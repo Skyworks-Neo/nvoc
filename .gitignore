@@ -1,0 +1,16 @@
+/result*
+/target/
+/.cargo/
+/.gitattributes
+*.swp
+*score.xml
+*vfp.log
+*vfpnew.csv
+*.DS_Store
+/ws/*
+/ws-*/*
+*.lock
+*.idea/
+target
+license
+debug.bat

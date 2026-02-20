@@ -1,0 +1,15 @@
+[package]
+name = "nvoc-srv"
+version = "0.0.1"
+description = "NVOC Windows service"
+authors = ["Skyworks"]
+edition = "2024"
+
+[profile.dev]
+incremental = false
+
+[dependencies]
+windows-service = "0.8.0"
+windows-sys = { version = "0.61.2", features = ["Win32"]}
+nvml-wrapper = "0.11.0"
+nvml-wrapper-sys = "0.9.0"
