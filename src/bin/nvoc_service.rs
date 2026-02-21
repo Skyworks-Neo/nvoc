@@ -30,9 +30,10 @@ fn main() {
 mod nvoc_service {
     use std::{
         time::{SystemTime, UNIX_EPOCH},
-        fs::OpenOptions,
+        fs::{OpenOptions, metadata},
         io::Write,
-        ffi::OsString, sync::mpsc, time::Duration
+        ffi::OsString, sync::mpsc, time::Duration,
+        process::Command
     };
     use windows_service::{
         define_windows_service,
@@ -117,12 +118,30 @@ mod nvoc_service {
 
         // let default = Nvml::init().err().unwrap_err();
         let nvml = Nvml::init().unwrap();
+
+        let mut loop_count = 0;
+        let loop_interval = 100000;
+
+        let temperature_softwall_offset = 10;
+        let vfp_safe_point = 50;
     
         // 根据环境变量决定输出位置
+        let file_path = format!("{}-output.log", SERVICE_NAME);
+
+        // 检查文件是否存在以及大小
+        let should_overwrite = if let Ok(meta) = metadata(&file_path) {
+            meta.len() > 10 * 1024 * 1024 // 大于10MB
+        } else {
+            false // 文件不存在，不需要覆写
+        };
+
         let mut file = OpenOptions::new()
-        .create(true)   // 如果文件不存在则创建
-        .append(true)   // 追加模式，保留原有内容
-        .open("nvoc-srv-output.log").unwrap();
+            .create(true)
+            .write(true)
+            .truncate(should_overwrite)  // 如果大于10MB则截断文件
+            .append(!should_overwrite)    // 如果不大于10MB则追加
+            .open(&file_path)
+            .unwrap();
 
         loop {
             let count = nvml.device_count().unwrap_or(0);
@@ -150,6 +169,24 @@ mod nvoc_service {
                     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
                     i, name, uuid, temperature, threshold_values[0], threshold_values[1], threshold_values[2], threshold_values[3]
                 ).unwrap();
+
+                // if temperature > threshold_values[3] - temperature_softwall_offset {
+                //     let _status = Command::new(".\\target\\debug\\nvoc-auto-optimizer.exe set vfp lock").arg(vfp_safe_point.to_string())
+                //     .status();
+                    
+                // } else if temperature < threshold_values[3] - temperature_softwall_offset {
+                //     let _status = Command::new(".\\target\\debug\\nvoc-auto-optimizer.exe set vfp unlock")
+                //     .status();
+                // }
+
+                // let set_status = Command::new("..\\NVOC-AutoOptimizer\\target\\debug\\nvoc-auto-optimizer.exe status").arg(vfp_safe_point.to_string())
+                //     .output().unwrap();
+                // write!(
+                //     file,
+                //     "Time {} GPU {}: VFP lock status: {}",
+                //     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+                //     i, String::from_utf8_lossy(&set_status.stdout)
+                // ).unwrap();
             }
 
             // Poll shutdown event.
@@ -160,6 +197,20 @@ mod nvoc_service {
                 // Continue work if no events were received within the timeout
                 Err(mpsc::RecvTimeoutError::Timeout) => (),
             };
+
+            loop_count += 1;
+
+            if loop_count % loop_interval == 0 {
+                if let Err(e) = file.flush() {
+                    eprintln!("Flush Error: {}", e);
+                }
+                file = OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    .truncate(true)  // 如果大于10MB则截断文件
+                    .open(&file_path)
+                    .unwrap();
+            }
         }
 
         // Tell the system that service has stopped.
