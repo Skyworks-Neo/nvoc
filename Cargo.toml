@@ -13,3 +13,10 @@ windows-service = "0.8.0"
 windows-sys = { version = "0.61.2", features = ["Win32"]}
 nvml-wrapper = "0.11.0"
 nvml-wrapper-sys = "0.9.0"
+nvapi-hi = { package = "nvapi-hi", version = "0.2.0", features = ["serde", ], git = "https://github.com/arcnmx/nvapi-rs", branch = "v0.2.x" }
+nvoc-auto-optimizer = { path = "../NVOC-AutoOptimizer" }
+clap = { version = "2.26.2", default-features = false }
+log = "0.4"
+log2 = "0.2.2"
+chrono = "0.4"  
+gag = "1.0.0"
