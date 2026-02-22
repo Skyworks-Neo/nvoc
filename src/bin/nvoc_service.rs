@@ -32,7 +32,8 @@ mod nvoc_service {
         time::{SystemTime, UNIX_EPOCH},
         fs::{OpenOptions},
         // io::Write,
-        ffi::OsString, sync::mpsc, time::Duration
+        ffi::OsString, sync::mpsc, time::Duration,
+        env
     };
     use windows_service::{
         define_windows_service,
@@ -69,10 +70,23 @@ mod nvoc_service {
     // parameters. There is no stdout or stderr at this point so make sure to configure the log
     // output to file if needed.
     pub fn my_service_main(_arguments: Vec<OsString>) {
+        let exe_dir = env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let log_dir = exe_dir.parent()  // 第一级
+            .and_then(|p| p.parent())    // 第二级
+            .unwrap_or(&exe_dir)         // 如果失败就用 exe_dir
+            .join("logs");                // 加上 logs 目录
+        std::fs::create_dir_all(&log_dir).unwrap();
+
+        let log_path = log_dir.join(format!("canbedel-{}-output.log", SERVICE_NAME));
+        let log_path_for_log2 = log_path.clone();
         let log_file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&format!("canbedel-{}-output.log", SERVICE_NAME))
+            .open(&log_path)
             .expect("Failed to open log file");
         
         // 重定向 stdout 和 stderr 到同一个文件
@@ -82,7 +96,7 @@ mod nvoc_service {
             .expect("Failed to redirect stderr");
 
         // 2. 初始化 log2（提供轮转和日志级别）
-        let _logger = log2::open(&format!("canbedel-{}-output.log", SERVICE_NAME))
+        let _logger = log2::open(log_path_for_log2.to_str().unwrap())
             .size(100 * 1024 * 1024)  // 100MB
             .rotate(2)                 // 保留1个备份
             // .tee(true)                  // 同时输出到终端

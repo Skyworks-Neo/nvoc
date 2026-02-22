@@ -40,5 +40,5 @@ p.s. Remember to stop the service when you compile and build the project.
 Usually on a Windows System Computer the path is
 
 ```
-C:\Windows\System32\canbedel-nvoc_service-output.log
+logs/
 ```

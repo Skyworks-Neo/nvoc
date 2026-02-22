@@ -14,3 +14,5 @@
 target
 license
 debug.bat
+logs/
+logs
