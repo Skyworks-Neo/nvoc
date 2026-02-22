@@ -139,32 +139,9 @@ mod nvoc_service {
         })?;
 
         // Nvml initialization is done here to ensure that the service can be stopped even if Nvml fails to initialize.
-
-        // let default = Nvml::init().err().unwrap_err();
         let nvml = Nvml::init().unwrap();
 
-        // let mut loop_count = 0;
-        // let loop_interval = 100000;
-
         let temperature_softwall_offset = 25;
-    
-        // // 根据环境变量决定输出位置
-        // let file_path = format!("{}-output.log", SERVICE_NAME);
-
-        // // 检查文件是否存在以及大小
-        // let should_overwrite = if let Ok(meta) = metadata(&file_path) {
-        //     meta.len() > 10 * 1024 * 1024 // 大于10MB
-        // } else {
-        //     false // 文件不存在，不需要覆写
-        // };
-
-        // let mut file = OpenOptions::new()
-        //     .create(true)
-        //     .write(true)
-        //     .truncate(should_overwrite)  // 如果大于10MB则截断文件
-        //     .append(!should_overwrite)    // 如果不大于10MB则追加
-        //     .open(&file_path)
-        //     .unwrap();
 
         let gpus = Gpu::enumerate().unwrap();
 
@@ -224,19 +201,6 @@ mod nvoc_service {
                 Err(mpsc::RecvTimeoutError::Timeout) => (),
             };
 
-            // loop_count += 1;
-
-            // if loop_count % loop_interval == 0 {
-            //     if let Err(e) = file.flush() {
-            //         eprintln!("Flush Error: {}", e);
-            //     }
-            //     file = OpenOptions::new()
-            //         .create(true)
-            //         .write(true)
-            //         .truncate(true)  // 如果大于10MB则截断文件
-            //         .open(&file_path)
-            //         .unwrap();
-            // }
         }
 
         // Tell the system that service has stopped.
