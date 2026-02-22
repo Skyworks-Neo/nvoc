@@ -42,3 +42,20 @@ Usually on a Windows System Computer the path is
 ```
 logs/
 ```
+
+## 3 Parameter update
+
+A web service is on the 1145 port of localhost.
+
+Now the example is a temperature wall of 64C. Over 64C will be set to vfp ref point 48.
+
+
+To change the ref point to 44
+```
+curl.exe "http://127.0.0.1:1145/set_vfp?point=44"
+```
+
+To check the ref point
+```
+curl.exe "http://127.0.0.1:1145/config"
+```

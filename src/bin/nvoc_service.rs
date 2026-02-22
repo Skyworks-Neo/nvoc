@@ -16,6 +16,9 @@
 // extern crate nvml_wrapper;
 // extern crate nvml_wrapper_sys;
 
+#[path = "../websrv.rs"]
+mod websrv;
+
 #[cfg(windows)]
 fn main() -> windows_service::Result<()> {
     nvoc_service::run()
@@ -33,7 +36,10 @@ mod nvoc_service {
         fs::{OpenOptions},
         // io::Write,
         ffi::OsString, sync::mpsc, time::Duration,
-        env
+        env,
+        sync::{Arc, Mutex},
+        thread,
+        cmp::{min, max}
     };
     use windows_service::{
         define_windows_service,
@@ -103,12 +109,21 @@ mod nvoc_service {
             .level(LevelFilter::Info)  
             .start();
 
-        if let Err(_e) = run_service() {
+        let config = Arc::new(Mutex::new(crate::websrv::NVOCServiceConfig {
+            vfp_lock_point: 48
+        }));
+
+        let http_config = config.clone();
+        thread::spawn(move || {
+            crate::websrv::start_http_server(http_config);
+        });
+
+        if let Err(_e) = run_service(config) {
             // Handle the error, by logging or something.
         }
     }
 
-    pub fn run_service() -> Result<()> {
+    pub fn run_service(config: Arc<Mutex<crate::websrv::NVOCServiceConfig>>) -> Result<()> {
         // Create a channel to be able to poll a stop event from the service worker loop.
         let (shutdown_tx, shutdown_rx) = mpsc::channel();
 
@@ -154,14 +169,14 @@ mod nvoc_service {
 
         // Nvml initialization is done here to ensure that the service can be stopped even if Nvml fails to initialize.
         let nvml = Nvml::init().unwrap();
-
         let temperature_softwall_offset = 25;
-
         let gpus = Gpu::enumerate().unwrap();
-
-        let vfp_low_lock_point = 48;
+        let vfp_lowest_lock_point = 40;
 
         loop {
+            let cfg = config.lock().unwrap();
+            let vfp_low_lock_point = max(cfg.vfp_lock_point, vfp_lowest_lock_point);
+
             let count = nvml.device_count().unwrap_or(0);
             info!("Detected {} GPUs via NVML", count);
 
@@ -214,6 +229,10 @@ mod nvoc_service {
                 // Continue work if no events were received within the timeout
                 Err(mpsc::RecvTimeoutError::Timeout) => (),
             };
+
+            drop(cfg); // 释放锁
+        
+            std::thread::sleep(std::time::Duration::from_secs(1));
 
         }
 
