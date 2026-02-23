@@ -35,7 +35,7 @@ mod nvoc_service {
         time::{SystemTime, UNIX_EPOCH},
         fs::{OpenOptions},
         // io::Write,
-        ffi::OsString, sync::mpsc, time::Duration,
+        ffi::OsString, time::Duration,
         env,
         sync::{Arc, Mutex},
         thread,
@@ -52,10 +52,14 @@ mod nvoc_service {
     };
     use nvapi_hi::Gpu;
     use nvml_wrapper::{Nvml, enum_wrappers::device::{TemperatureThreshold, TemperatureSensor}};
-    use nvoc_auto_optimizer::{handle_lock_vfp, handle_unlock_vfp};
-    use clap::ArgMatches;
+    use nvoc_auto_optimizer::{handle_lock_vfp, handle_unlock_vfp, handle_pstate_subcommand};
+    use clap;
     use log::{info, error, LevelFilter};
     use gag::Redirect;
+    use tokio;
+    use compio::runtime::RuntimeBuilder;
+
+    use crate::websrv::*;
 
     const SERVICE_NAME: &str = "nvoc_service";
     const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
@@ -112,20 +116,20 @@ mod nvoc_service {
         let config = Arc::new(Mutex::new(crate::websrv::NVOCServiceConfig {
             vfp_lock_point: 48
         }));
-
         let http_config = config.clone();
+        let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel::<NVOCServiceCmd>(32);
+        let http_tx = cmd_tx.clone();
+
         thread::spawn(move || {
-            crate::websrv::start_http_server(http_config);
+            crate::websrv::start_http_server(http_config, http_tx);
         });
 
-        if let Err(_e) = run_service(config) {
-            // Handle the error, by logging or something.
-        }
+        let _ = RuntimeBuilder::new().build().unwrap().block_on(run_service(config, cmd_rx));
     }
 
-    pub fn run_service(config: Arc<Mutex<crate::websrv::NVOCServiceConfig>>) -> Result<()> {
+    async fn run_service(config: Arc<Mutex<crate::websrv::NVOCServiceConfig>>, mut cmd_rx: tokio::sync::mpsc::Receiver<NVOCServiceCmd>) -> Result<()> {
         // Create a channel to be able to poll a stop event from the service worker loop.
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
+        let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel();
 
         // Define system service event handler that will be receiving service events.
         let event_handler = move |control_event| -> ServiceControlHandlerResult {
@@ -172,67 +176,105 @@ mod nvoc_service {
         let temperature_softwall_offset = 25;
         let gpus = Gpu::enumerate().unwrap();
         let vfp_lowest_lock_point = 40;
+        let vfp_highest_lock_point = 100;
+
+        let mut interval = tokio::time::interval(Duration::from_secs(5));
 
         loop {
-            let cfg = config.lock().unwrap();
-            let vfp_low_lock_point = max(cfg.vfp_lock_point, vfp_lowest_lock_point);
+            tokio::select!{
+                Some(cmd) = cmd_rx.recv() => {
+                    // 收到 HTTP 命令
+                    match cmd.cmd.as_str() {
+                        "set_oc_global" => {
+                            // 处理设置全局超频频率的命令
+                            let i = cmd.gpu_index;
+                            let freq_val = cmd.over_freq;
+                            let freq_str = freq_val.to_string();
+                            let pseudo_matches = clap::App::new("")
+                                .arg(clap::Arg::with_name("delta").default_value(&freq_str))
+                                .get_matches_from(vec![""]);
 
-            let count = nvml.device_count().unwrap_or(0);
-            info!("Detected {} GPUs via NVML", count);
+                            let mut gpu_result = Vec::new();
+                            if let Some(g) = gpus.get(i as usize) {
+                                gpu_result.push(g);
+                            }
 
-            // 遍历 GPU
-            for i in 0..count {
-                let device = nvml.device_by_index(i).unwrap();
-                let name = device.name().unwrap_or("Unknown".to_string()); // GPU 名称
-                let uuid = device.uuid().unwrap_or("Non UUID".to_string());                 // GPU UUID
-                let temperature = device.temperature(TemperatureSensor::Gpu).unwrap_or(0); // GPU 温度
-                let thresholds = [
-                    TemperatureThreshold::Shutdown,
-                    TemperatureThreshold::Slowdown,
-                    TemperatureThreshold::MemoryMax,
-                    TemperatureThreshold::GpuMax,
-                ];
-                let threshold_values: [u32; 4] = thresholds.map(|threshold_type| {
-                device.temperature_threshold(threshold_type).unwrap_or(0)});
-                
+                            match handle_pstate_subcommand(&gpu_result, &pseudo_matches) {
+                                Ok(_) => info!("OC set to {} for GPU {}", freq_str, i),
+                                Err(e) => error!("Failed to set OC for GPU {}: {:?}", i, e),
+                            }
+                            // 这里可以调用相应的函数来设置全局超频频率
+                            // 例如：set_oc_global_frequency(cmd.over_freq);
+                        }
 
-                info!(
-                    "Time {} GPU {}: {} UUID={} Temperature={} Threshold={} {} {} {}",
-                    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
-                    i, name, uuid, temperature, threshold_values[0], threshold_values[1], threshold_values[2], threshold_values[3]
-                );
-
-                let mut gpu_result = Vec::new();
-                if let Some(g) = gpus.get(i as usize) {
-                    gpu_result.push(g);
+                        _ => {
+                            // 处理其他命令
+                        }
+                    }
                 }
-                let pseudo_matches = ArgMatches::default();
-                if temperature >= threshold_values[3] - temperature_softwall_offset {
-                    match handle_lock_vfp(&gpu_result, &pseudo_matches, vfp_low_lock_point, true) {
-                        Ok(_) => info!("Locked VFP at point {} for GPU {} due to high temperature", vfp_low_lock_point, i),
-                        Err(e) => error!("Failed to lock VFP for GPU {}: {:?}", i, e),
-                    }
+
+                _ = interval.tick() => {
+                    let cfg = config.lock().unwrap();
+                    let vfp_low_lock_point = min(max(cfg.vfp_lock_point, vfp_lowest_lock_point), vfp_highest_lock_point);
+                    let count = nvml.device_count().unwrap_or(0);
+                    info!("Detected {} GPUs via NVML", count);
+
+                    // 遍历 GPU
+                    for i in 0..count {
+                        let device = nvml.device_by_index(i).unwrap();
+                        let name = device.name().unwrap_or("Unknown".to_string()); // GPU 名称
+                        let uuid = device.uuid().unwrap_or("Non UUID".to_string());                 // GPU UUID
+                        let temperature = device.temperature(TemperatureSensor::Gpu).unwrap_or(0); // GPU 温度
+                        let thresholds = [
+                            TemperatureThreshold::Shutdown,
+                            TemperatureThreshold::Slowdown,
+                            TemperatureThreshold::MemoryMax,
+                            TemperatureThreshold::GpuMax,
+                        ];
+                        let threshold_values: [u32; 4] = thresholds.map(|threshold_type| {
+                        device.temperature_threshold(threshold_type).unwrap_or(0)});
+                        
+
+                        info!(
+                            "Time {} GPU {}: {} UUID={} Temperature={} Threshold={} {} {} {}",
+                            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+                            i, name, uuid, temperature, threshold_values[0], threshold_values[1], threshold_values[2], threshold_values[3]
+                        );
+
+                        let mut gpu_result = Vec::new();
+                        if let Some(g) = gpus.get(i as usize) {
+                            gpu_result.push(g);
+                        }
+                        let pseudo_matches = clap::ArgMatches::default();
+                        if temperature >= threshold_values[3] - temperature_softwall_offset {
+                            match handle_lock_vfp(&gpu_result, &pseudo_matches, vfp_low_lock_point, true) {
+                                Ok(_) => info!("Locked VFP at point {} for GPU {} due to high temperature", vfp_low_lock_point, i),
+                                Err(e) => error!("Failed to lock VFP for GPU {}: {:?}", i, e),
+                            }
+                            
+                        } else if temperature < threshold_values[3] - temperature_softwall_offset {
+                            match handle_unlock_vfp(&gpu_result) {
+                                Ok(_) => info!("Unlocked VFP for GPU {} as temperature is back to normal", i),
+                                Err(e) => error!("Failed to unlock VFP for GPU {}: {:?}", i, e),
+                            }
+                            }
+                        }
                     
-                } else if temperature < threshold_values[3] - temperature_softwall_offset {
-                    match handle_unlock_vfp(&gpu_result) {
-                        Ok(_) => info!("Unlocked VFP for GPU {} as temperature is back to normal", i),
-                        Err(e) => error!("Failed to unlock VFP for GPU {}: {:?}", i, e),
-                    }
+
+                    drop(cfg); // 释放锁
+
+                    // Poll shutdown event.
+                    match shutdown_rx.recv_timeout(Duration::from_secs(1)) {
+                        // Break the loop either upon stop or channel disconnect
+                        Ok(_) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+
+                        // Continue work if no events were received within the timeout
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => (),
+                    };
+                
+                    std::thread::sleep(std::time::Duration::from_secs(1));
                 }
             }
-
-            // Poll shutdown event.
-            match shutdown_rx.recv_timeout(Duration::from_secs(1)) {
-                // Break the loop either upon stop or channel disconnect
-                Ok(_) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
-
-                // Continue work if no events were received within the timeout
-                Err(mpsc::RecvTimeoutError::Timeout) => (),
-            };
-
-            drop(cfg); // 释放锁
-        
-            std::thread::sleep(std::time::Duration::from_secs(1));
 
         }
 

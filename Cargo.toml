@@ -5,6 +5,11 @@ description = "NVOC Windows service"
 authors = ["Skyworks"]
 edition = "2024"
 
+[source.crates-io]
+replace-with = 'ustc'
+[source.ustc]
+registry = "git://mirrors.ustc.edu.cn/crates.io-index"
+
 [profile.dev]
 incremental = false
 
@@ -23,3 +28,7 @@ gag = "1.0.0"
 tiny_http = "0.12"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+tokio = { version = "1", features = ["rt", "time", "macros"] }
+tokio-stream = "0.1"
+futures-util = "0.3"
+compio = "0.15.0"
