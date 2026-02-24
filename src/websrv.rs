@@ -2,7 +2,6 @@ use std::sync::{Arc, Mutex};
 use tiny_http::{Server, Response};
 use serde::{Deserialize, Serialize};
 use log::{info};
-use tokio;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]  // 添加 Serialize
 pub struct NVOCServiceConfig {
@@ -16,7 +15,7 @@ pub struct NVOCServiceCmd {
     pub over_freq: i32,
 }
 
-pub fn start_http_server(config: Arc<Mutex<NVOCServiceConfig>>, cmd_tx: tokio::sync::mpsc::Sender<NVOCServiceCmd>) {
+pub fn start_http_server(config: Arc<Mutex<NVOCServiceConfig>>, cmd_tx: flume::Sender<NVOCServiceCmd>) {
     let server = Server::http("127.0.0.1:1145").unwrap();
     info!("HTTP config server listening on 127.0.0.1:1145");
     
@@ -32,6 +31,7 @@ pub fn start_http_server(config: Arc<Mutex<NVOCServiceConfig>>, cmd_tx: tokio::s
                 let response = Response::from_string(json).with_status_code(200);
                 request.respond(response).unwrap();
             }
+
             "/set_tem_wall_vfp" => {
                 // 调试：打印完整 URL                
                 if let Some(query) = request.url().split('?').nth(1) {                    
@@ -56,6 +56,7 @@ pub fn start_http_server(config: Arc<Mutex<NVOCServiceConfig>>, cmd_tx: tokio::s
                 let response = Response::from_string("Bad request").with_status_code(400);
                 request.respond(response).unwrap();
             }
+
             "/oc_global" => {
                 if let Some(query) = request.url().split('?').nth(1) {                    
                     if query.starts_with("oc=") {

@@ -59,3 +59,8 @@ To check the ref point
 ```
 curl.exe "http://127.0.0.1:1145/config"
 ```
+
+To set a global OC frequency
+```
+curl.exe "http://127.0.0.1:1145/oc_global?oc=75"
+```

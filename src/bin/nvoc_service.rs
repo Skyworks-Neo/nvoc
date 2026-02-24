@@ -39,8 +39,10 @@ mod nvoc_service {
         env,
         sync::{Arc, Mutex},
         thread,
-        cmp::{min, max}
+        cmp::{min, max},
+        time::Instant,
     };
+    use futures_util::StreamExt;
     use windows_service::{
         define_windows_service,
         service::{
@@ -52,14 +54,10 @@ mod nvoc_service {
     };
     use nvapi_hi::Gpu;
     use nvml_wrapper::{Nvml, enum_wrappers::device::{TemperatureThreshold, TemperatureSensor}};
-    use nvoc_auto_optimizer::{handle_lock_vfp, handle_unlock_vfp, handle_pstate_subcommand};
+    use nvoc_auto_optimizer::{handle_lock_vfp, handle_unlock_vfp, handle_pstate_subcommand };
     use clap;
     use log::{info, error, LevelFilter};
     use gag::Redirect;
-    use tokio;
-    use compio::runtime::RuntimeBuilder;
-
-    use crate::websrv::*;
 
     const SERVICE_NAME: &str = "nvoc_service";
     const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
@@ -117,19 +115,11 @@ mod nvoc_service {
             vfp_lock_point: 48
         }));
         let http_config = config.clone();
-        let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel::<NVOCServiceCmd>(32);
+        let (cmd_tx, cmd_rx) = flume::unbounded();
         let http_tx = cmd_tx.clone();
 
-        thread::spawn(move || {
-            crate::websrv::start_http_server(http_config, http_tx);
-        });
-
-        let _ = RuntimeBuilder::new().build().unwrap().block_on(run_service(config, cmd_rx));
-    }
-
-    async fn run_service(config: Arc<Mutex<crate::websrv::NVOCServiceConfig>>, mut cmd_rx: tokio::sync::mpsc::Receiver<NVOCServiceCmd>) -> Result<()> {
         // Create a channel to be able to poll a stop event from the service worker loop.
-        let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel();
+        let (shutdown_tx, shutdown_rx) = flume::unbounded();
 
         // Define system service event handler that will be receiving service events.
         let event_handler = move |control_event| -> ServiceControlHandlerResult {
@@ -158,10 +148,10 @@ mod nvoc_service {
 
         // Register system service event handler.
         // The returned status handle should be used to report service status changes to the system.
-        let status_handle = service_control_handler::register(SERVICE_NAME, event_handler)?;
+        let status_handle = service_control_handler::register(SERVICE_NAME, event_handler).unwrap();
 
         // Tell the system that service is running
-        status_handle.set_service_status(ServiceStatus {
+        let _ = status_handle.set_service_status(ServiceStatus {
             service_type: SERVICE_TYPE,
             current_state: ServiceState::Running,
             controls_accepted: ServiceControlAccept::STOP,
@@ -169,7 +159,32 @@ mod nvoc_service {
             checkpoint: 0,
             wait_hint: Duration::default(),
             process_id: None,
-        })?;
+        });
+
+        thread::spawn(move || {
+            crate::websrv::start_http_server(http_config, http_tx);
+        });
+
+        let _ = compio::runtime::RuntimeBuilder::new()
+        .build().unwrap()
+        .block_on(run_service(config, shutdown_rx, cmd_rx));
+
+        // Tell the system that service has stopped.
+        let _ = status_handle.set_service_status(ServiceStatus {
+            service_type: SERVICE_TYPE,
+            current_state: ServiceState::Stopped,
+            controls_accepted: ServiceControlAccept::empty(),
+            exit_code: ServiceExitCode::Win32(0),
+            checkpoint: 0,
+            wait_hint: Duration::default(),
+            process_id: None,
+        });
+    }
+
+    async fn run_service(config: Arc<Mutex<crate::websrv::NVOCServiceConfig>>, shutdown_rx: flume::Receiver<()>, cmd_rx: flume::Receiver<crate::websrv::NVOCServiceCmd>) -> Result<()> {
+        
+        let mut stopc = shutdown_rx.into_stream().skip(1);
+        let mut cmdc = cmd_rx.into_stream();
 
         // Nvml initialization is done here to ensure that the service can be stopped even if Nvml fails to initialize.
         let nvml = Nvml::init().unwrap();
@@ -178,42 +193,55 @@ mod nvoc_service {
         let vfp_lowest_lock_point = 40;
         let vfp_highest_lock_point = 100;
 
-        let mut interval = tokio::time::interval(Duration::from_secs(5));
+        let start_interval: Mutex<Option<humantime::Duration>> = Mutex::new(Some(humantime::Duration::from(std::time::Duration::from_secs(5))));
+        let interval: Option<humantime::Duration> = start_interval.lock().unwrap().as_ref().cloned();
+        let timer = create_timer(interval).fuse();
+        let mut timer = std::pin::pin!(timer);
+
+        info!("NVOC Service Start!!");
 
         loop {
-            tokio::select!{
-                Some(cmd) = cmd_rx.recv() => {
-                    // 收到 HTTP 命令
-                    match cmd.cmd.as_str() {
-                        "set_oc_global" => {
-                            // 处理设置全局超频频率的命令
-                            let i = cmd.gpu_index;
-                            let freq_val = cmd.over_freq;
-                            let freq_str = freq_val.to_string();
-                            let pseudo_matches = clap::App::new("")
-                                .arg(clap::Arg::with_name("delta").default_value(&freq_str))
-                                .get_matches_from(vec![""]);
+            futures_util::select!{
+                _ = stopc.next() => {
+                    break;
+                }
 
-                            let mut gpu_result = Vec::new();
-                            if let Some(g) = gpus.get(i as usize) {
-                                gpu_result.push(g);
+                cmd = cmdc.next() => {
+                    if let Some(cmd) = cmd {
+                        info!("Received command: {}", cmd.cmd);
+                        match cmd.cmd.as_str() {
+                            "set_oc_global" => {
+                                // 处理设置全局超频频率的命令
+                                let i = cmd.gpu_index;
+                                let freq_val = cmd.over_freq;
+                                let freq_str = freq_val.to_string();
+                                let pseudo_matches = clap::App::new("")
+                                    .arg(clap::Arg::with_name("delta").default_value(&freq_str))
+                                    .arg(clap::Arg::with_name("pstate").default_value("P0"))
+                                    .arg(clap::Arg::with_name("clock").default_value("graphics"))
+                                    .get_matches_from(vec![""]);
+
+                                let mut gpu_result = Vec::new();
+                                if let Some(g) = gpus.get(i as usize) {
+                                    gpu_result.push(g);
+                                }
+
+                                match handle_pstate_subcommand(&gpu_result, &pseudo_matches) {
+                                    Ok(_) => info!("OC set to {} for GPU {}", freq_str, i),
+                                    Err(e) => error!("Failed to set OC for GPU {}: {:?}", i, e),
+                                }
+                                // 这里可以调用相应的函数来设置全局超频频率
+                                // 例如：set_oc_global_frequency(cmd.over_freq);
                             }
 
-                            match handle_pstate_subcommand(&gpu_result, &pseudo_matches) {
-                                Ok(_) => info!("OC set to {} for GPU {}", freq_str, i),
-                                Err(e) => error!("Failed to set OC for GPU {}: {:?}", i, e),
+                            _ => {
+                                // 处理其他命令
                             }
-                            // 这里可以调用相应的函数来设置全局超频频率
-                            // 例如：set_oc_global_frequency(cmd.over_freq);
-                        }
-
-                        _ => {
-                            // 处理其他命令
                         }
                     }
                 }
-
-                _ = interval.tick() => {
+                
+                _ = timer.next() => {
                     let cfg = config.lock().unwrap();
                     let vfp_low_lock_point = min(max(cfg.vfp_lock_point, vfp_lowest_lock_point), vfp_highest_lock_point);
                     let count = nvml.device_count().unwrap_or(0);
@@ -260,17 +288,7 @@ mod nvoc_service {
                             }
                         }
                     
-
                     drop(cfg); // 释放锁
-
-                    // Poll shutdown event.
-                    match shutdown_rx.recv_timeout(Duration::from_secs(1)) {
-                        // Break the loop either upon stop or channel disconnect
-                        Ok(_) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-
-                        // Continue work if no events were received within the timeout
-                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => (),
-                    };
                 
                     std::thread::sleep(std::time::Duration::from_secs(1));
                 }
@@ -278,17 +296,20 @@ mod nvoc_service {
 
         }
 
-        // Tell the system that service has stopped.
-        status_handle.set_service_status(ServiceStatus {
-            service_type: SERVICE_TYPE,
-            current_state: ServiceState::Stopped,
-            controls_accepted: ServiceControlAccept::empty(),
-            exit_code: ServiceExitCode::Win32(0),
-            checkpoint: 0,
-            wait_hint: Duration::default(),
-            process_id: None,
-        })?;
-
         Ok(())
     }
+
+    pub fn create_timer(interval: Option<humantime::Duration>) -> impl futures_util::Stream<Item = Instant> {
+    if let Some(d) = interval {
+        futures_util::future::Either::Left(async_stream::stream! {
+            let mut interval = compio::time::interval(*d);
+            loop {
+                yield interval.tick().await;
+            }
+        })
+    } else {
+        futures_util::future::Either::Right(futures_util::stream::pending())
+    }
+}
+
 }
