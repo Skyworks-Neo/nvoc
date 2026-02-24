@@ -52,10 +52,15 @@ Now the example is a temperature wall of 64C. Over 64C will be set to vfp ref po
 
 To change the ref point to 44
 ```
-curl.exe "http://127.0.0.1:1145/set_vfp?point=44"
+curl.exe "http://127.0.0.1:1145/set_tem_wall_vfp?point=44"
 ```
 
 To check the ref point
 ```
 curl.exe "http://127.0.0.1:1145/config"
+```
+
+To set a global OC frequency
+```
+curl.exe "http://127.0.0.1:1145/oc_global?oc=75"
 ```

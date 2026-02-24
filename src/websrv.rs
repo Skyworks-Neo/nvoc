@@ -9,13 +9,18 @@ pub struct NVOCServiceConfig {
     // 其他参数...
 }
 
-pub fn start_http_server(config: Arc<Mutex<NVOCServiceConfig>>) {
+pub struct NVOCServiceCmd {
+    pub gpu_index: usize,
+    pub cmd: String,
+    pub over_freq: i32,
+}
+
+pub fn start_http_server(config: Arc<Mutex<NVOCServiceConfig>>, cmd_tx: flume::Sender<NVOCServiceCmd>) {
     let server = Server::http("127.0.0.1:1145").unwrap();
     info!("HTTP config server listening on 127.0.0.1:1145");
     
     for request in server.incoming_requests() {
         let full_url = request.url();
-        let config = config.clone();
         let path = full_url.split('?').next().unwrap_or(full_url);
         
         match path {
@@ -26,7 +31,8 @@ pub fn start_http_server(config: Arc<Mutex<NVOCServiceConfig>>) {
                 let response = Response::from_string(json).with_status_code(200);
                 request.respond(response).unwrap();
             }
-            "/set_vfp" => {
+
+            "/set_tem_wall_vfp" => {
                 // 调试：打印完整 URL                
                 if let Some(query) = request.url().split('?').nth(1) {                    
                     if query.starts_with("point=") {
@@ -45,6 +51,33 @@ pub fn start_http_server(config: Arc<Mutex<NVOCServiceConfig>>) {
                             }
                         }
                     } 
+                } 
+                
+                let response = Response::from_string("Bad request").with_status_code(400);
+                request.respond(response).unwrap();
+            }
+
+            "/oc_global" => {
+                if let Some(query) = request.url().split('?').nth(1) {                    
+                    if query.starts_with("oc=") {
+                        let freq = &query[3..];                        
+                        match freq.parse::<i32>() {
+                            Ok(freq_val) => {
+                                let _ =cmd_tx.send(NVOCServiceCmd {
+                                    gpu_index: 0, // 这里可以根据需要调整 GPU 索引
+                                    cmd: "set_oc_global".to_string(),
+                                    over_freq: freq_val,
+                                });
+                                info!("VFP over freq is {}", freq_val);
+                                
+                                let response = Response::from_string("OK").with_status_code(200);
+                                request.respond(response).unwrap();
+                                continue;
+                            }
+                            Err(_e) => {
+                            }
+                        }
+                    }
                 } 
                 
                 let response = Response::from_string("Bad request").with_status_code(400);
