@@ -6,6 +6,7 @@ use log::{info};
 #[derive(Serialize, Deserialize, Clone, Debug)]  // 添加 Serialize
 pub struct NVOCServiceConfig {
     pub vfp_lock_point: usize,
+    pub temp_limit: u32,
     // 其他参数...
 }
 
@@ -16,8 +17,8 @@ pub struct NVOCServiceCmd {
 }
 
 pub fn start_http_server(config: Arc<Mutex<NVOCServiceConfig>>, cmd_tx: flume::Sender<NVOCServiceCmd>) {
-    let server = Server::http("127.0.0.1:1145").unwrap();
-    info!("HTTP config server listening on 127.0.0.1:1145");
+    let server = Server::http("127.0.0.1:14514").unwrap();
+    info!("HTTP config server listening on 127.0.0.1:14514");
     
     for request in server.incoming_requests() {
         let full_url = request.url();
@@ -32,16 +33,16 @@ pub fn start_http_server(config: Arc<Mutex<NVOCServiceConfig>>, cmd_tx: flume::S
                 request.respond(response).unwrap();
             }
 
-            "/set_tem_wall_vfp" => {
+            "/set_temp_limit_soft_vfp" => {
                 // 调试：打印完整 URL                
                 if let Some(query) = request.url().split('?').nth(1) {                    
-                    if query.starts_with("point=") {
+                    if query.starts_with("limit=") {
                         let point_str = &query[6..];                        
                         match point_str.parse::<usize>() {
                             Ok(point) => {
                                 let mut cfg = config.lock().unwrap();
-                                cfg.vfp_lock_point = point;
-                                info!("VFP lock point updated to {}", point);
+                                cfg.temp_limit = point as u32;
+                                info!("Temp limit updated to {}℃", point);
                                 
                                 let response = Response::from_string("OK").with_status_code(200);
                                 request.respond(response).unwrap();

@@ -54,10 +54,11 @@ mod nvoc_service {
     };
     use nvapi_hi::Gpu;
     use nvml_wrapper::{Nvml, enum_wrappers::device::{TemperatureThreshold, TemperatureSensor}};
-    use nvoc_auto_optimizer::{handle_lock_vfp, handle_unlock_vfp, handle_pstate_subcommand };
+    use nvoc_auto_optimizer::{handle_lock_vfp, handle_unlock_vfp, handle_pstate_subcommand, find_matching_vfp_point};
     use clap;
     use log::{info, error, LevelFilter};
     use gag::Redirect;
+    use nvapi_hi::nvapi::ClockFrequencyType;
 
     const SERVICE_NAME: &str = "nvoc_service";
     const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
@@ -112,7 +113,8 @@ mod nvoc_service {
             .start();
 
         let config = Arc::new(Mutex::new(crate::websrv::NVOCServiceConfig {
-            vfp_lock_point: 48
+            vfp_lock_point: 70,
+            temp_limit: 60,
         }));
         let http_config = config.clone();
         let (cmd_tx, cmd_rx) = flume::unbounded();
@@ -188,10 +190,12 @@ mod nvoc_service {
 
         // Nvml initialization is done here to ensure that the service can be stopped even if Nvml fails to initialize.
         let nvml = Nvml::init().unwrap();
-        let temperature_softwall_offset = 25;
+        // let temperature_softwall_offset = 25;
         let gpus = Gpu::enumerate().unwrap();
         let vfp_lowest_lock_point = 40;
         let vfp_highest_lock_point = 100;
+        // 每张 GPU 的动态温控锁定点，初始为最高（即未限制）
+        let mut gpu_dynamic_lock_point: Vec<usize> = vec![vfp_highest_lock_point; gpus.len()];
 
         let start_interval: Mutex<Option<humantime::Duration>> = Mutex::new(Some(humantime::Duration::from(std::time::Duration::from_secs(5))));
         let interval: Option<humantime::Duration> = start_interval.lock().unwrap().as_ref().cloned();
@@ -244,6 +248,7 @@ mod nvoc_service {
                 _ = timer.next() => {
                     let cfg = config.lock().unwrap();
                     let vfp_low_lock_point = min(max(cfg.vfp_lock_point, vfp_lowest_lock_point), vfp_highest_lock_point);
+                    let temperature_softwall = cfg.temp_limit;
                     let count = nvml.device_count().unwrap_or(0);
                     info!("Detected {} GPUs via NVML", count);
 
@@ -272,25 +277,67 @@ mod nvoc_service {
                         let mut gpu_result = Vec::new();
                         if let Some(g) = gpus.get(i as usize) {
                             gpu_result.push(g);
+                            // 读取传感器电压/频率，并反推当前工作点写入 gpu_dynamic_lock_point
+                            let sensor_v = g.inner().core_voltage()
+                                .map_err(|e| error!("GPU {} core_voltage: {:?}", i, e)).ok();
+                            let sensor_f = g.inner().clock_frequencies(ClockFrequencyType::Current)
+                                .map_err(|e| error!("GPU {} clock_frequencies: {:?}", i, e)).ok();
+                            if let (Some(sensor_v), Some(sensor_f)) = (sensor_v, sensor_f) {
+                                info!("GPU {}: voltage={}, freq={:?}", i, sensor_v, sensor_f);
+                                match g.status().map(|s| s.vfp) {
+                                    Ok(Some(vfp)) => match find_matching_vfp_point(&vfp.graphics, sensor_v) {
+                                        Some((idx, pt)) => {
+                                            info!(
+                                                "GPU {} Working VfpPoint Inferred: Index={}, Voltage={:?}, Frequency={:?}",
+                                                i, idx, pt.voltage, pt.frequency
+                                            );
+                                            // 仅在未处于降频保护时更新动态点，避免覆盖温控收紧的值
+                                            if gpu_dynamic_lock_point[i as usize] >= vfp_highest_lock_point {
+                                                gpu_dynamic_lock_point[i as usize] = *idx;
+                                            }
+                                        },
+                                        None => info!("GPU {}: no matching VfpPoint found", i),
+                                    },
+                                    Ok(None)   => info!("GPU {}: VFP unsupported", i),
+                                    Err(e)     => error!("GPU {} status: {:?}", i, e),
+                                }
+                            }
                         }
                         let pseudo_matches = clap::ArgMatches::default();
-                        if temperature >= threshold_values[3] - temperature_softwall_offset {
-                            match handle_lock_vfp(&gpu_result, &pseudo_matches, vfp_low_lock_point, true) {
-                                Ok(_) => info!("Locked VFP at point {} for GPU {} due to high temperature", vfp_low_lock_point, i),
-                                Err(e) => error!("Failed to lock VFP for GPU {}: {:?}", i, e),
+
+                        if temperature >= temperature_softwall {
+                            // 超温：每周期降低一个工作点（收紧），不低于最低限制
+                            let current = gpu_dynamic_lock_point[i as usize];
+                            let next = current.saturating_sub(1).max(vfp_lowest_lock_point);
+                            gpu_dynamic_lock_point[i as usize] = next;
+                            match handle_lock_vfp(&gpu_result, &pseudo_matches, next, true) {
+                                Ok(_) => info!("GPU {}: over-temp, stepped down to VFP lock point {}", i, next),
+                                Err(e) => error!("GPU {}: failed to lock VFP: {:?}", i, e),
                             }
-                            
-                        } else if temperature < threshold_values[3] - temperature_softwall_offset {
-                            match handle_unlock_vfp(&gpu_result) {
-                                Ok(_) => info!("Unlocked VFP for GPU {} as temperature is back to normal", i),
-                                Err(e) => error!("Failed to unlock VFP for GPU {}: {:?}", i, e),
-                            }
+                        } else {
+                            // 温度正常：每周期放开一个工作点（松弛），不超过用户配置上限
+                            let current = gpu_dynamic_lock_point[i as usize];
+                            if current < vfp_low_lock_point {
+                                let next = (current + 1).min(vfp_low_lock_point);
+                                gpu_dynamic_lock_point[i as usize] = next;
+                                match handle_lock_vfp(&gpu_result, &pseudo_matches, next, true) {
+                                    Ok(_) => info!("GPU {}: temp normal, relaxed to VFP lock point {}", i, next),
+                                    Err(e) => error!("GPU {}: failed to relax VFP: {:?}", i, e),
+                                }
+                            } else {
+                                // 已回到正常上限，完全解锁
+                                gpu_dynamic_lock_point[i as usize] = vfp_highest_lock_point;
+                                match handle_unlock_vfp(&gpu_result) {
+                                    Ok(_) => info!("GPU {}: temp normal, VFP fully unlocked", i),
+                                    Err(e) => error!("GPU {}: failed to unlock VFP: {:?}", i, e),
+                                }
                             }
                         }
-                    
+                    } // end for i in 0..count
+
                     drop(cfg); // 释放锁
                 
-                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    thread::sleep(Duration::from_secs(1));
                 }
             }
 
