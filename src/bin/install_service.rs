@@ -14,7 +14,7 @@ fn main() -> windows_service::Result<()> {
     // This example installs the service defined in `examples/nvoc_service.rs`.
     // In the real world code you would set the executable path to point to your own binary
     // that implements windows service.
-    let service_binary_path = ::std::env::current_exe()
+    let service_binary_path = std::env::current_exe()
         .unwrap()
         .with_file_name("nvoc_service.exe");
 
@@ -31,9 +31,12 @@ fn main() -> windows_service::Result<()> {
         account_password: None,
     };
     println!("Installing service...");
-    let _service = service_manager.create_service(&service_info, ServiceAccess::START | ServiceAccess::QUERY_STATUS)?;
+    let _service = service_manager.create_service(
+        &service_info,
+        ServiceAccess::START | ServiceAccess::QUERY_STATUS | ServiceAccess::CHANGE_CONFIG,
+    )?;
     println!("Service installed successfully.");
-    // service.set_description("Windows service example from windows-service-rs")?;
+    _service.set_description("nvoc_service for connecting and communicating with nvapi & nvml driver")?;
     Ok(())
 }
 

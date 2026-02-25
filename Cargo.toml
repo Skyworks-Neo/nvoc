@@ -6,7 +6,7 @@ authors = ["Skyworks"]
 edition = "2024"
 
 [profile.dev]
-incremental = false
+incremental = true
 
 [dependencies]
 windows-service = "0.8.0"
