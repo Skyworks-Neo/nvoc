@@ -1,17 +1,9 @@
-// Ping service example.
-//
 // You can install and uninstall this service using other example programs.
 // All commands mentioned below shall be executed in Command Prompt with Administrator privileges.
 //
 // Service installation: `install_service.exe`
 // Service uninstallation: `uninstall_service.exe`
 //
-// Start the service: `net start ping_service`
-// Stop the service: `net stop ping_service`
-//
-// Ping server sends a text message to local UDP port 1234 once a second.
-// You can verify that service works by running netcat, i.e: `ncat -ul 1234`.
-
 // extern crate windows_service;
 // extern crate nvml_wrapper;
 // extern crate nvml_wrapper_sys;
@@ -54,7 +46,7 @@ mod nvoc_service {
     };
     use nvapi_hi::Gpu;
     use nvml_wrapper::{Nvml, enum_wrappers::device::{TemperatureThreshold, TemperatureSensor}};
-    use nvoc_auto_optimizer::{handle_lock_vfp, handle_unlock_vfp, handle_pstate_subcommand, find_matching_vfp_point};
+    use nvoc_auto_optimizer::{handle_lock_vfp, handle_unlock_vfp, handle_global_oc_offset_subcommand, find_matching_vfp_point};
     use clap;
     use log::{info, error, LevelFilter};
     use gag::Redirect;
@@ -69,7 +61,7 @@ mod nvoc_service {
         service_dispatcher::start(SERVICE_NAME, ffi_service_main)
     }
 
-    // Generate the windows service boilerplate.
+    // Generate the Windows service boilerplate.
     // The boilerplate contains the low-level service entry function (ffi_service_main) that parses
     // incoming service arguments into Vec<OsString> and passes them to user defined service
     // entry (my_service_main).
@@ -197,7 +189,7 @@ mod nvoc_service {
         // 每张 GPU 的动态温控锁定点，初始为最高（即未限制）
         let mut gpu_dynamic_lock_point: Vec<usize> = vec![vfp_highest_lock_point; gpus.len()];
 
-        let start_interval: Mutex<Option<humantime::Duration>> = Mutex::new(Some(humantime::Duration::from(std::time::Duration::from_secs(5))));
+        let start_interval: Mutex<Option<humantime::Duration>> = Mutex::new(Some(humantime::Duration::from(Duration::from_secs(5))));
         let interval: Option<humantime::Duration> = start_interval.lock().unwrap().as_ref().cloned();
         let timer = create_timer(interval).fuse();
         let mut timer = std::pin::pin!(timer);
@@ -219,19 +211,20 @@ mod nvoc_service {
                                 let i = cmd.gpu_index;
                                 let freq_val = cmd.over_freq;
                                 let freq_str = freq_val.to_string();
-                                let pseudo_matches = clap::App::new("")
-                                    .arg(clap::Arg::with_name("delta").default_value(&freq_str))
-                                    .arg(clap::Arg::with_name("pstate").default_value("P0"))
-                                    .arg(clap::Arg::with_name("clock").default_value("graphics"))
+                                let freq_str_static: &'static str = Box::leak(freq_str.into_boxed_str());
+                                let pseudo_matches = clap::Command::new("")
+                                    .arg(clap::Arg::new("delta").default_value(freq_str_static))
+                                    .arg(clap::Arg::new("pstate").default_value("P0"))
+                                    .arg(clap::Arg::new("clock").default_value("graphics"))
                                     .get_matches_from(vec![""]);
 
                                 let mut gpu_result = Vec::new();
-                                if let Some(g) = gpus.get(i as usize) {
+                                if let Some(g) = gpus.get(i) {
                                     gpu_result.push(g);
                                 }
 
-                                match handle_pstate_subcommand(&gpu_result, &pseudo_matches) {
-                                    Ok(_) => info!("OC set to {} for GPU {}", freq_str, i),
+                                match handle_global_oc_offset_subcommand(&gpu_result, &pseudo_matches) {
+                                    Ok(_) => info!("OC set to {} for GPU {}", freq_str_static, i),
                                     Err(e) => error!("Failed to set OC for GPU {}: {:?}", i, e),
                                 }
                                 // 这里可以调用相应的函数来设置全局超频频率
@@ -334,15 +327,11 @@ mod nvoc_service {
                             }
                         }
                     } // end for i in 0..count
-
                     drop(cfg); // 释放锁
-                
-                    thread::sleep(Duration::from_secs(1));
                 }
             }
 
         }
-
         Ok(())
     }
 
