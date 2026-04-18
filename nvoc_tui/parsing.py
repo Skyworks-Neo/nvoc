@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import re
-from math import ceil
 from pathlib import Path
 from typing import Any
 
@@ -162,10 +161,10 @@ def normalize_query_output(command: str, output: str) -> dict[str, Any]:
     return {}
 
 
-def vf_curve_plot(path: str, width: int = 90, height: int = 20) -> str:
+def load_vf_curve(path: str) -> tuple[list[float], list[float], list[float]]:
     csv_path = Path(path)
     if not csv_path.is_file():
-        return "No VF curve cache loaded."
+        return [], [], []
 
     voltages: list[float] = []
     freqs: list[float] = []
@@ -183,53 +182,4 @@ def vf_curve_plot(path: str, width: int = 90, height: int = 20) -> str:
         except ValueError:
             continue
 
-    if not voltages:
-        return "VF curve cache is empty."
-
-    plot_width = max(24, width)
-    plot_height = max(8, height)
-    left_pad = 8
-    inner_width = max(8, plot_width - left_pad - 1)
-    inner_height = max(4, plot_height - 4)
-
-    min_v = min(voltages)
-    max_v = max(voltages)
-    min_f = min(min(freqs), min(defaults))
-    max_f = max(max(freqs), max(defaults))
-    if max_v == min_v:
-        max_v += 1.0
-    if max_f == min_f:
-        max_f += 1.0
-
-    grid = [[" " for _ in range(inner_width)] for _ in range(inner_height)]
-
-    def place(series_x: list[float], series_y: list[float], marker: str) -> None:
-        for x_val, y_val in zip(series_x, series_y):
-            x_ratio = (x_val - min_v) / (max_v - min_v)
-            y_ratio = (y_val - min_f) / (max_f - min_f)
-            x = min(inner_width - 1, max(0, int(round(x_ratio * (inner_width - 1)))))
-            y = min(inner_height - 1, max(0, int(round((1.0 - y_ratio) * (inner_height - 1)))))
-            current = grid[y][x]
-            if current != " " and current != marker:
-                grid[y][x] = "*"
-            else:
-                grid[y][x] = marker
-
-    place(voltages, defaults, ".")
-    place(voltages, freqs, "#")
-
-    lines: list[str] = []
-    title = "VF Curve (# current, . default)"
-    lines.append(title[:plot_width].ljust(plot_width))
-    for row_idx, row in enumerate(grid):
-        freq_value = max_f - ((max_f - min_f) * row_idx / max(1, inner_height - 1))
-        label = f"{int(round(freq_value)):>6} "
-        lines.append(f"{label}|{''.join(row)}")
-
-    axis = " " * left_pad + "+" + "-" * inner_width
-    lines.append(axis[:plot_width])
-    min_label = f"{int(round(min_v))}mV"
-    max_label = f"{int(round(max_v))}mV"
-    gap = max(1, plot_width - len(min_label) - len(max_label))
-    lines.append((min_label + (" " * gap) + max_label)[:plot_width].ljust(plot_width))
-    return "\n".join(lines)
+    return voltages, freqs, defaults

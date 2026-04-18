@@ -4,13 +4,14 @@ import threading
 from pathlib import Path
 
 from textual.app import App, ComposeResult
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, HorizontalScroll, Vertical
 from textual.widgets import Button, Checkbox, Footer, Header, Input, Label, Log, Select, Static, TabbedContent, TabPane
+from textual_plotext import PlotextPlot
 
 from .cli import CliService
 from .config import ConfigStore
 from .models import AppConfig, GpuCache, GpuDescriptor, repo_root
-from .parsing import vf_curve_plot
+from .parsing import load_vf_curve
 
 
 class NVOCApp(App[None]):
@@ -18,6 +19,10 @@ class NVOCApp(App[None]):
     CSS = """
     Screen {
         layout: vertical;
+        overflow: hidden;
+    }
+    Button {
+        margin: 0 1;
     }
     #topbar {
         height: auto;
@@ -50,20 +55,57 @@ class NVOCApp(App[None]):
     .grow {
         width: 1fr;
     }
+    #dashboard-controls {
+        width: auto;
+        height: auto;
+    }
+    #dashboard-controls Button {
+        min-width: 8;
+        width: auto;
+    }
+    #dashboard-interval {
+        width: 8;
+        padding: 0 1;
+    }
+    .section {
+        overflow: auto;
+    }
     #metrics {
         height: auto;
         border: round $surface;
+        padding: 0 2;
     }
     #vf-plot {
-        min-height: 10;
+        min-height: 20;
         height: 1fr;
         border: round $accent;
         overflow: auto;
         content-align: left top;
     }
+    #vfcurve .row > * {
+        margin: 0 1;
+    }
+    #vfcurve .row > Input {
+        min-width: 6;
+        width: 6;
+    }
+    #vfcurve #vf-path {
+        width: 1fr;
+    }
+    #vf-actions {
+        width: 1fr;
+        align-horizontal: center;
+    }
+    #vfcurve #vf-plot {
+        margin: 0 2;
+    }
     #log-header {
         height: auto;
         padding: 0;
+        background: $surface;
+    }
+    #log-panel {
+        height: 5;
     }
     #log-panel.hidden {
         display: none;
@@ -71,6 +113,23 @@ class NVOCApp(App[None]):
     Log {
         height: 14;
         border: round $surface;
+    }
+    .section {
+        margin: 0 2;
+    }
+    TabbedContent {
+        height: 1fr;
+        overflow: hidden;
+    }
+    TabbedContent > ContentSwitcher {
+        height: 1fr;
+        overflow: hidden;
+    }
+    TabPane {
+        height: 1fr;
+    }
+    TabPane > .section {
+        height: 1fr;
     }
     """
     BINDINGS = [("ctrl+c", "quit", "Quit")]
@@ -107,8 +166,8 @@ class NVOCApp(App[None]):
         with TabbedContent(initial=self.config_data.ui.active_tab or "dashboard"):
             with TabPane("Dashboard", id="dashboard"):
                 with Vertical(classes="section"):
-                    with Horizontal(classes="row"):
-                        yield Label("Refresh (s)")
+                    with Horizontal(classes="row", id="dashboard-controls"):
+                        yield Label("Refresh (s): ")
                         yield Input(value=f"{self.config_data.dashboard.refresh_interval:.1f}", id="dashboard-interval", compact=True)
                         yield Button("Apply", id="dashboard-interval-apply", compact=True)
                         yield Button("Pause", id="dashboard-pause", compact=True)
@@ -211,7 +270,7 @@ class NVOCApp(App[None]):
                     with Horizontal(classes="row"):
                         yield Input(value=self.config_data.vfcurve.default_path, placeholder="CSV path for import/export", id="vf-path", classes="grow", compact=True)
                         yield Checkbox("Quick export", value=self.config_data.vfcurve.quick_export, id="vf-quick-export", compact=True)
-                    with Horizontal(classes="row"):
+                    with Horizontal(classes="row", id="vf-actions"):
                         yield Button("Refresh Curve", id="vf-refresh", compact=True)
                         yield Button("Export VFP", id="vf-export", compact=True)
                         yield Button("Import VFP", id="vf-import", compact=True)
@@ -246,9 +305,9 @@ class NVOCApp(App[None]):
                         yield Input(value="0", id="vf-mem-max", compact=True)
                         yield Button("Lock Mem", id="vf-lock-mem", compact=True)
                         yield Button("Reset Mem", id="vf-reset-mem", compact=True)
-                    yield Static("No VF curve cache loaded.", id="vf-plot")
+                    yield PlotextPlot(id="vf-plot")
         with Horizontal(id="log-header"):
-            yield Label("Output")
+            yield Label("  Output")
             yield Button("Hide", id="toggle-log", compact=True)
             yield Button("Clear", id="clear-log", compact=True)
         with Vertical(id="log-panel"):
@@ -258,6 +317,7 @@ class NVOCApp(App[None]):
     def on_mount(self) -> None:
         self._write_log("NVOC-TUI started.")
         self._update_metrics()
+        self._clear_vf_plot("No VF curve cache loaded.")
         self._refresh_gpu_list()
         self._set_poll_timer(self.config_data.dashboard.refresh_interval)
 
@@ -464,16 +524,38 @@ class NVOCApp(App[None]):
         if code == 0:
             self._render_vf_plot()
         else:
-            self.query_one("#vf-plot", Static).update("VF curve export failed.")
+            self._clear_vf_plot("VF curve export failed.")
+
+    def _clear_vf_plot(self, title: str) -> None:
+        widget = self.query_one("#vf-plot", PlotextPlot)
+        plt = widget.plt
+        plt.clear_figure()
+        plt.clear_data()
+        plt.clear_color()
+        plt.title(title)
+        plt.xlabel("mV")
+        plt.ylabel("MHz")
+        widget.refresh()
 
     def _render_vf_plot(self) -> None:
         if not self.cache.vf_curve_path:
+            self._clear_vf_plot("No VF curve cache loaded.")
             return
-        widget = self.query_one("#vf-plot", Static)
-        size = widget.size
-        width = max(24, size.width - 2)
-        height = max(8, size.height - 2)
-        widget.update(vf_curve_plot(self.cache.vf_curve_path, width=width, height=height))
+        voltages, freqs, defaults = load_vf_curve(self.cache.vf_curve_path)
+        if not voltages:
+            self._clear_vf_plot("VF curve cache is empty.")
+            return
+        widget = self.query_one("#vf-plot", PlotextPlot)
+        plt = widget.plt
+        plt.clear_figure()
+        plt.clear_data()
+        plt.clear_color()
+        plt.plot(voltages, freqs, marker="braille", color="cyan+", label="Current")
+        plt.scatter(voltages, defaults, marker="braille", color="white", label="Default")
+        plt.title("VF Curve")
+        plt.xlabel("mV")
+        plt.ylabel("MHz")
+        widget.refresh()
 
     def _get_int(self, widget_id: str, default: int = 0) -> int:
         try:

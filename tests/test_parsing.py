@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from nvoc_tui.parsing import parse_get_output, parse_gpu_list, parse_info_output, parse_json_output, parse_status_output, vf_curve_plot
+from nvoc_tui.parsing import load_vf_curve, parse_get_output, parse_gpu_list, parse_info_output, parse_json_output, parse_status_output
 
 
 def test_parse_gpu_list_with_uuid() -> None:
@@ -80,15 +80,18 @@ def test_parse_json_output() -> None:
     assert parsed[0]["gpu_clock_mhz"] == 2000
 
 
-def test_vf_curve_plot(tmp_path: Path) -> None:
+def test_load_vf_curve(tmp_path: Path) -> None:
     csv_path = tmp_path / "curve.csv"
     csv_path.write_text(
         "voltage_uv,frequency_khz,delta,default_frequency_khz\n"
         "800000,1800000,0,1750000\n"
+        "825000,1840000,0,1775000\n"
         "850000,1900000,0,1800000\n",
         encoding="utf-8",
     )
 
-    plot = vf_curve_plot(str(csv_path))
+    voltages, freqs, defaults = load_vf_curve(str(csv_path))
 
-    assert "VF Curve" in plot
+    assert voltages == [800.0, 825.0, 850.0]
+    assert freqs == [1800.0, 1840.0, 1900.0]
+    assert defaults == [1750.0, 1775.0, 1800.0]
