@@ -38,7 +38,7 @@ def test_parse_info_output() -> None:
 
     parsed = parse_info_output(output)
 
-    assert parsed["gpu_architecture"] == "Ada"
+    assert parsed["arch"] == "Ada"
     assert parsed["core_clock_min"] == -500
     assert parsed["mem_clock_max"] == 1500
     assert parsed["power_limit_default"] == 100
@@ -128,6 +128,22 @@ def test_normalize_status_json_output() -> None:
     assert parsed["voltage_mv"] == 650.0
     assert parsed["temperature_c"] == 37.0
     assert parsed["power_w"] == 1.0
+
+
+def test_normalize_info_json_output() -> None:
+    output = """
+    {
+      "id": 0,
+      "name": "GPU",
+      "arch": "Ada",
+      "gpu_type": "Desktop"
+    }
+    """
+
+    parsed = normalize_query_output("info", output)
+
+    assert parsed["arch"] == "Ada"
+    assert parsed["gpu_type"] == "Desktop"
 
 
 def test_load_vf_curve(tmp_path: Path) -> None:

@@ -480,10 +480,12 @@ class NVOCApp(App[None]):
         self._run_query("get", self.gpu_args() + ["-O", "json", "get"], self._on_get_loaded)
 
     def _on_info_loaded(self, code: int, output: str, parsed: dict) -> None:
-        if code != 0:
+        if code != 0 and output:
             self._write_log(output)
+        if code != 0 and not parsed:
             return
         self.cache.info = parsed
+        self._update_metrics()
         self._prime_overclock_inputs()
 
     def _on_status_loaded(self, code: int, output: str, parsed: dict) -> None:
@@ -520,13 +522,14 @@ class NVOCApp(App[None]):
     def _update_metrics(self) -> None:
         info = self.cache.info
         status = self.cache.status
+        architecture = info.get("arch") or info.get("codename") or "---"
         lines = [
             f"GPU: {status.get('gpu_clock_mhz', '---')} MHz",
             f"MEM: {status.get('mem_clock_mhz', '---')} MHz",
             f"VOLT: {status.get('voltage_mv', '---')} mV",
             f"TEMP: {status.get('temperature_c', '---')} C",
             f"PWR: {status.get('power_w', '---')} W",
-            f"ARCH: {info.get('gpu_architecture', '---')}",
+            f"ARCH: {architecture}",
         ]
         self.query_one("#metrics", Static).update("\n".join(lines))
 

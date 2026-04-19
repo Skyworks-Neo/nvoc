@@ -98,7 +98,7 @@ def parse_info_output(output: str) -> dict[str, Any]:
         line = raw.strip()
         if line.startswith("Architecture"):
             value = line.split(":", 1)[1].strip()
-            parsed["gpu_architecture"] = value
+            parsed["arch"] = value
         elif line.startswith("VFP (Graphics)"):
             match = re.search(r"(-?\d+)\s*MHz\s*~\s*(-?\d+)\s*MHz", line)
             if match:

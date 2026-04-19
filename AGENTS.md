@@ -57,6 +57,7 @@ This repository contains `nvoc-tui`, a Textual-based terminal UI for the externa
 
 ## Editing Guidance
 
+- CHECK ../NVOC-GUI for GUI conterparts; CHECK ../NVOC-AutoOptimizer for CLI that you will call.
 - Keep changes consistent with existing Textual patterns in `app.py`; this file currently centralizes most UI behavior.
 - Prefer extending helper methods like `_autoscan_args()`, `_oc_args()`, `_limit_args()`, and `_fan_args()` instead of embedding command construction directly in button handlers.
 - If you add new persisted fields, update:
