@@ -11,7 +11,7 @@ from textual_plotext import PlotextPlot
 from .cli import CliService
 from .config import ConfigStore
 from .models import AppConfig, GpuCache, GpuDescriptor, repo_root
-from .parsing import load_vf_curve
+from .parsing import find_curve_point_for_voltage, load_vf_curve
 
 
 class NVOCApp(App[None]):
@@ -492,6 +492,8 @@ class NVOCApp(App[None]):
             return
         self.cache.status = parsed
         self._update_metrics()
+        if self.cache.vf_curve_path:
+            self._render_vf_plot()
 
     def _on_get_loaded(self, code: int, output: str, parsed: dict) -> None:
         if code != 0:
@@ -589,6 +591,29 @@ class NVOCApp(App[None]):
         plt.clear_color()
         plt.plot(voltages, freqs, marker="braille", color="cyan+", label="Current")
         plt.scatter(voltages, defaults, marker="braille", color="white", label="Default")
+        live_voltage = self.cache.status.get("voltage_mv")
+        live_clock = self.cache.status.get("gpu_clock_mhz")
+        if isinstance(live_voltage, (int, float)) and isinstance(live_clock, (int, float)):
+            live_label = "Lock Point" if self.cache.status.get("voltage_locked") else "Live Point"
+            plt.vline(float(live_voltage), color="yellow+")
+            plt.hline(float(live_clock), color="yellow+")
+            plt.scatter([float(live_voltage)], [float(live_clock)], marker="braille", color="yellow+", label=live_label)
+        working_point = find_curve_point_for_voltage(
+            voltages,
+            freqs,
+            float(live_voltage) if isinstance(live_voltage, (int, float)) else None,
+        )
+        if working_point is not None:
+            plt.vline(working_point[0], color="green+")
+            plt.hline(working_point[1], color="green+")
+            plt.scatter(
+                [working_point[0]],
+                [working_point[1]],
+                marker="braille",
+                color="green+",
+                label="Working VFP",
+            )
+        plt.ylim(0, max(max(freqs), max(defaults)))
         plt.title("VF Curve")
         plt.xlabel("mV")
         plt.ylabel("MHz")

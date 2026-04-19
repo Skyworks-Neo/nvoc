@@ -1,6 +1,14 @@
 from pathlib import Path
 
-from nvoc_tui.parsing import load_vf_curve, parse_get_output, parse_gpu_list, parse_info_output, parse_json_output, parse_status_output
+from nvoc_tui.parsing import (
+    find_curve_point_for_voltage,
+    load_vf_curve,
+    parse_get_output,
+    parse_gpu_list,
+    parse_info_output,
+    parse_json_output,
+    parse_status_output,
+)
 
 
 def test_parse_gpu_list_with_uuid() -> None:
@@ -95,3 +103,19 @@ def test_load_vf_curve(tmp_path: Path) -> None:
     assert voltages == [800.0, 825.0, 850.0]
     assert freqs == [1800.0, 1840.0, 1900.0]
     assert defaults == [1750.0, 1775.0, 1800.0]
+
+
+def test_find_curve_point_for_voltage_returns_nearest_match() -> None:
+    point = find_curve_point_for_voltage(
+        [800.0, 825.0, 850.0],
+        [1800.0, 1840.0, 1900.0],
+        833.0,
+    )
+
+    assert point == (825.0, 1840.0)
+
+
+def test_find_curve_point_for_voltage_handles_missing_or_invalid_data() -> None:
+    assert find_curve_point_for_voltage([], [], 825.0) is None
+    assert find_curve_point_for_voltage([800.0], [], 800.0) is None
+    assert find_curve_point_for_voltage([800.0], [1800.0], None) is None

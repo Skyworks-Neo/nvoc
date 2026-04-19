@@ -183,3 +183,15 @@ def load_vf_curve(path: str) -> tuple[list[float], list[float], list[float]]:
             continue
 
     return voltages, freqs, defaults
+
+
+def find_curve_point_for_voltage(
+    voltages: list[float],
+    freqs: list[float],
+    voltage_mv: float | None,
+) -> tuple[float, float] | None:
+    if voltage_mv is None or not voltages or len(voltages) != len(freqs):
+        return None
+
+    nearest_index = min(range(len(voltages)), key=lambda idx: abs(voltages[idx] - voltage_mv))
+    return voltages[nearest_index], freqs[nearest_index]
