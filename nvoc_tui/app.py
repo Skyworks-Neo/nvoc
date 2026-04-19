@@ -17,30 +17,52 @@ from .parsing import load_vf_curve
 class NVOCApp(App[None]):
     TITLE = "NVOC-TUI"
     CSS = """
+    # Main Screen & common widgets
     Screen {
         layout: vertical;
         overflow: hidden;
-    }
-    Button {
-        margin: 0 1;
-    }
-    #topbar {
-        height: auto;
-        margin-left: 1;
     }
     .hsplit {
         height: 1;
         border-top: solid $surface;
         margin: 0 1;
     }
+    .row, .toprow {
+        height: auto;
+        margin: 0;
+        width: 1fr;
+        align-horizontal: center;
+    }
+    .grow {
+        width: 1fr !important;
+    }
+    .row > *, .toprow > * {
+        margin: 0 1;
+    }
+    .row > Input {
+        min-width: 6;
+        width: 6;
+    }
+    .green {
+        background: green;
+    }
+    .red {
+        background: red;
+    }
+    .blue {
+        background: blue;
+    }
+    .nvapi-nvml-select {
+        width: 8;
+    }
+
+    # Top Bar
+    #topbar {
+        height: auto;
+        margin-left: 1;
+    }
     .toprow {
         height: 1;
-    }
-    #gpu-select {
-        width: 1fr;
-    }
-    .toprow > * {
-        margin-right: 1;
     }
     #gpu-actions {
         width: auto;
@@ -48,13 +70,8 @@ class NVOCApp(App[None]):
     #gpu-actions > * {
         margin-left: 1;
     }
-    .row {
-        height: auto;
-        margin: 0;
-    }
-    .grow {
-        width: 1fr;
-    }
+
+    # Dashboard Controls
     #dashboard-controls {
         width: auto;
         height: auto;
@@ -75,26 +92,14 @@ class NVOCApp(App[None]):
         border: round $surface;
         padding: 0 2;
     }
+    
+    # VF Curve tab
     #vf-plot {
         min-height: 20;
         height: 1fr;
         border: round $accent;
         overflow: auto;
         content-align: left top;
-    }
-    #vfcurve .row > * {
-        margin: 0 1;
-    }
-    #vfcurve .row > Input {
-        min-width: 6;
-        width: 6;
-    }
-    #vfcurve #vf-path {
-        width: 1fr;
-    }
-    #vf-actions {
-        width: 1fr;
-        align-horizontal: center;
     }
     #vfcurve #vf-plot {
         margin: 0 2;
@@ -223,7 +228,7 @@ class NVOCApp(App[None]):
                 with Vertical(classes="section"):
                     with Horizontal(classes="row"):
                         yield Label("Clock API")
-                        yield Select(options=[("NVAPI", "nvapi"), ("NVML", "nvml")], value="nvapi", id="oc-api", allow_blank=False, compact=True)
+                        yield Select(options=[("NVAPI", "nvapi"), ("NVML", "nvml")], value="nvapi", classes="nvapi-nvml-select", id="oc-api", allow_blank=False, compact=True)
                         yield Label("PState Start")
                         yield Input(value="", id="pstate-start", compact=True)
                         yield Label("PState End")
@@ -235,7 +240,7 @@ class NVOCApp(App[None]):
                         yield Input(value="0", id="mem-offset", compact=True)
                     with Horizontal(classes="row"):
                         yield Label("Power API")
-                        yield Select(options=[("NVAPI", "nvapi"), ("NVML", "nvml")], value="nvapi", id="power-api", allow_blank=False, compact=True)
+                        yield Select(options=[("NVAPI", "nvapi"), ("NVML", "nvml")], value="nvapi", classes="nvapi-nvml-select", id="power-api", allow_blank=False, compact=True)
                         yield Label("Power Limit")
                         yield Input(value="100", id="power-limit", compact=True)
                         yield Label("Thermal Limit")
@@ -243,19 +248,19 @@ class NVOCApp(App[None]):
                         yield Label("Voltage Boost")
                         yield Input(value="0", id="voltage-boost", compact=True)
                     with Horizontal(classes="row"):
-                        yield Button("Apply OC", id="oc-apply", compact=True)
-                        yield Button("Reset OC", id="oc-reset", compact=True)
-                        yield Button("Apply Limits", id="limits-apply", compact=True)
-                        yield Button("Reset All", id="reset-all", compact=True)
+                        yield Button("Apply OC", id="oc-apply", classes="red", compact=True)
+                        yield Button("Reset OC", id="oc-reset", classes="green", compact=True)
+                        yield Button("Apply Limits", id="limits-apply", classes="red", compact=True)
+                        yield Button("Reset All", id="reset-all", classes="green", compact=True)
                     yield Static("Fan Control", classes="row")
                     with Horizontal(classes="row"):
                         yield Label("Fan Target")
                         yield Select(options=[("All", "all"), ("Fan 1", "1"), ("Fan 2", "2")], value="all", id="fan-id", allow_blank=False, compact=True)
                         yield Label("Fan API")
-                        yield Select(options=[("NVAPI", "nvapi"), ("NVML", "nvml")], value="nvapi", id="fan-api", allow_blank=False, compact=True)
+                        yield Select(options=[("NVAPI", "nvapi"), ("NVML", "nvml")], value="nvapi", classes="nvapi-nvml-select", id="fan-api", allow_blank=False, compact=True)
                         yield Label("Policy")
                         yield Select(
-                            options=[("continuous", "continuous"), ("manual", "manual"), ("default", "default"), ("auto", "auto")],
+                            options=[("contin.", "continuous"), ("manual", "manual"), ("default", "default"), ("auto", "auto")],
                             value="continuous",
                             id="fan-policy",
                             allow_blank=False,
@@ -263,48 +268,48 @@ class NVOCApp(App[None]):
                         )
                         yield Label("Level")
                         yield Input(value="60", id="fan-level", compact=True)
-                        yield Button("Apply Fan", id="fan-apply", compact=True)
-                        yield Button("Reset Fan", id="fan-reset", compact=True)
+                        yield Button("Apply Fan", id="fan-apply", classes="red", compact=True)
+                        yield Button("Reset Fan", id="fan-reset", classes="green", compact=True)
             with TabPane("VF Curve", id="vfcurve"):
                 with Vertical(classes="section"):
                     with Horizontal(classes="row"):
                         yield Input(value=self.config_data.vfcurve.default_path, placeholder="CSV path for import/export", id="vf-path", classes="grow", compact=True)
                         yield Checkbox("Quick export", value=self.config_data.vfcurve.quick_export, id="vf-quick-export", compact=True)
                     with Horizontal(classes="row", id="vf-actions"):
-                        yield Button("Refresh Curve", id="vf-refresh", compact=True)
+                        yield Button("Refresh Curve", id="vf-refresh", classes="blue", compact=True)
                         yield Button("Export VFP", id="vf-export", compact=True)
                         yield Button("Import VFP", id="vf-import", compact=True)
-                        yield Button("Reset VFP", id="vf-reset", compact=True)
-                        yield Button("Unlock VFP", id="vf-unlock", compact=True)
-                    with Horizontal(classes="row"):
-                        yield Label("Range")
+                        yield Button("Unlock VFP", id="vf-unlock", classes="red", compact=True)
+                        yield Button("Reset VFP", id="vf-reset", classes="green", compact=True)
+                    with Horizontal(classes="row", id="vf-range-actions"):
+                        yield Label("VF Adj: Range")
                         yield Input(value="0", id="vf-range-start", compact=True)
                         yield Label("to")
                         yield Input(value="0", id="vf-range-end", compact=True)
                         yield Label("Delta MHz")
                         yield Input(value="0", id="vf-delta", compact=True)
-                        yield Button("Apply Adj", id="vf-apply-adj", compact=True)
-                    with Horizontal(classes="row"):
+                        yield Button("Apply Adj", id="vf-apply-adj", classes="red", compact=True)
+                    with Horizontal(classes="row", id="vf-lock-actions"):
                         yield Label("Lock Value")
                         yield Input(value="55", id="vf-lock-value", compact=True)
                         yield Checkbox("As mV", value=False, id="vf-lock-as-mv", compact=True)
-                        yield Button("Lock Voltage", id="vf-lock-voltage", compact=True)
-                    with Horizontal(classes="row"):
+                        yield Button("Lock Voltage", id="vf-lock-voltage", classes="red", compact=True)
+                    with Horizontal(classes="row", id="vf-mem-actions"):
                         yield Label("Freq API")
-                        yield Select(options=[("NVML", "nvml"), ("NVAPI", "nvapi")], value="nvml", id="vf-freq-api", allow_blank=False, compact=True)
-                        yield Label("Core Min")
+                        yield Select(options=[("NVML", "nvml"), ("NVAPI", "nvapi")], value="nvml", classes="nvapi-nvml-select", id="vf-freq-api", allow_blank=False, compact=True)
+                        yield Label("Core Freq Min")
                         yield Input(value="0", id="vf-core-min", compact=True)
-                        yield Label("Core Max")
+                        yield Label("Max")
                         yield Input(value="0", id="vf-core-max", compact=True)
-                        yield Button("Lock Core", id="vf-lock-core", compact=True)
-                        yield Button("Reset Core", id="vf-reset-core", compact=True)
+                        yield Button("Lock Core", id="vf-lock-core", classes="red", compact=True)
+                        yield Button("Reset Core", id="vf-reset-core", classes="green", compact=True)
                     with Horizontal(classes="row"):
-                        yield Label("Mem Min")
+                        yield Label("Mem Freq Min")
                         yield Input(value="0", id="vf-mem-min", compact=True)
-                        yield Label("Mem Max")
+                        yield Label("Max")
                         yield Input(value="0", id="vf-mem-max", compact=True)
-                        yield Button("Lock Mem", id="vf-lock-mem", compact=True)
-                        yield Button("Reset Mem", id="vf-reset-mem", compact=True)
+                        yield Button("Lock Mem", id="vf-lock-mem", classes="red", compact=True)
+                        yield Button("Reset Mem", id="vf-reset-mem", classes="green", compact=True)
                     yield PlotextPlot(id="vf-plot")
         with Horizontal(id="log-header"):
             yield Label("  Output")
