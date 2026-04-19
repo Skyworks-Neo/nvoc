@@ -39,7 +39,10 @@ class CliService:
         return CliLocation(exe_path="", cwd=None)
 
     def run_query(self, cli: CliLocation, args: list[str], command_name: str) -> tuple[int, str, dict]:
-        cmd = [cli.exe_path] + args
+        query_args = list(args)
+        if command_name in {"info", "status", "get", "list"} and "-O" not in query_args:
+            query_args = ["-O", "json"] + query_args
+        cmd = [cli.exe_path] + query_args
         if not cli.exe_path:
             return -1, "CLI executable not configured.", {}
         try:

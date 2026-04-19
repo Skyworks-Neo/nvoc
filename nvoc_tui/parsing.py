@@ -66,6 +66,12 @@ def _normalize_status_json(value: dict[str, Any]) -> dict[str, Any]:
         if total_gpu_power is not None:
             normalized["power_w"] = total_gpu_power
 
+    # Status JSON exposes VFP lock state as a map of active lock bounds.
+    # A non-empty map means some VFP lock is currently active.
+    vfp_locks = value.get("vfp_locks")
+    if isinstance(vfp_locks, dict):
+        normalized["vfp_locked"] = bool(vfp_locks)
+
     return normalized
 
 
@@ -155,6 +161,14 @@ def parse_status_output(output: str) -> dict[str, Any]:
             match = re.search(r"(\d+(?:\.\d+)?)\s*w\b", low)
             if match:
                 parsed["power_w"] = float(match.group(1))
+        elif "vfp lock" in low:
+            if "none" in low:
+                parsed["vfp_locked"] = False
+                continue
+            parsed["vfp_locked"] = True
+            lock_mv = re.search(r"(\d+(?:\.\d+)?)\s*mv", low)
+            if lock_mv:
+                parsed["vfp_lock_mv"] = float(lock_mv.group(1))
     return parsed
 
 

@@ -282,7 +282,6 @@ class NVOCApp(App[None]):
                         yield Button(self._vf_auto_refresh_label(), id="vf-auto-refresh", compact=True)
                         yield Button("Export VFP", id="vf-export", compact=True)
                         yield Button("Import VFP", id="vf-import", compact=True)
-                        yield Button("Unlock VFP", id="vf-unlock", classes="red", compact=True)
                         yield Button("Reset VFP", id="vf-reset", classes="green", compact=True)
                     with Horizontal(classes="row", id="vf-range-actions"):
                         yield Label("VF Adj: Range")
@@ -297,6 +296,7 @@ class NVOCApp(App[None]):
                         yield Input(value="55", id="vf-lock-value", compact=True)
                         yield Checkbox("As mV", value=False, id="vf-lock-as-mv", compact=True)
                         yield Button("Lock Voltage", id="vf-lock-voltage", classes="red", compact=True)
+                        yield Button("Reset Volt Lock", id="vf-unlock", classes="green", compact=True)
                     with Horizontal(classes="row", id="vf-mem-actions"):
                         yield Label("Freq API")
                         yield Select(options=[("NVML", "nvml"), ("NVAPI", "nvapi")], value="nvml", classes="nvapi-nvml-select", id="vf-freq-api", allow_blank=False, compact=True)
@@ -523,10 +523,19 @@ class NVOCApp(App[None]):
         info = self.cache.info
         status = self.cache.status
         architecture = info.get("arch") or info.get("codename") or "---"
+        if status.get("vfp_locked"):
+            lock_mv = status.get("vfp_lock_mv")
+            if isinstance(lock_mv, (int, float)):
+                vfp_lock_text = f"ON ({lock_mv} mV)"
+            else:
+                vfp_lock_text = "ON"
+        else:
+            vfp_lock_text = "OFF"
         lines = [
             f"GPU: {status.get('gpu_clock_mhz', '---')} MHz",
             f"MEM: {status.get('mem_clock_mhz', '---')} MHz",
             f"VOLT: {status.get('voltage_mv', '---')} mV",
+            f"VFP LOCK: {vfp_lock_text}",
             f"TEMP: {status.get('temperature_c', '---')} C",
             f"PWR: {status.get('power_w', '---')} W",
             f"ARCH: {architecture}",
@@ -600,10 +609,12 @@ class NVOCApp(App[None]):
         live_point: tuple[float, float] | None = None
         if isinstance(live_voltage, (int, float)) and isinstance(live_clock, (int, float)):
             live_point = (float(live_voltage), float(live_clock))
-            live_label = "Lock Point" if self.cache.status.get("voltage_locked") else "Live Point"
-            plt.vline(live_point[0], color="yellow+")
-            plt.hline(live_point[1], color="yellow+")
-            plt.scatter([live_point[0]], [live_point[1]], marker="braille", color="yellow+", label=live_label)
+            lock_active = bool(self.cache.status.get("vfp_locked") or self.cache.status.get("voltage_locked"))
+            live_label = "Lock Point" if lock_active else "Live Point"
+            live_color = "orange+" if lock_active else "yellow+"
+            plt.vline(live_point[0], color=live_color)
+            plt.hline(live_point[1], color=live_color)
+            plt.scatter([live_point[0]], [live_point[1]], marker="braille", color=live_color, label=live_label)
         working_point = find_curve_point_for_voltage(
             voltages,
             freqs,
@@ -677,11 +688,11 @@ class NVOCApp(App[None]):
         elif button_id == "dashboard-now":
             self._dashboard_tick()
         elif button_id == "dashboard-info":
-            self._run_action(self.gpu_args() + ["info"])
+            self._run_action(self.gpu_args() + ["-O", "json", "info"])
         elif button_id == "dashboard-status":
-            self._run_action(self.gpu_args() + ["status", "-a"])
+            self._run_action(self.gpu_args() + ["-O", "json", "status", "-a"])
         elif button_id == "dashboard-get":
-            self._run_action(self.gpu_args() + ["get"])
+            self._run_action(self.gpu_args() + ["-O", "json", "get"])
         elif button_id == "autoscan-export-init":
             self._sync_autoscan_from_ui()
             self._run_action_chain(

@@ -66,6 +66,32 @@ def test_parse_status_output() -> None:
     assert parsed["power_w"] == 132.0
 
 
+def test_parse_status_output_with_vfp_lock() -> None:
+    output = """
+    Graphics Clock......: 1897 MHz
+    Core Voltage........: 918 mV
+    VFP Lock............: GPU Core Upperbound:875 mV
+    """
+
+    parsed = parse_status_output(output)
+
+    assert parsed["gpu_clock_mhz"] == 1897.0
+    assert parsed["voltage_mv"] == 918.0
+    assert parsed["vfp_locked"] is True
+    assert parsed["vfp_lock_mv"] == 875.0
+
+
+def test_parse_status_output_with_vfp_lock_none() -> None:
+    output = """
+    Graphics Clock......: 1897 MHz
+    VFP Lock............: None
+    """
+
+    parsed = parse_status_output(output)
+
+    assert parsed["vfp_locked"] is False
+
+
 def test_parse_get_output() -> None:
     output = """
     Supported P-States:
@@ -129,6 +155,26 @@ def test_normalize_status_json_output() -> None:
     assert parsed["voltage_mv"] == 650.0
     assert parsed["temperature_c"] == 37.0
     assert parsed["power_w"] == 1.0
+
+
+def test_normalize_status_json_output_with_vfp_lock() -> None:
+    output = """
+    [
+      {
+        "voltage": 650000,
+        "vfp_locks": {
+          "GPU": {
+            "voltage": 850000
+          }
+        }
+      }
+    ]
+    """
+
+    parsed = normalize_query_output("status", output)
+
+    assert parsed["voltage_mv"] == 650.0
+    assert parsed["vfp_locked"] is True
 
 
 def test_normalize_info_json_output() -> None:
