@@ -342,7 +342,7 @@ class NVOCApp(App[None]):
     def _dashboard_tick(self) -> None:
         if self.cli_service.action_state.running:
             return
-        self._run_query("status", self.gpu_args() + ["status", "-a"], self._on_status_loaded)
+        self._run_query("status", self.gpu_args() + ["-O", "json", "status", "-a"], self._on_status_loaded)
 
     def _vf_auto_refresh_label(self) -> str:
         return "Auto Refresh: On" if self.config_data.vfcurve.auto_refresh else "Auto Refresh: Off"
@@ -487,8 +487,9 @@ class NVOCApp(App[None]):
         self._prime_overclock_inputs()
 
     def _on_status_loaded(self, code: int, output: str, parsed: dict) -> None:
-        if code != 0:
+        if code != 0 and output:
             self._write_log(output)
+        if code != 0 and not parsed:
             return
         self.cache.status = parsed
         self._update_metrics()

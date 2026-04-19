@@ -3,6 +3,7 @@ from pathlib import Path
 from nvoc_tui.parsing import (
     find_curve_point_for_voltage,
     load_vf_curve,
+    normalize_query_output,
     parse_get_output,
     parse_gpu_list,
     parse_info_output,
@@ -86,6 +87,47 @@ def test_parse_json_output() -> None:
     output = '[{"gpu_clock_mhz": 2000}]'
     parsed = parse_json_output(output)
     assert parsed[0]["gpu_clock_mhz"] == 2000
+
+
+def test_parse_json_output_with_prefixed_warnings() -> None:
+    output = 'Warning: backend init failed\n[{"gpu_clock_mhz": 2000}]'
+    parsed = parse_json_output(output)
+    assert parsed[0]["gpu_clock_mhz"] == 2000
+
+
+def test_normalize_status_json_output() -> None:
+    output = """
+    [
+      {
+        "clocks": {
+          "Graphics": 300000,
+          "Memory": 405000
+        },
+        "voltage": 650000,
+        "power": {
+          "TotalGpuPower": 1,
+          "NormalizedTotalPower": 3
+        },
+        "sensors": [
+          [
+            {
+              "controller": "GpuInternal",
+              "target": "Gpu"
+            },
+            37
+          ]
+        ]
+      }
+    ]
+    """
+
+    parsed = normalize_query_output("status", output)
+
+    assert parsed["gpu_clock_mhz"] == 300.0
+    assert parsed["mem_clock_mhz"] == 405.0
+    assert parsed["voltage_mv"] == 650.0
+    assert parsed["temperature_c"] == 37.0
+    assert parsed["power_w"] == 1.0
 
 
 def test_load_vf_curve(tmp_path: Path) -> None:

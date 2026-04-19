@@ -14,12 +14,59 @@ UUID_LINE_RE = re.compile(r"UUID=(GPU-[\w-]+)", re.IGNORECASE)
 
 def parse_json_output(output: str) -> Any | None:
     stripped = output.strip()
-    if not stripped or not stripped.startswith(("{", "[")):
+    if not stripped:
         return None
-    try:
-        return json.loads(stripped)
-    except json.JSONDecodeError:
-        return None
+    decoder = json.JSONDecoder()
+    candidate_indexes = [idx for idx, char in enumerate(stripped) if char in "[{"]
+    for idx in candidate_indexes:
+        try:
+            parsed, _ = decoder.raw_decode(stripped[idx:])
+        except json.JSONDecodeError:
+            continue
+        return parsed
+    return None
+
+
+def _as_float(value: Any) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
+def _normalize_status_json(value: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(value)
+
+    clocks = value.get("clocks")
+    if isinstance(clocks, dict):
+        graphics = _as_float(clocks.get("Graphics"))
+        memory = _as_float(clocks.get("Memory"))
+        if graphics is not None:
+            normalized["gpu_clock_mhz"] = graphics / 1000.0
+        if memory is not None:
+            normalized["mem_clock_mhz"] = memory / 1000.0
+
+    voltage = _as_float(value.get("voltage"))
+    if voltage is not None:
+        normalized["voltage_mv"] = voltage / 1000.0
+
+    sensors = value.get("sensors")
+    if isinstance(sensors, list):
+        for entry in sensors:
+            if (
+                isinstance(entry, list)
+                and len(entry) >= 2
+                and isinstance(entry[1], (int, float))
+            ):
+                normalized["temperature_c"] = float(entry[1])
+                break
+
+    power = value.get("power")
+    if isinstance(power, dict):
+        total_gpu_power = _as_float(power.get("TotalGpuPower"))
+        if total_gpu_power is not None:
+            normalized["power_w"] = total_gpu_power
+
+    return normalized
 
 
 def parse_gpu_list(output: str) -> list[GpuDescriptor]:
@@ -149,8 +196,12 @@ def normalize_query_output(command: str, output: str) -> dict[str, Any]:
         if isinstance(parsed_json, list) and parsed_json:
             value = parsed_json[0]
             if isinstance(value, dict):
+                if command == "status":
+                    return _normalize_status_json(value)
                 return value
         if isinstance(parsed_json, dict):
+            if command == "status":
+                return _normalize_status_json(parsed_json)
             return parsed_json
     if command == "info":
         return parse_info_output(output)
