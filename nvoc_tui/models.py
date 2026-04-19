@@ -73,6 +73,7 @@ class DashboardSettings:
 class VFCurveSettings:
     default_path: str = ""
     quick_export: bool = True
+    auto_refresh: bool = False
 
 
 @dataclass(slots=True)

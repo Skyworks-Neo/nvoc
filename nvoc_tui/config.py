@@ -58,6 +58,7 @@ class ConfigStore:
         vfcurve = VFCurveSettings(
             default_path=str(data.get("vfcurve", {}).get("default_path", "")),
             quick_export=bool(data.get("vfcurve", {}).get("quick_export", True)),
+            auto_refresh=bool(data.get("vfcurve", {}).get("auto_refresh", False)),
         )
         ui = UiSettings(
             log_expanded=bool(data.get("ui", {}).get("log_expanded", True)),
@@ -85,6 +86,6 @@ class ConfigStore:
             last_gpu_idx=last_gpu_idx,
             autoscan=AutoscanSettings.from_mapping(data.get("autoscan")),
             dashboard=DashboardSettings(refresh_interval=1.0),
-            vfcurve=VFCurveSettings(default_path="", quick_export=True),
+            vfcurve=VFCurveSettings(default_path="", quick_export=True, auto_refresh=False),
             ui=UiSettings(log_expanded=True, active_tab="dashboard"),
         )

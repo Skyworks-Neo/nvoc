@@ -69,6 +69,7 @@ This repository contains `nvoc-tui`, a Textual-based terminal UI for the externa
 
 ## Testing Guidance
 
+- Use uv to run the program or any auxiliary scripts.
 - Existing tests are lightweight unit tests, not integration tests.
 - Prefer adding parsing/config tests when behavior changes in `parsing.py` or `config.py`.
 - UI behavior in `app.py` is currently only lightly protected; be careful with regressions around widget IDs and saved settings.

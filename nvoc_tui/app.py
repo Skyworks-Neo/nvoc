@@ -153,6 +153,8 @@ class NVOCApp(App[None]):
         self.gpus: list[GpuDescriptor] = []
         self.cache = GpuCache()
         self.poll_timer = None
+        self.vf_poll_timer = None
+        self.vf_refresh_inflight = False
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -277,6 +279,7 @@ class NVOCApp(App[None]):
                         yield Checkbox("Quick export", value=self.config_data.vfcurve.quick_export, id="vf-quick-export", compact=True)
                     with Horizontal(classes="row", id="vf-actions"):
                         yield Button("Refresh Curve", id="vf-refresh", classes="blue", compact=True)
+                        yield Button(self._vf_auto_refresh_label(), id="vf-auto-refresh", compact=True)
                         yield Button("Export VFP", id="vf-export", compact=True)
                         yield Button("Import VFP", id="vf-import", compact=True)
                         yield Button("Unlock VFP", id="vf-unlock", classes="red", compact=True)
@@ -325,6 +328,7 @@ class NVOCApp(App[None]):
         self._clear_vf_plot("No VF curve cache loaded.")
         self._refresh_gpu_list()
         self._set_poll_timer(self.config_data.dashboard.refresh_interval)
+        self._set_vf_poll_timer(self.config_data.vfcurve.auto_refresh)
 
     def _set_poll_timer(self, interval: float) -> None:
         interval = max(0.2, min(interval, 60.0))
@@ -339,6 +343,30 @@ class NVOCApp(App[None]):
         if self.cli_service.action_state.running:
             return
         self._run_query("status", self.gpu_args() + ["status", "-a"], self._on_status_loaded)
+
+    def _vf_auto_refresh_label(self) -> str:
+        return "Auto Refresh: On" if self.config_data.vfcurve.auto_refresh else "Auto Refresh: Off"
+
+    def _set_vf_poll_timer(self, enabled: bool) -> None:
+        self.config_data.vfcurve.auto_refresh = enabled
+        self.config_store.data = self.config_data
+        self.config_store.save()
+        if self.vf_poll_timer is not None:
+            self.vf_poll_timer.stop()
+            self.vf_poll_timer = None
+        if enabled:
+            self.vf_poll_timer = self.set_interval(2.0, self._vf_curve_tick, pause=False)
+        try:
+            self.query_one("#vf-auto-refresh", Button).label = self._vf_auto_refresh_label()
+        except Exception:
+            pass
+        if enabled and not self.cli_service.action_state.running and not self.vf_refresh_inflight:
+            self._refresh_vf_curve()
+
+    def _vf_curve_tick(self) -> None:
+        if self.cli_service.action_state.running or self.vf_refresh_inflight:
+            return
+        self._refresh_vf_curve()
 
     def _selected_gpu_idx(self) -> int | None:
         try:
@@ -510,7 +538,10 @@ class NVOCApp(App[None]):
         self._write_log(f"CLI path set to: {self.config_data.cli.exe_path or path}")
 
     def _refresh_vf_curve(self) -> None:
+        if self.vf_refresh_inflight:
+            return
         cache_path = self._vf_cache_path()
+        self.vf_refresh_inflight = True
 
         def worker() -> None:
             code, output, _ = self.cli_service.run_query(
@@ -523,6 +554,7 @@ class NVOCApp(App[None]):
         threading.Thread(target=worker, daemon=True, name="vf-refresh").start()
 
     def _on_vf_curve_loaded(self, output: str, path: str, code: int) -> None:
+        self.vf_refresh_inflight = False
         if output:
             self._write_log(output)
         self.cache.vf_curve_path = path
@@ -661,6 +693,9 @@ class NVOCApp(App[None]):
         elif button_id == "vf-refresh":
             self._sync_vfcurve_from_ui()
             self._refresh_vf_curve()
+        elif button_id == "vf-auto-refresh":
+            self._sync_vfcurve_from_ui()
+            self._set_vf_poll_timer(not self.config_data.vfcurve.auto_refresh)
         elif button_id == "vf-export":
             self._sync_vfcurve_from_ui()
             path = self.query_one("#vf-path", Input).value.strip()

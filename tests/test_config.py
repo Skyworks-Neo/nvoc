@@ -35,6 +35,7 @@ def test_persists_tui_config(tmp_path: Path) -> None:
     config.cli.exe_path = "/tmp/tool"
     config.last_gpu_idx = 1
     config.autoscan.mode = "legacy"
+    config.vfcurve.auto_refresh = True
     store.data = config
     store.save()
 
@@ -43,3 +44,4 @@ def test_persists_tui_config(tmp_path: Path) -> None:
     assert reloaded.cli.exe_path == "/tmp/tool"
     assert reloaded.last_gpu_idx == 1
     assert reloaded.autoscan.mode == "legacy"
+    assert reloaded.vfcurve.auto_refresh is True
