@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from nvoc_tui.parsing import (
+    compute_vf_plot_bounds,
     find_curve_point_for_voltage,
     load_vf_curve,
     normalize_query_output,
@@ -177,3 +178,20 @@ def test_find_curve_point_for_voltage_handles_missing_or_invalid_data() -> None:
     assert find_curve_point_for_voltage([], [], 825.0) is None
     assert find_curve_point_for_voltage([800.0], [], 800.0) is None
     assert find_curve_point_for_voltage([800.0], [1800.0], None) is None
+
+
+def test_compute_vf_plot_bounds_includes_live_and_working_points() -> None:
+    bounds = compute_vf_plot_bounds(
+        [800.0, 825.0, 850.0],
+        [1800.0, 1840.0, 1900.0],
+        [1750.0, 1775.0, 1800.0],
+        live_point=(870.0, 2050.0),
+        working_point=(850.0, 1900.0),
+    )
+
+    assert bounds is not None
+    (x_min, x_max), (y_min, y_max) = bounds
+    assert x_min < 800.0
+    assert x_max > 870.0
+    assert y_min == 0.0
+    assert y_max > 2050.0

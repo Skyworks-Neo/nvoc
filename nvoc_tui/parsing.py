@@ -246,3 +246,36 @@ def find_curve_point_for_voltage(
 
     nearest_index = min(range(len(voltages)), key=lambda idx: abs(voltages[idx] - voltage_mv))
     return voltages[nearest_index], freqs[nearest_index]
+
+
+def compute_vf_plot_bounds(
+    voltages: list[float],
+    freqs: list[float],
+    defaults: list[float],
+    *,
+    live_point: tuple[float, float] | None = None,
+    working_point: tuple[float, float] | None = None,
+) -> tuple[tuple[float, float], tuple[float, float]] | None:
+    if not voltages or not freqs or not defaults:
+        return None
+
+    x_values = list(voltages)
+    y_values = [*freqs, *defaults]
+    for point in (live_point, working_point):
+        if point is None:
+            continue
+        x_values.append(point[0])
+        y_values.append(point[1])
+
+    x_min = min(x_values)
+    x_max = max(x_values)
+    y_min = min(0.0, min(y_values))
+    y_max = max(y_values)
+
+    x_padding = max(1.0, (x_max - x_min) * 0.03) if x_max > x_min else 1.0
+    y_padding = max(1.0, (y_max - y_min) * 0.05) if y_max > y_min else 1.0
+
+    return (
+        (x_min - x_padding, x_max + x_padding),
+        (y_min, y_max + y_padding),
+    )
