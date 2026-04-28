@@ -1,0 +1,10 @@
+[project]
+dependencies = [
+  "numpy==2.4.4",
+  "pyopencl",
+]
+description = "An OpenCL GPU stress test tool"
+name = "nvoc-cli-stressor"
+readme = "README.md"
+requires-python = ">=3.11"
+version = "0.1.0"

@@ -1,0 +1,5 @@
+.venv
+*.lock
+*.xml
+.idea
+__pycache__/
