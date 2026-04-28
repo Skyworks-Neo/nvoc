@@ -821,7 +821,6 @@ cargo build --release
 
 编译产物：`target\release\NVOC-Auto-Optimizer.exe`
 
-> 需要 MSVC 工具链（`stable-x86_64-pc-windows-msvc`），不支持 GNU 工具链。  
 > 依赖 `nvapi-rs` 的私有 git 仓库分支，构建时需要能访问 GitHub。
 
 ---
