@@ -1,0 +1,36 @@
+[package]
+name = "nvoc-auto-optimizer"
+version = "0.0.3"
+authors = ["Skyworks"]
+edition = "2024"
+
+description = "NVIDIA GPU curve optimizer"
+keywords = ["nvidia", "gtx", "gpu", "nvapi", "overclock"]
+
+readme = "README.md"
+license = "MIT"
+
+include = ["/src/**", "/README*"]
+
+[profile.release]
+incremental = true
+panic = "abort"
+opt-level = 2
+lto = "thin"
+codegen-units = 8
+# codegen-units 不在此硬编码，通过环境变量按机器设置：
+# $env:CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16"  # 在各机器的构建环境中配置
+
+[dependencies]
+nvapi-hi = { version = "0.2.0", features = ["serde", ], git = "https://github.com/arcnmx/nvapi-rs", branch = "v0.2.x" }
+nvapi-sys = { git = "https://github.com/arcnmx/nvapi-rs", branch = "v0.2.x" }
+nvapi = { git = "https://github.com/arcnmx/nvapi-rs", branch = "v0.2.x" }
+nvml-wrapper = "0.12.1"
+nvml-wrapper-sys = "0.9.1"
+clap = { version = "4.5.60", default-features = false, features = ["std", "help", "usage", "error-context"] }
+quick-error = "2.0.1"
+csv = "1.4.0"
+serde_json = "^1.0.0"
+anyhow = "*"
+num-traits = "0.2.19"
+time = { version = "0.3", features = ["formatting", "local-offset", "macros"] }

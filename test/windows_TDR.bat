@@ -1,0 +1,6 @@
+@echo off
+setlocal enabledelayedexpansion
+echo Triggering Manual TDR...
+DXCap.exe -forcetdr
+echo Manual TDR Trig'd...
+timeout /t 20 /nobreak
