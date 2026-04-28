@@ -61,7 +61,8 @@ def test_parse_status_output() -> None:
     assert parsed["gpu_clock_mhz"] == 1897.0
     assert parsed["mem_clock_mhz"] == 7500.0
     assert parsed["voltage_mv"] == 918.0
-    assert parsed["voltage_locked"] is True
+    assert parsed["vfp_locked"] is True
+    assert "voltage_locked" not in parsed
     assert parsed["temperature_c"] == 47.0
     assert parsed["power_w"] == 132.0
 
@@ -175,6 +176,8 @@ def test_normalize_status_json_output_with_vfp_lock() -> None:
 
     assert parsed["voltage_mv"] == 650.0
     assert parsed["vfp_locked"] is True
+    assert parsed["vfp_lock_mv"] == 850.0
+    assert "voltage_locked" not in parsed
 
 
 def test_normalize_info_json_output() -> None:
@@ -232,12 +235,13 @@ def test_compute_vf_plot_bounds_includes_live_and_working_points() -> None:
         [1800.0, 1840.0, 1900.0],
         [1750.0, 1775.0, 1800.0],
         live_point=(870.0, 2050.0),
+        lock_point=(875.0, 2100.0),
         working_point=(850.0, 1900.0),
     )
 
     assert bounds is not None
     (x_min, x_max), (y_min, y_max) = bounds
     assert x_min < 800.0
-    assert x_max > 870.0
+    assert x_max > 875.0
     assert y_min == 0.0
-    assert y_max > 2050.0
+    assert y_max > 2100.0

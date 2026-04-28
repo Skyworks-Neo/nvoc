@@ -33,6 +33,20 @@ def _as_float(value: Any) -> float | None:
     return None
 
 
+def _normalize_status_lock_fields(parsed: dict[str, Any]) -> dict[str, Any]:
+    # Status can represent the same lock state using either the modern
+    # "vfp_locked" key or the legacy "voltage_locked" key.
+    lock_state = parsed.get("vfp_locked")
+    if not isinstance(lock_state, bool):
+        legacy_lock_state = parsed.get("voltage_locked")
+        if isinstance(legacy_lock_state, bool):
+            lock_state = legacy_lock_state
+    if isinstance(lock_state, bool):
+        parsed["vfp_locked"] = lock_state
+    parsed.pop("voltage_locked", None)
+    return parsed
+
+
 def _normalize_status_json(value: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(value)
 
@@ -71,8 +85,15 @@ def _normalize_status_json(value: dict[str, Any]) -> dict[str, Any]:
     vfp_locks = value.get("vfp_locks")
     if isinstance(vfp_locks, dict):
         normalized["vfp_locked"] = bool(vfp_locks)
+        for lock in vfp_locks.values():
+            if not isinstance(lock, dict):
+                continue
+            voltage = _as_float(lock.get("Voltage"))
+            if voltage is not None:
+                normalized["vfp_lock_mv"] = voltage / 1000.0
+                break
 
-    return normalized
+    return _normalize_status_lock_fields(normalized)
 
 
 def parse_gpu_list(output: str) -> list[GpuDescriptor]:
@@ -137,6 +158,7 @@ def parse_info_output(output: str) -> dict[str, Any]:
 
 def parse_status_output(output: str) -> dict[str, Any]:
     parsed: dict[str, Any] = {}
+    vfp_lock_line_seen = False
     for raw in output.splitlines():
         line = raw.strip()
         low = line.lower()
@@ -152,7 +174,10 @@ def parse_status_output(output: str) -> dict[str, Any]:
             match = re.search(r"(\d+(?:\.\d+)?)\s*mv", low)
             if match:
                 parsed["voltage_mv"] = float(match.group(1))
-            parsed["voltage_locked"] = "(locked)" in low
+            # The text output sometimes only marks lock state on voltage lines.
+            # Prefer explicit VFP lock lines when present.
+            if not vfp_lock_line_seen:
+                parsed["vfp_locked"] = "(locked)" in low
         elif "sensor" in low or "temp" in low:
             match = re.search(r"(\d+(?:\.\d+)?)\s*(?:°?c|celsius)", low)
             if match:
@@ -162,6 +187,7 @@ def parse_status_output(output: str) -> dict[str, Any]:
             if match:
                 parsed["power_w"] = float(match.group(1))
         elif "vfp lock" in low:
+            vfp_lock_line_seen = True
             if "none" in low:
                 parsed["vfp_locked"] = False
                 continue
@@ -169,7 +195,7 @@ def parse_status_output(output: str) -> dict[str, Any]:
             lock_mv = re.search(r"(\d+(?:\.\d+)?)\s*mv", low)
             if lock_mv:
                 parsed["vfp_lock_mv"] = float(lock_mv.group(1))
-    return parsed
+    return _normalize_status_lock_fields(parsed)
 
 
 def parse_get_output(output: str) -> dict[str, Any]:
@@ -268,6 +294,7 @@ def compute_vf_plot_bounds(
     defaults: list[float],
     *,
     live_point: tuple[float, float] | None = None,
+    lock_point: tuple[float, float] | None = None,
     working_point: tuple[float, float] | None = None,
 ) -> tuple[tuple[float, float], tuple[float, float]] | None:
     if not voltages or not freqs or not defaults:
@@ -275,7 +302,7 @@ def compute_vf_plot_bounds(
 
     x_values = list(voltages)
     y_values = [*freqs, *defaults]
-    for point in (live_point, working_point):
+    for point in (live_point, lock_point, working_point):
         if point is None:
             continue
         x_values.append(point[0])

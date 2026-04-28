@@ -110,10 +110,14 @@ class NVOCApp(App[None]):
         background: $surface;
     }
     #log-panel {
-        height: 5;
+        height: 6;
     }
     #log-panel.hidden {
         display: none;
+    }
+    #output-log {
+        height: 6;
+        overflow: auto;
     }
     Log {
         height: 14;
@@ -319,7 +323,7 @@ class NVOCApp(App[None]):
             yield Button("Hide", id="toggle-log", compact=True)
             yield Button("Clear", id="clear-log", compact=True)
         with Vertical(id="log-panel"):
-            yield Log(id="output-log", highlight=True)
+            yield Log(id="output-log", highlight=True, auto_scroll=True, max_lines=100)
         yield Footer()
 
     def on_mount(self) -> None:
@@ -401,6 +405,7 @@ class NVOCApp(App[None]):
         log = self.query_one("#output-log", Log)
         for line in text.rstrip("\n").splitlines() or [""]:
             log.write_line(line)
+            log.scroll_end()
 
     def _append_threadsafe(self, text: str, _level: str = "info") -> None:
         self.call_from_thread(self._write_log, text)
@@ -606,35 +611,41 @@ class NVOCApp(App[None]):
         plt.scatter(voltages, defaults, marker="braille", color="white", label="Default")
         live_voltage = self.cache.status.get("voltage_mv")
         live_clock = self.cache.status.get("gpu_clock_mhz")
+        lock_voltage = self.cache.status.get("vfp_lock_mv")
         live_point: tuple[float, float] | None = None
+        lock_point: tuple[float, float] | None = None
         if isinstance(live_voltage, (int, float)) and isinstance(live_clock, (int, float)):
             live_point = (float(live_voltage), float(live_clock))
-            lock_active = bool(self.cache.status.get("vfp_locked") or self.cache.status.get("voltage_locked"))
-            live_label = "Lock Point" if lock_active else "Live Point"
-            live_color = "orange+" if lock_active else "yellow+"
+            live_label = "Live Point"
+            live_color = "yellow+"
+            plt.scatter([live_point[0]], [live_point[1]], marker="braille", color=live_color, label=live_label)
             plt.vline(live_point[0], color=live_color)
             plt.hline(live_point[1], color=live_color)
-            plt.scatter([live_point[0]], [live_point[1]], marker="braille", color=live_color, label=live_label)
+        lock_voltage_mv: float | None = None
+        if isinstance(lock_voltage, (int, float)):
+            lock_voltage_mv = float(lock_voltage)
+        if lock_voltage_mv is not None:
+            lock_curve_point = find_curve_point_for_voltage(voltages, freqs, lock_voltage_mv)
+            if lock_curve_point is not None:
+                # Keep the reported lock voltage and pair it with the active VFP frequency.
+                lock_point = (lock_voltage_mv, lock_curve_point[1])
+        if lock_point is not None:
+            plt.vline(lock_point[0], color="orange+")
+            plt.hline(lock_point[1], color="orange+")
+            plt.text("Locked at {} mV".format(lock_voltage_mv), lock_point[0], 0, color="orange+", alignment="right")
         working_point = find_curve_point_for_voltage(
             voltages,
             freqs,
             float(live_voltage) if isinstance(live_voltage, (int, float)) else None,
         )
         if working_point is not None:
-            plt.vline(working_point[0], color="green+")
             plt.hline(working_point[1], color="green+")
-            plt.scatter(
-                [working_point[0]],
-                [working_point[1]],
-                marker="braille",
-                color="green+",
-                label="Working VFP",
-            )
         bounds = compute_vf_plot_bounds(
             voltages,
             freqs,
             defaults,
             live_point=live_point,
+            lock_point=lock_point,
             working_point=working_point,
         )
         if bounds is not None:
