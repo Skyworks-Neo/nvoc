@@ -2,6 +2,12 @@
 
 Terminal UI frontend for `nvoc-auto-optimizer`.
 
+# DISCLAIMER
+
+Code in this repo are mostly written by CodeX. Functionalities are NOT COMPLETE
+as for now, use at your own risk. The Dashboard page and VF Curve page are
+mostly tested, while Autoscan and Overclock page is NOT TESTED.
+
 ## Features
 
 - Dashboard polling for live GPU status
