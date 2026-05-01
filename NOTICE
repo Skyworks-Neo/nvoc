@@ -1,0 +1,12 @@
+NVOC
+Copyright 2026 Skyworks
+
+This product is licensed under the Apache License, Version 2.0.
+
+This monorepo combines the NVOC auto-optimizer core, CUDA and OpenCL stressor
+tools, GUI frontend, TUI frontend, and service wrapper that were previously
+documented as separate NVOC projects.
+
+Third-party dependencies are distributed under their own licenses. See the
+individual Rust Cargo manifests, Python project metadata, and lock files in
+each component directory for dependency details.

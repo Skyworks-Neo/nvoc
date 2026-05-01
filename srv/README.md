@@ -1,26 +1,13 @@
 # NVOC-srv
 
-## 配套产品——使用所有配套产品以达到最好体验
-
-[NVOC-AUTO-OPTIMIZER](https://github.com/Skyworks-Neo/nvoc-auto-optimizer)：核心模块。
-
-[NVOC-STRESSOR](https://github.com/Skyworks-Neo/NVOC-CLI-Stressor)：压力测试模块，用于自动超频扫描部分。没有该模块仍可以使用自动扫描之外的所有功能。（nvoc-auto-optimizer开放任何你的自定义压力测试模块接入，只需满足return
-code定义即可。）
-
-[NVOC-GUI](https://github.com/Skyworks-Neo/NVOC-GUI)：跨平台超频图形界面，直接对标MSI Afterburner。 （为了避免GPU超炸带走图形界面，使用CPU渲染，在低端机器如遇到性能问题，建议使用NVOC-TUI）；
-
-[NVOC-TUI](https://github.com/Skyworks-Neo/NVOC-TUI)：跨平台超频命令行界面，用于没有图形界面的机器，兼容性好，性能要求低；
-
-[NVOC-SRV](https://github.com/Skyworks-Neo/NVOC-SRV)：client-server架构控制模块，用于机房、服务器、工作站等场景的 Web 管理、~~远程超频~~（TODO）
-
 Windows Service for Nvidia GPU Optimizer
 
 ## 0 Compile
 
-clone this repo and nvoc-auto-optimizer
+clone this repository
 
 ├── auto-optimizer
-├── nvoc-srv
+├── srv
 
 ```
 cargo build

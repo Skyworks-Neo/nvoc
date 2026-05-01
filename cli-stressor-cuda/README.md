@@ -1,23 +1,10 @@
 # cli-stressor-cuda
 
-## 配套产品——使用所有配套产品以达到最好体验
-
-[NVOC-AUTO-OPTIMIZER](https://github.com/Skyworks-Neo/nvoc-auto-optimizer)：核心模块。
-
-[NVOC-STRESSOR](https://github.com/Skyworks-Neo/NVOC-CLI-Stressor)：压力测试模块，用于自动超频扫描部分。没有该模块仍可以使用自动扫描之外的所有功能。（nvoc-auto-optimizer开放任何你的自定义压力测试模块接入，只需满足return
-code定义即可。）
-
-[NVOC-GUI](https://github.com/Skyworks-Neo/NVOC-GUI)：跨平台超频图形界面，直接对标MSI Afterburner。 （为了避免GPU超炸带走图形界面，使用CPU渲染，在低端机器如遇到性能问题，建议使用NVOC-TUI）；
-
-[NVOC-TUI](https://github.com/Skyworks-Neo/NVOC-TUI)：跨平台超频命令行界面，用于没有图形界面的机器，兼容性好，性能要求低；
-
-[NVOC-SRV](https://github.com/Skyworks-Neo/NVOC-SRV)：client-server架构控制模块，用于机房、服务器、工作站等场景的 Web 管理、~~远程超频~~（TODO）
-
 > Language switch / 语言切换: [中文](#zh-cn) | [English](#en)
 >
 > License / 许可证: [Apache 2.0](LICENSE)
 >
-> 本仓库根目录的 `LICENSE` 适用于所有分支（包括 CUDA 和 opencl 分支）。
+> 本 monorepo 根目录的 `LICENSE` 适用于所有 NVOC 组件（包括 CUDA 和 OpenCL 压力测试工具）。
 
 ---
 
@@ -47,8 +34,8 @@ code定义即可。）
 1. 克隆本仓库：
 
 ```bash
-git clone https://github.com/your-username/NVOC-CLI-Stressor.git
-cd cli-stressor-cuda
+git clone https://github.com/Skyworks-Neo/nvoc.git
+cd nvoc/cli-stressor-cuda
 ```
 
 2. 安装依赖并自动建立独立环境：
@@ -130,8 +117,8 @@ This project recommends `uv` for virtual environment and dependency management.
 1. Clone the repository:
 
 ```bash
-git clone https://github.com/your-username/NVOC-CLI-Stressor.git
-cd cli-stressor-cuda
+git clone https://github.com/Skyworks-Neo/nvoc.git
+cd nvoc/cli-stressor-cuda
 ```
 
 2. Install dependencies and create the environment automatically:

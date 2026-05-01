@@ -4,7 +4,7 @@
 >
 > License / 许可证: [Apache 2.0](LICENSE)
 >
-> 本仓库根目录的 `LICENSE` 适用于所有分支（包括 CUDA 和 opencl 分支）。
+> 本 monorepo 根目录的 `LICENSE` 适用于所有 NVOC 组件（包括 CUDA 和 OpenCL 压力测试工具）。
 
 ---
 
@@ -34,8 +34,8 @@
 1. 克隆本仓库：
 
 ```bash
-git clone https://github.com/your-username/NVOC-CLI-Stressor.git
-cd cli-stressor-opencl
+git clone https://github.com/Skyworks-Neo/nvoc.git
+cd nvoc/cli-stressor-opencl
 ```
 
 2. 安装依赖并自动建立独立环境：
@@ -117,8 +117,8 @@ This project recommends `uv` for virtual environment and dependency management.
 1. Clone the repository:
 
 ```bash
-git clone https://github.com/your-username/NVOC-CLI-Stressor.git
-cd cli-stressor-opencl
+git clone https://github.com/Skyworks-Neo/nvoc.git
+cd nvoc/cli-stressor-opencl
 ```
 
 2. Install dependencies and create the environment automatically:

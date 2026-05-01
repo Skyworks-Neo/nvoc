@@ -11,16 +11,6 @@ This project is released under the [Apache License 2.0](LICENSE).
 
 ## nvoc-auto-optimizer — a tool that really understands overclocking
 
-## Companion projects — use the full stack for the best experience
-
-[NVOC-STRESSOR](https://github.com/Skyworks-Neo/NVOC-CLI-Stressor): stress test module used by the auto-overclocking scan. Without it, you can still use all functions except auto-scan. (nvoc-auto-optimizer allows any custom stress test module as long as it follows the return code convention.)
-
-[NVOC-GUI](https://github.com/Skyworks-Neo/NVOC-GUI): cross-platform overclocking GUI, positioned as an alternative to MSI Afterburner. (To avoid the GUI being taken down when the GPU crashes, it uses CPU rendering. On low-end systems, NVOC-TUI is recommended if performance becomes an issue.)
-
-[NVOC-TUI](https://github.com/Skyworks-Neo/NVOC-TUI): cross-platform overclocking CLI for machines without a GUI. It has good compatibility and low performance overhead.
-
-[NVOC-SRV](https://github.com/Skyworks-Neo/NVOC-SRV): client-server control module for web management in data centers, servers, and workstations. ~~Remote overclocking~~ (TODO)
-
 ## Table of contents
 
 - [Background and theory](#background-and-theory)
@@ -788,8 +778,8 @@ Legacy OverVolt often does not work well in practice, and NVIDIA's support is no
 ## Building from source
 
 ```bat
-git clone https://github.com/your-org/nvoc-auto-optimizer.git
-cd auto-optimizer
+git clone https://github.com/Skyworks-Neo/nvoc.git
+cd nvoc/auto-optimizer
 cargo build --release
 ```
 
