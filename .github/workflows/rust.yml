@@ -28,7 +28,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: my-rust-app-${{ matrix.os }}
-          path: target/release/my_rust_binary  # change this to your binary
+          path: ${{ matrix.os == 'windows-latest' && 'target/release/nvoc-auto-optimizer.exe' || 'target/release/nvoc-auto-optimizer' }}# change this to your binary
 
   release:
     needs: build
