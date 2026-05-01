@@ -1,79 +1,25 @@
 name: Rust
-
 on:
+  workflow_dispatch:
   push:
     branches:
-      - main         # triggers on pushes to main
-    tags:
-      - 'v*'         # triggers on version tags like v1.0.0, v2, etc.
-  pull_request:
-    branches: [ "main" ]
-
+      - main
+    paths-ignore:
+      - 'README.md'
+      - 'LICENSE'
+      - '.gitignore'
 permissions:
   contents: write
   packages: write
-
-env:
-  CARGO_TERM_COLOR: always
-
 jobs:
-  build:
+  test:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install Rust
         run: rustup update stable
       - name: Build
-        run: cargo build --release
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: nvoc-auto-optimizer-${{ matrix.os }}
-          path: ${{ matrix.os == 'windows-latest' && 'target/release/nvoc-auto-optimizer.exe' || 'target/release/nvoc-auto-optimizer' }}
-
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Download Linux artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: nvoc-auto-optimizer-ubuntu-latest
-          path: ./release/linux
-      - name: Download Windows artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: nvoc-auto-optimizer-windows-latest
-          path: ./release/windows
-      - name: Create GitHub Release
-        id: create_release
-        uses: actions/create-release@v1
-        with:
-          tag_name: ${{ github.ref_name }}  # use the pushed tag
-          release_name: Release ${{ github.run_number }}
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Upload Linux binary
-        uses: actions/upload-release-asset@v1
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./release/linux/nvoc-auto-optimizer
-          asset_name: nvoc-auto-optimizer-linux
-          asset_content_type: application/octet-stream
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Upload Windows binary
-        uses: actions/upload-release-asset@v1
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./release/windows/nvoc-auto-optimizer.exe
-          asset_name: nvoc-auto-optimizer-windows.exe
-          asset_content_type: application/octet-stream
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: cargo test
