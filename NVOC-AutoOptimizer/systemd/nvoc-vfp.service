@@ -1,0 +1,17 @@
+# Place this file in /etc/systemd/system/nvidia-overclocking.service
+# This service will run the NVOC VFP import/reset commands at startup and shutdown.
+
+[Unit]
+Description=NVOC VFP import/reset service
+Wants=systemd-udev-settle.service
+After=local-fs.target systemd-udev-settle.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=/bin/sh -c 'for i in $(seq 1 30); do [ -e /dev/nvidiactl ] && exit 0; sleep 1; done; echo "/dev/nvidiactl did not appear in time" >&2; exit 1'
+ExecStart=/srv/nvoc/nvoc-auto-optimizer set vfp import /srv/nvoc/vfp.csv
+ExecStop=/srv/nvoc/nvoc-auto-optimizer reset --domain vfp
+
+[Install]
+WantedBy=multi-user.target

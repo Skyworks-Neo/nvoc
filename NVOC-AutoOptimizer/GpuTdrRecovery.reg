@@ -1,0 +1,27 @@
+Windows Registry Editor Version 5.00
+
+[HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\GraphicsDrivers]
+“TdrDelay”=dword:00000004
+“TdrDdiDelay”=dword:00000006
+“PlatformSupportMiracast”=dword:00000001
+“TdrDebugMode”=dword:00000003
+“TdrLimitTime”=dword:ffffffff
+“TdrLevel”=dword:00000003
+“TDR_DEBUG_MODE_IGNORE_TIMEOUT”=dword:00000001
+“TdrLimitCount”=dword:ffffffff
+
+[HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\GraphicsDrivers\DCI]
+“Timeout”=dword:00000007
+
+[HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\GraphicsDrivers\Scheduler]
+“EnablePreemption”=dword:00000001
+
+[HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\GraphicsDrivers\TdrTestMode]
+“TDR_DEBUG_MODE_IGNORE_TIMEOUT”=dword:00000001
+
+[HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\GraphicsDrivers\TdrWatch]
+“TDR_RECOVERY”=dword:00000001
+
+[HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Watchdog\Logging]
+“BreakOnError”=dword:00000001
+"BreakOnAssertion "=dword:00000001

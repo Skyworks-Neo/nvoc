@@ -1,0 +1,25 @@
+name: Rust
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - 'README.md'
+      - 'LICENSE'
+      - '.gitignore'
+permissions:
+  contents: write
+  packages: write
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Rust
+        run: rustup update stable
+      - name: Build
+        run: cargo test
