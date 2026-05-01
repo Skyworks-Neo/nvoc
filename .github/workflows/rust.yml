@@ -17,8 +17,46 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
+
       - name: Install Rust
         run: rustup update stable
+
       - name: Build
         run: cargo build --release
 
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: my-rust-app-${{ matrix.os }}
+          path: target/release/my_rust_binary  # change this to your binary
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: my-rust-app-ubuntu-latest
+          path: ./release
+
+      - name: Create GitHub Release
+        id: create_release
+        uses: actions/create-release@v1
+        with:
+          tag_name: v${{ github.run_number }}
+          release_name: Release ${{ github.run_number }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Release Asset
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./release/my_rust_binary
+          asset_name: my_rust_binary
+          asset_content_type: application/octet-stream
