@@ -1,23 +1,22 @@
 # Copyright (C) 2026 Ajax Dong
 #
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
 #
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-# GNU General Public License for more details.
+#     https://www.apache.org/licenses/LICENSE-2.0
 #
-# You should have received a copy of the GNU General Public License
-# along with this program. If not, see <https://www.gnu.org/licenses/>.
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 from __future__ import annotations
 
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from .models import GpuDescriptor
 
@@ -103,6 +102,8 @@ def _normalize_status_json(value: dict[str, Any]) -> dict[str, Any]:
             if not isinstance(lock, dict):
                 continue
             voltage = _as_float(lock.get("Voltage"))
+            if voltage is None:
+                voltage = _as_float(lock.get("voltage"))
             if voltage is not None:
                 normalized["vfp_lock_mv"] = voltage / 1000.0
                 break
@@ -298,7 +299,8 @@ def find_curve_point_for_voltage(
     if voltage_mv is None or not voltages or len(voltages) != len(freqs):
         return None
 
-    nearest_index = min(range(len(voltages)), key=lambda idx: abs(voltages[idx] - voltage_mv))
+    target_voltage = float(voltage_mv)
+    nearest_index = min(range(len(voltages)), key=lambda idx: abs(voltages[idx] - target_voltage))
     return voltages[nearest_index], freqs[nearest_index]
 
 
@@ -322,15 +324,20 @@ def compute_vf_plot_bounds(
         x_values.append(point[0])
         y_values.append(point[1])
 
-    x_min = min(x_values)
-    x_max = max(x_values)
-    y_min = min(0.0, min(y_values))
-    y_max = max(y_values)
+    x_min: float = float(min(x_values))
+    x_max: float = float(max(x_values))
+    y_min: float = float(min(y_values))
+    if y_min > 0.0:
+        y_min = 0.0
+    y_max: float = float(max(y_values))
 
-    x_padding = max(1.0, (x_max - x_min) * 0.03) if x_max > x_min else 1.0
-    y_padding = max(1.0, (y_max - y_min) * 0.05) if y_max > y_min else 1.0
+    x_padding: float = float(max(1.0, (x_max - x_min) * 0.03) if x_max > x_min else 1.0)
+    y_padding: float = float(max(1.0, (y_max - y_min) * 0.05) if y_max > y_min else 1.0)
 
-    return (
-        (x_min - x_padding, x_max + x_padding),
-        (y_min, y_max + y_padding),
+    return cast(
+        tuple[tuple[float, float], tuple[float, float]],
+        (
+            (x_min - x_padding, x_max + x_padding),
+            (y_min, y_max + y_padding),
+        ),
     )

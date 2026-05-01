@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Terminal UI frontend for NVOC-AutoOptimizer"
 readme = "README.md"
 requires-python = ">=3.10"
+license = { file = "LICENSE" }
 dependencies = [
     "plotext>=5.3.2",
     "textual>=6.1.0",
