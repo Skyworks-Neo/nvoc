@@ -46,29 +46,52 @@ This project is licensed under the [Apache License 2.0](LICENSE).
 - Windows 10/11 (64-bit)
 - Built NVOC-AutoOptimizer binary (`../NVOC-Autooptimizer/target/release/nvoc-auto-optimizer.exe`)
 - NVIDIA GPU with compatible drivers
+- A Python environment managed by `uv` (recommended) or `venv`/`pip`
 
 ### Setup
 
-```bash
+Recommended (`uv`):
+
+```powershell
 uv sync
 uv run python main.py
 ```
 
+Alternative (`venv` + `pip`):
+
+```powershell
+py -3.8 -m venv .venv
+.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+python main.py
+```
+
 ### Compile a Single Executable (Optional)
 
-```bash
+Recommended (`uv`):
+
+```powershell
 uv sync --group build
 uv run pyinstaller nvoc_gui.spec
 ```
 
+Alternative (`venv` + `pip`):
+
+```powershell
+pip install pyinstaller
+pyinstaller nvoc_gui.spec
+```
+
 ### Dependency Management
 
-This repository uses `uv` with `pyproject.toml` instead of `requirements.txt`.
+This repository uses `pyproject.toml` as the source of truth for `uv`, and provides `requirements.txt` for users who prefer `venv` + `pip`.
 
-- Runtime dependencies use relaxed version ranges.
+- Runtime dependencies use relaxed version ranges and are mirrored in `requirements.txt`.
 - Packages with shifting Python support windows use Python-version markers so each interpreter resolves an appropriate release line.
-- Build-only tooling lives in the `build` dependency group.
+- Build-only tooling lives in the `build` dependency group; install packaging tools separately when you need them.
 - `uv sync` resolves dependencies for the active interpreter. To verify Python 3.8 compatibility specifically, create or sync a Python 3.8 environment first.
+- If you are using `venv`, install dependencies with `pip install -r requirements.txt` after activating the environment.
 
 ### Directory Structure
 
@@ -204,29 +227,52 @@ NVOC-GUI/
 - Windows 10/11（64 位）
 - 已构建的 NVOC-AutoOptimizer 可执行文件（`../NVOC-Autooptimizer/target/release/nvoc-auto-optimizer.exe`）
 - 安装了兼容驱动的 NVIDIA GPU
+- 使用 `uv`（推荐）或 `venv`/`pip` 管理的 Python 环境
 
 ### 安装与启动
 
-```bash
+推荐使用（`uv`）：
+
+```powershell
 uv sync
 uv run python main.py
 ```
 
+备用方案（`venv` + `pip`）：
+
+```powershell
+py -3.8 -m venv .venv
+.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+python main.py
+```
+
 ### 打包为单文件（可选）
 
-```bash
+推荐使用（`uv`）：
+
+```powershell
 uv sync --group build
 uv run pyinstaller nvoc_gui.spec
 ```
 
+备用方案（`venv` + `pip`）：
+
+```powershell
+pip install pyinstaller
+pyinstaller nvoc_gui.spec
+```
+
 ### 依赖管理
 
-本仓库使用 `uv` + `pyproject.toml`，而不是 `requirements.txt`。
+本仓库以 `pyproject.toml` 作为 `uv` 的依赖来源，同时提供 `requirements.txt` 方便偏好 `venv` + `pip` 的用户。
 
-- 运行时依赖使用较宽松的版本范围。
+- 运行时依赖使用较宽松的版本范围，并且会同步到 `requirements.txt`。
 - 对 Python 支持窗口会变化的包使用 Python 版本标记，确保不同解释器解析到合适的发行版本。
-- 仅用于构建的工具放在 `build` 依赖组中。
+- 仅用于构建的工具放在 `build` 依赖组中；需要打包时再单独安装构建工具。
 - `uv sync` 会针对当前活动解释器解析依赖。若要专门验证 Python 3.8 兼容性，请先创建或切换到 Python 3.8 环境再同步。
+- 如果使用 `venv`，请在激活环境后执行 `pip install -r requirements.txt`。
 
 ### 目录结构
 
@@ -339,4 +385,4 @@ NVOC-GUI/
 - 配置和 CLI 路径可以通过 `nvoc_gui_config.json` 或命令行参数自定义。
 - 如果需要扩展功能页签，可以在 `src/tabs/` 下新增模块并在 `app.py` 中注册。
 
-<p align="right"><a href="#top">Back to top / 返回顶部</a></p>
+<div style="text-align: right;">Back to top / 返回顶部</div>
