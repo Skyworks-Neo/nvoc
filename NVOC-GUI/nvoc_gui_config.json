@@ -1,0 +1,18 @@
+{
+  "cli_exe_path": "",
+  "last_gpu_id": "",
+  "autoscan": {
+    "mode": "standard",
+    "test_exe": ".\\test\\test.bat",
+    "score_threshold": "98.5",
+    "timeout_loops": "30",
+    "output_csv": ".\\ws\\vfp-tem.csv",
+    "init_csv": ".\\ws\\vfp-init.csv",
+    "log_file": ".\\ws\\vfp.log",
+    "score_path": "..\\yiji_tb\\result.xml",
+    "bsod_recovery": ""
+  },
+  "last_gpu_idx": "",
+  "ui_layout_mode": "compact",
+  "vfcurve_compact_panel": true
+}
