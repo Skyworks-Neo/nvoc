@@ -2,7 +2,10 @@ name: Rust
 
 on:
   push:
-    branches: [ "main" ]
+    branches:
+      - main         # triggers on pushes to main
+    tags:
+      - 'v*'         # triggers on version tags like v1.0.0, v2, etc.
   pull_request:
     branches: [ "main" ]
 
@@ -50,7 +53,7 @@ jobs:
         id: create_release
         uses: actions/create-release@v1
         with:
-          tag_name: v${{ github.run_number }}
+          tag_name: ${{ github.ref_name }}  # use the pushed tag
           release_name: Release ${{ github.run_number }}
           draft: false
           prerelease: false
