@@ -1,0 +1,30 @@
+[package]
+name = "nvoc-srv"
+version = "0.0.1"
+description = "NVOC Windows service"
+authors = ["Skyworks"]
+edition = "2024"
+
+[profile.dev]
+incremental = true
+
+[dependencies]
+windows-service = "0.8.0"
+windows-sys = { version = "0.61.2", features = ["Win32"]}
+nvml-wrapper = "0.11.0"
+nvml-wrapper-sys = "0.9.0"
+nvapi-hi = { package = "nvapi-hi", version = "0.2.0", features = ["serde", ], git = "https://github.com/arcnmx/nvapi-rs", branch = "v0.2.x" }
+nvoc-auto-optimizer = { path = "../auto-optimizer" }
+clap = { version = "4.5.60", default-features = false }
+log = "0.4"
+log2 = "0.2.2"
+chrono = "0.4"  
+gag = "1.0.0"
+tiny_http = "0.12"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+futures-util = "0.3"
+compio = { version = "0.15.0", features = ["runtime", "time"] }
+flume = "0.11"
+humantime = "2.2.0"
+async-stream = "0.3"

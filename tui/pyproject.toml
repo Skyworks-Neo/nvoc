@@ -1,0 +1,30 @@
+[project]
+name = "nvoc-tui"
+version = "0.1.0"
+description = "Terminal UI frontend for nvoc-auto-optimizer"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+dependencies = [
+    "plotext>=5.3.2",
+    "textual>=6.1.0",
+    "textual-plotext>=1.0.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.0",
+    "textual-dev>=1.8.0",
+]
+
+[project.scripts]
+nvoc-tui = "nvoc_tui.__main__:main"
+
+[tool.uv]
+package = true
+
+[tool.setuptools.packages.find]
+include = ["nvoc_tui*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
