@@ -2,6 +2,10 @@
 
 > GUI frontend for NVOC-AutoOptimizer — NVIDIA GPU VF Curve Optimizer
 
+## License
+
+This project is licensed under the [Apache License 2.0](LICENSE).
+
 ## Features
 
 - **Dashboard** — View GPU info, status (clocks, sensors, coolers, VFP), and current OC settings

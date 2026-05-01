@@ -3,7 +3,11 @@ name = "nvoc-gui"
 version = "0.1.0"
 description = "GUI frontend for NVOC-AutoOptimizer"
 readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.8"
+classifiers = [
+    "License :: OSI Approved :: Apache Software License",
+]
 dependencies = [
     "customtkinter>=5.2.2",
     "darkdetect>=0.8.0",
