@@ -48,7 +48,9 @@ def compose_overclock() -> ComposeResult:
             with Horizontal(classes="row"):
                 yield Button("Apply OC", id="oc-apply", classes="red", compact=True)
                 yield Button("Reset OC", id="oc-reset", classes="green", compact=True)
-                yield Button("Apply Limits", id="limits-apply", classes="red", compact=True)
+                yield Button(
+                    "Apply Limits", id="limits-apply", classes="red", compact=True
+                )
                 yield Button("Reset All", id="reset-all", classes="green", compact=True)
             yield Static("Fan Control", classes="row")
             with Horizontal(classes="row"):

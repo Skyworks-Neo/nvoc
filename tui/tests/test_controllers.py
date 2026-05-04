@@ -99,6 +99,4 @@ def test_vfcurve_export_action_appends_quick_flag() -> None:
 
     assert app.config_data.vfcurve.default_path == "curve.csv"
     assert app.config_data.vfcurve.quick_export is True
-    assert app.actions == [
-        ["--gpu=0", "set", "vfp", "export", "curve.csv", "-q"]
-    ]
+    assert app.actions == [["--gpu=0", "set", "vfp", "export", "curve.csv", "-q"]]

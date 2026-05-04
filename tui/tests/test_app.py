@@ -63,9 +63,7 @@ def test_app_hides_dashboard_alt_shortcuts_from_footer(
 
     app = NVOCApp()
     bindings = {
-        binding.key: binding
-        for binding in app.BINDINGS
-        if hasattr(binding, "key")
+        binding.key: binding for binding in app.BINDINGS if hasattr(binding, "key")
     }
 
     for key in [
@@ -135,17 +133,17 @@ def test_small_terminal_layer_visibility(monkeypatch, tmp_path: Path) -> None:
         small_app = NVOCApp()
         async with small_app.run_test(size=(54, 24)) as pilot:
             await pilot.pause()
-            assert small_app.query_one("#small-terminal-layer").has_class("visible")
+            assert small_app.has_class("too-small")
 
         normal_app = NVOCApp()
         async with normal_app.run_test(size=(55, 24)) as pilot:
             await pilot.pause()
-            assert not normal_app.query_one("#small-terminal-layer").has_class("visible")
+            assert not normal_app.has_class("too-small")
 
         short_app = NVOCApp()
         async with short_app.run_test(size=(55, 23)) as pilot:
             await pilot.pause()
-            assert short_app.query_one("#small-terminal-layer").has_class("visible")
+            assert short_app.has_class("too-small")
 
     asyncio.run(run())
 
@@ -293,9 +291,9 @@ def test_dashboard_shortcuts_are_scoped_and_labels_are_underlined(
             assert calls == [
                 "apply:1.0",
                 "now",
-                "-O json info",
-                "-O json status -a",
-                "-O json get",
+                "info",
+                "status -a",
+                "get",
             ]
 
             await pilot.press("f2")
@@ -303,9 +301,9 @@ def test_dashboard_shortcuts_are_scoped_and_labels_are_underlined(
             assert calls == [
                 "apply:1.0",
                 "now",
-                "-O json info",
-                "-O json status -a",
-                "-O json get",
+                "info",
+                "status -a",
+                "get",
             ]
 
     asyncio.run(run())

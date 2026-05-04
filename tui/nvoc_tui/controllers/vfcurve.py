@@ -7,7 +7,11 @@ from rich.text import Text
 from textual.widgets import Button, Checkbox, Input, Select
 from textual_plotext import PlotextPlot
 
-from ..parsing import compute_vf_plot_bounds, find_curve_point_for_voltage, load_vf_curve
+from ..parsing import (
+    compute_vf_plot_bounds,
+    find_curve_point_for_voltage,
+    load_vf_curve,
+)
 from ..widgets import mnemonic_text
 from .base import PaneController
 
@@ -31,9 +35,9 @@ class VFCurveController(PaneController):
         if enabled:
             self.poll_timer = self.app.set_interval(2.0, self.tick, pause=False)
         try:
-            self.app.query_one("#vf-auto-refresh", Button).label = (
-                self.auto_refresh_label()
-            )
+            self.app.query_one(
+                "#vf-auto-refresh", Button
+            ).label = self.auto_refresh_label()
         except Exception:
             pass
         if (
@@ -138,7 +142,9 @@ class VFCurveController(PaneController):
         plt.clear_data()
         plt.clear_color()
         plt.plot(voltages, freqs, marker="braille", color="cyan+", label="Current")
-        plt.scatter(voltages, defaults, marker="braille", color="white", label="Default")
+        plt.scatter(
+            voltages, defaults, marker="braille", color="white", label="Default"
+        )
         live_voltage = self.app.cache.status.get("voltage_mv")
         live_clock = self.app.cache.status.get("gpu_clock_mhz")
         lock_voltage = self.app.cache.status.get("vfp_lock_mv")
@@ -220,7 +226,9 @@ class VFCurveController(PaneController):
         if button_id == "vf-import":
             self.sync_from_ui()
             path = self.app.query_one("#vf-path", Input).value.strip()
-            self.app.run_cli_action(self.app.gpu_args() + ["set", "vfp", "import", path])
+            self.app.run_cli_action(
+                self.app.gpu_args() + ["set", "vfp", "import", path]
+            )
             return True
         if button_id == "vf-reset":
             self.app.run_cli_action(self.app.gpu_args() + ["reset", "vfp"])

@@ -9,11 +9,6 @@
     grid-columns: 1fr;
 }
 
-.subpane {
-    border: round $accent;
-    height: auto;
-}
-
 #vf-import-export-actions {
     grid-gutter: 0 1;
     height: auto;

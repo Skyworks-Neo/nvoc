@@ -24,9 +24,7 @@ class OverclockController(PaneController):
                     self.app.cache.info.get("power_limit_default", 100),
                 )
             ),
-            "#thermal-limit": str(
-                self.app.cache.info.get("thermal_limit_default", 83)
-            ),
+            "#thermal-limit": str(self.app.cache.info.get("thermal_limit_default", 83)),
             "#voltage-boost": str(
                 self.app.cache.settings.get("voltage_boost_current", 0)
             ),

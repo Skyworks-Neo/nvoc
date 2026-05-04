@@ -326,8 +326,11 @@ class NVOCApp(App[None]):
     def update_responsive_layout(self) -> None:
         self.set_class(self.size.width < 80, "compact")
         self.set_class(self.size.width < 100, "narrow")
-        self.set_class(self.size.width >= 160 , "wide")
-        self.set_class(self.size.width < self.MIN_WIDTH or self.size.height < self.MIN_HEIGHT, "too-small")
+        self.set_class(self.size.width >= 160, "wide")
+        self.set_class(
+            self.size.width < self.MIN_WIDTH or self.size.height < self.MIN_HEIGHT,
+            "too-small",
+        )
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         button_id = event.button.id or ""
