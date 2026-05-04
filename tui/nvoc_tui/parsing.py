@@ -122,7 +122,9 @@ def parse_gpu_list(output: str) -> list[GpuDescriptor]:
             name = match.group(2).strip()
             uuid_match = re.search(r"(?i)\buuid\s*[:=]\s*(GPU-[\w-]+)", name)
             uuid = uuid_match.group(1) if uuid_match else None
-            name = re.split(r"(?i)\buuid\s*[:=]\s*gpu-[\w-]+", name, maxsplit=1)[0].strip()
+            name = re.split(r"(?i)\buuid\s*[:=]\s*gpu-[\w-]+", name, maxsplit=1)[
+                0
+            ].strip()
             if name.startswith("ID:") and idx in gpus:
                 continue
             gpus[idx] = GpuDescriptor(index=idx, name=name, uuid=uuid)
@@ -157,13 +159,17 @@ def parse_info_output(output: str) -> dict[str, Any]:
                 parsed["power_limit_min"] = int(match.group(1))
                 parsed["power_limit_max"] = int(match.group(2))
                 parsed["power_limit_default"] = int(match.group(3))
-            watts = re.search(r"(\d+)W\s*min\s*/\s*(\d+)W\s*current\s*/\s*(\d+)W\s*max", line)
+            watts = re.search(
+                r"(\d+)W\s*min\s*/\s*(\d+)W\s*current\s*/\s*(\d+)W\s*max", line
+            )
             if watts:
                 parsed["power_limit_nvml_min_w"] = int(watts.group(1))
                 parsed["power_limit_nvml_current_w"] = int(watts.group(2))
                 parsed["power_limit_nvml_max_w"] = int(watts.group(3))
         elif line.startswith("Thermal Limit"):
-            match = re.search(r"(\d+)\s*C\s*~\s*(\d+)\s*C\s*\((\d+)\s*C\s*default\)", line)
+            match = re.search(
+                r"(\d+)\s*C\s*~\s*(\d+)\s*C\s*\((\d+)\s*C\s*default\)", line
+            )
             if match:
                 parsed["thermal_limit_min"] = int(match.group(1))
                 parsed["thermal_limit_max"] = int(match.group(2))
@@ -235,7 +241,10 @@ def parse_get_output(output: str) -> dict[str, Any]:
             if match:
                 parsed["power_limit_current"] = int(match.group(1))
         elif "Power Limit" in line and "W" in line:
-            match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*W\s*\(Min:\s*([0-9]+(?:\.[0-9]+)?)\s*W\s*-\s*Max:\s*([0-9]+(?:\.[0-9]+)?)\s*W", line)
+            match = re.search(
+                r"([0-9]+(?:\.[0-9]+)?)\s*W\s*\(Min:\s*([0-9]+(?:\.[0-9]+)?)\s*W\s*-\s*Max:\s*([0-9]+(?:\.[0-9]+)?)\s*W",
+                line,
+            )
             if match:
                 parsed["power_limit_nvml_current_w"] = int(round(float(match.group(1))))
                 parsed["power_limit_nvml_min_w"] = int(round(float(match.group(2))))
@@ -277,14 +286,20 @@ def load_vf_curve(path: str) -> tuple[list[float], list[float], list[float]]:
     defaults: list[float] = []
     for raw in csv_path.read_text(encoding="utf-8-sig").splitlines():
         row = [piece.strip() for piece in raw.split(",")]
-        if not row or row[0].startswith("#") or row[0].lower() in {"voltage", "voltage_uv"}:
+        if (
+            not row
+            or row[0].startswith("#")
+            or row[0].lower() in {"voltage", "voltage_uv"}
+        ):
             continue
         if len(row) < 2:
             continue
         try:
             voltages.append(float(row[0]) / 1000.0)
             freqs.append(float(row[1]) / 1000.0)
-            defaults.append(float(row[3]) / 1000.0 if len(row) > 3 else float(row[1]) / 1000.0)
+            defaults.append(
+                float(row[3]) / 1000.0 if len(row) > 3 else float(row[1]) / 1000.0
+            )
         except ValueError:
             continue
 
@@ -300,7 +315,9 @@ def find_curve_point_for_voltage(
         return None
 
     target_voltage = float(voltage_mv)
-    nearest_index = min(range(len(voltages)), key=lambda idx: abs(voltages[idx] - target_voltage))
+    nearest_index = min(
+        range(len(voltages)), key=lambda idx: abs(voltages[idx] - target_voltage)
+    )
     return voltages[nearest_index], freqs[nearest_index]
 
 

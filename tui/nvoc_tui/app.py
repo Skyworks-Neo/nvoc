@@ -17,8 +17,20 @@ import threading
 from pathlib import Path
 
 from textual.app import App, ComposeResult
-from textual.containers import Horizontal, HorizontalScroll, Vertical
-from textual.widgets import Button, Checkbox, Footer, Header, Input, Label, Log, Select, Static, TabbedContent, TabPane
+from textual.containers import Horizontal, Vertical
+from textual.widgets import (
+    Button,
+    Checkbox,
+    Footer,
+    Header,
+    Input,
+    Label,
+    Log,
+    Select,
+    Static,
+    TabbedContent,
+    TabPane,
+)
 from textual_plotext import PlotextPlot
 
 from .cli import CliService
@@ -157,7 +169,7 @@ class NVOCApp(App[None]):
     BINDINGS = [("ctrl+c", "quit", "Quit")]
 
     def __init__(self) -> None:
-        super().__init__()
+        super().__init__(ansi_color=True)
         self.root_dir = repo_root()
         self.config_store = ConfigStore(self.root_dir)
         self.config_data: AppConfig = self.config_store.load()
@@ -178,22 +190,42 @@ class NVOCApp(App[None]):
         with Vertical(id="topbar"):
             with Horizontal(classes="toprow"):
                 yield Label("GPU: ")
-                yield Select(options=[("Detecting...", "-1")], id="gpu-select", allow_blank=False, compact=True, classes="grow")
+                yield Select(
+                    options=[("Detecting...", "-1")],
+                    id="gpu-select",
+                    allow_blank=False,
+                    compact=True,
+                    classes="grow",
+                )
                 with Horizontal(id="gpu-actions"):
                     yield Button("Detect", id="detect-gpus", compact=True)
                     yield Button("Refresh All", id="refresh-all", compact=True)
             with Horizontal(classes="toprow"):
                 yield Label("CLI: ")
-                yield Input(value=self.config_data.cli.exe_path, placeholder="CLI path", id="cli-path", classes="grow", compact=True)
+                yield Input(
+                    value=self.config_data.cli.exe_path,
+                    placeholder="CLI path",
+                    id="cli-path",
+                    classes="grow",
+                    compact=True,
+                )
                 yield Button("Save CLI", id="save-cli", compact=True)
         yield Static(classes="hsplit")
-        with TabbedContent(initial=self.config_data.ui.active_tab or "dashboard"):
+        with TabbedContent(
+            initial=self.config_data.ui.active_tab or "dashboard", id="main-tabs"
+        ):
             with TabPane("Dashboard", id="dashboard"):
                 with Vertical(classes="section"):
                     with Horizontal(classes="row", id="dashboard-controls"):
                         yield Label("Refresh (s): ")
-                        yield Input(value=f"{self.config_data.dashboard.refresh_interval:.1f}", id="dashboard-interval", compact=True)
-                        yield Button("Apply", id="dashboard-interval-apply", compact=True)
+                        yield Input(
+                            value=f"{self.config_data.dashboard.refresh_interval:.1f}",
+                            id="dashboard-interval",
+                            compact=True,
+                        )
+                        yield Button(
+                            "Apply", id="dashboard-interval-apply", compact=True
+                        )
                         yield Button("Pause", id="dashboard-pause", compact=True)
                         yield Button("Now", id="dashboard-now", compact=True)
                         yield Button("Info", id="dashboard-info", compact=True)
@@ -217,37 +249,88 @@ class NVOCApp(App[None]):
                         )
                         yield Label("BSOD")
                         yield Select(
-                            options=[("(auto)", ""), ("aggressive", "aggressive"), ("traditional", "traditional")],
+                            options=[
+                                ("(auto)", ""),
+                                ("aggressive", "aggressive"),
+                                ("traditional", "traditional"),
+                            ],
                             value=self.config_data.autoscan.bsod_recovery,
                             id="autoscan-bsod",
                             allow_blank=False,
                             compact=True,
                         )
                     for label, value, widget_id in [
-                        ("Test Executable", self.config_data.autoscan.test_exe, "autoscan-test-exe"),
-                        ("Score XML Path", self.config_data.autoscan.score_path, "autoscan-score-path"),
-                        ("Score Threshold", self.config_data.autoscan.score_threshold, "autoscan-score"),
-                        ("Timeout Loops", self.config_data.autoscan.timeout_loops, "autoscan-timeout"),
-                        ("Log File", self.config_data.autoscan.log_file, "autoscan-log"),
-                        ("Output CSV", self.config_data.autoscan.output_csv, "autoscan-output"),
-                        ("Init CSV", self.config_data.autoscan.init_csv, "autoscan-init"),
+                        (
+                            "Test Executable",
+                            self.config_data.autoscan.test_exe,
+                            "autoscan-test-exe",
+                        ),
+                        (
+                            "Score XML Path",
+                            self.config_data.autoscan.score_path,
+                            "autoscan-score-path",
+                        ),
+                        (
+                            "Score Threshold",
+                            self.config_data.autoscan.score_threshold,
+                            "autoscan-score",
+                        ),
+                        (
+                            "Timeout Loops",
+                            self.config_data.autoscan.timeout_loops,
+                            "autoscan-timeout",
+                        ),
+                        (
+                            "Log File",
+                            self.config_data.autoscan.log_file,
+                            "autoscan-log",
+                        ),
+                        (
+                            "Output CSV",
+                            self.config_data.autoscan.output_csv,
+                            "autoscan-output",
+                        ),
+                        (
+                            "Init CSV",
+                            self.config_data.autoscan.init_csv,
+                            "autoscan-init",
+                        ),
                     ]:
                         with Horizontal(classes="row"):
                             yield Label(label)
-                            yield Input(value=value, id=widget_id, classes="grow", compact=True)
+                            yield Input(
+                                value=value, id=widget_id, classes="grow", compact=True
+                            )
                     with Horizontal(classes="row"):
-                        yield Button("Export Init VFP", id="autoscan-export-init", compact=True)
-                        yield Button("Reset & Unlock", id="autoscan-reset-unlock", compact=True)
-                        yield Button("Start Autoscan", id="autoscan-start", compact=True)
+                        yield Button(
+                            "Export Init VFP", id="autoscan-export-init", compact=True
+                        )
+                        yield Button(
+                            "Reset & Unlock", id="autoscan-reset-unlock", compact=True
+                        )
+                        yield Button(
+                            "Start Autoscan", id="autoscan-start", compact=True
+                        )
                         yield Button("Stop", id="autoscan-stop", compact=True)
                         yield Button("Fix Results", id="autoscan-fix", compact=True)
-                        yield Button("Import Final", id="autoscan-import-final", compact=True)
-                        yield Button("Export Final", id="autoscan-export-final", compact=True)
+                        yield Button(
+                            "Import Final", id="autoscan-import-final", compact=True
+                        )
+                        yield Button(
+                            "Export Final", id="autoscan-export-final", compact=True
+                        )
             with TabPane("Overclock", id="overclock"):
                 with Vertical(classes="section"):
                     with Horizontal(classes="row"):
                         yield Label("Clock API")
-                        yield Select(options=[("NVAPI", "nvapi"), ("NVML", "nvml")], value="nvapi", classes="nvapi-nvml-select", id="oc-api", allow_blank=False, compact=True)
+                        yield Select(
+                            options=[("NVAPI", "nvapi"), ("NVML", "nvml")],
+                            value="nvapi",
+                            classes="nvapi-nvml-select",
+                            id="oc-api",
+                            allow_blank=False,
+                            compact=True,
+                        )
                         yield Label("PState Start")
                         yield Input(value="", id="pstate-start", compact=True)
                         yield Label("PState End")
@@ -259,7 +342,14 @@ class NVOCApp(App[None]):
                         yield Input(value="0", id="mem-offset", compact=True)
                     with Horizontal(classes="row"):
                         yield Label("Power API")
-                        yield Select(options=[("NVAPI", "nvapi"), ("NVML", "nvml")], value="nvapi", classes="nvapi-nvml-select", id="power-api", allow_blank=False, compact=True)
+                        yield Select(
+                            options=[("NVAPI", "nvapi"), ("NVML", "nvml")],
+                            value="nvapi",
+                            classes="nvapi-nvml-select",
+                            id="power-api",
+                            allow_blank=False,
+                            compact=True,
+                        )
                         yield Label("Power Limit")
                         yield Input(value="100", id="power-limit", compact=True)
                         yield Label("Thermal Limit")
@@ -267,19 +357,48 @@ class NVOCApp(App[None]):
                         yield Label("Voltage Boost")
                         yield Input(value="0", id="voltage-boost", compact=True)
                     with Horizontal(classes="row"):
-                        yield Button("Apply OC", id="oc-apply", classes="red", compact=True)
-                        yield Button("Reset OC", id="oc-reset", classes="green", compact=True)
-                        yield Button("Apply Limits", id="limits-apply", classes="red", compact=True)
-                        yield Button("Reset All", id="reset-all", classes="green", compact=True)
+                        yield Button(
+                            "Apply OC", id="oc-apply", classes="red", compact=True
+                        )
+                        yield Button(
+                            "Reset OC", id="oc-reset", classes="green", compact=True
+                        )
+                        yield Button(
+                            "Apply Limits",
+                            id="limits-apply",
+                            classes="red",
+                            compact=True,
+                        )
+                        yield Button(
+                            "Reset All", id="reset-all", classes="green", compact=True
+                        )
                     yield Static("Fan Control", classes="row")
                     with Horizontal(classes="row"):
                         yield Label("Fan Target")
-                        yield Select(options=[("All", "all"), ("Fan 1", "1"), ("Fan 2", "2")], value="all", id="fan-id", allow_blank=False, compact=True)
+                        yield Select(
+                            options=[("All", "all"), ("Fan 1", "1"), ("Fan 2", "2")],
+                            value="all",
+                            id="fan-id",
+                            allow_blank=False,
+                            compact=True,
+                        )
                         yield Label("Fan API")
-                        yield Select(options=[("NVAPI", "nvapi"), ("NVML", "nvml")], value="nvapi", classes="nvapi-nvml-select", id="fan-api", allow_blank=False, compact=True)
+                        yield Select(
+                            options=[("NVAPI", "nvapi"), ("NVML", "nvml")],
+                            value="nvapi",
+                            classes="nvapi-nvml-select",
+                            id="fan-api",
+                            allow_blank=False,
+                            compact=True,
+                        )
                         yield Label("Policy")
                         yield Select(
-                            options=[("contin.", "continuous"), ("manual", "manual"), ("default", "default"), ("auto", "auto")],
+                            options=[
+                                ("contin.", "continuous"),
+                                ("manual", "manual"),
+                                ("default", "default"),
+                                ("auto", "auto"),
+                            ],
                             value="continuous",
                             id="fan-policy",
                             allow_blank=False,
@@ -287,19 +406,45 @@ class NVOCApp(App[None]):
                         )
                         yield Label("Level")
                         yield Input(value="60", id="fan-level", compact=True)
-                        yield Button("Apply Fan", id="fan-apply", classes="red", compact=True)
-                        yield Button("Reset Fan", id="fan-reset", classes="green", compact=True)
+                        yield Button(
+                            "Apply Fan", id="fan-apply", classes="red", compact=True
+                        )
+                        yield Button(
+                            "Reset Fan", id="fan-reset", classes="green", compact=True
+                        )
             with TabPane("VF Curve", id="vfcurve"):
                 with Vertical(classes="section"):
                     with Horizontal(classes="row"):
-                        yield Input(value=self.config_data.vfcurve.default_path, placeholder="CSV path for import/export", id="vf-path", classes="grow", compact=True)
-                        yield Checkbox("Quick export", value=self.config_data.vfcurve.quick_export, id="vf-quick-export", compact=True)
+                        yield Input(
+                            value=self.config_data.vfcurve.default_path,
+                            placeholder="CSV path for import/export",
+                            id="vf-path",
+                            classes="grow",
+                            compact=True,
+                        )
+                        yield Checkbox(
+                            "Quick export",
+                            value=self.config_data.vfcurve.quick_export,
+                            id="vf-quick-export",
+                            compact=True,
+                        )
                     with Horizontal(classes="row", id="vf-actions"):
-                        yield Button("Refresh Curve", id="vf-refresh", classes="blue", compact=True)
-                        yield Button(self._vf_auto_refresh_label(), id="vf-auto-refresh", compact=True)
+                        yield Button(
+                            "Refresh Curve",
+                            id="vf-refresh",
+                            classes="blue",
+                            compact=True,
+                        )
+                        yield Button(
+                            self._vf_auto_refresh_label(),
+                            id="vf-auto-refresh",
+                            compact=True,
+                        )
                         yield Button("Export VFP", id="vf-export", compact=True)
                         yield Button("Import VFP", id="vf-import", compact=True)
-                        yield Button("Reset VFP", id="vf-reset", classes="green", compact=True)
+                        yield Button(
+                            "Reset VFP", id="vf-reset", classes="green", compact=True
+                        )
                     with Horizontal(classes="row", id="vf-range-actions"):
                         yield Label("VF Adj: Range")
                         yield Input(value="0", id="vf-range-start", compact=True)
@@ -307,29 +452,64 @@ class NVOCApp(App[None]):
                         yield Input(value="0", id="vf-range-end", compact=True)
                         yield Label("Delta MHz")
                         yield Input(value="0", id="vf-delta", compact=True)
-                        yield Button("Apply Adj", id="vf-apply-adj", classes="red", compact=True)
+                        yield Button(
+                            "Apply Adj", id="vf-apply-adj", classes="red", compact=True
+                        )
                     with Horizontal(classes="row", id="vf-lock-actions"):
                         yield Label("Lock Value")
                         yield Input(value="55", id="vf-lock-value", compact=True)
-                        yield Checkbox("As mV", value=False, id="vf-lock-as-mv", compact=True)
-                        yield Button("Lock Voltage", id="vf-lock-voltage", classes="red", compact=True)
-                        yield Button("Reset Volt Lock", id="vf-unlock", classes="green", compact=True)
+                        yield Checkbox(
+                            "As mV", value=False, id="vf-lock-as-mv", compact=True
+                        )
+                        yield Button(
+                            "Lock Voltage",
+                            id="vf-lock-voltage",
+                            classes="red",
+                            compact=True,
+                        )
+                        yield Button(
+                            "Reset Volt Lock",
+                            id="vf-unlock",
+                            classes="green",
+                            compact=True,
+                        )
                     with Horizontal(classes="row", id="vf-mem-actions"):
                         yield Label("Freq API")
-                        yield Select(options=[("NVML", "nvml"), ("NVAPI", "nvapi")], value="nvml", classes="nvapi-nvml-select", id="vf-freq-api", allow_blank=False, compact=True)
+                        yield Select(
+                            options=[("NVML", "nvml"), ("NVAPI", "nvapi")],
+                            value="nvml",
+                            classes="nvapi-nvml-select",
+                            id="vf-freq-api",
+                            allow_blank=False,
+                            compact=True,
+                        )
                         yield Label("Core Freq Min")
                         yield Input(value="0", id="vf-core-min", compact=True)
                         yield Label("Max")
                         yield Input(value="0", id="vf-core-max", compact=True)
-                        yield Button("Lock Core", id="vf-lock-core", classes="red", compact=True)
-                        yield Button("Reset Core", id="vf-reset-core", classes="green", compact=True)
+                        yield Button(
+                            "Lock Core", id="vf-lock-core", classes="red", compact=True
+                        )
+                        yield Button(
+                            "Reset Core",
+                            id="vf-reset-core",
+                            classes="green",
+                            compact=True,
+                        )
                     with Horizontal(classes="row"):
                         yield Label("Mem Freq Min")
                         yield Input(value="0", id="vf-mem-min", compact=True)
                         yield Label("Max")
                         yield Input(value="0", id="vf-mem-max", compact=True)
-                        yield Button("Lock Mem", id="vf-lock-mem", classes="red", compact=True)
-                        yield Button("Reset Mem", id="vf-reset-mem", classes="green", compact=True)
+                        yield Button(
+                            "Lock Mem", id="vf-lock-mem", classes="red", compact=True
+                        )
+                        yield Button(
+                            "Reset Mem",
+                            id="vf-reset-mem",
+                            classes="green",
+                            compact=True,
+                        )
                     yield PlotextPlot(id="vf-plot")
         with Horizontal(id="log-header"):
             yield Label("  Output")
@@ -359,10 +539,18 @@ class NVOCApp(App[None]):
     def _dashboard_tick(self) -> None:
         if self.cli_service.action_state.running:
             return
-        self._run_query("status", self.gpu_args() + ["-O", "json", "status", "-a"], self._on_status_loaded)
+        self._run_query(
+            "status",
+            self.gpu_args() + ["-O", "json", "status", "-a"],
+            self._on_status_loaded,
+        )
 
     def _vf_auto_refresh_label(self) -> str:
-        return "Auto Refresh: On" if self.config_data.vfcurve.auto_refresh else "Auto Refresh: Off"
+        return (
+            "Auto Refresh: On"
+            if self.config_data.vfcurve.auto_refresh
+            else "Auto Refresh: Off"
+        )
 
     def _set_vf_poll_timer(self, enabled: bool) -> None:
         self.config_data.vfcurve.auto_refresh = enabled
@@ -372,12 +560,20 @@ class NVOCApp(App[None]):
             self.vf_poll_timer.stop()
             self.vf_poll_timer = None
         if enabled:
-            self.vf_poll_timer = self.set_interval(2.0, self._vf_curve_tick, pause=False)
+            self.vf_poll_timer = self.set_interval(
+                2.0, self._vf_curve_tick, pause=False
+            )
         try:
-            self.query_one("#vf-auto-refresh", Button).label = self._vf_auto_refresh_label()
+            self.query_one(
+                "#vf-auto-refresh", Button
+            ).label = self._vf_auto_refresh_label()
         except Exception:
             pass
-        if enabled and not self.cli_service.action_state.running and not self.vf_refresh_inflight:
+        if (
+            enabled
+            and not self.cli_service.action_state.running
+            and not self.vf_refresh_inflight
+        ):
             self._refresh_vf_curve()
 
     def _vf_curve_tick(self) -> None:
@@ -434,7 +630,9 @@ class NVOCApp(App[None]):
         if not self.config_data.cli.exe_path:
             self._write_log("CLI executable not configured.")
             return
-        started = self.cli_service.run_action(self.config_data.cli, args, self._append_threadsafe, self._action_finished)
+        started = self.cli_service.run_action(
+            self.config_data.cli, args, self._append_threadsafe, self._action_finished
+        )
         if not started:
             self._write_log("Another action is already running.")
 
@@ -459,10 +657,14 @@ class NVOCApp(App[None]):
 
     def _run_query(self, command_name: str, args: list[str], callback) -> None:
         def worker() -> None:
-            code, output, parsed = self.cli_service.run_query(self.config_data.cli, args, command_name)
+            code, output, parsed = self.cli_service.run_query(
+                self.config_data.cli, args, command_name
+            )
             self.call_from_thread(callback, code, output, parsed)
 
-        threading.Thread(target=worker, daemon=True, name=f"query-{command_name}").start()
+        threading.Thread(
+            target=worker, daemon=True, name=f"query-{command_name}"
+        ).start()
 
     def _refresh_gpu_list(self) -> None:
         def worker() -> None:
@@ -471,7 +673,9 @@ class NVOCApp(App[None]):
 
         threading.Thread(target=worker, daemon=True, name="gpu-list").start()
 
-    def _on_gpu_list_loaded(self, code: int, output: str, gpus: list[GpuDescriptor]) -> None:
+    def _on_gpu_list_loaded(
+        self, code: int, output: str, gpus: list[GpuDescriptor]
+    ) -> None:
         self._write_log(output or "GPU detection finished.")
         self.gpus = gpus
         select = self.query_one("#gpu-select", Select)
@@ -487,15 +691,36 @@ class NVOCApp(App[None]):
         self.config_data.last_gpu_idx = target
         self.config_store.data = self.config_data
         self.config_store.save()
+        if code == 0 and self.config_data.cli.exe_path:
+            self._focus_dashboard_tab_switcher()
         self._refresh_all_state()
+
+    def _focus_dashboard_tab_switcher(self) -> None:
+        tabs = self.query_one("#main-tabs", TabbedContent)
+        tabs.active = "dashboard"
+        self.config_data.ui.active_tab = "dashboard"
+        self.config_store.data = self.config_data
+        self.config_store.save()
+        try:
+            self.query_one("#main-tabs Tabs").focus()
+        except Exception:
+            self.query_one("#dashboard-now", Button).focus()
 
     def _refresh_all_state(self) -> None:
         if not self.gpu_args():
             self._update_metrics()
             return
-        self._run_query("info", self.gpu_args() + ["-O", "json", "info"], self._on_info_loaded)
-        self._run_query("status", self.gpu_args() + ["-O", "json", "status", "-a"], self._on_status_loaded)
-        self._run_query("get", self.gpu_args() + ["-O", "json", "get"], self._on_get_loaded)
+        self._run_query(
+            "info", self.gpu_args() + ["-O", "json", "info"], self._on_info_loaded
+        )
+        self._run_query(
+            "status",
+            self.gpu_args() + ["-O", "json", "status", "-a"],
+            self._on_status_loaded,
+        )
+        self._run_query(
+            "get", self.gpu_args() + ["-O", "json", "get"], self._on_get_loaded
+        )
 
     def _on_info_loaded(self, code: int, output: str, parsed: dict) -> None:
         if code != 0 and output:
@@ -525,9 +750,22 @@ class NVOCApp(App[None]):
 
     def _prime_overclock_inputs(self) -> None:
         fields = {
-            "#core-offset": str(self.cache.settings.get("core_clock_current", self.cache.info.get("core_clock_min", 0))),
-            "#mem-offset": str(self.cache.settings.get("mem_clock_current", self.cache.info.get("mem_clock_min", 0))),
-            "#power-limit": str(self.cache.settings.get("power_limit_current", self.cache.info.get("power_limit_default", 100))),
+            "#core-offset": str(
+                self.cache.settings.get(
+                    "core_clock_current", self.cache.info.get("core_clock_min", 0)
+                )
+            ),
+            "#mem-offset": str(
+                self.cache.settings.get(
+                    "mem_clock_current", self.cache.info.get("mem_clock_min", 0)
+                )
+            ),
+            "#power-limit": str(
+                self.cache.settings.get(
+                    "power_limit_current",
+                    self.cache.info.get("power_limit_default", 100),
+                )
+            ),
             "#thermal-limit": str(self.cache.info.get("thermal_limit_default", 83)),
             "#voltage-boost": str(self.cache.settings.get("voltage_boost_current", 0)),
         }
@@ -563,9 +801,15 @@ class NVOCApp(App[None]):
     def _save_cli_path(self) -> None:
         path = self.query_one("#cli-path", Input).value.strip()
         discovered = CliService.discover_cli(path)
-        self.config_data.cli = discovered if discovered.exe_path else self.config_data.cli.__class__(exe_path=path)
+        self.config_data.cli = (
+            discovered
+            if discovered.exe_path
+            else self.config_data.cli.__class__(exe_path=path)
+        )
         if self.config_data.cli.exe_path and not self.config_data.cli.cwd:
-            self.config_data.cli.cwd = str(Path(self.config_data.cli.exe_path).resolve().parent)
+            self.config_data.cli.cwd = str(
+                Path(self.config_data.cli.exe_path).resolve().parent
+            )
         self.config_store.data = self.config_data
         self.config_store.save()
         self._write_log(f"CLI path set to: {self.config_data.cli.exe_path or path}")
@@ -582,7 +826,9 @@ class NVOCApp(App[None]):
                 self.gpu_args() + ["set", "vfp", "export", "-q", str(cache_path)],
                 "",
             )
-            self.call_from_thread(self._on_vf_curve_loaded, output, str(cache_path), code)
+            self.call_from_thread(
+                self._on_vf_curve_loaded, output, str(cache_path), code
+            )
 
         threading.Thread(target=worker, daemon=True, name="vf-refresh").start()
 
@@ -621,31 +867,49 @@ class NVOCApp(App[None]):
         plt.clear_data()
         plt.clear_color()
         plt.plot(voltages, freqs, marker="braille", color="cyan+", label="Current")
-        plt.scatter(voltages, defaults, marker="braille", color="white", label="Default")
+        plt.scatter(
+            voltages, defaults, marker="braille", color="white", label="Default"
+        )
         live_voltage = self.cache.status.get("voltage_mv")
         live_clock = self.cache.status.get("gpu_clock_mhz")
         lock_voltage = self.cache.status.get("vfp_lock_mv")
         live_point: tuple[float, float] | None = None
         lock_point: tuple[float, float] | None = None
-        if isinstance(live_voltage, (int, float)) and isinstance(live_clock, (int, float)):
+        if isinstance(live_voltage, (int, float)) and isinstance(
+            live_clock, (int, float)
+        ):
             live_point = (float(live_voltage), float(live_clock))
             live_label = "Live Point"
             live_color = "yellow+"
-            plt.scatter([live_point[0]], [live_point[1]], marker="braille", color=live_color, label=live_label)
+            plt.scatter(
+                [live_point[0]],
+                [live_point[1]],
+                marker="braille",
+                color=live_color,
+                label=live_label,
+            )
             plt.vline(live_point[0], color=live_color)
             plt.hline(live_point[1], color=live_color)
         lock_voltage_mv: float | None = None
         if isinstance(lock_voltage, (int, float)):
             lock_voltage_mv = float(lock_voltage)
         if lock_voltage_mv is not None:
-            lock_curve_point = find_curve_point_for_voltage(voltages, freqs, lock_voltage_mv)
+            lock_curve_point = find_curve_point_for_voltage(
+                voltages, freqs, lock_voltage_mv
+            )
             if lock_curve_point is not None:
                 # Keep the reported lock voltage and pair it with the active VFP frequency.
                 lock_point = (lock_voltage_mv, lock_curve_point[1])
         if lock_point is not None:
             plt.vline(lock_point[0], color="orange+")
             plt.hline(lock_point[1], color="orange+")
-            plt.text("Locked at {} mV".format(lock_voltage_mv), lock_point[0], 0, color="orange+", alignment="right")
+            plt.text(
+                "Locked at {} mV".format(lock_voltage_mv),
+                lock_point[0],
+                0,
+                color="orange+",
+                alignment="right",
+            )
         working_point = find_curve_point_for_voltage(
             voltages,
             freqs,
@@ -698,7 +962,9 @@ class NVOCApp(App[None]):
             self._refresh_all_state()
         elif button_id == "dashboard-interval-apply":
             try:
-                value = float(self.query_one("#dashboard-interval", Input).value.strip())
+                value = float(
+                    self.query_one("#dashboard-interval", Input).value.strip()
+                )
             except ValueError:
                 value = 1.0
             self._set_poll_timer(value)
@@ -745,9 +1011,13 @@ class NVOCApp(App[None]):
                 args.append("-u")
             self._run_action(args)
         elif button_id == "autoscan-import-final":
-            self._run_action(self.gpu_args() + ["set", "vfp", "import", r".\ws\vfp.csv"])
+            self._run_action(
+                self.gpu_args() + ["set", "vfp", "import", r".\ws\vfp.csv"]
+            )
         elif button_id == "autoscan-export-final":
-            self._run_action(self.gpu_args() + ["set", "vfp", "export", r".\ws\vfp-final.csv"])
+            self._run_action(
+                self.gpu_args() + ["set", "vfp", "export", r".\ws\vfp-final.csv"]
+            )
         elif button_id == "oc-apply":
             self._run_action(self._oc_args())
         elif button_id == "oc-reset":
@@ -801,7 +1071,9 @@ class NVOCApp(App[None]):
             value = self.query_one("#vf-lock-value", Input).value.strip()
             if self.query_one("#vf-lock-as-mv", Checkbox).value:
                 value = f"{value}mV"
-            self._run_action(self.gpu_args() + ["set", "nvapi", "--locked-voltage", value])
+            self._run_action(
+                self.gpu_args() + ["set", "nvapi", "--locked-voltage", value]
+            )
         elif button_id == "vf-lock-core":
             backend = str(self.query_one("#vf-freq-api", Select).value or "nvml")
             self._run_action(
@@ -848,8 +1120,12 @@ class NVOCApp(App[None]):
             self.query_one("#output-log", Log).clear()
 
     def _sync_autoscan_from_ui(self) -> None:
-        self.config_data.autoscan.mode = str(self.query_one("#autoscan-mode", Select).value or "standard")
-        self.config_data.autoscan.bsod_recovery = str(self.query_one("#autoscan-bsod", Select).value or "")
+        self.config_data.autoscan.mode = str(
+            self.query_one("#autoscan-mode", Select).value or "standard"
+        )
+        self.config_data.autoscan.bsod_recovery = str(
+            self.query_one("#autoscan-bsod", Select).value or ""
+        )
         mapping = {
             "test_exe": "#autoscan-test-exe",
             "score_path": "#autoscan-score-path",
@@ -860,13 +1136,21 @@ class NVOCApp(App[None]):
             "init_csv": "#autoscan-init",
         }
         for field, selector in mapping.items():
-            setattr(self.config_data.autoscan, field, self.query_one(selector, Input).value.strip())
+            setattr(
+                self.config_data.autoscan,
+                field,
+                self.query_one(selector, Input).value.strip(),
+            )
         self.config_store.data = self.config_data
         self.config_store.save()
 
     def _sync_vfcurve_from_ui(self) -> None:
-        self.config_data.vfcurve.default_path = self.query_one("#vf-path", Input).value.strip()
-        self.config_data.vfcurve.quick_export = self.query_one("#vf-quick-export", Checkbox).value
+        self.config_data.vfcurve.default_path = self.query_one(
+            "#vf-path", Input
+        ).value.strip()
+        self.config_data.vfcurve.quick_export = self.query_one(
+            "#vf-quick-export", Checkbox
+        ).value
         self.config_store.data = self.config_data
         self.config_store.save()
 
@@ -879,7 +1163,18 @@ class NVOCApp(App[None]):
             if data.mode == "ultrafast":
                 args.append("-u")
             args += ["-o", data.output_csv, "-i", data.init_csv]
-        args += ["-w", data.test_exe, "-l", data.log_file, "-x", data.score_path, "-z", data.score_threshold, "-t", data.timeout_loops]
+        args += [
+            "-w",
+            data.test_exe,
+            "-l",
+            data.log_file,
+            "-x",
+            data.score_path,
+            "-z",
+            data.score_threshold,
+            "-t",
+            data.timeout_loops,
+        ]
         if data.bsod_recovery:
             args += ["-b", data.bsod_recovery]
         return args
@@ -905,7 +1200,11 @@ class NVOCApp(App[None]):
         return args
 
     def _fan_args(self, reset: bool) -> list[str]:
-        backend = "nvml-cooler" if str(self.query_one("#fan-api", Select).value or "nvapi") == "nvml" else "nvapi-cooler"
+        backend = (
+            "nvml-cooler"
+            if str(self.query_one("#fan-api", Select).value or "nvapi") == "nvml"
+            else "nvapi-cooler"
+        )
         args = self.gpu_args() + ["set", backend]
         fan_id = str(self.query_one("#fan-id", Select).value or "all")
         if fan_id != "all":
