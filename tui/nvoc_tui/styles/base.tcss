@@ -95,3 +95,8 @@ TabPane > .section {
     color: $text;
     text-align: center;
 }
+
+.subpane {
+    border: round $accent;
+    height: auto;
+}

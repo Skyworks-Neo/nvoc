@@ -238,7 +238,7 @@ class NVOCApp(App[None]):
             dashboard_shortcuts = {
                 "a": "dashboard-interval-apply",
                 "p": "dashboard-pause",
-                "n": "dashboard-now",
+                "r": "dashboard-now",
                 "i": "dashboard-info",
                 "s": "dashboard-status",
                 "g": "dashboard-get",

@@ -107,12 +107,12 @@ class DashboardController(PaneController):
             self.tick()
             return True
         if button_id == "dashboard-info":
-            self.app.run_cli_action(self.app.gpu_args() + ["-O", "json", "info"])
+            self.app.run_cli_action(self.app.gpu_args() + ["info"])
             return True
         if button_id == "dashboard-status":
-            self.app.run_cli_action(self.app.gpu_args() + ["-O", "json", "status", "-a"])
+            self.app.run_cli_action(self.app.gpu_args() + ["status", "-a"])
             return True
         if button_id == "dashboard-get":
-            self.app.run_cli_action(self.app.gpu_args() + ["-O", "json", "get"])
+            self.app.run_cli_action(self.app.gpu_args() + ["get"])
             return True
         return False

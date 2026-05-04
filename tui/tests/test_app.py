@@ -285,7 +285,7 @@ def test_dashboard_shortcuts_are_scoped_and_labels_are_underlined(
 
             await pilot.press("f1")
             await pilot.press("alt+a")
-            await pilot.press("alt+n")
+            await pilot.press("alt+r")
             await pilot.press("alt+i")
             await pilot.press("alt+s")
             await pilot.press("alt+g")
