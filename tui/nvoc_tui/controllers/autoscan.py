@@ -76,7 +76,7 @@ class AutoscanController(PaneController):
             return True
         if button_id == "autoscan-start":
             self.sync_from_ui()
-            self.app.run_action(self.autoscan_args())
+            self.app.run_cli_action(self.autoscan_args())
             return True
         if button_id == "autoscan-stop":
             self.app.cli_service.cancel_action()
@@ -86,15 +86,15 @@ class AutoscanController(PaneController):
             args = self.app.gpu_args() + ["set", "vfp", "fix_result", "-m", "1"]
             if self.app.config_data.autoscan.mode == "ultrafast":
                 args.append("-u")
-            self.app.run_action(args)
+            self.app.run_cli_action(args)
             return True
         if button_id == "autoscan-import-final":
-            self.app.run_action(
+            self.app.run_cli_action(
                 self.app.gpu_args() + ["set", "vfp", "import", r".\ws\vfp.csv"]
             )
             return True
         if button_id == "autoscan-export-final":
-            self.app.run_action(
+            self.app.run_cli_action(
                 self.app.gpu_args() + ["set", "vfp", "export", r".\ws\vfp-final.csv"]
             )
             return True

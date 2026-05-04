@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
+from rich.text import Text
 from textual.widgets import Button, Checkbox, Input, Select
 from textual_plotext import PlotextPlot
 
@@ -16,12 +17,9 @@ class VFCurveController(PaneController):
         self.poll_timer = None
         self.refresh_inflight = False
 
-    def auto_refresh_label(self) -> str:
-        return (
-            "Auto Refresh: On"
-            if self.app.config_data.vfcurve.auto_refresh
-            else "Auto Refresh: Off"
-        )
+    def auto_refresh_label(self) -> Text:
+        state = "On" if self.app.config_data.vfcurve.auto_refresh else "Off"
+        return Text.assemble(("A", "underline"), f"uto Refresh: {state}")
 
     def set_poll_timer(self, enabled: bool) -> None:
         self.app.config_data.vfcurve.auto_refresh = enabled
@@ -43,6 +41,25 @@ class VFCurveController(PaneController):
             and not self.refresh_inflight
         ):
             self.refresh_curve()
+
+    def activate_shortcut(self, target_id: str) -> bool:
+        if target_id in {
+            "vf-path",
+            "vf-range-start",
+            "vf-lock-value",
+            "vf-mem-min",
+        }:
+            self.app.query_one(f"#{target_id}", Input).focus()
+            return True
+        if target_id == "vf-freq-api":
+            self.app.query_one("#vf-freq-api", Select).focus()
+            return True
+        if target_id == "vf-quick-export":
+            checkbox = self.app.query_one("#vf-quick-export", Checkbox)
+            checkbox.value = not checkbox.value
+            self.sync_from_ui()
+            return True
+        return self.handle_button(target_id)
 
     def tick(self) -> None:
         if self.app.cli_service.action_state.running or self.refresh_inflight:
@@ -197,18 +214,18 @@ class VFCurveController(PaneController):
             args = self.app.gpu_args() + ["set", "vfp", "export", path]
             if self.app.query_one("#vf-quick-export", Checkbox).value:
                 args.append("-q")
-            self.app.run_action(args)
+            self.app.run_cli_action(args)
             return True
         if button_id == "vf-import":
             self.sync_from_ui()
             path = self.app.query_one("#vf-path", Input).value.strip()
-            self.app.run_action(self.app.gpu_args() + ["set", "vfp", "import", path])
+            self.app.run_cli_action(self.app.gpu_args() + ["set", "vfp", "import", path])
             return True
         if button_id == "vf-reset":
-            self.app.run_action(self.app.gpu_args() + ["reset", "vfp"])
+            self.app.run_cli_action(self.app.gpu_args() + ["reset", "vfp"])
             return True
         if button_id == "vf-unlock":
-            self.app.run_action(
+            self.app.run_cli_action(
                 self.app.gpu_args() + ["set", "nvapi", "--reset-volt-locks"]
             )
             return True
@@ -218,7 +235,7 @@ class VFCurveController(PaneController):
             delta = self.get_int("#vf-delta")
             if start > end:
                 start, end = end, start
-            self.app.run_action(
+            self.app.run_cli_action(
                 self.app.gpu_args()
                 + ["set", "vfp", "pointwiseoc", f"{start}-{end}", f"{delta * 1000:+d}"]
             )
@@ -227,13 +244,13 @@ class VFCurveController(PaneController):
             value = self.app.query_one("#vf-lock-value", Input).value.strip()
             if self.app.query_one("#vf-lock-as-mv", Checkbox).value:
                 value = f"{value}mV"
-            self.app.run_action(
+            self.app.run_cli_action(
                 self.app.gpu_args() + ["set", "nvapi", "--locked-voltage", value]
             )
             return True
         if button_id == "vf-lock-core":
             backend = str(self.app.query_one("#vf-freq-api", Select).value or "nvml")
-            self.app.run_action(
+            self.app.run_cli_action(
                 self.app.gpu_args()
                 + [
                     "set",
@@ -246,13 +263,13 @@ class VFCurveController(PaneController):
             return True
         if button_id == "vf-reset-core":
             backend = str(self.app.query_one("#vf-freq-api", Select).value or "nvml")
-            self.app.run_action(
+            self.app.run_cli_action(
                 self.app.gpu_args() + ["set", backend, "--reset-core-clocks"]
             )
             return True
         if button_id == "vf-lock-mem":
             backend = str(self.app.query_one("#vf-freq-api", Select).value or "nvml")
-            self.app.run_action(
+            self.app.run_cli_action(
                 self.app.gpu_args()
                 + [
                     "set",
@@ -265,7 +282,7 @@ class VFCurveController(PaneController):
             return True
         if button_id == "vf-reset-mem":
             backend = str(self.app.query_one("#vf-freq-api", Select).value or "nvml")
-            self.app.run_action(
+            self.app.run_cli_action(
                 self.app.gpu_args() + ["set", backend, "--reset-mem-clocks"]
             )
             return True

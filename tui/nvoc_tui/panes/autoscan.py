@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Button, Input, Label, Select, TabPane
+from textual.widgets import Button, Label, Select, TabPane
 
 from ..models import AppConfig
+from ..widgets import ShortcutInput
 
 
 def compose_autoscan(config: AppConfig) -> ComposeResult:
@@ -46,7 +47,9 @@ def compose_autoscan(config: AppConfig) -> ComposeResult:
             ]:
                 with Horizontal(classes="row"):
                     yield Label(label)
-                    yield Input(value=value, id=widget_id, classes="grow", compact=True)
+                    yield ShortcutInput(
+                        value=value, id=widget_id, classes="grow", compact=True
+                    )
             with Horizontal(classes="row"):
                 yield Button("Export Init VFP", id="autoscan-export-init", compact=True)
                 yield Button("Reset & Unlock", id="autoscan-reset-unlock", compact=True)

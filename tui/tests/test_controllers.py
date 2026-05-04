@@ -24,7 +24,7 @@ class FakeApp:
     def save_config(self) -> None:
         pass
 
-    def run_action(self, args: list[str]) -> None:
+    def run_cli_action(self, args: list[str]) -> None:
         self.actions.append(args)
 
 

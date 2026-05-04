@@ -30,6 +30,9 @@ class HeaderController(PaneController):
                 return gpu
         return None
 
+    def focus_gpu_select(self) -> None:
+        self.app.query_one("#gpu-select", Select).focus()
+
     def save_cli_path(self) -> None:
         path = self.app.query_one("#cli-path", Input).value.strip()
         discovered = CliService.discover_cli(path)

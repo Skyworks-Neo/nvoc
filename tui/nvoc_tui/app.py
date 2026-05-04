@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import threading
 
+from textual import events
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.widgets import Button, Select, TabbedContent
 
 from .cli import CliService
@@ -38,6 +40,12 @@ from .panes.vfcurve import compose_vfcurve
 class NVOCApp(App[None]):
     TITLE = "NVOC-TUI"
     TAB_IDS = ("dashboard", "autoscan", "overclock", "vfcurve")
+    TAB_FIRST_FOCUS = {
+        "dashboard": "#dashboard-interval",
+        "autoscan": "#autoscan-mode",
+        "overclock": "#oc-api",
+        "vfcurve": "#vf-path",
+    }
     CSS_PATH = [
         "styles/base.tcss",
         "styles/header.tcss",
@@ -49,14 +57,31 @@ class NVOCApp(App[None]):
     ]
     BINDINGS = [
         ("ctrl+c", "quit", "Quit"),
-        ("alt+1", "switch_tab(0)", "Dashboard"),
-        ("alt+2", "switch_tab(1)", "Autoscan"),
-        ("alt+3", "switch_tab(2)", "Overclock"),
-        ("alt+4", "switch_tab(3)", "VF Curve"),
+        ("ctrl+g", "focus_gpu_select", "GPU"),
+        ("ctrl+o", "focus_output", "Output"),
+        Binding("alt+a", "pane_shortcut('a')", show=False),
+        Binding("alt+p", "pane_shortcut('p')", show=False),
+        Binding("alt+n", "pane_shortcut('n')", show=False),
+        Binding("alt+i", "pane_shortcut('i')", show=False),
+        Binding("alt+s", "pane_shortcut('s')", show=False),
+        Binding("alt+g", "pane_shortcut('g')", show=False),
+        Binding("alt+c", "pane_shortcut('c')", show=False),
+        Binding("alt+q", "pane_shortcut('q')", show=False),
+        Binding("alt+r", "pane_shortcut('r')", show=False),
+        Binding("alt+e", "pane_shortcut('e')", show=False),
+        Binding("alt+v", "pane_shortcut('v')", show=False),
+        Binding("alt+l", "pane_shortcut('l')", show=False),
+        Binding("alt+u", "pane_shortcut('u')", show=False),
+        Binding("alt+m", "pane_shortcut('m')", show=False),
+        ("f1", "switch_tab(0)", "Dashboard"),
+        ("f2", "switch_tab(1)", "Autoscan"),
+        ("f3", "switch_tab(2)", "Overclock"),
+        ("f4", "switch_tab(3)", "VF Curve"),
     ]
 
     def __init__(self) -> None:
         super().__init__()
+        self.animation_level = "none"
         self.root_dir = repo_root()
         self.config_store = ConfigStore(self.root_dir)
         self.config_data: AppConfig = self.config_store.load()
@@ -124,7 +149,7 @@ class NVOCApp(App[None]):
         if code >= 0:
             self.refresh_all_state()
 
-    def run_action(self, args: list[str]) -> None:
+    def run_cli_action(self, args: list[str]) -> None:
         if not self.config_data.cli.exe_path:
             self.write_log("CLI executable not configured.")
             return
@@ -182,13 +207,75 @@ class NVOCApp(App[None]):
 
     def action_switch_tab(self, index: int) -> None:
         if 0 <= index < len(self.TAB_IDS):
-            self.switch_to_tab(self.TAB_IDS[index])
+            self.switch_to_tab(self.TAB_IDS[index], focus_first=True)
 
-    def switch_to_tab(self, tab_id: str) -> None:
+    def action_focus_gpu_select(self) -> None:
+        self.header_controller.focus_gpu_select()
+
+    def action_focus_output(self) -> None:
+        self.console_controller.focus_output()
+
+    def action_pane_shortcut(self, key: str) -> bool:
+        tabs = self.query_one("#main-tabs", TabbedContent)
+        if tabs.active == "dashboard":
+            dashboard_shortcuts = {
+                "a": "dashboard-interval-apply",
+                "p": "dashboard-pause",
+                "n": "dashboard-now",
+                "i": "dashboard-info",
+                "s": "dashboard-status",
+                "g": "dashboard-get",
+            }
+            if key in dashboard_shortcuts:
+                self.dashboard_controller.activate_button(dashboard_shortcuts[key])
+                return True
+        elif tabs.active == "vfcurve":
+            vfcurve_shortcuts = {
+                "c": "vf-path",
+                "q": "vf-quick-export",
+                "s": "vf-refresh",
+                "a": "vf-auto-refresh",
+                "e": "vf-export",
+                "i": "vf-import",
+                "r": "vf-reset",
+                "v": "vf-range-start",
+                "l": "vf-lock-value",
+                "u": "vf-freq-api",
+                "m": "vf-mem-min",
+            }
+            if key in vfcurve_shortcuts:
+                self.vfcurve_controller.activate_shortcut(vfcurve_shortcuts[key])
+                return True
+        return False
+
+    def on_key(self, event: events.Key) -> None:
+        if self.consume_alt_prefix_key(event.key):
+            event.stop()
+            event.prevent_default()
+
+    def consume_alt_prefix_key(self, key: str) -> bool:
+        if key.startswith("alt+"):
+            shortcut_key = key.rpartition("+")[2].lower()
+            if len(shortcut_key) == 1:
+                return self.action_pane_shortcut(shortcut_key)
+        return False
+
+    def switch_to_tab(self, tab_id: str, *, focus_first: bool = False) -> None:
         tabs = self.query_one("#main-tabs", TabbedContent)
         tabs.active = tab_id
         self.config_data.ui.active_tab = tab_id
         self.save_config()
+        if focus_first:
+            self.focus_first_in_tab(tab_id)
+
+    def focus_first_in_tab(self, tab_id: str) -> None:
+        selector = self.TAB_FIRST_FOCUS.get(tab_id)
+        if selector is None:
+            return
+        try:
+            self.query_one(selector).focus()
+        except Exception:
+            self.query_one(f"#{tab_id}").focus()
 
     def refresh_all_state(self) -> None:
         if not self.gpu_args():

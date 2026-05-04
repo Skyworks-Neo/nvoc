@@ -13,6 +13,15 @@ class ConsoleController(PaneController):
             log.write_line(line)
             log.scroll_end()
 
+    def focus_output(self) -> None:
+        panel = self.app.query_one("#log-panel", Vertical)
+        if panel.has_class("hidden"):
+            panel.remove_class("hidden")
+            self.app.query_one("#toggle-log", Button).label = "Hide"
+            self.app.config_data.ui.log_expanded = True
+            self.app.save_config()
+        self.app.query_one("#output-log", Log).focus()
+
     def handle_button(self, button: Button, button_id: str) -> bool:
         if button_id == "toggle-log":
             panel = self.app.query_one("#log-panel", Vertical)

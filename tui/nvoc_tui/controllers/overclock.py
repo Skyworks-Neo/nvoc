@@ -80,7 +80,7 @@ class OverclockController(PaneController):
 
     def handle_button(self, button_id: str) -> bool:
         if button_id == "oc-apply":
-            self.app.run_action(self.oc_args())
+            self.app.run_cli_action(self.oc_args())
             return True
         if button_id == "oc-reset":
             backend = self.app.query_one("#oc-api", Select).value or "nvapi"
@@ -92,15 +92,15 @@ class OverclockController(PaneController):
             )
             return True
         if button_id == "limits-apply":
-            self.app.run_action(self.limit_args())
+            self.app.run_cli_action(self.limit_args())
             return True
         if button_id == "reset-all":
-            self.app.run_action(self.app.gpu_args() + ["reset"])
+            self.app.run_cli_action(self.app.gpu_args() + ["reset"])
             return True
         if button_id == "fan-apply":
-            self.app.run_action(self.fan_args(reset=False))
+            self.app.run_cli_action(self.fan_args(reset=False))
             return True
         if button_id == "fan-reset":
-            self.app.run_action(self.fan_args(reset=True))
+            self.app.run_cli_action(self.fan_args(reset=True))
             return True
         return False

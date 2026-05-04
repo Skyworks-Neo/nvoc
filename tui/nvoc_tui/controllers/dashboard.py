@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from rich.text import Text
 from textual.widgets import Button, Input, Static
 
 from .base import PaneController
@@ -76,6 +77,13 @@ class DashboardController(PaneController):
         ]
         self.app.query_one("#metrics", Static).update("\n".join(lines))
 
+    def activate_button(self, button_id: str) -> bool:
+        button = self.app.query_one(f"#{button_id}", Button)
+        return self.handle_button(button, button_id)
+
+    def pause_label(self) -> Text:
+        return Text.assemble(("P", "underline"), "ause")
+
     def handle_button(self, button: Button, button_id: str) -> bool:
         if button_id == "dashboard-interval-apply":
             try:
@@ -89,7 +97,7 @@ class DashboardController(PaneController):
         if button_id == "dashboard-pause":
             if self.poll_timer and self.poll_timer.pause:
                 self.poll_timer.resume()
-                button.label = "Pause"
+                button.label = self.pause_label()
             elif self.poll_timer:
                 self.poll_timer.pause()
                 button.label = "Resume"
@@ -98,12 +106,12 @@ class DashboardController(PaneController):
             self.tick()
             return True
         if button_id == "dashboard-info":
-            self.app.run_action(self.app.gpu_args() + ["-O", "json", "info"])
+            self.app.run_cli_action(self.app.gpu_args() + ["-O", "json", "info"])
             return True
         if button_id == "dashboard-status":
-            self.app.run_action(self.app.gpu_args() + ["-O", "json", "status", "-a"])
+            self.app.run_cli_action(self.app.gpu_args() + ["-O", "json", "status", "-a"])
             return True
         if button_id == "dashboard-get":
-            self.app.run_action(self.app.gpu_args() + ["-O", "json", "get"])
+            self.app.run_cli_action(self.app.gpu_args() + ["-O", "json", "get"])
             return True
         return False
