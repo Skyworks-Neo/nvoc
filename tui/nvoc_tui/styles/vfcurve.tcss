@@ -1,0 +1,81 @@
+#vfcurve-controls-main {
+    grid-size: 2 1;
+    grid-columns: 1fr 1fr;
+    height: auto;
+}
+
+.narrow #vfcurve-controls-main {
+    grid-size: 1 2;
+    grid-columns: 1fr;
+}
+
+#vf-import-export-actions {
+    grid-gutter: 0 1;
+    height: auto;
+    align-horizontal: center;
+    grid-size: 2 2;
+    grid-columns: 1fr 1fr;
+}
+
+.wide #vf-import-export-actions {
+    grid-size: 4 1;
+    grid-columns: 1fr 1fr 1fr 1fr;
+}
+
+#vf-range-actions {
+    grid-gutter: 0 1;
+    height: auto;
+    align-horizontal: center;
+    grid-size: 6 1;
+    grid-columns: auto auto auto auto auto auto;
+}
+
+#vf-plot-settings {
+    grid-gutter: 0 1;
+    height: auto;
+    align-horizontal: center;
+    grid-size: 2 1;
+    grid-columns: 1fr 1fr;
+}
+
+#vf-lock-actions {
+    grid-gutter: 0 1;
+    height: auto;
+    align-horizontal: center;
+    grid-size: 2 2;
+    grid-columns: 1fr 1fr;
+}
+
+.wide #vf-lock-actions {
+    grid-size: 4 1;
+    grid-columns: 1fr 1fr 1fr 1fr;
+}
+
+#vf-freq-actions {
+    grid-gutter: 0 1;
+    height: auto;
+    align-horizontal: center;
+    grid-size: 2 2;
+    grid-columns: 1fr 1fr;
+}
+
+.wide #vf-freq-actions {
+    grid-size: 4 1;
+    grid-columns: 1fr 1fr 1fr 1fr;
+}
+
+#vf-mem-actions {
+    grid-gutter: 0 1;
+    height: auto;
+    align-horizontal: center;
+    grid-size: 6 1;
+    grid-columns: auto auto auto auto auto auto;
+}
+
+#vf-plot {
+    min-height: 20;
+    height: 1fr;
+    border: round $accent;
+    overflow: auto;
+    content-align: left top;
+}

@@ -1,0 +1,102 @@
+Screen {
+    layout: vertical;
+    overflow: hidden;
+    layers: base overlay;
+}
+
+.hsplit {
+    height: 1;
+    border-top: solid $surface;
+    margin: 0 1;
+}
+
+.row, .toprow {
+    height: auto;
+    margin: 0;
+    width: 1fr;
+    align-horizontal: center;
+}
+
+.grow {
+    width: 1fr !important;
+}
+
+.column {
+    height: auto;
+}
+
+.row > *, .toprow > * {
+    margin: 0 1;
+}
+
+.row > Input {
+    min-width: 6;
+    width: 6;
+}
+
+.green {
+    background: green;
+}
+
+.red {
+    background: red;
+}
+
+.blue {
+    background: blue;
+}
+
+.nvapi-nvml-select {
+    width: 8;
+}
+
+.section {
+    overflow: auto;
+    margin: 0 2;
+}
+
+TabbedContent {
+    height: 1fr;
+    overflow: hidden;
+}
+
+TabbedContent > ContentSwitcher {
+    height: 1fr;
+    overflow: hidden;
+}
+
+TabPane {
+    height: 1fr;
+}
+
+TabPane > .section {
+    height: 1fr;
+}
+
+#small-terminal-layer {
+    layer: overlay;
+    width: 100%;
+    height: 100%;
+    background: $background;
+    align: center middle;
+    display: none;
+}
+
+.too-small #small-terminal-layer {
+    display: block;
+}
+
+#small-terminal-message {
+    width: auto;
+    max-width: 100%;
+    padding: 1 2;
+    border: round $warning;
+    background: $surface;
+    color: $text;
+    text-align: center;
+}
+
+.subpane {
+    border: round $accent;
+    height: auto;
+}

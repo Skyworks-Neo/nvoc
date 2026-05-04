@@ -26,5 +26,8 @@ package = true
 [tool.setuptools.packages.find]
 include = ["nvoc_tui*"]
 
+[tool.setuptools.package-data]
+nvoc_tui = ["styles/*.tcss"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

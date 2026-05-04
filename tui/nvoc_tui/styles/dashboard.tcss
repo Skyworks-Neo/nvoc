@@ -1,0 +1,41 @@
+#dashboard-controls {
+    width: auto;
+    height: auto;
+}
+
+#dashboard-controls Button {
+    min-width: 8;
+    width: auto;
+}
+
+#dashboard-interval {
+    width: 8;
+    padding: 0 1;
+}
+
+#metrics {
+    height: auto;
+    border: round $surface;
+    padding: 0 2;
+}
+
+#dashboard-stats {
+    grid-gutter: 0 1;
+    height: auto;
+    align-horizontal: center;
+    grid-size: 4 1;
+    grid-columns: 1fr 1fr 1fr 1fr;
+}
+
+.narrow.compact #dashboard-stats {
+    grid-size: 2 2;
+    grid-columns: 1fr 1fr;
+}
+
+#dashboard-actions {
+    grid-gutter: 0 1;
+    height: auto;
+    align-horizontal: center;
+    grid-size: 3 1;
+    grid-columns: 1fr 1fr 1fr;
+}

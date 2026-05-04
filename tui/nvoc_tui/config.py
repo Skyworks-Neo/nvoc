@@ -18,7 +18,14 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from .models import AppConfig, AutoscanSettings, CliLocation, DashboardSettings, UiSettings, VFCurveSettings
+from .models import (
+    AppConfig,
+    AutoscanSettings,
+    CliLocation,
+    DashboardSettings,
+    UiSettings,
+    VFCurveSettings,
+)
 
 
 TUI_CONFIG_FILE = "nvoc_tui_config.json"
@@ -56,7 +63,9 @@ class ConfigStore:
             "vfcurve": asdict(self.data.vfcurve),
             "ui": asdict(self.data.ui),
         }
-        self.path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        self.path.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
 
     @staticmethod
     def _read_json(path: Path) -> dict[str, Any]:
@@ -66,8 +75,17 @@ class ConfigStore:
             return {}
 
     def _decode(self, data: dict[str, Any]) -> AppConfig:
-        cli = CliLocation(**{k: data.get("cli", {}).get(k, v) for k, v in asdict(CliLocation()).items()})
-        dashboard = DashboardSettings(refresh_interval=float(data.get("dashboard", {}).get("refresh_interval", 1.0)))
+        cli = CliLocation(
+            **{
+                k: data.get("cli", {}).get(k, v)
+                for k, v in asdict(CliLocation()).items()
+            }
+        )
+        dashboard = DashboardSettings(
+            refresh_interval=float(
+                data.get("dashboard", {}).get("refresh_interval", 1.0)
+            )
+        )
         vfcurve = VFCurveSettings(
             default_path=str(data.get("vfcurve", {}).get("default_path", "")),
             quick_export=bool(data.get("vfcurve", {}).get("quick_export", True)),
@@ -93,12 +111,16 @@ class ConfigStore:
         cli_path = str(data.get("cli_exe_path", ""))
         cli = CliLocation(exe_path=cli_path)
         last_gpu_idx_raw = data.get("last_gpu_idx")
-        last_gpu_idx = int(last_gpu_idx_raw) if str(last_gpu_idx_raw).isdigit() else None
+        last_gpu_idx = (
+            int(last_gpu_idx_raw) if str(last_gpu_idx_raw).isdigit() else None
+        )
         return AppConfig(
             cli=cli,
             last_gpu_idx=last_gpu_idx,
             autoscan=AutoscanSettings.from_mapping(data.get("autoscan")),
             dashboard=DashboardSettings(refresh_interval=1.0),
-            vfcurve=VFCurveSettings(default_path="", quick_export=True, auto_refresh=False),
+            vfcurve=VFCurveSettings(
+                default_path="", quick_export=True, auto_refresh=False
+            ),
             ui=UiSettings(log_expanded=True, active_tab="dashboard"),
         )

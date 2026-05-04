@@ -37,8 +37,18 @@ class CliService:
 
     @staticmethod
     def discover_cli(saved_path: str = "") -> CliLocation:
-        candidates = [saved_path, shutil.which("nvoc-autooptimizer") or "", shutil.which("nvoc-auto-optimizer") or ""]
-        sibling = Path(__file__).resolve().parent.parent.parent / "auto-optimizer" / "target" / "release" / "nvoc-auto-optimizer"
+        candidates = [
+            saved_path,
+            shutil.which("nvoc-autooptimizer") or "",
+            shutil.which("nvoc-auto-optimizer") or "",
+        ]
+        sibling = (
+            Path(__file__).resolve().parent.parent.parent
+            / "auto-optimizer"
+            / "target"
+            / "release"
+            / "nvoc-auto-optimizer"
+        )
         candidates.append(str(sibling))
         if os.name == "nt":
             candidates.append(str(sibling.with_suffix(".exe")))
@@ -51,7 +61,9 @@ class CliService:
                 return CliLocation(exe_path=str(Path(candidate).resolve()), cwd=cwd)
         return CliLocation(exe_path="", cwd=None)
 
-    def run_query(self, cli: CliLocation, args: list[str], command_name: str) -> tuple[int, str, dict]:
+    def run_query(
+        self, cli: CliLocation, args: list[str], command_name: str
+    ) -> tuple[int, str, dict]:
         query_args = list(args)
         if command_name in {"info", "status", "get", "list"} and "-O" not in query_args:
             query_args = ["-O", "json"] + query_args
@@ -75,7 +87,11 @@ class CliService:
             return -1, "Command timed out.", {}
         except Exception as exc:
             return -1, str(exc), {}
-        return completed.returncode, completed.stdout, normalize_query_output(command_name, completed.stdout)
+        return (
+            completed.returncode,
+            completed.stdout,
+            normalize_query_output(command_name, completed.stdout),
+        )
 
     def list_gpus(self, cli: CliLocation) -> tuple[int, str, list[GpuDescriptor]]:
         if not cli.exe_path:
@@ -127,7 +143,10 @@ class CliService:
                     for line in iter(self._process.stdout.readline, ""):
                         on_output(line, "info")
                 code = self._process.wait()
-                on_output(f"Process exited with code {code}\n", "success" if code == 0 else "error")
+                on_output(
+                    f"Process exited with code {code}\n",
+                    "success" if code == 0 else "error",
+                )
             except FileNotFoundError:
                 on_output(f"CLI executable not found: {cli.exe_path}\n", "error")
             except Exception as exc:

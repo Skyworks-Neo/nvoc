@@ -1,0 +1,16 @@
+from __future__ import annotations
+
+from rich.text import Text
+from textual.app import ComposeResult
+from textual.containers import Horizontal, Vertical
+from textual.widgets import Button, Footer, Label, Log
+
+
+def compose_console() -> ComposeResult:
+    with Horizontal(id="log-header"):
+        yield Label(Text.assemble("  ", ("O", "bold"), "utput"))
+        yield Button("Hide (^t)", id="toggle-log", compact=True)
+        yield Button("Clear (^e)", id="clear-log", compact=True)
+    with Vertical(id="log-panel"):
+        yield Log(id="output-log", highlight=True, auto_scroll=True, max_lines=1000)
+    yield Footer()
