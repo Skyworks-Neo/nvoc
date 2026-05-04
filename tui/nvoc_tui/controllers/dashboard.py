@@ -11,6 +11,7 @@ class DashboardController(PaneController):
     def __init__(self, app) -> None:
         super().__init__(app)
         self.poll_timer = None
+        self._timer_paused = False
 
     def set_poll_timer(self, interval: float) -> None:
         interval = max(0.2, min(interval, 60.0))
@@ -18,6 +19,7 @@ class DashboardController(PaneController):
         self.app.save_config()
         if self.poll_timer is not None:
             self.poll_timer.stop()
+        self._timer_paused = False
         self.poll_timer = self.app.set_interval(interval, self.tick, pause=False)
 
     def tick(self) -> None:
@@ -96,11 +98,13 @@ class DashboardController(PaneController):
             self.set_poll_timer(value)
             return True
         if button_id == "dashboard-pause":
-            if self.poll_timer and self.poll_timer.pause:
+            if self.poll_timer and self._timer_paused:
                 self.poll_timer.resume()
+                self._timer_paused = False
                 button.label = self.pause_label()
             elif self.poll_timer:
                 self.poll_timer.pause()
+                self._timer_paused = True
                 button.label = "Resume"
             return True
         if button_id == "dashboard-now":
