@@ -65,7 +65,7 @@ This repository contains `nvoc-tui`, a Textual-based terminal UI for the externa
 
 ## Editing Guidance
 
-- CHECK ../gui for GUI conterparts; CHECK ../auto-optimizer for CLI that you will call.
+- CHECK ../gui for GUI counterparts; CHECK ../auto-optimizer for CLI that you will call.
 - Keep `app.py` as the shell. Do not move pane composition or pane-specific button logic back into it.
 - Add widgets in the appropriate `nvoc_tui/panes/<pane>.py` file, handle their behavior in `nvoc_tui/controllers/<pane>.py`, and place pane-specific CSS in `nvoc_tui/styles/<pane>.tcss`.
 - Preserve widget IDs unless you update every controller, test, and saved-setting sync path that depends on them.
