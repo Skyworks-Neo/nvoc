@@ -18,7 +18,8 @@ import threading
 from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.widgets import Button, Select, TabbedContent
+from textual.containers import Container
+from textual.widgets import Button, Label, Select, TabbedContent
 
 from .cli import CliService
 from .config import ConfigStore
@@ -39,6 +40,8 @@ from .panes.vfcurve import compose_vfcurve
 
 class NVOCApp(App[None]):
     TITLE = "NVOC-TUI"
+    MIN_WIDTH = 55
+    MIN_HEIGHT = 24
     TAB_IDS = ("dashboard", "autoscan", "overclock", "vfcurve")
     TAB_FIRST_FOCUS = {
         "dashboard": "#dashboard-interval",
@@ -59,6 +62,8 @@ class NVOCApp(App[None]):
         ("ctrl+c", "quit", "Quit"),
         ("ctrl+g", "focus_gpu_select", "GPU"),
         ("ctrl+o", "focus_output", "Output"),
+        Binding("ctrl+t", "toggle_output", show=False),
+        Binding("ctrl+e", "clear_output", show=False),
         Binding("alt+a", "pane_shortcut('a')", show=False),
         Binding("alt+p", "pane_shortcut('p')", show=False),
         Binding("alt+n", "pane_shortcut('n')", show=False),
@@ -112,11 +117,17 @@ class NVOCApp(App[None]):
                 self.config_data, self.vfcurve_controller.auto_refresh_label()
             )
         yield from compose_console()
+        with Container(id="small-terminal-layer"):
+            yield Label(
+                f"Please enlarge the terminal\nto at least {self.MIN_WIDTH}x{self.MIN_HEIGHT}.",
+                id="small-terminal-message",
+            )
 
     def on_mount(self) -> None:
         self.write_log("NVOC-TUI started.")
         self.dashboard_controller.update_metrics()
         self.vfcurve_controller.clear_plot("No VF curve cache loaded.")
+        self.update_responsive_layout()
         self.refresh_gpu_list()
         self.dashboard_controller.set_poll_timer(
             self.config_data.dashboard.refresh_interval
@@ -215,6 +226,12 @@ class NVOCApp(App[None]):
     def action_focus_output(self) -> None:
         self.console_controller.focus_output()
 
+    def action_toggle_output(self) -> None:
+        self.console_controller.toggle_output()
+
+    def action_clear_output(self) -> None:
+        self.console_controller.clear_output()
+
     def action_pane_shortcut(self, key: str) -> bool:
         tabs = self.query_one("#main-tabs", TabbedContent)
         if tabs.active == "dashboard":
@@ -303,7 +320,14 @@ class NVOCApp(App[None]):
 
     def on_resize(self, event) -> None:
         del event
+        self.update_responsive_layout()
         self.vfcurve_controller.render_plot()
+
+    def update_responsive_layout(self) -> None:
+        self.set_class(self.size.width < 80, "compact")
+        self.set_class(self.size.width < 100, "narrow")
+        self.set_class(self.size.width >= 160 , "wide")
+        self.set_class(self.size.width < self.MIN_WIDTH or self.size.height < self.MIN_HEIGHT, "too-small")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         button_id = event.button.id or ""

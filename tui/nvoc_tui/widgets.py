@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+from rich.text import Text
 from textual import events
 from textual.widgets import Input
+
+
+def mnemonic_text(letter: str, after: str, before: str = "") -> Text:
+    return Text.assemble(before, (letter, "underline"), after)
 
 
 class ShortcutInput(Input):

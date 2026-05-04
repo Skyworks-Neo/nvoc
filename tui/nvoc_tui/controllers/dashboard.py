@@ -3,6 +3,7 @@ from __future__ import annotations
 from rich.text import Text
 from textual.widgets import Button, Input, Static
 
+from ..widgets import mnemonic_text
 from .base import PaneController
 
 
@@ -82,7 +83,7 @@ class DashboardController(PaneController):
         return self.handle_button(button, button_id)
 
     def pause_label(self) -> Text:
-        return Text.assemble(("P", "underline"), "ause")
+        return mnemonic_text("P", "ause")
 
     def handle_button(self, button: Button, button_id: str) -> bool:
         if button_id == "dashboard-interval-apply":

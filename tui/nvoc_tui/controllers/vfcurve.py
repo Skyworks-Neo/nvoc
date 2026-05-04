@@ -8,6 +8,7 @@ from textual.widgets import Button, Checkbox, Input, Select
 from textual_plotext import PlotextPlot
 
 from ..parsing import compute_vf_plot_bounds, find_curve_point_for_voltage, load_vf_curve
+from ..widgets import mnemonic_text
 from .base import PaneController
 
 
@@ -19,7 +20,7 @@ class VFCurveController(PaneController):
 
     def auto_refresh_label(self) -> Text:
         state = "On" if self.app.config_data.vfcurve.auto_refresh else "Off"
-        return Text.assemble(("A", "underline"), f"uto Refresh: {state}")
+        return mnemonic_text("A", f"uto Refresh: {state}")
 
     def set_poll_timer(self, enabled: bool) -> None:
         self.app.config_data.vfcurve.auto_refresh = enabled

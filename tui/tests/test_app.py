@@ -69,6 +69,8 @@ def test_app_hides_dashboard_alt_shortcuts_from_footer(
     }
 
     for key in [
+        "ctrl+t",
+        "ctrl+e",
         "alt+a",
         "alt+p",
         "alt+n",
@@ -114,6 +116,36 @@ def test_app_split_layout_smoke(monkeypatch, tmp_path: Path) -> None:
                 "#output-log",
             ]:
                 assert app.query_one(selector) is not None
+
+    asyncio.run(run())
+
+
+def test_small_terminal_layer_visibility(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(app_module, "repo_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        app_module.CliService, "discover_cli", lambda saved_path="": CliLocation()
+    )
+    monkeypatch.setattr(
+        app_module.CliService,
+        "list_gpus",
+        lambda self, cli: (-1, "CLI executable not configured.", []),
+    )
+
+    async def run() -> None:
+        small_app = NVOCApp()
+        async with small_app.run_test(size=(54, 24)) as pilot:
+            await pilot.pause()
+            assert small_app.query_one("#small-terminal-layer").has_class("visible")
+
+        normal_app = NVOCApp()
+        async with normal_app.run_test(size=(55, 24)) as pilot:
+            await pilot.pause()
+            assert not normal_app.query_one("#small-terminal-layer").has_class("visible")
+
+        short_app = NVOCApp()
+        async with short_app.run_test(size=(55, 23)) as pilot:
+            await pilot.pause()
+            assert short_app.query_one("#small-terminal-layer").has_class("visible")
 
     asyncio.run(run())
 
@@ -172,6 +204,45 @@ def test_global_focus_shortcuts(monkeypatch, tmp_path: Path) -> None:
             assert not panel.has_class("hidden")
             assert app.config_data.ui.log_expanded is True
             assert app.focused is app.query_one("#output-log")
+
+    asyncio.run(run())
+
+
+def test_global_output_panel_shortcuts(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(app_module, "repo_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        app_module.CliService, "discover_cli", lambda saved_path="": CliLocation()
+    )
+    monkeypatch.setattr(
+        app_module.CliService,
+        "list_gpus",
+        lambda self, cli: (-1, "CLI executable not configured.", []),
+    )
+
+    async def run() -> None:
+        app = NVOCApp()
+        async with app.run_test() as pilot:
+            panel = app.query_one("#log-panel")
+            toggle = app.query_one("#toggle-log")
+            clear = app.query_one("#clear-log")
+
+            assert toggle.label.plain == "Hide (^t)"
+            assert clear.label.plain == "Clear (^e)"
+
+            await pilot.press("ctrl+t")
+            assert panel.has_class("hidden")
+            assert app.config_data.ui.log_expanded is False
+            assert toggle.label.plain == "Show (^t)"
+
+            await pilot.press("ctrl+t")
+            assert not panel.has_class("hidden")
+            assert app.config_data.ui.log_expanded is True
+            assert toggle.label.plain == "Hide (^t)"
+
+            calls: list[str] = []
+            app.console_controller.clear_output = lambda: calls.append("clear")
+            await pilot.press("ctrl+e")
+            assert calls == ["clear"]
 
     asyncio.run(run())
 
