@@ -1,0 +1,23 @@
+#log-header {
+    height: auto;
+    padding: 0;
+    background: $surface;
+}
+
+#log-panel {
+    height: 6;
+}
+
+#log-panel.hidden {
+    display: none;
+}
+
+#output-log {
+    height: 6;
+    overflow: auto;
+}
+
+Log {
+    height: 14;
+    border: round $surface;
+}

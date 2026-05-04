@@ -1,0 +1,20 @@
+#dashboard-controls {
+    width: auto;
+    height: auto;
+}
+
+#dashboard-controls Button {
+    min-width: 8;
+    width: auto;
+}
+
+#dashboard-interval {
+    width: 8;
+    padding: 0 1;
+}
+
+#metrics {
+    height: auto;
+    border: round $surface;
+    padding: 0 2;
+}

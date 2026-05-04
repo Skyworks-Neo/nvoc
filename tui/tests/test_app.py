@@ -12,13 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from pathlib import Path
+import asyncio
 
 import nvoc_tui.app as app_module
 from nvoc_tui.app import NVOCApp
 from nvoc_tui.models import CliLocation
 
 
-def test_app_defaults_to_terminal_theme(monkeypatch, tmp_path: Path) -> None:
+def test_app_uses_textual_default_theme(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(app_module, "repo_root", lambda: tmp_path)
     monkeypatch.setattr(
         app_module.CliService, "discover_cli", lambda saved_path="": CliLocation()
@@ -26,7 +27,57 @@ def test_app_defaults_to_terminal_theme(monkeypatch, tmp_path: Path) -> None:
 
     app = NVOCApp()
 
-    assert app.theme == "textual-ansi"
-    assert app.ansi_color is True
-    assert app.get_css_variables()["background"] == "ansi_default"
-    assert app.get_css_variables()["surface"] == "ansi_default"
+    assert app.theme == "textual-dark"
+    assert app.ansi_color is False
+
+
+def test_app_css_path_points_to_split_styles(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(app_module, "repo_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        app_module.CliService, "discover_cli", lambda saved_path="": CliLocation()
+    )
+
+    app = NVOCApp()
+
+    assert list(app.CSS_PATH) == [
+        "styles/base.tcss",
+        "styles/header.tcss",
+        "styles/dashboard.tcss",
+        "styles/autoscan.tcss",
+        "styles/overclock.tcss",
+        "styles/vfcurve.tcss",
+        "styles/console.tcss",
+    ]
+    for css_path in app.css_path:
+        assert css_path.exists()
+
+
+def test_app_split_layout_smoke(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(app_module, "repo_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        app_module.CliService, "discover_cli", lambda saved_path="": CliLocation()
+    )
+    monkeypatch.setattr(
+        app_module.CliService,
+        "list_gpus",
+        lambda self, cli: (-1, "CLI executable not configured.", []),
+    )
+
+    async def run() -> None:
+        app = NVOCApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            for selector in [
+                "#gpu-select",
+                "#main-tabs",
+                "#dashboard",
+                "#autoscan",
+                "#overclock",
+                "#vfcurve",
+                "#metrics",
+                "#vf-plot",
+                "#output-log",
+            ]:
+                assert app.query_one(selector) is not None
+
+    asyncio.run(run())

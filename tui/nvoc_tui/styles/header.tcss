@@ -1,0 +1,16 @@
+#topbar {
+    height: auto;
+    margin-left: 1;
+}
+
+.toprow {
+    height: 1;
+}
+
+#gpu-actions {
+    width: auto;
+}
+
+#gpu-actions > * {
+    margin-left: 1;
+}
