@@ -25,46 +25,55 @@ pub fn query_nvml_power_watts_by_pci(pci_bus_id_str: &str) -> Option<(f32, f32, 
     // 例如 "PCIe x16 (1:0 routed to IRQ 0)" -> Bus = 1
     let nvapi_bus_num = if let Some(start) = pci_bus_id_str.find('(') {
         if let Some(end) = pci_bus_id_str[start..].find(':') {
-            pci_bus_id_str[start+1..start+end].trim().parse::<u32>().ok()
+            pci_bus_id_str[start + 1..start + end]
+                .trim()
+                .parse::<u32>()
+                .ok()
         } else {
             None
         }
     } else {
         // 尝试解析标准格式 "0000:01:00.0"
-        pci_bus_id_str.split(':').nth(1).and_then(|s| s.parse::<u32>().ok())
+        pci_bus_id_str
+            .split(':')
+            .nth(1)
+            .and_then(|s| s.parse::<u32>().ok())
     };
 
     // 尝试直接通过 PCI Bus ID 获取设备（可能失败）
-    let device = nvml.device_by_pci_bus_id(pci_bus_id_str).or_else(|_| {
-        // 降级方案：枚举所有 NVML 设备，匹配 PCI Bus 编号
-        let device_count = nvml.device_count()?;
+    let device = nvml
+        .device_by_pci_bus_id(pci_bus_id_str)
+        .or_else(|_| {
+            // 降级方案：枚举所有 NVML 设备，匹配 PCI Bus 编号
+            let device_count = nvml.device_count()?;
 
-        for i in 0..device_count {
-            if let Ok(dev) = nvml.device_by_index(i) {
-                if let Ok(pci_info) = dev.pci_info() {
-                    // 匹配策略：比较 PCI Bus 编号
-                    if let Some(target_bus) = nvapi_bus_num {
-                        if pci_info.bus == target_bus {
+            for i in 0..device_count {
+                if let Ok(dev) = nvml.device_by_index(i) {
+                    if let Ok(pci_info) = dev.pci_info() {
+                        // 匹配策略：比较 PCI Bus 编号
+                        if let Some(target_bus) = nvapi_bus_num {
+                            if pci_info.bus == target_bus {
+                                return Ok(dev);
+                            }
+                        }
+
+                        // 备用：宽松字符串匹配
+                        let nvml_pci_str = format!(
+                            "{:04x}:{:02x}:{:02x}.0",
+                            pci_info.domain, pci_info.bus, pci_info.device
+                        );
+                        let nvapi_stripped = pci_bus_id_str.trim_start_matches("0000:");
+                        let nvml_stripped = nvml_pci_str.trim_start_matches("0000:");
+                        if nvapi_stripped.eq_ignore_ascii_case(nvml_stripped) {
                             return Ok(dev);
                         }
                     }
-
-                    // 备用：宽松字符串匹配
-                    let nvml_pci_str = format!(
-                        "{:04x}:{:02x}:{:02x}.0",
-                        pci_info.domain, pci_info.bus, pci_info.device
-                    );
-                    let nvapi_stripped = pci_bus_id_str.trim_start_matches("0000:");
-                    let nvml_stripped = nvml_pci_str.trim_start_matches("0000:");
-                    if nvapi_stripped.eq_ignore_ascii_case(nvml_stripped) {
-                        return Ok(dev);
-                    }
                 }
             }
-        }
 
-        Err(nvml_wrapper::error::NvmlError::NotFound)
-    }).ok()?;
+            Err(nvml_wrapper::error::NvmlError::NotFound)
+        })
+        .ok()?;
 
     let current_mw = device.power_management_limit().ok()?;
     let constraints = device.power_management_limit_constraints();
@@ -145,7 +154,10 @@ pub fn query_nvml_power_watts(gpu_id: u32) -> Option<(f32, f32, f32)> {
     Some((min_w, current_w, max_w))
 }
 
-pub fn get_nvml_core_clock_vf_offset(gpu_id: u32, pstate: nvml_wrapper::enum_wrappers::device::PerformanceState) -> Option<i32> {
+pub fn get_nvml_core_clock_vf_offset(
+    gpu_id: u32,
+    pstate: nvml_wrapper::enum_wrappers::device::PerformanceState,
+) -> Option<i32> {
     let nvml = Nvml::init().ok()?;
     let pci_bus_num = gpu_id / 256;
     let device_count = nvml.device_count().ok()?;
@@ -153,7 +165,10 @@ pub fn get_nvml_core_clock_vf_offset(gpu_id: u32, pstate: nvml_wrapper::enum_wra
         if let Ok(dev) = nvml.device_by_index(i) {
             if let Ok(pci_info) = dev.pci_info() {
                 if pci_info.bus == pci_bus_num {
-                    return dev.clock_offset(nvml_wrapper::enum_wrappers::device::Clock::Graphics, pstate).ok().map(|o| o.clock_offset_mhz);
+                    return dev
+                        .clock_offset(nvml_wrapper::enum_wrappers::device::Clock::Graphics, pstate)
+                        .ok()
+                        .map(|o| o.clock_offset_mhz);
                 }
             }
         }
@@ -161,16 +176,29 @@ pub fn get_nvml_core_clock_vf_offset(gpu_id: u32, pstate: nvml_wrapper::enum_wra
     None
 }
 
-pub fn set_nvml_core_clock_vf_offset(gpu_id: u32, offset: i32, pstate: nvml_wrapper::enum_wrappers::device::PerformanceState) -> Result<(), Error> {
+pub fn set_nvml_core_clock_vf_offset(
+    gpu_id: u32,
+    offset: i32,
+    pstate: nvml_wrapper::enum_wrappers::device::PerformanceState,
+) -> Result<(), Error> {
     let nvml = Nvml::init().map_err(|e| Error::Custom(format!("NVML Init Error: {:?}", e)))?;
     let pci_bus_num = gpu_id / 256;
-    let device_count = nvml.device_count().map_err(|e| Error::Custom(format!("NVML Device Count Error: {:?}", e)))?;
+    let device_count = nvml
+        .device_count()
+        .map_err(|e| Error::Custom(format!("NVML Device Count Error: {:?}", e)))?;
     for i in 0..device_count {
         if let Ok(mut dev) = nvml.device_by_index(i) {
             if let Ok(pci_info) = dev.pci_info() {
                 if pci_info.bus == pci_bus_num {
-                    return dev.set_clock_offset(nvml_wrapper::enum_wrappers::device::Clock::Graphics, pstate, offset)
-                        .map_err(|e| Error::Custom(format!("NVML Set Core Clock VF Offset Error: {:?}", e)));
+                    return dev
+                        .set_clock_offset(
+                            nvml_wrapper::enum_wrappers::device::Clock::Graphics,
+                            pstate,
+                            offset,
+                        )
+                        .map_err(|e| {
+                            Error::Custom(format!("NVML Set Core Clock VF Offset Error: {:?}", e))
+                        });
                 }
             }
         }
@@ -178,7 +206,10 @@ pub fn set_nvml_core_clock_vf_offset(gpu_id: u32, offset: i32, pstate: nvml_wrap
     Err(Error::Custom(format!("GPU {} not found in NVML", gpu_id)))
 }
 
-pub fn get_nvml_mem_clock_vf_offset(gpu_id: u32, pstate: nvml_wrapper::enum_wrappers::device::PerformanceState) -> Option<i32> {
+pub fn get_nvml_mem_clock_vf_offset(
+    gpu_id: u32,
+    pstate: nvml_wrapper::enum_wrappers::device::PerformanceState,
+) -> Option<i32> {
     let nvml = Nvml::init().ok()?;
     let pci_bus_num = gpu_id / 256;
     let device_count = nvml.device_count().ok()?;
@@ -188,7 +219,10 @@ pub fn get_nvml_mem_clock_vf_offset(gpu_id: u32, pstate: nvml_wrapper::enum_wrap
                 if pci_info.bus == pci_bus_num {
                     // Note: NVML reports memory clock offset as double the actual frequency (GDDR historical reason).
                     // We divide by 2 here so the getter returns the actual effective memory offset.
-                    return dev.clock_offset(nvml_wrapper::enum_wrappers::device::Clock::Memory, pstate).ok().map(|o| o.clock_offset_mhz / 2);
+                    return dev
+                        .clock_offset(nvml_wrapper::enum_wrappers::device::Clock::Memory, pstate)
+                        .ok()
+                        .map(|o| o.clock_offset_mhz / 2);
                 }
             }
         }
@@ -196,7 +230,11 @@ pub fn get_nvml_mem_clock_vf_offset(gpu_id: u32, pstate: nvml_wrapper::enum_wrap
     None
 }
 
-pub fn set_nvml_mem_clock_vf_offset(gpu_id: u32, offset: i32, pstate: nvml_wrapper::enum_wrappers::device::PerformanceState) -> Result<(), Error> {
+pub fn set_nvml_mem_clock_vf_offset(
+    gpu_id: u32,
+    offset: i32,
+    pstate: nvml_wrapper::enum_wrappers::device::PerformanceState,
+) -> Result<(), Error> {
     let nvml = match Nvml::init() {
         Ok(n) => n,
         Err(e) => return Err(Error::Custom(format!("NVML Init Error: {:?}", e))),
@@ -211,9 +249,18 @@ pub fn set_nvml_mem_clock_vf_offset(gpu_id: u32, offset: i32, pstate: nvml_wrapp
             if let Ok(pci_info) = dev.pci_info() {
                 if pci_info.bus == pci_bus_num {
                     // NVML expects memory clock offset as double the actual target (GDDR historical reason).
-                    match dev.set_clock_offset(nvml_wrapper::enum_wrappers::device::Clock::Memory, pstate, (offset * 2) as i32) {
+                    match dev.set_clock_offset(
+                        nvml_wrapper::enum_wrappers::device::Clock::Memory,
+                        pstate,
+                        (offset * 2) as i32,
+                    ) {
                         Ok(_) => return Ok(()),
-                        Err(e) => return Err(Error::Custom(format!("NVML Set Mem Clock Offset Error: {:?}", e))),
+                        Err(e) => {
+                            return Err(Error::Custom(format!(
+                                "NVML Set Mem Clock Offset Error: {:?}",
+                                e
+                            )));
+                        }
                     }
                 }
             }
@@ -221,7 +268,6 @@ pub fn set_nvml_mem_clock_vf_offset(gpu_id: u32, offset: i32, pstate: nvml_wrapp
     }
     Err(Error::Custom("NVML Device not found".to_string()))
 }
-
 
 pub fn set_nvml_power_limit(gpu_id: u32, limit_w: u32) -> Result<(), Error> {
     let nvml = match Nvml::init() {
@@ -240,7 +286,12 @@ pub fn set_nvml_power_limit(gpu_id: u32, limit_w: u32) -> Result<(), Error> {
                     let limit_mw = limit_w * 1000;
                     match dev.set_power_management_limit(limit_mw) {
                         Ok(_) => return Ok(()),
-                        Err(e) => return Err(Error::Custom(format!("NVML Set Power Limit Error: {:?}", e))),
+                        Err(e) => {
+                            return Err(Error::Custom(format!(
+                                "NVML Set Power Limit Error: {:?}",
+                                e
+                            )));
+                        }
                     }
                 }
             }
@@ -270,7 +321,9 @@ pub fn set_nvml_temperature_threshold(
                 if pci_info.bus == pci_bus_num {
                     return dev
                         .set_temperature_threshold(threshold, limit_c)
-                        .map_err(|e| Error::Custom(format!("NVML Set Temperature Threshold Error: {:?}", e)));
+                        .map_err(|e| {
+                            Error::Custom(format!("NVML Set Temperature Threshold Error: {:?}", e))
+                        });
                 }
             }
         }
@@ -332,7 +385,9 @@ pub fn get_nvml_temperature_thresholds(gpu_id: u32) -> Option<Vec<(&'static str,
                     return Some(
                         thresholds
                             .iter()
-                            .map(|(name, threshold)| (*name, dev.temperature_threshold(*threshold).ok()))
+                            .map(|(name, threshold)| {
+                                (*name, dev.temperature_threshold(*threshold).ok())
+                            })
                             .collect(),
                     );
                 }
@@ -342,7 +397,17 @@ pub fn get_nvml_temperature_thresholds(gpu_id: u32) -> Option<Vec<(&'static str,
     None
 }
 
-pub fn get_nvml_pstate_info(gpu_id: u32) -> Option<Vec<(nvml_wrapper::enum_wrappers::device::PerformanceState, u32, u32, u32, u32)>> {
+pub fn get_nvml_pstate_info(
+    gpu_id: u32,
+) -> Option<
+    Vec<(
+        nvml_wrapper::enum_wrappers::device::PerformanceState,
+        u32,
+        u32,
+        u32,
+        u32,
+    )>,
+> {
     let nvml = Nvml::init().ok()?;
     let pci_bus_num = gpu_id / 256;
     let device_count = nvml.device_count().ok()?;
@@ -353,8 +418,18 @@ pub fn get_nvml_pstate_info(gpu_id: u32) -> Option<Vec<(nvml_wrapper::enum_wrapp
                     if let Ok(pstates) = dev.supported_performance_states() {
                         let mut res = Vec::new();
                         for p in pstates {
-                            let core_clock = dev.min_max_clock_of_pstate(nvml_wrapper::enum_wrappers::device::Clock::Graphics, p).unwrap_or((0, 0));
-                            let mem_clock = dev.min_max_clock_of_pstate(nvml_wrapper::enum_wrappers::device::Clock::Memory, p).unwrap_or((0, 0));
+                            let core_clock = dev
+                                .min_max_clock_of_pstate(
+                                    nvml_wrapper::enum_wrappers::device::Clock::Graphics,
+                                    p,
+                                )
+                                .unwrap_or((0, 0));
+                            let mem_clock = dev
+                                .min_max_clock_of_pstate(
+                                    nvml_wrapper::enum_wrappers::device::Clock::Memory,
+                                    p,
+                                )
+                                .unwrap_or((0, 0));
                             res.push((p, core_clock.0, core_clock.1, mem_clock.0, mem_clock.1));
                         }
                         return Some(res);
@@ -428,9 +503,7 @@ pub fn get_nvml_num_fans(gpu_id: u32) -> Option<u32> {
     None
 }
 
-pub fn parse_nvml_fan_control_policy(
-    policy_raw: &str,
-) -> Result<FanControlPolicy, Error> {
+pub fn parse_nvml_fan_control_policy(policy_raw: &str) -> Result<FanControlPolicy, Error> {
     match policy_raw.to_ascii_lowercase().as_str() {
         "continuous" | "auto" => Ok(FanControlPolicy::TemperatureContinousSw),
         "manual" => Ok(FanControlPolicy::Manual),
@@ -456,8 +529,9 @@ pub fn set_fan_speed(
 
     let nvml = Nvml::init().map_err(|e| Error::Custom(format!("NVML Init Error: {:?}", e)))?;
     let pci_bus_num = gpu_id / 256;
-    let device_count =
-        nvml.device_count().map_err(|e| Error::Custom(format!("NVML Device Count Error: {:?}", e)))?;
+    let device_count = nvml
+        .device_count()
+        .map_err(|e| Error::Custom(format!("NVML Device Count Error: {:?}", e)))?;
 
     for i in 0..device_count {
         if let Ok(mut dev) = nvml.device_by_index(i) {
@@ -480,8 +554,9 @@ pub fn set_fan_speed(
 pub fn set_default_fan_speed(gpu_id: u32, fan_idx: u32) -> Result<(), Error> {
     let nvml = Nvml::init().map_err(|e| Error::Custom(format!("NVML Init Error: {:?}", e)))?;
     let pci_bus_num = gpu_id / 256;
-    let device_count =
-        nvml.device_count().map_err(|e| Error::Custom(format!("NVML Device Count Error: {:?}", e)))?;
+    let device_count = nvml
+        .device_count()
+        .map_err(|e| Error::Custom(format!("NVML Device Count Error: {:?}", e)))?;
 
     for i in 0..device_count {
         if let Ok(mut dev) = nvml.device_by_index(i) {
@@ -609,16 +684,25 @@ pub fn set_nvml_pstate_lock(
 }
 
 /// 设定 GPU 在运行应用程序时锁定在指定的显存与核心频率，避免波动。
-pub fn set_nvml_applications_clocks(gpu_id: u32, mem_clock_mhz: u32, graphics_clock_mhz: u32) -> Result<(), Error> {
+pub fn set_nvml_applications_clocks(
+    gpu_id: u32,
+    mem_clock_mhz: u32,
+    graphics_clock_mhz: u32,
+) -> Result<(), Error> {
     let nvml = Nvml::init().map_err(|e| Error::Custom(format!("NVML Init Error: {:?}", e)))?;
     let pci_bus_num = gpu_id / 256;
-    let device_count = nvml.device_count().map_err(|e| Error::Custom(format!("NVML Device Count Error: {:?}", e)))?;
+    let device_count = nvml
+        .device_count()
+        .map_err(|e| Error::Custom(format!("NVML Device Count Error: {:?}", e)))?;
     for i in 0..device_count {
         if let Ok(mut dev) = nvml.device_by_index(i) {
             if let Ok(pci_info) = dev.pci_info() {
                 if pci_info.bus == pci_bus_num {
-                    return dev.set_applications_clocks(mem_clock_mhz, graphics_clock_mhz)
-                        .map_err(|e| Error::Custom(format!("NVML Set Applications Clocks Error: {:?}", e)));
+                    return dev
+                        .set_applications_clocks(mem_clock_mhz, graphics_clock_mhz)
+                        .map_err(|e| {
+                            Error::Custom(format!("NVML Set Applications Clocks Error: {:?}", e))
+                        });
                 }
             }
         }
@@ -630,13 +714,16 @@ pub fn set_nvml_applications_clocks(gpu_id: u32, mem_clock_mhz: u32, graphics_cl
 pub fn reset_nvml_applications_clocks(gpu_id: u32) -> Result<(), Error> {
     let nvml = Nvml::init().map_err(|e| Error::Custom(format!("NVML Init Error: {:?}", e)))?;
     let pci_bus_num = gpu_id / 256;
-    let device_count = nvml.device_count().map_err(|e| Error::Custom(format!("NVML Device Count Error: {:?}", e)))?;
+    let device_count = nvml
+        .device_count()
+        .map_err(|e| Error::Custom(format!("NVML Device Count Error: {:?}", e)))?;
     for i in 0..device_count {
         if let Ok(mut dev) = nvml.device_by_index(i) {
             if let Ok(pci_info) = dev.pci_info() {
                 if pci_info.bus == pci_bus_num {
-                    return dev.reset_applications_clocks()
-                        .map_err(|e| Error::Custom(format!("NVML Reset Applications Clocks Error: {:?}", e)));
+                    return dev.reset_applications_clocks().map_err(|e| {
+                        Error::Custom(format!("NVML Reset Applications Clocks Error: {:?}", e))
+                    });
                 }
             }
         }
@@ -645,16 +732,30 @@ pub fn reset_nvml_applications_clocks(gpu_id: u32) -> Result<(), Error> {
 }
 
 /// 锁定GPU核心频率在指定的最小值和最大值之间。
-pub fn set_nvml_core_locked_clocks(gpu_id: u32, min_clock_mhz: u32, max_clock_mhz: u32) -> Result<(), Error> {
+pub fn set_nvml_core_locked_clocks(
+    gpu_id: u32,
+    min_clock_mhz: u32,
+    max_clock_mhz: u32,
+) -> Result<(), Error> {
     let nvml = Nvml::init().map_err(|e| Error::Custom(format!("NVML Init Error: {:?}", e)))?;
     let pci_bus_num = gpu_id / 256;
-    let device_count = nvml.device_count().map_err(|e| Error::Custom(format!("NVML Device Count Error: {:?}", e)))?;
+    let device_count = nvml
+        .device_count()
+        .map_err(|e| Error::Custom(format!("NVML Device Count Error: {:?}", e)))?;
     for i in 0..device_count {
         if let Ok(mut dev) = nvml.device_by_index(i) {
             if let Ok(pci_info) = dev.pci_info() {
                 if pci_info.bus == pci_bus_num {
-                    return dev.set_gpu_locked_clocks(nvml_wrapper::enums::device::GpuLockedClocksSetting::Numeric { min_clock_mhz, max_clock_mhz })
-                        .map_err(|e| Error::Custom(format!("NVML Set GPU Locked Clocks Error: {:?}", e)));
+                    return dev
+                        .set_gpu_locked_clocks(
+                            nvml_wrapper::enums::device::GpuLockedClocksSetting::Numeric {
+                                min_clock_mhz,
+                                max_clock_mhz,
+                            },
+                        )
+                        .map_err(|e| {
+                            Error::Custom(format!("NVML Set GPU Locked Clocks Error: {:?}", e))
+                        });
                 }
             }
         }
@@ -666,13 +767,16 @@ pub fn set_nvml_core_locked_clocks(gpu_id: u32, min_clock_mhz: u32, max_clock_mh
 pub fn reset_nvml_core_locked_clocks(gpu_id: u32) -> Result<(), Error> {
     let nvml = Nvml::init().map_err(|e| Error::Custom(format!("NVML Init Error: {:?}", e)))?;
     let pci_bus_num = gpu_id / 256;
-    let device_count = nvml.device_count().map_err(|e| Error::Custom(format!("NVML Device Count Error: {:?}", e)))?;
+    let device_count = nvml
+        .device_count()
+        .map_err(|e| Error::Custom(format!("NVML Device Count Error: {:?}", e)))?;
     for i in 0..device_count {
         if let Ok(mut dev) = nvml.device_by_index(i) {
             if let Ok(pci_info) = dev.pci_info() {
                 if pci_info.bus == pci_bus_num {
-                    return dev.reset_gpu_locked_clocks()
-                        .map_err(|e| Error::Custom(format!("NVML Reset GPU Locked Clocks Error: {:?}", e)));
+                    return dev.reset_gpu_locked_clocks().map_err(|e| {
+                        Error::Custom(format!("NVML Reset GPU Locked Clocks Error: {:?}", e))
+                    });
                 }
             }
         }
@@ -681,16 +785,25 @@ pub fn reset_nvml_core_locked_clocks(gpu_id: u32) -> Result<(), Error> {
 }
 
 /// 锁定GPU显存频率在指定的最小值和最大值之间。
-pub fn set_nvml_mem_locked_clocks(gpu_id: u32, min_clock_mhz: u32, max_clock_mhz: u32) -> Result<(), Error> {
+pub fn set_nvml_mem_locked_clocks(
+    gpu_id: u32,
+    min_clock_mhz: u32,
+    max_clock_mhz: u32,
+) -> Result<(), Error> {
     let nvml = Nvml::init().map_err(|e| Error::Custom(format!("NVML Init Error: {:?}", e)))?;
     let pci_bus_num = gpu_id / 256;
-    let device_count = nvml.device_count().map_err(|e| Error::Custom(format!("NVML Device Count Error: {:?}", e)))?;
+    let device_count = nvml
+        .device_count()
+        .map_err(|e| Error::Custom(format!("NVML Device Count Error: {:?}", e)))?;
     for i in 0..device_count {
         if let Ok(mut dev) = nvml.device_by_index(i) {
             if let Ok(pci_info) = dev.pci_info() {
                 if pci_info.bus == pci_bus_num {
-                    return dev.set_mem_locked_clocks(min_clock_mhz, max_clock_mhz)
-                        .map_err(|e| Error::Custom(format!("NVML Set Memory Locked Clocks Error: {:?}", e)));
+                    return dev
+                        .set_mem_locked_clocks(min_clock_mhz, max_clock_mhz)
+                        .map_err(|e| {
+                            Error::Custom(format!("NVML Set Memory Locked Clocks Error: {:?}", e))
+                        });
                 }
             }
         }
@@ -702,13 +815,16 @@ pub fn set_nvml_mem_locked_clocks(gpu_id: u32, min_clock_mhz: u32, max_clock_mhz
 pub fn reset_nvml_mem_locked_clocks(gpu_id: u32) -> Result<(), Error> {
     let nvml = Nvml::init().map_err(|e| Error::Custom(format!("NVML Init Error: {:?}", e)))?;
     let pci_bus_num = gpu_id / 256;
-    let device_count = nvml.device_count().map_err(|e| Error::Custom(format!("NVML Device Count Error: {:?}", e)))?;
+    let device_count = nvml
+        .device_count()
+        .map_err(|e| Error::Custom(format!("NVML Device Count Error: {:?}", e)))?;
     for i in 0..device_count {
         if let Ok(mut dev) = nvml.device_by_index(i) {
             if let Ok(pci_info) = dev.pci_info() {
                 if pci_info.bus == pci_bus_num {
-                    return dev.reset_mem_locked_clocks()
-                        .map_err(|e| Error::Custom(format!("NVML Reset Memory Locked Clocks Error: {:?}", e)));
+                    return dev.reset_mem_locked_clocks().map_err(|e| {
+                        Error::Custom(format!("NVML Reset Memory Locked Clocks Error: {:?}", e))
+                    });
                 }
             }
         }

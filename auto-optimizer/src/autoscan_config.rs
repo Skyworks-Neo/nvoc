@@ -7,8 +7,8 @@
 
 use crate::error::Error;
 use crate::platform::{
-    default_test_exe_path, default_vfp_csv_path, default_vfp_init_csv_path,
-    default_vfp_log_path, default_vfp_temp_csv_path,
+    default_test_exe_path, default_vfp_csv_path, default_vfp_init_csv_path, default_vfp_log_path,
+    default_vfp_temp_csv_path,
 };
 use clap::ArgMatches;
 
@@ -34,7 +34,11 @@ pub struct VfpExportConfig {
 impl VfpExportConfig {
     pub fn from_matches(matches: &ArgMatches) -> Self {
         VfpExportConfig {
-            delimiter: if matches.get_flag("tabs") { b'\t' } else { b',' },
+            delimiter: if matches.get_flag("tabs") {
+                b'\t'
+            } else {
+                b','
+            },
             output: matches
                 .get_one::<String>("output")
                 .cloned()
@@ -186,4 +190,3 @@ impl AutoscanConfig {
         })
     }
 }
-

@@ -26,7 +26,7 @@ DEFAULT_CONFIG: Dict[str, JSONValue] = {
     },
 }
 
-CONFIG_FILE = "nvoc_gui_config.json"
+CONFIG_FILE = "../nvoc_gui_config.json"
 
 
 class Config:

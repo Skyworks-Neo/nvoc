@@ -1,10 +1,10 @@
 use crate::conv::ConvertEnum;
 use crate::platform::{
-    default_test_exe_path, default_vfp_csv_path, default_vfp_init_csv_path,
-    default_vfp_log_path, default_vfp_temp_csv_path,
+    default_test_exe_path, default_vfp_csv_path, default_vfp_init_csv_path, default_vfp_log_path,
+    default_vfp_temp_csv_path,
 };
 use crate::types::{
-    OutputFormat, ResetSettings, VfpResetDomain, POSSIBLE_BOOL, POSSIBLE_BOOL_OFF, POSSIBLE_BOOL_ON,
+    OutputFormat, POSSIBLE_BOOL, POSSIBLE_BOOL_OFF, POSSIBLE_BOOL_ON, ResetSettings, VfpResetDomain,
 };
 use clap::{Arg, ArgAction, Command};
 use nvapi_hi::PState;
@@ -855,4 +855,3 @@ pub fn get_arguments() -> Command {
                 )
         )
 }
-

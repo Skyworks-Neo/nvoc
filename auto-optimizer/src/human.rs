@@ -37,7 +37,14 @@ fn vfp_lock_label<T: std::fmt::Display>(id: &T) -> String {
     }
 }
 
-fn legacy_core_overvolt_ranges(gpu: &Gpu) -> Vec<(nvapi_hi::PState, MicrovoltsDelta, MicrovoltsDelta, MicrovoltsDelta)> {
+fn legacy_core_overvolt_ranges(
+    gpu: &Gpu,
+) -> Vec<(
+    nvapi_hi::PState,
+    MicrovoltsDelta,
+    MicrovoltsDelta,
+    MicrovoltsDelta,
+)> {
     let pstates = match gpu.inner().pstates() {
         Ok(pstates) => pstates,
         Err(_) => return Vec::new(),
@@ -323,7 +330,11 @@ pub fn print_info(gpu: &Gpu, info: &GpuInfo) {
                 pline!(
                     "Power Limit",
                     "{} ({} default) | {:.0}W min / {:.0}W current / {:.0}W max",
-                    limit.range, limit.default, min_w, current_w, max_w
+                    limit.range,
+                    limit.default,
+                    min_w,
+                    current_w,
+                    max_w
                 );
             }
             None => {

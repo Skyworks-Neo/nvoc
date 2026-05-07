@@ -1,8 +1,8 @@
 use crate::human;
 use crate::types::{OutputFormat, ResetSettings, VfpResetDomain};
 use nvapi_hi::{
-    allowable_result, Celsius, Gpu, GpuSettings, KilohertzDelta, MicrovoltsDelta, PState,
-    Percentage,
+    Celsius, Gpu, GpuSettings, KilohertzDelta, MicrovoltsDelta, PState, Percentage,
+    allowable_result,
 };
 use std::io;
 
@@ -10,7 +10,7 @@ use crate::conv::ConvertEnum;
 use crate::error::Error;
 use crate::oc_get_set_function_nvapi::{reset_all_pstate_base_voltages, reset_vfp_deltas};
 use clap::ArgMatches;
-use time::{format_description::parse, OffsetDateTime};
+use time::{OffsetDateTime, format_description::parse};
 
 pub fn local_time_hms() -> String {
     let format = match parse("[hour]:[minute]:[second]") {
@@ -1025,8 +1025,8 @@ fn handle_nvapi(gpus: &[&Gpu], matches: &ArgMatches) -> Result<(), Error> {
                     nvapi_hi::ClockDomain::Graphics,
                     KilohertzDelta(core_offset),
                 )]
-                    .iter()
-                    .cloned(),
+                .iter()
+                .cloned(),
             ) {
                 Ok(_) => println!(
                     "Successfully applied NVAPI core offset {} kHz to GPU {} for PState {:?}",
@@ -1053,8 +1053,8 @@ fn handle_nvapi(gpus: &[&Gpu], matches: &ArgMatches) -> Result<(), Error> {
                     nvapi_hi::ClockDomain::Memory,
                     KilohertzDelta(mem_offset),
                 )]
-                    .iter()
-                    .cloned(),
+                .iter()
+                .cloned(),
             ) {
                 Ok(_) => println!(
                     "Successfully applied NVAPI mem offset {} kHz to GPU {} for PState {:?}",

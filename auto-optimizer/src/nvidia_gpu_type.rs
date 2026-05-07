@@ -60,20 +60,48 @@ impl fmt::Display for GpuType {
 /// 根据 GPU 名称 + codename 字符串判定世代
 pub fn detect_gpu_type(gpu_name: &str) -> GpuType {
     if gpu_name.contains("GB") {
-        if gpu_name.contains("Laptop") { GpuType::Mobile50Series } else { GpuType::Desktop50Series }
+        if gpu_name.contains("Laptop") {
+            GpuType::Mobile50Series
+        } else {
+            GpuType::Desktop50Series
+        }
     } else if gpu_name.contains("AD") {
-        if gpu_name.contains("Laptop") { GpuType::Mobile40Series } else { GpuType::Desktop40Series }
+        if gpu_name.contains("Laptop") {
+            GpuType::Mobile40Series
+        } else {
+            GpuType::Desktop40Series
+        }
     } else if gpu_name.contains("GA") {
-        if gpu_name.contains("Laptop") { GpuType::Mobile30Series } else { GpuType::Desktop30Series }
+        if gpu_name.contains("Laptop") {
+            GpuType::Mobile30Series
+        } else {
+            GpuType::Desktop30Series
+        }
     } else if gpu_name.contains("TU10") {
-        if gpu_name.contains("Laptop") { GpuType::Mobile20Series } else { GpuType::Desktop20Series }
+        if gpu_name.contains("Laptop") {
+            GpuType::Mobile20Series
+        } else {
+            GpuType::Desktop20Series
+        }
     } else if gpu_name.contains("TU11") {
-        if gpu_name.contains("Laptop") { GpuType::Mobile16Series } else { GpuType::Desktop16Series }
+        if gpu_name.contains("Laptop") {
+            GpuType::Mobile16Series
+        } else {
+            GpuType::Desktop16Series
+        }
     } else if gpu_name.contains("GP1") {
         // Do NOT mess up with 'GPU'
-        if gpu_name.contains("Laptop") { GpuType::Mobile10Series } else { GpuType::Desktop10Series }
+        if gpu_name.contains("Laptop") {
+            GpuType::Mobile10Series
+        } else {
+            GpuType::Desktop10Series
+        }
     } else if gpu_name.contains("GM") {
-        if gpu_name.contains("Laptop") { GpuType::Mobile9Series } else { GpuType::Desktop9Series }
+        if gpu_name.contains("Laptop") {
+            GpuType::Mobile9Series
+        } else {
+            GpuType::Desktop9Series
+        }
     } else if gpu_name.contains("GV") {
         GpuType::ComputationVolta
     } else {
@@ -338,15 +366,19 @@ impl GpuType {
                 vfp_strict_inc_flag: false,
                 margin_threshold_check: true,
             },
-            GpuType::Mobile40Series | GpuType::Mobile30Series
-            | GpuType::Mobile20Series | GpuType::Mobile16Series => GpuVoltageLimitParams {
+            GpuType::Mobile40Series
+            | GpuType::Mobile30Series
+            | GpuType::Mobile20Series
+            | GpuType::Mobile16Series => GpuVoltageLimitParams {
                 upper_init_point: 75,
                 lower_init_point: 60,
                 vfp_strict_inc_flag: true,
                 margin_threshold_check: false,
             },
-            GpuType::Desktop40Series | GpuType::Desktop30Series
-            | GpuType::Desktop20Series | GpuType::Desktop16Series => GpuVoltageLimitParams {
+            GpuType::Desktop40Series
+            | GpuType::Desktop30Series
+            | GpuType::Desktop20Series
+            | GpuType::Desktop16Series => GpuVoltageLimitParams {
                 upper_init_point: 85,
                 lower_init_point: 78,
                 vfp_strict_inc_flag: true,
@@ -421,4 +453,3 @@ impl GpuType {
         }
     }
 }
-
