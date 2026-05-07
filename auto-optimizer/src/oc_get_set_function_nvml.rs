@@ -626,6 +626,24 @@ pub fn set_nvml_applications_clocks(gpu_id: u32, mem_clock_mhz: u32, graphics_cl
     Err(Error::Custom(format!("GPU {} not found in NVML", gpu_id)))
 }
 
+/// 重置 NVML applications clocks 到默认值。
+pub fn reset_nvml_applications_clocks(gpu_id: u32) -> Result<(), Error> {
+    let nvml = Nvml::init().map_err(|e| Error::Custom(format!("NVML Init Error: {:?}", e)))?;
+    let pci_bus_num = gpu_id / 256;
+    let device_count = nvml.device_count().map_err(|e| Error::Custom(format!("NVML Device Count Error: {:?}", e)))?;
+    for i in 0..device_count {
+        if let Ok(mut dev) = nvml.device_by_index(i) {
+            if let Ok(pci_info) = dev.pci_info() {
+                if pci_info.bus == pci_bus_num {
+                    return dev.reset_applications_clocks()
+                        .map_err(|e| Error::Custom(format!("NVML Reset Applications Clocks Error: {:?}", e)));
+                }
+            }
+        }
+    }
+    Err(Error::Custom(format!("GPU {} not found in NVML", gpu_id)))
+}
+
 /// 锁定GPU核心频率在指定的最小值和最大值之间。
 pub fn set_nvml_core_locked_clocks(gpu_id: u32, min_clock_mhz: u32, max_clock_mhz: u32) -> Result<(), Error> {
     let nvml = Nvml::init().map_err(|e| Error::Custom(format!("NVML Init Error: {:?}", e)))?;

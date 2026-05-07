@@ -187,33 +187,33 @@ pub fn get_arguments() -> Command {
                 ),
         )
         .subcommand(
-              Command::new("set")
-                  .about("GPU overclocking")
-                  .subcommand_required(true)
-                  .arg_required_else_help(true)
-                  .subcommand(
-                      Command::new("legacy-clock")
-                          .about("Set absolute core/memory clocks for legacy architectures (Fermi/Tesla)")
-                          .arg(
-                              Arg::new("core")
-                                  .short('c')
-                                  .long("core")
-                                  .value_name("CORE_MHZ")
-                                  .help("Target absolute core frequency in MHz")
-                                  .num_args(1)
-                                  .required(true)
-                          )
-                          .arg(
-                              Arg::new("memory")
-                                  .short('m')
-                                  .long("memory")
-                                  .value_name("MEM_MHZ")
-                                  .help("Target absolute memory frequency in MHz")
-                                  .num_args(1)
-                                  .required(true)
-                          )
-                  )
-                  .subcommand(
+            Command::new("set")
+                .about("GPU overclocking")
+                .subcommand_required(true)
+                .arg_required_else_help(true)
+                .subcommand(
+                    Command::new("legacy-clock")
+                        .about("Set absolute core/memory clocks for legacy architectures (Fermi/Tesla)")
+                        .arg(
+                            Arg::new("core")
+                                .short('c')
+                                .long("core")
+                                .value_name("CORE_MHZ")
+                                .help("Target absolute core frequency in MHz")
+                                .num_args(1)
+                                .required(true)
+                        )
+                        .arg(
+                            Arg::new("memory")
+                                .short('m')
+                                .long("memory")
+                                .value_name("MEM_MHZ")
+                                .help("Target absolute memory frequency in MHz")
+                                .num_args(1)
+                                .required(true)
+                        )
+                )
+                .subcommand(
                     Command::new("nvapi")
                         .about("NVAPI settings")
                         .arg_required_else_help(true)
@@ -221,119 +221,119 @@ pub fn get_arguments() -> Command {
                             Arg::new("vboost")
                                 .short('V')
                                 .long("voltage-boost")
-                        .value_name("VBOOST")
-                        .num_args(1)
-                        .help("Voltage Boost %"),
-                )
-                .arg(
-                    Arg::new("tlimit")
-                        .short('T')
-                        .long("thermal-limit")
-                        .value_name("TEMPLIMIT")
-                        .num_args(1..)
-                        .action(ArgAction::Append)
-                        .help("Thermal limit (C)"),
-                )
-                .arg(
-                    Arg::new("plimit")
-                        .short('P')
-                        .long("power-limit")
-                        .value_name("POWERLIMIT")
-                        .num_args(1..)
-                        .action(ArgAction::Append)
-                        .help("Power limit %"),
-                )
-                .arg(
-                    Arg::new("voltage_delta")
-                        .short('U')
-                        .long("voltage-delta")
-                        .value_name("UV")
-                        .num_args(1)
-                        .allow_hyphen_values(true)
-                        .help("Core voltage delta in μV via SetPstates20 (for Maxwell/900-series and older, e.g. +100000 = +100mV). Target pstate selectable via -z."),
-                )
-                .arg(
-                    Arg::new("pstate")
-                        .short('z')
-                        .long("pstate")
-                        .value_name("PSTATE_ID")
-                        .num_args(1)
-                        .value_parser(PState::possible_values().to_vec())
-                        .default_value(PState::P0.to_str())
-                        .help("Target pstate for -U/--voltage-delta and NVAPI offsets (default: P0)"),
-                )
-                .arg(
-                    Arg::new("core_offset")
-                        .long("core-offset")
-                        .value_name("CORE_OFFSET")
-                        .num_args(1)
-                        .allow_hyphen_values(true)
-                        .help("Core clock offset via NVAPI (kHz)."),
-                )
-                .arg(
-                    Arg::new("mem_offset")
-                        .long("mem-offset")
-                        .value_name("MEM_OFFSET")
-                        .num_args(1)
-                        .allow_hyphen_values(true)
-                        .help("Memory clock offset via NVAPI (kHz)."),
-                )
-                .arg(
-                    Arg::new("locked_voltage")
-                        .long("locked-voltage")
-                        .value_name("POINT_OR_VOLTAGE")
-                        .num_args(1)
-                        .help("Lock by VFP point index (e.g. 68) or explicit voltage unit (e.g. 850mV, 850000uV)."),
-                )
-                .arg(
-                    Arg::new("locked_core_clocks")
-                        .long("locked-core-clocks")
-                        .value_names(["MIN_MHZ", "MAX_MHZ"])
-                        .num_args(2)
-                        .help("Lock NVAPI graphics clock range (MHz). Example: --nvapi-locked-core-clocks 210 2100")
-                        .use_value_delimiter(false),
-                )
-                .arg(
-                    Arg::new("locked_mem_clocks")
-                        .long("locked-mem-clocks")
-                        .value_names(["MIN_MHZ", "MAX_MHZ"])
-                        .num_args(2)
-                        .help("Lock NVAPI memory clock range (MHz). Example: --nvapi-locked-mem-clocks 5000 9501")
-                        .use_value_delimiter(false),
-                )
-                .arg(
-                    Arg::new("pstate_lock")
-                        .long("pstate-lock")
-                        .value_names(["PSTATE_MIN", "PSTATE_MAX"])
-                        .num_args(1..=2)
-                        .conflicts_with("locked_mem_clocks")
-                        .help("Lock a GPU into one NVML P-State or contiguous NVML P-State range by applying the same derived memory window via NVAPI (for example: --pstate-lock 0, --pstate-lock P2 P2, or --pstate-lock P0 P5)."),
-                )
-                .arg(
-                    Arg::new("test_limit")
-                        .long("test-limit")
-                        .action(ArgAction::SetTrue)
-                        .help("Test the voltage limits of the GPU automatically."),
-                )
-                .arg(
-                    Arg::new("reset_volt_locks")
-                        .long("reset-volt-locks")
-                        .action(ArgAction::SetTrue)
-                        .help("Reset NVAPI Voltage lock state."),
-                )
-                .arg(
-                    Arg::new("reset_core_clocks")
-                        .long("reset-core-clocks")
-                        .action(ArgAction::SetTrue)
-                        .help("Reset GPU core clocks lock."),
-                )
-                .arg(
-                    Arg::new("reset_mem_clocks")
-                        .long("reset-mem-clocks")
-                        .alias("pstate-unlock")
-                        .action(ArgAction::SetTrue)
-                        .help("Reset GPU memory clocks lock. Alias: --pstate-unlock."),
-                )
+                                .value_name("VBOOST")
+                                .num_args(1)
+                                .help("Voltage Boost %"),
+                        )
+                        .arg(
+                            Arg::new("tlimit")
+                                .short('T')
+                                .long("thermal-limit")
+                                .value_name("TEMPLIMIT")
+                                .num_args(1..)
+                                .action(ArgAction::Append)
+                                .help("Thermal limit (C)"),
+                        )
+                        .arg(
+                            Arg::new("plimit")
+                                .short('P')
+                                .long("power-limit")
+                                .value_name("POWERLIMIT")
+                                .num_args(1..)
+                                .action(ArgAction::Append)
+                                .help("Power limit %"),
+                        )
+                        .arg(
+                            Arg::new("voltage_delta")
+                                .short('U')
+                                .long("voltage-delta")
+                                .value_name("UV")
+                                .num_args(1)
+                                .allow_hyphen_values(true)
+                                .help("Core voltage delta in μV via SetPstates20 (for Maxwell/900-series and older, e.g. +100000 = +100mV). Target pstate selectable via -z."),
+                        )
+                        .arg(
+                            Arg::new("pstate")
+                                .short('z')
+                                .long("pstate")
+                                .value_name("PSTATE_ID")
+                                .num_args(1)
+                                .value_parser(PState::possible_values().to_vec())
+                                .default_value(PState::P0.to_str())
+                                .help("Target pstate for -U/--voltage-delta and NVAPI offsets (default: P0)"),
+                        )
+                        .arg(
+                            Arg::new("core_offset")
+                                .long("core-offset")
+                                .value_name("CORE_OFFSET")
+                                .num_args(1)
+                                .allow_hyphen_values(true)
+                                .help("Core clock offset via NVAPI (kHz)."),
+                        )
+                        .arg(
+                            Arg::new("mem_offset")
+                                .long("mem-offset")
+                                .value_name("MEM_OFFSET")
+                                .num_args(1)
+                                .allow_hyphen_values(true)
+                                .help("Memory clock offset via NVAPI (kHz)."),
+                        )
+                        .arg(
+                            Arg::new("locked_voltage")
+                                .long("locked-voltage")
+                                .value_name("POINT_OR_VOLTAGE")
+                                .num_args(1)
+                                .help("Lock by VFP point index (e.g. 68) or explicit voltage unit (e.g. 850mV, 850000uV)."),
+                        )
+                        .arg(
+                            Arg::new("locked_core_clocks")
+                                .long("locked-core-clocks")
+                                .value_names(["MIN_MHZ", "MAX_MHZ"])
+                                .num_args(2)
+                                .help("Lock NVAPI graphics clock range (MHz). Example: --nvapi-locked-core-clocks 210 2100")
+                                .use_value_delimiter(false),
+                        )
+                        .arg(
+                            Arg::new("locked_mem_clocks")
+                                .long("locked-mem-clocks")
+                                .value_names(["MIN_MHZ", "MAX_MHZ"])
+                                .num_args(2)
+                                .help("Lock NVAPI memory clock range (MHz). Example: --nvapi-locked-mem-clocks 5000 9501")
+                                .use_value_delimiter(false),
+                        )
+                        .arg(
+                            Arg::new("pstate_lock")
+                                .long("pstate-lock")
+                                .value_names(["PSTATE_MIN", "PSTATE_MAX"])
+                                .num_args(1..=2)
+                                .conflicts_with("locked_mem_clocks")
+                                .help("Lock a GPU into one NVML P-State or contiguous NVML P-State range by applying the same derived memory window via NVAPI (for example: --pstate-lock 0, --pstate-lock P2 P2, or --pstate-lock P0 P5)."),
+                        )
+                        .arg(
+                            Arg::new("test_limit")
+                                .long("test-limit")
+                                .action(ArgAction::SetTrue)
+                                .help("Test the voltage limits of the GPU automatically."),
+                        )
+                        .arg(
+                            Arg::new("reset_volt_locks")
+                                .long("reset-volt-locks")
+                                .action(ArgAction::SetTrue)
+                                .help("Reset NVAPI Voltage lock state."),
+                        )
+                        .arg(
+                            Arg::new("reset_core_clocks")
+                                .long("reset-core-clocks")
+                                .action(ArgAction::SetTrue)
+                                .help("Reset GPU core clocks lock."),
+                        )
+                        .arg(
+                            Arg::new("reset_mem_clocks")
+                                .long("reset-mem-clocks")
+                                .alias("pstate-unlock")
+                                .action(ArgAction::SetTrue)
+                                .help("Reset GPU memory clocks lock. Alias: --pstate-unlock."),
+                        )
                 )
                 .subcommand(
                     Command::new("nvml")
@@ -341,82 +341,88 @@ pub fn get_arguments() -> Command {
                         .arg_required_else_help(true)
                         .arg(
                             Arg::new("pstate")
-                        .long("pstate")
-                        .value_name("PSTATE_ID")
-                        .num_args(1)
-                        .default_value("0")
-                        .help("Target PState for NVML clock offset (e.g. 0 for P0, 2 for P2)."),
-                )
-                .arg(
-                    Arg::new("core_offset")
-                        .long("core-offset")
-                        .value_name("CORE_OFFSET")
-                        .num_args(1)
-                        .allow_hyphen_values(true)
-                        .help("Core clock offset via NVML API (MHz)."),
-                )
-                .arg(
-                    Arg::new("mem_offset")
-                        .long("mem-offset")
-                        .value_name("MEM_OFFSET")
-                        .num_args(1)
-                        .allow_hyphen_values(true)
-                        .help("Memory clock offset via NVML API (MHz). Note: target effective offset, handled behind the scene as *2."),
-                )
-                // NVML thermal threshold write args are intentionally commented out for now.
-                .arg(
-                    Arg::new("power_limit")
-                        .short('P')
-                        .long("power-limit")
-                        .value_name("POWER_LIMIT")
-                        .num_args(1)
-                        .help("Power limit via NVML API (W)."),
-                )
-                .arg(
-                    Arg::new("app_clock")
-                        .long("app-clock")
-                        .value_names(["MEM_MHZ", "CORE_MHZ"])
-                        .num_args(2)
-                        .help("Set NVML applications clocks (memory and core freq in MHz). Example: --nvml-app-clock 5001 1500")
-                        .use_value_delimiter(false),
-                )
-                .arg(
-                    Arg::new("locked_core_clocks")
-                        .long("locked-core-clocks")
-                        .value_names(["MIN_MHZ", "MAX_MHZ"])
-                        .num_args(2)
-                        .help("Lock GPU core clocks to a specific range (MHz). Example: --nvml-locked-gpu-clocks 210 2100")
-                        .use_value_delimiter(false),
-                )
-                .arg(
-                    Arg::new("reset_core_clocks")
-                        .long("reset-core-clocks")
-                        .action(ArgAction::SetTrue)
-                        .help("Reset GPU core clocks lock."),
-                )
-                .arg(
-                    Arg::new("locked_mem_clocks")
-                        .long("locked-mem-clocks")
-                        .value_names(["MIN_MHZ", "MAX_MHZ"])
-                        .num_args(2)
-                        .help("Lock GPU memory clocks to a specific range (MHz). Example: --nvml-locked-mem-clocks 5000 5000")
-                        .use_value_delimiter(false),
-                )
-                .arg(
-                    Arg::new("pstate_lock")
-                        .long("pstate-lock")
-                        .value_names(["PSTATE_MIN", "PSTATE_MAX"])
-                        .num_args(1..=2)
-                        .conflicts_with_all(["locked_mem_clocks", "reset_mem_clocks"])
-                        .help("Lock a GPU into one NVML P-State or a contiguous NVML P-State range by applying a memory lock window derived from the selected P-State memory clocks (for example: --nvml-pstate-lock 0, --nvml-pstate-lock P2 P2, or --nvml-pstate-lock P0 P5)."),
-                )
-                .arg(
-                    Arg::new("reset_mem_clocks")
-                        .long("reset-mem-clocks")
-                        .alias("nvml-pstate-unlock")
-                        .action(ArgAction::SetTrue)
-                        .help("Reset GPU memory clocks lock. Alias: --nvml-pstate-unlock."),
-                )
+                                .long("pstate")
+                                .value_name("PSTATE_ID")
+                                .num_args(1)
+                                .default_value("0")
+                                .help("Target PState for NVML clock offset (e.g. 0 for P0, 2 for P2)."),
+                        )
+                        .arg(
+                            Arg::new("core_offset")
+                                .long("core-offset")
+                                .value_name("CORE_OFFSET")
+                                .num_args(1)
+                                .allow_hyphen_values(true)
+                                .help("Core clock offset via NVML API (MHz)."),
+                        )
+                        .arg(
+                            Arg::new("mem_offset")
+                                .long("mem-offset")
+                                .value_name("MEM_OFFSET")
+                                .num_args(1)
+                                .allow_hyphen_values(true)
+                                .help("Memory clock offset via NVML API (MHz). Note: target effective offset, handled behind the scene as *2."),
+                        )
+                        // NVML thermal threshold write args are intentionally commented out for now.
+                        .arg(
+                            Arg::new("power_limit")
+                                .short('P')
+                                .long("power-limit")
+                                .value_name("POWER_LIMIT")
+                                .num_args(1)
+                                .help("Power limit via NVML API (W)."),
+                        )
+                        .arg(
+                            Arg::new("app_clock")
+                                .long("app-clock")
+                                .value_names(["MEM_MHZ", "CORE_MHZ"])
+                                .num_args(2)
+                                .help("Set NVML applications clocks (memory and core freq in MHz). Example: --nvml-app-clock 5001 1500")
+                                .use_value_delimiter(false),
+                        )
+                        .arg(
+                            Arg::new("reset_app_clocks")
+                                .long("reset-app-clocks")
+                                .action(ArgAction::SetTrue)
+                                .help("Reset NVML applications clocks to defaults."),
+                        )
+                        .arg(
+                            Arg::new("locked_core_clocks")
+                                .long("locked-core-clocks")
+                                .value_names(["MIN_MHZ", "MAX_MHZ"])
+                                .num_args(2)
+                                .help("Lock GPU core clocks to a specific range (MHz). Example: --nvml-locked-gpu-clocks 210 2100")
+                                .use_value_delimiter(false),
+                        )
+                        .arg(
+                            Arg::new("reset_core_clocks")
+                                .long("reset-core-clocks")
+                                .action(ArgAction::SetTrue)
+                                .help("Reset GPU core clocks lock."),
+                        )
+                        .arg(
+                            Arg::new("locked_mem_clocks")
+                                .long("locked-mem-clocks")
+                                .value_names(["MIN_MHZ", "MAX_MHZ"])
+                                .num_args(2)
+                                .help("Lock GPU memory clocks to a specific range (MHz). Example: --nvml-locked-mem-clocks 5000 5000")
+                                .use_value_delimiter(false),
+                        )
+                        .arg(
+                            Arg::new("pstate_lock")
+                                .long("pstate-lock")
+                                .value_names(["PSTATE_MIN", "PSTATE_MAX"])
+                                .num_args(1..=2)
+                                .conflicts_with_all(["locked_mem_clocks", "reset_mem_clocks"])
+                                .help("Lock a GPU into one NVML P-State or a contiguous NVML P-State range by applying a memory lock window derived from the selected P-State memory clocks (for example: --nvml-pstate-lock 0, --nvml-pstate-lock P2 P2, or --nvml-pstate-lock P0 P5)."),
+                        )
+                        .arg(
+                            Arg::new("reset_mem_clocks")
+                                .long("reset-mem-clocks")
+                                .alias("nvml-pstate-unlock")
+                                .action(ArgAction::SetTrue)
+                                .help("Reset GPU memory clocks lock. Alias: --nvml-pstate-unlock."),
+                        )
                 )
                 .subcommand(
                     Command::new("nvml-cooler")
@@ -849,3 +855,4 @@ pub fn get_arguments() -> Command {
                 )
         )
 }
+

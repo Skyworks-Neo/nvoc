@@ -1025,8 +1025,8 @@ fn handle_nvapi(gpus: &[&Gpu], matches: &ArgMatches) -> Result<(), Error> {
                     nvapi_hi::ClockDomain::Graphics,
                     KilohertzDelta(core_offset),
                 )]
-                .iter()
-                .cloned(),
+                    .iter()
+                    .cloned(),
             ) {
                 Ok(_) => println!(
                     "Successfully applied NVAPI core offset {} kHz to GPU {} for PState {:?}",
@@ -1053,8 +1053,8 @@ fn handle_nvapi(gpus: &[&Gpu], matches: &ArgMatches) -> Result<(), Error> {
                     nvapi_hi::ClockDomain::Memory,
                     KilohertzDelta(mem_offset),
                 )]
-                .iter()
-                .cloned(),
+                    .iter()
+                    .cloned(),
             ) {
                 Ok(_) => println!(
                     "Successfully applied NVAPI mem offset {} kHz to GPU {} for PState {:?}",
@@ -1253,6 +1253,21 @@ pub fn handle_nvml_with_ids(gpu_ids: &[u32], matches: &ArgMatches) -> Result<(),
             eprintln!(
                 "Invalid arguments for --nvml-app-clock, expected 2 arguments (MEM_MHZ CORE_MHZ)"
             );
+        }
+    }
+
+    if matches.get_flag("reset_app_clocks") {
+        for &gpu_id in gpu_ids {
+            match crate::oc_get_set_function_nvml::reset_nvml_applications_clocks(gpu_id) {
+                Ok(_) => println!(
+                    "Successfully reset NVML applications clocks to default on GPU {}",
+                    gpu_id
+                ),
+                Err(e) => eprintln!(
+                    "Failed to reset NVML applications clocks for GPU {}: {:?}",
+                    gpu_id, e
+                ),
+            }
         }
     }
 
