@@ -211,7 +211,7 @@ pub fn set_nvml_mem_clock_vf_offset(gpu_id: u32, offset: i32, pstate: nvml_wrapp
             if let Ok(pci_info) = dev.pci_info() {
                 if pci_info.bus == pci_bus_num {
                     // NVML expects memory clock offset as double the actual target (GDDR historical reason).
-                    match dev.set_clock_offset(nvml_wrapper::enum_wrappers::device::Clock::Memory, pstate, (offset * 2) as i32) {
+                    match dev.set_clock_offset(nvml_wrapper::enum_wrappers::device::Clock::Memory, pstate, offset.saturating_mul(2)) {
                         Ok(_) => return Ok(()),
                         Err(e) => return Err(Error::Custom(format!("NVML Set Mem Clock Offset Error: {:?}", e))),
                     }
@@ -237,7 +237,7 @@ pub fn set_nvml_power_limit(gpu_id: u32, limit_w: u32) -> Result<(), Error> {
         if let Ok(mut dev) = nvml.device_by_index(i) {
             if let Ok(pci_info) = dev.pci_info() {
                 if pci_info.bus == pci_bus_num {
-                    let limit_mw = limit_w * 1000;
+                    let limit_mw = limit_w.saturating_mul(1000);
                     match dev.set_power_management_limit(limit_mw) {
                         Ok(_) => return Ok(()),
                         Err(e) => return Err(Error::Custom(format!("NVML Set Power Limit Error: {:?}", e))),

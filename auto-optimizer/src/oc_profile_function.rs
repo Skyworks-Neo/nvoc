@@ -189,20 +189,22 @@ fn extract_default_frequencies(file_path: &str, legacy_flag: bool) -> Result<Vec
         .from_path(file_path)?;
     let mut default_frequencies_load = Vec::new();
 
-    for result in rdr.records() {
+    for (row_idx, result) in rdr.records().enumerate() {
         let record = result?;
-        let default_frequency_load: u32;
-
-        if legacy_flag {
-            default_frequency_load = record[1].parse()?;
-        }
-        // Read only frequency column
-        else {
-            default_frequency_load = record[3].parse()?;
-        }
-        // Read only default_frequency column
-
-        default_frequencies_load.push(default_frequency_load);
+        let col_idx = if legacy_flag { 1 } else { 3 };
+        let val = record.get(col_idx).ok_or_else(|| {
+            Error::from(format!(
+                "CSV row {} missing column {} (default_frequency_load)",
+                row_idx, col_idx
+            ))
+        })?;
+        let freq = val.parse::<u32>().map_err(|e| {
+            Error::from(format!(
+                "CSV row {} column {} (default_frequency_load) not parseable as u32: {}",
+                row_idx, col_idx, e
+            ))
+        })?;
+        default_frequencies_load.push(freq);
     }
     Ok(default_frequencies_load)
 }
@@ -214,12 +216,20 @@ fn update_csv_with_load_and_margin(
     minimum_delta_core_freq_step: i32,
     legacy_flag: bool,
 ) -> Result<(), Error> {
+    let dest = std::path::Path::new(file_path);
+    let parent = dest.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let tmp = parent.join(format!(
+        ".{}.tmp-{}",
+        dest.file_name().and_then(|s| s.to_str()).unwrap_or("vfp"),
+        std::process::id()
+    ));
+
     let mut rdr = ReaderBuilder::new()
         .has_headers(true)
         .from_path(file_path)?;
     let mut wtr = WriterBuilder::new()
         .has_headers(true)
-        .from_writer(File::create("./ws/temp.csv")?);
+        .from_writer(File::create(&tmp)?);
 
     let mut index = 0;
     let headers = StringRecord::from(vec![
@@ -264,9 +274,8 @@ fn update_csv_with_load_and_margin(
 
     wtr.flush()?;
 
-    // Replace original file with updated file
-    fs::remove_file(file_path)?;
-    fs::rename("./ws/temp.csv", file_path)?;
+    // Single atomic replace: same filesystem as dest, no gap where data can be lost.
+    fs::rename(&tmp, dest)?;
 
     Ok(())
 }
@@ -493,19 +502,56 @@ pub fn handle_vfp_import(gpu: &Gpu, matches: &clap::ArgMatches) -> Result<(), Er
 
 // oc_profile_function.rs
 
-fn linear_interpolate(v1: u32, d1: i32, v2: u32, d2: i32, current_v: u32, delta_step: i32) -> i32 {
-    let ratio = (current_v - v1) as f64 / (v2 - v1) as f64;
-    let interpolated = (d2 as f64 - d1 as f64) * ratio + d1 as f64;
+/// Safely access and parse a column from a CSV row slice. Returns a descriptive
+/// error instead of panicking when the column is missing or not parseable.
+fn parse_col<T>(row: &[String], idx: usize, what: &str) -> Result<T, Error>
+where
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    row.get(idx)
+        .ok_or_else(|| Error::from(format!("CSV row missing column {} ({})", idx, what)))?
+        .parse::<T>()
+        .map_err(|e| Error::from(format!("CSV column {} ({}) not parseable: {}", idx, what, e)))
+}
+
+fn linear_interpolate(
+    v1: u32,
+    d1: i32,
+    v2: u32,
+    d2: i32,
+    current_v: u32,
+    delta_step: i32,
+) -> Result<i32, Error> {
+    if v1 == v2 {
+        // Flat region — average the two endpoint deltas rather than emitting a silent 0.
+        return Ok((d1 + d2) / 2);
+    }
+    let (lo_v, hi_v, lo_d, hi_d) = if v1 <= v2 {
+        (v1, v2, d1, d2)
+    } else {
+        (v2, v1, d2, d1)
+    };
+    if current_v < lo_v || current_v > hi_v {
+        return Err(Error::from(format!(
+            "linear_interpolate: current_v={} outside endpoints [{}, {}]",
+            current_v, lo_v, hi_v
+        )));
+    }
+    let ratio = (current_v - lo_v) as f64 / (hi_v - lo_v) as f64;
+    let interpolated = (hi_d as f64 - lo_d as f64) * ratio + lo_d as f64;
 
     let rounded = if interpolated >= delta_step as f64 {
         (interpolated / delta_step as f64).floor() * delta_step as f64
     } else {
         0.0
     };
-    rounded as i32
+    Ok(rounded as i32)
 }
 
-fn get_key_points_indices(lines: &[Vec<String>]) -> (usize, usize, usize, usize) {
+fn get_key_points_indices(
+    lines: &[Vec<String>],
+) -> Result<(usize, usize, usize, usize), Error> {
     let mut key_indices = Vec::new();
 
     for (i, columns) in lines.iter().enumerate() {
@@ -525,46 +571,55 @@ fn get_key_points_indices(lines: &[Vec<String>]) -> (usize, usize, usize, usize)
             }
         }
     }
-    assert_eq!(
-        key_indices.len(),
-        4,
-        "Need exactly 4 key points in ultrafast mode"
-    );
-    (
+    if key_indices.len() < 4 {
+        return Err(Error::from(format!(
+            "ultrafast mode needs >= 4 key points (rows with non-zero freq AND delta), found {}",
+            key_indices.len()
+        )));
+    }
+    Ok((
         key_indices[0],
         key_indices[1],
         key_indices[2],
         key_indices[3],
-    )
+    ))
 }
 
-fn interpolate_deltas(lines: &mut [Vec<String>], minimum_delta_step: i32, maxq_flag: bool) {
-    let (p1_idx, p2_idx, p3_idx, p4_idx) = get_key_points_indices(lines);
+fn interpolate_deltas(
+    lines: &mut [Vec<String>],
+    minimum_delta_step: i32,
+    maxq_flag: bool,
+) -> Result<(), Error> {
+    let (p1_idx, p2_idx, p3_idx, p4_idx) = get_key_points_indices(lines)?;
 
-    let p1_d;
-    let p2_d;
-    let p3_d;
-    let p4_d;
+    let p1_v = parse_col::<u32>(&lines[p1_idx], 0, "voltage")?;
+    let p2_v = parse_col::<u32>(&lines[p2_idx], 0, "voltage")?;
+    let p3_v = parse_col::<u32>(&lines[p3_idx], 0, "voltage")?;
+    let p4_v = parse_col::<u32>(&lines[p4_idx], 0, "voltage")?;
 
-    let p1_v = lines[p1_idx][0].parse::<u32>().unwrap();
-    let p2_v = lines[p2_idx][0].parse::<u32>().unwrap();
-    let p3_v = lines[p3_idx][0].parse::<u32>().unwrap();
-    let p4_v = lines[p4_idx][0].parse::<u32>().unwrap();
-
-    if maxq_flag {
-        p1_d = lines[p1_idx][2].parse::<i32>().unwrap() - minimum_delta_step;
-        p2_d = lines[p2_idx][2].parse::<i32>().unwrap() - minimum_delta_step;
-        p3_d = lines[p3_idx][2].parse::<i32>().unwrap() - 2 * minimum_delta_step;
-        p4_d = lines[p4_idx][2].parse::<i32>().unwrap() - 2 * minimum_delta_step;
+    let (p1_d, p2_d, p3_d, p4_d) = if maxq_flag {
+        (
+            parse_col::<i32>(&lines[p1_idx], 2, "delta")? - minimum_delta_step,
+            parse_col::<i32>(&lines[p2_idx], 2, "delta")? - minimum_delta_step,
+            parse_col::<i32>(&lines[p3_idx], 2, "delta")? - 2 * minimum_delta_step,
+            parse_col::<i32>(&lines[p4_idx], 2, "delta")? - 2 * minimum_delta_step,
+        )
     } else {
-        p1_d = lines[p1_idx][2].parse::<i32>().unwrap();
-        p2_d = lines[p2_idx][2].parse::<i32>().unwrap();
-        p3_d = lines[p3_idx][2].parse::<i32>().unwrap();
-        p4_d = lines[p4_idx][2].parse::<i32>().unwrap();
-    }
+        (
+            parse_col::<i32>(&lines[p1_idx], 2, "delta")?,
+            parse_col::<i32>(&lines[p2_idx], 2, "delta")?,
+            parse_col::<i32>(&lines[p3_idx], 2, "delta")?,
+            parse_col::<i32>(&lines[p4_idx], 2, "delta")?,
+        )
+    };
+
+    // Collect all voltage values up front to avoid re-borrowing inside the loop.
+    let current_vs: Vec<u32> = (0..lines.len())
+        .map(|i| parse_col::<u32>(&lines[i], 0, "voltage"))
+        .collect::<Result<Vec<_>, _>>()?;
 
     for i in 0..lines.len() {
-        let current_v = lines[i][0].parse::<u32>().unwrap();
+        let current_v = current_vs[i];
         let stair_inferred = min(p2_idx - p1_idx, p3_idx - p2_idx);
 
         let new_delta = if i < p1_idx {
@@ -572,19 +627,20 @@ fn interpolate_deltas(lines: &mut [Vec<String>], minimum_delta_step: i32, maxq_f
         } else if i < p2_idx && stair_inferred == p2_idx - p1_idx && maxq_flag {
             min(p1_d, p2_d)
         } else if i < p2_idx {
-            linear_interpolate(p1_v, p1_d, p2_v, p2_d, current_v, minimum_delta_step)
+            linear_interpolate(p1_v, p1_d, p2_v, p2_d, current_v, minimum_delta_step)?
         } else if i < p3_idx && stair_inferred == p3_idx - p2_idx && maxq_flag {
             min(p2_d, p3_d)
         } else if i < p3_idx {
-            linear_interpolate(p2_v, p2_d, p3_v, p3_d, current_v, minimum_delta_step)
+            linear_interpolate(p2_v, p2_d, p3_v, p3_d, current_v, minimum_delta_step)?
         } else if i < p4_idx {
-            linear_interpolate(p3_v, p3_d, p4_v, p4_d, current_v, minimum_delta_step)
+            linear_interpolate(p3_v, p3_d, p4_v, p4_d, current_v, minimum_delta_step)?
         } else {
             p4_d
         };
 
         lines[i][2] = new_delta.to_string();
     }
+    Ok(())
 }
 
 pub fn fix_result(gpu: &Gpu, matches: &clap::ArgMatches) -> Result<(), Error> {
@@ -623,7 +679,7 @@ pub fn fix_result(gpu: &Gpu, matches: &clap::ArgMatches) -> Result<(), Error> {
     }
     // interpolate when ultrafast
     if cfg.is_ultrafast {
-        interpolate_deltas(&mut all_columns, minimum_delta_core_freq_step, maxq_flag);
+        interpolate_deltas(&mut all_columns, minimum_delta_core_freq_step, maxq_flag)?;
     }
 
     for columns in &mut all_columns {
@@ -895,7 +951,14 @@ pub fn export_vfp_from_log(matches: &clap::ArgMatches) -> Result<(), Error> {
                 continue;
             }
             if let Some(point) = extract_value(line, "point: #") {
-                assert_eq!(last_voltage_point.unwrap(), point);
+                if let Some(last) = last_voltage_point {
+                    if last != point {
+                        eprintln!(
+                            "Warning: log consistency check: expected point #{} but saw #{}; continuing",
+                            last, point
+                        );
+                    }
+                }
             }
             if let Some(voltage) = extract_value_f64(line, "voltage: #") {
                 last_voltage = Some(voltage);
@@ -965,6 +1028,12 @@ pub fn key_point_extractor(
                 }
             }
             prev_margin_bin = Some(margin_bin);
+        }
+
+        if records.is_empty() {
+            return Err(Error::from(
+                "no rows with voltage > 680000 found in CSV; cannot determine key points",
+            ));
         }
 
         for i in 0..records.len() - 1 {

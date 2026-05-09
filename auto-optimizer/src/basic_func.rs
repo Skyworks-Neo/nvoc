@@ -47,24 +47,34 @@ fn get_primary_screen_size_raw() -> (u32, u32) {
     //   +176  dmPelsHeight      = 4 字节  ← OFFSET_PELS_HEIGHT
     //   …（后续字段省略，总结构体大小 220 字节）
     // 参考：https://learn.microsoft.com/en-us/windows/win32/api/wingdi/ns-wingdi-devmodew
-    const DEVMODEW_SIZE: usize = 220;
+    //
+    // The buffer is over-allocated to 256 bytes and given `align(4)` so that the
+    // DWORD fields the kernel writes (dmPelsWidth, dmPelsHeight, …) land at their
+    // natural 4-byte alignment.  The standard DEVMODEW size (220) is still written
+    // into dmSize so the kernel knows the exact buffer capacity we advertise.
+    const DEVMODEW_STD_SIZE: usize = 220;
     const OFFSET_DM_SIZE: usize = 68;
     const OFFSET_PELS_WIDTH: usize = 172;
     const OFFSET_PELS_HEIGHT: usize = 176;
     const ENUM_CURRENT_SETTINGS: u32 = 0xFFFF_FFFF;
+
+    #[repr(C, align(4))]
+    struct AlignedBuf([u8; 256]);
+
     unsafe {
-        let mut buf = [0u8; DEVMODEW_SIZE];
-        buf[OFFSET_DM_SIZE] = DEVMODEW_SIZE as u8;
-        buf[OFFSET_DM_SIZE + 1] = (DEVMODEW_SIZE >> 8) as u8;
-        let ret = EnumDisplaySettingsW(std::ptr::null(), ENUM_CURRENT_SETTINGS, buf.as_mut_ptr());
+        let mut buf = AlignedBuf([0u8; 256]);
+        buf.0[OFFSET_DM_SIZE] = DEVMODEW_STD_SIZE as u8;
+        buf.0[OFFSET_DM_SIZE + 1] = (DEVMODEW_STD_SIZE >> 8) as u8;
+        let ret =
+            EnumDisplaySettingsW(std::ptr::null(), ENUM_CURRENT_SETTINGS, buf.0.as_mut_ptr());
         if ret != 0 {
             let w = u32::from_le_bytes(
-                buf[OFFSET_PELS_WIDTH..OFFSET_PELS_WIDTH + 4]
+                buf.0[OFFSET_PELS_WIDTH..OFFSET_PELS_WIDTH + 4]
                     .try_into()
                     .unwrap(),
             );
             let h = u32::from_le_bytes(
-                buf[OFFSET_PELS_HEIGHT..OFFSET_PELS_HEIGHT + 4]
+                buf.0[OFFSET_PELS_HEIGHT..OFFSET_PELS_HEIGHT + 4]
                     .try_into()
                     .unwrap(),
             );
@@ -146,11 +156,9 @@ impl TestResolution {
             TestResolution::R800x600 => Some(TestResolution::R768x576),
             TestResolution::R768x576 => Some(TestResolution::R720x480),
             TestResolution::R720x480 => Some(TestResolution::R640x384),
-            TestResolution::R640x384 => Some(TestResolution::R640x384),
-            // TestResolution::R640x384 => Some(TestResolution::R576x360),
+            TestResolution::R640x384 => Some(TestResolution::R576x360),
             TestResolution::R576x360 => Some(TestResolution::R400x300),
-            TestResolution::R400x300 => Some(TestResolution::R400x300),
-            // Lowest resolution, no downgrade available
+            TestResolution::R400x300 => None,
         }
     }
 
@@ -291,28 +299,20 @@ pub fn select_gpus<'a>(
 
             let mut result = Vec::new();
             for input in inputs {
-                // ① 人类可读序号（强语义，禁止 fallback）
-                if input < 256 {
-                    if let Some(g) = gpus.get(input) {
-                        result.push(g);
-                        continue;
-                    } else {
-                        // index 不存在，直接认为无效
-                        continue;
-                    }
-                }
-
-                // ② 直接 GPU ID（dec / hex）
-                if let Some(g) = gpus.iter().find(|g| g.id() == input) {
-                    result.push(g);
-                    continue;
-                }
-
-                // ③ legacy fallback（只允许 input >= 256）
-                let legacy = input << 8;
-                if let Some(g) = gpus.iter().find(|g| g.id() == legacy) {
-                    result.push(g);
-                    continue;
+                let matched = if input < 256 {
+                    // ① 人类可读序号（强语义，禁止 fallback）
+                    gpus.get(input)
+                } else {
+                    // ② 直接 GPU ID（dec / hex），③ legacy fallback（只允许 input >= 256）
+                    gpus.iter().find(|g| g.id() == input)
+                        .or_else(|| gpus.iter().find(|g| g.id() == input << 8))
+                };
+                match matched {
+                    Some(g) => result.push(g),
+                    None => return Err(Error::Custom(format!(
+                        "no GPU matches --gpu {}; use `nvoc list` to see available indices",
+                        input
+                    ))),
                 }
             }
             result
@@ -370,24 +370,20 @@ pub fn select_gpu_ids(
 
             let mut result = Vec::new();
             for input in inputs {
-                if input < 256 {
-                    if let Some(id) = gpu_ids.get(input) {
-                        result.push(*id);
-                        continue;
-                    } else {
-                        continue;
-                    }
-                }
-
-                if let Some(&id) = gpu_ids.iter().find(|&&id| id as usize == input) {
-                    result.push(id);
-                    continue;
-                }
-
-                let legacy = (input as u32) << 8;
-                if let Some(&id) = gpu_ids.iter().find(|&&id| id == legacy) {
-                    result.push(id);
-                    continue;
+                let matched = if input < 256 {
+                    gpu_ids.get(input).copied()
+                } else {
+                    gpu_ids.iter().find(|&&id| id as usize == input).copied().or_else(|| {
+                        let legacy = (input as u32) << 8;
+                        gpu_ids.iter().find(|&&id| id == legacy).copied()
+                    })
+                };
+                match matched {
+                    Some(id) => result.push(id),
+                    None => return Err(Error::Custom(format!(
+                        "no GPU matches --gpu {}; use `nvoc list` to see available indices",
+                        input
+                    ))),
                 }
             }
             result

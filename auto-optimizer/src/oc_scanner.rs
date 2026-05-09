@@ -1372,14 +1372,21 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<&Gpu>, matches: &ArgMatches) -> Result<(),
                 )?;
             }
 
-            if p1 - 6 < lower_voltage_point {
+            // Guard against degenerate key-point extraction (e.g. all-zero return from key_point_extractor).
+            if p1 == 0 && p2 == 0 && p3 == 0 && p4 == 0 {
+                return Err(Error::Custom(
+                    "key_point_extractor returned all zeros — refusing to run ultrafast scan".into(),
+                ));
+            }
+
+            if p1.saturating_sub(6) < lower_voltage_point {
                 p1 = lower_voltage_point + 6;
             }
             if p2 < lower_voltage_point {
                 p2 = lower_voltage_point + 10;
             }
-            if p3 > upper_voltage_point {
-                p3 = upper_voltage_point - 10;
+            if p3 > upper_voltage_point.saturating_sub(10) {
+                p3 = upper_voltage_point.saturating_sub(10);
             }
             if p4 > upper_voltage_point {
                 p4 = upper_voltage_point;
@@ -1387,12 +1394,19 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<&Gpu>, matches: &ArgMatches) -> Result<(),
 
             // stair bias
             if is_50_series && p1 == p2 {
-                p1 -= 6;
+                p1 = p1.saturating_sub(6);
                 p2 += 6;
             }
             if is_50_series && p2 == p3 {
-                p2 -= 6;
+                p2 = p2.saturating_sub(6);
                 p3 += 6;
+            }
+
+            if !(p1 <= p2 && p2 <= p3 && p3 <= p4) {
+                return Err(Error::Custom(format!(
+                    "ultrafast key points not monotone after adjustment: {},{},{},{}",
+                    p1, p2, p3, p4
+                )));
             }
 
             if p2 > p3 {

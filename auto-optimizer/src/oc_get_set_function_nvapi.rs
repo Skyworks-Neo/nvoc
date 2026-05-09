@@ -1261,7 +1261,9 @@ pub fn voltage_frequency_check(arg_matches: ArgMatches, point: usize) -> Result<
 
     for gpu in gpus {
         let status = gpu.status()?;
-        let readout_v = status.voltage.unwrap();
+        let readout_v = status
+            .voltage
+            .ok_or_else(|| Error::Custom("GPU did not report voltage in status".into()))?;
         let readout_f = status.clone().clocks;
         print_scan_separator();
         println!(
@@ -1537,5 +1539,73 @@ pub fn set_legacy_clocks_nvapi(gpu: &Gpu, core_mhz: u32, mem_mhz: u32) -> Result
         }
     }
 
+    Ok(())
+}
+
+/// Release VFP voltage lock on each GPU (counterpart to `handle_lock_vfp`).
+/// Called by `srv` when temperature returns to the normal range.
+pub fn handle_unlock_vfp(gpus: &[&Gpu]) -> Result<(), Error> {
+    for gpu in gpus {
+        gpu.reset_vfp_lock().map_err(|e| {
+            Error::Custom(format!(
+                "Failed to unlock VFP for GPU ID 0x{:04X}: {:?}",
+                gpu.id(),
+                e
+            ))
+        })?;
+    }
+    Ok(())
+}
+
+/// Apply a flat per-pstate clock offset to every selected GPU.
+///
+/// `matches` must provide:
+/// - `"delta"`  — offset in kHz (i32, may be negative)
+/// - `"pstate"` — target pstate string, e.g. `"P0"` (default: P0)
+/// - `"clock"`  — clock domain string, `"graphics"` or `"memory"` (default: Graphics)
+///
+/// Called by `srv` to push a global OC delta received over the control channel.
+pub fn handle_global_oc_offset_subcommand(
+    gpus: &[&Gpu],
+    matches: &ArgMatches,
+) -> Result<(), Error> {
+    let delta_khz = matches
+        .get_one::<String>("delta")
+        .map(|s| i32::from_str(s.as_str()))
+        .transpose()
+        .map_err(|e| Error::Custom(format!("invalid --delta value: {}", e)))?
+        .unwrap_or(0);
+
+    let pstate = matches
+        .get_one::<String>("pstate")
+        .map(|s| PState::from_str(s.as_str()))
+        .transpose()
+        .map_err(|e| Error::from(format!("Invalid --pstate value: {}", e)))?
+        .unwrap_or(PState::P0);
+
+    let domain = match matches
+        .get_one::<String>("clock")
+        .map(|s| s.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("memory") | Some("mem") => ClockDomain::Memory,
+        _ => ClockDomain::Graphics,
+    };
+
+    for gpu in gpus {
+        let gpu_info = gpu.info()?;
+        gpu.inner()
+            .set_pstates(
+                [(pstate, domain, KilohertzDelta(delta_khz))]
+                    .iter()
+                    .cloned(),
+            )
+            .map_err(|e| {
+                Error::Custom(format!(
+                    "Failed to set global OC offset {} kHz for GPU {}: {:?}",
+                    delta_khz, gpu_info.id, e
+                ))
+            })?;
+    }
     Ok(())
 }
