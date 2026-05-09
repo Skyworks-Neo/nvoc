@@ -629,24 +629,24 @@ nvoc-auto-optimizer.exe set vfp import .\ws\vfp.csv
 Lock GPU voltage to VFP point or specific voltage, or release VFP lock.
 
 ```bat
-nvoc-auto-optimizer.exe set --nvapi-locked-voltage 68
-nvoc-auto-optimizer.exe set --nvapi-locked-voltage 850mV
-nvoc-auto-optimizer.exe set --nvapi-locked-voltage 850000uV
-nvoc-auto-optimizer.exe set --nvapi-locked-core-clocks 210 2100
-nvoc-auto-optimizer.exe set --nvapi-locked-mem-clocks 5000 9501
-nvoc-auto-optimizer.exe set --nvapi-reset-core-clocks
-nvoc-auto-optimizer.exe set --nvapi-reset-mem-clocks
-nvoc-auto-optimizer.exe set --nvapi-reset-vfp-locks
+nvoc-auto-optimizer.exe set nvapi --locked-voltage 68
+nvoc-auto-optimizer.exe set nvapi --locked-voltage 850mV
+nvoc-auto-optimizer.exe set nvapi --locked-voltage 850000uV
+nvoc-auto-optimizer.exe set nvapi --locked-core-clocks 210 2100
+nvoc-auto-optimizer.exe set nvapi --locked-mem-clocks 5000 9501
+nvoc-auto-optimizer.exe set nvapi --reset-core-clocks
+nvoc-auto-optimizer.exe set nvapi --reset-mem-clocks
+nvoc-auto-optimizer.exe set nvapi --reset-volt-locks
 ```
 
-| Parameter                                   | Description                                                         |
-|---------------------------------------------|---------------------------------------------------------------------|
-| `--nvapi-locked-voltage <POINT_OR_VOLTAGE>` | Bare number as point; voltage must have explicit unit (`mV` / `uV`) |
-| `--nvapi-locked-core-clocks <MIN> <MAX>`    | Lock NVAPI Graphics core frequency range (MHz)                      |
-| `--nvapi-locked-mem-clocks <MIN> <MAX>`     | Lock NVAPI Memory frequency range (MHz)                             |
-| `--nvapi-reset-core-clocks`                 | Release NVAPI core frequency lock                                   |
-| `--nvapi-reset-mem-clocks`                  | Release NVAPI memory frequency lock (alias: `--pstate-unlock`)      |
-| `--nvapi-reset-vfp-locks`                   | Clear NVAPI VFP lock (voltage / core/memory clock lock)             |
+| Parameter                            | Description                                                         |
+|--------------------------------------|---------------------------------------------------------------------|
+| `--locked-voltage <POINT_OR_VOLTAGE>` | Bare number as point; voltage must have explicit unit (`mV` / `uV`) |
+| `--locked-core-clocks <MIN> <MAX>`    | Lock NVAPI Graphics core frequency range (MHz)                      |
+| `--locked-mem-clocks <MIN> <MAX>`     | Lock NVAPI Memory frequency range (MHz)                             |
+| `--reset-core-clocks`                 | Release NVAPI core frequency lock                                   |
+| `--reset-mem-clocks`                  | Release NVAPI memory frequency lock (alias: `--pstate-unlock`)      |
+| `--reset-volt-locks`                  | Clear NVAPI VFP lock (voltage / core/memory clock lock)             |
 
 ---
 

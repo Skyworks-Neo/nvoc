@@ -33,6 +33,7 @@ pub enum GpuType {
     WorkstationPascal,
     ServerBlackwell,
     ServerHopper,
+    ServerLovelace,
     ServerAmpere,
     ServerVolta,
     ServerPascal,
@@ -68,6 +69,7 @@ impl fmt::Display for GpuType {
             GpuType::WorkstationPascal => write!(f, "Pascal series workstation card detected"),
             GpuType::ServerBlackwell => write!(f, "Blackwell series server card detected"),
             GpuType::ServerHopper => write!(f, "Hopper series server card detected"),
+            GpuType::ServerLovelace => write!(f, "Lovelace series server card detected"),
             GpuType::ServerAmpere => write!(f, "Ampere series server card detected"),
             GpuType::ServerVolta => write!(f, "Volta series server card detected"),
             GpuType::ServerPascal => write!(f, "Pascal series server card detected"),
@@ -101,7 +103,7 @@ pub fn detect_gpu_type(gpu_name: &str) -> GpuType {
         GpuType::ServerHopper
     } else if gpu_name.contains("AD") {
         if is_server || gpu_name.contains("L40") || gpu_name.contains("L4") {
-            GpuType::ServerBlackwell // L40/L4 are Ada but often categorized for servers, using Blackwell slot if Hopper/Ada server not explicit
+            GpuType::ServerLovelace // L40/L4 are Ada/Lovelace server cards
         } else if is_rtx_professional || is_quadro || is_rtx_a {
             GpuType::WorkstationLovelace
         } else if gpu_name.contains("Laptop") {
@@ -392,6 +394,7 @@ impl GpuType {
             | GpuType::WorkstationPascal
             | GpuType::ServerBlackwell
             | GpuType::ServerHopper
+            | GpuType::ServerLovelace
             | GpuType::ServerAmpere
             | GpuType::ServerVolta
             | GpuType::ServerPascal

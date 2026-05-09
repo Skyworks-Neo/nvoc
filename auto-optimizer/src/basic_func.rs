@@ -1245,13 +1245,13 @@ pub fn handle_nvml_with_ids(gpu_ids: &[u32], matches: &ArgMatches) -> Result<(),
                         mem_clock, core_clock, gpu_id
                     ),
                     Err(e) => {
-                        eprintln!("Failed to locked NVML app clocks for GPU {}: {:?}", gpu_id, e)
+                        eprintln!("Failed to lock NVML app clocks for GPU {}: {:?}", gpu_id, e)
                     }
                 }
             }
         } else {
             eprintln!(
-                "Invalid arguments for --nvml-app-clock, expected 2 arguments (MEM_MHZ CORE_MHZ)"
+                "Invalid arguments for --locked-app-clocks, expected 2 arguments (MEM_MHZ CORE_MHZ)"
             );
         }
     }
