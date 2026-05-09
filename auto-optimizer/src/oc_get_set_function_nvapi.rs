@@ -1,4 +1,5 @@
 use crate::basic_func::{select_gpus, TestResolution};
+use nvml_wrapper::Nvml;
 use crate::conv::ConvertEnum;
 use crate::error::Error;
 use crate::human::print_scan_separator;
@@ -439,12 +440,13 @@ fn nvapi_ranges_overlap(a_min: u32, a_max: u32, b_min: u32, b_max: u32) -> bool 
 }
 
 pub fn set_nvapi_pstate_lock(
+    nvml: &Nvml,
     gpu: &Gpu,
     gpu_id: u32,
     first_pstate: nvml_wrapper::enum_wrappers::device::PerformanceState,
     second_pstate: nvml_wrapper::enum_wrappers::device::PerformanceState,
 ) -> Result<(String, u32, u32), Error> {
-    let pstates = crate::oc_get_set_function_nvml::get_nvml_pstate_info(gpu_id).ok_or_else(|| {
+    let pstates = crate::oc_get_set_function_nvml::get_nvml_pstate_info(nvml, gpu_id).ok_or_else(|| {
         Error::Custom(format!(
             "Failed to query NVML P-State information for GPU {}",
             gpu_id
@@ -1131,6 +1133,7 @@ pub fn handle_test_voltage_limits(
 
 pub fn get_gpu_tdp_temp_limit(
     arg_matches: ArgMatches,
+    nvml: Option<&Nvml>,
 ) -> Result<
     (
         Percentage,
@@ -1175,15 +1178,14 @@ pub fn get_gpu_tdp_temp_limit(
         points: pff_current_point,
     };
 
-    let gpu = arg_matches.get_many::<String>("gpu");
+    let gpu_filter: Option<Vec<String>> = arg_matches.get_many::<String>("gpu").map(|v| v.cloned().collect());
     let gpu_list = crate::basic_func::get_sorted_gpus()?;
-    let gpus = select_gpus(&gpu_list, gpu)?;
+    let gpus = select_gpus(&gpu_list, gpu_filter.as_deref())?;
 
     for gpu in gpus.iter() {
         let info = gpu.info()?;
 
-        // 使用 NVAPI GPU ID 直接查询（公式：GPU_ID = PCI_Bus × 256）
-        if let Some((min_w, current_w, max_w)) = crate::oc_get_set_function_nvml::query_nvml_power_watts(info.id as u32) {
+        if let Some((min_w, current_w, max_w)) = nvml.and_then(|n| crate::oc_get_set_function_nvml::query_nvml_power_watts(n, info.id as u32)) {
             min_tdp = min_w;
             default_tdp = current_w;
             max_tdp = max_w;
@@ -1254,9 +1256,9 @@ pub fn find_matching_vfp_point(
 }
 
 pub fn voltage_frequency_check(arg_matches: ArgMatches, point: usize) -> Result<bool, Error> {
-    let gpu = arg_matches.get_many::<String>("gpu");
+    let gpu_filter: Option<Vec<String>> = arg_matches.get_many::<String>("gpu").map(|v| v.cloned().collect());
     let gpu_list = crate::basic_func::get_sorted_gpus()?;
-    let gpus = select_gpus(&gpu_list, gpu)?;
+    let gpus = select_gpus(&gpu_list, gpu_filter.as_deref())?;
     let mut precise_flag = false;
 
     for gpu in gpus {

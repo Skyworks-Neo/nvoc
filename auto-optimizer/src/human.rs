@@ -1,5 +1,6 @@
 use crate::oc_get_set_function_nvml::query_nvml_power_watts;
 use nvapi_hi::{ClockDomain, CoolerControl, Gpu, GpuInfo, GpuSettings, GpuStatus, MicrovoltsDelta};
+use nvml_wrapper::Nvml;
 use std::iter;
 
 const HEADER_LEN: usize = 20;
@@ -233,7 +234,7 @@ pub fn print_status(status: &GpuStatus) {
     }
 }
 
-pub fn print_info(gpu: &Gpu, info: &GpuInfo) {
+pub fn print_info(gpu: &Gpu, info: &GpuInfo, nvml: Option<&Nvml>) {
     pline!(
         format!("GPU {}", info.id),
         "{} ({})",
@@ -318,7 +319,7 @@ pub fn print_info(gpu: &Gpu, info: &GpuInfo) {
 
     for limit in info.power_limits.iter() {
         // 使用 NVAPI GPU ID 直接查询（公式：GPU_ID = PCI_Bus × 256）
-        match query_nvml_power_watts(info.id as u32) {
+        match nvml.and_then(|n| query_nvml_power_watts(n, info.id as u32)) {
             Some((min_w, current_w, max_w)) => {
                 pline!(
                     "Power Limit",

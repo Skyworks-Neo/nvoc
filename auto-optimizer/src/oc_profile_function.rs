@@ -1071,7 +1071,7 @@ pub fn apply_autoscan_profile(gpu: &Gpu, matches: &clap::ArgMatches, cooler_leve
     gpu.set_cooler_levels(settings)?;
     println!("Successfully set Cooler1 and Cooler2 to {}%.", cooler_level);
 
-    match get_gpu_tdp_temp_limit(matches.clone()) {
+    match get_gpu_tdp_temp_limit(matches.clone(), None) {
         Ok((
             _min_tdp_percent,
             _default_tdp_percent,

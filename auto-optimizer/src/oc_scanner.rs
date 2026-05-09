@@ -1,8 +1,8 @@
 use crate::basic_func::TestResolution::{R1680x1050, R640x384};
-use crate::basic_func::{get_second_largest_resolution, local_time_hms, TestResolution};
+use crate::basic_func::{get_second_largest_resolution, handle_reset_nvml_cooler_single_gpu, local_time_hms, TestResolution};
 use crate::error::Error;
-use crate::handle_reset_nvml_cooler_single_gpu;
 use crate::human::print_scan_separator;
+use nvml_wrapper::Nvml;
 use crate::nvidia_gpu_type::{fetch_gpu_type, GpuOcParams};
 use crate::oc_get_set_function_nvapi::{
     core_reset_vfp, get_resolution, get_voltage_by_point, handle_lock_vfp,
@@ -1195,6 +1195,7 @@ fn run_mem_oc_phase<V: std::fmt::Display + Copy>(
 
 pub fn autoscan_gpuboostv3(gpus: &Vec<&Gpu>, matches: &ArgMatches) -> Result<(), Error> {
     use crate::autoscan_config::AutoscanConfig;
+    let nvml = Nvml::init().map_err(|e| Error::Custom(format!("NVML init failed in autoscan: {:?}", e)))?;
     let cfg = AutoscanConfig::from_autoscan_matches(matches)?;
 
     let mut is_ultrafast = cfg.is_ultrafast;
@@ -1710,7 +1711,7 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<&Gpu>, matches: &ArgMatches) -> Result<(),
             );
         }
         gpu.reset_cooler_levels().unwrap_or_else(|_e| {
-            handle_reset_nvml_cooler_single_gpu(gpu, "all")
+            handle_reset_nvml_cooler_single_gpu(&nvml, gpu, "all")
                 .unwrap_or_else(|e| eprintln!("Failed to reset cooler: {e}"))
         })
     }
@@ -1720,6 +1721,7 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<&Gpu>, matches: &ArgMatches) -> Result<(),
 
 pub fn autoscan_legacy(gpus: &Vec<&Gpu>, matches: &ArgMatches) -> Result<(), Error> {
     use crate::autoscan_config::AutoscanConfig;
+    let nvml = Nvml::init().map_err(|e| Error::Custom(format!("NVML init failed in autoscan_legacy: {:?}", e)))?;
     let cfg = AutoscanConfig::from_legacy_matches(matches)?;
 
     let test_exe = cfg.test_exe.as_str();
@@ -1884,7 +1886,7 @@ pub fn autoscan_legacy(gpus: &Vec<&Gpu>, matches: &ArgMatches) -> Result<(), Err
                     .cloned(),
             )?;
             gpu.reset_cooler_levels().unwrap_or_else(|_e| {
-                handle_reset_nvml_cooler_single_gpu(gpu, "all")
+                handle_reset_nvml_cooler_single_gpu(&nvml, gpu, "all")
                     .unwrap_or_else(|e| eprintln!("Failed to reset cooler: {e}"))
             })
         }
