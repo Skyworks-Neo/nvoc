@@ -1,4 +1,4 @@
-use crate::basic_func::{select_gpus, TestResolution};
+use crate::basic_func::{select_gpus, GpuSelector, TestResolution};
 use crate::conv::ConvertEnum;
 use crate::error::Error;
 use crate::human::print_scan_separator;
@@ -1175,9 +1175,9 @@ pub fn get_gpu_tdp_temp_limit(
         points: pff_current_point,
     };
 
-    let gpu = arg_matches.get_many::<String>("gpu");
+    let selector = GpuSelector::from_clap(arg_matches.get_many::<String>("gpu"));
     let gpu_list = crate::basic_func::get_sorted_gpus()?;
-    let gpus = select_gpus(&gpu_list, gpu)?;
+    let gpus = select_gpus(&gpu_list, &selector)?;
 
     for gpu in gpus.iter() {
         let info = gpu.info()?;
@@ -1254,9 +1254,9 @@ pub fn find_matching_vfp_point(
 }
 
 pub fn voltage_frequency_check(arg_matches: ArgMatches, point: usize) -> Result<bool, Error> {
-    let gpu = arg_matches.get_many::<String>("gpu");
+    let selector = GpuSelector::from_clap(arg_matches.get_many::<String>("gpu"));
     let gpu_list = crate::basic_func::get_sorted_gpus()?;
-    let gpus = select_gpus(&gpu_list, gpu)?;
+    let gpus = select_gpus(&gpu_list, &selector)?;
     let mut precise_flag = false;
 
     for gpu in gpus {
