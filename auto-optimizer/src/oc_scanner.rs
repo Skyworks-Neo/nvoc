@@ -1103,7 +1103,9 @@ fn run_mem_oc_phase<V: std::fmt::Display + Copy>(
 
         println!(
             "current test progress estimated:{:.2}%",
-            (mem_test_num + mem_test_code - 1) / (args.mem_freq_step_exp + mem_test_code - 1)
+            (mem_test_num + mem_test_code - 1) as f64
+                / (args.mem_freq_step_exp + mem_test_code - 1) as f64
+                * 100.0
         );
         println!("current test num: {}", mem_test_num);
 
