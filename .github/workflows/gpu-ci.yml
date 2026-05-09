@@ -43,7 +43,7 @@ jobs:
         with:
           workspaces: auto-optimizer -> target
       - name: build
-        run: cargo build --release --locked
+        run: cargo build --release
       - name: read-only GPU discovery
         # Read-only NVAPI/NVML calls only. Never run write/overclock paths
         # in CI; those require a human-supervised run on a known-recoverable

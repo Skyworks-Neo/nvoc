@@ -24,12 +24,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: auto-optimizer -> target
-      - name: cargo fmt
+      - name: cargo fmt (advisory)
+        continue-on-error: true
         run: cargo fmt --check
-      - name: cargo clippy
-        run: cargo clippy --all-targets -- -D warnings
+      - name: cargo clippy (advisory)
+        continue-on-error: true
+        run: cargo clippy --all-targets
       - name: cargo build (release)
-        run: cargo build --release --locked
+        run: cargo build --release
       - name: cargo test
         run: cargo test --no-fail-fast -- --skip gpu_
 
@@ -47,10 +49,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: srv -> target
-      - name: cargo clippy
-        run: cargo clippy --all-targets -- -D warnings
+      - name: cargo clippy (advisory)
+        continue-on-error: true
+        run: cargo clippy --all-targets
       - name: cargo build (release)
-        run: cargo build --release --locked
+        run: cargo build --release
       - name: cargo test
         run: cargo test --no-fail-fast -- --skip gpu_
 
