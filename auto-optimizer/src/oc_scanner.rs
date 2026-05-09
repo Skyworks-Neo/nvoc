@@ -1101,9 +1101,15 @@ fn run_mem_oc_phase<V: std::fmt::Display + Copy>(
 
         pre_load_vf_recheck(args.common.matches, args.point);
 
+        let mem_denom = (args.mem_freq_step_exp + mem_test_code - 1) as f64;
+        let mem_progress_pct = if mem_denom > 0.0 {
+            (mem_test_num + mem_test_code - 1) as f64 / mem_denom * 100.0
+        } else {
+            0.0
+        };
         println!(
             "current test progress estimated:{:.2}%",
-            (mem_test_num + mem_test_code - 1) / (args.mem_freq_step_exp + mem_test_code - 1)
+            mem_progress_pct
         );
         println!("current test num: {}", mem_test_num);
 
