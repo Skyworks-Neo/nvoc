@@ -24,7 +24,7 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Child, Command};
 use std::thread::sleep;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 use std::{fs, iter};
 
 
@@ -226,7 +226,7 @@ mod pressure_runner {
                 Ok(mut process) => {
                     let mut exit_code = 1;
                     let test_start_at = Instant::now();
-                    let mut last_fluctuation = SystemTime::now();
+                    let mut last_fluctuation = Instant::now();
                     let mut in_test_check_number = 0;
                     let mut fluctuation_h_l_flag = false;
                     let mut thrm_or_pwr_limit_number = 0;
@@ -243,8 +243,7 @@ mod pressure_runner {
                     sleep(Duration::from_secs(1));
 
                     loop {
-                        if last_fluctuation.elapsed().unwrap_or(Duration::from_secs(6))
-                            >= Duration::from_millis(1500)
+                        if last_fluctuation.elapsed() >= Duration::from_millis(1500)
                         {
                             in_test_check_number += 1;
                             println!("inducing freq fluctuation...");
@@ -295,7 +294,7 @@ mod pressure_runner {
                                 }
                             }
 
-                            last_fluctuation = SystemTime::now();
+                            last_fluctuation = Instant::now();
                         }
 
                         sleep(time::Duration::from_secs(1));
