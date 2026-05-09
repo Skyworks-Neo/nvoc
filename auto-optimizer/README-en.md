@@ -551,7 +551,7 @@ nvoc-auto-optimizer.exe set nvml --pstate-lock P0
 | `--thermal-gps-curr <℃>`           | NVML `GpsCurr` compat, parse only                                                                   |
 | `-P, --power-limit <W>`            | Set precise power wall limit (Watts)                                                                |
 | `--locked-app-clocks <Mem> <Core>` | Lock App clocks, memory (MHz) and core (MHz)                                                        |
-| `--reset-app-clocks`               | Reset App clocks to defaults                                                                |
+| `--reset-app-clocks`               | Reset App clocks to defaults                                                                        |
 | `--locked-core-clocks <Min> <Max>` | Lock GPU core frequency range (MHz)                                                                 |
 | `--reset-core-clocks`              | Release GPU core frequency lock                                                                     |
 | `--locked-mem-clocks <Min> <Max>`  | Lock memory frequency range (MHz)                                                                   |
