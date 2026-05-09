@@ -22,6 +22,7 @@ class StressResult:
     iterations: int = 0
     total_flops: int = 0
     elapsed_s: float = 0.0
+    compute_s: float = 0.0
     tflops: float = 0.0
     validations: int = 0
     validation_failures: int = 0
@@ -192,14 +193,21 @@ def validate_precision(
         return False, float("inf"), float("inf"), "validation produced NaN/Inf"
 
     diff = (out_f32 - ref).abs()
-    max_abs = float(diff.max().item())
-    ref_abs = float(ref.abs().max().item())
-    max_rel = max_abs / (ref_abs + 1e-12)
     abs_thr, rel_thr = choose_tolerance(spec.name)
 
-    # 只要绝对误差或相对误差其中一个仍在可接受范围内，就不判失败。
-    passed = (max_abs <= abs_thr) or (max_rel <= rel_thr)
-    reason = None if passed else f"error too large: abs={max_abs:.4g}, rel={max_rel:.4g}"
+    # Per-element bound: atol + rtol * |ref|  (same convention as torch.allclose).
+    # A global max-of-diff vs max-of-ref with `or` lets a single badly-corrupted element
+    # pass whenever the global reference max is large enough to make max_rel look small.
+    elementwise_bound = abs_thr + rel_thr * ref.abs()
+    violated = diff > elementwise_bound
+    n_violated = int(violated.sum().item())
+    max_abs = float(diff.max().item())
+    ref_abs_max = float(ref.abs().max().item())
+    max_rel = max_abs / (ref_abs_max + 1e-12)
+    passed = n_violated == 0
+    reason = (None if passed else
+              f"{n_violated} elements exceed atol+rtol*|ref|; max_abs={max_abs:.4g}, "
+              f"max_rel={max_rel:.4g}")
     return passed, max_abs, max_rel, reason
 
 
@@ -289,9 +297,7 @@ def run_stress_for_precision(
 
             result.iterations += burst_iters
             result.total_flops += int(2 * (size**3) * burst_iters)
-            result.elapsed_s = time.monotonic() - start
-            if result.elapsed_s > 0:
-                result.tflops = (result.total_flops / result.elapsed_s) / 1e12
+            result.compute_s += op_elapsed
 
             del a, b
             empty_device_cache(device)
@@ -332,8 +338,8 @@ def run_stress_for_precision(
             time.sleep(0)
 
     result.elapsed_s = time.monotonic() - start
-    if result.elapsed_s > 0:
-        result.tflops = (result.total_flops / result.elapsed_s) / 1e12
+    if result.compute_s > 0:
+        result.tflops = (result.total_flops / result.compute_s) / 1e12
     return result
 
 
@@ -352,11 +358,15 @@ def print_summary(device_name: str, total_memory_gb, results):
             status = "OK" if (r.first_error is None and r.validation_failures == 0) else "FAIL"
         if status != "OK":
             overall_ok = False
+        wallclock_eff = (f"{100 * r.compute_s / r.elapsed_s:.1f}%"
+                         if r.elapsed_s > 0 else "n/a")
         print(
             f"{r.precision:12} {status:4} | "
             f"iters={r.iterations:8d} | "
-            f"time={r.elapsed_s:7.1f}s | "
+            f"wall={r.elapsed_s:7.1f}s | "
+            f"compute={r.compute_s:6.1f}s | "
             f"{r.tflops:8.2f} TFLOPS | "
+            f"eff={wallclock_eff:6} | "
             f"validations={r.validations:3d} | "
             f"val_fail={r.validation_failures:3d} | "
             f"max_abs={r.max_abs_error:.3g} | max_rel={r.max_rel_error:.3g}"
