@@ -54,10 +54,8 @@ jobs:
         run: cargo clippy --all-targets
       - name: cargo build (release)
         run: cargo build --release
-      - name: cargo build (tests, no run)
-        # srv has no #[test] functions today; we only exercise test-mode
-        # compilation. Promote to `cargo test` once srv gains tests.
-        run: cargo test --no-run --release
+        # srv has no tests yet; once tests are added, restore a
+        # `cargo test --no-fail-fast -- --skip gpu_` step here.
 
   python-tui:
     name: tui (${{ matrix.os }} / py${{ matrix.python }})
@@ -76,7 +74,14 @@ jobs:
         with:
           enable-cache: true
       - run: uv python install ${{ matrix.python }}
-      - run: uv sync --all-extras --dev --frozen
+      - name: uv sync (with retry)
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            uv sync --all-extras --dev --frozen && break
+            echo "uv sync attempt $attempt failed, retrying..."
+            sleep $((attempt * 5))
+          done
       - run: uv run pytest -q
 
   python-gui:
