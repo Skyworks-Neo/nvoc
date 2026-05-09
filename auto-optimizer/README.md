@@ -552,13 +552,14 @@ nvoc-auto-optimizer.exe set nvml --pstate-lock P0
 | `--thermal-acoustic-curr <℃>`      | NVML `AcousticCurr` 兼容参数，当前版本仅解析不写入                |
 | `--thermal-acoustic-max <℃>`       | NVML `AcousticMax` 兼容参数，当前版本仅解析不写入                 |
 | `--thermal-gps-curr <℃>`           | NVML `GpsCurr` 兼容参数，当前版本仅解析不写入                     |
-| `-P, --power-limit <W>`            | 精确设置功耗墙限制（瓦特）                               |
-| `--app-clock <Mem> <Core>`         | 锁定应用程序时钟频率，依次传入显存（MHz）与核心（MHz）              |
-| `--locked-core-clocks <Min> <Max>` | 锁定 GPU 核心频率范围（MHz）                          |
-| `--reset-core-clocks`              | 解除 GPU 核心频率锁定                               |
-| `--locked-mem-clocks <Min> <Max>`  | 锁定显存频率范围（MHz）                               |
-| `--pstate-lock <ID> [<ID>]`        | 通过显存锁窗将 GPU 锁到单个或连续 NVML P-State 区间（如 `P0`） |
-| `--reset-mem-clocks`               | 解除显存频率锁定（包含 P-State 锁定解除）                   |
+| `-P, --power-limit <W>`                | 精确设置功耗墙限制（瓦特）                               |
+| `--locked-app-clocks <Mem> <Core>`     | 锁定应用程序时钟频率，依次传入显存（MHz）与核心（MHz）              |
+| `--reset-app-clocks`                   | 解除应用程序时钟频率锁定                             |
+| `--locked-core-clocks <Min> <Max>`     | 锁定 GPU 核心频率范围（MHz）                          |
+| `--reset-core-clocks`                  | 解除 GPU 核心频率锁定                               |
+| `--locked-mem-clocks <Min> <Max>`      | 锁定显存频率范围（MHz）                               |
+| `--pstate-lock <ID> [<ID>]`            | 通过显存锁窗将 GPU 锁到单个或连续 NVML P-State 区间（如 `P0`） |
+| `--reset-mem-clocks`                   | 解除显存频率锁定（包含 P-State 锁定解除）                   |
 
 `get` / `status` 人类可读输出中会显示 NVML Temperature Thresholds 的细分值（不可用项显示 `N/A`）；当前版本不执行 NVML 温度阈值写入。
 
@@ -631,14 +632,14 @@ nvoc-auto-optimizer.exe set vfp import .\ws\vfp.csv
 将 GPU 电压锁定到 VFP 点位或显式电压，或解除 VFP lock 状态。
 
 ```bat
-nvoc-auto-optimizer.exe set --nvapi-locked-voltage 68
-nvoc-auto-optimizer.exe set --nvapi-locked-voltage 850mV
-nvoc-auto-optimizer.exe set --nvapi-locked-voltage 850000uV
-nvoc-auto-optimizer.exe set --nvapi-locked-core-clocks 210 2100
-nvoc-auto-optimizer.exe set --nvapi-locked-mem-clocks 5000 9501
-nvoc-auto-optimizer.exe set --nvapi-reset-core-clocks
-nvoc-auto-optimizer.exe set --nvapi-reset-mem-clocks
-nvoc-auto-optimizer.exe set --nvapi-reset-vfp-locks
+nvoc-auto-optimizer.exe set nvapi --locked-voltage 68
+nvoc-auto-optimizer.exe set nvapi --locked-voltage 850mV
+nvoc-auto-optimizer.exe set nvapi --locked-voltage 850000uV
+nvoc-auto-optimizer.exe set nvapi --locked-core-clocks 210 2100
+nvoc-auto-optimizer.exe set nvapi --locked-mem-clocks 5000 9501
+nvoc-auto-optimizer.exe set nvapi --reset-core-clocks
+nvoc-auto-optimizer.exe set nvapi --reset-mem-clocks
+nvoc-auto-optimizer.exe set nvapi --reset-vfp-locks
 ```
 
 | 参数                                          | 说明                                    |
@@ -736,7 +737,7 @@ nvoc-auto-optimizer.exe set vfp single_point_adj -s 50 -d 150000
 3. `reset vfp`（或 `reset --domain vfp --vfp-domain all`）：将 VFP 曲线所有点偏移归零
    - 若仅需清除核心超频，可改用 `reset --domain vfp --vfp-domain core`
    - 若仅需清除显存超频，可改用 `reset --domain vfp --vfp-domain memory`
-4. `set --nvapi-reset-vfp-locks`：解除电压锁定 / 频率锁定
+4. `set nvapi --reset-vfp-locks`：解除电压锁定 / 频率锁定
 5. `set vfp export .\ws\vfp-init.csv`（若不存在）：保存出厂原始曲线作为全程参考
 6. 为压力测试可执行文件添加防火墙规则（可选，避免网络活动干扰测试）
 

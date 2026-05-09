@@ -102,7 +102,7 @@ pub fn detect_gpu_type(gpu_name: &str) -> GpuType {
     } else if gpu_name.contains("GH") {
         GpuType::ServerHopper
     } else if gpu_name.contains("AD") {
-        if is_server || gpu_name.contains("L40") || gpu_name.contains("L4") {
+        if is_server {
             GpuType::ServerLovelace // L40/L4 are Ada/Lovelace server cards
         } else if is_rtx_professional || is_quadro || is_rtx_a {
             GpuType::WorkstationLovelace
@@ -112,7 +112,7 @@ pub fn detect_gpu_type(gpu_name: &str) -> GpuType {
             GpuType::Desktop40Series
         }
     } else if gpu_name.contains("GA") {
-        if is_server || gpu_name.contains("A100") {
+        if is_server {
             GpuType::ServerAmpere
         } else if is_rtx_professional || is_quadro || is_rtx_a {
             GpuType::WorkstationAmpere
@@ -122,7 +122,7 @@ pub fn detect_gpu_type(gpu_name: &str) -> GpuType {
             GpuType::Desktop30Series
         }
     } else if gpu_name.contains("TU10") {
-        if is_server || gpu_name.contains("T4") {
+        if is_server {
             GpuType::ServerTuringTesla
         } else if is_rtx_professional || is_quadro {
             GpuType::WorkstationTuring
@@ -139,7 +139,7 @@ pub fn detect_gpu_type(gpu_name: &str) -> GpuType {
         }
     } else if gpu_name.contains("GP1") {
         // Do NOT mess up with 'GPU'
-        if is_server || gpu_name.contains("P100") {
+        if is_server {
             GpuType::ServerPascal
         } else if is_quadro {
             GpuType::WorkstationPascal
@@ -155,7 +155,7 @@ pub fn detect_gpu_type(gpu_name: &str) -> GpuType {
             GpuType::Desktop9Series
         }
     } else if gpu_name.contains("GV") {
-        if is_server || gpu_name.contains("V100") {
+        if is_server {
             GpuType::ServerVolta
         } else {
             GpuType::ComputationVolta

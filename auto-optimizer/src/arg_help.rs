@@ -375,6 +375,7 @@ pub fn get_arguments() -> Command {
                         .arg(
                             Arg::new("locked_app_clocks")
                                 .long("locked-app-clocks")
+                                .alias("app-clock")
                                 .value_names(["MEM_MHZ", "CORE_MHZ"])
                                 .num_args(2)
                                 .help("Set NVML applications clocks (memory and core freq in MHz). Example: --locked-app-clocks 5001 1500")
