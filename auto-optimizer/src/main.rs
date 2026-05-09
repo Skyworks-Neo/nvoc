@@ -152,6 +152,26 @@ fn main_result() -> Result<i32, Box<dyn std::error::Error>> {
                                 .map_err(|_| "Invalid integer for core frequency")?;
                             let mem_mhz = matches.get_one::<String>("memory").unwrap().parse::<u32>()
                                 .map_err(|_| "Invalid integer for memory frequency")?;
+
+                            // Reject values outside a generous but finite window.
+                            // The internal scale factors are ×2000 (core) and ×1000 (mem);
+                            // anything above 5 000 MHz would produce a u32 overflow even
+                            // with saturating_mul, and no real Fermi/Kepler GPU runs there.
+                            const MIN_LEGACY_MHZ: u32 = 100;
+                            const MAX_LEGACY_MHZ: u32 = 5_000;
+                            if !(MIN_LEGACY_MHZ..=MAX_LEGACY_MHZ).contains(&core_mhz) {
+                                return Err(format!(
+                                    "--core {} MHz is outside the supported legacy range {}–{} MHz",
+                                    core_mhz, MIN_LEGACY_MHZ, MAX_LEGACY_MHZ
+                                ).into());
+                            }
+                            if !(MIN_LEGACY_MHZ..=MAX_LEGACY_MHZ).contains(&mem_mhz) {
+                                return Err(format!(
+                                    "--memory {} MHz is outside the supported legacy range {}–{} MHz",
+                                    mem_mhz, MIN_LEGACY_MHZ, MAX_LEGACY_MHZ
+                                ).into());
+                            }
+
                             for gpu in &gpus {
                                 match set_legacy_clocks_nvapi(gpu, core_mhz, mem_mhz) {
                                     Ok(_) => println!("Legacy clock applied to GPU: Core = {} MHz, Mem = {} MHz", core_mhz, mem_mhz),
