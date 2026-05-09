@@ -1229,7 +1229,7 @@ pub fn handle_nvml_with_ids(gpu_ids: &[u32], matches: &ArgMatches) -> Result<(),
         }
     }
 
-    if let Some(app_clocks) = matches.get_many::<String>("app_clock") {
+    if let Some(app_clocks) = matches.get_many::<String>("locked_app_clocks") {
         let clocks: Vec<u32> = app_clocks
             .map(|s| u32::from_str(s.as_str()).unwrap_or(0))
             .collect();
@@ -1241,11 +1241,11 @@ pub fn handle_nvml_with_ids(gpu_ids: &[u32], matches: &ArgMatches) -> Result<(),
                     gpu_id, mem_clock, core_clock,
                 ) {
                     Ok(_) => println!(
-                        "Successfully applied NVML app clocks (Mem: {}, Core: {}) to GPU {}",
+                        "Successfully locked NVML app clocks (Mem: {}, Core: {}) to GPU {}",
                         mem_clock, core_clock, gpu_id
                     ),
                     Err(e) => {
-                        eprintln!("Failed to set NVML app clocks for GPU {}: {:?}", gpu_id, e)
+                        eprintln!("Failed to locked NVML app clocks for GPU {}: {:?}", gpu_id, e)
                     }
                 }
             }

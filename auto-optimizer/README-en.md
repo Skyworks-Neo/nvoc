@@ -6,21 +6,21 @@
 
 This project is released under the [Apache License 2.0](LICENSE).
 
-> **NVIDIA GPU VF curve auto overclock optimizer**  
-> Written in Rust, it controls NVIDIA GPUs through NVAPI / NVML and works with `cli-stressor` stress tests to automatically scan the voltage-frequency (V-F Curve) curve point by point, find the stable overclock ceiling at each voltage point, and generate an optimized curve.
+> **NVIDIA GPU VF Curve Auto-Overclocking Optimizer**  
+> Written in Rust, it controls the GPU through NVAPI / NVML interfaces and works with `cli-stressor` pressure testing to perform point-by-point Voltage-Frequency (V-F Curve) automatic scanning, finding the stable overclocking upper limit for each voltage point of the NVIDIA GPU and generating an optimized curve.
 
-## nvoc-auto-optimizer — a tool that really understands overclocking
+## nvoc-auto-optimizer—A professional N-card overclocking tool for developers who truly understand overclocking
 
-## Table of contents
+## Table of Contents
 
-- [Background and theory](#background-and-theory)
-- [Supported GPU generations](#supported-gpu-generations)
-- [Compatibility matrix: interfaces × GPU generations / basic features](#compatibility-matrix-interfaces--gpu-generations--basic-features)
-- [Requirements and environment](#requirements-and-environment)
-- [Directory layout](#directory-layout)
-- [Quick start](#quick-start)
-- [Command reference](#command-reference)
-  - [Top-level arguments](#top-level-arguments)
+- [Background and Principles](#background-and-principles)
+- [Supported GPU Generations](#supported-gpu-generations)
+- [Compatibility Overview (Interface × GPU Generation / Basic Functions)](#compatibility-overview-interface--gpu-generation--basic-functions)
+- [Dependencies and Environment Requirements](#dependencies-and-environment-requirements)
+- [Directory Structure](#directory-structure)
+- [Quick Start](#quick-start)
+- [Command Reference](#command-reference)
+  - [Top-level Parameters](#top-level-parameters)
   - [info](#info)
   - [list](#list)
   - [status](#status)
@@ -36,125 +36,213 @@ This project is released under the [Apache License 2.0](LICENSE).
     - [set vfp autoscan_legacy](#set-vfp-autoscan_legacy)
     - [set vfp fix_result](#set-vfp-fix_result)
     - [set vfp single_point_adj](#set-vfp-single_point_adj)
-- [Scanning workflow explained](#scanning-workflow-explained)
-  - [Stage 0: Preparation](#stage-0-preparation)
-  - [Stage 1: Voltage range probing](#stage-1-voltage-range-probing)
-  - [Stage 2: Per-point core frequency scan](#stage-2-per-point-core-frequency-scan)
-  - [Stage 3: Memory frequency scan (optional)](#stage-3-memory-frequency-scan-optional)
-  - [Stage 4: fix_result post-processing](#stage-4-fix_result-post-processing)
-  - [Stage 5: Import and export the final curve](#stage-5-import-and-export-the-final-curve)
-- [Ultrafast mode](#ultrafast-mode)
-- [Crash recovery](#crash-recovery)
-- [Resume scanning](#resume-scanning)
-- [Legacy GPU mode (Maxwell / Pascal)](#legacy-gpu-mode-maxwell--pascal)
-- [Working files](#working-files)
-- [Recommended test environment](#recommended-test-environment)
-- [Building from source](#building-from-source)
-- [License](#license)
+- [Detailed Scanning Process](#detailed-scanning-process)
+  - [Phase 0: Preparation](#phase-0-preparation)
+  - [Phase 1: Voltage Range Probing](#phase-1-voltage-range-probing)
+  - [Phase 2: Point-by-point Core Frequency Scanning](#phase-2-point-by-point-core-frequency-scanning)
+  - [Phase 3: Video Memory Frequency Scanning (Optional)](#phase-3-video-memory-frequency-scanning-optional)
+  - [Phase 4: fix_result Post-processing](#phase-4-fix_result-post-processing)
+  - [Phase 5: Import and Export Final Curve](#phase-5-import-and-export-final-curve)
+- [Ultrafast Mode](#ultrafast-mode)
+- [Crash Recovery Mechanism](#crash-recovery-mechanism)
+- [Breakpoint Resumption](#breakpoint-resumption)
+- [Legacy GPU Mode (Maxwell / Pascal)](#legacy-gpu-mode-maxwell--pascal)
+- [Working Files Description](#working-files-description)
+- [Test Environment Suggestions](#test-environment-suggestions)
+- [Build from Source](#build-from-source)
+- [Disclaimer](#disclaimer)
 
 ---
 
-## Background and theory
+## Background and Principles
 
-### What is a V-F curve?
+### What is the V-F Curve?
 
-Starting with Pascal (10-series), NVIDIA introduced **GPU Boost 3.0**, which is driven by a voltage-frequency lookup table (VFP). The GPU looks up the target frequency for the current core voltage and tracks it dynamically at runtime.  
-The factory default curve is a conservative value calibrated by NVIDIA with plenty of headroom for the worst silicon. Real stability limits vary significantly between wafers and individual chips, and high-quality chips often can run much higher than the stock curve.
+Starting from Pascal (10 series), NVIDIA introduced **GPU Boost 3.0**, the core of which is a Voltage-Frequency (VFP) lookup table: the GPU will look up the corresponding target frequency in the table based on the current core voltage and track it in real-time during operation.  
+The factory default curve is a conservative value calibrated by NVIDIA for the worst silicon with a generous margin. Actual stability limits vary greatly between different wafer batches and silicon individuals, and the true usable frequency of high-quality silicon is often much higher than the factory value.
 
-### The essence of overclocking
+### The Essence of Overclocking
 
-Overclocking means applying a positive frequency offset (`KilohertzDelta`) to each voltage point in the VFP table, raising the target frequency for that voltage. If the offset is too high, the chip violates timing margins and the GPU may trigger TDR (Timeout Detection and Recovery) or crash directly.  
-The goal of this tool is: **find the maximum stable frequency offset for each point on the curve**.
+Overclocking is essentially applying a positive frequency offset (`KilohertzDelta`) to each voltage point in the VFP table to increase the target frequency corresponding to that voltage point. When the offset is too large, internal timing violations occur, and the GPU triggers TDR (Timeout Detection and Recovery) or crashes directly.  
+The goal of this tool is: **For each voltage point on the curve, find the maximum frequency offset value that can stably pass the pressure test at that voltage**.
 
-### Stress-test load: cli-stressor
+### Pressure Test Load: cli-stressor
 
-`cli-stressor` provides a stable stress workload at a given voltage/frequency. The pass/fail criterion is based on the **process return code**: `0` means success, any non-zero value means failure.
+`cli-stressor` is used to provide stability pressure at a given voltage/frequency. The criterion uses the **process return code**: returning `0` is considered passing, and non-`0` is considered failing.
 
-### Maxwell / 9-series legacy mode
+### Maxwell / 9 Series Legacy Mode
 
-Maxwell (GM codename, 9xx series) and earlier GPUs do not support per-point V-F curve writes. They can only apply a global frequency offset to P0 through `SetPstates20`. For such GPUs, this tool uses the `autoscan_legacy` workflow and scans a single global offset.
-
----
-
-## Supported GPU generations
-
-| Generation | Prefix | Mode | Notes |
-|---|---|---|---|
-| RTX 50 series (Blackwell) | `GB` | VF curve | Aggressive BSOD recovery by default; supports Max-Q step calibration |
-| RTX 40 series (Ada Lovelace) | `AD` | VF curve | — |
-| RTX 30 series (Ampere) | `GA` | VF curve | — |
-| RTX 20 series (Turing TU10x) | `TU10` | VF curve (small heavy/light-load difference) | — |
-| GTX 16 series (Turing TU11x) | `TU11` | VF curve (small heavy/light-load difference) | — |
-| GTX 10 series (Pascal) | `GP1` | VFP curve (79 points) | Small heavy/light-load difference; `fix_result` is still recommended |
-| GTX 9 series (Maxwell) | `GM` | **Legacy global offset** | No per-point VFP; use `autoscan_legacy` |
-| Volta compute cards | `GV` | Legacy | Same as above |
-
-> **Mobile GPUs** (names containing `Laptop`) cannot change TDP / thermal limits / VDDQ boost. The tool automatically skips those settings when detected.
+Maxwell (GM code name, 9xx series) and earlier GPUs do not support point-by-point V-F curve writing and can only apply a global frequency offset to the P0 state through `SetPstates20`. This tool uses the `autoscan_legacy` flow for such GPUs, scanning only a single global offset value.
 
 ---
 
-## Compatibility matrix: interfaces × GPU generations / basic features
+## Supported GPU Generations
 
-### **NVAPI + desktop consumer GPUs**
+| Generation                   | Code Name Prefix | Mode                                               | Description                                                           |
+|------------------------------|------------------|----------------------------------------------------|-----------------------------------------------------------------------|
+| RTX 50 Series (Blackwell)    | `GB`             | VF Curve                                           | Defaults to aggressive BSOD recovery; supports Max-Q step calibration |
+| RTX 40 Series (Ada Lovelace) | `AD`             | VF Curve                                           | —                                                                     |
+| RTX 30 Series (Ampere)       | `GA`             | VF Curve                                           | —                                                                     |
+| RTX 20 Series (Turing TU10x) | `TU10`           | VF Curve (Small diff between light and heavy load) | —                                                                     |
+| GTX 16 Series (Turing TU11x) | `TU11`           | VF Curve (Small diff between light and heavy load) | —                                                                     |
+| GTX 10 Series (Pascal)       | `GP1`            | VFP Curve (79 points)                              | Small diff between light and heavy load; fix_result still recommended |
+| GTX 9 Series (Maxwell)       | `GM`             | **Legacy Global Offset**                           | Point-by-point VFP not supported; scanned via `autoscan_legacy`       |
+| Volta Compute Cards          | `GV`             | Legacy                                             | Same as above                                                         |
 
-| Feature | RTX 50 (GB) | RTX 40 (AD) | RTX 30 (GA) | RTX 20 (TU10) | GTX 16 (TU11) | GTX 10 (GP1) | GTX 9 / some 7-series (GM) | Notes |
-|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|---|
-| VF curve edit + export | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | |
-| Auto overclocking `autoscan` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | |
-| Legacy auto overclocking `autoscan_legacy` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | |
-| Core frequency offset (`--core-offset`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | |
-| Memory frequency offset (`--mem-offset`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Not independent from VF curve; applying it resets the VF curve |
-| Power limit (`--power-limit`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | |
-| Thermal limit (`--thermal-limit`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | |
-| Fan control (NVAPI cooler) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | |
-| Fan reset (NVAPI cooler) | ✅ (Linux❓) | ✅ (Linux❓) | ✅ (Linux❓) | ✅ (Linux❓) | ✅ (Linux❌) | ✅ (Linux❌) | ✅ (Linux❌) | |
-| Locked voltage (`--locked-voltage`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | |
-| Unlock voltage (`--locked-voltage`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | |
-| Lock core clock range (`--locked-core-clocks`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | |
-| Unlock core clock range (`--locked-core-clocks`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | |
-| Lock memory clock range (`--locked-mem-clocks`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Partial | |
-| Unlock memory clock range (`--locked-mem-clocks`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Partial | |
-| Boost voltage (`--voltage-boost`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | |
-| Overvolt (`--voltage-delta`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | |
+> **Mobile GPUs** (name contains `Laptop`) cannot modify TDP / Temperature Wall / VDDQ boost; the tool will automatically skip these settings when detected.
 
-### **NVML + desktop consumer GPUs**
+---
 
-| Feature | RTX 50 (GB) | RTX 40 (AD) | RTX 30 (GA) | RTX 20 (TU10) | GTX 16 (TU11) | GTX 10 (GP1) | GTX 9 / some 7-series (GM) | Notes |
-|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|---|
-| VF curve edit + export | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| Auto overclocking `autoscan` | TODO | TODO | TODO | TODO | TODO | TODO | ❌ | A new algorithm based on clock locking and offsets is required |
-| Legacy auto overclocking `autoscan_legacy` | TODO | TODO | TODO | TODO | TODO | TODO | TODO | A new algorithm based on clock locking and offsets is required |
-| Core frequency offset (`--core-offset`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | |
-| Memory frequency offset (`--mem-offset`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Applying it resets the VF curve |
-| Power limit (`--power-limit`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | |
-| Thermal limit (`--thermal-limit`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | |
-| Fan control (NVML cooler) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | |
-| Fan reset (NVML cooler) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | |
-| Locked voltage (`--locked-voltage`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| Unlock voltage (`--locked-voltage`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| Lock core clock range (`--locked-core-clocks`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ? | |
-| Unlock core clock range (`--locked-core-clocks`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ? | |
-| Lock memory clock range (`--locked-mem-clocks`) | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | |
-| Unlock memory clock range (`--locked-mem-clocks`) | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | |
-| Boost voltage (`--voltage-boost`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| Overvolt (`--voltage-delta`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
+## Compatibility Overview (Interface × GPU Generation / Basic Functions)
 
-### Mobile GPUs
+Note: Testing on Linux NV proprietary drivers shows that NVAPI on Linux is essentially a compatibility layer for /lib/x86_64-linux-gnu/libnvidia-api.so.1, directly leading to /lib/x86_64-linux-gnu/libnvidia-ml.so.1. In other words, on Linux, only the NVML interface actually exists. However, due to NVAPI's "translation" of NVML, for professional cards (such as P100, V100, etc.)—since this project's primary GPU ID index uses the NVAPI interface—support on Linux may be better than on Windows.
+Additionally, the core frequency range lock of NVML is actually a voltage range lock at the bottom. We have verified through dynamic adjustment—after adjusting the frequency offset, the frequency range lock still takes effect within the working point of the voltage range corresponding to the frequency range at the time of setting, rather than the original frequency range.
 
-Generally do not support **boost voltage, fan-related controls, thermal limits, or power limits**.
+### **NVAPI Interface + Desktop Consumer GPUs:**
 
-## Requirements and environment
+|                      Function                      | RTX 50 (GB) | RTX 40 (AD) | RTX 30 (GA) | RTX 20 (TU10) | GTX 16 (TU11) | GTX 10 (GP1) |  GTX 9/Part 7 (GM)  |                          Remarks                           |
+|:--------------------------------------------------:|:-----------:|:-----------:|:-----------:|:-------------:|:-------------:|:------------:|:-------------------:|:----------------------------------------------------------:|
+|               VF curve Edit + Export               |      ✅      |      ✅      |      ✅      |       ✅       |       ✅       |      ✅       |          ❌          |                                                            |
+|                  Auto OC autoscan                  |      ✅      |      ✅      |      ✅      |       ✅       |       ✅       |      ✅       |          ❌          |                                                            |
+|           Legacy Auto OC autoscan_legacy           |      ✅      |      ✅      |      ✅      |       ✅       |       ✅       |      ✅       |          ✅          |                                                            |
+|      Core Frequency Offset (`--core-offset`)       |      ✅      |      ✅      |      ✅      |       ✅       |       ✅       |      ✅       |          ✅          |                                                            |
+|      Memory Frequency Offset (`--mem-offset`)      |      ✅      |      ✅      |      ✅      |       ✅       |       ✅       |      ✅       |          ✅          | Not independent from VF Curve; applying it resets VF Curve |
+|            Power Wall (`--power-limit`)            |      ✅      |      ✅      |      ✅      |       ✅       |       ✅       |      ✅       |          ✅          |                                                            |
+|        Temperature Wall (`--thermal-limit`)        |      ✅      |      ✅      |      ✅      |       ✅       |       ✅       |      ✅       |          ✅          |                                                            |
+|          Fan Speed Control (NVAPI cooler)          |      ✅      |      ✅      |      ✅      |       ✅       |       ✅       |      ✅       |          ✅          |                                                            |
+|           Fan Speed Reset (NVAPI cooler)           | ✅ (Linux❓)  | ✅ (Linux❓)  | ✅ (Linux❓)  |  ✅ (Linux❌)   |  ✅ (Linux❌)   |  ✅ (Linux❌)  |     ✅ (Linux❌)      |                                                            |
+|       Voltage Point Lock (--locked-voltage)        |      ✅      |      ✅      |      ✅      |       ✅       |       ✅       |      ✅       |          ❌          |                                                            |
+|      Voltage Point Unlock (reset-volt-locks)       |      ✅      |      ✅      |      ✅      |       ✅       |       ✅       |      ✅       |          ❌          |                                                            |
+|  Core Frequency Range Lock (--locked-core-clocks)  |      ✅      |      ✅      |      ✅      |       ✅       |       ✅       |      ✅       |          ✅          |                                                            |
+| Core Frequency Range Unlock (--reset-core-clocks)  |      ✅      |      ✅      |      ✅      |       ✅       |       ✅       |      ✅       |          ✅          |                                                            |
+| Memory Frequency Range Lock (--locked-mem-clocks)  |      ✅      |      ✅      |      ✅      |       ✅       |       ✅       |      ✅       | Partially Supported |                                                            |
+| Memory Frequency Range Unlock (--reset-mem-clocks) |      ✅      |      ✅      |      ✅      |       ✅       |       ✅       |      ✅       | Partially Supported |                                                            |
+|     Boost Voltage Voltboost (--voltage-boost)      |      ✅      |      ✅      |      ✅      |       ✅       |       ✅       |      ✅       |          ❌          |                                                            |
+|             Overvolt (--voltage-delta)             |      ❌      |      ❌      |      ❌      |       ❌       |       ❌       |      ❌       |          ✅          |                                                            |
 
-### Runtime dependencies
+### **NVML Interface + Desktop Consumer GPUs:**
 
-| Dependency | Description |
-|---|---|
-| Windows 10/11 | The tool uses NVAPI/NVML and supports Windows 10/11 and *any Linux distribution using nvidia-open-dkms* (theoretically; tested on Arch Linux + KDE, Ubuntu 22.04, Debian 12/13) |
-| NVIDIA driver (>= 537; Linux uses nvidia-open-dkms) | Must support the target GPU's NVAPI/NVML interface. Driver 395 is known to fail completely, so Kepler and older cards are difficult to support with very old drivers |
-| `cli-stressor` stress-test script (for auto OC) | Default invocation comes from `test/test_cuda_windows.bat` / `test/test_opencl_linux.sh` |
-| Administrator / sudo privileges | Writing overclock settings requires elevated privileges; most read-only actions do not |
+|                      Function                      | RTX 50 (GB) | RTX 40 (AD) | RTX 30 (GA) | RTX 20 (TU10) | GTX 16 (TU11) | GTX 10 (GP1) | GTX 9/Part 7 (GM) |                          Remarks                           |
+|:--------------------------------------------------:|:-----------:|:-----------:|:-----------:|:-------------:|:-------------:|:------------:|:-----------------:|:----------------------------------------------------------:|
+|               VF curve Edit + Export               |      ❌      |      ❌      |      ❌      |       ❌       |       ❌       |      ❌       |         ❌         |                                                            |
+|                  Auto OC autoscan                  |    TODO     |    TODO     |    TODO     |     TODO      |     TODO      |     TODO     |         ❌         | Requires new algorithm based on frequency lock and offset  |
+|           Legacy Auto OC autoscan_legacy           |    TODO     |    TODO     |    TODO     |     TODO      |     TODO      |     TODO     |       TODO        | Requires new algorithm based on frequency lock and offset  |
+|      Core Frequency Offset (`--core-offset`)       |      ✅      |      ✅      |      ✅      |       ✅       |       ✅       |      ✅       |         ✅         |                                                            |
+|      Memory Frequency Offset (`--mem-offset`)      |      ✅      |      ✅      |      ✅      |       ✅       |       ✅       |      ✅       |         ✅         | Not independent from VF Curve; applying it resets VF Curve |
+|            Power Wall (`--power-limit`)            |      ✅      |      ✅      |      ✅      |       ✅       |       ✅       |      ✅       |         ✅         |                                                            |
+|        Temperature Wall (`--thermal-limit`)        |      ✅      |      ✅      |      ✅      |       ✅       |       ✅       |      ✅       |         ✅         |                                                            |
+|          Fan Speed Control (NVML cooler)           |      ✅      |      ✅      |      ✅      |       ✅       |       ✅       |      ✅       |         ✅         |                                                            |
+|           Fan Speed Reset (NVML cooler)            |      ✅      |      ✅      |      ✅      |       ✅       |       ✅       |      ✅       |         ✅         |                                                            |
+|       Voltage Point Lock (--locked-voltage)        |      ❌      |      ❌      |      ❌      |       ❌       |       ❌       |      ❌       |         ❌         |                                                            |
+|      Voltage Point Unlock (reset-volt-locks)       |      ❌      |      ❌      |      ❌      |       ❌       |       ❌       |      ❌       |         ❌         |                                                            |
+|  Core Frequency Range Lock (--locked-core-clocks)  |      ✅      |      ✅      |      ✅      |       ✅       |       ✅       |      ✅       |         ❓         |                                                            |
+| Core Frequency Range Unlock (--reset-core-clocks)  |      ✅      |      ✅      |      ✅      |       ✅       |       ✅       |      ✅       |         ❓         |                                                            |
+| Memory Frequency Range Lock (--locked-mem-clocks)  |      ✅      |      ✅      |      ✅      |       ❌       |       ❌       |      ❌       |         ❌         |                                                            |
+| Memory Frequency Range Unlock (--reset-mem-clocks) |      ✅      |      ✅      |      ✅      |       ❌       |       ❌       |      ❌       |         ❌         |                                                            |
+|   App Frequency Range Lock (--locked-app-clocks)   |      ❌      |      ❌      |      ❌      |       ❌       |       ❌       |      ❌       |         ❌         |                                                            |
+|  App Frequency Range Unlock (--reset-app-clocks)   |      ❌      |      ❌      |      ❌      |       ❌       |       ❌       |      ❌       |         ❌         |                                                            |
+|     Boost Voltage Voltboost (--voltage-boost)      |      ❌      |      ❌      |      ❌      |       ❌       |       ❌       |      ❌       |         ❌         |                                                            |
+|             Overvolt (--voltage-delta)             |      ❌      |      ❌      |      ❌      |       ❌       |       ❌       |      ❌       |         ❌         |                                                            |
 
-### Default stress-test script locations
+### **NVAPI Interface + Server Grade GPUs:**
+
+|                      Function                      | Blackwell (GB) | Hopper (GH)  | Ampere (GA)  | Turing (GT)  |  Volta (GV)  | Pascal (GP)  |                     Remarks                     |
+|:--------------------------------------------------:|:--------------:|:------------:|:------------:|:------------:|:------------:|:------------:|:-----------------------------------------------:|
+|               VF curve Edit + Export               |       ❌        |      ❌       |      ❌       |      ❌       |      ❌       |      ❌       |                                                 |
+|                  Auto OC autoscan                  |       ❌        |      ❌       |      ❌       |      ❌       |      ❌       |      ❌       |                                                 |
+|      Core Frequency Offset (`--core-offset`)       |       ❌        |      ❌       |      ❌       |      ❌       |      ❌       |      ❌       |                                                 |
+|      Memory Frequency Offset (`--mem-offset`)      |       ❌        |      ❌       |      ❌       |      ❌       |      ❌       |      ❌       |                                                 |
+|            Power Wall (`--power-limit`)            |       ✅        |      ✅       |      ✅       |      ✅       |      ✅       |      ✅       |  Usually locked by driver, needs NVML attempt   |
+|        Temperature Wall (`--thermal-limit`)        |       ❓        |      ❓       |      ❓       |      ❓       |      ❓       |      ❓       |   Cases where return code 0 but not effective   |
+|          Fan Speed Control (NVAPI cooler)          |       ❌        |      ❌       |      ❌       |      ❌       |      ❌       |      ❌       | No onboard fan or motherboard/system controlled |
+|       Voltage Point Lock (--locked-voltage)        |       ❌        |      ❌       |      ❌       |      ❌       |      ❌       |      ❌       |                                                 |
+|  Core Frequency Range Lock (--locked-core-clocks)  |  ✅ (Windows❌)  | ✅ (Windows❌) | ✅ (Windows❌) | ✅ (Windows❌) | ✅ (Windows❌) | ✅ (Windows❌) | Diff driver model + Linux has NVAPI translation |
+| Core Frequency Range Unlock (--reset-core-clocks)  |  ✅ (Windows❌)  | ✅ (Windows❌) | ✅ (Windows❌) | ✅ (Windows❌) | ✅ (Windows❌) | ✅ (Windows❌) | Diff driver model + Linux has NVAPI translation |
+| Memory Frequency Range Lock (--locked-mem-clocks)  |  ✅ (Windows❌)  | ✅ (Windows❌) | ✅ (Windows❌) |      ❌       |      ❌       |      ❌       | Diff driver model + Linux has NVAPI translation |
+| Memory Frequency Range Unlock (--reset-mem-clocks) |  ✅ (Windows❌)  | ✅ (Windows❌) | ✅ (Windows❌) |      ❌       |      ❌       |      ❌       | Diff driver model + Linux has NVAPI translation |
+|     Boost Voltage Voltboost (--voltage-boost)      |       ❌        |      ❌       |      ❌       |      ❌       |      ❌       |      ❌       |                                                 |
+|             Overvolt (--voltage-delta)             |       ❌        |      ❌       |      ❌       |      ❌       |      ❌       |      ❌       |                        ❌                        | |
+
+### **NVAPI Interface + Workstation Grade GPUs:**
+
+|                     Function                      | Blackwell (GB) | Ada (AD) | Ampere (GA) | Turing (TU) | Pascal (GP) | Remarks |
+|:-------------------------------------------------:|:--------------:|:--------:|:-----------:|:-----------:|:-----------:|:-------:|
+|              VF curve Edit + Export               |       ✅        |    ✅     |      ✅      |      ❓      |      ❓      |         |
+|                 Auto OC autoscan                  |       ✅        |    ✅     |      ✅      |      ❓      |      ❓      |         |
+|      Core Frequency Offset (`--core-offset`)      |       ✅        |    ✅     |      ✅      |      ❓      |      ❓      |         |
+|     Memory Frequency Offset (`--mem-offset`)      |       ✅        |    ✅     |      ✅      |      ❓      |      ❓      |         |
+|           Power Wall (`--power-limit`)            |       ✅        |    ✅     |      ✅      |      ✅      |      ✅      |         |
+|       Temperature Wall (`--thermal-limit`)        |       ✅        |    ✅     |      ✅      |      ✅      |      ✅      |         |
+|         Fan Speed Control (NVAPI cooler)          |       ✅        |    ✅     |      ✅      |      ✅      |      ✅      |         |
+|       Voltage Point Lock (--locked-voltage)       |       ✅        |    ✅     |      ✅      |      ❓      |      ❓      |         |
+| Core Frequency Range Lock (--locked-core-clocks)  |       ✅        |    ✅     |      ✅      |      ✅      |      ✅      |         |
+| Memory Frequency Range Lock (--locked-mem-clocks) |       ✅        |    ✅     |      ✅      |      ❓      |      ❌      |         |
+|     Boost Voltage Voltboost (--voltage-boost)     |       ❌        |    ❌     |      ❌      |      ❌      |      ❌      |         |
+
+### **NVML Interface + Server Grade GPUs:**
+
+|                      Function                      | Blackwell (GB) | Hopper (GH)  | Ampere (GA)  | Turing (GT)  |  Volta (GV)  | Pascal (GP)  |                     Remarks                     |
+|:--------------------------------------------------:|:--------------:|:------------:|:------------:|:------------:|:------------:|:------------:|:-----------------------------------------------:|
+|               VF curve Edit + Export               |       ❌        |      ❌       |      ❌       |      ❌       |      ❌       |      ❌       |                                                 |
+|                  Auto OC autoscan                  |       ❌        |      ❌       |      ❌       |      ❌       |      ❌       |      ❌       |                                                 |
+|           Legacy Auto OC autoscan_legacy           |       ❌        |      ❌       |      ❌       |      ❌       |      ❌       |      ❌       |                                                 |
+|      Core Frequency Offset (`--core-offset`)       |       ❌        |      ❌       |      ❌       |      ❌       |      ❌       |      ❌       |                                                 |
+|      Memory Frequency Offset (`--mem-offset`)      |       ❌        |      ❌       |      ❌       |      ❌       |      ❌       |      ❌       |                                                 |
+|            Power Wall (`--power-limit`)            |       ✅        |      ✅       |      ✅       |      ✅       |      ✅       |      ✅       |                                                 |
+|        Temperature Wall (`--thermal-limit`)        |       ❓        |      ❓       |      ❓       |      ❓       |      ❓       |      ❓       |   Cases where return code 0 but not effective   |
+|          Fan Speed Control (NVML cooler)           |       ❌        |      ❌       |      ❌       |      ❌       |      ❌       |      ❌       | No onboard fan or motherboard/system controlled |
+|           Fan Speed Reset (NVML cooler)            |       ❌        |      ❌       |      ❌       |      ❌       |      ❌       |      ❌       | No onboard fan or motherboard/system controlled |
+|       Voltage Point Lock (--locked-voltage)        |       ❌        |      ❌       |      ❌       |      ❌       |      ❌       |      ❌       |                                                 |
+|      Voltage Point Unlock (reset-volt-locks)       |       ❌        |      ❌       |      ❌       |      ❌       |      ❌       |      ❌       |                                                 |
+|  Core Frequency Range Lock (--locked-core-clocks)  |  ✅ (Windows❌)  | ✅ (Windows❌) | ✅ (Windows❌) | ✅ (Windows❌) | ✅ (Windows❌) | ✅ (Windows❌) | Diff driver model + Linux has NVAPI translation |
+| Core Frequency Range Unlock (--reset-core-clocks)  |  ✅ (Windows❌)  | ✅ (Windows❌) | ✅ (Windows❌) | ✅ (Windows❌) | ✅ (Windows❌) | ✅ (Windows❌) | Diff driver model + Linux has NVAPI translation |
+| Memory Frequency Range Lock (--locked-mem-clocks)  |  ✅ (Windows❌)  | ✅ (Windows❌) | ✅ (Windows❌) |      ❌       |      ❌       |      ❌       | Diff driver model + Linux has NVAPI translation |
+| Memory Frequency Range Unlock (--reset-mem-clocks) |  ✅ (Windows❌)  | ✅ (Windows❌) | ✅ (Windows❌) |      ❌       |      ❌       |      ❌       | Diff driver model + Linux has NVAPI translation |
+|   App Frequency Range Lock (--locked-app-clocks)   |       ✅        |      ✅       |      ✅       |      ✅       |      ✅       |      ✅       |                                                 |
+|  App Frequency Range Unlock (--reset-app-clocks)   |       ✅        |      ✅       |      ✅       |      ✅       |      ✅       |      ✅       |                                                 |
+|     Boost Voltage Voltboost (--voltage-boost)      |       ❌        |      ❌       |      ❌       |      ❌       |      ❌       |      ❌       |                                                 |
+|             Overvolt (--voltage-delta)             |       ❌        |      ❌       |      ❌       |      ❌       |      ❌       |      ❌       |                        ❌                        | |
+
+### **NVML Interface + Workstation Grade GPUs:**
+
+|                      Function                      | Blackwell (GB) | Ada (AD) | Ampere (GA) | Turing (TU) | Pascal (GP) | Remarks |
+|:--------------------------------------------------:|:--------------:|:--------:|:-----------:|:-----------:|:-----------:|:-------:|
+|               VF curve Edit + Export               |       ❌        |    ❌     |      ❌      |      ❌      |      ❌      |         |
+|                  Auto OC autoscan                  |      TODO      |   TODO   |    TODO     |    TODO     |    TODO     |         |
+|           Legacy Auto OC autoscan_legacy           |       ❌        |    ❌     |      ❌      |      ❌      |      ❌      |         |
+|      Core Frequency Offset (`--core-offset`)       |       ❓        |    ❓     |      ❓      |      ❓      |      ❓      |         |
+|      Memory Frequency Offset (`--mem-offset`)      |       ❓        |    ❓     |      ❓      |      ❓      |      ❓      |         |
+|            Power Wall (`--power-limit`)            |       ✅        |    ✅     |      ✅      |      ✅      |      ✅      |         |
+|        Temperature Wall (`--thermal-limit`)        |       ❌        |    ❌     |      ❌      |      ❌      |      ❌      |         |
+|          Fan Speed Control (NVML cooler)           |       ✅        |    ✅     |      ✅      |      ✅      |      ✅      |         |
+|           Fan Speed Reset (NVML cooler)            |       ✅        |    ✅     |      ✅      |      ✅      |      ✅      |         |
+|       Voltage Point Lock (--locked-voltage)        |       ❌        |    ❌     |      ❌      |      ❌      |      ❌      |         |
+|      Voltage Point Unlock (reset-volt-locks)       |       ❌        |    ❌     |      ❌      |      ❌      |      ❌      |         |
+|  Core Frequency Range Lock (--locked-core-clocks)  |       ✅        |    ✅     |      ✅      |      ✅      |      ✅      |         |
+| Core Frequency Range Unlock (--reset-core-clocks)  |       ✅        |    ✅     |      ✅      |      ✅      |      ✅      |         |
+| Memory Frequency Range Lock (--locked-mem-clocks)  |       ✅        |    ✅     |      ✅      |      ❌      |      ❌      |         |
+| Memory Frequency Range Unlock (--reset-mem-clocks) |       ✅        |    ✅     |      ✅      |      ❌      |      ❌      |         |
+|   App Frequency Range Lock (--locked-app-clocks)   |       ❌        |    ❌     |      ❌      |      ❌      |      ❌      |         |
+|  App Frequency Range Unlock (--reset-app-clocks)   |       ❌        |    ❌     |      ❌      |      ❌      |      ❌      |         |
+|     Boost Voltage Voltboost (--voltage-boost)      |       ❌        |    ❌     |      ❌      |      ❌      |      ❌      |         |
+|             Overvolt (--voltage-delta)             |       ❌        |    ❌     |      ❌      |      ❌      |      ❌      |    ❌    | ❌ |
+
+### Mobile GPUs / Workstation GPUs / Server GPUs:
+
+Generally do not support **Boost Voltage, fan-related controls, temperature wall related controls, power wall related controls**.
+
+## Dependencies and Environment Requirements
+
+### Runtime Dependencies
+
+| Dependency                                                       | Description                                                                                                                                                                            |
+|------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Windows 10/11 or any Linux distribution                          | The tool is invoked via NVAPI/NVML and supports Windows 10/11 and *any Linux distribution using nvidia-open-dkms* (theoretically, ArchLinux + KDE, Ubuntu 22.04, Debian 12/13 tested). |
+| NVIDIA Driver (≥ 537, nvidia-open-dkms or proprietary for Linux) | Must support NVAPI/NVML interface for target GPU. Version 395 known not to work; hard to support Kepler and earlier GPUs with old drivers.                                             |
+| `cli-stressor` pressure test script (for auto OC)                | By default called by `test\test_cuda_windows.bat` / `test\test_opencl_linux.sh`.                                                                                                       |
+| Administrator/Sudo privileges                                    | OC parameter writing requires admin privileges; most reads do not.                                                                                                                     |
+
+### Pressure Test Script Location (Default)
 
 ```
 auto-optimizer/
@@ -165,52 +253,52 @@ auto-optimizer/
 └── ws/
 ```
 
-### Build dependencies (only when building from source)
+### Build Dependencies (Only if building from source)
 
 - Rust toolchain
-- Target platform build tools
+- Build tools for target architecture
 
 ---
 
-## Directory layout
+## Directory Structure
 
 ```
 auto-optimizer/
 ├── src/
-│   ├── main.rs               # entry point, command routing
-│   ├── arg_help.rs           # clap command-line argument definitions
-│   ├── basic_func.rs         # GPU generation detection, resolution helpers, handle_info/list/status/get/reset
-│   ├── nvidia_gpu_type.rs    # GPU generation identification and classification parameters
+│   ├── main.rs               # Entry point, command routing
+│   ├── arg_help.rs           # clap command line argument definitions
+│   ├── basic_func.rs         # GPU generation detection, resolution tools, handle_info/list/status/get/reset
+│   ├── nvidia_gpu_type.rs     # GPU generation identification and parameter typing
 │   ├── oc_get_set_function_nvapi.rs # NVAPI: VFP lock/reset, cooler, voltage/frequency settings
-│   ├── oc_get_set_function_nvml.rs  # NVML: power limits, clock locks, P-State locks
-│   ├── oc_profile_function.rs# VFP export/import, fix_result, autoscan helpers
-│   ├── oc_scanner.rs         # autoscan_gpuboostv3 / autoscan_legacy scanning loops
-│   ├── autoscan_config.rs    # scan parameter structures (ArgMatches parsing)
+│   ├── oc_get_set_function_nvml.rs  # NVML: Power wall, clock lock, P-State lock
+│   ├── oc_profile_function.rs# VFP export/import, fix_result, autoscan auxiliary functions
+│   ├── oc_scanner.rs         # autoscan_gpuboostv3 / autoscan_legacy core scanning loop
+│   ├── autoscan_config.rs    # Scan parameter struct (unified ArgMatches parsing)
 │   ├── types.rs              # OutputFormat, ResetSettings, VfpResetDomain enums
-│   ├── conv.rs               # enum <-> string conversions
-│   ├── error.rs              # unified error type
-│   ├── human.rs              # human-readable output formatting
+│   ├── conv.rs               # Enum string conversions
+│   ├── error.rs              # Unified error types
+│   ├── human.rs              # Human-readable output formatting
 │   └── lib.rs
-├── ws/                       # created at runtime for scan intermediates
-│   ├── vfp.log               # scan log (used by resume scanning)
-│   ├── vfp-init.csv          # factory curve snapshot exported before the first scan
-│   ├── vfp-tem.csv           # temporary autoscan results saved after each point
-│   └── vfp.csv / vfp-final.csv  # fixed final curve / final export snapshot
+├── ws/                       # Created automatically at runtime, stores intermediate scan files
+│   ├── vfp.log               # Scan process log (resumption depends on this file)
+│   ├── vfp-init.csv          # Factory original curve exported before first scan
+│   ├── vfp-tem.csv           # Real-time temporary results saved per point during autoscan
+│   └── vfp.csv / vfp-final.csv  # fix_result post-processing results / final exported confirmation file
 ├── test/
-│   └── test.bat              # stress-test wrapper script
-├── start.bat                 # standard scan launcher
-├── start_ultrafast.bat       # ultrafast scan launcher
-├── start_legacy.bat          # legacy GPU scan launcher
-├── GpuTdrRecovery.reg        # TDR recovery registry settings
-├── recover.bat               # manual recovery script
+│   └── test.bat              # Pressure test wrapper script calling cli-stressor
+├── start.bat                 # Standard scan startup script
+├── start_ultrafast.bat       # Ultrafast scan startup script
+├── start_legacy.bat          # Legacy GPU scan startup script
+├── GpuTdrRecovery.reg        # Registry related to TDR recovery
+├── recover.bat               # Manual recovery script
 └── Cargo.toml
 ```
 
 ---
 
-## Quick start
+## Quick Start
 
-### Standard scan (recommended for RTX 20-series and newer)
+### Standard Scan (Recommended, for RTX 20 series and above)
 
 Run as **Administrator**:
 
@@ -219,80 +307,86 @@ start.bat
 ```
 
 The script will automatically:
-1. Detect and list the GPUs in the system and prompt for a target GPU ID
-2. Reset the VFP curve and unlock voltage locks
-3. Export and save the factory curve (`ws\vfp-init.csv`)
-4. Run `autoscan` across the full voltage range
-5. Run `fix_result` for heavy/light-load compensation
-6. Import the best curve into the GPU and export the final file (`ws\vfp-final.csv`)
+1. Detect and list GPUs, prompting for target GPU ID
+2. Reset VFP curve and unlock voltage lock
+3. Export and save factory original curve (`ws\vfp-init.csv`)
+4. Perform autoscan for all voltage points
+5. Perform fix_result light/heavy load compensation post-processing
+6. Import the optimal curve into the GPU and export final file (`ws\vfp-final.csv`)
 
-### Ultrafast scan (recommended when you want to save time)
+### Ultrafast Scan (Recommended for saving time)
 
 ```bat
 start_ultrafast.bat
 ```
 
-Only 4 key voltage points are scanned and the rest are linearly interpolated, which greatly reduces runtime. See [Ultrafast mode](#ultrafast-mode).
+Only scans 4 key voltage points, other points are linearly interpolated, significantly speed up. See [Ultrafast Mode](#ultrafast-mode).
 
-### Legacy GPU scan (GTX 9 series and earlier / currently tested on Maxwell only)
+### Legacy GPU Scan (GTX 9 series and earlier / only Maxwell tested so far)
 
 ```bat
 start_legacy.bat
 ```
 
-Uses a global P0 frequency offset scan and does not write a VFP curve.
+Uses global P0 frequency offset scanning, no VFP curve writing.
 
-### Rescan from scratch (clear history)
+### Re-scan (Clear history)
 
-If you want to start over and discard resume state:
+To start from scratch (discarding breakpoint resume state):
 
 ```bat
 start.bat 1
 ```
 
-Passing `1` clears `ws\vfp.log` and `ws\vfp-tem.csv`.
+Passing argument `1` will clear `ws\vfp.log` and `ws\vfp-tem.csv`.
 
 ---
 
-## Command reference
+## Command Reference
 
-All commands should be run with Administrator privileges:
+All commands must be run with administrator privileges:
 
 ```
-nvoc-auto-optimizer.exe [global options] <subcommand> [subcommand options]
+nvoc-auto-optimizer.exe [global parameters] <subcommand> [subcommand parameters]
 ```
 
-### Top-level arguments
+### Top-level Parameters
 
-| Argument | Short | Description |
-|---|---|---|
-| `--gpu <GPU_ID>` | `-g` | Select a target GPU. Accepts decimal or hexadecimal (`0x0800`), or the index shown by `list` (`0, 1, 2...`). Can be specified multiple times to select multiple GPUs. If omitted, all GPUs are operated on. |
-| `--output-format <OFORMAT>` | `-O` | Output format: `human` (default, human-readable) or `json` |
+| Parameter                   | Shorthand | Description                                                                                                                              |
+|-----------------------------|-----------|------------------------------------------------------------------------------------------------------------------------------------------|
+| `--gpu <GPU_ID>`            | `-g`      | Target GPU. Accepts decimal or hex (`0x0800`), or index from `list` (0, 1, 2...). Can be specified multiple times. Defaults to all GPUs. |
+| `--output-format <OFORMAT>` | `-O`      | Output format: `human` (default) or `json`.                                                                                              |
+
+---
 
 ### info
 
-Display detailed GPU information (model, codename, performance state, power limits, sensor limits, etc.).
+Display detailed GPU information (model, code name, performance state, power limit, sensor limits, etc.).
 
 ```bat
 nvoc-auto-optimizer.exe info
 nvoc-auto-optimizer.exe -O json info -o gpu_info
 ```
 
-| Argument | Description |
-|---|---|
-| `-o <OUTPUT>` | JSON output prefix (will generate `<OUTPUT>_gpu<ID>.json`) |
+| Parameter     | Description                                                  |
+|---------------|--------------------------------------------------------------|
+| `-o <OUTPUT>` | JSON output path prefix (generates `<OUTPUT>_gpu<ID>.json`). |
+
+---
 
 ### list
 
-List all NVIDIA GPUs in the system, showing index, ID, PCI information, and UUID.
+List all NVIDIA GPUs in the system, showing index, ID, PCI info, and UUID.
 
 ```bat
 nvoc-auto-optimizer.exe list
 ```
 
+---
+
 ### status
 
-Display the current GPU status (frequencies, voltage, temperature, fans, current VFP curve values, etc.).
+Display current GPU running status (frequency, voltage, temperature, fan, current VFP curve values, etc.).
 
 ```bat
 nvoc-auto-optimizer.exe status
@@ -300,106 +394,112 @@ nvoc-auto-optimizer.exe status --all
 nvoc-auto-optimizer.exe status --monitor 2.0
 ```
 
-| Argument | Short | Default | Description |
-|---|---|---|---|
-| `--all` | `-a` | — | Show all information |
-| `--status <on|off>` | `-s` | `on` | Show basic status |
-| `--clocks <on|off>` | `-c` | `on` | Show clocks |
-| `--coolers <on|off>` | `-C` | `off` | Show fan information |
-| `--sensors <on|off>` | `-S` | `off` | Show sensor temperatures |
-| `--vfp <on|off>` | `-v` | `off` | Show current VFP curve values |
-| `--pstates <on|off>` | `-P` | `off` | Show P-State configuration |
-| `--monitor <seconds>` | `-m` | — | Continuously refresh every N seconds |
+| Parameter             | Shorthand | Default | Description                                           |
+|-----------------------|-----------|---------|-------------------------------------------------------|
+| `--all`               | `-a`      | —       | Display all information.                              |
+| `--status <on         | off>`     | `-s`    | `on`                                                  | Display basic status. |
+| `--clocks <on         | off>`     | `-c`    | `on`                                                  | Display clock frequencies. |
+| `--coolers <on        | off>`     | `-C`    | `off`                                                 | Display fan information. |
+| `--sensors <on        | off>`     | `-S`    | `off`                                                 | Display sensor temperatures. |
+| `--vfp <on            | off>`     | `-v`    | `off`                                                 | Display current VFP curve values. |
+| `--pstates <on        | off>`     | `-P`    | `off`                                                 | Display P-State config. |
+| `--monitor <seconds>` | `-m`      | —       | Continuous monitoring, refresh at specified interval. |
+
+---
 
 ### get
 
-Display the currently active overclock settings (VFP offsets, P-State offsets, etc.) along with detailed NVML status information.
+Display current effective OC settings (VFP offsets, P-State offsets, etc.) and detailed NVML status.
 
 ```bat
 nvoc-auto-optimizer.exe get
 ```
 
-> **NVML status notes**:
-> `get` prints detailed NVML settings, including:
-> - Power limit range (Min / Current / Max, in W)
-> - Core and memory frequency bounds for each P-State
-> - Core / memory overclock offsets defined per P-State
-> - All supported application clock combinations, with min/max frequency boundaries and step granularity automatically summarized
+> **Additional Note (NVML Status)**:
+> The `get` command now outputs detailed underlying NVML settings, including:
+> - Power wall limit range (Min / Current / Max, in Watts)
+> - Core and memory frequency boundaries for each P-State
+> - **Core / Memory OC Offset** set for each P-State
+> - All supported Application Clock combinations for this card, automatically organizing min/max boundaries and step values.
+
+---
 
 ### reset
 
-Restore overclock settings to defaults. Supports flexible `setting` selection, the `--domain` alias, and fine-grained `--vfp-domain` control for VFP resets. Also provides the `reset nvml-cooler` subcommand to restore NVML fan control to automatic mode.
+Restore OC settings to defaults. Supports flexible `setting` selectors, `--domain` aliases, and fine-grained `--vfp-domain` control for VFP reset; additionally provides `reset nvml-cooler` to restore default NVML fan control.
 
 ```bat
-reset all settings
+# Reset all settings
 nvoc-auto-optimizer.exe reset
 
-reset selected settings
+# Reset only specified settings
 nvoc-auto-optimizer.exe reset voltage-boost power nvapi-cooler
 
-use `--domain` aliases (equivalent to the above)
+# Using --domain aliases (equivalent to above)
 nvoc-auto-optimizer.exe reset --domain voltage-boost --domain power --domain nvapi-cooler
 
-reset NVML fans to automatic control
+# Reset NVML fans to default control mode
 nvoc-auto-optimizer.exe reset nvml-cooler
 
-reset NVML fan ID 1 to automatic control
+# Reset NVML fan default control mode by fan ID
 nvoc-auto-optimizer.exe reset nvml-cooler --id 1
 
-reset only the VFP curve and clear core frequency offsets
+# Reset only VFP curve and core frequency offset
 nvoc-auto-optimizer.exe reset vfp --vfp-domain core
 
-clear only the VFP memory frequency offsets
+# Clear only VFP memory frequency offset
 nvoc-auto-optimizer.exe reset --domain vfp --vfp-domain memory
 
-`--vfp-domain` alone defaults to `reset vfp`
+# Only --vfp-domain provided, defaults to reset vfp
 nvoc-auto-optimizer.exe reset --vfp-domain core
 ```
 
-**Selectable reset items:**
+**Specified items to reset (multiple selectable):**
 
-| Value | Alias | Description |
-|---|---|---|
-| `voltage-boost` | — | Reset boost voltage to zero |
-| `thermal` or `sensor-limits` | — | Restore thermal limits to default |
-| `power` or `power-limits` | — | Restore power limits to default |
-| `nvapi-cooler` | — | Restore NVAPI fan control to automatic |
-| `nvml-cooler` | — | Restore NVML fan control to automatic |
-| `vfp` or `vfp-deltas` | — | Reset all VFP curve offsets to zero (can be combined with `--vfp-domain`) |
-| `lock` or `vfp-lock` | — | Unlock voltage locking |
-| `pstate` or `pstate-deltas` | — | Reset P-State frequency offsets to zero |
-| `overvolt` | — | Clear legacy GPU `baseVoltage` delta (Maxwell / 9-series) |
+| Value                        | Shorthand or Alias | Description                                                 |
+|------------------------------|--------------------|-------------------------------------------------------------|
+| `voltage-boost`              | —                  | Reset Voltage Boost to zero                                 |
+| `thermal` or `sensor-limits` | —                  | Restore Temperature Wall to default                         |
+| `power` or `power-limits`    | —                  | Restore Power Wall to default                               |
+| `nvapi-cooler`               | —                  | Restore NVAPI fan control to automatic                      |
+| `nvml-cooler`                | —                  | Restore NVML fan control to automatic                       |
+| `vfp` or `vfp-deltas`        | —                  | Zero all VFP curve offsets (can use `--vfp-domain`)         |
+| `lock` or `vfp-lock`         | —                  | Release voltage lock                                        |
+| `pstate` or `pstate-deltas`  | —                  | Zero P-State frequency offsets                              |
+| `overvolt`                   | —                  | Zero baseVoltage delta for legacy GPUs (Maxwell / 9 series) |
 
-**VFP reset domain options:**
+**VFP Reset Domain Options (active only when `--vfp-domain` is specified):**
 
-| Value | Description |
-|---|---|
-| `all` | Reset both core and memory offsets (default) |
-| `core` | Reset only core (Graphics) offsets |
-| `memory` | Reset only memory offsets |
+| Value    | Description                                            |
+|----------|--------------------------------------------------------|
+| `all`    | Reset both core and memory frequency offsets (default) |
+| `core`   | Reset Graphics frequency offset only                   |
+| `memory` | Reset Memory frequency offset only                     |
+
+---
 
 ### set
 
-The overclocking entry point. This now distinguishes between `nvapi` and `nvml` interfaces and supports the following subcommands and options.
+Entry point for OC settings, now distinguished between `nvapi` and `nvml` interfaces, supporting the following subcommands and parameters.
 
 #### set nvml-cooler
 
-Set NVML fan policy and speed.
+Set NVML fan policy and level.
 
 ```bat
 nvoc-auto-optimizer.exe set nvml-cooler --id 1 --policy manual --level 60
 nvoc-auto-optimizer.exe set nvml-cooler --policy continuous --level 80
 ```
 
-| Argument | Description |
-|---|---|
-| `--id` | Fan ID (`1` / `2` / `all`, default `all`) |
-| `--policy` | Fan policy (for example `continuous` / `manual` / `auto`) |
-| `--level` | Fan speed percentage |
+| Parameter  | Description                                         |
+|------------|-----------------------------------------------------|
+| `--id`     | Fan ID (`1` / `2` / `all`, default `all`)           |
+| `--policy` | Fan policy (e.g., `continuous` / `manual` / `auto`) |
+| `--level`  | Fan speed percentage                                |
 
 #### set nvapi
 
-Use the official NVAPI interface for overclocking, mainly for VFP curve locking, boost voltage, and core/memory clock range locks.
+OC through official NVAPI interface, mainly for VFP curve locking, Voltage Boost, and core/memory frequency range locks.
 
 ```bat
 nvoc-auto-optimizer.exe set nvapi --voltage-boost 100 --thermal-limit 90
@@ -410,25 +510,25 @@ nvoc-auto-optimizer.exe set nvapi --locked-mem-clocks 5000 9501
 nvoc-auto-optimizer.exe set nvapi --reset-vfp-locks
 ```
 
-| Argument | Short | Description |
-|---|---|---|
-| `--voltage-boost <0-100>` | `-V` | Set boost voltage percentage (desktop GPUs) |
-| `--thermal-limit <°C>` | `-T` | Set thermal limit |
-| `--power-limit <%>` | `-P` | Set power limit percentage |
-| `--voltage-delta <μV>` | `-U` | Core voltage offset in microvolts (for Maxwell / 900-series and earlier) |
-| `--pstate <PSTATE>` | `-z` | Target P-State for `--voltage-delta` and offsets (default `P0`) |
-| `--core-offset <kHz>` | — | Set a core frequency offset for a specific P-State through NVAPI |
-| `--mem-offset <kHz>` | — | Set a memory frequency offset for a specific P-State through NVAPI |
-| `--locked-voltage <POINT_OR_VOLT>` | — | Lock a VFP point. Bare numbers are treated as points (e.g. `68`); voltage values must have units (e.g. `850mV`) |
-| `--locked-core-clocks <MIN> <MAX>` | — | Lock NVAPI Graphics core frequency range (MHz) |
-| `--locked-mem-clocks <MIN> <MAX>` | — | Lock NVAPI Memory frequency range (MHz) |
-| `--reset-core-clocks` | — | Unlock NVAPI core clock range |
-| `--reset-mem-clocks` | — | Unlock NVAPI memory clock range (alias: `--pstate-unlock`) |
-| `--reset-vfp-locks` | — | Clear NVAPI VFP lock state (voltage lock / frequency lock state) |
+| Parameter                          | Shorthand | Description                                                                       |
+|------------------------------------|-----------|-----------------------------------------------------------------------------------|
+| `--voltage-boost <0-100>`          | `-V`      | Set Voltage Boost percentage (Desktop GPUs)                                       |
+| `--thermal-limit <℃>`              | `-T`      | Set Temperature Wall (Celsius)                                                    |
+| `--power-limit <%>`                | `-P`      | Set Power Wall percentage                                                         |
+| `--voltage-delta <μV>`             | `-U`      | Core voltage offset (μV, for Maxwell / 900 series and earlier)                    |
+| `--pstate <PSTATE>`                | `-z`      | Target P-State for `--voltage-delta` and Offset (default `P0`)                    |
+| `--core-offset <kHz>`              | —         | Set core frequency offset via NVAPI for specific P-State (kHz)                    |
+| `--mem-offset <kHz>`               | —         | Set memory frequency offset via NVAPI for specific P-State (kHz)                  |
+| `--locked-voltage <POINT_OR_VOLT>` | —         | Lock VFP voltage. Number by point (e.g., `68`); voltage with unit (e.g., `850mV`) |
+| `--locked-core-clocks <MIN> <MAX>` | —         | Lock NVAPI Graphics core frequency range (MHz)                                    |
+| `--locked-mem-clocks <MIN> <MAX>`  | —         | Lock NVAPI Memory frequency range (MHz)                                           |
+| `--reset-core-clocks`              | —         | Release NVAPI core frequency lock                                                 |
+| `--reset-mem-clocks`               | —         | Release NVAPI memory frequency lock (alias: `--pstate-unlock`)                    |
+| `--reset-vfp-locks`                | —         | Clear NVAPI VFP lock (voltage / frequency lock status)                            |
 
 #### set nvml
 
-Use the official NVML interface for overclocking, mainly for P-State-level offsets, power limits (watts), and memory clock window locks.
+OC through official NVML interface, mainly for P-State level Offset settings, Power Limit (Watts), and memory lock windows.
 
 ```bat
 nvoc-auto-optimizer.exe set nvml --core-offset 150 --mem-offset 1000
@@ -436,90 +536,96 @@ nvoc-auto-optimizer.exe set nvml -P 350
 nvoc-auto-optimizer.exe set nvml --pstate-lock P0
 ```
 
-| Argument | Description |
-|---|---|
-| `--pstate <ID>` | Target P-State ID (`0` for P0, `2` for P2, default `0`) |
-| `--core-offset <MHz>` | Set a core frequency offset for the specified P-State |
-| `--mem-offset <MHz>` | Set a memory frequency offset for the specified P-State |
-| `-T, --thermal-limit <°C>` | Thermal-limit compatibility parameter (alias: `--thermal-gpu-max`), parsed but not written in the current version |
-| `--thermal-shutdown <°C>` | NVML `Shutdown` compatibility parameter, parsed but not written in the current version |
-| `--thermal-slowdown <°C>` | NVML `Slowdown` compatibility parameter, parsed but not written in the current version |
-| `--thermal-memory-max <°C>` | NVML `MemoryMax` compatibility parameter, parsed but not written in the current version |
-| `--thermal-acoustic-min <°C>` | NVML `AcousticMin` compatibility parameter, parsed but not written in the current version |
-| `--thermal-acoustic-curr <°C>` | NVML `AcousticCurr` compatibility parameter, parsed but not written in the current version |
-| `--thermal-acoustic-max <°C>` | NVML `AcousticMax` compatibility parameter, parsed but not written in the current version |
-| `--thermal-gps-curr <°C>` | NVML `GpsCurr` compatibility parameter, parsed but not written in the current version |
-| `-P, --power-limit <W>` | Set the power limit exactly in watts |
-| `--app-clock <Mem> <Core>` | Lock application clocks, passing memory (MHz) first and core (MHz) second |
-| `--locked-core-clocks <Min> <Max>` | Lock GPU core clock range (MHz) |
-| `--reset-core-clocks` | Unlock GPU core clock range |
-| `--locked-mem-clocks <Min> <Max>` | Lock memory clock range (MHz) |
-| `--pstate-lock <ID> [<ID>]` | Lock the GPU to a single or continuous NVML P-State range through memory clock windows (e.g. `P0`) |
-| `--reset-mem-clocks` | Unlock memory clocks (including P-State lock release) |
+| Parameter                          | Description                                                                                         |
+|------------------------------------|-----------------------------------------------------------------------------------------------------|
+| `--pstate <ID>`                    | Target P-State index (`0` for P0, `2` for P2, default `0`)                                          |
+| `--core-offset <MHz>`              | Set core frequency offset for specific P-State (MHz)                                                |
+| `--mem-offset <MHz>`               | Set memory frequency offset for specific P-State (MHz)                                              |
+| `-T, --thermal-limit <℃>`          | Temp wall compatibility param (alias: `--thermal-gpu-max`), parse only, not written in this version |
+| `--thermal-shutdown <℃>`           | NVML `Shutdown` compat, parse only                                                                  |
+| `--thermal-slowdown <℃>`           | NVML `Slowdown` compat, parse only                                                                  |
+| `--thermal-memory-max <℃>`         | NVML `MemoryMax` compat, parse only                                                                 |
+| `--thermal-acoustic-min <℃>`       | NVML `AcousticMin` compat, parse only                                                               |
+| `--thermal-acoustic-curr <℃>`      | NVML `AcousticCurr` compat, parse only                                                              |
+| `--thermal-acoustic-max <℃>`       | NVML `AcousticMax` compat, parse only                                                               |
+| `--thermal-gps-curr <℃>`           | NVML `GpsCurr` compat, parse only                                                                   |
+| `-P, --power-limit <W>`            | Set precise power wall limit (Watts)                                                                |
+| `--app-clock <Mem> <Core>`         | Lock App clocks, memory (MHz) and core (MHz)                                                        |
+| `--locked-core-clocks <Min> <Max>` | Lock GPU core frequency range (MHz)                                                                 |
+| `--reset-core-clocks`              | Release GPU core frequency lock                                                                     |
+| `--locked-mem-clocks <Min> <Max>`  | Lock memory frequency range (MHz)                                                                   |
+| `--pstate-lock <ID> [<ID>]`        | Lock GPU to a single or range of NVML P-States (e.g., `P0`) via memory locking                      |
+| `--reset-mem-clocks`               | Release memory frequency lock (includes P-State unlock)                                             |
 
-`get` / `status` human-readable output shows detailed NVML Temperature Thresholds values (unsupported items show `N/A`). The current version does not write NVML temperature thresholds.
+`get` / `status` human-readable output shows detailed NVML Temperature Thresholds values (unsupported items show `N/A`); NVML temp threshold writing is not performed in the current version.
 
 #### set nvapi-cooler
 
-Set fan policy and speed.
+Set fan policy and level.
 
 ```bat
 nvoc-auto-optimizer.exe set nvapi-cooler --id 1 --policy continuous --level 60
 nvoc-auto-optimizer.exe set nvapi-cooler --policy manual --level 80
 ```
 
-| Argument | Description |
-|---|---|
-| `--id` | Fan ID (`1` / `2` / `all`, default `all`) |
-| `--policy` | Fan policy (for example `continuous` / `manual`) |
-| `--level` | Fan speed percentage |
+| Parameter  | Description                                |
+|------------|--------------------------------------------|
+| `--id`     | Fan ID (`1` / `2` / `all`, default `all`)  |
+| `--policy` | Fan policy (e.g., `continuous` / `manual`) |
+| `--level`  | Fan speed percentage                       |
+
+---
 
 #### set vfp export
 
-Export the current VFP curve to a CSV file.
+Export current VFP curve as CSV.
 
 ```bat
 nvoc-auto-optimizer.exe set vfp export .\ws\vfp-init.csv
 nvoc-auto-optimizer.exe set vfp export --quick .\ws\vfp-quick.csv
 ```
 
-| Argument | Short | Description |
-|---|---|---|
-| `<OUTPUT>` | — | Output path (`-` means stdout) |
-| `--tabs` | `-t` | Use tab as separator (default: comma) |
-| `--quick` | `-q` | Skip dynamic load measurement and export only the static curve |
-| `--nocheck` | `-n` | Skip sanity checks for dynamic measurement results |
+| Parameter   | Shorthand | Description                                             |
+|-------------|-----------|---------------------------------------------------------|
+| `<OUTPUT>`  | —         | Output path (`-` for stdout)                            |
+| `--tabs`    | `-t`      | Use Tab as delimiter (default comma)                    |
+| `--quick`   | `-q`      | Skip dynamic load measurement, export static curve only |
+| `--nocheck` | `-n`      | Skip plausibility check for dynamic results             |
 
-**CSV columns for a full dynamic export:**
+**CSV Columns (Full Dynamic Export):**
 
-| Column | Description |
-|---|---|
-| `voltage` | Voltage point (μV) |
-| `frequency` | Current set frequency (kHz) |
-| `delta` | Offset relative to the factory frequency (kHz) |
-| `default_frequency` | Factory static default frequency (kHz) |
-| `default_frequency_load` | Measured frequency under load (kHz) |
-| `margin` | Difference between loaded frequency and static default frequency (kHz) |
-| `margin_bin` | `margin` converted to minimum step bins (integer) |
+| Column Name              | Description                                      |
+|--------------------------|--------------------------------------------------|
+| `voltage`                | Voltage point (μV)                               |
+| `frequency`              | Current set frequency (kHz)                      |
+| `delta`                  | Offset relative to factory (kHz)                 |
+| `default_frequency`      | Factory static default frequency (kHz)           |
+| `default_frequency_load` | Measured frequency under dynamic load (kHz)      |
+| `margin`                 | Difference between load and static default (kHz) |
+| `margin_bin`             | `margin` converted to min step units (integer)   |
 
-> Dynamic export starts the stress workload and reads the curve after about 45 seconds. Make sure the default stress-test script is executable.
+> Dynamic export will run the pressure test load for ~45s before reading, ensure the default test script is executable.
+
+---
 
 #### set vfp import
 
-Write a modified curve from CSV back into the GPU.
+Write modified curve from CSV to GPU.
 
 ```bat
 nvoc-auto-optimizer.exe set vfp import .\ws\vfp.csv
 ```
 
-| Argument | Short | Description |
-|---|---|---|
-| `<INPUT>` | — | Input path (`-` means stdin) |
-| `--tabs` | `-t` | Tab separator |
+| Parameter | Shorthand | Description                |
+|-----------|-----------|----------------------------|
+| `<INPUT>` | —         | Input path (`-` for stdin) |
+| `--tabs`  | `-t`      | Tab delimiter              |
+
+---
 
 #### set nvapi lock / reset
 
-Lock the GPU voltage to a VFP point or explicit voltage, or unlock the VFP lock state.
+Lock GPU voltage to VFP point or specific voltage, or release VFP lock.
 
 ```bat
 nvoc-auto-optimizer.exe set --nvapi-locked-voltage 68
@@ -532,18 +638,20 @@ nvoc-auto-optimizer.exe set --nvapi-reset-mem-clocks
 nvoc-auto-optimizer.exe set --nvapi-reset-vfp-locks
 ```
 
-| Argument | Description |
-|---|---|
-| `--nvapi-locked-voltage <POINT_OR_VOLTAGE>` | Bare numbers are treated as points; voltage values must explicitly use units (`mV` / `uV`) |
-| `--nvapi-locked-core-clocks <MIN> <MAX>` | Lock NVAPI Graphics core frequency range (MHz) |
-| `--nvapi-locked-mem-clocks <MIN> <MAX>` | Lock NVAPI Memory frequency range (MHz) |
-| `--nvapi-reset-core-clocks` | Unlock NVAPI core clock range |
-| `--nvapi-reset-mem-clocks` | Unlock NVAPI memory clock range (alias: `--pstate-unlock`) |
-| `--nvapi-reset-vfp-locks` | Clear NVAPI VFP lock state (voltage lock / core/memory clock lock state) |
+| Parameter                                   | Description                                                         |
+|---------------------------------------------|---------------------------------------------------------------------|
+| `--nvapi-locked-voltage <POINT_OR_VOLTAGE>` | Bare number as point; voltage must have explicit unit (`mV` / `uV`) |
+| `--nvapi-locked-core-clocks <MIN> <MAX>`    | Lock NVAPI Graphics core frequency range (MHz)                      |
+| `--nvapi-locked-mem-clocks <MIN> <MAX>`     | Lock NVAPI Memory frequency range (MHz)                             |
+| `--nvapi-reset-core-clocks`                 | Release NVAPI core frequency lock                                   |
+| `--nvapi-reset-mem-clocks`                  | Release NVAPI memory frequency lock (alias: `--pstate-unlock`)      |
+| `--nvapi-reset-vfp-locks`                   | Clear NVAPI VFP lock (voltage / core/memory clock lock)             |
+
+---
 
 #### set vfp autoscan
 
-**Core feature**: perform a full VFP curve auto-scan on the current GPU.
+**Core Function**: Perform full VFP curve auto-scanning on current GPU.
 
 ```bat
 nvoc-auto-optimizer.exe set vfp autoscan
@@ -551,88 +659,94 @@ nvoc-auto-optimizer.exe set vfp autoscan -u
 nvoc-auto-optimizer.exe set vfp autoscan -u -b aggressive
 ```
 
-| Argument | Short | Default | Description |
-|---|---|---|---|
-| `--ultrafast` | `-u` | off | Enable ultrafast mode (scan only 4 key points and interpolate the rest) |
-| `-w <path>` | — | `./test/test.bat` | Stress-test script path |
-| `-l <path>` | — | `./ws/vfp.log` | Scan log path |
-| `-q <sequence>` | — | `-` | Custom scan point sequence (`-` means automatic) |
-| `-t <count>` | — | `30` | Number of timeout-detection loops per test |
-| `-o <path>` | — | `./ws/vfp-tem.csv` | CSV path for incremental per-point results |
-| `-i <path>` | — | `./ws/vfp-init.csv` | Reference factory curve CSV path |
-| `-m` | — | off | Scan memory overclocking at the same time |
-| `-b <mode>` | — | auto by GPU generation | Crash recovery mode: `aggressive` (active BSOD reboot) or `traditional` (wait for TDR recovery) |
+| Parameter     | Shorthand | Default             | Description                                                         |
+|---------------|-----------|---------------------|---------------------------------------------------------------------|
+| `--ultrafast` | `-u`      | Off                 | Enable ultrafast mode (scan 4 key points, interpolation for others) |
+| `-w <path>`   | —         | `./test/test.bat`   | Path to pressure test script                                        |
+| `-l <path>`   | —         | `./ws/vfp.log`      | Path to scan log                                                    |
+| `-q <seq>`    | —         | `-`                 | Custom scan point sequence (`-` for auto)                           |
+| `-t <count>`  | —         | `30`                | Timeout detection loop count per test                               |
+| `-o <path>`   | —         | `./ws/vfp-tem.csv`  | Path for real-time per-point results CSV                            |
+| `-i <path>`   | —         | `./ws/vfp-init.csv` | Path for reference original curve CSV                               |
+| `-m`          | —         | Off                 | Scan video memory OC simultaneously                                 |
+| `-b <method>` | —         | Auto per GPU gen    | Recovery method: `aggressive` (BSOD reboot) or `traditional` (TDR)  |
+
+---
 
 #### set vfp autoscan_legacy
 
-Auto-scan the global offset for Maxwell (GTX 9-series) and older GPUs.
+Global offset auto-scanning for Maxwell (GTX 9 series) and earlier GPUs.
 
 ```bat
 nvoc-auto-optimizer.exe set vfp autoscan_legacy
 nvoc-auto-optimizer.exe set vfp autoscan_legacy -b aggressive
 ```
 
-The options are basically the same as `autoscan`, but `--ultrafast`, `-m` (memory scan), `-q` (point sequence), and `-i` (initial curve) are not supported because legacy mode only has one global offset.
+Parameters mostly same as `autoscan`, but without `--ultrafast`, `-m` (memory scan), `-q` (sequence), or `-i` (initial curve) support, as Legacy mode only has single global offset.
+
+---
 
 #### set vfp fix_result
 
-Run **heavy/light-load compensation post-processing** on the temporary CSV generated by `autoscan` to produce the final stable curve.
+Apply **light/heavy load compensation post-processing** to `autoscan` temporary CSV to generate final stable curve.
 
 ```bat
 nvoc-auto-optimizer.exe set vfp fix_result -m 1
 nvoc-auto-optimizer.exe set vfp fix_result -m 1 -u
 ```
 
-| Argument | Short | Description |
-|---|---|---|
-| `-m <integer>` | — | Extra conservative offset bins (recommended `1`, i.e. one extra step down on top of the margin correction) |
-| `--ultrafast` | `-u` | off | Interpolate and complete the ultrafast result with only 4 key points |
-| `-v <path>` | — | `./ws/vfp-tem.csv` | Input: temporary CSV generated by `autoscan` |
-| `-o <path>` | — | `./ws/vfp.csv` | Output: compensated final curve CSV |
-| `-i <path>` | — | `./ws/vfp-init.csv` | Reference: factory curve CSV |
-| `-l <path>` | — | `./ws/vfp.log` | Scan log (used to read ultrafast key points) |
-| `-d <integer>` | — | `3` | Reference frequency difference bin (internal parameter) |
+| Parameter     | Shorthand | Description                                                                              |
+|---------------|-----------|------------------------------------------------------------------------------------------|
+| `-m <int>`    | —         | Extra conservative offset bins (Recommend `1`, reduce 1 step extra on top of margin fix) |
+| `--ultrafast` | `-u`      | Off                                                                                      | Complete interpolation for 4 key point ultrafast results |
+| `-v <path>`   | —         | `./ws/vfp-tem.csv`                                                                       | Input: temporary CSV from autoscan |
+| `-o <path>`   | —         | `./ws/vfp.csv`                                                                           | Output: final compensated curve CSV |
+| `-i <path>`   | —         | `./ws/vfp-init.csv`                                                                      | Ref: factory original curve CSV |
+| `-l <path>`   | —         | `./ws/vfp.log`                                                                           | Scan log (for reading ultrafast key points) |
+| `-d <int>`    | —         | `3`                                                                                      | Ref frequency delta bin (internal param) |
+
+---
 
 #### set vfp single_point_adj
 
-Manually set one point on the VFP curve to a specific frequency offset for debugging.
+Manually set a single VFP point to specified frequency offset for debugging.
 
 ```bat
 nvoc-auto-optimizer.exe set vfp single_point_adj -s 50 -d 150000
 ```
 
-| Argument | Short | Default | Description |
-|---|---|---|---|
-| `-s <index>` | — | `50` | Starting point index |
-| `-d <kHz>` | — | `150000` | Frequency offset (kHz) |
+| Parameter    | Shorthand | Default  | Description            |
+|--------------|-----------|----------|------------------------|
+| `-s <index>` | —         | `50`     | Start point index      |
+| `-d <kHz>`   | —         | `150000` | Frequency offset (kHz) |
 
 ---
 
-## Scanning workflow explained
+## Detailed Scanning Process
 
-### Stage 0: Preparation
+### Phase 0: Preparation
 
-Before calling `autoscan`, `start.bat` performs the following steps:
+`start.bat` sequentially executes before calling `autoscan`:
 
-1. `info`: print GPU information and detect the generation
-2. `reset pstate`: clear P-State frequency offsets to ensure a clean starting point
-3. `reset vfp` (or `reset --domain vfp --vfp-domain all`): clear all VFP offsets
-   - If you only want to clear core overclocking, use `reset --domain vfp --vfp-domain core`
-   - If you only want to clear memory overclocking, use `reset --domain vfp --vfp-domain memory`
-4. `set --nvapi-reset-vfp-locks`: unlock voltage / frequency locks
-5. `set vfp export .\ws\vfp-init.csv` (if it does not exist): save the factory curve as a reference
-6. Add a firewall rule for the stress-test executable (optional, to avoid network activity affecting the test)
+1. `info`: Print GPU info and identify generation.
+2. `reset pstate`: Zero P-State frequency offsets to ensure a clean starting point.
+3. `reset vfp` (or `reset --domain vfp --vfp-domain all`): Zero all VFP curve point offsets.
+   - Use `reset --domain vfp --vfp-domain core` for core OC only.
+   - Use `reset --domain vfp --vfp-domain memory` for memory OC only.
+4. `set --nvapi-reset-vfp-locks`: Release voltage/frequency locks.
+5. `set vfp export .\ws\vfp-init.csv` (if it doesn't exist): Save factory original curve as reference.
+6. Add firewall rules for pressure test executable (optional, to avoid network activity affecting the test).
 
-### Stage 1: Voltage range probing
+### Phase 1: Voltage Range Probing
 
-When `autoscan` starts, it first calls `handle_test_voltage_limits`. Starting from generation-specific preset points, it probes the actual usable voltage range of the GPU by advancing the voltage lock (`handle_lock_vfp`) step by step:
+`autoscan` starts by calling `handle_test_voltage_limits`. Starting from generation-specific preset points, it probes the actual usable voltage range of the GPU by advancing the voltage lock (`handle_lock_vfp`) step by step:
 
-- **Upper-bound probing**: advance upward point by point from the preset upper point until locking fails (the curve reaches a flat region or goes out of range)
-- **Lower-bound probing**: advance downward from the preset lower point to find the minimum usable voltage point
+- **Upper Bound Probe**: Advance upward point by point from the preset upper point until locking fails (the curve reaches a flat region or goes out of range).
+- **Lower Bound Probe**: Advance downward from the preset lower point to find the minimum usable voltage point.
 
-The results are recorded in `vfp.log` (`minimum_voltage_point` / `maximum_voltage_point`). During resume scanning, this stage is skipped by reading the log directly.
+Results recorded in `vfp.log` (`minimum_voltage_point` / `maximum_voltage_point`), skipped on resume scanning by reading the log directly.
 
-### Stage 2: Per-point core frequency scan
+### Phase 2: Point-by-point Core Frequency Scanning
 
 For the range `[lower_voltage_point, upper_voltage_point]`, scan every 3 points in standard mode, or use 4 key points in ultrafast mode. At each voltage point, run a two-stage binary search:
 
@@ -646,156 +760,164 @@ If thermal / power throttling is detected (`thrm_or_pwr_limit_flag`), ~~the test
 
 After each voltage point finishes, the result is appended to `vfp-tem.csv` in real time and recorded in `vfp.log` (resume scanning supported).
 
-### Stage 3: Memory frequency scan (optional)
+### Phase 3: Video Memory Frequency Scanning (Optional)
 
-Enabled with `-m`. After the core scan finishes, the tool locks to the highest voltage point and scans the memory overclock ceiling using a similar binary-search approach.
+Enabled with `-m`. After core scan finishes, the tool locks at the highest voltage point and scans the memory OC ceiling using a similar binary-search approach.
 
-### Stage 4: `fix_result` post-processing
+### Phase 4: fix_result Post-processing
 
-After `autoscan` completes, `start.bat` automatically runs:
+`start.bat` automatically calls after `autoscan`:
 
 ```bat
 nvoc-auto-optimizer.exe set vfp fix_result -m 1
 ```
 
-**Why it exists**: Starting from Pascal (10-series), NVIDIA V-F curves exhibit a small difference between light load and heavy load — similar to CPU Load-Line Calibration (LLC). If the stable maximum frequency found under full load is written back without correction, instability may occur when the operating point shifts during load transitions.
+**Principle**: Since Pascal (10 series), NVIDIA V-F curves exhibit a small difference between light load and heavy load — similar to CPU Load-Line Calibration (LLC). If the stable maximum frequency found under full load is written back without correction, instability may occur when the operating point shifts during load transitions.
 
-`fix_result` uses the `margin_bin` values recorded in `vfp-init.csv` (difference between loaded frequency and static default frequency, converted to step bins) to conservatively adjust each point from `autoscan`:
-- `margin_bin > 5`: reduce by `(5 + minus_bin)` steps
-- `|margin_bin| < 2`: reduce by `(1 + minus_bin)` steps
-- otherwise: reduce by `(|margin_bin| + 1 + minus_bin)` steps
+fix_result uses `vfp-init.csv` dynamic measurement's `margin_bin` (difference between loaded frequency and static default frequency, converted to step bins) to conservatively adjust each point from `autoscan`:
+- `margin_bin > 5`: reduce by `(5 + minus_bin)` steps.
+- `|margin_bin| < 2`: reduce by `(1 + minus_bin)` steps.
+- otherwise: reduce by `(|margin_bin| + 1 + minus_bin)` steps.
 
 In ultrafast mode, the missing voltage points between the 4 key points are first filled in by linear interpolation.
 
-### Stage 5: Import and export the final curve
+### Phase 5: Import and Export Final Curve
 
 ```bat
 nvoc-auto-optimizer.exe set vfp import .\ws\vfp.csv
 nvoc-auto-optimizer.exe set vfp export .\ws\vfp-final.csv
 ```
 
-Write the corrected curve into the GPU and save the final snapshot file.
+Writes corrected curve to GPU and saves final snapshot.
 
 ---
 
-## Ultrafast mode
+## Ultrafast Mode
 
 The core assumption of ultrafast mode is: **under the factory-calibrated curve, overclock headroom decreases monotonically as voltage rises**. Therefore, only a few points need to be tested and the rest can be linearly interpolated, greatly reducing scan time.
 
-**Key-point selection logic (for RTX 50-series GPUs with a Max-Q step):**
+**Key Point Selection (for RTX 50 series GPUs with a Max-Q step):**
 
-The factory curve of NVIDIA 50-series GPUs contains a "Max-Q step" — at a certain mid-voltage point, frequency jumps sharply, forming a step. The step position differs between light load and heavy load. To handle this correctly, ultrafast mode detects these 4 key points from `vfp-init.csv` (which includes a dynamic load column):
+The factory curve of NVIDIA 50 series GPUs contains a "Max-Q step" — at a certain mid-voltage point, frequency jumps sharply, forming a step. The step location differs between light load and heavy load. To handle this correctly, ultrafast mode detects these 4 key points from `vfp-init.csv` (which includes a dynamic load column):
 
-| Key point | Detection basis |
-|---|---|
-| p1 | Point of maximum jump in the static curve (lower boundary of the step, light load) |
-| p2 | Point of maximum jump in the loaded curve (lower boundary of the step, heavy load) |
-| p3 | First point where `margin_bin` changes from 0 to negative (upper boundary of the step) |
-| p4 | Point with the most negative `margin_bin` (strongest heavy-load suppression) |
+| Key Point | Detection Basis                                                              |
+|-----------|------------------------------------------------------------------------------|
+| p1        | Static curve frequency max jump (step lower bound, light load)               |
+| p2        | Loaded curve frequency max jump (step lower bound, heavy load)               |
+| p3        | First point where `margin_bin` changes from 0 to negative (step upper bound) |
+| p4        | Point with most negative `margin_bin` (strongest heavy-load suppression)     |
 
-The scan only tests these 4 points once each. In `fix_result`, linear interpolation fills the gaps between segments, and an extra safety reduction is applied to the overclock headroom in the stepped region.
+The scan tests these 4 points once each. In fix_result, linear interpolation fills gaps between segments, and an extra safety reduction is applied to overclock headroom in the stepped region.
 
-**GPUs without a Max-Q step** (30-series, 40-series, etc.): p1–p4 are evenly distributed across the scan range at quarter intervals and are interpolated linearly.
+**GPUs without a Max-Q step** (30 series, 40 series, etc.): p1–p4 evenly distributed across scan range and interpolated linearly.
 
 ---
 
-## Crash recovery
+## Crash Recovery Mechanism
 
-Crashes are expected during overclocking scans. The tool includes two recovery strategies:
+Crashes are expected during overclocking scans. Built-in recovery strategies:
 
-### Traditional mode
+### Traditional
 
-Wait for Windows TDR (Timeout Detection and Recovery) to detect the GPU hang and recover the driver automatically. This works for most GPUs.
+Wait for Windows TDR (Timeout Detection and Recovery) to automatically detect GPU hang and recover driver. Suitable for most GPUs.
 
-### Aggressive mode (default on RTX 50-series)
+### Aggressive (Default for 50 Series)
 
-Some RTX 50-series drivers have a bug where TDR does not recover the driver, leaving the system permanently stuck and preventing the auto-scan flow from continuing.  
-Aggressive mode actively triggers a kernel crash (BSOD) to force a reboot, and uses a Windows startup auto-run entry to resume scanning from the breakpoint after reboot.
+Some RTX 50 series drivers fail to auto-recover after TDR, causing permanent system freeze.
+Aggressive mode actively triggers a kernel crash (BSOD) to force reboot, continuing from breakpoint via Windows startup item after reboot.
 
-> **Note**: An intentional BSOD is a normal part of the flow control and **does not indicate hardware damage**. It will not damage the GPU or OS. After reboot, simply continue — the scan will recover automatically.
+> **Note**: Intentional BSOD is a normal part of flow control, **not hardware damage**. Auto-resumption will follow reboot.
 
-You can override the mode with `-b`:
-
+Override via `-b`:
 ```bat
-set vfp autoscan -b traditional    # force traditional mode
-set vfp autoscan -b aggressive      # force aggressive mode
+set vfp autoscan -b traditional    # force traditional
+set vfp autoscan -b aggressive     # force aggressive
 ```
 
 ---
 
-## Resume scanning
+## Breakpoint Resumption
 
-After each voltage point finishes, the result is appended to `ws\vfp.log`. On the next run, the tool parses the log for:
+Results are appended to `ws\vfp.log` after each voltage point finishes. Next run, the tool parses:
 
-- `minimum_voltage_point` / `maximum_voltage_point`: skip the voltage range probing stage
-- The last `Finished core OC on point` entry: continue from the next point
-- The last successful/failed frequency offset values: restore the binary-search convergence state directly
+- `minimum_voltage_point` / `maximum_voltage_point`: skip probing.
+- Last `Finished core OC on point` entry: continue from next point.
+- Last success/fail offsets: restore binary search convergence directly.
 
-Therefore, whether the process exits normally, is interrupted manually, or crashes and reboots, **you only need to run `start.bat` again and the scan will resume from where it stopped**.
+Whether exit, manual interrupt, or crash, **just rerun `start.bat` to resume**.
 
-To start over, run `start.bat 1` to clear the log.
-
----
-
-## Legacy GPU mode (Maxwell / Pascal)
-
-The NVAPI used by GTX 9-series (Maxwell, GM codename) does not support per-point VFP curve writes. It can only set a single global frequency offset for P0. The `autoscan_legacy` flow:
-
-1. Write a global offset through `set_pstates` (`ClockDomain::Graphics`, `PState::P0`)
-2. Use the same binary-search + endurance-test logic as the VFP workflow to scan the maximum stable offset
-3. Not supported: ultrafast interpolation, memory segment scans, per-point `fix_result`
-
-For voltage control, Maxwell uses the `baseVoltages` field in `SetPstates20` (the `--voltage-delta` parameter, in μV) rather than the VoltRails boost mechanism used on Pascal and later.
-
-Legacy OverVolt often does not work well in practice, and NVIDIA's support is not great. For cards older than the 900-series, and only if core, memory, and VRM cooling are sufficiently strong, direct VBIOS editing is often the path to the best performance.
+To start over, run `start.bat 1` to clear log.
 
 ---
 
-## Working files
+## Legacy GPU Mode (Maxwell / Pascal)
 
-| File | Purpose | Notes |
-|---|---|---|
-| `ws\vfp.log` | Scan log | Core basis for resume scanning; deleting it forces a restart from scratch |
-| `ws\vfp-init.csv` | Factory curve snapshot | Automatically exported before the first scan; reference for `fix_result` |
-| `ws\vfp-tem.csv` | Temporary autoscan results | Written after each point; input to `fix_result` |
-| `ws\vfp.csv` | `fix_result` output | Final compensated curve; input to `import` |
-| `ws\vfp-final.csv` | Final snapshot | Saved again after `import` + `export`; useful for comparison and backup |
+NVAPI for GTX 9 series (Maxwell) lacks point-by-point VFP writing; uses global P0 offset via `autoscan_legacy`:
 
----
+1. Write global offset through `set_pstates` (`ClockDomain::Graphics`, `PState::P0`).
+2. Scan max stable offset with binary search + endurance test.
+3. Not supported: ultrafast interpolation, memory segment scans, per-point fix_result.
 
-## Recommended test environment
+For voltage control, Maxwell uses `SetPstates20` `baseVoltages` (`--voltage-delta` in μV) instead of VoltRails boost.
 
-- **Room temperature**: 20–25°C is recommended; do not exceed 30°C and do not go below 15°C
-- **Cooling**: Ensure the GPU is properly cooled; for laptops, use a stand and avoid soft surfaces
-- **GPU temperature**: If the core temperature stays above 82°C during scanning, check your cooling or let the system cool down and continue later
-- **System state**: Close other GPU workloads before scanning (games, video encoding, etc.); this is especially important for dynamic VFP export
-- **Power**: Make sure laptops are plugged in and desktop systems have sufficient PSU capacity
-
-**BSOD / black screen / Linux GPU drop / ERR during scanning is normal** — it means the current offset has exceeded the GPU's stable limit. The tool will back off and continue from a more conservative value. If the system freezes for more than 3 minutes, force a reboot manually and run `start.bat` again. On Linux, you may need to exit all processes using the GPU (including graphical sessions) and run `linux_oc_recover.sh` to reset it; if the process deadlocks, a reboot is usually the only option. Linux recovery tolerance for unstable overclocking is generally lower than Windows TDR, so please save your work.
+Legacy OverVolt often fails in practice; VBIOS editing often recommended for pre-900 series for max performance.
 
 ---
 
-## Building from source
+## Working Files Description
+
+| File               | Purpose               | Notes                                                |
+|--------------------|-----------------------|------------------------------------------------------|
+| `ws\vfp.log`       | Scan log              | Basis for resumption; deleting restarts from scratch |
+| `ws\vfp-init.csv`  | Factory snapshot      | Captured before scan; ref for fix_result             |
+| `ws\vfp-tem.csv`   | autoscan temp results | Written in real-time; input to fix_result            |
+| `ws\vfp.csv`       | fix_result output     | Final compensated curve; input for import            |
+| `ws\vfp-final.csv` | Final snapshot        | Exported after import for backup                     |
+
+---
+
+## Test Environment Suggestions
+
+- **Room Temp**: 20–25°C recommended; do not exceed 30°C or go below 15°C.
+- **Cooling**: Ensure GPU properly cooled; use stands for laptops.
+- **GPU Temp**: If > 82°C during scan, check cooling or let system cool and continue.
+- **System State**: Close other GPU loads (games, encoding); clean load environment vital for dynamic VFP export.
+- **Power**: Plug in laptops; ensure sufficient PSU for desktops.
+
+**BSOD / black screen / Linux drop / ERR during scanning is normal** — indicates frequency limit exceeded. Tool will backtrack. If system freezes > 3 min, force reboot and rerun `start.bat`. On Linux, exit GPU-using processes (including GUI) and run `linux_oc_recover.sh` to reset; reboot if deadlocked. Recovery tolerance on Linux lower than Windows TDR; save work.
+
+---
+
+## Build from Source
 
 ```bat
-git clone https://github.com/Skyworks-Neo/nvoc.git
+git clone https://github.com/Skyworks-Neo/nvoc
 cd nvoc/auto-optimizer
 cargo build --release
 ```
 
-Binary output: `target\release\nvoc-auto-optimizer.exe`
+Binary: `target\release\nvoc-auto-optimizer.exe`
 
-> This project depends on a private git branch of `nvapi-rs`, so GitHub access is required during build.
+> Requires private `nvapi-rs` git branch; GitHub access needed during build.
+
+---
+
+## Disclaimer
+
+- Overclocking operates GPU outside factory specs; potential for instability.
+- Crashes/BSOD are design behaviors, **not hardware damage**, but use at your own risk.
+- OC settings do not persist after reboot without re-import.
+- **The tool is not responsible for hardware damage, data loss, or other losses due to improper use.**
 
 ---
 
 ## License
 
-- This project is released under the **Apache License 2.0**.
-- See the root `LICENSE` file for the full text.
-- SPDX identifier: `Apache-2.0`
-- The crate manifest explicitly points to the license text via `license-file = "LICENSE"`
-- Release packages and source archives keep `LICENSE` for redistribution and downstream use
+Released under **Apache License 2.0**. Full terms in `LICENSE` file.
+
+- SPDX: `Apache-2.0`
+- Crate manifest points to license via `license-file`.
+- archives include `LICENSE`.
 
 ---
 

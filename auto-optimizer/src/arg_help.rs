@@ -373,8 +373,8 @@ pub fn get_arguments() -> Command {
                                 .help("Power limit via NVML API (W)."),
                         )
                         .arg(
-                            Arg::new("app_clock")
-                                .long("app-clock")
+                            Arg::new("locked_app_clocks")
+                                .long("locked-app-clocks")
                                 .value_names(["MEM_MHZ", "CORE_MHZ"])
                                 .num_args(2)
                                 .help("Set NVML applications clocks (memory and core freq in MHz). Example: --nvml-app-clock 5001 1500")
