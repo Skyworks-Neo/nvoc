@@ -1502,8 +1502,9 @@ pub fn set_legacy_clocks_nvapi(gpu: &Gpu, core_mhz: u32, mem_mhz: u32) -> Result
     };
 
     // 结合以前的逆向记录进行反向运算，乘以倍率使其满足旧结构格式要求
-    info.clocks[8] = mem_mhz * 1000;
-    info.clocks[30] = core_mhz * 2000;
+    // Saturating multiply prevents silent u32 wrap when caller passes extreme values.
+    info.clocks[8] = mem_mhz.saturating_mul(1000);
+    info.clocks[30] = core_mhz.saturating_mul(2000);
 
     unsafe {
         // 1. 获取隐藏函数指针
