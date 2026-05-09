@@ -1,0 +1,91 @@
+name: GPU CI
+
+# Runs hardware-dependent checks (CUDA / OpenCL / NVAPI / NVML) on a
+# self-hosted runner that has a real NVIDIA GPU. Triggered explicitly to
+# avoid burning GPU time on every push.
+
+on:
+  pull_request:
+    types: [labeled, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: branch / SHA to test
+        required: true
+        default: main
+
+concurrency:
+  group: gpu-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  guard:
+    # PR runs require the `ci:gpu` label. Manual dispatch always runs.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       contains(github.event.pull_request.labels.*.name, 'ci:gpu'))
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "gpu-ci approved for ${{ github.event_name }}"
+
+  auto-optimizer-gpu:
+    needs: guard
+    runs-on: [self-hosted, windows, gpu-nvidia]
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: auto-optimizer
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: auto-optimizer -> target
+      - name: build
+        run: cargo build --release --locked
+      - name: read-only GPU discovery
+        # Read-only NVAPI/NVML calls only. Never run write/overclock paths
+        # in CI; those require a human-supervised run on a known-recoverable
+        # bench with TDR + recovery configured.
+        run: cargo test --release --no-fail-fast -- --include-ignored gpu_readonly_
+
+  cuda-stressor:
+    needs: guard
+    runs-on: [self-hosted, windows, gpu-nvidia, cuda]
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: cli-stressor-cuda
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+      - run: uv sync
+      - name: short stress run
+        run: uv run python test.py
+
+  opencl-stressor-windows:
+    needs: guard
+    runs-on: [self-hosted, windows, gpu-nvidia, opencl]
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: cli-stressor-opencl
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+      - run: uv sync
+      - run: uv run python test.py
+
+  opencl-stressor-linux:
+    needs: guard
+    runs-on: [self-hosted, linux, gpu-nvidia, opencl]
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: cli-stressor-opencl
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+      - run: uv sync
+      - run: uv run python test.py

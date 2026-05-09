@@ -1,0 +1,139 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust-auto-optimizer:
+    name: auto-optimizer (windows)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: auto-optimizer
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: auto-optimizer -> target
+      - name: cargo fmt
+        run: cargo fmt --check
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: cargo build (release)
+        run: cargo build --release --locked
+      - name: cargo test
+        run: cargo test --no-fail-fast -- --skip gpu_
+
+  rust-srv:
+    name: srv (windows)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: srv
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: srv -> target
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: cargo build (release)
+        run: cargo build --release --locked
+      - name: cargo test
+        run: cargo test --no-fail-fast -- --skip gpu_
+
+  python-tui:
+    name: tui (${{ matrix.os }} / py${{ matrix.python }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.10", "3.12"]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: tui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+      - run: uv python install ${{ matrix.python }}
+      - run: uv sync --all-extras --dev --frozen
+      - run: uv run pytest -q
+
+  python-gui:
+    name: gui (sync + import smoke)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: gui
+    steps:
+      - uses: actions/checkout@v4
+      - name: install Tk runtime
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends python3-tk libxcb-xinerama0 xvfb
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+      - run: uv python install 3.12
+      - run: uv sync
+      - name: import smoke (no display required)
+        run: |
+          xvfb-run -a uv run python -c "import importlib, pathlib, sys; \
+              sys.path.insert(0, str(pathlib.Path('src').resolve())); \
+              importlib.import_module('config'); \
+              importlib.import_module('cli_runner')"
+
+  python-stressors:
+    name: stressor compile (${{ matrix.dir }})
+    strategy:
+      fail-fast: false
+      matrix:
+        dir: [cli-stressor-cuda, cli-stressor-opencl]
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ matrix.dir }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: byte-compile
+        run: python -m compileall -q test.py
+      - name: ruff (best-effort)
+        continue-on-error: true
+        run: |
+          python -m pip install --quiet ruff
+          ruff check test.py
+
+  ci-summary:
+    name: ci summary
+    needs:
+      - rust-auto-optimizer
+      - rust-srv
+      - python-tui
+      - python-gui
+      - python-stressors
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: fail if any required job failed
+        run: |
+          if [ "${{ contains(needs.*.result, 'failure') }}" = "true" ] \
+             || [ "${{ contains(needs.*.result, 'cancelled') }}" = "true" ]; then
+            echo "one or more required CI jobs did not succeed" >&2
+            exit 1
+          fi
