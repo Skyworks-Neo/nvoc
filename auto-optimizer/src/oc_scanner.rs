@@ -507,10 +507,11 @@ fn apply_short_phase_success_step(
     Some(increase)
 }
 
-fn pre_load_vf_recheck(matches: &ArgMatches, point: usize) {
+fn pre_load_vf_recheck(matches: &ArgMatches, point: usize) -> Result<(), Error> {
     println!("Waiting for pre-load volt-freq recheck");
     sleep(Duration::from_secs(1));
-    voltage_frequency_check(matches.clone(), point).expect("Failed to read v-f info");
+    voltage_frequency_check(matches.clone(), point)?;
+    Ok(())
 }
 
 fn apply_long_phase_failure_step(
@@ -844,7 +845,7 @@ fn run_gpuboostv3_short_phase<V: std::fmt::Display + Copy>(
             Some(*init_core_oc_value - args.common.minimum_delta_core_freq_step),
         )?;
 
-        pre_load_vf_recheck(args.common.matches, point);
+        pre_load_vf_recheck(args.common.matches, point)?;
 
         test_num += 1;
         test_code += 1;
@@ -986,7 +987,7 @@ fn run_gpuboostv3_long_phase<V: std::fmt::Display + Copy>(
     writeln!(l, "Initiating Long Test...")?;
 
     loop {
-        pre_load_vf_recheck(args.common.matches, point);
+        pre_load_vf_recheck(args.common.matches, point)?;
 
         *test_code += 1;
         log_point_test_header(
@@ -1099,7 +1100,7 @@ fn run_mem_oc_phase<V: std::fmt::Display + Copy>(
         mem_test_num += 1;
         mem_test_code += 1;
 
-        pre_load_vf_recheck(args.common.matches, args.point);
+        pre_load_vf_recheck(args.common.matches, args.point)?;
 
         println!(
             "current test progress estimated:{:.2}%",
