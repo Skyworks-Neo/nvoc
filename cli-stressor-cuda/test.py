@@ -22,6 +22,7 @@ class StressResult:
     iterations: int = 0
     total_flops: int = 0
     elapsed_s: float = 0.0
+    compute_s: float = 0.0  # burst-only GPU compute time (excludes warmup, validation, alloc)
     tflops: float = 0.0
     validations: int = 0
     validation_failures: int = 0
@@ -289,9 +290,10 @@ def run_stress_for_precision(
 
             result.iterations += burst_iters
             result.total_flops += int(2 * (size**3) * burst_iters)
+            result.compute_s += op_elapsed
             result.elapsed_s = time.monotonic() - start
-            if result.elapsed_s > 0:
-                result.tflops = (result.total_flops / result.elapsed_s) / 1e12
+            if result.compute_s > 0:
+                result.tflops = (result.total_flops / result.compute_s) / 1e12
 
             del a, b
             empty_device_cache(device)
@@ -318,22 +320,21 @@ def run_stress_for_precision(
                     if result.first_error is None:
                         result.first_error = reason
                         result.first_error_at_s = time.monotonic() - start
-                        sys.exit(1)
                 next_validate = time.monotonic() + max(0.0, validate_interval_s)
                 validation_seed += 1
 
         except Exception as exc:
             result.first_error = f"runtime error: {exc}"
             result.first_error_at_s = time.monotonic() - start
-            sys.exit(1)
+            break
 
         # 若 burst 很短，避免 CPU 忙等。
         if op_elapsed < 0.01:
             time.sleep(0)
 
     result.elapsed_s = time.monotonic() - start
-    if result.elapsed_s > 0:
-        result.tflops = (result.total_flops / result.elapsed_s) / 1e12
+    if result.compute_s > 0:
+        result.tflops = (result.total_flops / result.compute_s) / 1e12
     return result
 
 
@@ -352,10 +353,13 @@ def print_summary(device_name: str, total_memory_gb, results):
             status = "OK" if (r.first_error is None and r.validation_failures == 0) else "FAIL"
         if status != "OK":
             overall_ok = False
+        eff = f"{100 * r.compute_s / r.elapsed_s:.1f}%" if r.elapsed_s > 0 else "n/a"
         print(
             f"{r.precision:12} {status:4} | "
             f"iters={r.iterations:8d} | "
-            f"time={r.elapsed_s:7.1f}s | "
+            f"wall={r.elapsed_s:7.1f}s | "
+            f"compute={r.compute_s:6.1f}s | "
+            f"eff={eff:>6} | "
             f"{r.tflops:8.2f} TFLOPS | "
             f"validations={r.validations:3d} | "
             f"val_fail={r.validation_failures:3d} | "
@@ -372,7 +376,6 @@ def print_summary(device_name: str, total_memory_gb, results):
         print("- 在当前测试窗口内，没有出现明显计算错误或验证失败。")
     else:
         print("- 至少有一个精度模式出现错误、验证失败或不支持。")
-        sys.exit(1)
     print("=" * 72)
 
 
@@ -521,7 +524,7 @@ def main():
             if res.supported:
                 overall_passed = False
         else:
-            print(f"  结果: completed without detected error")
+            print("  结果: completed without detected error")
         print(f"  累计: {res.iterations} 次 matmul, {res.tflops:.2f} TFLOPS")
 
     print_summary(device_name, total_memory_gb, results)
