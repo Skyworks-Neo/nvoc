@@ -55,10 +55,6 @@ fn main_result() -> Result<i32, Box<dyn std::error::Error>> {
         return Err("Both NVML and NvAPI initialization failed".into());
     }
 
-<<<<<<< HEAD
-    let gpu = matches.get_many::<String>("gpu");
-=======
->>>>>>> origin/main
     let oformat = matches
         .get_one::<String>("oformat")
         .map(|s| OutputFormat::from_str(s.as_str()))
@@ -98,12 +94,6 @@ fn main_result() -> Result<i32, Box<dyn std::error::Error>> {
                 eprintln!("Error: {:?}", e);
             }
         }
-<<<<<<< HEAD
-        Some(("list", _matches)) => match &nvml_init_result {
-            Ok(nvml) => {
-                if let Err(e) = handle_list(nvml) {
-                    eprintln!("Error: {:?}", e);
-=======
         Some(("list", _matches)) => {
             match nvml_ref {
                 Some(nvml) => {
@@ -113,11 +103,7 @@ fn main_result() -> Result<i32, Box<dyn std::error::Error>> {
                 }
                 None => {
                     eprintln!("Error: list requires NVML, but NVML init failed");
->>>>>>> origin/main
                 }
-            }
-            Err(e) => {
-                eprintln!("Error: list requires NVML, but NVML init failed: {}", e);
             }
         },
         Some(("status", matches)) => {
@@ -130,12 +116,6 @@ fn main_result() -> Result<i32, Box<dyn std::error::Error>> {
                 eprintln!("Error getting info: {:?}", e);
             }
         }
-<<<<<<< HEAD
-        Some(("reset", matches)) => match matches.subcommand() {
-            Some(("nvml-cooler", sub_matches)) => {
-                if let Err(e) = handle_reset_nvml_cooler(&get_sorted_gpus()?, gpu, sub_matches) {
-                    eprintln!("Error: {:?}", e);
-=======
         Some(("reset", matches)) => {
             match matches.subcommand() {
                 Some(("nvml-cooler", sub_matches)) => {
@@ -147,27 +127,11 @@ fn main_result() -> Result<i32, Box<dyn std::error::Error>> {
                     if let Err(e) = handle_reset(&nvapi_selected, matches) {
                         eprintln!("Error: {:?}", e);
                     }
->>>>>>> origin/main
-                }
-            }
-            _ => {
-                if let Err(e) = handle_reset(&get_sorted_gpus()?, gpu, matches) {
-                    eprintln!("Error: {:?}", e);
                 }
             }
         },
         Some(("set", matches)) => {
             match matches.subcommand() {
-<<<<<<< HEAD
-                Some(("nvml", sub_matches)) => match &nvml_init_result {
-                    Ok(nvml) => {
-                        let gpu_ids = get_sorted_gpu_ids_nvml(nvml)?;
-                        let selected_ids = select_gpu_ids(&gpu_ids, gpu)?;
-                        handle_nvml_with_ids(&selected_ids, sub_matches)?;
-                    }
-                    Err(e) => {
-                        return Err(format!("NVML backend unavailable: {}", e).into());
-=======
                 Some(("nvml", sub_matches)) => {
                     match nvml_ref {
                         Some(_) => {
@@ -186,19 +150,8 @@ fn main_result() -> Result<i32, Box<dyn std::error::Error>> {
                         None => {
                             return Err(format!("NVML backend unavailable").into());
                         }
->>>>>>> origin/main
                     }
-                },
-                Some(("nvml-cooler", sub_matches)) => match &nvml_init_result {
-                    Ok(nvml) => {
-                        let gpu_ids = get_sorted_gpu_ids_nvml(nvml)?;
-                        let selected_ids = select_gpu_ids(&gpu_ids, gpu)?;
-                        handle_nvml_cooler_with_ids(&selected_ids, sub_matches)?;
-                    }
-                    Err(e) => {
-                        return Err(format!("NVML backend unavailable: {}", e).into());
-                    }
-                },
+                }
                 _ => {
                     if nvapi_init_result.is_err() {
                         return Err(
@@ -235,70 +188,36 @@ fn main_result() -> Result<i32, Box<dyn std::error::Error>> {
                                 }
                             }
                         }
-<<<<<<< HEAD
                         Some(("vfp", matches)) => {
                             match matches.subcommand() {
                                 Some(("export", matches)) => {
-                                    let gpu = single_gpu(&gpus)?;
-                                    handle_vfp_export(gpu, matches)?; // Call the export function
+                                    let gpu = single_gpu(&nvapi_selected)?;
+                                    handle_vfp_export(gpu, matches)?;
                                 }
                                 Some(("export_log", matches)) => {
-                                    export_vfp_from_log(matches)?; // Call the export function
-=======
-                    Some(("vfp", matches)) => {
-                        match matches.subcommand() {
-                            Some(("export", matches)) => {
-                                let gpu = single_gpu(&nvapi_selected)?;
-                                handle_vfp_export(gpu, matches)?;
-                            }
-                            Some(("export_log", matches)) => {
-                                export_vfp_from_log(matches)?;
-                            }
-                            Some(("import", matches)) => {
-                                let gpu = single_gpu(&nvapi_selected)?;
-                                handle_vfp_import(gpu, matches)?;
-                            }
-                            Some(("single_point_adj", matches)) => {
-                                single_point_adj(&nvapi_selected, matches)?
-                            }
-                            Some(("pointwiseoc", matches)) => {
-                                handle_pointwiseoc(&nvapi_selected, matches)?
-                            }
-                            Some(("fix_result", matches)) => {
-                                let gpu = single_gpu(&nvapi_selected)?;
-                                fix_result(gpu, matches)?
-                            }
-                            Some(("autoscan", matches)) => {
-                                if let Err(e) = autoscan_gpuboostv3(&nvapi_selected, matches) {
-                                    eprintln!("Error in autoscan: {:?}", e);
-                                }
-                            }
-                            Some(("autoscan_legacy", matches)) => {
-                                if let Err(e) = autoscan_legacy(&nvapi_selected, matches) {
-                                    eprintln!("Error in autoscan_legacy: {:?}", e);
->>>>>>> origin/main
+                                    export_vfp_from_log(matches)?;
                                 }
                                 Some(("import", matches)) => {
-                                    let gpu = single_gpu(&gpus)?;
-                                    handle_vfp_import(gpu, matches)?; // Call the import function
+                                    let gpu = single_gpu(&nvapi_selected)?;
+                                    handle_vfp_import(gpu, matches)?;
                                 }
                                 Some(("single_point_adj", matches)) => {
-                                    single_point_adj(&gpus, matches)? // Call the adjustment function
+                                    single_point_adj(&nvapi_selected, matches)?
                                 }
                                 Some(("pointwiseoc", matches)) => {
-                                    handle_pointwiseoc(&gpus, matches)?
+                                    handle_pointwiseoc(&nvapi_selected, matches)?
                                 }
                                 Some(("fix_result", matches)) => {
-                                    let gpu = single_gpu(&gpus)?;
-                                    fix_result(gpu, matches)? // Call the polishment function
+                                    let gpu = single_gpu(&nvapi_selected)?;
+                                    fix_result(gpu, matches)?
                                 }
                                 Some(("autoscan", matches)) => {
-                                    if let Err(e) = autoscan_gpuboostv3(&gpus, matches) {
+                                    if let Err(e) = autoscan_gpuboostv3(&nvapi_selected, matches) {
                                         eprintln!("Error in autoscan: {:?}", e);
                                     }
                                 }
                                 Some(("autoscan_legacy", matches)) => {
-                                    if let Err(e) = autoscan_legacy(&gpus, matches) {
+                                    if let Err(e) = autoscan_legacy(&nvapi_selected, matches) {
                                         eprintln!("Error in autoscan_legacy: {:?}", e);
                                     }
                                 }

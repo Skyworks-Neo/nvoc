@@ -1,8 +1,4 @@
-<<<<<<< HEAD
-use crate::basic_func::{TestResolution, select_gpus};
-=======
 use crate::basic_func::{select_gpus, GpuSelector, TestResolution};
->>>>>>> origin/main
 use crate::conv::ConvertEnum;
 use crate::error::Error;
 use crate::human::print_scan_separator;
