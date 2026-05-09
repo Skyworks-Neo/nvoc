@@ -207,16 +207,15 @@ mod nvoc_service {
                         info!("Received command: {}", cmd.cmd);
                         match cmd.cmd.as_str() {
                             "set_oc_global" => {
-                                // 处理设置全局超频频率的命令
                                 let i = cmd.gpu_index;
                                 let freq_val = cmd.over_freq;
+                                // Pass delta as a positional arg to avoid Box::leak.
                                 let freq_str = freq_val.to_string();
-                                let freq_str_static: &'static str = Box::leak(freq_str.into_boxed_str());
                                 let pseudo_matches = clap::Command::new("")
-                                    .arg(clap::Arg::new("delta").default_value(freq_str_static))
+                                    .arg(clap::Arg::new("delta"))
                                     .arg(clap::Arg::new("pstate").default_value("P0"))
                                     .arg(clap::Arg::new("clock").default_value("graphics"))
-                                    .get_matches_from(vec![""]);
+                                    .get_matches_from(["", freq_str.as_str()]);
 
                                 let mut gpu_result = Vec::new();
                                 if let Some(g) = gpus.get(i) {
@@ -224,11 +223,9 @@ mod nvoc_service {
                                 }
 
                                 match handle_global_oc_offset_subcommand(&gpu_result, &pseudo_matches) {
-                                    Ok(_) => info!("OC set to {} for GPU {}", freq_str_static, i),
+                                    Ok(_) => info!("OC set to {} kHz for GPU {}", freq_val, i),
                                     Err(e) => error!("Failed to set OC for GPU {}: {:?}", i, e),
                                 }
-                                // 这里可以调用相应的函数来设置全局超频频率
-                                // 例如：set_oc_global_frequency(cmd.over_freq);
                             }
 
                             _ => {

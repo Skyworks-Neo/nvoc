@@ -1339,6 +1339,81 @@ pub fn voltage_frequency_check(arg_matches: ArgMatches, point: usize) -> Result<
     Ok(precise_flag)
 }
 
+/// Release all VFP frequency and voltage locks for each GPU.
+/// Called when thermal conditions normalise and hardware-level locking should be lifted.
+pub fn handle_unlock_vfp(gpus: &[&Gpu]) -> Result<(), Error> {
+    for gpu in gpus {
+        if let Err(e) = gpu.set_vfp_lock_voltage(None) {
+            eprintln!("Warning: failed to release VFP voltage lock: {:?}", e);
+        }
+        for domain in [ClockDomain::Graphics, ClockDomain::Memory] {
+            if let Err(e) = reset_vfp_frequency_lock(gpu, domain) {
+                eprintln!(
+                    "Warning: failed to release VFP frequency lock ({:?}): {:?}",
+                    domain, e
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Apply a global OC frequency offset to all GPUs via `set_pstates`.
+///
+/// Reads from `matches`:
+/// - `delta`  — kHz integer offset (required)
+/// - `pstate` — "P0"–"P3" (default "P0")
+/// - `clock`  — "graphics"/"core" or "memory"/"mem" (default "graphics")
+pub fn handle_global_oc_offset_subcommand(
+    gpus: &[&Gpu],
+    matches: &ArgMatches,
+) -> Result<(), Error> {
+    let delta_khz: i32 = matches
+        .get_one::<String>("delta")
+        .ok_or_else(|| Error::from("Missing required argument: delta"))?
+        .parse()
+        .map_err(|_| Error::from("delta must be an integer kHz offset"))?;
+
+    let pstate_str = matches
+        .get_one::<String>("pstate")
+        .map(|s| s.as_str())
+        .unwrap_or("P0");
+    let pstate = match pstate_str {
+        "P0" => PState::P0,
+        "P1" => PState::P1,
+        "P2" => PState::P2,
+        "P3" => PState::P3,
+        other => return Err(Error::from(format!("Unknown pstate '{}'; use P0–P3", other))),
+    };
+
+    let clock_str = matches
+        .get_one::<String>("clock")
+        .map(|s| s.as_str())
+        .unwrap_or("graphics");
+    let domain = match clock_str {
+        "graphics" | "core" => ClockDomain::Graphics,
+        "memory" | "mem" => ClockDomain::Memory,
+        other => {
+            return Err(Error::from(format!(
+                "Unknown clock '{}'; use 'graphics' or 'memory'",
+                other
+            )))
+        }
+    };
+
+    for gpu in gpus {
+        gpu.inner()
+            .set_pstates([(pstate, domain, KilohertzDelta(delta_khz))].iter().cloned())
+            .map_err(|e| {
+                Error::from(format!(
+                    "set_pstates({:?}, {:?}, {} kHz) failed: {:?}",
+                    pstate, domain, delta_khz, e
+                ))
+            })?;
+    }
+    Ok(())
+}
+
 pub fn set_resolution(file_path: &str, resolution: TestResolution) -> io::Result<()> {
     let content = fs::read_to_string(file_path)?;
     let (width, height) = resolution.dimensions();
