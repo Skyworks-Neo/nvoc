@@ -394,16 +394,16 @@ nvoc-auto-optimizer.exe status --all
 nvoc-auto-optimizer.exe status --monitor 2.0
 ```
 
-| Parameter             | Shorthand | Default | Description                                           |
-|-----------------------|-----------|---------|-------------------------------------------------------|
-| `--all`               | `-a`      | —       | Display all information.                              |
-| `--status <on         | off>`     | `-s`    | `on`                                                  | Display basic status. |
-| `--clocks <on         | off>`     | `-c`    | `on`                                                  | Display clock frequencies. |
-| `--coolers <on        | off>`     | `-C`    | `off`                                                 | Display fan information. |
-| `--sensors <on        | off>`     | `-S`    | `off`                                                 | Display sensor temperatures. |
-| `--vfp <on            | off>`     | `-v`    | `off`                                                 | Display current VFP curve values. |
-| `--pstates <on        | off>`     | `-P`    | `off`                                                 | Display P-State config. |
-| `--monitor <seconds>` | `-m`      | —       | Continuous monitoring, refresh at specified interval. |
+| Parameter               | Shorthand | Default | Description                                           |
+|-------------------------|-----------|---------|-------------------------------------------------------|
+| `--all`                 | `-a`      | —       | Display all information.                              |
+| `--status <on\|off>`    | `-s`      | `on`    | Display basic status.                                 |
+| `--clocks <on\|off>`    | `-c`      | `on`    | Display clock frequencies.                            |
+| `--coolers <on\|off>`   | `-C`      | `off`   | Display fan information.                              |
+| `--sensors <on\|off>`   | `-S`      | `off`   | Display sensor temperatures.                          |
+| `--vfp <on\|off>`       | `-v`      | `off`   | Display current VFP curve values.                     |
+| `--pstates <on\|off>`   | `-P`      | `off`   | Display P-State config.                               |
+| `--monitor <seconds>`   | `-m`      | —       | Continuous monitoring, refresh at specified interval. |
 
 ---
 
