@@ -192,14 +192,21 @@ def validate_precision(
         return False, float("inf"), float("inf"), "validation produced NaN/Inf"
 
     diff = (out_f32 - ref).abs()
-    max_abs = float(diff.max().item())
-    ref_abs = float(ref.abs().max().item())
-    max_rel = max_abs / (ref_abs + 1e-12)
     abs_thr, rel_thr = choose_tolerance(spec.name)
 
-    # 只要绝对误差或相对误差其中一个仍在可接受范围内，就不判失败。
-    passed = (max_abs <= abs_thr) or (max_rel <= rel_thr)
-    reason = None if passed else f"error too large: abs={max_abs:.4g}, rel={max_rel:.4g}"
+    # Per-element bound: atol + rtol * |ref|  (same convention as torch.allclose / numpy.allclose).
+    # Using a global max-of-diff vs max-of-ref with an `or` would let a single badly-corrupted
+    # element pass whenever the global reference max is large enough to make max_rel look small.
+    elementwise_bound = abs_thr + rel_thr * ref.abs()
+    violated = diff > elementwise_bound
+    n_violated = int(violated.sum().item())
+    max_abs = float(diff.max().item())
+    ref_abs_max = float(ref.abs().max().item())
+    max_rel = max_abs / (ref_abs_max + 1e-12)
+    passed = n_violated == 0
+    reason = (None if passed else
+              f"{n_violated} elements exceed atol+rtol*|ref|; max_abs={max_abs:.4g}, "
+              f"max_rel={max_rel:.4g}")
     return passed, max_abs, max_rel, reason
 
 

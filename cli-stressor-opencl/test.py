@@ -555,13 +555,21 @@ def validate_precision(
         return False, float("inf"), float("inf"), "validation produced NaN/Inf"
 
     diff = np.abs(out_f32 - ref)
-    max_abs = float(np.max(diff))
-    ref_abs = float(np.max(np.abs(ref)))
-    max_rel = max_abs / (ref_abs + 1e-12)
     abs_thr, rel_thr = choose_tolerance(spec.name)
 
-    passed = (max_abs <= abs_thr) or (max_rel <= rel_thr)
-    reason = None if passed else f"error too large: abs={max_abs:.4g}, rel={max_rel:.4g}"
+    # Per-element bound: atol + rtol * |ref|  (same convention as numpy.allclose).
+    # Using a global max-of-diff vs max-of-ref with an `or` would let a single badly-corrupted
+    # element pass whenever the global reference max is large enough to make max_rel look small.
+    elementwise_bound = abs_thr + rel_thr * np.abs(ref)
+    violated = diff > elementwise_bound
+    n_violated = int(np.sum(violated))
+    max_abs = float(np.max(diff))
+    ref_abs_max = float(np.max(np.abs(ref)))
+    max_rel = max_abs / (ref_abs_max + 1e-12)
+    passed = n_violated == 0
+    reason = (None if passed else
+              f"{n_violated} elements exceed atol+rtol*|ref|; max_abs={max_abs:.4g}, "
+              f"max_rel={max_rel:.4g}")
     return passed, max_abs, max_rel, reason
 
 
