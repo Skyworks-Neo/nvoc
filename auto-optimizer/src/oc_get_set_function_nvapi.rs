@@ -1294,7 +1294,7 @@ pub fn voltage_frequency_check(arg_matches: ArgMatches, point: usize) -> Result<
 
     for gpu in gpus {
         let status = gpu.status()?;
-        let readout_v = status.voltage.unwrap();
+        let readout_v = status.voltage.ok_or_else(|| Error::Custom("GPU did not report voltage in status; check if the GPU supports voltage monitoring".into()))?;
         let readout_f = status.clone().clocks;
         print_scan_separator();
         println!("readout volt: {:?}, freq: {:?}", readout_v, readout_f);
@@ -1581,5 +1581,53 @@ pub fn set_legacy_clocks_nvapi(gpu: &Gpu, core_mhz: u32, mem_mhz: u32) -> Result
         }
     }
 
+    Ok(())
+}
+
+/// Release the VFP voltage lock on all provided GPUs.
+pub fn handle_unlock_vfp(gpus: &[&Gpu]) -> Result<(), Error> {
+    for gpu in gpus {
+        gpu.set_vfp_lock_voltage(None).map_err(Error::from)?;
+    }
+    Ok(())
+}
+
+/// Apply a global per-pstate clock-frequency offset to all provided GPUs.
+/// Reads `delta` (kHz, i32), `pstate` (e.g. "P0"), and `clock` (e.g. "graphics" or "memory")
+/// from `matches`. All three have defaults so the function never panics on missing args.
+pub fn handle_global_oc_offset_subcommand(
+    gpus: &[&Gpu],
+    matches: &ArgMatches,
+) -> Result<(), Error> {
+    let delta: i32 = matches
+        .get_one::<String>("delta")
+        .map(|s| s.trim_start_matches('+').parse::<i32>())
+        .transpose()
+        .map_err(|e| Error::Custom(format!("Invalid delta value: {}", e)))?
+        .unwrap_or(0);
+
+    let pstate = matches
+        .get_one::<String>("pstate")
+        .map(|s| PState::from_str(s.as_str()))
+        .transpose()
+        .map_err(|e| Error::Custom(format!("Invalid pstate: {}", e)))?
+        .unwrap_or(PState::P0);
+
+    let domain = matches
+        .get_one::<String>("clock")
+        .map(|s| match s.to_ascii_lowercase().as_str() {
+            "graphics" | "core" => Ok(ClockDomain::Graphics),
+            "memory" | "mem" => Ok(ClockDomain::Memory),
+            other => ClockDomain::from_str(other)
+                .map_err(|_| Error::Custom(format!("Invalid clock domain '{}'; use 'graphics' or 'memory'", other))),
+        })
+        .transpose()?
+        .unwrap_or(ClockDomain::Graphics);
+
+    for gpu in gpus {
+        gpu.inner()
+            .set_pstates([(pstate, domain, KilohertzDelta(delta))].iter().cloned())
+            .map_err(Error::from)?;
+    }
     Ok(())
 }
