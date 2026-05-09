@@ -148,10 +148,8 @@ fn main_result() -> Result<i32, Box<dyn std::error::Error>> {
                             handle_cooler_command(&gpus, matches)?;
                         }
                         Some(("legacy-clock", matches)) => {
-                            let core_mhz = matches.get_one::<String>("core").unwrap().parse::<u32>()
-                                .map_err(|_| "Invalid integer for core frequency")?;
-                            let mem_mhz = matches.get_one::<String>("memory").unwrap().parse::<u32>()
-                                .map_err(|_| "Invalid integer for memory frequency")?;
+                            let core_mhz = *matches.get_one::<u32>("core").unwrap();
+                            let mem_mhz = *matches.get_one::<u32>("memory").unwrap();
                             for gpu in &gpus {
                                 match set_legacy_clocks_nvapi(gpu, core_mhz, mem_mhz) {
                                     Ok(_) => println!("Legacy clock applied to GPU: Core = {} MHz, Mem = {} MHz", core_mhz, mem_mhz),

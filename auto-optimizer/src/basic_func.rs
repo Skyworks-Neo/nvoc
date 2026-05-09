@@ -118,11 +118,9 @@ impl TestResolution {
             TestResolution::R800x600 => Some(TestResolution::R768x576),
             TestResolution::R768x576 => Some(TestResolution::R720x480),
             TestResolution::R720x480 => Some(TestResolution::R640x384),
-            TestResolution::R640x384 => Some(TestResolution::R640x384),
-            // TestResolution::R640x384 => Some(TestResolution::R576x360),
+            TestResolution::R640x384 => Some(TestResolution::R576x360),
             TestResolution::R576x360 => Some(TestResolution::R400x300),
-            TestResolution::R400x300 => Some(TestResolution::R400x300),
-            // Lowest resolution, no downgrade available
+            TestResolution::R400x300 => None,
         }
     }
 
@@ -264,12 +262,18 @@ pub fn select_gpus<'a>(
             for input in inputs {
                 // ① 人类可读序号（强语义，禁止 fallback）
                 if input < 256 {
-                    if let Some(g) = gpus.get(input) {
-                        result.push(g);
-                        continue;
-                    } else {
-                        // index 不存在，直接认为无效
-                        continue;
+                    match gpus.get(input) {
+                        Some(g) => {
+                            result.push(g);
+                            continue;
+                        }
+                        None => {
+                            return Err(Error::Custom(format!(
+                                "no GPU found at index {} (system has {} GPU(s))",
+                                input,
+                                gpus.len()
+                            )));
+                        }
                     }
                 }
 
@@ -285,6 +289,11 @@ pub fn select_gpus<'a>(
                     result.push(g);
                     continue;
                 }
+
+                return Err(Error::Custom(format!(
+                    "no GPU matches --gpu 0x{:x} (tried index, raw ID, and legacy ID)",
+                    input
+                )));
             }
             result
         }
@@ -341,11 +350,18 @@ pub fn select_gpu_ids(
             let mut result = Vec::new();
             for input in inputs {
                 if input < 256 {
-                    if let Some(id) = gpu_ids.get(input) {
-                        result.push(*id);
-                        continue;
-                    } else {
-                        continue;
+                    match gpu_ids.get(input) {
+                        Some(&id) => {
+                            result.push(id);
+                            continue;
+                        }
+                        None => {
+                            return Err(Error::Custom(format!(
+                                "no GPU found at index {} (system has {} GPU(s))",
+                                input,
+                                gpu_ids.len()
+                            )));
+                        }
                     }
                 }
 
@@ -359,6 +375,11 @@ pub fn select_gpu_ids(
                     result.push(id);
                     continue;
                 }
+
+                return Err(Error::Custom(format!(
+                    "no GPU matches --gpu 0x{:x} (tried index, raw ID, and legacy ID)",
+                    input
+                )));
             }
             result
         }
@@ -963,29 +984,19 @@ pub fn handle_set_command(gpus: &[&Gpu], matches: &ArgMatches) -> Result<(), Err
 }
 
 fn handle_nvapi(gpus: &[&Gpu], matches: &ArgMatches) -> Result<(), Error> {
-    if let Some(vboost) = matches
-        .get_one::<String>("vboost")
-        .map(|s| u32::from_str(s.as_str()))
-        .transpose()?
-    {
+    if let Some(&vboost) = matches.get_one::<u32>("vboost") {
         for gpu in gpus {
             gpu.set_voltage_boost(Percentage(vboost))?;
         }
     }
-    if let Some(plimit) = matches.get_many::<String>("plimit") {
-        let plimit = plimit
-            .map(|s| u32::from_str(s.as_str()))
-            .map(|v| v.map(Percentage))
-            .collect::<Result<Vec<_>, _>>()?;
+    if let Some(plimit) = matches.get_many::<u32>("plimit") {
+        let plimit: Vec<Percentage> = plimit.map(|&v| Percentage(v)).collect();
         for gpu in gpus {
             gpu.set_power_limits(plimit.iter().cloned())?;
         }
     }
-    if let Some(tlimit) = matches.get_many::<String>("tlimit") {
-        let tlimit = tlimit
-            .map(|s| i32::from_str(s.as_str()))
-            .map(|v| v.map(|v| Celsius(v).into()))
-            .collect::<Result<Vec<_>, _>>()?;
+    if let Some(tlimit) = matches.get_many::<i32>("tlimit") {
+        let tlimit: Vec<_> = tlimit.map(|&v| Celsius(v).into()).collect();
         for gpu in gpus {
             gpu.set_sensor_limits(tlimit.iter().cloned())?;
         }
@@ -998,11 +1009,7 @@ fn handle_nvapi(gpus: &[&Gpu], matches: &ArgMatches) -> Result<(), Error> {
         .map_err(|e| Error::from(format!("Invalid --pstate value: {}", e)))?
         .unwrap_or(PState::P0);
 
-    if let Some(delta_uv) = matches
-        .get_one::<String>("voltage_delta")
-        .map(|s| i32::from_str(s.as_str()))
-        .transpose()?
-    {
+    if let Some(&delta_uv) = matches.get_one::<i32>("voltage_delta") {
         for gpu in gpus {
             crate::oc_get_set_function_nvapi::set_pstate_base_voltage(
                 gpu,
@@ -1012,11 +1019,7 @@ fn handle_nvapi(gpus: &[&Gpu], matches: &ArgMatches) -> Result<(), Error> {
         }
     }
 
-    if let Some(core_offset) = matches
-        .get_one::<String>("core_offset")
-        .map(|s| i32::from_str(s.as_str()))
-        .transpose()?
-    {
+    if let Some(&core_offset) = matches.get_one::<i32>("core_offset") {
         for gpu in gpus {
             let gpu_info = gpu.info()?;
             match gpu.inner().set_pstates(
@@ -1040,11 +1043,7 @@ fn handle_nvapi(gpus: &[&Gpu], matches: &ArgMatches) -> Result<(), Error> {
         }
     }
 
-    if let Some(mem_offset) = matches
-        .get_one::<String>("mem_offset")
-        .map(|s| i32::from_str(s.as_str()))
-        .transpose()?
-    {
+    if let Some(&mem_offset) = matches.get_one::<i32>("mem_offset") {
         for gpu in gpus {
             let gpu_info = gpu.info()?;
             match gpu.inner().set_pstates(
@@ -1173,11 +1172,7 @@ pub fn handle_nvml_with_ids(gpu_ids: &[u32], matches: &ArgMatches) -> Result<(),
         .unwrap_or("0");
     let target_nvml_pstate = crate::conv::parse_nvml_pstate(nvml_pstate_val);
 
-    if let Some(core_offset) = matches
-        .get_one::<String>("core_offset")
-        .map(|s| i32::from_str(s.as_str()))
-        .transpose()?
-    {
+    if let Some(&core_offset) = matches.get_one::<i32>("core_offset") {
         for &gpu_id in gpu_ids {
             match crate::oc_get_set_function_nvml::set_nvml_core_clock_vf_offset(
                 gpu_id,
@@ -1193,11 +1188,7 @@ pub fn handle_nvml_with_ids(gpu_ids: &[u32], matches: &ArgMatches) -> Result<(),
         }
     }
 
-    if let Some(mem_offset) = matches
-        .get_one::<String>("mem_offset")
-        .map(|s| i32::from_str(s.as_str()))
-        .transpose()?
-    {
+    if let Some(&mem_offset) = matches.get_one::<i32>("mem_offset") {
         for &gpu_id in gpu_ids {
             match crate::oc_get_set_function_nvml::set_nvml_mem_clock_vf_offset(
                 gpu_id,
@@ -1213,11 +1204,7 @@ pub fn handle_nvml_with_ids(gpu_ids: &[u32], matches: &ArgMatches) -> Result<(),
         }
     }
 
-    if let Some(power_w) = matches
-        .get_one::<String>("power_limit")
-        .map(|s| u32::from_str(s.as_str()))
-        .transpose()?
-    {
+    if let Some(&power_w) = matches.get_one::<u32>("power_limit") {
         for &gpu_id in gpu_ids {
             match crate::oc_get_set_function_nvml::set_nvml_power_limit(gpu_id, power_w) {
                 Ok(_) => println!(
@@ -1396,9 +1383,8 @@ pub fn handle_nvml_cooler_with_ids(gpu_ids: &[u32], matches: &ArgMatches) -> Res
         .transpose()?
         .ok_or_else(|| Error::from("Missing required argument: --policy <MODE>"))?;
     let level = matches
-        .get_one::<String>("level")
-        .map(|s| u32::from_str(s.as_str()))
-        .transpose()?
+        .get_one::<u32>("level")
+        .copied()
         .ok_or_else(|| Error::from("Missing required argument: --level <LEVEL>"))?;
 
     for &gpu_id in gpu_ids {
@@ -1511,4 +1497,53 @@ pub fn handle_reset_nvml_cooler_single_gpu(gpu: &Gpu, cooler_id: &str) -> Result
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TestResolution;
+
+    #[test]
+    fn test_resolution_downgrade_ladder() {
+        let top = TestResolution::R3600x1920;
+        let mut prev = top;
+        let mut current = top.downgrade();
+        while let Some(next) = current {
+            let (pw, ph) = prev.dimensions();
+            let (nw, nh) = next.dimensions();
+            assert!(
+                nw < pw || nh < ph,
+                "downgrade from {:?} ({pw}x{ph}) to {:?} ({nw}x{nh}) is not strictly smaller",
+                prev,
+                next,
+            );
+            prev = next;
+            current = next.downgrade();
+        }
+        assert_eq!(
+            prev,
+            TestResolution::R400x300,
+            "ladder must end at R400x300"
+        );
+    }
+
+    #[test]
+    fn test_resolution_r640x384_not_self_loop() {
+        let next = TestResolution::R640x384.downgrade();
+        assert_ne!(
+            next,
+            Some(TestResolution::R640x384),
+            "R640x384 must not downgrade to itself"
+        );
+        assert_eq!(next, Some(TestResolution::R576x360));
+    }
+
+    #[test]
+    fn test_resolution_r400x300_is_terminal() {
+        assert_eq!(
+            TestResolution::R400x300.downgrade(),
+            None,
+            "R400x300 is the lowest rung and must return None"
+        );
+    }
 }

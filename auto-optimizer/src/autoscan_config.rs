@@ -114,10 +114,8 @@ impl AutoscanConfig {
     /// 从 autoscan（gpuboostv3）子命令的 ArgMatches 解析
     pub fn from_autoscan_matches(matches: &ArgMatches) -> Result<Self, Error> {
         let timeout_loops = matches
-            .get_one::<String>("timeout_loops")
-            .map(|s| s.parse::<u32>())
-            .transpose()
-            .map_err(|e| Error::from(format!("Invalid timeout_loops: {}", e)))?
+            .get_one::<u32>("timeout_loops")
+            .copied()
             .unwrap_or(30);
 
         let recovery_method = matches
@@ -156,10 +154,8 @@ impl AutoscanConfig {
     /// legacy 没有 ultrafast / point_seq / output_csv / initcsv / vmem_scan，填默认值
     pub fn from_legacy_matches(matches: &ArgMatches) -> Result<Self, Error> {
         let timeout_loops = matches
-            .get_one::<String>("timeout_loops")
-            .map(|s| s.parse::<u32>())
-            .transpose()
-            .map_err(|e| Error::from(format!("Invalid timeout_loops: {}", e)))?
+            .get_one::<u32>("timeout_loops")
+            .copied()
             .unwrap_or(30);
 
         let recovery_method = matches
