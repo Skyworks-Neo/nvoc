@@ -74,10 +74,38 @@ fn get_primary_screen_size_raw() -> (u32, u32) {
         }
     }
 }
+use nvml_wrapper::enum_wrappers::device::{Clock, TemperatureSensor};
 use nvml_wrapper::Nvml;
 use std::str::FromStr;
 use std::thread::sleep;
 use std::time::Duration;
+
+/// GPU selection specification, independent of CLI argument parsing.
+///
+/// Decouples GPU selection from `clap` types so the library can be called
+/// without constructing CLI objects.
+pub struct GpuSelector(Option<Vec<String>>);
+
+impl GpuSelector {
+    /// Select all available GPUs (no filter).
+    pub fn all() -> Self {
+        Self(None)
+    }
+
+    /// Select GPUs by the given specification strings (indices or PCI bus IDs).
+    pub fn from_specs(specs: impl IntoIterator<Item = String>) -> Self {
+        Self(Some(specs.into_iter().collect()))
+    }
+
+    /// Build from an optional clap `ValuesRef` iterator.
+    pub fn from_clap(values: Option<clap::parser::ValuesRef<'_, String>>) -> Self {
+        Self(values.map(|v| v.cloned().collect()))
+    }
+
+    fn specs(&self) -> Option<&[String]> {
+        self.0.as_deref()
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TestResolution {
@@ -251,11 +279,12 @@ fn parse_gpu_id(s: &str) -> anyhow::Result<usize> {
 
 pub fn select_gpus<'a>(
     gpus: &'a [Gpu],
-    gpu: Option<clap::parser::ValuesRef<'_, String>>,
+    selector: &GpuSelector,
 ) -> anyhow::Result<Vec<&'a Gpu>, Error> {
-    let selected = match gpu {
-        Some(values) => {
-            let inputs = values
+    let selected = match selector.specs() {
+        Some(specs) => {
+            let inputs = specs
+                .iter()
                 .map(|s| parse_gpu_id(s.as_str()))
                 .collect::<anyhow::Result<Vec<_>, _>>()
                 .map_err(|e| Error::Custom(e.to_string()))?;
@@ -329,11 +358,12 @@ pub fn get_sorted_gpu_ids_nvml(nvml: &Nvml) -> Result<Vec<u32>, Error> {
 
 pub fn select_gpu_ids(
     gpu_ids: &[u32],
-    gpu: Option<clap::parser::ValuesRef<'_, String>>,
+    selector: &GpuSelector,
 ) -> anyhow::Result<Vec<u32>, Error> {
-    let selected = match gpu {
-        Some(values) => {
-            let inputs = values
+    let selected = match selector.specs() {
+        Some(specs) => {
+            let inputs = specs
+                .iter()
                 .map(|s| parse_gpu_id(s.as_str()))
                 .collect::<anyhow::Result<Vec<_>, _>>()
                 .map_err(|e| Error::Custom(e.to_string()))?;
@@ -420,58 +450,27 @@ pub fn handle_list(nvml: &Nvml) -> Result<(), Error> {
     Ok(())
 }
 
-// Define the handle_info function to handle the "info" subcommand
+/// Print GPU info. Uses the NVAPI path when `nvapi_gpus` is non-empty;
+/// falls back to NVML when NVAPI is unavailable (e.g. server GPUs on Windows).
+///
+/// `nvapi_gpus` and `nvml_indices` are pre-selected by the caller — GPU
+/// selection is no longer performed inside this function.
 pub fn handle_info(
-    gpu: Option<clap::parser::ValuesRef<'_, String>>,
+    nvapi_gpus: &[&Gpu],
+    nvml: Option<&Nvml>,
+    nvml_indices: &[u32],
     oformat: OutputFormat,
     output_file: Option<&str>,
 ) -> Result<(), Error> {
-    // Get the list of GPUs
-
-    let gpu_list = get_sorted_gpus()?;
-    let gpus = select_gpus(&gpu_list, gpu)?;
-
-    for (i, gpu) in gpus.iter().enumerate() {
-        println!("GPU {}: ID:0x{:04X}", i, gpu.id()); // ← Print something human-readable
-    }
-
-    // Handle the output format
-    match oformat {
-        OutputFormat::Human => {
-            let mut success = 0usize;
-            for gpu in gpus {
-                let info = match gpu.info() {
-                    Ok(info) => info,
-                    Err(e) => {
-                        eprintln!(
-                            "Warning: failed to read info for GPU ID 0x{:04X}: {:?}",
-                            gpu.id(),
-                            e
-                        );
-                        continue;
-                    }
-                };
-                human::print_info(&gpu, &info);
-                let gpu_type = fetch_gpu_type(&info)?;
-                human::print_scan_separator();
-                println!(
-                    "GPU {}: {} ({})====>[{}]",
-                    info.id, info.name, info.codename, gpu_type
-                );
-                human::print_scan_separator();
-                println!();
-                success += 1;
-            }
-            if success == 0 {
-                return Err(Error::Custom(
-                    "No selected GPU returned usable NvAPI info".to_string(),
-                ));
-            }
+    if !nvapi_gpus.is_empty() {
+        for (i, gpu) in nvapi_gpus.iter().enumerate() {
+            println!("GPU {}: ID:0x{:04X}", i, gpu.id());
         }
-        OutputFormat::Json => {
-            if let Some(file_path) = output_file {
+
+        match oformat {
+            OutputFormat::Human => {
                 let mut success = 0usize;
-                for gpu in gpus {
+                for gpu in nvapi_gpus {
                     let info = match gpu.info() {
                         Ok(info) => info,
                         Err(e) => {
@@ -483,15 +482,15 @@ pub fn handle_info(
                             continue;
                         }
                     };
-                    let gpu_file_path = format!("{}_gpu{}.json", file_path, info.id);
-                    let file = std::fs::File::create(&gpu_file_path)?;
-                    serde_json::to_writer_pretty(file, &info)?;
+                    human::print_info(gpu, &info);
+                    let gpu_type = fetch_gpu_type(&info)?;
                     human::print_scan_separator();
                     println!(
-                        "GPU {} information has been saved to: {}",
-                        info.id, gpu_file_path
+                        "GPU {}: {} ({})====>[{}]",
+                        info.id, info.name, info.codename, gpu_type
                     );
                     human::print_scan_separator();
+                    println!();
                     success += 1;
                 }
                 if success == 0 {
@@ -499,41 +498,135 @@ pub fn handle_info(
                         "No selected GPU returned usable NvAPI info".to_string(),
                     ));
                 }
-            } else {
-                // Write to stdout
-                let mut gpu_info = Vec::new();
-                for gpu in gpus {
-                    match gpu.info() {
-                        Ok(info) => gpu_info.push(info),
-                        Err(e) => eprintln!(
-                            "Warning: failed to read info for GPU ID 0x{:04X}: {:?}",
-                            gpu.id(),
-                            e
-                        ),
+            }
+            OutputFormat::Json => {
+                if let Some(file_path) = output_file {
+                    let mut success = 0usize;
+                    for gpu in nvapi_gpus {
+                        let info = match gpu.info() {
+                            Ok(info) => info,
+                            Err(e) => {
+                                eprintln!(
+                                    "Warning: failed to read info for GPU ID 0x{:04X}: {:?}",
+                                    gpu.id(),
+                                    e
+                                );
+                                continue;
+                            }
+                        };
+                        let gpu_file_path = format!("{}_gpu{}.json", file_path, info.id);
+                        let file = std::fs::File::create(&gpu_file_path)?;
+                        serde_json::to_writer_pretty(file, &info)?;
+                        human::print_scan_separator();
+                        println!(
+                            "GPU {} information has been saved to: {}",
+                            info.id, gpu_file_path
+                        );
+                        human::print_scan_separator();
+                        success += 1;
                     }
+                    if success == 0 {
+                        return Err(Error::Custom(
+                            "No selected GPU returned usable NvAPI info".to_string(),
+                        ));
+                    }
+                } else {
+                    let mut gpu_info = Vec::new();
+                    for gpu in nvapi_gpus {
+                        match gpu.info() {
+                            Ok(info) => gpu_info.push(info),
+                            Err(e) => eprintln!(
+                                "Warning: failed to read info for GPU ID 0x{:04X}: {:?}",
+                                gpu.id(),
+                                e
+                            ),
+                        }
+                    }
+                    if gpu_info.is_empty() {
+                        return Err(Error::Custom(
+                            "No selected GPU returned usable NvAPI info".to_string(),
+                        ));
+                    }
+                    serde_json::to_writer_pretty(io::stdout(), &gpu_info)?;
                 }
-                if gpu_info.is_empty() {
-                    return Err(Error::Custom(
-                        "No selected GPU returned usable NvAPI info".to_string(),
-                    ));
-                }
-                serde_json::to_writer_pretty(io::stdout(), &gpu_info)?;
             }
         }
+    } else if let Some(nvml) = nvml {
+        // NVML fallback: used when NVAPI is unavailable (e.g. server GPUs).
+        print_nvml_info(nvml, nvml_indices)?;
+    } else {
+        return Err(Error::Custom(
+            "No GPU backend available: both NvAPI and NVML are unavailable".to_string(),
+        ));
     }
 
     Ok(())
 }
 
+/// Print basic GPU info via NVML (fallback when NVAPI is unavailable).
+///
+/// `selected_ids` uses the same `pci.bus * 256` encoding as `get_sorted_gpu_ids_nvml`.
+/// An empty slice means "all devices".
+fn print_nvml_info(nvml: &Nvml, selected_ids: &[u32]) -> Result<(), Error> {
+    let count = nvml
+        .device_count()
+        .map_err(|e| Error::Custom(format!("NVML device_count failed: {:?}", e)))?;
+
+    let mut shown = 0usize;
+    for i in 0..count {
+        let dev = nvml
+            .device_by_index(i)
+            .map_err(|e| Error::Custom(format!("NVML device_by_index({}) failed: {:?}", i, e)))?;
+        let pci = dev
+            .pci_info()
+            .map_err(|e| Error::Custom(format!("NVML pci_info({}) failed: {:?}", i, e)))?;
+        let bus_id = pci.bus.saturating_mul(256);
+
+        if !selected_ids.is_empty() && !selected_ids.contains(&bus_id) {
+            continue;
+        }
+
+        let name = dev.name().unwrap_or_else(|_| "<unknown>".to_string());
+        let uuid = dev.uuid().unwrap_or_else(|_| "<unknown>".to_string());
+        let vbios = dev.vbios_version().unwrap_or_else(|_| "<unknown>".to_string());
+
+        human::print_scan_separator();
+        println!("GPU {} (NVML): {}", i, name);
+        println!("  PCI Bus:        0x{:02X}", pci.bus);
+        println!("  PCI Device:     0x{:04X}", pci.device);
+        println!("  PCI Domain:     0x{:04X}", pci.domain);
+        println!("  PCI Device ID:  0x{:08X}", pci.pci_device_id);
+        match pci.pci_sub_system_id {
+            Some(id) => println!("  PCI SubSys ID:  0x{:08X}", id),
+            None => println!("  PCI SubSys ID:  N/A"),
+        }
+        println!("  UUID:           {}", uuid);
+        println!("  VBIOS:          {}", vbios);
+        human::print_scan_separator();
+        println!();
+        shown += 1;
+    }
+
+    if shown == 0 {
+        return Err(Error::Custom(
+            "No matching NVML device found for info query".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Print GPU runtime status. Uses the NVAPI path when `nvapi_gpus` is non-empty;
+/// falls back to NVML when NVAPI is unavailable.
+///
+/// Pre-selection is performed by the caller; this function does not filter GPUs.
 pub fn handle_status(
-    gpus: &[Gpu],
-    gpu: Option<clap::parser::ValuesRef<'_, String>>,
+    nvapi_gpus: &[&Gpu],
+    nvml: Option<&Nvml>,
+    nvml_indices: &[u32],
     matches: &ArgMatches,
     oformat: OutputFormat,
 ) -> Result<(), Error> {
     const NANOS_IN_SECOND: f64 = 1e9;
-
-    let gpus = select_gpus(gpus, gpu)?;
 
     let monitor = matches
         .get_one::<String>("monitor")
@@ -542,89 +635,98 @@ pub fn handle_status(
         .map(|v| Duration::new(v as u64, (v.fract() * NANOS_IN_SECOND) as u32));
 
     loop {
-        match oformat {
-            OutputFormat::Human => {
-                let mut shown = false;
-                for &gpu in &gpus {
-                    let mut set = None;
+        if !nvapi_gpus.is_empty() {
+            match oformat {
+                OutputFormat::Human => {
+                    let mut shown = false;
+                    for &gpu in nvapi_gpus {
+                        let mut set = None;
 
-                    fn requires_set<'a>(
-                        gpu: &Gpu,
-                        set: &'a mut Option<GpuSettings>,
-                    ) -> Result<&'a GpuSettings, Error> {
-                        if set.is_some() {
-                            return Ok(set.as_ref().unwrap());
+                        fn requires_set<'a>(
+                            gpu: &Gpu,
+                            set: &'a mut Option<GpuSettings>,
+                        ) -> Result<&'a GpuSettings, Error> {
+                            if set.is_some() {
+                                return Ok(set.as_ref().unwrap());
+                            }
+                            Ok(set.get_or_insert(gpu.settings()?))
                         }
-                        Ok(set.get_or_insert(gpu.settings()?))
-                    }
 
-                    let status = match gpu.status() {
-                        Ok(status) => status,
-                        Err(e) => {
-                            eprintln!(
-                                "Warning: failed to read status for GPU ID 0x{:04X}: {:?}",
-                                gpu.id(),
-                                e
-                            );
-                            continue;
-                        }
-                    };
+                        let status = match gpu.status() {
+                            Ok(status) => status,
+                            Err(e) => {
+                                eprintln!(
+                                    "Warning: failed to read status for GPU ID 0x{:04X}: {:?}",
+                                    gpu.id(),
+                                    e
+                                );
+                                continue;
+                            }
+                        };
 
-                    human::print_status(&status);
-                    human::print_settings(gpu, requires_set(gpu, &mut set)?);
-                    if let Ok(info) = gpu.info() {
-                        if let Some(thresholds) =
-                            crate::oc_get_set_function_nvml::get_nvml_temperature_thresholds(
-                                info.id as u32,
-                            )
-                        {
-                            println!("NVML Temperature Thresholds:");
-                            for (name, value) in thresholds {
-                                match value {
-                                    Some(temp) => println!("  {:<16} : {} C", name, temp),
-                                    None => println!("  {:<16} : N/A", name),
+                        human::print_status(&status);
+                        human::print_settings(gpu, requires_set(gpu, &mut set)?);
+                        if let Ok(info) = gpu.info() {
+                            if let Some(thresholds) =
+                                crate::oc_get_set_function_nvml::get_nvml_temperature_thresholds(
+                                    info.id as u32,
+                                )
+                            {
+                                println!("NVML Temperature Thresholds:");
+                                for (name, value) in thresholds {
+                                    match value {
+                                        Some(temp) => println!("  {:<16} : {} C", name, temp),
+                                        None => println!("  {:<16} : N/A", name),
+                                    }
                                 }
                             }
                         }
+                        println!();
+                        shown = true;
+                        break;
                     }
-                    println!();
-                    shown = true;
-                    break;
-                }
 
-                if shown {
-                    sleep(Duration::from_secs_f32(0.5));
-                    return Ok(());
-                }
-
-                return Err(Error::Custom(
-                    "No selected GPU returned usable NvAPI status".to_string(),
-                ));
-            }
-            OutputFormat::Json => {
-                let mut status = Vec::new();
-                for &gpu in &gpus {
-                    match gpu.status() {
-                        Ok(s) => status.push(s),
-                        Err(e) => eprintln!(
-                            "Warning: failed to read status for GPU ID 0x{:04X}: {:?}",
-                            gpu.id(),
-                            e
-                        ),
+                    if shown {
+                        sleep(Duration::from_secs_f32(0.5));
+                        return Ok(());
                     }
-                }
-                if status.is_empty() {
+
                     return Err(Error::Custom(
                         "No selected GPU returned usable NvAPI status".to_string(),
                     ));
                 }
-                if monitor.is_some() {
-                    let _ = serde_json::to_writer(io::stdout(), &status);
-                    println!();
-                } else {
-                    let _ = serde_json::to_writer_pretty(io::stdout(), &status);
+                OutputFormat::Json => {
+                    let mut status = Vec::new();
+                    for &gpu in nvapi_gpus {
+                        match gpu.status() {
+                            Ok(s) => status.push(s),
+                            Err(e) => eprintln!(
+                                "Warning: failed to read status for GPU ID 0x{:04X}: {:?}",
+                                gpu.id(),
+                                e
+                            ),
+                        }
+                    }
+                    if status.is_empty() {
+                        return Err(Error::Custom(
+                            "No selected GPU returned usable NvAPI status".to_string(),
+                        ));
+                    }
+                    if monitor.is_some() {
+                        let _ = serde_json::to_writer(io::stdout(), &status);
+                        println!();
+                    } else {
+                        let _ = serde_json::to_writer_pretty(io::stdout(), &status);
+                    }
                 }
             }
+        } else if let Some(nvml) = nvml {
+            // NVML fallback: used when NVAPI is unavailable (e.g. server GPUs).
+            print_nvml_status(nvml, nvml_indices)?;
+        } else {
+            return Err(Error::Custom(
+                "No GPU backend available: both NvAPI and NVML are unavailable".to_string(),
+            ));
         }
 
         if let Some(monitor) = monitor {
@@ -637,13 +739,76 @@ pub fn handle_status(
     Ok(())
 }
 
-// In commands.rs
-pub fn handle_get(
-    gpus: &[Gpu],
-    gpu: Option<clap::parser::ValuesRef<'_, String>>,
-    oformat: OutputFormat,
-) -> Result<(), Error> {
-    let gpus = select_gpus(gpus, gpu)?;
+/// Print GPU runtime status via NVML (fallback when NVAPI is unavailable).
+fn print_nvml_status(nvml: &Nvml, selected_ids: &[u32]) -> Result<(), Error> {
+    let count = nvml
+        .device_count()
+        .map_err(|e| Error::Custom(format!("NVML device_count failed: {:?}", e)))?;
+
+    let mut shown = 0usize;
+    for i in 0..count {
+        let dev = nvml
+            .device_by_index(i)
+            .map_err(|e| Error::Custom(format!("NVML device_by_index({}) failed: {:?}", i, e)))?;
+        let pci = dev
+            .pci_info()
+            .map_err(|e| Error::Custom(format!("NVML pci_info({}) failed: {:?}", i, e)))?;
+        let bus_id = pci.bus.saturating_mul(256);
+
+        if !selected_ids.is_empty() && !selected_ids.contains(&bus_id) {
+            continue;
+        }
+
+        let name = dev.name().unwrap_or_else(|_| "<unknown>".to_string());
+        let temp = dev.temperature(TemperatureSensor::Gpu).ok();
+        let core_clock = dev.clock_info(Clock::Graphics).ok();
+        let mem_clock = dev.clock_info(Clock::Memory).ok();
+        let power_mw = dev.power_usage().ok();
+        let fan = dev.fan_speed(0).ok();
+        let util = dev.utilization_rates().ok();
+        let mem_info = dev.memory_info().ok();
+
+        human::print_scan_separator();
+        println!("GPU {} (NVML): {}", i, name);
+        if let Some(t) = temp {
+            println!("  Temperature  : {} C", t);
+        }
+        if let Some(c) = core_clock {
+            println!("  Core Clock   : {} MHz", c);
+        }
+        if let Some(m) = mem_clock {
+            println!("  Mem Clock    : {} MHz", m);
+        }
+        if let Some(p) = power_mw {
+            println!("  Power Usage  : {:.2} W", p as f32 / 1000.0);
+        }
+        if let Some(f) = fan {
+            println!("  Fan Speed    : {}%", f);
+        }
+        if let Some(u) = util {
+            println!("  GPU Util     : {}%  Mem Util: {}%", u.gpu, u.memory);
+        }
+        if let Some(m) = mem_info {
+            println!(
+                "  VRAM         : {} / {} MiB",
+                m.used / (1024 * 1024),
+                m.total / (1024 * 1024)
+            );
+        }
+        human::print_scan_separator();
+        println!();
+        shown += 1;
+    }
+
+    if shown == 0 {
+        return Err(Error::Custom(
+            "No matching NVML device found for status query".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+pub fn handle_get(gpus: &[&Gpu], oformat: OutputFormat) -> Result<(), Error> {
 
     match oformat {
         OutputFormat::Human => {
@@ -815,14 +980,7 @@ pub fn handle_get(
     Ok(())
 }
 
-// In commands.rs
-
-pub fn handle_reset(
-    gpus: &[Gpu],
-    gpu: Option<clap::parser::ValuesRef<'_, String>>,
-    matches: &ArgMatches,
-) -> Result<(), Error> {
-    let gpus = select_gpus(gpus, gpu)?;
+pub fn handle_reset(gpus: &[&Gpu], matches: &ArgMatches) -> Result<(), Error> {
 
     let parse_settings = |key: &str| -> Result<Vec<ResetSettings>, Error> {
         matches
@@ -1451,12 +1609,7 @@ pub fn handle_nvml_cooler(gpus: &[&Gpu], matches: &ArgMatches) -> Result<(), Err
     handle_nvml_cooler_with_ids(&gpu_ids, matches)
 }
 
-pub fn handle_reset_nvml_cooler(
-    gpus: &[Gpu],
-    gpu: Option<clap::parser::ValuesRef<'_, String>>,
-    matches: &ArgMatches,
-) -> Result<(), Error> {
-    let gpus = select_gpus(gpus, gpu)?;
+pub fn handle_reset_nvml_cooler(gpus: &[&Gpu], matches: &ArgMatches) -> Result<(), Error> {
     let cooler_id = matches
         .get_one::<String>("id")
         .map(|s| s.as_str())
