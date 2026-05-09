@@ -1,0 +1,7 @@
+[tool.uv.workspace]
+members = [
+    "gui",
+    "tui",
+    "cli-stressor-cuda",
+    "cli-stressor-opencl",
+]
