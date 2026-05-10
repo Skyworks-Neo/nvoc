@@ -212,6 +212,20 @@ class TestNoSysExitInInnerLoop(unittest.TestCase):
                                              "Inner-loop exception handler must not call sys.exit")
         self.assertTrue(inner_loop_handler_found, "Inner-loop exception handler not found")
 
+    def test_validation_failure_breaks_inner_loop(self):
+        """Validation failure must break the inner while-loop promptly (mirrors OpenCL behavior)."""
+        source = _MODULE_PATH.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "run_stress_for_precision":
+                func_src = ast.unparse(node)
+                # The 'if not passed:' block must contain 'break' so the loop exits
+                # immediately on validation failure rather than running to full duration.
+                self.assertIn("break", func_src,
+                              "run_stress_for_precision must break on validation failure")
+                return
+        self.fail("run_stress_for_precision not found")
+
     def test_print_summary_keeps_sys_exit(self):
         """The summary-level sys.exit(1) must be preserved for overall failure reporting."""
         src = self._func_source("print_summary")

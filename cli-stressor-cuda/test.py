@@ -327,6 +327,7 @@ def run_stress_for_precision(
                     if result.first_error is None:
                         result.first_error = reason
                         result.first_error_at_s = time.monotonic() - start
+                    break
                 next_validate = time.monotonic() + max(0.0, validate_interval_s)
                 validation_seed += 1
 
