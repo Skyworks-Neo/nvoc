@@ -63,6 +63,7 @@ jobs:
               - 'auto-optimizer/**'
               - 'srv/**'
               - 'Cargo.toml'
+              - 'Cargo.lock'
               - '.github/workflows/gpu-ci.yml'
             stressor_cuda:
               - 'cli-stressor-cuda/**'

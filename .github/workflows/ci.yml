@@ -37,10 +37,12 @@ jobs:
             auto_optimizer:
               - 'auto-optimizer/**'
               - 'Cargo.toml'
+              - 'Cargo.lock'
               - '.github/workflows/ci.yml'
             srv:
               - 'srv/**'
               - 'Cargo.toml'
+              - 'Cargo.lock'
               - '.github/workflows/ci.yml'
             tui:
               - 'tui/**'
