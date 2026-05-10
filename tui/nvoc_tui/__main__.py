@@ -12,10 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-if __package__:
-    from .app import NVOCApp
-else:  # Allow execution without package context (e.g., PyInstaller)
+if __package__ in (None, ""):  # Allow execution without package context (e.g., PyInstaller)
     from nvoc_tui.app import NVOCApp
+else:
+    from .app import NVOCApp
 
 
 def main() -> int:
