@@ -36,6 +36,17 @@ uv run nvoc-tui
 uv run pytest
 ```
 
+### Packaging with PyInstaller
+
+build using the spec:
+
+```powershell
+# change to the tui folder if you're not already there
+Set-Location -Path "tui"; \
+# build using the provided spec file
+pyinstaller --clean --noconfirm nvoc_tui.spec
+```
+
 [Back to top](#nvoc-tui)
 
 <a id="中文"></a>
@@ -65,6 +76,27 @@ uv run nvoc-tui
 
 ```bash
 uv run pytest
+```
+
+### 使用 PyInstaller 打包
+
+前置条件：
+
+- Python 3.8 或更高
+- 建议使用虚拟环境来隔离依赖
+
+安装 PyInstaller：
+
+```powershell
+pip install --upgrade pyinstaller
+```
+生成单文件 Windows 可执行程序（在 `tui` 目录下执行下面命令）：
+
+```powershell
+# 进入 tui 目录（如尚未进入）
+Set-Location -Path "tui"; \
+# 使用已提供的 spec 文件构建
+pyinstaller --clean --noconfirm nvoc_tui.spec
 ```
 
 [返回顶部](#nvoc-tui)
