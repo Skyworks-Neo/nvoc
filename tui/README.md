@@ -38,11 +38,22 @@ uv run pytest
 
 ### Packaging with PyInstaller
 
-build using the spec:
+Prerequisites:
+
+- Python 3.10 or higher
+- Recommended: use a virtual environment to isolate dependencies
+
+Install PyInstaller:
 
 ```powershell
-# change to the tui folder if you're not already there
-Set-Location -Path "tui"; \
+pip install --upgrade pyinstaller
+```
+
+Build using the spec (run from the repository root):
+
+```powershell
+# change to the tui folder
+Set-Location -Path "tui"
 # build using the provided spec file
 pyinstaller --clean --noconfirm nvoc_tui.spec
 ```
@@ -90,11 +101,11 @@ uv run pytest
 ```powershell
 pip install --upgrade pyinstaller
 ```
-生成单文件 Windows 可执行程序（在 `tui` 目录下执行下面命令）：
+生成单文件 Windows 可执行程序（从仓库根目录执行下面命令）：
 
 ```powershell
-# 进入 tui 目录（如尚未进入）
-Set-Location -Path "tui"; \
+# 进入 tui 目录
+Set-Location -Path "tui"
 # 使用已提供的 spec 文件构建
 pyinstaller --clean --noconfirm nvoc_tui.spec
 ```
