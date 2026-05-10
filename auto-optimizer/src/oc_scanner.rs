@@ -321,13 +321,25 @@ mod pressure_runner {
 
                     if exit_code == 0 {
                         eprintln!("Process finished successfully.");
-                        if in_test_check_number > 0
-                            && ((thrm_or_pwr_limit_number as f64 / in_test_check_number as f64)
-                                > 0.3)
-                            && resolution.downgrade().is_some()
-                            && !cfg.is_mem_test
-                        {
-                            thrm_or_pwr_limit_flag = true;
+                        let throttle_ratio = if in_test_check_number > 0 {
+                            thrm_or_pwr_limit_number as f64 / in_test_check_number as f64
+                        } else {
+                            0.0
+                        };
+                        if throttle_ratio > 0.3 && !cfg.is_mem_test {
+                            if resolution.downgrade().is_some() {
+                                thrm_or_pwr_limit_flag = true;
+                            } else {
+                                // At the lowest resolution floor — cannot downgrade further.
+                                // Accept the result as best-effort even under throttling.
+                                eprintln!(
+                                    "Warning: Thermal/power throttling detected ({:.0}%) at \
+                                     lowest resolution ({:?}). No lower resolution available; \
+                                     accepting result as floor.",
+                                    throttle_ratio * 100.0,
+                                    resolution
+                                );
+                            }
                         }
                         if thrm_or_pwr_limit_flag && let Some(lower_res) = resolution.downgrade() {
                             println!("Downgrading to {:?}", lower_res);
