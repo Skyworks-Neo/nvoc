@@ -82,7 +82,7 @@ uv run pytest
 
 前置条件：
 
-- Python 3.8 或更高
+- Python 3.10 或更高
 - 建议使用虚拟环境来隔离依赖
 
 安装 PyInstaller：
