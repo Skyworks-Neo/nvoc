@@ -19,6 +19,7 @@ use core::time;
 use num_traits::pow;
 use nvapi_hi::Gpu;
 use nvapi_hi::{ClockDomain, KilohertzDelta, PState};
+use nvml_wrapper::Nvml;
 use std::cmp::min;
 use std::io::Write;
 use std::path::Path;
@@ -1189,6 +1190,8 @@ fn run_mem_oc_phase<V: std::fmt::Display + Copy>(
 pub fn autoscan_gpuboostv3(gpus: &Vec<&Gpu>, matches: &ArgMatches) -> Result<(), Error> {
     use crate::autoscan_config::AutoscanConfig;
     let cfg = AutoscanConfig::from_autoscan_matches(matches)?;
+    let nvml = Nvml::init()
+        .map_err(|e| Error::Custom(format!("NVML init failed in autoscan: {:?}", e)))?;
 
     let mut is_ultrafast = cfg.is_ultrafast;
     if is_ultrafast {
@@ -1703,7 +1706,7 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<&Gpu>, matches: &ArgMatches) -> Result<(),
             );
         }
         gpu.reset_cooler_levels().unwrap_or_else(|_e| {
-            handle_reset_nvml_cooler_single_gpu(gpu, "all")
+            handle_reset_nvml_cooler_single_gpu(&nvml, gpu, "all")
                 .unwrap_or_else(|e| eprintln!("Failed to reset cooler: {e}"))
         })
     }
@@ -1714,6 +1717,8 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<&Gpu>, matches: &ArgMatches) -> Result<(),
 pub fn autoscan_legacy(gpus: &Vec<&Gpu>, matches: &ArgMatches) -> Result<(), Error> {
     use crate::autoscan_config::AutoscanConfig;
     let cfg = AutoscanConfig::from_legacy_matches(matches)?;
+    let nvml = Nvml::init()
+        .map_err(|e| Error::Custom(format!("NVML init failed in autoscan_legacy: {:?}", e)))?;
 
     let test_exe = cfg.test_exe.as_str();
     let log_filename = cfg.log.as_str();
@@ -1877,7 +1882,7 @@ pub fn autoscan_legacy(gpus: &Vec<&Gpu>, matches: &ArgMatches) -> Result<(), Err
                     .cloned(),
             )?;
             gpu.reset_cooler_levels().unwrap_or_else(|_e| {
-                handle_reset_nvml_cooler_single_gpu(gpu, "all")
+                handle_reset_nvml_cooler_single_gpu(&nvml, gpu, "all")
                     .unwrap_or_else(|e| eprintln!("Failed to reset cooler: {e}"))
             })
         }

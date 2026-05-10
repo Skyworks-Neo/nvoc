@@ -459,18 +459,18 @@ fn nvapi_ranges_overlap(a_min: u32, a_max: u32, b_min: u32, b_max: u32) -> bool 
 }
 
 pub fn set_nvapi_pstate_lock(
+    nvml: &nvml_wrapper::Nvml,
     gpu: &Gpu,
     gpu_id: u32,
     first_pstate: nvml_wrapper::enum_wrappers::device::PerformanceState,
     second_pstate: nvml_wrapper::enum_wrappers::device::PerformanceState,
 ) -> Result<(String, u32, u32), Error> {
-    let pstates =
-        crate::oc_get_set_function_nvml::get_nvml_pstate_info(gpu_id).ok_or_else(|| {
-            Error::Custom(format!(
-                "Failed to query NVML P-State information for GPU {}",
-                gpu_id
-            ))
-        })?;
+    let pstates = crate::oc_get_set_function_nvml::get_nvml_pstate_info(nvml, gpu_id).ok_or_else(|| {
+        Error::Custom(format!(
+            "Failed to query NVML P-State information for GPU {}",
+            gpu_id
+        ))
+    })?;
 
     let first_index = crate::conv::nvml_pstate_to_index(first_pstate)?;
     let second_index = crate::conv::nvml_pstate_to_index(second_pstate)?;
@@ -1208,12 +1208,14 @@ pub fn get_gpu_tdp_temp_limit(
     let gpu_list = crate::basic_func::get_sorted_gpus()?;
     let gpus = select_gpus(&gpu_list, &selector)?;
 
+    let nvml = nvml_wrapper::Nvml::init().ok();
     for gpu in gpus.iter() {
         let info = gpu.info()?;
 
         // 使用 NVAPI GPU ID 直接查询（公式：GPU_ID = PCI_Bus × 256）
-        if let Some((min_w, current_w, max_w)) =
-            crate::oc_get_set_function_nvml::query_nvml_power_watts(info.id as u32)
+        if let Some((min_w, current_w, max_w)) = nvml
+            .as_ref()
+            .and_then(|n| crate::oc_get_set_function_nvml::query_nvml_power_watts(n, info.id as u32))
         {
             min_tdp = min_w;
             default_tdp = current_w;
