@@ -134,7 +134,9 @@ def compose_overclock() -> ComposeResult:
                             )
                         with Horizontal(classes="row"):
                             yield Label("Level")
-                            yield ShortcutInput(value="60", id="fan-level", compact=True)
+                            yield ShortcutInput(
+                                value="60", id="fan-level", compact=True
+                            )
                     with Grid(id="fan-actions"):
                         yield Button(
                             "Apply Fan", id="fan-apply", classes="red", compact=True
