@@ -35,3 +35,25 @@ pub const fn stressor_3d_conf_path() -> Option<&'static str> {
 pub fn panic_windows_only(feature: &str) -> ! {
     panic!("{feature} is only supported on Windows in this repository")
 }
+
+/// Returns `true` when the process has the privilege level required to write
+/// GPU state through NVAPI / NVML (Administrator on Windows, root on POSIX).
+pub fn is_elevated() -> bool {
+    #[cfg(windows)]
+    {
+        #[link(name = "shell32")]
+        unsafe extern "system" {
+            fn IsUserAnAdmin() -> i32;
+        }
+        // SAFETY: IsUserAnAdmin reads only the caller's token; no preconditions.
+        unsafe { IsUserAnAdmin() != 0 }
+    }
+    #[cfg(not(windows))]
+    {
+        unsafe extern "C" {
+            fn geteuid() -> u32;
+        }
+        // SAFETY: geteuid() always succeeds and is async-signal-safe.
+        unsafe { geteuid() == 0 }
+    }
+}
