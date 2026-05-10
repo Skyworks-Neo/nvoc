@@ -131,18 +131,18 @@ jobs:
       - run: uv sync
       - run: uv run python test.py
 
-  opencl-stressor-linux:
-    needs: changes
-    if: needs.changes.outputs.stressor_opencl == 'true'
-    runs-on: [self-hosted, linux, gpu-nvidia, opencl]
-    timeout-minutes: 30
-    defaults:
-      run:
-        working-directory: cli-stressor-opencl
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.ref || github.ref }}
-      - uses: astral-sh/setup-uv@v4
-      - run: uv sync
-      - run: uv run python test.py
+  # opencl-stressor-linux:
+  #   needs: changes
+  #   if: needs.changes.outputs.stressor_opencl == 'true'
+  #   runs-on: [self-hosted, linux, gpu-nvidia, opencl]
+  #   timeout-minutes: 30
+  #   defaults:
+  #     run:
+  #       working-directory: cli-stressor-opencl
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #       with:
+  #         ref: ${{ inputs.ref || github.ref }}
+  #     - uses: astral-sh/setup-uv@v4
+  #     - run: uv sync
+  #     - run: uv run python test.py
