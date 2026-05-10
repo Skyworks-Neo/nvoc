@@ -103,6 +103,9 @@ jobs:
     if: needs.changes.outputs.stressor_cuda == 'true'
     runs-on: [self-hosted, windows, gpu-nvidia, cuda]
     timeout-minutes: 30
+    env:
+      UV_CACHE_DIR: E:\actions-runner\uv-cache
+      UV_PROJECT_ENVIRONMENT: E:\actions-runner\uv-envs\cuda-stressor
     defaults:
       run:
         working-directory: cli-stressor-cuda
@@ -111,7 +114,7 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.ref }}
       - uses: astral-sh/setup-uv@v4
-      - run: uv sync
+      - run: uv sync --frozen
       - name: short stress run
         run: uv run python test.py
 
