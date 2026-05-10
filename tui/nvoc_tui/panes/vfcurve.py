@@ -54,7 +54,7 @@ def compose_vfcurve(config: AppConfig, auto_refresh_label: Text) -> ComposeResul
 
                     # VFP Adjustments subpane
                     with Vertical(classes="subpane") as vf_adj_subpane:
-                        vf_adj_subpane.border_title = "VFP Adjustments (Alt-V)"
+                        vf_adj_subpane.border_title = mnemonic_text("V", "FP Adjustments")
                         with Grid(id="vf-range-actions"):
                             yield ShortcutInput(
                                 value="0", id="vf-range-start", compact=True
@@ -90,7 +90,7 @@ def compose_vfcurve(config: AppConfig, auto_refresh_label: Text) -> ComposeResul
                 with Vertical(classes="column"):
                     # Voltage locking subpane
                     with Vertical(classes="subpane") as volt_lock_subpane:
-                        volt_lock_subpane.border_title = "Voltage Locking (Alt-L)"
+                        volt_lock_subpane.border_title = mnemonic_text("L", "ocking", "Voltage ")
                         with Grid(id="vf-lock-actions"):
                             yield ShortcutInput(
                                 value="55", id="vf-lock-value", compact=True
@@ -113,9 +113,7 @@ def compose_vfcurve(config: AppConfig, auto_refresh_label: Text) -> ComposeResul
 
                     # Frequency adjustments subpane
                     with Vertical(classes="subpane") as freq_adj_subpane:
-                        freq_adj_subpane.border_title = (
-                            "Core Frequency Adjustments (Alt-U)"
-                        )
+                        freq_adj_subpane.border_title = mnemonic_text("u", "ency Adjustments", "Core Freq")
                         with Grid(id="vf-freq-actions"):
                             with Horizontal(classes="row"):
                                 yield Label("API")
@@ -153,9 +151,7 @@ def compose_vfcurve(config: AppConfig, auto_refresh_label: Text) -> ComposeResul
 
                     # Memory frequency adjustments subpane
                     with Vertical(classes="subpane") as mem_adj_subpane:
-                        mem_adj_subpane.border_title = (
-                            "Memory Frequency Adjustments (Alt-M)"
-                        )
+                        mem_adj_subpane.border_title = mnemonic_text("M", "emory Frequency Adjustments")
                         with Grid(id="vf-mem-actions"):
                             yield Label("Min")
                             yield ShortcutInput(

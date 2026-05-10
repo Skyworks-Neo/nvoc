@@ -4,7 +4,7 @@ from textual.app import ComposeResult
 from textual.containers import Grid, Horizontal, Vertical
 from textual.widgets import Button, Label, Select, TabPane
 
-from ..widgets import ShortcutInput
+from ..widgets import ShortcutInput, mnemonic_text
 
 
 def compose_overclock() -> ComposeResult:
@@ -12,7 +12,7 @@ def compose_overclock() -> ComposeResult:
         with Vertical(classes="section"):
             with Grid(id="overclock-groups"):
                 with Vertical(classes="subpane") as clock_pane:
-                    clock_pane.border_title = "Clock (Alt-C)"
+                    clock_pane.border_title = mnemonic_text("C", "lock")
                     with Grid(id="clock-controls"):
                         with Horizontal(classes="row"):
                             yield Label("API")
@@ -51,7 +51,7 @@ def compose_overclock() -> ComposeResult:
                         )
 
                 with Vertical(classes="subpane") as power_pane:
-                    power_pane.border_title = "Power (Alt-P)"
+                    power_pane.border_title = mnemonic_text("P", "ower")
                     with Grid(id="power-controls"):
                         with Horizontal(classes="row"):
                             yield Label("API")
@@ -93,7 +93,7 @@ def compose_overclock() -> ComposeResult:
                         )
 
                 with Vertical(classes="subpane") as fan_pane:
-                    fan_pane.border_title = "Fan (Alt-A)"
+                    fan_pane.border_title = mnemonic_text("a", "n", "F")
                     with Grid(id="fan-controls"):
                         with Horizontal(classes="row"):
                             yield Label("Target")

@@ -42,6 +42,17 @@ def test_autoscan_args_uses_ultrafast_mode() -> None:
     assert args[-2:] == ["-b", "aggressive"]
 
 
+def test_autoscan_shortcut_focuses_target_select() -> None:
+    app = FakeApp()
+    target = SimpleNamespace(focused=False)
+    target.focus = lambda: setattr(target, "focused", True)
+    app.widgets = {"#autoscan-bsod": target}
+
+    assert AutoscanController(app).activate_shortcut("autoscan-bsod") is True
+
+    assert target.focused is True
+
+
 def test_overclock_limit_args_for_nvapi_include_extra_limits() -> None:
     app = FakeApp()
     app.widgets = {

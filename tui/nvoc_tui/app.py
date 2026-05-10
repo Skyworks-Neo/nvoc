@@ -65,11 +65,16 @@ class NVOCApp(App[None]):
         Binding("ctrl+t", "toggle_output", show=False),
         Binding("ctrl+e", "clear_output", show=False),
         Binding("alt+a", "pane_shortcut('a')", show=False),
+        Binding("alt+b", "pane_shortcut('b')", show=False),
+        Binding("alt+d", "pane_shortcut('d')", show=False),
         Binding("alt+p", "pane_shortcut('p')", show=False),
         Binding("alt+n", "pane_shortcut('n')", show=False),
         Binding("alt+i", "pane_shortcut('i')", show=False),
         Binding("alt+s", "pane_shortcut('s')", show=False),
+        Binding("alt+t", "pane_shortcut('t')", show=False),
+        Binding("alt+x", "pane_shortcut('x')", show=False),
         Binding("alt+g", "pane_shortcut('g')", show=False),
+        Binding("alt+o", "pane_shortcut('o')", show=False),
         Binding("alt+c", "pane_shortcut('c')", show=False),
         Binding("alt+q", "pane_shortcut('q')", show=False),
         Binding("alt+r", "pane_shortcut('r')", show=False),
@@ -245,6 +250,26 @@ class NVOCApp(App[None]):
             }
             if key in dashboard_shortcuts:
                 self.dashboard_controller.activate_button(dashboard_shortcuts[key])
+                return True
+        elif tabs.active == "autoscan":
+            autoscan_shortcuts = {
+                "m": "autoscan-mode",
+                "d": "autoscan-bsod",
+                "v": "autoscan-export-init",
+                "i": "autoscan-import-final",
+                "e": "autoscan-export-final",
+                "t": "autoscan-test-exe",
+                "l": "autoscan-timeout",
+                "g": "autoscan-log",
+                "o": "autoscan-output",
+                "n": "autoscan-init",
+                "r": "autoscan-reset-unlock",
+                "a": "autoscan-start",
+                "s": "autoscan-stop",
+                "x": "autoscan-fix",
+            }
+            if key in autoscan_shortcuts:
+                self.autoscan_controller.activate_shortcut(autoscan_shortcuts[key])
                 return True
         elif tabs.active == "overclock":
             overclock_shortcuts = {
