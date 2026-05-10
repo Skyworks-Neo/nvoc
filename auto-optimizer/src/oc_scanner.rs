@@ -1,4 +1,4 @@
-use crate::basic_func::TestResolution::{R640x384, R1680x1050};
+use crate::basic_func::TestResolution::R1680x1050;
 use crate::basic_func::{TestResolution, get_second_largest_resolution, local_time_hms};
 use crate::error::Error;
 use crate::handle_reset_nvml_cooler_single_gpu;
@@ -324,7 +324,7 @@ mod pressure_runner {
                         if in_test_check_number > 0
                             && ((thrm_or_pwr_limit_number as f64 / in_test_check_number as f64)
                                 > 0.3)
-                            && resolution != R640x384
+                            && resolution.downgrade().is_some()
                             && !cfg.is_mem_test
                         {
                             thrm_or_pwr_limit_flag = true;
