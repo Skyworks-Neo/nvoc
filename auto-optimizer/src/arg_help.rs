@@ -199,20 +199,20 @@ pub fn get_arguments() -> Command {
                                 .short('c')
                                 .long("core")
                                 .value_name("CORE_MHZ")
-                                .help("Target absolute core frequency in MHz (100–5000)")
+                                .help("Target absolute core frequency in MHz (1–5000)")
                                 .num_args(1)
                                 .required(true)
-                                .value_parser(clap::value_parser!(u32).range(100..=5_000))
+                                .value_parser(clap::value_parser!(u32).range(1..=5_000))
                         )
                         .arg(
                             Arg::new("memory")
                                 .short('m')
                                 .long("memory")
                                 .value_name("MEM_MHZ")
-                                .help("Target absolute memory frequency in MHz (100–5000)")
+                                .help("Target absolute memory frequency in MHz (1–5000)")
                                 .num_args(1)
                                 .required(true)
-                                .value_parser(clap::value_parser!(u32).range(100..=5_000))
+                                .value_parser(clap::value_parser!(u32).range(1..=5_000))
                         )
                 )
                 .subcommand(
@@ -235,8 +235,8 @@ pub fn get_arguments() -> Command {
                                 .value_name("TEMPLIMIT")
                                 .num_args(1..)
                                 .action(ArgAction::Append)
-                                .value_parser(clap::value_parser!(i32).range(40..=120))
-                                .help("Thermal limit °C (40–120)"),
+                                .value_parser(clap::value_parser!(i32).range(0..=127))
+                                .help("Thermal limit °C (0–127)"),
                         )
                         .arg(
                             Arg::new("plimit")
@@ -245,8 +245,8 @@ pub fn get_arguments() -> Command {
                                 .value_name("POWERLIMIT")
                                 .num_args(1..)
                                 .action(ArgAction::Append)
-                                .value_parser(clap::value_parser!(u32).range(10..=200))
-                                .help("Power limit % (10–200)"),
+                                .value_parser(clap::value_parser!(u32).range(1..=10_000))
+                                .help("Power limit % (1–10000)"),
                         )
                         .arg(
                             Arg::new("voltage_delta")
@@ -274,8 +274,8 @@ pub fn get_arguments() -> Command {
                                 .value_name("CORE_OFFSET")
                                 .num_args(1)
                                 .allow_hyphen_values(true)
-                                .value_parser(clap::value_parser!(i32).range(-2_000_000..=2_000_000))
-                                .help("Core clock offset via NVAPI (kHz, ±2 000 000)."),
+                                .value_parser(clap::value_parser!(i32).range(-5_000_000..=5_000_000))
+                                .help("Core clock offset via NVAPI (kHz, ±5 000 000)."),
                         )
                         .arg(
                             Arg::new("mem_offset")
@@ -283,8 +283,8 @@ pub fn get_arguments() -> Command {
                                 .value_name("MEM_OFFSET")
                                 .num_args(1)
                                 .allow_hyphen_values(true)
-                                .value_parser(clap::value_parser!(i32).range(-2_000_000..=2_000_000))
-                                .help("Memory clock offset via NVAPI (kHz, ±2 000 000)."),
+                                .value_parser(clap::value_parser!(i32).range(-5_000_000..=5_000_000))
+                                .help("Memory clock offset via NVAPI (kHz, ±5 000 000)."),
                         )
                         .arg(
                             Arg::new("locked_voltage")
@@ -369,8 +369,8 @@ pub fn get_arguments() -> Command {
                                 .value_name("CORE_OFFSET")
                                 .num_args(1)
                                 .allow_hyphen_values(true)
-                                .value_parser(clap::value_parser!(i32).range(-2_000..=2_000))
-                                .help("Core clock offset via NVML API (MHz, ±2000)."),
+                                .value_parser(clap::value_parser!(i32).range(-5_000..=5_000))
+                                .help("Core clock offset via NVML API (MHz, ±5000)."),
                         )
                         .arg(
                             Arg::new("mem_offset")
@@ -378,8 +378,8 @@ pub fn get_arguments() -> Command {
                                 .value_name("MEM_OFFSET")
                                 .num_args(1)
                                 .allow_hyphen_values(true)
-                                .value_parser(clap::value_parser!(i32).range(-2_000..=2_000))
-                                .help("Memory clock offset via NVML API (MHz, ±2000). Note: target effective offset, handled behind the scene as *2."),
+                                .value_parser(clap::value_parser!(i32).range(-5_000..=5_000))
+                                .help("Memory clock offset via NVML API (MHz, ±5000). Note: target effective offset, handled behind the scene as *2."),
                         )
                         // NVML thermal threshold write args are intentionally commented out for now.
                         .arg(
@@ -388,8 +388,8 @@ pub fn get_arguments() -> Command {
                                 .long("power-limit")
                                 .value_name("POWER_LIMIT")
                                 .num_args(1)
-                                .value_parser(clap::value_parser!(u32).range(10..=600))
-                                .help("Power limit via NVML API (W, 10–600)."),
+                                .value_parser(clap::value_parser!(u32).range(1..=3_000))
+                                .help("Power limit via NVML API (W, 1–3000)."),
                         )
                         .arg(
                             Arg::new("locked_app_clocks")
@@ -397,8 +397,8 @@ pub fn get_arguments() -> Command {
                                 .alias("app-clock")
                                 .value_names(["MEM_MHZ", "CORE_MHZ"])
                                 .num_args(2)
-                                .value_parser(clap::value_parser!(u32).range(100..=10_000))
-                                .help("Set NVML applications clocks (memory and core freq in MHz, 100–10000). Example: --locked-app-clocks 5001 1500")
+                                .value_parser(clap::value_parser!(u32).range(1..=10_000))
+                                .help("Set NVML applications clocks (memory and core freq in MHz, 1–10000). Example: --locked-app-clocks 5001 1500")
                                 .use_value_delimiter(false),
                         )
                         .arg(
@@ -412,8 +412,8 @@ pub fn get_arguments() -> Command {
                                 .long("locked-core-clocks")
                                 .value_names(["MIN_MHZ", "MAX_MHZ"])
                                 .num_args(2)
-                                .value_parser(clap::value_parser!(u32).range(100..=10_000))
-                                .help("Lock GPU core clocks to a specific range (MHz, 100–10000). Example: --nvml-locked-gpu-clocks 210 2100")
+                                .value_parser(clap::value_parser!(u32).range(1..=10_000))
+                                .help("Lock GPU core clocks to a specific range (MHz, 1–10000). Example: --nvml-locked-gpu-clocks 210 2100")
                                 .use_value_delimiter(false),
                         )
                         .arg(
@@ -427,8 +427,8 @@ pub fn get_arguments() -> Command {
                                 .long("locked-mem-clocks")
                                 .value_names(["MIN_MHZ", "MAX_MHZ"])
                                 .num_args(2)
-                                .value_parser(clap::value_parser!(u32).range(100..=20_000))
-                                .help("Lock GPU memory clocks to a specific range (MHz, 100–20000). Example: --nvml-locked-mem-clocks 5000 5000")
+                                .value_parser(clap::value_parser!(u32).range(1..=20_000))
+                                .help("Lock GPU memory clocks to a specific range (MHz, 1–20000). Example: --nvml-locked-mem-clocks 5000 5000")
                                 .use_value_delimiter(false),
                         )
                         .arg(
@@ -607,8 +607,8 @@ pub fn get_arguments() -> Command {
                                         .short('s')
                                         .num_args(1)
                                         .default_value("40")
-                                        .value_parser(clap::value_parser!(u32).range(0..=120))
-                                        .help("VFP point index to adjust (0–120)"),
+                                        .value_parser(clap::value_parser!(u32).range(0..=255))
+                                        .help("VFP point index to adjust (0–255)"),
                                 )
                                 .arg(
                                     Arg::new("delta")
@@ -618,8 +618,8 @@ pub fn get_arguments() -> Command {
                                         .allow_hyphen_values(true)
                                         .required(true)
                                         .default_value("150000")
-                                        .value_parser(clap::value_parser!(i32).range(-2_000_000..=2_000_000))
-                                        .help("Clock delta / OC offset in kHz (±2 000 000)"),
+                                        .value_parser(clap::value_parser!(i32).range(-5_000_000..=5_000_000))
+                                        .help("Clock delta / OC offset in kHz (±5 000 000)"),
                                 ),
                         )
                         .subcommand(
@@ -639,8 +639,8 @@ pub fn get_arguments() -> Command {
                                         .num_args(1)
                                         .required(true)
                                         .allow_hyphen_values(true)
-                                        .value_parser(clap::value_parser!(i32).range(-2_000_000..=2_000_000))
-                                        .help("Clock frequency delta in kHz (±2 000 000), e.g. +150000 or -50000"),
+                                        .value_parser(clap::value_parser!(i32).range(-5_000_000..=5_000_000))
+                                        .help("Clock frequency delta in kHz (±5 000 000), e.g. +150000 or -50000"),
                                 ),
                         )
                         .subcommand(
@@ -699,8 +699,8 @@ pub fn get_arguments() -> Command {
                                         .short('m')
                                         .num_args(1)
                                         .allow_hyphen_values(true)
-                                        .value_parser(clap::value_parser!(i32).range(-1_000..=1_000))
-                                        .help("Margin bin adjustment integer (±1000)"),
+                                        .value_parser(clap::value_parser!(i32).range(-50..=50))
+                                        .help("Margin bin adjustment integer (±50)"),
                                 ),
                         )
                         .subcommand(
