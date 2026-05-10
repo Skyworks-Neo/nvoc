@@ -1,0 +1,244 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: detect changed components
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      auto_optimizer: ${{ steps.filter.outputs.auto_optimizer }}
+      srv: ${{ steps.filter.outputs.srv }}
+      tui: ${{ steps.filter.outputs.tui }}
+      gui: ${{ steps.filter.outputs.gui }}
+      stressor_cuda: ${{ steps.filter.outputs.stressor_cuda }}
+      stressor_opencl: ${{ steps.filter.outputs.stressor_opencl }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            auto_optimizer:
+              - 'auto-optimizer/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
+            srv:
+              - 'srv/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
+            tui:
+              - 'tui/**'
+              - 'pyproject.toml'
+              - '.github/workflows/ci.yml'
+            gui:
+              - 'gui/**'
+              - 'pyproject.toml'
+              - '.github/workflows/ci.yml'
+            stressor_cuda:
+              - 'cli-stressor-cuda/**'
+              - 'pyproject.toml'
+              - '.github/workflows/ci.yml'
+            stressor_opencl:
+              - 'cli-stressor-opencl/**'
+              - 'pyproject.toml'
+              - '.github/workflows/ci.yml'
+
+  rust-auto-optimizer:
+    name: auto-optimizer (windows)
+    needs: changes
+    if: needs.changes.outputs.auto_optimizer == 'true'
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: auto-optimizer
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: auto-optimizer -> target
+      - name: cargo fmt (advisory)
+        continue-on-error: true
+        run: cargo fmt --check
+      - name: cargo clippy (advisory)
+        continue-on-error: true
+        run: cargo clippy --all-targets
+      - name: cargo build (release)
+        run: cargo build --release
+      - name: cargo test
+        run: cargo test --no-fail-fast -- --skip gpu_
+
+  rust-srv:
+    name: srv (windows)
+    needs: changes
+    if: needs.changes.outputs.srv == 'true'
+    runs-on: windows-latest
+    # srv currently imports symbols from nvoc_auto_optimizer that no
+    # longer exist (handle_unlock_vfp, handle_global_oc_offset_subcommand).
+    # Tracked as a separate issue. Keep this job advisory so the rest of
+    # CI can gate merges until srv is repaired.
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: srv
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: srv -> target
+      - name: cargo clippy (advisory)
+        continue-on-error: true
+        run: cargo clippy --all-targets
+      - name: cargo build (release)
+        run: cargo build --release
+        # srv has no tests yet; once tests are added, restore a
+        # `cargo test --no-fail-fast -- --skip gpu_` step here.
+
+  python-tui:
+    name: tui (${{ matrix.os }} / py${{ matrix.python }})
+    needs: changes
+    if: needs.changes.outputs.tui == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.10", "3.12"]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: tui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+      - run: uv python install ${{ matrix.python }}
+      - name: uv sync (with retry)
+        shell: bash
+        run: |
+          # NOTE: cannot use --frozen yet. The workspace pyproject.toml at
+          # the repo root makes uv look for /uv.lock (workspace lock) even
+          # when invoked from tui/, but no root lock is committed (and one
+          # cannot be generated until cli-stressor-cuda's torch side-index
+          # is workspace-visible). Restore --frozen once a root uv.lock
+          # ships.
+          set -e
+          for attempt in 1 2 3; do
+            if uv sync --all-extras --dev; then
+              exit 0
+            fi
+            echo "uv sync attempt $attempt failed"
+            [ "$attempt" -lt 3 ] && sleep $((attempt * 5))
+          done
+          exit 1
+      - run: uv run pytest -q
+
+  python-gui:
+    name: gui (sync + import smoke)
+    needs: changes
+    if: needs.changes.outputs.gui == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: gui
+    steps:
+      - uses: actions/checkout@v4
+      - name: install Tk runtime
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends python3-tk libxcb-xinerama0 xvfb
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+      - run: uv python install 3.12
+      - run: uv sync
+      - name: import smoke (no display required)
+        run: |
+          xvfb-run -a uv run python -c "import importlib, pathlib, sys; \
+              sys.path.insert(0, str(pathlib.Path('src').resolve())); \
+              importlib.import_module('config'); \
+              importlib.import_module('cli_runner')"
+
+  python-stressor-cuda:
+    name: stressor compile (cli-stressor-cuda)
+    needs: changes
+    if: needs.changes.outputs.stressor_cuda == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cli-stressor-cuda
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: byte-compile
+        run: python -m compileall -q test.py
+      - name: ruff (best-effort)
+        continue-on-error: true
+        run: |
+          python -m pip install --quiet ruff
+          ruff check test.py
+
+  python-stressor-opencl:
+    name: stressor compile (cli-stressor-opencl)
+    needs: changes
+    if: needs.changes.outputs.stressor_opencl == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cli-stressor-opencl
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: byte-compile
+        run: python -m compileall -q test.py
+      - name: ruff (best-effort)
+        continue-on-error: true
+        run: |
+          python -m pip install --quiet ruff
+          ruff check test.py
+
+  ci-summary:
+    name: ci summary
+    needs:
+      - changes
+      - rust-auto-optimizer
+      - rust-srv
+      - python-tui
+      - python-gui
+      - python-stressor-cuda
+      - python-stressor-opencl
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: fail if any required job failed
+        run: |
+          if [ "${{ contains(needs.*.result, 'failure') }}" = "true" ] \
+             || [ "${{ contains(needs.*.result, 'cancelled') }}" = "true" ]; then
+            echo "one or more required CI jobs did not succeed" >&2
+            exit 1
+          fi

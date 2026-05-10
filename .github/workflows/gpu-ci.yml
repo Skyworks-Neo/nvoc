@@ -1,0 +1,148 @@
+name: GPU CI
+
+# Runs hardware-dependent checks (CUDA / OpenCL / NVAPI / NVML) on a
+# self-hosted runner that has a real NVIDIA GPU. Triggered explicitly to
+# avoid burning GPU time on every push.
+
+on:
+  pull_request:
+    types: [labeled, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: branch / SHA to test
+        required: true
+        default: main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gpu-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  guard:
+    # PR runs require the `ci:gpu` label. Manual dispatch always runs.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       contains(github.event.pull_request.labels.*.name, 'ci:gpu'))
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "gpu-ci approved for ${{ github.event_name }}"
+
+  changes:
+    needs: guard
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      auto_optimizer: ${{ steps.manual.outputs.auto_optimizer || steps.filter.outputs.auto_optimizer }}
+      stressor_cuda: ${{ steps.manual.outputs.stressor_cuda || steps.filter.outputs.stressor_cuda }}
+      stressor_opencl: ${{ steps.manual.outputs.stressor_opencl || steps.filter.outputs.stressor_opencl }}
+    steps:
+      - name: run all component jobs for manual dispatch
+        if: github.event_name == 'workflow_dispatch'
+        id: manual
+        run: |
+          echo "auto_optimizer=true" >> "$GITHUB_OUTPUT"
+          echo "stressor_cuda=true" >> "$GITHUB_OUTPUT"
+          echo "stressor_opencl=true" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        if: github.event_name != 'workflow_dispatch'
+        with:
+          fetch-depth: 0
+      - uses: dorny/paths-filter@v3
+        if: github.event_name != 'workflow_dispatch'
+        id: filter
+        with:
+          filters: |
+            auto_optimizer:
+              - 'auto-optimizer/**'
+              - 'srv/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/gpu-ci.yml'
+            stressor_cuda:
+              - 'cli-stressor-cuda/**'
+              - 'pyproject.toml'
+              - '.github/workflows/gpu-ci.yml'
+            stressor_opencl:
+              - 'cli-stressor-opencl/**'
+              - 'pyproject.toml'
+              - '.github/workflows/gpu-ci.yml'
+
+  auto-optimizer-gpu:
+    needs: changes
+    if: needs.changes.outputs.auto_optimizer == 'true'
+    runs-on: [self-hosted, windows, gpu-nvidia]
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: auto-optimizer
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: auto-optimizer -> target
+      - name: build
+        run: cargo build --release
+      - name: read-only GPU discovery
+        # Read-only NVAPI/NVML calls only. Never run write/overclock paths
+        # in CI; those require a human-supervised run on a known-recoverable
+        # bench with TDR + recovery configured.
+        run: cargo test --release --no-fail-fast -- --include-ignored gpu_readonly_
+
+  cuda-stressor:
+    needs: changes
+    if: needs.changes.outputs.stressor_cuda == 'true'
+    runs-on: [self-hosted, windows, gpu-nvidia, cuda]
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: cli-stressor-cuda
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: astral-sh/setup-uv@v4
+      - run: uv sync
+      - name: short stress run
+        run: uv run python test.py
+
+  opencl-stressor-windows:
+    needs: changes
+    if: needs.changes.outputs.stressor_opencl == 'true'
+    runs-on: [self-hosted, windows, gpu-nvidia, opencl]
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: cli-stressor-opencl
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: astral-sh/setup-uv@v4
+      - run: uv sync
+      - run: uv run python test.py
+
+  opencl-stressor-linux:
+    needs: changes
+    if: needs.changes.outputs.stressor_opencl == 'true'
+    runs-on: [self-hosted, linux, gpu-nvidia, opencl]
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: cli-stressor-opencl
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: astral-sh/setup-uv@v4
+      - run: uv sync
+      - run: uv run python test.py
