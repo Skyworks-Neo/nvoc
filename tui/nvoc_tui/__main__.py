@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-try:
+if __package__:
     from .app import NVOCApp
-except ImportError:  # Allow execution without package context (e.g., PyInstaller)
+else:  # Allow execution without package context (e.g., PyInstaller)
     from nvoc_tui.app import NVOCApp
 
 
