@@ -26,6 +26,18 @@ pub enum GpuType {
     Desktop10Series,
     Mobile9Series,
     Desktop9Series,
+    WorkstationBlackwell,
+    WorkstationLovelace,
+    WorkstationAmpere,
+    WorkstationTuring,
+    WorkstationPascal,
+    ServerBlackwell,
+    ServerHopper,
+    ServerLovelace,
+    ServerAmpere,
+    ServerVolta,
+    ServerPascal,
+    ServerTuringTesla,
     ComputationVolta,
     Unknown,
 }
@@ -50,6 +62,18 @@ impl fmt::Display for GpuType {
             GpuType::Mobile9Series => write!(f, "9 series mobile detected"),
             GpuType::Desktop9Series => write!(f, "9 series desktop detected"),
             GpuType::ComputationVolta => write!(f, "Volta series computational card detected"),
+            GpuType::WorkstationBlackwell => write!(f, "Blackwell series workstation card detected"),
+            GpuType::WorkstationLovelace => write!(f, "Lovelace series workstation card detected"),
+            GpuType::WorkstationAmpere => write!(f, "Ampere series workstation card detected"),
+            GpuType::WorkstationTuring => write!(f, "Turing series workstation card detected"),
+            GpuType::WorkstationPascal => write!(f, "Pascal series workstation card detected"),
+            GpuType::ServerBlackwell => write!(f, "Blackwell series server card detected"),
+            GpuType::ServerHopper => write!(f, "Hopper series server card detected"),
+            GpuType::ServerLovelace => write!(f, "Lovelace series server card detected"),
+            GpuType::ServerAmpere => write!(f, "Ampere series server card detected"),
+            GpuType::ServerVolta => write!(f, "Volta series server card detected"),
+            GpuType::ServerPascal => write!(f, "Pascal series server card detected"),
+            GpuType::ServerTuringTesla => write!(f, "Turing Tesla series server card (e.g. T4) detected"),
             GpuType::Unknown => write!(f, "Unknown"),
         }
     }
@@ -59,23 +83,83 @@ impl fmt::Display for GpuType {
 
 /// 根据 GPU 名称 + codename 字符串判定世代
 pub fn detect_gpu_type(gpu_name: &str) -> GpuType {
+    let is_rtx_a = gpu_name.contains("RTX A");
+    let is_rtx_professional = gpu_name.contains("RTX") && (gpu_name.contains("2000") || gpu_name.contains("3000") || gpu_name.contains("4000") || gpu_name.contains("5000") || gpu_name.contains("6000")) && !gpu_name.contains("GeForce");
+    let is_quadro = gpu_name.contains("Quadro");
+    let is_tesla = gpu_name.contains("Tesla");
+    let is_server = is_tesla || gpu_name.contains("H100") || gpu_name.contains("H800") || gpu_name.contains("A100") || gpu_name.contains("A800") || gpu_name.contains("B100") || gpu_name.contains("B200") || gpu_name.contains("V100") || gpu_name.contains("P100") || gpu_name.contains("L40") || gpu_name.contains("L4");
+
     if gpu_name.contains("GB") {
-        if gpu_name.contains("Laptop") { GpuType::Mobile50Series } else { GpuType::Desktop50Series }
+        if is_server {
+            GpuType::ServerBlackwell
+        } else if is_rtx_professional || is_quadro {
+            GpuType::WorkstationBlackwell
+        } else if gpu_name.contains("Laptop") {
+            GpuType::Mobile50Series
+        } else {
+            GpuType::Desktop50Series
+        }
+    } else if gpu_name.contains("GH") {
+        GpuType::ServerHopper
     } else if gpu_name.contains("AD") {
-        if gpu_name.contains("Laptop") { GpuType::Mobile40Series } else { GpuType::Desktop40Series }
+        if is_server {
+            GpuType::ServerLovelace // L40/L4 are Ada/Lovelace server cards
+        } else if is_rtx_professional || is_quadro || is_rtx_a {
+            GpuType::WorkstationLovelace
+        } else if gpu_name.contains("Laptop") {
+            GpuType::Mobile40Series
+        } else {
+            GpuType::Desktop40Series
+        }
     } else if gpu_name.contains("GA") {
-        if gpu_name.contains("Laptop") { GpuType::Mobile30Series } else { GpuType::Desktop30Series }
+        if is_server {
+            GpuType::ServerAmpere
+        } else if is_rtx_professional || is_quadro || is_rtx_a {
+            GpuType::WorkstationAmpere
+        } else if gpu_name.contains("Laptop") {
+            GpuType::Mobile30Series
+        } else {
+            GpuType::Desktop30Series
+        }
     } else if gpu_name.contains("TU10") {
-        if gpu_name.contains("Laptop") { GpuType::Mobile20Series } else { GpuType::Desktop20Series }
+        if is_server {
+            GpuType::ServerTuringTesla
+        } else if is_rtx_professional || is_quadro {
+            GpuType::WorkstationTuring
+        } else if gpu_name.contains("Laptop") {
+            GpuType::Mobile20Series
+        } else {
+            GpuType::Desktop20Series
+        }
     } else if gpu_name.contains("TU11") {
-        if gpu_name.contains("Laptop") { GpuType::Mobile16Series } else { GpuType::Desktop16Series }
+        if gpu_name.contains("Laptop") {
+            GpuType::Mobile16Series
+        } else {
+            GpuType::Desktop16Series
+        }
     } else if gpu_name.contains("GP1") {
         // Do NOT mess up with 'GPU'
-        if gpu_name.contains("Laptop") { GpuType::Mobile10Series } else { GpuType::Desktop10Series }
+        if is_server {
+            GpuType::ServerPascal
+        } else if is_quadro {
+            GpuType::WorkstationPascal
+        } else if gpu_name.contains("Laptop") {
+            GpuType::Mobile10Series
+        } else {
+            GpuType::Desktop10Series
+        }
     } else if gpu_name.contains("GM") {
-        if gpu_name.contains("Laptop") { GpuType::Mobile9Series } else { GpuType::Desktop9Series }
+        if gpu_name.contains("Laptop") {
+            GpuType::Mobile9Series
+        } else {
+            GpuType::Desktop9Series
+        }
     } else if gpu_name.contains("GV") {
-        GpuType::ComputationVolta
+        if is_server {
+            GpuType::ServerVolta
+        } else {
+            GpuType::ComputationVolta
+        }
     } else {
         GpuType::Unknown
     }
@@ -302,7 +386,19 @@ impl GpuType {
                 is_50_series: false,
                 testing_step: 3,
             },
-            GpuType::ComputationVolta => GpuOcParams {
+            GpuType::ComputationVolta
+            | GpuType::WorkstationBlackwell
+            | GpuType::WorkstationLovelace
+            | GpuType::WorkstationAmpere
+            | GpuType::WorkstationTuring
+            | GpuType::WorkstationPascal
+            | GpuType::ServerBlackwell
+            | GpuType::ServerHopper
+            | GpuType::ServerLovelace
+            | GpuType::ServerAmpere
+            | GpuType::ServerVolta
+            | GpuType::ServerPascal
+            | GpuType::ServerTuringTesla => GpuOcParams {
                 minimum_delta_core_freq_step: 15000,
                 core_oc_safe_limit: 300000,
                 init_core_oc_value: 0,
@@ -338,15 +434,19 @@ impl GpuType {
                 vfp_strict_inc_flag: false,
                 margin_threshold_check: true,
             },
-            GpuType::Mobile40Series | GpuType::Mobile30Series
-            | GpuType::Mobile20Series | GpuType::Mobile16Series => GpuVoltageLimitParams {
+            GpuType::Mobile40Series
+            | GpuType::Mobile30Series
+            | GpuType::Mobile20Series
+            | GpuType::Mobile16Series => GpuVoltageLimitParams {
                 upper_init_point: 75,
                 lower_init_point: 60,
                 vfp_strict_inc_flag: true,
                 margin_threshold_check: false,
             },
-            GpuType::Desktop40Series | GpuType::Desktop30Series
-            | GpuType::Desktop20Series | GpuType::Desktop16Series => GpuVoltageLimitParams {
+            GpuType::Desktop40Series
+            | GpuType::Desktop30Series
+            | GpuType::Desktop20Series
+            | GpuType::Desktop16Series => GpuVoltageLimitParams {
                 upper_init_point: 85,
                 lower_init_point: 78,
                 vfp_strict_inc_flag: true,
@@ -410,6 +510,10 @@ impl GpuType {
                 | GpuType::Desktop16Series
                 | GpuType::Mobile10Series
                 | GpuType::Desktop10Series
+                | GpuType::WorkstationTuring
+                | GpuType::ServerTuringTesla
+                | GpuType::WorkstationPascal
+                | GpuType::ServerPascal
         )
     }
 
@@ -421,4 +525,3 @@ impl GpuType {
         }
     }
 }
-

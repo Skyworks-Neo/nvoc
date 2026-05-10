@@ -1,4 +1,4 @@
-#![allow(dead_code)] 
+#![allow(dead_code)]
 
 mod arg_help;
 mod autoscan_config;

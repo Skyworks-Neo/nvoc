@@ -2,16 +2,16 @@ use crate::basic_func::{select_gpus, GpuSelector, TestResolution};
 use crate::conv::ConvertEnum;
 use crate::error::Error;
 use crate::human::print_scan_separator;
-use crate::nvidia_gpu_type::{fetch_gpu_type, GpuType};
+use crate::nvidia_gpu_type::{GpuType, fetch_gpu_type};
 use crate::types::NvapiLockedVoltageTarget;
 use crate::types::VfpResetDomain;
 use clap::ArgMatches;
 use num_traits::abs;
 use nvapi_hi::nvapi::{CelsiusShifted, ClockFrequencyType};
 use nvapi_hi::{
-    Celsius, ClockDomain, ClockLockEntry, ClockLockValue, CoolerPolicy, CoolerSettings, FanCoolerId,
-    Gpu, Kilohertz, KilohertzDelta, Microvolts, MicrovoltsDelta, PState, Percentage, PerfLimitId,
-    PffCurve, PffPoint, VfpPoint,
+    Celsius, ClockDomain, ClockLockEntry, ClockLockValue, CoolerPolicy, CoolerSettings,
+    FanCoolerId, Gpu, Kilohertz, KilohertzDelta, Microvolts, MicrovoltsDelta, PState, Percentage,
+    PerfLimitId, PffCurve, PffPoint, VfpPoint,
 };
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -24,14 +24,22 @@ use std::{fs, io, iter};
 /// 适用于 900 系（Maxwell）及更早不支持 ClientVoltRailsSetControl 的 GPU。
 /// delta_uv 单位为 μV，正值加压，负值降压，范围由 GPU 自身 voltDelta_uV.{min,max} 决定。
 /// target_pstate 指定目标 pstate，默认应传入 PState::P0。
-pub fn set_pstate_base_voltage(gpu: &Gpu, delta_uv: MicrovoltsDelta, target_pstate: PState) -> Result<(), Error> {
+pub fn set_pstate_base_voltage(
+    gpu: &Gpu,
+    delta_uv: MicrovoltsDelta,
+    target_pstate: PState,
+) -> Result<(), Error> {
     use nvapi_hi::sys::gpu::pstate as sys_pstate;
 
     // 1. 先读取当前 pstate 信息，确认目标 pstate 的 baseVoltages 可写并取得允许范围
-    let pstates = gpu.inner().pstates()
+    let pstates = gpu
+        .inner()
+        .pstates()
         .map_err(|e| Error::from(format!("Failed to read pstates: {:?}", e)))?;
 
-    let target_ps = pstates.pstates.iter()
+    let target_ps = pstates
+        .pstates
+        .iter()
         .find(|p| p.id == target_pstate)
         .ok_or_else(|| Error::from(format!("{:?} pstate not found", target_pstate)))?;
 
@@ -43,7 +51,10 @@ pub fn set_pstate_base_voltage(gpu: &Gpu, delta_uv: MicrovoltsDelta, target_psta
         )))?;
 
     if !base_volt.editable {
-        return Err(Error::from(format!("{:?} Core baseVoltage is not editable on this GPU", target_pstate)));
+        return Err(Error::from(format!(
+            "{:?} Core baseVoltage is not editable on this GPU",
+            target_pstate
+        )));
     }
 
     let range = base_volt.voltage_delta.range;
@@ -58,7 +69,7 @@ pub fn set_pstate_base_voltage(gpu: &Gpu, delta_uv: MicrovoltsDelta, target_psta
     let mut info = sys_pstate::NV_GPU_PERF_PSTATES20_INFO::default();
     info.bIsEditable = nvapi_hi::sys::types::BoolU32::from(true);
     info.numPstates = 1;
-    info.numClocks = 0;       // 不修改时钟
+    info.numClocks = 0; // 不修改时钟
     info.numBaseVoltages = 1; // 一个核心电压条目
 
     {
@@ -71,17 +82,13 @@ pub fn set_pstate_base_voltage(gpu: &Gpu, delta_uv: MicrovoltsDelta, target_psta
         ve.bIsEditable = nvapi_hi::sys::types::BoolU32::from(true);
         ve.volt_uV = base_volt.voltage.0;
         ve.voltDelta_uV.value = delta_uv.0;
-        ve.voltDelta_uV.min   = range.min.0;
-        ve.voltDelta_uV.max   = range.max.0;
+        ve.voltDelta_uV.min = range.min.0;
+        ve.voltDelta_uV.max = range.max.0;
     }
 
     // 3. 调用私有 undocumented API，返回值 0 = NVAPI_OK
-    let status = unsafe {
-        sys_pstate::private::NvAPI_GPU_SetPstates20(
-            *gpu.inner().handle(),
-            &info,
-        )
-    };
+    let status =
+        unsafe { sys_pstate::private::NvAPI_GPU_SetPstates20(*gpu.inner().handle(), &info) };
 
     if status != 0 {
         return Err(Error::from(format!(
@@ -105,14 +112,18 @@ pub fn set_pstate_base_voltage(gpu: &Gpu, delta_uv: MicrovoltsDelta, target_psta
 pub fn reset_all_pstate_base_voltages(gpu: &Gpu) -> Result<(), Error> {
     use nvapi_hi::sys::gpu::pstate as sys_pstate;
 
-    let pstates = gpu.inner().pstates()
+    let pstates = gpu
+        .inner()
+        .pstates()
         .map_err(|e| Error::from(format!("Failed to read pstates: {:?}", e)))?;
 
     let mut any_written = false;
 
     for ps in &pstates.pstates {
         // 找到 Core 域的 baseVoltage 条目
-        let base_volt = match ps.base_voltages.iter()
+        let base_volt = match ps
+            .base_voltages
+            .iter()
             .find(|v| v.voltage_domain == nvapi_hi::nvapi::VoltageDomain::Core)
         {
             Some(v) => v,
@@ -142,16 +153,12 @@ pub fn reset_all_pstate_base_voltages(gpu: &Gpu) -> Result<(), Error> {
             ve.bIsEditable = nvapi_hi::sys::types::BoolU32::from(true);
             ve.volt_uV = base_volt.voltage.0;
             ve.voltDelta_uV.value = 0; // 清零
-            ve.voltDelta_uV.min   = range.min.0;
-            ve.voltDelta_uV.max   = range.max.0;
+            ve.voltDelta_uV.min = range.min.0;
+            ve.voltDelta_uV.max = range.max.0;
         }
 
-        let status = unsafe {
-            sys_pstate::private::NvAPI_GPU_SetPstates20(
-                *gpu.inner().handle(),
-                &info,
-            )
-        };
+        let status =
+            unsafe { sys_pstate::private::NvAPI_GPU_SetPstates20(*gpu.inner().handle(), &info) };
 
         if status != 0 {
             eprintln!(
@@ -172,7 +179,6 @@ pub fn reset_all_pstate_base_voltages(gpu: &Gpu) -> Result<(), Error> {
 
     Ok(())
 }
-
 
 // In oc_set_function
 
@@ -204,14 +210,10 @@ pub fn handle_cooler_command(gpus: &[&Gpu], matches: &ArgMatches) -> Result<(), 
     for gpu in gpus {
         match cooler_id {
             "1" => {
-                gpu.set_cooler_levels(
-                    [(FanCoolerId::Cooler1, settings)].into_iter(),
-                )?;
+                gpu.set_cooler_levels([(FanCoolerId::Cooler1, settings)].into_iter())?;
             }
             "2" => {
-                gpu.set_cooler_levels(
-                    [(FanCoolerId::Cooler2, settings)].into_iter(),
-                )?;
+                gpu.set_cooler_levels([(FanCoolerId::Cooler2, settings)].into_iter())?;
             }
             _ => {
                 // "all" or anything else: set both coolers
@@ -241,7 +243,9 @@ pub fn get_voltage_by_point(gpu: &Gpu, point: usize) -> Result<Microvolts, Error
     Ok(v)
 }
 
-fn parse_lock_frequency(matches: &ArgMatches) -> Result<(ClockDomain, Kilohertz, Option<Kilohertz>), Error> {
+fn parse_lock_frequency(
+    matches: &ArgMatches,
+) -> Result<(ClockDomain, Kilohertz, Option<Kilohertz>), Error> {
     let raw_targets = matches
         .get_many::<String>("clock")
         .ok_or_else(|| Error::from("Missing --clock <UPPER_MHZ> [LOWER_MHZ] value"))?
@@ -252,15 +256,14 @@ fn parse_lock_frequency(matches: &ArgMatches) -> Result<(ClockDomain, Kilohertz,
         .parse::<u32>()
         .map_err(|_| Error::from("In --clock mode, UPPER_MHZ must be an integer MHz value"))?;
 
-    let lower_mhz = if raw_targets.len() >= 2 {
-        Some(
-            raw_targets[1]
-                .parse::<u32>()
-                .map_err(|_| Error::from("In --clock mode, LOWER_MHZ must be an integer MHz value"))?,
-        )
-    } else {
-        None
-    };
+    let lower_mhz =
+        if raw_targets.len() >= 2 {
+            Some(raw_targets[1].parse::<u32>().map_err(|_| {
+                Error::from("In --clock mode, LOWER_MHZ must be an integer MHz value")
+            })?)
+        } else {
+            None
+        };
 
     if let Some(lower) = lower_mhz {
         if lower > upper_mhz {
@@ -302,7 +305,11 @@ fn set_vfp_frequency_lock(
             let (upper_limit, lower_limit) = match domain {
                 ClockDomain::Graphics => (PerfLimitId::Gpu, PerfLimitId::GpuUnknown),
                 ClockDomain::Memory => (PerfLimitId::Memory, PerfLimitId::MemoryUnknown),
-                _ => return Err(Error::from("--domain must be Graphics or Memory in --clock mode")),
+                _ => {
+                    return Err(Error::from(
+                        "--domain must be Graphics or Memory in --clock mode",
+                    ));
+                }
             };
 
             gpu.inner()
@@ -328,7 +335,11 @@ pub fn reset_vfp_frequency_lock(gpu: &Gpu, domain: ClockDomain) -> Result<(), Er
     let (upper_limit, lower_limit) = match domain {
         ClockDomain::Graphics => (PerfLimitId::Gpu, PerfLimitId::GpuUnknown),
         ClockDomain::Memory => (PerfLimitId::Memory, PerfLimitId::MemoryUnknown),
-        _ => return Err(Error::from("--domain must be Graphics or Memory in --clock mode")),
+        _ => {
+            return Err(Error::from(
+                "--domain must be Graphics or Memory in --clock mode",
+            ));
+        }
     };
 
     gpu.inner()
@@ -349,13 +360,20 @@ pub fn reset_vfp_frequency_lock(gpu: &Gpu, domain: ClockDomain) -> Result<(), Er
     Ok(())
 }
 
-fn parse_lock_voltage(gpu: &Gpu, matches: &ArgMatches, default_point: usize) -> Result<Microvolts, Error> {
+fn parse_lock_voltage(
+    gpu: &Gpu,
+    matches: &ArgMatches,
+    default_point: usize,
+) -> Result<Microvolts, Error> {
     let raw_target = matches
         .get_one::<String>("point")
         .map(|s| s.as_str())
         .unwrap_or("");
 
-    if matches.try_get_one::<bool>("voltage").is_ok_and(|v| v.copied().unwrap_or(false)) {
+    if matches
+        .try_get_one::<bool>("voltage")
+        .is_ok_and(|v| v.copied().unwrap_or(false))
+    {
         let input_voltage = raw_target.parse::<u32>()?;
         let voltage_uv = if input_voltage >= 10_000 {
             input_voltage
@@ -368,7 +386,6 @@ fn parse_lock_voltage(gpu: &Gpu, matches: &ArgMatches, default_point: usize) -> 
         get_voltage_by_point(gpu, point)
     }
 }
-
 
 fn parse_nvapi_locked_voltage_target(raw: &str) -> Result<NvapiLockedVoltageTarget, Error> {
     let input = raw.trim();
@@ -396,7 +413,10 @@ fn parse_nvapi_locked_voltage_target(raw: &str) -> Result<NvapiLockedVoltageTarg
     Ok(NvapiLockedVoltageTarget::Point(point))
 }
 
-fn parse_nvapi_locked_clock_range(matches: &ArgMatches, key: &str) -> Result<Option<(u32, u32)>, Error> {
+fn parse_nvapi_locked_clock_range(
+    matches: &ArgMatches,
+    key: &str,
+) -> Result<Option<(u32, u32)>, Error> {
     let Some(raw) = matches.get_many::<String>(key) else {
         return Ok(None);
     };
@@ -444,12 +464,13 @@ pub fn set_nvapi_pstate_lock(
     first_pstate: nvml_wrapper::enum_wrappers::device::PerformanceState,
     second_pstate: nvml_wrapper::enum_wrappers::device::PerformanceState,
 ) -> Result<(String, u32, u32), Error> {
-    let pstates = crate::oc_get_set_function_nvml::get_nvml_pstate_info(gpu_id).ok_or_else(|| {
-        Error::Custom(format!(
-            "Failed to query NVML P-State information for GPU {}",
-            gpu_id
-        ))
-    })?;
+    let pstates =
+        crate::oc_get_set_function_nvml::get_nvml_pstate_info(gpu_id).ok_or_else(|| {
+            Error::Custom(format!(
+                "Failed to query NVML P-State information for GPU {}",
+                gpu_id
+            ))
+        })?;
 
     let first_index = crate::conv::nvml_pstate_to_index(first_pstate)?;
     let second_index = crate::conv::nvml_pstate_to_index(second_pstate)?;
@@ -603,7 +624,9 @@ pub fn handle_lock_vfp(
         }
     }
 
-    if let Some((min_clock, max_clock)) = parse_nvapi_locked_clock_range(matches, "locked_core_clocks")? {
+    if let Some((min_clock, max_clock)) =
+        parse_nvapi_locked_clock_range(matches, "locked_core_clocks")?
+    {
         handled_nvapi_lock = true;
         for gpu in gpus {
             let gpu_info = gpu.info()?;
@@ -617,12 +640,17 @@ pub fn handle_lock_vfp(
                     "Successfully locked NVAPI core clocks (Min: {}, Max: {}) to GPU {}",
                     min_clock, max_clock, gpu_info.id
                 ),
-                Err(e) => eprintln!("Failed to lock NVAPI core clocks for GPU {}: {:?}", gpu_info.id, e),
+                Err(e) => eprintln!(
+                    "Failed to lock NVAPI core clocks for GPU {}: {:?}",
+                    gpu_info.id, e
+                ),
             }
         }
     }
 
-    if let Some((min_clock, max_clock)) = parse_nvapi_locked_clock_range(matches, "locked_mem_clocks")? {
+    if let Some((min_clock, max_clock)) =
+        parse_nvapi_locked_clock_range(matches, "locked_mem_clocks")?
+    {
         handled_nvapi_lock = true;
         for gpu in gpus {
             let gpu_info = gpu.info()?;
@@ -636,7 +664,10 @@ pub fn handle_lock_vfp(
                     "Successfully locked NVAPI memory clocks (Min: {}, Max: {}) to GPU {}",
                     min_clock, max_clock, gpu_info.id
                 ),
-                Err(e) => eprintln!("Failed to lock NVAPI memory clocks for GPU {}: {:?}", gpu_info.id, e),
+                Err(e) => eprintln!(
+                    "Failed to lock NVAPI memory clocks for GPU {}: {:?}",
+                    gpu_info.id, e
+                ),
             }
         }
     }
@@ -646,7 +677,10 @@ pub fn handle_lock_vfp(
     }
 
     if matches.get_one::<String>("clock").is_some() {
-        if matches.try_get_one::<bool>("voltage").is_ok_and(|v| v.copied().unwrap_or(false)) {
+        if matches
+            .try_get_one::<bool>("voltage")
+            .is_ok_and(|v| v.copied().unwrap_or(false))
+        {
             return Err(Error::from("Cannot use --clock and --voltage together"));
         }
 
@@ -661,11 +695,7 @@ pub fn handle_lock_vfp(
                         upper.0 / 1000,
                         lower.0 / 1000
                     ),
-                    None => println!(
-                        "Target: {:?} lock = {} MHz",
-                        domain,
-                        upper.0 / 1000
-                    ),
+                    None => println!("Target: {:?} lock = {} MHz", domain, upper.0 / 1000),
                 }
             }
         }
@@ -812,13 +842,11 @@ pub fn reset_vfp_deltas(gpu: &Gpu, domain: VfpResetDomain) -> nvapi_hi::Result<(
     // 等价于命令行 `set OC -p P0`，速度远快于逐点 VFP 循环
     // 两者独立容错，TDR 恢复期间单项失败不阻断另一项的重置
     let graphics_ok = if reset_graphics {
-        let r = gpu
-            .inner()
-            .set_pstates(
-                [(PState::P0, ClockDomain::Graphics, KilohertzDelta(0))]
-                    .iter()
-                    .cloned(),
-            );
+        let r = gpu.inner().set_pstates(
+            [(PState::P0, ClockDomain::Graphics, KilohertzDelta(0))]
+                .iter()
+                .cloned(),
+        );
         if let Err(e) = &r {
             eprintln!("Warning: fast pstate Graphics reset failed: {:?}", e);
         }
@@ -828,13 +856,11 @@ pub fn reset_vfp_deltas(gpu: &Gpu, domain: VfpResetDomain) -> nvapi_hi::Result<(
     };
 
     let memory_ok = if reset_memory {
-        let r = gpu
-            .inner()
-            .set_pstates(
-                [(PState::P0, ClockDomain::Memory, KilohertzDelta(0))]
-                    .iter()
-                    .cloned(),
-            );
+        let r = gpu.inner().set_pstates(
+            [(PState::P0, ClockDomain::Memory, KilohertzDelta(0))]
+                .iter()
+                .cloned(),
+        );
         if let Err(e) = &r {
             eprintln!("Warning: fast pstate Memory reset failed: {:?}", e);
         }
@@ -871,14 +897,16 @@ pub fn reset_vfp_deltas(gpu: &Gpu, domain: VfpResetDomain) -> nvapi_hi::Result<(
             }
         }
     }
-    println!("vfp reset ({:?}) done (fallback point-by-point path)", domain);
+    println!(
+        "vfp reset ({:?}) done (fallback point-by-point path)",
+        domain
+    );
     Ok(())
 }
 
 pub fn core_reset_vfp(gpu: &Gpu) -> nvapi_hi::Result<()> {
     reset_vfp_deltas(gpu, VfpResetDomain::All)
 }
-
 
 // oc_profile_function.rs
 
@@ -888,7 +916,10 @@ pub fn single_point_adj(gpus: &Vec<&Gpu>, matches: &ArgMatches) -> Result<(), Er
         .map(|s| usize::from_str(s.as_str()))
         .unwrap()?;
 
-    let delta_ini: i32 = matches.get_one::<String>("delta").map(|s| i32::from_str(s.as_str())).unwrap()?;
+    let delta_ini: i32 = matches
+        .get_one::<String>("delta")
+        .map(|s| i32::from_str(s.as_str()))
+        .unwrap()?;
 
     for gpu in gpus {
         gpu.set_vfp(
@@ -920,10 +951,16 @@ pub fn handle_pointwiseoc(gpus: &[&Gpu], matches: &ArgMatches) -> Result<(), Err
             )));
         }
         let start = parts[0].trim().parse::<usize>().map_err(|_| {
-            Error::from(format!("Invalid range start '{}': must be a non-negative integer", parts[0]))
+            Error::from(format!(
+                "Invalid range start '{}': must be a non-negative integer",
+                parts[0]
+            ))
         })?;
         let end = parts[1].trim().parse::<usize>().map_err(|_| {
-            Error::from(format!("Invalid range end '{}': must be a non-negative integer", parts[1]))
+            Error::from(format!(
+                "Invalid range end '{}': must be a non-negative integer",
+                parts[1]
+            ))
         })?;
         if start > end {
             return Err(Error::from(format!(
@@ -972,7 +1009,9 @@ pub fn handle_test_voltage_limits(
             println!("TDP/Temp/VDDQ control not available on MOBILE chips! Skipping...");
         } else {
             match gpu.set_voltage_boost(Percentage(100)) {
-                Ok(_) => println!("Successfully set VDDQ boost to +100% (max allowed V_core in fact)."),
+                Ok(_) => {
+                    println!("Successfully set VDDQ boost to +100% (max allowed V_core in fact).")
+                }
                 Err(e) => eprintln!("Failed to set VDDQ boost: {:?}", e),
             }
         }
@@ -1183,7 +1222,9 @@ pub fn get_gpu_tdp_temp_limit(
         let info = gpu.info()?;
 
         // 使用 NVAPI GPU ID 直接查询（公式：GPU_ID = PCI_Bus × 256）
-        if let Some((min_w, current_w, max_w)) = crate::oc_get_set_function_nvml::query_nvml_power_watts(info.id as u32) {
+        if let Some((min_w, current_w, max_w)) =
+            crate::oc_get_set_function_nvml::query_nvml_power_watts(info.id as u32)
+        {
             min_tdp = min_w;
             default_tdp = current_w;
             max_tdp = max_w;
@@ -1264,10 +1305,7 @@ pub fn voltage_frequency_check(arg_matches: ArgMatches, point: usize) -> Result<
         let readout_v = status.voltage.unwrap();
         let readout_f = status.clone().clocks;
         print_scan_separator();
-        println!(
-            "readout volt: {:?}, freq: {:?}",
-            readout_v, readout_f
-        );
+        println!("readout volt: {:?}, freq: {:?}", readout_v, readout_f);
 
         let current_point = status.clone().vfp.ok_or(Error::VfpUnsupported)?.graphics;
 
@@ -1292,10 +1330,7 @@ pub fn voltage_frequency_check(arg_matches: ArgMatches, point: usize) -> Result<
         let sensor_v = gpu.inner().core_voltage()?;
         let sensor_f = gpu.inner().clock_frequencies(ClockFrequencyType::Current)?;
 
-        println!(
-            "current volt: {}, freq:{:?}",
-            sensor_v, sensor_f
-        );
+        println!("current volt: {}, freq:{:?}", sensor_v, sensor_f);
 
         if let Some((index, vfp_point)) = find_matching_vfp_point(&current_point, sensor_v) {
             println!(
@@ -1420,13 +1455,20 @@ pub fn set_vfp_range_warn(gpu: &&Gpu, range: std::ops::RangeInclusive<usize>, de
             iter::empty(),
         ) {
             Ok(_) => {}
-            Err(e) => eprintln!("Warning: {}, set_vfp offset={} Error. GPU crashed...", e, offset),
+            Err(e) => eprintln!(
+                "Warning: {}, set_vfp offset={} Error. GPU crashed...",
+                e, offset
+            ),
         }
     }
 }
 
 /// 与 `set_vfp_range_warn` 功能相同，但通过 `?` 传播错误。
-pub fn set_vfp_range(gpu: &&Gpu, range: std::ops::RangeInclusive<usize>, delta_khz: i32) -> Result<(), Error> {
+pub fn set_vfp_range(
+    gpu: &&Gpu,
+    range: std::ops::RangeInclusive<usize>,
+    delta_khz: i32,
+) -> Result<(), Error> {
     for offset in range {
         gpu.set_vfp(
             iter::once((offset, KilohertzDelta(delta_khz))),
@@ -1448,7 +1490,11 @@ pub fn set_vfp_curve_warn(
     lower_delta: Option<i32>,
 ) {
     if !flat_curve_flag {
-        set_vfp_range_warn(gpu, (point - vfp_set_range)..=(point + vfp_set_range), main_delta);
+        set_vfp_range_warn(
+            gpu,
+            (point - vfp_set_range)..=(point + vfp_set_range),
+            main_delta,
+        );
     } else {
         set_vfp_range_warn(gpu, point..=(point + vfp_set_range), main_delta);
         if let Some(ld) = lower_delta {
@@ -1467,7 +1513,11 @@ pub fn set_vfp_curve(
     lower_delta: Option<i32>,
 ) -> Result<(), Error> {
     if !flat_curve_flag {
-        set_vfp_range(gpu, (point - vfp_set_range)..=(point + vfp_set_range), main_delta)?;
+        set_vfp_range(
+            gpu,
+            (point - vfp_set_range)..=(point + vfp_set_range),
+            main_delta,
+        )?;
     } else {
         set_vfp_range(gpu, point..=(point + vfp_set_range), main_delta)?;
         if let Some(ld) = lower_delta {
@@ -1510,10 +1560,12 @@ pub fn set_legacy_clocks_nvapi(gpu: &Gpu, core_mhz: u32, mem_mhz: u32) -> Result
         let ptr_res = nvapi_QueryInterface(NVAPI_GPU_SET_CLOCKS_ID);
         let ptr = match ptr_res {
             Ok(p) => p as *const (),
-            Err(_) => return Err(Error::Custom(format!(
-                "legacy interface not found at ID (0x{:x}), NVIDIA has ended its support",
-                NVAPI_GPU_SET_CLOCKS_ID
-            ))),
+            Err(_) => {
+                return Err(Error::Custom(format!(
+                    "legacy interface not found at ID (0x{:x}), NVIDIA has ended its support",
+                    NVAPI_GPU_SET_CLOCKS_ID
+                )));
+            }
         };
 
         // 2. 强类型转换将其解释为可执行的函数
