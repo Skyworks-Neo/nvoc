@@ -217,14 +217,19 @@ mod nvoc_service {
                                     .arg(clap::Arg::new("clock").default_value("graphics"))
                                     .get_matches_from(["", freq_str.as_str()]);
 
-                                let mut gpu_result = Vec::new();
-                                if let Some(g) = gpus.get(i) {
-                                    gpu_result.push(g);
-                                }
-
-                                match handle_global_oc_offset_subcommand(&gpu_result, &pseudo_matches) {
-                                    Ok(_) => info!("OC set to {} kHz for GPU {}", freq_val, i),
-                                    Err(e) => error!("Failed to set OC for GPU {}: {:?}", i, e),
+                                match gpus.get(i) {
+                                    None => error!(
+                                        "GPU index {} out of range (system has {} GPU(s)); ignoring OC command",
+                                        i,
+                                        gpus.len()
+                                    ),
+                                    Some(g) => {
+                                        let gpu_result = vec![g];
+                                        match handle_global_oc_offset_subcommand(&gpu_result, &pseudo_matches) {
+                                            Ok(_) => info!("OC set to {} kHz for GPU {}", freq_val, i),
+                                            Err(e) => error!("Failed to set OC for GPU {}: {:?}", i, e),
+                                        }
+                                    }
                                 }
                             }
 

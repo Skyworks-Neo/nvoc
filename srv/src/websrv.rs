@@ -25,15 +25,38 @@ pub struct NVOCServiceCmd {
     pub over_freq: i32,
 }
 
-/// Parse a `key=value&key=value` query string into a flat map.
+/// Decode a percent-encoded URL segment (e.g. `%2B` → `+`, `%20` → ` `).
+/// Invalid `%XX` sequences are passed through unchanged.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(s.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(hi), Some(lo)) = (
+                (bytes[i + 1] as char).to_digit(16),
+                (bytes[i + 2] as char).to_digit(16),
+            ) {
+                out.push(((hi << 4) | lo) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Parse a `key=value&key=value` query string into a flat map of percent-decoded strings.
 /// Duplicate keys keep the last value; keys without '=' get an empty string value.
-fn parse_query(query: &str) -> HashMap<&str, &str> {
+fn parse_query(query: &str) -> HashMap<String, String> {
     query
         .split('&')
         .filter_map(|pair| {
             let mut parts = pair.splitn(2, '=');
             let key = parts.next().filter(|k| !k.is_empty())?;
-            Some((key, parts.next().unwrap_or("")))
+            Some((percent_decode(key), percent_decode(parts.next().unwrap_or(""))))
         })
         .collect()
 }
@@ -69,9 +92,13 @@ pub fn start_http_server(
 
         match path {
             "/config" => {
+                let content_type =
+                    tiny_http::Header::from_bytes("Content-Type", "application/json").unwrap();
                 let response = match config.lock() {
                     Ok(cfg) => match serde_json::to_string(&*cfg) {
-                        Ok(json) => Response::from_string(json).with_status_code(200),
+                        Ok(json) => Response::from_string(json)
+                            .with_status_code(200)
+                            .with_header(content_type),
                         Err(e) => {
                             error!("Failed to serialize config: {}", e);
                             Response::from_string("Internal error").with_status_code(500)
@@ -122,11 +149,29 @@ pub fn start_http_server(
 
             "/oc_global" => {
                 // Accepts: ?oc=<i32 kHz delta>[&gpu=<usize index>]
-                // gpu defaults to 0 when omitted.
-                let gpu_index = params
-                    .get("gpu")
-                    .and_then(|s| s.parse::<usize>().ok())
-                    .unwrap_or(0);
+                // gpu absent → 0; gpu present but non-numeric → 400 Bad Request.
+                let gpu_index_result: Result<usize, _> = match params.get("gpu") {
+                    None => Ok(0),
+                    Some(s) => s.parse::<usize>().map_err(|_| {
+                        warn!("Invalid 'gpu' parameter: {:?}", s);
+                        s.clone()
+                    }),
+                };
+
+                let gpu_index = match gpu_index_result {
+                    Ok(idx) => idx,
+                    Err(bad) => {
+                        respond(
+                            request,
+                            Response::from_string(format!(
+                                "Bad request: 'gpu' must be a non-negative integer, got {:?}",
+                                bad
+                            ))
+                            .with_status_code(400),
+                        );
+                        continue;
+                    }
+                };
 
                 let response = match params.get("oc").and_then(|s| s.parse::<i32>().ok()) {
                     Some(freq_val) if (OC_DELTA_MIN..=OC_DELTA_MAX).contains(&freq_val) => {
