@@ -1,1 +1,66 @@
-/* Overclock pane currently uses shared row and section styles. */
+#overclock-groups {
+    grid-size: 3 1;
+    grid-columns: 1fr 1fr 1fr;
+    grid-gutter: 0 1;
+    height: auto;
+}
+
+.narrow #overclock-groups {
+    grid-size: 1 3;
+    grid-columns: 1fr;
+}
+
+#clock-controls,
+#power-controls,
+#fan-controls {
+    grid-gutter: 0 1;
+    height: auto;
+    align-horizontal: center;
+    grid-columns: 1fr;
+}
+
+#clock-controls {
+    grid-size: 1 5;
+}
+
+#power-controls,
+#fan-controls {
+    grid-size: 1 4;
+}
+
+.wide #clock-controls {
+    grid-size: 2 3;
+    grid-columns: 1fr 1fr;
+}
+
+.wide #power-controls,
+.wide #fan-controls {
+    grid-size: 2 2;
+    grid-columns: 1fr 1fr;
+}
+
+#clock-actions,
+#power-actions,
+#fan-actions {
+    grid-gutter: 0 1;
+    height: auto;
+    align-horizontal: center;
+    grid-size: 2 1;
+    grid-columns: 1fr 1fr;
+}
+
+#overclock .row {
+    align-horizontal: left;
+}
+
+#overclock .row > Label {
+    width: 14;
+}
+
+#overclock Select {
+    width: 12;
+}
+
+#overclock .nvapi-nvml-select {
+    width: 8;
+}
