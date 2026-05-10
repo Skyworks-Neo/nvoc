@@ -43,10 +43,14 @@ Prerequisites:
 - Python 3.10 or higher
 - Recommended: use a virtual environment to isolate dependencies
 
-Install PyInstaller:
+Install PyInstaller (choose one):
 
 ```powershell
-pip install --upgrade pyinstaller
+uv sync --group build
+```
+
+```powershell
+python -m pip install --upgrade pyinstaller
 ```
 
 Build using the spec (run from the repository root):
@@ -55,7 +59,7 @@ Build using the spec (run from the repository root):
 # change to the tui folder
 Set-Location -Path "tui"
 # build using the provided spec file
-pyinstaller --clean --noconfirm nvoc_tui.spec
+uv run pyinstaller --clean --noconfirm nvoc_tui.spec
 ```
 
 [Back to top](#nvoc-tui)
@@ -96,10 +100,14 @@ uv run pytest
 - Python 3.10 或更高
 - 建议使用虚拟环境来隔离依赖
 
-安装 PyInstaller：
+安装 PyInstaller（任选一种方式）：
 
 ```powershell
-pip install --upgrade pyinstaller
+uv sync --group build
+```
+
+```powershell
+python -m pip install --upgrade pyinstaller
 ```
 生成单文件 Windows 可执行程序（从仓库根目录执行下面命令）：
 
@@ -107,7 +115,7 @@ pip install --upgrade pyinstaller
 # 进入 tui 目录
 Set-Location -Path "tui"
 # 使用已提供的 spec 文件构建
-pyinstaller --clean --noconfirm nvoc_tui.spec
+uv run pyinstaller --clean --noconfirm nvoc_tui.spec
 ```
 
 [返回顶部](#nvoc-tui)
