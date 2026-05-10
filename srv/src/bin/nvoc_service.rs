@@ -48,11 +48,12 @@ mod nvoc_service {
     };
     use nvapi_hi::Gpu;
     use nvml_wrapper::{Nvml, enum_wrappers::device::{TemperatureThreshold, TemperatureSensor}};
-    use nvoc_auto_optimizer::{handle_lock_vfp, handle_unlock_vfp, handle_global_oc_offset_subcommand, find_matching_vfp_point};
+    use nvoc_auto_optimizer::{handle_lock_vfp, reset_vfp_frequency_lock, find_matching_vfp_point};
     use clap;
-    use log::{info, error, LevelFilter};
+    use log::{info, error, warn, LevelFilter};
     use gag::Redirect;
     use nvapi_hi::nvapi::ClockFrequencyType;
+    use nvapi_hi::{ClockDomain, KilohertzDelta, PState};
 
     const SERVICE_NAME: &str = "nvoc_service";
     const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
@@ -218,27 +219,28 @@ mod nvoc_service {
                         info!("Received command: {}", cmd.cmd);
                         match cmd.cmd.as_str() {
                             "set_oc_global" => {
-                                // 处理设置全局超频频率的命令
                                 let i = cmd.gpu_index;
                                 let freq_val = cmd.over_freq;
-                                let freq_str = freq_val.to_string();
-                                let pseudo_matches = clap::Command::new("")
-                                    .arg(clap::Arg::new("delta"))
-                                    .arg(clap::Arg::new("pstate").default_value("P0"))
-                                    .arg(clap::Arg::new("clock").default_value("graphics"))
-                                    .get_matches_from(vec!["", freq_str.as_str()]);
 
-                                let mut gpu_result = Vec::new();
-                                if let Some(g) = gpus.get(i) {
-                                    gpu_result.push(g);
+                                match gpus.get(i) {
+                                    None => {
+                                        error!(
+                                            "GPU index {} is out of range (system has {} GPU(s)); command ignored",
+                                            i,
+                                            gpus.len()
+                                        );
+                                    }
+                                    Some(g) => {
+                                        match g.inner().set_pstates(
+                                            [(PState::P0, ClockDomain::Graphics, KilohertzDelta(freq_val as i32))]
+                                                .iter()
+                                                .cloned(),
+                                        ) {
+                                            Ok(_) => info!("OC set to {} kHz for GPU {}", freq_val, i),
+                                            Err(e) => error!("Failed to set OC for GPU {}: {:?}", i, e),
+                                        }
+                                    }
                                 }
-
-                                match handle_global_oc_offset_subcommand(&gpu_result, &pseudo_matches) {
-                                    Ok(_) => info!("OC set to {} kHz for GPU {}", freq_val, i),
-                                    Err(e) => error!("Failed to set OC for GPU {}: {:?}", i, e),
-                                }
-                                // 这里可以调用相应的函数来设置全局超频频率
-                                // 例如：set_oc_global_frequency(cmd.over_freq);
                             }
 
                             _ => {
@@ -343,11 +345,18 @@ mod nvoc_service {
                                 }
                             } else {
                                 // 已回到正常上限，完全解锁
-                                gpu_dynamic_lock_point[idx] = vfp_highest_lock_point;
-                                match handle_unlock_vfp(&gpu_result) {
-                                    Ok(_) => info!("GPU {}: temp normal, VFP fully unlocked", i),
-                                    Err(e) => error!("GPU {}: failed to unlock VFP: {:?}", i, e),
+                                gpu_dynamic_lock_point[i as usize] = vfp_highest_lock_point;
+                                for g in &gpu_result {
+                                    if let Err(e) = g.reset_vfp_lock() {
+                                        error!("GPU {}: failed to reset VFP voltage lock: {:?}", i, e);
+                                    }
+                                    for domain in [ClockDomain::Graphics, ClockDomain::Memory] {
+                                        if let Err(e) = reset_vfp_frequency_lock(g, domain) {
+                                            warn!("GPU {}: failed to reset VFP freq lock ({:?}): {:?}", i, domain, e);
+                                        }
+                                    }
                                 }
+                                info!("GPU {}: temp normal, VFP fully unlocked", i);
                             }
                         }
                     } // end for i in 0..count
