@@ -224,8 +224,9 @@ fn update_csv_with_load_and_margin(
 ) -> Result<(), Error> {
     let dest_path = std::path::Path::new(file_path);
     let tmp_name = format!(
-        ".{}.tmp-",
-        dest_path.file_name().and_then(|n| n.to_str()).unwrap_or("tmp")
+        ".{}.{}.tmp",
+        dest_path.file_name().and_then(|n| n.to_str()).unwrap_or("tmp"),
+        std::process::id()
     );
     let tmp_path = dest_path.parent().unwrap_or(dest_path).join(&tmp_name);
 
@@ -279,8 +280,16 @@ fn update_csv_with_load_and_margin(
 
     wtr.flush()?;
 
-    // Replace original file with updated file
-    fs::rename(&tmp_path, file_path)?;
+    // Replace original file with updated file.
+    // On Windows, rename fails when the destination already exists; fall back to
+    // an explicit remove-then-rename so the tmp file is never silently lost.
+    if let Err(rename_err) = fs::rename(&tmp_path, file_path) {
+        if let Err(remove_err) = fs::remove_file(file_path) {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(remove_err.into());
+        }
+        fs::rename(&tmp_path, file_path).map_err(|_| rename_err)?;
+    }
 
     Ok(())
 }
