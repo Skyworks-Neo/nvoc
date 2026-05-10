@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use tiny_http::{Response, Server};
+use tiny_http::{Header, Response, Server};
 use serde::{Deserialize, Serialize};
 use log::{error, info, warn};
 
@@ -25,30 +25,33 @@ pub struct NVOCServiceCmd {
     pub over_freq: i32,
 }
 
-/// Decode a percent-encoded URL segment (e.g. `%2B` → `+`, `%20` → ` `).
-/// Invalid `%XX` sequences are passed through unchanged.
+/// Decode a percent-encoded byte sequence (application/x-www-form-urlencoded style).
+/// `+` → space, `%XX` → byte 0xXX; invalid escapes are passed through as-is.
 fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(s.len());
+    let mut out = String::with_capacity(s.len());
+    let b = s.as_bytes();
     let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let (Some(hi), Some(lo)) = (
-                (bytes[i + 1] as char).to_digit(16),
-                (bytes[i + 2] as char).to_digit(16),
-            ) {
-                out.push(((hi << 4) | lo) as u8);
+    while i < b.len() {
+        if b[i] == b'+' {
+            out.push(' ');
+            i += 1;
+        } else if b[i] == b'%' && i + 2 < b.len() {
+            if let Ok(byte) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(byte as char);
                 i += 3;
-                continue;
+            } else {
+                out.push('%');
+                i += 1;
             }
+        } else {
+            out.push(b[i] as char);
+            i += 1;
         }
-        out.push(bytes[i]);
-        i += 1;
     }
-    String::from_utf8_lossy(&out).into_owned()
+    out
 }
 
-/// Parse a `key=value&key=value` query string into a flat map of percent-decoded strings.
+/// Parse a `key=value&key=value` query string into a flat map with percent-decoded values.
 /// Duplicate keys keep the last value; keys without '=' get an empty string value.
 fn parse_query(query: &str) -> HashMap<String, String> {
     query
@@ -56,7 +59,8 @@ fn parse_query(query: &str) -> HashMap<String, String> {
         .filter_map(|pair| {
             let mut parts = pair.splitn(2, '=');
             let key = parts.next().filter(|k| !k.is_empty())?;
-            Some((percent_decode(key), percent_decode(parts.next().unwrap_or(""))))
+            let val = parts.next().unwrap_or("");
+            Some((percent_decode(key), percent_decode(val)))
         })
         .collect()
 }
@@ -66,6 +70,11 @@ fn respond(request: tiny_http::Request, response: Response<std::io::Cursor<Vec<u
     if let Err(e) = request.respond(response) {
         warn!("HTTP: failed to send response: {}", e);
     }
+}
+
+fn json_content_type() -> Header {
+    Header::from_bytes("Content-Type", "application/json")
+        .expect("static header is valid ASCII")
 }
 
 pub fn start_http_server(
@@ -92,13 +101,11 @@ pub fn start_http_server(
 
         match path {
             "/config" => {
-                let content_type =
-                    tiny_http::Header::from_bytes("Content-Type", "application/json").unwrap();
                 let response = match config.lock() {
                     Ok(cfg) => match serde_json::to_string(&*cfg) {
                         Ok(json) => Response::from_string(json)
                             .with_status_code(200)
-                            .with_header(content_type),
+                            .with_header(json_content_type()),
                         Err(e) => {
                             error!("Failed to serialize config: {}", e);
                             Response::from_string("Internal error").with_status_code(500)
@@ -149,28 +156,24 @@ pub fn start_http_server(
 
             "/oc_global" => {
                 // Accepts: ?oc=<i32 kHz delta>[&gpu=<usize index>]
-                // gpu absent → 0; gpu present but non-numeric → 400 Bad Request.
-                let gpu_index_result: Result<usize, _> = match params.get("gpu") {
-                    None => Ok(0),
-                    Some(s) => s.parse::<usize>().map_err(|_| {
-                        warn!("Invalid 'gpu' parameter: {:?}", s);
-                        s.clone()
-                    }),
-                };
-
-                let gpu_index = match gpu_index_result {
-                    Ok(idx) => idx,
-                    Err(bad) => {
-                        respond(
-                            request,
-                            Response::from_string(format!(
-                                "Bad request: 'gpu' must be a non-negative integer, got {:?}",
-                                bad
-                            ))
-                            .with_status_code(400),
-                        );
-                        continue;
-                    }
+                // gpu defaults to 0 when absent; a present but non-numeric value is rejected.
+                let gpu_index: usize = match params.get("gpu") {
+                    None => 0,
+                    Some(s) => match s.parse::<usize>() {
+                        Ok(n) => n,
+                        Err(_) => {
+                            warn!("Rejected non-numeric 'gpu' parameter: {:?}", s);
+                            respond(
+                                request,
+                                Response::from_string(format!(
+                                    "Bad request: 'gpu' must be a non-negative integer, got {:?}",
+                                    s
+                                ))
+                                .with_status_code(400),
+                            );
+                            continue;
+                        }
+                    },
                 };
 
                 let response = match params.get("oc").and_then(|s| s.parse::<i32>().ok()) {

@@ -218,11 +218,13 @@ mod nvoc_service {
                                     .get_matches_from(["", freq_str.as_str()]);
 
                                 match gpus.get(i) {
-                                    None => error!(
-                                        "GPU index {} out of range (system has {} GPU(s)); ignoring OC command",
-                                        i,
-                                        gpus.len()
-                                    ),
+                                    None => {
+                                        error!(
+                                            "GPU index {} is out of range (system has {} GPU(s)); command ignored",
+                                            i,
+                                            gpus.len()
+                                        );
+                                    }
                                     Some(g) => {
                                         let gpu_result = vec![g];
                                         match handle_global_oc_offset_subcommand(&gpu_result, &pseudo_matches) {
