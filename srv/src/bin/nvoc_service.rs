@@ -29,10 +29,12 @@ mod nvoc_service {
         // io::Write,
         ffi::OsString, time::Duration,
         env,
+        path::PathBuf,
         sync::{Arc, Mutex},
         thread,
         cmp::{min, max},
         time::Instant,
+        panic::AssertUnwindSafe,
     };
     use futures_util::StreamExt;
     use windows_service::{
@@ -71,18 +73,16 @@ mod nvoc_service {
     // parameters. There is no stdout or stderr at this point so make sure to configure the log
     // output to file if needed.
     pub fn my_service_main(_arguments: Vec<OsString>) {
-        let exe_dir = env::current_exe()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .to_path_buf();
-        let log_dir = exe_dir.parent()  // 第一级
-            .and_then(|p| p.parent())    // 第二级
-            .unwrap_or(&exe_dir)         // 如果失败就用 exe_dir
-            .join("logs");                // 加上 logs 目录
+        // Use %PROGRAMDATA%\nvoc\logs so log placement is independent of the install
+        // directory layout and cannot be influenced by a writable install path.
+        let log_dir: PathBuf = env::var_os("PROGRAMDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"))
+            .join("nvoc")
+            .join("logs");
         std::fs::create_dir_all(&log_dir).unwrap();
 
-        let log_path = log_dir.join(format!("canbedel-{}-output.log", SERVICE_NAME));
+        let log_path = log_dir.join(format!("{}-output.log", SERVICE_NAME));
         let log_path_for_log2 = log_path.clone();
         let log_file = OpenOptions::new()
             .create(true)
@@ -155,8 +155,19 @@ mod nvoc_service {
             process_id: None,
         });
 
+        // Restart the HTTP thread on panic so a control-plane failure doesn't leave
+        // the service running but silently unresponsive (#67).
         thread::spawn(move || {
-            crate::websrv::start_http_server(http_config, http_tx);
+            loop {
+                let cfg = http_config.clone();
+                let tx  = http_tx.clone();
+                if std::panic::catch_unwind(AssertUnwindSafe(|| {
+                    crate::websrv::start_http_server(cfg, tx);
+                })).is_err() {
+                    error!("HTTP server thread panicked; restarting in 1 s");
+                    thread::sleep(Duration::from_secs(1));
+                }
+            }
         });
 
         let _ = compio::runtime::RuntimeBuilder::new()

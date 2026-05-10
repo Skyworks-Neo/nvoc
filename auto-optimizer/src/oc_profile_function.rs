@@ -63,15 +63,33 @@ fn spawn_dynamic_load_process() -> Result<Child, Error> {
     panic_windows_only("dynamic VFP export")
 }
 
+/// Reject paths containing `..` to prevent directory traversal when running as admin/root.
+fn reject_dotdot(path: &str) -> Result<(), Error> {
+    use std::path::Component;
+    if Path::new(path)
+        .components()
+        .any(|c| c == Component::ParentDir)
+    {
+        return Err(Error::Custom(format!(
+            "path '{}' contains '..'; refusing to write outside working directory",
+            path
+        )));
+    }
+    Ok(())
+}
+
 pub fn export_single_point(point: VfPoint, matches: &clap::ArgMatches) -> Result<(), Error> {
-    let file_path = matches
+    let file_path: &str = matches
         .get_one::<String>("output")
-        .map(|s| s.as_str())
-        .unwrap();
-    let init_path = matches
+        .ok_or_else(|| Error::Custom("missing --output argument".to_string()))?
+        .as_str();
+    let init_path: &str = matches
         .get_one::<String>("initcsv")
-        .map(|s| s.as_str())
-        .unwrap();
+        .ok_or_else(|| Error::Custom("missing --initcsv argument".to_string()))?
+        .as_str();
+
+    reject_dotdot(file_path)?;
+    reject_dotdot(init_path)?;
 
     // Check if the destination file exists
     if !Path::new(file_path).exists() {
@@ -115,30 +133,28 @@ pub fn export_single_point(point: VfPoint, matches: &clap::ArgMatches) -> Result
     // Open the output file for reading and writing
     let file = File::open(file_path)?;
     let reader = BufReader::new(file);
-    let mut record_lines = Vec::new();
+    let mut record_lines: Vec<String> = Vec::new();
 
     // Convert to String and store in variables
     let new_voltage = point.voltage.0;
     let new_delta = point.delta.0;
+    let voltage_str = new_voltage.to_string();
+    let delta_str = new_delta.to_string();
 
     for line in reader.lines() {
         let line = line?;
-        let mut columns: Vec<&str> = line.split(',').collect();
-        let voltage = new_voltage.clone().to_string();
-        let delta = new_delta.clone().to_string();
+        // Use owned Strings so we can mutate column slots without Box::leak.
+        let mut parts: Vec<String> = line.split(',').map(|s| s.to_string()).collect();
 
         // Check if the row matches
-        if columns.first() == Some(&&*voltage) && columns.len() > 3 {
-            columns[2] = &delta; // Update y value
-
-            // Convert parts[2] and parts[3] to integers safely
-            let y_value: i32 = columns[2].parse().unwrap_or(0);
-            let col3_value: i32 = columns[3].parse().unwrap_or(0);
-            let sum = y_value + col3_value;
-            columns[1] = Box::leak(sum.to_string().into_boxed_str());
+        if parts.first().map(|s| s.as_str()) == Some(&*voltage_str) && parts.len() > 3 {
+            parts[2] = delta_str.clone();
+            let y_value: i32 = parts[2].parse().unwrap_or(0);
+            let col3_value: i32 = parts[3].parse().unwrap_or(0);
+            parts[1] = (y_value + col3_value).to_string();
         }
 
-        record_lines.push(columns.join(",")); // Store modified line
+        record_lines.push(parts.join(","));
     }
 
     // Write the updated content back to the file
@@ -146,11 +162,7 @@ pub fn export_single_point(point: VfPoint, matches: &clap::ArgMatches) -> Result
     for line in record_lines {
         writeln!(output_file, "{}", line)?;
     }
-    println!(
-        "Updated row {}μV with delta = {} kHz",
-        new_voltage,
-        new_delta.clone()
-    );
+    println!("Updated row {}μV with delta = {} kHz", new_voltage, new_delta);
 
     Ok(())
 }
