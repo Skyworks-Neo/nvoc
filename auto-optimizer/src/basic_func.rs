@@ -1429,7 +1429,7 @@ pub fn handle_nvml_with_ids(gpu_ids: &[u32], matches: &ArgMatches) -> Result<(),
 
     if matches.get_flag("reset_app_clocks") {
         for &gpu_id in gpu_ids {
-            match crate::oc_get_set_function_nvml::reset_nvml_applications_clocks(gpu_id) {
+            match crate::oc_get_set_function_nvml::reset_nvml_applications_clocks(&nvml, gpu_id) {
                 Ok(_) => println!(
                     "Successfully reset NVML applications clocks to default on GPU {}",
                     gpu_id
