@@ -1127,29 +1127,19 @@ pub fn handle_set_command(gpus: &[&Gpu], matches: &ArgMatches) -> Result<(), Err
 }
 
 fn handle_nvapi(gpus: &[&Gpu], matches: &ArgMatches) -> Result<(), Error> {
-    if let Some(vboost) = matches
-        .get_one::<String>("vboost")
-        .map(|s| u32::from_str(s.as_str()))
-        .transpose()?
-    {
+    if let Some(&vboost) = matches.get_one::<u32>("vboost") {
         for gpu in gpus {
             gpu.set_voltage_boost(Percentage(vboost))?;
         }
     }
-    if let Some(plimit) = matches.get_many::<String>("plimit") {
-        let plimit = plimit
-            .map(|s| u32::from_str(s.as_str()))
-            .map(|v| v.map(Percentage))
-            .collect::<Result<Vec<_>, _>>()?;
+    if let Some(plimit) = matches.get_many::<u32>("plimit") {
+        let plimit: Vec<_> = plimit.copied().map(Percentage).collect();
         for gpu in gpus {
             gpu.set_power_limits(plimit.iter().cloned())?;
         }
     }
-    if let Some(tlimit) = matches.get_many::<String>("tlimit") {
-        let tlimit = tlimit
-            .map(|s| i32::from_str(s.as_str()))
-            .map(|v| v.map(|v| Celsius(v).into()))
-            .collect::<Result<Vec<_>, _>>()?;
+    if let Some(tlimit) = matches.get_many::<i32>("tlimit") {
+        let tlimit: Vec<_> = tlimit.copied().map(|v| Celsius(v).into()).collect();
         for gpu in gpus {
             gpu.set_sensor_limits(tlimit.iter().cloned())?;
         }
@@ -1162,11 +1152,7 @@ fn handle_nvapi(gpus: &[&Gpu], matches: &ArgMatches) -> Result<(), Error> {
         .map_err(|e| Error::from(format!("Invalid --pstate value: {}", e)))?
         .unwrap_or(PState::P0);
 
-    if let Some(delta_uv) = matches
-        .get_one::<String>("voltage_delta")
-        .map(|s| i32::from_str(s.as_str()))
-        .transpose()?
-    {
+    if let Some(&delta_uv) = matches.get_one::<i32>("voltage_delta") {
         for gpu in gpus {
             crate::oc_get_set_function_nvapi::set_pstate_base_voltage(
                 gpu,
@@ -1176,11 +1162,7 @@ fn handle_nvapi(gpus: &[&Gpu], matches: &ArgMatches) -> Result<(), Error> {
         }
     }
 
-    if let Some(core_offset) = matches
-        .get_one::<String>("core_offset")
-        .map(|s| i32::from_str(s.as_str()))
-        .transpose()?
-    {
+    if let Some(&core_offset) = matches.get_one::<i32>("core_offset") {
         for gpu in gpus {
             let gpu_info = gpu.info()?;
             match gpu.inner().set_pstates(
@@ -1204,11 +1186,7 @@ fn handle_nvapi(gpus: &[&Gpu], matches: &ArgMatches) -> Result<(), Error> {
         }
     }
 
-    if let Some(mem_offset) = matches
-        .get_one::<String>("mem_offset")
-        .map(|s| i32::from_str(s.as_str()))
-        .transpose()?
-    {
+    if let Some(&mem_offset) = matches.get_one::<i32>("mem_offset") {
         for gpu in gpus {
             let gpu_info = gpu.info()?;
             match gpu.inner().set_pstates(
@@ -1342,11 +1320,7 @@ pub fn handle_nvml_with_ids(gpu_ids: &[u32], matches: &ArgMatches) -> Result<(),
         .unwrap_or("0");
     let target_nvml_pstate = crate::conv::parse_nvml_pstate(nvml_pstate_val);
 
-    if let Some(core_offset) = matches
-        .get_one::<String>("core_offset")
-        .map(|s| i32::from_str(s.as_str()))
-        .transpose()?
-    {
+    if let Some(&core_offset) = matches.get_one::<i32>("core_offset") {
         for &gpu_id in gpu_ids {
             match crate::oc_get_set_function_nvml::set_nvml_core_clock_vf_offset(
                 &nvml,
@@ -1363,11 +1337,7 @@ pub fn handle_nvml_with_ids(gpu_ids: &[u32], matches: &ArgMatches) -> Result<(),
         }
     }
 
-    if let Some(mem_offset) = matches
-        .get_one::<String>("mem_offset")
-        .map(|s| i32::from_str(s.as_str()))
-        .transpose()?
-    {
+    if let Some(&mem_offset) = matches.get_one::<i32>("mem_offset") {
         for &gpu_id in gpu_ids {
             match crate::oc_get_set_function_nvml::set_nvml_mem_clock_vf_offset(
                 &nvml,
@@ -1384,11 +1354,7 @@ pub fn handle_nvml_with_ids(gpu_ids: &[u32], matches: &ArgMatches) -> Result<(),
         }
     }
 
-    if let Some(power_w) = matches
-        .get_one::<String>("power_limit")
-        .map(|s| u32::from_str(s.as_str()))
-        .transpose()?
-    {
+    if let Some(&power_w) = matches.get_one::<u32>("power_limit") {
         for &gpu_id in gpu_ids {
             match crate::oc_get_set_function_nvml::set_nvml_power_limit(&nvml, gpu_id, power_w) {
                 Ok(_) => println!(
@@ -1400,10 +1366,8 @@ pub fn handle_nvml_with_ids(gpu_ids: &[u32], matches: &ArgMatches) -> Result<(),
         }
     }
 
-    if let Some(app_clocks) = matches.get_many::<String>("locked_app_clocks") {
-        let clocks: Vec<u32> = app_clocks
-            .map(|s| u32::from_str(s.as_str()).unwrap_or(0))
-            .collect();
+    if let Some(app_clocks) = matches.get_many::<u32>("locked_app_clocks") {
+        let clocks: Vec<u32> = app_clocks.copied().collect();
         if clocks.len() == 2 {
             let mem_clock = clocks[0];
             let core_clock = clocks[1];
@@ -1442,10 +1406,8 @@ pub fn handle_nvml_with_ids(gpu_ids: &[u32], matches: &ArgMatches) -> Result<(),
         }
     }
 
-    if let Some(locked_core_clocks) = matches.get_many::<String>("locked_core_clocks") {
-        let clocks: Vec<u32> = locked_core_clocks
-            .map(|s| u32::from_str(s.as_str()).unwrap_or(0))
-            .collect();
+    if let Some(locked_core_clocks) = matches.get_many::<u32>("locked_core_clocks") {
+        let clocks: Vec<u32> = locked_core_clocks.copied().collect();
         if clocks.len() == 2 {
             let min_clock = clocks[0];
             let max_clock = clocks[1];
@@ -1485,10 +1447,8 @@ pub fn handle_nvml_with_ids(gpu_ids: &[u32], matches: &ArgMatches) -> Result<(),
         }
     }
 
-    if let Some(locked_mem_clocks) = matches.get_many::<String>("locked_mem_clocks") {
-        let clocks: Vec<u32> = locked_mem_clocks
-            .map(|s| u32::from_str(s.as_str()).unwrap_or(0))
-            .collect();
+    if let Some(locked_mem_clocks) = matches.get_many::<u32>("locked_mem_clocks") {
+        let clocks: Vec<u32> = locked_mem_clocks.copied().collect();
         if clocks.len() == 2 {
             let min_clock = clocks[0];
             let max_clock = clocks[1];
@@ -1585,9 +1545,8 @@ pub fn handle_nvml_cooler_with_ids(gpu_ids: &[u32], matches: &ArgMatches) -> Res
         .transpose()?
         .ok_or_else(|| Error::from("Missing required argument: --policy <MODE>"))?;
     let level = matches
-        .get_one::<String>("level")
-        .map(|s| u32::from_str(s.as_str()))
-        .transpose()?
+        .get_one::<u32>("level")
+        .copied()
         .ok_or_else(|| Error::from("Missing required argument: --level <LEVEL>"))?;
 
     for &gpu_id in gpu_ids {

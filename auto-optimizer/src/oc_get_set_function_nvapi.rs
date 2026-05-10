@@ -193,9 +193,9 @@ pub fn handle_cooler_command(gpus: &[&Gpu], matches: &ArgMatches) -> Result<(), 
         _ => CoolerPolicy::from_str(policy_raw.as_str())?,
     };
     let level = matches
-        .get_one::<String>("level")
-        .map(|s| u32::from_str(s.as_str()))
-        .ok_or_else(|| Error::from("Missing required argument: --level <LEVEL>"))??;
+        .get_one::<u32>("level")
+        .copied()
+        .ok_or_else(|| Error::from("Missing required argument: --level <LEVEL>"))?;
 
     let cooler_id = matches
         .get_one::<String>("id")
@@ -911,15 +911,8 @@ pub fn core_reset_vfp(gpu: &Gpu) -> nvapi_hi::Result<()> {
 // oc_profile_function.rs
 
 pub fn single_point_adj(gpus: &Vec<&Gpu>, matches: &ArgMatches) -> Result<(), Error> {
-    let point_start = matches
-        .get_one::<String>("point_start")
-        .map(|s| usize::from_str(s.as_str()))
-        .unwrap()?;
-
-    let delta_ini: i32 = matches
-        .get_one::<String>("delta")
-        .map(|s| i32::from_str(s.as_str()))
-        .unwrap()?;
+    let point_start = *matches.get_one::<u32>("point_start").unwrap() as usize;
+    let delta_ini = *matches.get_one::<i32>("delta").unwrap();
 
     for gpu in gpus {
         gpu.set_vfp(
@@ -971,12 +964,9 @@ pub fn handle_pointwiseoc(gpus: &[&Gpu], matches: &ArgMatches) -> Result<(), Err
         (start, end)
     };
 
-    let delta: i32 = matches
-        .get_one::<String>("delta")
-        .ok_or_else(|| Error::from("Missing required argument: DELTA"))?
-        .trim_start_matches('+')
-        .parse::<i32>()
-        .map_err(|_| Error::from("DELTA must be an integer (kHz), e.g. +150000 or -50000"))?;
+    let delta = *matches
+        .get_one::<i32>("delta")
+        .ok_or_else(|| Error::from("Missing required argument: DELTA"))?;
 
     println!(
         "pointwiseoc: applying delta {} kHz to VFP points {}..={} (inclusive)",
