@@ -6,6 +6,21 @@ from .base import PaneController
 
 
 class AutoscanController(PaneController):
+    def activate_shortcut(self, target_id: str) -> bool:
+        if target_id in {"autoscan-mode", "autoscan-bsod"}:
+            self.app.query_one(f"#{target_id}", Select).focus()
+            return True
+        if target_id in {
+            "autoscan-test-exe",
+            "autoscan-timeout",
+            "autoscan-log",
+            "autoscan-output",
+            "autoscan-init",
+        }:
+            self.app.query_one(f"#{target_id}", Input).focus()
+            return True
+        return self.handle_button(target_id)
+
     def sync_from_ui(self) -> None:
         self.app.config_data.autoscan.mode = str(
             self.app.query_one("#autoscan-mode", Select).value or "standard"
