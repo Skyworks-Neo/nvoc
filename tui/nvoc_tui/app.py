@@ -246,6 +246,15 @@ class NVOCApp(App[None]):
             if key in dashboard_shortcuts:
                 self.dashboard_controller.activate_button(dashboard_shortcuts[key])
                 return True
+        elif tabs.active == "overclock":
+            overclock_shortcuts = {
+                "c": "oc-api",
+                "p": "power-api",
+                "a": "fan-id",
+            }
+            if key in overclock_shortcuts:
+                self.overclock_controller.activate_shortcut(overclock_shortcuts[key])
+                return True
         elif tabs.active == "vfcurve":
             vfcurve_shortcuts = {
                 "c": "vf-path",

@@ -88,6 +88,17 @@ def test_overclock_fan_reset_args_preserve_target() -> None:
     ]
 
 
+def test_overclock_shortcut_focuses_target_widget() -> None:
+    app = FakeApp()
+    target = SimpleNamespace(focused=False)
+    target.focus = lambda: setattr(target, "focused", True)
+    app.widgets = {"#power-api": target}
+
+    assert OverclockController(app).activate_shortcut("power-api") is True
+
+    assert target.focused is True
+
+
 def test_vfcurve_export_action_appends_quick_flag() -> None:
     app = FakeApp()
     app.widgets = {
