@@ -1,8 +1,8 @@
 use crate::human;
 use crate::types::{OutputFormat, ResetSettings, VfpResetDomain};
 use nvapi_hi::{
-    allowable_result, Celsius, Gpu, GpuSettings, KilohertzDelta, MicrovoltsDelta, PState,
-    Percentage,
+    Celsius, Gpu, GpuSettings, KilohertzDelta, MicrovoltsDelta, PState, Percentage,
+    allowable_result,
 };
 use std::io;
 
@@ -10,7 +10,7 @@ use crate::conv::ConvertEnum;
 use crate::error::Error;
 use crate::oc_get_set_function_nvapi::{reset_all_pstate_base_voltages, reset_vfp_deltas};
 use clap::ArgMatches;
-use time::{format_description::parse, OffsetDateTime};
+use time::{OffsetDateTime, format_description::parse};
 
 pub fn local_time_hms() -> String {
     let format = match parse("[hour]:[minute]:[second]") {
@@ -1387,7 +1387,7 @@ pub fn handle_nvml_with_ids(gpu_ids: &[u32], matches: &ArgMatches) -> Result<(),
         }
     }
 
-    if let Some(app_clocks) = matches.get_many::<String>("app_clock") {
+    if let Some(app_clocks) = matches.get_many::<String>("locked_app_clocks") {
         let clocks: Vec<u32> = app_clocks
             .map(|s| u32::from_str(s.as_str()).unwrap_or(0))
             .collect();
@@ -1399,18 +1399,33 @@ pub fn handle_nvml_with_ids(gpu_ids: &[u32], matches: &ArgMatches) -> Result<(),
                     gpu_id, mem_clock, core_clock,
                 ) {
                     Ok(_) => println!(
-                        "Successfully applied NVML app clocks (Mem: {}, Core: {}) to GPU {}",
+                        "Successfully locked NVML app clocks (Mem: {}, Core: {}) to GPU {}",
                         mem_clock, core_clock, gpu_id
                     ),
                     Err(e) => {
-                        eprintln!("Failed to set NVML app clocks for GPU {}: {:?}", gpu_id, e)
+                        eprintln!("Failed to lock NVML app clocks for GPU {}: {:?}", gpu_id, e)
                     }
                 }
             }
         } else {
             eprintln!(
-                "Invalid arguments for --nvml-app-clock, expected 2 arguments (MEM_MHZ CORE_MHZ)"
+                "Invalid arguments for --locked-app-clocks, expected 2 arguments (MEM_MHZ CORE_MHZ)"
             );
+        }
+    }
+
+    if matches.get_flag("reset_app_clocks") {
+        for &gpu_id in gpu_ids {
+            match crate::oc_get_set_function_nvml::reset_nvml_applications_clocks(gpu_id) {
+                Ok(_) => println!(
+                    "Successfully reset NVML applications clocks to default on GPU {}",
+                    gpu_id
+                ),
+                Err(e) => eprintln!(
+                    "Failed to reset NVML applications clocks for GPU {}: {:?}",
+                    gpu_id, e
+                ),
+            }
         }
     }
 

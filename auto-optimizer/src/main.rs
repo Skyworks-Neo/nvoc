@@ -37,7 +37,6 @@ fn main() {
 }
 
 fn main_result() -> Result<i32, Box<dyn std::error::Error>> {
-
     let app = arg_help::get_arguments();
     check_single_dash_args(&app)?;
     let matches = app.get_matches();
@@ -106,7 +105,7 @@ fn main_result() -> Result<i32, Box<dyn std::error::Error>> {
                     eprintln!("Error: list requires NVML, but NVML init failed");
                 }
             }
-        }
+        },
         Some(("status", matches)) => {
             if let Err(e) = handle_status(&nvapi_selected, nvml_ref, &nvml_selected, matches, oformat) {
                 eprintln!("Error: {:?}", e);
@@ -130,7 +129,7 @@ fn main_result() -> Result<i32, Box<dyn std::error::Error>> {
                     }
                 }
             }
-        }
+        },
         Some(("set", matches)) => {
             match matches.subcommand() {
                 Some(("nvml", sub_matches)) => {
@@ -155,7 +154,10 @@ fn main_result() -> Result<i32, Box<dyn std::error::Error>> {
                 }
                 _ => {
                     if nvapi_init_result.is_err() {
-                        return Err("This subcommand requires NvAPI, but NvAPI initialization failed".into());
+                        return Err(
+                            "This subcommand requires NvAPI, but NvAPI initialization failed"
+                                .into(),
+                        );
                     }
 
                     handle_set_command(&nvapi_selected, matches)?;
@@ -166,57 +168,66 @@ fn main_result() -> Result<i32, Box<dyn std::error::Error>> {
                             handle_cooler_command(&nvapi_selected, matches)?;
                         }
                         Some(("legacy-clock", matches)) => {
-                            let core_mhz = matches.get_one::<String>("core").unwrap().parse::<u32>()
+                            let core_mhz = matches
+                                .get_one::<String>("core")
+                                .unwrap()
+                                .parse::<u32>()
                                 .map_err(|_| "Invalid integer for core frequency")?;
-                            let mem_mhz = matches.get_one::<String>("memory").unwrap().parse::<u32>()
+                            let mem_mhz = matches
+                                .get_one::<String>("memory")
+                                .unwrap()
+                                .parse::<u32>()
                                 .map_err(|_| "Invalid integer for memory frequency")?;
                             for gpu in &nvapi_selected {
                                 match set_legacy_clocks_nvapi(gpu, core_mhz, mem_mhz) {
-                                    Ok(_) => println!("Legacy clock applied to GPU: Core = {} MHz, Mem = {} MHz", core_mhz, mem_mhz),
+                                    Ok(_) => println!(
+                                        "Legacy clock applied to GPU: Core = {} MHz, Mem = {} MHz",
+                                        core_mhz, mem_mhz
+                                    ),
                                     Err(e) => eprintln!("Failed to apply legacy clock: {:?}", e),
                                 }
                             }
                         }
-                    Some(("vfp", matches)) => {
-                        match matches.subcommand() {
-                            Some(("export", matches)) => {
-                                let gpu = single_gpu(&nvapi_selected)?;
-                                handle_vfp_export(gpu, matches)?;
-                            }
-                            Some(("export_log", matches)) => {
-                                export_vfp_from_log(matches)?;
-                            }
-                            Some(("import", matches)) => {
-                                let gpu = single_gpu(&nvapi_selected)?;
-                                handle_vfp_import(gpu, matches)?;
-                            }
-                            Some(("single_point_adj", matches)) => {
-                                single_point_adj(&nvapi_selected, matches)?
-                            }
-                            Some(("pointwiseoc", matches)) => {
-                                handle_pointwiseoc(&nvapi_selected, matches)?
-                            }
-                            Some(("fix_result", matches)) => {
-                                let gpu = single_gpu(&nvapi_selected)?;
-                                fix_result(gpu, matches)?
-                            }
-                            Some(("autoscan", matches)) => {
-                                if let Err(e) = autoscan_gpuboostv3(&nvapi_selected, matches) {
-                                    eprintln!("Error in autoscan: {:?}", e);
+                        Some(("vfp", matches)) => {
+                            match matches.subcommand() {
+                                Some(("export", matches)) => {
+                                    let gpu = single_gpu(&nvapi_selected)?;
+                                    handle_vfp_export(gpu, matches)?;
                                 }
-                            }
-                            Some(("autoscan_legacy", matches)) => {
-                                if let Err(e) = autoscan_legacy(&nvapi_selected, matches) {
-                                    eprintln!("Error in autoscan_legacy: {:?}", e);
+                                Some(("export_log", matches)) => {
+                                    export_vfp_from_log(matches)?;
                                 }
+                                Some(("import", matches)) => {
+                                    let gpu = single_gpu(&nvapi_selected)?;
+                                    handle_vfp_import(gpu, matches)?;
+                                }
+                                Some(("single_point_adj", matches)) => {
+                                    single_point_adj(&nvapi_selected, matches)?
+                                }
+                                Some(("pointwiseoc", matches)) => {
+                                    handle_pointwiseoc(&nvapi_selected, matches)?
+                                }
+                                Some(("fix_result", matches)) => {
+                                    let gpu = single_gpu(&nvapi_selected)?;
+                                    fix_result(gpu, matches)?
+                                }
+                                Some(("autoscan", matches)) => {
+                                    if let Err(e) = autoscan_gpuboostv3(&nvapi_selected, matches) {
+                                        eprintln!("Error in autoscan: {:?}", e);
+                                    }
+                                }
+                                Some(("autoscan_legacy", matches)) => {
+                                    if let Err(e) = autoscan_legacy(&nvapi_selected, matches) {
+                                        eprintln!("Error in autoscan_legacy: {:?}", e);
+                                    }
+                                }
+                                _ => unreachable!("unknown command"),
                             }
-                            _ => unreachable!("unknown command"),
                         }
+                        None => (),
+                        _ => unreachable!("unknown command"),
                     }
-                    None => (),
-                    _ => unreachable!("unknown command"),
                 }
-            }
             }
         }
         _ => unreachable!("unknown command"),

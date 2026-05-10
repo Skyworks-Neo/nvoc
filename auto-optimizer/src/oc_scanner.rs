@@ -1,9 +1,9 @@
-use crate::basic_func::TestResolution::{R1680x1050, R640x384};
-use crate::basic_func::{get_second_largest_resolution, local_time_hms, TestResolution};
+use crate::basic_func::TestResolution::{R640x384, R1680x1050};
+use crate::basic_func::{TestResolution, get_second_largest_resolution, local_time_hms};
 use crate::error::Error;
 use crate::handle_reset_nvml_cooler_single_gpu;
 use crate::human::print_scan_separator;
-use crate::nvidia_gpu_type::{fetch_gpu_type, GpuOcParams};
+use crate::nvidia_gpu_type::{GpuOcParams, fetch_gpu_type};
 use crate::oc_get_set_function_nvapi::{
     core_reset_vfp, get_resolution, get_voltage_by_point, handle_lock_vfp,
     handle_test_voltage_limits, set_resolution, set_vfp_curve, set_vfp_curve_warn,
@@ -26,7 +26,6 @@ use std::process::{Child, Command};
 use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime};
 use std::{fs, iter};
-
 
 mod scan_shared {
     use super::*;
@@ -97,8 +96,8 @@ mod pressure_runner {
                         ClockDomain::Graphics,
                         KilohertzDelta(cfg.init_core_oc_value),
                     )]
-                        .iter()
-                        .cloned(),
+                    .iter()
+                    .cloned(),
                 )
                 .unwrap_or_else(|e| {
                     eprintln!("Warning:{}, initializing Error. GPU crashed...", e);
@@ -149,8 +148,8 @@ mod pressure_runner {
                         ClockDomain::Graphics,
                         KilohertzDelta(cfg.init_core_oc_value + fluctuation_freq),
                     )]
-                        .iter()
-                        .cloned(),
+                    .iter()
+                    .cloned(),
                 )
                 .unwrap_or_else(|e| {
                     eprintln!("Warning:{}, fluctuation Error. GPU crashed...", e);
@@ -187,10 +186,7 @@ mod pressure_runner {
                     );
                 }
                 Ok(None) => {
-                    eprintln!(
-                        "Failed to force-kill test process due to {}: {}",
-                        reason, e
-                    );
+                    eprintln!("Failed to force-kill test process due to {}: {}", reason, e);
                 }
                 Err(wait_err) => {
                     eprintln!(
@@ -263,10 +259,7 @@ mod pressure_runner {
                                     }
                                     Err(e) => {
                                         eprintln!("Warning: Failed to read v-f info: {}", e);
-                                        force_kill_process(
-                                            &mut process,
-                                            "v-f check read failure",
-                                        );
+                                        force_kill_process(&mut process, "v-f check read failure");
                                         break;
                                     }
                                 }
@@ -286,10 +279,7 @@ mod pressure_runner {
                                             "Warning: Failed to get voltage at point {}: {}",
                                             cfg.point, e
                                         );
-                                        force_kill_process(
-                                            &mut process,
-                                            "voltage fetch failure",
-                                        );
+                                        force_kill_process(&mut process, "voltage fetch failure");
                                         break;
                                     }
                                 }
@@ -332,15 +322,13 @@ mod pressure_runner {
                         eprintln!("Process finished successfully.");
                         if in_test_check_number > 0
                             && ((thrm_or_pwr_limit_number as f64 / in_test_check_number as f64)
-                            > 0.3)
+                                > 0.3)
                             && resolution != R640x384
                             && !cfg.is_mem_test
                         {
                             thrm_or_pwr_limit_flag = true;
                         }
-                        if thrm_or_pwr_limit_flag
-                            && let Some(lower_res) = resolution.downgrade()
-                        {
+                        if thrm_or_pwr_limit_flag && let Some(lower_res) = resolution.downgrade() {
                             println!("Downgrading to {:?}", lower_res);
                             resolution = lower_res;
                             continue;
@@ -583,8 +571,8 @@ fn run_legacy_short_phase(
                 ClockDomain::Graphics,
                 KilohertzDelta(*init_core_oc_value),
             )]
-                .iter()
-                .cloned(),
+            .iter()
+            .cloned(),
         )?;
 
         test_num += 1;
@@ -631,7 +619,10 @@ fn run_legacy_short_phase(
         writeln!(l, "Test result is code #{} .", test_flag)?;
 
         if test_flag != 0 {
-            println!("Short Test #{} FAILED at +{}kHz", *test_code, *init_core_oc_value);
+            println!(
+                "Short Test #{} FAILED at +{}kHz",
+                *test_code, *init_core_oc_value
+            );
             gpu.inner().set_pstates(
                 [(PState::P0, ClockDomain::Graphics, KilohertzDelta(0))]
                     .iter()
@@ -696,8 +687,8 @@ fn run_legacy_long_phase(
                 ClockDomain::Graphics,
                 KilohertzDelta(*init_core_oc_value),
             )]
-                .iter()
-                .cloned(),
+            .iter()
+            .cloned(),
         )?;
 
         *test_code += 1;
@@ -735,7 +726,10 @@ fn run_legacy_long_phase(
         writeln!(l, "Test result is code #{} .", long_flag)?;
 
         if long_flag != 0 {
-            println!("Long Test #{} FAILED at +{}kHz", *test_code, *init_core_oc_value);
+            println!(
+                "Long Test #{} FAILED at +{}kHz",
+                *test_code, *init_core_oc_value
+            );
             gpu.inner().set_pstates(
                 [(PState::P0, ClockDomain::Graphics, KilohertzDelta(0))]
                     .iter()
@@ -753,7 +747,10 @@ fn run_legacy_long_phase(
             continue;
         }
 
-        println!("Long Test #{} SUCCEEDED at +{}kHz", *test_code, *init_core_oc_value);
+        println!(
+            "Long Test #{} SUCCEEDED at +{}kHz",
+            *test_code, *init_core_oc_value
+        );
         break;
     }
 
@@ -857,7 +854,7 @@ fn run_gpuboostv3_short_phase<V: std::fmt::Display + Copy>(
             );
             while *init_core_oc_value
                 + args.common.minimum_delta_core_freq_step
-                * pow(2, args.freq_step_exp + 1 - test_num)
+                    * pow(2, args.freq_step_exp + 1 - test_num)
                 > *core_oc_safe_limit
             {
                 test_num += 1;
@@ -872,8 +869,7 @@ fn run_gpuboostv3_short_phase<V: std::fmt::Display + Copy>(
 
         println!(
             "current test progress estimated:{:.2}%",
-            (test_num + test_code - 1) as f64 / (args.freq_step_exp + test_code - 1) as f64
-                * 100.
+            (test_num + test_code - 1) as f64 / (args.freq_step_exp + test_code - 1) as f64 * 100.
         );
         println!("current test num: {}", test_num);
 
@@ -926,10 +922,7 @@ fn run_gpuboostv3_short_phase<V: std::fmt::Display + Copy>(
                 &mut test_num,
                 args.is_50_series,
             );
-            println!(
-                "Decreasing target freq by {}kHz",
-                decrease
-            );
+            println!("Decreasing target freq by {}kHz", decrease);
             if args.is_50_series {
                 println!(
                     "Additional safety: Decreasing target freq by {}kHz",
@@ -1092,8 +1085,8 @@ fn run_mem_oc_phase<V: std::fmt::Display + Copy>(
                 ClockDomain::Memory,
                 KilohertzDelta(*init_vmem_oc_value),
             )]
-                .iter()
-                .cloned(),
+            .iter()
+            .cloned(),
         )?;
 
         mem_test_num += 1;

@@ -40,11 +40,7 @@ pub fn check_single_dash_args(cmd: &clap::Command) -> Result<(), Box<dyn std::er
         let flag_name = body.split('=').next().unwrap_or(body);
 
         if known_longs.iter().any(|l| l == flag_name) {
-            return Err(format!(
-                "invalid option {:?} -- did you mean --{}?",
-                arg, body
-            )
-            .into());
+            return Err(format!("invalid option {:?} -- did you mean --{}?", arg, body).into());
         }
     }
     Ok(())

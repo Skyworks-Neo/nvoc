@@ -1,19 +1,19 @@
 use crate::autoscan_config::{FixResultConfig, VfpExportConfig};
-use crate::basic_func::{
-    get_primary_monitor_resolution, get_second_largest_resolution,
-};
+use crate::basic_func::{get_primary_monitor_resolution, get_second_largest_resolution};
 // oc_set_function
 use crate::error::Error;
-use crate::nvidia_gpu_type::{fetch_gpu_type, GpuType};
-use crate::oc_get_set_function_nvapi::{get_gpu_tdp_temp_limit, set_pstate_base_voltage, set_resolution};
+use crate::nvidia_gpu_type::{GpuType, fetch_gpu_type};
+use crate::oc_get_set_function_nvapi::{
+    get_gpu_tdp_temp_limit, set_pstate_base_voltage, set_resolution,
+};
 #[cfg(all(not(windows), not(target_os = "linux")))]
 use crate::platform::panic_windows_only;
 use crate::platform::stressor_3d_conf_path;
 use csv::{ReaderBuilder, StringRecord, WriterBuilder};
 use num_traits::abs;
 use nvapi_hi::{
-    CoolerPolicy, CoolerSettings, FanCoolerId, Kilohertz, KilohertzDelta, Microvolts,
-    Percentage, SensorThrottle,
+    CoolerPolicy, CoolerSettings, FanCoolerId, Kilohertz, KilohertzDelta, Microvolts, Percentage,
+    SensorThrottle,
 };
 use nvapi_hi::{Gpu, VfPoint, VfpDeltas, VfpTable};
 use std::cmp::min;
@@ -28,8 +28,6 @@ use std::thread::sleep;
 use std::time::Duration;
 use std::{fs, iter};
 // Adjust imports as needed
-
-
 
 fn is_std(str: &str) -> bool {
     str == "-"
@@ -66,8 +64,14 @@ fn spawn_dynamic_load_process() -> Result<Child, Error> {
 }
 
 pub fn export_single_point(point: VfPoint, matches: &clap::ArgMatches) -> Result<(), Error> {
-    let file_path = matches.get_one::<String>("output").map(|s| s.as_str()).unwrap();
-    let init_path = matches.get_one::<String>("initcsv").map(|s| s.as_str()).unwrap();
+    let file_path = matches
+        .get_one::<String>("output")
+        .map(|s| s.as_str())
+        .unwrap();
+    let init_path = matches
+        .get_one::<String>("initcsv")
+        .map(|s| s.as_str())
+        .unwrap();
 
     // Check if the destination file exists
     if !Path::new(file_path).exists() {
@@ -177,7 +181,7 @@ fn collect_vf_points(vfp: VfpTable, deltas: VfpDeltas, export_memory: bool) -> V
             assert_eq!(i0, i1);
             if export_memory {
                 point.voltage = Microvolts(point.voltage.0 * 2);
-            }// video memory voltage should × 2
+            } // video memory voltage should × 2
             VfPoint::new(point, delta)
         })
         .collect()
@@ -366,13 +370,18 @@ pub fn handle_vfp_export(gpu: &Gpu, matches: &clap::ArgMatches) -> Result<(), Er
                 Err(e) => eprintln!("Failed to set resolution: {}", e),
             },
             (None, Some(_)) => {
-                println!("Skipping game resolution sync because no stressor game config is available.")
+                println!(
+                    "Skipping game resolution sync because no stressor game config is available."
+                )
             }
             (_, None) => println!("No resolution to set."),
         }
 
         if let Err(e) = apply_autoscan_profile(gpu, matches, 30) {
-            eprintln!("apply_autoscan_profile failed: {:?}, continuing export...", e);
+            eprintln!(
+                "apply_autoscan_profile failed: {:?}, continuing export...",
+                e
+            );
         }
         // lowest all fan to maximize temp-related dynamic V-F curve effect
 
@@ -463,7 +472,10 @@ pub fn handle_vfp_import(gpu: &Gpu, matches: &clap::ArgMatches) -> Result<(), Er
     } else {
         b','
     };
-    let input = matches.get_one::<String>("input").map(|s| s.as_str()).unwrap();
+    let input = matches
+        .get_one::<String>("input")
+        .map(|s| s.as_str())
+        .unwrap();
     let status = gpu.status()?;
     let vfp = status.vfp.ok_or(Error::VfpUnsupported)?.graphics;
 
@@ -864,7 +876,10 @@ pub fn break_point_continue(
 }
 
 pub fn export_vfp_from_log(matches: &clap::ArgMatches) -> Result<(), Error> {
-    let log_filename = matches.get_one::<String>("log").map(|s| s.as_str()).unwrap();
+    let log_filename = matches
+        .get_one::<String>("log")
+        .map(|s| s.as_str())
+        .unwrap();
     let file = File::open(log_filename)?;
     let reader = BufReader::new(file);
 
@@ -1001,7 +1016,11 @@ pub fn key_point_extractor(
     }
 }
 
-pub fn apply_autoscan_profile(gpu: &Gpu, matches: &clap::ArgMatches, cooler_level: u32) -> Result<(), Error> {
+pub fn apply_autoscan_profile(
+    gpu: &Gpu,
+    matches: &clap::ArgMatches,
+    cooler_level: u32,
+) -> Result<(), Error> {
     let info = gpu.info()?;
     let gpu_name = &info.name;
 
@@ -1020,16 +1039,17 @@ pub fn apply_autoscan_profile(gpu: &Gpu, matches: &clap::ArgMatches, cooler_leve
         // 先读允许范围，再以最大 delta 写入
         let max_delta = {
             use nvapi_hi::PState;
-            gpu.inner().pstates().ok()
-                .and_then(|ps| {
-                    ps.pstates.into_iter()
-                        .find(|p| p.id == PState::P0)
-                        .and_then(|p0| {
-                            p0.base_voltages.into_iter()
-                                .find(|v| v.voltage_domain == nvapi_hi::nvapi::VoltageDomain::Core)
-                                .map(|v| v.voltage_delta.range.max)
-                        })
-                })
+            gpu.inner().pstates().ok().and_then(|ps| {
+                ps.pstates
+                    .into_iter()
+                    .find(|p| p.id == PState::P0)
+                    .and_then(|p0| {
+                        p0.base_voltages
+                            .into_iter()
+                            .find(|v| v.voltage_domain == nvapi_hi::nvapi::VoltageDomain::Core)
+                            .map(|v| v.voltage_delta.range.max)
+                    })
+            })
         };
         match max_delta {
             Some(max_uv) => {
@@ -1101,7 +1121,10 @@ pub fn apply_autoscan_profile(gpu: &Gpu, matches: &clap::ArgMatches, cooler_leve
             );
         }
         Err(e) => {
-            return Err(Error::from(format!("Failed to set Power and Temp limit: {:?}", e)));
+            return Err(Error::from(format!(
+                "Failed to set Power and Temp limit: {:?}",
+                e
+            )));
         }
     }
 
