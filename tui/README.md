@@ -53,12 +53,10 @@ uv sync --group build
 python -m pip install --upgrade pyinstaller
 ```
 
-Build using the spec (run from the repository root):
+Build using the spec (commands below are intended to run from the repository root):
 
 ```powershell
-# change to the tui folder
 Set-Location -Path "tui"
-# build using the provided spec file
 uv run pyinstaller --clean --noconfirm nvoc_tui.spec
 ```
 
