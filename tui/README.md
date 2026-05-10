@@ -40,24 +40,22 @@ uv run pytest
 
 Prerequisites:
 
-- Python 3.10 or higher
-- Recommended: use a virtual environment to isolate dependencies
+- Python 3.11 or higher
 
-Install PyInstaller (choose one):
+**Using uv (recommended):** Run the following from the repository root — it installs the build
+dependencies into the project environment and builds the executable:
 
 ```powershell
+Set-Location tui
 uv sync --group build
-```
-
-```powershell
-python -m pip install --upgrade pyinstaller
-```
-
-Build using the spec (commands below are intended to run from the repository root):
-
-```powershell
-Set-Location -Path "tui"
 uv run pyinstaller --clean --noconfirm nvoc_tui.spec
+```
+
+**Using pip:** Activate a Python 3.11+ virtual environment inside the `tui` directory, then:
+
+```bash
+pip install "pyinstaller~=6.0"
+pyinstaller --clean --noconfirm nvoc_tui.spec
 ```
 
 [Back to top](#nvoc-tui)
@@ -95,25 +93,21 @@ uv run pytest
 
 前置条件：
 
-- Python 3.10 或更高
-- 建议使用虚拟环境来隔离依赖
+- Python 3.11 或更高
 
-安装 PyInstaller（任选一种方式）：
+**使用 uv（推荐）：** 从仓库根目录执行以下命令——自动安装构建依赖并生成可执行文件：
 
 ```powershell
+Set-Location tui
 uv sync --group build
-```
-
-```powershell
-python -m pip install --upgrade pyinstaller
-```
-生成单文件 Windows 可执行程序（从仓库根目录执行下面命令）：
-
-```powershell
-# 进入 tui 目录
-Set-Location -Path "tui"
-# 使用已提供的 spec 文件构建
 uv run pyinstaller --clean --noconfirm nvoc_tui.spec
+```
+
+**使用 pip：** 在 `tui` 目录下激活 Python 3.11+ 虚拟环境，然后运行：
+
+```bash
+pip install "pyinstaller~=6.0"
+pyinstaller --clean --noconfirm nvoc_tui.spec
 ```
 
 [返回顶部](#nvoc-tui)

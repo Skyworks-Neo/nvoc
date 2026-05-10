@@ -3,7 +3,7 @@ name = "nvoc-tui"
 version = "0.1.0"
 description = "Terminal UI frontend for nvoc-auto-optimizer"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = { file = "LICENSE" }
 dependencies = [
     "plotext>=5.3.2",
