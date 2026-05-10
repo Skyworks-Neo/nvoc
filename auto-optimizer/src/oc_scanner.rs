@@ -172,7 +172,7 @@ mod pressure_runner {
         let mut count = 0;
         loop {
             let mut cmd = Command::new(app_path.clone());
-            cmd.args(arg.split_whitespace());
+            cmd.args(&args);
             if !cfg.stressor_extra_args.is_empty() {
                 cmd.args(cfg.stressor_extra_args);
             }
