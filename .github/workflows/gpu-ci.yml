@@ -84,6 +84,8 @@ jobs:
         working-directory: auto-optimizer
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -106,6 +108,8 @@ jobs:
         working-directory: cli-stressor-cuda
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
       - uses: astral-sh/setup-uv@v4
       - run: uv sync
       - name: short stress run
@@ -121,6 +125,8 @@ jobs:
         working-directory: cli-stressor-opencl
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
       - uses: astral-sh/setup-uv@v4
       - run: uv sync
       - run: uv run python test.py
@@ -135,6 +141,8 @@ jobs:
         working-directory: cli-stressor-opencl
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
       - uses: astral-sh/setup-uv@v4
       - run: uv sync
       - run: uv run python test.py

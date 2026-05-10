@@ -139,11 +139,21 @@ jobs:
       - name: uv sync (with retry)
         shell: bash
         run: |
+          # NOTE: cannot use --frozen yet. The workspace pyproject.toml at
+          # the repo root makes uv look for /uv.lock (workspace lock) even
+          # when invoked from tui/, but no root lock is committed (and one
+          # cannot be generated until cli-stressor-cuda's torch side-index
+          # is workspace-visible). Restore --frozen once a root uv.lock
+          # ships.
+          set -e
           for attempt in 1 2 3; do
-            uv sync --all-extras --dev --frozen && break
-            echo "uv sync attempt $attempt failed, retrying..."
-            sleep $((attempt * 5))
+            if uv sync --all-extras --dev; then
+              exit 0
+            fi
+            echo "uv sync attempt $attempt failed"
+            [ "$attempt" -lt 3 ] && sleep $((attempt * 5))
           done
+          exit 1
       - run: uv run pytest -q
 
   python-gui:
