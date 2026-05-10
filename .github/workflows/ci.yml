@@ -10,8 +10,55 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: detect changed components
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      auto_optimizer: ${{ steps.filter.outputs.auto_optimizer }}
+      srv: ${{ steps.filter.outputs.srv }}
+      tui: ${{ steps.filter.outputs.tui }}
+      gui: ${{ steps.filter.outputs.gui }}
+      stressor_cuda: ${{ steps.filter.outputs.stressor_cuda }}
+      stressor_opencl: ${{ steps.filter.outputs.stressor_opencl }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            auto_optimizer:
+              - 'auto-optimizer/**'
+              - 'Cargo.toml'
+              - '.github/workflows/ci.yml'
+            srv:
+              - 'srv/**'
+              - 'Cargo.toml'
+              - '.github/workflows/ci.yml'
+            tui:
+              - 'tui/**'
+              - 'pyproject.toml'
+              - '.github/workflows/ci.yml'
+            gui:
+              - 'gui/**'
+              - 'pyproject.toml'
+              - '.github/workflows/ci.yml'
+            stressor_cuda:
+              - 'cli-stressor-cuda/**'
+              - 'pyproject.toml'
+              - '.github/workflows/ci.yml'
+            stressor_opencl:
+              - 'cli-stressor-opencl/**'
+              - 'pyproject.toml'
+              - '.github/workflows/ci.yml'
+
   rust-auto-optimizer:
     name: auto-optimizer (windows)
+    needs: changes
+    if: needs.changes.outputs.auto_optimizer == 'true'
     runs-on: windows-latest
     defaults:
       run:
@@ -37,6 +84,8 @@ jobs:
 
   rust-srv:
     name: srv (windows)
+    needs: changes
+    if: needs.changes.outputs.srv == 'true'
     runs-on: windows-latest
     # srv currently imports symbols from nvoc_auto_optimizer that no
     # longer exist (handle_unlock_vfp, handle_global_oc_offset_subcommand).
@@ -64,6 +113,8 @@ jobs:
 
   python-tui:
     name: tui (${{ matrix.os }} / py${{ matrix.python }})
+    needs: changes
+    if: needs.changes.outputs.tui == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -91,6 +142,8 @@ jobs:
 
   python-gui:
     name: gui (sync + import smoke)
+    needs: changes
+    if: needs.changes.outputs.gui == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -111,16 +164,35 @@ jobs:
               importlib.import_module('config'); \
               importlib.import_module('cli_runner')"
 
-  python-stressors:
-    name: stressor compile (${{ matrix.dir }})
-    strategy:
-      fail-fast: false
-      matrix:
-        dir: [cli-stressor-cuda, cli-stressor-opencl]
+  python-stressor-cuda:
+    name: stressor compile (cli-stressor-cuda)
+    needs: changes
+    if: needs.changes.outputs.stressor_cuda == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: ${{ matrix.dir }}
+        working-directory: cli-stressor-cuda
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: byte-compile
+        run: python -m compileall -q test.py
+      - name: ruff (best-effort)
+        continue-on-error: true
+        run: |
+          python -m pip install --quiet ruff
+          ruff check test.py
+
+  python-stressor-opencl:
+    name: stressor compile (cli-stressor-opencl)
+    needs: changes
+    if: needs.changes.outputs.stressor_opencl == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cli-stressor-opencl
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -137,11 +209,13 @@ jobs:
   ci-summary:
     name: ci summary
     needs:
+      - changes
       - rust-auto-optimizer
       - rust-srv
       - python-tui
       - python-gui
-      - python-stressors
+      - python-stressor-cuda
+      - python-stressor-opencl
     if: always()
     runs-on: ubuntu-latest
     steps:

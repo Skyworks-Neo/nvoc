@@ -29,8 +29,49 @@ jobs:
     steps:
       - run: echo "gpu-ci approved for ${{ github.event_name }}"
 
-  auto-optimizer-gpu:
+  changes:
     needs: guard
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      auto_optimizer: ${{ steps.manual.outputs.auto_optimizer || steps.filter.outputs.auto_optimizer }}
+      stressor_cuda: ${{ steps.manual.outputs.stressor_cuda || steps.filter.outputs.stressor_cuda }}
+      stressor_opencl: ${{ steps.manual.outputs.stressor_opencl || steps.filter.outputs.stressor_opencl }}
+    steps:
+      - name: run all component jobs for manual dispatch
+        if: github.event_name == 'workflow_dispatch'
+        id: manual
+        run: |
+          echo "auto_optimizer=true" >> "$GITHUB_OUTPUT"
+          echo "stressor_cuda=true" >> "$GITHUB_OUTPUT"
+          echo "stressor_opencl=true" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        if: github.event_name != 'workflow_dispatch'
+        with:
+          fetch-depth: 0
+      - uses: dorny/paths-filter@v3
+        if: github.event_name != 'workflow_dispatch'
+        id: filter
+        with:
+          filters: |
+            auto_optimizer:
+              - 'auto-optimizer/**'
+              - 'srv/**'
+              - 'Cargo.toml'
+              - '.github/workflows/gpu-ci.yml'
+            stressor_cuda:
+              - 'cli-stressor-cuda/**'
+              - 'pyproject.toml'
+              - '.github/workflows/gpu-ci.yml'
+            stressor_opencl:
+              - 'cli-stressor-opencl/**'
+              - 'pyproject.toml'
+              - '.github/workflows/gpu-ci.yml'
+
+  auto-optimizer-gpu:
+    needs: changes
+    if: needs.changes.outputs.auto_optimizer == 'true'
     runs-on: [self-hosted, windows, gpu-nvidia]
     timeout-minutes: 20
     defaults:
@@ -51,7 +92,8 @@ jobs:
         run: cargo test --release --no-fail-fast -- --include-ignored gpu_readonly_
 
   cuda-stressor:
-    needs: guard
+    needs: changes
+    if: needs.changes.outputs.stressor_cuda == 'true'
     runs-on: [self-hosted, windows, gpu-nvidia, cuda]
     timeout-minutes: 30
     defaults:
@@ -65,7 +107,8 @@ jobs:
         run: uv run python test.py
 
   opencl-stressor-windows:
-    needs: guard
+    needs: changes
+    if: needs.changes.outputs.stressor_opencl == 'true'
     runs-on: [self-hosted, windows, gpu-nvidia, opencl]
     timeout-minutes: 30
     defaults:
@@ -78,7 +121,8 @@ jobs:
       - run: uv run python test.py
 
   opencl-stressor-linux:
-    needs: guard
+    needs: changes
+    if: needs.changes.outputs.stressor_opencl == 'true'
     runs-on: [self-hosted, linux, gpu-nvidia, opencl]
     timeout-minutes: 30
     defaults:
