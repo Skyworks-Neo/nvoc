@@ -1,1 +1,60 @@
-/* Autoscan pane currently uses shared row and section styles. */
+#autoscan-groups {
+    grid-size: 1 3;
+    grid-columns: 1fr;
+    grid-gutter: 1 0;
+    height: auto;
+}
+
+.narrow #autoscan-groups {
+    grid-size: 1 3;
+    grid-columns: 1fr;
+}
+
+#autoscan-mode-controls,
+#autoscan-config-controls,
+#autoscan-actions {
+    grid-gutter: 0 1;
+    height: auto;
+    align-horizontal: center;
+    grid-columns: 1fr;
+}
+
+#autoscan-mode-controls {
+    grid-size: 1 1;
+}
+
+#autoscan-config-controls {
+    grid-size: 1 8;
+}
+
+.wide #autoscan-config-controls {
+    grid-size: 2 4;
+    grid-columns: 1fr 1fr;
+}
+
+#autoscan-actions {
+    grid-size: 4 2;
+    grid-columns: 1fr 1fr 1fr 1fr;
+}
+
+.narrow #autoscan-actions {
+    grid-size: 2 4;
+    grid-columns: 1fr 1fr;
+}
+
+.wide #autoscan-actions {
+    grid-size: 7 1;
+    grid-columns: 1fr 1fr 1fr 1fr 1fr 1fr 1fr;
+}
+
+#autoscan .row {
+    align-horizontal: left;
+}
+
+#autoscan .row > Label {
+    width: 15;
+}
+
+#autoscan Select {
+    width: 13;
+}

@@ -6,6 +6,13 @@ from .base import PaneController
 
 
 class OverclockController(PaneController):
+    def activate_shortcut(self, target_id: str) -> bool:
+        try:
+            self.app.query_one(f"#{target_id}").focus()
+            return True
+        except Exception:
+            return False
+
     def prime_inputs(self) -> None:
         fields = {
             "#core-offset": str(
@@ -92,7 +99,7 @@ class OverclockController(PaneController):
         if button_id == "limits-apply":
             self.app.run_cli_action(self.limit_args())
             return True
-        if button_id == "reset-all":
+        if button_id == "reset-limits":
             self.app.run_cli_action(self.app.gpu_args() + ["reset"])
             return True
         if button_id == "fan-apply":
