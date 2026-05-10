@@ -10,6 +10,14 @@ NVOC CI runs in two tiers:
    maintainer dispatches it manually. Required before merging anything that
    changes NVAPI / NVML / stressor code paths.
 
+## Billing
+
+- Self-hosted GPU runners are not billed by GitHub Actions minute usage.
+- The hosted tier in `ci.yml` does consume GitHub-hosted runner minutes on
+  private repositories, subject to the repo owner's plan/quota.
+- Actions artifact / cache storage still counts against the owner's GitHub
+  plan, so keep retention tight on debug artifacts from GPU jobs.
+
 ## Self-hosted runner inventory
 
 We need three runners (or one host with three runner registrations under
