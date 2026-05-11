@@ -230,12 +230,42 @@ jobs:
           python -m pip install --quiet pytest
           python -m pytest -q test_non_gpu_ci.py
 
+  rust-crate-versions:
+    name: Rust duplicate-crate audit (advisory)
+    runs-on: ubuntu-latest
+    # Advisory: nvml-wrapper 0.11.0 (srv) vs 0.12.1 (auto-optimizer) is a known skew — see #12.
+    # Remove continue-on-error once both crates agree on the same version.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check Cargo.lock for duplicate crate versions
+        run: |
+          python3 << 'PYEOF'
+          import sys, re, collections
+          text = open('Cargo.lock').read()
+          blocks = re.split(r'(?=\[\[package\]\])', text)
+          seen = collections.defaultdict(set)
+          for block in blocks:
+              nm = re.search(r'name = "([^"]+)"', block)
+              vr = re.search(r'version = "([^"]+)"', block)
+              if nm and vr:
+                  seen[nm.group(1)].add(vr.group(1))
+          dupes = {k: sorted(v) for k, v in seen.items() if len(v) > 1}
+          if dupes:
+              print('Duplicate crate versions found (advisory — fix and remove continue-on-error):')
+              for name, vers in sorted(dupes.items()):
+                  print(f'  {name}: {", ".join(vers)}')
+              sys.exit(1)
+          print('No duplicate crate versions found.')
+          PYEOF
+
   ci-summary:
     name: ci summary
     needs:
       - changes
       - rust-auto-optimizer
       - rust-srv
+      - rust-crate-versions
       - python-tui
       - python-gui
       - python-stressor-cuda
