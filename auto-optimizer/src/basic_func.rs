@@ -1,8 +1,8 @@
 use crate::human;
 use crate::types::{OutputFormat, ResetSettings, VfpResetDomain};
 use nvapi_hi::{
-    Celsius, Gpu, GpuSettings, KilohertzDelta, MicrovoltsDelta, PState, Percentage,
-    allowable_result,
+    allowable_result, Celsius, Gpu, GpuSettings, KilohertzDelta, MicrovoltsDelta, PState,
+    Percentage,
 };
 use std::io;
 
@@ -10,7 +10,7 @@ use crate::conv::ConvertEnum;
 use crate::error::Error;
 use crate::oc_get_set_function_nvapi::{reset_all_pstate_base_voltages, reset_vfp_deltas};
 use clap::ArgMatches;
-use time::{OffsetDateTime, format_description::parse};
+use time::{format_description::parse, OffsetDateTime};
 
 pub fn local_time_hms() -> String {
     let format = match parse("[hour]:[minute]:[second]") {
@@ -24,59 +24,6 @@ pub fn local_time_hms() -> String {
         .unwrap_or_else(|_| String::from("??:??:??"))
 }
 
-// display_info replaced by direct Win32 API call to avoid pulling in the entire `windows` crate
-#[cfg(windows)]
-fn get_primary_screen_size_raw() -> (u32, u32) {
-    use std::ffi::c_int;
-    unsafe extern "system" {
-        fn EnumDisplaySettingsW(
-            lpsz_device_name: *const u16,
-            i_mode_num: u32,
-            lp_dev_mode: *mut u8,
-        ) -> c_int;
-    }
-    // DEVMODEW（wingdi.h）Win32 ABI 固定布局，x86-64 下：
-    //   +  0  dmDeviceName[32]  = 64 字节
-    //   + 64  dmSpecVersion     = 2 字节
-    //   + 66  dmDriverVersion   = 2 字节
-    //   + 68  dmSize            = 2 字节  ← OFFSET_DM_SIZE
-    //   + 70  dmDriverExtra     = 2 字节
-    //   + 72  dmFields          = 4 字节
-    //   +76~+171  union（显示模式字段，96 字节）
-    //   +172  dmPelsWidth       = 4 字节  ← OFFSET_PELS_WIDTH
-    //   +176  dmPelsHeight      = 4 字节  ← OFFSET_PELS_HEIGHT
-    //   …（后续字段省略，总结构体大小 220 字节）
-    // 参考：https://learn.microsoft.com/en-us/windows/win32/api/wingdi/ns-wingdi-devmodew
-    const DEVMODEW_SIZE: usize = 220;
-    const OFFSET_DM_SIZE: usize = 68;
-    const OFFSET_PELS_WIDTH: usize = 172;
-    const OFFSET_PELS_HEIGHT: usize = 176;
-    const ENUM_CURRENT_SETTINGS: u32 = 0xFFFF_FFFF;
-    #[repr(C, align(4))]
-    struct AlignedBuf([u8; 256]);
-    unsafe {
-        let mut aligned = AlignedBuf([0u8; 256]);
-        let buf = &mut aligned.0;
-        buf[OFFSET_DM_SIZE] = DEVMODEW_SIZE as u8;
-        buf[OFFSET_DM_SIZE + 1] = (DEVMODEW_SIZE >> 8) as u8;
-        let ret = EnumDisplaySettingsW(std::ptr::null(), ENUM_CURRENT_SETTINGS, buf.as_mut_ptr());
-        if ret != 0 {
-            let w = u32::from_le_bytes(
-                buf[OFFSET_PELS_WIDTH..OFFSET_PELS_WIDTH + 4]
-                    .try_into()
-                    .unwrap(),
-            );
-            let h = u32::from_le_bytes(
-                buf[OFFSET_PELS_HEIGHT..OFFSET_PELS_HEIGHT + 4]
-                    .try_into()
-                    .unwrap(),
-            );
-            (w, h)
-        } else {
-            (0, 0)
-        }
-    }
-}
 use nvml_wrapper::enum_wrappers::device::{Clock, TemperatureSensor};
 use nvml_wrapper::Nvml;
 use std::str::FromStr;
@@ -108,131 +55,6 @@ impl GpuSelector {
     fn specs(&self) -> Option<&[String]> {
         self.0.as_deref()
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TestResolution {
-    R3600x1920,
-    R3072x1600,
-    R2560x1440,
-    R2048x1536,
-    R1920x1200,
-    R1680x1050,
-    R1440x1080,
-    R1200x960,
-    R1080x864,
-    R960x800,
-    R864x640,
-    R800x600,
-    R768x576,
-    R720x480,
-    R640x384,
-    R576x360,
-    R400x300,
-}
-
-impl TestResolution {
-    // Get the next lower resolution
-    pub fn downgrade(self) -> Option<Self> {
-        match self {
-            TestResolution::R3600x1920 => Some(TestResolution::R3072x1600),
-            TestResolution::R3072x1600 => Some(TestResolution::R2560x1440),
-            TestResolution::R2560x1440 => Some(TestResolution::R2048x1536),
-            TestResolution::R2048x1536 => Some(TestResolution::R1920x1200),
-            TestResolution::R1920x1200 => Some(TestResolution::R1680x1050),
-            TestResolution::R1680x1050 => Some(TestResolution::R1440x1080),
-            TestResolution::R1440x1080 => Some(TestResolution::R1200x960),
-            TestResolution::R1200x960 => Some(TestResolution::R1080x864),
-            TestResolution::R1080x864 => Some(TestResolution::R960x800),
-            TestResolution::R960x800 => Some(TestResolution::R864x640),
-            TestResolution::R864x640 => Some(TestResolution::R800x600),
-            TestResolution::R800x600 => Some(TestResolution::R768x576),
-            TestResolution::R768x576 => Some(TestResolution::R720x480),
-            TestResolution::R720x480 => Some(TestResolution::R640x384),
-            TestResolution::R640x384 => Some(TestResolution::R576x360),
-            TestResolution::R576x360 => Some(TestResolution::R400x300),
-            TestResolution::R400x300 => None,
-        }
-    }
-
-    // Get width and height as values
-    pub fn dimensions(self) -> (u32, u32) {
-        match self {
-            TestResolution::R3600x1920 => (3600, 1920),
-            TestResolution::R3072x1600 => (3072, 1600),
-            TestResolution::R2560x1440 => (2560, 1440),
-            TestResolution::R2048x1536 => (2048, 1536),
-            TestResolution::R1920x1200 => (1920, 1200),
-            TestResolution::R1680x1050 => (1680, 1050),
-            TestResolution::R1440x1080 => (1440, 1080),
-            TestResolution::R1200x960 => (1200, 960),
-            TestResolution::R1080x864 => (1080, 864),
-            TestResolution::R960x800 => (960, 800),
-            TestResolution::R864x640 => (864, 640),
-            TestResolution::R800x600 => (800, 600),
-            TestResolution::R768x576 => (768, 576),
-            TestResolution::R720x480 => (720, 480),
-            TestResolution::R640x384 => (640, 384),
-            TestResolution::R576x360 => (576, 360),
-            TestResolution::R400x300 => (400, 300),
-        }
-    }
-    // Check if the resolution fits within the given width and height
-    pub fn fits_in(self, width: u32, height: u32) -> bool {
-        let (res_width, res_height) = self.dimensions();
-        res_width < width && res_height < height
-    }
-}
-
-pub fn get_primary_monitor_resolution() -> (u32, u32) {
-    #[cfg(windows)]
-    {
-        let (w, h) = get_primary_screen_size_raw();
-        if w > 0 && h > 0 {
-            return (w, h);
-        }
-    }
-    // Default resolution in case API call fails
-    (1920, 1080)
-}
-
-// Function to determine the second-largest test resolution that fits the primary monitor
-pub fn get_second_largest_resolution() -> Option<TestResolution> {
-    // Get the primary display resolution
-    let (width, height) = get_primary_monitor_resolution();
-
-    // Define all test resolutions in descending order of size
-    let resolutions = [
-        TestResolution::R3600x1920,
-        TestResolution::R3072x1600,
-        TestResolution::R2560x1440,
-        TestResolution::R2048x1536,
-        TestResolution::R1920x1200,
-        TestResolution::R1680x1050,
-        TestResolution::R1440x1080,
-        TestResolution::R1200x960,
-        TestResolution::R1080x864,
-        TestResolution::R960x800,
-        TestResolution::R864x640,
-        TestResolution::R800x600,
-        TestResolution::R768x576,
-        TestResolution::R720x480,
-        TestResolution::R640x384,
-        TestResolution::R576x360,
-        TestResolution::R400x300,
-    ];
-
-    // Find the largest resolution that fits
-    let mut last_fitting_resolution: Option<TestResolution> = None;
-    for resolution in resolutions.iter() {
-        if resolution.fits_in(width, height) {
-            if let Some(last) = last_fitting_resolution {
-                return Some(last); // Return the second-largest fitting resolution
-            }
-            last_fitting_resolution = Some(*resolution); // Save the largest fitting resolution
-        }
-    }
-    None
 }
 
 // GpuType、GpuOcParams、detect_gpu_type、fetch_gpu_type 已迁移至 nvidia_gpu_type.rs
@@ -298,7 +120,10 @@ pub fn select_gpus<'a>(
                         result.push(g);
                         continue;
                     } else {
-                        return Err(Error::Custom(format!("no GPU matches --gpu {}; use `nvoc list` to see available indices", input)));
+                        return Err(Error::Custom(format!(
+                            "no GPU matches --gpu {}; use `nvoc list` to see available indices",
+                            input
+                        )));
                     }
                 }
 
@@ -315,7 +140,10 @@ pub fn select_gpus<'a>(
                     continue;
                 }
 
-                return Err(Error::Custom(format!("no GPU matches --gpu {}; use `nvoc list` to see available indices", input)));
+                return Err(Error::Custom(format!(
+                    "no GPU matches --gpu {}; use `nvoc list` to see available indices",
+                    input
+                )));
             }
             result
         }
@@ -358,10 +186,7 @@ pub fn get_sorted_gpu_ids_nvml(nvml: &Nvml) -> Result<Vec<u32>, Error> {
     Ok(gpu_ids)
 }
 
-pub fn select_gpu_ids(
-    gpu_ids: &[u32],
-    selector: &GpuSelector,
-) -> anyhow::Result<Vec<u32>, Error> {
+pub fn select_gpu_ids(gpu_ids: &[u32], selector: &GpuSelector) -> anyhow::Result<Vec<u32>, Error> {
     let selected = match selector.specs() {
         Some(specs) => {
             let inputs = specs
@@ -377,7 +202,10 @@ pub fn select_gpu_ids(
                         result.push(*id);
                         continue;
                     } else {
-                        return Err(Error::Custom(format!("no GPU matches --gpu {}; use `nvoc list` to see available indices", input)));
+                        return Err(Error::Custom(format!(
+                            "no GPU matches --gpu {}; use `nvoc list` to see available indices",
+                            input
+                        )));
                     }
                 }
 
@@ -392,7 +220,10 @@ pub fn select_gpu_ids(
                     continue;
                 }
 
-                return Err(Error::Custom(format!("no GPU matches --gpu {}; use `nvoc list` to see available indices", input)));
+                return Err(Error::Custom(format!(
+                    "no GPU matches --gpu {}; use `nvoc list` to see available indices",
+                    input
+                )));
             }
             result
         }
@@ -592,7 +423,9 @@ fn print_nvml_info(nvml: &Nvml, selected_ids: &[u32]) -> Result<(), Error> {
 
         let name = dev.name().unwrap_or_else(|_| "<unknown>".to_string());
         let uuid = dev.uuid().unwrap_or_else(|_| "<unknown>".to_string());
-        let vbios = dev.vbios_version().unwrap_or_else(|_| "<unknown>".to_string());
+        let vbios = dev
+            .vbios_version()
+            .unwrap_or_else(|_| "<unknown>".to_string());
 
         human::print_scan_separator();
         println!("GPU {} (NVML): {}", i, name);
@@ -814,8 +647,7 @@ fn print_nvml_status(nvml: &Nvml, selected_ids: &[u32]) -> Result<(), Error> {
 }
 
 pub fn handle_get(gpus: &[&Gpu], oformat: OutputFormat) -> Result<(), Error> {
-    let nvml = Nvml::init()
-        .map_err(|e| Error::Custom(format!("NVML init failed: {:?}", e)))?;
+    let nvml = Nvml::init().map_err(|e| Error::Custom(format!("NVML init failed: {:?}", e)))?;
 
     match oformat {
         OutputFormat::Human => {
@@ -833,12 +665,14 @@ pub fn handle_get(gpus: &[&Gpu], oformat: OutputFormat) -> Result<(), Error> {
                     let power_limit =
                         crate::oc_get_set_function_nvml::query_nvml_power_watts(&nvml, gpu_id);
                     let temp_thresholds =
-                        crate::oc_get_set_function_nvml::get_nvml_temperature_thresholds(&nvml, gpu_id);
-                    let pstate_info = crate::oc_get_set_function_nvml::get_nvml_pstate_info(&nvml, gpu_id);
+                        crate::oc_get_set_function_nvml::get_nvml_temperature_thresholds(
+                            &nvml, gpu_id,
+                        );
+                    let pstate_info =
+                        crate::oc_get_set_function_nvml::get_nvml_pstate_info(&nvml, gpu_id);
                     let app_clocks =
                         crate::oc_get_set_function_nvml::get_nvml_supported_applications_clocks(
-                            &nvml,
-                            gpu_id,
+                            &nvml, gpu_id,
                         );
                     let min_max_fan_speed =
                         crate::oc_get_set_function_nvml::get_nvml_min_max_fan_speed(&nvml, gpu_id);
@@ -991,7 +825,6 @@ pub fn handle_get(gpus: &[&Gpu], oformat: OutputFormat) -> Result<(), Error> {
 }
 
 pub fn handle_reset(gpus: &[&Gpu], matches: &ArgMatches) -> Result<(), Error> {
-
     let parse_settings = |key: &str| -> Result<Vec<ResetSettings>, Error> {
         matches
             .get_many::<String>(key)
@@ -1225,8 +1058,7 @@ fn handle_nvapi(gpus: &[&Gpu], matches: &ArgMatches) -> Result<(), Error> {
             first_pstate
         };
 
-        let nvml = Nvml::init()
-            .map_err(|e| Error::Custom(format!("NVML init failed: {:?}", e)))?;
+        let nvml = Nvml::init().map_err(|e| Error::Custom(format!("NVML init failed: {:?}", e)))?;
         for gpu in gpus {
             let gpu_info = gpu.info()?;
             match crate::oc_get_set_function_nvapi::set_nvapi_pstate_lock(
@@ -1316,8 +1148,7 @@ fn handle_nvapi(gpus: &[&Gpu], matches: &ArgMatches) -> Result<(), Error> {
 }
 
 pub fn handle_nvml_with_ids(gpu_ids: &[u32], matches: &ArgMatches) -> Result<(), Error> {
-    let nvml = Nvml::init()
-        .map_err(|e| Error::Custom(format!("NVML init failed: {:?}", e)))?;
+    let nvml = Nvml::init().map_err(|e| Error::Custom(format!("NVML init failed: {:?}", e)))?;
     let nvml_pstate_val = matches
         .get_one::<String>("pstate")
         .map(|s| s.as_str())
@@ -1536,8 +1367,7 @@ fn handle_nvml(gpus: &[&Gpu], matches: &ArgMatches) -> Result<(), Error> {
 }
 
 pub fn handle_nvml_cooler_with_ids(gpu_ids: &[u32], matches: &ArgMatches) -> Result<(), Error> {
-    let nvml = Nvml::init()
-        .map_err(|e| Error::Custom(format!("NVML init failed: {:?}", e)))?;
+    let nvml = Nvml::init().map_err(|e| Error::Custom(format!("NVML init failed: {:?}", e)))?;
     let cooler_id = matches
         .get_one::<String>("id")
         .map(|s| s.as_str())
@@ -1554,8 +1384,8 @@ pub fn handle_nvml_cooler_with_ids(gpu_ids: &[u32], matches: &ArgMatches) -> Res
         .ok_or_else(|| Error::from("Missing required argument: --level <LEVEL>"))?;
 
     for &gpu_id in gpu_ids {
-        let fan_count =
-            crate::oc_get_set_function_nvml::get_nvml_num_fans(&nvml, gpu_id).ok_or_else(|| {
+        let fan_count = crate::oc_get_set_function_nvml::get_nvml_num_fans(&nvml, gpu_id)
+            .ok_or_else(|| {
                 Error::Custom(format!("Failed to query NVML fan count for GPU {}", gpu_id))
             })?;
 
@@ -1574,7 +1404,9 @@ pub fn handle_nvml_cooler_with_ids(gpu_ids: &[u32], matches: &ArgMatches) -> Res
         };
 
         for fan_idx in fan_indices {
-            match crate::oc_get_set_function_nvml::set_fan_speed(&nvml, gpu_id, fan_idx, policy, level) {
+            match crate::oc_get_set_function_nvml::set_fan_speed(
+                &nvml, gpu_id, fan_idx, policy, level,
+            ) {
                 Ok(_) => println!(
                     "Successfully applied NVML cooler policy {:?}, level {}% to GPU {} fan {}",
                     policy,
@@ -1609,8 +1441,7 @@ pub fn handle_reset_nvml_cooler(gpus: &[&Gpu], matches: &ArgMatches) -> Result<(
         .map(|s| s.as_str())
         .unwrap_or("all");
 
-    let nvml = Nvml::init()
-        .map_err(|e| Error::Custom(format!("NVML init failed: {:?}", e)))?;
+    let nvml = Nvml::init().map_err(|e| Error::Custom(format!("NVML init failed: {:?}", e)))?;
     for gpu in gpus {
         handle_reset_nvml_cooler_single_gpu(&nvml, gpu, cooler_id)?;
     }

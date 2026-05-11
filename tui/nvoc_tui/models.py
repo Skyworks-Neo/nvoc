@@ -46,13 +46,8 @@ class CliLocation:
 @dataclass(slots=True)
 class AutoscanSettings:
     mode: str = "standard"
-    test_exe: str = r".\test\test.bat"
-    score_threshold: str = "98.5"
-    timeout_loops: str = "30"
     output_csv: str = r".\ws\vfp-tem.csv"
     init_csv: str = r".\ws\vfp-init.csv"
-    log_file: str = r".\ws\vfp.log"
-    score_path: str = r"..\yiji_tb\result.xml"
     bsod_recovery: str = ""
 
     @classmethod
@@ -67,13 +62,8 @@ class AutoscanSettings:
     def to_dict(self) -> dict[str, str]:
         return {
             "mode": self.mode,
-            "test_exe": self.test_exe,
-            "score_threshold": self.score_threshold,
-            "timeout_loops": self.timeout_loops,
             "output_csv": self.output_csv,
             "init_csv": self.init_csv,
-            "log_file": self.log_file,
-            "score_path": self.score_path,
             "bsod_recovery": self.bsod_recovery,
         }
 
