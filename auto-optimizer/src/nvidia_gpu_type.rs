@@ -62,7 +62,9 @@ impl fmt::Display for GpuType {
             GpuType::Mobile9Series => write!(f, "9 series mobile detected"),
             GpuType::Desktop9Series => write!(f, "9 series desktop detected"),
             GpuType::ComputationVolta => write!(f, "Volta series computational card detected"),
-            GpuType::WorkstationBlackwell => write!(f, "Blackwell series workstation card detected"),
+            GpuType::WorkstationBlackwell => {
+                write!(f, "Blackwell series workstation card detected")
+            }
             GpuType::WorkstationLovelace => write!(f, "Lovelace series workstation card detected"),
             GpuType::WorkstationAmpere => write!(f, "Ampere series workstation card detected"),
             GpuType::WorkstationTuring => write!(f, "Turing series workstation card detected"),
@@ -73,7 +75,9 @@ impl fmt::Display for GpuType {
             GpuType::ServerAmpere => write!(f, "Ampere series server card detected"),
             GpuType::ServerVolta => write!(f, "Volta series server card detected"),
             GpuType::ServerPascal => write!(f, "Pascal series server card detected"),
-            GpuType::ServerTuringTesla => write!(f, "Turing Tesla series server card (e.g. T4) detected"),
+            GpuType::ServerTuringTesla => {
+                write!(f, "Turing Tesla series server card (e.g. T4) detected")
+            }
             GpuType::Unknown => write!(f, "Unknown"),
         }
     }
@@ -84,10 +88,26 @@ impl fmt::Display for GpuType {
 /// 根据 GPU 名称 + codename 字符串判定世代
 pub fn detect_gpu_type(gpu_name: &str) -> GpuType {
     let is_rtx_a = gpu_name.contains("RTX A");
-    let is_rtx_professional = gpu_name.contains("RTX") && (gpu_name.contains("2000") || gpu_name.contains("3000") || gpu_name.contains("4000") || gpu_name.contains("5000") || gpu_name.contains("6000")) && !gpu_name.contains("GeForce");
+    let is_rtx_professional = gpu_name.contains("RTX")
+        && (gpu_name.contains("2000")
+            || gpu_name.contains("3000")
+            || gpu_name.contains("4000")
+            || gpu_name.contains("5000")
+            || gpu_name.contains("6000"))
+        && !gpu_name.contains("GeForce");
     let is_quadro = gpu_name.contains("Quadro");
     let is_tesla = gpu_name.contains("Tesla");
-    let is_server = is_tesla || gpu_name.contains("H100") || gpu_name.contains("H800") || gpu_name.contains("A100") || gpu_name.contains("A800") || gpu_name.contains("B100") || gpu_name.contains("B200") || gpu_name.contains("V100") || gpu_name.contains("P100") || gpu_name.contains("L40") || gpu_name.contains("L4");
+    let is_server = is_tesla
+        || gpu_name.contains("H100")
+        || gpu_name.contains("H800")
+        || gpu_name.contains("A100")
+        || gpu_name.contains("A800")
+        || gpu_name.contains("B100")
+        || gpu_name.contains("B200")
+        || gpu_name.contains("V100")
+        || gpu_name.contains("P100")
+        || gpu_name.contains("L40")
+        || gpu_name.contains("L4");
 
     if gpu_name.contains("GB") {
         if is_server {

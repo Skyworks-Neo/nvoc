@@ -44,11 +44,9 @@ fn require_elevated() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     #[cfg(windows)]
-    return Err(
-        "This command requires Administrator privileges. \
+    return Err("This command requires Administrator privileges. \
          Please re-run nvoc from an elevated command prompt."
-            .into(),
-    );
+        .into());
     #[cfg(not(windows))]
     Err("This command requires root privileges. \
          Please re-run nvoc with sudo."
@@ -103,30 +101,35 @@ fn main_result() -> Result<i32, Box<dyn std::error::Error>> {
         .unwrap_or_default();
 
     // Pre-select for the NVML path (empty when NVML is unavailable).
-    let nvml_selected: Vec<u32> = select_gpu_ids(&nvml_ids_all, &selector)
-        .unwrap_or_default();
+    let nvml_selected: Vec<u32> = select_gpu_ids(&nvml_ids_all, &selector).unwrap_or_default();
 
     match matches.subcommand() {
         Some(("info", _matches)) => {
             let output_file = _matches.get_one::<String>("output").map(|s| s.as_str());
-            if let Err(e) = handle_info(&nvapi_selected, nvml_ref, &nvml_selected, oformat, output_file) {
+            if let Err(e) = handle_info(
+                &nvapi_selected,
+                nvml_ref,
+                &nvml_selected,
+                oformat,
+                output_file,
+            ) {
                 eprintln!("Error: {:?}", e);
             }
         }
-        Some(("list", _matches)) => {
-            match nvml_ref {
-                Some(nvml) => {
-                    if let Err(e) = handle_list(nvml) {
-                        eprintln!("Error: {:?}", e);
-                    }
+        Some(("list", _matches)) => match nvml_ref {
+            Some(nvml) => {
+                if let Err(e) = handle_list(nvml) {
+                    eprintln!("Error: {:?}", e);
                 }
-                None => {
-                    eprintln!("Error: list requires NVML, but NVML init failed");
-                }
+            }
+            None => {
+                eprintln!("Error: list requires NVML, but NVML init failed");
             }
         },
         Some(("status", matches)) => {
-            if let Err(e) = handle_status(&nvapi_selected, nvml_ref, &nvml_selected, matches, oformat) {
+            if let Err(e) =
+                handle_status(&nvapi_selected, nvml_ref, &nvml_selected, matches, oformat)
+            {
                 eprintln!("Error: {:?}", e);
             }
         }
@@ -149,30 +152,26 @@ fn main_result() -> Result<i32, Box<dyn std::error::Error>> {
                     }
                 }
             }
-        },
+        }
         Some(("set", matches)) => {
             require_elevated()?;
             match matches.subcommand() {
-                Some(("nvml", sub_matches)) => {
-                    match nvml_ref {
-                        Some(_) => {
-                            handle_nvml_with_ids(&nvml_selected, sub_matches)?;
-                        }
-                        None => {
-                            return Err(format!("NVML backend unavailable").into());
-                        }
+                Some(("nvml", sub_matches)) => match nvml_ref {
+                    Some(_) => {
+                        handle_nvml_with_ids(&nvml_selected, sub_matches)?;
                     }
-                }
-                Some(("nvml-cooler", sub_matches)) => {
-                    match nvml_ref {
-                        Some(_) => {
-                            handle_nvml_cooler_with_ids(&nvml_selected, sub_matches)?;
-                        }
-                        None => {
-                            return Err(format!("NVML backend unavailable").into());
-                        }
+                    None => {
+                        return Err(format!("NVML backend unavailable").into());
                     }
-                }
+                },
+                Some(("nvml-cooler", sub_matches)) => match nvml_ref {
+                    Some(_) => {
+                        handle_nvml_cooler_with_ids(&nvml_selected, sub_matches)?;
+                    }
+                    None => {
+                        return Err(format!("NVML backend unavailable").into());
+                    }
+                },
                 _ => {
                     if nvapi_init_result.is_err() {
                         return Err(
@@ -201,42 +200,40 @@ fn main_result() -> Result<i32, Box<dyn std::error::Error>> {
                                 }
                             }
                         }
-                        Some(("vfp", matches)) => {
-                            match matches.subcommand() {
-                                Some(("export", matches)) => {
-                                    let gpu = single_gpu(&nvapi_selected)?;
-                                    handle_vfp_export(gpu, matches)?;
-                                }
-                                Some(("export_log", matches)) => {
-                                    export_vfp_from_log(matches)?;
-                                }
-                                Some(("import", matches)) => {
-                                    let gpu = single_gpu(&nvapi_selected)?;
-                                    handle_vfp_import(gpu, matches)?;
-                                }
-                                Some(("single_point_adj", matches)) => {
-                                    single_point_adj(&nvapi_selected, matches)?
-                                }
-                                Some(("pointwiseoc", matches)) => {
-                                    handle_pointwiseoc(&nvapi_selected, matches)?
-                                }
-                                Some(("fix_result", matches)) => {
-                                    let gpu = single_gpu(&nvapi_selected)?;
-                                    fix_result(gpu, matches)?
-                                }
-                                Some(("autoscan", matches)) => {
-                                    if let Err(e) = autoscan_gpuboostv3(&nvapi_selected, matches) {
-                                        eprintln!("Error in autoscan: {:?}", e);
-                                    }
-                                }
-                                Some(("autoscan_legacy", matches)) => {
-                                    if let Err(e) = autoscan_legacy(&nvapi_selected, matches) {
-                                        eprintln!("Error in autoscan_legacy: {:?}", e);
-                                    }
-                                }
-                                _ => unreachable!("unknown command"),
+                        Some(("vfp", matches)) => match matches.subcommand() {
+                            Some(("export", matches)) => {
+                                let gpu = single_gpu(&nvapi_selected)?;
+                                handle_vfp_export(gpu, matches)?;
                             }
-                        }
+                            Some(("export_log", matches)) => {
+                                export_vfp_from_log(matches)?;
+                            }
+                            Some(("import", matches)) => {
+                                let gpu = single_gpu(&nvapi_selected)?;
+                                handle_vfp_import(gpu, matches)?;
+                            }
+                            Some(("single_point_adj", matches)) => {
+                                single_point_adj(&nvapi_selected, matches)?
+                            }
+                            Some(("pointwiseoc", matches)) => {
+                                handle_pointwiseoc(&nvapi_selected, matches)?
+                            }
+                            Some(("fix_result", matches)) => {
+                                let gpu = single_gpu(&nvapi_selected)?;
+                                fix_result(gpu, matches)?
+                            }
+                            Some(("autoscan", matches)) => {
+                                if let Err(e) = autoscan_gpuboostv3(&nvapi_selected, matches) {
+                                    eprintln!("Error in autoscan: {:?}", e);
+                                }
+                            }
+                            Some(("autoscan_legacy", matches)) => {
+                                if let Err(e) = autoscan_legacy(&nvapi_selected, matches) {
+                                    eprintln!("Error in autoscan_legacy: {:?}", e);
+                                }
+                            }
+                            _ => unreachable!("unknown command"),
+                        },
                         None => (),
                         _ => unreachable!("unknown command"),
                     }

@@ -36,7 +36,9 @@ fn main() -> windows_service::Result<()> {
         ServiceAccess::START | ServiceAccess::QUERY_STATUS | ServiceAccess::CHANGE_CONFIG,
     )?;
     println!("Service installed successfully.");
-    _service.set_description("nvoc_service for connecting and communicating with nvapi & nvml driver")?;
+    _service.set_description(
+        "nvoc_service for connecting and communicating with nvapi & nvml driver",
+    )?;
     Ok(())
 }
 

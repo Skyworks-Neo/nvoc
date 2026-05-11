@@ -6,7 +6,7 @@
 //!
 //! Replace the `SERVICE_NAME` placeholder above with the name of the service that the program
 //! should notify.
-//! 
+//!
 // extern crate windows_service;
 
 #[cfg(windows)]
