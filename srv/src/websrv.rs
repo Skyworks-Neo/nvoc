@@ -13,6 +13,11 @@ const TEMP_LIMIT_MAX: u32 = 120;
 const OC_DELTA_MIN: i32 = -2_000_000;
 const OC_DELTA_MAX: i32 = 2_000_000;
 
+// Upper bound on the GPU index accepted from the `?gpu=` query parameter (#91).
+// No consumer or workstation system supports more GPUs than this, so anything
+// above this value is either a misconfiguration or an attack probe.
+const GPU_INDEX_MAX: usize = 63;
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct NVOCServiceConfig {
     pub vfp_lock_point: usize,
@@ -63,6 +68,22 @@ fn parse_query(query: &str) -> HashMap<String, String> {
             Some((percent_decode(key), percent_decode(val)))
         })
         .collect()
+}
+
+/// CSRF guard for state-mutating endpoints (#90).
+///
+/// Requires both:
+/// 1. HTTP POST — rejects browser navigations and `<img>`/`<form>` GET probes.
+/// 2. `X-Requested-With: XMLHttpRequest` — a non-simple header browsers refuse to send
+///    cross-origin without a CORS preflight, making CSRF from any tab impossible.
+fn is_mutation_request(request: &tiny_http::Request) -> bool {
+    if request.method() != &tiny_http::Method::Post {
+        return false;
+    }
+    request.headers().iter().any(|h| {
+        h.field.equiv("x-requested-with")
+            && h.value.as_str().eq_ignore_ascii_case("xmlhttprequest")
+    })
 }
 
 /// Send a response, logging on failure (tiny_http returns an error if the client disconnected).
@@ -120,6 +141,17 @@ pub fn start_http_server(
             }
 
             "/set_temp_limit_soft_vfp" => {
+                if !is_mutation_request(&request) {
+                    warn!("Rejected non-POST or missing X-Requested-With on /set_temp_limit_soft_vfp");
+                    respond(
+                        request,
+                        Response::from_string(
+                            "Method Not Allowed: use POST with X-Requested-With: XMLHttpRequest",
+                        )
+                        .with_status_code(405),
+                    );
+                    continue;
+                }
                 // Accepts: ?limit=<u32>   Range: TEMP_LIMIT_MIN–TEMP_LIMIT_MAX °C
                 let response = match params.get("limit").and_then(|s| s.parse::<u32>().ok()) {
                     Some(limit) if (TEMP_LIMIT_MIN..=TEMP_LIMIT_MAX).contains(&limit) => {
@@ -155,6 +187,17 @@ pub fn start_http_server(
             }
 
             "/oc_global" => {
+                if !is_mutation_request(&request) {
+                    warn!("Rejected non-POST or missing X-Requested-With on /oc_global");
+                    respond(
+                        request,
+                        Response::from_string(
+                            "Method Not Allowed: use POST with X-Requested-With: XMLHttpRequest",
+                        )
+                        .with_status_code(405),
+                    );
+                    continue;
+                }
                 // Accepts: ?oc=<i32 kHz delta>[&gpu=<usize index>]
                 // gpu defaults to 0 when absent; a present but non-numeric value is rejected.
                 let gpu_index: usize = match params.get("gpu") {
@@ -175,6 +218,18 @@ pub fn start_http_server(
                         }
                     },
                 };
+
+                if gpu_index > GPU_INDEX_MAX {
+                    warn!("Rejected out-of-range 'gpu' parameter: {}", gpu_index);
+                    respond(
+                        request,
+                        Response::from_string(format!(
+                            "Bad request: 'gpu' must be 0–{GPU_INDEX_MAX}"
+                        ))
+                        .with_status_code(400),
+                    );
+                    continue;
+                }
 
                 let response = match params.get("oc").and_then(|s| s.parse::<i32>().ok()) {
                     Some(freq_val) if (OC_DELTA_MIN..=OC_DELTA_MAX).contains(&freq_val) => {

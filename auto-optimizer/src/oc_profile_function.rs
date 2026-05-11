@@ -59,15 +59,34 @@ fn spawn_dynamic_load_process() -> Result<Child, Error> {
     panic_windows_only("dynamic VFP export")
 }
 
+/// Reject paths containing `..` to prevent directory traversal when running with elevated
+/// privileges.
+fn reject_dotdot(path: &str) -> Result<(), Error> {
+    use std::path::Component;
+    if Path::new(path)
+        .components()
+        .any(|c| c == Component::ParentDir)
+    {
+        return Err(Error::Custom(format!(
+            "path '{}' contains '..'; refusing to write outside working directory",
+            path
+        )));
+    }
+    Ok(())
+}
+
 pub fn export_single_point(point: VfPoint, matches: &clap::ArgMatches) -> Result<(), Error> {
-    let file_path = matches
+    let file_path: &str = matches
         .get_one::<String>("output")
-        .map(|s| s.as_str())
-        .unwrap();
-    let init_path = matches
+        .ok_or_else(|| Error::Custom("missing --output argument".to_string()))?
+        .as_str();
+    let init_path: &str = matches
         .get_one::<String>("initcsv")
-        .map(|s| s.as_str())
-        .unwrap();
+        .ok_or_else(|| Error::Custom("missing --initcsv argument".to_string()))?
+        .as_str();
+
+    reject_dotdot(file_path)?;
+    reject_dotdot(init_path)?;
 
     // Check if the destination file exists
     if !Path::new(file_path).exists() {
@@ -127,7 +146,12 @@ pub fn export_single_point(point: VfPoint, matches: &clap::ArgMatches) -> Result
         if columns.first().map(String::as_str) == Some(voltage.as_str()) && columns.len() > 3 {
             // Convert parts[2] and parts[3] to integers safely before mutating columns[2].
             let col3_value: i32 = columns[3].parse().unwrap_or(0);
-            let sum = new_delta + col3_value;
+            let sum = new_delta.checked_add(col3_value).ok_or_else(|| {
+                Error::Custom(format!(
+                    "CSV row overflow: delta {} + col3 {} overflows i32",
+                    new_delta, col3_value
+                ))
+            })?;
             columns[1] = sum.to_string();
             columns[2] = delta;
         }
@@ -171,12 +195,18 @@ fn collect_vf_points(vfp: VfpTable, deltas: VfpDeltas, export_memory: bool) -> V
     points
         .into_iter()
         .zip(deltas)
-        .map(|((i0, mut point), (i1, delta))| {
-            assert_eq!(i0, i1);
+        .filter_map(|((i0, mut point), (i1, delta))| {
+            // Driver inconsistency: VFP table and delta table index mismatch.
+            // Log a warning and skip the point instead of aborting (panic="abort" in release
+            // would kill the process with no diagnostic output).
+            if i0 != i1 {
+                eprintln!("warning: VFP index mismatch ({i0} ≠ {i1}), skipping point");
+                return None;
+            }
             if export_memory {
                 point.voltage = Microvolts(point.voltage.0 * 2);
             } // video memory voltage should × 2
-            VfPoint::new(point, delta)
+            Some(VfPoint::new(point, delta))
         })
         .collect()
 }

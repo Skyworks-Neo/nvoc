@@ -29,6 +29,8 @@ mod nvoc_service {
         // io::Write,
         ffi::OsString, time::Duration,
         env,
+        path::PathBuf,
+        panic::AssertUnwindSafe,
         sync::{Arc, Mutex},
         thread,
         cmp::{min, max},
@@ -72,37 +74,38 @@ mod nvoc_service {
     // parameters. There is no stdout or stderr at this point so make sure to configure the log
     // output to file if needed.
     pub fn my_service_main(_arguments: Vec<OsString>) {
-        let exe_dir = env::current_exe()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .to_path_buf();
-        let log_dir = exe_dir.parent()  // 第一级
-            .and_then(|p| p.parent())    // 第二级
-            .unwrap_or(&exe_dir)         // 如果失败就用 exe_dir
-            .join("logs");                // 加上 logs 目录
-        std::fs::create_dir_all(&log_dir).unwrap();
+        // Use %PROGRAMDATA%\nvoc\logs so log placement is independent of the install
+        // directory layout and cannot be influenced by a writable install path (#66).
+        let log_dir: PathBuf = env::var_os("PROGRAMDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"))
+            .join("nvoc")
+            .join("logs");
+        if let Err(e) = std::fs::create_dir_all(&log_dir) {
+            eprintln!("Warning: failed to create log directory {:?}: {}", log_dir, e);
+        }
 
-        let log_path = log_dir.join(format!("canbedel-{}-output.log", SERVICE_NAME));
+        let log_path = log_dir.join(format!("{}-output.log", SERVICE_NAME));
         let log_path_for_log2 = log_path.clone();
         let log_file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(&log_path)
             .expect("Failed to open log file");
-        
-        // 重定向 stdout 和 stderr 到同一个文件
-        let _stdout_redirect = Redirect::stdout(log_file.try_clone().unwrap())
-            .expect("Failed to redirect stdout");
-        let _stderr_redirect = Redirect::stderr(log_file)
-            .expect("Failed to redirect stderr");
+
+        // 重定向 stdout 和 stderr 到同一个文件；redirect is best-effort — service must
+        // run even if log setup partially fails.
+        let _stdout_redirect = log_file.try_clone().ok().and_then(|f| Redirect::stdout(f).ok());
+        let _stderr_redirect = Redirect::stderr(log_file).ok();
 
         // 2. 初始化 log2（提供轮转和日志级别）
-        let _logger = log2::open(log_path_for_log2.to_str().unwrap())
+        // to_string_lossy handles the rare case of non-UTF-8 install paths.
+        let log_path_str = log_path_for_log2.to_string_lossy();
+        let _logger = log2::open(log_path_str.as_ref())
             .size(100 * 1024 * 1024)  // 100MB
             .rotate(2)                 // 保留1个备份
             // .tee(true)                  // 同时输出到终端
-            .level(LevelFilter::Info)  
+            .level(LevelFilter::Info)
             .start();
 
         let config = Arc::new(Mutex::new(crate::websrv::NVOCServiceConfig {
@@ -125,14 +128,15 @@ mod nvoc_service {
 
                 // Handle stop
                 ServiceControl::Stop => {
-                    shutdown_tx.send(()).unwrap();
+                    // Only failure mode is a dropped receiver — run_service already exited.
+                    let _ = shutdown_tx.send(());
                     ServiceControlHandlerResult::NoError
                 }
 
                 // treat the UserEvent as a stop request
                 ServiceControl::UserEvent(code) => {
                     if code.to_raw() == 130 {
-                        shutdown_tx.send(()).unwrap();
+                        let _ = shutdown_tx.send(());
                     }
                     ServiceControlHandlerResult::NoError
                 }
@@ -143,7 +147,8 @@ mod nvoc_service {
 
         // Register system service event handler.
         // The returned status handle should be used to report service status changes to the system.
-        let status_handle = service_control_handler::register(SERVICE_NAME, event_handler).unwrap();
+        let status_handle = service_control_handler::register(SERVICE_NAME, event_handler)
+            .expect("Failed to register nvoc_service control handler with SCM");
 
         // Tell the system that service is running
         let _ = status_handle.set_service_status(ServiceStatus {
@@ -156,13 +161,25 @@ mod nvoc_service {
             process_id: None,
         });
 
+        // Restart the HTTP thread on panic so a control-plane failure doesn't leave
+        // the service running but silently unresponsive (#67).
         thread::spawn(move || {
-            crate::websrv::start_http_server(http_config, http_tx);
+            loop {
+                let cfg = http_config.clone();
+                let tx  = http_tx.clone();
+                if std::panic::catch_unwind(AssertUnwindSafe(|| {
+                    crate::websrv::start_http_server(cfg, tx);
+                })).is_err() {
+                    error!("HTTP server thread panicked; restarting in 1 s");
+                    thread::sleep(Duration::from_secs(1));
+                }
+            }
         });
 
         let _ = compio::runtime::RuntimeBuilder::new()
-        .build().unwrap()
-        .block_on(run_service(config, shutdown_rx, cmd_rx));
+            .build()
+            .expect("Failed to build compio async runtime")
+            .block_on(run_service(config, shutdown_rx, cmd_rx));
 
         // Tell the system that service has stopped.
         let _ = status_handle.set_service_status(ServiceStatus {
@@ -181,17 +198,32 @@ mod nvoc_service {
         let mut stopc = shutdown_rx.into_stream().skip(1);
         let mut cmdc = cmd_rx.into_stream();
 
-        // Nvml initialization is done here to ensure that the service can be stopped even if Nvml fails to initialize.
-        let nvml = Nvml::init().unwrap();
-        // let temperature_softwall_offset = 25;
-        let gpus = Gpu::enumerate().unwrap();
+        // NVML/GPU init failures are non-fatal for the service lifecycle: log the error
+        // and stop cleanly so SCM can apply its restart policy instead of crashing (#7).
+        let nvml = match Nvml::init() {
+            Ok(n) => n,
+            Err(e) => {
+                error!("Failed to initialize NVML: {:?}; service exiting cleanly", e);
+                return Ok(());
+            }
+        };
+        let gpus = match Gpu::enumerate() {
+            Ok(g) => g,
+            Err(e) => {
+                error!("Failed to enumerate GPUs via NvAPI: {:?}; service exiting", e);
+                return Ok(());
+            }
+        };
         let vfp_lowest_lock_point = 40;
         let vfp_highest_lock_point = 100;
         // 每张 GPU 的动态温控锁定点，初始为最高（即未限制）
         let mut gpu_dynamic_lock_point: Vec<usize> = vec![vfp_highest_lock_point; gpus.len()];
 
         let start_interval: Mutex<Option<humantime::Duration>> = Mutex::new(Some(humantime::Duration::from(Duration::from_secs(5))));
-        let interval: Option<humantime::Duration> = start_interval.lock().unwrap().as_ref().cloned();
+        let interval: Option<humantime::Duration> = start_interval.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .cloned();
         let timer = create_timer(interval).fuse();
         let mut timer = std::pin::pin!(timer);
 
@@ -240,7 +272,7 @@ mod nvoc_service {
                 }
                 
                 _ = timer.next() => {
-                    let cfg = config.lock().unwrap();
+                    let cfg = config.lock().unwrap_or_else(|e| e.into_inner());
                     let vfp_low_lock_point = min(max(cfg.vfp_lock_point, vfp_lowest_lock_point), vfp_highest_lock_point);
                     let temperature_softwall = cfg.temp_limit;
                     let count = nvml.device_count().unwrap_or(0);
@@ -248,7 +280,13 @@ mod nvoc_service {
 
                     // 遍历 GPU
                     for i in 0..count {
-                        let device = nvml.device_by_index(i).unwrap();
+                        let device = match nvml.device_by_index(i) {
+                            Ok(d) => d,
+                            Err(e) => {
+                                error!("GPU {}: device_by_index failed: {:?}; skipping", i, e);
+                                continue;
+                            }
+                        };
                         let name = device.name().unwrap_or("Unknown".to_string()); // GPU 名称
                         let uuid = device.uuid().unwrap_or("Non UUID".to_string());                 // GPU UUID
                         let temperature = device.temperature(TemperatureSensor::Gpu).unwrap_or(0); // GPU 温度
@@ -264,12 +302,26 @@ mod nvoc_service {
 
                         info!(
                             "Time {} GPU {}: {} UUID={} Temperature={} Threshold={} {} {} {}",
-                            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+                            SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
                             i, name, uuid, temperature, threshold_values[0], threshold_values[1], threshold_values[2], threshold_values[3]
                         );
 
+                        // Guard against NVML/NVAPI device-count drift (#73).
+                        // NVAPI may enumerate fewer GPUs than NVML (e.g. datacenter SKUs,
+                        // MIG partitions). Without this check, gpu_dynamic_lock_point[idx]
+                        // would panic with an out-of-bounds index.
+                        let idx = i as usize;
+                        if idx >= gpu_dynamic_lock_point.len() {
+                            error!(
+                                "GPU {}: NVML device count ({}) > NVAPI GPU count ({}); \
+                                 skipping VFP control for this GPU",
+                                i, count, gpus.len()
+                            );
+                            continue;
+                        }
+
                         let mut gpu_result = Vec::new();
-                        if let Some(g) = gpus.get(i as usize) {
+                        if let Some(g) = gpus.get(idx) {
                             gpu_result.push(g);
                             // 读取传感器电压/频率，并反推当前工作点写入 gpu_dynamic_lock_point
                             let sensor_v = g.inner().core_voltage()
@@ -280,14 +332,14 @@ mod nvoc_service {
                                 info!("GPU {}: voltage={}, freq={:?}", i, sensor_v, sensor_f);
                                 match g.status().map(|s| s.vfp) {
                                     Ok(Some(vfp)) => match find_matching_vfp_point(&vfp.graphics, sensor_v) {
-                                        Some((idx, pt)) => {
+                                        Some((vfp_idx, pt)) => {
                                             info!(
                                                 "GPU {} Working VfpPoint Inferred: Index={}, Voltage={:?}, Frequency={:?}",
-                                                i, idx, pt.voltage, pt.frequency
+                                                i, vfp_idx, pt.voltage, pt.frequency
                                             );
                                             // 仅在未处于降频保护时更新动态点，避免覆盖温控收紧的值
-                                            if gpu_dynamic_lock_point[i as usize] >= vfp_highest_lock_point {
-                                                gpu_dynamic_lock_point[i as usize] = *idx;
+                                            if gpu_dynamic_lock_point[idx] >= vfp_highest_lock_point {
+                                                gpu_dynamic_lock_point[idx] = *vfp_idx;
                                             }
                                         },
                                         None => info!("GPU {}: no matching VfpPoint found", i),
@@ -301,26 +353,26 @@ mod nvoc_service {
 
                         if temperature >= temperature_softwall {
                             // 超温：每周期降低一个工作点（收紧），不低于最低限制
-                            let current = gpu_dynamic_lock_point[i as usize];
+                            let current = gpu_dynamic_lock_point[idx];
                             let next = current.saturating_sub(1).max(vfp_lowest_lock_point);
-                            gpu_dynamic_lock_point[i as usize] = next;
+                            gpu_dynamic_lock_point[idx] = next;
                             match handle_lock_vfp(&gpu_result, &pseudo_matches, next, true) {
                                 Ok(_) => info!("GPU {}: over-temp, stepped down to VFP lock point {}", i, next),
                                 Err(e) => error!("GPU {}: failed to lock VFP: {:?}", i, e),
                             }
                         } else {
                             // 温度正常：每周期放开一个工作点（松弛），不超过用户配置上限
-                            let current = gpu_dynamic_lock_point[i as usize];
+                            let current = gpu_dynamic_lock_point[idx];
                             if current < vfp_low_lock_point {
                                 let next = (current + 1).min(vfp_low_lock_point);
-                                gpu_dynamic_lock_point[i as usize] = next;
+                                gpu_dynamic_lock_point[idx] = next;
                                 match handle_lock_vfp(&gpu_result, &pseudo_matches, next, true) {
                                     Ok(_) => info!("GPU {}: temp normal, relaxed to VFP lock point {}", i, next),
                                     Err(e) => error!("GPU {}: failed to relax VFP: {:?}", i, e),
                                 }
                             } else {
                                 // 已回到正常上限，完全解锁
-                                gpu_dynamic_lock_point[i as usize] = vfp_highest_lock_point;
+                                gpu_dynamic_lock_point[idx] = vfp_highest_lock_point;
                                 for g in &gpu_result {
                                     if let Err(e) = g.reset_vfp_lock() {
                                         error!("GPU {}: failed to reset VFP voltage lock: {:?}", i, e);
