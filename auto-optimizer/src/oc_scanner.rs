@@ -560,6 +560,7 @@ fn run_legacy_short_phase(
                 args.common.minimum_delta_core_freq_step,
                 args.freq_step_exp,
                 &mut test_num,
+                false,
             );
             println!("Decreasing target freq by {}kHz", decrease);
             continue;
@@ -575,6 +576,7 @@ fn run_legacy_short_phase(
             args.common.minimum_delta_core_freq_step,
             args.freq_step_exp,
             &mut test_num,
+            false,
         ) {
             println!("Increasing target freq by {}kHz", increase);
         } else {
@@ -656,6 +658,7 @@ fn run_legacy_long_phase(
             apply_long_phase_failure_step(
                 init_core_oc_value,
                 args.common.minimum_delta_core_freq_step,
+                false,
             );
             println!(
                 "Decreasing target freq by {}kHz",
@@ -1059,6 +1062,7 @@ fn run_mem_oc_phase<V: std::fmt::Display + Copy>(
                 args.minimum_delta_mem_freq_step,
                 args.mem_freq_step_exp,
                 &mut mem_test_num,
+                false,
             );
             println!("Decreasing target mem_freq by {}kHz", decrease);
             continue;
@@ -1077,6 +1081,7 @@ fn run_mem_oc_phase<V: std::fmt::Display + Copy>(
             args.minimum_delta_mem_freq_step,
             args.mem_freq_step_exp,
             &mut mem_test_num,
+            false,
         ) {
             println!("Increasing target freq by {}kHz", increase);
         } else {

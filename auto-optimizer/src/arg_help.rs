@@ -787,7 +787,15 @@ pub fn get_arguments() -> Command {
                                         .default_value("-")
                                         .help("Point seq to scan at"),
                                 )
-
+                                .arg(
+                                    Arg::new("timeout_loops")
+                                        .short('t')
+                                        .value_name("timeout_loops")
+                                        .num_args(1)
+                                        .default_value("30")
+                                        .value_parser(clap::value_parser!(u32).range(1..=1_000))
+                                        .help("CLI stress duration/retry loop count (1–1000)"),
+                                )
                                 .arg(
                                     Arg::new("output")
                                         .value_name("OUTPUTCSV")
@@ -824,6 +832,15 @@ pub fn get_arguments() -> Command {
                         .subcommand(
                             Command::new("autoscan_legacy")
                                 .about("auto-scanner for legacy GPUs (Maxwell / pre-Pascal) using global pstate OC offset")
+                                .arg(
+                                    Arg::new("timeout_loops")
+                                        .short('t')
+                                        .value_name("timeout_loops")
+                                        .num_args(1)
+                                        .default_value("30")
+                                        .value_parser(clap::value_parser!(u32).range(1..=1_000))
+                                        .help("CLI stress duration/retry loop count (1–1000)"),
+                                )
                                 .arg(
                                     Arg::new("bsod_recovery")
                                         .short('b')

@@ -1342,3 +1342,139 @@ pub fn voltage_frequency_check(arg_matches: ArgMatches, point: usize) -> Result<
     }
     Ok(precise_flag)
 }
+
+// ---------------------------------------------------------------------------
+// VFP batch-setting helpers used by the CLI autoscan path.
+// ---------------------------------------------------------------------------
+
+/// Set the same frequency delta on a VFP point range.
+/// Errors are logged and the scan continues so the caller can recover from GPU resets.
+pub fn set_vfp_range_warn(gpu: &&Gpu, range: std::ops::RangeInclusive<usize>, delta_khz: i32) {
+    for offset in range {
+        match gpu.set_vfp(
+            iter::once((offset, KilohertzDelta(delta_khz))),
+            iter::empty(),
+        ) {
+            Ok(_) => {}
+            Err(e) => eprintln!(
+                "Warning: {}, set_vfp offset={} Error. GPU crashed...",
+                e, offset
+            ),
+        }
+    }
+}
+
+/// Set the same frequency delta on a VFP point range, propagating errors.
+pub fn set_vfp_range(
+    gpu: &&Gpu,
+    range: std::ops::RangeInclusive<usize>,
+    delta_khz: i32,
+) -> Result<(), Error> {
+    for offset in range {
+        gpu.set_vfp(
+            iter::once((offset, KilohertzDelta(delta_khz))),
+            iter::empty(),
+        )?;
+    }
+    Ok(())
+}
+
+/// Set the main VFP scan range, and optionally a lower range for flat-curve mode.
+pub fn set_vfp_curve_warn(
+    gpu: &&Gpu,
+    point: usize,
+    vfp_set_range: usize,
+    flat_curve_flag: bool,
+    main_delta: i32,
+    lower_delta: Option<i32>,
+) {
+    if !flat_curve_flag {
+        set_vfp_range_warn(
+            gpu,
+            (point - vfp_set_range)..=(point + vfp_set_range),
+            main_delta,
+        );
+    } else {
+        set_vfp_range_warn(gpu, point..=(point + vfp_set_range), main_delta);
+        if let Some(ld) = lower_delta {
+            set_vfp_range_warn(gpu, (point - vfp_set_range)..=(point - 1), ld);
+        }
+    }
+}
+
+/// Set the main VFP scan range, and optionally a lower range for flat-curve mode.
+pub fn set_vfp_curve(
+    gpu: &&Gpu,
+    point: usize,
+    vfp_set_range: usize,
+    flat_curve_flag: bool,
+    main_delta: i32,
+    lower_delta: Option<i32>,
+) -> Result<(), Error> {
+    if !flat_curve_flag {
+        set_vfp_range(
+            gpu,
+            (point - vfp_set_range)..=(point + vfp_set_range),
+            main_delta,
+        )?;
+    } else {
+        set_vfp_range(gpu, point..=(point + vfp_set_range), main_delta)?;
+        if let Some(ld) = lower_delta {
+            set_vfp_range(gpu, (point - vfp_set_range)..=(point - 1), ld)?;
+        }
+    }
+    Ok(())
+}
+
+pub fn set_legacy_clocks_nvapi(gpu: &Gpu, core_mhz: u32, mem_mhz: u32) -> Result<(), Error> {
+    use nvapi_hi::sys::nvapi_QueryInterface;
+    use std::mem;
+
+    const NVAPI_GPU_SET_CLOCKS_ID: u32 = 0x6f151055;
+
+    #[repr(C)]
+    struct NvClocksInfo {
+        version: u32,
+        clocks: [u32; 32],
+    }
+
+    let version = (size_of::<NvClocksInfo>() as u32) | (2 << 16);
+    let mut info = NvClocksInfo {
+        version,
+        clocks: [0; 32],
+    };
+
+    info.clocks[8] = mem_mhz.saturating_mul(1000);
+    info.clocks[30] = core_mhz.saturating_mul(2000);
+
+    unsafe {
+        let ptr_res = nvapi_QueryInterface(NVAPI_GPU_SET_CLOCKS_ID);
+        let ptr = match ptr_res {
+            Ok(p) => p as *const (),
+            Err(_) => {
+                return Err(Error::Custom(format!(
+                    "legacy interface not found at ID (0x{:x}), NVIDIA has ended its support",
+                    NVAPI_GPU_SET_CLOCKS_ID
+                )));
+            }
+        };
+
+        #[allow(improper_ctypes_definitions)]
+        type SetClocksFn = unsafe extern "system" fn(
+            h_physical_gpu: nvapi_hi::sys::api::NvPhysicalGpuHandle,
+            p_clks: *mut NvClocksInfo,
+        ) -> nvapi_hi::sys::Status;
+
+        let func: SetClocksFn = mem::transmute(ptr);
+        let status = func(*gpu.inner().handle(), &mut info);
+
+        if status != nvapi_hi::sys::Status::Ok {
+            return Err(Error::Custom(format!(
+                "Failed to call legacy interface NvAPI_GPU_SetClocks, error code: {:?}",
+                status
+            )));
+        }
+    }
+
+    Ok(())
+}

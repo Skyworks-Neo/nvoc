@@ -667,6 +667,7 @@ nvoc-auto-optimizer.exe set vfp autoscan -u -b aggressive
 |---------------|------|---------------------|-------------------------------------------------------------|
 | `--ultrafast` | `-u` | 关                   | 启用超快速模式（仅扫 4 个关键点，其余插值）                                     |
 | `-q <序列>`     | —    | `-`                 | 自定义扫描点序列（`-` 为自动）                                           |
+| `-t <次数>`     | —    | `30`                | CLI 压力测试时长/重试循环次数；封装脚本会据此设置压力测试 duration                    |
 | `-o <路径>`     | —    | `./ws/vfp-tem.csv`  | 每点结果实时保存的 CSV 路径                                            |
 | `-i <路径>`     | —    | `./ws/vfp-init.csv` | 参考原始曲线 CSV 路径                                               |
 | `-m`          | —    | 关                   | 同时扫描显存超频                                                    |
@@ -683,7 +684,7 @@ nvoc-auto-optimizer.exe set vfp autoscan_legacy
 nvoc-auto-optimizer.exe set vfp autoscan_legacy -b aggressive
 ```
 
-参数与 `autoscan` 基本相同，但不支持 `--ultrafast`、`-m`（显存扫描）、`-q`（点序列）、`-o`（临时结果 CSV）及 `-i`（初始曲线），因为 Legacy 模式只有单一全局偏移。压力测试脚本、扫描日志和超时循环使用 CLI 内置默认值。
+参数与 `autoscan` 基本相同，但不支持 `--ultrafast`、`-m`（显存扫描）、`-q`（点序列）、`-o`（临时结果 CSV）及 `-i`（初始曲线），因为 Legacy 模式只有单一全局偏移。压力测试脚本和扫描日志使用 CLI 内置默认值，`-t` 仍可用于调整 CLI 压力测试时长/重试循环。
 
 ---
 

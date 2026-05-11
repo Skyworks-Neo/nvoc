@@ -664,6 +664,7 @@ nvoc-auto-optimizer.exe set vfp autoscan -u -b aggressive
 |---------------|-----------|---------------------|---------------------------------------------------------------------|
 | `--ultrafast` | `-u`      | Off                 | Enable ultrafast mode (scan 4 key points, interpolation for others) |
 | `-q <seq>`    | —         | `-`                 | Custom scan point sequence (`-` for auto)                           |
+| `-t <count>`  | —         | `30`                | CLI stress duration/retry loop count; wrapper scripts use this to set stressor duration |
 | `-o <path>`   | —         | `./ws/vfp-tem.csv`  | Path for real-time per-point results CSV                            |
 | `-i <path>`   | —         | `./ws/vfp-init.csv` | Path for reference original curve CSV                               |
 | `-m`          | —         | Off                 | Scan video memory OC simultaneously                                 |
@@ -680,7 +681,7 @@ nvoc-auto-optimizer.exe set vfp autoscan_legacy
 nvoc-auto-optimizer.exe set vfp autoscan_legacy -b aggressive
 ```
 
-Parameters mostly same as `autoscan`, but without `--ultrafast`, `-m` (memory scan), `-q` (sequence), `-o` (temporary results CSV), or `-i` (initial curve) support, as Legacy mode only has single global offset. The stress script, scan log, and timeout loop use CLI built-in defaults.
+Parameters mostly same as `autoscan`, but without `--ultrafast`, `-m` (memory scan), `-q` (sequence), `-o` (temporary results CSV), or `-i` (initial curve) support, as Legacy mode only has single global offset. The stress script and scan log use CLI built-in defaults; `-t` remains available to tune CLI stress duration/retry loops.
 
 ---
 

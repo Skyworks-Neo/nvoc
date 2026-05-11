@@ -117,7 +117,10 @@ pub struct AutoscanConfig {
 impl AutoscanConfig {
     /// 从 autoscan（gpuboostv3）子命令的 ArgMatches 解析
     pub fn from_autoscan_matches(matches: &ArgMatches) -> Result<Self, Error> {
-        let timeout_loops = 30;
+        let timeout_loops = matches
+            .get_one::<u32>("timeout_loops")
+            .copied()
+            .unwrap_or(30);
 
         let recovery_method = matches
             .get_one::<String>("bsod_recovery")
@@ -148,7 +151,10 @@ impl AutoscanConfig {
     /// 从 autoscan_legacy 子命令的 ArgMatches 解析
     /// legacy 没有 ultrafast / point_seq / output_csv / initcsv / vmem_scan，填默认值
     pub fn from_legacy_matches(matches: &ArgMatches) -> Result<Self, Error> {
-        let timeout_loops = 30;
+        let timeout_loops = matches
+            .get_one::<u32>("timeout_loops")
+            .copied()
+            .unwrap_or(30);
 
         let recovery_method = matches
             .get_one::<String>("bsod_recovery")
