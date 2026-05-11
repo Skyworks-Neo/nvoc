@@ -378,8 +378,18 @@ fn parse_lock_voltage(
         let voltage_uv = if input_voltage >= 10_000 {
             input_voltage
         } else {
-            input_voltage * 1000
+            input_voltage.saturating_mul(1000)
         };
+        // Reject voltages that are clearly outside the plausible GPU range before
+        // handing the value to the driver (0.5 V – 2.0 V in µV units).
+        const MIN_LOCK_UV: u32 = 500_000;
+        const MAX_LOCK_UV: u32 = 2_000_000;
+        if !(MIN_LOCK_UV..=MAX_LOCK_UV).contains(&voltage_uv) {
+            return Err(Error::Custom(format!(
+                "--voltage {} µV is outside the supported range {MIN_LOCK_UV}–{MAX_LOCK_UV} µV",
+                voltage_uv
+            )));
+        }
         Ok(Microvolts(voltage_uv))
     } else {
         let point = raw_target.parse::<usize>().unwrap_or(default_point);

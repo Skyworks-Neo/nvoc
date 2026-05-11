@@ -24,54 +24,60 @@ pub fn local_time_hms() -> String {
         .unwrap_or_else(|_| String::from("??:??:??"))
 }
 
-// display_info replaced by direct Win32 API call to avoid pulling in the entire `windows` crate
+// Direct Win32 FFI for DEVMODEW — avoids pulling in the entire `windows` crate.
+// Layout verified against wingdi.h (x86-64 ABI). Compile-time offset assertions
+// guard against silent breakage if the struct definition drifts.
 #[cfg(windows)]
 fn get_primary_screen_size_raw() -> (u32, u32) {
     use std::ffi::c_int;
+    use std::mem;
+
+    // Mirrors DEVMODEW from wingdi.h. Fields not needed for EnumDisplaySettingsW
+    // (the printer/display union and trailing fields) are collapsed into opaque
+    // byte arrays so the compiler computes correct size and alignment.
+    #[repr(C, align(4))]
+    struct DevModeW {
+        dm_device_name: [u16; 32],       // offset   0, 64 bytes
+        dm_spec_version: u16,             // offset  64
+        dm_driver_version: u16,           // offset  66
+        dm_size: u16,                     // offset  68
+        dm_driver_extra: u16,             // offset  70
+        dm_fields: u32,                   // offset  72
+        _union_display_printer: [u8; 16], // offset  76 (display/printer union, 16 bytes)
+        dm_color: i16,                    // offset  92
+        dm_duplex: i16,                   // offset  94
+        dm_y_resolution: i16,            // offset  96
+        dm_tt_option: i16,               // offset  98
+        dm_collate: i16,                 // offset 100
+        dm_form_name: [u16; 32],         // offset 102, 64 bytes
+        dm_log_pixels: u16,              // offset 166
+        dm_bits_per_pel: u32,            // offset 168 (4-byte aligned, no padding gap)
+        dm_pels_width: u32,              // offset 172
+        dm_pels_height: u32,             // offset 176
+        _rest: [u8; 40],                 // offset 180 (dmDisplayFlags … dmPanningHeight)
+    }
+
+    const _: () = assert!(mem::size_of::<DevModeW>() == 220);
+    const _: () = assert!(mem::offset_of!(DevModeW, dm_size) == 68);
+    const _: () = assert!(mem::offset_of!(DevModeW, dm_pels_width) == 172);
+    const _: () = assert!(mem::offset_of!(DevModeW, dm_pels_height) == 176);
+
     unsafe extern "system" {
         fn EnumDisplaySettingsW(
             lpsz_device_name: *const u16,
             i_mode_num: u32,
-            lp_dev_mode: *mut u8,
+            lp_dev_mode: *mut DevModeW,
         ) -> c_int;
     }
-    // DEVMODEW（wingdi.h）Win32 ABI 固定布局，x86-64 下：
-    //   +  0  dmDeviceName[32]  = 64 字节
-    //   + 64  dmSpecVersion     = 2 字节
-    //   + 66  dmDriverVersion   = 2 字节
-    //   + 68  dmSize            = 2 字节  ← OFFSET_DM_SIZE
-    //   + 70  dmDriverExtra     = 2 字节
-    //   + 72  dmFields          = 4 字节
-    //   +76~+171  union（显示模式字段，96 字节）
-    //   +172  dmPelsWidth       = 4 字节  ← OFFSET_PELS_WIDTH
-    //   +176  dmPelsHeight      = 4 字节  ← OFFSET_PELS_HEIGHT
-    //   …（后续字段省略，总结构体大小 220 字节）
-    // 参考：https://learn.microsoft.com/en-us/windows/win32/api/wingdi/ns-wingdi-devmodew
-    const DEVMODEW_SIZE: usize = 220;
-    const OFFSET_DM_SIZE: usize = 68;
-    const OFFSET_PELS_WIDTH: usize = 172;
-    const OFFSET_PELS_HEIGHT: usize = 176;
+
     const ENUM_CURRENT_SETTINGS: u32 = 0xFFFF_FFFF;
-    #[repr(C, align(4))]
-    struct AlignedBuf([u8; 256]);
+
     unsafe {
-        let mut aligned = AlignedBuf([0u8; 256]);
-        let buf = &mut aligned.0;
-        buf[OFFSET_DM_SIZE] = DEVMODEW_SIZE as u8;
-        buf[OFFSET_DM_SIZE + 1] = (DEVMODEW_SIZE >> 8) as u8;
-        let ret = EnumDisplaySettingsW(std::ptr::null(), ENUM_CURRENT_SETTINGS, buf.as_mut_ptr());
+        let mut dev_mode: DevModeW = mem::zeroed();
+        dev_mode.dm_size = mem::size_of::<DevModeW>() as u16;
+        let ret = EnumDisplaySettingsW(std::ptr::null(), ENUM_CURRENT_SETTINGS, &mut dev_mode);
         if ret != 0 {
-            let w = u32::from_le_bytes(
-                buf[OFFSET_PELS_WIDTH..OFFSET_PELS_WIDTH + 4]
-                    .try_into()
-                    .unwrap(),
-            );
-            let h = u32::from_le_bytes(
-                buf[OFFSET_PELS_HEIGHT..OFFSET_PELS_HEIGHT + 4]
-                    .try_into()
-                    .unwrap(),
-            );
-            (w, h)
+            (dev_mode.dm_pels_width, dev_mode.dm_pels_height)
         } else {
             (0, 0)
         }
