@@ -375,11 +375,24 @@ fn parse_lock_voltage(
         .is_ok_and(|v| v.copied().unwrap_or(false))
     {
         let input_voltage = raw_target.parse::<u32>()?;
+        // Values ≥ 10 000 are already in µV; smaller values are in mV and need ×1000.
+        // Use saturating_mul for consistency with every other MHz/mV→kHz/µV conversion
+        // in this file (even though the < 10 000 guard prevents overflow in practice).
         let voltage_uv = if input_voltage >= 10_000 {
             input_voltage
         } else {
-            input_voltage * 1000
+            input_voltage.saturating_mul(1000)
         };
+        // Reject values outside any plausible consumer/professional GPU voltage window
+        // before handing an arbitrary number to the undocumented NVAPI voltage-lock path.
+        const MIN_LOCK_UV: u32 = 500_000; // 0.5 V
+        const MAX_LOCK_UV: u32 = 2_000_000; // 2.0 V — generous upper bound
+        if !(MIN_LOCK_UV..=MAX_LOCK_UV).contains(&voltage_uv) {
+            return Err(Error::from(format!(
+                "--voltage {} µV is outside the supported range {}–{} µV (0.5–2.0 V)",
+                voltage_uv, MIN_LOCK_UV, MAX_LOCK_UV
+            )));
+        }
         Ok(Microvolts(voltage_uv))
     } else {
         let point = raw_target.parse::<usize>().unwrap_or(default_point);
