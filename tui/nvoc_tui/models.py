@@ -13,6 +13,7 @@
 # limitations under the License.
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -126,4 +127,6 @@ class OutputLine:
 
 
 def repo_root() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent.parent

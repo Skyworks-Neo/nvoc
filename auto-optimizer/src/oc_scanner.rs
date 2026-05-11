@@ -1,4 +1,4 @@
-use crate::basic_func::TestResolution::{R640x384, R1680x1050};
+use crate::basic_func::TestResolution::R1680x1050;
 use crate::basic_func::{TestResolution, get_second_largest_resolution, local_time_hms};
 use crate::error::Error;
 use crate::handle_reset_nvml_cooler_single_gpu;
@@ -25,7 +25,7 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Child, Command};
 use std::thread::sleep;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 use std::{fs, iter};
 
 mod scan_shared {
@@ -225,7 +225,7 @@ mod pressure_runner {
                 Ok(mut process) => {
                     let mut exit_code = 1;
                     let test_start_at = Instant::now();
-                    let mut last_fluctuation = SystemTime::now();
+                    let mut last_fluctuation = Instant::now();
                     let mut in_test_check_number = 0;
                     let mut fluctuation_h_l_flag = false;
                     let mut thrm_or_pwr_limit_number = 0;
@@ -242,7 +242,7 @@ mod pressure_runner {
                     sleep(Duration::from_secs(1));
 
                     loop {
-                        if last_fluctuation.elapsed().unwrap_or(Duration::from_secs(6))
+                        if last_fluctuation.elapsed()
                             >= Duration::from_millis(1500)
                         {
                             in_test_check_number += 1;
@@ -288,7 +288,7 @@ mod pressure_runner {
                                 }
                             }
 
-                            last_fluctuation = SystemTime::now();
+                            last_fluctuation = Instant::now();
                         }
 
                         sleep(time::Duration::from_secs(1));
@@ -323,13 +323,25 @@ mod pressure_runner {
 
                     if exit_code == 0 {
                         eprintln!("Process finished successfully.");
-                        if in_test_check_number > 0
-                            && ((thrm_or_pwr_limit_number as f64 / in_test_check_number as f64)
-                                > 0.3)
-                            && resolution != R640x384
-                            && !cfg.is_mem_test
-                        {
-                            thrm_or_pwr_limit_flag = true;
+                        let throttle_ratio = if in_test_check_number > 0 {
+                            thrm_or_pwr_limit_number as f64 / in_test_check_number as f64
+                        } else {
+                            0.0
+                        };
+                        if throttle_ratio > 0.3 && !cfg.is_mem_test {
+                            if resolution.downgrade().is_some() {
+                                thrm_or_pwr_limit_flag = true;
+                            } else {
+                                // At the lowest resolution floor — cannot downgrade further.
+                                // Accept the result as best-effort even under throttling.
+                                eprintln!(
+                                    "Warning: Thermal/power throttling detected ({:.0}%) at \
+                                     lowest resolution ({:?}). No lower resolution available; \
+                                     accepting result as floor.",
+                                    throttle_ratio * 100.0,
+                                    resolution
+                                );
+                            }
                         }
                         if thrm_or_pwr_limit_flag && let Some(lower_res) = resolution.downgrade() {
                             println!("Downgrading to {:?}", lower_res);
@@ -498,10 +510,11 @@ fn apply_short_phase_success_step(
     Some(increase)
 }
 
-fn pre_load_vf_recheck(matches: &ArgMatches, point: usize) {
+fn pre_load_vf_recheck(matches: &ArgMatches, point: usize) -> Result<(), crate::error::Error> {
     println!("Waiting for pre-load volt-freq recheck");
     sleep(Duration::from_secs(1));
-    voltage_frequency_check(matches.clone(), point).expect("Failed to read v-f info");
+    voltage_frequency_check(matches.clone(), point)?;
+    Ok(())
 }
 
 fn apply_long_phase_failure_step(
@@ -844,7 +857,7 @@ fn run_gpuboostv3_short_phase<V: std::fmt::Display + Copy>(
             Some(*init_core_oc_value - args.common.minimum_delta_core_freq_step),
         )?;
 
-        pre_load_vf_recheck(args.common.matches, point);
+        pre_load_vf_recheck(args.common.matches, point)?;
 
         test_num += 1;
         test_code += 1;
@@ -982,7 +995,7 @@ fn run_gpuboostv3_long_phase<V: std::fmt::Display + Copy>(
     writeln!(l, "Initiating Long Test...")?;
 
     loop {
-        pre_load_vf_recheck(args.common.matches, point);
+        pre_load_vf_recheck(args.common.matches, point)?;
 
         *test_code += 1;
         log_point_test_header(
@@ -1095,11 +1108,13 @@ fn run_mem_oc_phase<V: std::fmt::Display + Copy>(
         mem_test_num += 1;
         mem_test_code += 1;
 
-        pre_load_vf_recheck(args.common.matches, args.point);
+        pre_load_vf_recheck(args.common.matches, args.point)?;
 
         println!(
             "current test progress estimated:{:.2}%",
-            (mem_test_num + mem_test_code - 1) / (args.mem_freq_step_exp + mem_test_code - 1)
+            (mem_test_num + mem_test_code - 1) as f64
+                / (args.mem_freq_step_exp + mem_test_code - 1).max(1) as f64
+                * 100.0
         );
         println!("current test num: {}", mem_test_num);
 
@@ -1370,14 +1385,14 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<&Gpu>, matches: &ArgMatches) -> Result<(),
                 )?;
             }
 
-            if p1 - 6 < lower_voltage_point {
+            if p1.saturating_sub(6) < lower_voltage_point {
                 p1 = lower_voltage_point + 6;
             }
             if p2 < lower_voltage_point {
                 p2 = lower_voltage_point + 10;
             }
             if p3 > upper_voltage_point {
-                p3 = upper_voltage_point - 10;
+                p3 = upper_voltage_point.saturating_sub(10);
             }
             if p4 > upper_voltage_point {
                 p4 = upper_voltage_point;
@@ -1385,11 +1400,11 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<&Gpu>, matches: &ArgMatches) -> Result<(),
 
             // stair bias
             if is_50_series && p1 == p2 {
-                p1 -= 6;
+                p1 = p1.saturating_sub(6);
                 p2 += 6;
             }
             if is_50_series && p2 == p3 {
-                p2 -= 6;
+                p2 = p2.saturating_sub(6);
                 p3 += 6;
             }
 

@@ -52,8 +52,11 @@ fn get_primary_screen_size_raw() -> (u32, u32) {
     const OFFSET_PELS_WIDTH: usize = 172;
     const OFFSET_PELS_HEIGHT: usize = 176;
     const ENUM_CURRENT_SETTINGS: u32 = 0xFFFF_FFFF;
+    #[repr(C, align(4))]
+    struct AlignedBuf([u8; 256]);
     unsafe {
-        let mut buf = [0u8; DEVMODEW_SIZE];
+        let mut aligned = AlignedBuf([0u8; 256]);
+        let buf = &mut aligned.0;
         buf[OFFSET_DM_SIZE] = DEVMODEW_SIZE as u8;
         buf[OFFSET_DM_SIZE + 1] = (DEVMODEW_SIZE >> 8) as u8;
         let ret = EnumDisplaySettingsW(std::ptr::null(), ENUM_CURRENT_SETTINGS, buf.as_mut_ptr());
@@ -146,11 +149,9 @@ impl TestResolution {
             TestResolution::R800x600 => Some(TestResolution::R768x576),
             TestResolution::R768x576 => Some(TestResolution::R720x480),
             TestResolution::R720x480 => Some(TestResolution::R640x384),
-            TestResolution::R640x384 => Some(TestResolution::R640x384),
-            // TestResolution::R640x384 => Some(TestResolution::R576x360),
+            TestResolution::R640x384 => Some(TestResolution::R576x360),
             TestResolution::R576x360 => Some(TestResolution::R400x300),
-            TestResolution::R400x300 => Some(TestResolution::R400x300),
-            // Lowest resolution, no downgrade available
+            TestResolution::R400x300 => None,
         }
     }
 
@@ -297,8 +298,7 @@ pub fn select_gpus<'a>(
                         result.push(g);
                         continue;
                     } else {
-                        // index 不存在，直接认为无效
-                        continue;
+                        return Err(Error::Custom(format!("no GPU matches --gpu {}; use `nvoc list` to see available indices", input)));
                     }
                 }
 
@@ -314,6 +314,8 @@ pub fn select_gpus<'a>(
                     result.push(g);
                     continue;
                 }
+
+                return Err(Error::Custom(format!("no GPU matches --gpu {}; use `nvoc list` to see available indices", input)));
             }
             result
         }
@@ -375,7 +377,7 @@ pub fn select_gpu_ids(
                         result.push(*id);
                         continue;
                     } else {
-                        continue;
+                        return Err(Error::Custom(format!("no GPU matches --gpu {}; use `nvoc list` to see available indices", input)));
                     }
                 }
 
@@ -389,6 +391,8 @@ pub fn select_gpu_ids(
                     result.push(id);
                     continue;
                 }
+
+                return Err(Error::Custom(format!("no GPU matches --gpu {}; use `nvoc list` to see available indices", input)));
             }
             result
         }
