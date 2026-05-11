@@ -205,11 +205,13 @@ mod pressure_runner {
         cfg: &TestPressureConfig<'_>,
     ) -> (i32, TestResolution) {
         let app_path = String::from(cfg.test_exe);
-        let mut arg = cfg.test_code.clone() + " " + &cfg.timeout_loops.to_string();
+        // Build argv as a structured Vec so paths or codes containing whitespace
+        // are not silently re-tokenized into multiple arguments.
+        let mut args: Vec<String> = vec![cfg.test_code.clone(), cfg.timeout_loops.to_string()];
         let timeout_budget_secs = cfg.timeout_loops * 6;
         println!("Timeout: {}s", timeout_budget_secs);
         if cfg.recovery_method {
-            arg += " --aggressive-recovery";
+            args.push("--aggressive-recovery".to_string());
         }
 
         let mut count = 0;
@@ -217,7 +219,7 @@ mod pressure_runner {
 
         loop {
             match Command::new(app_path.clone())
-                .args(arg.split_whitespace())
+                .args(&args)
                 .spawn()
             {
                 Ok(mut process) => {

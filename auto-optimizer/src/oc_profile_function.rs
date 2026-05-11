@@ -123,19 +123,17 @@ pub fn export_single_point(point: VfPoint, matches: &clap::ArgMatches) -> Result
 
     for line in reader.lines() {
         let line = line?;
-        let mut columns: Vec<&str> = line.split(',').collect();
-        let voltage = new_voltage.clone().to_string();
-        let delta = new_delta.clone().to_string();
+        let mut columns: Vec<String> = line.split(',').map(str::to_owned).collect();
+        let voltage = new_voltage.to_string();
+        let delta = new_delta.to_string();
 
         // Check if the row matches
-        if columns.first() == Some(&&*voltage) && columns.len() > 3 {
-            columns[2] = &delta; // Update y value
-
-            // Convert parts[2] and parts[3] to integers safely
-            let y_value: i32 = columns[2].parse().unwrap_or(0);
+        if columns.first().map(String::as_str) == Some(voltage.as_str()) && columns.len() > 3 {
+            // Convert parts[2] and parts[3] to integers safely before mutating columns[2].
             let col3_value: i32 = columns[3].parse().unwrap_or(0);
-            let sum = y_value + col3_value;
-            columns[1] = Box::leak(sum.to_string().into_boxed_str());
+            let sum = new_delta + col3_value;
+            columns[1] = sum.to_string();
+            columns[2] = delta;
         }
 
         record_lines.push(columns.join(",")); // Store modified line
