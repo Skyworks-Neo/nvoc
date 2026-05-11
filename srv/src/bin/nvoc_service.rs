@@ -125,14 +125,14 @@ mod nvoc_service {
 
                 // Handle stop
                 ServiceControl::Stop => {
-                    shutdown_tx.send(()).unwrap();
+                    let _ = shutdown_tx.send(());
                     ServiceControlHandlerResult::NoError
                 }
 
                 // treat the UserEvent as a stop request
                 ServiceControl::UserEvent(code) => {
                     if code.to_raw() == 130 {
-                        shutdown_tx.send(()).unwrap();
+                        let _ = shutdown_tx.send(());
                     }
                     ServiceControlHandlerResult::NoError
                 }
@@ -143,7 +143,13 @@ mod nvoc_service {
 
         // Register system service event handler.
         // The returned status handle should be used to report service status changes to the system.
-        let status_handle = service_control_handler::register(SERVICE_NAME, event_handler).unwrap();
+        let status_handle = match service_control_handler::register(SERVICE_NAME, event_handler) {
+            Ok(h) => h,
+            Err(e) => {
+                error!("Failed to register service control handler: {:?}", e);
+                return;
+            }
+        };
 
         // Tell the system that service is running
         let _ = status_handle.set_service_status(ServiceStatus {
@@ -160,9 +166,10 @@ mod nvoc_service {
             crate::websrv::start_http_server(http_config, http_tx);
         });
 
-        let _ = compio::runtime::RuntimeBuilder::new()
-        .build().unwrap()
-        .block_on(run_service(config, shutdown_rx, cmd_rx));
+        match compio::runtime::RuntimeBuilder::new().build() {
+            Ok(rt) => { let _ = rt.block_on(run_service(config, shutdown_rx, cmd_rx)); }
+            Err(e) => error!("Failed to build async runtime: {}", e),
+        };
 
         // Tell the system that service has stopped.
         let _ = status_handle.set_service_status(ServiceStatus {
@@ -182,9 +189,21 @@ mod nvoc_service {
         let mut cmdc = cmd_rx.into_stream();
 
         // Nvml initialization is done here to ensure that the service can be stopped even if Nvml fails to initialize.
-        let nvml = Nvml::init().unwrap();
+        let nvml = match Nvml::init() {
+            Ok(n) => n,
+            Err(e) => {
+                error!("NVML initialization failed: {:?}; service worker exiting cleanly", e);
+                return Ok(());
+            }
+        };
         // let temperature_softwall_offset = 25;
-        let gpus = Gpu::enumerate().unwrap();
+        let gpus = match Gpu::enumerate() {
+            Ok(g) => g,
+            Err(e) => {
+                error!("GPU enumeration failed: {:?}; service worker exiting cleanly", e);
+                return Ok(());
+            }
+        };
         let vfp_lowest_lock_point = 40;
         let vfp_highest_lock_point = 100;
         // 每张 GPU 的动态温控锁定点，初始为最高（即未限制）
@@ -240,7 +259,7 @@ mod nvoc_service {
                 }
                 
                 _ = timer.next() => {
-                    let cfg = config.lock().unwrap();
+                    let cfg = config.lock().unwrap_or_else(|p| p.into_inner());
                     let vfp_low_lock_point = min(max(cfg.vfp_lock_point, vfp_lowest_lock_point), vfp_highest_lock_point);
                     let temperature_softwall = cfg.temp_limit;
                     let count = nvml.device_count().unwrap_or(0);
@@ -248,7 +267,13 @@ mod nvoc_service {
 
                     // 遍历 GPU
                     for i in 0..count {
-                        let device = nvml.device_by_index(i).unwrap();
+                        let device = match nvml.device_by_index(i) {
+                            Ok(d) => d,
+                            Err(e) => {
+                                error!("GPU {}: failed to get device handle: {:?}", i, e);
+                                continue;
+                            }
+                        };
                         let name = device.name().unwrap_or("Unknown".to_string()); // GPU 名称
                         let uuid = device.uuid().unwrap_or("Non UUID".to_string());                 // GPU UUID
                         let temperature = device.temperature(TemperatureSensor::Gpu).unwrap_or(0); // GPU 温度
