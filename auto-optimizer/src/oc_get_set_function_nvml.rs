@@ -135,7 +135,7 @@ pub fn query_nvml_power_watts(nvml: &Nvml, gpu_id: u32) -> Option<(f32, f32, f32
 pub fn set_nvml_power_limit(nvml: &Nvml, gpu_id: u32, limit_w: u32) -> Result<(), Error> {
     let mut device = find_nvml_device_err(nvml, gpu_id)?;
     device
-        .set_power_management_limit(limit_w * 1000)
+        .set_power_management_limit(limit_w.saturating_mul(1000))
         .map_err(|e| Error::Custom(format!("NVML Set Power Limit Error: {:?}", e)))
 }
 
@@ -192,7 +192,7 @@ pub fn set_nvml_mem_clock_vf_offset(
         .set_clock_offset(
             nvml_wrapper::enum_wrappers::device::Clock::Memory,
             pstate,
-            offset * 2,
+            offset.saturating_mul(2),
         )
         .map_err(|e| Error::Custom(format!("NVML Set Mem Clock Offset Error: {:?}", e)))
 }

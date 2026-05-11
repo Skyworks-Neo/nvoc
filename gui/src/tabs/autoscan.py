@@ -3,7 +3,6 @@ Autoscan Tab - VFP auto-scanning workflow.
 """
 
 import customtkinter as ctk
-import os
 from tkinter import filedialog
 from typing import TYPE_CHECKING, Optional, Tuple
 from src.widgets.lightweight_controls import (
@@ -61,67 +60,6 @@ class AutoscanTab:
         params_grid.columnconfigure(1, weight=0)
 
         row = 0
-        # Test exe
-        ctk.CTkLabel(params_grid, text="Test Executable:").grid(
-            row=row, column=0, sticky="w", padx=5, pady=3
-        )
-        default_test_exe = (
-            r".\test\test_cuda_windows.bat"
-            if os.name == "nt"
-            else "./test/test_opencl_linux.sh"
-        )
-        self.test_exe_var = ctk.StringVar(value=default_test_exe)
-        test_exe_row = ctk.CTkFrame(params_grid, fg_color="transparent")
-        test_exe_row.grid(row=row, column=1, sticky="ew", padx=5, pady=3)
-        test_exe_entry = LiteEntry(
-            test_exe_row,
-            textvariable=self.test_exe_var,
-            width=52,
-            min_px=420,
-            justify="left",
-        )
-        test_exe_entry.pack(side="left")
-        LiteButton(
-            test_exe_row,
-            text="...",
-            width=34,
-            command=lambda: self._browse_file(self.test_exe_var),
-        ).pack(side="left", padx=(5, 0))
-
-        row += 1
-        # Timeout loops
-        ctk.CTkLabel(params_grid, text="Timeout Loops:").grid(
-            row=row, column=0, sticky="w", padx=5, pady=3
-        )
-        self.timeout_var = ctk.StringVar(value="30")
-        LiteEntry(
-            params_grid,
-            textvariable=self.timeout_var,
-            width=10,
-            min_px=86,
-            justify="right",
-        ).grid(row=row, column=1, sticky="w", padx=5, pady=3)
-
-        row += 1
-        # Log file
-        ctk.CTkLabel(params_grid, text="Log File:").grid(
-            row=row, column=0, sticky="w", padx=5, pady=3
-        )
-        self.log_var = ctk.StringVar(value=r".\ws\vfp.log")
-        log_row = ctk.CTkFrame(params_grid, fg_color="transparent")
-        log_row.grid(row=row, column=1, sticky="ew", padx=5, pady=3)
-        log_entry = LiteEntry(
-            log_row, textvariable=self.log_var, width=52, min_px=420, justify="left"
-        )
-        log_entry.pack(side="left")
-        LiteButton(
-            log_row,
-            text="...",
-            width=34,
-            command=lambda: self._browse_file(self.log_var),
-        ).pack(side="left", padx=(5, 0))
-
-        row += 1
         # Output CSV
         ctk.CTkLabel(params_grid, text="Output CSV:").grid(
             row=row, column=0, sticky="w", padx=5, pady=3
@@ -292,9 +230,6 @@ class AutoscanTab:
 
         if mode == "legacy":
             args = gpu_args + ["set", "vfp", "autoscan_legacy"]
-            args += ["-w", self.test_exe_var.get()]
-            args += ["-l", self.log_var.get()]
-            args += ["-t", self.timeout_var.get()]
             bsod = self.bsod_var.get()
             if bsod != "(auto)":
                 args += ["-b", bsod]
@@ -302,9 +237,6 @@ class AutoscanTab:
             args = gpu_args + ["set", "vfp", "autoscan"]
             if mode == "ultrafast":
                 args.append("-u")
-            args += ["-w", self.test_exe_var.get()]
-            args += ["-l", self.log_var.get()]
-            args += ["-t", self.timeout_var.get()]
             args += ["-o", self.output_csv_var.get()]
             args += ["-i", self.init_csv_var.get()]
             bsod = self.bsod_var.get()

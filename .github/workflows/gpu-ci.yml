@@ -84,10 +84,10 @@ jobs:
         working-directory: auto-optimizer
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.ref || github.ref }}
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+        # with:
+        #   ref: ${{ inputs.ref || github.ref }}
+      # - uses: dtolnay/rust-toolchain@stable
+      # - uses: Swatinem/rust-cache@v2
         with:
           workspaces: auto-optimizer -> target
       - name: build
