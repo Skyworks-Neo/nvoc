@@ -11,9 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import sys
 from pathlib import Path
 
 from nvoc_tui.config import ConfigStore
+from nvoc_tui.models import repo_root
 
 
 def test_imports_gui_config_on_first_run(tmp_path: Path) -> None:
@@ -24,8 +26,7 @@ def test_imports_gui_config_on_first_run(tmp_path: Path) -> None:
           "cli_exe_path": "/tmp/nvoc-auto-optimizer",
           "last_gpu_idx": "2",
           "autoscan": {
-            "mode": "ultrafast",
-            "test_exe": "test.bat"
+            "mode": "ultrafast"
           }
         }
         """,
@@ -38,7 +39,6 @@ def test_imports_gui_config_on_first_run(tmp_path: Path) -> None:
     assert config.cli.exe_path == "/tmp/nvoc-auto-optimizer"
     assert config.last_gpu_idx == 2
     assert config.autoscan.mode == "ultrafast"
-    assert config.autoscan.test_exe == "test.bat"
     assert (tmp_path / "nvoc_tui_config.json").is_file()
 
 
@@ -58,3 +58,13 @@ def test_persists_tui_config(tmp_path: Path) -> None:
     assert reloaded.last_gpu_idx == 1
     assert reloaded.autoscan.mode == "legacy"
     assert reloaded.vfcurve.auto_refresh is True
+
+
+def test_repo_root_uses_executable_dir_when_frozen(
+    monkeypatch, tmp_path: Path
+) -> None:
+    exe_path = tmp_path / "portable" / "nvoc-tui.exe"
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(exe_path))
+
+    assert repo_root() == exe_path.parent

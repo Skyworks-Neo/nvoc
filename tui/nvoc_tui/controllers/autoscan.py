@@ -10,13 +10,7 @@ class AutoscanController(PaneController):
         if target_id in {"autoscan-mode", "autoscan-bsod"}:
             self.app.query_one(f"#{target_id}", Select).focus()
             return True
-        if target_id in {
-            "autoscan-test-exe",
-            "autoscan-timeout",
-            "autoscan-log",
-            "autoscan-output",
-            "autoscan-init",
-        }:
+        if target_id in {"autoscan-output", "autoscan-init"}:
             self.app.query_one(f"#{target_id}", Input).focus()
             return True
         return self.handle_button(target_id)
@@ -29,11 +23,6 @@ class AutoscanController(PaneController):
             self.app.query_one("#autoscan-bsod", Select).value or ""
         )
         mapping = {
-            "test_exe": "#autoscan-test-exe",
-            "score_path": "#autoscan-score-path",
-            "score_threshold": "#autoscan-score",
-            "timeout_loops": "#autoscan-timeout",
-            "log_file": "#autoscan-log",
             "output_csv": "#autoscan-output",
             "init_csv": "#autoscan-init",
         }
@@ -54,18 +43,6 @@ class AutoscanController(PaneController):
             if data.mode == "ultrafast":
                 args.append("-u")
             args += ["-o", data.output_csv, "-i", data.init_csv]
-        args += [
-            "-w",
-            data.test_exe,
-            "-l",
-            data.log_file,
-            "-x",
-            data.score_path,
-            "-z",
-            data.score_threshold,
-            "-t",
-            data.timeout_loops,
-        ]
         if data.bsod_recovery:
             args += ["-b", data.bsod_recovery]
         return args
