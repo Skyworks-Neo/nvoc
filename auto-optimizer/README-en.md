@@ -663,10 +663,7 @@ nvoc-auto-optimizer.exe set vfp autoscan -u -b aggressive
 | Parameter     | Shorthand | Default             | Description                                                         |
 |---------------|-----------|---------------------|---------------------------------------------------------------------|
 | `--ultrafast` | `-u`      | Off                 | Enable ultrafast mode (scan 4 key points, interpolation for others) |
-| `-w <path>`   | —         | `./test/test.bat`   | Path to pressure test script                                        |
-| `-l <path>`   | —         | `./ws/vfp.log`      | Path to scan log                                                    |
 | `-q <seq>`    | —         | `-`                 | Custom scan point sequence (`-` for auto)                           |
-| `-t <count>`  | —         | `30`                | Timeout detection loop count per test                               |
 | `-o <path>`   | —         | `./ws/vfp-tem.csv`  | Path for real-time per-point results CSV                            |
 | `-i <path>`   | —         | `./ws/vfp-init.csv` | Path for reference original curve CSV                               |
 | `-m`          | —         | Off                 | Scan video memory OC simultaneously                                 |
@@ -683,7 +680,7 @@ nvoc-auto-optimizer.exe set vfp autoscan_legacy
 nvoc-auto-optimizer.exe set vfp autoscan_legacy -b aggressive
 ```
 
-Parameters mostly same as `autoscan`, but without `--ultrafast`, `-m` (memory scan), `-q` (sequence), or `-i` (initial curve) support, as Legacy mode only has single global offset.
+Parameters mostly same as `autoscan`, but without `--ultrafast`, `-m` (memory scan), `-q` (sequence), `-o` (temporary results CSV), or `-i` (initial curve) support, as Legacy mode only has single global offset. The stress script, scan log, and timeout loop use CLI built-in defaults.
 
 ---
 

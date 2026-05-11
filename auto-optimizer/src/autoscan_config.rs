@@ -117,24 +117,15 @@ pub struct AutoscanConfig {
 impl AutoscanConfig {
     /// 从 autoscan（gpuboostv3）子命令的 ArgMatches 解析
     pub fn from_autoscan_matches(matches: &ArgMatches) -> Result<Self, Error> {
-        let timeout_loops = matches
-            .get_one::<u32>("timeout_loops")
-            .copied()
-            .unwrap_or(30);
+        let timeout_loops = 30;
 
         let recovery_method = matches
             .get_one::<String>("bsod_recovery")
             .map(|v| v.as_str() == "aggressive");
 
         Ok(AutoscanConfig {
-            test_exe: matches
-                .get_one::<String>("test_exe")
-                .cloned()
-                .unwrap_or_else(|| default_test_exe_path().to_string()),
-            log: matches
-                .get_one::<String>("log")
-                .cloned()
-                .unwrap_or_else(|| default_vfp_log_path().to_string()),
+            test_exe: default_test_exe_path().to_string(),
+            log: default_vfp_log_path().to_string(),
             timeout_loops,
             recovery_method,
             is_ultrafast: matches.get_flag("ultrafast"),
@@ -157,24 +148,15 @@ impl AutoscanConfig {
     /// 从 autoscan_legacy 子命令的 ArgMatches 解析
     /// legacy 没有 ultrafast / point_seq / output_csv / initcsv / vmem_scan，填默认值
     pub fn from_legacy_matches(matches: &ArgMatches) -> Result<Self, Error> {
-        let timeout_loops = matches
-            .get_one::<u32>("timeout_loops")
-            .copied()
-            .unwrap_or(30);
+        let timeout_loops = 30;
 
         let recovery_method = matches
             .get_one::<String>("bsod_recovery")
             .map(|v| v.as_str() == "aggressive");
 
         Ok(AutoscanConfig {
-            test_exe: matches
-                .get_one::<String>("test_exe")
-                .cloned()
-                .unwrap_or_else(|| default_test_exe_path().to_string()),
-            log: matches
-                .get_one::<String>("log")
-                .cloned()
-                .unwrap_or_else(|| default_vfp_log_path().to_string()),
+            test_exe: default_test_exe_path().to_string(),
+            log: default_vfp_log_path().to_string(),
             timeout_loops,
             recovery_method,
             // legacy 无以下字段，填空/默认
