@@ -1,6 +1,6 @@
 use crate::conv::ConvertEnum;
 use crate::platform::{
-    default_vfp_csv_path, default_vfp_init_csv_path, default_vfp_log_path,
+    default_test_exe_path, default_vfp_csv_path, default_vfp_init_csv_path, default_vfp_log_path,
     default_vfp_temp_csv_path,
 };
 use crate::types::{
@@ -788,6 +788,24 @@ pub fn get_arguments() -> Command {
                                         .help("Point seq to scan at"),
                                 )
                                 .arg(
+                                    Arg::new("test_exe")
+                                        .value_name("TEST_EXE")
+                                        .short('w')
+                                        .long("test-exe")
+                                        .num_args(1)
+                                        .default_value(default_test_exe_path())
+                                        .help("CLI stress wrapper executable/script path"),
+                                )
+                                .arg(
+                                    Arg::new("log")
+                                        .value_name("LOG")
+                                        .short('l')
+                                        .long("log")
+                                        .num_args(1)
+                                        .default_value(default_vfp_log_path())
+                                        .help("Autoscan log file path"),
+                                )
+                                .arg(
                                     Arg::new("timeout_loops")
                                         .short('t')
                                         .value_name("timeout_loops")
@@ -832,6 +850,24 @@ pub fn get_arguments() -> Command {
                         .subcommand(
                             Command::new("autoscan_legacy")
                                 .about("auto-scanner for legacy GPUs (Maxwell / pre-Pascal) using global pstate OC offset")
+                                .arg(
+                                    Arg::new("test_exe")
+                                        .value_name("TEST_EXE")
+                                        .short('w')
+                                        .long("test-exe")
+                                        .num_args(1)
+                                        .default_value(default_test_exe_path())
+                                        .help("CLI stress wrapper executable/script path"),
+                                )
+                                .arg(
+                                    Arg::new("log")
+                                        .value_name("LOG")
+                                        .short('l')
+                                        .long("log")
+                                        .num_args(1)
+                                        .default_value(default_vfp_log_path())
+                                        .help("Autoscan log file path"),
+                                )
                                 .arg(
                                     Arg::new("timeout_loops")
                                         .short('t')

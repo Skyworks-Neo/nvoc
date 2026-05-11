@@ -127,8 +127,14 @@ impl AutoscanConfig {
             .map(|v| v.as_str() == "aggressive");
 
         Ok(AutoscanConfig {
-            test_exe: default_test_exe_path().to_string(),
-            log: default_vfp_log_path().to_string(),
+            test_exe: matches
+                .get_one::<String>("test_exe")
+                .cloned()
+                .unwrap_or_else(|| default_test_exe_path().to_string()),
+            log: matches
+                .get_one::<String>("log")
+                .cloned()
+                .unwrap_or_else(|| default_vfp_log_path().to_string()),
             timeout_loops,
             recovery_method,
             is_ultrafast: matches.get_flag("ultrafast"),
@@ -161,8 +167,14 @@ impl AutoscanConfig {
             .map(|v| v.as_str() == "aggressive");
 
         Ok(AutoscanConfig {
-            test_exe: default_test_exe_path().to_string(),
-            log: default_vfp_log_path().to_string(),
+            test_exe: matches
+                .get_one::<String>("test_exe")
+                .cloned()
+                .unwrap_or_else(|| default_test_exe_path().to_string()),
+            log: matches
+                .get_one::<String>("log")
+                .cloned()
+                .unwrap_or_else(|| default_vfp_log_path().to_string()),
             timeout_loops,
             recovery_method,
             // legacy 无以下字段，填空/默认
