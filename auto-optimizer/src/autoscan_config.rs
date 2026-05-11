@@ -156,7 +156,20 @@ impl AutoscanConfig {
                 .cloned()
                 .unwrap_or_else(|| default_vfp_init_csv_path().to_string()),
             vmem_scan: matches.get_flag("Vmem_scan_switch"),
-            cuda_device: matches.get_one::<u32>("cuda_device").copied(),
+            cuda_device: matches.get_one::<u32>("cuda_device").copied().or_else(|| {
+                // Auto-derive from --gpu when it's a single numeric index so that
+                // CUDA_VISIBLE_DEVICES (set with CUDA_DEVICE_ORDER=PCI_BUS_ID) matches
+                // the NVAPI/NVML PCI-bus GPU selection without a separate --cuda-device flag.
+                let specs: Vec<&String> = matches
+                    .get_many::<String>("gpu")
+                    .map(|v| v.collect())
+                    .unwrap_or_default();
+                if specs.len() == 1 {
+                    specs[0].parse::<u32>().ok().filter(|&n| n < 256)
+                } else {
+                    None
+                }
+            }),
             stressor_extra_args: matches
                 .get_many::<String>("stressor_extra_args")
                 .map(|v| v.cloned().collect())
@@ -193,7 +206,17 @@ impl AutoscanConfig {
             output_csv: default_vfp_temp_csv_path().to_string(),
             init_csv: default_vfp_init_csv_path().to_string(),
             vmem_scan: false,
-            cuda_device: matches.get_one::<u32>("cuda_device").copied(),
+            cuda_device: matches.get_one::<u32>("cuda_device").copied().or_else(|| {
+                let specs: Vec<&String> = matches
+                    .get_many::<String>("gpu")
+                    .map(|v| v.collect())
+                    .unwrap_or_default();
+                if specs.len() == 1 {
+                    specs[0].parse::<u32>().ok().filter(|&n| n < 256)
+                } else {
+                    None
+                }
+            }),
             stressor_extra_args: matches
                 .get_many::<String>("stressor_extra_args")
                 .map(|v| v.cloned().collect())

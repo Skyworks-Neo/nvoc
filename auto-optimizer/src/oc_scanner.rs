@@ -228,6 +228,9 @@ mod pressure_runner {
                 cmd.args(cfg.stressor_extra_args);
             }
             if let Some(dev) = cfg.cuda_device {
+                // PCI_BUS_ID makes CUDA ordinals match NVAPI/NVML ordering,
+                // so --gpu N and CUDA_VISIBLE_DEVICES=N refer to the same device.
+                cmd.env("CUDA_DEVICE_ORDER", "PCI_BUS_ID");
                 cmd.env("CUDA_VISIBLE_DEVICES", dev.to_string());
             }
             match cmd.spawn()
