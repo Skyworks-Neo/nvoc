@@ -1,8 +1,8 @@
-use crate::basic_func::{select_gpus, GpuSelector};
+use crate::basic_func::{GpuSelector, select_gpus};
 use crate::conv::ConvertEnum;
 use crate::error::Error;
 use crate::human::print_scan_separator;
-use crate::nvidia_gpu_type::{fetch_gpu_type, GpuType};
+use crate::nvidia_gpu_type::{GpuType, fetch_gpu_type};
 use crate::types::NvapiLockedVoltageTarget;
 use crate::types::VfpResetDomain;
 use clap::ArgMatches;

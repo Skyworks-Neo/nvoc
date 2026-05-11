@@ -23,35 +23,39 @@ fn main() {
 
 #[cfg(windows)]
 mod nvoc_service {
+    use clap;
+    use futures_util::StreamExt;
+    use gag::Redirect;
+    use log::{LevelFilter, error, info, warn};
+    use nvapi_hi::Gpu;
+    use nvapi_hi::nvapi::ClockFrequencyType;
+    use nvapi_hi::{ClockDomain, KilohertzDelta, PState};
+    use nvml_wrapper::{
+        Nvml,
+        enum_wrappers::device::{TemperatureSensor, TemperatureThreshold},
+    };
+    use nvoc_auto_optimizer::{find_matching_vfp_point, handle_lock_vfp, reset_vfp_frequency_lock};
     use std::{
-        time::{SystemTime, UNIX_EPOCH},
-        fs::{OpenOptions},
-        // io::Write,
-        ffi::OsString, time::Duration,
+        cmp::{max, min},
         env,
+        // io::Write,
+        ffi::OsString,
+        fs::OpenOptions,
         sync::{Arc, Mutex},
         thread,
-        cmp::{min, max},
+        time::Duration,
         time::Instant,
+        time::{SystemTime, UNIX_EPOCH},
     };
-    use futures_util::StreamExt;
     use windows_service::{
-        define_windows_service,
+        Result, define_windows_service,
         service::{
             ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus,
             ServiceType,
         },
         service_control_handler::{self, ServiceControlHandlerResult},
-        service_dispatcher, Result,
+        service_dispatcher,
     };
-    use nvapi_hi::Gpu;
-    use nvml_wrapper::{Nvml, enum_wrappers::device::{TemperatureThreshold, TemperatureSensor}};
-    use nvoc_auto_optimizer::{handle_lock_vfp, reset_vfp_frequency_lock, find_matching_vfp_point};
-    use clap;
-    use log::{info, error, warn, LevelFilter};
-    use gag::Redirect;
-    use nvapi_hi::nvapi::ClockFrequencyType;
-    use nvapi_hi::{ClockDomain, KilohertzDelta, PState};
 
     const SERVICE_NAME: &str = "nvoc_service";
     const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
@@ -72,15 +76,12 @@ mod nvoc_service {
     // parameters. There is no stdout or stderr at this point so make sure to configure the log
     // output to file if needed.
     pub fn my_service_main(_arguments: Vec<OsString>) {
-        let exe_dir = env::current_exe()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .to_path_buf();
-        let log_dir = exe_dir.parent()  // 第一级
-            .and_then(|p| p.parent())    // 第二级
-            .unwrap_or(&exe_dir)         // 如果失败就用 exe_dir
-            .join("logs");                // 加上 logs 目录
+        let exe_dir = env::current_exe().unwrap().parent().unwrap().to_path_buf();
+        let log_dir = exe_dir
+            .parent() // 第一级
+            .and_then(|p| p.parent()) // 第二级
+            .unwrap_or(&exe_dir) // 如果失败就用 exe_dir
+            .join("logs"); // 加上 logs 目录
         std::fs::create_dir_all(&log_dir).unwrap();
 
         let log_path = log_dir.join(format!("canbedel-{}-output.log", SERVICE_NAME));
@@ -90,19 +91,18 @@ mod nvoc_service {
             .append(true)
             .open(&log_path)
             .expect("Failed to open log file");
-        
+
         // 重定向 stdout 和 stderr 到同一个文件
-        let _stdout_redirect = Redirect::stdout(log_file.try_clone().unwrap())
-            .expect("Failed to redirect stdout");
-        let _stderr_redirect = Redirect::stderr(log_file)
-            .expect("Failed to redirect stderr");
+        let _stdout_redirect =
+            Redirect::stdout(log_file.try_clone().unwrap()).expect("Failed to redirect stdout");
+        let _stderr_redirect = Redirect::stderr(log_file).expect("Failed to redirect stderr");
 
         // 2. 初始化 log2（提供轮转和日志级别）
         let _logger = log2::open(log_path_for_log2.to_str().unwrap())
-            .size(100 * 1024 * 1024)  // 100MB
-            .rotate(2)                 // 保留1个备份
+            .size(100 * 1024 * 1024) // 100MB
+            .rotate(2) // 保留1个备份
             // .tee(true)                  // 同时输出到终端
-            .level(LevelFilter::Info)  
+            .level(LevelFilter::Info)
             .start();
 
         let config = Arc::new(Mutex::new(crate::websrv::NVOCServiceConfig {
@@ -161,8 +161,9 @@ mod nvoc_service {
         });
 
         let _ = compio::runtime::RuntimeBuilder::new()
-        .build().unwrap()
-        .block_on(run_service(config, shutdown_rx, cmd_rx));
+            .build()
+            .unwrap()
+            .block_on(run_service(config, shutdown_rx, cmd_rx));
 
         // Tell the system that service has stopped.
         let _ = status_handle.set_service_status(ServiceStatus {
@@ -176,8 +177,11 @@ mod nvoc_service {
         });
     }
 
-    async fn run_service(config: Arc<Mutex<crate::websrv::NVOCServiceConfig>>, shutdown_rx: flume::Receiver<()>, cmd_rx: flume::Receiver<crate::websrv::NVOCServiceCmd>) -> Result<()> {
-        
+    async fn run_service(
+        config: Arc<Mutex<crate::websrv::NVOCServiceConfig>>,
+        shutdown_rx: flume::Receiver<()>,
+        cmd_rx: flume::Receiver<crate::websrv::NVOCServiceCmd>,
+    ) -> Result<()> {
         let mut stopc = shutdown_rx.into_stream().skip(1);
         let mut cmdc = cmd_rx.into_stream();
 
@@ -190,15 +194,17 @@ mod nvoc_service {
         // 每张 GPU 的动态温控锁定点，初始为最高（即未限制）
         let mut gpu_dynamic_lock_point: Vec<usize> = vec![vfp_highest_lock_point; gpus.len()];
 
-        let start_interval: Mutex<Option<humantime::Duration>> = Mutex::new(Some(humantime::Duration::from(Duration::from_secs(5))));
-        let interval: Option<humantime::Duration> = start_interval.lock().unwrap().as_ref().cloned();
+        let start_interval: Mutex<Option<humantime::Duration>> =
+            Mutex::new(Some(humantime::Duration::from(Duration::from_secs(5))));
+        let interval: Option<humantime::Duration> =
+            start_interval.lock().unwrap().as_ref().cloned();
         let timer = create_timer(interval).fuse();
         let mut timer = std::pin::pin!(timer);
 
         info!("NVOC Service Start!!");
 
         loop {
-            futures_util::select!{
+            futures_util::select! {
                 _ = stopc.next() => {
                     break;
                 }
@@ -238,7 +244,7 @@ mod nvoc_service {
                         }
                     }
                 }
-                
+
                 _ = timer.next() => {
                     let cfg = config.lock().unwrap();
                     let vfp_low_lock_point = min(max(cfg.vfp_lock_point, vfp_lowest_lock_point), vfp_highest_lock_point);
@@ -260,7 +266,7 @@ mod nvoc_service {
                         ];
                         let threshold_values: [u32; 4] = thresholds.map(|threshold_type| {
                         device.temperature_threshold(threshold_type).unwrap_or(0)});
-                        
+
 
                         info!(
                             "Time {} GPU {}: {} UUID={} Temperature={} Threshold={} {} {} {}",
@@ -338,22 +344,22 @@ mod nvoc_service {
                     drop(cfg); // 释放锁
                 }
             }
-
         }
         Ok(())
     }
 
-    pub fn create_timer(interval: Option<humantime::Duration>) -> impl futures_util::Stream<Item = Instant> {
-    if let Some(d) = interval {
-        futures_util::future::Either::Left(async_stream::stream! {
-            let mut interval = compio::time::interval(*d);
-            loop {
-                yield interval.tick().await;
-            }
-        })
-    } else {
-        futures_util::future::Either::Right(futures_util::stream::pending())
+    pub fn create_timer(
+        interval: Option<humantime::Duration>,
+    ) -> impl futures_util::Stream<Item = Instant> {
+        if let Some(d) = interval {
+            futures_util::future::Either::Left(async_stream::stream! {
+                let mut interval = compio::time::interval(*d);
+                loop {
+                    yield interval.tick().await;
+                }
+            })
+        } else {
+            futures_util::future::Either::Right(futures_util::stream::pending())
+        }
     }
-}
-
 }

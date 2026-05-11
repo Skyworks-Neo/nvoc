@@ -1,7 +1,7 @@
 use crate::autoscan_config::{FixResultConfig, VfpExportConfig};
 // oc_set_function
 use crate::error::Error;
-use crate::nvidia_gpu_type::{fetch_gpu_type, GpuType};
+use crate::nvidia_gpu_type::{GpuType, fetch_gpu_type};
 use crate::oc_get_set_function_nvapi::{get_gpu_tdp_temp_limit, set_pstate_base_voltage};
 #[cfg(all(not(windows), not(target_os = "linux")))]
 use crate::platform::panic_windows_only;

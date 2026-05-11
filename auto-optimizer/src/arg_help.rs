@@ -4,7 +4,7 @@ use crate::platform::{
     default_vfp_temp_csv_path,
 };
 use crate::types::{
-    OutputFormat, ResetSettings, VfpResetDomain, POSSIBLE_BOOL, POSSIBLE_BOOL_OFF, POSSIBLE_BOOL_ON,
+    OutputFormat, POSSIBLE_BOOL, POSSIBLE_BOOL_OFF, POSSIBLE_BOOL_ON, ResetSettings, VfpResetDomain,
 };
 use clap::{Arg, ArgAction, Command};
 use nvapi_hi::PState;

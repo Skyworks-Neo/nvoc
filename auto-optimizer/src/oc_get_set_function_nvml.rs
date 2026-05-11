@@ -21,7 +21,10 @@ fn find_nvml_device<'n>(nvml: &'n Nvml, gpu_id: u32) -> Option<nvml_wrapper::Dev
     None
 }
 
-fn find_nvml_device_err<'n>(nvml: &'n Nvml, gpu_id: u32) -> Result<nvml_wrapper::Device<'n>, Error> {
+fn find_nvml_device_err<'n>(
+    nvml: &'n Nvml,
+    gpu_id: u32,
+) -> Result<nvml_wrapper::Device<'n>, Error> {
     find_nvml_device(nvml, gpu_id)
         .ok_or_else(|| Error::Custom(format!("GPU {} not found in NVML", gpu_id)))
 }
@@ -163,7 +166,11 @@ pub fn set_nvml_core_clock_vf_offset(
 ) -> Result<(), Error> {
     let mut device = find_nvml_device_err(nvml, gpu_id)?;
     device
-        .set_clock_offset(nvml_wrapper::enum_wrappers::device::Clock::Graphics, pstate, offset)
+        .set_clock_offset(
+            nvml_wrapper::enum_wrappers::device::Clock::Graphics,
+            pstate,
+            offset,
+        )
         .map_err(|e| Error::Custom(format!("NVML Set Core Clock VF Offset Error: {:?}", e)))
 }
 

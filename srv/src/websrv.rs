@@ -1,8 +1,8 @@
+use log::{error, info, warn};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tiny_http::{Header, Response, Server};
-use serde::{Deserialize, Serialize};
-use log::{error, info, warn};
 
 // Accepted temperature-limit range (°C) for /set_temp_limit_soft_vfp.
 const TEMP_LIMIT_MIN: u32 = 40;
@@ -73,8 +73,7 @@ fn respond(request: tiny_http::Request, response: Response<std::io::Cursor<Vec<u
 }
 
 fn json_content_type() -> Header {
-    Header::from_bytes("Content-Type", "application/json")
-        .expect("static header is valid ASCII")
+    Header::from_bytes("Content-Type", "application/json").expect("static header is valid ASCII")
 }
 
 pub fn start_http_server(
