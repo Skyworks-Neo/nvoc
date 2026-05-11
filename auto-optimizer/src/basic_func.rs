@@ -52,11 +52,12 @@ fn get_primary_screen_size_raw() -> (u32, u32) {
     const OFFSET_PELS_WIDTH: usize = 172;
     const OFFSET_PELS_HEIGHT: usize = 176;
     const ENUM_CURRENT_SETTINGS: u32 = 0xFFFF_FFFF;
-    #[repr(C, align(4))]
-    struct AlignedBuf([u8; 256]);
     unsafe {
-        let mut aligned = AlignedBuf([0u8; 256]);
-        let buf = &mut aligned.0;
+        // dmDriverExtra (offset 70) is a u16, so a driver may write up to 65 535 bytes
+        // of private data after the 220-byte DEVMODEW base.  A fixed 256-byte stack buffer
+        // only has 36 bytes of headroom — not guaranteed safe on all driver versions.
+        // Use a heap Vec to cover the full possible range without stack pressure.
+        let mut buf = vec![0u8; DEVMODEW_SIZE + u16::MAX as usize];
         buf[OFFSET_DM_SIZE] = DEVMODEW_SIZE as u8;
         buf[OFFSET_DM_SIZE + 1] = (DEVMODEW_SIZE >> 8) as u8;
         let ret = EnumDisplaySettingsW(std::ptr::null(), ENUM_CURRENT_SETTINGS, buf.as_mut_ptr());
