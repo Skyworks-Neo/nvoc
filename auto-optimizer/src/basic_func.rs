@@ -24,57 +24,51 @@ pub fn local_time_hms() -> String {
         .unwrap_or_else(|_| String::from("??:??:??"))
 }
 
-// display_info replaced by direct Win32 API call to avoid pulling in the entire `windows` crate
+// display_info replaced by direct Win32 API call to avoid pulling in the entire `windows` crate.
+// DEVMODEW layout per wingdi.h (x86-64 ABI, size = 220 bytes):
+//   dmDeviceName[32 u16] | dmSpecVersion | dmDriverVersion | dmSize | dmDriverExtra
+//   | dmFields | _display_union[96] | dmPelsWidth | dmPelsHeight | _rest[40]
 #[cfg(windows)]
 fn get_primary_screen_size_raw() -> (u32, u32) {
-    use std::ffi::c_int;
+    use std::{ffi::c_int, mem};
+
+    #[repr(C)]
+    struct DevModeW {
+        dm_device_name: [u16; 32], // 64 bytes
+        dm_spec_version: u16,
+        dm_driver_version: u16,
+        dm_size: u16,
+        dm_driver_extra: u16,
+        dm_fields: u32,
+        _display_union: [u8; 96], // covers the display-mode union (bytes 76–171)
+        dm_pels_width: u32,
+        dm_pels_height: u32,
+        _rest: [u8; 40], // remaining fields to reach the standard 220-byte size
+    }
+
+    const _: () = assert!(mem::size_of::<DevModeW>() == 220);
+
     unsafe extern "system" {
         fn EnumDisplaySettingsW(
             lpsz_device_name: *const u16,
             i_mode_num: u32,
-            lp_dev_mode: *mut u8,
+            lp_dev_mode: *mut DevModeW,
         ) -> c_int;
     }
-    // DEVMODEW（wingdi.h）Win32 ABI 固定布局，x86-64 下：
-    //   +  0  dmDeviceName[32]  = 64 字节
-    //   + 64  dmSpecVersion     = 2 字节
-    //   + 66  dmDriverVersion   = 2 字节
-    //   + 68  dmSize            = 2 字节  ← OFFSET_DM_SIZE
-    //   + 70  dmDriverExtra     = 2 字节
-    //   + 72  dmFields          = 4 字节
-    //   +76~+171  union（显示模式字段，96 字节）
-    //   +172  dmPelsWidth       = 4 字节  ← OFFSET_PELS_WIDTH
-    //   +176  dmPelsHeight      = 4 字节  ← OFFSET_PELS_HEIGHT
-    //   …（后续字段省略，总结构体大小 220 字节）
-    // 参考：https://learn.microsoft.com/en-us/windows/win32/api/wingdi/ns-wingdi-devmodew
-    const DEVMODEW_SIZE: usize = 220;
-    const OFFSET_DM_SIZE: usize = 68;
-    const OFFSET_PELS_WIDTH: usize = 172;
-    const OFFSET_PELS_HEIGHT: usize = 176;
+
     const ENUM_CURRENT_SETTINGS: u32 = 0xFFFF_FFFF;
-    #[repr(C, align(4))]
-    struct AlignedBuf([u8; 256]);
-    unsafe {
-        let mut aligned = AlignedBuf([0u8; 256]);
-        let buf = &mut aligned.0;
-        buf[OFFSET_DM_SIZE] = DEVMODEW_SIZE as u8;
-        buf[OFFSET_DM_SIZE + 1] = (DEVMODEW_SIZE >> 8) as u8;
-        let ret = EnumDisplaySettingsW(std::ptr::null(), ENUM_CURRENT_SETTINGS, buf.as_mut_ptr());
-        if ret != 0 {
-            let w = u32::from_le_bytes(
-                buf[OFFSET_PELS_WIDTH..OFFSET_PELS_WIDTH + 4]
-                    .try_into()
-                    .unwrap(),
-            );
-            let h = u32::from_le_bytes(
-                buf[OFFSET_PELS_HEIGHT..OFFSET_PELS_HEIGHT + 4]
-                    .try_into()
-                    .unwrap(),
-            );
-            (w, h)
-        } else {
-            (0, 0)
-        }
+
+    let mut dev_mode: DevModeW = unsafe { mem::zeroed() };
+    dev_mode.dm_size = mem::size_of::<DevModeW>() as u16;
+
+    let ok = unsafe {
+        EnumDisplaySettingsW(std::ptr::null(), ENUM_CURRENT_SETTINGS, &mut dev_mode) != 0
+    };
+
+    if ok {
+        (dev_mode.dm_pels_width, dev_mode.dm_pels_height)
+    } else {
+        (0, 0)
     }
 }
 use nvml_wrapper::enum_wrappers::device::{Clock, TemperatureSensor};
