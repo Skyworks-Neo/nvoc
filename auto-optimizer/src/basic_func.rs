@@ -47,6 +47,11 @@ fn get_primary_screen_size_raw() -> (u32, u32) {
     //   +176  dmPelsHeight      = 4 字节  ← OFFSET_PELS_HEIGHT
     //   …（后续字段省略，总结构体大小 220 字节）
     // 参考：https://learn.microsoft.com/en-us/windows/win32/api/wingdi/ns-wingdi-devmodew
+    //
+    // DEVMODEW_SIZE is the documented, stable Win32 ABI value (unchanged since Windows 2000).
+    // We avoid the `windows` crate to keep dependencies minimal, so size_of::<DEVMODEW>() is
+    // unavailable; this constant records the same value. The static assert below enforces that
+    // AlignedBuf always has enough capacity — it will fail to compile if the constant ever drifts.
     const DEVMODEW_SIZE: usize = 220;
     const OFFSET_DM_SIZE: usize = 68;
     const OFFSET_PELS_WIDTH: usize = 172;
@@ -54,6 +59,10 @@ fn get_primary_screen_size_raw() -> (u32, u32) {
     const ENUM_CURRENT_SETTINGS: u32 = 0xFFFF_FFFF;
     #[repr(C, align(4))]
     struct AlignedBuf([u8; 256]);
+    const _: () = assert!(
+        DEVMODEW_SIZE <= std::mem::size_of::<AlignedBuf>(),
+        "AlignedBuf must be at least DEVMODEW_SIZE bytes"
+    );
     unsafe {
         let mut aligned = AlignedBuf([0u8; 256]);
         let buf = &mut aligned.0;
