@@ -200,6 +200,10 @@ jobs:
         run: |
           python -m pip install --quiet ruff
           ruff check test.py
+      - name: non-GPU unit tests
+        run: |
+          python -m pip install --quiet pytest
+          python -m pytest -q test_non_gpu_ci.py
 
   python-stressor-opencl:
     name: stressor compile (cli-stressor-opencl)
@@ -221,6 +225,10 @@ jobs:
         run: |
           python -m pip install --quiet ruff
           ruff check test.py
+      - name: non-GPU unit tests
+        run: |
+          python -m pip install --quiet pytest
+          python -m pytest -q test_non_gpu_ci.py
 
   ci-summary:
     name: ci summary

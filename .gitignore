@@ -1,3 +1,6 @@
 .codex
 /target/
 gui/nvoc_gui_config.json
+__pycache__/
+*.pyc
+*.pyo
