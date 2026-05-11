@@ -1,14 +1,10 @@
 use crate::autoscan_config::{FixResultConfig, VfpExportConfig};
-use crate::basic_func::{get_primary_monitor_resolution, get_second_largest_resolution};
 // oc_set_function
 use crate::error::Error;
-use crate::nvidia_gpu_type::{GpuType, fetch_gpu_type};
-use crate::oc_get_set_function_nvapi::{
-    get_gpu_tdp_temp_limit, set_pstate_base_voltage, set_resolution,
-};
+use crate::nvidia_gpu_type::{fetch_gpu_type, GpuType};
+use crate::oc_get_set_function_nvapi::{get_gpu_tdp_temp_limit, set_pstate_base_voltage};
 #[cfg(all(not(windows), not(target_os = "linux")))]
 use crate::platform::panic_windows_only;
-use crate::platform::stressor_3d_conf_path;
 use csv::{ReaderBuilder, StringRecord, WriterBuilder};
 use num_traits::abs;
 use nvapi_hi::{
@@ -206,14 +202,20 @@ fn extract_default_frequencies(file_path: &str, legacy_flag: bool) -> Result<Vec
         let default_frequency_load: u32;
 
         if legacy_flag {
-            default_frequency_load = record.get(1)
-                .ok_or_else(|| crate::error::Error::Custom("row too short: missing column 1".into()))?
+            default_frequency_load = record
+                .get(1)
+                .ok_or_else(|| {
+                    crate::error::Error::Custom("row too short: missing column 1".into())
+                })?
                 .parse()?;
         }
         // Read only frequency column
         else {
-            default_frequency_load = record.get(3)
-                .ok_or_else(|| crate::error::Error::Custom("row too short: missing column 3".into()))?
+            default_frequency_load = record
+                .get(3)
+                .ok_or_else(|| {
+                    crate::error::Error::Custom("row too short: missing column 3".into())
+                })?
                 .parse()?;
         }
         // Read only default_frequency column
@@ -233,7 +235,10 @@ fn update_csv_with_load_and_margin(
     let dest_path = std::path::Path::new(file_path);
     let tmp_name = format!(
         ".{}.{}.tmp",
-        dest_path.file_name().and_then(|n| n.to_str()).unwrap_or("tmp"),
+        dest_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("tmp"),
         std::process::id()
     );
     let tmp_path = dest_path.parent().unwrap_or(dest_path).join(&tmp_name);
@@ -379,31 +384,6 @@ pub fn handle_vfp_export(gpu: &Gpu, matches: &clap::ArgMatches) -> Result<(), Er
     }?;
 
     if cfg.dynamic {
-        let test_conf_file_path = stressor_3d_conf_path();
-        let (width, height) = get_primary_monitor_resolution();
-        println!("Primary monitor resolution: {}x{}", width, height);
-        let mut test_resolution = None;
-        match get_second_largest_resolution() {
-            Some(resolution) => {
-                let (width, height) = resolution.dimensions();
-                println!("Second largest fitting resolution: {}x{}", width, height);
-                test_resolution = Some(resolution);
-            }
-            None => println!("No fitting resolution found."),
-        }
-        match (test_conf_file_path, test_resolution) {
-            (Some(path), Some(resolution)) => match set_resolution(path, resolution) {
-                Ok(_) => println!("Resolution set successfully."),
-                Err(e) => eprintln!("Failed to set resolution: {}", e),
-            },
-            (None, Some(_)) => {
-                println!(
-                    "Skipping game resolution sync because no stressor game config is available."
-                )
-            }
-            (_, None) => println!("No resolution to set."),
-        }
-
         if let Err(e) = apply_autoscan_profile(gpu, matches, 30) {
             eprintln!(
                 "apply_autoscan_profile failed: {:?}, continuing export...",
@@ -532,12 +512,23 @@ pub fn handle_vfp_import(gpu: &Gpu, matches: &clap::ArgMatches) -> Result<(), Er
 
 // oc_profile_function.rs
 
-fn linear_interpolate(v1: u32, d1: i32, v2: u32, d2: i32, current_v: u32, delta_step: i32) -> Result<i32, crate::error::Error> {
+fn linear_interpolate(
+    v1: u32,
+    d1: i32,
+    v2: u32,
+    d2: i32,
+    current_v: u32,
+    delta_step: i32,
+) -> Result<i32, crate::error::Error> {
     if v1 == v2 {
         let mid = ((d1 as i64 + d2 as i64) / 2) as i32;
         return Ok(mid);
     }
-    let (lo_v, lo_d, hi_v, hi_d) = if v1 <= v2 { (v1, d1, v2, d2) } else { (v2, d2, v1, d1) };
+    let (lo_v, lo_d, hi_v, hi_d) = if v1 <= v2 {
+        (v1, d1, v2, d2)
+    } else {
+        (v2, d2, v1, d1)
+    };
     if current_v < lo_v || current_v > hi_v {
         return Err(crate::error::Error::Custom(format!(
             "linear_interpolate: current_v {} out of range [{}, {}]",
@@ -554,7 +545,9 @@ fn linear_interpolate(v1: u32, d1: i32, v2: u32, d2: i32, current_v: u32, delta_
     Ok(rounded as i32)
 }
 
-fn get_key_points_indices(lines: &[Vec<String>]) -> Result<(usize, usize, usize, usize), crate::error::Error> {
+fn get_key_points_indices(
+    lines: &[Vec<String>],
+) -> Result<(usize, usize, usize, usize), crate::error::Error> {
     let mut key_indices = Vec::new();
 
     for (i, columns) in lines.iter().enumerate() {
@@ -580,10 +573,19 @@ fn get_key_points_indices(lines: &[Vec<String>]) -> Result<(usize, usize, usize,
             key_indices.len()
         )));
     }
-    Ok((key_indices[0], key_indices[1], key_indices[2], key_indices[3]))
+    Ok((
+        key_indices[0],
+        key_indices[1],
+        key_indices[2],
+        key_indices[3],
+    ))
 }
 
-fn parse_col<T: std::str::FromStr>(row: &[String], idx: usize, what: &str) -> Result<T, crate::error::Error>
+fn parse_col<T: std::str::FromStr>(
+    row: &[String],
+    idx: usize,
+    what: &str,
+) -> Result<T, crate::error::Error>
 where
     T::Err: std::fmt::Display,
 {
@@ -593,7 +595,11 @@ where
         .map_err(|e| crate::error::Error::Custom(format!("column {} ({}): {}", idx, what, e)))
 }
 
-fn interpolate_deltas(lines: &mut [Vec<String>], minimum_delta_step: i32, maxq_flag: bool) -> Result<(), crate::error::Error> {
+fn interpolate_deltas(
+    lines: &mut [Vec<String>],
+    minimum_delta_step: i32,
+    maxq_flag: bool,
+) -> Result<(), crate::error::Error> {
     let (p1_idx, p2_idx, p3_idx, p4_idx) = get_key_points_indices(lines)?;
 
     let p1_d;
@@ -830,7 +836,8 @@ fn extract_value(line: &str, pattern: &str) -> Option<i32> {
     line.split(pattern)
         .nth(1) // Get the part after the pattern
         .and_then(|s| s.split_whitespace().next()) // Get the next word (numeric value)
-        .and_then(|s| s.trim_matches(|c| c == '.' || c == ',').parse::<i32>().ok()) // Parse as i32
+        .and_then(|s| s.trim_matches(|c| c == '.' || c == ',').parse::<i32>().ok())
+    // Parse as i32
 }
 
 fn extract_value_f64(line: &str, pattern: &str) -> Option<f64> {
@@ -955,7 +962,10 @@ pub fn export_vfp_from_log(matches: &clap::ArgMatches) -> Result<(), Error> {
             }
             if let Some(point) = extract_value(line, "point: #") {
                 if last_voltage_point != Some(point) {
-                    eprintln!("Warning: export_vfp_from_log: expected voltage point {:?}, got {} — skipping", last_voltage_point, point);
+                    eprintln!(
+                        "Warning: export_vfp_from_log: expected voltage point {:?}, got {} — skipping",
+                        last_voltage_point, point
+                    );
                     continue;
                 }
             }
@@ -1030,7 +1040,9 @@ pub fn key_point_extractor(
         }
 
         if records.is_empty() {
-            return Err(crate::error::Error::Custom("key_point_extractor: no records in VFP CSV".into()));
+            return Err(crate::error::Error::Custom(
+                "key_point_extractor: no records in VFP CSV".into(),
+            ));
         }
 
         for i in 0..records.len() - 1 {

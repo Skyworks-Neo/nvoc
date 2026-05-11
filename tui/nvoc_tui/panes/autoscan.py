@@ -47,31 +47,6 @@ def compose_autoscan(config: AppConfig) -> ComposeResult:
                             )
                         for label, value, widget_id in [
                             (
-                                mnemonic_text("T", "est Executable"),
-                                config.autoscan.test_exe,
-                                "autoscan-test-exe",
-                            ),
-                            (
-                                "Score XML Path",
-                                config.autoscan.score_path,
-                                "autoscan-score-path",
-                            ),
-                            (
-                                "Score Threshold",
-                                config.autoscan.score_threshold,
-                                "autoscan-score",
-                            ),
-                            (
-                                mnemonic_text("L", "oops", "Timeout "),
-                                config.autoscan.timeout_loops,
-                                "autoscan-timeout",
-                            ),
-                            (
-                                mnemonic_text("g", " File", "Lo"),
-                                config.autoscan.log_file,
-                                "autoscan-log",
-                            ),
-                            (
                                 mnemonic_text("O", "utput CSV"),
                                 config.autoscan.output_csv,
                                 "autoscan-output",

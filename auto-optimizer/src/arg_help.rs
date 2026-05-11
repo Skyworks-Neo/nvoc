@@ -4,7 +4,7 @@ use crate::platform::{
     default_vfp_temp_csv_path,
 };
 use crate::types::{
-    OutputFormat, POSSIBLE_BOOL, POSSIBLE_BOOL_OFF, POSSIBLE_BOOL_ON, ResetSettings, VfpResetDomain,
+    OutputFormat, ResetSettings, VfpResetDomain, POSSIBLE_BOOL, POSSIBLE_BOOL_OFF, POSSIBLE_BOOL_ON,
 };
 use clap::{Arg, ArgAction, Command};
 use nvapi_hi::PState;
@@ -780,22 +780,6 @@ pub fn get_arguments() -> Command {
                                         .help("Enable ultrafast mode for maximum speed"),
                                 )
                                 .arg(
-                                    Arg::new("test_exe")
-                                        .value_name("TEST_EXE")
-                                        .short('w')
-                                        .num_args(1)
-                                        .default_value(default_test_exe_path())
-                                        .help("test exe file path"),
-                                )
-                                .arg(
-                                    Arg::new("log")
-                                        .value_name("LOG")
-                                        .short('l')
-                                        .num_args(1)
-                                        .default_value(default_vfp_log_path())
-                                        .help("log file path"),
-                                )
-                                .arg(
                                     Arg::new("point_seq")
                                         .value_name("point_seq")
                                         .short('q')
@@ -804,13 +788,31 @@ pub fn get_arguments() -> Command {
                                         .help("Point seq to scan at"),
                                 )
                                 .arg(
+                                    Arg::new("test_exe")
+                                        .value_name("TEST_EXE")
+                                        .short('w')
+                                        .long("test-exe")
+                                        .num_args(1)
+                                        .default_value(default_test_exe_path())
+                                        .help("CLI stress wrapper executable/script path"),
+                                )
+                                .arg(
+                                    Arg::new("log")
+                                        .value_name("LOG")
+                                        .short('l')
+                                        .long("log")
+                                        .num_args(1)
+                                        .default_value(default_vfp_log_path())
+                                        .help("Autoscan log file path"),
+                                )
+                                .arg(
                                     Arg::new("timeout_loops")
                                         .short('t')
                                         .value_name("timeout_loops")
                                         .num_args(1)
                                         .default_value("30")
                                         .value_parser(clap::value_parser!(u32).range(1..=1_000))
-                                        .help("stress-test timeout loops (1–1000)"),
+                                        .help("CLI stress duration/retry loop count (1–1000)"),
                                 )
                                 .arg(
                                     Arg::new("output")
@@ -852,17 +854,19 @@ pub fn get_arguments() -> Command {
                                     Arg::new("test_exe")
                                         .value_name("TEST_EXE")
                                         .short('w')
+                                        .long("test-exe")
                                         .num_args(1)
                                         .default_value(default_test_exe_path())
-                                        .help("test exe file path"),
+                                        .help("CLI stress wrapper executable/script path"),
                                 )
                                 .arg(
                                     Arg::new("log")
                                         .value_name("LOG")
                                         .short('l')
+                                        .long("log")
                                         .num_args(1)
                                         .default_value(default_vfp_log_path())
-                                        .help("log file path"),
+                                        .help("Autoscan log file path"),
                                 )
                                 .arg(
                                     Arg::new("timeout_loops")
@@ -871,7 +875,7 @@ pub fn get_arguments() -> Command {
                                         .num_args(1)
                                         .default_value("30")
                                         .value_parser(clap::value_parser!(u32).range(1..=1_000))
-                                        .help("stress-test timeout loops (1–1000)"),
+                                        .help("CLI stress duration/retry loop count (1–1000)"),
                                 )
                                 .arg(
                                     Arg::new("bsod_recovery")

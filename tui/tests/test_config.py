@@ -26,8 +26,7 @@ def test_imports_gui_config_on_first_run(tmp_path: Path) -> None:
           "cli_exe_path": "/tmp/nvoc-auto-optimizer",
           "last_gpu_idx": "2",
           "autoscan": {
-            "mode": "ultrafast",
-            "test_exe": "test.bat"
+            "mode": "ultrafast"
           }
         }
         """,
@@ -40,7 +39,6 @@ def test_imports_gui_config_on_first_run(tmp_path: Path) -> None:
     assert config.cli.exe_path == "/tmp/nvoc-auto-optimizer"
     assert config.last_gpu_idx == 2
     assert config.autoscan.mode == "ultrafast"
-    assert config.autoscan.test_exe == "test.bat"
     assert (tmp_path / "nvoc_tui_config.json").is_file()
 
 

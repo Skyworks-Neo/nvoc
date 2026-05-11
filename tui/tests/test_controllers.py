@@ -39,7 +39,7 @@ def test_autoscan_args_uses_ultrafast_mode() -> None:
 
     assert args[:5] == ["--gpu=0", "set", "vfp", "autoscan", "-u"]
     assert ["-o", "out.csv", "-i", "init.csv"] == args[5:9]
-    assert args[-2:] == ["-b", "aggressive"]
+    assert args[9:] == ["-b", "aggressive"]
 
 
 def test_autoscan_shortcut_focuses_target_select() -> None:
