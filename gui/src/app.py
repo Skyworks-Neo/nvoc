@@ -129,7 +129,7 @@ class App(ctk.CTk):
         # Initial GPU list
         self.after(500, self._refresh_gpu_list)
 
-        if sys.platform == "win32" and self._single_instance_guard is not None:
+        if self._single_instance_guard is not None:
             self.after(200, self._poll_single_instance_signal)
 
     def _build_ui(self):

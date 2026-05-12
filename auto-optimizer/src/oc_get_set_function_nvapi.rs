@@ -377,12 +377,27 @@ fn parse_lock_voltage(
         .try_get_one::<bool>("voltage")
         .is_ok_and(|v| v.copied().unwrap_or(false))
     {
+        // Voltage range guard: 0.5 V – 2.0 V is a generous but sane GPU voltage window.
+        // Rejects e.g. --voltage 9999 mV (≈ 10 V) before it reaches the NVAPI driver call.
+        const MIN_LOCK_UV: u32 = 500_000;   // 0.5 V
+        const MAX_LOCK_UV: u32 = 2_000_000; // 2.0 V
+
         let input_voltage = raw_target.parse::<u32>()?;
         let voltage_uv = if input_voltage >= 10_000 {
             input_voltage
         } else {
-            input_voltage * 1000
+            // Use saturating_mul for consistency with every other mV→µV conversion in this
+            // file and to avoid a latent overflow if the guard is ever widened (#82).
+            input_voltage.saturating_mul(1000)
         };
+
+        if !(MIN_LOCK_UV..=MAX_LOCK_UV).contains(&voltage_uv) {
+            return Err(Error::from(format!(
+                "--voltage {} µV is outside the supported range {}–{} µV (0.5–2.0 V)",
+                voltage_uv, MIN_LOCK_UV, MAX_LOCK_UV
+            )));
+        }
+
         Ok(Microvolts(voltage_uv))
     } else {
         let point = raw_target.parse::<usize>().unwrap_or(default_point);

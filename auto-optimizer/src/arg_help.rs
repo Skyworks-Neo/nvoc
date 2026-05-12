@@ -860,7 +860,8 @@ pub fn get_arguments() -> Command {
                                         .long("stressor-extra-args")
                                         .value_name("ARG")
                                         .num_args(1..)
-                                        .help("Extra arguments appended to each stressor invocation, e.g. --platform-index 0 --device-index 1 for OpenCL GPU selection")
+                                        .allow_hyphen_values(true)
+                                        .help("Extra arguments appended to each stressor invocation, e.g. --platform-index 0 --device-index 1 for OpenCL GPU selection; use `--` before pass-through args if needed")
                                         .required(false),
                                 )
                         )
