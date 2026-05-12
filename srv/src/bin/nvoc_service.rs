@@ -333,7 +333,6 @@ mod nvoc_service {
                         }
                         let pseudo_matches = clap::ArgMatches::default();
 
-                        let idx = i as usize;
                         let current = gpu_dynamic_lock_point[idx];
                         if temperature >= temperature_softwall {
                             // 超温：每周期降低一个工作点（收紧），不低于最低限制
