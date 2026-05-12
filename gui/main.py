@@ -26,20 +26,17 @@ from src.app import App
 
 
 def main() -> int:
-    guard: Optional[Any] = None
+    from src.single_instance import SingleInstanceGuard
 
-    if sys.platform == "win32":
-        from src.single_instance import SingleInstanceGuard
-
-        guard = SingleInstanceGuard()
-        try:
-            if not guard.acquire():
-                guard.signal_existing_instance()
-                return 0
-        except OSError as exc:
-            raise RuntimeError(
-                f"Failed to initialize single-instance guard: {exc}"
-            ) from exc
+    guard: Optional[Any] = SingleInstanceGuard()
+    try:
+        if not guard.acquire():
+            guard.signal_existing_instance()
+            return 0
+    except OSError as exc:
+        raise RuntimeError(
+            f"Failed to initialize single-instance guard: {exc}"
+        ) from exc
 
     import time
 

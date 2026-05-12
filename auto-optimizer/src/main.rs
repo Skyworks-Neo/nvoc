@@ -25,6 +25,7 @@ use crate::error::check_single_dash_args;
 use crate::oc_get_set_function_nvapi::*;
 use crate::oc_profile_function::*;
 use crate::oc_scanner::*;
+use crate::platform::is_elevated;
 
 fn main() {
     match main_result() {
@@ -34,6 +35,24 @@ fn main() {
             exit(1);
         }
     }
+}
+
+/// Gate write-class subcommands behind the required OS privilege level.
+/// Exits with a clear message rather than letting NVAPI/NVML fail opaquely.
+fn require_elevated() -> Result<(), Box<dyn std::error::Error>> {
+    if is_elevated() {
+        return Ok(());
+    }
+    #[cfg(windows)]
+    return Err(
+        "This command requires Administrator privileges. \
+         Please re-run nvoc from an elevated command prompt."
+            .into(),
+    );
+    #[cfg(not(windows))]
+    Err("This command requires root privileges. \
+         Please re-run nvoc with sudo."
+        .into())
 }
 
 fn main_result() -> Result<i32, Box<dyn std::error::Error>> {
@@ -117,6 +136,7 @@ fn main_result() -> Result<i32, Box<dyn std::error::Error>> {
             }
         }
         Some(("reset", matches)) => {
+            require_elevated()?;
             match matches.subcommand() {
                 Some(("nvml-cooler", sub_matches)) => {
                     if let Err(e) = handle_reset_nvml_cooler(&nvapi_selected, sub_matches) {
@@ -131,6 +151,7 @@ fn main_result() -> Result<i32, Box<dyn std::error::Error>> {
             }
         },
         Some(("set", matches)) => {
+            require_elevated()?;
             match matches.subcommand() {
                 Some(("nvml", sub_matches)) => {
                     match nvml_ref {

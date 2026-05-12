@@ -43,9 +43,27 @@ class Config:
         self._merge_defaults(self.data, DEFAULT_CONFIG)
 
     def save(self) -> None:
+        import sys
+        import tempfile
+
+        dir_ = os.path.dirname(self.path) or "."
         try:
-            with open(self.path, "w", encoding="utf-8") as f:
-                json.dump(self.data, f, indent=2, ensure_ascii=False)
+            fd, tmp = tempfile.mkstemp(dir=dir_, prefix=".nvoc_cfg-", suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(self.data, f, indent=2, ensure_ascii=False)
+                # Restrict config to owner-only before it lands at the final path.
+                # Windows uses ACLs; os.chmod is a no-op there for 0o600, skip it
+                # to avoid triggering antivirus hooks on the temp file.
+                if sys.platform != "win32":
+                    os.chmod(tmp, 0o600)
+                os.replace(tmp, self.path)
+            except Exception:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
         except IOError:
             pass
 
