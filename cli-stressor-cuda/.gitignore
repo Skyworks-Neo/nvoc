@@ -2,3 +2,6 @@
 *.lock
 *.xml
 .idea
+__pycache__/
+*.pyc
+*.pyo
