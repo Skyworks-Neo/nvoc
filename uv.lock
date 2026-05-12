@@ -1235,12 +1235,14 @@ version = "0.1.0"
 source = { virtual = "cli-stressor-opencl" }
 dependencies = [
     { name = "numpy" },
+    { name = "pyinstaller" },
     { name = "pyopencl" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "numpy", specifier = "==2.4.4" },
+    { name = "pyinstaller", specifier = ">6.0" },
     { name = "pyopencl" },
 ]
 
