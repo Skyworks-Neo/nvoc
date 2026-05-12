@@ -1075,7 +1075,6 @@ fn run_mem_oc_phase<V: std::fmt::Display + Copy>(
             true,
             args.common.cuda_device,
             args.common.stressor_extra_args,
-            false,
         );
 
         writeln!(l, "Test result is code #{} .", mem_test_flag)?;
