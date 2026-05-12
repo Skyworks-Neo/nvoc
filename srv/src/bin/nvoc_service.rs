@@ -220,17 +220,6 @@ mod nvoc_service {
                             "set_oc_global" => {
                                 let i = cmd.gpu_index;
                                 let freq_val = cmd.over_freq;
-                                let freq_str = freq_val.to_string();
-                                let pseudo_matches = clap::Command::new("")
-                                    .arg(clap::Arg::new("delta"))
-                                    .arg(clap::Arg::new("pstate").default_value("P0"))
-                                    .arg(clap::Arg::new("clock").default_value("graphics"))
-                                    .get_matches_from(vec!["", freq_str.as_str()]);
-
-                                let mut gpu_result = Vec::new();
-                                if let Some(g) = gpus.get(i) {
-                                    gpu_result.push(g);
-                                }
 
                                 match gpus.get(i) {
                                     None => {
