@@ -147,8 +147,9 @@ pub fn export_single_point(point: VfPoint, matches: &clap::ArgMatches) -> Result
         let mut parts: Vec<String> = line.split(',').map(|s| s.to_string()).collect();
         if parts.first().map(|s| s.as_str()) == Some(&*voltage_str) && parts.len() > 3 {
             parts[2] = delta_str.clone();
+            let y_value: i32 = parts[2].parse().unwrap_or(0);
             let col3_value: i32 = parts[3].parse().unwrap_or(0);
-            parts[1] = (new_delta + col3_value).to_string();
+            parts[1] = (y_value + col3_value).to_string();
         }
         record_lines.push(parts.join(","));
     }
