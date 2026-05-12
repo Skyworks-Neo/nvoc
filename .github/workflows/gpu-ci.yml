@@ -68,10 +68,12 @@ jobs:
             stressor_cuda:
               - 'cli-stressor-cuda/**'
               - 'pyproject.toml'
+              - 'uv.lock'
               - '.github/workflows/gpu-ci.yml'
             stressor_opencl:
               - 'cli-stressor-opencl/**'
               - 'pyproject.toml'
+              - 'uv.lock'
               - '.github/workflows/gpu-ci.yml'
 
   auto-optimizer-gpu:
