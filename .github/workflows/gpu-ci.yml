@@ -90,8 +90,8 @@ jobs:
         #   ref: ${{ inputs.ref || github.ref }}
       # - uses: dtolnay/rust-toolchain@stable
       # - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: auto-optimizer -> target
+#        with:
+#          workspaces: auto-optimizer -> target
       - name: build
         run: cargo build --release
       - name: read-only GPU discovery
@@ -105,9 +105,10 @@ jobs:
     if: needs.changes.outputs.stressor_cuda == 'true'
     runs-on: [self-hosted, windows, gpu-nvidia, cuda]
     timeout-minutes: 30
+    # runner context is not available here
     env:
-      UV_CACHE_DIR: ${{ runner.temp }}\uv-cache
-      UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}\uv-envs\cuda-stressor-${{ github.run_id }}
+      UV_CACHE_DIR: 'E:\actions-runner\uv-cache'
+      UV_PROJECT_ENVIRONMENT: 'E:\actions-runner\uv-envs\cuda-stressor'
     defaults:
       run:
         working-directory: cli-stressor-cuda
@@ -125,9 +126,10 @@ jobs:
     if: needs.changes.outputs.stressor_opencl == 'true'
     runs-on: [self-hosted, windows, gpu-nvidia, opencl]
     timeout-minutes: 30
+    # runner context is not available here
     env:
-      UV_CACHE_DIR: ${{ runner.temp }}\uv-cache
-      UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}\uv-envs\opencl-stressor-${{ github.run_id }}
+      UV_CACHE_DIR: 'E:\actions-runner\uv-cache'
+      UV_PROJECT_ENVIRONMENT: 'E:\actions-runner\uv-envs\opencl-stressor'
     defaults:
       run:
         working-directory: cli-stressor-opencl
