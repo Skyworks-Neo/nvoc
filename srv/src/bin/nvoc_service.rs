@@ -90,7 +90,7 @@ mod nvoc_service {
             .append(true)
             .open(&log_path)
             .expect("Failed to open log file");
-        
+
         // 重定向 stdout 和 stderr 到同一个文件
         let _stdout_redirect = Redirect::stdout(log_file.try_clone().unwrap())
             .expect("Failed to redirect stdout");
@@ -102,7 +102,7 @@ mod nvoc_service {
             .size(100 * 1024 * 1024)  // 100MB
             .rotate(2)                 // 保留1个备份
             // .tee(true)                  // 同时输出到终端
-            .level(LevelFilter::Info)  
+            .level(LevelFilter::Info)
             .start();
 
         let config = Arc::new(Mutex::new(crate::websrv::NVOCServiceConfig {
@@ -161,7 +161,7 @@ mod nvoc_service {
         thread::spawn(move || {
             loop {
                 let cfg = http_config.clone();
-                let tx  = http_tx.clone();
+                let tx = http_tx.clone();
                 if std::panic::catch_unwind(AssertUnwindSafe(|| {
                     crate::websrv::start_http_server(cfg, tx);
                 })).is_err() {
@@ -172,8 +172,8 @@ mod nvoc_service {
         });
 
         let _ = compio::runtime::RuntimeBuilder::new()
-        .build().unwrap()
-        .block_on(run_service(config, shutdown_rx, cmd_rx));
+            .build().unwrap()
+            .block_on(run_service(config, shutdown_rx, cmd_rx));
 
         // Tell the system that service has stopped.
         let _ = status_handle.set_service_status(ServiceStatus {
@@ -188,7 +188,6 @@ mod nvoc_service {
     }
 
     async fn run_service(config: Arc<Mutex<crate::websrv::NVOCServiceConfig>>, shutdown_rx: flume::Receiver<()>, cmd_rx: flume::Receiver<crate::websrv::NVOCServiceCmd>) -> Result<()> {
-        
         let mut stopc = shutdown_rx.into_stream().skip(1);
         let mut cmdc = cmd_rx.into_stream();
 
@@ -209,7 +208,7 @@ mod nvoc_service {
         info!("NVOC Service Start!!");
 
         loop {
-            futures_util::select!{
+            futures_util::select! {
                 _ = stopc.next() => {
                     break;
                 }
@@ -233,9 +232,6 @@ mod nvoc_service {
                                     gpu_result.push(g);
                                 }
 
-                                match handle_global_oc_offset_subcommand(&gpu_result, &pseudo_matches) {
-                                    Ok(_) => info!("OC set to {} kHz for GPU {}", freq_val, i),
-                                    Err(e) => error!("Failed to set OC for GPU {}: {:?}", i, e),
                                 match gpus.get(i) {
                                     None => {
                                         error!(
@@ -256,14 +252,13 @@ mod nvoc_service {
                                     }
                                 }
                             }
-
                             _ => {
                                 // 处理其他命令
                             }
                         }
                     }
                 }
-                
+
                 _ = timer.next() => {
                     let cfg = config.lock().unwrap();
                     let vfp_low_lock_point = min(max(cfg.vfp_lock_point, vfp_lowest_lock_point), vfp_highest_lock_point);
@@ -285,7 +280,7 @@ mod nvoc_service {
                         ];
                         let threshold_values: [u32; 4] = thresholds.map(|threshold_type| {
                         device.temperature_threshold(threshold_type).unwrap_or(0)});
-                        
+
 
                         info!(
                             "Time {} GPU {}: {} UUID={} Temperature={} Threshold={} {} {} {}",
@@ -338,65 +333,56 @@ mod nvoc_service {
                         }
                         let pseudo_matches = clap::ArgMatches::default();
 
+                        let idx = i as usize;
+                        let current = gpu_dynamic_lock_point[idx];
                         if temperature >= temperature_softwall {
                             // 超温：每周期降低一个工作点（收紧），不低于最低限制
-                            let current = gpu_dynamic_lock_point[idx];
                             let next = current.saturating_sub(1).max(vfp_lowest_lock_point);
                             gpu_dynamic_lock_point[idx] = next;
                             match handle_lock_vfp(&gpu_result, &pseudo_matches, next, true) {
                                 Ok(_) => info!("GPU {}: over-temp, stepped down to VFP lock point {}", i, next),
                                 Err(e) => error!("GPU {}: failed to lock VFP: {:?}", i, e),
                             }
-                        } else {
-                            // 温度正常：每周期放开一个工作点（松弛），不超过用户配置上限
-                            let current = gpu_dynamic_lock_point[idx];
-                            if current < vfp_low_lock_point {
-                                let next = (current + 1).min(vfp_low_lock_point);
-                                gpu_dynamic_lock_point[idx] = next;
-                                match handle_lock_vfp(&gpu_result, &pseudo_matches, next, true) {
-                                    Ok(_) => info!("GPU {}: temp normal, relaxed to VFP lock point {}", i, next),
-                                    Err(e) => error!("GPU {}: failed to relax VFP: {:?}", i, e),
-                                }
-                            } else {
-                                // 已回到正常上限，完全解锁
-                                gpu_dynamic_lock_point[idx] = vfp_highest_lock_point;
-                                match handle_unlock_vfp(&gpu_result) {
-                                    Ok(_) => info!("GPU {}: temp normal, VFP fully unlocked", i),
-                                    Err(e) => error!("GPU {}: failed to unlock VFP: {:?}", i, e),
-                                gpu_dynamic_lock_point[i as usize] = vfp_highest_lock_point;
-                                for g in &gpu_result {
-                                    if let Err(e) = g.reset_vfp_lock() {
-                                        error!("GPU {}: failed to reset VFP voltage lock: {:?}", i, e);
-                                    }
-                                    for domain in [ClockDomain::Graphics, ClockDomain::Memory] {
-                                        if let Err(e) = reset_vfp_frequency_lock(g, domain) {
-                                            warn!("GPU {}: failed to reset VFP freq lock ({:?}): {:?}", i, domain, e);
-                                        }
-                                    }
-                                }
-                                info!("GPU {}: temp normal, VFP fully unlocked", i);
+                        } else if current < vfp_low_lock_point {
+                            let next = (current + 1).min(vfp_low_lock_point);
+                            gpu_dynamic_lock_point[idx] = next;
+                            match handle_lock_vfp(&gpu_result, &pseudo_matches, next, true) {
+                                Ok(_) => info!("GPU {}: temp normal, relaxed to VFP lock point {}", i, next),
+                                Err(e) => error!("GPU {}: failed to relax VFP: {:?}", i, e),
                             }
+                        } else {
+                            // 已回到正常上限，完全解锁
+                            gpu_dynamic_lock_point[idx] = vfp_highest_lock_point;
+                            for g in &gpu_result {
+                                if let Err(e) = g.reset_vfp_lock() {
+                                    error!("GPU {}: failed to reset VFP voltage lock: {:?}", i, e);
+                                }
+                                for domain in [ClockDomain::Graphics, ClockDomain::Memory] {
+                                    if let Err(e) = reset_vfp_frequency_lock(g, domain) {
+                                        warn!("GPU {}: failed to reset VFP freq lock ({:?}): {:?}", i, domain, e);
+                                    }
+                                }
+                            }
+                            info!("GPU {}: temp normal, VFP fully unlocked", i);
                         }
-                    } // end for i in 0..count
+                    }
                     drop(cfg); // 释放锁
                 }
             }
-
         }
         Ok(())
     }
 
-    pub fn create_timer(interval: Option<humantime::Duration>) -> impl futures_util::Stream<Item = Instant> {
-    if let Some(d) = interval {
-        futures_util::future::Either::Left(async_stream::stream! {
-            let mut interval = compio::time::interval(*d);
-            loop {
-                yield interval.tick().await;
-            }
-        })
-    } else {
-        futures_util::future::Either::Right(futures_util::stream::pending())
+    pub fn create_timer(interval: Option<humantime::Duration>) -> impl futures_util::Stream<Item=Instant> {
+        if let Some(d) = interval {
+            futures_util::future::Either::Left(async_stream::stream! {
+                let mut interval = compio::time::interval(*d);
+                loop {
+                    yield interval.tick().await;
+                }
+            })
+        } else {
+            futures_util::future::Either::Right(futures_util::stream::pending())
+        }
     }
-}
-
 }

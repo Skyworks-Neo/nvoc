@@ -1,0 +1,6 @@
+# Pure-venv / pip dependencies for the OpenCL branch.
+# This single file covers both runtime and packaging dependencies.
+
+numpy==2.4.4
+pyopencl
+pyinstaller>=6.0

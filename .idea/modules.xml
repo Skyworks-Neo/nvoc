@@ -6,7 +6,6 @@
       <module fileurl="file://$PROJECT_DIR$/.idea/nvoc-cli-stressor.iml" filepath="$PROJECT_DIR$/.idea/nvoc-cli-stressor.iml" />
       <module fileurl="file://$PROJECT_DIR$/.idea/nvoc-gui.iml" filepath="$PROJECT_DIR$/.idea/nvoc-gui.iml" />
       <module fileurl="file://$PROJECT_DIR$/.idea/nvoc-tui.iml" filepath="$PROJECT_DIR$/.idea/nvoc-tui.iml" />
-      <module fileurl="file://$PROJECT_DIR$/.idea/nvoc@1.iml" filepath="$PROJECT_DIR$/.idea/nvoc@1.iml" />
       <module fileurl="file://$PROJECT_DIR$/.idea/torch-performance-test-data.iml" filepath="$PROJECT_DIR$/.idea/torch-performance-test-data.iml" />
     </modules>
   </component>

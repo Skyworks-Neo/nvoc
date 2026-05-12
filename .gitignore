@@ -4,3 +4,5 @@ gui/nvoc_gui_config.json
 __pycache__/
 *.pyc
 *.pyo
+/cli-stressor-opencl/build/
+/cli-stressor-opencl/dist/

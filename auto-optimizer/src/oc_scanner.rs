@@ -12,7 +12,6 @@ use crate::oc_profile_function::{
     key_point_extractor,
 };
 use clap::ArgMatches;
-use core::time;
 use num_traits::pow;
 use nvapi_hi::Gpu;
 use nvapi_hi::{ClockDomain, KilohertzDelta, PState};
@@ -246,7 +245,7 @@ mod pressure_runner {
                             last_fluctuation = Instant::now();
                         }
 
-                        sleep(time::Duration::from_secs(1));
+                        sleep(Duration::from_secs(1));
 
                         match process.try_wait() {
                             Ok(Some(status)) => {
@@ -326,7 +325,6 @@ fn test_pressure(
     is_legacy_global_offset: bool,
     cuda_device: Option<u32>,
     stressor_extra_args: &[String],
-) -> (i32, TestResolution) {
 ) -> i32 {
     let cfg = pressure_runner::TestPressureConfig {
         point,
@@ -453,7 +451,7 @@ fn apply_short_phase_success_step(
     Some(increase)
 }
 
-fn pre_load_vf_recheck(matches: &ArgMatches, point: usize) -> Result<(), crate::error::Error> {
+fn pre_load_vf_recheck(matches: &ArgMatches, point: usize) -> Result<(), Error> {
     println!("Waiting for pre-load volt-freq recheck");
     sleep(Duration::from_secs(1));
     voltage_frequency_check(matches.clone(), point)?;

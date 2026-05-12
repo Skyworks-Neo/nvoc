@@ -33,7 +33,7 @@ fn is_std(str: &str) -> bool {
 fn spawn_dynamic_load_process() -> Result<Child, Error> {
     let repo_root = env!("CARGO_MANIFEST_DIR");
     Command::new("cmd")
-        .args(["/C", r"test\dyn_load_export_windows.bat"])
+        .args(["/C", r".\test\dyn_load_export_windows.bat"])
         .current_dir(repo_root)
         .spawn()
         .map_err(|e| Error::Custom(format!("Failed to start Windows load process: {}", e)))
@@ -152,6 +152,7 @@ pub fn export_single_point(point: VfPoint, matches: &clap::ArgMatches) -> Result
             let sum = new_delta + col3_value;
             columns[1] = sum.to_string();
             columns[2] = delta;
+        }
         if parts.first().map(|s| s.as_str()) == Some(&*voltage_str) && parts.len() > 3 {
             parts[2] = delta_str.clone();
             let y_value: i32 = parts[2].parse().unwrap_or(0);
@@ -218,7 +219,7 @@ fn extract_default_frequencies(file_path: &str, legacy_flag: bool) -> Result<Vec
             default_frequency_load = record
                 .get(1)
                 .ok_or_else(|| {
-                    crate::error::Error::Custom("row too short: missing column 1".into())
+                    Error::Custom("row too short: missing column 1".into())
                 })?
                 .parse()?;
         }
@@ -227,7 +228,7 @@ fn extract_default_frequencies(file_path: &str, legacy_flag: bool) -> Result<Vec
             default_frequency_load = record
                 .get(3)
                 .ok_or_else(|| {
-                    crate::error::Error::Custom("row too short: missing column 3".into())
+                    Error::Custom("row too short: missing column 3".into())
                 })?
                 .parse()?;
         }
@@ -245,7 +246,7 @@ fn update_csv_with_load_and_margin(
     minimum_delta_core_freq_step: i32,
     legacy_flag: bool,
 ) -> Result<(), Error> {
-    let dest_path = std::path::Path::new(file_path);
+    let dest_path = Path::new(file_path);
     let tmp_name = format!(
         ".{}.{}.tmp",
         dest_path
@@ -532,7 +533,7 @@ fn linear_interpolate(
     d2: i32,
     current_v: u32,
     delta_step: i32,
-) -> Result<i32, crate::error::Error> {
+) -> Result<i32, Error> {
     if v1 == v2 {
         let mid = ((d1 as i64 + d2 as i64) / 2) as i32;
         return Ok(mid);
@@ -543,7 +544,7 @@ fn linear_interpolate(
         (v2, d2, v1, d1)
     };
     if current_v < lo_v || current_v > hi_v {
-        return Err(crate::error::Error::Custom(format!(
+        return Err(Error::Custom(format!(
             "linear_interpolate: current_v {} out of range [{}, {}]",
             current_v, lo_v, hi_v
         )));
@@ -560,7 +561,7 @@ fn linear_interpolate(
 
 fn get_key_points_indices(
     lines: &[Vec<String>],
-) -> Result<(usize, usize, usize, usize), crate::error::Error> {
+) -> Result<(usize, usize, usize, usize), Error> {
     let mut key_indices = Vec::new();
 
     for (i, columns) in lines.iter().enumerate() {
@@ -581,7 +582,7 @@ fn get_key_points_indices(
         }
     }
     if key_indices.len() != 4 {
-        return Err(crate::error::Error::Custom(format!(
+        return Err(Error::Custom(format!(
             "expected 4 key points, found {}",
             key_indices.len()
         )));
@@ -598,21 +599,21 @@ fn parse_col<T: std::str::FromStr>(
     row: &[String],
     idx: usize,
     what: &str,
-) -> Result<T, crate::error::Error>
+) -> Result<T, Error>
 where
     T::Err: std::fmt::Display,
 {
     row.get(idx)
-        .ok_or_else(|| crate::error::Error::Custom(format!("missing column {} ({})", idx, what)))?
+        .ok_or_else(|| Error::Custom(format!("missing column {} ({})", idx, what)))?
         .parse::<T>()
-        .map_err(|e| crate::error::Error::Custom(format!("column {} ({}): {}", idx, what, e)))
+        .map_err(|e| Error::Custom(format!("column {} ({}): {}", idx, what, e)))
 }
 
 fn interpolate_deltas(
     lines: &mut [Vec<String>],
     minimum_delta_step: i32,
     maxq_flag: bool,
-) -> Result<(), crate::error::Error> {
+) -> Result<(), Error> {
     let (p1_idx, p2_idx, p3_idx, p4_idx) = get_key_points_indices(lines)?;
 
     let p1_d;
@@ -1053,7 +1054,7 @@ pub fn key_point_extractor(
         }
 
         if records.is_empty() {
-            return Err(crate::error::Error::Custom(
+            return Err(Error::Custom(
                 "key_point_extractor: no records in VFP CSV".into(),
             ));
         }
@@ -1122,7 +1123,7 @@ pub fn apply_autoscan_profile(
                     .and_then(|p0| {
                         p0.base_voltages
                             .into_iter()
-                            .find(|v| v.voltage_domain == nvapi_hi::nvapi::VoltageDomain::Core)
+                            .find(|v| v.voltage_domain == nvapi::VoltageDomain::Core)
                             .map(|v| v.voltage_delta.range.max)
                     })
             })
