@@ -68,12 +68,10 @@ jobs:
             stressor_cuda:
               - 'cli-stressor-cuda/**'
               - 'pyproject.toml'
-              - 'uv.lock'
               - '.github/workflows/gpu-ci.yml'
             stressor_opencl:
               - 'cli-stressor-opencl/**'
               - 'pyproject.toml'
-              - 'uv.lock'
               - '.github/workflows/gpu-ci.yml'
 
   auto-optimizer-gpu:
@@ -105,9 +103,6 @@ jobs:
     if: needs.changes.outputs.stressor_cuda == 'true'
     runs-on: [self-hosted, windows, gpu-nvidia, cuda]
     timeout-minutes: 30
-    env:
-      UV_CACHE_DIR: ${{ runner.temp }}\uv-cache
-      UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}\uv-envs\cuda-stressor-${{ github.run_id }}
     defaults:
       run:
         working-directory: cli-stressor-cuda
@@ -116,7 +111,7 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.ref }}
       - uses: astral-sh/setup-uv@v4
-      - run: uv sync --frozen
+      - run: uv sync
       - name: short stress run
         run: uv run python test.py
 
@@ -125,9 +120,6 @@ jobs:
     if: needs.changes.outputs.stressor_opencl == 'true'
     runs-on: [self-hosted, windows, gpu-nvidia, opencl]
     timeout-minutes: 30
-    env:
-      UV_CACHE_DIR: ${{ runner.temp }}\uv-cache
-      UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}\uv-envs\opencl-stressor-${{ github.run_id }}
     defaults:
       run:
         working-directory: cli-stressor-opencl
@@ -136,7 +128,7 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.ref }}
       - uses: astral-sh/setup-uv@v4
-      - run: uv sync --frozen
+      - run: uv sync
       - run: uv run python test.py
 
   # opencl-stressor-linux:
