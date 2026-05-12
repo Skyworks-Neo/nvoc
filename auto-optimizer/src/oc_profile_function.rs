@@ -12,7 +12,7 @@ use nvapi_hi::{
     SensorThrottle,
 };
 use nvapi_hi::{Gpu, VfPoint, VfpDeltas, VfpTable};
-use std::cmp::min;
+use std::cmp::{min, Ordering};
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
@@ -59,13 +59,18 @@ fn spawn_dynamic_load_process() -> Result<Child, Error> {
     panic_windows_only("dynamic VFP export")
 }
 
-/// Reject paths containing `..` to prevent directory traversal when running as admin/root.
+/// Reject paths that could escape the working directory when running as admin/root.
+/// Rejects absolute paths (including UNC `\\server\share`) and `..` components.
 fn reject_dotdot(path: &str) -> Result<(), Error> {
     use std::path::Component;
-    if Path::new(path)
-        .components()
-        .any(|c| c == Component::ParentDir)
-    {
+    let p = Path::new(path);
+    if p.is_absolute() {
+        return Err(Error::Custom(format!(
+            "path '{}' must be relative; absolute and UNC paths are not allowed",
+            path
+        )));
+    }
+    if p.components().any(|c| c == Component::ParentDir) {
         return Err(Error::Custom(format!(
             "path '{}' contains '..'; refusing to write outside working directory",
             path
@@ -142,9 +147,8 @@ pub fn export_single_point(point: VfPoint, matches: &clap::ArgMatches) -> Result
         let mut parts: Vec<String> = line.split(',').map(|s| s.to_string()).collect();
         if parts.first().map(|s| s.as_str()) == Some(&*voltage_str) && parts.len() > 3 {
             parts[2] = delta_str.clone();
-            let y_value: i32 = parts[2].parse().unwrap_or(0);
             let col3_value: i32 = parts[3].parse().unwrap_or(0);
-            parts[1] = (y_value + col3_value).to_string();
+            parts[1] = (new_delta + col3_value).to_string();
         }
         record_lines.push(parts.join(","));
     }
@@ -178,17 +182,37 @@ fn collect_vf_points(vfp: VfpTable, deltas: VfpDeltas, export_memory: bool) -> V
         (vfp.graphics, deltas.graphics)
     };
 
-    points
-        .into_iter()
-        .zip(deltas)
-        .map(|((i0, mut point), (i1, delta))| {
-            assert_eq!(i0, i1);
-            if export_memory {
-                point.voltage = Microvolts(point.voltage.0 * 2);
-            } // video memory voltage should × 2
-            VfPoint::new(point, delta)
-        })
-        .collect()
+    // Sorted merge-join: zip() would silently drop all points after the first
+    // index gap. A peekable merge-join skips only the mismatched entry and
+    // continues, so a single driver inconsistency doesn't lose all later points.
+    let mut pts = points.into_iter().peekable();
+    let mut dts = deltas.into_iter().peekable();
+    let mut result = Vec::new();
+    loop {
+        let ord = match (pts.peek(), dts.peek()) {
+            (None, _) | (_, None) => break,
+            (Some((i0, _)), Some((i1, _))) => i0.cmp(i1),
+        };
+        match ord {
+            Ordering::Equal => {
+                let (_, mut point) = pts.next().unwrap();
+                let (_, delta) = dts.next().unwrap();
+                if export_memory {
+                    point.voltage = Microvolts(point.voltage.0 * 2);
+                }
+                result.push(VfPoint::new(point, delta));
+            }
+            Ordering::Less => {
+                let (i, _) = pts.next().unwrap();
+                eprintln!("warning: VFP point index {i} has no matching delta; skipping");
+            }
+            Ordering::Greater => {
+                let (i, _) = dts.next().unwrap();
+                eprintln!("warning: VFP delta index {i} has no matching point; skipping");
+            }
+        }
+    }
+    result
 }
 
 fn extract_default_frequencies(file_path: &str, legacy_flag: bool) -> Result<Vec<u32>, Error> {
