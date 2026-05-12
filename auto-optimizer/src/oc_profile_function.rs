@@ -139,27 +139,13 @@ pub fn export_single_point(point: VfPoint, matches: &clap::ArgMatches) -> Result
 
     for line in reader.lines() {
         let line = line?;
-        let mut columns: Vec<String> = line.split(',').map(str::to_owned).collect();
-        let voltage = new_voltage.to_string();
-        let delta = new_delta.to_string();
-        // Use owned Strings so we can mutate column slots without Box::leak.
         let mut parts: Vec<String> = line.split(',').map(|s| s.to_string()).collect();
-
-        // Check if the row matches
-        if columns.first().map(String::as_str) == Some(voltage.as_str()) && columns.len() > 3 {
-            // Convert parts[2] and parts[3] to integers safely before mutating columns[2].
-            let col3_value: i32 = columns[3].parse().unwrap_or(0);
-            let sum = new_delta + col3_value;
-            columns[1] = sum.to_string();
-            columns[2] = delta;
-        }
         if parts.first().map(|s| s.as_str()) == Some(&*voltage_str) && parts.len() > 3 {
             parts[2] = delta_str.clone();
             let y_value: i32 = parts[2].parse().unwrap_or(0);
             let col3_value: i32 = parts[3].parse().unwrap_or(0);
             parts[1] = (y_value + col3_value).to_string();
         }
-
         record_lines.push(parts.join(","));
     }
 
