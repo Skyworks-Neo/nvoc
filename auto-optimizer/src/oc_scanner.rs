@@ -12,7 +12,6 @@ use crate::oc_profile_function::{
     key_point_extractor,
 };
 use clap::ArgMatches;
-use core::time;
 use num_traits::pow;
 use nvapi_hi::Gpu;
 use nvapi_hi::{ClockDomain, KilohertzDelta, PState};
@@ -41,6 +40,10 @@ mod pressure_runner {
         pub(super) timeout_loops: u64,
         pub(super) recovery_method: bool,
         pub(super) is_legacy_global_offset: bool,
+        /// Stressor CUDA device ordinal (sets CUDA_VISIBLE_DEVICES when non-None).
+        pub(super) cuda_device: Option<u32>,
+        /// Extra arguments appended verbatim to the stressor command.
+        pub(super) stressor_extra_args: &'a [String],
     }
 
     fn test_initialization(gpu: &&Gpu, cfg: &TestPressureConfig<'_>) {
@@ -167,7 +170,19 @@ mod pressure_runner {
 
         let mut count = 0;
         loop {
-            match Command::new(app_path.clone()).args(&args).spawn() {
+            let mut cmd = Command::new(app_path.clone());
+            cmd.args(&args);
+            if !cfg.stressor_extra_args.is_empty() {
+                cmd.args(cfg.stressor_extra_args);
+            }
+            if let Some(dev) = cfg.cuda_device {
+                // PCI_BUS_ID makes CUDA ordinals match NVAPI/NVML ordering,
+                // so --gpu N and CUDA_VISIBLE_DEVICES=N refer to the same device.
+                cmd.env("CUDA_DEVICE_ORDER", "PCI_BUS_ID");
+                cmd.env("CUDA_VISIBLE_DEVICES", dev.to_string());
+            }
+            match cmd.spawn()
+            {
                 Ok(mut process) => {
                     let mut exit_code = 1;
                     let test_start_at = Instant::now();
@@ -230,7 +245,7 @@ mod pressure_runner {
                             last_fluctuation = Instant::now();
                         }
 
-                        sleep(time::Duration::from_secs(1));
+                        sleep(Duration::from_secs(1));
 
                         match process.try_wait() {
                             Ok(Some(status)) => {
@@ -308,6 +323,8 @@ fn test_pressure(
     timeout_loops: u64,
     recovery_method: bool,
     is_legacy_global_offset: bool,
+    cuda_device: Option<u32>,
+    stressor_extra_args: &[String],
 ) -> i32 {
     let cfg = pressure_runner::TestPressureConfig {
         point,
@@ -322,6 +339,8 @@ fn test_pressure(
         timeout_loops,
         recovery_method,
         is_legacy_global_offset,
+        cuda_device,
+        stressor_extra_args,
     };
 
     pressure_runner::run(gpu, matches, &cfg)
@@ -337,6 +356,8 @@ struct CommonPhaseArgs<'a> {
     recovery_method_switch: bool,
     test_duration: u64,
     endurance_coefficient: u64,
+    cuda_device: Option<u32>,
+    stressor_extra_args: &'a [String],
 }
 
 fn build_common_phase_args<'a>(
@@ -349,6 +370,8 @@ fn build_common_phase_args<'a>(
     recovery_method_switch: bool,
     test_duration: u64,
     endurance_coefficient: u64,
+    cuda_device: Option<u32>,
+    stressor_extra_args: &'a [String],
 ) -> CommonPhaseArgs<'a> {
     CommonPhaseArgs {
         matches,
@@ -360,6 +383,8 @@ fn build_common_phase_args<'a>(
         recovery_method_switch,
         test_duration,
         endurance_coefficient,
+        cuda_device,
+        stressor_extra_args,
     }
 }
 
@@ -426,7 +451,7 @@ fn apply_short_phase_success_step(
     Some(increase)
 }
 
-fn pre_load_vf_recheck(matches: &ArgMatches, point: usize) -> Result<(), crate::error::Error> {
+fn pre_load_vf_recheck(matches: &ArgMatches, point: usize) -> Result<(), Error> {
     println!("Waiting for pre-load volt-freq recheck");
     sleep(Duration::from_secs(1));
     voltage_frequency_check(matches.clone(), point)?;
@@ -541,6 +566,8 @@ fn run_legacy_short_phase(
             args.common.test_duration,
             args.common.recovery_method_switch,
             true,
+            args.common.cuda_device,
+            args.common.stressor_extra_args,
         );
         writeln!(l, "Test result is code #{} .", test_flag)?;
 
@@ -642,6 +669,8 @@ fn run_legacy_long_phase(
             args.common.endurance_coefficient * args.common.test_duration,
             args.common.recovery_method_switch,
             true,
+            args.common.cuda_device,
+            args.common.stressor_extra_args,
         );
         writeln!(l, "Test result is code #{} .", long_flag)?;
 
@@ -817,6 +846,8 @@ fn run_gpuboostv3_short_phase<V: std::fmt::Display + Copy>(
             args.common.test_duration,
             args.common.recovery_method_switch,
             false,
+            args.common.cuda_device,
+            args.common.stressor_extra_args,
         );
         println!("{}", test_flag);
         writeln!(l, "Test result is code #{} .", test_flag)?;
@@ -921,6 +952,8 @@ fn run_gpuboostv3_long_phase<V: std::fmt::Display + Copy>(
             args.common.endurance_coefficient * args.common.test_duration,
             args.common.recovery_method_switch,
             false,
+            args.common.cuda_device,
+            args.common.stressor_extra_args,
         );
         if long_duration_flag != 0 {
             core_reset_vfp(gpu)?;
@@ -1037,7 +1070,9 @@ fn run_mem_oc_phase<V: std::fmt::Display + Copy>(
             format!("{}{}{}", args.point, args.common.delimiter, mem_test_code),
             args.common.endurance_coefficient * args.common.test_duration,
             args.common.recovery_method_switch,
-            false,
+            true,
+            args.common.cuda_device,
+            args.common.stressor_extra_args,
         );
 
         writeln!(l, "Test result is code #{} .", mem_test_flag)?;
@@ -1362,6 +1397,8 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<&Gpu>, matches: &ArgMatches) -> Result<(),
                 recovery_method_switch,
                 test_duration,
                 endurance_coefficient,
+                cfg.cuda_device,
+                &cfg.stressor_extra_args,
             ),
             vfp_set_range,
             freq_step_exp,
@@ -1565,6 +1602,8 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<&Gpu>, matches: &ArgMatches) -> Result<(),
                     recovery_method_switch,
                     test_duration,
                     endurance_coefficient,
+                    cfg.cuda_device,
+                    &cfg.stressor_extra_args,
                 ),
                 point,
                 vfp_set_range,
@@ -1706,6 +1745,8 @@ pub fn autoscan_legacy(gpus: &Vec<&Gpu>, matches: &ArgMatches) -> Result<(), Err
                 recovery_method_switch,
                 test_duration,
                 endurance_coefficient,
+                cfg.cuda_device,
+                &cfg.stressor_extra_args,
             ),
             point,
             flat_curve_flag,

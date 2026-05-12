@@ -846,6 +846,24 @@ pub fn get_arguments() -> Command {
                                         .value_parser(["aggressive", "traditional"])
                                         .required(false),
                                 )
+                                .arg(
+                                    Arg::new("cuda_device")
+                                        .long("cuda-device")
+                                        .value_name("INDEX")
+                                        .num_args(1)
+                                        .value_parser(clap::value_parser!(u32))
+                                        .help("CUDA device ordinal for the stressor (sets CUDA_VISIBLE_DEVICES=INDEX; omit to let the stressor pick the default GPU)")
+                                        .required(false),
+                                )
+                                .arg(
+                                    Arg::new("stressor_extra_args")
+                                        .long("stressor-extra-args")
+                                        .value_name("ARG")
+                                        .num_args(1..)
+                                        .allow_hyphen_values(true)
+                                        .help("Extra arguments appended to each stressor invocation, e.g. --platform-index 0 --device-index 1 for OpenCL GPU selection; use `--` before pass-through args if needed")
+                                        .required(false),
+                                )
                         )
                         .subcommand(
                             Command::new("autoscan_legacy")
@@ -884,6 +902,23 @@ pub fn get_arguments() -> Command {
                                         .help("Override recovery method switch: aggressive or traditional")
                                         .num_args(1)
                                         .value_parser(["aggressive", "traditional"])
+                                        .required(false),
+                                )
+                                .arg(
+                                    Arg::new("cuda_device")
+                                        .long("cuda-device")
+                                        .value_name("INDEX")
+                                        .num_args(1)
+                                        .value_parser(clap::value_parser!(u32))
+                                        .help("CUDA device ordinal for the stressor (sets CUDA_VISIBLE_DEVICES=INDEX; omit to let the stressor pick the default GPU)")
+                                        .required(false),
+                                )
+                                .arg(
+                                    Arg::new("stressor_extra_args")
+                                        .long("stressor-extra-args")
+                                        .value_name("ARG")
+                                        .num_args(1..)
+                                        .help("Extra arguments appended to each stressor invocation, e.g. --platform-index 0 --device-index 1 for OpenCL GPU selection")
                                         .required(false),
                                 ),
                         ),

@@ -3,3 +3,6 @@
 *.xml
 .idea
 __pycache__/
+dist/
+build/
+*.pyc
