@@ -192,23 +192,37 @@ fn collect_vf_points(vfp: VfpTable, deltas: VfpDeltas, export_memory: bool) -> V
         (vfp.graphics, deltas.graphics)
     };
 
-    points
-        .into_iter()
-        .zip(deltas)
-        .filter_map(|((i0, mut point), (i1, delta))| {
-            // Driver inconsistency: VFP table and delta table index mismatch.
-            // Log a warning and skip the point instead of aborting (panic="abort" in release
-            // would kill the process with no diagnostic output).
-            if i0 != i1 {
-                eprintln!("warning: VFP index mismatch ({i0} ≠ {i1}), skipping point");
-                return None;
+    // Sorted merge-join on the index key.  zip() stops at the first mismatch and drops
+    // all remaining valid pairs after a gap; this loop advances only the lagging side,
+    // so a single missing index on one side skips only that one entry.
+    let mut pts = points.into_iter().peekable();
+    let mut dts = deltas.into_iter().peekable();
+    let mut result = Vec::new();
+    loop {
+        let ord = match (pts.peek(), dts.peek()) {
+            (None, _) | (_, None) => break,
+            (Some((i0, _)), Some((i1, _))) => i0.cmp(i1),
+        };
+        match ord {
+            std::cmp::Ordering::Equal => {
+                let (_, mut point) = pts.next().unwrap();
+                let (_, delta) = dts.next().unwrap();
+                if export_memory {
+                    point.voltage = Microvolts(point.voltage.0 * 2);
+                } // video memory voltage should × 2
+                result.push(VfPoint::new(point, delta));
             }
-            if export_memory {
-                point.voltage = Microvolts(point.voltage.0 * 2);
-            } // video memory voltage should × 2
-            Some(VfPoint::new(point, delta))
-        })
-        .collect()
+            std::cmp::Ordering::Less => {
+                let (i, _) = pts.next().unwrap();
+                eprintln!("warning: VFP point index {i} has no matching delta, skipping");
+            }
+            std::cmp::Ordering::Greater => {
+                let (i, _) = dts.next().unwrap();
+                eprintln!("warning: VFP delta index {i} has no matching point, skipping");
+            }
+        }
+    }
+    result
 }
 
 fn extract_default_frequencies(file_path: &str, legacy_flag: bool) -> Result<Vec<u32>, Error> {
