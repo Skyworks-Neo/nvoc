@@ -1,21 +1,17 @@
-use crate::basic_func::TestResolution::{R640x384, R1680x1050};
-use crate::basic_func::{TestResolution, get_second_largest_resolution, local_time_hms};
+use crate::basic_func::local_time_hms;
 use crate::error::Error;
 use crate::handle_reset_nvml_cooler_single_gpu;
 use crate::human::print_scan_separator;
-use crate::nvidia_gpu_type::{GpuOcParams, fetch_gpu_type};
+use crate::nvidia_gpu_type::{fetch_gpu_type, GpuOcParams};
 use crate::oc_get_set_function_nvapi::{
-    core_reset_vfp, get_resolution, get_voltage_by_point, handle_lock_vfp,
-    handle_test_voltage_limits, set_resolution, set_vfp_curve, set_vfp_curve_warn,
-    voltage_frequency_check,
+    core_reset_vfp, get_voltage_by_point, handle_lock_vfp, handle_test_voltage_limits,
+    set_vfp_curve, set_vfp_curve_warn, voltage_frequency_check,
 };
 use crate::oc_profile_function::{
     apply_autoscan_profile, break_point_continue, check_voltage_points, export_single_point,
     key_point_extractor,
 };
-use crate::platform::stressor_3d_conf_path;
 use clap::ArgMatches;
-use core::time;
 use num_traits::pow;
 use nvapi_hi::Gpu;
 use nvapi_hi::{ClockDomain, KilohertzDelta, PState};
@@ -25,47 +21,8 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Child, Command};
 use std::thread::sleep;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 use std::{fs, iter};
-
-mod scan_shared {
-    use super::*;
-
-    pub(super) fn pick_initial_resolution(
-        resuming_flag: bool,
-        test_conf_file_path: Option<&str>,
-    ) -> TestResolution {
-        if resuming_flag {
-            if let Some(path) = test_conf_file_path {
-                return get_resolution(path).unwrap_or(TestResolution::R1920x1200);
-            }
-            return TestResolution::R1920x1200;
-        }
-
-        match get_second_largest_resolution() {
-            Some(resolution) => {
-                let (width, height) = resolution.dimensions();
-                println!("Second largest fitting resolution: {}x{}", width, height);
-                resolution
-            }
-            None => {
-                println!("No fitting resolution found.");
-                TestResolution::R1920x1200
-            }
-        }
-    }
-
-    pub(super) fn sync_resolution(test_conf_file_path: Option<&str>, resolution: TestResolution) {
-        if let Some(path) = test_conf_file_path {
-            match set_resolution(path, resolution) {
-                Ok(_) => println!("Resolution updated successfully to {:?}.", resolution),
-                Err(e) => eprintln!("Failed to update resolution: {}", e),
-            }
-        } else {
-            println!("Skipping resolution sync because no stressor game config is available.");
-        }
-    }
-}
 
 mod pressure_runner {
     use super::*;
@@ -78,14 +35,15 @@ mod pressure_runner {
         pub(super) minimum_delta_core_freq_step: i32,
         pub(super) fluctuation_coefficient: i32,
         pub(super) fluctuation_mode: usize,
-        pub(super) test_resolution: TestResolution,
-        pub(super) is_mem_test: bool,
         pub(super) test_exe: &'a str,
         pub(super) test_code: String,
         pub(super) timeout_loops: u64,
-        pub(super) test_conf_file_path: Option<&'a str>,
         pub(super) recovery_method: bool,
         pub(super) is_legacy_global_offset: bool,
+        /// Stressor CUDA device ordinal (sets CUDA_VISIBLE_DEVICES when non-None).
+        pub(super) cuda_device: Option<u32>,
+        /// Extra arguments appended verbatim to the stressor command.
+        pub(super) stressor_extra_args: &'a [String],
     }
 
     fn test_initialization(gpu: &&Gpu, cfg: &TestPressureConfig<'_>) {
@@ -199,39 +157,39 @@ mod pressure_runner {
         }
     }
 
-    pub(super) fn run(
-        gpu: &&Gpu,
-        matches: &ArgMatches,
-        cfg: &TestPressureConfig<'_>,
-    ) -> (i32, TestResolution) {
+    pub(super) fn run(gpu: &&Gpu, matches: &ArgMatches, cfg: &TestPressureConfig<'_>) -> i32 {
         let app_path = String::from(cfg.test_exe);
-        let mut arg = cfg.test_code.clone() + " " + &cfg.timeout_loops.to_string();
+        // Build argv as a structured Vec so paths or codes containing whitespace
+        // are not silently re-tokenized into multiple arguments.
+        let mut args: Vec<String> = vec![cfg.test_code.clone(), cfg.timeout_loops.to_string()];
         let timeout_budget_secs = cfg.timeout_loops * 6;
         println!("Timeout: {}s", timeout_budget_secs);
         if cfg.recovery_method {
-            arg += " --aggressive-recovery";
+            args.push("--aggressive-recovery".to_string());
         }
 
         let mut count = 0;
-        let mut resolution = cfg.test_resolution;
-
         loop {
-            match Command::new(app_path.clone())
-                .args(arg.split_whitespace())
-                .spawn()
+            let mut cmd = Command::new(app_path.clone());
+            cmd.args(&args);
+            if !cfg.stressor_extra_args.is_empty() {
+                cmd.args(cfg.stressor_extra_args);
+            }
+            if let Some(dev) = cfg.cuda_device {
+                // PCI_BUS_ID makes CUDA ordinals match NVAPI/NVML ordering,
+                // so --gpu N and CUDA_VISIBLE_DEVICES=N refer to the same device.
+                cmd.env("CUDA_DEVICE_ORDER", "PCI_BUS_ID");
+                cmd.env("CUDA_VISIBLE_DEVICES", dev.to_string());
+            }
+            match cmd.spawn()
             {
                 Ok(mut process) => {
                     let mut exit_code = 1;
                     let test_start_at = Instant::now();
-                    let mut last_fluctuation = SystemTime::now();
+                    let mut last_fluctuation = Instant::now();
                     let mut in_test_check_number = 0;
                     let mut fluctuation_h_l_flag = false;
                     let mut thrm_or_pwr_limit_number = 0;
-                    let mut thrm_or_pwr_limit_flag = false;
-                    println!("Current resolution: {:?}", resolution);
-
-                    scan_shared::sync_resolution(cfg.test_conf_file_path, resolution);
-
                     core_reset_vfp(gpu).unwrap_or_else(|err| {
                         eprintln!("Warning: Failed to reset GPU due to {:?}", err);
                     });
@@ -240,9 +198,7 @@ mod pressure_runner {
                     sleep(Duration::from_secs(1));
 
                     loop {
-                        if last_fluctuation.elapsed().unwrap_or(Duration::from_secs(6))
-                            >= Duration::from_millis(1500)
-                        {
+                        if last_fluctuation.elapsed() >= Duration::from_millis(1500) {
                             in_test_check_number += 1;
                             println!("inducing freq fluctuation...");
 
@@ -286,10 +242,10 @@ mod pressure_runner {
                                 }
                             }
 
-                            last_fluctuation = SystemTime::now();
+                            last_fluctuation = Instant::now();
                         }
 
-                        sleep(time::Duration::from_secs(1));
+                        sleep(Duration::from_secs(1));
 
                         match process.try_wait() {
                             Ok(Some(status)) => {
@@ -321,24 +277,22 @@ mod pressure_runner {
 
                     if exit_code == 0 {
                         eprintln!("Process finished successfully.");
-                        if in_test_check_number > 0
-                            && ((thrm_or_pwr_limit_number as f64 / in_test_check_number as f64)
-                                > 0.3)
-                            && resolution != R640x384
-                            && !cfg.is_mem_test
-                        {
-                            thrm_or_pwr_limit_flag = true;
-                        }
-                        if thrm_or_pwr_limit_flag && let Some(lower_res) = resolution.downgrade() {
-                            println!("Downgrading to {:?}", lower_res);
-                            resolution = lower_res;
-                            continue;
+                        let throttle_ratio = if in_test_check_number > 0 {
+                            thrm_or_pwr_limit_number as f64 / in_test_check_number as f64
+                        } else {
+                            0.0
+                        };
+                        if throttle_ratio > 0.3 {
+                            eprintln!(
+                                "Warning: Thermal/power throttling detected ({:.0}%).",
+                                throttle_ratio * 100.0
+                            );
                         }
                     } else {
                         eprintln!("Process finished with exit code {}.", exit_code);
                     }
 
-                    return (exit_code, resolution);
+                    return exit_code;
                 }
                 Err(e) => {
                     count += 1;
@@ -346,7 +300,7 @@ mod pressure_runner {
                     sleep(Duration::from_secs(1));
                     if count >= cfg.timeout_loops {
                         eprintln!("Timeout reached, giving up on starting the process.");
-                        return (1, resolution);
+                        return 1;
                     }
                 }
             }
@@ -364,15 +318,14 @@ fn test_pressure(
     minimum_delta_core_freq_step: i32,
     fluctuation_coefficient: i32,
     fluctuation_mode: usize,
-    test_resolution: TestResolution,
-    is_mem_test: bool,
     test_exe: &str,
     test_code: String,
     timeout_loops: u64,
-    test_conf_file_path: Option<&str>,
     recovery_method: bool,
     is_legacy_global_offset: bool,
-) -> (i32, TestResolution) {
+    cuda_device: Option<u32>,
+    stressor_extra_args: &[String],
+) -> i32 {
     let cfg = pressure_runner::TestPressureConfig {
         point,
         flat_curve_flag,
@@ -381,14 +334,13 @@ fn test_pressure(
         minimum_delta_core_freq_step,
         fluctuation_coefficient,
         fluctuation_mode,
-        test_resolution,
-        is_mem_test,
         test_exe,
         test_code,
         timeout_loops,
-        test_conf_file_path,
         recovery_method,
         is_legacy_global_offset,
+        cuda_device,
+        stressor_extra_args,
     };
 
     pressure_runner::run(gpu, matches, &cfg)
@@ -401,10 +353,11 @@ struct CommonPhaseArgs<'a> {
     fluctuation_mode: usize,
     test_exe: &'a str,
     delimiter: &'a str,
-    test_conf_file_path: Option<&'a str>,
     recovery_method_switch: bool,
     test_duration: u64,
     endurance_coefficient: u64,
+    cuda_device: Option<u32>,
+    stressor_extra_args: &'a [String],
 }
 
 fn build_common_phase_args<'a>(
@@ -414,10 +367,11 @@ fn build_common_phase_args<'a>(
     fluctuation_mode: usize,
     test_exe: &'a str,
     delimiter: &'a str,
-    test_conf_file_path: Option<&'a str>,
     recovery_method_switch: bool,
     test_duration: u64,
     endurance_coefficient: u64,
+    cuda_device: Option<u32>,
+    stressor_extra_args: &'a [String],
 ) -> CommonPhaseArgs<'a> {
     CommonPhaseArgs {
         matches,
@@ -426,10 +380,11 @@ fn build_common_phase_args<'a>(
         fluctuation_mode,
         test_exe,
         delimiter,
-        test_conf_file_path,
         recovery_method_switch,
         test_duration,
         endurance_coefficient,
+        cuda_device,
+        stressor_extra_args,
     }
 }
 
@@ -496,10 +451,11 @@ fn apply_short_phase_success_step(
     Some(increase)
 }
 
-fn pre_load_vf_recheck(matches: &ArgMatches, point: usize) {
+fn pre_load_vf_recheck(matches: &ArgMatches, point: usize) -> Result<(), Error> {
     println!("Waiting for pre-load volt-freq recheck");
     sleep(Duration::from_secs(1));
-    voltage_frequency_check(matches.clone(), point).expect("Failed to read v-f info");
+    voltage_frequency_check(matches.clone(), point)?;
+    Ok(())
 }
 
 fn apply_long_phase_failure_step(
@@ -539,7 +495,6 @@ fn run_legacy_short_phase(
     args: &LegacyPhaseArgs<'_>,
     init_core_oc_value: &mut i32,
     core_oc_safe_limit: &mut i32,
-    test_resolution: &mut TestResolution,
     test_code: &mut usize,
     resuming_flag: &mut bool,
 ) -> Result<(), Error> {
@@ -596,7 +551,7 @@ fn run_legacy_short_phase(
             *test_code, *init_core_oc_value
         );
 
-        let (test_flag, new_resolution) = test_pressure(
+        let test_flag = test_pressure(
             gpu,
             args.common.matches,
             args.point,
@@ -606,17 +561,14 @@ fn run_legacy_short_phase(
             args.common.minimum_delta_core_freq_step,
             args.common.fluctuation_coefficient,
             args.common.fluctuation_mode,
-            *test_resolution,
-            false,
             args.common.test_exe,
             format!("legacy{}{}", args.common.delimiter, *test_code),
             args.common.test_duration,
-            args.common.test_conf_file_path,
             args.common.recovery_method_switch,
             true,
+            args.common.cuda_device,
+            args.common.stressor_extra_args,
         );
-        *test_resolution = new_resolution;
-
         writeln!(l, "Test result is code #{} .", test_flag)?;
 
         if test_flag != 0 {
@@ -675,7 +627,6 @@ fn run_legacy_long_phase(
     gpu: &&Gpu,
     args: &LegacyPhaseArgs<'_>,
     init_core_oc_value: &mut i32,
-    test_resolution: &mut TestResolution,
     test_code: &mut usize,
 ) -> Result<(), Error> {
     println!("Initiating Long Test...");
@@ -703,7 +654,7 @@ fn run_legacy_long_phase(
             *test_code, *init_core_oc_value
         );
 
-        let (long_flag, new_resolution) = test_pressure(
+        let long_flag = test_pressure(
             gpu,
             args.common.matches,
             args.point,
@@ -713,17 +664,14 @@ fn run_legacy_long_phase(
             args.common.minimum_delta_core_freq_step,
             args.common.fluctuation_coefficient,
             args.common.fluctuation_mode,
-            *test_resolution,
-            false,
             args.common.test_exe,
             format!("legacy{}{}", args.common.delimiter, *test_code),
             args.common.endurance_coefficient * args.common.test_duration,
-            args.common.test_conf_file_path,
             args.common.recovery_method_switch,
             true,
+            args.common.cuda_device,
+            args.common.stressor_extra_args,
         );
-        *test_resolution = new_resolution;
-
         writeln!(l, "Test result is code #{} .", long_flag)?;
 
         if long_flag != 0 {
@@ -827,7 +775,6 @@ fn run_gpuboostv3_short_phase<V: std::fmt::Display + Copy>(
     init_core_oc_value: &mut i32,
     core_oc_safe_limit: &mut i32,
     resuming_flag: &mut bool,
-    test_resolution: &mut TestResolution,
 ) -> Result<usize, Error> {
     let mut test_num = 0;
     let mut test_code = 0;
@@ -842,7 +789,7 @@ fn run_gpuboostv3_short_phase<V: std::fmt::Display + Copy>(
             Some(*init_core_oc_value - args.common.minimum_delta_core_freq_step),
         )?;
 
-        pre_load_vf_recheck(args.common.matches, point);
+        pre_load_vf_recheck(args.common.matches, point)?;
 
         test_num += 1;
         test_code += 1;
@@ -884,7 +831,7 @@ fn run_gpuboostv3_short_phase<V: std::fmt::Display + Copy>(
         )?;
 
         let test_flag;
-        (test_flag, *test_resolution) = test_pressure(
+        test_flag = test_pressure(
             &gpu,
             args.common.matches,
             point,
@@ -894,14 +841,13 @@ fn run_gpuboostv3_short_phase<V: std::fmt::Display + Copy>(
             args.common.minimum_delta_core_freq_step,
             args.common.fluctuation_coefficient,
             args.common.fluctuation_mode,
-            *test_resolution,
-            false,
             args.common.test_exe,
             format!("{}{}{}", point, args.common.delimiter, test_code),
             args.common.test_duration,
-            args.common.test_conf_file_path,
             args.common.recovery_method_switch,
             false,
+            args.common.cuda_device,
+            args.common.stressor_extra_args,
         );
         println!("{}", test_flag);
         writeln!(l, "Test result is code #{} .", test_flag)?;
@@ -972,7 +918,6 @@ fn run_gpuboostv3_long_phase<V: std::fmt::Display + Copy>(
     v: V,
     flat_curve_flag: bool,
     init_core_oc_value: &mut i32,
-    test_resolution: &mut TestResolution,
     test_code: &mut usize,
 ) -> Result<(), Error> {
     let mut long_duration_flag;
@@ -980,7 +925,7 @@ fn run_gpuboostv3_long_phase<V: std::fmt::Display + Copy>(
     writeln!(l, "Initiating Long Test...")?;
 
     loop {
-        pre_load_vf_recheck(args.common.matches, point);
+        pre_load_vf_recheck(args.common.matches, point)?;
 
         *test_code += 1;
         log_point_test_header(
@@ -992,7 +937,7 @@ fn run_gpuboostv3_long_phase<V: std::fmt::Display + Copy>(
             KilohertzDelta(*init_core_oc_value),
         )?;
 
-        (long_duration_flag, *test_resolution) = test_pressure(
+        long_duration_flag = test_pressure(
             &gpu,
             args.common.matches,
             point,
@@ -1002,14 +947,13 @@ fn run_gpuboostv3_long_phase<V: std::fmt::Display + Copy>(
             args.common.minimum_delta_core_freq_step,
             args.common.fluctuation_coefficient,
             args.common.fluctuation_mode,
-            *test_resolution,
-            false,
             args.common.test_exe,
             format!("{}{}{}", point, args.common.delimiter, *test_code),
             args.common.endurance_coefficient * args.common.test_duration,
-            args.common.test_conf_file_path,
             args.common.recovery_method_switch,
             false,
+            args.common.cuda_device,
+            args.common.stressor_extra_args,
         );
         if long_duration_flag != 0 {
             core_reset_vfp(gpu)?;
@@ -1069,7 +1013,6 @@ fn run_mem_oc_phase<V: std::fmt::Display + Copy>(
     mem_voltage: V,
     init_vmem_oc_value: &mut i32,
     mem_oc_safe_limit: &mut i32,
-    test_resolution: &mut TestResolution,
 ) -> Result<(), Error> {
     let mut mem_test_code: usize = 0;
     let mut mem_test_num: usize = 0;
@@ -1093,11 +1036,13 @@ fn run_mem_oc_phase<V: std::fmt::Display + Copy>(
         mem_test_num += 1;
         mem_test_code += 1;
 
-        pre_load_vf_recheck(args.common.matches, args.point);
+        pre_load_vf_recheck(args.common.matches, args.point)?;
 
         println!(
             "current test progress estimated:{:.2}%",
-            (mem_test_num + mem_test_code - 1) / (args.mem_freq_step_exp + mem_test_code - 1)
+            (mem_test_num + mem_test_code - 1) as f64
+                / (args.mem_freq_step_exp + mem_test_code - 1).max(1) as f64
+                * 100.0
         );
         println!("current test num: {}", mem_test_num);
 
@@ -1111,24 +1056,23 @@ fn run_mem_oc_phase<V: std::fmt::Display + Copy>(
         )?;
 
         let mem_test_flag;
-        (mem_test_flag, *test_resolution) = test_pressure(
+        mem_test_flag = test_pressure(
             &gpu,
             args.common.matches,
             args.point,
-            true,
+            false,
             args.vfp_set_range,
             0,
             args.common.minimum_delta_core_freq_step,
             args.common.fluctuation_coefficient,
             args.common.fluctuation_mode,
-            *test_resolution,
-            true,
             args.common.test_exe,
             format!("{}{}{}", args.point, args.common.delimiter, mem_test_code),
             args.common.endurance_coefficient * args.common.test_duration,
-            args.common.test_conf_file_path,
             args.common.recovery_method_switch,
             true,
+            args.common.cuda_device,
+            args.common.stressor_extra_args,
         );
 
         writeln!(l, "Test result is code #{} .", mem_test_flag)?;
@@ -1200,7 +1144,6 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<&Gpu>, matches: &ArgMatches) -> Result<(),
 
     let test_exe = cfg.test_exe.as_str();
     let log_filename = cfg.log.as_str();
-    let test_conf_file_path = stressor_3d_conf_path();
     // Ensure the directory exists
     if let Some(parent) = Path::new(log_filename).parent() {
         fs::create_dir_all(parent)?;
@@ -1354,10 +1297,6 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<&Gpu>, matches: &ArgMatches) -> Result<(),
             }
         }
 
-        let init_resolution =
-            scan_shared::pick_initial_resolution(resuming_flag, test_conf_file_path);
-        scan_shared::sync_resolution(test_conf_file_path, init_resolution);
-
         if is_ultrafast {
             if !ultrafast_point_extraction_flag {
                 (p1, p2, p3, p4) = key_point_extractor(
@@ -1368,14 +1307,14 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<&Gpu>, matches: &ArgMatches) -> Result<(),
                 )?;
             }
 
-            if p1 - 6 < lower_voltage_point {
+            if p1.saturating_sub(6) < lower_voltage_point {
                 p1 = lower_voltage_point + 6;
             }
             if p2 < lower_voltage_point {
                 p2 = lower_voltage_point + 10;
             }
             if p3 > upper_voltage_point {
-                p3 = upper_voltage_point - 10;
+                p3 = upper_voltage_point.saturating_sub(10);
             }
             if p4 > upper_voltage_point {
                 p4 = upper_voltage_point;
@@ -1383,11 +1322,11 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<&Gpu>, matches: &ArgMatches) -> Result<(),
 
             // stair bias
             if is_50_series && p1 == p2 {
-                p1 -= 6;
+                p1 = p1.saturating_sub(6);
                 p2 += 6;
             }
             if is_50_series && p2 == p3 {
-                p2 -= 6;
+                p2 = p2.saturating_sub(6);
                 p3 += 6;
             }
 
@@ -1447,7 +1386,6 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<&Gpu>, matches: &ArgMatches) -> Result<(),
         };
         let fluctuation_mode = 3; // 1 = 0-, 2 = ±, 3 = 0+
         let mut flat_curve_flag: bool;
-        let mut test_resolution = init_resolution;
         let phase_args = GpuBoostPhaseArgs {
             common: build_common_phase_args(
                 matches,
@@ -1456,10 +1394,11 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<&Gpu>, matches: &ArgMatches) -> Result<(),
                 fluctuation_mode,
                 test_exe,
                 delimiter.as_str(),
-                test_conf_file_path,
                 recovery_method_switch,
                 test_duration,
                 endurance_coefficient,
+                cfg.cuda_device,
+                &cfg.stressor_extra_args,
             ),
             vfp_set_range,
             freq_step_exp,
@@ -1541,7 +1480,6 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<&Gpu>, matches: &ArgMatches) -> Result<(),
                 &mut init_core_oc_value,
                 &mut core_oc_safe_limit,
                 &mut resuming_flag,
-                &mut test_resolution,
             )?;
             println!(
                 "Short Test #{} finished on point: #{} , voltage: #{}, delta: #+{}. ",
@@ -1558,14 +1496,9 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<&Gpu>, matches: &ArgMatches) -> Result<(),
                 v,
                 flat_curve_flag,
                 &mut init_core_oc_value,
-                &mut test_resolution,
                 &mut test_code,
             )?;
-            write!(
-                l,
-                "\nFinished core OC on point: #{} with resolution {:?}\n",
-                point, test_resolution
-            )?;
+            write!(l, "\nFinished core OC on point: #{}\n", point)?;
             println!(
                 "Core OC finished on point: #{}, voltage: #{}, delta: #+{}. ",
                 point,
@@ -1641,8 +1574,6 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<&Gpu>, matches: &ArgMatches) -> Result<(),
             let mut mem_oc_safe_limit = 0;
             let minimum_delta_mem_freq_step = 1000;
             let mem_freq_step_exp = 8;
-            test_resolution = R1680x1050;
-
             if let Some((_, memory_clock)) = clocks.iter().find(|(name, _)| name.contains("Memory"))
             {
                 println!("Memory Clock: {}", memory_clock);
@@ -1654,14 +1585,6 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<&Gpu>, matches: &ArgMatches) -> Result<(),
                 mem_oc_safe_limit = memory_clock.0 as i32 / 8;
             };
 
-            match get_second_largest_resolution() {
-                Some(resolution) => {
-                    let (width, height) = resolution.dimensions();
-                    println!("Second largest fitting resolution: {}x{}", width, height);
-                    test_resolution = resolution;
-                }
-                None => println!("No fitting resolution found."),
-            }
             point = upper_voltage_point;
             let mem_voltage = points
                 .get(&(point))
@@ -1676,10 +1599,11 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<&Gpu>, matches: &ArgMatches) -> Result<(),
                     fluctuation_mode,
                     test_exe,
                     delimiter.as_str(),
-                    test_conf_file_path,
                     recovery_method_switch,
                     test_duration,
                     endurance_coefficient,
+                    cfg.cuda_device,
+                    &cfg.stressor_extra_args,
                 ),
                 point,
                 vfp_set_range,
@@ -1695,7 +1619,6 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<&Gpu>, matches: &ArgMatches) -> Result<(),
                 mem_voltage,
                 &mut init_vmem_oc_value,
                 &mut mem_oc_safe_limit,
-                &mut test_resolution,
             )?;
             write!(l, "\nFinished on point: #{}.\n", point)?;
             println!(
@@ -1722,7 +1645,6 @@ pub fn autoscan_legacy(gpus: &Vec<&Gpu>, matches: &ArgMatches) -> Result<(), Err
 
     let test_exe = cfg.test_exe.as_str();
     let log_filename = cfg.log.as_str();
-    let test_conf_file_path = stressor_3d_conf_path();
 
     if let Some(parent) = Path::new(log_filename).parent() {
         fs::create_dir_all(parent)?;
@@ -1779,11 +1701,6 @@ pub fn autoscan_legacy(gpus: &Vec<&Gpu>, matches: &ArgMatches) -> Result<(), Err
             }
         }
 
-        // --- Resolution init ---
-        let init_resolution =
-            scan_shared::pick_initial_resolution(resuming_flag, test_conf_file_path);
-        scan_shared::sync_resolution(test_conf_file_path, init_resolution);
-
         // Apply breakpoint-restored values
         init_core_oc_value = last_succeeded_freq;
         core_oc_safe_limit = last_failed_freq;
@@ -1806,7 +1723,6 @@ pub fn autoscan_legacy(gpus: &Vec<&Gpu>, matches: &ArgMatches) -> Result<(), Err
         let fluctuation_mode = 3;
         let flat_curve_flag = false; // not applicable for legacy
 
-        let mut test_resolution = init_resolution;
         let mut test_code: usize = 0;
 
         writeln!(l, "Legacy Scan Initiated at {}", local_time_hms())?;
@@ -1826,10 +1742,11 @@ pub fn autoscan_legacy(gpus: &Vec<&Gpu>, matches: &ArgMatches) -> Result<(), Err
                 fluctuation_mode,
                 test_exe,
                 delimiter.as_str(),
-                test_conf_file_path,
                 recovery_method_switch,
                 test_duration,
                 endurance_coefficient,
+                cfg.cuda_device,
+                &cfg.stressor_extra_args,
             ),
             point,
             flat_curve_flag,
@@ -1851,7 +1768,6 @@ pub fn autoscan_legacy(gpus: &Vec<&Gpu>, matches: &ArgMatches) -> Result<(), Err
                 &phase_args,
                 &mut init_core_oc_value,
                 &mut core_oc_safe_limit,
-                &mut test_resolution,
                 &mut test_code,
                 &mut resuming_flag,
             )?;
@@ -1861,14 +1777,13 @@ pub fn autoscan_legacy(gpus: &Vec<&Gpu>, matches: &ArgMatches) -> Result<(), Err
                 gpu,
                 &phase_args,
                 &mut init_core_oc_value,
-                &mut test_resolution,
                 &mut test_code,
             )?;
 
             write!(
                 l,
-                "\nLegacy OC scan finished. Final freq_delta: +{}kHz, resolution: {:?}\n",
-                init_core_oc_value, test_resolution
+                "\nLegacy OC scan finished. Final freq_delta: +{}kHz\n",
+                init_core_oc_value
             )?;
             println!(
                 "Legacy OC scan finished. Final freq_delta: +{}kHz",

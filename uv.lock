@@ -8,10 +8,6 @@ resolution-markers = [
     "python_full_version < '3.12' and sys_platform != 'linux' and sys_platform != 'win32'",
 ]
 
-[options]
-exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
-exclude-newer-span = "P7D"
-
 [manifest]
 members = [
     "nvoc-cli-stressor",
@@ -1239,12 +1235,14 @@ version = "0.1.0"
 source = { virtual = "cli-stressor-opencl" }
 dependencies = [
     { name = "numpy" },
+    { name = "pyinstaller" },
     { name = "pyopencl" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "numpy", specifier = "==2.4.4" },
+    { name = "pyinstaller", specifier = ">6.0" },
     { name = "pyopencl" },
 ]
 
@@ -1299,6 +1297,9 @@ dependencies = [
 ]
 
 [package.dev-dependencies]
+build = [
+    { name = "pyinstaller" },
+]
 dev = [
     { name = "pytest" },
     { name = "ruff" },
@@ -1313,6 +1314,7 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
+build = [{ name = "pyinstaller", specifier = "~=6.0" }]
 dev = [
     { name = "pytest", specifier = ">=8.3.0" },
     { name = "ruff", specifier = ">=0.11.0" },

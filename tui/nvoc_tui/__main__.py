@@ -11,7 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .app import NVOCApp
+
+if __package__:
+    from .app import NVOCApp
+else:
+    from nvoc_tui.app import NVOCApp
 
 
 def main() -> int:

@@ -1,8 +1,8 @@
-use crate::basic_func::{select_gpus, GpuSelector, TestResolution};
+use crate::basic_func::{select_gpus, GpuSelector};
 use crate::conv::ConvertEnum;
 use crate::error::Error;
 use crate::human::print_scan_separator;
-use crate::nvidia_gpu_type::{GpuType, fetch_gpu_type};
+use crate::nvidia_gpu_type::{fetch_gpu_type, GpuType};
 use crate::types::NvapiLockedVoltageTarget;
 use crate::types::VfpResetDomain;
 use clap::ArgMatches;
@@ -14,11 +14,10 @@ use nvapi_hi::{
     PerfLimitId, PffCurve, PffPoint, VfpPoint,
 };
 use std::collections::BTreeMap;
-use std::io::Write;
+use std::iter;
 use std::str::FromStr;
 use std::thread::sleep;
 use std::time::Duration;
-use std::{fs, io, iter};
 
 /// 通过 NvAPI_GPU_SetPstates20 的 baseVoltages 字段写入指定 pstate 的核心电压 delta。
 /// 适用于 900 系（Maxwell）及更早不支持 ClientVoltRailsSetControl 的 GPU。
@@ -43,12 +42,16 @@ pub fn set_pstate_base_voltage(
         .find(|p| p.id == target_pstate)
         .ok_or_else(|| Error::from(format!("{:?} pstate not found", target_pstate)))?;
 
-    let base_volt = target_ps.base_voltages.iter()
+    let base_volt = target_ps
+        .base_voltages
+        .iter()
         .find(|v| v.voltage_domain == nvapi_hi::nvapi::VoltageDomain::Core)
-        .ok_or_else(|| Error::from(format!(
+        .ok_or_else(|| {
+            Error::from(format!(
             "{:?} Core baseVoltage entry not found — GPU may not support pstate voltage control",
             target_pstate
-        )))?;
+        ))
+        })?;
 
     if !base_volt.editable {
         return Err(Error::from(format!(
@@ -465,12 +468,13 @@ pub fn set_nvapi_pstate_lock(
     first_pstate: nvml_wrapper::enum_wrappers::device::PerformanceState,
     second_pstate: nvml_wrapper::enum_wrappers::device::PerformanceState,
 ) -> Result<(String, u32, u32), Error> {
-    let pstates = crate::oc_get_set_function_nvml::get_nvml_pstate_info(nvml, gpu_id).ok_or_else(|| {
-        Error::Custom(format!(
-            "Failed to query NVML P-State information for GPU {}",
-            gpu_id
-        ))
-    })?;
+    let pstates =
+        crate::oc_get_set_function_nvml::get_nvml_pstate_info(nvml, gpu_id).ok_or_else(|| {
+            Error::Custom(format!(
+                "Failed to query NVML P-State information for GPU {}",
+                gpu_id
+            ))
+        })?;
 
     let first_index = crate::conv::nvml_pstate_to_index(first_pstate)?;
     let second_index = crate::conv::nvml_pstate_to_index(second_pstate)?;
@@ -1213,10 +1217,9 @@ pub fn get_gpu_tdp_temp_limit(
         let info = gpu.info()?;
 
         // 使用 NVAPI GPU ID 直接查询（公式：GPU_ID = PCI_Bus × 256）
-        if let Some((min_w, current_w, max_w)) = nvml
-            .as_ref()
-            .and_then(|n| crate::oc_get_set_function_nvml::query_nvml_power_watts(n, info.id as u32))
-        {
+        if let Some((min_w, current_w, max_w)) = nvml.as_ref().and_then(|n| {
+            crate::oc_get_set_function_nvml::query_nvml_power_watts(n, info.id as u32)
+        }) {
             min_tdp = min_w;
             default_tdp = current_w;
             max_tdp = max_w;
@@ -1283,7 +1286,8 @@ pub fn find_matching_vfp_point(
 ) -> Option<(&usize, &VfpPoint)> {
     vfp_table
         .iter()
-        .min_by_key(|(_, point)| (point.voltage.0 as i64 - sensor_v.0 as i64).abs()) // Find closest voltage
+        .min_by_key(|(_, point)| (point.voltage.0 as i64 - sensor_v.0 as i64).abs())
+    // Find closest voltage
 }
 
 pub fn voltage_frequency_check(arg_matches: ArgMatches, point: usize) -> Result<bool, Error> {
@@ -1294,7 +1298,7 @@ pub fn voltage_frequency_check(arg_matches: ArgMatches, point: usize) -> Result<
 
     for gpu in gpus {
         let status = gpu.status()?;
-        let readout_v = status.voltage.unwrap();
+        let readout_v = status.voltage.ok_or_else(|| Error::Custom("GPU did not report voltage in status; check if the GPU supports voltage monitoring".into()))?;
         let readout_f = status.clone().clocks;
         print_scan_separator();
         println!("readout volt: {:?}, freq: {:?}", readout_v, readout_f);
@@ -1339,107 +1343,12 @@ pub fn voltage_frequency_check(arg_matches: ArgMatches, point: usize) -> Result<
     Ok(precise_flag)
 }
 
-pub fn set_resolution(file_path: &str, resolution: TestResolution) -> io::Result<()> {
-    let content = fs::read_to_string(file_path)?;
-    let (width, height) = resolution.dimensions();
-
-    // Replace all resolution-related keys
-    let updated_content = content
-        .lines()
-        .map(|line| {
-            if line.starts_with("ResolutionSizeX=") {
-                format!("ResolutionSizeX={}", width)
-            } else if line.starts_with("ResolutionSizeY=") {
-                format!("ResolutionSizeY={}", height)
-            } else if line.starts_with("LastUserConfirmedResolutionSizeX=") {
-                format!("LastUserConfirmedResolutionSizeX={}", width)
-            } else if line.starts_with("LastUserConfirmedResolutionSizeY=") {
-                format!("LastUserConfirmedResolutionSizeY={}", height)
-            } else if line.starts_with("DesiredScreenWidth=") {
-                format!("DesiredScreenWidth={}", width)
-            } else if line.starts_with("DesiredScreenHeight=") {
-                format!("DesiredScreenHeight={}", height)
-            } else if line.starts_with("LastUserConfirmedDesiredScreenWidth=") {
-                format!("LastUserConfirmedDesiredScreenWidth={}", width)
-            } else if line.starts_with("LastUserConfirmedDesiredScreenHeight=") {
-                format!("LastUserConfirmedDesiredScreenHeight={}", height)
-            } else {
-                line.to_string()
-            }
-        })
-        .collect::<Vec<String>>()
-        .join("\n");
-
-    // Write the updated content back to the file
-    let mut file = fs::File::create(file_path)?;
-    file.write_all(updated_content.as_bytes())?;
-
-    Ok(())
-}
-
-pub fn get_resolution(file_path: &str) -> io::Result<TestResolution> {
-    let content = fs::read_to_string(file_path)?;
-    let mut width: Option<u32> = None;
-    let mut height: Option<u32> = None;
-
-    for line in content.lines() {
-        if line.starts_with("ResolutionSizeX=") && width.is_none() {
-            width = line["ResolutionSizeX=".len()..].parse::<u32>().ok();
-        } else if line.starts_with("ResolutionSizeY=") && height.is_none() {
-            height = line["ResolutionSizeY=".len()..].parse::<u32>().ok();
-        }
-    }
-
-    for line in content.lines() {
-        if width.is_none() && line.starts_with("DesiredScreenWidth=") {
-            width = line["DesiredScreenWidth=".len()..].parse::<u32>().ok();
-        } else if height.is_none() && line.starts_with("DesiredScreenHeight=") {
-            height = line["DesiredScreenHeight=".len()..].parse::<u32>().ok();
-        }
-    }
-
-    if let (Some(w), Some(h)) = (width, height) {
-        let resolution = match (w, h) {
-            (3600, 1920) => TestResolution::R3600x1920,
-            (3072, 1600) => TestResolution::R3072x1600,
-            (2560, 1440) => TestResolution::R2560x1440,
-            (2048, 1536) => TestResolution::R2048x1536,
-            (1920, 1200) => TestResolution::R1920x1200,
-            (1680, 1050) => TestResolution::R1680x1050,
-            (1440, 1080) => TestResolution::R1440x1080,
-            (1200, 960) => TestResolution::R1200x960,
-            (1080, 864) => TestResolution::R1080x864,
-            (960, 800) => TestResolution::R960x800,
-            (864, 640) => TestResolution::R864x640,
-            (800, 600) => TestResolution::R800x600,
-            (768, 576) => TestResolution::R768x576,
-            (720, 480) => TestResolution::R720x480,
-            (640, 384) => TestResolution::R640x384,
-            (576, 360) => TestResolution::R576x360,
-            (400, 300) => TestResolution::R400x300,
-            _ => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("Unsupported resolution: {}x{}", w, h),
-                ));
-            }
-        };
-        println!("Resolution readout: {:?}", resolution);
-        Ok(resolution)
-    } else {
-        Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Resolution not found",
-        ))
-    }
-}
-
 // ---------------------------------------------------------------------------
-// VFP 批量设置辅助函数
+// VFP batch-setting helpers used by the CLI autoscan path.
 // ---------------------------------------------------------------------------
 
-/// 在指定 VFP 点范围 `range` 上，对每个点设置频率偏置 `delta_khz`。
-/// 错误仅打印警告（GPU 崩溃后会由上层恢复），不中断流程。
+/// Set the same frequency delta on a VFP point range.
+/// Errors are logged and the scan continues so the caller can recover from GPU resets.
 pub fn set_vfp_range_warn(gpu: &&Gpu, range: std::ops::RangeInclusive<usize>, delta_khz: i32) {
     for offset in range {
         match gpu.set_vfp(
@@ -1455,7 +1364,7 @@ pub fn set_vfp_range_warn(gpu: &&Gpu, range: std::ops::RangeInclusive<usize>, de
     }
 }
 
-/// 与 `set_vfp_range_warn` 功能相同，但通过 `?` 传播错误。
+/// Set the same frequency delta on a VFP point range, propagating errors.
 pub fn set_vfp_range(
     gpu: &&Gpu,
     range: std::ops::RangeInclusive<usize>,
@@ -1470,9 +1379,7 @@ pub fn set_vfp_range(
     Ok(())
 }
 
-/// 根据 flat_curve_flag 选择主区域 / 低区域范围，统一设置 VFP（warn 版本，不传播错误）。
-/// - `main_delta`  ：主区域（point 附近或 point..point+range）频率偏置
-/// - `lower_delta` ：仅 flat_curve 模式下 point 左侧区域的频率偏置（`None` 则不设置低区域）
+/// Set the main VFP scan range, and optionally a lower range for flat-curve mode.
 pub fn set_vfp_curve_warn(
     gpu: &&Gpu,
     point: usize,
@@ -1495,7 +1402,7 @@ pub fn set_vfp_curve_warn(
     }
 }
 
-/// 与 `set_vfp_curve_warn` 功能相同，但通过 `?` 传播错误。
+/// Set the main VFP scan range, and optionally a lower range for flat-curve mode.
 pub fn set_vfp_curve(
     gpu: &&Gpu,
     point: usize,
@@ -1523,32 +1430,24 @@ pub fn set_legacy_clocks_nvapi(gpu: &Gpu, core_mhz: u32, mem_mhz: u32) -> Result
     use nvapi_hi::sys::nvapi_QueryInterface;
     use std::mem;
 
-    // 遗留的魔术 ID，提取自 nvapi-sys 中的 nvid.rs 底层表
     const NVAPI_GPU_SET_CLOCKS_ID: u32 = 0x6f151055;
 
-    // 尝试构建一个泛用的 NvClocksInfo 原型传参结构 (基于 GetAllClocks 的返回值偏移猜想)
-    // 根据您的提示，旧时 GetAllClocks 中:
-    // mem_clock = clocks[8] * 0.001f; core_clock = clocks[30] * 0.0005f
     #[repr(C)]
     struct NvClocksInfo {
         version: u32,
-        clocks: [u32; 32], // 预留足够的空间
+        clocks: [u32; 32],
     }
 
-    // 版本号构造惯例：(size) | (VersionNum << 16)
-    // 通常版本号是 1 或 2，在此尝试版本 1 和 2 对应的魔力头
     let version = (size_of::<NvClocksInfo>() as u32) | (2 << 16);
     let mut info = NvClocksInfo {
         version,
         clocks: [0; 32],
     };
 
-    // 结合以前的逆向记录进行反向运算，乘以倍率使其满足旧结构格式要求
-    info.clocks[8] = mem_mhz * 1000;
-    info.clocks[30] = core_mhz * 2000;
+    info.clocks[8] = mem_mhz.saturating_mul(1000);
+    info.clocks[30] = core_mhz.saturating_mul(2000);
 
     unsafe {
-        // 1. 获取隐藏函数指针
         let ptr_res = nvapi_QueryInterface(NVAPI_GPU_SET_CLOCKS_ID);
         let ptr = match ptr_res {
             Ok(p) => p as *const (),
@@ -1560,7 +1459,6 @@ pub fn set_legacy_clocks_nvapi(gpu: &Gpu, core_mhz: u32, mem_mhz: u32) -> Result
             }
         };
 
-        // 2. 强类型转换将其解释为可执行的函数
         #[allow(improper_ctypes_definitions)]
         type SetClocksFn = unsafe extern "system" fn(
             h_physical_gpu: nvapi_hi::sys::api::NvPhysicalGpuHandle,
@@ -1568,12 +1466,9 @@ pub fn set_legacy_clocks_nvapi(gpu: &Gpu, core_mhz: u32, mem_mhz: u32) -> Result
         ) -> nvapi_hi::sys::Status;
 
         let func: SetClocksFn = mem::transmute(ptr);
-
-        // 3. 执行注入调用
         let status = func(*gpu.inner().handle(), &mut info);
 
         if status != nvapi_hi::sys::Status::Ok {
-            // 如果 version 不匹配，通常会报 INCOMPATIBLE_STRUCT_VERSION
             return Err(Error::Custom(format!(
                 "Failed to call legacy interface NvAPI_GPU_SetClocks, error code: {:?}",
                 status

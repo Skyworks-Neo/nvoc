@@ -25,12 +25,6 @@ pub const fn default_test_exe_path() -> &'static str {
     }
 }
 
-/// Optional path for stressor game config used by resolution sync.
-/// cli-stressor itself does not require this file, so default is None.
-pub const fn stressor_3d_conf_path() -> Option<&'static str> {
-    None
-}
-
 #[cfg(all(not(windows), not(target_os = "linux")))]
 pub fn panic_windows_only(feature: &str) -> ! {
     panic!("{feature} is only supported on Windows in this repository")

@@ -15,13 +15,8 @@ DEFAULT_CONFIG: Dict[str, JSONValue] = {
     "last_gpu_idx": "",
     "autoscan": {
         "mode": "standard",  # standard / ultrafast / legacy
-        "test_exe": r".\test\test.bat",
-        "score_threshold": "98.5",
-        "timeout_loops": "30",
         "output_csv": r".\ws\vfp-tem.csv",
         "init_csv": r".\ws\vfp-init.csv",
-        "log_file": r".\ws\vfp.log",
-        "score_path": r"..\yiji_tb\result.xml",
         "bsod_recovery": "",
     },
 }
