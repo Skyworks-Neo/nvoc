@@ -241,15 +241,12 @@ jobs:
       - name: Check Cargo.lock for duplicate crate versions
         run: |
           python3 << 'PYEOF'
-          import sys, re, collections
-          text = open('Cargo.lock').read()
-          blocks = re.split(r'(?=\[\[package\]\])', text)
+          import sys, tomllib, collections
+          with open('Cargo.lock', 'rb') as f:
+              data = tomllib.load(f)
           seen = collections.defaultdict(set)
-          for block in blocks:
-              nm = re.search(r'name = "([^"]+)"', block)
-              vr = re.search(r'version = "([^"]+)"', block)
-              if nm and vr:
-                  seen[nm.group(1)].add(vr.group(1))
+          for pkg in data.get('package', []):
+              seen[pkg['name']].add(pkg['version'])
           dupes = {k: sorted(v) for k, v in seen.items() if len(v) > 1}
           if dupes:
               print('Duplicate crate versions found (advisory — fix and remove continue-on-error):')
