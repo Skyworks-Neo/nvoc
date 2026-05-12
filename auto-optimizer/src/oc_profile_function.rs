@@ -12,7 +12,7 @@ use nvapi_hi::{
     SensorThrottle,
 };
 use nvapi_hi::{Gpu, VfPoint, VfpDeltas, VfpTable};
-use std::cmp::min;
+use std::cmp::{min, Ordering};
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
@@ -178,17 +178,38 @@ fn collect_vf_points(vfp: VfpTable, deltas: VfpDeltas, export_memory: bool) -> V
         (vfp.graphics, deltas.graphics)
     };
 
-    points
-        .into_iter()
-        .zip(deltas)
-        .map(|((i0, mut point), (i1, delta))| {
-            assert_eq!(i0, i1);
-            if export_memory {
-                point.voltage = Microvolts(point.voltage.0 * 2);
-            } // video memory voltage should × 2
-            VfPoint::new(point, delta)
-        })
-        .collect()
+    // Sorted merge-join on index: tolerates sparse tables where NVML/NVAPI
+    // report different index sets (MIG, datacenter SKUs). zip() would
+    // silently truncate all points after the first gap; assert_eq! would
+    // abort the process in release builds (panic = "abort").
+    let mut pts = points.into_iter().peekable();
+    let mut dts = deltas.into_iter().peekable();
+    let mut result = Vec::new();
+    loop {
+        let ord = match (pts.peek(), dts.peek()) {
+            (None, _) | (_, None) => break,
+            (Some((i0, _)), Some((i1, _))) => i0.cmp(i1),
+        };
+        match ord {
+            Ordering::Equal => {
+                let (_, mut point) = pts.next().unwrap();
+                let (_, delta) = dts.next().unwrap();
+                if export_memory {
+                    point.voltage = Microvolts(point.voltage.0 * 2);
+                }
+                result.push(VfPoint::new(point, delta));
+            }
+            Ordering::Less => {
+                let (i, _) = pts.next().unwrap();
+                eprintln!("warning: VFP point index {i} has no matching delta — skipping");
+            }
+            Ordering::Greater => {
+                let (i, _) = dts.next().unwrap();
+                eprintln!("warning: VFP delta index {i} has no matching point — skipping");
+            }
+        }
+    }
+    result
 }
 
 fn extract_default_frequencies(file_path: &str, legacy_flag: bool) -> Result<Vec<u32>, Error> {
