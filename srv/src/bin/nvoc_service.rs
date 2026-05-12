@@ -156,18 +156,21 @@ mod nvoc_service {
             process_id: None,
         });
 
-        // Restart the HTTP thread on panic so a control-plane failure doesn't leave
-        // the service running but silently unresponsive (#67).
+        // Restart the HTTP thread on any exit (panic or early normal return) so a
+        // control-plane failure doesn't leave the service running but silently
+        // unresponsive (#67). Sleep before every restart to prevent tight CPU loops
+        // when e.g. the bind port is unavailable.
         thread::spawn(move || {
             loop {
                 let cfg = http_config.clone();
                 let tx = http_tx.clone();
-                if std::panic::catch_unwind(AssertUnwindSafe(|| {
+                match std::panic::catch_unwind(AssertUnwindSafe(|| {
                     crate::websrv::start_http_server(cfg, tx);
-                })).is_err() {
-                    error!("HTTP server thread panicked; restarting in 1 s");
-                    thread::sleep(Duration::from_secs(1));
+                })) {
+                    Err(_) => error!("HTTP server thread panicked; restarting in 1 s"),
+                    Ok(_) => warn!("HTTP server thread exited; restarting in 1 s"),
                 }
+                thread::sleep(Duration::from_secs(1));
             }
         });
 
