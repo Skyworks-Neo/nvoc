@@ -54,6 +54,13 @@ cargo run -p cli-stressor-cuda-rs --features cuda -- --duration 30 --precisions 
 
 - TF32 使用 cuBLAS 的数学模式切换；BF16/FP8 目前会被跳过，并给出明确提示。
 - 校验路径使用 CPU FP64 GEMM，并按元素比较容差。
+- 兼容性总结（2026-05-13 记录）：
+  - CUDA 13 + `cuda13.dll` 在 10 系 GPU / Pascal 上不可用，编译成功也可能跑不起来。
+  - 较老驱动组合下，CUDA 13 可能出现 `CUBLAS_STATUS_NOT_INITIALIZED` 或 `CUBLAS_STATUS_ARCH_MISMATCH`。
+  - 更稳妥的发布方式是同时提供 CUDA 12.x 和 CUDA 13.x 两套构建；其中 CUDA 12.x 至少可覆盖到 Maxwell。
+  - CUDA 13 需要足够新的显卡和匹配的驱动；例如 40 系 GPU 搭配 CUDA 13 与新驱动（如 595 / CUDA 13.2）可正常工作。
+  - 客户端部署时要确保驱动支持性与 CUDA 版本都和目标 GPU 架构匹配。
+  - 结论：若要兼顾老卡与新卡，推荐按 CUDA 12.x / 13.x 分开打包与发布，并在客户端侧按 GPU 架构选择对应版本。
 
 ---
 
@@ -88,4 +95,11 @@ cargo run -p cli-stressor-cuda-rs --features cuda -- --duration 30 --precisions 
 
 - TF32 uses cuBLAS math-mode switching. BF16/FP8 are currently skipped with a clear message.
 - The validation path uses CPU FP64 GEMM and compares values with element-wise tolerances.
+- Compatibility summary (recorded on 2026-05-13):
+  - CUDA 13 with `cuda13.dll` does not run on 10-series GPUs / Pascal, even if it builds successfully.
+  - Older driver combinations may fail with `CUBLAS_STATUS_NOT_INITIALIZED` or `CUBLAS_STATUS_ARCH_MISMATCH`.
+  - The safer release strategy is to ship both CUDA 12.x and CUDA 13.x builds; CUDA 12.x reaches at least Maxwell.
+  - CUDA 13 requires a sufficiently new GPU and a matching driver; for example, RTX 40-series GPUs work normally with CUDA 13 and a newer driver (such as 595 / CUDA 13.2).
+  - In client deployments, driver support and CUDA version must match the target GPU architecture.
+  - Conclusion: to cover both legacy and newer GPUs, package and release separate CUDA 12.x and CUDA 13.x builds, then select the appropriate one on the client side by GPU architecture.
 
