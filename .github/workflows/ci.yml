@@ -233,8 +233,11 @@ jobs:
   rust-crate-versions:
     name: Rust duplicate-crate audit (advisory)
     runs-on: ubuntu-latest
-    # Advisory: nvml-wrapper 0.11.0 (srv) vs 0.12.1 (auto-optimizer) is a known skew — see #12.
-    # Remove continue-on-error once both crates agree on the same version.
+    # Advisory: the workspace currently has several duplicate crate versions:
+    #   - nvml-wrapper 0.11.0 (srv) vs 0.12.1 (auto-optimizer) — see #12 (unintentional skew)
+    #   - bitflags, thiserror, zerocopy, windows-sys, etc. (expected semver-breaking upgrades
+    #     pulled in by different transitive dependencies — normal in Rust projects)
+    # Keep continue-on-error until the Cargo.lock reports zero duplicate package names.
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
@@ -249,7 +252,7 @@ jobs:
               seen[pkg['name']].add(pkg['version'])
           dupes = {k: sorted(v) for k, v in seen.items() if len(v) > 1}
           if dupes:
-              print('Duplicate crate versions found (advisory — fix and remove continue-on-error):')
+              print('Duplicate crate versions found (advisory):')
               for name, vers in sorted(dupes.items()):
                   print(f'  {name}: {", ".join(vers)}')
               sys.exit(1)
