@@ -1,5 +1,5 @@
 [workspace]
-members = ["auto-optimizer", "srv"]
+members = ["auto-optimizer", "srv", "cli-stressor-cuda-rs"]
 resolver = "2"
 
 [profile.release]
