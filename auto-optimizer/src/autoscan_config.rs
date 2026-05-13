@@ -10,6 +10,7 @@ use crate::platform::{
     default_test_exe_path, default_vfp_csv_path, default_vfp_init_csv_path, default_vfp_log_path,
     default_vfp_temp_csv_path,
 };
+use nvapi_hi::ClockDomain;
 use clap::ArgMatches;
 
 // ---------------------------------------------------------------------------
@@ -27,8 +28,22 @@ pub struct VfpExportConfig {
     pub dynamic: bool,
     /// 是否跳过动态结果校验（--nocheck）
     pub dynamic_check: bool,
-    /// 是否导出显存 VF 曲线（--memory）；默认 false 表示导出核心曲线
-    pub export_memory: bool,
+    /// 目标 VFP domain；默认 Graphics
+    pub domain: ClockDomain,
+}
+
+fn vfp_domain_from_matches(matches: &ArgMatches) -> ClockDomain {
+    if matches.get_flag("memory") {
+        ClockDomain::Memory
+    } else if matches.get_flag("processor") {
+        ClockDomain::Processor
+    } else if matches.get_flag("video") {
+        ClockDomain::Video
+    } else if matches.get_flag("undefined") {
+        ClockDomain::Undefined
+    } else {
+        ClockDomain::Graphics
+    }
 }
 
 impl VfpExportConfig {
@@ -45,7 +60,7 @@ impl VfpExportConfig {
                 .unwrap_or_else(|| "-".to_string()),
             dynamic: !matches.get_flag("quick"),
             dynamic_check: !matches.get_flag("nocheck"),
-            export_memory: matches.get_flag("memory"),
+            domain: vfp_domain_from_matches(matches),
         }
     }
 }

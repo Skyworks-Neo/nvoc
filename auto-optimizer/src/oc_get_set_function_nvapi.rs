@@ -45,7 +45,7 @@ pub fn set_pstate_base_voltage(
     let base_volt = target_ps
         .base_voltages
         .iter()
-        .find(|v| v.voltage_domain == nvapi_hi::nvapi::VoltageDomain::Core)
+        .find(|v| v.voltage_domain == nvapi::VoltageDomain::Core)
         .ok_or_else(|| {
             Error::from(format!(
             "{:?} Core baseVoltage entry not found — GPU may not support pstate voltage control",
@@ -109,6 +109,88 @@ pub fn set_pstate_base_voltage(
     Ok(())
 }
 
+/// Preserve all editable clock deltas in the target P-State, overriding only one domain.
+/// This avoids `NvAPI_GPU_SetPstates20` clearing sibling domains when the caller wants
+/// to change only Graphics or Memory.
+pub fn set_pstate_clock_offset_preserve(
+    gpu: &Gpu,
+    target_pstate: PState,
+    target_domain: ClockDomain,
+    target_delta: KilohertzDelta,
+) -> Result<(), Error> {
+    let graphics_vfp = if target_domain == ClockDomain::Memory {
+        capture_graphics_vfp(gpu)?
+    } else {
+        None
+    };
+
+    let pstates = gpu
+        .inner()
+        .pstates()
+        .map_err(|e| Error::from(format!("Failed to read pstates: {:?}", e)))?;
+
+    let target_ps = pstates
+        .pstates
+        .iter()
+        .find(|p| p.id == target_pstate)
+        .ok_or_else(|| Error::from(format!("{:?} pstate not found", target_pstate)))?;
+
+    let mut entries: Vec<(PState, ClockDomain, KilohertzDelta)> = target_ps
+        .clocks
+        .iter()
+        .filter(|clock| clock.editable())
+        .map(|clock| {
+            let delta = if clock.domain() == target_domain {
+                target_delta
+            } else {
+                clock.frequency_delta().value
+            };
+            (target_pstate, clock.domain(), delta)
+        })
+        .collect();
+
+    if entries.is_empty() {
+        return Err(Error::from(format!(
+            "{:?} has no editable clock entries",
+            target_pstate
+        )));
+    }
+
+    if !entries.iter().any(|(_, domain, _)| *domain == target_domain) {
+        return Err(Error::from(format!(
+            "{:?} {:?} clock entry not found or not editable",
+            target_pstate, target_domain
+        )));
+    }
+
+    gpu.inner()
+        .set_pstates(entries.drain(..))
+        .map_err(Error::from)?;
+
+    if let Some(vfp) = graphics_vfp {
+        restore_graphics_vfp(gpu, &vfp)?;
+    }
+
+    Ok(())
+}
+
+fn capture_graphics_vfp(
+    gpu: &Gpu,
+) -> Result<Option<BTreeMap<usize, KilohertzDelta>>, Error> {
+    let settings = gpu.settings().map_err(Error::from)?;
+    Ok(settings.vfp.map(|vfp| vfp.graphics))
+}
+
+fn restore_graphics_vfp(
+    gpu: &Gpu,
+    vfp: &BTreeMap<usize, KilohertzDelta>,
+) -> Result<(), Error> {
+    for (point, delta) in vfp {
+        gpu.set_vfp(iter::once((*point, *delta)), iter::empty())?;
+    }
+    Ok(())
+}
+
 /// 将所有 pstate 的 Core baseVoltage delta 清零（适用于 Maxwell / 9 系及更早）。
 /// 遍历驱动报告的全部 pstate，对每个含有可编辑 Core baseVoltage 的条目发起单独写入，
 /// 单个 pstate 失败时打印警告并继续，不中断其他 pstate 的清零。
@@ -127,7 +209,7 @@ pub fn reset_all_pstate_base_voltages(gpu: &Gpu) -> Result<(), Error> {
         let base_volt = match ps
             .base_voltages
             .iter()
-            .find(|v| v.voltage_domain == nvapi_hi::nvapi::VoltageDomain::Core)
+            .find(|v| v.voltage_domain == nvapi::VoltageDomain::Core)
         {
             Some(v) => v,
             None => continue, // 该 pstate 无 Core 电压条目，跳过
