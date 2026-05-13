@@ -233,30 +233,49 @@ jobs:
   rust-crate-versions:
     name: Rust duplicate-crate audit (advisory)
     runs-on: ubuntu-latest
-    # Advisory: the workspace currently has several duplicate crate versions:
-    #   - nvml-wrapper 0.11.0 (srv) vs 0.12.1 (auto-optimizer) — see #12 (unintentional skew)
-    #   - bitflags, thiserror, zerocopy, windows-sys, etc. (expected semver-breaking upgrades
-    #     pulled in by different transitive dependencies — normal in Rust projects)
-    # Keep continue-on-error until the Cargo.lock reports zero duplicate package names.
+    # Advisory: nvml-wrapper has an unintentional workspace skew (0.11.0 in srv vs
+    # 0.12.1 in auto-optimizer — see #12). All other known duplicates are expected
+    # semver-breaking transitive deps silenced via ALLOWLIST in the script below.
+    # Remove continue-on-error once the nvml-wrapper skew is resolved.
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
       - name: Check Cargo.lock for duplicate crate versions
         run: |
           python3 << 'PYEOF'
           import sys, tomllib, collections
+
+          # Expected transitive duplicates from semver-breaking upgrades pulled in by
+          # different dependency chains.  Add entries only when unavoidable; remove
+          # them once the workspace converges on a single version.
+          ALLOWLIST = {
+              "bitflags",        # 1.x / 2.x
+              "getrandom",       # 0.2 / 0.3 / 0.4
+              "hashbrown",       # 0.15 / 0.17
+              "r-efi",           # 5.x / 6.x
+              "thiserror",       # 1.x / 2.x
+              "thiserror-impl",  # 1.x / 2.x
+              "windows-sys",     # 0.52 / 0.59 / 0.61
+              "wit-bindgen",     # 0.51 / 0.57
+              "zerocopy",        # 0.6 / 0.8
+              "zerocopy-derive", # 0.6 / 0.8
+          }
+
           with open('Cargo.lock', 'rb') as f:
               data = tomllib.load(f)
           seen = collections.defaultdict(set)
           for pkg in data.get('package', []):
               seen[pkg['name']].add(pkg['version'])
-          dupes = {k: sorted(v) for k, v in seen.items() if len(v) > 1}
+          dupes = {k: sorted(v) for k, v in seen.items() if len(v) > 1 and k not in ALLOWLIST}
           if dupes:
-              print('Duplicate crate versions found (advisory):')
+              print('Unexpected duplicate crate versions found:')
               for name, vers in sorted(dupes.items()):
                   print(f'  {name}: {", ".join(vers)}')
               sys.exit(1)
-          print('No duplicate crate versions found.')
+          print('No unexpected duplicate crate versions found.')
           PYEOF
 
   ci-summary:
