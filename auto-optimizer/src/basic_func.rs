@@ -38,11 +38,13 @@ pub struct GpuSelector(Option<Vec<String>>);
 
 impl GpuSelector {
     /// Select all available GPUs (no filter).
+    #[allow(dead_code)]
     pub fn all() -> Self {
         Self(None)
     }
 
     /// Select GPUs by the given specification strings (indices or PCI bus IDs).
+    #[allow(dead_code)]
     pub fn from_specs(specs: impl IntoIterator<Item = String>) -> Self {
         Self(Some(specs.into_iter().collect()))
     }
@@ -503,8 +505,8 @@ pub fn handle_status(
 
                         human::print_status(&status);
                         human::print_settings(gpu, requires_set(gpu, &mut set)?);
-                        if let Ok(info) = gpu.info() {
-                            if let Some(thresholds) = nvml.and_then(|n| {
+                        if let Ok(info) = gpu.info()
+                            && let Some(thresholds) = nvml.and_then(|n| {
                                 crate::oc_get_set_function_nvml::get_nvml_temperature_thresholds(
                                     n,
                                     info.id as u32,
@@ -518,7 +520,6 @@ pub fn handle_status(
                                     }
                                 }
                             }
-                        }
                         println!();
                         shown = true;
                         break;

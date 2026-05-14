@@ -69,11 +69,15 @@ pub fn set_pstate_base_voltage(
     }
 
     // 2. 构造最小化的 NV_GPU_PERF_PSTATES20_INFO，只填目标 pstate 的 baseVoltages，不修改时钟
-    let mut info = sys_pstate::NV_GPU_PERF_PSTATES20_INFO::default();
-    info.bIsEditable = nvapi_hi::sys::types::BoolU32::from(true);
-    info.numPstates = 1;
-    info.numClocks = 0; // 不修改时钟
-    info.numBaseVoltages = 1; // 一个核心电压条目
+    #[allow(clippy::field_reassign_with_default)]
+    let mut info = {
+        let mut v = sys_pstate::NV_GPU_PERF_PSTATES20_INFO::default();
+        v.bIsEditable = nvapi_hi::sys::types::BoolU32::from(true);
+        v.numPstates = 1;
+        v.numClocks = 0;
+        v.numBaseVoltages = 1;
+        v
+    };
 
     {
         let pe = &mut info.pstates[0];
@@ -140,11 +144,15 @@ pub fn reset_all_pstate_base_voltages(gpu: &Gpu) -> Result<(), Error> {
         let range = base_volt.voltage_delta.range;
 
         // 构造单 pstate 写入结构
-        let mut info = sys_pstate::NV_GPU_PERF_PSTATES20_INFO::default();
-        info.bIsEditable = nvapi_hi::sys::types::BoolU32::from(true);
-        info.numPstates = 1;
-        info.numClocks = 0;
-        info.numBaseVoltages = 1;
+        #[allow(clippy::field_reassign_with_default)]
+        let mut info = {
+            let mut v = sys_pstate::NV_GPU_PERF_PSTATES20_INFO::default();
+            v.bIsEditable = nvapi_hi::sys::types::BoolU32::from(true);
+            v.numPstates = 1;
+            v.numClocks = 0;
+            v.numBaseVoltages = 1;
+            v
+        };
 
         {
             let pe = &mut info.pstates[0];
@@ -268,13 +276,12 @@ fn parse_lock_frequency(
             None
         };
 
-    if let Some(lower) = lower_mhz {
-        if lower > upper_mhz {
+    if let Some(lower) = lower_mhz
+        && lower > upper_mhz {
             return Err(Error::from(
                 "--clock expects upper bound first and lower bound second",
             ));
         }
-    }
 
     let domain = match matches
         .get_one::<String>("domain")
@@ -993,7 +1000,7 @@ pub fn handle_pointwiseoc(gpus: &[&Gpu], matches: &ArgMatches) -> Result<(), Err
     );
 
     for gpu in gpus {
-        set_vfp_range(&gpu, start..=end, delta)?;
+        set_vfp_range(gpu, start..=end, delta)?;
     }
 
     Ok(())
@@ -1025,38 +1032,35 @@ pub fn handle_test_voltage_limits(
             }
         }
 
-        match gpu_type {
-            Ok(ref t) => {
-                let vlp = t.voltage_limit_params();
-                upper_init_point = vlp.upper_init_point;
-                lower_init_point = vlp.lower_init_point;
-                if vlp.vfp_strict_inc_flag {
-                    vfp_strict_inc_flag = 1;
-                }
-                if vlp.margin_threshold_check {
-                    margin_threshold_check = 1;
-                }
-
-                // 9 系及 Volta/Unknown 的特殊打印（无 VFP 支持）
-                match t {
-                    GpuType::Mobile9Series => {
-                        println!("Mobile 9 Series GPU detected.");
-                        drop(Error::VfpUnsupported);
-                    }
-                    GpuType::Desktop9Series => {
-                        println!("Desktop 9 Series GPU detected.");
-                        drop(Error::VfpUnsupported);
-                    }
-                    GpuType::ComputationVolta => {
-                        println!("Computation Volta GPU detected.");
-                    }
-                    GpuType::Unknown => {
-                        println!("Unknown GPU type detected.");
-                    }
-                    _ => {}
-                }
+        if let Ok(ref t) = gpu_type {
+            let vlp = t.voltage_limit_params();
+            upper_init_point = vlp.upper_init_point;
+            lower_init_point = vlp.lower_init_point;
+            if vlp.vfp_strict_inc_flag {
+                vfp_strict_inc_flag = 1;
             }
-            _ => {}
+            if vlp.margin_threshold_check {
+                margin_threshold_check = 1;
+            }
+
+            // 9 系及 Volta/Unknown 的特殊打印（无 VFP 支持）
+            match t {
+                GpuType::Mobile9Series => {
+                    println!("Mobile 9 Series GPU detected.");
+                    drop(Error::VfpUnsupported);
+                }
+                GpuType::Desktop9Series => {
+                    println!("Desktop 9 Series GPU detected.");
+                    drop(Error::VfpUnsupported);
+                }
+                GpuType::ComputationVolta => {
+                    println!("Computation Volta GPU detected.");
+                }
+                GpuType::Unknown => {
+                    println!("Unknown GPU type detected.");
+                }
+                _ => {}
+            }
         }
     }
 
