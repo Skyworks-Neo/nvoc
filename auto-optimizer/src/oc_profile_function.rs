@@ -149,7 +149,7 @@ pub fn export_single_point(point: VfPoint, matches: &clap::ArgMatches) -> Result
             parts[2] = delta_str.clone();
             let y_value: i32 = parts[2].parse().unwrap_or(0);
             let col3_value: i32 = parts[3].parse().unwrap_or(0);
-            parts[1] = (y_value + col3_value).to_string();
+            parts[1] = y_value.saturating_add(col3_value).to_string();
         }
         record_lines.push(parts.join(","));
     }
