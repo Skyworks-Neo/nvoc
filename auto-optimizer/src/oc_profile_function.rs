@@ -227,22 +227,19 @@ fn extract_default_frequencies(file_path: &str, legacy_flag: bool) -> Result<Vec
 
     for result in rdr.records() {
         let record = result?;
-        let default_frequency_load: u32;
-
-        if legacy_flag {
-            default_frequency_load = record
+        let default_frequency_load: u32 = if legacy_flag {
+            // Read only frequency column
+            record
                 .get(1)
                 .ok_or_else(|| Error::Custom("row too short: missing column 1".into()))?
-                .parse()?;
-        }
-        // Read only frequency column
-        else {
-            default_frequency_load = record
+                .parse()?
+        } else {
+            // Read only default_frequency column
+            record
                 .get(3)
                 .ok_or_else(|| Error::Custom("row too short: missing column 3".into()))?
-                .parse()?;
-        }
-        // Read only default_frequency column
+                .parse()?
+        };
 
         default_frequencies_load.push(default_frequency_load);
     }
@@ -274,7 +271,6 @@ fn update_csv_with_load_and_margin(
         .has_headers(true)
         .from_writer(File::create(&tmp_path)?);
 
-    let mut index = 0;
     let headers = StringRecord::from(vec![
         "voltage",
         "frequency",
@@ -285,21 +281,20 @@ fn update_csv_with_load_and_margin(
         "margin_bin",
     ]);
     wtr.write_record(&headers)?;
-    for result in rdr.records() {
+    for (index, result) in rdr.records().enumerate() {
         let record = result?;
         let voltage = &record[0];
         let frequency = &record[1];
         let delta = &record[2];
         let default_frequency = default_frequencies.get(index).cloned().unwrap_or(0);
-        let margin: i32;
         let default_frequency_load = default_frequencies_load.get(index).cloned().unwrap_or(0);
 
         // Get the corresponding load frequency
-        if legacy_flag {
-            margin = default_frequency_load as i32 - frequency.parse::<i32>()?;
+        let margin: i32 = if legacy_flag {
+            default_frequency_load as i32 - frequency.parse::<i32>()?
         } else {
-            margin = default_frequency_load as i32 - default_frequency as i32;
-        }
+            default_frequency_load as i32 - default_frequency as i32
+        };
 
         let margin_bin = (margin as f32 / minimum_delta_core_freq_step as f32).round() as i32;
         // Write updated row
@@ -312,7 +307,6 @@ fn update_csv_with_load_and_margin(
             &margin.to_string(),
             &margin_bin.to_string(),
         ])?;
-        index += 1;
     }
 
     wtr.flush()?;
@@ -642,8 +636,8 @@ fn interpolate_deltas(
         p4_d = parse_col::<i32>(&lines[p4_idx], 2, "delta")?;
     }
 
-    for i in 0..lines.len() {
-        let current_v = parse_col::<u32>(&lines[i], 0, "voltage")?;
+    for (i, line) in lines.iter_mut().enumerate() {
+        let current_v = parse_col::<u32>(line, 0, "voltage")?;
         let stair_inferred = min(p2_idx - p1_idx, p3_idx - p2_idx);
 
         let new_delta = if i < p1_idx {
@@ -662,7 +656,7 @@ fn interpolate_deltas(
             p4_d
         };
 
-        lines[i][2] = new_delta.to_string();
+        line[2] = new_delta.to_string();
     }
     Ok(())
 }
@@ -901,8 +895,8 @@ pub fn break_point_continue(
             break;
         }
 
-        if last_voltage_point.is_none() {
-            if let Some(point) = extract_value(line, "point: #") {
+        if last_voltage_point.is_none()
+            && let Some(point) = extract_value(line, "point: #") {
                 last_voltage_point = Some(point as usize);
 
                 if line.contains("Finished") {
@@ -910,23 +904,18 @@ pub fn break_point_continue(
                     break;
                 }
             }
-        }
 
-        if last_code_100_freq.is_none() {
-            if line.contains("Test result is code #0") {
-                if let Some(freq) = extract_value_f64(line, "freq_delta: #") {
+        if last_code_100_freq.is_none()
+            && line.contains("Test result is code #0")
+                && let Some(freq) = extract_value_f64(line, "freq_delta: #") {
                     last_code_100_freq = Some(freq);
                 }
-            }
-        }
 
-        if last_code_0_freq.is_none() {
-            if line.contains("Test") && !line.contains("Test result is code #0") {
-                if let Some(freq) = extract_value_f64(line, "freq_delta: #") {
+        if last_code_0_freq.is_none()
+            && line.contains("Test") && !line.contains("Test result is code #0")
+                && let Some(freq) = extract_value_f64(line, "freq_delta: #") {
                     last_code_0_freq = Some(freq);
                 }
-            }
-        }
 
         if last_voltage_point.is_some()
             && last_code_100_freq.is_some()
@@ -966,27 +955,25 @@ pub fn export_vfp_from_log(matches: &clap::ArgMatches) -> Result<(), Error> {
             break;
         }
 
-        if line.contains("Finished") {
-            if let Some(point) = extract_value(line, "point: #") {
+        if line.contains("Finished")
+            && let Some(point) = extract_value(line, "point: #") {
                 last_voltage_point = Some(point);
                 last_code_100_freq = None;
             }
-        }
 
         if last_code_100_freq.is_none() && line.contains("Test result is code #100") {
             println!("{}", line);
             if last_voltage_point.is_none() {
                 continue;
             }
-            if let Some(point) = extract_value(line, "point: #") {
-                if last_voltage_point != Some(point) {
+            if let Some(point) = extract_value(line, "point: #")
+                && last_voltage_point != Some(point) {
                     eprintln!(
                         "Warning: export_vfp_from_log: expected voltage point {:?}, got {} — skipping",
                         last_voltage_point, point
                     );
                     continue;
                 }
-            }
             if let Some(voltage) = extract_value_f64(line, "voltage: #") {
                 last_voltage = Some(voltage);
             }
