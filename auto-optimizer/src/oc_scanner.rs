@@ -829,8 +829,8 @@ fn run_gpuboostv3_short_phase<V: std::fmt::Display + Copy>(
             KilohertzDelta(*init_core_oc_value),
         )?;
 
-        let test_flag;
-        test_flag = test_pressure(
+        
+        let test_flag = test_pressure(
             &gpu,
             args.common.matches,
             point,
@@ -1054,8 +1054,8 @@ fn run_mem_oc_phase<V: std::fmt::Display + Copy>(
             KilohertzDelta(*init_vmem_oc_value),
         )?;
 
-        let mem_test_flag;
-        mem_test_flag = test_pressure(
+        
+        let mem_test_flag = test_pressure(
             &gpu,
             args.common.matches,
             args.point,
@@ -1268,32 +1268,30 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<&Gpu>, matches: &ArgMatches) -> Result<(),
         let mut last_failed_freq = core_oc_safe_limit_ref;
         let recovery_method_switch: bool = cfg.recovery_method.unwrap_or(is_50_series);
 
-        match break_point_continue(log_filename, testing_step)? {
-            (succeeded_freq, failed_freq, last_voltage_point, ultrafast_flag) => {
-                println!("Extracted Values:");
+        let (succeeded_freq, failed_freq, last_voltage_point, ultrafast_flag) =
+            break_point_continue(log_filename, testing_step)?;
+        println!("Extracted Values:");
 
-                if let Some(freq_s) = succeeded_freq {
-                    println!("  - Last freq_delta succeeded: {} MHz", freq_s);
-                    last_succeeded_freq = (freq_s * 1000.0) as i32; // Update if present
-                }
+        if let Some(freq_s) = succeeded_freq {
+            println!("  - Last freq_delta succeeded: {} MHz", freq_s);
+            last_succeeded_freq = (freq_s * 1000.0) as i32; // Update if present
+        }
 
-                if let Some(freq_f) = failed_freq {
-                    println!("  - Last freq_delta failed: {} MHz", freq_f);
-                    last_failed_freq = (freq_f * 1000.0) as i32; // Update if present
-                }
+        if let Some(freq_f) = failed_freq {
+            println!("  - Last freq_delta failed: {} MHz", freq_f);
+            last_failed_freq = (freq_f * 1000.0) as i32; // Update if present
+        }
 
-                if let Some(voltage_point) = last_voltage_point {
-                    println!("  - Last voltage point: {}", voltage_point);
-                    point = voltage_point; // Update if present
-                    resuming_flag = true;
-                }
+        if let Some(voltage_point) = last_voltage_point {
+            println!("  - Last voltage point: {}", voltage_point);
+            point = voltage_point; // Update if present
+            resuming_flag = true;
+        }
 
-                if let Some(ultrafast_flag) = ultrafast_flag {
-                    println!("Inheriting last scanner flag...");
-                    is_ultrafast = ultrafast_flag; // Update if present
-                    resuming_flag = true;
-                }
-            }
+        if let Some(ultrafast_flag) = ultrafast_flag {
+            println!("Inheriting last scanner flag...");
+            is_ultrafast = ultrafast_flag; // Update if present
+            resuming_flag = true;
         }
 
         if is_ultrafast {
@@ -1682,22 +1680,20 @@ pub fn autoscan_legacy(gpus: &Vec<&Gpu>, matches: &ArgMatches) -> Result<(), Err
         let mut last_succeeded_freq = init_core_oc_value;
         let mut last_failed_freq = core_oc_safe_limit_ref;
 
-        match break_point_continue(log_filename, 1 /* single point, step=1 */)? {
-            (succeeded_freq, failed_freq, last_voltage_point, _ultrafast_flag) => {
-                if let Some(freq_s) = succeeded_freq {
-                    println!("  - Last freq_delta succeeded: {} MHz", freq_s);
-                    last_succeeded_freq = (freq_s * 1000.0) as i32;
-                }
-                if let Some(freq_f) = failed_freq {
-                    println!("  - Last freq_delta failed: {} MHz", freq_f);
-                    last_failed_freq = (freq_f * 1000.0) as i32;
-                }
-                if last_voltage_point.is_some() {
-                    // For legacy, any breakpoint means we can resume
-                    resuming_flag = true;
-                    println!("Resuming legacy scan from breakpoint...");
-                }
-            }
+        let (succeeded_freq, failed_freq, last_voltage_point, _ultrafast_flag) =
+            break_point_continue(log_filename, 1 /* single point, step=1 */)?;
+        if let Some(freq_s) = succeeded_freq {
+            println!("  - Last freq_delta succeeded: {} MHz", freq_s);
+            last_succeeded_freq = (freq_s * 1000.0) as i32;
+        }
+        if let Some(freq_f) = failed_freq {
+            println!("  - Last freq_delta failed: {} MHz", freq_f);
+            last_failed_freq = (freq_f * 1000.0) as i32;
+        }
+        if last_voltage_point.is_some() {
+            // For legacy, any breakpoint means we can resume
+            resuming_flag = true;
+            println!("Resuming legacy scan from breakpoint...");
         }
 
         // Apply breakpoint-restored values
