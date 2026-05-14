@@ -979,6 +979,10 @@ def main():
         else:
             print("  结果: completed without detected error")
         print(f"  累计: {res.iterations} 次 matmul, {res.tflops:.2f} TFLOPS")
+        # On Linux a faulted GPU won't recover without a reboot; stop further
+        # precision tests immediately rather than issuing more kernels.
+        if result_status(res) == "FAIL":
+            break
 
     print_summary(runtime, results)
     return 1 if any(result_status(result) == "FAIL" for result in results) else 0
