@@ -268,12 +268,12 @@ fn parse_lock_frequency(
             None
         };
 
-    if let Some(lower) = lower_mhz {
-        if lower > upper_mhz {
-            return Err(Error::from(
-                "--clock expects upper bound first and lower bound second",
-            ));
-        }
+    if let Some(lower) = lower_mhz
+        && lower > upper_mhz
+    {
+        return Err(Error::from(
+            "--clock expects upper bound first and lower bound second",
+        ));
     }
 
     let domain = match matches
@@ -993,7 +993,7 @@ pub fn handle_pointwiseoc(gpus: &[&Gpu], matches: &ArgMatches) -> Result<(), Err
     );
 
     for gpu in gpus {
-        set_vfp_range(&gpu, start..=end, delta)?;
+        set_vfp_range(gpu, start..=end, delta)?;
     }
 
     Ok(())
@@ -1025,38 +1025,35 @@ pub fn handle_test_voltage_limits(
             }
         }
 
-        match gpu_type {
-            Ok(ref t) => {
-                let vlp = t.voltage_limit_params();
-                upper_init_point = vlp.upper_init_point;
-                lower_init_point = vlp.lower_init_point;
-                if vlp.vfp_strict_inc_flag {
-                    vfp_strict_inc_flag = 1;
-                }
-                if vlp.margin_threshold_check {
-                    margin_threshold_check = 1;
-                }
-
-                // 9 系及 Volta/Unknown 的特殊打印（无 VFP 支持）
-                match t {
-                    GpuType::Mobile9Series => {
-                        println!("Mobile 9 Series GPU detected.");
-                        drop(Error::VfpUnsupported);
-                    }
-                    GpuType::Desktop9Series => {
-                        println!("Desktop 9 Series GPU detected.");
-                        drop(Error::VfpUnsupported);
-                    }
-                    GpuType::ComputationVolta => {
-                        println!("Computation Volta GPU detected.");
-                    }
-                    GpuType::Unknown => {
-                        println!("Unknown GPU type detected.");
-                    }
-                    _ => {}
-                }
+        if let Ok(ref t) = gpu_type {
+            let vlp = t.voltage_limit_params();
+            upper_init_point = vlp.upper_init_point;
+            lower_init_point = vlp.lower_init_point;
+            if vlp.vfp_strict_inc_flag {
+                vfp_strict_inc_flag = 1;
             }
-            _ => {}
+            if vlp.margin_threshold_check {
+                margin_threshold_check = 1;
+            }
+
+            // 9 系及 Volta/Unknown 的特殊打印（无 VFP 支持）
+            match t {
+                GpuType::Mobile9Series => {
+                    println!("Mobile 9 Series GPU detected.");
+                    drop(Error::VfpUnsupported);
+                }
+                GpuType::Desktop9Series => {
+                    println!("Desktop 9 Series GPU detected.");
+                    drop(Error::VfpUnsupported);
+                }
+                GpuType::ComputationVolta => {
+                    println!("Computation Volta GPU detected.");
+                }
+                GpuType::Unknown => {
+                    println!("Unknown GPU type detected.");
+                }
+                _ => {}
+            }
         }
     }
 

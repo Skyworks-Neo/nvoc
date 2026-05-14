@@ -503,19 +503,19 @@ pub fn handle_status(
 
                         human::print_status(&status);
                         human::print_settings(gpu, requires_set(gpu, &mut set)?);
-                        if let Ok(info) = gpu.info() {
-                            if let Some(thresholds) = nvml.and_then(|n| {
+                        if let Ok(info) = gpu.info()
+                            && let Some(thresholds) = nvml.and_then(|n| {
                                 crate::oc_get_set_function_nvml::get_nvml_temperature_thresholds(
                                     n,
                                     info.id as u32,
                                 )
-                            }) {
-                                println!("NVML Temperature Thresholds:");
-                                for (name, value) in thresholds {
-                                    match value {
-                                        Some(temp) => println!("  {:<16} : {} C", name, temp),
-                                        None => println!("  {:<16} : N/A", name),
-                                    }
+                            })
+                        {
+                            println!("NVML Temperature Thresholds:");
+                            for (name, value) in thresholds {
+                                match value {
+                                    Some(temp) => println!("  {:<16} : {} C", name, temp),
+                                    None => println!("  {:<16} : N/A", name),
                                 }
                             }
                         }

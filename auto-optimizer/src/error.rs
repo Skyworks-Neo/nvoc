@@ -61,6 +61,7 @@ impl From<serde_json::Error> for Error {
 }
 
 quick_error! {
+    #[allow(clippy::enum_variant_names)]
     #[derive(Debug)]
     pub enum Error {
         Nvapi(err: nvapi_hi::Error) {from()source(err)display("NVAPI error: {}", err)}
