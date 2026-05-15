@@ -829,7 +829,6 @@ fn run_gpuboostv3_short_phase<V: std::fmt::Display + Copy>(
             KilohertzDelta(*init_core_oc_value),
         )?;
 
-        
         let test_flag = test_pressure(
             &gpu,
             args.common.matches,
@@ -1054,7 +1053,6 @@ fn run_mem_oc_phase<V: std::fmt::Display + Copy>(
             KilohertzDelta(*init_vmem_oc_value),
         )?;
 
-        
         let mem_test_flag = test_pressure(
             &gpu,
             args.common.matches,
