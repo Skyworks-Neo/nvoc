@@ -230,12 +230,59 @@ jobs:
           python -m pip install --quiet pytest
           python -m pytest -q test_non_gpu_ci.py
 
+  rust-crate-versions:
+    name: Rust duplicate-crate audit
+    runs-on: ubuntu-latest
+    # Guards against unintentional workspace version skew. The ALLOWLIST below
+    # covers expected semver-breaking transitive duplicates; any crate not on
+    # the list that appears at multiple versions will fail this job.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Check Cargo.lock for duplicate crate versions
+        run: |
+          python3 << 'PYEOF'
+          import sys, tomllib, collections
+
+          # Expected transitive duplicates from semver-breaking upgrades pulled in by
+          # different dependency chains.  Add entries only when unavoidable; remove
+          # them once the workspace converges on a single version.
+          ALLOWLIST = {
+              "bitflags",        # 1.x / 2.x
+              "getrandom",       # 0.2 / 0.3 / 0.4
+              "hashbrown",       # 0.15 / 0.17
+              "r-efi",           # 5.x / 6.x
+              "thiserror",       # 1.x / 2.x
+              "thiserror-impl",  # 1.x / 2.x
+              "windows-sys",     # 0.52 / 0.59 / 0.61
+              "wit-bindgen",     # 0.51 / 0.57
+              "zerocopy",        # 0.6 / 0.8
+              "zerocopy-derive", # 0.6 / 0.8
+          }
+
+          with open('Cargo.lock', 'rb') as f:
+              data = tomllib.load(f)
+          seen = collections.defaultdict(set)
+          for pkg in data.get('package', []):
+              seen[pkg['name']].add(pkg['version'])
+          dupes = {k: sorted(v) for k, v in seen.items() if len(v) > 1 and k not in ALLOWLIST}
+          if dupes:
+              print('Unexpected duplicate crate versions found:')
+              for name, vers in sorted(dupes.items()):
+                  print(f'  {name}: {", ".join(vers)}')
+              sys.exit(1)
+          print('No unexpected duplicate crate versions found.')
+          PYEOF
+
   ci-summary:
     name: ci summary
     needs:
       - changes
       - rust-auto-optimizer
       - rust-srv
+      - rust-crate-versions
       - python-tui
       - python-gui
       - python-stressor-cuda

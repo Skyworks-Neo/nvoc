@@ -1,9 +1,12 @@
-use cli_stressor_cuda_rs::{choose_tolerance, parse_int_list, per_element_allclose, StressResult};
+use cli_stressor_cuda_rs::{StressResult, choose_tolerance, parse_int_list, per_element_allclose};
 
 #[test]
 fn test_parse_int_list() {
     assert_eq!(parse_int_list("1024").unwrap(), vec![1024]);
-    assert_eq!(parse_int_list("512, 1024, 2048").unwrap(), vec![512, 1024, 2048]);
+    assert_eq!(
+        parse_int_list("512, 1024, 2048").unwrap(),
+        vec![512, 1024, 2048]
+    );
     assert!(parse_int_list("").is_err());
 }
 
@@ -28,4 +31,3 @@ fn test_stress_result_compute_s_default() {
     assert_eq!(r.compute_s, 0.0);
     assert_eq!(r.tflops, 0.0);
 }
-

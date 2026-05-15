@@ -10,8 +10,8 @@ use crate::platform::{
     default_test_exe_path, default_vfp_csv_path, default_vfp_init_csv_path, default_vfp_log_path,
     default_vfp_temp_csv_path,
 };
-use nvapi_hi::ClockDomain;
 use clap::ArgMatches;
+use nvapi_hi::ClockDomain;
 
 // ---------------------------------------------------------------------------
 // VFP export / fix_result 配置

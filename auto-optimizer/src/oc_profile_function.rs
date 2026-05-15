@@ -1,18 +1,18 @@
 use crate::autoscan_config::{FixResultConfig, VfpExportConfig};
 // oc_set_function
 use crate::error::Error;
-use crate::nvidia_gpu_type::{fetch_gpu_type, GpuType};
+use crate::nvidia_gpu_type::{GpuType, fetch_gpu_type};
 use crate::oc_get_set_function_nvapi::{get_gpu_tdp_temp_limit, set_pstate_base_voltage};
 #[cfg(all(not(windows), not(target_os = "linux")))]
 use crate::platform::panic_windows_only;
 use csv::{ReaderBuilder, StringRecord, WriterBuilder};
 use num_traits::abs;
+use nvapi_hi::{ClockDomain, Gpu, VfPoint};
 use nvapi_hi::{
     CoolerPolicy, CoolerSettings, FanCoolerId, Kilohertz, KilohertzDelta, Microvolts, Percentage,
     SensorThrottle,
 };
-use nvapi_hi::{ClockDomain, Gpu, VfPoint};
-use std::cmp::{min, Ordering};
+use std::cmp::{Ordering, min};
 use std::collections::HashSet;
 use std::convert::TryFrom;
 use std::fs::{File, OpenOptions};
@@ -161,7 +161,10 @@ pub fn export_single_point(point: VfPoint, matches: &clap::ArgMatches) -> Result
     for line in record_lines {
         writeln!(output_file, "{}", line)?;
     }
-    println!("Updated row {}μV with delta = {} kHz", new_voltage, new_delta);
+    println!(
+        "Updated row {}μV with delta = {} kHz",
+        new_voltage, new_delta
+    );
 
     Ok(())
 }
@@ -272,18 +275,14 @@ fn extract_default_frequencies(file_path: &str, legacy_flag: bool) -> Result<Vec
         if legacy_flag {
             default_frequency_load = record
                 .get(1)
-                .ok_or_else(|| {
-                    Error::Custom("row too short: missing column 1".into())
-                })?
+                .ok_or_else(|| Error::Custom("row too short: missing column 1".into()))?
                 .parse()?;
         }
         // Read only frequency column
         else {
             default_frequency_load = record
                 .get(3)
-                .ok_or_else(|| {
-                    Error::Custom("row too short: missing column 3".into())
-                })?
+                .ok_or_else(|| Error::Custom("row too short: missing column 3".into()))?
                 .parse()?;
         }
         // Read only default_frequency column
@@ -721,9 +720,7 @@ fn linear_interpolate(
     Ok(rounded as i32)
 }
 
-fn get_key_points_indices(
-    lines: &[Vec<String>],
-) -> Result<(usize, usize, usize, usize), Error> {
+fn get_key_points_indices(lines: &[Vec<String>]) -> Result<(usize, usize, usize, usize), Error> {
     let mut key_indices = Vec::new();
 
     for (i, columns) in lines.iter().enumerate() {
@@ -757,11 +754,7 @@ fn get_key_points_indices(
     ))
 }
 
-fn parse_col<T: std::str::FromStr>(
-    row: &[String],
-    idx: usize,
-    what: &str,
-) -> Result<T, Error>
+fn parse_col<T: std::str::FromStr>(row: &[String], idx: usize, what: &str) -> Result<T, Error>
 where
     T::Err: std::fmt::Display,
 {

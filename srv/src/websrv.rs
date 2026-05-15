@@ -1,8 +1,8 @@
+use log::{error, info, warn};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tiny_http::{Header, Response, Server};
-use serde::{Deserialize, Serialize};
-use log::{error, info, warn};
 
 // Accepted temperature-limit range (°C) for /set_temp_limit_soft_vfp.
 const TEMP_LIMIT_MIN: u32 = 40;
@@ -88,14 +88,12 @@ fn is_mutation_request(request: &tiny_http::Request) -> bool {
         return false;
     }
     request.headers().iter().any(|h| {
-        h.field.equiv("x-requested-with")
-            && h.value.as_str().eq_ignore_ascii_case("xmlhttprequest")
+        h.field.equiv("x-requested-with") && h.value.as_str().eq_ignore_ascii_case("xmlhttprequest")
     })
 }
 
 fn json_content_type() -> Header {
-    Header::from_bytes("Content-Type", "application/json")
-        .expect("static header is valid ASCII")
+    Header::from_bytes("Content-Type", "application/json").expect("static header is valid ASCII")
 }
 
 pub fn start_http_server(
@@ -142,7 +140,9 @@ pub fn start_http_server(
 
             "/set_temp_limit_soft_vfp" => {
                 if !is_mutation_request(&request) {
-                    warn!("Rejected non-POST or missing X-Requested-With on /set_temp_limit_soft_vfp");
+                    warn!(
+                        "Rejected non-POST or missing X-Requested-With on /set_temp_limit_soft_vfp"
+                    );
                     respond(
                         request,
                         Response::from_string(

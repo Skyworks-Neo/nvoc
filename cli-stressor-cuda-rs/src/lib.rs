@@ -66,7 +66,11 @@ pub trait Backend {
     fn device_info(&self) -> DeviceInfo;
     fn supports_precision(&self, spec: &PrecisionSpec) -> Result<(), String>;
     fn set_tf32(&mut self, enabled: Option<bool>) -> Result<(), BackendError>;
-    fn upload_matrix(&self, host: &HostMatrix, spec: &PrecisionSpec) -> Result<Self::Matrix, BackendError>;
+    fn upload_matrix(
+        &self,
+        host: &HostMatrix,
+        spec: &PrecisionSpec,
+    ) -> Result<Self::Matrix, BackendError>;
     fn gemm(
         &mut self,
         a: &Self::Matrix,
@@ -99,11 +103,46 @@ pub fn parse_int_list(raw: &str) -> Result<Vec<usize>, String> {
 
 pub fn parse_precision_list(raw: &str) -> Result<Vec<PrecisionSpec>, String> {
     let mapping = [
-        ("fp64", PrecisionSpec { name: "FP64", kind: PrecisionKind::FP64, tf32_enabled: None }),
-        ("fp32", PrecisionSpec { name: "FP32", kind: PrecisionKind::FP32, tf32_enabled: Some(false) }),
-        ("tf32", PrecisionSpec { name: "TF32", kind: PrecisionKind::TF32, tf32_enabled: Some(true) }),
-        ("fp16", PrecisionSpec { name: "FP16", kind: PrecisionKind::FP16, tf32_enabled: None }),
-        ("bf16", PrecisionSpec { name: "BF16", kind: PrecisionKind::BF16, tf32_enabled: None }),
+        (
+            "fp64",
+            PrecisionSpec {
+                name: "FP64",
+                kind: PrecisionKind::FP64,
+                tf32_enabled: None,
+            },
+        ),
+        (
+            "fp32",
+            PrecisionSpec {
+                name: "FP32",
+                kind: PrecisionKind::FP32,
+                tf32_enabled: Some(false),
+            },
+        ),
+        (
+            "tf32",
+            PrecisionSpec {
+                name: "TF32",
+                kind: PrecisionKind::TF32,
+                tf32_enabled: Some(true),
+            },
+        ),
+        (
+            "fp16",
+            PrecisionSpec {
+                name: "FP16",
+                kind: PrecisionKind::FP16,
+                tf32_enabled: None,
+            },
+        ),
+        (
+            "bf16",
+            PrecisionSpec {
+                name: "BF16",
+                kind: PrecisionKind::BF16,
+                tf32_enabled: None,
+            },
+        ),
         (
             "fp8",
             PrecisionSpec {
@@ -216,7 +255,12 @@ pub fn validate_precision<B: Backend>(
 
     for (idx, (out, ref_val)) in out_f32.iter().zip(reference.iter()).enumerate() {
         if !out.is_finite() {
-            return Ok((false, f32::INFINITY, f32::INFINITY, Some("validation produced NaN/Inf".to_string())));
+            return Ok((
+                false,
+                f32::INFINITY,
+                f32::INFINITY,
+                Some("validation produced NaN/Inf".to_string()),
+            ));
         }
         let diff = (*out - *ref_val).abs();
         max_abs = max_abs.max(diff);
@@ -235,7 +279,11 @@ pub fn validate_precision<B: Backend>(
         }
     }
 
-    let reason = if passed { None } else { Some("validation failed".to_string()) };
+    let reason = if passed {
+        None
+    } else {
+        Some("validation failed".to_string())
+    };
     Ok((passed, max_abs, max_rel, reason))
 }
 
@@ -291,9 +339,7 @@ pub fn run_stress_for_precision<B: Backend>(
 
     while start.elapsed().as_secs_f64() < duration_s {
         let size = if rng.gen::<f64>() < 0.15 {
-            *matrix_sizes
-                .choose(&mut rng)
-                .unwrap_or(&matrix_sizes[0])
+            *matrix_sizes.choose(&mut rng).unwrap_or(&matrix_sizes[0])
         } else {
             let small_sizes = [127usize, 256, 511, 512, 1023];
             *small_sizes.choose(&mut rng).unwrap()
@@ -332,7 +378,11 @@ pub fn run_stress_for_precision<B: Backend>(
 
         let burst_iters_f64 = burst_iters as f64;
         let flops = 2.0 * (size as f64).powi(3) * burst_iters_f64;
-        let inst_tflops = if op_elapsed > 0.0 { flops / op_elapsed / 1e12 } else { 0.0 };
+        let inst_tflops = if op_elapsed > 0.0 {
+            flops / op_elapsed / 1e12
+        } else {
+            0.0
+        };
         let elapsed_total = start.elapsed().as_secs_f64();
 
         println!(
@@ -391,4 +441,3 @@ pub fn run_stress_for_precision<B: Backend>(
     }
     result
 }
-

@@ -1,11 +1,11 @@
 use clap::Parser;
 
 #[cfg(feature = "cuda")]
-use cli_stressor_cuda_rs::{parse_int_list, Backend};
+use cli_stressor_cuda_rs::{Backend, parse_int_list};
 
 #[cfg(feature = "cuda")]
 use cli_stressor_cuda_rs::{
-    parse_precision_list, run_stress_for_precision, DeviceInfo, PrecisionKind, StressResult,
+    DeviceInfo, PrecisionKind, StressResult, parse_precision_list, run_stress_for_precision,
 };
 
 #[cfg(feature = "cuda")]
@@ -112,9 +112,13 @@ fn print_summary(results: &[StressResult], info: &DeviceInfo) {
     println!("{}", "=".repeat(72));
     println!(" Result:");
     if overall_ok {
-        println!("- No obvious computation errors or validation failures were observed in the current test window.");
+        println!(
+            "- No obvious computation errors or validation failures were observed in the current test window."
+        );
     } else {
-        println!("- At least one precision mode reported an error, validation failure, or unsupported status.");
+        println!(
+            "- At least one precision mode reported an error, validation failure, or unsupported status."
+        );
         std::process::exit(1);
     }
     println!("{}", "=".repeat(72));
@@ -214,7 +218,10 @@ fn main() {
         } else {
             println!("  Result: completed without detected error");
         }
-        println!("  Total: {} matmul operations, {:.2} TFLOPS", res.iterations, res.tflops);
+        println!(
+            "  Total: {} matmul operations, {:.2} TFLOPS",
+            res.iterations, res.tflops
+        );
         results.push(res);
     }
 

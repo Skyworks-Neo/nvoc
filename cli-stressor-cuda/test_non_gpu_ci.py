@@ -13,6 +13,7 @@ import pathlib
 import sys
 import types
 import unittest
+import importlib.util
 
 
 # ---------------------------------------------------------------------------
@@ -25,6 +26,7 @@ def _make_torch_stub():
     # dtype class and sentinel instances
     class _Dtype:
         pass
+
     t.dtype = _Dtype
     for _name in ("float64", "float32", "float16", "bfloat16"):
         setattr(t, _name, _Dtype())
@@ -57,6 +59,7 @@ def _make_torch_stub():
     class _Generator:
         def __init__(self, device="cpu"):
             pass
+
         def manual_seed(self, seed):
             pass
 
@@ -69,8 +72,6 @@ def _make_torch_stub():
 
 if "torch" not in sys.modules:
     sys.modules["torch"] = _make_torch_stub()
-
-import importlib.util
 
 _MODULE_PATH = pathlib.Path(__file__).parent / "test.py"
 _spec = importlib.util.spec_from_file_location("stressor_cuda", _MODULE_PATH)
@@ -98,7 +99,9 @@ def _per_element_allclose(diff_flat, ref_flat, atol, rtol):
 class TestComputeS(unittest.TestCase):
     def test_stress_result_has_compute_s(self):
         r = StressResult(precision="FP32")
-        self.assertTrue(hasattr(r, "compute_s"), "StressResult must have a compute_s field")
+        self.assertTrue(
+            hasattr(r, "compute_s"), "StressResult must have a compute_s field"
+        )
         self.assertEqual(r.compute_s, 0.0)
 
     def test_tflops_zero_when_no_compute_time(self):
@@ -109,7 +112,7 @@ class TestComputeS(unittest.TestCase):
         """TFLOPS from compute_s must exceed TFLOPS from wall time when there is overhead."""
         r = StressResult(precision="FP32")
         r.total_flops = int(2 * 4096**3 * 10)
-        r.compute_s = 5.0   # 5 s of actual GPU compute
+        r.compute_s = 5.0  # 5 s of actual GPU compute
         r.elapsed_s = 90.0  # 90 s total (includes warmup, validation, etc.)
         r.tflops = (r.total_flops / r.compute_s) / 1e12
         tflops_from_wall = (r.total_flops / r.elapsed_s) / 1e12
@@ -135,12 +138,12 @@ class TestComputeS(unittest.TestCase):
 class TestPerElementValidation(unittest.TestCase):
     def test_all_pass_within_tolerance(self):
         diff = [0.01] * 4
-        ref  = [1.0] * 4
+        ref = [1.0] * 4
         self.assertTrue(_per_element_allclose(diff, ref, atol=0.02, rtol=0.0))
 
     def test_single_outlier_detected(self):
         diff = [0.01, 0.01, 0.01, 100.0]
-        ref  = [1.0,  1.0,  1.0,  1.0]
+        ref = [1.0, 1.0, 1.0, 1.0]
         self.assertFalse(_per_element_allclose(diff, ref, atol=0.1, rtol=0.1))
 
     def test_old_criterion_false_pass(self):
@@ -151,26 +154,34 @@ class TestPerElementValidation(unittest.TestCase):
                                         global max_rel = 50/1000 = 0.05 ≤ rtol → PASS (wrong)
         """
         diff = [50.0, 0.0]
-        ref  = [1.0,  1000.0]
+        ref = [1.0, 1000.0]
         atol, rtol = 0.2, 0.2
 
-        max_abs     = max(diff)
-        ref_abs     = max(abs(r) for r in ref)
+        max_abs = max(diff)
+        ref_abs = max(abs(r) for r in ref)
         max_rel_old = max_abs / (ref_abs + 1e-12)
-        old_passed  = (max_abs <= atol) or (max_rel_old <= rtol)
-        self.assertTrue(old_passed, "Old criterion must incorrectly pass (demonstrates bug)")
-        self.assertFalse(_per_element_allclose(diff, ref, atol, rtol),
-                         "Fixed criterion must detect the outlier")
+        old_passed = (max_abs <= atol) or (max_rel_old <= rtol)
+        self.assertTrue(
+            old_passed, "Old criterion must incorrectly pass (demonstrates bug)"
+        )
+        self.assertFalse(
+            _per_element_allclose(diff, ref, atol, rtol),
+            "Fixed criterion must detect the outlier",
+        )
 
     def test_rtol_scales_with_ref_magnitude(self):
         diff = [0.5]
-        ref  = [100.0]
+        ref = [100.0]
         # budget = atol + rtol*|ref| = 1.0 + 0.01*100 = 2.0 → diff=0.5 passes
         self.assertTrue(_per_element_allclose(diff, ref, atol=1.0, rtol=0.01))
 
     def test_choose_tolerance_values(self):
-        for name, expected in [("FP64", (1e-5, 1e-5)), ("FP32", (1e-2, 1e-2)),
-                                ("FP16", (2e-1, 2e-1)), ("BF16", (5e-1, 5e-1))]:
+        for name, expected in [
+            ("FP64", (1e-5, 1e-5)),
+            ("FP32", (1e-2, 1e-2)),
+            ("FP16", (2e-1, 2e-1)),
+            ("BF16", (5e-1, 5e-1)),
+        ]:
             with self.subTest(precision=name):
                 self.assertEqual(choose_tolerance(name), expected)
 
@@ -190,8 +201,9 @@ class TestNoSysExitInInnerLoop(unittest.TestCase):
     def test_sys_exit_absent_from_run_stress_for_precision(self):
         src = self._func_source("run_stress_for_precision")
         self.assertNotEqual(src, "", "run_stress_for_precision must exist")
-        self.assertNotIn("sys.exit", src,
-                         "sys.exit must not appear inside run_stress_for_precision")
+        self.assertNotIn(
+            "sys.exit", src, "sys.exit must not appear inside run_stress_for_precision"
+        )
 
     def test_exception_handler_uses_break(self):
         """The inner-loop except block must use 'break', not sys.exit."""
@@ -199,38 +211,59 @@ class TestNoSysExitInInnerLoop(unittest.TestCase):
         tree = ast.parse(source)
         inner_loop_handler_found = False
         for node in ast.walk(tree):
-            if isinstance(node, ast.FunctionDef) and node.name == "run_stress_for_precision":
+            if (
+                isinstance(node, ast.FunctionDef)
+                and node.name == "run_stress_for_precision"
+            ):
                 for child in ast.walk(node):
                     if isinstance(child, ast.ExceptHandler):
                         handler_src = ast.unparse(child)
-                        if "result.first_error" in handler_src and "runtime error" in handler_src:
+                        if (
+                            "result.first_error" in handler_src
+                            and "runtime error" in handler_src
+                        ):
                             # This is the inner-loop handler
                             inner_loop_handler_found = True
-                            self.assertIn("break", handler_src,
-                                          "Inner-loop exception handler must use 'break'")
-                            self.assertNotIn("sys.exit", handler_src,
-                                             "Inner-loop exception handler must not call sys.exit")
-        self.assertTrue(inner_loop_handler_found, "Inner-loop exception handler not found")
+                            self.assertIn(
+                                "break",
+                                handler_src,
+                                "Inner-loop exception handler must use 'break'",
+                            )
+                            self.assertNotIn(
+                                "sys.exit",
+                                handler_src,
+                                "Inner-loop exception handler must not call sys.exit",
+                            )
+        self.assertTrue(
+            inner_loop_handler_found, "Inner-loop exception handler not found"
+        )
 
     def test_validation_failure_breaks_inner_loop(self):
         """Validation failure must break the inner while-loop promptly (mirrors OpenCL behavior)."""
         source = _MODULE_PATH.read_text(encoding="utf-8")
         tree = ast.parse(source)
         for node in ast.walk(tree):
-            if isinstance(node, ast.FunctionDef) and node.name == "run_stress_for_precision":
+            if (
+                isinstance(node, ast.FunctionDef)
+                and node.name == "run_stress_for_precision"
+            ):
                 func_src = ast.unparse(node)
                 # The 'if not passed:' block must contain 'break' so the loop exits
                 # immediately on validation failure rather than running to full duration.
-                self.assertIn("break", func_src,
-                              "run_stress_for_precision must break on validation failure")
+                self.assertIn(
+                    "break",
+                    func_src,
+                    "run_stress_for_precision must break on validation failure",
+                )
                 return
         self.fail("run_stress_for_precision not found")
 
     def test_print_summary_keeps_sys_exit(self):
         """The summary-level sys.exit(1) must be preserved for overall failure reporting."""
         src = self._func_source("print_summary")
-        self.assertIn("sys.exit", src,
-                      "print_summary must retain sys.exit(1) for overall failure")
+        self.assertIn(
+            "sys.exit", src, "print_summary must retain sys.exit(1) for overall failure"
+        )
 
 
 # ---------------------------------------------------------------------------

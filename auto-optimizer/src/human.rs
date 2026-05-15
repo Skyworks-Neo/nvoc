@@ -1,6 +1,6 @@
 use crate::oc_get_set_function_nvml::query_nvml_power_watts;
-use nvml_wrapper::Nvml;
 use nvapi_hi::{ClockDomain, CoolerControl, Gpu, GpuInfo, GpuSettings, GpuStatus, MicrovoltsDelta};
+use nvml_wrapper::Nvml;
 use std::iter;
 
 const HEADER_LEN: usize = 20;

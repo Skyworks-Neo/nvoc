@@ -23,37 +23,39 @@ fn main() {
 
 #[cfg(windows)]
 mod nvoc_service {
+    use clap;
+    use futures_util::StreamExt;
+    use gag::Redirect;
+    use log::{LevelFilter, error, info, warn};
+    use nvapi_hi::Gpu;
+    use nvapi_hi::nvapi::ClockFrequencyType;
+    use nvapi_hi::{ClockDomain, KilohertzDelta, PState};
+    use nvml_wrapper::{
+        Nvml,
+        enum_wrappers::device::{TemperatureSensor, TemperatureThreshold},
+    };
+    use nvoc_auto_optimizer::{find_matching_vfp_point, handle_lock_vfp, reset_vfp_frequency_lock};
     use std::{
-        time::{SystemTime, UNIX_EPOCH},
-        fs::{OpenOptions},
-        // io::Write,
-        ffi::OsString, time::Duration,
+        cmp::{max, min},
         env,
+        // io::Write,
+        ffi::OsString,
+        fs::OpenOptions,
+        panic::AssertUnwindSafe,
         path::PathBuf,
         sync::{Arc, Mutex},
         thread,
-        cmp::{min, max},
-        time::Instant,
-        panic::AssertUnwindSafe,
+        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
-    use futures_util::StreamExt;
     use windows_service::{
-        define_windows_service,
+        Result, define_windows_service,
         service::{
             ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus,
             ServiceType,
         },
         service_control_handler::{self, ServiceControlHandlerResult},
-        service_dispatcher, Result,
+        service_dispatcher,
     };
-    use nvapi_hi::Gpu;
-    use nvml_wrapper::{Nvml, enum_wrappers::device::{TemperatureThreshold, TemperatureSensor}};
-    use nvoc_auto_optimizer::{handle_lock_vfp, reset_vfp_frequency_lock, find_matching_vfp_point};
-    use clap;
-    use log::{info, error, warn, LevelFilter};
-    use gag::Redirect;
-    use nvapi_hi::nvapi::ClockFrequencyType;
-    use nvapi_hi::{ClockDomain, KilohertzDelta, PState};
 
     const SERVICE_NAME: &str = "nvoc_service";
     const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
@@ -92,15 +94,14 @@ mod nvoc_service {
             .expect("Failed to open log file");
 
         // 重定向 stdout 和 stderr 到同一个文件
-        let _stdout_redirect = Redirect::stdout(log_file.try_clone().unwrap())
-            .expect("Failed to redirect stdout");
-        let _stderr_redirect = Redirect::stderr(log_file)
-            .expect("Failed to redirect stderr");
+        let _stdout_redirect =
+            Redirect::stdout(log_file.try_clone().unwrap()).expect("Failed to redirect stdout");
+        let _stderr_redirect = Redirect::stderr(log_file).expect("Failed to redirect stderr");
 
         // 2. 初始化 log2（提供轮转和日志级别）
         let _logger = log2::open(log_path_for_log2.to_str().unwrap())
-            .size(100 * 1024 * 1024)  // 100MB
-            .rotate(2)                 // 保留1个备份
+            .size(100 * 1024 * 1024) // 100MB
+            .rotate(2) // 保留1个备份
             // .tee(true)                  // 同时输出到终端
             .level(LevelFilter::Info)
             .start();
@@ -175,7 +176,8 @@ mod nvoc_service {
         });
 
         let _ = compio::runtime::RuntimeBuilder::new()
-            .build().unwrap()
+            .build()
+            .unwrap()
             .block_on(run_service(config, shutdown_rx, cmd_rx));
 
         // Tell the system that service has stopped.
@@ -190,7 +192,11 @@ mod nvoc_service {
         });
     }
 
-    async fn run_service(config: Arc<Mutex<crate::websrv::NVOCServiceConfig>>, shutdown_rx: flume::Receiver<()>, cmd_rx: flume::Receiver<crate::websrv::NVOCServiceCmd>) -> Result<()> {
+    async fn run_service(
+        config: Arc<Mutex<crate::websrv::NVOCServiceConfig>>,
+        shutdown_rx: flume::Receiver<()>,
+        cmd_rx: flume::Receiver<crate::websrv::NVOCServiceCmd>,
+    ) -> Result<()> {
         let mut stopc = shutdown_rx.into_stream().skip(1);
         let mut cmdc = cmd_rx.into_stream();
 
@@ -203,8 +209,10 @@ mod nvoc_service {
         // 每张 GPU 的动态温控锁定点，初始为最高（即未限制）
         let mut gpu_dynamic_lock_point: Vec<usize> = vec![vfp_highest_lock_point; gpus.len()];
 
-        let start_interval: Mutex<Option<humantime::Duration>> = Mutex::new(Some(humantime::Duration::from(Duration::from_secs(5))));
-        let interval: Option<humantime::Duration> = start_interval.lock().unwrap().as_ref().cloned();
+        let start_interval: Mutex<Option<humantime::Duration>> =
+            Mutex::new(Some(humantime::Duration::from(Duration::from_secs(5))));
+        let interval: Option<humantime::Duration> =
+            start_interval.lock().unwrap().as_ref().cloned();
         let timer = create_timer(interval).fuse();
         let mut timer = std::pin::pin!(timer);
 
@@ -364,7 +372,9 @@ mod nvoc_service {
         Ok(())
     }
 
-    pub fn create_timer(interval: Option<humantime::Duration>) -> impl futures_util::Stream<Item=Instant> {
+    pub fn create_timer(
+        interval: Option<humantime::Duration>,
+    ) -> impl futures_util::Stream<Item = Instant> {
         if let Some(d) = interval {
             futures_util::future::Either::Left(async_stream::stream! {
                 let mut interval = compio::time::interval(*d);

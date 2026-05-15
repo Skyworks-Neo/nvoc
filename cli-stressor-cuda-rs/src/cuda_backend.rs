@@ -1,7 +1,9 @@
-use cli_stressor_cuda_rs::{Backend, BackendError, DeviceInfo, HostMatrix, PrecisionKind, PrecisionSpec};
-use cudarc::cublas::{sys as cublas_sys, CudaBlas, Gemm, GemmConfig};
-use cudarc::driver::sys as cuda_sys;
+use cli_stressor_cuda_rs::{
+    Backend, BackendError, DeviceInfo, HostMatrix, PrecisionKind, PrecisionSpec,
+};
+use cudarc::cublas::{CudaBlas, Gemm, GemmConfig, sys as cublas_sys};
 use cudarc::driver::CudaDevice;
+use cudarc::driver::sys as cuda_sys;
 use half::{bf16, f16};
 use std::ffi::CStr;
 use std::sync::Arc;
@@ -13,17 +15,41 @@ pub struct CudaBackend {
 }
 
 pub enum CudaMatrix {
-    BF16 { data: cudarc::driver::CudaSlice<bf16>, size: usize },
-    F16 { data: cudarc::driver::CudaSlice<f16>, size: usize },
-    F32 { data: cudarc::driver::CudaSlice<f32>, size: usize },
-    F64 { data: cudarc::driver::CudaSlice<f64>, size: usize },
+    BF16 {
+        data: cudarc::driver::CudaSlice<bf16>,
+        size: usize,
+    },
+    F16 {
+        data: cudarc::driver::CudaSlice<f16>,
+        size: usize,
+    },
+    F32 {
+        data: cudarc::driver::CudaSlice<f32>,
+        size: usize,
+    },
+    F64 {
+        data: cudarc::driver::CudaSlice<f64>,
+        size: usize,
+    },
 }
 
 pub enum CudaOutput {
-    BF16 { data: cudarc::driver::CudaSlice<bf16>, size: usize },
-    F16 { data: cudarc::driver::CudaSlice<f16>, size: usize },
-    F32 { data: cudarc::driver::CudaSlice<f32>, size: usize },
-    F64 { data: cudarc::driver::CudaSlice<f64>, size: usize },
+    BF16 {
+        data: cudarc::driver::CudaSlice<bf16>,
+        size: usize,
+    },
+    F16 {
+        data: cudarc::driver::CudaSlice<f16>,
+        size: usize,
+    },
+    F32 {
+        data: cudarc::driver::CudaSlice<f32>,
+        size: usize,
+    },
+    F64 {
+        data: cudarc::driver::CudaSlice<f64>,
+        size: usize,
+    },
 }
 
 impl CudaBackend {
@@ -32,7 +58,8 @@ impl CudaBackend {
             cuda_sys::cuInit(0);
         }
         let dev = CudaDevice::new(0).map_err(|err| BackendError::Other(err.to_string()))?;
-        let blas = CudaBlas::new(dev.clone()).map_err(|err| BackendError::Other(err.to_string()))?;
+        let blas =
+            CudaBlas::new(dev.clone()).map_err(|err| BackendError::Other(err.to_string()))?;
         let info = query_device_info()?;
         Ok(Self { dev, blas, info })
     }
@@ -55,14 +82,20 @@ impl Backend for CudaBackend {
             PrecisionKind::BF16 => {
                 if let Some((major, minor)) = cc {
                     if major < 8 {
-                        return Err(format!("BF16 requires SM80+, current SM{}.{}", major, minor));
+                        return Err(format!(
+                            "BF16 requires SM80+, current SM{}.{}",
+                            major, minor
+                        ));
                     }
                 }
             }
             PrecisionKind::TF32 => {
                 if let Some((major, minor)) = cc {
                     if major < 8 {
-                        return Err(format!("TF32 requires SM80+, current SM{}.{}", major, minor));
+                        return Err(format!(
+                            "TF32 requires SM80+, current SM{}.{}",
+                            major, minor
+                        ));
                     }
                 }
             }
@@ -84,11 +117,18 @@ impl Backend for CudaBackend {
         if status == cublas_sys::cublasStatus_t::CUBLAS_STATUS_SUCCESS {
             Ok(())
         } else {
-            Err(BackendError::Other(format!("cublasSetMathMode failed: {:?}", status)))
+            Err(BackendError::Other(format!(
+                "cublasSetMathMode failed: {:?}",
+                status
+            )))
         }
     }
 
-    fn upload_matrix(&self, host: &HostMatrix, spec: &PrecisionSpec) -> Result<Self::Matrix, BackendError> {
+    fn upload_matrix(
+        &self,
+        host: &HostMatrix,
+        spec: &PrecisionSpec,
+    ) -> Result<Self::Matrix, BackendError> {
         match spec.kind {
             PrecisionKind::BF16 => {
                 let data: Vec<bf16> = host.data.iter().map(|v| bf16::from_f32(*v)).collect();
@@ -96,7 +136,10 @@ impl Backend for CudaBackend {
                     .dev
                     .htod_copy(data)
                     .map_err(|err| BackendError::Other(err.to_string()))?;
-                Ok(CudaMatrix::BF16 { data: dev, size: host.size })
+                Ok(CudaMatrix::BF16 {
+                    data: dev,
+                    size: host.size,
+                })
             }
             PrecisionKind::FP16 => {
                 let data: Vec<f16> = host.data.iter().map(|v| f16::from_f32(*v)).collect();
@@ -104,14 +147,20 @@ impl Backend for CudaBackend {
                     .dev
                     .htod_copy(data)
                     .map_err(|err| BackendError::Other(err.to_string()))?;
-                Ok(CudaMatrix::F16 { data: dev, size: host.size })
+                Ok(CudaMatrix::F16 {
+                    data: dev,
+                    size: host.size,
+                })
             }
             PrecisionKind::FP32 | PrecisionKind::TF32 => {
                 let dev = self
                     .dev
                     .htod_copy(host.data.clone())
                     .map_err(|err| BackendError::Other(err.to_string()))?;
-                Ok(CudaMatrix::F32 { data: dev, size: host.size })
+                Ok(CudaMatrix::F32 {
+                    data: dev,
+                    size: host.size,
+                })
             }
             PrecisionKind::FP64 => {
                 let data: Vec<f64> = host.data.iter().map(|v| *v as f64).collect();
@@ -119,11 +168,14 @@ impl Backend for CudaBackend {
                     .dev
                     .htod_copy(data)
                     .map_err(|err| BackendError::Other(err.to_string()))?;
-                Ok(CudaMatrix::F64 { data: dev, size: host.size })
+                Ok(CudaMatrix::F64 {
+                    data: dev,
+                    size: host.size,
+                })
             }
-            PrecisionKind::FP8E4M3FN => {
-                Err(BackendError::Other("precision not supported in CUDA backend".to_string()))
-            }
+            PrecisionKind::FP8E4M3FN => Err(BackendError::Other(
+                "precision not supported in CUDA backend".to_string(),
+            )),
         }
     }
 
@@ -168,7 +220,10 @@ impl Backend for CudaBackend {
                         .gemm(cfg, a, b, &mut c)
                         .map_err(|err| BackendError::Other(err.to_string()))?;
                 }
-                Ok(CudaOutput::BF16 { data: c, size: *size })
+                Ok(CudaOutput::BF16 {
+                    data: c,
+                    size: *size,
+                })
             }
             (CudaMatrix::F16 { data: a, size }, CudaMatrix::F16 { data: b, .. }) => {
                 let mut c = self
@@ -192,7 +247,10 @@ impl Backend for CudaBackend {
                         .gemm(cfg, a, b, &mut c)
                         .map_err(|err| BackendError::Other(err.to_string()))?;
                 }
-                Ok(CudaOutput::F16 { data: c, size: *size })
+                Ok(CudaOutput::F16 {
+                    data: c,
+                    size: *size,
+                })
             }
             (CudaMatrix::F32 { data: a, size }, CudaMatrix::F32 { data: b, .. }) => {
                 let mut c = self
@@ -216,7 +274,10 @@ impl Backend for CudaBackend {
                         .gemm(cfg, a, b, &mut c)
                         .map_err(|err| BackendError::Other(err.to_string()))?;
                 }
-                Ok(CudaOutput::F32 { data: c, size: *size })
+                Ok(CudaOutput::F32 {
+                    data: c,
+                    size: *size,
+                })
             }
             (CudaMatrix::F64 { data: a, size }, CudaMatrix::F64 { data: b, .. }) => {
                 let mut c = self
@@ -240,9 +301,14 @@ impl Backend for CudaBackend {
                         .gemm(cfg, a, b, &mut c)
                         .map_err(|err| BackendError::Other(err.to_string()))?;
                 }
-                Ok(CudaOutput::F64 { data: c, size: *size })
+                Ok(CudaOutput::F64 {
+                    data: c,
+                    size: *size,
+                })
             }
-            _ => Err(BackendError::Other("mismatched matrix precision".to_string())),
+            _ => Err(BackendError::Other(
+                "mismatched matrix precision".to_string(),
+            )),
         }
     }
 

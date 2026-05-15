@@ -2,7 +2,7 @@ use crate::basic_func::local_time_hms;
 use crate::error::Error;
 use crate::handle_reset_nvml_cooler_single_gpu;
 use crate::human::print_scan_separator;
-use crate::nvidia_gpu_type::{fetch_gpu_type, GpuOcParams};
+use crate::nvidia_gpu_type::{GpuOcParams, fetch_gpu_type};
 use crate::oc_get_set_function_nvapi::{
     core_reset_vfp, get_voltage_by_point, handle_lock_vfp, handle_test_voltage_limits,
     set_vfp_curve, set_vfp_curve_warn, voltage_frequency_check,
@@ -181,8 +181,7 @@ mod pressure_runner {
                 cmd.env("CUDA_DEVICE_ORDER", "PCI_BUS_ID");
                 cmd.env("CUDA_VISIBLE_DEVICES", dev.to_string());
             }
-            match cmd.spawn()
-            {
+            match cmd.spawn() {
                 Ok(mut process) => {
                     let mut exit_code = 1;
                     let test_start_at = Instant::now();

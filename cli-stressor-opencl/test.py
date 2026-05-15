@@ -199,14 +199,23 @@ def round_up(value: int, multiple: int) -> int:
 
 def choose_tile_size(device) -> int:
     max_group = int(getattr(device, "max_work_group_size", 1) or 1)
-    max_items = tuple(int(item) for item in getattr(device, "max_work_item_sizes", (1, 1, 1)))
+    max_items = tuple(
+        int(item) for item in getattr(device, "max_work_item_sizes", (1, 1, 1))
+    )
     local_mem_bytes = int(getattr(device, "local_mem_size", 0) or 0)
     limit_x = max_items[0] if len(max_items) >= 1 else 1
     limit_y = max_items[1] if len(max_items) >= 2 else limit_x
 
     for tile_size in (32, PREFERRED_TILE_SIZE, 8, 4, 2, 1):
-        local_ok = local_mem_bytes <= 0 or (2 * tile_size * tile_size * 8) <= local_mem_bytes
-        if tile_size <= limit_x and tile_size <= limit_y and tile_size * tile_size <= max_group and local_ok:
+        local_ok = (
+            local_mem_bytes <= 0 or (2 * tile_size * tile_size * 8) <= local_mem_bytes
+        )
+        if (
+            tile_size <= limit_x
+            and tile_size <= limit_y
+            and tile_size * tile_size <= max_group
+            and local_ok
+        ):
             return tile_size
     return 1
 
@@ -329,7 +338,9 @@ def choose_default_gpu(platforms):
             )
     if not candidates:
         return None
-    _, _, platform_idx, gpu_index, platform, device = sorted(candidates, key=lambda item: item[:4])[0]
+    _, _, platform_idx, gpu_index, platform, device = sorted(
+        candidates, key=lambda item: item[:4]
+    )[0]
     return platform_idx, gpu_index, platform, device
 
 
@@ -361,7 +372,9 @@ def print_available_devices(platforms):
             gpu_index_by_ptr[getattr(device, "int_ptr", None)] = gpu_index
 
         for device_idx, device in enumerate(devices):
-            fp16_supported = "yes" if "cl_khr_fp16" in get_extension_names(device) else "no"
+            fp16_supported = (
+                "yes" if "cl_khr_fp16" in get_extension_names(device) else "no"
+            )
             fp64_supported = "yes" if supports_fp64(device) else "no"
             memory_gb = getattr(device, "global_mem_size", 0) / 1024**3
             pci_bus_id = get_pci_bus_id(device)
@@ -383,7 +396,11 @@ def print_available_devices(platforms):
             gpu_index = gpu_index_by_ptr.get(getattr(device, "int_ptr", None))
             if gpu_index is not None:
                 select_marker = ""
-                if default_gpu is not None and default_gpu[0] == platform_idx and default_gpu[1] == gpu_index:
+                if (
+                    default_gpu is not None
+                    and default_gpu[0] == platform_idx
+                    and default_gpu[1] == gpu_index
+                ):
                     select_marker = " [default]"
                 print(
                     "    "
@@ -408,7 +425,9 @@ def create_runtime(platform_index: Optional[int], device_index: Optional[int]):
 
     if platform_index is None:
         if device_index is not None:
-            raise ValueError("单独指定 --device-index 无效；请同时指定 --platform-index")
+            raise ValueError(
+                "单独指定 --device-index 无效；请同时指定 --platform-index"
+            )
 
         default_gpu = choose_default_gpu(platforms)
         if default_gpu is not None:
@@ -484,8 +503,12 @@ def get_kernel_bundle(runtime: OpenCLRuntime, spec: PrecisionSpec):
 
 def create_device_buffers(runtime: OpenCLRuntime, a_host, b_host):
     flags = cl.mem_flags
-    a_buf = cl.Buffer(runtime.context, flags.READ_ONLY | flags.COPY_HOST_PTR, hostbuf=a_host)
-    b_buf = cl.Buffer(runtime.context, flags.READ_ONLY | flags.COPY_HOST_PTR, hostbuf=b_host)
+    a_buf = cl.Buffer(
+        runtime.context, flags.READ_ONLY | flags.COPY_HOST_PTR, hostbuf=a_host
+    )
+    b_buf = cl.Buffer(
+        runtime.context, flags.READ_ONLY | flags.COPY_HOST_PTR, hostbuf=b_host
+    )
     c_buf = cl.Buffer(runtime.context, flags.WRITE_ONLY, a_host.nbytes)
     return DeviceBuffers(a=a_buf, b=b_buf, c=c_buf)
 
@@ -521,7 +544,9 @@ def enqueue_gemm(
     )
 
 
-def fetch_output(runtime: OpenCLRuntime, buffers: DeviceBuffers, size: int, spec: PrecisionSpec):
+def fetch_output(
+    runtime: OpenCLRuntime, buffers: DeviceBuffers, size: int, spec: PrecisionSpec
+):
     out = np.empty((size, size), dtype=spec.storage_dtype)
     cl.enqueue_copy(runtime.queue, out, buffers.c)
     runtime.queue.finish()
@@ -568,7 +593,8 @@ def validate_precision(
     max_abs = float(np.max(diff))
     max_rel = float(np.max(diff / (np.abs(ref) + 1e-12)))
     reason = (
-        None if passed
+        None
+        if passed
         else f"{n_fail} elements exceed atol+rtol*|ref|: max_abs={max_abs:.4g}, max_rel={max_rel:.4g}"
     )
     return passed, max_abs, max_rel, reason
@@ -656,23 +682,36 @@ def run_stress_for_precision(
                 windows_since_refresh = 0
 
             for _ in range(warmup_iters):
-                enqueue_gemm(runtime, bundle, active_buffers, size, transpose_a, transpose_b)
+                enqueue_gemm(
+                    runtime, bundle, active_buffers, size, transpose_a, transpose_b
+                )
             runtime.queue.finish()
 
             op_start = time.monotonic()
             executed_iters = burst_iters
             for _ in range(burst_iters):
-                enqueue_gemm(runtime, bundle, active_buffers, size, transpose_a, transpose_b)
+                enqueue_gemm(
+                    runtime, bundle, active_buffers, size, transpose_a, transpose_b
+                )
             runtime.queue.finish()
             op_elapsed = time.monotonic() - op_start
 
             if target_burst_s > 0 and op_elapsed < target_burst_s:
-                multiplier = max(1, int(math.ceil(target_burst_s / max(op_elapsed, 1e-9))))
+                multiplier = max(
+                    1, int(math.ceil(target_burst_s / max(op_elapsed, 1e-9)))
+                )
                 extra_iters = burst_iters * (multiplier - 1)
                 if extra_iters > 0:
                     extra_start = time.monotonic()
                     for _ in range(extra_iters):
-                        enqueue_gemm(runtime, bundle, active_buffers, size, transpose_a, transpose_b)
+                        enqueue_gemm(
+                            runtime,
+                            bundle,
+                            active_buffers,
+                            size,
+                            transpose_a,
+                            transpose_b,
+                        )
                     runtime.queue.finish()
                     op_elapsed += time.monotonic() - extra_start
                     executed_iters += extra_iters
@@ -833,8 +872,12 @@ def build_arg_parser():
         default="fp16,fp32",
         help="精度列表，支持 fp16、fp32、fp64（按设备能力自动跳过）",
     )
-    p.add_argument("--warmup-iters", type=int, default=3, help="每个工作负载窗口的预热轮数")
-    p.add_argument("--burst-iters", type=int, default=6, help="每个工作负载窗口的正式压力轮数")
+    p.add_argument(
+        "--warmup-iters", type=int, default=3, help="每个工作负载窗口的预热轮数"
+    )
+    p.add_argument(
+        "--burst-iters", type=int, default=6, help="每个工作负载窗口的正式压力轮数"
+    )
     p.add_argument(
         "--validate-interval",
         type=float,
@@ -907,7 +950,9 @@ def main():
 
     if cl is None:
         print(f"未安装 PyOpenCL：{PYOPENCL_IMPORT_ERROR}")
-        print("请先安装 OpenCL 驱动/ICD，然后执行 `uv sync` 或 `pip install pyopencl`。")
+        print(
+            "请先安装 OpenCL 驱动/ICD，然后执行 `uv sync` 或 `pip install pyopencl`。"
+        )
         return 3
 
     if args.list_devices:
@@ -940,12 +985,16 @@ def main():
     print(f"Kernel tile: {runtime.tile_size}x{runtime.tile_size}")
     print(f"Python版本: {sys.version.split()[0]}")
     print(f"NumPy版本: {np.__version__}")
-    print(f"PyOpenCL版本: {getattr(cl, 'VERSION_TEXT', getattr(cl, '__version__', 'unknown'))}")
+    print(
+        f"PyOpenCL版本: {getattr(cl, 'VERSION_TEXT', getattr(cl, '__version__', 'unknown'))}"
+    )
 
     random.seed(args.seed)
     results = []
     for idx, spec in enumerate(precisions):
-        current_sizes = args.fp64_matrix_sizes if spec.name == "FP64" else args.matrix_sizes
+        current_sizes = (
+            args.fp64_matrix_sizes if spec.name == "FP64" else args.matrix_sizes
+        )
 
         print("\n" + "-" * 72)
         print(f"开始测试 {spec.name}")

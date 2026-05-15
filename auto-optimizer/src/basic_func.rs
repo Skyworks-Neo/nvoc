@@ -1,8 +1,8 @@
 use crate::human;
 use crate::types::{OutputFormat, ResetSettings, VfpResetDomain};
 use nvapi_hi::{
-    allowable_result, Celsius, Gpu, GpuSettings, KilohertzDelta, MicrovoltsDelta, PState,
-    Percentage,
+    Celsius, Gpu, GpuSettings, KilohertzDelta, MicrovoltsDelta, PState, Percentage,
+    allowable_result,
 };
 use std::io;
 
@@ -10,7 +10,7 @@ use crate::conv::ConvertEnum;
 use crate::error::Error;
 use crate::oc_get_set_function_nvapi::{reset_all_pstate_base_voltages, reset_vfp_deltas};
 use clap::ArgMatches;
-use time::{format_description::parse, OffsetDateTime};
+use time::{OffsetDateTime, format_description::parse};
 
 pub fn local_time_hms() -> String {
     let format = match parse("[hour]:[minute]:[second]") {
@@ -24,8 +24,8 @@ pub fn local_time_hms() -> String {
         .unwrap_or_else(|_| String::from("??:??:??"))
 }
 
-use nvml_wrapper::enum_wrappers::device::{Clock, TemperatureSensor};
 use nvml_wrapper::Nvml;
+use nvml_wrapper::enum_wrappers::device::{Clock, TemperatureSensor};
 use std::str::FromStr;
 use std::thread::sleep;
 use std::time::Duration;

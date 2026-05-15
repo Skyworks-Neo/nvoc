@@ -108,13 +108,16 @@ def maybe_set_tf32(tf32_enabled: Optional[bool]):
         if hasattr(torch.backends.cuda.matmul, "fp32_precision"):
             torch.backends.cuda.matmul.fp32_precision = mode
 
-        if hasattr(torch.backends.cudnn, "conv") and hasattr(torch.backends.cudnn.conv, "fp32_precision"):
+        if hasattr(torch.backends.cudnn, "conv") and hasattr(
+            torch.backends.cudnn.conv, "fp32_precision"
+        ):
             torch.backends.cudnn.conv.fp32_precision = mode
 
         # 向后兼容（避免旧版本报错）
         elif hasattr(torch.backends.cuda.matmul, "allow_tf32"):
             torch.backends.cuda.matmul.allow_tf32 = tf32_enabled
             torch.backends.cudnn.allow_tf32 = tf32_enabled
+
 
 def detect_capability(device, spec: PrecisionSpec):
     if device.type != "cuda":
@@ -132,6 +135,7 @@ def detect_capability(device, spec: PrecisionSpec):
         return False, f"FP8 requires Hopper (SM90+), current SM{major}{minor}"
 
     return True, None
+
 
 def make_random_matrix(size: int, device: torch.device, dtype: torch.dtype, seed: int):
     g = torch.Generator(device="cpu")
@@ -190,7 +194,10 @@ def validate_precision(
         synchronize_device(device)
     except RuntimeError as exc:
         msg = str(exc)
-        if "no kernel image is available" in msg or "CUBLAS_STATUS_NOT_SUPPORTED" in msg:
+        if (
+            "no kernel image is available" in msg
+            or "CUBLAS_STATUS_NOT_SUPPORTED" in msg
+        ):
             # Legacy GPU (e.g. Maxwell sm_52, Pascal sm_61): cuBLAS in newer CUDA lacks
             # a precompiled kernel image for this validate_size × validate_size.  The main
             # GEMM loop uses larger tiles where the kernel image exists and is unaffected.
@@ -225,7 +232,8 @@ def validate_precision(
     max_abs = float(diff.max().item())
     max_rel = float((diff / (ref.abs() + 1e-12)).max().item())
     reason = (
-        None if passed
+        None
+        if passed
         else f"{n_fail} elements exceed atol+rtol*|ref|: max_abs={max_abs:.4g}, max_rel={max_rel:.4g}"
     )
     return passed, max_abs, max_rel, reason
@@ -304,7 +312,7 @@ def run_stress_for_precision(
                 _ = torch.mm(aa, bb)
             synchronize_device(device)
             op_elapsed = time.monotonic() - op_start
-            inst_tflops = (2 * (size ** 3) * burst_iters / op_elapsed) / 1e12
+            inst_tflops = (2 * (size**3) * burst_iters / op_elapsed) / 1e12
             elapsed_total = time.monotonic() - start
 
             print(
@@ -378,7 +386,11 @@ def print_summary(device_name: str, total_memory_gb, results):
         if not r.supported:
             status = "SKIP"
         else:
-            status = "OK" if (r.first_error is None and r.validation_failures == 0) else "FAIL"
+            status = (
+                "OK"
+                if (r.first_error is None and r.validation_failures == 0)
+                else "FAIL"
+            )
         if status != "OK":
             overall_ok = False
         eff = (r.compute_s / r.elapsed_s * 100) if r.elapsed_s > 0 else 0.0
@@ -435,8 +447,12 @@ def build_arg_parser():
         default="fp16,bf16",
         help="精度列表，支持 fp32, tf32, fp16, bf16, fp8, fp64（逗号分隔）",
     )
-    p.add_argument("--warmup-iters", type=int, default=3, help="每个工作负载窗口的预热轮数")
-    p.add_argument("--burst-iters", type=int, default=6, help="每个工作负载窗口的正式压力轮数")
+    p.add_argument(
+        "--warmup-iters", type=int, default=3, help="每个工作负载窗口的预热轮数"
+    )
+    p.add_argument(
+        "--burst-iters", type=int, default=6, help="每个工作负载窗口的正式压力轮数"
+    )
     p.add_argument(
         "--validate-interval",
         type=float,
@@ -519,7 +535,9 @@ def main():
     results = []
     overall_passed = True
     for idx, spec in enumerate(precisions):
-        current_sizes = args.fp64_matrix_sizes if spec.name == "FP64" else args.matrix_sizes
+        current_sizes = (
+            args.fp64_matrix_sizes if spec.name == "FP64" else args.matrix_sizes
+        )
 
         print("\n" + "-" * 72)
         print(f"开始测试 {spec.name}")
@@ -552,7 +570,7 @@ def main():
             if res.supported:
                 overall_passed = False
         else:
-            print(f"  结果: completed without detected error")
+            print("  结果: completed without detected error")
         print(f"  累计: {res.iterations} 次 matmul, {res.tflops:.2f} TFLOPS")
 
     print_summary(device_name, total_memory_gb, results)
