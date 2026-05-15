@@ -215,20 +215,17 @@ pub fn handle_cooler_command(gpus: &[&Gpu], matches: &ArgMatches) -> Result<(), 
     for gpu in gpus {
         match cooler_id {
             "1" => {
-                gpu.set_cooler_levels([(FanCoolerId::Cooler1, settings)].into_iter())?;
+                gpu.set_cooler_levels([(FanCoolerId::Cooler1, settings)])?;
             }
             "2" => {
-                gpu.set_cooler_levels([(FanCoolerId::Cooler2, settings)].into_iter())?;
+                gpu.set_cooler_levels([(FanCoolerId::Cooler2, settings)])?;
             }
             _ => {
                 // "all" or anything else: set both coolers
-                gpu.set_cooler_levels(
-                    [
-                        (FanCoolerId::Cooler1, settings),
-                        (FanCoolerId::Cooler2, settings),
-                    ]
-                    .into_iter(),
-                )?;
+                gpu.set_cooler_levels([
+                    (FanCoolerId::Cooler1, settings),
+                    (FanCoolerId::Cooler2, settings),
+                ])?;
             }
         }
     }
