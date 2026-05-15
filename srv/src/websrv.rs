@@ -1,3 +1,7 @@
+// All items here are used only from the #[cfg(windows)] binary path; suppress
+// dead_code lints when building/linting on non-Windows hosts.
+#![cfg_attr(not(windows), allow(dead_code))]
+
 use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

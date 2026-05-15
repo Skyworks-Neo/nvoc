@@ -307,6 +307,7 @@ mod pressure_runner {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn test_pressure(
     gpu: &&Gpu,
     matches: &ArgMatches,
@@ -359,6 +360,7 @@ struct CommonPhaseArgs<'a> {
     stressor_extra_args: &'a [String],
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_common_phase_args<'a>(
     matches: &'a ArgMatches,
     minimum_delta_core_freq_step: i32,
@@ -764,6 +766,7 @@ fn apply_arch_safety_policy(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_gpuboostv3_short_phase<V: std::fmt::Display + Copy>(
     l: &mut fs::File,
     gpu: &Gpu,
@@ -908,6 +911,7 @@ fn run_gpuboostv3_short_phase<V: std::fmt::Display + Copy>(
     Ok(test_code)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_gpuboostv3_long_phase<V: std::fmt::Display + Copy>(
     l: &mut fs::File,
     gpu: &Gpu,
