@@ -232,13 +232,13 @@ jobs:
 
   rust-crate-versions:
     name: Rust duplicate-crate audit
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     # Guards against unintentional workspace version skew. The ALLOWLIST below
     # covers expected semver-breaking transitive duplicates; any crate not on
     # the list that appears at multiple versions will fail this job.
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
       - name: Check Cargo.lock for duplicate crate versions
@@ -288,7 +288,7 @@ jobs:
       - python-stressor-cuda
       - python-stressor-opencl
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     steps:
       - name: fail if any required job failed
         run: |
