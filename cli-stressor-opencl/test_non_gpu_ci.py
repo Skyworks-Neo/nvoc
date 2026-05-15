@@ -7,10 +7,10 @@ Runs with stdlib only — no OpenCL, pyopencl, or numpy required.
   #38 - compute_s-based TFLOPS (not total wall-time)
 """
 
-import ast
 import pathlib
 import sys
 import types
+import importlib.util
 import unittest
 
 
@@ -20,7 +20,9 @@ import unittest
 def _make_cl_stub():
     cl = types.ModuleType("pyopencl")
     cl.get_platforms = lambda: []
-    cl.mem_flags = types.SimpleNamespace(READ_ONLY=1, WRITE_ONLY=2, READ_WRITE=4, COPY_HOST_PTR=8)
+    cl.mem_flags = types.SimpleNamespace(
+        READ_ONLY=1, WRITE_ONLY=2, READ_WRITE=4, COPY_HOST_PTR=8
+    )
     cl.Buffer = lambda *a, **kw: None
     cl.enqueue_copy = lambda *a, **kw: None
     cl.Context = lambda *a, **kw: types.SimpleNamespace(create_sub_devices=lambda d: [])
@@ -55,7 +57,6 @@ for _name, _stub in [("pyopencl", _make_cl_stub()), ("numpy", _make_numpy_stub()
 # ---------------------------------------------------------------------------
 # Import from the stressor module
 # ---------------------------------------------------------------------------
-import importlib.util
 
 _MODULE_PATH = pathlib.Path(__file__).parent / "test.py"
 _spec = importlib.util.spec_from_file_location("stressor_opencl", _MODULE_PATH)
@@ -74,10 +75,7 @@ parse_int_list = _mod.parse_int_list
 # Pure-Python per-element allclose (mirrors the fixed numpy logic)
 # ---------------------------------------------------------------------------
 def _per_element_allclose(diff_flat, ref_flat, atol, rtol):
-    return all(
-        d <= atol + rtol * abs(r)
-        for d, r in zip(diff_flat, ref_flat)
-    )
+    return all(d <= atol + rtol * abs(r) for d, r in zip(diff_flat, ref_flat))
 
 
 # ---------------------------------------------------------------------------
@@ -86,7 +84,9 @@ def _per_element_allclose(diff_flat, ref_flat, atol, rtol):
 class TestComputeS(unittest.TestCase):
     def test_stress_result_has_compute_s(self):
         r = StressResult(precision="FP32")
-        self.assertTrue(hasattr(r, "compute_s"), "StressResult must have compute_s field")
+        self.assertTrue(
+            hasattr(r, "compute_s"), "StressResult must have compute_s field"
+        )
         self.assertEqual(r.compute_s, 0.0)
 
     def test_tflops_zero_when_no_compute_time(self):
@@ -121,18 +121,18 @@ class TestComputeS(unittest.TestCase):
 class TestPerElementValidation(unittest.TestCase):
     def test_all_pass_within_tolerance(self):
         diff = [0.01] * 4
-        ref  = [1.0] * 4
+        ref = [1.0] * 4
         self.assertTrue(_per_element_allclose(diff, ref, atol=0.02, rtol=0.0))
 
     def test_single_outlier_detected(self):
         diff = [0.01, 0.01, 0.01, 100.0]
-        ref  = [1.0,  1.0,  1.0,  1.0]
+        ref = [1.0, 1.0, 1.0, 1.0]
         self.assertFalse(_per_element_allclose(diff, ref, atol=0.1, rtol=0.1))
 
     def test_old_criterion_false_pass(self):
         """Show that the old OR-of-globals criterion lets outliers through."""
         diff = [50.0, 0.0]
-        ref  = [1.0,  1000.0]
+        ref = [1.0, 1000.0]
         atol, rtol = 0.2, 0.2
 
         max_abs = max(diff)
@@ -141,8 +141,10 @@ class TestPerElementValidation(unittest.TestCase):
         old_passed = (max_abs <= atol) or (max_rel_old <= rtol)
         self.assertTrue(old_passed, "Demonstrates old criterion bug")
 
-        self.assertFalse(_per_element_allclose(diff, ref, atol, rtol),
-                         "Fixed criterion must catch the outlier")
+        self.assertFalse(
+            _per_element_allclose(diff, ref, atol, rtol),
+            "Fixed criterion must catch the outlier",
+        )
 
     def test_choose_tolerance_returns_expected(self):
         cases = {"FP64": (1e-5, 1e-5), "FP32": (1e-2, 1e-2), "FP16": (2e-1, 2e-1)}
@@ -157,20 +159,25 @@ class TestPerElementValidation(unittest.TestCase):
 class TestSourceStructure(unittest.TestCase):
     def test_compute_s_accumulated_in_loop(self):
         source = _MODULE_PATH.read_text(encoding="utf-8")
-        self.assertIn("result.compute_s += op_elapsed", source,
-                      "Loop body must accumulate compute_s from op_elapsed")
+        self.assertIn(
+            "result.compute_s += op_elapsed",
+            source,
+            "Loop body must accumulate compute_s from op_elapsed",
+        )
 
     def test_tflops_divides_by_compute_s(self):
         source = _MODULE_PATH.read_text(encoding="utf-8")
         self.assertIn("result.compute_s", source)
         # Confirm the tflops formula references compute_s, not elapsed_s
-        self.assertIn("result.total_flops / result.compute_s", source,
-                      "TFLOPS must be computed from compute_s, not elapsed_s")
+        self.assertIn(
+            "result.total_flops / result.compute_s",
+            source,
+            "TFLOPS must be computed from compute_s, not elapsed_s",
+        )
 
     def test_summary_shows_compute_column(self):
         source = _MODULE_PATH.read_text(encoding="utf-8")
-        self.assertIn("compute=", source,
-                      "print_summary must show compute= column")
+        self.assertIn("compute=", source, "print_summary must show compute= column")
 
 
 # ---------------------------------------------------------------------------

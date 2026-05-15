@@ -1,7 +1,6 @@
 [package]
 name = "nvoc-auto-optimizer"
 version = "0.1.0"
-authors = ["Skyworks"]
 edition = { workspace = true }
 
 description = "NVIDIA GPU curve optimizer"
@@ -11,15 +10,6 @@ readme = "README.md"
 license = "Apache-2.0"
 
 include = ["/src/**", "/README*", "/LICENSE*"]
-
-[profile.release]
-incremental = true
-panic = "abort"
-opt-level = 2
-lto = "thin"
-codegen-units = 8
-# codegen-units 不在此硬编码，通过环境变量按机器设置：
-# $env:CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16"  # 在各机器的构建环境中配置
 
 [dependencies]
 nvapi-hi = { workspace = true }
