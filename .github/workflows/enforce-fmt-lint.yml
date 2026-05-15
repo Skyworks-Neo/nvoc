@@ -20,7 +20,7 @@ jobs:
       - run: |
           python -m pip install --upgrade pip
           pip install ruff
-      - run: ruff format . --check --output-format=github .
+      - run: ruff format . --check --output-format=github
 
   ruff-lint:
     name: "ruff check ."
@@ -34,7 +34,7 @@ jobs:
       - run: |
           python -m pip install --upgrade pip
           pip install ruff
-      - run: ruff check . --output-format=github .
+      - run: ruff check . --output-format=github
 
   fmt:
     name: Rustfmt
