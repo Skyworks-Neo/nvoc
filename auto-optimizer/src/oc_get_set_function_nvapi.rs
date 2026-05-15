@@ -1176,6 +1176,7 @@ pub fn handle_test_voltage_limits(
     ))
 }
 
+#[allow(clippy::type_complexity)]
 pub fn get_gpu_tdp_temp_limit(
     arg_matches: ArgMatches,
 ) -> Result<

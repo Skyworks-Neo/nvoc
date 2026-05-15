@@ -281,6 +281,7 @@ pub fn get_nvml_temperature_thresholds(
 // P-State info and clock ranges
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::type_complexity)]
 pub fn get_nvml_pstate_info(
     nvml: &Nvml,
     gpu_id: u32,
