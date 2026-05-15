@@ -75,7 +75,9 @@ if sys.platform == "win32":
                 self.release()
                 return False
 
-            self._event_handle = kernel32.CreateEventW(None, True, False, self.event_name)
+            self._event_handle = kernel32.CreateEventW(
+                None, True, False, self.event_name
+            )
             if not self._event_handle:
                 error = ctypes.get_last_error()
                 self.release()
@@ -85,7 +87,9 @@ if sys.platform == "win32":
 
         def signal_existing_instance(self) -> bool:
             """Ask the running instance to restore and focus its window."""
-            event_handle = kernel32.OpenEventW(EVENT_MODIFY_STATE, False, self.event_name)
+            event_handle = kernel32.OpenEventW(
+                EVENT_MODIFY_STATE, False, self.event_name
+            )
             if not event_handle:
                 return False
 

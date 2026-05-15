@@ -4,7 +4,7 @@ Ranges are queried from GPU hardware via the CLI 'info' command.
 """
 
 import customtkinter as ctk
-from typing import TYPE_CHECKING, Tuple, Dict, Any, Optional, Union, List, Set
+from typing import TYPE_CHECKING, Tuple, Dict, Any, Optional, Union
 from src.tabs.fan_control import FanControlTab
 from src.widgets.lightweight_controls import (
     CanvasSlider,
@@ -404,7 +404,10 @@ class OverclockTab:
         power_backend = self._selected_power_backend()
         if power_backend == "nvml":
             self.plimit_label_var.set("Pwr Limit(W):")
-            if "power_limit_nvml_min_w" in limits and "power_limit_nvml_max_w" in limits:
+            if (
+                "power_limit_nvml_min_w" in limits
+                and "power_limit_nvml_max_w" in limits
+            ):
                 min_w = int(limits["power_limit_nvml_min_w"])
                 max_w = int(limits["power_limit_nvml_max_w"])
                 current_w = limits.get("power_limit_nvml_current_w", min_w)
@@ -508,7 +511,9 @@ class OverclockTab:
                 self._set_slider_value(self.vboost_slider, self.vboost_var, current_val)
             elif current is not None:
                 # Partial cache update: only current value is known, keep existing range.
-                self._set_slider_value(self.vboost_slider, self.vboost_var, int(current))
+                self._set_slider_value(
+                    self.vboost_slider, self.vboost_var, int(current)
+                )
 
         # Restore saved states to entry and button widgets
         self._safe_set_state(self.plimit_entry, plimit_entry_state)

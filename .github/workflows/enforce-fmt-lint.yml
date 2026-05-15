@@ -1,0 +1,56 @@
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  ruff-fmt:
+    name: "ruff format . --check"
+    runs-on: ubuntu-slim
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - run: |
+          python -m pip install --upgrade pip
+          pip install ruff
+      - run: ruff format . --check --output-format=github .
+
+  ruff-lint:
+    name: "ruff check ."
+    runs-on: ubuntu-slim
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - run: |
+          python -m pip install --upgrade pip
+          pip install ruff
+      - run: ruff check . --output-format=github .
+
+  fmt:
+    name: Rustfmt
+    runs-on: ubuntu-slim
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - run: rustup update stable && rustup component add rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-slim
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - run: rustup update stable && rustup component add clippy
+      - run: cargo clippy --all-targets --all-features
+      # - run: cargo clippy --all-targets --all-features -- -D warnings

@@ -8,7 +8,7 @@ import os
 import threading
 import customtkinter as ctk
 from tkinter import filedialog
-from typing import TYPE_CHECKING, List, Optional, Set, Tuple
+from typing import TYPE_CHECKING, List, Optional, Tuple
 
 import numpy as np
 
@@ -257,9 +257,7 @@ class VFCurveTab:
         core_lock_frame.columnconfigure(1, weight=1)
         ctk.CTkLabel(
             core_lock_frame, text="⚙Core Freq Lock", font=("", 14, "bold")
-        ).grid(
-            row=0, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 5)
-        )
+        ).grid(row=0, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 5))
 
         # Core Clock Rows
         ctk.CTkLabel(core_lock_frame, text="Min/MHz:").grid(
@@ -606,9 +604,7 @@ class VFCurveTab:
             self._auto_refresh_interval_ms = int(secs * 1000)
             self._auto_interval_var.set(f"{secs:.1f}")
         except ValueError:
-            self._auto_interval_var.set(
-                f"{self._auto_refresh_interval_ms / 1000:.1f}"
-            )
+            self._auto_interval_var.set(f"{self._auto_refresh_interval_ms / 1000:.1f}")
 
         if self._auto_refreshing:
             self._schedule_next_auto_refresh()
@@ -748,7 +744,9 @@ class VFCurveTab:
                 frequencies, defaults
             )
         else:
-            has_vfp_offset = any(abs(f - d) > 1e-4 for f, d in zip(frequencies, defaults))
+            has_vfp_offset = any(
+                abs(f - d) > 1e-4 for f, d in zip(frequencies, defaults)
+            )
             uniform_core_offset_mhz = None
         apply_vfp_state = getattr(self.app, "_apply_vfp_offset_state", None)
         if callable(apply_vfp_state):
@@ -1908,7 +1906,6 @@ class VFCurveTab:
         args = gpu_args + ["set", backend, "--reset-mem-clocks"]
         self.app.console.append(f"[GUI] Resetting {backend_label} memory clocks...\n")
         self.app.run_cli_display(args)
-
 
     def _apply_adj(self):
         """Apply the current frequency edits for the selected range to the GPU.

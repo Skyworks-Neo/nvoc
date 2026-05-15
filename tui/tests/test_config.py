@@ -60,9 +60,7 @@ def test_persists_tui_config(tmp_path: Path) -> None:
     assert reloaded.vfcurve.auto_refresh is True
 
 
-def test_repo_root_uses_executable_dir_when_frozen(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_repo_root_uses_executable_dir_when_frozen(monkeypatch, tmp_path: Path) -> None:
     exe_path = tmp_path / "portable" / "nvoc-tui.exe"
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(sys, "executable", str(exe_path))

@@ -5,9 +5,6 @@ description = "NVOC Windows service"
 authors = ["Skyworks"]
 edition = { workspace = true }
 
-[profile.dev]
-incremental = true
-
 [dependencies]
 nvoc-auto-optimizer = { workspace = true }
 
