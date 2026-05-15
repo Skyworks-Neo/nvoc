@@ -1,4 +1,8 @@
-#![allow(unused_crate_dependencies)]
+#![allow(
+    unused_crate_dependencies,
+    clippy::type_complexity,
+    clippy::too_many_arguments
+)]
 mod arg_help;
 mod autoscan_config;
 mod basic_func;
@@ -161,7 +165,7 @@ fn main_result() -> Result<i32, Box<dyn std::error::Error>> {
                         handle_nvml_with_ids(&nvml_selected, sub_matches)?;
                     }
                     None => {
-                        return Err(format!("NVML backend unavailable").into());
+                        return Err("NVML backend unavailable".into());
                     }
                 },
                 Some(("nvml-cooler", sub_matches)) => match nvml_ref {
@@ -169,7 +173,7 @@ fn main_result() -> Result<i32, Box<dyn std::error::Error>> {
                         handle_nvml_cooler_with_ids(&nvml_selected, sub_matches)?;
                     }
                     None => {
-                        return Err(format!("NVML backend unavailable").into());
+                        return Err("NVML backend unavailable".into());
                     }
                 },
                 _ => {
