@@ -23,6 +23,7 @@ clap = { version = "4.5.60", features = [
   "help",
   "usage",
   "error-context",
+  "derive"
 ] }
 compio = { version = "0.15.0", features = ["runtime", "time"] }
 csv = "1.4.0"

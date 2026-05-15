@@ -27,7 +27,7 @@ jobs:
       stressor_cuda: ${{ steps.filter.outputs.stressor_cuda }}
       stressor_opencl: ${{ steps.filter.outputs.stressor_opencl }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - uses: dorny/paths-filter@v3
@@ -70,7 +70,7 @@ jobs:
       run:
         working-directory: auto-optimizer
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -102,7 +102,7 @@ jobs:
       run:
         working-directory: srv
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -131,7 +131,7 @@ jobs:
       run:
         working-directory: tui
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v4
         with:
           enable-cache: true
@@ -165,7 +165,7 @@ jobs:
       run:
         working-directory: gui
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: install Tk runtime
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends python3-tk libxcb-xinerama0 xvfb
       - uses: astral-sh/setup-uv@v4
@@ -189,8 +189,8 @@ jobs:
       run:
         working-directory: cli-stressor-cuda
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: byte-compile
@@ -214,8 +214,8 @@ jobs:
       run:
         working-directory: cli-stressor-opencl
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: byte-compile
