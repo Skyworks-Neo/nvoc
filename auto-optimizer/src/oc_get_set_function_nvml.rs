@@ -231,6 +231,7 @@ pub fn set_nvml_temperature_limit(nvml: &Nvml, gpu_id: u32, limit_c: i32) -> Res
     )
 }
 
+#[allow(clippy::type_complexity)]
 pub fn get_nvml_temperature_thresholds(
     nvml: &Nvml,
     gpu_id: u32,
@@ -310,6 +311,7 @@ pub fn get_nvml_pstate_info(
 }
 
 /// Returns supported memory clocks and, for each, the supported graphics clocks.
+#[allow(clippy::type_complexity)]
 pub fn get_nvml_supported_applications_clocks(
     nvml: &Nvml,
     gpu_id: u32,

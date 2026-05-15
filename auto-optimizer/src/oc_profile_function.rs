@@ -776,6 +776,7 @@ pub fn fix_result(gpu: &Gpu, matches: &clap::ArgMatches) -> Result<(), Error> {
     Ok(())
 }
 
+#[allow(clippy::type_complexity)]
 pub fn check_voltage_points(
     log_filename: &str,
 ) -> io::Result<
@@ -865,6 +866,7 @@ fn extract_value_f64(line: &str, pattern: &str) -> Option<f64> {
         .and_then(|s| s.trim_matches(|c| c == ',').parse::<f64>().ok()) // Parse as f64
 }
 
+#[allow(clippy::type_complexity)]
 pub fn break_point_continue(
     log_filename: &str,
     testing_step: usize,
