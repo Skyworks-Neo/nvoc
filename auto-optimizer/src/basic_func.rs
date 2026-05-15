@@ -511,15 +511,16 @@ pub fn handle_status(
                                     n,
                                     info.id as u32,
                                 )
-                            }) {
-                                println!("NVML Temperature Thresholds:");
-                                for (name, value) in thresholds {
-                                    match value {
-                                        Some(temp) => println!("  {:<16} : {} C", name, temp),
-                                        None => println!("  {:<16} : N/A", name),
-                                    }
+                            })
+                        {
+                            println!("NVML Temperature Thresholds:");
+                            for (name, value) in thresholds {
+                                match value {
+                                    Some(temp) => println!("  {:<16} : {} C", name, temp),
+                                    None => println!("  {:<16} : N/A", name),
                                 }
                             }
+                        }
                         println!();
                         shown = true;
                         break;

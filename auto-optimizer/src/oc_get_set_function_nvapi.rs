@@ -277,11 +277,12 @@ fn parse_lock_frequency(
         };
 
     if let Some(lower) = lower_mhz
-        && lower > upper_mhz {
-            return Err(Error::from(
-                "--clock expects upper bound first and lower bound second",
-            ));
-        }
+        && lower > upper_mhz
+    {
+        return Err(Error::from(
+            "--clock expects upper bound first and lower bound second",
+        ));
+    }
 
     let domain = match matches
         .get_one::<String>("domain")
