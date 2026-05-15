@@ -338,18 +338,18 @@ pub fn run_stress_for_precision<B: Backend>(
     let mut validation_seed = base_seed ^ 0x5F3759DF;
 
     while start.elapsed().as_secs_f64() < duration_s {
-        let size = if rng.gen::<f64>() < 0.15 {
+        let size = if rng.random::<f64>() < 0.15 {
             *matrix_sizes.choose(&mut rng).unwrap_or(&matrix_sizes[0])
         } else {
             let small_sizes = [127usize, 256, 511, 512, 1023];
             *small_sizes.choose(&mut rng).unwrap()
         };
 
-        let transpose_a = rng.gen::<f64>() < transpose_prob;
-        let transpose_b = rng.gen::<f64>() < transpose_prob;
+        let transpose_a = rng.random::<f64>() < transpose_prob;
+        let transpose_b = rng.random::<f64>() < transpose_prob;
 
-        let a_host = make_random_host_matrix(size, rng.gen::<u64>());
-        let b_host = make_random_host_matrix(size, rng.gen::<u64>());
+        let a_host = make_random_host_matrix(size, rng.random::<u64>());
+        let b_host = make_random_host_matrix(size, rng.random::<u64>());
 
         let op_elapsed = match (|| {
             let a_dev = backend.upload_matrix(&a_host, &spec)?;
