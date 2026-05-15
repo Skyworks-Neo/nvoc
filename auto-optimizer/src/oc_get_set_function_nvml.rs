@@ -12,9 +12,10 @@ fn find_nvml_device<'n>(nvml: &'n Nvml, gpu_id: u32) -> Option<nvml_wrapper::Dev
     for i in 0..count {
         if let Ok(dev) = nvml.device_by_index(i)
             && let Ok(pci) = dev.pci_info()
-                && pci.bus == pci_bus {
-                    return Some(dev);
-                }
+            && pci.bus == pci_bus
+        {
+            return Some(dev);
+        }
     }
     None
 }
@@ -74,24 +75,26 @@ pub fn query_nvml_power_watts_by_pci(pci_bus_id_str: &str) -> Option<(f32, f32, 
 
             for i in 0..device_count {
                 if let Ok(dev) = nvml.device_by_index(i)
-                    && let Ok(pci_info) = dev.pci_info() {
-                        // 匹配策略：比较 PCI Bus 编号
-                        if let Some(target_bus) = nvapi_bus_num
-                            && pci_info.bus == target_bus {
-                                return Ok(dev);
-                            }
-
-                        // 备用：宽松字符串匹配
-                        let nvml_pci_str = format!(
-                            "{:04x}:{:02x}:{:02x}.0",
-                            pci_info.domain, pci_info.bus, pci_info.device
-                        );
-                        let nvapi_stripped = pci_bus_id_str.trim_start_matches("0000:");
-                        let nvml_stripped = nvml_pci_str.trim_start_matches("0000:");
-                        if nvapi_stripped.eq_ignore_ascii_case(nvml_stripped) {
-                            return Ok(dev);
-                        }
+                    && let Ok(pci_info) = dev.pci_info()
+                {
+                    // 匹配策略：比较 PCI Bus 编号
+                    if let Some(target_bus) = nvapi_bus_num
+                        && pci_info.bus == target_bus
+                    {
+                        return Ok(dev);
                     }
+
+                    // 备用：宽松字符串匹配
+                    let nvml_pci_str = format!(
+                        "{:04x}:{:02x}:{:02x}.0",
+                        pci_info.domain, pci_info.bus, pci_info.device
+                    );
+                    let nvapi_stripped = pci_bus_id_str.trim_start_matches("0000:");
+                    let nvml_stripped = nvml_pci_str.trim_start_matches("0000:");
+                    if nvapi_stripped.eq_ignore_ascii_case(nvml_stripped) {
+                        return Ok(dev);
+                    }
+                }
             }
 
             Err(nvml_wrapper::error::NvmlError::NotFound)

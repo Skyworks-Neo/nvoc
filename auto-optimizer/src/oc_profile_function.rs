@@ -896,26 +896,30 @@ pub fn break_point_continue(
         }
 
         if last_voltage_point.is_none()
-            && let Some(point) = extract_value(line, "point: #") {
-                last_voltage_point = Some(point as usize);
+            && let Some(point) = extract_value(line, "point: #")
+        {
+            last_voltage_point = Some(point as usize);
 
-                if line.contains("Finished") {
-                    last_voltage_point = last_voltage_point.map(|v| v + testing_step);
-                    break;
-                }
+            if line.contains("Finished") {
+                last_voltage_point = last_voltage_point.map(|v| v + testing_step);
+                break;
             }
+        }
 
         if last_code_100_freq.is_none()
             && line.contains("Test result is code #0")
-                && let Some(freq) = extract_value_f64(line, "freq_delta: #") {
-                    last_code_100_freq = Some(freq);
-                }
+            && let Some(freq) = extract_value_f64(line, "freq_delta: #")
+        {
+            last_code_100_freq = Some(freq);
+        }
 
         if last_code_0_freq.is_none()
-            && line.contains("Test") && !line.contains("Test result is code #0")
-                && let Some(freq) = extract_value_f64(line, "freq_delta: #") {
-                    last_code_0_freq = Some(freq);
-                }
+            && line.contains("Test")
+            && !line.contains("Test result is code #0")
+            && let Some(freq) = extract_value_f64(line, "freq_delta: #")
+        {
+            last_code_0_freq = Some(freq);
+        }
 
         if last_voltage_point.is_some()
             && last_code_100_freq.is_some()
@@ -956,10 +960,11 @@ pub fn export_vfp_from_log(matches: &clap::ArgMatches) -> Result<(), Error> {
         }
 
         if line.contains("Finished")
-            && let Some(point) = extract_value(line, "point: #") {
-                last_voltage_point = Some(point);
-                last_code_100_freq = None;
-            }
+            && let Some(point) = extract_value(line, "point: #")
+        {
+            last_voltage_point = Some(point);
+            last_code_100_freq = None;
+        }
 
         if last_code_100_freq.is_none() && line.contains("Test result is code #100") {
             println!("{}", line);
@@ -967,13 +972,14 @@ pub fn export_vfp_from_log(matches: &clap::ArgMatches) -> Result<(), Error> {
                 continue;
             }
             if let Some(point) = extract_value(line, "point: #")
-                && last_voltage_point != Some(point) {
-                    eprintln!(
-                        "Warning: export_vfp_from_log: expected voltage point {:?}, got {} — skipping",
-                        last_voltage_point, point
-                    );
-                    continue;
-                }
+                && last_voltage_point != Some(point)
+            {
+                eprintln!(
+                    "Warning: export_vfp_from_log: expected voltage point {:?}, got {} — skipping",
+                    last_voltage_point, point
+                );
+                continue;
+            }
             if let Some(voltage) = extract_value_f64(line, "voltage: #") {
                 last_voltage = Some(voltage);
             }
