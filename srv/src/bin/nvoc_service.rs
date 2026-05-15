@@ -8,6 +8,7 @@
 // extern crate nvml_wrapper;
 // extern crate nvml_wrapper_sys;
 
+#[cfg(windows)]
 #[path = "../websrv.rs"]
 mod websrv;
 
