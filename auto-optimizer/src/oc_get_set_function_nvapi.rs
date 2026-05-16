@@ -183,9 +183,10 @@ fn capture_graphics_vfp(gpu: &Gpu) -> Result<Option<BTreeMap<usize, KilohertzDel
 }
 
 fn restore_graphics_vfp(gpu: &Gpu, vfp: &BTreeMap<usize, KilohertzDelta>) -> Result<(), Error> {
-    for (point, delta) in vfp {
-        gpu.set_vfp(iter::once((*point, *delta)), iter::empty())?;
-    }
+    gpu.set_vfp(
+        vfp.iter().map(|(&point, &delta)| (point, delta)),
+        iter::empty(),
+    )?;
     Ok(())
 }
 
