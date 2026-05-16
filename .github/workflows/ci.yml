@@ -71,6 +71,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           components: clippy, rustfmt
+          rustflags: ""
       - name: Rustfmt
         run: cargo fmt --package nvoc-auto-optimizer -- --check
       - name: Clippy
@@ -88,6 +89,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           components: clippy, rustfmt
+          rustflags: ""
       - name: Rustfmt
         run: cargo fmt --package nvoc-srv -- --check
       - name: Clippy
