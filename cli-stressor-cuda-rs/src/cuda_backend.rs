@@ -2,14 +2,14 @@ use cli_stressor_cuda_rs::{
     Backend, BackendError, DeviceInfo, HostMatrix, PrecisionKind, PrecisionSpec,
 };
 use cudarc::cublas::{CudaBlas, Gemm, GemmConfig, sys as cublas_sys};
-use cudarc::driver::CudaDevice;
 use cudarc::driver::sys as cuda_sys;
+use cudarc::driver::{CudaContext, CudaStream};
 use half::{bf16, f16};
 use std::ffi::CStr;
 use std::sync::Arc;
 
 pub struct CudaBackend {
-    dev: Arc<CudaDevice>,
+    stream: Arc<CudaStream>,
     blas: CudaBlas,
     info: DeviceInfo,
 }
@@ -36,19 +36,15 @@ pub enum CudaMatrix {
 pub enum CudaOutput {
     BF16 {
         data: cudarc::driver::CudaSlice<bf16>,
-        size: usize,
     },
     F16 {
         data: cudarc::driver::CudaSlice<f16>,
-        size: usize,
     },
     F32 {
         data: cudarc::driver::CudaSlice<f32>,
-        size: usize,
     },
     F64 {
         data: cudarc::driver::CudaSlice<f64>,
-        size: usize,
     },
 }
 
@@ -57,11 +53,12 @@ impl CudaBackend {
         unsafe {
             cuda_sys::cuInit(0);
         }
-        let dev = CudaDevice::new(0).map_err(|err| BackendError::Other(err.to_string()))?;
+        let ctx = CudaContext::new(0).map_err(|err| BackendError::Other(err.to_string()))?;
+        let stream = ctx.default_stream();
         let blas =
-            CudaBlas::new(dev.clone()).map_err(|err| BackendError::Other(err.to_string()))?;
+            CudaBlas::new(stream.clone()).map_err(|err| BackendError::Other(err.to_string()))?;
         let info = query_device_info()?;
-        Ok(Self { dev, blas, info })
+        Ok(Self { stream, blas, info })
     }
 }
 
@@ -133,8 +130,8 @@ impl Backend for CudaBackend {
             PrecisionKind::BF16 => {
                 let data: Vec<bf16> = host.data.iter().map(|v| bf16::from_f32(*v)).collect();
                 let dev = self
-                    .dev
-                    .htod_copy(data)
+                    .stream
+                    .clone_htod(&data)
                     .map_err(|err| BackendError::Other(err.to_string()))?;
                 Ok(CudaMatrix::BF16 {
                     data: dev,
@@ -144,8 +141,8 @@ impl Backend for CudaBackend {
             PrecisionKind::FP16 => {
                 let data: Vec<f16> = host.data.iter().map(|v| f16::from_f32(*v)).collect();
                 let dev = self
-                    .dev
-                    .htod_copy(data)
+                    .stream
+                    .clone_htod(&data)
                     .map_err(|err| BackendError::Other(err.to_string()))?;
                 Ok(CudaMatrix::F16 {
                     data: dev,
@@ -154,8 +151,8 @@ impl Backend for CudaBackend {
             }
             PrecisionKind::FP32 | PrecisionKind::TF32 => {
                 let dev = self
-                    .dev
-                    .htod_copy(host.data.clone())
+                    .stream
+                    .clone_htod(&host.data)
                     .map_err(|err| BackendError::Other(err.to_string()))?;
                 Ok(CudaMatrix::F32 {
                     data: dev,
@@ -165,8 +162,8 @@ impl Backend for CudaBackend {
             PrecisionKind::FP64 => {
                 let data: Vec<f64> = host.data.iter().map(|v| *v as f64).collect();
                 let dev = self
-                    .dev
-                    .htod_copy(data)
+                    .stream
+                    .clone_htod(&data)
                     .map_err(|err| BackendError::Other(err.to_string()))?;
                 Ok(CudaMatrix::F64 {
                     data: dev,
@@ -200,7 +197,7 @@ impl Backend for CudaBackend {
         match (a, b) {
             (CudaMatrix::BF16 { data: a, size }, CudaMatrix::BF16 { data: b, .. }) => {
                 let mut c = self
-                    .dev
+                    .stream
                     .alloc_zeros::<bf16>(size * size)
                     .map_err(|err| BackendError::Other(err.to_string()))?;
                 let cfg = GemmConfig {
@@ -220,14 +217,11 @@ impl Backend for CudaBackend {
                         .gemm(cfg, a, b, &mut c)
                         .map_err(|err| BackendError::Other(err.to_string()))?;
                 }
-                Ok(CudaOutput::BF16 {
-                    data: c,
-                    size: *size,
-                })
+                Ok(CudaOutput::BF16 { data: c })
             }
             (CudaMatrix::F16 { data: a, size }, CudaMatrix::F16 { data: b, .. }) => {
                 let mut c = self
-                    .dev
+                    .stream
                     .alloc_zeros::<f16>(size * size)
                     .map_err(|err| BackendError::Other(err.to_string()))?;
                 let cfg = GemmConfig {
@@ -247,14 +241,11 @@ impl Backend for CudaBackend {
                         .gemm(cfg, a, b, &mut c)
                         .map_err(|err| BackendError::Other(err.to_string()))?;
                 }
-                Ok(CudaOutput::F16 {
-                    data: c,
-                    size: *size,
-                })
+                Ok(CudaOutput::F16 { data: c })
             }
             (CudaMatrix::F32 { data: a, size }, CudaMatrix::F32 { data: b, .. }) => {
                 let mut c = self
-                    .dev
+                    .stream
                     .alloc_zeros::<f32>(size * size)
                     .map_err(|err| BackendError::Other(err.to_string()))?;
                 let cfg = GemmConfig {
@@ -274,14 +265,11 @@ impl Backend for CudaBackend {
                         .gemm(cfg, a, b, &mut c)
                         .map_err(|err| BackendError::Other(err.to_string()))?;
                 }
-                Ok(CudaOutput::F32 {
-                    data: c,
-                    size: *size,
-                })
+                Ok(CudaOutput::F32 { data: c })
             }
             (CudaMatrix::F64 { data: a, size }, CudaMatrix::F64 { data: b, .. }) => {
                 let mut c = self
-                    .dev
+                    .stream
                     .alloc_zeros::<f64>(size * size)
                     .map_err(|err| BackendError::Other(err.to_string()))?;
                 let cfg = GemmConfig {
@@ -301,10 +289,7 @@ impl Backend for CudaBackend {
                         .gemm(cfg, a, b, &mut c)
                         .map_err(|err| BackendError::Other(err.to_string()))?;
                 }
-                Ok(CudaOutput::F64 {
-                    data: c,
-                    size: *size,
-                })
+                Ok(CudaOutput::F64 { data: c })
             }
             _ => Err(BackendError::Other(
                 "mismatched matrix precision".to_string(),
@@ -316,26 +301,41 @@ impl Backend for CudaBackend {
         match output {
             CudaOutput::BF16 { data, .. } => {
                 let host: Vec<bf16> = self
-                    .dev
-                    .dtoh_sync_copy(data)
+                    .stream
+                    .clone_dtoh(data)
+                    .map_err(|err| BackendError::Other(err.to_string()))?;
+                self.stream
+                    .synchronize()
                     .map_err(|err| BackendError::Other(err.to_string()))?;
                 Ok(host.into_iter().map(|v| v.to_f32()).collect())
             }
             CudaOutput::F16 { data, .. } => {
                 let host: Vec<f16> = self
-                    .dev
-                    .dtoh_sync_copy(data)
+                    .stream
+                    .clone_dtoh(data)
+                    .map_err(|err| BackendError::Other(err.to_string()))?;
+                self.stream
+                    .synchronize()
                     .map_err(|err| BackendError::Other(err.to_string()))?;
                 Ok(host.into_iter().map(|v| v.to_f32()).collect())
             }
             CudaOutput::F32 { data, .. } => self
-                .dev
-                .dtoh_sync_copy(data)
-                .map_err(|err| BackendError::Other(err.to_string())),
+                .stream
+                .clone_dtoh(data)
+                .map_err(|err| BackendError::Other(err.to_string()))
+                .and_then(|host| {
+                    self.stream
+                        .synchronize()
+                        .map_err(|err| BackendError::Other(err.to_string()))?;
+                    Ok(host)
+                }),
             CudaOutput::F64 { data, .. } => {
                 let host: Vec<f64> = self
-                    .dev
-                    .dtoh_sync_copy(data)
+                    .stream
+                    .clone_dtoh(data)
+                    .map_err(|err| BackendError::Other(err.to_string()))?;
+                self.stream
+                    .synchronize()
                     .map_err(|err| BackendError::Other(err.to_string()))?;
                 Ok(host.into_iter().map(|v| v as f32).collect())
             }
@@ -343,7 +343,7 @@ impl Backend for CudaBackend {
     }
 
     fn synchronize(&self) -> Result<(), BackendError> {
-        self.dev
+        self.stream
             .synchronize()
             .map_err(|err| BackendError::Other(err.to_string()))
     }

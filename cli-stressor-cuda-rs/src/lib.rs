@@ -1,6 +1,6 @@
 use rand::rngs::StdRng;
-use rand::seq::SliceRandom;
-use rand::{Rng, SeedableRng};
+use rand::seq::IndexedRandom;
+use rand::{RngExt, SeedableRng};
 use rand_distr::StandardNormal;
 use std::time::Instant;
 
