@@ -34,7 +34,7 @@
 ### 功能特点
 
 - 随机化的 GEMM 尺寸，包含预热阶段和突发阶段
-- 支持的精度模式：FP64、FP32、TF32、FP16（BF16/FP8 目前仅解析，尚未实现）
+- 支持的精度模式：FP64、FP32、TF32、FP16、BF16（SM80+ 架构，如 Ampere 及以后）；FP8 尚未实现
 - 使用 CPU FP64 参考结果进行周期性校验
 
 ### 环境要求
@@ -52,7 +52,7 @@ cargo run -p cli-stressor-cuda-rs --features cuda -- --duration 30 --precisions 
 
 ### 注意事项
 
-- TF32 使用 cuBLAS 的数学模式切换；BF16/FP8 目前会被跳过，并给出明确提示。
+- TF32 和 BF16 均使用 cuBLAS 的数学模式切换；BF16 需要 SM80+（Ampere 及以后），旧架构会自动跳过并给出明确提示。FP8 尚未实现。
 - 校验路径使用 CPU FP64 GEMM，并按元素比较容差。
 - 兼容性总结（2026-05-13 记录）：
   - CUDA 13 + `cuda13.dll` 在 10 系 GPU / Pascal 上不可用，编译成功也可能跑不起来。
@@ -75,7 +75,7 @@ cargo run -p cli-stressor-cuda-rs --features cuda -- --duration 30 --precisions 
 ### Features
 
 - Randomized GEMM sizes with warmup and burst phases
-- Precision modes: FP64, FP32, TF32, FP16 (BF16/FP8 are parsed but not implemented yet)
+- Precision modes: FP64, FP32, TF32, FP16, BF16 (SM80+/Ampere and later); FP8 is not yet implemented
 - Periodic validation using a CPU FP64 reference result
 
 ### Requirements
@@ -93,7 +93,7 @@ cargo run -p cli-stressor-cuda-rs --features cuda -- --duration 30 --precisions 
 
 ### Notes
 
-- TF32 uses cuBLAS math-mode switching. BF16/FP8 are currently skipped with a clear message.
+- TF32 and BF16 both use cuBLAS math-mode switching. BF16 requires SM80+ (Ampere and later); older architectures skip it with a clear message. FP8 is not yet implemented.
 - The validation path uses CPU FP64 GEMM and compares values with element-wise tolerances.
 - Compatibility summary (recorded on 2026-05-13):
   - CUDA 13 with `cuda13.dll` does not run on 10-series GPUs / Pascal, even if it builds successfully.
@@ -102,4 +102,3 @@ cargo run -p cli-stressor-cuda-rs --features cuda -- --duration 30 --precisions 
   - CUDA 13 requires a sufficiently new GPU and a matching driver; for example, RTX 40-series GPUs work normally with CUDA 13 and a newer driver (such as 595 / CUDA 13.2).
   - In client deployments, driver support and CUDA version must match the target GPU architecture.
   - Conclusion: to cover both legacy and newer GPUs, package and release separate CUDA 12.x and CUDA 13.x builds, then select the appropriate one on the client side by GPU architecture.
-

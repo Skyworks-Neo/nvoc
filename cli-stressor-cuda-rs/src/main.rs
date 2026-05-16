@@ -1,7 +1,7 @@
 use clap::Parser;
 
 #[cfg(feature = "cuda")]
-use cli_stressor_cuda_rs::{Backend, parse_int_list};
+use cli_stressor_cuda_rs::parse_int_list;
 
 #[cfg(feature = "cuda")]
 use cli_stressor_cuda_rs::{
@@ -80,7 +80,7 @@ fn print_summary(results: &[StressResult], info: &DeviceInfo) {
         } else {
             "FAIL"
         };
-        if status != "OK" {
+        if status == "FAIL" {
             overall_ok = false;
         }
         let eff = if r.elapsed_s > 0.0 {
@@ -116,9 +116,7 @@ fn print_summary(results: &[StressResult], info: &DeviceInfo) {
             "- No obvious computation errors or validation failures were observed in the current test window."
         );
     } else {
-        println!(
-            "- At least one precision mode reported an error, validation failure, or unsupported status."
-        );
+        println!("- At least one precision mode reported an error or validation failure.");
         std::process::exit(1);
     }
     println!("{}", "=".repeat(72));
