@@ -51,7 +51,13 @@ pub enum CudaOutput {
 impl CudaBackend {
     pub fn new() -> Result<Self, BackendError> {
         unsafe {
-            cuda_sys::cuInit(0);
+            let res = cuda_sys::cuInit(0);
+            if res as u32 != 0 {
+                return Err(BackendError::Other(format!(
+                    "cuInit failed: error code {}",
+                    res as u32
+                )));
+            }
         }
         let ctx = CudaContext::new(0).map_err(|err| BackendError::Other(err.to_string()))?;
         let stream = ctx.default_stream();

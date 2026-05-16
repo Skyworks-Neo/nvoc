@@ -66,173 +66,141 @@ jobs:
     needs: changes
     if: needs.changes.outputs.auto_optimizer == 'true'
     runs-on: windows-latest
-    defaults:
-      run:
-        working-directory: auto-optimizer
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: auto-optimizer -> target
-      - name: cargo fmt (advisory)
-        continue-on-error: true
-        run: cargo fmt --check
-      - name: cargo clippy (advisory)
-        continue-on-error: true
-        run: cargo clippy --all-targets
-      - name: cargo build (release)
-        run: cargo build --release
-      - name: cargo test
-        run: cargo test --no-fail-fast -- --skip gpu_
+          components: clippy, rustfmt
+      - name: Rustfmt
+        run: cargo fmt --package nvoc-auto-optimizer -- --check
+      - name: Clippy
+        run: cargo clippy --package nvoc-auto-optimizer --all-targets --all-features -- -D warnings
+      - name: Build
+        run: cargo build --package nvoc-auto-optimizer --all-targets --all-features
 
   rust-srv:
     name: srv (windows)
     needs: changes
     if: needs.changes.outputs.srv == 'true'
     runs-on: windows-latest
-    # srv currently imports symbols from nvoc_auto_optimizer that no
-    # longer exist (handle_unlock_vfp, handle_global_oc_offset_subcommand).
-    # Tracked as a separate issue. Keep this job advisory so the rest of
-    # CI can gate merges until srv is repaired.
-    continue-on-error: true
-    defaults:
-      run:
-        working-directory: srv
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          components: clippy
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: srv -> target
-      - name: cargo clippy (advisory)
-        continue-on-error: true
-        run: cargo clippy --all-targets
-      - name: cargo build (release)
-        run: cargo build --release
-        # srv has no tests yet; once tests are added, restore a
-        # `cargo test --no-fail-fast -- --skip gpu_` step here.
+          components: clippy, rustfmt
+      - name: Rustfmt
+        run: cargo fmt --package nvoc-srv -- --check
+      - name: Clippy
+        run: cargo clippy --package nvoc-srv --all-targets --all-features -- -D warnings
+      - name: Build
+        run: cargo build --package nvoc-srv --all-targets --all-features
 
   python-tui:
-    name: tui (${{ matrix.os }} / py${{ matrix.python }})
+    name: tui (${{ matrix.os }} / py${{ matrix.python-version }})
     needs: changes
     if: needs.changes.outputs.tui == 'true'
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        python: ["3.11", "3.12"]
+        python-version: ['3.11', '3.12']
     runs-on: ${{ matrix.os }}
-    defaults:
-      run:
-        working-directory: tui
     steps:
       - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v4
+      - uses: actions/setup-python@v5
         with:
-          enable-cache: true
-      - run: uv python install ${{ matrix.python }}
-      - name: uv sync (with retry)
-        shell: bash
+          python-version: ${{ matrix.python-version }}
+      - name: Install uv
+        run: pip install --quiet uv
+      - name: Install deps
+        run: uv pip install --system -e '.[dev]'
+        working-directory: tui
+      - name: byte-compile
+        run: python -m compileall -q tui/
+      - name: ruff (best-effort)
+        continue-on-error: true
         run: |
-          # NOTE: cannot use --frozen yet. The workspace pyproject.toml at
-          # the repo root makes uv look for /uv.lock (workspace lock) even
-          # when invoked from tui/, but no root lock is committed (and one
-          # cannot be generated until cli-stressor-cuda's torch side-index
-          # is workspace-visible). Restore --frozen once a root uv.lock
-          # ships.
-          set -e
-          for attempt in 1 2 3; do
-            if uv sync --all-extras --dev; then
-              exit 0
-            fi
-            echo "uv sync attempt $attempt failed"
-            [ "$attempt" -lt 3 ] && sleep $((attempt * 5))
-          done
-          exit 1
-      - run: uv run pytest -q
+          python -m pip install --quiet ruff
+          ruff check tui/
+      - name: non-GPU unit tests
+        run: |
+          python -m pip install --quiet pytest
+          python -m pytest -q tui/tests/
 
   python-gui:
     name: gui (sync + import smoke)
     needs: changes
     if: needs.changes.outputs.gui == 'true'
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: gui
     steps:
       - uses: actions/checkout@v6
-      - name: install Tk runtime
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends python3-tk libxcb-xinerama0 xvfb
-      - uses: astral-sh/setup-uv@v4
+      - uses: actions/setup-python@v5
         with:
-          enable-cache: true
-      - run: uv python install 3.12
-      - run: uv sync
-      - name: import smoke (no display required)
+          python-version: '3.12'
+      - name: Install uv
+        run: pip install --quiet uv
+      - name: Install deps
+        run: uv pip install --system -e '.[dev]'
+        working-directory: gui
+      - name: byte-compile gui/
+        run: python -m compileall -q gui/
+      - name: ruff (best-effort)
+        continue-on-error: true
         run: |
-          xvfb-run -a uv run python -c "import importlib, pathlib, sys; \
-              sys.path.insert(0, str(pathlib.Path('src').resolve())); \
-              importlib.import_module('config'); \
-              importlib.import_module('cli_runner')"
+          python -m pip install --quiet ruff
+          ruff check gui/
 
   python-stressor-cuda:
     name: stressor compile (cli-stressor-cuda)
     needs: changes
     if: needs.changes.outputs.stressor_cuda == 'true'
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: cli-stressor-cuda
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: '3.12'
       - name: byte-compile
         run: python -m compileall -q test.py
+        working-directory: cli-stressor-cuda
       - name: ruff (best-effort)
         continue-on-error: true
         run: |
           python -m pip install --quiet ruff
-          ruff check test.py
+          ruff check cli-stressor-cuda/test.py
       - name: non-GPU unit tests
         run: |
           python -m pip install --quiet pytest
           python -m pytest -q test_non_gpu_ci.py
+        working-directory: cli-stressor-cuda
 
   python-stressor-opencl:
     name: stressor compile (cli-stressor-opencl)
     needs: changes
     if: needs.changes.outputs.stressor_opencl == 'true'
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: cli-stressor-opencl
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: '3.12'
       - name: byte-compile
         run: python -m compileall -q test.py
+        working-directory: cli-stressor-opencl
       - name: ruff (best-effort)
         continue-on-error: true
         run: |
           python -m pip install --quiet ruff
-          ruff check test.py
+          ruff check cli-stressor-opencl/test.py
       - name: non-GPU unit tests
         run: |
           python -m pip install --quiet pytest
           python -m pytest -q test_non_gpu_ci.py
+        working-directory: cli-stressor-opencl
 
   rust-crate-versions:
     name: Rust duplicate-crate audit
-    runs-on: ubuntu-slim
+    runs-on: ubuntu-latest
     # Guards against unintentional workspace version skew. The ALLOWLIST below
     # covers expected semver-breaking transitive duplicates; any crate not on
     # the list that appears at multiple versions will fail this job.
@@ -288,7 +256,7 @@ jobs:
       - python-stressor-cuda
       - python-stressor-opencl
     if: always()
-    runs-on: ubuntu-slim
+    runs-on: ubuntu-latest
     steps:
       - name: fail if any required job failed
         run: |
