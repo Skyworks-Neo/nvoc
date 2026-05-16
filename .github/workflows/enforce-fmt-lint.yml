@@ -52,7 +52,5 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - run: rustup update stable && rustup component add clippy
-      # cli-stressor-cuda-rs links against CUDA even without --all-features; exclude it here.
-      # The Rust stressor is checked separately in ci.yml when files change.
-      - run: cargo clippy --workspace --exclude cli-stressor-cuda-rs --all-targets
-      # - run: cargo clippy --workspace --exclude cli-stressor-cuda-rs --all-targets -- -D warnings
+      - run: cargo clippy --all-targets
+      # - run: cargo clippy --all-targets -- -D warnings

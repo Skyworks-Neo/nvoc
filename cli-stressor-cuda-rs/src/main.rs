@@ -3,6 +3,7 @@ use clap::Parser;
 #[cfg(feature = "cuda")]
 use cli_stressor_cuda_rs::parse_int_list;
 
+#[cfg(feature = "cuda")]
 use cli_stressor_cuda_rs::Backend;
 #[cfg(feature = "cuda")]
 use cli_stressor_cuda_rs::{

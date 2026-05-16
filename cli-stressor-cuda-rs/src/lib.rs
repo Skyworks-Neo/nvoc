@@ -287,6 +287,7 @@ pub fn validate_precision<B: Backend>(
     Ok((passed, max_abs, max_rel, reason))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run_stress_for_precision<B: Backend>(
     backend: &mut B,
     spec: PrecisionSpec,
