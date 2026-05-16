@@ -162,7 +162,7 @@ pub fn export_single_point(point: VfPoint, matches: &clap::ArgMatches) -> Result
         writeln!(output_file, "{}", line)?;
     }
     println!(
-        "Updated row {}μV with delta = {} kHz",
+        "Updated row {}\u{03bc}V with delta = {} kHz",
         new_voltage, new_delta
     );
 
@@ -661,6 +661,14 @@ pub fn handle_vfp_import(gpu: &Gpu, matches: &clap::ArgMatches) -> Result<(), Er
     .map_err(io::Error::from)?;
 
     let deltas: Vec<_> = if domain == ClockDomain::Memory {
+        if input.len() != vfp.len() {
+            return Err(Error::Custom(format!(
+                "CSV has {} rows but GPU has {} VFP points; \
+                 please export the current curve first so the row counts match",
+                input.len(),
+                vfp.len()
+            )));
+        }
         input
             .into_iter()
             .zip(vfp.iter())
@@ -1132,7 +1140,7 @@ pub fn export_vfp_from_log(matches: &clap::ArgMatches) -> Result<(), Error> {
             if let Some(point) = extract_value(line, "point: #") {
                 if last_voltage_point != Some(point) {
                     eprintln!(
-                        "Warning: export_vfp_from_log: expected voltage point {:?}, got {} — skipping",
+                        "Warning: export_vfp_from_log: expected voltage point {:?}, got {} \u{2014} skipping",
                         last_voltage_point, point
                     );
                     continue;
@@ -1267,7 +1275,7 @@ pub fn apply_autoscan_profile(
     let gpu_type = fetch_gpu_type(&info).unwrap_or(GpuType::Unknown);
 
     if gpu_type.is_legacy_voltage() {
-        // 900 系及更早：通过 SetPstates20 写 P0 baseVoltage delta（最大允许值，即尽量升压）
+        // 900 系及更早：通过 SetPstates20 写 P0 baseVoltage delta（最大允许値，即尽量升压）
         // 先读允许范围，再以最大 delta 写入
         let max_delta = {
             use nvapi_hi::PState;
@@ -1287,7 +1295,7 @@ pub fn apply_autoscan_profile(
             Some(max_uv) => {
                 set_pstate_base_voltage(gpu, max_uv, nvapi_hi::PState::P0)?;
                 println!(
-                    "Successfully set P0 base voltage delta to max +{}μV (legacy GPU).",
+                    "Successfully set P0 base voltage delta to max +{}\u{03bc}V (legacy GPU).",
                     max_uv.0
                 );
             }
