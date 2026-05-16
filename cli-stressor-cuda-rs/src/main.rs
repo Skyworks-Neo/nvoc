@@ -3,10 +3,10 @@ use clap::Parser;
 #[cfg(feature = "cuda")]
 use cli_stressor_cuda_rs::parse_int_list;
 
-use cli_stressor_cuda_rs::Backend;
 #[cfg(feature = "cuda")]
 use cli_stressor_cuda_rs::{
-    DeviceInfo, PrecisionKind, StressResult, parse_precision_list, run_stress_for_precision,
+    Backend, DeviceInfo, PrecisionKind, StressResult, parse_precision_list,
+    run_stress_for_precision,
 };
 
 #[cfg(feature = "cuda")]

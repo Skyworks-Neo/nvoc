@@ -225,9 +225,6 @@ jobs:
               "hashbrown",       # 0.15 / 0.17
               "libloading",      # 0.8.x (nvml-wrapper) / 0.9.x (cudarc)
               "r-efi",           # 5.x / 6.x
-              "rand",            # 0.9.x (half transitive) / 0.10.x (cli-stressor-cuda-rs)
-              "rand_core",       # 0.9.x (half transitive) / 0.10.x (cli-stressor-cuda-rs)
-              "rand_distr",      # 0.5.x (half transitive) / 0.6.x (cli-stressor-cuda-rs)
               "thiserror",       # 1.x / 2.x
               "thiserror-impl",  # 1.x / 2.x
               "windows-sys",     # 0.52 / 0.59 / 0.61
