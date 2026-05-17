@@ -1,5 +1,6 @@
 .codex
 .idea/
+.ruff_cache/
 /target/
 gui/nvoc_gui_config.json
 __pycache__/

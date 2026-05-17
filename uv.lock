@@ -1242,7 +1242,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "numpy", specifier = "==2.4.4" },
-    { name = "pyinstaller", specifier = ">6.0" },
+    { name = "pyinstaller", specifier = ">=6.0" },
     { name = "pyopencl" },
 ]
 

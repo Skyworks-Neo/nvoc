@@ -533,6 +533,27 @@ pub fn get_arguments() -> Command {
                                         .help("Export memory VF table (default exports core/graphics VF table)"),
                                 )
                                 .arg(
+                                    Arg::new("processor")
+                                        .long("processor")
+                                        .action(ArgAction::SetTrue)
+                                        .conflicts_with_all(["memory", "video", "undefined"])
+                                        .help("Export processor VF table"),
+                                )
+                                .arg(
+                                    Arg::new("video")
+                                        .long("video")
+                                        .action(ArgAction::SetTrue)
+                                        .conflicts_with_all(["memory", "processor", "undefined"])
+                                        .help("Export video VF table"),
+                                )
+                                .arg(
+                                    Arg::new("undefined")
+                                        .long("undefined")
+                                        .action(ArgAction::SetTrue)
+                                        .conflicts_with_all(["memory", "processor", "video"])
+                                        .help("Export undefined VF table"),
+                                )
+                                .arg(
                                     Arg::new("output")
                                         .value_name("OUTPUT")
                                         .num_args(1)
@@ -591,12 +612,43 @@ pub fn get_arguments() -> Command {
                                         .help("Separate columns using tabs"),
                                 )
                                 .arg(
+                                    Arg::new("memory")
+                                        .long("memory")
+                                        .action(ArgAction::SetTrue)
+                                        .help("Import memory VF table (default imports core/graphics VF table)"),
+                                )
+                                .arg(
+                                    Arg::new("processor")
+                                        .long("processor")
+                                        .action(ArgAction::SetTrue)
+                                        .conflicts_with_all(["memory", "video", "undefined"])
+                                        .help("Import processor VF table"),
+                                )
+                                .arg(
+                                    Arg::new("video")
+                                        .long("video")
+                                        .action(ArgAction::SetTrue)
+                                        .conflicts_with_all(["memory", "processor", "undefined"])
+                                        .help("Import video VF table"),
+                                )
+                                .arg(
+                                    Arg::new("undefined")
+                                        .long("undefined")
+                                        .action(ArgAction::SetTrue)
+                                        .conflicts_with_all(["memory", "processor", "video"])
+                                        .help("Import undefined VF table"),
+                                )
+                                .arg(
                                     Arg::new("input")
                                         .value_name("INPUT")
                                         .num_args(1)
                                         .default_value("-")
                                         .help("Input file path"),
                                 )
+                        )
+                        .subcommand(
+                            Command::new("sync_mem_pstate_as_p0")
+                                .about("Sync the second-highest adjustable memory VFP stage to the P0 memory frequency"),
                         )
                         .subcommand(
                             Command::new("single_point_adj")

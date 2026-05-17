@@ -1,6 +1,9 @@
 use crate::error::Error;
 use nvml_wrapper::Nvml;
+use nvml_wrapper::enum_wrappers::device::PerformanceState;
 use nvml_wrapper::enums::device::FanControlPolicy;
+
+pub type NvmlPStateClockRange = (PerformanceState, u32, u32, u32, u32);
 
 // ---------------------------------------------------------------------------
 // Private helper: find an NVML device by NVAPI-style GPU ID (PCI bus * 256)
@@ -281,18 +284,7 @@ pub fn get_nvml_temperature_thresholds(
 // P-State info and clock ranges
 // ---------------------------------------------------------------------------
 
-pub fn get_nvml_pstate_info(
-    nvml: &Nvml,
-    gpu_id: u32,
-) -> Option<
-    Vec<(
-        nvml_wrapper::enum_wrappers::device::PerformanceState,
-        u32,
-        u32,
-        u32,
-        u32,
-    )>,
-> {
+pub fn get_nvml_pstate_info(nvml: &Nvml, gpu_id: u32) -> Option<Vec<NvmlPStateClockRange>> {
     let device = find_nvml_device(nvml, gpu_id)?;
     let pstates = device.supported_performance_states().ok()?;
     let mut res = Vec::new();

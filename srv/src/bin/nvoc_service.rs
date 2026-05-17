@@ -8,6 +8,7 @@
 // extern crate nvml_wrapper;
 // extern crate nvml_wrapper_sys;
 
+#[cfg(windows)]
 #[path = "../websrv.rs"]
 mod websrv;
 
@@ -260,7 +261,13 @@ mod nvoc_service {
                 }
 
                 _ = timer.next() => {
-                    let cfg = config.lock().unwrap();
+                    let cfg = match config.lock() {
+                        Ok(c) => c,
+                        Err(e) => {
+                            error!("Config mutex poisoned, skipping timer tick: {}", e);
+                            continue;
+                        }
+                    };
                     let vfp_low_lock_point = min(max(cfg.vfp_lock_point, vfp_lowest_lock_point), vfp_highest_lock_point);
                     let temperature_softwall = cfg.temp_limit;
                     let count = nvml.device_count().unwrap_or(0);
@@ -268,7 +275,13 @@ mod nvoc_service {
 
                     // 遍历 GPU
                     for i in 0..count {
-                        let device = nvml.device_by_index(i).unwrap();
+                        let device = match nvml.device_by_index(i) {
+                            Ok(d) => d,
+                            Err(e) => {
+                                error!("GPU {}: NVML device_by_index failed: {:?}", i, e);
+                                continue;
+                            }
+                        };
                         let name = device.name().unwrap_or("Unknown".to_string()); // GPU 名称
                         let uuid = device.uuid().unwrap_or("Non UUID".to_string());                 // GPU UUID
                         let temperature = device.temperature(TemperatureSensor::Gpu).unwrap_or(0); // GPU 温度
