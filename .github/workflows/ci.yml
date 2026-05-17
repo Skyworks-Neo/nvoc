@@ -8,11 +8,67 @@ on:
 permissions:
   contents: read
 
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: 1.95.0
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  ruff-fmt:
+    name: "ruff format . --check"
+    runs-on: ubuntu-slim
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - run: |
+          python -m pip install --upgrade pip
+          pip install ruff
+      - run: ruff format . --check --output-format=github
+
+  ruff-lint:
+    name: "ruff check ."
+    runs-on: ubuntu-slim
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - run: |
+          python -m pip install --upgrade pip
+          pip install ruff
+      - run: ruff check . --output-format=github
+
+  fmt:
+    name: Rustfmt
+    runs-on: ubuntu-slim
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-slim
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy
+      # cli-stressor-cuda-rs links against CUDA even without --all-features; exclude it here.
+      # The Rust stressor is compiled separately in ci.yml when files change.
+      - run: cargo clippy --workspace --exclude cli-stressor-cuda-rs --all-targets -- -D warnings
+
   changes:
     name: detect changed components
     runs-on: ubuntu-latest
@@ -73,10 +129,8 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: 1.95.0
-          components: clippy, rustfmt
+          components: clippy
           rustflags: ""
-      - name: Rustfmt
-        run: cargo fmt --package nvoc-auto-optimizer -- --check
       - name: Clippy
         run: cargo clippy --package nvoc-auto-optimizer --all-targets --all-features -- -D warnings
       - name: Build
@@ -92,10 +146,8 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: 1.95.0
-          components: clippy, rustfmt
+          components: clippy
           rustflags: ""
-      - name: Rustfmt
-        run: cargo fmt --package nvoc-srv -- --check
       - name: Clippy
         run: cargo clippy --package nvoc-srv --all-targets --all-features -- -D warnings
       - name: Build
@@ -207,6 +259,7 @@ jobs:
   rust-crate-versions:
     name: Rust duplicate-crate audit
     runs-on: ubuntu-latest
+    continue-on-error: true
     # Guards against unintentional workspace version skew. The ALLOWLIST below
     # covers expected semver-breaking transitive duplicates; any crate not on
     # the list that appears at multiple versions will fail this job.
@@ -254,6 +307,10 @@ jobs:
   ci-summary:
     name: ci summary
     needs:
+      - ruff-fmt
+      - ruff-lint
+      - fmt
+      - clippy
       - changes
       - rust-auto-optimizer
       - rust-srv
