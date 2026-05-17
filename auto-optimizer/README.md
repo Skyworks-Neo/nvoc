@@ -950,5 +950,3 @@ cargo build --release
 ---
 
 *nvoc-auto-optimizer v0.0.3 — by Skyworks*
-
-
