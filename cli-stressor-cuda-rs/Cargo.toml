@@ -1,0 +1,21 @@
+[package]
+name = "cli-stressor-cuda-rs"
+version = "0.1.0"
+edition = { workspace = true }
+rust-version = { workspace = true }
+license = "Apache-2.0"
+
+description = "Rust CUDA GEMM stressor with validation sidecar"
+
+[features]
+default = []
+cuda = ["dep:cudarc", "dep:half"]
+
+[dependencies]
+clap = { workspace = true }
+rand = "0.9"
+rand_distr = "0.5"
+matrixmultiply = "0.3.10"
+thiserror = "2.0.18"
+cudarc = { version = "0.19.7", optional = true, features = ["f16","cuda-12090"] }
+half = { version = "2.7.1", optional = true }

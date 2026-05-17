@@ -6,6 +6,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: 1.95.0
 
 jobs:
   ruff-fmt:
@@ -41,8 +42,10 @@ jobs:
     runs-on: ubuntu-slim
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - run: rustup update stable && rustup component add rustfmt
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: rustfmt
       - run: cargo fmt --all -- --check
 
   clippy:
@@ -50,7 +53,8 @@ jobs:
     runs-on: ubuntu-slim
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - run: rustup update stable && rustup component add clippy
-      - run: cargo clippy --all-targets --all-features
-      # - run: cargo clippy --all-targets --all-features -- -D warnings
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy
+      - run: cargo clippy --all-targets --all-features -- -D warnings

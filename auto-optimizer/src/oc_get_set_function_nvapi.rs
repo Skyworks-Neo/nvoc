@@ -19,10 +19,21 @@ use std::str::FromStr;
 use std::thread::sleep;
 use std::time::Duration;
 
+pub type GpuTdpTempLimits = (
+    Percentage,
+    Percentage,
+    Percentage,
+    Celsius,
+    Celsius,
+    Celsius,
+    PffCurve,
+);
+
 /// 通过 NvAPI_GPU_SetPstates20 的 baseVoltages 字段写入指定 pstate 的核心电压 delta。
 /// 适用于 900 系（Maxwell）及更早不支持 ClientVoltRailsSetControl 的 GPU。
 /// delta_uv 单位为 μV，正值加压，负值降压，范围由 GPU 自身 voltDelta_uV.{min,max} 决定。
 /// target_pstate 指定目标 pstate，默认应传入 PState::P0。
+#[allow(clippy::field_reassign_with_default)] // struct literal form fails: NV_GPU_PERF_PSTATES20_INFO V1/V2 type alias mismatch
 pub fn set_pstate_base_voltage(
     gpu: &Gpu,
     delta_uv: MicrovoltsDelta,
@@ -45,7 +56,7 @@ pub fn set_pstate_base_voltage(
     let base_volt = target_ps
         .base_voltages
         .iter()
-        .find(|v| v.voltage_domain == nvapi_hi::nvapi::VoltageDomain::Core)
+        .find(|v| v.voltage_domain == nvapi::VoltageDomain::Core)
         .ok_or_else(|| {
             Error::from(format!(
             "{:?} Core baseVoltage entry not found — GPU may not support pstate voltage control",
@@ -109,9 +120,91 @@ pub fn set_pstate_base_voltage(
     Ok(())
 }
 
+/// Preserve all editable clock deltas in the target P-State, overriding only one domain.
+/// This avoids `NvAPI_GPU_SetPstates20` clearing sibling domains when the caller wants
+/// to change only Graphics or Memory.
+pub fn set_pstate_clock_offset_preserve(
+    gpu: &Gpu,
+    target_pstate: PState,
+    target_domain: ClockDomain,
+    target_delta: KilohertzDelta,
+) -> Result<(), Error> {
+    let graphics_vfp = if target_domain == ClockDomain::Memory {
+        capture_graphics_vfp(gpu)?
+    } else {
+        None
+    };
+
+    let pstates = gpu
+        .inner()
+        .pstates()
+        .map_err(|e| Error::from(format!("Failed to read pstates: {:?}", e)))?;
+
+    let target_ps = pstates
+        .pstates
+        .iter()
+        .find(|p| p.id == target_pstate)
+        .ok_or_else(|| Error::from(format!("{:?} pstate not found", target_pstate)))?;
+
+    let mut entries: Vec<(PState, ClockDomain, KilohertzDelta)> = target_ps
+        .clocks
+        .iter()
+        .filter(|clock| clock.editable())
+        .map(|clock| {
+            let delta = if clock.domain() == target_domain {
+                target_delta
+            } else {
+                clock.frequency_delta().value
+            };
+            (target_pstate, clock.domain(), delta)
+        })
+        .collect();
+
+    if entries.is_empty() {
+        return Err(Error::from(format!(
+            "{:?} has no editable clock entries",
+            target_pstate
+        )));
+    }
+
+    if !entries
+        .iter()
+        .any(|(_, domain, _)| *domain == target_domain)
+    {
+        return Err(Error::from(format!(
+            "{:?} {:?} clock entry not found or not editable",
+            target_pstate, target_domain
+        )));
+    }
+
+    gpu.inner()
+        .set_pstates(entries.drain(..))
+        .map_err(Error::from)?;
+
+    if let Some(vfp) = graphics_vfp {
+        restore_graphics_vfp(gpu, &vfp)?;
+    }
+
+    Ok(())
+}
+
+fn capture_graphics_vfp(gpu: &Gpu) -> Result<Option<BTreeMap<usize, KilohertzDelta>>, Error> {
+    let settings = gpu.settings().map_err(Error::from)?;
+    Ok(settings.vfp.map(|vfp| vfp.graphics))
+}
+
+fn restore_graphics_vfp(gpu: &Gpu, vfp: &BTreeMap<usize, KilohertzDelta>) -> Result<(), Error> {
+    gpu.set_vfp(
+        vfp.iter().map(|(&point, &delta)| (point, delta)),
+        iter::empty(),
+    )?;
+    Ok(())
+}
+
 /// 将所有 pstate 的 Core baseVoltage delta 清零（适用于 Maxwell / 9 系及更早）。
 /// 遍历驱动报告的全部 pstate，对每个含有可编辑 Core baseVoltage 的条目发起单独写入，
 /// 单个 pstate 失败时打印警告并继续，不中断其他 pstate 的清零。
+#[allow(clippy::field_reassign_with_default)] // struct literal form fails: NV_GPU_PERF_PSTATES20_INFO V1/V2 type alias mismatch
 pub fn reset_all_pstate_base_voltages(gpu: &Gpu) -> Result<(), Error> {
     use nvapi_hi::sys::gpu::pstate as sys_pstate;
 
@@ -127,7 +220,7 @@ pub fn reset_all_pstate_base_voltages(gpu: &Gpu) -> Result<(), Error> {
         let base_volt = match ps
             .base_voltages
             .iter()
-            .find(|v| v.voltage_domain == nvapi_hi::nvapi::VoltageDomain::Core)
+            .find(|v| v.voltage_domain == nvapi::VoltageDomain::Core)
         {
             Some(v) => v,
             None => continue, // 该 pstate 无 Core 电压条目，跳过
@@ -213,20 +306,17 @@ pub fn handle_cooler_command(gpus: &[&Gpu], matches: &ArgMatches) -> Result<(), 
     for gpu in gpus {
         match cooler_id {
             "1" => {
-                gpu.set_cooler_levels([(FanCoolerId::Cooler1, settings)].into_iter())?;
+                gpu.set_cooler_levels([(FanCoolerId::Cooler1, settings)])?;
             }
             "2" => {
-                gpu.set_cooler_levels([(FanCoolerId::Cooler2, settings)].into_iter())?;
+                gpu.set_cooler_levels([(FanCoolerId::Cooler2, settings)])?;
             }
             _ => {
                 // "all" or anything else: set both coolers
-                gpu.set_cooler_levels(
-                    [
-                        (FanCoolerId::Cooler1, settings),
-                        (FanCoolerId::Cooler2, settings),
-                    ]
-                    .into_iter(),
-                )?;
+                gpu.set_cooler_levels([
+                    (FanCoolerId::Cooler1, settings),
+                    (FanCoolerId::Cooler2, settings),
+                ])?;
             }
         }
     }
@@ -268,12 +358,12 @@ fn parse_lock_frequency(
             None
         };
 
-    if let Some(lower) = lower_mhz {
-        if lower > upper_mhz {
-            return Err(Error::from(
-                "--clock expects upper bound first and lower bound second",
-            ));
-        }
+    if let Some(lower) = lower_mhz
+        && lower > upper_mhz
+    {
+        return Err(Error::from(
+            "--clock expects upper bound first and lower bound second",
+        ));
     }
 
     let domain = match matches
@@ -993,7 +1083,7 @@ pub fn handle_pointwiseoc(gpus: &[&Gpu], matches: &ArgMatches) -> Result<(), Err
     );
 
     for gpu in gpus {
-        set_vfp_range(&gpu, start..=end, delta)?;
+        set_vfp_range(gpu, start..=end, delta)?;
     }
 
     Ok(())
@@ -1025,38 +1115,35 @@ pub fn handle_test_voltage_limits(
             }
         }
 
-        match gpu_type {
-            Ok(ref t) => {
-                let vlp = t.voltage_limit_params();
-                upper_init_point = vlp.upper_init_point;
-                lower_init_point = vlp.lower_init_point;
-                if vlp.vfp_strict_inc_flag {
-                    vfp_strict_inc_flag = 1;
-                }
-                if vlp.margin_threshold_check {
-                    margin_threshold_check = 1;
-                }
-
-                // 9 系及 Volta/Unknown 的特殊打印（无 VFP 支持）
-                match t {
-                    GpuType::Mobile9Series => {
-                        println!("Mobile 9 Series GPU detected.");
-                        drop(Error::VfpUnsupported);
-                    }
-                    GpuType::Desktop9Series => {
-                        println!("Desktop 9 Series GPU detected.");
-                        drop(Error::VfpUnsupported);
-                    }
-                    GpuType::ComputationVolta => {
-                        println!("Computation Volta GPU detected.");
-                    }
-                    GpuType::Unknown => {
-                        println!("Unknown GPU type detected.");
-                    }
-                    _ => {}
-                }
+        if let Ok(ref t) = gpu_type {
+            let vlp = t.voltage_limit_params();
+            upper_init_point = vlp.upper_init_point;
+            lower_init_point = vlp.lower_init_point;
+            if vlp.vfp_strict_inc_flag {
+                vfp_strict_inc_flag = 1;
             }
-            _ => {}
+            if vlp.margin_threshold_check {
+                margin_threshold_check = 1;
+            }
+
+            // 9 系及 Volta/Unknown 的特殊打印（无 VFP 支持）
+            match t {
+                GpuType::Mobile9Series => {
+                    println!("Mobile 9 Series GPU detected.");
+                    drop(Error::VfpUnsupported);
+                }
+                GpuType::Desktop9Series => {
+                    println!("Desktop 9 Series GPU detected.");
+                    drop(Error::VfpUnsupported);
+                }
+                GpuType::ComputationVolta => {
+                    println!("Computation Volta GPU detected.");
+                }
+                GpuType::Unknown => {
+                    println!("Unknown GPU type detected.");
+                }
+                _ => {}
+            }
         }
     }
 
@@ -1177,20 +1264,7 @@ pub fn handle_test_voltage_limits(
     ))
 }
 
-pub fn get_gpu_tdp_temp_limit(
-    arg_matches: ArgMatches,
-) -> Result<
-    (
-        Percentage,
-        Percentage,
-        Percentage,
-        Celsius,
-        Celsius,
-        Celsius,
-        PffCurve,
-    ),
-    Error,
-> {
+pub fn get_gpu_tdp_temp_limit(arg_matches: ArgMatches) -> Result<GpuTdpTempLimits, Error> {
     let mut min_tdp = 16383.0_f32;
     let mut max_tdp = 32767.0_f32;
     let mut default_tdp = 65535.0_f32;

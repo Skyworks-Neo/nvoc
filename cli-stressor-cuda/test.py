@@ -569,6 +569,11 @@ def main():
             # 如果是检测到不支持（SKIP）则不视为测试失败，否则视为失败
             if res.supported:
                 overall_passed = False
+                print(f"  累计: {res.iterations} 次 matmul, {res.tflops:.2f} TFLOPS")
+                # GPU may be in a fault/bus-fallen state on Linux (no TDR); do not
+                # attempt further precisions — print partial summary and exit now.
+                print_summary(device_name, total_memory_gb, results)
+                sys.exit(1)
         else:
             print("  结果: completed without detected error")
         print(f"  累计: {res.iterations} 次 matmul, {res.tflops:.2f} TFLOPS")
