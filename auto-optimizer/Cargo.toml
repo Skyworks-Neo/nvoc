@@ -13,15 +13,13 @@ license = "Apache-2.0"
 include = ["/src/**", "/README*", "/LICENSE*"]
 
 [dependencies]
+nvoc-core = { workspace = true }
 nvapi-hi = { workspace = true }
-nvapi-sys = { workspace = true }
 nvapi = { workspace = true }
 nvml-wrapper = { workspace = true }
-nvml-wrapper-sys = { workspace = true }
 clap = { workspace = true }
-quick-error = { workspace = true }
-csv = { workspace = true }
-serde_json = { workspace = true }
 anyhow = { workspace = true }
+csv = { workspace = true }
 num-traits = { workspace = true }
+serde_json = { workspace = true }
 time = { workspace = true }

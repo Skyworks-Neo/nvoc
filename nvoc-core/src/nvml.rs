@@ -1,4 +1,5 @@
-use crate::error::Error;
+use super::conv::{nvml_pstate_to_index, nvml_pstate_to_str};
+use super::error::Error;
 use nvml_wrapper::Nvml;
 use nvml_wrapper::enum_wrappers::device::PerformanceState;
 use nvml_wrapper::enums::device::FanControlPolicy;
@@ -402,26 +403,26 @@ pub fn set_nvml_pstate_lock(
         ))
     })?;
 
-    let first_index = crate::conv::nvml_pstate_to_index(first_pstate)?;
-    let second_index = crate::conv::nvml_pstate_to_index(second_pstate)?;
+    let first_index = nvml_pstate_to_index(first_pstate)?;
+    let second_index = nvml_pstate_to_index(second_pstate)?;
     let (high_perf_pstate, low_perf_pstate, min_index, max_index) = if first_index <= second_index {
         (first_pstate, second_pstate, first_index, second_index)
     } else {
         (second_pstate, first_pstate, second_index, first_index)
     };
     let range_label = if min_index == max_index {
-        crate::conv::nvml_pstate_to_str(high_perf_pstate).to_string()
+        nvml_pstate_to_str(high_perf_pstate).to_string()
     } else {
         format!(
             "{}-{}",
-            crate::conv::nvml_pstate_to_str(high_perf_pstate),
-            crate::conv::nvml_pstate_to_str(low_perf_pstate)
+            nvml_pstate_to_str(high_perf_pstate),
+            nvml_pstate_to_str(low_perf_pstate)
         )
     };
     let supported_pstates = pstates
         .iter()
         .map(|(reported_pstate, _, _, _, _)| {
-            crate::conv::nvml_pstate_to_str(*reported_pstate)
+            nvml_pstate_to_str(*reported_pstate)
                 .trim_start_matches('P')
                 .to_string()
         })
@@ -432,7 +433,7 @@ pub fn set_nvml_pstate_lock(
         .ok_or_else(|| {
             Error::Custom(format!(
                 "{} is not reported by NVML for GPU {}. Supported NVML P-States: {}",
-                crate::conv::nvml_pstate_to_str(high_perf_pstate),
+                nvml_pstate_to_str(high_perf_pstate),
                 gpu_id,
                 supported_pstates.join(",")
             ))
@@ -443,7 +444,7 @@ pub fn set_nvml_pstate_lock(
         .ok_or_else(|| {
             Error::Custom(format!(
                 "{} is not reported by NVML for GPU {}. Supported NVML P-States: {}",
-                crate::conv::nvml_pstate_to_str(low_perf_pstate),
+                nvml_pstate_to_str(low_perf_pstate),
                 gpu_id,
                 supported_pstates.join(",")
             ))
@@ -461,8 +462,8 @@ pub fn set_nvml_pstate_lock(
         })
         .map(|(reported_pstate, _, _, _, _)| {
             (
-                crate::conv::nvml_pstate_to_index(*reported_pstate),
-                crate::conv::nvml_pstate_to_str(*reported_pstate),
+                nvml_pstate_to_index(*reported_pstate),
+                nvml_pstate_to_str(*reported_pstate),
             )
         })
         .collect::<Vec<_>>();

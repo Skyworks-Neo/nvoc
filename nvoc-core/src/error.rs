@@ -1,4 +1,3 @@
-use crate::types::ResetSettings;
 use quick_error::quick_error;
 use std::io;
 use std::num::{ParseFloatError, ParseIntError};
@@ -71,10 +70,6 @@ quick_error! {
         ParseInt(err: ParseIntError) {from()source(err)display("{}", err)}
         ParseFloat(err: ParseFloatError) {from()source(err)display("{}", err)}
         Str(err: &'static str) {from()display("{}", err)}
-        Reset { setting: ResetSettings, err: nvapi_hi::Error } {
-            from(s: (ResetSettings, nvapi_hi::Error)) -> {setting: s.0,err: s.1}
-            display("Reset {:?} failed: {}", setting, err)
-        }
         FeatureUnsupportedErr{display("Feature unsupported")}
         Custom(err: String) { from() display("{}", err) }  // Corrected syntax
     }

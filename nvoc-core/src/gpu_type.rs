@@ -6,7 +6,7 @@
 use nvapi_hi::GpuInfo;
 use std::fmt;
 
-use crate::error::Error;
+use super::error::Error;
 
 // ─────────────────────────────── GpuType 枚举 ───────────────────────────────
 
