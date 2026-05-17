@@ -1002,14 +1002,11 @@ fn handle_nvapi(gpus: &[&Gpu], matches: &ArgMatches) -> Result<(), Error> {
     if let Some(&core_offset) = matches.get_one::<i32>("core_offset") {
         for gpu in gpus {
             let gpu_info = gpu.info()?;
-            match gpu.inner().set_pstates(
-                [(
-                    nvapi_pstate,
-                    nvapi_hi::ClockDomain::Graphics,
-                    KilohertzDelta(core_offset),
-                )]
-                .iter()
-                .cloned(),
+            match crate::oc_get_set_function_nvapi::set_pstate_clock_offset_preserve(
+                gpu,
+                nvapi_pstate,
+                nvapi_hi::ClockDomain::Graphics,
+                KilohertzDelta(core_offset),
             ) {
                 Ok(_) => println!(
                     "Successfully applied NVAPI core offset {} kHz to GPU {} for PState {:?}",
@@ -1026,14 +1023,11 @@ fn handle_nvapi(gpus: &[&Gpu], matches: &ArgMatches) -> Result<(), Error> {
     if let Some(&mem_offset) = matches.get_one::<i32>("mem_offset") {
         for gpu in gpus {
             let gpu_info = gpu.info()?;
-            match gpu.inner().set_pstates(
-                [(
-                    nvapi_pstate,
-                    nvapi_hi::ClockDomain::Memory,
-                    KilohertzDelta(mem_offset),
-                )]
-                .iter()
-                .cloned(),
+            match crate::oc_get_set_function_nvapi::set_pstate_clock_offset_preserve(
+                gpu,
+                nvapi_pstate,
+                nvapi_hi::ClockDomain::Memory,
+                KilohertzDelta(mem_offset),
             ) {
                 Ok(_) => println!(
                     "Successfully applied NVAPI mem offset {} kHz to GPU {} for PState {:?}",

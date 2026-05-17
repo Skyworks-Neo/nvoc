@@ -212,6 +212,10 @@ fn main_result() -> Result<i32, Box<dyn std::error::Error>> {
                                 let gpu = single_gpu(&nvapi_selected)?;
                                 handle_vfp_import(gpu, matches)?;
                             }
+                            Some(("sync_mem_pstate_as_p0", _matches)) => {
+                                let gpu = single_gpu(&nvapi_selected)?;
+                                sync_memory_pstate_as_p0(gpu)?;
+                            }
                             Some(("single_point_adj", matches)) => {
                                 single_point_adj(&nvapi_selected, matches)?
                             }
