@@ -669,8 +669,8 @@ pub fn handle_vfp_import(gpu: &Gpu, matches: &clap::ArgMatches) -> Result<(), Er
     let deltas: Vec<_> = if domain == ClockDomain::Memory {
         if input.len() != vfp.len() {
             return Err(Error::Custom(format!(
-                "CSV has {} rows but GPU has {} VFP points; \
-                 please export the current curve first so the row counts match",
+                "Memory VFP import row count mismatch: CSV has {} rows but GPU table has {} \
+                 points; export the current curve first to ensure row counts match",
                 input.len(),
                 vfp.len()
             )));

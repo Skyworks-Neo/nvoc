@@ -83,23 +83,23 @@ impl Backend for CudaBackend {
                 return Err("FP8 not implemented in this build (cuBLASLt required)".to_string());
             }
             PrecisionKind::BF16 => {
-                if let Some((major, minor)) = cc
-                    && major < 8
-                {
-                    return Err(format!(
-                        "BF16 requires SM80+, current SM{}.{}",
-                        major, minor
-                    ));
+                if let Some((major, minor)) = cc {
+                    if major < 8 {
+                        return Err(format!(
+                            "BF16 requires SM80+, current SM{}.{}",
+                            major, minor
+                        ));
+                    }
                 }
             }
             PrecisionKind::TF32 => {
-                if let Some((major, minor)) = cc
-                    && major < 8
-                {
-                    return Err(format!(
-                        "TF32 requires SM80+, current SM{}.{}",
-                        major, minor
-                    ));
+                if let Some((major, minor)) = cc {
+                    if major < 8 {
+                        return Err(format!(
+                            "TF32 requires SM80+, current SM{}.{}",
+                            major, minor
+                        ));
+                    }
                 }
             }
             _ => {}

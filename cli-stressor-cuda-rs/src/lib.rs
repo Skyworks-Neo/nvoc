@@ -38,18 +38,6 @@ pub struct StressResult {
     pub first_error_at_s: Option<f64>,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct StressRunConfig<'a> {
-    pub matrix_sizes: &'a [usize],
-    pub duration_s: f64,
-    pub warmup_iters: u32,
-    pub burst_iters: u32,
-    pub validate_interval_s: f64,
-    pub validate_size: usize,
-    pub transpose_prob: f64,
-    pub base_seed: u64,
-}
-
 #[derive(Debug, Clone)]
 pub struct DeviceInfo {
     pub name: String,
@@ -302,7 +290,14 @@ pub fn validate_precision<B: Backend>(
 pub fn run_stress_for_precision<B: Backend>(
     backend: &mut B,
     spec: PrecisionSpec,
-    config: StressRunConfig<'_>,
+    matrix_sizes: &[usize],
+    duration_s: f64,
+    warmup_iters: u32,
+    burst_iters: u32,
+    validate_interval_s: f64,
+    validate_size: usize,
+    transpose_prob: f64,
+    base_seed: u64,
 ) -> StressResult {
     let mut result = StressResult {
         precision: spec.name.to_string(),
@@ -323,8 +318,8 @@ pub fn run_stress_for_precision<B: Backend>(
     }
 
     // Probe for dtype support.
-    let probe_a = make_random_host_matrix(8, config.base_seed.wrapping_add(1));
-    let probe_b = make_random_host_matrix(8, config.base_seed.wrapping_add(2));
+    let probe_a = make_random_host_matrix(8, base_seed.wrapping_add(1));
+    let probe_b = make_random_host_matrix(8, base_seed.wrapping_add(2));
     if let Err(err) = (|| {
         let a_dev = backend.upload_matrix(&probe_a, &spec)?;
         let b_dev = backend.upload_matrix(&probe_b, &spec)?;
@@ -337,24 +332,21 @@ pub fn run_stress_for_precision<B: Backend>(
         return result;
     }
 
-    let mut rng = StdRng::seed_from_u64(config.base_seed);
+    let mut rng = StdRng::seed_from_u64(base_seed);
     let start = Instant::now();
-    let mut next_validate = config.validate_interval_s.max(0.0);
-    let mut validation_seed = config.base_seed ^ 0x5F3759DF;
+    let mut next_validate = validate_interval_s.max(0.0);
+    let mut validation_seed = base_seed ^ 0x5F3759DF;
 
-    while start.elapsed().as_secs_f64() < config.duration_s {
+    while start.elapsed().as_secs_f64() < duration_s {
         let size = if rng.random::<f64>() < 0.15 {
-            *config
-                .matrix_sizes
-                .choose(&mut rng)
-                .unwrap_or(&config.matrix_sizes[0])
+            *matrix_sizes.choose(&mut rng).unwrap_or(&matrix_sizes[0])
         } else {
             let small_sizes = [127usize, 256, 511, 512, 1023];
             *small_sizes.choose(&mut rng).unwrap()
         };
 
-        let transpose_a = rng.random::<f64>() < config.transpose_prob;
-        let transpose_b = rng.random::<f64>() < config.transpose_prob;
+        let transpose_a = rng.random::<f64>() < transpose_prob;
+        let transpose_b = rng.random::<f64>() < transpose_prob;
 
         let a_host = make_random_host_matrix(size, rng.random::<u64>());
         let b_host = make_random_host_matrix(size, rng.random::<u64>());
@@ -363,13 +355,13 @@ pub fn run_stress_for_precision<B: Backend>(
             let a_dev = backend.upload_matrix(&a_host, &spec)?;
             let b_dev = backend.upload_matrix(&b_host, &spec)?;
 
-            for _ in 0..config.warmup_iters {
+            for _ in 0..warmup_iters {
                 let _ = backend.gemm(&a_dev, &b_dev, transpose_a, transpose_b)?;
             }
             backend.synchronize()?;
 
             let op_start = Instant::now();
-            for _ in 0..config.burst_iters {
+            for _ in 0..burst_iters {
                 let _ = backend.gemm(&a_dev, &b_dev, transpose_a, transpose_b)?;
             }
             backend.synchronize()?;
@@ -384,7 +376,7 @@ pub fn run_stress_for_precision<B: Backend>(
             }
         };
 
-        let burst_iters_f64 = config.burst_iters as f64;
+        let burst_iters_f64 = burst_iters as f64;
         let flops = 2.0 * (size as f64).powi(3) * burst_iters_f64;
         let inst_tflops = if op_elapsed > 0.0 {
             flops / op_elapsed / 1e12
@@ -395,11 +387,11 @@ pub fn run_stress_for_precision<B: Backend>(
 
         println!(
             "[{}] t={:6.1}s/{:.0}s | size={:5} | inst={:7.2} TFLOPS",
-            spec.name, elapsed_total, config.duration_s, size, inst_tflops
+            spec.name, elapsed_total, duration_s, size, inst_tflops
         );
 
-        result.iterations += config.burst_iters as u64;
-        result.total_flops += 2u128 * (size as u128).pow(3) * config.burst_iters as u128;
+        result.iterations += burst_iters as u64;
+        result.total_flops += 2u128 * (size as u128).pow(3) * burst_iters as u128;
         result.compute_s += op_elapsed;
         result.elapsed_s = elapsed_total;
         if result.compute_s > 0.0 {
@@ -409,7 +401,7 @@ pub fn run_stress_for_precision<B: Backend>(
         let _ = backend.empty_cache();
 
         if elapsed_total >= next_validate {
-            match validate_precision(backend, &spec, config.validate_size, validation_seed) {
+            match validate_precision(backend, &spec, validate_size, validation_seed) {
                 Ok((passed, max_abs, max_rel, reason)) => {
                     let status = if passed { "OK" } else { "FAIL" };
                     println!(
@@ -427,7 +419,7 @@ pub fn run_stress_for_precision<B: Backend>(
                         }
                         break;
                     }
-                    next_validate = elapsed_total + config.validate_interval_s.max(0.0);
+                    next_validate = elapsed_total + validate_interval_s.max(0.0);
                     validation_seed = validation_seed.wrapping_add(1);
                 }
                 Err(err) => {

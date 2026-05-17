@@ -5,7 +5,7 @@ use cli_stressor_cuda_rs::parse_int_list;
 
 #[cfg(feature = "cuda")]
 use cli_stressor_cuda_rs::{
-    Backend, DeviceInfo, PrecisionKind, StressResult, StressRunConfig, parse_precision_list,
+    Backend, DeviceInfo, PrecisionKind, StressResult, parse_precision_list,
     run_stress_for_precision,
 };
 
@@ -200,16 +200,14 @@ fn main() {
         let res = run_stress_for_precision(
             &mut backend,
             spec,
-            StressRunConfig {
-                matrix_sizes: current_sizes,
-                duration_s: args.duration,
-                warmup_iters: args.warmup_iters,
-                burst_iters: args.burst_iters,
-                validate_interval_s: args.validate_interval,
-                validate_size: args.validate_size,
-                transpose_prob: args.transpose_prob,
-                base_seed: args.seed + (idx as u64) * 1000,
-            },
+            current_sizes,
+            args.duration,
+            args.warmup_iters,
+            args.burst_iters,
+            args.validate_interval,
+            args.validate_size,
+            args.transpose_prob,
+            args.seed + (idx as u64) * 1000,
         );
         if res.first_error.is_some() && res.supported {
             overall_passed = false;
