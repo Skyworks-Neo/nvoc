@@ -1,13 +1,13 @@
-use crate::conv::ConvertEnum;
-use crate::platform::{
+use super::cli_types::{
+    OutputFormat, POSSIBLE_BOOL, POSSIBLE_BOOL_OFF, POSSIBLE_BOOL_ON, ResetSettings,
+};
+use super::platform::{
     default_test_exe_path, default_vfp_csv_path, default_vfp_init_csv_path, default_vfp_log_path,
     default_vfp_temp_csv_path,
 };
-use crate::types::{
-    OutputFormat, POSSIBLE_BOOL, POSSIBLE_BOOL_OFF, POSSIBLE_BOOL_ON, ResetSettings, VfpResetDomain,
-};
 use clap::{Arg, ArgAction, Command};
 use nvapi_hi::PState;
+use nvoc_core::{ConvertEnum, VfpResetDomain};
 
 pub fn get_arguments() -> Command {
     Command::new("nvoc-auto-optimizer")

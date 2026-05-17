@@ -7,7 +7,7 @@ edition = { workspace = true }
 rust-version = { workspace = true }
 
 [dependencies]
-nvoc-auto-optimizer = { workspace = true }
+nvoc-core = { workspace = true }
 
 async-stream = { workspace = true }
 chrono = { workspace = true }

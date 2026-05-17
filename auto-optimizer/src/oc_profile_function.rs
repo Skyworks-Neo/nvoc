@@ -1,10 +1,7 @@
-use crate::autoscan_config::{FixResultConfig, VfpExportConfig};
+use super::autoscan_config::{FixResultConfig, VfpExportConfig};
 // oc_set_function
-use crate::error::Error;
-use crate::nvidia_gpu_type::{GpuType, fetch_gpu_type};
-use crate::oc_get_set_function_nvapi::{get_gpu_tdp_temp_limit, set_pstate_base_voltage};
 #[cfg(all(not(windows), not(target_os = "linux")))]
-use crate::platform::panic_windows_only;
+use super::platform::panic_windows_only;
 use csv::{ReaderBuilder, StringRecord, WriterBuilder};
 use num_traits::abs;
 use nvapi_hi::{ClockDomain, Gpu, VfPoint};
@@ -12,6 +9,9 @@ use nvapi_hi::{
     CoolerPolicy, CoolerSettings, FanCoolerId, Kilohertz, KilohertzDelta, Microvolts, Percentage,
     SensorThrottle,
 };
+use nvoc_core::Error;
+use nvoc_core::{GpuType, fetch_gpu_type};
+use nvoc_core::{get_gpu_tdp_temp_limit, set_pstate_base_voltage};
 use std::cmp::{Ordering, min};
 use std::collections::HashSet;
 use std::convert::TryFrom;

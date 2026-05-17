@@ -1,5 +1,5 @@
-use crate::error::Error;
-use crate::types::{OutputFormat, ResetSettings, VfpResetDomain};
+use super::error::Error;
+use super::types::VfpResetDomain;
 use nvapi_hi::{ClockDomain, CoolerPolicy, PState};
 use nvml_wrapper::enum_wrappers::device::PerformanceState;
 
@@ -133,28 +133,6 @@ macro_rules! enum_from_str {
             }
         }
     };
-}
-
-enum_from_str! {
-    OutputFormat => {
-        Human = "human",
-        Json = "json",
-        _ => "unknown output format",
-    }
-}
-
-enum_from_str! {
-    ResetSettings => {
-        VoltageBoost = "voltage-boost",
-        SensorLimits = "thermal",
-        PowerLimits = "power",
-        CoolerLevels = "nvapi-cooler",
-        VfpDeltas = "vfp",
-        VfpLock = "lock",
-        PStateDeltas = "pstate",
-        Overvolt = "overvolt",
-        _ => "unknown setting",
-    }
 }
 
 enum_from_str! {

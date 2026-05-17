@@ -24,6 +24,7 @@ fn main() {
 
 #[cfg(windows)]
 mod nvoc_service {
+    use super::websrv::{NVOCServiceCmd, NVOCServiceConfig, start_http_server};
     use clap::ArgMatches;
     use futures_util::StreamExt;
     use gag::Redirect;
@@ -35,7 +36,7 @@ mod nvoc_service {
         Nvml,
         enum_wrappers::device::{TemperatureSensor, TemperatureThreshold},
     };
-    use nvoc_auto_optimizer::{find_matching_vfp_point, handle_lock_vfp, reset_vfp_frequency_lock};
+    use nvoc_core::{find_matching_vfp_point, handle_lock_vfp, reset_vfp_frequency_lock};
     use std::{
         cmp::{max, min},
         env,
@@ -107,7 +108,7 @@ mod nvoc_service {
             .level(LevelFilter::Info)
             .start();
 
-        let config = Arc::new(Mutex::new(crate::websrv::NVOCServiceConfig {
+        let config = Arc::new(Mutex::new(NVOCServiceConfig {
             vfp_lock_point: 70,
             temp_limit: 60,
         }));
@@ -167,7 +168,7 @@ mod nvoc_service {
                 let cfg = http_config.clone();
                 let tx = http_tx.clone();
                 match std::panic::catch_unwind(AssertUnwindSafe(|| {
-                    crate::websrv::start_http_server(cfg, tx);
+                    start_http_server(cfg, tx);
                 })) {
                     Err(_) => error!("HTTP server thread panicked; restarting in 1 s"),
                     Ok(_) => warn!("HTTP server thread exited; restarting in 1 s"),
@@ -194,9 +195,9 @@ mod nvoc_service {
     }
 
     async fn run_service(
-        config: Arc<Mutex<crate::websrv::NVOCServiceConfig>>,
+        config: Arc<Mutex<NVOCServiceConfig>>,
         shutdown_rx: flume::Receiver<()>,
-        cmd_rx: flume::Receiver<crate::websrv::NVOCServiceCmd>,
+        cmd_rx: flume::Receiver<NVOCServiceCmd>,
     ) -> Result<()> {
         let mut stopc = shutdown_rx.into_stream().skip(1);
         let mut cmdc = cmd_rx.into_stream();

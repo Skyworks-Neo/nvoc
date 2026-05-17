@@ -1,5 +1,5 @@
 [workspace]
-members = ["auto-optimizer", "srv", "cli-stressor-cuda-rs"]
+members = ["nvoc-core", "auto-optimizer", "srv", "cli-stressor-cuda-rs"]
 resolver = "3"
 
 [workspace.package]
@@ -14,6 +14,7 @@ lto = "thin"
 codegen-units = 8
 
 [workspace.dependencies]
+nvoc-core = { path = "./nvoc-core" }
 nvoc-auto-optimizer = { path = "./auto-optimizer" }
 
 anyhow = "*"

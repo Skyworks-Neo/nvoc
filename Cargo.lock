@@ -1077,12 +1077,25 @@ dependencies = [
  "num-traits",
  "nvapi",
  "nvapi-hi",
- "nvapi-sys",
  "nvml-wrapper",
- "nvml-wrapper-sys",
- "quick-error",
+ "nvoc-core",
  "serde_json",
  "time",
+]
+
+[[package]]
+name = "nvoc-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "csv",
+ "num-traits",
+ "nvapi",
+ "nvapi-hi",
+ "nvml-wrapper",
+ "quick-error",
+ "serde_json",
 ]
 
 [[package]]
@@ -1102,7 +1115,7 @@ dependencies = [
  "nvapi-hi",
  "nvml-wrapper",
  "nvml-wrapper-sys",
- "nvoc-auto-optimizer",
+ "nvoc-core",
  "serde",
  "serde_json",
  "tiny_http",

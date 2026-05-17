@@ -5,13 +5,13 @@
 //! 等函数的入口处一次性从 clap::ArgMatches 解析，之后只传 &AutoscanConfig，
 //! 消除函数间层层透传 ArgMatches 以及散落的字符串 key 读取。
 
-use crate::error::Error;
-use crate::platform::{
+use super::platform::{
     default_test_exe_path, default_vfp_csv_path, default_vfp_init_csv_path, default_vfp_log_path,
     default_vfp_temp_csv_path,
 };
 use clap::ArgMatches;
 use nvapi_hi::ClockDomain;
+use nvoc_core::Error;
 
 // ---------------------------------------------------------------------------
 // VFP export / fix_result 配置

@@ -1,10 +1,9 @@
-use crate::basic_func::{GpuSelector, select_gpus};
-use crate::conv::ConvertEnum;
-use crate::error::Error;
-use crate::human::print_scan_separator;
-use crate::nvidia_gpu_type::{GpuType, fetch_gpu_type};
-use crate::types::NvapiLockedVoltageTarget;
-use crate::types::VfpResetDomain;
+use super::conv::{ConvertEnum, nvml_pstate_to_index, nvml_pstate_to_str};
+use super::error::Error;
+use super::gpu::{GpuSelector, get_sorted_gpus, select_gpus};
+use super::gpu_type::{GpuType, fetch_gpu_type};
+use super::nvml::{get_nvml_pstate_info, query_nvml_power_watts};
+use super::types::{NvapiLockedVoltageTarget, VfpResetDomain};
 use clap::ArgMatches;
 use num_traits::abs;
 use nvapi_hi::nvapi::{CelsiusShifted, ClockFrequencyType};
@@ -18,6 +17,12 @@ use std::iter;
 use std::str::FromStr;
 use std::thread::sleep;
 use std::time::Duration;
+
+const SCAN_SEPARATOR: &str = "----------------------------------------------------------------------------------------------------------------------------------------";
+
+fn print_scan_separator() {
+    println!("{}", SCAN_SEPARATOR);
+}
 
 pub type GpuTdpTempLimits = (
     Percentage,
@@ -573,16 +578,15 @@ pub fn set_nvapi_pstate_lock(
     first_pstate: nvml_wrapper::enum_wrappers::device::PerformanceState,
     second_pstate: nvml_wrapper::enum_wrappers::device::PerformanceState,
 ) -> Result<(String, u32, u32), Error> {
-    let pstates =
-        crate::oc_get_set_function_nvml::get_nvml_pstate_info(nvml, gpu_id).ok_or_else(|| {
-            Error::Custom(format!(
-                "Failed to query NVML P-State information for GPU {}",
-                gpu_id
-            ))
-        })?;
+    let pstates = get_nvml_pstate_info(nvml, gpu_id).ok_or_else(|| {
+        Error::Custom(format!(
+            "Failed to query NVML P-State information for GPU {}",
+            gpu_id
+        ))
+    })?;
 
-    let first_index = crate::conv::nvml_pstate_to_index(first_pstate)?;
-    let second_index = crate::conv::nvml_pstate_to_index(second_pstate)?;
+    let first_index = nvml_pstate_to_index(first_pstate)?;
+    let second_index = nvml_pstate_to_index(second_pstate)?;
     let (high_perf_pstate, low_perf_pstate, min_index, max_index) = if first_index <= second_index {
         (first_pstate, second_pstate, first_index, second_index)
     } else {
@@ -590,19 +594,19 @@ pub fn set_nvapi_pstate_lock(
     };
 
     let range_label = if min_index == max_index {
-        crate::conv::nvml_pstate_to_str(high_perf_pstate).to_string()
+        nvml_pstate_to_str(high_perf_pstate).to_string()
     } else {
         format!(
             "{}-{}",
-            crate::conv::nvml_pstate_to_str(high_perf_pstate),
-            crate::conv::nvml_pstate_to_str(low_perf_pstate)
+            nvml_pstate_to_str(high_perf_pstate),
+            nvml_pstate_to_str(low_perf_pstate)
         )
     };
 
     let supported_pstates = pstates
         .iter()
         .map(|(reported_pstate, _, _, _, _)| {
-            crate::conv::nvml_pstate_to_str(*reported_pstate)
+            nvml_pstate_to_str(*reported_pstate)
                 .trim_start_matches('P')
                 .to_string()
         })
@@ -614,7 +618,7 @@ pub fn set_nvapi_pstate_lock(
         .ok_or_else(|| {
             Error::Custom(format!(
                 "{} is not reported by NVML for GPU {}. Supported NVML P-States: {}",
-                crate::conv::nvml_pstate_to_str(high_perf_pstate),
+                nvml_pstate_to_str(high_perf_pstate),
                 gpu_id,
                 supported_pstates.join(",")
             ))
@@ -625,7 +629,7 @@ pub fn set_nvapi_pstate_lock(
         .ok_or_else(|| {
             Error::Custom(format!(
                 "{} is not reported by NVML for GPU {}. Supported NVML P-States: {}",
-                crate::conv::nvml_pstate_to_str(low_perf_pstate),
+                nvml_pstate_to_str(low_perf_pstate),
                 gpu_id,
                 supported_pstates.join(",")
             ))
@@ -643,8 +647,8 @@ pub fn set_nvapi_pstate_lock(
         })
         .map(|(reported_pstate, _, _, _, _)| {
             (
-                crate::conv::nvml_pstate_to_index(*reported_pstate),
-                crate::conv::nvml_pstate_to_str(*reported_pstate),
+                nvml_pstate_to_index(*reported_pstate),
+                nvml_pstate_to_str(*reported_pstate),
             )
         })
         .collect::<Vec<_>>();
@@ -1298,7 +1302,7 @@ pub fn get_gpu_tdp_temp_limit(arg_matches: ArgMatches) -> Result<GpuTdpTempLimit
     };
 
     let selector = GpuSelector::from_clap(arg_matches.get_many::<String>("gpu"));
-    let gpu_list = crate::basic_func::get_sorted_gpus()?;
+    let gpu_list = get_sorted_gpus()?;
     let gpus = select_gpus(&gpu_list, &selector)?;
 
     let nvml = nvml_wrapper::Nvml::init().ok();
@@ -1306,9 +1310,10 @@ pub fn get_gpu_tdp_temp_limit(arg_matches: ArgMatches) -> Result<GpuTdpTempLimit
         let info = gpu.info()?;
 
         // 使用 NVAPI GPU ID 直接查询（公式：GPU_ID = PCI_Bus × 256）
-        if let Some((min_w, current_w, max_w)) = nvml.as_ref().and_then(|n| {
-            crate::oc_get_set_function_nvml::query_nvml_power_watts(n, info.id as u32)
-        }) {
+        if let Some((min_w, current_w, max_w)) = nvml
+            .as_ref()
+            .and_then(|n| query_nvml_power_watts(n, info.id as u32))
+        {
             min_tdp = min_w;
             default_tdp = current_w;
             max_tdp = max_w;
@@ -1381,7 +1386,7 @@ pub fn find_matching_vfp_point(
 
 pub fn voltage_frequency_check(arg_matches: ArgMatches, point: usize) -> Result<bool, Error> {
     let selector = GpuSelector::from_clap(arg_matches.get_many::<String>("gpu"));
-    let gpu_list = crate::basic_func::get_sorted_gpus()?;
+    let gpu_list = get_sorted_gpus()?;
     let gpus = select_gpus(&gpu_list, &selector)?;
     let mut precise_flag = false;
 
