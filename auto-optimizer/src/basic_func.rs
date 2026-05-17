@@ -907,7 +907,7 @@ fn handle_nvapi(gpus: &[&Gpu], matches: &ArgMatches) -> Result<(), Error> {
     }
 
     if matches.get_flag("test_limit") {
-        nvoc_core::handle_test_voltage_limits(gpus, matches)?;
+        nvoc_core::handle_test_voltage_limits(gpus, matches, human::print_scan_separator)?;
     }
 
     Ok(())

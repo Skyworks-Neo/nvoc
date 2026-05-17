@@ -205,7 +205,11 @@ mod pressure_runner {
                             println!("Processing in-test v-f check #{}...", in_test_check_number);
 
                             if !cfg.is_legacy_global_offset {
-                                match voltage_frequency_check(matches.clone(), cfg.point) {
+                                match voltage_frequency_check(
+                                    matches.clone(),
+                                    cfg.point,
+                                    print_scan_separator,
+                                ) {
                                     Ok(true) => {}
                                     Ok(false) => {
                                         println!("Considering trig'd thrm/pwr capping!!!");
@@ -453,7 +457,7 @@ fn apply_short_phase_success_step(
 fn pre_load_vf_recheck(matches: &ArgMatches, point: usize) -> Result<(), Error> {
     println!("Waiting for pre-load volt-freq recheck");
     sleep(Duration::from_secs(1));
-    voltage_frequency_check(matches.clone(), point)?;
+    voltage_frequency_check(matches.clone(), point, print_scan_separator)?;
     Ok(())
 }
 
@@ -1196,7 +1200,7 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<&Gpu>, matches: &ArgMatches) -> Result<(),
 
         None => {
             println!("Voltage scan initialized because values were missing in the log.");
-            let (lvp, uvp) = handle_test_voltage_limits(gpus, matches)?;
+            let (lvp, uvp) = handle_test_voltage_limits(gpus, matches, print_scan_separator)?;
 
             for gpu in gpus {
                 let minimum_voltage = get_voltage_by_point(gpu, lvp)?;
@@ -1364,7 +1368,8 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<&Gpu>, matches: &ArgMatches) -> Result<(),
 
         writeln!(l)?;
         println!("Waiting for default volt-freq self-check");
-        voltage_frequency_check(matches.clone(), point).expect("Failed to read v-f info");
+        voltage_frequency_check(matches.clone(), point, print_scan_separator)
+            .expect("Failed to read v-f info");
         let mut v;
         let mut default_frequency;
         let mut prev_endpoint_delta: Option<i32> = None;

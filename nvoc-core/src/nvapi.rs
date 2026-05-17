@@ -18,12 +18,6 @@ use std::str::FromStr;
 use std::thread::sleep;
 use std::time::Duration;
 
-const SCAN_SEPARATOR: &str = "----------------------------------------------------------------------------------------------------------------------------------------";
-
-fn print_scan_separator() {
-    println!("{}", SCAN_SEPARATOR);
-}
-
 pub type GpuTdpTempLimits = (
     Percentage,
     Percentage,
@@ -1096,6 +1090,7 @@ pub fn handle_pointwiseoc(gpus: &[&Gpu], matches: &ArgMatches) -> Result<(), Err
 pub fn handle_test_voltage_limits(
     gpus: &[&Gpu],
     matches: &ArgMatches,
+    mut print_separator: impl FnMut(),
 ) -> Result<(usize, usize), Error> {
     let mut upper_init_point: usize = 70;
     let mut lower_init_point: usize = 60;
@@ -1226,14 +1221,14 @@ pub fn handle_test_voltage_limits(
 
                 if revert_scan_flag == 0 {
                     upper_target_point = current_test_point - 1;
-                    print_scan_separator();
+                    print_separator();
                     println!(
                         "Upper voltage limit seems to be:{}mV @ point {}",
                         upper_voltage_old.0 as i32 / 1000,
                         upper_target_point - margin_threshold_check
                     );
                     println!("Reverting Scanner direction...");
-                    print_scan_separator();
+                    print_separator();
                     revert_scan_flag = 1;
                     flat_curve_modifier_flag = 1;
                     for gpu in gpus {
@@ -1242,7 +1237,7 @@ pub fn handle_test_voltage_limits(
                     current_test_point = lower_init_point;
                 } else {
                     let lower_target_point = current_test_point + 1;
-                    print_scan_separator();
+                    print_separator();
                     println!(
                         "Upper voltage limit seems to be:{}mV @ point {}",
                         upper_voltage_old.0 as i32 / 1000,
@@ -1253,7 +1248,7 @@ pub fn handle_test_voltage_limits(
                         lower_voltage_old.0 as i32 / 1000,
                         lower_target_point + margin_threshold_check
                     );
-                    print_scan_separator();
+                    print_separator();
                     break lower_target_point;
                 }
             }
@@ -1268,7 +1263,10 @@ pub fn handle_test_voltage_limits(
     ))
 }
 
-pub fn get_gpu_tdp_temp_limit(arg_matches: ArgMatches) -> Result<GpuTdpTempLimits, Error> {
+pub fn get_gpu_tdp_temp_limit(
+    arg_matches: ArgMatches,
+    mut print_separator: impl FnMut(),
+) -> Result<GpuTdpTempLimits, Error> {
     let mut min_tdp = 16383.0_f32;
     let mut max_tdp = 32767.0_f32;
     let mut default_tdp = 65535.0_f32;
@@ -1329,7 +1327,7 @@ pub fn get_gpu_tdp_temp_limit(arg_matches: ArgMatches) -> Result<GpuTdpTempLimit
             max_tdp_percentage = limit.range.max;
             min_tdp_percentage = limit.range.min;
             default_tdp_percentage = limit.default;
-            print_scan_separator();
+            print_separator();
             println!("Power Limit: {} ({} default)", limit.range, limit.default);
             println!(
                 "Min TDP: {:.2}W ({}), Default TDP: {:.2}W ({}), Max TDP: {:.2}W ({})",
@@ -1340,7 +1338,7 @@ pub fn get_gpu_tdp_temp_limit(arg_matches: ArgMatches) -> Result<GpuTdpTempLimit
                 max_tdp,
                 max_tdp_percentage
             );
-            print_scan_separator();
+            print_separator();
         }
 
         //temp limit readout
@@ -1384,7 +1382,11 @@ pub fn find_matching_vfp_point(
     // Find closest voltage
 }
 
-pub fn voltage_frequency_check(arg_matches: ArgMatches, point: usize) -> Result<bool, Error> {
+pub fn voltage_frequency_check(
+    arg_matches: ArgMatches,
+    point: usize,
+    mut print_separator: impl FnMut(),
+) -> Result<bool, Error> {
     let selector = GpuSelector::from_clap(arg_matches.get_many::<String>("gpu"));
     let gpu_list = get_sorted_gpus()?;
     let gpus = select_gpus(&gpu_list, &selector)?;
@@ -1394,7 +1396,7 @@ pub fn voltage_frequency_check(arg_matches: ArgMatches, point: usize) -> Result<
         let status = gpu.status()?;
         let readout_v = status.voltage.ok_or_else(|| Error::Custom("GPU did not report voltage in status; check if the GPU supports voltage monitoring".into()))?;
         let readout_f = status.clone().clocks;
-        print_scan_separator();
+        print_separator();
         println!("readout volt: {:?}, freq: {:?}", readout_v, readout_f);
 
         let current_point = status.clone().vfp.ok_or(Error::VfpUnsupported)?.graphics;
@@ -1432,7 +1434,7 @@ pub fn voltage_frequency_check(arg_matches: ArgMatches, point: usize) -> Result<
             eprintln!("No matching VfpPoint found");
             precise_flag = false;
         }
-        print_scan_separator();
+        print_separator();
     }
     Ok(precise_flag)
 }

@@ -1,4 +1,5 @@
 use super::autoscan_config::{FixResultConfig, VfpExportConfig};
+use super::human::print_scan_separator;
 // oc_set_function
 #[cfg(all(not(windows), not(target_os = "linux")))]
 use super::platform::panic_windows_only;
@@ -1325,7 +1326,7 @@ pub fn apply_autoscan_profile(
     gpu.set_cooler_levels(settings)?;
     println!("Successfully set Cooler1 and Cooler2 to {}%.", cooler_level);
 
-    match get_gpu_tdp_temp_limit(matches.clone()) {
+    match get_gpu_tdp_temp_limit(matches.clone(), print_scan_separator) {
         Ok((
             _min_tdp_percent,
             _default_tdp_percent,

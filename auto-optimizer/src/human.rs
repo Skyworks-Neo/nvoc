@@ -4,7 +4,7 @@ use nvoc_core::query_nvml_power_watts;
 use std::iter;
 
 const HEADER_LEN: usize = 20;
-pub const SCAN_SEPARATOR: &str =
+const SCAN_SEPARATOR: &str =
     "================================================================================";
 
 pub fn print_scan_separator() {
