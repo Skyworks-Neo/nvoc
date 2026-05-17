@@ -24,7 +24,7 @@ fn main() {
 
 #[cfg(windows)]
 mod nvoc_service {
-    use clap;
+    use clap::ArgMatches;
     use futures_util::StreamExt;
     use gag::Redirect;
     use log::{LevelFilter, error, info, warn};
@@ -100,7 +100,7 @@ mod nvoc_service {
         let _stderr_redirect = Redirect::stderr(log_file).expect("Failed to redirect stderr");
 
         // 2. 初始化 log2（提供轮转和日志级别）
-        let _logger = log2::open(log_path_for_log2.to_str().unwrap())
+        log2::open(log_path_for_log2.to_str().unwrap())
             .size(100 * 1024 * 1024) // 100MB
             .rotate(2) // 保留1个备份
             // .tee(true)                  // 同时输出到终端
@@ -243,7 +243,7 @@ mod nvoc_service {
                                     }
                                     Some(g) => {
                                         match g.inner().set_pstates(
-                                            [(PState::P0, ClockDomain::Graphics, KilohertzDelta(freq_val as i32))]
+                                            [(PState::P0, ClockDomain::Graphics, KilohertzDelta(freq_val))]
                                                 .iter()
                                                 .cloned(),
                                         ) {
@@ -344,7 +344,7 @@ mod nvoc_service {
                                 }
                             }
                         }
-                        let pseudo_matches = clap::ArgMatches::default();
+                        let pseudo_matches = ArgMatches::default();
 
                         let current = gpu_dynamic_lock_point[idx];
                         if temperature >= temperature_softwall {

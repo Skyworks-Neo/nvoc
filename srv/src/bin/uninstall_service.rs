@@ -36,13 +36,14 @@ fn main() -> windows_service::Result<()> {
     let start = Instant::now();
     let timeout = Duration::from_secs(5);
     while start.elapsed() < timeout {
-        if let Err(windows_service::Error::Winapi(e)) =
-            service_manager.open_service("nvoc_service", ServiceAccess::QUERY_STATUS)
-        {
-            if e.raw_os_error() == Some(ERROR_SERVICE_DOES_NOT_EXIST as i32) {
+        match service_manager.open_service("nvoc_service", ServiceAccess::QUERY_STATUS) {
+            Err(windows_service::Error::Winapi(e))
+                if e.raw_os_error() == Some(ERROR_SERVICE_DOES_NOT_EXIST as i32) =>
+            {
                 println!("nvoc_service is deleted.");
                 return Ok(());
             }
+            _ => {}
         }
         sleep(Duration::from_secs(1));
     }

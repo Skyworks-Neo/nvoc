@@ -78,7 +78,7 @@ jobs:
       - name: Rustfmt
         run: cargo fmt --package nvoc-auto-optimizer -- --check
       - name: Clippy
-        run: cargo clippy --package nvoc-auto-optimizer --all-targets --all-features
+        run: cargo clippy --package nvoc-auto-optimizer --all-targets --all-features -- -D warnings
       - name: Build
         run: cargo build --package nvoc-auto-optimizer --all-targets --all-features
 
@@ -97,7 +97,7 @@ jobs:
       - name: Rustfmt
         run: cargo fmt --package nvoc-srv -- --check
       - name: Clippy
-        run: cargo clippy --package nvoc-srv --all-targets --all-features
+        run: cargo clippy --package nvoc-srv --all-targets --all-features -- -D warnings
       - name: Build
         run: cargo build --package nvoc-srv --all-targets --all-features
 
