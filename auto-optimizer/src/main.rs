@@ -1,4 +1,8 @@
-#![allow(unused_crate_dependencies)]
+#![allow(
+    unused_crate_dependencies,
+    clippy::type_complexity,
+    clippy::too_many_arguments
+)]
 mod arg_help;
 mod autoscan_config;
 mod basic_func;
