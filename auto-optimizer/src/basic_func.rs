@@ -655,10 +655,7 @@ pub fn handle_reset(gpus: &[&Gpu], matches: &ArgMatches) -> Result<(), Error> {
         explicit: bool,
     ) -> Result<(), Error> {
         let reset_error = |err| Error::Custom(format!("Reset {:?} failed: {}", setting, err));
-        match (
-            allowable_result(r).map_err(|e| reset_error(e.into()))?,
-            explicit,
-        ) {
+        match (allowable_result(r).map_err(reset_error)?, explicit) {
             (Err(e), true) => Err(reset_error(e)),
             _ => Ok(()),
         }
