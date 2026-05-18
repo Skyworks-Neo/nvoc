@@ -25,11 +25,20 @@ fn collect_long_flags(cmd: &clap::Command, out: &mut Vec<String>) {
 /// Because the list of known flags is derived directly from the clap
 /// [`Command`] object, it stays in sync automatically whenever new arguments
 /// are added to `arg_help.rs`.
-pub fn check_single_dash_args(cmd: &clap::Command) -> Result<(), Box<dyn std::error::Error>> {
+#[doc(hidden)]
+pub fn check_single_dash_args_from<I, S>(
+    cmd: &clap::Command,
+    args: I,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
     let mut known_longs: Vec<String> = Vec::new();
     collect_long_flags(cmd, &mut known_longs);
 
-    for arg in std::env::args().skip(1) {
+    for arg in args {
+        let arg = arg.as_ref();
         // Only interested in single-dash tokens that are NOT `--` or `-`
         if !arg.starts_with('-') || arg.starts_with("--") || arg == "-" {
             continue;
@@ -43,6 +52,10 @@ pub fn check_single_dash_args(cmd: &clap::Command) -> Result<(), Box<dyn std::er
         }
     }
     Ok(())
+}
+
+pub fn check_single_dash_args(cmd: &clap::Command) -> Result<(), Box<dyn std::error::Error>> {
+    check_single_dash_args_from(cmd, std::env::args().skip(1))
 }
 
 type JsonError = std::convert::Infallible;

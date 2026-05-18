@@ -1,11 +1,16 @@
+use clap::{Arg, Command};
+use nvapi_hi::{ClockDomain, CoolerPolicy, Kilohertz, Microvolts, PState, VfpPoint};
 use nvml_wrapper::enum_wrappers::device::PerformanceState;
+use nvml_wrapper::enums::device::FanControlPolicy;
 use nvoc_core::{
-    ConvertEnum, GpuSelector, GpuType, VfpResetDomain, detect_gpu_type, nvml_pstate_to_index,
-    nvml_pstate_to_str, parse_nvml_pstate, select_gpu_ids, try_parse_nvml_pstate,
+    ConvertEnum, GpuSelector, GpuType, VfpResetDomain, check_single_dash_args_from,
+    detect_gpu_type, find_matching_vfp_point, nvml_pstate_to_index, nvml_pstate_to_str,
+    parse_nvml_fan_control_policy, parse_nvml_pstate, select_gpu_ids, try_parse_nvml_pstate,
 };
+use std::collections::BTreeMap;
 
 #[test]
-fn nvml_pstate_parsing_accepts_common_forms() {
+fn pstate_parse_forms() {
     assert_eq!(try_parse_nvml_pstate("P0").unwrap(), PerformanceState::Zero);
     assert_eq!(
         try_parse_nvml_pstate("p15").unwrap(),
@@ -21,7 +26,7 @@ fn nvml_pstate_parsing_accepts_common_forms() {
 }
 
 #[test]
-fn nvml_pstate_formatting_round_trips_known_states() {
+fn pstate_format_roundtrip() {
     for index in 0..=15 {
         let raw = format!("P{index}");
         let pstate = parse_nvml_pstate(&raw);
@@ -35,7 +40,7 @@ fn nvml_pstate_formatting_round_trips_known_states() {
 }
 
 #[test]
-fn vfp_reset_domain_convert_enum_matches_cli_values() {
+fn vfp_reset_domain_cli_values() {
     assert_eq!(
         VfpResetDomain::from_str("all").unwrap(),
         VfpResetDomain::All
@@ -57,7 +62,49 @@ fn vfp_reset_domain_convert_enum_matches_cli_values() {
 }
 
 #[test]
-fn gpu_id_selection_supports_indices_and_nvapi_bus_ids() {
+fn convert_enum_values() {
+    assert_eq!(PState::from_str("P0").unwrap(), PState::P0);
+    assert_eq!(PState::P15.to_str(), "P15");
+    assert!(PState::from_str("P16").is_err());
+
+    assert_eq!(
+        ClockDomain::from_str("graphics").unwrap(),
+        ClockDomain::Graphics
+    );
+    assert_eq!(ClockDomain::Memory.to_str(), "memory");
+    assert!(ClockDomain::from_str("core").is_err());
+
+    assert_eq!(
+        CoolerPolicy::from_str("manual").unwrap(),
+        CoolerPolicy::Manual
+    );
+    assert_eq!(CoolerPolicy::TemperatureContinuous.to_str(), "continuous");
+    assert!(CoolerPolicy::from_str("automatic").is_err());
+}
+
+#[test]
+fn fan_policy_aliases() {
+    assert_eq!(
+        parse_nvml_fan_control_policy("continuous").unwrap(),
+        FanControlPolicy::TemperatureContinousSw
+    );
+    assert_eq!(
+        parse_nvml_fan_control_policy("auto").unwrap(),
+        FanControlPolicy::TemperatureContinousSw
+    );
+    assert_eq!(
+        parse_nvml_fan_control_policy("manual").unwrap(),
+        FanControlPolicy::Manual
+    );
+
+    let err = parse_nvml_fan_control_policy("default")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("Invalid NVML fan policy"));
+}
+
+#[test]
+fn gpu_id_selection_ok() {
     let gpu_ids = [0x100, 0x300, 0x900];
 
     assert_eq!(
@@ -86,7 +133,27 @@ fn gpu_id_selection_supports_indices_and_nvapi_bus_ids() {
 }
 
 #[test]
-fn gpu_type_detection_classifies_consumer_and_datacenter_generations() {
+fn gpu_id_selection_rejects_bad_specs() {
+    let gpu_ids = [0x100, 0x300];
+
+    let err = select_gpu_ids(&gpu_ids, &GpuSelector::from_specs(["x".to_string()]))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("expected a decimal or hex"));
+
+    let err = select_gpu_ids(&gpu_ids, &GpuSelector::from_specs(["2".to_string()]))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("no GPU matches --gpu 2"));
+
+    let err = select_gpu_ids(&gpu_ids, &GpuSelector::from_specs(["0x999".to_string()]))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("no GPU matches --gpu 2457"));
+}
+
+#[test]
+fn gpu_type_detection() {
     let cases = [
         (
             "NVIDIA GeForce RTX 5090 Laptop GPU GB203",
@@ -117,7 +184,7 @@ fn gpu_type_detection_classifies_consumer_and_datacenter_generations() {
 }
 
 #[test]
-fn gpu_type_parameter_helpers_cover_special_cases() {
+fn gpu_type_params() {
     let mobile_50 = GpuType::Mobile50Series;
     assert!(mobile_50.oc_params().is_50_series);
     assert_eq!(mobile_50.oc_params().testing_step, 5);
@@ -134,4 +201,59 @@ fn gpu_type_parameter_helpers_cover_special_cases() {
     assert!(unknown.is_legacy_voltage());
     assert_eq!(unknown.minimum_freq_step_khz(), 15000);
     assert_eq!(unknown.vfp_point_range(), 126);
+}
+
+#[test]
+fn gpu_type_display() {
+    assert_eq!(
+        GpuType::Desktop40Series.to_string(),
+        "40 series desktop detected"
+    );
+    assert_eq!(GpuType::Unknown.to_string(), "Unknown");
+}
+
+#[test]
+fn vfp_point_nearest_voltage() {
+    let table = BTreeMap::from([
+        (
+            7,
+            VfpPoint {
+                default_frequency: Kilohertz(1_800_000),
+                frequency: Kilohertz(1_800_000),
+                voltage: Microvolts(850_000),
+            },
+        ),
+        (
+            8,
+            VfpPoint {
+                default_frequency: Kilohertz(1_860_000),
+                frequency: Kilohertz(1_860_000),
+                voltage: Microvolts(900_000),
+            },
+        ),
+    ]);
+
+    let (index, point) = find_matching_vfp_point(&table, Microvolts(880_000)).unwrap();
+    assert_eq!(*index, 8);
+    assert_eq!(point.voltage, Microvolts(900_000));
+    assert!(find_matching_vfp_point(&BTreeMap::new(), Microvolts(880_000)).is_none());
+}
+
+#[test]
+fn single_dash_typos() {
+    let cmd = Command::new("nvoc")
+        .arg(Arg::new("gpu").long("gpu"))
+        .subcommand(Command::new("set").arg(Arg::new("output-format").long("output-format")));
+
+    let err = check_single_dash_args_from(&cmd, ["-gpu=0"])
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("did you mean --gpu=0?"));
+
+    let err = check_single_dash_args_from(&cmd, ["-output-format=json"])
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("did you mean --output-format=json?"));
+
+    check_single_dash_args_from(&cmd, ["--gpu=0", "-x", "-"]).unwrap();
 }

@@ -9,7 +9,7 @@ mod types;
 pub use conv::{
     ConvertEnum, nvml_pstate_to_index, nvml_pstate_to_str, parse_nvml_pstate, try_parse_nvml_pstate,
 };
-pub use error::{Error, check_single_dash_args};
+pub use error::{Error, check_single_dash_args, check_single_dash_args_from};
 pub use gpu::{
     GpuSelector, get_sorted_gpu_ids_nvml, get_sorted_gpus, select_gpu_ids, select_gpus, single_gpu,
 };
