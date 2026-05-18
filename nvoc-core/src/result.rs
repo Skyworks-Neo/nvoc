@@ -32,6 +32,8 @@ pub enum OperationKind {
     ProbeVoltageLimits,
     CheckVoltageFrequency,
     SetLegacyClocks,
+    SetNvapiPstateLock,
+    SetNvmlPstateLock,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

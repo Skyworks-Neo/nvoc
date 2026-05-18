@@ -9,7 +9,7 @@ keywords = ["nvidia", "gpu", "nvapi", "nvml", "overclock"]
 license = "Apache-2.0"
 
 [dependencies]
-nvapi-hi = { version = "0.2.0", default-features = false, git = "https://github.com/arcnmx/nvapi-rs", branch = "v0.2.x" }
+nvapi-hi = { workspace = true }
 nvml-wrapper = { workspace = true }
 quick-error = { workspace = true }
 

@@ -407,12 +407,14 @@ impl GpuOperation for QueryFanInfo {
         let count = low_nvml::get_nvml_num_fans(nvml, target.id.0).ok_or_else(|| {
             Error::Custom(format!("failed to query fan count for GPU {}", target.id.0))
         })?;
-        let (min_speed, max_speed) =
-            low_nvml::get_nvml_min_max_fan_speed(nvml, target.id.0).unwrap_or((0, 0));
+        let (min_speed, max_speed) = match low_nvml::get_nvml_min_max_fan_speed(nvml, target.id.0) {
+            Some((min, max)) => (Some(min), Some(max)),
+            None => (None, None),
+        };
         Ok(FanInfo {
             count,
-            min_speed: Some(min_speed),
-            max_speed: Some(max_speed),
+            min_speed,
+            max_speed,
         })
     }
 }
@@ -532,7 +534,7 @@ impl GpuOperation for SetPstateClockOffset {
 pub struct SetCoolerLevels {
     pub policy: CoolerPolicy,
     pub level: u32,
-    pub target: low_nvapi::CoolerTarget,
+    pub cooler_target: low_nvapi::CoolerTarget,
 }
 
 impl GpuOperation for SetCoolerLevels {
@@ -543,7 +545,7 @@ impl GpuOperation for SetCoolerLevels {
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
-        low_nvapi::set_cooler_levels(&[target.nvapi()?], self.policy, self.level, self.target)?;
+        low_nvapi::set_cooler_levels(&[target.nvapi()?], self.policy, self.level, self.cooler_target)?;
         Ok(AppliedValue {
             requested: self.level,
             applied: self.level,
@@ -606,7 +608,7 @@ impl GpuOperation for ResetVfpFrequencyLock {
 
 #[derive(Clone, Copy, Debug)]
 pub struct SetVfpVoltageLock {
-    pub target: NvapiLockedVoltageTarget,
+    pub voltage_target: NvapiLockedVoltageTarget,
     pub feedback: bool,
 }
 
@@ -618,7 +620,7 @@ impl GpuOperation for SetVfpVoltageLock {
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
-        let request = match self.target {
+        let request = match self.voltage_target {
             NvapiLockedVoltageTarget::Point(point) => {
                 low_nvapi::VfpLockRequest::VoltagePoint(point)
             }
@@ -776,7 +778,7 @@ impl GpuOperation for SetNvapiPstateLock {
     type Output = (String, u32, u32);
 
     fn kind(&self) -> OperationKind {
-        OperationKind::SetVfpFrequencyLock
+        OperationKind::SetNvapiPstateLock
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
@@ -800,7 +802,7 @@ impl GpuOperation for SetNvmlPstateLock {
     type Output = (String, u32, u32);
 
     fn kind(&self) -> OperationKind {
-        OperationKind::SetLockedClocks
+        OperationKind::SetNvmlPstateLock
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {

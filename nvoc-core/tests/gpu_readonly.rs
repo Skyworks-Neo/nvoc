@@ -388,7 +388,7 @@ fn nvapi_tdp_temp_ok() {
 
 #[test]
 #[ignore]
-fn nvapi_tdp_temp_bad_gpu() {
+fn nvapi_tdp_temp_empty_slice() {
     assert!(get_gpu_tdp_temp_limit(&[], || {}).is_ok());
 }
 
