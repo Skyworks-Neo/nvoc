@@ -136,10 +136,10 @@ fn discovery_nvml_ids() {
 
     for id in ids {
         assert_eq!(id % 256, 0, "NVML ids should use NVAPI PCI bus encoding");
-        if let Some(truth) = truth_for_gpu(id) {
-            if let Some(bus) = truth.get("pci_bus").and_then(Value::as_u64) {
-                assert_eq!(id / 256, bus as u32);
-            }
+        if let Some(truth) = truth_for_gpu(id)
+            && let Some(bus) = truth.get("pci_bus").and_then(Value::as_u64)
+        {
+            assert_eq!(id / 256, bus as u32);
         }
     }
 }
@@ -321,12 +321,11 @@ fn nvml_fans_ok() {
         assert!(max <= 100);
     }
 
-    if let Some(count) = get_nvml_num_fans(&nvml, gpu_id) {
-        if let Some(truth) = truth_for_gpu(gpu_id)
-            && let Some(expected) = truth.pointer("/nvml/fan_count").and_then(Value::as_u64)
-        {
-            assert_eq!(count as u64, expected);
-        }
+    if let Some(count) = get_nvml_num_fans(&nvml, gpu_id)
+        && let Some(truth) = truth_for_gpu(gpu_id)
+        && let Some(expected) = truth.pointer("/nvml/fan_count").and_then(Value::as_u64)
+    {
+        assert_eq!(count as u64, expected);
     }
 }
 
