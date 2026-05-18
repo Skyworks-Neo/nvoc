@@ -1,8 +1,13 @@
+use clap::{Arg, Command};
+use nvapi_hi::{ClockDomain, CoolerPolicy, Kilohertz, Microvolts, PState, VfpPoint};
 use nvml_wrapper::enum_wrappers::device::PerformanceState;
+use nvml_wrapper::enums::device::FanControlPolicy;
 use nvoc_core::{
-    ConvertEnum, GpuSelector, GpuType, VfpResetDomain, detect_gpu_type, nvml_pstate_to_index,
-    nvml_pstate_to_str, parse_nvml_pstate, select_gpu_ids, try_parse_nvml_pstate,
+    ConvertEnum, GpuSelector, GpuType, VfpResetDomain, check_single_dash_args_from,
+    detect_gpu_type, find_matching_vfp_point, nvml_pstate_to_index, nvml_pstate_to_str,
+    parse_nvml_fan_control_policy, parse_nvml_pstate, select_gpu_ids, try_parse_nvml_pstate,
 };
+use std::collections::BTreeMap;
 
 #[test]
 fn nvml_pstate_parsing_accepts_common_forms() {
@@ -57,6 +62,48 @@ fn vfp_reset_domain_convert_enum_matches_cli_values() {
 }
 
 #[test]
+fn convert_enum_covers_clock_pstate_and_cooler_values() {
+    assert_eq!(PState::from_str("P0").unwrap(), PState::P0);
+    assert_eq!(PState::P15.to_str(), "P15");
+    assert!(PState::from_str("P16").is_err());
+
+    assert_eq!(
+        ClockDomain::from_str("graphics").unwrap(),
+        ClockDomain::Graphics
+    );
+    assert_eq!(ClockDomain::Memory.to_str(), "memory");
+    assert!(ClockDomain::from_str("core").is_err());
+
+    assert_eq!(
+        CoolerPolicy::from_str("manual").unwrap(),
+        CoolerPolicy::Manual
+    );
+    assert_eq!(CoolerPolicy::TemperatureContinuous.to_str(), "continuous");
+    assert!(CoolerPolicy::from_str("automatic").is_err());
+}
+
+#[test]
+fn nvml_fan_control_policy_parser_accepts_cli_aliases() {
+    assert_eq!(
+        parse_nvml_fan_control_policy("continuous").unwrap(),
+        FanControlPolicy::TemperatureContinousSw
+    );
+    assert_eq!(
+        parse_nvml_fan_control_policy("auto").unwrap(),
+        FanControlPolicy::TemperatureContinousSw
+    );
+    assert_eq!(
+        parse_nvml_fan_control_policy("manual").unwrap(),
+        FanControlPolicy::Manual
+    );
+
+    let err = parse_nvml_fan_control_policy("default")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("Invalid NVML fan policy"));
+}
+
+#[test]
 fn gpu_id_selection_supports_indices_and_nvapi_bus_ids() {
     let gpu_ids = [0x100, 0x300, 0x900];
 
@@ -83,6 +130,26 @@ fn gpu_id_selection_supports_indices_and_nvapi_bus_ids() {
     assert!(err.contains("did you mean --gpu=0?"));
 
     assert!(select_gpu_ids(&[], &GpuSelector::all()).is_err());
+}
+
+#[test]
+fn gpu_id_selection_rejects_invalid_and_missing_specs() {
+    let gpu_ids = [0x100, 0x300];
+
+    let err = select_gpu_ids(&gpu_ids, &GpuSelector::from_specs(["x".to_string()]))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("expected a decimal or hex"));
+
+    let err = select_gpu_ids(&gpu_ids, &GpuSelector::from_specs(["2".to_string()]))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("no GPU matches --gpu 2"));
+
+    let err = select_gpu_ids(&gpu_ids, &GpuSelector::from_specs(["0x999".to_string()]))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("no GPU matches --gpu 2457"));
 }
 
 #[test]
@@ -134,4 +201,59 @@ fn gpu_type_parameter_helpers_cover_special_cases() {
     assert!(unknown.is_legacy_voltage());
     assert_eq!(unknown.minimum_freq_step_khz(), 15000);
     assert_eq!(unknown.vfp_point_range(), 126);
+}
+
+#[test]
+fn gpu_type_display_is_stable_for_known_and_unknown_types() {
+    assert_eq!(
+        GpuType::Desktop40Series.to_string(),
+        "40 series desktop detected"
+    );
+    assert_eq!(GpuType::Unknown.to_string(), "Unknown");
+}
+
+#[test]
+fn find_matching_vfp_point_returns_nearest_voltage() {
+    let table = BTreeMap::from([
+        (
+            7,
+            VfpPoint {
+                default_frequency: Kilohertz(1_800_000),
+                frequency: Kilohertz(1_800_000),
+                voltage: Microvolts(850_000),
+            },
+        ),
+        (
+            8,
+            VfpPoint {
+                default_frequency: Kilohertz(1_860_000),
+                frequency: Kilohertz(1_860_000),
+                voltage: Microvolts(900_000),
+            },
+        ),
+    ]);
+
+    let (index, point) = find_matching_vfp_point(&table, Microvolts(880_000)).unwrap();
+    assert_eq!(*index, 8);
+    assert_eq!(point.voltage, Microvolts(900_000));
+    assert!(find_matching_vfp_point(&BTreeMap::new(), Microvolts(880_000)).is_none());
+}
+
+#[test]
+fn single_dash_arg_check_reports_known_long_option_typos() {
+    let cmd = Command::new("nvoc")
+        .arg(Arg::new("gpu").long("gpu"))
+        .subcommand(Command::new("set").arg(Arg::new("output-format").long("output-format")));
+
+    let err = check_single_dash_args_from(&cmd, ["-gpu=0"])
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("did you mean --gpu=0?"));
+
+    let err = check_single_dash_args_from(&cmd, ["-output-format=json"])
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("did you mean --output-format=json?"));
+
+    check_single_dash_args_from(&cmd, ["--gpu=0", "-x", "-"]).unwrap();
 }
