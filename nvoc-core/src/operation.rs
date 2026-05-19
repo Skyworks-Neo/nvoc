@@ -545,7 +545,12 @@ impl GpuOperation for SetCoolerLevels {
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
-        low_nvapi::set_cooler_levels(&[target.nvapi()?], self.policy, self.level, self.cooler_target)?;
+        low_nvapi::set_cooler_levels(
+            &[target.nvapi()?],
+            self.policy,
+            self.level,
+            self.cooler_target,
+        )?;
         Ok(AppliedValue {
             requested: self.level,
             applied: self.level,
@@ -768,6 +773,14 @@ impl GpuOperation for SetLegacyClocks {
     }
 }
 
+/// Lock one NVML P-State or a contiguous P-State range through NVAPI.
+///
+/// This is a logical P-State operation in the structured API. Internally it
+/// queries NVML P-State memory clock ranges, derives a memory VFP frequency
+/// window, rejects windows that would overlap P-States outside the requested
+/// range, then applies the window with NVAPI.
+///
+/// The output is `(range_label, min_lock_mhz, max_lock_mhz)`.
 #[derive(Clone, Copy, Debug)]
 pub struct SetNvapiPstateLock {
     pub first_pstate: PerformanceState,
@@ -792,6 +805,14 @@ impl GpuOperation for SetNvapiPstateLock {
     }
 }
 
+/// Lock one NVML P-State or a contiguous P-State range through NVML.
+///
+/// This is a logical P-State operation in the structured API. Internally it
+/// queries NVML P-State memory clock ranges, derives a memory locked-clock
+/// window, rejects windows that would overlap P-States outside the requested
+/// range, then applies the window with NVML memory locked clocks.
+///
+/// The output is `(range_label, min_lock_mhz, max_lock_mhz)`.
 #[derive(Clone, Copy, Debug)]
 pub struct SetNvmlPstateLock {
     pub first_pstate: PerformanceState,

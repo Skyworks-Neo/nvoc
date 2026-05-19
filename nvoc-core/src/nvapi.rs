@@ -428,6 +428,10 @@ pub fn parse_nvapi_locked_voltage_target(raw: &str) -> Result<NvapiLockedVoltage
     Ok(NvapiLockedVoltageTarget::Point(point))
 }
 
+// ---------------------------------------------------------------------------
+// P-State lock (via memory VFP frequency window)
+// ---------------------------------------------------------------------------
+
 const NVAPI_PSTATE_LOCK_MARGIN_MHZ: u32 = 50;
 
 fn nvapi_ranges_overlap(a_min: u32, a_max: u32, b_min: u32, b_max: u32) -> bool {

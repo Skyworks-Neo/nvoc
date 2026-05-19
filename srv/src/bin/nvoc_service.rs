@@ -35,8 +35,8 @@ mod nvoc_service {
         Nvml,
         enum_wrappers::device::{TemperatureSensor, TemperatureThreshold},
     };
-    use nvoc_core::legacy::{VfpLockRequest, lock_vfp, reset_vfp_frequency_lock};
     use nvoc_core::find_matching_vfp_point;
+    use nvoc_core::legacy::{VfpLockRequest, lock_vfp, reset_vfp_frequency_lock};
     use std::{
         cmp::{max, min},
         env,

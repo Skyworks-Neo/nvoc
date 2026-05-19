@@ -1,5 +1,10 @@
 use super::{Error, target::GpuId};
 
+/// Logical operation requested through the structured GPU operation API.
+///
+/// This identifies the high-level operation exposed to callers in
+/// [`OperationReport`] and [`BatchReport`]. It does not always name the lowest
+/// level driver primitive used to implement the operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperationKind {
     QueryPowerLimits,
@@ -32,7 +37,19 @@ pub enum OperationKind {
     ProbeVoltageLimits,
     CheckVoltageFrequency,
     SetLegacyClocks,
+    /// Lock one NVML P-State or a contiguous range through the NVAPI path.
+    ///
+    /// The implementation derives a memory VFP frequency window from the
+    /// requested P-State memory clock ranges and applies that window with
+    /// NVAPI. This remains distinct from a caller directly requesting
+    /// [`OperationKind::SetVfpFrequencyLock`].
     SetNvapiPstateLock,
+    /// Lock one NVML P-State or a contiguous range through the NVML path.
+    ///
+    /// The implementation derives a memory clock window from the requested
+    /// P-State memory clock ranges and applies it with NVML locked clocks. This
+    /// remains distinct from a caller directly requesting
+    /// [`OperationKind::SetLockedClocks`].
     SetNvmlPstateLock,
 }
 
