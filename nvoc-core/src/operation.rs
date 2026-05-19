@@ -544,13 +544,8 @@ impl GpuOperation for SetCoolerLevels {
         OperationKind::SetCoolerLevels
     }
 
-    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
-        low_nvapi::set_cooler_levels(
-            &[target.nvapi()?],
-            self.policy,
-            self.level,
-            self.cooler_target,
-        )?;
+    fn run(&self, gpu: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        low_nvapi::set_cooler_levels(&[gpu.nvapi()?], self.policy, self.level, self.cooler_target)?;
         Ok(AppliedValue {
             requested: self.level,
             applied: self.level,
@@ -624,7 +619,7 @@ impl GpuOperation for SetVfpVoltageLock {
         OperationKind::SetVfpVoltageLock
     }
 
-    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+    fn run(&self, gpu: &GpuTarget<'_>) -> Result<Self::Output, Error> {
         let request = match self.voltage_target {
             NvapiLockedVoltageTarget::Point(point) => {
                 low_nvapi::VfpLockRequest::VoltagePoint(point)
@@ -633,7 +628,7 @@ impl GpuOperation for SetVfpVoltageLock {
                 low_nvapi::VfpLockRequest::Voltage(voltage)
             }
         };
-        low_nvapi::lock_vfp(&[target.nvapi()?], request, self.feedback)
+        low_nvapi::lock_vfp(&[gpu.nvapi()?], request, self.feedback)
     }
 }
 
