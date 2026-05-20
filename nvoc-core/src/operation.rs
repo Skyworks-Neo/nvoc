@@ -9,8 +9,8 @@ use super::result::{
 use super::target::GpuTarget;
 use super::types::{NvapiLockedVoltageTarget, VfpResetDomain};
 use nvapi_hi::{
-    ClockDomain, CoolerPolicy, Kilohertz, KilohertzDelta, Microvolts, MicrovoltsDelta, PState,
-    Percentage, SensorThrottle, VfPoint,
+    ClockDomain, CoolerPolicy, Kilohertz, KilohertzDelta, MicrovoltsDelta, PState, Percentage,
+    SensorThrottle, VfPoint,
 };
 use nvml_wrapper::enum_wrappers::device::PerformanceState;
 use nvml_wrapper::enums::device::FanControlPolicy;
@@ -1179,79 +1179,6 @@ pub fn percentage(value: u32) -> Percentage {
     Percentage(value)
 }
 
-fn query_gpu_info(target: &GpuTarget<'_>) -> Result<nvapi_hi::GpuInfo, Error> {
-    run(target, QueryGpuInfo).map(|report| report.output)
-}
-
-fn query_gpu_settings(target: &GpuTarget<'_>) -> Result<nvapi_hi::GpuSettings, Error> {
-    run(target, QueryGpuSettings).map(|report| report.output)
-}
-
-fn query_gpu_status(target: &GpuTarget<'_>) -> Result<nvapi_hi::GpuStatus, Error> {
-    run(target, QueryGpuStatus).map(|report| report.output)
-}
-
-fn query_nvapi_vfp_point_voltage(
-    target: &GpuTarget<'_>,
-    point: usize,
-) -> Result<Microvolts, Error> {
-    run(target, QueryVfpPointVoltage { point }).map(|report| report.output)
-}
-
-fn reset_all_nvapi_vfp_deltas(target: &GpuTarget<'_>) -> Result<(), Error> {
-    run(
-        target,
-        ResetVfpDeltas {
-            domain: VfpResetDomain::All,
-        },
-    )
-    .map(|report| report.output)
-}
-
-fn reset_nvapi_vfp_deltas(target: &GpuTarget<'_>, domain: VfpResetDomain) -> Result<(), Error> {
-    run(target, ResetVfpDeltas { domain }).map(|report| report.output)
-}
-
-fn reset_nvapi_vfp_lock(target: &GpuTarget<'_>) -> Result<(), Error> {
-    run(target, ResetVfpLock).map(|report| report.output)
-}
-
-fn reset_nvapi_cooler_levels(target: &GpuTarget<'_>) -> Result<(), Error> {
-    run(target, ResetCoolerLevels).map(|report| report.output)
-}
-
-fn reset_nvapi_vfp_frequency_lock(
-    target: &GpuTarget<'_>,
-    domain: ClockDomain,
-) -> Result<(), Error> {
-    run(target, ResetVfpFrequencyLock { domain }).map(|report| report.output)
-}
-
-fn set_nvapi_vfp_frequency_lock(
-    target: &GpuTarget<'_>,
-    domain: ClockDomain,
-    upper: Kilohertz,
-    lower: Option<Kilohertz>,
-) -> Result<(), Error> {
-    run(
-        target,
-        SetVfpFrequencyLock {
-            domain,
-            upper,
-            lower,
-        },
-    )
-    .map(|report| report.output)
-}
-
-fn set_nvapi_vfp_point_delta(
-    target: &GpuTarget<'_>,
-    point: usize,
-    delta: KilohertzDelta,
-) -> Result<(), Error> {
-    run(target, SetVfpPointDelta { point, delta }).map(|_| ())
-}
-
 pub fn set_nvapi_vfp_curve_delta(
     target: &GpuTarget<'_>,
     point: usize,
@@ -1307,102 +1234,6 @@ pub fn set_nvapi_domain_vfp_deltas(
     .map(|report| report.output)
 }
 
-pub fn set_nvapi_vfp_voltage_lock(
-    target: &GpuTarget<'_>,
-    voltage: Option<Microvolts>,
-) -> Result<(), Error> {
-    match voltage {
-        Some(voltage) => run(
-            target,
-            SetVfpVoltageLock {
-                voltage_target: NvapiLockedVoltageTarget::Voltage(voltage),
-                feedback: false,
-            },
-        )
-        .map(|report| report.output),
-        None => target
-            .nvapi()?
-            .set_vfp_lock_voltage(None)
-            .map_err(Error::from),
-    }
-}
-
-pub fn set_nvapi_vfp_lock(
-    targets: &[GpuTarget<'_>],
-    request: low_nvapi::VfpLockRequest,
-    feedback: bool,
-) -> Result<(), Error> {
-    for target in targets {
-        match request {
-            low_nvapi::VfpLockRequest::VoltagePoint(point) => {
-                run(
-                    target,
-                    SetVfpVoltageLock {
-                        voltage_target: NvapiLockedVoltageTarget::Point(point),
-                        feedback,
-                    },
-                )?;
-            }
-            low_nvapi::VfpLockRequest::Voltage(voltage) => {
-                run(
-                    target,
-                    SetVfpVoltageLock {
-                        voltage_target: NvapiLockedVoltageTarget::Voltage(voltage),
-                        feedback,
-                    },
-                )?;
-            }
-            low_nvapi::VfpLockRequest::Frequency {
-                domain,
-                upper,
-                lower,
-            } => {
-                run(
-                    target,
-                    SetVfpFrequencyLock {
-                        domain,
-                        upper,
-                        lower,
-                    },
-                )?;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn probe_nvapi_voltage_limits(
-    targets: &[GpuTarget<'_>],
-    _print_separator: impl FnMut(),
-) -> Result<(usize, usize), Error> {
-    let target = targets
-        .first()
-        .ok_or_else(|| Error::from("no GPU selected"))?;
-    run(target, ProbeVoltageLimits)
-        .map(|report| (report.output.lower_point, report.output.upper_point))
-}
-
-fn check_nvapi_voltage_frequency(
-    targets: &[GpuTarget<'_>],
-    point: usize,
-    _print_separator: impl FnMut(),
-) -> Result<bool, Error> {
-    let target = targets
-        .first()
-        .ok_or_else(|| Error::from("no GPU selected"))?;
-    run(target, CheckVoltageFrequency { point }).map(|report| report.output.precise)
-}
-
-fn query_nvapi_tdp_temp_limits(
-    targets: &[GpuTarget<'_>],
-    _print_separator: impl FnMut(),
-) -> Result<low_nvapi::GpuTdpTempLimits, Error> {
-    let target = targets
-        .first()
-        .ok_or_else(|| Error::from("no GPU selected"))?;
-    run(target, QueryTdpTempLimits).map(|report| report.output)
-}
-
 pub fn query_domain_vf_points_indexed(
     target: &GpuTarget<'_>,
     domain: ClockDomain,
@@ -1438,79 +1269,6 @@ pub fn legacy_p0_core_max_voltage_delta(
     run(target, QueryLegacyP0CoreMaxVoltageDelta).map(|report| report.output)
 }
 
-fn set_nvapi_voltage_boost(target: &GpuTarget<'_>, boost: Percentage) -> Result<(), Error> {
-    run(target, SetVoltageBoost { boost }).map(|report| {
-        let _ = report.output;
-    })
-}
-
-fn set_nvapi_power_limits<I>(target: &GpuTarget<'_>, limits: I) -> Result<(), Error>
-where
-    I: IntoIterator<Item = Percentage>,
-{
-    run(
-        target,
-        SetNvapiPowerLimits {
-            limits: limits.into_iter().collect(),
-        },
-    )
-    .map(|report| report.output)
-}
-
-fn set_nvapi_sensor_limits<I>(target: &GpuTarget<'_>, limits: I) -> Result<(), Error>
-where
-    I: IntoIterator<Item = SensorThrottle>,
-{
-    run(
-        target,
-        SetNvapiSensorLimits {
-            limits: limits.into_iter().collect(),
-        },
-    )
-    .map(|report| report.output)
-}
-
-fn set_nvapi_sensor_limits_to_default(target: &GpuTarget<'_>) -> Result<(), Error> {
-    run(target, ResetNvapiSensorLimits).map(|report| report.output)
-}
-
-fn set_nvapi_power_limits_to_default(target: &GpuTarget<'_>) -> Result<(), Error> {
-    run(target, ResetNvapiPowerLimits).map(|report| report.output)
-}
-
-fn set_nvapi_pstate_base_voltage(
-    target: &GpuTarget<'_>,
-    delta_uv: MicrovoltsDelta,
-    pstate: PState,
-) -> Result<(), Error> {
-    run(target, SetPstateBaseVoltage { pstate, delta_uv }).map(|report| {
-        let _ = report.output;
-    })
-}
-
-fn reset_all_nvapi_pstate_base_voltages(target: &GpuTarget<'_>) -> Result<(), Error> {
-    run(target, ResetPstateBaseVoltages).map(|report| report.output)
-}
-
-pub fn set_nvapi_pstate_clock_offset_preserve(
-    target: &GpuTarget<'_>,
-    pstate: PState,
-    domain: ClockDomain,
-    delta: KilohertzDelta,
-) -> Result<(), Error> {
-    run(
-        target,
-        SetPstateClockOffset {
-            pstate,
-            domain,
-            delta,
-        },
-    )
-    .map(|report| {
-        let _ = report.output;
-    })
-}
-
 pub fn set_nvapi_pstate_clock_offsets<I>(target: &GpuTarget<'_>, offsets: I) -> Result<(), Error>
 where
     I: IntoIterator<Item = (PState, ClockDomain, KilohertzDelta)>,
@@ -1522,25 +1280,6 @@ where
         .map_err(Error::from)
 }
 
-fn set_nvapi_cooler_levels(
-    targets: &[GpuTarget<'_>],
-    policy: CoolerPolicy,
-    level: u32,
-    cooler_target: low_nvapi::CoolerTarget,
-) -> Result<(), Error> {
-    for target in targets {
-        run(
-            target,
-            SetCoolerLevels {
-                policy,
-                level,
-                cooler_target,
-            },
-        )?;
-    }
-    Ok(())
-}
-
 pub fn set_nvapi_cooler_settings<I>(target: &GpuTarget<'_>, settings: I) -> Result<(), Error>
 where
     I: IntoIterator<Item = (nvapi_hi::FanCoolerId, nvapi_hi::CoolerSettings)>,
@@ -1549,21 +1288,6 @@ where
         .nvapi()?
         .set_cooler_levels(settings)
         .map_err(Error::from)
-}
-
-fn set_nvapi_gpu_pstate_lock(
-    target: &GpuTarget<'_>,
-    first_pstate: PerformanceState,
-    second_pstate: PerformanceState,
-) -> Result<(String, u32, u32), Error> {
-    run(
-        target,
-        SetNvapiPstateLock {
-            first_pstate,
-            second_pstate,
-        },
-    )
-    .map(|report| report.output)
 }
 
 pub fn set_nvapi_legacy_clocks(
