@@ -45,6 +45,9 @@ struct Args {
     #[arg(long, default_value_t = 0.5)]
     transpose_prob: f64,
 
+    #[arg(long, default_value_t = 0.15)]
+    minor_mixture_rate: f64,
+
     #[arg(long, default_value_t = 12345)]
     seed: u64,
 
@@ -196,6 +199,7 @@ fn main() {
         println!("  Burst iterations: {}", args.burst_iters);
         println!("  Validation interval: {:.1} s", args.validate_interval);
         println!("  Validation size: {}", args.validate_size);
+        println!("  Minor mixture rate: {:.2}", args.minor_mixture_rate);
 
         let res = run_stress_for_precision(
             &mut backend,
@@ -209,6 +213,7 @@ fn main() {
                 validate_size: args.validate_size,
                 transpose_prob: args.transpose_prob,
                 base_seed: args.seed + (idx as u64) * 1000,
+                minor_mixture_rate: args.minor_mixture_rate,
             },
         );
         if res.first_error.is_some() && res.supported {
