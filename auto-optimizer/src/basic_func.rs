@@ -387,9 +387,9 @@ pub fn handle_lock_vfp(
 pub fn handle_test_voltage_limits(
     gpus: &[GpuTarget<'_>],
     _matches: &ArgMatches,
-    print_separator: impl FnMut(),
+    mut print_separator: impl FnMut(),
 ) -> Result<(usize, usize), Error> {
-    let _ = print_separator;
+    print_separator();
     let gpu = gpus.first().ok_or_else(|| Error::from("no GPU selected"))?;
     let limits = run_output(gpu, ProbeVoltageLimits)?;
     Ok((limits.lower_point, limits.upper_point))
@@ -398,7 +398,7 @@ pub fn handle_test_voltage_limits(
 pub fn voltage_frequency_check(
     matches: &ArgMatches,
     point: usize,
-    print_separator: impl FnMut(),
+    mut print_separator: impl FnMut(),
 ) -> Result<bool, Error> {
     let selector = match matches.get_many::<String>("gpu") {
         Some(values) => nvoc_core::GpuSelector::from_specs(values.cloned()),
@@ -407,14 +407,14 @@ pub fn voltage_frequency_check(
     let inventory = nvoc_core::discover_targets(nvoc_core::BackendSet::Nvapi)?;
     let all_targets = inventory.targets();
     let gpus = nvoc_core::select_targets(&all_targets, &selector)?;
-    let _ = print_separator;
+    print_separator();
     let gpu = gpus.first().ok_or_else(|| Error::from("no GPU selected"))?;
     run_output(gpu, CheckVoltageFrequency { point }).map(|check| check.precise)
 }
 
 pub fn get_gpu_tdp_temp_limit(
     matches: &ArgMatches,
-    print_separator: impl FnMut(),
+    mut print_separator: impl FnMut(),
 ) -> Result<GpuTdpTempLimits, Error> {
     let selector = match matches.get_many::<String>("gpu") {
         Some(values) => nvoc_core::GpuSelector::from_specs(values.cloned()),
@@ -423,7 +423,7 @@ pub fn get_gpu_tdp_temp_limit(
     let inventory = nvoc_core::discover_targets(nvoc_core::BackendSet::Nvapi)?;
     let all_targets = inventory.targets();
     let gpus = nvoc_core::select_targets(&all_targets, &selector)?;
-    let _ = print_separator;
+    print_separator();
     let gpu = gpus.first().ok_or_else(|| Error::from("no GPU selected"))?;
     run_output(gpu, QueryTdpTempLimits)
 }
