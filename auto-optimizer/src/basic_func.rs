@@ -11,16 +11,13 @@ use nvoc_core::ConvertEnum;
 use nvoc_core::Error;
 use nvoc_core::VfpResetDomain;
 use nvoc_core::{
-    CoolerTarget, VfpLockRequest, check_nvapi_voltage_frequency, is_allowable_nvapi_reset_error,
-    probe_nvapi_voltage_limits, query_gpu_info, query_gpu_settings, query_gpu_status,
-    query_nvapi_tdp_temp_limits, query_nvapi_vfp_point_voltage,
-    reset_all_nvapi_pstate_base_voltages, reset_nvapi_cooler_levels, reset_nvapi_vfp_deltas,
-    reset_nvapi_vfp_frequency_lock, reset_nvapi_vfp_lock, set_nvapi_cooler_levels,
-    set_nvapi_gpu_pstate_lock, set_nvapi_power_limits, set_nvapi_power_limits_to_default,
-    set_nvapi_pstate_base_voltage, set_nvapi_pstate_clock_offset_preserve,
-    set_nvapi_pstate_clock_offsets, set_nvapi_sensor_limits, set_nvapi_sensor_limits_to_default,
-    set_nvapi_vfp_frequency_lock, set_nvapi_vfp_lock, set_nvapi_vfp_point_delta,
-    set_nvapi_voltage_boost,
+    CheckVoltageFrequency, CoolerTarget, GpuOperation, ProbeVoltageLimits, QueryGpuInfo,
+    QueryGpuSettings, QueryGpuStatus, QueryTdpTempLimits, QueryVfpPointVoltage, ResetCoolerLevels,
+    ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetPstateBaseVoltages, ResetVfpDeltas,
+    ResetVfpFrequencyLock, ResetVfpLock, SetCoolerLevels, SetNvapiPowerLimits, SetNvapiPstateLock,
+    SetNvapiSensorLimits, SetPstateBaseVoltage, SetPstateClockOffset, SetVfpFrequencyLock,
+    SetVfpPointDelta, SetVfpVoltageLock, SetVoltageBoost, VfpLockRequest,
+    set_nvapi_pstate_clock_offsets,
 };
 use nvoc_core::{
     QueryClockOffset, QueryFanInfo, QueryPowerLimits, QueryPstates,
@@ -49,6 +46,45 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use nvoc_core::fetch_gpu_type;
+
+fn run_output<O: GpuOperation>(gpu: &GpuTarget<'_>, op: O) -> Result<O::Output, Error> {
+    run(gpu, op).map(|report| report.output)
+}
+
+fn apply_vfp_lock(
+    gpu: &GpuTarget<'_>,
+    request: VfpLockRequest,
+    feedback: bool,
+) -> Result<(), Error> {
+    match request {
+        VfpLockRequest::VoltagePoint(point) => run_output(
+            gpu,
+            SetVfpVoltageLock {
+                voltage_target: nvoc_core::NvapiLockedVoltageTarget::Point(point),
+                feedback,
+            },
+        ),
+        VfpLockRequest::Voltage(voltage) => run_output(
+            gpu,
+            SetVfpVoltageLock {
+                voltage_target: nvoc_core::NvapiLockedVoltageTarget::Voltage(voltage),
+                feedback,
+            },
+        ),
+        VfpLockRequest::Frequency {
+            domain,
+            upper,
+            lower,
+        } => run_output(
+            gpu,
+            SetVfpFrequencyLock {
+                domain,
+                upper,
+                lower,
+            },
+        ),
+    }
+}
 
 fn collect_long_flags(cmd: &clap::Command, out: &mut Vec<String>) {
     for arg in cmd.get_arguments() {
@@ -176,7 +212,7 @@ fn parse_lock_voltage(
         Ok(VfpLockRequest::Voltage(Microvolts(voltage_uv)))
     } else {
         let point = raw_target.parse::<usize>().unwrap_or(default_point);
-        query_nvapi_vfp_point_voltage(gpu, point)?;
+        run_output(gpu, QueryVfpPointVoltage { point })?;
         Ok(VfpLockRequest::VoltagePoint(point))
     }
 }
@@ -229,17 +265,17 @@ pub fn handle_lock_vfp(
     if let Some(locked_voltage_raw) = matches.get_one::<String>("locked_voltage") {
         let target = nvoc_core::parse_nvapi_locked_voltage_target(locked_voltage_raw.as_str())?;
         for gpu in gpus {
-            let gpu_info = query_gpu_info(gpu)?;
+            let gpu_info = run_output(gpu, QueryGpuInfo)?;
             let request = match target {
                 nvoc_core::NvapiLockedVoltageTarget::Point(point) => {
                     VfpLockRequest::VoltagePoint(point)
                 }
                 nvoc_core::NvapiLockedVoltageTarget::Voltage(v) => VfpLockRequest::Voltage(v),
             };
-            match set_nvapi_vfp_lock(&[*gpu], request, false) {
+            match apply_vfp_lock(gpu, request, false) {
                 Ok(_) => match target {
                     nvoc_core::NvapiLockedVoltageTarget::Point(point) => {
-                        let voltage = query_nvapi_vfp_point_voltage(gpu, point)?;
+                        let voltage = run_output(gpu, QueryVfpPointVoltage { point })?;
                         println!(
                             "Successfully locked GPU {} on VFP point {} ({} mV)",
                             gpu_info.id,
@@ -266,12 +302,14 @@ pub fn handle_lock_vfp(
         parse_nvapi_locked_clock_range(matches, "locked_core_clocks")?
     {
         for gpu in gpus {
-            let gpu_info = query_gpu_info(gpu)?;
-            match set_nvapi_vfp_frequency_lock(
+            let gpu_info = run_output(gpu, QueryGpuInfo)?;
+            match run_output(
                 gpu,
-                ClockDomain::Graphics,
-                Kilohertz(max_clock.saturating_mul(1000)),
-                Some(Kilohertz(min_clock.saturating_mul(1000))),
+                SetVfpFrequencyLock {
+                    domain: ClockDomain::Graphics,
+                    upper: Kilohertz(max_clock.saturating_mul(1000)),
+                    lower: Some(Kilohertz(min_clock.saturating_mul(1000))),
+                },
             ) {
                 Ok(_) => println!(
                     "Successfully locked NVAPI core clocks (Min: {}, Max: {}) to GPU {}",
@@ -290,12 +328,14 @@ pub fn handle_lock_vfp(
         parse_nvapi_locked_clock_range(matches, "locked_mem_clocks")?
     {
         for gpu in gpus {
-            let gpu_info = query_gpu_info(gpu)?;
-            match set_nvapi_vfp_frequency_lock(
+            let gpu_info = run_output(gpu, QueryGpuInfo)?;
+            match run_output(
                 gpu,
-                ClockDomain::Memory,
-                Kilohertz(max_clock.saturating_mul(1000)),
-                Some(Kilohertz(min_clock.saturating_mul(1000))),
+                SetVfpFrequencyLock {
+                    domain: ClockDomain::Memory,
+                    upper: Kilohertz(max_clock.saturating_mul(1000)),
+                    lower: Some(Kilohertz(min_clock.saturating_mul(1000))),
+                },
             ) {
                 Ok(_) => println!(
                     "Successfully locked NVAPI memory clocks (Min: {}, Max: {}) to GPU {}",
@@ -319,15 +359,18 @@ pub fn handle_lock_vfp(
         }
 
         let (domain, upper, lower) = parse_lock_frequency(matches)?;
-        return set_nvapi_vfp_lock(
-            gpus,
-            VfpLockRequest::Frequency {
-                domain,
-                upper,
-                lower,
-            },
-            feedback_flag,
-        );
+        for gpu in gpus {
+            apply_vfp_lock(
+                gpu,
+                VfpLockRequest::Frequency {
+                    domain,
+                    upper,
+                    lower,
+                },
+                feedback_flag,
+            )?;
+        }
+        return Ok(());
     }
 
     let request = parse_lock_voltage(
@@ -335,7 +378,10 @@ pub fn handle_lock_vfp(
         matches,
         default_point,
     )?;
-    set_nvapi_vfp_lock(gpus, request, feedback_flag)
+    for gpu in gpus {
+        apply_vfp_lock(gpu, request, feedback_flag)?;
+    }
+    Ok(())
 }
 
 pub fn handle_test_voltage_limits(
@@ -343,7 +389,10 @@ pub fn handle_test_voltage_limits(
     _matches: &ArgMatches,
     print_separator: impl FnMut(),
 ) -> Result<(usize, usize), Error> {
-    probe_nvapi_voltage_limits(gpus, print_separator)
+    let _ = print_separator;
+    let gpu = gpus.first().ok_or_else(|| Error::from("no GPU selected"))?;
+    let limits = run_output(gpu, ProbeVoltageLimits)?;
+    Ok((limits.lower_point, limits.upper_point))
 }
 
 pub fn voltage_frequency_check(
@@ -358,7 +407,9 @@ pub fn voltage_frequency_check(
     let inventory = nvoc_core::discover_targets(nvoc_core::BackendSet::Nvapi)?;
     let all_targets = inventory.targets();
     let gpus = nvoc_core::select_targets(&all_targets, &selector)?;
-    check_nvapi_voltage_frequency(&gpus, point, print_separator)
+    let _ = print_separator;
+    let gpu = gpus.first().ok_or_else(|| Error::from("no GPU selected"))?;
+    run_output(gpu, CheckVoltageFrequency { point }).map(|check| check.precise)
 }
 
 pub fn get_gpu_tdp_temp_limit(
@@ -372,7 +423,9 @@ pub fn get_gpu_tdp_temp_limit(
     let inventory = nvoc_core::discover_targets(nvoc_core::BackendSet::Nvapi)?;
     let all_targets = inventory.targets();
     let gpus = nvoc_core::select_targets(&all_targets, &selector)?;
-    query_nvapi_tdp_temp_limits(&gpus, print_separator)
+    let _ = print_separator;
+    let gpu = gpus.first().ok_or_else(|| Error::from("no GPU selected"))?;
+    run_output(gpu, QueryTdpTempLimits)
 }
 
 pub fn handle_cooler_command(gpus: &[GpuTarget<'_>], matches: &ArgMatches) -> Result<(), Error> {
@@ -399,14 +452,30 @@ pub fn handle_cooler_command(gpus: &[GpuTarget<'_>], matches: &ArgMatches) -> Re
         _ => CoolerTarget::All,
     };
 
-    set_nvapi_cooler_levels(gpus, mode, level, target)
+    for gpu in gpus {
+        run_output(
+            gpu,
+            SetCoolerLevels {
+                policy: mode,
+                level,
+                cooler_target: target,
+            },
+        )?;
+    }
+    Ok(())
 }
 
 pub fn single_point_adj(gpus: &[GpuTarget<'_>], matches: &ArgMatches) -> Result<(), Error> {
     let point_start = *matches.get_one::<u32>("point_start").unwrap() as usize;
     let delta_ini = *matches.get_one::<i32>("delta").unwrap();
     for gpu in gpus {
-        set_nvapi_vfp_point_delta(gpu, point_start, KilohertzDelta(delta_ini))?;
+        run_output(
+            gpu,
+            SetVfpPointDelta {
+                point: point_start,
+                delta: KilohertzDelta(delta_ini),
+            },
+        )?;
     }
     Ok(())
 }
@@ -451,7 +520,13 @@ pub fn handle_pointwiseoc(gpus: &[GpuTarget<'_>], matches: &ArgMatches) -> Resul
     );
     for gpu in gpus {
         for point in start..=end {
-            set_nvapi_vfp_point_delta(gpu, point, KilohertzDelta(delta))?;
+            run_output(
+                gpu,
+                SetVfpPointDelta {
+                    point,
+                    delta: KilohertzDelta(delta),
+                },
+            )?;
         }
     }
     Ok(())
@@ -482,7 +557,7 @@ pub fn handle_list(nvml: &Nvml) -> Result<(), Error> {
     let inventory = nvoc_core::discover_targets(nvoc_core::BackendSet::Nvapi)?;
     let gpu_list = inventory.targets();
     for (i, gpu) in gpu_list.iter().enumerate() {
-        let info = query_gpu_info(gpu)?;
+        let info = run_output(gpu, QueryGpuInfo)?;
         if let Some(ids) = info.bus.bus.pci_ids() {
             println!(
                 "GPU {}: ID:0x{:04X} bus:{:08x} - {:08x} - {:08x} - {:02x}",
@@ -522,7 +597,7 @@ pub fn handle_info(
             OutputFormat::Human => {
                 let mut success = 0usize;
                 for gpu in nvapi_gpus {
-                    let info = match query_gpu_info(gpu) {
+                    let info = match run_output(gpu, QueryGpuInfo) {
                         Ok(info) => info,
                         Err(e) => {
                             eprintln!(
@@ -553,7 +628,7 @@ pub fn handle_info(
                 if let Some(file_path) = output_file {
                     let mut success = 0usize;
                     for gpu in nvapi_gpus {
-                        let info = match query_gpu_info(gpu) {
+                        let info = match run_output(gpu, QueryGpuInfo) {
                             Ok(info) => info,
                             Err(e) => {
                                 eprintln!(
@@ -582,7 +657,7 @@ pub fn handle_info(
                 } else {
                     let mut gpu_info = Vec::new();
                     for gpu in nvapi_gpus {
-                        match query_gpu_info(gpu) {
+                        match run_output(gpu, QueryGpuInfo) {
                             Ok(info) => gpu_info.push(info),
                             Err(e) => eprintln!(
                                 "Warning: failed to read info for GPU ID 0x{:04X}: {:?}",
@@ -699,10 +774,10 @@ pub fn handle_status(
                             if set.is_some() {
                                 return Ok(set.as_ref().unwrap());
                             }
-                            Ok(set.get_or_insert(query_gpu_settings(gpu)?))
+                            Ok(set.get_or_insert(run_output(gpu, QueryGpuSettings)?))
                         }
 
-                        let status = match query_gpu_status(gpu) {
+                        let status = match run_output(gpu, QueryGpuStatus) {
                             Ok(status) => status,
                             Err(e) => {
                                 eprintln!(
@@ -741,7 +816,7 @@ pub fn handle_status(
                 OutputFormat::Json => {
                     let mut status = Vec::new();
                     for gpu in nvapi_gpus {
-                        match query_gpu_status(gpu) {
+                        match run_output(gpu, QueryGpuStatus) {
                             Ok(s) => status.push(s),
                             Err(e) => eprintln!(
                                 "Warning: failed to read status for GPU ID 0x{:04X}: {:?}",
@@ -854,15 +929,15 @@ pub fn handle_get(gpus: &[GpuTarget<'_>], oformat: OutputFormat) -> Result<(), E
     match oformat {
         OutputFormat::Human => {
             for gpu in gpus.iter() {
-                if let Ok(info) = query_gpu_info(gpu) {
+                if let Ok(info) = run_output(gpu, QueryGpuInfo) {
                     human::print_scan_separator();
                     println!("GPU {}: {} ({})", info.id, info.name, info.codename);
                     human::print_scan_separator();
                 }
-                if let Ok(set) = query_gpu_settings(gpu) {
+                if let Ok(set) = run_output(gpu, QueryGpuSettings) {
                     human::print_settings(gpu, &set);
                 }
-                if query_gpu_info(gpu).is_ok() {
+                if run_output(gpu, QueryGpuInfo).is_ok() {
                     let power_limit = run(gpu, QueryPowerLimits).ok().map(|r| r.output);
                     let temp_thresholds =
                         run(gpu, QueryTemperatureThresholds).ok().map(|r| r.output);
@@ -1022,7 +1097,7 @@ pub fn handle_get(gpus: &[GpuTarget<'_>], oformat: OutputFormat) -> Result<(), E
         OutputFormat::Json => {
             let mut settings = Vec::new();
             for gpu in gpus {
-                match query_gpu_settings(gpu) {
+                match run_output(gpu, QueryGpuSettings) {
                     Ok(s) => settings.push(s),
                     Err(e) => eprintln!(
                         "Warning: failed to read settings for GPU ID 0x{:04X}: {:?}",
@@ -1096,7 +1171,7 @@ pub fn handle_reset(gpus: &[GpuTarget<'_>], matches: &ArgMatches) -> Result<(), 
     ) -> Result<(), Error> {
         match r {
             Ok(()) => Ok(()),
-            Err(err) if is_allowable_nvapi_reset_error(&err) && !explicit => Ok(()),
+            Err(err) if err.is_allowable_nvapi_reset_error() && !explicit => Ok(()),
             Err(err) => Err(Error::Custom(format!(
                 "Reset {:?} failed: {}",
                 setting, err
@@ -1105,31 +1180,42 @@ pub fn handle_reset(gpus: &[GpuTarget<'_>], matches: &ArgMatches) -> Result<(), 
     }
 
     for gpu in gpus {
-        let info = query_gpu_info(gpu)?;
+        let info = run_output(gpu, QueryGpuInfo)?;
 
         for &setting in &settings {
             match setting {
                 ResetSettings::VoltageBoost => warn_result(
-                    set_nvapi_voltage_boost(gpu, Percentage(0)),
+                    run_output(
+                        gpu,
+                        SetVoltageBoost {
+                            boost: Percentage(0),
+                        },
+                    )
+                    .map(|_| ()),
                     setting,
                     explicit,
                 )?,
                 ResetSettings::SensorLimits => {
-                    warn_result(set_nvapi_sensor_limits_to_default(gpu), setting, explicit)?
+                    warn_result(run_output(gpu, ResetNvapiSensorLimits), setting, explicit)?
                 }
                 ResetSettings::PowerLimits => {
-                    warn_result(set_nvapi_power_limits_to_default(gpu), setting, explicit)?
+                    warn_result(run_output(gpu, ResetNvapiPowerLimits), setting, explicit)?
                 }
                 ResetSettings::CoolerLevels => {
-                    warn_result(reset_nvapi_cooler_levels(gpu), setting, explicit)?
+                    warn_result(run_output(gpu, ResetCoolerLevels), setting, explicit)?
                 }
                 ResetSettings::VfpDeltas => warn_result(
-                    reset_nvapi_vfp_deltas(gpu, vfp_reset_domain),
+                    run_output(
+                        gpu,
+                        ResetVfpDeltas {
+                            domain: vfp_reset_domain,
+                        },
+                    ),
                     setting,
                     explicit,
                 )?,
                 ResetSettings::VfpLock => {
-                    warn_result(reset_nvapi_vfp_lock(gpu), setting, explicit)?
+                    warn_result(run_output(gpu, ResetVfpLock), setting, explicit)?
                 }
                 ResetSettings::PStateDeltas => {
                     let pstates = info.pstate_limits.iter().flat_map(|(&pstate, l)| {
@@ -1151,7 +1237,7 @@ pub fn handle_reset(gpus: &[GpuTarget<'_>], matches: &ArgMatches) -> Result<(), 
                     match gpu_type {
                         Ok(ref t) if t.is_legacy_voltage() => {
                             // Maxwell / 9 系及更早：清零全部可编辑 pstate 的 Core baseVoltage delta
-                            match reset_all_nvapi_pstate_base_voltages(gpu) {
+                            match run_output(gpu, ResetPstateBaseVoltages) {
                                 Ok(_) => {}
                                 Err(e) if explicit => return Err(e),
                                 Err(e) => {
@@ -1186,19 +1272,34 @@ pub fn handle_set_command(gpus: &[GpuTarget<'_>], matches: &ArgMatches) -> Resul
 fn handle_nvapi(gpus: &[GpuTarget<'_>], matches: &ArgMatches) -> Result<(), Error> {
     if let Some(&vboost) = matches.get_one::<u32>("vboost") {
         for gpu in gpus {
-            set_nvapi_voltage_boost(gpu, Percentage(vboost))?;
+            run_output(
+                gpu,
+                SetVoltageBoost {
+                    boost: Percentage(vboost),
+                },
+            )?;
         }
     }
     if let Some(plimit) = matches.get_many::<u32>("plimit") {
         let plimit: Vec<_> = plimit.copied().map(Percentage).collect();
         for gpu in gpus {
-            set_nvapi_power_limits(gpu, plimit.iter().cloned())?;
+            run_output(
+                gpu,
+                SetNvapiPowerLimits {
+                    limits: plimit.clone(),
+                },
+            )?;
         }
     }
     if let Some(tlimit) = matches.get_many::<i32>("tlimit") {
         let tlimit: Vec<_> = tlimit.copied().map(|v| Celsius(v).into()).collect();
         for gpu in gpus {
-            set_nvapi_sensor_limits(gpu, tlimit.iter().cloned())?;
+            run_output(
+                gpu,
+                SetNvapiSensorLimits {
+                    limits: tlimit.clone(),
+                },
+            )?;
         }
     }
 
@@ -1211,18 +1312,26 @@ fn handle_nvapi(gpus: &[GpuTarget<'_>], matches: &ArgMatches) -> Result<(), Erro
 
     if let Some(&delta_uv) = matches.get_one::<i32>("voltage_delta") {
         for gpu in gpus {
-            set_nvapi_pstate_base_voltage(gpu, MicrovoltsDelta(delta_uv), nvapi_pstate)?;
+            run_output(
+                gpu,
+                SetPstateBaseVoltage {
+                    pstate: nvapi_pstate,
+                    delta_uv: MicrovoltsDelta(delta_uv),
+                },
+            )?;
         }
     }
 
     if let Some(&core_offset) = matches.get_one::<i32>("core_offset") {
         for gpu in gpus {
-            let gpu_info = query_gpu_info(gpu)?;
-            match set_nvapi_pstate_clock_offset_preserve(
+            let gpu_info = run_output(gpu, QueryGpuInfo)?;
+            match run_output(
                 gpu,
-                nvapi_pstate,
-                ClockDomain::Graphics,
-                KilohertzDelta(core_offset),
+                SetPstateClockOffset {
+                    pstate: nvapi_pstate,
+                    domain: ClockDomain::Graphics,
+                    delta: KilohertzDelta(core_offset),
+                },
             ) {
                 Ok(_) => println!(
                     "Successfully applied NVAPI core offset {} kHz to GPU {} for PState {:?}",
@@ -1238,12 +1347,14 @@ fn handle_nvapi(gpus: &[GpuTarget<'_>], matches: &ArgMatches) -> Result<(), Erro
 
     if let Some(&mem_offset) = matches.get_one::<i32>("mem_offset") {
         for gpu in gpus {
-            let gpu_info = query_gpu_info(gpu)?;
-            match set_nvapi_pstate_clock_offset_preserve(
+            let gpu_info = run_output(gpu, QueryGpuInfo)?;
+            match run_output(
                 gpu,
-                nvapi_pstate,
-                ClockDomain::Memory,
-                KilohertzDelta(mem_offset),
+                SetPstateClockOffset {
+                    pstate: nvapi_pstate,
+                    domain: ClockDomain::Memory,
+                    delta: KilohertzDelta(mem_offset),
+                },
             ) {
                 Ok(_) => println!(
                     "Successfully applied NVAPI mem offset {} kHz to GPU {} for PState {:?}",
@@ -1269,8 +1380,14 @@ fn handle_nvapi(gpus: &[GpuTarget<'_>], matches: &ArgMatches) -> Result<(), Erro
         };
 
         for gpu in gpus {
-            let gpu_info = query_gpu_info(gpu)?;
-            match set_nvapi_gpu_pstate_lock(gpu, first_pstate, second_pstate) {
+            let gpu_info = run_output(gpu, QueryGpuInfo)?;
+            match run_output(
+                gpu,
+                SetNvapiPstateLock {
+                    first_pstate,
+                    second_pstate,
+                },
+            ) {
                 Ok((range_label, min_lock_mhz, max_lock_mhz)) => println!(
                     "Successfully locked GPU {} to {} via NVAPI memory window {}-{} MHz",
                     gpu_info.id, range_label, min_lock_mhz, max_lock_mhz,
@@ -1294,8 +1411,8 @@ fn handle_nvapi(gpus: &[GpuTarget<'_>], matches: &ArgMatches) -> Result<(), Erro
 
     if matches.get_flag("reset_volt_locks") {
         for gpu in gpus {
-            let gpu_info = query_gpu_info(gpu)?;
-            match reset_nvapi_vfp_lock(gpu) {
+            let gpu_info = run_output(gpu, QueryGpuInfo)?;
+            match run_output(gpu, ResetVfpLock) {
                 Ok(_) => println!("Successfully reset NVAPI volt lock on GPU {}", gpu_info.id),
                 Err(e) => eprintln!(
                     "Failed to reset NVAPI volt lock for GPU {}: {:?}",
@@ -1307,8 +1424,13 @@ fn handle_nvapi(gpus: &[GpuTarget<'_>], matches: &ArgMatches) -> Result<(), Erro
 
     if matches.get_flag("reset_core_clocks") {
         for gpu in gpus {
-            let gpu_info = query_gpu_info(gpu)?;
-            match reset_nvapi_vfp_frequency_lock(gpu, ClockDomain::Graphics) {
+            let gpu_info = run_output(gpu, QueryGpuInfo)?;
+            match run_output(
+                gpu,
+                ResetVfpFrequencyLock {
+                    domain: ClockDomain::Graphics,
+                },
+            ) {
                 Ok(_) => println!(
                     "Successfully reset NVAPI core clocks lock on GPU {}",
                     gpu_info.id
@@ -1323,8 +1445,13 @@ fn handle_nvapi(gpus: &[GpuTarget<'_>], matches: &ArgMatches) -> Result<(), Erro
 
     if matches.get_flag("reset_mem_clocks") {
         for gpu in gpus {
-            let gpu_info = query_gpu_info(gpu)?;
-            match reset_nvapi_vfp_frequency_lock(gpu, ClockDomain::Memory) {
+            let gpu_info = run_output(gpu, QueryGpuInfo)?;
+            match run_output(
+                gpu,
+                ResetVfpFrequencyLock {
+                    domain: ClockDomain::Memory,
+                },
+            ) {
                 Ok(_) => println!(
                     "Successfully reset NVAPI memory clocks lock on GPU {}",
                     gpu_info.id

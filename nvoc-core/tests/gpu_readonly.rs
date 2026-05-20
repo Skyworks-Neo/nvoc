@@ -1,12 +1,12 @@
+use nvapi_hi::Microvolts;
 use nvml_wrapper::Nvml;
 use nvoc_core::{
     BackendSet, CheckVoltageFrequency, ClockDomain, Error, GpuId, GpuSelector, GpuTarget,
     QueryClockOffset, QueryFanInfo, QueryPowerLimits, QueryPstates,
     QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
-    QueryVfpPointVoltage, TargetInventory, discover_targets,
-    nvml_pstate_to_index, nvml_pstate_to_str, parse_nvml_pstate, run, select_targets,
+    QueryVfpPointVoltage, TargetInventory, discover_targets, nvml_pstate_to_index,
+    nvml_pstate_to_str, parse_nvml_pstate, run, select_targets,
 };
-use nvapi_hi::Microvolts;
 use serde_json::Value;
 use std::env;
 use std::fs;
@@ -38,7 +38,10 @@ fn first_target(inventory: &TargetInventory) -> GpuTarget<'_> {
         !targets.is_empty(),
         "GPU CI runner should expose at least one GPU"
     );
-    *targets.iter().find(|t| t.nvml.is_some()).unwrap_or(&targets[0])
+    *targets
+        .iter()
+        .find(|t| t.nvml.is_some())
+        .unwrap_or(&targets[0])
 }
 
 fn nvml(inventory: &TargetInventory) -> &Nvml {
@@ -145,18 +148,13 @@ fn discovery_nvml_device_id_conversion() {
 fn selection_nvapi() {
     let inv = inventory();
     let targets = inv.targets();
-    let nvapi_targets: Vec<GpuTarget<'_>> = targets
-        .into_iter()
-        .filter(|t| t.nvapi.is_some())
-        .collect();
+    let nvapi_targets: Vec<GpuTarget<'_>> =
+        targets.into_iter().filter(|t| t.nvapi.is_some()).collect();
     let selected = select_targets(&nvapi_targets, &GpuSelector::all()).unwrap();
     assert_eq!(selected.len(), nvapi_targets.len());
 
-    let by_index = select_targets(
-        &nvapi_targets,
-        &GpuSelector::from_specs(["0".to_string()]),
-    )
-    .unwrap();
+    let by_index =
+        select_targets(&nvapi_targets, &GpuSelector::from_specs(["0".to_string()])).unwrap();
     assert_eq!(by_index[0].id.0, nvapi_targets[0].id.0);
 
     let by_id = select_targets(
@@ -184,10 +182,7 @@ fn selection_nvml_ids() {
     let targets = inv.targets();
     let ids = targets.iter().map(|t| t.id.0).collect::<Vec<_>>();
     let all = select_targets(&targets, &GpuSelector::all()).unwrap();
-    assert_eq!(
-        all.iter().map(|t| t.id.0).collect::<Vec<_>>(),
-        ids
-    );
+    assert_eq!(all.iter().map(|t| t.id.0).collect::<Vec<_>>(), ids);
     assert_eq!(
         select_targets(&targets, &GpuSelector::from_specs(["0".to_string()]))
             .unwrap()
@@ -206,7 +201,8 @@ fn nvml_power_ok() {
     let target = first_target(&inv);
     let gpu_id = target.id.0;
     let power = run(&target, QueryPowerLimits)
-        .expect("power limits should be readable").output;
+        .expect("power limits should be readable")
+        .output;
     assert!(power.min_watts >= 0.0);
     assert!(power.current_watts >= power.min_watts || power.min_watts == 0.0);
     assert!(power.max_watts >= power.current_watts || power.max_watts == 0.0);
@@ -240,12 +236,25 @@ fn nvml_offsets_ok() {
     let inv = inventory();
     let target = first_target(&inv);
     let pstates = run(&target, QueryPstates)
-        .expect("pstate info should be readable").output;
+        .expect("pstate info should be readable")
+        .output;
     for pstate in &pstates {
-        if let Ok(report) = run(&target, QueryClockOffset { domain: ClockDomain::Graphics, pstate: pstate.pstate }) {
+        if let Ok(report) = run(
+            &target,
+            QueryClockOffset {
+                domain: ClockDomain::Graphics,
+                pstate: pstate.pstate,
+            },
+        ) {
             assert!(report.output.mhz.abs() < 2_000);
         }
-        if let Ok(report) = run(&target, QueryClockOffset { domain: ClockDomain::Memory, pstate: pstate.pstate }) {
+        if let Ok(report) = run(
+            &target,
+            QueryClockOffset {
+                domain: ClockDomain::Memory,
+                pstate: pstate.pstate,
+            },
+        ) {
             assert!(report.output.mhz.abs() < 10_000);
         }
     }
@@ -261,8 +270,26 @@ fn nvml_offsets_bad_gpu() {
         nvml: None,
     };
     let pstate = parse_nvml_pstate("P0").unwrap();
-    assert!(run(&bad_target, QueryClockOffset { domain: ClockDomain::Graphics, pstate }).is_err());
-    assert!(run(&bad_target, QueryClockOffset { domain: ClockDomain::Memory, pstate }).is_err());
+    assert!(
+        run(
+            &bad_target,
+            QueryClockOffset {
+                domain: ClockDomain::Graphics,
+                pstate
+            }
+        )
+        .is_err()
+    );
+    assert!(
+        run(
+            &bad_target,
+            QueryClockOffset {
+                domain: ClockDomain::Memory,
+                pstate
+            }
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -271,7 +298,8 @@ fn nvml_temp_thresholds_ok() {
     let inv = inventory();
     let target = first_target(&inv);
     let thresholds = run(&target, QueryTemperatureThresholds)
-        .expect("temperature thresholds should be readable").output;
+        .expect("temperature thresholds should be readable")
+        .output;
     assert_eq!(thresholds.len(), 8);
     for threshold in &thresholds {
         if let Some(celsius) = threshold.celsius {
@@ -299,7 +327,8 @@ fn nvml_pstates_ok() {
     let target = first_target(&inv);
     let gpu_id = target.id.0;
     let pstates = run(&target, QueryPstates)
-        .expect("pstate info should be readable").output;
+        .expect("pstate info should be readable")
+        .output;
     assert!(!pstates.is_empty());
     for pstate in &pstates {
         assert!(pstate.min_core_mhz <= pstate.max_core_mhz);
@@ -338,7 +367,8 @@ fn nvml_app_clocks_ok() {
     let inv = inventory();
     let target = first_target(&inv);
     let clocks = run(&target, QuerySupportedApplicationsClocks)
-        .expect("application clocks should be readable").output;
+        .expect("application clocks should be readable")
+        .output;
     for clock in &clocks {
         assert!(clock.memory_mhz > 0);
         for graphics_mhz in &clock.graphics_mhz {
@@ -366,7 +396,8 @@ fn nvml_fans_ok() {
     let target = first_target(&inv);
     let gpu_id = target.id.0;
     let fan_info = run(&target, QueryFanInfo)
-        .expect("fan info should be readable").output;
+        .expect("fan info should be readable")
+        .output;
     if let Some(min) = fan_info.min_speed
         && let Some(max) = fan_info.max_speed
     {
@@ -414,7 +445,8 @@ fn nvapi_voltage_point_ok() {
         .or_else(|| vfp.graphics.iter().next())
         .expect("VFP table should not be empty");
     let voltage: Microvolts = run(&target, QueryVfpPointVoltage { point: *point })
-        .expect("VFP point voltage should be readable").output;
+        .expect("VFP point voltage should be readable")
+        .output;
     assert_eq!(voltage, expected.voltage);
     if voltage.0 != 0 {
         assert!(voltage.0 <= 2_000_000);
@@ -437,7 +469,8 @@ fn nvapi_tdp_temp_ok() {
     let result = run(&target, QueryTdpTempLimits);
     match result {
         Ok(report) => {
-            let (min_tdp, default_tdp, max_tdp, min_temp, default_temp, max_temp, curve) = report.output;
+            let (min_tdp, default_tdp, max_tdp, min_temp, default_temp, max_temp, curve) =
+                report.output;
             assert!(min_tdp.0 <= max_tdp.0);
             assert!(default_tdp.0 >= min_tdp.0 || default_tdp.0 == 8191);
             assert!(min_temp.0 <= max_temp.0);

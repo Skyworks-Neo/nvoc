@@ -1179,26 +1179,26 @@ pub fn percentage(value: u32) -> Percentage {
     Percentage(value)
 }
 
-pub fn query_gpu_info(target: &GpuTarget<'_>) -> Result<nvapi_hi::GpuInfo, Error> {
+fn query_gpu_info(target: &GpuTarget<'_>) -> Result<nvapi_hi::GpuInfo, Error> {
     run(target, QueryGpuInfo).map(|report| report.output)
 }
 
-pub fn query_gpu_settings(target: &GpuTarget<'_>) -> Result<nvapi_hi::GpuSettings, Error> {
+fn query_gpu_settings(target: &GpuTarget<'_>) -> Result<nvapi_hi::GpuSettings, Error> {
     run(target, QueryGpuSettings).map(|report| report.output)
 }
 
-pub fn query_gpu_status(target: &GpuTarget<'_>) -> Result<nvapi_hi::GpuStatus, Error> {
+fn query_gpu_status(target: &GpuTarget<'_>) -> Result<nvapi_hi::GpuStatus, Error> {
     run(target, QueryGpuStatus).map(|report| report.output)
 }
 
-pub fn query_nvapi_vfp_point_voltage(
+fn query_nvapi_vfp_point_voltage(
     target: &GpuTarget<'_>,
     point: usize,
 ) -> Result<Microvolts, Error> {
     run(target, QueryVfpPointVoltage { point }).map(|report| report.output)
 }
 
-pub fn reset_all_nvapi_vfp_deltas(target: &GpuTarget<'_>) -> Result<(), Error> {
+fn reset_all_nvapi_vfp_deltas(target: &GpuTarget<'_>) -> Result<(), Error> {
     run(
         target,
         ResetVfpDeltas {
@@ -1208,26 +1208,26 @@ pub fn reset_all_nvapi_vfp_deltas(target: &GpuTarget<'_>) -> Result<(), Error> {
     .map(|report| report.output)
 }
 
-pub fn reset_nvapi_vfp_deltas(target: &GpuTarget<'_>, domain: VfpResetDomain) -> Result<(), Error> {
+fn reset_nvapi_vfp_deltas(target: &GpuTarget<'_>, domain: VfpResetDomain) -> Result<(), Error> {
     run(target, ResetVfpDeltas { domain }).map(|report| report.output)
 }
 
-pub fn reset_nvapi_vfp_lock(target: &GpuTarget<'_>) -> Result<(), Error> {
+fn reset_nvapi_vfp_lock(target: &GpuTarget<'_>) -> Result<(), Error> {
     run(target, ResetVfpLock).map(|report| report.output)
 }
 
-pub fn reset_nvapi_cooler_levels(target: &GpuTarget<'_>) -> Result<(), Error> {
+fn reset_nvapi_cooler_levels(target: &GpuTarget<'_>) -> Result<(), Error> {
     run(target, ResetCoolerLevels).map(|report| report.output)
 }
 
-pub fn reset_nvapi_vfp_frequency_lock(
+fn reset_nvapi_vfp_frequency_lock(
     target: &GpuTarget<'_>,
     domain: ClockDomain,
 ) -> Result<(), Error> {
     run(target, ResetVfpFrequencyLock { domain }).map(|report| report.output)
 }
 
-pub fn set_nvapi_vfp_frequency_lock(
+fn set_nvapi_vfp_frequency_lock(
     target: &GpuTarget<'_>,
     domain: ClockDomain,
     upper: Kilohertz,
@@ -1244,7 +1244,7 @@ pub fn set_nvapi_vfp_frequency_lock(
     .map(|report| report.output)
 }
 
-pub fn set_nvapi_vfp_point_delta(
+fn set_nvapi_vfp_point_delta(
     target: &GpuTarget<'_>,
     point: usize,
     delta: KilohertzDelta,
@@ -1371,7 +1371,7 @@ pub fn set_nvapi_vfp_lock(
     Ok(())
 }
 
-pub fn probe_nvapi_voltage_limits(
+fn probe_nvapi_voltage_limits(
     targets: &[GpuTarget<'_>],
     _print_separator: impl FnMut(),
 ) -> Result<(usize, usize), Error> {
@@ -1382,7 +1382,7 @@ pub fn probe_nvapi_voltage_limits(
         .map(|report| (report.output.lower_point, report.output.upper_point))
 }
 
-pub fn check_nvapi_voltage_frequency(
+fn check_nvapi_voltage_frequency(
     targets: &[GpuTarget<'_>],
     point: usize,
     _print_separator: impl FnMut(),
@@ -1393,7 +1393,7 @@ pub fn check_nvapi_voltage_frequency(
     run(target, CheckVoltageFrequency { point }).map(|report| report.output.precise)
 }
 
-pub fn query_nvapi_tdp_temp_limits(
+fn query_nvapi_tdp_temp_limits(
     targets: &[GpuTarget<'_>],
     _print_separator: impl FnMut(),
 ) -> Result<low_nvapi::GpuTdpTempLimits, Error> {
@@ -1438,13 +1438,13 @@ pub fn legacy_p0_core_max_voltage_delta(
     run(target, QueryLegacyP0CoreMaxVoltageDelta).map(|report| report.output)
 }
 
-pub fn set_nvapi_voltage_boost(target: &GpuTarget<'_>, boost: Percentage) -> Result<(), Error> {
+fn set_nvapi_voltage_boost(target: &GpuTarget<'_>, boost: Percentage) -> Result<(), Error> {
     run(target, SetVoltageBoost { boost }).map(|report| {
         let _ = report.output;
     })
 }
 
-pub fn set_nvapi_power_limits<I>(target: &GpuTarget<'_>, limits: I) -> Result<(), Error>
+fn set_nvapi_power_limits<I>(target: &GpuTarget<'_>, limits: I) -> Result<(), Error>
 where
     I: IntoIterator<Item = Percentage>,
 {
@@ -1457,7 +1457,7 @@ where
     .map(|report| report.output)
 }
 
-pub fn set_nvapi_sensor_limits<I>(target: &GpuTarget<'_>, limits: I) -> Result<(), Error>
+fn set_nvapi_sensor_limits<I>(target: &GpuTarget<'_>, limits: I) -> Result<(), Error>
 where
     I: IntoIterator<Item = SensorThrottle>,
 {
@@ -1470,15 +1470,15 @@ where
     .map(|report| report.output)
 }
 
-pub fn set_nvapi_sensor_limits_to_default(target: &GpuTarget<'_>) -> Result<(), Error> {
+fn set_nvapi_sensor_limits_to_default(target: &GpuTarget<'_>) -> Result<(), Error> {
     run(target, ResetNvapiSensorLimits).map(|report| report.output)
 }
 
-pub fn set_nvapi_power_limits_to_default(target: &GpuTarget<'_>) -> Result<(), Error> {
+fn set_nvapi_power_limits_to_default(target: &GpuTarget<'_>) -> Result<(), Error> {
     run(target, ResetNvapiPowerLimits).map(|report| report.output)
 }
 
-pub fn set_nvapi_pstate_base_voltage(
+fn set_nvapi_pstate_base_voltage(
     target: &GpuTarget<'_>,
     delta_uv: MicrovoltsDelta,
     pstate: PState,
@@ -1488,7 +1488,7 @@ pub fn set_nvapi_pstate_base_voltage(
     })
 }
 
-pub fn reset_all_nvapi_pstate_base_voltages(target: &GpuTarget<'_>) -> Result<(), Error> {
+fn reset_all_nvapi_pstate_base_voltages(target: &GpuTarget<'_>) -> Result<(), Error> {
     run(target, ResetPstateBaseVoltages).map(|report| report.output)
 }
 
@@ -1522,7 +1522,7 @@ where
         .map_err(Error::from)
 }
 
-pub fn set_nvapi_cooler_levels(
+fn set_nvapi_cooler_levels(
     targets: &[GpuTarget<'_>],
     policy: CoolerPolicy,
     level: u32,
@@ -1551,7 +1551,7 @@ where
         .map_err(Error::from)
 }
 
-pub fn set_nvapi_gpu_pstate_lock(
+fn set_nvapi_gpu_pstate_lock(
     target: &GpuTarget<'_>,
     first_pstate: PerformanceState,
     second_pstate: PerformanceState,

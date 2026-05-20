@@ -2,10 +2,11 @@ use nvapi_hi::{ClockDomain, KilohertzDelta, PState};
 use nvml_wrapper::enum_wrappers::device::PerformanceState;
 use nvml_wrapper::enums::device::FanControlPolicy;
 use nvoc_core::{
-    BackendSet, Error, GpuId, GpuTarget, QueryClockOffset, QueryPowerLimits,
-    QueryPstates, ResetApplicationsClocks, ResetFanSpeed, ResetLockedClocks, ResetVfpDeltas,
-    ResetVfpFrequencyLock, SetClockOffset, SetFanSpeed, SetLockedClocks, SetPstateClockOffset,
-    SetPowerLimit, TargetInventory, VfpResetDomain, discover_targets, parse_nvml_pstate, run,
+    BackendSet, Error, GpuId, GpuTarget, QueryClockOffset, QueryPowerLimits, QueryPstates,
+    ResetApplicationsClocks, ResetFanSpeed, ResetLockedClocks, ResetVfpDeltas,
+    ResetVfpFrequencyLock, SetClockOffset, SetFanSpeed, SetLockedClocks, SetPowerLimit,
+    SetPstateClockOffset, TargetInventory, VfpResetDomain, discover_targets, parse_nvml_pstate,
+    run,
 };
 
 const INVALID_GPU_ID: u32 = u32::MAX - 255;
@@ -20,7 +21,8 @@ fn require_write_opt_in() {
 
 fn inventory() -> TargetInventory {
     require_write_opt_in();
-    discover_targets(BackendSet::Both).expect("GPU backends should initialize on the GPU test runner")
+    discover_targets(BackendSet::Both)
+        .expect("GPU backends should initialize on the GPU test runner")
 }
 
 fn first_target_with_nvml(inventory: &TargetInventory) -> GpuTarget<'_> {
@@ -92,8 +94,24 @@ impl<'a> NvmlCleanupGuard<'a> {
     }
 
     fn remember_clock_offsets(&mut self, pstate: PerformanceState) {
-        let core = run(&self.target, QueryClockOffset { domain: ClockDomain::Graphics, pstate }).ok().map(|o| o.output.mhz);
-        let mem = run(&self.target, QueryClockOffset { domain: ClockDomain::Memory, pstate }).ok().map(|o| o.output.mhz);
+        let core = run(
+            &self.target,
+            QueryClockOffset {
+                domain: ClockDomain::Graphics,
+                pstate,
+            },
+        )
+        .ok()
+        .map(|o| o.output.mhz);
+        let mem = run(
+            &self.target,
+            QueryClockOffset {
+                domain: ClockDomain::Memory,
+                pstate,
+            },
+        )
+        .ok()
+        .map(|o| o.output.mhz);
         self.restore_clock_offsets.push((pstate, core, mem));
     }
 
@@ -109,14 +127,26 @@ impl<'a> NvmlCleanupGuard<'a> {
 
         for (pstate, core_offset, mem_offset) in self.restore_clock_offsets.iter().copied() {
             if let Some(offset) = core_offset
-                && let Err(err) =
-                    run(&self.target, SetClockOffset { domain: ClockDomain::Graphics, pstate, mhz: offset })
+                && let Err(err) = run(
+                    &self.target,
+                    SetClockOffset {
+                        domain: ClockDomain::Graphics,
+                        pstate,
+                        mhz: offset,
+                    },
+                )
             {
                 handle_cleanup_error("NVML core clock offset restore", err, fail_on_permission);
             }
             if let Some(offset) = mem_offset
-                && let Err(err) =
-                    run(&self.target, SetClockOffset { domain: ClockDomain::Memory, pstate, mhz: offset })
+                && let Err(err) = run(
+                    &self.target,
+                    SetClockOffset {
+                        domain: ClockDomain::Memory,
+                        pstate,
+                        mhz: offset,
+                    },
+                )
             {
                 handle_cleanup_error("NVML memory clock offset restore", err, fail_on_permission);
             }
@@ -129,11 +159,23 @@ impl<'a> NvmlCleanupGuard<'a> {
             ),
             (
                 "NVML core locked clocks reset",
-                run(&self.target, ResetLockedClocks { domain: ClockDomain::Graphics }).map(|_| ()),
+                run(
+                    &self.target,
+                    ResetLockedClocks {
+                        domain: ClockDomain::Graphics,
+                    },
+                )
+                .map(|_| ()),
             ),
             (
                 "NVML memory locked clocks reset",
-                run(&self.target, ResetLockedClocks { domain: ClockDomain::Memory }).map(|_| ()),
+                run(
+                    &self.target,
+                    ResetLockedClocks {
+                        domain: ClockDomain::Memory,
+                    },
+                )
+                .map(|_| ()),
             ),
         ] {
             if let Err(err) = result {
@@ -182,9 +224,14 @@ impl<'a> NvapiCleanupGuard<'a> {
             if let Err(err) = run(&self.target, ResetVfpFrequencyLock { domain }) {
                 handle_cleanup_error("NVAPI VFP frequency lock reset", err, fail_on_permission);
             }
-            if let Err(err) =
-                run(&self.target, SetPstateClockOffset { pstate: PState::P0, domain, delta: KilohertzDelta(0) })
-            {
+            if let Err(err) = run(
+                &self.target,
+                SetPstateClockOffset {
+                    pstate: PState::P0,
+                    domain,
+                    delta: KilohertzDelta(0),
+                },
+            ) {
                 handle_cleanup_error(
                     "NVAPI P0 pstate clock offset reset",
                     err,
@@ -193,7 +240,12 @@ impl<'a> NvapiCleanupGuard<'a> {
             }
         }
 
-        if let Err(err) = run(&self.target, ResetVfpDeltas { domain: VfpResetDomain::All }) {
+        if let Err(err) = run(
+            &self.target,
+            ResetVfpDeltas {
+                domain: VfpResetDomain::All,
+            },
+        ) {
             handle_cleanup_error("NVAPI VFP delta reset", err, fail_on_permission);
         }
     }
@@ -214,7 +266,14 @@ fn nvml_fan_level_rejects() {
         nvapi: None,
         nvml: None,
     };
-    let result = run(&bad_target, SetFanSpeed { fan_index: 0, policy: FanControlPolicy::Manual, level: 101 });
+    let result = run(
+        &bad_target,
+        SetFanSpeed {
+            fan_index: 0,
+            policy: FanControlPolicy::Manual,
+            level: 101,
+        },
+    );
     let err = result.expect_err("fan levels above 100 should be rejected");
     assert!(err.to_string().contains("Invalid fan level 101"));
 }
@@ -232,20 +291,68 @@ fn nvml_bad_gpu_rejects() {
 
     assert_invalid_gpu_id_error(run(&bad_target, SetPowerLimit { watts: 1 }).map(|_| ()));
     assert_invalid_gpu_id_error(
-        run(&bad_target, SetClockOffset { domain: ClockDomain::Graphics, pstate, mhz: 0 }).map(|_| ()),
+        run(
+            &bad_target,
+            SetClockOffset {
+                domain: ClockDomain::Graphics,
+                pstate,
+                mhz: 0,
+            },
+        )
+        .map(|_| ()),
     );
     assert_invalid_gpu_id_error(
-        run(&bad_target, SetClockOffset { domain: ClockDomain::Memory, pstate, mhz: 0 }).map(|_| ()),
+        run(
+            &bad_target,
+            SetClockOffset {
+                domain: ClockDomain::Memory,
+                pstate,
+                mhz: 0,
+            },
+        )
+        .map(|_| ()),
     );
     assert_invalid_gpu_id_error(run(&bad_target, ResetFanSpeed { fan_index: 0 }).map(|_| ()));
     assert_invalid_gpu_id_error(run(&bad_target, ResetApplicationsClocks).map(|_| ()));
-    assert_invalid_gpu_id_error(run(&bad_target, ResetLockedClocks { domain: ClockDomain::Graphics }).map(|_| ()));
-    assert_invalid_gpu_id_error(run(&bad_target, ResetLockedClocks { domain: ClockDomain::Memory }).map(|_| ()));
     assert_invalid_gpu_id_error(
-        run(&bad_target, SetLockedClocks { domain: ClockDomain::Graphics, min_mhz: 1, max_mhz: 1 }).map(|_| ()),
+        run(
+            &bad_target,
+            ResetLockedClocks {
+                domain: ClockDomain::Graphics,
+            },
+        )
+        .map(|_| ()),
     );
     assert_invalid_gpu_id_error(
-        run(&bad_target, SetLockedClocks { domain: ClockDomain::Memory, min_mhz: 1, max_mhz: 1 }).map(|_| ()),
+        run(
+            &bad_target,
+            ResetLockedClocks {
+                domain: ClockDomain::Memory,
+            },
+        )
+        .map(|_| ()),
+    );
+    assert_invalid_gpu_id_error(
+        run(
+            &bad_target,
+            SetLockedClocks {
+                domain: ClockDomain::Graphics,
+                min_mhz: 1,
+                max_mhz: 1,
+            },
+        )
+        .map(|_| ()),
+    );
+    assert_invalid_gpu_id_error(
+        run(
+            &bad_target,
+            SetLockedClocks {
+                domain: ClockDomain::Memory,
+                min_mhz: 1,
+                max_mhz: 1,
+            },
+        )
+        .map(|_| ()),
     );
 }
 
@@ -255,7 +362,9 @@ fn nvml_power_current() {
     let inv = inventory();
     let target = first_target_with_nvml(&inv);
     let mut cleanup = NvmlCleanupGuard::new(target);
-    let power = run(&target, QueryPowerLimits).expect("power limits should be readable").output;
+    let power = run(&target, QueryPowerLimits)
+        .expect("power limits should be readable")
+        .output;
     let min_w = power.min_watts;
     let current_w = power.current_watts;
     let max_w = power.max_watts;
@@ -263,10 +372,16 @@ fn nvml_power_current() {
     assert!(max_w >= current_w || max_w == 0.0);
 
     if current_w.is_finite() && current_w > 0.0 {
-        match run(&target, SetPowerLimit { watts: current_w.round() as u32 }) {
+        match run(
+            &target,
+            SetPowerLimit {
+                watts: current_w.round() as u32,
+            },
+        ) {
             Ok(_) => {
                 let after = run(&target, QueryPowerLimits)
-                    .expect("power should remain readable after current-value write").output;
+                    .expect("power should remain readable after current-value write")
+                    .output;
                 assert!((after.current_watts - current_w).abs() <= 1.0);
             }
             Err(err) => {
@@ -289,16 +404,40 @@ fn nvml_offsets_current() {
     let inv = inventory();
     let target = first_target_with_nvml(&inv);
     let mut cleanup = NvmlCleanupGuard::new(target);
-    let pstates = run(&target, QueryPstates).expect("pstate info should be readable").output;
+    let pstates = run(&target, QueryPstates)
+        .expect("pstate info should be readable")
+        .output;
 
     for pstate in pstates.into_iter().take(1) {
         cleanup.remember_clock_offsets(pstate.pstate);
 
-        if let Ok(offset_report) = run(&target, QueryClockOffset { domain: ClockDomain::Graphics, pstate: pstate.pstate }) {
+        if let Ok(offset_report) = run(
+            &target,
+            QueryClockOffset {
+                domain: ClockDomain::Graphics,
+                pstate: pstate.pstate,
+            },
+        ) {
             let offset = offset_report.output.mhz;
-            match run(&target, SetClockOffset { domain: ClockDomain::Graphics, pstate: pstate.pstate, mhz: offset }) {
+            match run(
+                &target,
+                SetClockOffset {
+                    domain: ClockDomain::Graphics,
+                    pstate: pstate.pstate,
+                    mhz: offset,
+                },
+            ) {
                 Ok(_) => assert_eq!(
-                    run(&target, QueryClockOffset { domain: ClockDomain::Graphics, pstate: pstate.pstate }).unwrap().output.mhz,
+                    run(
+                        &target,
+                        QueryClockOffset {
+                            domain: ClockDomain::Graphics,
+                            pstate: pstate.pstate
+                        }
+                    )
+                    .unwrap()
+                    .output
+                    .mhz,
                     offset
                 ),
                 Err(err) => {
@@ -309,11 +448,33 @@ fn nvml_offsets_current() {
             }
         }
 
-        if let Ok(offset_report) = run(&target, QueryClockOffset { domain: ClockDomain::Memory, pstate: pstate.pstate }) {
+        if let Ok(offset_report) = run(
+            &target,
+            QueryClockOffset {
+                domain: ClockDomain::Memory,
+                pstate: pstate.pstate,
+            },
+        ) {
             let offset = offset_report.output.mhz;
-            match run(&target, SetClockOffset { domain: ClockDomain::Memory, pstate: pstate.pstate, mhz: offset }) {
+            match run(
+                &target,
+                SetClockOffset {
+                    domain: ClockDomain::Memory,
+                    pstate: pstate.pstate,
+                    mhz: offset,
+                },
+            ) {
                 Ok(_) => assert_eq!(
-                    run(&target, QueryClockOffset { domain: ClockDomain::Memory, pstate: pstate.pstate }).unwrap().output.mhz,
+                    run(
+                        &target,
+                        QueryClockOffset {
+                            domain: ClockDomain::Memory,
+                            pstate: pstate.pstate
+                        }
+                    )
+                    .unwrap()
+                    .output
+                    .mhz,
                     offset
                 ),
                 Err(err) => {
@@ -337,8 +498,20 @@ fn nvml_resets() {
 
     for result in [
         run(&target, ResetApplicationsClocks).map(|_| ()),
-        run(&target, ResetLockedClocks { domain: ClockDomain::Graphics }).map(|_| ()),
-        run(&target, ResetLockedClocks { domain: ClockDomain::Memory }).map(|_| ()),
+        run(
+            &target,
+            ResetLockedClocks {
+                domain: ClockDomain::Graphics,
+            },
+        )
+        .map(|_| ()),
+        run(
+            &target,
+            ResetLockedClocks {
+                domain: ClockDomain::Memory,
+            },
+        )
+        .map(|_| ()),
     ] {
         if let Err(err) = result {
             let msg = err.to_string();
@@ -381,7 +554,12 @@ fn nvapi_vfp_delta_reset() {
     let inv = inventory();
     let target = first_target_with_nvapi(&inv);
     let mut cleanup = NvapiCleanupGuard::new(target);
-    match run(&target, ResetVfpDeltas { domain: VfpResetDomain::All }) {
+    match run(
+        &target,
+        ResetVfpDeltas {
+            domain: VfpResetDomain::All,
+        },
+    ) {
         Ok(_) => {}
         Err(err) => {
             let msg = err.to_string();
@@ -408,7 +586,14 @@ fn nvapi_pstate_zero_delta() {
         (PState::P0, ClockDomain::Graphics),
         (PState::P0, ClockDomain::Memory),
     ] {
-        match run(&target, SetPstateClockOffset { pstate, domain, delta: KilohertzDelta(0) }) {
+        match run(
+            &target,
+            SetPstateClockOffset {
+                pstate,
+                domain,
+                delta: KilohertzDelta(0),
+            },
+        ) {
             Ok(_) => {}
             Err(err) => {
                 let msg = err.to_string();

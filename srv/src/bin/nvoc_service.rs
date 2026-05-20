@@ -36,8 +36,8 @@ mod nvoc_service {
         enum_wrappers::device::{TemperatureSensor, TemperatureThreshold},
     };
     use nvoc_core::{
-        GpuId, GpuTarget, VfpLockRequest, find_matching_vfp_point,
-        reset_nvapi_vfp_frequency_lock, reset_nvapi_vfp_lock, set_nvapi_vfp_lock,
+        GpuId, GpuTarget, NvapiLockedVoltageTarget, ResetVfpFrequencyLock, ResetVfpLock,
+        SetVfpVoltageLock, find_matching_vfp_point, run,
     };
     use std::{
         cmp::{max, min},
@@ -358,7 +358,13 @@ mod nvoc_service {
                             let next = current.saturating_sub(1).max(vfp_lowest_lock_point);
                             gpu_dynamic_lock_point[idx] = next;
                             if let Some(target) = maybe_target {
-                                match set_nvapi_vfp_lock(&[target], VfpLockRequest::VoltagePoint(next), true) {
+                                match run(
+                                    &target,
+                                    SetVfpVoltageLock {
+                                        voltage_target: NvapiLockedVoltageTarget::Point(next),
+                                        feedback: true,
+                                    },
+                                ) {
                                     Ok(_) => info!("GPU {}: over-temp, stepped down to VFP lock point {}", i, next),
                                     Err(e) => error!("GPU {}: failed to lock VFP: {:?}", i, e),
                                 }
@@ -367,7 +373,13 @@ mod nvoc_service {
                             let next = (current + 1).min(vfp_low_lock_point);
                             gpu_dynamic_lock_point[idx] = next;
                             if let Some(target) = maybe_target {
-                                match set_nvapi_vfp_lock(&[target], VfpLockRequest::VoltagePoint(next), true) {
+                                match run(
+                                    &target,
+                                    SetVfpVoltageLock {
+                                        voltage_target: NvapiLockedVoltageTarget::Point(next),
+                                        feedback: true,
+                                    },
+                                ) {
                                     Ok(_) => info!("GPU {}: temp normal, relaxed to VFP lock point {}", i, next),
                                     Err(e) => error!("GPU {}: failed to relax VFP: {:?}", i, e),
                                 }
@@ -376,11 +388,11 @@ mod nvoc_service {
                             // 已回到正常上限，完全解锁
                             gpu_dynamic_lock_point[idx] = vfp_highest_lock_point;
                             if let Some(target) = maybe_target {
-                                if let Err(e) = reset_nvapi_vfp_lock(&target) {
+                                if let Err(e) = run(&target, ResetVfpLock) {
                                     error!("GPU {}: failed to reset VFP voltage lock: {:?}", i, e);
                                 }
                                 for domain in [ClockDomain::Graphics, ClockDomain::Memory] {
-                                    if let Err(e) = reset_nvapi_vfp_frequency_lock(&target, domain) {
+                                    if let Err(e) = run(&target, ResetVfpFrequencyLock { domain }) {
                                         warn!("GPU {}: failed to reset VFP freq lock ({:?}): {:?}", i, domain, e);
                                     }
                                 }

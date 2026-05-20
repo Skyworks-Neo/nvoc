@@ -11,10 +11,10 @@ use super::oc_profile_function::{
 use clap::ArgMatches;
 use num_traits::pow;
 use nvoc_core::{
-    ClockDomain, Error, GpuOcParams, GpuTarget, KilohertzDelta, PState, VfPoint, fetch_gpu_type,
-    query_gpu_info, query_gpu_status, query_nvapi_vfp_point_voltage, reset_all_nvapi_vfp_deltas,
-    reset_nvapi_cooler_levels, set_nvapi_pstate_clock_offsets, set_nvapi_vfp_curve_delta,
-    set_nvapi_vfp_point_delta, set_nvapi_vfp_voltage_lock,
+    ClockDomain, Error, GpuOcParams, GpuOperation, GpuTarget, KilohertzDelta,
+    NvapiLockedVoltageTarget, PState, QueryGpuInfo, QueryGpuStatus, QueryVfpPointVoltage,
+    ResetCoolerLevels, ResetVfpDeltas, SetVfpPointDelta, SetVfpVoltageLock, VfPoint,
+    VfpResetDomain, fetch_gpu_type, run, set_nvapi_pstate_clock_offsets, set_nvapi_vfp_curve_delta,
 };
 use std::cmp::min;
 use std::fs;
@@ -23,6 +23,10 @@ use std::path::Path;
 use std::process::{Child, Command};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
+
+fn run_output<O: GpuOperation>(gpu: &GpuTarget<'_>, op: O) -> Result<O::Output, Error> {
+    run(gpu, op).map(|report| report.output)
+}
 
 mod pressure_runner {
     use super::*;
@@ -33,7 +37,13 @@ mod pressure_runner {
         delta_khz: i32,
     ) {
         for offset in range {
-            match set_nvapi_vfp_point_delta(gpu, offset, KilohertzDelta(delta_khz)) {
+            match run_output(
+                gpu,
+                SetVfpPointDelta {
+                    point: offset,
+                    delta: KilohertzDelta(delta_khz),
+                },
+            ) {
                 Ok(_) => {}
                 Err(e) => eprintln!(
                     "Warning: {}, set_vfp offset={} Error. GPU crashed...",
@@ -227,7 +237,13 @@ mod pressure_runner {
                     let mut in_test_check_number = 0;
                     let mut fluctuation_h_l_flag = false;
                     let mut thrm_or_pwr_limit_number = 0;
-                    reset_all_nvapi_vfp_deltas(gpu).unwrap_or_else(|err| {
+                    run_output(
+                        gpu,
+                        ResetVfpDeltas {
+                            domain: VfpResetDomain::All,
+                        },
+                    )
+                    .unwrap_or_else(|err| {
                         eprintln!("Warning: Failed to reset GPU due to {:?}", err);
                     });
                     sleep(Duration::from_secs(1));
@@ -262,10 +278,19 @@ mod pressure_runner {
                                     }
                                 }
 
-                                match query_nvapi_vfp_point_voltage(gpu, cfg.point) {
+                                match run_output(gpu, QueryVfpPointVoltage { point: cfg.point }) {
                                     Ok(v) => {
                                         println!("Voltage at point {}: {}", cfg.point, v);
-                                        set_nvapi_vfp_voltage_lock(gpu, Some(v)).unwrap_or_else(
+                                        run_output(
+                                            gpu,
+                                            SetVfpVoltageLock {
+                                                voltage_target: NvapiLockedVoltageTarget::Voltage(
+                                                    v,
+                                                ),
+                                                feedback: false,
+                                            },
+                                        )
+                                        .unwrap_or_else(
                                             |err| {
                                                 eprintln!(
                                                     "Warning: Failed to set voltage due to {:?}",
@@ -311,7 +336,13 @@ mod pressure_runner {
                                 test_start_at.elapsed().as_secs()
                             );
                             force_kill_process(&mut process, "in-test timeout");
-                            reset_all_nvapi_vfp_deltas(gpu).unwrap_or_else(|err| {
+                            run_output(
+                                gpu,
+                                ResetVfpDeltas {
+                                    domain: VfpResetDomain::All,
+                                },
+                            )
+                            .unwrap_or_else(|err| {
                                 eprintln!("Warning: Failed to reset GPU due to {:?}", err);
                             });
                             break;
@@ -894,7 +925,12 @@ fn run_gpuboostv3_short_phase<V: std::fmt::Display + Copy>(
         writeln!(l, "Test result is code #{} .", test_flag)?;
 
         if test_flag != 0 {
-            reset_all_nvapi_vfp_deltas(gpu)?;
+            run_output(
+                gpu,
+                ResetVfpDeltas {
+                    domain: VfpResetDomain::All,
+                },
+            )?;
             println!(
                 "Test #{} FAILED on point: #{}, voltage: #{}, freq_delta: #+{}. ",
                 test_code,
@@ -998,7 +1034,12 @@ fn run_gpuboostv3_long_phase<V: std::fmt::Display + Copy>(
             args.common.stressor_extra_args,
         );
         if long_duration_flag != 0 {
-            reset_all_nvapi_vfp_deltas(gpu)?;
+            run_output(
+                gpu,
+                ResetVfpDeltas {
+                    domain: VfpResetDomain::All,
+                },
+            )?;
             println!(
                 "Long Test #{} FAILED on point: #{}, voltage: #{}, freq_delta: #+{}. ",
                 *test_code,
@@ -1236,8 +1277,8 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
             let (lvp, uvp) = handle_test_voltage_limits(gpus, matches, print_scan_separator)?;
 
             for gpu in gpus {
-                let minimum_voltage = query_nvapi_vfp_point_voltage(gpu, lvp)?;
-                let maximum_voltage = query_nvapi_vfp_point_voltage(gpu, uvp)?;
+                let minimum_voltage = run_output(gpu, QueryVfpPointVoltage { point: lvp })?;
+                let maximum_voltage = run_output(gpu, QueryVfpPointVoltage { point: uvp })?;
                 writeln!(l)?;
                 writeln!(l, "minimum_voltage_point: {} @ {}", lvp, minimum_voltage)?;
                 writeln!(l, "maximum_voltage_point: {} @ {}", uvp, maximum_voltage)?;
@@ -1255,16 +1296,22 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
             [(PState::P0, ClockDomain::Memory, KilohertzDelta(0))],
         )?;
 
-        let info = query_gpu_info(gpu)?;
+        let info = run_output(gpu, QueryGpuInfo)?;
         let gpu_type = fetch_gpu_type(&info);
 
-        set_nvapi_vfp_point_delta(gpu, upper_voltage_point, KilohertzDelta(45000))?;
+        run_output(
+            gpu,
+            SetVfpPointDelta {
+                point: upper_voltage_point,
+                delta: KilohertzDelta(45000),
+            },
+        )?;
         match handle_lock_vfp(gpus, matches, upper_voltage_point, false) {
             Ok(_) => println!("Voltage locked successfully."),
             Err(e) => eprintln!("Error: Failed to lock voltage - {:?}", e),
         }
 
-        let readout_f = query_gpu_status(gpu)?.clone().clocks;
+        let readout_f = run_output(gpu, QueryGpuStatus)?.clone().clocks;
 
         let mut clocks = Vec::new();
         for (clock_name, freq) in readout_f {
@@ -1293,7 +1340,7 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
 
         let mut core_oc_safe_limit_ref = core_oc_safe_limit;
         let _init_core_oc_value_ref = init_core_oc_value;
-        let points = query_gpu_status(gpu)?
+        let points = run_output(gpu, QueryGpuStatus)?
             .vfp
             .ok_or(Error::VfpUnsupported)?
             .graphics;
@@ -1660,7 +1707,7 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
                 KilohertzDelta(init_vmem_oc_value)
             );
         }
-        reset_nvapi_cooler_levels(gpu).unwrap_or_else(|_e| {
+        run_output(gpu, ResetCoolerLevels).unwrap_or_else(|_e| {
             handle_reset_nvml_cooler_single_gpu(gpu, "all")
                 .unwrap_or_else(|e| eprintln!("Failed to reset cooler: {e}"))
         })
@@ -1691,7 +1738,7 @@ pub fn autoscan_legacy(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> Resul
 
     for gpu in gpus {
         // 从 GpuType 读取该世代的固定 OC 扫描参数
-        let info = query_gpu_info(gpu)?;
+        let info = run_output(gpu, QueryGpuInfo)?;
         let gpu_type = fetch_gpu_type(&info);
 
         let GpuOcParams {
@@ -1821,7 +1868,7 @@ pub fn autoscan_legacy(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> Resul
                 gpu,
                 [(PState::P0, ClockDomain::Graphics, KilohertzDelta(0))],
             )?;
-            reset_nvapi_cooler_levels(gpu).unwrap_or_else(|_e| {
+            run_output(gpu, ResetCoolerLevels).unwrap_or_else(|_e| {
                 handle_reset_nvml_cooler_single_gpu(gpu, "all")
                     .unwrap_or_else(|e| eprintln!("Failed to reset cooler: {e}"))
             })

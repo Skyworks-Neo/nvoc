@@ -133,8 +133,7 @@ fn gpu_id_selection_ok() {
         vec![0x100, 0x300]
     );
 
-    let selected =
-        select_targets(&targets, &GpuSelector::from_specs(["768".to_string()])).unwrap();
+    let selected = select_targets(&targets, &GpuSelector::from_specs(["768".to_string()])).unwrap();
     assert_eq!(
         selected.iter().map(|t| t.id.0).collect::<Vec<_>>(),
         vec![0x300]

@@ -13,10 +13,10 @@ use nvoc_core::{
     SensorThrottle,
 };
 use nvoc_core::{
-    GpuType, fetch_gpu_type, legacy_p0_core_max_voltage_delta, query_domain_vf_points_indexed,
-    query_domain_vfp_indices, query_gpu_info, set_nvapi_cooler_settings,
-    set_nvapi_domain_vfp_deltas, set_nvapi_power_limits, set_nvapi_pstate_base_voltage,
-    set_nvapi_sensor_limits, set_nvapi_vfp_point_delta, set_nvapi_voltage_boost,
+    GpuOperation, GpuType, QueryGpuInfo, SetNvapiPowerLimits, SetNvapiSensorLimits,
+    SetPstateBaseVoltage, SetVfpPointDelta, SetVoltageBoost, fetch_gpu_type,
+    legacy_p0_core_max_voltage_delta, query_domain_vf_points_indexed, query_domain_vfp_indices,
+    run, set_nvapi_cooler_settings, set_nvapi_domain_vfp_deltas,
 };
 use std::cmp::min;
 use std::convert::TryFrom;
@@ -25,12 +25,16 @@ use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 use std::process::Child;
 
+use std::fs;
 #[cfg(any(windows, target_os = "linux"))]
 use std::process::Command;
 use std::thread::sleep;
 use std::time::Duration;
-use std::{fs, iter};
 // Adjust imports as needed
+
+fn run_output<O: GpuOperation>(gpu: &GpuTarget<'_>, op: O) -> Result<O::Output, Error> {
+    run(gpu, op).map(|report| report.output)
+}
 
 fn csv_error(err: csv::Error) -> Error {
     Error::Custom(format!("CSV Error: {}", err))
@@ -394,7 +398,7 @@ pub fn handle_vfp_export(gpu: &GpuTarget<'_>, matches: &clap::ArgMatches) -> Res
         println!("Warning! Disabling dynamic check may generate unstable scan result!")
     }
 
-    let info = query_gpu_info(gpu)?;
+    let info = run_output(gpu, QueryGpuInfo)?;
     let gpu_type = fetch_gpu_type(&info).unwrap_or(GpuType::Unknown);
     let minimum_delta_core_freq_step = gpu_type.minimum_freq_step_khz();
     let max_q_flag = gpu_type.is_maxq();
@@ -506,7 +510,7 @@ fn set_domain_vfp_deltas_raw(
 }
 
 pub fn sync_memory_pstate_as_p0(gpu: &GpuTarget<'_>) -> Result<(), Error> {
-    let info = query_gpu_info(gpu)?;
+    let info = run_output(gpu, QueryGpuInfo)?;
     let gpu_type = fetch_gpu_type(&info).unwrap_or(GpuType::Unknown);
     let memory_points =
         collect_domain_vf_points_indexed(gpu, ClockDomain::Memory, gpu_type.is_legacy_vfp())?;
@@ -605,7 +609,7 @@ pub fn handle_vfp_import(gpu: &GpuTarget<'_>, matches: &clap::ArgMatches) -> Res
 
     if domain == ClockDomain::Graphics {
         for (point, delta) in deltas {
-            set_nvapi_vfp_point_delta(gpu, point, delta)?;
+            run_output(gpu, SetVfpPointDelta { point, delta })?;
         }
     } else {
         set_domain_vfp_deltas_raw(gpu, domain, &deltas)?;
@@ -756,7 +760,7 @@ pub fn fix_result(gpu: &GpuTarget<'_>, matches: &clap::ArgMatches) -> Result<(),
     let mut sum_f: u64 = 0;
     let mut sum_df: u64 = 0;
 
-    let info = query_gpu_info(gpu)?;
+    let info = run_output(gpu, QueryGpuInfo)?;
     let gpu_type = fetch_gpu_type(&info).unwrap_or(GpuType::Unknown);
     let minimum_delta_core_freq_step = gpu_type.minimum_freq_step_khz();
     let maxq_flag = gpu_type.is_maxq();
@@ -1087,7 +1091,7 @@ pub fn key_point_extractor(
 
     let mut maxq_flag = false;
     for gpu in gpus {
-        let info = query_gpu_info(gpu)?;
+        let info = run_output(gpu, QueryGpuInfo)?;
         let gpu_type = fetch_gpu_type(&info).unwrap_or(GpuType::Unknown);
         maxq_flag = gpu_type.is_maxq();
     }
@@ -1170,7 +1174,7 @@ pub fn apply_autoscan_profile(
     matches: &clap::ArgMatches,
     cooler_level: u32,
 ) -> Result<(), Error> {
-    let info = query_gpu_info(gpu)?;
+    let info = run_output(gpu, QueryGpuInfo)?;
     let gpu_name = &info.name;
 
     if gpu_name.contains("Laptop") || gpu_name.contains("Device") {
@@ -1189,7 +1193,13 @@ pub fn apply_autoscan_profile(
         let max_delta = legacy_p0_core_max_voltage_delta(gpu)?;
         match max_delta {
             Some(max_uv) => {
-                set_nvapi_pstate_base_voltage(gpu, max_uv, nvoc_core::PState::P0)?;
+                run_output(
+                    gpu,
+                    SetPstateBaseVoltage {
+                        pstate: nvoc_core::PState::P0,
+                        delta_uv: max_uv,
+                    },
+                )?;
                 println!(
                     "Successfully set P0 base voltage delta to max +{}\u{03bc}V (legacy GPU).",
                     max_uv.0
@@ -1203,7 +1213,12 @@ pub fn apply_autoscan_profile(
         }
     } else {
         // 10 系及以后：使用 VoltRails boost
-        set_nvapi_voltage_boost(gpu, Percentage(100))?;
+        run_output(
+            gpu,
+            SetVoltageBoost {
+                boost: Percentage(100),
+            },
+        )?;
         println!("Successfully set VDDQ boost to +100% (max allowed V_core in fact).");
     }
 
@@ -1237,7 +1252,12 @@ pub fn apply_autoscan_profile(
             _max_temp_lim,
             mut _pff_curve,
         )) => {
-            set_nvapi_power_limits(gpu, iter::once(_max_tdp_percent))?;
+            run_output(
+                gpu,
+                SetNvapiPowerLimits {
+                    limits: vec![_max_tdp_percent],
+                },
+            )?;
             println!("Successfully set the TDP to {}", _max_tdp_percent);
 
             for point in _pff_curve.points.iter_mut() {
@@ -1250,7 +1270,12 @@ pub fn apply_autoscan_profile(
                 curve: Some(_pff_curve.clone()),
             };
 
-            set_nvapi_sensor_limits(gpu, iter::once(temp_limit))?;
+            run_output(
+                gpu,
+                SetNvapiSensorLimits {
+                    limits: vec![temp_limit],
+                },
+            )?;
             println!(
                 "Successfully set the Temp_limit to {} and pff-curve to {}",
                 _max_temp_lim, _pff_curve
