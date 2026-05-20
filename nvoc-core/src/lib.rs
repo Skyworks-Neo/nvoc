@@ -59,16 +59,3 @@ pub use nvapi_hi::{
     GpuSettings, GpuStatus, Kilohertz, KilohertzDelta, Microvolts, MicrovoltsDelta, PState,
     Percentage, SensorThrottle, VfPoint,
 };
-
-#[doc(hidden)]
-pub mod legacy {
-    pub use crate::conv::{
-        nvml_pstate_to_index, nvml_pstate_to_str, parse_nvml_pstate, try_parse_nvml_pstate,
-    };
-    pub use crate::gpu::{
-        get_sorted_gpu_ids_nvml, get_sorted_gpus, select_gpu_ids, select_gpus, single_gpu,
-    };
-    pub use crate::gpu_type::{detect_gpu_type, fetch_gpu_type};
-    pub use crate::nvapi::*;
-    pub use crate::nvml::*;
-}

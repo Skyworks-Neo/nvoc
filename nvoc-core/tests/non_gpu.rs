@@ -1,12 +1,11 @@
 use nvapi_hi::{ClockDomain, CoolerPolicy, Kilohertz, Microvolts, PState, VfpPoint};
 use nvml_wrapper::enum_wrappers::device::PerformanceState;
 use nvml_wrapper::enums::device::FanControlPolicy;
-use nvoc_core::legacy::select_gpu_ids;
 use nvoc_core::{
     BackendSet, ConvertEnum, GpuId, GpuOperation, GpuSelector, GpuTarget, GpuType, OperationKind,
     PciAddress, QueryPowerLimits, VfpResetDomain, detect_gpu_type, find_matching_vfp_point,
     nvml_pstate_to_index, nvml_pstate_to_str, parse_nvml_fan_control_policy, parse_nvml_pstate,
-    run, try_parse_nvml_pstate,
+    run, select_targets, try_parse_nvml_pstate,
 };
 use std::collections::BTreeMap;
 use std::str::FromStr;
@@ -107,48 +106,72 @@ fn fan_policy_aliases() {
 
 #[test]
 fn gpu_id_selection_ok() {
-    let gpu_ids = [0x100, 0x300, 0x900];
+    let targets: Vec<GpuTarget<'_>> = [0x100u32, 0x300, 0x900]
+        .into_iter()
+        .enumerate()
+        .map(|(i, id)| GpuTarget {
+            id: GpuId(id),
+            index: i,
+            nvapi: None,
+            nvml: None,
+        })
+        .collect();
 
+    let selected = select_targets(&targets, &GpuSelector::all()).unwrap();
     assert_eq!(
-        select_gpu_ids(&gpu_ids, &GpuSelector::all()).unwrap(),
-        gpu_ids
+        selected.iter().map(|t| t.id.0).collect::<Vec<_>>(),
+        vec![0x100, 0x300, 0x900]
     );
+
+    let selected = select_targets(
+        &targets,
+        &GpuSelector::from_specs(["0".to_string(), "0x300".to_string()]),
+    )
+    .unwrap();
     assert_eq!(
-        select_gpu_ids(
-            &gpu_ids,
-            &GpuSelector::from_specs(["0".to_string(), "0x300".to_string()])
-        )
-        .unwrap(),
+        selected.iter().map(|t| t.id.0).collect::<Vec<_>>(),
         vec![0x100, 0x300]
     );
+
+    let selected =
+        select_targets(&targets, &GpuSelector::from_specs(["768".to_string()])).unwrap();
     assert_eq!(
-        select_gpu_ids(&gpu_ids, &GpuSelector::from_specs(["768".to_string()])).unwrap(),
+        selected.iter().map(|t| t.id.0).collect::<Vec<_>>(),
         vec![0x300]
     );
 
-    let err = select_gpu_ids(&gpu_ids, &GpuSelector::from_specs(["pu=0".to_string()]))
+    let err = select_targets(&targets, &GpuSelector::from_specs(["pu=0".to_string()]))
         .unwrap_err()
         .to_string();
     assert!(err.contains("did you mean --gpu=0?"));
 
-    assert!(select_gpu_ids(&[], &GpuSelector::all()).is_err());
+    assert!(select_targets(&[], &GpuSelector::all()).is_err());
 }
 
 #[test]
 fn gpu_id_selection_rejects_bad_specs() {
-    let gpu_ids = [0x100, 0x300];
+    let targets: Vec<GpuTarget<'_>> = [0x100u32, 0x300]
+        .into_iter()
+        .enumerate()
+        .map(|(i, id)| GpuTarget {
+            id: GpuId(id),
+            index: i,
+            nvapi: None,
+            nvml: None,
+        })
+        .collect();
 
-    let err = select_gpu_ids(&gpu_ids, &GpuSelector::from_specs(["x".to_string()]))
+    let err = select_targets(&targets, &GpuSelector::from_specs(["x".to_string()]))
         .unwrap_err()
         .to_string();
     assert!(err.contains("expected a decimal or hex"));
 
-    let err = select_gpu_ids(&gpu_ids, &GpuSelector::from_specs(["2".to_string()]))
+    let err = select_targets(&targets, &GpuSelector::from_specs(["2".to_string()]))
         .unwrap_err()
         .to_string();
     assert!(err.contains("no GPU matches --gpu 2"));
 
-    let err = select_gpu_ids(&gpu_ids, &GpuSelector::from_specs(["0x999".to_string()]))
+    let err = select_targets(&targets, &GpuSelector::from_specs(["0x999".to_string()]))
         .unwrap_err()
         .to_string();
     assert!(err.contains("no GPU matches --gpu 2457"));

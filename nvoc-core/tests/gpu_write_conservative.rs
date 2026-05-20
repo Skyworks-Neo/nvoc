@@ -1,16 +1,12 @@
 use nvapi_hi::{ClockDomain, KilohertzDelta, PState};
-use nvml_wrapper::Nvml;
 use nvml_wrapper::enum_wrappers::device::PerformanceState;
 use nvml_wrapper::enums::device::FanControlPolicy;
-use nvoc_core::legacy::{
-    get_nvml_core_clock_vf_offset, get_nvml_mem_clock_vf_offset, get_nvml_pstate_info,
-    get_sorted_gpu_ids_nvml, get_sorted_gpus, parse_nvml_pstate, query_nvml_power_watts,
-    reset_nvml_applications_clocks, reset_nvml_core_locked_clocks, reset_nvml_mem_locked_clocks,
-    reset_vfp_deltas, reset_vfp_frequency_lock, select_gpus, set_default_fan_speed, set_fan_speed,
-    set_nvml_core_clock_vf_offset, set_nvml_core_locked_clocks, set_nvml_mem_clock_vf_offset,
-    set_nvml_mem_locked_clocks, set_nvml_power_limit, set_pstate_clock_offset_preserve,
+use nvoc_core::{
+    BackendSet, Error, GpuId, GpuTarget, QueryClockOffset, QueryPowerLimits,
+    QueryPstates, ResetApplicationsClocks, ResetFanSpeed, ResetLockedClocks, ResetVfpDeltas,
+    ResetVfpFrequencyLock, SetClockOffset, SetFanSpeed, SetLockedClocks, SetPstateClockOffset,
+    SetPowerLimit, TargetInventory, VfpResetDomain, discover_targets, parse_nvml_pstate, run,
 };
-use nvoc_core::{Error, GpuSelector, VfpResetDomain};
 
 const INVALID_GPU_ID: u32 = u32::MAX - 255;
 
@@ -22,27 +18,27 @@ fn require_write_opt_in() {
     );
 }
 
-fn nvml() -> Nvml {
+fn inventory() -> TargetInventory {
     require_write_opt_in();
-    Nvml::init().expect("NVML should initialize on the GPU test runner")
+    discover_targets(BackendSet::Both).expect("GPU backends should initialize on the GPU test runner")
 }
 
-fn first_gpu_id_nvml(nvml: &Nvml) -> u32 {
-    let ids = get_sorted_gpu_ids_nvml(nvml).expect("NVML should enumerate GPU ids");
-    assert!(
-        !ids.is_empty(),
-        "GPU test runner should expose at least one NVML GPU"
-    );
-    ids[0]
+fn first_target_with_nvml(inventory: &TargetInventory) -> GpuTarget<'_> {
+    let targets = inventory.targets();
+    let target = targets
+        .iter()
+        .find(|t| t.nvml.is_some())
+        .expect("GPU test runner should expose at least one NVML GPU");
+    *target
 }
 
-fn first_gpu() -> nvapi_hi::Gpu {
-    require_write_opt_in();
-    let gpus = get_sorted_gpus().expect("NVAPI should enumerate GPUs on the GPU test runner");
-    let selected = select_gpus(&gpus, &GpuSelector::from_specs(["0".to_string()]))
-        .expect("first GPU should be selectable");
-    assert_eq!(selected.len(), 1);
-    gpus.into_iter().next().unwrap()
+fn first_target_with_nvapi(inventory: &TargetInventory) -> GpuTarget<'_> {
+    let targets = inventory.targets();
+    let target = targets
+        .iter()
+        .find(|t| t.nvapi.is_some())
+        .expect("GPU test runner should expose at least one NVAPI GPU");
+    *target
 }
 
 fn assert_invalid_gpu_id_error(result: Result<(), Error>) {
@@ -75,32 +71,30 @@ fn handle_cleanup_error(label: &str, err: impl std::fmt::Display, fail_on_permis
 }
 
 struct NvmlCleanupGuard<'a> {
-    nvml: &'a Nvml,
-    gpu_id: u32,
+    target: GpuTarget<'a>,
     restore_power_limit_w: Option<u32>,
     restore_clock_offsets: Vec<(PerformanceState, Option<i32>, Option<i32>)>,
     cleaned: bool,
 }
 
 impl<'a> NvmlCleanupGuard<'a> {
-    fn new(nvml: &'a Nvml, gpu_id: u32) -> Self {
+    fn new(target: GpuTarget<'a>) -> Self {
+        let power = run(&target, QueryPowerLimits)
+            .ok()
+            .map(|p| p.output.current_watts.round() as u32)
+            .filter(|limit| *limit > 0);
         Self {
-            nvml,
-            gpu_id,
-            restore_power_limit_w: query_nvml_power_watts(nvml, gpu_id)
-                .map(|(_, current_w, _)| current_w.round() as u32)
-                .filter(|limit| *limit > 0),
+            target,
+            restore_power_limit_w: power,
             restore_clock_offsets: Vec::new(),
             cleaned: false,
         }
     }
 
     fn remember_clock_offsets(&mut self, pstate: PerformanceState) {
-        self.restore_clock_offsets.push((
-            pstate,
-            get_nvml_core_clock_vf_offset(self.nvml, self.gpu_id, pstate),
-            get_nvml_mem_clock_vf_offset(self.nvml, self.gpu_id, pstate),
-        ));
+        let core = run(&self.target, QueryClockOffset { domain: ClockDomain::Graphics, pstate }).ok().map(|o| o.output.mhz);
+        let mem = run(&self.target, QueryClockOffset { domain: ClockDomain::Memory, pstate }).ok().map(|o| o.output.mhz);
+        self.restore_clock_offsets.push((pstate, core, mem));
     }
 
     fn reset_after_write(&mut self) {
@@ -116,13 +110,13 @@ impl<'a> NvmlCleanupGuard<'a> {
         for (pstate, core_offset, mem_offset) in self.restore_clock_offsets.iter().copied() {
             if let Some(offset) = core_offset
                 && let Err(err) =
-                    set_nvml_core_clock_vf_offset(self.nvml, self.gpu_id, offset, pstate)
+                    run(&self.target, SetClockOffset { domain: ClockDomain::Graphics, pstate, mhz: offset })
             {
                 handle_cleanup_error("NVML core clock offset restore", err, fail_on_permission);
             }
             if let Some(offset) = mem_offset
                 && let Err(err) =
-                    set_nvml_mem_clock_vf_offset(self.nvml, self.gpu_id, offset, pstate)
+                    run(&self.target, SetClockOffset { domain: ClockDomain::Memory, pstate, mhz: offset })
             {
                 handle_cleanup_error("NVML memory clock offset restore", err, fail_on_permission);
             }
@@ -131,15 +125,15 @@ impl<'a> NvmlCleanupGuard<'a> {
         for (label, result) in [
             (
                 "NVML application clocks reset",
-                reset_nvml_applications_clocks(self.nvml, self.gpu_id),
+                run(&self.target, ResetApplicationsClocks).map(|_| ()),
             ),
             (
                 "NVML core locked clocks reset",
-                reset_nvml_core_locked_clocks(self.nvml, self.gpu_id),
+                run(&self.target, ResetLockedClocks { domain: ClockDomain::Graphics }).map(|_| ()),
             ),
             (
                 "NVML memory locked clocks reset",
-                reset_nvml_mem_locked_clocks(self.nvml, self.gpu_id),
+                run(&self.target, ResetLockedClocks { domain: ClockDomain::Memory }).map(|_| ()),
             ),
         ] {
             if let Err(err) = result {
@@ -148,7 +142,7 @@ impl<'a> NvmlCleanupGuard<'a> {
         }
 
         if let Some(limit_w) = self.restore_power_limit_w
-            && let Err(err) = set_nvml_power_limit(self.nvml, self.gpu_id, limit_w)
+            && let Err(err) = run(&self.target, SetPowerLimit { watts: limit_w })
         {
             handle_cleanup_error("NVML power limit restore", err, fail_on_permission);
         }
@@ -162,14 +156,14 @@ impl Drop for NvmlCleanupGuard<'_> {
 }
 
 struct NvapiCleanupGuard<'a> {
-    gpu: &'a nvapi_hi::Gpu,
+    target: GpuTarget<'a>,
     cleaned: bool,
 }
 
 impl<'a> NvapiCleanupGuard<'a> {
-    fn new(gpu: &'a nvapi_hi::Gpu) -> Self {
+    fn new(target: GpuTarget<'a>) -> Self {
         Self {
-            gpu,
+            target,
             cleaned: false,
         }
     }
@@ -185,11 +179,11 @@ impl<'a> NvapiCleanupGuard<'a> {
         self.cleaned = true;
 
         for domain in [ClockDomain::Graphics, ClockDomain::Memory] {
-            if let Err(err) = reset_vfp_frequency_lock(self.gpu, domain) {
+            if let Err(err) = run(&self.target, ResetVfpFrequencyLock { domain }) {
                 handle_cleanup_error("NVAPI VFP frequency lock reset", err, fail_on_permission);
             }
             if let Err(err) =
-                set_pstate_clock_offset_preserve(self.gpu, PState::P0, domain, KilohertzDelta(0))
+                run(&self.target, SetPstateClockOffset { pstate: PState::P0, domain, delta: KilohertzDelta(0) })
             {
                 handle_cleanup_error(
                     "NVAPI P0 pstate clock offset reset",
@@ -199,7 +193,7 @@ impl<'a> NvapiCleanupGuard<'a> {
             }
         }
 
-        if let Err(err) = reset_vfp_deltas(self.gpu, VfpResetDomain::All) {
+        if let Err(err) = run(&self.target, ResetVfpDeltas { domain: VfpResetDomain::All }) {
             handle_cleanup_error("NVAPI VFP delta reset", err, fail_on_permission);
         }
     }
@@ -214,8 +208,13 @@ impl Drop for NvapiCleanupGuard<'_> {
 #[test]
 #[ignore]
 fn nvml_fan_level_rejects() {
-    let nvml = nvml();
-    let result = set_fan_speed(&nvml, INVALID_GPU_ID, 0, FanControlPolicy::Manual, 101);
+    let bad_target = GpuTarget {
+        id: GpuId(INVALID_GPU_ID),
+        index: 0,
+        nvapi: None,
+        nvml: None,
+    };
+    let result = run(&bad_target, SetFanSpeed { fan_index: 0, policy: FanControlPolicy::Manual, level: 101 });
     let err = result.expect_err("fan levels above 100 should be rejected");
     assert!(err.to_string().contains("Invalid fan level 101"));
 }
@@ -223,48 +222,52 @@ fn nvml_fan_level_rejects() {
 #[test]
 #[ignore]
 fn nvml_bad_gpu_rejects() {
-    let nvml = nvml();
-    let pstate = parse_nvml_pstate("P0");
+    let pstate = parse_nvml_pstate("P0").unwrap();
+    let bad_target = GpuTarget {
+        id: GpuId(INVALID_GPU_ID),
+        index: 0,
+        nvapi: None,
+        nvml: None,
+    };
 
-    assert_invalid_gpu_id_error(set_nvml_power_limit(&nvml, INVALID_GPU_ID, 1));
-    assert_invalid_gpu_id_error(set_nvml_core_clock_vf_offset(
-        &nvml,
-        INVALID_GPU_ID,
-        0,
-        pstate,
-    ));
-    assert_invalid_gpu_id_error(set_nvml_mem_clock_vf_offset(
-        &nvml,
-        INVALID_GPU_ID,
-        0,
-        pstate,
-    ));
-    assert_invalid_gpu_id_error(set_default_fan_speed(&nvml, INVALID_GPU_ID, 0));
-    assert_invalid_gpu_id_error(reset_nvml_applications_clocks(&nvml, INVALID_GPU_ID));
-    assert_invalid_gpu_id_error(reset_nvml_core_locked_clocks(&nvml, INVALID_GPU_ID));
-    assert_invalid_gpu_id_error(reset_nvml_mem_locked_clocks(&nvml, INVALID_GPU_ID));
-    assert_invalid_gpu_id_error(set_nvml_core_locked_clocks(&nvml, INVALID_GPU_ID, 1, 1));
-    assert_invalid_gpu_id_error(set_nvml_mem_locked_clocks(&nvml, INVALID_GPU_ID, 1, 1));
+    assert_invalid_gpu_id_error(run(&bad_target, SetPowerLimit { watts: 1 }).map(|_| ()));
+    assert_invalid_gpu_id_error(
+        run(&bad_target, SetClockOffset { domain: ClockDomain::Graphics, pstate, mhz: 0 }).map(|_| ()),
+    );
+    assert_invalid_gpu_id_error(
+        run(&bad_target, SetClockOffset { domain: ClockDomain::Memory, pstate, mhz: 0 }).map(|_| ()),
+    );
+    assert_invalid_gpu_id_error(run(&bad_target, ResetFanSpeed { fan_index: 0 }).map(|_| ()));
+    assert_invalid_gpu_id_error(run(&bad_target, ResetApplicationsClocks).map(|_| ()));
+    assert_invalid_gpu_id_error(run(&bad_target, ResetLockedClocks { domain: ClockDomain::Graphics }).map(|_| ()));
+    assert_invalid_gpu_id_error(run(&bad_target, ResetLockedClocks { domain: ClockDomain::Memory }).map(|_| ()));
+    assert_invalid_gpu_id_error(
+        run(&bad_target, SetLockedClocks { domain: ClockDomain::Graphics, min_mhz: 1, max_mhz: 1 }).map(|_| ()),
+    );
+    assert_invalid_gpu_id_error(
+        run(&bad_target, SetLockedClocks { domain: ClockDomain::Memory, min_mhz: 1, max_mhz: 1 }).map(|_| ()),
+    );
 }
 
 #[test]
 #[ignore]
 fn nvml_power_current() {
-    let nvml = nvml();
-    let gpu_id = first_gpu_id_nvml(&nvml);
-    let mut cleanup = NvmlCleanupGuard::new(&nvml, gpu_id);
-    let Some((min_w, current_w, max_w)) = query_nvml_power_watts(&nvml, gpu_id) else {
-        return;
-    };
+    let inv = inventory();
+    let target = first_target_with_nvml(&inv);
+    let mut cleanup = NvmlCleanupGuard::new(target);
+    let power = run(&target, QueryPowerLimits).expect("power limits should be readable").output;
+    let min_w = power.min_watts;
+    let current_w = power.current_watts;
+    let max_w = power.max_watts;
     assert!(min_w >= 0.0);
     assert!(max_w >= current_w || max_w == 0.0);
 
     if current_w.is_finite() && current_w > 0.0 {
-        match set_nvml_power_limit(&nvml, gpu_id, current_w.round() as u32) {
-            Ok(()) => {
-                let (_, after_w, _) = query_nvml_power_watts(&nvml, gpu_id)
-                    .expect("power should remain readable after current-value write");
-                assert!((after_w - current_w).abs() <= 1.0);
+        match run(&target, SetPowerLimit { watts: current_w.round() as u32 }) {
+            Ok(_) => {
+                let after = run(&target, QueryPowerLimits)
+                    .expect("power should remain readable after current-value write").output;
+                assert!((after.current_watts - current_w).abs() <= 1.0);
             }
             Err(err) => {
                 let msg = err.to_string();
@@ -283,21 +286,20 @@ fn nvml_power_current() {
 #[test]
 #[ignore]
 fn nvml_offsets_current() {
-    let nvml = nvml();
-    let gpu_id = first_gpu_id_nvml(&nvml);
-    let mut cleanup = NvmlCleanupGuard::new(&nvml, gpu_id);
-    let Some(pstates) = get_nvml_pstate_info(&nvml, gpu_id) else {
-        return;
-    };
+    let inv = inventory();
+    let target = first_target_with_nvml(&inv);
+    let mut cleanup = NvmlCleanupGuard::new(target);
+    let pstates = run(&target, QueryPstates).expect("pstate info should be readable").output;
 
-    for (pstate, _, _, _, _) in pstates.into_iter().take(1) {
-        cleanup.remember_clock_offsets(pstate);
+    for pstate in pstates.into_iter().take(1) {
+        cleanup.remember_clock_offsets(pstate.pstate);
 
-        if let Some(offset) = get_nvml_core_clock_vf_offset(&nvml, gpu_id, pstate) {
-            match set_nvml_core_clock_vf_offset(&nvml, gpu_id, offset, pstate) {
-                Ok(()) => assert_eq!(
-                    get_nvml_core_clock_vf_offset(&nvml, gpu_id, pstate),
-                    Some(offset)
+        if let Ok(offset_report) = run(&target, QueryClockOffset { domain: ClockDomain::Graphics, pstate: pstate.pstate }) {
+            let offset = offset_report.output.mhz;
+            match run(&target, SetClockOffset { domain: ClockDomain::Graphics, pstate: pstate.pstate, mhz: offset }) {
+                Ok(_) => assert_eq!(
+                    run(&target, QueryClockOffset { domain: ClockDomain::Graphics, pstate: pstate.pstate }).unwrap().output.mhz,
+                    offset
                 ),
                 Err(err) => {
                     let msg = err.to_string();
@@ -307,11 +309,12 @@ fn nvml_offsets_current() {
             }
         }
 
-        if let Some(offset) = get_nvml_mem_clock_vf_offset(&nvml, gpu_id, pstate) {
-            match set_nvml_mem_clock_vf_offset(&nvml, gpu_id, offset, pstate) {
-                Ok(()) => assert_eq!(
-                    get_nvml_mem_clock_vf_offset(&nvml, gpu_id, pstate),
-                    Some(offset)
+        if let Ok(offset_report) = run(&target, QueryClockOffset { domain: ClockDomain::Memory, pstate: pstate.pstate }) {
+            let offset = offset_report.output.mhz;
+            match run(&target, SetClockOffset { domain: ClockDomain::Memory, pstate: pstate.pstate, mhz: offset }) {
+                Ok(_) => assert_eq!(
+                    run(&target, QueryClockOffset { domain: ClockDomain::Memory, pstate: pstate.pstate }).unwrap().output.mhz,
+                    offset
                 ),
                 Err(err) => {
                     let msg = err.to_string();
@@ -328,14 +331,14 @@ fn nvml_offsets_current() {
 #[test]
 #[ignore]
 fn nvml_resets() {
-    let nvml = nvml();
-    let gpu_id = first_gpu_id_nvml(&nvml);
-    let mut cleanup = NvmlCleanupGuard::new(&nvml, gpu_id);
+    let inv = inventory();
+    let target = first_target_with_nvml(&inv);
+    let mut cleanup = NvmlCleanupGuard::new(target);
 
     for result in [
-        reset_nvml_applications_clocks(&nvml, gpu_id),
-        reset_nvml_core_locked_clocks(&nvml, gpu_id),
-        reset_nvml_mem_locked_clocks(&nvml, gpu_id),
+        run(&target, ResetApplicationsClocks).map(|_| ()),
+        run(&target, ResetLockedClocks { domain: ClockDomain::Graphics }).map(|_| ()),
+        run(&target, ResetLockedClocks { domain: ClockDomain::Memory }).map(|_| ()),
     ] {
         if let Err(err) = result {
             let msg = err.to_string();
@@ -353,12 +356,13 @@ fn nvml_resets() {
 #[test]
 #[ignore]
 fn nvapi_lock_resets() {
-    let gpu = first_gpu();
-    let mut cleanup = NvapiCleanupGuard::new(&gpu);
+    let inv = inventory();
+    let target = first_target_with_nvapi(&inv);
+    let mut cleanup = NvapiCleanupGuard::new(target);
 
     for domain in [ClockDomain::Graphics, ClockDomain::Memory] {
-        match reset_vfp_frequency_lock(&gpu, domain) {
-            Ok(()) => {}
+        match run(&target, ResetVfpFrequencyLock { domain }) {
+            Ok(_) => {}
             Err(Error::VfpUnsupported) | Err(Error::FeatureUnsupportedErr) => {}
             Err(err) if matches!(err, Error::Nvapi(_)) => {
                 let msg = err.to_string();
@@ -374,10 +378,11 @@ fn nvapi_lock_resets() {
 #[test]
 #[ignore]
 fn nvapi_vfp_delta_reset() {
-    let gpu = first_gpu();
-    let mut cleanup = NvapiCleanupGuard::new(&gpu);
-    match reset_vfp_deltas(&gpu, VfpResetDomain::All) {
-        Ok(()) => {}
+    let inv = inventory();
+    let target = first_target_with_nvapi(&inv);
+    let mut cleanup = NvapiCleanupGuard::new(target);
+    match run(&target, ResetVfpDeltas { domain: VfpResetDomain::All }) {
+        Ok(_) => {}
         Err(err) => {
             let msg = err.to_string();
             assert_not_permission_denied(&msg);
@@ -396,14 +401,15 @@ fn nvapi_vfp_delta_reset() {
 #[test]
 #[ignore]
 fn nvapi_pstate_zero_delta() {
-    let gpu = first_gpu();
-    let mut cleanup = NvapiCleanupGuard::new(&gpu);
+    let inv = inventory();
+    let target = first_target_with_nvapi(&inv);
+    let mut cleanup = NvapiCleanupGuard::new(target);
     for (pstate, domain) in [
         (PState::P0, ClockDomain::Graphics),
         (PState::P0, ClockDomain::Memory),
     ] {
-        match set_pstate_clock_offset_preserve(&gpu, pstate, domain, KilohertzDelta(0)) {
-            Ok(()) => {}
+        match run(&target, SetPstateClockOffset { pstate, domain, delta: KilohertzDelta(0) }) {
+            Ok(_) => {}
             Err(err) => {
                 let msg = err.to_string();
                 assert_not_permission_denied(&msg);

@@ -155,6 +155,17 @@ pub struct GpuTarget<'a> {
     pub nvml: Option<&'a Nvml>,
 }
 
+impl fmt::Debug for GpuTarget<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GpuTarget")
+            .field("id", &self.id)
+            .field("index", &self.index)
+            .field("nvapi", &self.nvapi.is_some())
+            .field("nvml", &self.nvml.is_some())
+            .finish()
+    }
+}
+
 impl<'a> GpuTarget<'a> {
     pub fn nvapi(&self) -> Result<&'a Gpu, Error> {
         self.nvapi
