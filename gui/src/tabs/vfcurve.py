@@ -106,9 +106,6 @@ class VFCurveTab:
             hover_color="#96281b",
             command=self._reset_vfp,
         ).pack(side="left", padx=(0, 5))
-        LiteButton(auto_row, text="...", width=34, command=self._browse_csv).pack(
-            side="left", padx=(0, 8)
-        )
         self._auto_toggle_btn = ctk.CTkButton(
             auto_row, text="▶ Auto", width=82, command=self._toggle_auto_refresh
         )

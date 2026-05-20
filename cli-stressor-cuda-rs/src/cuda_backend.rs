@@ -1,16 +1,29 @@
 use cli_stressor_cuda_rs::{
-    Backend, BackendError, DeviceInfo, HostMatrix, PrecisionKind, PrecisionSpec,
+    Backend, BackendError, DeviceInfo, HostMatrix, KernelType, PrecisionKind, PrecisionSpec,
+    StreamMode, make_random_host_matrix,
 };
-use cudarc::cublas::{CudaBlas, Gemm, GemmConfig, sys as cublas_sys};
+use cudarc::cublas::{Asum, AsumConfig, CudaBlas, Gemm, GemmConfig, sys as cublas_sys};
 use cudarc::driver::sys as cuda_sys;
-use cudarc::driver::{CudaContext, CudaStream};
+use cudarc::driver::{
+    CudaContext, CudaFunction, CudaModule, CudaStream, DevicePtr, DevicePtrMut, LaunchConfig,
+    PushKernelArg,
+};
+use cudarc::nvrtc::compile_ptx;
 use half::{bf16, f16};
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 use std::ffi::CStr;
 use std::sync::Arc;
+use std::time::Instant;
 
 pub struct CudaBackend {
+    _ctx: Arc<CudaContext>,
     stream: Arc<CudaStream>,
+    aux_streams: Vec<Arc<CudaStream>>,
     blas: CudaBlas,
+    aux_blas: Vec<CudaBlas>,
+    _atomic_module: Option<Arc<CudaModule>>,
+    atomic_fn: Option<CudaFunction>,
     info: DeviceInfo,
 }
 
@@ -61,10 +74,743 @@ impl CudaBackend {
         }
         let ctx = CudaContext::new(0).map_err(|err| BackendError::Other(err.to_string()))?;
         let stream = ctx.default_stream();
+        let stream2 = stream
+            .fork()
+            .map_err(|err| BackendError::Other(err.to_string()))?;
+        let stream3 = stream
+            .fork()
+            .map_err(|err| BackendError::Other(err.to_string()))?;
         let blas =
             CudaBlas::new(stream.clone()).map_err(|err| BackendError::Other(err.to_string()))?;
+        let blas2 =
+            CudaBlas::new(stream2.clone()).map_err(|err| BackendError::Other(err.to_string()))?;
+        let blas3 =
+            CudaBlas::new(stream3.clone()).map_err(|err| BackendError::Other(err.to_string()))?;
+        let (atomic_module, atomic_fn) = match build_atomic_kernel(&ctx) {
+            Ok((module, func)) => (Some(module), Some(func)),
+            Err(_) => (None, None),
+        };
         let info = query_device_info()?;
-        Ok(Self { stream, blas, info })
+        Ok(Self {
+            _ctx: ctx,
+            stream,
+            aux_streams: vec![stream2, stream3],
+            blas,
+            aux_blas: vec![blas2, blas3],
+            _atomic_module: atomic_module,
+            atomic_fn,
+            info,
+        })
+    }
+
+    fn lane_count(stream_mode: StreamMode) -> usize {
+        stream_mode.stream_count().clamp(1, 3)
+    }
+
+    fn stream_for_lane(&self, lane: usize) -> &Arc<CudaStream> {
+        match lane {
+            0 => &self.stream,
+            1 => &self.aux_streams[0],
+            _ => &self.aux_streams[1],
+        }
+    }
+
+    fn blas_for_lane(&self, lane: usize) -> &CudaBlas {
+        match lane {
+            0 => &self.blas,
+            1 => &self.aux_blas[0],
+            _ => &self.aux_blas[1],
+        }
+    }
+
+    fn run_gemm_path(
+        &self,
+        spec: &PrecisionSpec,
+        size: usize,
+        warmup_iters: u32,
+        burst_iters: u32,
+        transpose_prob: f64,
+        seed: u64,
+        stream_mode: StreamMode,
+    ) -> Result<f64, BackendError> {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let transpose_a = rng.random::<f64>() < transpose_prob;
+        let transpose_b = rng.random::<f64>() < transpose_prob;
+        let lane_count = Self::lane_count(stream_mode);
+        let op_a = if transpose_a {
+            cublas_sys::cublasOperation_t::CUBLAS_OP_T
+        } else {
+            cublas_sys::cublasOperation_t::CUBLAS_OP_N
+        };
+        let op_b = if transpose_b {
+            cublas_sys::cublasOperation_t::CUBLAS_OP_T
+        } else {
+            cublas_sys::cublasOperation_t::CUBLAS_OP_N
+        };
+
+        match spec.kind {
+            PrecisionKind::BF16 => {
+                let cfg = GemmConfig {
+                    transa: op_a,
+                    transb: op_b,
+                    m: size as i32,
+                    n: size as i32,
+                    k: size as i32,
+                    alpha: bf16::from_f32(1.0),
+                    lda: size as i32,
+                    ldb: size as i32,
+                    beta: bf16::from_f32(0.0),
+                    ldc: size as i32,
+                };
+                let mut a_devs = Vec::with_capacity(lane_count);
+                let mut b_devs = Vec::with_capacity(lane_count);
+                for lane in 0..lane_count {
+                    let stream = self.stream_for_lane(lane);
+                    let a_host = make_random_host_matrix(size, rng.random::<u64>());
+                    let b_host = make_random_host_matrix(size, rng.random::<u64>());
+                    let a: Vec<bf16> = a_host.data.iter().map(|v| bf16::from_f32(*v)).collect();
+                    let b: Vec<bf16> = b_host.data.iter().map(|v| bf16::from_f32(*v)).collect();
+                    a_devs.push(
+                        stream
+                            .clone_htod(&a)
+                            .map_err(|err| BackendError::Other(err.to_string()))?,
+                    );
+                    b_devs.push(
+                        stream
+                            .clone_htod(&b)
+                            .map_err(|err| BackendError::Other(err.to_string()))?,
+                    );
+                }
+                for _ in 0..warmup_iters {
+                    for lane in 0..lane_count {
+                        let stream = self.stream_for_lane(lane);
+                        let blas = self.blas_for_lane(lane);
+                        let mut c = stream
+                            .alloc_zeros::<bf16>(size * size)
+                            .map_err(|err| BackendError::Other(err.to_string()))?;
+                        unsafe {
+                            blas.gemm(cfg, &a_devs[lane], &b_devs[lane], &mut c)
+                                .map_err(|err| BackendError::Other(err.to_string()))?;
+                        }
+                    }
+                }
+                for lane in 0..lane_count {
+                    self.stream_for_lane(lane)
+                        .synchronize()
+                        .map_err(|err| BackendError::Other(err.to_string()))?;
+                }
+                let op_start = Instant::now();
+                for _ in 0..burst_iters {
+                    for lane in 0..lane_count {
+                        let stream = self.stream_for_lane(lane);
+                        let blas = self.blas_for_lane(lane);
+                        let mut c = stream
+                            .alloc_zeros::<bf16>(size * size)
+                            .map_err(|err| BackendError::Other(err.to_string()))?;
+                        unsafe {
+                            blas.gemm(cfg, &a_devs[lane], &b_devs[lane], &mut c)
+                                .map_err(|err| BackendError::Other(err.to_string()))?;
+                        }
+                    }
+                }
+                for lane in 0..lane_count {
+                    self.stream_for_lane(lane)
+                        .synchronize()
+                        .map_err(|err| BackendError::Other(err.to_string()))?;
+                }
+                Ok(op_start.elapsed().as_secs_f64())
+            }
+            PrecisionKind::FP16 => {
+                let cfg = GemmConfig {
+                    transa: op_a,
+                    transb: op_b,
+                    m: size as i32,
+                    n: size as i32,
+                    k: size as i32,
+                    alpha: f16::from_f32(1.0),
+                    lda: size as i32,
+                    ldb: size as i32,
+                    beta: f16::from_f32(0.0),
+                    ldc: size as i32,
+                };
+                let mut a_devs = Vec::with_capacity(lane_count);
+                let mut b_devs = Vec::with_capacity(lane_count);
+                for lane in 0..lane_count {
+                    let stream = self.stream_for_lane(lane);
+                    let a_host = make_random_host_matrix(size, rng.random::<u64>());
+                    let b_host = make_random_host_matrix(size, rng.random::<u64>());
+                    let a: Vec<f16> = a_host.data.iter().map(|v| f16::from_f32(*v)).collect();
+                    let b: Vec<f16> = b_host.data.iter().map(|v| f16::from_f32(*v)).collect();
+                    a_devs.push(
+                        stream
+                            .clone_htod(&a)
+                            .map_err(|err| BackendError::Other(err.to_string()))?,
+                    );
+                    b_devs.push(
+                        stream
+                            .clone_htod(&b)
+                            .map_err(|err| BackendError::Other(err.to_string()))?,
+                    );
+                }
+                for _ in 0..warmup_iters {
+                    for lane in 0..lane_count {
+                        let stream = self.stream_for_lane(lane);
+                        let blas = self.blas_for_lane(lane);
+                        let mut c = stream
+                            .alloc_zeros::<f16>(size * size)
+                            .map_err(|err| BackendError::Other(err.to_string()))?;
+                        unsafe {
+                            blas.gemm(cfg, &a_devs[lane], &b_devs[lane], &mut c)
+                                .map_err(|err| BackendError::Other(err.to_string()))?;
+                        }
+                    }
+                }
+                for lane in 0..lane_count {
+                    self.stream_for_lane(lane)
+                        .synchronize()
+                        .map_err(|err| BackendError::Other(err.to_string()))?;
+                }
+                let op_start = Instant::now();
+                for _ in 0..burst_iters {
+                    for lane in 0..lane_count {
+                        let stream = self.stream_for_lane(lane);
+                        let blas = self.blas_for_lane(lane);
+                        let mut c = stream
+                            .alloc_zeros::<f16>(size * size)
+                            .map_err(|err| BackendError::Other(err.to_string()))?;
+                        unsafe {
+                            blas.gemm(cfg, &a_devs[lane], &b_devs[lane], &mut c)
+                                .map_err(|err| BackendError::Other(err.to_string()))?;
+                        }
+                    }
+                }
+                for lane in 0..lane_count {
+                    self.stream_for_lane(lane)
+                        .synchronize()
+                        .map_err(|err| BackendError::Other(err.to_string()))?;
+                }
+                Ok(op_start.elapsed().as_secs_f64())
+            }
+            PrecisionKind::FP32 | PrecisionKind::TF32 => {
+                let cfg = GemmConfig {
+                    transa: op_a,
+                    transb: op_b,
+                    m: size as i32,
+                    n: size as i32,
+                    k: size as i32,
+                    alpha: 1.0f32,
+                    lda: size as i32,
+                    ldb: size as i32,
+                    beta: 0.0f32,
+                    ldc: size as i32,
+                };
+                let mut a_devs = Vec::with_capacity(lane_count);
+                let mut b_devs = Vec::with_capacity(lane_count);
+                for lane in 0..lane_count {
+                    let stream = self.stream_for_lane(lane);
+                    let a_host = make_random_host_matrix(size, rng.random::<u64>());
+                    let b_host = make_random_host_matrix(size, rng.random::<u64>());
+                    a_devs.push(
+                        stream
+                            .clone_htod(&a_host.data)
+                            .map_err(|err| BackendError::Other(err.to_string()))?,
+                    );
+                    b_devs.push(
+                        stream
+                            .clone_htod(&b_host.data)
+                            .map_err(|err| BackendError::Other(err.to_string()))?,
+                    );
+                }
+                for _ in 0..warmup_iters {
+                    for lane in 0..lane_count {
+                        let stream = self.stream_for_lane(lane);
+                        let blas = self.blas_for_lane(lane);
+                        let mut c = stream
+                            .alloc_zeros::<f32>(size * size)
+                            .map_err(|err| BackendError::Other(err.to_string()))?;
+                        unsafe {
+                            blas.gemm(cfg, &a_devs[lane], &b_devs[lane], &mut c)
+                                .map_err(|err| BackendError::Other(err.to_string()))?;
+                        }
+                    }
+                }
+                for lane in 0..lane_count {
+                    self.stream_for_lane(lane)
+                        .synchronize()
+                        .map_err(|err| BackendError::Other(err.to_string()))?;
+                }
+                let op_start = Instant::now();
+                for _ in 0..burst_iters {
+                    for lane in 0..lane_count {
+                        let stream = self.stream_for_lane(lane);
+                        let blas = self.blas_for_lane(lane);
+                        let mut c = stream
+                            .alloc_zeros::<f32>(size * size)
+                            .map_err(|err| BackendError::Other(err.to_string()))?;
+                        unsafe {
+                            blas.gemm(cfg, &a_devs[lane], &b_devs[lane], &mut c)
+                                .map_err(|err| BackendError::Other(err.to_string()))?;
+                        }
+                    }
+                }
+                for lane in 0..lane_count {
+                    self.stream_for_lane(lane)
+                        .synchronize()
+                        .map_err(|err| BackendError::Other(err.to_string()))?;
+                }
+                Ok(op_start.elapsed().as_secs_f64())
+            }
+            PrecisionKind::FP64 => {
+                let cfg = GemmConfig {
+                    transa: op_a,
+                    transb: op_b,
+                    m: size as i32,
+                    n: size as i32,
+                    k: size as i32,
+                    alpha: 1.0f64,
+                    lda: size as i32,
+                    ldb: size as i32,
+                    beta: 0.0f64,
+                    ldc: size as i32,
+                };
+                let mut a_devs = Vec::with_capacity(lane_count);
+                let mut b_devs = Vec::with_capacity(lane_count);
+                for lane in 0..lane_count {
+                    let stream = self.stream_for_lane(lane);
+                    let a_host = make_random_host_matrix(size, rng.random::<u64>());
+                    let b_host = make_random_host_matrix(size, rng.random::<u64>());
+                    let a: Vec<f64> = a_host.data.iter().map(|v| *v as f64).collect();
+                    let b: Vec<f64> = b_host.data.iter().map(|v| *v as f64).collect();
+                    a_devs.push(
+                        stream
+                            .clone_htod(&a)
+                            .map_err(|err| BackendError::Other(err.to_string()))?,
+                    );
+                    b_devs.push(
+                        stream
+                            .clone_htod(&b)
+                            .map_err(|err| BackendError::Other(err.to_string()))?,
+                    );
+                }
+                for _ in 0..warmup_iters {
+                    for lane in 0..lane_count {
+                        let stream = self.stream_for_lane(lane);
+                        let blas = self.blas_for_lane(lane);
+                        let mut c = stream
+                            .alloc_zeros::<f64>(size * size)
+                            .map_err(|err| BackendError::Other(err.to_string()))?;
+                        unsafe {
+                            blas.gemm(cfg, &a_devs[lane], &b_devs[lane], &mut c)
+                                .map_err(|err| BackendError::Other(err.to_string()))?;
+                        }
+                    }
+                }
+                for lane in 0..lane_count {
+                    self.stream_for_lane(lane)
+                        .synchronize()
+                        .map_err(|err| BackendError::Other(err.to_string()))?;
+                }
+                let op_start = Instant::now();
+                for _ in 0..burst_iters {
+                    for lane in 0..lane_count {
+                        let stream = self.stream_for_lane(lane);
+                        let blas = self.blas_for_lane(lane);
+                        let mut c = stream
+                            .alloc_zeros::<f64>(size * size)
+                            .map_err(|err| BackendError::Other(err.to_string()))?;
+                        unsafe {
+                            blas.gemm(cfg, &a_devs[lane], &b_devs[lane], &mut c)
+                                .map_err(|err| BackendError::Other(err.to_string()))?;
+                        }
+                    }
+                }
+                for lane in 0..lane_count {
+                    self.stream_for_lane(lane)
+                        .synchronize()
+                        .map_err(|err| BackendError::Other(err.to_string()))?;
+                }
+                Ok(op_start.elapsed().as_secs_f64())
+            }
+            PrecisionKind::FP8E4M3FN => Err(BackendError::Other(
+                "GEMM path unsupported for FP8".to_string(),
+            )),
+        }
+    }
+
+    fn run_memcpy_path(
+        &self,
+        spec: &PrecisionSpec,
+        size: usize,
+        warmup_iters: u32,
+        burst_iters: u32,
+        seed: u64,
+        stream_mode: StreamMode,
+    ) -> Result<f64, BackendError> {
+        let elem_size = match spec.kind {
+            PrecisionKind::BF16 | PrecisionKind::FP16 => 2usize,
+            PrecisionKind::FP32 | PrecisionKind::TF32 => 4usize,
+            PrecisionKind::FP64 => 8usize,
+            PrecisionKind::FP8E4M3FN => 1usize,
+        };
+        let bytes = size * size * elem_size;
+        let mut rng = StdRng::seed_from_u64(seed);
+        let lane_count = Self::lane_count(stream_mode);
+        let mut srcs = Vec::with_capacity(lane_count);
+        let mut dsts = Vec::with_capacity(lane_count);
+        for lane in 0..lane_count {
+            let stream = self.stream_for_lane(lane);
+            let host: Vec<u8> = (0..bytes).map(|_| rng.random::<u8>()).collect();
+            srcs.push(
+                stream
+                    .clone_htod(&host)
+                    .map_err(|err| BackendError::Other(err.to_string()))?,
+            );
+            dsts.push(
+                stream
+                    .alloc_zeros::<u8>(bytes)
+                    .map_err(|err| BackendError::Other(err.to_string()))?,
+            );
+        }
+        for _ in 0..warmup_iters {
+            for lane in 0..lane_count {
+                let stream = self.stream_for_lane(lane);
+                stream
+                    .memcpy_dtod(&srcs[lane], &mut dsts[lane])
+                    .map_err(|err| BackendError::Other(err.to_string()))?;
+            }
+        }
+        for lane in 0..lane_count {
+            self.stream_for_lane(lane)
+                .synchronize()
+                .map_err(|err| BackendError::Other(err.to_string()))?;
+        }
+
+        let op_start = Instant::now();
+        for _ in 0..burst_iters {
+            for lane in 0..lane_count {
+                let stream = self.stream_for_lane(lane);
+                stream
+                    .memcpy_dtod(&srcs[lane], &mut dsts[lane])
+                    .map_err(|err| BackendError::Other(err.to_string()))?;
+            }
+        }
+        for lane in 0..lane_count {
+            self.stream_for_lane(lane)
+                .synchronize()
+                .map_err(|err| BackendError::Other(err.to_string()))?;
+        }
+        Ok(op_start.elapsed().as_secs_f64())
+    }
+
+    fn run_memset_path(
+        &self,
+        spec: &PrecisionSpec,
+        size: usize,
+        warmup_iters: u32,
+        burst_iters: u32,
+        stream_mode: StreamMode,
+    ) -> Result<f64, BackendError> {
+        let elem_size = match spec.kind {
+            PrecisionKind::BF16 | PrecisionKind::FP16 => 2usize,
+            PrecisionKind::FP32 | PrecisionKind::TF32 => 4usize,
+            PrecisionKind::FP64 => 8usize,
+            PrecisionKind::FP8E4M3FN => 1usize,
+        };
+        let bytes = size * size * elem_size;
+        let lane_count = Self::lane_count(stream_mode);
+        let mut bufs = Vec::with_capacity(lane_count);
+        for lane in 0..lane_count {
+            let stream = self.stream_for_lane(lane);
+            bufs.push(
+                stream
+                    .alloc_zeros::<u8>(bytes)
+                    .map_err(|err| BackendError::Other(err.to_string()))?,
+            );
+        }
+        for _ in 0..warmup_iters {
+            for lane in 0..lane_count {
+                self.stream_for_lane(lane)
+                    .memset_zeros(&mut bufs[lane])
+                    .map_err(|err| BackendError::Other(err.to_string()))?;
+            }
+        }
+        for lane in 0..lane_count {
+            self.stream_for_lane(lane)
+                .synchronize()
+                .map_err(|err| BackendError::Other(err.to_string()))?;
+        }
+
+        let op_start = Instant::now();
+        for _ in 0..burst_iters {
+            for lane in 0..lane_count {
+                self.stream_for_lane(lane)
+                    .memset_zeros(&mut bufs[lane])
+                    .map_err(|err| BackendError::Other(err.to_string()))?;
+            }
+        }
+        for lane in 0..lane_count {
+            self.stream_for_lane(lane)
+                .synchronize()
+                .map_err(|err| BackendError::Other(err.to_string()))?;
+        }
+        Ok(op_start.elapsed().as_secs_f64())
+    }
+
+    fn run_sgeam_path(
+        &self,
+        size: usize,
+        warmup_iters: u32,
+        burst_iters: u32,
+        transpose: bool,
+        seed: u64,
+        stream_mode: StreamMode,
+    ) -> Result<f64, BackendError> {
+        let lane_count = Self::lane_count(stream_mode);
+        let mut rng = StdRng::seed_from_u64(seed);
+        let mut a_devs = Vec::with_capacity(lane_count);
+        let mut b_devs = Vec::with_capacity(lane_count);
+        let mut c_devs = Vec::with_capacity(lane_count);
+        for lane in 0..lane_count {
+            let stream = self.stream_for_lane(lane);
+            let a_host = make_random_host_matrix(size, rng.random::<u64>());
+            let b_host = make_random_host_matrix(size, rng.random::<u64>());
+            a_devs.push(
+                stream
+                    .clone_htod(&a_host.data)
+                    .map_err(|err| BackendError::Other(err.to_string()))?,
+            );
+            b_devs.push(
+                stream
+                    .clone_htod(&b_host.data)
+                    .map_err(|err| BackendError::Other(err.to_string()))?,
+            );
+            c_devs.push(
+                stream
+                    .alloc_zeros::<f32>(size * size)
+                    .map_err(|err| BackendError::Other(err.to_string()))?,
+            );
+        }
+        let n = size as i32;
+        let transa = if transpose {
+            cublas_sys::cublasOperation_t::CUBLAS_OP_T
+        } else {
+            cublas_sys::cublasOperation_t::CUBLAS_OP_N
+        };
+        let transb = cublas_sys::cublasOperation_t::CUBLAS_OP_N;
+        let alpha = 1.0f32;
+        let beta = if transpose { 0.0f32 } else { 1.0f32 };
+
+        for _ in 0..warmup_iters {
+            for lane in 0..lane_count {
+                let stream = self.stream_for_lane(lane);
+                let blas = self.blas_for_lane(lane);
+                let (a_ptr, _a_sync) = a_devs[lane].device_ptr(stream);
+                let (b_ptr, _b_sync) = b_devs[lane].device_ptr(stream);
+                let (c_ptr, _c_sync) = c_devs[lane].device_ptr_mut(stream);
+                let status = unsafe {
+                    cublas_sys::cublasSgeam(
+                        *blas.handle(),
+                        transa,
+                        transb,
+                        n,
+                        n,
+                        &alpha as *const f32,
+                        a_ptr as *const f32,
+                        n,
+                        &beta as *const f32,
+                        b_ptr as *const f32,
+                        n,
+                        c_ptr as *mut f32,
+                        n,
+                    )
+                };
+                if status != cublas_sys::cublasStatus_t::CUBLAS_STATUS_SUCCESS {
+                    return Err(BackendError::Other(format!(
+                        "cublasSgeam failed: {:?}",
+                        status
+                    )));
+                }
+            }
+        }
+        for lane in 0..lane_count {
+            self.stream_for_lane(lane)
+                .synchronize()
+                .map_err(|err| BackendError::Other(err.to_string()))?;
+        }
+
+        let op_start = Instant::now();
+        for _ in 0..burst_iters {
+            for lane in 0..lane_count {
+                let stream = self.stream_for_lane(lane);
+                let blas = self.blas_for_lane(lane);
+                let (a_ptr, _a_sync) = a_devs[lane].device_ptr(stream);
+                let (b_ptr, _b_sync) = b_devs[lane].device_ptr(stream);
+                let (c_ptr, _c_sync) = c_devs[lane].device_ptr_mut(stream);
+                let status = unsafe {
+                    cublas_sys::cublasSgeam(
+                        *blas.handle(),
+                        transa,
+                        transb,
+                        n,
+                        n,
+                        &alpha as *const f32,
+                        a_ptr as *const f32,
+                        n,
+                        &beta as *const f32,
+                        b_ptr as *const f32,
+                        n,
+                        c_ptr as *mut f32,
+                        n,
+                    )
+                };
+                if status != cublas_sys::cublasStatus_t::CUBLAS_STATUS_SUCCESS {
+                    return Err(BackendError::Other(format!(
+                        "cublasSgeam failed: {:?}",
+                        status
+                    )));
+                }
+            }
+        }
+        for lane in 0..lane_count {
+            self.stream_for_lane(lane)
+                .synchronize()
+                .map_err(|err| BackendError::Other(err.to_string()))?;
+        }
+        Ok(op_start.elapsed().as_secs_f64())
+    }
+
+    fn run_reduction_path(
+        &self,
+        size: usize,
+        warmup_iters: u32,
+        burst_iters: u32,
+        seed: u64,
+        stream_mode: StreamMode,
+    ) -> Result<f64, BackendError> {
+        let lane_count = Self::lane_count(stream_mode);
+        let mut rng = StdRng::seed_from_u64(seed);
+        let mut xs = Vec::with_capacity(lane_count);
+        for lane in 0..lane_count {
+            let stream = self.stream_for_lane(lane);
+            let x_host = make_random_host_matrix(size, rng.random::<u64>());
+            xs.push(
+                stream
+                    .clone_htod(&x_host.data)
+                    .map_err(|err| BackendError::Other(err.to_string()))?,
+            );
+        }
+        let cfg = AsumConfig {
+            n: (size * size) as i32,
+            incx: 1,
+        };
+        let mut outs = vec![0.0f32; lane_count];
+        for _ in 0..warmup_iters {
+            for lane in 0..lane_count {
+                let blas = self.blas_for_lane(lane);
+                unsafe {
+                    blas.asum(cfg, &xs[lane], &mut outs[lane])
+                        .map_err(|err| BackendError::Other(err.to_string()))?;
+                }
+            }
+        }
+        for lane in 0..lane_count {
+            self.stream_for_lane(lane)
+                .synchronize()
+                .map_err(|err| BackendError::Other(err.to_string()))?;
+        }
+
+        let op_start = Instant::now();
+        for _ in 0..burst_iters {
+            for lane in 0..lane_count {
+                let blas = self.blas_for_lane(lane);
+                unsafe {
+                    blas.asum(cfg, &xs[lane], &mut outs[lane])
+                        .map_err(|err| BackendError::Other(err.to_string()))?;
+                }
+            }
+        }
+        for lane in 0..lane_count {
+            self.stream_for_lane(lane)
+                .synchronize()
+                .map_err(|err| BackendError::Other(err.to_string()))?;
+        }
+        Ok(op_start.elapsed().as_secs_f64())
+    }
+
+    fn run_atomic_path(
+        &self,
+        size: usize,
+        warmup_iters: u32,
+        burst_iters: u32,
+        seed: u64,
+        stream_mode: StreamMode,
+    ) -> Result<f64, BackendError> {
+        let atomic_fn = self
+            .atomic_fn
+            .as_ref()
+            .ok_or_else(|| BackendError::Other("atomic kernel unavailable".to_string()))?;
+        let n = (size * size) as u32;
+        let lane_count = Self::lane_count(stream_mode);
+        let mut rng = StdRng::seed_from_u64(seed);
+        let mut xs = Vec::with_capacity(lane_count);
+        let mut outs = Vec::with_capacity(lane_count);
+        for lane in 0..lane_count {
+            let stream = self.stream_for_lane(lane);
+            let host: Vec<f32> = (0..n).map(|_| rng.random::<f32>()).collect();
+            xs.push(
+                stream
+                    .clone_htod(&host)
+                    .map_err(|err| BackendError::Other(err.to_string()))?,
+            );
+            outs.push(
+                stream
+                    .alloc_zeros::<u32>(1)
+                    .map_err(|err| BackendError::Other(err.to_string()))?,
+            );
+        }
+        let cfg = LaunchConfig::for_num_elems(n.max(1));
+
+        for _ in 0..warmup_iters {
+            for lane in 0..lane_count {
+                let stream = self.stream_for_lane(lane);
+                unsafe {
+                    stream
+                        .launch_builder(atomic_fn)
+                        .arg(&xs[lane])
+                        .arg(&n)
+                        .arg(&mut outs[lane])
+                        .launch(cfg)
+                        .map_err(|err| BackendError::Other(err.to_string()))?;
+                }
+            }
+        }
+        for lane in 0..lane_count {
+            self.stream_for_lane(lane)
+                .synchronize()
+                .map_err(|err| BackendError::Other(err.to_string()))?;
+        }
+
+        let op_start = Instant::now();
+        for _ in 0..burst_iters {
+            for lane in 0..lane_count {
+                let stream = self.stream_for_lane(lane);
+                unsafe {
+                    stream
+                        .launch_builder(atomic_fn)
+                        .arg(&xs[lane])
+                        .arg(&n)
+                        .arg(&mut outs[lane])
+                        .launch(cfg)
+                        .map_err(|err| BackendError::Other(err.to_string()))?;
+                }
+            }
+        }
+        for lane in 0..lane_count {
+            self.stream_for_lane(lane)
+                .synchronize()
+                .map_err(|err| BackendError::Other(err.to_string()))?;
+        }
+        Ok(op_start.elapsed().as_secs_f64())
     }
 }
 
@@ -116,15 +862,16 @@ impl Backend for CudaBackend {
         } else {
             cublas_sys::cublasMath_t::CUBLAS_DEFAULT_MATH
         };
-        let status = unsafe { cublas_sys::cublasSetMathMode(*self.blas.handle(), mode) };
-        if status == cublas_sys::cublasStatus_t::CUBLAS_STATUS_SUCCESS {
-            Ok(())
-        } else {
-            Err(BackendError::Other(format!(
-                "cublasSetMathMode failed: {:?}",
-                status
-            )))
+        for blas in std::iter::once(&self.blas).chain(self.aux_blas.iter()) {
+            let status = unsafe { cublas_sys::cublasSetMathMode(*blas.handle(), mode) };
+            if status != cublas_sys::cublasStatus_t::CUBLAS_STATUS_SUCCESS {
+                return Err(BackendError::Other(format!(
+                    "cublasSetMathMode failed: {:?}",
+                    status
+                )));
+            }
         }
+        Ok(())
     }
 
     fn upload_matrix(
@@ -348,10 +1095,58 @@ impl Backend for CudaBackend {
         }
     }
 
+    fn run_kernel_path(
+        &mut self,
+        spec: &PrecisionSpec,
+        kind: KernelType,
+        size: usize,
+        warmup_iters: u32,
+        burst_iters: u32,
+        transpose_prob: f64,
+        seed: u64,
+        stream_mode: StreamMode,
+    ) -> Result<f64, BackendError> {
+        match kind {
+            KernelType::Gemm => self.run_gemm_path(
+                spec,
+                size,
+                warmup_iters,
+                burst_iters,
+                transpose_prob,
+                seed,
+                stream_mode,
+            ),
+            KernelType::Memcpy => {
+                self.run_memcpy_path(spec, size, warmup_iters, burst_iters, seed, stream_mode)
+            }
+            KernelType::Memset => {
+                self.run_memset_path(spec, size, warmup_iters, burst_iters, stream_mode)
+            }
+            KernelType::Transpose => {
+                self.run_sgeam_path(size, warmup_iters, burst_iters, true, seed, stream_mode)
+            }
+            KernelType::Elementwise => {
+                self.run_sgeam_path(size, warmup_iters, burst_iters, false, seed, stream_mode)
+            }
+            KernelType::Reduction => {
+                self.run_reduction_path(size, warmup_iters, burst_iters, seed, stream_mode)
+            }
+            KernelType::Atomic => {
+                self.run_atomic_path(size, warmup_iters, burst_iters, seed, stream_mode)
+            }
+        }
+    }
+
     fn synchronize(&self) -> Result<(), BackendError> {
         self.stream
             .synchronize()
-            .map_err(|err| BackendError::Other(err.to_string()))
+            .map_err(|err| BackendError::Other(err.to_string()))?;
+        for stream in &self.aux_streams {
+            stream
+                .synchronize()
+                .map_err(|err| BackendError::Other(err.to_string()))?;
+        }
+        Ok(())
     }
 
     fn empty_cache(&self) -> Result<(), BackendError> {
@@ -404,4 +1199,26 @@ fn query_device_info() -> Result<DeviceInfo, BackendError> {
         total_mem_gb,
         compute_capability: Some((major, minor)),
     })
+}
+
+fn build_atomic_kernel(
+    ctx: &Arc<CudaContext>,
+) -> Result<(Arc<CudaModule>, CudaFunction), BackendError> {
+    let src = r#"
+extern "C" __global__ void atomic_accum(const float* x, unsigned int n, unsigned int* out) {
+    unsigned int idx = (unsigned int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (idx < n) {
+        unsigned int v = (idx & 31U) == 0U ? ((__float_as_uint(x[idx]) & 1U) + 1U) : 1U;
+        atomicAdd(out, v);
+    }
+}
+"#;
+    let ptx = compile_ptx(src).map_err(|err| BackendError::Other(err.to_string()))?;
+    let module = ctx
+        .load_module(ptx)
+        .map_err(|err| BackendError::Other(err.to_string()))?;
+    let func = module
+        .load_function("atomic_accum")
+        .map_err(|err| BackendError::Other(err.to_string()))?;
+    Ok((module, func))
 }

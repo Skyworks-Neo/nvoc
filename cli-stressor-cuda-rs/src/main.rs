@@ -5,8 +5,8 @@ use cli_stressor_cuda_rs::parse_int_list;
 
 #[cfg(feature = "cuda")]
 use cli_stressor_cuda_rs::{
-    Backend, DeviceInfo, PrecisionKind, StressResult, StressRunConfig, parse_precision_list,
-    run_stress_for_precision,
+    Backend, DeviceInfo, PrecisionKind, StressResult, StressRunConfig, parse_kernel_mixture,
+    parse_kernel_type_list, parse_precision_list, parse_stream_mode, run_stress_for_precision,
 };
 
 #[cfg(feature = "cuda")]
@@ -15,7 +15,7 @@ mod cuda_backend;
 #[derive(Parser, Debug)]
 #[command(
     name = "cli-stressor-cuda-rs",
-    about = "GPU core-domain stressor (Rust): randomized GEMM + validation sidecar"
+    about = "GPU core-domain stressor (Rust): mixed kernel-path stress + validation sidecar"
 )]
 struct Args {
     #[arg(long, default_value_t = 90.0)]
@@ -50,6 +50,27 @@ struct Args {
 
     #[arg(long, default_value_t = 12345)]
     seed: u64,
+
+    #[arg(
+        long,
+        default_value = "gemm,memcpy,memset,transpose,elementwise,reduction,atomic",
+        help = "Enabled kernel paths (comma-separated): gemm,memcpy,memset,transpose,elementwise,reduction,atomic"
+    )]
+    kernel_types: String,
+
+    #[arg(
+        long,
+        default_value = "",
+        help = "Kernel mixture weights as type:weight pairs, e.g. gemm:0.5,memcpy:0.3,reduction:0.2 (empty = equal weights)"
+    )]
+    kernel_mixture: String,
+
+    #[arg(
+        long,
+        default_value = "single",
+        help = "Submission stream mode: single|dual|triple"
+    )]
+    stream_mode: String,
 
     #[arg(long)]
     disable_fp8: bool,
@@ -178,6 +199,28 @@ fn main() {
         std::process::exit(1);
     }
 
+    let kernel_types = match parse_kernel_type_list(&args.kernel_types) {
+        Ok(values) => values,
+        Err(err) => {
+            eprintln!("Invalid kernel types argument: {}", err);
+            std::process::exit(2);
+        }
+    };
+    let kernel_mixture = match parse_kernel_mixture(&args.kernel_mixture, &kernel_types) {
+        Ok(values) => values,
+        Err(err) => {
+            eprintln!("Invalid kernel mixture argument: {}", err);
+            std::process::exit(2);
+        }
+    };
+    let stream_mode = match parse_stream_mode(&args.stream_mode) {
+        Ok(mode) => mode,
+        Err(err) => {
+            eprintln!("Invalid stream mode argument: {}", err);
+            std::process::exit(2);
+        }
+    };
+
     let mut results = Vec::new();
     let mut overall_passed = true;
 
@@ -200,6 +243,13 @@ fn main() {
         println!("  Validation interval: {:.1} s", args.validate_interval);
         println!("  Validation size: {}", args.validate_size);
         println!("  Minor mixture rate: {:.2}", args.minor_mixture_rate);
+        println!("  Kernel types: {:?}", kernel_types);
+        println!("  Kernel mixture: {:?}", kernel_mixture);
+        println!(
+            "  Stream mode: {:?} ({} streams)",
+            stream_mode,
+            stream_mode.stream_count()
+        );
 
         let res = run_stress_for_precision(
             &mut backend,
@@ -214,6 +264,8 @@ fn main() {
                 transpose_prob: args.transpose_prob,
                 base_seed: args.seed + (idx as u64) * 1000,
                 minor_mixture_rate: args.minor_mixture_rate,
+                kernel_mixture: &kernel_mixture,
+                stream_mode,
             },
         );
         if res.first_error.is_some() && res.supported {

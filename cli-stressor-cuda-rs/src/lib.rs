@@ -14,6 +14,54 @@ pub enum PrecisionKind {
     FP8E4M3FN,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum KernelType {
+    Gemm,
+    Memcpy,
+    Memset,
+    Transpose,
+    Elementwise,
+    Reduction,
+    Atomic,
+}
+
+impl KernelType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            KernelType::Gemm => "GEMM",
+            KernelType::Memcpy => "MEMCPY",
+            KernelType::Memset => "MEMSET",
+            KernelType::Transpose => "TRANSPOSE",
+            KernelType::Elementwise => "ELEMENTWISE",
+            KernelType::Reduction => "REDUCTION",
+            KernelType::Atomic => "ATOMIC",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StreamMode {
+    Single,
+    Dual,
+    Triple,
+}
+
+impl StreamMode {
+    pub fn stream_count(&self) -> usize {
+        match self {
+            StreamMode::Single => 1,
+            StreamMode::Dual => 2,
+            StreamMode::Triple => 3,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct KernelMixtureEntry {
+    pub kind: KernelType,
+    pub weight: f64,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct PrecisionSpec {
     pub name: &'static str,
@@ -49,6 +97,8 @@ pub struct StressRunConfig<'a> {
     pub transpose_prob: f64,
     pub base_seed: u64,
     pub minor_mixture_rate: f64,
+    pub kernel_mixture: &'a [KernelMixtureEntry],
+    pub stream_mode: StreamMode,
 }
 
 #[derive(Debug, Clone)]
@@ -92,6 +142,17 @@ pub trait Backend {
         transpose_b: bool,
     ) -> Result<Self::Output, BackendError>;
     fn output_to_f32(&self, output: &Self::Output) -> Result<Vec<f32>, BackendError>;
+    fn run_kernel_path(
+        &mut self,
+        spec: &PrecisionSpec,
+        kind: KernelType,
+        size: usize,
+        warmup_iters: u32,
+        burst_iters: u32,
+        transpose_prob: f64,
+        seed: u64,
+        stream_mode: StreamMode,
+    ) -> Result<f64, BackendError>;
     fn synchronize(&self) -> Result<(), BackendError>;
     fn empty_cache(&self) -> Result<(), BackendError>;
 }
@@ -184,6 +245,105 @@ pub fn parse_precision_list(raw: &str) -> Result<Vec<PrecisionSpec>, String> {
         return Err("precision list cannot be empty".to_string());
     }
     Ok(selected)
+}
+
+pub fn parse_kernel_type_list(raw: &str) -> Result<Vec<KernelType>, String> {
+    let mut selected = Vec::new();
+    for item in raw.split(',') {
+        let key = item.trim().to_ascii_lowercase();
+        if key.is_empty() {
+            continue;
+        }
+        let kind = match key.as_str() {
+            "gemm" => KernelType::Gemm,
+            "memcpy" | "copy" | "clone" => KernelType::Memcpy,
+            "memset" | "fill" => KernelType::Memset,
+            "transpose" => KernelType::Transpose,
+            "elementwise" | "elem" | "add" => KernelType::Elementwise,
+            "reduction" | "reduce" | "sum" => KernelType::Reduction,
+            "atomic" => KernelType::Atomic,
+            _ => return Err(format!("unsupported kernel type: {item}")),
+        };
+        if !selected.contains(&kind) {
+            selected.push(kind);
+        }
+    }
+    if selected.is_empty() {
+        return Err("kernel type list cannot be empty".to_string());
+    }
+    Ok(selected)
+}
+
+pub fn parse_stream_mode(raw: &str) -> Result<StreamMode, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "single" | "1" => Ok(StreamMode::Single),
+        "dual" | "2" => Ok(StreamMode::Dual),
+        "triple" | "3" => Ok(StreamMode::Triple),
+        other => Err(format!(
+            "unsupported stream mode: {other}, expected single|dual|triple"
+        )),
+    }
+}
+
+pub fn parse_kernel_mixture(
+    raw: &str,
+    kernel_types: &[KernelType],
+) -> Result<Vec<KernelMixtureEntry>, String> {
+    if kernel_types.is_empty() {
+        return Err("kernel types cannot be empty".to_string());
+    }
+    if raw.trim().is_empty() {
+        return Ok(kernel_types
+            .iter()
+            .map(|kind| KernelMixtureEntry {
+                kind: *kind,
+                weight: 1.0,
+            })
+            .collect());
+    }
+
+    let mut entries = Vec::new();
+    for item in raw.split(',') {
+        let trimmed = item.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let (name, weight_raw) = trimmed.split_once(':').ok_or_else(|| {
+            format!("invalid kernel mixture item: {trimmed}, expected type:weight")
+        })?;
+        let kind = parse_kernel_type_list(name)?
+            .first()
+            .copied()
+            .ok_or_else(|| format!("invalid kernel type in mixture: {name}"))?;
+        if !kernel_types.contains(&kind) {
+            return Err(format!(
+                "kernel type {} is not included in --kernel-types",
+                kind.as_str()
+            ));
+        }
+        let weight = weight_raw
+            .trim()
+            .parse::<f64>()
+            .map_err(|_| format!("invalid mixture weight: {}", weight_raw.trim()))?;
+        if !weight.is_finite() || weight < 0.0 {
+            return Err(format!("mixture weight must be finite and >= 0: {weight}"));
+        }
+        entries.push(KernelMixtureEntry { kind, weight });
+    }
+
+    if entries.is_empty() {
+        return Err("kernel mixture cannot be empty".to_string());
+    }
+
+    for kind in kernel_types {
+        if !entries.iter().any(|entry| entry.kind == *kind) {
+            entries.push(KernelMixtureEntry {
+                kind: *kind,
+                weight: 0.0,
+            });
+        }
+    }
+    Ok(entries)
 }
 
 pub fn choose_tolerance(precision_name: &str) -> (f32, f32) {
@@ -300,6 +460,42 @@ pub fn validate_precision<B: Backend>(
     Ok((passed, max_abs, max_rel, reason))
 }
 
+fn choose_kernel_type(mixture: &[KernelMixtureEntry], rng: &mut StdRng) -> KernelType {
+    if mixture.is_empty() {
+        return KernelType::Gemm;
+    }
+    let total_weight: f64 = mixture.iter().map(|entry| entry.weight.max(0.0)).sum();
+    if total_weight <= 0.0 {
+        return mixture[0].kind;
+    }
+    let mut pick = rng.random::<f64>() * total_weight;
+    for entry in mixture {
+        let weight = entry.weight.max(0.0);
+        if pick <= weight {
+            return entry.kind;
+        }
+        pick -= weight;
+    }
+    mixture
+        .last()
+        .map(|entry| entry.kind)
+        .unwrap_or(KernelType::Gemm)
+}
+
+fn estimate_kernel_work_flops(kind: KernelType, size: usize, burst_iters: u32) -> u128 {
+    let n = size as u128;
+    let iters = burst_iters as u128;
+    match kind {
+        KernelType::Gemm => 2 * n * n * n * iters,
+        KernelType::Memcpy => n * n * iters,
+        KernelType::Memset => n * n * iters,
+        KernelType::Transpose => 2 * n * n * iters,
+        KernelType::Elementwise => 2 * n * n * iters,
+        KernelType::Reduction => n * n * iters,
+        KernelType::Atomic => n * n * iters,
+    }
+}
+
 pub fn run_stress_for_precision<B: Backend>(
     backend: &mut B,
     spec: PrecisionSpec,
@@ -354,29 +550,19 @@ pub fn run_stress_for_precision<B: Backend>(
             *small_sizes.choose(&mut rng).unwrap()
         };
 
-        let transpose_a = rng.random::<f64>() < config.transpose_prob;
-        let transpose_b = rng.random::<f64>() < config.transpose_prob;
+        let kernel_kind = choose_kernel_type(config.kernel_mixture, &mut rng);
+        let op_seed = rng.random::<u64>();
 
-        let a_host = make_random_host_matrix(size, rng.random::<u64>());
-        let b_host = make_random_host_matrix(size, rng.random::<u64>());
-
-        let op_elapsed = match (|| {
-            let a_dev = backend.upload_matrix(&a_host, &spec)?;
-            let b_dev = backend.upload_matrix(&b_host, &spec)?;
-
-            for _ in 0..config.warmup_iters {
-                let _ = backend.gemm(&a_dev, &b_dev, transpose_a, transpose_b)?;
-            }
-            backend.synchronize()?;
-
-            let op_start = Instant::now();
-            for _ in 0..config.burst_iters {
-                let _ = backend.gemm(&a_dev, &b_dev, transpose_a, transpose_b)?;
-            }
-            backend.synchronize()?;
-            let elapsed = op_start.elapsed().as_secs_f64();
-            Ok::<f64, BackendError>(elapsed)
-        })() {
+        let op_elapsed = match backend.run_kernel_path(
+            &spec,
+            kernel_kind,
+            size,
+            config.warmup_iters,
+            config.burst_iters,
+            config.transpose_prob,
+            op_seed,
+            config.stream_mode,
+        ) {
             Ok(value) => value,
             Err(err) => {
                 result.first_error = Some(format!("runtime error: {err}"));
@@ -385,8 +571,7 @@ pub fn run_stress_for_precision<B: Backend>(
             }
         };
 
-        let burst_iters_f64 = config.burst_iters as f64;
-        let flops = 2.0 * (size as f64).powi(3) * burst_iters_f64;
+        let flops = estimate_kernel_work_flops(kernel_kind, size, config.burst_iters) as f64;
         let inst_tflops = if op_elapsed > 0.0 {
             flops / op_elapsed / 1e12
         } else {
@@ -395,12 +580,17 @@ pub fn run_stress_for_precision<B: Backend>(
         let elapsed_total = start.elapsed().as_secs_f64();
 
         println!(
-            "[{}] t={:6.1}s/{:.0}s | size={:5} | inst={:7.2} TFLOPS",
-            spec.name, elapsed_total, config.duration_s, size, inst_tflops
+            "[{}] t={:6.1}s/{:.0}s | {:10} | size={:5} | inst={:7.2} TFLOPS(eqv)",
+            spec.name,
+            elapsed_total,
+            config.duration_s,
+            kernel_kind.as_str(),
+            size,
+            inst_tflops
         );
 
         result.iterations += config.burst_iters as u64;
-        result.total_flops += 2u128 * (size as u128).pow(3) * config.burst_iters as u128;
+        result.total_flops += estimate_kernel_work_flops(kernel_kind, size, config.burst_iters);
         result.compute_s += op_elapsed;
         result.elapsed_s = elapsed_total;
         if result.compute_s > 0.0 {
