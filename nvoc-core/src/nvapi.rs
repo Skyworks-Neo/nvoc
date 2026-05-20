@@ -905,13 +905,19 @@ pub fn query_domain_vf_points_indexed(
             }
             Ordering::Less => {
                 let (i, _) = pts.next().unwrap();
-                log::warn!("VFP point index {i} has no matching delta; skipping");
+                eprintln!("VFP point index {i} has no matching delta; skipping");
             }
             Ordering::Greater => {
                 let (i, _) = dts.next().unwrap();
-                log::warn!("VFP delta index {i} has no matching point; skipping");
+                eprintln!("VFP delta index {i} has no matching point; skipping");
             }
         }
+    }
+    while let Some((i, _)) = pts.next() {
+        eprintln!("VFP point index {i} has no matching delta; skipping");
+    }
+    while let Some((i, _)) = dts.next() {
+        eprintln!("VFP delta index {i} has no matching point; skipping");
     }
     Ok(result)
 }
