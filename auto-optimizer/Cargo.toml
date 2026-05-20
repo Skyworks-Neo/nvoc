@@ -14,8 +14,6 @@ include = ["/src/**", "/README*", "/LICENSE*"]
 
 [dependencies]
 nvoc-core = { workspace = true }
-nvapi-hi = { workspace = true }
-nvapi = { workspace = true }
 nvml-wrapper = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }

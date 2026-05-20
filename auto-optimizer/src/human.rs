@@ -1,6 +1,7 @@
-use nvapi_hi::{ClockDomain, CoolerControl, Gpu, GpuInfo, GpuSettings, GpuStatus, MicrovoltsDelta};
-use nvml_wrapper::Nvml;
-use nvoc_core::legacy::query_nvml_power_watts;
+use nvoc_core::{
+    ClockDomain, CoolerControl, CoolerPolicy, GpuInfo, GpuSettings, GpuStatus, GpuTarget,
+    QueryPowerLimits, legacy_core_overvolt_ranges, run,
+};
 use std::iter;
 
 const HEADER_LEN: usize = 20;
@@ -38,39 +39,7 @@ fn vfp_lock_label<T: std::fmt::Display>(id: &T) -> String {
     }
 }
 
-fn legacy_core_overvolt_ranges(
-    gpu: &Gpu,
-) -> Vec<(
-    nvapi_hi::PState,
-    MicrovoltsDelta,
-    MicrovoltsDelta,
-    MicrovoltsDelta,
-)> {
-    let pstates = match gpu.inner().pstates() {
-        Ok(pstates) => pstates,
-        Err(_) => return Vec::new(),
-    };
-
-    pstates
-        .pstates
-        .iter()
-        .filter_map(|ps| {
-            ps.base_voltages
-                .iter()
-                .find(|v| v.voltage_domain == nvapi::VoltageDomain::Core && v.editable)
-                .map(|v| {
-                    (
-                        ps.id,
-                        v.voltage_delta.value,
-                        v.voltage_delta.range.min,
-                        v.voltage_delta.range.max,
-                    )
-                })
-        })
-        .collect()
-}
-
-pub fn print_settings(gpu: &Gpu, set: &GpuSettings) {
+pub fn print_settings(gpu: &GpuTarget<'_>, set: &GpuSettings) {
     if let Some(ref boost) = set.voltage_boost {
         pline!("Voltage Boost", "{} (range: 0%-100%)", boost);
     }
@@ -108,7 +77,7 @@ pub fn print_settings(gpu: &Gpu, set: &GpuSettings) {
     {
         pline!(format!("{} @ {} Offset", clock, pstate), "{}", delta);
     }
-    let legacy_overvolt = legacy_core_overvolt_ranges(gpu);
+    let legacy_overvolt = legacy_core_overvolt_ranges(gpu).unwrap_or_default();
     if !legacy_overvolt.is_empty() {
         for (pstate, current, min, max) in legacy_overvolt {
             pline!(
@@ -241,7 +210,7 @@ pub fn print_status(status: &GpuStatus) {
     }
 }
 
-pub fn print_info(gpu: &Gpu, info: &GpuInfo) {
+pub fn print_info(gpu: &GpuTarget<'_>, info: &GpuInfo) {
     pline!(
         format!("GPU {}", info.id),
         "{} ({})",
@@ -324,25 +293,21 @@ pub fn print_info(gpu: &Gpu, info: &GpuInfo) {
         }
     }
 
-    let nvml = Nvml::init().ok();
     for limit in info.power_limits.iter() {
         // 使用 NVAPI GPU ID 直接查询（公式：GPU_ID = PCI_Bus × 256）
-        match nvml
-            .as_ref()
-            .and_then(|n| query_nvml_power_watts(n, info.id as u32))
-        {
-            Some((min_w, current_w, max_w)) => {
+        match run(gpu, QueryPowerLimits).map(|report| report.output) {
+            Ok(power) => {
                 pline!(
                     "Power Limit",
                     "{} ({} default) | {:.0}W min / {:.0}W current / {:.0}W max",
                     limit.range,
                     limit.default,
-                    min_w,
-                    current_w,
-                    max_w
+                    power.min_watts,
+                    power.current_watts,
+                    power.max_watts
                 );
             }
-            None => {
+            Err(_) => {
                 pline!("Power Limit", "{} ({} default)", limit.range, limit.default);
             }
         }
@@ -409,7 +374,7 @@ pub fn print_info(gpu: &Gpu, info: &GpuInfo) {
                 .into(),
             },
         );
-        if cooler.default_policy != nvapi_hi::CoolerPolicy::None {
+        if cooler.default_policy != CoolerPolicy::None {
             pline!(
                 format!("Cooler {} Default", id),
                 "{} Mode",
@@ -417,7 +382,7 @@ pub fn print_info(gpu: &Gpu, info: &GpuInfo) {
             );
         }
     }
-    let legacy_overvolt = legacy_core_overvolt_ranges(gpu);
+    let legacy_overvolt = legacy_core_overvolt_ranges(gpu).unwrap_or_default();
     if !legacy_overvolt.is_empty() {
         for (pstate, current, min, max) in legacy_overvolt {
             pline!(

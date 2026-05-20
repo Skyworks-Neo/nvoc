@@ -9,7 +9,8 @@ use nvapi_hi::{
     FanCoolerId, Gpu, Kilohertz, KilohertzDelta, Microvolts, MicrovoltsDelta, PState, Percentage,
     PerfLimitId, PffCurve, PffPoint, VfpPoint,
 };
-use std::collections::BTreeMap;
+use std::cmp::Ordering;
+use std::collections::{BTreeMap, HashSet};
 use std::iter;
 use std::str::FromStr;
 use std::thread::sleep;
@@ -41,6 +42,76 @@ pub enum VfpLockRequest {
         upper: Kilohertz,
         lower: Option<Kilohertz>,
     },
+}
+
+pub fn set_nvapi_voltage_boost(gpu: &Gpu, boost: Percentage) -> Result<(), Error> {
+    gpu.set_voltage_boost(boost).map_err(Error::from)
+}
+
+pub fn set_nvapi_sensor_limits_to_default(gpu: &Gpu) -> Result<(), Error> {
+    let info = gpu.info().map_err(Error::from)?;
+    gpu.set_sensor_limits(
+        info.sensor_limits
+            .iter()
+            .cloned()
+            .map(nvapi_hi::SensorThrottle::from_default),
+    )
+    .map_err(Error::from)
+}
+
+pub fn set_nvapi_power_limits_to_default(gpu: &Gpu) -> Result<(), Error> {
+    let info = gpu.info().map_err(Error::from)?;
+    gpu.set_power_limits(info.power_limits.iter().map(|info| info.default))
+        .map_err(Error::from)
+}
+
+pub fn set_nvapi_power_limits<I>(gpu: &Gpu, limits: I) -> Result<(), Error>
+where
+    I: IntoIterator<Item = Percentage>,
+{
+    gpu.set_power_limits(limits).map_err(Error::from)
+}
+
+pub fn set_nvapi_sensor_limits<I>(gpu: &Gpu, limits: I) -> Result<(), Error>
+where
+    I: IntoIterator<Item = nvapi_hi::SensorThrottle>,
+{
+    gpu.set_sensor_limits(limits).map_err(Error::from)
+}
+
+pub fn reset_nvapi_cooler_levels(gpu: &Gpu) -> Result<(), Error> {
+    gpu.reset_cooler_levels().map_err(Error::from)
+}
+
+pub fn reset_nvapi_vfp_lock(gpu: &Gpu) -> Result<(), Error> {
+    gpu.reset_vfp_lock().map_err(Error::from)
+}
+
+pub fn set_nvapi_cooler_settings<I>(gpu: &Gpu, settings: I) -> Result<(), Error>
+where
+    I: IntoIterator<Item = (FanCoolerId, CoolerSettings)>,
+{
+    gpu.set_cooler_levels(settings).map_err(Error::from)
+}
+
+pub fn set_nvapi_vfp_voltage_lock(gpu: &Gpu, voltage: Option<Microvolts>) -> Result<(), Error> {
+    gpu.set_vfp_lock_voltage(voltage).map_err(Error::from)
+}
+
+pub fn set_nvapi_pstate_clock_offsets<I>(gpu: &Gpu, offsets: I) -> Result<(), Error>
+where
+    I: IntoIterator<Item = (PState, ClockDomain, KilohertzDelta)>,
+{
+    gpu.inner().set_pstates(offsets).map_err(Error::from)
+}
+
+pub fn set_nvapi_pstate_clock_offset_preserve(
+    gpu: &Gpu,
+    target_pstate: PState,
+    target_domain: ClockDomain,
+    target_delta: KilohertzDelta,
+) -> Result<(), Error> {
+    set_pstate_clock_offset_preserve(gpu, target_pstate, target_domain, target_delta)
 }
 
 /// 通过 NvAPI_GPU_SetPstates20 的 baseVoltages 字段写入指定 pstate 的核心电压 delta。
@@ -132,6 +203,59 @@ pub fn set_pstate_base_voltage(
         delta_uv.0 as f64 / 1000.0
     );
     Ok(())
+}
+
+pub fn set_nvapi_pstate_base_voltage(
+    gpu: &Gpu,
+    delta_uv: MicrovoltsDelta,
+    target_pstate: PState,
+) -> Result<(), Error> {
+    set_pstate_base_voltage(gpu, delta_uv, target_pstate)
+}
+
+pub fn reset_all_nvapi_pstate_base_voltages(gpu: &Gpu) -> Result<(), Error> {
+    reset_all_pstate_base_voltages(gpu)
+}
+
+pub fn legacy_p0_core_max_voltage_delta(gpu: &Gpu) -> Result<Option<MicrovoltsDelta>, Error> {
+    let pstates = gpu
+        .inner()
+        .pstates()
+        .map_err(|e| Error::from(format!("Failed to read pstates: {:?}", e)))?;
+
+    Ok(pstates
+        .pstates
+        .into_iter()
+        .find(|p| p.id == PState::P0)
+        .and_then(|p0| {
+            p0.base_voltages
+                .into_iter()
+                .find(|v| v.voltage_domain == VoltageDomain::Core)
+                .map(|v| v.voltage_delta.range.max)
+        }))
+}
+
+pub fn legacy_core_overvolt_ranges(
+    gpu: &Gpu,
+) -> Result<Vec<(PState, MicrovoltsDelta, MicrovoltsDelta, MicrovoltsDelta)>, Error> {
+    let pstates = gpu.inner().pstates().map_err(Error::from)?;
+    Ok(pstates
+        .pstates
+        .iter()
+        .filter_map(|ps| {
+            ps.base_voltages
+                .iter()
+                .find(|v| v.voltage_domain == VoltageDomain::Core && v.editable)
+                .map(|v| {
+                    (
+                        ps.id,
+                        v.voltage_delta.value,
+                        v.voltage_delta.range.min,
+                        v.voltage_delta.range.max,
+                    )
+                })
+        })
+        .collect())
 }
 
 /// Preserve all editable clock deltas in the target P-State, overriding only one domain.
@@ -318,6 +442,16 @@ pub fn set_cooler_levels(
         }
     }
     Ok(())
+}
+
+pub fn set_nvapi_cooler_levels(
+    gpus: &[&Gpu],
+    policy: CoolerPolicy,
+    level: u32,
+    cooler_target: CoolerTarget,
+) -> Result<(), Error> {
+    let raw = gpus.to_vec();
+    set_cooler_levels(&raw, policy, level, cooler_target)
 }
 
 pub fn get_voltage_by_point(gpu: &Gpu, point: usize) -> Result<Microvolts, Error> {
@@ -553,6 +687,15 @@ pub fn set_nvapi_pstate_lock(
     Ok((range_label, min_lock_mhz, max_lock_mhz))
 }
 
+pub fn set_nvapi_gpu_pstate_lock(
+    nvml: &nvml_wrapper::Nvml,
+    gpu: &Gpu,
+    min_pstate: nvml_wrapper::enum_wrappers::device::PerformanceState,
+    max_pstate: nvml_wrapper::enum_wrappers::device::PerformanceState,
+) -> Result<(String, u32, u32), Error> {
+    set_nvapi_pstate_lock(nvml, gpu, gpu.id() as u32, min_pstate, max_pstate)
+}
+
 pub fn lock_vfp(gpus: &[&Gpu], request: VfpLockRequest, feedback_flag: bool) -> Result<(), Error> {
     if let VfpLockRequest::Frequency {
         domain,
@@ -661,6 +804,32 @@ pub fn lock_vfp(gpus: &[&Gpu], request: VfpLockRequest, feedback_flag: bool) -> 
         }
     }
     Ok(())
+}
+
+pub fn set_nvapi_vfp_lock(
+    gpus: &[&Gpu],
+    request: VfpLockRequest,
+    feedback_flag: bool,
+) -> Result<(), Error> {
+    let raw = gpus.to_vec();
+    lock_vfp(&raw, request, feedback_flag)
+}
+
+pub fn query_nvapi_vfp_point_voltage(gpu: &Gpu, point: usize) -> Result<Microvolts, Error> {
+    get_voltage_by_point(gpu, point)
+}
+
+pub fn set_nvapi_vfp_frequency_lock(
+    gpu: &Gpu,
+    domain: ClockDomain,
+    upper: Kilohertz,
+    lower: Option<Kilohertz>,
+) -> Result<(), Error> {
+    set_vfp_frequency_lock(gpu, domain, upper, lower)
+}
+
+pub fn reset_nvapi_vfp_frequency_lock(gpu: &Gpu, domain: ClockDomain) -> Result<(), Error> {
+    reset_vfp_frequency_lock(gpu, domain)
 }
 
 pub fn reset_vfp_deltas(gpu: &Gpu, domain: VfpResetDomain) -> nvapi_hi::Result<()> {
@@ -787,6 +956,14 @@ pub fn core_reset_vfp(gpu: &Gpu) -> nvapi_hi::Result<()> {
     reset_vfp_deltas(gpu, VfpResetDomain::All)
 }
 
+pub fn reset_nvapi_vfp_deltas(gpu: &Gpu, domain: VfpResetDomain) -> Result<(), Error> {
+    reset_vfp_deltas(gpu, domain).map_err(Error::from)
+}
+
+pub fn reset_all_nvapi_vfp_deltas(gpu: &Gpu) -> Result<(), Error> {
+    reset_nvapi_vfp_deltas(gpu, VfpResetDomain::All)
+}
+
 pub fn adjust_single_vfp_point(gpus: &[&Gpu], point: usize, delta_khz: i32) -> Result<(), Error> {
     for gpu in gpus {
         gpu.set_vfp(
@@ -817,6 +994,160 @@ pub fn set_pointwise_vfp_delta(
 
     for gpu in gpus {
         set_vfp_range(gpu, start..=end, delta_khz)?;
+    }
+
+    Ok(())
+}
+
+pub fn set_nvapi_vfp_point_delta(
+    gpu: &Gpu,
+    point: usize,
+    delta: KilohertzDelta,
+) -> Result<(), Error> {
+    gpu.set_vfp(iter::once((point, delta)), iter::empty())
+        .map_err(Error::from)
+}
+
+pub fn set_nvapi_vfp_curve_delta(
+    gpu: &Gpu,
+    point: usize,
+    vfp_set_range: usize,
+    flat_curve: bool,
+    main_delta: i32,
+    lower_delta: Option<i32>,
+) -> Result<(), Error> {
+    let raw = gpu;
+    if !flat_curve {
+        set_vfp_range(
+            &raw,
+            (point - vfp_set_range)..=(point + vfp_set_range),
+            main_delta,
+        )
+    } else {
+        set_vfp_range(&raw, point..=(point + vfp_set_range), main_delta)?;
+        if let Some(ld) = lower_delta {
+            set_vfp_range(&raw, (point - vfp_set_range)..=(point - 1), ld)?;
+        }
+        Ok(())
+    }
+}
+
+pub fn query_domain_vf_points_indexed(
+    gpu: &Gpu,
+    domain: ClockDomain,
+    infer_missing_default: bool,
+) -> Result<Vec<(usize, nvapi_hi::VfPoint)>, Error> {
+    let info = gpu.inner().vfp_info()?;
+    let curve = gpu.inner().vfp_curve(&info)?;
+    let table = gpu.inner().vfp_table(&info)?;
+
+    let points = curve.points.get(&domain).cloned().unwrap_or_default();
+    let deltas = table.delta_points.get(&domain).cloned().unwrap_or_default();
+
+    let mut pts = points.into_iter().peekable();
+    let mut dts = deltas.into_iter().peekable();
+    let mut result = Vec::new();
+    loop {
+        let ord = match (pts.peek(), dts.peek()) {
+            (None, _) | (_, None) => break,
+            (Some((i0, _)), Some((i1, _))) => i0.cmp(i1),
+        };
+        match ord {
+            Ordering::Equal => {
+                let (i, point) = pts.next().unwrap();
+                let (_, delta) = dts.next().unwrap();
+                let mut point = nvapi_hi::VfPoint {
+                    voltage: point.configured().voltage,
+                    frequency: point.configured().frequency,
+                    default_frequency: point.default().map(|p| p.frequency).unwrap_or_default(),
+                    delta,
+                };
+                if infer_missing_default && point.default_frequency.0 == 0 {
+                    let base = point.frequency.0 as i64 - point.delta.0 as i64;
+                    point.default_frequency = Kilohertz(base.max(0) as u32);
+                }
+                result.push((i, point));
+            }
+            Ordering::Less => {
+                let (i, _) = pts.next().unwrap();
+                eprintln!("warning: VFP point index {i} has no matching delta; skipping");
+            }
+            Ordering::Greater => {
+                let (i, _) = dts.next().unwrap();
+                eprintln!("warning: VFP delta index {i} has no matching point; skipping");
+            }
+        }
+    }
+    Ok(result)
+}
+
+pub fn query_domain_vf_points(
+    gpu: &Gpu,
+    domain: ClockDomain,
+    infer_missing_default: bool,
+) -> Result<Vec<nvapi_hi::VfPoint>, Error> {
+    query_domain_vf_points_indexed(gpu, domain, infer_missing_default)
+        .map(|points| points.into_iter().map(|(_, point)| point).collect())
+}
+
+pub fn query_domain_vfp_indices(gpu: &Gpu, domain: ClockDomain) -> Result<Vec<usize>, Error> {
+    let info = gpu.inner().vfp_info()?;
+    Ok(info.iter(domain).collect())
+}
+
+pub fn set_nvapi_domain_vfp_deltas(
+    gpu: &Gpu,
+    domain: ClockDomain,
+    deltas: &[(usize, KilohertzDelta)],
+) -> Result<(), Error> {
+    use nvapi_hi::sys::gpu::clock::private::NV_GPU_CLOCK_CLIENT_CLK_VF_POINTS_CONTROL;
+
+    let info = gpu
+        .inner()
+        .vfp_info()
+        .map_err(|e| Error::Custom(format!("NvAPI vfp_info failed: {}", e)))?;
+    let domain_indices: HashSet<usize> = info.iter(domain).collect();
+
+    let mut data = NV_GPU_CLOCK_CLIENT_CLK_VF_POINTS_CONTROL {
+        mask: info.mask.mask,
+        ..Default::default()
+    };
+
+    unsafe {
+        let status = nvapi_hi::sys::api::NvAPI_GPU_ClockClientClkVfPointsGetControl(
+            *gpu.inner().handle(),
+            &mut data,
+        );
+        nvapi_hi::sys::status_result(status).map_err(|e| {
+            Error::Custom(format!(
+                "NvAPI_GPU_ClockClientClkVfPointsGetControl failed: {:?}",
+                e
+            ))
+        })?;
+    }
+
+    for &(i, delta) in deltas {
+        if !domain_indices.contains(&i) {
+            return Err(Error::Custom(format!(
+                "VFP point index {i} is not a {:?} domain point",
+                domain
+            )));
+        }
+        data.points[i].freqDeltaKHz = delta.0;
+        data.mask.set_bit(i);
+    }
+
+    unsafe {
+        let status = nvapi_hi::sys::api::NvAPI_GPU_ClockClientClkVfPointsSetControl(
+            *gpu.inner().handle(),
+            &data,
+        );
+        nvapi_hi::sys::status_result(status).map_err(|e| {
+            Error::Custom(format!(
+                "NvAPI_GPU_ClockClientClkVfPointsSetControl failed: {:?}",
+                e
+            ))
+        })?;
     }
 
     Ok(())
@@ -997,6 +1328,14 @@ pub fn handle_test_voltage_limits(
     ))
 }
 
+pub fn probe_nvapi_voltage_limits(
+    gpus: &[&Gpu],
+    print_separator: impl FnMut(),
+) -> Result<(usize, usize), Error> {
+    let raw = gpus.to_vec();
+    handle_test_voltage_limits(&raw, print_separator)
+}
+
 pub fn get_gpu_tdp_temp_limit(
     gpus: &[&Gpu],
     mut print_separator: impl FnMut(),
@@ -1102,6 +1441,14 @@ pub fn get_gpu_tdp_temp_limit(
     ))
 }
 
+pub fn query_nvapi_tdp_temp_limits(
+    gpus: &[&Gpu],
+    print_separator: impl FnMut(),
+) -> Result<GpuTdpTempLimits, Error> {
+    let raw = gpus.to_vec();
+    get_gpu_tdp_temp_limit(&raw, print_separator)
+}
+
 pub fn find_matching_vfp_point(
     vfp_table: &BTreeMap<usize, VfpPoint>,
     sensor_v: Microvolts,
@@ -1164,6 +1511,15 @@ pub fn voltage_frequency_check(
         print_separator();
     }
     Ok(precise_flag)
+}
+
+pub fn check_nvapi_voltage_frequency(
+    gpus: &[&Gpu],
+    point: usize,
+    print_separator: impl FnMut(),
+) -> Result<bool, Error> {
+    let raw = gpus.to_vec();
+    voltage_frequency_check(&raw, point, print_separator)
 }
 
 // ---------------------------------------------------------------------------
@@ -1260,4 +1616,8 @@ pub fn set_legacy_clocks_nvapi(gpu: &Gpu, core_mhz: u32, mem_mhz: u32) -> Result
     }
 
     Ok(())
+}
+
+pub fn set_nvapi_legacy_clocks(gpu: &Gpu, core_mhz: u32, mem_mhz: u32) -> Result<(), Error> {
+    set_legacy_clocks_nvapi(gpu, core_mhz, mem_mhz)
 }

@@ -6,7 +6,7 @@ use super::platform::{
     default_vfp_temp_csv_path,
 };
 use clap::{Arg, ArgAction, Command};
-use nvapi_hi::PState;
+use nvoc_core::PState;
 use nvoc_core::{ConvertEnum, VfpResetDomain};
 
 pub fn get_arguments() -> Command {

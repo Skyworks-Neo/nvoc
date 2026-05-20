@@ -22,3 +22,13 @@ impl From<nvapi_hi::NvapiError> for Error {
         Self::from(nvapi_hi::Error::from(e))
     }
 }
+
+pub fn is_allowable_nvapi_reset_error(err: &Error) -> bool {
+    matches!(
+        err,
+        Error::Nvapi(nvapi_hi::Error::Nvapi(nvapi_hi::NvapiError {
+            status: nvapi_hi::Status::NotSupported | nvapi_hi::Status::NoImplementation,
+            ..
+        })) | Error::Nvapi(nvapi_hi::Error::ArgumentRange(..))
+    )
+}

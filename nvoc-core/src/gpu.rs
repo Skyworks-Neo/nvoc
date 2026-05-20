@@ -113,7 +113,6 @@ pub fn get_sorted_gpus() -> nvapi_hi::Result<Vec<Gpu>> {
     gpus.sort_by_key(|g| g.id());
     Ok(gpus)
 }
-
 pub fn get_sorted_gpu_ids_nvml(nvml: &Nvml) -> Result<Vec<u32>, Error> {
     let count = nvml
         .device_count()

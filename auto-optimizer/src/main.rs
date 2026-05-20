@@ -15,16 +15,14 @@ mod platform;
 use anyhow::Result;
 use basic_func::{
     check_single_dash_args, handle_cooler_command, handle_get, handle_info, handle_list,
-    handle_nvml_cooler_with_ids, handle_nvml_with_ids, handle_pointwiseoc, handle_reset,
-    handle_reset_nvml_cooler, handle_set_command, handle_status, single_point_adj,
+    handle_nvml, handle_nvml_cooler, handle_pointwiseoc, handle_reset, handle_reset_nvml_cooler,
+    handle_set_command, handle_status, single_point_adj,
 };
 use cli_types::OutputFormat;
-use nvml_wrapper::Nvml;
-use nvoc_core::legacy::{
-    get_sorted_gpu_ids_nvml, get_sorted_gpus, select_gpu_ids, select_gpus, set_legacy_clocks_nvapi,
-    single_gpu,
+use nvoc_core::{
+    BackendSet, ConvertEnum, GpuSelector, GpuTarget, discover_targets, select_targets,
+    set_nvapi_legacy_clocks,
 };
-use nvoc_core::{ConvertEnum, GpuSelector};
 use oc_profile_function::{
     export_vfp_from_log, fix_result, handle_vfp_export, handle_vfp_import, sync_memory_pstate_as_p0,
 };
@@ -59,24 +57,32 @@ fn require_elevated() -> Result<(), Box<dyn std::error::Error>> {
         .into())
 }
 
+fn single_target<'a>(targets: &'a [GpuTarget<'a>]) -> Result<&'a GpuTarget<'a>, nvoc_core::Error> {
+    let mut targets = targets.iter();
+    targets
+        .next()
+        .ok_or_else(|| nvoc_core::Error::from("no GPU selected"))
+        .and_then(|target| match targets.next() {
+            None => Ok(target),
+            Some(..) => Err(nvoc_core::Error::from("multiple GPUs selected")),
+        })
+}
+
 fn main_result() -> Result<i32, Box<dyn std::error::Error>> {
     let app = arg_help::get_arguments();
     check_single_dash_args(&app)?;
     let matches = app.get_matches();
     let exit_code = 0;
 
-    let nvml_init_result = Nvml::init();
-    let nvapi_init_result = nvapi_hi::initialize();
-
-    if let Err(e) = &nvml_init_result {
-        eprintln!("Warning: NVML init failed: {}", e);
-    }
-    if let Err(e) = &nvapi_init_result {
-        eprintln!("Warning: NvAPI init failed: {}", e);
-    }
-    if nvml_init_result.is_err() && nvapi_init_result.is_err() {
-        return Err("Both NVML and NvAPI initialization failed".into());
-    }
+    let inventory = discover_targets(BackendSet::Both)
+        .or_else(|both_err| {
+            eprintln!("Warning: combined GPU discovery failed: {}", both_err);
+            discover_targets(BackendSet::Nvapi)
+        })
+        .or_else(|nvapi_err| {
+            eprintln!("Warning: NvAPI discovery failed: {}", nvapi_err);
+            discover_targets(BackendSet::Nvml)
+        })?;
 
     let oformat = matches
         .get_one::<String>("oformat")
@@ -89,28 +95,19 @@ fn main_result() -> Result<i32, Box<dyn std::error::Error>> {
         None => GpuSelector::all(),
     };
 
-    // Enumerate both backends once, then resolve the selection upfront.
-    // Handlers receive already-selected handles and do not filter themselves.
-    let nvapi_all: Option<Vec<nvapi_hi::Gpu>> = if nvapi_init_result.is_ok() {
-        get_sorted_gpus().ok()
-    } else {
-        None
-    };
-
-    let nvml_ref = nvml_init_result.as_ref().ok();
-
-    let nvml_ids_all: Vec<u32> = nvml_ref
-        .and_then(|nvml| get_sorted_gpu_ids_nvml(nvml).ok())
-        .unwrap_or_default();
-
-    // Pre-select for the NVAPI path (empty when NVAPI is unavailable).
-    let nvapi_selected: Vec<&nvapi_hi::Gpu> = nvapi_all
-        .as_deref()
-        .and_then(|all| select_gpus(all, &selector).ok())
-        .unwrap_or_default();
-
-    // Pre-select for the NVML path (empty when NVML is unavailable).
-    let nvml_selected: Vec<u32> = select_gpu_ids(&nvml_ids_all, &selector).unwrap_or_default();
+    let targets_all = inventory.targets();
+    let selected_targets = select_targets(&targets_all, &selector).unwrap_or_default();
+    let nvapi_selected: Vec<GpuTarget<'_>> = selected_targets
+        .iter()
+        .copied()
+        .filter(|target| target.nvapi.is_some())
+        .collect();
+    let nvml_selected: Vec<u32> = selected_targets
+        .iter()
+        .filter(|target| target.nvml.is_some())
+        .map(|target| target.id.0)
+        .collect();
+    let nvml_ref = selected_targets.iter().find_map(|target| target.nvml);
 
     match matches.subcommand() {
         Some(("info", _matches)) => {
@@ -167,7 +164,7 @@ fn main_result() -> Result<i32, Box<dyn std::error::Error>> {
             match matches.subcommand() {
                 Some(("nvml", sub_matches)) => match nvml_ref {
                     Some(_) => {
-                        handle_nvml_with_ids(&nvml_selected, sub_matches)?;
+                        handle_nvml(&selected_targets, sub_matches)?;
                     }
                     None => {
                         return Err("NVML backend unavailable".into());
@@ -175,14 +172,14 @@ fn main_result() -> Result<i32, Box<dyn std::error::Error>> {
                 },
                 Some(("nvml-cooler", sub_matches)) => match nvml_ref {
                     Some(_) => {
-                        handle_nvml_cooler_with_ids(&nvml_selected, sub_matches)?;
+                        handle_nvml_cooler(&selected_targets, sub_matches)?;
                     }
                     None => {
                         return Err("NVML backend unavailable".into());
                     }
                 },
                 _ => {
-                    if nvapi_init_result.is_err() {
+                    if nvapi_selected.is_empty() {
                         return Err(
                             "This subcommand requires NvAPI, but NvAPI initialization failed"
                                 .into(),
@@ -200,7 +197,7 @@ fn main_result() -> Result<i32, Box<dyn std::error::Error>> {
                             let core_mhz = *matches.get_one::<u32>("core").unwrap();
                             let mem_mhz = *matches.get_one::<u32>("memory").unwrap();
                             for gpu in &nvapi_selected {
-                                match set_legacy_clocks_nvapi(gpu, core_mhz, mem_mhz) {
+                                match set_nvapi_legacy_clocks(gpu, core_mhz, mem_mhz) {
                                     Ok(_) => println!(
                                         "Legacy clock applied to GPU: Core = {} MHz, Mem = {} MHz",
                                         core_mhz, mem_mhz
@@ -211,18 +208,18 @@ fn main_result() -> Result<i32, Box<dyn std::error::Error>> {
                         }
                         Some(("vfp", matches)) => match matches.subcommand() {
                             Some(("export", matches)) => {
-                                let gpu = single_gpu(&nvapi_selected)?;
+                                let gpu = single_target(&nvapi_selected)?;
                                 handle_vfp_export(gpu, matches)?;
                             }
                             Some(("export_log", matches)) => {
                                 export_vfp_from_log(matches)?;
                             }
                             Some(("import", matches)) => {
-                                let gpu = single_gpu(&nvapi_selected)?;
+                                let gpu = single_target(&nvapi_selected)?;
                                 handle_vfp_import(gpu, matches)?;
                             }
                             Some(("sync_mem_pstate_as_p0", _matches)) => {
-                                let gpu = single_gpu(&nvapi_selected)?;
+                                let gpu = single_target(&nvapi_selected)?;
                                 sync_memory_pstate_as_p0(gpu)?;
                             }
                             Some(("single_point_adj", matches)) => {
@@ -232,7 +229,7 @@ fn main_result() -> Result<i32, Box<dyn std::error::Error>> {
                                 handle_pointwiseoc(&nvapi_selected, matches)?
                             }
                             Some(("fix_result", matches)) => {
-                                let gpu = single_gpu(&nvapi_selected)?;
+                                let gpu = single_target(&nvapi_selected)?;
                                 fix_result(gpu, matches)?
                             }
                             Some(("autoscan", matches)) => {

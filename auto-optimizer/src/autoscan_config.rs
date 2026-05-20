@@ -10,7 +10,7 @@ use super::platform::{
     default_vfp_temp_csv_path,
 };
 use clap::ArgMatches;
-use nvapi_hi::ClockDomain;
+use nvoc_core::ClockDomain;
 use nvoc_core::Error;
 
 // ---------------------------------------------------------------------------

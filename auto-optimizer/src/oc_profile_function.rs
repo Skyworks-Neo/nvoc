@@ -6,16 +6,19 @@ use super::human::print_scan_separator;
 use super::platform::panic_windows_only;
 use csv::{ReaderBuilder, StringRecord, WriterBuilder};
 use num_traits::abs;
-use nvapi_hi::{ClockDomain, Gpu, VfPoint};
-use nvapi_hi::{
+use nvoc_core::Error;
+use nvoc_core::{ClockDomain, GpuTarget, VfPoint};
+use nvoc_core::{
     CoolerPolicy, CoolerSettings, FanCoolerId, Kilohertz, KilohertzDelta, Microvolts, Percentage,
     SensorThrottle,
 };
-use nvoc_core::Error;
-use nvoc_core::legacy::set_pstate_base_voltage;
-use nvoc_core::{GpuType, fetch_gpu_type};
-use std::cmp::{Ordering, min};
-use std::collections::HashSet;
+use nvoc_core::{
+    GpuType, fetch_gpu_type, legacy_p0_core_max_voltage_delta, query_domain_vf_points_indexed,
+    query_domain_vfp_indices, query_gpu_info, set_nvapi_cooler_settings,
+    set_nvapi_domain_vfp_deltas, set_nvapi_power_limits, set_nvapi_pstate_base_voltage,
+    set_nvapi_sensor_limits, set_nvapi_vfp_point_delta, set_nvapi_voltage_boost,
+};
+use std::cmp::min;
 use std::convert::TryFrom;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
@@ -197,13 +200,6 @@ fn export_vfp<W: Write, I: Iterator<Item = VfPoint>>(
     Ok(())
 }
 
-fn infer_default_frequency(point: &mut VfPoint) {
-    if point.default_frequency.0 == 0 {
-        let base = point.frequency.0 as i64 - point.delta.0 as i64;
-        point.default_frequency = Kilohertz(base.max(0) as u32);
-    }
-}
-
 fn vfp_domain_from_matches(matches: &clap::ArgMatches) -> ClockDomain {
     if matches.get_flag("memory") {
         ClockDomain::Memory
@@ -219,58 +215,15 @@ fn vfp_domain_from_matches(matches: &clap::ArgMatches) -> ClockDomain {
 }
 
 fn collect_domain_vf_points_indexed(
-    gpu: &Gpu,
+    gpu: &GpuTarget<'_>,
     domain: ClockDomain,
     infer_missing_default: bool,
 ) -> Result<Vec<(usize, VfPoint)>, Error> {
-    let info = gpu.inner().vfp_info()?;
-    let curve = gpu.inner().vfp_curve(&info)?;
-    let table = gpu.inner().vfp_table(&info)?;
-
-    let points = curve.points.get(&domain).cloned().unwrap_or_default();
-    let deltas = table.delta_points.get(&domain).cloned().unwrap_or_default();
-
-    // Sorted merge-join: zip() would silently drop all points after the first
-    // index gap. A peekable merge-join skips only the mismatched entry and
-    // continues, so a single driver inconsistency doesn't lose all later points.
-    let mut pts = points.into_iter().peekable();
-    let mut dts = deltas.into_iter().peekable();
-    let mut result = Vec::new();
-    loop {
-        let ord = match (pts.peek(), dts.peek()) {
-            (None, _) | (_, None) => break,
-            (Some((i0, _)), Some((i1, _))) => i0.cmp(i1),
-        };
-        match ord {
-            Ordering::Equal => {
-                let (i, point) = pts.next().unwrap();
-                let (_, delta) = dts.next().unwrap();
-                let mut point = VfPoint {
-                    voltage: point.configured().voltage,
-                    frequency: point.configured().frequency,
-                    default_frequency: point.default().map(|p| p.frequency).unwrap_or_default(),
-                    delta,
-                };
-                if infer_missing_default {
-                    infer_default_frequency(&mut point);
-                }
-                result.push((i, point));
-            }
-            Ordering::Less => {
-                let (i, _) = pts.next().unwrap();
-                eprintln!("warning: VFP point index {i} has no matching delta; skipping");
-            }
-            Ordering::Greater => {
-                let (i, _) = dts.next().unwrap();
-                eprintln!("warning: VFP delta index {i} has no matching point; skipping");
-            }
-        }
-    }
-    Ok(result)
+    query_domain_vf_points_indexed(gpu, domain, infer_missing_default)
 }
 
 fn collect_domain_vf_points(
-    gpu: &Gpu,
+    gpu: &GpuTarget<'_>,
     domain: ClockDomain,
     infer_missing_default: bool,
 ) -> Result<Vec<VfPoint>, Error> {
@@ -431,7 +384,7 @@ pub fn patch_vfp_csv_add_column_diff(path: &str, delimiter: u8) -> Result<(), Er
     Ok(())
 }
 
-pub fn handle_vfp_export(gpu: &Gpu, matches: &clap::ArgMatches) -> Result<(), Error> {
+pub fn handle_vfp_export(gpu: &GpuTarget<'_>, matches: &clap::ArgMatches) -> Result<(), Error> {
     let cfg = VfpExportConfig::from_matches(matches);
     let delimiter = cfg.delimiter;
     let output = cfg.output.as_str();
@@ -441,7 +394,7 @@ pub fn handle_vfp_export(gpu: &Gpu, matches: &clap::ArgMatches) -> Result<(), Er
         println!("Warning! Disabling dynamic check may generate unstable scan result!")
     }
 
-    let info = gpu.info()?;
+    let info = query_gpu_info(gpu)?;
     let gpu_type = fetch_gpu_type(&info).unwrap_or(GpuType::Unknown);
     let minimum_delta_core_freq_step = gpu_type.minimum_freq_step_khz();
     let max_q_flag = gpu_type.is_maxq();
@@ -545,65 +498,15 @@ pub fn check_margin_column(file_path: &str, threshold: i32) -> Result<bool, Erro
 }
 
 fn set_domain_vfp_deltas_raw(
-    gpu: &Gpu,
+    gpu: &GpuTarget<'_>,
     domain: ClockDomain,
     deltas: &[(usize, KilohertzDelta)],
 ) -> Result<(), Error> {
-    use nvapi::sys::gpu::clock::private::NV_GPU_CLOCK_CLIENT_CLK_VF_POINTS_CONTROL;
-
-    let info = gpu
-        .inner()
-        .vfp_info()
-        .map_err(|e| Error::Custom(format!("NvAPI vfp_info failed: {}", e)))?;
-    let domain_indices: HashSet<usize> = info.iter(domain).collect();
-
-    let mut data = NV_GPU_CLOCK_CLIENT_CLK_VF_POINTS_CONTROL {
-        mask: info.mask.mask,
-        ..Default::default()
-    };
-
-    unsafe {
-        let status = nvapi::sys::api::NvAPI_GPU_ClockClientClkVfPointsGetControl(
-            *gpu.inner().handle(),
-            &mut data,
-        );
-        nvapi::sys::status_result(status).map_err(|e| {
-            Error::Custom(format!(
-                "NvAPI_GPU_ClockClientClkVfPointsGetControl failed: {:?}",
-                e
-            ))
-        })?;
-    }
-
-    for &(i, delta) in deltas {
-        if !domain_indices.contains(&i) {
-            return Err(Error::Custom(format!(
-                "VFP point index {i} is not a {:?} domain point",
-                domain
-            )));
-        }
-        data.points[i].freqDeltaKHz = delta.0;
-        data.mask.set_bit(i);
-    }
-
-    unsafe {
-        let status = nvapi::sys::api::NvAPI_GPU_ClockClientClkVfPointsSetControl(
-            *gpu.inner().handle(),
-            &data,
-        );
-        nvapi::sys::status_result(status).map_err(|e| {
-            Error::Custom(format!(
-                "NvAPI_GPU_ClockClientClkVfPointsSetControl failed: {:?}",
-                e
-            ))
-        })?;
-    }
-
-    Ok(())
+    set_nvapi_domain_vfp_deltas(gpu, domain, deltas)
 }
 
-pub fn sync_memory_pstate_as_p0(gpu: &Gpu) -> Result<(), Error> {
-    let info = gpu.info()?;
+pub fn sync_memory_pstate_as_p0(gpu: &GpuTarget<'_>) -> Result<(), Error> {
+    let info = query_gpu_info(gpu)?;
     let gpu_type = fetch_gpu_type(&info).unwrap_or(GpuType::Unknown);
     let memory_points =
         collect_domain_vf_points_indexed(gpu, ClockDomain::Memory, gpu_type.is_legacy_vfp())?;
@@ -648,7 +551,7 @@ pub fn sync_memory_pstate_as_p0(gpu: &Gpu) -> Result<(), Error> {
     Ok(())
 }
 
-pub fn handle_vfp_import(gpu: &Gpu, matches: &clap::ArgMatches) -> Result<(), Error> {
+pub fn handle_vfp_import(gpu: &GpuTarget<'_>, matches: &clap::ArgMatches) -> Result<(), Error> {
     let delimiter = if matches.get_flag("tabs") {
         b'\t'
     } else {
@@ -659,9 +562,7 @@ pub fn handle_vfp_import(gpu: &Gpu, matches: &clap::ArgMatches) -> Result<(), Er
         .get_one::<String>("input")
         .map(|s| s.as_str())
         .unwrap();
-    let info = gpu.inner().vfp_info()?;
-    let curve = gpu.inner().vfp_curve(&info)?;
-    let vfp = curve.points.get(&domain).cloned().unwrap_or_default();
+    let vfp_indices = query_domain_vfp_indices(gpu, domain)?;
 
     fn import<R: io::Read>(read: R, delimiter: u8) -> Result<Vec<VfPoint>, csv::Error> {
         let mut csv = ReaderBuilder::new().delimiter(delimiter).from_reader(read);
@@ -677,32 +578,35 @@ pub fn handle_vfp_import(gpu: &Gpu, matches: &clap::ArgMatches) -> Result<(), Er
     .map_err(io::Error::from)?;
 
     let deltas: Vec<_> = if domain == ClockDomain::Memory {
-        if input.len() != vfp.len() {
+        if input.len() != vfp_indices.len() {
             return Err(Error::Custom(format!(
                 "Memory VFP import row count mismatch: CSV has {} rows but GPU table has {} \
                  points; export the current curve first to ensure row counts match",
                 input.len(),
-                vfp.len()
+                vfp_indices.len()
             )));
         }
         input
             .into_iter()
-            .zip(vfp.iter())
-            .map(|(point, (i, _))| (*i, point.delta))
+            .zip(vfp_indices.iter())
+            .map(|(point, i)| (*i, point.delta))
             .collect()
     } else {
+        let vfp = query_domain_vf_points_indexed(gpu, domain, false)?;
         input
             .into_iter()
             .filter_map(|point| {
                 vfp.iter()
-                    .find(|&(_, v)| v.current.voltage == point.voltage)
+                    .find(|&(_, v)| v.voltage == point.voltage)
                     .map(|(i, _)| (*i, point.delta))
             })
             .collect()
     };
 
     if domain == ClockDomain::Graphics {
-        gpu.set_vfp(deltas.into_iter(), iter::empty())?;
+        for (point, delta) in deltas {
+            set_nvapi_vfp_point_delta(gpu, point, delta)?;
+        }
     } else {
         set_domain_vfp_deltas_raw(gpu, domain, &deltas)?;
     }
@@ -842,7 +746,7 @@ fn interpolate_deltas(
     Ok(())
 }
 
-pub fn fix_result(gpu: &Gpu, matches: &clap::ArgMatches) -> Result<(), Error> {
+pub fn fix_result(gpu: &GpuTarget<'_>, matches: &clap::ArgMatches) -> Result<(), Error> {
     let cfg = FixResultConfig::from_matches(matches)?;
 
     if cfg.is_ultrafast {
@@ -852,7 +756,7 @@ pub fn fix_result(gpu: &Gpu, matches: &clap::ArgMatches) -> Result<(), Error> {
     let mut sum_f: u64 = 0;
     let mut sum_df: u64 = 0;
 
-    let info = gpu.info()?;
+    let info = query_gpu_info(gpu)?;
     let gpu_type = fetch_gpu_type(&info).unwrap_or(GpuType::Unknown);
     let minimum_delta_core_freq_step = gpu_type.minimum_freq_step_khz();
     let maxq_flag = gpu_type.is_maxq();
@@ -1171,7 +1075,7 @@ pub fn export_vfp_from_log(matches: &clap::ArgMatches) -> Result<(), Error> {
 }
 
 pub fn key_point_extractor(
-    gpus: &[&Gpu],
+    gpus: &[GpuTarget<'_>],
     point_l: usize,
     point_u: usize,
     file_path: &str,
@@ -1183,7 +1087,7 @@ pub fn key_point_extractor(
 
     let mut maxq_flag = false;
     for gpu in gpus {
-        let info = gpu.info()?;
+        let info = query_gpu_info(gpu)?;
         let gpu_type = fetch_gpu_type(&info).unwrap_or(GpuType::Unknown);
         maxq_flag = gpu_type.is_maxq();
     }
@@ -1262,11 +1166,11 @@ pub fn key_point_extractor(
 }
 
 pub fn apply_autoscan_profile(
-    gpu: &Gpu,
+    gpu: &GpuTarget<'_>,
     matches: &clap::ArgMatches,
     cooler_level: u32,
 ) -> Result<(), Error> {
-    let info = gpu.info()?;
+    let info = query_gpu_info(gpu)?;
     let gpu_name = &info.name;
 
     if gpu_name.contains("Laptop") || gpu_name.contains("Device") {
@@ -1282,23 +1186,10 @@ pub fn apply_autoscan_profile(
     if gpu_type.is_legacy_voltage() {
         // 900 系及更早：通过 SetPstates20 写 P0 baseVoltage delta（最大允许値，即尽量升压）
         // 先读允许范围，再以最大 delta 写入
-        let max_delta = {
-            use nvapi_hi::PState;
-            gpu.inner().pstates().ok().and_then(|ps| {
-                ps.pstates
-                    .into_iter()
-                    .find(|p| p.id == PState::P0)
-                    .and_then(|p0| {
-                        p0.base_voltages
-                            .into_iter()
-                            .find(|v| v.voltage_domain == nvapi::VoltageDomain::Core)
-                            .map(|v| v.voltage_delta.range.max)
-                    })
-            })
-        };
+        let max_delta = legacy_p0_core_max_voltage_delta(gpu)?;
         match max_delta {
             Some(max_uv) => {
-                set_pstate_base_voltage(gpu, max_uv, nvapi_hi::PState::P0)?;
+                set_nvapi_pstate_base_voltage(gpu, max_uv, nvoc_core::PState::P0)?;
                 println!(
                     "Successfully set P0 base voltage delta to max +{}\u{03bc}V (legacy GPU).",
                     max_uv.0
@@ -1312,7 +1203,7 @@ pub fn apply_autoscan_profile(
         }
     } else {
         // 10 系及以后：使用 VoltRails boost
-        gpu.set_voltage_boost(Percentage(100))?;
+        set_nvapi_voltage_boost(gpu, Percentage(100))?;
         println!("Successfully set VDDQ boost to +100% (max allowed V_core in fact).");
     }
 
@@ -1333,7 +1224,7 @@ pub fn apply_autoscan_profile(
         ),
     ];
 
-    gpu.set_cooler_levels(settings)?;
+    set_nvapi_cooler_settings(gpu, settings)?;
     println!("Successfully set Cooler1 and Cooler2 to {}%.", cooler_level);
 
     match get_gpu_tdp_temp_limit(matches, print_scan_separator) {
@@ -1346,7 +1237,7 @@ pub fn apply_autoscan_profile(
             _max_temp_lim,
             mut _pff_curve,
         )) => {
-            gpu.set_power_limits(iter::once(_max_tdp_percent))?;
+            set_nvapi_power_limits(gpu, iter::once(_max_tdp_percent))?;
             println!("Successfully set the TDP to {}", _max_tdp_percent);
 
             for point in _pff_curve.points.iter_mut() {
@@ -1359,7 +1250,7 @@ pub fn apply_autoscan_profile(
                 curve: Some(_pff_curve.clone()),
             };
 
-            gpu.set_sensor_limits(iter::once(temp_limit))?;
+            set_nvapi_sensor_limits(gpu, iter::once(temp_limit))?;
             println!(
                 "Successfully set the Temp_limit to {} and pff-curve to {}",
                 _max_temp_lim, _pff_curve
