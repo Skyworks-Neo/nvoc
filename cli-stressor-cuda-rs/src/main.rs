@@ -327,7 +327,7 @@ fn merge_kernel_overrides(
 
 #[cfg(feature = "cuda")]
 fn parse_args_with_cli_sources() -> (Args, std::collections::HashSet<&'static str>) {
-    let mut cmd = Args::command();
+    let cmd = Args::command();
     let matches = cmd.get_matches();
     let args = Args::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
     let mut cli_set = std::collections::HashSet::new();
@@ -740,7 +740,7 @@ fn main() {
     println!("  Minor mixture rate: {:.2}", args.minor_mixture_rate);
     println!("  Kernel types: {:?}", kernel_types);
     println!("  Kernel mixture: {:?}", kernel_mixture);
-    println!("  Kernel param overrides: {:?}", kernel_param_overrides);
+    // println!("  Kernel param overrides: {:?}", kernel_param_overrides);
     println!(
         "  Stream mode: {:?} ({} streams)",
         stream_mode,
