@@ -48,6 +48,7 @@ pub struct StressRunConfig<'a> {
     pub validate_size: usize,
     pub transpose_prob: f64,
     pub base_seed: u64,
+    pub minor_mixture_rate: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -343,7 +344,7 @@ pub fn run_stress_for_precision<B: Backend>(
     let mut validation_seed = config.base_seed ^ 0x5F3759DF;
 
     while start.elapsed().as_secs_f64() < config.duration_s {
-        let size = if rng.random::<f64>() < 0.15 {
+        let size = if rng.random::<f64>() > config.minor_mixture_rate {
             *config
                 .matrix_sizes
                 .choose(&mut rng)

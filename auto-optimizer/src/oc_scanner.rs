@@ -21,6 +21,10 @@ use std::path::Path;
 use std::process::{Child, Command};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
+
+#[cfg(windows)]
+use std::time::SystemTime;
+
 use std::{fs, iter};
 
 mod pressure_runner {
@@ -193,6 +197,54 @@ mod pressure_runner {
         }
     }
 
+    #[cfg(windows)]
+    fn count_windows_gpu_error_events_by_id(
+        start: SystemTime,
+        end: SystemTime,
+    ) -> Option<Vec<(u32, usize)>> {
+        use std::time::UNIX_EPOCH;
+
+        let start_ms = start.duration_since(UNIX_EPOCH).ok()?.as_millis();
+        let end_ms = end.duration_since(UNIX_EPOCH).ok()?.as_millis();
+
+        let script = format!(
+            "$start=[DateTimeOffset]::FromUnixTimeMilliseconds({start_ms}).LocalDateTime; \
+             $end=[DateTimeOffset]::FromUnixTimeMilliseconds({end_ms}).LocalDateTime; \
+             $ids=@(153,13,4101,10110,10111); \
+             $logs=@('System','Microsoft-Windows-DriverFrameworks-UserMode/Operational'); \
+             foreach($id in $ids){{ \
+                 $idCount=0; \
+                 foreach($log in $logs){{ \
+                     try {{ $idCount += @(Get-WinEvent -FilterHashtable @{{LogName=$log;Id=$id;StartTime=$start;EndTime=$end}} -ErrorAction Stop).Count }} catch {{}} \
+                 }}; \
+                 Write-Output ($id.ToString() + '=' + $idCount.ToString()) \
+             }}"
+        );
+
+        let output = Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .output()
+            .ok()?;
+
+        if !output.status.success() {
+            eprintln!(
+                "Warning: Failed to query Windows Event Log: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return None;
+        }
+
+        let output_text = String::from_utf8_lossy(&output.stdout);
+        let mut counts = Vec::new();
+        for line in output_text.lines() {
+            let mut parts = line.trim().split('=');
+            let id = parts.next()?.parse::<u32>().ok()?;
+            let count = parts.next()?.parse::<usize>().ok()?;
+            counts.push((id, count));
+        }
+        Some(counts)
+    }
+
     pub(super) fn run(gpu: &&Gpu, matches: &ArgMatches, cfg: &TestPressureConfig<'_>) -> i32 {
         let app_path = String::from(cfg.test_exe);
         // Build argv as a structured Vec so paths or codes containing whitespace
@@ -220,6 +272,10 @@ mod pressure_runner {
             match cmd.spawn() {
                 Ok(mut process) => {
                     let mut exit_code = 1;
+
+                    #[cfg(windows)]
+                    let event_window_start = SystemTime::now();
+
                     let test_start_at = Instant::now();
                     let mut last_fluctuation = Instant::now();
                     let mut in_test_check_number = 0;
@@ -314,6 +370,12 @@ mod pressure_runner {
                         }
                     }
 
+                    #[cfg(windows)]
+                    let windows_event_counts = {
+                        let event_window_end = SystemTime::now();
+                        count_windows_gpu_error_events_by_id(event_window_start, event_window_end)
+                    };
+
                     if exit_code == 0 {
                         eprintln!("Process finished successfully.");
                         let throttle_ratio = if in_test_check_number > 0 {
@@ -329,6 +391,37 @@ mod pressure_runner {
                         }
                     } else {
                         eprintln!("Process finished with exit code {}.", exit_code);
+                    }
+
+                    #[cfg(windows)]
+                    {
+                        match windows_event_counts {
+                            Some(id_counts) => {
+                                let total_hits: usize = id_counts.iter().map(|(_, c)| *c).sum();
+                                if total_hits > 0 {
+                                    eprintln!(
+                                        "Detected {} Windows GPU/driver-related event(s) during pressure test:",
+                                        total_hits
+                                    );
+                                    for (id, count) in id_counts {
+                                        if count > 0 {
+                                            eprintln!("  Event ID {}: {}", id, count);
+                                        }
+                                    }
+                                    if exit_code == 0 {
+                                        eprintln!(
+                                            "Marking this run as failed due to Windows event log hits."
+                                        );
+                                        exit_code = 1;
+                                    }
+                                }
+                            }
+                            None => {
+                                eprintln!(
+                                    "Warning: Failed to query Windows Event Log for this run."
+                                );
+                            }
+                        }
                     }
 
                     return exit_code;
