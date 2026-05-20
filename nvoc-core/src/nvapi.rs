@@ -902,11 +902,11 @@ pub fn query_domain_vf_points_indexed(
             }
             Ordering::Less => {
                 let (i, _) = pts.next().unwrap();
-                eprintln!("warning: VFP point index {i} has no matching delta; skipping");
+                log::warn!("VFP point index {i} has no matching delta; skipping");
             }
             Ordering::Greater => {
                 let (i, _) = dts.next().unwrap();
-                eprintln!("warning: VFP delta index {i} has no matching point; skipping");
+                log::warn!("VFP delta index {i} has no matching point; skipping");
             }
         }
     }
