@@ -39,6 +39,19 @@ impl KernelType {
     }
 }
 
+pub fn parse_kernel_type(raw: &str) -> Result<KernelType, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "gemm" => Ok(KernelType::Gemm),
+        "memcpy" | "copy" | "clone" => Ok(KernelType::Memcpy),
+        "memset" | "fill" => Ok(KernelType::Memset),
+        "transpose" => Ok(KernelType::Transpose),
+        "elementwise" | "elem" | "add" => Ok(KernelType::Elementwise),
+        "reduction" | "reduce" | "sum" => Ok(KernelType::Reduction),
+        "atomic" => Ok(KernelType::Atomic),
+        other => Err(format!("unsupported kernel type: {other}")),
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StreamMode {
     Single,
@@ -60,6 +73,24 @@ impl StreamMode {
 pub struct KernelMixtureEntry {
     pub kind: KernelType,
     pub weight: f64,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct PrecisionMixtureEntry {
+    pub spec: PrecisionSpec,
+    pub weight: f64,
+}
+
+#[derive(Clone, Debug)]
+pub struct KernelParamOverride {
+    pub kind: KernelType,
+    pub precisions: Option<Vec<PrecisionSpec>>,
+    pub precision_mixture: Option<Vec<PrecisionMixtureEntry>>,
+    pub matrix_sizes: Option<Vec<usize>>,
+    pub warmup_iters: Option<u32>,
+    pub burst_iters: Option<u32>,
+    pub transpose_prob: Option<f64>,
+    pub minor_mixture_rate: Option<f64>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -89,6 +120,7 @@ pub struct StressResult {
 #[derive(Clone, Copy, Debug)]
 pub struct StressRunConfig<'a> {
     pub matrix_sizes: &'a [usize],
+    pub fp64_matrix_sizes: &'a [usize],
     pub duration_s: f64,
     pub warmup_iters: u32,
     pub burst_iters: u32,
@@ -99,6 +131,7 @@ pub struct StressRunConfig<'a> {
     pub minor_mixture_rate: f64,
     pub kernel_mixture: &'a [KernelMixtureEntry],
     pub stream_mode: StreamMode,
+    pub kernel_param_overrides: &'a [KernelParamOverride],
 }
 
 #[derive(Debug, Clone)]
@@ -254,16 +287,7 @@ pub fn parse_kernel_type_list(raw: &str) -> Result<Vec<KernelType>, String> {
         if key.is_empty() {
             continue;
         }
-        let kind = match key.as_str() {
-            "gemm" => KernelType::Gemm,
-            "memcpy" | "copy" | "clone" => KernelType::Memcpy,
-            "memset" | "fill" => KernelType::Memset,
-            "transpose" => KernelType::Transpose,
-            "elementwise" | "elem" | "add" => KernelType::Elementwise,
-            "reduction" | "reduce" | "sum" => KernelType::Reduction,
-            "atomic" => KernelType::Atomic,
-            _ => return Err(format!("unsupported kernel type: {item}")),
-        };
+        let kind = parse_kernel_type(&key)?;
         if !selected.contains(&kind) {
             selected.push(kind);
         }
@@ -272,6 +296,89 @@ pub fn parse_kernel_type_list(raw: &str) -> Result<Vec<KernelType>, String> {
         return Err("kernel type list cannot be empty".to_string());
     }
     Ok(selected)
+}
+
+pub fn parse_kernel_param_overrides(raw: &str) -> Result<Vec<KernelParamOverride>, String> {
+    if raw.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    for entry in raw.split(';') {
+        let trimmed = entry.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let (kind_raw, params_raw) = trimmed
+            .split_once(':')
+            .ok_or_else(|| format!("invalid kernel params entry: {trimmed}"))?;
+        let kind = parse_kernel_type(kind_raw)?;
+        let mut item = KernelParamOverride {
+            kind,
+            precisions: None,
+            precision_mixture: None,
+            matrix_sizes: None,
+            warmup_iters: None,
+            burst_iters: None,
+            transpose_prob: None,
+            minor_mixture_rate: None,
+        };
+        for kv in params_raw.split(',') {
+            let kv = kv.trim();
+            if kv.is_empty() {
+                continue;
+            }
+            let (k, v) = kv
+                .split_once('=')
+                .ok_or_else(|| format!("invalid key=value in kernel params: {kv}"))?;
+            let key = k.trim().to_ascii_lowercase();
+            let value = v.trim();
+            match key.as_str() {
+                "precisions" | "precision" => {
+                    let normalized = value.replace('|', ",");
+                    item.precisions = Some(parse_precision_list(&normalized)?);
+                }
+                "precision_mixture" | "precision_mix" => {
+                    let normalized = value.replace('|', ",");
+                    item.precision_mixture = Some(parse_precision_mixture(&normalized)?);
+                }
+                "matrix_sizes" | "sizes" => {
+                    let normalized = value.replace('|', ",");
+                    item.matrix_sizes = Some(parse_int_list(&normalized)?);
+                }
+                "warmup_iters" | "warmup" => {
+                    item.warmup_iters = Some(
+                        value
+                            .parse::<u32>()
+                            .map_err(|_| format!("invalid warmup_iters: {value}"))?,
+                    );
+                }
+                "burst_iters" | "burst" => {
+                    item.burst_iters = Some(
+                        value
+                            .parse::<u32>()
+                            .map_err(|_| format!("invalid burst_iters: {value}"))?,
+                    );
+                }
+                "transpose_prob" | "transpose" => {
+                    item.transpose_prob = Some(
+                        value
+                            .parse::<f64>()
+                            .map_err(|_| format!("invalid transpose_prob: {value}"))?,
+                    );
+                }
+                "minor_mixture_rate" | "minor" => {
+                    item.minor_mixture_rate = Some(
+                        value
+                            .parse::<f64>()
+                            .map_err(|_| format!("invalid minor_mixture_rate: {value}"))?,
+                    );
+                }
+                _ => return Err(format!("unsupported kernel param key: {k}")),
+            }
+        }
+        out.push(item);
+    }
+    Ok(out)
 }
 
 pub fn parse_stream_mode(raw: &str) -> Result<StreamMode, String> {
@@ -342,6 +449,40 @@ pub fn parse_kernel_mixture(
                 weight: 0.0,
             });
         }
+    }
+    Ok(entries)
+}
+
+pub fn parse_precision_mixture(raw: &str) -> Result<Vec<PrecisionMixtureEntry>, String> {
+    if raw.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut entries = Vec::new();
+    for item in raw.split(',') {
+        let trimmed = item.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let (name, weight_raw) = trimmed.split_once(':').ok_or_else(|| {
+            format!("invalid precision mixture item: {trimmed}, expected precision:weight")
+        })?;
+        let spec = parse_precision_list(name)?
+            .first()
+            .copied()
+            .ok_or_else(|| format!("invalid precision in mixture: {name}"))?;
+        let weight = weight_raw
+            .trim()
+            .parse::<f64>()
+            .map_err(|_| format!("invalid precision mixture weight: {}", weight_raw.trim()))?;
+        if !weight.is_finite() || weight < 0.0 {
+            return Err(format!(
+                "precision mixture weight must be finite and >= 0: {weight}"
+            ));
+        }
+        entries.push(PrecisionMixtureEntry { spec, weight });
+    }
+    if entries.is_empty() {
+        return Err("precision mixture cannot be empty".to_string());
     }
     Ok(entries)
 }
@@ -496,6 +637,127 @@ fn estimate_kernel_work_flops(kind: KernelType, size: usize, burst_iters: u32) -
     }
 }
 
+#[derive(Clone)]
+struct ResolvedKernelParams {
+    precisions: Option<Vec<PrecisionSpec>>,
+    precision_mixture: Option<Vec<PrecisionMixtureEntry>>,
+    matrix_sizes: Vec<usize>,
+    matrix_sizes_default: bool,
+    warmup_iters: u32,
+    burst_iters: u32,
+    transpose_prob: f64,
+    minor_mixture_rate: f64,
+}
+
+fn resolve_kernel_params(kind: KernelType, config: &StressRunConfig<'_>) -> ResolvedKernelParams {
+    let override_item = config
+        .kernel_param_overrides
+        .iter()
+        .find(|item| item.kind == kind);
+    let precisions = override_item.and_then(|item| item.precisions.clone());
+    let precision_mixture = override_item.and_then(|item| item.precision_mixture.clone());
+    let matrix_sizes_default = override_item
+        .and_then(|item| item.matrix_sizes.clone())
+        .is_none();
+    let matrix_sizes = override_item
+        .and_then(|item| item.matrix_sizes.clone())
+        .unwrap_or_else(|| config.matrix_sizes.to_vec());
+    let warmup_iters = override_item
+        .and_then(|item| item.warmup_iters)
+        .unwrap_or(config.warmup_iters);
+    let burst_iters = override_item
+        .and_then(|item| item.burst_iters)
+        .unwrap_or(config.burst_iters);
+    let transpose_prob = override_item
+        .and_then(|item| item.transpose_prob)
+        .unwrap_or(config.transpose_prob);
+    let minor_mixture_rate = override_item
+        .and_then(|item| item.minor_mixture_rate)
+        .unwrap_or(config.minor_mixture_rate);
+    ResolvedKernelParams {
+        precisions,
+        precision_mixture,
+        matrix_sizes,
+        matrix_sizes_default,
+        warmup_iters,
+        burst_iters,
+        transpose_prob,
+        minor_mixture_rate,
+    }
+}
+
+fn filter_supported_kernel_precisions<B: Backend>(
+    backend: &B,
+    overrides: &[KernelParamOverride],
+) -> Vec<KernelParamOverride> {
+    let mut out = Vec::with_capacity(overrides.len());
+    for item in overrides {
+        let mut cloned = item.clone();
+        if let Some(specs) = &item.precisions {
+            let mut supported = Vec::new();
+            for spec in specs {
+                if backend.supports_precision(spec).is_ok() {
+                    supported.push(*spec);
+                } else {
+                    println!(
+                        "Kernel {} precision {} unsupported on this device, skipping it",
+                        item.kind.as_str(),
+                        spec.name
+                    );
+                }
+            }
+            cloned.precisions = if supported.is_empty() {
+                None
+            } else {
+                Some(supported)
+            };
+        }
+        if let Some(mixture) = &item.precision_mixture {
+            let mut supported = Vec::new();
+            for entry in mixture {
+                if backend.supports_precision(&entry.spec).is_ok() {
+                    supported.push(*entry);
+                } else {
+                    println!(
+                        "Kernel {} precision {} unsupported on this device, skipping it",
+                        item.kind.as_str(),
+                        entry.spec.name
+                    );
+                }
+            }
+            cloned.precision_mixture = if supported.is_empty() {
+                None
+            } else {
+                Some(supported)
+            };
+        }
+        out.push(cloned);
+    }
+    out
+}
+
+fn choose_precision_from_mixture(
+    mixture: &[PrecisionMixtureEntry],
+    rng: &mut StdRng,
+) -> Option<PrecisionSpec> {
+    if mixture.is_empty() {
+        return None;
+    }
+    let total_weight: f64 = mixture.iter().map(|entry| entry.weight.max(0.0)).sum();
+    if total_weight <= 0.0 {
+        return Some(mixture[0].spec);
+    }
+    let mut pick = rng.random::<f64>() * total_weight;
+    for entry in mixture {
+        let weight = entry.weight.max(0.0);
+        if pick <= weight {
+            return Some(entry.spec);
+        }
+        pick -= weight;
+    }
+    mixture.last().map(|entry| entry.spec)
+}
+
 pub fn run_stress_for_precision<B: Backend>(
     backend: &mut B,
     spec: PrecisionSpec,
@@ -538,30 +800,54 @@ pub fn run_stress_for_precision<B: Backend>(
     let start = Instant::now();
     let mut next_validate = config.validate_interval_s.max(0.0);
     let mut validation_seed = config.base_seed ^ 0x5F3759DF;
+    let effective_overrides =
+        filter_supported_kernel_precisions(backend, config.kernel_param_overrides);
+    let effective_config = StressRunConfig {
+        matrix_sizes: config.matrix_sizes,
+        fp64_matrix_sizes: config.fp64_matrix_sizes,
+        duration_s: config.duration_s,
+        warmup_iters: config.warmup_iters,
+        burst_iters: config.burst_iters,
+        validate_interval_s: config.validate_interval_s,
+        validate_size: config.validate_size,
+        transpose_prob: config.transpose_prob,
+        base_seed: config.base_seed,
+        minor_mixture_rate: config.minor_mixture_rate,
+        kernel_mixture: config.kernel_mixture,
+        stream_mode: config.stream_mode,
+        kernel_param_overrides: &effective_overrides,
+    };
 
     while start.elapsed().as_secs_f64() < config.duration_s {
-        let size = if rng.random::<f64>() > config.minor_mixture_rate {
-            *config
-                .matrix_sizes
-                .choose(&mut rng)
-                .unwrap_or(&config.matrix_sizes[0])
+        let kernel_kind = choose_kernel_type(config.kernel_mixture, &mut rng);
+        let params = resolve_kernel_params(kernel_kind, &effective_config);
+        let op_spec = if let Some(specs) = &params.precisions {
+            *specs.choose(&mut rng).unwrap_or(&spec)
+        } else {
+            spec
+        };
+        let size_pool = if op_spec.kind == PrecisionKind::FP64 && params.matrix_sizes_default {
+            effective_config.fp64_matrix_sizes
+        } else {
+            &params.matrix_sizes
+        };
+        let size = if rng.random::<f64>() > params.minor_mixture_rate {
+            *size_pool.choose(&mut rng).unwrap_or(&size_pool[0])
         } else {
             let small_sizes = [127usize, 256, 511, 512, 1023];
             *small_sizes.choose(&mut rng).unwrap()
         };
-
-        let kernel_kind = choose_kernel_type(config.kernel_mixture, &mut rng);
         let op_seed = rng.random::<u64>();
 
         let op_elapsed = match backend.run_kernel_path(
-            &spec,
+            &op_spec,
             kernel_kind,
             size,
-            config.warmup_iters,
-            config.burst_iters,
-            config.transpose_prob,
+            params.warmup_iters,
+            params.burst_iters,
+            params.transpose_prob,
             op_seed,
-            config.stream_mode,
+            effective_config.stream_mode,
         ) {
             Ok(value) => value,
             Err(err) => {
@@ -571,7 +857,7 @@ pub fn run_stress_for_precision<B: Backend>(
             }
         };
 
-        let flops = estimate_kernel_work_flops(kernel_kind, size, config.burst_iters) as f64;
+        let flops = estimate_kernel_work_flops(kernel_kind, size, params.burst_iters) as f64;
         let inst_tflops = if op_elapsed > 0.0 {
             flops / op_elapsed / 1e12
         } else {
@@ -580,17 +866,18 @@ pub fn run_stress_for_precision<B: Backend>(
         let elapsed_total = start.elapsed().as_secs_f64();
 
         println!(
-            "[{}] t={:6.1}s/{:.0}s | {:10} | size={:5} | inst={:7.2} TFLOPS(eqv)",
+            "[{}] t={:6.1}s/{:.0}s | {:10} | p={:11} | size={:5} | inst={:7.2} TFLOPS(eqv)",
             spec.name,
             elapsed_total,
-            config.duration_s,
+            effective_config.duration_s,
             kernel_kind.as_str(),
+            op_spec.name,
             size,
             inst_tflops
         );
 
-        result.iterations += config.burst_iters as u64;
-        result.total_flops += estimate_kernel_work_flops(kernel_kind, size, config.burst_iters);
+        result.iterations += params.burst_iters as u64;
+        result.total_flops += estimate_kernel_work_flops(kernel_kind, size, params.burst_iters);
         result.compute_s += op_elapsed;
         result.elapsed_s = elapsed_total;
         if result.compute_s > 0.0 {
@@ -600,7 +887,12 @@ pub fn run_stress_for_precision<B: Backend>(
         let _ = backend.empty_cache();
 
         if elapsed_total >= next_validate {
-            match validate_precision(backend, &spec, config.validate_size, validation_seed) {
+            match validate_precision(
+                backend,
+                &spec,
+                effective_config.validate_size,
+                validation_seed,
+            ) {
                 Ok((passed, max_abs, max_rel, reason)) => {
                     let status = if passed { "OK" } else { "FAIL" };
                     println!(
@@ -618,7 +910,7 @@ pub fn run_stress_for_precision<B: Backend>(
                         }
                         break;
                     }
-                    next_validate = elapsed_total + config.validate_interval_s.max(0.0);
+                    next_validate = elapsed_total + effective_config.validate_interval_s.max(0.0);
                     validation_seed = validation_seed.wrapping_add(1);
                 }
                 Err(err) => {
@@ -639,4 +931,222 @@ pub fn run_stress_for_precision<B: Backend>(
         result.tflops = (result.total_flops as f64 / result.compute_s) / 1e12;
     }
     result
+}
+
+pub fn run_stress_mixed<B: Backend>(
+    backend: &mut B,
+    precisions: &[PrecisionSpec],
+    config: StressRunConfig<'_>,
+) -> Vec<StressResult> {
+    use std::collections::HashMap;
+
+    let mut results: Vec<StressResult> = precisions
+        .iter()
+        .map(|spec| StressResult {
+            precision: spec.name.to_string(),
+            supported: true,
+            ..StressResult::default()
+        })
+        .collect();
+    let mut index_by_name = HashMap::new();
+    for (idx, spec) in precisions.iter().enumerate() {
+        index_by_name.insert(spec.name, idx);
+    }
+
+    let mut supported = Vec::new();
+    for spec in precisions {
+        if let Err(reason) = backend.supports_precision(spec) {
+            if let Some(idx) = index_by_name.get(spec.name) {
+                results[*idx].supported = false;
+                results[*idx].first_error = Some(format!("SKIP: {reason}"));
+            }
+            continue;
+        }
+        if let Err(err) = backend.set_tf32(spec.tf32_enabled) {
+            if let Some(idx) = index_by_name.get(spec.name) {
+                results[*idx].supported = false;
+                results[*idx].first_error = Some(format!("tf32 setup failed: {err}"));
+            }
+            continue;
+        }
+        let probe_a = make_random_host_matrix(8, config.base_seed.wrapping_add(1));
+        let probe_b = make_random_host_matrix(8, config.base_seed.wrapping_add(2));
+        let probe_res = (|| {
+            let a_dev = backend.upload_matrix(&probe_a, spec)?;
+            let b_dev = backend.upload_matrix(&probe_b, spec)?;
+            let _ = backend.gemm(&a_dev, &b_dev, false, false)?;
+            backend.synchronize()?;
+            Ok::<(), BackendError>(())
+        })();
+        if let Err(err) = probe_res {
+            if let Some(idx) = index_by_name.get(spec.name) {
+                results[*idx].supported = false;
+                results[*idx].first_error = Some(format!("probe failed: {err}"));
+            }
+            continue;
+        }
+        supported.push(*spec);
+    }
+
+    if supported.is_empty() {
+        return results;
+    }
+
+    let mut rng = StdRng::seed_from_u64(config.base_seed);
+    let start = Instant::now();
+    let mut next_validate = config.validate_interval_s.max(0.0);
+    let mut validation_seed = config.base_seed ^ 0x5F3759DF;
+    let effective_overrides =
+        filter_supported_kernel_precisions(backend, config.kernel_param_overrides);
+    let effective_config = StressRunConfig {
+        matrix_sizes: config.matrix_sizes,
+        fp64_matrix_sizes: config.fp64_matrix_sizes,
+        duration_s: config.duration_s,
+        warmup_iters: config.warmup_iters,
+        burst_iters: config.burst_iters,
+        validate_interval_s: config.validate_interval_s,
+        validate_size: config.validate_size,
+        transpose_prob: config.transpose_prob,
+        base_seed: config.base_seed,
+        minor_mixture_rate: config.minor_mixture_rate,
+        kernel_mixture: config.kernel_mixture,
+        stream_mode: config.stream_mode,
+        kernel_param_overrides: &effective_overrides,
+    };
+
+    while start.elapsed().as_secs_f64() < config.duration_s {
+        let kernel_kind = choose_kernel_type(config.kernel_mixture, &mut rng);
+        let params = resolve_kernel_params(kernel_kind, &effective_config);
+        let op_spec = if let Some(mixture) = &params.precision_mixture {
+            choose_precision_from_mixture(mixture, &mut rng)
+                .unwrap_or_else(|| supported[0])
+        } else if let Some(specs) = &params.precisions {
+            *specs.choose(&mut rng).unwrap_or(&supported[0])
+        } else {
+            *supported.choose(&mut rng).unwrap_or(&supported[0])
+        };
+        let size_pool = if op_spec.kind == PrecisionKind::FP64 && params.matrix_sizes_default {
+            effective_config.fp64_matrix_sizes
+        } else {
+            &params.matrix_sizes
+        };
+        let size = if rng.random::<f64>() > params.minor_mixture_rate {
+            *size_pool.choose(&mut rng).unwrap_or(&size_pool[0])
+        } else {
+            let small_sizes = [127usize, 256, 511, 512, 1023];
+            *small_sizes.choose(&mut rng).unwrap()
+        };
+        let op_seed = rng.random::<u64>();
+        if let Err(err) = backend.set_tf32(op_spec.tf32_enabled) {
+            if let Some(idx) = index_by_name.get(op_spec.name) {
+                results[*idx].first_error = Some(format!("tf32 setup failed: {err}"));
+                results[*idx].first_error_at_s = Some(start.elapsed().as_secs_f64());
+            }
+            break;
+        }
+
+        let op_elapsed = match backend.run_kernel_path(
+            &op_spec,
+            kernel_kind,
+            size,
+            params.warmup_iters,
+            params.burst_iters,
+            params.transpose_prob,
+            op_seed,
+            effective_config.stream_mode,
+        ) {
+            Ok(value) => value,
+            Err(err) => {
+                if let Some(idx) = index_by_name.get(op_spec.name) {
+                    results[*idx].first_error = Some(format!("runtime error: {err}"));
+                    results[*idx].first_error_at_s = Some(start.elapsed().as_secs_f64());
+                }
+                break;
+            }
+        };
+
+        let flops = estimate_kernel_work_flops(kernel_kind, size, params.burst_iters) as f64;
+        let inst_tflops = if op_elapsed > 0.0 {
+            flops / op_elapsed / 1e12
+        } else {
+            0.0
+        };
+        let elapsed_total = start.elapsed().as_secs_f64();
+
+        println!(
+            "[{}] t={:6.1}s/{:.0}s | {:10} | p={:11} | size={:5} | inst={:7.2} TFLOPS(eqv)",
+            "MIX",
+            elapsed_total,
+            effective_config.duration_s,
+            kernel_kind.as_str(),
+            op_spec.name,
+            size,
+            inst_tflops
+        );
+
+        if let Some(idx) = index_by_name.get(op_spec.name) {
+            let result = &mut results[*idx];
+            result.iterations += params.burst_iters as u64;
+            result.total_flops += estimate_kernel_work_flops(kernel_kind, size, params.burst_iters);
+            result.compute_s += op_elapsed;
+            if result.compute_s > 0.0 {
+                result.tflops = (result.total_flops as f64 / result.compute_s) / 1e12;
+            }
+        }
+
+        let _ = backend.empty_cache();
+
+        if elapsed_total >= next_validate {
+            match validate_precision(
+                backend,
+                &op_spec,
+                effective_config.validate_size,
+                validation_seed,
+            ) {
+                Ok((passed, max_abs, max_rel, reason)) => {
+                    let status = if passed { "OK" } else { "FAIL" };
+                    println!(
+                        "[{}] validate | abs={:.3e} | rel={:.3e} | {}",
+                        op_spec.name, max_abs, max_rel, status
+                    );
+                    if let Some(idx) = index_by_name.get(op_spec.name) {
+                        let result = &mut results[*idx];
+                        result.validations += 1;
+                        result.max_abs_error = result.max_abs_error.max(max_abs);
+                        result.max_rel_error = result.max_rel_error.max(max_rel);
+                        if !passed {
+                            result.validation_failures += 1;
+                            if result.first_error.is_none() {
+                                result.first_error = reason;
+                                result.first_error_at_s = Some(start.elapsed().as_secs_f64());
+                            }
+                            break;
+                        }
+                    }
+                    next_validate = elapsed_total + effective_config.validate_interval_s.max(0.0);
+                    validation_seed = validation_seed.wrapping_add(1);
+                }
+                Err(err) => {
+                    if let Some(idx) = index_by_name.get(op_spec.name) {
+                        results[*idx].first_error = Some(format!("validation error: {err}"));
+                        results[*idx].first_error_at_s = Some(start.elapsed().as_secs_f64());
+                    }
+                    break;
+                }
+            }
+        }
+
+        if op_elapsed < 0.01 {
+            std::thread::yield_now();
+        }
+    }
+
+    let total_elapsed = start.elapsed().as_secs_f64();
+    for result in &mut results {
+        result.elapsed_s = total_elapsed;
+        if result.compute_s > 0.0 {
+            result.tflops = (result.total_flops as f64 / result.compute_s) / 1e12;
+        }
+    }
+    results
 }

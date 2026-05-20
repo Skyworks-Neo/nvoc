@@ -1,6 +1,6 @@
 use cli_stressor_cuda_rs::{
     KernelType, StressResult, choose_tolerance, parse_int_list, parse_kernel_mixture,
-    parse_kernel_type_list, parse_stream_mode, per_element_allclose,
+    parse_kernel_param_overrides, parse_kernel_type_list, parse_stream_mode, per_element_allclose,
 };
 
 #[test]
@@ -72,4 +72,31 @@ fn test_parse_kernel_mixture() {
 fn test_parse_stream_mode() {
     let mode = parse_stream_mode("dual").unwrap();
     assert_eq!(mode.stream_count(), 2);
+}
+
+#[test]
+fn test_parse_kernel_param_overrides() {
+    let items = parse_kernel_param_overrides(
+        "gemm:matrix_sizes=2049|4096,warmup=4,burst=8;memcpy:burst_iters=64",
+    )
+    .unwrap();
+    assert_eq!(items.len(), 2);
+    assert!(items.iter().any(|v| {
+        v.kind == KernelType::Gemm
+            && v.matrix_sizes.as_ref().map(|s| s.as_slice()) == Some(&[2049, 4096])
+            && v.warmup_iters == Some(4)
+            && v.burst_iters == Some(8)
+    }));
+    assert!(
+        items
+            .iter()
+            .any(|v| v.kind == KernelType::Memcpy && v.burst_iters == Some(64))
+    );
+    assert!(
+        parse_kernel_param_overrides("gemm:precisions=fp16|bf16")
+            .unwrap()
+            .iter()
+            .any(|v| v.kind == KernelType::Gemm
+                && v.precisions.as_ref().map(|p| p.len()) == Some(2))
+    );
 }
