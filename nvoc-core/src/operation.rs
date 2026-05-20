@@ -1188,10 +1188,15 @@ pub fn set_nvapi_vfp_curve_delta(
     lower_delta: Option<i32>,
 ) -> Result<(), Error> {
     if !flat_curve {
+        let start = point.checked_sub(vfp_set_range).ok_or_else(|| {
+            Error::Custom(format!(
+                "invalid VFP range: point ({point}) is smaller than range ({vfp_set_range})"
+            ))
+        })?;
         run(
             target,
             SetVfpRangeDelta {
-                start: point - vfp_set_range,
+                start,
                 end: point + vfp_set_range,
                 delta: KilohertzDelta(main_delta),
             },
@@ -1206,11 +1211,19 @@ pub fn set_nvapi_vfp_curve_delta(
             },
         )?;
         if let Some(ld) = lower_delta {
+            let start = point.checked_sub(vfp_set_range).ok_or_else(|| {
+                Error::Custom(format!(
+                    "invalid VFP range: point ({point}) is smaller than range ({vfp_set_range})"
+                ))
+            })?;
+            let end = point
+                .checked_sub(1)
+                .ok_or_else(|| Error::Custom("invalid VFP range: point must be greater than 0".to_string()))?;
             run(
                 target,
                 SetVfpRangeDelta {
-                    start: point - vfp_set_range,
-                    end: point - 1,
+                    start,
+                    end,
                     delta: KilohertzDelta(ld),
                 },
             )?;
