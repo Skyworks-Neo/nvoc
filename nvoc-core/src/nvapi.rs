@@ -705,8 +705,8 @@ pub fn lock_vfp(gpus: &[&Gpu], request: VfpLockRequest, feedback_flag: bool) -> 
     Ok(())
 }
 
-pub fn reset_vfp_deltas(gpu: &Gpu, domain: VfpResetDomain) -> nvapi_hi::Result<()> {
-    let info = gpu.info()?;
+pub fn reset_vfp_deltas(gpu: &Gpu, domain: VfpResetDomain) -> Result<(), Error> {
+    let info = gpu.info().map_err(Error::from)?;
     let gpu_type = fetch_gpu_type(&info);
 
     // 9 系及更早（Maxwell 及之前）不支持 VFP 曲线，只能通过 set_pstates 单点清零
@@ -808,13 +808,16 @@ pub fn reset_vfp_deltas(gpu: &Gpu, domain: VfpResetDomain) -> nvapi_hi::Result<(
                 gpu.set_vfp(
                     iter::once((point, KilohertzDelta(0))),
                     iter::once((point, KilohertzDelta(0))),
-                )?;
+                )
+                .map_err(Error::from)?;
             }
             VfpResetDomain::Core => {
-                gpu.set_vfp(iter::once((point, KilohertzDelta(0))), iter::empty())?;
+                gpu.set_vfp(iter::once((point, KilohertzDelta(0))), iter::empty())
+                    .map_err(Error::from)?;
             }
             VfpResetDomain::Memory => {
-                gpu.set_vfp(iter::empty(), iter::once((point, KilohertzDelta(0))))?;
+                gpu.set_vfp(iter::empty(), iter::once((point, KilohertzDelta(0))))
+                    .map_err(Error::from)?;
             }
         }
     }
@@ -825,7 +828,7 @@ pub fn reset_vfp_deltas(gpu: &Gpu, domain: VfpResetDomain) -> nvapi_hi::Result<(
     Ok(())
 }
 
-pub fn core_reset_vfp(gpu: &Gpu) -> nvapi_hi::Result<()> {
+pub fn core_reset_vfp(gpu: &Gpu) -> Result<(), Error> {
     reset_vfp_deltas(gpu, VfpResetDomain::All)
 }
 

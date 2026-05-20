@@ -60,16 +60,16 @@ fn assert_not_permission_denied(msg: &str) {
     assert!(!is_permission_denied(msg), "permission denied: {msg}");
 }
 
-fn log_cleanup_error(label: &str, err: impl std::fmt::Display) {
+fn log_cleanup_error(label: &str, err: Error) {
     eprintln!("Warning: cleanup failed for {label}: {err}");
 }
 
-fn handle_cleanup_error(label: &str, err: impl std::fmt::Display, fail_on_permission: bool) {
+fn handle_cleanup_error(label: &str, err: Error, fail_on_permission: bool) {
     let msg = err.to_string();
     if fail_on_permission {
         assert_not_permission_denied(&msg);
     }
-    log_cleanup_error(label, msg);
+    log_cleanup_error(label, err);
 }
 
 struct NvmlCleanupGuard<'a> {

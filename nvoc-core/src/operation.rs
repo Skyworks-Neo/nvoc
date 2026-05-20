@@ -691,7 +691,7 @@ impl GpuOperation for ResetVfpDeltas {
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
-        low_nvapi::reset_vfp_deltas(target.nvapi()?, self.domain).map_err(Error::from)
+        low_nvapi::reset_vfp_deltas(target.nvapi()?, self.domain)
     }
 }
 
