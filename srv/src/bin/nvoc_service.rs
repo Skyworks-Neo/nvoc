@@ -37,7 +37,7 @@ mod nvoc_service {
     };
     use nvoc_core::{
         GpuId, GpuTarget, NvapiLockedVoltageTarget, ResetVfpFrequencyLock, ResetVfpLock,
-        SetVfpVoltageLock, find_matching_vfp_point, run,
+        SetVfpVoltageLock, find_matching_vfp_point, run as run_gpu_operation,
     };
     use std::{
         cmp::{max, min},
@@ -358,7 +358,7 @@ mod nvoc_service {
                             let next = current.saturating_sub(1).max(vfp_lowest_lock_point);
                             gpu_dynamic_lock_point[idx] = next;
                             if let Some(target) = maybe_target {
-                                match run(
+                                match run_gpu_operation(
                                     &target,
                                     SetVfpVoltageLock {
                                         voltage_target: NvapiLockedVoltageTarget::Point(next),
@@ -373,7 +373,7 @@ mod nvoc_service {
                             let next = (current + 1).min(vfp_low_lock_point);
                             gpu_dynamic_lock_point[idx] = next;
                             if let Some(target) = maybe_target {
-                                match run(
+                                match run_gpu_operation(
                                     &target,
                                     SetVfpVoltageLock {
                                         voltage_target: NvapiLockedVoltageTarget::Point(next),
@@ -388,11 +388,13 @@ mod nvoc_service {
                             // 已回到正常上限，完全解锁
                             gpu_dynamic_lock_point[idx] = vfp_highest_lock_point;
                             if let Some(target) = maybe_target {
-                                if let Err(e) = run(&target, ResetVfpLock) {
+                                if let Err(e) = run_gpu_operation(&target, ResetVfpLock) {
                                     error!("GPU {}: failed to reset VFP voltage lock: {:?}", i, e);
                                 }
                                 for domain in [ClockDomain::Graphics, ClockDomain::Memory] {
-                                    if let Err(e) = run(&target, ResetVfpFrequencyLock { domain }) {
+                                    if let Err(e) =
+                                        run_gpu_operation(&target, ResetVfpFrequencyLock { domain })
+                                    {
                                         warn!("GPU {}: failed to reset VFP freq lock ({:?}): {:?}", i, domain, e);
                                     }
                                 }
