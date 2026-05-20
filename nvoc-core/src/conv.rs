@@ -33,13 +33,6 @@ pub fn try_parse_nvml_pstate(nvml_pstate_val: &str) -> Result<PerformanceState, 
     }
 }
 
-pub fn parse_nvml_pstate(nvml_pstate_val: &str) -> PerformanceState {
-    try_parse_nvml_pstate(nvml_pstate_val).unwrap_or_else(|e| {
-        eprintln!("{}, defaulting to PState 0", e);
-        PerformanceState::Zero
-    })
-}
-
 pub fn nvml_pstate_to_str(pstate: PerformanceState) -> &'static str {
     match pstate {
         PerformanceState::Zero => "P0",

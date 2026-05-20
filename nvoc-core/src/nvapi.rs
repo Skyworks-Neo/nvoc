@@ -1339,30 +1339,6 @@ pub fn set_vfp_range(
     Ok(())
 }
 
-/// Set the main VFP scan range, and optionally a lower range for flat-curve mode.
-pub fn set_vfp_curve(
-    gpu: &&Gpu,
-    point: usize,
-    vfp_set_range: usize,
-    flat_curve_flag: bool,
-    main_delta: i32,
-    lower_delta: Option<i32>,
-) -> Result<(), Error> {
-    if !flat_curve_flag {
-        set_vfp_range(
-            gpu,
-            (point - vfp_set_range)..=(point + vfp_set_range),
-            main_delta,
-        )?;
-    } else {
-        set_vfp_range(gpu, point..=(point + vfp_set_range), main_delta)?;
-        if let Some(ld) = lower_delta {
-            set_vfp_range(gpu, (point - vfp_set_range)..=(point - 1), ld)?;
-        }
-    }
-    Ok(())
-}
-
 pub fn set_legacy_clocks_nvapi(gpu: &Gpu, core_mhz: u32, mem_mhz: u32) -> Result<(), Error> {
     use nvapi_hi::sys::nvapi_QueryInterface;
     use std::mem;
