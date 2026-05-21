@@ -51,6 +51,19 @@ fn run_output<O: GpuOperation>(gpu: &GpuTarget<'_>, op: O) -> Result<O::Output, 
     run(gpu, op).map(|report| report.output)
 }
 
+#[derive(Clone, Debug)]
+pub struct GpuVoltageLimits {
+    pub gpu_id: u32,
+    pub lower_point: usize,
+    pub upper_point: usize,
+}
+
+#[derive(Clone, Debug)]
+pub struct GpuVoltageFrequencyCheck {
+    pub gpu_id: u32,
+    pub precise: bool,
+}
+
 fn apply_vfp_lock(
     gpu: &GpuTarget<'_>,
     request: VfpLockRequest,
@@ -388,28 +401,42 @@ pub fn handle_test_voltage_limits(
     gpus: &[GpuTarget<'_>],
     _matches: &ArgMatches,
     mut print_separator: impl FnMut(),
-) -> Result<(usize, usize), Error> {
+) -> Result<Vec<GpuVoltageLimits>, Error> {
+    if gpus.is_empty() {
+        return Err(Error::from("no GPU selected"));
+    }
+
     print_separator();
-    let gpu = gpus.first().ok_or_else(|| Error::from("no GPU selected"))?;
-    let limits = run_output(gpu, ProbeVoltageLimits)?;
-    Ok((limits.lower_point, limits.upper_point))
+    gpus.iter()
+        .map(|gpu| {
+            let limits = run_output(gpu, ProbeVoltageLimits)?;
+            Ok(GpuVoltageLimits {
+                gpu_id: gpu.id.0,
+                lower_point: limits.lower_point,
+                upper_point: limits.upper_point,
+            })
+        })
+        .collect()
 }
 
 pub fn voltage_frequency_check(
-    matches: &ArgMatches,
+    gpus: &[GpuTarget<'_>],
     point: usize,
     mut print_separator: impl FnMut(),
-) -> Result<bool, Error> {
-    let selector = match matches.get_many::<String>("gpu") {
-        Some(values) => nvoc_core::GpuSelector::from_specs(values.cloned()),
-        None => nvoc_core::GpuSelector::all(),
-    };
-    let inventory = nvoc_core::discover_targets(nvoc_core::BackendSet::Nvapi)?;
-    let all_targets = inventory.targets();
-    let gpus = nvoc_core::select_targets(&all_targets, &selector)?;
+) -> Result<Vec<GpuVoltageFrequencyCheck>, Error> {
+    if gpus.is_empty() {
+        return Err(Error::from("no GPU selected"));
+    }
+
     print_separator();
-    let gpu = gpus.first().ok_or_else(|| Error::from("no GPU selected"))?;
-    run_output(gpu, CheckVoltageFrequency { point }).map(|check| check.precise)
+    gpus.iter()
+        .map(|gpu| {
+            run_output(gpu, CheckVoltageFrequency { point }).map(|check| GpuVoltageFrequencyCheck {
+                gpu_id: gpu.id.0,
+                precise: check.precise,
+            })
+        })
+        .collect()
 }
 
 pub fn get_gpu_tdp_temp_limit(

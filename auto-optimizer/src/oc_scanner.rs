@@ -203,7 +203,7 @@ mod pressure_runner {
 
     pub(super) fn run(
         gpu: &GpuTarget<'_>,
-        matches: &ArgMatches,
+        _matches: &ArgMatches,
         cfg: &TestPressureConfig<'_>,
     ) -> i32 {
         let app_path = String::from(cfg.test_exe);
@@ -262,12 +262,18 @@ mod pressure_runner {
 
                             if !cfg.is_legacy_global_offset {
                                 match voltage_frequency_check(
-                                    matches,
+                                    std::slice::from_ref(gpu),
                                     cfg.point,
                                     print_scan_separator,
                                 ) {
-                                    Ok(true) => {}
-                                    Ok(false) => {
+                                    Ok(checks) if checks.iter().all(|check| check.precise) => {}
+                                    Ok(checks) => {
+                                        for check in checks {
+                                            println!(
+                                                "GPU {} V/F check at point {} precise={}",
+                                                check.gpu_id, cfg.point, check.precise
+                                            );
+                                        }
                                         println!("Considering trig'd thrm/pwr capping!!!");
                                         thrm_or_pwr_limit_number += 1;
                                     }
@@ -527,11 +533,22 @@ fn apply_short_phase_success_step(
     Some(increase)
 }
 
-fn pre_load_vf_recheck(matches: &ArgMatches, point: usize) -> Result<(), Error> {
+fn pre_load_vf_recheck(gpu: &GpuTarget<'_>, point: usize) -> Result<(), Error> {
     println!("Waiting for pre-load volt-freq recheck");
     sleep(Duration::from_secs(1));
-    voltage_frequency_check(matches, point, print_scan_separator)?;
-    Ok(())
+    let checks = voltage_frequency_check(std::slice::from_ref(gpu), point, print_scan_separator)?;
+    if checks.iter().all(|check| check.precise) {
+        return Ok(());
+    }
+
+    let summary = checks
+        .iter()
+        .map(|check| format!("GPU {} precise={}", check.gpu_id, check.precise))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(Error::Custom(format!(
+        "V/F check failed at point {point}: {summary}"
+    )))
 }
 
 fn apply_long_phase_failure_step(
@@ -862,7 +879,7 @@ fn run_gpuboostv3_short_phase<V: std::fmt::Display + Copy>(
             Some(*init_core_oc_value - args.common.minimum_delta_core_freq_step),
         )?;
 
-        pre_load_vf_recheck(args.common.matches, point)?;
+        pre_load_vf_recheck(gpu, point)?;
 
         test_num += 1;
         test_code += 1;
@@ -1003,7 +1020,7 @@ fn run_gpuboostv3_long_phase<V: std::fmt::Display + Copy>(
     writeln!(l, "Initiating Long Test...")?;
 
     loop {
-        pre_load_vf_recheck(args.common.matches, point)?;
+        pre_load_vf_recheck(gpu, point)?;
 
         *test_code += 1;
         log_point_test_header(
@@ -1118,7 +1135,7 @@ fn run_mem_oc_phase<V: std::fmt::Display + Copy>(
         mem_test_num += 1;
         mem_test_code += 1;
 
-        pre_load_vf_recheck(args.common.matches, args.point)?;
+        pre_load_vf_recheck(gpu, args.point)?;
 
         println!(
             "current test progress estimated:{:.2}%",
@@ -1274,15 +1291,53 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
 
         None => {
             println!("Voltage scan initialized because values were missing in the log.");
-            let (lvp, uvp) = handle_test_voltage_limits(gpus, matches, print_scan_separator)?;
-
-            for gpu in gpus {
-                let minimum_voltage = run_output(gpu, QueryVfpPointVoltage { point: lvp })?;
-                let maximum_voltage = run_output(gpu, QueryVfpPointVoltage { point: uvp })?;
-                writeln!(l)?;
-                writeln!(l, "minimum_voltage_point: {} @ {}", lvp, minimum_voltage)?;
-                writeln!(l, "maximum_voltage_point: {} @ {}", uvp, maximum_voltage)?;
+            let voltage_limits = handle_test_voltage_limits(gpus, matches, print_scan_separator)?;
+            let lvp = voltage_limits
+                .iter()
+                .map(|limits| limits.lower_point)
+                .max()
+                .ok_or_else(|| Error::from("no GPU voltage limits were probed"))?;
+            let uvp = voltage_limits
+                .iter()
+                .map(|limits| limits.upper_point)
+                .min()
+                .ok_or_else(|| Error::from("no GPU voltage limits were probed"))?;
+            if lvp > uvp {
+                return Err(Error::Custom(format!(
+                    "selected GPUs have no common voltage point range: lower point {lvp}, upper point {uvp}"
+                )));
             }
+
+            for limits in &voltage_limits {
+                let gpu = gpus
+                    .iter()
+                    .find(|gpu| gpu.id.0 == limits.gpu_id)
+                    .ok_or_else(|| Error::from("probed GPU was not found in selected targets"))?;
+                let minimum_voltage = run_output(
+                    gpu,
+                    QueryVfpPointVoltage {
+                        point: limits.lower_point,
+                    },
+                )?;
+                let maximum_voltage = run_output(
+                    gpu,
+                    QueryVfpPointVoltage {
+                        point: limits.upper_point,
+                    },
+                )?;
+                writeln!(l)?;
+                writeln!(
+                    l,
+                    "GPU {} minimum_voltage_point: {} @ {}",
+                    limits.gpu_id, limits.lower_point, minimum_voltage
+                )?;
+                writeln!(
+                    l,
+                    "GPU {} maximum_voltage_point: {} @ {}",
+                    limits.gpu_id, limits.upper_point, maximum_voltage
+                )?;
+            }
+            writeln!(l, "common_voltage_point_range: {}-{}", lvp, uvp)?;
 
             (lvp, uvp)
         }
@@ -1447,8 +1502,19 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
 
         writeln!(l)?;
         println!("Waiting for default volt-freq self-check");
-        voltage_frequency_check(matches, point, print_scan_separator)
-            .expect("Failed to read v-f info");
+        let checks =
+            voltage_frequency_check(std::slice::from_ref(gpu), point, print_scan_separator)
+                .expect("Failed to read v-f info");
+        if !checks.iter().all(|check| check.precise) {
+            let summary = checks
+                .iter()
+                .map(|check| format!("GPU {} precise={}", check.gpu_id, check.precise))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(Error::Custom(format!(
+                "default V/F self-check failed at point {point}: {summary}"
+            )));
+        }
         let mut v;
         let mut default_frequency;
         let mut prev_endpoint_delta: Option<i32> = None;

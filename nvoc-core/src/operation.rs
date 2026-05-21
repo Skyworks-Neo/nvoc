@@ -1216,9 +1216,9 @@ pub fn set_nvapi_vfp_curve_delta(
                     "invalid VFP range: point ({point}) is smaller than range ({vfp_set_range})"
                 ))
             })?;
-            let end = point
-                .checked_sub(1)
-                .ok_or_else(|| Error::Custom("invalid VFP range: point must be greater than 0".to_string()))?;
+            let end = point.checked_sub(1).ok_or_else(|| {
+                Error::Custom("invalid VFP range: point must be greater than 0".to_string())
+            })?;
             run(
                 target,
                 SetVfpRangeDelta {
