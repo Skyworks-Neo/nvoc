@@ -22,6 +22,43 @@ use serde::Deserialize;
 #[cfg(feature = "cuda")]
 mod cuda_backend;
 
+// Stressor Vulkan engine (optional). Only compiled when the crate is built with
+// --features "vulkan" in addition to "cuda".
+#[cfg(feature = "vulkan")]
+#[path = "vulkan_gfx_stressor.rs"]
+mod vulkan_gfx_stressor;
+#[cfg(feature = "vulkan")]
+use vulkan_gfx_stressor::VulkanGraphicsEngine;
+
+#[cfg(feature = "vulkan")]
+fn run_vulkan_for_duration(duration_s: f64) -> i32 {
+    println!(
+        "Vulkan-only mode: running Vulkan engine for {:.1}s",
+        duration_s
+    );
+
+    let mut eng = VulkanGraphicsEngine::new();
+    if let Err(e) = eng.start_stress_thread() {
+        eprintln!("Failed to start VulkanGraphicsEngine: {}", e);
+        return 1;
+    }
+
+    let err_flag = eng.get_error_flag_arc();
+    let started = std::time::Instant::now();
+    while started.elapsed().as_secs_f64() < duration_s {
+        if err_flag.load(std::sync::atomic::Ordering::SeqCst) {
+            eprintln!("[FATAL] Vulkan engine reported an error; exiting");
+            eng.stop();
+            return 1;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+
+    eng.stop();
+    println!("Vulkan-only run finished.");
+    0
+}
+
 #[derive(Parser, Debug)]
 #[command(
     name = "cli-stressor-cuda-rs",
@@ -97,6 +134,13 @@ struct Args {
 
     #[arg(long)]
     disable_fp8: bool,
+    /// Enable the Vulkan graphics stressor thread (optional)
+    #[arg(long, default_value_t = false)]
+    enable_vulkan_stress: bool,
+
+    /// Run Vulkan-only stress (skip CUDA workload)
+    #[arg(long, default_value_t = false)]
+    vulkan_only: bool,
 }
 
 #[cfg(feature = "cuda")]
@@ -117,6 +161,9 @@ struct FileConfig {
     kernel_mixture: Option<KernelMixtureConfig>,
     stream_mode: Option<String>,
     disable_fp8: Option<bool>,
+    enable_vulkan_stress: Option<bool>,
+    #[serde(alias = "vulkan-only")]
+    vulkan_only: Option<bool>,
     kernel_params: Option<HashMap<String, FileKernelParam>>,
 }
 
@@ -347,6 +394,8 @@ fn parse_args_with_cli_sources() -> (Args, std::collections::HashSet<&'static st
         "kernel_types",
         "kernel_mixture",
         "kernel_params",
+        "enable_vulkan_stress",
+        "vulkan_only",
         "stream_mode",
         "disable_fp8",
     ] {
@@ -458,6 +507,16 @@ fn apply_file_config_to_args(
     if !cli_set.contains("disable_fp8") {
         if let Some(v) = parsed.disable_fp8 {
             args.disable_fp8 = v;
+        }
+    }
+    if !cli_set.contains("enable_vulkan_stress") {
+        if let Some(v) = parsed.enable_vulkan_stress {
+            args.enable_vulkan_stress = v;
+        }
+    }
+    if !cli_set.contains("vulkan_only") {
+        if let Some(v) = parsed.vulkan_only {
+            args.vulkan_only = v;
         }
     }
     if !cli_set.contains("kernel_params") {
@@ -612,6 +671,20 @@ fn main() {
         std::process::exit(2);
     }
 
+    // In Vulkan-only mode, skip all CUDA initialization and mixed-kernel parsing/output.
+    if args.vulkan_only {
+        #[cfg(feature = "vulkan")]
+        {
+            std::process::exit(run_vulkan_for_duration(args.duration));
+        }
+
+        #[cfg(not(feature = "vulkan"))]
+        {
+            eprintln!("--vulkan-only requires building with --features vulkan");
+            std::process::exit(2);
+        }
+    }
+
     let matrix_sizes = match parse_int_list(&args.matrix_sizes) {
         Ok(values) => values,
         Err(err) => {
@@ -747,6 +820,36 @@ fn main() {
         stream_mode.stream_count()
     );
 
+    // Optionally start the Vulkan graphics engine (if built with --features "vulkan").
+    #[cfg(feature = "vulkan")]
+    let mut vulkan_engine: Option<VulkanGraphicsEngine> = None;
+
+    #[cfg(feature = "vulkan")]
+    {
+        if args.enable_vulkan_stress {
+            let mut eng = VulkanGraphicsEngine::new();
+            match eng.start_stress_thread() {
+                Ok(_) => {
+                    // spawn a short-interval watchdog that exits the process if Vulkan reports fatal error
+                    let err_flag = eng.get_error_flag_arc();
+                    std::thread::spawn(move || {
+                        loop {
+                            if err_flag.load(std::sync::atomic::Ordering::SeqCst) {
+                                eprintln!("[FATAL] Vulkan Vulkan engine reported an error; exiting");
+                                std::process::exit(1);
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(200));
+                        }
+                    });
+                    vulkan_engine = Some(eng);
+                }
+                Err(e) => {
+                    eprintln!("Failed to start VulkanGraphicsEngine: {}", e);
+                }
+            }
+        }
+    }
+
     let results = run_stress_mixed(
         &mut backend,
         &filtered,
@@ -775,12 +878,31 @@ fn main() {
 
     print_summary(&results, &info);
 
+    // Stop Vulkan engine if it was started.
+    #[cfg(feature = "vulkan")]
+    if let Some(mut eng) = vulkan_engine {
+        eng.stop();
+    }
+
     if !overall_passed {
         std::process::exit(1);
     }
 }
 
-#[cfg(not(feature = "cuda"))]
+#[cfg(all(not(feature = "cuda"), feature = "vulkan"))]
+fn main() {
+    let args = Args::parse();
+    if args.vulkan_only || args.enable_vulkan_stress {
+        std::process::exit(run_vulkan_for_duration(args.duration));
+    }
+
+    eprintln!(
+        "CUDA support is disabled. Use --vulkan-only (or --enable-vulkan-stress) when building with --features vulkan, or rebuild with --features cuda."
+    );
+    std::process::exit(1);
+}
+
+#[cfg(all(not(feature = "cuda"), not(feature = "vulkan")))]
 fn main() {
     let _ = Args::parse();
     eprintln!("CUDA support is disabled. Rebuild with --features cuda.");
