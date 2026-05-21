@@ -835,7 +835,7 @@ fn main() {
                     std::thread::spawn(move || {
                         loop {
                             if err_flag.load(std::sync::atomic::Ordering::SeqCst) {
-                                eprintln!("[FATAL] Vulkan Vulkan engine reported an error; exiting");
+                                eprintln!("[FATAL] Vulkan engine reported an error; exiting");
                                 std::process::exit(1);
                             }
                             std::thread::sleep(std::time::Duration::from_millis(200));

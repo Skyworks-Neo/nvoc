@@ -265,7 +265,7 @@ fn run_vulkan_stress_loop(is_running: Arc<AtomicBool>) -> Result<(), Box<dyn std
 
 			let now = std::time::Instant::now();
 			let log_elapsed = now.duration_since(last_log);
-			if log_elapsed >= Duration::from_secs(5) {
+			if log_elapsed >= Duration::from_secs(3) {
 				let elapsed_s = stress_start.elapsed().as_secs_f64();
 				let submits_per_s = window_submits as f64 / log_elapsed.as_secs_f64().max(1e-6);
 				println!(
