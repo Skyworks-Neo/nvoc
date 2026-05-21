@@ -913,10 +913,10 @@ pub fn query_domain_vf_points_indexed(
             }
         }
     }
-    while let Some((i, _)) = pts.next() {
+    for (i, _) in pts {
         eprintln!("VFP point index {i} has no matching delta; skipping");
     }
-    while let Some((i, _)) = dts.next() {
+    for (i, _) in dts {
         eprintln!("VFP delta index {i} has no matching point; skipping");
     }
     Ok(result)
