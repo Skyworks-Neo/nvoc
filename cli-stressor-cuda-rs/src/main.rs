@@ -942,6 +942,21 @@ fn main() {
         }
     };
 
+    #[cfg(feature = "vulkan")]
+    let cuda_device_identity = match backend.device_identity() {
+        Ok(identity) => Some(identity),
+        Err(err) => {
+            if args.enable_vulkan_stress {
+                eprintln!(
+                    "Failed to read CUDA device identity for Vulkan alignment immediately after CUDA init: {}",
+                    err
+                );
+                std::process::exit(1);
+            }
+            None
+        }
+    };
+
     let info = backend.device_info();
     print_device_info(&info);
 
@@ -1061,21 +1076,11 @@ fn main() {
     #[cfg(feature = "vulkan")]
     {
         if args.enable_vulkan_stress {
-            let selection = match backend.device_identity() {
-                Ok(identity) => Some(VulkanDeviceSelection {
+            if let Some(identity) = cuda_device_identity {
+                let selection = VulkanDeviceSelection {
                     cuda_uuid: identity.uuid,
                     cuda_pci_bus: identity.pci_bus,
-                }),
-                Err(err) => {
-                    eprintln!(
-                        "Failed to query CUDA device identity for Vulkan alignment: {}",
-                        err
-                    );
-                    None
-                }
-            };
-
-            if let Some(selection) = selection {
+                };
                 let mut eng = VulkanGraphicsEngine::with_selection(selection);
                 match eng.start_stress_thread() {
                     Ok(_) => {
@@ -1096,10 +1101,6 @@ fn main() {
                         eprintln!("Failed to start VulkanGraphicsEngine: {}", e);
                     }
                 }
-            } else {
-                eprintln!(
-                    "Skipping Vulkan stress because no CUDA device identity could be queried"
-                );
             }
         }
     }
