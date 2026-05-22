@@ -24,10 +24,7 @@ def test_imports_gui_config_on_first_run(tmp_path: Path) -> None:
         """
         {
           "cli_exe_path": "/tmp/nvoc-auto-optimizer",
-          "last_gpu_idx": "2",
-          "autoscan": {
-            "mode": "ultrafast"
-          }
+          "last_gpu_idx": "2"
         }
         """,
         encoding="utf-8",
@@ -36,28 +33,39 @@ def test_imports_gui_config_on_first_run(tmp_path: Path) -> None:
     store = ConfigStore(tmp_path)
     config = store.load()
 
-    assert config.cli.exe_path == "/tmp/nvoc-auto-optimizer"
     assert config.last_gpu_idx == 2
-    assert config.autoscan.mode == "ultrafast"
     assert (tmp_path / "nvoc_tui_config.json").is_file()
 
 
 def test_persists_tui_config(tmp_path: Path) -> None:
     store = ConfigStore(tmp_path)
     config = store.load()
-    config.cli.exe_path = "/tmp/tool"
     config.last_gpu_idx = 1
-    config.autoscan.mode = "legacy"
     config.vfcurve.auto_refresh = True
     store.data = config
     store.save()
 
     reloaded = ConfigStore(tmp_path).load()
 
-    assert reloaded.cli.exe_path == "/tmp/tool"
     assert reloaded.last_gpu_idx == 1
-    assert reloaded.autoscan.mode == "legacy"
     assert reloaded.vfcurve.auto_refresh is True
+
+
+def test_stale_autoscan_active_tab_falls_back_to_dashboard(tmp_path: Path) -> None:
+    (tmp_path / "nvoc_tui_config.json").write_text(
+        """
+        {
+          "ui": {
+            "active_tab": "autoscan"
+          }
+        }
+        """,
+        encoding="utf-8",
+    )
+
+    config = ConfigStore(tmp_path).load()
+
+    assert config.ui.active_tab == "dashboard"
 
 
 def test_repo_root_uses_executable_dir_when_frozen(monkeypatch, tmp_path: Path) -> None:

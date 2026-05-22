@@ -35,7 +35,7 @@ def compose_dashboard(config: AppConfig) -> ComposeResult:
                 yield Static("Waiting for first refresh.", id="metrics")
 
             with Vertical(classes="subpane") as actions_pane:
-                actions_pane.border_title = "CLI Commands (see logs for output)"
+                actions_pane.border_title = "Native Queries"
                 with Grid(id="dashboard-actions"):
                     yield Button(
                         mnemonic_text("I", "nfo"), id="dashboard-info", compact=True

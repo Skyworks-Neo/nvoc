@@ -42,70 +42,101 @@ class OverclockController(PaneController):
             except Exception:
                 pass
 
-    def oc_args(self) -> list[str]:
+    def apply_oc(self, native) -> None:
+        gpu = self.app.selected_gpu_target()
+        if gpu is None:
+            raise RuntimeError("No GPU selected.")
         backend = str(self.app.query_one("#oc-api", Select).value or "nvapi")
-        args = self.app.gpu_args() + ["set", backend]
-        args += ["--core-offset", str(self.get_int("#core-offset"))]
-        args += ["--mem-offset", str(self.get_int("#mem-offset"))]
-        pstart = self.app.query_one("#pstate-start", Input).value.strip().lower()
-        pend = self.app.query_one("#pstate-end", Input).value.strip().lower()
-        if pstart and pend:
-            args += ["--pstate-lock", pstart, pend]
-        return args
+        pstart = self.app.query_one("#pstate-start", Input).value.strip() or "P0"
+        pend = self.app.query_one("#pstate-end", Input).value.strip()
+        native.set_clock_offset(
+            gpu, backend, "core", self.get_int("#core-offset"), pstart
+        )
+        native.set_clock_offset(
+            gpu, backend, "memory", self.get_int("#mem-offset"), pstart
+        )
+        if pend:
+            if backend == "nvml":
+                native.set_nvml_pstate_lock(gpu, pstart, pend)
+            else:
+                native.set_nvapi_pstate_lock(gpu, pstart, pend)
 
-    def limit_args(self) -> list[str]:
+    def apply_limits(self, native) -> None:
+        gpu = self.app.selected_gpu_target()
+        if gpu is None:
+            raise RuntimeError("No GPU selected.")
         backend = str(self.app.query_one("#power-api", Select).value or "nvapi")
-        args = self.app.gpu_args() + ["set", backend]
-        args += ["--power-limit", str(self.get_int("#power-limit"))]
+        native.set_power_limit(gpu, backend, self.get_int("#power-limit"))
         if backend == "nvapi":
-            args += ["--thermal-limit", str(self.get_int("#thermal-limit"))]
-            args += ["--voltage-boost", str(self.get_int("#voltage-boost"))]
-        return args
+            native.set_thermal_limit(gpu, self.get_int("#thermal-limit"))
+            native.set_voltage_boost(gpu, self.get_int("#voltage-boost"))
 
-    def fan_args(self, reset: bool) -> list[str]:
+    def apply_fan(self, native, reset: bool) -> None:
+        gpu = self.app.selected_gpu_target()
+        if gpu is None:
+            raise RuntimeError("No GPU selected.")
         backend = (
             "nvml-cooler"
             if str(self.app.query_one("#fan-api", Select).value or "nvapi") == "nvml"
             else "nvapi-cooler"
         )
-        args = self.app.gpu_args() + ["set", backend]
         fan_id = str(self.app.query_one("#fan-id", Select).value or "all")
-        if fan_id != "all":
-            args += ["--id", fan_id]
         if reset:
-            args += ["--policy", "auto", "--level", "0"]
+            native.set_fan(gpu, backend, fan_id, "auto", 0)
         else:
-            args += [
-                "--policy",
+            native.set_fan(
+                gpu,
+                backend,
+                fan_id,
                 str(self.app.query_one("#fan-policy", Select).value or "continuous"),
-                "--level",
-                str(self.get_int("#fan-level", 60)),
-            ]
-        return args
+                self.get_int("#fan-level", 60),
+            )
 
     def handle_button(self, button_id: str) -> bool:
         if button_id == "oc-apply":
-            self.app.run_cli_action(self.oc_args())
+            self.app.run_native_action("apply overclock", self.apply_oc)
             return True
         if button_id == "oc-reset":
             backend = self.app.query_one("#oc-api", Select).value or "nvapi"
+            gpu = self.app.selected_gpu_target()
+            if gpu is None:
+                self.app.write_log("No GPU selected.")
+                return True
             self.app.run_action_chain(
                 [
-                    self.app.gpu_args() + ["set", str(backend), "--core-offset", "0"],
-                    self.app.gpu_args() + ["set", str(backend), "--mem-offset", "0"],
+                    (
+                        "reset core offset",
+                        lambda native, gpu=gpu, backend=str(backend): (
+                            native.set_clock_offset(gpu, backend, "core", 0, "P0")
+                        ),
+                    ),
+                    (
+                        "reset memory offset",
+                        lambda native, gpu=gpu, backend=str(backend): (
+                            native.set_clock_offset(gpu, backend, "memory", 0, "P0")
+                        ),
+                    ),
                 ]
             )
             return True
         if button_id == "limits-apply":
-            self.app.run_cli_action(self.limit_args())
+            self.app.run_native_action("apply limits", self.apply_limits)
             return True
         if button_id == "reset-limits":
-            self.app.run_cli_action(self.app.gpu_args() + ["reset"])
+            gpu = self.app.selected_gpu_target()
+            self.app.run_native_action(
+                "reset all limits",
+                lambda native, gpu=gpu: native.reset_all(gpu, None),
+            )
             return True
         if button_id == "fan-apply":
-            self.app.run_cli_action(self.fan_args(reset=False))
+            self.app.run_native_action(
+                "apply fan", lambda native: self.apply_fan(native, reset=False)
+            )
             return True
         if button_id == "fan-reset":
-            self.app.run_cli_action(self.fan_args(reset=True))
+            self.app.run_native_action(
+                "reset fan", lambda native: self.apply_fan(native, reset=True)
+            )
             return True
         return False

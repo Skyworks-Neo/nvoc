@@ -95,3 +95,18 @@ class TestQuerySettings:
     def test_returns_dict(self, pynvoc, gpu):
         result = pynvoc.query_settings(gpu, "both")
         assert isinstance(result, dict)
+
+
+class TestQueryDomainVfpPoints:
+    def test_returns_list(self, pynvoc, gpu):
+        result = pynvoc.query_domain_vfp_points(gpu, "graphics")
+        assert isinstance(result, list)
+        if result:
+            expected_keys = {
+                "index",
+                "voltage_uv",
+                "frequency_khz",
+                "delta_khz",
+                "default_frequency_khz",
+            }
+            assert expected_keys.issubset(result[0].keys())

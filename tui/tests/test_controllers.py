@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
-from nvoc_tui.controllers.autoscan import AutoscanController
 from nvoc_tui.controllers.overclock import OverclockController
 from nvoc_tui.controllers.vfcurve import VFCurveController
 from nvoc_tui.models import AppConfig, GpuCache
@@ -13,7 +13,10 @@ class FakeApp:
         self.config_data = AppConfig()
         self.cache = GpuCache()
         self.widgets: dict[str, object] = {}
-        self.actions: list[list[str]] = []
+        self.actions: list[str] = []
+        self.action_outputs: list[str | None] = []
+        self.logs: list[str] = []
+        self.native = FakeNative()
 
     def query_one(self, selector: str, _widget_type=None):
         return self.widgets[selector]
@@ -24,36 +27,49 @@ class FakeApp:
     def save_config(self) -> None:
         pass
 
-    def run_cli_action(self, args: list[str]) -> None:
-        self.actions.append(args)
+    def selected_gpu_target(self) -> str:
+        return "0x0000"
+
+    def run_native_action(self, description: str, action) -> None:
+        self.actions.append(description)
+        self.action_outputs.append(action(self.native))
+
+    def write_log(self, text: str) -> None:
+        self.logs.append(text)
 
 
-def test_autoscan_args_uses_ultrafast_mode() -> None:
-    app = FakeApp()
-    app.config_data.autoscan.mode = "ultrafast"
-    app.config_data.autoscan.output_csv = "out.csv"
-    app.config_data.autoscan.init_csv = "init.csv"
-    app.config_data.autoscan.bsod_recovery = "aggressive"
+class FakeNative:
+    def __init__(self) -> None:
+        self.calls: list[tuple] = []
 
-    args = AutoscanController(app).autoscan_args()
+    def query_domain_vfp_points(self, gpu, domain, infer_missing_default):
+        self.calls.append(
+            ("query_domain_vfp_points", gpu, domain, infer_missing_default)
+        )
+        return [
+            {
+                "index": 7,
+                "voltage_uv": 800000,
+                "frequency_khz": 1800000,
+                "delta_khz": 15000,
+                "default_frequency_khz": 1785000,
+            }
+        ]
 
-    assert args[:5] == ["--gpu=0", "set", "vfp", "autoscan", "-u"]
-    assert ["-o", "out.csv", "-i", "init.csv"] == args[5:9]
-    assert args[9:] == ["-b", "aggressive"]
+    def set_power_limit(self, gpu, backend, value):
+        self.calls.append(("set_power_limit", gpu, backend, value))
+
+    def set_thermal_limit(self, gpu, value):
+        self.calls.append(("set_thermal_limit", gpu, value))
+
+    def set_voltage_boost(self, gpu, value):
+        self.calls.append(("set_voltage_boost", gpu, value))
+
+    def set_fan(self, gpu, backend, fan_id, policy, level):
+        self.calls.append(("set_fan", gpu, backend, fan_id, policy, level))
 
 
-def test_autoscan_shortcut_focuses_target_select() -> None:
-    app = FakeApp()
-    target = SimpleNamespace(focused=False)
-    target.focus = lambda: setattr(target, "focused", True)
-    app.widgets = {"#autoscan-bsod": target}
-
-    assert AutoscanController(app).activate_shortcut("autoscan-bsod") is True
-
-    assert target.focused is True
-
-
-def test_overclock_limit_args_for_nvapi_include_extra_limits() -> None:
+def test_overclock_apply_limits_for_nvapi_calls_native_apis() -> None:
     app = FakeApp()
     app.widgets = {
         "#power-api": SimpleNamespace(value="nvapi"),
@@ -62,41 +78,27 @@ def test_overclock_limit_args_for_nvapi_include_extra_limits() -> None:
         "#voltage-boost": SimpleNamespace(value="25"),
     }
 
-    args = OverclockController(app).limit_args()
+    assert OverclockController(app).handle_button("limits-apply") is True
 
-    assert args == [
-        "--gpu=0",
-        "set",
-        "nvapi",
-        "--power-limit",
-        "110",
-        "--thermal-limit",
-        "88",
-        "--voltage-boost",
-        "25",
+    assert app.actions == ["apply limits"]
+    assert app.native.calls == [
+        ("set_power_limit", "0x0000", "nvapi", 110),
+        ("set_thermal_limit", "0x0000", 88),
+        ("set_voltage_boost", "0x0000", 25),
     ]
 
 
-def test_overclock_fan_reset_args_preserve_target() -> None:
+def test_overclock_fan_reset_preserves_target() -> None:
     app = FakeApp()
     app.widgets = {
         "#fan-api": SimpleNamespace(value="nvml"),
         "#fan-id": SimpleNamespace(value="2"),
     }
 
-    args = OverclockController(app).fan_args(reset=True)
+    assert OverclockController(app).handle_button("fan-reset") is True
 
-    assert args == [
-        "--gpu=0",
-        "set",
-        "nvml-cooler",
-        "--id",
-        "2",
-        "--policy",
-        "auto",
-        "--level",
-        "0",
-    ]
+    assert app.actions == ["reset fan"]
+    assert app.native.calls == [("set_fan", "0x0000", "nvml-cooler", "2", "auto", 0)]
 
 
 def test_overclock_shortcut_focuses_target_widget() -> None:
@@ -110,15 +112,18 @@ def test_overclock_shortcut_focuses_target_widget() -> None:
     assert target.focused is True
 
 
-def test_vfcurve_export_action_appends_quick_flag() -> None:
+def test_vfcurve_export_action_writes_static_curve(tmp_path: Path) -> None:
     app = FakeApp()
+    curve_path = tmp_path / "curve.csv"
     app.widgets = {
-        "#vf-path": SimpleNamespace(value="curve.csv"),
-        "#vf-quick-export": SimpleNamespace(value=True),
+        "#vf-path": SimpleNamespace(value=str(curve_path)),
     }
 
     assert VFCurveController(app).handle_button("vf-export") is True
 
-    assert app.config_data.vfcurve.default_path == "curve.csv"
-    assert app.config_data.vfcurve.quick_export is True
-    assert app.actions == [["--gpu=0", "set", "vfp", "export", "curve.csv", "-q"]]
+    assert app.config_data.vfcurve.default_path == str(curve_path)
+    assert app.actions == ["export VFP curve"]
+    assert curve_path.read_text(encoding="utf-8").splitlines() == [
+        "voltage,frequency,delta,default_frequency",
+        "800000,1800000,15000,1785000",
+    ]

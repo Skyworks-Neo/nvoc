@@ -8,11 +8,16 @@ resolution-markers = [
     "python_full_version < '3.12' and sys_platform != 'linux' and sys_platform != 'win32'",
 ]
 
+[options]
+exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
+exclude-newer-span = "P7D"
+
 [manifest]
 members = [
     "nvoc-cli-stressor",
     "nvoc-gui",
     "nvoc-tui",
+    "pynvoc",
     "torch-performance-test-data",
 ]
 
@@ -1292,6 +1297,7 @@ version = "0.1.0"
 source = { editable = "tui" }
 dependencies = [
     { name = "plotext" },
+    { name = "pynvoc" },
     { name = "textual" },
     { name = "textual-plotext" },
 ]
@@ -1309,6 +1315,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "plotext", specifier = ">=5.3.2" },
+    { name = "pynvoc", editable = "nvoc-python" },
     { name = "textual", specifier = ">=6.1.0" },
     { name = "textual-plotext", specifier = ">=1.0.1" },
 ]
@@ -1600,6 +1607,25 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/c7/fe/9278c29394bf69169febc21f96b4252c3ee7c8ec22c2fc545004bed47e71/pyinstaller_hooks_contrib-2026.4.tar.gz", hash = "sha256:766c281acb1ecc32e21c8c667056d7ebf5da0aabd5e30c219f9c2a283620eeaa", size = 173050, upload-time = "2026-03-31T14:10:51.188Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/88/f4/035fb8c06deff827f540a9a4ed9122c54e5376fca3e42eddf0c263730775/pyinstaller_hooks_contrib-2026.4-py3-none-any.whl", hash = "sha256:1de1a5e49a878122010b88c7e295502bc69776c157c4a4dc78741a4e6178b00f", size = 455496, upload-time = "2026-03-31T14:10:49.867Z" },
+]
+
+[[package]]
+name = "pynvoc"
+version = "0.1.0"
+source = { editable = "nvoc-python" }
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8.3.0" },
+    { name = "ruff", specifier = ">=0.11.0" },
 ]
 
 [[package]]
