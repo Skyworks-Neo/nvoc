@@ -1,0 +1,33 @@
+from ._native import (
+    discover_gpus,
+    query_info,
+    query_settings,
+    query_status,
+    reset_all,
+    reset_core_clocks,
+    reset_mem_clocks,
+    reset_vfp_lock,
+    set_clock_offset,
+    set_fan,
+    set_legacy_voltage_delta,
+    set_power_limit,
+    set_thermal_limit,
+    set_voltage_boost,
+)
+
+__all__ = [
+    "discover_gpus",
+    "query_info",
+    "query_status",
+    "query_settings",
+    "set_clock_offset",
+    "set_power_limit",
+    "set_thermal_limit",
+    "set_voltage_boost",
+    "set_legacy_voltage_delta",
+    "set_fan",
+    "reset_core_clocks",
+    "reset_mem_clocks",
+    "reset_vfp_lock",
+    "reset_all",
+]
