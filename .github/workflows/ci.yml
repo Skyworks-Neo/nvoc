@@ -77,6 +77,7 @@ jobs:
       pull-requests: read
     outputs:
       nvoc_core: ${{ steps.filter.outputs.nvoc_core }}
+      nvoc_python: ${{ steps.filter.outputs.nvoc_python }}
       auto_optimizer: ${{ steps.filter.outputs.auto_optimizer }}
       srv: ${{ steps.filter.outputs.srv }}
       tui: ${{ steps.filter.outputs.tui }}
@@ -93,6 +94,12 @@ jobs:
           filters: |
             nvoc_core:
               - 'nvoc-core/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - '.github/workflows/ci.yml'
+            nvoc_python:
+              - 'nvoc-python/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'rust-toolchain.toml'
@@ -139,6 +146,18 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - run: cargo test --package nvoc-core --all-targets
+
+  rust-nvoc-python:
+    name: nvoc-python tests
+    needs: changes
+    if: needs.changes.outputs.nvoc_python == 'true'
+    runs-on: ubuntu-slim
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - run: cargo test --package pynvoc --all-targets
 
   rust-auto-optimizer:
     name: auto-optimizer (windows)
@@ -334,6 +353,7 @@ jobs:
       - clippy
       - changes
       - rust-nvoc-core
+      - rust-nvoc-python
       - rust-auto-optimizer
       - rust-srv
       - rust-crate-versions

@@ -1,20 +1,20 @@
-use nvapi_hi::{Celsius, ClockDomain, CoolerPolicy, KilohertzDelta, MicrovoltsDelta, PState, Percentage};
+use nvapi_hi::{
+    Celsius, ClockDomain, CoolerPolicy, KilohertzDelta, MicrovoltsDelta, PState, Percentage,
+};
 use nvml_wrapper::enum_wrappers::device::PerformanceState;
 use nvoc_core::{
-    BackendSet, ConvertEnum, GpuTarget, QueryFanInfo, QueryGpuInfo,
-    QueryGpuSettings, QueryGpuStatus, QueryLegacyCoreOvervoltRanges,
-    QueryLegacyP0CoreMaxVoltageDelta, QueryPowerLimits, QueryPstates,
-    QuerySupportedApplicationsClocks, QueryTemperatureThresholds, QueryTdpTempLimits,
-    QueryVfpPointVoltage, ResetApplicationsClocks, ResetCoolerLevels, ResetFanSpeed,
-    ResetLockedClocks, ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetPstateBaseVoltages,
-    ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock, ResetVfpLock,
-    SetApplicationsClocks, SetClockOffset, SetCoolerLevels, SetDomainVfpDeltas, SetFanSpeed,
-    SetLegacyClocks, SetLockedClocks, SetNvapiPowerLimits, SetNvapiPstateLock,
+    BackendSet, ConvertEnum, GpuTarget, QueryFanInfo, QueryGpuInfo, QueryGpuSettings,
+    QueryGpuStatus, QueryLegacyCoreOvervoltRanges, QueryLegacyP0CoreMaxVoltageDelta,
+    QueryPowerLimits, QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits,
+    QueryTemperatureThresholds, QueryVfpPointVoltage, ResetApplicationsClocks, ResetCoolerLevels,
+    ResetFanSpeed, ResetLockedClocks, ResetNvapiPowerLimits, ResetNvapiSensorLimits,
+    ResetPstateBaseVoltages, ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock,
+    ResetVfpLock, SetApplicationsClocks, SetClockOffset, SetCoolerLevels, SetDomainVfpDeltas,
+    SetFanSpeed, SetLegacyClocks, SetLockedClocks, SetNvapiPowerLimits, SetNvapiPstateLock,
     SetNvapiSensorLimits, SetNvmlPstateLock, SetPowerLimit, SetPstateBaseVoltage,
     SetPstateClockOffset, SetTemperatureLimit, SetVfpFrequencyLock, SetVfpPointDelta,
-    SetVfpRangeDelta, SetVfpVoltageLock, SetVoltageBoost, VfpResetDomain,
-    discover_targets, nvml_pstate_to_str,
-    parse_nvml_fan_control_policy, run, try_parse_nvml_pstate,
+    SetVfpRangeDelta, SetVfpVoltageLock, SetVoltageBoost, VfpResetDomain, discover_targets,
+    nvml_pstate_to_str, parse_nvml_fan_control_policy, run, try_parse_nvml_pstate,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -73,7 +73,10 @@ fn parse_nvml_pstate(raw: &str) -> PyResult<PerformanceState> {
     try_parse_nvml_pstate(raw).map_err(invalid_value)
 }
 
-fn selected_target<'a>(inventory: &'a nvoc_core::TargetInventory, gpu: &str) -> PyResult<GpuTarget<'a>> {
+fn selected_target<'a>(
+    inventory: &'a nvoc_core::TargetInventory,
+    gpu: &str,
+) -> PyResult<GpuTarget<'a>> {
     for target in inventory.targets() {
         if gpu_id_matches(target.id.0, gpu)? {
             return Ok(target);
@@ -164,7 +167,9 @@ fn u64_value(value: u64) -> Value {
 }
 
 fn f64_value(value: f64) -> Value {
-    Number::from_f64(value).map(Value::Number).unwrap_or(Value::Null)
+    Number::from_f64(value)
+        .map(Value::Number)
+        .unwrap_or(Value::Null)
 }
 
 fn option_u32(value: Option<u32>) -> Value {
@@ -215,11 +220,11 @@ fn normalize_info(target: &GpuTarget<'_>) -> PyResultValue {
     map.insert("name".into(), text(&info.name));
     map.insert("gpu_name".into(), text(&info.name));
     map.insert("codename".into(), text(&info.codename));
-    map.insert("arch".into(), text(&info.arch));
-    map.insert("gpu_architecture".into(), text(&info.arch));
-    map.insert("gpu_type".into(), text(&info.gpu_type));
+    map.insert("arch".into(), text(info.arch));
+    map.insert("gpu_architecture".into(), text(info.arch));
+    map.insert("gpu_type".into(), text(info.gpu_type));
     map.insert("bios_version".into(), text(&info.bios_version));
-    map.insert("bus".into(), text(&info.bus));
+    map.insert("bus".into(), text(info.bus));
     if let Some(vendor) = info.vendor() {
         map.insert("vendor".into(), text(vendor));
     }
@@ -242,25 +247,52 @@ fn normalize_info(target: &GpuTarget<'_>) -> PyResultValue {
     }
 
     if let Some(limit) = info.power_limits.first() {
-        map.insert("power_limit_min".into(), u64_value(limit.range.min.0 as u64));
-        map.insert("power_limit_max".into(), u64_value(limit.range.max.0 as u64));
-        map.insert("power_limit_default".into(), u64_value(limit.default.0 as u64));
+        map.insert(
+            "power_limit_min".into(),
+            u64_value(limit.range.min.0 as u64),
+        );
+        map.insert(
+            "power_limit_max".into(),
+            u64_value(limit.range.max.0 as u64),
+        );
+        map.insert(
+            "power_limit_default".into(),
+            u64_value(limit.default.0 as u64),
+        );
     }
     if let Ok(power) = run(target, QueryPowerLimits).map(|report| report.output) {
-        map.insert("power_limit_nvml_min_w".into(), f64_value(power.min_watts as f64));
+        map.insert(
+            "power_limit_nvml_min_w".into(),
+            f64_value(power.min_watts as f64),
+        );
         map.insert(
             "power_limit_nvml_current_w".into(),
             f64_value(power.current_watts as f64),
         );
-        map.insert("power_limit_nvml_max_w".into(), f64_value(power.max_watts as f64));
+        map.insert(
+            "power_limit_nvml_max_w".into(),
+            f64_value(power.max_watts as f64),
+        );
         map.insert("power_watt_min".into(), f64_value(power.min_watts as f64));
-        map.insert("power_watt_current".into(), f64_value(power.current_watts as f64));
+        map.insert(
+            "power_watt_current".into(),
+            f64_value(power.current_watts as f64),
+        );
         map.insert("power_watt_max".into(), f64_value(power.max_watts as f64));
     }
     if let Some(limit) = info.sensor_limits.first() {
-        map.insert("thermal_limit_min".into(), i64_value(limit.range.min.0 as i64));
-        map.insert("thermal_limit_max".into(), i64_value(limit.range.max.0 as i64));
-        map.insert("thermal_limit_default".into(), i64_value(limit.default.0 as i64));
+        map.insert(
+            "thermal_limit_min".into(),
+            i64_value(limit.range.min.0 as i64),
+        );
+        map.insert(
+            "thermal_limit_max".into(),
+            i64_value(limit.range.max.0 as i64),
+        );
+        map.insert(
+            "thermal_limit_default".into(),
+            i64_value(limit.default.0 as i64),
+        );
     }
     let overvolts = run(target, QueryLegacyCoreOvervoltRanges)
         .map(|report| report.output)
@@ -271,8 +303,14 @@ fn normalize_info(target: &GpuTarget<'_>) -> PyResultValue {
             "legacy_overvolt_current_mv".into(),
             i64_value(uv_to_mv_i64(current.0)),
         );
-        map.insert("legacy_overvolt_min_mv".into(), i64_value(uv_to_mv_i64(min.0)));
-        map.insert("legacy_overvolt_max_mv".into(), i64_value(uv_to_mv_i64(max.0)));
+        map.insert(
+            "legacy_overvolt_min_mv".into(),
+            i64_value(uv_to_mv_i64(min.0)),
+        );
+        map.insert(
+            "legacy_overvolt_max_mv".into(),
+            i64_value(uv_to_mv_i64(max.0)),
+        );
     }
     Ok(Value::Object(map))
 }
@@ -301,13 +339,16 @@ fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
     if let Some((_sensor, temp)) = status.sensors.first() {
         map.insert("temperature_c".into(), f64_value(temp.0 as f64));
     }
-    if let Some((_channel, power)) = status.power.iter().next() {
-        if let Some(watts) = first_number_in_display(power) {
-            map.insert("power_w".into(), f64_value(watts));
-        }
+    if let Some((_channel, power)) = status.power.iter().next()
+        && let Some(watts) = first_number_in_display(power)
+    {
+        map.insert("power_w".into(), f64_value(watts));
     }
-    map.insert("vfp_locked".into(), bool_value(!status.vfp_locks.is_empty()));
-    for (_limit, lock) in &status.vfp_locks {
+    map.insert(
+        "vfp_locked".into(),
+        bool_value(!status.vfp_locks.is_empty()),
+    );
+    for lock in status.vfp_locks.values() {
         if let Some(mv) = first_number_in_display(lock) {
             map.insert("vfp_lock_mv".into(), f64_value(mv));
             break;
@@ -330,7 +371,10 @@ fn normalize_settings(target: &GpuTarget<'_>) -> PyResultValue {
         map.insert("power_limit_current".into(), i64_value(limit.0 as i64));
     }
     if let Some(limit) = settings.sensor_limits.first() {
-        map.insert("thermal_limit_current".into(), i64_value(limit.value.0 as i64));
+        map.insert(
+            "thermal_limit_current".into(),
+            i64_value(limit.value.0 as i64),
+        );
     }
 
     for (pstate, clocks) in &settings.pstate_deltas {
@@ -340,10 +384,16 @@ fn normalize_settings(target: &GpuTarget<'_>) -> PyResultValue {
             }
             match *clock {
                 ClockDomain::Graphics => {
-                    map.insert("core_clock_current".into(), i64_value(khz_to_mhz_i64(delta.0)));
+                    map.insert(
+                        "core_clock_current".into(),
+                        i64_value(khz_to_mhz_i64(delta.0)),
+                    );
                 }
                 ClockDomain::Memory => {
-                    map.insert("mem_clock_current".into(), i64_value(khz_to_mhz_i64(delta.0)));
+                    map.insert(
+                        "mem_clock_current".into(),
+                        i64_value(khz_to_mhz_i64(delta.0)),
+                    );
                 }
                 _ => {}
             }
@@ -369,12 +419,18 @@ fn normalize_settings(target: &GpuTarget<'_>) -> PyResultValue {
     }
 
     if let Ok(power) = run(target, QueryPowerLimits).map(|report| report.output) {
-        map.insert("power_limit_nvml_min_w".into(), f64_value(power.min_watts as f64));
+        map.insert(
+            "power_limit_nvml_min_w".into(),
+            f64_value(power.min_watts as f64),
+        );
         map.insert(
             "power_limit_nvml_current_w".into(),
             f64_value(power.current_watts as f64),
         );
-        map.insert("power_limit_nvml_max_w".into(), f64_value(power.max_watts as f64));
+        map.insert(
+            "power_limit_nvml_max_w".into(),
+            f64_value(power.max_watts as f64),
+        );
     }
     if let Ok(fan) = run(target, QueryFanInfo).map(|report| report.output) {
         map.insert("fan_count".into(), u64_value(fan.count as u64));
@@ -406,8 +462,14 @@ fn normalize_settings(target: &GpuTarget<'_>) -> PyResultValue {
             "legacy_overvolt_current_mv".into(),
             i64_value(uv_to_mv_i64(current.0)),
         );
-        map.insert("legacy_overvolt_min_mv".into(), i64_value(uv_to_mv_i64(min.0)));
-        map.insert("legacy_overvolt_max_mv".into(), i64_value(uv_to_mv_i64(max.0)));
+        map.insert(
+            "legacy_overvolt_min_mv".into(),
+            i64_value(uv_to_mv_i64(min.0)),
+        );
+        map.insert(
+            "legacy_overvolt_max_mv".into(),
+            i64_value(uv_to_mv_i64(max.0)),
+        );
     }
 
     let mut locks = Map::new();
@@ -492,13 +554,16 @@ fn normalize_voltage_check(target: &GpuTarget<'_>, point: usize) -> PyResultValu
     ]))
 }
 
-fn normalize_query_clock_offset(target: &GpuTarget<'_>, domain: ClockDomain, pstate: PerformanceState) -> PyResultValue {
+fn normalize_query_clock_offset(
+    target: &GpuTarget<'_>,
+    domain: ClockDomain,
+    pstate: PerformanceState,
+) -> PyResultValue {
     let value = run(target, nvoc_core::QueryClockOffset { domain, pstate })
         .map_err(to_py_err)?
         .output;
     Ok(value_object([("mhz", i64_value(value.mhz as i64))]))
 }
-
 
 fn target_inventory(backends: BackendSet) -> PyResult<nvoc_core::TargetInventory> {
     discover_targets(backends).map_err(to_py_err)
@@ -544,17 +609,35 @@ fn query_settings(py: Python<'_>, gpu: &str, backends: Option<&str>) -> PyResult
 }
 
 #[pyfunction]
-fn query_supported_applications_clocks(py: Python<'_>, gpu: &str, backends: Option<&str>) -> PyResult<Py<PyAny>> {
-    let value = with_target(gpu, backends.unwrap_or("nvml"), normalize_supported_app_clocks)?;
+fn query_supported_applications_clocks(
+    py: Python<'_>,
+    gpu: &str,
+    backends: Option<&str>,
+) -> PyResult<Py<PyAny>> {
+    let value = with_target(
+        gpu,
+        backends.unwrap_or("nvml"),
+        normalize_supported_app_clocks,
+    )?;
     py_value(py, &value)
 }
 
 #[pyfunction]
-fn query_clock_offset(py: Python<'_>, gpu: &str, backends: Option<&str>, domain: &str, pstate: Option<&str>) -> PyResult<Py<PyAny>> {
+fn query_clock_offset(
+    py: Python<'_>,
+    gpu: &str,
+    backends: Option<&str>,
+    domain: &str,
+    pstate: Option<&str>,
+) -> PyResult<Py<PyAny>> {
     let backend = parse_backend(backends.unwrap_or("nvml"))?;
     let domain = parse_domain(domain)?;
     let pstate = parse_nvml_pstate(pstate.unwrap_or("P0"))?;
-    let inventory = target_inventory(if backend == "nvml" { BackendSet::Nvml } else { BackendSet::Both })?;
+    let inventory = target_inventory(if backend == "nvml" {
+        BackendSet::Nvml
+    } else {
+        BackendSet::Both
+    })?;
     let target = selected_target(&inventory, gpu)?;
     let value = normalize_query_clock_offset(&target, domain, pstate)?;
     py_value(py, &value)
@@ -562,7 +645,9 @@ fn query_clock_offset(py: Python<'_>, gpu: &str, backends: Option<&str>, domain:
 
 #[pyfunction]
 fn query_vfp_point_voltage(py: Python<'_>, gpu: &str, point: usize) -> PyResult<Py<PyAny>> {
-    let value = with_target(gpu, "nvapi", |target| normalize_query_vfp_point(target, point))?;
+    let value = with_target(gpu, "nvapi", |target| {
+        normalize_query_vfp_point(target, point)
+    })?;
     py_value(py, &value)
 }
 
@@ -586,7 +671,9 @@ fn probe_voltage_limits(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
 
 #[pyfunction]
 fn check_voltage_frequency(py: Python<'_>, gpu: &str, point: usize) -> PyResult<Py<PyAny>> {
-    let value = with_target(gpu, "nvapi", |target| normalize_voltage_check(target, point))?;
+    let value = with_target(gpu, "nvapi", |target| {
+        normalize_voltage_check(target, point)
+    })?;
     py_value(py, &value)
 }
 
@@ -600,12 +687,24 @@ fn set_clock_offset(
 ) -> PyResult<()> {
     let backend = parse_backend(backend)?;
     let domain = parse_domain(domain)?;
-    let inventory = target_inventory(if backend == "nvml" { BackendSet::Nvml } else { BackendSet::Nvapi })?;
+    let inventory = target_inventory(if backend == "nvml" {
+        BackendSet::Nvml
+    } else {
+        BackendSet::Nvapi
+    })?;
     let target = selected_target(&inventory, gpu)?;
     match backend {
         "nvml" => {
             let pstate = parse_nvml_pstate(pstate.unwrap_or("P0"))?;
-            run(&target, SetClockOffset { domain, pstate, mhz: value }).map_err(to_py_err)?;
+            run(
+                &target,
+                SetClockOffset {
+                    domain,
+                    pstate,
+                    mhz: value,
+                },
+            )
+            .map_err(to_py_err)?;
         }
         "nvapi" => {
             let pstate = parse_pstate(pstate.unwrap_or("P0"))?;
@@ -619,7 +718,11 @@ fn set_clock_offset(
             )
             .map_err(to_py_err)?;
         }
-        _ => return Err(invalid_value("clock offsets require backend 'nvapi' or 'nvml'")),
+        _ => {
+            return Err(invalid_value(
+                "clock offsets require backend 'nvapi' or 'nvml'",
+            ));
+        }
     }
     Ok(())
 }
@@ -627,7 +730,11 @@ fn set_clock_offset(
 #[pyfunction]
 fn set_power_limit(gpu: &str, backend: &str, value: u32) -> PyResult<()> {
     let backend = parse_backend(backend)?;
-    let inventory = target_inventory(if backend == "nvml" { BackendSet::Nvml } else { BackendSet::Nvapi })?;
+    let inventory = target_inventory(if backend == "nvml" {
+        BackendSet::Nvml
+    } else {
+        BackendSet::Nvapi
+    })?;
     let target = selected_target(&inventory, gpu)?;
     match backend {
         "nvml" => {
@@ -642,7 +749,11 @@ fn set_power_limit(gpu: &str, backend: &str, value: u32) -> PyResult<()> {
             )
             .map_err(to_py_err)?;
         }
-        _ => return Err(invalid_value("power limits require backend 'nvapi' or 'nvml'")),
+        _ => {
+            return Err(invalid_value(
+                "power limits require backend 'nvapi' or 'nvml'",
+            ));
+        }
     }
     Ok(())
 }
@@ -689,7 +800,13 @@ fn reset_applications_clocks(gpu: &str) -> PyResult<()> {
 }
 
 #[pyfunction]
-fn set_locked_clocks(gpu: &str, backend: &str, domain: &str, min_mhz: u32, max_mhz: u32) -> PyResult<()> {
+fn set_locked_clocks(
+    gpu: &str,
+    backend: &str,
+    domain: &str,
+    min_mhz: u32,
+    max_mhz: u32,
+) -> PyResult<()> {
     let inventory = target_inventory(BackendSet::Nvml)?;
     let target = selected_target(&inventory, gpu)?;
     let domain = parse_domain(domain)?;
@@ -768,7 +885,12 @@ fn set_pstate_clock_offset(gpu: &str, pstate: &str, domain: &str, delta: i32) ->
 }
 
 #[pyfunction]
-fn set_cooler_levels(gpu: &str, policy: &str, level: u32, target_name: Option<&str>) -> PyResult<()> {
+fn set_cooler_levels(
+    gpu: &str,
+    policy: &str,
+    level: u32,
+    target_name: Option<&str>,
+) -> PyResult<()> {
     let inventory = target_inventory(BackendSet::Nvapi)?;
     let target = selected_target(&inventory, gpu)?;
     let cooler_target = match target_name.unwrap_or("all") {
@@ -790,7 +912,12 @@ fn set_cooler_levels(gpu: &str, policy: &str, level: u32, target_name: Option<&s
 }
 
 #[pyfunction]
-fn set_vfp_frequency_lock(gpu: &str, domain: &str, upper_khz: i32, lower_khz: Option<i32>) -> PyResult<()> {
+fn set_vfp_frequency_lock(
+    gpu: &str,
+    domain: &str,
+    upper_khz: i32,
+    lower_khz: Option<i32>,
+) -> PyResult<()> {
     let inventory = target_inventory(BackendSet::Nvapi)?;
     let target = selected_target(&inventory, gpu)?;
     run(
@@ -820,7 +947,12 @@ fn reset_vfp_frequency_lock(gpu: &str, domain: &str) -> PyResult<()> {
 }
 
 #[pyfunction]
-fn set_vfp_voltage_lock(gpu: &str, point: Option<usize>, voltage_uv: Option<i32>, feedback: Option<bool>) -> PyResult<()> {
+fn set_vfp_voltage_lock(
+    gpu: &str,
+    point: Option<usize>,
+    voltage_uv: Option<i32>,
+    feedback: Option<bool>,
+) -> PyResult<()> {
     let inventory = target_inventory(BackendSet::Nvapi)?;
     let target = selected_target(&inventory, gpu)?;
     let voltage_target = if let Some(point) = point {
@@ -985,7 +1117,11 @@ fn set_legacy_clocks(gpu: &str, core_mhz: u32, memory_mhz: u32) -> PyResult<()> 
 }
 
 #[pyfunction]
-fn set_nvapi_pstate_lock(gpu: &str, first_pstate: &str, second_pstate: Option<&str>) -> PyResult<()> {
+fn set_nvapi_pstate_lock(
+    gpu: &str,
+    first_pstate: &str,
+    second_pstate: Option<&str>,
+) -> PyResult<()> {
     let inventory = target_inventory(BackendSet::Both)?;
     let target = selected_target(&inventory, gpu)?;
     run(
@@ -1000,7 +1136,11 @@ fn set_nvapi_pstate_lock(gpu: &str, first_pstate: &str, second_pstate: Option<&s
 }
 
 #[pyfunction]
-fn set_nvml_pstate_lock(gpu: &str, first_pstate: &str, second_pstate: Option<&str>) -> PyResult<()> {
+fn set_nvml_pstate_lock(
+    gpu: &str,
+    first_pstate: &str,
+    second_pstate: Option<&str>,
+) -> PyResult<()> {
     let inventory = target_inventory(BackendSet::Nvml)?;
     let target = selected_target(&inventory, gpu)?;
     run(
@@ -1103,7 +1243,11 @@ fn set_fan(
             )
             .map_err(to_py_err)?;
         }
-        _ => return Err(invalid_value("fan control requires nvapi/nvml cooler backend")),
+        _ => {
+            return Err(invalid_value(
+                "fan control requires nvapi/nvml cooler backend",
+            ));
+        }
     }
     Ok(())
 }
@@ -1111,14 +1255,30 @@ fn set_fan(
 #[pyfunction]
 fn reset_core_clocks(gpu: &str, backend: &str) -> PyResult<()> {
     let backend = parse_backend(backend)?;
-    let inventory = target_inventory(if backend == "nvml" { BackendSet::Nvml } else { BackendSet::Nvapi })?;
+    let inventory = target_inventory(if backend == "nvml" {
+        BackendSet::Nvml
+    } else {
+        BackendSet::Nvapi
+    })?;
     let target = selected_target(&inventory, gpu)?;
     match backend {
         "nvml" => {
-            run(&target, ResetLockedClocks { domain: ClockDomain::Graphics }).map_err(to_py_err)?;
+            run(
+                &target,
+                ResetLockedClocks {
+                    domain: ClockDomain::Graphics,
+                },
+            )
+            .map_err(to_py_err)?;
         }
         "nvapi" => {
-            run(&target, ResetVfpFrequencyLock { domain: ClockDomain::Graphics }).map_err(to_py_err)?;
+            run(
+                &target,
+                ResetVfpFrequencyLock {
+                    domain: ClockDomain::Graphics,
+                },
+            )
+            .map_err(to_py_err)?;
             run(
                 &target,
                 ResetPstateClockOffsets {
@@ -1127,7 +1287,11 @@ fn reset_core_clocks(gpu: &str, backend: &str) -> PyResult<()> {
             )
             .map_err(to_py_err)?;
         }
-        _ => return Err(invalid_value("clock reset requires backend 'nvapi' or 'nvml'")),
+        _ => {
+            return Err(invalid_value(
+                "clock reset requires backend 'nvapi' or 'nvml'",
+            ));
+        }
     }
     Ok(())
 }
@@ -1135,14 +1299,30 @@ fn reset_core_clocks(gpu: &str, backend: &str) -> PyResult<()> {
 #[pyfunction]
 fn reset_mem_clocks(gpu: &str, backend: &str) -> PyResult<()> {
     let backend = parse_backend(backend)?;
-    let inventory = target_inventory(if backend == "nvml" { BackendSet::Nvml } else { BackendSet::Nvapi })?;
+    let inventory = target_inventory(if backend == "nvml" {
+        BackendSet::Nvml
+    } else {
+        BackendSet::Nvapi
+    })?;
     let target = selected_target(&inventory, gpu)?;
     match backend {
         "nvml" => {
-            run(&target, ResetLockedClocks { domain: ClockDomain::Memory }).map_err(to_py_err)?;
+            run(
+                &target,
+                ResetLockedClocks {
+                    domain: ClockDomain::Memory,
+                },
+            )
+            .map_err(to_py_err)?;
         }
         "nvapi" => {
-            run(&target, ResetVfpFrequencyLock { domain: ClockDomain::Memory }).map_err(to_py_err)?;
+            run(
+                &target,
+                ResetVfpFrequencyLock {
+                    domain: ClockDomain::Memory,
+                },
+            )
+            .map_err(to_py_err)?;
             run(
                 &target,
                 ResetPstateClockOffsets {
@@ -1151,7 +1331,11 @@ fn reset_mem_clocks(gpu: &str, backend: &str) -> PyResult<()> {
             )
             .map_err(to_py_err)?;
         }
-        _ => return Err(invalid_value("clock reset requires backend 'nvapi' or 'nvml'")),
+        _ => {
+            return Err(invalid_value(
+                "clock reset requires backend 'nvapi' or 'nvml'",
+            ));
+        }
     }
     Ok(())
 }
@@ -1175,7 +1359,13 @@ fn reset_all(gpu: &str, domain: Option<&str>) -> PyResult<()> {
             "memory" | "mem" => VfpResetDomain::Memory,
             other => return Err(invalid_value(format!("invalid reset domain {other:?}"))),
         };
-        run(&target, SetVoltageBoost { boost: Percentage(0) }).map_err(to_py_err)?;
+        run(
+            &target,
+            SetVoltageBoost {
+                boost: Percentage(0),
+            },
+        )
+        .map_err(to_py_err)?;
         run(&target, ResetNvapiSensorLimits).map_err(to_py_err)?;
         run(&target, ResetNvapiPowerLimits).map_err(to_py_err)?;
         run(&target, ResetCoolerLevels).map_err(to_py_err)?;
@@ -1194,8 +1384,18 @@ fn reset_all(gpu: &str, domain: Option<&str>) -> PyResult<()> {
         .map_err(to_py_err)?;
     }
     if target.nvml.is_some() {
-        let _ = run(&target, ResetLockedClocks { domain: ClockDomain::Graphics });
-        let _ = run(&target, ResetLockedClocks { domain: ClockDomain::Memory });
+        let _ = run(
+            &target,
+            ResetLockedClocks {
+                domain: ClockDomain::Graphics,
+            },
+        );
+        let _ = run(
+            &target,
+            ResetLockedClocks {
+                domain: ClockDomain::Memory,
+            },
+        );
     }
     Ok(())
 }
