@@ -1,0 +1,7 @@
+self-hosted-runner:
+  labels:
+    - cuda
+    - gpu-nvidia
+    - opencl
+
+config-variables: null
