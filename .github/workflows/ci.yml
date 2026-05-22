@@ -157,7 +157,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
-      - run: cargo test --package pynvoc --all-targets
+      - run: cargo test --package pynvoc --no-default-features
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install maturin pytest
+      - run: cd nvoc-python && maturin develop --release
+      - run: cd nvoc-python && python -m pytest tests/test_validation.py
 
   rust-auto-optimizer:
     name: auto-optimizer (windows)
