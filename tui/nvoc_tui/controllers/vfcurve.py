@@ -277,11 +277,23 @@ class VFCurveController(PaneController):
         if button_id == "vf-lock-voltage":
             value = self.app.query_one("#vf-lock-value", Input).value.strip()
             if self.app.query_one("#vf-lock-as-mv", Checkbox).value:
-                voltage_uv = int(float(value) * 1000)
+                try:
+                    voltage_uv = int(float(value) * 1000)
+                except (OverflowError, ValueError):
+                    self.app.write_log(
+                        "Invalid VFP lock voltage: enter a numeric mV value."
+                    )
+                    return True
                 point = None
             else:
                 voltage_uv = None
-                point = int(value)
+                try:
+                    point = int(value)
+                except ValueError:
+                    self.app.write_log(
+                        "Invalid VFP lock point: enter a numeric point index."
+                    )
+                    return True
             gpu = self.app.selected_gpu_target()
             self.app.run_native_action(
                 "lock VFP voltage",

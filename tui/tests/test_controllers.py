@@ -68,6 +68,9 @@ class FakeNative:
     def set_fan(self, gpu, backend, fan_id, policy, level):
         self.calls.append(("set_fan", gpu, backend, fan_id, policy, level))
 
+    def set_vfp_voltage_lock(self, gpu, point, voltage_uv, immediate):
+        self.calls.append(("set_vfp_voltage_lock", gpu, point, voltage_uv, immediate))
+
 
 def test_overclock_apply_limits_for_nvapi_calls_native_apis() -> None:
     app = FakeApp()
@@ -126,4 +129,47 @@ def test_vfcurve_export_action_writes_static_curve(tmp_path: Path) -> None:
     assert curve_path.read_text(encoding="utf-8").splitlines() == [
         "voltage,frequency,delta,default_frequency",
         "800000,1800000,15000,1785000",
+    ]
+
+
+def test_vfcurve_lock_voltage_rejects_invalid_point() -> None:
+    app = FakeApp()
+    app.widgets = {
+        "#vf-lock-value": SimpleNamespace(value=""),
+        "#vf-lock-as-mv": SimpleNamespace(value=False),
+    }
+
+    assert VFCurveController(app).handle_button("vf-lock-voltage") is True
+
+    assert app.actions == []
+    assert app.native.calls == []
+    assert app.logs == ["Invalid VFP lock point: enter a numeric point index."]
+
+
+def test_vfcurve_lock_voltage_rejects_invalid_mv() -> None:
+    app = FakeApp()
+    app.widgets = {
+        "#vf-lock-value": SimpleNamespace(value="not a number"),
+        "#vf-lock-as-mv": SimpleNamespace(value=True),
+    }
+
+    assert VFCurveController(app).handle_button("vf-lock-voltage") is True
+
+    assert app.actions == []
+    assert app.native.calls == []
+    assert app.logs == ["Invalid VFP lock voltage: enter a numeric mV value."]
+
+
+def test_vfcurve_lock_voltage_accepts_mv_value() -> None:
+    app = FakeApp()
+    app.widgets = {
+        "#vf-lock-value": SimpleNamespace(value="875.5"),
+        "#vf-lock-as-mv": SimpleNamespace(value=True),
+    }
+
+    assert VFCurveController(app).handle_button("vf-lock-voltage") is True
+
+    assert app.actions == ["lock VFP voltage"]
+    assert app.native.calls == [
+        ("set_vfp_voltage_lock", "0x0000", None, 875500, False)
     ]
