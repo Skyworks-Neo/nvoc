@@ -141,6 +141,24 @@ pub struct DeviceInfo {
     pub compute_capability: Option<(i32, i32)>,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct PciBusAddress {
+    pub domain: u32,
+    pub bus: u32,
+    pub device: u32,
+    pub function: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct CudaDeviceEnumInfo {
+    pub device_index: u32,
+    pub device_name: String,
+    pub uuid: [u8; 16],
+    pub pci_bus: Option<PciBusAddress>,
+    pub compute_capability: Option<(i32, i32)>,
+    pub total_mem_gb: Option<f64>,
+}
+
 #[derive(Debug, Clone)]
 pub struct HostMatrix {
     pub size: usize,
@@ -1018,8 +1036,7 @@ pub fn run_stress_mixed<B: Backend>(
         let kernel_kind = choose_kernel_type(config.kernel_mixture, &mut rng);
         let params = resolve_kernel_params(kernel_kind, &effective_config);
         let op_spec = if let Some(mixture) = &params.precision_mixture {
-            choose_precision_from_mixture(mixture, &mut rng)
-                .unwrap_or_else(|| supported[0])
+            choose_precision_from_mixture(mixture, &mut rng).unwrap_or_else(|| supported[0])
         } else if let Some(specs) = &params.precisions {
             *specs.choose(&mut rng).unwrap_or(&supported[0])
         } else {

@@ -12,9 +12,9 @@ use cli_stressor_cuda_rs::parse_int_list;
 #[cfg(feature = "cuda")]
 use cli_stressor_cuda_rs::{
     Backend, DeviceInfo, KernelParamOverride, KernelType, PrecisionKind, PrecisionMixtureEntry,
-    PrecisionSpec, StressResult, StressRunConfig, parse_kernel_mixture, parse_kernel_param_overrides,
-    parse_kernel_type, parse_kernel_type_list, parse_precision_list, parse_stream_mode,
-    run_stress_mixed,
+    PrecisionSpec, StressResult, StressRunConfig, parse_kernel_mixture,
+    parse_kernel_param_overrides, parse_kernel_type, parse_kernel_type_list, parse_precision_list,
+    parse_stream_mode, run_stress_mixed,
 };
 #[cfg(feature = "cuda")]
 use serde::Deserialize;
@@ -22,13 +22,19 @@ use serde::Deserialize;
 #[cfg(feature = "cuda")]
 mod cuda_backend;
 
+#[cfg(feature = "cuda")]
+use cuda_backend::{
+    enumerate_cuda_devices, resolve_device_index_by_pci_bus, resolve_device_index_by_sorted_index,
+    resolve_device_index_by_uuid,
+};
+
 // Stressor Vulkan engine (optional). Only compiled when the crate is built with
 // --features "vulkan" in addition to "cuda".
 #[cfg(feature = "vulkan")]
 #[path = "vulkan_gfx_stressor.rs"]
 mod vulkan_gfx_stressor;
 #[cfg(feature = "vulkan")]
-use vulkan_gfx_stressor::VulkanGraphicsEngine;
+use vulkan_gfx_stressor::{VulkanDeviceSelection, VulkanGraphicsEngine};
 
 #[cfg(feature = "vulkan")]
 fn run_vulkan_for_duration(duration_s: f64) -> i32 {
@@ -141,6 +147,34 @@ struct Args {
     /// Run Vulkan-only stress (skip CUDA workload)
     #[arg(long, default_value_t = false)]
     vulkan_only: bool,
+
+    /// CUDA GPU index in PCI-bus-sorted order (0-based)
+    #[arg(
+        long,
+        value_name = "INDEX",
+        help = "CUDA GPU index in PCI-bus-sorted order (0-based, default: 0)"
+    )]
+    gpu_index: Option<u32>,
+
+    /// CUDA GPU PCI bus address (e.g., 0001:01:00.0)
+    #[arg(
+        long,
+        value_name = "DOMAIN:BUS:DEVICE.FUNCTION",
+        help = "CUDA GPU PCI bus address (e.g., 0001:01:00.0)"
+    )]
+    pci_bus: Option<String>,
+
+    /// CUDA GPU UUID (128-bit hex string)
+    #[arg(
+        long,
+        value_name = "UUID",
+        help = "CUDA GPU UUID (32 hex digits or space/dash separated)"
+    )]
+    gpu_uuid: Option<String>,
+
+    /// List CUDA GPUs (PCI-sorted index, CUDA index, PCI bus, UUID) and exit
+    #[arg(long, default_value_t = false)]
+    list_gpus: bool,
 }
 
 #[cfg(feature = "cuda")]
@@ -165,6 +199,10 @@ struct FileConfig {
     #[serde(alias = "vulkan-only")]
     vulkan_only: Option<bool>,
     kernel_params: Option<HashMap<String, FileKernelParam>>,
+    gpu_index: Option<u32>,
+    pci_bus: Option<String>,
+    gpu_uuid: Option<String>,
+    list_gpus: Option<bool>,
 }
 
 #[cfg(feature = "cuda")]
@@ -208,7 +246,9 @@ fn precision_mixture_from_weights(
     let mut entries = Vec::with_capacity(precisions.len());
     for (spec, weight) in precisions.iter().zip(weights.iter()) {
         if !weight.is_finite() || *weight < 0.0 {
-            return Err(format!("{context} precision_weight must be finite and >= 0: {weight}"));
+            return Err(format!(
+                "{context} precision_weight must be finite and >= 0: {weight}"
+            ));
         }
         entries.push(PrecisionMixtureEntry {
             spec: *spec,
@@ -229,13 +269,18 @@ fn precision_mixture_from_map(
     let mut entries = Vec::with_capacity(map.len());
     for (name, weight) in map {
         if !weight.is_finite() || *weight < 0.0 {
-            return Err(format!("{context} precision_mixture must be finite and >= 0: {weight}"));
+            return Err(format!(
+                "{context} precision_mixture must be finite and >= 0: {weight}"
+            ));
         }
         let spec = parse_precision_list(name)?
             .first()
             .copied()
             .ok_or_else(|| format!("{context} invalid precision: {name}"))?;
-        entries.push(PrecisionMixtureEntry { spec, weight: *weight });
+        entries.push(PrecisionMixtureEntry {
+            spec,
+            weight: *weight,
+        });
     }
     Ok(entries)
 }
@@ -259,7 +304,9 @@ fn precision_mixture_cli_from_weights(
     let mut parts = Vec::with_capacity(precisions.len());
     for (name, weight) in precisions.iter().zip(weights.iter()) {
         if !weight.is_finite() || *weight < 0.0 {
-            return Err(format!("{context} precision_weight must be finite and >= 0: {weight}"));
+            return Err(format!(
+                "{context} precision_weight must be finite and >= 0: {weight}"
+            ));
         }
         parts.push(format!("{name}:{weight}"));
     }
@@ -267,14 +314,19 @@ fn precision_mixture_cli_from_weights(
 }
 
 #[cfg(feature = "cuda")]
-fn precision_mixture_cli_from_map(map: &HashMap<String, f64>, context: &str) -> Result<String, String> {
+fn precision_mixture_cli_from_map(
+    map: &HashMap<String, f64>,
+    context: &str,
+) -> Result<String, String> {
     if map.is_empty() {
         return Err(format!("{context} precision_mixture cannot be empty"));
     }
     let mut parts = Vec::with_capacity(map.len());
     for (name, weight) in map {
         if !weight.is_finite() || *weight < 0.0 {
-            return Err(format!("{context} precision_mixture must be finite and >= 0: {weight}"));
+            return Err(format!(
+                "{context} precision_mixture must be finite and >= 0: {weight}"
+            ));
         }
         parts.push(format!("{name}:{weight}"));
     }
@@ -398,6 +450,10 @@ fn parse_args_with_cli_sources() -> (Args, std::collections::HashSet<&'static st
         "vulkan_only",
         "stream_mode",
         "disable_fp8",
+        "gpu_index",
+        "pci_bus",
+        "gpu_uuid",
+        "list_gpus",
     ] {
         if matches.value_source(id) == Some(ValueSource::CommandLine) {
             cli_set.insert(id);
@@ -535,12 +591,9 @@ fn apply_file_config_to_args(
                     kvs.push(format!("precision_mixture={encoded}"));
                 }
                 if let Some(weights) = &item.precision_weight {
-                    let precisions = item
-                        .precisions
-                        .as_ref()
-                        .ok_or_else(|| {
-                            format!("kernel_params.{name}.precision_weight requires precisions")
-                        })?;
+                    let precisions = item.precisions.as_ref().ok_or_else(|| {
+                        format!("kernel_params.{name}.precision_weight requires precisions")
+                    })?;
                     let encoded = precision_mixture_cli_from_weights(
                         precisions,
                         weights,
@@ -573,6 +626,169 @@ fn apply_file_config_to_args(
             }
             args.kernel_params = entries.join(";");
         }
+    }
+    if !cli_set.contains("gpu_index") {
+        if let Some(v) = parsed.gpu_index {
+            args.gpu_index = Some(v);
+        }
+    }
+    if !cli_set.contains("pci_bus") {
+        if let Some(v) = parsed.pci_bus {
+            args.pci_bus = Some(v);
+        }
+    }
+    if !cli_set.contains("gpu_uuid") {
+        if let Some(v) = parsed.gpu_uuid {
+            args.gpu_uuid = Some(v);
+        }
+    }
+    if !cli_set.contains("list_gpus") {
+        if let Some(v) = parsed.list_gpus {
+            args.list_gpus = v;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "cuda")]
+fn resolve_gpu_device_index(args: &Args) -> Result<u32, String> {
+    // Count how many selection methods are provided
+    let has_gpu_index = args.gpu_index.is_some();
+    let has_pci_bus = args.pci_bus.is_some();
+    let has_gpu_uuid = args.gpu_uuid.is_some();
+
+    let count = [has_gpu_index, has_pci_bus, has_gpu_uuid]
+        .iter()
+        .filter(|x| **x)
+        .count();
+
+    if count > 1 {
+        return Err(
+            "only one of --gpu-index, --pci-bus, or --gpu-uuid can be specified".to_string(),
+        );
+    }
+
+    if let Some(index) = args.gpu_index {
+        // gpu-index is interpreted as index in PCI-bus-sorted CUDA device list.
+        println!("[GPU] Using PCI-sorted CUDA index: {}", index);
+        return resolve_device_index_by_sorted_index(index);
+    }
+
+    if let Some(ref pci_str) = args.pci_bus {
+        println!("[GPU] Using PCI bus ID: {}", pci_str);
+        let pci = parse_pci_bus_string(pci_str)?;
+        return resolve_device_index_by_pci_bus(pci);
+    }
+
+    if let Some(ref uuid_str) = args.gpu_uuid {
+        println!("[GPU] Using UUID: {}", uuid_str);
+        let uuid = parse_uuid_string(uuid_str)?;
+        return resolve_device_index_by_uuid(uuid);
+    }
+
+    // Default: use index 0 in PCI-sorted order.
+    println!("[GPU] Using default PCI-sorted CUDA index: 0");
+    resolve_device_index_by_sorted_index(0)
+}
+
+#[cfg(feature = "cuda")]
+fn parse_pci_bus_string(s: &str) -> Result<cli_stressor_cuda_rs::PciBusAddress, String> {
+    let s = s.trim();
+    let (domain_raw, rest) = s
+        .split_once(':')
+        .ok_or_else(|| format!("invalid PCI bus format: {s}"))?;
+    let (bus_raw, rest) = rest
+        .split_once(':')
+        .ok_or_else(|| format!("invalid PCI bus format: {s}"))?;
+    let (device_raw, function_raw) = rest
+        .split_once('.')
+        .ok_or_else(|| format!("invalid PCI bus format: {s}"))?;
+
+    let domain = u32::from_str_radix(domain_raw, 16)
+        .map_err(|_| format!("invalid PCI domain: {domain_raw}"))?;
+    let bus =
+        u32::from_str_radix(bus_raw, 16).map_err(|_| format!("invalid PCI bus: {bus_raw}"))?;
+    let device = u32::from_str_radix(device_raw, 16)
+        .map_err(|_| format!("invalid PCI device: {device_raw}"))?;
+    let function = u32::from_str_radix(function_raw, 16)
+        .map_err(|_| format!("invalid PCI function: {function_raw}"))?;
+
+    Ok(cli_stressor_cuda_rs::PciBusAddress {
+        domain,
+        bus,
+        device,
+        function,
+    })
+}
+
+#[cfg(feature = "cuda")]
+fn parse_uuid_string(s: &str) -> Result<[u8; 16], String> {
+    let s = s.trim();
+
+    // Remove spaces and dashes, then parse as continuous hex pairs
+    let hex_str: String = s.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+
+    if hex_str.len() != 32 {
+        return Err(format!("UUID must be 32 hex digits, got {}", hex_str.len()));
+    }
+
+    let mut uuid = [0u8; 16];
+    for i in 0..16 {
+        let hex_pair = &hex_str[i * 2..(i + 1) * 2];
+        uuid[i] = u8::from_str_radix(hex_pair, 16)
+            .map_err(|_| format!("invalid UUID hex pair: {hex_pair}"))?;
+    }
+
+    Ok(uuid)
+}
+
+#[cfg(feature = "cuda")]
+fn format_uuid_hex(uuid: &[u8; 16]) -> String {
+    uuid.iter()
+        .map(|b| format!("{:02X}", b))
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+#[cfg(feature = "cuda")]
+fn print_cuda_gpu_list() -> Result<(), String> {
+    let mut devices =
+        enumerate_cuda_devices().map_err(|e| format!("failed to enumerate devices: {e}"))?;
+    devices.sort_by(|a, b| match (a.pci_bus, b.pci_bus) {
+        (Some(pa), Some(pb)) => (pa.domain, pa.bus, pa.device, pa.function).cmp(&(
+            pb.domain,
+            pb.bus,
+            pb.device,
+            pb.function,
+        )),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => a.device_index.cmp(&b.device_index),
+    });
+
+    println!("CUDA GPUs (sorted by PCI bus):");
+    println!(
+        "{:>5} {:>6} {:<14} {:<32} {}",
+        "s_idx", "cuda", "pci_bus", "uuid", "name"
+    );
+    for (sorted_idx, dev) in devices.iter().enumerate() {
+        let pci = dev
+            .pci_bus
+            .map(|p| {
+                format!(
+                    "{:04X}:{:02X}:{:02X}.{}",
+                    p.domain, p.bus, p.device, p.function
+                )
+            })
+            .unwrap_or_else(|| "<none>".to_string());
+        println!(
+            "{:>5} {:>6} {:<14} {:<32} {}",
+            sorted_idx,
+            dev.device_index,
+            pci,
+            format_uuid_hex(&dev.uuid),
+            dev.device_name
+        );
     }
     Ok(())
 }
@@ -671,6 +887,16 @@ fn main() {
         std::process::exit(2);
     }
 
+    if args.list_gpus {
+        match print_cuda_gpu_list() {
+            Ok(()) => std::process::exit(0),
+            Err(err) => {
+                eprintln!("Failed to list CUDA GPUs: {}", err);
+                std::process::exit(1);
+            }
+        }
+    }
+
     // In Vulkan-only mode, skip all CUDA initialization and mixed-kernel parsing/output.
     if args.vulkan_only {
         #[cfg(feature = "vulkan")]
@@ -700,10 +926,18 @@ fn main() {
         }
     };
 
-    let mut backend = match cuda_backend::CudaBackend::new() {
+    let gpu_device_index = match resolve_gpu_device_index(&args) {
+        Ok(idx) => idx,
+        Err(err) => {
+            eprintln!("Failed to resolve GPU device: {}", err);
+            std::process::exit(2);
+        }
+    };
+
+    let mut backend = match cuda_backend::CudaBackend::new_with_device(gpu_device_index) {
         Ok(backend) => backend,
         Err(err) => {
-            eprintln!("CUDA init failed: {}", err);
+            eprintln!("CUDA init failed (gpu_index={}): {}", gpu_device_index, err);
             std::process::exit(1);
         }
     };
@@ -827,25 +1061,45 @@ fn main() {
     #[cfg(feature = "vulkan")]
     {
         if args.enable_vulkan_stress {
-            let mut eng = VulkanGraphicsEngine::new();
-            match eng.start_stress_thread() {
-                Ok(_) => {
-                    // spawn a short-interval watchdog that exits the process if Vulkan reports fatal error
-                    let err_flag = eng.get_error_flag_arc();
-                    std::thread::spawn(move || {
-                        loop {
-                            if err_flag.load(std::sync::atomic::Ordering::SeqCst) {
-                                eprintln!("[FATAL] Vulkan engine reported an error; exiting");
-                                std::process::exit(1);
+            let selection = match backend.device_identity() {
+                Ok(identity) => Some(VulkanDeviceSelection {
+                    cuda_uuid: identity.uuid,
+                    cuda_pci_bus: identity.pci_bus,
+                }),
+                Err(err) => {
+                    eprintln!(
+                        "Failed to query CUDA device identity for Vulkan alignment: {}",
+                        err
+                    );
+                    None
+                }
+            };
+
+            if let Some(selection) = selection {
+                let mut eng = VulkanGraphicsEngine::with_selection(selection);
+                match eng.start_stress_thread() {
+                    Ok(_) => {
+                        // spawn a short-interval watchdog that exits the process if Vulkan reports fatal error
+                        let err_flag = eng.get_error_flag_arc();
+                        std::thread::spawn(move || {
+                            loop {
+                                if err_flag.load(std::sync::atomic::Ordering::SeqCst) {
+                                    eprintln!("[FATAL] Vulkan engine reported an error; exiting");
+                                    std::process::exit(1);
+                                }
+                                std::thread::sleep(std::time::Duration::from_millis(200));
                             }
-                            std::thread::sleep(std::time::Duration::from_millis(200));
-                        }
-                    });
-                    vulkan_engine = Some(eng);
+                        });
+                        vulkan_engine = Some(eng);
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to start VulkanGraphicsEngine: {}", e);
+                    }
                 }
-                Err(e) => {
-                    eprintln!("Failed to start VulkanGraphicsEngine: {}", e);
-                }
+            } else {
+                eprintln!(
+                    "Skipping Vulkan stress because no CUDA device identity could be queried"
+                );
             }
         }
     }
