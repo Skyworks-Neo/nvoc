@@ -1149,13 +1149,10 @@ pub fn set_vfp_range(
     range: std::ops::RangeInclusive<usize>,
     delta_khz: i32,
 ) -> Result<(), Error> {
-    for offset in range {
-        gpu.set_vfp(
-            iter::once((offset, KilohertzDelta(delta_khz))),
-            iter::empty(),
-        )?;
-    }
-    Ok(())
+    Ok(gpu.set_vfp(
+        range.map(|offset| (offset, KilohertzDelta(delta_khz))),
+        iter::empty(),
+    )?)
 }
 
 pub fn set_legacy_clocks_nvapi(gpu: &Gpu, core_mhz: u32, mem_mhz: u32) -> Result<(), Error> {
