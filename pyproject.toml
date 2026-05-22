@@ -5,3 +5,6 @@ members = [
     "cli-stressor-cuda",
     "cli-stressor-opencl",
 ]
+[[tool.uv.index]]
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true
