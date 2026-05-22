@@ -14,6 +14,12 @@ classifiers = [
     "Programming Language :: Python :: 3",
 ]
 
+[dependency-groups]
+dev = [
+    "pytest>=8.3.0",
+    "ruff>=0.11.0",
+]
+
 [tool.maturin]
 module-name = "pynvoc._native"
 python-source = "python"
