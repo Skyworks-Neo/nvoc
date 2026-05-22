@@ -101,6 +101,7 @@ jobs:
             nvoc_python:
               - 'nvoc-python/**'
               - 'nvoc-core/**'
+              - 'nvoc-python/uv.lock'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'rust-toolchain.toml'
