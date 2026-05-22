@@ -28,8 +28,6 @@ class DashboardController(PaneController):
         self.app.run_query("status", self.on_status_loaded)
 
     def on_info_loaded(self, code: int, output: str, parsed: dict) -> None:
-        if code != 0 and output:
-            self.app.write_log(output)
         if code != 0 and not parsed:
             return
         self.app.cache.info = parsed
@@ -37,8 +35,6 @@ class DashboardController(PaneController):
         self.app.overclock_controller.prime_inputs()
 
     def on_status_loaded(self, code: int, output: str, parsed: dict) -> None:
-        if code != 0 and output:
-            self.app.write_log(output)
         if code != 0 and not parsed:
             return
         self.app.cache.status = parsed
@@ -48,7 +44,6 @@ class DashboardController(PaneController):
 
     def on_get_loaded(self, code: int, output: str, parsed: dict) -> None:
         if code != 0:
-            self.app.write_log(output)
             return
         self.app.cache.settings = parsed
         self.app.overclock_controller.prime_inputs()

@@ -198,9 +198,14 @@ class NVOCApp(App[None]):
             callback(-1, "No GPU selected.", {})
             return
 
+        def finish_query(code: int, output: str, parsed: dict) -> None:
+            if output:
+                self.write_log(output)
+            callback(code, output, parsed)
+
         def worker() -> None:
             code, output, parsed = self.native_service.run_query(gpu, command_name)
-            self.call_from_thread(callback, code, output, parsed)
+            self.call_from_thread(finish_query, code, output, parsed)
 
         threading.Thread(
             target=worker, daemon=True, name=f"query-{command_name}"

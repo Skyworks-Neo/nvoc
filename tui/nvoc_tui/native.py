@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import threading
 from pathlib import Path
 from typing import Any, Callable
@@ -45,12 +46,14 @@ class NativeService:
         try:
             native = self._pynvoc()
             if command_name == "info":
-                return 0, "", native.query_info(gpu, "both")
-            if command_name == "status":
-                return 0, "", native.query_status(gpu, "both")
-            if command_name == "get":
-                return 0, "", native.query_settings(gpu, "both")
-            return -1, f"Unsupported native query: {command_name}", {}
+                parsed = native.query_info(gpu, "both")
+            elif command_name == "status":
+                parsed = native.query_status(gpu, "both")
+            elif command_name == "get":
+                parsed = native.query_settings(gpu, "both")
+            else:
+                return -1, f"Unsupported native query: {command_name}", {}
+            return 0, self._query_output(command_name, gpu, parsed), parsed
         except Exception as exc:
             return -1, f"pynvoc {command_name} query failed: {exc}", {}
 
@@ -93,3 +96,7 @@ class NativeService:
             target=worker, daemon=True, name="nvoc-tui-native-action"
         ).start()
         return True
+
+    def _query_output(self, command_name: str, gpu: str, parsed: dict) -> str:
+        body = json.dumps(parsed, indent=2, sort_keys=True, default=str)
+        return f"> native {command_name} --gpu={gpu}\n{body}"
