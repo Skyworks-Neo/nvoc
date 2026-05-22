@@ -1,92 +1,121 @@
-A previous agent produced the plan below to accomplish the user's task. Implement the plan in a
-  fresh context. Treat the plan as the source of user intent, re-read files as needed, and carry
-  the work through implementation and verification.
+# Native Python Binding for `nvoc-core`
 
-  # Native Python Binding For `nvoc-core`
+## Current Progress
 
-  ## Summary
-  Add a new PyO3/maturin binding crate for `nvoc-core`, while keeping `auto-optimizer` workflows on
-  the existing CLI. GUI/TUI will call native Python for GPU discovery, read-only state queries, and
-  simple core set/reset operations, but continue using subprocess CLI for autoscan, VFP CSV import/
-  export, fix_result, and other `auto-optimizer`-owned flows.
+This branch adds a new Rust workspace crate, `nvoc-python`, that builds the `pynvoc` Python package
+with PyO3 and maturin. The package exposes a native extension module at `pynvoc._native` and a thin
+Python package wrapper at `pynvoc`.
 
-  References: PyO3 recommends `maturin` for Python extensions and `cdylib` crates; maturin supports
-  mixed Rust/Python packages and submodule names.
+The first implementation focuses on direct `nvoc-core` access for GPU discovery, read-only queries,
+and simple set/reset operations. Auto-optimizer workflows, streamed CLI logs, stress-test
+orchestration, VFP CSV import/export, `fix_result`, and pointwise OC remain CLI-backed for now.
 
-  ## Key Changes
-  - Add a Rust workspace member, e.g. `nvoc-python/`, with:
-    - `Cargo.toml` depending on `nvoc-core`, `pyo3`, `serde`, `serde_json`.
-    - `crate-type = ["cdylib"]`.
-    - `pyproject.toml` using `maturin>=1.9.4,<2`.
-    - import module `nvoc_core_native._native`, exposed through a small Python package
-  `nvoc_core_native`.
-  - Use `abi3-py38` so one wheel works for GUI Python `>=3.8` and TUI Python `>=3.11`.
-  - Do not add PyO3 to `nvoc-core`; keep bindings in the wrapper crate so Rust consumers stay
-  clean.
-  - Add `nvoc-core` DTO/serialization helpers only if needed, but prefer implementing Python-facing
-  DTO conversion in the binding crate.
+## Implemented Package Shape
 
-  ## Python API
-  Expose a small stable Python API, not a CLI argument emulator:
+- Distribution name: `pynvoc`
+- Python import name: `pynvoc`
+- Native module name: `pynvoc._native`
+- Rust crate/package: `pynvoc` in `nvoc-python/`
+- Build backend: `maturin`
+- Rust binding strategy: keep PyO3 isolated in `nvoc-python` so `nvoc-core` remains a Rust-first
+  library without Python-specific dependencies.
 
-  - `discover_gpus(backends: str = "both") -> list[dict]`
-    - Returns GPU index, core GPU id, hex id, backend availability, name/uuid when available.
-  - `query_info(gpu: int | str, backends: str = "both") -> dict`
-    - Normalized fields already used by GUI/TUI: architecture, GPU name, VFP ranges, NVAPI power/
-  thermal defaults, NVML watt limits, legacy overvolt bounds.
-  - `query_status(gpu: int | str, backends: str = "both") -> dict`
-    - Normalized fields: clocks, voltage, temperature, power, VFP lock state, lock voltage.
-  - `query_settings(gpu: int | str, backends: str = "both") -> dict`
-    - Normalized `get`-style data: current offsets, supported P-states, lock bounds, fan range,
-  power limits.
-  - Mutating helpers for existing UI controls:
-    - `set_clock_offset(gpu, backend, domain, value, pstate="P0")`
-    - `set_power_limit(gpu, backend, value)`
-    - `set_thermal_limit(gpu, celsius)`
-    - `set_voltage_boost(gpu, value)`
-    - `set_legacy_voltage_delta(gpu, uv, pstate="P0")`
-    - `set_fan(gpu, backend, fan_id="all", policy="continuous", level=60)`
-    - `reset_core_clocks(gpu, backend)`, `reset_mem_clocks(gpu, backend)`, `reset_vfp_lock(gpu)`,
-  `reset_all(gpu, domain=None)`
-  - Keep CLI-only for now:
-    - `set vfp export/import/autoscan/autoscan_legacy/fix_result/pointwiseoc`
-    - stress-test orchestration
-    - any workflow requiring streamed CLI logs.
+## Implemented Python API
 
-  ## GUI/TUI Migration
-  - Add a Python adapter module in both apps, e.g. `core_api.py`, which imports `nvoc_core_native`
-  and falls back to current CLI behavior if unavailable.
-  - TUI:
-    - Replace `CliService.list_gpus()` and `run_query(info/status/get)` with native calls.
-    - Keep `run_action()` CLI-backed for auto-optimizer and long-running streamed actions.
-    - Route overclock/fan/limit button actions through native helpers when they map directly to
-  `nvoc-core`.
-  - GUI:
-    - Replace `_refresh_gpu_list`, `run_gpu_query_async(["info"|"status"|"get"])`, and simple
-  overclock/fan/limit actions with native calls.
-    - Preserve CLI path configuration because autoscan/VFP workflows still need it.
-  - Keep existing parsers temporarily as CLI fallback and delete them only after native paths are
-  stable.
+`pynvoc` promotes every registered `pynvoc._native` function into the top-level package API.
+The exported bindings are:
 
-  ## Tests
-  - Rust:
-    - Build binding crate with `cargo check --package nvoc-python`.
-    - Add non-GPU unit tests for selector parsing, enum parsing, dict normalization, and error
-  conversion.
-    - Keep existing `cargo test --package nvoc-core --all-targets`.
-  - Python:
-    - Add fake/native-adapter tests for GUI/TUI to verify native results populate existing cache
-  fields.
-    - Preserve current CLI argument-construction tests for CLI-only workflows.
-    - Add fallback tests proving missing `nvoc_core_native` still uses CLI.
-  - GPU/manual:
-    - On NVIDIA hardware, smoke-test `discover_gpus`, `query_info`, `query_status`,
-  `query_settings`, then one supervised read/write operation per backend.
+- Discovery and general queries:
+  - `discover_gpus`
+  - `query_info`
+  - `query_status`
+  - `query_settings`
+  - `query_supported_applications_clocks`
+  - `query_clock_offset`
+  - `query_vfp_point_voltage`
+  - `query_legacy_p0_core_max_voltage_delta`
+  - `query_tdp_temp_limits`
+  - `probe_voltage_limits`
+  - `check_voltage_frequency`
+- Clock, power, thermal, and fan controls:
+  - `set_clock_offset`
+  - `set_power_limit`
+  - `set_thermal_limit`
+  - `set_applications_clocks`
+  - `reset_applications_clocks`
+  - `set_locked_clocks`
+  - `reset_locked_clocks`
+  - `set_fan`
+  - `reset_fan_speed`
+  - `set_cooler_levels`
+  - `reset_cooler_levels`
+  - `set_legacy_clocks`
+- P-state and VFP controls:
+  - `set_pstate_base_voltage`
+  - `reset_pstate_base_voltages`
+  - `set_pstate_clock_offset`
+  - `reset_pstate_clock_offsets`
+  - `set_vfp_frequency_lock`
+  - `reset_vfp_frequency_lock`
+  - `set_vfp_voltage_lock`
+  - `reset_vfp_lock`
+  - `reset_vfp_deltas`
+  - `set_vfp_point_delta`
+  - `set_vfp_range_delta`
+  - `set_domain_vfp_deltas`
+- NVAPI/NVML-specific controls:
+  - `set_nvapi_power_limits`
+  - `reset_nvapi_power_limits`
+  - `set_nvapi_sensor_limits`
+  - `reset_nvapi_sensor_limits`
+  - `set_nvapi_pstate_lock`
+  - `set_nvml_pstate_lock`
+  - `set_voltage_boost`
+  - `set_legacy_voltage_delta`
+- Convenience resets:
+  - `reset_core_clocks`
+  - `reset_mem_clocks`
+  - `reset_all`
 
-  ## Assumptions
-  - Native binding is additive first; no immediate removal of CLI code.
-  - `auto-optimizer` stays subprocess-driven until a later migration.
-  - Python package name will be `nvoc-core-native`, import name `nvoc_core_native`.
-  - Binding build artifacts are included in PyInstaller specs once native imports are wired.
+The package wrapper keeps `pynvoc.__all__` in parity with `pynvoc._native` so Python callers do not
+need to import the private native module directly. Return values are normalized Python
+dictionaries/lists converted from `serde_json::Value`.
 
+## Validation and Alias Policy
 
+User-facing validation should list every accepted alias. Current aliases include:
+
+- Backend sets: `both`, `all`, `nvapi`, `nvml`
+- Action backends: `nvapi`, `nvml`, `nvapi-cooler`, `nvml-cooler`
+- Clock domains: `graphics`, `core`, `gpu`, `memory`, `mem`
+
+Non-hardware validation tests cover these parsing paths so invalid values fail before GPU access.
+
+## CI and Tests
+
+The CI job for `nvoc-python` builds and tests the Rust package with:
+
+- `cargo test --package pynvoc --no-default-features`
+- `maturin develop --release`
+- `pytest tests/`
+
+The Python tests cover import/export contract, validation behavior that does not require GPU
+hardware, and GPU smoke tests that should skip when no supported GPU is available.
+
+## Remaining Work
+
+- Add native adapter modules in the GUI and TUI that import `pynvoc` and fall back to the existing
+  CLI path when unavailable.
+- Route GPU discovery and read-only query flows through `pynvoc` first.
+- Move simple direct set/reset UI actions to `pynvoc` where they map cleanly to `nvoc-core`.
+- Keep auto-optimizer and long-running streamed workflows on the CLI until they have a native API
+  designed for progress reporting and cancellation.
+- Add GUI/TUI adapter tests for native success paths and CLI fallback paths.
+- On NVIDIA hardware, smoke-test discovery, info/status/settings queries, and one supervised
+  read/write operation per backend.
+
+## Assumptions
+
+- The native binding remains additive during the initial migration.
+- CLI behavior stays available as a fallback while GUI/TUI integrations are introduced.
+- Hardware-mutating tests remain manual, ignored, or hardware-gated.

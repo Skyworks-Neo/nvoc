@@ -181,7 +181,7 @@ jobs:
         working-directory: nvoc-python
         env:
           VIRTUAL_ENV: ${{ github.workspace }}/nvoc-python/.venv
-        run: .venv/bin/python -m pytest tests/test_validation.py
+        run: .venv/bin/python -m pytest tests/
 
   rust-auto-optimizer:
     name: auto-optimizer (windows)

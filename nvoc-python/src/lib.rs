@@ -37,7 +37,7 @@ fn parse_backends(raw: &str) -> PyResult<BackendSet> {
         "nvapi" => Ok(BackendSet::Nvapi),
         "nvml" => Ok(BackendSet::Nvml),
         other => Err(invalid_value(format!(
-            "invalid backend set {other:?}; expected 'both', 'nvapi', or 'nvml'"
+            "invalid backend set {other:?}; expected 'both'/'all', 'nvapi', or 'nvml'"
         ))),
     }
 }
@@ -59,7 +59,7 @@ fn parse_domain(raw: &str) -> PyResult<ClockDomain> {
         "core" | "gpu" | "graphics" => Ok(ClockDomain::Graphics),
         "mem" | "memory" => Ok(ClockDomain::Memory),
         other => Err(invalid_value(format!(
-            "invalid clock domain {other:?}; expected 'graphics'/'core' or 'memory'/'mem'"
+            "invalid clock domain {other:?}; expected 'graphics'/'core'/'gpu' or 'memory'/'mem'"
         ))),
     }
 }

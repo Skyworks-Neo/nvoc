@@ -17,20 +17,52 @@ import importlib
 import pytest
 
 EXPECTED_EXPORTS = [
+    "check_voltage_frequency",
     "discover_gpus",
+    "probe_voltage_limits",
+    "query_clock_offset",
     "query_info",
+    "query_legacy_p0_core_max_voltage_delta",
     "query_status",
     "query_settings",
-    "set_clock_offset",
-    "set_power_limit",
-    "set_thermal_limit",
-    "set_voltage_boost",
-    "set_legacy_voltage_delta",
-    "set_fan",
-    "reset_core_clocks",
-    "reset_mem_clocks",
-    "reset_vfp_lock",
+    "query_supported_applications_clocks",
+    "query_tdp_temp_limits",
+    "query_vfp_point_voltage",
     "reset_all",
+    "reset_applications_clocks",
+    "reset_cooler_levels",
+    "reset_core_clocks",
+    "reset_fan_speed",
+    "reset_locked_clocks",
+    "reset_mem_clocks",
+    "reset_nvapi_power_limits",
+    "reset_nvapi_sensor_limits",
+    "reset_pstate_base_voltages",
+    "reset_pstate_clock_offsets",
+    "reset_vfp_deltas",
+    "reset_vfp_frequency_lock",
+    "reset_vfp_lock",
+    "set_applications_clocks",
+    "set_clock_offset",
+    "set_cooler_levels",
+    "set_domain_vfp_deltas",
+    "set_fan",
+    "set_legacy_clocks",
+    "set_legacy_voltage_delta",
+    "set_locked_clocks",
+    "set_nvapi_power_limits",
+    "set_nvapi_pstate_lock",
+    "set_nvapi_sensor_limits",
+    "set_nvml_pstate_lock",
+    "set_power_limit",
+    "set_pstate_base_voltage",
+    "set_pstate_clock_offset",
+    "set_thermal_limit",
+    "set_vfp_frequency_lock",
+    "set_vfp_point_delta",
+    "set_vfp_range_delta",
+    "set_vfp_voltage_lock",
+    "set_voltage_boost",
 ]
 
 
@@ -45,6 +77,7 @@ def pynvoc():
 
 def test_all_exports_present(pynvoc):
     assert hasattr(pynvoc, "__all__"), "pynvoc should define __all__"
+    assert pynvoc.__all__ == EXPECTED_EXPORTS
     for name in EXPECTED_EXPORTS:
         assert name in pynvoc.__all__, f"{name} missing from __all__"
         assert hasattr(pynvoc, name), f"{name} missing from module"
@@ -58,3 +91,8 @@ def test_all_names_callable(pynvoc):
 
 def test_native_module_exists(pynvoc):
     assert hasattr(pynvoc, "_native"), "pynvoc should expose _native submodule"
+
+
+def test_all_native_functions_are_top_level_exports(pynvoc):
+    native_names = {name for name in dir(pynvoc._native) if not name.startswith("_")}
+    assert native_names == set(pynvoc.__all__)
