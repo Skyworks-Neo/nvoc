@@ -48,10 +48,12 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         id: manual
         run: |
-          echo "auto_optimizer=true" >> "$GITHUB_OUTPUT"
-          echo "nvoc_core=true" >> "$GITHUB_OUTPUT"
-          echo "stressor_cuda=true" >> "$GITHUB_OUTPUT"
-          echo "stressor_opencl=true" >> "$GITHUB_OUTPUT"
+          {
+            echo "auto_optimizer=true"
+            echo "nvoc_core=true"
+            echo "stressor_cuda=true"
+            echo "stressor_opencl=true"
+          } >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v6
         if: github.event_name != 'workflow_dispatch'
         with:

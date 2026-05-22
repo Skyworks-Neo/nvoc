@@ -100,6 +100,7 @@ jobs:
               - '.github/workflows/ci.yml'
             nvoc_python:
               - 'nvoc-python/**'
+              - 'nvoc-core/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'rust-toolchain.toml'
@@ -121,18 +122,22 @@ jobs:
             tui:
               - 'tui/**'
               - 'pyproject.toml'
+              - 'uv.lock'
               - '.github/workflows/ci.yml'
             gui:
               - 'gui/**'
               - 'pyproject.toml'
+              - 'uv.lock'
               - '.github/workflows/ci.yml'
             stressor_cuda:
               - 'cli-stressor-cuda/**'
               - 'pyproject.toml'
+              - 'uv.lock'
               - '.github/workflows/ci.yml'
             stressor_opencl:
               - 'cli-stressor-opencl/**'
               - 'pyproject.toml'
+              - 'uv.lock'
               - '.github/workflows/ci.yml'
 
   rust-nvoc-core:
@@ -157,12 +162,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
-      - run: cargo test --package pynvoc --no-default-features
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install maturin pytest
+      - run: cargo test --package pynvoc --no-default-features
+      - run: python -m pip install --upgrade pip maturin
       - run: python -m venv .venv
+        working-directory: nvoc-python
+      - run: .venv/bin/python -m pip install pytest
         working-directory: nvoc-python
       - name: maturin develop
         working-directory: nvoc-python
@@ -174,7 +181,6 @@ jobs:
         env:
           VIRTUAL_ENV: ${{ github.workspace }}/nvoc-python/.venv
         run: .venv/bin/python -m pytest tests/test_validation.py
-        working-directory: nvoc-python
 
   rust-auto-optimizer:
     name: auto-optimizer (windows)
