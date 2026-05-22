@@ -55,32 +55,39 @@ fn is_std(str: &str) -> bool {
 }
 
 #[cfg(windows)]
-fn spawn_dynamic_load_process() -> Result<Child, Error> {
+fn spawn_dynamic_load_process(cuda_device: Option<u32>) -> Result<Child, Error> {
     let repo_root = env!("CARGO_MANIFEST_DIR");
-    Command::new("cmd")
-        .args(["/C", r".\test\dyn_load_export_windows.bat"])
-        .current_dir(repo_root)
-        .spawn()
+    let mut cmd = Command::new("cmd");
+    cmd.args(["/C", r".\test\dyn_load_export_windows.bat"])
+        .current_dir(repo_root);
+    if let Some(dev) = cuda_device {
+        cmd.env("CUDA_DEVICE_ORDER", "PCI_BUS_ID");
+        cmd.env("CUDA_VISIBLE_DEVICES", dev.to_string());
+    }
+    cmd.spawn()
         .map_err(|e| Error::Custom(format!("Failed to start Windows load process: {}", e)))
 }
 
 #[cfg(target_os = "linux")]
-fn spawn_dynamic_load_process() -> Result<Child, Error> {
+fn spawn_dynamic_load_process(cuda_device: Option<u32>) -> Result<Child, Error> {
     let repo_root = env!("CARGO_MANIFEST_DIR");
-    Command::new("bash")
-        .arg("./test/dyn_load_export_opencl_linux.sh")
-        .current_dir(repo_root)
-        .spawn()
-        .map_err(|e| {
-            Error::Custom(format!(
-                "Failed to start Linux load process with test/test_opencl_linux.sh load 10: {}",
-                e
-            ))
-        })
+    let mut cmd = Command::new("bash");
+    cmd.arg("./test/dyn_load_export_opencl_linux.sh")
+        .current_dir(repo_root);
+    if let Some(dev) = cuda_device {
+        cmd.env("CUDA_DEVICE_ORDER", "PCI_BUS_ID");
+        cmd.env("CUDA_VISIBLE_DEVICES", dev.to_string());
+    }
+    cmd.spawn().map_err(|e| {
+        Error::Custom(format!(
+            "Failed to start Linux load process with test/test_opencl_linux.sh load 10: {}",
+            e
+        ))
+    })
 }
 
 #[cfg(all(not(windows), not(target_os = "linux")))]
-fn spawn_dynamic_load_process() -> Result<Child, Error> {
+fn spawn_dynamic_load_process(_: Option<u32>) -> Result<Child, Error> {
     panic_windows_only("dynamic VFP export")
 }
 
@@ -418,6 +425,7 @@ pub fn handle_vfp_export(gpu: &GpuTarget<'_>, matches: &clap::ArgMatches) -> Res
     }
 
     if cfg.dynamic {
+        let cuda_device = matches.get_one::<u32>("cuda_device").copied();
         if let Err(e) = apply_autoscan_profile(gpu, matches, 30) {
             eprintln!(
                 "apply_autoscan_profile failed: {:?}, continuing export...",
@@ -427,7 +435,7 @@ pub fn handle_vfp_export(gpu: &GpuTarget<'_>, matches: &clap::ArgMatches) -> Res
         // lowest all fan to maximize temp-related dynamic V-F curve effect
 
         // Run load process (apply GPU load)
-        let mut child = spawn_dynamic_load_process()?;
+        let mut child = spawn_dynamic_load_process(cuda_device)?;
         sleep(Duration::from_secs(45));
         //too short duration may result in unstable dynamic result...
 
