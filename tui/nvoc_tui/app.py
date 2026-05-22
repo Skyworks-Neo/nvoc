@@ -28,7 +28,7 @@ from .controllers.header import HeaderController
 from .controllers.overclock import OverclockController
 from .controllers.vfcurve import VFCurveController
 from .models import AppConfig, GpuCache, GpuDescriptor, repo_root
-from .native import NativeService
+from .native import ActionCallback, NativeService
 from .panes.console import compose_console
 from .panes.dashboard import compose_dashboard
 from .panes.header import compose_header
@@ -163,7 +163,7 @@ class NVOCApp(App[None]):
         if code >= 0:
             self.refresh_all_state()
 
-    def run_native_action(self, description: str, action) -> None:
+    def run_native_action(self, description: str, action: ActionCallback) -> None:
         if self.selected_gpu_target() is None:
             self.write_log("No GPU selected.")
             return
@@ -173,7 +173,7 @@ class NVOCApp(App[None]):
         if not started:
             self.write_log("Another action is already running.")
 
-    def run_action_chain(self, commands: list[tuple[str, object]]) -> None:
+    def run_action_chain(self, commands: list[tuple[str, ActionCallback]]) -> None:
         queue = list(commands)
 
         def start_next(_code: int = 0) -> None:

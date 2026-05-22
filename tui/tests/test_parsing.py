@@ -17,6 +17,7 @@ from nvoc_tui.parsing import (
     compute_vf_plot_bounds,
     find_curve_point_for_voltage,
     load_vf_curve,
+    load_vf_curve_deltas,
     normalize_query_output,
     parse_get_output,
     parse_gpu_list,
@@ -224,6 +225,31 @@ def test_load_vf_curve(tmp_path: Path) -> None:
     assert voltages == [800.0, 825.0, 850.0]
     assert freqs == [1800.0, 1840.0, 1900.0]
     assert defaults == [1750.0, 1775.0, 1800.0]
+
+
+def test_load_vf_curve_deltas_skips_invalid_rows(tmp_path: Path) -> None:
+    csv_path = tmp_path / "curve.csv"
+    csv_path.write_text(
+        "voltage_uv,frequency_khz,delta,default_frequency_khz\n"
+        "800000,1800000,25000,1750000\n"
+        "825000,1840000,not-a-delta,1775000\n"
+        "bad-voltage,1900000,10000,1800000\n"
+        "850000,1900000,5000 # edited,1800000\n"
+        "875000,1910000,-10000,1810000\n",
+        encoding="utf-8",
+    )
+
+    deltas = load_vf_curve_deltas(
+        str(csv_path),
+        [
+            {"index": 3, "voltage_uv": 800000},
+            {"index": 4, "voltage_uv": 825000},
+            {"index": 5, "voltage_uv": "invalid"},
+            {"index": 6, "voltage_uv": 875000},
+        ],
+    )
+
+    assert deltas == [(3, 25000), (6, -10000)]
 
 
 def test_find_curve_point_for_voltage_returns_nearest_match() -> None:

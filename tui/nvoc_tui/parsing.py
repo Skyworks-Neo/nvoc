@@ -327,11 +327,15 @@ def load_vf_curve_deltas(
     if not csv_path.is_file():
         raise FileNotFoundError(path)
 
-    indices_by_voltage = {
-        int(point["voltage_uv"]): int(point["index"])
-        for point in current_points
-        if "voltage_uv" in point and "index" in point
-    }
+    indices_by_voltage: dict[int, int] = {}
+    for point in current_points:
+        if "voltage_uv" not in point or "index" not in point:
+            continue
+        try:
+            indices_by_voltage[int(point["voltage_uv"])] = int(point["index"])
+        except (TypeError, ValueError):
+            continue
+
     deltas: list[tuple[int, int]] = []
     for raw in csv_path.read_text(encoding="utf-8-sig").splitlines():
         row = [piece.strip() for piece in raw.split(",")]
@@ -343,8 +347,11 @@ def load_vf_curve_deltas(
             continue
         if len(row) < 3:
             continue
-        voltage = int(row[0])
-        delta = int(row[2])
+        try:
+            voltage = int(row[0])
+            delta = int(row[2])
+        except ValueError:
+            continue
         if voltage in indices_by_voltage:
             deltas.append((indices_by_voltage[voltage], delta))
     return deltas

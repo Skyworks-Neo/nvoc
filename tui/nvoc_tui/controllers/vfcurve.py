@@ -222,9 +222,9 @@ class VFCurveController(PaneController):
             if not path:
                 self.app.write_log("VFP export path is empty.")
                 return True
+            gpu = self.app.selected_gpu_target()
 
-            def export(native) -> str:
-                gpu = self.app.selected_gpu_target()
+            def export(native, gpu=gpu, path=path) -> str:
                 points = native.query_domain_vfp_points(gpu, "graphics", True)
                 write_vf_curve_points(path, points)
                 return f"Exported {len(points)} VFP point(s) to {path}."
@@ -237,9 +237,9 @@ class VFCurveController(PaneController):
             if not path:
                 self.app.write_log("VFP import path is empty.")
                 return True
+            gpu = self.app.selected_gpu_target()
 
-            def import_curve(native) -> str:
-                gpu = self.app.selected_gpu_target()
+            def import_curve(native, gpu=gpu, path=path) -> str:
                 points = native.query_domain_vfp_points(gpu, "graphics", True)
                 deltas = load_vf_curve_deltas(path, points)
                 native.set_domain_vfp_deltas(gpu, "graphics", deltas)
