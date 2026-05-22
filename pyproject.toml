@@ -4,4 +4,5 @@ members = [
     "tui",
     "cli-stressor-cuda",
     "cli-stressor-opencl",
+    "nvoc-python"
 ]
