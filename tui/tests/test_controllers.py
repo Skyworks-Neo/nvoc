@@ -170,6 +170,4 @@ def test_vfcurve_lock_voltage_accepts_mv_value() -> None:
     assert VFCurveController(app).handle_button("vf-lock-voltage") is True
 
     assert app.actions == ["lock VFP voltage"]
-    assert app.native.calls == [
-        ("set_vfp_voltage_lock", "0x0000", None, 875500, False)
-    ]
+    assert app.native.calls == [("set_vfp_voltage_lock", "0x0000", None, 875500, False)]
