@@ -210,6 +210,9 @@ mod pressure_runner {
         range: std::ops::RangeInclusive<usize>,
         delta_khz: i32,
     ) {
+        const MAX_CONSECUTIVE_FAILURES: usize = 3;
+        let mut consecutive_failures = 0;
+
         for offset in range {
             match run_output(
                 gpu,
@@ -218,11 +221,23 @@ mod pressure_runner {
                     delta: KilohertzDelta(delta_khz),
                 },
             ) {
-                Ok(_) => {}
-                Err(e) => eprintln!(
-                    "Warning: {}, set_vfp offset={} Error. GPU crashed...",
-                    e, offset
-                ),
+                Ok(_) => {
+                    consecutive_failures = 0;
+                }
+                Err(e) => {
+                    consecutive_failures += 1;
+                    eprintln!(
+                        "Warning: {}, set_vfp offset={} Error. GPU crashed...",
+                        e, offset
+                    );
+                    if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+                        eprintln!(
+                            "Too many consecutive VFP errors ({}). Skipping remaining offsets in range.",
+                            consecutive_failures
+                        );
+                        return;
+                    }
+                }
             }
         }
     }
@@ -247,6 +262,60 @@ mod pressure_runner {
                 set_vfp_range_warn(gpu, (point - vfp_set_range)..=(point - 1), ld);
             }
         }
+    }
+
+    fn retry_nvapi_with_backoff<F, E>(
+        mut op: F,
+        label: &str,
+        on_err: E,
+    ) -> Result<(), Error>
+    where
+        F: FnMut() -> Result<(), Error>,
+        E: Fn(&Error),
+    {
+        const BACKOFF_SECS: [u64; 5] = [5, 10, 20, 40, 80];
+
+        for (attempt, &wait_secs) in BACKOFF_SECS.iter().enumerate() {
+            if attempt > 0 {
+                eprintln!(
+                    "Retrying {} in {}s (attempt {}/{})...",
+                    label,
+                    wait_secs,
+                    attempt + 1,
+                    BACKOFF_SECS.len()
+                );
+            }
+            sleep(Duration::from_secs(wait_secs));
+
+            match op() {
+                Ok(()) => {
+                    if attempt > 0 {
+                        eprintln!("{} succeeded on attempt {}.", label, attempt + 1);
+                    }
+                    return Ok(());
+                }
+                Err(e) if attempt + 1 < BACKOFF_SECS.len() => {
+                    eprintln!(
+                        "{} failed (attempt {}): {:?}",
+                        label,
+                        attempt + 1,
+                        e
+                    );
+                    on_err(&e);
+                }
+                Err(e) => {
+                    eprintln!(
+                        "{} failed after {} attempts: {:?}",
+                        label,
+                        BACKOFF_SECS.len(),
+                        e
+                    );
+                    return Err(e);
+                }
+            }
+        }
+
+        unreachable!()
     }
 
     pub(super) struct TestPressureConfig<'a> {
@@ -463,15 +532,21 @@ mod pressure_runner {
                     let mut in_test_check_number = 0;
                     let mut fluctuation_h_l_flag = false;
                     let mut thrm_or_pwr_limit_number = 0;
-                    run_output(
-                        gpu,
-                        ResetVfpDeltas {
-                            domain: VfpResetDomain::All,
+                    let _ = retry_nvapi_with_backoff(
+                        || {
+                            run_output(
+                                gpu,
+                                ResetVfpDeltas {
+                                    domain: VfpResetDomain::All,
+                                },
+                            )
+                            .map(|_| ())
                         },
-                    )
-                    .unwrap_or_else(|err| {
-                        eprintln!("Warning: Failed to reset GPU due to {:?}", err);
-                    });
+                        "ResetVfpDeltas",
+                        |e| {
+                            eprintln!("Warning: Failed to reset GPU due to {:?}", e);
+                        },
+                    );
                     sleep(Duration::from_secs(1));
                     test_initialization(gpu, cfg);
                     sleep(Duration::from_secs(1));
@@ -568,15 +643,21 @@ mod pressure_runner {
                                 test_start_at.elapsed().as_secs()
                             );
                             force_kill_process(&mut process, "in-test timeout");
-                            run_output(
-                                gpu,
-                                ResetVfpDeltas {
-                                    domain: VfpResetDomain::All,
+                            let _ = retry_nvapi_with_backoff(
+                                || {
+                                    run_output(
+                                        gpu,
+                                        ResetVfpDeltas {
+                                            domain: VfpResetDomain::All,
+                                        },
+                                    )
+                                    .map(|_| ())
                                 },
-                            )
-                            .unwrap_or_else(|err| {
-                                eprintln!("Warning: Failed to reset GPU due to {:?}", err);
-                            });
+                                "ResetVfpDeltas (timeout recovery)",
+                                |e| {
+                                    eprintln!("Warning: Failed to reset GPU due to {:?}", e);
+                                },
+                            );
                             break;
                         }
                     }
@@ -640,20 +721,22 @@ mod pressure_runner {
                     // ensure subsequent runs start from the expected operating point after
                     // driver resets (TDR) or other disruptive events.
                     if exit_code != 0 {
-                        sleep(Duration::from_millis(5000));
                         eprintln!(
                             "Test returned non-zero ({}). Re-applying autoscan profile before next run...",
                             exit_code
                         );
-                        if let Err(e) = apply_autoscan_profile(gpu, _matches, 80) {
-                            eprintln!(
-                                "Warning: apply_autoscan_profile failed during failure-recovery: {:?}",
-                                e
-                            );
-                        } else {
-                            // Small sleep to allow the profile to be applied and driver to settle.
-                            sleep(Duration::from_millis(500));
-                        }
+                        let _ = retry_nvapi_with_backoff(
+                            || apply_autoscan_profile(gpu, _matches, 80),
+                            "apply_autoscan_profile",
+                            |e| {
+                                eprintln!(
+                                    "apply_autoscan_profile attempt failed: {:?}",
+                                    e
+                                );
+                            },
+                        );
+                        // Small sleep to allow the profile to settle.
+                        sleep(Duration::from_millis(500));
                     }
 
                     return exit_code;
