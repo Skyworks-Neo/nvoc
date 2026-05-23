@@ -30,7 +30,7 @@ def compose_dashboard(config: AppConfig) -> ComposeResult:
                         mnemonic_text("P", "ause"), id="dashboard-pause", compact=True
                     )
                     yield Button(
-                        mnemonic_text("R", "refresh"), id="dashboard-now", compact=True
+                        mnemonic_text("R", "efresh"), id="dashboard-now", compact=True
                     )
                 yield Static("Waiting for first refresh.", id="metrics")
 
