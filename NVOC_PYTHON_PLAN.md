@@ -7,8 +7,9 @@ with PyO3 and maturin. The package exposes a native extension module at `pynvoc.
 Python package wrapper at `pynvoc`.
 
 The first implementation focuses on direct `nvoc-core` access for GPU discovery, read-only queries,
-and simple set/reset operations. Auto-optimizer workflows, streamed CLI logs, stress-test
-orchestration, VFP CSV import/export, `fix_result`, and pointwise OC remain CLI-backed for now.
+simple set/reset operations, and static VFP curve import/export support. Auto-optimizer workflows,
+streamed CLI logs, stress-test orchestration, and `fix_result` remain outside the native UI path for
+now.
 
 ## Implemented Package Shape
 
@@ -32,6 +33,7 @@ The exported bindings are:
   - `query_settings`
   - `query_supported_applications_clocks`
   - `query_clock_offset`
+  - `query_domain_vfp_points`
   - `query_vfp_point_voltage`
   - `query_legacy_p0_core_max_voltage_delta`
   - `query_tdp_temp_limits`
@@ -104,13 +106,10 @@ hardware, and GPU smoke tests that should skip when no supported GPU is availabl
 
 ## Remaining Work
 
-- Add native adapter modules in the GUI and TUI that import `pynvoc` and fall back to the existing
-  CLI path when unavailable.
-- Route GPU discovery and read-only query flows through `pynvoc` first.
-- Move simple direct set/reset UI actions to `pynvoc` where they map cleanly to `nvoc-core`.
-- Keep auto-optimizer and long-running streamed workflows on the CLI until they have a native API
-  designed for progress reporting and cancellation.
-- Add GUI/TUI adapter tests for native success paths and CLI fallback paths.
+- Add a native adapter module in the GUI that imports `pynvoc`.
+- Keep auto-optimizer and long-running streamed workflows out of the native UI until they have a
+  native API designed for progress reporting and cancellation.
+- Add GUI adapter tests for native success paths.
 - On NVIDIA hardware, smoke-test discovery, info/status/settings queries, and one supervised
   read/write operation per backend.
 

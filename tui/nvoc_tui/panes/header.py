@@ -6,7 +6,6 @@ from textual.containers import Horizontal, Vertical
 from textual.widgets import Button, Header, Label, Select, Static
 
 from ..models import AppConfig
-from ..widgets import ShortcutInput
 
 
 def compose_header(config: AppConfig) -> ComposeResult:
@@ -24,14 +23,4 @@ def compose_header(config: AppConfig) -> ComposeResult:
             with Horizontal(id="gpu-actions"):
                 yield Button("Detect", id="detect-gpus", compact=True)
                 yield Button("Refresh All", id="refresh-all", compact=True)
-        with Horizontal(classes="toprow"):
-            yield Label("CLI: ")
-            yield ShortcutInput(
-                value=config.cli.exe_path,
-                placeholder="CLI path",
-                id="cli-path",
-                classes="grow",
-                compact=True,
-            )
-            yield Button("Save CLI", id="save-cli", compact=True)
     yield Static(classes="hsplit")

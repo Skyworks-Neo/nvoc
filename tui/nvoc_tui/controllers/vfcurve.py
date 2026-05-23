@@ -11,6 +11,8 @@ from ..parsing import (
     compute_vf_plot_bounds,
     find_curve_point_for_voltage,
     load_vf_curve,
+    load_vf_curve_deltas,
+    write_vf_curve_points,
 )
 from ..widgets import mnemonic_text
 from .base import PaneController
@@ -42,7 +44,7 @@ class VFCurveController(PaneController):
             pass
         if (
             enabled
-            and not self.app.cli_service.action_state.running
+            and not self.app.native_service.action_state.running
             and not self.refresh_inflight
         ):
             self.refresh_curve()
@@ -59,15 +61,10 @@ class VFCurveController(PaneController):
         if target_id == "vf-freq-api":
             self.app.query_one("#vf-freq-api", Select).focus()
             return True
-        if target_id == "vf-quick-export":
-            checkbox = self.app.query_one("#vf-quick-export", Checkbox)
-            checkbox.value = not checkbox.value
-            self.sync_from_ui()
-            return True
         return self.handle_button(target_id)
 
     def tick(self) -> None:
-        if self.app.cli_service.action_state.running or self.refresh_inflight:
+        if self.app.native_service.action_state.running or self.refresh_inflight:
             return
         self.refresh_curve()
 
@@ -84,23 +81,27 @@ class VFCurveController(PaneController):
         self.app.config_data.vfcurve.default_path = self.app.query_one(
             "#vf-path", Input
         ).value.strip()
-        self.app.config_data.vfcurve.quick_export = self.app.query_one(
-            "#vf-quick-export", Checkbox
-        ).value
         self.app.save_config()
 
     def refresh_curve(self) -> None:
         if self.refresh_inflight:
             return
         cache_path = self.cache_path()
+        gpu = self.app.selected_gpu_target()
+        if gpu is None:
+            self.clear_plot("No GPU selected.")
+            return
         self.refresh_inflight = True
 
         def worker() -> None:
-            code, output, _ = self.app.cli_service.run_query(
-                self.app.config_data.cli,
-                self.app.gpu_args() + ["set", "vfp", "export", "-q", str(cache_path)],
-                "",
-            )
+            output = ""
+            code = 0
+            try:
+                points = self.app.native_service.query_domain_vfp_points(gpu)
+                write_vf_curve_points(str(cache_path), points)
+            except Exception as exc:
+                output = f"pynvoc VFP curve query failed: {exc}"
+                code = -1
             self.app.call_from_thread(
                 self.on_curve_loaded, output, str(cache_path), code
             )
@@ -218,24 +219,56 @@ class VFCurveController(PaneController):
         if button_id == "vf-export":
             self.sync_from_ui()
             path = self.app.query_one("#vf-path", Input).value.strip()
-            args = self.app.gpu_args() + ["set", "vfp", "export", path]
-            if self.app.query_one("#vf-quick-export", Checkbox).value:
-                args.append("-q")
-            self.app.run_cli_action(args)
+            if not path:
+                self.app.write_log("VFP export path is empty.")
+                return True
+            gpu = self.app.selected_gpu_target()
+
+            def export(native, gpu=gpu, path=path) -> str:
+                points = native.query_domain_vfp_points(gpu, "graphics", True)
+                write_vf_curve_points(path, points)
+                return f"Exported {len(points)} VFP point(s) to {path}."
+
+            self.app.run_native_action("export VFP curve", export)
             return True
         if button_id == "vf-import":
             self.sync_from_ui()
             path = self.app.query_one("#vf-path", Input).value.strip()
-            self.app.run_cli_action(
-                self.app.gpu_args() + ["set", "vfp", "import", path]
-            )
+            if not path:
+                self.app.write_log("VFP import path is empty.")
+                return True
+            gpu = self.app.selected_gpu_target()
+
+            def import_curve(native, gpu=gpu, path=path) -> str:
+                points = native.query_domain_vfp_points(gpu, "graphics", True)
+                deltas = load_vf_curve_deltas(path, points)
+                native.set_domain_vfp_deltas(gpu, "graphics", deltas)
+                return f"Imported {len(deltas)} VFP point delta(s) from {path}."
+
+            self.app.run_native_action("import VFP curve", import_curve)
             return True
         if button_id == "vf-reset":
-            self.app.run_cli_action(self.app.gpu_args() + ["reset", "vfp"])
+            gpu = self.app.selected_gpu_target()
+
+            def reset_vfp(native, gpu=gpu) -> str:
+                native.reset_vfp_deltas(gpu, "all")
+                return "Successfully reset VFP deltas."
+
+            self.app.run_native_action(
+                "reset VFP deltas",
+                reset_vfp,
+            )
             return True
         if button_id == "vf-unlock":
-            self.app.run_cli_action(
-                self.app.gpu_args() + ["set", "nvapi", "--reset-volt-locks"]
+            gpu = self.app.selected_gpu_target()
+
+            def reset_vfp_lock(native, gpu=gpu) -> str:
+                native.reset_vfp_lock(gpu)
+                return "Successfully reset VFP lock."
+
+            self.app.run_native_action(
+                "reset VFP lock",
+                reset_vfp_lock,
             )
             return True
         if button_id == "vf-apply-adj":
@@ -244,55 +277,130 @@ class VFCurveController(PaneController):
             delta = self.get_int("#vf-delta")
             if start > end:
                 start, end = end, start
-            self.app.run_cli_action(
-                self.app.gpu_args()
-                + ["set", "vfp", "pointwiseoc", f"{start}-{end}", f"{delta * 1000:+d}"]
+            gpu = self.app.selected_gpu_target()
+
+            def apply_vfp_delta(
+                native, gpu=gpu, start=start, end=end, delta=delta
+            ) -> str:
+                native.set_vfp_range_delta(gpu, start, end, delta * 1000)
+                return f"Successfully applied {delta} MHz VFP delta to points {start}-{end}."
+
+            self.app.run_native_action(
+                "apply VFP range delta",
+                apply_vfp_delta,
             )
             return True
         if button_id == "vf-lock-voltage":
             value = self.app.query_one("#vf-lock-value", Input).value.strip()
             if self.app.query_one("#vf-lock-as-mv", Checkbox).value:
-                value = f"{value}mV"
-            self.app.run_cli_action(
-                self.app.gpu_args() + ["set", "nvapi", "--locked-voltage", value]
+                try:
+                    voltage_uv = int(float(value) * 1000)
+                except (OverflowError, ValueError):
+                    self.app.write_log(
+                        "Invalid VFP lock voltage: enter a numeric mV value."
+                    )
+                    return True
+                point = None
+            else:
+                voltage_uv = None
+                try:
+                    point = int(value)
+                except ValueError:
+                    self.app.write_log(
+                        "Invalid VFP lock point: enter a numeric point index."
+                    )
+                    return True
+            gpu = self.app.selected_gpu_target()
+
+            def lock_vfp_voltage(
+                native, gpu=gpu, point=point, voltage_uv=voltage_uv
+            ) -> str:
+                native.set_vfp_voltage_lock(gpu, point, voltage_uv, False)
+                if voltage_uv is not None:
+                    return (
+                        f"Successfully locked VFP voltage to {voltage_uv / 1000:g} mV."
+                    )
+                return f"Successfully locked VFP voltage to point {point}."
+
+            self.app.run_native_action(
+                "lock VFP voltage",
+                lock_vfp_voltage,
             )
             return True
         if button_id == "vf-lock-core":
             backend = str(self.app.query_one("#vf-freq-api", Select).value or "nvml")
-            self.app.run_cli_action(
-                self.app.gpu_args()
-                + [
-                    "set",
-                    backend,
-                    "--locked-core-clocks",
-                    str(self.get_int("#vf-core-min")),
-                    str(self.get_int("#vf-core-max")),
-                ]
+            gpu = self.app.selected_gpu_target()
+            min_mhz = self.get_int("#vf-core-min")
+            max_mhz = self.get_int("#vf-core-max")
+
+            def lock_core(
+                native, gpu=gpu, backend=backend, min_mhz=min_mhz, max_mhz=max_mhz
+            ) -> str:
+                if backend == "nvapi":
+                    native.set_vfp_frequency_lock(
+                        gpu, "core", max_mhz * 1000, min_mhz * 1000
+                    )
+                else:
+                    native.set_locked_clocks(gpu, backend, "core", min_mhz, max_mhz)
+                return f"Successfully locked core clocks to {min_mhz}-{max_mhz} MHz."
+
+            self.app.run_native_action(
+                "lock core clocks",
+                lock_core,
             )
             return True
         if button_id == "vf-reset-core":
             backend = str(self.app.query_one("#vf-freq-api", Select).value or "nvml")
-            self.app.run_cli_action(
-                self.app.gpu_args() + ["set", backend, "--reset-core-clocks"]
+            gpu = self.app.selected_gpu_target()
+
+            def reset_core(native, gpu=gpu, backend=backend) -> str:
+                if backend == "nvapi":
+                    native.reset_vfp_frequency_lock(gpu, "core")
+                else:
+                    native.reset_core_clocks(gpu, backend)
+                return "Successfully reset core clocks."
+
+            self.app.run_native_action(
+                "reset core clocks",
+                reset_core,
             )
             return True
         if button_id == "vf-lock-mem":
             backend = str(self.app.query_one("#vf-freq-api", Select).value or "nvml")
-            self.app.run_cli_action(
-                self.app.gpu_args()
-                + [
-                    "set",
-                    backend,
-                    "--locked-mem-clocks",
-                    str(self.get_int("#vf-mem-min")),
-                    str(self.get_int("#vf-mem-max")),
-                ]
+            gpu = self.app.selected_gpu_target()
+            min_mhz = self.get_int("#vf-mem-min")
+            max_mhz = self.get_int("#vf-mem-max")
+
+            def lock_mem(
+                native, gpu=gpu, backend=backend, min_mhz=min_mhz, max_mhz=max_mhz
+            ) -> str:
+                if backend == "nvapi":
+                    native.set_vfp_frequency_lock(
+                        gpu, "memory", max_mhz * 1000, min_mhz * 1000
+                    )
+                else:
+                    native.set_locked_clocks(gpu, backend, "memory", min_mhz, max_mhz)
+                return f"Successfully locked memory clocks to {min_mhz}-{max_mhz} MHz."
+
+            self.app.run_native_action(
+                "lock memory clocks",
+                lock_mem,
             )
             return True
         if button_id == "vf-reset-mem":
             backend = str(self.app.query_one("#vf-freq-api", Select).value or "nvml")
-            self.app.run_cli_action(
-                self.app.gpu_args() + ["set", backend, "--reset-mem-clocks"]
+            gpu = self.app.selected_gpu_target()
+
+            def reset_mem(native, gpu=gpu, backend=backend) -> str:
+                if backend == "nvapi":
+                    native.reset_vfp_frequency_lock(gpu, "memory")
+                else:
+                    native.reset_mem_clocks(gpu, backend)
+                return "Successfully reset memory clocks."
+
+            self.app.run_native_action(
+                "reset memory clocks",
+                reset_mem,
             )
             return True
         return False

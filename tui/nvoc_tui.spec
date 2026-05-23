@@ -6,7 +6,7 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 block_cipher = None
 root = Path(SPECPATH).resolve()
 
-packages = ("textual", "textual_plotext", "plotext")
+packages = ("textual", "textual_plotext", "plotext", "pynvoc")
 hiddenimports = []
 datas = []
 for package in packages:

@@ -29,12 +29,6 @@ def compose_vfcurve(config: AppConfig, auto_refresh_label: Text) -> ComposeResul
                                 compact=True,
                             )
                         with Grid(id="vf-import-export-actions"):
-                            yield Checkbox(
-                                mnemonic_text("Q", "uick export"),
-                                value=config.vfcurve.quick_export,
-                                id="vf-quick-export",
-                                compact=True,
-                            )
                             yield Button(
                                 mnemonic_text("R", "eset VFP"),
                                 id="vf-reset",

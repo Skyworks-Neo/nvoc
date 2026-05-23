@@ -23,17 +23,11 @@ class DashboardController(PaneController):
         self.poll_timer = self.app.set_interval(interval, self.tick, pause=False)
 
     def tick(self) -> None:
-        if self.app.cli_service.action_state.running:
+        if self.app.native_service.action_state.running:
             return
-        self.app.run_query(
-            "status",
-            self.app.gpu_args() + ["-O", "json", "status", "-a"],
-            self.on_status_loaded,
-        )
+        self.app.run_query("status", self.on_status_loaded, log_output=False)
 
     def on_info_loaded(self, code: int, output: str, parsed: dict) -> None:
-        if code != 0 and output:
-            self.app.write_log(output)
         if code != 0 and not parsed:
             return
         self.app.cache.info = parsed
@@ -41,8 +35,6 @@ class DashboardController(PaneController):
         self.app.overclock_controller.prime_inputs()
 
     def on_status_loaded(self, code: int, output: str, parsed: dict) -> None:
-        if code != 0 and output:
-            self.app.write_log(output)
         if code != 0 and not parsed:
             return
         self.app.cache.status = parsed
@@ -52,7 +44,6 @@ class DashboardController(PaneController):
 
     def on_get_loaded(self, code: int, output: str, parsed: dict) -> None:
         if code != 0:
-            self.app.write_log(output)
             return
         self.app.cache.settings = parsed
         self.app.overclock_controller.prime_inputs()
@@ -111,12 +102,12 @@ class DashboardController(PaneController):
             self.tick()
             return True
         if button_id == "dashboard-info":
-            self.app.run_cli_action(self.app.gpu_args() + ["info"])
+            self.app.run_query("info", self.on_info_loaded)
             return True
         if button_id == "dashboard-status":
-            self.app.run_cli_action(self.app.gpu_args() + ["status", "-a"])
+            self.app.run_query("status", self.on_status_loaded)
             return True
         if button_id == "dashboard-get":
-            self.app.run_cli_action(self.app.gpu_args() + ["get"])
+            self.app.run_query("get", self.on_get_loaded)
             return True
         return False

@@ -13,13 +13,13 @@
     grid-gutter: 0 1;
     height: auto;
     align-horizontal: center;
-    grid-size: 2 2;
-    grid-columns: 1fr 1fr;
+    grid-size: 3 1;
+    grid-columns: 1fr 1fr 1fr;
 }
 
 .wide #vf-import-export-actions {
-    grid-size: 4 1;
-    grid-columns: 1fr 1fr 1fr 1fr;
+    grid-size: 3 1;
+    grid-columns: 1fr 1fr 1fr;
 }
 
 #vf-range-actions {

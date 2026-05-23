@@ -306,6 +306,57 @@ def load_vf_curve(path: str) -> tuple[list[float], list[float], list[float]]:
     return voltages, freqs, defaults
 
 
+def write_vf_curve_points(path: str, points: list[dict[str, Any]]) -> None:
+    rows = ["voltage,frequency,delta,default_frequency"]
+    for point in points:
+        rows.append(
+            "{},{},{},{}".format(
+                int(point.get("voltage_uv", 0)),
+                int(point.get("frequency_khz", 0)),
+                int(point.get("delta_khz", 0)),
+                int(point.get("default_frequency_khz", 0)),
+            )
+        )
+    Path(path).write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+
+def load_vf_curve_deltas(
+    path: str, current_points: list[dict[str, Any]]
+) -> list[tuple[int, int]]:
+    csv_path = Path(path)
+    if not csv_path.is_file():
+        raise FileNotFoundError(path)
+
+    indices_by_voltage: dict[int, int] = {}
+    for point in current_points:
+        if "voltage_uv" not in point or "index" not in point:
+            continue
+        try:
+            indices_by_voltage[int(point["voltage_uv"])] = int(point["index"])
+        except (TypeError, ValueError):
+            continue
+
+    deltas: list[tuple[int, int]] = []
+    for raw in csv_path.read_text(encoding="utf-8-sig").splitlines():
+        row = [piece.strip() for piece in raw.split(",")]
+        if (
+            not row
+            or row[0].startswith("#")
+            or row[0].lower() in {"voltage", "voltage_uv"}
+        ):
+            continue
+        if len(row) < 3:
+            continue
+        try:
+            voltage = int(row[0])
+            delta = int(row[2])
+        except ValueError:
+            continue
+        if voltage in indices_by_voltage:
+            deltas.append((indices_by_voltage[voltage], delta))
+    return deltas
+
+
 def find_curve_point_for_voltage(
     voltages: list[float],
     freqs: list[float],

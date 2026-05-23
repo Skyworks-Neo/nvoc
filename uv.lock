@@ -1293,6 +1293,7 @@ version = "0.1.0"
 source = { editable = "tui" }
 dependencies = [
     { name = "plotext" },
+    { name = "pynvoc" },
     { name = "textual" },
     { name = "textual-plotext" },
 ]
@@ -1310,6 +1311,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "plotext", specifier = ">=5.3.2" },
+    { name = "pynvoc", editable = "nvoc-python" },
     { name = "textual", specifier = ">=6.1.0" },
     { name = "textual-plotext", specifier = ">=1.0.1" },
 ]
