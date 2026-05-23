@@ -543,8 +543,14 @@ pub fn handle_pointwiseoc(gpus: &[GpuTarget<'_>], matches: &ArgMatches) -> Resul
         )));
     }
     println!(
-        "pointwiseoc: applying delta {} kHz to VFP points {}..={} (inclusive)",
-        delta, start, end
+        "{}",
+        stylize(
+            &format!(
+                "pointwiseoc: applying delta {} kHz to VFP points {}..={} (inclusive)",
+                delta, start, end
+            ),
+            false
+        )
     );
     for gpu in gpus {
         for point in start..=end {

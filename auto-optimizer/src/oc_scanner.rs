@@ -832,6 +832,7 @@ fn pre_load_vf_recheck(gpu: &GpuTarget<'_>, point: usize) -> bool {
         };
 
     if checks.iter().all(|check| check.precise) {
+        println!("[SCANNER] Pre-load V/F check passed at point {}", point);
         return true; // 检查通过
     }
 

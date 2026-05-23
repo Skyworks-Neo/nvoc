@@ -52,7 +52,7 @@ impl VulkanGraphicsEngine {
             if let Err(e) = run_vulkan_stress_loop(is_running, selection) {
                 eprintln!(
                     "{}",
-                    stylize(&format!("[VulkanGfx] Thread crashed: {:?}", e), true)
+                    stylize(&format!("[VKGFX] Thread crashed: {:?}", e), true)
                 );
                 has_error.store(true, Ordering::SeqCst);
             }
@@ -344,7 +344,7 @@ fn run_vulkan_stress_loop(
                     "{}",
                     stylize(
                         &format!(
-                            "[Vulkan GFX] {:>6.1}s | {:>5.1} submits/s (randomized interval) | Active DWM preemption stress | Pipeline Flushes: {}",
+                            "[VKGFX] {:>6.1}s | {:>5.1} submits/s | Pipeline Flushes: {}",
                             elapsed_s, submits_per_s, pipeline_flushes
                         ),
                         false
@@ -409,7 +409,7 @@ pub fn select_gpu_by_cuda_identity(
         "{}",
         stylize(
             &format!(
-                "[VulkanGfx] Target CUDA UUID: {}{}",
+                "[VKGFX] Target CUDA UUID: {}{}",
                 target_uuid_hex,
                 if let Some(pci) = &target_pci_hex {
                     format!(" | target PCI: {pci}")
@@ -431,7 +431,7 @@ pub fn select_gpu_by_cuda_identity(
                 println!(
                     "{}",
                     stylize(
-                        &format!("[VulkanGfx] Failed to query device identity: {err}"),
+                        &format!("[VKGFX] Failed to query device identity: {err}"),
                         false
                     )
                 );
@@ -443,7 +443,7 @@ pub fn select_gpu_by_cuda_identity(
             "{}",
             stylize(
                 &format!(
-                    "[VulkanGfx] Checking device: {} | uuid={} | pci={}",
+                    "[VKGFX] Checking device: {} | uuid={} | pci={}",
                     device_name,
                     device_uuid_hex,
                     device_pci
@@ -459,7 +459,7 @@ pub fn select_gpu_by_cuda_identity(
             println!(
                 "{}",
                 stylize(
-                    &format!("[VulkanGfx] Selected Vulkan device by UUID match: {device_name}"),
+                    &format!("[VKGFX] Selected Vulkan device by UUID match: {device_name}"),
                     false
                 )
             );
