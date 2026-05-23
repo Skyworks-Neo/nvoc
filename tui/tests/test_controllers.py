@@ -54,6 +54,7 @@ class FakeApp:
 class FakeNative:
     def __init__(self) -> None:
         self.calls: list[tuple] = []
+        self.raise_on_set_clock: Exception | None = None
 
     def query_domain_vfp_points(self, gpu, domain, infer_missing_default):
         self.calls.append(
@@ -80,6 +81,17 @@ class FakeNative:
 
     def set_fan(self, gpu, backend, fan_id, policy, level):
         self.calls.append(("set_fan", gpu, backend, fan_id, policy, level))
+
+    def set_clock_offset(self, gpu, backend, domain, offset, pstate):
+        self.calls.append(("set_clock_offset", gpu, backend, domain, offset, pstate))
+        if self.raise_on_set_clock is not None:
+            raise self.raise_on_set_clock
+
+    def set_nvml_pstate_lock(self, gpu, pstart, pend):
+        self.calls.append(("set_nvml_pstate_lock", gpu, pstart, pend))
+
+    def set_nvapi_pstate_lock(self, gpu, pstart, pend):
+        self.calls.append(("set_nvapi_pstate_lock", gpu, pstart, pend))
 
     def set_vfp_voltage_lock(self, gpu, point, voltage_uv, immediate):
         self.calls.append(("set_vfp_voltage_lock", gpu, point, voltage_uv, immediate))
@@ -125,6 +137,44 @@ def test_overclock_apply_limits_for_nvapi_calls_native_apis() -> None:
         ("set_thermal_limit", "0x0000", 88),
         ("set_voltage_boost", "0x0000", 25),
     ]
+
+
+def test_overclock_apply_rejects_unknown_start_pstate_with_available_list() -> None:
+    app = FakeApp()
+    app.cache.settings["supported_pstates"] = ["P0", "P2"]
+    app.widgets = {
+        "#oc-api": SimpleNamespace(value="nvapi"),
+        "#core-offset": SimpleNamespace(value="100"),
+        "#mem-offset": SimpleNamespace(value="200"),
+        "#pstate-start": SimpleNamespace(value="P5"),
+        "#pstate-end": SimpleNamespace(value="P2"),
+    }
+
+    assert OverclockController(app).handle_button("oc-apply") is True
+
+    assert app.actions == []
+    assert app.native.calls == []
+    assert app.logs == ["Unknown pstate P5. Available pstates: P0, P2."]
+
+
+def test_overclock_apply_enriches_native_unknown_pstate_with_available_list() -> None:
+    app = FakeApp()
+    app.cache.settings["supported_pstates"] = ["P0", "P2"]
+    app.native.raise_on_set_clock = RuntimeError("unknown pstate")
+    app.widgets = {
+        "#oc-api": SimpleNamespace(value="nvapi"),
+        "#core-offset": SimpleNamespace(value="100"),
+        "#mem-offset": SimpleNamespace(value="200"),
+        "#pstate-start": SimpleNamespace(value="P0"),
+        "#pstate-end": SimpleNamespace(value=""),
+    }
+
+    try:
+        OverclockController(app).handle_button("oc-apply")
+    except RuntimeError as exc:
+        assert str(exc) == "unknown pstate. Available pstates: P0, P2."
+    else:
+        raise AssertionError("expected RuntimeError")
 
 
 def test_overclock_fan_reset_preserves_target() -> None:

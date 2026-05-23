@@ -6,6 +6,56 @@ from .base import PaneController
 
 
 class OverclockController(PaneController):
+    def available_pstates(self) -> list[str]:
+        pstates = self.app.cache.settings.get("supported_pstates", [])
+        if not isinstance(pstates, list):
+            return []
+        normalized: list[str] = []
+        for pstate in pstates:
+            value = self.normalize_pstate(str(pstate))
+            if value and value not in normalized:
+                normalized.append(value)
+        return normalized
+
+    def normalize_pstate(self, value: str) -> str:
+        stripped = value.strip().upper()
+        if stripped.isdigit():
+            return f"P{int(stripped)}"
+        if len(stripped) > 1 and stripped.startswith("P") and stripped[1:].isdigit():
+            return f"P{int(stripped[1:])}"
+        return stripped
+
+    def pstate_error(self, pstate: str) -> str:
+        available = self.available_pstates()
+        if available:
+            return (
+                f"Unknown pstate {pstate}. Available pstates: {', '.join(available)}."
+            )
+        return (
+            f"Unknown pstate {pstate}. Available pstates are not loaded; run Get first."
+        )
+
+    def validate_pstates(self, *pstates: str) -> str | None:
+        available = self.available_pstates()
+        if not available:
+            return None
+        available_set = set(available)
+        for pstate in pstates:
+            if pstate and pstate not in available_set:
+                return self.pstate_error(pstate)
+        return None
+
+    def enrich_pstate_exception(self, exc: Exception) -> Exception:
+        message = str(exc)
+        if "unknown pstate" not in message.lower():
+            return exc
+        available = self.available_pstates()
+        if available:
+            return RuntimeError(
+                f"{message}. Available pstates: {', '.join(available)}."
+            )
+        return exc
+
     def activate_shortcut(self, target_id: str) -> bool:
         try:
             self.app.query_one(f"#{target_id}").focus()
@@ -52,13 +102,16 @@ class OverclockController(PaneController):
         pstart: str,
         pend: str,
     ) -> str:
-        native.set_clock_offset(gpu, backend, "core", core_offset, pstart)
-        native.set_clock_offset(gpu, backend, "memory", mem_offset, pstart)
-        if pend:
-            if backend == "nvml":
-                native.set_nvml_pstate_lock(gpu, pstart, pend)
-            else:
-                native.set_nvapi_pstate_lock(gpu, pstart, pend)
+        try:
+            native.set_clock_offset(gpu, backend, "core", core_offset, pstart)
+            native.set_clock_offset(gpu, backend, "memory", mem_offset, pstart)
+            if pend:
+                if backend == "nvml":
+                    native.set_nvml_pstate_lock(gpu, pstart, pend)
+                else:
+                    native.set_nvapi_pstate_lock(gpu, pstart, pend)
+        except Exception as exc:
+            raise self.enrich_pstate_exception(exc) from exc
         return f"Successfully applied {backend} overclock."
 
     def apply_limits(
@@ -99,8 +152,16 @@ class OverclockController(PaneController):
             backend = str(self.app.query_one("#oc-api", Select).value or "nvapi")
             core_offset = self.get_int("#core-offset")
             mem_offset = self.get_int("#mem-offset")
-            pstart = self.app.query_one("#pstate-start", Input).value.strip() or "P0"
-            pend = self.app.query_one("#pstate-end", Input).value.strip()
+            pstart = (
+                self.normalize_pstate(self.app.query_one("#pstate-start", Input).value)
+                or "P0"
+            )
+            pend = self.normalize_pstate(self.app.query_one("#pstate-end", Input).value)
+
+            pstate_error = self.validate_pstates(pstart, pend)
+            if pstate_error:
+                self.app.write_log(pstate_error)
+                return True
 
             def apply_oc(
                 native,
