@@ -72,11 +72,11 @@ impl VulkanGraphicsEngine {
 
     pub fn stop(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         self.is_running.store(false, Ordering::SeqCst);
-        if let Some(handle) = self.thread_handle.take() {
-            if handle.join().is_err() {
-                self.has_error.store(true, Ordering::SeqCst);
-                return Err(std::io::Error::other("Vulkan stress thread panicked").into());
-            }
+        if let Some(handle) = self.thread_handle.take()
+            && handle.join().is_err()
+        {
+            self.has_error.store(true, Ordering::SeqCst);
+            return Err(std::io::Error::other("Vulkan stress thread panicked").into());
         }
         Ok(())
     }
@@ -88,9 +88,8 @@ fn run_vulkan_stress_loop(
 ) -> Result<(), Box<dyn std::error::Error>> {
     unsafe {
         let entry = ash::Entry::load()?;
-        let app_name = CStr::from_bytes_with_nul_unchecked(b"HeadlessStressor\0");
         let app_info = vk::ApplicationInfo::default()
-            .application_name(app_name)
+            .application_name(c"HeadlessStressor")
             .api_version(vk::API_VERSION_1_2);
 
         let instance_create_info = vk::InstanceCreateInfo::default().application_info(&app_info);
@@ -103,10 +102,7 @@ fn run_vulkan_stress_loop(
                 select_gpu_by_cuda_uuid(&instance, selection.cuda_uuid)
             };
             selection_result.map_err(|err| {
-                std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("Vulkan GPU selection failed: {err}"),
-                )
+                std::io::Error::other(format!("Vulkan GPU selection failed: {err}"))
             })?
         } else {
             let pdevices = instance.enumerate_physical_devices()?;
@@ -120,7 +116,8 @@ fn run_vulkan_stress_loop(
         let graphics_queue_index = queue_family_properties
             .iter()
             .position(|info| info.queue_flags.contains(vk::QueueFlags::GRAPHICS))
-            .expect("No Graphics queue family found") as u32;
+            .ok_or("No Vulkan graphics queue family found")?
+            as u32;
 
         let queue_priorities = [1.0];
         let queue_create_infos = [vk::DeviceQueueCreateInfo::default()
@@ -179,18 +176,14 @@ fn run_vulkan_stress_loop(
             let img = device.create_image(&image_create_info, None)?;
             let mem_req = device.get_image_memory_requirements(img);
 
-            let mut mem_type_idx = 0;
-            for i in 0..mem_properties.memory_type_count {
-                if (mem_req.memory_type_bits & (1 << i)) != 0 {
-                    if mem_properties.memory_types[i as usize]
-                        .property_flags
-                        .contains(vk::MemoryPropertyFlags::DEVICE_LOCAL)
-                    {
-                        mem_type_idx = i;
-                        break;
-                    }
-                }
-            }
+            let mem_type_idx = (0..mem_properties.memory_type_count)
+                .find(|&i| {
+                    (mem_req.memory_type_bits & (1 << i)) != 0
+                        && mem_properties.memory_types[i as usize]
+                            .property_flags
+                            .contains(vk::MemoryPropertyFlags::DEVICE_LOCAL)
+                })
+                .ok_or("No compatible DEVICE_LOCAL Vulkan memory type found")?;
 
             let alloc_info = vk::MemoryAllocateInfo::default()
                 .allocation_size(mem_req.size)
@@ -472,14 +465,12 @@ pub fn select_gpu_by_cuda_identity(
             return Ok(pdevice);
         }
 
-        if pci_fallback_candidate.is_none() {
-            if let (Some(target_pci), Some(device_pci)) =
+        if pci_fallback_candidate.is_none()
+            && let (Some(target_pci), Some(device_pci)) =
                 (target_cuda_pci.as_ref(), device_pci.as_ref())
-            {
-                if target_pci == device_pci {
-                    pci_fallback_candidate = Some(pdevice);
-                }
-            }
+            && target_pci == device_pci
+        {
+            pci_fallback_candidate = Some(pdevice);
         }
     }
 

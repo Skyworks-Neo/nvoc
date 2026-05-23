@@ -623,24 +623,33 @@ pub fn validate_precision<B: Backend>(
     Ok((passed, max_abs, max_rel, reason))
 }
 
+fn choose_weighted<'a, T, F>(items: &'a [T], rng: &mut StdRng, weight_of: F) -> Option<&'a T>
+where
+    F: Fn(&T) -> f64,
+{
+    if items.is_empty() {
+        return None;
+    }
+    let total_weight: f64 = items.iter().map(|item| weight_of(item).max(0.0)).sum();
+    if total_weight <= 0.0 {
+        return items.first();
+    }
+    let mut pick = rng.random::<f64>() * total_weight;
+    for item in items {
+        let weight = weight_of(item).max(0.0);
+        if pick <= weight {
+            return Some(item);
+        }
+        pick -= weight;
+    }
+    items.last()
+}
+
 fn choose_kernel_type(mixture: &[KernelMixtureEntry], rng: &mut StdRng) -> KernelType {
     if mixture.is_empty() {
         return KernelType::Gemm;
     }
-    let total_weight: f64 = mixture.iter().map(|entry| entry.weight.max(0.0)).sum();
-    if total_weight <= 0.0 {
-        return mixture[0].kind;
-    }
-    let mut pick = rng.random::<f64>() * total_weight;
-    for entry in mixture {
-        let weight = entry.weight.max(0.0);
-        if pick <= weight {
-            return entry.kind;
-        }
-        pick -= weight;
-    }
-    mixture
-        .last()
+    choose_weighted(mixture, rng, |entry| entry.weight)
         .map(|entry| entry.kind)
         .unwrap_or(KernelType::Gemm)
 }
@@ -762,22 +771,7 @@ fn choose_precision_from_mixture(
     mixture: &[PrecisionMixtureEntry],
     rng: &mut StdRng,
 ) -> Option<PrecisionSpec> {
-    if mixture.is_empty() {
-        return None;
-    }
-    let total_weight: f64 = mixture.iter().map(|entry| entry.weight.max(0.0)).sum();
-    if total_weight <= 0.0 {
-        return Some(mixture[0].spec);
-    }
-    let mut pick = rng.random::<f64>() * total_weight;
-    for entry in mixture {
-        let weight = entry.weight.max(0.0);
-        if pick <= weight {
-            return Some(entry.spec);
-        }
-        pick -= weight;
-    }
-    mixture.last().map(|entry| entry.spec)
+    choose_weighted(mixture, rng, |entry| entry.weight).map(|entry| entry.spec)
 }
 
 pub fn run_stress_for_precision<B: Backend>(

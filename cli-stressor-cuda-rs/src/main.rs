@@ -304,10 +304,13 @@ fn precision_mixture_from_map(
                 "{context} precision_mixture must be finite and >= 0: {weight}"
             ));
         }
-        let spec = parse_precision_list(name)?
-            .first()
-            .copied()
-            .ok_or_else(|| format!("{context} invalid precision: {name}"))?;
+        let specs = parse_precision_list(name)?;
+        if specs.len() != 1 {
+            return Err(format!(
+                "{context} expected a single precision, got: {name}"
+            ));
+        }
+        let spec = specs[0];
         entries.push(PrecisionMixtureEntry {
             spec,
             weight: *weight,
@@ -317,65 +320,28 @@ fn precision_mixture_from_map(
 }
 
 #[cfg(feature = "cuda")]
-fn precision_mixture_cli_from_weights(
-    precisions: &[String],
-    weights: &[f64],
-    context: &str,
-) -> Result<String, String> {
-    if precisions.is_empty() {
-        return Err(format!("{context} precisions cannot be empty"));
-    }
-    if precisions.len() != weights.len() {
-        return Err(format!(
-            "{context} precision_weight length ({}) must match precisions ({})",
-            weights.len(),
-            precisions.len()
-        ));
-    }
-    let mut parts = Vec::with_capacity(precisions.len());
-    for (name, weight) in precisions.iter().zip(weights.iter()) {
-        if !weight.is_finite() || *weight < 0.0 {
-            return Err(format!(
-                "{context} precision_weight must be finite and >= 0: {weight}"
-            ));
-        }
-        parts.push(format!("{name}:{weight}"));
-    }
-    Ok(parts.join("|"))
-}
-
-#[cfg(feature = "cuda")]
-fn precision_mixture_cli_from_map(
-    map: &HashMap<String, f64>,
-    context: &str,
-) -> Result<String, String> {
-    if map.is_empty() {
-        return Err(format!("{context} precision_mixture cannot be empty"));
-    }
-    let mut parts = Vec::with_capacity(map.len());
-    for (name, weight) in map {
-        if !weight.is_finite() || *weight < 0.0 {
-            return Err(format!(
-                "{context} precision_mixture must be finite and >= 0: {weight}"
-            ));
-        }
-        parts.push(format!("{name}:{weight}"));
-    }
-    Ok(parts.join("|"))
-}
-
-#[cfg(feature = "cuda")]
-fn load_kernel_overrides_from_config(path: &str) -> Result<Vec<KernelParamOverride>, String> {
+fn load_file_config(path: &str) -> Result<FileConfig, String> {
     let raw = fs::read_to_string(path).map_err(|e| format!("failed to read config: {e}"))?;
-    let parsed: FileConfig = toml::from_str(&raw).map_err(|e| format!("invalid TOML: {e}"))?;
+    toml::from_str(&raw).map_err(|e| format!("invalid TOML: {e}"))
+}
+
+#[cfg(feature = "cuda")]
+fn load_kernel_overrides_from_config(
+    parsed: &FileConfig,
+) -> Result<Vec<KernelParamOverride>, String> {
     let mut out = Vec::new();
-    if let Some(kernel_params) = parsed.kernel_params {
+    if let Some(kernel_params) = &parsed.kernel_params {
         for (name, item) in kernel_params {
-            let kind = parse_kernel_type(&name)?;
+            let kind = parse_kernel_type(name)?;
             if let Some(sizes) = &item.matrix_sizes
                 && sizes.is_empty()
             {
                 return Err(format!("kernel_params.{name}.matrix_sizes cannot be empty"));
+            }
+            if item.precision_mixture.is_some() && item.precision_weight.is_some() {
+                return Err(format!(
+                    "kernel_params.{name} cannot set both precision_mixture and precision_weight"
+                ));
             }
             let precisions = if let Some(list) = &item.precisions {
                 if list.is_empty() {
@@ -408,7 +374,7 @@ fn load_kernel_overrides_from_config(path: &str) -> Result<Vec<KernelParamOverri
                 kind,
                 precisions,
                 precision_mixture,
-                matrix_sizes: item.matrix_sizes,
+                matrix_sizes: item.matrix_sizes.clone(),
                 warmup_iters: item.warmup_iters,
                 burst_iters: item.burst_iters,
                 transpose_prob: item.transpose_prob,
@@ -497,190 +463,103 @@ fn parse_args_with_cli_sources() -> (Args, std::collections::HashSet<&'static st
 fn apply_file_config_to_args(
     args: &mut Args,
     cli_set: &std::collections::HashSet<&'static str>,
+    parsed: Option<&FileConfig>,
 ) -> Result<(), String> {
-    let Some(path) = &args.config else {
+    let Some(parsed) = parsed else {
         return Ok(());
     };
-    let raw = fs::read_to_string(path).map_err(|e| format!("failed to read config: {e}"))?;
-    let parsed: FileConfig = toml::from_str(&raw).map_err(|e| format!("invalid TOML: {e}"))?;
 
-    if !cli_set.contains("duration") {
-        if let Some(v) = parsed.duration {
-            args.duration = v;
-        }
+    if let (true, Some(v)) = (!cli_set.contains("duration"), parsed.duration) {
+        args.duration = v;
     }
-    if !cli_set.contains("matrix_sizes") {
-        if let Some(v) = parsed.matrix_sizes {
-            args.matrix_sizes = v
-                .iter()
-                .map(|x| x.to_string())
-                .collect::<Vec<_>>()
-                .join(",");
-        }
+    if let (true, Some(v)) = (!cli_set.contains("matrix_sizes"), &parsed.matrix_sizes) {
+        args.matrix_sizes = v
+            .iter()
+            .map(|x| x.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
     }
-    if !cli_set.contains("fp64_matrix_sizes") {
-        if let Some(v) = parsed.fp64_matrix_sizes {
-            args.fp64_matrix_sizes = v
-                .iter()
-                .map(|x| x.to_string())
-                .collect::<Vec<_>>()
-                .join(",");
-        }
+    if let (true, Some(v)) = (
+        !cli_set.contains("fp64_matrix_sizes"),
+        &parsed.fp64_matrix_sizes,
+    ) {
+        args.fp64_matrix_sizes = v
+            .iter()
+            .map(|x| x.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
     }
-    if !cli_set.contains("precisions") {
-        if let Some(v) = parsed.precisions {
-            args.precisions = v.join(",");
-        }
+    if let (true, Some(v)) = (!cli_set.contains("precisions"), &parsed.precisions) {
+        args.precisions = v.join(",");
     }
-    if !cli_set.contains("warmup_iters") {
-        if let Some(v) = parsed.warmup_iters {
-            args.warmup_iters = v;
-        }
+    if let (true, Some(v)) = (!cli_set.contains("warmup_iters"), parsed.warmup_iters) {
+        args.warmup_iters = v;
     }
-    if !cli_set.contains("burst_iters") {
-        if let Some(v) = parsed.burst_iters {
-            args.burst_iters = v;
-        }
+    if let (true, Some(v)) = (!cli_set.contains("burst_iters"), parsed.burst_iters) {
+        args.burst_iters = v;
     }
-    if !cli_set.contains("validate_interval") {
-        if let Some(v) = parsed.validate_interval {
-            args.validate_interval = v;
-        }
+    if let (true, Some(v)) = (
+        !cli_set.contains("validate_interval"),
+        parsed.validate_interval,
+    ) {
+        args.validate_interval = v;
     }
-    if !cli_set.contains("validate_size") {
-        if let Some(v) = parsed.validate_size {
-            args.validate_size = v;
-        }
+    if let (true, Some(v)) = (!cli_set.contains("validate_size"), parsed.validate_size) {
+        args.validate_size = v;
     }
-    if !cli_set.contains("transpose_prob") {
-        if let Some(v) = parsed.transpose_prob {
-            args.transpose_prob = v;
-        }
+    if let (true, Some(v)) = (!cli_set.contains("transpose_prob"), parsed.transpose_prob) {
+        args.transpose_prob = v;
     }
-    if !cli_set.contains("minor_mixture_rate") {
-        if let Some(v) = parsed.minor_mixture_rate {
-            args.minor_mixture_rate = v;
-        }
+    if let (true, Some(v)) = (
+        !cli_set.contains("minor_mixture_rate"),
+        parsed.minor_mixture_rate,
+    ) {
+        args.minor_mixture_rate = v;
     }
-    if !cli_set.contains("seed") {
-        if let Some(v) = parsed.seed {
-            args.seed = v;
-        }
+    if let (true, Some(v)) = (!cli_set.contains("seed"), parsed.seed) {
+        args.seed = v;
     }
-    if !cli_set.contains("kernel_types") {
-        if let Some(v) = parsed.kernel_types {
-            args.kernel_types = v.join(",");
-        }
+    if let (true, Some(v)) = (!cli_set.contains("kernel_types"), &parsed.kernel_types) {
+        args.kernel_types = v.join(",");
     }
-    if !cli_set.contains("kernel_mixture") {
-        if let Some(v) = parsed.kernel_mixture {
-            args.kernel_mixture = match v {
-                KernelMixtureConfig::Text(s) => s,
-                KernelMixtureConfig::Map(m) => {
-                    let mut parts = Vec::with_capacity(m.len());
-                    for (k, w) in m {
-                        parts.push(format!("{k}:{w}"));
-                    }
-                    parts.join(",")
+    if let (true, Some(v)) = (!cli_set.contains("kernel_mixture"), &parsed.kernel_mixture) {
+        args.kernel_mixture = match v {
+            KernelMixtureConfig::Text(s) => s.clone(),
+            KernelMixtureConfig::Map(m) => {
+                let mut parts = Vec::with_capacity(m.len());
+                for (k, w) in m {
+                    parts.push(format!("{k}:{w}"));
                 }
-            };
-        }
-    }
-    if !cli_set.contains("stream_mode") {
-        if let Some(v) = parsed.stream_mode {
-            args.stream_mode = v;
-        }
-    }
-    if !cli_set.contains("disable_fp8") {
-        if let Some(v) = parsed.disable_fp8 {
-            args.disable_fp8 = v;
-        }
-    }
-    if !cli_set.contains("enable_vulkan_stress") {
-        if let Some(v) = parsed.enable_vulkan_stress {
-            args.enable_vulkan_stress = v;
-        }
-    }
-    if !cli_set.contains("vulkan_only") {
-        if let Some(v) = parsed.vulkan_only {
-            args.vulkan_only = v;
-        }
-    }
-    if !cli_set.contains("kernel_params") {
-        if let Some(kernel_params) = parsed.kernel_params {
-            let mut entries = Vec::new();
-            for (name, item) in kernel_params {
-                let mut kvs = Vec::new();
-                if let Some(v) = &item.precisions {
-                    kvs.push(format!("precisions={}", v.join("|")));
-                }
-                if item.precision_mixture.is_some() && item.precision_weight.is_some() {
-                    return Err(format!(
-                        "kernel_params.{name} cannot set both precision_mixture and precision_weight"
-                    ));
-                }
-                if let Some(v) = &item.precision_mixture {
-                    let encoded = precision_mixture_cli_from_map(
-                        v,
-                        &format!("kernel_params.{name}.precision_mixture"),
-                    )?;
-                    kvs.push(format!("precision_mixture={encoded}"));
-                } else if let Some(weights) = &item.precision_weight {
-                    let precisions = item.precisions.as_ref().ok_or_else(|| {
-                        format!("kernel_params.{name}.precision_weight requires precisions")
-                    })?;
-                    let encoded = precision_mixture_cli_from_weights(
-                        precisions,
-                        weights,
-                        &format!("kernel_params.{name}.precision_weight"),
-                    )?;
-                    kvs.push(format!("precision_mixture={encoded}"));
-                }
-                if let Some(v) = &item.matrix_sizes {
-                    kvs.push(format!(
-                        "matrix_sizes={}",
-                        v.iter()
-                            .map(|x| x.to_string())
-                            .collect::<Vec<_>>()
-                            .join("|")
-                    ));
-                }
-                if let Some(v) = item.warmup_iters {
-                    kvs.push(format!("warmup_iters={v}"));
-                }
-                if let Some(v) = item.burst_iters {
-                    kvs.push(format!("burst_iters={v}"));
-                }
-                if let Some(v) = item.transpose_prob {
-                    kvs.push(format!("transpose_prob={v}"));
-                }
-                if let Some(v) = item.minor_mixture_rate {
-                    kvs.push(format!("minor_mixture_rate={v}"));
-                }
-                entries.push(format!("{name}:{}", kvs.join(",")));
+                parts.join(",")
             }
-            args.kernel_params = entries.join(";");
-        }
+        };
     }
-    if !cli_set.contains("gpu_index") {
-        if let Some(v) = parsed.gpu_index {
-            args.gpu_index = Some(v);
-        }
+    if let (true, Some(v)) = (!cli_set.contains("stream_mode"), &parsed.stream_mode) {
+        args.stream_mode = v.clone();
     }
-    if !cli_set.contains("pci_bus") {
-        if let Some(v) = parsed.pci_bus {
-            args.pci_bus = Some(v);
-        }
+    if let (true, Some(v)) = (!cli_set.contains("disable_fp8"), parsed.disable_fp8) {
+        args.disable_fp8 = v;
     }
-    if !cli_set.contains("gpu_uuid") {
-        if let Some(v) = parsed.gpu_uuid {
-            args.gpu_uuid = Some(v);
-        }
+    if let (true, Some(v)) = (
+        !cli_set.contains("enable_vulkan_stress"),
+        parsed.enable_vulkan_stress,
+    ) {
+        args.enable_vulkan_stress = v;
     }
-    if !cli_set.contains("list_gpus") {
-        if let Some(v) = parsed.list_gpus {
-            args.list_gpus = v;
-        }
+    if let (true, Some(v)) = (!cli_set.contains("vulkan_only"), parsed.vulkan_only) {
+        args.vulkan_only = v;
+    }
+    if let (true, Some(v)) = (!cli_set.contains("gpu_index"), parsed.gpu_index) {
+        args.gpu_index = Some(v);
+    }
+    if let (true, Some(v)) = (!cli_set.contains("pci_bus"), &parsed.pci_bus) {
+        args.pci_bus = Some(v.clone());
+    }
+    if let (true, Some(v)) = (!cli_set.contains("gpu_uuid"), &parsed.gpu_uuid) {
+        args.gpu_uuid = Some(v.clone());
+    }
+    if let (true, Some(v)) = (!cli_set.contains("list_gpus"), parsed.list_gpus) {
+        args.list_gpus = v;
     }
     Ok(())
 }
@@ -987,7 +866,20 @@ fn print_summary(results: &[StressResult], info: &DeviceInfo) {
 #[cfg(feature = "cuda")]
 fn main() {
     let (mut args, cli_set) = parse_args_with_cli_sources();
-    if let Err(err) = apply_file_config_to_args(&mut args, &cli_set) {
+    let file_config = match &args.config {
+        Some(path) => match load_file_config(path) {
+            Ok(parsed) => Some(parsed),
+            Err(err) => {
+                eprintln!(
+                    "{}",
+                    stylize(&format!("Invalid config file: {}", err), true)
+                );
+                std::process::exit(2);
+            }
+        },
+        None => None,
+    };
+    if let Err(err) = apply_file_config_to_args(&mut args, &cli_set, file_config.as_ref()) {
         eprintln!(
             "{}",
             stylize(&format!("Invalid config file: {}", err), true)
@@ -1183,8 +1075,8 @@ fn main() {
             std::process::exit(2);
         }
     };
-    let config_overrides = match &args.config {
-        Some(path) => match load_kernel_overrides_from_config(path) {
+    let config_overrides = match &file_config {
+        Some(parsed) => match load_kernel_overrides_from_config(parsed) {
             Ok(values) => values,
             Err(err) => {
                 eprintln!(
@@ -1282,43 +1174,26 @@ fn main() {
 
     #[cfg(feature = "vulkan")]
     {
-        if args.enable_vulkan_stress {
-            if let Some(identity) = cuda_device_identity {
-                let selection = VulkanDeviceSelection {
-                    cuda_uuid: identity.uuid,
-                    cuda_pci_bus: identity.pci_bus,
-                };
-                let mut eng = VulkanGraphicsEngine::with_selection(selection);
-                match eng.start_stress_thread() {
-                    Ok(_) => {
-                        // spawn a short-interval watchdog that exits the process if Vulkan reports fatal error
-                        let err_flag = eng.get_error_flag_arc();
-                        std::thread::spawn(move || {
-                            loop {
-                                if err_flag.load(std::sync::atomic::Ordering::SeqCst) {
-                                    eprintln!(
-                                        "{}",
-                                        stylize(
-                                            "[FATAL] Vulkan engine reported an error; exiting",
-                                            true
-                                        )
-                                    );
-                                    std::process::exit(1);
-                                }
-                                std::thread::sleep(std::time::Duration::from_millis(200));
-                            }
-                        });
-                        vulkan_engine = Some(eng);
-                    }
-                    Err(e) => {
-                        eprintln!(
-                            "{}",
-                            stylize(
-                                &format!("Failed to start VulkanGraphicsEngine: {}", e),
-                                true
-                            )
-                        );
-                    }
+        if args.enable_vulkan_stress
+            && let Some(identity) = cuda_device_identity
+        {
+            let selection = VulkanDeviceSelection {
+                cuda_uuid: identity.uuid,
+                cuda_pci_bus: identity.pci_bus,
+            };
+            let mut eng = VulkanGraphicsEngine::with_selection(selection);
+            match eng.start_stress_thread() {
+                Ok(_) => {
+                    vulkan_engine = Some(eng);
+                }
+                Err(e) => {
+                    eprintln!(
+                        "{}",
+                        stylize(
+                            &format!("Failed to start VulkanGraphicsEngine: {}", e),
+                            true
+                        )
+                    );
                 }
             }
         }
@@ -1350,18 +1225,31 @@ fn main() {
         }
     }
 
+    #[cfg(feature = "vulkan")]
+    if let Some(eng) = &vulkan_engine
+        && eng
+            .get_error_flag_arc()
+            .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        eprintln!(
+            "{}",
+            stylize("[FATAL] Vulkan engine reported an error", true)
+        );
+        overall_passed = false;
+    }
+
     print_summary(&results, &info);
 
     // Stop Vulkan engine if it was started.
     #[cfg(feature = "vulkan")]
-    if let Some(mut eng) = vulkan_engine {
-        if let Err(e) = eng.stop() {
-            eprintln!(
-                "{}",
-                stylize(&format!("[FATAL] Vulkan engine stop failed: {}", e), true)
-            );
-            overall_passed = false;
-        }
+    if let Some(mut eng) = vulkan_engine
+        && let Err(e) = eng.stop()
+    {
+        eprintln!(
+            "{}",
+            stylize(&format!("[FATAL] Vulkan engine stop failed: {}", e), true)
+        );
+        overall_passed = false;
     }
 
     if !overall_passed {
