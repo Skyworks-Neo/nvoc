@@ -20,7 +20,8 @@ matrixmultiply = "0.3.10"
 thiserror = "2.0.18"
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.8"
+anstream = "1.0.0"
+anstyle = "1.0.14"
 cudarc = { version = "0.19.7", optional = true, features = ["f16","nvrtc","cuda-12090"] }
 half = { version = "2.7.1", optional = true }
 ash = { version = "0.38", optional = true }
-nvoc-core = { path = "../nvoc-core" }

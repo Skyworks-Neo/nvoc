@@ -1,6 +1,7 @@
 use ash::{Instance, vk};
+use anstream::eprintln;
 use cli_stressor_cuda_rs::PciBusAddress;
-use nvoc_core::color::stylize;
+use crate::style::stylize;
 use rand::Rng;
 use std::ffi::CStr;
 use std::sync::Arc;
@@ -31,6 +32,7 @@ impl VulkanGraphicsEngine {
         }
     }
 
+    #[cfg(feature = "cuda")]
     pub fn with_selection(selection: VulkanDeviceSelection) -> Self {
         Self {
             is_running: Arc::new(AtomicBool::new(false)),

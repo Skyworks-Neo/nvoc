@@ -1,7 +1,12 @@
 use clap::Parser;
 #[cfg(feature = "cuda")]
 use clap::{CommandFactory, FromArgMatches, parser::ValueSource};
-use nvoc_core::color::stylize;
+use anstream::eprintln;
+#[cfg(any(feature = "cuda", feature = "vulkan"))]
+use anstream::println;
+use style::stylize;
+#[cfg(feature = "cuda")]
+use style::stylize_title;
 #[cfg(feature = "cuda")]
 use std::collections::HashMap;
 #[cfg(feature = "cuda")]
@@ -20,6 +25,8 @@ use cli_stressor_cuda_rs::{
 #[cfg(feature = "cuda")]
 use serde::Deserialize;
 
+mod style;
+
 #[cfg(feature = "cuda")]
 mod cuda_backend;
 
@@ -35,7 +42,9 @@ use cuda_backend::{
 #[path = "vulkan_gfx_stressor.rs"]
 mod vulkan_gfx_stressor;
 #[cfg(feature = "vulkan")]
-use vulkan_gfx_stressor::{VulkanDeviceSelection, VulkanGraphicsEngine};
+use vulkan_gfx_stressor::VulkanGraphicsEngine;
+#[cfg(all(feature = "cuda", feature = "vulkan"))]
+use vulkan_gfx_stressor::VulkanDeviceSelection;
 
 #[cfg(feature = "vulkan")]
 fn run_vulkan_for_duration(duration_s: f64) -> i32 {
@@ -799,7 +808,7 @@ fn print_cuda_gpu_list() -> Result<(), String> {
 
     println!(
         "{}",
-        nvoc_core::color::stylize_title("CUDA GPUs (sorted by PCI bus):")
+        stylize_title("CUDA GPUs (sorted by PCI bus):")
     );
     println!(
         "{}",
@@ -864,7 +873,7 @@ fn filter_atomic_for_sm(kernel_types: &mut Vec<KernelType>, info: &DeviceInfo) {
 fn print_device_info(info: &DeviceInfo) {
     println!(
         "{}",
-        nvoc_core::color::stylize_title(&format!("Testing Device: {}", info.name))
+        stylize_title(&format!("Testing Device: {}", info.name))
     );
     if let Some((major, minor)) = info.compute_capability {
         println!(
@@ -885,11 +894,11 @@ fn print_summary(results: &[StressResult], info: &DeviceInfo) {
     println!("\n{}", "=".repeat(72));
     println!(
         "{}",
-        nvoc_core::color::stylize_title("Phase 1 core stability summary")
+        stylize_title("Phase 1 core stability summary")
     );
     println!(
         "{}",
-        nvoc_core::color::stylize_title(&format!("Testing Device: {}", info.name))
+        stylize_title(&format!("Testing Device: {}", info.name))
     );
     if let Some(mem) = info.total_mem_gb {
         println!(
@@ -1200,7 +1209,7 @@ fn main() {
     println!("\n{}", "-".repeat(72));
     println!(
         "{}",
-        nvoc_core::color::stylize_title("Starting mixed-kernel stress")
+        stylize_title("Starting mixed-kernel stress")
     );
     println!(
         "{}",
