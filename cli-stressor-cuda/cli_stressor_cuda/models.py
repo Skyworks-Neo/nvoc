@@ -81,4 +81,3 @@ class StressRunConfig:
     kernel_mixture: List[Tuple[KernelType, float]]
     stream_mode: StreamMode
     kernel_param_overrides: List[KernelParamOverride]
-

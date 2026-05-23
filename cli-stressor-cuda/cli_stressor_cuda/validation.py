@@ -35,11 +35,15 @@ def validate_precision(
 
     g_a = torch.Generator(device="cpu")
     g_a.manual_seed(seed)
-    a_cpu = torch.randn(validate_size, validate_size, generator=g_a, dtype=torch.float32)
+    a_cpu = torch.randn(
+        validate_size, validate_size, generator=g_a, dtype=torch.float32
+    )
 
     g_b = torch.Generator(device="cpu")
     g_b.manual_seed(seed + 1)
-    b_cpu = torch.randn(validate_size, validate_size, generator=g_b, dtype=torch.float32)
+    b_cpu = torch.randn(
+        validate_size, validate_size, generator=g_b, dtype=torch.float32
+    )
 
     ref = torch.mm(a_cpu.to(torch.float64), b_cpu.to(torch.float64)).to(torch.float32)
 

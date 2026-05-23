@@ -9,7 +9,11 @@ except ImportError:  # pragma: no cover
     tomllib = None
 
 from .models import KernelParamOverride, PrecisionSpec
-from .parsing import parse_kernel_type, parse_precision_list_with_mapping, parse_precision_name
+from .parsing import (
+    parse_kernel_type,
+    parse_precision_list_with_mapping,
+    parse_precision_name,
+)
 
 
 def load_toml_config(path: str) -> Dict[str, object]:
@@ -43,7 +47,10 @@ def apply_file_config_to_args(args, argv: List[str], config: Dict[str, object]) 
         args.validate_size = int(config["validate_size"])
     if not cli_has_flag(argv, "--transpose-prob") and "transpose_prob" in config:
         args.transpose_prob = float(config["transpose_prob"])
-    if not cli_has_flag(argv, "--minor-mixture-rate") and "minor_mixture_rate" in config:
+    if (
+        not cli_has_flag(argv, "--minor-mixture-rate")
+        and "minor_mixture_rate" in config
+    ):
         args.minor_mixture_rate = float(config["minor_mixture_rate"])
     if not cli_has_flag(argv, "--seed") and "seed" in config:
         args.seed = int(config["seed"])
@@ -72,9 +79,7 @@ def kernel_params_to_cli_string(kernel_params: Dict[str, object]) -> str:
         if "precisions" in item:
             kvs.append(f"precisions={'|'.join(item['precisions'])}")
         if "precision_mixture" in item:
-            parts = [
-                f"{p}:{w}" for p, w in item["precision_mixture"].items()
-            ]
+            parts = [f"{p}:{w}" for p, w in item["precision_mixture"].items()]
             kvs.append(f"precision_mixture={'|'.join(parts)}")
         if "precision_weight" in item or "precision_weights" in item:
             weights = item.get("precision_weight", item.get("precision_weights", []))
@@ -86,9 +91,7 @@ def kernel_params_to_cli_string(kernel_params: Dict[str, object]) -> str:
             parts = [f"{p}:{w}" for p, w in zip(precisions, weights)]
             kvs.append(f"precision_mixture={'|'.join(parts)}")
         if "matrix_sizes" in item:
-            kvs.append(
-                f"matrix_sizes={'|'.join(str(x) for x in item['matrix_sizes'])}"
-            )
+            kvs.append(f"matrix_sizes={'|'.join(str(x) for x in item['matrix_sizes'])}")
         if "warmup_iters" in item:
             kvs.append(f"warmup_iters={item['warmup_iters']}")
         if "burst_iters" in item:
@@ -184,5 +187,3 @@ def merge_kernel_overrides(
         else:
             merged[item.kind] = item
     return list(merged.values())
-
-
