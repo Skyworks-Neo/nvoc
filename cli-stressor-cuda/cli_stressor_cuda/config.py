@@ -8,7 +8,7 @@ try:
 except ImportError:  # pragma: no cover
     tomllib = None
 
-from .models import KernelParamOverride, PrecisionSpec
+from .models import KernelParamOverride, KernelType, PrecisionSpec
 from .parsing import (
     parse_kernel_type,
     parse_precision_list_with_mapping,
