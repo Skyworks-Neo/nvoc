@@ -1971,7 +1971,7 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
 
         let freq_step_exp = 3;
         let endurance_coefficient = 2;
-        let vfp_set_range = 6;
+        let vfp_set_range = 3;
         let mut test_duration: u64 = 10;
         if is_ultrafast {
             test_duration += test_duration / 2;

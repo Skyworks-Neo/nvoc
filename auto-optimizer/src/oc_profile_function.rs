@@ -855,11 +855,11 @@ pub fn fix_result(gpu: &GpuTarget<'_>, matches: &clap::ArgMatches) -> Result<(),
         sum_df += default_freq as u64;
 
         if margin_bin > 5 {
-            delta -= minimum_delta_core_freq_step * (5 + cfg.minus_bin);
+            delta -= minimum_delta_core_freq_step * (3 + cfg.minus_bin);
         } else if abs(margin_bin) < 2 {
-            delta -= minimum_delta_core_freq_step * (1 + cfg.minus_bin);
+            delta -= minimum_delta_core_freq_step * (cfg.minus_bin);
         } else {
-            delta -= minimum_delta_core_freq_step * (abs(margin_bin) + 1 + cfg.minus_bin);
+            delta -= minimum_delta_core_freq_step * (abs(margin_bin) + cfg.minus_bin);
         }
 
         if delta < 0 {
