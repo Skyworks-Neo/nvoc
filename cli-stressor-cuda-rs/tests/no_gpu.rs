@@ -1,6 +1,7 @@
 use cli_stressor_cuda_rs::{
     KernelType, StressResult, choose_tolerance, parse_int_list, parse_kernel_mixture,
-    parse_kernel_param_overrides, parse_kernel_type_list, parse_stream_mode, per_element_allclose,
+    parse_kernel_param_overrides, parse_kernel_type_list, parse_precision_mixture,
+    parse_stream_mode, per_element_allclose,
 };
 
 #[test]
@@ -66,6 +67,17 @@ fn test_parse_kernel_mixture() {
         mix.iter()
             .any(|e| e.kind == KernelType::Memset && e.weight == 0.0)
     );
+}
+
+#[test]
+fn test_parse_kernel_mixture_rejects_invalid_kernel_name() {
+    let types = parse_kernel_type_list("gemm,memcpy").unwrap();
+    assert!(parse_kernel_mixture("gemm|memcpy:0.5", &types).is_err());
+}
+
+#[test]
+fn test_parse_precision_mixture_rejects_invalid_precision_name() {
+    assert!(parse_precision_mixture("fp32|fp16:0.5").is_err());
 }
 
 #[test]

@@ -79,13 +79,19 @@ fn run_vulkan_for_duration(duration_s: f64) -> i32 {
                 "{}",
                 stylize("[FATAL] Vulkan engine reported an error; exiting", true)
             );
-            eng.stop();
+            let _ = eng.stop();
             return 1;
         }
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
 
-    eng.stop();
+    if let Err(e) = eng.stop() {
+        eprintln!(
+            "{}",
+            stylize(&format!("[FATAL] Vulkan engine stop failed: {}", e), true)
+        );
+        return 1;
+    }
     println!("{}", stylize("Vulkan-only run finished.", false));
     0
 }
@@ -608,14 +614,18 @@ fn apply_file_config_to_args(
                 if let Some(v) = &item.precisions {
                     kvs.push(format!("precisions={}", v.join("|")));
                 }
+                if item.precision_mixture.is_some() && item.precision_weight.is_some() {
+                    return Err(format!(
+                        "kernel_params.{name} cannot set both precision_mixture and precision_weight"
+                    ));
+                }
                 if let Some(v) = &item.precision_mixture {
                     let encoded = precision_mixture_cli_from_map(
                         v,
                         &format!("kernel_params.{name}.precision_mixture"),
                     )?;
                     kvs.push(format!("precision_mixture={encoded}"));
-                }
-                if let Some(weights) = &item.precision_weight {
+                } else if let Some(weights) = &item.precision_weight {
                     let precisions = item.precisions.as_ref().ok_or_else(|| {
                         format!("kernel_params.{name}.precision_weight requires precisions")
                     })?;
@@ -1345,7 +1355,13 @@ fn main() {
     // Stop Vulkan engine if it was started.
     #[cfg(feature = "vulkan")]
     if let Some(mut eng) = vulkan_engine {
-        eng.stop();
+        if let Err(e) = eng.stop() {
+            eprintln!(
+                "{}",
+                stylize(&format!("[FATAL] Vulkan engine stop failed: {}", e), true)
+            );
+            overall_passed = false;
+        }
     }
 
     if !overall_passed {

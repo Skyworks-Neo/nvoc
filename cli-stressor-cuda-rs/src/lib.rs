@@ -300,6 +300,14 @@ pub fn parse_precision_list(raw: &str) -> Result<Vec<PrecisionSpec>, String> {
     Ok(selected)
 }
 
+fn parse_precision(raw: &str) -> Result<PrecisionSpec, String> {
+    let specs = parse_precision_list(raw)?;
+    if specs.len() != 1 {
+        return Err(format!("expected a single precision, got: {raw}"));
+    }
+    Ok(specs[0])
+}
+
 pub fn parse_kernel_type_list(raw: &str) -> Result<Vec<KernelType>, String> {
     let mut selected = Vec::new();
     for item in raw.split(',') {
@@ -438,10 +446,7 @@ pub fn parse_kernel_mixture(
         let (name, weight_raw) = trimmed.split_once(':').ok_or_else(|| {
             format!("invalid kernel mixture item: {trimmed}, expected type:weight")
         })?;
-        let kind = parse_kernel_type_list(name)?
-            .first()
-            .copied()
-            .ok_or_else(|| format!("invalid kernel type in mixture: {name}"))?;
+        let kind = parse_kernel_type(name)?;
         if !kernel_types.contains(&kind) {
             return Err(format!(
                 "kernel type {} is not included in --kernel-types",
@@ -486,10 +491,7 @@ pub fn parse_precision_mixture(raw: &str) -> Result<Vec<PrecisionMixtureEntry>, 
         let (name, weight_raw) = trimmed.split_once(':').ok_or_else(|| {
             format!("invalid precision mixture item: {trimmed}, expected precision:weight")
         })?;
-        let spec = parse_precision_list(name)?
-            .first()
-            .copied()
-            .ok_or_else(|| format!("invalid precision in mixture: {name}"))?;
+        let spec = parse_precision(name)?;
         let weight = weight_raw
             .trim()
             .parse::<f64>()
@@ -841,11 +843,7 @@ pub fn run_stress_for_precision<B: Backend>(
     while start.elapsed().as_secs_f64() < config.duration_s {
         let kernel_kind = choose_kernel_type(config.kernel_mixture, &mut rng);
         let params = resolve_kernel_params(kernel_kind, &effective_config);
-        let op_spec = if let Some(specs) = &params.precisions {
-            *specs.choose(&mut rng).unwrap_or(&spec)
-        } else {
-            spec
-        };
+        let op_spec = spec;
         let size_pool = if op_spec.kind == PrecisionKind::FP64 && params.matrix_sizes_default {
             effective_config.fp64_matrix_sizes
         } else {

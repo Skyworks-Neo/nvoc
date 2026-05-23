@@ -70,11 +70,15 @@ impl VulkanGraphicsEngine {
         self.has_error.clone()
     }
 
-    pub fn stop(&mut self) {
+    pub fn stop(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         self.is_running.store(false, Ordering::SeqCst);
         if let Some(handle) = self.thread_handle.take() {
-            let _ = handle.join();
+            if handle.join().is_err() {
+                self.has_error.store(true, Ordering::SeqCst);
+                return Err(std::io::Error::other("Vulkan stress thread panicked").into());
+            }
         }
+        Ok(())
     }
 }
 
