@@ -13,7 +13,6 @@ import pathlib
 import sys
 import types
 import unittest
-import importlib.util
 
 
 # ---------------------------------------------------------------------------
@@ -73,17 +72,22 @@ def _make_torch_stub():
 if "torch" not in sys.modules:
     sys.modules["torch"] = _make_torch_stub()
 
-_MODULE_PATH = pathlib.Path(__file__).parent / "test.py"
-_spec = importlib.util.spec_from_file_location("stressor_cuda", _MODULE_PATH)
-_mod = importlib.util.module_from_spec(_spec)
-try:
-    _spec.loader.exec_module(_mod)
-except Exception:
-    pass  # GPU-dependent code may fail; we only need dataclasses and helpers
+from cli_stressor_cuda.kernels import (  # noqa: E402
+    MAX_ATOMIC_ELEMENTS,
+    atomic_element_count,
+    choose_kernel_type,
+    choose_precision_from_mixture,
+)
+from cli_stressor_cuda.models import (  # noqa: E402
+    KernelType,
+    PrecisionSpec,
+    StressResult,
+)
+from cli_stressor_cuda.parsing import parse_int_list  # noqa: E402
+from cli_stressor_cuda.validation import choose_tolerance  # noqa: E402
 
-StressResult = _mod.StressResult
-choose_tolerance = _mod.choose_tolerance
-parse_int_list = _mod.parse_int_list
+
+_RUNNER_PATH = pathlib.Path(__file__).parent / "cli_stressor_cuda" / "runner.py"
 
 
 # ---------------------------------------------------------------------------
@@ -191,37 +195,31 @@ class TestPerElementValidation(unittest.TestCase):
 # ---------------------------------------------------------------------------
 class TestNoSysExitInInnerLoop(unittest.TestCase):
     def _func_source(self, name):
-        source = _MODULE_PATH.read_text(encoding="utf-8")
+        source = _RUNNER_PATH.read_text(encoding="utf-8")
         tree = ast.parse(source)
         for node in ast.walk(tree):
             if isinstance(node, ast.FunctionDef) and node.name == name:
                 return ast.unparse(node)
         return ""
 
-    def test_sys_exit_absent_from_run_stress_for_precision(self):
-        src = self._func_source("run_stress_for_precision")
-        self.assertNotEqual(src, "", "run_stress_for_precision must exist")
+    def test_sys_exit_absent_from_run_stress_mixed(self):
+        src = self._func_source("run_stress_mixed")
+        self.assertNotEqual(src, "", "run_stress_mixed must exist")
         self.assertNotIn(
-            "sys.exit", src, "sys.exit must not appear inside run_stress_for_precision"
+            "sys.exit", src, "sys.exit must not appear inside run_stress_mixed"
         )
 
     def test_exception_handler_uses_break(self):
         """The inner-loop except block must use 'break', not sys.exit."""
-        source = _MODULE_PATH.read_text(encoding="utf-8")
+        source = _RUNNER_PATH.read_text(encoding="utf-8")
         tree = ast.parse(source)
         inner_loop_handler_found = False
         for node in ast.walk(tree):
-            if (
-                isinstance(node, ast.FunctionDef)
-                and node.name == "run_stress_for_precision"
-            ):
+            if isinstance(node, ast.FunctionDef) and node.name == "run_stress_mixed":
                 for child in ast.walk(node):
                     if isinstance(child, ast.ExceptHandler):
                         handler_src = ast.unparse(child)
-                        if (
-                            "result.first_error" in handler_src
-                            and "runtime error" in handler_src
-                        ):
+                        if "runtime error" in handler_src:
                             # This is the inner-loop handler
                             inner_loop_handler_found = True
                             self.assertIn(
@@ -240,29 +238,34 @@ class TestNoSysExitInInnerLoop(unittest.TestCase):
 
     def test_validation_failure_breaks_inner_loop(self):
         """Validation failure must break the inner while-loop promptly (mirrors OpenCL behavior)."""
-        source = _MODULE_PATH.read_text(encoding="utf-8")
+        source = _RUNNER_PATH.read_text(encoding="utf-8")
         tree = ast.parse(source)
         for node in ast.walk(tree):
-            if (
-                isinstance(node, ast.FunctionDef)
-                and node.name == "run_stress_for_precision"
-            ):
+            if isinstance(node, ast.FunctionDef) and node.name == "run_stress_mixed":
                 func_src = ast.unparse(node)
                 # The 'if not passed:' block must contain 'break' so the loop exits
                 # immediately on validation failure rather than running to full duration.
                 self.assertIn(
                     "break",
                     func_src,
-                    "run_stress_for_precision must break on validation failure",
+                    "run_stress_mixed must break on validation failure",
                 )
                 return
-        self.fail("run_stress_for_precision not found")
+        self.fail("run_stress_mixed not found")
 
-    def test_print_summary_keeps_sys_exit(self):
-        """The summary-level sys.exit(1) must be preserved for overall failure reporting."""
-        src = self._func_source("print_summary")
+    def test_cli_returns_failure_when_summary_fails(self):
+        """The CLI must preserve non-zero status for overall failure reporting."""
+        source = (
+            pathlib.Path(__file__).parent / "cli_stressor_cuda" / "cli.py"
+        ).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        src = ""
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "main":
+                src = ast.unparse(node)
+                break
         self.assertIn(
-            "sys.exit", src, "print_summary must retain sys.exit(1) for overall failure"
+            "return 1", src, "main must return non-zero status for overall failure"
         )
 
 
@@ -271,7 +274,7 @@ class TestNoSysExitInInnerLoop(unittest.TestCase):
 # ---------------------------------------------------------------------------
 class TestSourceStructure(unittest.TestCase):
     def _source(self):
-        return _MODULE_PATH.read_text(encoding="utf-8")
+        return _RUNNER_PATH.read_text(encoding="utf-8")
 
     def test_compute_s_accumulated_in_loop(self):
         self.assertIn("result.compute_s += op_elapsed", self._source())
@@ -296,6 +299,34 @@ class TestParseIntList(unittest.TestCase):
     def test_empty_raises(self):
         with self.assertRaises(ValueError):
             parse_int_list("")
+
+
+class TestWeightedSelection(unittest.TestCase):
+    class ZeroRng:
+        def random(self):
+            return 0.0
+
+    def test_kernel_zero_weight_is_not_selected_at_boundary(self):
+        selected = choose_kernel_type(
+            [(KernelType.ATOMIC, 0.0), (KernelType.GEMM, 1.0)], self.ZeroRng()
+        )
+        self.assertEqual(selected, KernelType.GEMM)
+
+    def test_precision_zero_weight_is_not_selected_at_boundary(self):
+        fp16 = PrecisionSpec("FP16", sys.modules["torch"].float16, None)
+        bf16 = PrecisionSpec("BF16", sys.modules["torch"].bfloat16, None)
+        selected = choose_precision_from_mixture(
+            [(fp16, 0.0), (bf16, 1.0)], self.ZeroRng()
+        )
+        self.assertEqual(selected, bf16)
+
+
+class TestAtomicSizing(unittest.TestCase):
+    def test_atomic_size_is_capped(self):
+        self.assertEqual(atomic_element_count(16_384), MAX_ATOMIC_ELEMENTS)
+
+    def test_atomic_small_size_keeps_square_workload(self):
+        self.assertEqual(atomic_element_count(128), 128 * 128)
 
 
 if __name__ == "__main__":

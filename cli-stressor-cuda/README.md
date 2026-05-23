@@ -18,6 +18,7 @@
 
 - **多精度支持**：支持测试多种计算精度，包括 FP64、FP32、TF32、FP16、BF16 和 FP8（E4M3FN）。`opencl` 分支支持 FP32、FP16，并在受支持设备上兼容 FP64。
 - **随机化工作负载**：动态改变矩阵尺寸（包含非对齐的尺寸），制造冷热交替的计算阶段，对显卡供电和内存分配器施加压力。
+- **混合 Kernel 压力**：可按权重混合 GEMM / Memcpy / Memset / Transpose / Elementwise / Reduction / Atomic，并为每个 Kernel 单独设置精度配比。
 - **跨后端支持（多分支）**：主分支默认执行严格的 CUDA 验证，`opencl` 分支允许您在非 CUDA 平台环境（如某些核显等）免驱或免庞大依赖进行压力测试。
 - **旁路数据校验**：周期性中断压力测试，并使用 CPU 上 FP64 参考算法进行确定性计算校验，捕获静默错误。
 - **持续高压执行**：可自定义执行时长，对 GPU 持续平缓或剧烈施压。
@@ -38,7 +39,7 @@ git clone https://github.com/Skyworks-Neo/nvoc.git
 cd nvoc/cli-stressor-cuda
 ```
 
-2. 安装依赖并自动建立独立环境：
+1. 安装依赖并自动建立独立环境：
 
 ```bash
 uv sync
@@ -67,6 +68,7 @@ python test.py [参数]
 
 #### 可用参数
 
+- `--config`：可选 TOML 配置文件，支持 `[kernel_params.<kernel>]` 覆盖项。
 - `--duration`（默认：90.0）：每个精度模式的压力持续时间（秒）。
 - `--matrix-sizes`（默认：`2049, 4096, 4097, 8192, 8193, 16384`）：用于常规压力测试的随机矩阵尺寸列表，以逗号分隔。
 - `--fp64-matrix-sizes`（默认：`2048, 4096`）：专门用于 FP64 模式的矩阵尺寸，为了适应消费级 GPU 较低的双精度算力（避免测试假死）。
@@ -74,9 +76,14 @@ python test.py [参数]
 - `--warmup-iters`（默认：3）：每个工作负载窗口的预热轮数。
 - `--burst-iters`（默认：6）：每个工作负载窗口的正式压力突发轮数。
 - `--validate-interval`（默认：10）：旁路校验的间隔秒数。
-- `--validate-size`（默认：768）：旁路校验所用的固定矩阵尺寸。
+- `--validate-size`（默认：1024）：旁路校验所用的固定矩阵尺寸。
 - `--transpose-prob`（默认：0.5）：随机转置 a/b 矩阵的概率，用于轻度扰动 kernel 执行路径。
 - `--seed`（默认：12345）：随机种子，保证结果一致性。
+- `--kernel-types`（默认：`gemm,memcpy,memset,transpose,elementwise,reduction,atomic`）：启用的 kernel 类型列表。
+- `--kernel-mixture`（默认：空）：kernel 权重混合，格式 `type:weight`，例如 `gemm:0.5,memcpy:0.3,reduction:0.2`（空=等权）。
+- `--kernel-params`（默认：空）：按 kernel 覆盖参数，示例：`gemm:precisions=fp16|bf16,precision_mixture=fp16:0.7|bf16:0.3,matrix_sizes=2049|4096,warmup=4,burst=8;memcpy:matrix_sizes=8192|16384,burst=64`。
+- `--stream-mode`（默认：single）：流并发模式，支持 `single|dual|triple`。
+- `--minor-mixture-rate`（默认：0.15）：小尺寸混入比例。
 - `--disable-fp8`：添加此标志可强制跳过 FP8 测试，即便当前环境支持被检测到可用。
 
 ### 输出日志概览
@@ -101,6 +108,7 @@ This is a PyTorch-based GPU core-stability stress tool. It drives randomized gen
 
 - **Multiple precisions**: Supports FP64, FP32, TF32, FP16, BF16, and FP8 (E4M3FN). The `opencl` branch supports FP32 and FP16, and FP64 on supported devices.
 - **Randomized workloads**: Dynamically changes matrix sizes, including misaligned sizes, to alternate hot and cold compute phases and stress power delivery plus memory allocators.
+- **Mixed kernel stress**: Mixes GEMM / Memcpy / Memset / Transpose / Elementwise / Reduction / Atomic with per-kernel precision mixes.
 - **Cross-backend support (multi-branch)**: The main branch performs strict CUDA validation by default, while the `opencl` branch enables stress testing on non-CUDA platforms without heavy dependencies.
 - **Sidecar validation**: Periodically interrupts the stress loop and runs deterministic CPU-side FP64 reference checks to catch silent errors.
 - **Sustained high load**: You can customize the runtime to apply steady or aggressive pressure to the GPU.
@@ -121,7 +129,7 @@ git clone https://github.com/Skyworks-Neo/nvoc.git
 cd nvoc/cli-stressor-cuda
 ```
 
-2. Install dependencies and create the environment automatically:
+1. Install dependencies and create the environment automatically:
 
 ```bash
 uv sync
@@ -150,6 +158,7 @@ python test.py [arguments]
 
 #### Available arguments
 
+- `--config`: Optional TOML config file (supports `[kernel_params.<kernel>]`).
 - `--duration` (default: 90.0): Stress duration per precision mode, in seconds.
 - `--matrix-sizes` (default: `2049, 4096, 4097, 8192, 8193, 16384`): Comma-separated list of random matrix sizes for the main stress workload.
 - `--fp64-matrix-sizes` (default: `2048, 4096`): Matrix sizes dedicated to FP64 mode to better fit consumer GPUs with limited double-precision throughput.
@@ -157,9 +166,14 @@ python test.py [arguments]
 - `--warmup-iters` (default: 3): Warmup rounds for each workload window.
 - `--burst-iters` (default: 6): Main stress rounds for each workload window.
 - `--validate-interval` (default: 10): Interval, in seconds, for sidecar validation.
-- `--validate-size` (default: 768): Fixed matrix size used by validation.
+- `--validate-size` (default: 1024): Fixed matrix size used by validation.
 - `--transpose-prob` (default: 0.5): Probability of randomly transposing matrix A/B to perturb the kernel path.
 - `--seed` (default: 12345): Random seed for reproducible runs.
+- `--kernel-types` (default: `gemm,memcpy,memset,transpose,elementwise,reduction,atomic`): Enabled kernel types.
+- `--kernel-mixture` (default: empty): Kernel weight mix in `type:weight` format, e.g. `gemm:0.5,memcpy:0.3,reduction:0.2` (empty = equal weights).
+- `--kernel-params` (default: empty): Per-kernel overrides, e.g. `gemm:precisions=fp16|bf16,precision_mixture=fp16:0.7|bf16:0.3,matrix_sizes=2049|4096,warmup=4,burst=8;memcpy:matrix_sizes=8192|16384,burst=64`.
+- `--stream-mode` (default: single): Stream submission mode, `single|dual|triple`.
+- `--minor-mixture-rate` (default: 0.15): Small-size mixture rate.
 - `--disable-fp8`: Force skipping FP8 tests even if the runtime reports support.
 
 ### Log overview
