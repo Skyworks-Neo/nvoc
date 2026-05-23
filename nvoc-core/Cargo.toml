@@ -12,6 +12,7 @@ license = "Apache-2.0"
 nvapi-hi = { workspace = true }
 nvml-wrapper = { workspace = true }
 quick-error = { workspace = true }
+colored = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

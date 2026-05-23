@@ -1,3 +1,4 @@
+pub mod color;
 mod conv;
 mod error;
 mod gpu;
