@@ -39,6 +39,9 @@ jobs:
       contents: read
       pull-requests: read
     outputs:
+      ci_config: ${{ steps.manual.outputs.ci_config || steps.filter.outputs.ci_config }}
+      rust_base: ${{ steps.manual.outputs.rust_base || steps.filter.outputs.rust_base }}
+      python_base: ${{ steps.manual.outputs.python_base || steps.filter.outputs.python_base }}
       auto_optimizer: ${{ steps.manual.outputs.auto_optimizer || steps.filter.outputs.auto_optimizer }}
       nvoc_core: ${{ steps.manual.outputs.nvoc_core || steps.filter.outputs.nvoc_core }}
       stressor_cuda: ${{ steps.manual.outputs.stressor_cuda || steps.filter.outputs.stressor_cuda }}
@@ -48,10 +51,15 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         id: manual
         run: |
-          echo "auto_optimizer=true" >> "$GITHUB_OUTPUT"
-          echo "nvoc_core=true" >> "$GITHUB_OUTPUT"
-          echo "stressor_cuda=true" >> "$GITHUB_OUTPUT"
-          echo "stressor_opencl=true" >> "$GITHUB_OUTPUT"
+          {
+            echo "ci_config=true"
+            echo "rust_base=true"
+            echo "python_base=true"
+            echo "auto_optimizer=true"
+            echo "nvoc_core=true"
+            echo "stressor_cuda=true"
+            echo "stressor_opencl=true"
+          } >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v6
         if: github.event_name != 'workflow_dispatch'
         with:
@@ -61,32 +69,34 @@ jobs:
         id: filter
         with:
           filters: |
-            auto_optimizer:
-              - 'auto-optimizer/**'
-              - 'nvoc-core/**'
-              - 'srv/**'
+            # Base layers are composed in job-level if: expressions below.
+            ci_config:
+              - '.github/workflows/gpu-ci.yml'
+            rust_base:
               - 'Cargo.toml'
               - 'Cargo.lock'
-              - '.github/workflows/gpu-ci.yml'
+              - 'rust-toolchain.toml'
+              - 'rustfmt.toml'
+              - '.cargo/**'
+            python_base:
+              - 'pyproject.toml'
+              - 'uv.lock'
             nvoc_core:
               - 'nvoc-core/**'
-              - 'Cargo.toml'
-              - 'Cargo.lock'
-              - '.github/workflows/gpu-ci.yml'
+            auto_optimizer:
+              - 'auto-optimizer/**'
             stressor_cuda:
               - 'cli-stressor-cuda/**'
-              - 'pyproject.toml'
-              - 'uv.lock'
-              - '.github/workflows/gpu-ci.yml'
             stressor_opencl:
               - 'cli-stressor-opencl/**'
-              - 'pyproject.toml'
-              - 'uv.lock'
-              - '.github/workflows/gpu-ci.yml'
 
   auto-optimizer-gpu:
     needs: changes
-    if: needs.changes.outputs.auto_optimizer == 'true'
+    if: >-
+      needs.changes.outputs.ci_config == 'true' ||
+      needs.changes.outputs.rust_base == 'true' ||
+      needs.changes.outputs.nvoc_core == 'true' ||
+      needs.changes.outputs.auto_optimizer == 'true'
     runs-on: [self-hosted, windows, gpu-nvidia]
     timeout-minutes: 20
     defaults:
@@ -110,7 +120,10 @@ jobs:
 
   nvoc-core-gpu-readonly:
     needs: changes
-    if: needs.changes.outputs.nvoc_core == 'true'
+    if: >-
+      needs.changes.outputs.ci_config == 'true' ||
+      needs.changes.outputs.rust_base == 'true' ||
+      needs.changes.outputs.nvoc_core == 'true'
     runs-on: [self-hosted, windows, gpu-nvidia]
     timeout-minutes: 20
     steps:
@@ -128,7 +141,10 @@ jobs:
 
   cuda-stressor:
     needs: changes
-    if: needs.changes.outputs.stressor_cuda == 'true'
+    if: >-
+      needs.changes.outputs.ci_config == 'true' ||
+      needs.changes.outputs.python_base == 'true' ||
+      needs.changes.outputs.stressor_cuda == 'true'
     runs-on: [self-hosted, windows, gpu-nvidia, cuda]
     timeout-minutes: 30
     defaults:
@@ -155,7 +171,10 @@ jobs:
 
   opencl-stressor-windows:
     needs: changes
-    if: needs.changes.outputs.stressor_opencl == 'true'
+    if: >-
+      needs.changes.outputs.ci_config == 'true' ||
+      needs.changes.outputs.python_base == 'true' ||
+      needs.changes.outputs.stressor_opencl == 'true'
     runs-on: [self-hosted, windows, gpu-nvidia, opencl]
     timeout-minutes: 30
     defaults:

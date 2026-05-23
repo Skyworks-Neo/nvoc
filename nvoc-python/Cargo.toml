@@ -1,0 +1,25 @@
+[package]
+name = "pynvoc"
+version = "0.1.0"
+edition = { workspace = true }
+rust-version = { workspace = true }
+
+description = "Native Python bindings for nvoc-core"
+keywords = ["nvidia", "gpu", "nvapi", "nvml", "overclock", "python"]
+license = "Apache-2.0"
+
+[lib]
+name = "_native"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+nvoc-core = { workspace = true }
+nvapi-hi = { workspace = true }
+nvml-wrapper = { workspace = true }
+pyo3 = { version = "0.27.1", features = ["abi3-py38"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[features]
+default = ["extension-module"]
+extension-module = ["pyo3/extension-module"]

@@ -76,11 +76,16 @@ jobs:
       contents: read
       pull-requests: read
     outputs:
+      ci_config: ${{ steps.filter.outputs.ci_config }}
+      rust_base: ${{ steps.filter.outputs.rust_base }}
+      python_base: ${{ steps.filter.outputs.python_base }}
       nvoc_core: ${{ steps.filter.outputs.nvoc_core }}
+      nvoc_python: ${{ steps.filter.outputs.nvoc_python }}
       auto_optimizer: ${{ steps.filter.outputs.auto_optimizer }}
       srv: ${{ steps.filter.outputs.srv }}
       tui: ${{ steps.filter.outputs.tui }}
       gui: ${{ steps.filter.outputs.gui }}
+      stressor_cuda_rs: ${{ steps.filter.outputs.stressor_cuda_rs }}
       stressor_cuda: ${{ steps.filter.outputs.stressor_cuda }}
       stressor_opencl: ${{ steps.filter.outputs.stressor_opencl }}
     steps:
@@ -91,47 +96,44 @@ jobs:
         id: filter
         with:
           filters: |
+            # Base layers are composed in job-level if: expressions below.
+            ci_config:
+              - '.github/workflows/ci.yml'
+            rust_base:
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - 'rustfmt.toml'
+              - '.cargo/**'
+            python_base:
+              - 'pyproject.toml'
+              - 'uv.lock'
             nvoc_core:
               - 'nvoc-core/**'
-              - 'Cargo.toml'
-              - 'Cargo.lock'
-              - 'rust-toolchain.toml'
-              - '.github/workflows/ci.yml'
+            nvoc_python:
+              - 'nvoc-python/**'
             auto_optimizer:
               - 'auto-optimizer/**'
-              - 'nvoc-core/**'
-              - 'Cargo.toml'
-              - 'Cargo.lock'
-              - 'rust-toolchain.toml'
-              - '.github/workflows/ci.yml'
             srv:
               - 'srv/**'
-              - 'nvoc-core/**'
-              - 'Cargo.toml'
-              - 'Cargo.lock'
-              - 'rust-toolchain.toml'
-              - '.github/workflows/ci.yml'
             tui:
               - 'tui/**'
-              - 'pyproject.toml'
-              - '.github/workflows/ci.yml'
             gui:
               - 'gui/**'
-              - 'pyproject.toml'
-              - '.github/workflows/ci.yml'
+            stressor_cuda_rs:
+              - 'cli-stressor-cuda-rs/**'
             stressor_cuda:
               - 'cli-stressor-cuda/**'
-              - 'pyproject.toml'
-              - '.github/workflows/ci.yml'
             stressor_opencl:
               - 'cli-stressor-opencl/**'
-              - 'pyproject.toml'
-              - '.github/workflows/ci.yml'
 
   rust-nvoc-core:
     name: nvoc-core tests
     needs: changes
-    if: needs.changes.outputs.nvoc_core == 'true'
+    if: >-
+      needs.changes.outputs.ci_config == 'true' ||
+      needs.changes.outputs.rust_base == 'true' ||
+      needs.changes.outputs.nvoc_core == 'true'
     runs-on: ubuntu-slim
     steps:
       - uses: actions/checkout@v6
@@ -140,10 +142,48 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - run: cargo test --package nvoc-core --all-targets
 
+  rust-nvoc-python:
+    name: nvoc-python tests
+    needs: changes
+    if: >-
+      needs.changes.outputs.ci_config == 'true' ||
+      needs.changes.outputs.rust_base == 'true' ||
+      needs.changes.outputs.nvoc_core == 'true' ||
+      needs.changes.outputs.nvoc_python == 'true'
+    runs-on: ubuntu-slim
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: cargo test --package pynvoc --no-default-features
+      - run: python -m pip install --upgrade pip maturin
+      - run: python -m venv .venv
+        working-directory: nvoc-python
+      - run: .venv/bin/python -m pip install --upgrade pip pytest
+        working-directory: nvoc-python
+      - name: maturin develop
+        working-directory: nvoc-python
+        env:
+          VIRTUAL_ENV: ${{ github.workspace }}/nvoc-python/.venv
+        run: maturin develop --release
+      - name: pytest
+        working-directory: nvoc-python
+        env:
+          VIRTUAL_ENV: ${{ github.workspace }}/nvoc-python/.venv
+        run: .venv/bin/python -m pytest tests/
+
   rust-auto-optimizer:
     name: auto-optimizer (windows)
     needs: changes
-    if: needs.changes.outputs.auto_optimizer == 'true'
+    if: >-
+      needs.changes.outputs.ci_config == 'true' ||
+      needs.changes.outputs.rust_base == 'true' ||
+      needs.changes.outputs.nvoc_core == 'true' ||
+      needs.changes.outputs.auto_optimizer == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6
@@ -160,7 +200,11 @@ jobs:
   rust-srv:
     name: srv (windows)
     needs: changes
-    if: needs.changes.outputs.srv == 'true'
+    if: >-
+      needs.changes.outputs.ci_config == 'true' ||
+      needs.changes.outputs.rust_base == 'true' ||
+      needs.changes.outputs.nvoc_core == 'true' ||
+      needs.changes.outputs.srv == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6
@@ -174,10 +218,35 @@ jobs:
       - name: Build
         run: cargo build --package nvoc-srv --all-targets --all-features
 
+  rust-stressor-cuda-rs:
+    name: cli-stressor-cuda-rs (non-CUDA)
+    needs: changes
+    if: >-
+      needs.changes.outputs.ci_config == 'true' ||
+      needs.changes.outputs.rust_base == 'true' ||
+      needs.changes.outputs.stressor_cuda_rs == 'true'
+    runs-on: ubuntu-slim
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy
+      - name: Clippy
+        run: cargo clippy --package cli-stressor-cuda-rs --all-targets --no-default-features -- -D warnings
+      - name: Test
+        run: cargo test --package cli-stressor-cuda-rs --all-targets --no-default-features
+
   python-tui:
     name: tui (${{ matrix.os }} / py${{ matrix.python-version }})
     needs: changes
-    if: needs.changes.outputs.tui == 'true'
+    if: >-
+      needs.changes.outputs.ci_config == 'true' ||
+      needs.changes.outputs.python_base == 'true' ||
+      needs.changes.outputs.rust_base == 'true' ||
+      needs.changes.outputs.nvoc_core == 'true' ||
+      needs.changes.outputs.auto_optimizer == 'true' ||
+      needs.changes.outputs.tui == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -209,7 +278,13 @@ jobs:
   python-gui:
     name: gui (sync + import smoke)
     needs: changes
-    if: needs.changes.outputs.gui == 'true'
+    if: >-
+      needs.changes.outputs.ci_config == 'true' ||
+      needs.changes.outputs.python_base == 'true' ||
+      needs.changes.outputs.rust_base == 'true' ||
+      needs.changes.outputs.nvoc_core == 'true' ||
+      needs.changes.outputs.auto_optimizer == 'true' ||
+      needs.changes.outputs.gui == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -232,7 +307,10 @@ jobs:
   python-stressor-cuda:
     name: stressor compile (cli-stressor-cuda)
     needs: changes
-    if: needs.changes.outputs.stressor_cuda == 'true'
+    if: >-
+      needs.changes.outputs.ci_config == 'true' ||
+      needs.changes.outputs.python_base == 'true' ||
+      needs.changes.outputs.stressor_cuda == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -256,7 +334,10 @@ jobs:
   python-stressor-opencl:
     name: stressor compile (cli-stressor-opencl)
     needs: changes
-    if: needs.changes.outputs.stressor_opencl == 'true'
+    if: >-
+      needs.changes.outputs.ci_config == 'true' ||
+      needs.changes.outputs.python_base == 'true' ||
+      needs.changes.outputs.stressor_opencl == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -334,8 +415,10 @@ jobs:
       - clippy
       - changes
       - rust-nvoc-core
+      - rust-nvoc-python
       - rust-auto-optimizer
       - rust-srv
+      - rust-stressor-cuda-rs
       - rust-crate-versions
       - python-tui
       - python-gui

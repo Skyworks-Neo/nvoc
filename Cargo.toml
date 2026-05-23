@@ -1,5 +1,11 @@
 [workspace]
-members = ["nvoc-core", "auto-optimizer", "srv", "cli-stressor-cuda-rs"]
+members = [
+  "nvoc-core",
+  "auto-optimizer",
+  "srv",
+  "cli-stressor-cuda-rs",
+  "nvoc-python",
+]
 resolver = "3"
 
 [workspace.package]
