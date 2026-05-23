@@ -51,7 +51,7 @@ class OverclockController(PaneController):
         mem_offset: int,
         pstart: str,
         pend: str,
-    ) -> None:
+    ) -> str:
         native.set_clock_offset(gpu, backend, "core", core_offset, pstart)
         native.set_clock_offset(gpu, backend, "memory", mem_offset, pstart)
         if pend:
@@ -59,6 +59,7 @@ class OverclockController(PaneController):
                 native.set_nvml_pstate_lock(gpu, pstart, pend)
             else:
                 native.set_nvapi_pstate_lock(gpu, pstart, pend)
+        return f"Successfully applied {backend} overclock."
 
     def apply_limits(
         self,
@@ -68,11 +69,12 @@ class OverclockController(PaneController):
         power_limit: int,
         thermal_limit: int,
         voltage_boost: int,
-    ) -> None:
+    ) -> str:
         native.set_power_limit(gpu, backend, power_limit)
         if backend == "nvapi":
             native.set_thermal_limit(gpu, thermal_limit)
             native.set_voltage_boost(gpu, voltage_boost)
+        return f"Successfully applied {backend} limits."
 
     def apply_fan(
         self,
@@ -83,11 +85,13 @@ class OverclockController(PaneController):
         reset: bool,
         policy: str,
         level: int,
-    ) -> None:
+    ) -> str:
         if reset:
             native.set_fan(gpu, backend, fan_id, "auto", 0)
+            return "Successfully reset fan control."
         else:
             native.set_fan(gpu, backend, fan_id, policy, level)
+            return f"Successfully applied fan {fan_id} {policy} level {level}%."
 
     def handle_button(self, button_id: str) -> bool:
         if button_id == "oc-apply":
@@ -106,8 +110,8 @@ class OverclockController(PaneController):
                 mem_offset=mem_offset,
                 pstart=pstart,
                 pend=pend,
-            ) -> None:
-                self.apply_oc(
+            ) -> str:
+                return self.apply_oc(
                     native, gpu, backend, core_offset, mem_offset, pstart, pend
                 )
 
@@ -128,12 +132,14 @@ class OverclockController(PaneController):
                         "reset core offset",
                         lambda native, gpu=gpu, backend=str(backend): (
                             native.set_clock_offset(gpu, backend, "core", 0, "P0")
+                            or "Successfully reset core offset."
                         ),
                     ),
                     (
                         "reset memory offset",
                         lambda native, gpu=gpu, backend=str(backend): (
                             native.set_clock_offset(gpu, backend, "memory", 0, "P0")
+                            or "Successfully reset memory offset."
                         ),
                     ),
                 ]
@@ -153,8 +159,8 @@ class OverclockController(PaneController):
                 power_limit=power_limit,
                 thermal_limit=thermal_limit,
                 voltage_boost=voltage_boost,
-            ) -> None:
-                self.apply_limits(
+            ) -> str:
+                return self.apply_limits(
                     native,
                     gpu,
                     backend,
@@ -170,9 +176,14 @@ class OverclockController(PaneController):
             return True
         if button_id == "reset-limits":
             gpu = self.app.selected_gpu_target()
+
+            def reset_limits(native, gpu=gpu) -> str:
+                native.reset_all(gpu, None)
+                return "Successfully reset all limits."
+
             self.app.run_native_action(
                 "reset all limits",
-                lambda native, gpu=gpu: native.reset_all(gpu, None),
+                reset_limits,
             )
             return True
         if button_id == "fan-apply":
@@ -196,8 +207,10 @@ class OverclockController(PaneController):
                 fan_id=fan_id,
                 policy=policy,
                 level=level,
-            ) -> None:
-                self.apply_fan(native, gpu, backend, fan_id, False, policy, level)
+            ) -> str:
+                return self.apply_fan(
+                    native, gpu, backend, fan_id, False, policy, level
+                )
 
             self.app.run_native_action(
                 "apply fan",
@@ -214,8 +227,8 @@ class OverclockController(PaneController):
             )
             fan_id = str(self.app.query_one("#fan-id", Select).value or "all")
 
-            def reset_fan(native, gpu=gpu, backend=backend, fan_id=fan_id) -> None:
-                self.apply_fan(native, gpu, backend, fan_id, True, "auto", 0)
+            def reset_fan(native, gpu=gpu, backend=backend, fan_id=fan_id) -> str:
+                return self.apply_fan(native, gpu, backend, fan_id, True, "auto", 0)
 
             self.app.run_native_action(
                 "reset fan",

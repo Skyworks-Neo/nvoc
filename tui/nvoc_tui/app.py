@@ -192,14 +192,18 @@ class NVOCApp(App[None]):
 
         start_next()
 
-    def run_query(self, command_name: str, callback) -> None:
+    def run_query(
+        self, command_name: str, callback, *, log_output: bool = True
+    ) -> None:
         gpu = self.selected_gpu_target()
         if gpu is None:
+            if log_output:
+                self.write_log("No GPU selected.")
             callback(-1, "No GPU selected.", {})
             return
 
         def finish_query(code: int, output: str, parsed: dict) -> None:
-            if output:
+            if output and (log_output or code != 0):
                 self.write_log(output)
             callback(code, output, parsed)
 
@@ -317,9 +321,13 @@ class NVOCApp(App[None]):
         if not self.gpu_args():
             self.dashboard_controller.update_metrics()
             return
-        self.run_query("info", self.dashboard_controller.on_info_loaded)
-        self.run_query("status", self.dashboard_controller.on_status_loaded)
-        self.run_query("get", self.dashboard_controller.on_get_loaded)
+        self.run_query(
+            "info", self.dashboard_controller.on_info_loaded, log_output=False
+        )
+        self.run_query(
+            "status", self.dashboard_controller.on_status_loaded, log_output=False
+        )
+        self.run_query("get", self.dashboard_controller.on_get_loaded, log_output=False)
 
     def on_select_changed(self, event: Select.Changed) -> None:
         if event.select.id == "gpu-select":

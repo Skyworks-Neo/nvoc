@@ -249,15 +249,26 @@ class VFCurveController(PaneController):
             return True
         if button_id == "vf-reset":
             gpu = self.app.selected_gpu_target()
+
+            def reset_vfp(native, gpu=gpu) -> str:
+                native.reset_vfp_deltas(gpu, "all")
+                return "Successfully reset VFP deltas."
+
             self.app.run_native_action(
                 "reset VFP deltas",
-                lambda native, gpu=gpu: native.reset_vfp_deltas(gpu, "all"),
+                reset_vfp,
             )
             return True
         if button_id == "vf-unlock":
             gpu = self.app.selected_gpu_target()
+
+            def reset_vfp_lock(native, gpu=gpu) -> str:
+                native.reset_vfp_lock(gpu)
+                return "Successfully reset VFP lock."
+
             self.app.run_native_action(
-                "reset VFP lock", lambda native, gpu=gpu: native.reset_vfp_lock(gpu)
+                "reset VFP lock",
+                reset_vfp_lock,
             )
             return True
         if button_id == "vf-apply-adj":
@@ -267,11 +278,16 @@ class VFCurveController(PaneController):
             if start > end:
                 start, end = end, start
             gpu = self.app.selected_gpu_target()
+
+            def apply_vfp_delta(
+                native, gpu=gpu, start=start, end=end, delta=delta
+            ) -> str:
+                native.set_vfp_range_delta(gpu, start, end, delta * 1000)
+                return f"Successfully applied {delta} MHz VFP delta to points {start}-{end}."
+
             self.app.run_native_action(
                 "apply VFP range delta",
-                lambda native, gpu=gpu, start=start, end=end, delta=delta: (
-                    native.set_vfp_range_delta(gpu, start, end, delta * 1000)
-                ),
+                apply_vfp_delta,
             )
             return True
         if button_id == "vf-lock-voltage":
@@ -295,11 +311,20 @@ class VFCurveController(PaneController):
                     )
                     return True
             gpu = self.app.selected_gpu_target()
+
+            def lock_vfp_voltage(
+                native, gpu=gpu, point=point, voltage_uv=voltage_uv
+            ) -> str:
+                native.set_vfp_voltage_lock(gpu, point, voltage_uv, False)
+                if voltage_uv is not None:
+                    return (
+                        f"Successfully locked VFP voltage to {voltage_uv / 1000:g} mV."
+                    )
+                return f"Successfully locked VFP voltage to point {point}."
+
             self.app.run_native_action(
                 "lock VFP voltage",
-                lambda native, gpu=gpu, point=point, voltage_uv=voltage_uv: (
-                    native.set_vfp_voltage_lock(gpu, point, voltage_uv, False)
-                ),
+                lock_vfp_voltage,
             )
             return True
         if button_id == "vf-lock-core":
@@ -310,13 +335,14 @@ class VFCurveController(PaneController):
 
             def lock_core(
                 native, gpu=gpu, backend=backend, min_mhz=min_mhz, max_mhz=max_mhz
-            ):
+            ) -> str:
                 if backend == "nvapi":
                     native.set_vfp_frequency_lock(
                         gpu, "core", max_mhz * 1000, min_mhz * 1000
                     )
                 else:
                     native.set_locked_clocks(gpu, backend, "core", min_mhz, max_mhz)
+                return f"Successfully locked core clocks to {min_mhz}-{max_mhz} MHz."
 
             self.app.run_native_action(
                 "lock core clocks",
@@ -327,11 +353,12 @@ class VFCurveController(PaneController):
             backend = str(self.app.query_one("#vf-freq-api", Select).value or "nvml")
             gpu = self.app.selected_gpu_target()
 
-            def reset_core(native, gpu=gpu, backend=backend):
+            def reset_core(native, gpu=gpu, backend=backend) -> str:
                 if backend == "nvapi":
                     native.reset_vfp_frequency_lock(gpu, "core")
                 else:
                     native.reset_core_clocks(gpu, backend)
+                return "Successfully reset core clocks."
 
             self.app.run_native_action(
                 "reset core clocks",
@@ -346,13 +373,14 @@ class VFCurveController(PaneController):
 
             def lock_mem(
                 native, gpu=gpu, backend=backend, min_mhz=min_mhz, max_mhz=max_mhz
-            ):
+            ) -> str:
                 if backend == "nvapi":
                     native.set_vfp_frequency_lock(
                         gpu, "memory", max_mhz * 1000, min_mhz * 1000
                     )
                 else:
                     native.set_locked_clocks(gpu, backend, "memory", min_mhz, max_mhz)
+                return f"Successfully locked memory clocks to {min_mhz}-{max_mhz} MHz."
 
             self.app.run_native_action(
                 "lock memory clocks",
@@ -363,11 +391,12 @@ class VFCurveController(PaneController):
             backend = str(self.app.query_one("#vf-freq-api", Select).value or "nvml")
             gpu = self.app.selected_gpu_target()
 
-            def reset_mem(native, gpu=gpu, backend=backend):
+            def reset_mem(native, gpu=gpu, backend=backend) -> str:
                 if backend == "nvapi":
                     native.reset_vfp_frequency_lock(gpu, "memory")
                 else:
                     native.reset_mem_clocks(gpu, backend)
+                return "Successfully reset memory clocks."
 
             self.app.run_native_action(
                 "reset memory clocks",

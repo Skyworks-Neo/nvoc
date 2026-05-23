@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+from nvoc_tui.controllers.dashboard import DashboardController
 from nvoc_tui.controllers.overclock import OverclockController
 from nvoc_tui.controllers.vfcurve import VFCurveController
 from nvoc_tui.models import AppConfig, GpuCache
@@ -15,8 +16,12 @@ class FakeApp:
         self.widgets: dict[str, object] = {}
         self.actions: list[str] = []
         self.action_outputs: list[str | None] = []
+        self.query_calls: list[tuple] = []
         self.logs: list[str] = []
         self.native = FakeNative()
+        self.native_service = SimpleNamespace(
+            action_state=SimpleNamespace(running=False)
+        )
 
     def query_one(self, selector: str, _widget_type=None):
         return self.widgets[selector]
@@ -32,7 +37,15 @@ class FakeApp:
 
     def run_native_action(self, description: str, action) -> None:
         self.actions.append(description)
-        self.action_outputs.append(action(self.native))
+        output = action(self.native)
+        self.action_outputs.append(output)
+        if output:
+            self.write_log(output)
+
+    def run_query(
+        self, command_name: str, callback, *, log_output: bool = True
+    ) -> None:
+        self.query_calls.append((command_name, callback, log_output))
 
     def write_log(self, text: str) -> None:
         self.logs.append(text)
@@ -71,6 +84,27 @@ class FakeNative:
     def set_vfp_voltage_lock(self, gpu, point, voltage_uv, immediate):
         self.calls.append(("set_vfp_voltage_lock", gpu, point, voltage_uv, immediate))
 
+    def reset_vfp_deltas(self, gpu, domain):
+        self.calls.append(("reset_vfp_deltas", gpu, domain))
+
+    def reset_vfp_lock(self, gpu):
+        self.calls.append(("reset_vfp_lock", gpu))
+
+    def set_vfp_range_delta(self, gpu, start, end, delta):
+        self.calls.append(("set_vfp_range_delta", gpu, start, end, delta))
+
+
+def test_dashboard_tick_suppresses_status_json_output() -> None:
+    app = FakeApp()
+
+    DashboardController(app).tick()
+
+    assert len(app.query_calls) == 1
+    command_name, callback, log_output = app.query_calls[0]
+    assert command_name == "status"
+    assert callback.__name__ == "on_status_loaded"
+    assert log_output is False
+
 
 def test_overclock_apply_limits_for_nvapi_calls_native_apis() -> None:
     app = FakeApp()
@@ -84,6 +118,8 @@ def test_overclock_apply_limits_for_nvapi_calls_native_apis() -> None:
     assert OverclockController(app).handle_button("limits-apply") is True
 
     assert app.actions == ["apply limits"]
+    assert app.action_outputs == ["Successfully applied nvapi limits."]
+    assert app.logs == ["Successfully applied nvapi limits."]
     assert app.native.calls == [
         ("set_power_limit", "0x0000", "nvapi", 110),
         ("set_thermal_limit", "0x0000", 88),
@@ -101,6 +137,8 @@ def test_overclock_fan_reset_preserves_target() -> None:
     assert OverclockController(app).handle_button("fan-reset") is True
 
     assert app.actions == ["reset fan"]
+    assert app.action_outputs == ["Successfully reset fan control."]
+    assert app.logs == ["Successfully reset fan control."]
     assert app.native.calls == [("set_fan", "0x0000", "nvml-cooler", "2", "auto", 0)]
 
 
@@ -170,4 +208,35 @@ def test_vfcurve_lock_voltage_accepts_mv_value() -> None:
     assert VFCurveController(app).handle_button("vf-lock-voltage") is True
 
     assert app.actions == ["lock VFP voltage"]
+    assert app.action_outputs == ["Successfully locked VFP voltage to 875.5 mV."]
+    assert app.logs == ["Successfully locked VFP voltage to 875.5 mV."]
     assert app.native.calls == [("set_vfp_voltage_lock", "0x0000", None, 875500, False)]
+
+
+def test_vfcurve_reset_vfp_reports_success() -> None:
+    app = FakeApp()
+
+    assert VFCurveController(app).handle_button("vf-reset") is True
+
+    assert app.actions == ["reset VFP deltas"]
+    assert app.action_outputs == ["Successfully reset VFP deltas."]
+    assert app.logs == ["Successfully reset VFP deltas."]
+    assert app.native.calls == [("reset_vfp_deltas", "0x0000", "all")]
+
+
+def test_vfcurve_apply_adjustment_reports_success() -> None:
+    app = FakeApp()
+    app.widgets = {
+        "#vf-range-start": SimpleNamespace(value="10"),
+        "#vf-range-end": SimpleNamespace(value="5"),
+        "#vf-delta": SimpleNamespace(value="125"),
+    }
+
+    assert VFCurveController(app).handle_button("vf-apply-adj") is True
+
+    assert app.actions == ["apply VFP range delta"]
+    assert app.action_outputs == [
+        "Successfully applied 125 MHz VFP delta to points 5-10."
+    ]
+    assert app.logs == ["Successfully applied 125 MHz VFP delta to points 5-10."]
+    assert app.native.calls == [("set_vfp_range_delta", "0x0000", 5, 10, 125000)]

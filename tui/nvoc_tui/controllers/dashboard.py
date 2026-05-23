@@ -25,7 +25,7 @@ class DashboardController(PaneController):
     def tick(self) -> None:
         if self.app.native_service.action_state.running:
             return
-        self.app.run_query("status", self.on_status_loaded)
+        self.app.run_query("status", self.on_status_loaded, log_output=False)
 
     def on_info_loaded(self, code: int, output: str, parsed: dict) -> None:
         if code != 0 and not parsed:
