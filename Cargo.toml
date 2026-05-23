@@ -33,13 +33,13 @@ clap = { version = "4.5.60", features = [
   "error-context",
   "derive"
 ] }
-compio = { version = "0.15.0", features = ["runtime", "time"] }
+compio = { version = "0.18.0", features = ["runtime", "time"] }
 csv = "1.4.0"
 futures-util = "0.3"
-flume = "0.11"
+flume = "0.12.0"
 humantime = "2.2.0"
 log = "0.4"
-log2 = "0.2.2"
+log2 = "0.3.0"
 gag = "1.0.0"
 colored = "3.1.1"
 num-traits = "0.2.19"
