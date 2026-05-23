@@ -9,6 +9,7 @@ use super::oc_profile_function::{
     key_point_extractor,
 };
 use clap::ArgMatches;
+use colored::{Colorize, control};
 use num_traits::pow;
 use nvoc_core::{
     ClockDomain, Error, GpuOcParams, GpuOperation, GpuTarget, KilohertzDelta,
@@ -27,6 +28,175 @@ use std::time::{Duration, Instant};
 use std::time::SystemTime;
 
 use std::fs;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+mod scan_cli_color {
+    use super::{AtomicBool, Colorize, Ordering, control};
+
+    static COLOR_ENABLED: AtomicBool = AtomicBool::new(true);
+
+    pub(super) fn init(no_color_flag: bool) {
+        let disable = no_color_flag || std::env::var_os("NO_COLOR").is_some();
+        COLOR_ENABLED.store(!disable, Ordering::Relaxed);
+        if disable {
+            control::set_override(false);
+        }
+    }
+
+    fn enabled() -> bool {
+        COLOR_ENABLED.load(Ordering::Relaxed)
+    }
+
+    fn is_numeric_like(token: &str) -> bool {
+        let mut has_digit = false;
+        for c in token.chars() {
+            if c.is_ascii_digit() {
+                has_digit = true;
+                continue;
+            }
+            if matches!(c, '+' | '-' | '.' | '#' | ':' | '/' | ',') {
+                continue;
+            }
+            return false;
+        }
+        has_digit
+    }
+
+    fn split_affixes(token: &str) -> (&str, &str, &str) {
+        let start = token
+            .char_indices()
+            .find(|(_, c)| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+            .map(|(i, _)| i)
+            .unwrap_or(token.len());
+        let end = token
+            .char_indices()
+            .rev()
+            .find(|(_, c)| c.is_ascii_alphanumeric() || matches!(c, '%' | '+' | '°'))
+            .map(|(i, c)| i + c.len_utf8())
+            .unwrap_or(0);
+        if start >= end {
+            return (token, "", "");
+        }
+        (&token[..start], &token[start..end], &token[end..])
+    }
+
+    fn style_plain(core: &str, is_stderr: bool) -> String {
+        if is_stderr {
+            core.bright_white().to_string()
+        } else {
+            core.normal().to_string()
+        }
+    }
+
+    fn style_number(core: &str, is_stderr: bool) -> String {
+        if is_stderr {
+            core.bright_cyan().bold().to_string()
+        } else {
+            core.bright_blue().bold().to_string()
+        }
+    }
+
+    fn style_keyword(core: &str, is_stderr: bool) -> String {
+        let lower = core.to_ascii_lowercase();
+        if lower.contains("failed") || lower.contains("error") || lower.contains("crash") {
+            return core.red().bold().to_string();
+        }
+        if lower.contains("warning") {
+            return core.yellow().bold().to_string();
+        }
+        if lower.contains("skipped") || lower.contains("skip") {
+            return core.bright_yellow().bold().to_string();
+        }
+        if lower.contains("succeed") || lower == "passed" {
+            return core.green().bold().to_string();
+        }
+        if lower.contains("scanner") || lower.contains("point") || lower.contains("gpu") {
+            return core.bright_blue().bold().to_string();
+        }
+        if lower.contains("voltage") || lower.contains("uv") || lower.contains("mv") {
+            return core.bright_magenta().bold().to_string();
+        }
+        if lower.contains("freq")
+            || lower.contains("clock")
+            || lower.contains("khz")
+            || lower.contains("mhz")
+            || lower.contains("ghz")
+        {
+            return core.bright_cyan().bold().to_string();
+        }
+        if lower.contains("percent") || lower.contains("progress") || lower.ends_with('%') {
+            return core.bright_yellow().bold().to_string();
+        }
+        style_plain(core, is_stderr)
+    }
+
+    fn color_core_token(core: &str, is_stderr: bool) -> String {
+        let lower = core.to_ascii_lowercase();
+        if is_numeric_like(core) {
+            return style_number(core, is_stderr);
+        }
+
+        if lower.ends_with("khz") || lower.ends_with("mhz") || lower.ends_with("ghz") {
+            return core.bright_cyan().bold().to_string();
+        }
+        if lower.ends_with("uv") || lower.ends_with("mv") || lower.ends_with('v') {
+            return core.bright_magenta().bold().to_string();
+        }
+        if lower.ends_with('%') {
+            return core.bright_yellow().bold().to_string();
+        }
+        if lower.ends_with("ms") || lower.ends_with('s') {
+            return core.bright_green().bold().to_string();
+        }
+
+        style_keyword(core, is_stderr)
+    }
+
+    pub(super) fn stylize(message: &str, is_stderr: bool) -> String {
+        if !enabled() {
+            return message.to_string();
+        }
+
+        message
+            .split(' ')
+            .map(|token| {
+                if token.is_empty() {
+                    return String::new();
+                }
+                let (prefix, core, suffix) = split_affixes(token);
+                if core.is_empty() {
+                    return token.to_string();
+                }
+                format!("{}{}{}", prefix, color_core_token(core, is_stderr), suffix)
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
+pub(super) fn init_scan_cli_color(no_color_flag: bool) {
+    scan_cli_color::init(no_color_flag);
+}
+
+macro_rules! println {
+    () => {
+        std::println!()
+    };
+    ($($arg:tt)*) => {{
+        let msg = format!($($arg)*);
+        std::println!("{}", scan_cli_color::stylize(&msg, false));
+    }};
+}
+
+macro_rules! eprintln {
+    () => {
+        std::eprintln!()
+    };
+    ($($arg:tt)*) => {{
+        let msg = format!($($arg)*);
+        std::eprintln!("{}", scan_cli_color::stylize(&msg, true));
+    }};
+}
 
 fn run_output<O: GpuOperation>(gpu: &GpuTarget<'_>, op: O) -> Result<O::Output, Error> {
     run(gpu, op).map(|report| report.output)
@@ -253,7 +423,11 @@ mod pressure_runner {
         Some(counts)
     }
 
-    pub(super) fn run(gpu: &GpuTarget<'_>, _matches: &ArgMatches, cfg: &TestPressureConfig<'_>) -> i32 {
+    pub(super) fn run(
+        gpu: &GpuTarget<'_>,
+        _matches: &ArgMatches,
+        cfg: &TestPressureConfig<'_>,
+    ) -> i32 {
         let app_path = String::from(cfg.test_exe);
         // Build argv as a structured Vec so paths or codes containing whitespace
         // are not silently re-tokenized into multiple arguments.
@@ -648,13 +822,14 @@ fn pre_load_vf_recheck(gpu: &GpuTarget<'_>, point: usize) -> bool {
     sleep(Duration::from_secs(1));
 
     // voltage_frequency_check 可能仍返回 Result，我们这里捕获错误并当作失败处理
-    let checks = match voltage_frequency_check(std::slice::from_ref(gpu), point, print_scan_separator) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Failed to read V/F info: {e}");
-            return false;
-        }
-    };
+    let checks =
+        match voltage_frequency_check(std::slice::from_ref(gpu), point, print_scan_separator) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("Failed to read V/F info: {e}");
+                return false;
+            }
+        };
 
     if checks.iter().all(|check| check.precise) {
         return true; // 检查通过
@@ -1549,9 +1724,17 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
         // Now you can search for the Memory Clock:
         print_scan_separator();
         if let Some((_, memory_clock)) = clocks.iter().find(|(name, _)| name.contains("Memory")) {
-            println!("Memory Clock: {}", memory_clock);
+            println!(
+                "{}: {}",
+                nvoc_core::color::stylize_title("Memory Clock"),
+                nvoc_core::color::stylize(&format!("{}", memory_clock), false)
+            );
             init_vmem_oc_value = (memory_clock.0 / 25) as i32;
-            println!("Memory OC start at: +{} MHz", init_vmem_oc_value / 1000);
+            println!(
+                "{} {}",
+                nvoc_core::color::stylize_title("Memory OC start at"),
+                nvoc_core::color::stylize(&format!("+{} MHz", init_vmem_oc_value / 1000), false)
+            );
         }
         print_scan_separator();
 
@@ -1892,11 +2075,22 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
             let mem_freq_step_exp = 8;
             if let Some((_, memory_clock)) = clocks.iter().find(|(name, _)| name.contains("Memory"))
             {
-                println!("Memory Clock: {}", memory_clock);
                 println!(
-                    "Memory OC test start at: +{} MHz(+{}%)",
-                    init_vmem_oc_value / 1000,
-                    100 * init_vmem_oc_value / memory_clock.0 as i32
+                    "{}: {}",
+                    nvoc_core::color::stylize_title("Memory Clock"),
+                    nvoc_core::color::stylize(&format!("{}", memory_clock), false)
+                );
+                println!(
+                    "{} {}",
+                    nvoc_core::color::stylize_title("Memory OC test start at"),
+                    nvoc_core::color::stylize(
+                        &format!(
+                            "+{} MHz(+{}%)",
+                            init_vmem_oc_value / 1000,
+                            100 * init_vmem_oc_value / memory_clock.0 as i32
+                        ),
+                        false
+                    )
                 );
                 mem_oc_safe_limit = memory_clock.0 as i32 / 8;
             };

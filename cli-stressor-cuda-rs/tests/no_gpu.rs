@@ -96,7 +96,8 @@ fn test_parse_kernel_param_overrides() {
         parse_kernel_param_overrides("gemm:precisions=fp16|bf16")
             .unwrap()
             .iter()
-            .any(|v| v.kind == KernelType::Gemm
-                && v.precisions.as_ref().map(|p| p.len()) == Some(2))
+            .any(
+                |v| v.kind == KernelType::Gemm && v.precisions.as_ref().map(|p| p.len()) == Some(2)
+            )
     );
 }

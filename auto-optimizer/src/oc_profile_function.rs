@@ -7,6 +7,7 @@ use super::platform::panic_windows_only;
 use csv::{ReaderBuilder, StringRecord, WriterBuilder};
 use num_traits::abs;
 use nvoc_core::Error;
+use nvoc_core::color::stylize;
 use nvoc_core::{ClockDomain, GpuTarget, VfPoint};
 use nvoc_core::{
     CoolerPolicy, CoolerSettings, FanCoolerId, Kilohertz, KilohertzDelta, Microvolts, Percentage,
@@ -425,27 +426,25 @@ pub fn handle_vfp_export(gpu: &GpuTarget<'_>, matches: &clap::ArgMatches) -> Res
     }
 
     if cfg.dynamic {
-        let cuda_device = matches
-            .get_one::<u32>("cuda_device")
-            .copied()
-            .or_else(|| {
-                // 先尝试 get_many（多值）
-                let specs = matches
-                    .get_many::<String>("gpu")
-                    .map(|v| v.collect::<Vec<_>>());
-                // println!("[DEBUG]{:?}", specs);
+        let cuda_device = matches.get_one::<u32>("cuda_device").copied().or_else(|| {
+            // 先尝试 get_many（多值）
+            let specs = matches
+                .get_many::<String>("gpu")
+                .map(|v| v.collect::<Vec<_>>());
+            // println!("[DEBUG]{:?}", specs);
 
-                match specs {
-                    Some(ref s) if s.len() == 1 => s[0].parse::<u32>().ok().filter(|&n| n < 256),
-                    Some(_) => None, // 多个 GPU 不自动选择
-                    None => {
-                        // 退而求其次，尝试 get_one（单值）
-                        matches.get_one::<String>("gpu")
-                            .and_then(|s| s.parse::<u32>().ok())
-                            .filter(|&n| n < 256)
-                    }
+            match specs {
+                Some(ref s) if s.len() == 1 => s[0].parse::<u32>().ok().filter(|&n| n < 256),
+                Some(_) => None, // 多个 GPU 不自动选择
+                None => {
+                    // 退而求其次，尝试 get_one（单值）
+                    matches
+                        .get_one::<String>("gpu")
+                        .and_then(|s| s.parse::<u32>().ok())
+                        .filter(|&n| n < 256)
                 }
-            });
+            }
+        });
         // println!("[DEBUG]{:?}",cuda_device);
 
         if let Err(e) = apply_autoscan_profile(gpu, matches, 30) {
@@ -1249,7 +1248,13 @@ pub fn apply_autoscan_profile(
                 boost: Percentage(100),
             },
         )?;
-        println!("Successfully set VDDQ boost to +100% (max allowed V_core in fact).");
+        println!(
+            "{}",
+            stylize(
+                "Successfully set VDDQ boost to +100% (max allowed V_core in fact).",
+                false
+            )
+        );
     }
 
     let settings = [
@@ -1270,7 +1275,13 @@ pub fn apply_autoscan_profile(
     ];
 
     set_nvapi_cooler_settings(gpu, settings)?;
-    println!("Successfully set Cooler1 and Cooler2 to {}%.", cooler_level);
+    println!(
+        "{}",
+        stylize(
+            &format!("Successfully set Cooler1 and Cooler2 to {}%.", cooler_level),
+            false
+        )
+    );
 
     match get_gpu_tdp_temp_limit(matches, print_scan_separator) {
         Ok((
@@ -1288,7 +1299,13 @@ pub fn apply_autoscan_profile(
                     limits: vec![_max_tdp_percent],
                 },
             )?;
-            println!("Successfully set the TDP to {}", _max_tdp_percent);
+            println!(
+                "{}",
+                stylize(
+                    &format!("Successfully set the TDP to {}", _max_tdp_percent),
+                    false
+                )
+            );
 
             for point in _pff_curve.points.iter_mut() {
                 point.y = Kilohertz(3456000);
@@ -1307,8 +1324,14 @@ pub fn apply_autoscan_profile(
                 },
             )?;
             println!(
-                "Successfully set the Temp_limit to {} and pff-curve to {}",
-                _max_temp_lim, _pff_curve
+                "{}",
+                stylize(
+                    &format!(
+                        "Successfully set the Temp_limit to {} and pff-curve to {}",
+                        _max_temp_lim, _pff_curve
+                    ),
+                    false
+                )
             );
         }
         Err(e) => {

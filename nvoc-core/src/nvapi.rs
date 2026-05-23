@@ -1,3 +1,4 @@
+use super::color::{stylize, stylize_title};
 use super::conv::{nvml_pstate_to_index, nvml_pstate_to_str};
 use super::error::Error;
 use super::gpu_type::{GpuType, fetch_gpu_type};
@@ -658,7 +659,7 @@ pub fn lock_vfp(gpus: &[&Gpu], request: VfpLockRequest, feedback_flag: bool) -> 
         {
             if count >= 4 {
                 flag = 1;
-                println!("voltage lock failed!");
+                println!("{}", stylize("voltage lock failed!", false));
                 break;
             }
 
@@ -675,16 +676,28 @@ pub fn lock_vfp(gpus: &[&Gpu], request: VfpLockRequest, feedback_flag: bool) -> 
             }
             core_v = gpu.inner().core_voltage()?;
             println!(
-                "Attempt {} FAILED==Target: {} mV, Current: v = {} mV, Margin: {} mV",
-                count,
-                v.0 / 1000,
-                core_v.0 / 1000,
-                (v.0 as i32 - core_v.0 as i32) / 1000
+                "{}",
+                stylize(
+                    &format!(
+                        "Attempt {} FAILED==Target: {} mV, Current: v = {} mV, Margin: {} mV",
+                        count,
+                        v.0 / 1000,
+                        core_v.0 / 1000,
+                        (v.0 as i32 - core_v.0 as i32) / 1000
+                    ),
+                    false
+                )
             );
             println!(
-                "Current assumed skewrate: {}mV/s, TAU SET TO {}ms",
-                skew_rate,
-                ((v.0 as i32 - core_v.0 as i32).abs() / skew_rate) as u64
+                "{}",
+                stylize(
+                    &format!(
+                        "Current assumed skewrate: {}mV/s, TAU SET TO {}ms",
+                        skew_rate,
+                        ((v.0 as i32 - core_v.0 as i32).abs() / skew_rate) as u64
+                    ),
+                    false
+                )
             );
             if skew_rate_enabled == 1 {
                 sleep(Duration::from_millis(
@@ -696,7 +709,7 @@ pub fn lock_vfp(gpus: &[&Gpu], request: VfpLockRequest, feedback_flag: bool) -> 
         }
 
         if count < 5 {
-            println!("SUCCESS",);
+            println!("{}", stylize("SUCCESS", false));
         }
         if flag == 1 {
             return Err(Error::Str("Failed to lock voltage"));
@@ -1221,7 +1234,14 @@ pub fn get_gpu_tdp_temp_limit(
             min_tdp_percentage = limit.range.min;
             default_tdp_percentage = limit.default;
             print_separator();
-            println!("Power Limit: {} ({} default)", limit.range, limit.default);
+            println!(
+                "{}: {}",
+                stylize_title("Power Limit"),
+                stylize(
+                    &format!("{} ({} default)", limit.range, limit.default),
+                    false
+                )
+            );
             println!(
                 "Min TDP: {:.2}W ({}), Default TDP: {:.2}W ({}), Max TDP: {:.2}W ({})",
                 min_tdp,
@@ -1242,13 +1262,24 @@ pub fn get_gpu_tdp_temp_limit(
                 .chain(iter::repeat(None)),
         ) {
             if let Some(limit) = limit {
-                println!("Thermal Limit {} ({} default)", limit.range, limit.default);
+                println!(
+                    "{} {}",
+                    stylize_title("Thermal Limit"),
+                    stylize(
+                        &format!("{} ({} default)", limit.range, limit.default),
+                        false
+                    )
+                );
                 min_temp_lim = limit.range.min;
                 max_temp_lim = limit.range.max;
                 default_temp_lim = limit.default;
                 if let Some(pff) = &limit.throttle_curve {
                     current_pff_curve = pff.clone();
-                    println!("Thermal Throttle {}", pff);
+                    println!(
+                        "{} {}",
+                        stylize_title("Thermal Throttle"),
+                        stylize(&format!("{}", pff), false)
+                    );
                 }
             }
         }
@@ -1287,7 +1318,13 @@ pub fn voltage_frequency_check(
         let readout_v = status.voltage.ok_or_else(|| Error::Custom("GPU did not report voltage in status; check if the GPU supports voltage monitoring".into()))?;
         let readout_f = status.clone().clocks;
         print_separator();
-        println!("[SCANNER] Rdout V: {:?}, F: {:?}", readout_v, readout_f);
+        println!(
+            "{}",
+            stylize(
+                &format!("[SCANNER] Rdout V: {:?}, F: {:?}", readout_v, readout_f),
+                false
+            )
+        );
 
         let current_point = status.clone().vfp.ok_or(Error::VfpUnsupported)?.graphics;
 
@@ -1305,19 +1342,37 @@ pub fn voltage_frequency_check(
             .frequency;
 
         println!(
-            "[SCANNER] Chking Pnt: {} (V: {}) with default F: {}, target F: {}",
-            point, default_v, default_f, current_f
+            "{}",
+            stylize(
+                &format!(
+                    "[SCANNER] Chking Pnt: {} (V: {}) with default F: {}, target F: {}",
+                    point, default_v, default_f, current_f
+                ),
+                false
+            )
         );
 
         let sensor_v = gpu.inner().core_voltage()?;
         let sensor_f = gpu.inner().clock_frequencies(ClockFrequencyType::Current)?;
 
-        println!("[SCANNER] current V: {}, F:{:?}", sensor_v, sensor_f);
+        println!(
+            "{}",
+            stylize(
+                &format!("[SCANNER] current V: {}, F:{:?}", sensor_v, sensor_f),
+                false
+            )
+        );
 
         if let Some((index, vfp_point)) = find_matching_vfp_point(&current_point, sensor_v) {
             println!(
-                "[SCANNER] Working VfPoint Inferred:{}, V = {:?}, F = {:?}",
-                index, vfp_point.voltage, vfp_point.frequency
+                "{}",
+                stylize(
+                    &format!(
+                        "[SCANNER] Working VfPoint Inferred:{}, V = {:?}, F = {:?}",
+                        index, vfp_point.voltage, vfp_point.frequency
+                    ),
+                    false
+                )
             );
             // Some Old GPU generations report a default_frequency of 0 for
             // VFP points. In those cases the "default frequency" field is not
@@ -1326,7 +1381,7 @@ pub fn voltage_frequency_check(
             // point to be near the requested point (within 5 indices).
             precise_flag = index.abs_diff(point) < 5;
         } else {
-            eprintln!("[SCANNER] No matching VfpPoint found");
+            eprintln!("{}", stylize("[SCANNER] No matching VfpPoint found", true));
             precise_flag = false;
         }
         print_separator();

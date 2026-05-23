@@ -1,5 +1,6 @@
 use super::cli_types::{OutputFormat, ResetSettings};
 use super::human;
+use nvoc_core::color::{stylize, stylize_title};
 use nvoc_core::{
     Celsius, ClockDomain, CoolerPolicy, GpuSettings, GpuTarget, GpuTdpTempLimits, Kilohertz,
     KilohertzDelta, Microvolts, MicrovoltsDelta, PState, Percentage,
@@ -915,28 +916,59 @@ fn print_nvml_status(nvml: &Nvml, selected_ids: &[u32]) -> Result<(), Error> {
         human::print_scan_separator();
         println!("GPU {} (NVML): {}", i, name);
         if let Some(t) = temp {
-            println!("  Temperature  : {} C", t);
+            println!(
+                "{} {}",
+                stylize_title("  Temperature  :"),
+                stylize(&format!("{} C", t), false)
+            );
         }
         if let Some(c) = core_clock {
-            println!("  Core Clock   : {} MHz", c);
+            println!(
+                "{} {}",
+                stylize_title("  Core Clock   :"),
+                stylize(&format!("{} MHz", c), false)
+            );
         }
         if let Some(m) = mem_clock {
-            println!("  Mem Clock    : {} MHz", m);
+            println!(
+                "{} {}",
+                stylize_title("  Mem Clock    :"),
+                stylize(&format!("{} MHz", m), false)
+            );
         }
         if let Some(p) = power_mw {
-            println!("  Power Usage  : {:.2} W", p as f32 / 1000.0);
+            println!(
+                "{} {}",
+                stylize_title("  Power Usage  :"),
+                stylize(&format!("{:.2} W", p as f32 / 1000.0), false)
+            );
         }
         if let Some(f) = fan {
-            println!("  Fan Speed    : {}%", f);
+            println!(
+                "{} {}",
+                stylize_title("  Fan Speed    :"),
+                stylize(&format!("{}%", f), false)
+            );
         }
         if let Some(u) = util {
-            println!("  GPU Util     : {}%  Mem Util: {}%", u.gpu, u.memory);
+            println!(
+                "{} {}",
+                stylize_title("  GPU Util     :"),
+                stylize(&format!("{}%  Mem Util: {}%", u.gpu, u.memory), false)
+            );
         }
         if let Some(m) = mem_info {
             println!(
-                "  VRAM         : {} / {} MiB",
-                m.used / (1024 * 1024),
-                m.total / (1024 * 1024)
+                "{} {}",
+                stylize_title("  VRAM         :"),
+                stylize(
+                    &format!(
+                        "{} / {} MiB",
+                        m.used / (1024 * 1024),
+                        m.total / (1024 * 1024)
+                    ),
+                    false
+                )
             );
         }
         human::print_scan_separator();
@@ -979,41 +1011,73 @@ pub fn handle_get(gpus: &[GpuTarget<'_>], oformat: OutputFormat) -> Result<(), E
                         || app_clocks.is_some()
                         || fan_info.is_some()
                     {
-                        println!("NVML Settings:");
+                        println!("{}", stylize_title("NVML Settings:"));
                         if let Some(power) = power_limit {
                             println!(
-                                "  Power Limit        : {:.2} W (Min: {:.2} W - Max: {:.2} W)",
-                                power.current_watts, power.min_watts, power.max_watts
+                                "{} {}",
+                                stylize_title("  Power Limit        :"),
+                                stylize(
+                                    &format!(
+                                        "{:.2} W (Min: {:.2} W - Max: {:.2} W)",
+                                        power.current_watts, power.min_watts, power.max_watts
+                                    ),
+                                    false
+                                )
                             );
                         }
                         if let Some(thresholds) = temp_thresholds {
-                            println!("  Temperature Thresholds:");
+                            println!("{}", stylize_title("  Temperature Thresholds:"));
                             for threshold in thresholds {
                                 match threshold.celsius {
-                                    Some(temp) => {
-                                        println!("    {:<16} : {} C", threshold.name, temp)
-                                    }
-                                    None => println!("    {:<16} : N/A", threshold.name),
+                                    Some(temp) => println!(
+                                        "{} {}",
+                                        stylize_title(&format!("    {:<16} :", threshold.name)),
+                                        stylize(&format!("{} C", temp), false)
+                                    ),
+                                    None => println!(
+                                        "{} {}",
+                                        stylize_title(&format!("    {:<16} :", threshold.name)),
+                                        stylize_title("N/A")
+                                    ),
                                 }
                             }
                         }
                         if let Some(fan) = fan_info
                             && let (Some(min_fan), Some(max_fan)) = (fan.min_speed, fan.max_speed)
                         {
-                            println!("  Fan Speed Range    : {}% - {}%", min_fan, max_fan);
+                            println!(
+                                "{} {}",
+                                stylize_title("  Fan Speed Range    :"),
+                                stylize(&format!("{}% - {}%", min_fan, max_fan), false)
+                            );
                         }
                         if let Some(pstates) = pstate_info {
-                            println!("  Supported P-States:");
+                            println!("{}", stylize_title("  Supported P-States:"));
                             for pstate_range in pstates {
                                 let pstate_str = nvoc_core::nvml_pstate_to_str(pstate_range.pstate);
-                                println!("    {}:", pstate_str);
+                                println!("{}", stylize_title(&format!("    {}:", pstate_str)));
                                 println!(
-                                    "      Core Clock Range   : {} MHz - {} MHz",
-                                    pstate_range.min_core_mhz, pstate_range.max_core_mhz
+                                    "{} {}",
+                                    stylize_title("      Core Clock Range   :"),
+                                    stylize(
+                                        &format!(
+                                            "{} MHz - {} MHz",
+                                            pstate_range.min_core_mhz, pstate_range.max_core_mhz
+                                        ),
+                                        false
+                                    )
                                 );
                                 println!(
-                                    "      Mem Clock Range    : {} MHz - {} MHz",
-                                    pstate_range.min_memory_mhz, pstate_range.max_memory_mhz
+                                    "{} {}",
+                                    stylize_title("      Mem Clock Range    :"),
+                                    stylize(
+                                        &format!(
+                                            "{} MHz - {} MHz",
+                                            pstate_range.min_memory_mhz,
+                                            pstate_range.max_memory_mhz
+                                        ),
+                                        false
+                                    )
                                 );
 
                                 if let Ok(core_offset) = run(
@@ -1024,8 +1088,9 @@ pub fn handle_get(gpus: &[GpuTarget<'_>], oformat: OutputFormat) -> Result<(), E
                                     },
                                 ) {
                                     println!(
-                                        "      Core Clock Offset  : {} MHz",
-                                        core_offset.output.mhz
+                                        "{} {}",
+                                        stylize_title("      Core Clock Offset  :"),
+                                        stylize(&format!("{} MHz", core_offset.output.mhz), false)
                                     );
                                 }
                                 if let Ok(mem_offset) = run(
@@ -1036,8 +1101,9 @@ pub fn handle_get(gpus: &[GpuTarget<'_>], oformat: OutputFormat) -> Result<(), E
                                     },
                                 ) {
                                     println!(
-                                        "      Mem Clock Offset   : {} MHz",
-                                        mem_offset.output.mhz
+                                        "{} {}",
+                                        stylize_title("      Mem Clock Offset   :"),
+                                        stylize(&format!("{} MHz", mem_offset.output.mhz), false)
                                     );
                                 }
                             }
@@ -1053,8 +1119,9 @@ pub fn handle_get(gpus: &[GpuTarget<'_>], oformat: OutputFormat) -> Result<(), E
                                 },
                             ) {
                                 println!(
-                                    "  Core Clock Offset (P0) : {} MHz",
-                                    core_offset.output.mhz
+                                    "{} {}",
+                                    stylize_title("  Core Clock Offset (P0) :"),
+                                    stylize(&format!("{} MHz", core_offset.output.mhz), false)
                                 );
                             }
                             if let Ok(mem_offset) = run(
@@ -1065,14 +1132,15 @@ pub fn handle_get(gpus: &[GpuTarget<'_>], oformat: OutputFormat) -> Result<(), E
                                 },
                             ) {
                                 println!(
-                                    "  Mem Clock Offset (P0)  : {} MHz",
-                                    mem_offset.output.mhz
+                                    "{} {}",
+                                    stylize_title("  Mem Clock Offset (P0)  :"),
+                                    stylize(&format!("{} MHz", mem_offset.output.mhz), false)
                                 );
                             }
                         }
                         if let Some(clocks) = app_clocks {
                             if !clocks.is_empty() {
-                                println!("  Supported Applications Clocks:");
+                                println!("{}", stylize_title("  Supported Applications Clocks:"));
                                 for app_clock in clocks {
                                     let mem_clk = app_clock.memory_mhz;
                                     let mut gfx_clocks = app_clock.graphics_mhz;

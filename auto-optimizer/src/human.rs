@@ -1,3 +1,4 @@
+use nvoc_core::color::{stylize, stylize_title};
 use nvoc_core::{
     ClockDomain, CoolerControl, CoolerPolicy, GpuInfo, GpuSettings, GpuStatus, GpuTarget,
     QueryPowerLimits, legacy_core_overvolt_ranges, run,
@@ -9,7 +10,7 @@ const SCAN_SEPARATOR: &str =
     "================================================================================";
 
 pub fn print_scan_separator() {
-    println!("{}", SCAN_SEPARATOR);
+    println!("{}", stylize(SCAN_SEPARATOR, false));
 }
 
 macro_rules! pline {
@@ -19,8 +20,11 @@ macro_rules! pline {
             while header.len() < HEADER_LEN {
                 header.push('.');
             }
-            print!("{}: ", header);
-            println!($($tt)*);
+            println!(
+                "{}: {}",
+                stylize_title(&header),
+                stylize(&format!($($tt)*), false)
+            );
         }
     };
 }

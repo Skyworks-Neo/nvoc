@@ -26,7 +26,7 @@ use nvoc_core::{
 use oc_profile_function::{
     export_vfp_from_log, fix_result, handle_vfp_export, handle_vfp_import, sync_memory_pstate_as_p0,
 };
-use oc_scanner::{autoscan_gpuboostv3, autoscan_legacy};
+use oc_scanner::{autoscan_gpuboostv3, autoscan_legacy, init_scan_cli_color};
 use platform::is_elevated;
 use std::io::{self, Write};
 use std::process::exit;
@@ -72,6 +72,7 @@ fn main_result() -> Result<i32, Box<dyn std::error::Error>> {
     let app = arg_help::get_arguments();
     check_single_dash_args(&app)?;
     let matches = app.get_matches();
+    init_scan_cli_color(matches.get_flag("no_color"));
     let exit_code = 0;
 
     let inventory = discover_targets(BackendSet::Both)
