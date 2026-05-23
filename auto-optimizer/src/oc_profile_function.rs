@@ -6,8 +6,8 @@ use super::human::print_scan_separator;
 use super::platform::panic_windows_only;
 use csv::{ReaderBuilder, StringRecord, WriterBuilder};
 use num_traits::abs;
-use nvoc_core::color::stylize;
 use nvoc_core::Error;
+use nvoc_core::color::stylize;
 use nvoc_core::{ClockDomain, GpuTarget, VfPoint};
 use nvoc_core::{
     CoolerPolicy, CoolerSettings, FanCoolerId, Kilohertz, KilohertzDelta, Microvolts, Percentage,
@@ -1072,10 +1072,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time before unix epoch")
             .as_nanos();
-        path.push(format!(
-            "nvoc_test_{}_{}.log",
-            test_name, stamp
-        ));
+        path.push(format!("nvoc_test_{}_{}.log", test_name, stamp));
         let mut file = File::create(&path).expect("create temp log");
         file.write_all(contents.as_bytes()).expect("write temp log");
         path
@@ -1087,14 +1084,17 @@ mod tests {
             "GPU 256 minimum_voltage_point: 43 @ 718.75 mV\n\
 GPU 256 maximum_voltage_point: 103 @ 1093.75 mV\n\
 common_voltage_point_range: 43-103\n",
-            "check_voltage_gpu_id"
+            "check_voltage_gpu_id",
         );
 
         let result = check_voltage_points(path.to_str().expect("temp path utf8"))
             .expect("parse log")
             .expect("resume data");
 
-        assert_eq!(result.0, 43, "minimum voltage point should be 43, not 256 (GPU id)");
+        assert_eq!(
+            result.0, 43,
+            "minimum voltage point should be 43, not 256 (GPU id)"
+        );
         assert_eq!(result.1, 103, "maximum voltage point should be 103");
 
         let _ = std::fs::remove_file(path);
@@ -1107,14 +1107,16 @@ common_voltage_point_range: 43-103\n",
 Test #1 on point: #2304, voltage: #1350000, freq_delta: #+100. \n\
 Test result is code #0 .\n\
 Finished core OC on point: #2304\n",
-            "break_point_gpu_id"
+            "break_point_gpu_id",
         );
 
         let (_, _, last_voltage_point, _) =
-            break_point_continue(path.to_str().expect("utf8 temp path"), 6)
-                .expect("parse log");
+            break_point_continue(path.to_str().expect("utf8 temp path"), 6).expect("parse log");
 
-        assert_eq!(last_voltage_point, None, "should reject point 2304 (beyond valid VFP range)");
+        assert_eq!(
+            last_voltage_point, None,
+            "should reject point 2304 (beyond valid VFP range)"
+        );
         let _ = std::fs::remove_file(path);
     }
 
@@ -1125,14 +1127,17 @@ Finished core OC on point: #2304\n",
 Test #1 on point: #64, voltage: #1350000, freq_delta: #+100. \n\
 Test result is code #0 .\n\
 Finished core OC on point: #64\n",
-            "break_point_valid"
+            "break_point_valid",
         );
 
         let (_, _, last_voltage_point, _) =
-            break_point_continue(path.to_str().expect("utf8 temp path"), 6)
-                .expect("parse log");
+            break_point_continue(path.to_str().expect("utf8 temp path"), 6).expect("parse log");
 
-        assert_eq!(last_voltage_point, Some(70), "should keep valid point 64 and add step 6 = 70");
+        assert_eq!(
+            last_voltage_point,
+            Some(70),
+            "should keep valid point 64 and add step 6 = 70"
+        );
         let _ = std::fs::remove_file(path);
     }
 }
@@ -1341,7 +1346,13 @@ pub fn apply_autoscan_profile(
                 boost: Percentage(100),
             },
         )?;
-        println!("{}", stylize("Successfully set VDDQ boost to +100% (max allowed V_core in fact).", false));
+        println!(
+            "{}",
+            stylize(
+                "Successfully set VDDQ boost to +100% (max allowed V_core in fact).",
+                false
+            )
+        );
     }
 
     let settings = [
@@ -1362,7 +1373,13 @@ pub fn apply_autoscan_profile(
     ];
 
     set_nvapi_cooler_settings(gpu, settings)?;
-    println!("{}", stylize(&format!("Successfully set Cooler1 and Cooler2 to {}%.", cooler_level), false));
+    println!(
+        "{}",
+        stylize(
+            &format!("Successfully set Cooler1 and Cooler2 to {}%.", cooler_level),
+            false
+        )
+    );
 
     match get_gpu_tdp_temp_limit(matches, print_scan_separator) {
         Ok((
@@ -1380,7 +1397,13 @@ pub fn apply_autoscan_profile(
                     limits: vec![_max_tdp_percent],
                 },
             )?;
-            println!("{}", stylize(&format!("Successfully set the TDP to {}", _max_tdp_percent), false));
+            println!(
+                "{}",
+                stylize(
+                    &format!("Successfully set the TDP to {}", _max_tdp_percent),
+                    false
+                )
+            );
 
             for point in _pff_curve.points.iter_mut() {
                 point.y = Kilohertz(3456000);
@@ -1398,7 +1421,16 @@ pub fn apply_autoscan_profile(
                     limits: vec![temp_limit],
                 },
             )?;
-            println!("{}", stylize(&format!("Successfully set the Temp_limit to {} and pff-curve to {}", _max_temp_lim, _pff_curve), false));
+            println!(
+                "{}",
+                stylize(
+                    &format!(
+                        "Successfully set the Temp_limit to {} and pff-curve to {}",
+                        _max_temp_lim, _pff_curve
+                    ),
+                    false
+                )
+            );
         }
         Err(e) => {
             return Err(Error::from(format!(

@@ -50,7 +50,10 @@ impl VulkanGraphicsEngine {
 
         let handle = thread::spawn(move || {
             if let Err(e) = run_vulkan_stress_loop(is_running, selection) {
-                eprintln!("{}", stylize(&format!("[VulkanGfx] Thread crashed: {:?}", e), true));
+                eprintln!(
+                    "{}",
+                    stylize(&format!("[VulkanGfx] Thread crashed: {:?}", e), true)
+                );
                 has_error.store(true, Ordering::SeqCst);
             }
         });
@@ -425,7 +428,13 @@ pub fn select_gpu_by_cuda_identity(
         let (device_name, device_uuid, device_uuid_hex, device_pci) = match props {
             Ok(value) => value,
             Err(err) => {
-                println!("{}", stylize(&format!("[VulkanGfx] Failed to query device identity: {err}"), false));
+                println!(
+                    "{}",
+                    stylize(
+                        &format!("[VulkanGfx] Failed to query device identity: {err}"),
+                        false
+                    )
+                );
                 continue;
             }
         };
@@ -447,7 +456,13 @@ pub fn select_gpu_by_cuda_identity(
         );
 
         if target_uuid_valid && !is_zero_uuid(&device_uuid) && device_uuid == target_cuda_uuid {
-            println!("{}", stylize(&format!("[VulkanGfx] Selected Vulkan device by UUID match: {device_name}"), false));
+            println!(
+                "{}",
+                stylize(
+                    &format!("[VulkanGfx] Selected Vulkan device by UUID match: {device_name}"),
+                    false
+                )
+            );
             return Ok(pdevice);
         }
 

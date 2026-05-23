@@ -1237,7 +1237,10 @@ pub fn get_gpu_tdp_temp_limit(
             println!(
                 "{}: {}",
                 stylize_title("Power Limit"),
-                stylize(&format!("{} ({} default)", limit.range, limit.default), false)
+                stylize(
+                    &format!("{} ({} default)", limit.range, limit.default),
+                    false
+                )
             );
             println!(
                 "Min TDP: {:.2}W ({}), Default TDP: {:.2}W ({}), Max TDP: {:.2}W ({})",
@@ -1262,14 +1265,21 @@ pub fn get_gpu_tdp_temp_limit(
                 println!(
                     "{} {}",
                     stylize_title("Thermal Limit"),
-                    stylize(&format!("{} ({} default)", limit.range, limit.default), false)
+                    stylize(
+                        &format!("{} ({} default)", limit.range, limit.default),
+                        false
+                    )
                 );
                 min_temp_lim = limit.range.min;
                 max_temp_lim = limit.range.max;
                 default_temp_lim = limit.default;
                 if let Some(pff) = &limit.throttle_curve {
                     current_pff_curve = pff.clone();
-                    println!("{} {}", stylize_title("Thermal Throttle"), stylize(&format!("{}", pff), false));
+                    println!(
+                        "{} {}",
+                        stylize_title("Thermal Throttle"),
+                        stylize(&format!("{}", pff), false)
+                    );
                 }
             }
         }
@@ -1371,7 +1381,10 @@ pub fn voltage_frequency_check(
             // point to be near the requested point (within 5 indices).
             precise_flag = index.abs_diff(point) < 5;
         } else {
-            eprintln!("{}", stylize_scanner("[SCANNER] No matching VfpPoint found", true));
+            eprintln!(
+                "{}",
+                stylize_scanner("[SCANNER] No matching VfpPoint found", true)
+            );
             precise_flag = false;
         }
         print_separator();
