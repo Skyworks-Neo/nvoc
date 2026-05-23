@@ -59,7 +59,7 @@ class NVOCApp(App[None]):
         ("ctrl+g", "focus_gpu_select", "GPU"),
         ("ctrl+o", "focus_output", "Output"),
         Binding("ctrl+t", "toggle_output", show=False),
-        Binding("ctrl+shift+o", "toggle_output_maximized", show=False),
+        Binding("ctrl+x", "toggle_output_maximized", show=False),
         Binding("ctrl+e", "clear_output", show=False),
         Binding("alt+a", "pane_shortcut('a')", show=False),
         Binding("alt+b", "pane_shortcut('b')", show=False),

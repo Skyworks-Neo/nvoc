@@ -151,7 +151,7 @@ def test_console_maximize_toggle_updates_app_class_and_label() -> None:
     app.widgets = {
         "#log-panel": FakePanel(),
         "#toggle-log": SimpleNamespace(label="Hide (^t)"),
-        "#maximize-log": SimpleNamespace(label="Max (C-S-o)"),
+        "#maximize-log": SimpleNamespace(label="Max (^x)"),
         "#output-log": log,
     }
 
@@ -160,13 +160,13 @@ def test_console_maximize_toggle_updates_app_class_and_label() -> None:
     controller.toggle_output_maximized()
 
     assert app.has_class("output-maximized") is True
-    assert app.widgets["#maximize-log"].label == "Restore (C-S-o)"
+    assert app.widgets["#maximize-log"].label == "Restore (^x)"
     assert log.focused is True
 
     controller.toggle_output_maximized()
 
     assert app.has_class("output-maximized") is False
-    assert app.widgets["#maximize-log"].label == "Max (C-S-o)"
+    assert app.widgets["#maximize-log"].label == "Max (^x)"
 
 
 def test_console_maximize_from_hidden_shows_and_persists_output() -> None:
@@ -175,7 +175,7 @@ def test_console_maximize_from_hidden_shows_and_persists_output() -> None:
     app.widgets = {
         "#log-panel": panel,
         "#toggle-log": SimpleNamespace(label="Show (^t)"),
-        "#maximize-log": SimpleNamespace(label="Max (C-S-o)"),
+        "#maximize-log": SimpleNamespace(label="Max (^x)"),
         "#output-log": SimpleNamespace(focus=lambda: None),
     }
 
@@ -194,20 +194,20 @@ def test_console_hide_from_maximized_clears_maximized_state() -> None:
     app.widgets = {
         "#log-panel": panel,
         "#toggle-log": SimpleNamespace(label="Hide (^t)"),
-        "#maximize-log": SimpleNamespace(label="Restore (C-S-o)"),
+        "#maximize-log": SimpleNamespace(label="Restore (^x)"),
     }
 
     ConsoleController(app).toggle_output()
 
     assert panel.has_class("hidden") is True
     assert app.has_class("output-maximized") is False
-    assert app.widgets["#maximize-log"].label == "Max (C-S-o)"
+    assert app.widgets["#maximize-log"].label == "Max (^x)"
     assert app.config_data.ui.log_expanded is False
 
 
-def test_app_binds_ctrl_shift_o_to_output_maximize_toggle() -> None:
+def test_app_binds_ctrl_x_to_output_maximize_toggle() -> None:
     assert any(
-        binding.key == "ctrl+shift+o" and binding.action == "toggle_output_maximized"
+        binding.key == "ctrl+x" and binding.action == "toggle_output_maximized"
         for binding in NVOCApp.BINDINGS
         if hasattr(binding, "key")
     )

@@ -9,8 +9,8 @@ from .base import PaneController
 class ConsoleController(PaneController):
     HIDE_LABEL = "Hide (^t)"
     SHOW_LABEL = "Show (^t)"
-    MAXIMIZE_LABEL = "Max (C-S-o)"
-    RESTORE_LABEL = "Restore (C-S-o)"
+    MAXIMIZE_LABEL = "Max (^x)"
+    RESTORE_LABEL = "Restore (^x)"
 
     def write_log(self, text: str) -> None:
         log = self.app.query_one("#output-log", Log)
