@@ -73,4 +73,3 @@ def detect_capability(
         return False, f"FP8 requires Hopper (SM90+), current SM{major}{minor}"
 
     return True, None
-

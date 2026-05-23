@@ -131,9 +131,7 @@ def parse_kernel_mixture(
         try:
             weight = float(weight_raw.strip())
         except ValueError as exc:
-            raise ValueError(
-                f"invalid mixture weight: {weight_raw.strip()}"
-            ) from exc
+            raise ValueError(f"invalid mixture weight: {weight_raw.strip()}") from exc
         if not math.isfinite(weight) or weight < 0.0:
             raise ValueError(f"mixture weight must be finite and >= 0: {weight}")
         entries.append((kind, weight))
@@ -224,4 +222,3 @@ def parse_kernel_param_overrides(
                 raise ValueError(f"unsupported kernel param key: {k}")
         overrides.append(item)
     return overrides
-

@@ -6,7 +6,12 @@ from typing import List
 
 import torch
 
-from .device import detect_capability, empty_device_cache, maybe_set_tf32, synchronize_device
+from .device import (
+    detect_capability,
+    empty_device_cache,
+    maybe_set_tf32,
+    synchronize_device,
+)
 from .kernels import (
     choose_kernel_type,
     choose_precision_from_mixture,
@@ -25,9 +30,7 @@ def run_stress_mixed(
     precisions: List[PrecisionSpec],
     config: StressRunConfig,
 ) -> List[StressResult]:
-    results = [
-        StressResult(precision=spec.name, supported=True) for spec in precisions
-    ]
+    results = [StressResult(precision=spec.name, supported=True) for spec in precisions]
     index_by_name = {spec.name: idx for idx, spec in enumerate(precisions)}
 
     supported: List[PrecisionSpec] = []
@@ -173,7 +176,9 @@ def run_stress_mixed(
     return results
 
 
-def print_summary(device_name: str, total_memory_gb, results: List[StressResult]) -> bool:
+def print_summary(
+    device_name: str, total_memory_gb, results: List[StressResult]
+) -> bool:
     print("\n" + "=" * 72)
     print("Phase 1 core stability summary")
     print(f"Device: {device_name}")
@@ -187,7 +192,11 @@ def print_summary(device_name: str, total_memory_gb, results: List[StressResult]
             status = "SKIP"
         else:
             any_supported = True
-            status = "OK" if (r.first_error is None and r.validation_failures == 0) else "FAIL"
+            status = (
+                "OK"
+                if (r.first_error is None and r.validation_failures == 0)
+                else "FAIL"
+            )
         if status == "FAIL":
             overall_ok = False
         eff = (r.compute_s / r.elapsed_s * 100) if r.elapsed_s > 0 else 0.0
@@ -210,11 +219,12 @@ def print_summary(device_name: str, total_memory_gb, results: List[StressResult]
     print("Result:")
     if overall_ok:
         if any_supported:
-            print("- No obvious computation errors or validation failures were observed in the current test window.")
+            print(
+                "- No obvious computation errors or validation failures were observed in the current test window."
+            )
         else:
             print("- All requested precision modes were unsupported on this device.")
     else:
         print("- At least one precision mode reported an error or validation failure.")
     print("=" * 72)
     return overall_ok
-

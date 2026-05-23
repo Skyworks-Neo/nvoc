@@ -4,7 +4,12 @@ import sys
 
 import torch
 
-from .config import apply_file_config_to_args, load_kernel_overrides_from_config, load_toml_config, merge_kernel_overrides
+from .config import (
+    apply_file_config_to_args,
+    load_kernel_overrides_from_config,
+    load_toml_config,
+    merge_kernel_overrides,
+)
 from .device import get_accelerator_device
 from .models import StressRunConfig
 from .parsing import (
@@ -60,10 +65,16 @@ def build_arg_parser():
         help="Precision list: fp32, tf32, fp16, bf16, fp8, fp64 (comma-separated)",
     )
     p.add_argument(
-        "--warmup-iters", type=int, default=3, help="Warmup iterations per workload window"
+        "--warmup-iters",
+        type=int,
+        default=3,
+        help="Warmup iterations per workload window",
     )
     p.add_argument(
-        "--burst-iters", type=int, default=6, help="Stress iterations per workload window"
+        "--burst-iters",
+        type=int,
+        default=6,
+        help="Stress iterations per workload window",
     )
     p.add_argument(
         "--validate-interval",
@@ -203,9 +214,7 @@ def main() -> int:
     else:
         kernel_mixture = parse_kernel_mixture(args.kernel_mixture, kernel_types)
     if kernel_types != kernel_types_all:
-        kernel_mixture = [
-            entry for entry in kernel_mixture if entry[0] in kernel_types
-        ]
+        kernel_mixture = [entry for entry in kernel_mixture if entry[0] in kernel_types]
         if not kernel_mixture:
             kernel_mixture = [(kind, 1.0) for kind in kernel_types]
 
@@ -232,10 +241,10 @@ def main() -> int:
     print(f"  Validation size: {args.validate_size}")
     print(f"  Minor mixture rate: {args.minor_mixture_rate:.2f}")
     print(f"  Kernel types: {[kind.value for kind in kernel_types]}")
-    print(f"  Kernel mixture: {[(kind.value, weight) for kind, weight in kernel_mixture]}")
     print(
-        f"  Stream mode: {stream_mode.value} ({stream_mode.stream_count()} streams)"
+        f"  Kernel mixture: {[(kind.value, weight) for kind, weight in kernel_mixture]}"
     )
+    print(f"  Stream mode: {stream_mode.value} ({stream_mode.stream_count()} streams)")
 
     results = run_stress_mixed(
         device=device,
@@ -257,13 +266,8 @@ def main() -> int:
         ),
     )
 
-    overall_ok = all(
-        not (res.first_error and res.supported) for res in results
-    )
+    overall_ok = all(not (res.first_error and res.supported) for res in results)
     summary_ok = print_summary(device_name, total_memory_gb, results)
     if not (overall_ok and summary_ok):
         return 1
     return 0
-
-
-

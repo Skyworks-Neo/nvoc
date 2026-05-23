@@ -8,7 +8,12 @@ from typing import List, Optional, Tuple
 
 import torch
 
-from .device import empty_device_cache, maybe_set_tf32, synchronize_device, detect_capability
+from .device import (
+    empty_device_cache,
+    maybe_set_tf32,
+    synchronize_device,
+    detect_capability,
+)
 from .models import KernelParamOverride, KernelType, PrecisionSpec, StressRunConfig
 
 
@@ -85,7 +90,9 @@ class ResolvedKernelParams:
     minor_mixture_rate: float
 
 
-def resolve_kernel_params(kind: KernelType, config: StressRunConfig) -> ResolvedKernelParams:
+def resolve_kernel_params(
+    kind: KernelType, config: StressRunConfig
+) -> ResolvedKernelParams:
     override_item = next(
         (item for item in config.kernel_param_overrides if item.kind == kind), None
     )
@@ -198,7 +205,9 @@ def run_kernel_path(
             return time.monotonic() - op_start
 
         if kind == KernelType.MEMCPY:
-            src = make_random_matrix(size, device, spec.dtype, op_rng.randrange(1 << 30))
+            src = make_random_matrix(
+                size, device, spec.dtype, op_rng.randrange(1 << 30)
+            )
             for _ in range(warmup_iters):
                 _ = src.clone()
             synchronize_device(device)
@@ -209,7 +218,9 @@ def run_kernel_path(
             return time.monotonic() - op_start
 
         if kind == KernelType.MEMSET:
-            dst = make_random_matrix(size, device, spec.dtype, op_rng.randrange(1 << 30))
+            dst = make_random_matrix(
+                size, device, spec.dtype, op_rng.randrange(1 << 30)
+            )
             fill_value = float((seed % 97) - 48)
             for _ in range(warmup_iters):
                 dst.fill_(fill_value)
@@ -259,9 +270,9 @@ def run_kernel_path(
             indices = torch.randint(
                 0, length, (length,), device=device, dtype=torch.int64
             )
-            values = make_random_matrix(size, device, spec.dtype, op_rng.randrange(1 << 30)).view(
-                -1
-            )
+            values = make_random_matrix(
+                size, device, spec.dtype, op_rng.randrange(1 << 30)
+            ).view(-1)
             dst = torch.zeros(length, device=device, dtype=spec.dtype)
             for _ in range(warmup_iters):
                 dst.scatter_add_(0, indices, values)
@@ -277,4 +288,3 @@ def run_kernel_path(
 
 def empty_cache(device: torch.device) -> None:
     empty_device_cache(device)
-
