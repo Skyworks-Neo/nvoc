@@ -1,4 +1,4 @@
-use super::color::{stylize, stylize_title};
+use super::color::{stylize, stylize_scanner, stylize_title};
 use super::conv::{nvml_pstate_to_index, nvml_pstate_to_str};
 use super::error::Error;
 use super::gpu_type::{GpuType, fetch_gpu_type};
@@ -1237,10 +1237,7 @@ pub fn get_gpu_tdp_temp_limit(
             println!(
                 "{}: {}",
                 stylize_title("Power Limit"),
-                stylize(
-                    &format!("{} ({} default)", limit.range, limit.default),
-                    false
-                )
+                stylize(&format!("{} ({} default)", limit.range, limit.default), false)
             );
             println!(
                 "Min TDP: {:.2}W ({}), Default TDP: {:.2}W ({}), Max TDP: {:.2}W ({})",
@@ -1265,21 +1262,14 @@ pub fn get_gpu_tdp_temp_limit(
                 println!(
                     "{} {}",
                     stylize_title("Thermal Limit"),
-                    stylize(
-                        &format!("{} ({} default)", limit.range, limit.default),
-                        false
-                    )
+                    stylize(&format!("{} ({} default)", limit.range, limit.default), false)
                 );
                 min_temp_lim = limit.range.min;
                 max_temp_lim = limit.range.max;
                 default_temp_lim = limit.default;
                 if let Some(pff) = &limit.throttle_curve {
                     current_pff_curve = pff.clone();
-                    println!(
-                        "{} {}",
-                        stylize_title("Thermal Throttle"),
-                        stylize(&format!("{}", pff), false)
-                    );
+                    println!("{} {}", stylize_title("Thermal Throttle"), stylize(&format!("{}", pff), false));
                 }
             }
         }
@@ -1320,7 +1310,7 @@ pub fn voltage_frequency_check(
         print_separator();
         println!(
             "{}",
-            stylize(
+            stylize_scanner(
                 &format!("[SCANNER] Rdout V: {:?}, F: {:?}", readout_v, readout_f),
                 false
             )
@@ -1343,7 +1333,7 @@ pub fn voltage_frequency_check(
 
         println!(
             "{}",
-            stylize(
+            stylize_scanner(
                 &format!(
                     "[SCANNER] Chking Pnt: {} (V: {}) with default F: {}, target F: {}",
                     point, default_v, default_f, current_f
@@ -1357,7 +1347,7 @@ pub fn voltage_frequency_check(
 
         println!(
             "{}",
-            stylize(
+            stylize_scanner(
                 &format!("[SCANNER] current V: {}, F:{:?}", sensor_v, sensor_f),
                 false
             )
@@ -1366,7 +1356,7 @@ pub fn voltage_frequency_check(
         if let Some((index, vfp_point)) = find_matching_vfp_point(&current_point, sensor_v) {
             println!(
                 "{}",
-                stylize(
+                stylize_scanner(
                     &format!(
                         "[SCANNER] Working VfPoint Inferred:{}, V = {:?}, F = {:?}",
                         index, vfp_point.voltage, vfp_point.frequency
@@ -1381,7 +1371,7 @@ pub fn voltage_frequency_check(
             // point to be near the requested point (within 5 indices).
             precise_flag = index.abs_diff(point) < 5;
         } else {
-            eprintln!("{}", stylize("[SCANNER] No matching VfpPoint found", true));
+            eprintln!("{}", stylize_scanner("[SCANNER] No matching VfpPoint found", true));
             precise_flag = false;
         }
         print_separator();
