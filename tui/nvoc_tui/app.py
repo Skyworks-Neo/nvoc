@@ -59,6 +59,7 @@ class NVOCApp(App[None]):
         ("ctrl+g", "focus_gpu_select", "GPU"),
         ("ctrl+o", "focus_output", "Output"),
         Binding("ctrl+t", "toggle_output", show=False),
+        Binding("ctrl+x", "toggle_output_maximized", show=False),
         Binding("ctrl+e", "clear_output", show=False),
         Binding("alt+a", "pane_shortcut('a')", show=False),
         Binding("alt+b", "pane_shortcut('b')", show=False),
@@ -243,6 +244,9 @@ class NVOCApp(App[None]):
 
     def action_toggle_output(self) -> None:
         self.console_controller.toggle_output()
+
+    def action_toggle_output_maximized(self) -> None:
+        self.console_controller.toggle_output_maximized()
 
     def action_clear_output(self) -> None:
         self.console_controller.clear_output()

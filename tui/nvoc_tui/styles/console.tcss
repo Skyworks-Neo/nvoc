@@ -8,6 +8,14 @@
     height: 6;
 }
 
+.output-maximized #main-tabs {
+    display: none;
+}
+
+.output-maximized #log-panel {
+    height: 1fr;
+}
+
 #log-panel.hidden {
     display: none;
 }
@@ -15,6 +23,10 @@
 #output-log {
     height: 6;
     overflow: auto;
+}
+
+.output-maximized #output-log {
+    height: 1fr;
 }
 
 Log {

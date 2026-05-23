@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+from nvoc_tui.app import NVOCApp
+from nvoc_tui.controllers.console import ConsoleController
 from nvoc_tui.controllers.dashboard import DashboardController
 from nvoc_tui.controllers.overclock import OverclockController
 from nvoc_tui.controllers.vfcurve import VFCurveController
@@ -22,9 +24,19 @@ class FakeApp:
         self.native_service = SimpleNamespace(
             action_state=SimpleNamespace(running=False)
         )
+        self.classes: set[str] = set()
 
     def query_one(self, selector: str, _widget_type=None):
         return self.widgets[selector]
+
+    def has_class(self, class_name: str) -> bool:
+        return class_name in self.classes
+
+    def set_class(self, condition: bool, class_name: str) -> None:
+        if condition:
+            self.classes.add(class_name)
+        else:
+            self.classes.discard(class_name)
 
     def gpu_args(self) -> list[str]:
         return ["--gpu=0"]
@@ -49,6 +61,20 @@ class FakeApp:
 
     def write_log(self, text: str) -> None:
         self.logs.append(text)
+
+
+class FakePanel:
+    def __init__(self, classes: set[str] | None = None) -> None:
+        self.classes = classes or set()
+
+    def has_class(self, class_name: str) -> bool:
+        return class_name in self.classes
+
+    def add_class(self, class_name: str) -> None:
+        self.classes.add(class_name)
+
+    def remove_class(self, class_name: str) -> None:
+        self.classes.discard(class_name)
 
 
 class FakeNative:
@@ -116,6 +142,75 @@ def test_dashboard_tick_suppresses_status_json_output() -> None:
     assert command_name == "status"
     assert callback.__name__ == "on_status_loaded"
     assert log_output is False
+
+
+def test_console_maximize_toggle_updates_app_class_and_label() -> None:
+    app = FakeApp()
+    log = SimpleNamespace(focused=False)
+    log.focus = lambda: setattr(log, "focused", True)
+    app.widgets = {
+        "#log-panel": FakePanel(),
+        "#toggle-log": SimpleNamespace(label="Hide (^t)"),
+        "#maximize-log": SimpleNamespace(label="Max (^x)"),
+        "#output-log": log,
+    }
+
+    controller = ConsoleController(app)
+
+    controller.toggle_output_maximized()
+
+    assert app.has_class("output-maximized") is True
+    assert app.widgets["#maximize-log"].label == "Restore (^x)"
+    assert log.focused is True
+
+    controller.toggle_output_maximized()
+
+    assert app.has_class("output-maximized") is False
+    assert app.widgets["#maximize-log"].label == "Max (^x)"
+
+
+def test_console_maximize_from_hidden_shows_and_persists_output() -> None:
+    app = FakeApp()
+    panel = FakePanel(classes={"hidden"})
+    app.widgets = {
+        "#log-panel": panel,
+        "#toggle-log": SimpleNamespace(label="Show (^t)"),
+        "#maximize-log": SimpleNamespace(label="Max (^x)"),
+        "#output-log": SimpleNamespace(focus=lambda: None),
+    }
+
+    ConsoleController(app).toggle_output_maximized()
+
+    assert panel.has_class("hidden") is False
+    assert app.widgets["#toggle-log"].label == "Hide (^t)"
+    assert app.config_data.ui.log_expanded is True
+    assert app.has_class("output-maximized") is True
+
+
+def test_console_hide_from_maximized_clears_maximized_state() -> None:
+    app = FakeApp()
+    app.classes.add("output-maximized")
+    panel = FakePanel()
+    app.widgets = {
+        "#log-panel": panel,
+        "#toggle-log": SimpleNamespace(label="Hide (^t)"),
+        "#maximize-log": SimpleNamespace(label="Restore (^x)"),
+    }
+
+    ConsoleController(app).toggle_output()
+
+    assert panel.has_class("hidden") is True
+    assert app.has_class("output-maximized") is False
+    assert app.widgets["#maximize-log"].label == "Max (^x)"
+    assert app.config_data.ui.log_expanded is False
+
+
+def test_app_binds_ctrl_x_to_output_maximize_toggle() -> None:
+    assert any(
+        binding.key == "ctrl+x" and binding.action == "toggle_output_maximized"
+        for binding in NVOCApp.BINDINGS
+        if hasattr(binding, "key")
+    )
 
 
 def test_overclock_apply_limits_for_nvapi_calls_native_apis() -> None:

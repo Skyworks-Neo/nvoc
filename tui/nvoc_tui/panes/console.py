@@ -10,6 +10,7 @@ def compose_console() -> ComposeResult:
     with Horizontal(id="log-header"):
         yield Label(Text.assemble("  ", ("O", "bold"), "utput"))
         yield Button("Hide (^t)", id="toggle-log", compact=True)
+        yield Button("Max (^x)", id="maximize-log", compact=True)
         yield Button("Clear (^e)", id="clear-log", compact=True)
     with Vertical(id="log-panel"):
         yield Log(id="output-log", highlight=True, auto_scroll=True, max_lines=1000)
