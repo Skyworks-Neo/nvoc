@@ -10,6 +10,7 @@ mod cli_types;
 mod human;
 mod oc_profile_function;
 mod oc_scanner;
+mod progressbar;
 mod platform;
 
 use anyhow::Result;
@@ -26,7 +27,8 @@ use nvoc_core::{
 use oc_profile_function::{
     export_vfp_from_log, fix_result, handle_vfp_export, handle_vfp_import, sync_memory_pstate_as_p0,
 };
-use oc_scanner::{autoscan_gpuboostv3, autoscan_legacy, init_scan_cli_color};
+use oc_scanner::{autoscan_gpuboostv3, autoscan_legacy};
+use progressbar::init_scan_cli_color;
 use platform::is_elevated;
 use std::io::{self, Write};
 use std::process::exit;

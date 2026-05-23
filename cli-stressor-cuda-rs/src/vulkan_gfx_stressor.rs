@@ -343,7 +343,7 @@ fn run_vulkan_stress_loop(
                     "{}",
                     stylize(
                         &format!(
-                            "[Vulkan GFX] {:>6.1}s | {:>5.1} submits/s (randomized interval) | Active DWM preemption stress | Pipeline Flushes: {}",
+                            "[VKGFX] {:>6.1}s | {:>5.1} submits/s | Pipeline Flushes: {}",
                             elapsed_s, submits_per_s, pipeline_flushes
                         ),
                         false

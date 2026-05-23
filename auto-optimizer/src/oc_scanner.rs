@@ -9,193 +9,34 @@ use super::oc_profile_function::{
     key_point_extractor,
 };
 use clap::ArgMatches;
-use colored::{Colorize, control};
+use super::progressbar::{
+    ActiveScanProgressGuard, ScanProgress, forward_child_output, progress_print,
+};
 use num_traits::pow;
 use nvoc_core::{
     ClockDomain, Error, GpuOcParams, GpuOperation, GpuTarget, KilohertzDelta,
     NvapiLockedVoltageTarget, PState, QueryGpuInfo, QueryGpuStatus, QueryVfpPointVoltage,
     ResetCoolerLevels, ResetVfpDeltas, SetVfpPointDelta, SetVfpVoltageLock, VfPoint,
-    VfpResetDomain, fetch_gpu_type, run, set_nvapi_pstate_clock_offsets, set_nvapi_vfp_curve_delta,
+    VfpResetDomain, fetch_gpu_type, run as nvoc_run, set_nvapi_pstate_clock_offsets,
+    set_nvapi_vfp_curve_delta,
 };
 use std::cmp::min;
+use std::fs;
 use std::io::Write;
 use std::path::Path;
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
 use std::thread::sleep;
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 #[cfg(windows)]
 use std::time::SystemTime;
 
-use std::fs;
-use std::sync::atomic::{AtomicBool, Ordering};
-
-mod scan_cli_color {
-    use super::{AtomicBool, Colorize, Ordering, control};
-
-    static COLOR_ENABLED: AtomicBool = AtomicBool::new(true);
-
-    pub(super) fn init(no_color_flag: bool) {
-        let disable = no_color_flag || std::env::var_os("NO_COLOR").is_some();
-        COLOR_ENABLED.store(!disable, Ordering::Relaxed);
-        if disable {
-            control::set_override(false);
-        }
-    }
-
-    fn enabled() -> bool {
-        COLOR_ENABLED.load(Ordering::Relaxed)
-    }
-
-    fn is_numeric_like(token: &str) -> bool {
-        let mut has_digit = false;
-        for c in token.chars() {
-            if c.is_ascii_digit() {
-                has_digit = true;
-                continue;
-            }
-            if matches!(c, '+' | '-' | '.' | '#' | ':' | '/' | ',') {
-                continue;
-            }
-            return false;
-        }
-        has_digit
-    }
-
-    fn split_affixes(token: &str) -> (&str, &str, &str) {
-        let start = token
-            .char_indices()
-            .find(|(_, c)| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
-            .map(|(i, _)| i)
-            .unwrap_or(token.len());
-        let end = token
-            .char_indices()
-            .rev()
-            .find(|(_, c)| c.is_ascii_alphanumeric() || matches!(c, '%' | '+' | '°'))
-            .map(|(i, c)| i + c.len_utf8())
-            .unwrap_or(0);
-        if start >= end {
-            return (token, "", "");
-        }
-        (&token[..start], &token[start..end], &token[end..])
-    }
-
-    fn style_plain(core: &str, is_stderr: bool) -> String {
-        if is_stderr {
-            core.bright_white().to_string()
-        } else {
-            core.normal().to_string()
-        }
-    }
-
-    fn style_number(core: &str, _is_stderr: bool) -> String {
-        core.bright_cyan().bold().to_string()
-    }
-
-    fn style_keyword(core: &str, is_stderr: bool) -> String {
-        let lower = core.to_ascii_lowercase();
-        if lower.contains("failed") || lower.contains("error") || lower.contains("crash") {
-            return core.red().bold().to_string();
-        }
-        if lower.contains("warning") {
-            return core.yellow().bold().to_string();
-        }
-        if lower.contains("skipped") || lower.contains("skip") {
-            return core.bright_yellow().bold().to_string();
-        }
-        if lower.contains("succeed") || lower == "passed" {
-            return core.green().bold().to_string();
-        }
-        if lower.contains("scanner") || lower.contains("point") || lower.contains("gpu") {
-            return core.bright_cyan().bold().to_string();
-        }
-        if lower.contains("voltage") || lower.contains("uv") || lower.contains("mv") {
-            return core.bright_magenta().bold().to_string();
-        }
-        if lower.contains("freq")
-            || lower.contains("clock")
-            || lower.contains("khz")
-            || lower.contains("mhz")
-            || lower.contains("ghz")
-        {
-            return core.bright_cyan().bold().to_string();
-        }
-        if lower.contains("percent") || lower.contains("progress") || lower.ends_with('%') {
-            return core.bright_yellow().bold().to_string();
-        }
-        style_plain(core, is_stderr)
-    }
-
-    fn color_core_token(core: &str, is_stderr: bool) -> String {
-        let lower = core.to_ascii_lowercase();
-        if is_numeric_like(core) {
-            return style_number(core, is_stderr);
-        }
-
-        if lower.ends_with("khz") || lower.ends_with("mhz") || lower.ends_with("ghz") {
-            return core.bright_cyan().bold().to_string();
-        }
-        if lower.ends_with("uv") || lower.ends_with("mv") || lower.ends_with('v') {
-            return core.bright_magenta().bold().to_string();
-        }
-        if lower.ends_with('%') {
-            return core.bright_yellow().bold().to_string();
-        }
-        if lower.ends_with("ms") || lower.ends_with('s') {
-            return core.bright_green().bold().to_string();
-        }
-
-        style_keyword(core, is_stderr)
-    }
-
-    pub(super) fn stylize(message: &str, is_stderr: bool) -> String {
-        if !enabled() {
-            return message.to_string();
-        }
-
-        message
-            .split(' ')
-            .map(|token| {
-                if token.is_empty() {
-                    return String::new();
-                }
-                let (prefix, core, suffix) = split_affixes(token);
-                if core.is_empty() {
-                    return token.to_string();
-                }
-                format!("{}{}{}", prefix, color_core_token(core, is_stderr), suffix)
-            })
-            .collect::<Vec<_>>()
-            .join(" ")
-    }
-}
-
-pub(super) fn init_scan_cli_color(no_color_flag: bool) {
-    scan_cli_color::init(no_color_flag);
-}
-
-macro_rules! println {
-    () => {
-        std::println!()
-    };
-    ($($arg:tt)*) => {{
-        let msg = format!($($arg)*);
-        std::println!("{}", scan_cli_color::stylize(&msg, false));
-    }};
-}
-
-macro_rules! eprintln {
-    () => {
-        std::eprintln!()
-    };
-    ($($arg:tt)*) => {{
-        let msg = format!($($arg)*);
-        std::eprintln!("{}", scan_cli_color::stylize(&msg, true));
-    }};
-}
+// use standard println!/eprintln!; do not route prints through progressbar helper
 
 fn run_output<O: GpuOperation>(gpu: &GpuTarget<'_>, op: O) -> Result<O::Output, Error> {
-    run(gpu, op).map(|report| report.output)
+    nvoc_run(gpu, op).map(|report| report.output)
 }
 
 mod pressure_runner {
@@ -314,24 +155,7 @@ mod pressure_runner {
         unreachable!()
     }
 
-    pub(super) struct TestPressureConfig<'a> {
-        pub(super) point: usize,
-        pub(super) flat_curve_flag: bool,
-        pub(super) vfp_set_range: usize,
-        pub(super) init_core_oc_value: i32,
-        pub(super) minimum_delta_core_freq_step: i32,
-        pub(super) fluctuation_coefficient: i32,
-        pub(super) fluctuation_mode: usize,
-        pub(super) test_exe: &'a str,
-        pub(super) test_code: String,
-        pub(super) timeout_loops: u64,
-        pub(super) recovery_method: bool,
-        pub(super) is_legacy_global_offset: bool,
-        /// Stressor CUDA device ordinal (sets CUDA_VISIBLE_DEVICES when non-None).
-        pub(super) cuda_device: Option<u32>,
-        /// Extra arguments appended verbatim to the stressor command.
-        pub(super) stressor_extra_args: &'a [String],
-    }
+    // TestPressureConfig intentionally defined at module scope (see below)
 
     fn test_initialization(gpu: &GpuTarget<'_>, cfg: &TestPressureConfig<'_>) {
         if cfg.is_legacy_global_offset {
@@ -372,7 +196,8 @@ mod pressure_runner {
             } else {
                 -cfg.fluctuation_coefficient * cfg.minimum_delta_core_freq_step
             };
-            println!("fluctuation state changing to LOW...");
+            // avoid direct printing here; the caller will emit a single combined
+            // progress line to prevent excessive redraws of the MultiProgress UI.
             (freq, true)
         } else {
             let freq = if cfg.fluctuation_mode == 2 || cfg.fluctuation_mode == 3 {
@@ -380,7 +205,6 @@ mod pressure_runner {
             } else {
                 0
             };
-            println!("fluctuation state changing to HIGH...");
             (freq, false)
         };
 
@@ -491,14 +315,14 @@ mod pressure_runner {
     pub(super) fn run(
         gpu: &GpuTarget<'_>,
         _matches: &ArgMatches,
-        cfg: &TestPressureConfig<'_>,
+        cfg: &super::TestPressureConfig<'_>,
     ) -> i32 {
         let app_path = String::from(cfg.test_exe);
         // Build argv as a structured Vec so paths or codes containing whitespace
         // are not silently re-tokenized into multiple arguments.
         let mut args: Vec<String> = vec![cfg.test_code.clone(), cfg.timeout_loops.to_string()];
-        let timeout_budget_secs = cfg.timeout_loops * 8;
-        println!("Timeout: {}s", timeout_budget_secs);
+        let timeout_budget_secs = cfg.timeout_loops * 10;
+        progress_print(cfg.progress, format!("Timeout: {}s", timeout_budget_secs));
         if cfg.recovery_method {
             args.push("--aggressive-recovery".to_string());
         }
@@ -516,9 +340,30 @@ mod pressure_runner {
                 cmd.env("CUDA_DEVICE_ORDER", "PCI_BUS_ID");
                 cmd.env("CUDA_VISIBLE_DEVICES", dev.to_string());
             }
+            cmd.stdout(Stdio::piped());
+            cmd.stderr(Stdio::piped());
             match cmd.spawn() {
                 Ok(mut process) => {
                     let mut exit_code = 1;
+                    let mut output_threads: Vec<JoinHandle<()>> = Vec::new();
+                    let test_progress = cfg
+                        .progress
+                        .map(|progress| progress.begin_test(cfg.test_code.clone(), cfg.test_duration_secs));
+
+                    if let Some(stdout) = process.stdout.take() {
+                        output_threads.push(forward_child_output(
+                            stdout,
+                            cfg.progress.map(|progress| progress.total_bar()),
+                            false
+                        ));
+                    }
+                    if let Some(stderr) = process.stderr.take() {
+                        output_threads.push(forward_child_output(
+                            stderr,
+                            cfg.progress.map(|progress| progress.total_bar()),
+                            true,
+                        ));
+                    }
 
                     #[cfg(windows)]
                     let event_window_start = SystemTime::now();
@@ -550,29 +395,46 @@ mod pressure_runner {
                     loop {
                         if last_fluctuation.elapsed() >= Duration::from_millis(1500) {
                             in_test_check_number += 1;
-                            println!("inducing freq fluctuation...");
-
-                            fluctuation_h_l_flag =
-                                apply_fluctuation(gpu, cfg, fluctuation_h_l_flag);
-
-                            println!("Processing in-test v-f check #{}...", in_test_check_number);
+                            fluctuation_h_l_flag = apply_fluctuation(gpu, cfg, fluctuation_h_l_flag);
+                            let state_label = if fluctuation_h_l_flag { "LOW" } else { "HIGH" };
+                            // update a single status line (replaces noisy per-check printing)
+                            if let Some(progress) = cfg.progress {
+                                progress.set_status(format!(
+                                    "inducing freq fluctuation; state: {}. in-test v-f check #{}",
+                                    state_label, in_test_check_number
+                                ));
+                            } else {
+                                progress_print(None, format!(
+                                    "inducing freq fluctuation; state: {}. in-test v-f check #{}",
+                                    state_label, in_test_check_number
+                                ));
+                            }
 
                             if !cfg.is_legacy_global_offset {
                                 match voltage_frequency_check(
                                     std::slice::from_ref(gpu),
                                     cfg.point,
-                                    print_scan_separator,
                                 ) {
                                     Ok(checks) if checks.iter().all(|check| check.precise) => {}
                                     Ok(checks) => {
-                                        for check in checks {
-                                            println!(
-                                                "GPU {} V/F check at point {} precise={}",
-                                                check.gpu_id, cfg.point, check.precise
-                                            );
-                                        }
-                                        println!("Considering trig'd thrm/pwr capping!!!");
+                                        // summarize checks into a single status line instead of printing per-GPU
+                                        let summary = checks
+                                            .iter()
+                                            .map(|c| format!("{}:precise={}", c.gpu_id, c.precise))
+                                            .collect::<Vec<_>>()
+                                            .join(",");
                                         thrm_or_pwr_limit_number += 1;
+                                        if let Some(progress) = cfg.progress {
+                                            progress.set_status(format!(
+                                                "V/F summary [{}] (possible thrm/pwr capping)",
+                                                summary
+                                            ));
+                                        } else {
+                                            progress_print(None, format!(
+                                                "V/F summary [{}] (possible thrm/pwr capping)",
+                                                summary
+                                            ));
+                                        }
                                     }
                                     Err(e) => {
                                         eprintln!("Warning: Failed to read v-f info: {}", e);
@@ -583,7 +445,57 @@ mod pressure_runner {
 
                                 match run_output(gpu, QueryVfpPointVoltage { point: cfg.point }) {
                                     Ok(v) => {
-                                        println!("Voltage at point {}: {}", cfg.point, v);
+                                        // fetch default/current frequencies for the point if available
+                                        // and determine the actual VFP point key reported by the GPU.
+                                        let mut default_freq_khz: Option<i32> = None;
+                                        let mut current_freq_khz: Option<i32> = None;
+                                        let mut actual_point: usize = cfg.point;
+                                        if let Ok(status) = run_output(gpu, QueryGpuStatus) {
+                                            if let Some(vfp) = status.vfp {
+                                                // use shared helper to find the closest VFP point by voltage
+                                                if let Some((idx, pt)) = nvoc_core::find_matching_vfp_point(&vfp.graphics, v) {
+                                                    actual_point = *idx;
+                                                    default_freq_khz = Some(pt.default_frequency.0 as i32);
+                                                    current_freq_khz = Some(pt.frequency.0 as i32);
+                                                }
+                                            }
+                                        }
+
+                                        // recompute the currently-applied fluctuation delta
+                                        let fluctuation_freq = if fluctuation_h_l_flag {
+                                            // LOW state
+                                            if cfg.fluctuation_mode == 3 { 0 } else { -cfg.fluctuation_coefficient * cfg.minimum_delta_core_freq_step }
+                                        } else {
+                                            // HIGH state
+                                            if cfg.fluctuation_mode == 2 || cfg.fluctuation_mode == 3 { cfg.fluctuation_coefficient * cfg.minimum_delta_core_freq_step } else { 0 }
+                                        };
+                                        let main_delta = cfg.init_core_oc_value + fluctuation_freq;
+
+                                        let to_mhz = |freq_khz: Option<i32>| {
+                                            freq_khz
+                                                .map(|khz| format!("{:.1}", khz as f64 / 1000.0))
+                                                .unwrap_or_else(|| "N/A".to_string())
+                                        };
+
+                                        let state_msg = format!(
+                                            "State:{} Pt:{} V:{} default:{}MHz current:{}MHz delta:{:+.1}MHz thrm:{}/{}",
+                                            state_label,
+                                            actual_point,
+                                            v,
+                                            to_mhz(default_freq_khz),
+                                            to_mhz(current_freq_khz),
+                                            main_delta as f64 / 1000.0,
+                                            thrm_or_pwr_limit_number,
+                                            in_test_check_number
+                                        );
+
+                                        if let Some(progress) = cfg.progress {
+                                            progress.set_status(state_msg);
+                                        } else {
+                                            progress_print(None, state_msg);
+                                        }
+
+                                        // ensure voltage lock is applied as before
                                         run_output(
                                             gpu,
                                             SetVfpVoltageLock {
@@ -593,14 +505,12 @@ mod pressure_runner {
                                                 feedback: false,
                                             },
                                         )
-                                        .unwrap_or_else(
-                                            |err| {
-                                                eprintln!(
-                                                    "Warning: Failed to set voltage due to {:?}",
-                                                    err
-                                                );
-                                            },
-                                        );
+                                        .unwrap_or_else(|err| {
+                                            eprintln!(
+                                                "Warning: Failed to set voltage due to {:?}",
+                                                err
+                                            );
+                                        });
                                     }
                                     Err(e) => {
                                         eprintln!(
@@ -633,10 +543,13 @@ mod pressure_runner {
                         }
 
                         if test_start_at.elapsed() >= Duration::from_secs(timeout_budget_secs) {
-                            println!(
-                                "Considering GPU has crashed (timeout: {}s, elapsed: {}s)...",
-                                timeout_budget_secs,
-                                test_start_at.elapsed().as_secs()
+                            progress_print(
+                                cfg.progress,
+                                format!(
+                                    "Considering GPU has crashed (timeout: {}s, elapsed: {}s)...",
+                                    timeout_budget_secs,
+                                    test_start_at.elapsed().as_secs()
+                                ),
                             );
                             force_kill_process(&mut process, "in-test timeout");
                             let _ = retry_nvapi_with_backoff(
@@ -656,6 +569,11 @@ mod pressure_runner {
                             );
                             break;
                         }
+                    }
+
+                    drop(test_progress);
+                    for handle in output_threads {
+                        let _ = handle.join();
                     }
 
                     #[cfg(windows)]
@@ -751,6 +669,29 @@ mod pressure_runner {
     }
 }
 
+// Private config bundle for test pressure runs. Kept private to this module and
+// not exported to parent modules.
+struct TestPressureConfig<'a> {
+    point: usize,
+    flat_curve_flag: bool,
+    vfp_set_range: usize,
+    init_core_oc_value: i32,
+    minimum_delta_core_freq_step: i32,
+    fluctuation_coefficient: i32,
+    fluctuation_mode: usize,
+    test_exe: &'a str,
+    test_code: String,
+    timeout_loops: u64,
+    recovery_method: bool,
+    is_legacy_global_offset: bool,
+    test_duration_secs: u64,
+    progress: Option<&'a ScanProgress>,
+    /// Stressor CUDA device ordinal (sets CUDA_VISIBLE_DEVICES when non-None).
+    cuda_device: Option<u32>,
+    /// Extra arguments appended verbatim to the stressor command.
+    stressor_extra_args: &'a [String],
+}
+
 #[allow(clippy::too_many_arguments)]
 fn test_pressure(
     gpu: &GpuTarget<'_>,
@@ -767,10 +708,12 @@ fn test_pressure(
     timeout_loops: u64,
     recovery_method: bool,
     is_legacy_global_offset: bool,
+    test_duration_secs: u64,
+    progress: Option<&ScanProgress>,
     cuda_device: Option<u32>,
     stressor_extra_args: &[String],
 ) -> i32 {
-    let cfg = pressure_runner::TestPressureConfig {
+    let cfg = TestPressureConfig {
         point,
         flat_curve_flag,
         vfp_set_range,
@@ -783,6 +726,8 @@ fn test_pressure(
         timeout_loops,
         recovery_method,
         is_legacy_global_offset,
+        test_duration_secs,
+        progress,
         cuda_device,
         stressor_extra_args,
     };
@@ -800,6 +745,7 @@ struct CommonPhaseArgs<'a> {
     recovery_method_switch: bool,
     test_duration: u64,
     endurance_coefficient: u64,
+    progress: Option<&'a ScanProgress>,
     cuda_device: Option<u32>,
     stressor_extra_args: &'a [String],
 }
@@ -815,6 +761,7 @@ fn build_common_phase_args<'a>(
     recovery_method_switch: bool,
     test_duration: u64,
     endurance_coefficient: u64,
+    progress: Option<&'a ScanProgress>,
     cuda_device: Option<u32>,
     stressor_extra_args: &'a [String],
 ) -> CommonPhaseArgs<'a> {
@@ -828,6 +775,7 @@ fn build_common_phase_args<'a>(
         recovery_method_switch,
         test_duration,
         endurance_coefficient,
+        progress,
         cuda_device,
         stressor_extra_args,
     }
@@ -902,7 +850,7 @@ fn pre_load_vf_recheck(gpu: &GpuTarget<'_>, point: usize) -> bool {
 
     // voltage_frequency_check 可能仍返回 Result，我们这里捕获错误并当作失败处理
     let checks =
-        match voltage_frequency_check(std::slice::from_ref(gpu), point, print_scan_separator) {
+        match voltage_frequency_check(std::slice::from_ref(gpu), point) {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("Failed to read V/F info: {e}");
@@ -1032,6 +980,8 @@ fn run_legacy_short_phase(
             args.common.test_duration,
             args.common.recovery_method_switch,
             true,
+            args.common.test_duration,
+            args.common.progress,
             args.common.cuda_device,
             args.common.stressor_extra_args,
         );
@@ -1133,6 +1083,8 @@ fn run_legacy_long_phase(
             args.common.endurance_coefficient * args.common.test_duration,
             args.common.recovery_method_switch,
             true,
+            args.common.endurance_coefficient * args.common.test_duration,
+            args.common.progress,
             args.common.cuda_device,
             args.common.stressor_extra_args,
         );
@@ -1337,6 +1289,8 @@ fn run_gpuboostv3_short_phase<V: std::fmt::Display + Copy>(
             args.common.test_duration,
             args.common.recovery_method_switch,
             false,
+            args.common.test_duration,
+            args.common.progress,
             args.common.cuda_device,
             args.common.stressor_extra_args,
         );
@@ -1477,6 +1431,8 @@ fn run_gpuboostv3_long_phase<V: std::fmt::Display + Copy>(
             args.common.endurance_coefficient * args.common.test_duration,
             args.common.recovery_method_switch,
             false,
+            args.common.endurance_coefficient * args.common.test_duration,
+            args.common.progress,
             args.common.cuda_device,
             args.common.stressor_extra_args,
         );
@@ -1597,6 +1553,8 @@ fn run_mem_oc_phase<V: std::fmt::Display + Copy>(
             args.common.endurance_coefficient * args.common.test_duration,
             args.common.recovery_method_switch,
             true,
+            args.common.endurance_coefficient * args.common.test_duration,
+            args.common.progress,
             args.common.cuda_device,
             args.common.stressor_extra_args,
         );
@@ -1943,10 +1901,14 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
             return Ok(());
         }
 
+        let scan_progress = Arc::new(ScanProgress::new(lower_voltage_point, upper_voltage_point));
+        let _scan_progress_guard = ActiveScanProgressGuard::enter(scan_progress.clone());
+        scan_progress.set_total_point(point, lower_voltage_point, upper_voltage_point);
+
         writeln!(l)?;
         println!("Waiting for default volt-freq self-check");
         let checks =
-            voltage_frequency_check(std::slice::from_ref(gpu), point, print_scan_separator)
+            voltage_frequency_check(std::slice::from_ref(gpu), point)
                 .expect("Failed to read v-f info");
         if !checks.iter().all(|check| check.precise) {
             let summary = checks
@@ -1985,6 +1947,7 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
                 recovery_method_switch,
                 test_duration,
                 endurance_coefficient,
+                Some(scan_progress.as_ref()),
                 cfg.cuda_device,
                 &cfg.stressor_extra_args,
             ),
@@ -2019,6 +1982,8 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
             if point > upper_voltage_point {
                 break;
             }
+
+            scan_progress.set_total_point(point, lower_voltage_point, upper_voltage_point);
 
             v = points
                 .get(&(point))
@@ -2199,6 +2164,7 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
                     recovery_method_switch,
                     test_duration,
                     endurance_coefficient,
+                    Some(scan_progress.as_ref()),
                     cfg.cuda_device,
                     &cfg.stressor_extra_args,
                 ),
@@ -2337,6 +2303,7 @@ pub fn autoscan_legacy(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> Resul
                 recovery_method_switch,
                 test_duration,
                 endurance_coefficient,
+                None,
                 cfg.cuda_device,
                 &cfg.stressor_extra_args,
             ),

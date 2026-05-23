@@ -423,13 +423,12 @@ pub fn handle_test_voltage_limits(
 pub fn voltage_frequency_check(
     gpus: &[GpuTarget<'_>],
     point: usize,
-    mut print_separator: impl FnMut(),
 ) -> Result<Vec<GpuVoltageFrequencyCheck>, Error> {
     if gpus.is_empty() {
         return Err(Error::from("no GPU selected"));
     }
 
-    print_separator();
+    // print_separator();
     gpus.iter()
         .map(|gpu| {
             run_output(gpu, CheckVoltageFrequency { point }).map(|check| GpuVoltageFrequencyCheck {
