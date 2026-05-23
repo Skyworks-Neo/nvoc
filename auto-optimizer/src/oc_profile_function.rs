@@ -889,13 +889,6 @@ pub fn fix_result(gpu: &GpuTarget<'_>, matches: &clap::ArgMatches) -> Result<(),
 }
 
 pub fn check_voltage_points(log_filename: &str) -> io::Result<Option<VoltagePointResume>> {
-    // Helper function to extract voltage value from a log line
-    fn extract_voltage_point(line: &str) -> Option<i32> {
-        line.split_whitespace()
-            .filter_map(|word| word.parse::<i32>().ok()) // Try to parse integers
-            .next() // Take the first one found
-    }
-
     // Helper function to extract four usize values from a line
     fn extract_key_points(line: &str) -> Option<(usize, usize, usize, usize)> {
         let numbers: Vec<usize> = line
@@ -930,11 +923,11 @@ pub fn check_voltage_points(log_filename: &str) -> io::Result<Option<VoltagePoin
         // Check for minimum voltage point
         // Minimum voltage point
         if line.contains("minimum_voltage_point") {
-            min_voltage_point = extract_voltage_point(&line);
+            min_voltage_point = extract_value(&line, "minimum_voltage_point:");
         }
 
         if line.contains("maximum_voltage_point") {
-            max_voltage_point = extract_voltage_point(&line);
+            max_voltage_point = extract_value(&line, "maximum_voltage_point:");
         }
 
         if line.contains("key points detected:") {
@@ -964,6 +957,12 @@ fn extract_value_f64(line: &str, pattern: &str) -> Option<f64> {
         .nth(1) // Get the part after the pattern
         .and_then(|s| s.split_whitespace().next()) // Get the next word (numeric value)
         .and_then(|s| s.trim_matches(|c| c == ',').parse::<f64>().ok()) // Parse as f64
+}
+
+fn is_plausible_voltage_point(point: usize) -> bool {
+    // VFP point indices are bounded by the table size; anything above that is
+    // usually a misparsed GPU id or stale data from a different device.
+    point <= 255
 }
 
 pub fn break_point_continue(
@@ -1005,10 +1004,26 @@ pub fn break_point_continue(
         if last_voltage_point.is_none()
             && let Some(point) = extract_value(line, "point: #")
         {
-            last_voltage_point = Some(point as usize);
+            let point = point as usize;
+            if is_plausible_voltage_point(point) {
+                last_voltage_point = Some(point);
+            } else {
+                eprintln!(
+                    "Warning: ignoring suspicious resume point {} from log line: {}",
+                    point, line
+                );
+            }
 
             if line.contains("Finished") {
-                last_voltage_point = last_voltage_point.map(|v| v + testing_step);
+                last_voltage_point = last_voltage_point
+                    .and_then(|v| v.checked_add(testing_step))
+                    .filter(|&v| is_plausible_voltage_point(v));
+                if last_voltage_point.is_none() {
+                    eprintln!(
+                        "Warning: ignoring suspicious resume point after Finished line: {}",
+                        line
+                    );
+                }
                 break;
             }
         }
@@ -1042,6 +1057,64 @@ pub fn break_point_continue(
         last_voltage_point,
         ultrafast_flag,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::break_point_continue;
+    use std::fs::File;
+    use std::io::Write;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn write_temp_log(contents: &str) -> std::path::PathBuf {
+        let mut path = std::env::temp_dir();
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before unix epoch")
+            .as_nanos();
+        path.push(format!(
+            "nvoc_break_point_continue_{}_{}.log",
+            std::process::id(),
+            stamp
+        ));
+        let mut file = File::create(&path).expect("create temp log");
+        file.write_all(contents.as_bytes()).expect("write temp log");
+        path
+    }
+
+    #[test]
+    fn break_point_continue_rejects_gpu_id_like_resume_point() {
+        let path = write_temp_log(
+            "Starting short test phase...\n\
+Test #1 on point: #2304, voltage: #1350000, freq_delta: #+100. \n\
+Test result is code #0 .\n\
+Finished core OC on point: #2304\n",
+        );
+
+        let (_, _, last_voltage_point, _) =
+            break_point_continue(path.to_str().expect("utf8 temp path"), 6)
+                .expect("parse log");
+
+        assert_eq!(last_voltage_point, None);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn break_point_continue_keeps_valid_resume_point() {
+        let path = write_temp_log(
+            "Starting short test phase...\n\
+Test #1 on point: #64, voltage: #1350000, freq_delta: #+100. \n\
+Test result is code #0 .\n\
+Finished core OC on point: #64\n",
+        );
+
+        let (_, _, last_voltage_point, _) =
+            break_point_continue(path.to_str().expect("utf8 temp path"), 6)
+                .expect("parse log");
+
+        assert_eq!(last_voltage_point, Some(70));
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 pub fn export_vfp_from_log(matches: &clap::ArgMatches) -> Result<(), Error> {

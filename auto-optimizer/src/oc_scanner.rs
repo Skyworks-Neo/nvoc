@@ -1777,9 +1777,16 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
         }
 
         if let Some(voltage_point) = last_voltage_point {
-            println!("  - Last voltage point: {}", voltage_point);
-            point = voltage_point; // Update if present
-            resuming_flag = true;
+            if voltage_point < lower_voltage_point || voltage_point > upper_voltage_point {
+                eprintln!(
+                    "Warning: ignoring resume point {} outside current voltage range {}-{}.",
+                    voltage_point, lower_voltage_point, upper_voltage_point
+                );
+            } else {
+                println!("  - Last voltage point: {}", voltage_point);
+                point = voltage_point; // Update if present
+                resuming_flag = true;
+            }
         }
 
         if let Some(ultrafast_flag) = ultrafast_flag {
