@@ -9,12 +9,15 @@ from typing import List, Optional, Tuple
 import torch
 
 from .device import (
+    detect_capability,
     empty_device_cache,
     maybe_set_tf32,
     synchronize_device,
-    detect_capability,
 )
 from .models import KernelParamOverride, KernelType, PrecisionSpec, StressRunConfig
+
+
+MAX_ATOMIC_ELEMENTS = 4_194_304
 
 
 def make_random_matrix(size: int, device: torch.device, dtype: torch.dtype, seed: int):
@@ -28,6 +31,23 @@ def make_random_matrix(size: int, device: torch.device, dtype: torch.dtype, seed
     return base.to(device=device, dtype=dtype)
 
 
+def make_random_vector(
+    length: int, device: torch.device, dtype: torch.dtype, seed: int
+):
+    g = torch.Generator(device="cpu")
+    g.manual_seed(seed)
+    base = torch.randn(length, generator=g, dtype=torch.float32)
+
+    if hasattr(torch, "float8_e4m3fn") and dtype == torch.float8_e4m3fn:
+        return base.to(device=device).to(dtype=dtype)
+
+    return base.to(device=device, dtype=dtype)
+
+
+def atomic_element_count(size: int) -> int:
+    return min(int(size) * int(size), MAX_ATOMIC_ELEMENTS)
+
+
 def choose_kernel_type(
     mixture: List[Tuple[KernelType, float]], rng: random.Random
 ) -> KernelType:
@@ -39,10 +59,10 @@ def choose_kernel_type(
     pick = rng.random() * total_weight
     for kind, weight in mixture:
         weight = max(weight, 0.0)
-        if pick <= weight:
+        if weight > 0.0 and pick < weight:
             return kind
         pick -= weight
-    return mixture[-1][0]
+    return next(kind for kind, weight in reversed(mixture) if weight > 0.0)
 
 
 def choose_precision_from_mixture(
@@ -56,10 +76,10 @@ def choose_precision_from_mixture(
     pick = rng.random() * total_weight
     for spec, weight in mixture:
         weight = max(weight, 0.0)
-        if pick <= weight:
+        if weight > 0.0 and pick < weight:
             return spec
         pick -= weight
-    return mixture[-1][0]
+    return next(spec for spec, weight in reversed(mixture) if weight > 0.0)
 
 
 def estimate_kernel_work_flops(kind: KernelType, size: int, burst_iters: int) -> int:
@@ -69,6 +89,8 @@ def estimate_kernel_work_flops(kind: KernelType, size: int, burst_iters: int) ->
         return 2 * n * n * n * iters
     if kind in (KernelType.TRANSPOSE, KernelType.ELEMENTWISE):
         return 2 * n * n * iters
+    if kind == KernelType.ATOMIC:
+        return atomic_element_count(n) * iters
     return n * n * iters
 
 
@@ -266,13 +288,13 @@ def run_kernel_path(
             return time.monotonic() - op_start
 
         if kind == KernelType.ATOMIC:
-            length = size * size
+            length = atomic_element_count(size)
             indices = torch.randint(
                 0, length, (length,), device=device, dtype=torch.int64
             )
-            values = make_random_matrix(
-                size, device, spec.dtype, op_rng.randrange(1 << 30)
-            ).view(-1)
+            values = make_random_vector(
+                length, device, spec.dtype, op_rng.randrange(1 << 30)
+            )
             dst = torch.zeros(length, device=device, dtype=spec.dtype)
             for _ in range(warmup_iters):
                 dst.scatter_add_(0, indices, values)

@@ -76,7 +76,7 @@ python test.py [参数]
 - `--warmup-iters`（默认：3）：每个工作负载窗口的预热轮数。
 - `--burst-iters`（默认：6）：每个工作负载窗口的正式压力突发轮数。
 - `--validate-interval`（默认：10）：旁路校验的间隔秒数。
-- `--validate-size`（默认：768）：旁路校验所用的固定矩阵尺寸。
+- `--validate-size`（默认：1024）：旁路校验所用的固定矩阵尺寸。
 - `--transpose-prob`（默认：0.5）：随机转置 a/b 矩阵的概率，用于轻度扰动 kernel 执行路径。
 - `--seed`（默认：12345）：随机种子，保证结果一致性。
 - `--kernel-types`（默认：`gemm,memcpy,memset,transpose,elementwise,reduction,atomic`）：启用的 kernel 类型列表。
@@ -166,7 +166,7 @@ python test.py [arguments]
 - `--warmup-iters` (default: 3): Warmup rounds for each workload window.
 - `--burst-iters` (default: 6): Main stress rounds for each workload window.
 - `--validate-interval` (default: 10): Interval, in seconds, for sidecar validation.
-- `--validate-size` (default: 768): Fixed matrix size used by validation.
+- `--validate-size` (default: 1024): Fixed matrix size used by validation.
 - `--transpose-prob` (default: 0.5): Probability of randomly transposing matrix A/B to perturb the kernel path.
 - `--seed` (default: 12345): Random seed for reproducible runs.
 - `--kernel-types` (default: `gemm,memcpy,memset,transpose,elementwise,reduction,atomic`): Enabled kernel types.

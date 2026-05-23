@@ -72,7 +72,17 @@ def _make_torch_stub():
 if "torch" not in sys.modules:
     sys.modules["torch"] = _make_torch_stub()
 
-from cli_stressor_cuda.models import StressResult  # noqa: E402
+from cli_stressor_cuda.kernels import (  # noqa: E402
+    MAX_ATOMIC_ELEMENTS,
+    atomic_element_count,
+    choose_kernel_type,
+    choose_precision_from_mixture,
+)
+from cli_stressor_cuda.models import (  # noqa: E402
+    KernelType,
+    PrecisionSpec,
+    StressResult,
+)
 from cli_stressor_cuda.parsing import parse_int_list  # noqa: E402
 from cli_stressor_cuda.validation import choose_tolerance  # noqa: E402
 
@@ -289,6 +299,34 @@ class TestParseIntList(unittest.TestCase):
     def test_empty_raises(self):
         with self.assertRaises(ValueError):
             parse_int_list("")
+
+
+class TestWeightedSelection(unittest.TestCase):
+    class ZeroRng:
+        def random(self):
+            return 0.0
+
+    def test_kernel_zero_weight_is_not_selected_at_boundary(self):
+        selected = choose_kernel_type(
+            [(KernelType.ATOMIC, 0.0), (KernelType.GEMM, 1.0)], self.ZeroRng()
+        )
+        self.assertEqual(selected, KernelType.GEMM)
+
+    def test_precision_zero_weight_is_not_selected_at_boundary(self):
+        fp16 = PrecisionSpec("FP16", sys.modules["torch"].float16, None)
+        bf16 = PrecisionSpec("BF16", sys.modules["torch"].bfloat16, None)
+        selected = choose_precision_from_mixture(
+            [(fp16, 0.0), (bf16, 1.0)], self.ZeroRng()
+        )
+        self.assertEqual(selected, bf16)
+
+
+class TestAtomicSizing(unittest.TestCase):
+    def test_atomic_size_is_capped(self):
+        self.assertEqual(atomic_element_count(16_384), MAX_ATOMIC_ELEMENTS)
+
+    def test_atomic_small_size_keeps_square_workload(self):
+        self.assertEqual(atomic_element_count(128), 128 * 128)
 
 
 if __name__ == "__main__":

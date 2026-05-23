@@ -18,6 +18,7 @@ from .kernels import (
     estimate_kernel_work_flops,
     filter_supported_kernel_precisions,
     get_streams,
+    make_random_matrix,
     resolve_kernel_params,
     run_kernel_path,
 )
@@ -43,8 +44,8 @@ def run_stress_mixed(
             continue
         try:
             maybe_set_tf32(spec.tf32_enabled)
-            probe_a = torch.randn(8, 8, device=device, dtype=spec.dtype)
-            probe_b = torch.randn(8, 8, device=device, dtype=spec.dtype)
+            probe_a = make_random_matrix(8, device, spec.dtype, 101)
+            probe_b = make_random_matrix(8, device, spec.dtype, 102)
             _ = torch.mm(probe_a, probe_b)
             synchronize_device(device)
             del probe_a, probe_b
