@@ -1,7 +1,7 @@
 use cli_stressor_cuda_rs::PciBusAddress;
 use cli_stressor_cuda_rs::{
-    Backend, BackendError, CudaDeviceEnumInfo, DeviceInfo, HostMatrix, KernelType, PrecisionKind,
-    PrecisionSpec, StreamMode, make_random_host_matrix,
+    Backend, BackendError, CudaDeviceEnumInfo, DeviceInfo, HostMatrix, KernelPathRequest,
+    KernelType, PrecisionKind, PrecisionSpec, StreamMode, make_random_host_matrix,
 };
 use cudarc::cublas::{Asum, AsumConfig, CudaBlas, Gemm, GemmConfig, sys as cublas_sys};
 use cudarc::driver::sys as cuda_sys;
@@ -1119,17 +1119,18 @@ impl Backend for CudaBackend {
         }
     }
 
-    fn run_kernel_path(
-        &mut self,
-        spec: &PrecisionSpec,
-        kind: KernelType,
-        size: usize,
-        warmup_iters: u32,
-        burst_iters: u32,
-        transpose_prob: f64,
-        seed: u64,
-        stream_mode: StreamMode,
-    ) -> Result<f64, BackendError> {
+    fn run_kernel_path(&mut self, request: KernelPathRequest<'_>) -> Result<f64, BackendError> {
+        let KernelPathRequest {
+            spec,
+            kind,
+            size,
+            warmup_iters,
+            burst_iters,
+            transpose_prob,
+            seed,
+            stream_mode,
+        } = request;
+
         match kind {
             KernelType::Gemm => self.run_gemm_path(
                 spec,

@@ -83,7 +83,7 @@ fn test_parse_kernel_param_overrides() {
     assert_eq!(items.len(), 2);
     assert!(items.iter().any(|v| {
         v.kind == KernelType::Gemm
-            && v.matrix_sizes.as_ref().map(|s| s.as_slice()) == Some(&[2049, 4096])
+            && v.matrix_sizes.as_deref() == Some(&[2049, 4096])
             && v.warmup_iters == Some(4)
             && v.burst_iters == Some(8)
     }));

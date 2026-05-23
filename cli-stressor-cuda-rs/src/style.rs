@@ -8,9 +8,7 @@ fn paint(message: &str, style: Style) -> String {
 pub fn title(message: &str) -> String {
     paint(
         message,
-        AnsiColor::BrightWhite
-            .on_default()
-            .effects(Effects::BOLD),
+        AnsiColor::BrightWhite.on_default().effects(Effects::BOLD),
     )
 }
 

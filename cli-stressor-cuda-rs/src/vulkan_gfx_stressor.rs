@@ -1,7 +1,7 @@
-use ash::{Instance, vk};
-use anstream::eprintln;
-use cli_stressor_cuda_rs::PciBusAddress;
 use crate::style::stylize;
+use anstream::eprintln;
+use ash::{Instance, vk};
+use cli_stressor_cuda_rs::PciBusAddress;
 use rand::Rng;
 use std::ffi::CStr;
 use std::sync::Arc;

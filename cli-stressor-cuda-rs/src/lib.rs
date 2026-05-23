@@ -193,19 +193,21 @@ pub trait Backend {
         transpose_b: bool,
     ) -> Result<Self::Output, BackendError>;
     fn output_to_f32(&self, output: &Self::Output) -> Result<Vec<f32>, BackendError>;
-    fn run_kernel_path(
-        &mut self,
-        spec: &PrecisionSpec,
-        kind: KernelType,
-        size: usize,
-        warmup_iters: u32,
-        burst_iters: u32,
-        transpose_prob: f64,
-        seed: u64,
-        stream_mode: StreamMode,
-    ) -> Result<f64, BackendError>;
+    fn run_kernel_path(&mut self, request: KernelPathRequest<'_>) -> Result<f64, BackendError>;
     fn synchronize(&self) -> Result<(), BackendError>;
     fn empty_cache(&self) -> Result<(), BackendError>;
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct KernelPathRequest<'a> {
+    pub spec: &'a PrecisionSpec,
+    pub kind: KernelType,
+    pub size: usize,
+    pub warmup_iters: u32,
+    pub burst_iters: u32,
+    pub transpose_prob: f64,
+    pub seed: u64,
+    pub stream_mode: StreamMode,
 }
 
 pub fn parse_int_list(raw: &str) -> Result<Vec<usize>, String> {
@@ -857,16 +859,16 @@ pub fn run_stress_for_precision<B: Backend>(
         };
         let op_seed = rng.random::<u64>();
 
-        let op_elapsed = match backend.run_kernel_path(
-            &op_spec,
-            kernel_kind,
+        let op_elapsed = match backend.run_kernel_path(KernelPathRequest {
+            spec: &op_spec,
+            kind: kernel_kind,
             size,
-            params.warmup_iters,
-            params.burst_iters,
-            params.transpose_prob,
-            op_seed,
-            effective_config.stream_mode,
-        ) {
+            warmup_iters: params.warmup_iters,
+            burst_iters: params.burst_iters,
+            transpose_prob: params.transpose_prob,
+            seed: op_seed,
+            stream_mode: effective_config.stream_mode,
+        }) {
             Ok(value) => value,
             Err(err) => {
                 result.first_error = Some(format!("runtime error: {err}"));
@@ -1062,16 +1064,16 @@ pub fn run_stress_mixed<B: Backend>(
             break;
         }
 
-        let op_elapsed = match backend.run_kernel_path(
-            &op_spec,
-            kernel_kind,
+        let op_elapsed = match backend.run_kernel_path(KernelPathRequest {
+            spec: &op_spec,
+            kind: kernel_kind,
             size,
-            params.warmup_iters,
-            params.burst_iters,
-            params.transpose_prob,
-            op_seed,
-            effective_config.stream_mode,
-        ) {
+            warmup_iters: params.warmup_iters,
+            burst_iters: params.burst_iters,
+            transpose_prob: params.transpose_prob,
+            seed: op_seed,
+            stream_mode: effective_config.stream_mode,
+        }) {
             Ok(value) => value,
             Err(err) => {
                 if let Some(idx) = index_by_name.get(op_spec.name) {
@@ -1091,8 +1093,7 @@ pub fn run_stress_mixed<B: Backend>(
         let elapsed_total = start.elapsed().as_secs_f64();
 
         println!(
-            "[{}] t={:6.1}s/{:.0}s | {:10} | p={:11} | size={:5} | inst={:7.2} TFLOPS(eqv)",
-            "MIX",
+            "[MIX] t={:6.1}s/{:.0}s | {:10} | p={:11} | size={:5} | inst={:7.2} TFLOPS(eqv)",
             elapsed_total,
             effective_config.duration_s,
             kernel_kind.as_str(),

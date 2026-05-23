@@ -1,16 +1,16 @@
-use clap::Parser;
-#[cfg(feature = "cuda")]
-use clap::{CommandFactory, FromArgMatches, parser::ValueSource};
 use anstream::eprintln;
 #[cfg(any(feature = "cuda", feature = "vulkan"))]
 use anstream::println;
-use style::stylize;
+use clap::Parser;
 #[cfg(feature = "cuda")]
-use style::stylize_title;
+use clap::{CommandFactory, FromArgMatches, parser::ValueSource};
 #[cfg(feature = "cuda")]
 use std::collections::HashMap;
 #[cfg(feature = "cuda")]
 use std::fs;
+use style::stylize;
+#[cfg(feature = "cuda")]
+use style::stylize_title;
 
 #[cfg(feature = "cuda")]
 use cli_stressor_cuda_rs::parse_int_list;
@@ -41,10 +41,10 @@ use cuda_backend::{
 #[cfg(feature = "vulkan")]
 #[path = "vulkan_gfx_stressor.rs"]
 mod vulkan_gfx_stressor;
-#[cfg(feature = "vulkan")]
-use vulkan_gfx_stressor::VulkanGraphicsEngine;
 #[cfg(all(feature = "cuda", feature = "vulkan"))]
 use vulkan_gfx_stressor::VulkanDeviceSelection;
+#[cfg(feature = "vulkan")]
+use vulkan_gfx_stressor::VulkanGraphicsEngine;
 
 #[cfg(feature = "vulkan")]
 fn run_vulkan_for_duration(duration_s: f64) -> i32 {
@@ -806,10 +806,7 @@ fn print_cuda_gpu_list() -> Result<(), String> {
         (None, None) => a.device_index.cmp(&b.device_index),
     });
 
-    println!(
-        "{}",
-        stylize_title("CUDA GPUs (sorted by PCI bus):")
-    );
+    println!("{}", stylize_title("CUDA GPUs (sorted by PCI bus):"));
     println!(
         "{}",
         stylize(
@@ -892,10 +889,7 @@ fn print_device_info(info: &DeviceInfo) {
 #[cfg(feature = "cuda")]
 fn print_summary(results: &[StressResult], info: &DeviceInfo) {
     println!("\n{}", "=".repeat(72));
-    println!(
-        "{}",
-        stylize_title("Phase 1 core stability summary")
-    );
+    println!("{}", stylize_title("Phase 1 core stability summary"));
     println!(
         "{}",
         stylize_title(&format!("Testing Device: {}", info.name))
@@ -1207,10 +1201,7 @@ fn main() {
     let mut overall_passed = true;
 
     println!("\n{}", "-".repeat(72));
-    println!(
-        "{}",
-        stylize_title("Starting mixed-kernel stress")
-    );
+    println!("{}", stylize_title("Starting mixed-kernel stress"));
     println!(
         "{}",
         stylize(
