@@ -21,6 +21,7 @@ EXPECTED_EXPORTS = [
     "discover_gpus",
     "probe_voltage_limits",
     "query_clock_offset",
+    "query_domain_vfp_points",
     "query_info",
     "query_legacy_p0_core_max_voltage_delta",
     "query_status",

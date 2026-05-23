@@ -1,11 +1,12 @@
 [project]
 name = "nvoc-tui"
 version = "0.1.0"
-description = "Terminal UI frontend for nvoc-auto-optimizer"
+description = "Terminal UI frontend for NVOC"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }
 dependencies = [
+    "pynvoc",
     "plotext>=5.3.2",
     "textual>=6.1.0",
     "textual-plotext>=1.0.1",
@@ -26,6 +27,9 @@ nvoc-tui = "nvoc_tui.__main__:main"
 
 [tool.uv]
 package = true
+
+[tool.uv.sources]
+pynvoc = { workspace = true }
 
 [tool.setuptools.packages.find]
 include = ["nvoc_tui*"]

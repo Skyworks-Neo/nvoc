@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-from pathlib import Path
+from textual.widgets import Select
 
-from textual.widgets import Input, Select
-
-from ..cli import CliService
 from ..models import GpuDescriptor
 from .base import PaneController
 
@@ -33,23 +30,6 @@ class HeaderController(PaneController):
     def focus_gpu_select(self) -> None:
         self.app.query_one("#gpu-select", Select).focus()
 
-    def save_cli_path(self) -> None:
-        path = self.app.query_one("#cli-path", Input).value.strip()
-        discovered = CliService.discover_cli(path)
-        self.app.config_data.cli = (
-            discovered
-            if discovered.exe_path
-            else self.app.config_data.cli.__class__(exe_path=path)
-        )
-        if self.app.config_data.cli.exe_path and not self.app.config_data.cli.cwd:
-            self.app.config_data.cli.cwd = str(
-                Path(self.app.config_data.cli.exe_path).resolve().parent
-            )
-        self.app.save_config()
-        self.app.write_log(
-            f"CLI path set to: {self.app.config_data.cli.exe_path or path}"
-        )
-
     def on_gpu_selected(self, value: object) -> None:
         if value not in (None, Select.BLANK):
             self.app.config_data.last_gpu_idx = int(value)
@@ -73,16 +53,13 @@ class HeaderController(PaneController):
         select.value = str(target)
         self.app.config_data.last_gpu_idx = target
         self.app.save_config()
-        if code == 0 and self.app.config_data.cli.exe_path:
+        if code == 0:
             self.app.focus_dashboard_tab_switcher()
         self.app.refresh_all_state()
 
     def handle_button(self, button_id: str) -> bool:
         if button_id == "detect-gpus":
             self.app.refresh_gpu_list()
-            return True
-        if button_id == "save-cli":
-            self.save_cli_path()
             return True
         if button_id == "refresh-all":
             self.app.refresh_all_state()

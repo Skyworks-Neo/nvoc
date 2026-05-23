@@ -21,16 +21,14 @@ from textual.binding import Binding
 from textual.containers import Container
 from textual.widgets import Button, Label, Select, TabbedContent
 
-from .cli import CliService
 from .config import ConfigStore
-from .controllers.autoscan import AutoscanController
 from .controllers.console import ConsoleController
 from .controllers.dashboard import DashboardController
 from .controllers.header import HeaderController
 from .controllers.overclock import OverclockController
 from .controllers.vfcurve import VFCurveController
 from .models import AppConfig, GpuCache, GpuDescriptor, repo_root
-from .panes.autoscan import compose_autoscan
+from .native import ActionCallback, NativeService
 from .panes.console import compose_console
 from .panes.dashboard import compose_dashboard
 from .panes.header import compose_header
@@ -42,10 +40,9 @@ class NVOCApp(App[None]):
     TITLE = "NVOC-TUI"
     MIN_WIDTH = 55
     MIN_HEIGHT = 24
-    TAB_IDS = ("dashboard", "autoscan", "overclock", "vfcurve")
+    TAB_IDS = ("dashboard", "overclock", "vfcurve")
     TAB_FIRST_FOCUS = {
         "dashboard": "#dashboard-interval",
-        "autoscan": "#autoscan-mode",
         "overclock": "#oc-api",
         "vfcurve": "#vf-path",
     }
@@ -53,7 +50,6 @@ class NVOCApp(App[None]):
         "styles/base.tcss",
         "styles/header.tcss",
         "styles/dashboard.tcss",
-        "styles/autoscan.tcss",
         "styles/overclock.tcss",
         "styles/vfcurve.tcss",
         "styles/console.tcss",
@@ -84,9 +80,8 @@ class NVOCApp(App[None]):
         Binding("alt+u", "pane_shortcut('u')", show=False),
         Binding("alt+m", "pane_shortcut('m')", show=False),
         ("f1", "switch_tab(0)", "Dashboard"),
-        ("f2", "switch_tab(1)", "Autoscan"),
-        ("f3", "switch_tab(2)", "Overclock"),
-        ("f4", "switch_tab(3)", "VF Curve"),
+        ("f2", "switch_tab(1)", "Overclock"),
+        ("f3", "switch_tab(2)", "VF Curve"),
     ]
 
     def __init__(self) -> None:
@@ -95,17 +90,12 @@ class NVOCApp(App[None]):
         self.root_dir = repo_root()
         self.config_store = ConfigStore(self.root_dir)
         self.config_data: AppConfig = self.config_store.load()
-        discovered = CliService.discover_cli(self.config_data.cli.exe_path)
-        if discovered.exe_path:
-            self.config_data.cli = discovered
-            self.save_config()
-        self.cli_service = CliService(self.root_dir)
+        self.native_service = NativeService(self.root_dir)
         self.gpus: list[GpuDescriptor] = []
         self.cache = GpuCache()
 
         self.header_controller = HeaderController(self)
         self.dashboard_controller = DashboardController(self)
-        self.autoscan_controller = AutoscanController(self)
         self.overclock_controller = OverclockController(self)
         self.vfcurve_controller = VFCurveController(self)
         self.console_controller = ConsoleController(self)
@@ -116,7 +106,6 @@ class NVOCApp(App[None]):
             initial=self.config_data.ui.active_tab or "dashboard", id="main-tabs"
         ):
             yield from compose_dashboard(self.config_data)
-            yield from compose_autoscan(self.config_data)
             yield from compose_overclock()
             yield from compose_vfcurve(
                 self.config_data, self.vfcurve_controller.auto_refresh_label()
@@ -149,6 +138,15 @@ class NVOCApp(App[None]):
     def gpu_args(self) -> list[str]:
         return self.header_controller.gpu_args()
 
+    def selected_gpu_target(self) -> str | None:
+        gpu = self.current_gpu()
+        if gpu and gpu.gpu_id_hex:
+            return gpu.gpu_id_hex
+        idx = self.selected_gpu_idx()
+        if idx is not None and idx >= 0:
+            return str(idx)
+        return None
+
     def current_gpu(self) -> GpuDescriptor | None:
         return self.header_controller.current_gpu()
 
@@ -165,27 +163,27 @@ class NVOCApp(App[None]):
         if code >= 0:
             self.refresh_all_state()
 
-    def run_cli_action(self, args: list[str]) -> None:
-        if not self.config_data.cli.exe_path:
-            self.write_log("CLI executable not configured.")
+    def run_native_action(self, description: str, action: ActionCallback) -> None:
+        if self.selected_gpu_target() is None:
+            self.write_log("No GPU selected.")
             return
-        started = self.cli_service.run_action(
-            self.config_data.cli, args, self.append_threadsafe, self.action_finished
+        started = self.native_service.run_action(
+            description, action, self.append_threadsafe, self.action_finished
         )
         if not started:
             self.write_log("Another action is already running.")
 
-    def run_action_chain(self, commands: list[list[str]]) -> None:
+    def run_action_chain(self, commands: list[tuple[str, ActionCallback]]) -> None:
         queue = list(commands)
 
         def start_next(_code: int = 0) -> None:
             if not queue:
                 self.refresh_all_state()
                 return
-            next_args = queue.pop(0)
-            started = self.cli_service.run_action(
-                self.config_data.cli,
-                next_args,
+            description, action = queue.pop(0)
+            started = self.native_service.run_action(
+                description,
+                action,
                 self.append_threadsafe,
                 lambda code: self.call_from_thread(start_next, code),
             )
@@ -194,12 +192,24 @@ class NVOCApp(App[None]):
 
         start_next()
 
-    def run_query(self, command_name: str, args: list[str], callback) -> None:
+    def run_query(
+        self, command_name: str, callback, *, log_output: bool = True
+    ) -> None:
+        gpu = self.selected_gpu_target()
+        if gpu is None:
+            if log_output:
+                self.write_log("No GPU selected.")
+            callback(-1, "No GPU selected.", {})
+            return
+
+        def finish_query(code: int, output: str, parsed: dict) -> None:
+            if output and (log_output or code != 0):
+                self.write_log(output)
+            callback(code, output, parsed)
+
         def worker() -> None:
-            code, output, parsed = self.cli_service.run_query(
-                self.config_data.cli, args, command_name
-            )
-            self.call_from_thread(callback, code, output, parsed)
+            code, output, parsed = self.native_service.run_query(gpu, command_name)
+            self.call_from_thread(finish_query, code, output, parsed)
 
         threading.Thread(
             target=worker, daemon=True, name=f"query-{command_name}"
@@ -207,7 +217,7 @@ class NVOCApp(App[None]):
 
     def refresh_gpu_list(self) -> None:
         def worker() -> None:
-            code, output, gpus = self.cli_service.list_gpus(self.config_data.cli)
+            code, output, gpus = self.native_service.list_gpus()
             self.call_from_thread(
                 self.header_controller.on_gpu_list_loaded, code, output, gpus
             )
@@ -251,23 +261,6 @@ class NVOCApp(App[None]):
             if key in dashboard_shortcuts:
                 self.dashboard_controller.activate_button(dashboard_shortcuts[key])
                 return True
-        elif tabs.active == "autoscan":
-            autoscan_shortcuts = {
-                "m": "autoscan-mode",
-                "d": "autoscan-bsod",
-                "v": "autoscan-export-init",
-                "i": "autoscan-import-final",
-                "e": "autoscan-export-final",
-                "o": "autoscan-output",
-                "n": "autoscan-init",
-                "r": "autoscan-reset-unlock",
-                "a": "autoscan-start",
-                "s": "autoscan-stop",
-                "x": "autoscan-fix",
-            }
-            if key in autoscan_shortcuts:
-                self.autoscan_controller.activate_shortcut(autoscan_shortcuts[key])
-                return True
         elif tabs.active == "overclock":
             overclock_shortcuts = {
                 "c": "oc-api",
@@ -280,7 +273,6 @@ class NVOCApp(App[None]):
         elif tabs.active == "vfcurve":
             vfcurve_shortcuts = {
                 "c": "vf-path",
-                "q": "vf-quick-export",
                 "s": "vf-refresh",
                 "a": "vf-auto-refresh",
                 "e": "vf-export",
@@ -330,20 +322,12 @@ class NVOCApp(App[None]):
             self.dashboard_controller.update_metrics()
             return
         self.run_query(
-            "info",
-            self.gpu_args() + ["-O", "json", "info"],
-            self.dashboard_controller.on_info_loaded,
+            "info", self.dashboard_controller.on_info_loaded, log_output=False
         )
         self.run_query(
-            "status",
-            self.gpu_args() + ["-O", "json", "status", "-a"],
-            self.dashboard_controller.on_status_loaded,
+            "status", self.dashboard_controller.on_status_loaded, log_output=False
         )
-        self.run_query(
-            "get",
-            self.gpu_args() + ["-O", "json", "get"],
-            self.dashboard_controller.on_get_loaded,
-        )
+        self.run_query("get", self.dashboard_controller.on_get_loaded, log_output=False)
 
     def on_select_changed(self, event: Select.Changed) -> None:
         if event.select.id == "gpu-select":
@@ -368,8 +352,6 @@ class NVOCApp(App[None]):
         if self.header_controller.handle_button(button_id):
             return
         if self.dashboard_controller.handle_button(event.button, button_id):
-            return
-        if self.autoscan_controller.handle_button(button_id):
             return
         if self.overclock_controller.handle_button(button_id):
             return

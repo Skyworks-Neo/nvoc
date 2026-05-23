@@ -34,38 +34,9 @@ class GpuDescriptor:
     def long_label(self) -> str:
         if self.uuid:
             return f"{self.short_label} [{self.uuid}]"
+        if self.gpu_id_hex:
+            return f"{self.short_label} [{self.gpu_id_hex}]"
         return self.short_label
-
-
-@dataclass(slots=True)
-class CliLocation:
-    exe_path: str = ""
-    cwd: str | None = None
-
-
-@dataclass(slots=True)
-class AutoscanSettings:
-    mode: str = "standard"
-    output_csv: str = r".\ws\vfp-tem.csv"
-    init_csv: str = r".\ws\vfp-init.csv"
-    bsod_recovery: str = ""
-
-    @classmethod
-    def from_mapping(cls, data: dict[str, Any] | None) -> "AutoscanSettings":
-        merged = cls()
-        if data:
-            for key in cls.__dataclass_fields__:
-                if key in data:
-                    setattr(merged, key, str(data[key]))
-        return merged
-
-    def to_dict(self) -> dict[str, str]:
-        return {
-            "mode": self.mode,
-            "output_csv": self.output_csv,
-            "init_csv": self.init_csv,
-            "bsod_recovery": self.bsod_recovery,
-        }
 
 
 @dataclass(slots=True)
@@ -76,7 +47,6 @@ class DashboardSettings:
 @dataclass(slots=True)
 class VFCurveSettings:
     default_path: str = ""
-    quick_export: bool = True
     auto_refresh: bool = False
 
 
@@ -88,9 +58,7 @@ class UiSettings:
 
 @dataclass(slots=True)
 class AppConfig:
-    cli: CliLocation = field(default_factory=CliLocation)
     last_gpu_idx: int | None = None
-    autoscan: AutoscanSettings = field(default_factory=AutoscanSettings)
     dashboard: DashboardSettings = field(default_factory=DashboardSettings)
     vfcurve: VFCurveSettings = field(default_factory=VFCurveSettings)
     ui: UiSettings = field(default_factory=UiSettings)

@@ -1,9 +1,9 @@
 use super::conv::{nvml_pstate_to_index, nvml_pstate_to_str};
 use super::error::Error;
 use super::gpu_type::{GpuType, fetch_gpu_type};
-use super::nvml::{get_nvml_pstate_info, query_nvml_power_watts};
+use super::nvml::get_nvml_pstate_info;
 use super::types::{NvapiLockedVoltageTarget, VfpResetDomain};
-use nvapi_hi::nvapi::{CelsiusShifted, ClockFrequencyType, VoltageDomain};
+use nvapi_hi::nvapi::{CelsiusShifted, VoltageDomain};
 use nvapi_hi::{
     Celsius, ClockDomain, ClockLockEntry, ClockLockValue, CoolerPolicy, CoolerSettings,
     FanCoolerId, Gpu, Kilohertz, KilohertzDelta, Microvolts, MicrovoltsDelta, PState, Percentage,
@@ -126,12 +126,6 @@ pub fn set_pstate_base_voltage(
         )));
     }
 
-    println!(
-        "{:?} Core voltage delta set to {:+} μV ({:+.3} mV)",
-        target_pstate,
-        delta_uv.0,
-        delta_uv.0 as f64 / 1000.0
-    );
     Ok(())
 }
 
@@ -269,8 +263,6 @@ pub fn reset_all_pstate_base_voltages(gpu: &Gpu) -> Result<(), Error> {
         .pstates()
         .map_err(|e| Error::from(format!("Failed to read pstates: {:?}", e)))?;
 
-    let mut any_written = false;
-
     for ps in &pstates.pstates {
         // 找到 Core 域的 baseVoltage 条目
         let base_volt = match ps
@@ -312,21 +304,7 @@ pub fn reset_all_pstate_base_voltages(gpu: &Gpu) -> Result<(), Error> {
         let status =
             unsafe { sys_pstate::private::NvAPI_GPU_SetPstates20(*gpu.inner().handle(), &info) };
 
-        if status != 0 {
-            eprintln!(
-                "Warning: NvAPI_GPU_SetPstates20 failed for {:?} with status {}, skipping.",
-                ps.id, status
-            );
-        } else {
-            println!("{:?} Core voltage delta cleared (set to 0 μV).", ps.id);
-            any_written = true;
-        }
-    }
-
-    if any_written {
-        println!("All editable pstate Core voltage deltas have been reset.");
-    } else {
-        println!("No editable pstate Core voltage entries found — nothing to reset.");
+        let _ = status;
     }
 
     Ok(())
@@ -604,17 +582,6 @@ pub fn lock_vfp(gpus: &[&Gpu], request: VfpLockRequest, feedback_flag: bool) -> 
     {
         for gpu in gpus {
             set_vfp_frequency_lock(gpu, domain, upper, lower)?;
-            if feedback_flag {
-                match lower {
-                    Some(lower) => println!(
-                        "Target: {:?} lock upper={} MHz, lower={} MHz",
-                        domain,
-                        upper.0 / 1000,
-                        lower.0 / 1000
-                    ),
-                    None => println!("Target: {:?} lock = {} MHz", domain, upper.0 / 1000),
-                }
-            }
         }
         return Ok(());
     }
@@ -642,12 +609,6 @@ pub fn lock_vfp(gpus: &[&Gpu], request: VfpLockRequest, feedback_flag: bool) -> 
         }
 
         let mut core_v = gpu.inner().core_voltage()?;
-        println!(
-            "Target: {} mV, Current: v = {} mV, Margin: {} mV",
-            v.0 / 1000,
-            core_v.0 / 1000,
-            (v.0 as i32 - core_v.0 as i32) / 1000
-        );
 
         let mut count = 0;
         let mut flag = 0;
@@ -658,7 +619,6 @@ pub fn lock_vfp(gpus: &[&Gpu], request: VfpLockRequest, feedback_flag: bool) -> 
         {
             if count >= 4 {
                 flag = 1;
-                println!("voltage lock failed!");
                 break;
             }
 
@@ -674,18 +634,6 @@ pub fn lock_vfp(gpus: &[&Gpu], request: VfpLockRequest, feedback_flag: bool) -> 
                 ));
             }
             core_v = gpu.inner().core_voltage()?;
-            println!(
-                "Attempt {} FAILED==Target: {} mV, Current: v = {} mV, Margin: {} mV",
-                count,
-                v.0 / 1000,
-                core_v.0 / 1000,
-                (v.0 as i32 - core_v.0 as i32) / 1000
-            );
-            println!(
-                "Current assumed skewrate: {}mV/s, TAU SET TO {}ms",
-                skew_rate,
-                ((v.0 as i32 - core_v.0 as i32).abs() / skew_rate) as u64
-            );
             if skew_rate_enabled == 1 {
                 sleep(Duration::from_millis(
                     ((v.0 as i32 - core_v.0 as i32).abs() / skew_rate) as u64,
@@ -695,9 +643,6 @@ pub fn lock_vfp(gpus: &[&Gpu], request: VfpLockRequest, feedback_flag: bool) -> 
             skew_rate -= 4;
         }
 
-        if count < 5 {
-            println!("SUCCESS",);
-        }
         if flag == 1 {
             return Err(Error::Str("Failed to lock voltage"));
         }
@@ -724,37 +669,31 @@ pub fn reset_vfp_deltas(gpu: &Gpu, domain: VfpResetDomain) -> Result<(), Error> 
 
     if is_legacy {
         let mut any_ok = false;
-        if reset_graphics {
-            if let Err(e) = gpu.inner().set_pstates(
-                [(PState::P0, ClockDomain::Graphics, KilohertzDelta(0))]
-                    .iter()
-                    .cloned(),
-            ) {
-                // TDR 恢复期间调用可能失败，warn 后继续，不中断扫描流程
-                eprintln!(
-                    "Warning: legacy pstate Graphics reset failed (GPU may be recovering from TDR): {:?}",
-                    e
-                );
-            } else {
-                any_ok = true;
-            }
+        if reset_graphics
+            && gpu
+                .inner()
+                .set_pstates(
+                    [(PState::P0, ClockDomain::Graphics, KilohertzDelta(0))]
+                        .iter()
+                        .cloned(),
+                )
+                .is_ok()
+        {
+            any_ok = true;
         }
-        if reset_memory {
-            if let Err(e) = gpu.inner().set_pstates(
-                [(PState::P0, ClockDomain::Memory, KilohertzDelta(0))]
-                    .iter()
-                    .cloned(),
-            ) {
-                eprintln!(
-                    "Warning: legacy pstate Memory reset failed (GPU may be recovering from TDR): {:?}",
-                    e
-                );
-            } else {
-                any_ok = true;
-            }
+        if reset_memory
+            && gpu
+                .inner()
+                .set_pstates(
+                    [(PState::P0, ClockDomain::Memory, KilohertzDelta(0))]
+                        .iter()
+                        .cloned(),
+                )
+                .is_ok()
+        {
+            any_ok = true;
         }
         if any_ok {
-            println!("vfp reset ({:?}) done (legacy pstate mode)", domain);
             return Ok(());
         }
     }
@@ -769,7 +708,7 @@ pub fn reset_vfp_deltas(gpu: &Gpu, domain: VfpResetDomain) -> Result<(), Error> 
                 .cloned(),
         );
         if let Err(e) = &r {
-            eprintln!("Warning: fast pstate Graphics reset failed: {:?}", e);
+            let _ = e;
         }
         r.is_ok()
     } else {
@@ -783,7 +722,7 @@ pub fn reset_vfp_deltas(gpu: &Gpu, domain: VfpResetDomain) -> Result<(), Error> 
                 .cloned(),
         );
         if let Err(e) = &r {
-            eprintln!("Warning: fast pstate Memory reset failed: {:?}", e);
+            let _ = e;
         }
         r.is_ok()
     } else {
@@ -791,12 +730,10 @@ pub fn reset_vfp_deltas(gpu: &Gpu, domain: VfpResetDomain) -> Result<(), Error> 
     };
 
     if graphics_ok || memory_ok {
-        println!("vfp reset ({:?}) done (fast pstate path)", domain);
         return Ok(());
     }
 
     // 保底路径：逐点清零 VFP 曲线
-    eprintln!("Warning: fast pstate reset failed, falling back to point-by-point VFP reset...");
     let point_range: usize = gpu_type
         .as_ref()
         .map(|t| t.vfp_point_range())
@@ -821,10 +758,6 @@ pub fn reset_vfp_deltas(gpu: &Gpu, domain: VfpResetDomain) -> Result<(), Error> 
             }
         }
     }
-    println!(
-        "vfp reset ({:?}) done (fallback point-by-point path)",
-        domain
-    );
     Ok(())
 }
 
@@ -855,11 +788,6 @@ pub fn set_pointwise_vfp_delta(
             start, end
         )));
     }
-    println!(
-        "pointwiseoc: applying delta {} kHz to VFP points {}..={} (inclusive)",
-        delta_khz, start, end
-    );
-
     for gpu in gpus {
         set_vfp_range(gpu, start..=end, delta_khz)?;
     }
@@ -904,20 +832,12 @@ pub fn query_domain_vf_points_indexed(
                 result.push((i, point));
             }
             Ordering::Less => {
-                let (i, _) = pts.next().unwrap();
-                eprintln!("VFP point index {i} has no matching delta; skipping");
+                pts.next();
             }
             Ordering::Greater => {
-                let (i, _) = dts.next().unwrap();
-                eprintln!("VFP delta index {i} has no matching point; skipping");
+                dts.next();
             }
         }
-    }
-    for (i, _) in pts {
-        eprintln!("VFP point index {i} has no matching delta; skipping");
-    }
-    for (i, _) in dts {
-        eprintln!("VFP delta index {i} has no matching point; skipping");
     }
     Ok(result)
 }
@@ -1000,15 +920,8 @@ pub fn handle_test_voltage_limits(
         let info = gpu.info()?;
         let gpu_type = fetch_gpu_type(&info);
 
-        if info.name.contains("Laptop") || info.name.contains("Device") {
-            println!("TDP/Temp/VDDQ control not available on MOBILE chips! Skipping...");
-        } else {
-            match gpu.set_voltage_boost(Percentage(100)) {
-                Ok(_) => {
-                    println!("Successfully set VDDQ boost to +100% (max allowed V_core in fact).")
-                }
-                Err(e) => eprintln!("Failed to set VDDQ boost: {:?}", e),
-            }
+        if !(info.name.contains("Laptop") || info.name.contains("Device")) {
+            let _ = gpu.set_voltage_boost(Percentage(100));
         }
 
         if let Ok(ref t) = gpu_type {
@@ -1022,43 +935,20 @@ pub fn handle_test_voltage_limits(
                 margin_threshold_check = 1;
             }
 
-            // 9 系及 Volta/Unknown 的特殊打印（无 VFP 支持）
-            match t {
-                GpuType::Mobile9Series => {
-                    println!("Mobile 9 Series GPU detected.");
-                    drop(Error::VfpUnsupported);
-                }
-                GpuType::Desktop9Series => {
-                    println!("Desktop 9 Series GPU detected.");
-                    drop(Error::VfpUnsupported);
-                }
-                GpuType::ComputationVolta => {
-                    println!("Computation Volta GPU detected.");
-                }
-                GpuType::Unknown => {
-                    println!("Unknown GPU type detected.");
-                }
-                _ => {}
+            if matches!(t, GpuType::Mobile9Series | GpuType::Desktop9Series) {
+                drop(Error::VfpUnsupported);
             }
         }
     }
 
     let mut current_test_point = upper_init_point;
     let mut voltage: Option<Microvolts> = None;
-    let mut upper_voltage_old = Microvolts(0);
-    let mut lower_voltage_old = Microvolts(0);
     let mut flat_curve_modifier_flag = vfp_strict_inc_flag;
     let mut revert_scan_flag = 0;
     let mut upper_target_point: usize = 0;
 
     // Iterate over a range of test voltage values
     let lower_target_point: usize = loop {
-        if revert_scan_flag == 0 {
-            println!("\nTesting upper voltage limit...");
-        } else {
-            println!("\nTesting lower voltage limit...");
-        }
-
         for gpu in gpus {
             let gpu_status = gpu.status()?;
             voltage = Some(
@@ -1072,31 +962,23 @@ pub fn handle_test_voltage_limits(
             );
         }
 
-        let voltage = voltage.ok_or(Error::VfpUnsupported)?;
+        voltage.ok_or(Error::VfpUnsupported)?;
 
         match lock_vfp(gpus, VfpLockRequest::VoltagePoint(current_test_point), true) {
             Ok(_) => {
-                println!("Successfully set voltage to {} mV", voltage.0 as i32 / 1000);
                 if revert_scan_flag == 0 {
                     current_test_point += 1;
-                    upper_voltage_old = voltage;
                 } else {
                     current_test_point -= 1;
-                    lower_voltage_old = voltage;
                 }
                 if vfp_strict_inc_flag == 1 {
                     flat_curve_modifier_flag = 1;
                 }
             }
             Err(e) => {
-                println!(
-                    "Failed to set voltage to {} mV. Error: {:?}",
-                    voltage.0 as i32 / 1000,
-                    e
-                );
+                drop(e);
 
                 if vfp_strict_inc_flag == 1 && flat_curve_modifier_flag == 1 {
-                    println!("May stuck on flat curve, modifying...");
                     for gpu in gpus {
                         if revert_scan_flag == 0 {
                             gpu.set_vfp(
@@ -1112,19 +994,11 @@ pub fn handle_test_voltage_limits(
                     }
                     flat_curve_modifier_flag = 0;
                     continue;
-                } else {
-                    println!("Exceeding flat modifier limit, considered reaching TRUE limit!");
                 }
 
                 if revert_scan_flag == 0 {
                     upper_target_point = current_test_point - 1;
                     print_separator();
-                    println!(
-                        "Upper voltage limit seems to be:{}mV @ point {}",
-                        upper_voltage_old.0 as i32 / 1000,
-                        upper_target_point - margin_threshold_check
-                    );
-                    println!("Reverting Scanner direction...");
                     print_separator();
                     revert_scan_flag = 1;
                     flat_curve_modifier_flag = 1;
@@ -1135,16 +1009,6 @@ pub fn handle_test_voltage_limits(
                 } else {
                     let lower_target_point = current_test_point + 1;
                     print_separator();
-                    println!(
-                        "Upper voltage limit seems to be:{}mV @ point {}",
-                        upper_voltage_old.0 as i32 / 1000,
-                        upper_target_point - margin_threshold_check
-                    );
-                    println!(
-                        "Lower voltage limit seems to be:{}mV @ point {}",
-                        lower_voltage_old.0 as i32 / 1000,
-                        lower_target_point + margin_threshold_check
-                    );
                     print_separator();
                     break lower_target_point;
                 }
@@ -1164,10 +1028,6 @@ pub fn get_gpu_tdp_temp_limit(
     gpus: &[&Gpu],
     mut print_separator: impl FnMut(),
 ) -> Result<GpuTdpTempLimits, Error> {
-    let mut min_tdp = 16383.0_f32;
-    let mut max_tdp = 32767.0_f32;
-    let mut default_tdp = 65535.0_f32;
-
     let mut min_tdp_percentage = Percentage(2047);
     let mut max_tdp_percentage = Percentage(4095);
     let mut default_tdp_percentage = Percentage(8191);
@@ -1196,24 +1056,8 @@ pub fn get_gpu_tdp_temp_limit(
         points: pff_current_point,
     };
 
-    let nvml = nvml_wrapper::Nvml::init().ok();
     for gpu in gpus {
         let info = gpu.info()?;
-
-        // 使用 NVAPI GPU ID 直接查询（公式：GPU_ID = PCI_Bus × 256）
-        if let Some((min_w, current_w, max_w)) = nvml
-            .as_ref()
-            .and_then(|n| query_nvml_power_watts(n, info.id as u32))
-        {
-            min_tdp = min_w;
-            default_tdp = current_w;
-            max_tdp = max_w;
-        } else {
-            eprintln!(
-                "Warning: Failed to query NVML power limits for GPU id {}, using placeholder values",
-                info.id
-            );
-        }
 
         //power limit readout
         for limit in info.power_limits.iter() {
@@ -1221,16 +1065,6 @@ pub fn get_gpu_tdp_temp_limit(
             min_tdp_percentage = limit.range.min;
             default_tdp_percentage = limit.default;
             print_separator();
-            println!("Power Limit: {} ({} default)", limit.range, limit.default);
-            println!(
-                "Min TDP: {:.2}W ({}), Default TDP: {:.2}W ({}), Max TDP: {:.2}W ({})",
-                min_tdp,
-                min_tdp_percentage,
-                default_tdp,
-                default_tdp_percentage,
-                max_tdp,
-                max_tdp_percentage
-            );
             print_separator();
         }
 
@@ -1242,13 +1076,11 @@ pub fn get_gpu_tdp_temp_limit(
                 .chain(iter::repeat(None)),
         ) {
             if let Some(limit) = limit {
-                println!("Thermal Limit {} ({} default)", limit.range, limit.default);
                 min_temp_lim = limit.range.min;
                 max_temp_lim = limit.range.max;
                 default_temp_lim = limit.default;
                 if let Some(pff) = &limit.throttle_curve {
                     current_pff_curve = pff.clone();
-                    println!("Thermal Throttle {}", pff);
                 }
             }
         }
@@ -1285,9 +1117,7 @@ pub fn voltage_frequency_check(
     for gpu in gpus {
         let status = gpu.status()?;
         let readout_v = status.voltage.ok_or_else(|| Error::Custom("GPU did not report voltage in status; check if the GPU supports voltage monitoring".into()))?;
-        let readout_f = status.clone().clocks;
         print_separator();
-        println!("readout volt: {:?}, freq: {:?}", readout_v, readout_f);
 
         let current_point = status.clone().vfp.ok_or(Error::VfpUnsupported)?.graphics;
 
@@ -1295,33 +1125,13 @@ pub fn voltage_frequency_check(
             .get(&(point))
             .ok_or(Error::Str("invalid point index"))?
             .voltage;
-        let default_f = current_point
-            .get(&(point))
-            .ok_or(Error::Str("invalid point index"))?
-            .default_frequency;
-        let current_f = current_point
-            .get(&(point))
-            .ok_or(Error::Str("invalid point index"))?
-            .frequency;
-
-        println!(
-            "Chking Pnt: {} (volt: {}) with default freq: {}, target freq: {}",
-            point, default_v, default_f, current_f
-        );
 
         let sensor_v = gpu.inner().core_voltage()?;
-        let sensor_f = gpu.inner().clock_frequencies(ClockFrequencyType::Current)?;
-
-        println!("current volt: {}, freq:{:?}", sensor_v, sensor_f);
 
         if let Some((index, vfp_point)) = find_matching_vfp_point(&current_point, sensor_v) {
-            println!(
-                "Working VfPoint Inferred:{}, Volt = {:?}, Freq = {:?}",
-                index, vfp_point.voltage, vfp_point.frequency
-            );
+            let _ = (readout_v, default_v, vfp_point);
             precise_flag = index.abs_diff(point) < 5;
         } else {
-            eprintln!("No matching VfpPoint found");
             precise_flag = false;
         }
         print_separator();
@@ -1339,13 +1149,10 @@ pub fn set_vfp_range(
     range: std::ops::RangeInclusive<usize>,
     delta_khz: i32,
 ) -> Result<(), Error> {
-    for offset in range {
-        gpu.set_vfp(
-            iter::once((offset, KilohertzDelta(delta_khz))),
-            iter::empty(),
-        )?;
-    }
-    Ok(())
+    Ok(gpu.set_vfp(
+        range.map(|offset| (offset, KilohertzDelta(delta_khz))),
+        iter::empty(),
+    )?)
 }
 
 pub fn set_legacy_clocks_nvapi(gpu: &Gpu, core_mhz: u32, mem_mhz: u32) -> Result<(), Error> {

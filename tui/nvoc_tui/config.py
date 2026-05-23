@@ -20,8 +20,6 @@ from typing import Any
 
 from .models import (
     AppConfig,
-    AutoscanSettings,
-    CliLocation,
     DashboardSettings,
     UiSettings,
     VFCurveSettings,
@@ -56,9 +54,7 @@ class ConfigStore:
 
     def save(self) -> None:
         payload = {
-            "cli": asdict(self.data.cli),
             "last_gpu_idx": self.data.last_gpu_idx,
-            "autoscan": self.data.autoscan.to_dict(),
             "dashboard": asdict(self.data.dashboard),
             "vfcurve": asdict(self.data.vfcurve),
             "ui": asdict(self.data.ui),
@@ -75,12 +71,6 @@ class ConfigStore:
             return {}
 
     def _decode(self, data: dict[str, Any]) -> AppConfig:
-        cli = CliLocation(
-            **{
-                k: data.get("cli", {}).get(k, v)
-                for k, v in asdict(CliLocation()).items()
-            }
-        )
         dashboard = DashboardSettings(
             refresh_interval=float(
                 data.get("dashboard", {}).get("refresh_interval", 1.0)
@@ -88,39 +78,33 @@ class ConfigStore:
         )
         vfcurve = VFCurveSettings(
             default_path=str(data.get("vfcurve", {}).get("default_path", "")),
-            quick_export=bool(data.get("vfcurve", {}).get("quick_export", True)),
             auto_refresh=bool(data.get("vfcurve", {}).get("auto_refresh", False)),
         )
+        active_tab = str(data.get("ui", {}).get("active_tab", "dashboard"))
+        if active_tab == "autoscan":
+            active_tab = "dashboard"
         ui = UiSettings(
             log_expanded=bool(data.get("ui", {}).get("log_expanded", True)),
-            active_tab=str(data.get("ui", {}).get("active_tab", "dashboard")),
+            active_tab=active_tab,
         )
         last_gpu_idx = data.get("last_gpu_idx")
         if not isinstance(last_gpu_idx, int):
             last_gpu_idx = None
         return AppConfig(
-            cli=cli,
             last_gpu_idx=last_gpu_idx,
-            autoscan=AutoscanSettings.from_mapping(data.get("autoscan")),
             dashboard=dashboard,
             vfcurve=vfcurve,
             ui=ui,
         )
 
     def _decode_from_gui(self, data: dict[str, Any]) -> AppConfig:
-        cli_path = str(data.get("cli_exe_path", ""))
-        cli = CliLocation(exe_path=cli_path)
         last_gpu_idx_raw = data.get("last_gpu_idx")
         last_gpu_idx = (
             int(last_gpu_idx_raw) if str(last_gpu_idx_raw).isdigit() else None
         )
         return AppConfig(
-            cli=cli,
             last_gpu_idx=last_gpu_idx,
-            autoscan=AutoscanSettings.from_mapping(data.get("autoscan")),
             dashboard=DashboardSettings(refresh_interval=1.0),
-            vfcurve=VFCurveSettings(
-                default_path="", quick_export=True, auto_refresh=False
-            ),
+            vfcurve=VFCurveSettings(default_path="", auto_refresh=False),
             ui=UiSettings(log_expanded=True, active_tab="dashboard"),
         )

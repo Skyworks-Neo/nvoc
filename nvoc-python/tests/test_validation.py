@@ -96,6 +96,10 @@ class TestDomainValidation:
         with pytest.raises(ValueError, match="invalid clock domain"):
             pynvoc.set_clock_offset("0", "nvml", "video", 100, "P0")
 
+    def test_invalid_domain_query_domain_vfp_points(self, pynvoc):
+        with pytest.raises(ValueError, match="invalid clock domain"):
+            pynvoc.query_domain_vfp_points("0", "video")
+
 
 # --- Valid backend aliases ---
 # These should not raise ValueError (may raise RuntimeError if no GPU).
@@ -136,6 +140,15 @@ class TestDomainAliases:
     def test_domain_alias_accepted(self, pynvoc, alias):
         try:
             pynvoc.set_clock_offset("0", "nvml", alias, 100, "P0")
+        except ValueError:
+            pytest.fail(f"'{alias}' should be a valid domain alias")
+        except RuntimeError:
+            pass
+
+    @pytest.mark.parametrize("alias", ["core", "gpu", "graphics", "mem", "memory"])
+    def test_query_domain_vfp_points_domain_alias_accepted(self, pynvoc, alias):
+        try:
+            pynvoc.query_domain_vfp_points("0", alias)
         except ValueError:
             pytest.fail(f"'{alias}' should be a valid domain alias")
         except RuntimeError:

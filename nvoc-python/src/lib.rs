@@ -3,14 +3,15 @@ use nvapi_hi::{
 };
 use nvml_wrapper::enum_wrappers::device::PerformanceState;
 use nvoc_core::{
-    BackendSet, ConvertEnum, GpuTarget, QueryFanInfo, QueryGpuInfo, QueryGpuSettings,
-    QueryGpuStatus, QueryLegacyCoreOvervoltRanges, QueryLegacyP0CoreMaxVoltageDelta,
-    QueryPowerLimits, QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits,
-    QueryTemperatureThresholds, QueryVfpPointVoltage, ResetApplicationsClocks, ResetCoolerLevels,
-    ResetFanSpeed, ResetLockedClocks, ResetNvapiPowerLimits, ResetNvapiSensorLimits,
-    ResetPstateBaseVoltages, ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock,
-    ResetVfpLock, SetApplicationsClocks, SetClockOffset, SetCoolerLevels, SetDomainVfpDeltas,
-    SetFanSpeed, SetLegacyClocks, SetLockedClocks, SetNvapiPowerLimits, SetNvapiPstateLock,
+    BackendSet, ConvertEnum, GpuTarget, QueryDomainVfpPoints, QueryFanInfo, QueryGpuInfo,
+    QueryGpuSettings, QueryGpuStatus, QueryLegacyCoreOvervoltRanges,
+    QueryLegacyP0CoreMaxVoltageDelta, QueryPowerLimits, QueryPstates,
+    QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
+    QueryVfpPointVoltage, ResetApplicationsClocks, ResetCoolerLevels, ResetFanSpeed,
+    ResetLockedClocks, ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetPstateBaseVoltages,
+    ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock, ResetVfpLock,
+    SetApplicationsClocks, SetClockOffset, SetCoolerLevels, SetDomainVfpDeltas, SetFanSpeed,
+    SetLegacyClocks, SetLockedClocks, SetNvapiPowerLimits, SetNvapiPstateLock,
     SetNvapiSensorLimits, SetNvmlPstateLock, SetPowerLimit, SetPstateBaseVoltage,
     SetPstateClockOffset, SetTemperatureLimit, SetVfpFrequencyLock, SetVfpPointDelta,
     SetVfpRangeDelta, SetVfpVoltageLock, SetVoltageBoost, VfpResetDomain, discover_targets,
@@ -565,6 +566,38 @@ fn normalize_query_clock_offset(
     Ok(value_object([("mhz", i64_value(value.mhz as i64))]))
 }
 
+fn normalize_domain_vfp_points(
+    target: &GpuTarget<'_>,
+    domain: ClockDomain,
+    infer_missing_default: bool,
+) -> PyResultValue {
+    let points = run(
+        target,
+        QueryDomainVfpPoints {
+            domain,
+            infer_missing_default,
+            indexed: true,
+        },
+    )
+    .map_err(to_py_err)?
+    .output
+    .into_iter()
+    .map(|(index, point)| {
+        value_object([
+            ("index", u64_value(index as u64)),
+            ("voltage_uv", u64_value(point.voltage.0 as u64)),
+            ("frequency_khz", u64_value(point.frequency.0 as u64)),
+            ("delta_khz", i64_value(point.delta.0 as i64)),
+            (
+                "default_frequency_khz",
+                u64_value(point.default_frequency.0 as u64),
+            ),
+        ])
+    })
+    .collect();
+    Ok(Value::Array(points))
+}
+
 fn target_inventory(backends: BackendSet) -> PyResult<nvoc_core::TargetInventory> {
     discover_targets(backends).map_err(to_py_err)
 }
@@ -640,6 +673,21 @@ fn query_clock_offset(
     })?;
     let target = selected_target(&inventory, gpu)?;
     let value = normalize_query_clock_offset(&target, domain, pstate)?;
+    py_value(py, &value)
+}
+
+#[pyfunction]
+#[pyo3(signature = (gpu, domain = None, infer_missing_default = true))]
+fn query_domain_vfp_points(
+    py: Python<'_>,
+    gpu: &str,
+    domain: Option<&str>,
+    infer_missing_default: bool,
+) -> PyResult<Py<PyAny>> {
+    let domain = parse_domain(domain.unwrap_or("graphics"))?;
+    let value = with_target(gpu, "nvapi", |target| {
+        normalize_domain_vfp_points(target, domain, infer_missing_default)
+    })?;
     py_value(py, &value)
 }
 
@@ -1408,6 +1456,7 @@ fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(query_settings, m)?)?;
     m.add_function(wrap_pyfunction!(query_supported_applications_clocks, m)?)?;
     m.add_function(wrap_pyfunction!(query_clock_offset, m)?)?;
+    m.add_function(wrap_pyfunction!(query_domain_vfp_points, m)?)?;
     m.add_function(wrap_pyfunction!(query_vfp_point_voltage, m)?)?;
     m.add_function(wrap_pyfunction!(query_legacy_p0_core_max_voltage_delta, m)?)?;
     m.add_function(wrap_pyfunction!(query_tdp_temp_limits, m)?)?;
