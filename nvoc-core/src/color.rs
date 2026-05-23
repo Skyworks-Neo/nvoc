@@ -121,26 +121,58 @@ pub fn stylize_title(title: &str) -> String {
 }
 
 pub fn stylize(message: &str, is_stderr: bool) -> String {
-    if std::env::var_os("NO_COLOR").is_some() {
-        return message.to_string();
-    }
+	if std::env::var_os("NO_COLOR").is_some() {
+		return message.to_string();
+	}
 
-    if message.chars().all(|c| c == '=') {
-        return message.bright_black().to_string();
-    }
+	if message.chars().all(|c| c == '=') {
+		return message.bright_black().to_string();
+	}
 
-    message
-        .split(' ')
-        .map(|token| {
-            if token.is_empty() {
-                return String::new();
-            }
-            let (prefix, core, suffix) = split_affixes(token);
-            if core.is_empty() {
-                return token.to_string();
-            }
-            format!("{}{}{}", prefix, style_value(core, is_stderr), suffix)
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+	message
+		.split(' ')
+		.map(|token| {
+			if token.is_empty() {
+				return String::new();
+			}
+			let (prefix, core, suffix) = split_affixes(token);
+			if core.is_empty() {
+				return token.to_string();
+			}
+			format!("{}{}{}", prefix, style_value(core, is_stderr), suffix)
+		})
+		.collect::<Vec<_>>()
+		.join(" ")
+}
+
+/// 专为 SCANNER/调试行设计的着色器。
+/// 将任何包含数字的 token 渲染为亮黄色加粗，其它 token 使用常规 style_value 规则。
+pub fn stylize_scanner(message: &str, is_stderr: bool) -> String {
+	if std::env::var_os("NO_COLOR").is_some() {
+		return message.to_string();
+	}
+
+	message
+		.split(' ')
+		.map(|token| {
+			if token.is_empty() {
+				return String::new();
+			}
+			let (prefix, core, suffix) = split_affixes(token);
+			if core.is_empty() {
+				return token.to_string();
+			}
+
+			// 如果 core token 包含任何数字，将其渲染为亮黄色加粗，突出测量值
+			let colored = if core.chars().any(|c| c.is_ascii_digit()) {
+				core.bright_yellow().bold().to_string()
+			} else {
+				// 非数字 token 仍使用标准的值/关键字着色
+				style_value(core, is_stderr)
+			};
+
+			format!("{}{}{}", prefix, colored, suffix)
+		})
+		.collect::<Vec<_>>()
+		.join(" ")
 }

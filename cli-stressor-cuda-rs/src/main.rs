@@ -1,4 +1,5 @@
 use clap::Parser;
+use nvoc_core::color::stylize;
 #[cfg(feature = "cuda")]
 use clap::{CommandFactory, FromArgMatches, parser::ValueSource};
 #[cfg(feature = "cuda")]
@@ -39,13 +40,13 @@ use vulkan_gfx_stressor::{VulkanDeviceSelection, VulkanGraphicsEngine};
 #[cfg(feature = "vulkan")]
 fn run_vulkan_for_duration(duration_s: f64) -> i32 {
     println!(
-        "Vulkan-only mode: running Vulkan engine for {:.1}s",
-        duration_s
+        "{}",
+        stylize(&format!("Vulkan-only mode: running Vulkan engine for {:.1}s", duration_s), false)
     );
 
     let mut eng = VulkanGraphicsEngine::new();
     if let Err(e) = eng.start_stress_thread() {
-        eprintln!("Failed to start VulkanGraphicsEngine: {}", e);
+        eprintln!("{}", stylize(&format!("Failed to start VulkanGraphicsEngine: {}", e), true));
         return 1;
     }
 
@@ -53,7 +54,7 @@ fn run_vulkan_for_duration(duration_s: f64) -> i32 {
     let started = std::time::Instant::now();
     while started.elapsed().as_secs_f64() < duration_s {
         if err_flag.load(std::sync::atomic::Ordering::SeqCst) {
-            eprintln!("[FATAL] Vulkan engine reported an error; exiting");
+            eprintln!("{}", stylize("[FATAL] Vulkan engine reported an error; exiting", true));
             eng.stop();
             return 1;
         }
@@ -61,7 +62,7 @@ fn run_vulkan_for_duration(duration_s: f64) -> i32 {
     }
 
     eng.stop();
-    println!("Vulkan-only run finished.");
+    println!("{}", stylize("Vulkan-only run finished.", false));
     0
 }
 
@@ -670,24 +671,24 @@ fn resolve_gpu_device_index(args: &Args) -> Result<u32, String> {
 
     if let Some(index) = args.gpu_index {
         // gpu-index is interpreted as index in PCI-bus-sorted CUDA device list.
-        println!("[GPU] Using PCI-sorted CUDA index: {}", index);
+        println!("{}", stylize(&format!("[GPU] Using PCI-sorted CUDA index: {}", index), false));
         return resolve_device_index_by_sorted_index(index);
     }
 
     if let Some(ref pci_str) = args.pci_bus {
-        println!("[GPU] Using PCI bus ID: {}", pci_str);
+        println!("{}", stylize(&format!("[GPU] Using PCI bus ID: {}", pci_str), false));
         let pci = parse_pci_bus_string(pci_str)?;
         return resolve_device_index_by_pci_bus(pci);
     }
 
     if let Some(ref uuid_str) = args.gpu_uuid {
-        println!("[GPU] Using UUID: {}", uuid_str);
+        println!("{}", stylize(&format!("[GPU] Using UUID: {}", uuid_str), false));
         let uuid = parse_uuid_string(uuid_str)?;
         return resolve_device_index_by_uuid(uuid);
     }
 
     // Default: use index 0 in PCI-sorted order.
-    println!("[GPU] Using default PCI-sorted CUDA index: 0");
+    println!("{}", stylize("[GPU] Using default PCI-sorted CUDA index: 0", false));
     resolve_device_index_by_sorted_index(0)
 }
 
@@ -766,10 +767,10 @@ fn print_cuda_gpu_list() -> Result<(), String> {
         (None, None) => a.device_index.cmp(&b.device_index),
     });
 
-    println!("CUDA GPUs (sorted by PCI bus):");
+    println!("{}", nvoc_core::color::stylize_title("CUDA GPUs (sorted by PCI bus):"));
     println!(
-        "{:>5} {:>6} {:<14} {:<32} {}",
-        "s_idx", "cuda", "pci_bus", "uuid", "name"
+        "{}",
+        stylize(&format!("{:>5} {:>6} {:<14} {:<32} {}", "s_idx", "cuda", "pci_bus", "uuid", "name"), false)
     );
     for (sorted_idx, dev) in devices.iter().enumerate() {
         let pci = dev
@@ -782,12 +783,15 @@ fn print_cuda_gpu_list() -> Result<(), String> {
             })
             .unwrap_or_else(|| "<none>".to_string());
         println!(
-            "{:>5} {:>6} {:<14} {:<32} {}",
-            sorted_idx,
-            dev.device_index,
-            pci,
-            format_uuid_hex(&dev.uuid),
-            dev.device_name
+            "{}",
+            stylize(&format!(
+                "{:>5} {:>6} {:<14} {:<32} {}",
+                sorted_idx,
+                dev.device_index,
+                pci,
+                format_uuid_hex(&dev.uuid),
+                dev.device_name
+            ), false)
         );
     }
     Ok(())
@@ -802,30 +806,33 @@ fn filter_atomic_for_sm(kernel_types: &mut Vec<KernelType>, info: &DeviceInfo) {
     if kernel_types.contains(&KernelType::Atomic) {
         kernel_types.retain(|k| *k != KernelType::Atomic);
         println!(
-            "Atomic path disabled: current GPU is below SM80 (detected {:?})",
-            info.compute_capability
+            "{}",
+            stylize(&format!(
+                "Atomic path disabled: current GPU is below SM80 (detected {:?})",
+                info.compute_capability
+            ), false)
         );
     }
 }
 
 #[cfg(feature = "cuda")]
 fn print_device_info(info: &DeviceInfo) {
-    println!("Testing Device: {}", info.name);
+    println!("{}", nvoc_core::color::stylize_title(&format!("Testing Device: {}", info.name)));
     if let Some((major, minor)) = info.compute_capability {
-        println!("Compute Capability: SM{}.{}", major, minor);
+        println!("{}", stylize(&format!("Compute Capability: SM{}.{}", major, minor), false));
     }
     if let Some(mem) = info.total_mem_gb {
-        println!("Video Memory: {:.1} GB", mem);
+        println!("{}", stylize(&format!("Video Memory: {:.1} GB", mem), false));
     }
 }
 
 #[cfg(feature = "cuda")]
 fn print_summary(results: &[StressResult], info: &DeviceInfo) {
     println!("\n{}", "=".repeat(72));
-    println!("Phase 1 core stability summary");
-    println!("Testing Device: {}", info.name);
+    println!("{}", nvoc_core::color::stylize_title("Phase 1 core stability summary"));
+    println!("{}", nvoc_core::color::stylize_title(&format!("Testing Device: {}", info.name)));
     if let Some(mem) = info.total_mem_gb {
-        println!("Video Memory: {:.1} GB", mem);
+        println!("{}", stylize(&format!("Video Memory: {:.1} GB", mem), false));
     }
 
     let mut overall_ok = true;
@@ -846,34 +853,38 @@ fn print_summary(results: &[StressResult], info: &DeviceInfo) {
             0.0
         };
         println!(
-            "{:<12} {:<4} | iters={:8} | wall={:7.1}s | compute={:6.1}s | eff={:4.0}% | {:8.2} TFLOPS | val_fail={:3} | max_abs={:.3e} | max_rel={:.3e}",
-            r.precision,
-            status,
-            r.iterations,
-            r.elapsed_s,
-            r.compute_s,
-            eff,
-            r.tflops,
-            r.validation_failures,
-            r.max_abs_error,
-            r.max_rel_error
+            "{}",
+            stylize(&format!(
+                "{:<12} {:<4} | iters={:8} | wall={:7.1}s | compute={:6.1}s | eff={:4.0}% | {:8.2} TFLOPS | val_fail={:3} | max_abs={:.3e} | max_rel={:.3e}",
+                r.precision,
+                status,
+                r.iterations,
+                r.elapsed_s,
+                r.compute_s,
+                eff,
+                r.tflops,
+                r.validation_failures,
+                r.max_abs_error,
+                r.max_rel_error
+            ), false)
         );
         if let Some(err) = &r.first_error {
-            println!("{:12}      first_error: {}", "", err);
+            println!("{}", stylize(&format!("{:12}      first_error: {}", "", err), false));
             if let Some(at) = r.first_error_at_s {
-                println!("{:12}      at: {:.1}s", "", at);
+                println!("{}", stylize(&format!("{:12}      at: {:.1}s", "", at), false));
             }
         }
     }
 
     println!("{}", "=".repeat(72));
-    println!(" Result:");
+    println!("{}", stylize(" Result:", false));
     if overall_ok {
         println!(
-            "- No obvious computation errors or validation failures were observed in the current test window."
+            "{}",
+            stylize("- No obvious computation errors or validation failures were observed in the current test window.", false)
         );
     } else {
-        println!("- At least one precision mode reported an error or validation failure.");
+        println!("{}", stylize("- At least one precision mode reported an error or validation failure.", true));
         std::process::exit(1);
     }
     println!("{}", "=".repeat(72));
@@ -883,7 +894,7 @@ fn print_summary(results: &[StressResult], info: &DeviceInfo) {
 fn main() {
     let (mut args, cli_set) = parse_args_with_cli_sources();
     if let Err(err) = apply_file_config_to_args(&mut args, &cli_set) {
-        eprintln!("Invalid config file: {}", err);
+        eprintln!("{}", stylize(&format!("Invalid config file: {}", err), true));
         std::process::exit(2);
     }
 
@@ -891,7 +902,7 @@ fn main() {
         match print_cuda_gpu_list() {
             Ok(()) => std::process::exit(0),
             Err(err) => {
-                eprintln!("Failed to list CUDA GPUs: {}", err);
+                eprintln!("{}", stylize(&format!("Failed to list CUDA GPUs: {}", err), true));
                 std::process::exit(1);
             }
         }
@@ -906,7 +917,7 @@ fn main() {
 
         #[cfg(not(feature = "vulkan"))]
         {
-            eprintln!("--vulkan-only requires building with --features vulkan");
+            eprintln!("{}", stylize("--vulkan-only requires building with --features vulkan", true));
             std::process::exit(2);
         }
     }
@@ -914,14 +925,14 @@ fn main() {
     let matrix_sizes = match parse_int_list(&args.matrix_sizes) {
         Ok(values) => values,
         Err(err) => {
-            eprintln!("Invalid matrix sizes argument: {}", err);
+            eprintln!("{}", stylize(&format!("Invalid matrix sizes argument: {}", err), true));
             std::process::exit(2);
         }
     };
     let fp64_matrix_sizes = match parse_int_list(&args.fp64_matrix_sizes) {
         Ok(values) => values,
         Err(err) => {
-            eprintln!("Invalid fp64 matrix sizes argument: {}", err);
+            eprintln!("{}", stylize(&format!("Invalid fp64 matrix sizes argument: {}", err), true));
             std::process::exit(2);
         }
     };
@@ -929,7 +940,7 @@ fn main() {
     let gpu_device_index = match resolve_gpu_device_index(&args) {
         Ok(idx) => idx,
         Err(err) => {
-            eprintln!("Failed to resolve GPU device: {}", err);
+            eprintln!("{}", stylize(&format!("Failed to resolve GPU device: {}", err), true));
             std::process::exit(2);
         }
     };
@@ -937,7 +948,7 @@ fn main() {
     let mut backend = match cuda_backend::CudaBackend::new_with_device(gpu_device_index) {
         Ok(backend) => backend,
         Err(err) => {
-            eprintln!("CUDA init failed (gpu_index={}): {}", gpu_device_index, err);
+            eprintln!("{}", stylize(&format!("CUDA init failed (gpu_index={}): {}", gpu_device_index, err), true));
             std::process::exit(1);
         }
     };
@@ -948,8 +959,11 @@ fn main() {
         Err(err) => {
             if args.enable_vulkan_stress {
                 eprintln!(
-                    "Failed to read CUDA device identity for Vulkan alignment immediately after CUDA init: {}",
-                    err
+                    "{}",
+                    stylize(&format!(
+                        "Failed to read CUDA device identity for Vulkan alignment immediately after CUDA init: {}",
+                        err
+                    ), true)
                 );
                 std::process::exit(1);
             }
@@ -963,7 +977,7 @@ fn main() {
     let precisions = match parse_precision_list(&args.precisions) {
         Ok(values) => values,
         Err(err) => {
-            eprintln!("Invalid argument: {}", err);
+            eprintln!("{}", stylize(&format!("Invalid argument: {}", err), true));
             std::process::exit(2);
         }
     };
@@ -972,27 +986,27 @@ fn main() {
     let mut filtered = Vec::new();
     for spec in precisions {
         if spec.kind == PrecisionKind::FP8E4M3FN && !include_fp8 {
-            println!("FP8 E4M3FN disabled by flag, skipping");
+            println!("{}", stylize("FP8 E4M3FN disabled by flag, skipping", false));
             continue;
         }
         filtered.push(spec);
     }
     if filtered.is_empty() {
-        eprintln!("No runnable precision modes available");
+        eprintln!("{}", stylize("No runnable precision modes available", true));
         std::process::exit(1);
     }
 
     let kernel_types_all = match parse_kernel_type_list(&args.kernel_types) {
         Ok(values) => values,
         Err(err) => {
-            eprintln!("Invalid kernel types argument: {}", err);
+            eprintln!("{}", stylize(&format!("Invalid kernel types argument: {}", err), true));
             std::process::exit(2);
         }
     };
     let mut kernel_types = kernel_types_all.clone();
     filter_atomic_for_sm(&mut kernel_types, &info);
     if kernel_types.is_empty() {
-        eprintln!("No runnable kernel types after capability filtering");
+        eprintln!("{}", stylize("No runnable kernel types after capability filtering", true));
         std::process::exit(1);
     }
 
@@ -1004,7 +1018,7 @@ fn main() {
     let mut kernel_mixture = match kernel_mixture_base {
         Ok(values) => values,
         Err(err) => {
-            eprintln!("Invalid kernel mixture argument: {}", err);
+            eprintln!("{}", stylize(&format!("Invalid kernel mixture argument: {}", err), true));
             std::process::exit(2);
         }
     };
@@ -1023,7 +1037,7 @@ fn main() {
     let stream_mode = match parse_stream_mode(&args.stream_mode) {
         Ok(mode) => mode,
         Err(err) => {
-            eprintln!("Invalid stream mode argument: {}", err);
+            eprintln!("{}", stylize(&format!("Invalid stream mode argument: {}", err), true));
             std::process::exit(2);
         }
     };
@@ -1031,7 +1045,7 @@ fn main() {
         Some(path) => match load_kernel_overrides_from_config(path) {
             Ok(values) => values,
             Err(err) => {
-                eprintln!("Invalid config file: {}", err);
+                eprintln!("{}", stylize(&format!("Invalid config file: {}", err), true));
                 std::process::exit(2);
             }
         },
@@ -1040,7 +1054,7 @@ fn main() {
     let cli_overrides = match parse_kernel_param_overrides(&args.kernel_params) {
         Ok(values) => values,
         Err(err) => {
-            eprintln!("Invalid kernel params argument: {}", err);
+            eprintln!("{}", stylize(&format!("Invalid kernel params argument: {}", err), true));
             std::process::exit(2);
         }
     };
@@ -1049,24 +1063,30 @@ fn main() {
     let mut overall_passed = true;
 
     println!("\n{}", "-".repeat(72));
-    println!("Starting mixed-kernel stress");
+    println!("{}", nvoc_core::color::stylize_title("Starting mixed-kernel stress"));
     println!(
-        "  Precisions: {:?}",
-        filtered.iter().map(|spec| spec.name).collect::<Vec<_>>()
+        "{}",
+        stylize(&format!(
+            "  Precisions: {:?}",
+            filtered.iter().map(|spec| spec.name).collect::<Vec<_>>()
+        ), false)
     );
-    println!("  Duration: {:.1} s", args.duration);
-    println!("  Warmup iterations: {}", args.warmup_iters);
-    println!("  Burst iterations: {}", args.burst_iters);
-    println!("  Validation interval: {:.1} s", args.validate_interval);
-    println!("  Validation size: {}", args.validate_size);
-    println!("  Minor mixture rate: {:.2}", args.minor_mixture_rate);
-    println!("  Kernel types: {:?}", kernel_types);
-    println!("  Kernel mixture: {:?}", kernel_mixture);
+    println!("{}", stylize(&format!("  Duration: {:.1} s", args.duration), false));
+    println!("{}", stylize(&format!("  Warmup iterations: {}", args.warmup_iters), false));
+    println!("{}", stylize(&format!("  Burst iterations: {}", args.burst_iters), false));
+    println!("{}", stylize(&format!("  Validation interval: {:.1} s", args.validate_interval), false));
+    println!("{}", stylize(&format!("  Validation size: {}", args.validate_size), false));
+    println!("{}", stylize(&format!("  Minor mixture rate: {:.2}", args.minor_mixture_rate), false));
+    println!("{}", stylize(&format!("  Kernel types: {:?}", kernel_types), false));
+    println!("{}", stylize(&format!("  Kernel mixture: {:?}", kernel_mixture), false));
     // println!("  Kernel param overrides: {:?}", kernel_param_overrides);
     println!(
-        "  Stream mode: {:?} ({} streams)",
-        stream_mode,
-        stream_mode.stream_count()
+        "{}",
+        stylize(&format!(
+            "  Stream mode: {:?} ({} streams)",
+            stream_mode,
+            stream_mode.stream_count()
+        ), false)
     );
 
     // Optionally start the Vulkan graphics engine (if built with --features "vulkan").
@@ -1089,7 +1109,7 @@ fn main() {
                         std::thread::spawn(move || {
                             loop {
                                 if err_flag.load(std::sync::atomic::Ordering::SeqCst) {
-                                    eprintln!("[FATAL] Vulkan engine reported an error; exiting");
+                                    eprintln!("{}", stylize("[FATAL] Vulkan engine reported an error; exiting", true));
                                     std::process::exit(1);
                                 }
                                 std::thread::sleep(std::time::Duration::from_millis(200));
@@ -1098,7 +1118,7 @@ fn main() {
                         vulkan_engine = Some(eng);
                     }
                     Err(e) => {
-                        eprintln!("Failed to start VulkanGraphicsEngine: {}", e);
+                        eprintln!("{}", stylize(&format!("Failed to start VulkanGraphicsEngine: {}", e), true));
                     }
                 }
             }
@@ -1160,6 +1180,6 @@ fn main() {
 #[cfg(all(not(feature = "cuda"), not(feature = "vulkan")))]
 fn main() {
     let _ = Args::parse();
-    eprintln!("CUDA support is disabled. Rebuild with --features cuda.");
+    eprintln!("{}", stylize("CUDA support is disabled. Rebuild with --features cuda.", true));
     std::process::exit(1);
 }

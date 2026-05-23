@@ -1,6 +1,6 @@
-pub mod color;
 mod conv;
 mod error;
+pub mod color;
 mod gpu;
 mod gpu_type;
 mod nvapi;

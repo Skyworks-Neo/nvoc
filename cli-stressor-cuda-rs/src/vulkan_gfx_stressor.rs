@@ -1,5 +1,6 @@
 use ash::{Instance, vk};
 use cli_stressor_cuda_rs::PciBusAddress;
+use nvoc_core::color::stylize;
 use rand::Rng;
 use std::ffi::CStr;
 use std::sync::Arc;
@@ -49,7 +50,7 @@ impl VulkanGraphicsEngine {
 
         let handle = thread::spawn(move || {
             if let Err(e) = run_vulkan_stress_loop(is_running, selection) {
-                eprintln!("[VulkanGfx] Thread crashed: {:?}", e);
+                eprintln!("{}", stylize(&format!("[VulkanGfx] Thread crashed: {:?}", e), true));
                 has_error.store(true, Ordering::SeqCst);
             }
         });
@@ -337,8 +338,14 @@ fn run_vulkan_stress_loop(
                 let elapsed_s = stress_start.elapsed().as_secs_f64();
                 let submits_per_s = window_submits as f64 / log_elapsed.as_secs_f64().max(1e-6);
                 println!(
-                    "[Vulkan GFX] {:>6.1}s | {:>5.1} submits/s (randomized interval) | Active DWM preemption stress | Pipeline Flushes: {}",
-                    elapsed_s, submits_per_s, pipeline_flushes
+                    "{}",
+                    stylize(
+                        &format!(
+                            "[Vulkan GFX] {:>6.1}s | {:>5.1} submits/s (randomized interval) | Active DWM preemption stress | Pipeline Flushes: {}",
+                            elapsed_s, submits_per_s, pipeline_flushes
+                        ),
+                        false
+                    )
                 );
                 window_submits = 0;
                 last_log = now;
@@ -396,13 +403,19 @@ pub fn select_gpu_by_cuda_identity(
     let target_uuid_valid = !is_zero_uuid(&target_cuda_uuid);
     let target_pci_hex = target_cuda_pci.as_ref().map(format_pci_address);
     println!(
-        "[VulkanGfx] Target CUDA UUID: {}{}",
-        target_uuid_hex,
-        if let Some(pci) = &target_pci_hex {
-            format!(" | target PCI: {pci}")
-        } else {
-            String::new()
-        }
+        "{}",
+        stylize(
+            &format!(
+                "[VulkanGfx] Target CUDA UUID: {}{}",
+                target_uuid_hex,
+                if let Some(pci) = &target_pci_hex {
+                    format!(" | target PCI: {pci}")
+                } else {
+                    String::new()
+                }
+            ),
+            false
+        )
     );
 
     let mut pci_fallback_candidate: Option<vk::PhysicalDevice> = None;
@@ -412,23 +425,29 @@ pub fn select_gpu_by_cuda_identity(
         let (device_name, device_uuid, device_uuid_hex, device_pci) = match props {
             Ok(value) => value,
             Err(err) => {
-                println!("[VulkanGfx] Failed to query device identity: {err}");
+                println!("{}", stylize(&format!("[VulkanGfx] Failed to query device identity: {err}"), false));
                 continue;
             }
         };
 
         println!(
-            "[VulkanGfx] Checking device: {} | uuid={} | pci={}",
-            device_name,
-            device_uuid_hex,
-            device_pci
-                .as_ref()
-                .map(format_pci_address)
-                .unwrap_or_else(|| "<none>".to_string())
+            "{}",
+            stylize(
+                &format!(
+                    "[VulkanGfx] Checking device: {} | uuid={} | pci={}",
+                    device_name,
+                    device_uuid_hex,
+                    device_pci
+                        .as_ref()
+                        .map(format_pci_address)
+                        .unwrap_or_else(|| "<none>".to_string())
+                ),
+                false
+            )
         );
 
         if target_uuid_valid && !is_zero_uuid(&device_uuid) && device_uuid == target_cuda_uuid {
-            println!("[VulkanGfx] Selected Vulkan device by UUID match: {device_name}");
+            println!("{}", stylize(&format!("[VulkanGfx] Selected Vulkan device by UUID match: {device_name}"), false));
             return Ok(pdevice);
         }
 
