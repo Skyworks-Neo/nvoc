@@ -24,7 +24,8 @@ pub(crate) fn init_scan_cli_color(no_color_flag: bool) {
     scan_cli_color::init(no_color_flag);
 }
 
-static ACTIVE_SCAN_PROGRESS: Lazy<Mutex<Option<Arc<ScanProgress>>>> = Lazy::new(|| Mutex::new(None));
+static ACTIVE_SCAN_PROGRESS: Lazy<Mutex<Option<Arc<ScanProgress>>>> =
+    Lazy::new(|| Mutex::new(None));
 
 fn set_active_scan_progress(progress: Option<Arc<ScanProgress>>) {
     if let Ok(mut slot) = ACTIVE_SCAN_PROGRESS.lock() {
@@ -81,8 +82,8 @@ impl ScanProgress {
             ProgressStyle::with_template(
                 "{msg:.bold.white} [{bar:40.magenta/red}] {pos}/{len} points ({percent}%)",
             )
-                .unwrap_or_else(|_| ProgressStyle::default_bar())
-                .progress_chars("=>-"),
+            .unwrap_or_else(|_| ProgressStyle::default_bar())
+            .progress_chars("=>-"),
         );
         total_bar.set_message("Scan progress".to_string());
         total_bar.set_position(0);
@@ -100,8 +101,8 @@ impl ScanProgress {
             ProgressStyle::with_template(
                 "{msg:.bold.green} [{bar:40.green/red}] {pos}/{len}s ({percent}%)",
             )
-                .unwrap_or_else(|_| ProgressStyle::default_bar())
-                .progress_chars("=>-"),
+            .unwrap_or_else(|_| ProgressStyle::default_bar())
+            .progress_chars("=>-"),
         );
         test_bar.set_message("Run idle".to_string());
         test_bar.set_position(0);
@@ -114,7 +115,12 @@ impl ScanProgress {
         }
     }
 
-    pub(crate) fn set_total_point(&self, current_point: usize, lower_point: usize, upper_point: usize) {
+    pub(crate) fn set_total_point(
+        &self,
+        current_point: usize,
+        lower_point: usize,
+        upper_point: usize,
+    ) {
         let len = upper_point.saturating_sub(lower_point).max(1) as u64;
         let pos = current_point
             .saturating_sub(lower_point)
@@ -139,7 +145,11 @@ impl ScanProgress {
             .set_message(stylize_status_message(&message.into()));
     }
 
-    pub(crate) fn begin_test(&self, label: impl Into<String>, duration_secs: u64) -> TestProgressGuard {
+    pub(crate) fn begin_test(
+        &self,
+        label: impl Into<String>,
+        duration_secs: u64,
+    ) -> TestProgressGuard {
         let duration_secs = duration_secs.max(1).saturating_mul(5);
         let label = label.into();
         self.test_bar.set_length(duration_secs);
@@ -333,5 +343,3 @@ pub(crate) fn forward_child_output<R: std::io::Read + Send + 'static>(
         }
     })
 }
-
-

@@ -1106,23 +1106,59 @@ fn main() {
 
     println!("\n{}", "-".repeat(72));
     println!("{}", stylize_title("Starting mixed-kernel stress"));
-    println!("{}", stylize_config(&format!(
-        "  Precisions: {:?}",
-        filtered.iter().map(|spec| spec.name).collect::<Vec<_>>()
-    )));
-    println!("{}", stylize_config(&format!("  Duration: {:.1} s", args.duration)));
-    println!("{}", stylize_config(&format!("  Warmup iterations: {}", args.warmup_iters)));
-    println!("{}", stylize_config(&format!("  Burst iterations: {}", args.burst_iters)));
-    println!("{}", stylize_config(&format!("  Validation interval: {:.1} s", args.validate_interval)));
-    println!("{}", stylize_config(&format!("  Validation size: {}", args.validate_size)));
-    println!("{}", stylize_config(&format!("  Minor mixture rate: {:.2}", args.minor_mixture_rate)));
-    println!("{}", stylize_config(&format!("  Kernel types: {:?}", kernel_types)));
-    println!("{}", stylize_config(&format!("  Kernel mixture: {:?}", kernel_mixture)));
-    println!("{}", stylize_config(&format!(
-        "  Stream mode: {:?} ({} streams)",
-        stream_mode,
-        stream_mode.stream_count()
-    )));
+    println!(
+        "{}",
+        stylize_config(&format!(
+            "  Precisions: {:?}",
+            filtered.iter().map(|spec| spec.name).collect::<Vec<_>>()
+        ))
+    );
+    println!(
+        "{}",
+        stylize_config(&format!("  Duration: {:.1} s", args.duration))
+    );
+    println!(
+        "{}",
+        stylize_config(&format!("  Warmup iterations: {}", args.warmup_iters))
+    );
+    println!(
+        "{}",
+        stylize_config(&format!("  Burst iterations: {}", args.burst_iters))
+    );
+    println!(
+        "{}",
+        stylize_config(&format!(
+            "  Validation interval: {:.1} s",
+            args.validate_interval
+        ))
+    );
+    println!(
+        "{}",
+        stylize_config(&format!("  Validation size: {}", args.validate_size))
+    );
+    println!(
+        "{}",
+        stylize_config(&format!(
+            "  Minor mixture rate: {:.2}",
+            args.minor_mixture_rate
+        ))
+    );
+    println!(
+        "{}",
+        stylize_config(&format!("  Kernel types: {:?}", kernel_types))
+    );
+    println!(
+        "{}",
+        stylize_config(&format!("  Kernel mixture: {:?}", kernel_mixture))
+    );
+    println!(
+        "{}",
+        stylize_config(&format!(
+            "  Stream mode: {:?} ({} streams)",
+            stream_mode,
+            stream_mode.stream_count()
+        ))
+    );
 
     // Optionally start the Vulkan graphics engine (if built with --features "vulkan").
     #[cfg(feature = "vulkan")]

@@ -8,10 +8,10 @@ use super::oc_profile_function::{
     apply_autoscan_profile, break_point_continue, check_voltage_points, export_single_point,
     key_point_extractor,
 };
-use clap::ArgMatches;
 use super::progressbar::{
     ActiveScanProgressGuard, ScanProgress, forward_child_output, progress_print,
 };
+use clap::ArgMatches;
 use num_traits::pow;
 use nvoc_core::{
     ClockDomain, Error, GpuOcParams, GpuOperation, GpuTarget, KilohertzDelta,
@@ -26,8 +26,8 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
-use std::thread::sleep;
 use std::thread::JoinHandle;
+use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 #[cfg(windows)]
@@ -101,11 +101,7 @@ mod pressure_runner {
         }
     }
 
-    fn retry_nvapi_with_backoff<F, E>(
-        mut op: F,
-        label: &str,
-        on_err: E,
-    ) -> Result<(), Error>
+    fn retry_nvapi_with_backoff<F, E>(mut op: F, label: &str, on_err: E) -> Result<(), Error>
     where
         F: FnMut() -> Result<(), Error>,
         E: Fn(&Error),
@@ -132,12 +128,7 @@ mod pressure_runner {
                     return Ok(());
                 }
                 Err(e) if attempt + 1 < BACKOFF_SECS.len() => {
-                    eprintln!(
-                        "{} failed (attempt {}): {:?}",
-                        label,
-                        attempt + 1,
-                        e
-                    );
+                    eprintln!("{} failed (attempt {}): {:?}", label, attempt + 1, e);
                     on_err(&e);
                 }
                 Err(e) => {
@@ -315,7 +306,7 @@ mod pressure_runner {
     pub(super) fn run(
         gpu: &GpuTarget<'_>,
         _matches: &ArgMatches,
-        cfg: &super::TestPressureConfig<'_>,
+        cfg: &TestPressureConfig<'_>,
     ) -> i32 {
         let app_path = String::from(cfg.test_exe);
         // Build argv as a structured Vec so paths or codes containing whitespace
@@ -346,15 +337,15 @@ mod pressure_runner {
                 Ok(mut process) => {
                     let mut exit_code = 1;
                     let mut output_threads: Vec<JoinHandle<()>> = Vec::new();
-                    let test_progress = cfg
-                        .progress
-                        .map(|progress| progress.begin_test(cfg.test_code.clone(), cfg.test_duration_secs));
+                    let test_progress = cfg.progress.map(|progress| {
+                        progress.begin_test(cfg.test_code.clone(), cfg.test_duration_secs)
+                    });
 
                     if let Some(stdout) = process.stdout.take() {
                         output_threads.push(forward_child_output(
                             stdout,
                             cfg.progress.map(|progress| progress.total_bar()),
-                            false
+                            false,
                         ));
                     }
                     if let Some(stderr) = process.stderr.take() {
@@ -395,7 +386,8 @@ mod pressure_runner {
                     loop {
                         if last_fluctuation.elapsed() >= Duration::from_millis(1500) {
                             in_test_check_number += 1;
-                            fluctuation_h_l_flag = apply_fluctuation(gpu, cfg, fluctuation_h_l_flag);
+                            fluctuation_h_l_flag =
+                                apply_fluctuation(gpu, cfg, fluctuation_h_l_flag);
                             let state_label = if fluctuation_h_l_flag { "LOW" } else { "HIGH" };
                             // update a single status line (replaces noisy per-check printing)
                             if let Some(progress) = cfg.progress {
@@ -404,17 +396,18 @@ mod pressure_runner {
                                     state_label, in_test_check_number
                                 ));
                             } else {
-                                progress_print(None, format!(
-                                    "inducing freq fluctuation; state: {}. in-test v-f check #{}",
-                                    state_label, in_test_check_number
-                                ));
+                                progress_print(
+                                    None,
+                                    format!(
+                                        "inducing freq fluctuation; state: {}. in-test v-f check #{}",
+                                        state_label, in_test_check_number
+                                    ),
+                                );
                             }
 
                             if !cfg.is_legacy_global_offset {
-                                match voltage_frequency_check(
-                                    std::slice::from_ref(gpu),
-                                    cfg.point,
-                                ) {
+                                match voltage_frequency_check(std::slice::from_ref(gpu), cfg.point)
+                                {
                                     Ok(checks) if checks.iter().all(|check| check.precise) => {}
                                     Ok(checks) => {
                                         // summarize checks into a single status line instead of printing per-GPU
@@ -430,10 +423,13 @@ mod pressure_runner {
                                                 summary
                                             ));
                                         } else {
-                                            progress_print(None, format!(
-                                                "V/F summary [{}] (possible thrm/pwr capping)",
-                                                summary
-                                            ));
+                                            progress_print(
+                                                None,
+                                                format!(
+                                                    "V/F summary [{}] (possible thrm/pwr capping)",
+                                                    summary
+                                                ),
+                                            );
                                         }
                                     }
                                     Err(e) => {
@@ -450,24 +446,39 @@ mod pressure_runner {
                                         let mut default_freq_khz: Option<i32> = None;
                                         let mut current_freq_khz: Option<i32> = None;
                                         let mut actual_point: usize = cfg.point;
-                                        if let Ok(status) = run_output(gpu, QueryGpuStatus) {
-                                            if let Some(vfp) = status.vfp {
-                                                // use shared helper to find the closest VFP point by voltage
-                                                if let Some((idx, pt)) = nvoc_core::find_matching_vfp_point(&vfp.graphics, v) {
-                                                    actual_point = *idx;
-                                                    default_freq_khz = Some(pt.default_frequency.0 as i32);
-                                                    current_freq_khz = Some(pt.frequency.0 as i32);
-                                                }
+                                        if let Ok(status) = run_output(gpu, QueryGpuStatus)
+                                            && let Some(vfp) = status.vfp
+                                        {
+                                            // use shared helper to find the closest VFP point by voltage
+                                            if let Some((idx, pt)) =
+                                                nvoc_core::find_matching_vfp_point(&vfp.graphics, v)
+                                            {
+                                                actual_point = *idx;
+                                                default_freq_khz =
+                                                    Some(pt.default_frequency.0 as i32);
+                                                current_freq_khz = Some(pt.frequency.0 as i32);
                                             }
                                         }
 
                                         // recompute the currently-applied fluctuation delta
                                         let fluctuation_freq = if fluctuation_h_l_flag {
                                             // LOW state
-                                            if cfg.fluctuation_mode == 3 { 0 } else { -cfg.fluctuation_coefficient * cfg.minimum_delta_core_freq_step }
+                                            if cfg.fluctuation_mode == 3 {
+                                                0
+                                            } else {
+                                                -cfg.fluctuation_coefficient
+                                                    * cfg.minimum_delta_core_freq_step
+                                            }
                                         } else {
                                             // HIGH state
-                                            if cfg.fluctuation_mode == 2 || cfg.fluctuation_mode == 3 { cfg.fluctuation_coefficient * cfg.minimum_delta_core_freq_step } else { 0 }
+                                            if cfg.fluctuation_mode == 2
+                                                || cfg.fluctuation_mode == 3
+                                            {
+                                                cfg.fluctuation_coefficient
+                                                    * cfg.minimum_delta_core_freq_step
+                                            } else {
+                                                0
+                                            }
                                         };
                                         let main_delta = cfg.init_core_oc_value + fluctuation_freq;
 
@@ -505,12 +516,14 @@ mod pressure_runner {
                                                 feedback: false,
                                             },
                                         )
-                                        .unwrap_or_else(|err| {
-                                            eprintln!(
-                                                "Warning: Failed to set voltage due to {:?}",
-                                                err
-                                            );
-                                        });
+                                        .unwrap_or_else(
+                                            |err| {
+                                                eprintln!(
+                                                    "Warning: Failed to set voltage due to {:?}",
+                                                    err
+                                                );
+                                            },
+                                        );
                                     }
                                     Err(e) => {
                                         eprintln!(
@@ -643,10 +656,7 @@ mod pressure_runner {
                             || apply_autoscan_profile(gpu, _matches, 80),
                             "apply_autoscan_profile",
                             |e| {
-                                eprintln!(
-                                    "apply_autoscan_profile attempt failed: {:?}",
-                                    e
-                                );
+                                eprintln!("apply_autoscan_profile attempt failed: {:?}", e);
                             },
                         );
                         // Small sleep to allow the profile to settle.
@@ -849,14 +859,13 @@ fn pre_load_vf_recheck(gpu: &GpuTarget<'_>, point: usize) -> bool {
     sleep(Duration::from_secs(1));
 
     // voltage_frequency_check 可能仍返回 Result，我们这里捕获错误并当作失败处理
-    let checks =
-        match voltage_frequency_check(std::slice::from_ref(gpu), point) {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("Failed to read V/F info: {e}");
-                return false;
-            }
-        };
+    let checks = match voltage_frequency_check(std::slice::from_ref(gpu), point) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Failed to read V/F info: {e}");
+            return false;
+        }
+    };
 
     if checks.iter().all(|check| check.precise) {
         println!("[SCANNER] Pre-load V/F check passed at point {}", point);
@@ -1907,9 +1916,8 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
 
         writeln!(l)?;
         println!("Waiting for default volt-freq self-check");
-        let checks =
-            voltage_frequency_check(std::slice::from_ref(gpu), point)
-                .expect("Failed to read v-f info");
+        let checks = voltage_frequency_check(std::slice::from_ref(gpu), point)
+            .expect("Failed to read v-f info");
         if !checks.iter().all(|check| check.precise) {
             let summary = checks
                 .iter()

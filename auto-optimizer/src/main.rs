@@ -10,8 +10,8 @@ mod cli_types;
 mod human;
 mod oc_profile_function;
 mod oc_scanner;
-mod progressbar;
 mod platform;
+mod progressbar;
 
 use anyhow::Result;
 use basic_func::{
@@ -28,8 +28,8 @@ use oc_profile_function::{
     export_vfp_from_log, fix_result, handle_vfp_export, handle_vfp_import, sync_memory_pstate_as_p0,
 };
 use oc_scanner::{autoscan_gpuboostv3, autoscan_legacy};
-use progressbar::init_scan_cli_color;
 use platform::is_elevated;
+use progressbar::init_scan_cli_color;
 use std::io::{self, Write};
 use std::process::exit;
 
