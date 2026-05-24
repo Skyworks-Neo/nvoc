@@ -85,9 +85,7 @@ def test_fan_settings_call_native_action() -> None:
     )
 
     assert app.actions == [("apply fan settings", "Successfully applied fan settings.")]
-    assert app.native.calls == [
-        ("set_fan", "0x0000", "nvml-cooler", "1", "manual", 55)
-    ]
+    assert app.native.calls == [("set_fan", "0x0000", "nvml-cooler", "1", "manual", 55)]
 
 
 def test_run_action_rejects_overlapping_action() -> None:
@@ -104,5 +102,7 @@ def test_run_action_rejects_overlapping_action() -> None:
 
     assert backend.run_action("slow", slow_action, lambda *_: None, lambda _code: None)
     first_started.wait(timeout=1)
-    assert not backend.run_action("second", slow_action, lambda *_: None, lambda _code: None)
+    assert not backend.run_action(
+        "second", slow_action, lambda *_: None, lambda _code: None
+    )
     release.set()

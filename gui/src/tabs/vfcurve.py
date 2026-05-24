@@ -665,9 +665,7 @@ class VFCurveTab:
                 self._write_vfp_points(csv_path, points)
             except Exception as exc:
                 retcode = -1
-                self.app.after(
-                    0, lambda exc=exc: self.app.console.append(f"{exc}\n")
-                )
+                self.app.after(0, lambda exc=exc: self.app.console.append(f"{exc}\n"))
             self.app.after(0, lambda: self._on_export_done(retcode, csv_path))
 
         threading.Thread(target=_worker, daemon=True).start()
@@ -690,21 +688,19 @@ class VFCurveTab:
     def _write_vfp_points(path: str, points: List[dict]) -> None:
         with open(path, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
-            writer.writerow(
-                ["voltage", "frequency", "delta", "default_frequency"]
-            )
+            writer.writerow(["voltage", "frequency", "delta", "default_frequency"])
             for point in points:
-                writer.writerow(
-                    [
-                        point.get("voltage_uv", 0),
-                        point.get("frequency_khz", 0),
-                        point.get("delta_khz", 0),
-                        point.get("default_frequency_khz", 0),
-                    ]
-                )
+                writer.writerow([
+                    point.get("voltage_uv", 0),
+                    point.get("frequency_khz", 0),
+                    point.get("delta_khz", 0),
+                    point.get("default_frequency_khz", 0),
+                ])
 
     @staticmethod
-    def _load_vfp_deltas(path: str, reference_points: List[dict]) -> List[Tuple[int, int]]:
+    def _load_vfp_deltas(
+        path: str, reference_points: List[dict]
+    ) -> List[Tuple[int, int]]:
         reference_by_voltage = {
             int(point.get("voltage_uv", -1)): point for point in reference_points
         }
@@ -1490,7 +1486,9 @@ class VFCurveTab:
                     gpu, "core", local_max * 1000, local_min * 1000
                 )
             else:
-                native.set_locked_clocks(gpu, lock_backend, "core", local_min, local_max)
+                native.set_locked_clocks(
+                    gpu, lock_backend, "core", local_min, local_max
+                )
 
         if s == e and is_vfp_locked:
             description = "convert VFP lock to frequency lock"
@@ -1727,10 +1725,10 @@ class VFCurveTab:
 
         self.app.run_native_action(
             "lock VFP voltage",
-            lambda native, gpu=gpu, point=point, voltage_uv=voltage_uv: native.set_vfp_voltage_lock(
-                gpu, point, voltage_uv, False
-            )
-            or "Successfully locked VFP voltage.",
+            lambda native, gpu=gpu, point=point, voltage_uv=voltage_uv: (
+                native.set_vfp_voltage_lock(gpu, point, voltage_uv, False)
+                or "Successfully locked VFP voltage."
+            ),
             on_finished=_on_finished,
         )
 
@@ -1746,8 +1744,9 @@ class VFCurveTab:
 
         self.app.run_native_action(
             "reset VFP lock",
-            lambda native, gpu=gpu: native.reset_vfp_lock(gpu)
-            or "Successfully reset VFP lock.",
+            lambda native, gpu=gpu: (
+                native.reset_vfp_lock(gpu) or "Successfully reset VFP lock."
+            ),
             on_finished=_on_finished,
         )
 
@@ -1776,13 +1775,17 @@ class VFCurveTab:
         self.app.run_native_action(
             "lock core clocks",
             lambda native, gpu=gpu, backend=backend, min_clk=min_clk, max_clk=max_clk: (
-                native.set_vfp_frequency_lock(
-                    gpu, "core", max_clk * 1000, min_clk * 1000
+                (
+                    native.set_vfp_frequency_lock(
+                        gpu, "core", max_clk * 1000, min_clk * 1000
+                    )
+                    if backend == "nvapi"
+                    else native.set_locked_clocks(
+                        gpu, backend, "core", min_clk, max_clk
+                    )
                 )
-                if backend == "nvapi"
-                else native.set_locked_clocks(gpu, backend, "core", min_clk, max_clk)
-            )
-            or f"Successfully locked {backend_label} core clocks.",
+                or f"Successfully locked {backend_label} core clocks."
+            ),
             on_finished=lambda rc, label=backend_label: self._on_core_lock_done(
                 rc, min_clk, max_clk, label
             ),
@@ -1821,11 +1824,13 @@ class VFCurveTab:
         self.app.run_native_action(
             "reset core clocks",
             lambda native, gpu=gpu, backend=backend: (
-                native.reset_vfp_frequency_lock(gpu, "core")
-                if backend == "nvapi"
-                else native.reset_core_clocks(gpu, backend)
-            )
-            or f"Successfully reset {backend_label} core clocks.",
+                (
+                    native.reset_vfp_frequency_lock(gpu, "core")
+                    if backend == "nvapi"
+                    else native.reset_core_clocks(gpu, backend)
+                )
+                or f"Successfully reset {backend_label} core clocks."
+            ),
             on_finished=lambda rc, label=backend_label: self._on_core_reset_done(
                 rc, label
             ),
@@ -1869,13 +1874,17 @@ class VFCurveTab:
         self.app.run_native_action(
             "lock memory clocks",
             lambda native, gpu=gpu, backend=backend, min_clk=min_clk, max_clk=max_clk: (
-                native.set_vfp_frequency_lock(
-                    gpu, "memory", max_clk * 1000, min_clk * 1000
+                (
+                    native.set_vfp_frequency_lock(
+                        gpu, "memory", max_clk * 1000, min_clk * 1000
+                    )
+                    if backend == "nvapi"
+                    else native.set_locked_clocks(
+                        gpu, backend, "memory", min_clk, max_clk
+                    )
                 )
-                if backend == "nvapi"
-                else native.set_locked_clocks(gpu, backend, "memory", min_clk, max_clk)
-            )
-            or f"Successfully locked {backend_label} memory clocks.",
+                or f"Successfully locked {backend_label} memory clocks."
+            ),
         )
 
     def _reset_mem_clocks(self):
@@ -1886,11 +1895,13 @@ class VFCurveTab:
         self.app.run_native_action(
             "reset memory clocks",
             lambda native, gpu=gpu, backend=backend: (
-                native.reset_vfp_frequency_lock(gpu, "memory")
-                if backend == "nvapi"
-                else native.reset_mem_clocks(gpu, backend)
-            )
-            or f"Successfully reset {backend_label} memory clocks.",
+                (
+                    native.reset_vfp_frequency_lock(gpu, "memory")
+                    if backend == "nvapi"
+                    else native.reset_mem_clocks(gpu, backend)
+                )
+                or f"Successfully reset {backend_label} memory clocks."
+            ),
         )
 
     def _apply_adj(self):
@@ -1972,7 +1983,8 @@ class VFCurveTab:
         gpu = self.app.selected_gpu_target()
         self.app.run_native_action(
             "reset VFP deltas",
-            lambda native, gpu=gpu: native.reset_vfp_deltas(gpu, "all")
-            or "Successfully reset VFP deltas.",
+            lambda native, gpu=gpu: (
+                native.reset_vfp_deltas(gpu, "all") or "Successfully reset VFP deltas."
+            ),
             on_finished=lambda _rc: self.app.after(0, self._refresh_curve),
         )

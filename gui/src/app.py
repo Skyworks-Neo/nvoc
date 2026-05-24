@@ -678,9 +678,7 @@ class App(ctk.CTk):
 
                 # Power Limit.........: 58% ~ 124% (100% default) | 100W min / 211W current / 212W max
                 elif line.startswith("Power Limit"):
-                    m = re.search(
-                        r"(\d+)%\s*~\s*(\d+)%\s*\((\d+)%\s*default\)", line
-                    )
+                    m = re.search(r"(\d+)%\s*~\s*(\d+)%\s*\((\d+)%\s*default\)", line)
                     if m:
                         limits["power_limit_min"] = int(m.group(1))
                         limits["power_limit_max"] = int(m.group(2))
@@ -1082,14 +1080,12 @@ class App(ctk.CTk):
             m = pattern.match(line.strip())
             if not m:
                 continue
-            rows.append(
-                (
-                    m.group(1).upper(),
-                    App._voltage_text_to_mv(m.group(2), m.group(3)),
-                    App._voltage_text_to_mv(m.group(4), m.group(5)),
-                    App._voltage_text_to_mv(m.group(6), m.group(7)),
-                )
-            )
+            rows.append((
+                m.group(1).upper(),
+                App._voltage_text_to_mv(m.group(2), m.group(3)),
+                App._voltage_text_to_mv(m.group(4), m.group(5)),
+                App._voltage_text_to_mv(m.group(6), m.group(7)),
+            ))
 
         if not rows:
             return {}
@@ -1243,18 +1239,19 @@ class App(ctk.CTk):
                 points = self.backend.query_domain_vfp_points(gpu)
                 with open(csv_path, "w", newline="", encoding="utf-8") as f:
                     writer = csv.writer(f)
-                    writer.writerow(
-                        ["voltage", "frequency", "delta", "default_frequency"]
-                    )
+                    writer.writerow([
+                        "voltage",
+                        "frequency",
+                        "delta",
+                        "default_frequency",
+                    ])
                     for point in points:
-                        writer.writerow(
-                            [
-                                point.get("voltage_uv", 0),
-                                point.get("frequency_khz", 0),
-                                point.get("delta_khz", 0),
-                                point.get("default_frequency_khz", 0),
-                            ]
-                        )
+                        writer.writerow([
+                            point.get("voltage_uv", 0),
+                            point.get("frequency_khz", 0),
+                            point.get("delta_khz", 0),
+                            point.get("default_frequency_khz", 0),
+                        ])
                 vfp_offset_state = self._get_vfp_offset_state_from_csv(csv_path)
             except Exception:
                 retcode = -1
@@ -1335,11 +1332,11 @@ class App(ctk.CTk):
         command_name = command_args[0] if command_args else ""
         self.run_gpu_query_async(
             command_args,
-            lambda retcode, output: self.console.append(
-                output if output.endswith("\n") else f"{output}\n"
-            )
-            if retcode == 0
-            else self.console.append(f"{output}\n"),
+            lambda retcode, output: (
+                self.console.append(output if output.endswith("\n") else f"{output}\n")
+                if retcode == 0
+                else self.console.append(f"{output}\n")
+            ),
             thread_name=f"show-{command_name or 'query'}",
         )
 

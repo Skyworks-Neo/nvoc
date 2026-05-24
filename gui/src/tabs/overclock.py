@@ -266,9 +266,7 @@ class OverclockTab:
 
         fan_frame = ctk.CTkFrame(scroll)
         fan_frame.pack(fill="x", pady=(0, 10))
-        self.fan_section = FanControlPane(
-            fan_frame, self.app.backend, embedded=True
-        )
+        self.fan_section = FanControlPane(fan_frame, self.app.backend, embedded=True)
         self._limit_enabled_frame_color = self.limit_frame.cget("fg_color")
         self._limit_dim_frame_color = ("gray86", "gray20")
         self._limit_enabled_title_color = self.limit_title_label.cget("text_color")
@@ -884,11 +882,13 @@ class OverclockTab:
         self.app.run_native_action(
             "apply P-State lock",
             lambda native, gpu=gpu, backend=backend, start=start, end=end: (
-                native.set_nvml_pstate_lock(gpu, start, end)
-                if backend == "nvml"
-                else native.set_nvapi_pstate_lock(gpu, start, end)
-            )
-            or f"Successfully applied {backend.upper()} P-State lock {start}-{end}.",
+                (
+                    native.set_nvml_pstate_lock(gpu, start, end)
+                    if backend == "nvml"
+                    else native.set_nvapi_pstate_lock(gpu, start, end)
+                )
+                or f"Successfully applied {backend.upper()} P-State lock {start}-{end}."
+            ),
         )
 
     def _unlock_pstate_lock(self):
@@ -899,10 +899,10 @@ class OverclockTab:
         backend = self._selected_oc_backend()
         self.app.run_native_action(
             "reset memory clocks",
-            lambda native, gpu=gpu, backend=backend: native.reset_mem_clocks(
-                gpu, backend
-            )
-            or "Successfully reset memory clocks.",
+            lambda native, gpu=gpu, backend=backend: (
+                native.reset_mem_clocks(gpu, backend)
+                or "Successfully reset memory clocks."
+            ),
         )
 
     def _apply_core_only(self):
@@ -920,10 +920,10 @@ class OverclockTab:
         gpu = self.app.selected_gpu_target()
         self.app.run_native_action(
             "apply core offset",
-            lambda native, gpu=gpu, backend=backend, value=value: native.set_clock_offset(
-                gpu, backend, "core", value, self._oc_pstate()
-            )
-            or f"Successfully applied core offset {value} MHz.",
+            lambda native, gpu=gpu, backend=backend, value=value: (
+                native.set_clock_offset(gpu, backend, "core", value, self._oc_pstate())
+                or f"Successfully applied core offset {value} MHz."
+            ),
         )
 
     def _apply_mem_only(self):
@@ -936,10 +936,12 @@ class OverclockTab:
         gpu = self.app.selected_gpu_target()
         self.app.run_native_action(
             "apply memory offset",
-            lambda native, gpu=gpu, backend=backend, value=value: native.set_clock_offset(
-                gpu, backend, "memory", value, self._oc_pstate()
-            )
-            or f"Successfully applied memory offset {value} MHz.",
+            lambda native, gpu=gpu, backend=backend, value=value: (
+                native.set_clock_offset(
+                    gpu, backend, "memory", value, self._oc_pstate()
+                )
+                or f"Successfully applied memory offset {value} MHz."
+            ),
         )
 
     def _apply_plimit_only(self):
@@ -949,10 +951,10 @@ class OverclockTab:
             gpu = self.app.selected_gpu_target()
             self.app.run_native_action(
                 "apply power limit",
-                lambda native, gpu=gpu, backend=backend, plimit=int(plimit): native.set_power_limit(
-                    gpu, backend, plimit
-                )
-                or f"Successfully applied {backend.upper()} power limit.",
+                lambda native, gpu=gpu, backend=backend, plimit=int(plimit): (
+                    native.set_power_limit(gpu, backend, plimit)
+                    or f"Successfully applied {backend.upper()} power limit."
+                ),
             )
 
     def _apply_tlimit_only(self):
@@ -961,10 +963,10 @@ class OverclockTab:
             gpu = self.app.selected_gpu_target()
             self.app.run_native_action(
                 "apply thermal limit",
-                lambda native, gpu=gpu, tlimit=int(tlimit): native.set_thermal_limit(
-                    gpu, tlimit
-                )
-                or "Successfully applied thermal limit.",
+                lambda native, gpu=gpu, tlimit=int(tlimit): (
+                    native.set_thermal_limit(gpu, tlimit)
+                    or "Successfully applied thermal limit."
+                ),
             )
 
     def _apply_vboost_only(self):
@@ -978,18 +980,18 @@ class OverclockTab:
                     return
                 self.app.run_native_action(
                     "apply legacy voltage delta",
-                    lambda native, gpu=gpu, vboost_uv=vboost_uv: native.set_legacy_voltage_delta(
-                        gpu, vboost_uv, "P0"
-                    )
-                    or "Successfully applied legacy voltage delta.",
+                    lambda native, gpu=gpu, vboost_uv=vboost_uv: (
+                        native.set_legacy_voltage_delta(gpu, vboost_uv, "P0")
+                        or "Successfully applied legacy voltage delta."
+                    ),
                 )
             else:
                 self.app.run_native_action(
                     "apply voltage boost",
-                    lambda native, gpu=gpu, vboost=int(vboost): native.set_voltage_boost(
-                        gpu, vboost
-                    )
-                    or "Successfully applied voltage boost.",
+                    lambda native, gpu=gpu, vboost=int(vboost): (
+                        native.set_voltage_boost(gpu, vboost)
+                        or "Successfully applied voltage boost."
+                    ),
                 )
 
     def _apply_oc(self):
@@ -1003,29 +1005,29 @@ class OverclockTab:
         if (not self._is_vfp_mode) and core_mhz != "Curve":
             try:
                 core_value = int(core_mhz)
-                actions.append(
-                    (
-                        "apply core offset",
-                        lambda native, gpu=gpu, backend=backend, core_value=core_value: native.set_clock_offset(
+                actions.append((
+                    "apply core offset",
+                    lambda native, gpu=gpu, backend=backend, core_value=core_value: (
+                        native.set_clock_offset(
                             gpu, backend, "core", core_value, self._oc_pstate()
                         )
-                        or f"Successfully applied core offset {core_value} MHz.",
-                    )
-                )
+                        or f"Successfully applied core offset {core_value} MHz."
+                    ),
+                ))
             except ValueError:
                 pass
 
         try:
             mem_value = int(mem_mhz)
-            actions.append(
-                (
-                    "apply memory offset",
-                    lambda native, gpu=gpu, backend=backend, mem_value=mem_value: native.set_clock_offset(
+            actions.append((
+                "apply memory offset",
+                lambda native, gpu=gpu, backend=backend, mem_value=mem_value: (
+                    native.set_clock_offset(
                         gpu, backend, "memory", mem_value, self._oc_pstate()
                     )
-                    or f"Successfully applied memory offset {mem_value} MHz.",
-                )
-            )
+                    or f"Successfully applied memory offset {mem_value} MHz."
+                ),
+            ))
         except ValueError:
             pass
 
@@ -1045,24 +1047,24 @@ class OverclockTab:
         self._syncing = False
 
         backend = self._selected_oc_backend()
-        self.app.run_native_action_chain(
-            [
-                (
-                    "reset core offset",
-                    lambda native, gpu=gpu, backend=backend: native.set_clock_offset(
-                        gpu, backend, "core", 0, self._oc_pstate()
-                    )
-                    or "Successfully reset core offset.",
+        self.app.run_native_action_chain([
+            (
+                "reset core offset",
+                lambda native, gpu=gpu, backend=backend: (
+                    native.set_clock_offset(gpu, backend, "core", 0, self._oc_pstate())
+                    or "Successfully reset core offset."
                 ),
-                (
-                    "reset memory offset",
-                    lambda native, gpu=gpu, backend=backend: native.set_clock_offset(
+            ),
+            (
+                "reset memory offset",
+                lambda native, gpu=gpu, backend=backend: (
+                    native.set_clock_offset(
                         gpu, backend, "memory", 0, self._oc_pstate()
                     )
-                    or "Successfully reset memory offset.",
+                    or "Successfully reset memory offset."
                 ),
-            ]
-        )
+            ),
+        ])
 
     def _apply_limits(self):
         gpu = self.app.selected_gpu_target()
@@ -1072,28 +1074,24 @@ class OverclockTab:
             plimit = self.plimit_var.get().strip()
             if plimit:
                 backend = self._selected_power_backend()
-                actions.append(
-                    (
-                        "apply power limit",
-                        lambda native, gpu=gpu, backend=backend, plimit=int(plimit): native.set_power_limit(
-                            gpu, backend, plimit
-                        )
-                        or f"Successfully applied {backend.upper()} power limit.",
-                    )
-                )
+                actions.append((
+                    "apply power limit",
+                    lambda native, gpu=gpu, backend=backend, plimit=int(plimit): (
+                        native.set_power_limit(gpu, backend, plimit)
+                        or f"Successfully applied {backend.upper()} power limit."
+                    ),
+                ))
 
         if self.tlimit_slider.cget("state") != "disabled":
             tlimit = self.tlimit_var.get().strip()
             if tlimit:
-                actions.append(
-                    (
-                        "apply thermal limit",
-                        lambda native, gpu=gpu, tlimit=int(tlimit): native.set_thermal_limit(
-                            gpu, tlimit
-                        )
-                        or "Successfully applied thermal limit.",
-                    )
-                )
+                actions.append((
+                    "apply thermal limit",
+                    lambda native, gpu=gpu, tlimit=int(tlimit): (
+                        native.set_thermal_limit(gpu, tlimit)
+                        or "Successfully applied thermal limit."
+                    ),
+                ))
 
         if self.vboost_slider.cget("state") != "disabled":
             vboost = self.vboost_var.get().strip()
@@ -1104,25 +1102,21 @@ class OverclockTab:
                     except ValueError:
                         pass
                     else:
-                        actions.append(
-                            (
-                                "apply legacy voltage delta",
-                                lambda native, gpu=gpu, vboost_uv=vboost_uv: native.set_legacy_voltage_delta(
-                                    gpu, vboost_uv, "P0"
-                                )
-                                or "Successfully applied legacy voltage delta.",
-                            )
-                        )
+                        actions.append((
+                            "apply legacy voltage delta",
+                            lambda native, gpu=gpu, vboost_uv=vboost_uv: (
+                                native.set_legacy_voltage_delta(gpu, vboost_uv, "P0")
+                                or "Successfully applied legacy voltage delta."
+                            ),
+                        ))
                 else:
-                    actions.append(
-                        (
-                            "apply voltage boost",
-                            lambda native, gpu=gpu, vboost=int(vboost): native.set_voltage_boost(
-                                gpu, vboost
-                            )
-                            or "Successfully applied voltage boost.",
-                        )
-                    )
+                    actions.append((
+                        "apply voltage boost",
+                        lambda native, gpu=gpu, vboost=int(vboost): (
+                            native.set_voltage_boost(gpu, vboost)
+                            or "Successfully applied voltage boost."
+                        ),
+                    ))
 
         if not actions:
             self.app.console.append("[GUI] No limit values specified.\n")
@@ -1147,6 +1141,7 @@ class OverclockTab:
 
         self.app.run_native_action(
             "reset all settings",
-            lambda native, gpu=gpu: native.reset_all(gpu, None)
-            or "Successfully reset all settings.",
+            lambda native, gpu=gpu: (
+                native.reset_all(gpu, None) or "Successfully reset all settings."
+            ),
         )
