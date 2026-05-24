@@ -330,7 +330,7 @@ impl GpuType {
                 core_oc_safe_limit: 375000,
                 init_core_oc_value: 90000,
                 safe_elasticity_per_cycle: 60000,
-                fluctuation_coefficient: 3,
+                fluctuation_coefficient: 2,
                 is_50_series: false,
                 testing_step: 5,
             },

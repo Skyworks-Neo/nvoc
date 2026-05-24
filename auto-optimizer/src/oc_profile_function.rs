@@ -7,12 +7,12 @@ use super::platform::panic_windows_only;
 use csv::{ReaderBuilder, StringRecord, WriterBuilder};
 use num_traits::abs;
 use nvoc_cli_common::color::stylize;
-use nvoc_core::Error;
 use nvoc_core::{ClockDomain, GpuTarget, VfPoint};
 use nvoc_core::{
     CoolerPolicy, CoolerSettings, FanCoolerId, Kilohertz, KilohertzDelta, Microvolts, Percentage,
     SensorThrottle,
 };
+use nvoc_core::{Error, QueryGpuStatus, set_nvapi_pstate_clock_offsets};
 use nvoc_core::{
     GpuOperation, GpuType, QueryGpuInfo, SetNvapiPowerLimits, SetNvapiSensorLimits,
     SetPstateBaseVoltage, SetVfpPointDelta, SetVoltageBoost, fetch_gpu_type,
@@ -26,6 +26,7 @@ use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 use std::process::Child;
 
+use nvoc_auto_optimizer::PState;
 use std::fs;
 #[cfg(any(windows, target_os = "linux"))]
 use std::process::Command;
@@ -974,8 +975,8 @@ pub fn break_point_continue(
     // Read all lines into a Vec
     let lines: Vec<String> = reader.lines().collect::<Result<_, _>>()?;
 
-    let mut last_code_100_freq: Option<f64> = None;
-    let mut last_code_0_freq: Option<f64> = None;
+    let mut last_succeeded_freq: Option<f64> = None;
+    let mut last_failed_freq: Option<f64> = None;
     let mut last_voltage_point: Option<usize> = None;
 
     let mut ultrafast_flag: Option<bool> = None;
@@ -990,8 +991,8 @@ pub fn break_point_continue(
         if line.contains("Scan")
             || line.contains("Finished")
                 && (last_voltage_point.is_some()
-                    || last_code_100_freq.is_some()
-                    || last_code_0_freq.is_some())
+                    || last_succeeded_freq.is_some()
+                    || last_failed_freq.is_some())
         {
             if line.contains("ultrafast") {
                 ultrafast_flag = Some(true)
@@ -1028,32 +1029,32 @@ pub fn break_point_continue(
             }
         }
 
-        if last_code_100_freq.is_none()
+        if last_succeeded_freq.is_none()
             && line.contains("Test result is code #0")
             && let Some(freq) = extract_value_f64(line, "freq_delta: #")
         {
-            last_code_100_freq = Some(freq);
+            last_succeeded_freq = Some(freq);
         }
 
-        if last_code_0_freq.is_none()
+        if last_failed_freq.is_none()
             && line.contains("Test")
             && !line.contains("Test result is code #0")
             && let Some(freq) = extract_value_f64(line, "freq_delta: #")
         {
-            last_code_0_freq = Some(freq);
+            last_failed_freq = Some(freq);
         }
 
         if last_voltage_point.is_some()
-            && last_code_100_freq.is_some()
-            && last_code_0_freq.is_some()
+            && last_succeeded_freq.is_some()
+            && last_failed_freq.is_some()
         {
             break; // Stop early if all values are found
         }
     }
 
     Ok((
-        last_code_100_freq,
-        last_code_0_freq,
+        last_succeeded_freq,
+        last_failed_freq,
         last_voltage_point,
         ultrafast_flag,
     ))
@@ -1240,7 +1241,7 @@ pub fn apply_autoscan_profile(
                 run_output(
                     gpu,
                     SetPstateBaseVoltage {
-                        pstate: nvoc_core::PState::P0,
+                        pstate: PState::P0,
                         delta_uv: max_uv,
                     },
                 )?;
@@ -1356,6 +1357,39 @@ pub fn apply_autoscan_profile(
             )));
         }
     }
+    let readout_f = run_output(gpu, QueryGpuStatus)?.clone().clocks;
+    let mut init_vmem_oc_value = 0;
+    let mut clocks = Vec::new();
+    for (clock_name, freq) in readout_f {
+        // Store the clock name and frequency in a data structure.
+        clocks.push((clock_name.to_string(), freq));
+    }
+    print_scan_separator();
+    if let Some((_, memory_clock)) = clocks.iter().find(|(name, _)| name.contains("Memory")) {
+        println!(
+            "{}: {}",
+            nvoc_cli_common::color::stylize_title("Memory Clock"),
+            stylize(&format!("{}", memory_clock), false)
+        );
+        init_vmem_oc_value = (memory_clock.0 / 25) as i32;
+        println!(
+            "{} {}",
+            nvoc_cli_common::color::stylize_title("Memory OC start at"),
+            stylize(&format!("+{} MHz", init_vmem_oc_value / 1000), false)
+        );
+    }
+    print_scan_separator();
+
+    set_nvapi_pstate_clock_offsets(
+        gpu,
+        [(
+            PState::P0,
+            ClockDomain::Memory,
+            KilohertzDelta(init_vmem_oc_value),
+        )],
+    )?;
+
+    sync_memory_pstate_as_p0(gpu)?;
 
     Ok(())
 }

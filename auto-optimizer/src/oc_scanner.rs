@@ -6,7 +6,7 @@ use super::basic_func::{
 use super::human::print_scan_separator;
 use super::oc_profile_function::{
     apply_autoscan_profile, break_point_continue, check_voltage_points, export_single_point,
-    key_point_extractor,
+    key_point_extractor, sync_memory_pstate_as_p0,
 };
 use super::progressbar::{
     ActiveScanProgressGuard, ScanProgress, forward_child_output, progress_print,
@@ -369,7 +369,7 @@ mod pressure_runner {
                             run_output(
                                 gpu,
                                 ResetVfpDeltas {
-                                    domain: VfpResetDomain::All,
+                                    domain: VfpResetDomain::Core,
                                 },
                             )
                             .map(|_| ())
@@ -379,9 +379,7 @@ mod pressure_runner {
                             eprintln!("Warning: Failed to reset GPU due to {:?}", e);
                         },
                     );
-                    sleep(Duration::from_secs(1));
                     test_initialization(gpu, cfg);
-                    sleep(Duration::from_secs(1));
 
                     loop {
                         if last_fluctuation.elapsed() >= Duration::from_millis(1500) {
@@ -901,14 +899,15 @@ fn log_point_test_header<V: std::fmt::Display, D: std::fmt::Display>(
     delta_label: &str,
     delta_value: D,
 ) -> Result<(), Error> {
+    let now = local_time_hms();
     write!(
         l,
-        "Test #{} on point: #{}, voltage: #{}, {}: #{}. ",
-        test_code, point, voltage, delta_label, delta_value
+        "[{}] Test #{} on point: #{}, voltage: #{}, {}: #{}. ",
+        now, test_code, point, voltage, delta_label, delta_value
     )?;
     println!(
-        "Test #{} on point: #{}, voltage: #{}, {}: #+{}. ",
-        test_code, point, voltage, delta_label, delta_value
+        "[{}] Test #{} on point: #{}, voltage: #{}, {}: #+{}. ",
+        now, test_code, point, voltage, delta_label, delta_value
     );
     Ok(())
 }
@@ -966,12 +965,16 @@ fn run_legacy_short_phase(
 
         write!(
             l,
-            "Short Test #{} freq_delta: +{}kHz. ",
-            *test_code, *init_core_oc_value
+            "[{}] Short Test #{} freq_delta: +{}kHz. ",
+            local_time_hms(),
+            *test_code,
+            *init_core_oc_value
         )?;
         println!(
-            "Short Test #{} freq_delta: +{}kHz. ",
-            *test_code, *init_core_oc_value
+            "[{}] Short Test #{} freq_delta: +{}kHz. ",
+            local_time_hms(),
+            *test_code,
+            *init_core_oc_value
         );
 
         let test_flag = test_pressure(
@@ -994,7 +997,12 @@ fn run_legacy_short_phase(
             args.common.cuda_device,
             args.common.stressor_extra_args,
         );
-        writeln!(l, "Test result is code #{} .", test_flag)?;
+        writeln!(
+            l,
+            "Test result is code #{} . [{}]",
+            test_flag,
+            local_time_hms()
+        )?;
 
         if test_flag != 0 {
             println!(
@@ -1069,12 +1077,16 @@ fn run_legacy_long_phase(
         *test_code += 1;
         write!(
             l,
-            "Long Test #{} freq_delta: +{}kHz. ",
-            *test_code, *init_core_oc_value
+            "[{}] Long Test #{} freq_delta: +{}kHz. ",
+            local_time_hms(),
+            *test_code,
+            *init_core_oc_value
         )?;
         println!(
-            "Long Test #{} freq_delta: +{}kHz. ",
-            *test_code, *init_core_oc_value
+            "[{}] Long Test #{} freq_delta: +{}kHz. ",
+            local_time_hms(),
+            *test_code,
+            *init_core_oc_value
         );
 
         let long_flag = test_pressure(
@@ -1097,7 +1109,12 @@ fn run_legacy_long_phase(
             args.common.cuda_device,
             args.common.stressor_extra_args,
         );
-        writeln!(l, "Test result is code #{} .", long_flag)?;
+        writeln!(
+            l,
+            "Test result is code #{} . [{}]",
+            long_flag,
+            local_time_hms()
+        )?;
 
         if long_flag != 0 {
             println!(
@@ -1304,7 +1321,12 @@ fn run_gpuboostv3_short_phase<V: std::fmt::Display + Copy>(
             args.common.stressor_extra_args,
         );
         println!("{}", test_flag);
-        writeln!(l, "Test result is code #{} .", test_flag)?;
+        writeln!(
+            l,
+            "Test result is code #{} . [{}]",
+            test_flag,
+            local_time_hms()
+        )?;
 
         if test_flag != 0 {
             run_output(
@@ -1459,7 +1481,12 @@ fn run_gpuboostv3_long_phase<V: std::fmt::Display + Copy>(
                 v,
                 KilohertzDelta(*init_core_oc_value)
             );
-            writeln!(l, "Test result is code #{} .", long_duration_flag)?;
+            writeln!(
+                l,
+                "Test result is code #{} . [{}]",
+                long_duration_flag,
+                local_time_hms()
+            )?;
             apply_long_phase_failure_step(
                 init_core_oc_value,
                 args.common.minimum_delta_core_freq_step,
@@ -1485,7 +1512,12 @@ fn run_gpuboostv3_long_phase<V: std::fmt::Display + Copy>(
             v,
             KilohertzDelta(*init_core_oc_value)
         );
-        writeln!(l, "Test result is code #{} .", long_duration_flag)?;
+        writeln!(
+            l,
+            "Test result is code #{} . [{}]",
+            long_duration_flag,
+            local_time_hms()
+        )?;
         break;
     }
 
@@ -1526,6 +1558,8 @@ fn run_mem_oc_phase<V: std::fmt::Display + Copy>(
                 KilohertzDelta(*init_vmem_oc_value),
             )],
         )?;
+
+        sync_memory_pstate_as_p0(gpu)?;
 
         mem_test_num += 1;
         mem_test_code += 1;
@@ -1568,7 +1602,12 @@ fn run_mem_oc_phase<V: std::fmt::Display + Copy>(
             args.common.stressor_extra_args,
         );
 
-        writeln!(l, "Test result is code #{} .", mem_test_flag)?;
+        writeln!(
+            l,
+            "Test result is code #{} . [{}]",
+            mem_test_flag,
+            local_time_hms()
+        )?;
 
         if mem_test_flag != 0 {
             set_nvapi_pstate_clock_offsets(
@@ -1761,33 +1800,6 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
             Err(e) => eprintln!("Error: Failed to lock voltage - {:?}", e),
         }
 
-        let readout_f = run_output(gpu, QueryGpuStatus)?.clone().clocks;
-
-        let mut clocks = Vec::new();
-        for (clock_name, freq) in readout_f {
-            // Store the clock name and frequency in a data structure.
-            clocks.push((clock_name.to_string(), freq));
-        }
-        // Now you can search for the Memory Clock:
-        print_scan_separator();
-        if let Some((_, memory_clock)) = clocks.iter().find(|(name, _)| name.contains("Memory")) {
-            println!(
-                "{}: {}",
-                nvoc_cli_common::color::stylize_title("Memory Clock"),
-                nvoc_cli_common::color::stylize(&format!("{}", memory_clock), false)
-            );
-            init_vmem_oc_value = (memory_clock.0 / 25) as i32;
-            println!(
-                "{} {}",
-                nvoc_cli_common::color::stylize_title("Memory OC start at"),
-                nvoc_cli_common::color::stylize(
-                    &format!("+{} MHz", init_vmem_oc_value / 1000),
-                    false,
-                )
-            );
-        }
-        print_scan_separator();
-
         // 从 GpuType 读取该世代的固定 OC 扫描参数
         let GpuOcParams {
             minimum_delta_core_freq_step,
@@ -1918,17 +1930,7 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
         scan_progress.set_total_point(point, lower_voltage_point, upper_voltage_point);
 
         writeln!(l)?;
-        println!("Waiting for default volt-freq self-check");
-        let checks = voltage_frequency_check(std::slice::from_ref(gpu), point)
-            .expect("Failed to read v-f info");
-        if !checks.iter().all(|check| check.precise) {
-            let summary = checks
-                .iter()
-                .map(|check| format!("GPU {} precise={}", check.gpu_id, check.precise))
-                .collect::<Vec<_>>()
-                .join(", ");
-            eprintln!("Warning: default V/F self-check failed at point {point}: {summary}");
-        }
+
         let mut v;
         let mut default_frequency;
         let mut prev_endpoint_delta: Option<i32> = None;
@@ -2013,15 +2015,6 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
                     flat_curve_flag = true;
                 }
             }
-
-            set_nvapi_pstate_clock_offsets(
-                gpu,
-                [(
-                    PState::P0,
-                    ClockDomain::Memory,
-                    KilohertzDelta(init_vmem_oc_value),
-                )],
-            )?;
 
             apply_arch_safety_policy(
                 ArchSafetyPolicyPhase::PrePointTest,
@@ -2136,6 +2129,13 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
             let mut mem_oc_safe_limit = 0;
             let minimum_delta_mem_freq_step = 1000;
             let mem_freq_step_exp = 8;
+
+            let readout_f = run_output(gpu, QueryGpuStatus)?.clone().clocks;
+            let mut clocks = Vec::new();
+            for (clock_name, freq) in readout_f {
+                // Store the clock name and frequency in a data structure.
+                clocks.push((clock_name.to_string(), freq));
+            }
             if let Some((_, memory_clock)) = clocks.iter().find(|(name, _)| name.contains("Memory"))
             {
                 println!(
