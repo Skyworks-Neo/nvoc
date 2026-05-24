@@ -657,8 +657,6 @@ mod pressure_runner {
                                 eprintln!("apply_autoscan_profile attempt failed: {:?}", e);
                             },
                         );
-                        // Small sleep to allow the profile to settle.
-                        sleep(Duration::from_millis(500));
                     }
 
                     return exit_code;
@@ -854,7 +852,6 @@ fn apply_short_phase_success_step(
 
 fn pre_load_vf_recheck(gpu: &GpuTarget<'_>, point: usize) -> bool {
     println!("Waiting for pre-load volt-freq recheck");
-    sleep(Duration::from_secs(1));
 
     // voltage_frequency_check 可能仍返回 Result，我们这里捕获错误并当作失败处理
     let checks = match voltage_frequency_check(std::slice::from_ref(gpu), point) {
