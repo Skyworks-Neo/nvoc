@@ -33,3 +33,4 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+/nvoc-python/python/pynvoc/_native.pyd
