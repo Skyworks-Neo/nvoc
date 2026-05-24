@@ -43,7 +43,10 @@ pub use target::{
     BackendSet, GpuId, GpuTarget, PciAddress, TargetInventory, discover_targets,
     gpu_id_from_nvapi_gpu, gpu_id_from_nvml_device, pci_address_from_nvml_device, select_targets,
 };
-pub use types::{NvapiLockedVoltageTarget, VfpResetDomain};
+pub use types::{
+    IntoMegahertzDelta, Megahertz, MegahertzDelta, Millivolts, MillivoltsDelta,
+    NvapiLockedVoltageTarget, VfpResetDomain,
+};
 
 pub use nvapi_hi::{
     Celsius, ClockDomain, CoolerControl, CoolerPolicy, CoolerSettings, FanCoolerId, GpuInfo,

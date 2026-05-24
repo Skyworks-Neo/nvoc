@@ -1,6 +1,4 @@
-use nvapi_hi::{
-    Celsius, ClockDomain, CoolerPolicy, KilohertzDelta, MicrovoltsDelta, PState, Percentage,
-};
+use nvapi_hi::{Celsius, ClockDomain, CoolerPolicy, PState, Percentage};
 use nvml_wrapper::enum_wrappers::device::PerformanceState;
 use nvoc_core::{
     BackendSet, ConvertEnum, GpuTarget, QueryDomainVfpPoints, QueryFanInfo, QueryGpuInfo,
@@ -181,10 +179,6 @@ fn khz_to_mhz_i64(value: i32) -> i64 {
     (value / 1000) as i64
 }
 
-fn uv_to_mv_i64(value: i32) -> i64 {
-    (value / 1000) as i64
-}
-
 fn bool_value(value: bool) -> Value {
     Value::Bool(value)
 }
@@ -302,16 +296,10 @@ fn normalize_info(target: &GpuTarget<'_>) -> PyResultValue {
         map.insert("legacy_overvolt_pstate".into(), text(pstate));
         map.insert(
             "legacy_overvolt_current_mv".into(),
-            i64_value(uv_to_mv_i64(current.0)),
+            i64_value(*current as i64),
         );
-        map.insert(
-            "legacy_overvolt_min_mv".into(),
-            i64_value(uv_to_mv_i64(min.0)),
-        );
-        map.insert(
-            "legacy_overvolt_max_mv".into(),
-            i64_value(uv_to_mv_i64(max.0)),
-        );
+        map.insert("legacy_overvolt_min_mv".into(), i64_value(*min as i64));
+        map.insert("legacy_overvolt_max_mv".into(), i64_value(*max as i64));
     }
     Ok(Value::Object(map))
 }
@@ -461,16 +449,10 @@ fn normalize_settings(target: &GpuTarget<'_>) -> PyResultValue {
         map.insert("legacy_overvolt_pstate".into(), text(pstate));
         map.insert(
             "legacy_overvolt_current_mv".into(),
-            i64_value(uv_to_mv_i64(current.0)),
+            i64_value(*current as i64),
         );
-        map.insert(
-            "legacy_overvolt_min_mv".into(),
-            i64_value(uv_to_mv_i64(min.0)),
-        );
-        map.insert(
-            "legacy_overvolt_max_mv".into(),
-            i64_value(uv_to_mv_i64(max.0)),
-        );
+        map.insert("legacy_overvolt_min_mv".into(), i64_value(*min as i64));
+        map.insert("legacy_overvolt_max_mv".into(), i64_value(*max as i64));
     }
 
     let mut locks = Map::new();
@@ -510,7 +492,7 @@ fn normalize_query_vfp_point(target: &GpuTarget<'_>, point: usize) -> PyResultVa
     let voltage = run(target, QueryVfpPointVoltage { point })
         .map_err(to_py_err)?
         .output;
-    Ok(value_object([("microvolts", u64_value(voltage.0 as u64))]))
+    Ok(value_object([("millivolts", u64_value(voltage as u64))]))
 }
 
 fn normalize_legacy_p0_delta(target: &GpuTarget<'_>) -> PyResultValue {
@@ -518,8 +500,8 @@ fn normalize_legacy_p0_delta(target: &GpuTarget<'_>) -> PyResultValue {
         .map_err(to_py_err)?
         .output;
     Ok(value_object([(
-        "microvolts",
-        value.map(|v| u64_value(v.0 as u64)).unwrap_or(Value::Null),
+        "millivolts",
+        value.map(|v| u64_value(v as u64)).unwrap_or(Value::Null),
     )]))
 }
 
@@ -551,7 +533,7 @@ fn normalize_voltage_check(target: &GpuTarget<'_>, point: usize) -> PyResultValu
     Ok(value_object([
         ("precise", bool_value(true)),
         ("matched_point", Value::Null),
-        ("microvolts", u64_value(value.output.0 as u64)),
+        ("millivolts", u64_value(value.output as u64)),
     ]))
 }
 
@@ -761,7 +743,7 @@ fn set_clock_offset(
                 SetPstateClockOffset {
                     pstate,
                     domain,
-                    delta: KilohertzDelta(value.saturating_mul(1000)),
+                    delta_mhz: value,
                 },
             )
             .map_err(to_py_err)?;
@@ -901,7 +883,7 @@ fn set_pstate_base_voltage(gpu: &str, pstate: &str, delta_uv: i32) -> PyResult<(
         &target,
         SetPstateBaseVoltage {
             pstate: parse_pstate(pstate)?,
-            delta_uv: MicrovoltsDelta(delta_uv),
+            delta_mv: delta_uv / 1000,
         },
     )
     .map_err(to_py_err)?;
@@ -925,7 +907,7 @@ fn set_pstate_clock_offset(gpu: &str, pstate: &str, domain: &str, delta: i32) ->
         SetPstateClockOffset {
             pstate: parse_pstate(pstate)?,
             domain: parse_domain(domain)?,
-            delta: KilohertzDelta(delta),
+            delta_mhz: delta / 1000,
         },
     )
     .map_err(to_py_err)?;
@@ -972,8 +954,8 @@ fn set_vfp_frequency_lock(
         &target,
         SetVfpFrequencyLock {
             domain: parse_domain(domain)?,
-            upper: nvapi_hi::Kilohertz(upper_khz.max(0) as u32),
-            lower: lower_khz.map(|v| nvapi_hi::Kilohertz(v.max(0) as u32)),
+            upper_mhz: (upper_khz.max(0) as u32) / 1000,
+            lower_mhz: lower_khz.map(|v| (v.max(0) as u32) / 1000),
         },
     )
     .map_err(to_py_err)?;
@@ -1006,7 +988,7 @@ fn set_vfp_voltage_lock(
     let voltage_target = if let Some(point) = point {
         nvoc_core::NvapiLockedVoltageTarget::Point(point)
     } else if let Some(voltage_uv) = voltage_uv {
-        nvoc_core::NvapiLockedVoltageTarget::Voltage(nvapi_hi::Microvolts(voltage_uv.max(0) as u32))
+        nvoc_core::NvapiLockedVoltageTarget::Voltage((voltage_uv.max(0) as u32) / 1000)
     } else {
         return Err(invalid_value("expected either point or voltage"));
     };
@@ -1043,7 +1025,7 @@ fn set_vfp_point_delta(gpu: &str, point: usize, delta: i32) -> PyResult<()> {
         &target,
         SetVfpPointDelta {
             point,
-            delta: KilohertzDelta(delta),
+            delta_mhz: delta / 1000,
         },
     )
     .map_err(to_py_err)?;
@@ -1059,7 +1041,7 @@ fn set_vfp_range_delta(gpu: &str, start: usize, end: usize, delta: i32) -> PyRes
         SetVfpRangeDelta {
             start,
             end,
-            delta: KilohertzDelta(delta),
+            delta_mhz: delta / 1000,
         },
     )
     .map_err(to_py_err)?;
@@ -1070,15 +1052,15 @@ fn set_vfp_range_delta(gpu: &str, start: usize, end: usize, delta: i32) -> PyRes
 fn set_domain_vfp_deltas(gpu: &str, domain: &str, deltas: Vec<(usize, i32)>) -> PyResult<()> {
     let inventory = target_inventory(BackendSet::Nvapi)?;
     let target = selected_target(&inventory, gpu)?;
-    let deltas = deltas
+    let deltas_mhz = deltas
         .into_iter()
-        .map(|(p, d)| (p, KilohertzDelta(d)))
+        .map(|(p, d)| (p, d / 1000))
         .collect::<Vec<_>>();
     run(
         &target,
         SetDomainVfpDeltas {
             domain: parse_domain(domain)?,
-            deltas,
+            deltas_mhz,
         },
     )
     .map_err(to_py_err)?;
@@ -1224,7 +1206,7 @@ fn set_legacy_voltage_delta(gpu: &str, uv: i32, pstate: Option<&str>) -> PyResul
         &target,
         SetPstateBaseVoltage {
             pstate: parse_pstate(pstate.unwrap_or("P0"))?,
-            delta_uv: MicrovoltsDelta(uv),
+            delta_mv: uv / 1000,
         },
     )
     .map_err(to_py_err)?;

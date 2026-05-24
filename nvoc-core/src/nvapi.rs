@@ -430,16 +430,14 @@ pub fn parse_nvapi_locked_voltage_target(raw: &str) -> Result<NvapiLockedVoltage
         let mv = u32::from_str(v.trim()).map_err(|_| {
             Error::from("Invalid --nvapi-locked-voltage value: expected POINT or <N>mV/<N>uV")
         })?;
-        return Ok(NvapiLockedVoltageTarget::Voltage(Microvolts(
-            mv.saturating_mul(1000),
-        )));
+        return Ok(NvapiLockedVoltageTarget::Voltage(mv));
     }
 
     if let Some(v) = lower.strip_suffix("uv") {
         let uv = u32::from_str(v.trim()).map_err(|_| {
             Error::from("Invalid --nvapi-locked-voltage value: expected POINT or <N>mV/<N>uV")
         })?;
-        return Ok(NvapiLockedVoltageTarget::Voltage(Microvolts(uv)));
+        return Ok(NvapiLockedVoltageTarget::Voltage(uv / 1000));
     }
 
     let point = usize::from_str(input).map_err(|_| {

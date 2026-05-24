@@ -41,7 +41,7 @@ mod pressure_runner {
                 gpu,
                 SetVfpPointDelta {
                     point: offset,
-                    delta: KilohertzDelta(delta_khz),
+                    delta_mhz: delta_khz / 1000,
                 },
             ) {
                 Ok(_) => {}
@@ -1358,7 +1358,7 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
             gpu,
             SetVfpPointDelta {
                 point: upper_voltage_point,
-                delta: KilohertzDelta(45000),
+                delta_mhz: 45,
             },
         )?;
         match handle_lock_vfp(gpus, matches, upper_voltage_point, false) {

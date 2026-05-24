@@ -506,7 +506,11 @@ fn set_domain_vfp_deltas_raw(
     domain: ClockDomain,
     deltas: &[(usize, KilohertzDelta)],
 ) -> Result<(), Error> {
-    set_nvapi_domain_vfp_deltas(gpu, domain, deltas)
+    let deltas_mhz = deltas
+        .iter()
+        .map(|&(point, delta)| (point, delta.0 / 1000))
+        .collect::<Vec<_>>();
+    set_nvapi_domain_vfp_deltas(gpu, domain, &deltas_mhz)
 }
 
 pub fn sync_memory_pstate_as_p0(gpu: &GpuTarget<'_>) -> Result<(), Error> {
@@ -609,7 +613,13 @@ pub fn handle_vfp_import(gpu: &GpuTarget<'_>, matches: &clap::ArgMatches) -> Res
 
     if domain == ClockDomain::Graphics {
         for (point, delta) in deltas {
-            run_output(gpu, SetVfpPointDelta { point, delta })?;
+            run_output(
+                gpu,
+                SetVfpPointDelta {
+                    point,
+                    delta_mhz: delta.0 / 1000,
+                },
+            )?;
         }
     } else {
         set_domain_vfp_deltas_raw(gpu, domain, &deltas)?;
@@ -1197,12 +1207,12 @@ pub fn apply_autoscan_profile(
                     gpu,
                     SetPstateBaseVoltage {
                         pstate: nvoc_core::PState::P0,
-                        delta_uv: max_uv,
+                        delta_mv: max_uv,
                     },
                 )?;
                 println!(
-                    "Successfully set P0 base voltage delta to max +{}\u{03bc}V (legacy GPU).",
-                    max_uv.0
+                    "Successfully set P0 base voltage delta to max +{} mV (legacy GPU).",
+                    max_uv
                 );
             }
             None => {
