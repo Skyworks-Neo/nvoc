@@ -23,8 +23,6 @@ a = Analysis(
     datas=[
         # Bundle customtkinter's themes / assets
         (ctk_path, "customtkinter"),
-        # Bundle GUI config template (optional, will be created at runtime if missing)
-        ("nvoc_gui_config.json", "."),
     ],
     hiddenimports=[
         "customtkinter",
@@ -41,6 +39,7 @@ a = Analysis(
         "PIL.Image",
         "PIL.ImageDraw",
         "PIL.ImageFont",
+        "pynvoc",
     ],
     hookspath=[],
     hooksconfig={},
