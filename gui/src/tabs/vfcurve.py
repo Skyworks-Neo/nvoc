@@ -75,6 +75,9 @@ class VFCurveTab:
         self._auto_refresh_interval_ms = self._DEFAULT_AUTO_REFRESH_INTERVAL_MS
         self._auto_interval_var = ctk.StringVar(value="1.0")
         self._auto_toggle_btn = None
+        self.csv_path_var = ctk.StringVar(value="")
+        self.use_default_path_var = ctk.BooleanVar(value=False)
+        self.quick_export_var = ctk.BooleanVar(value=True)
 
         # ── Top: chart area (controls row + plot) ──
         chart_area = ctk.CTkFrame(self.frame, fg_color="transparent")
@@ -105,6 +108,41 @@ class VFCurveTab:
         auto_interval_entry.bind("<Return>", self._on_auto_interval_changed)
         auto_interval_entry.bind("<FocusOut>", self._on_auto_interval_changed)
         ctk.CTkLabel(auto_row, text="Refresh (s):").pack(side="left")
+
+        io_row = ctk.CTkFrame(chart_area, fg_color="transparent")
+        io_row.pack(fill="x", pady=(0, 4))
+        ctk.CTkLabel(io_row, text="File Path:").pack(side="left", padx=(8, 5))
+        path_entry = LiteEntry(
+            io_row,
+            textvariable=self.csv_path_var,
+            width=42,
+            min_px=320,
+            justify="left",
+        )
+        path_entry.pack(side="left", fill="x", expand=True)
+        LiteButton(io_row, text="...", width=34, command=self._browse_csv).pack(
+            side="left", padx=(5, 0)
+        )
+        ctk.CTkCheckBox(
+            io_row, text="Use for I/O", variable=self.use_default_path_var, width=80
+        ).pack(side="left", padx=(10, 0))
+        ctk.CTkCheckBox(
+            io_row, text="Quick export", variable=self.quick_export_var, width=100
+        ).pack(side="left", padx=(8, 0))
+        LiteButton(
+            io_row, text="📤 Export VFP", width=118, command=self._export_vfp
+        ).pack(side="left", padx=(10, 0))
+        LiteButton(
+            io_row, text="📥 Import VFP", width=118, command=self._import_vfp
+        ).pack(side="left", padx=(5, 0))
+        LiteButton(
+            io_row,
+            text="🔁 Reset VFP",
+            width=120,
+            fg_color="#c0392b",
+            hover_color="#96281b",
+            command=self._reset_vfp,
+        ).pack(side="left", padx=(5, 8))
 
         self._chart_frame = ctk.CTkFrame(chart_area)
         self._chart_frame.pack(fill="x", expand=False)
@@ -355,62 +393,6 @@ class VFCurveTab:
             command=self._reset_mem_clocks,
         )
         btn_mem_reset.pack(side="right", fill="x", padx=0)
-
-        # === Export / Import ===
-        ei_frame = ctk.CTkFrame(scroll)
-        ei_frame.pack(fill="x", pady=(0, 10))
-        ctk.CTkLabel(
-            ei_frame, text="📂 Export / Import VF Curve", font=("", 14, "bold")
-        ).pack(anchor="w", padx=10, pady=(10, 5))
-
-        grid = ctk.CTkFrame(ei_frame, fg_color="transparent")
-        grid.pack(fill="x", padx=10, pady=(0, 10))
-        grid.columnconfigure(1, weight=0)
-
-        ctk.CTkLabel(grid, text="File Path:").grid(
-            row=0, column=0, sticky="w", padx=5, pady=3
-        )
-        self.csv_path_var = ctk.StringVar(value="")
-        path_row = ctk.CTkFrame(grid, fg_color="transparent")
-        path_row.grid(row=0, column=1, sticky="ew", padx=5, pady=3)
-        path_entry = LiteEntry(
-            path_row,
-            textvariable=self.csv_path_var,
-            width=52,
-            min_px=420,
-            justify="left",
-        )
-        path_entry.pack(side="left")
-        LiteButton(path_row, text="...", width=34, command=self._browse_csv).pack(
-            side="left", padx=(5, 0)
-        )
-
-        self.use_default_path_var = ctk.BooleanVar(value=False)
-        ctk.CTkCheckBox(
-            path_row, text="Use for I/O", variable=self.use_default_path_var, width=80
-        ).pack(side="left", padx=(10, 0))
-
-        self.quick_export_var = ctk.BooleanVar(value=True)
-        ctk.CTkCheckBox(
-            grid, text="Quick export (skip load curve)", variable=self.quick_export_var
-        ).grid(row=1, column=0, columnspan=2, sticky="w", padx=5, pady=3)
-
-        btn_ei = ctk.CTkFrame(ei_frame, fg_color="transparent")
-        btn_ei.pack(fill="x", padx=10, pady=(0, 10))
-        LiteButton(
-            btn_ei, text="📤 Export VFP", width=130, command=self._export_vfp
-        ).pack(side="left", padx=5)
-        LiteButton(
-            btn_ei, text="📥 Import VFP", width=130, command=self._import_vfp
-        ).pack(side="left", padx=5)
-        LiteButton(
-            btn_ei,
-            text="🔁 Reset VFP",
-            width=140,
-            fg_color="#c0392b",
-            hover_color="#96281b",
-            command=self._reset_vfp,
-        ).pack(side="left", padx=5)
 
     # ────────────────────────────────────────────
     # Chart setup
