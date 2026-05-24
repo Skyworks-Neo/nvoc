@@ -7,6 +7,7 @@ members = [
   "srv",
   "cli-stressor-cuda-rs",
   "nvoc-python",
+  "nvoc-webui-backend",
 ]
 resolver = "3"
 
