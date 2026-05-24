@@ -1,11 +1,11 @@
 use super::autoscan_config::{FixResultConfig, VfpExportConfig};
 use super::basic_func::get_gpu_tdp_temp_limit;
-use super::human::print_scan_separator;
 // oc_set_function
 #[cfg(all(not(windows), not(target_os = "linux")))]
 use super::platform::panic_windows_only;
 use csv::{ReaderBuilder, StringRecord, WriterBuilder};
 use num_traits::abs;
+use nvoc_auto_optimizer::PState;
 use nvoc_cli_common::color::stylize;
 use nvoc_core::{ClockDomain, GpuTarget, VfPoint};
 use nvoc_core::{
@@ -21,13 +21,11 @@ use nvoc_core::{
 };
 use std::cmp::min;
 use std::convert::TryFrom;
+use std::fs;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 use std::process::Child;
-
-use nvoc_auto_optimizer::PState;
-use std::fs;
 #[cfg(any(windows, target_os = "linux"))]
 use std::process::Command;
 use std::thread::sleep;
