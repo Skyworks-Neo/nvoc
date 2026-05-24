@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "nvoc-core",
+  "nvoc-cli-common",
   "auto-optimizer",
   "srv",
   "cli-stressor-cuda-rs",
@@ -21,6 +22,7 @@ codegen-units = 8
 
 [workspace.dependencies]
 nvoc-core = { path = "./nvoc-core" }
+nvoc-cli-common = { path = "./nvoc-cli-common" }
 nvoc-auto-optimizer = { path = "./auto-optimizer" }
 
 anyhow = "*"

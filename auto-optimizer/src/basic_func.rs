@@ -1,6 +1,6 @@
 use super::cli_types::{OutputFormat, ResetSettings};
 use super::human;
-use nvoc_core::color::{stylize, stylize_title};
+use nvoc_cli_common::color::{stylize, stylize_title};
 use nvoc_core::{
     Celsius, ClockDomain, CoolerPolicy, GpuSettings, GpuTarget, GpuTdpTempLimits, Kilohertz,
     KilohertzDelta, Microvolts, MicrovoltsDelta, PState, Percentage,

@@ -1,4 +1,4 @@
-use nvoc_core::color::stylize;
+use nvoc_cli_common::color::stylize;
 use rand::rngs::StdRng;
 use rand::seq::IndexedRandom;
 use rand::{Rng, SeedableRng};

@@ -1,4 +1,4 @@
-use nvoc_core::color::{stylize, stylize_title};
+use nvoc_cli_common::color::{stylize, stylize_title};
 use nvoc_core::{
     ClockDomain, CoolerControl, CoolerPolicy, GpuInfo, GpuSettings, GpuStatus, GpuTarget,
     QueryPowerLimits, legacy_core_overvolt_ranges, run,

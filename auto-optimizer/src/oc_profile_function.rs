@@ -6,8 +6,8 @@ use super::human::print_scan_separator;
 use super::platform::panic_windows_only;
 use csv::{ReaderBuilder, StringRecord, WriterBuilder};
 use num_traits::abs;
+use nvoc_cli_common::color::stylize;
 use nvoc_core::Error;
-use nvoc_core::color::stylize;
 use nvoc_core::{ClockDomain, GpuTarget, VfPoint};
 use nvoc_core::{
     CoolerPolicy, CoolerSettings, FanCoolerId, Kilohertz, KilohertzDelta, Microvolts, Percentage,

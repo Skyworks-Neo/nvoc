@@ -16,7 +16,7 @@ mod scan_cli_color {
     }
 
     pub(super) fn stylize(message: &str, is_stderr: bool) -> String {
-        nvoc_core::color::stylize_scanner(message, is_stderr)
+        nvoc_cli_common::color::stylize_scanner(message, is_stderr)
     }
 }
 

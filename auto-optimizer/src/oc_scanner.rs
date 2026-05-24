@@ -1773,14 +1773,17 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
         if let Some((_, memory_clock)) = clocks.iter().find(|(name, _)| name.contains("Memory")) {
             println!(
                 "{}: {}",
-                nvoc_core::color::stylize_title("Memory Clock"),
-                nvoc_core::color::stylize(&format!("{}", memory_clock), false)
+                nvoc_cli_common::color::stylize_title("Memory Clock"),
+                nvoc_cli_common::color::stylize(&format!("{}", memory_clock), false)
             );
             init_vmem_oc_value = (memory_clock.0 / 25) as i32;
             println!(
                 "{} {}",
-                nvoc_core::color::stylize_title("Memory OC start at"),
-                nvoc_core::color::stylize(&format!("+{} MHz", init_vmem_oc_value / 1000), false)
+                nvoc_cli_common::color::stylize_title("Memory OC start at"),
+                nvoc_cli_common::color::stylize(
+                    &format!("+{} MHz", init_vmem_oc_value / 1000),
+                    false,
+                )
             );
         }
         print_scan_separator();
@@ -2137,13 +2140,13 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
             {
                 println!(
                     "{}: {}",
-                    nvoc_core::color::stylize_title("Memory Clock"),
-                    nvoc_core::color::stylize(&format!("{}", memory_clock), false)
+                    nvoc_cli_common::color::stylize_title("Memory Clock"),
+                    nvoc_cli_common::color::stylize(&format!("{}", memory_clock), false)
                 );
                 println!(
                     "{} {}",
-                    nvoc_core::color::stylize_title("Memory OC test start at"),
-                    nvoc_core::color::stylize(
+                    nvoc_cli_common::color::stylize_title("Memory OC test start at"),
+                    nvoc_cli_common::color::stylize(
                         &format!(
                             "+{} MHz(+{}%)",
                             init_vmem_oc_value / 1000,
