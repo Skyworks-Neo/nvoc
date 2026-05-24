@@ -15,29 +15,52 @@ pub struct VulkanDeviceSelection {
     pub cuda_pci_bus: Option<PciBusAddress>,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct VulkanImageConfig {
+    pub width: u32,
+    pub height: u32,
+    pub image_count: u32,
+}
+
+impl Default for VulkanImageConfig {
+    fn default() -> Self {
+        Self {
+            width: 8192,
+            height: 8192,
+            image_count: 6,
+        }
+    }
+}
+
 pub struct VulkanGraphicsEngine {
     is_running: Arc<AtomicBool>,
     has_error: Arc<AtomicBool>,
     selection: Option<VulkanDeviceSelection>,
+    image_config: VulkanImageConfig,
     thread_handle: Option<thread::JoinHandle<()>>,
 }
 
 impl VulkanGraphicsEngine {
-    pub fn new() -> Self {
+    pub fn new(image_config: VulkanImageConfig) -> Self {
         Self {
             is_running: Arc::new(AtomicBool::new(false)),
             has_error: Arc::new(AtomicBool::new(false)),
             selection: None,
+            image_config,
             thread_handle: None,
         }
     }
 
     #[cfg(feature = "cuda")]
-    pub fn with_selection(selection: VulkanDeviceSelection) -> Self {
+    pub fn with_selection(
+        selection: VulkanDeviceSelection,
+        image_config: VulkanImageConfig,
+    ) -> Self {
         Self {
             is_running: Arc::new(AtomicBool::new(false)),
             has_error: Arc::new(AtomicBool::new(false)),
             selection: Some(selection),
+            image_config,
             thread_handle: None,
         }
     }
@@ -46,12 +69,13 @@ impl VulkanGraphicsEngine {
         let is_running = self.is_running.clone();
         let has_error = self.has_error.clone();
         let selection = self.selection;
+        let image_config = self.image_config;
 
         is_running.store(true, Ordering::SeqCst);
         has_error.store(false, Ordering::SeqCst);
 
         let handle = thread::spawn(move || {
-            if let Err(e) = run_vulkan_stress_loop(is_running, selection) {
+            if let Err(e) = run_vulkan_stress_loop(is_running, selection, image_config) {
                 eprintln!(
                     "{}",
                     stylize(&format!("[VulkanGfx] Thread crashed: {:?}", e), true)
@@ -85,6 +109,7 @@ impl VulkanGraphicsEngine {
 fn run_vulkan_stress_loop(
     is_running: Arc<AtomicBool>,
     selection: Option<VulkanDeviceSelection>,
+    image_config: VulkanImageConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     unsafe {
         let entry = ash::Entry::load()?;
@@ -147,8 +172,8 @@ fn run_vulkan_stress_loop(
         // ==========================================
         // 模块：极高压内存与 ROP 占据
         let image_extent = vk::Extent3D {
-            width: 8192,
-            height: 8192,
+            width: image_config.width,
+            height: image_config.height,
             depth: 1,
         };
         let image_create_info = vk::ImageCreateInfo::default()
@@ -166,7 +191,7 @@ fn run_vulkan_stress_loop(
             )
             .sharing_mode(vk::SharingMode::EXCLUSIVE);
 
-        let image_count = 6; // ~1.5GB region
+        let image_count = image_config.image_count as usize;
         let mut images = Vec::new();
         let mut memories = Vec::new();
 
@@ -281,8 +306,8 @@ fn run_vulkan_stress_loop(
                     .src_offsets([
                         vk::Offset3D { x: 0, y: 0, z: 0 },
                         vk::Offset3D {
-                            x: 8192,
-                            y: 8192,
+                            x: image_extent.width as i32,
+                            y: image_extent.height as i32,
                             z: 1,
                         },
                     ])
@@ -294,8 +319,8 @@ fn run_vulkan_stress_loop(
                     .dst_offsets([
                         vk::Offset3D { x: 0, y: 0, z: 0 },
                         vk::Offset3D {
-                            x: 8192,
-                            y: 8192,
+                            x: image_extent.width as i32,
+                            y: image_extent.height as i32,
                             z: 1,
                         },
                     ]);
