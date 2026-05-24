@@ -8,10 +8,6 @@ resolution-markers = [
     "python_full_version < '3.12' and sys_platform != 'linux' and sys_platform != 'win32'",
 ]
 
-[options]
-exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
-exclude-newer-span = "P7D"
-
 [manifest]
 members = [
     "nvoc-cli-stressor",
@@ -1262,8 +1258,8 @@ dependencies = [
     { name = "numpy" },
     { name = "packaging" },
     { name = "pillow" },
-    { name = "pynvoc" },
     { name = "pyinstaller" },
+    { name = "pynvoc" },
     { name = "pystray" },
     { name = "six" },
 ]
@@ -1287,8 +1283,8 @@ requires-dist = [
     { name = "numpy", marker = "python_full_version >= '3.9'", specifier = ">=2.0" },
     { name = "packaging", specifier = ">=24.0" },
     { name = "pillow", specifier = ">=10.4.0" },
-    { name = "pynvoc", editable = "nvoc-python" },
     { name = "pyinstaller", specifier = "~=6.19.0" },
+    { name = "pynvoc", editable = "nvoc-python" },
     { name = "pystray", specifier = ">=0.19.5" },
     { name = "six", specifier = ">=1.17.0" },
 ]
