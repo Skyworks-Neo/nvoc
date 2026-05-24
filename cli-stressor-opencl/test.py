@@ -326,16 +326,14 @@ def choose_default_gpu(platforms):
         except Exception:
             continue
         for gpu_index, device in enumerate(devices):
-            candidates.append(
-                (
-                    platform_priority(platform),
-                    -int(getattr(device, "global_mem_size", 0)),
-                    platform_idx,
-                    gpu_index,
-                    platform,
-                    device,
-                )
-            )
+            candidates.append((
+                platform_priority(platform),
+                -int(getattr(device, "global_mem_size", 0)),
+                platform_idx,
+                gpu_index,
+                platform,
+                device,
+            ))
     if not candidates:
         return None
     _, _, platform_idx, gpu_index, platform, device = sorted(

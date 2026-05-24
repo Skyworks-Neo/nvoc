@@ -187,24 +187,22 @@ class OverclockController(PaneController):
             if gpu is None:
                 self.app.write_log("No GPU selected.")
                 return True
-            self.app.run_action_chain(
-                [
-                    (
-                        "reset core offset",
-                        lambda native, gpu=gpu, backend=str(backend): (
-                            native.set_clock_offset(gpu, backend, "core", 0, "P0")
-                            or "Successfully reset core offset."
-                        ),
+            self.app.run_action_chain([
+                (
+                    "reset core offset",
+                    lambda native, gpu=gpu, backend=str(backend): (
+                        native.set_clock_offset(gpu, backend, "core", 0, "P0")
+                        or "Successfully reset core offset."
                     ),
-                    (
-                        "reset memory offset",
-                        lambda native, gpu=gpu, backend=str(backend): (
-                            native.set_clock_offset(gpu, backend, "memory", 0, "P0")
-                            or "Successfully reset memory offset."
-                        ),
+                ),
+                (
+                    "reset memory offset",
+                    lambda native, gpu=gpu, backend=str(backend): (
+                        native.set_clock_offset(gpu, backend, "memory", 0, "P0")
+                        or "Successfully reset memory offset."
                     ),
-                ]
-            )
+                ),
+            ])
             return True
         if button_id == "limits-apply":
             gpu = self.app.selected_gpu_target()
