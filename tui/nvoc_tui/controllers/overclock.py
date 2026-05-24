@@ -99,20 +99,34 @@ class OverclockController(PaneController):
         backend: str,
         core_offset: int,
         mem_offset: int,
+    ) -> str:
+        native.set_clock_offset(gpu, backend, "core", core_offset, "P0")
+        native.set_clock_offset(gpu, backend, "memory", mem_offset, "P0")
+        return f"Successfully applied {backend} overclock."
+
+    def apply_pstate_limits(
+        self,
+        native,
+        gpu: str,
+        backend: str,
         pstart: str,
         pend: str,
     ) -> str:
         try:
-            native.set_clock_offset(gpu, backend, "core", core_offset, pstart)
-            native.set_clock_offset(gpu, backend, "memory", mem_offset, pstart)
-            if pend:
-                if backend == "nvml":
-                    native.set_nvml_pstate_lock(gpu, pstart, pend)
-                else:
-                    native.set_nvapi_pstate_lock(gpu, pstart, pend)
+            if backend == "nvml":
+                native.set_nvml_pstate_lock(gpu, pstart, pend)
+            else:
+                native.set_nvapi_pstate_lock(gpu, pstart, pend)
         except Exception as exc:
             raise self.enrich_pstate_exception(exc) from exc
-        return f"Successfully applied {backend} overclock."
+        return f"Successfully applied {backend} PState limits {pstart}-{pend}."
+
+    def reset_pstate_limits(self, native, gpu: str, backend: str) -> str:
+        if backend == "nvml":
+            native.reset_locked_clocks(gpu, backend, "memory")
+        else:
+            native.reset_vfp_frequency_lock(gpu, "memory")
+        return f"Successfully reset {backend} PState limits."
 
     def apply_limits(
         self,
@@ -152,16 +166,6 @@ class OverclockController(PaneController):
             backend = str(self.app.query_one("#oc-api", Select).value or "nvapi")
             core_offset = self.get_int("#core-offset")
             mem_offset = self.get_int("#mem-offset")
-            pstart = (
-                self.normalize_pstate(self.app.query_one("#pstate-start", Input).value)
-                or "P0"
-            )
-            pend = self.normalize_pstate(self.app.query_one("#pstate-end", Input).value)
-
-            pstate_error = self.validate_pstates(pstart, pend)
-            if pstate_error:
-                self.app.write_log(pstate_error)
-                return True
 
             def apply_oc(
                 native,
@@ -169,16 +173,51 @@ class OverclockController(PaneController):
                 backend=backend,
                 core_offset=core_offset,
                 mem_offset=mem_offset,
-                pstart=pstart,
-                pend=pend,
             ) -> str:
-                return self.apply_oc(
-                    native, gpu, backend, core_offset, mem_offset, pstart, pend
-                )
+                return self.apply_oc(native, gpu, backend, core_offset, mem_offset)
 
             self.app.run_native_action(
                 "apply overclock",
                 apply_oc,
+            )
+            return True
+        if button_id == "pstate-limits-apply":
+            gpu = self.app.selected_gpu_target()
+            backend = str(self.app.query_one("#oc-api", Select).value or "nvapi")
+            pstart = (
+                self.normalize_pstate(self.app.query_one("#pstate-start", Input).value)
+                or "P0"
+            )
+            pend = (
+                self.normalize_pstate(self.app.query_one("#pstate-end", Input).value)
+                or pstart
+            )
+
+            pstate_error = self.validate_pstates(pstart, pend)
+            if pstate_error:
+                self.app.write_log(pstate_error)
+                return True
+
+            def apply_pstate_limits(
+                native, gpu=gpu, backend=backend, pstart=pstart, pend=pend
+            ) -> str:
+                return self.apply_pstate_limits(native, gpu, backend, pstart, pend)
+
+            self.app.run_native_action(
+                "apply PState limits",
+                apply_pstate_limits,
+            )
+            return True
+        if button_id == "pstate-limits-reset":
+            gpu = self.app.selected_gpu_target()
+            backend = str(self.app.query_one("#oc-api", Select).value or "nvapi")
+
+            def reset_pstate_limits(native, gpu=gpu, backend=backend) -> str:
+                return self.reset_pstate_limits(native, gpu, backend)
+
+            self.app.run_native_action(
+                "reset PState limits",
+                reset_pstate_limits,
             )
             return True
         if button_id == "oc-reset":
