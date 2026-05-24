@@ -13,25 +13,39 @@ def compose_overclock() -> ComposeResult:
             with Grid(id="overclock-groups"):
                 with Vertical(classes="subpane") as clock_pane:
                     clock_pane.border_title = mnemonic_text("C", "lock")
-                    with Grid(id="clock-controls"):
+                    with Horizontal(classes="row"):
+                        yield Label("API")
+                        yield Select(
+                            options=[("NVAPI", "nvapi"), ("NVML", "nvml")],
+                            value="nvapi",
+                            classes="nvapi-nvml-select",
+                            id="oc-api",
+                            allow_blank=False,
+                            compact=True,
+                        )
+                    with Grid(id="pstate-controls"):
                         with Horizontal(classes="row"):
-                            yield Label("API")
-                            yield Select(
-                                options=[("NVAPI", "nvapi"), ("NVML", "nvml")],
-                                value="nvapi",
-                                classes="nvapi-nvml-select",
-                                id="oc-api",
-                                allow_blank=False,
-                                compact=True,
-                            )
-                        with Horizontal(classes="row"):
-                            yield Label("PState Start")
+                            yield Label("PState From")
                             yield ShortcutInput(
                                 value="", id="pstate-start", compact=True
                             )
                         with Horizontal(classes="row"):
-                            yield Label("PState End")
+                            yield Label("PState To")
                             yield ShortcutInput(value="", id="pstate-end", compact=True)
+                    with Grid(id="pstate-actions"):
+                        yield Button(
+                            "Apply PState",
+                            id="pstate-limits-apply",
+                            classes="red",
+                            compact=True,
+                        )
+                        yield Button(
+                            "Reset PState",
+                            id="pstate-limits-reset",
+                            classes="green",
+                            compact=True,
+                        )
+                    with Grid(id="clock-controls"):
                         with Horizontal(classes="row"):
                             yield Label("Core Offset")
                             yield ShortcutInput(

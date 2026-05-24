@@ -21,3 +21,6 @@ torch = [
 explicit = true
 name = "pytorch-cu129"
 url = "https://download.pytorch.org/whl/cu129"
+
+[project.scripts]
+cli_stressor_cuda = "cli_stressor_cuda.cli:main"

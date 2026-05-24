@@ -11,6 +11,7 @@
 }
 
 #clock-controls,
+#pstate-controls,
 #power-controls,
 #fan-controls {
     grid-gutter: 0 1;
@@ -19,8 +20,9 @@
     grid-columns: 1fr;
 }
 
-#clock-controls {
-    grid-size: 1 5;
+#clock-controls,
+#pstate-controls {
+    grid-size: 1 2;
 }
 
 #power-controls,
@@ -28,8 +30,9 @@
     grid-size: 1 4;
 }
 
-.wide #clock-controls {
-    grid-size: 2 3;
+.wide #clock-controls,
+.wide #pstate-controls {
+    grid-size: 2 1;
     grid-columns: 1fr 1fr;
 }
 
@@ -40,6 +43,7 @@
 }
 
 #clock-actions,
+#pstate-actions,
 #power-actions,
 #fan-actions {
     grid-gutter: 0 1;

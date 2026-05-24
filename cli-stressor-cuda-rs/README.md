@@ -15,12 +15,14 @@
   - [功能特点](#功能特点)
   - [环境要求](#环境要求)
   - [构建与运行](#构建与运行)
+  - [配置文件](#配置文件)
   - [注意事项](#注意事项)
 - [English](#english)
   - [Overview](#overview)
   - [Features](#features)
   - [Requirements](#requirements)
   - [Build & Run](#build--run)
+  - [Config File](#config-file)
   - [Notes](#notes)
 
 ---
@@ -41,6 +43,11 @@
 
 - NVIDIA GPU，且已安装 CUDA 驱动/工具包
 - Rust 1.70+
+- Windows 运行时需确保以下 DLL （*取决于CUDA版本）可被加载（位于系统 PATH 或程序同目录）：
+  - `nvrtc64_*.dll`
+  - `cublasLt64_*.dll`
+  - `cublas64_*.dll`
+  - `cudart64_*.dll`
 
 ### 构建与运行
 
@@ -48,6 +55,50 @@ CUDA 支持通过 feature flag 控制。
 
 ```bash
 cargo run -p cli-stressor-cuda-rs --features cuda -- --duration 30 --precisions fp16,tf32
+```
+
+可选：通过配置文件运行（所有选项都可放入 config）。
+
+```bash
+cargo run -p cli-stressor-cuda-rs --features cuda -- --config ./stressor.toml
+```
+
+### 配置文件
+
+- 参数优先级：`命令行显式传入 > config 文件 > 内置默认值`
+- `kernel_mixture` 支持两种写法：
+  - 字符串：`"gemm:0.4,memcpy:0.3,reduction:0.3"`
+  - 映射：`{ gemm = 0.4, memcpy = 0.3, reduction = 0.3 }`
+- `kernel_params.<kernel>` 支持按 kernel 覆盖参数，包括 `precisions`
+
+示例（`stressor.toml`）：
+
+```toml
+duration = 120
+matrix_sizes = [2049, 4096, 8192]
+fp64_matrix_sizes = [2048, 4096]
+precisions = ["fp16", "bf16", "tf32"]
+warmup_iters = 3
+burst_iters = 6
+validate_interval = 10.0
+validate_size = 1024
+transpose_prob = 0.5
+minor_mixture_rate = 0.15
+seed = 12345
+kernel_types = ["gemm", "memcpy", "reduction", "atomic"]
+kernel_mixture = { gemm = 0.4, memcpy = 0.3, reduction = 0.2, atomic = 0.1 }
+stream_mode = "dual"
+disable_fp8 = true
+
+[kernel_params.gemm]
+precisions = ["fp16", "bf16"]
+matrix_sizes = [4096, 8192]
+warmup_iters = 4
+burst_iters = 8
+
+[kernel_params.reduction]
+precisions = ["fp32"]
+burst_iters = 64
 ```
 
 ### 注意事项
@@ -61,6 +112,11 @@ cargo run -p cli-stressor-cuda-rs --features cuda -- --duration 30 --precisions 
   - CUDA 13 需要足够新的显卡和匹配的驱动；例如 40 系 GPU 搭配 CUDA 13 与新驱动（如 595 / CUDA 13.2）可正常工作。
   - 客户端部署时要确保驱动支持性与 CUDA 版本都和目标 GPU 架构匹配。
   - 结论：若要兼顾老卡与新卡，推荐按 CUDA 12.x / 13.x 分开打包与发布，并在客户端侧按 GPU 架构选择对应版本。
+- `atomic` kernel path 在本项目中建议 SM80+ 使用；在 SM75（Turing）及以下默认会自动禁用该 path，避免执行期失败。
+- Linux 对应依赖是同版本 `.so` 动态库（典型如 `libnvrtc.so.*`、`libcublasLt.so.*`、`libcublas.so.*`、`libcudart.so.*`）。请确保动态链接器可找到它们：
+  - 临时方式：设置 `LD_LIBRARY_PATH` 指向 CUDA 库目录（如 `/usr/local/cuda/lib64`）
+  - 持久方式：将 CUDA 库目录写入 `/etc/ld.so.conf.d/*.conf` 后执行 `ldconfig`
+  - 可用 `ldd <binary>` 检查是否有 `not found` 依赖
 
 ---
 
@@ -82,6 +138,11 @@ cargo run -p cli-stressor-cuda-rs --features cuda -- --duration 30 --precisions 
 
 - NVIDIA GPU with the CUDA driver/toolkit installed
 - Rust 1.70+
+- On Windows, make sure these DLLs (* depends on CUDA version) are discoverable (in `PATH` or next to the executable):
+  - `nvrtc64_*.dll`
+  - `cublasLt64_*.dll`
+  - `cublas64_*.dll`
+  - `cudart64_*.dll`
 
 ### Build & Run
 
@@ -89,6 +150,50 @@ CUDA support is behind a feature flag.
 
 ```bash
 cargo run -p cli-stressor-cuda-rs --features cuda -- --duration 30 --precisions fp16,tf32
+```
+
+Optional: run with a config file (all options can be provided in config).
+
+```bash
+cargo run -p cli-stressor-cuda-rs --features cuda -- --config ./stressor.toml
+```
+
+### Config File
+
+- Precedence: `explicit CLI value > config file > built-in default`
+- `kernel_mixture` supports two formats:
+  - string: `"gemm:0.4,memcpy:0.3,reduction:0.3"`
+  - map: `{ gemm = 0.4, memcpy = 0.3, reduction = 0.3 }`
+- `kernel_params.<kernel>` supports per-kernel overrides, including `precisions`
+
+Example (`stressor.toml`):
+
+```toml
+duration = 120
+matrix_sizes = [2049, 4096, 8192]
+fp64_matrix_sizes = [2048, 4096]
+precisions = ["fp16", "bf16", "tf32"]
+warmup_iters = 3
+burst_iters = 6
+validate_interval = 10.0
+validate_size = 1024
+transpose_prob = 0.5
+minor_mixture_rate = 0.15
+seed = 12345
+kernel_types = ["gemm", "memcpy", "reduction", "atomic"]
+kernel_mixture = { gemm = 0.4, memcpy = 0.3, reduction = 0.2, atomic = 0.1 }
+stream_mode = "dual"
+disable_fp8 = true
+
+[kernel_params.gemm]
+precisions = ["fp16", "bf16"]
+matrix_sizes = [4096, 8192]
+warmup_iters = 4
+burst_iters = 8
+
+[kernel_params.reduction]
+precisions = ["fp32"]
+burst_iters = 64
 ```
 
 ### Notes
@@ -102,3 +207,8 @@ cargo run -p cli-stressor-cuda-rs --features cuda -- --duration 30 --precisions 
   - CUDA 13 requires a sufficiently new GPU and a matching driver; for example, RTX 40-series GPUs work normally with CUDA 13 and a newer driver (such as 595 / CUDA 13.2).
   - In client deployments, driver support and CUDA version must match the target GPU architecture.
   - Conclusion: to cover both legacy and newer GPUs, package and release separate CUDA 12.x and CUDA 13.x builds, then select the appropriate one on the client side by GPU architecture.
+- In this project, the `atomic` kernel path is recommended for SM80+ only; it is auto-disabled on SM75 (Turing) and below to avoid runtime failure.
+- Linux equivalents are the matching `.so` runtime libraries (typically `libnvrtc.so.*`, `libcublasLt.so.*`, `libcublas.so.*`, `libcudart.so.*`). Ensure the dynamic loader can locate them:
+  - Temporary: set `LD_LIBRARY_PATH` to CUDA library directories (e.g. `/usr/local/cuda/lib64`)
+  - Persistent: add CUDA library directories to `/etc/ld.so.conf.d/*.conf` and run `ldconfig`
+  - Use `ldd <binary>` to verify there are no `not found` dependencies
