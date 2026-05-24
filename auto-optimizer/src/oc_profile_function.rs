@@ -1299,7 +1299,7 @@ pub fn apply_autoscan_profile(
         )
     );
 
-    match get_gpu_tdp_temp_limit(matches, print_scan_separator) {
+    match get_gpu_tdp_temp_limit(matches) {
         Ok((
             _min_tdp_percent,
             _default_tdp_percent,
@@ -1364,7 +1364,6 @@ pub fn apply_autoscan_profile(
         // Store the clock name and frequency in a data structure.
         clocks.push((clock_name.to_string(), freq));
     }
-    print_scan_separator();
     if let Some((_, memory_clock)) = clocks.iter().find(|(name, _)| name.contains("Memory")) {
         println!(
             "{}: {}",
@@ -1378,7 +1377,6 @@ pub fn apply_autoscan_profile(
             stylize(&format!("+{} MHz", init_vmem_oc_value / 1000), false)
         );
     }
-    print_scan_separator();
 
     set_nvapi_pstate_clock_offsets(
         gpu,

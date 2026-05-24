@@ -439,10 +439,7 @@ pub fn voltage_frequency_check(
         .collect()
 }
 
-pub fn get_gpu_tdp_temp_limit(
-    matches: &ArgMatches,
-    mut print_separator: impl FnMut(),
-) -> Result<GpuTdpTempLimits, Error> {
+pub fn get_gpu_tdp_temp_limit(matches: &ArgMatches) -> Result<GpuTdpTempLimits, Error> {
     let selector = match matches.get_many::<String>("gpu") {
         Some(values) => nvoc_core::GpuSelector::from_specs(values.cloned()),
         None => nvoc_core::GpuSelector::all(),
@@ -450,7 +447,6 @@ pub fn get_gpu_tdp_temp_limit(
     let inventory = nvoc_core::discover_targets(nvoc_core::BackendSet::Nvapi)?;
     let all_targets = inventory.targets();
     let gpus = nvoc_core::select_targets(&all_targets, &selector)?;
-    print_separator();
     let gpu = gpus.first().ok_or_else(|| Error::from("no GPU selected"))?;
     run_output(gpu, QueryTdpTempLimits)
 }
