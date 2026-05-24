@@ -1,3 +1,4 @@
+use nvapi_hi::Microvolts;
 use nvml_wrapper::Nvml;
 use nvoc_core::{
     BackendSet, CheckVoltageFrequency, ClockDomain, Error, GpuId, GpuSelector, GpuTarget,
@@ -443,12 +444,12 @@ fn nvapi_voltage_point_ok() {
         .find(|(_, point)| (500_000..=2_000_000).contains(&point.voltage.0))
         .or_else(|| vfp.graphics.iter().next())
         .expect("VFP table should not be empty");
-    let voltage_mv = run(&target, QueryVfpPointVoltage { point: *point })
+    let voltage: Microvolts = run(&target, QueryVfpPointVoltage { point: *point })
         .expect("VFP point voltage should be readable")
         .output;
-    assert_eq!(voltage_mv, expected.voltage.0 / 1000);
-    if voltage_mv != 0 {
-        assert!(voltage_mv <= 2_000);
+    assert_eq!(voltage, expected.voltage);
+    if voltage.0 != 0 {
+        assert!(voltage.0 <= 2_000_000);
     }
 }
 

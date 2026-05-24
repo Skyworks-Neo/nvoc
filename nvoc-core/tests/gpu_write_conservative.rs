@@ -1,4 +1,4 @@
-use nvapi_hi::{ClockDomain, PState};
+use nvapi_hi::{ClockDomain, KilohertzDelta, PState};
 use nvml_wrapper::enum_wrappers::device::PerformanceState;
 use nvml_wrapper::enums::device::FanControlPolicy;
 use nvoc_core::{
@@ -229,7 +229,7 @@ impl<'a> NvapiCleanupGuard<'a> {
                 SetPstateClockOffset {
                     pstate: PState::P0,
                     domain,
-                    delta_mhz: 0,
+                    delta: KilohertzDelta(0),
                 },
             ) {
                 handle_cleanup_error(
@@ -591,7 +591,7 @@ fn nvapi_pstate_zero_delta() {
             SetPstateClockOffset {
                 pstate,
                 domain,
-                delta_mhz: 0,
+                delta: KilohertzDelta(0),
             },
         ) {
             Ok(_) => {}

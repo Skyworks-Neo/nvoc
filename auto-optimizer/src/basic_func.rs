@@ -2,7 +2,7 @@ use super::cli_types::{OutputFormat, ResetSettings};
 use super::human;
 use nvoc_core::{
     Celsius, ClockDomain, CoolerPolicy, GpuSettings, GpuTarget, GpuTdpTempLimits, Kilohertz,
-    KilohertzDelta, Microvolts, PState, Percentage,
+    KilohertzDelta, Microvolts, MicrovoltsDelta, PState, Percentage,
 };
 use std::io;
 
@@ -80,7 +80,7 @@ fn apply_vfp_lock(
         VfpLockRequest::Voltage(voltage) => run_output(
             gpu,
             SetVfpVoltageLock {
-                voltage_target: nvoc_core::NvapiLockedVoltageTarget::Voltage(voltage.0 / 1000),
+                voltage_target: nvoc_core::NvapiLockedVoltageTarget::Voltage(voltage),
                 feedback,
             },
         ),
@@ -92,8 +92,8 @@ fn apply_vfp_lock(
             gpu,
             SetVfpFrequencyLock {
                 domain,
-                upper_mhz: upper.0 / 1000,
-                lower_mhz: lower.map(|v| v.0 / 1000),
+                upper,
+                lower,
             },
         ),
     }
@@ -283,9 +283,7 @@ pub fn handle_lock_vfp(
                 nvoc_core::NvapiLockedVoltageTarget::Point(point) => {
                     VfpLockRequest::VoltagePoint(point)
                 }
-                nvoc_core::NvapiLockedVoltageTarget::Voltage(v) => {
-                    VfpLockRequest::Voltage(Microvolts(v.saturating_mul(1000)))
-                }
+                nvoc_core::NvapiLockedVoltageTarget::Voltage(v) => VfpLockRequest::Voltage(v),
             };
             match apply_vfp_lock(gpu, request, false) {
                 Ok(_) => match target {
@@ -293,12 +291,15 @@ pub fn handle_lock_vfp(
                         let voltage = run_output(gpu, QueryVfpPointVoltage { point })?;
                         println!(
                             "Successfully locked GPU {} on VFP point {} ({} mV)",
-                            gpu_info.id, point, voltage
+                            gpu_info.id,
+                            point,
+                            voltage.0 / 1000
                         );
                     }
                     nvoc_core::NvapiLockedVoltageTarget::Voltage(v) => println!(
                         "Successfully applied NVAPI locked voltage {} mV to GPU {}",
-                        v, gpu_info.id
+                        v.0 / 1000,
+                        gpu_info.id
                     ),
                 },
                 Err(e) => eprintln!(
@@ -319,8 +320,8 @@ pub fn handle_lock_vfp(
                 gpu,
                 SetVfpFrequencyLock {
                     domain: ClockDomain::Graphics,
-                    upper_mhz: max_clock,
-                    lower_mhz: Some(min_clock),
+                    upper: Kilohertz(max_clock.saturating_mul(1000)),
+                    lower: Some(Kilohertz(min_clock.saturating_mul(1000))),
                 },
             ) {
                 Ok(_) => println!(
@@ -345,8 +346,8 @@ pub fn handle_lock_vfp(
                 gpu,
                 SetVfpFrequencyLock {
                     domain: ClockDomain::Memory,
-                    upper_mhz: max_clock,
-                    lower_mhz: Some(min_clock),
+                    upper: Kilohertz(max_clock.saturating_mul(1000)),
+                    lower: Some(Kilohertz(min_clock.saturating_mul(1000))),
                 },
             ) {
                 Ok(_) => println!(
@@ -499,7 +500,7 @@ pub fn single_point_adj(gpus: &[GpuTarget<'_>], matches: &ArgMatches) -> Result<
             gpu,
             SetVfpPointDelta {
                 point: point_start,
-                delta_mhz: delta_ini / 1000,
+                delta: KilohertzDelta(delta_ini),
             },
         )?;
     }
@@ -550,7 +551,7 @@ pub fn handle_pointwiseoc(gpus: &[GpuTarget<'_>], matches: &ArgMatches) -> Resul
                 gpu,
                 SetVfpPointDelta {
                     point,
-                    delta_mhz: delta / 1000,
+                    delta: KilohertzDelta(delta),
                 },
             )?;
         }
@@ -1342,7 +1343,7 @@ fn handle_nvapi(gpus: &[GpuTarget<'_>], matches: &ArgMatches) -> Result<(), Erro
                 gpu,
                 SetPstateBaseVoltage {
                     pstate: nvapi_pstate,
-                    delta_mv: delta_uv / 1000,
+                    delta_uv: MicrovoltsDelta(delta_uv),
                 },
             )?;
         }
@@ -1356,7 +1357,7 @@ fn handle_nvapi(gpus: &[GpuTarget<'_>], matches: &ArgMatches) -> Result<(), Erro
                 SetPstateClockOffset {
                     pstate: nvapi_pstate,
                     domain: ClockDomain::Graphics,
-                    delta_mhz: core_offset / 1000,
+                    delta: KilohertzDelta(core_offset),
                 },
             ) {
                 Ok(_) => println!(
@@ -1379,7 +1380,7 @@ fn handle_nvapi(gpus: &[GpuTarget<'_>], matches: &ArgMatches) -> Result<(), Erro
                 SetPstateClockOffset {
                     pstate: nvapi_pstate,
                     domain: ClockDomain::Memory,
-                    delta_mhz: mem_offset / 1000,
+                    delta: KilohertzDelta(mem_offset),
                 },
             ) {
                 Ok(_) => println!(
