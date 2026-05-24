@@ -19,7 +19,9 @@ pub struct VulkanDeviceSelection {
 pub struct VulkanImageConfig {
     pub width: u32,
     pub height: u32,
+    pub depth: u32,
     pub image_count: u32,
+    pub msaa: u32,
 }
 
 impl Default for VulkanImageConfig {
@@ -27,7 +29,9 @@ impl Default for VulkanImageConfig {
         Self {
             width: 8192,
             height: 8192,
+            depth: 100,
             image_count: 6,
+            msaa: 1,
         }
     }
 }
@@ -170,19 +174,20 @@ fn run_vulkan_stress_loop(
         let fence = device.create_fence(&fence_create_info, None)?;
 
         // ==========================================
-        // 模块：极高压内存与 ROP 占据
+        // 模块：极高压内存与 ROP 占据 (3D images + MSAA)
+        let sample_flags = vk::SampleCountFlags::from_raw(image_config.msaa);
         let image_extent = vk::Extent3D {
             width: image_config.width,
             height: image_config.height,
-            depth: 1,
+            depth: image_config.depth,
         };
         let image_create_info = vk::ImageCreateInfo::default()
-            .image_type(vk::ImageType::TYPE_2D)
-            .format(vk::Format::R8G8B8A8_UNORM)
+            .image_type(vk::ImageType::TYPE_3D)
+            .format(vk::Format::R16G16B16A16_UNORM)
             .extent(image_extent)
             .mip_levels(1)
             .array_layers(1)
-            .samples(vk::SampleCountFlags::TYPE_1)
+            .samples(sample_flags)
             .tiling(vk::ImageTiling::OPTIMAL)
             .usage(
                 vk::ImageUsageFlags::TRANSFER_SRC
@@ -192,15 +197,18 @@ fn run_vulkan_stress_loop(
             .sharing_mode(vk::SharingMode::EXCLUSIVE);
 
         let image_count = image_config.image_count as usize;
+        let msaa_on = image_config.msaa > 1;
+
         let mut images = Vec::new();
         let mut memories = Vec::new();
+        let mut resolve_images = Vec::new();
+        let mut resolve_memories = Vec::new();
 
         let mem_properties = instance.get_physical_device_memory_properties(pdevice);
 
         for _ in 0..image_count {
             let img = device.create_image(&image_create_info, None)?;
             let mem_req = device.get_image_memory_requirements(img);
-
             let mem_type_idx = (0..mem_properties.memory_type_count)
                 .find(|&i| {
                     (mem_req.memory_type_bits & (1 << i)) != 0
@@ -209,7 +217,6 @@ fn run_vulkan_stress_loop(
                             .contains(vk::MemoryPropertyFlags::DEVICE_LOCAL)
                 })
                 .ok_or("No compatible DEVICE_LOCAL Vulkan memory type found")?;
-
             let alloc_info = vk::MemoryAllocateInfo::default()
                 .allocation_size(mem_req.size)
                 .memory_type_index(mem_type_idx);
@@ -217,6 +224,36 @@ fn run_vulkan_stress_loop(
             device.bind_image_memory(img, mem, 0)?;
             images.push(img);
             memories.push(mem);
+
+            if msaa_on {
+                let rinfo = vk::ImageCreateInfo::default()
+                    .image_type(vk::ImageType::TYPE_3D)
+                    .format(vk::Format::R16G16B16A16_UNORM)
+                    .extent(image_extent)
+                    .mip_levels(1)
+                    .array_layers(1)
+                    .samples(vk::SampleCountFlags::TYPE_1)
+                    .tiling(vk::ImageTiling::OPTIMAL)
+                    .usage(vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST)
+                    .sharing_mode(vk::SharingMode::EXCLUSIVE);
+                let rimg = device.create_image(&rinfo, None)?;
+                let rreq = device.get_image_memory_requirements(rimg);
+                let rtype_idx = (0..mem_properties.memory_type_count)
+                    .find(|&i| {
+                        (rreq.memory_type_bits & (1 << i)) != 0
+                            && mem_properties.memory_types[i as usize]
+                                .property_flags
+                                .contains(vk::MemoryPropertyFlags::DEVICE_LOCAL)
+                    })
+                    .ok_or("No compatible DEVICE_LOCAL memory for resolve image")?;
+                let ralloc = vk::MemoryAllocateInfo::default()
+                    .allocation_size(rreq.size)
+                    .memory_type_index(rtype_idx);
+                let rmem = device.allocate_memory(&ralloc, None)?;
+                device.bind_image_memory(rimg, rmem, 0)?;
+                resolve_images.push(rimg);
+                resolve_memories.push(rmem);
+            }
         }
 
         // Convert layout to GENERAL
@@ -241,7 +278,24 @@ fn run_vulkan_stress_loop(
                         .image(img)
                         .subresource_range(subresource_range)
                         .src_access_mask(vk::AccessFlags::empty())
-                        .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE),
+                        .dst_access_mask(
+                            vk::AccessFlags::TRANSFER_READ | vk::AccessFlags::TRANSFER_WRITE,
+                        ),
+                );
+            }
+            for &img in &resolve_images {
+                barriers.push(
+                    vk::ImageMemoryBarrier::default()
+                        .old_layout(vk::ImageLayout::UNDEFINED)
+                        .new_layout(vk::ImageLayout::GENERAL)
+                        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .image(img)
+                        .subresource_range(subresource_range)
+                        .src_access_mask(vk::AccessFlags::empty())
+                        .dst_access_mask(
+                            vk::AccessFlags::TRANSFER_READ | vk::AccessFlags::TRANSFER_WRITE,
+                        ),
                 );
             }
             device.cmd_pipeline_barrier(
@@ -280,7 +334,7 @@ fn run_vulkan_stress_loop(
                 .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
             device.begin_command_buffer(cmd_buffer, &begin_info)?;
 
-            // Heavy work
+            // Heavy work: clear + resolve (MSAA) or clear + blit
             for _ in 0..20 {
                 let c_val: f32 = rng.random_range(0.0..1.0);
                 let clear_color = vk::ClearColorValue {
@@ -295,45 +349,70 @@ fn run_vulkan_stress_loop(
                     &[subresource_range],
                 );
 
-                let src_idx = (target_img_idx + 1) % image_count;
-                let dst_idx = (target_img_idx + 2) % image_count;
-                let blit = vk::ImageBlit::default()
-                    .src_subresource(
-                        vk::ImageSubresourceLayers::default()
-                            .aspect_mask(vk::ImageAspectFlags::COLOR)
-                            .layer_count(1),
-                    )
-                    .src_offsets([
-                        vk::Offset3D { x: 0, y: 0, z: 0 },
-                        vk::Offset3D {
-                            x: image_extent.width as i32,
-                            y: image_extent.height as i32,
-                            z: 1,
-                        },
-                    ])
-                    .dst_subresource(
-                        vk::ImageSubresourceLayers::default()
-                            .aspect_mask(vk::ImageAspectFlags::COLOR)
-                            .layer_count(1),
-                    )
-                    .dst_offsets([
-                        vk::Offset3D { x: 0, y: 0, z: 0 },
-                        vk::Offset3D {
-                            x: image_extent.width as i32,
-                            y: image_extent.height as i32,
-                            z: 1,
-                        },
-                    ]);
-
-                device.cmd_blit_image(
-                    cmd_buffer,
-                    images[src_idx],
-                    vk::ImageLayout::GENERAL,
-                    images[dst_idx],
-                    vk::ImageLayout::GENERAL,
-                    &[blit],
-                    vk::Filter::NEAREST,
-                );
+                if msaa_on {
+                    let resolve_dst_idx = (target_img_idx + 1) % image_count;
+                    let resolve = vk::ImageResolve::default()
+                        .src_subresource(
+                            vk::ImageSubresourceLayers::default()
+                                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                                .layer_count(1),
+                        )
+                        .src_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
+                        .dst_subresource(
+                            vk::ImageSubresourceLayers::default()
+                                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                                .layer_count(1),
+                        )
+                        .dst_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
+                        .extent(image_extent);
+                    device.cmd_resolve_image(
+                        cmd_buffer,
+                        images[target_img_idx],
+                        vk::ImageLayout::GENERAL,
+                        resolve_images[resolve_dst_idx],
+                        vk::ImageLayout::GENERAL,
+                        &[resolve],
+                    );
+                } else {
+                    let src_idx = (target_img_idx + 1) % image_count;
+                    let dst_idx = (target_img_idx + 2) % image_count;
+                    let blit = vk::ImageBlit::default()
+                        .src_subresource(
+                            vk::ImageSubresourceLayers::default()
+                                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                                .layer_count(1),
+                        )
+                        .src_offsets([
+                            vk::Offset3D { x: 0, y: 0, z: 0 },
+                            vk::Offset3D {
+                                x: image_extent.width as i32,
+                                y: image_extent.height as i32,
+                                z: image_extent.depth as i32,
+                            },
+                        ])
+                        .dst_subresource(
+                            vk::ImageSubresourceLayers::default()
+                                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                                .layer_count(1),
+                        )
+                        .dst_offsets([
+                            vk::Offset3D { x: 0, y: 0, z: 0 },
+                            vk::Offset3D {
+                                x: image_extent.width as i32,
+                                y: image_extent.height as i32,
+                                z: image_extent.depth as i32,
+                            },
+                        ]);
+                    device.cmd_blit_image(
+                        cmd_buffer,
+                        images[src_idx],
+                        vk::ImageLayout::GENERAL,
+                        images[dst_idx],
+                        vk::ImageLayout::GENERAL,
+                        &[blit],
+                        vk::Filter::NEAREST,
+                    );
+                }
 
                 let memory_barrier = vk::MemoryBarrier::default()
                     .src_access_mask(vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE)
@@ -393,6 +472,12 @@ fn run_vulkan_stress_loop(
             device.destroy_image(img, None);
         }
         for &mem in &memories {
+            device.free_memory(mem, None);
+        }
+        for &img in &resolve_images {
+            device.destroy_image(img, None);
+        }
+        for &mem in &resolve_memories {
             device.free_memory(mem, None);
         }
 

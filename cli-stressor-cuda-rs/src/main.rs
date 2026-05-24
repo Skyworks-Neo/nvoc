@@ -193,6 +193,14 @@ struct Args {
     #[arg(long, default_value_t = 6)]
     vulkan_image_count: u32,
 
+    /// Vulkan 3D image depth
+    #[arg(long, default_value_t = 1)]
+    vulkan_image_depth: u32,
+
+    /// MSAA sample count for Vulkan images (1 = off, use 2/4/8)
+    #[arg(long, default_value_t = 1)]
+    vulkan_image_msaa: u32,
+
     /// CUDA GPU index in PCI-bus-sorted order (0-based)
     #[arg(
         long,
@@ -251,6 +259,8 @@ struct FileConfig {
     vulkan_image_width: Option<u32>,
     vulkan_image_height: Option<u32>,
     vulkan_image_count: Option<u32>,
+    vulkan_image_depth: Option<u32>,
+    vulkan_image_msaa: Option<u32>,
 }
 
 #[cfg(feature = "cuda")]
@@ -471,6 +481,8 @@ fn parse_args_with_cli_sources() -> (Args, std::collections::HashSet<&'static st
         "vulkan_image_width",
         "vulkan_image_height",
         "vulkan_image_count",
+        "vulkan_image_depth",
+        "vulkan_image_msaa",
     ] {
         if matches.value_source(id) == Some(ValueSource::CommandLine) {
             cli_set.insert(id);
@@ -598,6 +610,18 @@ fn apply_file_config_to_args(
         parsed.vulkan_image_count,
     ) {
         args.vulkan_image_count = v;
+    }
+    if let (true, Some(v)) = (
+        !cli_set.contains("vulkan_image_depth"),
+        parsed.vulkan_image_depth,
+    ) {
+        args.vulkan_image_depth = v;
+    }
+    if let (true, Some(v)) = (
+        !cli_set.contains("vulkan_image_msaa"),
+        parsed.vulkan_image_msaa,
+    ) {
+        args.vulkan_image_msaa = v;
     }
     Ok(())
 }
@@ -945,7 +969,9 @@ fn main() {
             let image_config = VulkanImageConfig {
                 width: args.vulkan_image_width,
                 height: args.vulkan_image_height,
+                depth: args.vulkan_image_depth,
                 image_count: args.vulkan_image_count,
+                msaa: args.vulkan_image_msaa,
             };
             std::process::exit(run_vulkan_for_duration(args.duration, image_config));
         }
@@ -1204,8 +1230,12 @@ fn main() {
         println!(
             "{}",
             stylize_config(&format!(
-                "  Vulkan image: {}x{} x{} images",
-                args.vulkan_image_width, args.vulkan_image_height, args.vulkan_image_count
+                "  Vulkan image: {}x{}x{} x{} ({}x MSAA)",
+                args.vulkan_image_width,
+                args.vulkan_image_height,
+                args.vulkan_image_depth,
+                args.vulkan_image_count,
+                args.vulkan_image_msaa,
             ))
         );
     }
@@ -1222,7 +1252,9 @@ fn main() {
             let image_config = VulkanImageConfig {
                 width: args.vulkan_image_width,
                 height: args.vulkan_image_height,
+                depth: args.vulkan_image_depth,
                 image_count: args.vulkan_image_count,
+                msaa: args.vulkan_image_msaa,
             };
             let selection = VulkanDeviceSelection {
                 cuda_uuid: identity.uuid,
@@ -1311,7 +1343,9 @@ fn main() {
         let image_config = VulkanImageConfig {
             width: args.vulkan_image_width,
             height: args.vulkan_image_height,
+            depth: args.vulkan_image_depth,
             image_count: args.vulkan_image_count,
+            msaa: args.vulkan_image_msaa,
         };
         std::process::exit(run_vulkan_for_duration(args.duration, image_config));
     }

@@ -382,7 +382,7 @@ mod pressure_runner {
                     test_initialization(gpu, cfg);
 
                     loop {
-                        if last_fluctuation.elapsed() >= Duration::from_millis(1500) {
+                        if last_fluctuation.elapsed() >= Duration::from_millis(1) {
                             in_test_check_number += 1;
                             fluctuation_h_l_flag =
                                 apply_fluctuation(gpu, cfg, fluctuation_h_l_flag);
@@ -1329,7 +1329,7 @@ fn run_gpuboostv3_short_phase<V: std::fmt::Display + Copy>(
             run_output(
                 gpu,
                 ResetVfpDeltas {
-                    domain: VfpResetDomain::All,
+                    domain: VfpResetDomain::Core,
                 },
             )?;
             println!(
@@ -1468,7 +1468,7 @@ fn run_gpuboostv3_long_phase<V: std::fmt::Display + Copy>(
             run_output(
                 gpu,
                 ResetVfpDeltas {
-                    domain: VfpResetDomain::All,
+                    domain: VfpResetDomain::Core,
                 },
             )?;
             println!(
