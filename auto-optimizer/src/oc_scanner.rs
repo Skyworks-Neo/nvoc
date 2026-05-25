@@ -649,7 +649,7 @@ mod pressure_runner {
                             last_fluctuation = Instant::now();
                         }
 
-                        sleep(Duration::from_secs(1));
+                        sleep(Duration::from_millis(500));
 
                         match process.try_wait() {
                             Ok(Some(status)) => {
