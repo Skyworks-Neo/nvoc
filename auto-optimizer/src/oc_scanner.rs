@@ -30,7 +30,6 @@ use std::thread::JoinHandle;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
-#[cfg(windows)]
 use std::time::SystemTime;
 
 // use standard println!/eprintln!; do not route prints through progressbar helper
@@ -300,6 +299,68 @@ mod pressure_runner {
             let count = parts.next()?.parse::<usize>().ok()?;
             counts.push((id, count));
         }
+        Some(counts)
+    }
+
+    #[cfg(not(windows))]
+    fn count_linux_gpu_xid_events_by_time(
+        start: SystemTime,
+        end: SystemTime,
+    ) -> Option<Vec<(u32, usize)>> {
+        use std::time::UNIX_EPOCH;
+
+        let start_epoch = start.duration_since(UNIX_EPOCH).ok()?.as_secs();
+        let end_epoch = end.duration_since(UNIX_EPOCH).ok()?.as_secs();
+
+        let output = Command::new("dmesg")
+            .args([
+                "--since",
+                &format!("@{start_epoch}"),
+                "--until",
+                &format!("@{end_epoch}"),
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .ok()?;
+
+        if !output.status.success() {
+            eprintln!(
+                "Warning: Failed to query dmesg (time range {} → {}): {}",
+                start_epoch,
+                end_epoch,
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return None;
+        }
+
+        let output_text = String::from_utf8_lossy(&output.stdout);
+        let mut counts: Vec<(u32, usize)> = Vec::new();
+
+        for line in output_text.lines() {
+            if !line.contains("NVRM: Xid") {
+                continue;
+            }
+            let xid: u32 = if let Some(pos) = line.find("): ") {
+                let after = &line[pos + 3..];
+                let num_end = after
+                    .find(|c: char| !c.is_ascii_digit())
+                    .unwrap_or(after.len());
+                match after[..num_end].parse() {
+                    Ok(n) => n,
+                    Err(_) => continue,
+                }
+            } else {
+                continue;
+            };
+
+            if let Some(existing) = counts.iter_mut().find(|(id, _)| *id == xid) {
+                existing.1 += 1;
+            } else {
+                counts.push((xid, 1));
+            }
+        }
+
         Some(counts)
     }
 
