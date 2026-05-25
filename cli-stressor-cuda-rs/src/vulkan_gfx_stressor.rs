@@ -29,7 +29,7 @@ impl Default for VulkanImageConfig {
         Self {
             width: 8192,
             height: 8192,
-            depth: 100,
+            depth: 1,
             image_count: 6,
             msaa: 1,
         }

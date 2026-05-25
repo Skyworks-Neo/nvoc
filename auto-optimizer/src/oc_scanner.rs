@@ -228,6 +228,19 @@ mod pressure_runner {
     }
 
     fn force_kill_process(process: &mut Child, reason: &str) {
+        // On Windows the stressor is typically launched via a .bat wrapper
+        // which spawns the real executable as a child.  taskkill /T ensures
+        // the entire process tree is terminated.
+        #[cfg(windows)]
+        {
+            let pid = process.id();
+            let _ = Command::new("taskkill")
+                .args(["/F", "/T", "/PID", &pid.to_string()])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+
         match process.kill() {
             Ok(_) => {
                 let _ = process.wait();
@@ -255,31 +268,44 @@ mod pressure_runner {
     }
 
     #[cfg(windows)]
-    fn count_windows_gpu_error_events_by_id(
+    #[derive(Debug, Clone)]
+    #[allow(dead_code)]
+    struct WindowsGpuEvent {
+        event_id: u32,
+        /// Raw GPUID from event message (matches `GpuId.0` which = pci_bus * 256).
+        /// `None` for system-wide events (e.g. `\Device\Video3`) that carry no GPUID.
+        gpu_bus_id: Option<u32>,
+        /// True when the event message contains Graphics FECS Exception.
+        is_fecs: bool,
+        /// True when the event message contains Restarting TDR or Reset TDR.
+        is_tdr: bool,
+    }
+
+    #[cfg(windows)]
+    fn query_windows_gpu_events(
         start: SystemTime,
         end: SystemTime,
-    ) -> Option<Vec<(u32, usize)>> {
+    ) -> Option<Vec<WindowsGpuEvent>> {
         use std::time::UNIX_EPOCH;
 
         let start_ms = start.duration_since(UNIX_EPOCH).ok()?.as_millis();
         let end_ms = end.duration_since(UNIX_EPOCH).ok()?.as_millis();
 
-        let script = format!(
-            "$start=[DateTimeOffset]::FromUnixTimeMilliseconds({start_ms}).LocalDateTime; \
-             $end=[DateTimeOffset]::FromUnixTimeMilliseconds({end_ms}).LocalDateTime; \
-             $ids=@(153,13,4101,10110,10111); \
-             $logs=@('System','Microsoft-Windows-DriverFrameworks-UserMode/Operational'); \
-             foreach($id in $ids){{ \
-                 $idCount=0; \
-                 foreach($log in $logs){{ \
-                     try {{ $idCount += @(Get-WinEvent -FilterHashtable @{{LogName=$log;Id=$id;StartTime=$start;EndTime=$end}} -ErrorAction Stop).Count }} catch {{}} \
-                 }}; \
-                 Write-Output ($id.ToString() + '=' + $idCount.ToString()) \
-             }}"
-        );
+        let script_path = "./test/windows_gpu_event_query.ps1";
 
         let output = Command::new("powershell")
-            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                script_path,
+                "-StartMs",
+                &start_ms.to_string(),
+                "-EndMs",
+                &end_ms.to_string(),
+            ])
             .output()
             .ok()?;
 
@@ -292,14 +318,30 @@ mod pressure_runner {
         }
 
         let output_text = String::from_utf8_lossy(&output.stdout);
-        let mut counts = Vec::new();
+        let mut events = Vec::new();
         for line in output_text.lines() {
-            let mut parts = line.trim().split('=');
-            let id = parts.next()?.parse::<u32>().ok()?;
-            let count = parts.next()?.parse::<usize>().ok()?;
-            counts.push((id, count));
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let mut parts = line.splitn(5, '|');
+            let event_id = parts.next()?.parse::<u32>().ok()?;
+            let gpu_bus_str = parts.next()?;
+            let gpu_bus_id = if gpu_bus_str.is_empty() {
+                None
+            } else {
+                gpu_bus_str.parse::<u32>().ok()
+            };
+            let is_fecs = parts.next() == Some("1");
+            let is_tdr = parts.next() == Some("1");
+            events.push(WindowsGpuEvent {
+                event_id,
+                gpu_bus_id,
+                is_fecs,
+                is_tdr,
+            });
         }
-        Some(counts)
+        Some(events)
     }
 
     #[cfg(not(windows))]
@@ -418,7 +460,16 @@ mod pressure_runner {
                     }
 
                     #[cfg(windows)]
+                    let event_baseline = query_windows_gpu_events(
+                        SystemTime::now() - Duration::from_secs(30),
+                        SystemTime::now(),
+                    );
+                    #[cfg(windows)]
                     let event_window_start = SystemTime::now();
+                    #[cfg(windows)]
+                    let mut last_event_poll = Instant::now();
+                    #[cfg(windows)]
+                    let poll_interval = Duration::from_secs(3);
 
                     let test_start_at = Instant::now();
                     let mut last_fluctuation = Instant::now();
@@ -614,6 +665,45 @@ mod pressure_runner {
                             }
                         }
 
+                        #[cfg(windows)]
+                        if last_event_poll.elapsed() >= poll_interval {
+                            last_event_poll = Instant::now();
+                            let now = SystemTime::now();
+                            if let Some(current_events) =
+                                query_windows_gpu_events(event_window_start, now)
+                            {
+                                let target_id = cfg.target_gpu_id;
+                                let matches_target = |evt: &&WindowsGpuEvent| {
+                                    evt.gpu_bus_id.map_or(true, |id| id == target_id)
+                                };
+                                let current_target_count = current_events
+                                    .iter()
+                                    .filter(|e| matches_target(e))
+                                    .count();
+                                if current_target_count > 0 {
+                                    let fecs_count = current_events
+                                        .iter()
+                                        .filter(|e| matches_target(e) && e.is_fecs)
+                                        .count();
+                                    let tdr_count = current_events
+                                        .iter()
+                                        .filter(|e| matches_target(e) && e.is_tdr)
+                                        .count();
+                                    eprintln!(
+                                        "CRITICAL: Detected {} GPU event(s) for target GPU during test (FECS: {}, TDR: {}). Killing stressor.",
+                                        current_target_count, fecs_count, tdr_count
+                                    );
+                                    force_kill_process(
+                                        &mut process,
+                                        "GPU event detected during test",
+                                    );
+                                    exit_code = 1;
+                                    pnp_recover_gpu(gpu);
+                                    break;
+                                }
+                            }
+                        }
+
                         if test_start_at.elapsed() >= Duration::from_secs(timeout_budget_secs) {
                             progress_print(
                                 cfg.progress,
@@ -651,7 +741,7 @@ mod pressure_runner {
                     #[cfg(windows)]
                     let windows_event_counts = {
                         let event_window_end = SystemTime::now();
-                        count_windows_gpu_error_events_by_id(event_window_start, event_window_end)
+                        query_windows_gpu_events(event_window_start, event_window_end)
                     };
 
                     if exit_code == 0 {
@@ -674,24 +764,70 @@ mod pressure_runner {
                     #[cfg(windows)]
                     {
                         match windows_event_counts {
-                            Some(id_counts) => {
-                                let total_hits: usize = id_counts.iter().map(|(_, c)| *c).sum();
-                                if total_hits > 0 {
+                            Some(detailed_events) => {
+                                let target_id = cfg.target_gpu_id;
+                                let matches_target = |evt: &&WindowsGpuEvent| {
+                                    evt.gpu_bus_id.map_or(true, |id| id == target_id)
+                                };
+
+                                let fecs_count = detailed_events
+                                    .iter()
+                                    .filter(|e| matches_target(e) && e.is_fecs)
+                                    .count();
+                                let tdr_count = detailed_events
+                                    .iter()
+                                    .filter(|e| matches_target(e) && e.is_tdr)
+                                    .count();
+
+                                if fecs_count > 3 {
                                     eprintln!(
-                                        "Detected {} Windows GPU/driver-related event(s) during pressure test:",
-                                        total_hits
+                                        "Detected {} FECS exception(s) for target GPU (>3 threshold) during pressure test.",
+                                        fecs_count
                                     );
-                                    for (id, count) in id_counts {
-                                        if count > 0 {
-                                            eprintln!("  Event ID {}: {}", id, count);
-                                        }
-                                    }
-                                    if exit_code == 0 {
-                                        eprintln!(
-                                            "Marking this run as failed due to Windows event log hits."
-                                        );
-                                        exit_code = 1;
-                                    }
+                                    exit_code = 1;
+                                }
+
+                                if tdr_count > 6 {
+                                    eprintln!(
+                                        "Detected {} TDR events for target GPU (>6 threshold) during pressure test.",
+                                        tdr_count
+                                    );
+                                    exit_code = 1;
+                                }
+
+                                // For non-FECS / non-TDR events: differential check against baseline
+                                let other_target = detailed_events
+                                    .iter()
+                                    .filter(|e| matches_target(e) && !e.is_fecs && !e.is_tdr)
+                                    .count();
+                                let baseline_other = event_baseline
+                                    .as_ref()
+                                    .map(|bl| {
+                                        bl.iter()
+                                            .filter(|e| matches_target(e) && !e.is_fecs && !e.is_tdr)
+                                            .count()
+                                    })
+                                    .unwrap_or(0);
+                                let new_other = other_target.saturating_sub(baseline_other);
+                                if new_other > 0 && exit_code == 0 {
+                                    eprintln!(
+                                        "Detected {} new non-critical Windows event(s) for target GPU.",
+                                        new_other
+                                    );
+                                    exit_code = 1;
+                                }
+
+                                // Log summary
+                                let total_relevant = detailed_events
+                                    .iter()
+                                    .filter(|e| matches_target(e))
+                                    .count();
+                                if total_relevant > 0 {
+                                    eprintln!(
+                                        "Event summary for target GPU: {} total, {} FECS, {} TDR, {} other",
+                                        total_relevant, fecs_count, tdr_count,
+                                        total_relevant - fecs_count - tdr_count
+                                    );
                                 }
                             }
                             None => {
@@ -736,6 +872,55 @@ mod pressure_runner {
     }
 }
 
+#[cfg(windows)]
+fn pnp_recover_gpu(gpu: &GpuTarget<'_>) -> bool {
+    let pci_bus = gpu.id.pci_bus();
+
+    let script_path = "./test/windows_oc_pnp_recover.ps1";
+    eprintln!(
+        "pnp_recover: Triggering PnP disable/enable cycle for GPU at PCI bus {} (GpuId: {})...",
+        pci_bus, gpu.id.0
+    );
+
+    let output = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            script_path,
+            "-TargetPciBus",
+            &pci_bus.to_string(),
+        ])
+        .output();
+
+    match output {
+        Ok(out) => {
+            if out.status.success() {
+                eprintln!("pnp_recover: PnP cycle completed successfully.");
+                eprintln!(
+                    "stdout: {}",
+                    String::from_utf8_lossy(&out.stdout).trim()
+                );
+                // Wait for GPU to re-appear in NVML
+                sleep(Duration::from_secs(10));
+                true
+            } else {
+                eprintln!(
+                    "pnp_recover: PnP cycle failed: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                false
+            }
+        }
+        Err(e) => {
+            eprintln!("pnp_recover: Failed to launch recovery script: {e}");
+            false
+        }
+    }
+}
+
 // Private config bundle for test pressure runs. Kept private to this module and
 // not exported to parent modules.
 struct TestPressureConfig<'a> {
@@ -757,6 +942,8 @@ struct TestPressureConfig<'a> {
     cuda_device: Option<u32>,
     /// Extra arguments appended verbatim to the stressor command.
     stressor_extra_args: &'a [String],
+    /// GpuId.0 value of the GPU under test (used for event-log GPU filtering).
+    target_gpu_id: u32,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -797,6 +984,7 @@ fn test_pressure(
         progress,
         cuda_device,
         stressor_extra_args,
+        target_gpu_id: gpu.id.0,
     };
 
     pressure_runner::run(gpu, matches, &cfg)
@@ -1014,11 +1202,6 @@ fn run_legacy_short_phase(
         test_num += 1;
         *test_code += 1;
 
-        println!(
-            "current test progress estimated: {:.2}%",
-            (test_num + *test_code - 1) as f64 / (args.freq_step_exp + *test_code - 1) as f64
-                * 100.0
-        );
         println!("current test num: {}", test_num);
 
         write!(
@@ -1343,12 +1526,6 @@ fn run_gpuboostv3_short_phase<V: std::fmt::Display + Copy>(
             }
         }
 
-        println!(
-            "current test progress estimated:{:.2}%",
-            (test_num + test_code - 1) as f64 / (args.freq_step_exp + test_code - 1) as f64 * 100.
-        );
-        println!("current test num: {}", test_num);
-
         log_point_test_header(
             l,
             test_code,
@@ -1622,12 +1799,6 @@ fn run_mem_oc_phase<V: std::fmt::Display + Copy>(
         mem_test_num += 1;
         mem_test_code += 1;
 
-        println!(
-            "current test progress estimated:{:.2}%",
-            (mem_test_num + mem_test_code - 1) as f64
-                / (args.mem_freq_step_exp + mem_test_code - 1).max(1) as f64
-                * 100.0
-        );
         println!("current test num: {}", mem_test_num);
 
         log_point_test_header(
