@@ -128,7 +128,7 @@ struct Args {
     #[arg(long, default_value_t = 6)]
     burst_iters: u32,
 
-    #[arg(long, default_value_t = 10.0)]
+    #[arg(long, default_value_t = 5.0)]
     validate_interval: f64,
 
     #[arg(long, default_value_t = 1024)]
