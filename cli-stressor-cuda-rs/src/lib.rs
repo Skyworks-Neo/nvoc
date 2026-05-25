@@ -3,6 +3,8 @@ use rand::rngs::StdRng;
 use rand::seq::IndexedRandom;
 use rand::{Rng, SeedableRng};
 use rand_distr::StandardNormal;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 macro_rules! println {
@@ -787,6 +789,7 @@ pub fn run_stress_for_precision<B: Backend>(
     backend: &mut B,
     spec: PrecisionSpec,
     config: StressRunConfig<'_>,
+    abort_flag: Option<Arc<AtomicBool>>,
 ) -> StressResult {
     let mut result = StressResult {
         precision: spec.name.to_string(),
@@ -844,6 +847,15 @@ pub fn run_stress_for_precision<B: Backend>(
     };
 
     while start.elapsed().as_secs_f64() < config.duration_s {
+        if let Some(ref flag) = abort_flag
+            && flag.load(Ordering::SeqCst)
+        {
+            eprintln!(
+                "[ABORT] abort flag set, stopping stress for precision {}",
+                spec.name
+            );
+            break;
+        }
         let kernel_kind = choose_kernel_type(config.kernel_mixture, &mut rng);
         let params = resolve_kernel_params(kernel_kind, &effective_config);
         let op_spec = if let Some(specs) = &params.precisions {
@@ -962,6 +974,7 @@ pub fn run_stress_mixed<B: Backend>(
     backend: &mut B,
     precisions: &[PrecisionSpec],
     config: StressRunConfig<'_>,
+    abort_flag: Option<Arc<AtomicBool>>,
 ) -> Vec<StressResult> {
     use std::collections::HashMap;
 
@@ -1040,6 +1053,12 @@ pub fn run_stress_mixed<B: Backend>(
     };
 
     while start.elapsed().as_secs_f64() < config.duration_s {
+        if let Some(ref flag) = abort_flag
+            && flag.load(Ordering::SeqCst)
+        {
+            eprintln!("[ABORT] abort flag set, stopping mixed-kernel stress.");
+            break;
+        }
         let kernel_kind = choose_kernel_type(config.kernel_mixture, &mut rng);
         let params = resolve_kernel_params(kernel_kind, &effective_config);
         let op_spec = if let Some(mixture) = &params.precision_mixture {

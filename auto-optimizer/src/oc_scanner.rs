@@ -676,10 +676,8 @@ mod pressure_runner {
                                 let matches_target = |evt: &&WindowsGpuEvent| {
                                     evt.gpu_bus_id.map_or(true, |id| id == target_id)
                                 };
-                                let current_target_count = current_events
-                                    .iter()
-                                    .filter(|e| matches_target(e))
-                                    .count();
+                                let current_target_count =
+                                    current_events.iter().filter(|e| matches_target(e)).count();
                                 if current_target_count > 0 {
                                     let fecs_count = current_events
                                         .iter()
@@ -804,7 +802,9 @@ mod pressure_runner {
                                     .as_ref()
                                     .map(|bl| {
                                         bl.iter()
-                                            .filter(|e| matches_target(e) && !e.is_fecs && !e.is_tdr)
+                                            .filter(|e| {
+                                                matches_target(e) && !e.is_fecs && !e.is_tdr
+                                            })
                                             .count()
                                     })
                                     .unwrap_or(0);
@@ -818,14 +818,14 @@ mod pressure_runner {
                                 }
 
                                 // Log summary
-                                let total_relevant = detailed_events
-                                    .iter()
-                                    .filter(|e| matches_target(e))
-                                    .count();
+                                let total_relevant =
+                                    detailed_events.iter().filter(|e| matches_target(e)).count();
                                 if total_relevant > 0 {
                                     eprintln!(
                                         "Event summary for target GPU: {} total, {} FECS, {} TDR, {} other",
-                                        total_relevant, fecs_count, tdr_count,
+                                        total_relevant,
+                                        fecs_count,
+                                        tdr_count,
                                         total_relevant - fecs_count - tdr_count
                                     );
                                 }
@@ -899,10 +899,7 @@ fn pnp_recover_gpu(gpu: &GpuTarget<'_>) -> bool {
         Ok(out) => {
             if out.status.success() {
                 eprintln!("pnp_recover: PnP cycle completed successfully.");
-                eprintln!(
-                    "stdout: {}",
-                    String::from_utf8_lossy(&out.stdout).trim()
-                );
+                eprintln!("stdout: {}", String::from_utf8_lossy(&out.stdout).trim());
                 // Wait for GPU to re-appear in NVML
                 sleep(Duration::from_secs(10));
                 true
@@ -1472,7 +1469,7 @@ fn run_gpuboostv3_short_phase<V: std::fmt::Display + Copy>(
             Some(*init_core_oc_value - args.common.minimum_delta_core_freq_step),
         )?;
 
-        let mut attempt = 0;
+        let mut attempt: i32 = 0;
         let max_attempts = 10;
 
         while attempt < max_attempts {
@@ -1487,12 +1484,24 @@ fn run_gpuboostv3_short_phase<V: std::fmt::Display + Copy>(
                 Some(*init_core_oc_value - args.common.minimum_delta_core_freq_step),
             )?;
 
+            // After PnP reset the voltage lock is lost — re-lock at the target point
+            if let Ok(locked_v) = run_output(gpu, QueryVfpPointVoltage { point }) {
+                let _ = run_output(
+                    gpu,
+                    SetVfpVoltageLock {
+                        voltage_target: NvapiLockedVoltageTarget::Voltage(locked_v),
+                        feedback: false,
+                    },
+                );
+            }
+
             if pre_load_vf_recheck(gpu, point) {
                 println!("V/F recheck passed on attempt {attempt}");
                 break;
             } else {
                 eprintln!("Retrying set_nvapi_vfp_curve_delta... (attempt {attempt})");
-                sleep(Duration::from_millis(500));
+                let wait_secs = 2u64.saturating_pow(attempt.saturating_sub(1).min(6) as u32);
+                sleep(Duration::from_secs(wait_secs));
             }
 
             if attempt == max_attempts {
@@ -1642,7 +1651,7 @@ fn run_gpuboostv3_long_phase<V: std::fmt::Display + Copy>(
     writeln!(l, "Initiating Long Test...")?;
 
     loop {
-        let mut attempt = 0;
+        let mut attempt: i32 = 0;
         let max_attempts = 5;
 
         while attempt < max_attempts {
@@ -1657,12 +1666,24 @@ fn run_gpuboostv3_long_phase<V: std::fmt::Display + Copy>(
                 Some(*init_core_oc_value - args.common.minimum_delta_core_freq_step),
             )?;
 
+            // After PnP reset the voltage lock is lost — re-lock at the target point
+            if let Ok(locked_v) = run_output(gpu, QueryVfpPointVoltage { point }) {
+                let _ = run_output(
+                    gpu,
+                    SetVfpVoltageLock {
+                        voltage_target: NvapiLockedVoltageTarget::Voltage(locked_v),
+                        feedback: false,
+                    },
+                );
+            }
+
             if pre_load_vf_recheck(gpu, point) {
                 println!("V/F recheck passed on attempt {attempt}");
                 break;
             } else {
                 eprintln!("Retrying set_nvapi_vfp_curve_delta... (attempt {attempt})");
-                sleep(Duration::from_millis(500));
+                let wait_secs = 2u64.saturating_pow(attempt.saturating_sub(1).min(6) as u32);
+                sleep(Duration::from_secs(wait_secs));
             }
 
             if attempt == max_attempts {

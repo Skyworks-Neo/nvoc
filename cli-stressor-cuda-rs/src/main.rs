@@ -1278,6 +1278,11 @@ fn main() {
         }
     }
 
+    #[cfg(feature = "vulkan")]
+    let vulkan_abort = vulkan_engine.as_ref().map(|eng| eng.get_error_flag_arc());
+    #[cfg(not(feature = "vulkan"))]
+    let vulkan_abort: Option<std::sync::Arc<std::sync::atomic::AtomicBool>> = None;
+
     let results = run_stress_mixed(
         &mut backend,
         &filtered,
@@ -1296,6 +1301,7 @@ fn main() {
             stream_mode,
             kernel_param_overrides: &kernel_param_overrides,
         },
+        vulkan_abort,
     );
 
     for res in &results {
