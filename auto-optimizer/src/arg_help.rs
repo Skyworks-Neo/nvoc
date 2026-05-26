@@ -378,7 +378,8 @@ pub fn get_arguments() -> Command {
                                 .num_args(1)
                                 .allow_hyphen_values(true)
                                 .value_parser(clap::value_parser!(i32).range(-5_000..=5_000))
-                                .help("Core clock offset via NVML API (MHz, ±5000)."),
+                                .conflicts_with("clock_offset")
+                                .help("Core clock offset via NVML API (MHz, ±5000). Alias for --clock-offset graphics:OFFSET."),
                         )
                         .arg(
                             Arg::new("mem_offset")
@@ -387,7 +388,17 @@ pub fn get_arguments() -> Command {
                                 .num_args(1)
                                 .allow_hyphen_values(true)
                                 .value_parser(clap::value_parser!(i32).range(-5_000..=5_000))
-                                .help("Memory clock offset via NVML API (MHz, ±5000). Note: target effective offset, handled behind the scene as *2."),
+                                .conflicts_with("clock_offset")
+                                .help("Memory clock offset via NVML API (MHz, ±5000). Alias for --clock-offset memory:OFFSET. Note: target effective offset, handled behind the scene as *2."),
+                        )
+                        .arg(
+                            Arg::new("clock_offset")
+                                .long("clock-offset")
+                                .value_name("DOMAIN:OFFSET")
+                                .num_args(1)
+                                .allow_hyphen_values(true)
+                                .conflicts_with_all(["core_offset", "mem_offset"])
+                                .help("Clock offset for any domain via NVML API. Format: DOMAIN:OFFSET_MHZ. Domains: graphics, memory, processor, video. Example: --clock-offset graphics:150, --clock-offset memory:500"),
                         )
                         // NVML thermal threshold write args are intentionally commented out for now.
                         .arg(

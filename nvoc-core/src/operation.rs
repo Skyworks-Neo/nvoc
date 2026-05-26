@@ -13,6 +13,19 @@ use nvapi_hi::{
     SensorThrottle, VfPoint,
 };
 use nvml_wrapper::enum_wrappers::device::PerformanceState;
+
+fn nvapi_clock_domain_to_nvml(
+    domain: ClockDomain,
+) -> Option<nvml_wrapper::enum_wrappers::device::Clock> {
+    use nvml_wrapper::enum_wrappers::device::Clock;
+    match domain {
+        ClockDomain::Graphics => Some(Clock::Graphics),
+        ClockDomain::Memory => Some(Clock::Memory),
+        ClockDomain::Processor => Some(Clock::SM),
+        ClockDomain::Video => Some(Clock::Video),
+        _ => None,
+    }
+}
 use nvml_wrapper::enums::device::FanControlPolicy;
 
 pub trait GpuOperation {
@@ -309,25 +322,19 @@ impl GpuOperation for QueryClockOffset {
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
         let nvml = target.nvml()?;
-        let mhz = match self.domain {
-            ClockDomain::Graphics => {
-                low_nvml::get_nvml_core_clock_vf_offset(nvml, target.id.0, self.pstate)
-            }
-            ClockDomain::Memory => {
-                low_nvml::get_nvml_mem_clock_vf_offset(nvml, target.id.0, self.pstate)
-            }
-            _ => {
-                return Err(Error::from(
-                    "NVML clock offset domain must be Graphics or Memory",
-                ));
-            }
-        }
-        .ok_or_else(|| {
+        let clock = nvapi_clock_domain_to_nvml(self.domain).ok_or_else(|| {
             Error::Custom(format!(
-                "failed to query NVML clock offset for GPU {}",
-                target.id.0
+                "NVML clock offset does not support domain {:?}",
+                self.domain
             ))
         })?;
+        let mhz = low_nvml::get_nvml_clock_offset(nvml, target.id.0, clock, self.pstate)
+            .ok_or_else(|| {
+                Error::Custom(format!(
+                    "failed to query NVML clock offset for GPU {}",
+                    target.id.0
+                ))
+            })?;
         Ok(ClockOffset { mhz })
     }
 }
@@ -348,19 +355,13 @@ impl GpuOperation for SetClockOffset {
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
         let nvml = target.nvml()?;
-        match self.domain {
-            ClockDomain::Graphics => {
-                low_nvml::set_nvml_core_clock_vf_offset(nvml, target.id.0, self.mhz, self.pstate)?
-            }
-            ClockDomain::Memory => {
-                low_nvml::set_nvml_mem_clock_vf_offset(nvml, target.id.0, self.mhz, self.pstate)?
-            }
-            _ => {
-                return Err(Error::from(
-                    "NVML clock offset domain must be Graphics or Memory",
-                ));
-            }
-        }
+        let clock = nvapi_clock_domain_to_nvml(self.domain).ok_or_else(|| {
+            Error::Custom(format!(
+                "NVML clock offset does not support domain {:?}",
+                self.domain
+            ))
+        })?;
+        low_nvml::set_nvml_clock_offset(nvml, target.id.0, clock, self.pstate, self.mhz)?;
         Ok(AppliedValue {
             requested: self.mhz,
             applied: self.mhz,

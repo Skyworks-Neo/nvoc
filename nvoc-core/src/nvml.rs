@@ -89,62 +89,44 @@ pub fn set_nvml_power_limit(nvml: &Nvml, gpu_id: u32, limit_w: u32) -> Result<()
 // Clock offset get/set
 // ---------------------------------------------------------------------------
 
-pub fn get_nvml_core_clock_vf_offset(
+/// Scale factor for NVML memory clock offsets (GDDR historical reason:
+/// NVML reports/expects double the actual frequency).
+const MEM_CLOCK_OFFSET_SCALE: i32 = 2;
+
+/// Map a NVML `Clock` domain to the offset scale factor.
+fn clock_offset_scale(clock: nvml_wrapper::enum_wrappers::device::Clock) -> i32 {
+    match clock {
+        nvml_wrapper::enum_wrappers::device::Clock::Memory => MEM_CLOCK_OFFSET_SCALE,
+        _ => 1,
+    }
+}
+
+pub fn get_nvml_clock_offset(
     nvml: &Nvml,
     gpu_id: u32,
+    clock: nvml_wrapper::enum_wrappers::device::Clock,
     pstate: PerformanceState,
 ) -> Option<i32> {
     let device = find_nvml_device(nvml, gpu_id)?;
+    let scale = clock_offset_scale(clock);
     device
-        .clock_offset(nvml_wrapper::enum_wrappers::device::Clock::Graphics, pstate)
+        .clock_offset(clock, pstate)
         .ok()
-        .map(|o| o.clock_offset_mhz)
+        .map(|o| o.clock_offset_mhz / scale)
 }
 
-pub fn set_nvml_core_clock_vf_offset(
+pub fn set_nvml_clock_offset(
     nvml: &Nvml,
     gpu_id: u32,
-    offset: i32,
+    clock: nvml_wrapper::enum_wrappers::device::Clock,
     pstate: PerformanceState,
+    offset: i32,
 ) -> Result<(), Error> {
     let mut device = find_nvml_device_err(nvml, gpu_id)?;
+    let scale = clock_offset_scale(clock);
     device
-        .set_clock_offset(
-            nvml_wrapper::enum_wrappers::device::Clock::Graphics,
-            pstate,
-            offset,
-        )
-        .map_err(|e| Error::Custom(format!("NVML Set Core Clock VF Offset Error: {:?}", e)))
-}
-
-pub fn get_nvml_mem_clock_vf_offset(
-    nvml: &Nvml,
-    gpu_id: u32,
-    pstate: PerformanceState,
-) -> Option<i32> {
-    let device = find_nvml_device(nvml, gpu_id)?;
-    // NVML reports memory clock offset as double the actual frequency (GDDR historical reason).
-    device
-        .clock_offset(nvml_wrapper::enum_wrappers::device::Clock::Memory, pstate)
-        .ok()
-        .map(|o| o.clock_offset_mhz / 2)
-}
-
-pub fn set_nvml_mem_clock_vf_offset(
-    nvml: &Nvml,
-    gpu_id: u32,
-    offset: i32,
-    pstate: PerformanceState,
-) -> Result<(), Error> {
-    let mut device = find_nvml_device_err(nvml, gpu_id)?;
-    // NVML expects memory clock offset as double the actual target (GDDR historical reason).
-    device
-        .set_clock_offset(
-            nvml_wrapper::enum_wrappers::device::Clock::Memory,
-            pstate,
-            offset.saturating_mul(2),
-        )
-        .map_err(|e| Error::Custom(format!("NVML Set Mem Clock Offset Error: {:?}", e)))
+        .set_clock_offset(clock, pstate, offset.saturating_mul(scale))
+        .map_err(|e| Error::Custom(format!("NVML Set Clock Offset Error: {:?}", e)))
 }
 
 // ---------------------------------------------------------------------------

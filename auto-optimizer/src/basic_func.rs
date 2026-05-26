@@ -1654,6 +1654,38 @@ pub fn handle_nvml(gpus: &[GpuTarget<'_>], matches: &ArgMatches) -> Result<(), E
         }
     }
 
+    if let Some(clock_offset_raw) = matches.get_one::<String>("clock_offset") {
+        let (domain_str, offset_str) = clock_offset_raw.split_once(':').ok_or_else(|| {
+            Error::Custom("--clock-offset format: DOMAIN:OFFSET (e.g. graphics:150)".into())
+        })?;
+        let domain = nvoc_core::ConvertEnum::from_str(domain_str)?;
+        let offset: i32 = offset_str.parse().map_err(|_| {
+            Error::Custom(format!(
+                "invalid offset '{}', expected integer MHz",
+                offset_str
+            ))
+        })?;
+        for gpu in gpus {
+            match run(
+                gpu,
+                SetClockOffset {
+                    domain,
+                    pstate: target_nvml_pstate,
+                    mhz: offset,
+                },
+            ) {
+                Ok(_) => println!(
+                    "Successfully applied NVML {} offset {} MHz to GPU {} for PState {}",
+                    domain_str, offset, gpu.id.0, nvml_pstate_val
+                ),
+                Err(e) => eprintln!(
+                    "Failed to set NVML {} offset for GPU {}: {:?}",
+                    domain_str, gpu.id.0, e
+                ),
+            }
+        }
+    }
+
     if let Some(&power_w) = matches.get_one::<u32>("power_limit") {
         for gpu in gpus {
             match run(gpu, SetPowerLimit { watts: power_w }) {
