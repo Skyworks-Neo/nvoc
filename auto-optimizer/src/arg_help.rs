@@ -454,6 +454,27 @@ pub fn get_arguments() -> Command {
                                 .action(ArgAction::SetTrue)
                                 .help("Reset GPU memory clocks lock. Alias: --nvml-pstate-unlock."),
                         )
+                        .arg(
+                            Arg::new("autoboost")
+                                .long("autoboost")
+                                .value_name("STATE")
+                                .value_parser(["on", "off"])
+                                .help("Enable or disable auto-boosted clocks. Example: --autoboost on, --autoboost off"),
+                        )
+                        .arg(
+                            Arg::new("autoboost_default")
+                                .long("autoboost-default")
+                                .value_name("STATE")
+                                .value_parser(["on", "off"])
+                                .help("Set the default auto-boosted clocks state (persists across driver reinitialization). Example: --autoboost-default on, --autoboost-default off"),
+                        )
+                        .arg(
+                            Arg::new("api_restriction")
+                                .long("api-restriction")
+                                .num_args(2)
+                                .value_names(["API", "STATE"])
+                                .help("Control API permission restrictions for non-admin users. API: app-clocks, auto-boost. STATE: open, restricted. Example: --api-restriction app-clocks open"),
+                        )
                 )
                 .subcommand(
                     Command::new("nvml-cooler")

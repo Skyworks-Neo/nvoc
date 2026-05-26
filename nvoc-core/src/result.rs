@@ -67,6 +67,9 @@ pub enum OperationKind {
     /// remains distinct from a caller directly requesting
     /// [`OperationKind::SetLockedClocks`].
     SetNvmlPstateLock,
+    SetAutoBoost,
+    SetAutoBoostDefault,
+    SetApiRestriction,
     QueryThrottleReasons,
 }
 

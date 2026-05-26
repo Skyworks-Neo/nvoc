@@ -1162,6 +1162,63 @@ impl GpuOperation for SetNvmlPstateLock {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct SetAutoBoost {
+    pub enabled: bool,
+}
+
+impl GpuOperation for SetAutoBoost {
+    type Output = ();
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetAutoBoost
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        low_nvml::set_nvml_auto_boost(target.nvml()?, target.id.0, self.enabled)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct SetAutoBoostDefault {
+    pub enabled: bool,
+}
+
+impl GpuOperation for SetAutoBoostDefault {
+    type Output = ();
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetAutoBoostDefault
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        low_nvml::set_nvml_auto_boost_default(target.nvml()?, target.id.0, self.enabled)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct SetApiRestriction {
+    pub api_type: nvml_wrapper::enum_wrappers::device::Api,
+    pub restricted: bool,
+}
+
+impl GpuOperation for SetApiRestriction {
+    type Output = ();
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetApiRestriction
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        low_nvml::set_nvml_api_restriction(
+            target.nvml()?,
+            target.id.0,
+            self.api_type,
+            self.restricted,
+        )
+    }
+}
+
 pub fn parse_nvapi_locked_voltage_target(raw: &str) -> Result<NvapiLockedVoltageTarget, Error> {
     low_nvapi::parse_nvapi_locked_voltage_target(raw)
 }

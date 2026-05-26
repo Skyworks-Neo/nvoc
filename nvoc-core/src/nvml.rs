@@ -52,6 +52,32 @@ pub fn query_nvml_power_watts(nvml: &Nvml, gpu_id: u32) -> Option<(f32, f32, f32
     ))
 }
 
+pub fn set_nvml_auto_boost(nvml: &Nvml, gpu_id: u32, enabled: bool) -> Result<(), Error> {
+    let mut device = find_nvml_device_err(nvml, gpu_id)?;
+    device
+        .set_auto_boosted_clocks(enabled)
+        .map_err(|e| Error::Custom(format!("NVML Set Auto Boost Error: {:?}", e)))
+}
+
+pub fn set_nvml_auto_boost_default(nvml: &Nvml, gpu_id: u32, enabled: bool) -> Result<(), Error> {
+    let mut device = find_nvml_device_err(nvml, gpu_id)?;
+    device
+        .set_auto_boosted_clocks_default(enabled)
+        .map_err(|e| Error::Custom(format!("NVML Set Auto Boost Default Error: {:?}", e)))
+}
+
+pub fn set_nvml_api_restriction(
+    nvml: &Nvml,
+    gpu_id: u32,
+    api_type: nvml_wrapper::enum_wrappers::device::Api,
+    restricted: bool,
+) -> Result<(), Error> {
+    let mut device = find_nvml_device_err(nvml, gpu_id)?;
+    device
+        .set_api_restricted(api_type, restricted)
+        .map_err(|e| Error::Custom(format!("NVML Set API Restriction Error: {:?}", e)))
+}
+
 pub fn set_nvml_power_limit(nvml: &Nvml, gpu_id: u32, limit_w: u32) -> Result<(), Error> {
     let mut device = find_nvml_device_err(nvml, gpu_id)?;
     device
@@ -220,6 +246,45 @@ pub fn get_nvml_throttle_reasons(nvml: &Nvml, gpu_id: u32) -> Option<Vec<(&'stat
             .map(|(name, flag)| (*name, reasons.contains(*flag)))
             .collect(),
     )
+}
+
+pub struct ViolationStatus {
+    pub violation_time_ns: u64,
+    pub reference_time_us: u64,
+}
+
+pub fn get_nvml_violation_status(
+    nvml: &Nvml,
+    gpu_id: u32,
+) -> Option<Vec<(&'static str, ViolationStatus)>> {
+    use nvml_wrapper::enum_wrappers::device::PerformancePolicy;
+    let device = find_nvml_device(nvml, gpu_id)?;
+    let policies: &[(&str, PerformancePolicy)] = &[
+        ("Pwr", PerformancePolicy::Power),
+        ("Thrm", PerformancePolicy::Thermal),
+        ("Syn-Boost", PerformancePolicy::SyncBoost),
+        ("Brd-Lim", PerformancePolicy::BoardLimit),
+        ("Idle", PerformancePolicy::LowUtilization),
+        ("Rel", PerformancePolicy::Reliability),
+        ("AppClk", PerformancePolicy::TotalAppClocks),
+        ("BaseClk", PerformancePolicy::TotalBaseClocks),
+    ];
+    let mut results = Vec::new();
+    for (name, policy) in policies {
+        let status = device
+            .violation_status(*policy)
+            .ok()
+            .map(|v| ViolationStatus {
+                violation_time_ns: v.violation_time,
+                reference_time_us: v.reference_time,
+            })
+            .unwrap_or(ViolationStatus {
+                violation_time_ns: 0,
+                reference_time_us: 0,
+            });
+        results.push((*name, status));
+    }
+    Some(results)
 }
 
 // ---------------------------------------------------------------------------
@@ -435,7 +500,8 @@ pub fn set_nvml_pstate_lock(
         })
         .collect::<Vec<_>>();
 
-    let outside_requested_range = collect_outside_requested_range(&overlapping_pstates, min_index, max_index);
+    let outside_requested_range =
+        collect_outside_requested_range(&overlapping_pstates, min_index, max_index);
 
     if !outside_requested_range.is_empty() {
         return Err(Error::Custom(format!(

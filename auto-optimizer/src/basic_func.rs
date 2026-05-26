@@ -23,8 +23,9 @@ use nvoc_core::{
 use nvoc_core::{
     QueryClockOffset, QueryFanInfo, QueryPowerLimits, QueryPstates,
     QuerySupportedApplicationsClocks, QueryTemperatureThresholds, QueryThrottleReasons,
-    ResetApplicationsClocks, ResetFanSpeed, ResetLockedClocks, SetApplicationsClocks,
-    SetClockOffset, SetFanSpeed, SetLockedClocks, SetNvmlPstateLock, SetPowerLimit, run,
+    ResetApplicationsClocks, ResetFanSpeed, ResetLockedClocks, SetApiRestriction,
+    SetApplicationsClocks, SetAutoBoost, SetAutoBoostDefault, SetClockOffset, SetFanSpeed,
+    SetLockedClocks, SetNvmlPstateLock, SetPowerLimit, run,
 };
 use time::{OffsetDateTime, format_description::parse};
 
@@ -819,15 +820,6 @@ pub fn handle_status(
 
                         human::print_status(&status);
                         human::print_settings(gpu, requires_set(gpu, &mut set)?);
-                        if let Ok(thresholds) = run(gpu, QueryTemperatureThresholds) {
-                            println!("NVML Temperature Thresholds:");
-                            for threshold in thresholds.output {
-                                match threshold.celsius {
-                                    Some(temp) => println!("  {:<16} : {} C", threshold.name, temp),
-                                    None => println!("  {:<16} : N/A", threshold.name),
-                                }
-                            }
-                        }
                         if let Ok(reasons) = run(gpu, QueryThrottleReasons) {
                             let active: Vec<_> =
                                 reasons.output.iter().filter(|r| r.active).collect();
@@ -835,6 +827,41 @@ pub fn handle_status(
                                 let names: Vec<_> =
                                     active.iter().map(|r| r.name.as_str()).collect();
                                 println!("Throttle Reasons...: {}", names.join(", "));
+                            }
+                        }
+                        if let Some(viol) =
+                            nvoc_core::nvml::get_nvml_violation_status(gpu.nvml()?, gpu.id.0)
+                        {
+                            let parts: Vec<_> = viol
+                                .iter()
+                                .filter_map(|(name, status)| {
+                                    if status.violation_time_ns > 0 {
+                                        let secs =
+                                            status.violation_time_ns as f64 / 1_000_000_000.0;
+                                        Some(format!("{}:{:.1}s", name, secs))
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect();
+                            if !parts.is_empty() {
+                                let ref_ts = viol[0].1.reference_time_us;
+                                let ref_str = OffsetDateTime::from_unix_timestamp_nanos(
+                                    ref_ts as i128 * 1000,
+                                )
+                                .map(|dt| {
+                                    dt.format(
+                                        &parse("[year]-[month]-[day] [hour]:[minute]:[second]")
+                                            .unwrap(),
+                                    )
+                                    .unwrap()
+                                })
+                                .unwrap_or_else(|_| format!("{} us", ref_ts));
+                                println!(
+                                    "Limit Violation Time: {} (Since: {})",
+                                    parts.join(", "),
+                                    ref_str
+                                );
                             }
                         }
                         println!();
@@ -1818,6 +1845,88 @@ pub fn handle_nvml(gpus: &[GpuTarget<'_>], matches: &ArgMatches) -> Result<(), E
                     gpu.id.0, e
                 ),
             }
+        }
+    }
+
+    if let Some(state) = matches.get_one::<String>("autoboost") {
+        let enabled = state == "on";
+        for gpu in gpus {
+            match run(gpu, SetAutoBoost { enabled }) {
+                Ok(_) => println!(
+                    "Successfully {} NVML auto-boosted clocks for GPU {}",
+                    if enabled { "enabled" } else { "disabled" },
+                    gpu.id.0
+                ),
+                Err(e) => eprintln!(
+                    "Failed to set NVML auto-boost for GPU {}: {:?}",
+                    gpu.id.0, e
+                ),
+            }
+        }
+    }
+
+    if let Some(state) = matches.get_one::<String>("autoboost_default") {
+        let enabled = state == "on";
+        for gpu in gpus {
+            match run(gpu, SetAutoBoostDefault { enabled }) {
+                Ok(_) => println!(
+                    "Successfully {} NVML default auto-boosted clocks for GPU {}",
+                    if enabled { "enabled" } else { "disabled" },
+                    gpu.id.0
+                ),
+                Err(e) => eprintln!(
+                    "Failed to set NVML default auto-boost for GPU {}: {:?}",
+                    gpu.id.0, e
+                ),
+            }
+        }
+    }
+
+    if let Some(vals) = matches.get_many::<String>("api_restriction") {
+        let args: Vec<&str> = vals.map(|s| s.as_str()).collect();
+        if args.len() == 2 {
+            use nvml_wrapper::enum_wrappers::device::Api;
+            let api_type = match args[0] {
+                "app-clocks" => Api::ApplicationClocks,
+                "auto-boost" => Api::AutoBoostedClocks,
+                other => {
+                    eprintln!(
+                        "Unknown API type '{}'. Expected: app-clocks, auto-boost",
+                        other
+                    );
+                    return Ok(());
+                }
+            };
+            let restricted = match args[1] {
+                "restricted" => true,
+                "open" => false,
+                other => {
+                    eprintln!("Unknown state '{}'. Expected: open, restricted", other);
+                    return Ok(());
+                }
+            };
+            for gpu in gpus {
+                match run(
+                    gpu,
+                    SetApiRestriction {
+                        api_type,
+                        restricted,
+                    },
+                ) {
+                    Ok(_) => println!(
+                        "Successfully {} API restriction '{}' for GPU {}",
+                        if restricted { "set" } else { "cleared" },
+                        args[0],
+                        gpu.id.0
+                    ),
+                    Err(e) => eprintln!(
+                        "Failed to set API restriction for GPU {}: {:?}",
+                        gpu.id.0, e
+                    ),
+                }
+            }
+        } else {
+            eprintln!("--api-restriction requires 2 arguments: <API> <STATE>");
         }
     }
 

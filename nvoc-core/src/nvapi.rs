@@ -563,7 +563,8 @@ pub fn set_nvapi_pstate_lock(
         })
         .collect::<Vec<_>>();
 
-    let outside_requested_range = collect_outside_requested_range(&overlapping_pstates, min_index, max_index);
+    let outside_requested_range =
+        collect_outside_requested_range(&overlapping_pstates, min_index, max_index);
 
     if !outside_requested_range.is_empty() {
         return Err(Error::Custom(format!(
@@ -706,9 +707,11 @@ pub fn reset_vfp_deltas(gpu: &Gpu, domain: VfpResetDomain) -> Result<(), Error> 
         // rewrite Memory VFP / default-frequency entries when Graphics P0 is modified.
         let mem_backup = capture_memory_vfp(gpu)?;
 
-        let r = gpu
-            .inner()
-            .set_pstates([(PState::P0, ClockDomain::Graphics, KilohertzDelta(0))].iter().cloned());
+        let r = gpu.inner().set_pstates(
+            [(PState::P0, ClockDomain::Graphics, KilohertzDelta(0))]
+                .iter()
+                .cloned(),
+        );
         if let Err(e) = &r {
             let _ = e;
         }
@@ -726,9 +729,11 @@ pub fn reset_vfp_deltas(gpu: &Gpu, domain: VfpResetDomain) -> Result<(), Error> 
     };
 
     let memory_ok = if reset_memory {
-        let r = gpu
-            .inner()
-            .set_pstates([(PState::P0, ClockDomain::Memory, KilohertzDelta(0))].iter().cloned());
+        let r = gpu.inner().set_pstates(
+            [(PState::P0, ClockDomain::Memory, KilohertzDelta(0))]
+                .iter()
+                .cloned(),
+        );
         if let Err(e) = &r {
             let _ = e;
         }
