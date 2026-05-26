@@ -893,6 +893,7 @@ pub fn query_domain_vf_points_indexed(
                 let (i, point) = pts.next().unwrap();
                 let (_, delta) = dts.next().unwrap();
                 let mut point = nvapi_hi::VfPoint {
+                    point_type: point.point_type,
                     voltage: point.configured().voltage,
                     frequency: point.configured().frequency,
                     default_frequency: point.default().map(|p| p.frequency).unwrap_or_default(),

@@ -16,7 +16,7 @@ use num_traits::pow;
 use nvoc_core::{
     ClockDomain, Error, GpuOcParams, GpuOperation, GpuTarget, KilohertzDelta,
     NvapiLockedVoltageTarget, PState, QueryGpuInfo, QueryGpuStatus, QueryVfpPointVoltage,
-    ResetCoolerLevels, ResetVfpDeltas, SetVfpPointDelta, SetVfpVoltageLock, VfPoint,
+    ResetCoolerLevels, ResetVfpDeltas, SetVfpPointDelta, SetVfpVoltageLock, VfPoint, VfPointType,
     VfpResetDomain, fetch_gpu_type, run as nvoc_run, set_nvapi_pstate_clock_offsets,
     set_nvapi_vfp_curve_delta,
 };
@@ -2318,6 +2318,7 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
             );
 
             let p_save = VfPoint {
+                point_type: VfPointType::Prog,
                 voltage: v,
                 frequency: default_frequency + KilohertzDelta(init_core_oc_value),
                 delta: KilohertzDelta(init_core_oc_value),
@@ -2348,6 +2349,7 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
                         .ok_or(Error::Str("invalid point index"))?
                         .voltage;
                     let p_save_prev = VfPoint {
+                        point_type: VfPointType::Prog,
                         voltage: v_prev,
                         frequency: default_frequency + KilohertzDelta(interpolated_delta),
                         delta: KilohertzDelta(interpolated_delta),

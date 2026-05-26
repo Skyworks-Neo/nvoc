@@ -36,3 +36,4 @@ dist-ssr
 /nvoc-python/python/pynvoc/_native.pyd
 /nvapi/
 /nvapi-rs/
+/.venv/

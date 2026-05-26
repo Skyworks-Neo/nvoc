@@ -59,3 +59,8 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 windows-service = "0.8.0"
 windows-sys = { version = "0.61.2", features = ["Win32"] }
+
+[patch."https://github.com/Skyworks-Neo/nvapi-rs"]
+nvapi = { path = "./nvapi-rs" }
+nvapi-sys = { path = "./nvapi-rs/sys" }
+nvapi-hi = { path = "./nvapi-rs/hi" }

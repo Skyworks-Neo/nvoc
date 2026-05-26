@@ -48,5 +48,5 @@ pub use types::{NvapiLockedVoltageTarget, VfpResetDomain};
 pub use nvapi_hi::{
     Celsius, ClockDomain, CoolerControl, CoolerPolicy, CoolerSettings, FanCoolerId, GpuInfo,
     GpuSettings, GpuStatus, Kilohertz, KilohertzDelta, Microvolts, MicrovoltsDelta, PState,
-    Percentage, SensorThrottle, VfPoint,
+    Percentage, SensorThrottle, VfPoint, VfPointType,
 };

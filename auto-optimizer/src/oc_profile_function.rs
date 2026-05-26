@@ -7,7 +7,7 @@ use csv::{ReaderBuilder, StringRecord, WriterBuilder};
 use num_traits::abs;
 use nvoc_auto_optimizer::PState;
 use nvoc_cli_common::color::stylize;
-use nvoc_core::{ClockDomain, GpuTarget, VfPoint};
+use nvoc_core::{ClockDomain, GpuTarget, VfPoint, VfPointType};
 use nvoc_core::{
     CoolerPolicy, CoolerSettings, FanCoolerId, Kilohertz, KilohertzDelta, Microvolts, Percentage,
     SensorThrottle,
@@ -1108,6 +1108,7 @@ pub fn export_vfp_from_log(matches: &clap::ArgMatches) -> Result<(), Error> {
                 last_code_100_freq = Some(freq);
                 export_single_point(
                     VfPoint {
+                        point_type: VfPointType::Prog,
                         voltage: Microvolts((last_voltage.unwrap() * 1000.0) as u32),
                         frequency: Kilohertz(0),
                         delta: KilohertzDelta((last_code_100_freq.unwrap() * 1000.0) as i32),
