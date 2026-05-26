@@ -1130,6 +1130,51 @@ fn pre_load_vf_recheck(gpu: &GpuTarget<'_>, point: usize) -> bool {
     false // 检查失败
 }
 
+/// Apply VFP curve delta with voltage lock, then retry with exponential backoff
+/// until `pre_load_vf_recheck` passes or `max_attempts` is exhausted.
+fn set_vfp_and_recheck(
+    gpu: &GpuTarget<'_>,
+    point: usize,
+    vfp_set_range: usize,
+    flat_curve_flag: bool,
+    init_core_oc_value: i32,
+    minimum_delta_core_freq_step: i32,
+    max_attempts: i32,
+) -> Result<(), Error> {
+    for attempt in 1..=max_attempts {
+        set_nvapi_vfp_curve_delta(
+            gpu,
+            point,
+            vfp_set_range,
+            flat_curve_flag,
+            init_core_oc_value,
+            Some(init_core_oc_value - minimum_delta_core_freq_step),
+        )?;
+
+        // After PnP reset the voltage lock is lost — re-lock at the target point
+        if let Ok(locked_v) = run_output(gpu, QueryVfpPointVoltage { point }) {
+            let _ = run_output(
+                gpu,
+                SetVfpVoltageLock {
+                    voltage_target: NvapiLockedVoltageTarget::Voltage(locked_v),
+                    feedback: false,
+                },
+            );
+        }
+
+        if pre_load_vf_recheck(gpu, point) {
+            println!("V/F recheck passed on attempt {attempt}");
+            return Ok(());
+        }
+        eprintln!("Retrying set_nvapi_vfp_curve_delta... (attempt {attempt})");
+        let wait_secs = 2u64.saturating_pow(attempt.saturating_sub(1).min(6) as u32);
+        sleep(Duration::from_secs(wait_secs));
+    }
+    Err(Error::Custom(format!(
+        "V/F recheck failed after {max_attempts} attempts"
+    )))
+}
+
 fn apply_long_phase_failure_step(
     init_core_oc_value: &mut i32,
     minimum_delta_core_freq_step: i32,
@@ -1467,56 +1512,15 @@ fn run_gpuboostv3_short_phase<V: std::fmt::Display + Copy>(
     let mut test_code = 0;
 
     loop {
-        set_nvapi_vfp_curve_delta(
+        set_vfp_and_recheck(
             gpu,
             point,
             args.vfp_set_range,
             flat_curve_flag,
             *init_core_oc_value,
-            Some(*init_core_oc_value - args.common.minimum_delta_core_freq_step),
+            args.common.minimum_delta_core_freq_step,
+            10,
         )?;
-
-        let mut attempt: i32 = 0;
-        let max_attempts = 10;
-
-        while attempt < max_attempts {
-            attempt += 1;
-
-            set_nvapi_vfp_curve_delta(
-                gpu,
-                point,
-                args.vfp_set_range,
-                flat_curve_flag,
-                *init_core_oc_value,
-                Some(*init_core_oc_value - args.common.minimum_delta_core_freq_step),
-            )?;
-
-            // After PnP reset the voltage lock is lost — re-lock at the target point
-            if let Ok(locked_v) = run_output(gpu, QueryVfpPointVoltage { point }) {
-                let _ = run_output(
-                    gpu,
-                    SetVfpVoltageLock {
-                        voltage_target: NvapiLockedVoltageTarget::Voltage(locked_v),
-                        feedback: false,
-                    },
-                );
-            }
-
-            if pre_load_vf_recheck(gpu, point) {
-                println!("V/F recheck passed on attempt {attempt}");
-                break;
-            } else {
-                eprintln!("Retrying set_nvapi_vfp_curve_delta... (attempt {attempt})");
-                let wait_secs = 2u64.saturating_pow(attempt.saturating_sub(1).min(6) as u32);
-                sleep(Duration::from_secs(wait_secs));
-            }
-
-            if attempt == max_attempts {
-                return Err(Error::Custom(format!(
-                    "V/F recheck failed after {max_attempts} attempts"
-                )));
-            }
-        }
 
         test_num += 1;
         test_code += 1;
@@ -1658,47 +1662,15 @@ fn run_gpuboostv3_long_phase<V: std::fmt::Display + Copy>(
     writeln!(l, "Initiating Long Test...")?;
 
     loop {
-        let mut attempt: i32 = 0;
-        let max_attempts = 5;
-
-        while attempt < max_attempts {
-            attempt += 1;
-
-            set_nvapi_vfp_curve_delta(
-                gpu,
-                point,
-                args.vfp_set_range,
-                flat_curve_flag,
-                *init_core_oc_value,
-                Some(*init_core_oc_value - args.common.minimum_delta_core_freq_step),
-            )?;
-
-            // After PnP reset the voltage lock is lost — re-lock at the target point
-            if let Ok(locked_v) = run_output(gpu, QueryVfpPointVoltage { point }) {
-                let _ = run_output(
-                    gpu,
-                    SetVfpVoltageLock {
-                        voltage_target: NvapiLockedVoltageTarget::Voltage(locked_v),
-                        feedback: false,
-                    },
-                );
-            }
-
-            if pre_load_vf_recheck(gpu, point) {
-                println!("V/F recheck passed on attempt {attempt}");
-                break;
-            } else {
-                eprintln!("Retrying set_nvapi_vfp_curve_delta... (attempt {attempt})");
-                let wait_secs = 2u64.saturating_pow(attempt.saturating_sub(1).min(6) as u32);
-                sleep(Duration::from_secs(wait_secs));
-            }
-
-            if attempt == max_attempts {
-                return Err(Error::Custom(format!(
-                    "V/F recheck failed after {max_attempts} attempts"
-                )));
-            }
-        }
+        set_vfp_and_recheck(
+            gpu,
+            point,
+            args.vfp_set_range,
+            flat_curve_flag,
+            *init_core_oc_value,
+            args.common.minimum_delta_core_freq_step,
+            5,
+        )?;
 
         *test_code += 1;
         log_point_test_header(
