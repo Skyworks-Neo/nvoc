@@ -1143,6 +1143,32 @@ pub fn handle_get(gpus: &[GpuTarget<'_>], oformat: OutputFormat) -> Result<(), E
                                         stylize(&format!("{} MHz", mem_offset.output.mhz), false)
                                     );
                                 }
+                                if let Ok(sm_offset) = run(
+                                    gpu,
+                                    QueryClockOffset {
+                                        domain: ClockDomain::Processor,
+                                        pstate: pstate_range.pstate,
+                                    },
+                                ) {
+                                    println!(
+                                        "{} {}",
+                                        stylize_title("       SM Clock Offset   :"),
+                                        stylize(&format!("{} MHz", sm_offset.output.mhz), false)
+                                    );
+                                }
+                                if let Ok(vid_offset) = run(
+                                    gpu,
+                                    QueryClockOffset {
+                                        domain: ClockDomain::Video,
+                                        pstate: pstate_range.pstate,
+                                    },
+                                ) {
+                                    println!(
+                                        "{} {}",
+                                        stylize_title("   Video Clock Offset   :"),
+                                        stylize(&format!("{} MHz", vid_offset.output.mhz), false)
+                                    );
+                                }
                             }
                         } else {
                             // Fallback if pstate info is unsupported
@@ -1172,6 +1198,32 @@ pub fn handle_get(gpus: &[GpuTarget<'_>], oformat: OutputFormat) -> Result<(), E
                                     "{} {}",
                                     stylize_title("  Mem Clock Offset (P0)  :"),
                                     stylize(&format!("{} MHz", mem_offset.output.mhz), false)
+                                );
+                            }
+                            if let Ok(sm_offset) = run(
+                                gpu,
+                                QueryClockOffset {
+                                    domain: ClockDomain::Processor,
+                                    pstate,
+                                },
+                            ) {
+                                println!(
+                                    "{} {}",
+                                    stylize_title("   SM Clock Offset (P0)  :"),
+                                    stylize(&format!("{} MHz", sm_offset.output.mhz), false)
+                                );
+                            }
+                            if let Ok(vid_offset) = run(
+                                gpu,
+                                QueryClockOffset {
+                                    domain: ClockDomain::Video,
+                                    pstate,
+                                },
+                            ) {
+                                println!(
+                                    "{} {}",
+                                    stylize_title("Video Clock Offset (P0)  :"),
+                                    stylize(&format!("{} MHz", vid_offset.output.mhz), false)
                                 );
                             }
                         }
