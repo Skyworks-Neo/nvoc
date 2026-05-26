@@ -25,10 +25,7 @@ fn find_nvml_device(nvml: &'_ Nvml, gpu_id: u32) -> Option<nvml_wrapper::Device<
     None
 }
 
-fn find_nvml_device_err(
-    nvml: &'_ Nvml,
-    gpu_id: u32,
-) -> Result<nvml_wrapper::Device<'_>, Error> {
+fn find_nvml_device_err(nvml: &'_ Nvml, gpu_id: u32) -> Result<nvml_wrapper::Device<'_>, Error> {
     find_nvml_device(nvml, gpu_id)
         .ok_or_else(|| Error::Custom(format!("GPU {} not found in NVML", gpu_id)))
 }
@@ -307,6 +304,60 @@ fn nvml_ranges_overlap(a_min: u32, a_max: u32, b_min: u32, b_max: u32) -> bool {
     a_min <= b_max && b_min <= a_max
 }
 
+pub(crate) fn build_supported_pstate_list(pstates: &[NvmlPStateClockRange]) -> String {
+    pstates
+        .iter()
+        .map(|(reported_pstate, _, _, _, _)| {
+            nvml_pstate_to_str(*reported_pstate)
+                .trim_start_matches('P')
+                .to_string()
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+pub(crate) fn find_pstate_entry<'a>(
+    pstates: &'a [NvmlPStateClockRange],
+    target_pstate: PerformanceState,
+    gpu_id: u32,
+    supported_list: &str,
+) -> Result<&'a NvmlPStateClockRange, Error> {
+    pstates
+        .iter()
+        .find(|(reported_pstate, _, _, _, _)| *reported_pstate == target_pstate)
+        .ok_or_else(|| {
+            Error::Custom(format!(
+                "{} is not reported by NVML for GPU {}. Supported NVML P-States: {}",
+                nvml_pstate_to_str(target_pstate),
+                gpu_id,
+                supported_list
+            ))
+        })
+}
+
+pub(crate) fn collect_outside_requested_range(
+    overlapping_pstates: &[(Result<u8, Error>, &'static str)],
+    min_index: u8,
+    max_index: u8,
+) -> Vec<&'static str> {
+    overlapping_pstates
+        .iter()
+        .filter_map(|(reported_index, reported_label)| {
+            reported_index.as_ref().ok().and_then(|reported_index| {
+                if *reported_index < min_index || *reported_index > max_index {
+                    Some(*reported_label)
+                } else {
+                    None
+                }
+            })
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// P-State lock (via memory clock window)
+// ---------------------------------------------------------------------------
+
 pub fn set_nvml_pstate_lock(
     nvml: &Nvml,
     gpu_id: u32,
@@ -336,36 +387,9 @@ pub fn set_nvml_pstate_lock(
             nvml_pstate_to_str(low_perf_pstate)
         )
     };
-    let supported_pstates = pstates
-        .iter()
-        .map(|(reported_pstate, _, _, _, _)| {
-            nvml_pstate_to_str(*reported_pstate)
-                .trim_start_matches('P')
-                .to_string()
-        })
-        .collect::<Vec<_>>();
-    let high_perf_entry = pstates
-        .iter()
-        .find(|(reported_pstate, _, _, _, _)| *reported_pstate == high_perf_pstate)
-        .ok_or_else(|| {
-            Error::Custom(format!(
-                "{} is not reported by NVML for GPU {}. Supported NVML P-States: {}",
-                nvml_pstate_to_str(high_perf_pstate),
-                gpu_id,
-                supported_pstates.join(",")
-            ))
-        })?;
-    let low_perf_entry = pstates
-        .iter()
-        .find(|(reported_pstate, _, _, _, _)| *reported_pstate == low_perf_pstate)
-        .ok_or_else(|| {
-            Error::Custom(format!(
-                "{} is not reported by NVML for GPU {}. Supported NVML P-States: {}",
-                nvml_pstate_to_str(low_perf_pstate),
-                gpu_id,
-                supported_pstates.join(",")
-            ))
-        })?;
+    let supported_list = build_supported_pstate_list(&pstates);
+    let high_perf_entry = find_pstate_entry(&pstates, high_perf_pstate, gpu_id, &supported_list)?;
+    let low_perf_entry = find_pstate_entry(&pstates, low_perf_pstate, gpu_id, &supported_list)?;
 
     let min_target_mem_clock_mhz = low_perf_entry.3;
     let max_target_mem_clock_mhz = high_perf_entry.4;
@@ -385,18 +409,7 @@ pub fn set_nvml_pstate_lock(
         })
         .collect::<Vec<_>>();
 
-    let outside_requested_range = overlapping_pstates
-        .iter()
-        .filter_map(|(reported_index, reported_label)| {
-            reported_index.as_ref().ok().and_then(|reported_index| {
-                if *reported_index < min_index || *reported_index > max_index {
-                    Some(*reported_label)
-                } else {
-                    None
-                }
-            })
-        })
-        .collect::<Vec<_>>();
+    let outside_requested_range = collect_outside_requested_range(&overlapping_pstates, min_index, max_index);
 
     if !outside_requested_range.is_empty() {
         return Err(Error::Custom(format!(
