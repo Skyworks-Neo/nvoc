@@ -33,16 +33,6 @@ fn n_a() -> String {
     "N/A".into()
 }
 
-fn vfp_lock_label<T: std::fmt::Display>(id: &T) -> String {
-    match id.to_string().as_str() {
-        "GPU" => "GPU Core Upperbound".to_string(),
-        "GpuUnknown" => "GPU Core Lowerbound".to_string(),
-        "Memory" => "Memory Upperbound".to_string(),
-        "MemoryUnknown" => "Memory Lowerbound".to_string(),
-        other => other.to_string(),
-    }
-}
-
 pub fn print_settings(gpu: &GpuTarget<'_>, set: &GpuSettings) {
     if let Some(ref boost) = set.voltage_boost {
         pline!("Voltage Boost", "{} (range: 0%-100%)", boost);
@@ -99,7 +89,7 @@ pub fn print_settings(gpu: &GpuTarget<'_>, set: &GpuSettings) {
     }
     for (id, lock) in &set.vfp_locks {
         if let Some(value) = lock.lock_value {
-            pline!(format!("VFP Lock {}", vfp_lock_label(id)), "{}", value);
+            pline!(format!("VFP Lock {}", id), "{}", value);
         }
     }
 }
@@ -175,7 +165,7 @@ pub fn print_status(status: &GpuStatus) {
             status
                 .vfp_locks
                 .iter()
-                .map(|(limit, lock)| format!("{}:{}", vfp_lock_label(limit), lock))
+                .map(|(limit, lock)| format!("{}:{}", limit, lock))
                 .collect::<Vec<_>>()
                 .join(", ")
         },

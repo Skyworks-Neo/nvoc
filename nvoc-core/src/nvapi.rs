@@ -427,8 +427,8 @@ pub fn set_vfp_frequency_lock(
         }
         Some(lower) => {
             let (upper_limit, lower_limit) = match domain {
-                ClockDomain::Graphics => (PerfLimitId::Gpu, PerfLimitId::GpuUnknown),
-                ClockDomain::Memory => (PerfLimitId::Memory, PerfLimitId::MemoryUnknown),
+                ClockDomain::Graphics => (PerfLimitId::Gpu, PerfLimitId::GpuLowerbound),
+                ClockDomain::Memory => (PerfLimitId::Memory, PerfLimitId::MemoryLowerbound),
                 _ => {
                     return Err(Error::from(
                         "--domain must be Graphics or Memory in --clock mode",
@@ -457,8 +457,8 @@ pub fn set_vfp_frequency_lock(
 
 pub fn reset_vfp_frequency_lock(gpu: &Gpu, domain: ClockDomain) -> Result<(), Error> {
     let (upper_limit, lower_limit) = match domain {
-        ClockDomain::Graphics => (PerfLimitId::Gpu, PerfLimitId::GpuUnknown),
-        ClockDomain::Memory => (PerfLimitId::Memory, PerfLimitId::MemoryUnknown),
+        ClockDomain::Graphics => (PerfLimitId::Gpu, PerfLimitId::GpuLowerbound),
+        ClockDomain::Memory => (PerfLimitId::Memory, PerfLimitId::MemoryLowerbound),
         _ => {
             return Err(Error::from(
                 "--domain must be Graphics or Memory in --clock mode",
