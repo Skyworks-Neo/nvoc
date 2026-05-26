@@ -34,3 +34,5 @@ dist-ssr
 *.sln
 *.sw?
 /nvoc-python/python/pynvoc/_native.pyd
+/nvapi/
+/nvapi-rs/

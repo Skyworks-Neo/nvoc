@@ -995,7 +995,7 @@ dependencies = [
 [[package]]
 name = "nvapi"
 version = "0.2.0"
-source = "git+https://github.com/arcnmx/nvapi-rs?branch=v0.2.x#d7ac31cf0f413d2cda21051d323c2bf932d32565"
+source = "git+https://github.com/Skyworks-Neo/nvapi-rs?branch=v0.2.x#d7ac31cf0f413d2cda21051d323c2bf932d32565"
 dependencies = [
  "log",
  "nvapi-sys",
@@ -1005,7 +1005,7 @@ dependencies = [
 [[package]]
 name = "nvapi-hi"
 version = "0.2.0"
-source = "git+https://github.com/arcnmx/nvapi-rs?branch=v0.2.x#d7ac31cf0f413d2cda21051d323c2bf932d32565"
+source = "git+https://github.com/Skyworks-Neo/nvapi-rs?branch=v0.2.x#d7ac31cf0f413d2cda21051d323c2bf932d32565"
 dependencies = [
  "nvapi",
  "once_cell",
@@ -1015,7 +1015,7 @@ dependencies = [
 [[package]]
 name = "nvapi-sys"
 version = "0.2.0"
-source = "git+https://github.com/arcnmx/nvapi-rs?branch=v0.2.x#d7ac31cf0f413d2cda21051d323c2bf932d32565"
+source = "git+https://github.com/Skyworks-Neo/nvapi-rs?branch=v0.2.x#d7ac31cf0f413d2cda21051d323c2bf932d32565"
 dependencies = [
  "bitflags 1.3.2",
  "libc",
