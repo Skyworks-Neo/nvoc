@@ -1,4 +1,4 @@
-use nvapi_hi::{ClockDomain, CoolerPolicy, Kilohertz, Microvolts, PState, VfpPoint, VfPointType};
+use nvapi_hi::{ClockDomain, CoolerPolicy, Kilohertz, Microvolts, PState, VfPointType, VfpPoint};
 use nvml_wrapper::enum_wrappers::device::PerformanceState;
 use nvml_wrapper::enums::device::FanControlPolicy;
 use nvoc_core::{

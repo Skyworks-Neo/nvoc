@@ -699,7 +699,9 @@ mod pressure_runner {
 
                                     // Only trigger PnP recovery on critical thresholds
                                     if fecs_count > 3 || tdr_count > 6 {
-                                        eprintln!("Event count exceeds critical threshold — triggering PnP recovery.");
+                                        eprintln!(
+                                            "Event count exceeds critical threshold — triggering PnP recovery."
+                                        );
                                         pnp_recover_gpu(gpu);
                                     }
                                     break;
