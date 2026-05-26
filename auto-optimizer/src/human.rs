@@ -1,7 +1,7 @@
 use nvoc_cli_common::color::{stylize, stylize_title};
 use nvoc_core::{
     ClockDomain, CoolerControl, CoolerPolicy, GpuInfo, GpuSettings, GpuStatus, GpuTarget,
-    QueryPowerLimits, legacy_core_overvolt_ranges, run,
+    QueryPowerLimits, ThermalSensors, legacy_core_overvolt_ranges, run,
 };
 use std::iter;
 
@@ -211,6 +211,20 @@ pub fn print_status(status: &GpuStatus) {
             None => String::new(),
         };
         pline!(format!("Cooler {}", i), "{}{}", level, tach);
+    }
+}
+
+#[allow(dead_code)]
+pub fn print_thermal_sensors(sensors: &ThermalSensors) {
+    if let Some(hotspot) = sensors.hotspot {
+        pline!("GPU Hotspot", "{}", hotspot);
+    } else {
+        pline!("GPU Hotspot", "N/A");
+    }
+    if let Some(vram) = sensors.vram {
+        pline!("VRAM Temp.", "{}", vram);
+    } else {
+        pline!("VRAM Temp.", "N/A");
     }
 }
 

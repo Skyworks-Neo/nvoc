@@ -13,7 +13,10 @@ pub use conv::ConvertEnum;
 pub use error::Error;
 pub use gpu::GpuSelector;
 pub use gpu_type::{GpuOcParams, GpuType, GpuVoltageLimitParams, GpuVoltageLockParams};
-pub use nvapi::{CoolerTarget, GpuTdpTempLimits, VfpLockRequest};
+pub use nvapi::{
+    CoolerTarget, GpuTdpTempLimits, ThermalSensors, VfpLockRequest, probe_thermal_sensors_mask,
+    read_thermal_sensors,
+};
 pub use operation::{
     CheckVoltageFrequency, GpuOperation, ProbeVoltageLimits, QueryClockOffset,
     QueryDomainVfpIndices, QueryDomainVfpPoints, QueryFanInfo, QueryGpuInfo, QueryGpuSettings,
