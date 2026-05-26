@@ -11,7 +11,7 @@ pub type NvmlPStateClockRange = (PerformanceState, u32, u32, u32, u32);
 // Private helper: find an NVML device by NVAPI-style GPU ID (PCI bus * 256)
 // ---------------------------------------------------------------------------
 
-fn find_nvml_device<'n>(nvml: &'n Nvml, gpu_id: u32) -> Option<nvml_wrapper::Device<'n>> {
+fn find_nvml_device(nvml: &'_ Nvml, gpu_id: u32) -> Option<nvml_wrapper::Device<'_>> {
     let pci_bus = GpuId(gpu_id).pci_bus();
     let count = nvml.device_count().ok()?;
     for i in 0..count {
@@ -25,10 +25,10 @@ fn find_nvml_device<'n>(nvml: &'n Nvml, gpu_id: u32) -> Option<nvml_wrapper::Dev
     None
 }
 
-fn find_nvml_device_err<'n>(
-    nvml: &'n Nvml,
+fn find_nvml_device_err(
+    nvml: &'_ Nvml,
     gpu_id: u32,
-) -> Result<nvml_wrapper::Device<'n>, Error> {
+) -> Result<nvml_wrapper::Device<'_>, Error> {
     find_nvml_device(nvml, gpu_id)
         .ok_or_else(|| Error::Custom(format!("GPU {} not found in NVML", gpu_id)))
 }
@@ -69,7 +69,7 @@ pub fn set_nvml_power_limit(nvml: &Nvml, gpu_id: u32, limit_w: u32) -> Result<()
 pub fn get_nvml_core_clock_vf_offset(
     nvml: &Nvml,
     gpu_id: u32,
-    pstate: nvml_wrapper::enum_wrappers::device::PerformanceState,
+    pstate: PerformanceState,
 ) -> Option<i32> {
     let device = find_nvml_device(nvml, gpu_id)?;
     device
@@ -82,7 +82,7 @@ pub fn set_nvml_core_clock_vf_offset(
     nvml: &Nvml,
     gpu_id: u32,
     offset: i32,
-    pstate: nvml_wrapper::enum_wrappers::device::PerformanceState,
+    pstate: PerformanceState,
 ) -> Result<(), Error> {
     let mut device = find_nvml_device_err(nvml, gpu_id)?;
     device
@@ -97,7 +97,7 @@ pub fn set_nvml_core_clock_vf_offset(
 pub fn get_nvml_mem_clock_vf_offset(
     nvml: &Nvml,
     gpu_id: u32,
-    pstate: nvml_wrapper::enum_wrappers::device::PerformanceState,
+    pstate: PerformanceState,
 ) -> Option<i32> {
     let device = find_nvml_device(nvml, gpu_id)?;
     // NVML reports memory clock offset as double the actual frequency (GDDR historical reason).
@@ -111,7 +111,7 @@ pub fn set_nvml_mem_clock_vf_offset(
     nvml: &Nvml,
     gpu_id: u32,
     offset: i32,
-    pstate: nvml_wrapper::enum_wrappers::device::PerformanceState,
+    pstate: PerformanceState,
 ) -> Result<(), Error> {
     let mut device = find_nvml_device_err(nvml, gpu_id)?;
     // NVML expects memory clock offset as double the actual target (GDDR historical reason).
@@ -310,8 +310,8 @@ fn nvml_ranges_overlap(a_min: u32, a_max: u32, b_min: u32, b_max: u32) -> bool {
 pub fn set_nvml_pstate_lock(
     nvml: &Nvml,
     gpu_id: u32,
-    first_pstate: nvml_wrapper::enum_wrappers::device::PerformanceState,
-    second_pstate: nvml_wrapper::enum_wrappers::device::PerformanceState,
+    first_pstate: PerformanceState,
+    second_pstate: PerformanceState,
 ) -> Result<(String, u32, u32), Error> {
     let pstates = get_nvml_pstate_info(nvml, gpu_id).ok_or_else(|| {
         Error::Custom(format!(
