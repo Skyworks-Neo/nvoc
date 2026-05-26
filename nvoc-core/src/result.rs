@@ -67,6 +67,7 @@ pub enum OperationKind {
     /// remains distinct from a caller directly requesting
     /// [`OperationKind::SetLockedClocks`].
     SetNvmlPstateLock,
+    QueryThrottleReasons,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -160,4 +161,10 @@ pub struct TdpTempLimits {
 pub struct VoltageFrequencyCheck {
     pub precise: bool,
     pub matched_point: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThrottleReason {
+    pub name: String,
+    pub active: bool,
 }

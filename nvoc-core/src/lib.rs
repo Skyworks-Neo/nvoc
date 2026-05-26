@@ -22,11 +22,12 @@ pub use operation::{
     QueryDomainVfpIndices, QueryDomainVfpPoints, QueryFanInfo, QueryGpuInfo, QueryGpuSettings,
     QueryGpuStatus, QueryLegacyCoreOvervoltRanges, QueryLegacyP0CoreMaxVoltageDelta,
     QueryPowerLimits, QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits,
-    QueryTemperatureThresholds, QueryVfpPointVoltage, ResetApplicationsClocks, ResetCoolerLevels,
-    ResetFanSpeed, ResetLockedClocks, ResetNvapiPowerLimits, ResetNvapiSensorLimits,
-    ResetPstateBaseVoltages, ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock,
-    ResetVfpLock, SetApplicationsClocks, SetClockOffset, SetCoolerLevels, SetDomainVfpDeltas,
-    SetFanSpeed, SetLegacyClocks, SetLockedClocks, SetNvapiPowerLimits, SetNvapiPstateLock,
+    QueryTemperatureThresholds, QueryThrottleReasons, QueryVfpPointVoltage,
+    ResetApplicationsClocks, ResetCoolerLevels, ResetFanSpeed, ResetLockedClocks,
+    ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetPstateBaseVoltages,
+    ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock, ResetVfpLock,
+    SetApplicationsClocks, SetClockOffset, SetCoolerLevels, SetDomainVfpDeltas, SetFanSpeed,
+    SetLegacyClocks, SetLockedClocks, SetNvapiPowerLimits, SetNvapiPstateLock,
     SetNvapiSensorLimits, SetNvmlPstateLock, SetPowerLimit, SetPstateBaseVoltage,
     SetPstateClockOffset, SetTemperatureLimit, SetVfpFrequencyLock, SetVfpPointDelta,
     SetVfpRangeDelta, SetVfpVoltageLock, SetVoltageBoost, detect_gpu_type, fetch_gpu_type,
@@ -40,7 +41,7 @@ pub use operation::{
 pub use result::{
     AppliedValue, BatchReport, ClockOffset, FanInfo, OperationKind, OperationReport,
     OperationWarning, PowerLimits, PstateClockRange, SupportedApplicationClocks, TargetOutcome,
-    TdpTempLimits, TemperatureThreshold, VoltageFrequencyCheck, VoltageLimits,
+    TdpTempLimits, TemperatureThreshold, ThrottleReason, VoltageFrequencyCheck, VoltageLimits,
 };
 pub use target::{
     BackendSet, GpuId, GpuTarget, PciAddress, TargetInventory, discover_targets,

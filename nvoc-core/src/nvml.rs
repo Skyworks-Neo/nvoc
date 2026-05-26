@@ -196,6 +196,32 @@ pub fn get_nvml_temperature_thresholds(
     )
 }
 
+pub fn get_nvml_throttle_reasons(nvml: &Nvml, gpu_id: u32) -> Option<Vec<(&'static str, bool)>> {
+    use nvml_wrapper::bitmasks::device::ThrottleReasons;
+    let device = find_nvml_device(nvml, gpu_id)?;
+    let reasons = device.current_throttle_reasons().ok()?;
+    let names: &[(&str, ThrottleReasons)] = &[
+        ("GPU Idle", ThrottleReasons::GPU_IDLE),
+        (
+            "App Clock Setting",
+            ThrottleReasons::APPLICATIONS_CLOCKS_SETTING,
+        ),
+        ("SW Power Cap", ThrottleReasons::SW_POWER_CAP),
+        ("HW Slowdown", ThrottleReasons::HW_SLOWDOWN),
+        ("Sync Boost", ThrottleReasons::SYNC_BOOST),
+        ("SW Thermal", ThrottleReasons::SW_THERMAL_SLOWDOWN),
+        ("HW Thermal", ThrottleReasons::HW_THERMAL_SLOWDOWN),
+        ("HW Power Brake", ThrottleReasons::HW_POWER_BRAKE_SLOWDOWN),
+        ("Display Clock", ThrottleReasons::DISPLAY_CLOCK_SETTING),
+    ];
+    Some(
+        names
+            .iter()
+            .map(|(name, flag)| (*name, reasons.contains(*flag)))
+            .collect(),
+    )
+}
+
 // ---------------------------------------------------------------------------
 // P-State info and clock ranges
 // ---------------------------------------------------------------------------

@@ -4,7 +4,7 @@ use super::nvml as low_nvml;
 use super::result::{
     AppliedValue, BatchReport, ClockOffset, FanInfo, OperationKind, OperationReport,
     PstateClockRange, SupportedApplicationClocks, TargetOutcome, TemperatureThreshold,
-    VoltageFrequencyCheck,
+    ThrottleReason, VoltageFrequencyCheck,
 };
 use super::target::GpuTarget;
 use super::types::{NvapiLockedVoltageTarget, VfpResetDomain};
@@ -171,6 +171,36 @@ impl GpuOperation for QueryTemperatureThresholds {
                 items
                     .into_iter()
                     .map(|(name, celsius)| TemperatureThreshold { name, celsius })
+                    .collect()
+            })
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct QueryThrottleReasons;
+
+impl GpuOperation for QueryThrottleReasons {
+    type Output = Vec<ThrottleReason>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryThrottleReasons
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        low_nvml::get_nvml_throttle_reasons(target.nvml()?, target.id.0)
+            .ok_or_else(|| {
+                Error::Custom(format!(
+                    "failed to query NVML throttle reasons for GPU {}",
+                    target.id.0
+                ))
+            })
+            .map(|items| {
+                items
+                    .into_iter()
+                    .map(|(name, active)| ThrottleReason {
+                        name: name.to_string(),
+                        active,
+                    })
                     .collect()
             })
     }

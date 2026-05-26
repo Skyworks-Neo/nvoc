@@ -22,9 +22,9 @@ use nvoc_core::{
 };
 use nvoc_core::{
     QueryClockOffset, QueryFanInfo, QueryPowerLimits, QueryPstates,
-    QuerySupportedApplicationsClocks, QueryTemperatureThresholds, ResetApplicationsClocks,
-    ResetFanSpeed, ResetLockedClocks, SetApplicationsClocks, SetClockOffset, SetFanSpeed,
-    SetLockedClocks, SetNvmlPstateLock, SetPowerLimit, run,
+    QuerySupportedApplicationsClocks, QueryTemperatureThresholds, QueryThrottleReasons,
+    ResetApplicationsClocks, ResetFanSpeed, ResetLockedClocks, SetApplicationsClocks,
+    SetClockOffset, SetFanSpeed, SetLockedClocks, SetNvmlPstateLock, SetPowerLimit, run,
 };
 use time::{OffsetDateTime, format_description::parse};
 
@@ -826,6 +826,15 @@ pub fn handle_status(
                                     Some(temp) => println!("  {:<16} : {} C", threshold.name, temp),
                                     None => println!("  {:<16} : N/A", threshold.name),
                                 }
+                            }
+                        }
+                        if let Ok(reasons) = run(gpu, QueryThrottleReasons) {
+                            let active: Vec<_> =
+                                reasons.output.iter().filter(|r| r.active).collect();
+                            if !active.is_empty() {
+                                let names: Vec<_> =
+                                    active.iter().map(|r| r.name.as_str()).collect();
+                                println!("Throttle Reasons...: {}", names.join(", "));
                             }
                         }
                         println!();
