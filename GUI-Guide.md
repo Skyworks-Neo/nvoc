@@ -19,7 +19,7 @@ GUI 会自动检测 `../auto-optimizer/target/release/nvoc-auto-optimizer.exe`�
 - GPU 信息与实时状态（频率、温度、风扇、VFP）
 - 当前超频设置一览
 
-<img width="1156" height="1051" alt="image" src="https://github.com/user-attachments/assets/7cfefc10-47e3-40aa-aeeb-f7d37f527c6f" />
+<img width="1156" height="1051" alt="image" src="https://github.com/user-attachments/assets/7cfefc10-47e3-40aa-aeeb-f7d37f527c6f" width="50%"/>
 
 ### Autoscan
 
