@@ -42,7 +42,7 @@ Once built, the module can be imported anywhere in the workspace environment:
 import pynvoc._native
 
 # Example usage
-print(pynvoc._native.__file__) # Should point to the generated .pyd
+print(pynvoc._native.__file__)  # Should point to the generated .pyd
 ```
 
 To run the Python tests for the bindings:
@@ -106,7 +106,7 @@ uv run maturin develop
 import pynvoc._native
 
 # 验证调用
-print(pynvoc._native.__file__) # 应指向新生成的 .pyd 模块
+print(pynvoc._native.__file__)  # 应指向新生成的 .pyd 模块
 ```
 
 运行绑定代码的 Python 测试：
