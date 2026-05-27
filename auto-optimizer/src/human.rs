@@ -1,7 +1,7 @@
 use nvoc_cli_common::color::{stylize, stylize_title};
 use nvoc_core::{
-    ClockDomain, CoolerControl, CoolerPolicy, GpuInfo, GpuSettings, GpuStatus, GpuTarget,
-    QueryPowerLimits, ThermalSensors, legacy_core_overvolt_ranges, run,
+    ClockDomain, CoolerControl, CoolerPolicy, GpuInfo, GpuSettings, GpuStatus,
+    GpuTarget, QueryPowerLimits, ThermalSensors, legacy_core_overvolt_ranges, run,
 };
 use std::iter;
 
@@ -288,6 +288,35 @@ pub fn print_info(gpu: &GpuTarget<'_>, info: &GpuInfo) {
     pline!("BIOS Version", "{}", info.bios_version);
     if let Some(driver_model) = &info.driver_model {
         pline!("Driver Model", "{}", driver_model);
+    }
+    if !info.connected_displays.is_empty() {
+        for display in &info.connected_displays {
+            pline!(
+                "Connected Display",
+                "0x{:08X} ({})",
+                display.display_id,
+                display.connector
+            );
+            if let Ok(nvapi) = gpu.nvapi() {
+                if let Ok(edid) = nvapi.inner().get_edid(display.display_id) {
+                    if !edid.is_empty() {
+                        pline!(
+                            "  EDID",
+                            "{} bytes: {}",
+                            edid.len(),
+                            edid.iter()
+                                .map(|b| format!("{:02X}", b))
+                                .collect::<Vec<_>>()
+                                .as_slice()
+                                .chunks(16)
+                                .map(|c| c.join(""))
+                                .collect::<Vec<_>>()
+                                .join(" ")
+                        );
+                    }
+                }
+            }
+        }
     }
     pline!(
         "Limit Support",
