@@ -244,6 +244,14 @@ pub fn print_info(gpu: &GpuTarget<'_>, info: &GpuInfo) {
     } else {
         pline!("Video Memory", "{} {}-bit", n_a(), info.ram_bus_width);
     }
+    if info.physical_frame_buffer.0 > 0 {
+        pline!(
+            "VRAM Size",
+            "{:.2} physical / {:.2} virtual",
+            info.physical_frame_buffer,
+            info.virtual_frame_buffer
+        );
+    }
     pline!("Memory Type", "{} ({})", info.ram_type, info.ram_maker);
     pline!(
         "Memory Banks",
