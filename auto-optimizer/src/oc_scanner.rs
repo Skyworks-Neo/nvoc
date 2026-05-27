@@ -415,7 +415,7 @@ mod pressure_runner {
         // Build argv as a structured Vec so paths or codes containing whitespace
         // are not silently re-tokenized into multiple arguments.
         let mut args: Vec<String> = vec![cfg.test_code.clone(), cfg.timeout_loops.to_string()];
-        let timeout_budget_secs = cfg.timeout_loops * 10;
+        let timeout_budget_secs = cfg.timeout_loops * 15;
         progress_print(cfg.progress, format!("Timeout: {}s", timeout_budget_secs));
         if cfg.recovery_method {
             args.push("--aggressive-recovery".to_string());
