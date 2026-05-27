@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "nvoc-core",
+  "nvoc-cli-common",
   "auto-optimizer",
   "srv",
   "cli-stressor-cuda-rs",
@@ -21,6 +22,7 @@ codegen-units = 8
 
 [workspace.dependencies]
 nvoc-core = { path = "./nvoc-core" }
+nvoc-cli-common = { path = "./nvoc-cli-common" }
 nvoc-auto-optimizer = { path = "./auto-optimizer" }
 
 anyhow = "*"
@@ -41,6 +43,7 @@ humantime = "2.2.0"
 log = "0.4"
 log2 = "0.2.2"
 gag = "1.0.0"
+colored = "2.2.0"
 num-traits = "0.2.19"
 nvml-wrapper = "0.12.0"
 nvml-wrapper-sys = "0.9.0"
