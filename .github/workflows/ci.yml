@@ -307,6 +307,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      - name: Disable local nvapi-rs patch for CI
+        shell: pwsh
+        run: |
+          $cargoToml = "Cargo.toml"
+          $content = Get-Content $cargoToml -Raw
+          $content = [regex]::Replace($content, '(?ms)^\# For development, we use the local path to the nvapi-rs crate\. In production, we can switch to the git dependency\.\r?\n\[patch\."https://github\.com/Skyworks-Neo/nvapi-rs"\]\r?\nnvapi = \{ path = "\./nvapi-rs" \}\r?\nnvapi-sys = \{ path = "\./nvapi-rs/sys" \}\r?\nnvapi-hi = \{ path = "\./nvapi-rs/hi" \}\r?\n', '')
+          Set-Content $cargoToml $content -NoNewline
       - name: Install uv
         run: pip install --quiet uv
       - name: Install deps
@@ -340,6 +347,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Disable local nvapi-rs patch for CI
+        shell: pwsh
+        run: |
+          $cargoToml = "Cargo.toml"
+          $content = Get-Content $cargoToml -Raw
+          $content = [regex]::Replace($content, '(?ms)^\# For development, we use the local path to the nvapi-rs crate\. In production, we can switch to the git dependency\.\r?\n\[patch\."https://github\.com/Skyworks-Neo/nvapi-rs"\]\r?\nnvapi = \{ path = "\./nvapi-rs" \}\r?\nnvapi-sys = \{ path = "\./nvapi-rs/sys" \}\r?\nnvapi-hi = \{ path = "\./nvapi-rs/hi" \}\r?\n', '')
+          Set-Content $cargoToml $content -NoNewline
       - name: Install uv
         run: pip install --quiet uv
       - name: Install deps
@@ -366,6 +380,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Disable local nvapi-rs patch for CI
+        shell: pwsh
+        run: |
+          $cargoToml = "Cargo.toml"
+          $content = Get-Content $cargoToml -Raw
+          $content = [regex]::Replace($content, '(?ms)^\# For development, we use the local path to the nvapi-rs crate\. In production, we can switch to the git dependency\.\r?\n\[patch\."https://github\.com/Skyworks-Neo/nvapi-rs"\]\r?\nnvapi = \{ path = "\./nvapi-rs" \}\r?\nnvapi-sys = \{ path = "\./nvapi-rs/sys" \}\r?\nnvapi-hi = \{ path = "\./nvapi-rs/hi" \}\r?\n', '')
+          Set-Content $cargoToml $content -NoNewline
       - name: byte-compile
         run: python -m compileall -q test.py
         working-directory: cli-stressor-cuda
@@ -393,6 +414,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Disable local nvapi-rs patch for CI
+        shell: pwsh
+        run: |
+          $cargoToml = "Cargo.toml"
+          $content = Get-Content $cargoToml -Raw
+          $content = [regex]::Replace($content, '(?ms)^\# For development, we use the local path to the nvapi-rs crate\. In production, we can switch to the git dependency\.\r?\n\[patch\."https://github\.com/Skyworks-Neo/nvapi-rs"\]\r?\nnvapi = \{ path = "\./nvapi-rs" \}\r?\nnvapi-sys = \{ path = "\./nvapi-rs/sys" \}\r?\nnvapi-hi = \{ path = "\./nvapi-rs/hi" \}\r?\n', '')
+          Set-Content $cargoToml $content -NoNewline
       - name: byte-compile
         run: python -m compileall -q test.py
         working-directory: cli-stressor-opencl
