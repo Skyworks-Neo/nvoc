@@ -39,7 +39,6 @@ a = Analysis(
         "PIL.Image",
         "PIL.ImageDraw",
         "PIL.ImageFont",
-        "pynvoc",
     ],
     hookspath=[],
     hooksconfig={},
