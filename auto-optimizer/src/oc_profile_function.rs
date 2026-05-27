@@ -6,17 +6,16 @@ use super::human::print_scan_separator;
 use super::platform::panic_windows_only;
 use csv::{ReaderBuilder, StringRecord, WriterBuilder};
 use num_traits::abs;
-use nvoc_core::Error;
-use nvoc_core::{ClockDomain, GpuTarget, VfPoint};
+use nvoc_core::{ClockDomain, GpuTarget, PState, VfPoint};
 use nvoc_core::{
     CoolerPolicy, CoolerSettings, FanCoolerId, Kilohertz, KilohertzDelta, Microvolts, Percentage,
     SensorThrottle,
 };
 use nvoc_core::{
-    GpuOperation, GpuType, QueryGpuInfo, SetNvapiPowerLimits, SetNvapiSensorLimits,
-    SetPstateBaseVoltage, SetVfpPointDelta, SetVoltageBoost, fetch_gpu_type,
+    Error, GpuOperation, GpuType, QueryGpuInfo, QueryGpuStatus, SetNvapiPowerLimits,
+    SetNvapiSensorLimits, SetPstateBaseVoltage, SetVfpPointDelta, SetVoltageBoost, fetch_gpu_type,
     legacy_p0_core_max_voltage_delta, query_domain_vf_points_indexed, query_domain_vfp_indices,
-    run, set_nvapi_cooler_settings, set_nvapi_domain_vfp_deltas,
+    run, set_nvapi_cooler_settings, set_nvapi_domain_vfp_deltas, set_nvapi_pstate_clock_offsets,
 };
 use std::cmp::min;
 use std::convert::TryFrom;
@@ -1288,6 +1287,28 @@ pub fn apply_autoscan_profile(
             )));
         }
     }
+
+    let readout_f = run_output(gpu, QueryGpuStatus)?.clone().clocks;
+    let mut init_vmem_oc_value = 0;
+    let mut clocks = Vec::new();
+    for (clock_name, freq) in readout_f {
+        clocks.push((clock_name.to_string(), freq));
+    }
+    if let Some((_, memory_clock)) = clocks.iter().find(|(name, _)| name.contains("Memory")) {
+        println!("Memory Clock: {}", memory_clock);
+        init_vmem_oc_value = (memory_clock.0 / 25) as i32;
+        println!("Memory OC start at: +{} MHz", init_vmem_oc_value / 1000);
+    }
+
+    set_nvapi_pstate_clock_offsets(
+        gpu,
+        [(
+            PState::P0,
+            ClockDomain::Memory,
+            KilohertzDelta(init_vmem_oc_value),
+        )],
+    )?;
+    sync_memory_pstate_as_p0(gpu)?;
 
     Ok(())
 }

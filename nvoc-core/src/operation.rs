@@ -949,7 +949,7 @@ impl GpuOperation for ResetNvapiSensorLimits {
                 info.sensor_limits
                     .iter()
                     .cloned()
-                    .map(nvapi_hi::SensorThrottle::from_default),
+                    .map(SensorThrottle::from_default),
             )
             .map_err(Error::from)
     }
