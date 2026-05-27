@@ -6,6 +6,7 @@ use super::human::print_scan_separator;
 use super::platform::panic_windows_only;
 use csv::{ReaderBuilder, StringRecord, WriterBuilder};
 use num_traits::abs;
+use nvoc_cli_common::color::stylize;
 use nvoc_core::Error;
 use nvoc_core::{ClockDomain, GpuTarget, VfPoint};
 use nvoc_core::{
@@ -1219,7 +1220,13 @@ pub fn apply_autoscan_profile(
                 boost: Percentage(100),
             },
         )?;
-        println!("Successfully set VDDQ boost to +100% (max allowed V_core in fact).");
+        println!(
+            "{}",
+            stylize(
+                "Successfully set VDDQ boost to +100% (max allowed V_core in fact).",
+                false
+            )
+        );
     }
 
     let settings = [
@@ -1240,7 +1247,13 @@ pub fn apply_autoscan_profile(
     ];
 
     set_nvapi_cooler_settings(gpu, settings)?;
-    println!("Successfully set Cooler1 and Cooler2 to {}%.", cooler_level);
+    println!(
+        "{}",
+        stylize(
+            &format!("Successfully set Cooler1 and Cooler2 to {}%.", cooler_level),
+            false
+        )
+    );
 
     match get_gpu_tdp_temp_limit(matches, print_scan_separator) {
         Ok((
@@ -1258,7 +1271,13 @@ pub fn apply_autoscan_profile(
                     limits: vec![_max_tdp_percent],
                 },
             )?;
-            println!("Successfully set the TDP to {}", _max_tdp_percent);
+            println!(
+                "{}",
+                stylize(
+                    &format!("Successfully set the TDP to {}", _max_tdp_percent),
+                    false
+                )
+            );
 
             for point in _pff_curve.points.iter_mut() {
                 point.y = Kilohertz(3456000);
@@ -1277,8 +1296,14 @@ pub fn apply_autoscan_profile(
                 },
             )?;
             println!(
-                "Successfully set the Temp_limit to {} and pff-curve to {}",
-                _max_temp_lim, _pff_curve
+                "{}",
+                stylize(
+                    &format!(
+                        "Successfully set the Temp_limit to {} and pff-curve to {}",
+                        _max_temp_lim, _pff_curve
+                    ),
+                    false
+                )
             );
         }
         Err(e) => {
