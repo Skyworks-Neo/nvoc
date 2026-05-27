@@ -674,7 +674,7 @@ mod pressure_runner {
                             {
                                 let target_id = cfg.target_gpu_id;
                                 let matches_target = |evt: &&WindowsGpuEvent| {
-                                    evt.gpu_bus_id.map_or(true, |id| id == target_id)
+                                    evt.gpu_bus_id.is_none_or(|id| id == target_id)
                                 };
                                 let current_target_count =
                                     current_events.iter().filter(|e| matches_target(e)).count();
@@ -772,7 +772,7 @@ mod pressure_runner {
                             Some(detailed_events) => {
                                 let target_id = cfg.target_gpu_id;
                                 let matches_target = |evt: &&WindowsGpuEvent| {
-                                    evt.gpu_bus_id.map_or(true, |id| id == target_id)
+                                    evt.gpu_bus_id.is_none_or(|id| id == target_id)
                                 };
 
                                 let fecs_count = detailed_events
