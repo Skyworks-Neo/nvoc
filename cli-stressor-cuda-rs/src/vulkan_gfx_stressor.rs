@@ -198,6 +198,7 @@ fn run_vulkan_stress_loop(
 
         let image_count = image_config.image_count.max(1) as usize;
         let msaa_on = image_config.msaa > 1;
+
         let mut images = Vec::new();
         let mut memories = Vec::new();
         let mut resolve_images = Vec::new();
@@ -208,7 +209,6 @@ fn run_vulkan_stress_loop(
         for _ in 0..image_count {
             let img = device.create_image(&image_create_info, None)?;
             let mem_req = device.get_image_memory_requirements(img);
-
             let mem_type_idx = (0..mem_properties.memory_type_count)
                 .find(|&i| {
                     (mem_req.memory_type_bits & (1 << i)) != 0
@@ -217,7 +217,6 @@ fn run_vulkan_stress_loop(
                             .contains(vk::MemoryPropertyFlags::DEVICE_LOCAL)
                 })
                 .ok_or("No compatible DEVICE_LOCAL Vulkan memory type found")?;
-
             let alloc_info = vk::MemoryAllocateInfo::default()
                 .allocation_size(mem_req.size)
                 .memory_type_index(mem_type_idx);
@@ -227,7 +226,7 @@ fn run_vulkan_stress_loop(
             memories.push(mem);
 
             if msaa_on {
-                let resolve_info = vk::ImageCreateInfo::default()
+                let rinfo = vk::ImageCreateInfo::default()
                     .image_type(vk::ImageType::TYPE_3D)
                     .format(vk::Format::R16G16B16A16_UNORM)
                     .extent(image_extent)
@@ -237,23 +236,23 @@ fn run_vulkan_stress_loop(
                     .tiling(vk::ImageTiling::OPTIMAL)
                     .usage(vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST)
                     .sharing_mode(vk::SharingMode::EXCLUSIVE);
-                let resolve_img = device.create_image(&resolve_info, None)?;
-                let resolve_req = device.get_image_memory_requirements(resolve_img);
-                let resolve_type_idx = (0..mem_properties.memory_type_count)
+                let rimg = device.create_image(&rinfo, None)?;
+                let rreq = device.get_image_memory_requirements(rimg);
+                let rtype_idx = (0..mem_properties.memory_type_count)
                     .find(|&i| {
-                        (resolve_req.memory_type_bits & (1 << i)) != 0
+                        (rreq.memory_type_bits & (1 << i)) != 0
                             && mem_properties.memory_types[i as usize]
                                 .property_flags
                                 .contains(vk::MemoryPropertyFlags::DEVICE_LOCAL)
                     })
                     .ok_or("No compatible DEVICE_LOCAL memory for resolve image")?;
-                let resolve_alloc = vk::MemoryAllocateInfo::default()
-                    .allocation_size(resolve_req.size)
-                    .memory_type_index(resolve_type_idx);
-                let resolve_mem = device.allocate_memory(&resolve_alloc, None)?;
-                device.bind_image_memory(resolve_img, resolve_mem, 0)?;
-                resolve_images.push(resolve_img);
-                resolve_memories.push(resolve_mem);
+                let ralloc = vk::MemoryAllocateInfo::default()
+                    .allocation_size(rreq.size)
+                    .memory_type_index(rtype_idx);
+                let rmem = device.allocate_memory(&ralloc, None)?;
+                device.bind_image_memory(rimg, rmem, 0)?;
+                resolve_images.push(rimg);
+                resolve_memories.push(rmem);
             }
         }
 
@@ -335,7 +334,7 @@ fn run_vulkan_stress_loop(
                 .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
             device.begin_command_buffer(cmd_buffer, &begin_info)?;
 
-            // Heavy work: clear + resolve (MSAA) or clear + blit.
+            // Heavy work: clear + resolve (MSAA) or clear + blit
             for _ in 0..20 {
                 let c_val: f32 = rng.random_range(0.0..1.0);
                 let clear_color = vk::ClearColorValue {
@@ -404,7 +403,6 @@ fn run_vulkan_stress_loop(
                                 z: image_extent.depth as i32,
                             },
                         ]);
-
                     device.cmd_blit_image(
                         cmd_buffer,
                         images[src_idx],

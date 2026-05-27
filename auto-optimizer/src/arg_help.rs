@@ -23,6 +23,7 @@ pub fn get_arguments() -> Command {
                 .value_name("GPU_ID")
                 .num_args(1..)
                 .action(ArgAction::Append)
+                .global(true)
                 .help(
                     "GPU ID selector. \
              Accepts decimal or hex.\n\

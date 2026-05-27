@@ -1,31 +1,31 @@
 use super::autoscan_config::{FixResultConfig, VfpExportConfig};
 use super::basic_func::get_gpu_tdp_temp_limit;
-use super::human::print_scan_separator;
 // oc_set_function
 #[cfg(all(not(windows), not(target_os = "linux")))]
 use super::platform::panic_windows_only;
 use csv::{ReaderBuilder, StringRecord, WriterBuilder};
 use num_traits::abs;
+use nvoc_auto_optimizer::PState;
 use nvoc_cli_common::color::stylize;
 use nvoc_core::{ClockDomain, GpuTarget, VfPoint};
 use nvoc_core::{
     CoolerPolicy, CoolerSettings, FanCoolerId, Kilohertz, KilohertzDelta, Microvolts, Percentage,
     SensorThrottle,
 };
+use nvoc_core::{Error, QueryGpuStatus, set_nvapi_pstate_clock_offsets};
 use nvoc_core::{
-    Error, GpuOperation, GpuType, PState, QueryGpuInfo, QueryGpuStatus, SetNvapiPowerLimits,
-    SetNvapiSensorLimits, SetPstateBaseVoltage, SetVfpPointDelta, SetVoltageBoost, fetch_gpu_type,
+    GpuOperation, GpuType, QueryGpuInfo, SetNvapiPowerLimits, SetNvapiSensorLimits,
+    SetPstateBaseVoltage, SetVfpPointDelta, SetVoltageBoost, fetch_gpu_type,
     legacy_p0_core_max_voltage_delta, query_domain_vf_points_indexed, query_domain_vfp_indices,
-    run, set_nvapi_cooler_settings, set_nvapi_domain_vfp_deltas, set_nvapi_pstate_clock_offsets,
+    run, set_nvapi_cooler_settings, set_nvapi_domain_vfp_deltas,
 };
 use std::cmp::min;
 use std::convert::TryFrom;
+use std::fs;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 use std::process::Child;
-
-use std::fs;
 #[cfg(any(windows, target_os = "linux"))]
 use std::process::Command;
 use std::thread::sleep;
@@ -858,11 +858,11 @@ pub fn fix_result(gpu: &GpuTarget<'_>, matches: &clap::ArgMatches) -> Result<(),
         sum_df += default_freq as u64;
 
         if margin_bin > 5 {
-            delta -= minimum_delta_core_freq_step * (5 + cfg.minus_bin);
+            delta -= minimum_delta_core_freq_step * (3 + cfg.minus_bin);
         } else if abs(margin_bin) < 2 {
-            delta -= minimum_delta_core_freq_step * (1 + cfg.minus_bin);
+            delta -= minimum_delta_core_freq_step * (cfg.minus_bin);
         } else {
-            delta -= minimum_delta_core_freq_step * (abs(margin_bin) + 1 + cfg.minus_bin);
+            delta -= minimum_delta_core_freq_step * (abs(margin_bin) + cfg.minus_bin);
         }
 
         if delta < 0 {
@@ -892,13 +892,6 @@ pub fn fix_result(gpu: &GpuTarget<'_>, matches: &clap::ArgMatches) -> Result<(),
 }
 
 pub fn check_voltage_points(log_filename: &str) -> io::Result<Option<VoltagePointResume>> {
-    // Helper function to extract voltage value from a log line
-    fn extract_voltage_point(line: &str) -> Option<i32> {
-        line.split_whitespace()
-            .filter_map(|word| word.parse::<i32>().ok()) // Try to parse integers
-            .next() // Take the first one found
-    }
-
     // Helper function to extract four usize values from a line
     fn extract_key_points(line: &str) -> Option<(usize, usize, usize, usize)> {
         let numbers: Vec<usize> = line
@@ -930,14 +923,14 @@ pub fn check_voltage_points(log_filename: &str) -> io::Result<Option<VoltagePoin
     for line in reader.lines() {
         let line = line?; // Unwrap line safely
 
-        // Check for minimum voltage point
-        // Minimum voltage point
+        // Check for minimum voltage point by looking for the pattern and extracting the value after it
         if line.contains("minimum_voltage_point") {
-            min_voltage_point = extract_voltage_point(&line);
+            min_voltage_point = extract_value(&line, "minimum_voltage_point:");
         }
 
+        // Check for maximum voltage point by looking for the pattern and extracting the value after it
         if line.contains("maximum_voltage_point") {
-            max_voltage_point = extract_voltage_point(&line);
+            max_voltage_point = extract_value(&line, "maximum_voltage_point:");
         }
 
         if line.contains("key points detected:") {
@@ -969,6 +962,12 @@ fn extract_value_f64(line: &str, pattern: &str) -> Option<f64> {
         .and_then(|s| s.trim_matches(|c| c == ',').parse::<f64>().ok()) // Parse as f64
 }
 
+fn is_plausible_voltage_point(point: usize) -> bool {
+    // VFP point indices are bounded by the table size; anything above that is
+    // usually a misparsed GPU id or stale data from a different device.
+    point <= 255
+}
+
 pub fn break_point_continue(
     log_filename: &str,
     testing_step: usize,
@@ -978,8 +977,8 @@ pub fn break_point_continue(
     // Read all lines into a Vec
     let lines: Vec<String> = reader.lines().collect::<Result<_, _>>()?;
 
-    let mut last_code_100_freq: Option<f64> = None;
-    let mut last_code_0_freq: Option<f64> = None;
+    let mut last_succeeded_freq: Option<f64> = None;
+    let mut last_failed_freq: Option<f64> = None;
     let mut last_voltage_point: Option<usize> = None;
 
     let mut ultrafast_flag: Option<bool> = None;
@@ -994,8 +993,8 @@ pub fn break_point_continue(
         if line.contains("Scan")
             || line.contains("Finished")
                 && (last_voltage_point.is_some()
-                    || last_code_100_freq.is_some()
-                    || last_code_0_freq.is_some())
+                    || last_succeeded_freq.is_some()
+                    || last_failed_freq.is_some())
         {
             if line.contains("ultrafast") {
                 ultrafast_flag = Some(true)
@@ -1008,40 +1007,56 @@ pub fn break_point_continue(
         if last_voltage_point.is_none()
             && let Some(point) = extract_value(line, "point: #")
         {
-            last_voltage_point = Some(point as usize);
+            let point = point as usize;
+            if is_plausible_voltage_point(point) {
+                last_voltage_point = Some(point);
+            } else {
+                eprintln!(
+                    "Warning: ignoring suspicious resume point {} from log line: {}",
+                    point, line
+                );
+            }
 
             if line.contains("Finished") {
-                last_voltage_point = last_voltage_point.map(|v| v + testing_step);
+                last_voltage_point = last_voltage_point
+                    .and_then(|v| v.checked_add(testing_step))
+                    .filter(|&v| is_plausible_voltage_point(v));
+                if last_voltage_point.is_none() {
+                    eprintln!(
+                        "Warning: ignoring suspicious resume point after Finished line: {}",
+                        line
+                    );
+                }
                 break;
             }
         }
 
-        if last_code_100_freq.is_none()
+        if last_succeeded_freq.is_none()
             && line.contains("Test result is code #0")
             && let Some(freq) = extract_value_f64(line, "freq_delta: #")
         {
-            last_code_100_freq = Some(freq);
+            last_succeeded_freq = Some(freq);
         }
 
-        if last_code_0_freq.is_none()
+        if last_failed_freq.is_none()
             && line.contains("Test")
             && !line.contains("Test result is code #0")
             && let Some(freq) = extract_value_f64(line, "freq_delta: #")
         {
-            last_code_0_freq = Some(freq);
+            last_failed_freq = Some(freq);
         }
 
         if last_voltage_point.is_some()
-            && last_code_100_freq.is_some()
-            && last_code_0_freq.is_some()
+            && last_succeeded_freq.is_some()
+            && last_failed_freq.is_some()
         {
             break; // Stop early if all values are found
         }
     }
 
     Ok((
-        last_code_100_freq,
-        last_code_0_freq,
+        last_succeeded_freq,
+        last_failed_freq,
         last_voltage_point,
         ultrafast_flag,
     ))
@@ -1286,7 +1301,7 @@ pub fn apply_autoscan_profile(
         )
     );
 
-    match get_gpu_tdp_temp_limit(matches, print_scan_separator) {
+    match get_gpu_tdp_temp_limit(matches) {
         Ok((
             _min_tdp_percent,
             _default_tdp_percent,
@@ -1344,17 +1359,25 @@ pub fn apply_autoscan_profile(
             )));
         }
     }
-
     let readout_f = run_output(gpu, QueryGpuStatus)?.clone().clocks;
     let mut init_vmem_oc_value = 0;
     let mut clocks = Vec::new();
     for (clock_name, freq) in readout_f {
+        // Store the clock name and frequency in a data structure.
         clocks.push((clock_name.to_string(), freq));
     }
     if let Some((_, memory_clock)) = clocks.iter().find(|(name, _)| name.contains("Memory")) {
-        println!("Memory Clock: {}", memory_clock);
+        println!(
+            "{}: {}",
+            nvoc_cli_common::color::stylize_title("Memory Clock"),
+            stylize(&format!("{}", memory_clock), false)
+        );
         init_vmem_oc_value = (memory_clock.0 / 25) as i32;
-        println!("Memory OC start at: +{} MHz", init_vmem_oc_value / 1000);
+        println!(
+            "{} {}",
+            nvoc_cli_common::color::stylize_title("Memory OC start at"),
+            stylize(&format!("+{} MHz", init_vmem_oc_value / 1000), false)
+        );
     }
 
     set_nvapi_pstate_clock_offsets(

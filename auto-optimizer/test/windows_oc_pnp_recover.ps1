@@ -46,7 +46,10 @@ if ($TargetPciBus -ge 0) {
                 $targetDev = $gpu
                 break
             }
-        } catch {}
+        } catch {
+            # Some devices may not expose DEVPKEY_Device_BusNumber
+        }
+        # Fallback: parse location info string "PCI bus 1, device 0, function 0"
         try {
             $loc = (Get-PnpDeviceProperty -InstanceId $gpu.InstanceId -KeyName 'DEVPKEY_Device_LocationInfo').Data
             if ($loc -match 'bus\s+(\d+)') {
@@ -68,12 +71,15 @@ if ($TargetPciBus -ge 0) {
     Write-Host "Targeting GPU at PCI bus $TargetPciBus : $($targetDev.FriendlyName)"
     Write-Host "PNPDeviceID: $($targetDev.InstanceId)"
 
+    # Disable
     $targetDev | Disable-PnpDevice -Confirm:$false
     Write-Host "Device '$($targetDev.FriendlyName)' is now disabled."
     Start-Sleep -Seconds 5
+    # Enable
     $targetDev | Enable-PnpDevice -Confirm:$false
     Write-Host "Device '$($targetDev.FriendlyName)' is now enabled."
 } else {
+    # Legacy: toggle all NVIDIA GPUs
     $gpus = Get-WmiObject Win32_VideoController | Where-Object { $_.Description -like "*NVIDIA*" }
     if ($gpus -eq $null) {
         Write-Host "No NVIDIA GPU found."

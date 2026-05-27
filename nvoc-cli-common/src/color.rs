@@ -8,6 +8,8 @@ pub fn init(no_color_flag: bool) {
     NO_COLOR_OVERRIDE.store(no_color_flag, Ordering::Relaxed);
     if no_color_flag {
         colored::control::set_override(false);
+    } else {
+        colored::control::unset_override();
     }
 }
 
@@ -39,7 +41,7 @@ fn split_affixes(token: &str) -> (&str, &str, &str) {
     let end = token
         .char_indices()
         .rev()
-        .find(|(_, c)| c.is_ascii_alphanumeric() || matches!(c, '%' | '+'))
+        .find(|(_, c)| c.is_ascii_alphanumeric() || matches!(c, '%' | '+' | '°'))
         .map(|(i, c)| i + c.len_utf8())
         .unwrap_or(0);
     if start >= end {
@@ -59,7 +61,7 @@ fn style_keyword(core: &str, is_stderr: bool) -> String {
     if lower.contains("warning") {
         return core.yellow().bold().to_string();
     }
-    if lower.contains("skipped") || lower == "skip" {
+    if lower.contains("skipped") || lower.contains("skip") {
         return core.bright_yellow().bold().to_string();
     }
     if lower.contains("succeed") || lower == "success" || lower == "passed" || lower == "ok" {
@@ -185,6 +187,8 @@ pub fn stylize_config(message: &str) -> String {
     }
 }
 
+/// 专为 SCANNER/调试行设计的着色器。
+/// 将任何包含数字的 token 渲染为亮黄色加粗，其它 token 使用常规 style_value 规则。
 pub fn stylize_scanner(message: &str, is_stderr: bool) -> String {
     if !colors_enabled() {
         return message.to_string();
@@ -201,9 +205,11 @@ pub fn stylize_scanner(message: &str, is_stderr: bool) -> String {
                 return token.to_string();
             }
 
+            // 如果 core token 包含任何数字，将其渲染为亮黄色加粗，突出测量值
             let colored = if core.chars().any(|c| c.is_ascii_digit()) {
                 core.bright_yellow().bold().to_string()
             } else {
+                // 非数字 token 仍使用标准的值/关键字着色
                 style_value(core, is_stderr)
             };
 

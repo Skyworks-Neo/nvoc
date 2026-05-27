@@ -885,7 +885,7 @@ def build_arg_parser():
     p.add_argument(
         "--validate-size",
         type=int,
-        default=768,
+        default=1024,
         help="旁路校验所用的固定矩阵尺寸",
     )
     p.add_argument(

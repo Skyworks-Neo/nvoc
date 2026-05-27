@@ -35,13 +35,13 @@ clap = { version = "4.5.60", features = [
   "error-context",
   "derive"
 ] }
-compio = { version = "0.15.0", features = ["runtime", "time"] }
+compio = { version = "0.18.0", features = ["runtime", "time"] }
 csv = "1.4.0"
 futures-util = "0.3"
-flume = "0.11"
+flume = "0.12.0"
 humantime = "2.2.0"
 log = "0.4"
-log2 = "0.2.2"
+log2 = "0.3.0"
 gag = "1.0.0"
 colored = "2.2.0"
 num-traits = "0.2.19"
@@ -49,9 +49,9 @@ nvml-wrapper = "0.12.0"
 nvml-wrapper-sys = "0.9.0"
 nvapi-hi = { version = "0.2.0", features = [
   "serde",
-], git = "https://github.com/arcnmx/nvapi-rs", branch = "v0.2.x" }
-nvapi-sys = { git = "https://github.com/arcnmx/nvapi-rs", branch = "v0.2.x" }
-nvapi = { git = "https://github.com/arcnmx/nvapi-rs", branch = "v0.2.x" }
+], git = "https://github.com/Skyworks-Neo/nvapi-rs", branch = "v0.2.x" }
+nvapi-sys = { git = "https://github.com/Skyworks-Neo/nvapi-rs", branch = "v0.2.x" }
+nvapi = { git = "https://github.com/Skyworks-Neo/nvapi-rs", branch = "v0.2.x" }
 quick-error = "2.0.1"
 time = { version = "0.3", features = ["formatting", "local-offset", "macros"] }
 tiny_http = "0.12"

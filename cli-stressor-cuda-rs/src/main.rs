@@ -128,7 +128,7 @@ struct Args {
     #[arg(long, default_value_t = 6)]
     burst_iters: u32,
 
-    #[arg(long, default_value_t = 10.0)]
+    #[arg(long, default_value_t = 5.0)]
     validate_interval: f64,
 
     #[arg(long, default_value_t = 1024)]
@@ -181,23 +181,23 @@ struct Args {
     #[arg(long, default_value_t = false)]
     vulkan_only: bool,
 
-    /// Vulkan image width for render stress
+    /// Vulkan image width for 3D render stress
     #[arg(long, default_value_t = 8192)]
     vulkan_image_width: u32,
 
-    /// Vulkan image height for render stress
+    /// Vulkan image height for 3D render stress
     #[arg(long, default_value_t = 8192)]
     vulkan_image_height: u32,
 
-    /// Number of Vulkan images for render stress
+    /// Number of Vulkan images for 3D render stress
     #[arg(long, default_value_t = 6)]
     vulkan_image_count: u32,
 
-    /// Vulkan image depth
+    /// Vulkan 3D image depth
     #[arg(long, default_value_t = 1)]
     vulkan_image_depth: u32,
 
-    /// Vulkan MSAA sample count (1 = off, use 2/4/8 when supported)
+    /// MSAA sample count for Vulkan images (1 = off, use 2/4/8)
     #[arg(long, default_value_t = 1)]
     vulkan_image_msaa: u32,
 
@@ -1218,7 +1218,6 @@ fn main() {
         "{}",
         stylize_config(&format!("  Kernel mixture: {:?}", kernel_mixture))
     );
-    // println!("  Kernel param overrides: {:?}", kernel_param_overrides);
     println!(
         "{}",
         stylize_config(&format!(
@@ -1230,17 +1229,14 @@ fn main() {
     if args.enable_vulkan_stress || args.vulkan_only {
         println!(
             "{}",
-            stylize(
-                &format!(
-                    "  Vulkan image: {}x{}x{} x{} ({}x MSAA)",
-                    args.vulkan_image_width,
-                    args.vulkan_image_height,
-                    args.vulkan_image_depth,
-                    args.vulkan_image_count,
-                    args.vulkan_image_msaa,
-                ),
-                false
-            )
+            stylize_config(&format!(
+                "  Vulkan image: {}x{}x{} x{} ({}x MSAA)",
+                args.vulkan_image_width,
+                args.vulkan_image_height,
+                args.vulkan_image_depth,
+                args.vulkan_image_count,
+                args.vulkan_image_msaa,
+            ))
         );
     }
 
