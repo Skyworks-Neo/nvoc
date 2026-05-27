@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import random
 import time
 from typing import List
@@ -24,6 +25,25 @@ from .kernels import (
 )
 from .models import PrecisionSpec, StressResult, StressRunConfig
 from .validation import validate_precision
+
+_KERNEL_COLORS = {
+    "GEMM": "\033[1;91m",
+    "MEMCPY": "\033[1;92m",
+    "MEMSET": "\033[1;93m",
+    "TRANSPOSE": "\033[1;95m",
+    "ELEMENTWISE": "\033[1;96m",
+    "REDUCTION": "\033[1;94m",
+    "ATOMIC": "\033[1;91m",
+}
+_RESET = "\033[0m"
+
+
+def _stylize_line(line: str) -> str:
+    if os.environ.get("NO_COLOR"):
+        return line
+    for name, code in _KERNEL_COLORS.items():
+        line = line.replace(name, f"{code}{name}{_RESET}")
+    return line
 
 
 def run_stress_mixed(
@@ -128,9 +148,11 @@ def run_stress_mixed(
         elapsed_total = time.monotonic() - start
 
         print(
-            f"[MIX] t={elapsed_total:6.1f}s/{config.duration_s:.0f}s | "
-            f"{kernel_kind.value:10} | p={op_spec.name:11} | "
-            f"size={size:5d} | inst={inst_tflops:7.2f} TFLOPS(eqv)"
+            _stylize_line(
+                f"[MIX] t={elapsed_total:6.1f}s/{config.duration_s:.0f}s | "
+                f"{kernel_kind.value:10} | p={op_spec.name:11} | "
+                f"size={size:5d} | inst={inst_tflops:7.2f} TFLOPS(eqv)"
+            )
         )
 
         idx = index_by_name[op_spec.name]
