@@ -1,4 +1,21 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use colored::Colorize;
+
+static NO_COLOR_OVERRIDE: AtomicBool = AtomicBool::new(false);
+
+pub fn init(no_color_flag: bool) {
+    NO_COLOR_OVERRIDE.store(no_color_flag, Ordering::Relaxed);
+    if no_color_flag {
+        colored::control::set_override(false);
+    } else {
+        colored::control::unset_override();
+    }
+}
+
+fn colors_enabled() -> bool {
+    !NO_COLOR_OVERRIDE.load(Ordering::Relaxed) && std::env::var_os("NO_COLOR").is_none()
+}
 
 fn is_numeric_like(token: &str) -> bool {
     let mut has_digit = false;
@@ -38,13 +55,16 @@ fn style_keyword(core: &str, is_stderr: bool) -> String {
     if lower.contains("failed") || lower.contains("error") || lower.contains("crash") {
         return core.red().bold().to_string();
     }
+    if lower == "fail" || lower == "fatal" {
+        return core.red().bold().to_string();
+    }
     if lower.contains("warning") {
         return core.yellow().bold().to_string();
     }
     if lower.contains("skipped") || lower.contains("skip") {
         return core.bright_yellow().bold().to_string();
     }
-    if lower.contains("succeed") || lower == "success" || lower == "passed" {
+    if lower.contains("succeed") || lower == "success" || lower == "passed" || lower == "ok" {
         return core.green().bold().to_string();
     }
     if lower.contains("scanner") || lower.contains("point") || lower.contains("gpu") {
@@ -62,10 +82,7 @@ fn style_keyword(core: &str, is_stderr: bool) -> String {
     if lower == "transpose" {
         return core.bright_magenta().bold().to_string();
     }
-    if lower == "elementwise" {
-        return core.bright_cyan().bold().to_string();
-    }
-    if lower == "reduction" {
+    if lower == "elementwise" || lower == "reduction" {
         return core.bright_cyan().bold().to_string();
     }
     if lower == "atomic" {
@@ -99,7 +116,7 @@ fn style_value(core: &str, is_stderr: bool) -> String {
 }
 
 pub fn stylize_title(title: &str) -> String {
-    if std::env::var_os("NO_COLOR").is_some() {
+    if !colors_enabled() {
         return title.to_string();
     }
 
@@ -138,7 +155,7 @@ pub fn stylize_title(title: &str) -> String {
 }
 
 pub fn stylize(message: &str, is_stderr: bool) -> String {
-    if std::env::var_os("NO_COLOR").is_some() {
+    if !colors_enabled() {
         return message.to_string();
     }
 
@@ -163,17 +180,17 @@ pub fn stylize(message: &str, is_stderr: bool) -> String {
 }
 
 pub fn stylize_config(message: &str) -> String {
-    if std::env::var_os("NO_COLOR").is_some() {
-        message.to_string()
-    } else {
+    if colors_enabled() {
         message.bright_cyan().bold().to_string()
+    } else {
+        message.to_string()
     }
 }
 
 /// 专为 SCANNER/调试行设计的着色器。
 /// 将任何包含数字的 token 渲染为亮黄色加粗，其它 token 使用常规 style_value 规则。
 pub fn stylize_scanner(message: &str, is_stderr: bool) -> String {
-    if std::env::var_os("NO_COLOR").is_some() {
+    if !colors_enabled() {
         return message.to_string();
     }
 
