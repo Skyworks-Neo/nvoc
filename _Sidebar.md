@@ -1,0 +1,12 @@
+**导航**
+- [[首页|Home]]
+- [[架构|Architecture]]
+- [[编译安装|Build-and-Install]]
+- [[GPU 兼容性|GPU-Support-Matrix]]
+- [[Auto-Optimizer|Auto-Optimizer-Guide]]
+- [[Autoscan|Autoscan-Workflow]]
+- [[压力测试|Stress-Testing]]
+- [[GUI|GUI-Guide]]
+- [[TUI|TUI-Guide]]
+- [[SRV 服务|SRV-Guide]]
+- [[贡献|Contributing]]
