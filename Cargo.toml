@@ -23,7 +23,6 @@ codegen-units = 8
 [workspace.dependencies]
 nvoc-core = { path = "./nvoc-core" }
 nvoc-cli-common = { path = "./nvoc-cli-common" }
-nvoc-auto-optimizer = { path = "./auto-optimizer" }
 
 anyhow = "*"
 async-stream = "0.3"
@@ -50,8 +49,6 @@ nvml-wrapper-sys = "0.9.1"
 nvapi-hi = { version = "0.2.0", features = [
   "serde",
 ], git = "https://github.com/Skyworks-Neo/nvapi-rs", branch = "v0.2.x" }
-nvapi-sys = { git = "https://github.com/Skyworks-Neo/nvapi-rs", branch = "v0.2.x" }
-nvapi = { git = "https://github.com/Skyworks-Neo/nvapi-rs", branch = "v0.2.x" }
 quick-error = "2.0.1"
 time = { version = "0.3", features = ["formatting", "local-offset", "macros"] }
 tiny_http = "0.12"

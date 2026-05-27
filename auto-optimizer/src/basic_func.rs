@@ -1652,6 +1652,58 @@ fn handle_nvapi(gpus: &[GpuTarget<'_>], matches: &ArgMatches) -> Result<(), Erro
         handle_test_voltage_limits(gpus, matches, human::print_scan_separator)?;
     }
 
+    if let Some(edid_vals) = matches.get_many::<String>("edid") {
+        let vals: Vec<_> = edid_vals.collect();
+        let display_id_str = vals[0];
+        let hex_data = vals[1];
+        let display_id = u32::from_str_radix(
+            display_id_str
+                .trim_start_matches("0x")
+                .trim_start_matches("0X"),
+            16,
+        )
+        .map_err(|e| Error::from(format!("Invalid display ID '{}': {}", display_id_str, e)))?;
+        let edid_bytes = if hex_data.is_empty() {
+            Vec::new()
+        } else {
+            (0..hex_data.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&hex_data[i..i + 2], 16))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| Error::from(format!("Invalid EDID hex data: {}", e)))?
+        };
+        for gpu in gpus {
+            let gpu_info = run_output(gpu, QueryGpuInfo)?;
+            let nvapi = gpu.nvapi()?;
+            let result = if edid_bytes.is_empty() {
+                nvapi.inner().clear_edid(display_id)
+            } else {
+                nvapi.inner().set_edid(display_id, &edid_bytes)
+            };
+            match result {
+                Ok(()) => {
+                    if edid_bytes.is_empty() {
+                        println!(
+                            "Cleared EDID for display 0x{:08X} on GPU {}",
+                            display_id, gpu_info.id
+                        );
+                    } else {
+                        println!(
+                            "Set EDID ({} bytes) for display 0x{:08X} on GPU {}",
+                            edid_bytes.len(),
+                            display_id,
+                            gpu_info.id
+                        );
+                    }
+                }
+                Err(e) => eprintln!(
+                    "Failed to set EDID for display 0x{:08X} on GPU {}: {:?}",
+                    display_id, gpu_info.id, e
+                ),
+            }
+        }
+    }
+
     Ok(())
 }
 

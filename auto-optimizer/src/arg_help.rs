@@ -350,6 +350,19 @@ pub fn get_arguments() -> Command {
                                 .action(ArgAction::SetTrue)
                                 .help("Reset GPU memory clocks lock. Alias: --pstate-unlock."),
                         )
+                        .arg(
+                            Arg::new("edid")
+                                .long("edid")
+                                .value_names(["DISPLAY_ID", "HEX_DATA"])
+                                .num_args(2)
+                                .help(
+                                    "Set EDID for a display. \
+                                    DISPLAY_ID is the hex display ID (e.g. 0x00010001). \
+                                    HEX_DATA is the raw EDID hex string (e.g. 00FF...). \
+                                    Pass empty string to clear.",
+                                )
+                                .use_value_delimiter(false),
+                        )
                 )
                 .subcommand(
                     Command::new("nvml")
