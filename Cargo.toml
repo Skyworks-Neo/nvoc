@@ -27,7 +27,7 @@ nvoc-cli-common = { path = "./nvoc-cli-common" }
 anyhow = "*"
 async-stream = "0.3"
 chrono = "0.4"
-clap = { version = "4.5.60", features = [
+clap = { version = "4.6", features = [
   "std",
   "help",
   "usage",
@@ -38,7 +38,7 @@ compio = { version = "0.18.0", features = ["runtime", "time"] }
 csv = "1.4.0"
 futures-util = "0.3"
 flume = "0.12.0"
-humantime = "2.2.0"
+humantime = "2.3.0"
 log = "0.4"
 log2 = "0.3.0"
 gag = "1.0.0"
