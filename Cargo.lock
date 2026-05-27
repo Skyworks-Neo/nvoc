@@ -259,6 +259,7 @@ dependencies = [
  "cudarc",
  "half",
  "matrixmultiply",
+ "nvoc-cli-common",
  "rand",
  "rand_distr",
  "serde",
@@ -280,6 +281,15 @@ checksum = "117725a109d387c937a1533ce01b450cbde6b88abceea8473c4d7a85853cda3c"
 dependencies = [
  "lazy_static",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "colored"
+version = "3.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34"
+dependencies = [
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -986,7 +996,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ab0bb08f62a7ad37611a1e4edde73a2279fa22c18dc1490b388ca4737fdaf21"
 dependencies = [
  "chrono",
- "colored",
+ "colored 2.2.0",
  "flate2",
  "log",
 ]
@@ -1127,12 +1137,21 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "colored 3.1.1",
  "csv",
  "num-traits",
  "nvml-wrapper",
+ "nvoc-cli-common",
  "nvoc-core",
  "serde_json",
  "time",
+]
+
+[[package]]
+name = "nvoc-cli-common"
+version = "0.1.0"
+dependencies = [
+ "colored 3.1.1",
 ]
 
 [[package]]
