@@ -6,7 +6,7 @@ use super::basic_func::{
 use super::human::print_scan_separator;
 use super::oc_profile_function::{
     apply_autoscan_profile, break_point_continue, check_voltage_points, export_single_point,
-    key_point_extractor,
+    key_point_extractor, sync_memory_pstate_as_p0,
 };
 use clap::ArgMatches;
 use num_traits::pow;
@@ -20,9 +20,9 @@ use std::cmp::min;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
 use std::thread::sleep;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 fn run_output<O: GpuOperation>(gpu: &GpuTarget<'_>, op: O) -> Result<O::Output, Error> {
     run(gpu, op).map(|report| report.output)
@@ -36,6 +36,9 @@ mod pressure_runner {
         range: std::ops::RangeInclusive<usize>,
         delta_khz: i32,
     ) {
+        const MAX_CONSECUTIVE_FAILURES: usize = 3;
+        let mut consecutive_failures = 0;
+
         for offset in range {
             match run_output(
                 gpu,
@@ -44,11 +47,23 @@ mod pressure_runner {
                     delta: KilohertzDelta(delta_khz),
                 },
             ) {
-                Ok(_) => {}
-                Err(e) => eprintln!(
-                    "Warning: {}, set_vfp offset={} Error. GPU crashed...",
-                    e, offset
-                ),
+                Ok(_) => {
+                    consecutive_failures = 0;
+                }
+                Err(e) => {
+                    consecutive_failures += 1;
+                    eprintln!(
+                        "Warning: {}, set_vfp offset={} Error. GPU crashed...",
+                        e, offset
+                    );
+                    if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+                        eprintln!(
+                            "Too many consecutive VFP errors ({}). Skipping remaining offsets in range.",
+                            consecutive_failures
+                        );
+                        return;
+                    }
+                }
             }
         }
     }
@@ -75,6 +90,51 @@ mod pressure_runner {
         }
     }
 
+    fn retry_nvapi_with_backoff<F, E>(mut op: F, label: &str, on_err: E) -> Result<(), Error>
+    where
+        F: FnMut() -> Result<(), Error>,
+        E: Fn(&Error),
+    {
+        const BACKOFF_SECS: [u64; 5] = [5, 10, 20, 40, 80];
+
+        for (attempt, &wait_secs) in BACKOFF_SECS.iter().enumerate() {
+            if attempt > 0 {
+                eprintln!(
+                    "Retrying {} in {}s (attempt {}/{})...",
+                    label,
+                    wait_secs,
+                    attempt + 1,
+                    BACKOFF_SECS.len()
+                );
+                sleep(Duration::from_secs(wait_secs));
+            }
+
+            match op() {
+                Ok(()) => {
+                    if attempt > 0 {
+                        eprintln!("{} succeeded on attempt {}.", label, attempt + 1);
+                    }
+                    return Ok(());
+                }
+                Err(e) if attempt + 1 < BACKOFF_SECS.len() => {
+                    eprintln!("{} failed (attempt {}): {:?}", label, attempt + 1, e);
+                    on_err(&e);
+                }
+                Err(e) => {
+                    eprintln!(
+                        "{} failed after {} attempts: {:?}",
+                        label,
+                        BACKOFF_SECS.len(),
+                        e
+                    );
+                    return Err(e);
+                }
+            }
+        }
+
+        unreachable!()
+    }
+
     pub(super) struct TestPressureConfig<'a> {
         pub(super) point: usize,
         pub(super) flat_curve_flag: bool,
@@ -92,6 +152,9 @@ mod pressure_runner {
         pub(super) cuda_device: Option<u32>,
         /// Extra arguments appended verbatim to the stressor command.
         pub(super) stressor_extra_args: &'a [String],
+        /// GpuId.0 value of the GPU under test; used for event-log GPU filtering.
+        #[cfg(windows)]
+        pub(super) target_gpu_id: u32,
     }
 
     fn test_initialization(gpu: &GpuTarget<'_>, cfg: &TestPressureConfig<'_>) {
@@ -175,6 +238,16 @@ mod pressure_runner {
     }
 
     fn force_kill_process(process: &mut Child, reason: &str) {
+        #[cfg(windows)]
+        {
+            let pid = process.id();
+            let _ = Command::new("taskkill")
+                .args(["/F", "/T", "/PID", &pid.to_string()])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+
         match process.kill() {
             Ok(_) => {
                 let _ = process.wait();
@@ -201,6 +274,180 @@ mod pressure_runner {
         }
     }
 
+    #[cfg(windows)]
+    #[derive(Debug, Clone)]
+    #[allow(dead_code)]
+    struct WindowsGpuEvent {
+        event_id: u32,
+        gpu_bus_id: Option<u32>,
+        is_fecs: bool,
+        is_tdr: bool,
+    }
+
+    #[cfg(windows)]
+    fn query_windows_gpu_events(
+        start: SystemTime,
+        end: SystemTime,
+    ) -> Option<Vec<WindowsGpuEvent>> {
+        use std::time::UNIX_EPOCH;
+
+        let start_ms = start.duration_since(UNIX_EPOCH).ok()?.as_millis();
+        let end_ms = end.duration_since(UNIX_EPOCH).ok()?.as_millis();
+
+        let output = Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "./test/windows_gpu_event_query.ps1",
+                "-StartMs",
+                &start_ms.to_string(),
+                "-EndMs",
+                &end_ms.to_string(),
+            ])
+            .output()
+            .ok()?;
+
+        if !output.status.success() {
+            eprintln!(
+                "Warning: Failed to query Windows Event Log: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return None;
+        }
+
+        let output_text = String::from_utf8_lossy(&output.stdout);
+        let mut events = Vec::new();
+        for line in output_text.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let mut parts = line.splitn(5, '|');
+            let event_id = parts.next()?.parse::<u32>().ok()?;
+            let gpu_bus_str = parts.next()?;
+            let gpu_bus_id = if gpu_bus_str.is_empty() {
+                None
+            } else {
+                gpu_bus_str.parse::<u32>().ok()
+            };
+            let is_fecs = parts.next() == Some("1");
+            let is_tdr = parts.next() == Some("1");
+            events.push(WindowsGpuEvent {
+                event_id,
+                gpu_bus_id,
+                is_fecs,
+                is_tdr,
+            });
+        }
+        Some(events)
+    }
+
+    #[cfg(windows)]
+    fn pnp_recover_gpu(gpu: &GpuTarget<'_>) -> bool {
+        let pci_bus = gpu.id.pci_bus();
+        eprintln!(
+            "pnp_recover: Triggering PnP disable/enable cycle for GPU at PCI bus {} (GpuId: {})...",
+            pci_bus, gpu.id.0
+        );
+
+        let output = Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "./test/windows_oc_pnp_recover.ps1",
+                "-TargetPciBus",
+                &pci_bus.to_string(),
+            ])
+            .output();
+
+        match output {
+            Ok(out) if out.status.success() => {
+                eprintln!("pnp_recover: PnP cycle completed successfully.");
+                eprintln!("stdout: {}", String::from_utf8_lossy(&out.stdout).trim());
+                sleep(Duration::from_secs(10));
+                true
+            }
+            Ok(out) => {
+                eprintln!(
+                    "pnp_recover: PnP cycle failed: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                false
+            }
+            Err(e) => {
+                eprintln!("pnp_recover: Failed to launch recovery script: {e}");
+                false
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    fn count_linux_gpu_xid_events_by_time(
+        start: SystemTime,
+        end: SystemTime,
+    ) -> Option<Vec<(u32, usize)>> {
+        use std::time::UNIX_EPOCH;
+
+        let start_epoch = start.duration_since(UNIX_EPOCH).ok()?.as_secs();
+        let end_epoch = end.duration_since(UNIX_EPOCH).ok()?.as_secs();
+
+        let output = Command::new("dmesg")
+            .args([
+                "--since",
+                &format!("@{start_epoch}"),
+                "--until",
+                &format!("@{end_epoch}"),
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .ok()?;
+
+        if !output.status.success() {
+            eprintln!(
+                "Warning: Failed to query dmesg (time range {} -> {}): {}",
+                start_epoch,
+                end_epoch,
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return None;
+        }
+
+        let output_text = String::from_utf8_lossy(&output.stdout);
+        let mut counts: Vec<(u32, usize)> = Vec::new();
+        for line in output_text.lines() {
+            if !line.contains("NVRM: Xid") {
+                continue;
+            }
+            let xid: u32 = if let Some(pos) = line.find("): ") {
+                let after = &line[pos + 3..];
+                let num_end = after
+                    .find(|c: char| !c.is_ascii_digit())
+                    .unwrap_or(after.len());
+                match after[..num_end].parse() {
+                    Ok(n) => n,
+                    Err(_) => continue,
+                }
+            } else {
+                continue;
+            };
+
+            if let Some(existing) = counts.iter_mut().find(|(id, _)| *id == xid) {
+                existing.1 += 1;
+            } else {
+                counts.push((xid, 1));
+            }
+        }
+
+        Some(counts)
+    }
+
     pub(super) fn run(
         gpu: &GpuTarget<'_>,
         _matches: &ArgMatches,
@@ -210,7 +457,7 @@ mod pressure_runner {
         // Build argv as a structured Vec so paths or codes containing whitespace
         // are not silently re-tokenized into multiple arguments.
         let mut args: Vec<String> = vec![cfg.test_code.clone(), cfg.timeout_loops.to_string()];
-        let timeout_budget_secs = cfg.timeout_loops * 6;
+        let timeout_budget_secs = cfg.timeout_loops * 10;
         println!("Timeout: {}s", timeout_budget_secs);
         if cfg.recovery_method {
             args.push("--aggressive-recovery".to_string());
@@ -232,21 +479,40 @@ mod pressure_runner {
             match cmd.spawn() {
                 Ok(mut process) => {
                     let mut exit_code = 1;
+                    #[cfg(windows)]
+                    let event_baseline = query_windows_gpu_events(
+                        SystemTime::now() - Duration::from_secs(30),
+                        SystemTime::now(),
+                    );
+                    #[cfg(windows)]
+                    let event_window_start = SystemTime::now();
+                    #[cfg(windows)]
+                    let mut last_event_poll = Instant::now();
+                    #[cfg(windows)]
+                    let poll_interval = Duration::from_secs(3);
+                    #[cfg(not(windows))]
+                    let linux_xid_window_start = SystemTime::now();
+
                     let test_start_at = Instant::now();
                     let mut last_fluctuation = Instant::now();
                     let mut in_test_check_number = 0;
                     let mut fluctuation_h_l_flag = false;
                     let mut thrm_or_pwr_limit_number = 0;
-                    run_output(
-                        gpu,
-                        ResetVfpDeltas {
-                            domain: VfpResetDomain::All,
+                    let _ = retry_nvapi_with_backoff(
+                        || {
+                            run_output(
+                                gpu,
+                                ResetVfpDeltas {
+                                    domain: VfpResetDomain::Core,
+                                },
+                            )
+                            .map(|_| ())
                         },
-                    )
-                    .unwrap_or_else(|err| {
-                        eprintln!("Warning: Failed to reset GPU due to {:?}", err);
-                    });
-                    sleep(Duration::from_secs(1));
+                        "ResetVfpDeltas",
+                        |e| {
+                            eprintln!("Warning: Failed to reset GPU due to {:?}", e);
+                        },
+                    );
                     test_initialization(gpu, cfg);
                     sleep(Duration::from_secs(1));
 
@@ -335,6 +601,48 @@ mod pressure_runner {
                             }
                         }
 
+                        #[cfg(windows)]
+                        if last_event_poll.elapsed() >= poll_interval {
+                            last_event_poll = Instant::now();
+                            if let Some(current_events) =
+                                query_windows_gpu_events(event_window_start, SystemTime::now())
+                            {
+                                let target_id = cfg.target_gpu_id;
+                                let matches_target = |evt: &&WindowsGpuEvent| {
+                                    evt.gpu_bus_id.is_none_or(|id| id == target_id)
+                                };
+                                let current_target_count =
+                                    current_events.iter().filter(|e| matches_target(e)).count();
+                                if current_target_count > 0 {
+                                    let fecs_count = current_events
+                                        .iter()
+                                        .filter(|e| matches_target(e) && e.is_fecs)
+                                        .count();
+                                    let tdr_count = current_events
+                                        .iter()
+                                        .filter(|e| matches_target(e) && e.is_tdr)
+                                        .count();
+                                    eprintln!(
+                                        "Detected {} GPU event(s) for target GPU during test (FECS: {}, TDR: {}). Killing stressor.",
+                                        current_target_count, fecs_count, tdr_count
+                                    );
+                                    force_kill_process(
+                                        &mut process,
+                                        "GPU event detected during test",
+                                    );
+                                    exit_code = 1;
+
+                                    if fecs_count > 3 || tdr_count > 6 {
+                                        eprintln!(
+                                            "Event count exceeds critical threshold; triggering PnP recovery."
+                                        );
+                                        pnp_recover_gpu(gpu);
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+
                         if test_start_at.elapsed() >= Duration::from_secs(timeout_budget_secs) {
                             println!(
                                 "Considering GPU has crashed (timeout: {}s, elapsed: {}s)...",
@@ -342,18 +650,28 @@ mod pressure_runner {
                                 test_start_at.elapsed().as_secs()
                             );
                             force_kill_process(&mut process, "in-test timeout");
-                            run_output(
-                                gpu,
-                                ResetVfpDeltas {
-                                    domain: VfpResetDomain::All,
+                            let _ = retry_nvapi_with_backoff(
+                                || {
+                                    run_output(
+                                        gpu,
+                                        ResetVfpDeltas {
+                                            domain: VfpResetDomain::Core,
+                                        },
+                                    )
+                                    .map(|_| ())
                                 },
-                            )
-                            .unwrap_or_else(|err| {
-                                eprintln!("Warning: Failed to reset GPU due to {:?}", err);
-                            });
+                                "ResetVfpDeltas (timeout recovery)",
+                                |e| {
+                                    eprintln!("Warning: Failed to reset GPU due to {:?}", e);
+                                },
+                            );
                             break;
                         }
                     }
+
+                    #[cfg(windows)]
+                    let windows_event_counts =
+                        query_windows_gpu_events(event_window_start, SystemTime::now());
 
                     if exit_code == 0 {
                         eprintln!("Process finished successfully.");
@@ -370,6 +688,116 @@ mod pressure_runner {
                         }
                     } else {
                         eprintln!("Process finished with exit code {}.", exit_code);
+                    }
+
+                    #[cfg(windows)]
+                    {
+                        match windows_event_counts {
+                            Some(detailed_events) => {
+                                let target_id = cfg.target_gpu_id;
+                                let matches_target = |evt: &&WindowsGpuEvent| {
+                                    evt.gpu_bus_id.is_none_or(|id| id == target_id)
+                                };
+
+                                let fecs_count = detailed_events
+                                    .iter()
+                                    .filter(|e| matches_target(e) && e.is_fecs)
+                                    .count();
+                                let tdr_count = detailed_events
+                                    .iter()
+                                    .filter(|e| matches_target(e) && e.is_tdr)
+                                    .count();
+
+                                if fecs_count > 3 {
+                                    eprintln!(
+                                        "Detected {} FECS exception(s) for target GPU (>3 threshold) during pressure test.",
+                                        fecs_count
+                                    );
+                                    exit_code = 1;
+                                }
+
+                                if tdr_count > 6 {
+                                    eprintln!(
+                                        "Detected {} TDR events for target GPU (>6 threshold) during pressure test.",
+                                        tdr_count
+                                    );
+                                    exit_code = 1;
+                                }
+
+                                let other_target = detailed_events
+                                    .iter()
+                                    .filter(|e| matches_target(e) && !e.is_fecs && !e.is_tdr)
+                                    .count();
+                                let baseline_other = event_baseline
+                                    .as_ref()
+                                    .map(|baseline| {
+                                        baseline
+                                            .iter()
+                                            .filter(|e| {
+                                                matches_target(e) && !e.is_fecs && !e.is_tdr
+                                            })
+                                            .count()
+                                    })
+                                    .unwrap_or(0);
+                                let new_other = other_target.saturating_sub(baseline_other);
+                                if new_other > 0 && exit_code == 0 {
+                                    eprintln!(
+                                        "Detected {} new non-critical Windows GPU event(s) for target GPU.",
+                                        new_other
+                                    );
+                                    exit_code = 1;
+                                }
+
+                                let total_relevant =
+                                    detailed_events.iter().filter(|e| matches_target(e)).count();
+                                if total_relevant > 0 {
+                                    eprintln!(
+                                        "Event summary for target GPU: {} total, {} FECS, {} TDR, {} other",
+                                        total_relevant,
+                                        fecs_count,
+                                        tdr_count,
+                                        total_relevant - fecs_count - tdr_count
+                                    );
+                                }
+                            }
+                            None => {
+                                eprintln!(
+                                    "Warning: Failed to query Windows Event Log for this run."
+                                );
+                            }
+                        }
+                    }
+
+                    #[cfg(not(windows))]
+                    if let Some(xid_counts) = count_linux_gpu_xid_events_by_time(
+                        linux_xid_window_start,
+                        SystemTime::now(),
+                    ) {
+                        if !xid_counts.is_empty() {
+                            let summary = xid_counts
+                                .iter()
+                                .map(|(xid, count)| format!("Xid {} x{}", xid, count))
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            eprintln!(
+                                "Detected NVIDIA Xid event(s) during pressure test: {summary}"
+                            );
+                            exit_code = 1;
+                        }
+                    }
+
+                    if exit_code != 0 {
+                        eprintln!(
+                            "Test returned non-zero ({}). Re-applying autoscan profile before next run...",
+                            exit_code
+                        );
+                        let _ = retry_nvapi_with_backoff(
+                            || apply_autoscan_profile(gpu, _matches, 80),
+                            "apply_autoscan_profile",
+                            |e| {
+                                eprintln!("apply_autoscan_profile attempt failed: {:?}", e);
+                            },
+                        );
                     }
 
                     return exit_code;
@@ -422,6 +850,8 @@ fn test_pressure(
         is_legacy_global_offset,
         cuda_device,
         stressor_extra_args,
+        #[cfg(windows)]
+        target_gpu_id: gpu.id.0,
     };
 
     pressure_runner::run(gpu, matches, &cfg)
@@ -533,12 +963,20 @@ fn apply_short_phase_success_step(
     Some(increase)
 }
 
-fn pre_load_vf_recheck(gpu: &GpuTarget<'_>, point: usize) -> Result<(), Error> {
+fn pre_load_vf_recheck(gpu: &GpuTarget<'_>, point: usize) -> bool {
     println!("Waiting for pre-load volt-freq recheck");
     sleep(Duration::from_secs(1));
-    let checks = voltage_frequency_check(std::slice::from_ref(gpu), point, print_scan_separator)?;
+    let checks =
+        match voltage_frequency_check(std::slice::from_ref(gpu), point, print_scan_separator) {
+            Ok(checks) => checks,
+            Err(e) => {
+                eprintln!("Failed to read V/F info: {e}");
+                return false;
+            }
+        };
     if checks.iter().all(|check| check.precise) {
-        return Ok(());
+        println!("[SCANNER] Pre-load V/F check passed at point {}", point);
+        return true;
     }
 
     let summary = checks
@@ -546,8 +984,51 @@ fn pre_load_vf_recheck(gpu: &GpuTarget<'_>, point: usize) -> Result<(), Error> {
         .map(|check| format!("GPU {} precise={}", check.gpu_id, check.precise))
         .collect::<Vec<_>>()
         .join(", ");
+    eprintln!("V/F check failed at point {point}: {summary}");
+    false
+}
+
+fn relock_and_recheck_vf(
+    gpu: &GpuTarget<'_>,
+    point: usize,
+    vfp_set_range: usize,
+    flat_curve_flag: bool,
+    init_core_oc_value: i32,
+    minimum_delta_core_freq_step: i32,
+    max_attempts: i32,
+) -> Result<(), Error> {
+    for attempt in 1..=max_attempts {
+        set_nvapi_vfp_curve_delta(
+            gpu,
+            point,
+            vfp_set_range,
+            flat_curve_flag,
+            init_core_oc_value,
+            Some(init_core_oc_value - minimum_delta_core_freq_step),
+        )?;
+
+        if let Ok(locked_v) = run_output(gpu, QueryVfpPointVoltage { point }) {
+            let _ = run_output(
+                gpu,
+                SetVfpVoltageLock {
+                    voltage_target: NvapiLockedVoltageTarget::Voltage(locked_v),
+                    feedback: false,
+                },
+            );
+        }
+
+        if pre_load_vf_recheck(gpu, point) {
+            println!("V/F recheck passed on attempt {attempt}");
+            return Ok(());
+        }
+
+        eprintln!("Retrying set_nvapi_vfp_curve_delta... (attempt {attempt})");
+        let wait_secs = 2u64.saturating_pow((attempt - 1).min(6) as u32);
+        sleep(Duration::from_secs(wait_secs));
+    }
+
     Err(Error::Custom(format!(
-        "V/F check failed at point {point}: {summary}"
+        "V/F recheck failed after {max_attempts} attempts"
     )))
 }
 
@@ -870,16 +1351,15 @@ fn run_gpuboostv3_short_phase<V: std::fmt::Display + Copy>(
     let mut test_code = 0;
 
     loop {
-        set_nvapi_vfp_curve_delta(
+        relock_and_recheck_vf(
             gpu,
             point,
             args.vfp_set_range,
             flat_curve_flag,
             *init_core_oc_value,
-            Some(*init_core_oc_value - args.common.minimum_delta_core_freq_step),
+            args.common.minimum_delta_core_freq_step,
+            10,
         )?;
-
-        pre_load_vf_recheck(gpu, point)?;
 
         test_num += 1;
         test_code += 1;
@@ -945,7 +1425,7 @@ fn run_gpuboostv3_short_phase<V: std::fmt::Display + Copy>(
             run_output(
                 gpu,
                 ResetVfpDeltas {
-                    domain: VfpResetDomain::All,
+                    domain: VfpResetDomain::Core,
                 },
             )?;
             println!(
@@ -1020,7 +1500,15 @@ fn run_gpuboostv3_long_phase<V: std::fmt::Display + Copy>(
     writeln!(l, "Initiating Long Test...")?;
 
     loop {
-        pre_load_vf_recheck(gpu, point)?;
+        relock_and_recheck_vf(
+            gpu,
+            point,
+            args.vfp_set_range,
+            flat_curve_flag,
+            *init_core_oc_value,
+            args.common.minimum_delta_core_freq_step,
+            5,
+        )?;
 
         *test_code += 1;
         log_point_test_header(
@@ -1054,7 +1542,7 @@ fn run_gpuboostv3_long_phase<V: std::fmt::Display + Copy>(
             run_output(
                 gpu,
                 ResetVfpDeltas {
-                    domain: VfpResetDomain::All,
+                    domain: VfpResetDomain::Core,
                 },
             )?;
             println!(
@@ -1131,11 +1619,10 @@ fn run_mem_oc_phase<V: std::fmt::Display + Copy>(
                 KilohertzDelta(*init_vmem_oc_value),
             )],
         )?;
+        sync_memory_pstate_as_p0(gpu)?;
 
         mem_test_num += 1;
         mem_test_code += 1;
-
-        pre_load_vf_recheck(gpu, args.point)?;
 
         println!(
             "current test progress estimated:{:.2}%",
@@ -1605,6 +2092,7 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
                     KilohertzDelta(init_vmem_oc_value),
                 )],
             )?;
+            sync_memory_pstate_as_p0(gpu)?;
 
             apply_arch_safety_policy(
                 ArchSafetyPolicyPhase::PrePointTest,
@@ -1715,6 +2203,7 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
                 gpu,
                 [(PState::P0, ClockDomain::Memory, KilohertzDelta(0))],
             )?;
+            sync_memory_pstate_as_p0(gpu)?;
 
             let mut mem_oc_safe_limit = 0;
             let minimum_delta_mem_freq_step = 1000;
