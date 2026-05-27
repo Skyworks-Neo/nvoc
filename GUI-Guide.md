@@ -19,6 +19,8 @@ GUI 会自动检测 `../auto-optimizer/target/release/nvoc-auto-optimizer.exe`�
 - GPU 信息与实时状态（频率、温度、风扇、VFP）
 - 当前超频设置一览
 
+<img width="1156" height="1051" alt="image" src="https://github.com/user-attachments/assets/7cfefc10-47e3-40aa-aeeb-f7d37f527c6f" />
+
 ### Autoscan
 
 一键自动优化 VF 曲线工作流：
@@ -32,6 +34,9 @@ GUI 会自动检测 `../auto-optimizer/target/release/nvoc-auto-optimizer.exe`�
 
 支持 Standard / Ultrafast / Legacy 三种模式。
 
+<img width="1144" height="1032" alt="image" src="https://github.com/user-attachments/assets/5b7ca629-e6b2-4bab-a586-41bc50670cb9" />
+
+
 ### Overclock
 
 - 核心频率偏移（`--core-offset`）
@@ -39,6 +44,12 @@ GUI 会自动检测 `../auto-optimizer/target/release/nvoc-auto-optimizer.exe`�
 - 功耗墙（`-P`）
 - 温度墙（`-T`）
 - Voltage Boost（`-V`）
+- 手动风扇转速控制
+- 预设方案与滑块调节
+- NVAPI / NVML 双接口支持
+
+<img width="1154" height="1044" alt="image" src="https://github.com/user-attachments/assets/debbe0de-25e7-42d6-811c-6c2670cc7bd5" />
+
 
 ### VF Curve
 
@@ -47,11 +58,7 @@ GUI 会自动检测 `../auto-optimizer/target/release/nvoc-auto-optimizer.exe`�
 - 单点频率调整
 - 终端绘图预览
 
-### Fan Control
-
-- 手动风扇转速控制
-- 预设方案与滑块调节
-- NVAPI / NVML 双接口支持
+<img width="1143" height="1028" alt="image" src="https://github.com/user-attachments/assets/e7f79884-abbd-4ea6-9a54-9584e0c2f20e" />
 
 ### Output Console
 
