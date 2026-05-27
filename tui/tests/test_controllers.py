@@ -83,14 +83,12 @@ class FakeNative:
         self.raise_on_set_clock: Exception | None = None
 
     def query_domain_vfp_points(self, gpu, domain, infer_missing_default):
-        self.calls.append(
-            (
-                "query_domain_vfp_points",
-                gpu,
-                domain,
-                infer_missing_default,
-            )
-        )
+        self.calls.append((
+            "query_domain_vfp_points",
+            gpu,
+            domain,
+            infer_missing_default,
+        ))
         return [
             {
                 "index": 7,
