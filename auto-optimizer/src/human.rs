@@ -573,27 +573,26 @@ pub fn print_info(gpu: &GpuTarget<'_>, info: &GpuInfo) {
                 display.display_id,
                 display.connector
             );
-            if let Ok(nvapi) = gpu.nvapi() {
-                if let Ok(edid) = nvapi.inner().get_edid(display.display_id) {
-                    if !edid.is_empty() {
-                        for (k, v) in parse_edid(&edid) {
-                            pline!(format!("-- {}", k), "{}", v);
-                        }
-                        // pline!(
-                        //     "EDID Bytes",
-                        //     "{} bytes: {}",
-                        //     edid.len(),
-                        //     edid.iter()
-                        //         .map(|b| format!("{:02X}", b))
-                        //         .collect::<Vec<_>>()
-                        //         .as_slice()
-                        //         .chunks(16)
-                        //         .map(|c| c.join(""))
-                        //         .collect::<Vec<_>>()
-                        //         .join(" ")
-                        // );
-                    }
+            if let Ok(nvapi) = gpu.nvapi()
+                && let Ok(edid) = nvapi.inner().get_edid(display.display_id)
+                && !edid.is_empty()
+            {
+                for (k, v) in parse_edid(&edid) {
+                    pline!(format!("-- {}", k), "{}", v);
                 }
+                // pline!(
+                //     "EDID Bytes",
+                //     "{} bytes: {}",
+                //     edid.len(),
+                //     edid.iter()
+                //         .map(|b| format!("{:02X}", b))
+                //         .collect::<Vec<_>>()
+                //         .as_slice()
+                //         .chunks(16)
+                //         .map(|c| c.join(""))
+                //         .collect::<Vec<_>>()
+                //         .join(" ")
+                // );
             }
         }
     }

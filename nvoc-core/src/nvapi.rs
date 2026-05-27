@@ -1225,10 +1225,10 @@ pub fn set_legacy_clocks_nvapi(gpu: &Gpu, core_mhz: u32, mem_mhz: u32) -> Result
 pub fn probe_thermal_sensors_mask(gpu: &Gpu) -> Result<i32, Error> {
     for i in 0..32 {
         let mask: i32 = 1 << i;
-        if let Ok(sensors) = gpu.thermal_sensors(mask) {
-            if sensors.values.iter().any(|&v| v != 0) {
-                return Ok(mask);
-            }
+        if let Ok(sensors) = gpu.thermal_sensors(mask)
+            && sensors.values.iter().any(|&v| v != 0)
+        {
+            return Ok(mask);
         }
     }
     Err(Error::Str("no valid NVAPI thermal sensor mask found"))
