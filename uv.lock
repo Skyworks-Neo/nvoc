@@ -1267,6 +1267,9 @@ dependencies = [
 build = [
     { name = "pyinstaller" },
 ]
+dev = [
+    { name = "pyinstaller" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -1286,6 +1289,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 build = [{ name = "pyinstaller", specifier = "~=6.0" }]
+dev = [{ name = "pyinstaller", specifier = ">=6.19.0" }]
 
 [[package]]
 name = "nvoc-tui"

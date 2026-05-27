@@ -27,6 +27,9 @@ dependencies = [
 build = [
     "pyinstaller~=6.0",
 ]
+dev = [
+    "pyinstaller>=6.19.0",
+]
 
 [tool.uv]
 package = false
