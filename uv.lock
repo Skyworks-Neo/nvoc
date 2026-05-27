@@ -1259,6 +1259,7 @@ dependencies = [
     { name = "packaging" },
     { name = "pillow" },
     { name = "pyinstaller" },
+    { name = "pynvoc" },
     { name = "pystray" },
     { name = "six" },
 ]
@@ -1280,6 +1281,7 @@ requires-dist = [
     { name = "packaging", specifier = ">=24.0" },
     { name = "pillow", specifier = ">=10.4.0" },
     { name = "pyinstaller", specifier = "~=6.19.0" },
+    { name = "pynvoc", editable = "nvoc-python" },
     { name = "pystray", specifier = ">=0.19.5" },
     { name = "six", specifier = ">=1.17.0" },
 ]
