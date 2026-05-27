@@ -281,14 +281,12 @@ class FanControlTab:
         # Keep target selection sourced from the actual UI control.
         args.extend(self._fan_id_args())
 
-        args.extend(
-            [
-                "--policy",
-                policy,
-                "--level",
-                str(int(self.level_slider.get())),
-            ]
-        )
+        args.extend([
+            "--policy",
+            policy,
+            "--level",
+            str(int(self.level_slider.get())),
+        ])
 
         self.app.run_cli_display(args)
 
