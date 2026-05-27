@@ -65,6 +65,13 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: clippy
+      - name: Disable local nvapi-rs patch for CI
+        shell: pwsh
+        run: |
+          $cargoToml = "Cargo.toml"
+          $content = Get-Content $cargoToml -Raw
+          $content = [regex]::Replace($content, '(?ms)^\# For development, we use the local path to the nvapi-rs crate\. In production, we can switch to the git dependency\.\r?\n\[patch\."https://github\.com/Skyworks-Neo/nvapi-rs"\]\r?\nnvapi = \{ path = "\./nvapi-rs" \}\r?\nnvapi-sys = \{ path = "\./nvapi-rs/sys" \}\r?\nnvapi-hi = \{ path = "\./nvapi-rs/hi" \}\r?\n', '')
+          Set-Content $cargoToml $content -NoNewline
       # cli-stressor-cuda-rs links against CUDA even without --all-features; exclude it here.
       # The Rust stressor is compiled separately in ci.yml when files change.
       - run: cargo clippy --workspace --exclude cli-stressor-cuda-rs --all-targets -- -D warnings
@@ -192,6 +199,13 @@ jobs:
           toolchain: 1.95.0
           components: clippy
           rustflags: ""
+      - name: Disable local nvapi-rs patch for CI
+        shell: pwsh
+        run: |
+          $cargoToml = "Cargo.toml"
+          $content = Get-Content $cargoToml -Raw
+          $content = [regex]::Replace($content, '(?ms)^\# For development, we use the local path to the nvapi-rs crate\. In production, we can switch to the git dependency\.\r?\n\[patch\."https://github\.com/Skyworks-Neo/nvapi-rs"\]\r?\nnvapi = \{ path = "\./nvapi-rs" \}\r?\nnvapi-sys = \{ path = "\./nvapi-rs/sys" \}\r?\nnvapi-hi = \{ path = "\./nvapi-rs/hi" \}\r?\n', '')
+          Set-Content $cargoToml $content -NoNewline
       - name: Clippy
         run: cargo clippy --package nvoc-auto-optimizer --all-targets --all-features -- -D warnings
       - name: Build
