@@ -946,12 +946,14 @@ class App(ctk.CTk):
             m = pattern.match(line.strip())
             if not m:
                 continue
-            rows.append((
-                m.group(1).upper(),
-                App._voltage_text_to_mv(m.group(2), m.group(3)),
-                App._voltage_text_to_mv(m.group(4), m.group(5)),
-                App._voltage_text_to_mv(m.group(6), m.group(7)),
-            ))
+            rows.append(
+                (
+                    m.group(1).upper(),
+                    App._voltage_text_to_mv(m.group(2), m.group(3)),
+                    App._voltage_text_to_mv(m.group(4), m.group(5)),
+                    App._voltage_text_to_mv(m.group(6), m.group(7)),
+                )
+            )
 
         if not rows:
             return {}

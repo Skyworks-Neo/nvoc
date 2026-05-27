@@ -851,18 +851,15 @@ mod pressure_runner {
                     if let Some(xid_counts) = count_linux_gpu_xid_events_by_time(
                         linux_xid_window_start,
                         SystemTime::now(),
-                    ) {
-                        if !xid_counts.is_empty() {
-                            let summary = xid_counts
-                                .iter()
-                                .map(|(xid, count)| format!("Xid {} x{}", xid, count))
-                                .collect::<Vec<_>>()
-                                .join(", ");
-                            eprintln!(
-                                "Detected NVIDIA Xid event(s) during pressure test: {summary}"
-                            );
-                            exit_code = 1;
-                        }
+                    ) && !xid_counts.is_empty()
+                    {
+                        let summary = xid_counts
+                            .iter()
+                            .map(|(xid, count)| format!("Xid {} x{}", xid, count))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        eprintln!("Detected NVIDIA Xid event(s) during pressure test: {summary}");
+                        exit_code = 1;
                     }
 
                     // If a run failed (non-zero exit), re-apply the autoscan profile to
