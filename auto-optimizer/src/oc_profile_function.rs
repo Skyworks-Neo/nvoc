@@ -434,26 +434,30 @@ pub fn handle_vfp_export(gpu: &GpuTarget<'_>, matches: &clap::ArgMatches) -> Res
     }
 
     if cfg.dynamic {
-        let cuda_device = matches.get_one::<u32>("cuda_device").copied().or_else(|| {
-            // 先尝试 get_many（多值）
-            let specs = matches
-                .get_many::<String>("gpu")
-                .map(|v| v.collect::<Vec<_>>());
-            // println!("[DEBUG]{:?}", specs);
-
-            match specs {
-                Some(ref s) if s.len() == 1 => s[0].parse::<u32>().ok().filter(|&n| n < 256),
-                Some(_) => None, // 多个 GPU 不自动选择
-                None => {
-                    // 退而求其次，尝试 get_one（单值）
-                    matches
-                        .get_one::<String>("gpu")
+        let cuda_device = matches
+            .try_get_one::<u32>("cuda_device")
+            .ok()
+            .flatten()
+            .copied()
+            .or_else(|| {
+                let specs = matches
+                    .try_get_many::<String>("gpu")
+                    .ok()
+                    .flatten()
+                    .map(|values| values.collect::<Vec<_>>());
+                match specs {
+                    Some(ref values) if values.len() == 1 => {
+                        values[0].parse::<u32>().ok().filter(|&n| n < 256)
+                    }
+                    Some(_) => None,
+                    None => matches
+                        .try_get_one::<String>("gpu")
+                        .ok()
+                        .flatten()
                         .and_then(|s| s.parse::<u32>().ok())
-                        .filter(|&n| n < 256)
+                        .filter(|&n| n < 256),
                 }
-            }
-        });
-        // println!("[DEBUG]{:?}",cuda_device);
+            });
 
         if let Err(e) = apply_autoscan_profile(gpu, matches, 30) {
             eprintln!(

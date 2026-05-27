@@ -9,10 +9,7 @@ use std::time::{Duration, Instant};
 
 mod scan_cli_color {
     pub(super) fn init(no_color_flag: bool) {
-        if no_color_flag {
-            // call fully-qualified to avoid relying on module-level `use` name resolution
-            colored::control::set_override(false);
-        }
+        nvoc_cli_common::color::init(no_color_flag);
     }
 
     pub(super) fn stylize(message: &str, is_stderr: bool) -> String {

@@ -174,7 +174,7 @@ fn run_vulkan_stress_loop(
         let fence = device.create_fence(&fence_create_info, None)?;
 
         // ==========================================
-        // 模块：极高压内存与 ROP 占据 (3D images + MSAA)
+        // 模块：极高压内存与 ROP 占据 (3D images + optional MSAA)
         let sample_flags = vk::SampleCountFlags::from_raw(image_config.msaa);
         let image_extent = vk::Extent3D {
             width: image_config.width,
@@ -196,7 +196,7 @@ fn run_vulkan_stress_loop(
             )
             .sharing_mode(vk::SharingMode::EXCLUSIVE);
 
-        let image_count = image_config.image_count as usize;
+        let image_count = image_config.image_count.max(1) as usize;
         let msaa_on = image_config.msaa > 1;
 
         let mut images = Vec::new();

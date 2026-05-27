@@ -470,6 +470,8 @@ mod pressure_runner {
                     let mut last_event_poll = Instant::now();
                     #[cfg(windows)]
                     let poll_interval = Duration::from_secs(3);
+                    #[cfg(not(windows))]
+                    let linux_xid_window_start = SystemTime::now();
 
                     let test_start_at = Instant::now();
                     let mut last_fluctuation = Instant::now();
@@ -845,6 +847,21 @@ mod pressure_runner {
                         }
                     }
 
+                    #[cfg(not(windows))]
+                    if let Some(xid_counts) = count_linux_gpu_xid_events_by_time(
+                        linux_xid_window_start,
+                        SystemTime::now(),
+                    ) && !xid_counts.is_empty()
+                    {
+                        let summary = xid_counts
+                            .iter()
+                            .map(|(xid, count)| format!("Xid {} x{}", xid, count))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        eprintln!("Detected NVIDIA Xid event(s) during pressure test: {summary}");
+                        exit_code = 1;
+                    }
+
                     // If a run failed (non-zero exit), re-apply the autoscan profile to
                     // restore the locked volt/freq state before the next test. This helps
                     // ensure subsequent runs start from the expected operating point after
@@ -947,6 +964,7 @@ struct TestPressureConfig<'a> {
     /// Extra arguments appended verbatim to the stressor command.
     stressor_extra_args: &'a [String],
     /// GpuId.0 value of the GPU under test (used for event-log GPU filtering).
+    #[cfg(windows)]
     target_gpu_id: u32,
 }
 
@@ -988,6 +1006,7 @@ fn test_pressure(
         progress,
         cuda_device,
         stressor_extra_args,
+        #[cfg(windows)]
         target_gpu_id: gpu.id.0,
     };
 
