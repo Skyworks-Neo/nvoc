@@ -35,3 +35,11 @@ pub fn stylize(message: &str, is_stderr: bool) -> String {
 pub fn stylize_title(title: &str) -> String {
     self::title(title)
 }
+
+#[cfg(feature = "cuda")]
+pub fn stylize_config(message: &str) -> String {
+    paint(
+        message,
+        AnsiColor::BrightCyan.on_default().effects(Effects::BOLD),
+    )
+}
