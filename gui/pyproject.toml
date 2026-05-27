@@ -21,6 +21,7 @@ dependencies = [
     "pystray>=0.19.5",
     "six>=1.17.0",
     "pyinstaller~=6.19.0",
+    "pynvoc",
 ]
 
 [dependency-groups]
@@ -30,6 +31,9 @@ build = [
 
 [tool.uv]
 package = false
+
+[tool.uv.sources]
+pynvoc = { workspace = true }
 
 [[tool.uv.index]]
 url = "https://pypi.tuna.tsinghua.edu.cn/simple"
