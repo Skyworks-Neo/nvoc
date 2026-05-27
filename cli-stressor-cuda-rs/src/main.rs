@@ -10,6 +10,8 @@ use std::collections::HashMap;
 use std::fs;
 use style::stylize;
 #[cfg(feature = "cuda")]
+use style::stylize_config;
+#[cfg(feature = "cuda")]
 use style::stylize_title;
 
 #[cfg(feature = "cuda")]
@@ -1173,66 +1175,57 @@ fn main() {
     println!("{}", stylize_title("Starting mixed-kernel stress"));
     println!(
         "{}",
-        stylize(
-            &format!(
-                "  Precisions: {:?}",
-                filtered.iter().map(|spec| spec.name).collect::<Vec<_>>()
-            ),
-            false
-        )
+        stylize_config(&format!(
+            "  Precisions: {:?}",
+            filtered.iter().map(|spec| spec.name).collect::<Vec<_>>()
+        ))
     );
     println!(
         "{}",
-        stylize(&format!("  Duration: {:.1} s", args.duration), false)
+        stylize_config(&format!("  Duration: {:.1} s", args.duration))
     );
     println!(
         "{}",
-        stylize(
-            &format!("  Warmup iterations: {}", args.warmup_iters),
-            false
-        )
+        stylize_config(&format!("  Warmup iterations: {}", args.warmup_iters))
     );
     println!(
         "{}",
-        stylize(&format!("  Burst iterations: {}", args.burst_iters), false)
+        stylize_config(&format!("  Burst iterations: {}", args.burst_iters))
     );
     println!(
         "{}",
-        stylize(
-            &format!("  Validation interval: {:.1} s", args.validate_interval),
-            false
-        )
+        stylize_config(&format!(
+            "  Validation interval: {:.1} s",
+            args.validate_interval
+        ))
     );
     println!(
         "{}",
-        stylize(&format!("  Validation size: {}", args.validate_size), false)
+        stylize_config(&format!("  Validation size: {}", args.validate_size))
     );
     println!(
         "{}",
-        stylize(
-            &format!("  Minor mixture rate: {:.2}", args.minor_mixture_rate),
-            false
-        )
+        stylize_config(&format!(
+            "  Minor mixture rate: {:.2}",
+            args.minor_mixture_rate
+        ))
     );
     println!(
         "{}",
-        stylize(&format!("  Kernel types: {:?}", kernel_types), false)
+        stylize_config(&format!("  Kernel types: {:?}", kernel_types))
     );
     println!(
         "{}",
-        stylize(&format!("  Kernel mixture: {:?}", kernel_mixture), false)
+        stylize_config(&format!("  Kernel mixture: {:?}", kernel_mixture))
     );
     // println!("  Kernel param overrides: {:?}", kernel_param_overrides);
     println!(
         "{}",
-        stylize(
-            &format!(
-                "  Stream mode: {:?} ({} streams)",
-                stream_mode,
-                stream_mode.stream_count()
-            ),
-            false
-        )
+        stylize_config(&format!(
+            "  Stream mode: {:?} ({} streams)",
+            stream_mode,
+            stream_mode.stream_count()
+        ))
     );
     if args.enable_vulkan_stress || args.vulkan_only {
         println!(

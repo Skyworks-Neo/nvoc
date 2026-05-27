@@ -72,6 +72,7 @@ fn main_result() -> Result<i32, Box<dyn std::error::Error>> {
     let app = arg_help::get_arguments();
     check_single_dash_args(&app)?;
     let matches = app.get_matches();
+    nvoc_cli_common::color::init(matches.get_flag("no_color"));
     let exit_code = 0;
 
     let inventory = discover_targets(BackendSet::Both)

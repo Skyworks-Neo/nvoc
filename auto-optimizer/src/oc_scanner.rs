@@ -10,6 +10,7 @@ use super::oc_profile_function::{
 };
 use clap::ArgMatches;
 use num_traits::pow;
+use nvoc_cli_common::color::{stylize, stylize_title};
 use nvoc_core::{
     ClockDomain, Error, GpuOcParams, GpuOperation, GpuTarget, KilohertzDelta,
     NvapiLockedVoltageTarget, PState, QueryGpuInfo, QueryGpuStatus, QueryVfpPointVoltage,
@@ -772,18 +773,15 @@ mod pressure_runner {
                     if let Some(xid_counts) = count_linux_gpu_xid_events_by_time(
                         linux_xid_window_start,
                         SystemTime::now(),
-                    ) {
-                        if !xid_counts.is_empty() {
-                            let summary = xid_counts
-                                .iter()
-                                .map(|(xid, count)| format!("Xid {} x{}", xid, count))
-                                .collect::<Vec<_>>()
-                                .join(", ");
-                            eprintln!(
-                                "Detected NVIDIA Xid event(s) during pressure test: {summary}"
-                            );
-                            exit_code = 1;
-                        }
+                    ) && !xid_counts.is_empty()
+                    {
+                        let summary = xid_counts
+                            .iter()
+                            .map(|(xid, count)| format!("Xid {} x{}", xid, count))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        eprintln!("Detected NVIDIA Xid event(s) during pressure test: {summary}");
+                        exit_code = 1;
                     }
 
                     if exit_code != 0 {
@@ -1863,9 +1861,17 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
         // Now you can search for the Memory Clock:
         print_scan_separator();
         if let Some((_, memory_clock)) = clocks.iter().find(|(name, _)| name.contains("Memory")) {
-            println!("Memory Clock: {}", memory_clock);
+            println!(
+                "{}: {}",
+                stylize_title("Memory Clock"),
+                stylize(&format!("{}", memory_clock), false)
+            );
             init_vmem_oc_value = (memory_clock.0 / 25) as i32;
-            println!("Memory OC start at: +{} MHz", init_vmem_oc_value / 1000);
+            println!(
+                "{} {}",
+                stylize_title("Memory OC start at"),
+                stylize(&format!("+{} MHz", init_vmem_oc_value / 1000), false)
+            );
         }
         print_scan_separator();
 
@@ -2210,11 +2216,22 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
             let mem_freq_step_exp = 8;
             if let Some((_, memory_clock)) = clocks.iter().find(|(name, _)| name.contains("Memory"))
             {
-                println!("Memory Clock: {}", memory_clock);
                 println!(
-                    "Memory OC test start at: +{} MHz(+{}%)",
-                    init_vmem_oc_value / 1000,
-                    100 * init_vmem_oc_value / memory_clock.0 as i32
+                    "{}: {}",
+                    stylize_title("Memory Clock"),
+                    stylize(&format!("{}", memory_clock), false)
+                );
+                println!(
+                    "{} {}",
+                    stylize_title("Memory OC test start at"),
+                    stylize(
+                        &format!(
+                            "+{} MHz(+{}%)",
+                            init_vmem_oc_value / 1000,
+                            100 * init_vmem_oc_value / memory_clock.0 as i32
+                        ),
+                        false
+                    )
                 );
                 mem_oc_safe_limit = memory_clock.0 as i32 / 8;
             };
