@@ -43,6 +43,13 @@ pub fn get_arguments() -> Command {
                 .default_value(OutputFormat::Human.to_str())
                 .help("Data output format"),
         )
+        .arg(
+            Arg::new("no_color")
+                .long("no-color")
+                .action(ArgAction::SetTrue)
+                .global(true)
+                .help("Disable ANSI color output (also honors NO_COLOR)"),
+        )
         .subcommand(
             Command::new("info")
                 .about("Information about the model and capabilities of the GPU")

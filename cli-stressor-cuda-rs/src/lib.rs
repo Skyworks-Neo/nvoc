@@ -1,3 +1,4 @@
+use nvoc_cli_common::color::stylize;
 use rand::rngs::StdRng;
 use rand::seq::IndexedRandom;
 use rand::{Rng, SeedableRng};
@@ -5,6 +6,16 @@ use rand_distr::StandardNormal;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
+
+macro_rules! println {
+    () => {
+        std::println!()
+    };
+    ($($arg:tt)*) => {{
+        let msg = format!($($arg)*);
+        std::println!("{}", stylize(&msg, false));
+    }};
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PrecisionKind {
