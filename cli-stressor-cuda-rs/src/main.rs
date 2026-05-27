@@ -46,10 +46,10 @@ mod vulkan_gfx_stressor;
 #[cfg(all(feature = "cuda", feature = "vulkan"))]
 use vulkan_gfx_stressor::VulkanDeviceSelection;
 #[cfg(feature = "vulkan")]
-use vulkan_gfx_stressor::VulkanGraphicsEngine;
+use vulkan_gfx_stressor::{VulkanGraphicsEngine, VulkanImageConfig};
 
 #[cfg(feature = "vulkan")]
-fn run_vulkan_for_duration(duration_s: f64) -> i32 {
+fn run_vulkan_for_duration(duration_s: f64, image_config: VulkanImageConfig) -> i32 {
     println!(
         "{}",
         stylize(
@@ -61,7 +61,7 @@ fn run_vulkan_for_duration(duration_s: f64) -> i32 {
         )
     );
 
-    let mut eng = VulkanGraphicsEngine::new();
+    let mut eng = VulkanGraphicsEngine::new(image_config);
     if let Err(e) = eng.start_stress_thread() {
         eprintln!(
             "{}",
@@ -181,6 +181,26 @@ struct Args {
     #[arg(long, default_value_t = false)]
     vulkan_only: bool,
 
+    /// Vulkan image width for render stress
+    #[arg(long, default_value_t = 8192)]
+    vulkan_image_width: u32,
+
+    /// Vulkan image height for render stress
+    #[arg(long, default_value_t = 8192)]
+    vulkan_image_height: u32,
+
+    /// Number of Vulkan images for render stress
+    #[arg(long, default_value_t = 6)]
+    vulkan_image_count: u32,
+
+    /// Vulkan image depth
+    #[arg(long, default_value_t = 1)]
+    vulkan_image_depth: u32,
+
+    /// Vulkan MSAA sample count (1 = off, use 2/4/8 when supported)
+    #[arg(long, default_value_t = 1)]
+    vulkan_image_msaa: u32,
+
     /// CUDA GPU index in PCI-bus-sorted order (0-based)
     #[arg(
         long,
@@ -236,6 +256,11 @@ struct FileConfig {
     pci_bus: Option<String>,
     gpu_uuid: Option<String>,
     list_gpus: Option<bool>,
+    vulkan_image_width: Option<u32>,
+    vulkan_image_height: Option<u32>,
+    vulkan_image_count: Option<u32>,
+    vulkan_image_depth: Option<u32>,
+    vulkan_image_msaa: Option<u32>,
 }
 
 #[cfg(feature = "cuda")]
@@ -453,6 +478,11 @@ fn parse_args_with_cli_sources() -> (Args, std::collections::HashSet<&'static st
         "pci_bus",
         "gpu_uuid",
         "list_gpus",
+        "vulkan_image_width",
+        "vulkan_image_height",
+        "vulkan_image_count",
+        "vulkan_image_depth",
+        "vulkan_image_msaa",
     ] {
         if matches.value_source(id) == Some(ValueSource::CommandLine) {
             cli_set.insert(id);
@@ -562,6 +592,36 @@ fn apply_file_config_to_args(
     }
     if let (true, Some(v)) = (!cli_set.contains("list_gpus"), parsed.list_gpus) {
         args.list_gpus = v;
+    }
+    if let (true, Some(v)) = (
+        !cli_set.contains("vulkan_image_width"),
+        parsed.vulkan_image_width,
+    ) {
+        args.vulkan_image_width = v;
+    }
+    if let (true, Some(v)) = (
+        !cli_set.contains("vulkan_image_height"),
+        parsed.vulkan_image_height,
+    ) {
+        args.vulkan_image_height = v;
+    }
+    if let (true, Some(v)) = (
+        !cli_set.contains("vulkan_image_count"),
+        parsed.vulkan_image_count,
+    ) {
+        args.vulkan_image_count = v;
+    }
+    if let (true, Some(v)) = (
+        !cli_set.contains("vulkan_image_depth"),
+        parsed.vulkan_image_depth,
+    ) {
+        args.vulkan_image_depth = v;
+    }
+    if let (true, Some(v)) = (
+        !cli_set.contains("vulkan_image_msaa"),
+        parsed.vulkan_image_msaa,
+    ) {
+        args.vulkan_image_msaa = v;
     }
     Ok(())
 }
@@ -906,7 +966,14 @@ fn main() {
     if args.vulkan_only {
         #[cfg(feature = "vulkan")]
         {
-            std::process::exit(run_vulkan_for_duration(args.duration));
+            let image_config = VulkanImageConfig {
+                width: args.vulkan_image_width,
+                height: args.vulkan_image_height,
+                depth: args.vulkan_image_depth,
+                image_count: args.vulkan_image_count,
+                msaa: args.vulkan_image_msaa,
+            };
+            std::process::exit(run_vulkan_for_duration(args.duration, image_config));
         }
 
         #[cfg(not(feature = "vulkan"))]
@@ -1160,6 +1227,22 @@ fn main() {
             stream_mode.stream_count()
         ))
     );
+    if args.enable_vulkan_stress || args.vulkan_only {
+        println!(
+            "{}",
+            stylize(
+                &format!(
+                    "  Vulkan image: {}x{}x{} x{} ({}x MSAA)",
+                    args.vulkan_image_width,
+                    args.vulkan_image_height,
+                    args.vulkan_image_depth,
+                    args.vulkan_image_count,
+                    args.vulkan_image_msaa,
+                ),
+                false
+            )
+        );
+    }
 
     // Optionally start the Vulkan graphics engine (if built with --features "vulkan").
     #[cfg(feature = "vulkan")]
@@ -1170,11 +1253,18 @@ fn main() {
         if args.enable_vulkan_stress
             && let Some(identity) = cuda_device_identity
         {
+            let image_config = VulkanImageConfig {
+                width: args.vulkan_image_width,
+                height: args.vulkan_image_height,
+                depth: args.vulkan_image_depth,
+                image_count: args.vulkan_image_count,
+                msaa: args.vulkan_image_msaa,
+            };
             let selection = VulkanDeviceSelection {
                 cuda_uuid: identity.uuid,
                 cuda_pci_bus: identity.pci_bus,
             };
-            let mut eng = VulkanGraphicsEngine::with_selection(selection);
+            let mut eng = VulkanGraphicsEngine::with_selection(selection, image_config);
             match eng.start_stress_thread() {
                 Ok(_) => {
                     vulkan_engine = Some(eng);
@@ -1191,6 +1281,11 @@ fn main() {
             }
         }
     }
+
+    #[cfg(feature = "vulkan")]
+    let vulkan_abort = vulkan_engine.as_ref().map(|eng| eng.get_error_flag_arc());
+    #[cfg(not(feature = "vulkan"))]
+    let vulkan_abort: Option<std::sync::Arc<std::sync::atomic::AtomicBool>> = None;
 
     let results = run_stress_mixed(
         &mut backend,
@@ -1210,6 +1305,7 @@ fn main() {
             stream_mode,
             kernel_param_overrides: &kernel_param_overrides,
         },
+        vulkan_abort,
     );
 
     for res in &results {
@@ -1254,7 +1350,14 @@ fn main() {
 fn main() {
     let args = Args::parse();
     if args.vulkan_only || args.enable_vulkan_stress {
-        std::process::exit(run_vulkan_for_duration(args.duration));
+        let image_config = VulkanImageConfig {
+            width: args.vulkan_image_width,
+            height: args.vulkan_image_height,
+            depth: args.vulkan_image_depth,
+            image_count: args.vulkan_image_count,
+            msaa: args.vulkan_image_msaa,
+        };
+        std::process::exit(run_vulkan_for_duration(args.duration, image_config));
     }
 
     eprintln!(

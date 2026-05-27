@@ -251,6 +251,50 @@ fn restore_graphics_vfp(gpu: &Gpu, vfp: &BTreeMap<usize, KilohertzDelta>) -> Res
     Ok(())
 }
 
+fn capture_memory_vfp(gpu: &Gpu) -> Result<Option<BTreeMap<usize, KilohertzDelta>>, Error> {
+    let settings = gpu.settings().map_err(Error::from)?;
+    Ok(settings.vfp.map(|vfp| vfp.memory))
+}
+
+fn restore_memory_vfp(gpu: &Gpu, vfp: &BTreeMap<usize, KilohertzDelta>) -> Result<(), Error> {
+    let indices = query_domain_vfp_indices(gpu, ClockDomain::Memory)?;
+    let deltas: Vec<(usize, KilohertzDelta)> = indices
+        .into_iter()
+        .map(|i| (i, *vfp.get(&i).unwrap_or(&KilohertzDelta(0))))
+        .collect();
+
+    const MAX_RETRIES: usize = 3;
+    for attempt in 0..MAX_RETRIES {
+        if attempt > 0 {
+            sleep(Duration::from_millis(150 * attempt as u64));
+        }
+
+        if let Err(err) = set_nvapi_domain_vfp_deltas(gpu, ClockDomain::Memory, &deltas) {
+            if attempt + 1 == MAX_RETRIES {
+                return Err(err);
+            }
+            continue;
+        }
+
+        let read_back = query_domain_vf_points_indexed(gpu, ClockDomain::Memory, false)?;
+        let map: BTreeMap<usize, KilohertzDelta> = read_back
+            .into_iter()
+            .map(|(index, point)| (index, point.delta))
+            .collect();
+
+        let restored = deltas.iter().all(|(index, desired)| {
+            map.get(index).copied().unwrap_or(KilohertzDelta(0)) == *desired
+        });
+        if restored {
+            return Ok(());
+        }
+    }
+
+    Err(Error::Custom(
+        "Failed to reliably restore memory VFP after P-State change".into(),
+    ))
+}
+
 /// 将所有 pstate 的 Core baseVoltage delta 清零（适用于 Maxwell / 9 系及更早）。
 /// 遍历驱动报告的全部 pstate，对每个含有可编辑 Core baseVoltage 的条目发起单独写入，
 /// 单个 pstate 失败时打印警告并继续，不中断其他 pstate 的清零。
@@ -702,6 +746,7 @@ pub fn reset_vfp_deltas(gpu: &Gpu, domain: VfpResetDomain) -> Result<(), Error> 
     // 等价于命令行 `set OC -p P0`，速度远快于逐点 VFP 循环
     // 两者独立容错，TDR 恢复期间单项失败不阻断另一项的重置
     let graphics_ok = if reset_graphics {
+        let mem_backup = capture_memory_vfp(gpu)?;
         let r = gpu.inner().set_pstates(
             [(PState::P0, ClockDomain::Graphics, KilohertzDelta(0))]
                 .iter()
@@ -710,7 +755,11 @@ pub fn reset_vfp_deltas(gpu: &Gpu, domain: VfpResetDomain) -> Result<(), Error> 
         if let Err(e) = &r {
             let _ = e;
         }
-        r.is_ok()
+        let ok = r.is_ok();
+        if let Some(mem) = mem_backup {
+            let _ = restore_memory_vfp(gpu, &mem);
+        }
+        ok
     } else {
         false
     };
@@ -1116,20 +1165,20 @@ pub fn voltage_frequency_check(
 
     for gpu in gpus {
         let status = gpu.status()?;
-        let readout_v = status.voltage.ok_or_else(|| Error::Custom("GPU did not report voltage in status; check if the GPU supports voltage monitoring".into()))?;
+        let _readout_v = status.voltage.ok_or_else(|| Error::Custom("GPU did not report voltage in status; check if the GPU supports voltage monitoring".into()))?;
+        let _readout_f = status.clone().clocks;
         print_separator();
 
         let current_point = status.clone().vfp.ok_or(Error::VfpUnsupported)?.graphics;
 
-        let default_v = current_point
+        let _default_v = current_point
             .get(&(point))
             .ok_or(Error::Str("invalid point index"))?
             .voltage;
 
         let sensor_v = gpu.inner().core_voltage()?;
 
-        if let Some((index, vfp_point)) = find_matching_vfp_point(&current_point, sensor_v) {
-            let _ = (readout_v, default_v, vfp_point);
+        if let Some((index, _vfp_point)) = find_matching_vfp_point(&current_point, sensor_v) {
             precise_flag = index.abs_diff(point) < 5;
         } else {
             precise_flag = false;

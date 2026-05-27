@@ -7,17 +7,16 @@ use super::platform::panic_windows_only;
 use csv::{ReaderBuilder, StringRecord, WriterBuilder};
 use num_traits::abs;
 use nvoc_cli_common::color::stylize;
-use nvoc_core::Error;
 use nvoc_core::{ClockDomain, GpuTarget, VfPoint};
 use nvoc_core::{
     CoolerPolicy, CoolerSettings, FanCoolerId, Kilohertz, KilohertzDelta, Microvolts, Percentage,
     SensorThrottle,
 };
 use nvoc_core::{
-    GpuOperation, GpuType, QueryGpuInfo, SetNvapiPowerLimits, SetNvapiSensorLimits,
-    SetPstateBaseVoltage, SetVfpPointDelta, SetVoltageBoost, fetch_gpu_type,
+    Error, GpuOperation, GpuType, PState, QueryGpuInfo, QueryGpuStatus, SetNvapiPowerLimits,
+    SetNvapiSensorLimits, SetPstateBaseVoltage, SetVfpPointDelta, SetVoltageBoost, fetch_gpu_type,
     legacy_p0_core_max_voltage_delta, query_domain_vf_points_indexed, query_domain_vfp_indices,
-    run, set_nvapi_cooler_settings, set_nvapi_domain_vfp_deltas,
+    run, set_nvapi_cooler_settings, set_nvapi_domain_vfp_deltas, set_nvapi_pstate_clock_offsets,
 };
 use std::cmp::min;
 use std::convert::TryFrom;
@@ -56,32 +55,39 @@ fn is_std(str: &str) -> bool {
 }
 
 #[cfg(windows)]
-fn spawn_dynamic_load_process() -> Result<Child, Error> {
+fn spawn_dynamic_load_process(cuda_device: Option<u32>) -> Result<Child, Error> {
     let repo_root = env!("CARGO_MANIFEST_DIR");
-    Command::new("cmd")
-        .args(["/C", r".\test\dyn_load_export_windows.bat"])
-        .current_dir(repo_root)
-        .spawn()
+    let mut cmd = Command::new("cmd");
+    cmd.args(["/C", r".\test\dyn_load_export_windows.bat"])
+        .current_dir(repo_root);
+    if let Some(dev) = cuda_device {
+        cmd.env("CUDA_DEVICE_ORDER", "PCI_BUS_ID");
+        cmd.env("CUDA_VISIBLE_DEVICES", dev.to_string());
+    }
+    cmd.spawn()
         .map_err(|e| Error::Custom(format!("Failed to start Windows load process: {}", e)))
 }
 
 #[cfg(target_os = "linux")]
-fn spawn_dynamic_load_process() -> Result<Child, Error> {
+fn spawn_dynamic_load_process(cuda_device: Option<u32>) -> Result<Child, Error> {
     let repo_root = env!("CARGO_MANIFEST_DIR");
-    Command::new("bash")
-        .arg("./test/dyn_load_export_opencl_linux.sh")
-        .current_dir(repo_root)
-        .spawn()
-        .map_err(|e| {
-            Error::Custom(format!(
-                "Failed to start Linux load process with test/test_opencl_linux.sh load 10: {}",
-                e
-            ))
-        })
+    let mut cmd = Command::new("bash");
+    cmd.arg("./test/dyn_load_export_opencl_linux.sh")
+        .current_dir(repo_root);
+    if let Some(dev) = cuda_device {
+        cmd.env("CUDA_DEVICE_ORDER", "PCI_BUS_ID");
+        cmd.env("CUDA_VISIBLE_DEVICES", dev.to_string());
+    }
+    cmd.spawn().map_err(|e| {
+        Error::Custom(format!(
+            "Failed to start Linux load process with test/test_opencl_linux.sh load 10: {}",
+            e
+        ))
+    })
 }
 
 #[cfg(all(not(windows), not(target_os = "linux")))]
-fn spawn_dynamic_load_process() -> Result<Child, Error> {
+fn spawn_dynamic_load_process(_: Option<u32>) -> Result<Child, Error> {
     panic_windows_only("dynamic VFP export")
 }
 
@@ -419,6 +425,31 @@ pub fn handle_vfp_export(gpu: &GpuTarget<'_>, matches: &clap::ArgMatches) -> Res
     }
 
     if cfg.dynamic {
+        let cuda_device = matches
+            .try_get_one::<u32>("cuda_device")
+            .ok()
+            .flatten()
+            .copied()
+            .or_else(|| {
+                let specs = matches
+                    .try_get_many::<String>("gpu")
+                    .ok()
+                    .flatten()
+                    .map(|values| values.collect::<Vec<_>>());
+                match specs {
+                    Some(ref values) if values.len() == 1 => {
+                        values[0].parse::<u32>().ok().filter(|&n| n < 256)
+                    }
+                    Some(_) => None,
+                    None => matches
+                        .try_get_one::<String>("gpu")
+                        .ok()
+                        .flatten()
+                        .and_then(|s| s.parse::<u32>().ok())
+                        .filter(|&n| n < 256),
+                }
+            });
+
         if let Err(e) = apply_autoscan_profile(gpu, matches, 30) {
             eprintln!(
                 "apply_autoscan_profile failed: {:?}, continuing export...",
@@ -428,7 +459,7 @@ pub fn handle_vfp_export(gpu: &GpuTarget<'_>, matches: &clap::ArgMatches) -> Res
         // lowest all fan to maximize temp-related dynamic V-F curve effect
 
         // Run load process (apply GPU load)
-        let mut child = spawn_dynamic_load_process()?;
+        let mut child = spawn_dynamic_load_process(cuda_device)?;
         sleep(Duration::from_secs(45));
         //too short duration may result in unstable dynamic result...
 
@@ -1197,7 +1228,7 @@ pub fn apply_autoscan_profile(
                 run_output(
                     gpu,
                     SetPstateBaseVoltage {
-                        pstate: nvoc_core::PState::P0,
+                        pstate: PState::P0,
                         delta_uv: max_uv,
                     },
                 )?;
@@ -1313,6 +1344,29 @@ pub fn apply_autoscan_profile(
             )));
         }
     }
+
+    let readout_f = run_output(gpu, QueryGpuStatus)?.clone().clocks;
+    let mut init_vmem_oc_value = 0;
+    let mut clocks = Vec::new();
+    for (clock_name, freq) in readout_f {
+        clocks.push((clock_name.to_string(), freq));
+    }
+    if let Some((_, memory_clock)) = clocks.iter().find(|(name, _)| name.contains("Memory")) {
+        println!("Memory Clock: {}", memory_clock);
+        init_vmem_oc_value = (memory_clock.0 / 25) as i32;
+        println!("Memory OC start at: +{} MHz", init_vmem_oc_value / 1000);
+    }
+
+    set_nvapi_pstate_clock_offsets(
+        gpu,
+        [(
+            PState::P0,
+            ClockDomain::Memory,
+            KilohertzDelta(init_vmem_oc_value),
+        )],
+    )?;
+
+    sync_memory_pstate_as_p0(gpu)?;
 
     Ok(())
 }

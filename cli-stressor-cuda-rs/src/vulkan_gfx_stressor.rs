@@ -15,29 +15,56 @@ pub struct VulkanDeviceSelection {
     pub cuda_pci_bus: Option<PciBusAddress>,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct VulkanImageConfig {
+    pub width: u32,
+    pub height: u32,
+    pub depth: u32,
+    pub image_count: u32,
+    pub msaa: u32,
+}
+
+impl Default for VulkanImageConfig {
+    fn default() -> Self {
+        Self {
+            width: 8192,
+            height: 8192,
+            depth: 1,
+            image_count: 6,
+            msaa: 1,
+        }
+    }
+}
+
 pub struct VulkanGraphicsEngine {
     is_running: Arc<AtomicBool>,
     has_error: Arc<AtomicBool>,
     selection: Option<VulkanDeviceSelection>,
+    image_config: VulkanImageConfig,
     thread_handle: Option<thread::JoinHandle<()>>,
 }
 
 impl VulkanGraphicsEngine {
-    pub fn new() -> Self {
+    pub fn new(image_config: VulkanImageConfig) -> Self {
         Self {
             is_running: Arc::new(AtomicBool::new(false)),
             has_error: Arc::new(AtomicBool::new(false)),
             selection: None,
+            image_config,
             thread_handle: None,
         }
     }
 
     #[cfg(feature = "cuda")]
-    pub fn with_selection(selection: VulkanDeviceSelection) -> Self {
+    pub fn with_selection(
+        selection: VulkanDeviceSelection,
+        image_config: VulkanImageConfig,
+    ) -> Self {
         Self {
             is_running: Arc::new(AtomicBool::new(false)),
             has_error: Arc::new(AtomicBool::new(false)),
             selection: Some(selection),
+            image_config,
             thread_handle: None,
         }
     }
@@ -46,12 +73,13 @@ impl VulkanGraphicsEngine {
         let is_running = self.is_running.clone();
         let has_error = self.has_error.clone();
         let selection = self.selection;
+        let image_config = self.image_config;
 
         is_running.store(true, Ordering::SeqCst);
         has_error.store(false, Ordering::SeqCst);
 
         let handle = thread::spawn(move || {
-            if let Err(e) = run_vulkan_stress_loop(is_running, selection) {
+            if let Err(e) = run_vulkan_stress_loop(is_running, selection, image_config) {
                 eprintln!(
                     "{}",
                     stylize(&format!("[VulkanGfx] Thread crashed: {:?}", e), true)
@@ -85,6 +113,7 @@ impl VulkanGraphicsEngine {
 fn run_vulkan_stress_loop(
     is_running: Arc<AtomicBool>,
     selection: Option<VulkanDeviceSelection>,
+    image_config: VulkanImageConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     unsafe {
         let entry = ash::Entry::load()?;
@@ -145,19 +174,20 @@ fn run_vulkan_stress_loop(
         let fence = device.create_fence(&fence_create_info, None)?;
 
         // ==========================================
-        // 模块：极高压内存与 ROP 占据
+        // 模块：极高压内存与 ROP 占据 (3D images + optional MSAA)
+        let sample_flags = vk::SampleCountFlags::from_raw(image_config.msaa);
         let image_extent = vk::Extent3D {
-            width: 8192,
-            height: 8192,
-            depth: 1,
+            width: image_config.width,
+            height: image_config.height,
+            depth: image_config.depth,
         };
         let image_create_info = vk::ImageCreateInfo::default()
-            .image_type(vk::ImageType::TYPE_2D)
-            .format(vk::Format::R8G8B8A8_UNORM)
+            .image_type(vk::ImageType::TYPE_3D)
+            .format(vk::Format::R16G16B16A16_UNORM)
             .extent(image_extent)
             .mip_levels(1)
             .array_layers(1)
-            .samples(vk::SampleCountFlags::TYPE_1)
+            .samples(sample_flags)
             .tiling(vk::ImageTiling::OPTIMAL)
             .usage(
                 vk::ImageUsageFlags::TRANSFER_SRC
@@ -166,9 +196,12 @@ fn run_vulkan_stress_loop(
             )
             .sharing_mode(vk::SharingMode::EXCLUSIVE);
 
-        let image_count = 6; // ~1.5GB region
+        let image_count = image_config.image_count.max(1) as usize;
+        let msaa_on = image_config.msaa > 1;
         let mut images = Vec::new();
         let mut memories = Vec::new();
+        let mut resolve_images = Vec::new();
+        let mut resolve_memories = Vec::new();
 
         let mem_properties = instance.get_physical_device_memory_properties(pdevice);
 
@@ -192,6 +225,36 @@ fn run_vulkan_stress_loop(
             device.bind_image_memory(img, mem, 0)?;
             images.push(img);
             memories.push(mem);
+
+            if msaa_on {
+                let resolve_info = vk::ImageCreateInfo::default()
+                    .image_type(vk::ImageType::TYPE_3D)
+                    .format(vk::Format::R16G16B16A16_UNORM)
+                    .extent(image_extent)
+                    .mip_levels(1)
+                    .array_layers(1)
+                    .samples(vk::SampleCountFlags::TYPE_1)
+                    .tiling(vk::ImageTiling::OPTIMAL)
+                    .usage(vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST)
+                    .sharing_mode(vk::SharingMode::EXCLUSIVE);
+                let resolve_img = device.create_image(&resolve_info, None)?;
+                let resolve_req = device.get_image_memory_requirements(resolve_img);
+                let resolve_type_idx = (0..mem_properties.memory_type_count)
+                    .find(|&i| {
+                        (resolve_req.memory_type_bits & (1 << i)) != 0
+                            && mem_properties.memory_types[i as usize]
+                                .property_flags
+                                .contains(vk::MemoryPropertyFlags::DEVICE_LOCAL)
+                    })
+                    .ok_or("No compatible DEVICE_LOCAL memory for resolve image")?;
+                let resolve_alloc = vk::MemoryAllocateInfo::default()
+                    .allocation_size(resolve_req.size)
+                    .memory_type_index(resolve_type_idx);
+                let resolve_mem = device.allocate_memory(&resolve_alloc, None)?;
+                device.bind_image_memory(resolve_img, resolve_mem, 0)?;
+                resolve_images.push(resolve_img);
+                resolve_memories.push(resolve_mem);
+            }
         }
 
         // Convert layout to GENERAL
@@ -216,7 +279,24 @@ fn run_vulkan_stress_loop(
                         .image(img)
                         .subresource_range(subresource_range)
                         .src_access_mask(vk::AccessFlags::empty())
-                        .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE),
+                        .dst_access_mask(
+                            vk::AccessFlags::TRANSFER_READ | vk::AccessFlags::TRANSFER_WRITE,
+                        ),
+                );
+            }
+            for &img in &resolve_images {
+                barriers.push(
+                    vk::ImageMemoryBarrier::default()
+                        .old_layout(vk::ImageLayout::UNDEFINED)
+                        .new_layout(vk::ImageLayout::GENERAL)
+                        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .image(img)
+                        .subresource_range(subresource_range)
+                        .src_access_mask(vk::AccessFlags::empty())
+                        .dst_access_mask(
+                            vk::AccessFlags::TRANSFER_READ | vk::AccessFlags::TRANSFER_WRITE,
+                        ),
                 );
             }
             device.cmd_pipeline_barrier(
@@ -255,7 +335,7 @@ fn run_vulkan_stress_loop(
                 .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
             device.begin_command_buffer(cmd_buffer, &begin_info)?;
 
-            // Heavy work
+            // Heavy work: clear + resolve (MSAA) or clear + blit.
             for _ in 0..20 {
                 let c_val: f32 = rng.random_range(0.0..1.0);
                 let clear_color = vk::ClearColorValue {
@@ -270,45 +350,71 @@ fn run_vulkan_stress_loop(
                     &[subresource_range],
                 );
 
-                let src_idx = (target_img_idx + 1) % image_count;
-                let dst_idx = (target_img_idx + 2) % image_count;
-                let blit = vk::ImageBlit::default()
-                    .src_subresource(
-                        vk::ImageSubresourceLayers::default()
-                            .aspect_mask(vk::ImageAspectFlags::COLOR)
-                            .layer_count(1),
-                    )
-                    .src_offsets([
-                        vk::Offset3D { x: 0, y: 0, z: 0 },
-                        vk::Offset3D {
-                            x: 8192,
-                            y: 8192,
-                            z: 1,
-                        },
-                    ])
-                    .dst_subresource(
-                        vk::ImageSubresourceLayers::default()
-                            .aspect_mask(vk::ImageAspectFlags::COLOR)
-                            .layer_count(1),
-                    )
-                    .dst_offsets([
-                        vk::Offset3D { x: 0, y: 0, z: 0 },
-                        vk::Offset3D {
-                            x: 8192,
-                            y: 8192,
-                            z: 1,
-                        },
-                    ]);
+                if msaa_on {
+                    let resolve_dst_idx = (target_img_idx + 1) % image_count;
+                    let resolve = vk::ImageResolve::default()
+                        .src_subresource(
+                            vk::ImageSubresourceLayers::default()
+                                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                                .layer_count(1),
+                        )
+                        .src_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
+                        .dst_subresource(
+                            vk::ImageSubresourceLayers::default()
+                                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                                .layer_count(1),
+                        )
+                        .dst_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
+                        .extent(image_extent);
+                    device.cmd_resolve_image(
+                        cmd_buffer,
+                        images[target_img_idx],
+                        vk::ImageLayout::GENERAL,
+                        resolve_images[resolve_dst_idx],
+                        vk::ImageLayout::GENERAL,
+                        &[resolve],
+                    );
+                } else {
+                    let src_idx = (target_img_idx + 1) % image_count;
+                    let dst_idx = (target_img_idx + 2) % image_count;
+                    let blit = vk::ImageBlit::default()
+                        .src_subresource(
+                            vk::ImageSubresourceLayers::default()
+                                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                                .layer_count(1),
+                        )
+                        .src_offsets([
+                            vk::Offset3D { x: 0, y: 0, z: 0 },
+                            vk::Offset3D {
+                                x: image_extent.width as i32,
+                                y: image_extent.height as i32,
+                                z: image_extent.depth as i32,
+                            },
+                        ])
+                        .dst_subresource(
+                            vk::ImageSubresourceLayers::default()
+                                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                                .layer_count(1),
+                        )
+                        .dst_offsets([
+                            vk::Offset3D { x: 0, y: 0, z: 0 },
+                            vk::Offset3D {
+                                x: image_extent.width as i32,
+                                y: image_extent.height as i32,
+                                z: image_extent.depth as i32,
+                            },
+                        ]);
 
-                device.cmd_blit_image(
-                    cmd_buffer,
-                    images[src_idx],
-                    vk::ImageLayout::GENERAL,
-                    images[dst_idx],
-                    vk::ImageLayout::GENERAL,
-                    &[blit],
-                    vk::Filter::NEAREST,
-                );
+                    device.cmd_blit_image(
+                        cmd_buffer,
+                        images[src_idx],
+                        vk::ImageLayout::GENERAL,
+                        images[dst_idx],
+                        vk::ImageLayout::GENERAL,
+                        &[blit],
+                        vk::Filter::NEAREST,
+                    );
+                }
 
                 let memory_barrier = vk::MemoryBarrier::default()
                     .src_access_mask(vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE)
@@ -343,7 +449,7 @@ fn run_vulkan_stress_loop(
                     "{}",
                     stylize(
                         &format!(
-                            "[Vulkan GFX] {:>6.1}s | {:>5.1} submits/s (randomized interval) | Active DWM preemption stress | Pipeline Flushes: {}",
+                            "[VKGFX] {:>6.1}s | {:>5.1} submits/s | Pipeline Flushes: {}",
                             elapsed_s, submits_per_s, pipeline_flushes
                         ),
                         false
@@ -368,6 +474,12 @@ fn run_vulkan_stress_loop(
             device.destroy_image(img, None);
         }
         for &mem in &memories {
+            device.free_memory(mem, None);
+        }
+        for &img in &resolve_images {
+            device.destroy_image(img, None);
+        }
+        for &mem in &resolve_memories {
             device.free_memory(mem, None);
         }
 
