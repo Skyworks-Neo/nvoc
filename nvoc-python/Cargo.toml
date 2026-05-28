@@ -16,8 +16,7 @@ crate-type = ["cdylib", "rlib"]
 nvoc-core = { workspace = true }
 nvapi-hi = { workspace = true }
 nvml-wrapper = { workspace = true }
-pyo3 = { version = "0.27.1", features = ["abi3-py38"] }
-serde = { workspace = true }
+pyo3 = { version = "0.28.3", features = ["abi3-py38"] }
 serde_json = { workspace = true }
 
 [features]

@@ -75,8 +75,6 @@ class VFCurveTab:
         self._auto_refresh_interval_ms = self._DEFAULT_AUTO_REFRESH_INTERVAL_MS
         self._auto_interval_var = ctk.StringVar(value="1.0")
         self._auto_toggle_btn = None
-        self.csv_path_var = ctk.StringVar(value="")
-        self.use_default_path_var = ctk.BooleanVar(value=False)
         self.quick_export_var = ctk.BooleanVar(value=True)
 
         # ── Top: chart area (controls row + plot) ──
@@ -111,21 +109,6 @@ class VFCurveTab:
 
         io_row = ctk.CTkFrame(chart_area, fg_color="transparent")
         io_row.pack(fill="x", pady=(0, 4))
-        ctk.CTkLabel(io_row, text="File Path:").pack(side="left", padx=(8, 5))
-        path_entry = LiteEntry(
-            io_row,
-            textvariable=self.csv_path_var,
-            width=42,
-            min_px=320,
-            justify="left",
-        )
-        path_entry.pack(side="left", fill="x", expand=True)
-        LiteButton(io_row, text="...", width=34, command=self._browse_csv).pack(
-            side="left", padx=(5, 0)
-        )
-        ctk.CTkCheckBox(
-            io_row, text="Use for I/O", variable=self.use_default_path_var, width=80
-        ).pack(side="left", padx=(10, 0))
         ctk.CTkCheckBox(
             io_row, text="Quick export", variable=self.quick_export_var, width=100
         ).pack(side="left", padx=(8, 0))
@@ -1678,31 +1661,16 @@ class VFCurveTab:
     # ────────────────────────────────────────────
     # Actions (CLI calls)
     # ────────────────────────────────────────────
-    def _browse_csv(self):
-        path = filedialog.asksaveasfilename(
-            title="Select CSV File Path",
-            defaultextension=".csv",
-            filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")],
-        )
-        if path:
-            self.csv_path_var.set(path)
-
     def _export_vfp(self):
         gpu_args = self.app.get_gpu_args()
 
-        if self.use_default_path_var.get():
-            path = self.csv_path_var.get().strip()
-            if not path:
-                path = self._get_csv_path()
-                self.csv_path_var.set(path)
-        else:
-            path = filedialog.asksaveasfilename(
-                title="Export VF Curve",
-                defaultextension=".csv",
-                filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")],
-            )
-            if not path:
-                return
+        path = filedialog.asksaveasfilename(
+            title="Export VF Curve",
+            defaultextension=".csv",
+            filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")],
+        )
+        if not path:
+            return
 
         args = gpu_args + ["set", "vfp", "export", path]
         if self.quick_export_var.get():
@@ -1712,19 +1680,13 @@ class VFCurveTab:
     def _import_vfp(self):
         gpu_args = self.app.get_gpu_args()
 
-        if self.use_default_path_var.get():
-            path = self.csv_path_var.get().strip()
-            if not path:
-                self.app.console.append("[GUI] No CSV path specified.\n")
-                return
-        else:
-            path = filedialog.askopenfilename(
-                title="Import VF Curve",
-                defaultextension=".csv",
-                filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")],
-            )
-            if not path:
-                return
+        path = filedialog.askopenfilename(
+            title="Import VF Curve",
+            defaultextension=".csv",
+            filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")],
+        )
+        if not path:
+            return
 
         args = gpu_args + ["set", "vfp", "import", path]
         self.app.run_cli(

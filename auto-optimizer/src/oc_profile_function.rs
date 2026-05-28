@@ -7,7 +7,7 @@ use csv::{ReaderBuilder, StringRecord, WriterBuilder};
 use num_traits::abs;
 use nvoc_auto_optimizer::PState;
 use nvoc_cli_common::color::stylize;
-use nvoc_core::{ClockDomain, GpuTarget, VfPoint};
+use nvoc_core::{ClockDomain, GpuTarget, VfPoint, VfPointType};
 use nvoc_core::{
     CoolerPolicy, CoolerSettings, FanCoolerId, Kilohertz, KilohertzDelta, Microvolts, Percentage,
     SensorThrottle,
@@ -204,10 +204,19 @@ fn export_vfp<W: Write, I: Iterator<Item = VfPoint>>(
     points: I,
     delimiter: u8,
 ) -> io::Result<()> {
-    let mut w = WriterBuilder::new().delimiter(delimiter).from_writer(write);
-    let _: () = for point in points {
-        w.serialize(point)?;
-    };
+    let mut w = WriterBuilder::new()
+        .has_headers(false)
+        .delimiter(delimiter)
+        .from_writer(write);
+    w.write_record(["voltage", "frequency", "delta", "default_frequency"])?;
+    for point in points {
+        w.write_record([
+            point.voltage.0.to_string(),
+            point.frequency.0.to_string(),
+            point.delta.0.to_string(),
+            point.default_frequency.0.to_string(),
+        ])?;
+    }
     Ok(())
 }
 
@@ -601,9 +610,26 @@ pub fn handle_vfp_import(gpu: &GpuTarget<'_>, matches: &clap::ArgMatches) -> Res
     let vfp_indices = query_domain_vfp_indices(gpu, domain)?;
 
     fn import<R: io::Read>(read: R, delimiter: u8) -> Result<Vec<VfPoint>, csv::Error> {
-        let mut csv = ReaderBuilder::new().delimiter(delimiter).from_reader(read);
-        let de = csv.deserialize();
-        de.collect()
+        let mut csv = ReaderBuilder::new()
+            .has_headers(true)
+            .delimiter(delimiter)
+            .from_reader(read);
+        let mut points = Vec::new();
+        for result in csv.records() {
+            let record = result?;
+            let voltage: u32 = record.get(0).unwrap_or("0").parse().unwrap_or(0);
+            let frequency: u32 = record.get(1).unwrap_or("0").parse().unwrap_or(0);
+            let delta: i32 = record.get(2).unwrap_or("0").parse().unwrap_or(0);
+            let default_frequency: u32 = record.get(3).unwrap_or("0").parse().unwrap_or(0);
+            points.push(VfPoint {
+                point_type: VfPointType::Prog,
+                voltage: Microvolts(voltage),
+                frequency: Kilohertz(frequency),
+                delta: KilohertzDelta(delta),
+                default_frequency: Kilohertz(default_frequency),
+            });
+        }
+        Ok(points)
     }
 
     let input = if is_std(input) {
@@ -1112,6 +1138,7 @@ pub fn export_vfp_from_log(matches: &clap::ArgMatches) -> Result<(), Error> {
                 last_code_100_freq = Some(freq);
                 export_single_point(
                     VfPoint {
+                        point_type: VfPointType::Prog,
                         voltage: Microvolts((last_voltage.unwrap() * 1000.0) as u32),
                         frequency: Kilohertz(0),
                         delta: KilohertzDelta((last_code_100_freq.unwrap() * 1000.0) as i32),

@@ -1,8 +1,12 @@
 use super::conv::{nvml_pstate_to_index, nvml_pstate_to_str};
 use super::error::Error;
 use super::gpu_type::{GpuType, fetch_gpu_type};
-use super::nvml::get_nvml_pstate_info;
+use super::nvml::{
+    build_supported_pstate_list, collect_outside_requested_range, find_pstate_entry,
+    get_nvml_pstate_info,
+};
 use super::types::{NvapiLockedVoltageTarget, VfpResetDomain};
+pub use nvapi_hi::ThermalSensors;
 use nvapi_hi::nvapi::{CelsiusShifted, VoltageDomain};
 use nvapi_hi::{
     Celsius, ClockDomain, ClockLockEntry, ClockLockValue, CoolerPolicy, CoolerSettings,
@@ -381,22 +385,14 @@ pub fn set_cooler_levels(
         policy: mode,
         level: Some(Percentage(level)),
     };
+    let cooler_ids: &[FanCoolerId] = match target {
+        CoolerTarget::Cooler1 => &[FanCoolerId::Cooler1],
+        CoolerTarget::Cooler2 => &[FanCoolerId::Cooler2],
+        CoolerTarget::All => &[FanCoolerId::Cooler1, FanCoolerId::Cooler2],
+    };
 
     for gpu in gpus {
-        match target {
-            CoolerTarget::Cooler1 => {
-                gpu.set_cooler_levels([(FanCoolerId::Cooler1, settings)])?;
-            }
-            CoolerTarget::Cooler2 => {
-                gpu.set_cooler_levels([(FanCoolerId::Cooler2, settings)])?;
-            }
-            CoolerTarget::All => {
-                gpu.set_cooler_levels([
-                    (FanCoolerId::Cooler1, settings),
-                    (FanCoolerId::Cooler2, settings),
-                ])?;
-            }
-        }
+        gpu.set_cooler_levels(cooler_ids.iter().map(|id| (*id, settings)))?;
     }
     Ok(())
 }
@@ -425,15 +421,7 @@ pub fn set_vfp_frequency_lock(
             gpu.set_vfp_lock(domain, Some(upper))?;
         }
         Some(lower) => {
-            let (upper_limit, lower_limit) = match domain {
-                ClockDomain::Graphics => (PerfLimitId::Gpu, PerfLimitId::GpuUnknown),
-                ClockDomain::Memory => (PerfLimitId::Memory, PerfLimitId::MemoryUnknown),
-                _ => {
-                    return Err(Error::from(
-                        "--domain must be Graphics or Memory in --clock mode",
-                    ));
-                }
-            };
+            let (upper_limit, lower_limit) = perf_limits_for_domain(domain)?;
 
             gpu.inner()
                 .set_vfp_locks([
@@ -454,16 +442,18 @@ pub fn set_vfp_frequency_lock(
     Ok(())
 }
 
+fn perf_limits_for_domain(domain: ClockDomain) -> Result<(PerfLimitId, PerfLimitId), Error> {
+    match domain {
+        ClockDomain::Graphics => Ok((PerfLimitId::Gpu, PerfLimitId::GpuLowerbound)),
+        ClockDomain::Memory => Ok((PerfLimitId::Memory, PerfLimitId::MemoryLowerbound)),
+        _ => Err(Error::from(
+            "--domain must be Graphics or Memory in --clock mode",
+        )),
+    }
+}
+
 pub fn reset_vfp_frequency_lock(gpu: &Gpu, domain: ClockDomain) -> Result<(), Error> {
-    let (upper_limit, lower_limit) = match domain {
-        ClockDomain::Graphics => (PerfLimitId::Gpu, PerfLimitId::GpuUnknown),
-        ClockDomain::Memory => (PerfLimitId::Memory, PerfLimitId::MemoryUnknown),
-        _ => {
-            return Err(Error::from(
-                "--domain must be Graphics or Memory in --clock mode",
-            ));
-        }
-    };
+    let (upper_limit, lower_limit) = perf_limits_for_domain(domain)?;
 
     gpu.inner()
         .set_vfp_locks([
@@ -551,37 +541,9 @@ pub fn set_nvapi_pstate_lock(
         )
     };
 
-    let supported_pstates = pstates
-        .iter()
-        .map(|(reported_pstate, _, _, _, _)| {
-            nvml_pstate_to_str(*reported_pstate)
-                .trim_start_matches('P')
-                .to_string()
-        })
-        .collect::<Vec<_>>();
-
-    let high_perf_entry = pstates
-        .iter()
-        .find(|(reported_pstate, _, _, _, _)| *reported_pstate == high_perf_pstate)
-        .ok_or_else(|| {
-            Error::Custom(format!(
-                "{} is not reported by NVML for GPU {}. Supported NVML P-States: {}",
-                nvml_pstate_to_str(high_perf_pstate),
-                gpu_id,
-                supported_pstates.join(",")
-            ))
-        })?;
-    let low_perf_entry = pstates
-        .iter()
-        .find(|(reported_pstate, _, _, _, _)| *reported_pstate == low_perf_pstate)
-        .ok_or_else(|| {
-            Error::Custom(format!(
-                "{} is not reported by NVML for GPU {}. Supported NVML P-States: {}",
-                nvml_pstate_to_str(low_perf_pstate),
-                gpu_id,
-                supported_pstates.join(",")
-            ))
-        })?;
+    let supported_list = build_supported_pstate_list(&pstates);
+    let high_perf_entry = find_pstate_entry(&pstates, high_perf_pstate, gpu_id, &supported_list)?;
+    let low_perf_entry = find_pstate_entry(&pstates, low_perf_pstate, gpu_id, &supported_list)?;
 
     let min_target_mem_clock_mhz = low_perf_entry.3;
     let max_target_mem_clock_mhz = high_perf_entry.4;
@@ -601,18 +563,8 @@ pub fn set_nvapi_pstate_lock(
         })
         .collect::<Vec<_>>();
 
-    let outside_requested_range = overlapping_pstates
-        .iter()
-        .filter_map(|(reported_index, reported_label)| {
-            reported_index.as_ref().ok().and_then(|reported_index| {
-                if *reported_index < min_index || *reported_index > max_index {
-                    Some(*reported_label)
-                } else {
-                    None
-                }
-            })
-        })
-        .collect::<Vec<_>>();
+    let outside_requested_range =
+        collect_outside_requested_range(&overlapping_pstates, min_index, max_index);
 
     if !outside_requested_range.is_empty() {
         return Err(Error::Custom(format!(
@@ -728,30 +680,18 @@ pub fn reset_vfp_deltas(gpu: &Gpu, domain: VfpResetDomain) -> Result<(), Error> 
     let reset_graphics = matches!(domain, VfpResetDomain::All | VfpResetDomain::Core);
     let reset_memory = matches!(domain, VfpResetDomain::All | VfpResetDomain::Memory);
 
+    let try_set_p0 = |domain| {
+        gpu.inner()
+            .set_pstates([(PState::P0, domain, KilohertzDelta(0))].iter().cloned())
+            .is_ok()
+    };
+
     if is_legacy {
         let mut any_ok = false;
-        if reset_graphics
-            && gpu
-                .inner()
-                .set_pstates(
-                    [(PState::P0, ClockDomain::Graphics, KilohertzDelta(0))]
-                        .iter()
-                        .cloned(),
-                )
-                .is_ok()
-        {
+        if reset_graphics && try_set_p0(ClockDomain::Graphics) {
             any_ok = true;
         }
-        if reset_memory
-            && gpu
-                .inner()
-                .set_pstates(
-                    [(PState::P0, ClockDomain::Memory, KilohertzDelta(0))]
-                        .iter()
-                        .cloned(),
-                )
-                .is_ok()
-        {
+        if reset_memory && try_set_p0(ClockDomain::Memory) {
             any_ok = true;
         }
         if any_ok {
@@ -893,6 +833,7 @@ pub fn query_domain_vf_points_indexed(
                 let (i, point) = pts.next().unwrap();
                 let (_, delta) = dts.next().unwrap();
                 let mut point = nvapi_hi::VfPoint {
+                    point_type: point.point_type,
                     voltage: point.configured().voltage,
                     frequency: point.configured().frequency,
                     default_frequency: point.default().map(|p| p.frequency).unwrap_or_default(),
@@ -1279,4 +1220,20 @@ pub fn set_legacy_clocks_nvapi(gpu: &Gpu, core_mhz: u32, mem_mhz: u32) -> Result
     }
 
     Ok(())
+}
+
+pub fn probe_thermal_sensors_mask(gpu: &Gpu) -> Result<i32, Error> {
+    for i in 0..32 {
+        let mask: i32 = 1 << i;
+        if let Ok(sensors) = gpu.thermal_sensors(mask)
+            && sensors.values.iter().any(|&v| v != 0)
+        {
+            return Ok(mask);
+        }
+    }
+    Err(Error::Str("no valid NVAPI thermal sensor mask found"))
+}
+
+pub fn read_thermal_sensors(gpu: &Gpu, mask: i32) -> Result<ThermalSensors, Error> {
+    gpu.thermal_sensors(mask).map_err(Error::from)
 }

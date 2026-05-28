@@ -1,4 +1,4 @@
-use nvapi_hi::{ClockDomain, CoolerPolicy, Kilohertz, Microvolts, PState, VfpPoint};
+use nvapi_hi::{ClockDomain, CoolerPolicy, Kilohertz, Microvolts, PState, VfPointType, VfpPoint};
 use nvml_wrapper::enum_wrappers::device::PerformanceState;
 use nvml_wrapper::enums::device::FanControlPolicy;
 use nvoc_core::{
@@ -242,6 +242,7 @@ fn vfp_point_nearest_voltage() {
         (
             7,
             VfpPoint {
+                point_type: VfPointType::Prog,
                 default_frequency: Kilohertz(1_800_000),
                 frequency: Kilohertz(1_800_000),
                 voltage: Microvolts(850_000),
@@ -250,6 +251,7 @@ fn vfp_point_nearest_voltage() {
         (
             8,
             VfpPoint {
+                point_type: VfPointType::Prog,
                 default_frequency: Kilohertz(1_860_000),
                 frequency: Kilohertz(1_860_000),
                 voltage: Microvolts(900_000),

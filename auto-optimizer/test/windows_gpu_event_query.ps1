@@ -6,7 +6,7 @@ param(
 $startDateTime = [DateTimeOffset]::FromUnixTimeMilliseconds($StartMs).LocalDateTime
 $endDateTime   = [DateTimeOffset]::FromUnixTimeMilliseconds($EndMs).LocalDateTime
 
-$ids  = @(153, 13, 4101, 10110, 10111)
+$ids  = @(153, 13, 14, 4101, 10110, 10111)
 $logs = @('System', 'Microsoft-Windows-DriverFrameworks-UserMode/Operational')
 
 foreach ($id in $ids) {

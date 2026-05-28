@@ -54,6 +54,13 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: rustfmt
+      - name: Disable local nvapi-rs patch for CI
+        shell: pwsh
+        run: |
+          $cargoToml = "Cargo.toml"
+          $content = Get-Content $cargoToml -Raw
+          $content = [regex]::Replace($content, '(?ms)^\# For development, we use the local path to the nvapi-rs crate\. In production, we can switch to the git dependency\.\r?\n\[patch\."https://github\.com/Skyworks-Neo/nvapi-rs"\]\r?\nnvapi = \{ path = "\./nvapi-rs" \}\r?\nnvapi-sys = \{ path = "\./nvapi-rs/sys" \}\r?\nnvapi-hi = \{ path = "\./nvapi-rs/hi" \}\r?\n', '')
+          Set-Content $cargoToml $content -NoNewline
       - run: cargo fmt --all -- --check
 
   clippy:
@@ -65,6 +72,13 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: clippy
+      - name: Disable local nvapi-rs patch for CI
+        shell: pwsh
+        run: |
+          $cargoToml = "Cargo.toml"
+          $content = Get-Content $cargoToml -Raw
+          $content = [regex]::Replace($content, '(?ms)^\# For development, we use the local path to the nvapi-rs crate\. In production, we can switch to the git dependency\.\r?\n\[patch\."https://github\.com/Skyworks-Neo/nvapi-rs"\]\r?\nnvapi = \{ path = "\./nvapi-rs" \}\r?\nnvapi-sys = \{ path = "\./nvapi-rs/sys" \}\r?\nnvapi-hi = \{ path = "\./nvapi-rs/hi" \}\r?\n', '')
+          Set-Content $cargoToml $content -NoNewline
       # cli-stressor-cuda-rs links against CUDA even without --all-features; exclude it here.
       # The Rust stressor is compiled separately in ci.yml when files change.
       - run: cargo clippy --workspace --exclude cli-stressor-cuda-rs --all-targets -- -D warnings
@@ -140,6 +154,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - name: Disable local nvapi-rs patch for CI
+        shell: pwsh
+        run: |
+          $cargoToml = "Cargo.toml"
+          $content = Get-Content $cargoToml -Raw
+          $content = [regex]::Replace($content, '(?ms)^\# For development, we use the local path to the nvapi-rs crate\. In production, we can switch to the git dependency\.\r?\n\[patch\."https://github\.com/Skyworks-Neo/nvapi-rs"\]\r?\nnvapi = \{ path = "\./nvapi-rs" \}\r?\nnvapi-sys = \{ path = "\./nvapi-rs/sys" \}\r?\nnvapi-hi = \{ path = "\./nvapi-rs/hi" \}\r?\n', '')
+          Set-Content $cargoToml $content -NoNewline
       - run: cargo test --package nvoc-core --all-targets
 
   rust-nvoc-python:
@@ -159,6 +180,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Disable local nvapi-rs patch for CI
+        shell: pwsh
+        run: |
+          $cargoToml = "Cargo.toml"
+          $content = Get-Content $cargoToml -Raw
+          $content = [regex]::Replace($content, '(?ms)^\# For development, we use the local path to the nvapi-rs crate\. In production, we can switch to the git dependency\.\r?\n\[patch\."https://github\.com/Skyworks-Neo/nvapi-rs"\]\r?\nnvapi = \{ path = "\./nvapi-rs" \}\r?\nnvapi-sys = \{ path = "\./nvapi-rs/sys" \}\r?\nnvapi-hi = \{ path = "\./nvapi-rs/hi" \}\r?\n', '')
+          Set-Content $cargoToml $content -NoNewline
       - run: cargo test --package pynvoc --no-default-features
       - run: python -m pip install --upgrade pip maturin
       - run: python -m venv .venv
@@ -192,6 +220,13 @@ jobs:
           toolchain: 1.95.0
           components: clippy
           rustflags: ""
+      - name: Disable local nvapi-rs patch for CI
+        shell: pwsh
+        run: |
+          $cargoToml = "Cargo.toml"
+          $content = Get-Content $cargoToml -Raw
+          $content = [regex]::Replace($content, '(?ms)^\# For development, we use the local path to the nvapi-rs crate\. In production, we can switch to the git dependency\.\r?\n\[patch\."https://github\.com/Skyworks-Neo/nvapi-rs"\]\r?\nnvapi = \{ path = "\./nvapi-rs" \}\r?\nnvapi-sys = \{ path = "\./nvapi-rs/sys" \}\r?\nnvapi-hi = \{ path = "\./nvapi-rs/hi" \}\r?\n', '')
+          Set-Content $cargoToml $content -NoNewline
       - name: Clippy
         run: cargo clippy --package nvoc-auto-optimizer --all-targets --all-features -- -D warnings
       - name: Build
@@ -213,6 +248,13 @@ jobs:
           toolchain: 1.95.0
           components: clippy
           rustflags: ""
+      - name: Disable local nvapi-rs patch for CI
+        shell: pwsh
+        run: |
+          $cargoToml = "Cargo.toml"
+          $content = Get-Content $cargoToml -Raw
+          $content = [regex]::Replace($content, '(?ms)^\# For development, we use the local path to the nvapi-rs crate\. In production, we can switch to the git dependency\.\r?\n\[patch\."https://github\.com/Skyworks-Neo/nvapi-rs"\]\r?\nnvapi = \{ path = "\./nvapi-rs" \}\r?\nnvapi-sys = \{ path = "\./nvapi-rs/sys" \}\r?\nnvapi-hi = \{ path = "\./nvapi-rs/hi" \}\r?\n', '')
+          Set-Content $cargoToml $content -NoNewline
       - name: Clippy
         run: cargo clippy --package nvoc-srv --all-targets --all-features -- -D warnings
       - name: Build
@@ -232,6 +274,13 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: clippy
+      - name: Disable local nvapi-rs patch for CI
+        shell: pwsh
+        run: |
+          $cargoToml = "Cargo.toml"
+          $content = Get-Content $cargoToml -Raw
+          $content = [regex]::Replace($content, '(?ms)^\# For development, we use the local path to the nvapi-rs crate\. In production, we can switch to the git dependency\.\r?\n\[patch\."https://github\.com/Skyworks-Neo/nvapi-rs"\]\r?\nnvapi = \{ path = "\./nvapi-rs" \}\r?\nnvapi-sys = \{ path = "\./nvapi-rs/sys" \}\r?\nnvapi-hi = \{ path = "\./nvapi-rs/hi" \}\r?\n', '')
+          Set-Content $cargoToml $content -NoNewline
       - name: Clippy
         run: cargo clippy --package cli-stressor-cuda-rs --all-targets --no-default-features -- -D warnings
       - name: Test
@@ -258,6 +307,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      - name: Disable local nvapi-rs patch for CI
+        shell: pwsh
+        run: |
+          $cargoToml = "Cargo.toml"
+          $content = Get-Content $cargoToml -Raw
+          $content = [regex]::Replace($content, '(?ms)^\# For development, we use the local path to the nvapi-rs crate\. In production, we can switch to the git dependency\.\r?\n\[patch\."https://github\.com/Skyworks-Neo/nvapi-rs"\]\r?\nnvapi = \{ path = "\./nvapi-rs" \}\r?\nnvapi-sys = \{ path = "\./nvapi-rs/sys" \}\r?\nnvapi-hi = \{ path = "\./nvapi-rs/hi" \}\r?\n', '')
+          Set-Content $cargoToml $content -NoNewline
       - name: Install uv
         run: pip install --quiet uv
       - name: Install deps
@@ -291,6 +347,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Disable local nvapi-rs patch for CI
+        shell: pwsh
+        run: |
+          $cargoToml = "Cargo.toml"
+          $content = Get-Content $cargoToml -Raw
+          $content = [regex]::Replace($content, '(?ms)^\# For development, we use the local path to the nvapi-rs crate\. In production, we can switch to the git dependency\.\r?\n\[patch\."https://github\.com/Skyworks-Neo/nvapi-rs"\]\r?\nnvapi = \{ path = "\./nvapi-rs" \}\r?\nnvapi-sys = \{ path = "\./nvapi-rs/sys" \}\r?\nnvapi-hi = \{ path = "\./nvapi-rs/hi" \}\r?\n', '')
+          Set-Content $cargoToml $content -NoNewline
       - name: Install uv
         run: pip install --quiet uv
       - name: Install deps
@@ -317,6 +380,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Disable local nvapi-rs patch for CI
+        shell: pwsh
+        run: |
+          $cargoToml = "Cargo.toml"
+          $content = Get-Content $cargoToml -Raw
+          $content = [regex]::Replace($content, '(?ms)^\# For development, we use the local path to the nvapi-rs crate\. In production, we can switch to the git dependency\.\r?\n\[patch\."https://github\.com/Skyworks-Neo/nvapi-rs"\]\r?\nnvapi = \{ path = "\./nvapi-rs" \}\r?\nnvapi-sys = \{ path = "\./nvapi-rs/sys" \}\r?\nnvapi-hi = \{ path = "\./nvapi-rs/hi" \}\r?\n', '')
+          Set-Content $cargoToml $content -NoNewline
       - name: byte-compile
         run: python -m compileall -q test.py
         working-directory: cli-stressor-cuda
@@ -344,6 +414,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Disable local nvapi-rs patch for CI
+        shell: pwsh
+        run: |
+          $cargoToml = "Cargo.toml"
+          $content = Get-Content $cargoToml -Raw
+          $content = [regex]::Replace($content, '(?ms)^\# For development, we use the local path to the nvapi-rs crate\. In production, we can switch to the git dependency\.\r?\n\[patch\."https://github\.com/Skyworks-Neo/nvapi-rs"\]\r?\nnvapi = \{ path = "\./nvapi-rs" \}\r?\nnvapi-sys = \{ path = "\./nvapi-rs/sys" \}\r?\nnvapi-hi = \{ path = "\./nvapi-rs/hi" \}\r?\n', '')
+          Set-Content $cargoToml $content -NoNewline
       - name: byte-compile
         run: python -m compileall -q test.py
         working-directory: cli-stressor-opencl
@@ -370,6 +447,13 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
+      - name: Disable local nvapi-rs patch for CI
+        shell: pwsh
+        run: |
+          $cargoToml = "Cargo.toml"
+          $content = Get-Content $cargoToml -Raw
+          $content = [regex]::Replace($content, '(?ms)^\# For development, we use the local path to the nvapi-rs crate\. In production, we can switch to the git dependency\.\r?\n\[patch\."https://github\.com/Skyworks-Neo/nvapi-rs"\]\r?\nnvapi = \{ path = "\./nvapi-rs" \}\r?\nnvapi-sys = \{ path = "\./nvapi-rs/sys" \}\r?\nnvapi-hi = \{ path = "\./nvapi-rs/hi" \}\r?\n', '')
+          Set-Content $cargoToml $content -NoNewline
       - name: Check Cargo.lock for duplicate crate versions
         run: |
           python3 << 'PYEOF'
