@@ -1,0 +1,7 @@
+# Pure-venv / pip fallback dependencies for NVOC-CLI-Stressor
+# Keep this file aligned with pyproject.toml for direct pip installs.
+
+--extra-index-url https://download.pytorch.org/whl/cu129
+
+numpy==2.4.4
+torch==2.9.0
