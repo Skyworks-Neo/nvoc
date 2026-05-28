@@ -128,7 +128,11 @@ struct Args {
     #[arg(long, default_value_t = 6)]
     burst_iters: u32,
 
-    #[arg(long, default_value_t = 5.0)]
+    #[arg(
+        long,
+        default_value_t = 5.0,
+        help = "Periodic validation interval in seconds; set to 0 to disable validation"
+    )]
     validate_interval: f64,
 
     #[arg(long, default_value_t = 1024)]
@@ -1184,32 +1188,75 @@ fn main() {
         "{}",
         stylize_config(&format!("  Duration: {:.1} s", args.duration))
     );
+    // Show per-kernel warmup/burst overrides if present
+    let warmup_display = if kernel_param_overrides
+        .iter()
+        .any(|o| o.warmup_iters.is_some())
+    {
+        let mut parts = vec![format!(
+            "  Warmup iterations: {} (global default)",
+            args.warmup_iters
+        )];
+        for override_item in &kernel_param_overrides {
+            if let Some(w) = override_item.warmup_iters {
+                parts.push(format!("    {:?}: {}", override_item.kind, w));
+            }
+        }
+        parts.join("\n")
+    } else {
+        format!("  Warmup iterations: {}", args.warmup_iters)
+    };
+    println!("{}", stylize_config(&warmup_display));
+
+    let burst_display = if kernel_param_overrides
+        .iter()
+        .any(|o| o.burst_iters.is_some())
+    {
+        let mut parts = vec![format!(
+            "  Burst iterations: {} (global default)",
+            args.burst_iters
+        )];
+        for override_item in &kernel_param_overrides {
+            if let Some(b) = override_item.burst_iters {
+                parts.push(format!("    {:?}: {}", override_item.kind, b));
+            }
+        }
+        parts.join("\n")
+    } else {
+        format!("  Burst iterations: {}", args.burst_iters)
+    };
+    println!("{}", stylize_config(&burst_display));
     println!(
         "{}",
-        stylize_config(&format!("  Warmup iterations: {}", args.warmup_iters))
-    );
-    println!(
-        "{}",
-        stylize_config(&format!("  Burst iterations: {}", args.burst_iters))
-    );
-    println!(
-        "{}",
-        stylize_config(&format!(
-            "  Validation interval: {:.1} s",
-            args.validate_interval
-        ))
+        stylize_config(&if args.validate_interval > 0.0 {
+            format!("  Validation interval: {:.1} s", args.validate_interval)
+        } else {
+            "  Validation interval: disabled (set to 0)".to_string()
+        })
     );
     println!(
         "{}",
         stylize_config(&format!("  Validation size: {}", args.validate_size))
     );
-    println!(
-        "{}",
-        stylize_config(&format!(
-            "  Minor mixture rate: {:.2}",
+
+    let minor_mixture_display = if kernel_param_overrides
+        .iter()
+        .any(|o| o.minor_mixture_rate.is_some())
+    {
+        let mut parts = vec![format!(
+            "  Minor mixture rate: {:.2} (global default)",
             args.minor_mixture_rate
-        ))
-    );
+        )];
+        for override_item in &kernel_param_overrides {
+            if let Some(m) = override_item.minor_mixture_rate {
+                parts.push(format!("    {:?}: {:.2}", override_item.kind, m));
+            }
+        }
+        parts.join("\n")
+    } else {
+        format!("  Minor mixture rate: {:.2}", args.minor_mixture_rate)
+    };
+    println!("{}", stylize_config(&minor_mixture_display));
     println!(
         "{}",
         stylize_config(&format!("  Kernel types: {:?}", kernel_types))

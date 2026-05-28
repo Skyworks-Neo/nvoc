@@ -26,6 +26,11 @@ from .kernels import (
 from .models import PrecisionSpec, StressResult, StressRunConfig
 from .validation import validate_precision
 
+
+def validation_enabled(validate_interval_s: float) -> bool:
+    return validate_interval_s > 0.0
+
+
 _KERNEL_COLORS = {
     "GEMM": "\033[1;91m",
     "MEMCPY": "\033[1;92m",
@@ -81,7 +86,8 @@ def run_stress_mixed(
 
     rng = random.Random(config.base_seed)
     start = time.monotonic()
-    next_validate = max(0.0, config.validate_interval_s)
+    validate_is_enabled = validation_enabled(config.validate_interval_s)
+    next_validate = config.validate_interval_s
     validation_seed = config.base_seed ^ 0x5F3759DF
     effective_overrides = filter_supported_kernel_precisions(
         device, config.kernel_param_overrides
@@ -165,7 +171,7 @@ def run_stress_mixed(
 
         empty_device_cache(device)
 
-        if elapsed_total >= next_validate:
+        if validate_is_enabled and elapsed_total >= next_validate:
             passed, max_abs, max_rel, reason = validate_precision(
                 device=device,
                 spec=op_spec,
@@ -185,7 +191,7 @@ def run_stress_mixed(
                     result.first_error = reason
                     result.first_error_at_s = time.monotonic() - start
                 break
-            next_validate = elapsed_total + max(0.0, config.validate_interval_s)
+            next_validate = elapsed_total + config.validate_interval_s
             validation_seed += 1
 
         if op_elapsed < 0.01:

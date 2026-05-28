@@ -80,7 +80,7 @@ def build_arg_parser():
         "--validate-interval",
         type=float,
         default=10,
-        help="Validation interval in seconds",
+        help="Validation interval in seconds; set to 0 to disable validation",
     )
     p.add_argument(
         "--validate-size",
@@ -237,7 +237,10 @@ def main() -> int:
     print(f"  Duration: {args.duration:.1f} s")
     print(f"  Warmup iterations: {args.warmup_iters}")
     print(f"  Burst iterations: {args.burst_iters}")
-    print(f"  Validation interval: {args.validate_interval:.1f} s")
+    if args.validate_interval > 0:
+        print(f"  Validation interval: {args.validate_interval:.1f} s")
+    else:
+        print("  Validation interval: disabled (set to 0)")
     print(f"  Validation size: {args.validate_size}")
     print(f"  Minor mixture rate: {args.minor_mixture_rate:.2f}")
     print(f"  Kernel types: {[kind.value for kind in kernel_types]}")

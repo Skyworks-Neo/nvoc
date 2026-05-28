@@ -83,6 +83,7 @@ from cli_stressor_cuda.models import (  # noqa: E402
     PrecisionSpec,
     StressResult,
 )
+from cli_stressor_cuda.runner import validation_enabled  # noqa: E402
 from cli_stressor_cuda.parsing import parse_int_list  # noqa: E402
 from cli_stressor_cuda.validation import choose_tolerance  # noqa: E402
 
@@ -134,6 +135,13 @@ class TestComputeS(unittest.TestCase):
             r.elapsed_s = wall_s
             r.tflops = (r.total_flops / r.compute_s) / 1e12
             self.assertAlmostEqual(r.tflops, expected, places=6)
+
+
+class TestValidationIntervalDisable(unittest.TestCase):
+    def test_zero_disables_validation(self):
+        self.assertFalse(validation_enabled(0.0))
+        self.assertFalse(validation_enabled(-1.0))
+        self.assertTrue(validation_enabled(0.1))
 
 
 # ---------------------------------------------------------------------------

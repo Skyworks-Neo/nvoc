@@ -70,6 +70,7 @@ cargo run -p cli-stressor-cuda-rs --features cuda -- --config ./stressor.toml
   - 字符串：`"gemm:0.4,memcpy:0.3,reduction:0.3"`
   - 映射：`{ gemm = 0.4, memcpy = 0.3, reduction = 0.3 }`
 - `kernel_params.<kernel>` 支持按 kernel 覆盖参数，包括 `precisions`
+- `validate_interval = 0` 可关闭周期性验证
 
 示例（`stressor.toml`）：
 
@@ -165,6 +166,7 @@ cargo run -p cli-stressor-cuda-rs --features cuda -- --config ./stressor.toml
   - string: `"gemm:0.4,memcpy:0.3,reduction:0.3"`
   - map: `{ gemm = 0.4, memcpy = 0.3, reduction = 0.3 }`
 - `kernel_params.<kernel>` supports per-kernel overrides, including `precisions`
+- `validate_interval = 0` disables periodic validation
 
 Example (`stressor.toml`):
 
