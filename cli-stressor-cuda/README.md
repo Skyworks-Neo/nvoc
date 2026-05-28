@@ -2,7 +2,7 @@
 
 > Language switch / 语言切换: [中文](#zh-cn) | [English](#en)
 >
-> License / 许可证: [Apache 2.0](LICENSE)
+> License / 许可证: [Apache 2.0](../LICENSE)
 >
 > 本 monorepo 根目录的 `LICENSE` 适用于所有 NVOC 组件（包括 CUDA 和 OpenCL 压力测试工具）。
 

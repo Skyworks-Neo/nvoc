@@ -6,7 +6,7 @@
 
 [English](#english) | [中文](#chinese)
 
-[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](../LICENSE)
 
 <a id="english"></a>
 
@@ -14,7 +14,7 @@
 
 ### License
 
-This project is licensed under the [Apache License 2.0](LICENSE).
+This project is licensed under the [Apache License 2.0](../LICENSE).
 
 ### Features
 
@@ -195,7 +195,7 @@ gui/
 
 ### 许可证
 
-本项目采用 [Apache License 2.0](LICENSE) 许可。
+本项目采用 [Apache License 2.0](../LICENSE) 许可。
 
 ### 功能
 
