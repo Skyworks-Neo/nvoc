@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-NVOC is a Rust/Python monorepo for NVIDIA GPU overclocking and stress tooling. Rust crates are `nvoc-core/`, `auto-optimizer/`, `srv/`, and `cli-stressor-cuda-rs/`. Python `uv` projects are `gui/`, `tui/`, `cli-stressor-cuda/`, and `cli-stressor-opencl/`. TUI code lives in `tui/nvoc_tui/`, tests in `tui/tests/`, and styles in `tui/nvoc_tui/styles/`. Platform helpers are in `auto-optimizer/test/` and `auto-optimizer/systemd/`.
+NVOC is a Rust/Python monorepo for NVIDIA GPU overclocking and stress tooling. The canonical component inventory (including user-facing vs internal modules) lives in [`README.md` → "Components (canonical)"](./README.md#components-canonical). TUI code lives in `tui/nvoc_tui/`, tests in `tui/tests/`, and styles in `tui/nvoc_tui/styles/`. Platform helpers are in `auto-optimizer/test/` and `auto-optimizer/systemd/`.
 
 ## Build, Test, and Development Commands
 
