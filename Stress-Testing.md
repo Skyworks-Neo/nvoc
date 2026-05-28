@@ -1,8 +1,130 @@
-# 压力测试
+# Stress Testing
+
+[English](#english) | [中文](#chinese)
+
+<a id="english"></a>
+
+## English
+
+NVOC provides three stress testing tools for GPU stability validation during autoscan or standalone use.
+
+### Overview
+
+| Tool | Language | Backend | Characteristics |
+|---|---|---|---|
+| `cli-stressor-cuda` | Python | PyTorch CUDA | Most feature-complete, multi-precision + mixed kernel + strict validation |
+| `cli-stressor-opencl` | Python | OpenCL | Lightweight, no CUDA/PyTorch dependency |
+| `cli-stressor-cuda-rs` | Rust | CUDA (cuBLAS) | Native high performance, no Python dependency |
+
+### cli-stressor-cuda (Python + PyTorch)
+
+#### Install
+
+```bash
+cd cli-stressor-cuda
+uv sync
+```
+
+#### Run
+
+```bash
+uv run test.py [options]
+```
+
+#### Key Parameters
+
+| Parameter | Default | Description |
+|---|---|---|
+| `--duration` | `90.0` | Stress duration per precision (seconds) |
+| `--precisions` | `fp16,bf16` | Precision list: `fp64` `fp32` `tf32` `fp16` `bf16` `fp8` |
+| `--matrix-sizes` | `2049,4096,4097,8192,8193,16384` | Random matrix sizes |
+| `--validate-interval` | `10` | Side-channel validation interval (seconds) |
+| `--kernel-types` | `gemm,memcpy,memset,...` | Enabled kernel types |
+| `--kernel-mixture` | empty (equal weight) | Kernel weight mixture, e.g. `gemm:0.5,memcpy:0.3` |
+| `--stream-mode` | `single` | Stream concurrency mode: `single` `dual` `triple` |
+| `--config` | — | TOML config file |
+
+#### Features
+
+- Multi-precision: FP64 / FP32 / TF32 / FP16 / BF16 / FP8
+- Mixed kernels: GEMM / Memcpy / Memset / Transpose / Elementwise / Reduction / Atomic
+- Side-channel validation: CPU FP64 reference algorithm verification, catching silent data errors
+- Randomized matrix sizes (including non-aligned), creating hot/cold alternating loads
+
+### cli-stressor-opencl (Python + OpenCL)
+
+#### Install
+
+```bash
+cd cli-stressor-opencl
+uv sync
+```
+
+#### Run
+
+```bash
+uv run test.py [options]
+```
+
+Parameters are essentially the same as the CUDA version; precision supports FP32 / FP16 (and FP64 on supported devices).
+
+#### Use Cases
+
+- Environments without CUDA/PyTorch
+- Cross-platform lightweight testing
+- Basic stress testing for non-NVIDIA GPUs
+
+### cli-stressor-cuda-rs (Rust + CUDA)
+
+#### Build
+
+Requires CUDA Toolkit and CUDA runtime DLL/SO.
+
+```bash
+cargo run -p cli-stressor-cuda-rs --features cuda -- [options]
+```
+
+#### Configuration File
+
+Supports TOML configuration, priority: `command line > config > defaults`
+
+```toml
+duration = 120
+precisions = ["fp16", "bf16", "tf32"]
+matrix_sizes = [2049, 4096, 8192]
+kernel_mixture = { gemm = 0.4, memcpy = 0.3, reduction = 0.2, atomic = 0.1 }
+
+[kernel_params.gemm]
+precisions = ["fp16", "bf16"]
+matrix_sizes = [4096, 8192]
+```
+
+#### CUDA Version Compatibility
+
+| CUDA Version | Support Range |
+|---|---|
+| CUDA 12.x | Maxwell and above |
+| CUDA 13.x | Ampere and above (requires newer driver) |
+
+Separate releases per CUDA 12.x / 13.x are recommended; clients should choose based on GPU architecture.
+
+### Pass/Fail Criteria
+
+All stress testing tools uniformly use **process exit code** as the criterion:
+- Returns `0` = pass (stable)
+- Non-`0` = fail (unstable)
+
+During autoscan, auto-optimizer calls the stressor via wrapper scripts and decides whether to raise or lower the frequency offset based on the exit code.
+
+---
+
+<a id="chinese"></a>
+
+## 中文
 
 NVOC 提供三种压力测试工具，用于在 autoscan 流程中验证 GPU 稳定性或独立运行。
 
-## 概览
+### 概览
 
 | 工具 | 语言 | 后端 | 特点 |
 |---|---|---|---|
@@ -10,22 +132,22 @@ NVOC 提供三种压力测试工具，用于在 autoscan 流程中验证 GPU 稳
 | `cli-stressor-opencl` | Python | OpenCL | 轻量，不依赖 CUDA PyTorch |
 | `cli-stressor-cuda-rs` | Rust | CUDA (cuBLAS) | 原生高性能，无 Python 依赖 |
 
-## cli-stressor-cuda（Python + PyTorch）
+### cli-stressor-cuda（Python + PyTorch）
 
-### 安装
+#### 安装
 
 ```bash
 cd cli-stressor-cuda
 uv sync
 ```
 
-### 运行
+#### 运行
 
 ```bash
 uv run test.py [参数]
 ```
 
-### 关键参数
+#### 关键参数
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
@@ -38,23 +160,23 @@ uv run test.py [参数]
 | `--stream-mode` | `single` | 流并发模式：`single` `dual` `triple` |
 | `--config` | — | TOML 配置文件 |
 
-### 特性
+#### 特性
 
 - 多精度：FP64 / FP32 / TF32 / FP16 / BF16 / FP8
 - 混合 kernel：GEMM / Memcpy / Memset / Transpose / Elementwise / Reduction / Atomic
 - 旁路校验：CPU FP64 参考算法验证，捕获静默数据错误
 - 随机化矩阵尺寸（含非对齐尺寸），制造冷热交替负载
 
-## cli-stressor-opencl（Python + OpenCL）
+### cli-stressor-opencl（Python + OpenCL）
 
-### 安装
+#### 安装
 
 ```bash
 cd cli-stressor-opencl
 uv sync
 ```
 
-### 运行
+#### 运行
 
 ```bash
 uv run test.py [参数]
@@ -62,15 +184,15 @@ uv run test.py [参数]
 
 与 CUDA 版参数基本相同，精度支持 FP32 / FP16（及受支持设备的 FP64）。
 
-### 适用场景
+#### 适用场景
 
 - 无 CUDA PyTorch 的环境
 - 跨平台轻量测试
 - 非 NVIDIA GPU 的基础压力测试
 
-## cli-stressor-cuda-rs（Rust + CUDA）
+### cli-stressor-cuda-rs（Rust + CUDA）
 
-### 构建
+#### 构建
 
 需要 CUDA Toolkit 和 CUDA runtime DLL/SO。
 
@@ -78,7 +200,7 @@ uv run test.py [参数]
 cargo run -p cli-stressor-cuda-rs --features cuda -- [参数]
 ```
 
-### 配置文件
+#### 配置文件
 
 支持 TOML 配置，优先级：`命令行 > config > 默认值`
 
@@ -93,7 +215,7 @@ precisions = ["fp16", "bf16"]
 matrix_sizes = [4096, 8192]
 ```
 
-### CUDA 版本兼容性
+#### CUDA 版本兼容性
 
 | CUDA 版本 | 支持范围 |
 |---|---|
@@ -102,7 +224,7 @@ matrix_sizes = [4096, 8192]
 
 建议按 CUDA 12.x / 13.x 分开打包发布，客户端按 GPU 架构选择。
 
-## 判定标准
+### 判定标准
 
 所有压力测试工具统一使用**进程返回码**判据：
 - 返回 `0` = 通过（稳定）

@@ -1,8 +1,108 @@
-# GUI 使用指南
+# GUI Guide
+
+[English](#english) | [中文](#chinese)
+
+<a id="english"></a>
+
+## English
+
+NVOC-GUI is a Python-based graphical interface frontend providing Dashboard, Autoscan, Overclock, VF Curve, and Fan Control functionality.
+
+### Running
+
+```bash
+cd gui
+uv sync
+uv run python main.py
+```
+
+The GUI auto-detects `../auto-optimizer/target/release/nvoc-auto-optimizer.exe`.
+
+### Feature Tabs
+
+#### Dashboard
+
+- GPU info and real-time status (frequency, temperature, fans, VFP)
+- Current overclock settings overview
+
+<img alt="image" width="50%" src="https://github.com/user-attachments/assets/7cfefc10-47e3-40aa-aeeb-f7d37f527c6f"/>
+
+#### Autoscan
+
+One-click automated VF curve optimization workflow:
+
+1. Click **Export Init VFP** to save factory curve
+2. Click **Reset & Unlock VFP** to prepare for scanning
+3. Configure parameters (mode, score threshold, etc.)
+4. Click **Start Autoscan** — output streams to console in real time
+5. After scan completes, click **Fix Results** for post-processing
+6. Click **Import Final VFP** to apply the optimized curve
+
+Supports Standard / Ultrafast / Legacy modes.
+
+<img width="50%" alt="image" src="https://github.com/user-attachments/assets/5b7ca629-e6b2-4bab-a586-41bc50670cb9" />
+
+#### Overclock
+
+- Core frequency offset (`--core-offset`)
+- Memory frequency offset (`--mem-offset`)
+- Power limit (`-P`)
+- Thermal limit (`-T`)
+- Voltage Boost (`-V`)
+- Manual fan speed control
+- Preset profiles and slider adjustment
+- NVAPI / NVML dual interface support
+
+<img width="50%" alt="image" src="https://github.com/user-attachments/assets/debbe0de-25e7-42d6-811c-6c2670cc7bd5" />
+
+#### VF Curve
+
+- Export / import VFP curves (CSV format)
+- Lock / unlock voltage points
+- Single-point frequency adjustment
+- Terminal plot preview
+
+<img width="50%" alt="image" src="https://github.com/user-attachments/assets/e7f79884-abbd-4ea6-9a54-9584e0c2f20e" />
+
+#### Output Console
+
+- Real-time CLI output for all operations
+- Dockable window, scrollable to view history
+
+### Architecture
+
+```
+main.py → src/app.py → src/tabs/*
+                     → src/widgets/*
+         → src/config.py
+         → src/cli_runner.py → nvoc-auto-optimizer CLI
+```
+
+- **`src/cli_runner.py`**: Invokes CLI as a subprocess, passes arguments and parses output
+- **`src/config.py`**: JSON-based configuration management
+- **`src/tabs/`**: One file per feature tab
+
+### Configuration
+
+- Config file: `nvoc_gui_config.json`
+- Customizable CLI path, GPU selection, etc.
+
+### Packaging
+
+```powershell
+uv sync --group build
+uv run pyinstaller nvoc_gui.spec
+```
+
+---
+
+<a id="chinese"></a>
+
+## 中文
 
 NVOC-GUI 是基于 Python 的图形界面前端，提供 Dashboard、Autoscan、Overclock、VF Curve、Fan Control 等功能。
 
-## 运行
+### 运行
 
 ```bash
 cd gui
@@ -12,16 +112,16 @@ uv run python main.py
 
 GUI 会自动检测 `../auto-optimizer/target/release/nvoc-auto-optimizer.exe`。
 
-## 功能页签
+### 功能页签
 
-### Dashboard
+#### Dashboard
 
 - GPU 信息与实时状态（频率、温度、风扇、VFP）
 - 当前超频设置一览
 
 <img alt="image" width="50%" src="https://github.com/user-attachments/assets/7cfefc10-47e3-40aa-aeeb-f7d37f527c6f"/>
 
-### Autoscan
+#### Autoscan
 
 一键自动优化 VF 曲线工作流：
 
@@ -36,8 +136,7 @@ GUI 会自动检测 `../auto-optimizer/target/release/nvoc-auto-optimizer.exe`�
 
 <img width="50%" alt="image" src="https://github.com/user-attachments/assets/5b7ca629-e6b2-4bab-a586-41bc50670cb9" />
 
-
-### Overclock
+#### Overclock
 
 - 核心频率偏移（`--core-offset`）
 - 显存频率偏移（`--mem-offset`）
@@ -50,8 +149,7 @@ GUI 会自动检测 `../auto-optimizer/target/release/nvoc-auto-optimizer.exe`�
 
 <img width="50%" alt="image" src="https://github.com/user-attachments/assets/debbe0de-25e7-42d6-811c-6c2670cc7bd5" />
 
-
-### VF Curve
+#### VF Curve
 
 - 导出 / 导入 VFP 曲线（CSV 格式）
 - 锁定 / 解锁电压点
@@ -60,12 +158,12 @@ GUI 会自动检测 `../auto-optimizer/target/release/nvoc-auto-optimizer.exe`�
 
 <img width="50%" alt="image" src="https://github.com/user-attachments/assets/e7f79884-abbd-4ea6-9a54-9584e0c2f20e" />
 
-### Output Console
+#### Output Console
 
 - 所有操作的 CLI 输出实时展示
 - 停靠式窗口，可滚动查看历史输出
 
-## 架构
+### 架构
 
 ```
 main.py → src/app.py → src/tabs/*
@@ -78,12 +176,12 @@ main.py → src/app.py → src/tabs/*
 - **`src/config.py`**：JSON 格式配置管理
 - **`src/tabs/`**：每个文件对应一个功能页签
 
-## 配置
+### 配置
 
 - 配置文件：`nvoc_gui_config.json`
 - 可自定义 CLI 路径、GPU 选择等
 
-## 打包
+### 打包
 
 ```powershell
 uv sync --group build

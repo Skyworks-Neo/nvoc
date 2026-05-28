@@ -1,12 +1,154 @@
-# 编译与安装
+# Build & Install
 
-## 系统要求
+[English](#english) | [中文](#chinese)
+
+<a id="english"></a>
+
+## English
+
+### System Requirements
+
+- NVIDIA GPU + compatible driver (≥ 537)
+- Windows 10/11 or Linux (nvidia-open-dkms / proprietary driver)
+- Administrator privileges (Windows) or sudo (Linux) for overclocking write operations
+
+### Rust Toolchain
+
+```bash
+# Install Rust (recommended: rustup)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+# Requires toolchain 1.95.0+
+rustup default 1.95.0
+```
+
+The project uses Rust Edition 2024.
+
+### Python Environment
+
+Use [`uv`](https://docs.astral.sh/uv/) to manage the Python environment:
+
+```bash
+# Install uv
+pip install uv
+# or
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+### Clone Repository
+
+```bash
+git clone https://github.com/Skyworks-Neo/nvoc.git
+cd nvoc
+```
+
+### Build Auto-Optimizer (Rust CLI Core)
+
+```bash
+cd auto-optimizer
+cargo build --release
+```
+
+Output: `target/release/nvoc-auto-optimizer` (or `.exe`)
+
+> Build all workspace Rust crates (excluding CUDA stress test):
+> ```bash
+> cargo build --workspace --exclude cli-stressor-cuda-rs
+> ```
+
+### Build Stress Testing Tools
+
+#### CUDA Edition (Python + PyTorch)
+
+```bash
+cd cli-stressor-cuda
+uv sync
+# or manual install
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu129
+pip install numpy
+```
+
+#### OpenCL Edition (Python)
+
+```bash
+cd cli-stressor-opencl
+uv sync
+```
+
+#### Rust CUDA Edition
+
+Requires CUDA Toolkit:
+
+```bash
+cargo run -p cli-stressor-cuda-rs --features cuda -- --duration 30
+```
+
+### Run Frontends
+
+#### GUI
+
+```bash
+cd gui
+uv sync
+uv run python main.py
+```
+
+The GUI auto-detects `../auto-optimizer/target/release/nvoc-auto-optimizer.exe`.
+
+#### TUI
+
+```bash
+cd tui
+uv sync
+uv run nvoc-tui
+```
+
+### Package as Executable
+
+#### GUI (PyInstaller)
+
+```powershell
+cd gui
+uv sync --group build
+uv run pyinstaller nvoc_gui.spec
+```
+
+#### TUI (PyInstaller)
+
+```powershell
+cd tui
+uv sync --group build
+uv run pyinstaller --clean --noconfirm nvoc_tui.spec
+```
+
+### Development Checks
+
+```bash
+# Rust
+cargo fmt --all -- --check
+cargo clippy --workspace --exclude cli-stressor-cuda-rs --all-targets -- -D warnings
+cargo test --package nvoc-core --all-targets
+
+# Python TUI
+cd tui && uv run pytest
+
+# Python format & lint
+ruff format . --check && ruff check .
+```
+
+---
+
+<a id="chinese"></a>
+
+## 中文
+
+### 系统要求
 
 - NVIDIA GPU + 兼容驱动（≥ 537）
 - Windows 10/11 或 Linux（nvidia-open-dkms / proprietary driver）
 - 管理员权限（Windows）或 sudo（Linux）用于超频写入操作
 
-## Rust 工具链
+### Rust 工具链
 
 ```bash
 # 安装 Rust（推荐 rustup）
@@ -18,7 +160,7 @@ rustup default 1.95.0
 
 项目使用 Rust Edition 2024。
 
-## Python 环境
+### Python 环境
 
 推荐使用 [`uv`](https://docs.astral.sh/uv/) 管理 Python 环境：
 
@@ -29,14 +171,14 @@ pip install uv
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-## 克隆仓库
+### 克隆仓库
 
 ```bash
 git clone https://github.com/Skyworks-Neo/nvoc.git
 cd nvoc
 ```
 
-## 构建 Auto-Optimizer（Rust CLI 核心）
+### 构建 Auto-Optimizer（Rust CLI 核心）
 
 ```bash
 cd auto-optimizer
@@ -50,9 +192,9 @@ cargo build --release
 > cargo build --workspace --exclude cli-stressor-cuda-rs
 > ```
 
-## 构建压力测试工具
+### 构建压力测试工具
 
-### CUDA 版（Python + PyTorch）
+#### CUDA 版（Python + PyTorch）
 
 ```bash
 cd cli-stressor-cuda
@@ -62,14 +204,14 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 pip install numpy
 ```
 
-### OpenCL 版（Python）
+#### OpenCL 版（Python）
 
 ```bash
 cd cli-stressor-opencl
 uv sync
 ```
 
-### Rust CUDA 版
+#### Rust CUDA 版
 
 需要安装 CUDA Toolkit：
 
@@ -77,9 +219,9 @@ uv sync
 cargo run -p cli-stressor-cuda-rs --features cuda -- --duration 30
 ```
 
-## 运行前端
+### 运行前端
 
-### GUI
+#### GUI
 
 ```bash
 cd gui
@@ -89,7 +231,7 @@ uv run python main.py
 
 GUI 会自动检测 `../auto-optimizer/target/release/nvoc-auto-optimizer.exe`。
 
-### TUI
+#### TUI
 
 ```bash
 cd tui
@@ -97,9 +239,9 @@ uv sync
 uv run nvoc-tui
 ```
 
-## 打包为可执行文件
+### 打包为可执行文件
 
-### GUI（PyInstaller）
+#### GUI（PyInstaller）
 
 ```powershell
 cd gui
@@ -107,7 +249,7 @@ uv sync --group build
 uv run pyinstaller nvoc_gui.spec
 ```
 
-### TUI（PyInstaller）
+#### TUI（PyInstaller）
 
 ```powershell
 cd tui
@@ -115,7 +257,7 @@ uv sync --group build
 uv run pyinstaller --clean --noconfirm nvoc_tui.spec
 ```
 
-## 开发检查
+### 开发检查
 
 ```bash
 # Rust
