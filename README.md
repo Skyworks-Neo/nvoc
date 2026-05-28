@@ -11,6 +11,17 @@ NVOC is a monorepo for NVIDIA GPU overclocking and stability tools. The stack ce
 
 Overclocking can crash the display driver, reset the GPU, or make a machine unstable. Run write operations only when you understand the target GPU, driver, cooling, and recovery path.
 
+## Documentation & Wiki Policy
+
+For this repository size and contributor model, documentation is maintained in this monorepo first.
+
+- Canonical docs path: [`docs/wiki/`](./docs/wiki/)
+- English Home: [`docs/wiki/Home.md`](./docs/wiki/Home.md)
+- Chinese Home: [`docs/wiki/Home-zh.md`](./docs/wiki/Home-zh.md)
+- Review flow: open PRs in `nvoc`, review here, then sync to GitHub Wiki (`nvoc-wiki`) if needed.
+
+If wiki pages differ from `docs/wiki`, treat `docs/wiki` as source of truth and sync the wiki repo.
+
 ## Components (canonical)
 
 This section is the canonical component inventory for the monorepo. `CONTRIBUTING.md` and `AGENTS.md` intentionally reference this table instead of duplicating entries.
