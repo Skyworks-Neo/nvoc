@@ -1,5 +1,6 @@
 **导航**
 - [[首页|Home]]
+- [[理论基础|Theory]]
 - [[架构|Architecture]]
 - [[编译安装|Build-and-Install]]
 - [[GPU 兼容性|GPU-Support-Matrix]]

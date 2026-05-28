@@ -12,6 +12,7 @@ NVOC 是一个 Rust/Python 混合 monorepo，用于 NVIDIA GPU 超频、V-F 曲�
 
 | 页面 | 说明 |
 |---|---|
+| [[Theory]] | GPU 超频与 V-F 曲线优化的理论基础 |
 | [[Architecture]] | 项目架构与仓库结构 |
 | [[Build-and-Install]] | 编译、安装与环境配置 |
 | [[GPU-Support-Matrix]] | GPU 世代 × 接口兼容性矩阵 |
