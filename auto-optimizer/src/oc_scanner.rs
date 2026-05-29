@@ -38,6 +38,66 @@ fn run_output<O: GpuOperation>(gpu: &GpuTarget<'_>, op: O) -> Result<O::Output, 
     nvoc_run(gpu, op).map(|report| report.output)
 }
 
+// Retry a generic operation with exponential backoff on transient NVAPI errors
+fn retry_operation_with_backoff<T, F>(
+    mut op: F,
+    label: &str,
+    attempts: usize,
+    base_wait_secs: u64,
+) -> Result<T, Error>
+where
+    F: FnMut() -> Result<T, Error>,
+{
+    let mut last_err: Option<Error> = None;
+    for attempt in 0..attempts {
+        if attempt > 0 {
+            eprintln!(
+                "Retrying {} (attempt {}/{})...",
+                label,
+                attempt + 1,
+                attempts
+            );
+        }
+        match op() {
+            Ok(v) => {
+                if attempt > 0 {
+                    eprintln!("{} succeeded on retry (attempt {}).", label, attempt + 1);
+                }
+                return Ok(v);
+            }
+            Err(e) => {
+                // Detect common transient NVAPI messages that indicate the GPU is temporarily
+                // unavailable / not powered and therefore worth retrying
+                let s = format!("{:?}", e);
+                let is_transient = s.contains("GPUnotpowered")
+                    || s.contains("NVAPI_GPU_GETCURRENTPSTATE")
+                    || s.to_lowercase().contains("not powered")
+                    || s.to_lowercase().contains("device not found");
+
+                eprintln!("{} failed: {:?}", label, e);
+                last_err = Some(e);
+
+                if !is_transient {
+                    // Non-transient error: return immediately without retry
+                    break;
+                }
+
+                // Transient error: sleep with exponential backoff before retrying
+                if attempt + 1 < attempts {
+                    let exp = (1u64 << attempt).saturating_mul(base_wait_secs);
+                    let wait = exp.min(60); // cap wait to 60s
+                    eprintln!(
+                        "Transient NVAPI error detected; sleeping {}s before retry...",
+                        wait
+                    );
+                    sleep(Duration::from_secs(wait));
+                }
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| Error::Custom(format!("{}: retry exhausted", label))))
+}
+
 mod pressure_runner {
     use super::*;
 
@@ -2061,10 +2121,15 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
 
         let mut core_oc_safe_limit_ref = core_oc_safe_limit;
         let _init_core_oc_value_ref = init_core_oc_value;
-        let points = run_output(gpu, QueryGpuStatus)?
-            .vfp
-            .ok_or(Error::VfpUnsupported)?
-            .graphics;
+
+        // Retry QueryGpuStatus with backoff to handle transient GPU power state issues
+        let status = retry_operation_with_backoff(
+            || run_output(gpu, QueryGpuStatus),
+            "QueryGpuStatus (initial VFP load)",
+            8, // attempts
+            1, // base_wait_secs
+        )?;
+        let points = status.vfp.ok_or(Error::VfpUnsupported)?.graphics;
 
         let mut point = lower_voltage_point;
         let mut resuming_flag = false;
@@ -2380,7 +2445,14 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
             let minimum_delta_mem_freq_step = 1000;
             let mem_freq_step_exp = 8;
 
-            let readout_f = run_output(gpu, QueryGpuStatus)?.clone().clocks;
+            // Retry QueryGpuStatus with backoff for memory OC readout
+            let status = retry_operation_with_backoff(
+                || run_output(gpu, QueryGpuStatus),
+                "QueryGpuStatus (memory OC readout)",
+                5, // attempts
+                1, // base_wait_secs
+            )?;
+            let readout_f = status.clone().clocks;
             let mut clocks = Vec::new();
             for (clock_name, freq) in readout_f {
                 // Store the clock name and frequency in a data structure.
