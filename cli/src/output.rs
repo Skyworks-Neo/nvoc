@@ -293,9 +293,7 @@ fn join_context(parent: &str, key: &str) -> String {
     }
 }
 
-fn sorted_object_entries(
-    object: &serde_json::Map<String, Value>,
-) -> Vec<(&String, &Value)> {
+fn sorted_object_entries(object: &serde_json::Map<String, Value>) -> Vec<(&String, &Value)> {
     let mut entries = object.iter().collect::<Vec<_>>();
     if entries.iter().all(|(key, _)| key.parse::<i64>().is_ok()) {
         entries.sort_by_key(|(key, _)| key.parse::<i64>().unwrap_or_default());
