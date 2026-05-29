@@ -88,6 +88,27 @@ class VFCurveTab:
             font=("", 15, "bold"),
             text_color="#aaccff",
         ).pack(side="left", padx=8)
+
+        io_row = ctk.CTkFrame(chart_top, fg_color="transparent")
+        io_row.pack(side="left", padx=(12, 0))
+        ctk.CTkCheckBox(
+            io_row, text="Quick export", variable=self.quick_export_var, width=100
+        ).pack(side="left", padx=(0, 8))
+        LiteButton(io_row, text="📤Export", width=75, command=self._export_vfp).pack(
+            side="left", padx=(0, 4)
+        )
+        LiteButton(io_row, text="📥Import", width=75, command=self._import_vfp).pack(
+            side="left", padx=(0, 4)
+        )
+        LiteButton(
+            io_row,
+            text="🔁Reset",
+            width=75,
+            fg_color="#c0392b",
+            hover_color="#96281b",
+            command=self._reset_vfp,
+        ).pack(side="left")
+
         auto_row = ctk.CTkFrame(chart_top, fg_color="transparent")
         auto_row.pack(side="right")
         self._auto_toggle_btn = ctk.CTkButton(
@@ -105,26 +126,6 @@ class VFCurveTab:
         auto_interval_entry.bind("<Return>", self._on_auto_interval_changed)
         auto_interval_entry.bind("<FocusOut>", self._on_auto_interval_changed)
         ctk.CTkLabel(auto_row, text="Refresh (s):").pack(side="left")
-
-        io_row = ctk.CTkFrame(chart_area, fg_color="transparent")
-        io_row.pack(fill="x", pady=(0, 4))
-        ctk.CTkCheckBox(
-            io_row, text="Quick export", variable=self.quick_export_var, width=100
-        ).pack(side="left", padx=(8, 0))
-        LiteButton(
-            io_row, text="📤 Export VFP", width=118, command=self._export_vfp
-        ).pack(side="left", padx=(10, 0))
-        LiteButton(
-            io_row, text="📥 Import VFP", width=118, command=self._import_vfp
-        ).pack(side="left", padx=(5, 0))
-        LiteButton(
-            io_row,
-            text="🔁 Reset VFP",
-            width=120,
-            fg_color="#c0392b",
-            hover_color="#96281b",
-            command=self._reset_vfp,
-        ).pack(side="left", padx=(5, 8))
 
         self._chart_frame = ctk.CTkFrame(chart_area)
         self._chart_frame.pack(fill="x", expand=False)
