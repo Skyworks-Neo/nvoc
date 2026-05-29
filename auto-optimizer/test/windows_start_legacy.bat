@@ -2,7 +2,7 @@
 for /f %%a in ('echo prompt $E^| cmd') do set "ESC=%%a"
 :: powershell -ExecutionPolicy Unrestricted -Command "Set-ExecutionPolicy Unrestricted -Scope CurrentUser"
 
-.\target\release\nvoc-auto-optimizer.exe info
+..\target\release\nvoc-auto-optimizer.exe info
 
 setlocal enabledelayedexpansion
 
@@ -20,7 +20,7 @@ if not exist "%logfile%" (
 )
 
 echo Detecting GPUs in system...
-.\target\release\nvoc-auto-optimizer.exe list
+..\target\release\nvoc-auto-optimizer.exe list
 echo.
 set /p GPU_ID=Input target GPU id to be scanned:
 
@@ -28,7 +28,7 @@ echo.
 echo Selected GPU: %GPU_ID%
 echo.
 
-.\target\release\nvoc-auto-optimizer.exe --gpu=%GPU_ID% reset pstate
+..\target\release\nvoc-auto-optimizer.exe --gpu=%GPU_ID% reset pstate
 
 if "%~1"=="1" (
     :: If para is 1, clear the log file
@@ -48,6 +48,6 @@ echo %ESC%[1;93m If crash is unacceptable on your current situation, use Ctrl-C 
 
 pause
 
-.\target\release\nvoc-auto-optimizer.exe --gpu=%GPU_ID% set vfp autoscan_legacy
+..\target\release\nvoc-auto-optimizer.exe --gpu=%GPU_ID% set vfp autoscan_legacy
 
 echo %ESC%[1;92m All VFP Scan Finish Please Close this Window and please check in file ws\vfp-final.csv %ESC%[0m

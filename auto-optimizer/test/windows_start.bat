@@ -3,7 +3,7 @@ for /f %%a in ('echo prompt $E^| cmd') do set "ESC=%%a"
 
 :: powershell -ExecutionPolicy Unrestricted -Command "Set-ExecutionPolicy Unrestricted -Scope CurrentUser"
 
-.\target\release\nvoc-auto-optimizer.exe info
+..\target\release\nvoc-auto-optimizer.exe info
 
 setlocal enabledelayedexpansion
 
@@ -21,7 +21,7 @@ if not exist "%logfile%" (
 )
 
 echo Detecting GPUs in system...
-.\target\release\nvoc-auto-optimizer.exe list
+..\target\release\nvoc-auto-optimizer.exe list
 echo.
 set /p GPU_ID=Input target GPU id to be scanned:
 
@@ -29,13 +29,13 @@ echo.
 echo Selected GPU: %GPU_ID%
 echo.
 
-.\target\release\nvoc-auto-optimizer.exe --gpu=%GPU_ID% reset pstate
-.\target\release\nvoc-auto-optimizer.exe --gpu=%GPU_ID% reset vfp
-.\target\release\nvoc-auto-optimizer.exe --gpu=%GPU_ID% reset vfp lock
+..\target\release\nvoc-auto-optimizer.exe --gpu=%GPU_ID% reset pstate
+..\target\release\nvoc-auto-optimizer.exe --gpu=%GPU_ID% reset vfp
+..\target\release\nvoc-auto-optimizer.exe --gpu=%GPU_ID% reset vfp lock
 
 if not exist ".\ws\vfp-init.csv" (
   echo exporting default data...
-  .\target\release\nvoc-auto-optimizer.exe --gpu=%GPU_ID% set vfp export .\ws\vfp-init.csv
+  ..\target\release\nvoc-auto-optimizer.exe --gpu=%GPU_ID% set vfp export .\ws\vfp-init.csv
 )
 if "%~1"=="1" (
     :: If para is 1, clear the log file
@@ -55,9 +55,9 @@ echo %ESC%[1;93m If crash is unacceptable on your current situation, use Ctrl-C 
 
 pause
 
-.\target\release\nvoc-auto-optimizer.exe --gpu=%GPU_ID% set vfp autoscan
-.\target\release\nvoc-auto-optimizer.exe --gpu=%GPU_ID% set vfp fix_result -m 1
-.\target\release\nvoc-auto-optimizer.exe --gpu=%GPU_ID% set vfp import .\ws\vfp.csv
-.\target\release\nvoc-auto-optimizer.exe --gpu=%GPU_ID% set vfp export .\ws\vfp-final.csv
+..\target\release\nvoc-auto-optimizer.exe --gpu=%GPU_ID% set vfp autoscan
+..\target\release\nvoc-auto-optimizer.exe --gpu=%GPU_ID% set vfp fix_result -m 1
+..\target\release\nvoc-auto-optimizer.exe --gpu=%GPU_ID% set vfp import .\ws\vfp.csv
+..\target\release\nvoc-auto-optimizer.exe --gpu=%GPU_ID% set vfp export .\ws\vfp-final.csv
 
 echo %ESC%[1;92m All VFP Scan Finish Please Close this Window and please check in file ws\vfp-final.csv %ESC%[0m

@@ -11,7 +11,7 @@ pub type NvmlPStateClockRange = (PerformanceState, u32, u32, u32, u32);
 // Private helper: find an NVML device by NVAPI-style GPU ID (PCI bus * 256)
 // ---------------------------------------------------------------------------
 
-fn find_nvml_device<'n>(nvml: &'n Nvml, gpu_id: u32) -> Option<nvml_wrapper::Device<'n>> {
+fn find_nvml_device(nvml: &'_ Nvml, gpu_id: u32) -> Option<nvml_wrapper::Device<'_>> {
     let pci_bus = GpuId(gpu_id).pci_bus();
     let count = nvml.device_count().ok()?;
     for i in 0..count {
@@ -25,10 +25,7 @@ fn find_nvml_device<'n>(nvml: &'n Nvml, gpu_id: u32) -> Option<nvml_wrapper::Dev
     None
 }
 
-fn find_nvml_device_err<'n>(
-    nvml: &'n Nvml,
-    gpu_id: u32,
-) -> Result<nvml_wrapper::Device<'n>, Error> {
+fn find_nvml_device_err(nvml: &'_ Nvml, gpu_id: u32) -> Result<nvml_wrapper::Device<'_>, Error> {
     find_nvml_device(nvml, gpu_id)
         .ok_or_else(|| Error::Custom(format!("GPU {} not found in NVML", gpu_id)))
 }
@@ -55,6 +52,32 @@ pub fn query_nvml_power_watts(nvml: &Nvml, gpu_id: u32) -> Option<(f32, f32, f32
     ))
 }
 
+pub fn set_nvml_auto_boost(nvml: &Nvml, gpu_id: u32, enabled: bool) -> Result<(), Error> {
+    let mut device = find_nvml_device_err(nvml, gpu_id)?;
+    device
+        .set_auto_boosted_clocks(enabled)
+        .map_err(|e| Error::Custom(format!("NVML Set Auto Boost Error: {:?}", e)))
+}
+
+pub fn set_nvml_auto_boost_default(nvml: &Nvml, gpu_id: u32, enabled: bool) -> Result<(), Error> {
+    let mut device = find_nvml_device_err(nvml, gpu_id)?;
+    device
+        .set_auto_boosted_clocks_default(enabled)
+        .map_err(|e| Error::Custom(format!("NVML Set Auto Boost Default Error: {:?}", e)))
+}
+
+pub fn set_nvml_api_restriction(
+    nvml: &Nvml,
+    gpu_id: u32,
+    api_type: nvml_wrapper::enum_wrappers::device::Api,
+    restricted: bool,
+) -> Result<(), Error> {
+    let mut device = find_nvml_device_err(nvml, gpu_id)?;
+    device
+        .set_api_restricted(api_type, restricted)
+        .map_err(|e| Error::Custom(format!("NVML Set API Restriction Error: {:?}", e)))
+}
+
 pub fn set_nvml_power_limit(nvml: &Nvml, gpu_id: u32, limit_w: u32) -> Result<(), Error> {
     let mut device = find_nvml_device_err(nvml, gpu_id)?;
     device
@@ -66,62 +89,44 @@ pub fn set_nvml_power_limit(nvml: &Nvml, gpu_id: u32, limit_w: u32) -> Result<()
 // Clock offset get/set
 // ---------------------------------------------------------------------------
 
-pub fn get_nvml_core_clock_vf_offset(
+/// Scale factor for NVML memory clock offsets (GDDR historical reason:
+/// NVML reports/expects double the actual frequency).
+const MEM_CLOCK_OFFSET_SCALE: i32 = 2;
+
+/// Map a NVML `Clock` domain to the offset scale factor.
+fn clock_offset_scale(clock: nvml_wrapper::enum_wrappers::device::Clock) -> i32 {
+    match clock {
+        nvml_wrapper::enum_wrappers::device::Clock::Memory => MEM_CLOCK_OFFSET_SCALE,
+        _ => 1,
+    }
+}
+
+pub fn get_nvml_clock_offset(
     nvml: &Nvml,
     gpu_id: u32,
-    pstate: nvml_wrapper::enum_wrappers::device::PerformanceState,
+    clock: nvml_wrapper::enum_wrappers::device::Clock,
+    pstate: PerformanceState,
 ) -> Option<i32> {
     let device = find_nvml_device(nvml, gpu_id)?;
+    let scale = clock_offset_scale(clock);
     device
-        .clock_offset(nvml_wrapper::enum_wrappers::device::Clock::Graphics, pstate)
+        .clock_offset(clock, pstate)
         .ok()
-        .map(|o| o.clock_offset_mhz)
+        .map(|o| o.clock_offset_mhz / scale)
 }
 
-pub fn set_nvml_core_clock_vf_offset(
+pub fn set_nvml_clock_offset(
     nvml: &Nvml,
     gpu_id: u32,
+    clock: nvml_wrapper::enum_wrappers::device::Clock,
+    pstate: PerformanceState,
     offset: i32,
-    pstate: nvml_wrapper::enum_wrappers::device::PerformanceState,
 ) -> Result<(), Error> {
     let mut device = find_nvml_device_err(nvml, gpu_id)?;
+    let scale = clock_offset_scale(clock);
     device
-        .set_clock_offset(
-            nvml_wrapper::enum_wrappers::device::Clock::Graphics,
-            pstate,
-            offset,
-        )
-        .map_err(|e| Error::Custom(format!("NVML Set Core Clock VF Offset Error: {:?}", e)))
-}
-
-pub fn get_nvml_mem_clock_vf_offset(
-    nvml: &Nvml,
-    gpu_id: u32,
-    pstate: nvml_wrapper::enum_wrappers::device::PerformanceState,
-) -> Option<i32> {
-    let device = find_nvml_device(nvml, gpu_id)?;
-    // NVML reports memory clock offset as double the actual frequency (GDDR historical reason).
-    device
-        .clock_offset(nvml_wrapper::enum_wrappers::device::Clock::Memory, pstate)
-        .ok()
-        .map(|o| o.clock_offset_mhz / 2)
-}
-
-pub fn set_nvml_mem_clock_vf_offset(
-    nvml: &Nvml,
-    gpu_id: u32,
-    offset: i32,
-    pstate: nvml_wrapper::enum_wrappers::device::PerformanceState,
-) -> Result<(), Error> {
-    let mut device = find_nvml_device_err(nvml, gpu_id)?;
-    // NVML expects memory clock offset as double the actual target (GDDR historical reason).
-    device
-        .set_clock_offset(
-            nvml_wrapper::enum_wrappers::device::Clock::Memory,
-            pstate,
-            offset.saturating_mul(2),
-        )
-        .map_err(|e| Error::Custom(format!("NVML Set Mem Clock Offset Error: {:?}", e)))
+        .set_clock_offset(clock, pstate, offset.saturating_mul(scale))
+        .map_err(|e| Error::Custom(format!("NVML Set Clock Offset Error: {:?}", e)))
 }
 
 // ---------------------------------------------------------------------------
@@ -197,6 +202,71 @@ pub fn get_nvml_temperature_thresholds(
             .map(|(name, threshold)| (*name, device.temperature_threshold(*threshold).ok()))
             .collect(),
     )
+}
+
+pub fn get_nvml_throttle_reasons(nvml: &Nvml, gpu_id: u32) -> Option<Vec<(&'static str, bool)>> {
+    use nvml_wrapper::bitmasks::device::ThrottleReasons;
+    let device = find_nvml_device(nvml, gpu_id)?;
+    let reasons = device.current_throttle_reasons().ok()?;
+    let names: &[(&str, ThrottleReasons)] = &[
+        ("GPU Idle", ThrottleReasons::GPU_IDLE),
+        (
+            "App Clock Setting",
+            ThrottleReasons::APPLICATIONS_CLOCKS_SETTING,
+        ),
+        ("SW Power Cap", ThrottleReasons::SW_POWER_CAP),
+        ("HW Slowdown", ThrottleReasons::HW_SLOWDOWN),
+        ("Sync Boost", ThrottleReasons::SYNC_BOOST),
+        ("SW Thermal", ThrottleReasons::SW_THERMAL_SLOWDOWN),
+        ("HW Thermal", ThrottleReasons::HW_THERMAL_SLOWDOWN),
+        ("HW Power Brake", ThrottleReasons::HW_POWER_BRAKE_SLOWDOWN),
+        ("Display Clock", ThrottleReasons::DISPLAY_CLOCK_SETTING),
+    ];
+    Some(
+        names
+            .iter()
+            .map(|(name, flag)| (*name, reasons.contains(*flag)))
+            .collect(),
+    )
+}
+
+pub struct ViolationStatus {
+    pub violation_time_ns: u64,
+    pub reference_time_us: u64,
+}
+
+pub fn get_nvml_violation_status(
+    nvml: &Nvml,
+    gpu_id: u32,
+) -> Option<Vec<(&'static str, ViolationStatus)>> {
+    use nvml_wrapper::enum_wrappers::device::PerformancePolicy;
+    let device = find_nvml_device(nvml, gpu_id)?;
+    let policies: &[(&str, PerformancePolicy)] = &[
+        ("Pwr", PerformancePolicy::Power),
+        ("Thrm", PerformancePolicy::Thermal),
+        ("Syn-Boost", PerformancePolicy::SyncBoost),
+        ("Brd-Lim", PerformancePolicy::BoardLimit),
+        ("Idle", PerformancePolicy::LowUtilization),
+        ("Rel", PerformancePolicy::Reliability),
+        ("AppClk", PerformancePolicy::TotalAppClocks),
+        ("BaseClk", PerformancePolicy::TotalBaseClocks),
+    ];
+    let mut results = Vec::new();
+    for (name, policy) in policies {
+        let status = device
+            .violation_status(*policy)
+            .ok()
+            .map(|v| ViolationStatus {
+                violation_time_ns: v.violation_time,
+                reference_time_us: v.reference_time,
+            })
+            .unwrap_or(ViolationStatus {
+                violation_time_ns: 0,
+                reference_time_us: 0,
+            });
+        results.push((*name, status));
+    }
+    Some(results)
 }
 
 // ---------------------------------------------------------------------------
@@ -307,11 +377,65 @@ fn nvml_ranges_overlap(a_min: u32, a_max: u32, b_min: u32, b_max: u32) -> bool {
     a_min <= b_max && b_min <= a_max
 }
 
+pub(crate) fn build_supported_pstate_list(pstates: &[NvmlPStateClockRange]) -> String {
+    pstates
+        .iter()
+        .map(|(reported_pstate, _, _, _, _)| {
+            nvml_pstate_to_str(*reported_pstate)
+                .trim_start_matches('P')
+                .to_string()
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+pub(crate) fn find_pstate_entry<'a>(
+    pstates: &'a [NvmlPStateClockRange],
+    target_pstate: PerformanceState,
+    gpu_id: u32,
+    supported_list: &str,
+) -> Result<&'a NvmlPStateClockRange, Error> {
+    pstates
+        .iter()
+        .find(|(reported_pstate, _, _, _, _)| *reported_pstate == target_pstate)
+        .ok_or_else(|| {
+            Error::Custom(format!(
+                "{} is not reported by NVML for GPU {}. Supported NVML P-States: {}",
+                nvml_pstate_to_str(target_pstate),
+                gpu_id,
+                supported_list
+            ))
+        })
+}
+
+pub(crate) fn collect_outside_requested_range(
+    overlapping_pstates: &[(Result<u8, Error>, &'static str)],
+    min_index: u8,
+    max_index: u8,
+) -> Vec<&'static str> {
+    overlapping_pstates
+        .iter()
+        .filter_map(|(reported_index, reported_label)| {
+            reported_index.as_ref().ok().and_then(|reported_index| {
+                if *reported_index < min_index || *reported_index > max_index {
+                    Some(*reported_label)
+                } else {
+                    None
+                }
+            })
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// P-State lock (via memory clock window)
+// ---------------------------------------------------------------------------
+
 pub fn set_nvml_pstate_lock(
     nvml: &Nvml,
     gpu_id: u32,
-    first_pstate: nvml_wrapper::enum_wrappers::device::PerformanceState,
-    second_pstate: nvml_wrapper::enum_wrappers::device::PerformanceState,
+    first_pstate: PerformanceState,
+    second_pstate: PerformanceState,
 ) -> Result<(String, u32, u32), Error> {
     let pstates = get_nvml_pstate_info(nvml, gpu_id).ok_or_else(|| {
         Error::Custom(format!(
@@ -336,36 +460,9 @@ pub fn set_nvml_pstate_lock(
             nvml_pstate_to_str(low_perf_pstate)
         )
     };
-    let supported_pstates = pstates
-        .iter()
-        .map(|(reported_pstate, _, _, _, _)| {
-            nvml_pstate_to_str(*reported_pstate)
-                .trim_start_matches('P')
-                .to_string()
-        })
-        .collect::<Vec<_>>();
-    let high_perf_entry = pstates
-        .iter()
-        .find(|(reported_pstate, _, _, _, _)| *reported_pstate == high_perf_pstate)
-        .ok_or_else(|| {
-            Error::Custom(format!(
-                "{} is not reported by NVML for GPU {}. Supported NVML P-States: {}",
-                nvml_pstate_to_str(high_perf_pstate),
-                gpu_id,
-                supported_pstates.join(",")
-            ))
-        })?;
-    let low_perf_entry = pstates
-        .iter()
-        .find(|(reported_pstate, _, _, _, _)| *reported_pstate == low_perf_pstate)
-        .ok_or_else(|| {
-            Error::Custom(format!(
-                "{} is not reported by NVML for GPU {}. Supported NVML P-States: {}",
-                nvml_pstate_to_str(low_perf_pstate),
-                gpu_id,
-                supported_pstates.join(",")
-            ))
-        })?;
+    let supported_list = build_supported_pstate_list(&pstates);
+    let high_perf_entry = find_pstate_entry(&pstates, high_perf_pstate, gpu_id, &supported_list)?;
+    let low_perf_entry = find_pstate_entry(&pstates, low_perf_pstate, gpu_id, &supported_list)?;
 
     let min_target_mem_clock_mhz = low_perf_entry.3;
     let max_target_mem_clock_mhz = high_perf_entry.4;
@@ -385,18 +482,8 @@ pub fn set_nvml_pstate_lock(
         })
         .collect::<Vec<_>>();
 
-    let outside_requested_range = overlapping_pstates
-        .iter()
-        .filter_map(|(reported_index, reported_label)| {
-            reported_index.as_ref().ok().and_then(|reported_index| {
-                if *reported_index < min_index || *reported_index > max_index {
-                    Some(*reported_label)
-                } else {
-                    None
-                }
-            })
-        })
-        .collect::<Vec<_>>();
+    let outside_requested_range =
+        collect_outside_requested_range(&overlapping_pstates, min_index, max_index);
 
     if !outside_requested_range.is_empty() {
         return Err(Error::Custom(format!(

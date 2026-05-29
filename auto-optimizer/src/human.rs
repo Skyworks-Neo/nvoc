@@ -1,6 +1,7 @@
+use nvoc_cli_common::color::{stylize, stylize_title};
 use nvoc_core::{
     ClockDomain, CoolerControl, CoolerPolicy, GpuInfo, GpuSettings, GpuStatus, GpuTarget,
-    QueryPowerLimits, legacy_core_overvolt_ranges, run,
+    QueryPowerLimits, ThermalSensors, legacy_core_overvolt_ranges, run,
 };
 use std::iter;
 
@@ -9,7 +10,162 @@ const SCAN_SEPARATOR: &str =
     "================================================================================";
 
 pub fn print_scan_separator() {
-    println!("{}", SCAN_SEPARATOR);
+    println!("{}", stylize(SCAN_SEPARATOR, false));
+}
+
+fn parse_edid(edid: &[u8]) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    if edid.len() < 128 {
+        return out;
+    }
+    if &edid[0..8] != b"\x00\xFF\xFF\xFF\xFF\xFF\xFF\x00" {
+        return out;
+    }
+
+    let mfg = u16::from_be_bytes([edid[8], edid[9]]);
+    let char1 = ((mfg >> 10) & 0x1F) as u8 + b'A' - 1;
+    let char2 = ((mfg >> 5) & 0x1F) as u8 + b'A' - 1;
+    let char3 = (mfg & 0x1F) as u8 + b'A' - 1;
+    let mfg_id = format!("{}{}{}", char1 as char, char2 as char, char3 as char);
+    out.push(("Manufacturer".into(), mfg_id));
+
+    let product_code = u16::from_le_bytes([edid[10], edid[11]]);
+    out.push(("Product Code".into(), format!("0x{:04X}", product_code)));
+
+    let s_no = u32::from_le_bytes([edid[12], edid[13], edid[14], edid[15]]);
+    if s_no != 0 {
+        out.push(("Serial Number".into(), s_no.to_string()));
+    }
+
+    let week = edid[16];
+    let year = edid[17] as u16 + 1990;
+    if week > 0 && week <= 54 {
+        out.push(("Manufactured".into(), format!("Week {}, {}", week, year)));
+    } else {
+        out.push(("Manufactured".into(), year.to_string()));
+    }
+
+    let digital = (edid[20] & 0x80) != 0;
+    out.push((
+        "Input Signal".into(),
+        if digital {
+            "Digital".into()
+        } else {
+            "Analog".into()
+        },
+    ));
+
+    let width_cm = edid[21];
+    let height_cm = edid[22];
+    if width_cm > 0 && height_cm > 0 {
+        out.push((
+            "Screen Size".into(),
+            format!("{} cm x {} cm", width_cm, height_cm),
+        ));
+    }
+
+    let gamma = edid[23];
+    if gamma > 0 && gamma != 0xFF {
+        out.push((
+            "Gamma".into(),
+            format!("{:.2}", (gamma as f32 + 100.0) / 100.0),
+        ));
+    }
+
+    let features = edid[24];
+    let mut dpms = Vec::new();
+    if features & 0x80 != 0 {
+        dpms.push("Standby");
+    }
+    if features & 0x40 != 0 {
+        dpms.push("Suspend");
+    }
+    if features & 0x20 != 0 {
+        dpms.push("ActiveOff");
+    }
+    if !dpms.is_empty() {
+        out.push(("DPMS Features".into(), dpms.join(", ")));
+    }
+
+    let color_type = if digital {
+        match (features >> 3) & 0x03 {
+            0 => "RGB 4:4:4",
+            1 => "RGB 4:4:4 & YCrCb 4:4:4",
+            2 => "RGB 4:4:4 & YCrCb 4:2:2",
+            _ => "RGB 4:4:4 & YCrCb 4:4:4 & 4:2:2",
+        }
+    } else {
+        match (features >> 3) & 0x03 {
+            0 => "Monochrome",
+            1 => "RGB",
+            2 => "Non-RGB",
+            _ => "Undefined",
+        }
+    };
+    out.push(("Color Format".into(), color_type.into()));
+
+    let mut name = String::new();
+    let mut serial_str = String::new();
+    let mut range_limits = String::new();
+
+    for i in 0..4 {
+        let offset = 54 + i * 18;
+        if offset + 18 > edid.len() {
+            continue;
+        }
+        let block = &edid[offset..offset + 18];
+        if block[0] != 0 || block[1] != 0 || block[2] != 0 {
+            if i == 0 {
+                let pixel_clock = u16::from_le_bytes([block[0], block[1]]);
+                if pixel_clock > 0 {
+                    let hactive = block[2] as u16 | (((block[4] >> 4) as u16) << 8);
+                    let vactive = block[5] as u16 | (((block[7] >> 4) as u16) << 8);
+                    out.push(("Native Res".into(), format!("{}x{}", hactive, vactive)));
+                }
+            }
+        } else {
+            let tag = block[3];
+            if tag == 0xFC || tag == 0xFF {
+                let mut text = String::new();
+                for &b in &block[5..18] {
+                    if b == 0x0A {
+                        break;
+                    }
+                    if b.is_ascii_graphic() || b == b' ' {
+                        text.push(b as char);
+                    }
+                }
+                let text = text.trim().to_string();
+                if tag == 0xFC {
+                    name = text;
+                } else if tag == 0xFF {
+                    serial_str = text;
+                }
+            } else if tag == 0xFD {
+                let v_min = block[5];
+                let v_max = block[6];
+                let h_min = block[7];
+                let h_max = block[8];
+                let max_clock = (block[9] as u16) * 10;
+                range_limits = format!(
+                    "{}~{} Hz (V) | {}~{} kHz (H) | Max {} MHz",
+                    v_min, v_max, h_min, h_max, max_clock
+                );
+            }
+        }
+    }
+
+    if !name.is_empty() {
+        out.push(("Model Name".into(), name));
+    }
+    if !serial_str.is_empty() {
+        out.push(("Serial Number".into(), serial_str));
+    }
+    if !range_limits.is_empty() {
+        out.push(("Range Limits".into(), range_limits));
+    }
+
+    out
 }
 
 macro_rules! pline {
@@ -19,24 +175,17 @@ macro_rules! pline {
             while header.len() < HEADER_LEN {
                 header.push('.');
             }
-            print!("{}: ", header);
-            println!($($tt)*);
+            println!(
+                "{}: {}",
+                stylize_title(&header),
+                stylize(&format!($($tt)*), false)
+            );
         }
     };
 }
 
 fn n_a() -> String {
     "N/A".into()
-}
-
-fn vfp_lock_label<T: std::fmt::Display>(id: &T) -> String {
-    match id.to_string().as_str() {
-        "GPU" => "GPU Core Upperbound".to_string(),
-        "GpuUnknown" => "GPU Core Lowerbound".to_string(),
-        "Memory" => "Memory Upperbound".to_string(),
-        "MemoryUnknown" => "Memory Lowerbound".to_string(),
-        other => other.to_string(),
-    }
 }
 
 pub fn print_settings(gpu: &GpuTarget<'_>, set: &GpuSettings) {
@@ -95,7 +244,7 @@ pub fn print_settings(gpu: &GpuTarget<'_>, set: &GpuSettings) {
     }
     for (id, lock) in &set.vfp_locks {
         if let Some(value) = lock.lock_value {
-            pline!(format!("VFP Lock {}", vfp_lock_label(id)), "{}", value);
+            pline!(format!("VFP Lock {}", id), "{}", value);
         }
     }
 }
@@ -171,7 +320,7 @@ pub fn print_status(status: &GpuStatus) {
             status
                 .vfp_locks
                 .iter()
-                .map(|(limit, lock)| format!("{}:{}", vfp_lock_label(limit), lock))
+                .map(|(limit, lock)| format!("{}:{}", limit, lock))
                 .collect::<Vec<_>>()
                 .join(", ")
         },
@@ -210,6 +359,20 @@ pub fn print_status(status: &GpuStatus) {
     }
 }
 
+#[allow(dead_code)]
+pub fn print_thermal_sensors(sensors: &ThermalSensors) {
+    if let Some(hotspot) = sensors.hotspot {
+        pline!("GPU Hotspot", "{}", hotspot);
+    } else {
+        pline!("GPU Hotspot", "N/A");
+    }
+    if let Some(vram) = sensors.vram {
+        pline!("VRAM Temp.", "{}", vram);
+    } else {
+        pline!("VRAM Temp.", "N/A");
+    }
+}
+
 pub fn print_info(gpu: &GpuTarget<'_>, info: &GpuInfo) {
     pline!(
         format!("GPU {}", info.id),
@@ -235,6 +398,14 @@ pub fn print_info(gpu: &GpuTarget<'_>, info: &GpuInfo) {
         );
     } else {
         pline!("Video Memory", "{} {}-bit", n_a(), info.ram_bus_width);
+    }
+    if info.physical_frame_buffer.0 > 0 {
+        pline!(
+            "VRAM Size",
+            "{:.2} physical / {:.2} virtual",
+            info.physical_frame_buffer,
+            info.virtual_frame_buffer
+        );
     }
     pline!("Memory Type", "{} ({})", info.ram_type, info.ram_maker);
     pline!(
@@ -392,6 +563,37 @@ pub fn print_info(gpu: &GpuTarget<'_>, info: &GpuInfo) {
                 min,
                 max
             );
+        }
+    }
+    if !info.connected_displays.is_empty() {
+        for display in &info.connected_displays {
+            pline!(
+                "Connected Display",
+                "0x{:08X} ({})",
+                display.display_id,
+                display.connector
+            );
+            if let Ok(nvapi) = gpu.nvapi()
+                && let Ok(edid) = nvapi.inner().get_edid(display.display_id)
+                && !edid.is_empty()
+            {
+                for (k, v) in parse_edid(&edid) {
+                    pline!(format!("-- {}", k), "{}", v);
+                }
+                // pline!(
+                //     "EDID Bytes",
+                //     "{} bytes: {}",
+                //     edid.len(),
+                //     edid.iter()
+                //         .map(|b| format!("{:02X}", b))
+                //         .collect::<Vec<_>>()
+                //         .as_slice()
+                //         .chunks(16)
+                //         .map(|c| c.join(""))
+                //         .collect::<Vec<_>>()
+                //         .join(" ")
+                // );
+            }
         }
     }
 }

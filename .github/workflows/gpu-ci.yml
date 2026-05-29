@@ -110,6 +110,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: auto-optimizer -> target
+      - name: Disable local nvapi-rs patch for CI
+        shell: pwsh
+        run: |
+          $cargoToml = "Cargo.toml"
+          $content = Get-Content $cargoToml -Raw
+          $content = [regex]::Replace($content, '(?ms)^\# For development, we use the local path to the nvapi-rs crate\. In production, we can switch to the git dependency\.\r?\n\[patch\."https://github\.com/Skyworks-Neo/nvapi-rs"\]\r?\nnvapi = \{ path = "\./nvapi-rs" \}\r?\nnvapi-sys = \{ path = "\./nvapi-rs/sys" \}\r?\nnvapi-hi = \{ path = "\./nvapi-rs/hi" \}\r?\n', '')
+          Set-Content $cargoToml $content -NoNewline
       - name: build
         run: cargo build --release
       - name: read-only GPU discovery
@@ -130,10 +137,24 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.ref || github.ref }}
+      - name: Disable local nvapi-rs patch for CI
+        shell: pwsh
+        run: |
+          $cargoToml = "Cargo.toml"
+          $content = Get-Content $cargoToml -Raw
+          $content = [regex]::Replace($content, '(?ms)^\# For development, we use the local path to the nvapi-rs crate\. In production, we can switch to the git dependency\.\r?\n\[patch\."https://github\.com/Skyworks-Neo/nvapi-rs"\]\r?\nnvapi = \{ path = "\./nvapi-rs" \}\r?\nnvapi-sys = \{ path = "\./nvapi-rs/sys" \}\r?\nnvapi-hi = \{ path = "\./nvapi-rs/hi" \}\r?\n', '')
+          Set-Content $cargoToml $content -NoNewline
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: . -> target
+      - name: Disable local nvapi-rs patch for CI
+        shell: pwsh
+        run: |
+          $cargoToml = "Cargo.toml"
+          $content = Get-Content $cargoToml -Raw
+          $content = [regex]::Replace($content, '(?ms)^\# For development, we use the local path to the nvapi-rs crate\. In production, we can switch to the git dependency\.\r?\n\[patch\."https://github\.com/Skyworks-Neo/nvapi-rs"\]\r?\nnvapi = \{ path = "\./nvapi-rs" \}\r?\nnvapi-sys = \{ path = "\./nvapi-rs/sys" \}\r?\nnvapi-hi = \{ path = "\./nvapi-rs/hi" \}\r?\n', '')
+          Set-Content $cargoToml $content -NoNewline
       - name: nvoc-core read-only GPU API tests
         run: cargo test --release --package nvoc-core --test gpu_readonly -- --ignored --test-threads=1
         env:
@@ -154,6 +175,13 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.ref || github.ref }}
+      - name: Disable local nvapi-rs patch for CI
+        shell: pwsh
+        run: |
+          $cargoToml = "Cargo.toml"
+          $content = Get-Content $cargoToml -Raw
+          $content = [regex]::Replace($content, '(?ms)^\# For development, we use the local path to the nvapi-rs crate\. In production, we can switch to the git dependency\.\r?\n\[patch\."https://github\.com/Skyworks-Neo/nvapi-rs"\]\r?\nnvapi = \{ path = "\./nvapi-rs" \}\r?\nnvapi-sys = \{ path = "\./nvapi-rs/sys" \}\r?\nnvapi-hi = \{ path = "\./nvapi-rs/hi" \}\r?\n', '')
+          Set-Content $cargoToml $content -NoNewline
       - name: set uv cache dirs
         shell: pwsh
         run: |
@@ -184,6 +212,13 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.ref || github.ref }}
+      - name: Disable local nvapi-rs patch for CI
+        shell: pwsh
+        run: |
+          $cargoToml = "Cargo.toml"
+          $content = Get-Content $cargoToml -Raw
+          $content = [regex]::Replace($content, '(?ms)^\# For development, we use the local path to the nvapi-rs crate\. In production, we can switch to the git dependency\.\r?\n\[patch\."https://github\.com/Skyworks-Neo/nvapi-rs"\]\r?\nnvapi = \{ path = "\./nvapi-rs" \}\r?\nnvapi-sys = \{ path = "\./nvapi-rs/sys" \}\r?\nnvapi-hi = \{ path = "\./nvapi-rs/hi" \}\r?\n', '')
+          Set-Content $cargoToml $content -NoNewline
       - name: set uv cache dirs
         shell: pwsh
         run: |

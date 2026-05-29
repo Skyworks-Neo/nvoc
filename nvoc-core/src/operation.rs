@@ -4,7 +4,7 @@ use super::nvml as low_nvml;
 use super::result::{
     AppliedValue, BatchReport, ClockOffset, FanInfo, OperationKind, OperationReport,
     PstateClockRange, SupportedApplicationClocks, TargetOutcome, TemperatureThreshold,
-    VoltageFrequencyCheck,
+    ThrottleReason, VoltageFrequencyCheck,
 };
 use super::target::GpuTarget;
 use super::types::{NvapiLockedVoltageTarget, VfpResetDomain};
@@ -13,6 +13,19 @@ use nvapi_hi::{
     SensorThrottle, VfPoint,
 };
 use nvml_wrapper::enum_wrappers::device::PerformanceState;
+
+fn nvapi_clock_domain_to_nvml(
+    domain: ClockDomain,
+) -> Option<nvml_wrapper::enum_wrappers::device::Clock> {
+    use nvml_wrapper::enum_wrappers::device::Clock;
+    match domain {
+        ClockDomain::Graphics => Some(Clock::Graphics),
+        ClockDomain::Memory => Some(Clock::Memory),
+        ClockDomain::Processor => Some(Clock::SM),
+        ClockDomain::Video => Some(Clock::Video),
+        _ => None,
+    }
+}
 use nvml_wrapper::enums::device::FanControlPolicy;
 
 pub trait GpuOperation {
@@ -177,6 +190,36 @@ impl GpuOperation for QueryTemperatureThresholds {
 }
 
 #[derive(Clone, Copy, Debug)]
+pub struct QueryThrottleReasons;
+
+impl GpuOperation for QueryThrottleReasons {
+    type Output = Vec<ThrottleReason>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryThrottleReasons
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        low_nvml::get_nvml_throttle_reasons(target.nvml()?, target.id.0)
+            .ok_or_else(|| {
+                Error::Custom(format!(
+                    "failed to query NVML throttle reasons for GPU {}",
+                    target.id.0
+                ))
+            })
+            .map(|items| {
+                items
+                    .into_iter()
+                    .map(|(name, active)| ThrottleReason {
+                        name: name.to_string(),
+                        active,
+                    })
+                    .collect()
+            })
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
 pub struct SetTemperatureLimit {
     pub celsius: i32,
 }
@@ -279,25 +322,19 @@ impl GpuOperation for QueryClockOffset {
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
         let nvml = target.nvml()?;
-        let mhz = match self.domain {
-            ClockDomain::Graphics => {
-                low_nvml::get_nvml_core_clock_vf_offset(nvml, target.id.0, self.pstate)
-            }
-            ClockDomain::Memory => {
-                low_nvml::get_nvml_mem_clock_vf_offset(nvml, target.id.0, self.pstate)
-            }
-            _ => {
-                return Err(Error::from(
-                    "NVML clock offset domain must be Graphics or Memory",
-                ));
-            }
-        }
-        .ok_or_else(|| {
+        let clock = nvapi_clock_domain_to_nvml(self.domain).ok_or_else(|| {
             Error::Custom(format!(
-                "failed to query NVML clock offset for GPU {}",
-                target.id.0
+                "NVML clock offset does not support domain {:?}",
+                self.domain
             ))
         })?;
+        let mhz = low_nvml::get_nvml_clock_offset(nvml, target.id.0, clock, self.pstate)
+            .ok_or_else(|| {
+                Error::Custom(format!(
+                    "failed to query NVML clock offset for GPU {}",
+                    target.id.0
+                ))
+            })?;
         Ok(ClockOffset { mhz })
     }
 }
@@ -318,19 +355,13 @@ impl GpuOperation for SetClockOffset {
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
         let nvml = target.nvml()?;
-        match self.domain {
-            ClockDomain::Graphics => {
-                low_nvml::set_nvml_core_clock_vf_offset(nvml, target.id.0, self.mhz, self.pstate)?
-            }
-            ClockDomain::Memory => {
-                low_nvml::set_nvml_mem_clock_vf_offset(nvml, target.id.0, self.mhz, self.pstate)?
-            }
-            _ => {
-                return Err(Error::from(
-                    "NVML clock offset domain must be Graphics or Memory",
-                ));
-            }
-        }
+        let clock = nvapi_clock_domain_to_nvml(self.domain).ok_or_else(|| {
+            Error::Custom(format!(
+                "NVML clock offset does not support domain {:?}",
+                self.domain
+            ))
+        })?;
+        low_nvml::set_nvml_clock_offset(nvml, target.id.0, clock, self.pstate, self.mhz)?;
         Ok(AppliedValue {
             requested: self.mhz,
             applied: self.mhz,
@@ -949,7 +980,7 @@ impl GpuOperation for ResetNvapiSensorLimits {
                 info.sensor_limits
                     .iter()
                     .cloned()
-                    .map(nvapi_hi::SensorThrottle::from_default),
+                    .map(SensorThrottle::from_default),
             )
             .map_err(Error::from)
     }
@@ -1128,6 +1159,63 @@ impl GpuOperation for SetNvmlPstateLock {
             target.id.0,
             self.first_pstate,
             self.second_pstate,
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct SetAutoBoost {
+    pub enabled: bool,
+}
+
+impl GpuOperation for SetAutoBoost {
+    type Output = ();
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetAutoBoost
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        low_nvml::set_nvml_auto_boost(target.nvml()?, target.id.0, self.enabled)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct SetAutoBoostDefault {
+    pub enabled: bool,
+}
+
+impl GpuOperation for SetAutoBoostDefault {
+    type Output = ();
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetAutoBoostDefault
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        low_nvml::set_nvml_auto_boost_default(target.nvml()?, target.id.0, self.enabled)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct SetApiRestriction {
+    pub api_type: nvml_wrapper::enum_wrappers::device::Api,
+    pub restricted: bool,
+}
+
+impl GpuOperation for SetApiRestriction {
+    type Output = ();
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetApiRestriction
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        low_nvml::set_nvml_api_restriction(
+            target.nvml()?,
+            target.id.0,
+            self.api_type,
+            self.restricted,
         )
     }
 }

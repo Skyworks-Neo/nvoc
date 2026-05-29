@@ -330,7 +330,7 @@ impl GpuType {
                 core_oc_safe_limit: 375000,
                 init_core_oc_value: 90000,
                 safe_elasticity_per_cycle: 60000,
-                fluctuation_coefficient: 3,
+                fluctuation_coefficient: 2,
                 is_50_series: false,
                 testing_step: 5,
             },
@@ -372,7 +372,7 @@ impl GpuType {
             },
             GpuType::Mobile10Series => GpuOcParams {
                 minimum_delta_core_freq_step: 12500,
-                core_oc_safe_limit: 300000,
+                core_oc_safe_limit: 435000,
                 init_core_oc_value: 90000,
                 safe_elasticity_per_cycle: 50000,
                 fluctuation_coefficient: 2,
@@ -381,7 +381,7 @@ impl GpuType {
             },
             GpuType::Desktop10Series => GpuOcParams {
                 minimum_delta_core_freq_step: 12500,
-                core_oc_safe_limit: 300000,
+                core_oc_safe_limit: 400000,
                 init_core_oc_value: 90000,
                 safe_elasticity_per_cycle: 50000,
                 fluctuation_coefficient: 2,

@@ -1,5 +1,6 @@
 use super::cli_types::{OutputFormat, ResetSettings};
 use super::human;
+use nvoc_cli_common::color::{stylize, stylize_title};
 use nvoc_core::{
     Celsius, ClockDomain, CoolerPolicy, GpuSettings, GpuTarget, GpuTdpTempLimits, Kilohertz,
     KilohertzDelta, Microvolts, MicrovoltsDelta, PState, Percentage,
@@ -21,8 +22,9 @@ use nvoc_core::{
 };
 use nvoc_core::{
     QueryClockOffset, QueryFanInfo, QueryPowerLimits, QueryPstates,
-    QuerySupportedApplicationsClocks, QueryTemperatureThresholds, ResetApplicationsClocks,
-    ResetFanSpeed, ResetLockedClocks, SetApplicationsClocks, SetClockOffset, SetFanSpeed,
+    QuerySupportedApplicationsClocks, QueryTemperatureThresholds, QueryThrottleReasons,
+    ResetApplicationsClocks, ResetFanSpeed, ResetLockedClocks, SetApiRestriction,
+    SetApplicationsClocks, SetAutoBoost, SetAutoBoostDefault, SetClockOffset, SetFanSpeed,
     SetLockedClocks, SetNvmlPstateLock, SetPowerLimit, run,
 };
 use time::{OffsetDateTime, format_description::parse};
@@ -143,6 +145,10 @@ pub fn check_single_dash_args(cmd: &clap::Command) -> Result<(), Box<dyn std::er
 
 fn json_error(err: serde_json::Error) -> Error {
     Error::Custom(format!("JSON Error: {}", err))
+}
+
+fn print_styled_pair(label: &str, value: &str) {
+    println!("{} {}", stylize_title(label), stylize(value, false));
 }
 
 fn parse_clock_domain(raw: Option<&String>) -> Result<ClockDomain, Error> {
@@ -422,13 +428,12 @@ pub fn handle_test_voltage_limits(
 pub fn voltage_frequency_check(
     gpus: &[GpuTarget<'_>],
     point: usize,
-    mut print_separator: impl FnMut(),
 ) -> Result<Vec<GpuVoltageFrequencyCheck>, Error> {
     if gpus.is_empty() {
         return Err(Error::from("no GPU selected"));
     }
 
-    print_separator();
+    // print_separator();
     gpus.iter()
         .map(|gpu| {
             run_output(gpu, CheckVoltageFrequency { point }).map(|check| GpuVoltageFrequencyCheck {
@@ -439,10 +444,7 @@ pub fn voltage_frequency_check(
         .collect()
 }
 
-pub fn get_gpu_tdp_temp_limit(
-    matches: &ArgMatches,
-    mut print_separator: impl FnMut(),
-) -> Result<GpuTdpTempLimits, Error> {
+pub fn get_gpu_tdp_temp_limit(matches: &ArgMatches) -> Result<GpuTdpTempLimits, Error> {
     let selector = match matches.get_many::<String>("gpu") {
         Some(values) => nvoc_core::GpuSelector::from_specs(values.cloned()),
         None => nvoc_core::GpuSelector::all(),
@@ -450,7 +452,6 @@ pub fn get_gpu_tdp_temp_limit(
     let inventory = nvoc_core::discover_targets(nvoc_core::BackendSet::Nvapi)?;
     let all_targets = inventory.targets();
     let gpus = nvoc_core::select_targets(&all_targets, &selector)?;
-    print_separator();
     let gpu = gpus.first().ok_or_else(|| Error::from("no GPU selected"))?;
     run_output(gpu, QueryTdpTempLimits)
 }
@@ -542,8 +543,14 @@ pub fn handle_pointwiseoc(gpus: &[GpuTarget<'_>], matches: &ArgMatches) -> Resul
         )));
     }
     println!(
-        "pointwiseoc: applying delta {} kHz to VFP points {}..={} (inclusive)",
-        delta, start, end
+        "{}",
+        stylize(
+            &format!(
+                "pointwiseoc: applying delta {} kHz to VFP points {}..={} (inclusive)",
+                delta, start, end
+            ),
+            false
+        )
     );
     for gpu in gpus {
         for point in start..=end {
@@ -743,17 +750,17 @@ fn print_nvml_info(nvml: &Nvml, selected_ids: &[u32]) -> Result<(), Error> {
             .unwrap_or_else(|_| "<unknown>".to_string());
 
         human::print_scan_separator();
-        println!("GPU {} (NVML): {}", i, name);
-        println!("  PCI Bus:        0x{:02X}", pci.bus);
-        println!("  PCI Device:     0x{:04X}", pci.device);
-        println!("  PCI Domain:     0x{:04X}", pci.domain);
-        println!("  PCI Device ID:  0x{:08X}", pci.pci_device_id);
+        print_styled_pair(&format!("GPU {} (NVML):", i), &name);
+        print_styled_pair("  PCI Bus:       ", &format!("0x{:02X}", pci.bus));
+        print_styled_pair("  PCI Device:    ", &format!("0x{:04X}", pci.device));
+        print_styled_pair("  PCI Domain:    ", &format!("0x{:04X}", pci.domain));
+        print_styled_pair("  PCI Device ID: ", &format!("0x{:08X}", pci.pci_device_id));
         match pci.pci_sub_system_id {
-            Some(id) => println!("  PCI SubSys ID:  0x{:08X}", id),
-            None => println!("  PCI SubSys ID:  N/A"),
+            Some(id) => print_styled_pair("  PCI SubSys ID: ", &format!("0x{:08X}", id)),
+            None => print_styled_pair("  PCI SubSys ID: ", "N/A"),
         }
-        println!("  UUID:           {}", uuid);
-        println!("  VBIOS:          {}", vbios);
+        print_styled_pair("  UUID:          ", &uuid);
+        print_styled_pair("  VBIOS:         ", &vbios);
         human::print_scan_separator();
         println!();
         shown += 1;
@@ -817,12 +824,62 @@ pub fn handle_status(
 
                         human::print_status(&status);
                         human::print_settings(gpu, requires_set(gpu, &mut set)?);
+                        if let Ok(reasons) = run(gpu, QueryThrottleReasons) {
+                            let active: Vec<_> =
+                                reasons.output.iter().filter(|r| r.active).collect();
+                            if !active.is_empty() {
+                                let names: Vec<_> =
+                                    active.iter().map(|r| r.name.as_str()).collect();
+                                println!("Throttle Reasons...: {}", names.join(", "));
+                            }
+                        }
+                        if let Some(viol) =
+                            nvoc_core::nvml::get_nvml_violation_status(gpu.nvml()?, gpu.id.0)
+                        {
+                            let parts: Vec<_> = viol
+                                .iter()
+                                .filter_map(|(name, status)| {
+                                    if status.violation_time_ns > 0 {
+                                        let secs =
+                                            status.violation_time_ns as f64 / 1_000_000_000.0;
+                                        Some(format!("{}:{:.1}s", name, secs))
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect();
+                            if !parts.is_empty() {
+                                let ref_ts = viol[0].1.reference_time_us;
+                                let ref_str = OffsetDateTime::from_unix_timestamp_nanos(
+                                    ref_ts as i128 * 1000,
+                                )
+                                .map(|dt| {
+                                    dt.format(
+                                        &parse("[year]-[month]-[day] [hour]:[minute]:[second]")
+                                            .unwrap(),
+                                    )
+                                    .unwrap()
+                                })
+                                .unwrap_or_else(|_| format!("{} us", ref_ts));
+                                println!(
+                                    "Limit Violation Time: {} (Since: {})",
+                                    parts.join(", "),
+                                    ref_str
+                                );
+                            }
+                        }
                         if let Ok(thresholds) = run(gpu, QueryTemperatureThresholds) {
-                            println!("NVML Temperature Thresholds:");
+                            println!("{}", stylize_title("NVML Temperature Thresholds:"));
                             for threshold in thresholds.output {
                                 match threshold.celsius {
-                                    Some(temp) => println!("  {:<16} : {} C", threshold.name, temp),
-                                    None => println!("  {:<16} : N/A", threshold.name),
+                                    Some(temp) => print_styled_pair(
+                                        &format!("  {:<16} :", threshold.name),
+                                        &format!("{} C", temp),
+                                    ),
+                                    None => print_styled_pair(
+                                        &format!("  {:<16} :", threshold.name),
+                                        "N/A",
+                                    ),
                                 }
                             }
                         }
@@ -874,7 +931,7 @@ pub fn handle_status(
         }
 
         if let Some(monitor) = monitor {
-            sleep(monitor)
+            sleep(monitor);
         } else {
             break;
         }
@@ -913,30 +970,36 @@ fn print_nvml_status(nvml: &Nvml, selected_ids: &[u32]) -> Result<(), Error> {
         let mem_info = dev.memory_info().ok();
 
         human::print_scan_separator();
-        println!("GPU {} (NVML): {}", i, name);
+        print_styled_pair(&format!("GPU {} (NVML):", i), &name);
         if let Some(t) = temp {
-            println!("  Temperature  : {} C", t);
+            print_styled_pair("  Temperature  :", &format!("{} C", t));
         }
         if let Some(c) = core_clock {
-            println!("  Core Clock   : {} MHz", c);
+            print_styled_pair("  Core Clock   :", &format!("{} MHz", c));
         }
         if let Some(m) = mem_clock {
-            println!("  Mem Clock    : {} MHz", m);
+            print_styled_pair("  Mem Clock    :", &format!("{} MHz", m));
         }
         if let Some(p) = power_mw {
-            println!("  Power Usage  : {:.2} W", p as f32 / 1000.0);
+            print_styled_pair("  Power Usage  :", &format!("{:.2} W", p as f32 / 1000.0));
         }
         if let Some(f) = fan {
-            println!("  Fan Speed    : {}%", f);
+            print_styled_pair("  Fan Speed    :", &format!("{}%", f));
         }
         if let Some(u) = util {
-            println!("  GPU Util     : {}%  Mem Util: {}%", u.gpu, u.memory);
+            print_styled_pair(
+                "  GPU Util     :",
+                &format!("{}%  Mem Util: {}%", u.gpu, u.memory),
+            );
         }
         if let Some(m) = mem_info {
-            println!(
-                "  VRAM         : {} / {} MiB",
-                m.used / (1024 * 1024),
-                m.total / (1024 * 1024)
+            print_styled_pair(
+                "  VRAM         :",
+                &format!(
+                    "{} / {} MiB",
+                    m.used / (1024 * 1024),
+                    m.total / (1024 * 1024)
+                ),
             );
         }
         human::print_scan_separator();
@@ -958,7 +1021,13 @@ pub fn handle_get(gpus: &[GpuTarget<'_>], oformat: OutputFormat) -> Result<(), E
             for gpu in gpus.iter() {
                 if let Ok(info) = run_output(gpu, QueryGpuInfo) {
                     human::print_scan_separator();
-                    println!("GPU {}: {} ({})", info.id, info.name, info.codename);
+                    println!(
+                        "{}",
+                        stylize(
+                            &format!("GPU {}: {} ({})", info.id, info.name, info.codename),
+                            false
+                        )
+                    );
                     human::print_scan_separator();
                 }
                 if let Ok(set) = run_output(gpu, QueryGpuSettings) {
@@ -979,41 +1048,57 @@ pub fn handle_get(gpus: &[GpuTarget<'_>], oformat: OutputFormat) -> Result<(), E
                         || app_clocks.is_some()
                         || fan_info.is_some()
                     {
-                        println!("NVML Settings:");
+                        println!("{}", stylize_title("NVML Settings:"));
                         if let Some(power) = power_limit {
-                            println!(
-                                "  Power Limit        : {:.2} W (Min: {:.2} W - Max: {:.2} W)",
-                                power.current_watts, power.min_watts, power.max_watts
+                            print_styled_pair(
+                                "  Power Limit        :",
+                                &format!(
+                                    "{:.2} W (Min: {:.2} W - Max: {:.2} W)",
+                                    power.current_watts, power.min_watts, power.max_watts
+                                ),
                             );
                         }
                         if let Some(thresholds) = temp_thresholds {
-                            println!("  Temperature Thresholds:");
+                            println!("{}", stylize_title("  Temperature Thresholds:"));
                             for threshold in thresholds {
                                 match threshold.celsius {
-                                    Some(temp) => {
-                                        println!("    {:<16} : {} C", threshold.name, temp)
-                                    }
-                                    None => println!("    {:<16} : N/A", threshold.name),
+                                    Some(temp) => print_styled_pair(
+                                        &format!("    {:<16} :", threshold.name),
+                                        &format!("{} C", temp),
+                                    ),
+                                    None => print_styled_pair(
+                                        &format!("    {:<16} :", threshold.name),
+                                        "N/A",
+                                    ),
                                 }
                             }
                         }
                         if let Some(fan) = fan_info
                             && let (Some(min_fan), Some(max_fan)) = (fan.min_speed, fan.max_speed)
                         {
-                            println!("  Fan Speed Range    : {}% - {}%", min_fan, max_fan);
+                            print_styled_pair(
+                                "  Fan Speed Range    :",
+                                &format!("{}% - {}%", min_fan, max_fan),
+                            );
                         }
                         if let Some(pstates) = pstate_info {
-                            println!("  Supported P-States:");
+                            println!("{}", stylize_title("  Supported P-States:"));
                             for pstate_range in pstates {
                                 let pstate_str = nvoc_core::nvml_pstate_to_str(pstate_range.pstate);
-                                println!("    {}:", pstate_str);
-                                println!(
-                                    "      Core Clock Range   : {} MHz - {} MHz",
-                                    pstate_range.min_core_mhz, pstate_range.max_core_mhz
+                                println!("{}", stylize_title(&format!("    {}:", pstate_str)));
+                                print_styled_pair(
+                                    "      Core Clock Range   :",
+                                    &format!(
+                                        "{} MHz - {} MHz",
+                                        pstate_range.min_core_mhz, pstate_range.max_core_mhz
+                                    ),
                                 );
-                                println!(
-                                    "      Mem Clock Range    : {} MHz - {} MHz",
-                                    pstate_range.min_memory_mhz, pstate_range.max_memory_mhz
+                                print_styled_pair(
+                                    "      Mem Clock Range    :",
+                                    &format!(
+                                        "{} MHz - {} MHz",
+                                        pstate_range.min_memory_mhz, pstate_range.max_memory_mhz
+                                    ),
                                 );
 
                                 if let Ok(core_offset) = run(
@@ -1023,9 +1108,9 @@ pub fn handle_get(gpus: &[GpuTarget<'_>], oformat: OutputFormat) -> Result<(), E
                                         pstate: pstate_range.pstate,
                                     },
                                 ) {
-                                    println!(
-                                        "      Core Clock Offset  : {} MHz",
-                                        core_offset.output.mhz
+                                    print_styled_pair(
+                                        "      Core Clock Offset  :",
+                                        &format!("{} MHz", core_offset.output.mhz),
                                     );
                                 }
                                 if let Ok(mem_offset) = run(
@@ -1035,9 +1120,35 @@ pub fn handle_get(gpus: &[GpuTarget<'_>], oformat: OutputFormat) -> Result<(), E
                                         pstate: pstate_range.pstate,
                                     },
                                 ) {
+                                    print_styled_pair(
+                                        "      Mem Clock Offset   :",
+                                        &format!("{} MHz", mem_offset.output.mhz),
+                                    )
+                                }
+                                if let Ok(sm_offset) = run(
+                                    gpu,
+                                    QueryClockOffset {
+                                        domain: ClockDomain::Processor,
+                                        pstate: pstate_range.pstate,
+                                    },
+                                ) {
                                     println!(
-                                        "      Mem Clock Offset   : {} MHz",
-                                        mem_offset.output.mhz
+                                        "{} {}",
+                                        stylize_title("       SM Clock Offset   :"),
+                                        stylize(&format!("{} MHz", sm_offset.output.mhz), false)
+                                    );
+                                }
+                                if let Ok(vid_offset) = run(
+                                    gpu,
+                                    QueryClockOffset {
+                                        domain: ClockDomain::Video,
+                                        pstate: pstate_range.pstate,
+                                    },
+                                ) {
+                                    println!(
+                                        "{} {}",
+                                        stylize_title("   Video Clock Offset   :"),
+                                        stylize(&format!("{} MHz", vid_offset.output.mhz), false)
                                     );
                                 }
                             }
@@ -1052,9 +1163,9 @@ pub fn handle_get(gpus: &[GpuTarget<'_>], oformat: OutputFormat) -> Result<(), E
                                     pstate,
                                 },
                             ) {
-                                println!(
-                                    "  Core Clock Offset (P0) : {} MHz",
-                                    core_offset.output.mhz
+                                print_styled_pair(
+                                    "  Core Clock Offset (P0) :",
+                                    &format!("{} MHz", core_offset.output.mhz),
                                 );
                             }
                             if let Ok(mem_offset) = run(
@@ -1064,15 +1175,41 @@ pub fn handle_get(gpus: &[GpuTarget<'_>], oformat: OutputFormat) -> Result<(), E
                                     pstate,
                                 },
                             ) {
+                                print_styled_pair(
+                                    "  Mem Clock Offset (P0)  :",
+                                    &format!("{} MHz", mem_offset.output.mhz),
+                                )
+                            }
+                            if let Ok(sm_offset) = run(
+                                gpu,
+                                QueryClockOffset {
+                                    domain: ClockDomain::Processor,
+                                    pstate,
+                                },
+                            ) {
                                 println!(
-                                    "  Mem Clock Offset (P0)  : {} MHz",
-                                    mem_offset.output.mhz
+                                    "{} {}",
+                                    stylize_title("   SM Clock Offset (P0)  :"),
+                                    stylize(&format!("{} MHz", sm_offset.output.mhz), false)
+                                );
+                            }
+                            if let Ok(vid_offset) = run(
+                                gpu,
+                                QueryClockOffset {
+                                    domain: ClockDomain::Video,
+                                    pstate,
+                                },
+                            ) {
+                                println!(
+                                    "{} {}",
+                                    stylize_title("Video Clock Offset (P0)  :"),
+                                    stylize(&format!("{} MHz", vid_offset.output.mhz), false)
                                 );
                             }
                         }
                         if let Some(clocks) = app_clocks {
                             if !clocks.is_empty() {
-                                println!("  Supported Applications Clocks:");
+                                println!("{}", stylize_title("  Supported Applications Clocks:"));
                                 for app_clock in clocks {
                                     let mem_clk = app_clock.memory_mhz;
                                     let mut gfx_clocks = app_clock.graphics_mhz;
@@ -1083,8 +1220,14 @@ pub fn handle_get(gpus: &[GpuTarget<'_>], oformat: OutputFormat) -> Result<(), E
                                     let mode_count = gfx_clocks.len();
                                     if mode_count == 1 {
                                         println!(
-                                            "    Memory {:>5} MHz : {} MHz (1 mode)",
-                                            mem_clk, gfx_clocks[0]
+                                            "{}",
+                                            stylize(
+                                                &format!(
+                                                    "    Memory {:>5} MHz : {} MHz (1 mode)",
+                                                    mem_clk, gfx_clocks[0]
+                                                ),
+                                                false
+                                            )
                                         );
                                     } else {
                                         let min_clk = gfx_clocks[0];
@@ -1096,8 +1239,14 @@ pub fn handle_get(gpus: &[GpuTarget<'_>], oformat: OutputFormat) -> Result<(), E
                                             _ => step.to_string(),
                                         };
                                         println!(
-                                            "    Memory {:>5} MHz : {:>4} MHz ~ {:>4} MHz (Step: {} MHz, {} modes)",
-                                            mem_clk, min_clk, max_clk, step_str, mode_count
+                                            "{}",
+                                            stylize(
+                                                &format!(
+                                                    "    Memory {:>5} MHz : {:>4} MHz ~ {:>4} MHz (Step: {} MHz, {} modes)",
+                                                    mem_clk, min_clk, max_clk, step_str, mode_count
+                                                ),
+                                                false
+                                            )
                                         );
                                     }
                                 }
@@ -1107,12 +1256,19 @@ pub fn handle_get(gpus: &[GpuTarget<'_>], oformat: OutputFormat) -> Result<(), E
                                     clocks.iter().map(|clock| clock.memory_mhz).collect();
                                 if !mem_clocks.is_empty() {
                                     println!(
-                                        "  Supported Applications Clocks: {} MHz",
-                                        mem_clocks
-                                            .iter()
-                                            .map(|c| c.to_string())
-                                            .collect::<Vec<_>>()
-                                            .join(", ")
+                                        "{} {}",
+                                        stylize_title("  Supported Applications Clocks:"),
+                                        stylize(
+                                            &format!(
+                                                "{} MHz",
+                                                mem_clocks
+                                                    .iter()
+                                                    .map(|c| c.to_string())
+                                                    .collect::<Vec<_>>()
+                                                    .join(", ")
+                                            ),
+                                            false
+                                        )
                                     );
                                 }
                             }
@@ -1495,6 +1651,58 @@ fn handle_nvapi(gpus: &[GpuTarget<'_>], matches: &ArgMatches) -> Result<(), Erro
         handle_test_voltage_limits(gpus, matches, human::print_scan_separator)?;
     }
 
+    if let Some(edid_vals) = matches.get_many::<String>("edid") {
+        let vals: Vec<_> = edid_vals.collect();
+        let display_id_str = vals[0];
+        let hex_data = vals[1];
+        let display_id = u32::from_str_radix(
+            display_id_str
+                .trim_start_matches("0x")
+                .trim_start_matches("0X"),
+            16,
+        )
+        .map_err(|e| Error::from(format!("Invalid display ID '{}': {}", display_id_str, e)))?;
+        let edid_bytes = if hex_data.is_empty() {
+            Vec::new()
+        } else {
+            (0..hex_data.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&hex_data[i..i + 2], 16))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| Error::from(format!("Invalid EDID hex data: {}", e)))?
+        };
+        for gpu in gpus {
+            let gpu_info = run_output(gpu, QueryGpuInfo)?;
+            let nvapi = gpu.nvapi()?;
+            let result = if edid_bytes.is_empty() {
+                nvapi.inner().clear_edid(display_id)
+            } else {
+                nvapi.inner().set_edid(display_id, &edid_bytes)
+            };
+            match result {
+                Ok(()) => {
+                    if edid_bytes.is_empty() {
+                        println!(
+                            "Cleared EDID for display 0x{:08X} on GPU {}",
+                            display_id, gpu_info.id
+                        );
+                    } else {
+                        println!(
+                            "Set EDID ({} bytes) for display 0x{:08X} on GPU {}",
+                            edid_bytes.len(),
+                            display_id,
+                            gpu_info.id
+                        );
+                    }
+                }
+                Err(e) => eprintln!(
+                    "Failed to set EDID for display 0x{:08X} on GPU {}: {:?}",
+                    display_id, gpu_info.id, e
+                ),
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -1544,6 +1752,38 @@ pub fn handle_nvml(gpus: &[GpuTarget<'_>], matches: &ArgMatches) -> Result<(), E
                 Err(e) => eprintln!(
                     "Failed to set NVML mem offset for GPU {}: {:?}",
                     gpu.id.0, e
+                ),
+            }
+        }
+    }
+
+    if let Some(clock_offset_raw) = matches.get_one::<String>("clock_offset") {
+        let (domain_str, offset_str) = clock_offset_raw.split_once(':').ok_or_else(|| {
+            Error::Custom("--clock-offset format: DOMAIN:OFFSET (e.g. graphics:150)".into())
+        })?;
+        let domain = ConvertEnum::from_str(domain_str)?;
+        let offset: i32 = offset_str.parse().map_err(|_| {
+            Error::Custom(format!(
+                "invalid offset '{}', expected integer MHz",
+                offset_str
+            ))
+        })?;
+        for gpu in gpus {
+            match run(
+                gpu,
+                SetClockOffset {
+                    domain,
+                    pstate: target_nvml_pstate,
+                    mhz: offset,
+                },
+            ) {
+                Ok(_) => println!(
+                    "Successfully applied NVML {} offset {} MHz to GPU {} for PState {}",
+                    domain_str, offset, gpu.id.0, nvml_pstate_val
+                ),
+                Err(e) => eprintln!(
+                    "Failed to set NVML {} offset for GPU {}: {:?}",
+                    domain_str, gpu.id.0, e
                 ),
             }
         }
@@ -1743,6 +1983,88 @@ pub fn handle_nvml(gpus: &[GpuTarget<'_>], matches: &ArgMatches) -> Result<(), E
         }
     }
 
+    if let Some(state) = matches.get_one::<String>("autoboost") {
+        let enabled = state == "on";
+        for gpu in gpus {
+            match run(gpu, SetAutoBoost { enabled }) {
+                Ok(_) => println!(
+                    "Successfully {} NVML auto-boosted clocks for GPU {}",
+                    if enabled { "enabled" } else { "disabled" },
+                    gpu.id.0
+                ),
+                Err(e) => eprintln!(
+                    "Failed to set NVML auto-boost for GPU {}: {:?}",
+                    gpu.id.0, e
+                ),
+            }
+        }
+    }
+
+    if let Some(state) = matches.get_one::<String>("autoboost_default") {
+        let enabled = state == "on";
+        for gpu in gpus {
+            match run(gpu, SetAutoBoostDefault { enabled }) {
+                Ok(_) => println!(
+                    "Successfully {} NVML default auto-boosted clocks for GPU {}",
+                    if enabled { "enabled" } else { "disabled" },
+                    gpu.id.0
+                ),
+                Err(e) => eprintln!(
+                    "Failed to set NVML default auto-boost for GPU {}: {:?}",
+                    gpu.id.0, e
+                ),
+            }
+        }
+    }
+
+    if let Some(vals) = matches.get_many::<String>("api_restriction") {
+        let args: Vec<&str> = vals.map(|s| s.as_str()).collect();
+        if args.len() == 2 {
+            use nvml_wrapper::enum_wrappers::device::Api;
+            let api_type = match args[0] {
+                "app-clocks" => Api::ApplicationClocks,
+                "auto-boost" => Api::AutoBoostedClocks,
+                other => {
+                    eprintln!(
+                        "Unknown API type '{}'. Expected: app-clocks, auto-boost",
+                        other
+                    );
+                    return Ok(());
+                }
+            };
+            let restricted = match args[1] {
+                "restricted" => true,
+                "open" => false,
+                other => {
+                    eprintln!("Unknown state '{}'. Expected: open, restricted", other);
+                    return Ok(());
+                }
+            };
+            for gpu in gpus {
+                match run(
+                    gpu,
+                    SetApiRestriction {
+                        api_type,
+                        restricted,
+                    },
+                ) {
+                    Ok(_) => println!(
+                        "Successfully {} API restriction '{}' for GPU {}",
+                        if restricted { "set" } else { "cleared" },
+                        args[0],
+                        gpu.id.0
+                    ),
+                    Err(e) => eprintln!(
+                        "Failed to set API restriction for GPU {}: {:?}",
+                        gpu.id.0, e
+                    ),
+                }
+            }
+        } else {
+            eprintln!("--api-restriction requires 2 arguments: <API> <STATE>");
+        }
+    }
+
     Ok(())
 }
 
@@ -1848,11 +2170,11 @@ pub fn handle_reset_nvml_cooler_single_gpu(
                 gpu.id.0,
                 fan_idx + 1
             ),
-            Err(e) => eprintln!(
+            Err(_e) => eprintln!(
                 "Failed to restore NVML default fan speed for GPU {} fan {}: {:?}",
                 gpu.id.0,
                 fan_idx + 1,
-                e
+                _e
             ),
         }
     }

@@ -1,17 +1,18 @@
 use super::autoscan_config::{FixResultConfig, VfpExportConfig};
 use super::basic_func::get_gpu_tdp_temp_limit;
-use super::human::print_scan_separator;
 // oc_set_function
 #[cfg(all(not(windows), not(target_os = "linux")))]
 use super::platform::panic_windows_only;
 use csv::{ReaderBuilder, StringRecord, WriterBuilder};
 use num_traits::abs;
-use nvoc_core::Error;
-use nvoc_core::{ClockDomain, GpuTarget, VfPoint};
+use nvoc_auto_optimizer::PState;
+use nvoc_cli_common::color::stylize;
+use nvoc_core::{ClockDomain, GpuTarget, VfPoint, VfPointType};
 use nvoc_core::{
     CoolerPolicy, CoolerSettings, FanCoolerId, Kilohertz, KilohertzDelta, Microvolts, Percentage,
     SensorThrottle,
 };
+use nvoc_core::{Error, QueryGpuStatus, set_nvapi_pstate_clock_offsets};
 use nvoc_core::{
     GpuOperation, GpuType, QueryGpuInfo, SetNvapiPowerLimits, SetNvapiSensorLimits,
     SetPstateBaseVoltage, SetVfpPointDelta, SetVoltageBoost, fetch_gpu_type,
@@ -20,12 +21,11 @@ use nvoc_core::{
 };
 use std::cmp::min;
 use std::convert::TryFrom;
+use std::fs;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 use std::process::Child;
-
-use std::fs;
 #[cfg(any(windows, target_os = "linux"))]
 use std::process::Command;
 use std::thread::sleep;
@@ -55,32 +55,39 @@ fn is_std(str: &str) -> bool {
 }
 
 #[cfg(windows)]
-fn spawn_dynamic_load_process() -> Result<Child, Error> {
+fn spawn_dynamic_load_process(cuda_device: Option<u32>) -> Result<Child, Error> {
     let repo_root = env!("CARGO_MANIFEST_DIR");
-    Command::new("cmd")
-        .args(["/C", r".\test\dyn_load_export_windows.bat"])
-        .current_dir(repo_root)
-        .spawn()
+    let mut cmd = Command::new("cmd");
+    cmd.args(["/C", r".\test\dyn_load_export_windows.bat"])
+        .current_dir(repo_root);
+    if let Some(dev) = cuda_device {
+        cmd.env("CUDA_DEVICE_ORDER", "PCI_BUS_ID");
+        cmd.env("CUDA_VISIBLE_DEVICES", dev.to_string());
+    }
+    cmd.spawn()
         .map_err(|e| Error::Custom(format!("Failed to start Windows load process: {}", e)))
 }
 
 #[cfg(target_os = "linux")]
-fn spawn_dynamic_load_process() -> Result<Child, Error> {
+fn spawn_dynamic_load_process(cuda_device: Option<u32>) -> Result<Child, Error> {
     let repo_root = env!("CARGO_MANIFEST_DIR");
-    Command::new("bash")
-        .arg("./test/dyn_load_export_opencl_linux.sh")
-        .current_dir(repo_root)
-        .spawn()
-        .map_err(|e| {
-            Error::Custom(format!(
-                "Failed to start Linux load process with test/test_opencl_linux.sh load 10: {}",
-                e
-            ))
-        })
+    let mut cmd = Command::new("bash");
+    cmd.arg("./test/dyn_load_export_opencl_linux.sh")
+        .current_dir(repo_root);
+    if let Some(dev) = cuda_device {
+        cmd.env("CUDA_DEVICE_ORDER", "PCI_BUS_ID");
+        cmd.env("CUDA_VISIBLE_DEVICES", dev.to_string());
+    }
+    cmd.spawn().map_err(|e| {
+        Error::Custom(format!(
+            "Failed to start Linux load process with test/test_opencl_linux.sh load 10: {}",
+            e
+        ))
+    })
 }
 
 #[cfg(all(not(windows), not(target_os = "linux")))]
-fn spawn_dynamic_load_process() -> Result<Child, Error> {
+fn spawn_dynamic_load_process(_: Option<u32>) -> Result<Child, Error> {
     panic_windows_only("dynamic VFP export")
 }
 
@@ -197,10 +204,19 @@ fn export_vfp<W: Write, I: Iterator<Item = VfPoint>>(
     points: I,
     delimiter: u8,
 ) -> io::Result<()> {
-    let mut w = WriterBuilder::new().delimiter(delimiter).from_writer(write);
-    let _: () = for point in points {
-        w.serialize(point)?;
-    };
+    let mut w = WriterBuilder::new()
+        .has_headers(false)
+        .delimiter(delimiter)
+        .from_writer(write);
+    w.write_record(["voltage", "frequency", "delta", "default_frequency"])?;
+    for point in points {
+        w.write_record([
+            point.voltage.0.to_string(),
+            point.frequency.0.to_string(),
+            point.delta.0.to_string(),
+            point.default_frequency.0.to_string(),
+        ])?;
+    }
     Ok(())
 }
 
@@ -418,6 +434,31 @@ pub fn handle_vfp_export(gpu: &GpuTarget<'_>, matches: &clap::ArgMatches) -> Res
     }
 
     if cfg.dynamic {
+        let cuda_device = matches
+            .try_get_one::<u32>("cuda_device")
+            .ok()
+            .flatten()
+            .copied()
+            .or_else(|| {
+                let specs = matches
+                    .try_get_many::<String>("gpu")
+                    .ok()
+                    .flatten()
+                    .map(|values| values.collect::<Vec<_>>());
+                match specs {
+                    Some(ref values) if values.len() == 1 => {
+                        values[0].parse::<u32>().ok().filter(|&n| n < 256)
+                    }
+                    Some(_) => None,
+                    None => matches
+                        .try_get_one::<String>("gpu")
+                        .ok()
+                        .flatten()
+                        .and_then(|s| s.parse::<u32>().ok())
+                        .filter(|&n| n < 256),
+                }
+            });
+
         if let Err(e) = apply_autoscan_profile(gpu, matches, 30) {
             eprintln!(
                 "apply_autoscan_profile failed: {:?}, continuing export...",
@@ -427,7 +468,7 @@ pub fn handle_vfp_export(gpu: &GpuTarget<'_>, matches: &clap::ArgMatches) -> Res
         // lowest all fan to maximize temp-related dynamic V-F curve effect
 
         // Run load process (apply GPU load)
-        let mut child = spawn_dynamic_load_process()?;
+        let mut child = spawn_dynamic_load_process(cuda_device)?;
         sleep(Duration::from_secs(45));
         //too short duration may result in unstable dynamic result...
 
@@ -569,9 +610,26 @@ pub fn handle_vfp_import(gpu: &GpuTarget<'_>, matches: &clap::ArgMatches) -> Res
     let vfp_indices = query_domain_vfp_indices(gpu, domain)?;
 
     fn import<R: io::Read>(read: R, delimiter: u8) -> Result<Vec<VfPoint>, csv::Error> {
-        let mut csv = ReaderBuilder::new().delimiter(delimiter).from_reader(read);
-        let de = csv.deserialize();
-        de.collect()
+        let mut csv = ReaderBuilder::new()
+            .has_headers(true)
+            .delimiter(delimiter)
+            .from_reader(read);
+        let mut points = Vec::new();
+        for result in csv.records() {
+            let record = result?;
+            let voltage: u32 = record.get(0).unwrap_or("0").parse().unwrap_or(0);
+            let frequency: u32 = record.get(1).unwrap_or("0").parse().unwrap_or(0);
+            let delta: i32 = record.get(2).unwrap_or("0").parse().unwrap_or(0);
+            let default_frequency: u32 = record.get(3).unwrap_or("0").parse().unwrap_or(0);
+            points.push(VfPoint {
+                point_type: VfPointType::Prog,
+                voltage: Microvolts(voltage),
+                frequency: Kilohertz(frequency),
+                delta: KilohertzDelta(delta),
+                default_frequency: Kilohertz(default_frequency),
+            });
+        }
+        Ok(points)
     }
 
     let input = if is_std(input) {
@@ -826,11 +884,11 @@ pub fn fix_result(gpu: &GpuTarget<'_>, matches: &clap::ArgMatches) -> Result<(),
         sum_df += default_freq as u64;
 
         if margin_bin > 5 {
-            delta -= minimum_delta_core_freq_step * (5 + cfg.minus_bin);
+            delta -= minimum_delta_core_freq_step * (3 + cfg.minus_bin);
         } else if abs(margin_bin) < 2 {
-            delta -= minimum_delta_core_freq_step * (1 + cfg.minus_bin);
+            delta -= minimum_delta_core_freq_step * (cfg.minus_bin);
         } else {
-            delta -= minimum_delta_core_freq_step * (abs(margin_bin) + 1 + cfg.minus_bin);
+            delta -= minimum_delta_core_freq_step * (abs(margin_bin) + cfg.minus_bin);
         }
 
         if delta < 0 {
@@ -860,13 +918,6 @@ pub fn fix_result(gpu: &GpuTarget<'_>, matches: &clap::ArgMatches) -> Result<(),
 }
 
 pub fn check_voltage_points(log_filename: &str) -> io::Result<Option<VoltagePointResume>> {
-    // Helper function to extract voltage value from a log line
-    fn extract_voltage_point(line: &str) -> Option<i32> {
-        line.split_whitespace()
-            .filter_map(|word| word.parse::<i32>().ok()) // Try to parse integers
-            .next() // Take the first one found
-    }
-
     // Helper function to extract four usize values from a line
     fn extract_key_points(line: &str) -> Option<(usize, usize, usize, usize)> {
         let numbers: Vec<usize> = line
@@ -898,14 +949,14 @@ pub fn check_voltage_points(log_filename: &str) -> io::Result<Option<VoltagePoin
     for line in reader.lines() {
         let line = line?; // Unwrap line safely
 
-        // Check for minimum voltage point
-        // Minimum voltage point
+        // Check for minimum voltage point by looking for the pattern and extracting the value after it
         if line.contains("minimum_voltage_point") {
-            min_voltage_point = extract_voltage_point(&line);
+            min_voltage_point = extract_value(&line, "minimum_voltage_point:");
         }
 
+        // Check for maximum voltage point by looking for the pattern and extracting the value after it
         if line.contains("maximum_voltage_point") {
-            max_voltage_point = extract_voltage_point(&line);
+            max_voltage_point = extract_value(&line, "maximum_voltage_point:");
         }
 
         if line.contains("key points detected:") {
@@ -937,6 +988,12 @@ fn extract_value_f64(line: &str, pattern: &str) -> Option<f64> {
         .and_then(|s| s.trim_matches(|c| c == ',').parse::<f64>().ok()) // Parse as f64
 }
 
+fn is_plausible_voltage_point(point: usize) -> bool {
+    // VFP point indices are bounded by the table size; anything above that is
+    // usually a misparsed GPU id or stale data from a different device.
+    point <= 255
+}
+
 pub fn break_point_continue(
     log_filename: &str,
     testing_step: usize,
@@ -946,8 +1003,8 @@ pub fn break_point_continue(
     // Read all lines into a Vec
     let lines: Vec<String> = reader.lines().collect::<Result<_, _>>()?;
 
-    let mut last_code_100_freq: Option<f64> = None;
-    let mut last_code_0_freq: Option<f64> = None;
+    let mut last_succeeded_freq: Option<f64> = None;
+    let mut last_failed_freq: Option<f64> = None;
     let mut last_voltage_point: Option<usize> = None;
 
     let mut ultrafast_flag: Option<bool> = None;
@@ -962,8 +1019,8 @@ pub fn break_point_continue(
         if line.contains("Scan")
             || line.contains("Finished")
                 && (last_voltage_point.is_some()
-                    || last_code_100_freq.is_some()
-                    || last_code_0_freq.is_some())
+                    || last_succeeded_freq.is_some()
+                    || last_failed_freq.is_some())
         {
             if line.contains("ultrafast") {
                 ultrafast_flag = Some(true)
@@ -976,40 +1033,56 @@ pub fn break_point_continue(
         if last_voltage_point.is_none()
             && let Some(point) = extract_value(line, "point: #")
         {
-            last_voltage_point = Some(point as usize);
+            let point = point as usize;
+            if is_plausible_voltage_point(point) {
+                last_voltage_point = Some(point);
+            } else {
+                eprintln!(
+                    "Warning: ignoring suspicious resume point {} from log line: {}",
+                    point, line
+                );
+            }
 
             if line.contains("Finished") {
-                last_voltage_point = last_voltage_point.map(|v| v + testing_step);
+                last_voltage_point = last_voltage_point
+                    .and_then(|v| v.checked_add(testing_step))
+                    .filter(|&v| is_plausible_voltage_point(v));
+                if last_voltage_point.is_none() {
+                    eprintln!(
+                        "Warning: ignoring suspicious resume point after Finished line: {}",
+                        line
+                    );
+                }
                 break;
             }
         }
 
-        if last_code_100_freq.is_none()
+        if last_succeeded_freq.is_none()
             && line.contains("Test result is code #0")
             && let Some(freq) = extract_value_f64(line, "freq_delta: #")
         {
-            last_code_100_freq = Some(freq);
+            last_succeeded_freq = Some(freq);
         }
 
-        if last_code_0_freq.is_none()
+        if last_failed_freq.is_none()
             && line.contains("Test")
             && !line.contains("Test result is code #0")
             && let Some(freq) = extract_value_f64(line, "freq_delta: #")
         {
-            last_code_0_freq = Some(freq);
+            last_failed_freq = Some(freq);
         }
 
         if last_voltage_point.is_some()
-            && last_code_100_freq.is_some()
-            && last_code_0_freq.is_some()
+            && last_succeeded_freq.is_some()
+            && last_failed_freq.is_some()
         {
             break; // Stop early if all values are found
         }
     }
 
     Ok((
-        last_code_100_freq,
-        last_code_0_freq,
+        last_succeeded_freq,
+        last_failed_freq,
         last_voltage_point,
         ultrafast_flag,
     ))
@@ -1065,6 +1138,7 @@ pub fn export_vfp_from_log(matches: &clap::ArgMatches) -> Result<(), Error> {
                 last_code_100_freq = Some(freq);
                 export_single_point(
                     VfPoint {
+                        point_type: VfPointType::Prog,
                         voltage: Microvolts((last_voltage.unwrap() * 1000.0) as u32),
                         frequency: Kilohertz(0),
                         delta: KilohertzDelta((last_code_100_freq.unwrap() * 1000.0) as i32),
@@ -1196,7 +1270,7 @@ pub fn apply_autoscan_profile(
                 run_output(
                     gpu,
                     SetPstateBaseVoltage {
-                        pstate: nvoc_core::PState::P0,
+                        pstate: PState::P0,
                         delta_uv: max_uv,
                     },
                 )?;
@@ -1219,7 +1293,13 @@ pub fn apply_autoscan_profile(
                 boost: Percentage(100),
             },
         )?;
-        println!("Successfully set VDDQ boost to +100% (max allowed V_core in fact).");
+        println!(
+            "{}",
+            stylize(
+                "Successfully set VDDQ boost to +100% (max allowed V_core in fact).",
+                false
+            )
+        );
     }
 
     let settings = [
@@ -1240,9 +1320,15 @@ pub fn apply_autoscan_profile(
     ];
 
     set_nvapi_cooler_settings(gpu, settings)?;
-    println!("Successfully set Cooler1 and Cooler2 to {}%.", cooler_level);
+    println!(
+        "{}",
+        stylize(
+            &format!("Successfully set Cooler1 and Cooler2 to {}%.", cooler_level),
+            false
+        )
+    );
 
-    match get_gpu_tdp_temp_limit(matches, print_scan_separator) {
+    match get_gpu_tdp_temp_limit(matches) {
         Ok((
             _min_tdp_percent,
             _default_tdp_percent,
@@ -1258,7 +1344,13 @@ pub fn apply_autoscan_profile(
                     limits: vec![_max_tdp_percent],
                 },
             )?;
-            println!("Successfully set the TDP to {}", _max_tdp_percent);
+            println!(
+                "{}",
+                stylize(
+                    &format!("Successfully set the TDP to {}", _max_tdp_percent),
+                    false
+                )
+            );
 
             for point in _pff_curve.points.iter_mut() {
                 point.y = Kilohertz(3456000);
@@ -1277,8 +1369,14 @@ pub fn apply_autoscan_profile(
                 },
             )?;
             println!(
-                "Successfully set the Temp_limit to {} and pff-curve to {}",
-                _max_temp_lim, _pff_curve
+                "{}",
+                stylize(
+                    &format!(
+                        "Successfully set the Temp_limit to {} and pff-curve to {}",
+                        _max_temp_lim, _pff_curve
+                    ),
+                    false
+                )
             );
         }
         Err(e) => {
@@ -1288,6 +1386,37 @@ pub fn apply_autoscan_profile(
             )));
         }
     }
+    let readout_f = run_output(gpu, QueryGpuStatus)?.clone().clocks;
+    let mut init_vmem_oc_value = 0;
+    let mut clocks = Vec::new();
+    for (clock_name, freq) in readout_f {
+        // Store the clock name and frequency in a data structure.
+        clocks.push((clock_name.to_string(), freq));
+    }
+    if let Some((_, memory_clock)) = clocks.iter().find(|(name, _)| name.contains("Memory")) {
+        println!(
+            "{}: {}",
+            nvoc_cli_common::color::stylize_title("Memory Clock"),
+            stylize(&format!("{}", memory_clock), false)
+        );
+        init_vmem_oc_value = (memory_clock.0 / 25) as i32;
+        println!(
+            "{} {}",
+            nvoc_cli_common::color::stylize_title("Memory OC start at"),
+            stylize(&format!("+{} MHz", init_vmem_oc_value / 1000), false)
+        );
+    }
+
+    set_nvapi_pstate_clock_offsets(
+        gpu,
+        [(
+            PState::P0,
+            ClockDomain::Memory,
+            KilohertzDelta(init_vmem_oc_value),
+        )],
+    )?;
+
+    sync_memory_pstate_as_p0(gpu)?;
 
     Ok(())
 }

@@ -23,6 +23,7 @@ pub fn get_arguments() -> Command {
                 .value_name("GPU_ID")
                 .num_args(1..)
                 .action(ArgAction::Append)
+                .global(true)
                 .help(
                     "GPU ID selector. \
              Accepts decimal or hex.\n\
@@ -42,6 +43,13 @@ pub fn get_arguments() -> Command {
                 .value_parser(OutputFormat::possible_values().to_vec())
                 .default_value(OutputFormat::Human.to_str())
                 .help("Data output format"),
+        )
+        .arg(
+            Arg::new("no_color")
+                .long("no-color")
+                .action(ArgAction::SetTrue)
+                .global(true)
+                .help("Disable ANSI color output (also honors NO_COLOR)"),
         )
         .subcommand(
             Command::new("info")
@@ -342,6 +350,19 @@ pub fn get_arguments() -> Command {
                                 .action(ArgAction::SetTrue)
                                 .help("Reset GPU memory clocks lock. Alias: --pstate-unlock."),
                         )
+                        .arg(
+                            Arg::new("edid")
+                                .long("edid")
+                                .value_names(["DISPLAY_ID", "HEX_DATA"])
+                                .num_args(2)
+                                .help(
+                                    "Set EDID for a display. \
+                                    DISPLAY_ID is the hex display ID (e.g. 0x00010001). \
+                                    HEX_DATA is the raw EDID hex string (e.g. 00FF...). \
+                                    Pass empty string to clear.",
+                                )
+                                .use_value_delimiter(false),
+                        )
                 )
                 .subcommand(
                     Command::new("nvml")
@@ -370,7 +391,8 @@ pub fn get_arguments() -> Command {
                                 .num_args(1)
                                 .allow_hyphen_values(true)
                                 .value_parser(clap::value_parser!(i32).range(-5_000..=5_000))
-                                .help("Core clock offset via NVML API (MHz, ±5000)."),
+                                .conflicts_with("clock_offset")
+                                .help("Core clock offset via NVML API (MHz, ±5000). Alias for --clock-offset graphics:OFFSET."),
                         )
                         .arg(
                             Arg::new("mem_offset")
@@ -379,7 +401,17 @@ pub fn get_arguments() -> Command {
                                 .num_args(1)
                                 .allow_hyphen_values(true)
                                 .value_parser(clap::value_parser!(i32).range(-5_000..=5_000))
-                                .help("Memory clock offset via NVML API (MHz, ±5000). Note: target effective offset, handled behind the scene as *2."),
+                                .conflicts_with("clock_offset")
+                                .help("Memory clock offset via NVML API (MHz, ±5000). Alias for --clock-offset memory:OFFSET. Note: target effective offset, handled behind the scene as *2."),
+                        )
+                        .arg(
+                            Arg::new("clock_offset")
+                                .long("clock-offset")
+                                .value_name("DOMAIN:OFFSET")
+                                .num_args(1)
+                                .allow_hyphen_values(true)
+                                .conflicts_with_all(["core_offset", "mem_offset"])
+                                .help("Clock offset for any domain via NVML API. Format: DOMAIN:OFFSET_MHZ. Domains: graphics, memory, processor, video. Example: --clock-offset graphics:150, --clock-offset memory:500"),
                         )
                         // NVML thermal threshold write args are intentionally commented out for now.
                         .arg(
@@ -445,6 +477,27 @@ pub fn get_arguments() -> Command {
                                 .alias("nvml-pstate-unlock")
                                 .action(ArgAction::SetTrue)
                                 .help("Reset GPU memory clocks lock. Alias: --nvml-pstate-unlock."),
+                        )
+                        .arg(
+                            Arg::new("autoboost")
+                                .long("autoboost")
+                                .value_name("STATE")
+                                .value_parser(["on", "off"])
+                                .help("Enable or disable auto-boosted clocks. Example: --autoboost on, --autoboost off"),
+                        )
+                        .arg(
+                            Arg::new("autoboost_default")
+                                .long("autoboost-default")
+                                .value_name("STATE")
+                                .value_parser(["on", "off"])
+                                .help("Set the default auto-boosted clocks state (persists across driver reinitialization). Example: --autoboost-default on, --autoboost-default off"),
+                        )
+                        .arg(
+                            Arg::new("api_restriction")
+                                .long("api-restriction")
+                                .num_args(2)
+                                .value_names(["API", "STATE"])
+                                .help("Control API permission restrictions for non-admin users. API: app-clocks, auto-boost. STATE: open, restricted. Example: --api-restriction app-clocks open"),
                         )
                 )
                 .subcommand(

@@ -11,6 +11,7 @@ mod human;
 mod oc_profile_function;
 mod oc_scanner;
 mod platform;
+mod progressbar;
 
 use anyhow::Result;
 use basic_func::{
@@ -28,6 +29,7 @@ use oc_profile_function::{
 };
 use oc_scanner::{autoscan_gpuboostv3, autoscan_legacy};
 use platform::is_elevated;
+use progressbar::init_scan_cli_color;
 use std::io::{self, Write};
 use std::process::exit;
 
@@ -72,6 +74,7 @@ fn main_result() -> Result<i32, Box<dyn std::error::Error>> {
     let app = arg_help::get_arguments();
     check_single_dash_args(&app)?;
     let matches = app.get_matches();
+    init_scan_cli_color(matches.get_flag("no_color"));
     let exit_code = 0;
 
     let inventory = discover_targets(BackendSet::Both)

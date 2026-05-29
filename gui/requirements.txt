@@ -12,4 +12,3 @@ pillow>=10.4.0
 pystray>=0.19.5
 six>=1.17.0
 pyinstaller>=6.1.0
-

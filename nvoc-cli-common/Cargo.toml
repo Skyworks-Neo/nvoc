@@ -1,0 +1,12 @@
+[package]
+name = "nvoc-cli-common"
+version = "0.1.0"
+edition = { workspace = true }
+rust-version = { workspace = true }
+
+description = "Shared CLI helpers for NVOC tools"
+keywords = ["nvidia", "gpu", "cli", "color"]
+license = "Apache-2.0"
+
+[dependencies]
+colored = { workspace = true }
