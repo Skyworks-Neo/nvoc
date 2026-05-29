@@ -1,11 +1,11 @@
 # nvoc-auto-optimizer
 
-[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](../LICENSE)
 
 
 [中文](./README.md) | [English](./README-en.md)
 
-本项目采用 [Apache License 2.0](LICENSE) 许可发布，英文版说明见 `README-en.md`。
+本项目采用 [Apache License 2.0](../LICENSE) 许可发布，英文版说明见 `README-en.md`。
 
 > **NVIDIA GPU VF 曲线自动超频优化器**  
 > 基于 Rust 编写，通过 NVAPI / NVML 接口操控 GPU，配合 `cli-stressor` 压力测试进行逐点电压-频率（V-F Curve）自动扫描，为

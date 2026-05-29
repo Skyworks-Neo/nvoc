@@ -1,0 +1,4 @@
+[submodule "nvapi-rs"]
+	path = nvapi-rs
+	url = ../nvapi-rs.git
+	branch = v0.2.x

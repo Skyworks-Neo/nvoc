@@ -11,7 +11,22 @@ NVOC is a monorepo for NVIDIA GPU overclocking and stability tools. The stack ce
 
 Overclocking can crash the display driver, reset the GPU, or make a machine unstable. Run write operations only when you understand the target GPU, driver, cooling, and recovery path.
 
-## Components
+## Documentation & Wiki Policy
+
+For this repository size and contributor model, documentation is maintained in this monorepo first.
+
+- Canonical docs path: [`docs/wiki/`](./docs/wiki/)
+- English Home: [`docs/wiki/Home.md`](./docs/wiki/Home.md)
+- Chinese Home: [`docs/wiki/Home-zh.md`](./docs/wiki/Home-zh.md)
+- Review flow: open PRs in `nvoc`, review here, then sync to GitHub Wiki (`nvoc-wiki`) if needed.
+
+If wiki pages differ from `docs/wiki`, treat `docs/wiki` as source of truth and sync the wiki repo.
+
+## Components (canonical)
+
+This section is the canonical component inventory for the monorepo. `CONTRIBUTING.md` and `AGENTS.md` intentionally reference this table instead of duplicating entries.
+
+### User-facing products
 
 | Component | Path | Purpose |
 |---|---|---|
@@ -22,6 +37,15 @@ Overclocking can crash the display driver, reset the GPU, or make a machine unst
 | NVOC-TUI | [tui/](./tui/) | Textual terminal UI frontend for machines where a desktop GUI is unavailable or undesirable. |
 | NVOC-SRV | [srv/](./srv/) | Windows service and localhost HTTP control layer for server, workstation, and managed-machine use cases. |
 
+### Internal libraries and experimental modules
+
+| Component | Path | Scope |
+|---|---|---|
+| NVOC-CORE | [nvoc-core/](./nvoc-core/) | Core overclocking/domain library shared by Rust components. |
+| NVOC-CLI-COMMON | [nvoc-cli-common/](./nvoc-cli-common/) | Shared CLI support layer for Rust command-line components. |
+| NVOC-PYTHON (pynvoc) | [nvoc-python/](./nvoc-python/) | Python bindings and shared Python-side integration surface. |
+| CLI-STRESSOR-CUDA-RS (experimental) | [cli-stressor-cuda-rs/](./cli-stressor-cuda-rs/) | Experimental Rust CUDA stressor crate currently excluded from common workspace checks by default docs/CI flows. |
+
 Read the component README before building or running that component. The detailed command reference, compatibility matrices, and scanning theory live in [auto-optimizer/README-en.md](./auto-optimizer/README-en.md) and [auto-optimizer/README.md](./auto-optimizer/README.md).
 
 ## Requirements
@@ -30,6 +54,8 @@ Read the component README before building or running that component. The detaile
 - Administrator privileges on Windows or sudo privileges on Linux for operations that write overclocking settings.
 - Rust toolchain for `auto-optimizer/` and `srv/`.
 - Python plus `uv` for the Python frontends and stressors.
+- Python Tk support (`tkinter`) for NVOC-GUI. On Linux this may require a
+  system package such as `tk`, `python3-tk`, or `python3-tkinter`.
 - CUDA-capable PyTorch for `cli-stressor-cuda/`, or OpenCL runtime support for `cli-stressor-opencl/`.
 
 Platform support and feature availability vary by GPU generation and backend. The auto-optimizer README contains the current support matrix for RTX 50/40/30/20, GTX 16/10/9, Volta, mobile GPUs, NVAPI, and NVML.
@@ -110,6 +136,10 @@ NVOC 是一个 NVIDIA GPU 超频与稳定性工具的 monorepo。核心是 Rust 
 
 ## 组件
 
+该章节是 monorepo 组件清单的唯一权威来源；`CONTRIBUTING.md` 与 `AGENTS.md` 仅引用此处，不再重复维护列表。
+
+### 用户向产品
+
 | 组件 | 路径 | 用途 |
 |---|---|---|
 | NVOC-AUTO-OPTIMIZER | [auto-optimizer/](./auto-optimizer/) | Rust CLI 核心，负责 GPU 发现、状态读取、重置、NVAPI / NVML 写入、V-F 曲线导入导出、autoscan 和结果后处理。 |
@@ -119,6 +149,15 @@ NVOC 是一个 NVIDIA GPU 超频与稳定性工具的 monorepo。核心是 Rust 
 | NVOC-TUI | [tui/](./tui/) | 基于 Textual 的终端界面，适用于没有桌面环境或不适合运行 GUI 的机器。 |
 | NVOC-SRV | [srv/](./srv/) | Windows Service 与 localhost HTTP 控制层，面向服务器、工作站和托管机器场景。 |
 
+### 内部库与实验模块
+
+| 组件 | 路径 | 说明 |
+|---|---|---|
+| NVOC-CORE | [nvoc-core/](./nvoc-core/) | Rust 共享核心库，承载超频/设备领域能力。 |
+| NVOC-CLI-COMMON | [nvoc-cli-common/](./nvoc-cli-common/) | Rust CLI 共享支撑层。 |
+| NVOC-PYTHON (pynvoc) | [nvoc-python/](./nvoc-python/) | Python 绑定与跨 Python 组件共享接口。 |
+| CLI-STRESSOR-CUDA-RS（实验性） | [cli-stressor-cuda-rs/](./cli-stressor-cuda-rs/) | Rust CUDA 压力测试实验 crate；当前在常见 CI/文档流程中默认排除。 |
+
 构建或运行某个组件前，请先阅读对应子目录 README。详细命令参考、兼容性矩阵和扫描原理在 [auto-optimizer/README.md](./auto-optimizer/README.md) 和 [auto-optimizer/README-en.md](./auto-optimizer/README-en.md) 中。
 
 ## 依赖
@@ -127,6 +166,8 @@ NVOC 是一个 NVIDIA GPU 超频与稳定性工具的 monorepo。核心是 Rust 
 - Windows 管理员权限，或 Linux sudo 权限，用于写入超频参数。
 - `auto-optimizer/` 与 `srv/` 需要 Rust 工具链。
 - Python 前端与压力测试工具推荐使用 `uv` 管理环境。
+- NVOC-GUI 需要 Python Tk 支持（`tkinter`）。Linux 上可能需要安装
+  `tk`、`python3-tk` 或 `python3-tkinter` 等系统包。
 - `cli-stressor-cuda/` 需要 CUDA 版 PyTorch；`cli-stressor-opencl/` 需要 OpenCL 运行环境。
 
 不同 GPU 世代与后端支持的功能不同，请以 auto-optimizer README 中的兼容性矩阵为准。

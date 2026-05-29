@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-NVOC is a Rust/Python monorepo for NVIDIA GPU overclocking and stress tooling. Rust crates are `nvoc-core/`, `auto-optimizer/`, `srv/`, and `cli-stressor-cuda-rs/`. Python `uv` projects are `gui/`, `tui/`, `cli-stressor-cuda/`, and `cli-stressor-opencl/`. TUI code lives in `tui/nvoc_tui/`, tests in `tui/tests/`, and styles in `tui/nvoc_tui/styles/`. Platform helpers are in `auto-optimizer/test/` and `auto-optimizer/systemd/`.
+NVOC is a Rust/Python monorepo for NVIDIA GPU overclocking and stress tooling. The canonical component inventory (including user-facing vs internal modules) lives in [`README.md` → "Components (canonical)"](./README.md#components-canonical). TUI code lives in `tui/nvoc_tui/`, tests in `tui/tests/`, and styles in `tui/nvoc_tui/styles/`. Platform helpers are in `auto-optimizer/test/` and `auto-optimizer/systemd/`.
 
 ## Build, Test, and Development Commands
 
@@ -10,8 +10,9 @@ NVOC is a Rust/Python monorepo for NVIDIA GPU overclocking and stress tooling. R
 - `cargo fmt --all -- --check`: check Rust formatting.
 - `cargo clippy --workspace --exclude cli-stressor-cuda-rs --all-targets -- -D warnings`: run Rust CI linting.
 - `cargo test --package nvoc-core --all-targets`: run non-GPU Rust core tests.
+- `cd gui && uv sync && uv run pytest`: run GUI unit tests.
 - `cd tui && uv sync && uv run pytest`: run TUI unit tests.
-- `ruff format . --check && ruff check .`: check Python format and lint.
+- `ruff format . --preview --check --output-format=github && ruff check . --output-format=github`: mirror CI's Python format and lint checks.
 - `cd gui && uv sync && uv run python main.py`: run the GUI.
 - `cd tui && uv sync && uv run nvoc-tui`: run the TUI.
 
@@ -21,7 +22,7 @@ Rust uses edition 2024 and toolchain `1.95.0`; keep `rustfmt` and clippy clean. 
 
 ## Testing Guidelines
 
-Keep tests near changed code. Rust integration tests use `*/tests/*.rs`; Python tests use `pytest` and `test_*.py`. Keep GPU-mutating tests ignored or hardware-gated. Report checks run and GPU availability.
+Keep tests near changed code. Rust integration tests use `*/tests/*.rs`; GUI tests live in `gui/tests/`; TUI tests live in `tui/tests/`; Python tests use `pytest` and `test_*.py`. Keep GPU-mutating tests ignored or hardware-gated. Report checks run and GPU availability.
 
 ## Commit & Pull Request Guidelines
 
