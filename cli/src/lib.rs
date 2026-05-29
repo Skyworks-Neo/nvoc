@@ -409,7 +409,8 @@ where
     let mut argv = vec!["nvoc-cli".to_string()];
     argv.extend(args.into_iter().map(Into::into));
 
-    let mut cli = cli_command();
+    let command_hint = command_hint_from_argv(&argv[1..]);
+    let mut cli = cli_command(command_hint);
     if argv.iter().any(|arg| arg == "--no-color") || std::env::var_os("NO_COLOR").is_some() {
         cli = cli.color(ColorChoice::Never);
     }
@@ -447,7 +448,7 @@ where
     } else {
         Vec::new()
     };
-    let options = collect_named_options(command_matches);
+    let options = collect_named_options(command_matches, parsed_command.allowed_options());
 
     let invocation = Invocation {
         backend,
@@ -529,7 +530,40 @@ fn parse_command(raw: &str) -> CliResult<Command> {
         .ok_or_else(|| CliError::new(format!("unknown function {raw:?}")))
 }
 
-fn cli_command() -> ClapCommand {
+fn command_hint_from_argv(argv: &[String]) -> Option<Command> {
+    let mut index = 0;
+    while index < argv.len() {
+        let token = argv[index].as_str();
+        if token == "--" {
+            return None;
+        }
+        if option_takes_value(token) {
+            index += 2;
+            continue;
+        }
+        if let Ok(command) = parse_command(token) {
+            return Some(command);
+        }
+        index += 1;
+    }
+    None
+}
+
+fn option_takes_value(token: &str) -> bool {
+    matches!(
+        token,
+        "-g" | "-O"
+            | "--gpu"
+            | "--output"
+            | "--domain"
+            | "--pstate"
+            | "--fan"
+            | "--policy"
+            | "--infer-missing-default"
+    )
+}
+
+fn cli_command(command_hint: Option<Command>) -> ClapCommand {
     let mut command = ClapCommand::new("nvoc-cli")
         .version(env!("CARGO_PKG_VERSION"))
         .about("Focused command-line wrapper for nvoc-core")
@@ -576,73 +610,69 @@ fn cli_command() -> ClapCommand {
                 .action(ArgAction::SetTrue)
                 .global(true)
                 .help("Disable ANSI color output"),
-        )
-        .arg(
-            Arg::new("domain")
-                .long("domain")
-                .value_name("DOMAIN")
-                .action(ArgAction::Append)
-                .global(true)
-                .help("Clock/VFP domain: core, memory, processor, or video"),
-        )
-        .arg(
-            Arg::new("pstate")
-                .long("pstate")
-                .value_name("PSTATE")
-                .action(ArgAction::Append)
-                .global(true)
-                .help("P-State such as P0 or P2"),
-        )
-        .arg(
-            Arg::new("fan")
-                .long("fan")
-                .value_name("FAN")
-                .action(ArgAction::Append)
-                .global(true)
-                .help("Fan/cooler target: all, 0, 1, or 2"),
-        )
-        .arg(
-            Arg::new("policy")
-                .long("policy")
-                .value_name("POLICY")
-                .action(ArgAction::Append)
-                .global(true)
-                .help("Fan policy such as manual or continuous"),
-        )
-        .arg(
-            Arg::new("infer-missing-default")
-                .long("infer-missing-default")
-                .value_name("BOOL")
-                .action(ArgAction::Append)
-                .global(true)
-                .help("Infer missing default VFP values"),
-        )
-        .arg(
-            Arg::new("indexed")
-                .long("indexed")
-                .action(ArgAction::SetTrue)
-                .global(true)
-                .help("Preserve hardware VFP indices"),
-        )
-        .arg(
-            Arg::new("no-infer-missing-default")
-                .long("no-infer-missing-default")
-                .action(ArgAction::SetTrue)
-                .global(true)
-                .help("Do not infer missing default VFP values"),
-        )
-        .arg(
-            Arg::new("feedback")
-                .long("feedback")
-                .action(ArgAction::SetTrue)
-                .global(true)
-                .help("Enable feedback for VFP voltage lock"),
         );
+
+    if let Some(command_hint) = command_hint {
+        for option in command_hint.allowed_options() {
+            command = command.arg(command_specific_arg(option));
+        }
+    }
 
     for nvoc_command in COMMANDS {
         command = command.subcommand(clap_subcommand(*nvoc_command));
     }
     command
+}
+
+fn command_specific_arg(name: &'static str) -> Arg {
+    match name {
+        "domain" => Arg::new("domain")
+            .long("domain")
+            .value_name("DOMAIN")
+            .action(ArgAction::Append)
+            .global(true)
+            .help("Clock/VFP domain: core, memory, processor, or video"),
+        "pstate" => Arg::new("pstate")
+            .long("pstate")
+            .value_name("PSTATE")
+            .action(ArgAction::Append)
+            .global(true)
+            .help("P-State such as P0 or P2"),
+        "fan" => Arg::new("fan")
+            .long("fan")
+            .value_name("FAN")
+            .action(ArgAction::Append)
+            .global(true)
+            .help("Fan/cooler target: all, 0, 1, or 2"),
+        "policy" => Arg::new("policy")
+            .long("policy")
+            .value_name("POLICY")
+            .action(ArgAction::Append)
+            .global(true)
+            .help("Fan policy such as manual or continuous"),
+        "infer-missing-default" => Arg::new("infer-missing-default")
+            .long("infer-missing-default")
+            .value_name("BOOL")
+            .action(ArgAction::Append)
+            .global(true)
+            .help("Infer missing default VFP values"),
+        "indexed" => Arg::new("indexed")
+            .long("indexed")
+            .action(ArgAction::SetTrue)
+            .global(true)
+            .help("Preserve hardware VFP indices"),
+        "no-infer-missing-default" => Arg::new("no-infer-missing-default")
+            .long("no-infer-missing-default")
+            .action(ArgAction::SetTrue)
+            .global(true)
+            .help("Do not infer missing default VFP values"),
+        "feedback" => Arg::new("feedback")
+            .long("feedback")
+            .action(ArgAction::SetTrue)
+            .global(true)
+            .help("Enable feedback for VFP voltage lock"),
+        _ => unreachable!("unknown command-specific option {name}"),
+    }
 }
 
 fn clap_subcommand(command: Command) -> ClapCommand {
@@ -659,16 +689,23 @@ fn clap_subcommand(command: Command) -> ClapCommand {
     subcommand
 }
 
-fn collect_named_options(matches: &clap::ArgMatches) -> BTreeMap<String, Vec<String>> {
+fn collect_named_options(
+    matches: &clap::ArgMatches,
+    allowed_options: &[&'static str],
+) -> BTreeMap<String, Vec<String>> {
     let mut options = BTreeMap::new();
-    for name in ["domain", "pstate", "fan", "policy", "infer-missing-default"] {
-        if let Some(values) = matches.get_many::<String>(name) {
-            options.insert(name.to_string(), values.cloned().collect());
-        }
-    }
-    for name in ["indexed", "no-infer-missing-default", "feedback"] {
-        if matches.get_flag(name) {
-            options.insert(name.to_string(), vec!["true".to_string()]);
+    for name in allowed_options {
+        match *name {
+            "indexed" | "no-infer-missing-default" | "feedback" => {
+                if matches.get_flag(name) {
+                    options.insert(name.to_string(), vec!["true".to_string()]);
+                }
+            }
+            _ => {
+                if let Some(values) = matches.get_many::<String>(name) {
+                    options.insert(name.to_string(), values.cloned().collect());
+                }
+            }
         }
     }
     options
@@ -1801,6 +1838,14 @@ mod tests {
     }
 
     #[test]
+    fn parses_command_specific_named_args_before_function() {
+        let invocation = parse_args(["--fan", "1", "set-fan-percent", "65"]).unwrap();
+        assert_eq!(invocation.command, Some(Command::SetFanPercent));
+        assert_eq!(invocation.positionals, vec!["65"]);
+        assert_eq!(option_one(&invocation, "fan"), Some("1"));
+    }
+
+    #[test]
     fn rejects_backend_conflict() {
         let err = parse_args(["--nvapi", "--nvml", "list-gpus"])
             .unwrap_err()
@@ -1813,7 +1858,29 @@ mod tests {
         let err = parse_args(["get-power-watt", "--domain", "memory"])
             .unwrap_err()
             .to_string();
-        assert!(err.contains("not valid"));
+        assert!(err.contains("--domain"));
+    }
+
+    #[test]
+    fn command_help_only_lists_supported_named_args() {
+        let get_info_help = parse_args(["get-info", "--help"]).unwrap_err().to_string();
+        assert!(!get_info_help.contains("--fan"));
+        assert!(!get_info_help.contains("--domain"));
+
+        let set_fan_help = parse_args(["set-fan-percent", "--help"])
+            .unwrap_err()
+            .to_string();
+        assert!(set_fan_help.contains("--fan"));
+        assert!(set_fan_help.contains("--policy"));
+        assert!(!set_fan_help.contains("--domain"));
+    }
+
+    #[test]
+    fn rejects_command_specific_named_args_on_other_commands() {
+        let err = parse_args(["--fan", "1", "get-info"])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("--fan"));
     }
 
     #[test]

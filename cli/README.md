@@ -8,7 +8,9 @@
 nvoc-cli [--gpu GPU_ID] [--nvapi|--nvml] [--output human|json] <function-name> [args] [named args]
 ```
 
-Named arguments can be placed before or after the function name.
+Named arguments can be placed before or after the function name. Use
+`nvoc-cli <function-name> --help` to see the named arguments supported by a
+specific function.
 
 Examples:
 
