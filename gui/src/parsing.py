@@ -272,14 +272,12 @@ def parse_legacy_overvolt_bounds(output: str) -> dict[str, int | str]:
     for line in output.splitlines():
         match = pattern.match(line.strip())
         if match:
-            rows.append(
-                (
-                    match.group(1).upper(),
-                    voltage_text_to_mv(match.group(2), match.group(3)),
-                    voltage_text_to_mv(match.group(4), match.group(5)),
-                    voltage_text_to_mv(match.group(6), match.group(7)),
-                )
-            )
+            rows.append((
+                match.group(1).upper(),
+                voltage_text_to_mv(match.group(2), match.group(3)),
+                voltage_text_to_mv(match.group(4), match.group(5)),
+                voltage_text_to_mv(match.group(6), match.group(7)),
+            ))
     if not rows:
         return {}
     selected = next((row for row in rows if row[0] == "P0"), rows[0])
@@ -410,14 +408,12 @@ def write_vfp_points(path: str, points: list[dict[str, Any]]) -> None:
         writer = csv.writer(file)
         writer.writerow(["voltage", "frequency", "delta", "default_frequency"])
         for point in points:
-            writer.writerow(
-                [
-                    point.get("voltage_uv", 0),
-                    point.get("frequency_khz", 0),
-                    point.get("delta_khz", 0),
-                    point.get("default_frequency_khz", 0),
-                ]
-            )
+            writer.writerow([
+                point.get("voltage_uv", 0),
+                point.get("frequency_khz", 0),
+                point.get("delta_khz", 0),
+                point.get("default_frequency_khz", 0),
+            ])
 
 
 def load_vfp_deltas(
