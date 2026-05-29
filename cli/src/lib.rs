@@ -19,7 +19,7 @@ use nvoc_core::{
 use serde_json::{Value, json};
 
 mod output;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error as StdError;
 use std::fmt;
 
@@ -309,7 +309,8 @@ impl Command {
             | Self::SetMemoryOffsetMhz
             | Self::ResetCoreOffsetMhz
             | Self::ResetMemoryOffsetMhz => &["pstate"],
-            Self::SetFanPercent | Self::ResetFan => &["fan", "policy"],
+            Self::SetFanPercent => &["fan", "policy"],
+            Self::ResetFan => &["fan"],
             Self::SetLockedClocksMhz | Self::ResetLockedClocks | Self::ResetVfpDeltas => {
                 &["domain"]
             }
@@ -509,6 +510,15 @@ fn validate_invocation(invocation: &Invocation) -> CliResult<()> {
                 command.name()
             )));
         }
+    }
+
+    if command == Command::ResetFan
+        && option_one(invocation, "fan").is_some_and(|fan| !fan.eq_ignore_ascii_case("all"))
+        && invocation.backend != BackendChoice::Nvml
+    {
+        return Err(CliError::new(
+            "reset-fan with a specific --fan requires --nvml; NVAPI resets all coolers",
+        ));
     }
 
     Ok(())
@@ -748,7 +758,22 @@ fn execute_auto(invocation: &Invocation, command: Command) -> CliResult<Executio
     if supports_nvapi {
         let nvapi_attempt = execute_backend(invocation, command, BackendAdapter::Nvapi);
         match nvapi_attempt {
-            Ok(execution) if !execution.has_errors() => return Ok(execution),
+            Ok(mut execution) if !execution.has_errors() => {
+                if supports_nvml && let Ok(selected_ids) = selected_auto_target_ids(invocation) {
+                    let missing_ids = uncovered_target_ids(&selected_ids, &execution);
+                    if !missing_ids.is_empty() {
+                        let nvml_execution = execute_backend_for_gpu_ids(
+                            invocation,
+                            command,
+                            BackendAdapter::Nvml,
+                            &missing_ids,
+                        )?;
+                        execution.backend = "auto".to_string();
+                        execution.results.extend(nvml_execution.results);
+                    }
+                }
+                return Ok(execution);
+            }
             Ok(nvapi_execution) if supports_nvml => {
                 let mut nvml_execution =
                     execute_backend(invocation, command, BackendAdapter::Nvml)?;
@@ -855,6 +880,89 @@ fn execute_backend(
         warnings: Vec::new(),
         results,
     })
+}
+
+fn selected_auto_target_ids(invocation: &Invocation) -> CliResult<Vec<u32>> {
+    let inventory = discover_targets(BackendSet::Both)?;
+    let all_targets = inventory.targets();
+    let selector = gpu_selector(invocation);
+    let selected = select_targets(&all_targets, &selector)?;
+    Ok(selected.into_iter().map(|target| target.id.0).collect())
+}
+
+fn execute_backend_for_gpu_ids(
+    invocation: &Invocation,
+    command: Command,
+    adapter: BackendAdapter,
+    gpu_ids: &[u32],
+) -> CliResult<Execution> {
+    let discovery = discovery_backend_set(command, adapter);
+    let inventory = discover_targets(discovery)?;
+    let all_targets = inventory.targets();
+    let requested = gpu_ids.iter().copied().collect::<BTreeSet<_>>();
+    let filtered = all_targets
+        .into_iter()
+        .filter(|target| requested.contains(&target.id.0))
+        .filter(|target| target_supports(*target, command, adapter))
+        .collect::<Vec<_>>();
+
+    execute_targets(invocation, command, adapter, filtered)
+}
+
+fn execute_targets(
+    invocation: &Invocation,
+    command: Command,
+    adapter: BackendAdapter,
+    filtered: Vec<GpuTarget<'_>>,
+) -> CliResult<Execution> {
+    if filtered.is_empty() {
+        return Err(CliError::new(format!(
+            "no selected GPUs expose the {} backend required by {}",
+            adapter.label(),
+            command.name()
+        )));
+    }
+
+    let mut results = Vec::with_capacity(filtered.len());
+    for target in filtered {
+        let result = match execute_target(command, adapter, &target, invocation) {
+            Ok(output) => TargetResult {
+                gpu_id: Some(target.id.0),
+                backend: adapter.label(),
+                ok: true,
+                output: Some(output),
+                error: None,
+            },
+            Err(error) => TargetResult {
+                gpu_id: Some(target.id.0),
+                backend: adapter.label(),
+                ok: false,
+                output: None,
+                error: Some(error.to_string()),
+            },
+        };
+        results.push(result);
+    }
+
+    Ok(Execution {
+        function: command.name(),
+        backend: adapter.label().to_string(),
+        warnings: Vec::new(),
+        results,
+    })
+}
+
+fn uncovered_target_ids(target_ids: &[u32], execution: &Execution) -> Vec<u32> {
+    let covered = execution
+        .results
+        .iter()
+        .filter_map(|result| result.gpu_id)
+        .collect::<BTreeSet<_>>();
+    target_ids
+        .iter()
+        .copied()
+        .filter(|id| !covered.contains(id))
+        .collect()
 }
 
 fn execute_list_gpus_auto(invocation: &Invocation) -> CliResult<Execution> {
@@ -1514,8 +1622,8 @@ fn set_locked_clocks(
                 target,
                 SetVfpFrequencyLock {
                     domain,
-                    upper: Kilohertz(max_mhz.saturating_mul(1000)),
-                    lower: Some(Kilohertz(min_mhz.saturating_mul(1000))),
+                    upper: Kilohertz(mhz_to_khz_u32(max_mhz)?),
+                    lower: Some(Kilohertz(mhz_to_khz_u32(min_mhz)?)),
                 },
             )?;
         }
@@ -1547,6 +1655,11 @@ fn reset_fan(
     let fan = option_one(invocation, "fan").unwrap_or("all");
     match adapter {
         BackendAdapter::Nvapi => {
+            if !fan.eq_ignore_ascii_case("all") {
+                return Err(CliError::new(
+                    "reset-fan with a specific --fan requires --nvml; NVAPI resets all coolers",
+                ));
+            }
             run(target, ResetCoolerLevels)?;
             Ok(json!({"applied": true, "fan": fan}))
         }
@@ -1707,6 +1820,11 @@ fn mhz_to_khz_i32(mhz: i32) -> CliResult<i32> {
         .ok_or_else(|| CliError::new("MHz value is too large"))
 }
 
+fn mhz_to_khz_u32(mhz: u32) -> CliResult<u32> {
+    mhz.checked_mul(1000)
+        .ok_or_else(|| CliError::new("MHz value is too large"))
+}
+
 fn domain_label(domain: ClockDomain) -> &'static str {
     match domain {
         ClockDomain::Graphics => "graphics",
@@ -1811,6 +1929,10 @@ mod tests {
         assert!(set_fan_help.contains("--fan"));
         assert!(set_fan_help.contains("--policy"));
         assert!(!set_fan_help.contains("--domain"));
+
+        let reset_fan_help = parse_args(["reset-fan", "--help"]).unwrap_err().to_string();
+        assert!(reset_fan_help.contains("--fan"));
+        assert!(!reset_fan_help.contains("--policy"));
     }
 
     #[test]
@@ -1822,6 +1944,23 @@ mod tests {
     }
 
     #[test]
+    fn reset_fan_rejects_ignored_policy_and_nvapi_specific_fan() {
+        let err = parse_args(["reset-fan", "--policy", "manual"])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("--policy"));
+
+        let err = parse_args(["--fan", "1", "reset-fan"])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("requires --nvml"));
+
+        let invocation = parse_args(["--nvml", "--fan", "1", "reset-fan"]).unwrap();
+        assert_eq!(invocation.backend, BackendChoice::Nvml);
+        assert_eq!(option_one(&invocation, "fan"), Some("1"));
+    }
+
+    #[test]
     fn parses_units() {
         assert_eq!(parse_i32_unit("-125MHz", "mhz", "mhz").unwrap(), -125);
         assert_eq!(parse_u32_unit("350W", "w", "watt").unwrap(), 350);
@@ -1830,6 +1969,8 @@ mod tests {
         assert_eq!(parse_u32_unit("90percent", "%", "percent").unwrap(), 90);
         assert_eq!(parse_i32_unit("83celsius", "c", "celsius").unwrap(), 83);
         assert_eq!(mhz_to_khz_i32(150).unwrap(), 150_000);
+        assert_eq!(mhz_to_khz_u32(150).unwrap(), 150_000);
+        assert!(mhz_to_khz_u32(u32::MAX).is_err());
     }
 
     #[test]
@@ -1852,5 +1993,35 @@ mod tests {
         );
         assert_eq!(Command::SetPowerWatt.adapters(), &NVML_ONLY);
         assert_eq!(Command::SetPowerPercent.adapters(), &NVAPI_ONLY);
+    }
+
+    #[test]
+    fn finds_auto_targets_not_covered_by_primary_backend() {
+        let execution = Execution {
+            function: "get-clock-offset-mhz",
+            backend: "nvapi".to_string(),
+            warnings: Vec::new(),
+            results: vec![
+                TargetResult {
+                    gpu_id: Some(256),
+                    backend: "nvapi",
+                    ok: true,
+                    output: None,
+                    error: None,
+                },
+                TargetResult {
+                    gpu_id: Some(768),
+                    backend: "nvapi",
+                    ok: true,
+                    output: None,
+                    error: None,
+                },
+            ],
+        };
+
+        assert_eq!(
+            uncovered_target_ids(&[256, 512, 768], &execution),
+            vec![512]
+        );
     }
 }
