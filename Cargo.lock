@@ -1045,6 +1045,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "nvoc-cli"
+version = "0.1.0"
+dependencies = [
+ "nvml-wrapper",
+ "nvoc-cli-common",
+ "nvoc-core",
+ "serde_json",
+]
+
+[[package]]
 name = "nvoc-cli-common"
 version = "0.1.0"
 dependencies = [

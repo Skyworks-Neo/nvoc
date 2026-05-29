@@ -31,6 +31,7 @@ This section is the canonical component inventory for the monorepo. `CONTRIBUTIN
 | Component | Path | Purpose |
 |---|---|---|
 | NVOC-AUTO-OPTIMIZER | [auto-optimizer/](./auto-optimizer/) | Rust CLI core for GPU discovery, status, resets, NVAPI / NVML setting writes, V-F curve export/import, autoscan, and result fixing. |
+| NVOC-CLI | [cli/](./cli/) | Focused Rust wrapper over `nvoc-core` with flat function-style commands and NVAPI/NVML backend selection. |
 | NVOC-STRESSOR CUDA | [cli-stressor-cuda/](./cli-stressor-cuda/) | PyTorch CUDA GPU core-stability stress tool used by autoscan and standalone validation. |
 | NVOC-STRESSOR OpenCL | [cli-stressor-opencl/](./cli-stressor-opencl/) | Lightweight OpenCL stress tool for broader backend coverage without the CUDA PyTorch stack. |
 | NVOC-GUI | [gui/](./gui/) | Python GUI frontend for dashboard, autoscan, overclock, V-F curve, fan control, and live CLI output workflows. |
@@ -143,6 +144,7 @@ NVOC 是一个 NVIDIA GPU 超频与稳定性工具的 monorepo。核心是 Rust 
 | 组件 | 路径 | 用途 |
 |---|---|---|
 | NVOC-AUTO-OPTIMIZER | [auto-optimizer/](./auto-optimizer/) | Rust CLI 核心，负责 GPU 发现、状态读取、重置、NVAPI / NVML 写入、V-F 曲线导入导出、autoscan 和结果后处理。 |
+| NVOC-CLI | [cli/](./cli/) | `nvoc-core` 的精简 Rust 包装器，提供扁平函数式命令和 NVAPI/NVML 后端选择。 |
 | NVOC-STRESSOR CUDA | [cli-stressor-cuda/](./cli-stressor-cuda/) | 基于 PyTorch CUDA 的 GPU 核心稳定性压力测试工具，可供 autoscan 或单独验证使用。 |
 | NVOC-STRESSOR OpenCL | [cli-stressor-opencl/](./cli-stressor-opencl/) | 轻量 OpenCL 压力测试工具，用于不依赖 CUDA PyTorch 体系的后端覆盖。 |
 | NVOC-GUI | [gui/](./gui/) | Python 图形界面，提供 Dashboard、Autoscan、Overclock、V-F Curve、Fan Control 和实时 CLI 输出。 |

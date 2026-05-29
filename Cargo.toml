@@ -2,6 +2,7 @@
 members = [
   "nvoc-core",
   "nvoc-cli-common",
+  "cli",
   "auto-optimizer",
   "srv",
   "cli-stressor-cuda-rs",
