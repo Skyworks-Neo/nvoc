@@ -293,9 +293,9 @@ fn join_context(parent: &str, key: &str) -> String {
     }
 }
 
-fn sorted_object_entries<'a>(
-    object: &'a serde_json::Map<String, Value>,
-) -> Vec<(&'a String, &'a Value)> {
+fn sorted_object_entries(
+    object: &serde_json::Map<String, Value>,
+) -> Vec<(&String, &Value)> {
     let mut entries = object.iter().collect::<Vec<_>>();
     if entries.iter().all(|(key, _)| key.parse::<i64>().is_ok()) {
         entries.sort_by_key(|(key, _)| key.parse::<i64>().unwrap_or_default());
@@ -563,9 +563,9 @@ fn ordered_compact_values<'a>(
         .collect()
 }
 
-fn ordered_scalar_object_values<'a>(
-    object: &'a serde_json::Map<String, Value>,
-) -> Vec<(&'static str, &'a str, &'a Value)> {
+fn ordered_scalar_object_values(
+    object: &serde_json::Map<String, Value>,
+) -> Vec<(&'static str, &str, &Value)> {
     [
         "max", "maximum", "current", "value", "default", "min", "minimum",
     ]
