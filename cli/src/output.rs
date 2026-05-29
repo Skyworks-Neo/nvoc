@@ -953,6 +953,31 @@ mod tests {
         }
     }
 
+    #[test]
+    fn json_output_is_compact() {
+        let execution = Execution {
+            function: "get-power-watt",
+            backend: "nvml".to_string(),
+            warnings: Vec::new(),
+            results: vec![TargetResult {
+                gpu_id: Some(7),
+                backend: "nvml",
+                ok: true,
+                output: Some(json!({
+                    "min_watt": 100,
+                    "current_watt": 250,
+                    "max_watt": 350,
+                })),
+                error: None,
+            }],
+        };
+
+        let rendered = serde_json::to_string(&execution_to_json(&execution)).unwrap();
+
+        assert!(!rendered.contains('\n'));
+        assert!(rendered.contains("\"function\":\"get-power-watt\""));
+    }
+
     fn sample_output(command: Command) -> Value {
         match command {
             Command::ListGpus => json!({

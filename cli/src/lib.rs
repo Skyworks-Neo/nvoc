@@ -717,7 +717,7 @@ pub fn run_invocation(invocation: &Invocation) -> CliResult<RunOutput> {
     let execution = execute(invocation)?;
     let rendered = match invocation.output {
         OutputFormat::Human => output::format_human(&execution),
-        OutputFormat::Json => serde_json::to_string_pretty(&output::execution_to_json(&execution))?,
+        OutputFormat::Json => serde_json::to_string(&output::execution_to_json(&execution))?,
     };
     Ok(RunOutput {
         rendered,
