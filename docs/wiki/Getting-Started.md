@@ -6,6 +6,8 @@
    cd nvoc
    ```
 2. Install Rust toolchain `1.95.0` and Python `uv`.
+   For NVOC-GUI, use a Python interpreter with Tk support (`tkinter`);
+   Linux may require `tk`, `python3-tk`, or `python3-tkinter`.
 3. Build optimizer first.
    ```bash
    cd auto-optimizer

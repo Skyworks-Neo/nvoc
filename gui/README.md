@@ -32,6 +32,9 @@ This project is licensed under the [Apache License 2.0](../LICENSE).
 - Built nvoc-auto-optimizer binary (`../auto-optimizer/target/release/nvoc-auto-optimizer.exe`)
 - NVIDIA GPU with compatible drivers
 - A Python environment managed by `uv` (recommended) or `venv`/`pip`
+- Python Tk support (`tkinter`). Windows Python installers usually include it;
+  on Linux it may require a system package such as `tk` (Arch),
+  `python3-tk` (Debian/Ubuntu), or `python3-tkinter` (Fedora).
 
 ### Setup
 
@@ -76,6 +79,10 @@ This repository uses `pyproject.toml` as the source of truth for `uv`, and provi
 - Packages with shifting Python support windows use Python-version markers so each interpreter resolves an appropriate release line.
 - Build-only tooling lives in the `build` dependency group; install packaging tools separately when you need them.
 - `uv sync` resolves dependencies for the active interpreter. To verify Python 3.8 compatibility specifically, create or sync a Python 3.8 environment first.
+- `tkinter` is provided by the Python interpreter or operating system, not by `pip`.
+  If the GUI fails with `ModuleNotFoundError: No module named 'tkinter'`,
+  use an interpreter that passes `python -c "import tkinter"` and recreate or
+  resync the environment.
 - If you are using `venv`, install dependencies with `pip install -r requirements.txt` after activating the environment.
 
 ### Directory Structure
@@ -213,6 +220,9 @@ gui/
 - 已构建的 nvoc-auto-optimizer 可执行文件（`../auto-optimizer/target/release/nvoc-auto-optimizer.exe`）
 - 安装了兼容驱动的 NVIDIA GPU
 - 使用 `uv`（推荐）或 `venv`/`pip` 管理的 Python 环境
+- Python Tk 支持（`tkinter`）。Windows Python 安装包通常自带；Linux
+  可能需要安装系统包，例如 Arch 的 `tk`、Debian/Ubuntu 的 `python3-tk`
+  或 Fedora 的 `python3-tkinter`。
 
 ### 安装与启动
 
@@ -257,6 +267,9 @@ pyinstaller nvoc_gui.spec
 - 对 Python 支持窗口会变化的包使用 Python 版本标记，确保不同解释器解析到合适的发行版本。
 - 仅用于构建的工具放在 `build` 依赖组中；需要打包时再单独安装构建工具。
 - `uv sync` 会针对当前活动解释器解析依赖。若要专门验证 Python 3.8 兼容性，请先创建或切换到 Python 3.8 环境再同步。
+- `tkinter` 由 Python 解释器或操作系统提供，不由 `pip` 安装。若 GUI 报错
+  `ModuleNotFoundError: No module named 'tkinter'`，请使用能通过
+  `python -c "import tkinter"` 的解释器，并重新创建或同步环境。
 - 如果使用 `venv`，请在激活环境后执行 `pip install -r requirements.txt`。
 
 ### 目录结构

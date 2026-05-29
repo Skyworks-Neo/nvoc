@@ -4,6 +4,8 @@
 
 - Path: `gui/`
 - Start: `cd gui && uv sync && uv run python main.py`
+- Requires Python Tk support (`tkinter`); on Linux this may require `tk`,
+  `python3-tk`, or `python3-tkinter`.
 - Use case: desktop operational control with visual tabs and live output.
 
 ## TUI
