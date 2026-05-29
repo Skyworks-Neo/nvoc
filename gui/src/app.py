@@ -1099,6 +1099,8 @@ class App(ctk.CTk):
         queue = list(commands)
 
         def start_next(_code: int = 0) -> None:
+            if _code != 0:
+                return
             if not queue:
                 self.refresh_after_native_action()
                 return
@@ -1110,7 +1112,7 @@ class App(ctk.CTk):
                 lambda code: self.after(0, lambda: start_next(code)),
             )
             if not started:
-                self.console.append("[GUI] Another native action is already running.\n")
+                return
 
         start_next()
 
