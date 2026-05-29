@@ -263,6 +263,55 @@ def parse_vfp_lock_bounds(output: str) -> dict[str, int]:
     return bounds
 
 
+def _frequency_value_to_mhz(value: object) -> Optional[int]:
+    if isinstance(value, (int, float)):
+        return int(round(value / 1000.0 if abs(value) >= 10000 else value))
+    if not isinstance(value, str):
+        return None
+
+    match = re.search(r"([+-]?\d+(?:\.\d+)?)\s*([kmg]?hz)?", value, re.IGNORECASE)
+    if not match:
+        return None
+    raw = float(match.group(1))
+    unit = (match.group(2) or "").lower()
+    if unit == "khz":
+        raw /= 1000.0
+    elif unit == "ghz":
+        raw *= 1000.0
+    elif not unit and abs(raw) >= 10000:
+        raw /= 1000.0
+    return int(round(raw))
+
+
+def normalize_native_vfp_lock_bounds(payload: dict[str, Any]) -> dict[str, int]:
+    """Map pynvoc VFP lock payloads onto the GUI's legacy lock-bound keys."""
+    locks = payload.get("vfp_locks")
+    if not isinstance(locks, dict):
+        return {}
+
+    bounds: dict[str, int] = {}
+    for raw_key, raw_value in locks.items():
+        value = _frequency_value_to_mhz(raw_value)
+        if value is None:
+            continue
+
+        key = re.sub(r"[^a-z0-9]+", "", str(raw_key).lower())
+        if "memory" in key or key.startswith("mem"):
+            prefix = "vfp_lock_memory"
+        elif "gpu" in key or "graphics" in key or "core" in key:
+            prefix = "vfp_lock_gpu_core"
+        else:
+            continue
+
+        suffix = (
+            "lowerbound_mhz"
+            if ("lower" in key or "min" in key or "unknown" in key)
+            else "upperbound_mhz"
+        )
+        bounds[f"{prefix}_{suffix}"] = value
+    return bounds
+
+
 def parse_legacy_overvolt_bounds(output: str) -> dict[str, int | str]:
     pattern = re.compile(
         r"^\s*Overvolt\s+(P\d+)\s*:\s*([+-]?\d+(?:\.\d+)?)\s*([mu\u00b5\u03bc]V)\s*\(\s*range\s*:\s*([+-]?\d+(?:\.\d+)?)\s*([mu\u00b5\u03bc]V)\s*-\s*([+-]?\d+(?:\.\d+)?)\s*([mu\u00b5\u03bc]V)\s*\)",

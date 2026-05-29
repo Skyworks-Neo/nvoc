@@ -205,6 +205,9 @@ class FanControlPane:
         except (TypeError, ValueError):
             return 0
 
+    def fan_level_text(self) -> str:
+        return self.level_var.get()
+
     def set_policy_values(self, values: Sequence[str]) -> None:
         self.policy_menu.configure(values=list(values))
 

@@ -24,6 +24,7 @@ from src.parsing import (
     parse_legacy_overvolt_bounds,
     parse_nvapi_power_current_from_get,
     parse_nvml_power_limits_from_get,
+    normalize_native_vfp_lock_bounds,
     parse_status_current_values,
     parse_supported_pstates,
     parse_vfp_lock_bounds,
@@ -727,6 +728,14 @@ class App(ctk.CTk):
         native_payload = self._native_query_payload(output)
         if native_payload is not None:
             merged.update(native_payload)
+            for key in (
+                "vfp_lock_gpu_core_upperbound_mhz",
+                "vfp_lock_gpu_core_lowerbound_mhz",
+                "vfp_lock_memory_upperbound_mhz",
+                "vfp_lock_memory_lowerbound_mhz",
+            ):
+                merged.pop(key, None)
+            merged.update(normalize_native_vfp_lock_bounds(native_payload))
             pstates = native_payload.get("supported_pstates", [])
             self._gpu_pstates_cache = (
                 [str(pstate) for pstate in pstates] if isinstance(pstates, list) else []
@@ -1066,10 +1075,12 @@ class App(ctk.CTk):
         description: str,
         action: Callable[[Any], Optional[str]],
         on_finished: Optional[Callable[[int], None]] = None,
-    ) -> None:
+    ) -> bool:
         if self.selected_gpu_target() is None:
             self.console.append("[GUI] No GPU selected.\n")
-            return
+            if on_finished is not None:
+                self.after(0, lambda: on_finished(-1))
+            return False
         started = self.backend.run_action(
             description,
             action,
@@ -1079,7 +1090,8 @@ class App(ctk.CTk):
             ),
         )
         if not started:
-            self.console.append("[GUI] Another native action is already running.\n")
+            return False
+        return True
 
     def run_native_action_chain(
         self, commands: List[Tuple[str, Callable[[Any], Optional[str]]]]
@@ -1125,15 +1137,13 @@ class App(ctk.CTk):
 
         This helper now accepts an optional completion callback for command chaining.
         """
-        self.runner.on_finished = on_finished
-        self.runner.run(args, cwd=self.cli_cwd)
+        self.runner.run(args, cwd=self.cli_cwd, on_finished=on_finished)
 
     def run_cli(
         self, args: List[str], on_finished: Optional[Callable[[int], None]] = None
     ) -> None:
         """Run CLI command with custom on_finished callback."""
-        self.runner.on_finished = on_finished
-        self.runner.run(args, cwd=self.cli_cwd)
+        self.runner.run(args, cwd=self.cli_cwd, on_finished=on_finished)
 
     def cancel_cli(self):
         """Cancel the running CLI process."""

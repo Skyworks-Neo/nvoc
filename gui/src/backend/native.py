@@ -72,9 +72,13 @@ class NativeBackend:
         on_finished: FinishCallback,
     ) -> bool:
         with self._lock:
-            if self._action_running:
-                return False
-            self._action_running = True
+            already_running = self._action_running
+            if not already_running:
+                self._action_running = True
+        if already_running:
+            on_output("Another native action is already running.\n", "error")
+            on_finished(-1)
+            return False
 
         def worker() -> None:
             code = -1
@@ -95,14 +99,21 @@ class NativeBackend:
                 on_finished(code)
 
         submit = getattr(self.app, "run_background", None)
-        if callable(submit):
-            submit("native-action", worker)
-        else:
-            if self._fallback_executor is None:
-                self._fallback_executor = ThreadPoolExecutor(
-                    max_workers=2, thread_name_prefix="nvoc-gui-native"
-                )
-            self._fallback_executor.submit(worker)
+        try:
+            if callable(submit):
+                submit("native-action", worker)
+            else:
+                if self._fallback_executor is None:
+                    self._fallback_executor = ThreadPoolExecutor(
+                        max_workers=2, thread_name_prefix="nvoc-gui-native"
+                    )
+                self._fallback_executor.submit(worker)
+        except Exception as exc:
+            with self._lock:
+                self._action_running = False
+            on_output(f"Failed to schedule native action: {exc}\n", "error")
+            on_finished(-1)
+            return False
         return True
 
     def shutdown(self) -> None:

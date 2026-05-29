@@ -14,7 +14,9 @@
 ## Python projects
 
 - Lint/format:
-  `ruff format . --check && ruff check .`
+  `ruff format . --preview --check --output-format=github && ruff check . --output-format=github`
+- GUI tests:
+  `cd gui && uv sync && uv run pytest`
 - TUI tests:
   `cd tui && uv sync && uv run pytest`
 - GUI run:

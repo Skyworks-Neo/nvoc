@@ -1582,6 +1582,12 @@ class VFCurveTab:
         if not path:
             return
 
+        if not self.quick_export_var.get():
+            self.app.run_cli_display(
+                self.app.get_gpu_args() + ["set", "vfp", "export", path]
+            )
+            return
+
         def export(native, gpu=gpu, path=path) -> str:
             points = native.query_domain_vfp_points(gpu, "graphics", True)
             self._write_vfp_points(path, points)
@@ -1883,9 +1889,21 @@ class VFCurveTab:
         )
 
         def apply_groups(native, gpu=gpu, groups=groups) -> str:
+            applied = 0
+            failed = 0
+            messages = []
             for frm, to, dkz in groups:
-                native.set_vfp_range_delta(gpu, frm, to, dkz)
-            return f"Applied {len(groups)} VFP delta group(s)."
+                try:
+                    native.set_vfp_range_delta(gpu, frm, to, dkz)
+                except Exception as exc:
+                    failed += 1
+                    messages.append(
+                        f"Warning: failed VFP delta group {frm}-{to} ({dkz} kHz): {exc}"
+                    )
+                    continue
+                applied += 1
+            messages.append(f"Applied {applied} VFP delta group(s); {failed} failed.")
+            return "\n".join(messages)
 
         self.app.run_native_action(
             "apply VFP point deltas",

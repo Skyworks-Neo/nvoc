@@ -45,6 +45,11 @@ class FakeNative:
         self.calls.append(("set_fan", gpu, backend, fan_id, policy, level))
 
 
+class RejectingSubmitApp(FakeApp):
+    def run_background(self, _name: str, _task) -> None:
+        raise RuntimeError("runner stopped")
+
+
 def test_list_gpus_uses_pynvoc_discovery() -> None:
     app = FakeApp()
     backend = NativeBackend(app)
@@ -106,3 +111,22 @@ def test_run_action_rejects_overlapping_action() -> None:
         "second", slow_action, lambda *_: None, lambda _code: None
     )
     release.set()
+
+
+def test_run_action_resets_running_flag_when_submit_fails() -> None:
+    app = RejectingSubmitApp()
+    backend = NativeBackend(app)
+    backend._native = app.native
+    output: list[str] = []
+    finished: list[int] = []
+
+    assert not backend.run_action(
+        "fail",
+        lambda _native: "done",
+        lambda text, _level: output.append(text),
+        finished.append,
+    )
+
+    assert finished == [-1]
+    assert any("Failed to schedule native action" in message for message in output)
+    assert not backend._action_running

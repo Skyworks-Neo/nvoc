@@ -7,6 +7,7 @@ from src.parsing import (
     get_vfp_offset_state_from_csv,
     load_vfp_deltas,
     native_query_payload,
+    normalize_native_vfp_lock_bounds,
     parse_dashboard_status,
     parse_gpu_list_output,
     parse_info_limits,
@@ -113,6 +114,25 @@ def test_parse_status_and_get_helpers() -> None:
         "vfp_lock_gpu_core_lowerbound_mhz": 1800,
     }
     assert parse_legacy_overvolt_bounds(get_output)["legacy_overvolt_max_mv"] == 250
+
+
+def test_normalize_native_vfp_lock_bounds() -> None:
+    payload = {
+        "vfp_locks": {
+            "Gpu": "2100 MHz",
+            "GpuLowerbound": "1800000 kHz",
+            "Memory": "9501 MHz",
+            "MemoryUnknown": "9000 MHz",
+            "Voltage": "875 mV",
+        }
+    }
+
+    assert normalize_native_vfp_lock_bounds(payload) == {
+        "vfp_lock_gpu_core_upperbound_mhz": 2100,
+        "vfp_lock_gpu_core_lowerbound_mhz": 1800,
+        "vfp_lock_memory_upperbound_mhz": 9501,
+        "vfp_lock_memory_lowerbound_mhz": 9000,
+    }
 
 
 def test_vfp_csv_helpers(tmp_path: Path) -> None:

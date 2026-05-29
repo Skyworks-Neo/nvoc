@@ -20,6 +20,7 @@ class FakePane:
         self.fan_id = fan_id
         self.policy = policy
         self.level = level
+        self.level_entry = str(level)
         self.policy_values: list[str] = []
         self.supported = True
 
@@ -35,6 +36,9 @@ class FakePane:
     def fan_level(self) -> int:
         return self.level
 
+    def fan_level_text(self) -> str:
+        return self.level_entry
+
     def set_policy_values(self, values) -> None:
         self.policy_values = list(values)
 
@@ -43,6 +47,7 @@ class FakePane:
 
     def set_level(self, level: int) -> None:
         self.level = level
+        self.level_entry = str(level)
 
     def set_supported_state(self, supported: bool) -> None:
         self.supported = supported
@@ -133,6 +138,35 @@ def test_preset_sets_level_and_applies() -> None:
             level=30,
         )
     ]
+
+
+def test_entry_change_updates_applied_level() -> None:
+    pane = FakePane(level=60)
+    pane.level_entry = "80"
+    backend = FakeBackend()
+    controller = FanControlController(pane, backend)
+
+    controller.on_entry_change()
+    controller.apply()
+
+    assert pane.level == 80
+    assert backend.applied == [
+        FanSettings(
+            backend="nvapi-cooler",
+            fan_id=None,
+            policy="continuous",
+            level=80,
+        )
+    ]
+
+
+def test_entry_change_clamps_level() -> None:
+    pane = FakePane(level=60)
+    pane.level_entry = "125"
+
+    FanControlController(pane, FakeBackend()).on_entry_change()
+
+    assert pane.level == 100
 
 
 def test_fan_settings_to_cli_args() -> None:

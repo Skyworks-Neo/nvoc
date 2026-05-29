@@ -25,6 +25,7 @@ class FanControlPaneProtocol(Protocol):
     def selected_fan_id(self) -> str: ...
     def selected_policy(self) -> str: ...
     def fan_level(self) -> int: ...
+    def fan_level_text(self) -> str: ...
     def set_policy_values(self, values: Sequence[str]) -> None: ...
     def set_policy(self, policy: str) -> None: ...
     def set_level(self, level: int) -> None: ...
@@ -86,9 +87,14 @@ class FanControlController:
         self.pane.set_level(int(value))
 
     def on_entry_change(self) -> None:
-        level = self.pane.fan_level()
-        if 0 <= level <= 100:
-            self.pane.set_level(level)
+        text = self.pane.fan_level_text().strip()
+        if not text:
+            return
+        try:
+            level = int(text)
+        except ValueError:
+            return
+        self.pane.set_level(max(0, min(100, level)))
 
     def set_preset(self, level: int) -> None:
         self.pane.set_policy("continuous")
