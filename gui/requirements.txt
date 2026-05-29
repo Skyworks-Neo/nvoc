@@ -9,6 +9,7 @@ numpy>=1.24.4,<2; python_version < '3.9'
 numpy>=2.0; python_version >= '3.9'
 packaging>=24.0
 pillow>=10.4.0
+-e ../nvoc-python
 pystray>=0.19.5
 six>=1.17.0
 pyinstaller>=6.1.0

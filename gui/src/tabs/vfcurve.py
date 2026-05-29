@@ -5,7 +5,6 @@ plus VFP export/import, lock/unlock, and point adjustment controls.
 
 import csv
 import os
-import threading
 import customtkinter as ctk
 from tkinter import filedialog
 from typing import TYPE_CHECKING, List, Optional, Tuple
@@ -15,12 +14,12 @@ import numpy as np
 if TYPE_CHECKING:
     from src.app import App
 
-from src.cli_runner import CLIRunner
 from src.widgets.lightweight_controls import (
     LiteButton,
     LiteEntry,
     install_mousewheel_support,
 )
+from src.parsing import load_vfp_deltas, write_vfp_points
 
 
 class VFCurveTab:
@@ -89,6 +88,27 @@ class VFCurveTab:
             font=("", 15, "bold"),
             text_color="#aaccff",
         ).pack(side="left", padx=8)
+
+        io_row = ctk.CTkFrame(chart_top, fg_color="transparent")
+        io_row.pack(side="left", padx=(12, 0))
+        ctk.CTkCheckBox(
+            io_row, text="Quick export", variable=self.quick_export_var, width=100
+        ).pack(side="left", padx=(0, 8))
+        LiteButton(io_row, text="📤Export", width=75, command=self._export_vfp).pack(
+            side="left", padx=(0, 4)
+        )
+        LiteButton(io_row, text="📥Import", width=75, command=self._import_vfp).pack(
+            side="left", padx=(0, 4)
+        )
+        LiteButton(
+            io_row,
+            text="🔁Reset",
+            width=75,
+            fg_color="#c0392b",
+            hover_color="#96281b",
+            command=self._reset_vfp,
+        ).pack(side="left")
+
         auto_row = ctk.CTkFrame(chart_top, fg_color="transparent")
         auto_row.pack(side="right")
         self._auto_toggle_btn = ctk.CTkButton(
@@ -106,26 +126,6 @@ class VFCurveTab:
         auto_interval_entry.bind("<Return>", self._on_auto_interval_changed)
         auto_interval_entry.bind("<FocusOut>", self._on_auto_interval_changed)
         ctk.CTkLabel(auto_row, text="Refresh (s):").pack(side="left")
-
-        io_row = ctk.CTkFrame(chart_area, fg_color="transparent")
-        io_row.pack(fill="x", pady=(0, 4))
-        ctk.CTkCheckBox(
-            io_row, text="Quick export", variable=self.quick_export_var, width=100
-        ).pack(side="left", padx=(8, 0))
-        LiteButton(
-            io_row, text="📤 Export VFP", width=118, command=self._export_vfp
-        ).pack(side="left", padx=(10, 0))
-        LiteButton(
-            io_row, text="📥 Import VFP", width=118, command=self._import_vfp
-        ).pack(side="left", padx=(5, 0))
-        LiteButton(
-            io_row,
-            text="🔁 Reset VFP",
-            width=120,
-            fg_color="#c0392b",
-            hover_color="#96281b",
-            command=self._reset_vfp,
-        ).pack(side="left", padx=(5, 8))
 
         self._chart_frame = ctk.CTkFrame(chart_area)
         self._chart_frame.pack(fill="x", expand=False)
@@ -591,8 +591,7 @@ class VFCurveTab:
         if not self._auto_refreshing:
             return
 
-        gpu_args = self.app.get_gpu_args()
-        if not gpu_args:
+        if self.app.selected_gpu_target() is None:
             self._schedule_next_auto_refresh()
             return
 
@@ -611,29 +610,31 @@ class VFCurveTab:
         self._refresh_curve()
 
     def _refresh_curve(self):
-        """Export VFP from GPU then load and plot it."""
+        """Query VFP points from pynvoc then load and plot them."""
         if self._refresh_curve_inflight:
             self._refresh_curve_pending = True
             return
 
         csv_path = self._get_csv_path()
-        gpu_args = self.app.get_gpu_args()
-        if not gpu_args:
+        gpu = self.app.selected_gpu_target()
+        if gpu is None:
             self.app.console.append("[GUI] No GPU selected.\n")
             return
 
         self._refresh_curve_inflight = True
-        self.app.console.append("[GUI] Exporting VF curve...\n")
+        self.app.console.append("[GUI] Querying VF curve via pynvoc...\n")
 
         def _worker():
-            runner = CLIRunner(
-                self.app.runner.exe_path, on_output=self.app._on_cli_output
-            )
-            args = gpu_args + ["set", "vfp", "export", "-q", csv_path]
-            retcode, _ = runner.run_sync(args, cwd=self.app.cli_cwd)
+            retcode = 0
+            try:
+                points = self.app.backend.query_domain_vfp_points(gpu)
+                self._write_vfp_points(csv_path, points)
+            except Exception as exc:
+                retcode = -1
+                self.app.after(0, lambda exc=exc: self.app.console.append(f"{exc}\n"))
             self.app.after(0, lambda: self._on_export_done(retcode, csv_path))
 
-        threading.Thread(target=_worker, daemon=True).start()
+        self.app.run_background("vfcurve-refresh", _worker)
 
     def _on_export_done(self, retcode: int, csv_path: str):
         self._refresh_curve_inflight = False
@@ -648,6 +649,16 @@ class VFCurveTab:
             self.app.after(0, self._refresh_curve)
         elif self._auto_refreshing:
             self._schedule_next_auto_refresh()
+
+    @staticmethod
+    def _write_vfp_points(path: str, points: List[dict]) -> None:
+        write_vfp_points(path, points)
+
+    @staticmethod
+    def _load_vfp_deltas(
+        path: str, reference_points: List[dict]
+    ) -> List[Tuple[int, int]]:
+        return load_vfp_deltas(path, reference_points)
 
     def _load_csv(self, path: str):
         """Parse CSV and redraw chart."""
@@ -1382,7 +1393,7 @@ class VFCurveTab:
 
         s = min(self._sel_start, self._sel_end)
         e = max(self._sel_start, self._sel_end)
-        gpu_args = self.app.get_gpu_args()
+        gpu = self.app.selected_gpu_target()
         lock_backend = self._selected_freq_lock_backend()
         lock_backend_label = self._selected_freq_lock_backend_label()
 
@@ -1404,221 +1415,120 @@ class VFCurveTab:
         )
         has_vfp_locks = len(self._locked_points) > 0
 
-        def _worker():
-            # Use an isolated runner inside the background thread so composite operations execute sequentially
-            runner = CLIRunner(
-                self.app.runner.exe_path, on_output=self.app._on_cli_output
-            )
+        def _lock_core(native, local_min: int, local_max: int) -> None:
+            if lock_backend == "nvapi":
+                native.set_vfp_frequency_lock(
+                    gpu, "core", local_max * 1000, local_min * 1000
+                )
+            else:
+                native.set_locked_clocks(
+                    gpu, lock_backend, "core", local_min, local_max
+                )
 
-            try:
-                if s == e:
-                    # Single point selected
-                    if is_vfp_locked:
-                        # VFP Lock -> selected frequency lock backend
-                        self.app.after(
-                            0,
-                            lambda: self.app.console.append(
-                                f"[GUI] Unlocking VFP point {idx}...\n"
-                            ),
-                        )
-                        runner.run_sync(
-                            gpu_args + ["set", "nvapi", "--reset-volt-locks"],
-                            cwd=self.app.cli_cwd,
-                        )
+        if s == e and is_vfp_locked:
+            description = "convert VFP lock to frequency lock"
 
-                        self.app.after(
-                            0,
-                            lambda: self.app.console.append(
-                                f"[GUI] Applying {lock_backend_label} lock for point {idx} ({cur_f} MHz)....\n"
-                            ),
-                        )
-                        rc, _ = runner.run_sync(
-                            gpu_args
-                            + [
-                                "set",
-                                lock_backend,
-                                "--locked-core-clocks",
-                                str(cur_f),
-                                str(cur_f),
-                            ],
-                            cwd=self.app.cli_cwd,
-                        )
+            def action(native) -> str:
+                native.reset_vfp_lock(gpu)
+                _lock_core(native, cur_f, cur_f)
+                return f"Applied {lock_backend_label} lock for point {idx}."
 
-                        def _update_freq_lock(result_rc=rc, local_f=cur_f):
-                            self._locked_points.clear()
-                            if result_rc == 0:
-                                self._freq_core_lock = (local_f, local_f)
-                                self.core_lock_min_var.set(str(local_f))
-                                self.core_lock_max_var.set(str(local_f))
-                                self.app.console.append(
-                                    f"[GUI] ✔ {lock_backend_label} lock applied successfully.\n"
-                                )
-                            else:
-                                self.app.console.append(
-                                    f"[GUI] ❌ {lock_backend_label} lock failed (rc={result_rc}), UI falling back.\n"
-                                )
-                            self._redraw()
-                            self.canvas.draw()  # Force immediate UI paint
+            def done(rc: int, local_f=cur_f) -> None:
+                self._locked_points.clear()
+                if rc == 0:
+                    self._freq_core_lock = (local_f, local_f)
+                    self.core_lock_min_var.set(str(local_f))
+                    self.core_lock_max_var.set(str(local_f))
+                self._redraw()
+                self.canvas.draw()
+                self._is_toggling_lock = False
 
-                        self.app.after(0, _update_freq_lock)
+        elif s == e and is_freq_locked_single:
+            description = "reset frequency lock"
 
-                    elif is_freq_locked_single:
-                        # Selected frequency lock backend -> Unlock
-                        self.app.after(
-                            0,
-                            lambda: self.app.console.append(
-                                f"[GUI] Resetting {lock_backend_label} lock...\n"
-                            ),
-                        )
-                        rc, _ = runner.run_sync(
-                            gpu_args + ["set", lock_backend, "--reset-core-clocks"],
-                            cwd=self.app.cli_cwd,
-                        )
-
-                        def _update_unlock(result_rc=rc):
-                            if result_rc == 0:
-                                self._freq_core_lock = None
-                                self.core_lock_min_var.set("0")
-                                self.core_lock_max_var.set("0")
-                                self.app.console.append(
-                                    f"[GUI] ✔ {lock_backend_label} lock reset successfully.\n"
-                                )
-                            else:
-                                self.app.console.append(
-                                    f"[GUI] ❌ {lock_backend_label} lock reset failed (rc={result_rc}).\n"
-                                )
-                            self._redraw()
-                            self.canvas.draw()  # Force immediate UI paint
-
-                        self.app.after(0, _update_unlock)
-
-                    else:
-                        # Unlock -> VFP Lock
-                        # Always clear selected freq lock backend via CLI to be safe
-                        runner.run_sync(
-                            gpu_args + ["set", lock_backend, "--reset-core-clocks"],
-                            cwd=self.app.cli_cwd,
-                        )
-
-                        self.app.after(
-                            0,
-                            lambda: self.app.console.append(
-                                f"[GUI] Locking point {idx} via VFP...\n"
-                            ),
-                        )
-                        rc, _ = runner.run_sync(
-                            gpu_args + ["set", "nvapi", "--locked-voltage", str(idx)],
-                            cwd=self.app.cli_cwd,
-                        )
-
-                        def _update_vfp(
-                            result_rc=rc, local_idx=idx, local_vol=vol, local_f=cur_f
-                        ):
-                            self._freq_core_lock = None
-                            self.core_lock_min_var.set("0")
-                            self.core_lock_max_var.set("0")
-                            if result_rc == 0:
-                                self._locked_points.clear()
-                                self._locked_points.add(local_idx)
-                                self.app.console.append(
-                                    f"[GUI] ✔ VFP Lock applied ({local_vol:.1f} mV / {local_f} MHz).\n"
-                                )
-                            else:
-                                self.app.console.append(
-                                    f"[GUI] ❌ VFP Lock failed (rc={result_rc}). UI fallback bypassed.\n"
-                                )
-                                # If backend success is not reflected in return code, keep UI in sync with user-observed state.
-                                self._locked_points.clear()
-                                self._locked_points.add(local_idx)
-                            self._redraw()
-                            self.canvas.draw()  # Force immediate UI paint
-
-                        self.app.after(0, _update_vfp)
-
+            def action(native) -> str:
+                if lock_backend == "nvapi":
+                    native.reset_vfp_frequency_lock(gpu, "core")
                 else:
-                    # Range selected
-                    if is_freq_locked_range:
-                        # Unlock selected frequency lock backend
-                        self.app.after(
-                            0,
-                            lambda: self.app.console.append(
-                                f"[GUI] Resetting {lock_backend_label} range lock...\n"
-                            ),
-                        )
-                        rc, _ = runner.run_sync(
-                            gpu_args + ["set", lock_backend, "--reset-core-clocks"],
-                            cwd=self.app.cli_cwd,
-                        )
+                    native.reset_core_clocks(gpu, lock_backend)
+                return f"Reset {lock_backend_label} lock."
 
-                        def _update_range_unlock(result_rc=rc):
-                            if result_rc == 0:
-                                self._freq_core_lock = None
-                                self.core_lock_min_var.set("0")
-                                self.core_lock_max_var.set("0")
-                                self.app.console.append(
-                                    f"[GUI] ✔ {lock_backend_label} range lock reset.\n"
-                                )
-                            else:
-                                self.app.console.append(
-                                    f"[GUI] ❌ {lock_backend_label} range unlock failed (rc={result_rc}).\n"
-                                )
-                            self._redraw()
-                            self.canvas.draw()  # Force immediate UI paint
+            def done(rc: int) -> None:
+                if rc == 0:
+                    self._freq_core_lock = None
+                    self.core_lock_min_var.set("0")
+                    self.core_lock_max_var.set("0")
+                self._redraw()
+                self.canvas.draw()
+                self._is_toggling_lock = False
 
-                        self.app.after(0, _update_range_unlock)
-                    else:
-                        # Lock selected frequency backend range
-                        if has_vfp_locks:
-                            runner.run_sync(
-                                gpu_args + ["set", "nvapi", "--reset-volt-locks"],
-                                cwd=self.app.cli_cwd,
-                            )
+        elif s == e:
+            description = "lock VFP point"
 
-                        self.app.after(
-                            0,
-                            lambda: self.app.console.append(
-                                f"[GUI] Applying {lock_backend_label} lock for range {s}-{e} ({min_f} - {max_f} MHz)....\n"
-                            ),
-                        )
-                        rc, _ = runner.run_sync(
-                            gpu_args
-                            + [
-                                "set",
-                                lock_backend,
-                                "--locked-core-clocks",
-                                str(min_f),
-                                str(max_f),
-                            ],
-                            cwd=self.app.cli_cwd,
-                        )
+            def action(native) -> str:
+                if lock_backend == "nvapi":
+                    native.reset_vfp_frequency_lock(gpu, "core")
+                else:
+                    native.reset_core_clocks(gpu, lock_backend)
+                native.set_vfp_voltage_lock(gpu, idx, None, False)
+                return f"Locked VFP point {idx}."
 
-                        def _update_range_lock(
-                            result_rc=rc, lf_min=min_f, lf_max=max_f
-                        ):
-                            self._locked_points.clear()
-                            if result_rc == 0:
-                                self._freq_core_lock = (lf_min, lf_max)
-                                self.core_lock_min_var.set(str(lf_min))
-                                self.core_lock_max_var.set(str(lf_max))
-                                self.app.console.append(
-                                    f"[GUI] ✔ {lock_backend_label} range lock applied.\n"
-                                )
-                            else:
-                                self.app.console.append(
-                                    f"[GUI] ❌ {lock_backend_label} range lock failed (rc={result_rc}).\n"
-                                )
-                                # Fallback UI for potential false negative returns
-                                self._freq_core_lock = (lf_min, lf_max)
-                                self.core_lock_min_var.set(str(lf_min))
-                                self.core_lock_max_var.set(str(lf_max))
-                            self._redraw()
-                            self.canvas.draw()  # Force immediate UI paint
+            def done(rc: int, local_idx=idx) -> None:
+                self._freq_core_lock = None
+                self.core_lock_min_var.set("0")
+                self.core_lock_max_var.set("0")
+                if rc == 0:
+                    self._locked_points.clear()
+                    self._locked_points.add(local_idx)
+                    self.app.console.append(
+                        f"[GUI] VFP Lock applied ({vol:.1f} mV / {cur_f} MHz).\n"
+                    )
+                self._redraw()
+                self.canvas.draw()
+                self._is_toggling_lock = False
 
-                        self.app.after(0, _update_range_lock)
-            finally:
-                self.app.after(0, lambda: setattr(self, "_is_toggling_lock", False))
+        elif is_freq_locked_range:
+            description = "reset frequency range lock"
 
-        threading.Thread(target=_worker, daemon=True, name="space-toggle").start()
+            def action(native) -> str:
+                if lock_backend == "nvapi":
+                    native.reset_vfp_frequency_lock(gpu, "core")
+                else:
+                    native.reset_core_clocks(gpu, lock_backend)
+                return f"Reset {lock_backend_label} range lock."
+
+            def done(rc: int) -> None:
+                if rc == 0:
+                    self._freq_core_lock = None
+                    self.core_lock_min_var.set("0")
+                    self.core_lock_max_var.set("0")
+                self._redraw()
+                self.canvas.draw()
+                self._is_toggling_lock = False
+
+        else:
+            description = "apply frequency range lock"
+
+            def action(native) -> str:
+                if has_vfp_locks:
+                    native.reset_vfp_lock(gpu)
+                _lock_core(native, min_f, max_f)
+                return (
+                    f"Applied {lock_backend_label} lock for range {s}-{e} "
+                    f"({min_f}-{max_f} MHz)."
+                )
+
+            def done(rc: int, lf_min=min_f, lf_max=max_f) -> None:
+                self._locked_points.clear()
+                if rc == 0:
+                    self._freq_core_lock = (lf_min, lf_max)
+                    self.core_lock_min_var.set(str(lf_min))
+                    self.core_lock_max_var.set(str(lf_max))
+                self._redraw()
+                self.canvas.draw()
+                self._is_toggling_lock = False
+
+        self.app.run_native_action(description, action, on_finished=done)
         return "break"
 
     def _clear_selection(self):
@@ -1662,7 +1572,7 @@ class VFCurveTab:
     # Actions (CLI calls)
     # ────────────────────────────────────────────
     def _export_vfp(self):
-        gpu_args = self.app.get_gpu_args()
+        gpu = self.app.selected_gpu_target()
 
         path = filedialog.asksaveasfilename(
             title="Export VF Curve",
@@ -1672,13 +1582,21 @@ class VFCurveTab:
         if not path:
             return
 
-        args = gpu_args + ["set", "vfp", "export", path]
-        if self.quick_export_var.get():
-            args.append("-q")
-        self.app.run_cli_display(args)
+        if not self.quick_export_var.get():
+            self.app.run_cli_display(
+                self.app.get_gpu_args() + ["set", "vfp", "export", path]
+            )
+            return
+
+        def export(native, gpu=gpu, path=path) -> str:
+            points = native.query_domain_vfp_points(gpu, "graphics", True)
+            self._write_vfp_points(path, points)
+            return f"Exported {len(points)} VFP point(s) to {path}."
+
+        self.app.run_native_action("export VFP curve", export)
 
     def _import_vfp(self):
-        gpu_args = self.app.get_gpu_args()
+        gpu = self.app.selected_gpu_target()
 
         path = filedialog.askopenfilename(
             title="Import VF Curve",
@@ -1688,20 +1606,36 @@ class VFCurveTab:
         if not path:
             return
 
-        args = gpu_args + ["set", "vfp", "import", path]
-        self.app.run_cli(
-            args, on_finished=lambda _rc: self.app.after(0, self._refresh_curve)
+        def import_curve(native, gpu=gpu, path=path) -> str:
+            points = native.query_domain_vfp_points(gpu, "graphics", True)
+            deltas = self._load_vfp_deltas(path, points)
+            native.set_domain_vfp_deltas(gpu, "graphics", deltas)
+            return f"Imported {len(deltas)} VFP point delta(s) from {path}."
+
+        self.app.run_native_action(
+            "import VFP curve",
+            import_curve,
+            on_finished=lambda _rc: self.app.after(0, self._refresh_curve),
         )
 
     def _lock_vfp(self):
-        gpu_args = self.app.get_gpu_args()
+        gpu = self.app.selected_gpu_target()
         val = self.lock_point_var.get()
-        if self.lock_voltage_var.get():
-            args = gpu_args + ["set", "nvapi", "--locked-voltage", f"{val}mV"]
-        else:
-            args = gpu_args + ["set", "nvapi", "--locked-voltage", val]
-
         lock_idx = self._resolve_vfp_lock_idx_from_input()
+        if self.lock_voltage_var.get():
+            try:
+                voltage_uv = int(float(val) * 1000)
+            except ValueError:
+                self.app.console.append(f"[GUI] Invalid lock voltage value: {val}\n")
+                return
+            point = None
+        else:
+            voltage_uv = None
+            try:
+                point = int(val)
+            except ValueError:
+                self.app.console.append(f"[GUI] Invalid lock point value: {val}\n")
+                return
 
         def _on_finished(rc: int, idx=lock_idx):
             def _update_ui():
@@ -1709,10 +1643,17 @@ class VFCurveTab:
 
             self.app.after(0, _update_ui)
 
-        self.app.run_cli(args, on_finished=_on_finished)
+        self.app.run_native_action(
+            "lock VFP voltage",
+            lambda native, gpu=gpu, point=point, voltage_uv=voltage_uv: (
+                native.set_vfp_voltage_lock(gpu, point, voltage_uv, False)
+                or "Successfully locked VFP voltage."
+            ),
+            on_finished=_on_finished,
+        )
 
     def _unlock_vfp(self):
-        gpu_args = self.app.get_gpu_args()
+        gpu = self.app.selected_gpu_target()
 
         def _on_finished(rc: int):
             def _update_ui():
@@ -1721,8 +1662,12 @@ class VFCurveTab:
 
             self.app.after(0, _update_ui)
 
-        self.app.run_cli(
-            gpu_args + ["set", "nvapi", "--reset-volt-locks"], on_finished=_on_finished
+        self.app.run_native_action(
+            "reset VFP lock",
+            lambda native, gpu=gpu: (
+                native.reset_vfp_lock(gpu) or "Successfully reset VFP lock."
+            ),
+            on_finished=_on_finished,
         )
 
     def _lock_core_clocks(self):
@@ -1741,21 +1686,26 @@ class VFCurveTab:
             min_clk, max_clk = max_clk, min_clk
 
         self._is_toggling_lock = True
-        gpu_args = self.app.get_gpu_args()
+        gpu = self.app.selected_gpu_target()
         backend = self._selected_freq_lock_backend()
         backend_label = self._selected_freq_lock_backend_label()
-        args = gpu_args + [
-            "set",
-            backend,
-            "--locked-core-clocks",
-            str(min_clk),
-            str(max_clk),
-        ]
         self.app.console.append(
             f"[GUI] Locking {backend_label} core clocks to {min_clk} - {max_clk} MHz...\n"
         )
-        self.app.run_cli(
-            args,
+        self.app.run_native_action(
+            "lock core clocks",
+            lambda native, gpu=gpu, backend=backend, min_clk=min_clk, max_clk=max_clk: (
+                (
+                    native.set_vfp_frequency_lock(
+                        gpu, "core", max_clk * 1000, min_clk * 1000
+                    )
+                    if backend == "nvapi"
+                    else native.set_locked_clocks(
+                        gpu, backend, "core", min_clk, max_clk
+                    )
+                )
+                or f"Successfully locked {backend_label} core clocks."
+            ),
             on_finished=lambda rc, label=backend_label: self._on_core_lock_done(
                 rc, min_clk, max_clk, label
             ),
@@ -1787,13 +1737,20 @@ class VFCurveTab:
             return
 
         self._is_toggling_lock = True
-        gpu_args = self.app.get_gpu_args()
+        gpu = self.app.selected_gpu_target()
         backend = self._selected_freq_lock_backend()
         backend_label = self._selected_freq_lock_backend_label()
-        args = gpu_args + ["set", backend, "--reset-core-clocks"]
         self.app.console.append(f"[GUI] Resetting {backend_label} core clocks...\n")
-        self.app.run_cli(
-            args,
+        self.app.run_native_action(
+            "reset core clocks",
+            lambda native, gpu=gpu, backend=backend: (
+                (
+                    native.reset_vfp_frequency_lock(gpu, "core")
+                    if backend == "nvapi"
+                    else native.reset_core_clocks(gpu, backend)
+                )
+                or f"Successfully reset {backend_label} core clocks."
+            ),
             on_finished=lambda rc, label=backend_label: self._on_core_reset_done(
                 rc, label
             ),
@@ -1828,28 +1785,44 @@ class VFCurveTab:
         if min_clk > max_clk:
             min_clk, max_clk = max_clk, min_clk
 
-        gpu_args = self.app.get_gpu_args()
+        gpu = self.app.selected_gpu_target()
         backend = self._selected_freq_lock_backend()
         backend_label = self._selected_freq_lock_backend_label()
-        args = gpu_args + [
-            "set",
-            backend,
-            "--locked-mem-clocks",
-            str(min_clk),
-            str(max_clk),
-        ]
         self.app.console.append(
             f"[GUI] Locking {backend_label} memory clocks to {min_clk} - {max_clk} MHz...\n"
         )
-        self.app.run_cli_display(args)
+        self.app.run_native_action(
+            "lock memory clocks",
+            lambda native, gpu=gpu, backend=backend, min_clk=min_clk, max_clk=max_clk: (
+                (
+                    native.set_vfp_frequency_lock(
+                        gpu, "memory", max_clk * 1000, min_clk * 1000
+                    )
+                    if backend == "nvapi"
+                    else native.set_locked_clocks(
+                        gpu, backend, "memory", min_clk, max_clk
+                    )
+                )
+                or f"Successfully locked {backend_label} memory clocks."
+            ),
+        )
 
     def _reset_mem_clocks(self):
-        gpu_args = self.app.get_gpu_args()
+        gpu = self.app.selected_gpu_target()
         backend = self._selected_freq_lock_backend()
         backend_label = self._selected_freq_lock_backend_label()
-        args = gpu_args + ["set", backend, "--reset-mem-clocks"]
         self.app.console.append(f"[GUI] Resetting {backend_label} memory clocks...\n")
-        self.app.run_cli_display(args)
+        self.app.run_native_action(
+            "reset memory clocks",
+            lambda native, gpu=gpu, backend=backend: (
+                (
+                    native.reset_vfp_frequency_lock(gpu, "memory")
+                    if backend == "nvapi"
+                    else native.reset_mem_clocks(gpu, backend)
+                )
+                or f"Successfully reset {backend_label} memory clocks."
+            ),
+        )
 
     def _apply_adj(self):
         """Apply the current frequency edits for the selected range to the GPU.
@@ -1858,7 +1831,7 @@ class VFCurveTab:
         selected range, updates the in-memory curve, then groups consecutive
         equal-delta points and runs pointwiseoc calls sequentially.
         """
-        gpu_args = self.app.get_gpu_args()
+        gpu = self.app.selected_gpu_target()
         try:
             start = int(self.adj_start_var.get())
             end = int(self.adj_end_var.get())
@@ -1915,33 +1888,35 @@ class VFCurveTab:
             f"for range {start}–{end}…\n"
         )
 
-        def _worker():
-            runner = CLIRunner(self.app.runner.exe_path, on_output=lambda _: None)
+        def apply_groups(native, gpu=gpu, groups=groups) -> str:
+            applied = 0
+            failed = 0
+            messages = []
             for frm, to, dkz in groups:
-                sign = "+" if dkz >= 0 else ""
-                args = gpu_args + [
-                    "set",
-                    "vfp",
-                    "pointwiseoc",
-                    f"{frm}-{to}",
-                    f"{sign}{dkz}",
-                ]
-                self.app.console.append(
-                    f"[GUI]   pointwiseoc {frm}-{to} {sign}{dkz} kHz\n"
-                )
-                retcode, _ = runner.run_sync(args, cwd=self.app.cli_cwd)
-                if retcode != 0:
-                    self.app.console.append(
-                        f"[GUI] ⚠ pointwiseoc {frm}-{to} failed (rc={retcode})\n"
+                try:
+                    native.set_vfp_range_delta(gpu, frm, to, dkz)
+                except Exception as exc:
+                    failed += 1
+                    messages.append(
+                        f"Warning: failed VFP delta group {frm}-{to} ({dkz} kHz): {exc}"
                     )
-            # Refresh curve on main thread when all groups are done
-            self.app.after(0, self._refresh_curve)
+                    continue
+                applied += 1
+            messages.append(f"Applied {applied} VFP delta group(s); {failed} failed.")
+            return "\n".join(messages)
 
-        threading.Thread(target=_worker, daemon=True, name="apply-adj").start()
+        self.app.run_native_action(
+            "apply VFP point deltas",
+            apply_groups,
+            on_finished=lambda _rc: self.app.after(0, self._refresh_curve),
+        )
 
     def _reset_vfp(self):
-        gpu_args = self.app.get_gpu_args()
-        self.app.run_cli(
-            gpu_args + ["reset", "vfp"],
+        gpu = self.app.selected_gpu_target()
+        self.app.run_native_action(
+            "reset VFP deltas",
+            lambda native, gpu=gpu: (
+                native.reset_vfp_deltas(gpu, "all") or "Successfully reset VFP deltas."
+            ),
             on_finished=lambda _rc: self.app.after(0, self._refresh_curve),
         )

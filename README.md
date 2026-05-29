@@ -54,6 +54,8 @@ Read the component README before building or running that component. The detaile
 - Administrator privileges on Windows or sudo privileges on Linux for operations that write overclocking settings.
 - Rust toolchain for `auto-optimizer/` and `srv/`.
 - Python plus `uv` for the Python frontends and stressors.
+- Python Tk support (`tkinter`) for NVOC-GUI. On Linux this may require a
+  system package such as `tk`, `python3-tk`, or `python3-tkinter`.
 - CUDA-capable PyTorch for `cli-stressor-cuda/`, or OpenCL runtime support for `cli-stressor-opencl/`.
 
 Platform support and feature availability vary by GPU generation and backend. The auto-optimizer README contains the current support matrix for RTX 50/40/30/20, GTX 16/10/9, Volta, mobile GPUs, NVAPI, and NVML.
@@ -164,6 +166,8 @@ NVOC 是一个 NVIDIA GPU 超频与稳定性工具的 monorepo。核心是 Rust 
 - Windows 管理员权限，或 Linux sudo 权限，用于写入超频参数。
 - `auto-optimizer/` 与 `srv/` 需要 Rust 工具链。
 - Python 前端与压力测试工具推荐使用 `uv` 管理环境。
+- NVOC-GUI 需要 Python Tk 支持（`tkinter`）。Linux 上可能需要安装
+  `tk`、`python3-tk` 或 `python3-tkinter` 等系统包。
 - `cli-stressor-cuda/` 需要 CUDA 版 PyTorch；`cli-stressor-opencl/` 需要 OpenCL 运行环境。
 
 不同 GPU 世代与后端支持的功能不同，请以 auto-optimizer README 中的兼容性矩阵为准。

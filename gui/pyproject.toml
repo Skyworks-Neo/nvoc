@@ -18,6 +18,7 @@ dependencies = [
     "numpy>=2.0; python_version >= '3.9'",
     "packaging>=24.0",
     "pillow>=10.4.0",
+    "pynvoc",
     "pystray>=0.19.5",
     "six>=1.17.0",
     "pyinstaller~=6.19.0",
@@ -29,10 +30,17 @@ build = [
 ]
 dev = [
     "pyinstaller>=6.19.0",
+    "pytest>=8.3.0",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [tool.uv]
 package = false
+
+[tool.uv.sources]
+pynvoc = { workspace = true }
 
 [[tool.uv.index]]
 url = "https://pypi.tuna.tsinghua.edu.cn/simple"

@@ -3,9 +3,11 @@ Overclock Tab - OC offset (slider + entry) and power/thermal limits.
 Ranges are queried from GPU hardware via the CLI 'info' command.
 """
 
-import customtkinter as ctk
 from typing import TYPE_CHECKING, Tuple, Dict, Any, Optional, Union
-from src.tabs.fan_control import FanControlTab
+
+import customtkinter as ctk
+
+from src.panes.fan_control import FanControlPane
 from src.widgets.lightweight_controls import (
     CanvasSlider,
     LiteButton,
@@ -264,7 +266,7 @@ class OverclockTab:
 
         fan_frame = ctk.CTkFrame(scroll)
         fan_frame.pack(fill="x", pady=(0, 10))
-        self.fan_section = FanControlTab(fan_frame, self.app, embedded=True)
+        self.fan_section = FanControlPane(fan_frame, self.app.backend, embedded=True)
         self._limit_enabled_frame_color = self.limit_frame.cget("fg_color")
         self._limit_dim_frame_color = ("gray86", "gray20")
         self._limit_enabled_title_color = self.limit_title_label.cget("text_color")
@@ -861,8 +863,8 @@ class OverclockTab:
     def _apply_pstate_lock(self):
         """Apply P-State lock range with the selected OC backend."""
         selection = self.pstate_selector.get_selection()
-        gpu_args = self.app.get_gpu_args()
-        if not gpu_args or selection is None:
+        gpu = self.app.selected_gpu_target()
+        if gpu is None or selection is None:
             self.app.console.append("[GUI] No supported P-State selection available.\n")
             return
 
@@ -877,17 +879,31 @@ class OverclockTab:
             pass
 
         backend = self._selected_oc_backend()
-        self.app.run_cli_display(
-            gpu_args + ["set", backend, "--pstate-lock", start, end]
+        self.app.run_native_action(
+            "apply P-State lock",
+            lambda native, gpu=gpu, backend=backend, start=start, end=end: (
+                (
+                    native.set_nvml_pstate_lock(gpu, start, end)
+                    if backend == "nvml"
+                    else native.set_nvapi_pstate_lock(gpu, start, end)
+                )
+                or f"Successfully applied {backend.upper()} P-State lock {start}-{end}."
+            ),
         )
 
     def _unlock_pstate_lock(self):
         """Remove memory lock settings for the selected OC backend."""
-        gpu_args = self.app.get_gpu_args()
-        if gpu_args:
-            backend = self._selected_oc_backend()
-            flag = "--reset-mem-clocks"
-            self.app.run_cli_display(gpu_args + ["set", backend, flag])
+        gpu = self.app.selected_gpu_target()
+        if gpu is None:
+            return
+        backend = self._selected_oc_backend()
+        self.app.run_native_action(
+            "reset memory clocks",
+            lambda native, gpu=gpu, backend=backend: (
+                native.reset_mem_clocks(gpu, backend)
+                or "Successfully reset memory clocks."
+            ),
+        )
 
     def _apply_core_only(self):
         if self._is_vfp_mode:
@@ -896,86 +912,132 @@ class OverclockTab:
         if core_mhz == "Curve":
             return
 
-        gpu_args = self.app.get_gpu_args()
         backend = self._selected_oc_backend()
-        value = self._format_oc_value_for_backend(core_mhz, backend)
-        if value is None:
+        try:
+            value = int(core_mhz)
+        except ValueError:
             return
-        args = gpu_args + ["set", backend, "--core-offset", value]
-        self.app.run_cli_display(args)
+        gpu = self.app.selected_gpu_target()
+        self.app.run_native_action(
+            "apply core offset",
+            lambda native, gpu=gpu, backend=backend, value=value: (
+                native.set_clock_offset(gpu, backend, "core", value, self._oc_pstate())
+                or f"Successfully applied core offset {value} MHz."
+            ),
+        )
 
     def _apply_mem_only(self):
         mem_mhz = self.mem_var.get().strip()
-        gpu_args = self.app.get_gpu_args()
         backend = self._selected_oc_backend()
-        value = self._format_oc_value_for_backend(mem_mhz, backend)
-        if value is None:
+        try:
+            value = int(mem_mhz)
+        except ValueError:
             return
-        args = gpu_args + ["set", backend, "--mem-offset", value]
-        self.app.run_cli_display(args)
+        gpu = self.app.selected_gpu_target()
+        self.app.run_native_action(
+            "apply memory offset",
+            lambda native, gpu=gpu, backend=backend, value=value: (
+                native.set_clock_offset(
+                    gpu, backend, "memory", value, self._oc_pstate()
+                )
+                or f"Successfully applied memory offset {value} MHz."
+            ),
+        )
 
     def _apply_plimit_only(self):
         plimit = self.plimit_var.get().strip()
         if plimit:
             backend = self._selected_power_backend()
-            self.app.run_cli_display(
-                self.app.get_gpu_args() + ["set", backend, "--power-limit", plimit],
-                on_finished=lambda _rc: self.app._query_gpu_get(),
+            gpu = self.app.selected_gpu_target()
+            self.app.run_native_action(
+                "apply power limit",
+                lambda native, gpu=gpu, backend=backend, plimit=int(plimit): (
+                    native.set_power_limit(gpu, backend, plimit)
+                    or f"Successfully applied {backend.upper()} power limit."
+                ),
             )
 
     def _apply_tlimit_only(self):
         tlimit = self.tlimit_var.get().strip()
         if tlimit:
-            self.app.run_cli_display(
-                self.app.get_gpu_args() + ["set", "nvapi", "--thermal-limit", tlimit]
+            gpu = self.app.selected_gpu_target()
+            self.app.run_native_action(
+                "apply thermal limit",
+                lambda native, gpu=gpu, tlimit=int(tlimit): (
+                    native.set_thermal_limit(gpu, tlimit)
+                    or "Successfully applied thermal limit."
+                ),
             )
 
     def _apply_vboost_only(self):
         vboost = self.vboost_var.get().strip()
         if vboost:
+            gpu = self.app.selected_gpu_target()
             if getattr(self, "_is_legacy_gpu", False):
                 try:
-                    vboost_uv = str(int(vboost) * 1000)
+                    vboost_uv = int(vboost) * 1000
                 except ValueError:
                     return
-                self.app.run_cli_display(
-                    self.app.get_gpu_args()
-                    + ["set", "nvapi", "--voltage-delta", vboost_uv]
+                self.app.run_native_action(
+                    "apply legacy voltage delta",
+                    lambda native, gpu=gpu, vboost_uv=vboost_uv: (
+                        native.set_legacy_voltage_delta(gpu, vboost_uv, "P0")
+                        or "Successfully applied legacy voltage delta."
+                    ),
                 )
             else:
-                self.app.run_cli_display(
-                    self.app.get_gpu_args()
-                    + ["set", "nvapi", "--voltage-boost", vboost]
+                self.app.run_native_action(
+                    "apply voltage boost",
+                    lambda native, gpu=gpu, vboost=int(vboost): (
+                        native.set_voltage_boost(gpu, vboost)
+                        or "Successfully applied voltage boost."
+                    ),
                 )
 
     def _apply_oc(self):
-        gpu_args = self.app.get_gpu_args()
+        gpu = self.app.selected_gpu_target()
         backend = self._selected_oc_backend()
 
         core_mhz = self.core_var.get().strip()
         mem_mhz = self.mem_var.get().strip()
 
-        applied = False
-        # Apply core clock offset (convert MHz → kHz)
+        actions = []
         if (not self._is_vfp_mode) and core_mhz != "Curve":
-            value = self._format_oc_value_for_backend(core_mhz, backend)
-            if value is not None:
-                args = gpu_args + ["set", backend, "--core-offset", value]
-                self.app.run_cli_display(args)
-                applied = True
+            try:
+                core_value = int(core_mhz)
+                actions.append((
+                    "apply core offset",
+                    lambda native, gpu=gpu, backend=backend, core_value=core_value: (
+                        native.set_clock_offset(
+                            gpu, backend, "core", core_value, self._oc_pstate()
+                        )
+                        or f"Successfully applied core offset {core_value} MHz."
+                    ),
+                ))
+            except ValueError:
+                pass
 
-        # Apply memory clock offset using the selected backend units.
-        value = self._format_oc_value_for_backend(mem_mhz, backend)
-        if value is not None:
-            args = gpu_args + ["set", backend, "--mem-offset", value]
-            self.app.run_cli_display(args)
-            applied = True
+        try:
+            mem_value = int(mem_mhz)
+            actions.append((
+                "apply memory offset",
+                lambda native, gpu=gpu, backend=backend, mem_value=mem_value: (
+                    native.set_clock_offset(
+                        gpu, backend, "memory", mem_value, self._oc_pstate()
+                    )
+                    or f"Successfully applied memory offset {mem_value} MHz."
+                ),
+            ))
+        except ValueError:
+            pass
 
-        if not applied:
+        if not actions:
             self.app.console.append("[GUI] No valid clock offset values.\n")
+            return
+        self.app.run_native_action_chain(actions)
 
     def _reset_oc(self):
-        gpu_args = self.app.get_gpu_args()
+        gpu = self.app.selected_gpu_target()
         # Reset both sliders to 0
         self._syncing = True
         self.core_var.set("0")
@@ -985,54 +1047,84 @@ class OverclockTab:
         self._syncing = False
 
         backend = self._selected_oc_backend()
-        self.app.run_cli_display(gpu_args + ["set", backend, "--core-offset", "0"])
-        self.app.run_cli_display(gpu_args + ["set", backend, "--mem-offset", "0"])
+        self.app.run_native_action_chain([
+            (
+                "reset core offset",
+                lambda native, gpu=gpu, backend=backend: (
+                    native.set_clock_offset(gpu, backend, "core", 0, self._oc_pstate())
+                    or "Successfully reset core offset."
+                ),
+            ),
+            (
+                "reset memory offset",
+                lambda native, gpu=gpu, backend=backend: (
+                    native.set_clock_offset(
+                        gpu, backend, "memory", 0, self._oc_pstate()
+                    )
+                    or "Successfully reset memory offset."
+                ),
+            ),
+        ])
 
     def _apply_limits(self):
-        gpu_args = self.app.get_gpu_args()
-        nvapi_args = gpu_args + ["set", "nvapi"]
-        has_nvapi = False
-        power_args = None
+        gpu = self.app.selected_gpu_target()
+        actions = []
 
         if self.plimit_slider.cget("state") != "disabled":
             plimit = self.plimit_var.get().strip()
             if plimit:
-                if self._selected_power_backend() == "nvml":
-                    power_args = gpu_args + ["set", "nvml", "--power-limit", plimit]
-                else:
-                    nvapi_args += ["--power-limit", plimit]
-                    has_nvapi = True
+                backend = self._selected_power_backend()
+                actions.append((
+                    "apply power limit",
+                    lambda native, gpu=gpu, backend=backend, plimit=int(plimit): (
+                        native.set_power_limit(gpu, backend, plimit)
+                        or f"Successfully applied {backend.upper()} power limit."
+                    ),
+                ))
 
         if self.tlimit_slider.cget("state") != "disabled":
             tlimit = self.tlimit_var.get().strip()
             if tlimit:
-                nvapi_args += ["--thermal-limit", tlimit]
-                has_nvapi = True
+                actions.append((
+                    "apply thermal limit",
+                    lambda native, gpu=gpu, tlimit=int(tlimit): (
+                        native.set_thermal_limit(gpu, tlimit)
+                        or "Successfully applied thermal limit."
+                    ),
+                ))
 
         if self.vboost_slider.cget("state") != "disabled":
             vboost = self.vboost_var.get().strip()
             if vboost:
                 if getattr(self, "_is_legacy_gpu", False):
                     try:
-                        nvapi_args += ["--voltage-delta", str(int(vboost) * 1000)]
-                        has_nvapi = True
+                        vboost_uv = int(vboost) * 1000
                     except ValueError:
                         pass
+                    else:
+                        actions.append((
+                            "apply legacy voltage delta",
+                            lambda native, gpu=gpu, vboost_uv=vboost_uv: (
+                                native.set_legacy_voltage_delta(gpu, vboost_uv, "P0")
+                                or "Successfully applied legacy voltage delta."
+                            ),
+                        ))
                 else:
-                    nvapi_args += ["--voltage-boost", vboost]
-                    has_nvapi = True
+                    actions.append((
+                        "apply voltage boost",
+                        lambda native, gpu=gpu, vboost=int(vboost): (
+                            native.set_voltage_boost(gpu, vboost)
+                            or "Successfully applied voltage boost."
+                        ),
+                    ))
 
-        if power_args is None and (not has_nvapi):
+        if not actions:
             self.app.console.append("[GUI] No limit values specified.\n")
             return
-
-        if power_args is not None:
-            self.app.run_cli_display(power_args)
-        if has_nvapi:
-            self.app.run_cli_display(nvapi_args)
+        self.app.run_native_action_chain(actions)
 
     def _reset_all(self):
-        gpu_args = self.app.get_gpu_args()
+        gpu = self.app.selected_gpu_target()
         # Reset sliders to their defaults from GPU info
         self._syncing = True
         self.core_var.set("0")
@@ -1047,4 +1139,9 @@ class OverclockTab:
         self.vboost_slider.set(0)
         self._syncing = False
 
-        self.app.run_cli_display(gpu_args + ["reset"])
+        self.app.run_native_action(
+            "reset all settings",
+            lambda native, gpu=gpu: (
+                native.reset_all(gpu, None) or "Successfully reset all settings."
+            ),
+        )

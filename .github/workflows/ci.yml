@@ -53,7 +53,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
-          components: rustfmt
+          components: clippy,rustfmt
       - name: Disable local nvapi-rs patch for CI
         shell: pwsh
         run: |
@@ -71,7 +71,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
-          components: clippy
+          components: clippy,rustfmt
       - name: Disable local nvapi-rs patch for CI
         shell: pwsh
         run: |
@@ -154,6 +154,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy,rustfmt
       - name: Disable local nvapi-rs patch for CI
         shell: pwsh
         run: |
@@ -177,6 +178,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy,rustfmt
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -218,7 +220,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: 1.95.0
-          components: clippy
+          components: clippy,rustfmt
           rustflags: ""
       - name: Disable local nvapi-rs patch for CI
         shell: pwsh
@@ -246,7 +248,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: 1.95.0
-          components: clippy
+          components: clippy,rustfmt
           rustflags: ""
       - name: Disable local nvapi-rs patch for CI
         shell: pwsh
@@ -273,7 +275,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
-          components: clippy
+          components: clippy,rustfmt
       - name: Disable local nvapi-rs patch for CI
         shell: pwsh
         run: |
@@ -347,6 +349,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy,rustfmt
       - name: Disable local nvapi-rs patch for CI
         shell: pwsh
         run: |
@@ -366,6 +372,10 @@ jobs:
         run: |
           python -m pip install --quiet ruff
           ruff check gui/
+      - name: non-GPU unit tests
+        run: |
+          python -m pip install --quiet pytest
+          python -m pytest -q gui/tests/
 
   python-stressor-cuda:
     name: stressor compile (cli-stressor-cuda)
@@ -464,6 +474,7 @@ jobs:
           # them once the workspace converges on a single version.
           ALLOWLIST = {
               "bitflags",        # 1.x / 2.x
+              "colored",         # 2.x via log2 / 3.x workspace CLI styling
               "getrandom",       # 0.2 / 0.3 / 0.4
               "hashbrown",       # 0.15 / 0.17
               "libloading",      # 0.8.x (nvml-wrapper) / 0.9.x (cudarc)
