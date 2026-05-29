@@ -296,7 +296,7 @@ jobs:
       needs.changes.outputs.python_base == 'true' ||
       needs.changes.outputs.rust_base == 'true' ||
       needs.changes.outputs.nvoc_core == 'true' ||
-      needs.changes.outputs.auto_optimizer == 'true' ||
+      needs.changes.outputs.nvoc_python == 'true' ||
       needs.changes.outputs.tui == 'true'
     strategy:
       fail-fast: false
@@ -309,6 +309,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy,rustfmt
       - name: Disable local nvapi-rs patch for CI
         shell: pwsh
         run: |
@@ -319,19 +323,14 @@ jobs:
       - name: Install uv
         run: pip install --quiet uv
       - name: Install deps
-        run: uv pip install --system -e '.[dev]'
-        working-directory: tui
+        run: uv sync --locked --package nvoc-tui --group dev
       - name: byte-compile
-        run: python -m compileall -q tui/
+        run: uv run --locked --package nvoc-tui --group dev python -m compileall -q tui/
       - name: ruff (best-effort)
         continue-on-error: true
-        run: |
-          python -m pip install --quiet ruff
-          ruff check tui/
+        run: uv run --locked --package nvoc-tui --group dev ruff check tui/
       - name: non-GPU unit tests
-        run: |
-          python -m pip install --quiet pytest
-          python -m pytest -q tui/tests/
+        run: uv run --locked --package nvoc-tui --group dev pytest -q tui/tests/
 
   python-gui:
     name: gui (sync + import smoke)
@@ -341,7 +340,7 @@ jobs:
       needs.changes.outputs.python_base == 'true' ||
       needs.changes.outputs.rust_base == 'true' ||
       needs.changes.outputs.nvoc_core == 'true' ||
-      needs.changes.outputs.auto_optimizer == 'true' ||
+      needs.changes.outputs.nvoc_python == 'true' ||
       needs.changes.outputs.gui == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -363,19 +362,16 @@ jobs:
       - name: Install uv
         run: pip install --quiet uv
       - name: Install deps
-        run: uv pip install --system -e '.[dev]'
-        working-directory: gui
+        run: uv sync --locked --package nvoc-gui --group dev
       - name: byte-compile gui/
-        run: python -m compileall -q gui/
+        run: uv run --locked --package nvoc-gui --group dev python -m compileall -q gui/
       - name: ruff (best-effort)
         continue-on-error: true
         run: |
           python -m pip install --quiet ruff
           ruff check gui/
       - name: non-GPU unit tests
-        run: |
-          python -m pip install --quiet pytest
-          python -m pytest -q gui/tests/
+        run: uv run --locked --package nvoc-gui --group dev pytest -q gui/tests/
 
   python-stressor-cuda:
     name: stressor compile (cli-stressor-cuda)
