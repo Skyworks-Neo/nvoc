@@ -1,3 +1,4 @@
+use clap::{Arg, ArgAction, Command as ClapCommand, error::ErrorKind};
 use nvoc_core::{
     BackendSet, CheckVoltageFrequency, ClockDomain, ConvertEnum, CoolerPolicy, CoolerTarget,
     GpuSelector, GpuTarget, Kilohertz, KilohertzDelta, PState, Percentage, ProbeVoltageLimits,
@@ -81,12 +82,6 @@ impl BackendAdapter {
 pub enum OutputFormat {
     Human,
     Json,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OptionKind {
-    Flag,
-    Value,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -392,106 +387,65 @@ where
     I: IntoIterator<Item = S>,
     S: Into<String>,
 {
-    let mut tokens = args.into_iter().map(Into::into).peekable();
-    if tokens.peek().is_none() {
+    let mut argv = vec!["nvoc-cli".to_string()];
+    argv.extend(args.into_iter().map(Into::into));
+    if argv.len() == 1 {
         return Ok(default_invocation_with_help());
     }
 
-    let mut backend = BackendChoice::Auto;
-    let mut output = OutputFormat::Human;
-    let mut no_color = false;
-    let mut help = false;
-    let mut version = false;
-    let mut gpu_specs = Vec::new();
-    let mut command = None;
-    let mut positionals = Vec::new();
-    let mut options: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let matches = match cli_command().try_get_matches_from(argv) {
+        Ok(matches) => matches,
+        Err(err) if err.kind() == ErrorKind::DisplayHelp => {
+            return Ok(default_invocation_with_help());
+        }
+        Err(err) if err.kind() == ErrorKind::DisplayVersion => {
+            return Ok(Invocation {
+                version: true,
+                ..default_invocation_with_help()
+            });
+        }
+        Err(err) if err.kind() == ErrorKind::ArgumentConflict => {
+            return Err(CliError::new(format!("argument conflicts: {err}")));
+        }
+        Err(err) => return Err(CliError::new(err.to_string())),
+    };
 
-    while let Some(token) = tokens.next() {
-        if token == "--" {
-            if command.is_none() {
-                return Err(CliError::new("`--` must appear after the function name"));
-            }
-            positionals.extend(tokens);
-            break;
-        }
-
-        if token == "-h" || token == "--help" {
-            help = true;
-            continue;
-        }
-        if token == "--version" {
-            version = true;
-            continue;
-        }
-        if token == "--nvapi" {
-            if backend == BackendChoice::Nvml {
-                return Err(CliError::new("--nvapi conflicts with --nvml"));
-            }
-            backend = BackendChoice::Nvapi;
-            continue;
-        }
-        if token == "--nvml" {
-            if backend == BackendChoice::Nvapi {
-                return Err(CliError::new("--nvml conflicts with --nvapi"));
-            }
-            backend = BackendChoice::Nvml;
-            continue;
-        }
-        if token == "--no-color" {
-            no_color = true;
-            continue;
-        }
-
-        if let Some(value) = token.strip_prefix("--output=") {
-            output = parse_output_format(value)?;
-            continue;
-        }
-        if token == "--output" || token == "-O" {
-            let value = next_value(&mut tokens, &token)?;
-            output = parse_output_format(&value)?;
-            continue;
-        }
-        if let Some(value) = token.strip_prefix("--gpu=") {
-            gpu_specs.push(value.to_string());
-            continue;
-        }
-        if token == "--gpu" || token == "-g" {
-            gpu_specs.push(next_value(&mut tokens, &token)?);
-            continue;
-        }
-
-        if let Some(long) = token.strip_prefix("--") {
-            let (name, inline_value) = split_long_option(long);
-            let kind = option_kind(name)
-                .ok_or_else(|| CliError::new(format!("unknown option --{name}")))?;
-            let value = match (kind, inline_value) {
-                (OptionKind::Flag, Some(value)) => value.to_string(),
-                (OptionKind::Flag, None) => "true".to_string(),
-                (OptionKind::Value, Some(value)) => value.to_string(),
-                (OptionKind::Value, None) => next_value(&mut tokens, &format!("--{name}"))?,
-            };
-            options.entry(name.to_string()).or_default().push(value);
-            continue;
-        }
-
-        if token.starts_with('-') && !token.chars().nth(1).is_some_and(|c| c.is_ascii_digit()) {
-            return Err(CliError::new(format!("unknown short option {token}")));
-        }
-
-        if command.is_none() {
-            command = Some(parse_command(&token)?);
-        } else {
-            positionals.push(token);
-        }
-    }
+    let (command_name, command_matches) = matches
+        .subcommand()
+        .ok_or_else(|| CliError::new("missing function name"))?;
+    let parsed_command = parse_command(command_name)?;
+    let command = Some(parsed_command);
+    let backend = if command_matches.get_flag("nvapi") {
+        BackendChoice::Nvapi
+    } else if command_matches.get_flag("nvml") {
+        BackendChoice::Nvml
+    } else {
+        BackendChoice::Auto
+    };
+    let output = command_matches
+        .get_one::<String>("output")
+        .map_or(Ok(OutputFormat::Human), |raw| parse_output_format(raw))?;
+    let no_color = command_matches.get_flag("no-color");
+    let gpu_specs = command_matches
+        .get_many::<String>("gpu")
+        .map(|values| values.cloned().collect())
+        .unwrap_or_default();
+    let positionals = if parsed_command.arity().1 > 0 {
+        command_matches
+            .get_many::<String>("args")
+            .map(|values| values.cloned().collect())
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let options = collect_named_options(command_matches);
 
     let invocation = Invocation {
         backend,
         output,
         no_color,
-        help,
-        version,
+        help: false,
+        version: false,
         gpu_specs,
         command,
         positionals,
@@ -586,36 +540,154 @@ fn parse_command(raw: &str) -> CliResult<Command> {
         .ok_or_else(|| CliError::new(format!("unknown function {raw:?}")))
 }
 
-fn option_kind(name: &str) -> Option<OptionKind> {
-    match name {
-        "domain" | "pstate" | "fan" | "policy" | "infer-missing-default" => Some(OptionKind::Value),
-        "indexed" | "no-infer-missing-default" | "feedback" => Some(OptionKind::Flag),
-        _ => None,
+fn cli_command() -> ClapCommand {
+    let mut command = ClapCommand::new("nvoc-cli")
+        .version(env!("CARGO_PKG_VERSION"))
+        .about("Focused command-line wrapper for nvoc-core")
+        .subcommand_required(true)
+        .arg_required_else_help(true)
+        .disable_help_subcommand(true)
+        .arg(
+            Arg::new("gpu")
+                .short('g')
+                .long("gpu")
+                .value_name("GPU_ID")
+                .action(ArgAction::Append)
+                .global(true)
+                .help("GPU selector; repeat for multiple GPUs"),
+        )
+        .arg(
+            Arg::new("nvapi")
+                .long("nvapi")
+                .action(ArgAction::SetTrue)
+                .conflicts_with("nvml")
+                .global(true)
+                .help("Force the NVAPI backend"),
+        )
+        .arg(
+            Arg::new("nvml")
+                .long("nvml")
+                .action(ArgAction::SetTrue)
+                .conflicts_with("nvapi")
+                .global(true)
+                .help("Force the NVML backend"),
+        )
+        .arg(
+            Arg::new("output")
+                .short('O')
+                .long("output")
+                .value_name("FORMAT")
+                .value_parser(["human", "json"])
+                .default_value("human")
+                .global(true)
+                .help("Output format"),
+        )
+        .arg(
+            Arg::new("no-color")
+                .long("no-color")
+                .action(ArgAction::SetTrue)
+                .global(true)
+                .help("Disable ANSI color output"),
+        )
+        .arg(
+            Arg::new("domain")
+                .long("domain")
+                .value_name("DOMAIN")
+                .action(ArgAction::Append)
+                .global(true)
+                .help("Clock/VFP domain: core, memory, processor, or video"),
+        )
+        .arg(
+            Arg::new("pstate")
+                .long("pstate")
+                .value_name("PSTATE")
+                .action(ArgAction::Append)
+                .global(true)
+                .help("P-State such as P0 or P2"),
+        )
+        .arg(
+            Arg::new("fan")
+                .long("fan")
+                .value_name("FAN")
+                .action(ArgAction::Append)
+                .global(true)
+                .help("Fan/cooler target: all, 0, 1, or 2"),
+        )
+        .arg(
+            Arg::new("policy")
+                .long("policy")
+                .value_name("POLICY")
+                .action(ArgAction::Append)
+                .global(true)
+                .help("Fan policy such as manual or continuous"),
+        )
+        .arg(
+            Arg::new("infer-missing-default")
+                .long("infer-missing-default")
+                .value_name("BOOL")
+                .action(ArgAction::Append)
+                .global(true)
+                .help("Infer missing default VFP values"),
+        )
+        .arg(
+            Arg::new("indexed")
+                .long("indexed")
+                .action(ArgAction::SetTrue)
+                .global(true)
+                .help("Preserve hardware VFP indices"),
+        )
+        .arg(
+            Arg::new("no-infer-missing-default")
+                .long("no-infer-missing-default")
+                .action(ArgAction::SetTrue)
+                .global(true)
+                .help("Do not infer missing default VFP values"),
+        )
+        .arg(
+            Arg::new("feedback")
+                .long("feedback")
+                .action(ArgAction::SetTrue)
+                .global(true)
+                .help("Enable feedback for VFP voltage lock"),
+        );
+
+    for nvoc_command in COMMANDS {
+        command = command.subcommand(clap_subcommand(*nvoc_command));
     }
+    command
 }
 
-fn split_long_option(raw: &str) -> (&str, Option<&str>) {
-    raw.split_once('=')
-        .map_or((raw, None), |(name, value)| (name, Some(value)))
+fn clap_subcommand(command: Command) -> ClapCommand {
+    let mut subcommand = ClapCommand::new(command.name()).about(command.about());
+    let (min_args, max_args) = command.arity();
+    if max_args > 0 {
+        subcommand = subcommand.arg(
+            Arg::new("args")
+                .value_name("ARGS")
+                .num_args(min_args..=max_args)
+                .allow_hyphen_values(true),
+        );
+    }
+    subcommand
 }
 
-fn next_value<I>(tokens: &mut std::iter::Peekable<I>, option: &str) -> CliResult<String>
-where
-    I: Iterator<Item = String>,
-{
-    tokens
-        .next()
-        .ok_or_else(|| CliError::new(format!("{option} requires a value")))
+fn collect_named_options(matches: &clap::ArgMatches) -> BTreeMap<String, Vec<String>> {
+    let mut options = BTreeMap::new();
+    for name in ["domain", "pstate", "fan", "policy", "infer-missing-default"] {
+        if let Some(values) = matches.get_many::<String>(name) {
+            options.insert(name.to_string(), values.cloned().collect());
+        }
+    }
+    for name in ["indexed", "no-infer-missing-default", "feedback"] {
+        if matches.get_flag(name) {
+            options.insert(name.to_string(), vec!["true".to_string()]);
+        }
+    }
+    options
 }
 
 pub fn help_text() -> String {
-    let mut out = String::from(
-        "Usage:\n  nvoc-cli [--gpu GPU_ID] [--nvapi|--nvml] [--output human|json] <function-name> [args] [named args]\n\nGlobal args:\n  --gpu, -g <GPU_ID>       Select a GPU; repeat for multiple GPUs\n  --nvapi                 Force NVAPI backend\n  --nvml                  Force NVML backend\n  --output, -O <FORMAT>   human or json (default: human)\n  --no-color              Disable ANSI colors\n\nFunctions:\n",
-    );
-    for command in COMMANDS {
-        out.push_str(&format!("  {:36} {}\n", command.name(), command.about()));
-    }
-    out
+    cli_command().render_long_help().to_string()
 }
 
 pub fn run_invocation(invocation: &Invocation) -> CliResult<RunOutput> {

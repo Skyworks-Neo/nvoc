@@ -1048,6 +1048,7 @@ dependencies = [
 name = "nvoc-cli"
 version = "0.1.0"
 dependencies = [
+ "clap",
  "nvml-wrapper",
  "nvoc-cli-common",
  "nvoc-core",

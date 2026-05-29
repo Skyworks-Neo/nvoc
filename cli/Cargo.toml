@@ -9,6 +9,7 @@ keywords = ["nvidia", "gpu", "nvapi", "nvml", "overclock"]
 license = "Apache-2.0"
 
 [dependencies]
+clap = { workspace = true }
 nvoc-core = { workspace = true }
 nvoc-cli-common = { workspace = true }
 nvml-wrapper = { workspace = true }
