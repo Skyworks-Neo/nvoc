@@ -2,14 +2,11 @@
 NVOC-GUI Application - Main application window.
 """
 
-import csv
 import customtkinter as ctk
 import ctypes
-import json
 import os
 import re
 import sys
-import threading
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 import pystray
@@ -18,6 +15,22 @@ from PIL import Image
 from src.backend import NativeBackend
 from src.cli_runner import CLIRunner
 from src.config import Config
+from src.parsing import (
+    analyze_vfp_offsets,
+    get_vfp_offset_state_from_csv,
+    native_query_payload,
+    parse_gpu_list_output,
+    parse_info_limits,
+    parse_legacy_overvolt_bounds,
+    parse_nvapi_power_current_from_get,
+    parse_nvml_power_limits_from_get,
+    parse_status_current_values,
+    parse_supported_pstates,
+    parse_vfp_lock_bounds,
+    voltage_text_to_mv,
+    write_vfp_points,
+)
+from src.task_runner import GuiTaskRunner
 from src.widgets.output_console import OutputConsole
 from src.widgets.lightweight_controls import LiteButton
 from src.tabs.dashboard import DashboardTab
@@ -62,7 +75,7 @@ class App(ctk.CTk):
 
         # Tray icon (initialized lazily)
         self._tray_icon = None  # type: Optional[pystray.Icon]
-        self._tray_thread = None  # type: Optional[threading.Thread]
+        self._tray_thread = None  # type: Optional[Any]
         self._tray_image = None  # type: Optional[Image.Image]
 
         # ✕ Close button → exit completely
@@ -93,10 +106,15 @@ class App(ctk.CTk):
         if self.cli_cwd and os.path.basename(self.cli_cwd) == "target":
             self.cli_cwd = os.path.dirname(self.cli_cwd)
 
+        self.tasks = GuiTaskRunner()
         self._build_ui()
 
         # Setup CLI runner (after console is created)
-        self.runner = CLIRunner(exe_path, on_output=self._on_cli_output)
+        self.runner = CLIRunner(
+            exe_path,
+            on_output=self._on_cli_output,
+            submit=self.run_background,
+        )
 
         if not exe_path:
             self.console.append(
@@ -335,6 +353,10 @@ class App(ctk.CTk):
         """Thread-safe callback: schedule append on the main thread."""
         self.after(0, lambda: self.console.append(text))
 
+    def run_background(self, name: str, task: Callable[[], Any]) -> Any:
+        """Submit non-UI work to the central GUI task runner."""
+        return self.tasks.submit(name, task)
+
     def _debounce_tabview_configure(self, event=None):
         """Compatibility shim retained for older experiments; intentionally no-op."""
         return
@@ -400,7 +422,7 @@ class App(ctk.CTk):
             retcode, output, gpus = self.backend.list_gpus()
             self.after(0, lambda: self._apply_gpu_list(retcode, output, gpus))
 
-        threading.Thread(target=_worker, daemon=True).start()
+        self.run_background("gpu-list", _worker)
 
     def _apply_gpu_list(
         self, retcode: int, output: str, items: List[Dict[str, Any]]
@@ -481,56 +503,8 @@ class App(ctk.CTk):
             self.gpu_var.set("(detection failed)")
             return
 
-        # Parse lines like "GPU 0: NVIDIA GeForce RTX 3060"
-        # The CLI outputs multiple lines per GPU (NVML name, UUID, NVAPI bus info, etc.)
-        # We only want the first "GPU <index>: <name>" line per unique index,
-        # which is typically the NVML name line.
-        gpu_pattern = re.compile(r"^GPU\s+(\d+)\s*:\s*(.+)$")
-        uuid_pattern = re.compile(r"^UUID=(GPU-[\w-]+)")
-        seen_indices = {}  # type: Dict[int, str]  # gpu_index -> display_text
-        gpu_names = {}  # type: Dict[int, str]  # gpu_index -> gpu_name
-        uuid_map = {}  # type: Dict[int, str]  # gpu_index -> UUID
-        last_gpu_idx = None  # type: Optional[int]
-
-        for line in output.strip().split("\n"):
-            line = line.strip()
-            m = gpu_pattern.match(line)
-            if m:
-                idx = int(m.group(1))
-                name = m.group(2).strip()
-                # Capture inline UUID if the CLI prints it on the same GPU line.
-                m_inline_uuid = re.search(r"(?i)\buuid\s*[:=]\s*(GPU-[\w-]+)", name)
-                if m_inline_uuid:
-                    uuid_map[idx] = m_inline_uuid.group(1)
-                # Some CLI builds append UUID to the same GPU line; keep selector compact.
-                # Accept forms like: "... UUID=GPU-...", "... UUID:GPU-...", "...[GPU-...]".
-                name = re.split(r"(?i)\buuid\s*[:=]\s*gpu-[\w-]+", name, maxsplit=1)[
-                    0
-                ].strip()
-                name = re.sub(
-                    r"\s*\[\s*GPU-[\w-]+\s*\].*$", "", name, flags=re.IGNORECASE
-                )
-                last_gpu_idx = idx
-                if idx not in seen_indices:
-                    # Keep the first match per GPU index (the NVML GPU name)
-                    display = f"GPU {idx}: {name}"
-                    seen_indices[idx] = display
-                    gpu_names[idx] = name  # Store the raw name for capabilities check
-            else:
-                mu = uuid_pattern.match(line)
-                if mu and last_gpu_idx is not None:
-                    uuid_map[last_gpu_idx] = mu.group(1)
-
-        # Build ordered list by GPU index
-        ordered_indices = sorted(seen_indices.keys())
-        short_labels = {}  # type: Dict[int, str]
-        long_labels = {}  # type: Dict[int, str]
-        for idx in ordered_indices:
-            short = seen_indices[idx]
-            uuid = uuid_map.get(idx)
-            long = f"{short}  [{uuid}]" if uuid else short
-            short_labels[idx] = short
-            long_labels[idx] = long
+        short_labels, long_labels, gpu_names, uuid_map = parse_gpu_list_output(output)
+        ordered_indices = sorted(short_labels.keys())
 
         # Use long labels for dropdown entries so users can see full UUID when expanded.
         gpus = [long_labels[i] for i in ordered_indices]
@@ -632,7 +606,7 @@ class App(ctk.CTk):
 
     def _parse_gpu_info(self, output: str):
         """Parse 'info' output to extract hardware limits for overclock tab."""
-        limits = {}
+        limits = parse_info_limits(output)
 
         # Add cached GPU identity fields to limits for capability checks
         current_gpu_idx = self.get_current_gpu_index()
@@ -641,95 +615,8 @@ class App(ctk.CTk):
         if current_gpu_idx is not None and current_gpu_idx in self.gpu_arches:
             limits["gpu_architecture"] = self.gpu_arches[current_gpu_idx]
 
-        native_payload = self._native_query_payload(output)
-        if native_payload is not None:
-            limits.update(native_payload)
-            if current_gpu_idx is not None and native_payload.get("gpu_architecture"):
-                self.gpu_arches[current_gpu_idx] = str(
-                    native_payload["gpu_architecture"]
-                )
-        else:
-            for line in output.split("\n"):
-                line = line.strip()
-
-                # Architecture........: GM200:161 (dGPU)
-                if line.startswith("Architecture"):
-                    parts = line.split(":", 1)
-                    if len(parts) == 2:
-                        arch = parts[1].strip()
-                        if arch:
-                            limits["gpu_architecture"] = arch
-                            if current_gpu_idx is not None:
-                                self.gpu_arches[current_gpu_idx] = arch
-
-                # VFP (Graphics)......: -500 MHz ~ 500 MHz
-                elif line.startswith("VFP (Graphics)"):
-                    m = re.search(r"(-?\d+)\s*MHz\s*~\s*(-?\d+)\s*MHz", line)
-                    if m:
-                        limits["core_clock_min"] = int(m.group(1))
-                        limits["core_clock_max"] = int(m.group(2))
-
-                # VFP (Memory)........: -500 MHz ~ 1500 MHz
-                elif line.startswith("VFP (Memory)"):
-                    m = re.search(r"(-?\d+)\s*MHz\s*~\s*(-?\d+)\s*MHz", line)
-                    if m:
-                        limits["mem_clock_min"] = int(m.group(1))
-                        limits["mem_clock_max"] = int(m.group(2))
-
-                # Power Limit.........: 58% ~ 124% (100% default) | 100W min / 211W current / 212W max
-                elif line.startswith("Power Limit"):
-                    m = re.search(r"(\d+)%\s*~\s*(\d+)%\s*\((\d+)%\s*default\)", line)
-                    if m:
-                        limits["power_limit_min"] = int(m.group(1))
-                        limits["power_limit_max"] = int(m.group(2))
-                        limits["power_limit_default"] = int(m.group(3))
-                    mc = re.search(r"\|\s*(\d+)%\s*current", line)
-                    if mc:
-                        limits["power_limit_current"] = int(mc.group(1))
-                    mw = re.search(
-                        r"(\d+)W\s*min\s*/\s*(\d+)W\s*current\s*/\s*(\d+)W\s*max",
-                        line,
-                    )
-                    if mw:
-                        limits["power_watt_min"] = int(mw.group(1))
-                        limits["power_watt_current"] = int(mw.group(2))
-                        limits["power_watt_max"] = int(mw.group(3))
-
-                # Thermal Limit.......: 65C ~ 90C (83C default)
-                elif line.startswith("Thermal Limit"):
-                    m = re.search(
-                        r"(\d+)\s*C\s*~\s*(\d+)\s*C\s*\((\d+)\s*C\s*default\)",
-                        line,
-                    )
-                    if m:
-                        limits["thermal_limit_min"] = int(m.group(1))
-                        limits["thermal_limit_max"] = int(m.group(2))
-                        limits["thermal_limit_default"] = int(m.group(3))
-                    mc = re.search(r"\|\s*(\d+)\s*C\s*current", line)
-                    if mc:
-                        limits["thermal_limit_current"] = int(mc.group(1))
-
-                # Overvolt P0.........: 0 mV (range: -1018.461 mV - 256.019 mV)
-                elif line.startswith("Overvolt"):
-                    m = re.search(
-                        r"^Overvolt\s+(P\d+).*?:\s*([+-]?\d+(?:\.\d+)?)\s*([mu\u00b5\u03bc]V)\s*\(\s*range\s*:\s*([+-]?\d+(?:\.\d+)?)\s*([mu\u00b5\u03bc]V)\s*-\s*([+-]?\d+(?:\.\d+)?)\s*([mu\u00b5\u03bc]V)\s*\)",
-                        line,
-                        re.IGNORECASE,
-                    )
-                    if m:
-                        pstate = m.group(1).upper()
-                        current_mv = self._voltage_text_to_mv(m.group(2), m.group(3))
-                        min_mv = self._voltage_text_to_mv(m.group(4), m.group(5))
-                        max_mv = self._voltage_text_to_mv(m.group(6), m.group(7))
-                        if (
-                            limits.get("legacy_overvolt_pstate") == "P0"
-                            and pstate != "P0"
-                        ):
-                            continue
-                        limits["legacy_overvolt_pstate"] = pstate
-                        limits["legacy_overvolt_current_mv"] = current_mv
-                        limits["legacy_overvolt_min_mv"] = min_mv
-                        limits["legacy_overvolt_max_mv"] = max_mv
+        if current_gpu_idx is not None and limits.get("gpu_architecture"):
+            self.gpu_arches[current_gpu_idx] = str(limits["gpu_architecture"])
 
         if limits:
             self.console.append(f"[GUI] GPU limits: {limits}\n")
@@ -774,83 +661,19 @@ class App(ctk.CTk):
     @staticmethod
     def _voltage_text_to_mv(value_text: str, unit_text: str) -> int:
         """Convert a voltage text pair (value + unit) into integer mV."""
-        value = float(value_text)
-        unit = unit_text.lower()
-        if unit in {"uv", "µv", "μv"}:
-            return int(round(value / 1000.0))
-        return int(round(value))
+        return voltage_text_to_mv(value_text, unit_text)
 
     @staticmethod
     def _native_query_payload(output: str) -> Optional[Dict[str, Any]]:
         """Extract the JSON body emitted by NativeBackend query helpers."""
-        text = output.strip()
-        start = text.find("{")
-        if start < 0:
-            return None
-        try:
-            payload = json.loads(text[start:])
-        except json.JSONDecodeError:
-            return None
-        return payload if isinstance(payload, dict) else None
+        return native_query_payload(output)
 
     @staticmethod
     def _parse_status_current_values(
         output: str,
     ) -> Tuple[Optional[float], Dict[str, Any]]:
         """Extract lock voltage and current OC/limit values from CLI 'status' output."""
-        locked_voltage_mv = None  # type: Optional[float]
-        limits_update = {}  # type: Dict[str, Any]
-
-        native_payload = App._native_query_payload(output)
-        if native_payload is not None:
-            lock_value = native_payload.get("vfp_lock_mv")
-            if isinstance(lock_value, (int, float)):
-                locked_voltage_mv = float(lock_value)
-            for key in (
-                "core_clock_current",
-                "mem_clock_current",
-                "power_limit_current",
-                "thermal_limit_current",
-                "voltage_boost_current",
-            ):
-                value = native_payload.get(key)
-                if isinstance(value, (int, float)):
-                    limits_update[key] = int(value)
-            return locked_voltage_mv, limits_update
-
-        for line in output.splitlines():
-            line_s = line.strip()
-
-            if re.search(r"vfp lock", line_s, re.IGNORECASE):
-                m = re.search(
-                    r"voltage\s*:\s*(\d+(?:\.\d+)?)\s*mv", line_s, re.IGNORECASE
-                )
-                if m:
-                    locked_voltage_mv = float(m.group(1))
-            elif re.search(
-                r"Graphics.*Offset|OC\s*\(Graphics\)", line_s, re.IGNORECASE
-            ):
-                m = re.search(r"([+-]?\d+)\s*MHz", line_s)
-                if m:
-                    limits_update["core_clock_current"] = int(m.group(1))
-            elif re.search(r"Memory.*Offset|OC\s*\(Memory\)", line_s, re.IGNORECASE):
-                m = re.search(r"([+-]?\d+)\s*MHz", line_s)
-                if m:
-                    limits_update["mem_clock_current"] = int(m.group(1))
-            elif re.search(r"power limit", line_s, re.IGNORECASE):
-                m = re.search(r"([+-]?\d+)\s*%", line_s)
-                if m:
-                    limits_update["power_limit_current"] = int(m.group(1))
-            elif re.search(r"thermal limit", line_s, re.IGNORECASE):
-                m = re.search(r"(\d+)\s*[Cc]", line_s)
-                if m:
-                    limits_update["thermal_limit_current"] = int(m.group(1))
-            elif re.search(r"voltage boost", line_s, re.IGNORECASE):
-                m = re.search(r"([+-]?\d+)\s*%", line_s)
-                if m:
-                    limits_update["voltage_boost_current"] = int(m.group(1))
-
-        return locked_voltage_mv, limits_update
+        return parse_status_current_values(output)
 
     def _apply_overclock_status(self, retcode: int, output: str):
         """Apply status-derived current values to cache and Overclock controls."""
@@ -872,56 +695,17 @@ class App(ctk.CTk):
     @staticmethod
     def _parse_supported_pstates(output: str) -> List[str]:
         """Extract ordered NVML P-State labels from CLI 'get' output."""
-        match = re.search(
-            r"Supported P-States:\s*(.*?)(?:\n\s*Supported Applications Clocks:|\Z)",
-            output,
-            re.IGNORECASE | re.DOTALL,
-        )
-        if not match:
-            return []
-
-        seen = set()  # type: Set[str]
-        pstates = []  # type: List[str]
-        for raw in match.group(1).splitlines():
-            line = raw.strip()
-            state_match = re.match(r"^P\s*(\d+)\s*:", line, re.IGNORECASE)
-            if not state_match:
-                continue
-            label = f"P{int(state_match.group(1))}"
-            if label in seen:
-                continue
-            seen.add(label)
-            pstates.append(label)
-        return pstates
+        return parse_supported_pstates(output)
 
     @staticmethod
     def _parse_nvml_power_limits_from_get(output: str) -> Dict[str, int]:
         """Extract NVML power limit values (W) from CLI 'get' output."""
-        match = re.search(
-            r"^\s*Power\s+Limit\s*:\s*([0-9]+(?:\.[0-9]+)?)\s*W\s*\(\s*Min:\s*([0-9]+(?:\.[0-9]+)?)\s*W\s*-\s*Max:\s*([0-9]+(?:\.[0-9]+)?)\s*W\s*\)",
-            output,
-            re.IGNORECASE | re.MULTILINE,
-        )
-        if not match:
-            return {}
-
-        return {
-            "power_limit_nvml_current_w": int(round(float(match.group(1)))),
-            "power_limit_nvml_min_w": int(round(float(match.group(2)))),
-            "power_limit_nvml_max_w": int(round(float(match.group(3)))),
-        }
+        return parse_nvml_power_limits_from_get(output)
 
     @staticmethod
     def _parse_nvapi_power_current_from_get(output: str) -> Dict[str, int]:
         """Extract NVAPI power limit current (%) from CLI 'get' output."""
-        match = re.search(
-            r"^\s*Power\s+Limit\.*\s*:\s*([+-]?\d+)\s*%",
-            output,
-            re.IGNORECASE | re.MULTILINE,
-        )
-        if not match:
-            return {}
-        return {"power_limit_current": int(match.group(1))}
+        return parse_nvapi_power_current_from_get(output)
 
     def _apply_gpu_get(self, retcode: int, output: str):
         """Merge supported P-State data from CLI 'get' into the cached GPU state."""
@@ -1051,52 +835,12 @@ class App(ctk.CTk):
     @staticmethod
     def _parse_vfp_lock_bounds(output: str) -> Dict[str, int]:
         """Parse VFP lock bounds (core/memory) from CLI 'get' output."""
-        bounds = {}  # type: Dict[str, int]
-        patterns = {
-            "vfp_lock_gpu_core_upperbound_mhz": r"^\s*VFP\s+Lock\s+GPU\s+Core\s+Upperbound\s*:\s*([+-]?\d+)\s*MHz\b",
-            "vfp_lock_gpu_core_lowerbound_mhz": r"^\s*VFP\s+Lock\s+GPU\s+Core\s+Lowerbound\s*:\s*([+-]?\d+)\s*MHz\b",
-            "vfp_lock_memory_upperbound_mhz": r"^\s*VFP\s+Lock\s+Memory\s+Upperbound\s*:\s*([+-]?\d+)\s*MHz\b",
-            "vfp_lock_memory_lowerbound_mhz": r"^\s*VFP\s+Lock\s+Memory\s+Lowerbound\s*:\s*([+-]?\d+)\s*MHz\b",
-        }
-
-        for key, pattern in patterns.items():
-            m = re.search(pattern, output, re.IGNORECASE | re.MULTILINE)
-            if not m:
-                continue
-            bounds[key] = int(m.group(1))
-
-        return bounds
+        return parse_vfp_lock_bounds(output)
 
     @staticmethod
     def _parse_legacy_overvolt_bounds(output: str) -> Dict[str, int | str]:
         """Parse legacy Overvolt rows from CLI 'get' output and normalize to mV."""
-        pattern = re.compile(
-            r"^\s*Overvolt\s+(P\d+)\s*:\s*([+-]?\d+(?:\.\d+)?)\s*([mu\u00b5\u03bc]V)\s*\(\s*range\s*:\s*([+-]?\d+(?:\.\d+)?)\s*([mu\u00b5\u03bc]V)\s*-\s*([+-]?\d+(?:\.\d+)?)\s*([mu\u00b5\u03bc]V)\s*\)",
-            re.IGNORECASE,
-        )
-
-        rows: list[tuple[str, int, int, int]] = []
-        for line in output.splitlines():
-            m = pattern.match(line.strip())
-            if not m:
-                continue
-            rows.append((
-                m.group(1).upper(),
-                App._voltage_text_to_mv(m.group(2), m.group(3)),
-                App._voltage_text_to_mv(m.group(4), m.group(5)),
-                App._voltage_text_to_mv(m.group(6), m.group(7)),
-            ))
-
-        if not rows:
-            return {}
-
-        selected = next((row for row in rows if row[0] == "P0"), rows[0])
-        return {
-            "legacy_overvolt_pstate": selected[0],
-            "legacy_overvolt_current_mv": selected[1],
-            "legacy_overvolt_min_mv": selected[2],
-            "legacy_overvolt_max_mv": selected[3],
-        }
+        return parse_legacy_overvolt_bounds(output)
 
     def _apply_initial_status(self, retcode: int, output: str):
         """Parse VFP Lock and current OC settings from 'status' output, sync all tabs."""
@@ -1153,48 +897,14 @@ class App(ctk.CTk):
         frequencies: List[float], defaults: List[float]
     ) -> Tuple[bool, Optional[int]]:
         """Return (has_any_offset, uniform_core_offset_mhz_if_flat_curve)."""
-        if (not frequencies) or (len(frequencies) != len(defaults)):
-            return False, None
-
-        eps = 1e-4
-        offsets = [freq - default for freq, default in zip(frequencies, defaults)]
-        if all(abs(offset - offsets[0]) <= eps for offset in offsets):
-            if abs(offsets[0]) <= eps:
-                return False, None
-            return True, int(round(offsets[0]))
-        return any(abs(offset) > eps for offset in offsets), None
+        return analyze_vfp_offsets(frequencies, defaults)
 
     @staticmethod
     def _get_vfp_offset_state_from_csv(
         csv_path: str,
     ) -> Optional[Tuple[bool, Optional[int]]]:
         """Read a VF export and return (has_any_offset, uniform_core_offset_mhz_if_flat_curve)."""
-        if not os.path.isfile(csv_path):
-            return None
-
-        frequencies = []  # type: List[float]
-        defaults = []  # type: List[float]
-        try:
-            with open(csv_path, newline="", encoding="utf-8-sig") as f:
-                reader = csv.reader(f)
-                for row in reader:
-                    if not row or row[0].startswith("#"):
-                        continue
-                    if row[0].strip().lower() in {"voltage_uv", "voltage", "uv"}:
-                        continue
-                    try:
-                        freq = float(row[1]) / 1000.0  # kHz -> MHz
-                        default = (
-                            float(row[3]) / 1000.0 if len(row) > 3 else freq
-                        )  # kHz -> MHz
-                    except (ValueError, IndexError):
-                        continue
-                    frequencies.append(freq)
-                    defaults.append(default)
-        except Exception:
-            return None
-
-        return App._analyze_vfp_offsets(frequencies, defaults)
+        return get_vfp_offset_state_from_csv(csv_path)
 
     def _apply_vfp_offset_state(
         self, has_vfp_offset: bool, uniform_core_offset_mhz: Optional[int] = None
@@ -1237,21 +947,7 @@ class App(ctk.CTk):
             vfp_offset_state = None
             try:
                 points = self.backend.query_domain_vfp_points(gpu)
-                with open(csv_path, "w", newline="", encoding="utf-8") as f:
-                    writer = csv.writer(f)
-                    writer.writerow([
-                        "voltage",
-                        "frequency",
-                        "delta",
-                        "default_frequency",
-                    ])
-                    for point in points:
-                        writer.writerow([
-                            point.get("voltage_uv", 0),
-                            point.get("frequency_khz", 0),
-                            point.get("delta_khz", 0),
-                            point.get("default_frequency_khz", 0),
-                        ])
+                write_vfp_points(csv_path, points)
                 vfp_offset_state = self._get_vfp_offset_state_from_csv(csv_path)
             except Exception:
                 retcode = -1
@@ -1262,7 +958,7 @@ class App(ctk.CTk):
                 ),
             )
 
-        threading.Thread(target=_worker, daemon=True, name="detect-vfp-offset").start()
+        self.run_background("detect-vfp-offset", _worker)
 
     def _on_vfp_offset_refresh_done(
         self,
@@ -1359,7 +1055,7 @@ class App(ctk.CTk):
             retcode, output, _parsed = self.backend.run_query(gpu, command_name)
             self.after(0, lambda: callback(retcode, output))
 
-        threading.Thread(target=_worker, daemon=True, name=thread_name).start()
+        self.run_background(thread_name, _worker)
         return True
 
     def _on_native_output(self, text: str, _level: str = "info") -> None:
@@ -1532,10 +1228,7 @@ class App(ctk.CTk):
             except Exception:
                 pass
         self._tray_icon = self._build_tray_icon()
-        self._tray_thread = threading.Thread(
-            target=self._tray_icon.run, daemon=True, name="tray-icon"
-        )
-        self._tray_thread.start()
+        self._tray_thread = self.run_background("tray-icon", self._tray_icon.run)
 
     def _show_from_tray(self, icon=None, item=None):
         """Restore the main window from the tray."""
@@ -1608,4 +1301,7 @@ class App(ctk.CTk):
         if self._tray_icon is not None:
             self._tray_icon.stop()
             self._tray_icon = None
+        self.runner.shutdown()
+        self.backend.shutdown()
+        self.tasks.shutdown()
         self.after(0, self.destroy)

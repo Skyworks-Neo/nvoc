@@ -5,7 +5,6 @@ plus VFP export/import, lock/unlock, and point adjustment controls.
 
 import csv
 import os
-import threading
 import customtkinter as ctk
 from tkinter import filedialog
 from typing import TYPE_CHECKING, List, Optional, Tuple
@@ -20,6 +19,7 @@ from src.widgets.lightweight_controls import (
     LiteEntry,
     install_mousewheel_support,
 )
+from src.parsing import load_vfp_deltas, write_vfp_points
 
 
 class VFCurveTab:
@@ -633,7 +633,7 @@ class VFCurveTab:
                 self.app.after(0, lambda exc=exc: self.app.console.append(f"{exc}\n"))
             self.app.after(0, lambda: self._on_export_done(retcode, csv_path))
 
-        threading.Thread(target=_worker, daemon=True).start()
+        self.app.run_background("vfcurve-refresh", _worker)
 
     def _on_export_done(self, retcode: int, csv_path: str):
         self._refresh_curve_inflight = False
@@ -651,44 +651,13 @@ class VFCurveTab:
 
     @staticmethod
     def _write_vfp_points(path: str, points: List[dict]) -> None:
-        with open(path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow(["voltage", "frequency", "delta", "default_frequency"])
-            for point in points:
-                writer.writerow([
-                    point.get("voltage_uv", 0),
-                    point.get("frequency_khz", 0),
-                    point.get("delta_khz", 0),
-                    point.get("default_frequency_khz", 0),
-                ])
+        write_vfp_points(path, points)
 
     @staticmethod
     def _load_vfp_deltas(
         path: str, reference_points: List[dict]
     ) -> List[Tuple[int, int]]:
-        reference_by_voltage = {
-            int(point.get("voltage_uv", -1)): point for point in reference_points
-        }
-        deltas: List[Tuple[int, int]] = []
-        with open(path, newline="", encoding="utf-8-sig") as f:
-            reader = csv.reader(f)
-            for row_index, row in enumerate(reader):
-                if not row or row[0].startswith("#"):
-                    continue
-                if row[0].strip().lower() in {"voltage", "voltage_uv", "uv"}:
-                    continue
-                try:
-                    voltage_uv = int(float(row[0]))
-                    frequency_khz = int(round(float(row[1])))
-                except (IndexError, ValueError):
-                    continue
-                reference = reference_by_voltage.get(voltage_uv)
-                if reference is None:
-                    continue
-                point_index = int(reference.get("index", row_index))
-                default_khz = int(reference.get("default_frequency_khz", frequency_khz))
-                deltas.append((point_index, frequency_khz - default_khz))
-        return deltas
+        return load_vfp_deltas(path, reference_points)
 
     def _load_csv(self, path: str):
         """Parse CSV and redraw chart."""

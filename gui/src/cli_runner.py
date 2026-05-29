@@ -4,9 +4,9 @@ Runs commands in background threads and streams output to callbacks.
 """
 
 import subprocess
-import threading
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Dict, Optional, Sequence, Tuple
 
 
@@ -18,6 +18,7 @@ class CLIRunner:
         exe_path: str,
         on_output: Callable[[str], None],
         on_finished: Optional[Callable[[int], None]] = None,
+        submit: Optional[Callable[[str, Callable[[], None]], object]] = None,
     ):
         """
         Args:
@@ -28,8 +29,10 @@ class CLIRunner:
         self.exe_path = exe_path
         self.on_output = on_output
         self.on_finished = on_finished
+        self._submit = submit
+        self._fallback_executor = None  # type: Optional[ThreadPoolExecutor]
         self._process = None  # type: Optional[subprocess.Popen]
-        self._thread = None  # type: Optional[threading.Thread]
+        self._thread = None  # type: Optional[object]
         self._cancelled = False
 
     @staticmethod
@@ -103,8 +106,14 @@ class CLIRunner:
             finally:
                 self._process = None
 
-        self._thread = threading.Thread(target=_worker, daemon=True)
-        self._thread.start()
+        if self._submit is not None:
+            self._thread = self._submit("cli-runner", _worker)
+        else:
+            if self._fallback_executor is None:
+                self._fallback_executor = ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="nvoc-gui-cli"
+                )
+            self._thread = self._fallback_executor.submit(_worker)
 
     def run_sync(
         self, args: Sequence[str], cwd: Optional[str] = None
@@ -144,3 +153,10 @@ class CLIRunner:
                 self._process.terminate()
             except OSError:
                 pass
+
+    def shutdown(self) -> None:
+        """Stop any active process and release fallback worker threads."""
+        self.cancel()
+        if self._fallback_executor is not None:
+            self._fallback_executor.shutdown(wait=False, cancel_futures=True)
+            self._fallback_executor = None

@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib
 import json
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any, Callable
 
 from src.backend.base import FanSettings
@@ -28,6 +29,7 @@ class NativeBackend:
         self._native: Any | None = None
         self._lock = threading.Lock()
         self._action_running = False
+        self._fallback_executor: ThreadPoolExecutor | None = None
 
     def _pynvoc(self) -> Any:
         if self._native is None:
@@ -92,10 +94,22 @@ class NativeBackend:
                     self._action_running = False
                 on_finished(code)
 
-        threading.Thread(
-            target=worker, daemon=True, name="nvoc-gui-native-action"
-        ).start()
+        submit = getattr(self.app, "run_background", None)
+        if callable(submit):
+            submit("native-action", worker)
+        else:
+            if self._fallback_executor is None:
+                self._fallback_executor = ThreadPoolExecutor(
+                    max_workers=2, thread_name_prefix="nvoc-gui-native"
+                )
+            self._fallback_executor.submit(worker)
         return True
+
+    def shutdown(self) -> None:
+        """Release fallback worker threads when NativeBackend is used standalone."""
+        if self._fallback_executor is not None:
+            self._fallback_executor.shutdown(wait=False, cancel_futures=True)
+            self._fallback_executor = None
 
     def apply_fan_settings(self, settings: FanSettings) -> None:
         gpu = self.app.selected_gpu_target()
