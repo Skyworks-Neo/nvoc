@@ -1,4 +1,4 @@
-use clap::{Arg, ArgAction, Command as ClapCommand, error::ErrorKind};
+use clap::{Arg, ArgAction, ColorChoice, Command as ClapCommand};
 use nvoc_core::{
     BackendSet, CheckVoltageFrequency, ClockDomain, ConvertEnum, CoolerPolicy, CoolerTarget,
     GpuSelector, GpuTarget, Kilohertz, KilohertzDelta, PState, Percentage, ProbeVoltageLimits,
@@ -21,22 +21,43 @@ use std::collections::BTreeMap;
 use std::error::Error as StdError;
 use std::fmt;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CliError {
-    message: String,
+#[derive(Debug)]
+pub enum CliError {
+    Message(String),
+    Clap(clap::Error),
 }
 
 impl CliError {
     fn new(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
+        Self::Message(message.into())
+    }
+
+    pub fn print_clap(&self) -> bool {
+        if let Self::Clap(err) = self {
+            let _ = err.print();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn exit_code(&self) -> i32 {
+        match self {
+            Self::Message(_) => 2,
+            Self::Clap(err) => err.exit_code(),
         }
     }
 }
 
 impl fmt::Display for CliError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.message)
+        match self {
+            Self::Message(message) => f.write_str(message),
+            Self::Clap(err) if err.kind() == clap::error::ErrorKind::ArgumentConflict => {
+                write!(f, "argument conflicts: {err}")
+            }
+            Self::Clap(err) => write!(f, "{err}"),
+        }
     }
 }
 
@@ -345,8 +366,6 @@ pub struct Invocation {
     pub backend: BackendChoice,
     pub output: OutputFormat,
     pub no_color: bool,
-    pub help: bool,
-    pub version: bool,
     pub gpu_specs: Vec<String>,
     pub command: Option<Command>,
     pub positionals: Vec<String>,
@@ -389,25 +408,15 @@ where
 {
     let mut argv = vec!["nvoc-cli".to_string()];
     argv.extend(args.into_iter().map(Into::into));
-    if argv.len() == 1 {
-        return Ok(default_invocation_with_help());
+
+    let mut cli = cli_command();
+    if argv.iter().any(|arg| arg == "--no-color") || std::env::var_os("NO_COLOR").is_some() {
+        cli = cli.color(ColorChoice::Never);
     }
 
-    let matches = match cli_command().try_get_matches_from(argv) {
+    let matches = match cli.try_get_matches_from(argv) {
         Ok(matches) => matches,
-        Err(err) if err.kind() == ErrorKind::DisplayHelp => {
-            return Ok(default_invocation_with_help());
-        }
-        Err(err) if err.kind() == ErrorKind::DisplayVersion => {
-            return Ok(Invocation {
-                version: true,
-                ..default_invocation_with_help()
-            });
-        }
-        Err(err) if err.kind() == ErrorKind::ArgumentConflict => {
-            return Err(CliError::new(format!("argument conflicts: {err}")));
-        }
-        Err(err) => return Err(CliError::new(err.to_string())),
+        Err(err) => return Err(CliError::Clap(err)),
     };
 
     let (command_name, command_matches) = matches
@@ -444,8 +453,6 @@ where
         backend,
         output,
         no_color,
-        help: false,
-        version: false,
         gpu_specs,
         command,
         positionals,
@@ -456,25 +463,7 @@ where
     Ok(invocation)
 }
 
-fn default_invocation_with_help() -> Invocation {
-    Invocation {
-        backend: BackendChoice::Auto,
-        output: OutputFormat::Human,
-        no_color: false,
-        help: true,
-        version: false,
-        gpu_specs: Vec::new(),
-        command: None,
-        positionals: Vec::new(),
-        options: BTreeMap::new(),
-    }
-}
-
 fn validate_invocation(invocation: &Invocation) -> CliResult<()> {
-    if invocation.help || invocation.version {
-        return Ok(());
-    }
-
     let command = invocation
         .command
         .ok_or_else(|| CliError::new("missing function name"))?;
@@ -544,7 +533,6 @@ fn cli_command() -> ClapCommand {
     let mut command = ClapCommand::new("nvoc-cli")
         .version(env!("CARGO_PKG_VERSION"))
         .about("Focused command-line wrapper for nvoc-core")
-        .subcommand_required(true)
         .arg_required_else_help(true)
         .disable_help_subcommand(true)
         .arg(
@@ -684,10 +672,6 @@ fn collect_named_options(matches: &clap::ArgMatches) -> BTreeMap<String, Vec<Str
         }
     }
     options
-}
-
-pub fn help_text() -> String {
-    cli_command().render_long_help().to_string()
 }
 
 pub fn run_invocation(invocation: &Invocation) -> CliResult<RunOutput> {

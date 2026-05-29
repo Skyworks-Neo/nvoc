@@ -4,6 +4,9 @@ fn main() {
     let args = std::env::args().skip(1);
     let invocation = match nvoc_cli::parse_args(args) {
         Ok(invocation) => invocation,
+        Err(err) if err.print_clap() => {
+            exit(err.exit_code());
+        }
         Err(err) => {
             eprintln!(
                 "{}",
@@ -15,16 +18,6 @@ fn main() {
     };
 
     nvoc_cli_common::color::init(invocation.no_color);
-
-    if invocation.version {
-        println!("nvoc-cli {}", env!("CARGO_PKG_VERSION"));
-        return;
-    }
-
-    if invocation.help {
-        println!("{}", nvoc_cli::help_text());
-        return;
-    }
 
     match nvoc_cli::run_invocation(&invocation) {
         Ok(run) => {
