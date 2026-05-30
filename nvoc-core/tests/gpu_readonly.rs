@@ -469,13 +469,12 @@ fn nvapi_tdp_temp_ok() {
     let result = run(&target, QueryTdpTempLimits);
     match result {
         Ok(report) => {
-            let (min_tdp, default_tdp, max_tdp, min_temp, default_temp, max_temp, curve) =
-                report.output;
-            assert!(min_tdp.0 <= max_tdp.0);
-            assert!(default_tdp.0 >= min_tdp.0 || default_tdp.0 == 8191);
-            assert!(min_temp.0 <= max_temp.0);
-            assert!(default_temp.0 >= min_temp.0 || default_temp.0 == 511);
-            assert!(!curve.points.is_empty());
+            let limits = report.output;
+            assert!(limits.min_tdp.0 <= limits.max_tdp.0);
+            assert!(limits.default_tdp.0 >= limits.min_tdp.0 || limits.default_tdp.0 == 8191);
+            assert!(limits.min_temp.0 <= limits.max_temp.0);
+            assert!(limits.default_temp.0 >= limits.min_temp.0 || limits.default_temp.0 == 511);
+            assert!(!limits.throttle_curve.points.is_empty());
         }
         Err(Error::FeatureUnsupportedErr | Error::VfpUnsupported) => {}
         Err(e) => panic!("unexpected read-only TDP/temp error: {e}"),
@@ -514,7 +513,12 @@ fn nvapi_vf_check_ok() {
         .next()
         .expect("VFP table should not be empty");
     match run(&target, CheckVoltageFrequency { point }) {
-        Ok(_) => {}
+        Ok(report) => {
+            assert!(
+                report.output.matched_point.is_some(),
+                "matched VFP point should be preserved"
+            );
+        }
         Err(Error::VfpUnsupported) => {}
         Err(e) => panic!("unexpected read-only voltage/frequency error: {e}"),
     }

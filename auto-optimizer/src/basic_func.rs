@@ -2,8 +2,8 @@ use super::cli_types::{OutputFormat, ResetSettings};
 use super::human;
 use nvoc_cli_common::color::{stylize, stylize_title};
 use nvoc_core::{
-    Celsius, ClockDomain, CoolerPolicy, GpuSettings, GpuTarget, GpuTdpTempLimits, Kilohertz,
-    KilohertzDelta, Microvolts, MicrovoltsDelta, PState, Percentage,
+    Celsius, ClockDomain, CoolerPolicy, GpuSettings, GpuTarget, Kilohertz, KilohertzDelta,
+    Microvolts, MicrovoltsDelta, PState, Percentage, TdpTempLimits,
 };
 use std::io;
 
@@ -64,6 +64,7 @@ pub struct GpuVoltageLimits {
 pub struct GpuVoltageFrequencyCheck {
     pub gpu_id: u32,
     pub precise: bool,
+    pub matched_point: Option<usize>,
 }
 
 fn apply_vfp_lock(
@@ -439,12 +440,13 @@ pub fn voltage_frequency_check(
             run_output(gpu, CheckVoltageFrequency { point }).map(|check| GpuVoltageFrequencyCheck {
                 gpu_id: gpu.id.0,
                 precise: check.precise,
+                matched_point: check.matched_point,
             })
         })
         .collect()
 }
 
-pub fn get_gpu_tdp_temp_limit(matches: &ArgMatches) -> Result<GpuTdpTempLimits, Error> {
+pub fn get_gpu_tdp_temp_limit(matches: &ArgMatches) -> Result<TdpTempLimits, Error> {
     let selector = match matches.get_many::<String>("gpu") {
         Some(values) => nvoc_core::GpuSelector::from_specs(values.cloned()),
         None => nvoc_core::GpuSelector::all(),

@@ -522,7 +522,12 @@ mod pressure_runner {
                                         // summarize checks into a single status line instead of printing per-GPU
                                         let summary = checks
                                             .iter()
-                                            .map(|c| format!("{}:precise={}", c.gpu_id, c.precise))
+                                            .map(|c| {
+                                                format!(
+                                                    "{}:precise={},matched_point={:?}",
+                                                    c.gpu_id, c.precise, c.matched_point
+                                                )
+                                            })
                                             .collect::<Vec<_>>()
                                             .join(",");
                                         thrm_or_pwr_limit_number += 1;
@@ -1138,7 +1143,12 @@ fn pre_load_vf_recheck(gpu: &GpuTarget<'_>, point: usize) -> bool {
 
     let summary = checks
         .iter()
-        .map(|check| format!("GPU {} precise={}", check.gpu_id, check.precise))
+        .map(|check| {
+            format!(
+                "GPU {} precise={} matched_point={:?}",
+                check.gpu_id, check.precise, check.matched_point
+            )
+        })
         .collect::<Vec<_>>()
         .join(", ");
 
