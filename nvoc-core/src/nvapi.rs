@@ -1125,8 +1125,9 @@ pub fn voltage_frequency_check(
     gpus: &[&Gpu],
     point: usize,
     mut print_separator: impl FnMut(),
-) -> Result<bool, Error> {
+) -> Result<(bool, Option<usize>), Error> {
     let mut precise_flag = false;
+    let mut matched_point = None;
 
     for gpu in gpus {
         let status = gpu.status()?;
@@ -1145,12 +1146,14 @@ pub fn voltage_frequency_check(
 
         if let Some((index, _vfp_point)) = find_matching_vfp_point(&current_point, sensor_v) {
             precise_flag = index.abs_diff(point) < 5;
+            matched_point = Some(*index);
         } else {
             precise_flag = false;
+            matched_point = None;
         }
         print_separator();
     }
-    Ok(precise_flag)
+    Ok((precise_flag, matched_point))
 }
 
 // ---------------------------------------------------------------------------

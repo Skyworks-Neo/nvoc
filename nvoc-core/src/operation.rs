@@ -3,8 +3,8 @@ use super::nvapi as low_nvapi;
 use super::nvml as low_nvml;
 use super::result::{
     AppliedValue, BatchReport, ClockOffset, FanInfo, OperationKind, OperationReport,
-    PstateClockRange, SupportedApplicationClocks, TargetOutcome, TemperatureThreshold,
-    ThrottleReason, VoltageFrequencyCheck,
+    PstateClockRange, SupportedApplicationClocks, TargetOutcome, TdpTempLimits,
+    TemperatureThreshold, ThrottleReason, VoltageFrequencyCheck,
 };
 use super::target::GpuTarget;
 use super::types::{NvapiLockedVoltageTarget, VfpResetDomain};
@@ -1030,14 +1030,24 @@ impl GpuOperation for ResetPstateClockOffsets {
 pub struct QueryTdpTempLimits;
 
 impl GpuOperation for QueryTdpTempLimits {
-    type Output = low_nvapi::GpuTdpTempLimits;
+    type Output = TdpTempLimits;
 
     fn kind(&self) -> OperationKind {
         OperationKind::QueryTdpTempLimits
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
-        low_nvapi::get_gpu_tdp_temp_limit(&[target.nvapi()?], || {})
+        let (min_tdp, default_tdp, max_tdp, min_temp, default_temp, max_temp, throttle_curve) =
+            low_nvapi::get_gpu_tdp_temp_limit(&[target.nvapi()?], || {})?;
+        Ok(TdpTempLimits {
+            min_tdp,
+            default_tdp,
+            max_tdp,
+            min_temp,
+            default_temp,
+            max_temp,
+            throttle_curve,
+        })
     }
 }
 
@@ -1074,10 +1084,11 @@ impl GpuOperation for CheckVoltageFrequency {
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
-        let precise = low_nvapi::voltage_frequency_check(&[target.nvapi()?], self.point, || {})?;
+        let (precise, matched_point) =
+            low_nvapi::voltage_frequency_check(&[target.nvapi()?], self.point, || {})?;
         Ok(VoltageFrequencyCheck {
             precise,
-            matched_point: None,
+            matched_point,
         })
     }
 }
