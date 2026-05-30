@@ -13,7 +13,6 @@ cuda = ["dep:cudarc", "dep:half"]
 vulkan = ["ash"]
 
 [dependencies]
-nvoc-core = { workspace = true }
 nvoc-cli-common = { workspace = true }
 clap = { workspace = true }
 rand = "0.9"
