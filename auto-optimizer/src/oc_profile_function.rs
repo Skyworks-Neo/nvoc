@@ -1329,37 +1329,30 @@ pub fn apply_autoscan_profile(
     );
 
     match get_gpu_tdp_temp_limit(matches) {
-        Ok((
-            _min_tdp_percent,
-            _default_tdp_percent,
-            _max_tdp_percent,
-            _min_temp_lim,
-            _default_temp_lim,
-            _max_temp_lim,
-            mut _pff_curve,
-        )) => {
+        Ok(limits) => {
             run_output(
                 gpu,
                 SetNvapiPowerLimits {
-                    limits: vec![_max_tdp_percent],
+                    limits: vec![limits.max_tdp],
                 },
             )?;
             println!(
                 "{}",
                 stylize(
-                    &format!("Successfully set the TDP to {}", _max_tdp_percent),
+                    &format!("Successfully set the TDP to {}", limits.max_tdp),
                     false
                 )
             );
 
-            for point in _pff_curve.points.iter_mut() {
+            let mut pff_curve = limits.throttle_curve;
+            for point in pff_curve.points.iter_mut() {
                 point.y = Kilohertz(3456000);
             }
 
             let temp_limit = SensorThrottle {
-                value: _max_temp_lim,
+                value: limits.max_temp,
                 remove_tdp_limit: true,
-                curve: Some(_pff_curve.clone()),
+                curve: Some(pff_curve.clone()),
             };
 
             run_output(
@@ -1373,7 +1366,7 @@ pub fn apply_autoscan_profile(
                 stylize(
                     &format!(
                         "Successfully set the Temp_limit to {} and pff-curve to {}",
-                        _max_temp_lim, _pff_curve
+                        limits.max_temp, pff_curve
                     ),
                     false
                 )

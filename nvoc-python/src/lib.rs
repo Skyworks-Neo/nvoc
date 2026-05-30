@@ -3,8 +3,8 @@ use nvapi_hi::{
 };
 use nvml_wrapper::enum_wrappers::device::PerformanceState;
 use nvoc_core::{
-    BackendSet, ConvertEnum, GpuTarget, QueryDomainVfpPoints, QueryFanInfo, QueryGpuInfo,
-    QueryGpuSettings, QueryGpuStatus, QueryLegacyCoreOvervoltRanges,
+    BackendSet, CheckVoltageFrequency, ConvertEnum, GpuTarget, QueryDomainVfpPoints, QueryFanInfo,
+    QueryGpuInfo, QueryGpuSettings, QueryGpuStatus, QueryLegacyCoreOvervoltRanges,
     QueryLegacyP0CoreMaxVoltageDelta, QueryPowerLimits, QueryPstates,
     QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
     QueryVfpPointVoltage, ResetApplicationsClocks, ResetCoolerLevels, ResetFanSpeed,
@@ -524,15 +524,14 @@ fn normalize_legacy_p0_delta(target: &GpuTarget<'_>) -> PyResultValue {
 }
 
 fn normalize_tdp_temp_limits(target: &GpuTarget<'_>) -> PyResultValue {
-    let (min_tdp, default_tdp, max_tdp, min_temp, default_temp, max_temp, _curve) =
-        run(target, QueryTdpTempLimits).map_err(to_py_err)?.output;
+    let limits = run(target, QueryTdpTempLimits).map_err(to_py_err)?.output;
     Ok(value_object([
-        ("min_tdp", percent_value(min_tdp)),
-        ("default_tdp", percent_value(default_tdp)),
-        ("max_tdp", percent_value(max_tdp)),
-        ("min_temp", u64_value(min_temp.0 as u64)),
-        ("default_temp", u64_value(default_temp.0 as u64)),
-        ("max_temp", u64_value(max_temp.0 as u64)),
+        ("min_tdp", percent_value(limits.min_tdp)),
+        ("default_tdp", percent_value(limits.default_tdp)),
+        ("max_tdp", percent_value(limits.max_tdp)),
+        ("min_temp", u64_value(limits.min_temp.0 as u64)),
+        ("default_temp", u64_value(limits.default_temp.0 as u64)),
+        ("max_temp", u64_value(limits.max_temp.0 as u64)),
     ]))
 }
 
@@ -547,11 +546,22 @@ fn normalize_voltage_limits(target: &GpuTarget<'_>) -> PyResultValue {
 }
 
 fn normalize_voltage_check(target: &GpuTarget<'_>, point: usize) -> PyResultValue {
-    let value = run(target, QueryVfpPointVoltage { point }).map_err(to_py_err)?;
+    let check = run(target, CheckVoltageFrequency { point })
+        .map_err(to_py_err)?
+        .output;
+    let voltage = run(target, QueryVfpPointVoltage { point })
+        .map_err(to_py_err)?
+        .output;
     Ok(value_object([
-        ("precise", bool_value(true)),
-        ("matched_point", Value::Null),
-        ("microvolts", u64_value(value.output.0 as u64)),
+        ("precise", bool_value(check.precise)),
+        (
+            "matched_point",
+            check
+                .matched_point
+                .map(|point| u64_value(point as u64))
+                .unwrap_or(Value::Null),
+        ),
+        ("microvolts", u64_value(voltage.0 as u64)),
     ]))
 }
 

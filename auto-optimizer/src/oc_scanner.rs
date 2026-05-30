@@ -105,19 +105,21 @@ mod pressure_runner {
         F: FnMut() -> Result<(), Error>,
         E: Fn(&Error),
     {
-        const BACKOFF_SECS: [u64; 5] = [5, 10, 20, 40, 80];
+        const MAX_ATTEMPTS: usize = 5;
+        const RETRY_BACKOFF_SECS: [u64; MAX_ATTEMPTS - 1] = [5, 10, 20, 40];
 
-        for (attempt, &wait_secs) in BACKOFF_SECS.iter().enumerate() {
+        for attempt in 0..MAX_ATTEMPTS {
             if attempt > 0 {
+                let wait_secs = RETRY_BACKOFF_SECS[attempt - 1];
                 eprintln!(
                     "Retrying {} in {}s (attempt {}/{})...",
                     label,
                     wait_secs,
                     attempt + 1,
-                    BACKOFF_SECS.len()
+                    MAX_ATTEMPTS
                 );
+                sleep(Duration::from_secs(wait_secs));
             }
-            sleep(Duration::from_secs(wait_secs));
 
             match op() {
                 Ok(()) => {
@@ -126,17 +128,12 @@ mod pressure_runner {
                     }
                     return Ok(());
                 }
-                Err(e) if attempt + 1 < BACKOFF_SECS.len() => {
+                Err(e) if attempt + 1 < MAX_ATTEMPTS => {
                     eprintln!("{} failed (attempt {}): {:?}", label, attempt + 1, e);
                     on_err(&e);
                 }
                 Err(e) => {
-                    eprintln!(
-                        "{} failed after {} attempts: {:?}",
-                        label,
-                        BACKOFF_SECS.len(),
-                        e
-                    );
+                    eprintln!("{} failed after {} attempts: {:?}", label, MAX_ATTEMPTS, e);
                     return Err(e);
                 }
             }
@@ -525,7 +522,12 @@ mod pressure_runner {
                                         // summarize checks into a single status line instead of printing per-GPU
                                         let summary = checks
                                             .iter()
-                                            .map(|c| format!("{}:precise={}", c.gpu_id, c.precise))
+                                            .map(|c| {
+                                                format!(
+                                                    "{}:precise={},matched_point={:?}",
+                                                    c.gpu_id, c.precise, c.matched_point
+                                                )
+                                            })
                                             .collect::<Vec<_>>()
                                             .join(",");
                                         thrm_or_pwr_limit_number += 1;
@@ -1141,7 +1143,12 @@ fn pre_load_vf_recheck(gpu: &GpuTarget<'_>, point: usize) -> bool {
 
     let summary = checks
         .iter()
-        .map(|check| format!("GPU {} precise={}", check.gpu_id, check.precise))
+        .map(|check| {
+            format!(
+                "GPU {} precise={} matched_point={:?}",
+                check.gpu_id, check.precise, check.matched_point
+            )
+        })
         .collect::<Vec<_>>()
         .join(", ");
 

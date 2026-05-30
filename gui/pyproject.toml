@@ -26,10 +26,10 @@ dependencies = [
 
 [dependency-groups]
 build = [
-    "pyinstaller~=6.0",
+    "pyinstaller~=6.19.0",
 ]
 dev = [
-    "pyinstaller>=6.19.0",
+    "pyinstaller~=6.19.0",
     "pytest>=8.3.0",
 ]
 
