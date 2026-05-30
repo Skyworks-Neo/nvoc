@@ -94,6 +94,7 @@ jobs:
       rust_base: ${{ steps.filter.outputs.rust_base }}
       python_base: ${{ steps.filter.outputs.python_base }}
       nvoc_core: ${{ steps.filter.outputs.nvoc_core }}
+      nvoc_cli: ${{ steps.filter.outputs.nvoc_cli }}
       nvoc_python: ${{ steps.filter.outputs.nvoc_python }}
       auto_optimizer: ${{ steps.filter.outputs.auto_optimizer }}
       srv: ${{ steps.filter.outputs.srv }}
@@ -124,6 +125,9 @@ jobs:
               - 'uv.lock'
             nvoc_core:
               - 'nvoc-core/**'
+            nvoc_cli:
+              - 'cli/**'
+              - 'nvoc-cli-common/**'
             nvoc_python:
               - 'nvoc-python/**'
             auto_optimizer:
@@ -163,6 +167,30 @@ jobs:
           $content = [regex]::Replace($content, '(?ms)^\# For development, we use the local path to the nvapi-rs crate\. In production, we can switch to the git dependency\.\r?\n\[patch\."https://github\.com/Skyworks-Neo/nvapi-rs"\]\r?\nnvapi = \{ path = "\./nvapi-rs" \}\r?\nnvapi-sys = \{ path = "\./nvapi-rs/sys" \}\r?\nnvapi-hi = \{ path = "\./nvapi-rs/hi" \}\r?\n', '')
           Set-Content $cargoToml $content -NoNewline
       - run: cargo test --package nvoc-core --all-targets
+
+  rust-nvoc-cli:
+    name: nvoc-cli tests
+    needs: changes
+    if: >-
+      needs.changes.outputs.ci_config == 'true' ||
+      needs.changes.outputs.rust_base == 'true' ||
+      needs.changes.outputs.nvoc_core == 'true' ||
+      needs.changes.outputs.nvoc_cli == 'true'
+    runs-on: ubuntu-slim
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy,rustfmt
+      - name: Disable local nvapi-rs patch for CI
+        shell: pwsh
+        run: |
+          $cargoToml = "Cargo.toml"
+          $content = Get-Content $cargoToml -Raw
+          $content = [regex]::Replace($content, '(?ms)^\# For development, we use the local path to the nvapi-rs crate\. In production, we can switch to the git dependency\.\r?\n\[patch\."https://github\.com/Skyworks-Neo/nvapi-rs"\]\r?\nnvapi = \{ path = "\./nvapi-rs" \}\r?\nnvapi-sys = \{ path = "\./nvapi-rs/sys" \}\r?\nnvapi-hi = \{ path = "\./nvapi-rs/hi" \}\r?\n', '')
+          Set-Content $cargoToml $content -NoNewline
+      - run: cargo test --package nvoc-cli --all-targets
 
   rust-nvoc-python:
     name: nvoc-python tests
