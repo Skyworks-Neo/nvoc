@@ -254,7 +254,6 @@ dependencies = [
  "half",
  "matrixmultiply",
  "nvoc-cli-common",
- "nvoc-core",
  "rand",
  "rand_distr",
  "serde",
