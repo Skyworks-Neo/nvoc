@@ -1150,16 +1150,15 @@ fn execute_target(
             ))
         }
         Command::GetTdpTempLimits => {
-            let (min_tdp, default_tdp, max_tdp, min_temp, default_temp, max_temp, curve) =
-                run(target, QueryTdpTempLimits)?.output;
+            let limits = run(target, QueryTdpTempLimits)?.output;
             Ok(json!({
-                "min_tdp_percent": min_tdp.0,
-                "default_tdp_percent": default_tdp.0,
-                "max_tdp_percent": max_tdp.0,
-                "min_temp_c": min_temp.0,
-                "default_temp_c": default_temp.0,
-                "max_temp_c": max_temp.0,
-                "curve": format!("{curve:?}"),
+                "min_tdp_percent": limits.min_tdp.0,
+                "default_tdp_percent": limits.default_tdp.0,
+                "max_tdp_percent": limits.max_tdp.0,
+                "min_temp_c": limits.min_temp.0,
+                "default_temp_c": limits.default_temp.0,
+                "max_temp_c": limits.max_temp.0,
+                "curve": format!("{:?}", limits.throttle_curve),
             }))
         }
         Command::ProbeVoltageLimits => {
