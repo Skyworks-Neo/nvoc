@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ctypes
 import gc
 import os
 import sys
@@ -75,12 +74,14 @@ def current_rss_bytes() -> Optional[int]:
 def _windows_current_rss_bytes() -> Optional[int]:
     # ``ctypes.wintypes`` only exists on Windows; import it lazily here so the
     # module remains importable on Linux/macOS where this helper is never called.
-    from ctypes import wintypes
+    # Use ``import`` (not ``from ... import``) to keep a single import style for
+    # ``ctypes`` and avoid CodeQL's mixed-import warning.
+    import ctypes.wintypes
 
     class PROCESS_MEMORY_COUNTERS(ctypes.Structure):
         _fields_ = [
-            ("cb", wintypes.DWORD),
-            ("PageFaultCount", wintypes.DWORD),
+            ("cb", ctypes.wintypes.DWORD),
+            ("PageFaultCount", ctypes.wintypes.DWORD),
             ("PeakWorkingSetSize", ctypes.c_size_t),
             ("WorkingSetSize", ctypes.c_size_t),
             ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
