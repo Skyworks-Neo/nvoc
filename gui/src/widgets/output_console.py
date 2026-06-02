@@ -92,7 +92,7 @@ class OutputConsole(ctk.CTkFrame):
         if line_count > self._MAX_LINES:
             self.textbox.delete("1.0", f"{line_count - self._MAX_LINES + 1}.0")
 
-        char_count = int(self.textbox.count("1.0", "end-1c", "chars")[0])
+        char_count = len(self.textbox.get("1.0", "end-1c"))
         if char_count > self._MAX_CHARS:
             overflow = char_count - self._MAX_CHARS
             self.textbox.delete("1.0", f"1.0+{overflow}c")
