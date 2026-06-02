@@ -7,7 +7,6 @@ import gc
 import os
 import sys
 import tracemalloc
-from ctypes import wintypes
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -76,8 +75,8 @@ def current_rss_bytes() -> Optional[int]:
 def _windows_current_rss_bytes() -> Optional[int]:
     class PROCESS_MEMORY_COUNTERS(ctypes.Structure):
         _fields_ = [
-            ("cb", wintypes.DWORD),
-            ("PageFaultCount", wintypes.DWORD),
+            ("cb", ctypes.wintypes.DWORD),
+            ("PageFaultCount", ctypes.wintypes.DWORD),
             ("PeakWorkingSetSize", ctypes.c_size_t),
             ("WorkingSetSize", ctypes.c_size_t),
             ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
