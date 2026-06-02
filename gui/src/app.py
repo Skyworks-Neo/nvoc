@@ -15,6 +15,7 @@ from PIL import Image
 from src.backend import NativeBackend
 from src.cli_runner import CLIRunner
 from src.config import Config
+from src.memory_debug import MemoryDebugSampler
 from src.parsing import (
     analyze_vfp_offsets,
     get_vfp_offset_state_from_csv,
@@ -78,6 +79,7 @@ class App(ctk.CTk):
         self._tray_icon = None  # type: Optional[pystray.Icon]
         self._tray_thread = None  # type: Optional[Any]
         self._tray_image = None  # type: Optional[Image.Image]
+        self._memory_debug_sampler = None  # type: Optional[MemoryDebugSampler]
 
         # ✕ Close button → exit completely
         # Minimize button → hide to tray (via <Unmap>)
@@ -153,6 +155,11 @@ class App(ctk.CTk):
 
         if self._single_instance_guard is not None:
             self.after(200, self._poll_single_instance_signal)
+
+        if os.environ.get("NVOC_GUI_MEMORY_DEBUG"):
+            interval_ms = self._memory_debug_interval_ms()
+            self._memory_debug_sampler = MemoryDebugSampler(self, interval_ms)
+            self._memory_debug_sampler.start()
 
     def _build_ui(self):
         """Build the main UI layout."""
@@ -357,6 +364,15 @@ class App(ctk.CTk):
     def run_background(self, name: str, task: Callable[[], Any]) -> Any:
         """Submit non-UI work to the central GUI task runner."""
         return self.tasks.submit(name, task)
+
+    @staticmethod
+    def _memory_debug_interval_ms() -> int:
+        raw_value = os.environ.get("NVOC_GUI_MEMORY_DEBUG_INTERVAL", "300")
+        try:
+            seconds = max(5.0, float(raw_value))
+        except ValueError:
+            seconds = 300.0
+        return int(seconds * 1000)
 
     def _debounce_tabview_configure(self, event=None):
         """Compatibility shim retained for older experiments; intentionally no-op."""
@@ -1310,6 +1326,9 @@ class App(ctk.CTk):
 
     def _quit_app(self, icon=None, item=None):
         """Fully exit the application from the tray menu."""
+        if self._memory_debug_sampler is not None:
+            self._memory_debug_sampler.stop()
+            self._memory_debug_sampler = None
         if self._tray_icon is not None:
             self._tray_icon.stop()
             self._tray_icon = None
