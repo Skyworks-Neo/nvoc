@@ -73,10 +73,14 @@ def current_rss_bytes() -> Optional[int]:
 
 
 def _windows_current_rss_bytes() -> Optional[int]:
+    # ``ctypes.wintypes`` only exists on Windows; import it lazily here so the
+    # module remains importable on Linux/macOS where this helper is never called.
+    from ctypes import wintypes
+
     class PROCESS_MEMORY_COUNTERS(ctypes.Structure):
         _fields_ = [
-            ("cb", ctypes.wintypes.DWORD),
-            ("PageFaultCount", ctypes.wintypes.DWORD),
+            ("cb", wintypes.DWORD),
+            ("PageFaultCount", wintypes.DWORD),
             ("PeakWorkingSetSize", ctypes.c_size_t),
             ("WorkingSetSize", ctypes.c_size_t),
             ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
