@@ -668,6 +668,11 @@ class VFCurveTab:
             self.app.console.append(f"[GUI] CSV not found: {path}\n")
             return
 
+        previous_selection = (
+            (self._sel_start, self._sel_end)
+            if self._sel_start is not None and self._sel_end is not None
+            else None
+        )
         voltages = []
         frequencies = []
         defaults = []
@@ -702,6 +707,12 @@ class VFCurveTab:
         self._sel_start = None
         self._sel_end = None
         self._drag_orig_freqs = None
+        if previous_selection is not None and voltages:
+            max_idx = len(voltages) - 1
+            start, end = previous_selection
+            self._sel_start = max(0, min(start, max_idx))
+            self._sel_end = max(0, min(end, max_idx))
+            self._sync_selection_to_adj()
 
         # Apply any pending lock set before data was loaded
         pending_mv = getattr(self, "_pending_lock_mv", None)

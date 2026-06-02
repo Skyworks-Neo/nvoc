@@ -96,6 +96,9 @@ def make_tab(api: str, start: int = 1, end: int = 1) -> tuple[VFCurveTab, FakeAp
     tab._freq_core_lock_backend = None
     tab._freq_mem_lock_backend = None
     tab.freq_lock_api_var = FakeVar(api)
+    tab.adj_start_var = FakeVar("0")
+    tab.adj_end_var = FakeVar("0")
+    tab.adj_delta_var = FakeVar("0")
     tab.core_lock_min_var = FakeVar("0")
     tab.core_lock_max_var = FakeVar("0")
     tab.mem_lock_min_var = FakeVar("0")
@@ -198,3 +201,24 @@ def test_space_reset_uses_lock_backend_after_selector_change() -> None:
         call == ("reset_vfp_frequency_lock", "GPU0", "core")
         for call in app.native.calls
     )
+
+
+def test_load_csv_preserves_selection_for_space_round_robin_refresh(tmp_path) -> None:
+    tab, _app = make_tab("NVAPI", start=1, end=1)
+    csv_path = tmp_path / "curve.csv"
+    csv_path.write_text(
+        "\n".join([
+            "voltage,frequency,delta,default_frequency",
+            "800000,1400000,0,1400000",
+            "900000,1500000,0,1500000",
+            "1000000,1600000,0,1600000",
+        ]),
+        encoding="utf-8",
+    )
+
+    tab._load_csv(str(csv_path))
+
+    assert tab._sel_start == 1
+    assert tab._sel_end == 1
+    assert tab.adj_start_var.get() == "1"
+    assert tab.adj_end_var.get() == "1"
