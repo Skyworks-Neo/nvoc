@@ -10,7 +10,8 @@ import customtkinter as ctk
 class OutputConsole(ctk.CTkFrame):
     """A docked output console that displays CLI output in real-time."""
 
-    _MAX_LINES = 100
+    _MAX_LINES = 500
+    _MAX_CHARS = 250_000
 
     def __init__(self, master, **kwargs) -> None:
         super().__init__(master, **kwargs)
@@ -61,7 +62,7 @@ class OutputConsole(ctk.CTkFrame):
             self.textbox.pack_forget()
 
     def append(self, text: str) -> None:
-        """Append text to the console (thread-safe) and keep only the last 1000 lines."""
+        """Append text to the console and bound retained text/tag ranges."""
         with self._lock:
             self.textbox.configure(state="normal")
 
@@ -80,13 +81,21 @@ class OutputConsole(ctk.CTkFrame):
                 # If it's a message with a return code that isn't 0
                 self.textbox.tag_add("red", start_index, end_index)
 
-            # Keep only the last 1000 lines
-            line_count = int(float(self.textbox.index("end-1c")))
-            if line_count > self._MAX_LINES:
-                self.textbox.delete("1.0", f"{line_count - self._MAX_LINES}.0")
+            self._trim_history()
 
             self.textbox.see("end")
             self.textbox.configure(state="disabled")
+
+    def _trim_history(self) -> None:
+        """Keep long-running console output from retaining unbounded Tk state."""
+        line_count = int(float(self.textbox.index("end-1c")))
+        if line_count > self._MAX_LINES:
+            self.textbox.delete("1.0", f"{line_count - self._MAX_LINES + 1}.0")
+
+        char_count = int(self.textbox.count("1.0", "end-1c", "chars")[0])
+        if char_count > self._MAX_CHARS:
+            overflow = char_count - self._MAX_CHARS
+            self.textbox.delete("1.0", f"1.0+{overflow}c")
 
     def clear(self) -> None:
         """Clear all console text."""

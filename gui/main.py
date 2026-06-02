@@ -11,6 +11,8 @@ from typing import Any, Callable, Optional
 # Ensure the project root is in path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from src.memory_debug import configure_memory_debug_from_env
+
 # Fix blurry/tiny rendering on Windows HiDPI displays (e.g. 150% scaling).
 if sys.platform == "win32":
     try:
@@ -78,6 +80,7 @@ def _require_gui_runtime(
 
 
 def main() -> int:
+    memory_debug_config = configure_memory_debug_from_env()
     _require_gui_runtime()
 
     from src.app import App
@@ -98,7 +101,7 @@ def main() -> int:
     start_time = time.perf_counter()
 
     try:
-        app = App(single_instance_guard=guard)
+        app = App(single_instance_guard=guard, memory_debug_config=memory_debug_config)
 
         def log_startup_time() -> None:
             elapsed_time = time.perf_counter() - start_time

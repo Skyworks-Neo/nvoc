@@ -32,6 +32,7 @@ from src.parsing import (
     write_vfp_points,
 )
 from src.task_runner import GuiTaskRunner
+from src.memory_debug import MemoryDebugConfig, schedule_memory_reports
 from src.widgets.output_console import OutputConsole
 from src.widgets.lightweight_controls import LiteButton
 from src.tabs.dashboard import DashboardTab
@@ -56,7 +57,11 @@ def find_cli_exe() -> str:
 class App(ctk.CTk):
     """Main application window."""
 
-    def __init__(self, single_instance_guard: Optional["SingleInstanceGuard"] = None):
+    def __init__(
+        self,
+        single_instance_guard: Optional["SingleInstanceGuard"] = None,
+        memory_debug_config: Optional[MemoryDebugConfig] = None,
+    ):
         super().__init__()
 
         # Global resize session state (used to coalesce expensive per-tab redraw work)
@@ -69,6 +74,7 @@ class App(ctk.CTk):
         self.geometry("768x672")
         self.minsize(768, 360)
         self._single_instance_guard = single_instance_guard
+        self._memory_debug_config = memory_debug_config
 
         # Appearance
         ctk.set_appearance_mode("dark")
@@ -121,6 +127,15 @@ class App(ctk.CTk):
             self.console.append(
                 "[GUI] CLI executable not found in PATH.\n"
                 "[GUI] Please click '⚙ CLI Path' to locate nvoc-autooptimizer.exe manually.\n"
+            )
+
+        if self._memory_debug_config is not None:
+            self.console.append(
+                "[GUI][mem] Memory diagnostics enabled; "
+                f"logging every {self._memory_debug_config.interval_seconds:.0f}s.\n"
+            )
+            schedule_memory_reports(
+                self.after, self.console.append, self._memory_debug_config
             )
 
         # GPU index → display name mapping
