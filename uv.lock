@@ -1312,9 +1312,9 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
-build = [{ name = "pyinstaller", specifier = "~=6.0" }]
+build = [{ name = "pyinstaller", specifier = "~=6.19.0" }]
 dev = [
-    { name = "pyinstaller", specifier = ">=6.19.0" },
+    { name = "pyinstaller", specifier = "~=6.19.0" },
     { name = "pytest", specifier = ">=8.3.0" },
 ]
 

@@ -150,7 +150,7 @@ pub struct VoltageLimits {
     pub upper_point: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TdpTempLimits {
     pub min_tdp: nvapi_hi::Percentage,
     pub default_tdp: nvapi_hi::Percentage,
@@ -158,6 +158,7 @@ pub struct TdpTempLimits {
     pub min_temp: nvapi_hi::Celsius,
     pub default_temp: nvapi_hi::Celsius,
     pub max_temp: nvapi_hi::Celsius,
+    pub throttle_curve: nvapi_hi::PffCurve,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

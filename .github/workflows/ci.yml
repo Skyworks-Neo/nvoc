@@ -94,6 +94,7 @@ jobs:
       rust_base: ${{ steps.filter.outputs.rust_base }}
       python_base: ${{ steps.filter.outputs.python_base }}
       nvoc_core: ${{ steps.filter.outputs.nvoc_core }}
+      nvoc_cli: ${{ steps.filter.outputs.nvoc_cli }}
       nvoc_python: ${{ steps.filter.outputs.nvoc_python }}
       auto_optimizer: ${{ steps.filter.outputs.auto_optimizer }}
       srv: ${{ steps.filter.outputs.srv }}
@@ -124,6 +125,9 @@ jobs:
               - 'uv.lock'
             nvoc_core:
               - 'nvoc-core/**'
+            nvoc_cli:
+              - 'cli/**'
+              - 'nvoc-cli-common/**'
             nvoc_python:
               - 'nvoc-python/**'
             auto_optimizer:
@@ -163,6 +167,30 @@ jobs:
           $content = [regex]::Replace($content, '(?ms)^\# For development, we use the local path to the nvapi-rs crate\. In production, we can switch to the git dependency\.\r?\n\[patch\."https://github\.com/Skyworks-Neo/nvapi-rs"\]\r?\nnvapi = \{ path = "\./nvapi-rs" \}\r?\nnvapi-sys = \{ path = "\./nvapi-rs/sys" \}\r?\nnvapi-hi = \{ path = "\./nvapi-rs/hi" \}\r?\n', '')
           Set-Content $cargoToml $content -NoNewline
       - run: cargo test --package nvoc-core --all-targets
+
+  rust-nvoc-cli:
+    name: nvoc-cli tests
+    needs: changes
+    if: >-
+      needs.changes.outputs.ci_config == 'true' ||
+      needs.changes.outputs.rust_base == 'true' ||
+      needs.changes.outputs.nvoc_core == 'true' ||
+      needs.changes.outputs.nvoc_cli == 'true'
+    runs-on: ubuntu-slim
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy,rustfmt
+      - name: Disable local nvapi-rs patch for CI
+        shell: pwsh
+        run: |
+          $cargoToml = "Cargo.toml"
+          $content = Get-Content $cargoToml -Raw
+          $content = [regex]::Replace($content, '(?ms)^\# For development, we use the local path to the nvapi-rs crate\. In production, we can switch to the git dependency\.\r?\n\[patch\."https://github\.com/Skyworks-Neo/nvapi-rs"\]\r?\nnvapi = \{ path = "\./nvapi-rs" \}\r?\nnvapi-sys = \{ path = "\./nvapi-rs/sys" \}\r?\nnvapi-hi = \{ path = "\./nvapi-rs/hi" \}\r?\n', '')
+          Set-Content $cargoToml $content -NoNewline
+      - run: cargo test --package nvoc-cli --all-targets
 
   rust-nvoc-python:
     name: nvoc-python tests
@@ -296,7 +324,7 @@ jobs:
       needs.changes.outputs.python_base == 'true' ||
       needs.changes.outputs.rust_base == 'true' ||
       needs.changes.outputs.nvoc_core == 'true' ||
-      needs.changes.outputs.auto_optimizer == 'true' ||
+      needs.changes.outputs.nvoc_python == 'true' ||
       needs.changes.outputs.tui == 'true'
     strategy:
       fail-fast: false
@@ -309,6 +337,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy,rustfmt
       - name: Disable local nvapi-rs patch for CI
         shell: pwsh
         run: |
@@ -319,19 +351,14 @@ jobs:
       - name: Install uv
         run: pip install --quiet uv
       - name: Install deps
-        run: uv pip install --system -e '.[dev]'
-        working-directory: tui
+        run: uv sync --locked --package nvoc-tui --group dev
       - name: byte-compile
-        run: python -m compileall -q tui/
+        run: uv run --locked --package nvoc-tui --group dev python -m compileall -q tui/
       - name: ruff (best-effort)
         continue-on-error: true
-        run: |
-          python -m pip install --quiet ruff
-          ruff check tui/
+        run: uv run --locked --package nvoc-tui --group dev ruff check tui/
       - name: non-GPU unit tests
-        run: |
-          python -m pip install --quiet pytest
-          python -m pytest -q tui/tests/
+        run: uv run --locked --package nvoc-tui --group dev pytest -q tui/tests/
 
   python-gui:
     name: gui (sync + import smoke)
@@ -341,7 +368,7 @@ jobs:
       needs.changes.outputs.python_base == 'true' ||
       needs.changes.outputs.rust_base == 'true' ||
       needs.changes.outputs.nvoc_core == 'true' ||
-      needs.changes.outputs.auto_optimizer == 'true' ||
+      needs.changes.outputs.nvoc_python == 'true' ||
       needs.changes.outputs.gui == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -363,19 +390,16 @@ jobs:
       - name: Install uv
         run: pip install --quiet uv
       - name: Install deps
-        run: uv pip install --system -e '.[dev]'
-        working-directory: gui
+        run: uv sync --locked --package nvoc-gui --group dev
       - name: byte-compile gui/
-        run: python -m compileall -q gui/
+        run: uv run --locked --package nvoc-gui --group dev python -m compileall -q gui/
       - name: ruff (best-effort)
         continue-on-error: true
         run: |
           python -m pip install --quiet ruff
           ruff check gui/
       - name: non-GPU unit tests
-        run: |
-          python -m pip install --quiet pytest
-          python -m pytest -q gui/tests/
+        run: uv run --locked --package nvoc-gui --group dev pytest -q gui/tests/
 
   python-stressor-cuda:
     name: stressor compile (cli-stressor-cuda)

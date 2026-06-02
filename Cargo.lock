@@ -254,7 +254,6 @@ dependencies = [
  "half",
  "matrixmultiply",
  "nvoc-cli-common",
- "nvoc-core",
  "rand",
  "rand_distr",
  "serde",
@@ -1042,6 +1041,17 @@ dependencies = [
  "once_cell",
  "serde_json",
  "time",
+]
+
+[[package]]
+name = "nvoc-cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "nvml-wrapper",
+ "nvoc-cli-common",
+ "nvoc-core",
+ "serde_json",
 ]
 
 [[package]]
