@@ -130,9 +130,26 @@ fn run_vulkan_stress_loop(
             } else {
                 select_gpu_by_cuda_uuid(&instance, selection.cuda_uuid)
             };
-            selection_result.map_err(|err| {
-                std::io::Error::other(format!("Vulkan GPU selection failed: {err}"))
-            })?
+            match selection_result {
+                Ok(dev) => dev,
+                Err(err) => {
+                    eprintln!(
+                        "{}",
+                        stylize(
+                            &format!("[VulkanGfx] Vulkan GPU selection failed: {err}; fallback to CUDA-only stress"),
+                            true
+                        )
+                    );
+                    eprintln!(
+                        "{}",
+                        stylize(
+                            &format!("Your Target GPU may not have proper Vulkan driver, check compatibility..."),
+                            true
+                        )
+                    );
+                    return Ok(());
+                }
+            }
         } else {
             let pdevices = instance.enumerate_physical_devices()?;
             if pdevices.is_empty() {
