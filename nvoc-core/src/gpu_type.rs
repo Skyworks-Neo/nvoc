@@ -544,4 +544,115 @@ impl GpuType {
             _ => 126,
         }
     }
+
+    /// 返回该 GPU 架构的已知超频先验数据。
+    /// 扫描器可从这些数据点出发做简单单步进探测，而非从零开始指数搜索。
+    pub fn arch_prior(&self) -> ArchOcPrior {
+        match self {
+            GpuType::Desktop50Series => ArchOcPrior {
+                points: vec![
+                    OcPriorPoint {
+                        voltage_uv: 700_000,
+                        expected_freq_khz: 1_950_000,
+                    },
+                    OcPriorPoint {
+                        voltage_uv: 750_000,
+                        expected_freq_khz: 2_130_000,
+                    },
+                    OcPriorPoint {
+                        voltage_uv: 800_000,
+                        expected_freq_khz: 2_310_000,
+                    },
+                    OcPriorPoint {
+                        voltage_uv: 850_000,
+                        expected_freq_khz: 2_490_000,
+                    },
+                    OcPriorPoint {
+                        voltage_uv: 900_000,
+                        expected_freq_khz: 2_700_000,
+                    },
+                    OcPriorPoint {
+                        voltage_uv: 950_000,
+                        expected_freq_khz: 2_880_000,
+                    },
+                    OcPriorPoint {
+                        voltage_uv: 1_000_000,
+                        expected_freq_khz: 3_030_000,
+                    },
+                ],
+                probe_margin_khz: 150_000,
+            },
+            GpuType::Mobile50Series => ArchOcPrior {
+                points: vec![
+                    OcPriorPoint {
+                        voltage_uv: 700_000,
+                        expected_freq_khz: 1_800_000,
+                    },
+                    OcPriorPoint {
+                        voltage_uv: 750_000,
+                        expected_freq_khz: 2_010_000,
+                    },
+                    OcPriorPoint {
+                        voltage_uv: 800_000,
+                        expected_freq_khz: 2_190_000,
+                    },
+                    OcPriorPoint {
+                        voltage_uv: 850_000,
+                        expected_freq_khz: 2_370_000,
+                    },
+                    OcPriorPoint {
+                        voltage_uv: 900_000,
+                        expected_freq_khz: 2_550_000,
+                    },
+                    OcPriorPoint {
+                        voltage_uv: 950_000,
+                        expected_freq_khz: 2_700_000,
+                    },
+                    OcPriorPoint {
+                        voltage_uv: 1_000_000,
+                        expected_freq_khz: 2_850_000,
+                    },
+                ],
+                probe_margin_khz: 150_000,
+            },
+            _ => ArchOcPrior::none(),
+        }
+    }
+}
+
+// ──────────────────── OcPriorPoint / ArchOcPrior ────────────────────────────
+
+/// 一条先验数据点：(电压_μV, 已知稳定频率_kHz)
+#[derive(Debug, Clone, Copy)]
+pub struct OcPriorPoint {
+    pub voltage_uv: u32,
+    pub expected_freq_khz: i32,
+}
+
+/// 某个 GPU 架构的已知超频能力集合。
+#[derive(Debug, Clone)]
+pub struct ArchOcPrior {
+    /// 已知 (电压, 频率) 数据点，按电压升序排列。
+    pub points: Vec<OcPriorPoint>,
+    /// 在先验基础上允许向上探测的冗余量 (kHz)。
+    pub probe_margin_khz: i32,
+}
+
+impl ArchOcPrior {
+    /// 查找 <= `voltage_uv` 的最接近先验点。
+    pub fn lookup(&self, voltage_uv: u32) -> Option<OcPriorPoint> {
+        self.points
+            .iter()
+            .rev()
+            .find(|p| p.voltage_uv <= voltage_uv)
+            .copied()
+    }
+
+    /// 无先验（空）。
+    pub fn none() -> Self {
+        ArchOcPrior {
+            points: Vec::new(),
+            probe_margin_khz: 0,
+        }
+    }
 }

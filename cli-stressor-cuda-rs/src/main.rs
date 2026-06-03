@@ -966,33 +966,6 @@ fn main() {
         }
     }
 
-    // In Vulkan-only mode, skip all CUDA initialization and mixed-kernel parsing/output.
-    if args.vulkan_only {
-        #[cfg(feature = "vulkan")]
-        {
-            let image_config = VulkanImageConfig {
-                width: args.vulkan_image_width,
-                height: args.vulkan_image_height,
-                depth: args.vulkan_image_depth,
-                image_count: args.vulkan_image_count,
-                msaa: args.vulkan_image_msaa,
-            };
-            std::process::exit(run_vulkan_for_duration(args.duration, image_config));
-        }
-
-        #[cfg(not(feature = "vulkan"))]
-        {
-            eprintln!(
-                "{}",
-                stylize(
-                    "--vulkan-only requires building with --features vulkan",
-                    true
-                )
-            );
-            std::process::exit(2);
-        }
-    }
-
     let matrix_sizes = match parse_int_list(&args.matrix_sizes) {
         Ok(values) => values,
         Err(err) => {
@@ -1062,6 +1035,85 @@ fn main() {
             None
         }
     };
+
+    // In Vulkan-only mode, skip CUDA workload but use device identity for GPU selection
+    if args.vulkan_only {
+        #[cfg(feature = "vulkan")]
+        {
+            let image_config = VulkanImageConfig {
+                width: args.vulkan_image_width,
+                height: args.vulkan_image_height,
+                depth: args.vulkan_image_depth,
+                image_count: args.vulkan_image_count,
+                msaa: args.vulkan_image_msaa,
+            };
+            let selection = cuda_device_identity.map(|identity| VulkanDeviceSelection {
+                cuda_uuid: identity.uuid,
+                cuda_pci_bus: identity.pci_bus,
+            });
+            let result = if let Some(sel) = selection {
+                let mut eng = VulkanGraphicsEngine::with_selection(sel, image_config);
+                if let Err(e) = eng.start_stress_thread() {
+                    eprintln!(
+                        "{}",
+                        stylize(
+                            &format!("Failed to start VulkanGraphicsEngine: {}", e),
+                            true
+                        )
+                    );
+                    1
+                } else {
+                    let err_flag = eng.get_error_flag_arc();
+                    let started = std::time::Instant::now();
+                    let mut exit_code = 0;
+                    while started.elapsed().as_secs_f64() < args.duration {
+                        if err_flag.load(std::sync::atomic::Ordering::SeqCst) {
+                            eprintln!(
+                                "{}",
+                                stylize("[FATAL] Vulkan engine reported an error; exiting", true)
+                            );
+                            let _ = eng.stop();
+                            exit_code = 1;
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(200));
+                    }
+                    if exit_code == 0 {
+                        if let Err(e) = eng.stop() {
+                            eprintln!(
+                                "{}",
+                                stylize(&format!("[FATAL] Vulkan engine stop failed: {}", e), true)
+                            );
+                            exit_code = 1;
+                        }
+                    }
+                    if exit_code == 0 {
+                        println!(
+                            "{}",
+                            stylize("Vulkan-only run finished with GPU selection.", false)
+                        );
+                    }
+                    exit_code
+                }
+            } else {
+                // Fallback: no CUDA identity available, use first physical device
+                run_vulkan_for_duration(args.duration, image_config)
+            };
+            std::process::exit(result);
+        }
+
+        #[cfg(not(feature = "vulkan"))]
+        {
+            eprintln!(
+                "{}",
+                stylize(
+                    "--vulkan-only requires building with --features vulkan",
+                    true
+                )
+            );
+            std::process::exit(2);
+        }
+    }
 
     let info = backend.device_info();
     print_device_info(&info);

@@ -6,8 +6,8 @@
 //! 消除函数间层层透传 ArgMatches 以及散落的字符串 key 读取。
 
 use super::platform::{
-    default_test_exe_path, default_vfp_csv_path, default_vfp_init_csv_path, default_vfp_log_path,
-    default_vfp_temp_csv_path,
+    default_minload_exe_path, default_test_exe_path, default_vfp_csv_path,
+    default_vfp_init_csv_path, default_vfp_log_path, default_vfp_temp_csv_path,
 };
 use clap::ArgMatches;
 use nvoc_core::ClockDomain;
@@ -109,6 +109,8 @@ impl FixResultConfig {
 pub struct AutoscanConfig {
     /// 压力测试可执行文件路径
     pub test_exe: String,
+    /// Min-load Vulkan 可执行文件路径（唤醒 Optimus 笔记本上的 GPU）
+    pub minload_exe: String,
     /// 扫描日志文件路径
     pub log: String,
     /// 单轮超时循环次数
@@ -151,6 +153,10 @@ impl AutoscanConfig {
                 .get_one::<String>("test_exe")
                 .cloned()
                 .unwrap_or_else(|| default_test_exe_path().to_string()),
+            minload_exe: matches
+                .get_one::<String>("minload_exe")
+                .cloned()
+                .unwrap_or_else(|| default_minload_exe_path().to_string()),
             log: matches
                 .get_one::<String>("log")
                 .cloned()
@@ -209,6 +215,10 @@ impl AutoscanConfig {
                 .get_one::<String>("test_exe")
                 .cloned()
                 .unwrap_or_else(|| default_test_exe_path().to_string()),
+            minload_exe: matches
+                .get_one::<String>("minload_exe")
+                .cloned()
+                .unwrap_or_else(|| default_minload_exe_path().to_string()),
             log: matches
                 .get_one::<String>("log")
                 .cloned()

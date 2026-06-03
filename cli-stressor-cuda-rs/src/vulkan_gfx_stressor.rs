@@ -136,14 +136,18 @@ fn run_vulkan_stress_loop(
                     eprintln!(
                         "{}",
                         stylize(
-                            &format!("[VulkanGfx] Vulkan GPU selection failed: {err}; fallback to CUDA-only stress"),
+                            &format!(
+                                "[VulkanGfx] Vulkan GPU selection failed: {err}; fallback to CUDA-only stress"
+                            ),
                             true
                         )
                     );
                     eprintln!(
                         "{}",
                         stylize(
-                            &format!("Your Target GPU may not have proper Vulkan driver, check compatibility..."),
+                            &format!(
+                                "Your Target GPU may not have proper Vulkan driver, check compatibility..."
+                            ),
                             true
                         )
                     );

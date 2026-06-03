@@ -25,6 +25,17 @@ pub const fn default_test_exe_path() -> &'static str {
     }
 }
 
+pub const fn default_minload_exe_path() -> &'static str {
+    #[cfg(windows)]
+    {
+        "./test/cli-stressor-cuda-rs-minload.bat"
+    }
+    #[cfg(not(windows))]
+    {
+        "./test/cli-stressor-cuda-rs-minload.sh"
+    }
+}
+
 #[cfg(all(not(windows), not(target_os = "linux")))]
 pub fn panic_windows_only(feature: &str) -> ! {
     panic!("{feature} is only supported on Windows in this repository")
