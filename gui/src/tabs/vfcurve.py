@@ -1327,6 +1327,7 @@ class VFCurveTab:
             try:
                 el.set_visible(visible)
             except Exception:
+                # Matplotlib artists can be stale or removed during redraw churn.
                 pass
 
     # ────────────────────────────────────────────

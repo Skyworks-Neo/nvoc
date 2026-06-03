@@ -29,12 +29,12 @@ def _current_rss_kib() -> int | None:
     if sys.platform == "win32":
         try:
             import ctypes
-            from ctypes import wintypes
+            import ctypes.wintypes
 
             class PROCESS_MEMORY_COUNTERS(ctypes.Structure):
                 _fields_ = [
-                    ("cb", wintypes.DWORD),
-                    ("PageFaultCount", wintypes.DWORD),
+                    ("cb", ctypes.wintypes.DWORD),
+                    ("PageFaultCount", ctypes.wintypes.DWORD),
                     ("PeakWorkingSetSize", ctypes.c_size_t),
                     ("WorkingSetSize", ctypes.c_size_t),
                     ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
@@ -81,6 +81,7 @@ class MemoryDebugSampler:
         try:
             self._app.after_cancel(self._after_id)
         except Exception:
+            # Tk callbacks can disappear during shutdown; diagnostics must not block exit.
             pass
         self._after_id = None
 
@@ -94,6 +95,7 @@ class MemoryDebugSampler:
         gc_objects_list = gc.get_objects()
         gc_objects = len(gc_objects_list)
         matplotlib_stats = self._matplotlib_stats(gc_objects_list)
+        del gc_objects_list
 
         lines = [
             (
@@ -114,6 +116,7 @@ class MemoryDebugSampler:
             with self._path.open("a", encoding="utf-8") as log_file:
                 log_file.write("\n".join(lines))
         except OSError:
+            # Memory diagnostics are optional; log path failures should stay non-fatal.
             pass
 
         self._after_id = self._app.after(self._interval_ms, self._sample)
