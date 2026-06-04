@@ -1528,14 +1528,14 @@ fn run_gpuboostv3_short_phase<V: std::fmt::Display + Copy>(
                 KilohertzDelta(controller.f_current)
             );
             let decrease = controller.on_test_failed(args.common.minimum_delta_core_freq_step);
-            if args.is_50_series {
-                controller
-                    .apply_50_series_failure_penalty(args.common.minimum_delta_core_freq_step);
-                println!(
-                    "Additional safety: Decreasing target freq by {}kHz",
-                    args.common.minimum_delta_core_freq_step
-                );
-            }
+            // if args.is_50_series {
+            //     controller
+            //         .apply_50_series_failure_penalty(args.common.minimum_delta_core_freq_step);
+            //     println!(
+            //         "Additional safety: Decreasing target freq by {}kHz",
+            //         args.common.minimum_delta_core_freq_step
+            //     );
+            // }
             println!("Decreasing target freq by {}kHz", decrease);
             continue;
         }
@@ -1650,12 +1650,12 @@ fn run_gpuboostv3_long_phase<V: std::fmt::Display + Copy>(
                 "Decreasing target freq by {}kHz",
                 args.common.minimum_delta_core_freq_step
             );
-            if args.is_50_series {
-                println!(
-                    "Additional safety: Decreasing target freq by {}kHz",
-                    args.common.minimum_delta_core_freq_step
-                )
-            }
+            // if args.is_50_series {
+            //     println!(
+            //         "Additional safety: Decreasing target freq by {}kHz",
+            //         args.common.minimum_delta_core_freq_step
+            //     )
+            // }
             continue;
         }
 
@@ -2183,17 +2183,17 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
                 }
             }
 
-            if scan_params.enable_arch_safety_policy {
-                scan_strategy::apply_arch_safety_policy(
-                    &scan_params,
-                    ArchSafetyPhase::PrePointTest,
-                    v.0,
-                    &mut controller.f_current,
-                    &mut controller.f_max,
-                    &mut core_oc_safe_limit_ref,
-                    safe_elasticity_per_cycle,
-                );
-            }
+            // if scan_params.enable_arch_safety_policy {
+            //     scan_strategy::apply_arch_safety_policy(
+            //         &scan_params,
+            //         ArchSafetyPhase::PrePointTest,
+            //         v.0,
+            //         &mut controller.f_current,
+            //         &mut controller.f_max,
+            //         &mut core_oc_safe_limit_ref,
+            //         safe_elasticity_per_cycle,
+            //     );
+            // }
 
             let mut test_code = run_gpuboostv3_short_phase(
                 &mut l,
@@ -2273,17 +2273,19 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
             }
             prev_endpoint_delta = Some(controller.f_current);
 
-            if scan_params.enable_arch_safety_policy {
-                scan_strategy::apply_arch_safety_policy(
-                    &scan_params,
-                    ArchSafetyPhase::PostPointTest,
-                    v.0,
-                    &mut controller.f_current,
-                    &mut controller.f_max,
-                    &mut core_oc_safe_limit_ref,
-                    safe_elasticity_per_cycle,
-                );
-            }
+            // if scan_params.enable_arch_safety_policy {
+            //     scan_strategy::apply_arch_safety_policy(
+            //         &scan_params,
+            //         ArchSafetyPhase::PostPointTest,
+            //         v.0,
+            //         &mut controller.f_current,
+            //         &mut controller.f_max,
+            //         &mut core_oc_safe_limit_ref,
+            //         safe_elasticity_per_cycle,
+            //     );
+            // }
+            controller.f_current -= safe_elasticity_per_cycle;
+            controller.f_max += safe_elasticity_per_cycle;
             println!(
                 "Reset init core oc value {}, OC safe limit to {}",
                 controller.f_current, controller.f_max

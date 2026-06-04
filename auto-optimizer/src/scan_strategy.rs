@@ -312,7 +312,7 @@ impl StepController {
         }
 
         self.f_max = self.f_current;
-        let decrease = f_min_step * pow(2, self.current_step_exp - self.test_progress_num);
+        let decrease = f_min_step * pow(2, self.current_step_exp + 1 - self.test_progress_num);
         self.f_current -= decrease;
         decrease
     }
@@ -321,7 +321,7 @@ impl StepController {
     ///
     /// 50 系需要额外减去一个 f_min_step。
     pub fn apply_50_series_failure_penalty(&mut self, f_min_step: i32) {
-        self.f_current -= f_min_step;
+        // self.f_current -= f_min_step;
     }
 
     /// 应用长测失败步进：简单减去 f_min_step（50 系再减一个）。
