@@ -1447,16 +1447,17 @@ fn run_gpuboostv3_short_phase<V: std::fmt::Display + Copy>(
 
     if *resuming_flag {
         *resuming_flag = false;
-        println!(
-            "Initial OC offset:{}kHz, current safe limit:{}kHz",
-            controller.f_current, controller.f_max
-        );
         if controller.is_converged() {
             println!("Skipping short test...");
             println!("Initiating Long Test...");
-            writeln!(l, "Initiating Long Test...")?;
             return Ok(test_code);
+        }else{
+            println!(
+                "Initial OC offset:{}kHz, current safe limit:{}kHz",
+                controller.f_current, controller.f_max
+            );
         }
+
     }
 
     loop {

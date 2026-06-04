@@ -204,16 +204,18 @@ impl StepController {
         f_min_step: i32,
         step_exp: usize,
     ) -> Self {
-        let f_current = f_last_success - f_elastic;
+        let mut f_current = f_last_success - f_elastic;
         let f_max = min(f_last_failed + f_elastic, f_last_failed.max(f_current));
         let mut progress = 0;
 
-        while f_current + f_min_step * pow(2, step_exp + 1 - progress) >= f_max {
+        while f_current + f_min_step * pow(2, step_exp - progress) >= f_max {
             progress += 1;
         }
 
-        // 如果 progress 已经超过 exp+1，说明已收敛，跳过短测
-        if step_exp + 1 < progress {
+        // 如果 progress 已经超过 exp，说明已收敛，跳过短测
+        if f_last_success >= f_last_failed - f_min_step {
+            f_current = f_last_success;
+            progress = step_exp + 1
             // 仍正常返回，调用方会自行判断是否跳过短测
         }
 
@@ -241,7 +243,7 @@ impl StepController {
         let f_max = prior.expected_freq_khz + probe_margin_khz;
         let mut progress = 0;
 
-        while f_current + f_min_step * pow(2, step_exp + 1 - progress) >= f_max {
+        while f_current + f_min_step * pow(2, step_exp - progress) >= f_max {
             progress += 1;
         }
 
@@ -274,9 +276,10 @@ impl StepController {
             >= self.f_max
         {
             // 较大步进会超过上限，改用较小步进
-            let smaller = f_min_step * pow(2, self.current_step_exp - self.test_progress_num);
+            let mut smaller = f_min_step * pow(2, self.current_step_exp - self.test_progress_num);
             if self.f_current + smaller == self.f_max {
                 self.test_progress_num += 1;
+                smaller /= 2;
             }
             smaller
         } else {
@@ -309,11 +312,7 @@ impl StepController {
         }
 
         self.f_max = self.f_current;
-        // 用 (progress - 1) 抵消循环开头 +1：
-        //   首次失败 progress=1 → p=0 → 2^(3-0)=8× → 直接跳回上一个通过点
-        //   再次失败 progress=2 → p=1 → 2^(3-1)=4× → 半程探测
-        let p = self.test_progress_num.saturating_sub(1);
-        let decrease = f_min_step * pow(2, self.current_step_exp - p);
+        let decrease = f_min_step * pow(2, self.current_step_exp - self.test_progress_num);
         self.f_current -= decrease;
         decrease
     }
