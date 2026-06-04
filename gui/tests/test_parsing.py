@@ -142,7 +142,7 @@ def test_vfp_csv_helpers(tmp_path: Path) -> None:
             "index": 3,
             "voltage_uv": 800000,
             "frequency_khz": 1800000,
-            "delta_khz": 25000,
+            "delta_khz": 40000,
             "default_frequency_khz": 1775000,
         }
     ]
@@ -151,4 +151,4 @@ def test_vfp_csv_helpers(tmp_path: Path) -> None:
 
     assert get_vfp_offset_state_from_csv(str(csv_path)) == (True, 25)
     assert analyze_vfp_offsets([1800.0], [1775.0]) == (True, 25)
-    assert load_vfp_deltas(str(csv_path), points) == [(3, 25000)]
+    assert load_vfp_deltas(str(csv_path), points) == [(3, 40000)]
