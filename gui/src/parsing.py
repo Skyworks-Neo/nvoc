@@ -481,13 +481,12 @@ def load_vfp_deltas(
                 continue
             try:
                 voltage_uv = int(float(row[0]))
-                frequency_khz = int(round(float(row[1])))
+                delta_khz = int(round(float(row[2])))
             except (IndexError, ValueError):
                 continue
             reference = reference_by_voltage.get(voltage_uv)
             if reference is None:
                 continue
             point_index = int(reference.get("index", row_index))
-            default_khz = int(reference.get("default_frequency_khz", frequency_khz))
-            deltas.append((point_index, frequency_khz - default_khz))
+            deltas.append((point_index, delta_khz))
     return deltas
