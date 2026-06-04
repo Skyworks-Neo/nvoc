@@ -1451,13 +1451,12 @@ fn run_gpuboostv3_short_phase<V: std::fmt::Display + Copy>(
             println!("Skipping short test...");
             println!("Initiating Long Test...");
             return Ok(test_code);
-        }else{
+        } else {
             println!(
                 "Initial OC offset:{}kHz, current safe limit:{}kHz",
                 controller.f_current, controller.f_max
             );
         }
-
     }
 
     loop {
@@ -1528,14 +1527,14 @@ fn run_gpuboostv3_short_phase<V: std::fmt::Display + Copy>(
                 KilohertzDelta(controller.f_current)
             );
             let decrease = controller.on_test_failed(args.common.minimum_delta_core_freq_step);
-            if args.is_50_series {
-                controller
-                    .apply_50_series_failure_penalty(args.common.minimum_delta_core_freq_step);
-                println!(
-                    "Additional safety: Decreasing target freq by {}kHz",
-                    args.common.minimum_delta_core_freq_step
-                );
-            }
+            // if args.is_50_series {
+            //     controller
+            //         .apply_50_series_failure_penalty(args.common.minimum_delta_core_freq_step);
+            //     println!(
+            //         "Additional safety: Decreasing target freq by {}kHz",
+            //         args.common.minimum_delta_core_freq_step
+            //     );
+            // }
             println!("Decreasing target freq by {}kHz", decrease);
             continue;
         }
@@ -1553,14 +1552,14 @@ fn run_gpuboostv3_short_phase<V: std::fmt::Display + Copy>(
         }
 
         if controller.is_converged() {
-            break;
-        }
-            }
             controller.test_progress_num = 0;
             println!(
-        "Short test phase finished. Current freq_delta: +{}kHz",
-        controller.f_current
-    );
+                "Short test phase finished. Current freq_delta: +{}kHz",
+                controller.f_current
+            );
+            break;
+        }
+    }
     Ok(test_code)
 }
 
@@ -1650,12 +1649,12 @@ fn run_gpuboostv3_long_phase<V: std::fmt::Display + Copy>(
                 "Decreasing target freq by {}kHz",
                 args.common.minimum_delta_core_freq_step
             );
-            if args.is_50_series {
-                println!(
-                    "Additional safety: Decreasing target freq by {}kHz",
-                    args.common.minimum_delta_core_freq_step
-                )
-            }
+            // if args.is_50_series {
+            //     println!(
+            //         "Additional safety: Decreasing target freq by {}kHz",
+            //         args.common.minimum_delta_core_freq_step
+            //     )
+            // }
             continue;
         }
 
@@ -1951,15 +1950,14 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
             testing_step,
         } = gpu_type.as_ref().map(|t| t.oc_params()).unwrap_or_default();
 
-        let mut core_oc_safe_limit_ref = core_oc_safe_limit;
-
+        // let mut core_oc_safe_limit_ref = core_oc_safe_limit;
         let freq_step_exp = 3;
 
-        let scan_params = ScanParams {
-            is_50_series,
-            enable_arch_safety_policy: true,
-            ..ScanParams::default()
-        };
+        // let scan_params = ScanParams {
+        //     is_50_series,
+        //     enable_arch_safety_policy: true,
+        //     ..ScanParams::default()
+        // };
 
         // Retry QueryGpuStatus with backoff to handle transient GPU power state issues
         let status = retry_operation_with_backoff(
@@ -1975,7 +1973,7 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
         let mut point = lower_voltage_point;
         let mut resuming_flag = false;
         let mut last_succeeded_freq = init_core_oc_value;
-        let mut last_failed_freq = core_oc_safe_limit_ref;
+        let mut last_failed_freq = core_oc_safe_limit;
         let recovery_method_switch: bool = cfg.recovery_method.unwrap_or(is_50_series);
 
         let (succeeded_freq, failed_freq, last_voltage_point, ultrafast_flag) =
@@ -2061,22 +2059,20 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
 
         let mut controller;
 
-        {
-            let mut fc = last_succeeded_freq;
-            let mut fm = last_failed_freq;
-            if fm < fc {
-                println!("log parsing error... Restoring default value");
-                fm = core_oc_safe_limit_ref;
-                fc -= safe_elasticity_per_cycle;
-            }
-            controller = StepController::init_from_resume(
-                fc,
-                fm,
-                safe_elasticity_per_cycle,
-                minimum_delta_core_freq_step,
-                freq_step_exp,
-            );
+        let mut fc = last_succeeded_freq;
+        let mut fm = last_failed_freq;
+        if fm < fc {
+            println!("log parsing error... Restoring default value");
+            fm = core_oc_safe_limit;
+            fc -= safe_elasticity_per_cycle;
         }
+        controller = StepController::init_from_resume(
+            fc,
+            fm,
+            safe_elasticity_per_cycle,
+            minimum_delta_core_freq_step,
+            freq_step_exp,
+        );
 
         print_scan_separator();
         if resuming_flag {
@@ -2183,17 +2179,17 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
                 }
             }
 
-            if scan_params.enable_arch_safety_policy {
-                scan_strategy::apply_arch_safety_policy(
-                    &scan_params,
-                    ArchSafetyPhase::PrePointTest,
-                    v.0,
-                    &mut controller.f_current,
-                    &mut controller.f_max,
-                    &mut core_oc_safe_limit_ref,
-                    safe_elasticity_per_cycle,
-                );
-            }
+            // if scan_params.enable_arch_safety_policy {
+            //     scan_strategy::apply_arch_safety_policy(
+            //         &scan_params,
+            //         ArchSafetyPhase::PrePointTest,
+            //         v.0,
+            //         &mut controller.f_current,
+            //         &mut controller.f_max,
+            //         &mut core_oc_safe_limit_ref,
+            //         safe_elasticity_per_cycle,
+            //     );
+            // }
 
             let mut test_code = run_gpuboostv3_short_phase(
                 &mut l,
@@ -2273,17 +2269,19 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
             }
             prev_endpoint_delta = Some(controller.f_current);
 
-            if scan_params.enable_arch_safety_policy {
-                scan_strategy::apply_arch_safety_policy(
-                    &scan_params,
-                    ArchSafetyPhase::PostPointTest,
-                    v.0,
-                    &mut controller.f_current,
-                    &mut controller.f_max,
-                    &mut core_oc_safe_limit_ref,
-                    safe_elasticity_per_cycle,
-                );
-            }
+            // if scan_params.enable_arch_safety_policy {
+            //     scan_strategy::apply_arch_safety_policy(
+            //         &scan_params,
+            //         ArchSafetyPhase::PostPointTest,
+            //         v.0,
+            //         &mut controller.f_current,
+            //         &mut controller.f_max,
+            //         &mut core_oc_safe_limit_ref,
+            //         safe_elasticity_per_cycle,
+            //     );
+            // }
+            controller.f_current -= safe_elasticity_per_cycle;
+            controller.f_max += safe_elasticity_per_cycle;
             println!(
                 "Reset init core oc value {}, OC safe limit to {}",
                 controller.f_current, controller.f_max
