@@ -102,8 +102,12 @@ class VFCurveController(PaneController):
     def refresh_curve(self) -> None:
         if not self._begin_refresh():
             return
-        cache_path = self.cache_path()
-        gpu = self.app.selected_gpu_target()
+        try:
+            cache_path = self.cache_path()
+            gpu = self.app.selected_gpu_target()
+        except Exception:
+            self._end_refresh()
+            raise
         if gpu is None:
             self._end_refresh()
             self.clear_plot("No GPU selected.")
@@ -126,7 +130,12 @@ class VFCurveController(PaneController):
                 self._end_refresh()
                 raise
 
-        threading.Thread(target=worker, daemon=True, name="vf-refresh").start()
+        try:
+            thread = threading.Thread(target=worker, daemon=True, name="vf-refresh")
+            thread.start()
+        except Exception:
+            self._end_refresh()
+            raise
 
     def on_curve_loaded(self, output: str, path: str, code: int) -> None:
         self._end_refresh()

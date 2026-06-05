@@ -15,7 +15,7 @@ class FakeApp:
     def __init__(self) -> None:
         self.config_data = AppConfig()
         self.cache = GpuCache()
-        self.root_dir = Path("/tmp")
+        self.root_dir = Path.cwd()
         self.widgets: dict[str, object] = {}
         self.actions: list[str] = []
         self.action_outputs: list[str | None] = []
@@ -441,6 +441,49 @@ def test_vfcurve_refresh_suppresses_overlapping_workers(
 
     assert len(scheduled) == 1
     assert controller.is_refresh_inflight() is True
+
+
+def test_vfcurve_refresh_clears_inflight_when_cache_path_fails() -> None:
+    app = FakeApp()
+    controller = VFCurveController(app)
+
+    def fail_cache_path() -> Path:
+        raise OSError("cache path unavailable")
+
+    controller.cache_path = fail_cache_path
+
+    try:
+        controller.refresh_curve()
+    except OSError:
+        pass
+
+    assert controller.is_refresh_inflight() is False
+
+
+def test_vfcurve_refresh_clears_inflight_when_thread_start_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    app = FakeApp()
+    app.root_dir = tmp_path
+
+    class FakeThread:
+        def __init__(self, *, target, daemon, name) -> None:
+            self.target = target
+            self.daemon = daemon
+            self.name = name
+
+        def start(self) -> None:
+            raise RuntimeError("thread unavailable")
+
+    monkeypatch.setattr("nvoc_tui.controllers.vfcurve.threading.Thread", FakeThread)
+    controller = VFCurveController(app)
+
+    try:
+        controller.refresh_curve()
+    except RuntimeError:
+        pass
+
+    assert controller.is_refresh_inflight() is False
 
 
 def test_vfcurve_lock_voltage_rejects_invalid_point() -> None:
