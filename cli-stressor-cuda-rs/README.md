@@ -77,6 +77,7 @@ cargo run -p cli-stressor-cuda-rs --features cuda -- --config ./stressor.toml
   - 映射：`{ gemm = 0.4, memcpy = 0.3, reduction = 0.3 }`
 - `kernel_params.<kernel>` 支持按 kernel 覆盖参数，包括 `precisions`
 - `validate_interval = 0` 可关闭周期性验证
+- `vulkan_minor_mixture_rate` 用于 Vulkan 图形压力：启用 Vulkan 时会按该比例混入小尺寸 3D 图像（宽高随机取 127/256/511/512/1023，depth 保持不变）
 
 示例（`stressor.toml`）：
 
@@ -179,6 +180,7 @@ cargo run -p cli-stressor-cuda-rs --features cuda -- --config ./stressor.toml
   - map: `{ gemm = 0.4, memcpy = 0.3, reduction = 0.3 }`
 - `kernel_params.<kernel>` supports per-kernel overrides, including `precisions`
 - `validate_interval = 0` disables periodic validation
+- `vulkan_minor_mixture_rate` controls Vulkan graphics stress: when Vulkan is enabled, small 3D images are mixed in at that rate (width/height randomly chosen from 127/256/511/512/1023; depth stays the same)
 
 Example (`stressor.toml`):
 

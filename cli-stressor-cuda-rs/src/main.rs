@@ -205,6 +205,10 @@ struct Args {
     #[arg(long, default_value_t = 1)]
     vulkan_image_msaa: u32,
 
+    /// Vulkan minor mixture rate for small-image mixing
+    #[arg(long, default_value_t = 0.15)]
+    vulkan_minor_mixture_rate: f64,
+
     /// CUDA GPU index in PCI-bus-sorted order (0-based)
     #[arg(
         long,
@@ -265,6 +269,7 @@ struct FileConfig {
     vulkan_image_count: Option<u32>,
     vulkan_image_depth: Option<u32>,
     vulkan_image_msaa: Option<u32>,
+    vulkan_minor_mixture_rate: Option<f64>,
 }
 
 #[cfg(feature = "cuda")]
@@ -487,6 +492,7 @@ fn parse_args_with_cli_sources() -> (Args, std::collections::HashSet<&'static st
         "vulkan_image_count",
         "vulkan_image_depth",
         "vulkan_image_msaa",
+        "vulkan_minor_mixture_rate",
     ] {
         if matches.value_source(id) == Some(ValueSource::CommandLine) {
             cli_set.insert(id);
@@ -626,6 +632,12 @@ fn apply_file_config_to_args(
         parsed.vulkan_image_msaa,
     ) {
         args.vulkan_image_msaa = v;
+    }
+    if let (true, Some(v)) = (
+        !cli_set.contains("vulkan_minor_mixture_rate"),
+        parsed.vulkan_minor_mixture_rate,
+    ) {
+        args.vulkan_minor_mixture_rate = v;
     }
     Ok(())
 }
@@ -1046,6 +1058,7 @@ fn main() {
                 depth: args.vulkan_image_depth,
                 image_count: args.vulkan_image_count,
                 msaa: args.vulkan_image_msaa,
+                minor_mixture_rate: args.vulkan_minor_mixture_rate,
             };
             let selection = cuda_device_identity.map(|identity| VulkanDeviceSelection {
                 cuda_uuid: identity.uuid,
@@ -1341,6 +1354,13 @@ fn main() {
                 args.vulkan_image_msaa,
             ))
         );
+        println!(
+            "{}",
+            stylize_config(&format!(
+                "  Vulkan minor mixture rate: {:.2}",
+                args.vulkan_minor_mixture_rate
+            ))
+        );
     }
 
     // Optionally start the Vulkan graphics engine (if built with --features "vulkan").
@@ -1358,6 +1378,7 @@ fn main() {
                 depth: args.vulkan_image_depth,
                 image_count: args.vulkan_image_count,
                 msaa: args.vulkan_image_msaa,
+                minor_mixture_rate: args.vulkan_minor_mixture_rate,
             };
             let selection = VulkanDeviceSelection {
                 cuda_uuid: identity.uuid,
@@ -1455,6 +1476,7 @@ fn main() {
             depth: args.vulkan_image_depth,
             image_count: args.vulkan_image_count,
             msaa: args.vulkan_image_msaa,
+            minor_mixture_rate: args.vulkan_minor_mixture_rate,
         };
         std::process::exit(run_vulkan_for_duration(args.duration, image_config));
     }
