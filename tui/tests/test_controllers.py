@@ -15,6 +15,7 @@ class FakeApp:
     def __init__(self) -> None:
         self.config_data = AppConfig()
         self.cache = GpuCache()
+        self.root_dir = Path("/tmp")
         self.widgets: dict[str, object] = {}
         self.actions: list[str] = []
         self.action_outputs: list[str | None] = []
@@ -46,6 +47,15 @@ class FakeApp:
 
     def selected_gpu_target(self) -> str:
         return "0x0000"
+
+    def selected_gpu_idx(self) -> int:
+        return 0
+
+    def current_gpu(self):
+        return SimpleNamespace(uuid=None)
+
+    def call_from_thread(self, callback, *args) -> None:
+        callback(*args)
 
     def run_native_action(self, description: str, action) -> None:
         self.actions.append(description)
@@ -405,6 +415,32 @@ def test_vfcurve_export_action_writes_static_curve(tmp_path: Path) -> None:
         "voltage,frequency,delta,default_frequency",
         "800000,1800000,15000,1785000",
     ]
+
+
+def test_vfcurve_refresh_suppresses_overlapping_workers(
+    tmp_path: Path, monkeypatch
+) -> None:
+    app = FakeApp()
+    app.root_dir = tmp_path
+    scheduled: list[object] = []
+
+    class FakeThread:
+        def __init__(self, *, target, daemon, name) -> None:
+            self.target = target
+            self.daemon = daemon
+            self.name = name
+
+        def start(self) -> None:
+            scheduled.append(self)
+
+    monkeypatch.setattr("nvoc_tui.controllers.vfcurve.threading.Thread", FakeThread)
+    controller = VFCurveController(app)
+
+    controller.refresh_curve()
+    controller.refresh_curve()
+
+    assert len(scheduled) == 1
+    assert controller.is_refresh_inflight() is True
 
 
 def test_vfcurve_lock_voltage_rejects_invalid_point() -> None:
