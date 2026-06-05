@@ -1,4 +1,3 @@
-use nvoc_cli_common::color::stylize;
 use rand::rngs::StdRng;
 use rand::seq::IndexedRandom;
 use rand::{Rng, SeedableRng};
@@ -11,7 +10,7 @@ macro_rules! println {
     () => { std::println!() };
     ($($arg:tt)*) => {{
         let msg = format!($($arg)*);
-        std::println!("{}", stylize(&msg, false));
+        std::println!("{}", nvoc_cli_common::color::stylize(&msg, false));
     }};
 }
 
@@ -152,6 +151,38 @@ pub struct DeviceInfo {
     pub compute_capability: Option<(i32, i32)>,
 }
 
+impl DeviceInfo {
+    pub fn supports_precision(&self, spec: &PrecisionSpec) -> Result<(), String> {
+        match spec.kind {
+            PrecisionKind::FP64 => Ok(()),
+            PrecisionKind::FP32 | PrecisionKind::TF32 => Ok(()),
+            PrecisionKind::FP16 => Ok(()),
+            PrecisionKind::BF16 => {
+                let sm = self.compute_capability.unwrap_or((0, 0));
+                if sm.0 >= 8 {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "BF16 requires SM80 or higher (current: SM{}.{})",
+                        sm.0, sm.1
+                    ))
+                }
+            }
+            PrecisionKind::FP8E4M3FN => {
+                let sm = self.compute_capability.unwrap_or((0, 0));
+                if sm.0 >= 8 && (sm.0 > 8 || sm.1 >= 9) {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "FP8 requires SM89 or higher (current: SM{}.{})",
+                        sm.0, sm.1
+                    ))
+                }
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct PciBusAddress {
     pub domain: u32,
@@ -190,6 +221,9 @@ pub trait Backend {
 
     fn device_info(&self) -> DeviceInfo;
     fn supports_precision(&self, spec: &PrecisionSpec) -> Result<(), String>;
+    fn supports_kernel(&self, _kind: KernelType) -> bool {
+        true
+    }
     fn set_tf32(&mut self, enabled: Option<bool>) -> Result<(), BackendError>;
     fn upload_matrix(
         &self,

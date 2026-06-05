@@ -1155,6 +1155,10 @@ fn main() {
     };
     let mut kernel_types = kernel_types_all.clone();
     filter_atomic_for_sm(&mut kernel_types, &info);
+
+    // Additional filtering based on backend-specific runtime availability
+    kernel_types.retain(|&k| backend.supports_kernel(k));
+
     if kernel_types.is_empty() {
         eprintln!(
             "{}",
