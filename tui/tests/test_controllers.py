@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from nvoc_tui.app import NVOCApp
 from nvoc_tui.controllers.console import ConsoleController
 from nvoc_tui.controllers.dashboard import DashboardController
@@ -478,10 +479,8 @@ def test_vfcurve_refresh_clears_inflight_when_thread_start_fails(
     monkeypatch.setattr("nvoc_tui.controllers.vfcurve.threading.Thread", FakeThread)
     controller = VFCurveController(app)
 
-    try:
+    with pytest.raises(RuntimeError):
         controller.refresh_curve()
-    except RuntimeError:
-        pass
 
     assert controller.is_refresh_inflight() is False
 
