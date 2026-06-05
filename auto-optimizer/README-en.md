@@ -240,7 +240,7 @@ Generally do not support **Boost Voltage, fan-related controls, temperature wall
 |------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | Windows 10/11 or any Linux distribution                          | The tool is invoked via NVAPI/NVML and supports Windows 10/11 and *any Linux distribution using nvidia-open-dkms* (theoretically, ArchLinux + KDE, Ubuntu 22.04, Debian 12/13 tested). |
 | NVIDIA Driver (≥ 537, nvidia-open-dkms or proprietary for Linux) | Must support NVAPI/NVML interface for target GPU. Version 395 known not to work; hard to support Kepler and earlier GPUs with old drivers.                                             |
-| `cli-stressor` pressure test script (for auto OC)                | By default called by `test\test_cuda_windows.bat` / `test\test_opencl_linux.sh`.                                                                                                       |
+| `cli-stressor` pressure test script (for auto OC)                | By default called by `test\test_cuda_windows.bat` on Windows and `test/test_cuda_linux.sh` on Linux.                                                                                    |
 | Administrator/Sudo privileges                                    | OC parameter writing requires admin privileges; most reads do not.                                                                                                                     |
 
 ### Pressure Test Script Location (Default)
@@ -250,7 +250,9 @@ auto-optimizer/
 ├── test/
 │   ├── test.bat
 │   ├── test_cuda_windows.bat
-│   └── test_opencl_linux.sh
+│   ├── test_cuda_linux.sh
+│   ├── cli-stressor-cuda-rs-minload.sh
+│   └── dyn_load_export_cuda_rs_linux.sh
 └── ws/
 ```
 
@@ -258,6 +260,8 @@ auto-optimizer/
 
 - Rust toolchain
 - Build tools for target architecture
+- Linux CUDA RS autoscan requires a release binary built with CUDA support; build with
+  `cargo build --release -p cli-stressor-cuda-rs --features cuda,vulkan` when using the default Linux minload/Vulkan configs.
 
 ---
 

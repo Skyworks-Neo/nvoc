@@ -19,7 +19,11 @@ pub const fn default_test_exe_path() -> &'static str {
     {
         "./test/test_cuda_windows.bat"
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        "./test/test_cuda_linux.sh"
+    }
+    #[cfg(all(not(windows), not(target_os = "linux")))]
     {
         "./test/test_opencl_linux.sh"
     }
@@ -113,5 +117,20 @@ pub fn is_elevated() -> bool {
         }
         // SAFETY: geteuid() always succeeds and is async-signal-safe.
         unsafe { geteuid() == 0 }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{default_minload_exe_path, default_test_exe_path};
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn linux_defaults_use_cuda_rs_wrappers() {
+        assert_eq!(default_test_exe_path(), "./test/test_cuda_linux.sh");
+        assert_eq!(
+            default_minload_exe_path(),
+            "./test/cli-stressor-cuda-rs-minload.sh"
+        );
     }
 }

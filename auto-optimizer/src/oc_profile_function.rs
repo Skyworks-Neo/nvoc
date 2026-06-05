@@ -72,7 +72,7 @@ fn spawn_dynamic_load_process(cuda_device: Option<u32>) -> Result<Child, Error> 
 fn spawn_dynamic_load_process(cuda_device: Option<u32>) -> Result<Child, Error> {
     let repo_root = env!("CARGO_MANIFEST_DIR");
     let mut cmd = Command::new("bash");
-    cmd.arg("./test/dyn_load_export_opencl_linux.sh")
+    cmd.arg("./test/dyn_load_export_cuda_rs_linux.sh")
         .current_dir(repo_root);
     if let Some(dev) = cuda_device {
         cmd.env("CUDA_DEVICE_ORDER", "PCI_BUS_ID");
@@ -80,7 +80,7 @@ fn spawn_dynamic_load_process(cuda_device: Option<u32>) -> Result<Child, Error> 
     }
     cmd.spawn().map_err(|e| {
         Error::Custom(format!(
-            "Failed to start Linux load process with test/test_opencl_linux.sh load 10: {}",
+            "Failed to start Linux load process with test/dyn_load_export_cuda_rs_linux.sh: {}",
             e
         ))
     })
