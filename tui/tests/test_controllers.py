@@ -456,6 +456,7 @@ def test_vfcurve_refresh_clears_inflight_when_cache_path_fails() -> None:
     try:
         controller.refresh_curve()
     except OSError:
+        # Expected in this test: cache_path is forced to fail, we only verify inflight cleanup.
         pass
 
     assert controller.is_refresh_inflight() is False
