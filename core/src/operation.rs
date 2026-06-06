@@ -1170,6 +1170,49 @@ impl GpuOperation for QueryEdid {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct SetEdid {
+    pub display_id: u32,
+    pub bytes: Vec<u8>,
+}
+
+impl GpuOperation for SetEdid {
+    type Output = ();
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetEdid
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .inner()
+            .set_edid(self.display_id, &self.bytes)
+            .map_err(Error::from)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ClearEdid {
+    pub display_id: u32,
+}
+
+impl GpuOperation for ClearEdid {
+    type Output = ();
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::ClearEdid
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .inner()
+            .clear_edid(self.display_id)
+            .map_err(Error::from)
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct SetLegacyClocks {
     pub core_mhz: u32,

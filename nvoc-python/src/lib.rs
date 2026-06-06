@@ -1,16 +1,18 @@
 use nvapi_hi::{
     Celsius, ClockDomain, CoolerPolicy, KilohertzDelta, MicrovoltsDelta, PState, Percentage,
 };
-use nvml_wrapper::enum_wrappers::device::PerformanceState;
+use nvml_wrapper::enum_wrappers::device::{Api, PerformanceState};
 use nvoc_core::{
-    BackendSet, CheckVoltageFrequency, ConvertEnum, GpuTarget, QueryDomainVfpPoints, QueryFanInfo,
-    QueryGpuInfo, QueryGpuSettings, QueryGpuStatus, QueryLegacyCoreOvervoltRanges,
-    QueryLegacyP0CoreMaxVoltageDelta, QueryPowerLimits, QueryPstates,
+    BackendSet, CheckVoltageFrequency, ClearEdid, ConvertEnum, GpuTarget, QueryApiRestriction,
+    QueryAutoBoost, QueryDisplays, QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo,
+    QueryGpuSettings, QueryGpuStatus, QueryLegacyCoreOvervoltRanges,
+    QueryLegacyP0CoreMaxVoltageDelta, QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates,
     QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
-    QueryVfpPointVoltage, ResetApplicationsClocks, ResetCoolerLevels, ResetFanSpeed,
-    ResetLockedClocks, ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetPstateBaseVoltages,
-    ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock, ResetVfpLock,
-    SetApplicationsClocks, SetClockOffset, SetCoolerLevels, SetDomainVfpDeltas, SetFanSpeed,
+    QueryThrottleReasons, QueryVfpPointVoltage, QueryVoltageBoost, ResetApplicationsClocks,
+    ResetCoolerLevels, ResetFanSpeed, ResetLockedClocks, ResetNvapiPowerLimits,
+    ResetNvapiSensorLimits, ResetPstateBaseVoltages, ResetPstateClockOffsets, ResetVfpDeltas,
+    ResetVfpFrequencyLock, ResetVfpLock, SetApiRestriction, SetApplicationsClocks, SetAutoBoost,
+    SetAutoBoostDefault, SetClockOffset, SetCoolerLevels, SetDomainVfpDeltas, SetEdid, SetFanSpeed,
     SetLegacyClocks, SetLockedClocks, SetNvapiPowerLimits, SetNvapiPstateLock,
     SetNvapiSensorLimits, SetNvmlPstateLock, SetPowerLimit, SetPstateBaseVoltage,
     SetPstateClockOffset, SetTemperatureLimit, SetVfpFrequencyLock, SetVfpPointDelta,
@@ -72,6 +74,67 @@ fn parse_pstate(raw: &str) -> PyResult<PState> {
 
 fn parse_nvml_pstate(raw: &str) -> PyResult<PerformanceState> {
     try_parse_nvml_pstate(raw).map_err(invalid_value)
+}
+
+fn parse_api_restriction_api(raw: &str) -> PyResult<Api> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "app-clocks" | "application-clocks" => Ok(Api::ApplicationClocks),
+        "auto-boost" | "autoboost" => Ok(Api::AutoBoostedClocks),
+        other => Err(invalid_value(format!(
+            "invalid API {other:?}; expected app-clocks or auto-boost"
+        ))),
+    }
+}
+
+fn api_restriction_api_label(api_type: Api) -> &'static str {
+    match api_type {
+        Api::ApplicationClocks => "app-clocks",
+        Api::AutoBoostedClocks => "auto-boost",
+    }
+}
+
+fn voltage_domain_label(domain: nvoc_core::VoltageDomain) -> &'static str {
+    match domain {
+        nvoc_core::VoltageDomain::Core => "core",
+        nvoc_core::VoltageDomain::Undefined => "undefined",
+        _ => "unknown",
+    }
+}
+
+fn parse_display_id(raw: &str) -> PyResult<u32> {
+    let trimmed = raw.trim();
+    let digits = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+        .unwrap_or(trimmed);
+    u32::from_str_radix(digits, 16)
+        .map_err(|_| invalid_value(format!("invalid display ID {raw:?}; expected hex")))
+}
+
+fn parse_edid_hex(raw: &str) -> PyResult<Vec<u8>> {
+    let hex = raw.trim();
+    if !hex.len().is_multiple_of(2) {
+        return Err(invalid_value(
+            "EDID hex must contain an even number of digits",
+        ));
+    }
+    (0..hex.len())
+        .step_by(2)
+        .map(|index| {
+            u8::from_str_radix(&hex[index..index + 2], 16)
+                .map_err(|_| invalid_value(format!("invalid EDID hex byte at offset {index}")))
+        })
+        .collect()
+}
+
+fn bytes_to_upper_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0F) as usize] as char);
+    }
+    out
 }
 
 fn selected_target<'a>(
@@ -212,8 +275,65 @@ fn first_number_in_display<T: std::fmt::Display>(value: T) -> Option<f64> {
     }
 }
 
+fn target_nvml_device<'a>(target: &GpuTarget<'a>) -> PyResult<nvml_wrapper::Device<'a>> {
+    let nvml = target.nvml().map_err(to_py_err)?;
+    let count = nvml
+        .device_count()
+        .map_err(|err| to_py_err(format!("NVML device_count failed: {err:?}")))?;
+    for index in 0..count {
+        let device = nvml
+            .device_by_index(index)
+            .map_err(|err| to_py_err(format!("NVML device_by_index({index}) failed: {err:?}")))?;
+        let id = nvoc_core::gpu_id_from_nvml_device(&device).map_err(to_py_err)?;
+        if id.0 == target.id.0 {
+            return Ok(device);
+        }
+    }
+    Err(to_py_err(format!(
+        "NVML device for GPU {} not found",
+        target.id.0
+    )))
+}
+
+fn normalize_info_nvml(target: &GpuTarget<'_>) -> PyResultValue {
+    let device = target_nvml_device(target)?;
+    let mut map = Map::new();
+    map.insert("gpu_id".into(), u64_value(target.id.0 as u64));
+    map.insert("gpu_id_hex".into(), text(format!("0x{:04X}", target.id.0)));
+    map.insert("index".into(), u64_value(target.index as u64));
+    map.insert("vendor".into(), text("NVIDIA"));
+
+    let name = device
+        .name()
+        .map_err(|err| to_py_err(format!("NVML name failed: {err:?}")))?;
+    map.insert("name".into(), text(&name));
+    map.insert("gpu_name".into(), text(name));
+
+    if let Ok(pci) = device.pci_info() {
+        map.insert(
+            "bus".into(),
+            text(format!(
+                "{:04x}:{:02x}:{:02x}.0",
+                pci.domain, pci.bus, pci.device
+            )),
+        );
+    }
+    if let Ok(uuid) = device.uuid() {
+        map.insert("uuid".into(), text(uuid));
+    }
+    if let Ok(brand) = device.brand() {
+        map.insert("brand".into(), text(format!("{brand:?}")));
+    }
+
+    Ok(Value::Object(map))
+}
+
 fn normalize_info(target: &GpuTarget<'_>) -> PyResultValue {
-    let info = run(target, QueryGpuInfo).map_err(to_py_err)?.output;
+    let info = match run(target, QueryGpuInfo) {
+        Ok(report) => report.output,
+        Err(_) if target.nvml.is_some() => return normalize_info_nvml(target),
+        Err(error) => return Err(to_py_err(error)),
+    };
     let mut map = Map::new();
     map.insert("gpu_id".into(), u64_value(target.id.0 as u64));
     map.insert("gpu_id_hex".into(), text(format!("0x{:04X}", target.id.0)));
@@ -506,6 +626,189 @@ fn normalize_supported_app_clocks(target: &GpuTarget<'_>) -> PyResultValue {
     Ok(Value::Array(items))
 }
 
+fn normalize_power_limits(target: &GpuTarget<'_>) -> PyResultValue {
+    let power = run(target, QueryPowerLimits).map_err(to_py_err)?.output;
+    Ok(value_object([
+        ("min_watt", f64_value(power.min_watts as f64)),
+        ("current_watt", f64_value(power.current_watts as f64)),
+        ("max_watt", f64_value(power.max_watts as f64)),
+    ]))
+}
+
+fn normalize_pstates(target: &GpuTarget<'_>) -> PyResultValue {
+    let items = run(target, QueryPstates)
+        .map_err(to_py_err)?
+        .output
+        .into_iter()
+        .map(|item| {
+            value_object([
+                (
+                    "pstate",
+                    Value::String(nvml_pstate_to_str(item.pstate).to_string()),
+                ),
+                ("min_core_mhz", u64_value(item.min_core_mhz as u64)),
+                ("max_core_mhz", u64_value(item.max_core_mhz as u64)),
+                ("min_memory_mhz", u64_value(item.min_memory_mhz as u64)),
+                ("max_memory_mhz", u64_value(item.max_memory_mhz as u64)),
+            ])
+        })
+        .collect();
+    Ok(Value::Array(items))
+}
+
+fn normalize_fan_info(target: &GpuTarget<'_>) -> PyResultValue {
+    let fan = run(target, QueryFanInfo).map_err(to_py_err)?.output;
+    Ok(value_object([
+        ("count", u64_value(fan.count as u64)),
+        ("min_percent", option_u32(fan.min_speed)),
+        ("max_percent", option_u32(fan.max_speed)),
+    ]))
+}
+
+fn normalize_temperature_thresholds(target: &GpuTarget<'_>) -> PyResultValue {
+    let items = run(target, QueryTemperatureThresholds)
+        .map_err(to_py_err)?
+        .output
+        .into_iter()
+        .map(|item| {
+            value_object([
+                ("name", Value::String(item.name.to_string())),
+                ("celsius", option_u32(item.celsius)),
+            ])
+        })
+        .collect();
+    Ok(Value::Array(items))
+}
+
+fn normalize_throttle_reasons(target: &GpuTarget<'_>) -> PyResultValue {
+    let items = run(target, QueryThrottleReasons)
+        .map_err(to_py_err)?
+        .output
+        .into_iter()
+        .map(|item| {
+            value_object([
+                ("name", Value::String(item.name)),
+                ("active", bool_value(item.active)),
+            ])
+        })
+        .collect();
+    Ok(Value::Array(items))
+}
+
+fn normalize_legacy_overvolt_ranges(target: &GpuTarget<'_>) -> PyResultValue {
+    let items = run(target, QueryLegacyCoreOvervoltRanges)
+        .map_err(to_py_err)?
+        .output
+        .into_iter()
+        .map(|(pstate, current, min, max)| {
+            value_object([
+                ("pstate", text(pstate)),
+                ("min_uv", i64_value(min.0 as i64)),
+                ("current_uv", i64_value(current.0 as i64)),
+                ("max_uv", i64_value(max.0 as i64)),
+            ])
+        })
+        .collect();
+    Ok(Value::Array(items))
+}
+
+fn normalize_pstate_base_voltage(target: &GpuTarget<'_>, pstate: PState) -> PyResultValue {
+    let voltage = run(target, QueryPstateBaseVoltage { pstate })
+        .map_err(to_py_err)?
+        .output;
+    Ok(value_object([
+        ("pstate", text(voltage.pstate)),
+        (
+            "voltage_domain",
+            Value::String(voltage_domain_label(voltage.voltage_domain).to_string()),
+        ),
+        ("editable", bool_value(voltage.editable)),
+        ("voltage_uv", u64_value(voltage.voltage.0 as u64)),
+        ("delta_uv", i64_value(voltage.delta.0 as i64)),
+        ("min_delta_uv", i64_value(voltage.min_delta.0 as i64)),
+        ("max_delta_uv", i64_value(voltage.max_delta.0 as i64)),
+    ]))
+}
+
+fn normalize_voltage_boost(target: &GpuTarget<'_>) -> PyResultValue {
+    let boost = run(target, QueryVoltageBoost).map_err(to_py_err)?.output;
+    Ok(value_object([(
+        "voltage_boost_percent",
+        boost
+            .voltage_boost
+            .map(percent_value)
+            .unwrap_or(Value::Null),
+    )]))
+}
+
+fn normalize_auto_boost(target: &GpuTarget<'_>) -> PyResultValue {
+    let state = run(target, QueryAutoBoost).map_err(to_py_err)?.output;
+    Ok(value_object([
+        ("enabled", bool_value(state.enabled)),
+        ("default_enabled", bool_value(state.default_enabled)),
+    ]))
+}
+
+fn normalize_api_restriction(target: &GpuTarget<'_>, api_type: Api) -> PyResultValue {
+    let state = run(target, QueryApiRestriction { api_type })
+        .map_err(to_py_err)?
+        .output;
+    Ok(value_object([
+        (
+            "api",
+            Value::String(api_restriction_api_label(state.api_type).to_string()),
+        ),
+        ("restricted", bool_value(state.restricted)),
+    ]))
+}
+
+fn normalize_displays(target: &GpuTarget<'_>, all: bool) -> PyResultValue {
+    let items = run(target, QueryDisplays { all })
+        .map_err(to_py_err)?
+        .output
+        .into_iter()
+        .map(|display| {
+            value_object([
+                (
+                    "display_id",
+                    Value::String(format!("0x{:08X}", display.display_id)),
+                ),
+                ("display_id_u32", u64_value(display.display_id as u64)),
+                ("connector", Value::String(display.connector)),
+                (
+                    "flags_hex",
+                    Value::String(format!("0x{:08X}", display.flags_bits)),
+                ),
+                ("connected", bool_value(display.connected)),
+                (
+                    "physically_connected",
+                    bool_value(display.physically_connected),
+                ),
+                ("active", bool_value(display.active)),
+                ("os_visible", bool_value(display.os_visible)),
+                ("dynamic", bool_value(display.dynamic)),
+                ("mst_root", bool_value(display.mst_root)),
+                ("wireless", bool_value(display.wireless)),
+            ])
+        })
+        .collect();
+    Ok(Value::Array(items))
+}
+
+fn normalize_edid(target: &GpuTarget<'_>, display_id: u32) -> PyResultValue {
+    let edid = run(target, QueryEdid { display_id })
+        .map_err(to_py_err)?
+        .output;
+    Ok(value_object([
+        (
+            "display_id",
+            Value::String(format!("0x{:08X}", edid.display_id)),
+        ),
+        ("bytes", u64_value(edid.bytes.len() as u64)),
+        ("edid_hex", Value::String(bytes_to_upper_hex(&edid.bytes))),
+    ]))
+}
+
 fn normalize_query_vfp_point(target: &GpuTarget<'_>, point: usize) -> PyResultValue {
     let voltage = run(target, QueryVfpPointVoltage { point })
         .map_err(to_py_err)?
@@ -662,6 +965,91 @@ fn query_supported_applications_clocks(
         backends.unwrap_or("nvml"),
         normalize_supported_app_clocks,
     )?;
+    py_value(py, &value)
+}
+
+#[pyfunction]
+fn query_power_limits(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
+    let value = with_target(gpu, "nvml", normalize_power_limits)?;
+    py_value(py, &value)
+}
+
+#[pyfunction]
+fn query_pstates(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
+    let value = with_target(gpu, "nvml", normalize_pstates)?;
+    py_value(py, &value)
+}
+
+#[pyfunction]
+fn query_fan_info(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
+    let value = with_target(gpu, "nvml", normalize_fan_info)?;
+    py_value(py, &value)
+}
+
+#[pyfunction]
+fn query_temperature_thresholds(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
+    let value = with_target(gpu, "nvml", normalize_temperature_thresholds)?;
+    py_value(py, &value)
+}
+
+#[pyfunction]
+fn query_throttle_reasons(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
+    let value = with_target(gpu, "nvml", normalize_throttle_reasons)?;
+    py_value(py, &value)
+}
+
+#[pyfunction]
+fn query_legacy_overvolt_ranges(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
+    let value = with_target(gpu, "nvapi", normalize_legacy_overvolt_ranges)?;
+    py_value(py, &value)
+}
+
+#[pyfunction]
+#[pyo3(signature = (gpu, pstate = None))]
+fn query_pstate_base_voltage(
+    py: Python<'_>,
+    gpu: &str,
+    pstate: Option<&str>,
+) -> PyResult<Py<PyAny>> {
+    let pstate = parse_pstate(pstate.unwrap_or("P0"))?;
+    let value = with_target(gpu, "nvapi", |target| {
+        normalize_pstate_base_voltage(target, pstate)
+    })?;
+    py_value(py, &value)
+}
+
+#[pyfunction]
+fn query_voltage_boost(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
+    let value = with_target(gpu, "nvapi", normalize_voltage_boost)?;
+    py_value(py, &value)
+}
+
+#[pyfunction]
+fn query_auto_boost(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
+    let value = with_target(gpu, "nvml", normalize_auto_boost)?;
+    py_value(py, &value)
+}
+
+#[pyfunction]
+fn query_api_restriction(py: Python<'_>, gpu: &str, api_type: &str) -> PyResult<Py<PyAny>> {
+    let api_type = parse_api_restriction_api(api_type)?;
+    let value = with_target(gpu, "nvml", |target| {
+        normalize_api_restriction(target, api_type)
+    })?;
+    py_value(py, &value)
+}
+
+#[pyfunction]
+#[pyo3(signature = (gpu, all = false))]
+fn list_displays(py: Python<'_>, gpu: &str, all: bool) -> PyResult<Py<PyAny>> {
+    let value = with_target(gpu, "nvapi", |target| normalize_displays(target, all))?;
+    py_value(py, &value)
+}
+
+#[pyfunction]
+fn query_edid(py: Python<'_>, gpu: &str, display_id: &str) -> PyResult<Py<PyAny>> {
+    let display_id = parse_display_id(display_id)?;
+    let value = with_target(gpu, "nvapi", |target| normalize_edid(target, display_id))?;
     py_value(py, &value)
 }
 
@@ -1227,6 +1615,71 @@ fn set_voltage_boost(gpu: &str, value: u32) -> PyResult<()> {
 }
 
 #[pyfunction]
+fn reset_voltage_boost(gpu: &str) -> PyResult<()> {
+    let inventory = target_inventory(BackendSet::Nvapi)?;
+    let target = selected_target(&inventory, gpu)?;
+    run(
+        &target,
+        SetVoltageBoost {
+            boost: Percentage(0),
+        },
+    )
+    .map_err(to_py_err)?;
+    Ok(())
+}
+
+#[pyfunction]
+fn set_auto_boost(gpu: &str, enabled: bool) -> PyResult<()> {
+    let inventory = target_inventory(BackendSet::Nvml)?;
+    let target = selected_target(&inventory, gpu)?;
+    run(&target, SetAutoBoost { enabled }).map_err(to_py_err)?;
+    Ok(())
+}
+
+#[pyfunction]
+fn set_auto_boost_default(gpu: &str, enabled: bool) -> PyResult<()> {
+    let inventory = target_inventory(BackendSet::Nvml)?;
+    let target = selected_target(&inventory, gpu)?;
+    run(&target, SetAutoBoostDefault { enabled }).map_err(to_py_err)?;
+    Ok(())
+}
+
+#[pyfunction]
+fn set_api_restriction(gpu: &str, api_type: &str, restricted: bool) -> PyResult<()> {
+    let api_type = parse_api_restriction_api(api_type)?;
+    let inventory = target_inventory(BackendSet::Nvml)?;
+    let target = selected_target(&inventory, gpu)?;
+    run(
+        &target,
+        SetApiRestriction {
+            api_type,
+            restricted,
+        },
+    )
+    .map_err(to_py_err)?;
+    Ok(())
+}
+
+#[pyfunction]
+fn set_edid(gpu: &str, display_id: &str, edid_hex: &str) -> PyResult<()> {
+    let display_id = parse_display_id(display_id)?;
+    let bytes = parse_edid_hex(edid_hex)?;
+    let inventory = target_inventory(BackendSet::Nvapi)?;
+    let target = selected_target(&inventory, gpu)?;
+    run(&target, SetEdid { display_id, bytes }).map_err(to_py_err)?;
+    Ok(())
+}
+
+#[pyfunction]
+fn clear_edid(gpu: &str, display_id: &str) -> PyResult<()> {
+    let display_id = parse_display_id(display_id)?;
+    let inventory = target_inventory(BackendSet::Nvapi)?;
+    let target = selected_target(&inventory, gpu)?;
+    run(&target, ClearEdid { display_id }).map_err(to_py_err)?;
+    Ok(())
+}
+
+#[pyfunction]
 fn set_legacy_voltage_delta(gpu: &str, uv: i32, pstate: Option<&str>) -> PyResult<()> {
     let inventory = target_inventory(BackendSet::Nvapi)?;
     let target = selected_target(&inventory, gpu)?;
@@ -1465,6 +1918,18 @@ fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(query_status, m)?)?;
     m.add_function(wrap_pyfunction!(query_settings, m)?)?;
     m.add_function(wrap_pyfunction!(query_supported_applications_clocks, m)?)?;
+    m.add_function(wrap_pyfunction!(query_power_limits, m)?)?;
+    m.add_function(wrap_pyfunction!(query_pstates, m)?)?;
+    m.add_function(wrap_pyfunction!(query_fan_info, m)?)?;
+    m.add_function(wrap_pyfunction!(query_temperature_thresholds, m)?)?;
+    m.add_function(wrap_pyfunction!(query_throttle_reasons, m)?)?;
+    m.add_function(wrap_pyfunction!(query_legacy_overvolt_ranges, m)?)?;
+    m.add_function(wrap_pyfunction!(query_pstate_base_voltage, m)?)?;
+    m.add_function(wrap_pyfunction!(query_voltage_boost, m)?)?;
+    m.add_function(wrap_pyfunction!(query_auto_boost, m)?)?;
+    m.add_function(wrap_pyfunction!(query_api_restriction, m)?)?;
+    m.add_function(wrap_pyfunction!(list_displays, m)?)?;
+    m.add_function(wrap_pyfunction!(query_edid, m)?)?;
     m.add_function(wrap_pyfunction!(query_clock_offset, m)?)?;
     m.add_function(wrap_pyfunction!(query_domain_vfp_points, m)?)?;
     m.add_function(wrap_pyfunction!(query_vfp_point_voltage, m)?)?;
@@ -1502,6 +1967,12 @@ fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(set_nvapi_pstate_lock, m)?)?;
     m.add_function(wrap_pyfunction!(set_nvml_pstate_lock, m)?)?;
     m.add_function(wrap_pyfunction!(set_voltage_boost, m)?)?;
+    m.add_function(wrap_pyfunction!(reset_voltage_boost, m)?)?;
+    m.add_function(wrap_pyfunction!(set_auto_boost, m)?)?;
+    m.add_function(wrap_pyfunction!(set_auto_boost_default, m)?)?;
+    m.add_function(wrap_pyfunction!(set_api_restriction, m)?)?;
+    m.add_function(wrap_pyfunction!(set_edid, m)?)?;
+    m.add_function(wrap_pyfunction!(clear_edid, m)?)?;
     m.add_function(wrap_pyfunction!(set_legacy_voltage_delta, m)?)?;
     m.add_function(wrap_pyfunction!(set_fan, m)?)?;
     m.add_function(wrap_pyfunction!(reset_core_clocks, m)?)?;

@@ -76,6 +76,8 @@ pub enum OperationKind {
     QueryApiRestriction,
     QueryDisplays,
     QueryEdid,
+    SetEdid,
+    ClearEdid,
     QueryThrottleReasons,
 }
 

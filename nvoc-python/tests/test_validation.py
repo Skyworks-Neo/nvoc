@@ -101,6 +101,50 @@ class TestDomainValidation:
             pynvoc.query_domain_vfp_points("0", "video")
 
 
+class TestEdidValidation:
+    """Test EDID/display parsing that runs before GPU access."""
+
+    def test_invalid_display_id_query_edid(self, pynvoc):
+        with pytest.raises(ValueError, match="invalid display ID"):
+            pynvoc.query_edid("0", "display-1")
+
+    def test_invalid_display_id_set_edid(self, pynvoc):
+        with pytest.raises(ValueError, match="invalid display ID"):
+            pynvoc.set_edid("0", "display-1", "00FFFFFF")
+
+    def test_invalid_display_id_clear_edid(self, pynvoc):
+        with pytest.raises(ValueError, match="invalid display ID"):
+            pynvoc.clear_edid("0", "display-1")
+
+    def test_odd_length_edid_hex(self, pynvoc):
+        with pytest.raises(ValueError, match="even number of digits"):
+            pynvoc.set_edid("0", "0x00010001", "ABC")
+
+    def test_invalid_edid_hex_byte(self, pynvoc):
+        with pytest.raises(ValueError, match="invalid EDID hex byte"):
+            pynvoc.set_edid("0", "0x00010001", "00GG")
+
+
+class TestApiRestrictionValidation:
+    """Test API restriction parsing that runs before GPU access."""
+
+    def test_invalid_api_query_restriction(self, pynvoc):
+        with pytest.raises(ValueError, match="invalid API"):
+            pynvoc.query_api_restriction("0", "fan-control")
+
+    def test_invalid_api_set_restriction(self, pynvoc):
+        with pytest.raises(ValueError, match="invalid API"):
+            pynvoc.set_api_restriction("0", "fan-control", True)
+
+
+class TestPstateValidation:
+    """Test P-State parsing that runs before GPU access."""
+
+    def test_invalid_pstate_query_base_voltage(self, pynvoc):
+        with pytest.raises(ValueError):
+            pynvoc.query_pstate_base_voltage("0", "P16")
+
+
 # --- Valid backend aliases ---
 # These should not raise ValueError (may raise RuntimeError if no GPU).
 
@@ -142,6 +186,34 @@ class TestDomainAliases:
             pynvoc.set_clock_offset("0", "nvml", alias, 100, "P0")
         except ValueError:
             pytest.fail(f"'{alias}' should be a valid domain alias")
+        except RuntimeError:
+            pass
+
+
+class TestApiRestrictionAliases:
+    """Verify API restriction aliases are accepted."""
+
+    @pytest.mark.parametrize(
+        "api_type", ["app-clocks", "application-clocks", "auto-boost", "autoboost"]
+    )
+    def test_api_restriction_alias_accepted(self, pynvoc, api_type):
+        try:
+            pynvoc.query_api_restriction("0", api_type)
+        except ValueError:
+            pytest.fail(f"'{api_type}' should be a valid API restriction alias")
+        except RuntimeError:
+            pass
+
+
+class TestEdidAliases:
+    """Verify display IDs accept hex with and without a 0x prefix."""
+
+    @pytest.mark.parametrize("display_id", ["0x00010001", "00010001", "0X00010001"])
+    def test_display_id_alias_accepted(self, pynvoc, display_id):
+        try:
+            pynvoc.query_edid("0", display_id)
+        except ValueError:
+            pytest.fail(f"'{display_id}' should be a valid display ID")
         except RuntimeError:
             pass
 

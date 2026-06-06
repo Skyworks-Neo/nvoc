@@ -1,17 +1,17 @@
 use clap::{Arg, ArgAction, ColorChoice, Command as ClapCommand};
 use nvoc_core::{
-    BackendSet, CheckVoltageFrequency, ClockDomain, ConvertEnum, CoolerPolicy, CoolerTarget,
-    GpuSelector, GpuTarget, Kilohertz, KilohertzDelta, MicrovoltsDelta, PState, Percentage,
-    ProbeVoltageLimits, QueryApiRestriction, QueryAutoBoost, QueryClockOffset, QueryDisplays,
-    QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings, QueryGpuStatus,
-    QueryLegacyCoreOvervoltRanges, QueryLegacyP0CoreMaxVoltageDelta, QueryPowerLimits,
-    QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits,
-    QueryTemperatureThresholds, QueryThrottleReasons, QueryVfpPointVoltage, QueryVoltageBoost,
-    ResetApplicationsClocks, ResetCoolerLevels, ResetFanSpeed, ResetLockedClocks,
-    ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetPstateBaseVoltages,
+    BackendSet, CheckVoltageFrequency, ClearEdid, ClockDomain, ConvertEnum, CoolerPolicy,
+    CoolerTarget, GpuSelector, GpuTarget, Kilohertz, KilohertzDelta, MicrovoltsDelta, PState,
+    Percentage, ProbeVoltageLimits, QueryApiRestriction, QueryAutoBoost, QueryClockOffset,
+    QueryDisplays, QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings,
+    QueryGpuStatus, QueryLegacyCoreOvervoltRanges, QueryLegacyP0CoreMaxVoltageDelta,
+    QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks,
+    QueryTdpTempLimits, QueryTemperatureThresholds, QueryThrottleReasons, QueryVfpPointVoltage,
+    QueryVoltageBoost, ResetApplicationsClocks, ResetCoolerLevels, ResetFanSpeed,
+    ResetLockedClocks, ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetPstateBaseVoltages,
     ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock, ResetVfpLock,
     SetApiRestriction, SetApplicationsClocks, SetAutoBoost, SetAutoBoostDefault, SetClockOffset,
-    SetCoolerLevels, SetFanSpeed, SetLegacyClocks, SetLockedClocks, SetNvapiPowerLimits,
+    SetCoolerLevels, SetEdid, SetFanSpeed, SetLegacyClocks, SetLockedClocks, SetNvapiPowerLimits,
     SetNvapiPstateLock, SetNvapiSensorLimits, SetNvmlPstateLock, SetPowerLimit,
     SetPstateBaseVoltage, SetPstateClockOffset, SetTemperatureLimit, SetVfpFrequencyLock,
     SetVfpPointDelta, SetVfpRangeDelta, SetVfpVoltageLock, SetVoltageBoost, VfpResetDomain,
@@ -1546,24 +1546,23 @@ fn execute_target(
         Command::SetEdid => {
             let display_id = parse_display_id(&invocation.positionals[0])?;
             let edid = parse_edid_hex(&invocation.positionals[1])?;
-            target
-                .nvapi()?
-                .inner()
-                .set_edid(display_id, &edid)
-                .map_err(nvoc_core::Error::from)?;
+            let bytes = edid.len();
+            run(
+                target,
+                SetEdid {
+                    display_id,
+                    bytes: edid,
+                },
+            )?;
             Ok(json!({
                 "applied": true,
                 "display_id": format!("0x{display_id:08X}"),
-                "bytes": edid.len(),
+                "bytes": bytes,
             }))
         }
         Command::ClearEdid => {
             let display_id = parse_display_id(&invocation.positionals[0])?;
-            target
-                .nvapi()?
-                .inner()
-                .clear_edid(display_id)
-                .map_err(nvoc_core::Error::from)?;
+            run(target, ClearEdid { display_id })?;
             Ok(json!({
                 "applied": true,
                 "display_id": format!("0x{display_id:08X}"),
@@ -2259,6 +2258,14 @@ mod tests {
         let invocation = parse_args(["get-edid", "0x00010001"]).unwrap();
         assert_eq!(invocation.command, Some(Command::GetEdid));
         assert_eq!(invocation.positionals, vec!["0x00010001"]);
+
+        let invocation = parse_args(["set-edid", "0x00010001", "00FFFFFF"]).unwrap();
+        assert_eq!(invocation.command, Some(Command::SetEdid));
+        assert_eq!(invocation.positionals, vec!["0x00010001", "00FFFFFF"]);
+
+        let invocation = parse_args(["clear-edid", "0x00010001"]).unwrap();
+        assert_eq!(invocation.command, Some(Command::ClearEdid));
+        assert_eq!(invocation.positionals, vec!["0x00010001"]);
     }
 
     #[test]
@@ -2335,6 +2342,12 @@ mod tests {
         assert_eq!(mhz_to_khz_u32(150).unwrap(), 150_000);
         assert!(mhz_to_khz_u32(u32::MAX).is_err());
         assert_eq!(bytes_to_upper_hex(&[0x00, 0xab, 0xff]), "00ABFF");
+        assert_eq!(parse_display_id("0x00010001").unwrap(), 0x00010001);
+        assert_eq!(parse_display_id("00010001").unwrap(), 0x00010001);
+        assert_eq!(parse_edid_hex("00abFF").unwrap(), vec![0x00, 0xab, 0xff]);
+        assert!(parse_display_id("display-1").is_err());
+        assert!(parse_edid_hex("ABC").is_err());
+        assert!(parse_edid_hex("00GG").is_err());
     }
 
     #[test]
@@ -2361,6 +2374,8 @@ mod tests {
         assert_eq!(Command::GetAutoBoost.adapters(), &NVML_ONLY);
         assert_eq!(Command::GetApiRestriction.adapters(), &NVML_ONLY);
         assert_eq!(Command::GetEdid.adapters(), &NVAPI_ONLY);
+        assert_eq!(Command::SetEdid.adapters(), &NVAPI_ONLY);
+        assert_eq!(Command::ClearEdid.adapters(), &NVAPI_ONLY);
     }
 
     #[test]
