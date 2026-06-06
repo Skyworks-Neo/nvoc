@@ -42,8 +42,8 @@ This section is the canonical component inventory for the monorepo. `CONTRIBUTIN
 
 | Component | Path | Scope |
 |---|---|---|
-| NVOC-CORE | [nvoc-core/](./nvoc-core/) | Core overclocking/domain library shared by Rust components. |
-| NVOC-CLI-COMMON | [nvoc-cli-common/](./nvoc-cli-common/) | Shared CLI support layer for Rust command-line components. |
+| NVOC-CORE | [core/](./core/) | Core overclocking/domain library shared by Rust components. |
+| NVOC-CLI-COMMON | [cli-common/](./cli-common/) | Shared CLI support layer for Rust command-line components. |
 | NVOC-PYTHON (pynvoc) | [nvoc-python/](./nvoc-python/) | Python bindings and shared Python-side integration surface. |
 
 Read the component README before building or running that component. The detailed command reference, compatibility matrices, and scanning theory live in [auto-optimizer/README-en.md](./auto-optimizer/README-en.md) and [auto-optimizer/README.md](./auto-optimizer/README.md).
@@ -152,8 +152,8 @@ NVOC 是一个 NVIDIA GPU 超频与稳定性工具的 monorepo。核心是 Rust 
 
 | 组件 | 路径 | 说明 |
 |---|---|---|
-| NVOC-CORE | [nvoc-core/](./nvoc-core/) | Rust 共享核心库，承载超频/设备领域能力。 |
-| NVOC-CLI-COMMON | [nvoc-cli-common/](./nvoc-cli-common/) | Rust CLI 共享支撑层。 |
+| NVOC-CORE | [core/](./core/) | Rust 共享核心库，承载超频/设备领域能力。 |
+| NVOC-CLI-COMMON | [cli-common/](./cli-common/) | Rust CLI 共享支撑层。 |
 | NVOC-PYTHON (pynvoc) | [nvoc-python/](./nvoc-python/) | Python 绑定与跨 Python 组件共享接口。 |
 
 构建或运行某个组件前，请先阅读对应子目录 README。详细命令参考、兼容性矩阵和扫描原理在 [auto-optimizer/README.md](./auto-optimizer/README.md) 和 [auto-optimizer/README-en.md](./auto-optimizer/README-en.md) 中。

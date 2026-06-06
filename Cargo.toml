@@ -1,7 +1,7 @@
 [workspace]
 members = [
-  "nvoc-core",
-  "nvoc-cli-common",
+  "core",
+  "cli-common",
   "cli",
   "auto-optimizer",
   "srv",
@@ -22,8 +22,8 @@ lto = "thin"
 codegen-units = 8
 
 [workspace.dependencies]
-nvoc-core = { path = "./nvoc-core" }
-nvoc-cli-common = { path = "./nvoc-cli-common" }
+nvoc-core = { path = "./core" }
+nvoc-cli-common = { path = "./cli-common" }
 
 anyhow = "*"
 async-stream = "0.3"
