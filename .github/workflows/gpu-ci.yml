@@ -216,11 +216,11 @@ jobs:
           Add-Content $env:GITHUB_ENV "UV_CACHE_DIR=$env:RUNNER_TEMP\uv-cache"
           Add-Content $env:GITHUB_ENV "UV_PROJECT_ENVIRONMENT=$env:RUNNER_TEMP\uv-envs\opencl-stressor-${{ github.run_id }}"
       - uses: astral-sh/setup-uv@v4
-      - run: uv sync --frozen
+      - run: uv sync --frozen --no-config
         env:
           UV_CACHE_DIR: ${{ runner.temp }}\uv-cache
           UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}\uv-envs\opencl-stressor-${{ github.run_id }}
-      - run: uv run python test.py
+      - run: uv run --no-config python test.py
         env:
           UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}\uv-envs\opencl-stressor-${{ github.run_id }}
 

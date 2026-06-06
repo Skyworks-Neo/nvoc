@@ -348,14 +348,14 @@ jobs:
       - name: Install uv
         run: pip install --quiet uv
       - name: Install deps
-        run: uv sync --locked --package nvoc-tui --group dev
+        run: uv sync --locked --package nvoc-tui --group dev --no-config
       - name: byte-compile
-        run: uv run --locked --package nvoc-tui --group dev python -m compileall -q tui/
+        run: uv run --locked --package nvoc-tui --group dev --no-config python -m compileall -q tui/
       - name: ruff (best-effort)
         continue-on-error: true
-        run: uv run --locked --package nvoc-tui --group dev ruff check tui/
+        run: uv run --locked --package nvoc-tui --group dev --no-config ruff check tui/
       - name: non-GPU unit tests
-        run: uv run --locked --package nvoc-tui --group dev pytest -q tui/tests/
+        run: uv run --locked --package nvoc-tui --group dev --no-config pytest -q tui/tests/
 
   python-gui:
     name: gui (sync + import smoke)
@@ -387,16 +387,16 @@ jobs:
       - name: Install uv
         run: pip install --quiet uv
       - name: Install deps
-        run: uv sync --locked --package nvoc-gui --group dev
+        run: uv sync --locked --package nvoc-gui --group dev --no-config
       - name: byte-compile gui/
-        run: uv run --locked --package nvoc-gui --group dev python -m compileall -q gui/
+        run: uv run --locked --package nvoc-gui --group dev --no-config python -m compileall -q gui/
       - name: ruff (best-effort)
         continue-on-error: true
         run: |
           python -m pip install --quiet ruff
           ruff check gui/
       - name: non-GPU unit tests
-        run: uv run --locked --package nvoc-gui --group dev pytest -q gui/tests/
+        run: uv run --locked --package nvoc-gui --group dev --no-config pytest -q gui/tests/
 
   python-stressor-opencl:
     name: stressor compile (cli-stressor-opencl)
