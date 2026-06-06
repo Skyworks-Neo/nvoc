@@ -60,6 +60,10 @@ class VFCurveTab:
         self._live_volt: Optional[float] = None
         self._live_freq: Optional[float] = None
         self._live_elements: list = []
+        self._live_hline = None
+        self._live_vline = None
+        self._live_marker = None
+        self._live_text = None
         self._chart_resize_after_id = None
         self._last_chart_event_width: Optional[int] = None
         self._last_chart_resize_width: Optional[int] = None
@@ -979,6 +983,10 @@ class VFCurveTab:
         self.fig.subplots_adjust(left=0.11, right=0.98, top=0.95, bottom=0.18)
 
         self._live_elements.clear()
+        self._live_hline = None
+        self._live_vline = None
+        self._live_marker = None
+        self._live_text = None
         self._draw_live_point(call_draw_idle=False)
         self.canvas.draw_idle()
 
@@ -1217,10 +1225,20 @@ class VFCurveTab:
         """Update the real-time crosshair overlay for the current operating point."""
         self._live_volt = volt_mv
         self._live_freq = freq_mhz
-        if self._is_resize_active:
+        if self._is_resize_active or not self._chart_should_draw():
             self._pending_live_point = (volt_mv, freq_mhz)
             return
         self._draw_live_point()
+
+    def _chart_should_draw(self) -> bool:
+        if not hasattr(self, "canvas") or not hasattr(self, "_chart_frame"):
+            return False
+        try:
+            if not self._chart_frame.winfo_ismapped():
+                return False
+            return str(self.app.tabview.get()).endswith("VF Curve")
+        except Exception:
+            return False
 
     def on_resize_state_changed(self, resizing: bool, force_flush: bool = False):
         self._is_resize_active = resizing
@@ -1239,18 +1257,12 @@ class VFCurveTab:
         if self._pending_live_point is not None:
             self._live_volt, self._live_freq = self._pending_live_point
             self._pending_live_point = None
-            self._draw_live_point()
+            if self._chart_should_draw():
+                self._draw_live_point()
 
     def _draw_live_point(self, call_draw_idle: bool = True):
-        # Remove previously drawn live elements
-        for el in self._live_elements:
-            try:
-                el.remove()
-            except Exception:
-                pass
-        self._live_elements.clear()
-
         if self._live_volt is None or self._live_freq is None or not self._voltages:
+            self._hide_live_point()
             if call_draw_idle:
                 self.canvas.draw_idle()
             return
@@ -1259,8 +1271,18 @@ class VFCurveTab:
         lf = self._live_freq
         ax = self.ax
 
-        crosshair_kw = dict(color="#22cc44", linewidth=1.0, linestyle="--", alpha=0.85)
+        if self._live_hline is not None:
+            self._live_hline.set_ydata([lf, lf])
+            self._live_vline.set_xdata([lv, lv])
+            self._live_marker.set_data([lv], [lf])
+            self._live_text.xy = (lv, lf)
+            self._live_text.set_text(f"Live: {lv:.1f} mV, {lf:.0f} MHz")
+            self._set_live_point_visible(True)
+            if call_draw_idle:
+                self.canvas.draw_idle()
+            return
 
+        crosshair_kw = dict(color="#22cc44", linewidth=1.0, linestyle="--", alpha=0.85)
         hline = ax.axhline(y=lf, zorder=6.0, **crosshair_kw)
         vline = ax.axvline(x=lv, zorder=5.0, **crosshair_kw)
 
@@ -1289,9 +1311,24 @@ class VFCurveTab:
         )
 
         self._live_elements.extend([hline, vline, marker, text])
+        self._live_hline = hline
+        self._live_vline = vline
+        self._live_marker = marker
+        self._live_text = text
 
         if call_draw_idle:
             self.canvas.draw_idle()
+
+    def _hide_live_point(self) -> None:
+        self._set_live_point_visible(False)
+
+    def _set_live_point_visible(self, visible: bool) -> None:
+        for el in self._live_elements:
+            try:
+                el.set_visible(visible)
+            except Exception:
+                # Matplotlib artists can be stale or removed during redraw churn.
+                pass
 
     # ────────────────────────────────────────────
     # Keyboard navigation
