@@ -15,9 +15,9 @@
 
 | Library | Path | Purpose |
 |---|---|---|
-| nvoc-core | `nvoc-core/` | Backend abstraction over NVAPI/NVML and common types/errors/operations. |
+| nvoc-core | `core/` | Backend abstraction over NVAPI/NVML and common types/errors/operations. |
 | pynvoc | Python package outputs | Python-facing bindings/adapters used by frontends to invoke control paths. |
 
 ---
 
-*Maintained from: `README.md`, `nvoc-core/src/lib.rs`, workspace `Cargo.toml`.*
+*Maintained from: `README.md`, `core/src/lib.rs`, workspace `Cargo.toml`.*

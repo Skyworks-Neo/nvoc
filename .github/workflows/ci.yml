@@ -123,10 +123,10 @@ jobs:
               - 'pyproject.toml'
               - 'uv.lock'
             nvoc_core:
-              - 'nvoc-core/**'
+              - 'core/**'
             nvoc_cli:
               - 'cli/**'
-              - 'nvoc-cli-common/**'
+              - 'cli-common/**'
             nvoc_python:
               - 'nvoc-python/**'
             auto_optimizer:
