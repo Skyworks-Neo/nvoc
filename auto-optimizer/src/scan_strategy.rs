@@ -320,7 +320,7 @@ impl StepController {
     /// 应用 50 系额外安全惩罚（在 on_test_failed 之后调用）。
     ///
     /// 50 系需要额外减去一个 f_min_step。
-    pub fn apply_50_series_failure_penalty(&mut self, f_min_step: i32) {
+    pub fn apply_50_series_failure_penalty(&mut self, _f_min_step: i32) {
         // self.f_current -= f_min_step;
     }
 

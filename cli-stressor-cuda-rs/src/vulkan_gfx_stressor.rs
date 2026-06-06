@@ -219,88 +219,89 @@ fn run_vulkan_stress_loop(
 
         let mem_properties = instance.get_physical_device_memory_properties(pdevice);
 
-        let create_batch = |extent: vk::Extent3D| -> Result<VulkanImageBatch, Box<dyn std::error::Error>> {
-            let image_create_info = vk::ImageCreateInfo::default()
-                .image_type(vk::ImageType::TYPE_3D)
-                .format(vk::Format::R16G16B16A16_UNORM)
-                .extent(extent)
-                .mip_levels(1)
-                .array_layers(1)
-                .samples(sample_flags)
-                .tiling(vk::ImageTiling::OPTIMAL)
-                .usage(
-                    vk::ImageUsageFlags::TRANSFER_SRC
-                        | vk::ImageUsageFlags::TRANSFER_DST
-                        | vk::ImageUsageFlags::COLOR_ATTACHMENT,
-                )
-                .sharing_mode(vk::SharingMode::EXCLUSIVE);
+        let create_batch =
+            |extent: vk::Extent3D| -> Result<VulkanImageBatch, Box<dyn std::error::Error>> {
+                let image_create_info = vk::ImageCreateInfo::default()
+                    .image_type(vk::ImageType::TYPE_3D)
+                    .format(vk::Format::R16G16B16A16_UNORM)
+                    .extent(extent)
+                    .mip_levels(1)
+                    .array_layers(1)
+                    .samples(sample_flags)
+                    .tiling(vk::ImageTiling::OPTIMAL)
+                    .usage(
+                        vk::ImageUsageFlags::TRANSFER_SRC
+                            | vk::ImageUsageFlags::TRANSFER_DST
+                            | vk::ImageUsageFlags::COLOR_ATTACHMENT,
+                    )
+                    .sharing_mode(vk::SharingMode::EXCLUSIVE);
 
-            let mut images = Vec::new();
-            let mut memories = Vec::new();
-            let mut resolve_images = Vec::new();
-            let mut resolve_memories = Vec::new();
+                let mut images = Vec::new();
+                let mut memories = Vec::new();
+                let mut resolve_images = Vec::new();
+                let mut resolve_memories = Vec::new();
 
-            for _ in 0..image_count {
-                let img = device.create_image(&image_create_info, None)?;
-                let mem_req = device.get_image_memory_requirements(img);
-                let mem_type_idx = (0..mem_properties.memory_type_count)
-                    .find(|&i| {
-                        (mem_req.memory_type_bits & (1 << i)) != 0
-                            && mem_properties.memory_types[i as usize]
-                                .property_flags
-                                .contains(vk::MemoryPropertyFlags::DEVICE_LOCAL)
-                    })
-                    .ok_or("No compatible DEVICE_LOCAL Vulkan memory type found")?;
-                let alloc_info = vk::MemoryAllocateInfo::default()
-                    .allocation_size(mem_req.size)
-                    .memory_type_index(mem_type_idx);
-                let mem = device.allocate_memory(&alloc_info, None)?;
-                device.bind_image_memory(img, mem, 0)?;
-                images.push(img);
-                memories.push(mem);
-
-                if msaa_on {
-                    let rinfo = vk::ImageCreateInfo::default()
-                        .image_type(vk::ImageType::TYPE_3D)
-                        .format(vk::Format::R16G16B16A16_UNORM)
-                        .extent(extent)
-                        .mip_levels(1)
-                        .array_layers(1)
-                        .samples(vk::SampleCountFlags::TYPE_1)
-                        .tiling(vk::ImageTiling::OPTIMAL)
-                        .usage(
-                            vk::ImageUsageFlags::TRANSFER_SRC
-                                | vk::ImageUsageFlags::TRANSFER_DST,
-                        )
-                        .sharing_mode(vk::SharingMode::EXCLUSIVE);
-                    let rimg = device.create_image(&rinfo, None)?;
-                    let rreq = device.get_image_memory_requirements(rimg);
-                    let rtype_idx = (0..mem_properties.memory_type_count)
+                for _ in 0..image_count {
+                    let img = device.create_image(&image_create_info, None)?;
+                    let mem_req = device.get_image_memory_requirements(img);
+                    let mem_type_idx = (0..mem_properties.memory_type_count)
                         .find(|&i| {
-                            (rreq.memory_type_bits & (1 << i)) != 0
+                            (mem_req.memory_type_bits & (1 << i)) != 0
                                 && mem_properties.memory_types[i as usize]
                                     .property_flags
                                     .contains(vk::MemoryPropertyFlags::DEVICE_LOCAL)
                         })
-                        .ok_or("No compatible DEVICE_LOCAL memory for resolve image")?;
-                    let ralloc = vk::MemoryAllocateInfo::default()
-                        .allocation_size(rreq.size)
-                        .memory_type_index(rtype_idx);
-                    let rmem = device.allocate_memory(&ralloc, None)?;
-                    device.bind_image_memory(rimg, rmem, 0)?;
-                    resolve_images.push(rimg);
-                    resolve_memories.push(rmem);
-                }
-            }
+                        .ok_or("No compatible DEVICE_LOCAL Vulkan memory type found")?;
+                    let alloc_info = vk::MemoryAllocateInfo::default()
+                        .allocation_size(mem_req.size)
+                        .memory_type_index(mem_type_idx);
+                    let mem = device.allocate_memory(&alloc_info, None)?;
+                    device.bind_image_memory(img, mem, 0)?;
+                    images.push(img);
+                    memories.push(mem);
 
-            Ok(VulkanImageBatch {
-                extent,
-                images,
-                memories,
-                resolve_images,
-                resolve_memories,
-            })
-        };
+                    if msaa_on {
+                        let rinfo = vk::ImageCreateInfo::default()
+                            .image_type(vk::ImageType::TYPE_3D)
+                            .format(vk::Format::R16G16B16A16_UNORM)
+                            .extent(extent)
+                            .mip_levels(1)
+                            .array_layers(1)
+                            .samples(vk::SampleCountFlags::TYPE_1)
+                            .tiling(vk::ImageTiling::OPTIMAL)
+                            .usage(
+                                vk::ImageUsageFlags::TRANSFER_SRC
+                                    | vk::ImageUsageFlags::TRANSFER_DST,
+                            )
+                            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+                        let rimg = device.create_image(&rinfo, None)?;
+                        let rreq = device.get_image_memory_requirements(rimg);
+                        let rtype_idx = (0..mem_properties.memory_type_count)
+                            .find(|&i| {
+                                (rreq.memory_type_bits & (1 << i)) != 0
+                                    && mem_properties.memory_types[i as usize]
+                                        .property_flags
+                                        .contains(vk::MemoryPropertyFlags::DEVICE_LOCAL)
+                            })
+                            .ok_or("No compatible DEVICE_LOCAL memory for resolve image")?;
+                        let ralloc = vk::MemoryAllocateInfo::default()
+                            .allocation_size(rreq.size)
+                            .memory_type_index(rtype_idx);
+                        let rmem = device.allocate_memory(&ralloc, None)?;
+                        device.bind_image_memory(rimg, rmem, 0)?;
+                        resolve_images.push(rimg);
+                        resolve_memories.push(rmem);
+                    }
+                }
+
+                Ok(VulkanImageBatch {
+                    extent,
+                    images,
+                    memories,
+                    resolve_images,
+                    resolve_memories,
+                })
+            };
 
         let main_batch = create_batch(main_extent)?;
         let mut minor_batches = Vec::new();

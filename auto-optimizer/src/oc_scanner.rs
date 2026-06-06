@@ -11,9 +11,7 @@ use super::oc_profile_function::{
 use super::progressbar::{
     ActiveScanProgressGuard, ScanProgress, forward_child_output, progress_print,
 };
-use super::scan_strategy::{
-    self, ArchSafetyPhase, FluctuationMode, FluctuationStrategy, ScanParams, StepController,
-};
+use super::scan_strategy::{FluctuationMode, FluctuationStrategy, StepController};
 use clap::ArgMatches;
 use nvoc_core::{
     ClockDomain, Error, GpuOcParams, GpuOperation, GpuTarget, KilohertzDelta,

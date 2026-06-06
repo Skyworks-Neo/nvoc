@@ -115,7 +115,10 @@ impl CudaBackend {
         let (atomic_module, atomic_fn) = match build_atomic_kernel(&ctx) {
             Ok((module, func)) => (Some(module), Some(func)),
             Err(err) => {
-                println!("Warning: Atomic kernel build failed (possibly CUDA vs GPU mismatch): {}", err);
+                println!(
+                    "Warning: Atomic kernel build failed (possibly CUDA vs GPU mismatch): {}",
+                    err
+                );
                 (None, None)
             }
         };
