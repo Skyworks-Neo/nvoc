@@ -101,7 +101,6 @@ jobs:
       tui: ${{ steps.filter.outputs.tui }}
       gui: ${{ steps.filter.outputs.gui }}
       stressor_cuda_rs: ${{ steps.filter.outputs.stressor_cuda_rs }}
-      stressor_cuda: ${{ steps.filter.outputs.stressor_cuda }}
       stressor_opencl: ${{ steps.filter.outputs.stressor_opencl }}
     steps:
       - uses: actions/checkout@v6
@@ -140,8 +139,6 @@ jobs:
               - 'gui/**'
             stressor_cuda_rs:
               - 'cli-stressor-cuda-rs/**'
-            stressor_cuda:
-              - 'cli-stressor-cuda/**'
             stressor_opencl:
               - 'cli-stressor-opencl/**'
 
@@ -401,40 +398,6 @@ jobs:
       - name: non-GPU unit tests
         run: uv run --locked --package nvoc-gui --group dev pytest -q gui/tests/
 
-  python-stressor-cuda:
-    name: stressor compile (cli-stressor-cuda)
-    needs: changes
-    if: >-
-      needs.changes.outputs.ci_config == 'true' ||
-      needs.changes.outputs.python_base == 'true' ||
-      needs.changes.outputs.stressor_cuda == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - name: Disable local nvapi-rs patch for CI
-        shell: pwsh
-        run: |
-          $cargoToml = "Cargo.toml"
-          $content = Get-Content $cargoToml -Raw
-          $content = [regex]::Replace($content, '(?ms)^\# For development, we use the local path to the nvapi-rs crate\. In production, we can switch to the git dependency\.\r?\n\[patch\."https://github\.com/Skyworks-Neo/nvapi-rs"\]\r?\nnvapi = \{ path = "\./nvapi-rs" \}\r?\nnvapi-sys = \{ path = "\./nvapi-rs/sys" \}\r?\nnvapi-hi = \{ path = "\./nvapi-rs/hi" \}\r?\n', '')
-          Set-Content $cargoToml $content -NoNewline
-      - name: byte-compile
-        run: python -m compileall -q test.py
-        working-directory: cli-stressor-cuda
-      - name: ruff (best-effort)
-        continue-on-error: true
-        run: |
-          python -m pip install --quiet ruff
-          ruff check cli-stressor-cuda
-      - name: non-GPU unit tests
-        run: |
-          python -m pip install --quiet pytest
-          python -m pytest -q test_non_gpu_ci.py
-        working-directory: cli-stressor-cuda
-
   python-stressor-opencl:
     name: stressor compile (cli-stressor-opencl)
     needs: changes
@@ -541,7 +504,6 @@ jobs:
       - rust-crate-versions
       - python-tui
       - python-gui
-      - python-stressor-cuda
       - python-stressor-opencl
     if: always()
     runs-on: ubuntu-latest
