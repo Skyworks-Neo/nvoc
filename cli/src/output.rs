@@ -1055,7 +1055,9 @@ mod tests {
                 json!([{"pstate": "P0", "min_uv": 0, "current_uv": 0, "max_uv": 100000}])
             }
             Command::GetLegacyP0CoreMaxVoltageDelta => json!({"max_delta_uv": 100000}),
-            Command::SetCoreOffsetMhz | Command::SetMemoryOffsetMhz => json!({
+            Command::SetCoreOffsetMhz
+            | Command::SetMemoryOffsetMhz
+            | Command::SetClockOffsetMhz => json!({
                 "applied": true,
                 "backend": "nvapi",
                 "domain": "graphics",
@@ -1084,8 +1086,26 @@ mod tests {
             Command::SetApplicationsClocksMhz => {
                 json!({"applied": true, "memory_mhz": 10500, "graphics_mhz": 1800})
             }
+            Command::SetPstateBaseVoltageUv => {
+                json!({"applied": true, "pstate": "P0", "delta_uv": 100000})
+            }
             Command::SetVoltageBoostPercent => {
                 json!({"applied": true, "voltage_boost_percent": 25})
+            }
+            Command::SetAutoBoost | Command::SetAutoBoostDefault => {
+                json!({"applied": true, "enabled": true})
+            }
+            Command::SetApiRestriction => {
+                json!({"applied": true, "api": "app-clocks", "restricted": true})
+            }
+            Command::SetEdid => {
+                json!({"applied": true, "display_id": "0x00010001", "bytes": 128})
+            }
+            Command::ClearEdid => {
+                json!({"applied": true, "display_id": "0x00010001"})
+            }
+            Command::SetLegacyClocksMhz => {
+                json!({"applied": true, "core_mhz": 900, "memory_mhz": 1800})
             }
             Command::ResetCoreOffsetMhz | Command::ResetMemoryOffsetMhz => json!({
                 "applied": true,
@@ -1097,7 +1117,11 @@ mod tests {
             | Command::ResetVfpLock
             | Command::ResetPowerPercent
             | Command::ResetThermalLimitC
-            | Command::ResetPstateBaseVoltages => json!({"applied": true}),
+            | Command::ResetPstateBaseVoltages
+            | Command::ResetPstateClockOffsets => json!({"applied": true}),
+            Command::ResetVoltageBoostPercent => {
+                json!({"applied": true, "voltage_boost_percent": 0})
+            }
             Command::ResetLockedClocks | Command::ResetVfpDeltas => {
                 json!({"applied": true, "domain": "graphics"})
             }

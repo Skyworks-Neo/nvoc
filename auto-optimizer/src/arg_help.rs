@@ -1,19 +1,15 @@
-use super::cli_types::{
-    OutputFormat, POSSIBLE_BOOL, POSSIBLE_BOOL_OFF, POSSIBLE_BOOL_ON, ResetSettings,
-};
 use super::platform::{
     default_minload_exe_path, default_test_exe_path, default_vfp_csv_path,
     default_vfp_init_csv_path, default_vfp_log_path, default_vfp_temp_csv_path,
 };
 use clap::{Arg, ArgAction, Command};
-use nvoc_core::PState;
 use nvoc_core::{ConvertEnum, VfpResetDomain};
 
 pub fn get_arguments() -> Command {
     Command::new("nvoc-auto-optimizer")
         .version(env!("CARGO_PKG_VERSION"))
         .author("Skyworks")
-        .about("NVIDIA GPU VFP Curve Optimizer")
+        .about("NVIDIA GPU VFP curve workflows and autoscan")
         .subcommand_required(true)
         .arg_required_else_help(true)
         .arg(
@@ -24,25 +20,7 @@ pub fn get_arguments() -> Command {
                 .num_args(1..)
                 .action(ArgAction::Append)
                 .global(true)
-                .help(
-                    "GPU ID selector. \
-             Accepts decimal or hex.\n\
-             Examples:\n\
-               --gpu=2048\n\
-               --gpu=0x0800\n\
-               --gpu=256   (legacy, auto-mapped)\n\
-             Can be specified multiple times.",
-                ),
-        )
-        .arg(
-            Arg::new("oformat")
-                .short('O')
-                .long("output-format")
-                .value_name("OFORMAT")
-                .num_args(1)
-                .value_parser(OutputFormat::possible_values().to_vec())
-                .default_value(OutputFormat::Human.to_str())
-                .help("Data output format"),
+                .help("GPU ID selector; accepts decimal or hex and can be repeated"),
         )
         .arg(
             Arg::new("no_color")
@@ -52,997 +30,404 @@ pub fn get_arguments() -> Command {
                 .help("Disable ANSI color output (also honors NO_COLOR)"),
         )
         .subcommand(
-            Command::new("info")
-                .about("Information about the model and capabilities of the GPU")
-                .arg(
-                    Arg::new("output")
-                        .value_name("OUTPUT")
-                        .short('o')
-                        .long("output")
-                        .num_args(1)
-                        .help("Output file path for JSON format (optional)"),
-                ),
-        )
-        .subcommand(Command::new("list"))
-        .subcommand(
-            Command::new("status")
-                .about("Show current GPU usage, sensor, and clock information")
-                .arg(
-                    Arg::new("all")
-                        .short('a')
-                        .long("all")
-                        .action(ArgAction::SetTrue)
-                        .help("Show all available info"),
-                )
-                .arg(
-                    Arg::new("status")
-                        .short('s')
-                        .long("status")
-                        .value_name("SHOW")
-                        .num_args(1)
-                        .value_parser(POSSIBLE_BOOL.to_vec())
-                        .default_value(POSSIBLE_BOOL_ON)
-                        .help("Show status info"),
-                )
-                .arg(
-                    Arg::new("clocks")
-                        .short('c')
-                        .long("clocks")
-                        .value_name("SHOW")
-                        .num_args(1)
-                        .value_parser(POSSIBLE_BOOL.to_vec())
-                        .default_value(POSSIBLE_BOOL_ON)
-                        .help("Show clock frequency info"),
-                )
-                .arg(
-                    Arg::new("coolers")
-                        .short('C')
-                        .long("coolers")
-                        .value_name("SHOW")
-                        .num_args(1)
-                        .value_parser(POSSIBLE_BOOL.to_vec())
-                        .default_value(POSSIBLE_BOOL_OFF)
-                        .default_value_if("all", clap::builder::ArgPredicate::IsPresent, POSSIBLE_BOOL_ON)
-                        .help("Show cooler info"),
-                )
-                .arg(
-                    Arg::new("sensors")
-                        .short('S')
-                        .long("sensors")
-                        .value_name("SHOW")
-                        .num_args(1)
-                        .value_parser(POSSIBLE_BOOL.to_vec())
-                        .default_value(POSSIBLE_BOOL_OFF)
-                        .default_value_if("all", clap::builder::ArgPredicate::IsPresent, POSSIBLE_BOOL_ON)
-                        .help("Show thermal sensors"),
-                )
-                .arg(
-                    Arg::new("vfp")
-                        .short('v')
-                        .long("vfp")
-                        .value_name("SHOW")
-                        .num_args(1)
-                        .value_parser(POSSIBLE_BOOL.to_vec())
-                        .default_value(POSSIBLE_BOOL_OFF)
-                        .default_value_if("all", clap::builder::ArgPredicate::IsPresent, POSSIBLE_BOOL_ON)
-                        .help("Show voltage-frequency chart"),
-                )
-                .arg(
-                    Arg::new("pstates")
-                        .short('P')
-                        .long("pstates")
-                        .value_name("SHOW")
-                        .num_args(1)
-                        .value_parser(POSSIBLE_BOOL.to_vec())
-                        .default_value(POSSIBLE_BOOL_OFF)
-                        .default_value_if("all", clap::builder::ArgPredicate::IsPresent, POSSIBLE_BOOL_ON)
-                        .help("Show power state configurations"),
-                )
-                .arg(
-                    Arg::new("monitor")
-                        .short('m')
-                        .long("monitor")
-                        .value_name("PERIOD")
-                        .num_args(1)
-                        .help("Monitor GPU status over time, optionally accepts period in seconds"),
-                ),
-        )
-        .subcommand(
-            Command::new("get")
-                .about("Show GPU overclock settings"),
-        )
-        .subcommand(
             Command::new("reset")
-                .about("Restore all overclocking settings")
+                .about("Restore VFP curve deltas")
+                .subcommand_required(true)
+                .arg_required_else_help(true)
                 .subcommand(
-                    Command::new("nvml-cooler")
-                        .about("Restore NVML default fan control")
+                    Command::new("vfp")
+                        .about("Reset VFP curve deltas")
                         .arg(
-                            Arg::new("id")
-                                .short('i')
-                                .long("id")
-                                .value_name("COOLER_ID")
+                            Arg::new("vfp_domain")
+                                .long("vfp-domain")
+                                .value_name("VFP_DOMAIN")
                                 .num_args(1)
-                                .value_parser(["1", "2", "all"])
-                                .default_value("all")
-                                .help("Target cooler ID: 1, 2, or all (default: all)"),
+                                .default_value(VfpResetDomain::All.to_str())
+                                .value_parser(VfpResetDomain::possible_values().to_vec())
+                                .help("VFP reset domain: all, core, or memory"),
                         ),
-                )
-                .arg(
-                    Arg::new("setting")
-                        .value_name("SETTING")
-                        .num_args(1..)
-                        .value_parser(ResetSettings::possible_values().to_vec())
-                        .help("Reset only the specified setting(s)"),
-                )
-                .arg(
-                    Arg::new("domain")
-                        .long("domain")
-                        .value_name("DOMAIN")
-                        .num_args(1..)
-                        .action(ArgAction::Append)
-                        .value_parser(ResetSettings::possible_values().to_vec())
-                        .help("Optional alias of setting selector (e.g. --domain voltage-boost --domain power)"),
-                )
-                .arg(
-                    Arg::new("vfp_domain")
-                        .long("vfp-domain")
-                        .value_name("VFP_DOMAIN")
-                        .num_args(1)
-                        .default_value(VfpResetDomain::All.to_str())
-                        .value_parser(VfpResetDomain::possible_values().to_vec())
-                        .help("When resetting vfp, choose all/core/memory"),
                 ),
         )
         .subcommand(
             Command::new("set")
-                .about("GPU overclocking")
+                .about("VFP curve workflows")
                 .subcommand_required(true)
                 .arg_required_else_help(true)
                 .subcommand(
-                    Command::new("legacy-clock")
-                        .about("Set absolute core/memory clocks for legacy architectures (Fermi/Tesla)")
-                        .arg(
-                            Arg::new("core")
-                                .short('c')
-                                .long("core")
-                                .value_name("CORE_MHZ")
-                                .help("Target absolute core frequency in MHz (1–5000)")
-                                .num_args(1)
-                                .required(true)
-                                .value_parser(clap::value_parser!(u32).range(1..=5_000))
-                        )
-                        .arg(
-                            Arg::new("memory")
-                                .short('m')
-                                .long("memory")
-                                .value_name("MEM_MHZ")
-                                .help("Target absolute memory frequency in MHz (1–5000)")
-                                .num_args(1)
-                                .required(true)
-                                .value_parser(clap::value_parser!(u32).range(1..=5_000))
-                        )
-                )
-                .subcommand(
-                    Command::new("nvapi")
-                        .about("NVAPI settings")
-                        .arg_required_else_help(true)
-                        .arg(
-                            Arg::new("vboost")
-                                .short('V')
-                                .long("voltage-boost")
-                                .value_name("VBOOST")
-                                .num_args(1)
-                                .value_parser(clap::value_parser!(u32).range(0..=200))
-                                .help("Voltage Boost % (0–200)"),
-                        )
-                        .arg(
-                            Arg::new("tlimit")
-                                .short('T')
-                                .long("thermal-limit")
-                                .value_name("TEMPLIMIT")
-                                .num_args(1..)
-                                .action(ArgAction::Append)
-                                .value_parser(clap::value_parser!(i32).range(0..=127))
-                                .help("Thermal limit °C (0–127)"),
-                        )
-                        .arg(
-                            Arg::new("plimit")
-                                .short('P')
-                                .long("power-limit")
-                                .value_name("POWERLIMIT")
-                                .num_args(1..)
-                                .action(ArgAction::Append)
-                                .value_parser(clap::value_parser!(u32).range(1..=10_000))
-                                .help("Power limit % (1–10000)"),
-                        )
-                        .arg(
-                            Arg::new("voltage_delta")
-                                .short('U')
-                                .long("voltage-delta")
-                                .value_name("UV")
-                                .num_args(1)
-                                .allow_hyphen_values(true)
-                                .value_parser(clap::value_parser!(i32).range(-500_000..=500_000))
-                                .help("Core voltage delta in μV via SetPstates20 (±500 000 μV / ±500 mV). Target pstate selectable via -z."),
-                        )
-                        .arg(
-                            Arg::new("pstate")
-                                .short('z')
-                                .long("pstate")
-                                .value_name("PSTATE_ID")
-                                .num_args(1)
-                                .value_parser(PState::possible_values().to_vec())
-                                .default_value(PState::P0.to_str())
-                                .help("Target pstate for -U/--voltage-delta and NVAPI offsets (default: P0)"),
-                        )
-                        .arg(
-                            Arg::new("core_offset")
-                                .long("core-offset")
-                                .value_name("CORE_OFFSET")
-                                .num_args(1)
-                                .allow_hyphen_values(true)
-                                .value_parser(clap::value_parser!(i32).range(-5_000_000..=5_000_000))
-                                .help("Core clock offset via NVAPI (kHz, ±5 000 000)."),
-                        )
-                        .arg(
-                            Arg::new("mem_offset")
-                                .long("mem-offset")
-                                .value_name("MEM_OFFSET")
-                                .num_args(1)
-                                .allow_hyphen_values(true)
-                                .value_parser(clap::value_parser!(i32).range(-5_000_000..=5_000_000))
-                                .help("Memory clock offset via NVAPI (kHz, ±5 000 000)."),
-                        )
-                        .arg(
-                            Arg::new("locked_voltage")
-                                .long("locked-voltage")
-                                .value_name("POINT_OR_VOLTAGE")
-                                .num_args(1)
-                                .help("Lock by VFP point index (e.g. 68) or explicit voltage unit (e.g. 850mV, 850000uV)."),
-                        )
-                        .arg(
-                            Arg::new("locked_core_clocks")
-                                .long("locked-core-clocks")
-                                .value_names(["MIN_MHZ", "MAX_MHZ"])
-                                .num_args(2)
-                                .help("Lock NVAPI graphics clock range (MHz). Example: --nvapi-locked-core-clocks 210 2100")
-                                .use_value_delimiter(false),
-                        )
-                        .arg(
-                            Arg::new("locked_mem_clocks")
-                                .long("locked-mem-clocks")
-                                .value_names(["MIN_MHZ", "MAX_MHZ"])
-                                .num_args(2)
-                                .help("Lock NVAPI memory clock range (MHz). Example: --nvapi-locked-mem-clocks 5000 9501")
-                                .use_value_delimiter(false),
-                        )
-                        .arg(
-                            Arg::new("pstate_lock")
-                                .long("pstate-lock")
-                                .value_names(["PSTATE_MIN", "PSTATE_MAX"])
-                                .num_args(1..=2)
-                                .conflicts_with("locked_mem_clocks")
-                                .help("Lock a GPU into one NVML P-State or contiguous NVML P-State range by applying the same derived memory window via NVAPI (for example: --pstate-lock 0, --pstate-lock P2 P2, or --pstate-lock P0 P5)."),
-                        )
-                        .arg(
-                            Arg::new("test_limit")
-                                .long("test-limit")
-                                .action(ArgAction::SetTrue)
-                                .help("Test the voltage limits of the GPU automatically."),
-                        )
-                        .arg(
-                            Arg::new("reset_volt_locks")
-                                .long("reset-volt-locks")
-                                .action(ArgAction::SetTrue)
-                                .help("Reset NVAPI Voltage lock state."),
-                        )
-                        .arg(
-                            Arg::new("reset_core_clocks")
-                                .long("reset-core-clocks")
-                                .action(ArgAction::SetTrue)
-                                .help("Reset GPU core clocks lock."),
-                        )
-                        .arg(
-                            Arg::new("reset_mem_clocks")
-                                .long("reset-mem-clocks")
-                                .alias("pstate-unlock")
-                                .action(ArgAction::SetTrue)
-                                .help("Reset GPU memory clocks lock. Alias: --pstate-unlock."),
-                        )
-                        .arg(
-                            Arg::new("edid")
-                                .long("edid")
-                                .value_names(["DISPLAY_ID", "HEX_DATA"])
-                                .num_args(2)
-                                .help(
-                                    "Set EDID for a display. \
-                                    DISPLAY_ID is the hex display ID (e.g. 0x00010001). \
-                                    HEX_DATA is the raw EDID hex string (e.g. 00FF...). \
-                                    Pass empty string to clear.",
-                                )
-                                .use_value_delimiter(false),
-                        )
-                )
-                .subcommand(
-                    Command::new("nvml")
-                        .about("NVML settings")
-                        .arg_required_else_help(true)
-                        .arg(
-                            Arg::new("pstate")
-                                .long("pstate")
-                                .value_name("PSTATE_ID")
-                                .num_args(1)
-                                .default_value("0")
-                                .value_parser(|s: &str| -> Result<String, String> {
-                                    let n = if s.starts_with(['P', 'p']) { &s[1..] } else { s };
-                                    n.parse::<u32>()
-                                        .ok()
-                                        .filter(|&v| v <= 15)
-                                        .map(|_| s.to_string())
-                                        .ok_or_else(|| format!("P-state must be 0–15 or P0–P15, got '{s}'"))
-                                })
-                                .help("Target PState for NVML clock offset (0–15 or P0–P15, e.g. 0 or P0)."),
-                        )
-                        .arg(
-                            Arg::new("core_offset")
-                                .long("core-offset")
-                                .value_name("CORE_OFFSET")
-                                .num_args(1)
-                                .allow_hyphen_values(true)
-                                .value_parser(clap::value_parser!(i32).range(-5_000..=5_000))
-                                .conflicts_with("clock_offset")
-                                .help("Core clock offset via NVML API (MHz, ±5000). Alias for --clock-offset graphics:OFFSET."),
-                        )
-                        .arg(
-                            Arg::new("mem_offset")
-                                .long("mem-offset")
-                                .value_name("MEM_OFFSET")
-                                .num_args(1)
-                                .allow_hyphen_values(true)
-                                .value_parser(clap::value_parser!(i32).range(-5_000..=5_000))
-                                .conflicts_with("clock_offset")
-                                .help("Memory clock offset via NVML API (MHz, ±5000). Alias for --clock-offset memory:OFFSET. Note: target effective offset, handled behind the scene as *2."),
-                        )
-                        .arg(
-                            Arg::new("clock_offset")
-                                .long("clock-offset")
-                                .value_name("DOMAIN:OFFSET")
-                                .num_args(1)
-                                .allow_hyphen_values(true)
-                                .conflicts_with_all(["core_offset", "mem_offset"])
-                                .help("Clock offset for any domain via NVML API. Format: DOMAIN:OFFSET_MHZ. Domains: graphics, memory, processor, video. Example: --clock-offset graphics:150, --clock-offset memory:500"),
-                        )
-                        // NVML thermal threshold write args are intentionally commented out for now.
-                        .arg(
-                            Arg::new("power_limit")
-                                .short('P')
-                                .long("power-limit")
-                                .value_name("POWER_LIMIT")
-                                .num_args(1)
-                                .value_parser(clap::value_parser!(u32).range(1..=3_000))
-                                .help("Power limit via NVML API (W, 1–3000)."),
-                        )
-                        .arg(
-                            Arg::new("locked_app_clocks")
-                                .long("locked-app-clocks")
-                                .alias("app-clock")
-                                .value_names(["MEM_MHZ", "CORE_MHZ"])
-                                .num_args(2)
-                                .value_parser(clap::value_parser!(u32).range(1..=10_000))
-                                .help("Set NVML applications clocks (memory and core freq in MHz, 1–10000). Example: --locked-app-clocks 5001 1500")
-                                .use_value_delimiter(false),
-                        )
-                        .arg(
-                            Arg::new("reset_app_clocks")
-                                .long("reset-app-clocks")
-                                .action(ArgAction::SetTrue)
-                                .help("Reset NVML applications clocks to defaults."),
-                        )
-                        .arg(
-                            Arg::new("locked_core_clocks")
-                                .long("locked-core-clocks")
-                                .value_names(["MIN_MHZ", "MAX_MHZ"])
-                                .num_args(2)
-                                .value_parser(clap::value_parser!(u32).range(1..=10_000))
-                                .help("Lock GPU core clocks to a specific range (MHz, 1–10000). Example: --nvml-locked-gpu-clocks 210 2100")
-                                .use_value_delimiter(false),
-                        )
-                        .arg(
-                            Arg::new("reset_core_clocks")
-                                .long("reset-core-clocks")
-                                .action(ArgAction::SetTrue)
-                                .help("Reset GPU core clocks lock."),
-                        )
-                        .arg(
-                            Arg::new("locked_mem_clocks")
-                                .long("locked-mem-clocks")
-                                .value_names(["MIN_MHZ", "MAX_MHZ"])
-                                .num_args(2)
-                                .value_parser(clap::value_parser!(u32).range(1..=20_000))
-                                .help("Lock GPU memory clocks to a specific range (MHz, 1–20000). Example: --nvml-locked-mem-clocks 5000 5000")
-                                .use_value_delimiter(false),
-                        )
-                        .arg(
-                            Arg::new("pstate_lock")
-                                .long("pstate-lock")
-                                .value_names(["PSTATE_MIN", "PSTATE_MAX"])
-                                .num_args(1..=2)
-                                .conflicts_with_all(["locked_mem_clocks", "reset_mem_clocks"])
-                                .help("Lock a GPU into one NVML P-State or a contiguous NVML P-State range by applying a memory lock window derived from the selected P-State memory clocks (for example: --nvml-pstate-lock 0, --nvml-pstate-lock P2 P2, or --nvml-pstate-lock P0 P5)."),
-                        )
-                        .arg(
-                            Arg::new("reset_mem_clocks")
-                                .long("reset-mem-clocks")
-                                .alias("nvml-pstate-unlock")
-                                .action(ArgAction::SetTrue)
-                                .help("Reset GPU memory clocks lock. Alias: --nvml-pstate-unlock."),
-                        )
-                        .arg(
-                            Arg::new("autoboost")
-                                .long("autoboost")
-                                .value_name("STATE")
-                                .value_parser(["on", "off"])
-                                .help("Enable or disable auto-boosted clocks. Example: --autoboost on, --autoboost off"),
-                        )
-                        .arg(
-                            Arg::new("autoboost_default")
-                                .long("autoboost-default")
-                                .value_name("STATE")
-                                .value_parser(["on", "off"])
-                                .help("Set the default auto-boosted clocks state (persists across driver reinitialization). Example: --autoboost-default on, --autoboost-default off"),
-                        )
-                        .arg(
-                            Arg::new("api_restriction")
-                                .long("api-restriction")
-                                .num_args(2)
-                                .value_names(["API", "STATE"])
-                                .help("Control API permission restrictions for non-admin users. API: app-clocks, auto-boost. STATE: open, restricted. Example: --api-restriction app-clocks open"),
-                        )
-                )
-                .subcommand(
-                    Command::new("nvml-cooler")
-                        .about("NVML fan and cooler controls")
-                        .arg_required_else_help(true)
-                        .arg(
-                            Arg::new("id")
-                                .short('i')
-                                .long("id")
-                                .value_name("COOLER_ID")
-                                .num_args(1)
-                                .value_parser(["1", "2", "all"])
-                                .default_value("all")
-                                .help("Target cooler ID: 1, 2, or all (default: all)"),
-                        )
-                        .arg(
-                            Arg::new("policy")
-                                .long("policy")
-                                .value_name("MODE")
-                                .num_args(1)
-                                .required(true)
-                                .help("Cooler policy (e.g. continuous/manual/auto)"),
-                        )
-                        .arg(
-                            Arg::new("level")
-                                .long("level")
-                                .value_name("LEVEL")
-                                .num_args(1)
-                                .required(true)
-                                .value_parser(clap::value_parser!(u32).range(0..=100))
-                                .help("Cooler level % (0–100)"),
-                        ),
-                )
-                .subcommand(
-                    Command::new("nvapi-cooler")
-                        .about("Fan and cooler controls")
-                        .arg_required_else_help(true)
-                        .arg(
-                            Arg::new("id")
-                                .short('i')
-                                .long("id")
-                                .value_name("COOLER_ID")
-                                .num_args(1)
-                                .value_parser(["1", "2", "all"])
-                                .default_value("all")
-                                .help("Target cooler ID: 1, 2, or all (default: all)"),
-                        )
-                        .arg(
-                            Arg::new("policy")
-                                .long("policy")
-                                .value_name("MODE")
-                                .num_args(1)
-                                .required(true)
-                                .help("Cooler policy (e.g. continuous/manual/auto)"),
-                        )
-                        .arg(
-                            Arg::new("level")
-                                .long("level")
-                                .value_name("LEVEL")
-                                .num_args(1)
-                                .required(true)
-                                .value_parser(clap::value_parser!(u32).range(0..=100))
-                                .help("Cooler level % (0–100)"),
-                        ),
-                )
-                .subcommand(
                     Command::new("vfp")
-                        .about("GPU Boost 3.0 voltage-frequency curve")
+                        .about("GPU Boost voltage-frequency curve workflows")
                         .subcommand_required(true)
                         .arg_required_else_help(true)
-                        .subcommand(
-                            Command::new("export")
-                                .about("Export current curve as CSV")
-                                .arg(
-                                    Arg::new("tabs")
-                                        .short('t')
-                                        .long("tabs")
-                                        .action(ArgAction::SetTrue)
-                                        .help("Separate columns using tabs"),
-                                )
-                                .arg(
-                                    Arg::new("memory")
-                                        .long("memory")
-                                        .action(ArgAction::SetTrue)
-                                        .help("Export memory VF table (default exports core/graphics VF table)"),
-                                )
-                                .arg(
-                                    Arg::new("processor")
-                                        .long("processor")
-                                        .action(ArgAction::SetTrue)
-                                        .conflicts_with_all(["memory", "video", "undefined"])
-                                        .help("Export processor VF table"),
-                                )
-                                .arg(
-                                    Arg::new("video")
-                                        .long("video")
-                                        .action(ArgAction::SetTrue)
-                                        .conflicts_with_all(["memory", "processor", "undefined"])
-                                        .help("Export video VF table"),
-                                )
-                                .arg(
-                                    Arg::new("undefined")
-                                        .long("undefined")
-                                        .action(ArgAction::SetTrue)
-                                        .conflicts_with_all(["memory", "processor", "video"])
-                                        .help("Export undefined VF table"),
-                                )
-                                .arg(
-                                    Arg::new("output")
-                                        .value_name("OUTPUT")
-                                        .num_args(1)
-                                        .default_value("-")
-                                        .help("Output file path"),
-                                )
-                                .arg(
-                                    Arg::new("quick")
-                                        .short('q')
-                                        .long("quick")
-                                        .action(ArgAction::SetTrue)
-                                        .help("Do not export load curve, fast export"),
-                                )
-                                .arg(
-                                    Arg::new("nocheck")
-                                        .short('n')
-                                        .long("nocheck")
-                                        .action(ArgAction::SetTrue)
-                                        .help("whether not to check dynamic result validity"),
-                                )
-                        )
-                        .subcommand(
-                            Command::new("export_log")
-                                .about("Export current curve as CSV")
-                                .arg(
-                                    Arg::new("tabs")
-                                        .short('t')
-                                        .long("tabs")
-                                        .action(ArgAction::SetTrue)
-                                        .help("Separate columns using tabs"),
-                                )
-                                .arg(
-                                    Arg::new("log")
-                                        .value_name("LOG")
-                                        .short('l')
-                                        .num_args(1)
-                                        .default_value(default_vfp_log_path())
-                                        .help("input from a log file path"),
-                                )
-                                .arg(
-                                    Arg::new("output")
-                                        .value_name("OUTPUT")
-                                        .num_args(1)
-                                        .default_value("-")
-                                        .help("Output file path"),
-                                )
-                        )
-                        .subcommand(
-                            Command::new("import")
-                                .about("Import a modified curve from CSV")
-                                .arg(
-                                    Arg::new("tabs")
-                                        .short('t')
-                                        .long("tabs")
-                                        .action(ArgAction::SetTrue)
-                                        .help("Separate columns using tabs"),
-                                )
-                                .arg(
-                                    Arg::new("memory")
-                                        .long("memory")
-                                        .action(ArgAction::SetTrue)
-                                        .help("Import memory VF table (default imports core/graphics VF table)"),
-                                )
-                                .arg(
-                                    Arg::new("processor")
-                                        .long("processor")
-                                        .action(ArgAction::SetTrue)
-                                        .conflicts_with_all(["memory", "video", "undefined"])
-                                        .help("Import processor VF table"),
-                                )
-                                .arg(
-                                    Arg::new("video")
-                                        .long("video")
-                                        .action(ArgAction::SetTrue)
-                                        .conflicts_with_all(["memory", "processor", "undefined"])
-                                        .help("Import video VF table"),
-                                )
-                                .arg(
-                                    Arg::new("undefined")
-                                        .long("undefined")
-                                        .action(ArgAction::SetTrue)
-                                        .conflicts_with_all(["memory", "processor", "video"])
-                                        .help("Import undefined VF table"),
-                                )
-                                .arg(
-                                    Arg::new("input")
-                                        .value_name("INPUT")
-                                        .num_args(1)
-                                        .default_value("-")
-                                        .help("Input file path"),
-                                )
-                        )
+                        .subcommand(vfp_export_command())
+                        .subcommand(vfp_export_log_command())
+                        .subcommand(vfp_import_command())
                         .subcommand(
                             Command::new("sync_mem_pstate_as_p0")
-                                .about("Sync the second-highest adjustable memory VFP stage to the P0 memory frequency"),
+                                .about("Sync the second-highest adjustable memory VFP stage to P0 memory frequency"),
                         )
-                        .subcommand(
-                            Command::new("single_point_adj")
-                                .about("modify a single point")
-                                .arg(
-                                    Arg::new("point_start")
-                                        .value_name("point_start")
-                                        .short('s')
-                                        .num_args(1)
-                                        .default_value("40")
-                                        .value_parser(clap::value_parser!(u32).range(0..=255))
-                                        .help("VFP point index to adjust (0–255)"),
-                                )
-                                .arg(
-                                    Arg::new("delta")
-                                        .short('d')
-                                        .value_name("DELTA")
-                                        .num_args(1)
-                                        .allow_hyphen_values(true)
-                                        .required(true)
-                                        .default_value("150000")
-                                        .value_parser(clap::value_parser!(i32).range(-5_000_000..=5_000_000))
-                                        .help("Clock delta / OC offset in kHz (±5 000 000)"),
-                                ),
-                        )
-                        .subcommand(
-                            Command::new("pointwiseoc")
-                                .about("Apply a frequency delta to a range of VFP points (inclusive). \
-                                    Example: pointwiseoc 39-76 +150000")
-                                .arg(
-                                    Arg::new("range")
-                                        .value_name("RANGE")
-                                        .num_args(1)
-                                        .required(true)
-                                        .help("Inclusive point range, e.g. 39-76"),
-                                )
-                                .arg(
-                                    Arg::new("delta")
-                                        .value_name("DELTA")
-                                        .num_args(1)
-                                        .required(true)
-                                        .allow_hyphen_values(true)
-                                        .value_parser(clap::value_parser!(i32).range(-5_000_000..=5_000_000))
-                                        .help("Clock frequency delta in kHz (±5 000 000), e.g. +150000 or -50000"),
-                                ),
-                        )
-                        .subcommand(
-                            Command::new("fix_result")
-                                .about("result fix")
-                                .arg(
-                                    Arg::new("delta_ref")
-                                        .value_name("delta_ref")
-                                        .short('d')
-                                        .num_args(1)
-                                        .default_value("3")
-                                        .help("fix ref f"),
-                                )
-                                .arg(
-                                    Arg::new("tempcsv")
-                                        .value_name("TMPCSV")
-                                        .short('v')
-                                        .num_args(1)
-                                        .default_value(default_vfp_temp_csv_path())
-                                        .help("temporary vfcurve file path"),
-                                )
-                                .arg(
-                                    Arg::new("outputcsv")
-                                        .value_name("OUTPUTCSV")
-                                        .short('o')
-                                        .num_args(1)
-                                        .default_value(default_vfp_csv_path())
-                                        .help("output vfcurve file path"),
-                                )
-                                .arg(
-                                    Arg::new("initcsv")
-                                        .value_name("INITCSV")
-                                        .short('i')
-                                        .num_args(1)
-                                        .default_value(default_vfp_init_csv_path())
-                                        .help("reference init vfcurve file path"),
-                                )
-                                .arg(
-                                    Arg::new("ultrafast")
-                                        .short('u')
-                                        .long("ultrafast")
-                                        .action(ArgAction::SetTrue)
-                                        .help("Enable ultrafast mode for maximum speed"),
-                                )
-                                .arg(
-                                    Arg::new("vfplog")
-                                        .value_name("VFPLOG")
-                                        .short('l')
-                                        .num_args(1)
-                                        .default_value(default_vfp_log_path())
-                                        .help("vfplog file path"),
-                                )
-                                .arg(
-                                    Arg::new("minus_bin")
-                                        .value_name("MINUS_BIN")
-                                        .short('m')
-                                        .num_args(1)
-                                        .allow_hyphen_values(true)
-                                        .value_parser(clap::value_parser!(i32).range(-50..=50))
-                                        .help("Margin bin adjustment integer (±50)"),
-                                ),
-                        )
-                        .subcommand(
-                            Command::new("gen_seq")
-                                .about("generate scan point sequence")
-                                .arg(
-                                    Arg::new("point_start")
-                                        .value_name("point_start")
-                                        .short('s')
-                                        .num_args(1)
-                                        .default_value("40")
-                                        .value_parser(clap::value_parser!(u32).range(0..=120))
-                                        .help("VFP point index to start (0–120)"),
-                                )
-                                .arg(
-                                    Arg::new("interval_s")
-                                        .value_name("interval_s")
-                                        .short('a')
-                                        .num_args(1)
-                                        .default_value("2")
-                                        .value_parser(clap::value_parser!(u32).range(1..=50))
-                                        .help("small scan interval (1–50)"),
-                                )
-                                .arg(
-                                    Arg::new("interval_m")
-                                        .value_name("interval_m")
-                                        .short('b')
-                                        .num_args(1)
-                                        .default_value("3")
-                                        .value_parser(clap::value_parser!(u32).range(1..=50))
-                                        .help("medium scan interval (1–50)"),
-                                )
-                                .arg(
-                                    Arg::new("interval_l")
-                                        .value_name("interval_l")
-                                        .short('c')
-                                        .num_args(1)
-                                        .default_value("5")
-                                        .value_parser(clap::value_parser!(u32).range(1..=50))
-                                        .help("large scan interval (1–50)"),
-                                )
-                                .arg(
-                                    Arg::new("wait_time_sec")
-                                        .value_name("wait_time_sec")
-                                        .short('w')
-                                        .num_args(1)
-                                        .default_value("5")
-                                        .value_parser(clap::value_parser!(u32).range(1..=300))
-                                        .help("voltage settle wait time in seconds (1–300)"),
-                                )
-                                .arg(
-                                    Arg::new("try_point_start")
-                                        .value_name("try_point_start")
-                                        .short('t')
-                                        .num_args(1)
-                                        .default_value("60")
-                                        .value_parser(clap::value_parser!(u32).range(0..=120))
-                                        .help("VFP point index to start trying (0–120)"),
-                                )
-                                .arg(
-                                    Arg::new("vfcsv")
-                                        .value_name("VFCSV")
-                                        .short('v')
-                                        .num_args(1)
-                                        .default_value(default_vfp_init_csv_path())
-                                        .help("init vfcurve file path"),
-                                ),
-                        )
-                        .subcommand(
-                            Command::new("autoscan")
-                                .about("auto-scanner for a new vfp")
-                                .arg(
-                                    Arg::new("ultrafast")
-                                        .short('u')
-                                        .long("ultrafast")
-                                        .action(ArgAction::SetTrue)
-                                        .help("Enable ultrafast mode for maximum speed"),
-                                )
-                                .arg(
-                                    Arg::new("point_seq")
-                                        .value_name("point_seq")
-                                        .short('q')
-                                        .num_args(1)
-                                        .default_value("-")
-                                        .help("Point seq to scan at"),
-                                )
-                                .arg(
-                                    Arg::new("test_exe")
-                                        .value_name("TEST_EXE")
-                                        .short('w')
-                                        .long("test-exe")
-                                        .num_args(1)
-                                        .default_value(default_test_exe_path())
-                                        .help("CLI stress wrapper executable/script path"),
-                                )
-                                .arg(
-                                    Arg::new("minload_exe")
-                                        .long("minload-exe")
-                                        .value_name("PATH")
-                                        .num_args(1)
-                                        .default_value(default_minload_exe_path())
-                                        .help("Min-load Vulkan executable to wake GPU on Optimus laptops when GPUnotpowered is detected"),
-                                )
-                                .arg(
-                                    Arg::new("log")
-                                        .value_name("LOG")
-                                        .short('l')
-                                        .long("log")
-                                        .num_args(1)
-                                        .default_value(default_vfp_log_path())
-                                        .help("Autoscan log file path"),
-                                )
-                                .arg(
-                                    Arg::new("timeout_loops")
-                                        .short('t')
-                                        .value_name("timeout_loops")
-                                        .num_args(1)
-                                        .default_value("30")
-                                        .value_parser(clap::value_parser!(u32).range(1..=1_000))
-                                        .help("CLI stress duration/retry loop count (1–1000)"),
-                                )
-                                .arg(
-                                    Arg::new("output")
-                                        .value_name("OUTPUTCSV")
-                                        .short('o')
-                                        .num_args(1)
-                                        .default_value(default_vfp_temp_csv_path())
-                                        .help("output vfcurve file path with every-point save"),
-                                )
-                                .arg(
-                                    Arg::new("Vmem_scan_switch")
-                                        .short('m')
-                                        .long("Vmem_scan_switch")
-                                        .action(ArgAction::SetTrue)
-                                        .help("Enables Vmem scan switch"),
-                                )
-                                .arg(
-                                    Arg::new("initcsv")
-                                        .value_name("INITCSV")
-                                        .short('i')
-                                        .num_args(1)
-                                        .default_value(default_vfp_init_csv_path())
-                                        .help("reference init vfcurve file path"),
-                                )
-                                .arg(
-                                    Arg::new("bsod_recovery")
-                                        .short('b')
-                                        .long("recovery_method_switch")
-                                        .help("Override recovery method switch: true or false")
-                                        .num_args(1)
-                                        .value_parser(["aggressive", "traditional"])
-                                        .required(false),
-                                )
-                                .arg(
-                                    Arg::new("cuda_device")
-                                        .long("cuda-device")
-                                        .value_name("INDEX")
-                                        .num_args(1)
-                                        .value_parser(clap::value_parser!(u32))
-                                        .help("CUDA device ordinal for the stressor (sets CUDA_VISIBLE_DEVICES=INDEX; omit to let the stressor pick the default GPU)")
-                                        .required(false),
-                                )
-                                .arg(
-                                    Arg::new("stressor_extra_args")
-                                        .long("stressor-extra-args")
-                                        .value_name("ARG")
-                                        .num_args(1..)
-                                        .allow_hyphen_values(true)
-                                        .help("Extra arguments appended to each stressor invocation, e.g. --platform-index 0 --device-index 1 for OpenCL GPU selection; use `--` before pass-through args if needed")
-                                        .required(false),
-                                )
-                        )
-                        .subcommand(
-                            Command::new("autoscan_legacy")
-                                .about("auto-scanner for legacy GPUs (Maxwell / pre-Pascal) using global pstate OC offset")
-                                .arg(
-                                    Arg::new("test_exe")
-                                        .value_name("TEST_EXE")
-                                        .short('w')
-                                        .long("test-exe")
-                                        .num_args(1)
-                                        .default_value(default_test_exe_path())
-                                        .help("CLI stress wrapper executable/script path"),
-                                )
-                                .arg(
-                                    Arg::new("minload_exe")
-                                        .long("minload-exe")
-                                        .value_name("PATH")
-                                        .num_args(1)
-                                        .default_value(default_minload_exe_path())
-                                        .help("Min-load Vulkan executable to wake GPU on Optimus laptops when GPUnotpowered is detected"),
-                                )
-                                .arg(
-                                    Arg::new("log")
-                                        .value_name("LOG")
-                                        .short('l')
-                                        .long("log")
-                                        .num_args(1)
-                                        .default_value(default_vfp_log_path())
-                                        .help("Autoscan log file path"),
-                                )
-                                .arg(
-                                    Arg::new("timeout_loops")
-                                        .short('t')
-                                        .value_name("timeout_loops")
-                                        .num_args(1)
-                                        .default_value("30")
-                                        .value_parser(clap::value_parser!(u32).range(1..=1_000))
-                                        .help("CLI stress duration/retry loop count (1–1000)"),
-                                )
-                                .arg(
-                                    Arg::new("bsod_recovery")
-                                        .short('b')
-                                        .long("recovery_method_switch")
-                                        .help("Override recovery method switch: aggressive or traditional")
-                                        .num_args(1)
-                                        .value_parser(["aggressive", "traditional"])
-                                        .required(false),
-                                )
-                                .arg(
-                                    Arg::new("cuda_device")
-                                        .long("cuda-device")
-                                        .value_name("INDEX")
-                                        .num_args(1)
-                                        .value_parser(clap::value_parser!(u32))
-                                        .help("CUDA device ordinal for the stressor (sets CUDA_VISIBLE_DEVICES=INDEX; omit to let the stressor pick the default GPU)")
-                                        .required(false),
-                                )
-                                .arg(
-                                    Arg::new("stressor_extra_args")
-                                        .long("stressor-extra-args")
-                                        .value_name("ARG")
-                                        .num_args(1..)
-                                        .help("Extra arguments appended to each stressor invocation, e.g. --platform-index 0 --device-index 1 for OpenCL GPU selection")
-                                        .required(false),
-                                ),
-                        ),
-                )
+                        .subcommand(vfp_fix_result_command())
+                        .subcommand(vfp_autoscan_command(false))
+                        .subcommand(vfp_autoscan_command(true)),
+                ),
         )
+}
+
+fn vfp_export_command() -> Command {
+    Command::new("export")
+        .about("Export current VFP curve as CSV")
+        .arg(
+            Arg::new("tabs")
+                .short('t')
+                .long("tabs")
+                .action(ArgAction::SetTrue)
+                .help("Separate columns using tabs"),
+        )
+        .args(vfp_domain_args("Export"))
+        .arg(
+            Arg::new("output")
+                .value_name("OUTPUT")
+                .num_args(1)
+                .default_value("-")
+                .help("Output file path"),
+        )
+        .arg(
+            Arg::new("quick")
+                .short('q')
+                .long("quick")
+                .action(ArgAction::SetTrue)
+                .help("Skip dynamic load export"),
+        )
+        .arg(
+            Arg::new("nocheck")
+                .short('n')
+                .long("nocheck")
+                .action(ArgAction::SetTrue)
+                .help("Skip dynamic result validity check"),
+        )
+}
+
+fn vfp_export_log_command() -> Command {
+    Command::new("export_log")
+        .about("Export VFP points parsed from an autoscan log")
+        .arg(
+            Arg::new("tabs")
+                .short('t')
+                .long("tabs")
+                .action(ArgAction::SetTrue)
+                .help("Separate columns using tabs"),
+        )
+        .arg(
+            Arg::new("log")
+                .value_name("LOG")
+                .short('l')
+                .num_args(1)
+                .default_value(default_vfp_log_path())
+                .help("Input log file path"),
+        )
+        .arg(
+            Arg::new("output")
+                .value_name("OUTPUT")
+                .num_args(1)
+                .default_value("-")
+                .help("Output file path"),
+        )
+}
+
+fn vfp_import_command() -> Command {
+    Command::new("import")
+        .about("Import a modified VFP curve from CSV")
+        .arg(
+            Arg::new("tabs")
+                .short('t')
+                .long("tabs")
+                .action(ArgAction::SetTrue)
+                .help("Separate columns using tabs"),
+        )
+        .args(vfp_domain_args("Import"))
+        .arg(
+            Arg::new("input")
+                .value_name("INPUT")
+                .num_args(1)
+                .default_value("-")
+                .help("Input file path"),
+        )
+}
+
+fn vfp_fix_result_command() -> Command {
+    Command::new("fix_result")
+        .about("Post-process autoscan results")
+        .arg(
+            Arg::new("delta_ref")
+                .value_name("DELTA_REF")
+                .short('d')
+                .num_args(1)
+                .default_value("3")
+                .help("Reference delta"),
+        )
+        .arg(
+            Arg::new("tempcsv")
+                .value_name("TMPCSV")
+                .short('v')
+                .num_args(1)
+                .default_value(default_vfp_temp_csv_path())
+                .help("Temporary VFP CSV path"),
+        )
+        .arg(
+            Arg::new("outputcsv")
+                .value_name("OUTPUTCSV")
+                .short('o')
+                .num_args(1)
+                .default_value(default_vfp_csv_path())
+                .help("Output VFP CSV path"),
+        )
+        .arg(
+            Arg::new("initcsv")
+                .value_name("INITCSV")
+                .short('i')
+                .num_args(1)
+                .default_value(default_vfp_init_csv_path())
+                .help("Reference initial VFP CSV path"),
+        )
+        .arg(
+            Arg::new("ultrafast")
+                .short('u')
+                .long("ultrafast")
+                .action(ArgAction::SetTrue)
+                .help("Enable ultrafast mode post-processing"),
+        )
+        .arg(
+            Arg::new("vfplog")
+                .value_name("VFPLOG")
+                .short('l')
+                .num_args(1)
+                .default_value(default_vfp_log_path())
+                .help("VFP log file path"),
+        )
+        .arg(
+            Arg::new("minus_bin")
+                .value_name("MINUS_BIN")
+                .short('m')
+                .num_args(1)
+                .allow_hyphen_values(true)
+                .value_parser(clap::value_parser!(i32).range(-50..=50))
+                .help("Margin bin adjustment integer"),
+        )
+}
+
+fn vfp_autoscan_command(legacy: bool) -> Command {
+    let mut cmd = if legacy {
+        Command::new("autoscan_legacy")
+            .about("Auto-scanner for legacy GPUs using global pstate OC offset")
+    } else {
+        Command::new("autoscan").about("Auto-scanner for a new VFP curve")
+    }
+    .arg(
+        Arg::new("test_exe")
+            .value_name("TEST_EXE")
+            .short('w')
+            .long("test-exe")
+            .num_args(1)
+            .default_value(default_test_exe_path())
+            .help("CLI stress wrapper executable/script path"),
+    )
+    .arg(
+        Arg::new("minload_exe")
+            .long("minload-exe")
+            .value_name("PATH")
+            .num_args(1)
+            .default_value(default_minload_exe_path())
+            .help("Min-load executable used to wake power-gated GPUs"),
+    )
+    .arg(
+        Arg::new("log")
+            .value_name("LOG")
+            .short('l')
+            .long("log")
+            .num_args(1)
+            .default_value(default_vfp_log_path())
+            .help("Autoscan log file path"),
+    )
+    .arg(
+        Arg::new("timeout_loops")
+            .short('t')
+            .value_name("TIMEOUT_LOOPS")
+            .num_args(1)
+            .default_value("30")
+            .value_parser(clap::value_parser!(u32).range(1..=1_000))
+            .help("CLI stress duration/retry loop count"),
+    )
+    .arg(
+        Arg::new("bsod_recovery")
+            .short('b')
+            .long("recovery_method_switch")
+            .num_args(1)
+            .value_parser(["aggressive", "traditional"])
+            .help("Override recovery method"),
+    )
+    .arg(
+        Arg::new("cuda_device")
+            .long("cuda-device")
+            .value_name("INDEX")
+            .num_args(1)
+            .value_parser(clap::value_parser!(u32))
+            .help("CUDA device ordinal for the stressor"),
+    )
+    .arg(
+        Arg::new("stressor_extra_args")
+            .long("stressor-extra-args")
+            .value_name("ARG")
+            .num_args(1..)
+            .allow_hyphen_values(true)
+            .help("Extra arguments appended to each stressor invocation"),
+    );
+
+    if !legacy {
+        cmd = cmd
+            .arg(
+                Arg::new("ultrafast")
+                    .short('u')
+                    .long("ultrafast")
+                    .action(ArgAction::SetTrue)
+                    .help("Enable ultrafast mode"),
+            )
+            .arg(
+                Arg::new("point_seq")
+                    .value_name("POINT_SEQ")
+                    .short('q')
+                    .num_args(1)
+                    .default_value("-")
+                    .help("Point sequence to scan"),
+            )
+            .arg(
+                Arg::new("output")
+                    .value_name("OUTPUTCSV")
+                    .short('o')
+                    .num_args(1)
+                    .default_value(default_vfp_temp_csv_path())
+                    .help("Autoscan output CSV path"),
+            )
+            .arg(
+                Arg::new("Vmem_scan_switch")
+                    .short('m')
+                    .long("Vmem_scan_switch")
+                    .action(ArgAction::SetTrue)
+                    .help("Enable memory voltage scan"),
+            )
+            .arg(
+                Arg::new("initcsv")
+                    .value_name("INITCSV")
+                    .short('i')
+                    .num_args(1)
+                    .default_value(default_vfp_init_csv_path())
+                    .help("Reference initial VFP CSV path"),
+            );
+    }
+
+    cmd.args(hidden_vfp_lock_args())
+}
+
+fn vfp_domain_args(action: &'static str) -> Vec<Arg> {
+    vec![
+        Arg::new("memory")
+            .long("memory")
+            .action(ArgAction::SetTrue)
+            .conflicts_with_all(["processor", "video", "undefined"])
+            .help(format!("{action} memory VF table")),
+        Arg::new("processor")
+            .long("processor")
+            .action(ArgAction::SetTrue)
+            .conflicts_with_all(["memory", "video", "undefined"])
+            .help(format!("{action} processor VF table")),
+        Arg::new("video")
+            .long("video")
+            .action(ArgAction::SetTrue)
+            .conflicts_with_all(["memory", "processor", "undefined"])
+            .help(format!("{action} video VF table")),
+        Arg::new("undefined")
+            .long("undefined")
+            .action(ArgAction::SetTrue)
+            .conflicts_with_all(["memory", "processor", "video"])
+            .help(format!("{action} undefined VF table")),
+    ]
+}
+
+fn hidden_vfp_lock_args() -> Vec<Arg> {
+    vec![
+        Arg::new("locked_voltage")
+            .long("locked-voltage")
+            .value_name("POINT_OR_VOLTAGE")
+            .num_args(1)
+            .hide(true),
+        Arg::new("locked_core_clocks")
+            .long("locked-core-clocks")
+            .value_names(["MIN_MHZ", "MAX_MHZ"])
+            .num_args(2)
+            .hide(true),
+        Arg::new("locked_mem_clocks")
+            .long("locked-mem-clocks")
+            .value_names(["MIN_MHZ", "MAX_MHZ"])
+            .num_args(2)
+            .hide(true),
+        Arg::new("clock")
+            .long("clock")
+            .value_names(["UPPER_MHZ", "LOWER_MHZ"])
+            .num_args(1..=2)
+            .hide(true),
+        Arg::new("voltage")
+            .long("voltage")
+            .action(ArgAction::SetTrue)
+            .hide(true),
+        Arg::new("point")
+            .long("point")
+            .value_name("POINT")
+            .num_args(1)
+            .hide(true),
+        Arg::new("domain")
+            .long("domain")
+            .value_name("DOMAIN")
+            .num_args(1)
+            .hide(true),
+    ]
+}
+
+fn collect_long_flags(cmd: &clap::Command, out: &mut Vec<String>) {
+    for arg in cmd.get_arguments() {
+        if let Some(long) = arg.get_long() {
+            out.push(long.to_string());
+        }
+    }
+    for sub in cmd.get_subcommands() {
+        collect_long_flags(sub, out);
+    }
+}
+
+pub fn check_single_dash_args_from<I, S>(
+    cmd: &clap::Command,
+    args: I,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut known_longs: Vec<String> = Vec::new();
+    collect_long_flags(cmd, &mut known_longs);
+
+    for arg in args {
+        let arg = arg.as_ref();
+        if !arg.starts_with('-') || arg.starts_with("--") || arg == "-" {
+            continue;
+        }
+
+        let body = arg.trim_start_matches('-');
+        let flag_name = body.split('=').next().unwrap_or(body);
+
+        if known_longs.iter().any(|l| l == flag_name) {
+            return Err(format!("invalid option {:?} -- did you mean --{}?", arg, body).into());
+        }
+    }
+    Ok(())
+}
+
+pub fn check_single_dash_args(cmd: &clap::Command) -> Result<(), Box<dyn std::error::Error>> {
+    check_single_dash_args_from(cmd, std::env::args().skip(1))
 }

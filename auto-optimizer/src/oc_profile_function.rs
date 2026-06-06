@@ -1,5 +1,5 @@
 use super::autoscan_config::{FixResultConfig, VfpExportConfig};
-use super::basic_func::get_gpu_tdp_temp_limit;
+use super::scan_support::get_gpu_tdp_temp_limit;
 // oc_set_function
 #[cfg(all(not(windows), not(target_os = "linux")))]
 use super::platform::panic_windows_only;

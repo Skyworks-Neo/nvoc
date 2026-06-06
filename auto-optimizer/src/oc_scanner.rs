@@ -1,9 +1,3 @@
-use super::basic_func::local_time_hms;
-use super::basic_func::{
-    handle_lock_vfp, handle_reset_nvml_cooler_single_gpu, handle_test_voltage_limits,
-    voltage_frequency_check,
-};
-use super::human::print_scan_separator;
 use super::oc_profile_function::{
     apply_autoscan_profile, break_point_continue, check_voltage_points, export_single_point,
     key_point_extractor, sync_memory_pstate_as_p0,
@@ -12,6 +6,11 @@ use super::progressbar::{
     ActiveScanProgressGuard, ScanProgress, forward_child_output, progress_print,
 };
 use super::scan_strategy::{FluctuationMode, FluctuationStrategy, StepController};
+use super::scan_support::local_time_hms;
+use super::scan_support::{
+    handle_lock_vfp, handle_reset_nvml_cooler_single_gpu, handle_test_voltage_limits,
+    print_scan_separator, voltage_frequency_check,
+};
 use clap::ArgMatches;
 use nvoc_core::{
     ClockDomain, Error, GpuOcParams, GpuOperation, GpuTarget, KilohertzDelta,

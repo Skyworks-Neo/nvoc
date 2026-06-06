@@ -1,19 +1,20 @@
 use clap::{Arg, ArgAction, ColorChoice, Command as ClapCommand};
 use nvoc_core::{
     BackendSet, CheckVoltageFrequency, ClockDomain, ConvertEnum, CoolerPolicy, CoolerTarget,
-    GpuSelector, GpuTarget, Kilohertz, KilohertzDelta, PState, Percentage, ProbeVoltageLimits,
-    QueryClockOffset, QueryDomainVfpPoints, QueryFanInfo, QueryGpuInfo, QueryGpuSettings,
-    QueryGpuStatus, QueryLegacyCoreOvervoltRanges, QueryLegacyP0CoreMaxVoltageDelta,
-    QueryPowerLimits, QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits,
-    QueryTemperatureThresholds, QueryThrottleReasons, QueryVfpPointVoltage,
-    ResetApplicationsClocks, ResetCoolerLevels, ResetFanSpeed, ResetLockedClocks,
-    ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetPstateBaseVoltages,
-    ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock, ResetVfpLock,
-    SetApplicationsClocks, SetClockOffset, SetCoolerLevels, SetFanSpeed, SetLockedClocks,
+    GpuSelector, GpuTarget, Kilohertz, KilohertzDelta, MicrovoltsDelta, PState, Percentage,
+    ProbeVoltageLimits, QueryClockOffset, QueryDomainVfpPoints, QueryFanInfo, QueryGpuInfo,
+    QueryGpuSettings, QueryGpuStatus, QueryLegacyCoreOvervoltRanges,
+    QueryLegacyP0CoreMaxVoltageDelta, QueryPowerLimits, QueryPstates,
+    QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
+    QueryThrottleReasons, QueryVfpPointVoltage, ResetApplicationsClocks, ResetCoolerLevels,
+    ResetFanSpeed, ResetLockedClocks, ResetNvapiPowerLimits, ResetNvapiSensorLimits,
+    ResetPstateBaseVoltages, ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock,
+    ResetVfpLock, SetApiRestriction, SetApplicationsClocks, SetAutoBoost, SetAutoBoostDefault,
+    SetClockOffset, SetCoolerLevels, SetFanSpeed, SetLegacyClocks, SetLockedClocks,
     SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiSensorLimits, SetNvmlPstateLock,
-    SetPowerLimit, SetPstateClockOffset, SetTemperatureLimit, SetVfpFrequencyLock,
-    SetVfpPointDelta, SetVfpRangeDelta, SetVfpVoltageLock, SetVoltageBoost, VfpResetDomain,
-    discover_targets, nvml_pstate_to_str, parse_nvapi_locked_voltage_target,
+    SetPowerLimit, SetPstateBaseVoltage, SetPstateClockOffset, SetTemperatureLimit,
+    SetVfpFrequencyLock, SetVfpPointDelta, SetVfpRangeDelta, SetVfpVoltageLock, SetVoltageBoost,
+    VfpResetDomain, discover_targets, nvml_pstate_to_str, parse_nvapi_locked_voltage_target,
     parse_nvml_fan_control_policy, parse_nvml_pstate, run, select_targets,
 };
 use serde_json::{Value, json};
@@ -129,6 +130,7 @@ pub enum Command {
     GetLegacyP0CoreMaxVoltageDelta,
     SetCoreOffsetMhz,
     SetMemoryOffsetMhz,
+    SetClockOffsetMhz,
     SetPowerWatt,
     SetPowerPercent,
     SetThermalLimitC,
@@ -139,7 +141,14 @@ pub enum Command {
     SetVfpRangeDeltaMhz,
     SetPstateLock,
     SetApplicationsClocksMhz,
+    SetPstateBaseVoltageUv,
     SetVoltageBoostPercent,
+    SetAutoBoost,
+    SetAutoBoostDefault,
+    SetApiRestriction,
+    SetEdid,
+    ClearEdid,
+    SetLegacyClocksMhz,
     ResetCoreOffsetMhz,
     ResetMemoryOffsetMhz,
     ResetApplicationsClocks,
@@ -150,6 +159,8 @@ pub enum Command {
     ResetPowerPercent,
     ResetThermalLimitC,
     ResetPstateBaseVoltages,
+    ResetPstateClockOffsets,
+    ResetVoltageBoostPercent,
 }
 
 static NVAPI_ONLY: [BackendAdapter; 1] = [BackendAdapter::Nvapi];
@@ -179,6 +190,7 @@ impl Command {
             Self::GetLegacyP0CoreMaxVoltageDelta => "get-legacy-p0-core-max-voltage-delta",
             Self::SetCoreOffsetMhz => "set-core-offset-mhz",
             Self::SetMemoryOffsetMhz => "set-memory-offset-mhz",
+            Self::SetClockOffsetMhz => "set-clock-offset-mhz",
             Self::SetPowerWatt => "set-power-watt",
             Self::SetPowerPercent => "set-power-percent",
             Self::SetThermalLimitC => "set-thermal-limit-c",
@@ -189,7 +201,14 @@ impl Command {
             Self::SetVfpRangeDeltaMhz => "set-vfp-range-delta-mhz",
             Self::SetPstateLock => "set-pstate-lock",
             Self::SetApplicationsClocksMhz => "set-applications-clocks-mhz",
+            Self::SetPstateBaseVoltageUv => "set-pstate-base-voltage-uv",
             Self::SetVoltageBoostPercent => "set-voltage-boost-percent",
+            Self::SetAutoBoost => "set-auto-boost",
+            Self::SetAutoBoostDefault => "set-auto-boost-default",
+            Self::SetApiRestriction => "set-api-restriction",
+            Self::SetEdid => "set-edid",
+            Self::ClearEdid => "clear-edid",
+            Self::SetLegacyClocksMhz => "set-legacy-clocks-mhz",
             Self::ResetCoreOffsetMhz => "reset-core-offset-mhz",
             Self::ResetMemoryOffsetMhz => "reset-memory-offset-mhz",
             Self::ResetApplicationsClocks => "reset-applications-clocks",
@@ -200,6 +219,8 @@ impl Command {
             Self::ResetPowerPercent => "reset-power-percent",
             Self::ResetThermalLimitC => "reset-thermal-limit-c",
             Self::ResetPstateBaseVoltages => "reset-pstate-base-voltages",
+            Self::ResetPstateClockOffsets => "reset-pstate-clock-offsets",
+            Self::ResetVoltageBoostPercent => "reset-voltage-boost-percent",
         }
     }
 
@@ -225,6 +246,7 @@ impl Command {
             Self::GetLegacyP0CoreMaxVoltageDelta => "Read NVAPI legacy P0 max voltage delta",
             Self::SetCoreOffsetMhz => "Set core clock offset in MHz",
             Self::SetMemoryOffsetMhz => "Set memory clock offset in MHz",
+            Self::SetClockOffsetMhz => "Set clock offset in MHz for any clock domain",
             Self::SetPowerWatt => "Set NVML power limit in watts",
             Self::SetPowerPercent => "Set NVAPI power limit in percent",
             Self::SetThermalLimitC => "Set thermal limit in Celsius",
@@ -235,7 +257,14 @@ impl Command {
             Self::SetVfpRangeDeltaMhz => "Set a VFP point range delta in MHz",
             Self::SetPstateLock => "Lock one NVML P-State or a contiguous range",
             Self::SetApplicationsClocksMhz => "Set NVML application clocks in MHz",
+            Self::SetPstateBaseVoltageUv => "Set NVAPI P-State base voltage delta in microvolts",
             Self::SetVoltageBoostPercent => "Set NVAPI voltage boost percent",
+            Self::SetAutoBoost => "Set NVML auto-boost state",
+            Self::SetAutoBoostDefault => "Set NVML default auto-boost state",
+            Self::SetApiRestriction => "Set NVML API restriction state",
+            Self::SetEdid => "Set display EDID through NVAPI",
+            Self::ClearEdid => "Clear display EDID through NVAPI",
+            Self::SetLegacyClocksMhz => "Set absolute core/memory clocks for legacy GPUs",
             Self::ResetCoreOffsetMhz => "Reset core clock offset to 0 MHz",
             Self::ResetMemoryOffsetMhz => "Reset memory clock offset to 0 MHz",
             Self::ResetApplicationsClocks => "Reset NVML application clocks",
@@ -246,6 +275,8 @@ impl Command {
             Self::ResetPowerPercent => "Reset NVAPI power limits",
             Self::ResetThermalLimitC => "Reset NVAPI sensor limits",
             Self::ResetPstateBaseVoltages => "Reset NVAPI P-State base voltages",
+            Self::ResetPstateClockOffsets => "Reset all NVAPI P-State clock offsets",
+            Self::ResetVoltageBoostPercent => "Reset NVAPI voltage boost percent",
         }
     }
 
@@ -253,6 +284,7 @@ impl Command {
         match self {
             Self::ListGpus
             | Self::GetClockOffsetMhz
+            | Self::SetClockOffsetMhz
             | Self::SetCoreOffsetMhz
             | Self::SetMemoryOffsetMhz
             | Self::SetThermalLimitC
@@ -271,6 +303,9 @@ impl Command {
             | Self::GetThrottleReasons
             | Self::SetPowerWatt
             | Self::SetApplicationsClocksMhz
+            | Self::SetAutoBoost
+            | Self::SetAutoBoostDefault
+            | Self::SetApiRestriction
             | Self::ResetApplicationsClocks => &NVML_ONLY,
             _ => &NVAPI_ONLY,
         }
@@ -281,15 +316,23 @@ impl Command {
             Self::GetVfpPointVoltageMv | Self::CheckVoltageFrequency => (1, 1),
             Self::SetCoreOffsetMhz
             | Self::SetMemoryOffsetMhz
+            | Self::SetClockOffsetMhz
             | Self::SetPowerWatt
             | Self::SetPowerPercent
             | Self::SetThermalLimitC
             | Self::SetFanPercent
             | Self::SetVfpVoltageLock
+            | Self::SetPstateBaseVoltageUv
+            | Self::SetAutoBoost
+            | Self::SetAutoBoostDefault
+            | Self::ClearEdid
             | Self::SetVoltageBoostPercent => (1, 1),
             Self::SetLockedClocksMhz
             | Self::SetVfpPointDeltaMhz
-            | Self::SetApplicationsClocksMhz => (2, 2),
+            | Self::SetApplicationsClocksMhz
+            | Self::SetApiRestriction
+            | Self::SetEdid
+            | Self::SetLegacyClocksMhz => (2, 2),
             Self::SetVfpRangeDeltaMhz => (3, 3),
             Self::SetPstateLock => (1, 2),
             _ => (0, 0),
@@ -305,10 +348,12 @@ impl Command {
                 "no-infer-missing-default",
             ],
             Self::GetClockOffsetMhz => &["domain", "pstate"],
+            Self::SetClockOffsetMhz => &["domain", "pstate"],
             Self::SetCoreOffsetMhz
             | Self::SetMemoryOffsetMhz
             | Self::ResetCoreOffsetMhz
-            | Self::ResetMemoryOffsetMhz => &["pstate"],
+            | Self::ResetMemoryOffsetMhz
+            | Self::SetPstateBaseVoltageUv => &["pstate"],
             Self::SetFanPercent => &["fan", "policy"],
             Self::ResetFan => &["fan"],
             Self::SetLockedClocksMhz | Self::ResetLockedClocks | Self::ResetVfpDeltas => {
@@ -341,6 +386,7 @@ const COMMANDS: &[Command] = &[
     Command::GetLegacyP0CoreMaxVoltageDelta,
     Command::SetCoreOffsetMhz,
     Command::SetMemoryOffsetMhz,
+    Command::SetClockOffsetMhz,
     Command::SetPowerWatt,
     Command::SetPowerPercent,
     Command::SetThermalLimitC,
@@ -351,7 +397,14 @@ const COMMANDS: &[Command] = &[
     Command::SetVfpRangeDeltaMhz,
     Command::SetPstateLock,
     Command::SetApplicationsClocksMhz,
+    Command::SetPstateBaseVoltageUv,
     Command::SetVoltageBoostPercent,
+    Command::SetAutoBoost,
+    Command::SetAutoBoostDefault,
+    Command::SetApiRestriction,
+    Command::SetEdid,
+    Command::ClearEdid,
+    Command::SetLegacyClocksMhz,
     Command::ResetCoreOffsetMhz,
     Command::ResetMemoryOffsetMhz,
     Command::ResetApplicationsClocks,
@@ -362,6 +415,8 @@ const COMMANDS: &[Command] = &[
     Command::ResetPowerPercent,
     Command::ResetThermalLimitC,
     Command::ResetPstateBaseVoltages,
+    Command::ResetPstateClockOffsets,
+    Command::ResetVoltageBoostPercent,
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1203,6 +1258,10 @@ fn execute_target(
         Command::SetMemoryOffsetMhz => {
             set_clock_offset(target, adapter, invocation, ClockDomain::Memory)
         }
+        Command::SetClockOffsetMhz => {
+            let domain = option_domain(invocation, ClockDomain::Graphics)?;
+            set_clock_offset(target, adapter, invocation, domain)
+        }
         Command::SetPowerWatt => {
             let watts = parse_u32_unit(&invocation.positionals[0], "w", "watt")?;
             run(target, SetPowerLimit { watts })?;
@@ -1330,6 +1389,22 @@ fn execute_target(
                 "graphics_mhz": graphics_mhz,
             }))
         }
+        Command::SetPstateBaseVoltageUv => {
+            let delta_uv = parse_i32_unit(&invocation.positionals[0], "uv", "microvolt")?;
+            let pstate = option_pstate_nvapi(invocation)?;
+            run(
+                target,
+                SetPstateBaseVoltage {
+                    pstate,
+                    delta_uv: MicrovoltsDelta(delta_uv),
+                },
+            )?;
+            Ok(json!({
+                "applied": true,
+                "pstate": pstate_label(pstate),
+                "delta_uv": delta_uv,
+            }))
+        }
         Command::SetVoltageBoostPercent => {
             let percent = parse_u32_unit(&invocation.positionals[0], "%", "percent")?;
             run(
@@ -1339,6 +1414,74 @@ fn execute_target(
                 },
             )?;
             Ok(json!({"applied": true, "voltage_boost_percent": percent}))
+        }
+        Command::SetAutoBoost => {
+            let enabled = parse_bool(&invocation.positionals[0])?;
+            run(target, SetAutoBoost { enabled })?;
+            Ok(json!({"applied": true, "enabled": enabled}))
+        }
+        Command::SetAutoBoostDefault => {
+            let enabled = parse_bool(&invocation.positionals[0])?;
+            run(target, SetAutoBoostDefault { enabled })?;
+            Ok(json!({"applied": true, "enabled": enabled}))
+        }
+        Command::SetApiRestriction => {
+            let api_type = parse_api_restriction_api(&invocation.positionals[0])?;
+            let restricted = parse_api_restriction_state(&invocation.positionals[1])?;
+            run(
+                target,
+                SetApiRestriction {
+                    api_type,
+                    restricted,
+                },
+            )?;
+            Ok(json!({
+                "applied": true,
+                "api": invocation.positionals[0],
+                "restricted": restricted,
+            }))
+        }
+        Command::SetEdid => {
+            let display_id = parse_display_id(&invocation.positionals[0])?;
+            let edid = parse_edid_hex(&invocation.positionals[1])?;
+            target
+                .nvapi()?
+                .inner()
+                .set_edid(display_id, &edid)
+                .map_err(nvoc_core::Error::from)?;
+            Ok(json!({
+                "applied": true,
+                "display_id": format!("0x{display_id:08X}"),
+                "bytes": edid.len(),
+            }))
+        }
+        Command::ClearEdid => {
+            let display_id = parse_display_id(&invocation.positionals[0])?;
+            target
+                .nvapi()?
+                .inner()
+                .clear_edid(display_id)
+                .map_err(nvoc_core::Error::from)?;
+            Ok(json!({
+                "applied": true,
+                "display_id": format!("0x{display_id:08X}"),
+            }))
+        }
+        Command::SetLegacyClocksMhz => {
+            let core_mhz = parse_u32_unit(&invocation.positionals[0], "mhz", "mhz")?;
+            let memory_mhz = parse_u32_unit(&invocation.positionals[1], "mhz", "mhz")?;
+            run(
+                target,
+                SetLegacyClocks {
+                    core_mhz,
+                    memory_mhz,
+                },
+            )?;
+            Ok(json!({
+                "applied": true,
+                "core_mhz": core_mhz,
+                "memory_mhz": memory_mhz,
+            }))
         }
         Command::ResetCoreOffsetMhz => {
             reset_clock_offset(target, adapter, invocation, ClockDomain::Graphics)
@@ -1383,6 +1526,30 @@ fn execute_target(
         Command::ResetPstateBaseVoltages => {
             run(target, ResetPstateBaseVoltages)?;
             Ok(json!({"applied": true}))
+        }
+        Command::ResetPstateClockOffsets => {
+            let info = run(target, QueryGpuInfo)?.output;
+            let offsets = info
+                .pstate_limits
+                .iter()
+                .flat_map(|(&pstate, limits)| {
+                    limits
+                        .iter()
+                        .filter(|&(_, info)| info.frequency_delta.is_some())
+                        .map(move |(&domain, _)| (pstate, domain))
+                })
+                .collect::<Vec<_>>();
+            run(target, ResetPstateClockOffsets { offsets })?;
+            Ok(json!({"applied": true}))
+        }
+        Command::ResetVoltageBoostPercent => {
+            run(
+                target,
+                SetVoltageBoost {
+                    boost: Percentage(0),
+                },
+            )?;
+            Ok(json!({"applied": true, "voltage_boost_percent": 0}))
         }
     }
 }
@@ -1683,6 +1850,53 @@ fn nvml_fan_indices(target: &GpuTarget<'_>, raw: &str) -> CliResult<Vec<u32>> {
         return Ok((0..fan_count).collect());
     }
     Ok(vec![parse_u32(raw, "fan")?])
+}
+
+fn parse_api_restriction_api(raw: &str) -> CliResult<nvml_wrapper::enum_wrappers::device::Api> {
+    use nvml_wrapper::enum_wrappers::device::Api;
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "app-clocks" | "application-clocks" => Ok(Api::ApplicationClocks),
+        "auto-boost" | "autoboost" => Ok(Api::AutoBoostedClocks),
+        other => Err(CliError::new(format!(
+            "invalid API {other:?}; expected app-clocks or auto-boost"
+        ))),
+    }
+}
+
+fn parse_api_restriction_state(raw: &str) -> CliResult<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "restricted" => Ok(true),
+        "open" => Ok(false),
+        other => Err(CliError::new(format!(
+            "invalid API restriction state {other:?}; expected open or restricted"
+        ))),
+    }
+}
+
+fn parse_display_id(raw: &str) -> CliResult<u32> {
+    let trimmed = raw.trim();
+    let digits = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+        .unwrap_or(trimmed);
+    u32::from_str_radix(digits, 16)
+        .map_err(|_| CliError::new(format!("invalid display ID {raw:?}; expected hex")))
+}
+
+fn parse_edid_hex(raw: &str) -> CliResult<Vec<u8>> {
+    let hex = raw.trim();
+    if !hex.len().is_multiple_of(2) {
+        return Err(CliError::new(
+            "EDID hex must contain an even number of digits",
+        ));
+    }
+    (0..hex.len())
+        .step_by(2)
+        .map(|index| {
+            u8::from_str_radix(&hex[index..index + 2], 16)
+                .map_err(|_| CliError::new(format!("invalid EDID hex byte at offset {index}")))
+        })
+        .collect()
 }
 
 fn option_one<'a>(invocation: &'a Invocation, name: &str) -> Option<&'a str> {
