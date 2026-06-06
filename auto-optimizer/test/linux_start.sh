@@ -5,6 +5,7 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 auto_optimizer_dir="$(cd -- "${script_dir}/.." && pwd)"
 repo_root="$(cd -- "${auto_optimizer_dir}/.." && pwd)"
 bin="${NVOC_AUTO_OPTIMIZER_BIN:-${repo_root}/target/release/nvoc-auto-optimizer}"
+cli_bin="${NVOC_CLI_BIN:-${repo_root}/target/release/nvoc-cli}"
 
 red=$'\033[1;91m'
 green=$'\033[1;92m'
@@ -22,6 +23,11 @@ if [[ ! -x "${bin}" ]]; then
     echo "Build it with: cargo build --release -p nvoc-auto-optimizer" >&2
     exit 1
 fi
+if [[ ! -x "${cli_bin}" ]]; then
+    echo "${red}Missing executable: ${cli_bin}${reset}" >&2
+    echo "Build it with: cargo build --release -p nvoc-cli" >&2
+    exit 1
+fi
 
 mkdir -p ./ws
 if [[ ! -f "${logfile}" ]]; then
@@ -29,10 +35,10 @@ if [[ ! -f "${logfile}" ]]; then
     echo "${green}Log file created: ${logfile}${reset}"
 fi
 
-"${bin}" info
+"${cli_bin}" get-info
 
 echo "Detecting GPUs in system..."
-"${bin}" list
+"${cli_bin}" list-gpus
 echo
 read -r -p "Input target GPU id to be scanned: " gpu_id
 
@@ -45,13 +51,13 @@ echo
 echo "Selected GPU: ${gpu_id}"
 echo
 
-sudo "${bin}" --gpu="${gpu_id}" reset pstate
-sudo "${bin}" --gpu="${gpu_id}" reset vfp
-sudo "${bin}" --gpu="${gpu_id}" reset vfp lock
+sudo "${cli_bin}" --gpu="${gpu_id}" reset-pstate-clock-offsets
+sudo "${bin}" --gpu="${gpu_id}" reset-vfp
+sudo "${cli_bin}" --gpu="${gpu_id}" reset-vfp-lock
 
 if [[ ! -f "./ws/vfp-init.csv" ]]; then
     echo "exporting default data..."
-    sudo "${bin}" --gpu="${gpu_id}" set vfp export ./ws/vfp-init.csv
+    sudo "${bin}" --gpu="${gpu_id}" export-vfp ./ws/vfp-init.csv
 fi
 
 if [[ "${1:-}" == "1" ]]; then
@@ -71,12 +77,12 @@ echo "${yellow}If crash is unacceptable right now, press Ctrl-C to exit.${reset}
 echo
 read -r -p "Press Enter to start autoscan..."
 
-sudo "${bin}" --gpu="${gpu_id}" set vfp autoscan \
+sudo "${bin}" --gpu="${gpu_id}" autoscan-vfp \
     --test-exe ./test/test_cuda_linux.sh \
     --minload-exe ./test/cli-stressor-cuda-rs-minload.sh \
     --stressor-extra-args --gpu-index "${gpu_id}"
-sudo "${bin}" --gpu="${gpu_id}" set vfp fix_result -m 1
-sudo "${bin}" --gpu="${gpu_id}" set vfp import ./ws/vfp.csv
-sudo "${bin}" --gpu="${gpu_id}" set vfp export ./ws/vfp-final.csv
+sudo "${bin}" --gpu="${gpu_id}" fix-vfp-result -m 1
+sudo "${bin}" --gpu="${gpu_id}" import-vfp ./ws/vfp.csv
+sudo "${bin}" --gpu="${gpu_id}" export-vfp ./ws/vfp-final.csv
 
 echo "${green}All VFP scan finished. Check auto-optimizer/ws/vfp-final.csv.${reset}"

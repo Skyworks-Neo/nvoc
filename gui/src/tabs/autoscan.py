@@ -211,30 +211,57 @@ class AutoscanTab:
 
     def _export_init(self) -> None:
         gpu_args = self.app.get_gpu_args()
+        gpu = self.app.selected_gpu_target()
         self.app.console.append("[GUI] Resetting core offset/curve...\n")
-        self.app.run_cli_display(gpu_args + ["set", "nvml", "--core-offset", "0"])
-        # Chain: after OC reset, export
-        self.app.run_cli_display(gpu_args + ["set", "vfp", "export", "-q", "-"])
+
+        def export_after_reset(code: int) -> None:
+            if code == 0:
+                self.app.run_cli_display(gpu_args + ["export-vfp", "-q", "-"])
+
+        self.app.run_native_action(
+            "reset core offset",
+            lambda native, gpu=gpu: (
+                native.set_clock_offset(gpu, "nvml", "core", 0, "P0")
+                or "Successfully reset core offset."
+            ),
+            on_finished=export_after_reset,
+        )
 
     def _reset_unlock(self) -> None:
         """Reset VF curve explicitly and unlock NVAPI VFP states, then auto refresh."""
         gpu_args = self.app.get_gpu_args()
-        self.app.run_cli_display(gpu_args + ["set", "nvapi", "--reset-volt-locks"])
-        self.app.run_cli_display(gpu_args + ["reset", "vfp"])
-        if getattr(self.app, "tab_vfcurve", None):
-            self.app.tab_vfcurve._refresh_curve()
+        gpu = self.app.selected_gpu_target()
+
+        def refresh_curve(_code: int) -> None:
+            if getattr(self.app, "tab_vfcurve", None):
+                self.app.tab_vfcurve._refresh_curve()
+
+        def reset_curve_after_unlock(code: int) -> None:
+            if code == 0:
+                self.app.run_cli_display(
+                    gpu_args + ["reset-vfp"],
+                    on_finished=refresh_curve,
+                )
+
+        self.app.run_native_action(
+            "reset VFP lock",
+            lambda native, gpu=gpu: (
+                native.reset_vfp_lock(gpu) or "Successfully reset VFP lock."
+            ),
+            on_finished=reset_curve_after_unlock,
+        )
 
     def _start_scan(self) -> None:
         gpu_args = self.app.get_gpu_args()
         mode = self.mode_var.get()
 
         if mode == "legacy":
-            args = gpu_args + ["set", "vfp", "autoscan_legacy"]
+            args = gpu_args + ["autoscan-vfp-legacy"]
             bsod = self.bsod_var.get()
             if bsod != "(auto)":
                 args += ["-b", bsod]
         else:
-            args = gpu_args + ["set", "vfp", "autoscan"]
+            args = gpu_args + ["autoscan-vfp"]
             if mode == "ultrafast":
                 args.append("-u")
             args += ["-o", self.output_csv_var.get()]
@@ -260,17 +287,17 @@ class AutoscanTab:
     def _fix_result(self) -> None:
         gpu_args = self.app.get_gpu_args()
         mode = self.mode_var.get()
-        args = gpu_args + ["set", "vfp", "fix_result", "-m", "1"]
+        args = gpu_args + ["fix-vfp-result", "-m", "1"]
         if mode == "ultrafast":
             args.append("-u")
         self.app.run_cli_display(args)
 
     def _import_final(self) -> None:
         gpu_args = self.app.get_gpu_args()
-        self.app.run_cli_display(gpu_args + ["set", "vfp", "import", r".\ws\vfp.csv"])
+        self.app.run_cli_display(gpu_args + ["import-vfp", r".\ws\vfp.csv"])
 
     def _export_final(self) -> None:
         gpu_args = self.app.get_gpu_args()
         self.app.run_cli_display(
-            gpu_args + ["set", "vfp", "export", r".\ws\vfp-final.csv"]
+            gpu_args + ["export-vfp", r".\ws\vfp-final.csv"]
         )

@@ -29,51 +29,22 @@ pub fn get_arguments() -> Command {
                 .global(true)
                 .help("Disable ANSI color output (also honors NO_COLOR)"),
         )
+        .subcommand(vfp_export_command())
+        .subcommand(vfp_export_log_command())
+        .subcommand(vfp_import_command())
         .subcommand(
-            Command::new("reset")
-                .about("Restore VFP curve deltas")
-                .subcommand_required(true)
-                .arg_required_else_help(true)
-                .subcommand(
-                    Command::new("vfp")
-                        .about("Reset VFP curve deltas")
-                        .arg(
-                            Arg::new("vfp_domain")
-                                .long("vfp-domain")
-                                .value_name("VFP_DOMAIN")
-                                .num_args(1)
-                                .default_value(VfpResetDomain::All.to_str())
-                                .value_parser(VfpResetDomain::possible_values().to_vec())
-                                .help("VFP reset domain: all, core, or memory"),
-                        ),
-                ),
+            Command::new("sync-vfp-memory-pstate").about(
+                "Sync the second-highest adjustable memory VFP stage to P0 memory frequency",
+            ),
         )
-        .subcommand(
-            Command::new("set")
-                .about("VFP curve workflows")
-                .subcommand_required(true)
-                .arg_required_else_help(true)
-                .subcommand(
-                    Command::new("vfp")
-                        .about("GPU Boost voltage-frequency curve workflows")
-                        .subcommand_required(true)
-                        .arg_required_else_help(true)
-                        .subcommand(vfp_export_command())
-                        .subcommand(vfp_export_log_command())
-                        .subcommand(vfp_import_command())
-                        .subcommand(
-                            Command::new("sync_mem_pstate_as_p0")
-                                .about("Sync the second-highest adjustable memory VFP stage to P0 memory frequency"),
-                        )
-                        .subcommand(vfp_fix_result_command())
-                        .subcommand(vfp_autoscan_command(false))
-                        .subcommand(vfp_autoscan_command(true)),
-                ),
-        )
+        .subcommand(vfp_fix_result_command())
+        .subcommand(vfp_autoscan_command(false))
+        .subcommand(vfp_autoscan_command(true))
+        .subcommand(vfp_reset_command())
 }
 
 fn vfp_export_command() -> Command {
-    Command::new("export")
+    Command::new("export-vfp")
         .about("Export current VFP curve as CSV")
         .arg(
             Arg::new("tabs")
@@ -107,7 +78,7 @@ fn vfp_export_command() -> Command {
 }
 
 fn vfp_export_log_command() -> Command {
-    Command::new("export_log")
+    Command::new("export-vfp-log")
         .about("Export VFP points parsed from an autoscan log")
         .arg(
             Arg::new("tabs")
@@ -134,7 +105,7 @@ fn vfp_export_log_command() -> Command {
 }
 
 fn vfp_import_command() -> Command {
-    Command::new("import")
+    Command::new("import-vfp")
         .about("Import a modified VFP curve from CSV")
         .arg(
             Arg::new("tabs")
@@ -154,7 +125,7 @@ fn vfp_import_command() -> Command {
 }
 
 fn vfp_fix_result_command() -> Command {
-    Command::new("fix_result")
+    Command::new("fix-vfp-result")
         .about("Post-process autoscan results")
         .arg(
             Arg::new("delta_ref")
@@ -216,10 +187,10 @@ fn vfp_fix_result_command() -> Command {
 
 fn vfp_autoscan_command(legacy: bool) -> Command {
     let mut cmd = if legacy {
-        Command::new("autoscan_legacy")
+        Command::new("autoscan-vfp-legacy")
             .about("Auto-scanner for legacy GPUs using global pstate OC offset")
     } else {
-        Command::new("autoscan").about("Auto-scanner for a new VFP curve")
+        Command::new("autoscan-vfp").about("Auto-scanner for a new VFP curve")
     }
     .arg(
         Arg::new("test_exe")
@@ -324,6 +295,20 @@ fn vfp_autoscan_command(legacy: bool) -> Command {
     }
 
     cmd.args(hidden_vfp_lock_args())
+}
+
+fn vfp_reset_command() -> Command {
+    Command::new("reset-vfp")
+        .about("Reset VFP curve deltas")
+        .arg(
+            Arg::new("vfp_domain")
+                .long("vfp-domain")
+                .value_name("VFP_DOMAIN")
+                .num_args(1)
+                .default_value(VfpResetDomain::All.to_str())
+                .value_parser(VfpResetDomain::possible_values().to_vec())
+                .help("VFP reset domain: all, core, or memory"),
+        )
 }
 
 fn vfp_domain_args(action: &'static str) -> Vec<Arg> {

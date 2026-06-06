@@ -30,7 +30,7 @@ This section is the canonical component inventory for the monorepo. `CONTRIBUTIN
 
 | Component | Path | Purpose |
 |---|---|---|
-| NVOC-AUTO-OPTIMIZER | [auto-optimizer/](./auto-optimizer/) | Rust CLI core for GPU discovery, status, resets, NVAPI / NVML setting writes, V-F curve export/import, autoscan, and result fixing. |
+| NVOC-AUTO-OPTIMIZER | [auto-optimizer/](./auto-optimizer/) | Rust CLI for V-F curve export/import, autoscan, result fixing, and retained VFP reset workflows. Use NVOC-CLI for GPU discovery, status, general resets, and NVAPI / NVML setting writes. |
 | NVOC-CLI | [cli/](./cli/) | Focused Rust wrapper over `nvoc-core` with flat function-style commands and NVAPI/NVML backend selection. |
 | NVOC-STRESSOR CUDA (Rust, experimental) | [cli-stressor-cuda-rs/](./cli-stressor-cuda-rs/) | Rust CUDA stress tool for CUDA-capable systems and native Rust pipeline usage. |
 | NVOC-STRESSOR OpenCL | [cli-stressor-opencl/](./cli-stressor-opencl/) | Lightweight OpenCL stress tool for broader backend coverage without CUDA-specific dependencies. |
@@ -140,7 +140,7 @@ NVOC 是一个 NVIDIA GPU 超频与稳定性工具的 monorepo。核心是 Rust 
 
 | 组件 | 路径 | 用途 |
 |---|---|---|
-| NVOC-AUTO-OPTIMIZER | [auto-optimizer/](./auto-optimizer/) | Rust CLI 核心，负责 GPU 发现、状态读取、重置、NVAPI / NVML 写入、V-F 曲线导入导出、autoscan 和结果后处理。 |
+| NVOC-AUTO-OPTIMIZER | [auto-optimizer/](./auto-optimizer/) | Rust CLI，负责 V-F 曲线导入导出、autoscan、结果后处理和保留的 VFP 重置流程。GPU 发现、状态读取、通用重置和 NVAPI / NVML 写入由 NVOC-CLI 负责。 |
 | NVOC-CLI | [cli/](./cli/) | `nvoc-core` 的精简 Rust 包装器，提供扁平函数式命令和 NVAPI/NVML 后端选择。 |
 | NVOC-STRESSOR CUDA（Rust，实验性） | [cli-stressor-cuda-rs/](./cli-stressor-cuda-rs/) | 面向 CUDA 环境与 Rust 原生流水线的 Rust CUDA 压力测试工具。 |
 | NVOC-STRESSOR OpenCL | [cli-stressor-opencl/](./cli-stressor-opencl/) | 轻量 OpenCL 压力测试工具，用于不依赖 CUDA 专有依赖的后端覆盖。 |
