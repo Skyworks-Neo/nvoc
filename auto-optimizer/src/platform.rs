@@ -120,7 +120,7 @@ pub fn is_elevated() -> bool {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::{default_minload_exe_path, default_test_exe_path};
 
