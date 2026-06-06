@@ -74,6 +74,7 @@ pub enum OperationKind {
     QueryAutoBoost,
     SetApiRestriction,
     QueryApiRestriction,
+    QueryDisplays,
     QueryEdid,
     QueryThrottleReasons,
 }
@@ -153,6 +154,20 @@ pub struct ApiRestrictionState {
 pub struct EdidData {
     pub display_id: u32,
     pub bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DisplayInfo {
+    pub display_id: u32,
+    pub connector: String,
+    pub flags_bits: u32,
+    pub connected: bool,
+    pub physically_connected: bool,
+    pub active: bool,
+    pub os_visible: bool,
+    pub dynamic: bool,
+    pub mst_root: bool,
+    pub wireless: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

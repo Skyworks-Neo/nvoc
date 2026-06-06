@@ -8,11 +8,11 @@ use super::nvml::{
 use super::result::PstateBaseVoltage;
 use super::types::{NvapiLockedVoltageTarget, VfpResetDomain};
 pub use nvapi_hi::ThermalSensors;
-use nvapi_hi::nvapi::{CelsiusShifted, VoltageDomain};
+use nvapi_hi::nvapi::{CelsiusShifted, DisplayIdsFlags, VoltageDomain};
 use nvapi_hi::{
-    Celsius, ClockDomain, ClockLockEntry, ClockLockValue, CoolerPolicy, CoolerSettings,
-    FanCoolerId, Gpu, Kilohertz, KilohertzDelta, Microvolts, MicrovoltsDelta, PState, Percentage,
-    PerfLimitId, PffCurve, PffPoint, VfpPoint,
+    Celsius, ClockDomain, ClockLockEntry, ClockLockValue, ConnectedIdsFlags, CoolerPolicy,
+    CoolerSettings, FanCoolerId, Gpu, Kilohertz, KilohertzDelta, Microvolts, MicrovoltsDelta,
+    PState, Percentage, PerfLimitId, PffCurve, PffPoint, VfpPoint,
 };
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
@@ -84,6 +84,35 @@ pub fn query_pstate_base_voltage(
         min_delta: base_volt.voltage_delta.range.min,
         max_delta: base_volt.voltage_delta.range.max,
     })
+}
+
+pub fn query_displays(gpu: &Gpu, all: bool) -> Result<Vec<super::result::DisplayInfo>, Error> {
+    let displays = if all {
+        gpu.inner().display_ids_all()
+    } else {
+        gpu.inner()
+            .display_ids_connected(ConnectedIdsFlags::empty())
+    }
+    .map_err(Error::from)?;
+
+    Ok(displays
+        .into_iter()
+        .map(|display| {
+            let flags = display.flags;
+            super::result::DisplayInfo {
+                display_id: display.display_id,
+                connector: display.connector.to_string(),
+                flags_bits: flags.bits(),
+                connected: flags.contains(DisplayIdsFlags::CONNECTED),
+                physically_connected: flags.contains(DisplayIdsFlags::PHYSICALLY_CONNECTED),
+                active: flags.contains(DisplayIdsFlags::ACTIVE),
+                os_visible: flags.contains(DisplayIdsFlags::OS_VISIBLE),
+                dynamic: flags.contains(DisplayIdsFlags::DYNAMIC),
+                mst_root: flags.contains(DisplayIdsFlags::MST_ROOT_NODE),
+                wireless: flags.contains(DisplayIdsFlags::WIRELESS),
+            }
+        })
+        .collect())
 }
 
 /// 通过 NvAPI_GPU_SetPstates20 的 baseVoltages 字段写入指定 pstate 的核心电压 delta。

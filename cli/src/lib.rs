@@ -2,7 +2,7 @@ use clap::{Arg, ArgAction, ColorChoice, Command as ClapCommand};
 use nvoc_core::{
     BackendSet, CheckVoltageFrequency, ClockDomain, ConvertEnum, CoolerPolicy, CoolerTarget,
     GpuSelector, GpuTarget, Kilohertz, KilohertzDelta, MicrovoltsDelta, PState, Percentage,
-    ProbeVoltageLimits, QueryApiRestriction, QueryAutoBoost, QueryClockOffset,
+    ProbeVoltageLimits, QueryApiRestriction, QueryAutoBoost, QueryClockOffset, QueryDisplays,
     QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings, QueryGpuStatus,
     QueryLegacyCoreOvervoltRanges, QueryLegacyP0CoreMaxVoltageDelta, QueryPowerLimits,
     QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits,
@@ -112,6 +112,7 @@ pub enum OutputFormat {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
     ListGpus,
+    ListDisplays,
     GetInfo,
     GetStatus,
     GetSettings,
@@ -177,6 +178,7 @@ impl Command {
     pub fn name(self) -> &'static str {
         match self {
             Self::ListGpus => "list-gpus",
+            Self::ListDisplays => "list-displays",
             Self::GetInfo => "get-info",
             Self::GetStatus => "get-status",
             Self::GetSettings => "get-settings",
@@ -238,6 +240,7 @@ impl Command {
     fn about(self) -> &'static str {
         match self {
             Self::ListGpus => "List discovered GPUs and available backends",
+            Self::ListDisplays => "List NVAPI display IDs for EDID operations",
             Self::GetInfo => "Read NVAPI GPU identity and capability information",
             Self::GetStatus => "Read NVAPI live GPU status",
             Self::GetSettings => "Read NVAPI overclock settings",
@@ -368,6 +371,7 @@ impl Command {
                 "infer-missing-default",
                 "no-infer-missing-default",
             ],
+            Self::ListDisplays => &["all"],
             Self::GetClockOffsetMhz => &["domain", "pstate"],
             Self::SetClockOffsetMhz => &["domain", "pstate"],
             Self::SetCoreOffsetMhz
@@ -389,6 +393,7 @@ impl Command {
 
 const COMMANDS: &[Command] = &[
     Command::ListGpus,
+    Command::ListDisplays,
     Command::GetInfo,
     Command::GetStatus,
     Command::GetSettings,
@@ -765,6 +770,11 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .action(ArgAction::SetTrue)
             .global(true)
             .help("Enable feedback for VFP voltage lock"),
+        "all" => Arg::new("all")
+            .long("all")
+            .action(ArgAction::SetTrue)
+            .global(true)
+            .help("List all display IDs instead of only connected display IDs"),
         _ => unreachable!("unknown command-specific option {name}"),
     }
 }
@@ -790,7 +800,7 @@ fn collect_named_options(
     let mut options = BTreeMap::new();
     for name in allowed_options {
         match *name {
-            "indexed" | "no-infer-missing-default" | "feedback" => {
+            "indexed" | "no-infer-missing-default" | "feedback" | "all" => {
                 if matches.get_flag(name) {
                     options.insert(name.to_string(), vec!["true".to_string()]);
                 }
@@ -1152,6 +1162,30 @@ fn execute_target(
 ) -> CliResult<Value> {
     match command {
         Command::ListGpus => unreachable!("list-gpus is handled before target execution"),
+        Command::ListDisplays => {
+            let all = option_bool(invocation, "all", false)?;
+            let displays = run(target, QueryDisplays { all })?.output;
+            Ok(Value::Array(
+                displays
+                    .into_iter()
+                    .map(|display| {
+                        json!({
+                            "display_id": format!("0x{:08X}", display.display_id),
+                            "display_id_u32": display.display_id,
+                            "connector": display.connector,
+                            "flags_hex": format!("0x{:08X}", display.flags_bits),
+                            "connected": display.connected,
+                            "physically_connected": display.physically_connected,
+                            "active": display.active,
+                            "os_visible": display.os_visible,
+                            "dynamic": display.dynamic,
+                            "mst_root": display.mst_root,
+                            "wireless": display.wireless,
+                        })
+                    })
+                    .collect(),
+            ))
+        }
         Command::GetInfo => Ok(serde_json::to_value(run(target, QueryGpuInfo)?.output)?),
         Command::GetStatus => Ok(serde_json::to_value(run(target, QueryGpuStatus)?.output)?),
         Command::GetSettings => Ok(serde_json::to_value(run(target, QueryGpuSettings)?.output)?),
@@ -2210,6 +2244,10 @@ mod tests {
 
     #[test]
     fn parses_new_getter_commands() {
+        let invocation = parse_args(["list-displays", "--all"]).unwrap();
+        assert_eq!(invocation.command, Some(Command::ListDisplays));
+        assert!(option_bool(&invocation, "all", false).unwrap());
+
         let invocation = parse_args(["get-pstate-base-voltage-uv", "--pstate", "P2"]).unwrap();
         assert_eq!(invocation.command, Some(Command::GetPstateBaseVoltageUv));
         assert_eq!(option_one(&invocation, "pstate"), Some("P2"));
@@ -2263,6 +2301,9 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("--fan"));
+
+        let err = parse_args(["--all", "get-info"]).unwrap_err().to_string();
+        assert!(err.contains("--all"));
     }
 
     #[test]
@@ -2316,6 +2357,7 @@ mod tests {
         );
         assert_eq!(Command::SetPowerWatt.adapters(), &NVML_ONLY);
         assert_eq!(Command::SetPowerPercent.adapters(), &NVAPI_ONLY);
+        assert_eq!(Command::ListDisplays.adapters(), &NVAPI_ONLY);
         assert_eq!(Command::GetAutoBoost.adapters(), &NVML_ONLY);
         assert_eq!(Command::GetApiRestriction.adapters(), &NVML_ONLY);
         assert_eq!(Command::GetEdid.adapters(), &NVAPI_ONLY);

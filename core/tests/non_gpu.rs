@@ -3,7 +3,7 @@ use nvml_wrapper::enum_wrappers::device::{Api, PerformanceState};
 use nvml_wrapper::enums::device::FanControlPolicy;
 use nvoc_core::{
     BackendSet, ConvertEnum, GpuId, GpuOperation, GpuSelector, GpuTarget, GpuType, OperationKind,
-    PciAddress, QueryApiRestriction, QueryAutoBoost, QueryEdid, QueryPowerLimits,
+    PciAddress, QueryApiRestriction, QueryAutoBoost, QueryDisplays, QueryEdid, QueryPowerLimits,
     QueryPstateBaseVoltage, QueryVoltageBoost, VfpResetDomain, detect_gpu_type,
     find_matching_vfp_point, nvml_pstate_to_index, nvml_pstate_to_str,
     parse_nvml_fan_control_policy, parse_nvml_pstate, run, select_targets, try_parse_nvml_pstate,
@@ -284,6 +284,10 @@ fn structured_operation_requires_matching_backend() {
     );
     assert_eq!(QueryVoltageBoost.kind(), OperationKind::QueryVoltageBoost);
     assert_eq!(QueryAutoBoost.kind(), OperationKind::QueryAutoBoost);
+    assert_eq!(
+        QueryDisplays { all: false }.kind(),
+        OperationKind::QueryDisplays
+    );
     assert_eq!(
         QueryApiRestriction {
             api_type: Api::ApplicationClocks,

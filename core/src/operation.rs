@@ -2,8 +2,8 @@ use super::error::Error;
 use super::nvapi as low_nvapi;
 use super::nvml as low_nvml;
 use super::result::{
-    ApiRestrictionState, AppliedValue, AutoBoostState, BatchReport, ClockOffset, EdidData, FanInfo,
-    OperationKind, OperationReport, PstateBaseVoltage, PstateClockRange,
+    ApiRestrictionState, AppliedValue, AutoBoostState, BatchReport, ClockOffset, DisplayInfo,
+    EdidData, FanInfo, OperationKind, OperationReport, PstateBaseVoltage, PstateClockRange,
     SupportedApplicationClocks, TargetOutcome, TdpTempLimits, TemperatureThreshold, ThrottleReason,
     VoltageBoostState, VoltageFrequencyCheck,
 };
@@ -1125,6 +1125,23 @@ impl GpuOperation for CheckVoltageFrequency {
             precise,
             matched_point,
         })
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct QueryDisplays {
+    pub all: bool,
+}
+
+impl GpuOperation for QueryDisplays {
+    type Output = Vec<DisplayInfo>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryDisplays
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        low_nvapi::query_displays(target.nvapi()?, self.all)
     }
 }
 

@@ -21,8 +21,8 @@ pub use nvapi::{
 };
 pub use operation::{
     CheckVoltageFrequency, GpuOperation, ProbeVoltageLimits, QueryApiRestriction, QueryAutoBoost,
-    QueryClockOffset, QueryDomainVfpIndices, QueryDomainVfpPoints, QueryEdid, QueryFanInfo,
-    QueryGpuInfo, QueryGpuSettings, QueryGpuStatus, QueryLegacyCoreOvervoltRanges,
+    QueryClockOffset, QueryDisplays, QueryDomainVfpIndices, QueryDomainVfpPoints, QueryEdid,
+    QueryFanInfo, QueryGpuInfo, QueryGpuSettings, QueryGpuStatus, QueryLegacyCoreOvervoltRanges,
     QueryLegacyP0CoreMaxVoltageDelta, QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates,
     QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
     QueryThrottleReasons, QueryVfpPointVoltage, QueryVoltageBoost, ResetApplicationsClocks,
@@ -42,9 +42,9 @@ pub use operation::{
     set_nvapi_vfp_curve_delta, try_parse_nvml_pstate,
 };
 pub use result::{
-    ApiRestrictionState, AppliedValue, AutoBoostState, BatchReport, ClockOffset, EdidData, FanInfo,
-    OperationKind, OperationReport, OperationWarning, PowerLimits, PstateBaseVoltage,
-    PstateClockRange, SupportedApplicationClocks, TargetOutcome, TdpTempLimits,
+    ApiRestrictionState, AppliedValue, AutoBoostState, BatchReport, ClockOffset, DisplayInfo,
+    EdidData, FanInfo, OperationKind, OperationReport, OperationWarning, PowerLimits,
+    PstateBaseVoltage, PstateClockRange, SupportedApplicationClocks, TargetOutcome, TdpTempLimits,
     TemperatureThreshold, ThrottleReason, VoltageBoostState, VoltageFrequencyCheck, VoltageLimits,
 };
 pub use target::{
