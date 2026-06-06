@@ -35,7 +35,7 @@ GitHub's concurrency).
 - NVIDIA GPU within the support matrix in `auto-optimizer/README-en.md`
   (RTX 50/40/30/20, GTX 16/10/9, Volta, mobile). One generation per runner is
   fine; rotate hardware for broader coverage.
-- ≥ 16 GB RAM, ≥ 100 GB SSD (CUDA toolkit + PyTorch wheels are large).
+- ≥ 16 GB RAM, ≥ 100 GB SSD (CUDA toolkit and Rust build artifacts are large).
 - Wired network. Avoid sleep / hibernation in power settings.
 - TDR (Timeout Detection and Recovery) configured per
   `auto-optimizer/GpuTdrRecovery.reg` on Windows. Without it, a hang during
@@ -53,8 +53,8 @@ GitHub's concurrency).
    - `rustup` → stable toolchain.
    - `uv` (https://docs.astral.sh/uv/).
    - Git for Windows.
-   - CUDA Toolkit matching the PyTorch wheel pinned in
-     `cli-stressor-cuda/pyproject.toml` (currently `cu129`).
+   - CUDA Toolkit compatible with the Rust CUDA stressor in
+     `cli-stressor-cuda-rs/`.
    - OpenCL ICD loader (ships with the NVIDIA driver).
 3. Apply `auto-optimizer/GpuTdrRecovery.reg` and reboot.
 4. Create a low-privilege local user `gha-runner`. Grant it
@@ -131,6 +131,6 @@ Configure on `main` (Settings → Branches → Rules):
 - **Wedged after a CI run**: post-job hook should have caught it. If not,
   reboot and add the failing test to the `--skip` list while you debug.
 - **CUDA / driver upgrade**: drain the runner (Settings → Runners →
-  pause), upgrade, reboot, run `cli-stressor-cuda` manually, un-pause.
+  pause), upgrade, reboot, run `cli-stressor-cuda-rs` manually, un-pause.
 - **Adding a new GPU generation**: register a new runner with an extra label
   (e.g. `gpu-rtx50`) and add a job in `gpu-ci.yml` that targets that label.

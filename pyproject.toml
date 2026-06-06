@@ -2,11 +2,10 @@
 members = [
     "gui",
     "tui",
-    "cli-stressor-cuda",
     "cli-stressor-opencl",
     "nvoc-python"
 ]
 
-[[tool.uv.index]]
-url = "https://pypi.tuna.tsinghua.edu.cn/simple"
-default = true
+# [[tool.uv.index]]
+# url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+# default = true
