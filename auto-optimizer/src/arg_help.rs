@@ -2,8 +2,8 @@ use super::cli_types::{
     OutputFormat, POSSIBLE_BOOL, POSSIBLE_BOOL_OFF, POSSIBLE_BOOL_ON, ResetSettings,
 };
 use super::platform::{
-    default_test_exe_path, default_vfp_csv_path, default_vfp_init_csv_path, default_vfp_log_path,
-    default_vfp_temp_csv_path,
+    default_minload_exe_path, default_test_exe_path, default_vfp_csv_path,
+    default_vfp_init_csv_path, default_vfp_log_path, default_vfp_temp_csv_path,
 };
 use clap::{Arg, ArgAction, Command};
 use nvoc_core::PState;
@@ -902,6 +902,14 @@ pub fn get_arguments() -> Command {
                                         .help("CLI stress wrapper executable/script path"),
                                 )
                                 .arg(
+                                    Arg::new("minload_exe")
+                                        .long("minload-exe")
+                                        .value_name("PATH")
+                                        .num_args(1)
+                                        .default_value(default_minload_exe_path())
+                                        .help("Min-load Vulkan executable to wake GPU on Optimus laptops when GPUnotpowered is detected"),
+                                )
+                                .arg(
                                     Arg::new("log")
                                         .value_name("LOG")
                                         .short('l')
@@ -981,6 +989,14 @@ pub fn get_arguments() -> Command {
                                         .num_args(1)
                                         .default_value(default_test_exe_path())
                                         .help("CLI stress wrapper executable/script path"),
+                                )
+                                .arg(
+                                    Arg::new("minload_exe")
+                                        .long("minload-exe")
+                                        .value_name("PATH")
+                                        .num_args(1)
+                                        .default_value(default_minload_exe_path())
+                                        .help("Min-load Vulkan executable to wake GPU on Optimus laptops when GPUnotpowered is detected"),
                                 )
                                 .arg(
                                     Arg::new("log")

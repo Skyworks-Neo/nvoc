@@ -114,7 +114,13 @@ impl CudaBackend {
             CudaBlas::new(stream3.clone()).map_err(|err| BackendError::Other(err.to_string()))?;
         let (atomic_module, atomic_fn) = match build_atomic_kernel(&ctx) {
             Ok((module, func)) => (Some(module), Some(func)),
-            Err(_) => (None, None),
+            Err(err) => {
+                println!(
+                    "Warning: Atomic kernel build failed (possibly CUDA vs GPU mismatch): {}",
+                    err
+                );
+                (None, None)
+            }
         };
         let info = query_device_info_for_index(gpu_index)?;
         Ok(Self {
@@ -857,34 +863,14 @@ impl Backend for CudaBackend {
     }
 
     fn supports_precision(&self, spec: &PrecisionSpec) -> Result<(), String> {
-        let cc = self.info.compute_capability;
-        match spec.kind {
-            PrecisionKind::FP8E4M3FN => {
-                return Err("FP8 not implemented in this build (cuBLASLt required)".to_string());
-            }
-            PrecisionKind::BF16 => {
-                if let Some((major, minor)) = cc
-                    && major < 8
-                {
-                    return Err(format!(
-                        "BF16 requires SM80+, current SM{}.{}",
-                        major, minor
-                    ));
-                }
-            }
-            PrecisionKind::TF32 => {
-                if let Some((major, minor)) = cc
-                    && major < 8
-                {
-                    return Err(format!(
-                        "TF32 requires SM80+, current SM{}.{}",
-                        major, minor
-                    ));
-                }
-            }
-            _ => {}
+        self.info.supports_precision(spec)
+    }
+
+    fn supports_kernel(&self, kind: KernelType) -> bool {
+        match kind {
+            KernelType::Atomic => self.atomic_fn.is_some(),
+            _ => true,
         }
-        Ok(())
     }
 
     fn set_tf32(&mut self, enabled: Option<bool>) -> Result<(), BackendError> {

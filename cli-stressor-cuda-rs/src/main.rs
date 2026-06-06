@@ -128,7 +128,11 @@ struct Args {
     #[arg(long, default_value_t = 6)]
     burst_iters: u32,
 
-    #[arg(long, default_value_t = 5.0)]
+    #[arg(
+        long,
+        default_value_t = 5.0,
+        help = "Periodic validation interval in seconds; set to 0 to disable validation"
+    )]
     validate_interval: f64,
 
     #[arg(long, default_value_t = 1024)]
@@ -201,6 +205,10 @@ struct Args {
     #[arg(long, default_value_t = 1)]
     vulkan_image_msaa: u32,
 
+    /// Vulkan minor mixture rate for small-image mixing
+    #[arg(long, default_value_t = 0.15)]
+    vulkan_minor_mixture_rate: f64,
+
     /// CUDA GPU index in PCI-bus-sorted order (0-based)
     #[arg(
         long,
@@ -261,6 +269,7 @@ struct FileConfig {
     vulkan_image_count: Option<u32>,
     vulkan_image_depth: Option<u32>,
     vulkan_image_msaa: Option<u32>,
+    vulkan_minor_mixture_rate: Option<f64>,
 }
 
 #[cfg(feature = "cuda")]
@@ -483,6 +492,7 @@ fn parse_args_with_cli_sources() -> (Args, std::collections::HashSet<&'static st
         "vulkan_image_count",
         "vulkan_image_depth",
         "vulkan_image_msaa",
+        "vulkan_minor_mixture_rate",
     ] {
         if matches.value_source(id) == Some(ValueSource::CommandLine) {
             cli_set.insert(id);
@@ -622,6 +632,12 @@ fn apply_file_config_to_args(
         parsed.vulkan_image_msaa,
     ) {
         args.vulkan_image_msaa = v;
+    }
+    if let (true, Some(v)) = (
+        !cli_set.contains("vulkan_minor_mixture_rate"),
+        parsed.vulkan_minor_mixture_rate,
+    ) {
+        args.vulkan_minor_mixture_rate = v;
     }
     Ok(())
 }
@@ -962,33 +978,6 @@ fn main() {
         }
     }
 
-    // In Vulkan-only mode, skip all CUDA initialization and mixed-kernel parsing/output.
-    if args.vulkan_only {
-        #[cfg(feature = "vulkan")]
-        {
-            let image_config = VulkanImageConfig {
-                width: args.vulkan_image_width,
-                height: args.vulkan_image_height,
-                depth: args.vulkan_image_depth,
-                image_count: args.vulkan_image_count,
-                msaa: args.vulkan_image_msaa,
-            };
-            std::process::exit(run_vulkan_for_duration(args.duration, image_config));
-        }
-
-        #[cfg(not(feature = "vulkan"))]
-        {
-            eprintln!(
-                "{}",
-                stylize(
-                    "--vulkan-only requires building with --features vulkan",
-                    true
-                )
-            );
-            std::process::exit(2);
-        }
-    }
-
     let matrix_sizes = match parse_int_list(&args.matrix_sizes) {
         Ok(values) => values,
         Err(err) => {
@@ -1059,6 +1048,86 @@ fn main() {
         }
     };
 
+    // In Vulkan-only mode, skip CUDA workload but use device identity for GPU selection
+    if args.vulkan_only {
+        #[cfg(feature = "vulkan")]
+        {
+            let image_config = VulkanImageConfig {
+                width: args.vulkan_image_width,
+                height: args.vulkan_image_height,
+                depth: args.vulkan_image_depth,
+                image_count: args.vulkan_image_count,
+                msaa: args.vulkan_image_msaa,
+                minor_mixture_rate: args.vulkan_minor_mixture_rate,
+            };
+            let selection = cuda_device_identity.map(|identity| VulkanDeviceSelection {
+                cuda_uuid: identity.uuid,
+                cuda_pci_bus: identity.pci_bus,
+            });
+            let result = if let Some(sel) = selection {
+                let mut eng = VulkanGraphicsEngine::with_selection(sel, image_config);
+                if let Err(e) = eng.start_stress_thread() {
+                    eprintln!(
+                        "{}",
+                        stylize(
+                            &format!("Failed to start VulkanGraphicsEngine: {}", e),
+                            true
+                        )
+                    );
+                    1
+                } else {
+                    let err_flag = eng.get_error_flag_arc();
+                    let started = std::time::Instant::now();
+                    let mut exit_code = 0;
+                    while started.elapsed().as_secs_f64() < args.duration {
+                        if err_flag.load(std::sync::atomic::Ordering::SeqCst) {
+                            eprintln!(
+                                "{}",
+                                stylize("[FATAL] Vulkan engine reported an error; exiting", true)
+                            );
+                            let _ = eng.stop();
+                            exit_code = 1;
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(200));
+                    }
+                    if exit_code == 0 {
+                        if let Err(e) = eng.stop() {
+                            eprintln!(
+                                "{}",
+                                stylize(&format!("[FATAL] Vulkan engine stop failed: {}", e), true)
+                            );
+                            exit_code = 1;
+                        }
+                    }
+                    if exit_code == 0 {
+                        println!(
+                            "{}",
+                            stylize("Vulkan-only run finished with GPU selection.", false)
+                        );
+                    }
+                    exit_code
+                }
+            } else {
+                // Fallback: no CUDA identity available, use first physical device
+                run_vulkan_for_duration(args.duration, image_config)
+            };
+            std::process::exit(result);
+        }
+
+        #[cfg(not(feature = "vulkan"))]
+        {
+            eprintln!(
+                "{}",
+                stylize(
+                    "--vulkan-only requires building with --features vulkan",
+                    true
+                )
+            );
+            std::process::exit(2);
+        }
+    }
+
     let info = backend.device_info();
     print_device_info(&info);
 
@@ -1099,6 +1168,10 @@ fn main() {
     };
     let mut kernel_types = kernel_types_all.clone();
     filter_atomic_for_sm(&mut kernel_types, &info);
+
+    // Additional filtering based on backend-specific runtime availability
+    kernel_types.retain(|&k| backend.supports_kernel(k));
+
     if kernel_types.is_empty() {
         eprintln!(
             "{}",
@@ -1184,32 +1257,75 @@ fn main() {
         "{}",
         stylize_config(&format!("  Duration: {:.1} s", args.duration))
     );
+    // Show per-kernel warmup/burst overrides if present
+    let warmup_display = if kernel_param_overrides
+        .iter()
+        .any(|o| o.warmup_iters.is_some())
+    {
+        let mut parts = vec![format!(
+            "  Warmup iterations: {} (global default)",
+            args.warmup_iters
+        )];
+        for override_item in &kernel_param_overrides {
+            if let Some(w) = override_item.warmup_iters {
+                parts.push(format!("    {:?}: {}", override_item.kind, w));
+            }
+        }
+        parts.join("\n")
+    } else {
+        format!("  Warmup iterations: {}", args.warmup_iters)
+    };
+    println!("{}", stylize_config(&warmup_display));
+
+    let burst_display = if kernel_param_overrides
+        .iter()
+        .any(|o| o.burst_iters.is_some())
+    {
+        let mut parts = vec![format!(
+            "  Burst iterations: {} (global default)",
+            args.burst_iters
+        )];
+        for override_item in &kernel_param_overrides {
+            if let Some(b) = override_item.burst_iters {
+                parts.push(format!("    {:?}: {}", override_item.kind, b));
+            }
+        }
+        parts.join("\n")
+    } else {
+        format!("  Burst iterations: {}", args.burst_iters)
+    };
+    println!("{}", stylize_config(&burst_display));
     println!(
         "{}",
-        stylize_config(&format!("  Warmup iterations: {}", args.warmup_iters))
-    );
-    println!(
-        "{}",
-        stylize_config(&format!("  Burst iterations: {}", args.burst_iters))
-    );
-    println!(
-        "{}",
-        stylize_config(&format!(
-            "  Validation interval: {:.1} s",
-            args.validate_interval
-        ))
+        stylize_config(&if args.validate_interval > 0.0 {
+            format!("  Validation interval: {:.1} s", args.validate_interval)
+        } else {
+            "  Validation interval: disabled (set to 0)".to_string()
+        })
     );
     println!(
         "{}",
         stylize_config(&format!("  Validation size: {}", args.validate_size))
     );
-    println!(
-        "{}",
-        stylize_config(&format!(
-            "  Minor mixture rate: {:.2}",
+
+    let minor_mixture_display = if kernel_param_overrides
+        .iter()
+        .any(|o| o.minor_mixture_rate.is_some())
+    {
+        let mut parts = vec![format!(
+            "  Minor mixture rate: {:.2} (global default)",
             args.minor_mixture_rate
-        ))
-    );
+        )];
+        for override_item in &kernel_param_overrides {
+            if let Some(m) = override_item.minor_mixture_rate {
+                parts.push(format!("    {:?}: {:.2}", override_item.kind, m));
+            }
+        }
+        parts.join("\n")
+    } else {
+        format!("  Minor mixture rate: {:.2}", args.minor_mixture_rate)
+    };
+    println!("{}", stylize_config(&minor_mixture_display));
     println!(
         "{}",
         stylize_config(&format!("  Kernel types: {:?}", kernel_types))
@@ -1238,6 +1354,13 @@ fn main() {
                 args.vulkan_image_msaa,
             ))
         );
+        println!(
+            "{}",
+            stylize_config(&format!(
+                "  Vulkan minor mixture rate: {:.2}",
+                args.vulkan_minor_mixture_rate
+            ))
+        );
     }
 
     // Optionally start the Vulkan graphics engine (if built with --features "vulkan").
@@ -1255,6 +1378,7 @@ fn main() {
                 depth: args.vulkan_image_depth,
                 image_count: args.vulkan_image_count,
                 msaa: args.vulkan_image_msaa,
+                minor_mixture_rate: args.vulkan_minor_mixture_rate,
             };
             let selection = VulkanDeviceSelection {
                 cuda_uuid: identity.uuid,
@@ -1352,6 +1476,7 @@ fn main() {
             depth: args.vulkan_image_depth,
             image_count: args.vulkan_image_count,
             msaa: args.vulkan_image_msaa,
+            minor_mixture_rate: args.vulkan_minor_mixture_rate,
         };
         std::process::exit(run_vulkan_for_duration(args.duration, image_config));
     }

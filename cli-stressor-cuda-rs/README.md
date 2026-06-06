@@ -57,6 +57,12 @@ CUDA 支持通过 feature flag 控制。
 cargo run -p cli-stressor-cuda-rs --features cuda -- --duration 30 --precisions fp16,tf32
 ```
 
+若使用 `auto-optimizer/test/cli-stressor-cuda-rs-minload.toml` 或启用 Vulkan 图形压力，请同时启用 `vulkan` feature：
+
+```bash
+cargo build --release -p cli-stressor-cuda-rs --features cuda,vulkan
+```
+
 可选：通过配置文件运行（所有选项都可放入 config）。
 
 ```bash
@@ -66,10 +72,15 @@ cargo run -p cli-stressor-cuda-rs --features cuda -- --config ./stressor.toml
 ### 配置文件
 
 - 参数优先级：`命令行显式传入 > config 文件 > 内置默认值`
+- autoscan 示例配置位于 `auto-optimizer/test/`：
+  - `cli-stressor-cuda-rs.toml`：默认配置，面向 8G+ 显存显卡。
+  - `cli-stressor-cuda-rs-6g-8g.toml`：较低显存配置，面向 6G-8G 显存显卡。
 - `kernel_mixture` 支持两种写法：
   - 字符串：`"gemm:0.4,memcpy:0.3,reduction:0.3"`
   - 映射：`{ gemm = 0.4, memcpy = 0.3, reduction = 0.3 }`
 - `kernel_params.<kernel>` 支持按 kernel 覆盖参数，包括 `precisions`
+- `validate_interval = 0` 可关闭周期性验证
+- `vulkan_minor_mixture_rate` 用于 Vulkan 图形压力：启用 Vulkan 时会按该比例混入小尺寸 3D 图像（宽高随机取 127/256/511/512/1023，depth 保持不变）
 
 示例（`stressor.toml`）：
 
@@ -152,6 +163,12 @@ CUDA support is behind a feature flag.
 cargo run -p cli-stressor-cuda-rs --features cuda -- --duration 30 --precisions fp16,tf32
 ```
 
+When using `auto-optimizer/test/cli-stressor-cuda-rs-minload.toml` or Vulkan graphics stress, build with both features:
+
+```bash
+cargo build --release -p cli-stressor-cuda-rs --features cuda,vulkan
+```
+
 Optional: run with a config file (all options can be provided in config).
 
 ```bash
@@ -161,10 +178,15 @@ cargo run -p cli-stressor-cuda-rs --features cuda -- --config ./stressor.toml
 ### Config File
 
 - Precedence: `explicit CLI value > config file > built-in default`
+- Autoscan example configs are under `auto-optimizer/test/`:
+  - `cli-stressor-cuda-rs.toml`: default profile for cards with 8G+ VRAM.
+  - `cli-stressor-cuda-rs-6g-8g.toml`: lower-VRAM profile for cards with 6G-8G VRAM.
 - `kernel_mixture` supports two formats:
   - string: `"gemm:0.4,memcpy:0.3,reduction:0.3"`
   - map: `{ gemm = 0.4, memcpy = 0.3, reduction = 0.3 }`
 - `kernel_params.<kernel>` supports per-kernel overrides, including `precisions`
+- `validate_interval = 0` disables periodic validation
+- `vulkan_minor_mixture_rate` controls Vulkan graphics stress: when Vulkan is enabled, small 3D images are mixed in at that rate (width/height randomly chosen from 127/256/511/512/1023; depth stays the same)
 
 Example (`stressor.toml`):
 

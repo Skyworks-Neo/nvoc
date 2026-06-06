@@ -1,0 +1,8 @@
+vulkan_only = true
+enable_vulkan_stress = true
+vulkan_image_width = 64
+vulkan_image_height = 64
+vulkan_image_depth = 64
+vulkan_image_count = 1
+vulkan_image_msaa = 1
+duration = 15

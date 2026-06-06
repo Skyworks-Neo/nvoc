@@ -12,6 +12,7 @@ mod oc_profile_function;
 mod oc_scanner;
 mod platform;
 mod progressbar;
+mod scan_strategy;
 
 use anyhow::Result;
 use basic_func::{

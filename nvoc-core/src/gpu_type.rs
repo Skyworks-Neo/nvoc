@@ -283,7 +283,7 @@ impl GpuType {
             GpuType::Mobile50Series => GpuOcParams {
                 minimum_delta_core_freq_step: 7500,
                 core_oc_safe_limit: 675000,
-                init_core_oc_value: 330000,
+                init_core_oc_value: 390000,
                 safe_elasticity_per_cycle: 60000,
                 fluctuation_coefficient: 3,
                 is_50_series: true,
@@ -302,7 +302,7 @@ impl GpuType {
                 minimum_delta_core_freq_step: 15000,
                 core_oc_safe_limit: 360000,
                 init_core_oc_value: 150000,
-                safe_elasticity_per_cycle: 60000,
+                safe_elasticity_per_cycle: 30000,
                 fluctuation_coefficient: 1,
                 is_50_series: false,
                 testing_step: 5,
@@ -311,7 +311,7 @@ impl GpuType {
                 minimum_delta_core_freq_step: 15000,
                 core_oc_safe_limit: 360000,
                 init_core_oc_value: 150000,
-                safe_elasticity_per_cycle: 60000,
+                safe_elasticity_per_cycle: 30000,
                 fluctuation_coefficient: 1,
                 is_50_series: false,
                 testing_step: 5,
@@ -320,7 +320,7 @@ impl GpuType {
                 minimum_delta_core_freq_step: 15000,
                 core_oc_safe_limit: 300000,
                 init_core_oc_value: 90000,
-                safe_elasticity_per_cycle: 60000,
+                safe_elasticity_per_cycle: 30000,
                 fluctuation_coefficient: 2,
                 is_50_series: false,
                 testing_step: 5,
@@ -329,7 +329,7 @@ impl GpuType {
                 minimum_delta_core_freq_step: 15000,
                 core_oc_safe_limit: 375000,
                 init_core_oc_value: 90000,
-                safe_elasticity_per_cycle: 60000,
+                safe_elasticity_per_cycle: 30000,
                 fluctuation_coefficient: 2,
                 is_50_series: false,
                 testing_step: 5,
@@ -338,7 +338,7 @@ impl GpuType {
                 minimum_delta_core_freq_step: 15000,
                 core_oc_safe_limit: 300000,
                 init_core_oc_value: 90000,
-                safe_elasticity_per_cycle: 60000,
+                safe_elasticity_per_cycle: 30000,
                 fluctuation_coefficient: 2,
                 is_50_series: false,
                 testing_step: 3,
@@ -347,7 +347,7 @@ impl GpuType {
                 minimum_delta_core_freq_step: 15000,
                 core_oc_safe_limit: 300000,
                 init_core_oc_value: 90000,
-                safe_elasticity_per_cycle: 60000,
+                safe_elasticity_per_cycle: 30000,
                 fluctuation_coefficient: 2,
                 is_50_series: false,
                 testing_step: 3,
@@ -356,7 +356,7 @@ impl GpuType {
                 minimum_delta_core_freq_step: 15000,
                 core_oc_safe_limit: 300000,
                 init_core_oc_value: 90000,
-                safe_elasticity_per_cycle: 60000,
+                safe_elasticity_per_cycle: 30000,
                 fluctuation_coefficient: 2,
                 is_50_series: false,
                 testing_step: 3,
@@ -365,7 +365,7 @@ impl GpuType {
                 minimum_delta_core_freq_step: 15000,
                 core_oc_safe_limit: 300000,
                 init_core_oc_value: 90000,
-                safe_elasticity_per_cycle: 60000,
+                safe_elasticity_per_cycle: 30000,
                 fluctuation_coefficient: 2,
                 is_50_series: false,
                 testing_step: 3,
@@ -374,7 +374,7 @@ impl GpuType {
                 minimum_delta_core_freq_step: 12500,
                 core_oc_safe_limit: 435000,
                 init_core_oc_value: 90000,
-                safe_elasticity_per_cycle: 50000,
+                safe_elasticity_per_cycle: 30000,
                 fluctuation_coefficient: 2,
                 is_50_series: false,
                 testing_step: 3,
@@ -383,7 +383,7 @@ impl GpuType {
                 minimum_delta_core_freq_step: 12500,
                 core_oc_safe_limit: 400000,
                 init_core_oc_value: 90000,
-                safe_elasticity_per_cycle: 50000,
+                safe_elasticity_per_cycle: 30000,
                 fluctuation_coefficient: 2,
                 is_50_series: false,
                 testing_step: 3,
@@ -401,7 +401,7 @@ impl GpuType {
                 minimum_delta_core_freq_step: 15000,
                 core_oc_safe_limit: 300000,
                 init_core_oc_value: 0,
-                safe_elasticity_per_cycle: 50000,
+                safe_elasticity_per_cycle: 37500,
                 fluctuation_coefficient: 2,
                 is_50_series: false,
                 testing_step: 3,
@@ -542,6 +542,117 @@ impl GpuType {
         match self {
             GpuType::Mobile10Series | GpuType::Desktop10Series => 79,
             _ => 126,
+        }
+    }
+
+    /// 返回该 GPU 架构的已知超频先验数据。
+    /// 扫描器可从这些数据点出发做简单单步进探测，而非从零开始指数搜索。
+    pub fn arch_prior(&self) -> ArchOcPrior {
+        match self {
+            GpuType::Desktop50Series => ArchOcPrior {
+                points: vec![
+                    OcPriorPoint {
+                        voltage_uv: 700_000,
+                        expected_freq_khz: 1_950_000,
+                    },
+                    OcPriorPoint {
+                        voltage_uv: 750_000,
+                        expected_freq_khz: 2_130_000,
+                    },
+                    OcPriorPoint {
+                        voltage_uv: 800_000,
+                        expected_freq_khz: 2_310_000,
+                    },
+                    OcPriorPoint {
+                        voltage_uv: 850_000,
+                        expected_freq_khz: 2_490_000,
+                    },
+                    OcPriorPoint {
+                        voltage_uv: 900_000,
+                        expected_freq_khz: 2_700_000,
+                    },
+                    OcPriorPoint {
+                        voltage_uv: 950_000,
+                        expected_freq_khz: 2_880_000,
+                    },
+                    OcPriorPoint {
+                        voltage_uv: 1_000_000,
+                        expected_freq_khz: 3_030_000,
+                    },
+                ],
+                probe_margin_khz: 150_000,
+            },
+            GpuType::Mobile50Series => ArchOcPrior {
+                points: vec![
+                    OcPriorPoint {
+                        voltage_uv: 700_000,
+                        expected_freq_khz: 1_800_000,
+                    },
+                    OcPriorPoint {
+                        voltage_uv: 750_000,
+                        expected_freq_khz: 2_010_000,
+                    },
+                    OcPriorPoint {
+                        voltage_uv: 800_000,
+                        expected_freq_khz: 2_190_000,
+                    },
+                    OcPriorPoint {
+                        voltage_uv: 850_000,
+                        expected_freq_khz: 2_370_000,
+                    },
+                    OcPriorPoint {
+                        voltage_uv: 900_000,
+                        expected_freq_khz: 2_550_000,
+                    },
+                    OcPriorPoint {
+                        voltage_uv: 950_000,
+                        expected_freq_khz: 2_700_000,
+                    },
+                    OcPriorPoint {
+                        voltage_uv: 1_000_000,
+                        expected_freq_khz: 2_850_000,
+                    },
+                ],
+                probe_margin_khz: 150_000,
+            },
+            _ => ArchOcPrior::none(),
+        }
+    }
+}
+
+// ──────────────────── OcPriorPoint / ArchOcPrior ────────────────────────────
+
+/// 一条先验数据点：(电压_μV, 已知稳定频率_kHz)
+#[derive(Debug, Clone, Copy)]
+pub struct OcPriorPoint {
+    pub voltage_uv: u32,
+    pub expected_freq_khz: i32,
+}
+
+/// 某个 GPU 架构的已知超频能力集合。
+#[derive(Debug, Clone)]
+pub struct ArchOcPrior {
+    /// 已知 (电压, 频率) 数据点，按电压升序排列。
+    pub points: Vec<OcPriorPoint>,
+    /// 在先验基础上允许向上探测的冗余量 (kHz)。
+    pub probe_margin_khz: i32,
+}
+
+impl ArchOcPrior {
+    /// 查找 <= `voltage_uv` 的最接近先验点。
+    pub fn lookup(&self, voltage_uv: u32) -> Option<OcPriorPoint> {
+        self.points
+            .iter()
+            .rev()
+            .find(|p| p.voltage_uv <= voltage_uv)
+            .copied()
+    }
+
+    /// 无先验（空）。
+    pub fn none() -> Self {
+        ArchOcPrior {
+            points: Vec::new(),
+            probe_margin_khz: 0,
         }
     }
 }

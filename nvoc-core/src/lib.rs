@@ -12,7 +12,9 @@ mod types;
 pub use conv::ConvertEnum;
 pub use error::Error;
 pub use gpu::GpuSelector;
-pub use gpu_type::{GpuOcParams, GpuType, GpuVoltageLimitParams, GpuVoltageLockParams};
+pub use gpu_type::{
+    ArchOcPrior, GpuOcParams, GpuType, GpuVoltageLimitParams, GpuVoltageLockParams, OcPriorPoint,
+};
 pub use nvapi::{
     CoolerTarget, GpuTdpTempLimits, ThermalSensors, VfpLockRequest, probe_thermal_sensors_mask,
     read_thermal_sensors,

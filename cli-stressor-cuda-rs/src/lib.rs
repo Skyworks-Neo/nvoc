@@ -1,4 +1,3 @@
-use nvoc_cli_common::color::stylize;
 use rand::rngs::StdRng;
 use rand::seq::IndexedRandom;
 use rand::{Rng, SeedableRng};
@@ -11,7 +10,7 @@ macro_rules! println {
     () => { std::println!() };
     ($($arg:tt)*) => {{
         let msg = format!($($arg)*);
-        std::println!("{}", stylize(&msg, false));
+        std::println!("{}", nvoc_cli_common::color::stylize(&msg, false));
     }};
 }
 
@@ -152,6 +151,38 @@ pub struct DeviceInfo {
     pub compute_capability: Option<(i32, i32)>,
 }
 
+impl DeviceInfo {
+    pub fn supports_precision(&self, spec: &PrecisionSpec) -> Result<(), String> {
+        match spec.kind {
+            PrecisionKind::FP64 => Ok(()),
+            PrecisionKind::FP32 | PrecisionKind::TF32 => Ok(()),
+            PrecisionKind::FP16 => Ok(()),
+            PrecisionKind::BF16 => {
+                let sm = self.compute_capability.unwrap_or((0, 0));
+                if sm.0 >= 8 {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "BF16 requires SM80 or higher (current: SM{}.{})",
+                        sm.0, sm.1
+                    ))
+                }
+            }
+            PrecisionKind::FP8E4M3FN => {
+                let sm = self.compute_capability.unwrap_or((0, 0));
+                if sm.0 >= 8 && (sm.0 > 8 || sm.1 >= 9) {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "FP8 requires SM89 or higher (current: SM{}.{})",
+                        sm.0, sm.1
+                    ))
+                }
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct PciBusAddress {
     pub domain: u32,
@@ -190,6 +221,9 @@ pub trait Backend {
 
     fn device_info(&self) -> DeviceInfo;
     fn supports_precision(&self, spec: &PrecisionSpec) -> Result<(), String>;
+    fn supports_kernel(&self, _kind: KernelType) -> bool {
+        true
+    }
     fn set_tf32(&mut self, enabled: Option<bool>) -> Result<(), BackendError>;
     fn upload_matrix(
         &self,
@@ -219,6 +253,10 @@ pub struct KernelPathRequest<'a> {
     pub transpose_prob: f64,
     pub seed: u64,
     pub stream_mode: StreamMode,
+}
+
+fn validation_enabled(validate_interval_s: f64) -> bool {
+    validate_interval_s > 0.0
 }
 
 pub fn parse_int_list(raw: &str) -> Result<Vec<usize>, String> {
@@ -826,7 +864,8 @@ pub fn run_stress_for_precision<B: Backend>(
 
     let mut rng = StdRng::seed_from_u64(config.base_seed);
     let start = Instant::now();
-    let mut next_validate = config.validate_interval_s.max(0.0);
+    let validate_enabled = validation_enabled(config.validate_interval_s);
+    let mut next_validate = config.validate_interval_s;
     let mut validation_seed = config.base_seed ^ 0x5F3759DF;
     let effective_overrides =
         filter_supported_kernel_precisions(backend, config.kernel_param_overrides);
@@ -923,7 +962,7 @@ pub fn run_stress_for_precision<B: Backend>(
 
         let _ = backend.empty_cache();
 
-        if elapsed_total >= next_validate {
+        if validate_enabled && elapsed_total >= next_validate {
             match validate_precision(
                 backend,
                 &spec,
@@ -947,7 +986,7 @@ pub fn run_stress_for_precision<B: Backend>(
                         }
                         break;
                     }
-                    next_validate = elapsed_total + effective_config.validate_interval_s.max(0.0);
+                    next_validate = elapsed_total + effective_config.validate_interval_s;
                     validation_seed = validation_seed.wrapping_add(1);
                 }
                 Err(err) => {
@@ -1032,7 +1071,8 @@ pub fn run_stress_mixed<B: Backend>(
 
     let mut rng = StdRng::seed_from_u64(config.base_seed);
     let start = Instant::now();
-    let mut next_validate = config.validate_interval_s.max(0.0);
+    let validate_enabled = validation_enabled(config.validate_interval_s);
+    let mut next_validate = config.validate_interval_s;
     let mut validation_seed = config.base_seed ^ 0x5F3759DF;
     let effective_overrides =
         filter_supported_kernel_precisions(backend, config.kernel_param_overrides);
@@ -1138,7 +1178,7 @@ pub fn run_stress_mixed<B: Backend>(
 
         let _ = backend.empty_cache();
 
-        if elapsed_total >= next_validate {
+        if validate_enabled && elapsed_total >= next_validate {
             match validate_precision(
                 backend,
                 &op_spec,
@@ -1165,7 +1205,7 @@ pub fn run_stress_mixed<B: Backend>(
                             break;
                         }
                     }
-                    next_validate = elapsed_total + effective_config.validate_interval_s.max(0.0);
+                    next_validate = elapsed_total + effective_config.validate_interval_s;
                     validation_seed = validation_seed.wrapping_add(1);
                 }
                 Err(err) => {
@@ -1191,4 +1231,16 @@ pub fn run_stress_mixed<B: Backend>(
         }
     }
     results
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validation_enabled;
+
+    #[test]
+    fn validation_interval_zero_disables_validation() {
+        assert!(!validation_enabled(0.0));
+        assert!(!validation_enabled(-1.0));
+        assert!(validation_enabled(0.1));
+    }
 }
