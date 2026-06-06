@@ -132,6 +132,7 @@ Or, if you prefer manual pip installation:
 ```bash
 pip install numpy pyopencl
 ```
+> Note: the OpenCL stressor does not require PyTorch/CUDA; it only needs an OpenCL runtime and `pyopencl`.
 
 ### Usage
 
