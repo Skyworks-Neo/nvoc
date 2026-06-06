@@ -49,6 +49,7 @@ uv sync
 ```bash
 pip install numpy pyopencl
 ```
+> 注意：OpenCL stressor 不依赖 PyTorch/CUDA，仅需要 OpenCL 运行环境与 `pyopencl`。
 
 ### 使用方法
 
