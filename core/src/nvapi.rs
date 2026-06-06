@@ -5,6 +5,7 @@ use super::nvml::{
     build_supported_pstate_list, collect_outside_requested_range, find_pstate_entry,
     get_nvml_pstate_info,
 };
+use super::result::PstateBaseVoltage;
 use super::types::{NvapiLockedVoltageTarget, VfpResetDomain};
 pub use nvapi_hi::ThermalSensors;
 use nvapi_hi::nvapi::{CelsiusShifted, VoltageDomain};
@@ -46,6 +47,43 @@ pub enum VfpLockRequest {
         upper: Kilohertz,
         lower: Option<Kilohertz>,
     },
+}
+
+pub fn query_pstate_base_voltage(
+    gpu: &Gpu,
+    target_pstate: PState,
+) -> Result<PstateBaseVoltage, Error> {
+    let pstates = gpu
+        .inner()
+        .pstates()
+        .map_err(|e| Error::from(format!("Failed to read pstates: {:?}", e)))?;
+
+    let target_ps = pstates
+        .pstates
+        .iter()
+        .find(|p| p.id == target_pstate)
+        .ok_or_else(|| Error::from(format!("{:?} pstate not found", target_pstate)))?;
+
+    let base_volt = target_ps
+        .base_voltages
+        .iter()
+        .find(|v| v.voltage_domain == VoltageDomain::Core)
+        .ok_or_else(|| {
+            Error::from(format!(
+                "{:?} Core baseVoltage entry not found — GPU may not support pstate voltage control",
+                target_pstate
+            ))
+        })?;
+
+    Ok(PstateBaseVoltage {
+        pstate: target_ps.id,
+        voltage_domain: base_volt.voltage_domain,
+        editable: base_volt.editable,
+        voltage: base_volt.voltage,
+        delta: base_volt.voltage_delta.value,
+        min_delta: base_volt.voltage_delta.range.min,
+        max_delta: base_volt.voltage_delta.range.max,
+    })
 }
 
 /// 通过 NvAPI_GPU_SetPstates20 的 baseVoltages 字段写入指定 pstate 的核心电压 delta。

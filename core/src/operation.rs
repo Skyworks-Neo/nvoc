@@ -2,9 +2,10 @@ use super::error::Error;
 use super::nvapi as low_nvapi;
 use super::nvml as low_nvml;
 use super::result::{
-    AppliedValue, BatchReport, ClockOffset, FanInfo, OperationKind, OperationReport,
-    PstateClockRange, SupportedApplicationClocks, TargetOutcome, TdpTempLimits,
-    TemperatureThreshold, ThrottleReason, VoltageFrequencyCheck,
+    ApiRestrictionState, AppliedValue, AutoBoostState, BatchReport, ClockOffset, EdidData, FanInfo,
+    OperationKind, OperationReport, PstateBaseVoltage, PstateClockRange,
+    SupportedApplicationClocks, TargetOutcome, TdpTempLimits, TemperatureThreshold, ThrottleReason,
+    VoltageBoostState, VoltageFrequencyCheck,
 };
 use super::target::GpuTarget;
 use super::types::{NvapiLockedVoltageTarget, VfpResetDomain};
@@ -12,7 +13,7 @@ use nvapi_hi::{
     ClockDomain, CoolerPolicy, Kilohertz, KilohertzDelta, MicrovoltsDelta, PState, Percentage,
     SensorThrottle, VfPoint,
 };
-use nvml_wrapper::enum_wrappers::device::PerformanceState;
+use nvml_wrapper::enum_wrappers::device::{Api, PerformanceState};
 
 fn nvapi_clock_domain_to_nvml(
     domain: ClockDomain,
@@ -543,6 +544,23 @@ impl GpuOperation for ResetFanSpeed {
 }
 
 #[derive(Clone, Copy, Debug)]
+pub struct QueryPstateBaseVoltage {
+    pub pstate: PState,
+}
+
+impl GpuOperation for QueryPstateBaseVoltage {
+    type Output = PstateBaseVoltage;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryPstateBaseVoltage
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        low_nvapi::query_pstate_base_voltage(target.nvapi()?, self.pstate)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
 pub struct SetPstateBaseVoltage {
     pub pstate: PState,
     pub delta_uv: MicrovoltsDelta,
@@ -883,6 +901,23 @@ impl GpuOperation for QueryLegacyP0CoreMaxVoltageDelta {
 }
 
 #[derive(Clone, Copy, Debug)]
+pub struct QueryVoltageBoost;
+
+impl GpuOperation for QueryVoltageBoost {
+    type Output = VoltageBoostState;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryVoltageBoost
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        Ok(VoltageBoostState {
+            voltage_boost: target.nvapi()?.settings()?.voltage_boost,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
 pub struct SetVoltageBoost {
     pub boost: Percentage,
 }
@@ -1094,6 +1129,31 @@ impl GpuOperation for CheckVoltageFrequency {
 }
 
 #[derive(Clone, Copy, Debug)]
+pub struct QueryEdid {
+    pub display_id: u32,
+}
+
+impl GpuOperation for QueryEdid {
+    type Output = EdidData;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryEdid
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let bytes = target
+            .nvapi()?
+            .inner()
+            .get_edid(self.display_id)
+            .map_err(Error::from)?;
+        Ok(EdidData {
+            display_id: self.display_id,
+            bytes,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
 pub struct SetLegacyClocks {
     pub core_mhz: u32,
     pub memory_mhz: u32,
@@ -1175,6 +1235,26 @@ impl GpuOperation for SetNvmlPstateLock {
 }
 
 #[derive(Clone, Copy, Debug)]
+pub struct QueryAutoBoost;
+
+impl GpuOperation for QueryAutoBoost {
+    type Output = AutoBoostState;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryAutoBoost
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let (enabled, default_enabled) =
+            low_nvml::query_nvml_auto_boost(target.nvml()?, target.id.0)?;
+        Ok(AutoBoostState {
+            enabled,
+            default_enabled,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
 pub struct SetAutoBoost {
     pub enabled: bool,
 }
@@ -1209,8 +1289,30 @@ impl GpuOperation for SetAutoBoostDefault {
 }
 
 #[derive(Clone, Copy, Debug)]
+pub struct QueryApiRestriction {
+    pub api_type: Api,
+}
+
+impl GpuOperation for QueryApiRestriction {
+    type Output = ApiRestrictionState;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryApiRestriction
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let restricted =
+            low_nvml::query_nvml_api_restriction(target.nvml()?, target.id.0, self.api_type)?;
+        Ok(ApiRestrictionState {
+            api_type: self.api_type,
+            restricted,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
 pub struct SetApiRestriction {
-    pub api_type: nvml_wrapper::enum_wrappers::device::Api,
+    pub api_type: Api,
     pub restricted: bool,
 }
 

@@ -1055,6 +1055,25 @@ mod tests {
                 json!([{"pstate": "P0", "min_uv": 0, "current_uv": 0, "max_uv": 100000}])
             }
             Command::GetLegacyP0CoreMaxVoltageDelta => json!({"max_delta_uv": 100000}),
+            Command::GetPstateBaseVoltageUv => json!({
+                "pstate": "P0",
+                "voltage_domain": "core",
+                "editable": true,
+                "voltage_uv": 900000,
+                "delta_uv": 100000,
+                "min_delta_uv": 0,
+                "max_delta_uv": 100000,
+            }),
+            Command::GetVoltageBoostPercent => json!({"voltage_boost_percent": 25}),
+            Command::GetAutoBoost => json!({"enabled": true, "default_enabled": false}),
+            Command::GetApiRestriction => {
+                json!({"api": "app-clocks", "restricted": true})
+            }
+            Command::GetEdid => json!({
+                "display_id": "0x00010001",
+                "bytes": 4,
+                "edid_hex": "00FFFFFF",
+            }),
             Command::SetCoreOffsetMhz
             | Command::SetMemoryOffsetMhz
             | Command::SetClockOffsetMhz => json!({
