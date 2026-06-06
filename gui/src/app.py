@@ -267,7 +267,7 @@ class App(ctk.CTk):
         if current_tab.endswith("Dashboard") and self.tab_dashboard is None:
             self.tab_dashboard = DashboardTab(self.tabview.tab("📊 Dashboard"), self)
             self.register_resize_target(self.tab_dashboard)
-            # Reset vfp_lock sentinel if needed
+            # Clear vfp_lock sentinel if needed
             self.tab_dashboard._last_vfp_lock_mv = object()
             self._sync_dashboard_lock_state_from_cache()
             # Force one immediate lock-state refresh chain for dashboard-only usage.

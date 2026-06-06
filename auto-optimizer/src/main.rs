@@ -94,13 +94,11 @@ fn main_result() -> Result<i32, Box<dyn std::error::Error>> {
         return Err("This command requires NvAPI, but NvAPI initialization failed".into());
     }
 
+    require_elevated()?;
+
     match matches.subcommand() {
-        Some(("reset", matches)) => {
-            require_elevated()?;
-            let Some(("vfp", sub_matches)) = matches.subcommand() else {
-                unreachable!("reset requires the vfp subcommand");
-            };
-            let domain = sub_matches
+        Some(("reset-vfp", matches)) => {
+            let domain = matches
                 .get_one::<String>("vfp_domain")
                 .map(|s| VfpResetDomain::from_str(s.as_str()))
                 .transpose()?
@@ -109,42 +107,33 @@ fn main_result() -> Result<i32, Box<dyn std::error::Error>> {
                 run(gpu, ResetVfpDeltas { domain })?;
             }
         }
-        Some(("set", matches)) => {
-            require_elevated()?;
-            let Some(("vfp", matches)) = matches.subcommand() else {
-                unreachable!("set requires the vfp subcommand");
-            };
-            match matches.subcommand() {
-                Some(("export", matches)) => {
-                    let gpu = single_target(&nvapi_selected)?;
-                    handle_vfp_export(gpu, matches)?;
-                }
-                Some(("export_log", matches)) => {
-                    export_vfp_from_log(matches)?;
-                }
-                Some(("import", matches)) => {
-                    let gpu = single_target(&nvapi_selected)?;
-                    handle_vfp_import(gpu, matches)?;
-                }
-                Some(("sync_mem_pstate_as_p0", _matches)) => {
-                    let gpu = single_target(&nvapi_selected)?;
-                    sync_memory_pstate_as_p0(gpu)?;
-                }
-                Some(("fix_result", matches)) => {
-                    let gpu = single_target(&nvapi_selected)?;
-                    fix_result(gpu, matches)?
-                }
-                Some(("autoscan", matches)) => {
-                    if let Err(e) = autoscan_gpuboostv3(&nvapi_selected, matches) {
-                        eprintln!("Error in autoscan: {:?}", e);
-                    }
-                }
-                Some(("autoscan_legacy", matches)) => {
-                    if let Err(e) = autoscan_legacy(&nvapi_selected, matches) {
-                        eprintln!("Error in autoscan_legacy: {:?}", e);
-                    }
-                }
-                _ => unreachable!("unknown vfp command"),
+        Some(("export-vfp", matches)) => {
+            let gpu = single_target(&nvapi_selected)?;
+            handle_vfp_export(gpu, matches)?;
+        }
+        Some(("export-vfp-log", matches)) => {
+            export_vfp_from_log(matches)?;
+        }
+        Some(("import-vfp", matches)) => {
+            let gpu = single_target(&nvapi_selected)?;
+            handle_vfp_import(gpu, matches)?;
+        }
+        Some(("sync-vfp-memory-pstate", _matches)) => {
+            let gpu = single_target(&nvapi_selected)?;
+            sync_memory_pstate_as_p0(gpu)?;
+        }
+        Some(("fix-vfp-result", matches)) => {
+            let gpu = single_target(&nvapi_selected)?;
+            fix_result(gpu, matches)?
+        }
+        Some(("autoscan-vfp", matches)) => {
+            if let Err(e) = autoscan_gpuboostv3(&nvapi_selected, matches) {
+                eprintln!("Error in autoscan: {:?}", e);
+            }
+        }
+        Some(("autoscan-vfp-legacy", matches)) => {
+            if let Err(e) = autoscan_legacy(&nvapi_selected, matches) {
+                eprintln!("Error in autoscan_legacy: {:?}", e);
             }
         }
         _ => unreachable!("unknown command"),

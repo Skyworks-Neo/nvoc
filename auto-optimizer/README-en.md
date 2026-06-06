@@ -20,23 +20,11 @@ This project is released under the [Apache License 2.0](LICENSE).
 - [Directory Structure](#directory-structure)
 - [Quick Start](#quick-start)
 - [Command Reference](#command-reference)
-  - [Top-level Parameters](#top-level-parameters)
-  - [info](#info)
-  - [list](#list)
-  - [status](#status)
-  - [get](#get)
-  - [reset](#reset)
-  - [set](#set)
-    - [set nvml-cooler](#set-nvml-cooler)
-    - [set nvapi-cooler](#set-nvapi-cooler)
-    - [set vfp export](#set-vfp-export)
-    - [set vfp import](#set-vfp-import)
-    - [set vfp sync_mem_pstate_as_p0](#set-vfp-sync_mem_pstate_as_p0)
-    - [set nvapi lock / reset](#set-nvapi-lock--reset)
-    - [set vfp autoscan](#set-vfp-autoscan)
-    - [set vfp autoscan_legacy](#set-vfp-autoscan_legacy)
-    - [set vfp fix_result](#set-vfp-fix_result)
-    - [set vfp single_point_adj](#set-vfp-single_point_adj)
+  - [Global Parameters](#global-parameters)
+  - [Commands](#commands)
+    - [export-vfp](#export-vfp)
+    - [import-vfp](#import-vfp)
+    - [sync-vfp-memory-pstate](#sync-vfp-memory-pstate)
 - [Detailed Scanning Process](#detailed-scanning-process)
   - [Phase 0: Preparation](#phase-0-preparation)
   - [Phase 1: Voltage Range Probing](#phase-1-voltage-range-probing)
@@ -73,7 +61,7 @@ The goal of this tool is: **For each voltage point on the curve, find the maximu
 
 ### Maxwell / 9 Series Legacy Mode
 
-Maxwell (GM code name, 9xx series) and earlier GPUs do not support point-by-point V-F curve writing and can only apply a global frequency offset to the P0 state through `SetPstates20`. This tool uses the `autoscan_legacy` flow for such GPUs, scanning only a single global offset value.
+Maxwell (GM code name, 9xx series) and earlier GPUs do not support point-by-point V-F curve writing and can only apply a global frequency offset to the P0 state through `SetPstates20`. This tool uses the `autoscan-vfp-legacy` flow for such GPUs, scanning only a single global offset value.
 
 ---
 
@@ -87,7 +75,7 @@ Maxwell (GM code name, 9xx series) and earlier GPUs do not support point-by-poin
 | RTX 20 Series (Turing TU10x) | `TU10`           | VF Curve (Small diff between light and heavy load) | —                                                                     |
 | GTX 16 Series (Turing TU11x) | `TU11`           | VF Curve (Small diff between light and heavy load) | —                                                                     |
 | GTX 10 Series (Pascal)       | `GP1`            | VFP Curve (79 points)                              | Small diff between light and heavy load; fix_result still recommended |
-| GTX 9 Series (Maxwell)       | `GM`             | **Legacy Global Offset**                           | Point-by-point VFP not supported; scanned via `autoscan_legacy`       |
+| GTX 9 Series (Maxwell)       | `GM`             | **Legacy Global Offset**                           | Point-by-point VFP not supported; scanned via `autoscan-vfp-legacy`       |
 | Volta Compute Cards          | `GV`             | Legacy                                             | Same as above                                                         |
 
 > **Mobile GPUs** (name contains `Laptop`) cannot modify TDP / Temperature Wall / VDDQ boost; the tool will automatically skip these settings when detected.
@@ -105,7 +93,7 @@ Additionally, the core frequency range lock of NVML is actually a voltage range 
 |:--------------------------------------------------:|:-----------:|:-----------:|:-----------:|:-------------:|:-------------:|:------------:|:-------------------:|:----------------------------------------------------------:|
 |               VF curve Edit + Export               |      ✅      |      ✅      |      ✅      |       ✅       |       ✅       |      ✅       |          ❌          |                                                            |
 |                  Auto OC autoscan                  |      ✅      |      ✅      |      ✅      |       ✅       |       ✅       |      ✅       |          ❌          |                                                            |
-|           Legacy Auto OC autoscan_legacy           |      ✅      |      ✅      |      ✅      |       ✅       |       ✅       |      ✅       |          ✅          |                                                            |
+|           Legacy Auto OC autoscan-vfp-legacy           |      ✅      |      ✅      |      ✅      |       ✅       |       ✅       |      ✅       |          ✅          |                                                            |
 |      Core Frequency Offset (`--core-offset`)       |      ✅      |      ✅      |      ✅      |       ✅       |       ✅       |      ✅       |          ✅          |                                                            |
 |      Memory Frequency Offset (`--mem-offset`)      |      ✅      |      ✅      |      ✅      |       ✅       |       ✅       |      ✅       |          ✅          | Preserves Graphics VFP curve (restores per-point deltas) |
 |            Power Wall (`--power-limit`)            |      ✅      |      ✅      |      ✅      |       ✅       |       ✅       |      ✅       |          ✅          |                                                            |
@@ -127,7 +115,7 @@ Additionally, the core frequency range lock of NVML is actually a voltage range 
 |:--------------------------------------------------:|:-----------:|:-----------:|:-----------:|:-------------:|:-------------:|:------------:|:-----------------:|:----------------------------------------------------------:|
 |               VF curve Edit + Export               |      ❌      |      ❌      |      ❌      |       ❌       |       ❌       |      ❌       |         ❌         |                                                            |
 |                  Auto OC autoscan                  |    TODO     |    TODO     |    TODO     |     TODO      |     TODO      |     TODO     |         ❌         | Requires new algorithm based on frequency lock and offset  |
-|           Legacy Auto OC autoscan_legacy           |    TODO     |    TODO     |    TODO     |     TODO      |     TODO     |     TODO     |       TODO        | Requires new algorithm based on frequency lock and offset  |
+|           Legacy Auto OC autoscan-vfp-legacy           |    TODO     |    TODO     |    TODO     |     TODO      |     TODO     |     TODO     |       TODO        | Requires new algorithm based on frequency lock and offset  |
 |      Core Frequency Offset (`--core-offset`)       |      ✅      |      ✅      |      ✅      |       ✅       |       ✅       |      ✅       |         ✅         |                                                            |
 |      Memory Frequency Offset (`--mem-offset`)      |      ✅      |      ✅      |      ✅      |       ✅       |       ✅       |      ✅       |         ✅         | NVML has no VFP curve |
 |            Power Wall (`--power-limit`)            |      ✅      |      ✅      |      ✅      |       ✅       |       ✅       |      ✅       |         ✅         |                                                            |
@@ -186,7 +174,7 @@ Additionally, the core frequency range lock of NVML is actually a voltage range 
 |:--------------------------------------------------:|:--------------:|:------------:|:------------:|:------------:|:------------:|:------------:|:-----------------------------------------------:|
 |               VF curve Edit + Export               |       ❌        |      ❌       |      ❌       |      ❌       |      ❌       |      ❌       |                                                 |
 |                  Auto OC autoscan                  |       ❌        |      ❌       |      ❌       |      ❌       |      ❌       |      ❌       |                                                 |
-|           Legacy Auto OC autoscan_legacy           |       ❌        |      ❌       |      ❌       |      ❌       |      ❌       |      ❌       |                                                 |
+|           Legacy Auto OC autoscan-vfp-legacy           |       ❌        |      ❌       |      ❌       |      ❌       |      ❌       |      ❌       |                                                 |
 |      Core Frequency Offset (`--core-offset`)       |       ❌        |      ❌       |      ❌       |      ❌       |      ❌       |      ❌       |                                                 |
 |      Memory Frequency Offset (`--mem-offset`)      |       ❌        |      ❌       |      ❌       |      ❌       |      ❌       |      ❌       |                                                 |
 |            Power Wall (`--power-limit`)            |       ✅        |      ✅       |      ✅       |      ✅       |      ✅       |      ✅       |                                                 |
@@ -210,7 +198,7 @@ Additionally, the core frequency range lock of NVML is actually a voltage range 
 |:--------------------------------------------------:|:--------------:|:--------:|:-----------:|:-----------:|:-----------:|:-------:|
 |               VF curve Edit + Export               |       ❌        |    ❌     |      ❌      |      ❌      |      ❌      |         |
 |                  Auto OC autoscan                  |      TODO      |   TODO   |    TODO     |    TODO     |    TODO     |         |
-|           Legacy Auto OC autoscan_legacy           |       ❌        |    ❌     |      ❌      |      ❌      |      ❌      |         |
+|           Legacy Auto OC autoscan-vfp-legacy           |       ❌        |    ❌     |      ❌      |      ❌      |      ❌      |         |
 |      Core Frequency Offset (`--core-offset`)       |       ❓        |    ❓     |      ❓      |      ❓      |      ❓      |         |
 |      Memory Frequency Offset (`--mem-offset`)      |       ❓        |    ❓     |      ❓      |      ❓      |      ❓      |         |
 |            Power Wall (`--power-limit`)            |       ✅        |    ✅     |      ✅      |      ✅      |      ✅      |         |
@@ -277,7 +265,7 @@ auto-optimizer/
 │   ├── oc_get_set_function_nvapi.rs # NVAPI: VFP lock/reset, cooler, voltage/frequency settings
 │   ├── oc_get_set_function_nvml.rs  # NVML: Power wall, clock lock, P-State lock
 │   ├── oc_profile_function.rs# VFP export/import, fix_result, autoscan auxiliary functions
-│   ├── oc_scanner.rs         # autoscan_gpuboostv3 / autoscan_legacy core scanning loop
+│   ├── oc_scanner.rs         # autoscan_gpuboostv3 / legacy scanner core scanning loop
 │   ├── autoscan_config.rs    # Scan parameter struct (unified ArgMatches parsing)
 │   ├── types.rs              # OutputFormat, ResetSettings, VfpResetDomain enums
 │   ├── conv.rs               # Enum string conversions
@@ -349,246 +337,43 @@ Passing argument `1` will clear `ws\vfp.log` and `ws\vfp-tem.csv`.
 
 ## Command Reference
 
-All commands must be run with administrator privileges:
+`nvoc-auto-optimizer` exposes only VFP optimizer workflows. Run mutating commands with administrator/root privileges:
 
+```text
+nvoc-auto-optimizer.exe [--gpu GPU_ID] [--no-color] <command> [command options]
 ```
-nvoc-auto-optimizer.exe [global parameters] <subcommand> [subcommand parameters]
-```
 
-### Top-level Parameters
+For GPU discovery, status, general overclock settings, fan control, power limits, locks, and generic resets, use `nvoc-cli` instead, for example `nvoc-cli list-gpus`, `nvoc-cli get-status`, `nvoc-cli set-core-offset-mhz`, or `nvoc-cli reset-vfp-lock`.
 
-| Parameter                   | Shorthand | Description                                                                                                                              |
-|-----------------------------|-----------|------------------------------------------------------------------------------------------------------------------------------------------|
-| `--gpu <GPU_ID>`            | `-g`      | Target GPU. Accepts decimal or hex (`0x0800`), or index from `list` (0, 1, 2...). Can be specified multiple times. Defaults to all GPUs. |
-| `--output-format <OFORMAT>` | `-O`      | Output format: `human` (default) or `json`.                                                                                              |
+### Global Parameters
+
+| Parameter | Shorthand | Description |
+|-----------|-----------|-------------|
+| `--gpu <GPU_ID>` | `-g` | Target GPU. Accepts decimal or hex and can be specified multiple times. |
+| `--no-color` | - | Disable ANSI color output. |
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `export-vfp [OPTIONS] [OUTPUT]` | Export current VFP curve as CSV. |
+| `export-vfp-log [OPTIONS]` | Export VFP points parsed from an autoscan log. |
+| `import-vfp [OPTIONS] [INPUT]` | Import a modified VFP curve from CSV. |
+| `sync-vfp-memory-pstate` | Sync the second-highest adjustable memory VFP stage to P0 memory frequency. |
+| `fix-vfp-result [OPTIONS]` | Post-process autoscan results. |
+| `autoscan-vfp [OPTIONS]` | Auto-scan a VFP curve. |
+| `autoscan-vfp-legacy [OPTIONS]` | Auto-scan legacy GPUs using a global P-State OC offset. |
+| `reset-vfp --vfp-domain all\|core\|memory` | Reset VFP curve deltas. |
 
 ---
 
-### info
-
-Display detailed GPU information (model, code name, performance state, power limit, sensor limits, etc.).
-
-```bat
-nvoc-auto-optimizer.exe info
-nvoc-auto-optimizer.exe -O json info -o gpu_info
-```
-
-| Parameter     | Description                                                  |
-|---------------|--------------------------------------------------------------|
-| `-o <OUTPUT>` | JSON output path prefix (generates `<OUTPUT>_gpu<ID>.json`). |
-
----
-
-### list
-
-List all NVIDIA GPUs in the system, showing index, ID, PCI info, and UUID.
-
-```bat
-nvoc-auto-optimizer.exe list
-```
-
----
-
-### status
-
-Display current GPU running status (frequency, voltage, temperature, fan, current VFP curve values, etc.).
-
-```bat
-nvoc-auto-optimizer.exe status
-nvoc-auto-optimizer.exe status --all
-nvoc-auto-optimizer.exe status --monitor 2.0
-```
-
-| Parameter               | Shorthand | Default | Description                                           |
-|-------------------------|-----------|---------|-------------------------------------------------------|
-| `--all`                 | `-a`      | —       | Display all information.                              |
-| `--status <on\|off>`    | `-s`      | `on`    | Display basic status.                                 |
-| `--clocks <on\|off>`    | `-c`      | `on`    | Display clock frequencies.                            |
-| `--coolers <on\|off>`   | `-C`      | `off`   | Display fan information.                              |
-| `--sensors <on\|off>`   | `-S`      | `off`   | Display sensor temperatures.                          |
-| `--vfp <on\|off>`       | `-v`      | `off`   | Display current VFP curve values.                     |
-| `--pstates <on\|off>`   | `-P`      | `off`   | Display P-State config.                               |
-| `--monitor <seconds>`   | `-m`      | —       | Continuous monitoring, refresh at specified interval. |
-
----
-
-### get
-
-Display current effective OC settings (VFP offsets, P-State offsets, etc.) and detailed NVML status.
-
-```bat
-nvoc-auto-optimizer.exe get
-```
-
-> **Additional Note (NVML Status)**:
-> The `get` command now outputs detailed underlying NVML settings, including:
-> - Power wall limit range (Min / Current / Max, in Watts)
-> - Core and memory frequency boundaries for each P-State
-> - **Core / Memory OC Offset** set for each P-State
-> - All supported Application Clock combinations for this card, automatically organizing min/max boundaries and step values.
-
----
-
-### reset
-
-Restore OC settings to defaults. Supports flexible `setting` selectors, `--domain` aliases, and fine-grained `--vfp-domain` control for VFP reset; additionally provides `reset nvml-cooler` to restore default NVML fan control.
-
-```bat
-# Reset all settings
-nvoc-auto-optimizer.exe reset
-
-# Reset only specified settings
-nvoc-auto-optimizer.exe reset voltage-boost power nvapi-cooler
-
-# Using --domain aliases (equivalent to above)
-nvoc-auto-optimizer.exe reset --domain voltage-boost --domain power --domain nvapi-cooler
-
-# Reset NVML fans to default control mode
-nvoc-auto-optimizer.exe reset nvml-cooler
-
-# Reset NVML fan default control mode by fan ID
-nvoc-auto-optimizer.exe reset nvml-cooler --id 1
-
-# Reset only VFP curve and core frequency offset
-nvoc-auto-optimizer.exe reset vfp --vfp-domain core
-
-# Clear only VFP memory frequency offset
-nvoc-auto-optimizer.exe reset --domain vfp --vfp-domain memory
-
-# Only --vfp-domain provided, defaults to reset vfp
-nvoc-auto-optimizer.exe reset --vfp-domain core
-```
-
-**Specified items to reset (multiple selectable):**
-
-| Value                        | Shorthand or Alias | Description                                                 |
-|------------------------------|--------------------|-------------------------------------------------------------|
-| `voltage-boost`              | —                  | Reset Voltage Boost to zero                                 |
-| `thermal` or `sensor-limits` | —                  | Restore Temperature Wall to default                         |
-| `power` or `power-limits`    | —                  | Restore Power Wall to default                               |
-| `nvapi-cooler`               | —                  | Restore NVAPI fan control to automatic                      |
-| `nvml-cooler`                | —                  | Restore NVML fan control to automatic                       |
-| `vfp` or `vfp-deltas`        | —                  | Zero all VFP curve offsets (can use `--vfp-domain`)         |
-| `lock` or `vfp-lock`         | —                  | Release voltage lock                                        |
-| `pstate` or `pstate-deltas`  | —                  | Zero P-State frequency offsets                              |
-| `overvolt`                   | —                  | Zero baseVoltage delta for legacy GPUs (Maxwell / 9 series) |
-
-**VFP Reset Domain Options (active only when `--vfp-domain` is specified):**
-
-| Value    | Description                                            |
-|----------|--------------------------------------------------------|
-| `all`    | Reset both core and memory frequency offsets (default) |
-| `core`   | Reset Graphics frequency offset only                   |
-| `memory` | Reset Memory frequency offset only                     |
-
----
-
-### set
-
-Entry point for OC settings, now distinguished between `nvapi` and `nvml` interfaces, supporting the following subcommands and parameters.
-
-#### set nvml-cooler
-
-Set NVML fan policy and level.
-
-```bat
-nvoc-auto-optimizer.exe set nvml-cooler --id 1 --policy manual --level 60
-nvoc-auto-optimizer.exe set nvml-cooler --policy continuous --level 80
-```
-
-| Parameter  | Description                                         |
-|------------|-----------------------------------------------------|
-| `--id`     | Fan ID (`1` / `2` / `all`, default `all`)           |
-| `--policy` | Fan policy (e.g., `continuous` / `manual` / `auto`) |
-| `--level`  | Fan speed percentage                                |
-
-#### set nvapi
-
-OC through official NVAPI interface, mainly for VFP curve locking, Voltage Boost, and core/memory frequency range locks.
-
-```bat
-nvoc-auto-optimizer.exe set nvapi --voltage-boost 100 --thermal-limit 90
-nvoc-auto-optimizer.exe set nvapi --core-offset 150000 --mem-offset 500000
-nvoc-auto-optimizer.exe set nvapi --locked-voltage 68
-nvoc-auto-optimizer.exe set nvapi --locked-core-clocks 210 2100
-nvoc-auto-optimizer.exe set nvapi --locked-mem-clocks 5000 9501
-nvoc-auto-optimizer.exe set nvapi --reset-vfp-locks
-```
-
-| Parameter                          | Shorthand | Description                                                                       |
-|------------------------------------|-----------|-----------------------------------------------------------------------------------|
-| `--voltage-boost <0-100>`          | `-V`      | Set Voltage Boost percentage (Desktop GPUs)                                       |
-| `--thermal-limit <℃>`              | `-T`      | Set Temperature Wall (Celsius)                                                    |
-| `--power-limit <%>`                | `-P`      | Set Power Wall percentage                                                         |
-| `--voltage-delta <μV>`             | `-U`      | Core voltage offset (μV, for Maxwell / 900 series and earlier)                    |
-| `--pstate <PSTATE>`                | `-z`      | Target P-State for `--voltage-delta` and Offset (default `P0`)                    |
-| `--core-offset <kHz>`              | —         | Set core frequency offset via NVAPI for specific P-State (kHz)                    |
-| `--mem-offset <kHz>`               | —         | Set memory frequency offset via NVAPI for specific P-State (kHz)                  |
-| `--locked-voltage <POINT_OR_VOLT>` | —         | Lock VFP voltage. Number by point (e.g., `68`); voltage with unit (e.g., `850mV`) |
-| `--locked-core-clocks <MIN> <MAX>` | —         | Lock NVAPI Graphics core frequency range (MHz)                                    |
-| `--locked-mem-clocks <MIN> <MAX>`  | —         | Lock NVAPI Memory frequency range (MHz)                                           |
-| `--reset-core-clocks`              | —         | Release NVAPI core frequency lock                                                 |
-| `--reset-mem-clocks`               | —         | Release NVAPI memory frequency lock (alias: `--pstate-unlock`)                    |
-| `--reset-vfp-locks`                | —         | Clear NVAPI VFP lock (voltage / frequency lock status)                            |
-
-#### set nvml
-
-OC through official NVML interface, mainly for P-State level Offset settings, Power Limit (Watts), and memory lock windows.
-
-```bat
-nvoc-auto-optimizer.exe set nvml --core-offset 150 --mem-offset 1000
-nvoc-auto-optimizer.exe set nvml -P 350
-nvoc-auto-optimizer.exe set nvml --pstate-lock P0
-```
-
-| Parameter                          | Description                                                                                         |
-|------------------------------------|-----------------------------------------------------------------------------------------------------|
-| `--pstate <ID>`                    | Target P-State index (`0` for P0, `2` for P2, default `0`)                                          |
-| `--core-offset <MHz>`              | Set core frequency offset for specific P-State (MHz)                                                |
-| `--mem-offset <MHz>`               | Set memory frequency offset for specific P-State (MHz)                                              |
-| `-T, --thermal-limit <℃>`          | Temp wall compatibility param (alias: `--thermal-gpu-max`), parse only, not written in this version |
-| `--thermal-shutdown <℃>`           | NVML `Shutdown` compat, parse only                                                                  |
-| `--thermal-slowdown <℃>`           | NVML `Slowdown` compat, parse only                                                                  |
-| `--thermal-memory-max <℃>`         | NVML `MemoryMax` compat, parse only                                                                 |
-| `--thermal-acoustic-min <℃>`       | NVML `AcousticMin` compat, parse only                                                               |
-| `--thermal-acoustic-curr <℃>`      | NVML `AcousticCurr` compat, parse only                                                              |
-| `--thermal-acoustic-max <℃>`       | NVML `AcousticMax` compat, parse only                                                               |
-| `--thermal-gps-curr <℃>`           | NVML `GpsCurr` compat, parse only                                                                   |
-| `-P, --power-limit <W>`            | Set precise power wall limit (Watts)                                                                |
-| `--locked-app-clocks <Mem> <Core>` | Lock App clocks, memory (MHz) and core (MHz)                                                        |
-| `--reset-app-clocks`               | Reset App clocks to defaults                                                                        |
-| `--locked-core-clocks <Min> <Max>` | Lock GPU core frequency range (MHz)                                                                 |
-| `--reset-core-clocks`              | Release GPU core frequency lock                                                                     |
-| `--locked-mem-clocks <Min> <Max>`  | Lock memory frequency range (MHz)                                                                   |
-| `--pstate-lock <ID> [<ID>]`        | Lock GPU to a single or range of NVML P-States (e.g., `P0`) via memory locking                      |
-| `--reset-mem-clocks`               | Release memory frequency lock (includes P-State unlock)                                             |
-
-`get` / `status` human-readable output shows detailed NVML Temperature Thresholds values (unsupported items show `N/A`); NVML temp threshold writing is not performed in the current version.
-
-#### set nvapi-cooler
-
-Set fan policy and level.
-
-```bat
-nvoc-auto-optimizer.exe set nvapi-cooler --id 1 --policy continuous --level 60
-nvoc-auto-optimizer.exe set nvapi-cooler --policy manual --level 80
-```
-
-| Parameter  | Description                                |
-|------------|--------------------------------------------|
-| `--id`     | Fan ID (`1` / `2` / `all`, default `all`)  |
-| `--policy` | Fan policy (e.g., `continuous` / `manual`) |
-| `--level`  | Fan speed percentage                       |
-
----
-
-#### set vfp export
+#### export-vfp
 
 Export current VFP curve as CSV.
 
 ```bat
-nvoc-auto-optimizer.exe set vfp export .\ws\vfp-init.csv
-nvoc-auto-optimizer.exe set vfp export --quick .\ws\vfp-quick.csv
+nvoc-auto-optimizer.exe export-vfp .\ws\vfp-init.csv
+nvoc-auto-optimizer.exe export-vfp --quick .\ws\vfp-quick.csv
 ```
 
 Defaults to the Graphics (core) curve; use domain flags to export other VFP tables.
@@ -620,12 +405,12 @@ Defaults to the Graphics (core) curve; use domain flags to export other VFP tabl
 
 ---
 
-#### set vfp import
+#### import-vfp
 
 Write modified curve from CSV to GPU.
 
 ```bat
-nvoc-auto-optimizer.exe set vfp import .\ws\vfp.csv
+nvoc-auto-optimizer.exe import-vfp .\ws\vfp.csv
 ```
 
 Defaults to the Graphics (core) curve; Memory domain import aligns by point index (edit an export file), other domains match by voltage.
@@ -641,12 +426,12 @@ Defaults to the Graphics (core) curve; Memory domain import aligns by point inde
 
 ---
 
-#### set vfp sync_mem_pstate_as_p0
+#### sync-vfp-memory-pstate
 
 Sync the second-highest memory VFP stage to the P0 frequency (useful for Windows P2/P3 alignment).
 
 ```bat
-nvoc-auto-optimizer.exe set vfp sync_mem_pstate_as_p0
+nvoc-auto-optimizer.exe sync-vfp-memory-pstate
 ```
 
 ---
@@ -655,15 +440,15 @@ nvoc-auto-optimizer.exe set vfp sync_mem_pstate_as_p0
 
 ### Phase 0: Preparation
 
-`start.bat` sequentially executes before calling `autoscan`:
+`start.bat` sequentially executes before calling `autoscan-vfp`:
 
-1. `info`: Print GPU info and identify generation.
-2. `reset pstate`: Zero P-State frequency offsets to ensure a clean starting point.
-3. `reset vfp` (or `reset --domain vfp --vfp-domain all`): Zero all VFP curve point offsets.
-   - Use `reset --domain vfp --vfp-domain core` for core OC only.
-   - Use `reset --domain vfp --vfp-domain memory` for memory OC only.
-4. `set --nvapi-reset-vfp-locks`: Release voltage/frequency locks.
-5. `set vfp export .\ws\vfp-init.csv` (if it doesn't exist): Save factory original curve as reference.
+1. `nvoc-cli get-info`: Print GPU info and identify generation.
+2. `nvoc-cli reset-pstate-clock-offsets`: Zero P-State frequency offsets to ensure a clean starting point.
+3. `reset-vfp` (or `reset-vfp --vfp-domain all`): Zero all VFP curve point offsets.
+   - Use `reset-vfp --vfp-domain core` for core OC only.
+   - Use `reset-vfp --vfp-domain memory` for memory OC only.
+4. `nvoc-cli reset-vfp-lock`: Release voltage/frequency locks.
+5. `export-vfp .\ws\vfp-init.csv` (if it doesn't exist): Save factory original curve as reference.
 6. Add firewall rules for pressure test executable (optional, to avoid network activity affecting the test).
 
 ### Phase 1: Voltage Range Probing
@@ -698,7 +483,7 @@ Enabled with `-m`. After core scan finishes, the tool locks at the highest volta
 `start.bat` automatically calls after `autoscan`:
 
 ```bat
-nvoc-auto-optimizer.exe set vfp fix_result -m 1
+nvoc-auto-optimizer.exe fix-vfp-result -m 1
 ```
 
 **Principle**: Since Pascal (10 series), NVIDIA V-F curves exhibit a small difference between light load and heavy load — similar to CPU Load-Line Calibration (LLC). If the stable maximum frequency found under full load is written back without correction, instability may occur when the operating point shifts during load transitions.
@@ -713,8 +498,8 @@ In ultrafast mode, the missing voltage points between the 4 key points are first
 ### Phase 5: Import and Export Final Curve
 
 ```bat
-nvoc-auto-optimizer.exe set vfp import .\ws\vfp.csv
-nvoc-auto-optimizer.exe set vfp export .\ws\vfp-final.csv
+nvoc-auto-optimizer.exe import-vfp .\ws\vfp.csv
+nvoc-auto-optimizer.exe export-vfp .\ws\vfp-final.csv
 ```
 
 Writes corrected curve to GPU and saves final snapshot.
@@ -759,8 +544,8 @@ Aggressive mode actively triggers a kernel crash (BSOD) to force reboot, continu
 
 Override via `-b`:
 ```bat
-set vfp autoscan -b traditional    # force traditional
-set vfp autoscan -b aggressive     # force aggressive
+autoscan-vfp -b traditional    # force traditional
+autoscan-vfp -b aggressive     # force aggressive
 ```
 
 ---
@@ -781,7 +566,7 @@ To start over, run `start.bat 1` to clear log.
 
 ## Legacy GPU Mode (Maxwell / Pascal)
 
-NVAPI for GTX 9 series (Maxwell) lacks point-by-point VFP writing; uses global P0 offset via `autoscan_legacy`:
+NVAPI for GTX 9 series (Maxwell) lacks point-by-point VFP writing; uses global P0 offset via `autoscan-vfp-legacy`:
 
 1. Write global offset through `set_pstates` (`ClockDomain::Graphics`, `PState::P0`).
 2. Scan max stable offset with binary search + endurance test.

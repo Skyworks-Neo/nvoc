@@ -1696,7 +1696,7 @@ class VFCurveTab:
 
         if not self.quick_export_var.get():
             self.app.run_cli_display(
-                self.app.get_gpu_args() + ["set", "vfp", "export", path]
+                self.app.get_gpu_args() + ["export-vfp", path]
             )
             return
 
