@@ -72,6 +72,9 @@ cargo run -p cli-stressor-cuda-rs --features cuda -- --config ./stressor.toml
 ### 配置文件
 
 - 参数优先级：`命令行显式传入 > config 文件 > 内置默认值`
+- autoscan 示例配置位于 `auto-optimizer/test/`：
+  - `cli-stressor-cuda-rs.toml`：默认配置，面向 8G+ 显存显卡。
+  - `cli-stressor-cuda-rs-6g-8g.toml`：较低显存配置，面向 6G-8G 显存显卡。
 - `kernel_mixture` 支持两种写法：
   - 字符串：`"gemm:0.4,memcpy:0.3,reduction:0.3"`
   - 映射：`{ gemm = 0.4, memcpy = 0.3, reduction = 0.3 }`
@@ -175,6 +178,9 @@ cargo run -p cli-stressor-cuda-rs --features cuda -- --config ./stressor.toml
 ### Config File
 
 - Precedence: `explicit CLI value > config file > built-in default`
+- Autoscan example configs are under `auto-optimizer/test/`:
+  - `cli-stressor-cuda-rs.toml`: default profile for cards with 8G+ VRAM.
+  - `cli-stressor-cuda-rs-6g-8g.toml`: lower-VRAM profile for cards with 6G-8G VRAM.
 - `kernel_mixture` supports two formats:
   - string: `"gemm:0.4,memcpy:0.3,reduction:0.3"`
   - map: `{ gemm = 0.4, memcpy = 0.3, reduction = 0.3 }`

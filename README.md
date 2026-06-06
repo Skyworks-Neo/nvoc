@@ -93,7 +93,7 @@ uv sync
 uv run nvoc-tui
 ```
 
-For autoscan workflows, configure one of the stressor modules and review the scripts under [auto-optimizer/test/](./auto-optimizer/test/).
+For autoscan workflows, configure one of the stressor modules and review the scripts under [auto-optimizer/test/](./auto-optimizer/test/). The CUDA stressor default config targets cards with 8G+ VRAM; use `cli-stressor-cuda-rs-6g-8g.toml` for 6G-8G cards.
 
 ## Repository Layout
 
@@ -206,7 +206,7 @@ uv sync
 uv run nvoc-tui
 ```
 
-如需使用 autoscan，请配置压力测试模块，并阅读 [auto-optimizer/test/](./auto-optimizer/test/) 下的脚本。
+如需使用 autoscan，请配置压力测试模块，并阅读 [auto-optimizer/test/](./auto-optimizer/test/) 下的脚本。CUDA 压力测试默认配置面向 8G+ 显存显卡；6G-8G 显存显卡请使用 `cli-stressor-cuda-rs-6g-8g.toml`。
 
 ## 许可证
 

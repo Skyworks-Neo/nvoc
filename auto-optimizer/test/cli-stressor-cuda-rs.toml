@@ -1,3 +1,5 @@
+# Default CUDA stressor profile for cards with 8G+ VRAM.
+# For 6G-8G cards, use cli-stressor-cuda-rs-6g-8g.toml.
 fp64_matrix_sizes = [2048,4096]
 precisions = ["bf16", "fp16", "fp32","tf32","fp64"]
 validate_interval = 3.0
@@ -70,4 +72,3 @@ warmup_iters = 1
 burst_iters = 500
 minor_mixture_rate = 0.20
 weight = 0.00
-
