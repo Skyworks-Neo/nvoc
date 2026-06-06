@@ -32,7 +32,6 @@ This section is the canonical component inventory for the monorepo. `CONTRIBUTIN
 |---|---|---|
 | NVOC-AUTO-OPTIMIZER | [auto-optimizer/](./auto-optimizer/) | Rust CLI core for GPU discovery, status, resets, NVAPI / NVML setting writes, V-F curve export/import, autoscan, and result fixing. |
 | NVOC-CLI | [cli/](./cli/) | Focused Rust wrapper over `nvoc-core` with flat function-style commands and NVAPI/NVML backend selection. |
-| NVOC-STRESSOR CUDA | [cli-stressor-cuda/](./cli-stressor-cuda/) | PyTorch CUDA GPU core-stability stress tool used by autoscan and standalone validation. |
 | NVOC-STRESSOR OpenCL | [cli-stressor-opencl/](./cli-stressor-opencl/) | Lightweight OpenCL stress tool for broader backend coverage without the CUDA PyTorch stack. |
 | NVOC-GUI | [gui/](./gui/) | Python GUI frontend for dashboard, autoscan, overclock, V-F curve, fan control, and live CLI output workflows. |
 | NVOC-TUI | [tui/](./tui/) | Textual terminal UI frontend for machines where a desktop GUI is unavailable or undesirable. |
@@ -54,10 +53,10 @@ Read the component README before building or running that component. The detaile
 - NVIDIA GPU with a compatible driver.
 - Administrator privileges on Windows or sudo privileges on Linux for operations that write overclocking settings.
 - Rust toolchain for `auto-optimizer/` and `srv/`.
-- Python plus `uv` for the Python frontends and stressors.
+- Python plus `uv` for the Python frontends and OpenCL stressor.
 - Python Tk support (`tkinter`) for NVOC-GUI. On Linux this may require a
   system package such as `tk`, `python3-tk`, or `python3-tkinter`.
-- CUDA-capable PyTorch for `cli-stressor-cuda/`, or OpenCL runtime support for `cli-stressor-opencl/`.
+- OpenCL runtime support for `cli-stressor-opencl/`.
 
 Platform support and feature availability vary by GPU generation and backend. The auto-optimizer README contains the current support matrix for RTX 50/40/30/20, GTX 16/10/9, Volta, mobile GPUs, NVAPI, and NVML.
 
@@ -100,7 +99,6 @@ For autoscan workflows, configure one of the stressor modules and review the scr
 ```text
 nvoc/
 ├── auto-optimizer/       # Rust CLI core and autoscan implementation
-├── cli-stressor-cuda/    # CUDA/PyTorch stress workload
 ├── cli-stressor-opencl/  # OpenCL stress workload
 ├── gui/                  # Python GUI frontend
 ├── srv/                  # Windows service wrapper and HTTP control endpoint
@@ -118,7 +116,6 @@ cd auto-optimizer && cargo build
 cd srv && cargo build
 cd gui && uv sync
 cd tui && uv sync && uv run pytest
-cd cli-stressor-cuda && uv sync
 cd cli-stressor-opencl && uv sync
 ```
 
@@ -145,7 +142,6 @@ NVOC 是一个 NVIDIA GPU 超频与稳定性工具的 monorepo。核心是 Rust 
 |---|---|---|
 | NVOC-AUTO-OPTIMIZER | [auto-optimizer/](./auto-optimizer/) | Rust CLI 核心，负责 GPU 发现、状态读取、重置、NVAPI / NVML 写入、V-F 曲线导入导出、autoscan 和结果后处理。 |
 | NVOC-CLI | [cli/](./cli/) | `nvoc-core` 的精简 Rust 包装器，提供扁平函数式命令和 NVAPI/NVML 后端选择。 |
-| NVOC-STRESSOR CUDA | [cli-stressor-cuda/](./cli-stressor-cuda/) | 基于 PyTorch CUDA 的 GPU 核心稳定性压力测试工具，可供 autoscan 或单独验证使用。 |
 | NVOC-STRESSOR OpenCL | [cli-stressor-opencl/](./cli-stressor-opencl/) | 轻量 OpenCL 压力测试工具，用于不依赖 CUDA PyTorch 体系的后端覆盖。 |
 | NVOC-GUI | [gui/](./gui/) | Python 图形界面，提供 Dashboard、Autoscan、Overclock、V-F Curve、Fan Control 和实时 CLI 输出。 |
 | NVOC-TUI | [tui/](./tui/) | 基于 Textual 的终端界面，适用于没有桌面环境或不适合运行 GUI 的机器。 |
@@ -167,10 +163,10 @@ NVOC 是一个 NVIDIA GPU 超频与稳定性工具的 monorepo。核心是 Rust 
 - 支持的 NVIDIA GPU 与驱动。
 - Windows 管理员权限，或 Linux sudo 权限，用于写入超频参数。
 - `auto-optimizer/` 与 `srv/` 需要 Rust 工具链。
-- Python 前端与压力测试工具推荐使用 `uv` 管理环境。
+- Python 前端与 OpenCL 压力测试工具推荐使用 `uv` 管理环境。
 - NVOC-GUI 需要 Python Tk 支持（`tkinter`）。Linux 上可能需要安装
   `tk`、`python3-tk` 或 `python3-tkinter` 等系统包。
-- `cli-stressor-cuda/` 需要 CUDA 版 PyTorch；`cli-stressor-opencl/` 需要 OpenCL 运行环境。
+- `cli-stressor-opencl/` 需要 OpenCL 运行环境。
 
 不同 GPU 世代与后端支持的功能不同，请以 auto-optimizer README 中的兼容性矩阵为准。
 

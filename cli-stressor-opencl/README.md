@@ -47,8 +47,7 @@ uv sync
 或者如果您习惯使用 pip 手动安装：
 
 ```bash
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu129
-pip install numpy
+pip install numpy pyopencl
 ```
 
 ### 使用方法
@@ -130,8 +129,7 @@ uv sync
 Or, if you prefer manual pip installation:
 
 ```bash
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu129
-pip install numpy
+pip install numpy pyopencl
 ```
 
 ### Usage
