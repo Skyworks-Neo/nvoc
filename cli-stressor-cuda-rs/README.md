@@ -31,7 +31,7 @@
 
 ### 概述
 
-`cli-stressor-cuda-rs` 是一个用 Rust 编写的 CUDA GEMM 压力测试工具，参考 `cli-stressor-cuda` 的设计实现。它通过随机化 GEMM 负载和周期性的 CPU 侧校验，帮助发现静默数据损坏和硬件稳定性问题。
+`cli-stressor-cuda-rs` 是一个用 Rust 编写的 CUDA GEMM 压力测试工具。它通过随机化 GEMM 负载和周期性的 CPU 侧校验，帮助发现静默数据损坏和硬件稳定性问题。
 
 ### 功能特点
 
@@ -137,7 +137,7 @@ burst_iters = 64
 
 ### Overview
 
-`cli-stressor-cuda-rs` is a Rust-based CUDA GEMM stress tool modeled after `cli-stressor-cuda`. It uses randomized GEMM workloads and periodic CPU-side validation to help detect silent data corruption and hardware stability issues.
+`cli-stressor-cuda-rs` is a Rust-based CUDA GEMM stress tool. It uses randomized GEMM workloads and periodic CPU-side validation to help detect silent data corruption and hardware stability issues.
 
 ### Features
 
