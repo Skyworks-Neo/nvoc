@@ -5,7 +5,6 @@
 | Component | Path | Purpose |
 |---|---|---|
 | NVOC-AUTO-OPTIMIZER | `auto-optimizer/` | Rust CLI core for GPU discovery/control, autoscan, reset, V-F operations, and result handling. |
-| NVOC-STRESSOR CUDA (Python) | `cli-stressor-cuda/` | CUDA/PyTorch-based stress workload used by autoscan and standalone checks. |
 | NVOC-STRESSOR CUDA (Rust) | `cli-stressor-cuda-rs/` | Rust CUDA stressor variant for native Rust pipeline usage. |
 | NVOC-STRESSOR OpenCL | `cli-stressor-opencl/` | Lightweight OpenCL stress workload for non-CUDA stacks. |
 | NVOC-GUI | `gui/` | Desktop GUI for dashboard, autoscan, overclock, and live runner views. |

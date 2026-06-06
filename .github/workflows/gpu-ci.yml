@@ -44,7 +44,7 @@ jobs:
       python_base: ${{ steps.manual.outputs.python_base || steps.filter.outputs.python_base }}
       auto_optimizer: ${{ steps.manual.outputs.auto_optimizer || steps.filter.outputs.auto_optimizer }}
       nvoc_core: ${{ steps.manual.outputs.nvoc_core || steps.filter.outputs.nvoc_core }}
-      stressor_cuda: ${{ steps.manual.outputs.stressor_cuda || steps.filter.outputs.stressor_cuda }}
+      stressor_cuda_rs: ${{ steps.manual.outputs.stressor_cuda_rs || steps.filter.outputs.stressor_cuda_rs }}
       stressor_opencl: ${{ steps.manual.outputs.stressor_opencl || steps.filter.outputs.stressor_opencl }}
     steps:
       - name: run all component jobs for manual dispatch
@@ -57,7 +57,7 @@ jobs:
             echo "python_base=true"
             echo "auto_optimizer=true"
             echo "nvoc_core=true"
-            echo "stressor_cuda=true"
+            echo "stressor_cuda_rs=true"
             echo "stressor_opencl=true"
           } >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v6
@@ -85,8 +85,8 @@ jobs:
               - 'nvoc-core/**'
             auto_optimizer:
               - 'auto-optimizer/**'
-            stressor_cuda:
-              - 'cli-stressor-cuda/**'
+            stressor_cuda_rs:
+              - 'cli-stressor-cuda-rs/**'
             stressor_opencl:
               - 'cli-stressor-opencl/**'
 
@@ -160,21 +160,22 @@ jobs:
         env:
           NVOC_CORE_GPU_GROUND_TRUTH: ${{ vars.NVOC_CORE_GPU_GROUND_TRUTH }}
 
-  cuda-stressor:
+  cuda-stressor-rs:
     needs: changes
     if: >-
       needs.changes.outputs.ci_config == 'true' ||
-      needs.changes.outputs.python_base == 'true' ||
-      needs.changes.outputs.stressor_cuda == 'true'
+      needs.changes.outputs.rust_base == 'true' ||
+      needs.changes.outputs.stressor_cuda_rs == 'true'
     runs-on: [self-hosted, windows, gpu-nvidia, cuda]
     timeout-minutes: 30
-    defaults:
-      run:
-        working-directory: cli-stressor-cuda
     steps:
       - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.ref || github.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
       - name: Disable local nvapi-rs patch for CI
         shell: pwsh
         run: |
@@ -182,20 +183,10 @@ jobs:
           $content = Get-Content $cargoToml -Raw
           $content = [regex]::Replace($content, '(?ms)^\# For development, we use the local path to the nvapi-rs crate\. In production, we can switch to the git dependency\.\r?\n\[patch\."https://github\.com/Skyworks-Neo/nvapi-rs"\]\r?\nnvapi = \{ path = "\./nvapi-rs" \}\r?\nnvapi-sys = \{ path = "\./nvapi-rs/sys" \}\r?\nnvapi-hi = \{ path = "\./nvapi-rs/hi" \}\r?\n', '')
           Set-Content $cargoToml $content -NoNewline
-      - name: set uv cache dirs
-        shell: pwsh
-        run: |
-          Add-Content $env:GITHUB_ENV "UV_CACHE_DIR=$env:RUNNER_TEMP\uv-cache"
-          Add-Content $env:GITHUB_ENV "UV_PROJECT_ENVIRONMENT=$env:RUNNER_TEMP\uv-envs\cuda-stressor-${{ github.run_id }}"
-      - uses: astral-sh/setup-uv@v4
-      - run: uv sync --frozen
-        env:
-          UV_CACHE_DIR: ${{ runner.temp }}\uv-cache
-          UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}\uv-envs\cuda-stressor-${{ github.run_id }}
+      - name: build CUDA stressor
+        run: cargo build --release --package cli-stressor-cuda-rs --features cuda
       - name: short stress run
-        run: uv run python test.py
-        env:
-          UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}\uv-envs\cuda-stressor-${{ github.run_id }}
+        run: cargo run --release --package cli-stressor-cuda-rs --features cuda -- --duration 10 --precisions fp32 --matrix-sizes 2048 --kernel-types gemm --disable-fp8
 
   opencl-stressor-windows:
     needs: changes
@@ -225,11 +216,11 @@ jobs:
           Add-Content $env:GITHUB_ENV "UV_CACHE_DIR=$env:RUNNER_TEMP\uv-cache"
           Add-Content $env:GITHUB_ENV "UV_PROJECT_ENVIRONMENT=$env:RUNNER_TEMP\uv-envs\opencl-stressor-${{ github.run_id }}"
       - uses: astral-sh/setup-uv@v4
-      - run: uv sync --frozen
+      - run: uv sync --frozen --no-config
         env:
           UV_CACHE_DIR: ${{ runner.temp }}\uv-cache
           UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}\uv-envs\opencl-stressor-${{ github.run_id }}
-      - run: uv run python test.py
+      - run: uv run --no-config python test.py
         env:
           UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}\uv-envs\opencl-stressor-${{ github.run_id }}
 

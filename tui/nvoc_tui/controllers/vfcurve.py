@@ -23,6 +23,7 @@ class VFCurveController(PaneController):
         super().__init__(app)
         self.poll_timer = None
         self.refresh_inflight = False
+        self._refresh_lock = threading.Lock()
 
     def auto_refresh_label(self) -> Text:
         state = "On" if self.app.config_data.vfcurve.auto_refresh else "Off"
@@ -45,7 +46,7 @@ class VFCurveController(PaneController):
         if (
             enabled
             and not self.app.native_service.action_state.running
-            and not self.refresh_inflight
+            and not self.is_refresh_inflight()
         ):
             self.refresh_curve()
 
@@ -64,9 +65,24 @@ class VFCurveController(PaneController):
         return self.handle_button(target_id)
 
     def tick(self) -> None:
-        if self.app.native_service.action_state.running or self.refresh_inflight:
+        if self.app.native_service.action_state.running or self.is_refresh_inflight():
             return
         self.refresh_curve()
+
+    def is_refresh_inflight(self) -> bool:
+        with self._refresh_lock:
+            return self.refresh_inflight
+
+    def _begin_refresh(self) -> bool:
+        with self._refresh_lock:
+            if self.refresh_inflight:
+                return False
+            self.refresh_inflight = True
+            return True
+
+    def _end_refresh(self) -> None:
+        with self._refresh_lock:
+            self.refresh_inflight = False
 
     def cache_path(self) -> Path:
         cache_dir = self.app.root_dir / "vfp_cache"
@@ -84,14 +100,18 @@ class VFCurveController(PaneController):
         self.app.save_config()
 
     def refresh_curve(self) -> None:
-        if self.refresh_inflight:
+        if not self._begin_refresh():
             return
-        cache_path = self.cache_path()
-        gpu = self.app.selected_gpu_target()
+        try:
+            cache_path = self.cache_path()
+            gpu = self.app.selected_gpu_target()
+        except Exception:
+            self._end_refresh()
+            raise
         if gpu is None:
+            self._end_refresh()
             self.clear_plot("No GPU selected.")
             return
-        self.refresh_inflight = True
 
         def worker() -> None:
             output = ""
@@ -102,14 +122,23 @@ class VFCurveController(PaneController):
             except Exception as exc:
                 output = f"pynvoc VFP curve query failed: {exc}"
                 code = -1
-            self.app.call_from_thread(
-                self.on_curve_loaded, output, str(cache_path), code
-            )
+            try:
+                self.app.call_from_thread(
+                    self.on_curve_loaded, output, str(cache_path), code
+                )
+            except Exception:
+                self._end_refresh()
+                raise
 
-        threading.Thread(target=worker, daemon=True, name="vf-refresh").start()
+        try:
+            thread = threading.Thread(target=worker, daemon=True, name="vf-refresh")
+            thread.start()
+        except Exception:
+            self._end_refresh()
+            raise
 
     def on_curve_loaded(self, output: str, path: str, code: int) -> None:
-        self.refresh_inflight = False
+        self._end_refresh()
         if output:
             self.app.write_log(output)
         self.app.cache.vf_curve_path = path

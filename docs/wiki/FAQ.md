@@ -12,7 +12,6 @@
 
 ## Which stressor should I use?
 
-- Prefer CUDA-Python when PyTorch CUDA is already installed.
 - Prefer OpenCL when CUDA stack is unavailable.
 - Prefer CUDA-Rust when you need a native Rust-only integration path.
 
