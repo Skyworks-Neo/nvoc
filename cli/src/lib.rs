@@ -1088,17 +1088,19 @@ fn list_gpus_execution(
             continue;
         }
 
-        let name = target.nvapi.and_then(|_| {
+        let name = if target.has_nvapi() {
             run(&target, QueryGpuInfo)
                 .ok()
                 .map(|report| report.output.name)
-        });
+        } else {
+            None
+        };
 
         results.push(TargetResult {
             gpu_id: Some(target.id.0),
-            backend: if target.nvapi.is_some() && target.nvml.is_some() {
+            backend: if target.has_nvapi() && target.has_nvml() {
                 "both"
-            } else if target.nvapi.is_some() {
+            } else if target.has_nvapi() {
                 "nvapi"
             } else {
                 "nvml"
@@ -1109,8 +1111,8 @@ fn list_gpus_execution(
                 "gpu_id": target.id.0,
                 "gpu_id_hex": format!("0x{:04X}", target.id.0),
                 "pci_bus": target.id.pci_bus(),
-                "backend_nvapi": target.nvapi.is_some(),
-                "backend_nvml": target.nvml.is_some(),
+                "backend_nvapi": target.has_nvapi(),
+                "backend_nvml": target.has_nvml(),
                 "name": name,
             })),
             error: None,
@@ -1148,9 +1150,9 @@ fn gpu_selector(invocation: &Invocation) -> GpuSelector {
 fn target_supports(target: GpuTarget<'_>, command: Command, adapter: BackendAdapter) -> bool {
     match adapter {
         BackendAdapter::Nvapi => {
-            target.nvapi.is_some() && (command != Command::SetPstateLock || target.nvml.is_some())
+            target.has_nvapi() && (command != Command::SetPstateLock || target.has_nvml())
         }
-        BackendAdapter::Nvml => target.nvml.is_some(),
+        BackendAdapter::Nvml => target.has_nvml(),
     }
 }
 

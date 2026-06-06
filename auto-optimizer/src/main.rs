@@ -87,7 +87,7 @@ fn main_result() -> Result<i32, Box<dyn std::error::Error>> {
     let nvapi_selected: Vec<GpuTarget<'_>> = selected_targets
         .iter()
         .copied()
-        .filter(|target| target.nvapi.is_some())
+        .filter(|target| target.has_nvapi())
         .collect();
 
     if nvapi_selected.is_empty() {

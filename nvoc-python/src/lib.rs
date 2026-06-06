@@ -331,7 +331,7 @@ fn normalize_info_nvml(target: &GpuTarget<'_>) -> PyResultValue {
 fn normalize_info(target: &GpuTarget<'_>) -> PyResultValue {
     let info = match run(target, QueryGpuInfo) {
         Ok(report) => report.output,
-        Err(_) if target.nvml.is_some() => return normalize_info_nvml(target),
+        Err(_) if target.has_nvml() => return normalize_info_nvml(target),
         Err(error) => return Err(to_py_err(error)),
     };
     let mut map = Map::new();
@@ -924,8 +924,8 @@ fn discover_gpus(py: Python<'_>, backends: Option<&str>) -> PyResult<Py<PyAny>> 
         item.insert("index".into(), u64_value(target.index as u64));
         item.insert("gpu_id".into(), u64_value(target.id.0 as u64));
         item.insert("gpu_id_hex".into(), text(format!("0x{:04X}", target.id.0)));
-        item.insert("backend_nvapi".into(), bool_value(target.nvapi.is_some()));
-        item.insert("backend_nvml".into(), bool_value(target.nvml.is_some()));
+        item.insert("backend_nvapi".into(), bool_value(target.has_nvapi()));
+        item.insert("backend_nvml".into(), bool_value(target.has_nvml()));
         if let Ok(info) = run(&target, QueryGpuInfo).map(|report| report.output) {
             item.insert("name".into(), text(info.name));
             item.insert("codename".into(), text(info.codename));
@@ -1208,7 +1208,7 @@ fn set_power_limit(gpu: &str, backend: &str, value: u32) -> PyResult<()> {
 fn set_thermal_limit(gpu: &str, celsius: i32) -> PyResult<()> {
     let inventory = target_inventory(BackendSet::Both)?;
     let target = selected_target(&inventory, gpu)?;
-    if target.nvapi.is_some() {
+    if target.has_nvapi() {
         run(
             &target,
             SetNvapiSensorLimits {
@@ -1863,7 +1863,7 @@ fn reset_vfp_lock(gpu: &str) -> PyResult<()> {
 fn reset_all(gpu: &str, domain: Option<&str>) -> PyResult<()> {
     let inventory = target_inventory(BackendSet::Both)?;
     let target = selected_target(&inventory, gpu)?;
-    if target.nvapi.is_some() {
+    if target.has_nvapi() {
         let vfp_domain = match domain.unwrap_or("all").to_ascii_lowercase().as_str() {
             "all" => VfpResetDomain::All,
             "core" | "graphics" => VfpResetDomain::Core,
@@ -1894,7 +1894,7 @@ fn reset_all(gpu: &str, domain: Option<&str>) -> PyResult<()> {
         )
         .map_err(to_py_err)?;
     }
-    if target.nvml.is_some() {
+    if target.has_nvml() {
         let _ = run(
             &target,
             ResetLockedClocks {
