@@ -94,6 +94,8 @@ uv run nvoc-tui
 
 For autoscan workflows, configure one of the stressor modules and review the scripts under [auto-optimizer/test/](./auto-optimizer/test/). The CUDA stressor default config targets cards with 8G+ VRAM; use `cli-stressor-cuda-rs-6g-8g.toml` for 6G-8G cards.
 
+Do not use the OpenCL stressor as the final stability gate for overclocking. It is not high-pressure enough and can produce autoscan / V-F curve results higher than the GPU can safely sustain, which may cause instability or hardware failure. Revalidate OpenCL-derived results with the CUDA stressor or heavier real workloads before relying on them.
+
 ## Repository Layout
 
 ```text
@@ -203,6 +205,8 @@ uv run nvoc-tui
 ```
 
 如需使用 autoscan，请配置压力测试模块，并阅读 [auto-optimizer/test/](./auto-optimizer/test/) 下的脚本。CUDA 压力测试默认配置面向 8G+ 显存显卡；6G-8G 显存显卡请使用 `cli-stressor-cuda-rs-6g-8g.toml`。
+
+不要将 OpenCL stressor 作为超频最终稳定性判据。它的压力不足，可能得到高于 GPU 安全承受范围的 autoscan / V-F 曲线结果，并进一步导致不稳定或硬件故障。依赖 OpenCL 结果前，请使用 CUDA stressor 或更重的真实负载重新验证。
 
 ## 许可证
 

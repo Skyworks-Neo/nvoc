@@ -59,6 +59,8 @@ The goal of this tool is: **For each voltage point on the curve, find the maximu
 
 `cli-stressor` is used to provide stability pressure at a given voltage/frequency. The criterion uses the **process return code**: returning `0` is considered passing, and non-`0` is considered failing.
 
+> **Warning:** do not use the OpenCL stressor as the final acceptance gate for autoscan results. It is not high-pressure enough, so OpenCL-only passes can make the scan accept frequency offsets higher than the hardware can actually sustain. Applying those inflated results can cause driver resets, system instability, data corruption, or hardware failure; treat them as provisional and revalidate with the CUDA stressor or heavier real workloads.
+
 ### Maxwell / 9 Series Legacy Mode
 
 Maxwell (GM code name, 9xx series) and earlier GPUs do not support point-by-point V-F curve writing and can only apply a global frequency offset to the P0 state through `SetPstates20`. This tool uses the `autoscan-vfp-legacy` flow for such GPUs, scanning only a single global offset value.
