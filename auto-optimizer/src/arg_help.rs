@@ -91,9 +91,18 @@ fn vfp_export_log_command() -> Command {
             Arg::new("log")
                 .value_name("LOG")
                 .short('l')
+                .long("log")
                 .num_args(1)
                 .default_value(default_vfp_log_path())
-                .help("Input log file path"),
+                .help("Input JSONL scan log file path"),
+        )
+        .arg(
+            Arg::new("initcsv")
+                .value_name("INITCSV")
+                .short('i')
+                .num_args(1)
+                .default_value(default_vfp_init_csv_path())
+                .help("Reference initial VFP CSV path used when OUTPUT is a file"),
         )
         .arg(
             Arg::new("output")
@@ -172,7 +181,7 @@ fn vfp_fix_result_command() -> Command {
                 .short('l')
                 .num_args(1)
                 .default_value(default_vfp_log_path())
-                .help("VFP log file path"),
+                .help("VFP JSONL log file path"),
         )
         .arg(
             Arg::new("minus_bin")
@@ -216,7 +225,7 @@ fn vfp_autoscan_command(legacy: bool) -> Command {
             .long("log")
             .num_args(1)
             .default_value(default_vfp_log_path())
-            .help("Autoscan log file path"),
+            .help("Autoscan JSONL log file path"),
     )
     .arg(
         Arg::new("timeout_loops")

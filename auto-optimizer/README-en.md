@@ -143,7 +143,7 @@ auto-optimizer/
 │   ├── human.rs              # Human-readable output formatting
 │   └── lib.rs
 ├── ws/                       # Created automatically at runtime, stores intermediate scan files
-│   ├── vfp.log               # Scan process log (resumption depends on this file)
+│   ├── vfp.jsonl             # Structured scan log (resumption depends on this file)
 │   ├── vfp-init.csv          # Factory original curve exported before first scan
 │   ├── vfp-tem.csv           # Real-time temporary results saved per point during autoscan
 │   └── vfp.csv / vfp-final.csv  # fix_result post-processing results / final exported confirmation file
@@ -201,7 +201,7 @@ To start from scratch (discarding breakpoint resume state):
 start.bat 1
 ```
 
-Passing argument `1` will clear `ws\vfp.log` and `ws\vfp-tem.csv`.
+Passing argument `1` will clear `ws\vfp.jsonl` and `ws\vfp-tem.csv`.
 
 ---
 
@@ -227,7 +227,7 @@ For GPU discovery, status, general overclock settings, fan control, power limits
 | Command | Description |
 |---------|-------------|
 | `export-vfp [OPTIONS] [OUTPUT]` | Export current VFP curve as CSV. |
-| `export-vfp-log [OPTIONS]` | Export VFP points parsed from an autoscan log. |
+| `export-vfp-log [OPTIONS]` | Export VFP points parsed from an autoscan JSONL log. |
 | `import-vfp [OPTIONS] [INPUT]` | Import a modified VFP curve from CSV. |
 | `sync-vfp-memory-pstate` | Sync the second-highest adjustable memory VFP stage to P0 memory frequency. |
 | `fix-vfp-result [OPTIONS]` | Post-process autoscan results. |
@@ -328,7 +328,7 @@ nvoc-auto-optimizer.exe sync-vfp-memory-pstate
 - **Upper Bound Probe**: Advance upward point by point from the preset upper point until locking fails (the curve reaches a flat region or goes out of range).
 - **Lower Bound Probe**: Advance downward from the preset lower point to find the minimum usable voltage point.
 
-Results recorded in `vfp.log` (`minimum_voltage_point` / `maximum_voltage_point`), skipped on resume scanning by reading the log directly.
+Results are recorded in `vfp.jsonl` as structured `voltage_range` events and skipped on resume by reading the JSONL log directly.
 
 ### Phase 2: Point-by-point Core Frequency Scanning
 
@@ -342,7 +342,7 @@ During each round of testing, the tool periodically applies **frequency fluctuat
 
 If thermal / power throttling is detected (`thrm_or_pwr_limit_flag`), ~~the test resolution will be lowered automatically to reduce GPU load~~ (TODO since the load was changed to CLI-based testing), ensuring the result reflects overclocking capability rather than TDP bottlenecks.
 
-After each voltage point finishes, the result is appended to `vfp-tem.csv` in real time and recorded in `vfp.log` (resume scanning supported).
+After each voltage point finishes, the result is appended to `vfp-tem.csv` in real time and recorded in `vfp.jsonl` (resume scanning supported).
 
 ### Phase 3: Video Memory Frequency Scanning (Optional)
 
@@ -422,11 +422,14 @@ autoscan-vfp -b aggressive     # force aggressive
 
 ## Breakpoint Resumption
 
-Results are appended to `ws\vfp.log` after each voltage point finishes. Next run, the tool parses:
+Structured results are appended to `ws\vfp.jsonl` after each voltage point finishes. Next run, the tool parses:
 
-- `minimum_voltage_point` / `maximum_voltage_point`: skip probing.
-- Last `Finished core OC on point` entry: continue from next point.
-- Last success/fail offsets: restore binary search convergence directly.
+- `voltage_range`: skip probing.
+- `point_finished`: continue from the next point.
+- `test_result`: restore binary search convergence directly.
+- `scan_mode` / `key_points`: restore normal or ultrafast mode state.
+
+If the JSONL file contains corrupt records, the tool prints the parse errors, recovers valid records where possible, and asks before resuming from recovered state.
 
 Whether exit, manual interrupt, or crash, **just rerun `start.bat` to resume**.
 
@@ -452,7 +455,7 @@ Legacy OverVolt often fails in practice; VBIOS editing often recommended for pre
 
 | File               | Purpose               | Notes                                                |
 |--------------------|-----------------------|------------------------------------------------------|
-| `ws\vfp.log`       | Scan log              | Basis for resumption; deleting restarts from scratch |
+| `ws\vfp.jsonl`     | Structured scan log   | Basis for resumption; deleting restarts from scratch |
 | `ws\vfp-init.csv`  | Factory snapshot      | Captured before scan; ref for fix_result             |
 | `ws\vfp-tem.csv`   | autoscan temp results | Written in real-time; input to fix_result            |
 | `ws\vfp.csv`       | fix_result output     | Final compensated curve; input for import            |

@@ -9,7 +9,7 @@ if not defined NVOC_CLI_BIN set "NVOC_CLI_BIN=..\target\release\nvoc-cli.exe"
 
 setlocal enabledelayedexpansion
 
-set "logfile=.\ws\vfp.log"
+set "logfile=.\ws\vfp.jsonl"
 set "vfptemfile=.\ws\vfp-tem.csv"
 set "startpoint=0"
 

@@ -334,4 +334,18 @@ mod tests {
             ["--platform-index", "0", "--device-index", "1"]
         );
     }
+
+    #[test]
+    fn export_vfp_log_defaults_to_jsonl_and_initcsv() {
+        let matches = subcommand_matches(&["nvoc-auto-optimizer", "export-vfp-log"]);
+
+        assert_eq!(
+            matches.get_one::<String>("log").unwrap(),
+            default_vfp_log_path()
+        );
+        assert_eq!(
+            matches.get_one::<String>("initcsv").unwrap(),
+            default_vfp_init_csv_path()
+        );
+    }
 }

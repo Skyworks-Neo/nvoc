@@ -14,6 +14,7 @@ use super::oc_profile_function::{
     key_point_extractor,
 };
 use super::progressbar::{ActiveScanProgressGuard, ScanProgress};
+use super::scan_log::{GpuVoltageRange, ScanArea, ScanKind, ScanLogWriter, ScanMode};
 use super::scan_strategy::{FluctuationMode, FluctuationStrategy, StepController};
 use super::scan_support::local_time_hms;
 use super::scan_support::{
@@ -26,9 +27,6 @@ use nvoc_core::{
     QueryGpuStatus, QueryVfpPointVoltage, ResetCoolerLevels, SetVfpPointDelta, VfPoint,
     VfPointType, fetch_gpu_type, set_nvapi_pstate_clock_offsets,
 };
-use std::fs;
-use std::io::Write;
-use std::path::Path;
 use std::sync::Arc;
 
 // use standard println!/eprintln!; do not route prints through progressbar helper
@@ -49,15 +47,7 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
     let test_exe = common.test_exe.as_str();
     let minload_exe = common.minload_exe.as_str();
     let log_filename = common.log.as_str();
-    // Ensure the directory exists
-    if let Some(parent) = Path::new(log_filename).parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let mut l = fs::OpenOptions::new()
-        .read(true)
-        .append(true)
-        .create(true)
-        .open(log_filename)?;
+    let mut l = ScanLogWriter::open_append(log_filename)?;
     let delimiter: String = String::from("--");
 
     let mut p1 = 0;
@@ -128,6 +118,7 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
                 )));
             }
 
+            let mut gpu_ranges = Vec::new();
             for limits in &voltage_limits {
                 let gpu = gpus
                     .iter()
@@ -145,19 +136,24 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
                         point: limits.upper_point,
                     },
                 )?;
-                writeln!(l)?;
-                writeln!(
-                    l,
+                println!(
                     "GPU {} minimum_voltage_point: {} @ {}",
                     limits.gpu_id, limits.lower_point, minimum_voltage
-                )?;
-                writeln!(
-                    l,
+                );
+                println!(
                     "GPU {} maximum_voltage_point: {} @ {}",
                     limits.gpu_id, limits.upper_point, maximum_voltage
-                )?;
+                );
+                gpu_ranges.push(GpuVoltageRange {
+                    gpu_id: limits.gpu_id,
+                    lower_point: limits.lower_point,
+                    upper_point: limits.upper_point,
+                    minimum_voltage_uv: minimum_voltage.0,
+                    maximum_voltage_uv: maximum_voltage.0,
+                });
             }
-            writeln!(l, "common_voltage_point_range: {}-{}", lvp, uvp)?;
+            println!("common_voltage_point_range: {}-{}", lvp, uvp);
+            l.write_voltage_range(lvp, uvp, gpu_ranges)?;
 
             (lvp, uvp)
         }
@@ -297,14 +293,13 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
             }
 
             println!("key points detected:{},{},{},{}", p1, p2, p3, p4);
-            writeln!(l, "\n\nkey points detected:{},{},{},{}", p1, p2, p3, p4)
-                .expect("extraction failed");
+            l.write_key_points([p1, p2, p3, p4])?;
 
             println!("Scan in ultrafast mode...");
-            writeln!(l, "\nScan in ultrafast mode")?;
+            l.write_scan_mode(ScanMode::Ultrafast)?;
         } else {
             println!("Scan in normal mode...");
-            writeln!(l, "\nScan in normal mode")?;
+            l.write_scan_mode(ScanMode::Normal)?;
         }
 
         let mut controller;
@@ -339,8 +334,6 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
         let scan_progress = Arc::new(ScanProgress::new(lower_voltage_point, upper_voltage_point));
         let _scan_progress_guard = ActiveScanProgressGuard::enter(scan_progress.clone());
         scan_progress.set_total_point(point, lower_voltage_point, upper_voltage_point);
-
-        writeln!(l)?;
 
         let mut v;
         let mut default_frequency;
@@ -382,7 +375,7 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
         };
 
         // core oc scanning
-        writeln!(l, "New Test Initiated at {}", local_time_hms())?;
+        println!("New Test Initiated at {}", local_time_hms());
         while point <= upper_voltage_point {
             if is_ultrafast {
                 if (point < p1 && p1 != 0) || (point == p1 && resuming_flag) {
@@ -468,7 +461,7 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
                 &mut controller,
                 &mut test_code,
             )?;
-            write!(l, "\nFinished core OC on point: #{}\n", point)?;
+            l.write_point_finished(ScanArea::Core, point)?;
             println!(
                 "Core OC finished on point: #{}, voltage: #{}, delta: #+{}. ",
                 point,
@@ -632,7 +625,7 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
                 mem_voltage,
                 &mut mem_controller,
             )?;
-            write!(l, "\nFinished on point: #{}.\n", point)?;
+            l.write_point_finished(ScanArea::Memory, point)?;
             println!(
                 "mem OC finished on point: #{}, voltage: #{}, delta: #+{}. ",
                 point,
@@ -645,7 +638,7 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
                 .unwrap_or_else(|e| eprintln!("Failed to reset cooler: {e}"))
         })
     }
-    writeln!(l, "VFP Scan succeeded...")?;
+    l.write_scan_completed(ScanKind::GpuBoostV3)?;
     Ok(())
 }
 
@@ -660,15 +653,7 @@ pub fn autoscan_legacy(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> Resul
     let test_exe = common.test_exe.as_str();
     let minload_exe = common.minload_exe.as_str();
     let log_filename = common.log.as_str();
-
-    if let Some(parent) = Path::new(log_filename).parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let mut l = fs::OpenOptions::new()
-        .read(true)
-        .append(true)
-        .create(true)
-        .open(log_filename)?;
+    let mut l = ScanLogWriter::open_append(log_filename)?;
     let delimiter: String = String::from("--");
 
     // Legacy GPU: single global offset, no V-F curve scanning
@@ -747,7 +732,8 @@ pub fn autoscan_legacy(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> Resul
 
         let mut test_code: usize = 0;
 
-        writeln!(l, "Legacy Scan Initiated at {}", local_time_hms())?;
+        println!("Legacy Scan Initiated at {}", local_time_hms());
+        l.write_scan_mode(ScanMode::Legacy)?;
         print_scan_separator();
         println!("autoscan_legacy: single global core OC offset mode (Maxwell / pre-Pascal)");
         println!(
@@ -798,11 +784,7 @@ pub fn autoscan_legacy(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> Resul
 
             run_legacy_long_phase(&mut l, gpu, &phase_args, &mut controller, &mut test_code)?;
 
-            write!(
-                l,
-                "\nLegacy OC scan finished. Final freq_delta: +{}kHz\n",
-                controller.f_current
-            )?;
+            l.write_point_finished(ScanArea::Legacy, point)?;
             println!(
                 "Legacy OC scan finished. Final freq_delta: +{}kHz",
                 controller.f_current
@@ -820,6 +802,6 @@ pub fn autoscan_legacy(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> Resul
         }
     }
 
-    writeln!(l, "Legacy VFP Scan succeeded...")?;
+    l.write_scan_completed(ScanKind::Legacy)?;
     Ok(())
 }

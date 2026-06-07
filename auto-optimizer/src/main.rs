@@ -9,6 +9,7 @@ mod oc_profile_function;
 mod oc_scanner;
 mod platform;
 mod progressbar;
+mod scan_log;
 mod scan_strategy;
 mod scan_support;
 

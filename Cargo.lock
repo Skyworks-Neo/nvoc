@@ -1039,6 +1039,7 @@ dependencies = [
  "nvoc-cli-common",
  "nvoc-core",
  "once_cell",
+ "serde",
  "serde_json",
  "time",
 ]

@@ -15,7 +15,7 @@ reset=$'\033[0m'
 
 cd "${auto_optimizer_dir}"
 
-logfile="./ws/vfp.log"
+logfile="./ws/vfp.jsonl"
 vfptemfile="./ws/vfp-tem.csv"
 
 if [[ ! -x "${bin}" ]]; then

@@ -2,16 +2,15 @@ use super::pressure::{PressureTestConfig, run_pressure_test};
 use super::runtime::{MinLoadPulse, run_output};
 use crate::oc_profile_function::sync_memory_pstate_as_p0;
 use crate::progressbar::ScanProgress;
+use crate::scan_log::{ScanArea, ScanLogWriter, TestPhase};
 use crate::scan_strategy::{FluctuationStrategy, StepController};
 use crate::scan_support::{handle_lock_vfp, local_time_hms, voltage_frequency_check};
 use clap::ArgMatches;
 use nvoc_core::{
-    ClockDomain, Error, GpuTarget, KilohertzDelta, NvapiLockedVoltageTarget, PState,
+    ClockDomain, Error, GpuTarget, KilohertzDelta, Microvolts, NvapiLockedVoltageTarget, PState,
     QueryVfpPointVoltage, ResetVfpDeltas, SetVfpVoltageLock, VfpResetDomain,
     set_nvapi_pstate_clock_offsets, set_nvapi_vfp_curve_delta,
 };
-use std::fs;
-use std::io::Write;
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -170,29 +169,22 @@ fn set_vfp_and_recheck(
     )))
 }
 
-fn log_point_test_header<V: std::fmt::Display, D: std::fmt::Display>(
-    l: &mut fs::File,
+fn log_point_test_header<D: std::fmt::Display>(
     test_code: usize,
     point: usize,
-    voltage: V,
+    voltage: Microvolts,
     delta_label: &str,
     delta_value: D,
-) -> Result<(), Error> {
+) {
     let now = local_time_hms();
-    write!(
-        l,
-        "[{}] Test #{} on point: #{}, voltage: #{}, {}: #{}. ",
-        now, test_code, point, voltage, delta_label, delta_value
-    )?;
     println!(
         "[{}] Test #{} on point: #{}, voltage: #{}, {}: #+{}. ",
         now, test_code, point, voltage, delta_label, delta_value
     );
-    Ok(())
 }
 
 pub(super) fn run_legacy_short_phase(
-    l: &mut fs::File,
+    l: &mut ScanLogWriter,
     gpu: &GpuTarget<'_>,
     args: &LegacyPhaseArgs<'_>,
     controller: &mut StepController,
@@ -200,7 +192,6 @@ pub(super) fn run_legacy_short_phase(
     resuming_flag: &mut bool,
 ) -> Result<(), Error> {
     println!("Starting short test phase...");
-    writeln!(l, "Starting short test phase...")?;
 
     if *resuming_flag {
         *resuming_flag = false;
@@ -226,13 +217,6 @@ pub(super) fn run_legacy_short_phase(
         controller.test_progress_num += 1;
         *test_code += 1;
 
-        write!(
-            l,
-            "[{}] Short Test #{} freq_delta: +{}kHz. ",
-            local_time_hms(),
-            *test_code,
-            controller.f_current
-        )?;
         println!(
             "[{}] Short Test #{} freq_delta: +{}kHz. ",
             local_time_hms(),
@@ -254,11 +238,14 @@ pub(super) fn run_legacy_short_phase(
             },
         );
         let test_flag = run_pressure_test(gpu, args.common.matches, &pressure_cfg);
-        writeln!(
-            l,
-            "Test result is code #{} . [{}]",
+        l.write_test_result(
+            ScanArea::Legacy,
+            TestPhase::Short,
+            *test_code,
+            args.point,
+            None,
+            KilohertzDelta(controller.f_current),
             test_flag,
-            local_time_hms()
         )?;
 
         if test_flag != 0 {
@@ -298,14 +285,13 @@ pub(super) fn run_legacy_short_phase(
 }
 
 pub(super) fn run_legacy_long_phase(
-    l: &mut fs::File,
+    l: &mut ScanLogWriter,
     gpu: &GpuTarget<'_>,
     args: &LegacyPhaseArgs<'_>,
     controller: &mut StepController,
     test_code: &mut usize,
 ) -> Result<(), Error> {
     println!("Initiating Long Test...");
-    writeln!(l, "Initiating Long Test...")?;
 
     loop {
         set_nvapi_pstate_clock_offsets(
@@ -318,13 +304,6 @@ pub(super) fn run_legacy_long_phase(
         )?;
 
         *test_code += 1;
-        write!(
-            l,
-            "[{}] Long Test #{} freq_delta: +{}kHz. ",
-            local_time_hms(),
-            *test_code,
-            controller.f_current
-        )?;
         println!(
             "[{}] Long Test #{} freq_delta: +{}kHz. ",
             local_time_hms(),
@@ -346,11 +325,14 @@ pub(super) fn run_legacy_long_phase(
             },
         );
         let long_flag = run_pressure_test(gpu, args.common.matches, &pressure_cfg);
-        writeln!(
-            l,
-            "Test result is code #{} . [{}]",
+        l.write_test_result(
+            ScanArea::Legacy,
+            TestPhase::Long,
+            *test_code,
+            args.point,
+            None,
+            KilohertzDelta(controller.f_current),
             long_flag,
-            local_time_hms()
         )?;
 
         if long_flag != 0 {
@@ -391,12 +373,12 @@ pub(super) struct GpuBoostPhaseArgs<'a> {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn run_gpuboostv3_short_phase<V: std::fmt::Display + Copy>(
-    l: &mut fs::File,
+pub(super) fn run_gpuboostv3_short_phase(
+    l: &mut ScanLogWriter,
     gpu: &GpuTarget<'_>,
     args: &GpuBoostPhaseArgs<'_>,
     point: usize,
-    v: V,
+    v: Microvolts,
     flat_curve_flag: bool,
     controller: &mut StepController,
     resuming_flag: &mut bool,
@@ -435,13 +417,12 @@ pub(super) fn run_gpuboostv3_short_phase<V: std::fmt::Display + Copy>(
         test_code += 1;
 
         log_point_test_header(
-            l,
             test_code,
             point,
             v,
             "freq_delta",
             KilohertzDelta(controller.f_current),
-        )?;
+        );
 
         let pressure_cfg = args.common.pressure_config(
             gpu,
@@ -458,11 +439,14 @@ pub(super) fn run_gpuboostv3_short_phase<V: std::fmt::Display + Copy>(
         );
         let test_flag = run_pressure_test(gpu, args.common.matches, &pressure_cfg);
         println!("{}", test_flag);
-        writeln!(
-            l,
-            "Test result is code #{} . [{}]",
+        l.write_test_result(
+            ScanArea::Core,
+            TestPhase::Short,
+            test_code,
+            point,
+            Some(v),
+            KilohertzDelta(controller.f_current),
             test_flag,
-            local_time_hms()
         )?;
 
         if test_flag != 0 {
@@ -517,19 +501,18 @@ pub(super) fn run_gpuboostv3_short_phase<V: std::fmt::Display + Copy>(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn run_gpuboostv3_long_phase<V: std::fmt::Display + Copy>(
-    l: &mut fs::File,
+pub(super) fn run_gpuboostv3_long_phase(
+    l: &mut ScanLogWriter,
     gpu: &GpuTarget<'_>,
     args: &GpuBoostPhaseArgs<'_>,
     point: usize,
-    v: V,
+    v: Microvolts,
     flat_curve_flag: bool,
     controller: &mut StepController,
     test_code: &mut usize,
 ) -> Result<(), Error> {
     let mut long_duration_flag;
     println!("Initiating Long Test...");
-    writeln!(l, "Initiating Long Test...")?;
 
     loop {
         set_vfp_and_recheck(
@@ -546,13 +529,12 @@ pub(super) fn run_gpuboostv3_long_phase<V: std::fmt::Display + Copy>(
 
         *test_code += 1;
         log_point_test_header(
-            l,
             *test_code,
             point,
             v,
             "freq_delta",
             KilohertzDelta(controller.f_current),
-        )?;
+        );
 
         let pressure_cfg = args.common.pressure_config(
             gpu,
@@ -582,11 +564,14 @@ pub(super) fn run_gpuboostv3_long_phase<V: std::fmt::Display + Copy>(
                 v,
                 KilohertzDelta(controller.f_current)
             );
-            writeln!(
-                l,
-                "Test result is code #{} . [{}]",
+            l.write_test_result(
+                ScanArea::Core,
+                TestPhase::Long,
+                *test_code,
+                point,
+                Some(v),
+                KilohertzDelta(controller.f_current),
                 long_duration_flag,
-                local_time_hms()
             )?;
             controller.apply_long_failure_step(
                 args.common.minimum_delta_core_freq_step,
@@ -612,11 +597,14 @@ pub(super) fn run_gpuboostv3_long_phase<V: std::fmt::Display + Copy>(
             v,
             KilohertzDelta(controller.f_current)
         );
-        writeln!(
-            l,
-            "Test result is code #{} . [{}]",
+        l.write_test_result(
+            ScanArea::Core,
+            TestPhase::Long,
+            *test_code,
+            point,
+            Some(v),
+            KilohertzDelta(controller.f_current),
             long_duration_flag,
-            local_time_hms()
         )?;
         break;
     }
@@ -635,12 +623,12 @@ pub(super) struct MemOcPhaseArgs<'a> {
     pub(super) mem_freq_step_exp: usize,
 }
 
-pub(super) fn run_mem_oc_phase<V: std::fmt::Display + Copy>(
-    l: &mut fs::File,
+pub(super) fn run_mem_oc_phase(
+    l: &mut ScanLogWriter,
     gpu: &GpuTarget<'_>,
     gpus: &Vec<GpuTarget<'_>>,
     args: &MemOcPhaseArgs<'_>,
-    mem_voltage: V,
+    mem_voltage: Microvolts,
     controller: &mut StepController,
 ) -> Result<(), Error> {
     let mut mem_test_code: usize = 0;
@@ -667,13 +655,12 @@ pub(super) fn run_mem_oc_phase<V: std::fmt::Display + Copy>(
         mem_test_code += 1;
 
         log_point_test_header(
-            l,
             mem_test_code,
             args.point,
             mem_voltage,
             "mem_freq_delta",
             KilohertzDelta(controller.f_current),
-        )?;
+        );
 
         let pressure_cfg = args.common.pressure_config(
             gpu,
@@ -690,11 +677,14 @@ pub(super) fn run_mem_oc_phase<V: std::fmt::Display + Copy>(
         );
         let mem_test_flag = run_pressure_test(gpu, args.common.matches, &pressure_cfg);
 
-        writeln!(
-            l,
-            "Test result is code #{} . [{}]",
+        l.write_test_result(
+            ScanArea::Memory,
+            TestPhase::Long,
+            mem_test_code,
+            args.point,
+            Some(mem_voltage),
+            KilohertzDelta(controller.f_current),
             mem_test_flag,
-            local_time_hms()
         )?;
 
         if mem_test_flag != 0 {
