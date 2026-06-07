@@ -11,6 +11,7 @@ This wiki is split by component responsibilities, architecture, build/test comma
 - [Components](./Components.md)
 - [Getting Started](./Getting-Started.md)
 - [Build and Test](./Build-and-Test.md)
+- [Container Usage](./Container-Usage.md)
 - [Architecture](./Architecture.md)
 - [Auto Optimizer](./Auto-Optimizer.md)
 - [Stressors](./Stressors.md)

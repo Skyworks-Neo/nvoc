@@ -202,6 +202,8 @@ class TestApiRestrictionAliases:
         except ValueError:
             pytest.fail(f"'{api_type}' should be a valid API restriction alias")
         except RuntimeError:
+            # RuntimeError is acceptable on systems without compatible GPU/hardware.
+            # This test only verifies that alias parsing does not raise ValueError.
             pass
 
 
@@ -215,7 +217,7 @@ class TestEdidAliases:
         except ValueError:
             pytest.fail(f"'{display_id}' should be a valid display ID")
         except RuntimeError:
-            pass
+            pass  # No GPU hardware available, but display ID string was accepted
 
     @pytest.mark.parametrize("alias", ["core", "gpu", "graphics", "mem", "memory"])
     def test_query_domain_vfp_points_domain_alias_accepted(self, pynvoc, alias):
