@@ -34,7 +34,7 @@ uv run nvoc-tui
 uv run pytest
 ```
 
-### Packaging a self-contained Linux binary
+### Packaging a self-contained executable
 
 Prerequisites:
 
@@ -42,9 +42,10 @@ Prerequisites:
 - Rust toolchain and a C build toolchain for the native `pynvoc` build
 - NVIDIA driver libraries on the target machine at runtime
 
-**Using uv (recommended):** Run the following from the repository root. It builds
-a one-file PyInstaller executable at `tui/dist/nvoc-tui` with Python, `nvoc_tui`,
-the TCSS styles, and `pynvoc` bundled into the binary.
+**Using uv (recommended):** Run the following from the repository root on the
+target OS. PyInstaller produces OS-specific executables, so build on Windows for
+`tui\dist\nvoc-tui.exe` and on Linux for `tui/dist/nvoc-tui`. Both builds bundle
+Python, `nvoc_tui`, the TCSS styles, and `pynvoc` into a one-file executable.
 
 ```bash
 cd tui
@@ -52,12 +53,20 @@ uv run --frozen --no-editable --group dev pyinstaller --clean --noconfirm nvoc_t
 ./dist/nvoc-tui
 ```
 
-The binary is self-contained for Python code and Python/Rust package artifacts,
-but it is still a Linux binary: build it on the oldest glibc target you intend to
-support, and expect system libraries such as glibc and NVIDIA driver libraries to
-come from the target host.
+```powershell
+Set-Location tui
+uv run --frozen --no-editable --group dev pyinstaller --clean --noconfirm nvoc_tui.spec
+.\dist\nvoc-tui.exe
+```
 
-If the build environment cannot write to the workspace venv or Cargo target
+The executable is self-contained for Python code and Python/Rust package
+artifacts, but PyInstaller does not cross-compile or bundle platform system
+libraries. Build on the target OS. For Linux, build on the oldest glibc target
+you intend to support; for Windows, build with a matching Python architecture and
+Windows Rust/C toolchain. NVIDIA driver libraries still come from the target
+host.
+
+If a Linux build environment cannot write to the workspace venv or Cargo target
 directory, put those paths under `/tmp`:
 
 ```bash
@@ -97,7 +106,7 @@ uv run nvoc-tui
 uv run pytest
 ```
 
-### 打包自包含 Linux 可执行文件
+### 打包自包含可执行文件
 
 前置条件：
 
@@ -105,9 +114,11 @@ uv run pytest
 - 用于构建原生 `pynvoc` 的 Rust 工具链和 C 构建工具链
 - 目标机器运行时需要 NVIDIA 驱动库
 
-**使用 uv（推荐）：** 从仓库根目录执行以下命令。它会生成单文件
-PyInstaller 可执行文件 `tui/dist/nvoc-tui`，其中包含 Python、`nvoc_tui`、
-TCSS 样式和 `pynvoc`。
+**使用 uv（推荐）：** 在目标操作系统上从仓库根目录执行以下命令。
+PyInstaller 会生成对应平台的可执行文件：在 Windows 上构建会得到
+`tui\dist\nvoc-tui.exe`，在 Linux 上构建会得到 `tui/dist/nvoc-tui`。
+两者都会将 Python、`nvoc_tui`、TCSS 样式和 `pynvoc` 打包进单文件
+可执行文件。
 
 ```bash
 cd tui
@@ -115,12 +126,20 @@ uv run --frozen --no-editable --group dev pyinstaller --clean --noconfirm nvoc_t
 ./dist/nvoc-tui
 ```
 
-该二进制文件对 Python 代码以及 Python/Rust 包产物是自包含的，但它仍然
-是 Linux 二进制文件：请在你要支持的最旧 glibc 目标环境中构建，并预期
-glibc、NVIDIA 驱动库等系统库由目标主机提供。
+```powershell
+Set-Location tui
+uv run --frozen --no-editable --group dev pyinstaller --clean --noconfirm nvoc_tui.spec
+.\dist\nvoc-tui.exe
+```
 
-如果构建环境不能写入 workspace venv 或 Cargo target 目录，可将这些路径
-放到 `/tmp`：
+该可执行文件对 Python 代码以及 Python/Rust 包产物是自包含的，但
+PyInstaller 不会交叉编译，也不会打包平台系统库。请在目标操作系统上
+构建。Linux 版本应在你要支持的最旧 glibc 目标环境中构建；Windows
+版本应使用匹配架构的 Python 以及 Windows Rust/C 工具链构建。NVIDIA
+驱动库仍由目标主机提供。
+
+如果 Linux 构建环境不能写入 workspace venv 或 Cargo target 目录，可将
+这些路径放到 `/tmp`：
 
 ```bash
 UV_PROJECT_ENVIRONMENT=/tmp/nvoc-tui-venv \
