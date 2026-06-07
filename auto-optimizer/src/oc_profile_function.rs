@@ -112,36 +112,56 @@ pub fn export_single_point(point: VfPoint, matches: &clap::ArgMatches) -> Result
         .get_one::<String>("initcsv")
         .ok_or_else(|| Error::Custom("missing --initcsv argument".to_string()))?
         .as_str();
+    let delimiter = if matches.get_flag("tabs") {
+        b'\t'
+    } else {
+        b','
+    };
 
+    export_single_point_to_paths(point, file_path, init_path, delimiter)
+}
+
+fn export_single_point_to_paths(
+    point: VfPoint,
+    file_path: &str,
+    init_path: &str,
+    delimiter: u8,
+) -> Result<(), Error> {
     reject_dotdot(file_path)?;
     reject_dotdot(init_path)?;
 
+    let delimiter_char = char::from(delimiter);
+    let delimiter_string = delimiter_char.to_string();
+
     // Check if the destination file exists
     if !Path::new(file_path).exists() {
-        // Copy the file if it doesn't exist
-        fs::copy(init_path, file_path)?;
+        let template = File::open(init_path)?;
+        let reader = BufReader::new(template);
+        let lines: Vec<String> = reader.lines().collect::<io::Result<_>>()?;
+        let input_delimiter = lines
+            .first()
+            .map(|line| infer_vfp_file_delimiter(line, delimiter_char))
+            .unwrap_or(delimiter_char);
         println!("temporary output file generated successfully!");
-        let output_2bcleared = File::open(file_path)?;
-        let reader = BufReader::new(output_2bcleared);
         let mut line_number = 1;
         let mut modified_lines = Vec::new();
 
         // Iterate over each line in the file
-        for line in reader.lines() {
-            let line = line?; // Get the line as a String
+        for line in lines {
             if line_number == 1 {
-                modified_lines.push(line);
+                let columns: Vec<&str> = line.split(input_delimiter).collect();
+                modified_lines.push(columns.join(&delimiter_string));
                 line_number += 1;
                 continue;
             }
-            let mut columns: Vec<&str> = line.split(',').collect();
+            let mut columns: Vec<&str> = line.split(input_delimiter).collect();
 
             // Remove the 2nd and 3rd values (index 1 and 2)
             if columns.len() > 2 {
                 columns[1] = ""; // Clear second value
                 columns[2] = ""; // Clear third value
             }
-            modified_lines.push(columns.join(",")); // Store the modified line
+            modified_lines.push(columns.join(&delimiter_string)); // Store the modified line
             line_number += 1;
         }
 
@@ -168,14 +188,14 @@ pub fn export_single_point(point: VfPoint, matches: &clap::ArgMatches) -> Result
 
     for line in reader.lines() {
         let line = line?;
-        let mut parts: Vec<String> = line.split(',').map(|s| s.to_string()).collect();
+        let mut parts: Vec<String> = line.split(delimiter_char).map(|s| s.to_string()).collect();
         if parts.first().map(|s| s.as_str()) == Some(&*voltage_str) && parts.len() > 3 {
             parts[2] = delta_str.clone();
             let y_value: i32 = parts[2].parse().unwrap_or(0);
             let col3_value: i32 = parts[3].parse().unwrap_or(0);
             parts[1] = y_value.saturating_add(col3_value).to_string();
         }
-        record_lines.push(parts.join(","));
+        record_lines.push(parts.join(&delimiter_string));
     }
 
     // Write the updated content back to the file
@@ -189,6 +209,18 @@ pub fn export_single_point(point: VfPoint, matches: &clap::ArgMatches) -> Result
     );
 
     Ok(())
+}
+
+fn infer_vfp_file_delimiter(line: &str, requested: char) -> char {
+    let comma_count = line.matches(',').count();
+    let tab_count = line.matches('\t').count();
+    if tab_count > comma_count {
+        '\t'
+    } else if comma_count > tab_count {
+        ','
+    } else {
+        requested
+    }
 }
 
 fn export_vfp<W: Write, I: Iterator<Item = VfPoint>>(
@@ -1270,6 +1302,16 @@ mod tests {
         }
     }
 
+    fn unique_test_path(name: &str) -> String {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time is after unix epoch")
+            .as_nanos();
+        let dir = "target/nvoc-auto-optimizer-tests";
+        std::fs::create_dir_all(dir).expect("create test output directory");
+        format!("{dir}/{}-{nanos}-{name}", std::process::id())
+    }
+
     #[test]
     fn export_points_from_jsonl_uses_last_code_100_before_finished_point() {
         let entries = vec![
@@ -1320,5 +1362,35 @@ mod tests {
         assert_eq!(points.len(), 1);
         assert_eq!(points[0].voltage.0, 875000);
         assert_eq!(points[0].delta.0, 150000);
+    }
+
+    #[test]
+    fn export_single_point_honors_tab_delimiter_for_file_output() {
+        let init_path = unique_test_path("init.tsv");
+        let output_path = unique_test_path("output.tsv");
+        std::fs::write(
+            &init_path,
+            "voltage,frequency,delta,default_frequency\n875000,123,0,1000\n900000,456,0,2000\n",
+        )
+        .expect("write init file");
+
+        let point = VfPoint {
+            point_type: VfPointType::Prog,
+            voltage: Microvolts(875000),
+            frequency: Kilohertz(0),
+            delta: KilohertzDelta(150),
+            default_frequency: Kilohertz(0),
+        };
+
+        export_single_point_to_paths(point, &output_path, &init_path, b'\t')
+            .expect("export tab-delimited point");
+
+        let output = std::fs::read_to_string(&output_path).expect("read output file");
+        assert!(output.contains("875000\t1150\t150\t1000\n"));
+        assert!(output.contains("900000\t\t\t2000\n"));
+        assert!(!output.contains(','));
+
+        let _ = std::fs::remove_file(init_path);
+        let _ = std::fs::remove_file(output_path);
     }
 }

@@ -73,6 +73,22 @@ fn set_vfp_range_warn(gpu: &GpuTarget<'_>, range: std::ops::RangeInclusive<usize
     }
 }
 
+fn vfp_curve_range(point: usize, vfp_set_range: usize) -> std::ops::RangeInclusive<usize> {
+    point.saturating_sub(vfp_set_range)..=point.saturating_add(vfp_set_range)
+}
+
+fn lower_vfp_curve_range(
+    point: usize,
+    vfp_set_range: usize,
+) -> Option<std::ops::RangeInclusive<usize>> {
+    let lower = point.saturating_sub(vfp_set_range);
+    let upper = point.checked_sub(1)?;
+    if lower > upper {
+        return None;
+    }
+    Some(lower..=upper)
+}
+
 fn set_vfp_curve_warn(
     gpu: &GpuTarget<'_>,
     point: usize,
@@ -84,15 +100,13 @@ fn set_vfp_curve_warn(
     // A flat curve can only apply the main delta above the target point; the
     // lower side uses the previous bin to avoid over-tightening low points.
     if !flat_curve_flag {
-        set_vfp_range_warn(
-            gpu,
-            (point - vfp_set_range)..=(point + vfp_set_range),
-            main_delta,
-        );
+        set_vfp_range_warn(gpu, vfp_curve_range(point, vfp_set_range), main_delta);
     } else {
-        set_vfp_range_warn(gpu, point..=(point + vfp_set_range), main_delta);
-        if let Some(ld) = lower_delta {
-            set_vfp_range_warn(gpu, (point - vfp_set_range)..=(point - 1), ld);
+        set_vfp_range_warn(gpu, point..=point.saturating_add(vfp_set_range), main_delta);
+        if let Some(ld) = lower_delta
+            && let Some(range) = lower_vfp_curve_range(point, vfp_set_range)
+        {
+            set_vfp_range_warn(gpu, range, ld);
         }
     }
 }
@@ -862,5 +876,23 @@ pub(super) fn run_pressure_test(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vfp_curve_range_saturates_low_points() {
+        assert_eq!(vfp_curve_range(2, 5), 0..=7);
+        assert_eq!(vfp_curve_range(0, 5), 0..=5);
+    }
+
+    #[test]
+    fn lower_vfp_curve_range_skips_empty_low_side() {
+        assert_eq!(lower_vfp_curve_range(2, 5), Some(0..=1));
+        assert_eq!(lower_vfp_curve_range(5, 0), None);
+        assert_eq!(lower_vfp_curve_range(0, 5), None);
     }
 }

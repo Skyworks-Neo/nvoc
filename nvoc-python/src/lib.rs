@@ -111,18 +111,37 @@ fn parse_display_id(raw: &str) -> PyResult<u32> {
         .map_err(|_| invalid_value(format!("invalid display ID {raw:?}; expected hex")))
 }
 
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
 fn parse_edid_hex(raw: &str) -> PyResult<Vec<u8>> {
     let hex = raw.trim();
-    if !hex.len().is_multiple_of(2) {
+    let bytes = hex.as_bytes();
+    if !bytes.len().is_multiple_of(2) {
         return Err(invalid_value(
             "EDID hex must contain an even number of digits",
         ));
     }
-    (0..hex.len())
-        .step_by(2)
-        .map(|index| {
-            u8::from_str_radix(&hex[index..index + 2], 16)
-                .map_err(|_| invalid_value(format!("invalid EDID hex byte at offset {index}")))
+
+    bytes
+        .chunks_exact(2)
+        .enumerate()
+        .map(|(pair_index, pair)| {
+            let high_index = pair_index * 2;
+            let high = hex_nibble(pair[0]).ok_or_else(|| {
+                invalid_value(format!("invalid EDID hex byte at offset {high_index}"))
+            })?;
+            let low_index = high_index + 1;
+            let low = hex_nibble(pair[1]).ok_or_else(|| {
+                invalid_value(format!("invalid EDID hex byte at offset {low_index}"))
+            })?;
+            Ok((high << 4) | low)
         })
         .collect()
 }

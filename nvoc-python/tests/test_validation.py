@@ -124,6 +124,10 @@ class TestEdidValidation:
         with pytest.raises(ValueError, match="invalid EDID hex byte"):
             pynvoc.set_edid("0", "0x00010001", "00GG")
 
+    def test_non_ascii_edid_hex_byte(self, pynvoc):
+        with pytest.raises(ValueError, match="invalid EDID hex byte"):
+            pynvoc.set_edid("0", "0x00010001", "0\u00e90")
+
 
 class TestApiRestrictionValidation:
     """Test API restriction parsing that runs before GPU access."""
