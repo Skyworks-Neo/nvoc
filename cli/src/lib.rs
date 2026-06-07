@@ -1,4 +1,7 @@
-use clap::{Arg, ArgAction, ColorChoice, Command as ClapCommand};
+use clap::{
+    Arg, ArgAction, ColorChoice, Command as ClapCommand,
+    builder::{PossibleValue, PossibleValuesParser},
+};
 use nvoc_core::{
     BackendSet, CheckVoltageFrequency, ClearEdid, ClockDomain, ConvertEnum, CoolerPolicy,
     CoolerTarget, GpuSelector, GpuTarget, Kilohertz, KilohertzDelta, MicrovoltsDelta, PState,
@@ -389,6 +392,198 @@ impl Command {
             _ => &[],
         }
     }
+
+    fn positional_args(self) -> Vec<PositionalArg> {
+        match self {
+            Self::GetVfpPointVoltageMv | Self::CheckVoltageFrequency => {
+                vec![PositionalArg::free("arg_point", "POINT", "VFP point index")]
+            }
+            Self::GetApiRestriction => vec![PositionalArg::finite(
+                "arg_api",
+                "API",
+                "NVML API to query",
+                PositionalValueKind::ApiRestrictionApi,
+            )],
+            Self::GetEdid | Self::ClearEdid => vec![PositionalArg::free(
+                "arg_display_id",
+                "DISPLAY_ID",
+                "NVAPI display ID as hex, for example 0x00010001",
+            )],
+            Self::SetCoreOffsetMhz | Self::SetMemoryOffsetMhz | Self::SetClockOffsetMhz => {
+                vec![PositionalArg::hyphen(
+                    "arg_offset_mhz",
+                    "OFFSET_MHZ",
+                    "Clock offset in MHz, for example -100 or 125MHz",
+                )]
+            }
+            Self::SetPowerWatt => vec![PositionalArg::free(
+                "arg_power_watt",
+                "WATTS",
+                "Power limit in watts, for example 250 or 250W",
+            )],
+            Self::SetPowerPercent => vec![PositionalArg::free(
+                "arg_power_percent",
+                "PERCENT",
+                "Power limit percentage, for example 90 or 90%",
+            )],
+            Self::SetThermalLimitC => vec![PositionalArg::hyphen(
+                "arg_celsius",
+                "CELSIUS",
+                "Temperature limit in Celsius, for example 83 or 83C",
+            )],
+            Self::SetFanPercent => vec![PositionalArg::free(
+                "arg_fan_percent",
+                "PERCENT",
+                "Fan speed/cooler level percentage",
+            )],
+            Self::SetLockedClocksMhz => vec![
+                PositionalArg::free("arg_min_mhz", "MIN_MHZ", "Minimum clock in MHz"),
+                PositionalArg::free("arg_max_mhz", "MAX_MHZ", "Maximum clock in MHz"),
+            ],
+            Self::SetVfpVoltageLock => vec![PositionalArg::free(
+                "arg_voltage_target",
+                "TARGET",
+                "VFP point index or voltage, for example 42, 900mV, or 900000uV",
+            )],
+            Self::SetVfpPointDeltaMhz => vec![
+                PositionalArg::free("arg_point", "POINT", "VFP point index"),
+                PositionalArg::hyphen(
+                    "arg_delta_mhz",
+                    "DELTA_MHZ",
+                    "Frequency delta in MHz, for example -30 or 15MHz",
+                ),
+            ],
+            Self::SetVfpRangeDeltaMhz => vec![
+                PositionalArg::free("arg_start_point", "START_POINT", "First VFP point index"),
+                PositionalArg::free("arg_end_point", "END_POINT", "Last VFP point index"),
+                PositionalArg::hyphen(
+                    "arg_delta_mhz",
+                    "DELTA_MHZ",
+                    "Frequency delta in MHz, for example -30 or 15MHz",
+                ),
+            ],
+            Self::SetPstateLock => vec![
+                PositionalArg::finite(
+                    "arg_first_pstate",
+                    "FIRST_PSTATE",
+                    "First P-State to lock",
+                    PositionalValueKind::Pstate,
+                ),
+                PositionalArg::finite(
+                    "arg_second_pstate",
+                    "SECOND_PSTATE",
+                    "Optional final P-State to lock",
+                    PositionalValueKind::Pstate,
+                ),
+            ],
+            Self::SetApplicationsClocksMhz => vec![
+                PositionalArg::free("arg_memory_mhz", "MEMORY_MHZ", "Memory clock in MHz"),
+                PositionalArg::free("arg_graphics_mhz", "GRAPHICS_MHZ", "Graphics clock in MHz"),
+            ],
+            Self::SetPstateBaseVoltageUv => vec![PositionalArg::hyphen(
+                "arg_delta_uv",
+                "DELTA_UV",
+                "Base voltage delta in microvolts, for example 100000 or -25000uV",
+            )],
+            Self::SetVoltageBoostPercent => vec![PositionalArg::free(
+                "arg_boost_percent",
+                "PERCENT",
+                "Voltage boost percentage",
+            )],
+            Self::SetAutoBoost | Self::SetAutoBoostDefault => vec![PositionalArg::finite(
+                "arg_enabled",
+                "ENABLED",
+                "Whether auto-boost is enabled",
+                PositionalValueKind::Bool,
+            )],
+            Self::SetApiRestriction => vec![
+                PositionalArg::finite(
+                    "arg_api",
+                    "API",
+                    "NVML API to restrict",
+                    PositionalValueKind::ApiRestrictionApi,
+                ),
+                PositionalArg::finite(
+                    "arg_restriction_state",
+                    "STATE",
+                    "Restriction state",
+                    PositionalValueKind::ApiRestrictionState,
+                ),
+            ],
+            Self::SetEdid => vec![
+                PositionalArg::free(
+                    "arg_display_id",
+                    "DISPLAY_ID",
+                    "NVAPI display ID as hex, for example 0x00010001",
+                ),
+                PositionalArg::free(
+                    "arg_edid_hex",
+                    "EDID_HEX",
+                    "EDID bytes as an even-length hex string",
+                ),
+            ],
+            Self::SetLegacyClocksMhz => vec![
+                PositionalArg::free("arg_core_mhz", "CORE_MHZ", "Core clock in MHz"),
+                PositionalArg::free("arg_memory_mhz", "MEMORY_MHZ", "Memory clock in MHz"),
+            ],
+            _ => Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PositionalValueKind {
+    Free,
+    ApiRestrictionApi,
+    ApiRestrictionState,
+    Bool,
+    Pstate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PositionalArg {
+    id: &'static str,
+    value_name: &'static str,
+    help: &'static str,
+    allow_hyphen_values: bool,
+    value_kind: PositionalValueKind,
+}
+
+impl PositionalArg {
+    const fn free(id: &'static str, value_name: &'static str, help: &'static str) -> Self {
+        Self {
+            id,
+            value_name,
+            help,
+            allow_hyphen_values: false,
+            value_kind: PositionalValueKind::Free,
+        }
+    }
+
+    const fn hyphen(id: &'static str, value_name: &'static str, help: &'static str) -> Self {
+        Self {
+            id,
+            value_name,
+            help,
+            allow_hyphen_values: true,
+            value_kind: PositionalValueKind::Free,
+        }
+    }
+
+    const fn finite(
+        id: &'static str,
+        value_name: &'static str,
+        help: &'static str,
+        value_kind: PositionalValueKind,
+    ) -> Self {
+        Self {
+            id,
+            value_name,
+            help,
+            allow_hyphen_values: false,
+            value_kind,
+        }
+    }
 }
 
 const COMMANDS: &[Command] = &[
@@ -530,14 +725,11 @@ where
         .get_many::<String>("gpu")
         .map(|values| values.cloned().collect())
         .unwrap_or_default();
-    let positionals = if parsed_command.arity().1 > 0 {
-        command_matches
-            .get_many::<String>("args")
-            .map(|values| values.cloned().collect())
-            .unwrap_or_default()
-    } else {
-        Vec::new()
-    };
+    let positionals = parsed_command
+        .positional_args()
+        .into_iter()
+        .filter_map(|arg| command_matches.get_one::<String>(arg.id).cloned())
+        .collect();
     let options = collect_named_options(command_matches, parsed_command.allowed_options());
 
     let invocation = Invocation {
@@ -781,16 +973,62 @@ fn command_specific_arg(name: &'static str) -> Arg {
 
 fn clap_subcommand(command: Command) -> ClapCommand {
     let mut subcommand = ClapCommand::new(command.name()).about(command.about());
-    let (min_args, max_args) = command.arity();
-    if max_args > 0 {
-        subcommand = subcommand.arg(
-            Arg::new("args")
-                .value_name("ARGS")
-                .num_args(min_args..=max_args)
-                .allow_hyphen_values(true),
-        );
+    let (min_args, _) = command.arity();
+    for (index, positional) in command.positional_args().into_iter().enumerate() {
+        subcommand = subcommand.arg(positional_arg(positional, index < min_args));
     }
     subcommand
+}
+
+fn positional_arg(spec: PositionalArg, required: bool) -> Arg {
+    let mut arg = Arg::new(spec.id)
+        .value_name(spec.value_name)
+        .help(spec.help)
+        .required(required)
+        .num_args(1)
+        .allow_hyphen_values(spec.allow_hyphen_values);
+
+    if let Some(parser) = possible_values_parser(spec.value_kind) {
+        arg = arg.value_parser(parser).ignore_case(true);
+    }
+
+    arg
+}
+
+fn possible_values_parser(kind: PositionalValueKind) -> Option<PossibleValuesParser> {
+    match kind {
+        PositionalValueKind::Free => None,
+        PositionalValueKind::ApiRestrictionApi => Some(PossibleValuesParser::new([
+            PossibleValue::new("app-clocks").alias("application-clocks"),
+            PossibleValue::new("auto-boost").alias("autoboost"),
+        ])),
+        PositionalValueKind::ApiRestrictionState => Some(PossibleValuesParser::new([
+            PossibleValue::new("open"),
+            PossibleValue::new("restricted"),
+        ])),
+        PositionalValueKind::Bool => Some(PossibleValuesParser::new([
+            PossibleValue::new("on").aliases(["true", "yes", "1"]),
+            PossibleValue::new("off").aliases(["false", "no", "0"]),
+        ])),
+        PositionalValueKind::Pstate => Some(PossibleValuesParser::new([
+            PossibleValue::new("P0").alias("0"),
+            PossibleValue::new("P1").alias("1"),
+            PossibleValue::new("P2").alias("2"),
+            PossibleValue::new("P3").alias("3"),
+            PossibleValue::new("P4").alias("4"),
+            PossibleValue::new("P5").alias("5"),
+            PossibleValue::new("P6").alias("6"),
+            PossibleValue::new("P7").alias("7"),
+            PossibleValue::new("P8").alias("8"),
+            PossibleValue::new("P9").alias("9"),
+            PossibleValue::new("P10").alias("10"),
+            PossibleValue::new("P11").alias("11"),
+            PossibleValue::new("P12").alias("12"),
+            PossibleValue::new("P13").alias("13"),
+            PossibleValue::new("P14").alias("14"),
+            PossibleValue::new("P15").alias("15"),
+        ])),
+    }
 }
 
 fn collect_named_options(
@@ -2268,6 +2506,45 @@ mod tests {
         let invocation = parse_args(["clear-edid", "0x00010001"]).unwrap();
         assert_eq!(invocation.command, Some(Command::ClearEdid));
         assert_eq!(invocation.positionals, vec!["0x00010001"]);
+    }
+
+    #[test]
+    fn command_help_names_positionals_and_lists_finite_values() {
+        let help = parse_args(["get-api-restriction", "--help"])
+            .unwrap_err()
+            .to_string();
+        assert!(help.contains("<API>"));
+        assert!(help.contains("[possible values: app-clocks, auto-boost]"));
+        assert!(!help.contains("[ARGS]"));
+
+        let help = parse_args(["set-api-restriction", "--help"])
+            .unwrap_err()
+            .to_string();
+        assert!(help.contains("<API> <STATE>"));
+        assert!(help.contains("[possible values: app-clocks, auto-boost]"));
+        assert!(help.contains("[possible values: open, restricted]"));
+
+        let help = parse_args(["set-auto-boost", "--help"])
+            .unwrap_err()
+            .to_string();
+        assert!(help.contains("<ENABLED>"));
+        assert!(help.contains("[possible values: on, off]"));
+    }
+
+    #[test]
+    fn finite_positionals_keep_existing_aliases() {
+        let invocation =
+            parse_args(["set-api-restriction", "application-clocks", "restricted"]).unwrap();
+        assert_eq!(
+            invocation.positionals,
+            vec!["application-clocks", "restricted"]
+        );
+
+        let invocation = parse_args(["set-auto-boost", "yes"]).unwrap();
+        assert_eq!(invocation.positionals, vec!["yes"]);
+
+        let invocation = parse_args(["set-pstate-lock", "0", "p2"]).unwrap();
+        assert_eq!(invocation.positionals, vec!["0", "p2"]);
     }
 
     #[test]
