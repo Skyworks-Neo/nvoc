@@ -73,6 +73,8 @@ NVIDIA 从 Pascal（10 系）起引入了 **GPU Boost 3.0**，其核心是一张
 
 `cli-stressor` 用于在给定电压/频率下提供稳定性压力。判据采用**进程返回码**：返回 `0` 视为通过，非 `0` 视为失败。
 
+> **警告**：不要将 OpenCL stressor 作为 autoscan 结果的最终通过判据。它的压力不足，OpenCL-only 通过可能让扫描接受高于硬件真实稳定上限的频率偏移。直接应用这些偏高结果可能导致驱动重置、系统不稳定、数据损坏或硬件故障；请将其视为临时结果，并使用 CUDA stressor 或更重的真实负载重新验证。
+
 ### Maxwell / 9 系 Legacy 模式
 
 Maxwell（GM 代号，9xx 系列）及更早的 GPU 不支持逐点 V-F 曲线写入，只能通过 `SetPstates20` 对 P0 状态施加全局频率偏移。本工具对这类 GPU 使用 `autoscan_legacy` 流程，仅扫描单一全局偏移值。
