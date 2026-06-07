@@ -298,6 +298,4 @@ class AutoscanTab:
 
     def _export_final(self) -> None:
         gpu_args = self.app.get_gpu_args()
-        self.app.run_cli_display(
-            gpu_args + ["export-vfp", r".\ws\vfp-final.csv"]
-        )
+        self.app.run_cli_display(gpu_args + ["export-vfp", r".\ws\vfp-final.csv"])
