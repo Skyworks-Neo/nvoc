@@ -46,7 +46,7 @@ This section is the canonical component inventory for the monorepo. `CONTRIBUTIN
 | NVOC-CLI-COMMON | [cli-common/](./cli-common/) | Shared CLI support layer for Rust command-line components. |
 | NVOC-PYTHON (pynvoc) | [nvoc-python/](./nvoc-python/) | Python bindings and shared Python-side integration surface. |
 
-Read the component README before building or running that component. The detailed command reference, compatibility matrices, and scanning theory live in [auto-optimizer/README-en.md](./auto-optimizer/README-en.md) and [auto-optimizer/README.md](./auto-optimizer/README.md).
+Read the component README before building or running that component. The backend compatibility matrix lives in [cli/README.md](./cli/README.md#compatibility-overview-interface--gpu-generation--basic-functions); the autoscan command reference and scanning theory live in [auto-optimizer/README-en.md](./auto-optimizer/README-en.md) and [auto-optimizer/README.md](./auto-optimizer/README.md).
 
 ## Requirements
 
@@ -58,7 +58,7 @@ Read the component README before building or running that component. The detaile
   system package such as `tk`, `python3-tk`, or `python3-tkinter`.
 - OpenCL runtime support for `cli-stressor-opencl/`.
 
-Platform support and feature availability vary by GPU generation and backend. The auto-optimizer README contains the current support matrix for RTX 50/40/30/20, GTX 16/10/9, Volta, mobile GPUs, NVAPI, and NVML.
+Platform support and feature availability vary by GPU generation and backend. The CLI README contains the current support matrix for RTX 50/40/30/20, GTX 16/10/9, Volta, mobile GPUs, NVAPI, and NVML.
 
 ## Quick Start
 
@@ -158,7 +158,7 @@ NVOC 是一个 NVIDIA GPU 超频与稳定性工具的 monorepo。核心是 Rust 
 | NVOC-CLI-COMMON | [cli-common/](./cli-common/) | Rust CLI 共享支撑层。 |
 | NVOC-PYTHON (pynvoc) | [nvoc-python/](./nvoc-python/) | Python 绑定与跨 Python 组件共享接口。 |
 
-构建或运行某个组件前，请先阅读对应子目录 README。详细命令参考、兼容性矩阵和扫描原理在 [auto-optimizer/README.md](./auto-optimizer/README.md) 和 [auto-optimizer/README-en.md](./auto-optimizer/README-en.md) 中。
+构建或运行某个组件前，请先阅读对应子目录 README。后端兼容性矩阵在 [cli/README.md](./cli/README.md#compatibility-overview-interface--gpu-generation--basic-functions) 中；autoscan 命令参考和扫描原理在 [auto-optimizer/README.md](./auto-optimizer/README.md) 和 [auto-optimizer/README-en.md](./auto-optimizer/README-en.md) 中。
 
 ## 依赖
 
@@ -170,7 +170,7 @@ NVOC 是一个 NVIDIA GPU 超频与稳定性工具的 monorepo。核心是 Rust 
   `tk`、`python3-tk` 或 `python3-tkinter` 等系统包。
 - `cli-stressor-opencl/` 需要 OpenCL 运行环境。
 
-不同 GPU 世代与后端支持的功能不同，请以 auto-optimizer README 中的兼容性矩阵为准。
+不同 GPU 世代与后端支持的功能不同，请以 CLI README 中的兼容性矩阵为准。
 
 ## 快速开始
 
