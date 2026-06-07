@@ -289,6 +289,7 @@ pub(super) fn run_legacy_short_phase(
         }
     }
 
+    controller.reset_search_progress();
     println!(
         "Short test phase finished. Current freq_delta: +{}kHz",
         controller.f_current
@@ -407,6 +408,7 @@ pub(super) fn run_gpuboostv3_short_phase<V: std::fmt::Display + Copy>(
         if controller.is_converged() {
             println!("Skipping short test...");
             println!("Initiating Long Test...");
+            controller.reset_search_progress();
             return Ok(test_code);
         } else {
             println!(
@@ -503,7 +505,6 @@ pub(super) fn run_gpuboostv3_short_phase<V: std::fmt::Display + Copy>(
         }
 
         if controller.is_converged() {
-            controller.test_progress_num = 0;
             println!(
                 "Short test phase finished. Current freq_delta: +{}kHz",
                 controller.f_current
@@ -511,6 +512,7 @@ pub(super) fn run_gpuboostv3_short_phase<V: std::fmt::Display + Copy>(
             break;
         }
     }
+    controller.reset_search_progress();
     Ok(test_code)
 }
 
