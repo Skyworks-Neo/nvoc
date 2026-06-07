@@ -146,7 +146,13 @@ fn parse_lock_voltage(
         const MIN_LOCK_UV: u32 = 500_000;
         const MAX_LOCK_UV: u32 = 2_000_000;
 
-        let input_voltage = raw_target.parse::<u32>()?;
+        if raw_target.is_empty() {
+            return Err(Error::from("--voltage requires --point <VOLTAGE_MV_OR_UV>"));
+        }
+
+        let input_voltage = raw_target.parse::<u32>().map_err(|_| {
+            Error::from("--voltage --point value must be an integer mV or uV value")
+        })?;
         let voltage_uv = if input_voltage >= 10_000 {
             input_voltage
         } else {
@@ -179,14 +185,14 @@ fn parse_nvapi_locked_clock_range(
     let (invalid_msg, count_msg, order_msg) = if key == "locked_core_clocks" {
         (
             "Invalid --locked-core-clocks value: expected integer MHz",
-            "Invalid arguments for --nvapi-locked-core-clocks, expected 2 values (MIN_MHZ MAX_MHZ)",
-            "--nvapi-locked-core-clocks expects MIN_MHZ <= MAX_MHZ",
+            "Invalid arguments for --locked-core-clocks, expected 2 values (MIN_MHZ MAX_MHZ)",
+            "--locked-core-clocks expects MIN_MHZ <= MAX_MHZ",
         )
     } else {
         (
             "Invalid --locked-mem-clocks value: expected integer MHz",
-            "Invalid arguments for --nvapi-locked-mem-clocks, expected 2 values (MIN_MHZ MAX_MHZ)",
-            "--nvapi-locked-mem-clocks expects MIN_MHZ <= MAX_MHZ",
+            "Invalid arguments for --locked-mem-clocks, expected 2 values (MIN_MHZ MAX_MHZ)",
+            "--locked-mem-clocks expects MIN_MHZ <= MAX_MHZ",
         )
     };
 
@@ -222,7 +228,7 @@ pub fn handle_lock_vfp(
                 }
                 nvoc_core::NvapiLockedVoltageTarget::Voltage(v) => VfpLockRequest::Voltage(v),
             };
-            apply_vfp_lock(gpu, request, false)?;
+            apply_vfp_lock(gpu, request, feedback_flag)?;
         }
         return Ok(());
     }
@@ -344,4 +350,64 @@ pub fn get_gpu_tdp_temp_limit(matches: &ArgMatches) -> Result<TdpTempLimits, Err
     let gpus = nvoc_core::select_targets(&all_targets, &selector)?;
     let gpu = gpus.first().ok_or_else(|| Error::from("no GPU selected"))?;
     run_output(gpu, QueryTdpTempLimits)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::{Arg, ArgAction, Command};
+
+    fn lock_matches(args: &[&str]) -> ArgMatches {
+        Command::new("test")
+            .arg(
+                Arg::new("voltage")
+                    .long("voltage")
+                    .action(ArgAction::SetTrue),
+            )
+            .arg(Arg::new("point").long("point").num_args(1))
+            .arg(
+                Arg::new("locked_core_clocks")
+                    .long("locked-core-clocks")
+                    .num_args(2),
+            )
+            .arg(
+                Arg::new("locked_mem_clocks")
+                    .long("locked-mem-clocks")
+                    .num_args(2),
+            )
+            .try_get_matches_from(args)
+            .expect("valid test args")
+    }
+
+    #[test]
+    fn voltage_mode_requires_explicit_point_value() {
+        let matches = lock_matches(&["test", "--voltage"]);
+        let gpu = GpuTarget::without_backends(nvoc_core::GpuId(0), 0);
+
+        let error = parse_lock_voltage(&gpu, &matches, 42).expect_err("missing point errors");
+
+        assert_eq!(
+            error.to_string(),
+            "--voltage requires --point <VOLTAGE_MV_OR_UV>"
+        );
+    }
+
+    #[test]
+    fn locked_clock_range_errors_use_actual_flag_names() {
+        let matches = lock_matches(&["test", "--locked-core-clocks", "2000", "1000"]);
+        let error = parse_nvapi_locked_clock_range(&matches, "locked_core_clocks")
+            .expect_err("reversed clocks error");
+        assert_eq!(
+            error.to_string(),
+            "--locked-core-clocks expects MIN_MHZ <= MAX_MHZ"
+        );
+
+        let matches = lock_matches(&["test", "--locked-mem-clocks", "2000", "1000"]);
+        let error = parse_nvapi_locked_clock_range(&matches, "locked_mem_clocks")
+            .expect_err("reversed clocks error");
+        assert_eq!(
+            error.to_string(),
+            "--locked-mem-clocks expects MIN_MHZ <= MAX_MHZ"
+        );
+    }
 }

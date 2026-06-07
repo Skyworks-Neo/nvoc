@@ -81,7 +81,7 @@ fn parse_api_restriction_api(raw: &str) -> PyResult<Api> {
         "app-clocks" | "application-clocks" => Ok(Api::ApplicationClocks),
         "auto-boost" | "autoboost" => Ok(Api::AutoBoostedClocks),
         other => Err(invalid_value(format!(
-            "invalid API {other:?}; expected app-clocks or auto-boost"
+            "invalid API {other:?}; expected app-clocks, application-clocks, auto-boost, or autoboost"
         ))),
     }
 }
@@ -135,11 +135,11 @@ fn parse_edid_hex(raw: &str) -> PyResult<Vec<u8>> {
         .map(|(pair_index, pair)| {
             let high_index = pair_index * 2;
             let high = hex_nibble(pair[0]).ok_or_else(|| {
-                invalid_value(format!("invalid EDID hex byte at offset {high_index}"))
+                invalid_value(format!("invalid EDID hex digit at offset {high_index}"))
             })?;
             let low_index = high_index + 1;
             let low = hex_nibble(pair[1]).ok_or_else(|| {
-                invalid_value(format!("invalid EDID hex byte at offset {low_index}"))
+                invalid_value(format!("invalid EDID hex digit at offset {low_index}"))
             })?;
             Ok((high << 4) | low)
         })
@@ -350,7 +350,7 @@ fn normalize_info_nvml(target: &GpuTarget<'_>) -> PyResultValue {
 fn normalize_info(target: &GpuTarget<'_>) -> PyResultValue {
     let info = match run(target, QueryGpuInfo) {
         Ok(report) => report.output,
-        Err(_) if target.has_nvml() => return normalize_info_nvml(target),
+        Err(_) if !target.has_nvapi() && target.has_nvml() => return normalize_info_nvml(target),
         Err(error) => return Err(to_py_err(error)),
     };
     let mut map = Map::new();
