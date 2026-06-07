@@ -202,6 +202,8 @@ class TestApiRestrictionAliases:
         except ValueError:
             pytest.fail(f"'{api_type}' should be a valid API restriction alias")
         except RuntimeError:
+            # RuntimeError is acceptable on systems without compatible GPU/hardware.
+            # This test only verifies that alias parsing does not raise ValueError.
             pass
 
 
