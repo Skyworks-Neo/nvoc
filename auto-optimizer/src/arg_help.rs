@@ -188,6 +188,7 @@ fn vfp_fix_result_command() -> Command {
                 .value_name("MINUS_BIN")
                 .short('m')
                 .num_args(1)
+                .default_value("1")
                 .allow_hyphen_values(true)
                 .value_parser(clap::value_parser!(i32).range(-50..=50))
                 .help("Margin bin adjustment integer"),

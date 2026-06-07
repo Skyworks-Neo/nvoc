@@ -83,9 +83,7 @@ pub struct FixResultConfig {
 
 impl FixResultConfig {
     pub fn from_matches(matches: &ArgMatches) -> Result<Self, Error> {
-        let minus_bin = *matches
-            .get_one::<i32>("minus_bin")
-            .ok_or_else(|| Error::from("missing --minus_bin argument"))?;
+        let minus_bin = matches.get_one::<i32>("minus_bin").copied().unwrap_or(1);
         Ok(FixResultConfig {
             is_ultrafast: matches.get_flag("ultrafast"),
             vfpath: matches
@@ -347,5 +345,21 @@ mod tests {
             matches.get_one::<String>("initcsv").unwrap(),
             default_vfp_init_csv_path()
         );
+    }
+
+    #[test]
+    fn fix_result_defaults_minus_bin_to_one() {
+        let matches = subcommand_matches(&["nvoc-auto-optimizer", "fix-vfp-result"]);
+        let cfg = FixResultConfig::from_matches(&matches).unwrap();
+
+        assert_eq!(cfg.minus_bin, 1);
+    }
+
+    #[test]
+    fn fix_result_accepts_explicit_minus_bin() {
+        let matches = subcommand_matches(&["nvoc-auto-optimizer", "fix-vfp-result", "-m", "-2"]);
+        let cfg = FixResultConfig::from_matches(&matches).unwrap();
+
+        assert_eq!(cfg.minus_bin, -2);
     }
 }

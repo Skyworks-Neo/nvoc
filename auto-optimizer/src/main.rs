@@ -64,11 +64,58 @@ fn single_target<'a>(targets: &'a [GpuTarget<'a>]) -> Result<&'a GpuTarget<'a>, 
         })
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TargetRequirement {
+    None,
+    NvapiAny,
+    NvapiSingle,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CommandRequirements {
+    target: TargetRequirement,
+    elevation: bool,
+}
+
+fn command_requirements(command: &str) -> Option<CommandRequirements> {
+    let target = match command {
+        "export-vfp-log" => TargetRequirement::None,
+        "export-vfp" | "import-vfp" | "sync-vfp-memory-pstate" | "fix-vfp-result" => {
+            TargetRequirement::NvapiSingle
+        }
+        "reset-vfp" | "autoscan-vfp" | "autoscan-vfp-legacy" => TargetRequirement::NvapiAny,
+        _ => return None,
+    };
+    let elevation = matches!(
+        command,
+        "reset-vfp"
+            | "import-vfp"
+            | "sync-vfp-memory-pstate"
+            | "autoscan-vfp"
+            | "autoscan-vfp-legacy"
+    );
+
+    Some(CommandRequirements { target, elevation })
+}
+
 fn main_result() -> Result<i32, Box<dyn std::error::Error>> {
     let app = arg_help::get_arguments();
     arg_help::check_single_dash_args(&app)?;
     let matches = app.get_matches();
     init_scan_cli_color(matches.get_flag("no_color"));
+
+    let (command_name, _) = matches.subcommand().expect("subcommand required");
+    let requirements = command_requirements(command_name).expect("known subcommand");
+
+    if requirements.target == TargetRequirement::None {
+        match matches.subcommand() {
+            Some(("export-vfp-log", matches)) => {
+                export_vfp_from_log(matches)?;
+            }
+            _ => unreachable!("offline command requirements did not match dispatch"),
+        }
+        return Ok(0);
+    }
 
     let inventory = discover_targets(BackendSet::Both)
         .or_else(|both_err| {
@@ -97,7 +144,9 @@ fn main_result() -> Result<i32, Box<dyn std::error::Error>> {
         return Err("This command requires NvAPI, but NvAPI initialization failed".into());
     }
 
-    require_elevated()?;
+    if requirements.elevation {
+        require_elevated()?;
+    }
 
     match matches.subcommand() {
         Some(("reset-vfp", matches)) => {
@@ -114,9 +163,7 @@ fn main_result() -> Result<i32, Box<dyn std::error::Error>> {
             let gpu = single_target(&nvapi_selected)?;
             handle_vfp_export(gpu, matches)?;
         }
-        Some(("export-vfp-log", matches)) => {
-            export_vfp_from_log(matches)?;
-        }
+        Some(("export-vfp-log", _)) => unreachable!("offline command was already dispatched"),
         Some(("import-vfp", matches)) => {
             let gpu = single_target(&nvapi_selected)?;
             handle_vfp_import(gpu, matches)?;
@@ -149,4 +196,70 @@ fn main_result() -> Result<i32, Box<dyn std::error::Error>> {
     }
 
     Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn requirements(command: &str) -> CommandRequirements {
+        command_requirements(command).expect("command requirements")
+    }
+
+    #[test]
+    fn every_subcommand_has_requirements() {
+        let app = arg_help::get_arguments();
+        let missing: Vec<_> = app
+            .get_subcommands()
+            .filter_map(|subcommand| {
+                let name = subcommand.get_name();
+                command_requirements(name)
+                    .is_none()
+                    .then(|| name.to_string())
+            })
+            .collect();
+
+        assert!(
+            missing.is_empty(),
+            "subcommands missing requirements: {missing:?}"
+        );
+    }
+
+    #[test]
+    fn export_vfp_log_is_offline() {
+        assert_eq!(
+            requirements("export-vfp-log"),
+            CommandRequirements {
+                target: TargetRequirement::None,
+                elevation: false,
+            }
+        );
+    }
+
+    #[test]
+    fn export_vfp_is_read_only_preflight() {
+        assert_eq!(
+            requirements("export-vfp"),
+            CommandRequirements {
+                target: TargetRequirement::NvapiSingle,
+                elevation: false,
+            }
+        );
+    }
+
+    #[test]
+    fn gpu_write_commands_require_elevation() {
+        for command in [
+            "reset-vfp",
+            "import-vfp",
+            "sync-vfp-memory-pstate",
+            "autoscan-vfp",
+            "autoscan-vfp-legacy",
+        ] {
+            assert!(
+                requirements(command).elevation,
+                "{command} should require elevation"
+            );
+        }
+    }
 }
