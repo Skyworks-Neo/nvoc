@@ -2,8 +2,8 @@ use clap::ArgMatches;
 use nvoc_cli_common::color::stylize;
 use nvoc_core::{
     CheckVoltageFrequency, ClockDomain, ConvertEnum, Error, GpuOperation, GpuTarget, Kilohertz,
-    Microvolts, ProbeVoltageLimits, QueryFanInfo, QueryTdpTempLimits, QueryVfpPointVoltage,
-    ResetFanSpeed, SetVfpFrequencyLock, SetVfpVoltageLock, TdpTempLimits, VfpLockRequest, run,
+    Microvolts, ProbeVoltageLimits, QueryTdpTempLimits, QueryVfpPointVoltage, SetVfpFrequencyLock,
+    SetVfpVoltageLock, TdpTempLimits, VfpLockRequest, run,
 };
 use std::str::FromStr;
 use time::{OffsetDateTime, format_description::parse};
@@ -344,43 +344,4 @@ pub fn get_gpu_tdp_temp_limit(matches: &ArgMatches) -> Result<TdpTempLimits, Err
     let gpus = nvoc_core::select_targets(&all_targets, &selector)?;
     let gpu = gpus.first().ok_or_else(|| Error::from("no GPU selected"))?;
     run_output(gpu, QueryTdpTempLimits)
-}
-
-pub fn handle_reset_nvml_cooler_single_gpu(
-    gpu: &GpuTarget<'_>,
-    cooler_id: &str,
-) -> Result<(), Error> {
-    let fan_count = run(gpu, QueryFanInfo)?.output.count;
-
-    let fan_indices: Vec<u32> = match cooler_id {
-        "1" => vec![0],
-        "2" => {
-            if fan_count < 2 {
-                return Err(Error::Custom(format!(
-                    "GPU {} reports only {} fan(s), cooler id 2 is unavailable",
-                    gpu.id.0, fan_count
-                )));
-            }
-            vec![1]
-        }
-        _ => (0..fan_count).collect(),
-    };
-
-    for fan_idx in fan_indices {
-        match run(gpu, ResetFanSpeed { fan_index: fan_idx }) {
-            Ok(_) => println!(
-                "Successfully restored NVML default fan speed on GPU {} fan {}",
-                gpu.id.0,
-                fan_idx + 1
-            ),
-            Err(e) => eprintln!(
-                "Failed to restore NVML default fan speed for GPU {} fan {}: {:?}",
-                gpu.id.0,
-                fan_idx + 1,
-                e
-            ),
-        }
-    }
-
-    Ok(())
 }

@@ -17,15 +17,12 @@ use super::progressbar::{ActiveScanProgressGuard, ScanProgress};
 use super::scan_log::{GpuVoltageRange, ScanArea, ScanKind, ScanLogWriter, ScanMode};
 use super::scan_strategy::{FluctuationMode, FluctuationStrategy, StepController};
 use super::scan_support::local_time_hms;
-use super::scan_support::{
-    handle_lock_vfp, handle_reset_nvml_cooler_single_gpu, handle_test_voltage_limits,
-    print_scan_separator,
-};
+use super::scan_support::{handle_lock_vfp, handle_test_voltage_limits, print_scan_separator};
 use clap::ArgMatches;
 use nvoc_core::{
     ClockDomain, Error, GpuOcParams, GpuTarget, KilohertzDelta, PState, QueryGpuInfo,
-    QueryGpuStatus, QueryVfpPointVoltage, ResetCoolerLevels, SetVfpPointDelta, VfPoint,
-    VfPointType, fetch_gpu_type, set_nvapi_pstate_clock_offsets,
+    QueryGpuStatus, QueryVfpPointVoltage, SetVfpPointDelta, VfPoint, VfPointType, fetch_gpu_type,
+    set_nvapi_pstate_clock_offsets,
 };
 use std::sync::Arc;
 
@@ -633,10 +630,6 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
                 KilohertzDelta(mem_controller.f_current)
             );
         }
-        run_output(gpu, ResetCoolerLevels).unwrap_or_else(|_e| {
-            handle_reset_nvml_cooler_single_gpu(gpu, "all")
-                .unwrap_or_else(|e| eprintln!("Failed to reset cooler: {e}"))
-        })
     }
     l.write_scan_completed(ScanKind::GpuBoostV3)?;
     Ok(())
@@ -795,10 +788,6 @@ pub fn autoscan_legacy(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> Resul
                 gpu,
                 [(PState::P0, ClockDomain::Graphics, KilohertzDelta(0))],
             )?;
-            run_output(gpu, ResetCoolerLevels).unwrap_or_else(|_e| {
-                handle_reset_nvml_cooler_single_gpu(gpu, "all")
-                    .unwrap_or_else(|e| eprintln!("Failed to reset cooler: {e}"))
-            })
         }
     }
 

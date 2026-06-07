@@ -5,6 +5,7 @@
 )]
 mod arg_help;
 mod autoscan_config;
+mod cleanup;
 mod oc_profile_function;
 mod oc_scanner;
 mod platform;
@@ -14,6 +15,7 @@ mod scan_strategy;
 mod scan_support;
 
 use anyhow::Result;
+use cleanup::{AutoscanExit, cleanup_autoscan_exit};
 use nvoc_core::{
     BackendSet, ConvertEnum, GpuSelector, GpuTarget, ResetVfpDeltas, VfpResetDomain,
     discover_targets, run, select_targets,
@@ -127,16 +129,22 @@ fn main_result() -> Result<i32, Box<dyn std::error::Error>> {
             let gpu = single_target(&nvapi_selected)?;
             fix_result(gpu, matches)?
         }
-        Some(("autoscan-vfp", matches)) => {
-            if let Err(e) = autoscan_gpuboostv3(&nvapi_selected, matches) {
+        Some(("autoscan-vfp", matches)) => match autoscan_gpuboostv3(&nvapi_selected, matches) {
+            Ok(()) => cleanup_autoscan_exit(&nvapi_selected, AutoscanExit::Success),
+            Err(e) => {
                 eprintln!("Error in autoscan: {:?}", e);
+                cleanup_autoscan_exit(&nvapi_selected, AutoscanExit::Error);
+                return Ok(1);
             }
-        }
-        Some(("autoscan-vfp-legacy", matches)) => {
-            if let Err(e) = autoscan_legacy(&nvapi_selected, matches) {
+        },
+        Some(("autoscan-vfp-legacy", matches)) => match autoscan_legacy(&nvapi_selected, matches) {
+            Ok(()) => cleanup_autoscan_exit(&nvapi_selected, AutoscanExit::Success),
+            Err(e) => {
                 eprintln!("Error in autoscan_legacy: {:?}", e);
+                cleanup_autoscan_exit(&nvapi_selected, AutoscanExit::Error);
+                return Ok(1);
             }
-        }
+        },
         _ => unreachable!("unknown command"),
     }
 
