@@ -59,18 +59,18 @@ Additionally, the core frequency range lock of NVML is actually a voltage range 
 
 |                      Function                      | Blackwell (GB) | Hopper (GH)  | Ampere (GA)  | Turing (GT)  |  Volta (GV)  | Pascal (GP)  |                     Remarks                     |
 |:--------------------------------------------------:|:--------------:|:------------:|:------------:|:------------:|:------------:|:------------:|:-----------------------------------------------:|
-|               VF curve Edit + Export               |       ❓        |      ❓       |      ❓       |      ❓       |      ❓       |      ❌       |                                                 |
-|                  Auto OC autoscan                  |       ❓        |      ❓       |      ❓       |      ❓       |      ❓       |      ❌       |                                                 |
-|      Core Frequency Offset (`--core-offset`)       |       ❓        |      ❓       |      ❓       |      ❓       |      ❓       |      ❌       |                                                 |
-|      Memory Frequency Offset (`--mem-offset`)      |       ❓        |      ❓       |      ❓       |      ❓       |      ❓       |      ❌       |                                                 |
-|            Power Wall (`--power-limit`)            |       ❓        |      ❓       |      ❓       |      ❓       |      ❓       |      ✅       |  Usually locked by driver, needs NVML attempt   |
+|               VF curve Edit + Export               |       ❓        |      ❓       |      View Only       |      ❓       |      ❓       |      ❌       |                                                 |
+|                  Auto OC autoscan                  |       ❓        |      ❓       |      ❌       |      ❓       |      ❓       |      ❌       |                                                 |
+|      Core Frequency Offset (`--core-offset`)       |       ❓        |      ❓       |      ❌       |      ❓       |      ❓       |      ❌       |                                                 |
+|      Memory Frequency Offset (`--mem-offset`)      |       ❓        |      ❓       |      ❌       |      ❓       |      ❓       |      ❌       |                                                 |
+|            Power Wall (`--power-limit`)            |       ❓        |      ❓       |      ✅       |      ❓       |      ❓       |      ✅       |  Usually locked by driver, needs NVML attempt   |
 |        Temperature Wall (`--thermal-limit`)        |       ❓        |      ❓       |      ❓       |      ❓       |      ❓       |      ❓       |   Cases where return code 0 but not effective   |
-|          Fan Speed Control (NVAPI cooler)          |       ❓        |      ❓       |      ❓       |      ❓       |      ❓       |      ❌       | No onboard fan or motherboard/system controlled |
-|       Voltage Point Lock (--locked-voltage)        |       ❓        |      ❓       |      ❓       |      ❓       |      ❓       |      ❌       |                                                 |
-|  Core Frequency Range Lock (--locked-core-clocks)  |       ❓        |      ❓       |      ❓       |      ❓       |      ❓       | ✅ (Windows❌) | Diff driver model + Linux has NVAPI translation |
-| Core Frequency Range Unlock (--reset-core-clocks)  |       ❓        |      ❓       |      ❓       |      ❓       |      ❓       | ✅ (Windows❌) | Diff driver model + Linux has NVAPI translation |
-| Memory Frequency Range Lock (--locked-mem-clocks)  |       ❓        |      ❓       |      ❓       |      ❓       |      ❓       |      ❌       | Diff driver model + Linux has NVAPI translation |
-| Memory Frequency Range Unlock (--reset-mem-clocks) |       ❓        |      ❓       |      ❓       |      ❓       |      ❓       |      ❌       | Diff driver model + Linux has NVAPI translation |
+|          Fan Speed Control (NVAPI cooler)          |       ❓        |      ❓       |      ❌       |      ❓       |      ❓       |      ❌       | No onboard fan or motherboard/system controlled |
+|       Voltage Point Lock (--locked-voltage)        |       ❓        |      ❓       |      ✅       |      ❓       |      ❓       |      ❌       |                                                 |
+|  Core Frequency Range Lock (--locked-core-clocks)  |       ❓        |      ❓       |      ✅       |      ❓       |      ❓       | ✅ (Windows❌) | Diff driver model + Linux has NVAPI translation |
+| Core Frequency Range Unlock (--reset-core-clocks)  |       ❓        |      ❓       |      ✅       |      ❓       |      ❓       | ✅ (Windows❌) | Diff driver model + Linux has NVAPI translation |
+| Memory Frequency Range Lock (--locked-mem-clocks)  |       ❓        |      ❓       |      ❌ Crashes GPU!       |      ❓       |      ❓       |      ❌       | Diff driver model + Linux has NVAPI translation |
+| Memory Frequency Range Unlock (--reset-mem-clocks) |       ❓        |      ❓       |      ✅ But useless       |      ❓       |      ❓       |      ❌       | Diff driver model + Linux has NVAPI translation |
 |     Boost Voltage Voltboost (--voltage-boost)      |       ❓        |      ❓       |      ❓       |      ❓       |      ❓       |      ❌       |                                                 |
 |             Overvolt (--voltage-delta)             |       ❓        |      ❓       |      ❓       |      ❓       |      ❓       |      ❌       |                                                 |
 
@@ -94,21 +94,21 @@ Additionally, the core frequency range lock of NVML is actually a voltage range 
 
 |                      Function                      | Blackwell (GB) | Hopper (GH)  | Ampere (GA)  | Turing (GT)  |  Volta (GV)  | Pascal (GP)  |                     Remarks                     |
 |:--------------------------------------------------:|:--------------:|:------------:|:------------:|:------------:|:------------:|:------------:|:-----------------------------------------------:|
-|               VF curve Edit + Export               |       ❓        |      ❓       |      ❓       |      ❓       |      ❓       |      ❌       |                                                 |
-|                  Auto OC autoscan                  |       ❓        |      ❓       |      ❓       |      ❓       |      ❓       |      ❌       |                                                 |
-|           Legacy Auto OC autoscan-vfp-legacy           |       ❓        |      ❓       |      ❓       |      ❓       |      ❓       |      ❌       |                                                 |
-|      Core Frequency Offset (`--core-offset`)       |       ❓        |      ❓       |      ❓       |      ❓       |      ❓       |      ❌       |                                                 |
-|      Memory Frequency Offset (`--mem-offset`)      |       ❓        |      ❓       |      ❓       |      ❓       |      ❓       |      ❌       |                                                 |
-|            Power Wall (`--power-limit`)            |       ❓        |      ❓       |      ❓       |      ❓       |      ❓       |      ✅       |                                                 |
+|               VF curve Edit + Export               |       ❓        |      ❓       |      View Only        |      ❓       |      ❓       |      ❌       |                                                 |
+|                  Auto OC autoscan                  |       ❓        |      ❓       |      ❌       |      ❓       |      ❓       |      ❌       |                                                 |
+|           Legacy Auto OC autoscan-vfp-legacy           |       ❓        |      ❓       |      ❌       |      ❓       |      ❓       |      ❌       |                                                 |
+|      Core Frequency Offset (`--core-offset`)       |       ❓        |      ❓       |      ❌       |      ❓       |      ❓       |      ❌       |                                                 |
+|      Memory Frequency Offset (`--mem-offset`)      |       ❓        |      ❓       |      ❌       |      ❓       |      ❓       |      ❌       |                                                 |
+|            Power Wall (`--power-limit`)            |       ❓        |      ❓       |      ✅       |      ❓       |      ❓       |      ✅       |                                                 |
 |        Temperature Wall (`--thermal-limit`)        |       ❓        |      ❓       |      ❓       |      ❓       |      ❓       |      ❓       |   Cases where return code 0 but not effective   |
-|          Fan Speed Control (NVML cooler)           |       ❓        |      ❓       |      ❓       |      ❓       |      ❓       |      ❌       | No onboard fan or motherboard/system controlled |
-|           Fan Speed Reset (NVML cooler)            |       ❓        |      ❓       |      ❓       |      ❓       |      ❓       |      ❌       | No onboard fan or motherboard/system controlled |
-|       Voltage Point Lock (--locked-voltage)        |       ❓        |      ❓       |      ❓       |      ❓       |      ❓       |      ❌       |                                                 |
-|      Voltage Point Unlock (reset-volt-locks)       |       ❓        |      ❓       |      ❓       |      ❓       |      ❓       |      ❌       |                                                 |
-|  Core Frequency Range Lock (--locked-core-clocks)  |       ❓        |      ❓       |      ❓       |      ❓       |      ❓       | ✅ (Windows❌) | Diff driver model + Linux has NVAPI translation |
-| Core Frequency Range Unlock (--reset-core-clocks)  |       ❓        |      ❓       |      ❓       |      ❓       |      ❓       | ✅ (Windows❌) | Diff driver model + Linux has NVAPI translation |
-| Memory Frequency Range Lock (--locked-mem-clocks)  |       ❓        |      ❓       |      ❓       |      ❓       |      ❓       |      ❌       | Diff driver model + Linux has NVAPI translation |
-| Memory Frequency Range Unlock (--reset-mem-clocks) |       ❓        |      ❓       |      ❓       |      ❓       |      ❓       |      ❌       | Diff driver model + Linux has NVAPI translation |
+|          Fan Speed Control (NVML cooler)           |       ❓        |      ❓       |      ❌       |      ❓       |      ❓       |      ❌       | No onboard fan or motherboard/system controlled |
+|           Fan Speed Reset (NVML cooler)            |       ❓        |      ❓       |      ❌       |      ❓       |      ❓       |      ❌       | No onboard fan or motherboard/system controlled |
+|       Voltage Point Lock (--locked-voltage)        |       ❓        |      ❓       |      ✅       |      ❓       |      ❓       |      ❌       |                                                 |
+|      Voltage Point Unlock (reset-volt-locks)       |       ❓        |      ❓       |      ✅       |      ❓       |      ❓       |      ❌       |                                                 |
+|  Core Frequency Range Lock (--locked-core-clocks)  |       ❓        |      ❓       |      ✅       |      ❓       |      ❓       | ✅ (Windows❌) | Diff driver model + Linux has NVAPI translation |
+| Core Frequency Range Unlock (--reset-core-clocks)  |       ❓        |      ❓       |      ✅       |      ❓       |      ❓       | ✅ (Windows❌) | Diff driver model + Linux has NVAPI translation |
+| Memory Frequency Range Lock (--locked-mem-clocks)  |       ❓        |      ❓       |      ❌ Crashes GPU!       |      ❓       |      ❓       |      ❌       | Diff driver model + Linux has NVAPI translation |
+| Memory Frequency Range Unlock (--reset-mem-clocks) |       ❓        |      ❓       |      ✅ But useless       |      ❓       |      ❓       |      ❌       | Diff driver model + Linux has NVAPI translation |
 |   App Frequency Range Lock (--locked-app-clocks)   |       ❓        |      ❓       |      ❓      |       ❓       |       ❓       |      ❌       |                                                            |
 |  App Frequency Range Unlock (--reset-app-clocks)   |       ❓        |      ❓       |      ❓      |       ❓       |       ❓       |      ❌       |                                                            |
 |     Boost Voltage Voltboost (--voltage-boost)      |       ❓        |      ❓       |      ❓      |       ❓       |       ❓       |      ❌       |                                                            |
