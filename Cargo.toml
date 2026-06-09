@@ -8,6 +8,7 @@ members = [
   "cli-stressor-cuda-rs",
   "nvoc-python",
 ]
+exclude = ["nvapi-rs"]
 resolver = "3"
 
 [workspace.package]
@@ -47,9 +48,9 @@ colored = "3.1.1"
 num-traits = "0.2.19"
 nvml-wrapper = "0.12.1"
 nvml-wrapper-sys = "0.9.1"
-nvapi-hi = { version = "0.2.0", features = [
+nvapi-hi = { path = "./nvapi-rs/hi", features = [
   "serde",
-], git = "https://github.com/Skyworks-Neo/nvapi-rs", branch = "v0.2.x" }
+] }
 quick-error = "2.0.1"
 time = { version = "0.3", features = ["formatting", "local-offset", "macros"] }
 tiny_http = "0.12"
@@ -57,8 +58,3 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 windows-service = "0.8.0"
 windows-sys = { version = "0.61.2", features = ["Win32"] }
-# For development, we use the local path to the nvapi-rs crate. In production, we can switch to the git dependency.
-[patch."https://github.com/Skyworks-Neo/nvapi-rs"]
-nvapi = { path = "./nvapi-rs" }
-nvapi-sys = { path = "./nvapi-rs/sys" }
-nvapi-hi = { path = "./nvapi-rs/hi" }
