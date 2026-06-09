@@ -72,6 +72,7 @@ jobs:
             # Base layers are composed in job-level if: expressions below.
             ci_config:
               - '.github/workflows/gpu-ci.yml'
+              - '.github/actions/setup-rust/**'
             rust_base:
               - 'Cargo.toml'
               - 'Cargo.lock'
@@ -187,6 +188,9 @@ jobs:
           Add-Content $env:GITHUB_ENV "UV_CACHE_DIR=$env:RUNNER_TEMP\uv-cache"
           Add-Content $env:GITHUB_ENV "UV_PROJECT_ENVIRONMENT=$env:RUNNER_TEMP\uv-envs\opencl-stressor-${{ github.run_id }}"
       - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: "true"
+          cache-dependency-glob: uv.lock
       - run: uv sync --frozen --no-config
         env:
           UV_CACHE_DIR: ${{ runner.temp }}\uv-cache

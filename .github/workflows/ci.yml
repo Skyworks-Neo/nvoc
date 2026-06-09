@@ -62,6 +62,8 @@ jobs:
         with:
           submodules: true
       - uses: ./.github/actions/setup-rust
+        with:
+          cache: "true"
       # cli-stressor-cuda-rs links against CUDA even without --all-features; exclude it here.
       # The Rust stressor is compiled separately in ci.yml when files change.
       - run: cargo clippy --workspace --exclude cli-stressor-cuda-rs --all-targets -- -D warnings
@@ -96,6 +98,7 @@ jobs:
             # Base layers are composed in job-level if: expressions below.
             ci_config:
               - '.github/workflows/ci.yml'
+              - '.github/actions/setup-rust/**'
             rust_base:
               - 'Cargo.toml'
               - 'Cargo.lock'
@@ -141,6 +144,8 @@ jobs:
         with:
           submodules: true
       - uses: ./.github/actions/setup-rust
+        with:
+          cache: "true"
       - run: cargo test --package nvoc-core --all-targets
 
   rust-nvoc-cli:
@@ -157,6 +162,8 @@ jobs:
         with:
           submodules: true
       - uses: ./.github/actions/setup-rust
+        with:
+          cache: "true"
       - run: cargo test --package nvoc-cli --all-targets
 
   rust-nvoc-python:
@@ -173,6 +180,8 @@ jobs:
         with:
           submodules: true
       - uses: ./.github/actions/setup-rust
+        with:
+          cache: "true"
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -248,6 +257,8 @@ jobs:
         with:
           submodules: true
       - uses: ./.github/actions/setup-rust
+        with:
+          cache: "true"
       - name: Clippy
         run: cargo clippy --package cli-stressor-cuda-rs --all-targets --no-default-features -- -D warnings
       - name: Test
@@ -277,8 +288,13 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - uses: ./.github/actions/setup-rust
-      - name: Install uv
-        run: pip install --quiet uv
+        with:
+          cache: "true"
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: "true"
+          cache-dependency-glob: uv.lock
       - name: Install deps
         run: uv sync --locked --package nvoc-tui --group dev --no-config
       - name: byte-compile
@@ -308,8 +324,13 @@ jobs:
         with:
           python-version: '3.12'
       - uses: ./.github/actions/setup-rust
-      - name: Install uv
-        run: pip install --quiet uv
+        with:
+          cache: "true"
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: "true"
+          cache-dependency-glob: uv.lock
       - name: Install deps
         run: uv sync --locked --package nvoc-gui --group dev --no-config
       - name: byte-compile gui/
