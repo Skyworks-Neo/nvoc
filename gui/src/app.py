@@ -183,6 +183,20 @@ class App(ctk.CTk):
         )
         self.gpu_dropdown.pack(side="left", padx=5)
 
+        def _on_gpu_wheel(event):
+            indices = sorted(self._gpu_short_label_by_idx.keys())
+            if len(indices) < 2:
+                return
+            cur_idx = self.gpu_map.get(self.gpu_var.get())
+            if cur_idx is None:
+                return
+            pos = indices.index(cur_idx)
+            delta = -1 if event.delta > 0 else 1
+            nxt = indices[(pos + delta) % len(indices)]
+            self._on_gpu_changed(self._gpu_short_label_by_idx[nxt])
+
+        self.gpu_dropdown.bind("<MouseWheel>", _on_gpu_wheel)
+
         LiteButton(
             top_bar, text="🔍 Detect", width=80, command=self._refresh_gpu_list
         ).pack(side="left", padx=5)
