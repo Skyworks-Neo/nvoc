@@ -3,6 +3,8 @@ use anstream::eprintln;
 use anstream::println;
 use clap::Parser;
 #[cfg(feature = "cuda")]
+use anyhow::Context;
+#[cfg(feature = "cuda")]
 use clap::{CommandFactory, FromArgMatches, parser::ValueSource};
 #[cfg(feature = "cuda")]
 use std::collections::HashMap;
@@ -13,6 +15,7 @@ use style::stylize;
 use style::stylize_config;
 #[cfg(feature = "cuda")]
 use style::stylize_title;
+use std::path::PathBuf;
 
 #[cfg(feature = "cuda")]
 use cli_stressor_cuda_rs::parse_int_list;
@@ -32,11 +35,21 @@ mod style;
 #[cfg(feature = "cuda")]
 mod cuda_backend;
 
+mod abft;
+mod golden;
+mod logger;
+#[cfg(feature = "cuda")]
+mod gemm;
+#[cfg(feature = "cuda")]
+mod power;
+
 #[cfg(feature = "cuda")]
 use cuda_backend::{
     enumerate_cuda_devices, resolve_device_index_by_pci_bus, resolve_device_index_by_sorted_index,
     resolve_device_index_by_uuid,
 };
+#[cfg(feature = "cuda")]
+use half;
 
 // Stressor Vulkan engine (optional). Only compiled when the crate is built with
 // --features "vulkan" in addition to "cuda".
@@ -236,6 +249,42 @@ struct Args {
     /// List CUDA GPUs (PCI-sorted index, CUDA index, PCI bus, UUID) and exit
     #[arg(long, default_value_t = false)]
     list_gpus: bool,
+
+    /// Run mode: stress (existing), profile (SDC detection), verify (ABFT coverage)
+    #[arg(long, default_value = "stress")]
+    pub mode: String,
+
+    /// Precision: fp32, fp16, tf32
+    #[arg(long, default_value = "fp32")]
+    pub precision: String,
+
+    /// Voltage in mV at current hardware setting (user-supplied, for logging only)
+    #[arg(long, default_value_t = 0)]
+    pub voltage_mv: u32,
+
+    /// Square matrix dimension N
+    #[arg(long, default_value_t = 4096)]
+    pub matrix_size: usize,
+
+    /// Number of trial repetitions for profile/verify modes
+    #[arg(long, default_value_t = 100)]
+    pub trials: usize,
+
+    /// If set: run one GEMM, write output to this path, exit
+    #[arg(long)]
+    pub capture_golden: Option<PathBuf>,
+
+    /// Path to previously captured golden output for profile/verify modes
+    #[arg(long)]
+    pub golden: Option<PathBuf>,
+
+    /// CSV output path for profile/verify modes
+    #[arg(long, default_value = "saou_log.csv")]
+    pub output_csv: PathBuf,
+
+    /// ABFT checksum residual tolerance
+    #[arg(long, default_value_t = 0.5_f32)]
+    pub abft_tol: f32,
 }
 
 #[cfg(feature = "cuda")]
@@ -493,6 +542,15 @@ fn parse_args_with_cli_sources() -> (Args, std::collections::HashSet<&'static st
         "vulkan_image_depth",
         "vulkan_image_msaa",
         "vulkan_minor_mixture_rate",
+        "mode",
+        "precision",
+        "voltage_mv",
+        "matrix_size",
+        "trials",
+        "capture_golden",
+        "golden",
+        "output_csv",
+        "abft_tol",
     ] {
         if matches.value_source(id) == Some(ValueSource::CommandLine) {
             cli_set.insert(id);
@@ -1013,6 +1071,25 @@ fn main() {
         }
     };
 
+    if args.mode == "profile" {
+        match run_profile(&args, gpu_device_index) {
+            Ok(()) => std::process::exit(0),
+            Err(e) => {
+                eprintln!("{}", stylize(&format!("Profile mode error: {:#}", e), true));
+                std::process::exit(1);
+            }
+        }
+    }
+    if args.mode == "verify" {
+        match run_verify(&args, gpu_device_index) {
+            Ok(()) => std::process::exit(0),
+            Err(e) => {
+                eprintln!("{}", stylize(&format!("Verify mode error: {:#}", e), true));
+                std::process::exit(1);
+            }
+        }
+    }
+
     let mut backend = match cuda_backend::CudaBackend::new_with_device(gpu_device_index) {
         Ok(backend) => backend,
         Err(err) => {
@@ -1464,6 +1541,506 @@ fn main() {
     if !overall_passed {
         std::process::exit(1);
     }
+}
+
+#[cfg(feature = "cuda")]
+fn parse_precision(raw: &str) -> Result<gemm::Precision, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "fp32" => Ok(gemm::Precision::Fp32),
+        "fp16" => Ok(gemm::Precision::Fp16),
+        "tf32" => Ok(gemm::Precision::Tf32),
+        "fp64" => Ok(gemm::Precision::Fp64),
+        "bf16" => Ok(gemm::Precision::Bf16),
+        other => Err(format!(
+            "unsupported precision: {other}, expected fp32|fp16|tf32|fp64|bf16"
+        )),
+    }
+}
+
+#[cfg(feature = "cuda")]
+fn run_profile(args: &Args, device_index: u32) -> Result<(), anyhow::Error> {
+    let precision = parse_precision(&args.precision)
+        .map_err(|e| anyhow::anyhow!(e))?;
+    let n = args.matrix_size;
+
+    eprintln!(
+        "[profile] mode=profile precision={} n={} seed={}",
+        precision.as_str(),
+        n,
+        args.seed
+    );
+
+    let cu = gemm::CublasContext::new(device_index)?;
+
+    if precision.is_deterministic() {
+        gemm::init_cublas_deterministic(&cu.blas)?;
+    } else {
+        gemm::init_cublas_tf32(&cu.blas)?;
+    }
+
+    let a_host = gemm::generate_matrix(n, n, args.seed);
+    let b_host = gemm::generate_matrix(n, n, args.seed.wrapping_add(1));
+
+    if let Some(ref path) = args.capture_golden {
+        gemm::preflight_reproducibility_check(&cu, precision, n, &a_host, &b_host)?;
+        let (c_host, _, _) =
+            gemm::run_trial_gemm(&cu, precision, n, &a_host, &b_host, None, None, false)?;
+        golden::save_golden(path, &c_host)?;
+        eprintln!(
+            "Golden saved: {}  ({}×{}, {}, {} bytes)",
+            path.display(),
+            n,
+            n,
+            precision.as_str(),
+            n * n * 4
+        );
+        return Ok(());
+    }
+
+    let golden_path = args
+        .golden
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("--golden <path> required for profile trial mode"))?;
+    let golden_data = golden::load_golden(golden_path, n)?;
+
+    let use_tolerant = !precision.is_deterministic();
+
+    let (d_a, d_b, d_a_half, d_b_half, d_c, d_c_half,
+         d_a_f64, d_b_f64, d_c_f64,
+         d_a_bf16, d_b_bf16, d_c_bf16,
+         pinned_c, pinned_c_f64) =
+        match precision {
+            gemm::Precision::Fp32 | gemm::Precision::Tf32 => {
+                let d_a = cu.stream.clone_htod(&a_host).context("upload A failed")?;
+                let d_b = cu.stream.clone_htod(&b_host).context("upload B failed")?;
+                let d_c = cu.stream.alloc_zeros::<f32>(n * n).context("alloc C failed")?;
+                (Some(d_a), Some(d_b), None, None, Some(d_c), None,
+                 None, None, None, None, None, None,
+                 gemm::PinnedHost::new(n * n)?, None)
+            }
+            gemm::Precision::Fp16 => {
+                let a_half: Vec<half::f16> = a_host.iter().map(|v| half::f16::from_f32(*v)).collect();
+                let b_half: Vec<half::f16> = b_host.iter().map(|v| half::f16::from_f32(*v)).collect();
+                let d_a = cu.stream.clone_htod(&a_half).context("upload A(half) failed")?;
+                let d_b = cu.stream.clone_htod(&b_half).context("upload B(half) failed")?;
+                let d_c = cu.stream.alloc_zeros::<half::f16>(n * n).context("alloc C(half) failed")?;
+                (None, None, Some(d_a), Some(d_b), None, Some(d_c),
+                 None, None, None, None, None, None,
+                 gemm::PinnedHost::new(n * n)?, None)
+            }
+            gemm::Precision::Fp64 => {
+                let a_f64: Vec<f64> = a_host.iter().map(|&v| v as f64).collect();
+                let b_f64: Vec<f64> = b_host.iter().map(|&v| v as f64).collect();
+                let d_a = cu.stream.clone_htod(&a_f64).context("upload A(f64) failed")?;
+                let d_b = cu.stream.clone_htod(&b_f64).context("upload B(f64) failed")?;
+                let d_c = cu.stream.alloc_zeros::<f64>(n * n).context("alloc C(f64) failed")?;
+                (None, None, None, None, None, None,
+                 Some(d_a), Some(d_b), Some(d_c), None, None, None,
+                 gemm::PinnedHost::new(n * n)?, Some(gemm::PinnedHost::new(n * n)?))
+            }
+            gemm::Precision::Bf16 => {
+                let a_bf16: Vec<half::bf16> = a_host.iter().map(|&v| half::bf16::from_f32(v)).collect();
+                let b_bf16: Vec<half::bf16> = b_host.iter().map(|&v| half::bf16::from_f32(v)).collect();
+                let d_a = cu.stream.clone_htod(&a_bf16).context("upload A(bf16) failed")?;
+                let d_b = cu.stream.clone_htod(&b_bf16).context("upload B(bf16) failed")?;
+                let d_c = cu.stream.alloc_zeros::<half::bf16>(n * n).context("alloc C(bf16) failed")?;
+                (None, None, None, None, None, None,
+                 None, None, None, Some(d_a), Some(d_b), Some(d_c),
+                 gemm::PinnedHost::new(n * n)?, None)
+            }
+        };
+
+    let mut state = gemm::TrialReusableState {
+        pinned_c,
+        pinned_c_f64,
+        pinned_c_ext: None,
+        pinned_c_f64_ext: None,
+        device_bufs: gemm::TrialDeviceBuffers {
+            d_a, d_b, d_a_half, d_b_half, d_c, d_c_half,
+            d_a_f64, d_b_f64, d_c_f64,
+            d_a_bf16, d_b_bf16, d_c_bf16,
+        },
+    };
+
+    let mut logger = logger::Logger::new(&args.output_csv)?;
+    let nvml_freq = power::read_freq_mhz_once(device_index);
+    let mut pass_count = 0usize;
+    let mut sdc_count = 0usize;
+    let mut err_count = 0usize;
+
+    for trial in 0..args.trials {
+        let sampler = power::PowerSampler::start(device_index);
+
+        let trial_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            gemm::run_trial_gemm_fast(&cu, precision, n, &mut state, false)
+        }));
+
+        let (exec_time_s, result_type, cmp) = match trial_result {
+            Err(_) => (
+                0.0,
+                golden::ResultType::RuntimeError,
+                golden::CompareResult::zeroed(),
+            ),
+            Ok(Err(_)) => (
+                0.0,
+                golden::ResultType::RuntimeError,
+                golden::CompareResult::zeroed(),
+            ),
+            Ok(Ok((elapsed, count))) => {
+                let c_host = match precision {
+                    gemm::Precision::Fp64 => gemm::read_pinned_f64(
+                        state.pinned_c_f64.as_ref().expect("pinned_c_f64"), count),
+                    _ => gemm::read_pinned_result(&state.pinned_c, count, precision),
+                };
+                let cmp = if use_tolerant {
+                    golden::compare_tolerant_or_fast(&c_host, &golden_data, 1e-2)
+                } else {
+                    golden::compare_or_fast(&c_host, &golden_data)
+                };
+                (elapsed, cmp.result_type, cmp)
+            }
+        };
+
+        let (mean_mw, _) = sampler.stop_and_read();
+        let exec_ms = (exec_time_s * 1000.0) as u128;
+
+        match result_type {
+            golden::ResultType::Pass => pass_count += 1,
+            golden::ResultType::Sdc => sdc_count += 1,
+            golden::ResultType::RuntimeError => err_count += 1,
+        }
+
+        logger.write_trial(&logger::TrialRow {
+            trial_id: trial,
+            timestamp_unix_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+            mode: "profile".to_string(),
+            precision: precision.as_str().to_string(),
+            seed: args.seed,
+            matrix_n: n,
+            voltage_mv: args.voltage_mv,
+            freq_mhz: nvml_freq,
+            result_type: format!("{:?}", result_type),
+            l2_diff: cmp.l2_diff,
+            hamming_dist: cmp.hamming_dist,
+            max_abs_diff: cmp.max_abs_diff,
+            abft_row_ok: None,
+            abft_col_ok: None,
+            abft_row_residual: None,
+            abft_col_residual: None,
+            abft_detected: None,
+            golden_detected: Some(cmp.hamming_dist > 0),
+            exec_time_ms: exec_ms,
+            avg_power_mw: mean_mw,
+            energy_mj: if mean_mw > 0 {
+                mean_mw * exec_ms as i64 / 1000
+            } else {
+                -1
+            },
+        })?;
+
+        if (trial + 1) % 10 == 0 {
+            eprintln!(
+                "[{}/{}] pass={} sdc={} err={}",
+                trial + 1,
+                args.trials,
+                pass_count,
+                sdc_count,
+                err_count
+            );
+        }
+    }
+
+    logger.flush()?;
+
+    eprintln!(
+        "Profile summary: {} trials, pass={}, sdc={}, err={}",
+        args.trials, pass_count, sdc_count, err_count
+    );
+    if pass_count + sdc_count > 0 {
+        let sdc_rate = sdc_count as f64 / (pass_count + sdc_count) as f64 * 100.0;
+        eprintln!("SDC rate: {:.2}%", sdc_rate);
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "cuda")]
+fn run_verify(args: &Args, device_index: u32) -> Result<(), anyhow::Error> {
+    let precision = parse_precision(&args.precision)
+        .map_err(|e| anyhow::anyhow!(e))?;
+    let n = args.matrix_size;
+
+    eprintln!(
+        "[verify] mode=verify precision={} n={} seed={}",
+        precision.as_str(),
+        n,
+        args.seed
+    );
+
+    let cu = gemm::CublasContext::new(device_index)?;
+
+    if precision.is_deterministic() {
+        gemm::init_cublas_deterministic(&cu.blas)?;
+    } else {
+        gemm::init_cublas_tf32(&cu.blas)?;
+    }
+
+    let a_host = abft::generate_matrix(n, n, args.seed);
+    let b_host = abft::generate_matrix(n, n, args.seed.wrapping_add(1));
+
+    let a_c_host = abft::encode_a(&a_host, n);
+    let b_r_host = abft::encode_b(&b_host, n);
+
+    if let Some(ref path) = args.capture_golden {
+        gemm::preflight_reproducibility_check(&cu, precision, n, &a_host, &b_host)?;
+
+        let (c_f_host, _, _) = gemm::run_trial_gemm(
+            &cu,
+            precision,
+            n,
+            &a_host,
+            &b_host,
+            Some(&a_c_host),
+            Some(&b_r_host),
+            true,
+        )?;
+
+        let c_host = abft::extract_result_block(&c_f_host, n);
+        golden::save_golden(path, &c_host)?;
+
+        let vr = abft::verify(&c_f_host, n, 1e9);
+        eprintln!(
+            "Clean ABFT residuals — row: {:.3e}, col: {:.3e}",
+            vr.row_max_residual, vr.col_max_residual
+        );
+        eprintln!(
+            "Suggested --abft-tol: set above these values (current default: 0.5)"
+        );
+        eprintln!(
+            "Golden saved: {}  ({}×{}, {}, {} bytes)",
+            path.display(),
+            n,
+            n,
+            precision.as_str(),
+            n * n * 4
+        );
+        return Ok(());
+    }
+
+    let golden_path = args
+        .golden
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("--golden <path> required for verify trial mode"))?;
+    let golden_data = golden::load_golden(golden_path, n)?;
+
+    let use_tolerant = !precision.is_deterministic();
+    let extended_n = (n + 1) * (n + 1);
+
+    let (d_a, d_b, d_a_half, d_b_half, d_c, d_c_half,
+         d_a_f64, d_b_f64, d_c_f64,
+         d_a_bf16, d_b_bf16, d_c_bf16,
+         pinned_c, pinned_c_f64, pinned_c_ext, pinned_c_f64_ext) =
+        match precision {
+            gemm::Precision::Fp32 | gemm::Precision::Tf32 => {
+                let d_a = cu.stream.clone_htod(&a_c_host).context("upload A_c failed")?;
+                let d_b = cu.stream.clone_htod(&b_r_host).context("upload B_r failed")?;
+                let d_c = cu.stream.alloc_zeros::<f32>(extended_n).context("alloc C_f failed")?;
+                (Some(d_a), Some(d_b), None, None, Some(d_c), None,
+                 None, None, None, None, None, None,
+                 gemm::PinnedHost::new(extended_n)?, None,
+                 Some(gemm::PinnedHost::new(extended_n)?), None)
+            }
+            gemm::Precision::Fp16 => {
+                let a_c_half: Vec<half::f16> = a_c_host.iter().map(|v| half::f16::from_f32(*v)).collect();
+                let b_r_half: Vec<half::f16> = b_r_host.iter().map(|v| half::f16::from_f32(*v)).collect();
+                let d_a = cu.stream.clone_htod(&a_c_half).context("upload A_c(half) failed")?;
+                let d_b = cu.stream.clone_htod(&b_r_half).context("upload B_r(half) failed")?;
+                let d_c = cu.stream.alloc_zeros::<half::f16>(extended_n).context("alloc C_f(half) failed")?;
+                (None, None, Some(d_a), Some(d_b), None, Some(d_c),
+                 None, None, None, None, None, None,
+                 gemm::PinnedHost::new(extended_n)?, None,
+                 Some(gemm::PinnedHost::new(extended_n)?), None)
+            }
+            gemm::Precision::Fp64 => {
+                let a_c_f64: Vec<f64> = a_c_host.iter().map(|&v| v as f64).collect();
+                let b_r_f64: Vec<f64> = b_r_host.iter().map(|&v| v as f64).collect();
+                let d_a = cu.stream.clone_htod(&a_c_f64).context("upload A_c(f64) failed")?;
+                let d_b = cu.stream.clone_htod(&b_r_f64).context("upload B_r(f64) failed")?;
+                let d_c = cu.stream.alloc_zeros::<f64>(extended_n).context("alloc C_f(f64) failed")?;
+                (None, None, None, None, None, None,
+                 Some(d_a), Some(d_b), Some(d_c), None, None, None,
+                 gemm::PinnedHost::new(extended_n)?, Some(gemm::PinnedHost::new(extended_n)?),
+                 Some(gemm::PinnedHost::new(extended_n)?), Some(gemm::PinnedHost::new(extended_n)?))
+            }
+            gemm::Precision::Bf16 => {
+                let a_c_bf16: Vec<half::bf16> = a_c_host.iter().map(|&v| half::bf16::from_f32(v)).collect();
+                let b_r_bf16: Vec<half::bf16> = b_r_host.iter().map(|&v| half::bf16::from_f32(v)).collect();
+                let d_a = cu.stream.clone_htod(&a_c_bf16).context("upload A_c(bf16) failed")?;
+                let d_b = cu.stream.clone_htod(&b_r_bf16).context("upload B_r(bf16) failed")?;
+                let d_c = cu.stream.alloc_zeros::<half::bf16>(extended_n).context("alloc C_f(bf16) failed")?;
+                (None, None, None, None, None, None,
+                 None, None, None, Some(d_a), Some(d_b), Some(d_c),
+                 gemm::PinnedHost::new(extended_n)?, None,
+                 Some(gemm::PinnedHost::new(extended_n)?), None)
+            }
+        };
+
+    let mut state = gemm::TrialReusableState {
+        pinned_c,
+        pinned_c_f64,
+        pinned_c_ext,
+        pinned_c_f64_ext,
+        device_bufs: gemm::TrialDeviceBuffers {
+            d_a, d_b, d_a_half, d_b_half, d_c, d_c_half,
+            d_a_f64, d_b_f64, d_c_f64,
+            d_a_bf16, d_b_bf16, d_c_bf16,
+        },
+    };
+
+    let mut logger = logger::Logger::new(&args.output_csv)?;
+    let nvml_freq = power::read_freq_mhz_once(device_index);
+
+    let mut pass_count = 0usize;
+    let mut sdc_count = 0usize;
+    let mut err_count = 0usize;
+    let mut abft_detected_count = 0usize;
+    let mut golden_detected_count = 0usize;
+
+    for trial in 0..args.trials {
+        let sampler = power::PowerSampler::start(device_index);
+
+        let trial_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            gemm::run_trial_gemm_fast(&cu, precision, n, &mut state, true)
+        }));
+
+        let (exec_time_s, result_type, cmp, abft_vr) = match trial_result {
+            Err(_) => (
+                0.0,
+                golden::ResultType::RuntimeError,
+                golden::CompareResult::zeroed(),
+                None,
+            ),
+            Ok(Err(_)) => (
+                0.0,
+                golden::ResultType::RuntimeError,
+                golden::CompareResult::zeroed(),
+                None,
+            ),
+            Ok(Ok((elapsed, count))) => {
+                let result_pinned = state.pinned_c_ext.as_ref().expect("pinned_c_ext");
+                let c_f_host = match precision {
+                    gemm::Precision::Fp64 => {
+                        let pinned_f64 = state.pinned_c_f64_ext.as_ref().expect("pinned_c_f64_ext");
+                        gemm::read_pinned_f64(pinned_f64, count)
+                    }
+                    _ => gemm::read_pinned_result(result_pinned, count, precision),
+                };
+                let vr = abft::verify(&c_f_host, n, args.abft_tol);
+                let c_host = abft::extract_result_block(&c_f_host, n);
+                let cmp = if use_tolerant {
+                    golden::compare_tolerant_or_fast(&c_host, &golden_data, 1e-2)
+                } else {
+                    golden::compare_or_fast(&c_host, &golden_data)
+                };
+                (elapsed, cmp.result_type, cmp, Some(vr))
+            }
+        };
+
+        let (mean_mw, _) = sampler.stop_and_read();
+        let exec_ms = (exec_time_s * 1000.0) as u128;
+
+        match result_type {
+            golden::ResultType::Pass => pass_count += 1,
+            golden::ResultType::Sdc => sdc_count += 1,
+            golden::ResultType::RuntimeError => err_count += 1,
+        }
+
+        let row_checksum_ok = abft_vr.as_ref().map(|v| v.row_checksum_ok);
+        let col_checksum_ok = abft_vr.as_ref().map(|v| v.col_checksum_ok);
+        let abft_detected = abft_vr
+            .as_ref()
+            .map(|v| !v.row_checksum_ok || !v.col_checksum_ok);
+        let golden_detected = cmp.hamming_dist > 0;
+
+        if abft_detected == Some(true) {
+            abft_detected_count += 1;
+        }
+        if golden_detected {
+            golden_detected_count += 1;
+        }
+
+        logger.write_trial(&logger::TrialRow {
+            trial_id: trial,
+            timestamp_unix_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+            mode: "verify".to_string(),
+            precision: precision.as_str().to_string(),
+            seed: args.seed,
+            matrix_n: n,
+            voltage_mv: args.voltage_mv,
+            freq_mhz: nvml_freq,
+            result_type: format!("{:?}", result_type),
+            l2_diff: cmp.l2_diff,
+            hamming_dist: cmp.hamming_dist,
+            max_abs_diff: cmp.max_abs_diff,
+            abft_row_ok: row_checksum_ok,
+            abft_col_ok: col_checksum_ok,
+            abft_row_residual: abft_vr.as_ref().map(|v| v.row_max_residual),
+            abft_col_residual: abft_vr.as_ref().map(|v| v.col_max_residual),
+            abft_detected,
+            golden_detected: Some(golden_detected),
+            exec_time_ms: exec_ms,
+            avg_power_mw: mean_mw,
+            energy_mj: if mean_mw > 0 {
+                mean_mw * exec_ms as i64 / 1000
+            } else {
+                -1
+            },
+        })?;
+
+        if (trial + 1) % 10 == 0 {
+            eprintln!(
+                "[{}/{}] pass={} sdc={} err={} abft_hit={} golden_hit={}",
+                trial + 1,
+                args.trials,
+                pass_count,
+                sdc_count,
+                err_count,
+                abft_detected_count,
+                golden_detected_count
+            );
+        }
+    }
+
+    logger.flush()?;
+
+    let coverage = if golden_detected_count > 0 {
+        abft_detected_count as f64 / golden_detected_count as f64 * 100.0
+    } else {
+        f64::NAN
+    };
+
+    eprintln!(
+        "Verify summary: {} trials, pass={}, sdc={}, err={}",
+        args.trials, pass_count, sdc_count, err_count
+    );
+    if pass_count + sdc_count > 0 {
+        let sdc_rate = sdc_count as f64 / (pass_count + sdc_count) as f64 * 100.0;
+        eprintln!("SDC rate: {:.2}%", sdc_rate);
+    }
+    if !coverage.is_nan() {
+        eprintln!(
+            "ABFT coverage: {:.1}% ({} detected / {} golden)",
+            coverage, abft_detected_count, golden_detected_count
+        );
+    }
+
+    Ok(())
 }
 
 #[cfg(all(not(feature = "cuda"), feature = "vulkan"))]
