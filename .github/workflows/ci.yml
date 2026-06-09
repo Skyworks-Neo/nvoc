@@ -10,7 +10,6 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_TOOLCHAIN: 1.95.0
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -52,10 +51,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           submodules: true
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-          components: clippy,rustfmt
+      - uses: ./.github/actions/setup-rust
       - run: cargo fmt --all -- --check
 
   clippy:
@@ -65,10 +61,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           submodules: true
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-          components: clippy,rustfmt
+      - uses: ./.github/actions/setup-rust
       # cli-stressor-cuda-rs links against CUDA even without --all-features; exclude it here.
       # The Rust stressor is compiled separately in ci.yml when files change.
       - run: cargo clippy --workspace --exclude cli-stressor-cuda-rs --all-targets -- -D warnings
@@ -147,10 +140,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           submodules: true
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-          components: clippy,rustfmt
+      - uses: ./.github/actions/setup-rust
       - run: cargo test --package nvoc-core --all-targets
 
   rust-nvoc-cli:
@@ -166,10 +156,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           submodules: true
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-          components: clippy,rustfmt
+      - uses: ./.github/actions/setup-rust
       - run: cargo test --package nvoc-cli --all-targets
 
   rust-nvoc-python:
@@ -185,10 +172,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           submodules: true
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-          components: clippy,rustfmt
+      - uses: ./.github/actions/setup-rust
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -222,11 +206,9 @@ jobs:
       - uses: actions/checkout@v6
         with:
           submodules: true
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: ./.github/actions/setup-rust
         with:
-          toolchain: 1.95.0
-          components: clippy,rustfmt
-          rustflags: ""
+          cache: "true"
       - name: Clippy
         run: cargo clippy --package nvoc-auto-optimizer --all-targets --all-features -- -D warnings
       - name: Build
@@ -245,11 +227,9 @@ jobs:
       - uses: actions/checkout@v6
         with:
           submodules: true
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: ./.github/actions/setup-rust
         with:
-          toolchain: 1.95.0
-          components: clippy,rustfmt
-          rustflags: ""
+          cache: "true"
       - name: Clippy
         run: cargo clippy --package nvoc-srv --all-targets --all-features -- -D warnings
       - name: Build
@@ -267,10 +247,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           submodules: true
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-          components: clippy,rustfmt
+      - uses: ./.github/actions/setup-rust
       - name: Clippy
         run: cargo clippy --package cli-stressor-cuda-rs --all-targets --no-default-features -- -D warnings
       - name: Test
@@ -299,10 +276,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-          components: clippy,rustfmt
+      - uses: ./.github/actions/setup-rust
       - name: Install uv
         run: pip install --quiet uv
       - name: Install deps
@@ -333,10 +307,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-          components: clippy,rustfmt
+      - uses: ./.github/actions/setup-rust
       - name: Install uv
         run: pip install --quiet uv
       - name: Install deps

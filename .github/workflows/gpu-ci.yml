@@ -108,13 +108,12 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
+          ref: ${{ inputs.ref || github.ref }}
           submodules: true
-        # with:
-        #   ref: ${{ inputs.ref || github.ref }}
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/setup-rust
         with:
-          workspaces: auto-optimizer -> target
+          cache: "true"
+          cache-workspaces: auto-optimizer -> target
       - name: build
         run: cargo build --release
       - name: read-only GPU discovery
@@ -136,10 +135,10 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.ref }}
           submodules: true
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/setup-rust
         with:
-          workspaces: . -> target
+          cache: "true"
+          cache-workspaces: . -> target
       - name: nvoc-core read-only GPU API tests
         run: cargo test --release --package nvoc-core --test gpu_readonly -- --ignored --test-threads=1
         env:
@@ -158,10 +157,10 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.ref }}
           submodules: true
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/setup-rust
         with:
-          workspaces: . -> target
+          cache: "true"
+          cache-workspaces: . -> target
       - name: build CUDA stressor
         run: cargo build --release --package cli-stressor-cuda-rs --features cuda
       - name: short stress run
