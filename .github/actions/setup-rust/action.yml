@@ -1,0 +1,21 @@
+name: Setup Rust
+description: Install the repository Rust toolchain from rust-toolchain.toml.
+
+inputs:
+  cache:
+    description: Enable Rust build caching.
+    required: false
+    default: "false"
+  cache-workspaces:
+    description: Workspace mappings forwarded to Swatinem/rust-cache.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        cache: ${{ inputs.cache }}
+        cache-workspaces: ${{ inputs.cache-workspaces }}
+        rustflags: ""
