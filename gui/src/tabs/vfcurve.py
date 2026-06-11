@@ -1590,15 +1590,17 @@ class VFCurveTab:
 
         event_num = getattr(event, "num", None)
         if event_num == 4:
-            delta_mhz = +self._KEY_FREQ_STEP_MHZ   # Linux scroll up = increase freq
+            delta_mhz = +self._KEY_FREQ_STEP_MHZ  # Linux scroll up = increase freq
         elif event_num == 5:
-            delta_mhz = -self._KEY_FREQ_STEP_MHZ   # Linux scroll down = decrease freq
+            delta_mhz = -self._KEY_FREQ_STEP_MHZ  # Linux scroll down = decrease freq
         else:
             delta = int(getattr(event, "delta", 0) or 0)
             if delta == 0:
                 return "break"
             # Windows: positive delta = scroll up = increase, negative = scroll down = decrease
-            delta_mhz = self._KEY_FREQ_STEP_MHZ if delta > 0 else -self._KEY_FREQ_STEP_MHZ
+            delta_mhz = (
+                self._KEY_FREQ_STEP_MHZ if delta > 0 else -self._KEY_FREQ_STEP_MHZ
+            )
 
         self._key_shift_freq(delta_mhz)
         return "break"

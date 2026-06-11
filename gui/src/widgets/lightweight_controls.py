@@ -236,9 +236,9 @@ class CanvasSlider(ctk.CTkFrame):
         # Determine scroll direction: +1 = increment, -1 = decrement
         event_num = getattr(event, "num", None)
         if event_num == 4:
-            direction = -1   # Linux Button-4 (scroll up) = decrement
+            direction = -1  # Linux Button-4 (scroll up) = decrement
         elif event_num == 5:
-            direction = 1    # Linux Button-5 (scroll down) = increment
+            direction = 1  # Linux Button-5 (scroll down) = increment
         else:
             delta = int(getattr(event, "delta", 0) or 0)
             if delta == 0:
