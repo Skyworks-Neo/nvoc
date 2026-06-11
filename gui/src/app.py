@@ -1352,17 +1352,17 @@ class App(ctk.CTk):
             self._memory_debug_sampler.stop()
             self._memory_debug_sampler = None
 
-        if hasattr(self, 'tab_dashboard') and self.tab_dashboard is not None:
+        if hasattr(self, "tab_dashboard") and self.tab_dashboard is not None:
             self.tab_dashboard._stop_polling()
 
-        if hasattr(self, 'tab_overclock') and self.tab_overclock is not None:
-            if hasattr(self.tab_overclock, '_stop_auto_refresh'):
+        if hasattr(self, "tab_overclock") and self.tab_overclock is not None:
+            if hasattr(self.tab_overclock, "_stop_auto_refresh"):
                 self.tab_overclock._stop_auto_refresh()
-            if hasattr(self.tab_overclock, 'cleanup'):
+            if hasattr(self.tab_overclock, "cleanup"):
                 self.tab_overclock.cleanup()
 
-        if hasattr(self, 'tab_vfcurve') and self.tab_vfcurve is not None:
-            if hasattr(self.tab_vfcurve, 'cleanup'):
+        if hasattr(self, "tab_vfcurve") and self.tab_vfcurve is not None:
+            if hasattr(self.tab_vfcurve, "cleanup"):
                 self.tab_vfcurve.cleanup()
 
         # 2. Stop tray icon

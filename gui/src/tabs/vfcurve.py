@@ -471,6 +471,10 @@ class VFCurveTab:
         # Tab / Shift-Tab  (return "break" to prevent focus from leaving canvas)
         tk_widget.bind("<Tab>", self._on_key_tab)
         tk_widget.bind("<Shift-Tab>", self._on_key_shift_tab)
+        # ── Mouse wheel frequency adjustment ──
+        tk_widget.bind("<MouseWheel>", self._on_mousewheel)
+        tk_widget.bind("<Button-4>", self._on_mousewheel)
+        tk_widget.bind("<Button-5>", self._on_mousewheel)
 
         # Resize figure width when the parent frame width changes.
         # Height is kept fixed (3.5 in) so controls below are never squeezed out.
@@ -1576,6 +1580,27 @@ class VFCurveTab:
         if not self._voltages or self._sel_start is None:
             return "break"
         self._key_shift_freq(-self._KEY_FREQ_STEP_MHZ)
+        return "break"
+
+    # ── Mouse wheel : equivalent to Up / Down key ──
+    def _on_mousewheel(self, event):
+        """Handle mouse wheel to adjust frequency of selected point(s)."""
+        if not self._voltages or self._sel_start is None:
+            return "break"
+
+        event_num = getattr(event, "num", None)
+        if event_num == 4:
+            delta_mhz = +self._KEY_FREQ_STEP_MHZ   # Linux scroll up = increase freq
+        elif event_num == 5:
+            delta_mhz = -self._KEY_FREQ_STEP_MHZ   # Linux scroll down = decrease freq
+        else:
+            delta = int(getattr(event, "delta", 0) or 0)
+            if delta == 0:
+                return "break"
+            # Windows: positive delta = scroll up = increase, negative = scroll down = decrease
+            delta_mhz = self._KEY_FREQ_STEP_MHZ if delta > 0 else -self._KEY_FREQ_STEP_MHZ
+
+        self._key_shift_freq(delta_mhz)
         return "break"
 
     def _key_shift_freq(self, delta_mhz: float):

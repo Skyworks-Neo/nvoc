@@ -119,6 +119,9 @@ class CanvasSlider(ctk.CTkFrame):
         self._canvas.bind("<Button-1>", self._on_pointer)
         self._canvas.bind("<B1-Motion>", self._on_pointer)
         self._canvas.bind("<ButtonRelease-1>", self._on_release)
+        self._canvas.bind("<MouseWheel>", self._on_mousewheel)
+        self._canvas.bind("<Button-4>", self._on_mousewheel)
+        self._canvas.bind("<Button-5>", self._on_mousewheel)
 
     def configure(self, require_redraw: bool = True, **kwargs):
         if "from_" in kwargs:
@@ -224,6 +227,40 @@ class CanvasSlider(ctk.CTkFrame):
             value = self._pending_command_value
             self._pending_command_value = None
             self._command(value)
+
+    def _on_mousewheel(self, event):
+        """Handle mouse wheel to step the slider value up/down."""
+        if self._state == "disabled":
+            return "break"
+
+        # Determine scroll direction: +1 = increment, -1 = decrement
+        event_num = getattr(event, "num", None)
+        if event_num == 4:
+            direction = -1   # Linux Button-4 (scroll up) = decrement
+        elif event_num == 5:
+            direction = 1    # Linux Button-5 (scroll down) = increment
+        else:
+            delta = int(getattr(event, "delta", 0) or 0)
+            if delta == 0:
+                return "break"
+            # Windows: positive delta = scroll up = decrement, negative = scroll down = increment
+            direction = -1 if delta > 0 else 1
+
+        lo, hi = (
+            (self._from, self._to) if self._from <= self._to else (self._to, self._from)
+        )
+        step_size = (hi - lo) / self._steps if self._steps > 0 else 0.0
+        if step_size <= 0:
+            return "break"
+
+        new_value = self._clamp(self._value + direction * step_size)
+        if abs(new_value - self._value) < 1e-9:
+            return "break"
+
+        self._value = new_value
+        self._redraw()
+        self._schedule_command(self._value)
+        return "break"
 
     def _redraw(self):
         c = self._canvas
