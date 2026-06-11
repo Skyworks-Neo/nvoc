@@ -639,6 +639,7 @@ class VFCurveTab:
             try:
                 canvas.get_tk_widget().destroy()
             except Exception:
+                # Best-effort cleanup: widget may already be destroyed during shutdown.
                 pass
             try:
                 canvas._tkphoto = None
