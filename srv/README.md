@@ -32,7 +32,7 @@ p.s. Remember to stop the service when you compile and build the project.
 ### 1.3 check the state
 
 ```
-.\notify\debug\uninstall_service.exe
+sc query nvoc_service
 ```
 
 ## 2 Check log
