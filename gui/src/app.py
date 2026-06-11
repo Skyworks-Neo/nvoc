@@ -7,6 +7,7 @@ import ctypes
 import os
 import re
 import sys
+import threading
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 import pystray
@@ -1347,6 +1348,23 @@ class App(ctk.CTk):
             return
         self._exiting = True
 
+        # If called from a non-main thread (e.g. pystray tray menu callback),
+        # schedule the heavy shutdown work on the main Tk thread to avoid:
+        #   1) self-join deadlock (worker thread calling tasks.shutdown(wait=True))
+        #   2) cross-thread Tk destroy (Tkinter is not thread-safe)
+        if threading.current_thread() is not threading.main_thread():
+            # Stop the tray icon from this thread — pystray stop must be
+            # called from the thread that owns the icon's run loop.
+            if self._tray_icon is not None:
+                self._tray_icon.stop()
+                self._tray_icon = None
+            self.after(0, self._do_shutdown)
+            return
+
+        self._do_shutdown()
+
+    def _do_shutdown(self):
+        """Perform shutdown cleanup. Must run on the main Tk thread."""
         # 1. Stop all periodic timers
         if self._memory_debug_sampler is not None:
             self._memory_debug_sampler.stop()
@@ -1365,12 +1383,12 @@ class App(ctk.CTk):
             if hasattr(self.tab_vfcurve, "cleanup"):
                 self.tab_vfcurve.cleanup()
 
-        # 2. Stop tray icon
+        # 2. Stop tray icon (no-op if already stopped from tray thread)
         if self._tray_icon is not None:
             self._tray_icon.stop()
             self._tray_icon = None
 
-        # 3. Shut down workers
+        # 3. Shut down workers (safe on main thread — main thread is not a worker)
         self.runner.shutdown()
         self.backend.shutdown()
         self.tasks.shutdown(wait=True)
