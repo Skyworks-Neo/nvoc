@@ -620,6 +620,7 @@ class VFCurveTab:
                 if canvas is not None:
                     canvas.mpl_disconnect(cid)
             except Exception:
+                # Best-effort cleanup: callback may already be disconnected or canvas invalid during shutdown.
                 pass
         self._mpl_connection_ids.clear()
 
