@@ -20,9 +20,7 @@ use nvoc_core::{
     BackendSet, ConvertEnum, GpuSelector, GpuTarget, ResetVfpDeltas, VfpResetDomain,
     discover_targets, run, select_targets, sync_memory_pstate_as_p0,
 };
-use oc_profile_function::{
-    export_vfp_from_log, fix_result, handle_vfp_export, handle_vfp_import,
-};
+use oc_profile_function::{export_vfp_from_log, fix_result, handle_vfp_export, handle_vfp_import};
 use oc_scanner::{autoscan_gpuboostv3, autoscan_legacy};
 use platform::is_elevated;
 use progressbar::init_scan_cli_color;

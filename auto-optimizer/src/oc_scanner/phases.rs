@@ -1,11 +1,11 @@
 use super::pressure::{PressureTestConfig, run_pressure_test};
 use super::runtime::{MinLoadPulse, run_output};
-use nvoc_core::sync_memory_pstate_as_p0;
 use crate::progressbar::ScanProgress;
 use crate::scan_log::{ScanArea, ScanLogWriter, TestPhase};
 use crate::scan_strategy::{FluctuationStrategy, StepController};
 use crate::scan_support::{handle_lock_vfp, local_time_hms, voltage_frequency_check};
 use clap::ArgMatches;
+use nvoc_core::sync_memory_pstate_as_p0;
 use nvoc_core::{
     ClockDomain, Error, GpuTarget, KilohertzDelta, Microvolts, NvapiLockedVoltageTarget, PState,
     QueryVfpPointVoltage, ResetVfpDeltas, SetVfpVoltageLock, VfpResetDomain,
