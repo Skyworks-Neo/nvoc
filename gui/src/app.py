@@ -80,6 +80,7 @@ class App(ctk.CTk):
         self._tray_thread = None  # type: Optional[Any]
         self._tray_image = None  # type: Optional[Image.Image]
         self._memory_debug_sampler = None  # type: Optional[MemoryDebugSampler]
+        self._exiting = False
 
         # ✕ Close button → exit completely
         # Minimize button → hide to tray (via <Unmap>)
@@ -1291,6 +1292,8 @@ class App(ctk.CTk):
 
     def _poll_single_instance_signal(self):
         """Restore the running instance when a duplicate launch requests it."""
+        if self._exiting:
+            return
         try:
             if (
                 self._single_instance_guard
@@ -1298,7 +1301,7 @@ class App(ctk.CTk):
             ):
                 self._activate_from_second_launch()
         finally:
-            if self.winfo_exists():
+            if not self._exiting and self.winfo_exists():
                 self.after(200, self._poll_single_instance_signal)
 
     def _activate_from_second_launch(self):
@@ -1339,14 +1342,38 @@ class App(ctk.CTk):
             pass
 
     def _quit_app(self, icon=None, item=None):
-        """Fully exit the application from the tray menu."""
+        """Fully exit the application."""
+        if self._exiting:
+            return
+        self._exiting = True
+
+        # 1. Stop all periodic timers
         if self._memory_debug_sampler is not None:
             self._memory_debug_sampler.stop()
             self._memory_debug_sampler = None
+
+        if hasattr(self, 'tab_dashboard') and self.tab_dashboard is not None:
+            self.tab_dashboard._stop_polling()
+
+        if hasattr(self, 'tab_overclock') and self.tab_overclock is not None:
+            if hasattr(self.tab_overclock, '_stop_auto_refresh'):
+                self.tab_overclock._stop_auto_refresh()
+            if hasattr(self.tab_overclock, 'cleanup'):
+                self.tab_overclock.cleanup()
+
+        if hasattr(self, 'tab_vfcurve') and self.tab_vfcurve is not None:
+            if hasattr(self.tab_vfcurve, 'cleanup'):
+                self.tab_vfcurve.cleanup()
+
+        # 2. Stop tray icon
         if self._tray_icon is not None:
             self._tray_icon.stop()
             self._tray_icon = None
+
+        # 3. Shut down workers
         self.runner.shutdown()
         self.backend.shutdown()
-        self.tasks.shutdown()
-        self.after(0, self.destroy)
+        self.tasks.shutdown(wait=True)
+
+        # 4. Destroy window synchronously
+        self.destroy()

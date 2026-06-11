@@ -204,10 +204,17 @@ class CLIRunner:
                 process.terminate()
             except OSError:
                 pass
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                try:
+                    process.kill()
+                except OSError:
+                    pass
 
     def shutdown(self) -> None:
         """Stop any active process and release fallback worker threads."""
         self.cancel()
         if self._fallback_executor is not None:
-            self._fallback_executor.shutdown(wait=False, cancel_futures=True)
+            self._fallback_executor.shutdown(wait=True, cancel_futures=True)
             self._fallback_executor = None

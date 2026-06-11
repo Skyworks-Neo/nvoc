@@ -64,7 +64,11 @@ class VFCurveTab:
         self._live_vline = None
         self._live_marker = None
         self._live_text = None
+        self._cleaned_up = False
+        self._chart_build_after_id: Optional[str] = None
         self._chart_resize_after_id = None
+        self._chart_configure_bind_id: Optional[str] = None
+        self._mpl_connection_ids: list[int] = []
         self._last_chart_event_width: Optional[int] = None
         self._last_chart_resize_width: Optional[int] = None
         self._pending_chart_resize_width: Optional[int] = None
@@ -137,7 +141,7 @@ class VFCurveTab:
         self._chart_frame.pack(fill="x", expand=False)
 
         # Schedule heavy chart init (and matplotlib import) to occur after UI starts
-        self.app.after(50, lambda: self._build_chart(self._chart_frame))
+        self._chart_build_after_id = self.app.after(50, self._build_chart_if_alive)
 
         # ── Chart toolbar ──
         toolbar = ctk.CTkFrame(self.frame, fg_color="transparent")
@@ -386,6 +390,17 @@ class VFCurveTab:
     # ────────────────────────────────────────────
     # Chart setup
     # ────────────────────────────────────────────
+    def _build_chart_if_alive(self):
+        self._chart_build_after_id = None
+        if self._cleaned_up:
+            return
+        try:
+            if not self._chart_frame.winfo_exists():
+                return
+        except Exception:
+            return
+        self._build_chart(self._chart_frame)
+
     @staticmethod
     def _get_screen_dpi_scale(widget) -> float:
         """Return the effective DPI scaling factor of the screen hosting *widget*.
@@ -404,6 +419,9 @@ class VFCurveTab:
 
     def _build_chart(self, parent: ctk.CTkFrame):
         """Create the matplotlib figure embedded in customtkinter."""
+        if self._cleaned_up or getattr(self, "canvas", None) is not None:
+            return
+
         # Lazy import matplotlib to avoid blocking GUI startup
         import matplotlib
 
@@ -456,7 +474,9 @@ class VFCurveTab:
 
         # Resize figure width when the parent frame width changes.
         # Height is kept fixed (3.5 in) so controls below are never squeezed out.
-        parent.bind("<Configure>", self._on_chart_resize, add="+")
+        self._chart_configure_bind_id = parent.bind(
+            "<Configure>", self._on_chart_resize, add="+"
+        )
 
         # Plot line references (created on first data load)
         self._line_current = None
@@ -465,9 +485,11 @@ class VFCurveTab:
         self._sel_points = None  # selected point markers
 
         # Connect mouse events
-        self.canvas.mpl_connect("button_press_event", self._on_mouse_press)
-        self.canvas.mpl_connect("button_release_event", self._on_mouse_release)
-        self.canvas.mpl_connect("motion_notify_event", self._on_mouse_move)
+        self._mpl_connection_ids = [
+            self.canvas.mpl_connect("button_press_event", self._on_mouse_press),
+            self.canvas.mpl_connect("button_release_event", self._on_mouse_release),
+            self.canvas.mpl_connect("motion_notify_event", self._on_mouse_move),
+        ]
 
     def _on_chart_resize(self, event):
         """Debounce figure width updates to avoid geometry thrash during live resize."""
@@ -561,6 +583,73 @@ class VFCurveTab:
             except Exception:
                 pass
             self._auto_refresh_job = None
+
+    def cleanup(self) -> None:
+        """Release matplotlib resources."""
+        self._cleaned_up = True
+
+        if self._chart_build_after_id is not None:
+            try:
+                self.app.after_cancel(self._chart_build_after_id)
+            except Exception:
+                pass
+            self._chart_build_after_id = None
+
+        if self._chart_resize_after_id is not None:
+            try:
+                self.app.after_cancel(self._chart_resize_after_id)
+            except Exception:
+                pass
+            self._chart_resize_after_id = None
+
+        self._stop_auto_refresh()
+
+        if self._chart_configure_bind_id is not None:
+            try:
+                self._chart_frame.unbind("<Configure>", self._chart_configure_bind_id)
+            except Exception:
+                pass
+            self._chart_configure_bind_id = None
+
+        canvas = getattr(self, "canvas", None)
+        for cid in self._mpl_connection_ids:
+            try:
+                if canvas is not None:
+                    canvas.mpl_disconnect(cid)
+            except Exception:
+                pass
+        self._mpl_connection_ids.clear()
+
+        self._live_elements.clear()
+        self._live_hline = None
+        self._live_vline = None
+        self._live_marker = None
+        self._live_text = None
+
+        self._line_current = None
+        self._line_default = None
+        self._sel_rect = None
+        self._sel_points = None
+
+        if canvas is not None:
+            try:
+                canvas.get_tk_widget().destroy()
+            except Exception:
+                pass
+            try:
+                canvas._tkphoto = None
+            except Exception:
+                pass
+            self.canvas = None
+
+        fig = getattr(self, "fig", None)
+        if fig is not None:
+            try:
+                fig.clear()
+            except Exception:
+                pass
+            self.fig = None
+        self.ax = None
 
     def _toggle_auto_refresh(self) -> None:
         if self._auto_refreshing:
