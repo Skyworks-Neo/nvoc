@@ -83,10 +83,10 @@ impl GpuOperation for QueryGpuInfo {
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
         let mut info = target.nvapi()?.info().map_err(Error::from)?;
-        if info.uuid.is_none() {
-            if let Ok(nvml) = target.nvml() {
-                info.uuid = low_nvml::query_nvml_uuid(nvml, target.id.0);
-            }
+        if info.uuid.is_none()
+            && let Ok(nvml) = target.nvml()
+        {
+            info.uuid = low_nvml::query_nvml_uuid(nvml, target.id.0);
         }
         Ok(info)
     }
