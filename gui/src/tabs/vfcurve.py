@@ -644,6 +644,7 @@ class VFCurveTab:
             try:
                 canvas._tkphoto = None
             except Exception:
+                # Best-effort teardown: ignore backend-specific cleanup failures.
                 pass
             self.canvas = None
 
