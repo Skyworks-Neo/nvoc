@@ -210,6 +210,7 @@ class CLIRunner:
                 try:
                     process.kill()
                 except OSError:
+                    # Best-effort cancellation: process may have already exited.
                     pass
 
     def shutdown(self) -> None:
