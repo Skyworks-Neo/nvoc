@@ -599,6 +599,7 @@ class VFCurveTab:
             try:
                 self.app.after_cancel(self._chart_resize_after_id)
             except Exception:
+                # Best-effort cleanup: timer may already be canceled/destroyed during teardown.
                 pass
             self._chart_resize_after_id = None
 
