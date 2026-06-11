@@ -610,6 +610,7 @@ class VFCurveTab:
             try:
                 self._chart_frame.unbind("<Configure>", self._chart_configure_bind_id)
             except Exception:
+                # Best-effort teardown: widget/bind may already be gone during shutdown.
                 pass
             self._chart_configure_bind_id = None
 
