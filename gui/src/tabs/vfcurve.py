@@ -592,6 +592,7 @@ class VFCurveTab:
             try:
                 self.app.after_cancel(self._chart_build_after_id)
             except Exception:
+                # Best-effort cleanup: callback may already be canceled or app may be shutting down.
                 pass
             self._chart_build_after_id = None
 
