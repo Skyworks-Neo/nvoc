@@ -148,6 +148,11 @@ class OverclockTab:
                 apply_cmd=self._apply_mem_only,
             )
         )
+        btn_apply_mem.configure(shift_command=self._apply_mem_with_sync)
+        HoverTooltip(
+            btn_apply_mem,
+            "Shift+Click: apply global offset then sync P2 memory VFP to P0 frequency",
+        )
 
         # Buttons
         btn_oc = ctk.CTkFrame(oc_frame, fg_color="transparent")
@@ -905,6 +910,26 @@ class OverclockTab:
                 )
                 or f"Successfully applied memory offset {value} MHz."
             ),
+        )
+
+    def _apply_mem_with_sync(self):
+        """Shift+click: apply memory offset then sync P2→P0."""
+        mem_mhz = self.mem_var.get().strip()
+        backend = self._selected_oc_backend()
+        try:
+            value = int(mem_mhz)
+        except ValueError:
+            return
+        gpu = self.app.selected_gpu_target()
+        self.app.run_native_action(
+            "apply memory offset + sync P2→P0",
+            lambda native, gpu=gpu, backend=backend, value=value: (
+                native.set_clock_offset(
+                    gpu, backend, "memory", value, self._oc_pstate()
+                ),
+                native.sync_memory_pstate_as_p0(gpu),
+                f"Applied memory offset {value} MHz + synced P2→P0.",
+            )[-1],
         )
 
     def _apply_plimit_only(self):

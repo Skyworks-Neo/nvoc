@@ -9,18 +9,7 @@ if not defined NVOC_CLI_BIN set "NVOC_CLI_BIN=..\target\release\nvoc-cli.exe"
 
 setlocal enabledelayedexpansion
 
-set "logfile=.\ws\vfp.jsonl"
-set "vfptemfile=.\ws\vfp-tem.csv"
 set "startpoint=0"
-
-if not exist ".\ws" (
- mkdir ".\ws"
- echo %ESC%[1;92m Folder created: .\ws %ESC%[0m
-)
-if not exist "%logfile%" (
- echo. > "%logfile%"
- echo %ESC%[1;92m Log file created: %logfile% %ESC%[0m
-)
 
 echo Detecting GPUs in system...
 "%NVOC_CLI_BIN%" list-gpus
@@ -31,12 +20,35 @@ echo.
 echo Selected GPU: %GPU_ID%
 echo.
 
+"%NVOC_CLI_BIN%" --gpu=%GPU_ID% get-uuid 2>NUL | findstr "GPU-" > "%TEMP%\nvoc_uuid.tmp"
+set /p UUID_LINE=<"%TEMP%\nvoc_uuid.tmp"
+del "%TEMP%\nvoc_uuid.tmp" 2>NUL
+for /f "tokens=1" %%u in ("%UUID_LINE:  =%") do set "UUID=%%u"
+set "UUID=%UUID:GPU-=%"
+
+if "%UUID%"=="" (
+    echo %ESC%[1;91m ERROR: Failed to resolve GPU UUID. Aborting. %ESC%[0m
+    exit /b 1
+)
+
+set "WSDIR=.\GPUScan-%UUID%"
+set "logfile=%WSDIR%\vfp.jsonl"
+set "vfptemfile=%WSDIR%\vfp-tem.csv"
+
+if not exist "%WSDIR%" (
+ mkdir "%WSDIR%"
+ echo %ESC%[1;92m Folder created: %WSDIR% %ESC%[0m
+)
+if not exist "%logfile%" (
+ echo. > "%logfile%"
+ echo %ESC%[1;92m Log file created: %logfile% %ESC%[0m
+)
+
 "%NVOC_CLI_BIN%" --gpu=%GPU_ID% reset-pstate-clock-offsets
 
 if "%~1"=="1" (
-    :: If para is 1, clear the log file
-    copy nul "%logfile%" > nul
-    copy nul "%vfptemfile%" > nul
+    copy nul "%logfile%" >NUL
+    copy nul "%vfptemfile%" >NUL
 )
 
 echo  =================================================================
@@ -51,6 +63,6 @@ echo %ESC%[1;93m If crash is unacceptable on your current situation, use Ctrl-C 
 
 pause
 
-"%NVOC_AUTO_OPTIMIZER_BIN%" --gpu=%GPU_ID% autoscan-vfp-legacy
+"%NVOC_AUTO_OPTIMIZER_BIN%" --gpu=%GPU_ID% autoscan-vfp-legacy --log "%logfile%"
 
-echo %ESC%[1;92m All VFP Scan Finish Please Close this Window and please check in file ws\vfp-final.csv %ESC%[0m
+echo %ESC%[1;92m All VFP Scan Finish Please Close this Window %ESC%[0m

@@ -1350,6 +1350,14 @@ fn set_pstate_clock_offset(gpu: &str, pstate: &str, domain: &str, delta: i32) ->
 }
 
 #[pyfunction]
+fn sync_memory_pstate_as_p0(gpu: &str) -> PyResult<()> {
+    let inventory = target_inventory(BackendSet::Nvapi)?;
+    let target = selected_target(&inventory, gpu)?;
+    nvoc_core::sync_memory_pstate_as_p0(&target).map_err(to_py_err)?;
+    Ok(())
+}
+
+#[pyfunction]
 fn set_cooler_levels(
     gpu: &str,
     policy: &str,
@@ -1967,6 +1975,7 @@ fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(set_pstate_base_voltage, m)?)?;
     m.add_function(wrap_pyfunction!(reset_pstate_base_voltages, m)?)?;
     m.add_function(wrap_pyfunction!(set_pstate_clock_offset, m)?)?;
+    m.add_function(wrap_pyfunction!(sync_memory_pstate_as_p0, m)?)?;
     m.add_function(wrap_pyfunction!(set_cooler_levels, m)?)?;
     m.add_function(wrap_pyfunction!(set_vfp_frequency_lock, m)?)?;
     m.add_function(wrap_pyfunction!(reset_vfp_frequency_lock, m)?)?;

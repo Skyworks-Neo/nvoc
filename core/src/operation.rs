@@ -82,7 +82,13 @@ impl GpuOperation for QueryGpuInfo {
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
-        target.nvapi()?.info().map_err(Error::from)
+        let mut info = target.nvapi()?.info().map_err(Error::from)?;
+        if info.uuid.is_none() {
+            if let Ok(nvml) = target.nvml() {
+                info.uuid = low_nvml::query_nvml_uuid(nvml, target.id.0);
+            }
+        }
+        Ok(info)
     }
 }
 
@@ -1573,6 +1579,52 @@ where
         .nvapi()?
         .set_cooler_levels(settings)
         .map_err(Error::from)
+}
+
+pub fn sync_memory_pstate_as_p0(target: &GpuTarget<'_>) -> Result<(), Error> {
+    let info = run(target, QueryGpuInfo)?.output;
+    let gpu_type = fetch_gpu_type(&info).unwrap_or(super::gpu_type::GpuType::Unknown);
+    let memory_points =
+        query_domain_vf_points_indexed(target, ClockDomain::Memory, gpu_type.is_legacy_vfp())?;
+
+    if memory_points.len() < 2 {
+        return Err(Error::Custom(
+            "memory VFP table has fewer than two points; cannot sync second stage to P0".into(),
+        ));
+    }
+
+    let (p0_index, p0_point) = memory_points
+        .last()
+        .cloned()
+        .ok_or_else(|| Error::Custom("memory VFP table is empty".into()))?;
+    let (sync_index, sync_point) = memory_points[memory_points.len() - 2].clone();
+
+    let new_delta =
+        sync_point.delta.0 as i64 + (p0_point.frequency.0 as i64 - sync_point.frequency.0 as i64);
+    let new_delta = i32::try_from(new_delta).map_err(|_| {
+        Error::Custom(format!(
+            "derived memory delta {} is out of i32 range for VFP point {}",
+            new_delta, sync_index
+        ))
+    })?;
+
+    set_nvapi_domain_vfp_deltas(
+        target,
+        ClockDomain::Memory,
+        &[(sync_index, KilohertzDelta(new_delta))],
+    )?;
+
+    println!(
+        "Synced memory VFP point {} to P0 point {}: current={} kHz, old_delta={} kHz, target={} kHz, new_delta={} kHz",
+        sync_index,
+        p0_index,
+        sync_point.frequency.0,
+        sync_point.delta.0,
+        p0_point.frequency.0,
+        new_delta
+    );
+
+    Ok(())
 }
 
 pub fn set_nvapi_legacy_clocks(

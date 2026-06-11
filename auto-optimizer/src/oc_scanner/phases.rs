@@ -1,6 +1,6 @@
 use super::pressure::{PressureTestConfig, run_pressure_test};
 use super::runtime::{MinLoadPulse, run_output};
-use crate::oc_profile_function::sync_memory_pstate_as_p0;
+use nvoc_core::sync_memory_pstate_as_p0;
 use crate::progressbar::ScanProgress;
 use crate::scan_log::{ScanArea, ScanLogWriter, TestPhase};
 use crate::scan_strategy::{FluctuationStrategy, StepController};

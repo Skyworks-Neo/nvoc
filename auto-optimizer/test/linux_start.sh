@@ -15,9 +15,6 @@ reset=$'\033[0m'
 
 cd "${auto_optimizer_dir}"
 
-logfile="./ws/vfp.jsonl"
-vfptemfile="./ws/vfp-tem.csv"
-
 if [[ ! -x "${bin}" ]]; then
     echo "${red}Missing executable: ${bin}${reset}" >&2
     echo "Build it with: cargo build --release -p nvoc-auto-optimizer" >&2
@@ -27,12 +24,6 @@ if [[ ! -x "${cli_bin}" ]]; then
     echo "${red}Missing executable: ${cli_bin}${reset}" >&2
     echo "Build it with: cargo build --release -p nvoc-cli" >&2
     exit 1
-fi
-
-mkdir -p ./ws
-if [[ ! -f "${logfile}" ]]; then
-    : > "${logfile}"
-    echo "${green}Log file created: ${logfile}${reset}"
 fi
 
 "${cli_bin}" get-info
@@ -51,13 +42,27 @@ echo
 echo "Selected GPU: ${gpu_id}"
 echo
 
+# Resolve GPU UUID for per-GPU workspace isolation
+uuid_raw=$("${cli_bin}" --gpu="${gpu_id}" get-uuid 2>/dev/null | tail -1 | tr -d '[:space:]')
+uuid="${uuid_raw#GPU-}"
+
+wsdir="./Scan-${uuid}"
+logfile="${wsdir}/vfp.jsonl"
+vfptemfile="${wsdir}/vfp-tem.csv"
+
+mkdir -p "${wsdir}"
+if [[ ! -f "${logfile}" ]]; then
+    : > "${logfile}"
+    echo "${green}Log file created: ${logfile}${reset}"
+fi
+
 sudo "${cli_bin}" --gpu="${gpu_id}" reset-pstate-clock-offsets
 sudo "${bin}" --gpu="${gpu_id}" reset-vfp
 sudo "${cli_bin}" --gpu="${gpu_id}" reset-vfp-lock
 
-if [[ ! -f "./ws/vfp-init.csv" ]]; then
+if [[ ! -f "${wsdir}/vfp-init.csv" ]]; then
     echo "exporting default data..."
-    sudo "${bin}" --gpu="${gpu_id}" export-vfp ./ws/vfp-init.csv
+    sudo "${bin}" --gpu="${gpu_id}" export-vfp "${wsdir}/vfp-init.csv"
 fi
 
 if [[ "${1:-}" == "1" ]]; then
@@ -78,11 +83,14 @@ echo
 read -r -p "Press Enter to start autoscan..."
 
 sudo "${bin}" --gpu="${gpu_id}" autoscan-vfp \
+    --log "${logfile}" \
+    -i "${wsdir}/vfp-init.csv" \
+    -o "${vfptemfile}" \
     --test-exe ./test/test_cuda_linux.sh \
     --minload-exe ./test/cli-stressor-cuda-rs-minload.sh \
     --stressor-extra-args --gpu-index "${gpu_id}"
-sudo "${bin}" --gpu="${gpu_id}" fix-vfp-result -m 1
-sudo "${bin}" --gpu="${gpu_id}" import-vfp ./ws/vfp.csv
-sudo "${bin}" --gpu="${gpu_id}" export-vfp ./ws/vfp-final.csv
+sudo "${bin}" --gpu="${gpu_id}" fix-vfp-result -m 1 -v "${vfptemfile}" -o "${wsdir}/vfp.csv" -l "${logfile}"
+sudo "${bin}" --gpu="${gpu_id}" import-vfp "${wsdir}/vfp.csv"
+sudo "${bin}" --gpu="${gpu_id}" export-vfp "${wsdir}/vfp-final.csv"
 
-echo "${green}All VFP scan finished. Check auto-optimizer/ws/vfp-final.csv.${reset}"
+echo "${green}All VFP scan finished. Check ${wsdir}/vfp-final.csv.${reset}"

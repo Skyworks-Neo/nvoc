@@ -117,6 +117,7 @@ pub enum Command {
     ListGpus,
     ListDisplays,
     GetInfo,
+    GetUuid,
     GetStatus,
     GetSettings,
     GetVfp,
@@ -183,6 +184,7 @@ impl Command {
             Self::ListGpus => "list-gpus",
             Self::ListDisplays => "list-displays",
             Self::GetInfo => "get-info",
+            Self::GetUuid => "get-uuid",
             Self::GetStatus => "get-status",
             Self::GetSettings => "get-settings",
             Self::GetVfp => "get-vfp",
@@ -245,6 +247,7 @@ impl Command {
             Self::ListGpus => "List discovered GPUs and available backends",
             Self::ListDisplays => "List NVAPI display IDs for EDID operations",
             Self::GetInfo => "Read NVAPI GPU identity and capability information",
+            Self::GetUuid => "Read GPU UUID",
             Self::GetStatus => "Read NVAPI live GPU status",
             Self::GetSettings => "Read NVAPI overclock settings",
             Self::GetVfp => "Read V-F curve points",
@@ -590,6 +593,7 @@ const COMMANDS: &[Command] = &[
     Command::ListGpus,
     Command::ListDisplays,
     Command::GetInfo,
+    Command::GetUuid,
     Command::GetStatus,
     Command::GetSettings,
     Command::GetVfp,
@@ -1326,12 +1330,13 @@ fn list_gpus_execution(
             continue;
         }
 
-        let name = if target.has_nvapi() {
+        let (name, uuid) = if target.has_nvapi() {
             run(&target, QueryGpuInfo)
                 .ok()
-                .map(|report| report.output.name)
+                .map(|report| (Some(report.output.name), report.output.uuid))
+                .unwrap_or((None, None))
         } else {
-            None
+            (None, None)
         };
 
         results.push(TargetResult {
@@ -1351,6 +1356,7 @@ fn list_gpus_execution(
                 "pci_bus": target.id.pci_bus(),
                 "backend_nvapi": target.has_nvapi(),
                 "backend_nvml": target.has_nvml(),
+                "uuid": uuid,
                 "name": name,
             })),
             error: None,
@@ -1371,6 +1377,8 @@ fn list_gpus_execution(
 
 fn discovery_backend_set(command: Command, adapter: BackendAdapter) -> BackendSet {
     match (command, adapter) {
+        (Command::GetInfo, BackendAdapter::Nvapi) => BackendSet::Both,
+        (Command::GetUuid, BackendAdapter::Nvapi) => BackendSet::Both,
         (Command::SetPstateLock, BackendAdapter::Nvapi) => BackendSet::Both,
         (_, BackendAdapter::Nvapi) => BackendSet::Nvapi,
         (_, BackendAdapter::Nvml) => BackendSet::Nvml,
@@ -1427,6 +1435,10 @@ fn execute_target(
             ))
         }
         Command::GetInfo => Ok(serde_json::to_value(run(target, QueryGpuInfo)?.output)?),
+        Command::GetUuid => {
+            let info = run(target, QueryGpuInfo)?.output;
+            Ok(Value::String(info.uuid.unwrap_or_default()))
+        }
         Command::GetStatus => Ok(serde_json::to_value(run(target, QueryGpuStatus)?.output)?),
         Command::GetSettings => Ok(serde_json::to_value(run(target, QueryGpuSettings)?.output)?),
         Command::GetVfp => get_vfp(target, invocation),

@@ -985,6 +985,7 @@ mod tests {
                 "pci_bus": 1,
                 "backend_nvapi": true,
                 "backend_nvml": true,
+                "uuid": "GPU-12345678-abcd-1234-abcd-1234567890ab",
                 "name": "GPU",
             }),
             Command::ListDisplays => json!([{
@@ -1005,6 +1006,7 @@ mod tests {
                 "architecture": "Ada",
                 "driver_version": "555.0",
             }),
+            Command::GetUuid => json!("GPU-12345678-abcd-1234-abcd-1234567890ab"),
             Command::GetStatus => json!({
                 "temperature_c": 65,
                 "core_clock_mhz": 1800,

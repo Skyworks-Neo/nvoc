@@ -572,6 +572,7 @@ class LiteButton(ctk.CTkFrame):
         super().__init__(parent, fg_color="transparent", width=width, height=height)
         self._text = text
         self._command = command
+        self._shift_command = None
         self._state = "normal"
         self._fg_color = fg_color
         self._hover_color = hover_color
@@ -596,6 +597,8 @@ class LiteButton(ctk.CTkFrame):
             self._text = kwargs.pop("text")
         if "command" in kwargs:
             self._command = kwargs.pop("command")
+        if "shift_command" in kwargs:
+            self._shift_command = kwargs.pop("shift_command")
         if "state" in kwargs:
             self._state = kwargs.pop("state")
         if "fg_color" in kwargs:
@@ -647,8 +650,12 @@ class LiteButton(ctk.CTkFrame):
             return
         w = max(1, self._canvas.winfo_width())
         h = max(1, self._canvas.winfo_height())
-        if 0 <= event.x <= w and 0 <= event.y <= h and callable(self._command):
-            self._command()
+        if 0 <= event.x <= w and 0 <= event.y <= h:
+            shift_held = bool(event.state & 0x0001)
+            if shift_held and callable(self._shift_command):
+                self._shift_command()
+            elif callable(self._command):
+                self._command()
 
     def _rounded_rect(self, x0, y0, x1, y1, r, **kwargs):
         points = [

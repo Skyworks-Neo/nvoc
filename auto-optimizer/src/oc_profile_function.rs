@@ -18,11 +18,10 @@ use nvoc_core::{
     GpuOperation, GpuType, QueryGpuInfo, SetNvapiPowerLimits, SetNvapiSensorLimits,
     SetPstateBaseVoltage, SetVfpPointDelta, SetVoltageBoost, fetch_gpu_type,
     legacy_p0_core_max_voltage_delta, query_domain_vf_points_indexed, query_domain_vfp_indices,
-    run, set_nvapi_cooler_settings, set_nvapi_domain_vfp_deltas,
+    run, set_nvapi_cooler_settings, set_nvapi_domain_vfp_deltas, sync_memory_pstate_as_p0,
 };
 use std::cmp::min;
 use std::collections::BTreeSet;
-use std::convert::TryFrom;
 use std::fs;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
@@ -499,8 +498,15 @@ pub fn handle_vfp_export(gpu: &GpuTarget<'_>, matches: &clap::ArgMatches) -> Res
         let points_load = collect_domain_vf_points(gpu, domain, legacy_vfp_flag)?.into_iter();
 
         // Export the load-default frequency to a temporary file
-        let temp_file = "./ws/temp_load.csv";
-        export_vfp(File::create(temp_file)?, points_load, delimiter)?;
+        // Derive from the output path so it lands in the same directory (e.g. Scan-<UUID>/)
+        let temp_file = {
+            let parent = std::path::Path::new(output)
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| std::path::PathBuf::from("."));
+            parent.join("temp_load.csv").to_string_lossy().into_owned()
+        };
+        export_vfp(File::create(&temp_file)?, points_load, delimiter)?;
 
         // Step 4: Kill the load process
         if let Err(e) = child.kill() {
@@ -512,7 +518,7 @@ pub fn handle_vfp_export(gpu: &GpuTarget<'_>, matches: &clap::ArgMatches) -> Res
 
         // Extract only default_frequency column from temp file
         let default_frequencies = extract_default_frequencies(output, legacy_vfp_flag)?;
-        let default_frequencies_load = extract_default_frequencies(temp_file, legacy_vfp_flag)?;
+        let default_frequencies_load = extract_default_frequencies(&temp_file, legacy_vfp_flag)?;
 
         // Update original CSV with the new columns
         update_csv_with_load_and_margin(
@@ -572,52 +578,6 @@ fn set_domain_vfp_deltas_raw(
     deltas: &[(usize, KilohertzDelta)],
 ) -> Result<(), Error> {
     set_nvapi_domain_vfp_deltas(gpu, domain, deltas)
-}
-
-pub fn sync_memory_pstate_as_p0(gpu: &GpuTarget<'_>) -> Result<(), Error> {
-    let info = run_output(gpu, QueryGpuInfo)?;
-    let gpu_type = fetch_gpu_type(&info).unwrap_or(GpuType::Unknown);
-    let memory_points =
-        collect_domain_vf_points_indexed(gpu, ClockDomain::Memory, gpu_type.is_legacy_vfp())?;
-
-    if memory_points.len() < 2 {
-        return Err(Error::Custom(
-            "memory VFP table has fewer than two points; cannot sync second stage to P0".into(),
-        ));
-    }
-
-    let (p0_index, p0_point) = memory_points
-        .last()
-        .cloned()
-        .ok_or_else(|| Error::Custom("memory VFP table is empty".into()))?;
-    let (sync_index, sync_point) = memory_points[memory_points.len() - 2].clone();
-
-    let new_delta =
-        sync_point.delta.0 as i64 + (p0_point.frequency.0 as i64 - sync_point.frequency.0 as i64);
-    let new_delta = i32::try_from(new_delta).map_err(|_| {
-        Error::Custom(format!(
-            "derived memory delta {} is out of i32 range for VFP point {}",
-            new_delta, sync_index
-        ))
-    })?;
-
-    set_domain_vfp_deltas_raw(
-        gpu,
-        ClockDomain::Memory,
-        &[(sync_index, KilohertzDelta(new_delta))],
-    )?;
-
-    println!(
-        "Synced memory VFP point {} to P0 point {}: current={} kHz, old_delta={} kHz, target={} kHz, new_delta={} kHz",
-        sync_index,
-        p0_index,
-        sync_point.frequency.0,
-        sync_point.delta.0,
-        p0_point.frequency.0,
-        new_delta
-    );
-
-    Ok(())
 }
 
 pub fn handle_vfp_import(gpu: &GpuTarget<'_>, matches: &clap::ArgMatches) -> Result<(), Error> {

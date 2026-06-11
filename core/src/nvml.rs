@@ -31,6 +31,18 @@ fn find_nvml_device_err(nvml: &'_ Nvml, gpu_id: u32) -> Result<nvml_wrapper::Dev
 }
 
 // ---------------------------------------------------------------------------
+// UUID query
+// ---------------------------------------------------------------------------
+
+/// Query GPU UUID via NVML.
+///
+/// `gpu_id` uses the NVAPI encoding: `PCI_Bus_Number × 256`.
+pub fn query_nvml_uuid(nvml: &Nvml, gpu_id: u32) -> Option<String> {
+    let device = find_nvml_device(nvml, gpu_id)?;
+    device.uuid().ok()
+}
+
+// ---------------------------------------------------------------------------
 // Power queries
 // ---------------------------------------------------------------------------
 
