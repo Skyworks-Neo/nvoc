@@ -651,6 +651,7 @@ class VFCurveTab:
             try:
                 fig.clear()
             except Exception:
+                # Best-effort cleanup: figure may already be disposed during shutdown.
                 pass
             self.fig = None
         self.ax = None
