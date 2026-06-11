@@ -59,12 +59,12 @@ from ._native import (
     set_pstate_base_voltage,
     set_pstate_clock_offset,
     set_thermal_limit,
-    sync_memory_pstate_as_p0,
     set_vfp_frequency_lock,
     set_vfp_point_delta,
     set_vfp_range_delta,
     set_vfp_voltage_lock,
     set_voltage_boost,
+    sync_memory_pstate_as_p0,
 )
 
 __all__ = [
@@ -128,10 +128,10 @@ __all__ = [
     "set_pstate_base_voltage",
     "set_pstate_clock_offset",
     "set_thermal_limit",
-    "sync_memory_pstate_as_p0",
     "set_vfp_frequency_lock",
     "set_vfp_point_delta",
     "set_vfp_range_delta",
     "set_vfp_voltage_lock",
     "set_voltage_boost",
+    "sync_memory_pstate_as_p0",
 ]

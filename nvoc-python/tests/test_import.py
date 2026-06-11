@@ -82,6 +82,7 @@ EXPECTED_EXPORTS = [
     "set_vfp_range_delta",
     "set_vfp_voltage_lock",
     "set_voltage_boost",
+    "sync_memory_pstate_as_p0",
 ]
 
 
