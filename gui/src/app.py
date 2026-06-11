@@ -600,7 +600,7 @@ class App(ctk.CTk):
             self.console.append(f"[GUI] GPU switched to: {selected}\n")
 
         # Reset dashboard VFP-lock sentinel so first poll after switch always syncs
-        if hasattr(self, "tab_dashboard"):
+        if self.tab_dashboard is not None:
             self.tab_dashboard._last_vfp_lock_mv = object()
         self._dashboard_gpu_lock_active = False
         self._dashboard_mem_lock_active = False
