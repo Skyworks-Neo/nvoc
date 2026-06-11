@@ -61,7 +61,7 @@ class OutputConsole(ctk.CTkFrame):
             self.textbox.pack_forget()
 
     def append(self, text: str) -> None:
-        """Append text to the console (thread-safe) and keep only the last 1000 lines."""
+        """Append text to the console (thread-safe) and keep only the last 100 lines."""
         with self._lock:
             self.textbox.configure(state="normal")
 
@@ -80,7 +80,7 @@ class OutputConsole(ctk.CTkFrame):
                 # If it's a message with a return code that isn't 0
                 self.textbox.tag_add("red", start_index, end_index)
 
-            # Keep only the last 1000 lines
+            # Keep only the last 100 lines
             line_count = int(float(self.textbox.index("end-1c")))
             if line_count > self._MAX_LINES:
                 self.textbox.delete("1.0", f"{line_count - self._MAX_LINES}.0")
