@@ -18,6 +18,7 @@ clap = { workspace = true }
 rand = "0.9"
 rand_distr = "0.5"
 matrixmultiply = "0.3.10"
+rayon = "1.10"
 thiserror = "2.0.18"
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.8"
