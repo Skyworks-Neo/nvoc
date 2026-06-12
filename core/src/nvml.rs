@@ -2,7 +2,7 @@ use super::conv::{nvml_pstate_to_index, nvml_pstate_to_str};
 use super::error::Error;
 use super::target::GpuId;
 use nvml_wrapper::Nvml;
-use nvml_wrapper::enum_wrappers::device::PerformanceState;
+use nvml_wrapper::enum_wrappers::device::{Api, PerformanceState};
 use nvml_wrapper::enums::device::FanControlPolicy;
 
 pub type NvmlPStateClockRange = (PerformanceState, u32, u32, u32, u32);
@@ -28,6 +28,18 @@ fn find_nvml_device(nvml: &'_ Nvml, gpu_id: u32) -> Option<nvml_wrapper::Device<
 fn find_nvml_device_err(nvml: &'_ Nvml, gpu_id: u32) -> Result<nvml_wrapper::Device<'_>, Error> {
     find_nvml_device(nvml, gpu_id)
         .ok_or_else(|| Error::Custom(format!("GPU {} not found in NVML", gpu_id)))
+}
+
+// ---------------------------------------------------------------------------
+// UUID query
+// ---------------------------------------------------------------------------
+
+/// Query GPU UUID via NVML.
+///
+/// `gpu_id` uses the NVAPI encoding: `PCI_Bus_Number × 256`.
+pub fn query_nvml_uuid(nvml: &Nvml, gpu_id: u32) -> Option<String> {
+    let device = find_nvml_device(nvml, gpu_id)?;
+    device.uuid().ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -59,6 +71,14 @@ pub fn set_nvml_auto_boost(nvml: &Nvml, gpu_id: u32, enabled: bool) -> Result<()
         .map_err(|e| Error::Custom(format!("NVML Set Auto Boost Error: {:?}", e)))
 }
 
+pub fn query_nvml_auto_boost(nvml: &Nvml, gpu_id: u32) -> Result<(bool, bool), Error> {
+    let device = find_nvml_device_err(nvml, gpu_id)?;
+    let info = device
+        .auto_boosted_clocks_enabled()
+        .map_err(|e| Error::Custom(format!("NVML Query Auto Boost Error: {:?}", e)))?;
+    Ok((info.is_enabled, info.is_enabled_default))
+}
+
 pub fn set_nvml_auto_boost_default(nvml: &Nvml, gpu_id: u32, enabled: bool) -> Result<(), Error> {
     let mut device = find_nvml_device_err(nvml, gpu_id)?;
     device
@@ -69,13 +89,20 @@ pub fn set_nvml_auto_boost_default(nvml: &Nvml, gpu_id: u32, enabled: bool) -> R
 pub fn set_nvml_api_restriction(
     nvml: &Nvml,
     gpu_id: u32,
-    api_type: nvml_wrapper::enum_wrappers::device::Api,
+    api_type: Api,
     restricted: bool,
 ) -> Result<(), Error> {
     let mut device = find_nvml_device_err(nvml, gpu_id)?;
     device
         .set_api_restricted(api_type, restricted)
         .map_err(|e| Error::Custom(format!("NVML Set API Restriction Error: {:?}", e)))
+}
+
+pub fn query_nvml_api_restriction(nvml: &Nvml, gpu_id: u32, api_type: Api) -> Result<bool, Error> {
+    let device = find_nvml_device_err(nvml, gpu_id)?;
+    device
+        .is_api_restricted(api_type)
+        .map_err(|e| Error::Custom(format!("NVML Query API Restriction Error: {:?}", e)))
 }
 
 pub fn set_nvml_power_limit(nvml: &Nvml, gpu_id: u32, limit_w: u32) -> Result<(), Error> {

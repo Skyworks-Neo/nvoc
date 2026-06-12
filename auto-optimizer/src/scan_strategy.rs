@@ -339,6 +339,11 @@ impl StepController {
     pub fn is_converged(&self) -> bool {
         self.test_progress_num >= self.current_step_exp
     }
+
+    /// Reset per-phase binary-search progress before starting a fresh short scan.
+    pub fn reset_search_progress(&mut self) {
+        self.test_progress_num = 0;
+    }
 }
 
 // ──────────────────── ScanParams ────────────────────────────────────────────
@@ -569,6 +574,7 @@ pub fn run_short_phase(
         } else {
             println!("Skipping short test phase entirely (already converged).");
         }
+        controller.reset_search_progress();
         return Ok(ShortPhaseResult {
             test_count: 0,
             skipped: true,
@@ -613,6 +619,7 @@ pub fn run_short_phase(
         }
     }
 
+    controller.reset_search_progress();
     println!(
         "Short test phase finished. Current freq_delta: +{}kHz",
         controller.f_current
@@ -733,6 +740,36 @@ mod tests {
         // After on_test_passed, progress decrements, so it may not be None
         // Just verify the controller remains in a valid state
         assert!(ctrl.f_current > 0);
+    }
+
+    #[test]
+    fn test_reset_search_progress_restores_next_point_step() {
+        let mut stale = StepController {
+            current_step_exp: 3,
+            test_progress_num: 3,
+            f_current: 120_000,
+            f_max: 240_000,
+        };
+
+        stale.test_progress_num += 1;
+        let stale_result = stale.on_test_passed(15_000);
+
+        assert_eq!(stale.f_current, 135_000);
+        assert!(stale_result.is_none());
+
+        let mut reset = StepController {
+            current_step_exp: 3,
+            test_progress_num: 3,
+            f_current: 120_000,
+            f_max: 240_000,
+        };
+
+        reset.reset_search_progress();
+        reset.test_progress_num += 1;
+        let reset_result = reset.on_test_passed(15_000);
+
+        assert_eq!(reset.f_current, 180_000);
+        assert_eq!(reset_result, Some(60_000));
     }
 
     #[test]

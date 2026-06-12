@@ -221,15 +221,24 @@ impl CudaBackend {
                             .map_err(|err| BackendError::Other(err.to_string()))?,
                     );
                 }
+                // Allocate the output buffers once and reuse them across all
+                // iterations. With beta = 0 every gemm overwrites C, so reusing
+                // the same buffer is numerically identical, and it removes a
+                // synchronous device alloc + zero of size*size per gemm that
+                // otherwise serializes the streams and starves the GPU.
+                let mut c_devs = Vec::with_capacity(lane_count);
+                for lane in 0..lane_count {
+                    c_devs.push(
+                        self.stream_for_lane(lane)
+                            .alloc_zeros::<bf16>(size * size)
+                            .map_err(|err| BackendError::Other(err.to_string()))?,
+                    );
+                }
                 for _ in 0..warmup_iters {
                     for lane in 0..lane_count {
-                        let stream = self.stream_for_lane(lane);
                         let blas = self.blas_for_lane(lane);
-                        let mut c = stream
-                            .alloc_zeros::<bf16>(size * size)
-                            .map_err(|err| BackendError::Other(err.to_string()))?;
                         unsafe {
-                            blas.gemm(cfg, &a_devs[lane], &b_devs[lane], &mut c)
+                            blas.gemm(cfg, &a_devs[lane], &b_devs[lane], &mut c_devs[lane])
                                 .map_err(|err| BackendError::Other(err.to_string()))?;
                         }
                     }
@@ -242,13 +251,9 @@ impl CudaBackend {
                 let op_start = Instant::now();
                 for _ in 0..burst_iters {
                     for lane in 0..lane_count {
-                        let stream = self.stream_for_lane(lane);
                         let blas = self.blas_for_lane(lane);
-                        let mut c = stream
-                            .alloc_zeros::<bf16>(size * size)
-                            .map_err(|err| BackendError::Other(err.to_string()))?;
                         unsafe {
-                            blas.gemm(cfg, &a_devs[lane], &b_devs[lane], &mut c)
+                            blas.gemm(cfg, &a_devs[lane], &b_devs[lane], &mut c_devs[lane])
                                 .map_err(|err| BackendError::Other(err.to_string()))?;
                         }
                     }
@@ -292,15 +297,20 @@ impl CudaBackend {
                             .map_err(|err| BackendError::Other(err.to_string()))?,
                     );
                 }
+                // Reuse output buffers across iterations (beta = 0 overwrites C).
+                let mut c_devs = Vec::with_capacity(lane_count);
+                for lane in 0..lane_count {
+                    c_devs.push(
+                        self.stream_for_lane(lane)
+                            .alloc_zeros::<f16>(size * size)
+                            .map_err(|err| BackendError::Other(err.to_string()))?,
+                    );
+                }
                 for _ in 0..warmup_iters {
                     for lane in 0..lane_count {
-                        let stream = self.stream_for_lane(lane);
                         let blas = self.blas_for_lane(lane);
-                        let mut c = stream
-                            .alloc_zeros::<f16>(size * size)
-                            .map_err(|err| BackendError::Other(err.to_string()))?;
                         unsafe {
-                            blas.gemm(cfg, &a_devs[lane], &b_devs[lane], &mut c)
+                            blas.gemm(cfg, &a_devs[lane], &b_devs[lane], &mut c_devs[lane])
                                 .map_err(|err| BackendError::Other(err.to_string()))?;
                         }
                     }
@@ -313,13 +323,9 @@ impl CudaBackend {
                 let op_start = Instant::now();
                 for _ in 0..burst_iters {
                     for lane in 0..lane_count {
-                        let stream = self.stream_for_lane(lane);
                         let blas = self.blas_for_lane(lane);
-                        let mut c = stream
-                            .alloc_zeros::<f16>(size * size)
-                            .map_err(|err| BackendError::Other(err.to_string()))?;
                         unsafe {
-                            blas.gemm(cfg, &a_devs[lane], &b_devs[lane], &mut c)
+                            blas.gemm(cfg, &a_devs[lane], &b_devs[lane], &mut c_devs[lane])
                                 .map_err(|err| BackendError::Other(err.to_string()))?;
                         }
                     }
@@ -361,15 +367,20 @@ impl CudaBackend {
                             .map_err(|err| BackendError::Other(err.to_string()))?,
                     );
                 }
+                // Reuse output buffers across iterations (beta = 0 overwrites C).
+                let mut c_devs = Vec::with_capacity(lane_count);
+                for lane in 0..lane_count {
+                    c_devs.push(
+                        self.stream_for_lane(lane)
+                            .alloc_zeros::<f32>(size * size)
+                            .map_err(|err| BackendError::Other(err.to_string()))?,
+                    );
+                }
                 for _ in 0..warmup_iters {
                     for lane in 0..lane_count {
-                        let stream = self.stream_for_lane(lane);
                         let blas = self.blas_for_lane(lane);
-                        let mut c = stream
-                            .alloc_zeros::<f32>(size * size)
-                            .map_err(|err| BackendError::Other(err.to_string()))?;
                         unsafe {
-                            blas.gemm(cfg, &a_devs[lane], &b_devs[lane], &mut c)
+                            blas.gemm(cfg, &a_devs[lane], &b_devs[lane], &mut c_devs[lane])
                                 .map_err(|err| BackendError::Other(err.to_string()))?;
                         }
                     }
@@ -382,13 +393,9 @@ impl CudaBackend {
                 let op_start = Instant::now();
                 for _ in 0..burst_iters {
                     for lane in 0..lane_count {
-                        let stream = self.stream_for_lane(lane);
                         let blas = self.blas_for_lane(lane);
-                        let mut c = stream
-                            .alloc_zeros::<f32>(size * size)
-                            .map_err(|err| BackendError::Other(err.to_string()))?;
                         unsafe {
-                            blas.gemm(cfg, &a_devs[lane], &b_devs[lane], &mut c)
+                            blas.gemm(cfg, &a_devs[lane], &b_devs[lane], &mut c_devs[lane])
                                 .map_err(|err| BackendError::Other(err.to_string()))?;
                         }
                     }
@@ -432,15 +439,20 @@ impl CudaBackend {
                             .map_err(|err| BackendError::Other(err.to_string()))?,
                     );
                 }
+                // Reuse output buffers across iterations (beta = 0 overwrites C).
+                let mut c_devs = Vec::with_capacity(lane_count);
+                for lane in 0..lane_count {
+                    c_devs.push(
+                        self.stream_for_lane(lane)
+                            .alloc_zeros::<f64>(size * size)
+                            .map_err(|err| BackendError::Other(err.to_string()))?,
+                    );
+                }
                 for _ in 0..warmup_iters {
                     for lane in 0..lane_count {
-                        let stream = self.stream_for_lane(lane);
                         let blas = self.blas_for_lane(lane);
-                        let mut c = stream
-                            .alloc_zeros::<f64>(size * size)
-                            .map_err(|err| BackendError::Other(err.to_string()))?;
                         unsafe {
-                            blas.gemm(cfg, &a_devs[lane], &b_devs[lane], &mut c)
+                            blas.gemm(cfg, &a_devs[lane], &b_devs[lane], &mut c_devs[lane])
                                 .map_err(|err| BackendError::Other(err.to_string()))?;
                         }
                     }
@@ -453,13 +465,9 @@ impl CudaBackend {
                 let op_start = Instant::now();
                 for _ in 0..burst_iters {
                     for lane in 0..lane_count {
-                        let stream = self.stream_for_lane(lane);
                         let blas = self.blas_for_lane(lane);
-                        let mut c = stream
-                            .alloc_zeros::<f64>(size * size)
-                            .map_err(|err| BackendError::Other(err.to_string()))?;
                         unsafe {
-                            blas.gemm(cfg, &a_devs[lane], &b_devs[lane], &mut c)
+                            blas.gemm(cfg, &a_devs[lane], &b_devs[lane], &mut c_devs[lane])
                                 .map_err(|err| BackendError::Other(err.to_string()))?;
                         }
                     }
