@@ -5,13 +5,14 @@ use super::nvml::{
     build_supported_pstate_list, collect_outside_requested_range, find_pstate_entry,
     get_nvml_pstate_info,
 };
+use super::result::PstateBaseVoltage;
 use super::types::{NvapiLockedVoltageTarget, VfpResetDomain};
 pub use nvapi_hi::ThermalSensors;
-use nvapi_hi::nvapi::{CelsiusShifted, VoltageDomain};
+use nvapi_hi::nvapi::{CelsiusShifted, DisplayIdsFlags, VoltageDomain};
 use nvapi_hi::{
-    Celsius, ClockDomain, ClockLockEntry, ClockLockValue, CoolerPolicy, CoolerSettings,
-    FanCoolerId, Gpu, Kilohertz, KilohertzDelta, Microvolts, MicrovoltsDelta, PState, Percentage,
-    PerfLimitId, PffCurve, PffPoint, VfpPoint,
+    Celsius, ClockDomain, ClockLockEntry, ClockLockValue, ConnectedIdsFlags, CoolerPolicy,
+    CoolerSettings, FanCoolerId, Gpu, Kilohertz, KilohertzDelta, Microvolts, MicrovoltsDelta,
+    PState, Percentage, PerfLimitId, PffCurve, PffPoint, VfpPoint,
 };
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
@@ -46,6 +47,72 @@ pub enum VfpLockRequest {
         upper: Kilohertz,
         lower: Option<Kilohertz>,
     },
+}
+
+pub fn query_pstate_base_voltage(
+    gpu: &Gpu,
+    target_pstate: PState,
+) -> Result<PstateBaseVoltage, Error> {
+    let pstates = gpu
+        .inner()
+        .pstates()
+        .map_err(|e| Error::from(format!("Failed to read pstates: {:?}", e)))?;
+
+    let target_ps = pstates
+        .pstates
+        .iter()
+        .find(|p| p.id == target_pstate)
+        .ok_or_else(|| Error::from(format!("{:?} pstate not found", target_pstate)))?;
+
+    let base_volt = target_ps
+        .base_voltages
+        .iter()
+        .find(|v| v.voltage_domain == VoltageDomain::Core)
+        .ok_or_else(|| {
+            Error::from(format!(
+                "{:?} Core baseVoltage entry not found — GPU may not support pstate voltage control",
+                target_pstate
+            ))
+        })?;
+
+    Ok(PstateBaseVoltage {
+        pstate: target_ps.id,
+        voltage_domain: base_volt.voltage_domain,
+        editable: base_volt.editable,
+        voltage: base_volt.voltage,
+        delta: base_volt.voltage_delta.value,
+        min_delta: base_volt.voltage_delta.range.min,
+        max_delta: base_volt.voltage_delta.range.max,
+    })
+}
+
+pub fn query_displays(gpu: &Gpu, all: bool) -> Result<Vec<super::result::DisplayInfo>, Error> {
+    let displays = if all {
+        gpu.inner().display_ids_all()
+    } else {
+        gpu.inner()
+            .display_ids_connected(ConnectedIdsFlags::empty())
+    }
+    .map_err(Error::from)?;
+
+    Ok(displays
+        .into_iter()
+        .map(|display| {
+            let flags = display.flags;
+            super::result::DisplayInfo {
+                display_id: display.display_id,
+                connector: display.connector.to_string(),
+                flags_bits: flags.bits(),
+                connected: flags.contains(DisplayIdsFlags::CONNECTED),
+                physically_connected: flags.contains(DisplayIdsFlags::PHYSICALLY_CONNECTED),
+                active: flags.contains(DisplayIdsFlags::ACTIVE),
+                os_visible: flags.contains(DisplayIdsFlags::OS_VISIBLE),
+                dynamic: flags.contains(DisplayIdsFlags::DYNAMIC),
+                mst_root: flags.contains(DisplayIdsFlags::MST_ROOT_NODE),
+                wireless: flags.contains(DisplayIdsFlags::WIRELESS),
+            }
+        })
+        .collect())
 }
 
 /// 通过 NvAPI_GPU_SetPstates20 的 baseVoltages 字段写入指定 pstate 的核心电压 delta。
@@ -1225,7 +1292,7 @@ pub fn set_legacy_clocks_nvapi(gpu: &Gpu, core_mhz: u32, mem_mhz: u32) -> Result
     Ok(())
 }
 
-pub fn probe_thermal_sensors_mask(gpu: &Gpu) -> Result<i32, Error> {
+pub(crate) fn probe_thermal_sensors_mask(gpu: &Gpu) -> Result<i32, Error> {
     for i in 0..32 {
         let mask: i32 = 1 << i;
         if let Ok(sensors) = gpu.thermal_sensors(mask)
@@ -1237,6 +1304,6 @@ pub fn probe_thermal_sensors_mask(gpu: &Gpu) -> Result<i32, Error> {
     Err(Error::Str("no valid NVAPI thermal sensor mask found"))
 }
 
-pub fn read_thermal_sensors(gpu: &Gpu, mask: i32) -> Result<ThermalSensors, Error> {
+pub(crate) fn read_thermal_sensors(gpu: &Gpu, mask: i32) -> Result<ThermalSensors, Error> {
     gpu.thermal_sensors(mask).map_err(Error::from)
 }

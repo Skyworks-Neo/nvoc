@@ -119,7 +119,7 @@ class NativeBackend:
     def shutdown(self) -> None:
         """Release fallback worker threads when NativeBackend is used standalone."""
         if self._fallback_executor is not None:
-            self._fallback_executor.shutdown(wait=False, cancel_futures=True)
+            self._fallback_executor.shutdown(wait=True, cancel_futures=True)
             self._fallback_executor = None
 
     def apply_fan_settings(self, settings: FanSettings) -> None:

@@ -1,17 +1,22 @@
-use clap::{Arg, ArgAction, ColorChoice, Command as ClapCommand};
+use clap::{
+    Arg, ArgAction, ColorChoice, Command as ClapCommand,
+    builder::{PossibleValue, PossibleValuesParser},
+};
 use nvoc_core::{
-    BackendSet, CheckVoltageFrequency, ClockDomain, ConvertEnum, CoolerPolicy, CoolerTarget,
-    GpuSelector, GpuTarget, Kilohertz, KilohertzDelta, PState, Percentage, ProbeVoltageLimits,
-    QueryClockOffset, QueryDomainVfpPoints, QueryFanInfo, QueryGpuInfo, QueryGpuSettings,
+    BackendSet, CheckVoltageFrequency, ClearEdid, ClockDomain, ConvertEnum, CoolerPolicy,
+    CoolerTarget, GpuSelector, GpuTarget, Kilohertz, KilohertzDelta, MicrovoltsDelta, PState,
+    Percentage, ProbeVoltageLimits, QueryApiRestriction, QueryAutoBoost, QueryClockOffset,
+    QueryDisplays, QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings,
     QueryGpuStatus, QueryLegacyCoreOvervoltRanges, QueryLegacyP0CoreMaxVoltageDelta,
-    QueryPowerLimits, QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits,
-    QueryTemperatureThresholds, QueryThrottleReasons, QueryVfpPointVoltage,
-    ResetApplicationsClocks, ResetCoolerLevels, ResetFanSpeed, ResetLockedClocks,
-    ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetPstateBaseVoltages,
+    QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks,
+    QueryTdpTempLimits, QueryTemperatureThresholds, QueryThrottleReasons, QueryVfpPointVoltage,
+    QueryVoltageBoost, ResetApplicationsClocks, ResetCoolerLevels, ResetFanSpeed,
+    ResetLockedClocks, ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetPstateBaseVoltages,
     ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock, ResetVfpLock,
-    SetApplicationsClocks, SetClockOffset, SetCoolerLevels, SetFanSpeed, SetLockedClocks,
-    SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiSensorLimits, SetNvmlPstateLock,
-    SetPowerLimit, SetPstateClockOffset, SetTemperatureLimit, SetVfpFrequencyLock,
+    SetApiRestriction, SetApplicationsClocks, SetAutoBoost, SetAutoBoostDefault, SetClockOffset,
+    SetCoolerLevels, SetEdid, SetFanSpeed, SetLegacyClocks, SetLockedClocks, SetNvapiPowerLimits,
+    SetNvapiPstateLock, SetNvapiSensorLimits, SetNvmlPstateLock, SetPowerLimit,
+    SetPstateBaseVoltage, SetPstateClockOffset, SetTemperatureLimit, SetVfpFrequencyLock,
     SetVfpPointDelta, SetVfpRangeDelta, SetVfpVoltageLock, SetVoltageBoost, VfpResetDomain,
     discover_targets, nvml_pstate_to_str, parse_nvapi_locked_voltage_target,
     parse_nvml_fan_control_policy, parse_nvml_pstate, run, select_targets,
@@ -110,7 +115,9 @@ pub enum OutputFormat {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
     ListGpus,
+    ListDisplays,
     GetInfo,
+    GetUuid,
     GetStatus,
     GetSettings,
     GetVfp,
@@ -127,8 +134,14 @@ pub enum Command {
     CheckVoltageFrequency,
     GetLegacyOvervoltRanges,
     GetLegacyP0CoreMaxVoltageDelta,
+    GetPstateBaseVoltageUv,
+    GetVoltageBoostPercent,
+    GetAutoBoost,
+    GetApiRestriction,
+    GetEdid,
     SetCoreOffsetMhz,
     SetMemoryOffsetMhz,
+    SetClockOffsetMhz,
     SetPowerWatt,
     SetPowerPercent,
     SetThermalLimitC,
@@ -139,7 +152,14 @@ pub enum Command {
     SetVfpRangeDeltaMhz,
     SetPstateLock,
     SetApplicationsClocksMhz,
+    SetPstateBaseVoltageUv,
     SetVoltageBoostPercent,
+    SetAutoBoost,
+    SetAutoBoostDefault,
+    SetApiRestriction,
+    SetEdid,
+    ClearEdid,
+    SetLegacyClocksMhz,
     ResetCoreOffsetMhz,
     ResetMemoryOffsetMhz,
     ResetApplicationsClocks,
@@ -150,6 +170,8 @@ pub enum Command {
     ResetPowerPercent,
     ResetThermalLimitC,
     ResetPstateBaseVoltages,
+    ResetPstateClockOffsets,
+    ResetVoltageBoostPercent,
 }
 
 static NVAPI_ONLY: [BackendAdapter; 1] = [BackendAdapter::Nvapi];
@@ -160,7 +182,9 @@ impl Command {
     pub fn name(self) -> &'static str {
         match self {
             Self::ListGpus => "list-gpus",
+            Self::ListDisplays => "list-displays",
             Self::GetInfo => "get-info",
+            Self::GetUuid => "get-uuid",
             Self::GetStatus => "get-status",
             Self::GetSettings => "get-settings",
             Self::GetVfp => "get-vfp",
@@ -177,8 +201,14 @@ impl Command {
             Self::CheckVoltageFrequency => "check-voltage-frequency",
             Self::GetLegacyOvervoltRanges => "get-legacy-overvolt-ranges",
             Self::GetLegacyP0CoreMaxVoltageDelta => "get-legacy-p0-core-max-voltage-delta",
+            Self::GetPstateBaseVoltageUv => "get-pstate-base-voltage-uv",
+            Self::GetVoltageBoostPercent => "get-voltage-boost-percent",
+            Self::GetAutoBoost => "get-auto-boost",
+            Self::GetApiRestriction => "get-api-restriction",
+            Self::GetEdid => "get-edid",
             Self::SetCoreOffsetMhz => "set-core-offset-mhz",
             Self::SetMemoryOffsetMhz => "set-memory-offset-mhz",
+            Self::SetClockOffsetMhz => "set-clock-offset-mhz",
             Self::SetPowerWatt => "set-power-watt",
             Self::SetPowerPercent => "set-power-percent",
             Self::SetThermalLimitC => "set-thermal-limit-c",
@@ -189,7 +219,14 @@ impl Command {
             Self::SetVfpRangeDeltaMhz => "set-vfp-range-delta-mhz",
             Self::SetPstateLock => "set-pstate-lock",
             Self::SetApplicationsClocksMhz => "set-applications-clocks-mhz",
+            Self::SetPstateBaseVoltageUv => "set-pstate-base-voltage-uv",
             Self::SetVoltageBoostPercent => "set-voltage-boost-percent",
+            Self::SetAutoBoost => "set-auto-boost",
+            Self::SetAutoBoostDefault => "set-auto-boost-default",
+            Self::SetApiRestriction => "set-api-restriction",
+            Self::SetEdid => "set-edid",
+            Self::ClearEdid => "clear-edid",
+            Self::SetLegacyClocksMhz => "set-legacy-clocks-mhz",
             Self::ResetCoreOffsetMhz => "reset-core-offset-mhz",
             Self::ResetMemoryOffsetMhz => "reset-memory-offset-mhz",
             Self::ResetApplicationsClocks => "reset-applications-clocks",
@@ -200,13 +237,17 @@ impl Command {
             Self::ResetPowerPercent => "reset-power-percent",
             Self::ResetThermalLimitC => "reset-thermal-limit-c",
             Self::ResetPstateBaseVoltages => "reset-pstate-base-voltages",
+            Self::ResetPstateClockOffsets => "reset-pstate-clock-offsets",
+            Self::ResetVoltageBoostPercent => "reset-voltage-boost-percent",
         }
     }
 
     fn about(self) -> &'static str {
         match self {
             Self::ListGpus => "List discovered GPUs and available backends",
+            Self::ListDisplays => "List NVAPI display IDs for EDID operations",
             Self::GetInfo => "Read NVAPI GPU identity and capability information",
+            Self::GetUuid => "Read GPU UUID",
             Self::GetStatus => "Read NVAPI live GPU status",
             Self::GetSettings => "Read NVAPI overclock settings",
             Self::GetVfp => "Read V-F curve points",
@@ -223,8 +264,14 @@ impl Command {
             Self::CheckVoltageFrequency => "Check whether one VFP point is precise",
             Self::GetLegacyOvervoltRanges => "Read NVAPI legacy core overvolt ranges",
             Self::GetLegacyP0CoreMaxVoltageDelta => "Read NVAPI legacy P0 max voltage delta",
+            Self::GetPstateBaseVoltageUv => "Read NVAPI P-State base voltage delta in microvolts",
+            Self::GetVoltageBoostPercent => "Read NVAPI voltage boost percent",
+            Self::GetAutoBoost => "Read NVML auto-boost state",
+            Self::GetApiRestriction => "Read NVML API restriction state",
+            Self::GetEdid => "Read display EDID through NVAPI",
             Self::SetCoreOffsetMhz => "Set core clock offset in MHz",
             Self::SetMemoryOffsetMhz => "Set memory clock offset in MHz",
+            Self::SetClockOffsetMhz => "Set clock offset in MHz for any clock domain",
             Self::SetPowerWatt => "Set NVML power limit in watts",
             Self::SetPowerPercent => "Set NVAPI power limit in percent",
             Self::SetThermalLimitC => "Set thermal limit in Celsius",
@@ -235,7 +282,14 @@ impl Command {
             Self::SetVfpRangeDeltaMhz => "Set a VFP point range delta in MHz",
             Self::SetPstateLock => "Lock one NVML P-State or a contiguous range",
             Self::SetApplicationsClocksMhz => "Set NVML application clocks in MHz",
+            Self::SetPstateBaseVoltageUv => "Set NVAPI P-State base voltage delta in microvolts",
             Self::SetVoltageBoostPercent => "Set NVAPI voltage boost percent",
+            Self::SetAutoBoost => "Set NVML auto-boost state",
+            Self::SetAutoBoostDefault => "Set NVML default auto-boost state",
+            Self::SetApiRestriction => "Set NVML API restriction state",
+            Self::SetEdid => "Set display EDID through NVAPI",
+            Self::ClearEdid => "Clear display EDID through NVAPI",
+            Self::SetLegacyClocksMhz => "Set absolute core/memory clocks for legacy GPUs",
             Self::ResetCoreOffsetMhz => "Reset core clock offset to 0 MHz",
             Self::ResetMemoryOffsetMhz => "Reset memory clock offset to 0 MHz",
             Self::ResetApplicationsClocks => "Reset NVML application clocks",
@@ -246,6 +300,8 @@ impl Command {
             Self::ResetPowerPercent => "Reset NVAPI power limits",
             Self::ResetThermalLimitC => "Reset NVAPI sensor limits",
             Self::ResetPstateBaseVoltages => "Reset NVAPI P-State base voltages",
+            Self::ResetPstateClockOffsets => "Reset all NVAPI P-State clock offsets",
+            Self::ResetVoltageBoostPercent => "Reset NVAPI voltage boost percent",
         }
     }
 
@@ -253,6 +309,7 @@ impl Command {
         match self {
             Self::ListGpus
             | Self::GetClockOffsetMhz
+            | Self::SetClockOffsetMhz
             | Self::SetCoreOffsetMhz
             | Self::SetMemoryOffsetMhz
             | Self::SetThermalLimitC
@@ -269,8 +326,13 @@ impl Command {
             | Self::GetFanInfo
             | Self::GetTemperatureThresholds
             | Self::GetThrottleReasons
+            | Self::GetAutoBoost
+            | Self::GetApiRestriction
             | Self::SetPowerWatt
             | Self::SetApplicationsClocksMhz
+            | Self::SetAutoBoost
+            | Self::SetAutoBoostDefault
+            | Self::SetApiRestriction
             | Self::ResetApplicationsClocks => &NVML_ONLY,
             _ => &NVAPI_ONLY,
         }
@@ -278,18 +340,29 @@ impl Command {
 
     fn arity(self) -> (usize, usize) {
         match self {
-            Self::GetVfpPointVoltageMv | Self::CheckVoltageFrequency => (1, 1),
+            Self::GetVfpPointVoltageMv
+            | Self::CheckVoltageFrequency
+            | Self::GetApiRestriction
+            | Self::GetEdid => (1, 1),
             Self::SetCoreOffsetMhz
             | Self::SetMemoryOffsetMhz
+            | Self::SetClockOffsetMhz
             | Self::SetPowerWatt
             | Self::SetPowerPercent
             | Self::SetThermalLimitC
             | Self::SetFanPercent
             | Self::SetVfpVoltageLock
+            | Self::SetPstateBaseVoltageUv
+            | Self::SetAutoBoost
+            | Self::SetAutoBoostDefault
+            | Self::ClearEdid
             | Self::SetVoltageBoostPercent => (1, 1),
             Self::SetLockedClocksMhz
             | Self::SetVfpPointDeltaMhz
-            | Self::SetApplicationsClocksMhz => (2, 2),
+            | Self::SetApplicationsClocksMhz
+            | Self::SetApiRestriction
+            | Self::SetEdid
+            | Self::SetLegacyClocksMhz => (2, 2),
             Self::SetVfpRangeDeltaMhz => (3, 3),
             Self::SetPstateLock => (1, 2),
             _ => (0, 0),
@@ -304,11 +377,15 @@ impl Command {
                 "infer-missing-default",
                 "no-infer-missing-default",
             ],
+            Self::ListDisplays => &["all"],
             Self::GetClockOffsetMhz => &["domain", "pstate"],
+            Self::SetClockOffsetMhz => &["domain", "pstate"],
             Self::SetCoreOffsetMhz
             | Self::SetMemoryOffsetMhz
             | Self::ResetCoreOffsetMhz
-            | Self::ResetMemoryOffsetMhz => &["pstate"],
+            | Self::ResetMemoryOffsetMhz
+            | Self::GetPstateBaseVoltageUv
+            | Self::SetPstateBaseVoltageUv => &["pstate"],
             Self::SetFanPercent => &["fan", "policy"],
             Self::ResetFan => &["fan"],
             Self::SetLockedClocksMhz | Self::ResetLockedClocks | Self::ResetVfpDeltas => {
@@ -318,11 +395,205 @@ impl Command {
             _ => &[],
         }
     }
+
+    fn positional_args(self) -> Vec<PositionalArg> {
+        match self {
+            Self::GetVfpPointVoltageMv | Self::CheckVoltageFrequency => {
+                vec![PositionalArg::free("arg_point", "POINT", "VFP point index")]
+            }
+            Self::GetApiRestriction => vec![PositionalArg::finite(
+                "arg_api",
+                "API",
+                "NVML API to query",
+                PositionalValueKind::ApiRestrictionApi,
+            )],
+            Self::GetEdid | Self::ClearEdid => vec![PositionalArg::free(
+                "arg_display_id",
+                "DISPLAY_ID",
+                "NVAPI display ID as hex, for example 0x00010001",
+            )],
+            Self::SetCoreOffsetMhz | Self::SetMemoryOffsetMhz | Self::SetClockOffsetMhz => {
+                vec![PositionalArg::hyphen(
+                    "arg_offset_mhz",
+                    "OFFSET_MHZ",
+                    "Clock offset in MHz, for example -100 or 125MHz",
+                )]
+            }
+            Self::SetPowerWatt => vec![PositionalArg::free(
+                "arg_power_watt",
+                "WATTS",
+                "Power limit in watts, for example 250 or 250W",
+            )],
+            Self::SetPowerPercent => vec![PositionalArg::free(
+                "arg_power_percent",
+                "PERCENT",
+                "Power limit percentage, for example 90 or 90%",
+            )],
+            Self::SetThermalLimitC => vec![PositionalArg::hyphen(
+                "arg_celsius",
+                "CELSIUS",
+                "Temperature limit in Celsius, for example 83 or 83C",
+            )],
+            Self::SetFanPercent => vec![PositionalArg::free(
+                "arg_fan_percent",
+                "PERCENT",
+                "Fan speed/cooler level percentage",
+            )],
+            Self::SetLockedClocksMhz => vec![
+                PositionalArg::free("arg_min_mhz", "MIN_MHZ", "Minimum clock in MHz"),
+                PositionalArg::free("arg_max_mhz", "MAX_MHZ", "Maximum clock in MHz"),
+            ],
+            Self::SetVfpVoltageLock => vec![PositionalArg::free(
+                "arg_voltage_target",
+                "TARGET",
+                "VFP point index or voltage, for example 42, 900mV, or 900000uV",
+            )],
+            Self::SetVfpPointDeltaMhz => vec![
+                PositionalArg::free("arg_point", "POINT", "VFP point index"),
+                PositionalArg::hyphen(
+                    "arg_delta_mhz",
+                    "DELTA_MHZ",
+                    "Frequency delta in MHz, for example -30 or 15MHz",
+                ),
+            ],
+            Self::SetVfpRangeDeltaMhz => vec![
+                PositionalArg::free("arg_start_point", "START_POINT", "First VFP point index"),
+                PositionalArg::free("arg_end_point", "END_POINT", "Last VFP point index"),
+                PositionalArg::hyphen(
+                    "arg_delta_mhz",
+                    "DELTA_MHZ",
+                    "Frequency delta in MHz, for example -30 or 15MHz",
+                ),
+            ],
+            Self::SetPstateLock => vec![
+                PositionalArg::finite(
+                    "arg_first_pstate",
+                    "FIRST_PSTATE",
+                    "First P-State to lock",
+                    PositionalValueKind::Pstate,
+                ),
+                PositionalArg::finite(
+                    "arg_second_pstate",
+                    "SECOND_PSTATE",
+                    "Optional final P-State to lock",
+                    PositionalValueKind::Pstate,
+                ),
+            ],
+            Self::SetApplicationsClocksMhz => vec![
+                PositionalArg::free("arg_memory_mhz", "MEMORY_MHZ", "Memory clock in MHz"),
+                PositionalArg::free("arg_graphics_mhz", "GRAPHICS_MHZ", "Graphics clock in MHz"),
+            ],
+            Self::SetPstateBaseVoltageUv => vec![PositionalArg::hyphen(
+                "arg_delta_uv",
+                "DELTA_UV",
+                "Base voltage delta in microvolts, for example 100000 or -25000uV",
+            )],
+            Self::SetVoltageBoostPercent => vec![PositionalArg::free(
+                "arg_boost_percent",
+                "PERCENT",
+                "Voltage boost percentage",
+            )],
+            Self::SetAutoBoost | Self::SetAutoBoostDefault => vec![PositionalArg::finite(
+                "arg_enabled",
+                "ENABLED",
+                "Whether auto-boost is enabled",
+                PositionalValueKind::Bool,
+            )],
+            Self::SetApiRestriction => vec![
+                PositionalArg::finite(
+                    "arg_api",
+                    "API",
+                    "NVML API to restrict",
+                    PositionalValueKind::ApiRestrictionApi,
+                ),
+                PositionalArg::finite(
+                    "arg_restriction_state",
+                    "STATE",
+                    "Restriction state",
+                    PositionalValueKind::ApiRestrictionState,
+                ),
+            ],
+            Self::SetEdid => vec![
+                PositionalArg::free(
+                    "arg_display_id",
+                    "DISPLAY_ID",
+                    "NVAPI display ID as hex, for example 0x00010001",
+                ),
+                PositionalArg::free(
+                    "arg_edid_hex",
+                    "EDID_HEX",
+                    "EDID bytes as an even-length hex string",
+                ),
+            ],
+            Self::SetLegacyClocksMhz => vec![
+                PositionalArg::free("arg_core_mhz", "CORE_MHZ", "Core clock in MHz"),
+                PositionalArg::free("arg_memory_mhz", "MEMORY_MHZ", "Memory clock in MHz"),
+            ],
+            _ => Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PositionalValueKind {
+    Free,
+    ApiRestrictionApi,
+    ApiRestrictionState,
+    Bool,
+    Pstate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PositionalArg {
+    id: &'static str,
+    value_name: &'static str,
+    help: &'static str,
+    allow_hyphen_values: bool,
+    value_kind: PositionalValueKind,
+}
+
+impl PositionalArg {
+    const fn free(id: &'static str, value_name: &'static str, help: &'static str) -> Self {
+        Self {
+            id,
+            value_name,
+            help,
+            allow_hyphen_values: false,
+            value_kind: PositionalValueKind::Free,
+        }
+    }
+
+    const fn hyphen(id: &'static str, value_name: &'static str, help: &'static str) -> Self {
+        Self {
+            id,
+            value_name,
+            help,
+            allow_hyphen_values: true,
+            value_kind: PositionalValueKind::Free,
+        }
+    }
+
+    const fn finite(
+        id: &'static str,
+        value_name: &'static str,
+        help: &'static str,
+        value_kind: PositionalValueKind,
+    ) -> Self {
+        Self {
+            id,
+            value_name,
+            help,
+            allow_hyphen_values: false,
+            value_kind,
+        }
+    }
 }
 
 const COMMANDS: &[Command] = &[
     Command::ListGpus,
+    Command::ListDisplays,
     Command::GetInfo,
+    Command::GetUuid,
     Command::GetStatus,
     Command::GetSettings,
     Command::GetVfp,
@@ -339,8 +610,14 @@ const COMMANDS: &[Command] = &[
     Command::CheckVoltageFrequency,
     Command::GetLegacyOvervoltRanges,
     Command::GetLegacyP0CoreMaxVoltageDelta,
+    Command::GetPstateBaseVoltageUv,
+    Command::GetVoltageBoostPercent,
+    Command::GetAutoBoost,
+    Command::GetApiRestriction,
+    Command::GetEdid,
     Command::SetCoreOffsetMhz,
     Command::SetMemoryOffsetMhz,
+    Command::SetClockOffsetMhz,
     Command::SetPowerWatt,
     Command::SetPowerPercent,
     Command::SetThermalLimitC,
@@ -351,7 +628,14 @@ const COMMANDS: &[Command] = &[
     Command::SetVfpRangeDeltaMhz,
     Command::SetPstateLock,
     Command::SetApplicationsClocksMhz,
+    Command::SetPstateBaseVoltageUv,
     Command::SetVoltageBoostPercent,
+    Command::SetAutoBoost,
+    Command::SetAutoBoostDefault,
+    Command::SetApiRestriction,
+    Command::SetEdid,
+    Command::ClearEdid,
+    Command::SetLegacyClocksMhz,
     Command::ResetCoreOffsetMhz,
     Command::ResetMemoryOffsetMhz,
     Command::ResetApplicationsClocks,
@@ -362,6 +646,8 @@ const COMMANDS: &[Command] = &[
     Command::ResetPowerPercent,
     Command::ResetThermalLimitC,
     Command::ResetPstateBaseVoltages,
+    Command::ResetPstateClockOffsets,
+    Command::ResetVoltageBoostPercent,
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -443,14 +729,11 @@ where
         .get_many::<String>("gpu")
         .map(|values| values.cloned().collect())
         .unwrap_or_default();
-    let positionals = if parsed_command.arity().1 > 0 {
-        command_matches
-            .get_many::<String>("args")
-            .map(|values| values.cloned().collect())
-            .unwrap_or_default()
-    } else {
-        Vec::new()
-    };
+    let positionals = parsed_command
+        .positional_args()
+        .into_iter()
+        .filter_map(|arg| command_matches.get_one::<String>(arg.id).cloned())
+        .collect();
     let options = collect_named_options(command_matches, parsed_command.allowed_options());
 
     let invocation = Invocation {
@@ -683,22 +966,73 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .action(ArgAction::SetTrue)
             .global(true)
             .help("Enable feedback for VFP voltage lock"),
+        "all" => Arg::new("all")
+            .long("all")
+            .action(ArgAction::SetTrue)
+            .global(true)
+            .help("List all display IDs instead of only connected display IDs"),
         _ => unreachable!("unknown command-specific option {name}"),
     }
 }
 
 fn clap_subcommand(command: Command) -> ClapCommand {
     let mut subcommand = ClapCommand::new(command.name()).about(command.about());
-    let (min_args, max_args) = command.arity();
-    if max_args > 0 {
-        subcommand = subcommand.arg(
-            Arg::new("args")
-                .value_name("ARGS")
-                .num_args(min_args..=max_args)
-                .allow_hyphen_values(true),
-        );
+    let (min_args, _) = command.arity();
+    for (index, positional) in command.positional_args().into_iter().enumerate() {
+        subcommand = subcommand.arg(positional_arg(positional, index < min_args));
     }
     subcommand
+}
+
+fn positional_arg(spec: PositionalArg, required: bool) -> Arg {
+    let mut arg = Arg::new(spec.id)
+        .value_name(spec.value_name)
+        .help(spec.help)
+        .required(required)
+        .num_args(1)
+        .allow_hyphen_values(spec.allow_hyphen_values);
+
+    if let Some(parser) = possible_values_parser(spec.value_kind) {
+        arg = arg.value_parser(parser).ignore_case(true);
+    }
+
+    arg
+}
+
+fn possible_values_parser(kind: PositionalValueKind) -> Option<PossibleValuesParser> {
+    match kind {
+        PositionalValueKind::Free => None,
+        PositionalValueKind::ApiRestrictionApi => Some(PossibleValuesParser::new([
+            PossibleValue::new("app-clocks").alias("application-clocks"),
+            PossibleValue::new("auto-boost").alias("autoboost"),
+        ])),
+        PositionalValueKind::ApiRestrictionState => Some(PossibleValuesParser::new([
+            PossibleValue::new("open"),
+            PossibleValue::new("restricted"),
+        ])),
+        PositionalValueKind::Bool => Some(PossibleValuesParser::new([
+            PossibleValue::new("on").aliases(["true", "yes", "1"]),
+            PossibleValue::new("off").aliases(["false", "no", "0"]),
+        ])),
+        PositionalValueKind::Pstate => Some(PossibleValuesParser::new([
+            PossibleValue::new("P0").alias("0"),
+            PossibleValue::new("P1").alias("1"),
+            PossibleValue::new("P2").alias("2"),
+            PossibleValue::new("P3").alias("3"),
+            PossibleValue::new("P4").alias("4"),
+            PossibleValue::new("P5").alias("5"),
+            PossibleValue::new("P6").alias("6"),
+            PossibleValue::new("P7").alias("7"),
+            PossibleValue::new("P8").alias("8"),
+            PossibleValue::new("P9").alias("9"),
+            PossibleValue::new("P10").alias("10"),
+            PossibleValue::new("P11").alias("11"),
+            PossibleValue::new("P12").alias("12"),
+            PossibleValue::new("P13").alias("13"),
+            PossibleValue::new("P14").alias("14"),
+            PossibleValue::new("P15").alias("15"),
+        ])),
+    }
 }
 
 fn collect_named_options(
@@ -708,7 +1042,7 @@ fn collect_named_options(
     let mut options = BTreeMap::new();
     for name in allowed_options {
         match *name {
-            "indexed" | "no-infer-missing-default" | "feedback" => {
+            "indexed" | "no-infer-missing-default" | "feedback" | "all" => {
                 if matches.get_flag(name) {
                     options.insert(name.to_string(), vec!["true".to_string()]);
                 }
@@ -996,17 +1330,20 @@ fn list_gpus_execution(
             continue;
         }
 
-        let name = target.nvapi.and_then(|_| {
+        let (name, uuid) = if target.has_nvapi() {
             run(&target, QueryGpuInfo)
                 .ok()
-                .map(|report| report.output.name)
-        });
+                .map(|report| (Some(report.output.name), report.output.uuid))
+                .unwrap_or((None, None))
+        } else {
+            (None, None)
+        };
 
         results.push(TargetResult {
             gpu_id: Some(target.id.0),
-            backend: if target.nvapi.is_some() && target.nvml.is_some() {
+            backend: if target.has_nvapi() && target.has_nvml() {
                 "both"
-            } else if target.nvapi.is_some() {
+            } else if target.has_nvapi() {
                 "nvapi"
             } else {
                 "nvml"
@@ -1017,8 +1354,9 @@ fn list_gpus_execution(
                 "gpu_id": target.id.0,
                 "gpu_id_hex": format!("0x{:04X}", target.id.0),
                 "pci_bus": target.id.pci_bus(),
-                "backend_nvapi": target.nvapi.is_some(),
-                "backend_nvml": target.nvml.is_some(),
+                "backend_nvapi": target.has_nvapi(),
+                "backend_nvml": target.has_nvml(),
+                "uuid": uuid,
                 "name": name,
             })),
             error: None,
@@ -1039,6 +1377,8 @@ fn list_gpus_execution(
 
 fn discovery_backend_set(command: Command, adapter: BackendAdapter) -> BackendSet {
     match (command, adapter) {
+        (Command::GetInfo, BackendAdapter::Nvapi) => BackendSet::Both,
+        (Command::GetUuid, BackendAdapter::Nvapi) => BackendSet::Both,
         (Command::SetPstateLock, BackendAdapter::Nvapi) => BackendSet::Both,
         (_, BackendAdapter::Nvapi) => BackendSet::Nvapi,
         (_, BackendAdapter::Nvml) => BackendSet::Nvml,
@@ -1056,9 +1396,9 @@ fn gpu_selector(invocation: &Invocation) -> GpuSelector {
 fn target_supports(target: GpuTarget<'_>, command: Command, adapter: BackendAdapter) -> bool {
     match adapter {
         BackendAdapter::Nvapi => {
-            target.nvapi.is_some() && (command != Command::SetPstateLock || target.nvml.is_some())
+            target.has_nvapi() && (command != Command::SetPstateLock || target.has_nvml())
         }
-        BackendAdapter::Nvml => target.nvml.is_some(),
+        BackendAdapter::Nvml => target.has_nvml(),
     }
 }
 
@@ -1070,7 +1410,35 @@ fn execute_target(
 ) -> CliResult<Value> {
     match command {
         Command::ListGpus => unreachable!("list-gpus is handled before target execution"),
+        Command::ListDisplays => {
+            let all = option_bool(invocation, "all", false)?;
+            let displays = run(target, QueryDisplays { all })?.output;
+            Ok(Value::Array(
+                displays
+                    .into_iter()
+                    .map(|display| {
+                        json!({
+                            "display_id": format!("0x{:08X}", display.display_id),
+                            "display_id_u32": display.display_id,
+                            "connector": display.connector,
+                            "flags_hex": format!("0x{:08X}", display.flags_bits),
+                            "connected": display.connected,
+                            "physically_connected": display.physically_connected,
+                            "active": display.active,
+                            "os_visible": display.os_visible,
+                            "dynamic": display.dynamic,
+                            "mst_root": display.mst_root,
+                            "wireless": display.wireless,
+                        })
+                    })
+                    .collect(),
+            ))
+        }
         Command::GetInfo => Ok(serde_json::to_value(run(target, QueryGpuInfo)?.output)?),
+        Command::GetUuid => {
+            let info = run(target, QueryGpuInfo)?.output;
+            Ok(Value::String(info.uuid.unwrap_or_default()))
+        }
         Command::GetStatus => Ok(serde_json::to_value(run(target, QueryGpuStatus)?.output)?),
         Command::GetSettings => Ok(serde_json::to_value(run(target, QueryGpuSettings)?.output)?),
         Command::GetVfp => get_vfp(target, invocation),
@@ -1197,11 +1565,56 @@ fn execute_target(
             let delta = run(target, QueryLegacyP0CoreMaxVoltageDelta)?.output;
             Ok(json!({"max_delta_uv": delta.map(|v| v.0)}))
         }
+        Command::GetPstateBaseVoltageUv => {
+            let pstate = option_pstate_nvapi(invocation)?;
+            let voltage = run(target, QueryPstateBaseVoltage { pstate })?.output;
+            Ok(json!({
+                "pstate": pstate_label(voltage.pstate),
+                "voltage_domain": voltage_domain_label(voltage.voltage_domain),
+                "editable": voltage.editable,
+                "voltage_uv": voltage.voltage.0,
+                "delta_uv": voltage.delta.0,
+                "min_delta_uv": voltage.min_delta.0,
+                "max_delta_uv": voltage.max_delta.0,
+            }))
+        }
+        Command::GetVoltageBoostPercent => {
+            let boost = run(target, QueryVoltageBoost)?.output;
+            Ok(json!({"voltage_boost_percent": boost.voltage_boost.map(|v| v.0)}))
+        }
+        Command::GetAutoBoost => {
+            let state = run(target, QueryAutoBoost)?.output;
+            Ok(json!({
+                "enabled": state.enabled,
+                "default_enabled": state.default_enabled,
+            }))
+        }
+        Command::GetApiRestriction => {
+            let api_type = parse_api_restriction_api(&invocation.positionals[0])?;
+            let state = run(target, QueryApiRestriction { api_type })?.output;
+            Ok(json!({
+                "api": api_restriction_api_label(state.api_type),
+                "restricted": state.restricted,
+            }))
+        }
+        Command::GetEdid => {
+            let display_id = parse_display_id(&invocation.positionals[0])?;
+            let edid = run(target, QueryEdid { display_id })?.output;
+            Ok(json!({
+                "display_id": format!("0x{:08X}", edid.display_id),
+                "bytes": edid.bytes.len(),
+                "edid_hex": bytes_to_upper_hex(&edid.bytes),
+            }))
+        }
         Command::SetCoreOffsetMhz => {
             set_clock_offset(target, adapter, invocation, ClockDomain::Graphics)
         }
         Command::SetMemoryOffsetMhz => {
             set_clock_offset(target, adapter, invocation, ClockDomain::Memory)
+        }
+        Command::SetClockOffsetMhz => {
+            let domain = option_domain(invocation, ClockDomain::Graphics)?;
+            set_clock_offset(target, adapter, invocation, domain)
         }
         Command::SetPowerWatt => {
             let watts = parse_u32_unit(&invocation.positionals[0], "w", "watt")?;
@@ -1330,6 +1743,22 @@ fn execute_target(
                 "graphics_mhz": graphics_mhz,
             }))
         }
+        Command::SetPstateBaseVoltageUv => {
+            let delta_uv = parse_i32_unit(&invocation.positionals[0], "uv", "microvolt")?;
+            let pstate = option_pstate_nvapi(invocation)?;
+            run(
+                target,
+                SetPstateBaseVoltage {
+                    pstate,
+                    delta_uv: MicrovoltsDelta(delta_uv),
+                },
+            )?;
+            Ok(json!({
+                "applied": true,
+                "pstate": pstate_label(pstate),
+                "delta_uv": delta_uv,
+            }))
+        }
         Command::SetVoltageBoostPercent => {
             let percent = parse_u32_unit(&invocation.positionals[0], "%", "percent")?;
             run(
@@ -1339,6 +1768,73 @@ fn execute_target(
                 },
             )?;
             Ok(json!({"applied": true, "voltage_boost_percent": percent}))
+        }
+        Command::SetAutoBoost => {
+            let enabled = parse_bool(&invocation.positionals[0])?;
+            run(target, SetAutoBoost { enabled })?;
+            Ok(json!({"applied": true, "enabled": enabled}))
+        }
+        Command::SetAutoBoostDefault => {
+            let enabled = parse_bool(&invocation.positionals[0])?;
+            run(target, SetAutoBoostDefault { enabled })?;
+            Ok(json!({"applied": true, "enabled": enabled}))
+        }
+        Command::SetApiRestriction => {
+            let api_type = parse_api_restriction_api(&invocation.positionals[0])?;
+            let restricted = parse_api_restriction_state(&invocation.positionals[1])?;
+            run(
+                target,
+                SetApiRestriction {
+                    api_type,
+                    restricted,
+                },
+            )?;
+            Ok(json!({
+                "applied": true,
+                "api": invocation.positionals[0],
+                "restricted": restricted,
+            }))
+        }
+        Command::SetEdid => {
+            let display_id = parse_display_id(&invocation.positionals[0])?;
+            let edid = parse_edid_hex(&invocation.positionals[1])?;
+            let bytes = edid.len();
+            run(
+                target,
+                SetEdid {
+                    display_id,
+                    bytes: edid,
+                },
+            )?;
+            Ok(json!({
+                "applied": true,
+                "display_id": format!("0x{display_id:08X}"),
+                "bytes": bytes,
+            }))
+        }
+        Command::ClearEdid => {
+            let display_id = parse_display_id(&invocation.positionals[0])?;
+            run(target, ClearEdid { display_id })?;
+            Ok(json!({
+                "applied": true,
+                "display_id": format!("0x{display_id:08X}"),
+            }))
+        }
+        Command::SetLegacyClocksMhz => {
+            let core_mhz = parse_u32_unit(&invocation.positionals[0], "mhz", "mhz")?;
+            let memory_mhz = parse_u32_unit(&invocation.positionals[1], "mhz", "mhz")?;
+            run(
+                target,
+                SetLegacyClocks {
+                    core_mhz,
+                    memory_mhz,
+                },
+            )?;
+            Ok(json!({
+                "applied": true,
+                "core_mhz": core_mhz,
+                "memory_mhz": memory_mhz,
+            }))
         }
         Command::ResetCoreOffsetMhz => {
             reset_clock_offset(target, adapter, invocation, ClockDomain::Graphics)
@@ -1383,6 +1879,30 @@ fn execute_target(
         Command::ResetPstateBaseVoltages => {
             run(target, ResetPstateBaseVoltages)?;
             Ok(json!({"applied": true}))
+        }
+        Command::ResetPstateClockOffsets => {
+            let info = run(target, QueryGpuInfo)?.output;
+            let offsets = info
+                .pstate_limits
+                .iter()
+                .flat_map(|(&pstate, limits)| {
+                    limits
+                        .iter()
+                        .filter(|&(_, info)| info.frequency_delta.is_some())
+                        .map(move |(&domain, _)| (pstate, domain))
+                })
+                .collect::<Vec<_>>();
+            run(target, ResetPstateClockOffsets { offsets })?;
+            Ok(json!({"applied": true}))
+        }
+        Command::ResetVoltageBoostPercent => {
+            run(
+                target,
+                SetVoltageBoost {
+                    boost: Percentage(0),
+                },
+            )?;
+            Ok(json!({"applied": true, "voltage_boost_percent": 0}))
         }
     }
 }
@@ -1685,6 +2205,79 @@ fn nvml_fan_indices(target: &GpuTarget<'_>, raw: &str) -> CliResult<Vec<u32>> {
     Ok(vec![parse_u32(raw, "fan")?])
 }
 
+fn parse_api_restriction_api(raw: &str) -> CliResult<nvml_wrapper::enum_wrappers::device::Api> {
+    use nvml_wrapper::enum_wrappers::device::Api;
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "app-clocks" | "application-clocks" => Ok(Api::ApplicationClocks),
+        "auto-boost" | "autoboost" => Ok(Api::AutoBoostedClocks),
+        other => Err(CliError::new(format!(
+            "invalid API {other:?}; expected app-clocks or auto-boost"
+        ))),
+    }
+}
+
+fn api_restriction_api_label(api_type: nvml_wrapper::enum_wrappers::device::Api) -> &'static str {
+    use nvml_wrapper::enum_wrappers::device::Api;
+    match api_type {
+        Api::ApplicationClocks => "app-clocks",
+        Api::AutoBoostedClocks => "auto-boost",
+    }
+}
+
+fn voltage_domain_label(domain: nvoc_core::VoltageDomain) -> &'static str {
+    match domain {
+        nvoc_core::VoltageDomain::Core => "core",
+        nvoc_core::VoltageDomain::Undefined => "undefined",
+        _ => "unknown",
+    }
+}
+
+fn bytes_to_upper_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0F) as usize] as char);
+    }
+    out
+}
+
+fn parse_api_restriction_state(raw: &str) -> CliResult<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "restricted" => Ok(true),
+        "open" => Ok(false),
+        other => Err(CliError::new(format!(
+            "invalid API restriction state {other:?}; expected open or restricted"
+        ))),
+    }
+}
+
+fn parse_display_id(raw: &str) -> CliResult<u32> {
+    let trimmed = raw.trim();
+    let digits = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+        .unwrap_or(trimmed);
+    u32::from_str_radix(digits, 16)
+        .map_err(|_| CliError::new(format!("invalid display ID {raw:?}; expected hex")))
+}
+
+fn parse_edid_hex(raw: &str) -> CliResult<Vec<u8>> {
+    let hex = raw.trim();
+    if !hex.len().is_multiple_of(2) {
+        return Err(CliError::new(
+            "EDID hex must contain an even number of digits",
+        ));
+    }
+    (0..hex.len())
+        .step_by(2)
+        .map(|index| {
+            u8::from_str_radix(&hex[index..index + 2], 16)
+                .map_err(|_| CliError::new(format!("invalid EDID hex byte at offset {index}")))
+        })
+        .collect()
+}
+
 fn option_one<'a>(invocation: &'a Invocation, name: &str) -> Option<&'a str> {
     invocation
         .options
@@ -1901,6 +2494,72 @@ mod tests {
     }
 
     #[test]
+    fn parses_new_getter_commands() {
+        let invocation = parse_args(["list-displays", "--all"]).unwrap();
+        assert_eq!(invocation.command, Some(Command::ListDisplays));
+        assert!(option_bool(&invocation, "all", false).unwrap());
+
+        let invocation = parse_args(["get-pstate-base-voltage-uv", "--pstate", "P2"]).unwrap();
+        assert_eq!(invocation.command, Some(Command::GetPstateBaseVoltageUv));
+        assert_eq!(option_one(&invocation, "pstate"), Some("P2"));
+
+        let invocation = parse_args(["get-api-restriction", "auto-boost"]).unwrap();
+        assert_eq!(invocation.command, Some(Command::GetApiRestriction));
+        assert_eq!(invocation.positionals, vec!["auto-boost"]);
+
+        let invocation = parse_args(["get-edid", "0x00010001"]).unwrap();
+        assert_eq!(invocation.command, Some(Command::GetEdid));
+        assert_eq!(invocation.positionals, vec!["0x00010001"]);
+
+        let invocation = parse_args(["set-edid", "0x00010001", "00FFFFFF"]).unwrap();
+        assert_eq!(invocation.command, Some(Command::SetEdid));
+        assert_eq!(invocation.positionals, vec!["0x00010001", "00FFFFFF"]);
+
+        let invocation = parse_args(["clear-edid", "0x00010001"]).unwrap();
+        assert_eq!(invocation.command, Some(Command::ClearEdid));
+        assert_eq!(invocation.positionals, vec!["0x00010001"]);
+    }
+
+    #[test]
+    fn command_help_names_positionals_and_lists_finite_values() {
+        let help = parse_args(["get-api-restriction", "--help"])
+            .unwrap_err()
+            .to_string();
+        assert!(help.contains("<API>"));
+        assert!(help.contains("[possible values: app-clocks, auto-boost]"));
+        assert!(!help.contains("[ARGS]"));
+
+        let help = parse_args(["set-api-restriction", "--help"])
+            .unwrap_err()
+            .to_string();
+        assert!(help.contains("<API> <STATE>"));
+        assert!(help.contains("[possible values: app-clocks, auto-boost]"));
+        assert!(help.contains("[possible values: open, restricted]"));
+
+        let help = parse_args(["set-auto-boost", "--help"])
+            .unwrap_err()
+            .to_string();
+        assert!(help.contains("<ENABLED>"));
+        assert!(help.contains("[possible values: on, off]"));
+    }
+
+    #[test]
+    fn finite_positionals_keep_existing_aliases() {
+        let invocation =
+            parse_args(["set-api-restriction", "application-clocks", "restricted"]).unwrap();
+        assert_eq!(
+            invocation.positionals,
+            vec!["application-clocks", "restricted"]
+        );
+
+        let invocation = parse_args(["set-auto-boost", "yes"]).unwrap();
+        assert_eq!(invocation.positionals, vec!["yes"]);
+
+        let invocation = parse_args(["set-pstate-lock", "0", "p2"]).unwrap();
+        assert_eq!(invocation.positionals, vec!["0", "p2"]);
+    }
+
+    #[test]
     fn rejects_backend_conflict() {
         let err = parse_args(["--nvapi", "--nvml", "list-gpus"])
             .unwrap_err()
@@ -1940,6 +2599,9 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("--fan"));
+
+        let err = parse_args(["--all", "get-info"]).unwrap_err().to_string();
+        assert!(err.contains("--all"));
     }
 
     #[test]
@@ -1970,6 +2632,13 @@ mod tests {
         assert_eq!(mhz_to_khz_i32(150).unwrap(), 150_000);
         assert_eq!(mhz_to_khz_u32(150).unwrap(), 150_000);
         assert!(mhz_to_khz_u32(u32::MAX).is_err());
+        assert_eq!(bytes_to_upper_hex(&[0x00, 0xab, 0xff]), "00ABFF");
+        assert_eq!(parse_display_id("0x00010001").unwrap(), 0x00010001);
+        assert_eq!(parse_display_id("00010001").unwrap(), 0x00010001);
+        assert_eq!(parse_edid_hex("00abFF").unwrap(), vec![0x00, 0xab, 0xff]);
+        assert!(parse_display_id("display-1").is_err());
+        assert!(parse_edid_hex("ABC").is_err());
+        assert!(parse_edid_hex("00GG").is_err());
     }
 
     #[test]
@@ -1992,6 +2661,12 @@ mod tests {
         );
         assert_eq!(Command::SetPowerWatt.adapters(), &NVML_ONLY);
         assert_eq!(Command::SetPowerPercent.adapters(), &NVAPI_ONLY);
+        assert_eq!(Command::ListDisplays.adapters(), &NVAPI_ONLY);
+        assert_eq!(Command::GetAutoBoost.adapters(), &NVML_ONLY);
+        assert_eq!(Command::GetApiRestriction.adapters(), &NVML_ONLY);
+        assert_eq!(Command::GetEdid.adapters(), &NVAPI_ONLY);
+        assert_eq!(Command::SetEdid.adapters(), &NVAPI_ONLY);
+        assert_eq!(Command::ClearEdid.adapters(), &NVAPI_ONLY);
     }
 
     #[test]

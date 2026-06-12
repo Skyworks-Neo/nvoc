@@ -2,7 +2,7 @@ use nvapi_hi::Microvolts;
 use nvml_wrapper::Nvml;
 use nvoc_core::{
     BackendSet, CheckVoltageFrequency, ClockDomain, Error, GpuId, GpuSelector, GpuTarget,
-    QueryClockOffset, QueryFanInfo, QueryPowerLimits, QueryPstates,
+    QueryClockOffset, QueryFanInfo, QueryGpuInfo, QueryGpuStatus, QueryPowerLimits, QueryPstates,
     QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
     QueryVfpPointVoltage, TargetInventory, discover_targets, nvml_pstate_to_index,
     nvml_pstate_to_str, parse_nvml_pstate, run, select_targets,
@@ -38,19 +38,16 @@ fn first_target(inventory: &TargetInventory) -> GpuTarget<'_> {
         !targets.is_empty(),
         "GPU CI runner should expose at least one GPU"
     );
-    *targets
-        .iter()
-        .find(|t| t.nvml.is_some())
-        .unwrap_or(&targets[0])
+    *targets.iter().find(|t| t.has_nvml()).unwrap_or(&targets[0])
 }
 
 fn nvml(inventory: &TargetInventory) -> &Nvml {
-    inventory
-        .targets()
+    let targets = inventory.targets();
+    targets
         .iter()
-        .find(|t| t.nvml.is_some())
+        .find(|t| t.has_nvml())
         .expect("at least one NVML backend should be present")
-        .nvml
+        .nvml()
         .unwrap()
 }
 
@@ -90,9 +87,13 @@ fn discovery_nvapi_sorted() {
     assert_sorted_unique(&ids);
 
     for target in &targets {
-        let Some(gpu) = target.nvapi else { continue };
-        let info = gpu.info().expect("GPU info should be readable");
-        assert_eq!(info.id, gpu.id());
+        if !target.has_nvapi() {
+            continue;
+        }
+        let info = run(target, QueryGpuInfo)
+            .expect("GPU info should be readable")
+            .output;
+        assert_eq!(info.id as u32, target.id.0);
         assert!(!info.name.trim().is_empty());
 
         if let Some(truth) = truth_for_gpu(info.id as u32)
@@ -148,8 +149,7 @@ fn discovery_nvml_device_id_conversion() {
 fn selection_nvapi() {
     let inv = inventory();
     let targets = inv.targets();
-    let nvapi_targets: Vec<GpuTarget<'_>> =
-        targets.into_iter().filter(|t| t.nvapi.is_some()).collect();
+    let nvapi_targets: Vec<GpuTarget<'_>> = targets.into_iter().filter(|t| t.has_nvapi()).collect();
     let selected = select_targets(&nvapi_targets, &GpuSelector::all()).unwrap();
     assert_eq!(selected.len(), nvapi_targets.len());
 
@@ -220,12 +220,7 @@ fn nvml_power_ok() {
 #[test]
 #[ignore]
 fn nvml_power_bad_gpu() {
-    let bad_target = GpuTarget {
-        id: GpuId(INVALID_GPU_ID),
-        index: 0,
-        nvapi: None,
-        nvml: None,
-    };
+    let bad_target = GpuTarget::without_backends(GpuId(INVALID_GPU_ID), 0);
     assert!(run(&bad_target, QueryPowerLimits).is_err());
     assert!(GpuId::from_pci_str("invalid-pci-id").is_err());
 }
@@ -263,12 +258,7 @@ fn nvml_offsets_ok() {
 #[test]
 #[ignore]
 fn nvml_offsets_bad_gpu() {
-    let bad_target = GpuTarget {
-        id: GpuId(INVALID_GPU_ID),
-        index: 0,
-        nvapi: None,
-        nvml: None,
-    };
+    let bad_target = GpuTarget::without_backends(GpuId(INVALID_GPU_ID), 0);
     let pstate = parse_nvml_pstate("P0").unwrap();
     assert!(
         run(
@@ -311,12 +301,7 @@ fn nvml_temp_thresholds_ok() {
 #[test]
 #[ignore]
 fn nvml_temp_thresholds_bad_gpu() {
-    let bad_target = GpuTarget {
-        id: GpuId(INVALID_GPU_ID),
-        index: 0,
-        nvapi: None,
-        nvml: None,
-    };
+    let bad_target = GpuTarget::without_backends(GpuId(INVALID_GPU_ID), 0);
     assert!(run(&bad_target, QueryTemperatureThresholds).is_err());
 }
 
@@ -352,12 +337,7 @@ fn nvml_pstates_ok() {
 #[test]
 #[ignore]
 fn nvml_pstates_bad_gpu() {
-    let bad_target = GpuTarget {
-        id: GpuId(INVALID_GPU_ID),
-        index: 0,
-        nvapi: None,
-        nvml: None,
-    };
+    let bad_target = GpuTarget::without_backends(GpuId(INVALID_GPU_ID), 0);
     assert!(run(&bad_target, QueryPstates).is_err());
 }
 
@@ -380,12 +360,7 @@ fn nvml_app_clocks_ok() {
 #[test]
 #[ignore]
 fn nvml_app_clocks_bad_gpu() {
-    let bad_target = GpuTarget {
-        id: GpuId(INVALID_GPU_ID),
-        index: 0,
-        nvapi: None,
-        nvml: None,
-    };
+    let bad_target = GpuTarget::without_backends(GpuId(INVALID_GPU_ID), 0);
     assert!(run(&bad_target, QuerySupportedApplicationsClocks).is_err());
 }
 
@@ -415,12 +390,7 @@ fn nvml_fans_ok() {
 #[test]
 #[ignore]
 fn nvml_fans_bad_gpu() {
-    let bad_target = GpuTarget {
-        id: GpuId(INVALID_GPU_ID),
-        index: 0,
-        nvapi: None,
-        nvml: None,
-    };
+    let bad_target = GpuTarget::without_backends(GpuId(INVALID_GPU_ID), 0);
     assert!(run(&bad_target, QueryFanInfo).is_err());
 }
 
@@ -429,8 +399,12 @@ fn nvml_fans_bad_gpu() {
 fn nvapi_voltage_point_ok() {
     let inv = inventory();
     let target = first_target(&inv);
-    let Some(gpu) = target.nvapi else { return };
-    let status = gpu.status().expect("GPU status should be readable");
+    if !target.has_nvapi() {
+        return;
+    }
+    let status = run(&target, QueryGpuStatus)
+        .expect("GPU status should be readable")
+        .output;
     let Some(vfp) = status.vfp else {
         assert!(matches!(
             run(&target, QueryVfpPointVoltage { point: 0 }),
@@ -484,12 +458,7 @@ fn nvapi_tdp_temp_ok() {
 #[test]
 #[ignore]
 fn nvapi_tdp_temp_no_nvapi() {
-    let bad_target = GpuTarget {
-        id: GpuId(0),
-        index: 0,
-        nvapi: None,
-        nvml: None,
-    };
+    let bad_target = GpuTarget::without_backends(GpuId(0), 0);
     assert!(run(&bad_target, QueryTdpTempLimits).is_err());
 }
 
@@ -498,8 +467,12 @@ fn nvapi_tdp_temp_no_nvapi() {
 fn nvapi_vf_check_ok() {
     let inv = inventory();
     let target = first_target(&inv);
-    let Some(gpu) = target.nvapi else { return };
-    let status = gpu.status().expect("GPU status should be readable");
+    if !target.has_nvapi() {
+        return;
+    }
+    let status = run(&target, QueryGpuStatus)
+        .expect("GPU status should be readable")
+        .output;
     let Some(vfp) = status.vfp else {
         assert!(matches!(
             run(&target, CheckVoltageFrequency { point: 0 }),

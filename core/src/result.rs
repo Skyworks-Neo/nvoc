@@ -17,6 +17,7 @@ pub enum OperationKind {
     QueryPstates,
     QuerySupportedApplicationsClocks,
     QueryClockOffset,
+    QueryPstateBaseVoltage,
     SetClockOffset,
     SetApplicationsClocks,
     ResetApplicationsClocks,
@@ -42,6 +43,7 @@ pub enum OperationKind {
     QueryDomainVfpIndices,
     QueryLegacyCoreOvervoltRanges,
     QueryLegacyP0CoreMaxVoltageDelta,
+    QueryVoltageBoost,
     SetVoltageBoost,
     SetNvapiPowerLimits,
     SetNvapiSensorLimits,
@@ -69,7 +71,13 @@ pub enum OperationKind {
     SetNvmlPstateLock,
     SetAutoBoost,
     SetAutoBoostDefault,
+    QueryAutoBoost,
     SetApiRestriction,
+    QueryApiRestriction,
+    QueryDisplays,
+    QueryEdid,
+    SetEdid,
+    ClearEdid,
     QueryThrottleReasons,
 }
 
@@ -114,6 +122,54 @@ pub struct TemperatureThreshold {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ClockOffset {
     pub mhz: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PstateBaseVoltage {
+    pub pstate: nvapi_hi::PState,
+    pub voltage_domain: nvapi_hi::VoltageDomain,
+    pub editable: bool,
+    pub voltage: nvapi_hi::Microvolts,
+    pub delta: nvapi_hi::MicrovoltsDelta,
+    pub min_delta: nvapi_hi::MicrovoltsDelta,
+    pub max_delta: nvapi_hi::MicrovoltsDelta,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VoltageBoostState {
+    pub voltage_boost: Option<nvapi_hi::Percentage>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AutoBoostState {
+    pub enabled: bool,
+    pub default_enabled: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ApiRestrictionState {
+    pub api_type: nvml_wrapper::enum_wrappers::device::Api,
+    pub restricted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EdidData {
+    pub display_id: u32,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DisplayInfo {
+    pub display_id: u32,
+    pub connector: String,
+    pub flags_bits: u32,
+    pub connected: bool,
+    pub physically_connected: bool,
+    pub active: bool,
+    pub os_visible: bool,
+    pub dynamic: bool,
+    pub mst_root: bool,
+    pub wireless: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
