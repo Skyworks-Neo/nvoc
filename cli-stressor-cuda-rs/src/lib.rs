@@ -3,6 +3,7 @@ use rand::seq::IndexedRandom;
 use rand::{Rng, SeedableRng};
 use rand_distr::StandardNormal;
 use rayon::prelude::*;
+use std::mem::MaybeUninit;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
@@ -579,7 +580,12 @@ pub fn per_element_allclose(diff: &[f32], reference: &[f32], atol: f32, rtol: f3
 
 pub fn make_random_host_matrix(size: usize, seed: u64) -> HostMatrix {
     let n = size * size;
-    let mut data = vec![0.0f32; n];
+    let mut data = Vec::<MaybeUninit<f32>>::with_capacity(n);
+    // SAFETY: Every element is initialized by the parallel fill below before the
+    // buffer is converted to `Vec<f32>`.
+    unsafe {
+        data.set_len(n);
+    }
     // Fill in parallel so the GPU is not starved waiting on single-threaded
     // StandardNormal sampling (the dominant gap between bursts for large
     // matrices). Each chunk is seeded independently from `seed`, so the result
@@ -594,9 +600,16 @@ pub fn make_random_host_matrix(size: usize, seed: u64) -> HostMatrix {
                 seed.wrapping_add((ci as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)),
             );
             for v in slice.iter_mut() {
-                *v = rng.sample(StandardNormal);
+                v.write(rng.sample(StandardNormal));
             }
         });
+    let len = data.len();
+    let capacity = data.capacity();
+    let ptr = data.as_mut_ptr().cast::<f32>();
+    std::mem::forget(data);
+    // SAFETY: The parallel fill above writes all `len` elements exactly once,
+    // and `MaybeUninit<f32>` has the same layout as `f32`.
+    let data = unsafe { Vec::from_raw_parts(ptr, len, capacity) };
     HostMatrix { size, data }
 }
 
