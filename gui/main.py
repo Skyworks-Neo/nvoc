@@ -112,6 +112,7 @@ def main() -> int:
     finally:
         if guard is not None:
             guard.release()
+        os._exit(0)
 
 
 if __name__ == "__main__":
