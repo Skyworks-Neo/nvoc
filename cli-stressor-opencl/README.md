@@ -13,6 +13,8 @@
 这是一个基于 OpenCL 的 GPU 核心域稳定性压力测试工具。它通过时间驱动、随机化的通用矩阵乘法（GEMM）工作负载，结合旁路校验机制来对显卡进行压力测试，能够有效检测显卡的静默计算错误（Silent Data Corruption）或硬件稳定性问题。
 
 > **提示**：本目录只维护 OpenCL stressor。CUDA stressor 已迁移到 Rust crate：`cli-stressor-cuda-rs/`。
+>
+> **警告**：OpenCL stressor 的压力不足以作为最终超频稳定性判据。OpenCL-only 通过可能得到高于真实稳定上限的 autoscan / V-F 曲线结果；直接长期使用这些偏高结果可能导致驱动重置、系统不稳定、数据损坏或硬件故障。请仅将 OpenCL 结果视为初筛，并使用 CUDA stressor 或更重的真实负载重新验证。
 
 ### 功能特点
 
@@ -97,6 +99,8 @@ python test.py [参数]
 This is an OpenCL-based GPU core-stability stress tool. It drives randomized generalized matrix multiplication (GEMM) workloads over time, combined with a sidecar validation path, to stress the GPU and help detect silent data corruption or hardware stability issues.
 
 > **Note**: this directory maintains only the OpenCL stressor. The CUDA stressor lives in the Rust crate: `cli-stressor-cuda-rs/`.
+>
+> **Warning**: the OpenCL stressor is not high-pressure enough to be a final overclocking stability gate. OpenCL-only passes can produce autoscan / V-F curve results higher than the hardware can actually sustain; using those inflated results long term may cause driver resets, system instability, data corruption, or hardware failure. Treat OpenCL results as a first-pass screen and revalidate with the CUDA stressor or heavier real workloads.
 
 ### Features
 

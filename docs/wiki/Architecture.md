@@ -19,4 +19,4 @@ Use CLI for reproducible automation and troubleshooting; use frontends for opera
 
 ---
 
-*Maintained from: `README.md`, `nvoc-core/src/lib.rs`, `gui/src/`, `tui/nvoc_tui/`, `srv/src/`.*
+*Maintained from: `README.md`, `core/src/lib.rs`, `gui/src/`, `tui/nvoc_tui/`, `srv/src/`.*

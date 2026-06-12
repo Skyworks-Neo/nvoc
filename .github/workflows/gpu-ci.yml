@@ -64,7 +64,7 @@ jobs:
         if: github.event_name != 'workflow_dispatch'
         with:
           fetch-depth: 0
-      - uses: dorny/paths-filter@v3
+      - uses: dorny/paths-filter@v4
         if: github.event_name != 'workflow_dispatch'
         id: filter
         with:
@@ -72,17 +72,21 @@ jobs:
             # Base layers are composed in job-level if: expressions below.
             ci_config:
               - '.github/workflows/gpu-ci.yml'
+              - '.github/actions/setup-rust/**'
             rust_base:
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'rust-toolchain.toml'
               - 'rustfmt.toml'
               - '.cargo/**'
+              - '.gitmodules'
+              - 'nvapi-rs'
+              - 'nvapi-rs/**'
             python_base:
               - 'pyproject.toml'
               - 'uv.lock'
             nvoc_core:
-              - 'nvoc-core/**'
+              - 'core/**'
             auto_optimizer:
               - 'auto-optimizer/**'
             stressor_cuda_rs:
@@ -104,19 +108,13 @@ jobs:
         working-directory: auto-optimizer
     steps:
       - uses: actions/checkout@v6
-        # with:
-        #   ref: ${{ inputs.ref || github.ref }}
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: auto-optimizer -> target
-      - name: Disable local nvapi-rs patch for CI
-        shell: pwsh
-        run: |
-          $cargoToml = "Cargo.toml"
-          $content = Get-Content $cargoToml -Raw
-          $content = [regex]::Replace($content, '(?ms)^\# For development, we use the local path to the nvapi-rs crate\. In production, we can switch to the git dependency\.\r?\n\[patch\."https://github\.com/Skyworks-Neo/nvapi-rs"\]\r?\nnvapi = \{ path = "\./nvapi-rs" \}\r?\nnvapi-sys = \{ path = "\./nvapi-rs/sys" \}\r?\nnvapi-hi = \{ path = "\./nvapi-rs/hi" \}\r?\n', '')
-          Set-Content $cargoToml $content -NoNewline
+          ref: ${{ inputs.ref || github.ref }}
+          submodules: true
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache: "true"
+          cache-workspaces: auto-optimizer -> target
       - name: build
         run: cargo build --release
       - name: read-only GPU discovery
@@ -137,24 +135,11 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.ref || github.ref }}
-      - name: Disable local nvapi-rs patch for CI
-        shell: pwsh
-        run: |
-          $cargoToml = "Cargo.toml"
-          $content = Get-Content $cargoToml -Raw
-          $content = [regex]::Replace($content, '(?ms)^\# For development, we use the local path to the nvapi-rs crate\. In production, we can switch to the git dependency\.\r?\n\[patch\."https://github\.com/Skyworks-Neo/nvapi-rs"\]\r?\nnvapi = \{ path = "\./nvapi-rs" \}\r?\nnvapi-sys = \{ path = "\./nvapi-rs/sys" \}\r?\nnvapi-hi = \{ path = "\./nvapi-rs/hi" \}\r?\n', '')
-          Set-Content $cargoToml $content -NoNewline
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+          submodules: true
+      - uses: ./.github/actions/setup-rust
         with:
-          workspaces: . -> target
-      - name: Disable local nvapi-rs patch for CI
-        shell: pwsh
-        run: |
-          $cargoToml = "Cargo.toml"
-          $content = Get-Content $cargoToml -Raw
-          $content = [regex]::Replace($content, '(?ms)^\# For development, we use the local path to the nvapi-rs crate\. In production, we can switch to the git dependency\.\r?\n\[patch\."https://github\.com/Skyworks-Neo/nvapi-rs"\]\r?\nnvapi = \{ path = "\./nvapi-rs" \}\r?\nnvapi-sys = \{ path = "\./nvapi-rs/sys" \}\r?\nnvapi-hi = \{ path = "\./nvapi-rs/hi" \}\r?\n', '')
-          Set-Content $cargoToml $content -NoNewline
+          cache: "true"
+          cache-workspaces: . -> target
       - name: nvoc-core read-only GPU API tests
         run: cargo test --release --package nvoc-core --test gpu_readonly -- --ignored --test-threads=1
         env:
@@ -172,17 +157,11 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.ref || github.ref }}
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+          submodules: true
+      - uses: ./.github/actions/setup-rust
         with:
-          workspaces: . -> target
-      - name: Disable local nvapi-rs patch for CI
-        shell: pwsh
-        run: |
-          $cargoToml = "Cargo.toml"
-          $content = Get-Content $cargoToml -Raw
-          $content = [regex]::Replace($content, '(?ms)^\# For development, we use the local path to the nvapi-rs crate\. In production, we can switch to the git dependency\.\r?\n\[patch\."https://github\.com/Skyworks-Neo/nvapi-rs"\]\r?\nnvapi = \{ path = "\./nvapi-rs" \}\r?\nnvapi-sys = \{ path = "\./nvapi-rs/sys" \}\r?\nnvapi-hi = \{ path = "\./nvapi-rs/hi" \}\r?\n', '')
-          Set-Content $cargoToml $content -NoNewline
+          cache: "true"
+          cache-workspaces: . -> target
       - name: build CUDA stressor
         run: cargo build --release --package cli-stressor-cuda-rs --features cuda
       - name: short stress run
@@ -203,19 +182,17 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.ref || github.ref }}
-      - name: Disable local nvapi-rs patch for CI
-        shell: pwsh
-        run: |
-          $cargoToml = "Cargo.toml"
-          $content = Get-Content $cargoToml -Raw
-          $content = [regex]::Replace($content, '(?ms)^\# For development, we use the local path to the nvapi-rs crate\. In production, we can switch to the git dependency\.\r?\n\[patch\."https://github\.com/Skyworks-Neo/nvapi-rs"\]\r?\nnvapi = \{ path = "\./nvapi-rs" \}\r?\nnvapi-sys = \{ path = "\./nvapi-rs/sys" \}\r?\nnvapi-hi = \{ path = "\./nvapi-rs/hi" \}\r?\n', '')
-          Set-Content $cargoToml $content -NoNewline
       - name: set uv cache dirs
         shell: pwsh
         run: |
           Add-Content $env:GITHUB_ENV "UV_CACHE_DIR=$env:RUNNER_TEMP\uv-cache"
           Add-Content $env:GITHUB_ENV "UV_PROJECT_ENVIRONMENT=$env:RUNNER_TEMP\uv-envs\opencl-stressor-${{ github.run_id }}"
-      - uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@v8.2.0
+        with:
+          version: "0.11.19"
+          enable-cache: "true"
+          cache-dependency-glob: uv.lock
+          cache-suffix: opencl
       - run: uv sync --frozen --no-config
         env:
           UV_CACHE_DIR: ${{ runner.temp }}\uv-cache
@@ -236,6 +213,6 @@ jobs:
   #     - uses: actions/checkout@v6
   #       with:
   #         ref: ${{ inputs.ref || github.ref }}
-  #     - uses: astral-sh/setup-uv@v4
+  #     - uses: astral-sh/setup-uv@v8.2.0
   #     - run: uv sync
   #     - run: uv run python test.py

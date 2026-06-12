@@ -11,7 +11,7 @@ pub const fn default_vfp_init_csv_path() -> &'static str {
 }
 
 pub const fn default_vfp_log_path() -> &'static str {
-    "./ws/vfp.log"
+    "./ws/vfp.jsonl"
 }
 
 pub const fn default_test_exe_path() -> &'static str {

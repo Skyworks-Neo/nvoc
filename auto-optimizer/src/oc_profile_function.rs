@@ -1,5 +1,6 @@
 use super::autoscan_config::{FixResultConfig, VfpExportConfig};
-use super::basic_func::get_gpu_tdp_temp_limit;
+use super::scan_log::{self, BreakPointResume, ScanArea, ScanLogEvent, VoltagePointResume};
+use super::scan_support::get_gpu_tdp_temp_limit;
 // oc_set_function
 #[cfg(all(not(windows), not(target_os = "linux")))]
 use super::platform::panic_windows_only;
@@ -17,10 +18,10 @@ use nvoc_core::{
     GpuOperation, GpuType, QueryGpuInfo, SetNvapiPowerLimits, SetNvapiSensorLimits,
     SetPstateBaseVoltage, SetVfpPointDelta, SetVoltageBoost, fetch_gpu_type,
     legacy_p0_core_max_voltage_delta, query_domain_vf_points_indexed, query_domain_vfp_indices,
-    run, set_nvapi_cooler_settings, set_nvapi_domain_vfp_deltas,
+    run, set_nvapi_cooler_settings, set_nvapi_domain_vfp_deltas, sync_memory_pstate_as_p0,
 };
 use std::cmp::min;
-use std::convert::TryFrom;
+use std::collections::BTreeSet;
 use std::fs;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
@@ -39,16 +40,6 @@ fn run_output<O: GpuOperation>(gpu: &GpuTarget<'_>, op: O) -> Result<O::Output, 
 fn csv_error(err: csv::Error) -> Error {
     Error::Custom(format!("CSV Error: {}", err))
 }
-
-type VoltagePointResume = (
-    i32,
-    i32,
-    Option<usize>,
-    Option<usize>,
-    Option<usize>,
-    Option<usize>,
-);
-type BreakPointResume = (Option<f64>, Option<f64>, Option<usize>, Option<bool>);
 
 fn is_std(str: &str) -> bool {
     str == "-"
@@ -120,36 +111,56 @@ pub fn export_single_point(point: VfPoint, matches: &clap::ArgMatches) -> Result
         .get_one::<String>("initcsv")
         .ok_or_else(|| Error::Custom("missing --initcsv argument".to_string()))?
         .as_str();
+    let delimiter = if matches.get_flag("tabs") {
+        b'\t'
+    } else {
+        b','
+    };
 
+    export_single_point_to_paths(point, file_path, init_path, delimiter)
+}
+
+fn export_single_point_to_paths(
+    point: VfPoint,
+    file_path: &str,
+    init_path: &str,
+    delimiter: u8,
+) -> Result<(), Error> {
     reject_dotdot(file_path)?;
     reject_dotdot(init_path)?;
 
+    let delimiter_char = char::from(delimiter);
+    let delimiter_string = delimiter_char.to_string();
+
     // Check if the destination file exists
     if !Path::new(file_path).exists() {
-        // Copy the file if it doesn't exist
-        fs::copy(init_path, file_path)?;
+        let template = File::open(init_path)?;
+        let reader = BufReader::new(template);
+        let lines: Vec<String> = reader.lines().collect::<io::Result<_>>()?;
+        let input_delimiter = lines
+            .first()
+            .map(|line| infer_vfp_file_delimiter(line, delimiter_char))
+            .unwrap_or(delimiter_char);
         println!("temporary output file generated successfully!");
-        let output_2bcleared = File::open(file_path)?;
-        let reader = BufReader::new(output_2bcleared);
         let mut line_number = 1;
         let mut modified_lines = Vec::new();
 
         // Iterate over each line in the file
-        for line in reader.lines() {
-            let line = line?; // Get the line as a String
+        for line in lines {
             if line_number == 1 {
-                modified_lines.push(line);
+                let columns: Vec<&str> = line.split(input_delimiter).collect();
+                modified_lines.push(columns.join(&delimiter_string));
                 line_number += 1;
                 continue;
             }
-            let mut columns: Vec<&str> = line.split(',').collect();
+            let mut columns: Vec<&str> = line.split(input_delimiter).collect();
 
             // Remove the 2nd and 3rd values (index 1 and 2)
             if columns.len() > 2 {
                 columns[1] = ""; // Clear second value
                 columns[2] = ""; // Clear third value
             }
-            modified_lines.push(columns.join(",")); // Store the modified line
+            modified_lines.push(columns.join(&delimiter_string)); // Store the modified line
             line_number += 1;
         }
 
@@ -176,14 +187,14 @@ pub fn export_single_point(point: VfPoint, matches: &clap::ArgMatches) -> Result
 
     for line in reader.lines() {
         let line = line?;
-        let mut parts: Vec<String> = line.split(',').map(|s| s.to_string()).collect();
+        let mut parts: Vec<String> = line.split(delimiter_char).map(|s| s.to_string()).collect();
         if parts.first().map(|s| s.as_str()) == Some(&*voltage_str) && parts.len() > 3 {
             parts[2] = delta_str.clone();
             let y_value: i32 = parts[2].parse().unwrap_or(0);
             let col3_value: i32 = parts[3].parse().unwrap_or(0);
             parts[1] = y_value.saturating_add(col3_value).to_string();
         }
-        record_lines.push(parts.join(","));
+        record_lines.push(parts.join(&delimiter_string));
     }
 
     // Write the updated content back to the file
@@ -197,6 +208,18 @@ pub fn export_single_point(point: VfPoint, matches: &clap::ArgMatches) -> Result
     );
 
     Ok(())
+}
+
+fn infer_vfp_file_delimiter(line: &str, requested: char) -> char {
+    let comma_count = line.matches(',').count();
+    let tab_count = line.matches('\t').count();
+    if tab_count > comma_count {
+        '\t'
+    } else if comma_count > tab_count {
+        ','
+    } else {
+        requested
+    }
 }
 
 fn export_vfp<W: Write, I: Iterator<Item = VfPoint>>(
@@ -475,8 +498,15 @@ pub fn handle_vfp_export(gpu: &GpuTarget<'_>, matches: &clap::ArgMatches) -> Res
         let points_load = collect_domain_vf_points(gpu, domain, legacy_vfp_flag)?.into_iter();
 
         // Export the load-default frequency to a temporary file
-        let temp_file = "./ws/temp_load.csv";
-        export_vfp(File::create(temp_file)?, points_load, delimiter)?;
+        // Derive from the output path so it lands in the same directory (e.g. Scan-<UUID>/)
+        let temp_file = {
+            let parent = std::path::Path::new(output)
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| std::path::PathBuf::from("."));
+            parent.join("temp_load.csv").to_string_lossy().into_owned()
+        };
+        export_vfp(File::create(&temp_file)?, points_load, delimiter)?;
 
         // Step 4: Kill the load process
         if let Err(e) = child.kill() {
@@ -488,7 +518,7 @@ pub fn handle_vfp_export(gpu: &GpuTarget<'_>, matches: &clap::ArgMatches) -> Res
 
         // Extract only default_frequency column from temp file
         let default_frequencies = extract_default_frequencies(output, legacy_vfp_flag)?;
-        let default_frequencies_load = extract_default_frequencies(temp_file, legacy_vfp_flag)?;
+        let default_frequencies_load = extract_default_frequencies(&temp_file, legacy_vfp_flag)?;
 
         // Update original CSV with the new columns
         update_csv_with_load_and_margin(
@@ -548,52 +578,6 @@ fn set_domain_vfp_deltas_raw(
     deltas: &[(usize, KilohertzDelta)],
 ) -> Result<(), Error> {
     set_nvapi_domain_vfp_deltas(gpu, domain, deltas)
-}
-
-pub fn sync_memory_pstate_as_p0(gpu: &GpuTarget<'_>) -> Result<(), Error> {
-    let info = run_output(gpu, QueryGpuInfo)?;
-    let gpu_type = fetch_gpu_type(&info).unwrap_or(GpuType::Unknown);
-    let memory_points =
-        collect_domain_vf_points_indexed(gpu, ClockDomain::Memory, gpu_type.is_legacy_vfp())?;
-
-    if memory_points.len() < 2 {
-        return Err(Error::Custom(
-            "memory VFP table has fewer than two points; cannot sync second stage to P0".into(),
-        ));
-    }
-
-    let (p0_index, p0_point) = memory_points
-        .last()
-        .cloned()
-        .ok_or_else(|| Error::Custom("memory VFP table is empty".into()))?;
-    let (sync_index, sync_point) = memory_points[memory_points.len() - 2].clone();
-
-    let new_delta =
-        sync_point.delta.0 as i64 + (p0_point.frequency.0 as i64 - sync_point.frequency.0 as i64);
-    let new_delta = i32::try_from(new_delta).map_err(|_| {
-        Error::Custom(format!(
-            "derived memory delta {} is out of i32 range for VFP point {}",
-            new_delta, sync_index
-        ))
-    })?;
-
-    set_domain_vfp_deltas_raw(
-        gpu,
-        ClockDomain::Memory,
-        &[(sync_index, KilohertzDelta(new_delta))],
-    )?;
-
-    println!(
-        "Synced memory VFP point {} to P0 point {}: current={} kHz, old_delta={} kHz, target={} kHz, new_delta={} kHz",
-        sync_index,
-        p0_index,
-        sync_point.frequency.0,
-        sync_point.delta.0,
-        p0_point.frequency.0,
-        new_delta
-    );
-
-    Ok(())
 }
 
 pub fn handle_vfp_import(gpu: &GpuTarget<'_>, matches: &clap::ArgMatches) -> Result<(), Error> {
@@ -918,174 +902,14 @@ pub fn fix_result(gpu: &GpuTarget<'_>, matches: &clap::ArgMatches) -> Result<(),
 }
 
 pub fn check_voltage_points(log_filename: &str) -> io::Result<Option<VoltagePointResume>> {
-    // Helper function to extract four usize values from a line
-    fn extract_key_points(line: &str) -> Option<(usize, usize, usize, usize)> {
-        let numbers: Vec<usize> = line
-            .split(|c: char| !c.is_ascii_digit()) // Split on non-numeric characters
-            .filter_map(|num| num.parse::<usize>().ok()) // Parse integers
-            .collect();
-
-        if numbers.len() == 4 {
-            Some((numbers[0], numbers[1], numbers[2], numbers[3]))
-        } else {
-            None
-        }
-    }
-
-    let path = Path::new(log_filename);
-
-    // If the log file doesn't exist, scanning should be initialized
-    if !path.exists() {
-        return Ok(None);
-    }
-
-    let file = File::open(log_filename)?;
-    let reader = BufReader::new(file);
-
-    let mut min_voltage_point: Option<i32> = None;
-    let mut max_voltage_point: Option<i32> = None;
-    let mut key_points: Option<(usize, usize, usize, usize)> = None;
-
-    for line in reader.lines() {
-        let line = line?; // Unwrap line safely
-
-        // Check for minimum voltage point by looking for the pattern and extracting the value after it
-        if line.contains("minimum_voltage_point") {
-            min_voltage_point = extract_value(&line, "minimum_voltage_point:");
-        }
-
-        // Check for maximum voltage point by looking for the pattern and extracting the value after it
-        if line.contains("maximum_voltage_point") {
-            max_voltage_point = extract_value(&line, "maximum_voltage_point:");
-        }
-
-        if line.contains("key points detected:") {
-            key_points = extract_key_points(&line);
-        }
-    }
-
-    // Return lower/upper voltage if found, with optional key points
-    if let (Some(lower), Some(upper)) = (min_voltage_point, max_voltage_point) {
-        let (p1, p2, p3, p4) = key_points.unwrap_or((0, 0, 0, 0)); // fallback to 0 if missing
-        Ok(Some((lower, upper, Some(p1), Some(p2), Some(p3), Some(p4))))
-    } else {
-        Ok(None)
-    }
-}
-
-fn extract_value(line: &str, pattern: &str) -> Option<i32> {
-    line.split(pattern)
-        .nth(1) // Get the part after the pattern
-        .and_then(|s| s.split_whitespace().next()) // Get the next word (numeric value)
-        .and_then(|s| s.trim_matches(|c| c == '.' || c == ',').parse::<i32>().ok())
-    // Parse as i32
-}
-
-fn extract_value_f64(line: &str, pattern: &str) -> Option<f64> {
-    line.split(pattern)
-        .nth(1) // Get the part after the pattern
-        .and_then(|s| s.split_whitespace().next()) // Get the next word (numeric value)
-        .and_then(|s| s.trim_matches(|c| c == ',').parse::<f64>().ok()) // Parse as f64
-}
-
-fn is_plausible_voltage_point(point: usize) -> bool {
-    // VFP point indices are bounded by the table size; anything above that is
-    // usually a misparsed GPU id or stale data from a different device.
-    point <= 255
+    scan_log::voltage_points_from_file(log_filename)
 }
 
 pub fn break_point_continue(
     log_filename: &str,
     testing_step: usize,
 ) -> io::Result<BreakPointResume> {
-    let file = File::open(log_filename)?;
-    let reader = BufReader::new(file);
-    // Read all lines into a Vec
-    let lines: Vec<String> = reader.lines().collect::<Result<_, _>>()?;
-
-    let mut last_succeeded_freq: Option<f64> = None;
-    let mut last_failed_freq: Option<f64> = None;
-    let mut last_voltage_point: Option<usize> = None;
-
-    let mut ultrafast_flag: Option<bool> = None;
-
-    for line in lines.iter().rev() {
-        // Reverse iteration over lines
-
-        if line.contains("succeeded") {
-            break;
-        }
-
-        if line.contains("Scan")
-            || line.contains("Finished")
-                && (last_voltage_point.is_some()
-                    || last_succeeded_freq.is_some()
-                    || last_failed_freq.is_some())
-        {
-            if line.contains("ultrafast") {
-                ultrafast_flag = Some(true)
-            } else if line.contains("normal") {
-                ultrafast_flag = Some(false)
-            }
-            break;
-        }
-
-        if last_voltage_point.is_none()
-            && let Some(point) = extract_value(line, "point: #")
-        {
-            let point = point as usize;
-            if is_plausible_voltage_point(point) {
-                last_voltage_point = Some(point);
-            } else {
-                eprintln!(
-                    "Warning: ignoring suspicious resume point {} from log line: {}",
-                    point, line
-                );
-            }
-
-            if line.contains("Finished") {
-                last_voltage_point = last_voltage_point
-                    .and_then(|v| v.checked_add(testing_step))
-                    .filter(|&v| is_plausible_voltage_point(v));
-                if last_voltage_point.is_none() {
-                    eprintln!(
-                        "Warning: ignoring suspicious resume point after Finished line: {}",
-                        line
-                    );
-                }
-                break;
-            }
-        }
-
-        if last_succeeded_freq.is_none()
-            && line.contains("Test result is code #0")
-            && let Some(freq) = extract_value_f64(line, "freq_delta: #")
-        {
-            last_succeeded_freq = Some(freq);
-        }
-
-        if last_failed_freq.is_none()
-            && line.contains("Test")
-            && !line.contains("Test result is code #0")
-            && let Some(freq) = extract_value_f64(line, "freq_delta: #")
-        {
-            last_failed_freq = Some(freq);
-        }
-
-        if last_voltage_point.is_some()
-            && last_succeeded_freq.is_some()
-            && last_failed_freq.is_some()
-        {
-            break; // Stop early if all values are found
-        }
-    }
-
-    Ok((
-        last_succeeded_freq,
-        last_failed_freq,
-        last_voltage_point,
-        ultrafast_flag,
-    ))
+    scan_log::breakpoint_from_file(log_filename, testing_step)
 }
 
 pub fn export_vfp_from_log(matches: &clap::ArgMatches) -> Result<(), Error> {
@@ -1093,63 +917,75 @@ pub fn export_vfp_from_log(matches: &clap::ArgMatches) -> Result<(), Error> {
         .get_one::<String>("log")
         .map(|s| s.as_str())
         .unwrap();
-    let file = File::open(log_filename)?;
-    let reader = BufReader::new(file);
+    let output = matches
+        .get_one::<String>("output")
+        .map(|s| s.as_str())
+        .unwrap_or("-");
+    let delimiter = if matches.get_flag("tabs") {
+        b'\t'
+    } else {
+        b','
+    };
+    let loaded = scan_log::read_scan_log(log_filename)?;
+    let points = export_points_from_jsonl_entries(&loaded.entries);
 
-    // Read all lines into a Vec
-    let lines: Vec<String> = reader.lines().collect::<Result<_, _>>()?;
+    if points.is_empty() {
+        eprintln!(
+            "Warning: export-vfp-log found no code #100 core test results in {}.",
+            log_filename
+        );
+    }
 
-    let mut last_code_100_freq: Option<f64> = None;
-    let mut last_voltage: Option<f64> = None;
-    let mut last_voltage_point: Option<i32> = None;
+    if is_std(output) {
+        return export_vfp(io::stdout(), points.into_iter(), delimiter).map_err(Error::from);
+    }
 
-    for line in lines.iter().rev() {
-        // Reverse iteration over lines
-
-        if line.contains("minimum_voltage_point") {
-            break;
-        }
-
-        if line.contains("Finished")
-            && let Some(point) = extract_value(line, "point: #")
-        {
-            last_voltage_point = Some(point);
-            last_code_100_freq = None;
-        }
-
-        if last_code_100_freq.is_none() && line.contains("Test result is code #100") {
-            println!("{}", line);
-            if last_voltage_point.is_none() {
-                continue;
-            }
-            if let Some(point) = extract_value(line, "point: #")
-                && last_voltage_point != Some(point)
-            {
-                eprintln!(
-                    "Warning: export_vfp_from_log: expected voltage point {:?}, got {} \u{2014} skipping",
-                    last_voltage_point, point
-                );
-                continue;
-            }
-            if let Some(voltage) = extract_value_f64(line, "voltage: #") {
-                last_voltage = Some(voltage);
-            }
-            if let Some(freq) = extract_value_f64(line, "freq_delta: #") {
-                last_code_100_freq = Some(freq);
-                export_single_point(
-                    VfPoint {
-                        point_type: VfPointType::Prog,
-                        voltage: Microvolts((last_voltage.unwrap() * 1000.0) as u32),
-                        frequency: Kilohertz(0),
-                        delta: KilohertzDelta((last_code_100_freq.unwrap() * 1000.0) as i32),
-                        default_frequency: Kilohertz(0),
-                    },
-                    matches,
-                )?;
-            }
-        }
+    for point in points {
+        export_single_point(point, matches)?;
     }
     Ok(())
+}
+
+fn export_points_from_jsonl_entries(entries: &[scan_log::ScanLogEntry]) -> Vec<VfPoint> {
+    let mut exported_points = BTreeSet::new();
+    let mut active_finished_point = None;
+    let mut points = Vec::new();
+
+    for entry in entries.iter().rev() {
+        match entry.event {
+            ScanLogEvent::PointFinished {
+                area: ScanArea::Core,
+                point,
+            } => {
+                active_finished_point = Some(point);
+            }
+            ScanLogEvent::VoltageRange { .. } => break,
+            ScanLogEvent::TestResult {
+                area: ScanArea::Core,
+                point,
+                voltage_uv: Some(voltage_uv),
+                delta_khz,
+                result_code: 100,
+                ..
+            } if active_finished_point == Some(point) && exported_points.insert(point) => {
+                eprintln!(
+                    "export-vfp-log: point #{point}, voltage #{voltage_uv}uV, delta #{delta_khz}kHz"
+                );
+                points.push(VfPoint {
+                    point_type: VfPointType::Prog,
+                    voltage: Microvolts(voltage_uv),
+                    frequency: Kilohertz(0),
+                    delta: KilohertzDelta(delta_khz),
+                    default_frequency: Kilohertz(0),
+                });
+                active_finished_point = None;
+            }
+            _ => {}
+        }
+    }
+
+    points.reverse();
+    points
 }
 
 pub fn key_point_extractor(
@@ -1412,4 +1248,109 @@ pub fn apply_autoscan_profile(
     sync_memory_pstate_as_p0(gpu)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(event: ScanLogEvent) -> scan_log::ScanLogEntry {
+        scan_log::ScanLogEntry {
+            schema_version: 1,
+            time: "12:34:56".to_string(),
+            event,
+        }
+    }
+
+    fn unique_test_path(name: &str) -> String {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time is after unix epoch")
+            .as_nanos();
+        let dir = "target/nvoc-auto-optimizer-tests";
+        std::fs::create_dir_all(dir).expect("create test output directory");
+        format!("{dir}/{}-{nanos}-{name}", std::process::id())
+    }
+
+    #[test]
+    fn export_points_from_jsonl_uses_last_code_100_before_finished_point() {
+        let entries = vec![
+            entry(ScanLogEvent::VoltageRange {
+                lower_point: 10,
+                upper_point: 80,
+                gpu_ranges: Vec::new(),
+            }),
+            entry(ScanLogEvent::TestResult {
+                area: ScanArea::Core,
+                phase: scan_log::TestPhase::Short,
+                test_code: 1,
+                point: 42,
+                voltage_uv: Some(875000),
+                delta_khz: 125000,
+                result_code: 0,
+            }),
+            entry(ScanLogEvent::TestResult {
+                area: ScanArea::Core,
+                phase: scan_log::TestPhase::Short,
+                test_code: 2,
+                point: 42,
+                voltage_uv: Some(875000),
+                delta_khz: 150000,
+                result_code: 100,
+            }),
+            entry(ScanLogEvent::PointFinished {
+                area: ScanArea::Core,
+                point: 42,
+            }),
+            entry(ScanLogEvent::TestResult {
+                area: ScanArea::Memory,
+                phase: scan_log::TestPhase::Long,
+                test_code: 1,
+                point: 80,
+                voltage_uv: Some(950000),
+                delta_khz: 900000,
+                result_code: 100,
+            }),
+            entry(ScanLogEvent::PointFinished {
+                area: ScanArea::Memory,
+                point: 80,
+            }),
+        ];
+
+        let points = export_points_from_jsonl_entries(&entries);
+
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0].voltage.0, 875000);
+        assert_eq!(points[0].delta.0, 150000);
+    }
+
+    #[test]
+    fn export_single_point_honors_tab_delimiter_for_file_output() {
+        let init_path = unique_test_path("init.tsv");
+        let output_path = unique_test_path("output.tsv");
+        std::fs::write(
+            &init_path,
+            "voltage,frequency,delta,default_frequency\n875000,123,0,1000\n900000,456,0,2000\n",
+        )
+        .expect("write init file");
+
+        let point = VfPoint {
+            point_type: VfPointType::Prog,
+            voltage: Microvolts(875000),
+            frequency: Kilohertz(0),
+            delta: KilohertzDelta(150),
+            default_frequency: Kilohertz(0),
+        };
+
+        export_single_point_to_paths(point, &output_path, &init_path, b'\t')
+            .expect("export tab-delimited point");
+
+        let output = std::fs::read_to_string(&output_path).expect("read output file");
+        assert!(output.contains("875000\t1150\t150\t1000\n"));
+        assert!(output.contains("900000\t\t\t2000\n"));
+        assert!(!output.contains(','));
+
+        let _ = std::fs::remove_file(init_path);
+        let _ = std::fs::remove_file(output_path);
+    }
 }
