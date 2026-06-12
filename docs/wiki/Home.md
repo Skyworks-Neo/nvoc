@@ -1,6 +1,6 @@
 # NVOC Wiki Home
 
-NVOC is a Rust + Python monorepo for NVIDIA GPU overclocking, validation, and frontend orchestration. The core control path is `auto-optimizer` with NVAPI/NVML backends, while GUI/TUI/SRV wrap operational flows for different environments.
+NVOC is a Rust + Python monorepo for NVIDIA GPU overclocking, validation, and frontend orchestration. `nvoc-cli` owns direct NVAPI/NVML control commands, `auto-optimizer` orchestrates autoscan workflows, and GUI/TUI/SRV wrap operational flows for different environments.
 
 > ⚠️ **Safety first**: Overclock writes can crash drivers, reset GPUs, and cause data loss. Start with read-only commands, verify cooling and power limits, and ensure you know recovery steps before applying write operations.
 
@@ -11,6 +11,7 @@ This wiki is split by component responsibilities, architecture, build/test comma
 - [Components](./Components.md)
 - [Getting Started](./Getting-Started.md)
 - [Build and Test](./Build-and-Test.md)
+- [Container Usage](./Container-Usage.md)
 - [Architecture](./Architecture.md)
 - [Auto Optimizer](./Auto-Optimizer.md)
 - [Stressors](./Stressors.md)
@@ -23,4 +24,4 @@ This wiki is split by component responsibilities, architecture, build/test comma
 
 ---
 
-*Maintained from: `README.md`, `auto-optimizer/README-en.md`, `auto-optimizer/README.md`.*
+*Maintained from: `README.md`, `cli/README.md`, `auto-optimizer/README-en.md`, `auto-optimizer/README.md`.*

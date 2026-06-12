@@ -116,7 +116,7 @@ fn parse_decimal_prefix(raw: &str, label: &str, full: &str) -> Result<u32, Error
         .map_err(|_| Error::Custom(format!("invalid PCI {} in {:?}", label, full)))
 }
 
-pub fn gpu_id_from_nvapi_gpu(gpu: &Gpu) -> GpuId {
+pub(crate) fn gpu_id_from_nvapi_gpu(gpu: &Gpu) -> GpuId {
     GpuId(gpu.id() as u32)
 }
 
@@ -151,8 +151,8 @@ pub enum BackendSet {
 pub struct GpuTarget<'a> {
     pub id: GpuId,
     pub index: usize,
-    pub nvapi: Option<&'a Gpu>,
-    pub nvml: Option<&'a Nvml>,
+    nvapi: Option<&'a Gpu>,
+    nvml: Option<&'a Nvml>,
 }
 
 impl fmt::Debug for GpuTarget<'_> {
@@ -167,7 +167,24 @@ impl fmt::Debug for GpuTarget<'_> {
 }
 
 impl<'a> GpuTarget<'a> {
-    pub fn nvapi(&self) -> Result<&'a Gpu, Error> {
+    pub fn without_backends(id: GpuId, index: usize) -> Self {
+        Self {
+            id,
+            index,
+            nvapi: None,
+            nvml: None,
+        }
+    }
+
+    pub fn has_nvapi(&self) -> bool {
+        self.nvapi.is_some()
+    }
+
+    pub fn has_nvml(&self) -> bool {
+        self.nvml.is_some()
+    }
+
+    pub(crate) fn nvapi(&self) -> Result<&'a Gpu, Error> {
         self.nvapi
             .ok_or_else(|| Error::Custom(format!("GPU {} has no NvAPI backend", self.id.0)))
     }
@@ -243,10 +260,6 @@ impl TargetInventory {
 
     pub fn target_by_pci_str(&self, raw: &str) -> Result<GpuTarget<'_>, Error> {
         self.target_by_id(GpuId::from_pci_str(raw)?)
-    }
-
-    pub fn target_by_nvapi_gpu(&self, gpu: &Gpu) -> Result<GpuTarget<'_>, Error> {
-        self.target_by_id(gpu_id_from_nvapi_gpu(gpu))
     }
 }
 

@@ -148,6 +148,11 @@ class OverclockTab:
                 apply_cmd=self._apply_mem_only,
             )
         )
+        btn_apply_mem.configure(shift_command=self._apply_mem_with_sync)
+        HoverTooltip(
+            btn_apply_mem,
+            "Shift+Click: apply global offset then sync P2 memory VFP to P0 frequency",
+        )
 
         # Buttons
         btn_oc = ctk.CTkFrame(oc_frame, fg_color="transparent")
@@ -528,37 +533,20 @@ class OverclockTab:
         if "supported_pstates" in limits:
             self.set_supported_pstates(limits.get("supported_pstates"))
 
-    def _get_vfp_core_display_text(self) -> str:
-        """Display text for Core Offset while VF curve mode is active."""
-        if self._vfp_uniform_offset_mhz is not None:
-            return str(int(self._vfp_uniform_offset_mhz))
-        return "Curve"
-
     def set_vfp_state(
         self, has_vfp_offset: bool, uniform_core_offset_mhz: Optional[int] = None
     ):
-        """Update core clock display if VFP has offsets."""
+        """Track whether VFP offsets exist without changing scalar OC controls."""
         if self._is_resize_active:
             self._pending_vfp_state = (has_vfp_offset, uniform_core_offset_mhz)
             return
 
-        previous_vfp_mode = self._is_vfp_mode
         self._is_vfp_mode = has_vfp_offset
         self._vfp_uniform_offset_mhz = (
             int(uniform_core_offset_mhz)
             if (has_vfp_offset and uniform_core_offset_mhz is not None)
             else None
         )
-        if has_vfp_offset:
-            self._syncing = True
-            self.core_var.set(self._get_vfp_core_display_text())
-            self._syncing = False
-        else:
-            # If VF mode just ended, reset display back to the slider's scalar value.
-            if previous_vfp_mode or self.core_var.get() == "Curve":
-                self._syncing = True
-                self.core_var.set(str(int(self.core_slider.get())))
-                self._syncing = False
 
     def check_capabilities(self, info: dict):
         """Enable/disable controls based on GPU capabilities."""
@@ -714,10 +702,7 @@ class OverclockTab:
         slider._oc_step = step
 
         slider.set(default)
-        if var is self.core_var and self._is_vfp_mode:
-            var.set(self._get_vfp_core_display_text())
-        else:
-            var.set(str(default))
+        var.set(str(default))
         self._syncing = False
 
     def _set_slider_value(self, slider: Any, var: ctk.StringVar, value: int):
@@ -727,10 +712,7 @@ class OverclockTab:
         clamped = max(min_val, min(max_val, value))
         self._syncing = True
         slider.set(clamped)
-        if var is self.core_var and self._is_vfp_mode:
-            var.set(self._get_vfp_core_display_text())
-        else:
-            var.set(str(clamped))
+        var.set(str(clamped))
         self._syncing = False
 
     # ────────────────────────────────────────────
@@ -798,13 +780,6 @@ class OverclockTab:
             if self._syncing:
                 return
             text = _var.get().strip()
-            if _var is self.core_var and self._is_vfp_mode:
-                display = self._get_vfp_core_display_text()
-                if text != display:
-                    self._syncing = True
-                    _var.set(display)
-                    self._syncing = False
-                return
             # Allow typing a minus sign or empty string without clamping
             if text in ("", "-", "+"):
                 return
@@ -824,11 +799,6 @@ class OverclockTab:
         # ── On focus-out: clamp entry value ──
         def _on_focusout(event, _var=var, _slider=slider):
             text = _var.get().strip()
-            if _var is self.core_var and self._is_vfp_mode:
-                self._syncing = True
-                _var.set(self._get_vfp_core_display_text())
-                self._syncing = False
-                return
             if text == "Curve":
                 return
             try:
@@ -906,8 +876,6 @@ class OverclockTab:
         )
 
     def _apply_core_only(self):
-        if self._is_vfp_mode:
-            return
         core_mhz = self.core_var.get().strip()
         if core_mhz == "Curve":
             return
@@ -942,6 +910,26 @@ class OverclockTab:
                 )
                 or f"Successfully applied memory offset {value} MHz."
             ),
+        )
+
+    def _apply_mem_with_sync(self):
+        """Shift+click: apply memory offset then sync P2→P0."""
+        mem_mhz = self.mem_var.get().strip()
+        backend = self._selected_oc_backend()
+        try:
+            value = int(mem_mhz)
+        except ValueError:
+            return
+        gpu = self.app.selected_gpu_target()
+        self.app.run_native_action(
+            "apply memory offset + sync P2→P0",
+            lambda native, gpu=gpu, backend=backend, value=value: (
+                native.set_clock_offset(
+                    gpu, backend, "memory", value, self._oc_pstate()
+                ),
+                native.sync_memory_pstate_as_p0(gpu),
+                f"Applied memory offset {value} MHz + synced P2→P0.",
+            )[-1],
         )
 
     def _apply_plimit_only(self):
@@ -1002,7 +990,7 @@ class OverclockTab:
         mem_mhz = self.mem_var.get().strip()
 
         actions = []
-        if (not self._is_vfp_mode) and core_mhz != "Curve":
+        if core_mhz != "Curve":
             try:
                 core_value = int(core_mhz)
                 actions.append((
