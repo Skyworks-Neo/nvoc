@@ -432,6 +432,7 @@ jobs:
       - clippy
       - changes
       - rust-nvoc-core
+      - rust-nvoc-cli
       - rust-nvoc-python
       - rust-auto-optimizer
       - rust-srv
