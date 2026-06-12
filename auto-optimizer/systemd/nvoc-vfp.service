@@ -10,8 +10,8 @@ After=local-fs.target systemd-udev-settle.service
 Type=oneshot
 RemainAfterExit=yes
 ExecStartPre=/bin/sh -c 'for i in $(seq 1 30); do [ -e /dev/nvidiactl ] && exit 0; sleep 1; done; echo "/dev/nvidiactl did not appear in time" >&2; exit 1'
-ExecStart=/srv/nvoc/nvoc-auto-optimizer set vfp import /srv/nvoc/vfp.csv
-ExecStop=/srv/nvoc/nvoc-auto-optimizer reset --domain vfp
+ExecStart=/srv/nvoc/nvoc-auto-optimizer import-vfp /srv/nvoc/vfp.csv
+ExecStop=/srv/nvoc/nvoc-auto-optimizer reset-vfp
 
 [Install]
 WantedBy=multi-user.target

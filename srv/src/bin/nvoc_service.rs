@@ -36,8 +36,8 @@ mod nvoc_service {
         enum_wrappers::device::{TemperatureSensor, TemperatureThreshold},
     };
     use nvoc_core::{
-        GpuId, GpuTarget, NvapiLockedVoltageTarget, ResetVfpFrequencyLock, ResetVfpLock,
-        SetVfpVoltageLock, find_matching_vfp_point, run as run_gpu_operation,
+        BackendSet, GpuId, NvapiLockedVoltageTarget, ResetVfpFrequencyLock, ResetVfpLock,
+        SetVfpVoltageLock, discover_targets, find_matching_vfp_point, run as run_gpu_operation,
     };
     use std::{
         cmp::{max, min},
@@ -208,6 +208,7 @@ mod nvoc_service {
         let nvml = Nvml::init().unwrap();
         // let temperature_softwall_offset = 25;
         let gpus = Gpu::enumerate().unwrap();
+        let inventory = discover_targets(BackendSet::Both).unwrap();
         let vfp_lowest_lock_point = 40;
         let vfp_highest_lock_point = 100;
         // 每张 GPU 的动态温控锁定点，初始为最高（即未限制）
@@ -347,12 +348,8 @@ mod nvoc_service {
                             }
                         }
                         let current = gpu_dynamic_lock_point[idx];
-                        let maybe_target = maybe_gpu.map(|g| GpuTarget {
-                            id: GpuId(g.id() as u32),
-                            index: idx,
-                            nvapi: Some(g),
-                            nvml: Some(&nvml),
-                        });
+                        let maybe_target = maybe_gpu
+                            .and_then(|g| inventory.target_by_id(GpuId(g.id() as u32)).ok());
                         if temperature >= temperature_softwall {
                             // 超温：每周期降低一个工作点（收紧），不低于最低限制
                             let next = current.saturating_sub(1).max(vfp_lowest_lock_point);

@@ -45,6 +45,18 @@ import pynvoc._native
 print(pynvoc._native.__file__)  # Should point to the generated .pyd
 ```
 
+Common top-level binding calls include:
+
+```python
+import pynvoc
+
+gpus = pynvoc.discover_gpus("both")
+gpu = gpus[0]["gpu_id_hex"]
+print(pynvoc.query_status(gpu, "both"))
+print(pynvoc.list_displays(gpu))
+print(pynvoc.query_edid(gpu, "0x00010001"))
+```
+
 To run the Python tests for the bindings:
 
 ```bash
@@ -107,6 +119,18 @@ import pynvoc._native
 
 # 验证调用
 print(pynvoc._native.__file__)  # 应指向新生成的 .pyd 模块
+```
+
+常用顶层绑定调用包括：
+
+```python
+import pynvoc
+
+gpus = pynvoc.discover_gpus("both")
+gpu = gpus[0]["gpu_id_hex"]
+print(pynvoc.query_status(gpu, "both"))
+print(pynvoc.list_displays(gpu))
+print(pynvoc.query_edid(gpu, "0x00010001"))
 ```
 
 运行绑定代码的 Python 测试：

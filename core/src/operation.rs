@@ -2,9 +2,10 @@ use super::error::Error;
 use super::nvapi as low_nvapi;
 use super::nvml as low_nvml;
 use super::result::{
-    AppliedValue, BatchReport, ClockOffset, FanInfo, OperationKind, OperationReport,
-    PstateClockRange, SupportedApplicationClocks, TargetOutcome, TdpTempLimits,
-    TemperatureThreshold, ThrottleReason, VoltageFrequencyCheck,
+    ApiRestrictionState, AppliedValue, AutoBoostState, BatchReport, ClockOffset, DisplayInfo,
+    EdidData, FanInfo, OperationKind, OperationReport, PstateBaseVoltage, PstateClockRange,
+    SupportedApplicationClocks, TargetOutcome, TdpTempLimits, TemperatureThreshold, ThrottleReason,
+    VoltageBoostState, VoltageFrequencyCheck,
 };
 use super::target::GpuTarget;
 use super::types::{NvapiLockedVoltageTarget, VfpResetDomain};
@@ -12,7 +13,7 @@ use nvapi_hi::{
     ClockDomain, CoolerPolicy, Kilohertz, KilohertzDelta, MicrovoltsDelta, PState, Percentage,
     SensorThrottle, VfPoint,
 };
-use nvml_wrapper::enum_wrappers::device::PerformanceState;
+use nvml_wrapper::enum_wrappers::device::{Api, PerformanceState};
 
 fn nvapi_clock_domain_to_nvml(
     domain: ClockDomain,
@@ -81,7 +82,13 @@ impl GpuOperation for QueryGpuInfo {
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
-        target.nvapi()?.info().map_err(Error::from)
+        let mut info = target.nvapi()?.info().map_err(Error::from)?;
+        if info.uuid.is_none()
+            && let Ok(nvml) = target.nvml()
+        {
+            info.uuid = low_nvml::query_nvml_uuid(nvml, target.id.0);
+        }
+        Ok(info)
     }
 }
 
@@ -543,6 +550,23 @@ impl GpuOperation for ResetFanSpeed {
 }
 
 #[derive(Clone, Copy, Debug)]
+pub struct QueryPstateBaseVoltage {
+    pub pstate: PState,
+}
+
+impl GpuOperation for QueryPstateBaseVoltage {
+    type Output = PstateBaseVoltage;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryPstateBaseVoltage
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        low_nvapi::query_pstate_base_voltage(target.nvapi()?, self.pstate)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
 pub struct SetPstateBaseVoltage {
     pub pstate: PState,
     pub delta_uv: MicrovoltsDelta,
@@ -883,6 +907,23 @@ impl GpuOperation for QueryLegacyP0CoreMaxVoltageDelta {
 }
 
 #[derive(Clone, Copy, Debug)]
+pub struct QueryVoltageBoost;
+
+impl GpuOperation for QueryVoltageBoost {
+    type Output = VoltageBoostState;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryVoltageBoost
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        Ok(VoltageBoostState {
+            voltage_boost: target.nvapi()?.settings()?.voltage_boost,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
 pub struct SetVoltageBoost {
     pub boost: Percentage,
 }
@@ -1094,6 +1135,91 @@ impl GpuOperation for CheckVoltageFrequency {
 }
 
 #[derive(Clone, Copy, Debug)]
+pub struct QueryDisplays {
+    pub all: bool,
+}
+
+impl GpuOperation for QueryDisplays {
+    type Output = Vec<DisplayInfo>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryDisplays
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        low_nvapi::query_displays(target.nvapi()?, self.all)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct QueryEdid {
+    pub display_id: u32,
+}
+
+impl GpuOperation for QueryEdid {
+    type Output = EdidData;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryEdid
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let bytes = target
+            .nvapi()?
+            .inner()
+            .get_edid(self.display_id)
+            .map_err(Error::from)?;
+        Ok(EdidData {
+            display_id: self.display_id,
+            bytes,
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct SetEdid {
+    pub display_id: u32,
+    pub bytes: Vec<u8>,
+}
+
+impl GpuOperation for SetEdid {
+    type Output = ();
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetEdid
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .inner()
+            .set_edid(self.display_id, &self.bytes)
+            .map_err(Error::from)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ClearEdid {
+    pub display_id: u32,
+}
+
+impl GpuOperation for ClearEdid {
+    type Output = ();
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::ClearEdid
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .inner()
+            .clear_edid(self.display_id)
+            .map_err(Error::from)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
 pub struct SetLegacyClocks {
     pub core_mhz: u32,
     pub memory_mhz: u32,
@@ -1175,6 +1301,26 @@ impl GpuOperation for SetNvmlPstateLock {
 }
 
 #[derive(Clone, Copy, Debug)]
+pub struct QueryAutoBoost;
+
+impl GpuOperation for QueryAutoBoost {
+    type Output = AutoBoostState;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryAutoBoost
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let (enabled, default_enabled) =
+            low_nvml::query_nvml_auto_boost(target.nvml()?, target.id.0)?;
+        Ok(AutoBoostState {
+            enabled,
+            default_enabled,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
 pub struct SetAutoBoost {
     pub enabled: bool,
 }
@@ -1209,8 +1355,30 @@ impl GpuOperation for SetAutoBoostDefault {
 }
 
 #[derive(Clone, Copy, Debug)]
+pub struct QueryApiRestriction {
+    pub api_type: Api,
+}
+
+impl GpuOperation for QueryApiRestriction {
+    type Output = ApiRestrictionState;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryApiRestriction
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let restricted =
+            low_nvml::query_nvml_api_restriction(target.nvml()?, target.id.0, self.api_type)?;
+        Ok(ApiRestrictionState {
+            api_type: self.api_type,
+            restricted,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
 pub struct SetApiRestriction {
-    pub api_type: nvml_wrapper::enum_wrappers::device::Api,
+    pub api_type: Api,
     pub restricted: bool,
 }
 
@@ -1276,6 +1444,17 @@ pub fn oc_params(gpu_type: super::gpu_type::GpuType) -> super::gpu_type::GpuOcPa
 
 pub fn percentage(value: u32) -> Percentage {
     Percentage(value)
+}
+
+pub fn probe_thermal_sensors_mask(target: &GpuTarget<'_>) -> Result<i32, Error> {
+    low_nvapi::probe_thermal_sensors_mask(target.nvapi()?)
+}
+
+pub fn read_thermal_sensors(
+    target: &GpuTarget<'_>,
+    mask: i32,
+) -> Result<nvapi_hi::ThermalSensors, Error> {
+    low_nvapi::read_thermal_sensors(target.nvapi()?, mask)
 }
 
 pub fn set_nvapi_vfp_curve_delta(
@@ -1400,6 +1579,52 @@ where
         .nvapi()?
         .set_cooler_levels(settings)
         .map_err(Error::from)
+}
+
+pub fn sync_memory_pstate_as_p0(target: &GpuTarget<'_>) -> Result<(), Error> {
+    let info = run(target, QueryGpuInfo)?.output;
+    let gpu_type = fetch_gpu_type(&info).unwrap_or(super::gpu_type::GpuType::Unknown);
+    let memory_points =
+        query_domain_vf_points_indexed(target, ClockDomain::Memory, gpu_type.is_legacy_vfp())?;
+
+    if memory_points.len() < 2 {
+        return Err(Error::Custom(
+            "memory VFP table has fewer than two points; cannot sync second stage to P0".into(),
+        ));
+    }
+
+    let (p0_index, p0_point) = memory_points
+        .last()
+        .cloned()
+        .ok_or_else(|| Error::Custom("memory VFP table is empty".into()))?;
+    let (sync_index, sync_point) = memory_points[memory_points.len() - 2].clone();
+
+    let new_delta =
+        sync_point.delta.0 as i64 + (p0_point.frequency.0 as i64 - sync_point.frequency.0 as i64);
+    let new_delta = i32::try_from(new_delta).map_err(|_| {
+        Error::Custom(format!(
+            "derived memory delta {} is out of i32 range for VFP point {}",
+            new_delta, sync_index
+        ))
+    })?;
+
+    set_nvapi_domain_vfp_deltas(
+        target,
+        ClockDomain::Memory,
+        &[(sync_index, KilohertzDelta(new_delta))],
+    )?;
+
+    println!(
+        "Synced memory VFP point {} to P0 point {}: current={} kHz, old_delta={} kHz, target={} kHz, new_delta={} kHz",
+        sync_index,
+        p0_index,
+        sync_point.frequency.0,
+        sync_point.delta.0,
+        p0_point.frequency.0,
+        new_delta
+    );
+
+    Ok(())
 }
 
 pub fn set_nvapi_legacy_clocks(

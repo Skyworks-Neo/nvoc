@@ -2,6 +2,7 @@ use rand::rngs::StdRng;
 use rand::seq::IndexedRandom;
 use rand::{Rng, SeedableRng};
 use rand_distr::StandardNormal;
+use rayon::prelude::*;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
@@ -577,12 +578,25 @@ pub fn per_element_allclose(diff: &[f32], reference: &[f32], atol: f32, rtol: f3
 }
 
 pub fn make_random_host_matrix(size: usize, seed: u64) -> HostMatrix {
-    let mut rng = StdRng::seed_from_u64(seed);
-    let mut data = Vec::with_capacity(size * size);
-    for _ in 0..size * size {
-        let sample: f32 = rng.sample(StandardNormal);
-        data.push(sample);
-    }
+    let n = size * size;
+    let mut data = vec![0.0f32; n];
+    // Fill in parallel so the GPU is not starved waiting on single-threaded
+    // StandardNormal sampling (the dominant gap between bursts for large
+    // matrices). Each chunk is seeded independently from `seed`, so the result
+    // is fully deterministic for a given seed (reproducibility and the FP64
+    // validation path, which compares GPU vs CPU over the same matrix, are
+    // unaffected) while saturating all CPU cores.
+    const CHUNK: usize = 1 << 16;
+    data.par_chunks_mut(CHUNK)
+        .enumerate()
+        .for_each(|(ci, slice)| {
+            let mut rng = StdRng::seed_from_u64(
+                seed.wrapping_add((ci as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)),
+            );
+            for v in slice.iter_mut() {
+                *v = rng.sample(StandardNormal);
+            }
+        });
     HostMatrix { size, data }
 }
 
