@@ -73,14 +73,13 @@ python test.py [参数]
 - `--duration`（默认：90.0）：每个精度模式的压力持续时间（秒）。
 - `--matrix-sizes`（默认：`2049, 4096, 4097, 8192, 8193, 16384`）：用于常规压力测试的随机矩阵尺寸列表，以逗号分隔。
 - `--fp64-matrix-sizes`（默认：`2048, 4096`）：专门用于 FP64 模式的矩阵尺寸，为了适应消费级 GPU 较低的双精度算力（避免测试假死）。
-- `--precisions`（默认：`fp16,bf16`）：需要测试的精度列表。可选：`fp64`、`fp32`、`tf32`、`fp16`、`bf16`、`fp8`。
+- `--precisions`（默认：`fp16,fp32`）：需要测试的精度列表。可选：`fp16`、`fp32`、`fp64`（按设备能力自动跳过）。
 - `--warmup-iters`（默认：3）：每个工作负载窗口的预热轮数。
 - `--burst-iters`（默认：6）：每个工作负载窗口的正式压力突发轮数。
 - `--validate-interval`（默认：10）：旁路校验的间隔秒数。
-- `--validate-size`（默认：768）：旁路校验所用的固定矩阵尺寸。
+- `--validate-size`（默认：1024）：旁路校验所用的固定矩阵尺寸。
 - `--transpose-prob`（默认：0.5）：随机转置 a/b 矩阵的概率，用于轻度扰动 kernel 执行路径。
 - `--seed`（默认：12345）：随机种子，保证结果一致性。
-- `--disable-fp8`：添加此标志可强制跳过 FP8 测试，即便当前环境支持被检测到可用。
 
 ### 输出日志概览
 
@@ -159,14 +158,13 @@ python test.py [arguments]
 - `--duration` (default: 90.0): Stress duration per precision mode, in seconds.
 - `--matrix-sizes` (default: `2049, 4096, 4097, 8192, 8193, 16384`): Comma-separated list of random matrix sizes for the main stress workload.
 - `--fp64-matrix-sizes` (default: `2048, 4096`): Matrix sizes dedicated to FP64 mode to better fit consumer GPUs with limited double-precision throughput.
-- `--precisions` (default: `fp16,bf16`): Precision list to test. Supported values: `fp64`, `fp32`, `tf32`, `fp16`, `bf16`, `fp8`.
+- `--precisions` (default: `fp16,fp32`): Precision list to test. Supported values: `fp16`, `fp32`, `fp64` (auto-skipped per device capability).
 - `--warmup-iters` (default: 3): Warmup rounds for each workload window.
 - `--burst-iters` (default: 6): Main stress rounds for each workload window.
 - `--validate-interval` (default: 10): Interval, in seconds, for sidecar validation.
-- `--validate-size` (default: 768): Fixed matrix size used by validation.
+- `--validate-size` (default: 1024): Fixed matrix size used by validation.
 - `--transpose-prob` (default: 0.5): Probability of randomly transposing matrix A/B to perturb the kernel path.
 - `--seed` (default: 12345): Random seed for reproducible runs.
-- `--disable-fp8`: Force skipping FP8 tests even if the runtime reports support.
 
 ### Log overview
 
