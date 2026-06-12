@@ -1,11 +1,12 @@
 use nvapi_hi::{ClockDomain, CoolerPolicy, Kilohertz, Microvolts, PState, VfPointType, VfpPoint};
-use nvml_wrapper::enum_wrappers::device::PerformanceState;
+use nvml_wrapper::enum_wrappers::device::{Api, PerformanceState};
 use nvml_wrapper::enums::device::FanControlPolicy;
 use nvoc_core::{
     BackendSet, ConvertEnum, GpuId, GpuOperation, GpuSelector, GpuTarget, GpuType, OperationKind,
-    PciAddress, QueryPowerLimits, VfpResetDomain, detect_gpu_type, find_matching_vfp_point,
-    nvml_pstate_to_index, nvml_pstate_to_str, parse_nvml_fan_control_policy, parse_nvml_pstate,
-    run, select_targets, try_parse_nvml_pstate,
+    PciAddress, QueryApiRestriction, QueryAutoBoost, QueryDisplays, QueryEdid, QueryPowerLimits,
+    QueryPstateBaseVoltage, QueryVoltageBoost, VfpResetDomain, detect_gpu_type,
+    find_matching_vfp_point, nvml_pstate_to_index, nvml_pstate_to_str,
+    parse_nvml_fan_control_policy, parse_nvml_pstate, run, select_targets, try_parse_nvml_pstate,
 };
 use std::collections::BTreeMap;
 use std::str::FromStr;
@@ -109,12 +110,7 @@ fn gpu_id_selection_ok() {
     let targets: Vec<GpuTarget<'_>> = [0x100u32, 0x300, 0x900]
         .into_iter()
         .enumerate()
-        .map(|(i, id)| GpuTarget {
-            id: GpuId(id),
-            index: i,
-            nvapi: None,
-            nvml: None,
-        })
+        .map(|(i, id)| GpuTarget::without_backends(GpuId(id), i))
         .collect();
 
     let selected = select_targets(&targets, &GpuSelector::all()).unwrap();
@@ -152,12 +148,7 @@ fn gpu_id_selection_rejects_bad_specs() {
     let targets: Vec<GpuTarget<'_>> = [0x100u32, 0x300]
         .into_iter()
         .enumerate()
-        .map(|(i, id)| GpuTarget {
-            id: GpuId(id),
-            index: i,
-            nvapi: None,
-            nvml: None,
-        })
+        .map(|(i, id)| GpuTarget::without_backends(GpuId(id), i))
         .collect();
 
     let err = select_targets(&targets, &GpuSelector::from_specs(["x".to_string()]))
@@ -267,16 +258,35 @@ fn vfp_point_nearest_voltage() {
 
 #[test]
 fn structured_operation_requires_matching_backend() {
-    let target = GpuTarget {
-        id: GpuId(0x100),
-        index: 0,
-        nvapi: None,
-        nvml: None,
-    };
+    let target = GpuTarget::without_backends(GpuId(0x100), 0);
 
     let err = run(&target, QueryPowerLimits).unwrap_err().to_string();
     assert!(err.contains("has no NVML backend"));
     assert_eq!(QueryPowerLimits.kind(), OperationKind::QueryPowerLimits);
+    assert_eq!(
+        QueryPstateBaseVoltage { pstate: PState::P0 }.kind(),
+        OperationKind::QueryPstateBaseVoltage
+    );
+    assert_eq!(QueryVoltageBoost.kind(), OperationKind::QueryVoltageBoost);
+    assert_eq!(QueryAutoBoost.kind(), OperationKind::QueryAutoBoost);
+    assert_eq!(
+        QueryDisplays { all: false }.kind(),
+        OperationKind::QueryDisplays
+    );
+    assert_eq!(
+        QueryApiRestriction {
+            api_type: Api::ApplicationClocks,
+        }
+        .kind(),
+        OperationKind::QueryApiRestriction
+    );
+    assert_eq!(
+        QueryEdid {
+            display_id: 0x0001_0001,
+        }
+        .kind(),
+        OperationKind::QueryEdid
+    );
     assert_eq!(BackendSet::Both, BackendSet::Both);
 }
 

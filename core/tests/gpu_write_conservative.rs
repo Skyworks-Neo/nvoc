@@ -29,7 +29,7 @@ fn first_target_with_nvml(inventory: &TargetInventory) -> GpuTarget<'_> {
     let targets = inventory.targets();
     let target = targets
         .iter()
-        .find(|t| t.nvml.is_some())
+        .find(|t| t.has_nvml())
         .expect("GPU test runner should expose at least one NVML GPU");
     *target
 }
@@ -38,7 +38,7 @@ fn first_target_with_nvapi(inventory: &TargetInventory) -> GpuTarget<'_> {
     let targets = inventory.targets();
     let target = targets
         .iter()
-        .find(|t| t.nvapi.is_some())
+        .find(|t| t.has_nvapi())
         .expect("GPU test runner should expose at least one NVAPI GPU");
     *target
 }
@@ -260,12 +260,7 @@ impl Drop for NvapiCleanupGuard<'_> {
 #[test]
 #[ignore]
 fn nvml_fan_level_rejects() {
-    let bad_target = GpuTarget {
-        id: GpuId(INVALID_GPU_ID),
-        index: 0,
-        nvapi: None,
-        nvml: None,
-    };
+    let bad_target = GpuTarget::without_backends(GpuId(INVALID_GPU_ID), 0);
     let result = run(
         &bad_target,
         SetFanSpeed {
@@ -282,12 +277,7 @@ fn nvml_fan_level_rejects() {
 #[ignore]
 fn nvml_bad_gpu_rejects() {
     let pstate = parse_nvml_pstate("P0").unwrap();
-    let bad_target = GpuTarget {
-        id: GpuId(INVALID_GPU_ID),
-        index: 0,
-        nvapi: None,
-        nvml: None,
-    };
+    let bad_target = GpuTarget::without_backends(GpuId(INVALID_GPU_ID), 0);
 
     assert_invalid_gpu_id_error(run(&bad_target, SetPowerLimit { watts: 1 }).map(|_| ()));
     assert_invalid_gpu_id_error(
