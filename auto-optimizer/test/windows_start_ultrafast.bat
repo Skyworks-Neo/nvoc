@@ -2,25 +2,17 @@
 for /f %%a in ('echo prompt $E^| cmd') do set "ESC=%%a"
 :: powershell -ExecutionPolicy Unrestricted -Command "Set-ExecutionPolicy Unrestricted -Scope CurrentUser"
 
-..\target\release\nvoc-auto-optimizer.exe info
+if not defined NVOC_AUTO_OPTIMIZER_BIN set "NVOC_AUTO_OPTIMIZER_BIN=..\target\release\nvoc-auto-optimizer.exe"
+if not defined NVOC_CLI_BIN set "NVOC_CLI_BIN=..\target\release\nvoc-cli.exe"
+
+"%NVOC_CLI_BIN%" get-info
 
 setlocal enabledelayedexpansion
 
-set "logfile=.\ws\vfp.log"
-set "vfptemfile=.\ws\vfp-tem.csv"
 set "startpoint=0"
 
-if not exist ".\ws" (
- mkdir ".\ws"
- echo %ESC%[1;92m Folder created: .\ws %ESC%[0m
-)
-if not exist "%logfile%" (
- echo. > "%logfile%"
- echo %ESC%[1;92m Log file created: %logfile% %ESC%[0m
-)
-
 echo Detecting GPUs in system...
-..\target\release\nvoc-auto-optimizer.exe list
+"%NVOC_CLI_BIN%" list-gpus
 echo.
 set /p GPU_ID=Input target GPU id to be scanned:
 
@@ -28,18 +20,41 @@ echo.
 echo Selected GPU: %GPU_ID%
 echo.
 
-..\target\release\nvoc-auto-optimizer.exe --gpu=%GPU_ID% reset pstate
-..\target\release\nvoc-auto-optimizer.exe --gpu=%GPU_ID% reset vfp
-..\target\release\nvoc-auto-optimizer.exe --gpu=%GPU_ID% reset vfp lock
+"%NVOC_CLI_BIN%" --gpu=%GPU_ID% get-uuid 2>NUL | findstr "GPU-" > "%TEMP%\nvoc_uuid.tmp"
+set /p UUID_LINE=<"%TEMP%\nvoc_uuid.tmp"
+del "%TEMP%\nvoc_uuid.tmp" 2>NUL
+for /f "tokens=1" %%u in ("%UUID_LINE:  =%") do set "UUID=%%u"
+set "UUID=%UUID:GPU-=%"
 
-if not exist ".\ws\vfp-init.csv" (
+if "%UUID%"=="" (
+    echo %ESC%[1;91m ERROR: Failed to resolve GPU UUID. Aborting. %ESC%[0m
+    exit /b 1
+)
+
+set "WSDIR=.\GPUScan-%UUID%"
+set "logfile=%WSDIR%\vfp.jsonl"
+set "vfptemfile=%WSDIR%\vfp-tem.csv"
+
+if not exist "%WSDIR%" (
+ mkdir "%WSDIR%"
+ echo %ESC%[1;92m Folder created: %WSDIR% %ESC%[0m
+)
+if not exist "%logfile%" (
+ echo. > "%logfile%"
+ echo %ESC%[1;92m Log file created: %logfile% %ESC%[0m
+)
+
+"%NVOC_CLI_BIN%" --gpu=%GPU_ID% reset-pstate-clock-offsets
+"%NVOC_AUTO_OPTIMIZER_BIN%" --gpu=%GPU_ID% reset-vfp
+"%NVOC_CLI_BIN%" --gpu=%GPU_ID% reset-vfp-lock
+
+if not exist "%WSDIR%\vfp-init.csv" (
   echo exporting default data...
-  ..\target\release\nvoc-auto-optimizer.exe --gpu=%GPU_ID% set vfp export .\ws\vfp-init.csv
+  "%NVOC_AUTO_OPTIMIZER_BIN%" --gpu=%GPU_ID% export-vfp "%WSDIR%\vfp-init.csv"
 )
 if "%~1"=="1" (
-    :: If para is 1, clear the log file
-    copy nul "%logfile%" > nul
-    copy nul "%vfptemfile%" > nul
+    copy nul "%logfile%" >NUL
+    copy nul "%vfptemfile%" >NUL
 )
 
 echo  =================================================================
@@ -54,9 +69,9 @@ echo %ESC%[1;93m If crash is unacceptable on your current situation, use Ctrl-C 
 
 pause
 
-..\target\release\nvoc-auto-optimizer.exe --gpu=%GPU_ID% set vfp autoscan -u
-..\target\release\nvoc-auto-optimizer.exe --gpu=%GPU_ID% set vfp fix_result -m 1 -u
-..\target\release\nvoc-auto-optimizer.exe --gpu=%GPU_ID% set vfp import .\ws\vfp.csv
-..\target\release\nvoc-auto-optimizer.exe --gpu=%GPU_ID% set vfp export .\ws\vfp-final.csv
+"%NVOC_AUTO_OPTIMIZER_BIN%" --gpu=%GPU_ID% autoscan-vfp -u --log "%logfile%" -i "%WSDIR%\vfp-init.csv" -o "%vfptemfile%"
+"%NVOC_AUTO_OPTIMIZER_BIN%" --gpu=%GPU_ID% fix-vfp-result -u -m 1 -v "%vfptemfile%" -o "%WSDIR%\vfp.csv" -l "%logfile%"
+"%NVOC_AUTO_OPTIMIZER_BIN%" --gpu=%GPU_ID% import-vfp "%WSDIR%\vfp.csv"
+"%NVOC_AUTO_OPTIMIZER_BIN%" --gpu=%GPU_ID% export-vfp "%WSDIR%\vfp-final.csv"
 
-echo %ESC%[1;92m All VFP Scan Finish Please Close this Window and please check in file ws\vfp-final.csv %ESC%[0m
+echo %ESC%[1;92m All VFP Scan Finish Please Close this Window and please check in file %WSDIR%\vfp-final.csv %ESC%[0m

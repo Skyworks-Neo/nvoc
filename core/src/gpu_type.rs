@@ -299,7 +299,7 @@ impl GpuType {
                 testing_step: 5,
             },
             GpuType::Mobile40Series => GpuOcParams {
-                minimum_delta_core_freq_step: 15000,
+                minimum_delta_core_freq_step: 7500,
                 core_oc_safe_limit: 360000,
                 init_core_oc_value: 150000,
                 safe_elasticity_per_cycle: 30000,
@@ -308,7 +308,7 @@ impl GpuType {
                 testing_step: 5,
             },
             GpuType::Desktop40Series => GpuOcParams {
-                minimum_delta_core_freq_step: 15000,
+                minimum_delta_core_freq_step: 7500,
                 core_oc_safe_limit: 360000,
                 init_core_oc_value: 150000,
                 safe_elasticity_per_cycle: 30000,
@@ -317,7 +317,7 @@ impl GpuType {
                 testing_step: 5,
             },
             GpuType::Mobile30Series => GpuOcParams {
-                minimum_delta_core_freq_step: 15000,
+                minimum_delta_core_freq_step: 7500,
                 core_oc_safe_limit: 300000,
                 init_core_oc_value: 90000,
                 safe_elasticity_per_cycle: 30000,
@@ -326,7 +326,7 @@ impl GpuType {
                 testing_step: 5,
             },
             GpuType::Desktop30Series => GpuOcParams {
-                minimum_delta_core_freq_step: 15000,
+                minimum_delta_core_freq_step: 7500,
                 core_oc_safe_limit: 375000,
                 init_core_oc_value: 90000,
                 safe_elasticity_per_cycle: 30000,
