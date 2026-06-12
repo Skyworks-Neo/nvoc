@@ -247,7 +247,6 @@ name = "cli-stressor-cuda-rs"
 version = "0.1.0"
 dependencies = [
  "anstream",
- "anstyle",
  "ash",
  "clap",
  "cudarc",
@@ -1065,6 +1064,7 @@ dependencies = [
  "nvoc-cli-common",
  "nvoc-core",
  "once_cell",
+ "serde",
  "serde_json",
  "time",
 ]

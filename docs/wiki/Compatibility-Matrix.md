@@ -1,6 +1,6 @@
 # Compatibility Matrix
 
-This page is intentionally extracted from `auto-optimizer` README compatibility sections and should be updated by copy-sync from that source when support changes.
+This page is intentionally extracted from the `cli/README.md` compatibility section and should be updated by copy-sync from that source when support changes.
 
 ## GPU families × backend support
 
@@ -15,8 +15,8 @@ Matrix dimensions:
 - NVML support status
 - Feature caveats (write support, sensor coverage, stability constraints)
 
-> For canonical values, use the latest table in `auto-optimizer/README.md` and `auto-optimizer/README-en.md`.
+> For canonical values, use the latest table in `cli/README.md`.
 
 ---
 
-*Maintained from: `auto-optimizer/README.md`, `auto-optimizer/README-en.md` (compatibility sections only).*
+*Maintained from: `cli/README.md` (compatibility section only).*
