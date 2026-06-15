@@ -102,10 +102,7 @@ fn reject_dotdot(path: &str) -> Result<(), Error> {
     Ok(())
 }
 
-pub fn export_single_point(
-    point: VfPoint,
-    matches: &clap::ArgMatches,
-) -> Result<(), Error> {
+pub fn export_single_point(point: VfPoint, matches: &clap::ArgMatches) -> Result<(), Error> {
     let file_path: &str = matches
         .get_one::<String>("output")
         .ok_or_else(|| Error::Custom("missing --output argument".to_string()))?
@@ -199,10 +196,7 @@ fn export_single_point_to_paths(
     Ok(())
 }
 
-fn export_vfp<W: Write, I: Iterator<Item = VfPoint>>(
-    write: W,
-    points: I,
-) -> io::Result<()> {
+fn export_vfp<W: Write, I: Iterator<Item = VfPoint>>(write: W, points: I) -> io::Result<()> {
     let mut w = WriterBuilder::new()
         .has_headers(false)
         .delimiter(b',')
