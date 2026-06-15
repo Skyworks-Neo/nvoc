@@ -32,35 +32,41 @@ p.s. Remember to stop the service when you compile and build the project.
 ### 1.3 check the state
 
 ```
-.\notify\debug\uninstall_service.exe
+sc query nvoc_service
 ```
 
 ## 2 Check log
 
-Usually on a Windows System Computer the path is
+On Windows the service writes logs under `%PROGRAMDATA%\nvoc\logs`, e.g.
 
 ```
-logs/
+C:\ProgramData\nvoc\logs\nvoc_service-output.log
 ```
 
 ## 3 Parameter update
 
-A web service is on the 1145 port of localhost.
+A localhost-only HTTP control server listens on `127.0.0.1:14514` (loopback only;
+it is not reachable from the network).
 
-Now the example is a temperature wall of 64C. Over 64C will be set to vfp ref point 48.
+The service enforces a soft temperature wall: when a GPU's temperature reaches
+`temp_limit` (°C) it steps the VFP voltage lock down toward a safer point, and
+relaxes/unlocks again once the temperature is back to normal. Defaults:
+`temp_limit = 60`, `vfp_lock_point = 70`.
 
+State-changing endpoints are CSRF-guarded: they require `POST` **and** the header
+`X-Requested-With: XMLHttpRequest`. A `GET` to them returns `405`.
 
-To change the ref point to 44
+Check the current config (read-only):
 ```
-curl.exe "http://127.0.0.1:1145/set_tem_wall_vfp?point=44"
-```
-
-To check the ref point
-```
-curl.exe "http://127.0.0.1:1145/config"
+curl.exe "http://127.0.0.1:14514/config"
 ```
 
-To set a global OC frequency
+Set the soft temperature wall to 64 °C (valid range 40–120):
 ```
-curl.exe "http://127.0.0.1:1145/oc_global?oc=75"
+curl.exe -X POST -H "X-Requested-With: XMLHttpRequest" "http://127.0.0.1:14514/set_temp_limit_soft_vfp?limit=64"
+```
+
+Queue a global P0 graphics-clock offset on GPU 0 (`oc` is a kHz delta, range ±2000000; `gpu` defaults to 0):
+```
+curl.exe -X POST -H "X-Requested-With: XMLHttpRequest" "http://127.0.0.1:14514/oc_global?oc=75000&gpu=0"
 ```

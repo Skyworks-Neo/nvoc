@@ -279,8 +279,8 @@ async fn list_gpus(Query(query): Query<BackendQuery>) -> ApiResult<Value> {
         item.insert("index".into(), u64_value(target.index as u64));
         item.insert("gpu_id".into(), u64_value(target.id.0 as u64));
         item.insert("gpu_id_hex".into(), text(format!("0x{:04X}", target.id.0)));
-        item.insert("backend_nvapi".into(), bool_value(target.nvapi.is_some()));
-        item.insert("backend_nvml".into(), bool_value(target.nvml.is_some()));
+        item.insert("backend_nvapi".into(), bool_value(target.has_nvapi()));
+        item.insert("backend_nvml".into(), bool_value(target.has_nvml()));
         if let Ok(info) = run(&target, QueryGpuInfo).map(|report| report.output) {
             item.insert("name".into(), text(info.name));
             item.insert("codename".into(), text(info.codename));
@@ -604,7 +604,7 @@ async fn apply_limits(
 async fn reset_limits(Path(gpu): Path<String>) -> ApiResult<ActionResponse> {
     let inventory = target_inventory(BackendSet::Both)?;
     let target = selected_target(&inventory, &gpu)?;
-    if target.nvapi.is_some() {
+    if target.has_nvapi() {
         run(
             &target,
             SetVoltageBoost {
@@ -635,7 +635,7 @@ async fn reset_limits(Path(gpu): Path<String>) -> ApiResult<ActionResponse> {
         )
         .map_err(to_api_err)?;
     }
-    if target.nvml.is_some() {
+    if target.has_nvml() {
         let _ = run(
             &target,
             ResetLockedClocks {
