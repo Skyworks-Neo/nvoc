@@ -21,8 +21,6 @@ use nvoc_core::Error;
 /// handle_vfp_export 所需参数
 #[derive(Debug, Clone)]
 pub struct VfpExportConfig {
-    /// CSV 列分隔符（',' 或 '\t'）
-    pub delimiter: u8,
     /// 输出文件路径（"-" 表示 stdout）
     pub output: String,
     /// 是否执行动态 load 测量（--quick 取反）
@@ -50,11 +48,6 @@ fn vfp_domain_from_matches(matches: &ArgMatches) -> ClockDomain {
 impl VfpExportConfig {
     pub fn from_matches(matches: &ArgMatches) -> Self {
         VfpExportConfig {
-            delimiter: if matches.get_flag("tabs") {
-                b'\t'
-            } else {
-                b','
-            },
             output: matches
                 .get_one::<String>("output")
                 .cloned()

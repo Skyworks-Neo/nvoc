@@ -46,13 +46,6 @@ pub fn get_arguments() -> Command {
 fn vfp_export_command() -> Command {
     Command::new("export-vfp")
         .about("Export current VFP curve as CSV")
-        .arg(
-            Arg::new("tabs")
-                .short('t')
-                .long("tabs")
-                .action(ArgAction::SetTrue)
-                .help("Separate columns using tabs"),
-        )
         .args(vfp_domain_args("Export"))
         .arg(
             Arg::new("output")
@@ -80,13 +73,6 @@ fn vfp_export_command() -> Command {
 fn vfp_export_log_command() -> Command {
     Command::new("export-vfp-log")
         .about("Export VFP points parsed from an autoscan log")
-        .arg(
-            Arg::new("tabs")
-                .short('t')
-                .long("tabs")
-                .action(ArgAction::SetTrue)
-                .help("Separate columns using tabs"),
-        )
         .arg(
             Arg::new("log")
                 .value_name("LOG")
@@ -116,13 +102,6 @@ fn vfp_export_log_command() -> Command {
 fn vfp_import_command() -> Command {
     Command::new("import-vfp")
         .about("Import a modified VFP curve from CSV")
-        .arg(
-            Arg::new("tabs")
-                .short('t')
-                .long("tabs")
-                .action(ArgAction::SetTrue)
-                .help("Separate columns using tabs"),
-        )
         .args(vfp_domain_args("Import"))
         .arg(
             Arg::new("input")
