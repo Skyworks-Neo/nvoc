@@ -251,7 +251,6 @@ Defaults to the Graphics (core) curve; use domain flags to export other VFP tabl
 | Parameter   | Shorthand | Description                                             |
 |-------------|-----------|---------------------------------------------------------|
 | `<OUTPUT>`  | —         | Output path (`-` for stdout)                            |
-| `--tabs`    | `-t`      | Use Tab as delimiter (default comma)                    |
 | `--quick`   | `-q`      | Skip dynamic load measurement, export static curve only |
 | `--nocheck` | `-n`      | Skip plausibility check for dynamic results             |
 | `--memory`  | —         | Export Memory domain VFP curve                          |
@@ -288,7 +287,6 @@ Defaults to the Graphics (core) curve; Memory domain import aligns by point inde
 | Parameter | Shorthand | Description                |
 |-----------|-----------|----------------------------|
 | `<INPUT>` | —         | Input path (`-` for stdin) |
-| `--tabs`  | `-t`      | Tab delimiter              |
 | `--memory` | —        | Import Memory domain VFP curve |
 | `--processor` | —     | Import Processor domain VFP curve |
 | `--video` | —         | Import Video domain VFP curve   |

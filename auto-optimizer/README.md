@@ -258,7 +258,6 @@ nvoc-auto-optimizer.exe export-vfp --quick .\ws\vfp-quick.csv
 | 参数          | 简写   | 说明                  |
 |-------------|------|---------------------|
 | `<OUTPUT>`  | —    | 输出路径（`-` 表示 stdout） |
-| `--tabs`    | `-t` | 使用 Tab 作为分隔符（默认逗号）  |
 | `--quick`   | `-q` | 跳过动态负载测量，仅导出静态曲线    |
 | `--nocheck` | `-n` | 跳过动态测量结果的合理性校验      |
 | `--memory`  | —    | 导出 Memory 域 VFP 曲线          |
@@ -295,7 +294,6 @@ nvoc-auto-optimizer.exe import-vfp .\ws\vfp.csv
 | 参数        | 简写   | 说明                 |
 |-----------|----|--------------------|
 | `<INPUT>` | —    | 输入路径（`-` 表示 stdin） |
-| `--tabs`  | `-t` | Tab 分隔符            |
 | `--memory`  | —  | 导入 Memory 域 VFP 曲线  |
 | `--processor` | — | 导入 Processor 域 VFP 曲线 |
 | `--video` | —    | 导入 Video 域 VFP 曲线   |
