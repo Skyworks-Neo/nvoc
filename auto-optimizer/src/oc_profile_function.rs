@@ -102,7 +102,11 @@ fn reject_dotdot(path: &str) -> Result<(), Error> {
     Ok(())
 }
 
-pub fn export_single_point(point: VfPoint, matches: &clap::ArgMatches) -> Result<(), Error> {
+pub fn export_single_point(
+    point: VfPoint,
+    matches: &clap::ArgMatches,
+    delimiter: u8,
+) -> Result<(), Error> {
     let file_path: &str = matches
         .get_one::<String>("output")
         .ok_or_else(|| Error::Custom("missing --output argument".to_string()))?
@@ -111,11 +115,6 @@ pub fn export_single_point(point: VfPoint, matches: &clap::ArgMatches) -> Result
         .get_one::<String>("initcsv")
         .ok_or_else(|| Error::Custom("missing --initcsv argument".to_string()))?
         .as_str();
-    let delimiter = if matches.get_flag("tabs") {
-        b'\t'
-    } else {
-        b','
-    };
 
     export_single_point_to_paths(point, file_path, init_path, delimiter)
 }
@@ -941,7 +940,7 @@ pub fn export_vfp_from_log(matches: &clap::ArgMatches) -> Result<(), Error> {
     }
 
     for point in points {
-        export_single_point(point, matches)?;
+        export_single_point(point, matches, delimiter)?;
     }
     Ok(())
 }
@@ -1349,6 +1348,60 @@ mod tests {
         assert!(output.contains("875000\t1150\t150\t1000\n"));
         assert!(output.contains("900000\t\t\t2000\n"));
         assert!(!output.contains(','));
+
+        let _ = std::fs::remove_file(init_path);
+        let _ = std::fs::remove_file(output_path);
+    }
+
+    // Regression for the autoscan-vfp panic: the autoscan-vfp command defines
+    // `output`/`initcsv` but never a `tabs` arg, yet the scanner reaches
+    // export_single_point. The old code read `matches.get_flag("tabs")`, which
+    // panics on an undefined arg id and aborted the scan right after the first
+    // point. export_single_point must instead take the delimiter explicitly.
+    #[test]
+    fn export_single_point_does_not_panic_on_autoscan_matches() {
+        let init_path = unique_test_path("autoscan_init.csv");
+        let output_path = unique_test_path("autoscan_out.csv");
+        std::fs::write(
+            &init_path,
+            "voltage,frequency,delta,default_frequency\n875000,123,0,1000\n",
+        )
+        .expect("write init file");
+
+        // Real autoscan-vfp matches: `output`/`initcsv` defined, `tabs` is not.
+        let matches = crate::arg_help::get_arguments()
+            .try_get_matches_from([
+                "nvoc-auto-optimizer",
+                "autoscan-vfp",
+                "-o",
+                output_path.as_str(),
+                "-i",
+                init_path.as_str(),
+            ])
+            .expect("valid autoscan-vfp args");
+        let (name, sub) = matches.subcommand().expect("autoscan-vfp subcommand");
+        assert_eq!(name, "autoscan-vfp");
+
+        let point = VfPoint {
+            point_type: VfPointType::Prog,
+            voltage: Microvolts(875000),
+            frequency: Kilohertz(0),
+            delta: KilohertzDelta(150),
+            default_frequency: Kilohertz(0),
+        };
+
+        // Must not panic on the absent `tabs` arg; the scanner uses comma output.
+        export_single_point(point, sub, b',').expect("export must not panic on autoscan matches");
+
+        let output = std::fs::read_to_string(&output_path).expect("read output file");
+        assert!(
+            output.contains(','),
+            "scanner output should be comma-delimited"
+        );
+        assert!(
+            !output.contains('\t'),
+            "scanner output should not contain tabs"
+        );
 
         let _ = std::fs::remove_file(init_path);
         let _ = std::fs::remove_file(output_path);

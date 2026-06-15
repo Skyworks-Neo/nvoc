@@ -473,7 +473,7 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
                 delta: KilohertzDelta(controller.f_current),
                 default_frequency,
             };
-            let _ = export_single_point(p_save, matches);
+            let _ = export_single_point(p_save, matches, b',');
             // interpolate when not in ultrafast mode.
             if !is_ultrafast {
                 let prev_delta = prev_endpoint_delta.unwrap_or(controller.f_current);
@@ -504,7 +504,7 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
                         delta: KilohertzDelta(interpolated_delta),
                         default_frequency,
                     };
-                    let _ = export_single_point(p_save_prev, matches);
+                    let _ = export_single_point(p_save_prev, matches, b',');
                 }
             }
             prev_endpoint_delta = Some(controller.f_current);
