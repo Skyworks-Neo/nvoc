@@ -292,7 +292,7 @@ impl GpuType {
             GpuType::Desktop50Series => GpuOcParams {
                 minimum_delta_core_freq_step: 7500,
                 core_oc_safe_limit: 600000,
-                init_core_oc_value: 195000,
+                init_core_oc_value: 390000,
                 safe_elasticity_per_cycle: 60000,
                 fluctuation_coefficient: 3,
                 is_50_series: true,
