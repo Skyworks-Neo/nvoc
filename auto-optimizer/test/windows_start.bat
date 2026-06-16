@@ -19,11 +19,9 @@ echo.
 echo Selected GPU: %GPU_ID%
 echo.
 
-"%NVOC_CLI_BIN%" --gpu=%GPU_ID% get-uuid 2>NUL | findstr "GPU-" > "%TEMP%\nvoc_uuid.tmp"
-set /p UUID_LINE=<"%TEMP%\nvoc_uuid.tmp"
+"%NVOC_CLI_BIN%" --gpu=%GPU_ID% get-uuid > "%TEMP%\nvoc_uuid.tmp" 2>&1
+for /f "usebackq tokens=*" %%a in (`findstr /r /i "[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-" "%TEMP%\nvoc_uuid.tmp"`) do set "UUID=%%a"
 del "%TEMP%\nvoc_uuid.tmp" 2>NUL
-for /f "tokens=1" %%u in ("%UUID_LINE:  =%") do set "UUID=%%u"
-set "UUID=%UUID:GPU-=%"
 
 if "%UUID%"=="" (
     echo %ESC%[1;91m ERROR: Failed to resolve GPU UUID. Aborting. %ESC%[0m

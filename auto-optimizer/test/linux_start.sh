@@ -43,8 +43,13 @@ echo "Selected GPU: ${gpu_id}"
 echo
 
 # Resolve GPU UUID for per-GPU workspace isolation
-uuid_raw=$("${cli_bin}" --gpu="${gpu_id}" get-uuid 2>/dev/null | tail -1 | tr -d '[:space:]')
-uuid="${uuid_raw#GPU-}"
+# Match by UUID hex pattern (8-4-4-4-12) rather than relying on line position
+uuid=$("${cli_bin}" --gpu="${gpu_id}" get-uuid 2>/dev/null | grep -oEi '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -1)
+
+if [[ -z "${uuid}" ]]; then
+    echo "${red}ERROR: Failed to resolve GPU UUID. Aborting.${reset}" >&2
+    exit 1
+fi
 
 wsdir="./Scan-${uuid}"
 logfile="${wsdir}/vfp.jsonl"
