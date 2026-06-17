@@ -8,24 +8,19 @@ validate_interval = 10.0
 validate_size = 512
 transpose_prob = 0.5
 seed = 12345
-kernel_types = ["gemm", "memcpy", "memset"]
-kernel_mixture = { gemm = 0.75, memcpy = 0.15, memset = 0.10 }
-stream_mode = "dual"
+kernel_types = ["gemm"]
+kernel_mixture = { gemm = 1.0 }
+stream_mode = "triple"
 disable_fp8 = true
-enable_vulkan_stress = true
-vulkan_image_width = 512
-vulkan_image_height = 512
-vulkan_image_depth = 512
-vulkan_image_count = 2
-vulkan_image_msaa = 4
-vulkan_minor_mixture_rate = 0.3
+enable_vulkan_stress = false
+vulkan_minor_mixture_rate = 0.0
 
 [kernel_params.gemm]
 matrix_sizes = [2048, 2049, 4096, 4097]
 precisions = ["fp16", "fp32"]
 precision_weight = [0.35, 0.65]
 warmup_iters = 0
-burst_iters = 200
+burst_iters = 1000
 minor_mixture_rate = 0.10
 weight = 0.85
 
