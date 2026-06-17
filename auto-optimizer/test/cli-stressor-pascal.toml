@@ -1,0 +1,48 @@
+# Pascal (SM6.x: GTX 1080 / 1080 Ti) stressor profile.
+# BF16 and TF32 are Ampere+ only and skip entirely on Pascal — removed here
+# to avoid wasting kernel slots. Focuses on large FP32/FP64 GEMM which is
+# the actual bottleneck that exposes VFP instability on these cards.
+fp64_matrix_sizes = [2048, 4096]
+precisions = ["fp16", "fp32"]
+validate_interval = 10.0
+validate_size = 512
+transpose_prob = 0.5
+seed = 12345
+kernel_types = ["gemm", "memcpy", "memset"]
+kernel_mixture = { gemm = 0.75, memcpy = 0.15, memset = 0.10 }
+stream_mode = "dual"
+disable_fp8 = true
+enable_vulkan_stress = true
+vulkan_image_width = 512
+vulkan_image_height = 512
+vulkan_image_depth = 512
+vulkan_image_count = 2
+vulkan_image_msaa = 4
+vulkan_minor_mixture_rate = 0.3
+
+[kernel_params.gemm]
+matrix_sizes = [2048, 2049, 4096, 4097]
+precisions = ["fp16", "fp32"]
+precision_weight = [0.35, 0.65]
+warmup_iters = 0
+burst_iters = 200
+minor_mixture_rate = 0.10
+weight = 0.85
+
+[kernel_params.memcpy]
+matrix_sizes = [8192, 10240, 16384]
+precisions = ["fp32", "fp16"]
+precision_weight = [0.6, 0.4]
+warmup_iters = 1
+burst_iters = 25
+minor_mixture_rate = 0.30
+weight = 0.15
+
+[kernel_params.memset]
+matrix_sizes = [8192, 16384]
+precisions = ["fp32", "fp16"]
+precision_weight = [0.6, 0.4]
+warmup_iters = 1
+burst_iters = 50
+minor_mixture_rate = 0.10
+weight = 0.10
