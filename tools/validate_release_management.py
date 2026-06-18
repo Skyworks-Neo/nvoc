@@ -11,6 +11,7 @@ import sprint_issue_triage as triage
 
 ROOT = Path(__file__).resolve().parents[1]
 TRIAGE_DOC = ROOT / ".github" / "SPRINT_ISSUE_TRIAGE.md"
+RELEASE_GUARD_DOC = ROOT / ".github" / "RELEASE_GUARD.md"
 ROADMAP_DOC = ROOT / "docs" / "wiki" / "Release-Roadmap.md"
 HOME_DOCS = [ROOT / "docs" / "wiki" / "Home.md", ROOT / "docs" / "wiki" / "Home-zh.md"]
 
@@ -57,7 +58,7 @@ def validate_triage_doc() -> None:
 
 
 def validate_local_markdown_links() -> None:
-    for path in [TRIAGE_DOC, ROADMAP_DOC, *HOME_DOCS]:
+    for path in [TRIAGE_DOC, RELEASE_GUARD_DOC, ROADMAP_DOC, *HOME_DOCS]:
         text = path.read_text(encoding="utf-8")
         for match in re.finditer(r"\[[^\]]+\]\(([^)]+)\)", text):
             link = match.group(1)

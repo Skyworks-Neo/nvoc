@@ -2,7 +2,7 @@
 
 This page turns the current repository state into manageable sprints and a release decision checklist. It is intentionally conservative because NVOC can write overclocking, voltage, clock, power, thermal, and fan settings to real GPUs.
 
-See also: [Sprint issue triage plan](../../.github/SPRINT_ISSUE_TRIAGE.md) for the current issue-to-sprint label mapping and the tool that applies it.
+See also: [Sprint issue triage plan](../../.github/SPRINT_ISSUE_TRIAGE.md) for the current issue-to-sprint label mapping and the tool that applies it. See [Release and tag guard](../../.github/RELEASE_GUARD.md) for the protected-tag ruleset that must back the guard workflow.
 
 ## Release decision as of 2026-06-18
 
