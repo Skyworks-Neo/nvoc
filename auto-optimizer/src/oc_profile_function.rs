@@ -111,36 +111,23 @@ pub fn export_single_point(point: VfPoint, matches: &clap::ArgMatches) -> Result
         .get_one::<String>("initcsv")
         .ok_or_else(|| Error::Custom("missing --initcsv argument".to_string()))?
         .as_str();
-    let delimiter = if matches.get_flag("tabs") {
-        b'\t'
-    } else {
-        b','
-    };
 
-    export_single_point_to_paths(point, file_path, init_path, delimiter)
+    export_single_point_to_paths(point, file_path, init_path)
 }
 
 fn export_single_point_to_paths(
     point: VfPoint,
     file_path: &str,
     init_path: &str,
-    delimiter: u8,
 ) -> Result<(), Error> {
     reject_dotdot(file_path)?;
     reject_dotdot(init_path)?;
-
-    let delimiter_char = char::from(delimiter);
-    let delimiter_string = delimiter_char.to_string();
 
     // Check if the destination file exists
     if !Path::new(file_path).exists() {
         let template = File::open(init_path)?;
         let reader = BufReader::new(template);
         let lines: Vec<String> = reader.lines().collect::<io::Result<_>>()?;
-        let input_delimiter = lines
-            .first()
-            .map(|line| infer_vfp_file_delimiter(line, delimiter_char))
-            .unwrap_or(delimiter_char);
         println!("temporary output file generated successfully!");
         let mut line_number = 1;
         let mut modified_lines = Vec::new();
@@ -148,19 +135,18 @@ fn export_single_point_to_paths(
         // Iterate over each line in the file
         for line in lines {
             if line_number == 1 {
-                let columns: Vec<&str> = line.split(input_delimiter).collect();
-                modified_lines.push(columns.join(&delimiter_string));
                 line_number += 1;
+                modified_lines.push(line);
                 continue;
             }
-            let mut columns: Vec<&str> = line.split(input_delimiter).collect();
+            let mut columns: Vec<&str> = line.split(',').collect();
 
             // Remove the 2nd and 3rd values (index 1 and 2)
             if columns.len() > 2 {
                 columns[1] = ""; // Clear second value
                 columns[2] = ""; // Clear third value
             }
-            modified_lines.push(columns.join(&delimiter_string)); // Store the modified line
+            modified_lines.push(columns.join(",")); // Store the modified line
             line_number += 1;
         }
 
@@ -187,14 +173,14 @@ fn export_single_point_to_paths(
 
     for line in reader.lines() {
         let line = line?;
-        let mut parts: Vec<String> = line.split(delimiter_char).map(|s| s.to_string()).collect();
+        let mut parts: Vec<String> = line.split(',').map(|s| s.to_string()).collect();
         if parts.first().map(|s| s.as_str()) == Some(&*voltage_str) && parts.len() > 3 {
             parts[2] = delta_str.clone();
             let y_value: i32 = parts[2].parse().unwrap_or(0);
             let col3_value: i32 = parts[3].parse().unwrap_or(0);
             parts[1] = y_value.saturating_add(col3_value).to_string();
         }
-        record_lines.push(parts.join(&delimiter_string));
+        record_lines.push(parts.join(","));
     }
 
     // Write the updated content back to the file
@@ -210,26 +196,10 @@ fn export_single_point_to_paths(
     Ok(())
 }
 
-fn infer_vfp_file_delimiter(line: &str, requested: char) -> char {
-    let comma_count = line.matches(',').count();
-    let tab_count = line.matches('\t').count();
-    if tab_count > comma_count {
-        '\t'
-    } else if comma_count > tab_count {
-        ','
-    } else {
-        requested
-    }
-}
-
-fn export_vfp<W: Write, I: Iterator<Item = VfPoint>>(
-    write: W,
-    points: I,
-    delimiter: u8,
-) -> io::Result<()> {
+fn export_vfp<W: Write, I: Iterator<Item = VfPoint>>(write: W, points: I) -> io::Result<()> {
     let mut w = WriterBuilder::new()
         .has_headers(false)
-        .delimiter(delimiter)
+        .delimiter(b',')
         .from_writer(write);
     w.write_record(["voltage", "frequency", "delta", "default_frequency"])?;
     for point in points {
@@ -385,12 +355,12 @@ fn update_csv_with_load_and_margin(
 
 /// Add a 4th column to the exported VFP CSV: column2 - column3 for legacy quick export
 /// Assumes the CSV has a header row and 3 columns initially.
-pub fn patch_vfp_csv_add_column_diff(path: &str, delimiter: u8) -> Result<(), Error> {
+pub fn patch_vfp_csv_add_column_diff(path: &str) -> Result<(), Error> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
     let mut csv_reader = ReaderBuilder::new()
         .has_headers(true)
-        .delimiter(delimiter)
+        .delimiter(b',')
         .from_reader(reader);
 
     let headers = csv_reader.headers().map_err(csv_error)?.clone();
@@ -416,7 +386,7 @@ pub fn patch_vfp_csv_add_column_diff(path: &str, delimiter: u8) -> Result<(), Er
     let writer = BufWriter::new(file);
     let mut csv_writer = WriterBuilder::new()
         .has_headers(false)
-        .delimiter(delimiter)
+        .delimiter(b',')
         .from_writer(writer);
 
     for row in records {
@@ -429,7 +399,6 @@ pub fn patch_vfp_csv_add_column_diff(path: &str, delimiter: u8) -> Result<(), Er
 
 pub fn handle_vfp_export(gpu: &GpuTarget<'_>, matches: &clap::ArgMatches) -> Result<(), Error> {
     let cfg = VfpExportConfig::from_matches(matches);
-    let delimiter = cfg.delimiter;
     let output = cfg.output.as_str();
     let domain = cfg.domain;
 
@@ -446,9 +415,9 @@ pub fn handle_vfp_export(gpu: &GpuTarget<'_>, matches: &clap::ArgMatches) -> Res
     let points = collect_domain_vf_points(gpu, domain, legacy_vfp_flag)?.into_iter();
 
     if is_std(output) {
-        export_vfp(io::stdout(), points, delimiter)
+        export_vfp(io::stdout(), points)
     } else {
-        export_vfp(File::create(output)?, points, delimiter)
+        export_vfp(File::create(output)?, points)
     }?;
 
     if is_std(output) {
@@ -506,7 +475,7 @@ pub fn handle_vfp_export(gpu: &GpuTarget<'_>, matches: &clap::ArgMatches) -> Res
                 .unwrap_or_else(|| std::path::PathBuf::from("."));
             parent.join("temp_load.csv").to_string_lossy().into_owned()
         };
-        export_vfp(File::create(&temp_file)?, points_load, delimiter)?;
+        export_vfp(File::create(&temp_file)?, points_load)?;
 
         // Step 4: Kill the load process
         if let Err(e) = child.kill() {
@@ -548,7 +517,7 @@ pub fn handle_vfp_export(gpu: &GpuTarget<'_>, matches: &clap::ArgMatches) -> Res
             }
         }
     } else if legacy_vfp_flag {
-        patch_vfp_csv_add_column_diff(output, delimiter)?;
+        patch_vfp_csv_add_column_diff(output)?;
     }
     Ok(())
 }
@@ -581,11 +550,6 @@ fn set_domain_vfp_deltas_raw(
 }
 
 pub fn handle_vfp_import(gpu: &GpuTarget<'_>, matches: &clap::ArgMatches) -> Result<(), Error> {
-    let delimiter = if matches.get_flag("tabs") {
-        b'\t'
-    } else {
-        b','
-    };
     let domain = vfp_domain_from_matches(matches);
     let input = matches
         .get_one::<String>("input")
@@ -593,10 +557,10 @@ pub fn handle_vfp_import(gpu: &GpuTarget<'_>, matches: &clap::ArgMatches) -> Res
         .unwrap();
     let vfp_indices = query_domain_vfp_indices(gpu, domain)?;
 
-    fn import<R: io::Read>(read: R, delimiter: u8) -> Result<Vec<VfPoint>, csv::Error> {
+    fn import<R: io::Read>(read: R) -> Result<Vec<VfPoint>, csv::Error> {
         let mut csv = ReaderBuilder::new()
             .has_headers(true)
-            .delimiter(delimiter)
+            .delimiter(b',')
             .from_reader(read);
         let mut points = Vec::new();
         for result in csv.records() {
@@ -617,9 +581,9 @@ pub fn handle_vfp_import(gpu: &GpuTarget<'_>, matches: &clap::ArgMatches) -> Res
     }
 
     let input = if is_std(input) {
-        import(io::stdin(), delimiter)
+        import(io::stdin())
     } else {
-        import(File::open(input)?, delimiter)
+        import(File::open(input)?)
     }
     .map_err(io::Error::from)?;
 
@@ -921,11 +885,6 @@ pub fn export_vfp_from_log(matches: &clap::ArgMatches) -> Result<(), Error> {
         .get_one::<String>("output")
         .map(|s| s.as_str())
         .unwrap_or("-");
-    let delimiter = if matches.get_flag("tabs") {
-        b'\t'
-    } else {
-        b','
-    };
     let loaded = scan_log::read_scan_log(log_filename)?;
     let points = export_points_from_jsonl_entries(&loaded.entries);
 
@@ -937,7 +896,7 @@ pub fn export_vfp_from_log(matches: &clap::ArgMatches) -> Result<(), Error> {
     }
 
     if is_std(output) {
-        return export_vfp(io::stdout(), points.into_iter(), delimiter).map_err(Error::from);
+        return export_vfp(io::stdout(), points.into_iter()).map_err(Error::from);
     }
 
     for point in points {
@@ -1325,9 +1284,9 @@ mod tests {
     }
 
     #[test]
-    fn export_single_point_honors_tab_delimiter_for_file_output() {
-        let init_path = unique_test_path("init.tsv");
-        let output_path = unique_test_path("output.tsv");
+    fn export_single_point_writes_comma_delimited_file_output() {
+        let init_path = unique_test_path("init.csv");
+        let output_path = unique_test_path("output.csv");
         std::fs::write(
             &init_path,
             "voltage,frequency,delta,default_frequency\n875000,123,0,1000\n900000,456,0,2000\n",
@@ -1342,13 +1301,65 @@ mod tests {
             default_frequency: Kilohertz(0),
         };
 
-        export_single_point_to_paths(point, &output_path, &init_path, b'\t')
-            .expect("export tab-delimited point");
+        export_single_point_to_paths(point, &output_path, &init_path)
+            .expect("export comma-delimited point");
 
         let output = std::fs::read_to_string(&output_path).expect("read output file");
-        assert!(output.contains("875000\t1150\t150\t1000\n"));
-        assert!(output.contains("900000\t\t\t2000\n"));
-        assert!(!output.contains(','));
+        assert!(output.contains("875000,1150,150,1000\n"));
+        assert!(output.contains("900000,,,2000\n"));
+        assert!(!output.contains('\t'));
+
+        let _ = std::fs::remove_file(init_path);
+        let _ = std::fs::remove_file(output_path);
+    }
+
+    // Regression for the autoscan-vfp panic: the scanner reaches
+    // export_single_point using autoscan-vfp matches, so this path must not
+    // depend on subcommand-specific CSV format args.
+    #[test]
+    fn export_single_point_does_not_panic_on_autoscan_matches() {
+        let init_path = unique_test_path("autoscan_init.csv");
+        let output_path = unique_test_path("autoscan_out.csv");
+        std::fs::write(
+            &init_path,
+            "voltage,frequency,delta,default_frequency\n875000,123,0,1000\n",
+        )
+        .expect("write init file");
+
+        // Real autoscan-vfp matches: `output`/`initcsv` are defined.
+        let matches = crate::arg_help::get_arguments()
+            .try_get_matches_from([
+                "nvoc-auto-optimizer",
+                "autoscan-vfp",
+                "-o",
+                output_path.as_str(),
+                "-i",
+                init_path.as_str(),
+            ])
+            .expect("valid autoscan-vfp args");
+        let (name, sub) = matches.subcommand().expect("autoscan-vfp subcommand");
+        assert_eq!(name, "autoscan-vfp");
+
+        let point = VfPoint {
+            point_type: VfPointType::Prog,
+            voltage: Microvolts(875000),
+            frequency: Kilohertz(0),
+            delta: KilohertzDelta(150),
+            default_frequency: Kilohertz(0),
+        };
+
+        // The scanner uses comma output.
+        export_single_point(point, sub).expect("export must not panic on autoscan matches");
+
+        let output = std::fs::read_to_string(&output_path).expect("read output file");
+        assert!(
+            output.contains(','),
+            "scanner output should be comma-delimited"
+        );
+        assert!(
+            !output.contains('\t'),
+            "scanner output should not contain tab characters"
+        );
 
         let _ = std::fs::remove_file(init_path);
         let _ = std::fs::remove_file(output_path);

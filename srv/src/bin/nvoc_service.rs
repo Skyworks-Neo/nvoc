@@ -201,7 +201,7 @@ mod nvoc_service {
         shutdown_rx: flume::Receiver<()>,
         cmd_rx: flume::Receiver<NVOCServiceCmd>,
     ) -> Result<()> {
-        let mut stopc = shutdown_rx.into_stream().skip(1);
+        let mut stopc = shutdown_rx.into_stream();
         let mut cmdc = cmd_rx.into_stream();
 
         // Nvml initialization is done here to ensure that the service can be stopped even if Nvml fails to initialize.
