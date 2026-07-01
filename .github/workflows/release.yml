@@ -1,0 +1,186 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version. Defaults to the tag name or short SHA.
+        required: false
+        type: string
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  UV_VERSION: "0.11.19"
+
+jobs:
+  build:
+    name: build ${{ matrix.platform }}-${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            arch: amd64
+            os: ubuntu-22.04
+            python-architecture: x64
+            shell: bash
+          - platform: linux
+            arch: arm64
+            os: ubuntu-22.04-arm
+            python-architecture: arm64
+            shell: bash
+          - platform: windows
+            arch: amd64
+            os: windows-2025
+            python-architecture: x64
+            shell: pwsh
+          - platform: windows
+            arch: arm64
+            os: windows-11-arm
+            python-architecture: arm64
+            shell: pwsh
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: true
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          architecture: ${{ matrix.python-architecture }}
+
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache: "true"
+
+      - uses: astral-sh/setup-uv@v8.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: "true"
+          cache-dependency-glob: uv.lock
+          cache-suffix: release-${{ matrix.platform }}-${{ matrix.arch }}
+
+      - name: Resolve release version
+        id: version
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            version="${{ inputs.version }}"
+          elif [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            version="${GITHUB_REF_NAME}"
+          else
+            version="dev-${GITHUB_SHA::12}"
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+        if: matrix.platform == 'linux'
+
+      - name: Resolve release version
+        id: version_windows
+        run: |
+          if ("${{ inputs.version }}") {
+            $version = "${{ inputs.version }}"
+          } elseif ($env:GITHUB_REF_TYPE -eq "tag") {
+            $version = $env:GITHUB_REF_NAME
+          } else {
+            $version = "dev-" + $env:GITHUB_SHA.Substring(0, 12)
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+        if: matrix.platform == 'windows'
+
+      - name: Build Rust release binaries
+        run: cargo build --release -p nvoc-cli -p nvoc-auto-optimizer -p cli-stressor-cuda-rs --features cuda,vulkan
+
+      - name: Build TUI single binary
+        working-directory: tui
+        run: |
+          uv sync --locked --group dev --no-config --no-editable
+          uv run --locked --group dev --no-config --no-editable pyinstaller --clean --noconfirm nvoc_tui.spec
+
+      - name: Build GUI single binary
+        working-directory: gui
+        run: |
+          uv sync --locked --group build --no-config --no-editable
+          uv run --locked --group build --no-config --no-editable pyinstaller --clean --noconfirm nvoc_gui.spec
+
+      - name: Smoke test release CLIs
+        run: |
+          ./target/release/nvoc-cli --help
+          ./target/release/nvoc-auto-optimizer --help
+          ./target/release/cli-stressor-cuda-rs --help
+        if: matrix.platform == 'linux'
+
+      - name: Smoke test release CLIs
+        run: |
+          .\target\release\nvoc-cli.exe --help
+          .\target\release\nvoc-auto-optimizer.exe --help
+          .\target\release\cli-stressor-cuda-rs.exe --help
+        if: matrix.platform == 'windows'
+
+      - name: Stage release artifacts
+        run: >
+          python scripts/release/build_release.py
+          --platform ${{ matrix.platform }}
+          --arch ${{ matrix.arch }}
+          --version ${{ steps.version.outputs.version || steps.version_windows.outputs.version }}
+
+      - name: Verify Debian 12 / Ubuntu 22.04 Linux baseline
+        if: matrix.platform == 'linux' && matrix.arch == 'amd64'
+        run: |
+          for image in debian:12 ubuntu:22.04; do
+            docker run --rm -v "$PWD:/work:ro" -w /work "$image" \
+              ./dist/release/linux-amd64/nvoc-cli-${{ steps.version.outputs.version }}-linux-amd64 --help
+            docker run --rm -v "$PWD:/work:ro" -w /work "$image" \
+              ./dist/release/linux-amd64/nvoc-tools-${{ steps.version.outputs.version }}-linux-amd64/bin/nvoc-auto-optimizer --help
+            docker run --rm -v "$PWD:/work:ro" -w /work "$image" \
+              ./dist/release/linux-amd64/nvoc-tools-${{ steps.version.outputs.version }}-linux-amd64/bin/cli-stressor-cuda-rs --help
+          done
+
+      - name: Upload matrix artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nvoc-release-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            dist/release/${{ matrix.platform }}-${{ matrix.arch }}/nvoc-cli-*
+            dist/release/${{ matrix.platform }}-${{ matrix.arch }}/nvoc-tui-*
+            dist/release/${{ matrix.platform }}-${{ matrix.arch }}/nvoc-gui-*
+            dist/release/${{ matrix.platform }}-${{ matrix.arch }}/*.tar.gz
+            dist/release/${{ matrix.platform }}-${{ matrix.arch }}/SHA256SUMS-*.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: publish draft release
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          path: dist/release-artifacts
+          pattern: nvoc-release-*
+          merge-multiple: true
+
+      - name: Build aggregate SHA256SUMS
+        run: |
+          find dist/release-artifacts -maxdepth 1 -type f ! -name SHA256SUMS -print0 \
+            | sort -z \
+            | xargs -0 sha256sum > dist/release-artifacts/SHA256SUMS
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/release-artifacts/* \
+            --draft \
+            --verify-tag \
+            --title "$GITHUB_REF_NAME" \
+            --notes "Draft NVOC release for $GITHUB_REF_NAME."
