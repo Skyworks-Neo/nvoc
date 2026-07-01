@@ -36,7 +36,9 @@ def sha256(path: Path) -> str:
 
 def run_text(cmd: list[str], cwd: Path) -> str:
     try:
-        return subprocess.check_output(cmd, cwd=cwd, text=True, stderr=subprocess.DEVNULL).strip()
+        return subprocess.check_output(
+            cmd, cwd=cwd, text=True, stderr=subprocess.DEVNULL
+        ).strip()
     except (OSError, subprocess.CalledProcessError):
         return "unknown"
 
@@ -62,7 +64,9 @@ def verify_executable_arch(path: Path, platform: str, arch: str) -> None:
         machine = struct.unpack_from("<H", header, 18)[0]
         expected = ELF_MACHINES[arch]
         if machine != expected:
-            raise ValueError(f"{path} has ELF machine 0x{machine:x}, expected 0x{expected:x}")
+            raise ValueError(
+                f"{path} has ELF machine 0x{machine:x}, expected 0x{expected:x}"
+            )
         return
 
     if platform == "windows":
@@ -76,7 +80,9 @@ def verify_executable_arch(path: Path, platform: str, arch: str) -> None:
         machine = struct.unpack_from("<H", header, pe_offset + 4)[0]
         expected = PE_MACHINES[arch]
         if machine != expected:
-            raise ValueError(f"{path} has PE machine 0x{machine:x}, expected 0x{expected:x}")
+            raise ValueError(
+                f"{path} has PE machine 0x{machine:x}, expected 0x{expected:x}"
+            )
         return
 
     raise ValueError(f"unsupported platform: {platform}")
@@ -134,7 +140,9 @@ def make_tarball(path: Path, entries: list[tuple[Path, str]]) -> None:
 
 
 def write_sha256s(paths: list[Path], out: Path) -> None:
-    lines = [f"{sha256(path)}  {path.name}" for path in sorted(paths, key=lambda p: p.name)]
+    lines = [
+        f"{sha256(path)}  {path.name}" for path in sorted(paths, key=lambda p: p.name)
+    ]
     out.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -190,7 +198,8 @@ def main() -> int:
         "platform": args.platform,
         "arch": args.arch,
         "target": cell,
-        "git_sha": os.environ.get("GITHUB_SHA") or run_text(["git", "rev-parse", "HEAD"], root),
+        "git_sha": os.environ.get("GITHUB_SHA")
+        or run_text(["git", "rev-parse", "HEAD"], root),
         "rustc": run_text(["rustc", "--version"], root),
         "cargo": run_text(["cargo", "--version"], root),
         "python": sys.version.split()[0],
@@ -215,7 +224,9 @@ def main() -> int:
         }
 
     manifest_path = tools_root / "manifest.json"
-    manifest_path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    manifest_path.write_text(
+        json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
 
     tarball = cell_dir / f"nvoc-tools-{args.version}-{cell}.tar.gz"
     tar_entries: list[tuple[Path, str]] = [(tools_root, tools_root.name)]
@@ -225,7 +236,11 @@ def main() -> int:
 
     all_outputs = single_outputs + [tarball]
     write_sha256s(all_outputs, cell_dir / f"SHA256SUMS-{cell}.txt")
-    print(json.dumps({"cell": cell, "artifacts": [str(path) for path in all_outputs]}, indent=2))
+    print(
+        json.dumps(
+            {"cell": cell, "artifacts": [str(path) for path in all_outputs]}, indent=2
+        )
+    )
     return 0
 
 
