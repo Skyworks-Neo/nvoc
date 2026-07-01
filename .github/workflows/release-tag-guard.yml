@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   guard:
-    name: Require release targets from sprint
+    name: Require release targets from main
     runs-on: ubuntu-slim
     steps:
       - uses: actions/checkout@v6
@@ -32,7 +32,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          git fetch --no-tags origin sprint:refs/remotes/origin/sprint
+          git fetch --no-tags origin main:refs/remotes/origin/main
           git fetch --tags --force origin 'refs/tags/v*:refs/tags/v*'
 
           if [[ "${EVENT_NAME}" == "release" ]]; then
@@ -61,12 +61,12 @@ jobs:
             exit 1
           fi
 
-          sprint_commit="$(git rev-parse refs/remotes/origin/sprint)"
+          main_commit="$(git rev-parse refs/remotes/origin/main)"
           echo "tag_name=${tag_name}"
           echo "target_commit=${target_commit}"
-          echo "sprint_commit=${sprint_commit}"
+          echo "main_commit=${main_commit}"
 
-          if ! git merge-base --is-ancestor "${target_commit}" refs/remotes/origin/sprint; then
-            echo "Release/tag target ${target_commit} is not reachable from origin/sprint" >&2
+          if ! git merge-base --is-ancestor "${target_commit}" refs/remotes/origin/main; then
+            echo "Release/tag target ${target_commit} is not reachable from origin/main" >&2
             exit 1
           fi
