@@ -5,7 +5,7 @@ use super::result::{
     ApiRestrictionState, AppliedValue, AutoBoostState, BatchReport, ClockOffset, DisplayInfo,
     EdidData, FanInfo, OperationKind, OperationReport, PstateBaseVoltage, PstateClockRange,
     SupportedApplicationClocks, TargetOutcome, TdpTempLimits, TemperatureThreshold, ThrottleReason,
-    VoltageBoostState, VoltageFrequencyCheck,
+    ViolationEntry, ViolationStatusReport, VoltageBoostState, VoltageFrequencyCheck,
 };
 use super::target::GpuTarget;
 use super::types::{NvapiLockedVoltageTarget, VfpResetDomain};
@@ -223,6 +223,37 @@ impl GpuOperation for QueryThrottleReasons {
                     })
                     .collect()
             })
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct QueryViolationStatus;
+
+impl GpuOperation for QueryViolationStatus {
+    type Output = Option<ViolationStatusReport>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryViolationStatus
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let nvml = target.nvml()?;
+        Ok(low_nvml::get_nvml_violation_status(nvml, target.id.0).map(|items| {
+            let reference_time_us = items
+                .first()
+                .map(|(_, status)| status.reference_time_us)
+                .unwrap_or(0);
+            ViolationStatusReport {
+                entries: items
+                    .into_iter()
+                    .map(|(name, status)| ViolationEntry {
+                        name: name.to_string(),
+                        violation_time_ns: status.violation_time_ns,
+                    })
+                    .collect(),
+                reference_time_us,
+            }
+        }))
     }
 }
 

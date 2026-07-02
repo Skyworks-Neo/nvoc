@@ -10,7 +10,8 @@ use nvoc_core::{
     QueryGpuStatus, QueryLegacyCoreOvervoltRanges, QueryLegacyP0CoreMaxVoltageDelta,
     QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks,
     QueryTdpTempLimits, QueryTemperatureThresholds, QueryThrottleReasons, QueryVfpPointVoltage,
-    QueryVoltageBoost, ResetApplicationsClocks, ResetCoolerLevels, ResetFanSpeed,
+    QueryViolationStatus, QueryVoltageBoost, ResetApplicationsClocks, ResetCoolerLevels,
+    ResetFanSpeed,
     ResetLockedClocks, ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetPstateBaseVoltages,
     ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock, ResetVfpLock,
     SetApiRestriction, SetApplicationsClocks, SetAutoBoost, SetAutoBoostDefault, SetClockOffset,
@@ -22,6 +23,8 @@ use nvoc_core::{
     parse_nvml_fan_control_policy, parse_nvml_pstate, run, select_targets,
 };
 use serde_json::{Value, json};
+use time::macros::format_description;
+use time::OffsetDateTime;
 
 mod output;
 use std::collections::{BTreeMap, BTreeSet};
@@ -1510,12 +1513,33 @@ fn execute_target(
         }
         Command::GetThrottleReasons => {
             let reasons = run(target, QueryThrottleReasons)?.output;
-            Ok(Value::Array(
+            let reasons_json = Value::Array(
                 reasons
                     .into_iter()
                     .map(|item| json!({"name": item.name, "active": item.active}))
                     .collect(),
-            ))
+            );
+            // NVML violation status is queried off the same NVML handle and
+            // appends the driver's cumulative per-policy violation times
+            // (the "how long was each modality limiting" breakdown). It is
+            // best-effort: if the device exposes no violation counters we
+            // still return the throttle-reason snapshot.
+            let violation = run(target, QueryViolationStatus)?.output;
+            let violation_json = violation.map(|report| {
+                json!({
+                    "entries": report.entries.iter().map(|entry| {
+                        json!({
+                            "name": entry.name,
+                            "seconds": entry.violation_time_ns as f64 / 1_000_000_000.0,
+                        })
+                    }).collect::<Vec<_>>(),
+                    "since": format_reference_time(report.reference_time_us),
+                })
+            });
+            Ok(json!({
+                "reasons": reasons_json,
+                "violation": violation_json,
+            }))
         }
         Command::GetTdpTempLimits => {
             let limits = run(target, QueryTdpTempLimits)?.output;
@@ -2600,6 +2624,21 @@ fn domain_label(domain: ClockDomain) -> &'static str {
 
 fn pstate_label(pstate: PState) -> &'static str {
     <PState as ConvertEnum>::to_str(&pstate)
+}
+
+/// Format an NVML violation-status `reference_time` (a Unix epoch microsecond
+/// stamp marking when the driver's cumulative counters started) as a UTC
+/// wall-clock string. Returns `None` when the stamp is missing/zero.
+fn format_reference_time(reference_time_us: u64) -> Option<String> {
+    if reference_time_us == 0 {
+        return None;
+    }
+    let nanos = reference_time_us as i128 * 1000;
+    let dt = OffsetDateTime::from_unix_timestamp_nanos(nanos).ok()?;
+    dt.format(&format_description!(
+        "[year]-[month]-[day] [hour]:[minute]:[second] UTC"
+    ))
+    .ok()
 }
 
 fn policy_label(policy: CoolerPolicy) -> &'static str {
