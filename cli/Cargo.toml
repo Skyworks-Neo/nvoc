@@ -14,3 +14,4 @@ nvoc-core = { workspace = true }
 nvoc-cli-common = { workspace = true }
 nvml-wrapper = { workspace = true }
 serde_json = { workspace = true }
+time = { workspace = true }
