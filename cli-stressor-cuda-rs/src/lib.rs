@@ -24,6 +24,9 @@ pub enum PrecisionKind {
     FP16,
     BF16,
     FP8E4M3FN,
+    INT8,
+    INT16,
+    INT32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -35,6 +38,10 @@ pub enum KernelType {
     Elementwise,
     Reduction,
     Atomic,
+    /// Integer ALU stress via a custom NVRTC kernel (INT8 DP4A on capable HW,
+    /// scalar int32/16/8 MAD chains otherwise). Use `--precisions int32/int16`
+    /// (or `int8`) with `--kernel-types intalu`.
+    IntAlu,
 }
 
 impl KernelType {
@@ -47,6 +54,7 @@ impl KernelType {
             KernelType::Elementwise => "ELEMENTWISE",
             KernelType::Reduction => "REDUCTION",
             KernelType::Atomic => "ATOMIC",
+            KernelType::IntAlu => "INTALU",
         }
     }
 }
@@ -60,6 +68,7 @@ pub fn parse_kernel_type(raw: &str) -> Result<KernelType, String> {
         "elementwise" | "elem" | "add" => Ok(KernelType::Elementwise),
         "reduction" | "reduce" | "sum" => Ok(KernelType::Reduction),
         "atomic" => Ok(KernelType::Atomic),
+        "intalu" | "ialu" | "int" => Ok(KernelType::IntAlu),
         other => Err(format!("unsupported kernel type: {other}")),
     }
 }
@@ -159,6 +168,11 @@ impl DeviceInfo {
             PrecisionKind::FP64 => Ok(()),
             PrecisionKind::FP32 | PrecisionKind::TF32 => Ok(()),
             PrecisionKind::FP16 => Ok(()),
+            // Integer ALU (INT8/16/32) runs on every SM. INT8 GEMM tensor-core
+            // (IMMA) availability is enforced at the kernel level (cuBLAS will
+            // fall back to a scalar INT8 path below SM 7.5), so we never reject
+            // an INT precision here — the stress tester always produces load.
+            PrecisionKind::INT8 | PrecisionKind::INT16 | PrecisionKind::INT32 => Ok(()),
             PrecisionKind::BF16 => {
                 let sm = self.compute_capability.unwrap_or((0, 0));
                 if sm.0 >= 8 {
@@ -261,6 +275,42 @@ fn validation_enabled(validate_interval_s: f64) -> bool {
     validate_interval_s > 0.0
 }
 
+/// Whether a precision is an integer (INT8/16/32) stress path.
+///
+/// INT paths have no FP reference to compare against (`validate_precision` is
+/// FP-centric) and the `intalu` kernel is an intentionally non-referenceable
+/// MAD/hash chain, so per-element validation is skipped for them — they are
+/// pure-load stress paths, like the atomic kernel.
+fn is_int_precision(kind: PrecisionKind) -> bool {
+    matches!(
+        kind,
+        PrecisionKind::INT8 | PrecisionKind::INT16 | PrecisionKind::INT32
+    )
+}
+
+/// Whether a (kernel, precision) pair is a meaningful stress combination.
+///
+/// The kernel and precision axes are *mostly* orthogonal, but a few pairings
+/// have no hardware path: cuBLAS exposes no INT16/INT32 GEMM, and the FP
+/// upload/gemm validation path doesn't cover INT. The integer precisions map
+/// to specific kernels:
+///
+/// - INT8 → `Gemm` (cuBLAS INT8 GEMM, IMMA tensor cores) **or** `IntAlu`.
+/// - INT16/INT32 → `IntAlu` only.
+///
+/// Returning false lets the dispatch loop soft-skip the combo (and keep
+/// producing load on the compatible ones) instead of hard-failing.
+pub fn kernel_precision_compatible(kind: KernelType, precision: PrecisionKind) -> bool {
+    match (kind, precision) {
+        // INT16/INT32 only have the integer-ALU kernel.
+        (KernelType::IntAlu, _) => true,
+        (_, PrecisionKind::INT16) | (_, PrecisionKind::INT32) => false,
+        // INT8 GEMM is supported via cuBLAS; other kernels (memcpy/memset/…)
+        // also accept an INT8 precision by element size, so allow them.
+        _ => true,
+    }
+}
+
 pub fn parse_int_list(raw: &str) -> Result<Vec<usize>, String> {
     let mut values = Vec::new();
     for item in raw.split(',') {
@@ -326,6 +376,54 @@ pub fn parse_precision_list(raw: &str) -> Result<Vec<PrecisionSpec>, String> {
             PrecisionSpec {
                 name: "FP8 E4M3FN",
                 kind: PrecisionKind::FP8E4M3FN,
+                tf32_enabled: None,
+            },
+        ),
+        (
+            "int8",
+            PrecisionSpec {
+                name: "INT8",
+                kind: PrecisionKind::INT8,
+                tf32_enabled: None,
+            },
+        ),
+        (
+            "i8",
+            PrecisionSpec {
+                name: "INT8",
+                kind: PrecisionKind::INT8,
+                tf32_enabled: None,
+            },
+        ),
+        (
+            "int16",
+            PrecisionSpec {
+                name: "INT16",
+                kind: PrecisionKind::INT16,
+                tf32_enabled: None,
+            },
+        ),
+        (
+            "i16",
+            PrecisionSpec {
+                name: "INT16",
+                kind: PrecisionKind::INT16,
+                tf32_enabled: None,
+            },
+        ),
+        (
+            "int32",
+            PrecisionSpec {
+                name: "INT32",
+                kind: PrecisionKind::INT32,
+                tf32_enabled: None,
+            },
+        ),
+        (
+            "i32",
+            PrecisionSpec {
+                name: "INT32",
+                kind: PrecisionKind::INT32,
                 tf32_enabled: None,
             },
         ),
@@ -741,6 +839,13 @@ fn estimate_kernel_work_flops(kind: KernelType, size: usize, burst_iters: u32) -
         KernelType::Elementwise => 2 * n * n * iters,
         KernelType::Reduction => n * n * iters,
         KernelType::Atomic => n * n * iters,
+        // The IntAlu kernel performs a fixed-length data-dependent int MAD
+        // chain per element (plus a DP4A dot on capable HW). Counted as
+        // integer ops (IOPs); throughput is reported as TFLOPS(eqv).
+        KernelType::IntAlu => {
+            const INTALU_OPS_PER_ELEM: u128 = 64;
+            n * n * INTALU_OPS_PER_ELEM * iters
+        }
     }
 }
 
@@ -874,19 +979,27 @@ pub fn run_stress_for_precision<B: Backend>(
         return result;
     }
 
-    // Probe for dtype support.
+    // Probe for dtype support (FP path: upload + gemm). INT precisions are
+    // exercised through the dedicated `gemm` (INT8) and `intalu` kernel paths,
+    // not this FP upload/gemm pipeline, so skip the probe for them — they are
+    // always supported on any SM.
     let probe_a = make_random_host_matrix(8, config.base_seed.wrapping_add(1));
     let probe_b = make_random_host_matrix(8, config.base_seed.wrapping_add(2));
-    if let Err(err) = (|| {
-        let a_dev = backend.upload_matrix(&probe_a, &spec)?;
-        let b_dev = backend.upload_matrix(&probe_b, &spec)?;
-        let _ = backend.gemm(&a_dev, &b_dev, false, false)?;
-        backend.synchronize()?;
-        Ok::<(), BackendError>(())
-    })() {
-        result.supported = false;
-        result.first_error = Some(format!("probe failed: {err}"));
-        return result;
+    // Not collapsed: the inner `if let Err` requires `let_chains` to merge with
+    // the `!is_int_precision` guard, which is nightly-only.
+    #[allow(clippy::collapsible_if)]
+    if !is_int_precision(spec.kind) {
+        if let Err(err) = (|| {
+            let a_dev = backend.upload_matrix(&probe_a, &spec)?;
+            let b_dev = backend.upload_matrix(&probe_b, &spec)?;
+            let _ = backend.gemm(&a_dev, &b_dev, false, false)?;
+            backend.synchronize()?;
+            Ok::<(), BackendError>(())
+        })() {
+            result.supported = false;
+            result.first_error = Some(format!("probe failed: {err}"));
+            return result;
+        }
     }
 
     let mut rng = StdRng::seed_from_u64(config.base_seed);
@@ -954,6 +1067,12 @@ pub fn run_stress_for_precision<B: Backend>(
         }) {
             Ok(value) => value,
             Err(err) => {
+                // An incompatible (kernel, precision) combo is expected when the
+                // user mixes INT precisions with the full kernel pool (e.g.
+                // INT16 has no GEMM). Soft-skip it instead of aborting the run.
+                if !kernel_precision_compatible(kernel_kind, op_spec.kind) {
+                    continue;
+                }
                 result.first_error = Some(format!("runtime error: {err}"));
                 result.first_error_at_s = Some(start.elapsed().as_secs_f64());
                 break;
@@ -989,7 +1108,7 @@ pub fn run_stress_for_precision<B: Backend>(
 
         let _ = backend.empty_cache();
 
-        if validate_enabled && elapsed_total >= next_validate {
+        if validate_enabled && !is_int_precision(spec.kind) && elapsed_total >= next_validate {
             match validate_precision(
                 backend,
                 &spec,
@@ -1075,13 +1194,18 @@ pub fn run_stress_mixed<B: Backend>(
         }
         let probe_a = make_random_host_matrix(8, config.base_seed.wrapping_add(1));
         let probe_b = make_random_host_matrix(8, config.base_seed.wrapping_add(2));
-        let probe_res = (|| {
-            let a_dev = backend.upload_matrix(&probe_a, spec)?;
-            let b_dev = backend.upload_matrix(&probe_b, spec)?;
-            let _ = backend.gemm(&a_dev, &b_dev, false, false)?;
-            backend.synchronize()?;
+        // Skip the FP upload/gemm probe for INT precisions (see run_stress_once).
+        let probe_res = if is_int_precision(spec.kind) {
             Ok::<(), BackendError>(())
-        })();
+        } else {
+            (|| {
+                let a_dev = backend.upload_matrix(&probe_a, spec)?;
+                let b_dev = backend.upload_matrix(&probe_b, spec)?;
+                let _ = backend.gemm(&a_dev, &b_dev, false, false)?;
+                backend.synchronize()?;
+                Ok::<(), BackendError>(())
+            })()
+        };
         if let Err(err) = probe_res {
             if let Some(idx) = index_by_name.get(spec.name) {
                 results[*idx].supported = false;
@@ -1167,6 +1291,11 @@ pub fn run_stress_mixed<B: Backend>(
         }) {
             Ok(value) => value,
             Err(err) => {
+                // Soft-skip an incompatible (kernel, precision) combo (e.g.
+                // INT16 + GEMM) and keep producing load on the valid combos.
+                if !kernel_precision_compatible(kernel_kind, op_spec.kind) {
+                    continue;
+                }
                 if let Some(idx) = index_by_name.get(op_spec.name) {
                     results[*idx].first_error = Some(format!("runtime error: {err}"));
                     results[*idx].first_error_at_s = Some(start.elapsed().as_secs_f64());
@@ -1205,7 +1334,7 @@ pub fn run_stress_mixed<B: Backend>(
 
         let _ = backend.empty_cache();
 
-        if validate_enabled && elapsed_total >= next_validate {
+        if validate_enabled && !is_int_precision(op_spec.kind) && elapsed_total >= next_validate {
             match validate_precision(
                 backend,
                 &op_spec,
@@ -1262,12 +1391,99 @@ pub fn run_stress_mixed<B: Backend>(
 
 #[cfg(test)]
 mod tests {
-    use super::validation_enabled;
+    use super::{
+        DeviceInfo, KernelType, PrecisionKind, estimate_kernel_work_flops, parse_kernel_type,
+        parse_precision_list, validation_enabled,
+    };
 
     #[test]
     fn validation_interval_zero_disables_validation() {
         assert!(!validation_enabled(0.0));
         assert!(!validation_enabled(-1.0));
         assert!(validation_enabled(0.1));
+    }
+
+    fn int_spec(kind: PrecisionKind) -> super::PrecisionSpec {
+        super::PrecisionSpec {
+            name: "INT",
+            kind,
+            tf32_enabled: None,
+        }
+    }
+
+    #[test]
+    fn parse_int_precision_keys_and_aliases() {
+        let specs =
+            parse_precision_list("int8,i8,int16,i16,int32,i32").expect("int keys parse");
+        let kinds: Vec<_> = specs.iter().map(|s| s.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                PrecisionKind::INT8,
+                PrecisionKind::INT8,
+                PrecisionKind::INT16,
+                PrecisionKind::INT16,
+                PrecisionKind::INT32,
+                PrecisionKind::INT32,
+            ]
+        );
+    }
+
+    #[test]
+    fn unknown_int_precision_rejected() {
+        assert!(parse_precision_list("int64").is_err());
+    }
+
+    #[test]
+    fn parse_intalu_kernel_type() {
+        assert_eq!(parse_kernel_type("intalu").unwrap(), KernelType::IntAlu);
+        assert_eq!(parse_kernel_type("ialu").unwrap(), KernelType::IntAlu);
+        assert_eq!(parse_kernel_type("int").unwrap(), KernelType::IntAlu);
+        assert_eq!(KernelType::IntAlu.as_str(), "INTALU");
+    }
+
+    #[test]
+    fn int_precisions_supported_on_any_sm() {
+        // Integer ALU works on every architecture, so supports_precision must
+        // never reject an INT precision regardless of compute capability.
+        let old_gpu = DeviceInfo {
+            name: "OldGPU".into(),
+            total_mem_gb: Some(4.0),
+            compute_capability: Some((6, 1)), // Pascal
+        };
+        for kind in [PrecisionKind::INT8, PrecisionKind::INT16, PrecisionKind::INT32] {
+            assert!(old_gpu.supports_precision(&int_spec(kind)).is_ok());
+        }
+        // A GPU with unknown compute capability still gets INT stress.
+        let unknown = DeviceInfo {
+            name: "MysteryGPU".into(),
+            total_mem_gb: None,
+            compute_capability: None,
+        };
+        assert!(unknown.supports_precision(&int_spec(PrecisionKind::INT8)).is_ok());
+    }
+
+    #[test]
+    fn intalu_flops_estimate() {
+        // n*n elements, 64 IOPs each, over `iters` burst iterations.
+        assert_eq!(
+            estimate_kernel_work_flops(KernelType::IntAlu, 1024, 10),
+            1024u128 * 1024 * 64 * 10
+        );
+    }
+
+    #[test]
+    fn kernel_precision_compatibility_matrix() {
+        use super::kernel_precision_compatible;
+        // INT16/INT32 only run on IntAlu.
+        assert!(!kernel_precision_compatible(KernelType::Gemm, PrecisionKind::INT16));
+        assert!(!kernel_precision_compatible(KernelType::Gemm, PrecisionKind::INT32));
+        assert!(kernel_precision_compatible(KernelType::IntAlu, PrecisionKind::INT16));
+        assert!(kernel_precision_compatible(KernelType::IntAlu, PrecisionKind::INT32));
+        // INT8 GEMM is supported (cuBLAS), and INT8 + IntAlu too.
+        assert!(kernel_precision_compatible(KernelType::Gemm, PrecisionKind::INT8));
+        assert!(kernel_precision_compatible(KernelType::IntAlu, PrecisionKind::INT8));
+        // FP precisions pair with GEMM normally.
+        assert!(kernel_precision_compatible(KernelType::Gemm, PrecisionKind::FP32));
     }
 }
