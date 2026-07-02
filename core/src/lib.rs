@@ -22,7 +22,8 @@ pub use operation::{
     QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings, QueryGpuStatus,
     QueryLegacyCoreOvervoltRanges, QueryLegacyP0CoreMaxVoltageDelta, QueryPowerLimits,
     QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits,
-    QueryTemperatureThresholds, QueryThrottleReasons, QueryVfpPointVoltage, QueryVoltageBoost,
+    QueryTemperatureThresholds, QueryThrottleReasons, QueryVfpPointVoltage, QueryViolationStatus,
+    QueryVoltageBoost,
     ResetApplicationsClocks, ResetCoolerLevels, ResetFanSpeed, ResetLockedClocks,
     ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetPstateBaseVoltages,
     ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock, ResetVfpLock,
@@ -43,7 +44,8 @@ pub use result::{
     ApiRestrictionState, AppliedValue, AutoBoostState, BatchReport, ClockOffset, DisplayInfo,
     EdidData, FanInfo, OperationKind, OperationReport, OperationWarning, PowerLimits,
     PstateBaseVoltage, PstateClockRange, SupportedApplicationClocks, TargetOutcome, TdpTempLimits,
-    TemperatureThreshold, ThrottleReason, VoltageBoostState, VoltageFrequencyCheck, VoltageLimits,
+    TemperatureThreshold, ThrottleReason, ViolationEntry, ViolationStatusReport, VoltageBoostState,
+    VoltageFrequencyCheck, VoltageLimits,
 };
 pub use target::{
     BackendSet, GpuId, GpuTarget, PciAddress, TargetInventory, discover_targets,
