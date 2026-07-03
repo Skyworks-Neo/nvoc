@@ -222,6 +222,10 @@ jobs:
         run: cargo clippy --package nvoc-auto-optimizer --all-targets --all-features -- -D warnings
       - name: Build
         run: cargo build --package nvoc-auto-optimizer --all-targets --all-features
+      # Hardware-gated tests are #[ignore]d and run separately in gpu-ci.yml;
+      # this runs the non-GPU unit tests, which previously never ran in CI.
+      - name: Test (non-GPU)
+        run: cargo test --package nvoc-auto-optimizer --all-targets --all-features
 
   rust-srv:
     name: srv (windows)
