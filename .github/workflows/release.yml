@@ -233,7 +233,7 @@ jobs:
           merge-multiple: true
       - name: Generate SHA256SUMS
         working-directory: dist
-        run: sha256sum * | tee SHA256SUMS
+        run: sha256sum ./* | tee SHA256SUMS
       - name: Create draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
