@@ -1,8 +1,9 @@
 # Release procedure
 
 Scope: repo-wide releases — one `vX.Y.Z[-pre.N]` tag builds and ships every
-component. The pipeline is `release.yml` (build → smoke → checksums →
-provenance → **draft** release); publishing is always a human action.
+component. The pipeline is `release.yml` (from #224: a linux/windows ×
+amd64/arm64 matrix — build → smoke → checksums → provenance → **draft**
+release); publishing is always a human action.
 
 ## Version contract
 
@@ -37,9 +38,11 @@ provenance → **draft** release); publishing is always a human action.
 3. **Tag** the merge commit on `main`:
    `git tag vX.Y.Z[-pre.N] <sha> && git push origin --tags`.
    The tag guard verifies SemVer shape, main-reachability, and version match.
-4. **Review the draft**: the workflow uploads artifacts + `SHA256SUMS` and
-   creates a draft release with generated notes. Check the notes against
-   `CHANGELOG.md`, spot-verify a checksum, and verify provenance:
+4. **Review the draft**: the workflow uploads per-cell artifacts (CLI/TUI/GUI
+   single binaries, OpenCL stressor, `nvoc-tools` bundle with auto-optimizer,
+   CUDA stressor and, on Windows, the srv service binaries) plus `SHA256SUMS`,
+   and creates a draft release. Check the notes against `CHANGELOG.md`,
+   spot-verify a checksum, and verify provenance:
    `gh attestation verify <file> --repo Skyworks-Neo/nvoc`.
 5. **Publish** the draft. Pre-releases (`-alpha.N` / `-beta.N` / `-rc.N`)
    must be marked "pre-release" on the release page.
@@ -49,7 +52,7 @@ provenance → **draft** release); publishing is always a human action.
 - No Windows Authenticode signing yet — SmartScreen warnings are expected;
   say so in the release notes. Provenance attestations + SHA256SUMS are the
   integrity story for now.
-- Linux GUI PyInstaller artifact is not built (tkinter on hosted runners
-  unverified); GUI ships for Windows only.
+- The OpenCL stressor is not shipped for windows-arm64 (pyopencl publishes
+  no win_arm64 wheel).
 - CUDA/Vulkan runtime libraries are intentionally not bundled; artifacts
   load them from the user's system (see component READMEs).
