@@ -14,8 +14,9 @@ single source of truth is `[workspace.package].version` in the root
   mirror for Python packages) with a CI consistency gate.
 - Supply-chain CI: cargo-audit, pip-audit, actionlint, Dependabot version
   updates.
-- Release pipeline: tag-triggered draft-release workflow with artifact
-  smoke tests, SHA256SUMS, and build provenance attestations.
+- Release pipeline (#224 + #225): tag-triggered draft-release workflow with a
+  linux/windows × amd64/arm64 matrix, artifact smoke tests, SHA256SUMS, and
+  build provenance attestations.
 
 ### Security
 
