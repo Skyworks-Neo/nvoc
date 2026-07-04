@@ -70,3 +70,8 @@ jobs:
             echo "Release/tag target ${target_commit} is not reachable from origin/main" >&2
             exit 1
           fi
+
+          # The tag must equal the workspace/package version at the tagged
+          # commit (single source of truth; see .github/scripts/check-versions.py).
+          git checkout --quiet "${target_commit}"
+          python3 .github/scripts/check-versions.py --tag "${tag_name}"

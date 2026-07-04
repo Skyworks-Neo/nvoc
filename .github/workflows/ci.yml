@@ -378,6 +378,16 @@ jobs:
           python -m pytest -q test_non_gpu_ci.py
         working-directory: cli-stressor-opencl
 
+  version-consistency:
+    name: workspace/package version consistency
+    runs-on: ubuntu-slim
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - run: python3 .github/scripts/check-versions.py
+
   rust-crate-versions:
     name: Rust duplicate-crate audit
     runs-on: ubuntu-latest
@@ -442,6 +452,7 @@ jobs:
       - rust-srv
       - rust-stressor-cuda-rs
       - rust-crate-versions
+      - version-consistency
       - python-tui
       - python-gui
       - python-stressor-opencl

@@ -1,0 +1,234 @@
+name: Release build
+
+# Builds, smoke-tests, checksums, and attests release artifacts, then creates
+# a DRAFT GitHub release for human review — publishing stays a manual step.
+#
+# Safety/supply-chain rules (see docs/engineering-audit-2026-07.md and
+# .github/RELEASE.md):
+# - GitHub-hosted runners only. The self-hosted GPU runners are for tests and
+#   must never produce release artifacts.
+# - Builds are --locked / --frozen against the committed lockfiles.
+# - `workflow_dispatch` is a dry run: build + smoke + checksums on any ref,
+#   no attestation and no release created.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version-check:
+    name: tag / version consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Check versions (and tag match on tag builds)
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            python3 .github/scripts/check-versions.py --tag "${{ github.ref_name }}"
+          else
+            python3 .github/scripts/check-versions.py
+          fi
+
+  build-rust:
+    name: rust artifacts (${{ matrix.platform }})
+    needs: version-check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows-x86_64
+          - os: ubuntu-latest
+            platform: linux-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: true
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache: "true"
+      - name: Build CLI tools
+        run: cargo build --release --locked -p nvoc-auto-optimizer -p nvoc-cli
+      # cudarc/ash load CUDA/Vulkan at runtime, so no CUDA toolkit or Vulkan
+      # SDK is needed to build (verified on a machine without either).
+      - name: Build CUDA stressor
+        run: cargo build --release --locked -p cli-stressor-cuda-rs --features cuda,vulkan
+      - name: Build srv (Windows service)
+        if: matrix.os == 'windows-latest'
+        run: cargo build --release --locked -p nvoc-srv
+      - name: Smoke-test binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          exe=""
+          [ "${{ matrix.os }}" = "windows-latest" ] && exe=".exe"
+          "target/release/nvoc-auto-optimizer${exe}" --help > /dev/null
+          "target/release/nvoc-cli${exe}" --help > /dev/null
+          "target/release/cli-stressor-cuda-rs${exe}" --help > /dev/null
+      - name: Stage artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          exe=""
+          [ "${{ matrix.os }}" = "windows-latest" ] && exe=".exe"
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            ver="${{ github.ref_name }}"
+          else
+            ver="dryrun-$(git rev-parse --short HEAD)"
+          fi
+          plat="${{ matrix.platform }}"
+          mkdir -p stage
+          cp "target/release/nvoc-auto-optimizer${exe}"   "stage/nvoc-auto-optimizer-${ver}-${plat}${exe}"
+          cp "target/release/nvoc-cli${exe}"              "stage/nvoc-cli-${ver}-${plat}${exe}"
+          cp "target/release/cli-stressor-cuda-rs${exe}"  "stage/nvoc-stressor-cuda-${ver}-${plat}${exe}"
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            mkdir -p srv-bins
+            for b in nvoc_service install_service uninstall_service notify_service \
+                     pause_continue service_config service_failure_actions; do
+              cp "target/release/${b}.exe" srv-bins/
+            done
+            python -m zipfile -c "stage/nvoc-srv-${ver}-${plat}.zip" srv-bins/
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rust-${{ matrix.platform }}
+          path: stage/*
+          if-no-files-found: error
+
+  build-python:
+    name: pyinstaller artifacts (${{ matrix.platform }})
+    needs: version-check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows-x86_64
+          - os: ubuntu-latest
+            platform: linux-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache: "true"
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v8.2.0
+        with:
+          version: "0.11.19"
+          enable-cache: "true"
+          cache-dependency-glob: uv.lock
+          cache-suffix: release-py3.12
+      - name: Build TUI
+        working-directory: tui
+        run: |
+          uv sync --frozen --package nvoc-tui --group dev --no-config
+          uv run --frozen --no-editable --package nvoc-tui --group dev --no-config pyinstaller --clean --noconfirm nvoc_tui.spec
+      # GUI is Windows-only for now: the Linux PyInstaller leg needs a
+      # tkinter-capable interpreter, which is not yet verified on hosted
+      # runners. Revisit when a Linux GUI artifact is wanted.
+      - name: Build GUI
+        if: matrix.os == 'windows-latest'
+        working-directory: gui
+        run: |
+          uv sync --frozen --package nvoc-gui --group build --no-config
+          uv run --frozen --no-editable --package nvoc-gui --group build --no-config pyinstaller --clean --noconfirm nvoc_gui.spec
+      - name: Build OpenCL stressor
+        working-directory: cli-stressor-opencl
+        run: |
+          uv sync --frozen --package nvoc-cli-stressor --no-config
+          uv run --frozen --no-editable --package nvoc-cli-stressor --no-config pyinstaller --clean --noconfirm cli-stressor-opencl.spec
+      - name: Stage artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          exe=""
+          [ "${{ matrix.os }}" = "windows-latest" ] && exe=".exe"
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            ver="${{ github.ref_name }}"
+          else
+            ver="dryrun-$(git rev-parse --short HEAD)"
+          fi
+          plat="${{ matrix.platform }}"
+          mkdir -p stage
+          test -f "tui/dist/nvoc-tui${exe}"
+          cp "tui/dist/nvoc-tui${exe}" "stage/nvoc-tui-${ver}-${plat}${exe}"
+          test -f "cli-stressor-opencl/dist/NVOC-CLI-Stressor-opencl${exe}"
+          cp "cli-stressor-opencl/dist/NVOC-CLI-Stressor-opencl${exe}" "stage/nvoc-stressor-opencl-${ver}-${plat}${exe}"
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            test -f "gui/dist/NVOC-GUI.exe"
+            cp "gui/dist/NVOC-GUI.exe" "stage/nvoc-gui-${ver}-${plat}.exe"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-${{ matrix.platform }}
+          path: stage/*
+          if-no-files-found: error
+
+  # Provenance attestations (SLSA). Users verify with:
+  #   gh attestation verify <file> --repo <owner>/<repo>
+  attest:
+    name: attest provenance
+    if: github.ref_type == 'tag'
+    needs: [build-rust, build-python]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      attestations: write
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/*
+
+  # Creates a DRAFT release. Configure the `release` environment with required
+  # reviewers so this job waits for human approval; publishing the draft is a
+  # second manual review point.
+  release:
+    name: draft release
+    if: github.ref_type == 'tag'
+    needs: [attest]
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Generate SHA256SUMS
+        working-directory: dist
+        run: sha256sum * | tee SHA256SUMS
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" \
+            --draft \
+            --verify-tag \
+            --generate-notes \
+            --title "NVOC ${{ github.ref_name }}" \
+            dist/*

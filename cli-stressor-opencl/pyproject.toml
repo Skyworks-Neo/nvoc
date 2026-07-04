@@ -12,4 +12,4 @@ name = "nvoc-cli-stressor"
 license = { file = "LICENSE" }
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.11"
-version = "0.1.0"
+version = "0.2.0a1"
