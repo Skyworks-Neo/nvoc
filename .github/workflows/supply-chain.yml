@@ -17,6 +17,7 @@ on:
       - "**/pyproject.toml"
       - ".github/workflows/**"
       - ".github/dependabot.yml"
+      - ".github/actionlint.yaml"
 
 permissions:
   contents: read
