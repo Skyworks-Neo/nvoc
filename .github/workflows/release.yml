@@ -11,15 +11,56 @@ on:
     tags:
       - "v*"
 
+# Build jobs run third-party build tooling (pyinstaller, docker images) and
+# must not hold a writable token; only the publish job gets contents: write.
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
   UV_VERSION: "0.11.19"
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
+  version-check:
+    name: tag / version consistency
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      # check-versions.py lands with the audit PR (#225); guard on presence so
+      # this workflow is mergeable in either order. Once both are on main the
+      # gate is fully active.
+      - name: Check tag matches workspace/package versions
+        run: |
+          if [ ! -f .github/scripts/check-versions.py ]; then
+            echo "check-versions.py not present yet (lands with #225); skipping"
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            python3 .github/scripts/check-versions.py --tag "${{ github.ref_name }}"
+          else
+            python3 .github/scripts/check-versions.py
+          fi
+      # Defense in depth, independent of the tag ruleset: never build release
+      # artifacts for a tag outside main history.
+      - name: Require tag to point into main history
+        if: github.ref_type == 'tag'
+        run: |
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor HEAD refs/remotes/origin/main; then
+            echo "Tag ${{ github.ref_name }} is not reachable from origin/main" >&2
+            exit 1
+          fi
+
   build:
+    needs: version-check
     name: build ${{ matrix.platform }}-${{ matrix.arch }}
     strategy:
       fail-fast: false
@@ -46,6 +87,7 @@ jobs:
             python-architecture: arm64
             shell: pwsh
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     defaults:
       run:
         shell: ${{ matrix.shell }}
@@ -97,7 +139,11 @@ jobs:
         if: matrix.platform == 'windows'
 
       - name: Build Rust release binaries
-        run: cargo build --release -p nvoc-cli -p nvoc-auto-optimizer -p cli-stressor-cuda-rs --features cuda,vulkan
+        run: cargo build --release --locked -p nvoc-cli -p nvoc-auto-optimizer -p cli-stressor-cuda-rs --features cuda,vulkan
+
+      - name: Build srv (Windows service)
+        if: matrix.platform == 'windows'
+        run: cargo build --release --locked -p nvoc-srv
 
       - name: Build TUI single binary
         working-directory: tui
@@ -110,6 +156,15 @@ jobs:
         run: |
           uv sync --locked --group build --no-config --no-editable
           uv run --locked --group build --no-config --no-editable pyinstaller --clean --noconfirm nvoc_gui.spec
+
+      # pyopencl publishes no win_arm64 wheel, so that cell is skipped (the
+      # staging script is told via --skip-opencl).
+      - name: Build OpenCL stressor single binary
+        if: matrix.platform == 'linux' || matrix.arch == 'amd64'
+        working-directory: cli-stressor-opencl
+        run: |
+          uv sync --locked --no-config --no-editable
+          uv run --locked --no-config --no-editable pyinstaller --clean --noconfirm cli-stressor-opencl.spec
 
       - name: Smoke test release CLIs
         run: |
@@ -131,6 +186,7 @@ jobs:
           --platform ${{ matrix.platform }}
           --arch ${{ matrix.arch }}
           --version ${{ steps.version.outputs.version || steps.version_windows.outputs.version }}
+          ${{ (matrix.platform == 'windows' && matrix.arch == 'arm64') && '--skip-opencl' || '' }}
 
       - name: Verify Debian 12 / Ubuntu 22.04 Linux baseline
         if: matrix.platform == 'linux' && matrix.arch == 'amd64'
@@ -152,16 +208,47 @@ jobs:
             dist/release/${{ matrix.platform }}-${{ matrix.arch }}/nvoc-cli-*
             dist/release/${{ matrix.platform }}-${{ matrix.arch }}/nvoc-tui-*
             dist/release/${{ matrix.platform }}-${{ matrix.arch }}/nvoc-gui-*
+            dist/release/${{ matrix.platform }}-${{ matrix.arch }}/nvoc-stressor-opencl-*
             dist/release/${{ matrix.platform }}-${{ matrix.arch }}/*.tar.gz
             dist/release/${{ matrix.platform }}-${{ matrix.arch }}/SHA256SUMS-*.txt
           if-no-files-found: error
           retention-days: 14
 
+  # Provenance attestations (SLSA). Users verify with:
+  #   gh attestation verify <file> --repo <owner>/<repo>
+  # push+tag only: a workflow_dispatch pointed at an existing tag is a dry
+  # run and must never attest or publish.
+  attest:
+    name: attest provenance
+    needs: build
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      id-token: write
+      attestations: write
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          path: dist/release-artifacts
+          pattern: nvoc-release-*
+          merge-multiple: true
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/release-artifacts/*
+
   publish:
     name: publish draft release
-    needs: build
-    if: github.ref_type == 'tag'
+    needs: [build, attest]
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    # Configure required reviewers on the `release` environment so drafting
+    # waits for human approval; publishing the draft is a second gate.
+    environment: release
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v6
 
@@ -173,7 +260,7 @@ jobs:
 
       - name: Build aggregate SHA256SUMS
         run: |
-          find dist/release-artifacts -maxdepth 1 -type f ! -name SHA256SUMS -print0 \
+          find dist/release-artifacts -maxdepth 1 -type f ! -name 'SHA256SUMS*' -print0 \
             | sort -z \
             | xargs -0 sha256sum > dist/release-artifacts/SHA256SUMS
 

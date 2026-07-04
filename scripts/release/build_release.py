@@ -153,6 +153,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--version", required=True)
     parser.add_argument("--workspace", type=Path, default=Path.cwd())
     parser.add_argument("--out-dir", type=Path, default=Path("dist/release"))
+    parser.add_argument(
+        "--skip-opencl",
+        action="store_true",
+        help="Skip the OpenCL stressor binary (pyopencl has no win_arm64 wheel)",
+    )
     return parser.parse_args()
 
 
@@ -174,10 +179,18 @@ def main() -> int:
         "cli-stressor-cuda-rs": target_release / f"cli-stressor-cuda-rs{suffix}",
         "nvoc-tui": root / "tui" / "dist" / f"nvoc-tui{suffix}",
         "nvoc-gui": root / "gui" / "dist" / f"NVOC-GUI{suffix}",
+        "nvoc-stressor-opencl": root
+        / "cli-stressor-opencl"
+        / "dist"
+        / f"NVOC-CLI-Stressor-opencl{suffix}",
     }
 
+    single_names = ["nvoc-cli", "nvoc-tui", "nvoc-gui"]
+    if not args.skip_opencl:
+        single_names.append("nvoc-stressor-opencl")
+
     single_outputs: list[Path] = []
-    for name in ("nvoc-cli", "nvoc-tui", "nvoc-gui"):
+    for name in single_names:
         dst = cell_dir / f"{name}-{args.version}-{cell}{suffix}"
         copy_file(inputs[name], dst)
         verify_executable_arch(dst, args.platform, args.arch)
@@ -189,6 +202,19 @@ def main() -> int:
         "nvoc-auto-optimizer": bin_dir / f"nvoc-auto-optimizer{suffix}",
         "cli-stressor-cuda-rs": bin_dir / f"cli-stressor-cuda-rs{suffix}",
     }
+    if args.platform == "windows":
+        # NVOC-SRV: Windows service binaries ship inside the tools bundle.
+        for name in (
+            "nvoc_service",
+            "install_service",
+            "uninstall_service",
+            "notify_service",
+            "pause_continue",
+            "service_config",
+            "service_failure_actions",
+        ):
+            inputs[name] = target_release / f"{name}{suffix}"
+            tools_outputs[name] = bin_dir / "srv" / f"{name}{suffix}"
     for name, dst in tools_outputs.items():
         copy_file(inputs[name], dst)
         verify_executable_arch(dst, args.platform, args.arch)
