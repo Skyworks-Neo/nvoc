@@ -66,7 +66,7 @@ echo %ESC%[1;93m If crash is unacceptable on your current situation, use Ctrl-C 
 
 pause
 
-"%NVOC_AUTO_OPTIMIZER_BIN%" --gpu=%GPU_ID% autoscan-vfp --log "%logfile%" -i "%WSDIR%\vfp-init.csv" -o "%vfptemfile%"
+"%NVOC_AUTO_OPTIMIZER_BIN%" --gpu=%GPU_ID% autoscan-vfp --log "%logfile%" -i "%WSDIR%\vfp-init.csv" -o "%vfptemfile%"  --manual-override
 "%NVOC_AUTO_OPTIMIZER_BIN%" --gpu=%GPU_ID% fix-vfp-result -m 1 -v "%vfptemfile%" -o "%WSDIR%\vfp.csv" -l "%logfile%"
 "%NVOC_AUTO_OPTIMIZER_BIN%" --gpu=%GPU_ID% import-vfp "%WSDIR%\vfp.csv"
 "%NVOC_AUTO_OPTIMIZER_BIN%" --gpu=%GPU_ID% export-vfp "%WSDIR%\vfp-final.csv"

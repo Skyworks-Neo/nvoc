@@ -1,4 +1,5 @@
 use super::runtime::{retry_operation_with_backoff, run_output};
+use crate::manual_override::{OverrideRequest, take_override};
 use crate::oc_profile_function::apply_autoscan_profile;
 use crate::progressbar::{ScanProgress, forward_child_output, progress_print};
 use crate::scan_strategy::FluctuationStrategy;
@@ -501,6 +502,22 @@ pub(super) fn run_pressure_test(
                 test_initialization(gpu, cfg);
 
                 loop {
+                    // Manual override (Alt+P/Alt+F on Windows): end this pressure
+                    // test early and force its result. Mirrors the timeout branch
+                    // below — kill the stressor, set the exit code, break out.
+                    if let Some(req) = take_override() {
+                        let (code, label) = match req {
+                            OverrideRequest::Pass => (0i32, "MANUAL PASS (Alt+P)"),
+                            OverrideRequest::Fail => (1i32, "MANUAL FAIL (Alt+F)"),
+                        };
+                        progress_print(
+                            cfg.progress,
+                            format!("{}: ending current test early.", label),
+                        );
+                        force_kill_process(&mut process, label);
+                        exit_code = code;
+                        break;
+                    }
                     if last_fluctuation.elapsed() >= Duration::from_millis(1) {
                         // Frequency fluctuation is intentionally driven while
                         // the stressor is running to expose marginal V/F points.

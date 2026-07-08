@@ -13,6 +13,7 @@ use super::oc_profile_function::{
     apply_autoscan_profile, break_point_continue, check_voltage_points, export_single_point,
     key_point_extractor,
 };
+use super::manual_override::ManualOverrideGuard;
 use super::progressbar::{ActiveScanProgressGuard, ScanProgress};
 use super::scan_log::{GpuVoltageRange, ScanDomain, ScanKind, ScanLogWriter, ScanMode};
 use super::scan_strategy::{FluctuationMode, FluctuationStrategy, StepController};
@@ -352,6 +353,17 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
         let scan_progress = Arc::new(ScanProgress::new(lower_voltage_point, upper_voltage_point));
         let _scan_progress_guard = ActiveScanProgressGuard::enter(scan_progress.clone());
         scan_progress.set_total_point(point, lower_voltage_point, upper_voltage_point);
+
+        // Optional debug aid: on Windows, spawn the Alt+P/Alt+F listener that can
+        // end the current pressure test early and force its result. No-op on
+        // other platforms. Drop order: the override guard drops before the scan
+        // progress guard, so the listener always stops before progress state is
+        // torn down.
+        let _manual_override_guard = common.manual_override.then(ManualOverrideGuard::enter);
+        #[cfg(not(windows))]
+        if common.manual_override {
+            eprintln!("--manual-override is Windows-only; ignored.");
+        }
 
         let mut v;
         let mut default_frequency;
@@ -766,6 +778,16 @@ pub fn autoscan_legacy(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> Resul
             controller.f_current, controller.f_max
         );
         print_scan_separator();
+
+        // Optional debug aid: on Windows, spawn the Alt+P/Alt+F listener that can
+        // end the current pressure test early and force its result. Legacy scans
+        // have no progress bar, but the override still works because it reads a
+        // global slot. No-op on other platforms.
+        let _manual_override_guard = common.manual_override.then(ManualOverrideGuard::enter);
+        #[cfg(not(windows))]
+        if common.manual_override {
+            eprintln!("--manual-override is Windows-only; ignored.");
+        }
 
         let phase_args = LegacyPhaseArgs {
             common: CommonPhaseArgs {

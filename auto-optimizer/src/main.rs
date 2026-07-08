@@ -6,6 +6,7 @@
 mod arg_help;
 mod autoscan_config;
 mod cleanup;
+mod manual_override;
 mod oc_profile_function;
 mod oc_scanner;
 mod platform;

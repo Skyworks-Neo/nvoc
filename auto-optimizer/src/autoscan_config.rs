@@ -150,6 +150,8 @@ pub struct AutoscanCommonConfig {
     /// None 表示未指定，由调用方根据 GPU 世代决定默认值
     pub recovery_method: Option<bool>,
     pub stressor: StressorConfig,
+    /// 是否启用 Alt+P/Alt+F 手动 override 当前压力测试结果（仅 Windows，调试用）。
+    pub manual_override: bool,
 }
 
 impl AutoscanCommonConfig {
@@ -177,6 +179,7 @@ impl AutoscanCommonConfig {
                 .get_one::<String>("bsod_recovery")
                 .map(|v| v.as_str() == "aggressive"),
             stressor: StressorConfig::from_matches(matches),
+            manual_override: matches.get_flag("manual_override"),
         }
     }
 }
