@@ -5,18 +5,16 @@ use std::sync::Arc;
 
 use cudarc::cublas::{CudaBlas, Gemm, GemmConfig, sys as cublas_sys};
 use cudarc::driver::sys as cuda_sys;
-use cudarc::driver::{
-    CudaContext, CudaFunction, CudaModule, CudaStream,
-};
+use cudarc::driver::{CudaContext, CudaFunction, CudaModule, CudaStream};
 use half::{bf16, f16};
 
 use cli_stressor_cuda_rs::{
-    Backend, BackendError, DeviceInfo, HostMatrix, KernelPathRequest,
-    KernelType, PrecisionKind, PrecisionSpec,
+    Backend, BackendError, DeviceInfo, HostMatrix, KernelPathRequest, KernelType, PrecisionKind,
+    PrecisionSpec,
 };
 
-use super::device::query_device_info_for_index;
 use super::atomic::build_atomic_kernel;
+use super::device::query_device_info_for_index;
 use super::gemm::GemmPathConfig;
 
 #[cfg(feature = "vulkan")]

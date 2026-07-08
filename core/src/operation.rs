@@ -238,22 +238,24 @@ impl GpuOperation for QueryViolationStatus {
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
         let nvml = target.nvml()?;
-        Ok(low_nvml::get_nvml_violation_status(nvml, target.id.0).map(|items| {
-            let reference_time_us = items
-                .first()
-                .map(|(_, status)| status.reference_time_us)
-                .unwrap_or(0);
-            ViolationStatusReport {
-                entries: items
-                    .into_iter()
-                    .map(|(name, status)| ViolationEntry {
-                        name: name.to_string(),
-                        violation_time_ns: status.violation_time_ns,
-                    })
-                    .collect(),
-                reference_time_us,
-            }
-        }))
+        Ok(
+            low_nvml::get_nvml_violation_status(nvml, target.id.0).map(|items| {
+                let reference_time_us = items
+                    .first()
+                    .map(|(_, status)| status.reference_time_us)
+                    .unwrap_or(0);
+                ViolationStatusReport {
+                    entries: items
+                        .into_iter()
+                        .map(|(name, status)| ViolationEntry {
+                            name: name.to_string(),
+                            violation_time_ns: status.violation_time_ns,
+                        })
+                        .collect(),
+                    reference_time_us,
+                }
+            }),
+        )
     }
 }
 

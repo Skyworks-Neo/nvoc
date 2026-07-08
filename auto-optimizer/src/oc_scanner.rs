@@ -189,10 +189,10 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
             fluctuation_coefficient,
             is_50_series,
             testing_step,
+            freq_step_exp_core,
         } = gpu_type.as_ref().map(|t| t.oc_params()).unwrap_or_default();
 
-        // let mut core_oc_safe_limit_ref = core_oc_safe_limit;
-        let freq_step_exp = 3;
+        let freq_step_exp = freq_step_exp_core;
 
         // let scan_params = ScanParams {
         //     is_50_series,
@@ -666,11 +666,12 @@ pub fn autoscan_legacy(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> Resul
             fluctuation_coefficient,
             is_50_series: _, // legacy 路径不区分架构世代
             testing_step: _,
+            freq_step_exp_core,
         } = gpu_type.as_ref().map(|t| t.oc_params()).unwrap_or_default();
 
         let core_oc_safe_limit_ref = core_oc_safe_limit;
 
-        let freq_step_exp = 3;
+        let freq_step_exp = freq_step_exp_core;
 
         // --- Breakpoint resume logic (mirrors v3) ---
         let mut resuming_flag = false;
@@ -702,14 +703,22 @@ pub fn autoscan_legacy(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> Resul
                 println!("log parsing error... Restoring default value");
                 fm = core_oc_safe_limit_ref;
                 fc -= safe_elasticity_per_cycle;
+                controller = StepController::new(
+                    fc,
+                    fm,
+                    safe_elasticity_per_cycle,
+                    minimum_delta_core_freq_step,
+                    freq_step_exp,
+                );
+            } else {
+                controller = StepController::init_from_resume(
+                    fc,
+                    fm,
+                    safe_elasticity_per_cycle,
+                    minimum_delta_core_freq_step,
+                    freq_step_exp,
+                );
             }
-            controller = StepController::init_from_resume(
-                fc,
-                fm,
-                safe_elasticity_per_cycle,
-                minimum_delta_core_freq_step,
-                freq_step_exp,
-            );
         }
 
         if let Err(e) = apply_autoscan_profile(gpu, matches, 80) {

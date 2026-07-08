@@ -103,9 +103,10 @@ impl CudaBackend {
         seed: u64,
         stream_mode: StreamMode,
     ) -> Result<f64, BackendError> {
-        let func = self.intalu_fn.as_ref().ok_or_else(|| {
-            BackendError::Other("INT ALU kernel unavailable".to_string())
-        })?;
+        let func = self
+            .intalu_fn
+            .as_ref()
+            .ok_or_else(|| BackendError::Other("INT ALU kernel unavailable".to_string()))?;
         let n = (size * size) as u32;
         let lane_count = Self::lane_count(stream_mode);
         let mut rng = StdRng::seed_from_u64(seed);

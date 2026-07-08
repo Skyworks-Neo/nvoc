@@ -1413,8 +1413,7 @@ mod tests {
 
     #[test]
     fn parse_int_precision_keys_and_aliases() {
-        let specs =
-            parse_precision_list("int8,i8,int16,i16,int32,i32").expect("int keys parse");
+        let specs = parse_precision_list("int8,i8,int16,i16,int32,i32").expect("int keys parse");
         let kinds: Vec<_> = specs.iter().map(|s| s.kind).collect();
         assert_eq!(
             kinds,
@@ -1451,7 +1450,11 @@ mod tests {
             total_mem_gb: Some(4.0),
             compute_capability: Some((6, 1)), // Pascal
         };
-        for kind in [PrecisionKind::INT8, PrecisionKind::INT16, PrecisionKind::INT32] {
+        for kind in [
+            PrecisionKind::INT8,
+            PrecisionKind::INT16,
+            PrecisionKind::INT32,
+        ] {
             assert!(old_gpu.supports_precision(&int_spec(kind)).is_ok());
         }
         // A GPU with unknown compute capability still gets INT stress.
@@ -1460,7 +1463,11 @@ mod tests {
             total_mem_gb: None,
             compute_capability: None,
         };
-        assert!(unknown.supports_precision(&int_spec(PrecisionKind::INT8)).is_ok());
+        assert!(
+            unknown
+                .supports_precision(&int_spec(PrecisionKind::INT8))
+                .is_ok()
+        );
     }
 
     #[test]
@@ -1476,14 +1483,35 @@ mod tests {
     fn kernel_precision_compatibility_matrix() {
         use super::kernel_precision_compatible;
         // INT16/INT32 only run on IntAlu.
-        assert!(!kernel_precision_compatible(KernelType::Gemm, PrecisionKind::INT16));
-        assert!(!kernel_precision_compatible(KernelType::Gemm, PrecisionKind::INT32));
-        assert!(kernel_precision_compatible(KernelType::IntAlu, PrecisionKind::INT16));
-        assert!(kernel_precision_compatible(KernelType::IntAlu, PrecisionKind::INT32));
+        assert!(!kernel_precision_compatible(
+            KernelType::Gemm,
+            PrecisionKind::INT16
+        ));
+        assert!(!kernel_precision_compatible(
+            KernelType::Gemm,
+            PrecisionKind::INT32
+        ));
+        assert!(kernel_precision_compatible(
+            KernelType::IntAlu,
+            PrecisionKind::INT16
+        ));
+        assert!(kernel_precision_compatible(
+            KernelType::IntAlu,
+            PrecisionKind::INT32
+        ));
         // INT8 GEMM is supported (cuBLAS), and INT8 + IntAlu too.
-        assert!(kernel_precision_compatible(KernelType::Gemm, PrecisionKind::INT8));
-        assert!(kernel_precision_compatible(KernelType::IntAlu, PrecisionKind::INT8));
+        assert!(kernel_precision_compatible(
+            KernelType::Gemm,
+            PrecisionKind::INT8
+        ));
+        assert!(kernel_precision_compatible(
+            KernelType::IntAlu,
+            PrecisionKind::INT8
+        ));
         // FP precisions pair with GEMM normally.
-        assert!(kernel_precision_compatible(KernelType::Gemm, PrecisionKind::FP32));
+        assert!(kernel_precision_compatible(
+            KernelType::Gemm,
+            PrecisionKind::FP32
+        ));
     }
 }

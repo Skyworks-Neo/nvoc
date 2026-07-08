@@ -200,7 +200,10 @@ fn format_throttle_reasons_output(output: &Value) -> Vec<String> {
     let mut lines = Vec::new();
 
     let reasons = output.get("reasons").unwrap_or(output);
-    lines.extend(format_object_array(reasons, &[("name", "Reason"), ("active", "Active")]));
+    lines.extend(format_object_array(
+        reasons,
+        &[("name", "Reason"), ("active", "Active")],
+    ));
 
     if let Some(violation) = output.get("violation").and_then(Value::as_object) {
         let entries = violation

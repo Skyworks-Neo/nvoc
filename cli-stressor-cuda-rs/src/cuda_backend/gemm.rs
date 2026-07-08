@@ -9,8 +9,7 @@ use cudarc::driver::{DevicePtr, DevicePtrMut};
 use half::{bf16, f16};
 
 use cli_stressor_cuda_rs::{
-    BackendError, PrecisionKind, PrecisionSpec, StreamMode,
-    make_random_host_matrix,
+    BackendError, PrecisionKind, PrecisionSpec, StreamMode, make_random_host_matrix,
 };
 
 use super::backend::CudaBackend;

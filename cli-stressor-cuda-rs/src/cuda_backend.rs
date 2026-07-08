@@ -24,13 +24,13 @@ mod mem_ops;
 // `CudaMatrix` / `CudaOutput` are the `Backend::Matrix` / `Backend::Output`
 // associated types; re-exported as part of the backend's public surface even
 // though nothing in this crate names them directly.
-#[allow(unused_imports)]
-pub use backend::{CudaBackend, CudaMatrix, CudaOutput};
 #[cfg(feature = "vulkan")]
 #[allow(unused_imports)]
 pub use backend::CudaDeviceIdentity;
+#[allow(unused_imports)]
+pub use backend::{CudaBackend, CudaMatrix, CudaOutput};
 
 pub use device::{
-    enumerate_cuda_devices, resolve_device_index_by_pci_bus,
-    resolve_device_index_by_sorted_index, resolve_device_index_by_uuid,
+    enumerate_cuda_devices, resolve_device_index_by_pci_bus, resolve_device_index_by_sorted_index,
+    resolve_device_index_by_uuid,
 };
