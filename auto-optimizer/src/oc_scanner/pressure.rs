@@ -510,10 +510,10 @@ pub(super) fn run_pressure_test(
                             OverrideRequest::Pass => (0i32, "MANUAL PASS (Alt+P)"),
                             OverrideRequest::Fail => (1i32, "MANUAL FAIL (Alt+F)"),
                         };
-                        progress_print(
-                            cfg.progress,
-                            format!("{}: ending current test early.", label),
-                        );
+                        // Use a plain println (not progress_print) so the message
+                        // lands in the scrollable stdout history instead of being
+                        // absorbed into the indicatif progress-bar region.
+                        println!("{}: ending current test early.", label);
                         force_kill_process(&mut process, label);
                         exit_code = code;
                         break;
