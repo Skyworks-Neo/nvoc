@@ -14,7 +14,7 @@ use super::oc_profile_function::{
     key_point_extractor,
 };
 use super::progressbar::{ActiveScanProgressGuard, ScanProgress};
-use super::scan_log::{GpuVoltageRange, ScanArea, ScanKind, ScanLogWriter, ScanMode};
+use super::scan_log::{GpuVoltageRange, ScanDomain, ScanKind, ScanLogWriter, ScanMode};
 use super::scan_strategy::{FluctuationMode, FluctuationStrategy, StepController};
 use super::scan_support::local_time_hms;
 use super::scan_support::{handle_lock_vfp, handle_test_voltage_limits, print_scan_separator};
@@ -89,6 +89,13 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
 
         None => {
             println!("Voltage scan initialized because values were missing in the log.");
+            // 探测前先读取首个 GPU 的世代，判断是否需要 MinLoadPulse 唤醒。
+            let wakeup_load_needed = gpus
+                .first()
+                .and_then(|g| run_output(g, QueryGpuInfo).ok())
+                .and_then(|info| fetch_gpu_type(&info).ok())
+                .map(|t| t.oc_params().wakeup_load_needed)
+                .unwrap_or(false);
             // New logs need a read-only voltage range probe before any per-point
             // VFP writes are attempted.
             let voltage_limits = retry_operation_with_backoff(
@@ -98,6 +105,7 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
                 1,
                 minload_exe,
                 cuda_device,
+                wakeup_load_needed,
             )?;
             let lvp = voltage_limits
                 .iter()
@@ -174,7 +182,16 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
                 delta: KilohertzDelta(45000),
             },
         )?;
-        let _pulse = MinLoadPulse::wake(minload_exe, cuda_device);
+        // 仅在需要唤醒的世代（30/50 系笔记本）执行 MinLoadPulse
+        let wakeup_load_needed = gpu_type
+            .as_ref()
+            .map(|t| t.oc_params().wakeup_load_needed)
+            .unwrap_or(false);
+        let _pulse = if wakeup_load_needed {
+            Some(MinLoadPulse::wake(minload_exe, cuda_device))
+        } else {
+            None
+        };
         match handle_lock_vfp(gpus, matches, upper_voltage_point, false) {
             Ok(_) => println!("Voltage locked successfully."),
             Err(e) => eprintln!("Error: Failed to lock voltage - {:?}", e),
@@ -190,6 +207,7 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
             is_50_series,
             testing_step,
             freq_step_exp_core,
+            ..
         } = gpu_type.as_ref().map(|t| t.oc_params()).unwrap_or_default();
 
         let freq_step_exp = freq_step_exp_core;
@@ -208,6 +226,7 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
             1, // base_wait_secs
             minload_exe,
             cuda_device,
+            wakeup_load_needed,
         )?;
         let points = status.vfp.ok_or(Error::VfpUnsupported)?.graphics;
 
@@ -218,7 +237,7 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
         let recovery_method_switch: bool = common.recovery_method.unwrap_or(is_50_series);
 
         let (succeeded_freq, failed_freq, last_voltage_point, ultrafast_flag) =
-            break_point_continue(log_filename, testing_step)?;
+            break_point_continue(log_filename, testing_step, safe_elasticity_per_cycle, minimum_delta_core_freq_step)?;
         println!("Extracted Values:");
 
         if let Some(freq_s) = succeeded_freq {
@@ -307,14 +326,16 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
             println!("log parsing error... Restoring default value");
             fm = core_oc_safe_limit;
             fc -= safe_elasticity_per_cycle;
+            controller = StepController::new(fc, fm, minimum_delta_core_freq_step, freq_step_exp);
+        } else {
+            controller = StepController::init_from_resume(
+                fc,
+                fm,
+                safe_elasticity_per_cycle,
+                minimum_delta_core_freq_step,
+                freq_step_exp,
+            );
         }
-        controller = StepController::init_from_resume(
-            fc,
-            fm,
-            safe_elasticity_per_cycle,
-            minimum_delta_core_freq_step,
-            freq_step_exp,
-        );
 
         print_scan_separator();
         if resuming_flag {
@@ -365,6 +386,7 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
                 progress: Some(scan_progress.as_ref()),
                 cuda_device,
                 stressor_extra_args,
+                wakeup_load_needed,
             },
             vfp_set_range,
             freq_step_exp,
@@ -409,7 +431,11 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
                 .ok_or(Error::Str("invalid point index"))?
                 .default_frequency;
 
-            let _pulse = MinLoadPulse::wake(minload_exe, cuda_device);
+            let _pulse = if wakeup_load_needed {
+                Some(MinLoadPulse::wake(minload_exe, cuda_device))
+            } else {
+                None
+            };
             match handle_lock_vfp(gpus, matches, point, true) {
                 Ok(_) => {
                     flat_curve_flag = false;
@@ -458,7 +484,7 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
                 &mut controller,
                 &mut test_code,
             )?;
-            l.write_point_finished(ScanArea::Core, point)?;
+            l.write_point_finished(ScanDomain::Core, point)?;
             println!(
                 "Core OC finished on point: #{}, voltage: #{}, delta: #+{}. ",
                 point,
@@ -547,6 +573,7 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
                 1, // base_wait_secs
                 minload_exe,
                 cuda_device,
+                wakeup_load_needed,
             )?;
             let readout_f = status.clone().clocks;
             let mut clocks = Vec::new();
@@ -599,6 +626,7 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
                     progress: Some(scan_progress.as_ref()),
                     cuda_device,
                     stressor_extra_args,
+                    wakeup_load_needed,
                 },
                 point,
                 vfp_set_range,
@@ -609,7 +637,6 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
             let mut mem_controller = StepController::new(
                 init_vmem_oc_value,
                 mem_oc_safe_limit,
-                0,
                 minimum_delta_mem_freq_step,
                 mem_freq_step_exp,
             );
@@ -622,7 +649,7 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
                 mem_voltage,
                 &mut mem_controller,
             )?;
-            l.write_point_finished(ScanArea::Memory, point)?;
+            l.write_point_finished(ScanDomain::Memory, point)?;
             println!(
                 "mem OC finished on point: #{}, voltage: #{}, delta: #+{}. ",
                 point,
@@ -665,6 +692,7 @@ pub fn autoscan_legacy(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> Resul
             safe_elasticity_per_cycle,
             fluctuation_coefficient,
             is_50_series: _, // legacy 路径不区分架构世代
+            wakeup_load_needed,
             testing_step: _,
             freq_step_exp_core,
         } = gpu_type.as_ref().map(|t| t.oc_params()).unwrap_or_default();
@@ -679,7 +707,7 @@ pub fn autoscan_legacy(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> Resul
         let mut last_failed_freq = core_oc_safe_limit_ref;
 
         let (succeeded_freq, failed_freq, last_voltage_point, _ultrafast_flag) =
-            break_point_continue(log_filename, 1 /* single point, step=1 */)?;
+            break_point_continue(log_filename, 1, safe_elasticity_per_cycle, minimum_delta_core_freq_step)?;
         if let Some(freq_s) = succeeded_freq {
             println!("  - Last freq_delta succeeded: {} MHz", freq_s);
             last_succeeded_freq = (freq_s * 1000.0) as i32;
@@ -703,13 +731,8 @@ pub fn autoscan_legacy(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> Resul
                 println!("log parsing error... Restoring default value");
                 fm = core_oc_safe_limit_ref;
                 fc -= safe_elasticity_per_cycle;
-                controller = StepController::new(
-                    fc,
-                    fm,
-                    safe_elasticity_per_cycle,
-                    minimum_delta_core_freq_step,
-                    freq_step_exp,
-                );
+                controller =
+                    StepController::new(fc, fm, minimum_delta_core_freq_step, freq_step_exp);
             } else {
                 controller = StepController::init_from_resume(
                     fc,
@@ -761,6 +784,7 @@ pub fn autoscan_legacy(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> Resul
                 progress: None,
                 cuda_device,
                 stressor_extra_args,
+                wakeup_load_needed,
             },
             point,
             flat_curve_flag,
@@ -786,7 +810,7 @@ pub fn autoscan_legacy(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> Resul
 
             run_legacy_long_phase(&mut l, gpu, &phase_args, &mut controller, &mut test_code)?;
 
-            l.write_point_finished(ScanArea::Legacy, point)?;
+            l.write_point_finished(ScanDomain::Legacy, point)?;
             println!(
                 "Legacy OC scan finished. Final freq_delta: +{}kHz",
                 controller.f_current

@@ -10,7 +10,6 @@ __pycache__/
 /cli-stressor-opencl/build/
 /cli-stressor-opencl/dist/
 *.pdb
-nvoc.wiki
 
 # Logs
 logs

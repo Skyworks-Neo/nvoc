@@ -1,7 +1,7 @@
 use super::pressure::{PressureTestConfig, run_pressure_test};
 use super::runtime::{MinLoadPulse, run_output};
 use crate::progressbar::ScanProgress;
-use crate::scan_log::{ScanArea, ScanLogWriter, TestPhase};
+use crate::scan_log::{ScanDomain, ScanLogWriter, TestPhase};
 use crate::scan_strategy::{FluctuationStrategy, StepController};
 use crate::scan_support::{handle_lock_vfp, local_time_hms, voltage_frequency_check};
 use clap::ArgMatches;
@@ -11,6 +11,7 @@ use nvoc_core::{
     QueryVfpPointVoltage, ResetVfpDeltas, SetVfpVoltageLock, VfpResetDomain,
     set_nvapi_pstate_clock_offsets, set_nvapi_vfp_curve_delta,
 };
+use std::io;
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -29,6 +30,7 @@ pub(super) struct CommonPhaseArgs<'a> {
     pub(super) progress: Option<&'a ScanProgress>,
     pub(super) cuda_device: Option<u32>,
     pub(super) stressor_extra_args: &'a [String],
+    pub(super) wakeup_load_needed: bool,
 }
 
 struct PressureRunSpec {
@@ -42,6 +44,41 @@ struct PressureRunSpec {
     timeout_loops: u64,
     is_legacy_global_offset: bool,
     test_duration_secs: u64,
+}
+
+fn begin_test_result_log(
+    l: &mut ScanLogWriter,
+    domain: ScanDomain,
+    phase: TestPhase,
+    test_code: usize,
+    point: usize,
+    voltage: Option<Microvolts>,
+    delta: KilohertzDelta,
+) -> io::Result<String> {
+    l.write_pending_test_result(domain, phase, test_code, point, voltage, delta)
+}
+
+fn finish_test_result_log(
+    l: &mut ScanLogWriter,
+    started_at: String,
+    domain: ScanDomain,
+    phase: TestPhase,
+    test_code: usize,
+    point: usize,
+    voltage: Option<Microvolts>,
+    delta: KilohertzDelta,
+    result_code: i32,
+) -> io::Result<()> {
+    l.write_completed_test_result(
+        started_at,
+        domain,
+        phase,
+        test_code,
+        point,
+        voltage,
+        delta,
+        result_code,
+    )
 }
 
 impl<'a> CommonPhaseArgs<'a> {
@@ -69,6 +106,7 @@ impl<'a> CommonPhaseArgs<'a> {
             progress: self.progress,
             cuda_device: self.cuda_device,
             stressor_extra_args: self.stressor_extra_args,
+            wakeup_load_needed: self.wakeup_load_needed,
             #[cfg(windows)]
             target_gpu_id: _gpu.id.0,
         }
@@ -132,9 +170,14 @@ fn set_vfp_and_recheck(
     max_attempts: i32,
     minload_exe: &str,
     cuda_device: Option<u32>,
+    wakeup_load_needed: bool,
 ) -> Result<(), Error> {
     for attempt in 1..=max_attempts {
-        let _pulse = MinLoadPulse::wake(minload_exe, cuda_device);
+        let _pulse = if wakeup_load_needed {
+            Some(MinLoadPulse::wake(minload_exe, cuda_device))
+        } else {
+            None
+        };
 
         set_nvapi_vfp_curve_delta(
             gpu,
@@ -223,6 +266,7 @@ pub(super) fn run_legacy_short_phase(
             *test_code,
             controller.f_current
         );
+        println!("[DEBUG] StepController: {:?}", controller);
 
         let pressure_cfg = args.common.pressure_config(
             gpu,
@@ -237,9 +281,20 @@ pub(super) fn run_legacy_short_phase(
                 test_duration_secs: args.common.test_duration,
             },
         );
+        let started_at = begin_test_result_log(
+            l,
+            ScanDomain::Legacy,
+            TestPhase::Short,
+            *test_code,
+            args.point,
+            None,
+            KilohertzDelta(controller.f_current),
+        )?;
         let test_flag = run_pressure_test(gpu, args.common.matches, &pressure_cfg);
-        l.write_test_result(
-            ScanArea::Legacy,
+        finish_test_result_log(
+            l,
+            started_at,
+            ScanDomain::Legacy,
             TestPhase::Short,
             *test_code,
             args.point,
@@ -259,6 +314,7 @@ pub(super) fn run_legacy_short_phase(
             )?;
             let decrease = controller.on_test_failed(args.common.minimum_delta_core_freq_step);
             println!("Decreasing target freq by {}kHz", decrease);
+            println!("[DEBUG] StepController: {:?}", controller);
             continue;
         }
 
@@ -267,7 +323,10 @@ pub(super) fn run_legacy_short_phase(
             *test_code, controller.f_current
         );
         match controller.on_test_passed(args.common.minimum_delta_core_freq_step) {
-            Some(increase) => println!("Increasing target freq by {}kHz", increase),
+            Some(increase) => {
+                println!("Increasing target freq by {}kHz", increase);
+                println!("[DEBUG] StepController: {:?}", controller);
+            }
             None => break,
         }
 
@@ -324,9 +383,20 @@ pub(super) fn run_legacy_long_phase(
                 test_duration_secs: args.common.endurance_coefficient * args.common.test_duration,
             },
         );
+        let started_at = begin_test_result_log(
+            l,
+            ScanDomain::Legacy,
+            TestPhase::Long,
+            *test_code,
+            args.point,
+            None,
+            KilohertzDelta(controller.f_current),
+        )?;
         let long_flag = run_pressure_test(gpu, args.common.matches, &pressure_cfg);
-        l.write_test_result(
-            ScanArea::Legacy,
+        finish_test_result_log(
+            l,
+            started_at,
+            ScanDomain::Legacy,
             TestPhase::Long,
             *test_code,
             args.point,
@@ -349,6 +419,7 @@ pub(super) fn run_legacy_long_phase(
                 "Decreasing target freq by {}kHz",
                 args.common.minimum_delta_core_freq_step
             );
+            println!("[DEBUG] StepController: {:?}", controller);
             continue;
         }
 
@@ -356,6 +427,7 @@ pub(super) fn run_legacy_long_phase(
             "Long Test #{} SUCCEEDED at +{}kHz",
             *test_code, controller.f_current
         );
+        println!("[DEBUG] StepController: {:?}", controller);
         break;
     }
 
@@ -411,6 +483,7 @@ pub(super) fn run_gpuboostv3_short_phase(
             10,
             args.common.minload_exe,
             args.common.cuda_device,
+            args.common.wakeup_load_needed,
         )?;
 
         controller.test_progress_num += 1;
@@ -437,10 +510,21 @@ pub(super) fn run_gpuboostv3_short_phase(
                 test_duration_secs: args.common.test_duration,
             },
         );
+        let started_at = begin_test_result_log(
+            l,
+            ScanDomain::Core,
+            TestPhase::Short,
+            test_code,
+            point,
+            Some(v),
+            KilohertzDelta(controller.f_current),
+        )?;
         let test_flag = run_pressure_test(gpu, args.common.matches, &pressure_cfg);
         println!("{}", test_flag);
-        l.write_test_result(
-            ScanArea::Core,
+        finish_test_result_log(
+            l,
+            started_at,
+            ScanDomain::Core,
             TestPhase::Short,
             test_code,
             point,
@@ -473,6 +557,7 @@ pub(super) fn run_gpuboostv3_short_phase(
             //     );
             // }
             println!("Decreasing target freq by {}kHz", decrease);
+            println!("[DEBUG] StepController: {:?}", controller);
             continue;
         }
 
@@ -484,7 +569,10 @@ pub(super) fn run_gpuboostv3_short_phase(
             KilohertzDelta(controller.f_current)
         );
         match controller.on_test_passed(args.common.minimum_delta_core_freq_step) {
-            Some(increase) => println!("Increasing target freq by {}kHz", increase),
+            Some(increase) => {
+                println!("Increasing target freq by {}kHz", increase);
+                println!("[DEBUG] StepController: {:?}", controller);
+            }
             None => break,
         }
 
@@ -525,6 +613,7 @@ pub(super) fn run_gpuboostv3_long_phase(
             5,
             args.common.minload_exe,
             args.common.cuda_device,
+            args.common.wakeup_load_needed,
         )?;
 
         *test_code += 1;
@@ -549,7 +638,27 @@ pub(super) fn run_gpuboostv3_long_phase(
                 test_duration_secs: args.common.endurance_coefficient * args.common.test_duration,
             },
         );
+        let started_at = begin_test_result_log(
+            l,
+            ScanDomain::Core,
+            TestPhase::Long,
+            *test_code,
+            point,
+            Some(v),
+            KilohertzDelta(controller.f_current),
+        )?;
         long_duration_flag = run_pressure_test(gpu, args.common.matches, &pressure_cfg);
+        finish_test_result_log(
+            l,
+            started_at,
+            ScanDomain::Core,
+            TestPhase::Long,
+            *test_code,
+            point,
+            Some(v),
+            KilohertzDelta(controller.f_current),
+            long_duration_flag,
+        )?;
         if long_duration_flag != 0 {
             run_output(
                 gpu,
@@ -564,15 +673,6 @@ pub(super) fn run_gpuboostv3_long_phase(
                 v,
                 KilohertzDelta(controller.f_current)
             );
-            l.write_test_result(
-                ScanArea::Core,
-                TestPhase::Long,
-                *test_code,
-                point,
-                Some(v),
-                KilohertzDelta(controller.f_current),
-                long_duration_flag,
-            )?;
             controller.apply_long_failure_step(
                 args.common.minimum_delta_core_freq_step,
                 args.is_50_series,
@@ -587,6 +687,7 @@ pub(super) fn run_gpuboostv3_long_phase(
             //         args.common.minimum_delta_core_freq_step
             //     )
             // }
+            println!("[DEBUG] StepController: {:?}", controller);
             continue;
         }
 
@@ -597,8 +698,20 @@ pub(super) fn run_gpuboostv3_long_phase(
             v,
             KilohertzDelta(controller.f_current)
         );
-        l.write_test_result(
-            ScanArea::Core,
+        println!("[DEBUG] StepController: {:?}", controller);
+        let started_at = begin_test_result_log(
+            l,
+            ScanDomain::Core,
+            TestPhase::Long,
+            *test_code,
+            point,
+            Some(v),
+            KilohertzDelta(controller.f_current),
+        )?;
+        finish_test_result_log(
+            l,
+            started_at,
+            ScanDomain::Core,
             TestPhase::Long,
             *test_code,
             point,
@@ -634,7 +747,11 @@ pub(super) fn run_mem_oc_phase(
     let mut mem_test_code: usize = 0;
 
     loop {
-        let _pulse = MinLoadPulse::wake(args.common.minload_exe, args.common.cuda_device);
+        let _pulse = if args.common.wakeup_load_needed {
+            Some(MinLoadPulse::wake(args.common.minload_exe, args.common.cuda_device))
+        } else {
+            None
+        };
         match handle_lock_vfp(gpus, args.common.matches, args.point, false) {
             Ok(_) => println!("Voltage locked successfully."),
             Err(e) => eprintln!("Error: Failed to lock voltage - {:?}", e),
@@ -675,10 +792,20 @@ pub(super) fn run_mem_oc_phase(
                 test_duration_secs: args.common.endurance_coefficient * args.common.test_duration,
             },
         );
+        let started_at = begin_test_result_log(
+            l,
+            ScanDomain::Memory,
+            TestPhase::Long,
+            mem_test_code,
+            args.point,
+            Some(mem_voltage),
+            KilohertzDelta(controller.f_current),
+        )?;
         let mem_test_flag = run_pressure_test(gpu, args.common.matches, &pressure_cfg);
-
-        l.write_test_result(
-            ScanArea::Memory,
+        finish_test_result_log(
+            l,
+            started_at,
+            ScanDomain::Memory,
             TestPhase::Long,
             mem_test_code,
             args.point,
@@ -702,6 +829,7 @@ pub(super) fn run_mem_oc_phase(
 
             let decrease = controller.on_test_failed(args.minimum_delta_mem_freq_step);
             println!("Decreasing target mem_freq by {}kHz", decrease);
+            println!("[DEBUG] StepController: {:?}", controller);
             continue;
         }
 
@@ -713,7 +841,10 @@ pub(super) fn run_mem_oc_phase(
             KilohertzDelta(controller.f_current)
         );
         match controller.on_test_passed(args.minimum_delta_mem_freq_step) {
-            Some(increase) => println!("Increasing target freq by {}kHz", increase),
+            Some(increase) => {
+                println!("Increasing target freq by {}kHz", increase);
+                println!("[DEBUG] StepController: {:?}", controller);
+            }
             None => break,
         }
 

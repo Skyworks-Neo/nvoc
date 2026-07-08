@@ -1,5 +1,5 @@
 use super::autoscan_config::{FixResultConfig, VfpExportConfig};
-use super::scan_log::{self, BreakPointResume, ScanArea, ScanLogEvent, VoltagePointResume};
+use super::scan_log::{self, BreakPointResume, ScanDomain, ScanLogEvent, VoltagePointResume};
 use super::scan_support::get_gpu_tdp_temp_limit;
 // oc_set_function
 #[cfg(all(not(windows), not(target_os = "linux")))]
@@ -872,8 +872,10 @@ pub fn check_voltage_points(log_filename: &str) -> io::Result<Option<VoltagePoin
 pub fn break_point_continue(
     log_filename: &str,
     testing_step: usize,
+    safe_elastic_khz: i32,
+    min_step_khz: i32,
 ) -> io::Result<BreakPointResume> {
-    scan_log::breakpoint_from_file(log_filename, testing_step)
+    scan_log::breakpoint_from_file(log_filename, testing_step, safe_elastic_khz, min_step_khz)
 }
 
 pub fn export_vfp_from_log(matches: &clap::ArgMatches) -> Result<(), Error> {
@@ -913,18 +915,18 @@ fn export_points_from_jsonl_entries(entries: &[scan_log::ScanLogEntry]) -> Vec<V
     for entry in entries.iter().rev() {
         match entry.event {
             ScanLogEvent::PointFinished {
-                area: ScanArea::Core,
+                domain: ScanDomain::Core,
                 point,
             } => {
                 active_finished_point = Some(point);
             }
             ScanLogEvent::VoltageRange { .. } => break,
             ScanLogEvent::TestResult {
-                area: ScanArea::Core,
+                domain: ScanDomain::Core,
                 point,
                 voltage_uv: Some(voltage_uv),
                 delta_khz,
-                result_code: 100,
+                result_code: Some(100),
                 ..
             } if active_finished_point == Some(point) && exported_points.insert(point) => {
                 eprintln!(
@@ -1240,38 +1242,41 @@ mod tests {
                 gpu_ranges: Vec::new(),
             }),
             entry(ScanLogEvent::TestResult {
-                area: ScanArea::Core,
+                domain: ScanDomain::Core,
                 phase: scan_log::TestPhase::Short,
                 test_code: 1,
                 point: 42,
                 voltage_uv: Some(875000),
                 delta_khz: 125000,
-                result_code: 0,
+                finished_at: Some("12:34:57".to_string()),
+                result_code: Some(0),
             }),
             entry(ScanLogEvent::TestResult {
-                area: ScanArea::Core,
+                domain: ScanDomain::Core,
                 phase: scan_log::TestPhase::Short,
                 test_code: 2,
                 point: 42,
                 voltage_uv: Some(875000),
                 delta_khz: 150000,
-                result_code: 100,
+                finished_at: Some("12:34:58".to_string()),
+                result_code: Some(100),
             }),
             entry(ScanLogEvent::PointFinished {
-                area: ScanArea::Core,
+                domain: ScanDomain::Core,
                 point: 42,
             }),
             entry(ScanLogEvent::TestResult {
-                area: ScanArea::Memory,
+                domain: ScanDomain::Memory,
                 phase: scan_log::TestPhase::Long,
                 test_code: 1,
                 point: 80,
                 voltage_uv: Some(950000),
                 delta_khz: 900000,
-                result_code: 100,
+                finished_at: Some("12:34:59".to_string()),
+                result_code: Some(100),
             }),
             entry(ScanLogEvent::PointFinished {
-                area: ScanArea::Memory,
+                domain: ScanDomain::Memory,
                 point: 80,
             }),
         ];

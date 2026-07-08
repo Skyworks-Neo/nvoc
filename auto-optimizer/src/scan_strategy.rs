@@ -166,16 +166,10 @@ impl StepController {
     ///
     /// 根据算法 3.1：
     /// - `test_progress_num` 初始化为 0（循环开头 +1 后首次步进为 2^(exp+1-1) = 2^exp 倍）
-    /// - `f_current = f_initial - f_elastic`
+    /// - `f_current = f_initial`
     /// - 如果 `f_current + f_min_step * 2^(exp+1 - progress) >= f_max`，则递增 progress
-    pub fn new(
-        f_initial: i32,
-        f_max: i32,
-        f_elastic: i32,
-        f_min_step: i32,
-        step_exp: usize,
-    ) -> Self {
-        let f_current = f_initial - f_elastic;
+    pub fn new(f_initial: i32, f_max: i32, f_min_step: i32, step_exp: usize) -> Self {
+        let f_current = f_initial;
         let mut progress = 0;
 
         // 算法 3.1 初始化循环：当初始频率已接近上限时，增加 progress 以减小步进
@@ -312,7 +306,7 @@ impl StepController {
         }
 
         self.f_max = self.f_current;
-        let decrease = f_min_step * pow(2, self.current_step_exp + 1 - self.test_progress_num);
+        let decrease = f_min_step * pow(2, self.current_step_exp - self.test_progress_num + 1);
         self.f_current -= decrease;
         decrease
     }
@@ -650,7 +644,7 @@ pub fn run_long_phase(
     let mut test_code: usize = 0;
 
     if params.debug_skip_long_phase {
-        println!("[DEBUG] Skipping long phase (debug_skip_long_phase).");
+        eprintln!("[DEBUG] Skipping long phase (debug_skip_long_phase).");
         return Ok(LongPhaseResult {
             test_count: 0,
             skipped: true,
@@ -699,12 +693,11 @@ mod tests {
         let ctrl = StepController::new(
             195_000, // f_initial
             600_000, // f_max
-            60_000,  // f_elastic
             7_500,   // f_min_step
             3,       // step_exp
         );
-        // f_current = 195000 - 60000 = 135000
-        assert_eq!(ctrl.f_current, 135_000);
+        // f_current = 195000
+        assert_eq!(ctrl.f_current, 195_000);
         assert_eq!(ctrl.f_max, 600_000);
         assert_eq!(ctrl.current_step_exp, 3);
         // progress 初始为 0（循环开头 +1 后首次步进为 2^(3+1-1) = 8×）
@@ -713,13 +706,13 @@ mod tests {
 
     #[test]
     fn test_step_controller_on_failure_then_success() {
-        let mut ctrl = StepController::new(195_000, 600_000, 60_000, 7_500, 3);
+        let mut ctrl = StepController::new(195_000, 600_000, 7_500, 3);
 
         // 模拟一次失败
         let decrease = ctrl.on_test_failed(7_500);
         assert!(decrease > 0);
         // f_max 应该被锁定到失败前的 f_current
-        let old_f_current_before = 135_000;
+        let old_f_current_before = 195_000;
         assert_eq!(ctrl.f_max, old_f_current_before);
 
         // 模拟一次成功
@@ -730,7 +723,7 @@ mod tests {
 
     #[test]
     fn test_step_controller_convergence() {
-        let mut ctrl = StepController::new(195_000, 600_000, 60_000, 7_500, 3);
+        let mut ctrl = StepController::new(195_000, 600_000, 7_500, 3);
         // Force progress to convergence threshold
         ctrl.test_progress_num = 3;
         assert!(ctrl.is_converged());

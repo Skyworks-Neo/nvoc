@@ -216,6 +216,17 @@ fn gpu_type_params() {
     assert!(unknown.is_legacy_voltage());
     assert_eq!(unknown.minimum_freq_step_khz(), 15000);
     assert_eq!(unknown.vfp_point_range(), 126);
+
+    // MinLoadPulse 唤醒仅在 30/50 系笔记本端默认开启
+    assert!(GpuType::Mobile50Series.oc_params().wakeup_load_needed);
+    assert!(GpuType::Mobile30Series.oc_params().wakeup_load_needed);
+    // 其余世代（含同代桌面、其他笔记本世代、服务器/工作站）一律关闭
+    assert!(!GpuType::Desktop50Series.oc_params().wakeup_load_needed);
+    assert!(!GpuType::Desktop30Series.oc_params().wakeup_load_needed);
+    assert!(!GpuType::Mobile40Series.oc_params().wakeup_load_needed);
+    assert!(!GpuType::Mobile20Series.oc_params().wakeup_load_needed);
+    assert!(!GpuType::Unknown.oc_params().wakeup_load_needed);
+    assert!(!GpuType::ServerBlackwell.oc_params().wakeup_load_needed);
 }
 
 #[test]

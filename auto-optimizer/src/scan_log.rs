@@ -2,8 +2,9 @@ use crate::scan_support::local_time_hms;
 use nvoc_core::{KilohertzDelta, Microvolts};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
-use std::io::{self, BufRead, BufReader, BufWriter, IsTerminal, Write};
+use std::io::{self, BufRead, BufReader, IsTerminal, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 
@@ -21,7 +22,7 @@ pub type BreakPointResume = (Option<f64>, Option<f64>, Option<usize>, Option<boo
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ScanArea {
+pub enum ScanDomain {
     Core,
     Memory,
     Legacy,
@@ -73,16 +74,17 @@ pub enum ScanLogEvent {
         points: [usize; 4],
     },
     TestResult {
-        area: ScanArea,
+        domain: ScanDomain,
         phase: TestPhase,
         test_code: usize,
         point: usize,
         voltage_uv: Option<u32>,
         delta_khz: i32,
-        result_code: i32,
+        finished_at: Option<String>,
+        result_code: Option<i32>,
     },
     PointFinished {
-        area: ScanArea,
+        domain: ScanDomain,
         point: usize,
     },
     ScanCompleted {
@@ -100,9 +102,13 @@ pub struct ScanLogEntry {
 
 impl ScanLogEntry {
     fn new(event: ScanLogEvent) -> Self {
+        Self::new_with_time(event, local_time_hms())
+    }
+
+    fn new_with_time(event: ScanLogEvent, time: String) -> Self {
         ScanLogEntry {
             schema_version: SCHEMA_VERSION,
-            time: local_time_hms(),
+            time,
             event,
         }
     }
@@ -115,7 +121,8 @@ pub struct ScanLogLoad {
 }
 
 pub struct ScanLogWriter {
-    writer: BufWriter<File>,
+    file: File,
+    pending_test_result_offset: Option<u64>,
 }
 
 impl ScanLogWriter {
@@ -123,17 +130,106 @@ impl ScanLogWriter {
         if let Some(parent) = Path::new(path).parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let file = OpenOptions::new().append(true).create(true).open(path)?;
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(path)?;
+        file.seek(SeekFrom::End(0))?;
         Ok(ScanLogWriter {
-            writer: BufWriter::new(file),
+            file,
+            pending_test_result_offset: None,
         })
     }
 
     pub fn write_event(&mut self, event: ScanLogEvent) -> io::Result<()> {
-        serde_json::to_writer(&mut self.writer, &ScanLogEntry::new(event))
+        self.write_entry(&ScanLogEntry::new(event))
+    }
+
+    fn write_entry(&mut self, entry: &ScanLogEntry) -> io::Result<()> {
+        self.file.seek(SeekFrom::End(0))?;
+        serde_json::to_writer(&mut self.file, entry)
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
-        self.writer.write_all(b"\n")?;
-        self.writer.flush()
+        self.file.write_all(b"\n")?;
+        self.file.flush()
+    }
+
+    fn overwrite_entry(&mut self, entry: &ScanLogEntry) -> io::Result<()> {
+        let start = self
+            .pending_test_result_offset
+            .ok_or_else(|| io::Error::other("missing pending test result offset"))?;
+        self.file.seek(SeekFrom::Start(start))?;
+        serde_json::to_writer(&mut self.file, entry)
+            .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+        self.file.write_all(b"\n")?;
+        let end = self.file.stream_position()?;
+        self.file.set_len(end)?;
+        self.file.flush()?;
+        self.pending_test_result_offset = None;
+        Ok(())
+    }
+
+    pub fn write_pending_test_result(
+        &mut self,
+        domain: ScanDomain,
+        phase: TestPhase,
+        test_code: usize,
+        point: usize,
+        voltage: Option<Microvolts>,
+        delta: KilohertzDelta,
+    ) -> io::Result<String> {
+        let started_at = local_time_hms();
+        let entry = ScanLogEntry::new_with_time(
+            ScanLogEvent::TestResult {
+                domain,
+                phase,
+                test_code,
+                point,
+                voltage_uv: voltage.map(|v| v.0),
+                delta_khz: delta.0,
+                finished_at: None,
+                result_code: None,
+            },
+            started_at.clone(),
+        );
+        let start = self.file.seek(SeekFrom::End(0))?;
+        serde_json::to_writer(&mut self.file, &entry)
+            .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+        self.file.write_all(b"\n")?;
+        self.file.flush()?;
+        self.pending_test_result_offset = Some(start);
+        Ok(started_at)
+    }
+
+    pub fn write_completed_test_result(
+        &mut self,
+        started_at: String,
+        domain: ScanDomain,
+        phase: TestPhase,
+        test_code: usize,
+        point: usize,
+        voltage: Option<Microvolts>,
+        delta: KilohertzDelta,
+        result_code: i32,
+    ) -> io::Result<()> {
+        let entry = ScanLogEntry::new_with_time(
+            ScanLogEvent::TestResult {
+                domain,
+                phase,
+                test_code,
+                point,
+                voltage_uv: voltage.map(|v| v.0),
+                delta_khz: delta.0,
+                finished_at: Some(local_time_hms()),
+                result_code: Some(result_code),
+            },
+            started_at,
+        );
+        if self.pending_test_result_offset.is_some() {
+            self.overwrite_entry(&entry)
+        } else {
+            self.write_entry(&entry)
+        }
     }
 
     pub fn write_voltage_range(
@@ -157,9 +253,10 @@ impl ScanLogWriter {
         self.write_event(ScanLogEvent::KeyPoints { points })
     }
 
+    #[allow(dead_code)]
     pub fn write_test_result(
         &mut self,
-        area: ScanArea,
+        domain: ScanDomain,
         phase: TestPhase,
         test_code: usize,
         point: usize,
@@ -167,19 +264,20 @@ impl ScanLogWriter {
         delta: KilohertzDelta,
         result_code: i32,
     ) -> io::Result<()> {
-        self.write_event(ScanLogEvent::TestResult {
-            area,
+        self.write_completed_test_result(
+            local_time_hms(),
+            domain,
             phase,
             test_code,
             point,
-            voltage_uv: voltage.map(|v| v.0),
-            delta_khz: delta.0,
+            voltage,
+            delta,
             result_code,
-        })
+        )
     }
 
-    pub fn write_point_finished(&mut self, area: ScanArea, point: usize) -> io::Result<()> {
-        self.write_event(ScanLogEvent::PointFinished { area, point })
+    pub fn write_point_finished(&mut self, domain: ScanDomain, point: usize) -> io::Result<()> {
+        self.write_event(ScanLogEvent::PointFinished { domain, point })
     }
 
     pub fn write_scan_completed(&mut self, scan: ScanKind) -> io::Result<()> {
@@ -281,9 +379,14 @@ pub fn voltage_points_from_file(path: &str) -> io::Result<Option<VoltagePointRes
     Ok(resume)
 }
 
-pub fn breakpoint_from_file(path: &str, testing_step: usize) -> io::Result<BreakPointResume> {
+pub fn breakpoint_from_file(
+    path: &str,
+    testing_step: usize,
+    safe_elastic_khz: i32,
+    min_step_khz: i32,
+) -> io::Result<BreakPointResume> {
     let load = read_scan_log(path)?;
-    let resume = breakpoint_from_entries(&load.entries, testing_step);
+    let resume = breakpoint_from_entries(&load.entries, testing_step, safe_elastic_khz, min_step_khz);
     if resume_has_data(&resume) && !allow_corrupt_resume(path, load.had_errors) {
         return Ok((None, None, None, None));
     }
@@ -328,14 +431,24 @@ pub fn voltage_points_from_entries(entries: &[ScanLogEntry]) -> Option<VoltagePo
     }
 }
 
-pub fn breakpoint_from_entries(entries: &[ScanLogEntry], testing_step: usize) -> BreakPointResume {
+pub fn breakpoint_from_entries(
+    entries: &[ScanLogEntry],
+    testing_step: usize,
+    safe_elastic_khz: i32,
+    min_step_khz: i32,
+) -> BreakPointResume {
     let mut last_succeeded_freq = None;
     let mut last_failed_freq = None;
     let mut last_voltage_point = None;
     let mut ultrafast_flag = None;
+    let finished_last_point = matches!(
+        entries.last().map(|entry| &entry.event),
+        Some(ScanLogEvent::PointFinished { .. })
+    );
+    let mut completed_test_codes = HashSet::new();
 
     for entry in entries.iter().rev() {
-        match entry.event {
+        match &entry.event {
             ScanLogEvent::ScanCompleted { .. }
                 if !resume_has_data(&(
                     last_succeeded_freq,
@@ -348,18 +461,18 @@ pub fn breakpoint_from_entries(entries: &[ScanLogEntry], testing_step: usize) ->
             }
             ScanLogEvent::ScanMode { mode } => {
                 if ultrafast_flag.is_none() {
-                    ultrafast_flag = match mode {
+                    ultrafast_flag = match *mode {
                         ScanMode::Ultrafast => Some(true),
                         ScanMode::Normal | ScanMode::Legacy => Some(false),
                     };
                 }
                 break;
             }
-            ScanLogEvent::PointFinished { area, point }
+            ScanLogEvent::PointFinished { domain, point }
                 if last_voltage_point.is_none()
-                    && matches!(area, ScanArea::Core | ScanArea::Legacy) =>
+                    && matches!(*domain, ScanDomain::Core | ScanDomain::Legacy) =>
             {
-                last_voltage_point = point
+                last_voltage_point = (*point)
                     .checked_add(testing_step)
                     .filter(|point| is_plausible_voltage_point(*point));
                 if last_voltage_point.is_none() {
@@ -369,22 +482,30 @@ pub fn breakpoint_from_entries(entries: &[ScanLogEntry], testing_step: usize) ->
                 }
             }
             ScanLogEvent::TestResult {
-                area: ScanArea::Core | ScanArea::Legacy,
+                domain: ScanDomain::Core | ScanDomain::Legacy,
                 point,
                 delta_khz,
+                finished_at: _finished_at,
                 result_code,
+                test_code,
                 ..
             } => {
+                if result_code.is_some() {
+                    completed_test_codes.insert(*test_code);
+                } else if completed_test_codes.contains(test_code) {
+                    continue;
+                }
+
                 if last_voltage_point.is_none() {
-                    if is_plausible_voltage_point(point) {
-                        last_voltage_point = Some(point);
+                    if is_plausible_voltage_point(*point) {
+                        last_voltage_point = Some(*point);
                     } else {
                         eprintln!("Warning: ignoring suspicious resume point {point} from JSONL.");
                     }
                 }
 
-                let delta_mhz = delta_khz as f64 / 1000.0;
-                if result_code == 0 {
+                let delta_mhz = *delta_khz as f64 / 1000.0;
+                if result_code.as_ref().copied().unwrap_or(1) == 0 {
                     last_succeeded_freq.get_or_insert(delta_mhz);
                 } else {
                     last_failed_freq.get_or_insert(delta_mhz);
@@ -397,6 +518,21 @@ pub fn breakpoint_from_entries(entries: &[ScanLogEntry], testing_step: usize) ->
         // inherit normal vs ultrafast mode even after enough test data is found.
     }
 
+    if finished_last_point {
+        let shift_mhz = safe_elastic_khz as f64 / 1000.0;
+        if let Some(freq) = last_succeeded_freq.as_mut() {
+            *freq -= shift_mhz;
+        }
+        if let Some(freq) = last_failed_freq.as_mut() {
+            *freq += shift_mhz;
+        }
+    }
+
+    if let (Some(s), Some(f)) = (last_succeeded_freq, last_failed_freq) {
+        if s >= f {
+            last_succeeded_freq = Some(f - min_step_khz as f64 / 1000.0);
+        }
+    }
     (
         last_succeeded_freq,
         last_failed_freq,
@@ -498,27 +634,29 @@ mod tests {
                 mode: ScanMode::Normal,
             }),
             entry(ScanLogEvent::TestResult {
-                area: ScanArea::Core,
+                domain: ScanDomain::Core,
                 phase: TestPhase::Short,
                 test_code: 1,
                 point: 42,
                 voltage_uv: Some(875000),
                 delta_khz: 125000,
-                result_code: 0,
+                finished_at: Some("12:34:57".to_string()),
+                result_code: Some(0),
             }),
             entry(ScanLogEvent::TestResult {
-                area: ScanArea::Core,
+                domain: ScanDomain::Core,
                 phase: TestPhase::Short,
                 test_code: 2,
                 point: 42,
                 voltage_uv: Some(875000),
                 delta_khz: 150000,
-                result_code: 100,
+                finished_at: Some("12:34:58".to_string()),
+                result_code: Some(100),
             }),
         ];
 
         assert_eq!(
-            breakpoint_from_entries(&entries, 3),
+            breakpoint_from_entries(&entries, 3, 60_000, 15_000),
             (Some(125.0), Some(150.0), Some(42), Some(false))
         );
     }
@@ -530,13 +668,13 @@ mod tests {
                 mode: ScanMode::Ultrafast,
             }),
             entry(ScanLogEvent::PointFinished {
-                area: ScanArea::Core,
+                domain: ScanDomain::Core,
                 point: 42,
             }),
         ];
 
         assert_eq!(
-            breakpoint_from_entries(&entries, 3),
+            breakpoint_from_entries(&entries, 3, 15_000, 15_000),
             (None, None, Some(45), Some(true))
         );
     }
@@ -548,7 +686,7 @@ mod tests {
         })];
 
         assert_eq!(
-            breakpoint_from_entries(&entries, 3),
+            breakpoint_from_entries(&entries, 3, 60_000, 15_000),
             (None, None, None, None)
         );
     }
@@ -557,13 +695,14 @@ mod tests {
     fn memory_events_do_not_drive_core_resume() {
         let entries = vec![
             entry(ScanLogEvent::TestResult {
-                area: ScanArea::Memory,
+                domain: ScanDomain::Memory,
                 phase: TestPhase::Long,
                 test_code: 1,
                 point: 90,
                 voltage_uv: Some(950000),
                 delta_khz: 800000,
-                result_code: 0,
+                finished_at: Some("12:34:57".to_string()),
+                result_code: Some(0),
             }),
             entry(ScanLogEvent::ScanMode {
                 mode: ScanMode::Normal,
@@ -571,8 +710,142 @@ mod tests {
         ];
 
         assert_eq!(
-            breakpoint_from_entries(&entries, 3),
+            breakpoint_from_entries(&entries, 3, 60_000, 15_000),
             (None, None, None, Some(false))
+        );
+    }
+
+    #[test]
+    fn breakpoint_counts_pending_result_as_failure() {
+        let entries = vec![
+            entry(ScanLogEvent::ScanMode {
+                mode: ScanMode::Normal,
+            }),
+            entry(ScanLogEvent::TestResult {
+                domain: ScanDomain::Core,
+                phase: TestPhase::Short,
+                test_code: 7,
+                point: 42,
+                voltage_uv: Some(875000),
+                delta_khz: 150000,
+                finished_at: None,
+                result_code: None,
+            }),
+        ];
+
+        assert_eq!(
+            breakpoint_from_entries(&entries, 3, 60_000, 15_000),
+            (None, Some(150.0), Some(42), Some(false))
+        );
+    }
+
+    #[test]
+    fn breakpoint_ignores_pending_when_completed_exists() {
+        let entries = vec![
+            entry(ScanLogEvent::ScanMode {
+                mode: ScanMode::Normal,
+            }),
+            entry(ScanLogEvent::TestResult {
+                domain: ScanDomain::Core,
+                phase: TestPhase::Short,
+                test_code: 7,
+                point: 42,
+                voltage_uv: Some(875000),
+                delta_khz: 150000,
+                finished_at: None,
+                result_code: None,
+            }),
+            entry(ScanLogEvent::TestResult {
+                domain: ScanDomain::Core,
+                phase: TestPhase::Short,
+                test_code: 7,
+                point: 42,
+                voltage_uv: Some(875000),
+                delta_khz: 150000,
+                finished_at: Some("12:34:57".to_string()),
+                result_code: Some(0),
+            }),
+        ];
+
+        assert_eq!(
+            breakpoint_from_entries(&entries, 3, 60_000, 15_000),
+            (Some(150.0), None, Some(42), Some(false))
+        );
+    }
+
+    #[test]
+    fn point_finished_at_log_end_applies_resume_shift() {
+        let entries = vec![
+            entry(ScanLogEvent::ScanMode {
+                mode: ScanMode::Normal,
+            }),
+            entry(ScanLogEvent::TestResult {
+                domain: ScanDomain::Core,
+                phase: TestPhase::Short,
+                test_code: 1,
+                point: 42,
+                voltage_uv: Some(875000),
+                delta_khz: 125000,
+                finished_at: Some("12:34:57".to_string()),
+                result_code: Some(0),
+            }),
+            entry(ScanLogEvent::TestResult {
+                domain: ScanDomain::Core,
+                phase: TestPhase::Short,
+                test_code: 2,
+                point: 42,
+                voltage_uv: Some(875000),
+                delta_khz: 150000,
+                finished_at: Some("12:34:58".to_string()),
+                result_code: Some(100),
+            }),
+            entry(ScanLogEvent::PointFinished {
+                domain: ScanDomain::Core,
+                point: 42,
+            }),
+        ];
+
+        assert_eq!(
+            breakpoint_from_entries(&entries, 3, 15_000, 15_000),
+            (Some(110.0), Some(165.0), Some(45), Some(false))
+        );
+    }
+
+    #[test]
+    fn equal_succeeded_and_failed_deltas_back_off_succeeded() {
+        // Both the last succeeded and last failed deltas collapsed to 247.5 MHz
+        // (delta_khz 247500). The succeeded side is backed off by one minimal
+        // step (7.5 MHz for a 7500 kHz step) so the resumed StepController can
+        // make progress instead of initializing already-converged.
+        let entries = vec![
+            entry(ScanLogEvent::ScanMode {
+                mode: ScanMode::Normal,
+            }),
+            entry(ScanLogEvent::TestResult {
+                domain: ScanDomain::Core,
+                phase: TestPhase::Short,
+                test_code: 1,
+                point: 42,
+                voltage_uv: Some(875000),
+                delta_khz: 247500,
+                finished_at: Some("12:34:57".to_string()),
+                result_code: Some(0),
+            }),
+            entry(ScanLogEvent::TestResult {
+                domain: ScanDomain::Core,
+                phase: TestPhase::Short,
+                test_code: 2,
+                point: 42,
+                voltage_uv: Some(875000),
+                delta_khz: 247500,
+                finished_at: Some("12:34:58".to_string()),
+                result_code: Some(100),
+            }),
+        ];
+
+        assert_eq!(
+            breakpoint_from_entries(&entries, 3, 60_000, 7500),
+            (Some(240.0), Some(247.5), Some(42), Some(false))
         );
     }
 
@@ -596,5 +869,55 @@ mod tests {
 
         assert!(loaded.had_errors);
         assert_eq!(loaded.entries.len(), 1);
+    }
+
+    #[test]
+    fn completed_test_result_overwrites_pending_line() {
+        let path = std::env::temp_dir().join(format!(
+            "nvoc-vfp-jsonl-overwrite-{}.jsonl",
+            std::process::id()
+        ));
+
+        {
+            let mut writer = ScanLogWriter::open_append(path.to_str().unwrap()).unwrap();
+            let started_at = writer
+                .write_pending_test_result(
+                    ScanDomain::Core,
+                    TestPhase::Short,
+                    1,
+                    85,
+                    Some(nvoc_core::Microvolts(981_250)),
+                    KilohertzDelta(60_000),
+                )
+                .unwrap();
+            writer
+                .write_completed_test_result(
+                    started_at,
+                    ScanDomain::Core,
+                    TestPhase::Short,
+                    1,
+                    85,
+                    Some(nvoc_core::Microvolts(981_250)),
+                    KilohertzDelta(60_000),
+                    0,
+                )
+                .unwrap();
+        }
+
+        let loaded = read_scan_log(path.to_str().unwrap()).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(loaded.entries.len(), 1);
+        match &loaded.entries[0].event {
+            ScanLogEvent::TestResult {
+                finished_at,
+                result_code,
+                ..
+            } => {
+                assert!(finished_at.as_deref().is_some_and(|s| !s.is_empty()));
+                assert_eq!(result_code, &Some(0));
+            }
+            other => panic!("unexpected event: {:?}", other),
+        }
     }
 }
