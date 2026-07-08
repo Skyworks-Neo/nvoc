@@ -262,26 +262,25 @@ impl StepController {
     pub fn on_test_passed(&mut self, f_min_step: i32) -> Option<i32> {
         // 算法 3.1: if f_current + f_min_step == f_max → break
         if self.f_current + f_min_step >= self.f_max {
-            return None;
+            return None;  // 收敛，跳转长测
         }
 
-        let increase = if self.f_current
-            + f_min_step * pow(2, self.current_step_exp + 1 - self.test_progress_num)
-            >= self.f_max
-        {
-            // 较大步进会超过上限，改用较小步进
-            let mut smaller = f_min_step * pow(2, self.current_step_exp - self.test_progress_num);
-            if self.f_current + smaller == self.f_max {
+        let normal_step = f_min_step * pow(2, self.current_step_exp + 1 - self.test_progress_num);
+        let exceeds_fmaxsafe = self.f_current + normal_step >= self.f_max;
+
+        let increase = if exceeds_fmaxsafe {
+            let mut half_normal_step = f_min_step * pow(2, self.current_step_exp - self.test_progress_num);
+            if self.f_current + half_normal_step == self.f_max {
+                half_normal_step /= 2;
                 self.test_progress_num += 1;
-                smaller /= 2;
             }
-            smaller
+            half_normal_step
         } else {
-            f_min_step * pow(2, self.current_step_exp + 1 - self.test_progress_num)
+            self.test_progress_num = self.test_progress_num.saturating_sub(1);
+            normal_step
         };
 
         self.f_current += increase;
-        self.test_progress_num = self.test_progress_num.saturating_sub(1);
 
         if self.test_progress_num >= self.current_step_exp {
             None // 收敛，跳转长测
