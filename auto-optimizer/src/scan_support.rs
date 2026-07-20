@@ -6,10 +6,10 @@ use nvoc_core::{
     SetVfpVoltageLock, TdpTempLimits, VfpLockRequest, run,
 };
 use std::str::FromStr;
-use time::{OffsetDateTime, format_description::parse};
+use time::{OffsetDateTime, format_description::parse_borrowed};
 
 pub fn local_time_hms() -> String {
-    let format = match parse("[hour]:[minute]:[second]") {
+    let format = match parse_borrowed::<3>("[hour]:[minute]:[second]") {
         Ok(format) => format,
         Err(_) => return String::from("??:??:??"),
     };
