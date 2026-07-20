@@ -46,7 +46,7 @@ jobs:
             target_ref="${REF_NAME}"
           fi
 
-          if [[ ! "${tag_name}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+          if [[ ! "${tag_name}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[[:alnum:]_]+(\.[[:alnum:]_]+)*)?$ ]]; then
             echo "Release/tag name must be SemVer-like and start with v: ${tag_name}" >&2
             exit 1
           fi
