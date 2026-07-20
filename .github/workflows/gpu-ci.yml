@@ -69,7 +69,7 @@ jobs:
             echo "stressor_cuda_rs=true"
             echo "stressor_opencl=true"
           } >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         if: github.event_name != 'workflow_dispatch'
         with:
           fetch-depth: 0
@@ -116,7 +116,7 @@ jobs:
       run:
         working-directory: auto-optimizer
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref || github.ref }}
           submodules: true
@@ -141,7 +141,7 @@ jobs:
     runs-on: [self-hosted, windows, gpu-nvidia]
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref || github.ref }}
           submodules: true
@@ -163,7 +163,7 @@ jobs:
     runs-on: [self-hosted, windows, gpu-nvidia, cuda]
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref || github.ref }}
           submodules: true
@@ -188,7 +188,7 @@ jobs:
       run:
         working-directory: cli-stressor-opencl
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref || github.ref }}
       - name: set uv cache dirs
@@ -219,7 +219,7 @@ jobs:
   #     run:
   #       working-directory: cli-stressor-opencl
   #   steps:
-  #     - uses: actions/checkout@v6
+  #     - uses: actions/checkout@v7
   #       with:
   #         ref: ${{ inputs.ref || github.ref }}
   #     - uses: astral-sh/setup-uv@v8.2.0

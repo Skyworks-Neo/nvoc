@@ -20,7 +20,7 @@ jobs:
     name: "ruff format . --check"
     runs-on: ubuntu-slim
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Install Python
         uses: actions/setup-python@v6
         with:
@@ -34,7 +34,7 @@ jobs:
     name: "ruff check . "
     runs-on: ubuntu-slim
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Install Python
         uses: actions/setup-python@v6
         with:
@@ -48,7 +48,7 @@ jobs:
     name: Rustfmt
     runs-on: ubuntu-slim
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           submodules: true
       - uses: ./.github/actions/setup-rust
@@ -58,7 +58,7 @@ jobs:
     name: Clippy
     runs-on: ubuntu-slim
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           submodules: true
       - uses: ./.github/actions/setup-rust
@@ -88,7 +88,7 @@ jobs:
       stressor_cuda_rs: ${{ steps.filter.outputs.stressor_cuda_rs }}
       stressor_opencl: ${{ steps.filter.outputs.stressor_opencl }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: dorny/paths-filter@v4
@@ -140,7 +140,7 @@ jobs:
       needs.changes.outputs.nvoc_core == 'true'
     runs-on: ubuntu-slim
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           submodules: true
       - uses: ./.github/actions/setup-rust
@@ -158,7 +158,7 @@ jobs:
       needs.changes.outputs.nvoc_cli == 'true'
     runs-on: ubuntu-slim
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           submodules: true
       - uses: ./.github/actions/setup-rust
@@ -176,7 +176,7 @@ jobs:
       needs.changes.outputs.nvoc_python == 'true'
     runs-on: ubuntu-slim
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           submodules: true
       - uses: ./.github/actions/setup-rust
@@ -212,7 +212,7 @@ jobs:
       needs.changes.outputs.auto_optimizer == 'true'
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           submodules: true
       - uses: ./.github/actions/setup-rust
@@ -237,7 +237,7 @@ jobs:
       needs.changes.outputs.srv == 'true'
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           submodules: true
       - uses: ./.github/actions/setup-rust
@@ -257,7 +257,7 @@ jobs:
       needs.changes.outputs.stressor_cuda_rs == 'true'
     runs-on: ubuntu-slim
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           submodules: true
       - uses: ./.github/actions/setup-rust
@@ -285,7 +285,7 @@ jobs:
         python-version: ['3.11', '3.12']
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           submodules: true
       - uses: actions/setup-python@v6
@@ -323,7 +323,7 @@ jobs:
       needs.changes.outputs.gui == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           submodules: true
       - uses: actions/setup-python@v6
@@ -360,7 +360,7 @@ jobs:
       needs.changes.outputs.stressor_opencl == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
@@ -382,7 +382,7 @@ jobs:
     name: workspace/package version consistency
     runs-on: ubuntu-slim
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
@@ -396,7 +396,7 @@ jobs:
     # covers expected semver-breaking transitive duplicates; any crate not on
     # the list that appears at multiple versions will fail this job.
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: '3.11'

@@ -31,7 +31,7 @@ jobs:
     name: cargo audit (RustSec advisories)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Cache cargo-audit binary
         id: cache-cargo-audit
         uses: actions/cache@v4
@@ -49,7 +49,7 @@ jobs:
     name: pip-audit (Python advisories)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -67,7 +67,7 @@ jobs:
     name: actionlint (workflow lint)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       # Uses the repo's existing .github/actionlint.yaml config (self-hosted
       # runner labels), which previously was not enforced by any job.
       - name: Run actionlint
