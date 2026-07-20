@@ -1,58 +1,99 @@
-# Release procedure
+# Release process
 
-Scope: repo-wide releases — one `vX.Y.Z[-pre.N]` tag builds and ships every
-component. The pipeline is `release.yml` (from #224: a linux/windows ×
-amd64/arm64 matrix — build → smoke → checksums → provenance → **draft**
-release); publishing is always a human action.
+NVOC uses one version and one `vX.Y.Z[-pre.N]` tag for the entire repository.
+Publishing remains a deliberate maintainer action: automation creates a draft,
+but never publishes it.
 
 ## Version contract
 
-- Single source of truth: `[workspace.package].version` in the root
-  `Cargo.toml`. All crates inherit it (`version.workspace = true`).
-- Python packages (`gui`, `tui`, `nvoc-python`, `cli-stressor-opencl`) carry
-  the PEP 440 form (`0.2.0-alpha.1` → `0.2.0a1`).
-- `.github/scripts/check-versions.py` enforces this in CI on every PR, and
-  additionally that `tag == v<workspace version>` in the tag guard and the
-  release workflow.
+- `[workspace.package].version` in the root `Cargo.toml` is the source of
+  truth. Every Rust crate inherits it with `version.workspace = true`.
+- `gui`, `tui`, `nvoc-python`, and `cli-stressor-opencl` use the equivalent
+  PEP 440 version (`X.Y.Z-alpha.N` becomes `X.Y.ZaN`).
+- `.github/scripts/check-versions.py` checks the Rust and Python versions in
+  CI. For a release, it also requires the tag to equal `v<workspace version>`.
 
-## One-time repository setup (admin)
+## Repository release controls
 
-1. Tag ruleset per [`RELEASE_GUARD.md`](./RELEASE_GUARD.md): protect `v*`
-   tags, require the `Require release targets from main` check.
-2. `release` environment (Settings → Environments): add required reviewers.
-   The draft-release job waits for this approval.
-3. Keep release builds on **GitHub-hosted runners only**. Never add the
-   self-hosted GPU runners to `release.yml` — test machines must not be able
-   to produce release artifacts.
+- The active `v*` tag ruleset requires the `Require release targets from main`
+  check and blocks tag updates. See [`RELEASE_GUARD.md`](./RELEASE_GUARD.md).
+- The tag guard verifies the tag format, confirms that its commit is reachable
+  from `origin/main`, and checks that the tag matches the workspace version.
+  The release workflow repeats these checks before building.
+- Release builds use GitHub-hosted runners only. Do not give self-hosted GPU
+  runners authority to produce release artifacts.
+- Only the final draft-creation job receives `contents: write`; it must first
+  pass the required-reviewer gate on the `release` environment.
+
+## Release workflow
+
+`.github/workflows/release.yml` provides two entry points:
+
+- A manual `workflow_dispatch` builds and validates Linux and Windows artifacts
+  for amd64 and arm64. It is always a dry run; even when pointed at a tag, it
+  cannot create attestations or a release.
+- A pushed release tag runs the same matrix, creates build-provenance
+  attestations, waits for approval through the `release` environment, and
+  creates a draft GitHub release. Publishing the draft remains manual.
+
+The matrix produces:
+
+| Deliverable | Linux amd64 | Linux arm64 | Windows amd64 | Windows arm64 |
+|---|---:|---:|---:|---:|
+| `nvoc-cli`, `nvoc-tui`, `nvoc-gui` | Yes | Yes | Yes | Yes |
+| OpenCL stressor | Yes | Yes | Yes | No |
+| Tools bundle: auto-optimizer and CUDA/Vulkan stressor | Yes | Yes | Yes | Yes |
+| NVOC-SRV binaries inside the tools bundle | No | No | Yes | Yes |
+
+Each matrix cell validates executable architecture, runs CLI smoke tests, and
+emits a manifest plus per-cell checksums. Linux amd64 CLI artifacts are also
+tested in Debian 12 and Ubuntu 22.04 containers. Tag builds attest the matrix
+artifacts, then the publish job creates an aggregate `SHA256SUMS` file and a
+draft GitHub release.
 
 ## Cutting a release
 
-1. **Bump**: edit the workspace version in the root `Cargo.toml`, mirror the
-   PEP 440 form in the four `pyproject.toml` files, refresh lockfiles
-   (`cargo update --workspace && uv lock`), and move `CHANGELOG.md`
-   `Unreleased` items under the new version heading. Open a PR; the
-   `version-consistency` CI job must pass.
-2. **Dry run** (recommended for pipeline changes): run the *Release build*
-   workflow via `workflow_dispatch` on the merged commit. This builds and
-   smoke-tests everything but creates no release.
-3. **Tag** the merge commit on `main`:
-   `git tag vX.Y.Z[-pre.N] <sha> && git push origin --tags`.
-   The tag guard verifies SemVer shape, main-reachability, and version match.
-4. **Review the draft**: the workflow uploads per-cell artifacts (CLI/TUI/GUI
-   single binaries, OpenCL stressor, `nvoc-tools` bundle with auto-optimizer,
-   CUDA stressor and, on Windows, the srv service binaries) plus `SHA256SUMS`,
-   and creates a draft release. Check the notes against `CHANGELOG.md`,
-   spot-verify a checksum, and verify provenance:
-   `gh attestation verify <file> --repo Skyworks-Neo/nvoc`.
-5. **Publish** the draft. Pre-releases (`-alpha.N` / `-beta.N` / `-rc.N`)
-   must be marked "pre-release" on the release page.
+1. Update `[workspace.package].version` in the root `Cargo.toml`, mirror its
+   PEP 440 form in the four Python `pyproject.toml` files, refresh `Cargo.lock`
+   and `uv.lock`, and move the relevant `CHANGELOG.md` entries from
+   `Unreleased` to the new version heading.
+2. Run `python3 .github/scripts/check-versions.py`, open a PR, and merge only
+   after the `version-consistency` and other required CI checks pass.
+3. From the merged commit on `main`, run the **Release** workflow manually.
+   Confirm all four matrix jobs pass and inspect the retained workflow
+   artifacts. A dry run does not attest or create a GitHub release.
+4. Create a signed tag on that exact `main` commit and push only that tag:
 
-## Known limitations (revisit deliberately)
+   ```bash
+   git tag -s vX.Y.Z[-pre.N] <commit> -m "NVOC vX.Y.Z[-pre.N]"
+   git push origin refs/tags/vX.Y.Z[-pre.N]
+   ```
 
-- No Windows Authenticode signing yet — SmartScreen warnings are expected;
-  say so in the release notes. Provenance attestations + SHA256SUMS are the
-  integrity story for now.
-- The OpenCL stressor is not shipped for windows-arm64 (pyopencl publishes
-  no win_arm64 wheel).
-- CUDA/Vulkan runtime libraries are intentionally not bundled; artifacts
-  load them from the user's system (see component READMEs).
+5. After the tag guard and release workflow pass, approve the `release`
+   environment deployment. This permits the workflow to create the draft; it
+   does not publish it.
+6. Review the draft assets and replace the generated placeholder notes with
+   the matching `CHANGELOG.md` section. Verify the aggregate checksums and at
+   least one artifact's provenance:
+
+   ```bash
+   sha256sum --check SHA256SUMS
+   gh attestation verify <artifact> --repo Skyworks-Neo/nvoc
+   ```
+
+7. Mark `-alpha.N`, `-beta.N`, and `-rc.N` versions as pre-releases, then
+   publish the draft manually.
+
+## Known limitations
+
+- Windows artifacts are not Authenticode-signed, so SmartScreen warnings are
+  expected. Checksums and GitHub build-provenance attestations provide the
+  current integrity checks.
+- The OpenCL stressor is omitted from Windows arm64 because pyopencl does not
+  provide a `win_arm64` wheel.
+- The Debian 12 / Ubuntu 22.04 container compatibility check currently covers
+  Linux amd64 only; Linux arm64 is built and checked on GitHub's arm64 Ubuntu
+  runner.
+- NVIDIA driver, CUDA, and Vulkan runtime libraries are not bundled. Release
+  artifacts load the applicable libraries from the target system; consult the
+  component README files before use.

@@ -13,7 +13,7 @@ use cudarc::nvrtc::compile_ptx;
 use half::{bf16, f16};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
-use std::ffi::CStr;
+use std::ffi::{CStr, c_char};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -1195,7 +1195,7 @@ fn query_device_info_for_index(device_index: u32) -> Result<DeviceInfo, BackendE
         }
     }
 
-    let mut name_buf = [0i8; 128];
+    let mut name_buf = [0 as c_char; 128];
     unsafe {
         cuda_sys::cuDeviceGetName(name_buf.as_mut_ptr(), name_buf.len() as i32, device);
     }
@@ -1266,7 +1266,7 @@ pub fn enumerate_cuda_devices() -> Result<Vec<CudaDeviceEnumInfo>, BackendError>
             cuda_sys::cuDeviceGet(&mut device, idx);
         }
 
-        let mut name_buf = [0i8; 128];
+        let mut name_buf = [0 as c_char; 128];
         unsafe {
             cuda_sys::cuDeviceGetName(name_buf.as_mut_ptr(), name_buf.len() as i32, device);
         }
@@ -1413,7 +1413,7 @@ fn fetch_device_uuid(device: i32) -> Result<[u8; 16], BackendError> {
 }
 
 fn fetch_device_pci_bus(device: i32) -> Result<Option<PciBusAddress>, BackendError> {
-    let mut buf = [0i8; 32];
+    let mut buf = [0 as c_char; 32];
     unsafe {
         let res = cuda_sys::cuDeviceGetPCIBusId(buf.as_mut_ptr(), buf.len() as i32, device);
         if res as u32 != 0 {
@@ -1477,7 +1477,7 @@ fn query_cuda_device_pci_bus_address(
         }
     }
 
-    let mut buf = [0i8; 32];
+    let mut buf = [0 as c_char; 32];
     unsafe {
         let res = cuda_sys::cuDeviceGetPCIBusId(buf.as_mut_ptr(), buf.len() as i32, device);
         if res as u32 != 0 {
