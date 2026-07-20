@@ -16,7 +16,7 @@ vulkan = ["ash"]
 nvoc-cli-common = { workspace = true }
 clap = { workspace = true }
 rand = "0.9"
-rand_distr = "0.5"
+rand_distr = "0.6"
 matrixmultiply = "0.3.10"
 rayon = "1.10"
 thiserror = "2.0.18"
