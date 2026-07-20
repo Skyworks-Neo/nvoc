@@ -13,6 +13,8 @@
 # limitations under the License.
 """NVOC-TUI package."""
 
+from importlib.metadata import version as package_version
+
 __all__ = ["__version__"]
 
-__version__ = "0.1.0"
+__version__ = package_version("nvoc-tui")

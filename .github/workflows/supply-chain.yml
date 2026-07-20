@@ -1,0 +1,76 @@
+name: Supply chain
+
+# Dependency-advisory and workflow-lint checks. Runs weekly (new advisories
+# appear without any commit) plus on PRs that touch lockfiles or workflows,
+# so an advisory cannot fail unrelated PRs.
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "uv.lock"
+      - "pyproject.toml"
+      - "**/pyproject.toml"
+      - ".github/workflows/**"
+      - ".github/dependabot.yml"
+      - ".github/actionlint.yaml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cargo-audit:
+    name: cargo audit (RustSec advisories)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Cache cargo-audit binary
+        id: cache-cargo-audit
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: cargo-audit-v0.21-${{ runner.os }}
+      - name: Install cargo-audit
+        if: steps.cache-cargo-audit.outputs.cache-hit != 'true'
+        run: cargo install cargo-audit --locked
+      # Checks Cargo.lock against the RustSec advisory DB (vulns, unmaintained,
+      # yanked). Does not need the nvapi-rs submodule or a full build.
+      - run: cargo audit
+
+  pip-audit:
+    name: pip-audit (Python advisories)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v8.2.0
+        with:
+          version: "0.11.19"
+      # Export the locked third-party dependency set (workspace members are
+      # local Rust-backed packages and cannot be audited from PyPI).
+      - name: Export locked requirements
+        run: uv export --frozen --no-emit-workspace --all-packages -o requirements-audit.txt
+      - name: Audit locked requirements
+        run: uvx pip-audit --strict -r requirements-audit.txt
+
+  actionlint:
+    name: actionlint (workflow lint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      # Uses the repo's existing .github/actionlint.yaml config (self-hosted
+      # runner labels), which previously was not enforced by any job.
+      - name: Run actionlint
+        run: |
+          bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7
+          ./actionlint -color

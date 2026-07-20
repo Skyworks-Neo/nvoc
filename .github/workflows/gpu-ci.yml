@@ -24,10 +24,19 @@ concurrency:
 jobs:
   guard:
     # PR runs require the `ci:gpu` label. Manual dispatch always runs.
+    #
+    # Fork PRs additionally only run at the moment the label is applied
+    # (`labeled` event): a maintainer labeling the PR is the explicit
+    # approval for that revision. Without this, labeling a fork PR once
+    # would let every later push (`synchronize`) run arbitrary code on the
+    # self-hosted GPU runners with no further review. Same-repo PRs keep
+    # auto-rerun on push.
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request' &&
-       contains(github.event.pull_request.labels.*.name, 'ci:gpu'))
+       contains(github.event.pull_request.labels.*.name, 'ci:gpu') &&
+       ((github.event.action == 'labeled' && github.event.label.name == 'ci:gpu') ||
+        github.event.pull_request.head.repo.full_name == github.repository))
     runs-on: ubuntu-latest
     steps:
       - run: echo "gpu-ci approved for ${{ github.event_name }}"
