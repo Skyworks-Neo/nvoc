@@ -40,7 +40,7 @@ clap = { version = "4.6", features = [
   "error-context",
   "derive"
 ] }
-compio = { version = "0.18.0", features = ["runtime", "time"] }
+compio = { version = "0.19.1", features = ["runtime", "time"] }
 csv = "1.4.0"
 futures-util = "0.3"
 flume = "0.12.0"
