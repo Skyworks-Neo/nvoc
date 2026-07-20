@@ -2,6 +2,14 @@ name: Release and tag guard
 
 on:
   push:
+    # The main-push trigger exists to stamp the "Require release targets from
+    # main" check onto every main commit. A tag ruleset that requires this
+    # check evaluates checks on the commit BEFORE the tag exists, so a check
+    # produced only by tag pushes can never satisfy it (tag creation would
+    # always be rejected). With this trigger, tags pointing at main commits
+    # pass the ruleset naturally; tags pointing anywhere else are rejected at
+    # creation time.
+    branches: [main]
     tags:
       - "v*"
   release:
@@ -26,11 +34,19 @@ jobs:
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
           RELEASE_TAG_NAME: ${{ github.event.release.tag_name || '' }}
           RELEASE_TARGET_COMMITISH: ${{ github.event.release.target_commitish || '' }}
         run: |
           set -euo pipefail
+
+          # Main push: the commit is on main by construction. Succeed to
+          # record the check for the tag ruleset (see the trigger comment).
+          if [[ "${EVENT_NAME}" == "push" && "${REF_TYPE}" == "branch" ]]; then
+            echo "main commit $(git rev-parse HEAD): check recorded for the v* tag ruleset"
+            exit 0
+          fi
 
           git fetch --no-tags origin main:refs/remotes/origin/main
           git fetch --tags --force origin 'refs/tags/v*:refs/tags/v*'
@@ -70,3 +86,8 @@ jobs:
             echo "Release/tag target ${target_commit} is not reachable from origin/main" >&2
             exit 1
           fi
+
+          # The tag must equal the workspace/package version at the tagged
+          # commit (single source of truth; see .github/scripts/check-versions.py).
+          git checkout --quiet "${target_commit}"
+          python3 .github/scripts/check-versions.py --tag "${tag_name}"

@@ -222,6 +222,10 @@ jobs:
         run: cargo clippy --package nvoc-auto-optimizer --all-targets --all-features -- -D warnings
       - name: Build
         run: cargo build --package nvoc-auto-optimizer --all-targets --all-features
+      # Hardware-gated tests are #[ignore]d and run separately in gpu-ci.yml;
+      # this runs the non-GPU unit tests, which previously never ran in CI.
+      - name: Test (non-GPU)
+        run: cargo test --package nvoc-auto-optimizer --all-targets --all-features
 
   rust-srv:
     name: srv (windows)
@@ -374,6 +378,16 @@ jobs:
           python -m pytest -q test_non_gpu_ci.py
         working-directory: cli-stressor-opencl
 
+  version-consistency:
+    name: workspace/package version consistency
+    runs-on: ubuntu-slim
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - run: python3 .github/scripts/check-versions.py
+
   rust-crate-versions:
     name: Rust duplicate-crate audit
     runs-on: ubuntu-latest
@@ -438,6 +452,7 @@ jobs:
       - rust-srv
       - rust-stressor-cuda-rs
       - rust-crate-versions
+      - version-consistency
       - python-tui
       - python-gui
       - python-stressor-opencl

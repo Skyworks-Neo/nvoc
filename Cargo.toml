@@ -12,6 +12,10 @@ exclude = ["nvapi-rs"]
 resolver = "3"
 
 [workspace.package]
+# Single source of truth for the repo-wide release version. Release tags are
+# v<this version>; .github/scripts/check-versions.py enforces that every
+# workspace crate and Python package stays in sync (PEP 440 form for Python).
+version = "0.2.0-alpha.1"
 edition = "2024"
 rust-version = "1.95"
 

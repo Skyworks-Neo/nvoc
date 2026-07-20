@@ -1,0 +1,41 @@
+# Dependabot version updates.
+#
+# Note: GitHub's automatic *security* updates were already active for this
+# repository (grouped "uv group" / "cargo group" PRs); this file adds regular
+# *version* updates so dependencies do not silently age between advisories.
+#
+# gui/requirements.txt and cli-stressor-opencl/requirements.txt are manual
+# mirrors of the corresponding pyproject.toml files, so the `pip` ecosystem is
+# intentionally NOT enabled — updating the mirrors independently would drift
+# them from the pyproject/uv.lock source of truth.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      cargo-minor-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: uv
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      uv-minor-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: gitsubmodule
+    directory: "/"
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 2
