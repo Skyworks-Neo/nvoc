@@ -9,7 +9,7 @@ classifiers = [
     "License :: OSI Approved :: Apache Software License",
 ]
 dependencies = [
-    "customtkinter>=5.2.2",
+    "customtkinter>=6.0.0",
     "darkdetect>=0.8.0",
     "matplotlib>=3.7.5,<3.9; python_version < '3.9'",
     "matplotlib>=3.9.4,<3.10; python_version >= '3.9' and python_version < '3.10'",
