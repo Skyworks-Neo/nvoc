@@ -59,8 +59,8 @@ jobs:
 
           if [ ! -f .github/scripts/check-versions.py ]; then
             echo "check-versions.py not present yet (lands with #225); skipping"
-          elif [ "${REF_TYPE}" = "tag" ]; then
-            python3 .github/scripts/check-versions.py --tag "${REF_NAME}"
+          elif [ -n "${version}" ]; then
+            python3 .github/scripts/check-versions.py --tag "${version}"
           else
             python3 .github/scripts/check-versions.py
           fi
