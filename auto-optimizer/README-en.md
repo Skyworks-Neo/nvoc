@@ -493,7 +493,6 @@ Released under **Apache License 2.0**. Full terms in `LICENSE` file.
 
 - SPDX: `Apache-2.0`
 - Crate manifest points to license via `license-file`.
-- archives include `LICENSE`.
 
 ---
 

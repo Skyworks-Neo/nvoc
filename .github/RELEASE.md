@@ -41,15 +41,16 @@ The matrix produces:
 | Deliverable | Linux amd64 | Linux arm64 | Windows amd64 | Windows arm64 |
 |---|---:|---:|---:|---:|
 | `nvoc-cli`, `nvoc-tui`, `nvoc-gui` | Yes | Yes | Yes | Yes |
+| Bundled `nvoc-auto-optimizer` executable | Yes | Yes | Yes | Yes |
+| Standalone `cli-stressor-cuda-rs` executable | Yes | Yes | Yes | Yes |
 | OpenCL stressor | Yes | Yes | Yes | No |
-| Tools bundle: auto-optimizer and CUDA/Vulkan stressor | Yes | Yes | Yes | Yes |
-| NVOC-SRV binaries inside the tools bundle | No | No | Yes | Yes |
+| Standalone NVOC-SRV executables | No | No | Yes | Yes |
 
-Each matrix cell validates executable architecture, runs CLI smoke tests, and
-emits a manifest plus per-cell checksums. Linux amd64 CLI artifacts are also
-tested in Debian 12 and Ubuntu 22.04 containers. Tag builds attest the matrix
-artifacts, then the publish job creates an aggregate `SHA256SUMS` file and a
-draft GitHub release.
+Each matrix cell builds natively and runs CLI smoke tests. Linux amd64 CLI
+artifacts are also tested in Debian 12 and Ubuntu 22.04 containers. No tools or
+stressor archive is produced. Tag builds attest the direct executable artifacts,
+then the publish job creates an aggregate `SHA256SUMS` file and a draft GitHub
+release.
 
 ## Cutting a release
 

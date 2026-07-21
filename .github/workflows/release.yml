@@ -198,13 +198,40 @@ jobs:
           .\target\release\cli-stressor-cuda-rs.exe --help
         if: matrix.platform == 'windows'
 
-      - name: Stage release artifacts
-        run: >
-          python scripts/release/build_release.py
-          --platform ${{ matrix.platform }}
-          --arch ${{ matrix.arch }}
-          --version ${{ steps.version.outputs.version || steps.version_windows.outputs.version }}
-          ${{ (matrix.platform == 'windows' && matrix.arch == 'arm64') && '--skip-opencl' || '' }}
+      - name: Stage Linux release executables
+        if: matrix.platform == 'linux'
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          RELEASE_ARCH: ${{ matrix.arch }}
+        run: |
+          out="dist/release/linux-${RELEASE_ARCH}"
+          mkdir -p "$out"
+          install -m 755 target/release/nvoc-cli "$out/nvoc-cli-${RELEASE_VERSION}-linux-${RELEASE_ARCH}"
+          install -m 755 target/release/nvoc-auto-optimizer "$out/nvoc-auto-optimizer-${RELEASE_VERSION}-linux-${RELEASE_ARCH}"
+          install -m 755 target/release/cli-stressor-cuda-rs "$out/cli-stressor-cuda-rs-${RELEASE_VERSION}-linux-${RELEASE_ARCH}"
+          install -m 755 tui/dist/nvoc-tui "$out/nvoc-tui-${RELEASE_VERSION}-linux-${RELEASE_ARCH}"
+          install -m 755 gui/dist/NVOC-GUI "$out/nvoc-gui-${RELEASE_VERSION}-linux-${RELEASE_ARCH}"
+          install -m 755 cli-stressor-opencl/dist/NVOC-CLI-Stressor-opencl "$out/nvoc-stressor-opencl-${RELEASE_VERSION}-linux-${RELEASE_ARCH}"
+
+      - name: Stage Windows release executables
+        if: matrix.platform == 'windows'
+        env:
+          RELEASE_VERSION: ${{ steps.version_windows.outputs.version }}
+          RELEASE_ARCH: ${{ matrix.arch }}
+        run: |
+          $out = "dist/release/windows-$env:RELEASE_ARCH"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          Copy-Item target/release/nvoc-cli.exe "$out/nvoc-cli-$env:RELEASE_VERSION-windows-$env:RELEASE_ARCH.exe"
+          Copy-Item target/release/nvoc-auto-optimizer.exe "$out/nvoc-auto-optimizer-$env:RELEASE_VERSION-windows-$env:RELEASE_ARCH.exe"
+          Copy-Item target/release/cli-stressor-cuda-rs.exe "$out/cli-stressor-cuda-rs-$env:RELEASE_VERSION-windows-$env:RELEASE_ARCH.exe"
+          Copy-Item tui/dist/nvoc-tui.exe "$out/nvoc-tui-$env:RELEASE_VERSION-windows-$env:RELEASE_ARCH.exe"
+          Copy-Item gui/dist/NVOC-GUI.exe "$out/nvoc-gui-$env:RELEASE_VERSION-windows-$env:RELEASE_ARCH.exe"
+          if ($env:RELEASE_ARCH -eq "amd64") {
+            Copy-Item cli-stressor-opencl/dist/NVOC-CLI-Stressor-opencl.exe "$out/nvoc-stressor-opencl-$env:RELEASE_VERSION-windows-$env:RELEASE_ARCH.exe"
+          }
+          foreach ($name in @("nvoc_service", "install_service", "uninstall_service", "notify_service", "pause_continue", "service_config", "service_failure_actions")) {
+            Copy-Item "target/release/$name.exe" "$out/nvoc-srv-$name-$env:RELEASE_VERSION-windows-$env:RELEASE_ARCH.exe"
+          }
 
       - name: Verify Debian 12 / Ubuntu 22.04 Linux baseline
         if: matrix.platform == 'linux' && matrix.arch == 'amd64'
@@ -213,7 +240,7 @@ jobs:
             docker run --rm -v "$PWD:/work:ro" -w /work "$image" \
               ./dist/release/linux-amd64/nvoc-cli-${{ steps.version.outputs.version }}-linux-amd64 --help
             docker run --rm -v "$PWD:/work:ro" -w /work "$image" \
-              ./dist/release/linux-amd64/nvoc-tools-${{ steps.version.outputs.version }}-linux-amd64/bin/nvoc-auto-optimizer --help
+              ./dist/release/linux-amd64/nvoc-auto-optimizer-${{ steps.version.outputs.version }}-linux-amd64 --help
             docker run --rm -v "$PWD:/work:ro" -w /work "$image" \
               ./dist/release/linux-amd64/cli-stressor-cuda-rs-${{ steps.version.outputs.version }}-linux-amd64 --help
           done
@@ -224,11 +251,12 @@ jobs:
           name: nvoc-release-${{ matrix.platform }}-${{ matrix.arch }}
           path: |
             dist/release/${{ matrix.platform }}-${{ matrix.arch }}/nvoc-cli-*
+            dist/release/${{ matrix.platform }}-${{ matrix.arch }}/nvoc-auto-optimizer-*
+            dist/release/${{ matrix.platform }}-${{ matrix.arch }}/cli-stressor-cuda-rs-*
             dist/release/${{ matrix.platform }}-${{ matrix.arch }}/nvoc-tui-*
             dist/release/${{ matrix.platform }}-${{ matrix.arch }}/nvoc-gui-*
             dist/release/${{ matrix.platform }}-${{ matrix.arch }}/nvoc-stressor-opencl-*
-            dist/release/${{ matrix.platform }}-${{ matrix.arch }}/*.tar.gz
-            dist/release/${{ matrix.platform }}-${{ matrix.arch }}/SHA256SUMS-*.txt
+            dist/release/${{ matrix.platform }}-${{ matrix.arch }}/nvoc-srv-*
           if-no-files-found: error
           retention-days: 14
 
