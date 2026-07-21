@@ -176,6 +176,7 @@ def main() -> int:
     inputs = {
         "nvoc-cli": target_release / f"nvoc-cli{suffix}",
         "nvoc-auto-optimizer": target_release / f"nvoc-auto-optimizer{suffix}",
+        "cli-stressor-cuda-rs": target_release / f"cli-stressor-cuda-rs{suffix}",
         "nvoc-tui": root / "tui" / "dist" / f"nvoc-tui{suffix}",
         "nvoc-gui": root / "gui" / "dist" / f"NVOC-GUI{suffix}",
         "nvoc-stressor-opencl": root
@@ -184,7 +185,7 @@ def main() -> int:
         / f"NVOC-CLI-Stressor-opencl{suffix}",
     }
 
-    single_names = ["nvoc-cli", "nvoc-tui", "nvoc-gui"]
+    single_names = ["nvoc-cli", "cli-stressor-cuda-rs", "nvoc-tui", "nvoc-gui"]
     if not args.skip_opencl:
         single_names.append("nvoc-stressor-opencl")
 

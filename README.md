@@ -148,7 +148,8 @@ The binary is emitted at `auto-optimizer/target/release/nvoc-auto-optimizer` (Li
 The default `nvoc-auto-optimizer` build embeds `cli-stressor-cuda-rs` and self-spawns a worker
 subprocess for CUDA isolation. A fatal CUDA failure therefore terminates the worker rather than
 running inside the optimizer process. The standalone `cli-stressor-cuda-rs` binary remains
-available for direct stress testing and for optimizer builds using `stressor-external`.
+available for direct stress testing and for optimizer builds using `stressor-external`; releases
+publish it as a separate versioned artifact rather than placing it in the optimizer tools bundle.
 
 Feature flags control the backends:
 
