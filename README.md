@@ -143,11 +143,15 @@ cargo build --release
 The binary is emitted at `auto-optimizer/target/release/nvoc-auto-optimizer` (Linux) or
 `auto-optimizer\target\release\nvoc-auto-optimizer.exe` (Windows).
 
-### (Optional) Build the CUDA stressor
+### CUDA stressor and single-binary optimizer
 
-The CUDA stressor (`cli-stressor-cuda-rs`) is optional and only needed for autoscan stability
-validation with real GPU workloads. It requires the **CUDA Toolkit** to be installed on the
-build machine or manually provide corresponding libraries.
+The default `nvoc-auto-optimizer` build embeds `cli-stressor-cuda-rs` and self-spawns a worker
+subprocess for CUDA isolation. A fatal CUDA failure therefore terminates the worker rather than
+running inside the optimizer process. The standalone `cli-stressor-cuda-rs` binary remains
+available for direct stress testing and for optimizer builds using `stressor-external`; releases
+publish it as a separate versioned executable rather than placing it in the optimizer tools
+archive. Releases also publish `nvoc-auto-optimizer` directly as the bundled, single executable;
+release packaging no longer creates a separate tools/stressor archive.
 
 Feature flags control the backends:
 
@@ -177,7 +181,7 @@ cargo run -p cli-stressor-cuda-rs --features cuda -- --duration 30 --precisions 
 **Run with a config file:**
 
 ```bash
-cargo run -p cli-stressor-cuda-rs --features cuda -- --config ./auto-optimizer/test/cli-stressor-cuda-rs.toml
+cargo run -p cli-stressor-cuda-rs --features cuda -- --profile standard
 ```
 
 > **Windows runtime DLLs:** `nvrtc64_*.dll`, `cublasLt64_*.dll`, `cublas64_*.dll`, `cudart64_*.dll`
@@ -283,7 +287,9 @@ uv run --frozen --no-editable --group dev pyinstaller --clean --noconfirm nvoc_t
 
 ### Autoscan & Stress Testing
 
-For autoscan workflows, configure one of the stressor modules and review the scripts under [auto-optimizer/test/](./auto-optimizer/test/). The CUDA stressor default config targets cards with 8G+ VRAM; use `cli-stressor-cuda-rs-6g-8g.toml` for 6G-8G cards.
+Use `nvoc-auto-optimizer optimize --gpu <id>` for the integrated autoscan workflow. It selects
+the embedded `low-vram` profile for 6–8 GiB GPUs and `standard` above 8 GiB; GPUs below 6 GiB
+require an explicit profile/config override. The legacy low-level autoscan commands remain available.
 
 Do not use the OpenCL stressor as the final stability gate for overclocking. It is not high-pressure enough and can produce autoscan / V-F curve results higher than the GPU can safely sustain, which may cause instability or hardware failure. Revalidate OpenCL-derived results with the CUDA stressor or heavier real workloads before relying on them.
 
@@ -479,7 +485,7 @@ cargo run -p cli-stressor-cuda-rs --features cuda -- --duration 30 --precisions 
 **使用配置文件运行：**
 
 ```bash
-cargo run -p cli-stressor-cuda-rs --features cuda -- --config ./auto-optimizer/test/cli-stressor-cuda-rs.toml
+cargo run -p cli-stressor-cuda-rs --features cuda -- --profile standard
 ```
 
 > **Windows 运行时 DLL：** `nvrtc64_*.dll`、`cublasLt64_*.dll`、`cublas64_*.dll`、`cudart64_*.dll`

@@ -101,6 +101,10 @@ pub struct StressorConfig {
     /// Extra arguments appended verbatim to each stressor invocation
     /// (e.g. ["--platform-index", "0", "--device-index", "1"] for OpenCL GPU selection).
     pub extra_args: Vec<String>,
+    /// Embedded bundled profile name; "auto" resolves from target VRAM.
+    pub profile: String,
+    /// Optional custom stressor TOML file.
+    pub config: Option<String>,
 }
 
 impl StressorConfig {
@@ -126,6 +130,17 @@ impl StressorConfig {
                 .get_many::<String>("stressor_extra_args")
                 .map(|v| v.cloned().collect())
                 .unwrap_or_default(),
+            profile: matches
+                .try_get_one::<String>("stressor_profile")
+                .ok()
+                .flatten()
+                .cloned()
+                .unwrap_or_else(|| "auto".to_string()),
+            config: matches
+                .try_get_one::<String>("stressor_config")
+                .ok()
+                .flatten()
+                .cloned(),
         }
     }
 }
@@ -156,15 +171,30 @@ impl AutoscanCommonConfig {
     fn from_matches(matches: &ArgMatches) -> Self {
         // These flags are accepted by both autoscan subcommands; parse them
         // once so mode-specific configs only carry mode-specific fields.
+        // With both backends compiled, Clap still materializes defaults for
+        // the external paths. Do not let those defaults override the bundled
+        // backend selected by --stressor-backend (or its bundled default).
+        let use_bundled = cfg!(feature = "stressor-bundled")
+            && matches
+                .try_get_one::<String>("stressor_backend")
+                .ok()
+                .flatten()
+                .is_none_or(|backend| backend == "bundled");
+        let selected_executable = |argument: &str, bundled_default: &str| {
+            if use_bundled {
+                bundled_default.to_string()
+            } else {
+                matches
+                    .try_get_one::<String>(argument)
+                    .ok()
+                    .flatten()
+                    .cloned()
+                    .unwrap_or_else(|| bundled_default.to_string())
+            }
+        };
         AutoscanCommonConfig {
-            test_exe: matches
-                .get_one::<String>("test_exe")
-                .cloned()
-                .unwrap_or_else(|| default_test_exe_path().to_string()),
-            minload_exe: matches
-                .get_one::<String>("minload_exe")
-                .cloned()
-                .unwrap_or_else(|| default_minload_exe_path().to_string()),
+            test_exe: selected_executable("test_exe", default_test_exe_path()),
+            minload_exe: selected_executable("minload_exe", default_minload_exe_path()),
             log: matches
                 .get_one::<String>("log")
                 .cloned()
@@ -263,6 +293,8 @@ mod tests {
         assert_eq!(cfg.common.recovery_method, None);
         assert_eq!(cfg.common.stressor.cuda_device, None);
         assert!(cfg.common.stressor.extra_args.is_empty());
+        assert_eq!(cfg.common.stressor.profile, "auto");
+        assert_eq!(cfg.common.stressor.config, None);
         assert!(!cfg.is_ultrafast);
         assert_eq!(cfg.point_seq, "-");
         assert_eq!(cfg.output_csv, default_vfp_temp_csv_path());
@@ -282,6 +314,23 @@ mod tests {
         assert_eq!(cfg.common.recovery_method, None);
         assert_eq!(cfg.common.stressor.cuda_device, None);
         assert!(cfg.common.stressor.extra_args.is_empty());
+        assert_eq!(cfg.common.stressor.profile, "auto");
+        assert_eq!(cfg.common.stressor.config, None);
+    }
+
+    #[cfg(all(feature = "stressor-bundled", feature = "stressor-external"))]
+    #[test]
+    fn explicit_external_backend_uses_cli_executable_defaults() {
+        let matches = subcommand_matches(&[
+            "nvoc-auto-optimizer",
+            "autoscan-vfp",
+            "--stressor-backend",
+            "external",
+        ]);
+        let cfg = GpuBoostAutoscanConfig::from_autoscan_matches(&matches).unwrap();
+
+        assert_eq!(cfg.common.test_exe, "cli-stressor-cuda-rs");
+        assert_eq!(cfg.common.minload_exe, "cli-stressor-cuda-rs");
     }
 
     #[test]

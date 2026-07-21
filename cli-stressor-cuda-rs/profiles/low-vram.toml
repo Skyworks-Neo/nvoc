@@ -1,5 +1,5 @@
 # CUDA stressor profile for cards with 6G-8G VRAM.
-# The default cli-stressor-cuda-rs.toml targets cards with 8G+ VRAM.
+# The embedded standard profile targets cards with more than 8 GiB VRAM.
 fp64_matrix_sizes = [2048,4096]
 precisions = ["bf16", "fp16", "fp32","tf32","fp64"]
 validate_interval = 3.0
