@@ -1,6 +1,6 @@
 use super::platform::{
-    default_minload_exe_path, default_test_exe_path, default_vfp_csv_path,
-    default_vfp_init_csv_path, default_vfp_log_path, default_vfp_temp_csv_path,
+    default_vfp_csv_path, default_vfp_init_csv_path, default_vfp_log_path,
+    default_vfp_temp_csv_path,
 };
 use clap::{Arg, ArgAction, Command};
 use nvoc_core::{ConvertEnum, VfpResetDomain};
@@ -40,7 +40,104 @@ pub fn get_arguments() -> Command {
         .subcommand(vfp_fix_result_command())
         .subcommand(vfp_autoscan_command(false))
         .subcommand(vfp_autoscan_command(true))
+        .subcommand(optimize_command())
         .subcommand(vfp_reset_command())
+}
+
+fn optimize_command() -> Command {
+    let mut cmd = Command::new("optimize")
+        .about("Run the complete VFP optimization workflow")
+        .arg(
+            Arg::new("mode")
+                .long("mode")
+                .value_name("MODE")
+                .default_value("standard")
+                .value_parser(["standard", "ultrafast", "legacy"])
+                .help("Optimization workflow mode"),
+        )
+        .arg(
+            Arg::new("fresh")
+                .long("fresh")
+                .action(ArgAction::SetTrue)
+                .help("Discard the resumable scan log and temporary result"),
+        )
+        .arg(
+            Arg::new("yes")
+                .short('y')
+                .long("yes")
+                .action(ArgAction::SetTrue)
+                .help("Acknowledge the safety warning without prompting"),
+        )
+        .arg(
+            Arg::new("workspace")
+                .long("workspace")
+                .value_name("PATH")
+                .num_args(1)
+                .help("Relative per-GPU scan workspace path"),
+        );
+
+    #[cfg(feature = "stressor-bundled")]
+    {
+        cmd = cmd
+            .arg(
+                Arg::new("stressor_profile")
+                    .long("stressor-profile")
+                    .value_name("PROFILE")
+                    .num_args(1)
+                    .value_parser(["auto", "low-vram", "standard"])
+                    .help("Bundled CUDA stress profile (default: auto)"),
+            )
+            .arg(
+                Arg::new("stressor_config")
+                    .long("stressor-config")
+                    .value_name("PATH")
+                    .num_args(1)
+                    .conflicts_with("stressor_profile")
+                    .help("Custom stressor TOML config"),
+            );
+    }
+
+    #[cfg(all(feature = "stressor-external", not(feature = "stressor-bundled")))]
+    {
+        cmd = cmd
+            .arg(
+                Arg::new("test_exe")
+                    .long("test-exe")
+                    .value_name("PATH")
+                    .default_value("cli-stressor-cuda-rs"),
+            )
+            .arg(
+                Arg::new("minload_exe")
+                    .long("minload-exe")
+                    .value_name("PATH")
+                    .default_value("cli-stressor-cuda-rs"),
+            );
+    }
+
+    #[cfg(all(feature = "stressor-bundled", feature = "stressor-external"))]
+    {
+        cmd = cmd
+            .arg(
+                Arg::new("stressor_backend")
+                    .long("stressor-backend")
+                    .default_value("bundled")
+                    .value_parser(["bundled", "external"]),
+            )
+            .arg(
+                Arg::new("test_exe")
+                    .long("test-exe")
+                    .value_name("PATH")
+                    .default_value("cli-stressor-cuda-rs"),
+            )
+            .arg(
+                Arg::new("minload_exe")
+                    .long("minload-exe")
+                    .value_name("PATH")
+                    .default_value("cli-stressor-cuda-rs"),
+            );
+    }
+
+    cmd
 }
 
 fn vfp_export_command() -> Command {
@@ -182,23 +279,6 @@ fn vfp_autoscan_command(legacy: bool) -> Command {
         Command::new("autoscan-vfp").about("Auto-scanner for a new VFP curve")
     }
     .arg(
-        Arg::new("test_exe")
-            .value_name("TEST_EXE")
-            .short('w')
-            .long("test-exe")
-            .num_args(1)
-            .default_value(default_test_exe_path())
-            .help("CLI stress wrapper executable/script path"),
-    )
-    .arg(
-        Arg::new("minload_exe")
-            .long("minload-exe")
-            .value_name("PATH")
-            .num_args(1)
-            .default_value(default_minload_exe_path())
-            .help("Min-load executable used to wake power-gated GPUs"),
-    )
-    .arg(
         Arg::new("log")
             .value_name("LOG")
             .short('l')
@@ -249,6 +329,79 @@ fn vfp_autoscan_command(legacy: bool) -> Command {
                  and force its result pass/fail (debug aid; no effect on other platforms)",
             ),
     );
+
+    #[cfg(feature = "stressor-bundled")]
+    {
+        cmd = cmd
+            .arg(
+                Arg::new("stressor_profile")
+                    .long("stressor-profile")
+                    .value_name("PROFILE")
+                    .num_args(1)
+                    .value_parser(["auto", "low-vram", "standard"])
+                    .help("Bundled CUDA stress profile; defaults to auto VRAM selection"),
+            )
+            .arg(
+                Arg::new("stressor_config")
+                    .long("stressor-config")
+                    .value_name("PATH")
+                    .num_args(1)
+                    .conflicts_with("stressor_profile")
+                    .help("Custom stressor TOML config (overrides the embedded profile)"),
+            );
+    }
+
+    #[cfg(all(feature = "stressor-external", not(feature = "stressor-bundled")))]
+    {
+        cmd = cmd
+            .arg(
+                Arg::new("test_exe")
+                    .value_name("TEST_EXE")
+                    .short('w')
+                    .long("test-exe")
+                    .num_args(1)
+                    .default_value("cli-stressor-cuda-rs")
+                    .help("External cli-stressor-cuda-rs executable path"),
+            )
+            .arg(
+                Arg::new("minload_exe")
+                    .long("minload-exe")
+                    .value_name("PATH")
+                    .num_args(1)
+                    .default_value("cli-stressor-cuda-rs")
+                    .help("External cli-stressor-cuda-rs executable used for min-load"),
+            );
+    }
+
+    #[cfg(all(feature = "stressor-bundled", feature = "stressor-external"))]
+    {
+        cmd = cmd
+            .arg(
+                Arg::new("stressor_backend")
+                    .long("stressor-backend")
+                    .value_name("BACKEND")
+                    .default_value("bundled")
+                    .value_parser(["bundled", "external"])
+                    .help("Select bundled worker or external executable backend"),
+            )
+            .arg(
+                Arg::new("test_exe")
+                    .value_name("TEST_EXE")
+                    .short('w')
+                    .long("test-exe")
+                    .num_args(1)
+                    .default_value("cli-stressor-cuda-rs")
+                    .help("External cli-stressor-cuda-rs executable path"),
+            )
+            .arg(
+                Arg::new("minload_exe")
+                    .long("minload-exe")
+                    .value_name("PATH")
+                    .num_args(1)
+                    .default_value("cli-stressor-cuda-rs")
+                    .help("External cli-stressor-cuda-rs executable used for min-load"),
+            );
+    }
 
     if !legacy {
         cmd = cmd

@@ -9,11 +9,13 @@ mod cleanup;
 mod manual_override;
 mod oc_profile_function;
 mod oc_scanner;
+mod optimize;
 mod platform;
 mod progressbar;
 mod scan_log;
 mod scan_strategy;
 mod scan_support;
+mod stressor_process;
 
 use anyhow::Result;
 use cleanup::{AutoscanExit, cleanup_autoscan_exit};
@@ -23,12 +25,21 @@ use nvoc_core::{
 };
 use oc_profile_function::{export_vfp_from_log, fix_result, handle_vfp_export, handle_vfp_import};
 use oc_scanner::{autoscan_gpuboostv3, autoscan_legacy};
+use optimize::run_optimize;
 use platform::is_elevated;
 use progressbar::init_scan_cli_color;
 use std::io::{self, Write};
 use std::process::exit;
 
 fn main() {
+    #[cfg(feature = "stressor-bundled")]
+    // A bundled stress worker is still a separate OS process. The environment
+    // marker prevents the child from entering the optimizer command router.
+    if std::env::var_os(stressor_process::WORKER_ENV).is_some() {
+        cli_stressor_cuda_rs::runner::run_from_env();
+        return;
+    }
+
     match main_result() {
         Ok(code) => exit(code),
         Err(e) => {
@@ -82,7 +93,9 @@ fn command_requirements(command: &str) -> Option<CommandRequirements> {
         "export-vfp" | "import-vfp" | "sync-vfp-memory-pstate" | "fix-vfp-result" => {
             TargetRequirement::NvapiSingle
         }
-        "reset-vfp" | "autoscan-vfp" | "autoscan-vfp-legacy" => TargetRequirement::NvapiAny,
+        "reset-vfp" | "autoscan-vfp" | "autoscan-vfp-legacy" | "optimize" => {
+            TargetRequirement::NvapiAny
+        }
         _ => return None,
     };
     let elevation = matches!(
@@ -92,6 +105,7 @@ fn command_requirements(command: &str) -> Option<CommandRequirements> {
             | "sync-vfp-memory-pstate"
             | "autoscan-vfp"
             | "autoscan-vfp-legacy"
+            | "optimize"
     );
 
     Some(CommandRequirements { target, elevation })
@@ -187,6 +201,14 @@ fn main_result() -> Result<i32, Box<dyn std::error::Error>> {
             Ok(()) => cleanup_autoscan_exit(&nvapi_selected, AutoscanExit::Success),
             Err(e) => {
                 eprintln!("Error in autoscan_legacy: {:?}", e);
+                cleanup_autoscan_exit(&nvapi_selected, AutoscanExit::Error);
+                return Ok(1);
+            }
+        },
+        Some(("optimize", matches)) => match run_optimize(&nvapi_selected, matches) {
+            Ok(()) => cleanup_autoscan_exit(&nvapi_selected, AutoscanExit::Success),
+            Err(e) => {
+                eprintln!("Error in optimize: {:?}", e);
                 cleanup_autoscan_exit(&nvapi_selected, AutoscanExit::Error);
                 return Ok(1);
             }

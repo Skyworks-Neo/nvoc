@@ -2,8 +2,10 @@ use super::autoscan_config::{FixResultConfig, VfpExportConfig};
 use super::scan_log::{self, BreakPointResume, ScanDomain, ScanLogEvent, VoltagePointResume};
 use super::scan_support::get_gpu_tdp_temp_limit;
 // oc_set_function
-#[cfg(all(not(windows), not(target_os = "linux")))]
-use super::platform::panic_windows_only;
+#[cfg(feature = "stressor-bundled")]
+use crate::stressor_process::bundled_command;
+#[cfg(all(not(feature = "stressor-bundled"), feature = "stressor-external"))]
+use crate::stressor_process::external_command;
 use csv::{ReaderBuilder, StringRecord, WriterBuilder};
 use num_traits::abs;
 use nvoc_auto_optimizer::PState;
@@ -27,8 +29,6 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 use std::process::Child;
-#[cfg(any(windows, target_os = "linux"))]
-use std::process::Command;
 use std::thread::sleep;
 use std::time::Duration;
 // Adjust imports as needed
@@ -45,41 +45,32 @@ fn is_std(str: &str) -> bool {
     str == "-"
 }
 
-#[cfg(windows)]
+#[cfg(feature = "stressor-bundled")]
 fn spawn_dynamic_load_process(cuda_device: Option<u32>) -> Result<Child, Error> {
-    let repo_root = env!("CARGO_MANIFEST_DIR");
-    let mut cmd = Command::new("cmd");
-    cmd.args(["/C", r".\test\dyn_load_export_windows.bat"])
-        .current_dir(repo_root);
-    if let Some(dev) = cuda_device {
-        cmd.env("CUDA_DEVICE_ORDER", "PCI_BUS_ID");
-        cmd.env("CUDA_VISIBLE_DEVICES", dev.to_string());
-    }
-    cmd.spawn()
-        .map_err(|e| Error::Custom(format!("Failed to start Windows load process: {}", e)))
+    bundled_command(Some("dynamic-export"), None, 45.0, cuda_device, &[])?
+        .spawn()
+        .map_err(|e| Error::Custom(format!("Failed to start bundled dynamic load: {e}")))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(not(feature = "stressor-bundled"), feature = "stressor-external"))]
 fn spawn_dynamic_load_process(cuda_device: Option<u32>) -> Result<Child, Error> {
-    let repo_root = env!("CARGO_MANIFEST_DIR");
-    let mut cmd = Command::new("bash");
-    cmd.arg("./test/dyn_load_export_cuda_rs_linux.sh")
-        .current_dir(repo_root);
-    if let Some(dev) = cuda_device {
-        cmd.env("CUDA_DEVICE_ORDER", "PCI_BUS_ID");
-        cmd.env("CUDA_VISIBLE_DEVICES", dev.to_string());
-    }
-    cmd.spawn().map_err(|e| {
-        Error::Custom(format!(
-            "Failed to start Linux load process with test/dyn_load_export_cuda_rs_linux.sh: {}",
-            e
-        ))
-    })
+    external_command(
+        "cli-stressor-cuda-rs",
+        Some("dynamic-export"),
+        None,
+        45.0,
+        cuda_device,
+        &[],
+    )
+    .spawn()
+    .map_err(|e| Error::Custom(format!("Failed to start external dynamic load: {e}")))
 }
 
-#[cfg(all(not(windows), not(target_os = "linux")))]
+#[cfg(all(not(feature = "stressor-bundled"), not(feature = "stressor-external")))]
 fn spawn_dynamic_load_process(_: Option<u32>) -> Result<Child, Error> {
-    panic_windows_only("dynamic VFP export")
+    Err(Error::Custom(
+        "dynamic VFP export requires stressor-bundled or stressor-external".into(),
+    ))
 }
 
 /// Reject paths that could escape the working directory when running as admin/root.
@@ -449,7 +440,8 @@ pub fn handle_vfp_export(gpu: &GpuTarget<'_>, matches: &clap::ArgMatches) -> Res
                         .and_then(|s| s.parse::<u32>().ok())
                         .filter(|&n| n < 256),
                 }
-            });
+            })
+            .or(Some(gpu.index as u32));
 
         if let Err(e) = apply_autoscan_profile(gpu, matches, 30) {
             eprintln!(
@@ -484,6 +476,7 @@ pub fn handle_vfp_export(gpu: &GpuTarget<'_>, matches: &clap::ArgMatches) -> Res
                 e
             )));
         }
+        let _ = child.wait();
 
         // Extract only default_frequency column from temp file
         let default_frequencies = extract_default_frequencies(output, legacy_vfp_flag)?;

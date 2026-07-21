@@ -121,7 +121,7 @@ cargo run -p cli-stressor-cuda-rs --features cuda -- \
   --kernel-types gemm,intalu
 ```
 
-若使用 `auto-optimizer/test/cli-stressor-cuda-rs-minload.toml` 或启用 Vulkan 图形压力，请同时启用 `vulkan` feature：
+若使用内置 `minload` profile 或启用 Vulkan 图形压力，请同时启用 `vulkan` feature：
 
 ```bash
 cargo build --release -p cli-stressor-cuda-rs --features cuda,vulkan
@@ -136,9 +136,9 @@ cargo run -p cli-stressor-cuda-rs --features cuda -- --config ./stressor.toml
 ### 配置文件
 
 - 参数优先级：`命令行显式传入 > config 文件 > 内置默认值`
-- autoscan 示例配置位于 `auto-optimizer/test/`：
-  - `cli-stressor-cuda-rs.toml`：默认配置，面向 8G+ 显存显卡。
-  - `cli-stressor-cuda-rs-6g-8g.toml`：较低显存配置，面向 6G-8G 显存显卡。
+- 内置 autoscan profile 位于 `cli-stressor-cuda-rs/profiles/`：
+  - `standard.toml`：默认配置，面向 8G+ 显存显卡。
+  - `low-vram.toml`：较低显存配置，面向 6G-8G 显存显卡。
 - `kernel_mixture` 支持两种写法：
   - 字符串：`"gemm:0.4,intalu:0.2,memcpy:0.2,reduction:0.2"`
   - 映射：`{ gemm = 0.4, intalu = 0.2, memcpy = 0.2, reduction = 0.2 }`
@@ -317,7 +317,7 @@ cargo run -p cli-stressor-cuda-rs --features cuda -- \
   --kernel-types gemm,intalu
 ```
 
-When using `auto-optimizer/test/cli-stressor-cuda-rs-minload.toml` or Vulkan graphics stress, build with both features:
+When using the built-in `minload` profile or Vulkan graphics stress, build with both features:
 
 ```bash
 cargo build --release -p cli-stressor-cuda-rs --features cuda,vulkan
@@ -332,9 +332,9 @@ cargo run -p cli-stressor-cuda-rs --features cuda -- --config ./stressor.toml
 ### Config File
 
 - Precedence: `explicit CLI value > config file > built-in default`
-- Autoscan example configs are under `auto-optimizer/test/`:
-  - `cli-stressor-cuda-rs.toml`: default profile for cards with 8G+ VRAM.
-  - `cli-stressor-cuda-rs-6g-8g.toml`: lower-VRAM profile for cards with 6G-8G VRAM.
+- Built-in autoscan profiles are under `cli-stressor-cuda-rs/profiles/`:
+  - `standard.toml`: default profile for cards with 8G+ VRAM.
+  - `low-vram.toml`: lower-VRAM profile for cards with 6G-8G VRAM.
 - `kernel_mixture` supports two formats:
   - string: `"gemm:0.4,intalu:0.2,memcpy:0.2,reduction:0.2"`
   - map: `{ gemm = 0.4, intalu = 0.2, memcpy = 0.2, reduction = 0.2 }`

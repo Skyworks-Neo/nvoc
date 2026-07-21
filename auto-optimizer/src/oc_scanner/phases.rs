@@ -24,13 +24,14 @@ pub(super) struct CommonPhaseArgs<'a> {
     pub(super) test_exe: &'a str,
     pub(super) minload_exe: &'a str,
     pub(super) delimiter: &'a str,
-    pub(super) recovery_method_switch: bool,
     pub(super) test_duration: u64,
     pub(super) endurance_coefficient: u64,
     pub(super) progress: Option<&'a ScanProgress>,
     pub(super) cuda_device: Option<u32>,
     pub(super) stressor_extra_args: &'a [String],
     pub(super) wakeup_load_needed: bool,
+    pub(super) stressor_profile: &'a str,
+    pub(super) stressor_config: Option<&'a str>,
 }
 
 struct PressureRunSpec {
@@ -100,13 +101,14 @@ impl<'a> CommonPhaseArgs<'a> {
             minload_exe: self.minload_exe,
             test_code: spec.test_code,
             timeout_loops: spec.timeout_loops,
-            recovery_method: self.recovery_method_switch,
             is_legacy_global_offset: spec.is_legacy_global_offset,
             test_duration_secs: spec.test_duration_secs,
             progress: self.progress,
             cuda_device: self.cuda_device,
             stressor_extra_args: self.stressor_extra_args,
             wakeup_load_needed: self.wakeup_load_needed,
+            stressor_profile: self.stressor_profile,
+            stressor_config: self.stressor_config,
             #[cfg(windows)]
             target_gpu_id: _gpu.id.0,
         }

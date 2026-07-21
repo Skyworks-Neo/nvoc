@@ -15,28 +15,32 @@ pub const fn default_vfp_log_path() -> &'static str {
 }
 
 pub const fn default_test_exe_path() -> &'static str {
-    #[cfg(windows)]
+    #[cfg(feature = "stressor-bundled")]
     {
-        "./test/test_cuda_windows.bat"
+        crate::stressor_process::BUNDLED_SENTINEL
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(all(not(feature = "stressor-bundled"), feature = "stressor-external"))]
     {
-        "./test/test_cuda_linux.sh"
+        "cli-stressor-cuda-rs"
     }
-    #[cfg(all(not(windows), not(target_os = "linux")))]
+    #[cfg(not(any(feature = "stressor-bundled", feature = "stressor-external")))]
     {
-        "./test/test_opencl_linux.sh"
+        ""
     }
 }
 
 pub const fn default_minload_exe_path() -> &'static str {
-    #[cfg(windows)]
+    #[cfg(feature = "stressor-bundled")]
     {
-        "./test/cli-stressor-cuda-rs-minload.bat"
+        crate::stressor_process::BUNDLED_SENTINEL
     }
-    #[cfg(not(windows))]
+    #[cfg(all(not(feature = "stressor-bundled"), feature = "stressor-external"))]
     {
-        "./test/cli-stressor-cuda-rs-minload.sh"
+        "cli-stressor-cuda-rs"
+    }
+    #[cfg(not(any(feature = "stressor-bundled", feature = "stressor-external")))]
+    {
+        ""
     }
 }
 
@@ -126,11 +130,22 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "linux")]
-    fn linux_defaults_use_cuda_rs_wrappers() {
-        assert_eq!(default_test_exe_path(), "./test/test_cuda_linux.sh");
-        assert_eq!(
-            default_minload_exe_path(),
-            "./test/cli-stressor-cuda-rs-minload.sh"
-        );
+    fn linux_defaults_use_configured_backend() {
+        #[cfg(feature = "stressor-bundled")]
+        {
+            assert_eq!(
+                default_test_exe_path(),
+                crate::stressor_process::BUNDLED_SENTINEL
+            );
+            assert_eq!(
+                default_minload_exe_path(),
+                crate::stressor_process::BUNDLED_SENTINEL
+            );
+        }
+        #[cfg(all(not(feature = "stressor-bundled"), feature = "stressor-external"))]
+        {
+            assert_eq!(default_test_exe_path(), "cli-stressor-cuda-rs");
+            assert_eq!(default_minload_exe_path(), "cli-stressor-cuda-rs");
+        }
     }
 }

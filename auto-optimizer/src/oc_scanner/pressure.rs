@@ -4,6 +4,7 @@ use crate::oc_profile_function::apply_autoscan_profile;
 use crate::progressbar::{ScanProgress, forward_child_output, progress_print};
 use crate::scan_strategy::FluctuationStrategy;
 use crate::scan_support::voltage_frequency_check;
+use crate::stressor_process::{bundled_command, external_command, is_bundled, resolve_profile};
 use clap::ArgMatches;
 use nvoc_core::{
     ClockDomain, GpuTarget, KilohertzDelta, NvapiLockedVoltageTarget, PState, QueryGpuStatus,
@@ -28,7 +29,6 @@ pub(super) struct PressureTestConfig<'a> {
     pub(super) minload_exe: &'a str,
     pub(super) test_code: String,
     pub(super) timeout_loops: u64,
-    pub(super) recovery_method: bool,
     pub(super) is_legacy_global_offset: bool,
     pub(super) test_duration_secs: u64,
     pub(super) progress: Option<&'a ScanProgress>,
@@ -38,6 +38,8 @@ pub(super) struct PressureTestConfig<'a> {
     pub(super) stressor_extra_args: &'a [String],
     /// 是否需要在掉电时以 MinLoadPulse 唤醒 GPU（仅 30/50 系笔记本端默认开启）。
     pub(super) wakeup_load_needed: bool,
+    pub(super) stressor_profile: &'a str,
+    pub(super) stressor_config: Option<&'a str>,
     /// GpuId.0 value of the GPU under test (used for event-log GPU filtering).
     #[cfg(windows)]
     pub(super) target_gpu_id: u32,
@@ -187,9 +189,8 @@ fn apply_fluctuation(
 }
 
 fn force_kill_process(process: &mut Child, reason: &str) {
-    // On Windows the stressor is typically launched via a .bat wrapper which
-    // spawns the real executable as a child. taskkill /T ensures the entire
-    // process tree is terminated.
+    // Kill the full child process tree on Windows in case the stressor loaded
+    // helper processes of its own.
     #[cfg(windows)]
     {
         let pid = process.id();
@@ -414,30 +415,48 @@ pub(super) fn run_pressure_test(
     cfg: &PressureTestConfig<'_>,
 ) -> i32 {
     let app_path = String::from(cfg.test_exe);
-    // Build argv as a structured Vec so paths or codes containing whitespace
-    // are not silently re-tokenized into multiple arguments.
-    let mut args: Vec<String> = vec![cfg.test_code.clone(), cfg.timeout_loops.to_string()];
+    let stressor_profile = if cfg.stressor_config.is_none() {
+        match resolve_profile(gpu, cfg.stressor_profile) {
+            Ok(profile) => Some(profile),
+            Err(e) => {
+                eprintln!("Failed to resolve stressor profile: {e}");
+                return 1;
+            }
+        }
+    } else {
+        None
+    };
     let timeout_budget_secs = cfg.timeout_loops * 15;
     progress_print(cfg.progress, format!("Timeout: {}s", timeout_budget_secs));
-    if cfg.recovery_method {
-        args.push("--aggressive-recovery".to_string());
-    }
 
     let mut count = 0;
     loop {
         // Rebuild Command every retry so env vars, pipes, and extra args are
         // fresh for each stressor attempt.
-        let mut cmd = Command::new(app_path.clone());
-        cmd.args(&args);
-        if !cfg.stressor_extra_args.is_empty() {
-            cmd.args(cfg.stressor_extra_args);
-        }
-        if let Some(dev) = cfg.cuda_device {
-            // PCI_BUS_ID makes CUDA ordinals match NVAPI/NVML ordering, so
-            // --gpu N and CUDA_VISIBLE_DEVICES=N refer to the same device.
-            cmd.env("CUDA_DEVICE_ORDER", "PCI_BUS_ID");
-            cmd.env("CUDA_VISIBLE_DEVICES", dev.to_string());
-        }
+        let mut cmd = if is_bundled(&app_path) {
+            match bundled_command(
+                stressor_profile.as_deref(),
+                cfg.stressor_config,
+                (cfg.timeout_loops * 5) as f64,
+                cfg.cuda_device,
+                cfg.stressor_extra_args,
+            ) {
+                Ok(command) => command,
+                Err(e) => {
+                    eprintln!("Failed to prepare bundled stressor process: {e}");
+                    return 1;
+                }
+            }
+        } else {
+            external_command(
+                &app_path,
+                stressor_profile.as_deref(),
+                cfg.stressor_config,
+                (cfg.timeout_loops * 5) as f64,
+                cfg.cuda_device,
+                cfg.stressor_extra_args,
+            )
+        };
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
         match cmd.spawn() {

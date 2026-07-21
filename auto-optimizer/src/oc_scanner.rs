@@ -37,6 +37,8 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
     // mapping and extra wrapper args.
     let cuda_device = common.stressor.cuda_device;
     let stressor_extra_args = common.stressor.extra_args.as_slice();
+    let stressor_profile = common.stressor.profile.as_str();
+    let stressor_config = common.stressor.config.as_deref();
     let mut is_ultrafast = cfg.is_ultrafast;
     if is_ultrafast {
         println!("Ultrafast mode interpolation active...");
@@ -235,7 +237,7 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
         let mut resuming_flag = false;
         let mut last_succeeded_freq = init_core_oc_value;
         let mut last_failed_freq = core_oc_safe_limit;
-        let recovery_method_switch: bool = common.recovery_method.unwrap_or(is_50_series);
+        let _recovery_method_switch: bool = common.recovery_method.unwrap_or(is_50_series);
 
         let (succeeded_freq, failed_freq, last_voltage_point, ultrafast_flag) =
             break_point_continue(
@@ -397,13 +399,14 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
                 test_exe,
                 minload_exe,
                 delimiter: delimiter.as_str(),
-                recovery_method_switch,
                 test_duration,
                 endurance_coefficient,
                 progress: Some(scan_progress.as_ref()),
                 cuda_device,
                 stressor_extra_args,
                 wakeup_load_needed,
+                stressor_profile,
+                stressor_config,
             },
             vfp_set_range,
             freq_step_exp,
@@ -637,13 +640,14 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
                     test_exe,
                     minload_exe,
                     delimiter: delimiter.as_str(),
-                    recovery_method_switch,
                     test_duration,
                     endurance_coefficient,
                     progress: Some(scan_progress.as_ref()),
                     cuda_device,
                     stressor_extra_args,
                     wakeup_load_needed,
+                    stressor_profile,
+                    stressor_config,
                 },
                 point,
                 vfp_set_range,
@@ -687,6 +691,8 @@ pub fn autoscan_legacy(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> Resul
     // curve-specific config.
     let cuda_device = common.stressor.cuda_device;
     let stressor_extra_args = common.stressor.extra_args.as_slice();
+    let stressor_profile = common.stressor.profile.as_str();
+    let stressor_config = common.stressor.config.as_deref();
     let test_exe = common.test_exe.as_str();
     let minload_exe = common.minload_exe.as_str();
     let log_filename = common.log.as_str();
@@ -770,7 +776,7 @@ pub fn autoscan_legacy(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> Resul
             eprintln!("apply_autoscan_profile failed: {:?}, continuing scan...", e);
         }
 
-        let recovery_method_switch: bool = common.recovery_method.unwrap_or(false);
+        let _recovery_method_switch: bool = common.recovery_method.unwrap_or(false);
 
         let endurance_coefficient = 2;
         let vfp_set_range = 0; // unused for legacy but required by test_pressure signature
@@ -810,13 +816,14 @@ pub fn autoscan_legacy(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> Resul
                 test_exe,
                 minload_exe,
                 delimiter: delimiter.as_str(),
-                recovery_method_switch,
                 test_duration,
                 endurance_coefficient,
                 progress: None,
                 cuda_device,
                 stressor_extra_args,
                 wakeup_load_needed,
+                stressor_profile,
+                stressor_config,
             },
             point,
             flat_curve_flag,

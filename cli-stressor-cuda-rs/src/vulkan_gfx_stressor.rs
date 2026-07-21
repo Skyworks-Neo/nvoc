@@ -1,9 +1,8 @@
-use crate::style::stylize;
+use super::style::stylize;
 use anstream::eprintln;
 use ash::{Instance, vk};
 use cli_stressor_cuda_rs::PciBusAddress;
 use rand::RngExt;
-use std::collections::HashSet;
 use std::ffi::CStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -156,9 +155,7 @@ fn run_vulkan_stress_loop(
                     eprintln!(
                         "{}",
                         stylize(
-                            &format!(
-                                "Your Target GPU may not have proper Vulkan driver, check compatibility..."
-                            ),
+                            "Your Target GPU may not have proper Vulkan driver, check compatibility...",
                             true
                         )
                     );
@@ -306,20 +303,13 @@ fn run_vulkan_stress_loop(
         let main_batch = create_batch(main_extent)?;
         let mut minor_batches = Vec::new();
         if image_config.minor_mixture_rate > 0.0 {
-            let mut seen = HashSet::new();
-            for &size in &[16u32] {
-                let width = size.min(main_extent.width).max(1);
-                let height = size.min(main_extent.height).max(1);
-                let depth = size.min(main_extent.depth).max(1);
-                let extent = vk::Extent3D {
-                    width,
-                    height,
-                    depth,
-                };
-                if seen.insert((extent.width, extent.height, extent.depth)) {
-                    minor_batches.push(create_batch(extent)?);
-                }
-            }
+            let size = 16u32;
+            let extent = vk::Extent3D {
+                width: size.min(main_extent.width).max(1),
+                height: size.min(main_extent.height).max(1),
+                depth: size.min(main_extent.depth).max(1),
+            };
+            minor_batches.push(create_batch(extent)?);
         }
 
         // Convert layout to GENERAL
