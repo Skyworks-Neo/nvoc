@@ -186,10 +186,10 @@ fn spawn_windows_listener(stop: Arc<AtomicBool>) {
                     _ => None,
                 };
 
-                if let Some(req) = req {
-                    if let Ok(mut slot) = ACTIVE_OVERRIDE.lock() {
-                        *slot = Some(req);
-                    }
+                if let Some(req) = req
+                    && let Ok(mut slot) = ACTIVE_OVERRIDE.lock()
+                {
+                    *slot = Some(req);
                 }
             }
         }

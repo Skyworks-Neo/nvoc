@@ -1,7 +1,7 @@
 //! GEMM stress path — cuBLAS matrix multiply across the FP precisions.
 
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use std::time::Instant;
 
 use cudarc::cublas::{Gemm, GemmConfig, result as cublas_res, sys as cublas_sys};

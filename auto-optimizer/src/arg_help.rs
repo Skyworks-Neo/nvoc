@@ -373,7 +373,7 @@ fn hidden_vfp_lock_args() -> Vec<Arg> {
     ]
 }
 
-fn collect_long_flags(cmd: &clap::Command, out: &mut Vec<String>) {
+fn collect_long_flags(cmd: &Command, out: &mut Vec<String>) {
     for arg in cmd.get_arguments() {
         if let Some(long) = arg.get_long() {
             out.push(long.to_string());
@@ -385,7 +385,7 @@ fn collect_long_flags(cmd: &clap::Command, out: &mut Vec<String>) {
 }
 
 pub fn check_single_dash_args_from<I, S>(
-    cmd: &clap::Command,
+    cmd: &Command,
     args: I,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
@@ -411,6 +411,6 @@ where
     Ok(())
 }
 
-pub fn check_single_dash_args(cmd: &clap::Command) -> Result<(), Box<dyn std::error::Error>> {
+pub fn check_single_dash_args(cmd: &Command) -> Result<(), Box<dyn std::error::Error>> {
     check_single_dash_args_from(cmd, std::env::args().skip(1))
 }

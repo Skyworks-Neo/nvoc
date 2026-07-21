@@ -2,7 +2,7 @@ use crate::style::stylize;
 use anstream::eprintln;
 use ash::{Instance, vk};
 use cli_stressor_cuda_rs::PciBusAddress;
-use rand::Rng;
+use rand::RngExt;
 use std::collections::HashSet;
 use std::ffi::CStr;
 use std::sync::Arc;

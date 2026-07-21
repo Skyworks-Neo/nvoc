@@ -2,7 +2,7 @@
 //! reduction), all driven through cuBLAS or the driver memory primitives.
 
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use std::time::Instant;
 
 use cudarc::cublas::{Asum, AsumConfig, sys as cublas_sys};

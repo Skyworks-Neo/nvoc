@@ -133,7 +133,7 @@ impl ScanLogWriter {
         let mut file = OpenOptions::new()
             .read(true)
             .write(true)
-            .create(true)
+            .create(true).truncate(true)
             .open(path)?;
         file.seek(SeekFrom::End(0))?;
         Ok(ScanLogWriter {
@@ -529,10 +529,10 @@ pub fn breakpoint_from_entries(
         }
     }
 
-    if let (Some(s), Some(f)) = (last_succeeded_freq, last_failed_freq) {
-        if s >= f {
-            last_succeeded_freq = Some(f - min_step_khz as f64 / 1000.0);
-        }
+    if let (Some(s), Some(f)) = (last_succeeded_freq, last_failed_freq)
+        && s >= f
+    {
+        last_succeeded_freq = Some(f - min_step_khz as f64 / 1000.0);
     }
     (
         last_succeeded_freq,
@@ -887,7 +887,7 @@ mod tests {
                     TestPhase::Short,
                     1,
                     85,
-                    Some(nvoc_core::Microvolts(981_250)),
+                    Some(Microvolts(981_250)),
                     KilohertzDelta(60_000),
                 )
                 .unwrap();
@@ -898,7 +898,7 @@ mod tests {
                     TestPhase::Short,
                     1,
                     85,
-                    Some(nvoc_core::Microvolts(981_250)),
+                    Some(Microvolts(981_250)),
                     KilohertzDelta(60_000),
                     0,
                 )

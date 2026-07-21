@@ -469,7 +469,7 @@ pub fn handle_vfp_export(gpu: &GpuTarget<'_>, matches: &clap::ArgMatches) -> Res
         // Export the load-default frequency to a temporary file
         // Derive from the output path so it lands in the same directory (e.g. Scan-<UUID>/)
         let temp_file = {
-            let parent = std::path::Path::new(output)
+            let parent = Path::new(output)
                 .parent()
                 .map(|p| p.to_path_buf())
                 .unwrap_or_else(|| std::path::PathBuf::from("."));
@@ -1229,7 +1229,7 @@ mod tests {
             .expect("system time is after unix epoch")
             .as_nanos();
         let dir = "target/nvoc-auto-optimizer-tests";
-        std::fs::create_dir_all(dir).expect("create test output directory");
+        fs::create_dir_all(dir).expect("create test output directory");
         format!("{dir}/{}-{nanos}-{name}", std::process::id())
     }
 
@@ -1292,7 +1292,7 @@ mod tests {
     fn export_single_point_writes_comma_delimited_file_output() {
         let init_path = unique_test_path("init.csv");
         let output_path = unique_test_path("output.csv");
-        std::fs::write(
+        fs::write(
             &init_path,
             "voltage,frequency,delta,default_frequency\n875000,123,0,1000\n900000,456,0,2000\n",
         )
@@ -1309,13 +1309,13 @@ mod tests {
         export_single_point_to_paths(point, &output_path, &init_path)
             .expect("export comma-delimited point");
 
-        let output = std::fs::read_to_string(&output_path).expect("read output file");
+        let output = fs::read_to_string(&output_path).expect("read output file");
         assert!(output.contains("875000,1150,150,1000\n"));
         assert!(output.contains("900000,,,2000\n"));
         assert!(!output.contains('\t'));
 
-        let _ = std::fs::remove_file(init_path);
-        let _ = std::fs::remove_file(output_path);
+        let _ = fs::remove_file(init_path);
+        let _ = fs::remove_file(output_path);
     }
 
     // Regression for the autoscan-vfp panic: the scanner reaches
@@ -1325,7 +1325,7 @@ mod tests {
     fn export_single_point_does_not_panic_on_autoscan_matches() {
         let init_path = unique_test_path("autoscan_init.csv");
         let output_path = unique_test_path("autoscan_out.csv");
-        std::fs::write(
+        fs::write(
             &init_path,
             "voltage,frequency,delta,default_frequency\n875000,123,0,1000\n",
         )
@@ -1356,7 +1356,7 @@ mod tests {
         // The scanner uses comma output.
         export_single_point(point, sub).expect("export must not panic on autoscan matches");
 
-        let output = std::fs::read_to_string(&output_path).expect("read output file");
+        let output = fs::read_to_string(&output_path).expect("read output file");
         assert!(
             output.contains(','),
             "scanner output should be comma-delimited"
@@ -1366,7 +1366,7 @@ mod tests {
             "scanner output should not contain tab characters"
         );
 
-        let _ = std::fs::remove_file(init_path);
-        let _ = std::fs::remove_file(output_path);
+        let _ = fs::remove_file(init_path);
+        let _ = fs::remove_file(output_path);
     }
 }
