@@ -371,6 +371,8 @@ fn load_file_config(path: &str) -> Result<FileConfig, String> {
 
 #[cfg(feature = "cuda")]
 fn load_builtin_profile(name: &str) -> Result<FileConfig, String> {
+    // include_str! places these TOML files in the executable at compile time.
+    // Bundled workers therefore do not need a profiles directory at runtime.
     let raw = match name {
         "standard" => include_str!("../profiles/standard.toml"),
         "low-vram" => include_str!("../profiles/low-vram.toml"),
@@ -964,6 +966,8 @@ fn print_summary(results: &[StressResult], info: &DeviceInfo) {
 #[cfg(feature = "cuda")]
 pub fn run_from_env() {
     let (mut args, cli_set) = parse_args_with_cli_sources();
+    // --config reads a user-supplied runtime file, whereas --profile selects
+    // one of the TOML documents compiled into the binary above.
     let file_config = match (&args.config, &args.profile) {
         (Some(path), None) => match load_file_config(path) {
             Ok(parsed) => Some(parsed),

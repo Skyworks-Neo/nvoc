@@ -1,5 +1,7 @@
 extern crate self as cli_stressor_cuda_rs;
 
+// Reuse the CLI implementation as the bundled optimizer worker. The optimizer
+// calls runner::run_from_env only inside its isolated child process.
 #[path = "main.rs"]
 pub mod runner;
 

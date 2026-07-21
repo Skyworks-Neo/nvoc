@@ -102,7 +102,15 @@ fn confirm(matches: &ArgMatches) -> Result<(), Error> {
 }
 
 fn validate_workspace(path: &Path) -> Result<(), Error> {
-    if path.is_absolute() || path.components().any(|part| part == Component::ParentDir) {
+    // Check components rather than only Path::is_absolute(): on Windows a
+    // leading slash is rooted but lacks a drive prefix, so is_absolute() is
+    // false even though it can escape the requested working directory.
+    if path.components().any(|part| {
+        matches!(
+            part,
+            Component::Prefix(_) | Component::RootDir | Component::ParentDir
+        )
+    }) {
         return Err(error(
             "--workspace must be a relative path without '..' components",
         ));
@@ -330,5 +338,10 @@ mod tests {
         assert!(validate_workspace(Path::new("../outside")).is_err());
         assert!(validate_workspace(Path::new("nested/../../outside")).is_err());
         assert!(validate_workspace(Path::new("/absolute")).is_err());
+        #[cfg(windows)]
+        {
+            assert!(validate_workspace(Path::new(r"C:\absolute")).is_err());
+            assert!(validate_workspace(Path::new(r"\\server\share")).is_err());
+        }
     }
 }

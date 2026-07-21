@@ -3,6 +3,8 @@ use std::process::Command;
 
 #[cfg(feature = "stressor-bundled")]
 pub const WORKER_ENV: &str = "NVOC_STRESSOR_CUDA_RS_WORKER";
+// Internal marker used in scan configuration instead of a filesystem path.
+// It never reaches Command::new; bundled_command resolves it to current_exe().
 pub const BUNDLED_SENTINEL: &str = "@bundled:cli-stressor-cuda-rs";
 
 pub fn is_bundled(path: &str) -> bool {
@@ -61,9 +63,14 @@ pub fn bundled_command(
     cuda_device: Option<u32>,
     extra_args: &[String],
 ) -> Result<Command, Error> {
+    // The optimizer deliberately executes a new copy of itself. CUDA is only
+    // initialized in that child, so a fatal CUDA failure cannot poison the
+    // long-running optimizer process.
     let executable = std::env::current_exe()
         .map_err(|e| Error::Custom(format!("failed to resolve current executable: {e}")))?;
     let mut command = Command::new(executable);
+    // main() checks this before parsing optimizer commands and dispatches the
+    // child directly into the embedded cli-stressor-cuda-rs runner.
     command.env(WORKER_ENV, "1");
     add_stressor_args(
         &mut command,
@@ -90,6 +97,8 @@ pub fn bundled_command(
 }
 
 pub fn resolve_profile(gpu: &GpuTarget<'_>, requested: &str) -> Result<String, Error> {
+    // Explicit profile names pass through unchanged. Only "auto" needs an
+    // NVAPI query to choose between the embedded VRAM-sized configurations.
     if requested != "auto" {
         return Ok(requested.to_string());
     }
