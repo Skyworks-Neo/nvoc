@@ -133,7 +133,8 @@ impl ScanLogWriter {
         let mut file = OpenOptions::new()
             .read(true)
             .write(true)
-            .create(true).truncate(true)
+            .create(true)
+            .truncate(true)
             .open(path)?;
         file.seek(SeekFrom::End(0))?;
         Ok(ScanLogWriter {
