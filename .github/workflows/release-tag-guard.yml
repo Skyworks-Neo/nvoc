@@ -1,0 +1,93 @@
+name: Release and tag guard
+
+on:
+  push:
+    # The main-push trigger exists to stamp the "Require release targets from
+    # main" check onto every main commit. A tag ruleset that requires this
+    # check evaluates checks on the commit BEFORE the tag exists, so a check
+    # produced only by tag pushes can never satisfy it (tag creation would
+    # always be rejected). With this trigger, tags pointing at main commits
+    # pass the ruleset naturally; tags pointing anywhere else are rejected at
+    # creation time.
+    branches: [main]
+    tags:
+      - "v*"
+  release:
+    types: [created, edited, prereleased, published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-tag-guard-${{ github.ref }}-${{ github.event.release.tag_name || '' }}
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    name: Require release targets from main
+    runs-on: ubuntu-slim
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Validate tag/release target
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          RELEASE_TAG_NAME: ${{ github.event.release.tag_name || '' }}
+          RELEASE_TARGET_COMMITISH: ${{ github.event.release.target_commitish || '' }}
+        run: |
+          set -euo pipefail
+
+          # Main push: the commit is on main by construction. Succeed to
+          # record the check for the tag ruleset (see the trigger comment).
+          if [[ "${EVENT_NAME}" == "push" && "${REF_TYPE}" == "branch" ]]; then
+            echo "main commit $(git rev-parse HEAD): check recorded for the v* tag ruleset"
+            exit 0
+          fi
+
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          git fetch --tags --force origin 'refs/tags/v*:refs/tags/v*'
+
+          if [[ "${EVENT_NAME}" == "release" ]]; then
+            tag_name="${RELEASE_TAG_NAME}"
+            target_ref="${RELEASE_TAG_NAME}"
+            if [[ -n "${RELEASE_TARGET_COMMITISH}" ]]; then
+              target_ref="${RELEASE_TARGET_COMMITISH}"
+            fi
+          else
+            tag_name="${REF_NAME}"
+            target_ref="${REF_NAME}"
+          fi
+
+          if [[ ! "${tag_name}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[[:alnum:]_]+(\.[[:alnum:]_]+)*)?$ ]]; then
+            echo "Release/tag name must be SemVer-like and start with v: ${tag_name}" >&2
+            exit 1
+          fi
+
+          target_commit=""
+          if git rev-parse --verify --quiet "refs/tags/${tag_name}^{commit}" >/dev/null; then
+            target_commit="$(git rev-parse "refs/tags/${tag_name}^{commit}")"
+          elif git rev-parse --verify --quiet "${target_ref}^{commit}" >/dev/null; then
+            target_commit="$(git rev-parse "${target_ref}^{commit}")"
+          else
+            echo "Could not resolve release/tag target: ${target_ref}" >&2
+            exit 1
+          fi
+
+          main_commit="$(git rev-parse refs/remotes/origin/main)"
+          echo "tag_name=${tag_name}"
+          echo "target_commit=${target_commit}"
+          echo "main_commit=${main_commit}"
+
+          if ! git merge-base --is-ancestor "${target_commit}" refs/remotes/origin/main; then
+            echo "Release/tag target ${target_commit} is not reachable from origin/main" >&2
+            exit 1
+          fi
+
+          # The tag must equal the workspace/package version at the tagged
+          # commit (single source of truth; see .github/scripts/check-versions.py).
+          git checkout --quiet "${target_commit}"
+          python3 .github/scripts/check-versions.py --tag "${tag_name}"

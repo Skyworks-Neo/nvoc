@@ -1,6 +1,6 @@
 [package]
 name = "nvoc-srv"
-version = "0.0.1"
+version = { workspace = true }
 description = "NVOC Windows service"
 authors = ["Skyworks"]
 edition = { workspace = true }

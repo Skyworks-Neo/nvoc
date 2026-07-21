@@ -24,10 +24,19 @@ concurrency:
 jobs:
   guard:
     # PR runs require the `ci:gpu` label. Manual dispatch always runs.
+    #
+    # Fork PRs additionally only run at the moment the label is applied
+    # (`labeled` event): a maintainer labeling the PR is the explicit
+    # approval for that revision. Without this, labeling a fork PR once
+    # would let every later push (`synchronize`) run arbitrary code on the
+    # self-hosted GPU runners with no further review. Same-repo PRs keep
+    # auto-rerun on push.
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request' &&
-       contains(github.event.pull_request.labels.*.name, 'ci:gpu'))
+       contains(github.event.pull_request.labels.*.name, 'ci:gpu') &&
+       ((github.event.action == 'labeled' && github.event.label.name == 'ci:gpu') ||
+        github.event.pull_request.head.repo.full_name == github.repository))
     runs-on: ubuntu-latest
     steps:
       - run: echo "gpu-ci approved for ${{ github.event_name }}"
@@ -60,7 +69,7 @@ jobs:
             echo "stressor_cuda_rs=true"
             echo "stressor_opencl=true"
           } >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         if: github.event_name != 'workflow_dispatch'
         with:
           fetch-depth: 0
@@ -107,7 +116,7 @@ jobs:
       run:
         working-directory: auto-optimizer
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref || github.ref }}
           submodules: true
@@ -132,7 +141,7 @@ jobs:
     runs-on: [self-hosted, windows, gpu-nvidia]
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref || github.ref }}
           submodules: true
@@ -154,7 +163,7 @@ jobs:
     runs-on: [self-hosted, windows, gpu-nvidia, cuda]
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref || github.ref }}
           submodules: true
@@ -179,7 +188,7 @@ jobs:
       run:
         working-directory: cli-stressor-opencl
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref || github.ref }}
       - name: set uv cache dirs
@@ -187,7 +196,7 @@ jobs:
         run: |
           Add-Content $env:GITHUB_ENV "UV_CACHE_DIR=$env:RUNNER_TEMP\uv-cache"
           Add-Content $env:GITHUB_ENV "UV_PROJECT_ENVIRONMENT=$env:RUNNER_TEMP\uv-envs\opencl-stressor-${{ github.run_id }}"
-      - uses: astral-sh/setup-uv@v8.2.0
+      - uses: astral-sh/setup-uv@v8.3.2
         with:
           version: "0.11.19"
           enable-cache: "true"
@@ -210,9 +219,9 @@ jobs:
   #     run:
   #       working-directory: cli-stressor-opencl
   #   steps:
-  #     - uses: actions/checkout@v6
+  #     - uses: actions/checkout@v7
   #       with:
   #         ref: ${{ inputs.ref || github.ref }}
-  #     - uses: astral-sh/setup-uv@v8.2.0
+  #     - uses: astral-sh/setup-uv@v8.3.2
   #     - run: uv sync
   #     - run: uv run python test.py

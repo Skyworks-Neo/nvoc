@@ -1,6 +1,6 @@
 [package]
 name = "cli-stressor-cuda-rs"
-version = "0.1.0"
+version = { workspace = true }
 edition = { workspace = true }
 rust-version = { workspace = true }
 license = "Apache-2.0"
@@ -15,13 +15,13 @@ vulkan = ["ash"]
 [dependencies]
 nvoc-cli-common = { workspace = true }
 clap = { workspace = true }
-rand = "0.9"
-rand_distr = "0.5"
+rand = "0.10"
+rand_distr = "0.6"
 matrixmultiply = "0.3.10"
 rayon = "1.10"
 thiserror = "2.0.18"
 serde = { version = "1.0", features = ["derive"] }
-toml = "0.8"
+toml = "1.1"
 anstream = "1.0.0"
 cudarc = { version = "0.19.7", optional = true, features = ["f16","nvrtc","cuda-12090"] }
 half = { version = "2.7.1", optional = true }

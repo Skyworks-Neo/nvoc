@@ -3,5 +3,7 @@ self-hosted-runner:
     - cuda
     - gpu-nvidia
     - opencl
+    # GitHub-hosted slim runner; not yet in actionlint's built-in label list.
+    - ubuntu-slim
 
 config-variables: null

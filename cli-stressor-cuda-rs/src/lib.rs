@@ -1,6 +1,6 @@
 use rand::rngs::StdRng;
 use rand::seq::IndexedRandom;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rand_distr::StandardNormal;
 use rayon::prelude::*;
 use std::mem::MaybeUninit;

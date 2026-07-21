@@ -20,9 +20,9 @@ jobs:
     name: "ruff format . --check"
     runs-on: ubuntu-slim
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Install Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.11"
       - run: |
@@ -34,9 +34,9 @@ jobs:
     name: "ruff check . "
     runs-on: ubuntu-slim
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Install Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.11"
       - run: |
@@ -48,7 +48,7 @@ jobs:
     name: Rustfmt
     runs-on: ubuntu-slim
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           submodules: true
       - uses: ./.github/actions/setup-rust
@@ -58,7 +58,7 @@ jobs:
     name: Clippy
     runs-on: ubuntu-slim
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           submodules: true
       - uses: ./.github/actions/setup-rust
@@ -88,7 +88,7 @@ jobs:
       stressor_cuda_rs: ${{ steps.filter.outputs.stressor_cuda_rs }}
       stressor_opencl: ${{ steps.filter.outputs.stressor_opencl }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: dorny/paths-filter@v4
@@ -140,7 +140,7 @@ jobs:
       needs.changes.outputs.nvoc_core == 'true'
     runs-on: ubuntu-slim
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           submodules: true
       - uses: ./.github/actions/setup-rust
@@ -158,7 +158,7 @@ jobs:
       needs.changes.outputs.nvoc_cli == 'true'
     runs-on: ubuntu-slim
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           submodules: true
       - uses: ./.github/actions/setup-rust
@@ -176,13 +176,13 @@ jobs:
       needs.changes.outputs.nvoc_python == 'true'
     runs-on: ubuntu-slim
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           submodules: true
       - uses: ./.github/actions/setup-rust
         with:
           cache: "true"
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: cargo test --package pynvoc --no-default-features
@@ -212,7 +212,7 @@ jobs:
       needs.changes.outputs.auto_optimizer == 'true'
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           submodules: true
       - uses: ./.github/actions/setup-rust
@@ -222,6 +222,10 @@ jobs:
         run: cargo clippy --package nvoc-auto-optimizer --all-targets --all-features -- -D warnings
       - name: Build
         run: cargo build --package nvoc-auto-optimizer --all-targets --all-features
+      # Hardware-gated tests are #[ignore]d and run separately in gpu-ci.yml;
+      # this runs the non-GPU unit tests, which previously never ran in CI.
+      - name: Test (non-GPU)
+        run: cargo test --package nvoc-auto-optimizer --all-targets --all-features
 
   rust-srv:
     name: srv (windows)
@@ -233,7 +237,7 @@ jobs:
       needs.changes.outputs.srv == 'true'
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           submodules: true
       - uses: ./.github/actions/setup-rust
@@ -253,7 +257,7 @@ jobs:
       needs.changes.outputs.stressor_cuda_rs == 'true'
     runs-on: ubuntu-slim
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           submodules: true
       - uses: ./.github/actions/setup-rust
@@ -281,17 +285,17 @@ jobs:
         python-version: ['3.11', '3.12']
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           submodules: true
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
       - uses: ./.github/actions/setup-rust
         with:
           cache: "true"
       - name: Set up uv
-        uses: astral-sh/setup-uv@v8.2.0
+        uses: astral-sh/setup-uv@v8.3.2
         with:
           version: "0.11.19"
           enable-cache: "true"
@@ -319,17 +323,17 @@ jobs:
       needs.changes.outputs.gui == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           submodules: true
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - uses: ./.github/actions/setup-rust
         with:
           cache: "true"
       - name: Set up uv
-        uses: astral-sh/setup-uv@v8.2.0
+        uses: astral-sh/setup-uv@v8.3.2
         with:
           version: "0.11.19"
           enable-cache: "true"
@@ -356,8 +360,8 @@ jobs:
       needs.changes.outputs.stressor_opencl == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: byte-compile
@@ -374,6 +378,16 @@ jobs:
           python -m pytest -q test_non_gpu_ci.py
         working-directory: cli-stressor-opencl
 
+  version-consistency:
+    name: workspace/package version consistency
+    runs-on: ubuntu-slim
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - run: python3 .github/scripts/check-versions.py
+
   rust-crate-versions:
     name: Rust duplicate-crate audit
     runs-on: ubuntu-latest
@@ -382,8 +396,8 @@ jobs:
     # covers expected semver-breaking transitive duplicates; any crate not on
     # the list that appears at multiple versions will fail this job.
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.11'
       - name: Check Cargo.lock for duplicate crate versions
@@ -401,6 +415,10 @@ jobs:
               "hashbrown",       # 0.15 / 0.17
               "libloading",      # 0.8.x (nvml-wrapper) / 0.9.x (cudarc)
               "r-efi",           # 5.x / 6.x
+              "rand",            # 0.9.x via half / 0.10.x CUDA stressor
+              "rand_core",       # 0.9.x via half / 0.10.x CUDA stressor
+              "rand_distr",      # 0.5.x via half / 0.6.x CUDA stressor
+              "syn",             # 2.x ecosystem / 3.x serde and thiserror derives
               "thiserror",       # 1.x / 2.x
               "thiserror-impl",  # 1.x / 2.x
               "windows-sys",     # 0.52 / 0.59 / 0.61
@@ -438,6 +456,7 @@ jobs:
       - rust-srv
       - rust-stressor-cuda-rs
       - rust-crate-versions
+      - version-consistency
       - python-tui
       - python-gui
       - python-stressor-opencl
