@@ -9,11 +9,11 @@ use self::phases::{
     run_gpuboostv3_short_phase, run_legacy_long_phase, run_legacy_short_phase, run_mem_oc_phase,
 };
 use self::runtime::{MinLoadPulse, retry_operation_with_backoff, run_output};
+use super::manual_override::ManualOverrideGuard;
 use super::oc_profile_function::{
     apply_autoscan_profile, break_point_continue, check_voltage_points, export_single_point,
     key_point_extractor,
 };
-use super::manual_override::ManualOverrideGuard;
 use super::progressbar::{ActiveScanProgressGuard, ScanProgress};
 use super::scan_log::{GpuVoltageRange, ScanDomain, ScanKind, ScanLogWriter, ScanMode};
 use super::scan_strategy::{FluctuationMode, FluctuationStrategy, StepController};
@@ -238,7 +238,12 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
         let recovery_method_switch: bool = common.recovery_method.unwrap_or(is_50_series);
 
         let (succeeded_freq, failed_freq, last_voltage_point, ultrafast_flag) =
-            break_point_continue(log_filename, testing_step, safe_elasticity_per_cycle, minimum_delta_core_freq_step)?;
+            break_point_continue(
+                log_filename,
+                testing_step,
+                safe_elasticity_per_cycle,
+                minimum_delta_core_freq_step,
+            )?;
         println!("Extracted Values:");
 
         if let Some(freq_s) = succeeded_freq {
@@ -719,7 +724,12 @@ pub fn autoscan_legacy(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> Resul
         let mut last_failed_freq = core_oc_safe_limit_ref;
 
         let (succeeded_freq, failed_freq, last_voltage_point, _ultrafast_flag) =
-            break_point_continue(log_filename, 1, safe_elasticity_per_cycle, minimum_delta_core_freq_step)?;
+            break_point_continue(
+                log_filename,
+                1,
+                safe_elasticity_per_cycle,
+                minimum_delta_core_freq_step,
+            )?;
         if let Some(freq_s) = succeeded_freq {
             println!("  - Last freq_delta succeeded: {} MHz", freq_s);
             last_succeeded_freq = (freq_s * 1000.0) as i32;

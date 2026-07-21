@@ -20,9 +20,9 @@
 use std::sync::Mutex;
 
 #[cfg(windows)]
-use std::sync::atomic::{AtomicBool, Ordering};
-#[cfg(windows)]
 use std::sync::Arc;
+#[cfg(windows)]
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use once_cell::sync::Lazy;
 
@@ -109,8 +109,8 @@ fn spawn_windows_listener(stop: Arc<AtomicBool>) {
 
     use windows_sys::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
     use windows_sys::Win32::System::Console::{
-        GetNumberOfConsoleInputEvents, GetStdHandle, ReadConsoleInputW, STD_INPUT_HANDLE,
-        INPUT_RECORD, KEY_EVENT, KEY_EVENT_RECORD, LEFT_ALT_PRESSED, RIGHT_ALT_PRESSED,
+        GetNumberOfConsoleInputEvents, GetStdHandle, INPUT_RECORD, KEY_EVENT, KEY_EVENT_RECORD,
+        LEFT_ALT_PRESSED, RIGHT_ALT_PRESSED, ReadConsoleInputW, STD_INPUT_HANDLE,
     };
     use windows_sys::Win32::System::Threading::WaitForSingleObject;
 
@@ -145,16 +145,16 @@ fn spawn_windows_listener(stop: Arc<AtomicBool>) {
 
             // Peek the count first so we never block on an empty queue.
             let mut available: u32 = 0;
-            if unsafe { GetNumberOfConsoleInputEvents(handle, &mut available) } == 0 || available == 0
+            if unsafe { GetNumberOfConsoleInputEvents(handle, &mut available) } == 0
+                || available == 0
             {
                 continue;
             }
 
             let mut buf: [INPUT_RECORD; 64] = unsafe { std::mem::zeroed() };
             let mut read: u32 = 0;
-            if unsafe {
-                ReadConsoleInputW(handle, buf.as_mut_ptr(), buf.len() as u32, &mut read)
-            } == 0
+            if unsafe { ReadConsoleInputW(handle, buf.as_mut_ptr(), buf.len() as u32, &mut read) }
+                == 0
                 || read == 0
             {
                 continue;

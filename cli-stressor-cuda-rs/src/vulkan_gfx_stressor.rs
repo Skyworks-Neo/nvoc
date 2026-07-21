@@ -314,7 +314,7 @@ fn run_vulkan_stress_loop(
                 let extent = vk::Extent3D {
                     width,
                     height,
-                    depth
+                    depth,
                 };
                 if seen.insert((extent.width, extent.height, extent.depth)) {
                     minor_batches.push(create_batch(extent)?);

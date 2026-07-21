@@ -386,7 +386,8 @@ pub fn breakpoint_from_file(
     min_step_khz: i32,
 ) -> io::Result<BreakPointResume> {
     let load = read_scan_log(path)?;
-    let resume = breakpoint_from_entries(&load.entries, testing_step, safe_elastic_khz, min_step_khz);
+    let resume =
+        breakpoint_from_entries(&load.entries, testing_step, safe_elastic_khz, min_step_khz);
     if resume_has_data(&resume) && !allow_corrupt_resume(path, load.had_errors) {
         return Ok((None, None, None, None));
     }

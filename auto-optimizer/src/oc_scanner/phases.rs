@@ -748,7 +748,10 @@ pub(super) fn run_mem_oc_phase(
 
     loop {
         let _pulse = if args.common.wakeup_load_needed {
-            Some(MinLoadPulse::wake(args.common.minload_exe, args.common.cuda_device))
+            Some(MinLoadPulse::wake(
+                args.common.minload_exe,
+                args.common.cuda_device,
+            ))
         } else {
             None
         };
