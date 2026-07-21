@@ -1,8 +1,8 @@
-use crate::style::stylize;
+use super::style::stylize;
 use anstream::eprintln;
 use ash::{Instance, vk};
 use cli_stressor_cuda_rs::PciBusAddress;
-use rand::Rng;
+use rand::RngExt;
 use std::collections::HashSet;
 use std::ffi::CStr;
 use std::sync::Arc;
@@ -156,9 +156,7 @@ fn run_vulkan_stress_loop(
                     eprintln!(
                         "{}",
                         stylize(
-                            &format!(
-                                "Your Target GPU may not have proper Vulkan driver, check compatibility..."
-                            ),
+                            "Your Target GPU may not have proper Vulkan driver, check compatibility...",
                             true
                         )
                     );

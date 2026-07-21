@@ -157,7 +157,7 @@ jobs:
         if: matrix.platform == 'windows'
 
       - name: Build Rust release binaries
-        run: cargo build --release --locked -p nvoc-cli -p nvoc-auto-optimizer -p cli-stressor-cuda-rs --features cuda,vulkan
+        run: cargo build --release --locked -p nvoc-cli -p nvoc-auto-optimizer
 
       - name: Build srv (Windows service)
         if: matrix.platform == 'windows'
@@ -188,14 +188,12 @@ jobs:
         run: |
           ./target/release/nvoc-cli --help
           ./target/release/nvoc-auto-optimizer --help
-          ./target/release/cli-stressor-cuda-rs --help
         if: matrix.platform == 'linux'
 
       - name: Smoke test release CLIs
         run: |
           .\target\release\nvoc-cli.exe --help
           .\target\release\nvoc-auto-optimizer.exe --help
-          .\target\release\cli-stressor-cuda-rs.exe --help
         if: matrix.platform == 'windows'
 
       - name: Stage release artifacts
@@ -214,8 +212,6 @@ jobs:
               ./dist/release/linux-amd64/nvoc-cli-${{ steps.version.outputs.version }}-linux-amd64 --help
             docker run --rm -v "$PWD:/work:ro" -w /work "$image" \
               ./dist/release/linux-amd64/nvoc-tools-${{ steps.version.outputs.version }}-linux-amd64/bin/nvoc-auto-optimizer --help
-            docker run --rm -v "$PWD:/work:ro" -w /work "$image" \
-              ./dist/release/linux-amd64/nvoc-tools-${{ steps.version.outputs.version }}-linux-amd64/bin/cli-stressor-cuda-rs --help
           done
 
       - name: Upload matrix artifacts

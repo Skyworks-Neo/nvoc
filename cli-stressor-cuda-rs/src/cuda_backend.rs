@@ -12,7 +12,7 @@ use cudarc::driver::{
 use cudarc::nvrtc::compile_ptx;
 use half::{bf16, f16};
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use std::ffi::{CStr, c_char};
 use std::sync::Arc;
 use std::time::Instant;

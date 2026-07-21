@@ -98,28 +98,22 @@ For autoscan-specific GPU generation support, see [Supported GPU Generations](#s
 |------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | Windows 10/11 or any Linux distribution                          | The tool is invoked via NVAPI/NVML and supports Windows 10/11 and *any Linux distribution using nvidia-open-dkms* (theoretically, ArchLinux + KDE, Ubuntu 22.04, Debian 12/13 tested). |
 | NVIDIA Driver (≥ 537, nvidia-open-dkms or proprietary for Linux) | Must support NVAPI/NVML interface for target GPU. Version 395 known not to work; hard to support Kepler and earlier GPUs with old drivers.                                             |
-| `cli-stressor` pressure test script (for auto OC)                | By default called by `test\test_cuda_windows.bat` on Windows and `test/test_cuda_linux.sh` on Linux.                                                                                    |
+| CUDA runtime libraries                                           | Required by the bundled `cli-stressor-cuda-rs` worker. The optimizer launches it as an isolated subprocess.                                                                            |
 | Administrator/Sudo privileges                                    | OC parameter writing requires admin privileges; most reads do not.                                                                                                                     |
 
-### Pressure Test Script Location (Default)
+### Integrated workflow
 
-```
-auto-optimizer/
-├── test/
-│   ├── test.bat
-│   ├── test_cuda_windows.bat
-│   ├── test_cuda_linux.sh
-│   ├── cli-stressor-cuda-rs-minload.sh
-│   └── dyn_load_export_cuda_rs_linux.sh
-└── ws/
-```
+Run `nvoc-auto-optimizer optimize --gpu <id>`. The optimizer handles workspace creation,
+reset, initial export, resumable autoscan, result fixing/import, and final export itself.
+Use `--mode ultrafast` or `--mode legacy`, and `--fresh` to discard resumable scan state.
 
 ### Build Dependencies (Only if building from source)
 
 - Rust toolchain
 - Build tools for target architecture
-- Linux CUDA RS autoscan requires a release binary built with CUDA support; build with
-  `cargo build --release -p cli-stressor-cuda-rs --features cuda,vulkan` when using the default Linux minload/Vulkan configs.
+- The default `stressor-bundled` feature builds CUDA and Vulkan support into the optimizer.
+- `stressor-external` is an optional fallback that launches a standalone
+  `cli-stressor-cuda-rs` executable with structured arguments, without a shell wrapper.
 
 ---
 
@@ -149,9 +143,6 @@ auto-optimizer/
 │   └── vfp.csv / vfp-final.csv  # fix_result post-processing results / final exported confirmation file
 ├── test/
 │   └── test.bat              # Pressure test wrapper script calling cli-stressor
-├── start.bat                 # Standard scan startup script
-├── start_ultrafast.bat       # Ultrafast scan startup script
-├── start_legacy.bat          # Legacy GPU scan startup script
 ├── GpuTdrRecovery.reg        # Registry related to TDR recovery
 ├── recover.bat               # Manual recovery script
 └── Cargo.toml
@@ -166,7 +157,7 @@ auto-optimizer/
 Run as **Administrator**:
 
 ```bat
-start.bat
+nvoc-auto-optimizer optimize
 ```
 
 The script will automatically:
@@ -180,7 +171,7 @@ The script will automatically:
 ### Ultrafast Scan (Recommended for saving time)
 
 ```bat
-start_ultrafast.bat
+nvoc-auto-optimizer optimize --mode ultrafast
 ```
 
 Only scans 4 key voltage points, other points are linearly interpolated, significantly speed up. See [Ultrafast Mode](#ultrafast-mode).
@@ -188,7 +179,7 @@ Only scans 4 key voltage points, other points are linearly interpolated, signifi
 ### Legacy GPU Scan (GTX 9 series and earlier / only Maxwell tested so far)
 
 ```bat
-start_legacy.bat
+nvoc-auto-optimizer optimize --mode legacy
 ```
 
 Uses global P0 frequency offset scanning, no VFP curve writing.
@@ -198,7 +189,7 @@ Uses global P0 frequency offset scanning, no VFP curve writing.
 To start from scratch (discarding breakpoint resume state):
 
 ```bat
-start.bat 1
+nvoc-auto-optimizer optimize --fresh
 ```
 
 Passing argument `1` will clear `ws\vfp.jsonl` and `ws\vfp-tem.csv`.
@@ -308,7 +299,7 @@ nvoc-auto-optimizer.exe sync-vfp-memory-pstate
 
 ### Phase 0: Preparation
 
-`start.bat` sequentially executes before calling `autoscan-vfp`:
+`nvoc-auto-optimizer optimize` sequentially executes before calling `autoscan-vfp`:
 
 1. `nvoc-cli get-info`: Print GPU info and identify generation.
 2. `nvoc-cli reset-pstate-clock-offsets`: Zero P-State frequency offsets to ensure a clean starting point.
@@ -348,7 +339,7 @@ Enabled with `-m`. After core scan finishes, the tool locks at the highest volta
 
 ### Phase 4: fix_result Post-processing
 
-`start.bat` automatically calls after `autoscan`:
+`nvoc-auto-optimizer optimize` automatically calls after `autoscan`:
 
 ```bat
 nvoc-auto-optimizer.exe fix-vfp-result -m 1
@@ -429,9 +420,9 @@ Structured results are appended to `ws\vfp.jsonl` after each voltage point finis
 
 If the JSONL file contains corrupt records, the tool prints the parse errors, recovers valid records where possible, and asks before resuming from recovered state.
 
-Whether exit, manual interrupt, or crash, **just rerun `start.bat` to resume**.
+Whether exit, manual interrupt, or crash, **just rerun `nvoc-auto-optimizer optimize` to resume**.
 
-To start over, run `start.bat 1` to clear log.
+To start over, run `nvoc-auto-optimizer optimize --fresh` to clear log.
 
 ---
 
@@ -469,7 +460,7 @@ Legacy OverVolt often fails in practice; VBIOS editing often recommended for pre
 - **System State**: Close other GPU loads (games, encoding); clean load environment vital for dynamic VFP export.
 - **Power**: Plug in laptops; ensure sufficient PSU for desktops.
 
-**BSOD / black screen / Linux drop / ERR during scanning is normal** — indicates frequency limit exceeded. Tool will backtrack. If system freezes > 3 min, force reboot and rerun `start.bat`. On Linux, exit GPU-using processes (including GUI) and run `linux_oc_recover.sh` to reset; reboot if deadlocked. Recovery tolerance on Linux lower than Windows TDR; save work.
+**BSOD / black screen / Linux drop / ERR during scanning is normal** — indicates frequency limit exceeded. Tool will backtrack. If system freezes > 3 min, force reboot and rerun `nvoc-auto-optimizer optimize`. On Linux, exit GPU-using processes (including GUI) and run `linux_oc_recover.sh` to reset; reboot if deadlocked. Recovery tolerance on Linux lower than Windows TDR; save work.
 
 ---
 

@@ -110,6 +110,14 @@ struct Args {
     )]
     config: Option<String>,
 
+    #[arg(
+        long,
+        value_parser = ["standard", "low-vram", "minload", "dynamic-export"],
+        conflicts_with = "config",
+        help = "Use an embedded NVOC stress profile"
+    )]
+    profile: Option<String>,
+
     #[arg(long, default_value_t = 90.0)]
     duration: f64,
 
@@ -359,6 +367,18 @@ fn precision_mixture_from_map(
 fn load_file_config(path: &str) -> Result<FileConfig, String> {
     let raw = fs::read_to_string(path).map_err(|e| format!("failed to read config: {e}"))?;
     toml::from_str(&raw).map_err(|e| format!("invalid TOML: {e}"))
+}
+
+#[cfg(feature = "cuda")]
+fn load_builtin_profile(name: &str) -> Result<FileConfig, String> {
+    let raw = match name {
+        "standard" => include_str!("../profiles/standard.toml"),
+        "low-vram" => include_str!("../profiles/low-vram.toml"),
+        "minload" => include_str!("../profiles/minload.toml"),
+        "dynamic-export" => include_str!("../profiles/dynamic-export.toml"),
+        other => return Err(format!("unknown embedded profile: {other}")),
+    };
+    toml::from_str(raw).map_err(|e| format!("invalid embedded profile {name}: {e}"))
 }
 
 #[cfg(feature = "cuda")]
@@ -942,10 +962,10 @@ fn print_summary(results: &[StressResult], info: &DeviceInfo) {
 }
 
 #[cfg(feature = "cuda")]
-fn main() {
+pub fn run_from_env() {
     let (mut args, cli_set) = parse_args_with_cli_sources();
-    let file_config = match &args.config {
-        Some(path) => match load_file_config(path) {
+    let file_config = match (&args.config, &args.profile) {
+        (Some(path), None) => match load_file_config(path) {
             Ok(parsed) => Some(parsed),
             Err(err) => {
                 eprintln!(
@@ -955,7 +975,15 @@ fn main() {
                 std::process::exit(2);
             }
         },
-        None => None,
+        (None, Some(profile)) => match load_builtin_profile(profile) {
+            Ok(parsed) => Some(parsed),
+            Err(err) => {
+                eprintln!("{}", stylize(&format!("Invalid profile: {}", err), true));
+                std::process::exit(2);
+            }
+        },
+        (None, None) => None,
+        (Some(_), Some(_)) => unreachable!("clap rejects --config with --profile"),
     };
     if let Err(err) = apply_file_config_to_args(&mut args, &cli_set, file_config.as_ref()) {
         eprintln!(
@@ -1091,14 +1119,14 @@ fn main() {
                         }
                         std::thread::sleep(std::time::Duration::from_millis(200));
                     }
-                    if exit_code == 0 {
-                        if let Err(e) = eng.stop() {
-                            eprintln!(
-                                "{}",
-                                stylize(&format!("[FATAL] Vulkan engine stop failed: {}", e), true)
-                            );
-                            exit_code = 1;
-                        }
+                    if exit_code == 0
+                        && let Err(e) = eng.stop()
+                    {
+                        eprintln!(
+                            "{}",
+                            stylize(&format!("[FATAL] Vulkan engine stop failed: {}", e), true)
+                        );
+                        exit_code = 1;
                     }
                     if exit_code == 0 {
                         println!(
@@ -1467,7 +1495,7 @@ fn main() {
 }
 
 #[cfg(all(not(feature = "cuda"), feature = "vulkan"))]
-fn main() {
+pub fn run_from_env() {
     let args = Args::parse();
     if args.vulkan_only || args.enable_vulkan_stress {
         let image_config = VulkanImageConfig {
@@ -1488,7 +1516,7 @@ fn main() {
 }
 
 #[cfg(all(not(feature = "cuda"), not(feature = "vulkan")))]
-fn main() {
+pub fn run_from_env() {
     let _ = Args::parse();
     eprintln!(
         "{}",
@@ -1498,4 +1526,9 @@ fn main() {
         )
     );
     std::process::exit(1);
+}
+
+#[allow(dead_code)]
+fn main() {
+    run_from_env();
 }

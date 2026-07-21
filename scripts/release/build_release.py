@@ -176,7 +176,6 @@ def main() -> int:
     inputs = {
         "nvoc-cli": target_release / f"nvoc-cli{suffix}",
         "nvoc-auto-optimizer": target_release / f"nvoc-auto-optimizer{suffix}",
-        "cli-stressor-cuda-rs": target_release / f"cli-stressor-cuda-rs{suffix}",
         "nvoc-tui": root / "tui" / "dist" / f"nvoc-tui{suffix}",
         "nvoc-gui": root / "gui" / "dist" / f"NVOC-GUI{suffix}",
         "nvoc-stressor-opencl": root
@@ -200,7 +199,6 @@ def main() -> int:
     bin_dir = tools_root / "bin"
     tools_outputs = {
         "nvoc-auto-optimizer": bin_dir / f"nvoc-auto-optimizer{suffix}",
-        "cli-stressor-cuda-rs": bin_dir / f"cli-stressor-cuda-rs{suffix}",
     }
     if args.platform == "windows":
         # NVOC-SRV: Windows service binaries ship inside the tools bundle.
@@ -230,14 +228,14 @@ def main() -> int:
         "cargo": run_text(["cargo", "--version"], root),
         "python": sys.version.split()[0],
         "feature_flags": {
-            "cli-stressor-cuda-rs": ["cuda", "vulkan"],
+            "nvoc-auto-optimizer": ["stressor-bundled"],
         },
         "linux_compatibility_baseline": (
             "Debian 12 / Ubuntu 22.04 and newer" if args.platform == "linux" else None
         ),
         "runtime_dependencies": [
             "NVIDIA driver libraries",
-            "CUDA runtime libraries for cli-stressor-cuda-rs",
+            "CUDA runtime libraries for the bundled cli-stressor-cuda-rs worker",
         ],
         "files": {},
     }

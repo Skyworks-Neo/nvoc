@@ -1,3 +1,8 @@
+extern crate self as cli_stressor_cuda_rs;
+
+#[path = "main.rs"]
+pub mod runner;
+
 use rand::rngs::StdRng;
 use rand::seq::IndexedRandom;
 use rand::{RngExt, SeedableRng};

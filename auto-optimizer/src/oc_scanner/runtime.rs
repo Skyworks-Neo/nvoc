@@ -1,5 +1,8 @@
+use crate::stressor_process::{bundled_command, external_command, is_bundled};
 use nvoc_core::{Error, GpuOperation, GpuTarget, run as nvoc_run};
-use std::process::{Child, Command, Stdio};
+#[cfg(windows)]
+use std::process::Command;
+use std::process::{Child, Stdio};
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -13,13 +16,19 @@ pub(super) struct MinLoadPulse(Option<Child>);
 
 impl MinLoadPulse {
     pub(super) fn wake(test_exe: &str, cuda_device: Option<u32>) -> Self {
-        let mut cmd = Command::new(test_exe);
+        let mut cmd = if is_bundled(test_exe) {
+            match bundled_command(Some("minload"), None, 15.0, cuda_device, &[]) {
+                Ok(command) => command,
+                Err(e) => {
+                    eprintln!("MinLoadPulse: failed to prepare bundled worker: {e}");
+                    return Self(None);
+                }
+            }
+        } else {
+            external_command(test_exe, Some("minload"), None, 15.0, cuda_device, &[])
+        };
         cmd.stdout(Stdio::null());
         cmd.stderr(Stdio::null());
-        if let Some(dev) = cuda_device {
-            cmd.env("CUDA_DEVICE_ORDER", "PCI_BUS_ID");
-            cmd.env("CUDA_VISIBLE_DEVICES", dev.to_string());
-        }
         match cmd.spawn() {
             Ok(child) => {
                 eprintln!("MinLoadPulse: spawned PID {} to wake GPU.", child.id(),);

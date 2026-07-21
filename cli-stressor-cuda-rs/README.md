@@ -57,7 +57,7 @@ CUDA 支持通过 feature flag 控制。
 cargo run -p cli-stressor-cuda-rs --features cuda -- --duration 30 --precisions fp16,tf32
 ```
 
-若使用 `auto-optimizer/test/cli-stressor-cuda-rs-minload.toml` 或启用 Vulkan 图形压力，请同时启用 `vulkan` feature：
+若使用内置 `minload` profile 或启用 Vulkan 图形压力，请同时启用 `vulkan` feature：
 
 ```bash
 cargo build --release -p cli-stressor-cuda-rs --features cuda,vulkan
@@ -163,7 +163,7 @@ CUDA support is behind a feature flag.
 cargo run -p cli-stressor-cuda-rs --features cuda -- --duration 30 --precisions fp16,tf32
 ```
 
-When using `auto-optimizer/test/cli-stressor-cuda-rs-minload.toml` or Vulkan graphics stress, build with both features:
+When using the built-in `minload` profile or Vulkan graphics stress, build with both features:
 
 ```bash
 cargo build --release -p cli-stressor-cuda-rs --features cuda,vulkan

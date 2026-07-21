@@ -101,6 +101,10 @@ pub struct StressorConfig {
     /// Extra arguments appended verbatim to each stressor invocation
     /// (e.g. ["--platform-index", "0", "--device-index", "1"] for OpenCL GPU selection).
     pub extra_args: Vec<String>,
+    /// Embedded bundled profile name; "auto" resolves from target VRAM.
+    pub profile: String,
+    /// Optional custom stressor TOML file.
+    pub config: Option<String>,
 }
 
 impl StressorConfig {
@@ -126,6 +130,17 @@ impl StressorConfig {
                 .get_many::<String>("stressor_extra_args")
                 .map(|v| v.cloned().collect())
                 .unwrap_or_default(),
+            profile: matches
+                .try_get_one::<String>("stressor_profile")
+                .ok()
+                .flatten()
+                .cloned()
+                .unwrap_or_else(|| "auto".to_string()),
+            config: matches
+                .try_get_one::<String>("stressor_config")
+                .ok()
+                .flatten()
+                .cloned(),
         }
     }
 }
@@ -158,11 +173,15 @@ impl AutoscanCommonConfig {
         // once so mode-specific configs only carry mode-specific fields.
         AutoscanCommonConfig {
             test_exe: matches
-                .get_one::<String>("test_exe")
+                .try_get_one::<String>("test_exe")
+                .ok()
+                .flatten()
                 .cloned()
                 .unwrap_or_else(|| default_test_exe_path().to_string()),
             minload_exe: matches
-                .get_one::<String>("minload_exe")
+                .try_get_one::<String>("minload_exe")
+                .ok()
+                .flatten()
                 .cloned()
                 .unwrap_or_else(|| default_minload_exe_path().to_string()),
             log: matches
@@ -263,6 +282,8 @@ mod tests {
         assert_eq!(cfg.common.recovery_method, None);
         assert_eq!(cfg.common.stressor.cuda_device, None);
         assert!(cfg.common.stressor.extra_args.is_empty());
+        assert_eq!(cfg.common.stressor.profile, "auto");
+        assert_eq!(cfg.common.stressor.config, None);
         assert!(!cfg.is_ultrafast);
         assert_eq!(cfg.point_seq, "-");
         assert_eq!(cfg.output_csv, default_vfp_temp_csv_path());
@@ -282,6 +303,8 @@ mod tests {
         assert_eq!(cfg.common.recovery_method, None);
         assert_eq!(cfg.common.stressor.cuda_device, None);
         assert!(cfg.common.stressor.extra_args.is_empty());
+        assert_eq!(cfg.common.stressor.profile, "auto");
+        assert_eq!(cfg.common.stressor.config, None);
     }
 
     #[test]
