@@ -255,7 +255,7 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
 name = "cli-stressor-cuda-rs"
-version = "0.2.0-alpha.1"
+version = "0.2.0-alpha.2"
 dependencies = [
  "anstream",
  "ash",
@@ -1118,7 +1118,7 @@ dependencies = [
 
 [[package]]
 name = "nvoc-auto-optimizer"
-version = "0.2.0-alpha.1"
+version = "0.2.0-alpha.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -1139,7 +1139,7 @@ dependencies = [
 
 [[package]]
 name = "nvoc-cli"
-version = "0.2.0-alpha.1"
+version = "0.2.0-alpha.2"
 dependencies = [
  "clap",
  "nvml-wrapper",
@@ -1151,14 +1151,14 @@ dependencies = [
 
 [[package]]
 name = "nvoc-cli-common"
-version = "0.2.0-alpha.1"
+version = "0.2.0-alpha.2"
 dependencies = [
  "colored 3.1.1",
 ]
 
 [[package]]
 name = "nvoc-core"
-version = "0.2.0-alpha.1"
+version = "0.2.0-alpha.2"
 dependencies = [
  "nvapi-hi",
  "nvml-wrapper",
@@ -1168,7 +1168,7 @@ dependencies = [
 
 [[package]]
 name = "nvoc-srv"
-version = "0.2.0-alpha.1"
+version = "0.2.0-alpha.2"
 dependencies = [
  "async-stream",
  "chrono",
@@ -1267,7 +1267,7 @@ dependencies = [
 
 [[package]]
 name = "pynvoc"
-version = "0.2.0-alpha.1"
+version = "0.2.0-alpha.2"
 dependencies = [
  "nvapi-hi",
  "nvml-wrapper",
