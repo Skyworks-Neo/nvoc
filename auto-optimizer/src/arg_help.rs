@@ -84,7 +84,7 @@ fn optimize_command() -> Command {
                     .long("stressor-profile")
                     .value_name("PROFILE")
                     .num_args(1)
-                    .value_parser(["auto", "low-vram", "standard"])
+                    .value_parser(["auto", "low-vram", "standard", "40-50"])
                     .help("Bundled CUDA stress profile (default: auto)"),
             )
             .arg(
@@ -338,7 +338,7 @@ fn vfp_autoscan_command(legacy: bool) -> Command {
                     .long("stressor-profile")
                     .value_name("PROFILE")
                     .num_args(1)
-                    .value_parser(["auto", "low-vram", "standard"])
+                    .value_parser(["auto", "low-vram", "standard", "40-50"])
                     .help("Bundled CUDA stress profile; defaults to auto VRAM selection"),
             )
             .arg(

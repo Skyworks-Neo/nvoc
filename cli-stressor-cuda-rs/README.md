@@ -137,6 +137,7 @@ cargo run -p cli-stressor-cuda-rs --features cuda -- --config ./stressor.toml
 
 - 参数优先级：`命令行显式传入 > config 文件 > 内置默认值`
 - 内置 autoscan profile 位于 `cli-stressor-cuda-rs/profiles/`：
+  - `40-50.toml`：面向 NVIDIA GeForce RTX 40/50 系显卡，由 auto-optimizer 自动选择。
   - `standard.toml`：默认配置，面向 8G+ 显存显卡。
   - `low-vram.toml`：较低显存配置，面向 6G-8G 显存显卡。
 - `kernel_mixture` 支持两种写法：
@@ -333,6 +334,7 @@ cargo run -p cli-stressor-cuda-rs --features cuda -- --config ./stressor.toml
 
 - Precedence: `explicit CLI value > config file > built-in default`
 - Built-in autoscan profiles are under `cli-stressor-cuda-rs/profiles/`:
+  - `40-50.toml`: tuned for NVIDIA GeForce RTX 40/50-series GPUs and selected automatically by auto-optimizer.
   - `standard.toml`: default profile for cards with 8G+ VRAM.
   - `low-vram.toml`: lower-VRAM profile for cards with 6G-8G VRAM.
 - `kernel_mixture` supports two formats:
