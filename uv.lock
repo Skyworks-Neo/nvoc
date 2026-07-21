@@ -1087,7 +1087,7 @@ wheels = [
 
 [[package]]
 name = "nvoc-cli-stressor"
-version = "0.2.0a1"
+version = "0.2.0a2"
 source = { virtual = "cli-stressor-opencl" }
 dependencies = [
     { name = "numpy" },
@@ -1104,7 +1104,7 @@ requires-dist = [
 
 [[package]]
 name = "nvoc-gui"
-version = "0.2.0a1"
+version = "0.2.0a2"
 source = { virtual = "gui" }
 dependencies = [
     { name = "customtkinter" },
@@ -1154,7 +1154,7 @@ dev = [
 
 [[package]]
 name = "nvoc-tui"
-version = "0.2.0a1"
+version = "0.2.0a2"
 source = { editable = "tui" }
 dependencies = [
     { name = "plotext" },
@@ -1480,7 +1480,7 @@ wheels = [
 
 [[package]]
 name = "pynvoc"
-version = "0.2.0a1"
+version = "0.2.0a2"
 source = { editable = "nvoc-python" }
 
 [package.dev-dependencies]
