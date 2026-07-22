@@ -479,7 +479,21 @@ fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
     if let Some((_sensor, temp)) = status.sensors.first() {
         map.insert("temperature_c".into(), f64_value(*temp as f64));
     }
-    if let Some((_channel, power)) = status.power.iter().next()
+    // Live board power draw (watts). Prefer the NVML reading
+    // (`nvmlDeviceGetPowerUsage`, same source as nvidia-smi): on laptop GPUs the
+    // NVAPI power-topology path returns a dimensionless percentage (or nothing),
+    // so it is neither accurate nor usually present. Fall back to the NVAPI
+    // value only when NVML is unavailable.
+    let mut power_w_set = false;
+    if target.has_nvml()
+        && let Ok(device) = target_nvml_device(target)
+        && let Ok(mw) = device.power_usage()
+    {
+        map.insert("power_w".into(), f64_value(mw as f64 / 1000.0));
+        power_w_set = true;
+    }
+    if !power_w_set
+        && let Some((_channel, power)) = status.power.iter().next()
         && let Some(watts) = first_number_in_display(power)
     {
         map.insert("power_w".into(), f64_value(watts));

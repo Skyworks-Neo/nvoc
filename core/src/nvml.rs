@@ -64,6 +64,24 @@ pub fn query_nvml_power_watts(nvml: &Nvml, gpu_id: u32) -> Option<(f32, f32, f32
     ))
 }
 
+/// Query the live (instantaneous) GPU power draw in watts via NVML.
+///
+/// Wraps `nvmlDeviceGetPowerUsage` (`Device::power_usage`), which reports the
+/// current board power draw in milliwatts — the same reading `nvidia-smi`
+/// shows. This is the only reliable live-draw source on laptop GPUs: the
+/// NVAPI power-topology path (`NvAPI_GPU_ClientPowerTopologyGetStatus`) returns
+/// a dimensionless percentage and is typically empty on mobile parts, while
+/// [`query_nvml_power_watts`] reads the configurable power *limit*, not the
+/// actual draw (and laptops usually have no user-configurable limit, so it
+/// returns `None`).
+///
+/// `gpu_id` uses the NVAPI encoding: `PCI_Bus_Number × 256`.
+pub fn query_nvml_power_draw_watts(nvml: &Nvml, gpu_id: u32) -> Option<f32> {
+    let device = find_nvml_device(nvml, gpu_id)?;
+    let mw = device.power_usage().ok()?;
+    Some(mw as f32 / 1000.0)
+}
+
 pub fn set_nvml_auto_boost(nvml: &Nvml, gpu_id: u32, enabled: bool) -> Result<(), Error> {
     let mut device = find_nvml_device_err(nvml, gpu_id)?;
     device

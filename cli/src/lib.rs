@@ -1380,6 +1380,7 @@ fn list_gpus_execution(
 fn discovery_backend_set(command: Command, adapter: BackendAdapter) -> BackendSet {
     match (command, adapter) {
         (Command::GetInfo, BackendAdapter::Nvapi) => BackendSet::Both,
+        (Command::GetStatus, BackendAdapter::Nvapi) => BackendSet::Both,
         (Command::GetUuid, BackendAdapter::Nvapi) => BackendSet::Both,
         (Command::SetPstateLock, BackendAdapter::Nvapi) => BackendSet::Both,
         (_, BackendAdapter::Nvapi) => BackendSet::Nvapi,
@@ -1445,8 +1446,20 @@ fn execute_target(
             let verbose = option_bool(invocation, "verbose", false)?;
             let mut value = serde_json::to_value(run(target, QueryGpuStatus)?.output)?;
             // The VFP table is large; omit it from get-status unless --verbose.
-            if !verbose && let Some(map) = value.as_object_mut() {
-                map.remove("vfp");
+            if let Some(map) = value.as_object_mut() {
+                if !verbose {
+                    map.remove("vfp");
+                }
+                // NVAPI's power topology reports a dimensionless percentage and
+                // is empty on most laptop GPUs. Augment with the live board
+                // power draw (watts) from NVML (`nvmlDeviceGetPowerUsage`, the
+                // same source nvidia-smi uses) when an NVML backend is present.
+                if let Ok(nvml) = target.nvml()
+                    && let Some(draw_w) =
+                        nvoc_core::nvml::query_nvml_power_draw_watts(nvml, target.id.0)
+                {
+                    map.insert("power_draw_w".to_string(), json!(draw_w));
+                }
             }
             Ok(value)
         }
