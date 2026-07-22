@@ -1441,7 +1441,15 @@ fn execute_target(
             let info = run(target, QueryGpuInfo)?.output;
             Ok(Value::String(info.uuid.unwrap_or_default()))
         }
-        Command::GetStatus => Ok(serde_json::to_value(run(target, QueryGpuStatus)?.output)?),
+        Command::GetStatus => {
+            let verbose = option_bool(invocation, "verbose", false)?;
+            let mut value = serde_json::to_value(run(target, QueryGpuStatus)?.output)?;
+            // The VFP table is large; omit it from get-status unless --verbose.
+            if !verbose && let Some(map) = value.as_object_mut() {
+                map.remove("vfp");
+            }
+            Ok(value)
+        }
         Command::GetSettings => Ok(serde_json::to_value(run(target, QueryGpuSettings)?.output)?),
         Command::GetVfp => get_vfp(target, invocation),
         Command::GetVfpPointVoltageMv => {

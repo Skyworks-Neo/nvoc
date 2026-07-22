@@ -7,6 +7,16 @@ from ..widgets import mnemonic_text
 from .base import PaneController
 
 
+def _temp_c_str(value) -> str:
+    """Format a temperature for display as a rounded integer (°C)."""
+    if value is None:
+        return "---"
+    try:
+        return f"{round(float(value))}"
+    except (TypeError, ValueError):
+        return "---"
+
+
 class DashboardController(PaneController):
     def __init__(self, app) -> None:
         super().__init__(app)
@@ -65,7 +75,7 @@ class DashboardController(PaneController):
             f"MEM: {status.get('mem_clock_mhz', '---')} MHz",
             f"VOLT: {status.get('voltage_mv', '---')} mV",
             f"VFP LOCK: {vfp_lock_text}",
-            f"TEMP: {status.get('temperature_c', '---')} C",
+            f"TEMP: {_temp_c_str(status.get('temperature_c'))} C",
             f"PWR: {status.get('power_w', '---')} W",
             f"ARCH: {architecture}",
         ]
