@@ -1079,6 +1079,42 @@ mod tests {
     }
 
     #[test]
+    fn human_output_renders_p2_monitoring_fields() {
+        nvoc_cli_common::color::init(true);
+        // P2 dimensions surfaced in get-status: the board/GPU power split
+        // (both topology channels), the perf-decrease reason bitset, the fan
+        // arbiter (zero-RPM) status/control, and the legacy thermal/fan levels.
+        let output = json!({
+            "power": {
+                "TotalGpuPower": 84,
+                "NormalizedTotalPower": 82
+            },
+            "performance_decrease": ["POWER_CONTROL"],
+            "fan_arbiter_status": { "0": { "fan_stopped": false } },
+            "fan_arbiter_control": { "0": { "stop_fan": true } },
+            "current_thermal_level": 3,
+            "current_fan_speed_level": 2
+        });
+
+        let rendered = format_human_output("get-status", &output).join("\n");
+
+        // Both power topology channels (board/GPU split) are shown.
+        assert!(rendered.contains("TotalGpuPower"));
+        assert!(rendered.contains("NormalizedTotalPower"));
+        // Perf-decrease reason surfaces (bitflags serialize as a name array).
+        assert!(rendered.contains("POWER_CONTROL"));
+        assert!(rendered.contains("Performance Decrease"));
+        // Fan arbiter (zero-RPM) and legacy levels. Field labels are title-cased
+        // by the generic renderer (snake_case -> "Fan Stopped" / "Stop Fan").
+        assert!(rendered.contains("Fan Arbiter Status"));
+        assert!(rendered.contains("Fan Arbiter Control"));
+        assert!(rendered.contains("Fan Stopped"));
+        assert!(rendered.contains("Stop Fan"));
+        assert!(rendered.contains("Current Thermal Level"));
+        assert!(rendered.contains("Current Fan Speed Level"));
+    }
+
+    #[test]
     fn human_output_compacts_range_fields() {
         nvoc_cli_common::color::init(true);
         let output = json!({
