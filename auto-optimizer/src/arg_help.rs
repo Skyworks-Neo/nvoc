@@ -319,15 +319,6 @@ fn vfp_autoscan_command(legacy: bool) -> Command {
             .num_args(1..)
             .allow_hyphen_values(true)
             .help("Extra arguments appended to each stressor invocation"),
-    )
-    .arg(
-        Arg::new("manual_override")
-            .long("manual-override")
-            .action(ArgAction::SetTrue)
-            .help(
-                "[Windows] Enable Alt+P/Alt+F to manually end the current pressure test \
-                 and force its result pass/fail (debug aid; no effect on other platforms)",
-            ),
     );
 
     #[cfg(feature = "stressor-bundled")]
