@@ -3,18 +3,9 @@ from __future__ import annotations
 from rich.text import Text
 from textual.widgets import Button, Input, Static
 
+from ..metrics_format import _format_metric_lines
 from ..widgets import mnemonic_text
 from .base import PaneController
-
-
-def _temp_c_str(value) -> str:
-    """Format a temperature for display as a rounded integer (°C)."""
-    if value is None:
-        return "---"
-    try:
-        return f"{round(float(value))}"
-    except (TypeError, ValueError):
-        return "---"
 
 
 class DashboardController(PaneController):
@@ -62,23 +53,7 @@ class DashboardController(PaneController):
         info = self.app.cache.info
         status = self.app.cache.status
         architecture = info.get("arch") or info.get("codename") or "---"
-        if status.get("vfp_locked"):
-            lock_mv = status.get("vfp_lock_mv")
-            if isinstance(lock_mv, (int, float)):
-                vfp_lock_text = f"ON ({lock_mv} mV)"
-            else:
-                vfp_lock_text = "ON"
-        else:
-            vfp_lock_text = "OFF"
-        lines = [
-            f"GPU: {status.get('gpu_clock_mhz', '---')} MHz",
-            f"MEM: {status.get('mem_clock_mhz', '---')} MHz",
-            f"VOLT: {status.get('voltage_mv', '---')} mV",
-            f"VFP LOCK: {vfp_lock_text}",
-            f"TEMP: {_temp_c_str(status.get('temperature_c'))} C",
-            f"PWR: {status.get('power_w', '---')} W",
-            f"ARCH: {architecture}",
-        ]
+        lines = _format_metric_lines(status, architecture)
         self.app.query_one("#metrics", Static).update("\n".join(lines))
 
     def activate_button(self, button_id: str) -> bool:
