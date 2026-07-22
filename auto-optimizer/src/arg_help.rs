@@ -321,6 +321,19 @@ fn vfp_autoscan_command(legacy: bool) -> Command {
             .help("Extra arguments appended to each stressor invocation"),
     );
 
+    #[cfg(debug_assertions)]
+    {
+        cmd = cmd.arg(
+            Arg::new("manual_override")
+                .long("manual-override")
+                .action(ArgAction::SetTrue)
+                .help(
+                    "[development builds only] Enable manual pressure-test results via \
+                     p/pass or f/fail followed by Enter",
+                ),
+        );
+    }
+
     #[cfg(feature = "stressor-bundled")]
     {
         cmd = cmd
