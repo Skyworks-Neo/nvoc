@@ -153,10 +153,18 @@ def test_normalize_status_json_output() -> None:
         "sensors": [
           [
             {
-              "controller": "GpuInternal",
-              "target": "Gpu"
+              "target": "Gpu",
+              "name": "Core"
             },
             37
+          ],
+          [
+            {
+              "target": "Gpu",
+              "name": "Memory Module A0 Hotspot",
+              "sensor_mask_number": 11
+            },
+            48.25
           ]
         ]
       }
