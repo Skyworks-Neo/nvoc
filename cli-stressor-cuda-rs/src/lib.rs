@@ -309,13 +309,46 @@ fn is_int_precision(kind: PrecisionKind) -> bool {
 /// producing load on the compatible ones) instead of hard-failing.
 pub fn kernel_precision_compatible(kind: KernelType, precision: PrecisionKind) -> bool {
     match (kind, precision) {
-        // INT16/INT32 only have the integer-ALU kernel.
-        (KernelType::IntAlu, _) => true,
+        // IntAlu is meaningful only for the dedicated integer precisions.
+        (KernelType::IntAlu, precision) => is_int_precision(precision),
         (_, PrecisionKind::INT16) | (_, PrecisionKind::INT32) => false,
         // INT8 GEMM is supported via cuBLAS; other kernels (memcpy/memset/…)
         // also accept an INT8 precision by element size, so allow them.
         _ => true,
     }
+}
+
+/// Reject explicit per-kernel IntAlu precision overrides that would mislabel
+/// an INT32 workload as floating-point stress.
+pub fn validate_intalu_precision_overrides(
+    overrides: &[KernelParamOverride],
+) -> Result<(), String> {
+    for item in overrides {
+        if item.kind != KernelType::IntAlu {
+            continue;
+        }
+
+        let specs = item.precisions.iter().flatten().chain(
+            item.precision_mixture
+                .iter()
+                .flatten()
+                .map(|entry| &entry.spec),
+        );
+        let mut incompatible = Vec::new();
+        for spec in specs {
+            if !is_int_precision(spec.kind) && !incompatible.contains(&spec.name) {
+                incompatible.push(spec.name);
+            }
+        }
+
+        if !incompatible.is_empty() {
+            return Err(format!(
+                "INTALU supports only INT8/INT16/INT32; incompatible precision(s): {}",
+                incompatible.join(", ")
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub fn parse_int_list(raw: &str) -> Result<Vec<usize>, String> {
@@ -1049,6 +1082,9 @@ pub fn run_stress_for_precision<B: Backend>(
         } else {
             spec
         };
+        if !kernel_precision_compatible(kernel_kind, op_spec.kind) {
+            continue;
+        }
         let size_pool = if op_spec.kind == PrecisionKind::FP64 && params.matrix_sizes_default {
             effective_config.fp64_matrix_sizes
         } else {
@@ -1266,6 +1302,9 @@ pub fn run_stress_mixed<B: Backend>(
         } else {
             *supported.choose(&mut rng).unwrap_or(&supported[0])
         };
+        if !kernel_precision_compatible(kernel_kind, op_spec.kind) {
+            continue;
+        }
         let size_pool = if op_spec.kind == PrecisionKind::FP64 && params.matrix_sizes_default {
             effective_config.fp64_matrix_sizes
         } else {
@@ -1399,8 +1438,9 @@ pub fn run_stress_mixed<B: Backend>(
 #[cfg(test)]
 mod tests {
     use super::{
-        DeviceInfo, KernelType, PrecisionKind, estimate_kernel_work_flops, parse_kernel_type,
-        parse_precision_list, validation_enabled,
+        DeviceInfo, KernelType, PrecisionKind, estimate_kernel_work_flops,
+        parse_kernel_param_overrides, parse_kernel_type, parse_precision_list,
+        validate_intalu_precision_overrides, validation_enabled,
     };
 
     #[test]
@@ -1515,10 +1555,37 @@ mod tests {
             KernelType::IntAlu,
             PrecisionKind::INT8
         ));
+        // IntAlu must never silently execute an INT32 workload for an FP label.
+        for kind in [
+            PrecisionKind::FP64,
+            PrecisionKind::FP32,
+            PrecisionKind::TF32,
+            PrecisionKind::FP16,
+            PrecisionKind::BF16,
+            PrecisionKind::FP8E4M3FN,
+        ] {
+            assert!(!kernel_precision_compatible(KernelType::IntAlu, kind));
+        }
         // FP precisions pair with GEMM normally.
         assert!(kernel_precision_compatible(
             KernelType::Gemm,
             PrecisionKind::FP32
         ));
+    }
+
+    #[test]
+    fn intalu_precision_overrides_reject_floats() {
+        let invalid = parse_kernel_param_overrides("intalu:precisions=fp16|fp32").unwrap();
+        let err = validate_intalu_precision_overrides(&invalid).unwrap_err();
+        assert!(err.contains("INTALU supports only INT8/INT16/INT32"));
+        assert!(err.contains("FP16"));
+        assert!(err.contains("FP32"));
+
+        let invalid_mixture =
+            parse_kernel_param_overrides("intalu:precision_mixture=fp16:0.5|int32:0.5").unwrap();
+        assert!(validate_intalu_precision_overrides(&invalid_mixture).is_err());
+
+        let valid = parse_kernel_param_overrides("intalu:precisions=int8|int16|int32").unwrap();
+        assert!(validate_intalu_precision_overrides(&valid).is_ok());
     }
 }

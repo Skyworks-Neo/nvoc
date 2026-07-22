@@ -22,7 +22,7 @@ use cli_stressor_cuda_rs::{
     Backend, DeviceInfo, KernelParamOverride, KernelType, PrecisionKind, PrecisionMixtureEntry,
     PrecisionSpec, StressResult, StressRunConfig, parse_kernel_mixture,
     parse_kernel_param_overrides, parse_kernel_type, parse_kernel_type_list, parse_precision_list,
-    parse_stream_mode, run_stress_mixed,
+    parse_stream_mode, run_stress_mixed, validate_intalu_precision_overrides,
 };
 #[cfg(feature = "cuda")]
 use serde::Deserialize;
@@ -1263,7 +1263,9 @@ pub fn run_from_env() {
         }
     }
     if !incompatible.is_empty() {
-        let need = if incompatible.iter().any(|n| *n == "INT16" || *n == "INT32") {
+        let need = if kernel_types.iter().all(|kind| *kind == KernelType::IntAlu) {
+            "INTALU supports only INT8/INT16/INT32"
+        } else if incompatible.iter().any(|n| *n == "INT16" || *n == "INT32") {
             "INT16/INT32 have no GEMM path; add `intalu` to --kernel-types"
         } else {
             "no compatible kernel type for the requested precision"
@@ -1344,6 +1346,16 @@ pub fn run_from_env() {
         }
     };
     let kernel_param_overrides = merge_kernel_overrides(config_overrides, cli_overrides);
+    if let Err(err) = validate_intalu_precision_overrides(&kernel_param_overrides) {
+        eprintln!(
+            "{}",
+            stylize(
+                &format!("Invalid kernel precision configuration: {err}"),
+                true
+            )
+        );
+        std::process::exit(2);
+    }
 
     let mut overall_passed = true;
 

@@ -114,9 +114,12 @@ impl CudaBackend {
             PrecisionKind::INT8 => 8,
             PrecisionKind::INT16 => 16,
             PrecisionKind::INT32 => 32,
-            // Other precisions shouldn't reach the intalu path; default to full
-            // 32-bit integer MAD stress.
-            _ => 32,
+            _ => {
+                return Err(BackendError::Other(format!(
+                    "INTALU supports only INT8/INT16/INT32, got {}",
+                    spec.name
+                )));
+            }
         };
 
         let mut xs = Vec::with_capacity(lane_count);
