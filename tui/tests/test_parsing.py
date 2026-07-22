@@ -161,7 +161,7 @@ def test_normalize_status_json_output() -> None:
           [
             {
               "target": "Gpu",
-              "name": "Memory Module A0 Hotspot",
+              "name": "Memory Module Hotspot",
               "sensor_mask_number": 11
             },
             48.25
