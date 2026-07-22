@@ -101,7 +101,7 @@ jobs:
             shell: pwsh
           - platform: windows
             arch: arm64
-            os: windows-11-arm
+            os: windows-11-vs2026-arm
             python-architecture: arm64
             shell: pwsh
     runs-on: ${{ matrix.os }}

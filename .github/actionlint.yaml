@@ -5,7 +5,7 @@ self-hosted-runner:
     - opencl
     # GitHub-hosted slim runner; not yet in actionlint's built-in label list.
     - ubuntu-slim
-    # GitHub-hosted Windows arm64 public preview runner.
+    # GitHub-hosted ARM preview runners
     - windows-11-arm
-
+    - windows-11-vs2026-arm
 config-variables: null
