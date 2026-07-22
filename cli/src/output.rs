@@ -270,6 +270,30 @@ fn format_value_block_with_context(value: &Value, indent: usize, context: &str) 
                 }
 
                 match value {
+                    Value::Object(child) if key == "utilization" => {
+                        lines.push(format!(
+                            "{}{}",
+                            indent_spaces(indent),
+                            nvoc_cli_common::color::stylize_title(&format_label(key))
+                        ));
+                        lines.extend(format_utilization_entries(indent + 1, child));
+                    }
+                    Value::Object(child) if key == "memory" && child.contains_key("dedicated") => {
+                        lines.push(format!(
+                            "{}{}",
+                            indent_spaces(indent),
+                            nvoc_cli_common::color::stylize_title(&format_label(key))
+                        ));
+                        lines.extend(format_memory_entries(indent + 1, child));
+                    }
+                    Value::Array(items) if key == "sensors" => {
+                        lines.push(format!(
+                            "{}{}",
+                            indent_spaces(indent),
+                            nvoc_cli_common::color::stylize_title(&format_label(key))
+                        ));
+                        lines.extend(format_sensors_array(indent + 1, items));
+                    }
                     Value::Object(child) if object_is_compact_scalar_group(child) => {
                         lines.push(format_scalar_object_line(
                             indent,
@@ -643,6 +667,137 @@ fn format_field_line(indent: usize, key: &str, value: &Value) -> String {
     )
 }
 
+/// Render the per-domain utilization map with friendlier labels (FrameBuffer is
+/// NVAPI's name for the memory-controller domain) and a `%` unit on each value.
+fn format_utilization_entries(
+    indent: usize,
+    object: &serde_json::Map<String, Value>,
+) -> Vec<String> {
+    sorted_object_entries(object)
+        .iter()
+        .map(|(key, value)| {
+            let label = match key.as_str() {
+                "FrameBuffer" => "Memory Controller",
+                "VideoEngine" => "Video Engine",
+                "BusInterface" => "Bus Interface",
+                other => other,
+            };
+            let rendered = match value {
+                Value::Number(number) => format!("{}%", number),
+                _ => format_scalar(key, value),
+            };
+            format!(
+                "{}{}: {}",
+                indent_spaces(indent),
+                nvoc_cli_common::color::stylize_title(label),
+                nvoc_cli_common::color::stylize(&rendered, false)
+            )
+        })
+        .collect()
+}
+
+/// Render the VRAM info map. Size fields are kibibytes -> shown in MB;
+/// `dedicated_evictions` is a plain count (no unit).
+fn format_memory_entries(
+    indent: usize,
+    object: &serde_json::Map<String, Value>,
+) -> Vec<String> {
+    sorted_object_entries(object)
+        .iter()
+        .map(|(key, value)| {
+            let rendered = if key.as_str() == "dedicated_evictions" {
+                format_scalar(key, value)
+            } else if let Some(kib) = value.as_f64() {
+                format_measurement(kib / 1024.0, "MB")
+            } else {
+                format_scalar(key, value)
+            };
+            format!(
+                "{}{}: {}",
+                indent_spaces(indent),
+                nvoc_cli_common::color::stylize_title(&format_label(key)),
+                nvoc_cli_common::color::stylize(&rendered, false)
+            )
+        })
+        .collect()
+}
+
+/// Render the thermal `sensors` array. Each entry is a `[descriptor, temp]`
+/// tuple (sub-degree celsius). The `target` field is dropped (it adds no useful
+/// information beyond the sensor name) and each temperature gets a `C` unit.
+/// Sensor ranges are temperature limits, also shown with `C`; an all-zero range
+/// (the undocumented sensors carry no limit data) is omitted as uninformative.
+fn format_sensors_array(indent: usize, items: &[Value]) -> Vec<String> {
+    let mut lines = Vec::new();
+    for sensor in items {
+        let Some(tuple) = sensor.as_array() else {
+            lines.extend(format_value_block_with_context(sensor, indent, "sensors"));
+            continue;
+        };
+        let descriptor = tuple.get(0).and_then(Value::as_object);
+        let temp = tuple.get(1);
+
+        if let Some(descriptor) = descriptor {
+            lines.extend(format_sensor_descriptor(indent, descriptor));
+        }
+        if let Some(temp) = temp {
+            let rendered = match temp {
+                Value::Number(number) => format!("{} C", number),
+                _ => format_scalar("", temp),
+            };
+            lines.push(format!(
+                "{}- {}",
+                indent_spaces(indent),
+                nvoc_cli_common::color::stylize(&rendered, false)
+            ));
+        }
+    }
+    lines
+}
+
+/// Render a sensor descriptor (everything except `target`) as indented fields.
+/// `name` and `sensor_mask_number` are emitted verbatim; `range` is a
+/// temperature limit shown as `Max N C, Min N C`, skipped when it is `{0, 0}`
+/// (the undocumented thermal-sensors API reports no limits for hot-spot /
+/// memory sensors, so a zero range carries no information).
+fn format_sensor_descriptor(indent: usize, descriptor: &serde_json::Map<String, Value>) -> Vec<String> {
+    let field = |key: &str, value: &Value| {
+        format!(
+            "{}{}: {}",
+            indent_spaces(indent),
+            nvoc_cli_common::color::stylize_title(&format_label(key)),
+            nvoc_cli_common::color::stylize(&format_scalar(key, value), false)
+        )
+    };
+
+    let mut lines = Vec::new();
+    if let Some(name) = descriptor.get("name") {
+        lines.push(field("name", name));
+    }
+    if let Some(range) = descriptor.get("range").and_then(Value::as_object) {
+        let max = range.get("max").and_then(Value::as_f64);
+        let min = range.get("min").and_then(Value::as_f64);
+        // Skip a {0, 0} range (no limit data for undocumented sensors).
+        let is_zero_range = matches!((max, min), (Some(0.0), Some(0.0)) | (Some(0.0), None) | (None, Some(0.0)));
+        if !is_zero_range
+            && let Some(max) = max
+            && let Some(min) = min
+        {
+            lines.push(format!(
+                "{}{}: Max {}, Min {}",
+                indent_spaces(indent),
+                nvoc_cli_common::color::stylize_title("Range"),
+                nvoc_cli_common::color::stylize(&format_measurement(max, "C"), false),
+                nvoc_cli_common::color::stylize(&format_measurement(min, "C"), false)
+            ));
+        }
+    }
+    if let Some(mask) = descriptor.get("sensor_mask_number") {
+        lines.push(field("sensor_mask_number", mask));
+    }
+    lines
+}
+
 fn field_text(object: &Value, key: &str) -> String {
     object
         .get(key)
@@ -719,6 +874,12 @@ fn format_with_unit(key: &str, rendered: &str) -> String {
         format!("{rendered}%")
     } else if key.ends_with("_c") || key == "celsius" {
         format!("{rendered} C")
+    } else if key == "voltage" {
+        // Core voltage is reported in microvolts.
+        format!("{rendered} uV")
+    } else if key == "pcie_lanes" {
+        // Link width (downstream lane count), e.g. x16.
+        format!("x{rendered}")
     } else {
         rendered.to_string()
     }
@@ -820,6 +981,101 @@ mod tests {
         assert!(rendered.contains("V-F Points"));
         assert!(rendered.contains("#12: 900.0 mV, 1800.0 MHz, delta 15.0 MHz"));
         assert!(!rendered.contains("\"points\""));
+    }
+
+    #[test]
+    fn human_output_relabels_utilization_domains_with_percent() {
+        nvoc_cli_common::color::init(true);
+        let output = json!({
+            "utilization": {
+                "Graphics": 100,
+                "FrameBuffer": 0,
+                "VideoEngine": 0,
+                "BusInterface": 2
+            }
+        });
+
+        let rendered = format_human_output("get-status", &output).join("\n");
+
+        assert!(rendered.contains("Utilization"));
+        // FrameBuffer is NVAPI's memory-controller domain -> relabelled.
+        assert!(rendered.contains("Memory Controller: 0%"));
+        assert!(rendered.contains("Graphics: 100%"));
+        assert!(!rendered.contains("FrameBuffer"));
+    }
+
+    #[test]
+    fn human_output_formats_status_units() {
+        nvoc_cli_common::color::init(true);
+        let output = json!({
+            "voltage": 940000,
+            "pcie_lanes": 8,
+            "memory": {
+                "dedicated": 8384512,
+                "dedicated_available": 8146944,
+                "dedicated_available_current": 8144412,
+                "dedicated_evictions": 0,
+                "dedicated_evictions_size": 38224,
+                "shared": 33355556,
+                "system": 0
+            },
+            "sensors": [
+                [
+                    {
+                        "target": "Gpu",
+                        "name": "Core",
+                        "sensor_mask_number": 8,
+                        "range": { "max": 139, "min": -35 }
+                    },
+                    52.58203125
+                ]
+            ]
+        });
+
+        let rendered = format_human_output("get-status", &output).join("\n");
+
+        // Voltage reported in microvolts.
+        assert!(rendered.contains("Voltage: 940000 uV"));
+        // PCIe link width gets an `x` prefix.
+        assert!(rendered.contains("Pcie Lanes: x8"));
+        // Memory size fields are KiB -> MB; the eviction *count* has no unit.
+        assert!(rendered.contains("Dedicated: 8188 MB"));
+        assert!(rendered.contains("Shared: 32573.785 MB"));
+        assert!(rendered.contains("Dedicated Evictions: 0"));
+        assert!(!rendered.contains("Dedicated: 8384512"));
+        // Sensors: target dropped, temperature gets a C unit.
+        assert!(!rendered.contains("Target"));
+        assert!(rendered.contains("Name: Core"));
+        assert!(rendered.contains("Sensor Mask Number: 8"));
+        assert!(rendered.contains("Range: Max 139 C, Min -35 C"));
+        assert!(rendered.contains("- 52.58203125 C"));
+    }
+
+    #[test]
+    fn human_output_hides_zero_sensor_range() {
+        nvoc_cli_common::color::init(true);
+        // Undocumented sensors (hot spot / memory junction) carry no limit data,
+        // so their range is {0, 0}; that uninformative line is suppressed.
+        let output = json!({
+            "sensors": [
+                [
+                    {
+                        "target": "Gpu",
+                        "name": "Hot Spot",
+                        "sensor_mask_number": 9,
+                        "range": { "max": 0, "min": 0 }
+                    },
+                    78.5
+                ]
+            ]
+        });
+
+        let rendered = format_human_output("get-status", &output).join("\n");
+
+        assert!(rendered.contains("Name: Hot Spot"));
+        assert!(rendered.contains("- 78.5 C"));
+        assert!(!rendered.contains("Range"));
+        assert!(!rendered.contains("Target"));
     }
 
     #[test]
