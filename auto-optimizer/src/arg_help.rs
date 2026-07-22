@@ -84,7 +84,7 @@ fn optimize_command() -> Command {
                     .long("stressor-profile")
                     .value_name("PROFILE")
                     .num_args(1)
-                    .value_parser(["auto", "low-vram", "standard"])
+                    .value_parser(["auto", "low-vram", "standard", "40-50"])
                     .help("Bundled CUDA stress profile (default: auto)"),
             )
             .arg(
@@ -329,7 +329,7 @@ fn vfp_autoscan_command(legacy: bool) -> Command {
                     .long("stressor-profile")
                     .value_name("PROFILE")
                     .num_args(1)
-                    .value_parser(["auto", "low-vram", "standard"])
+                    .value_parser(["auto", "low-vram", "standard", "40-50"])
                     .help("Bundled CUDA stress profile; defaults to auto VRAM selection"),
             )
             .arg(
@@ -517,7 +517,7 @@ fn hidden_vfp_lock_args() -> Vec<Arg> {
     ]
 }
 
-fn collect_long_flags(cmd: &clap::Command, out: &mut Vec<String>) {
+fn collect_long_flags(cmd: &Command, out: &mut Vec<String>) {
     for arg in cmd.get_arguments() {
         if let Some(long) = arg.get_long() {
             out.push(long.to_string());
@@ -529,7 +529,7 @@ fn collect_long_flags(cmd: &clap::Command, out: &mut Vec<String>) {
 }
 
 pub fn check_single_dash_args_from<I, S>(
-    cmd: &clap::Command,
+    cmd: &Command,
     args: I,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
@@ -555,6 +555,6 @@ where
     Ok(())
 }
 
-pub fn check_single_dash_args(cmd: &clap::Command) -> Result<(), Box<dyn std::error::Error>> {
+pub fn check_single_dash_args(cmd: &Command) -> Result<(), Box<dyn std::error::Error>> {
     check_single_dash_args_from(cmd, std::env::args().skip(1))
 }

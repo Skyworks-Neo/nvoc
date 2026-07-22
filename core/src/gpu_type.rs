@@ -209,8 +209,13 @@ pub struct GpuOcParams {
     pub fluctuation_coefficient: i32,
     /// 是否为 50 系架构（影响 recovery 默认策略）
     pub is_50_series: bool,
+    /// 是否需要在扫描期间以 MinLoadPulse 唤醒 GPU
+    /// （仅 30/50 系笔记本端默认开启，Optimus 掉电唤醒用）
+    pub wakeup_load_needed: bool,
     /// 电压点扫描步长（autoscan_gpuboostv3 的 testing_step）
     pub testing_step: usize,
+    /// 核心频率扫描步长指数
+    pub freq_step_exp_core: usize,
 }
 
 /// 未知/不支持超频型号的保守默认值
@@ -223,7 +228,9 @@ impl Default for GpuOcParams {
             safe_elasticity_per_cycle: 50000,
             fluctuation_coefficient: 2,
             is_50_series: false,
+            wakeup_load_needed: false,
             testing_step: 3,
+            freq_step_exp_core: 3,
         }
     }
 }
@@ -287,16 +294,20 @@ impl GpuType {
                 safe_elasticity_per_cycle: 60000,
                 fluctuation_coefficient: 3,
                 is_50_series: true,
+                wakeup_load_needed: true,
                 testing_step: 5,
+                freq_step_exp_core: 4,
             },
             GpuType::Desktop50Series => GpuOcParams {
                 minimum_delta_core_freq_step: 7500,
-                core_oc_safe_limit: 600000,
-                init_core_oc_value: 195000,
+                core_oc_safe_limit: 675000,
+                init_core_oc_value: 390000,
                 safe_elasticity_per_cycle: 60000,
                 fluctuation_coefficient: 3,
                 is_50_series: true,
+                wakeup_load_needed: false,
                 testing_step: 5,
+                freq_step_exp_core: 4,
             },
             GpuType::Mobile40Series => GpuOcParams {
                 minimum_delta_core_freq_step: 7500,
@@ -305,7 +316,9 @@ impl GpuType {
                 safe_elasticity_per_cycle: 30000,
                 fluctuation_coefficient: 1,
                 is_50_series: false,
+                wakeup_load_needed: false,
                 testing_step: 5,
+                freq_step_exp_core: 3,
             },
             GpuType::Desktop40Series => GpuOcParams {
                 minimum_delta_core_freq_step: 7500,
@@ -314,7 +327,9 @@ impl GpuType {
                 safe_elasticity_per_cycle: 30000,
                 fluctuation_coefficient: 1,
                 is_50_series: false,
+                wakeup_load_needed: false,
                 testing_step: 5,
+                freq_step_exp_core: 3,
             },
             GpuType::Mobile30Series => GpuOcParams {
                 minimum_delta_core_freq_step: 7500,
@@ -323,7 +338,9 @@ impl GpuType {
                 safe_elasticity_per_cycle: 30000,
                 fluctuation_coefficient: 2,
                 is_50_series: false,
+                wakeup_load_needed: true,
                 testing_step: 5,
+                freq_step_exp_core: 3,
             },
             GpuType::Desktop30Series => GpuOcParams {
                 minimum_delta_core_freq_step: 7500,
@@ -332,7 +349,9 @@ impl GpuType {
                 safe_elasticity_per_cycle: 30000,
                 fluctuation_coefficient: 2,
                 is_50_series: false,
+                wakeup_load_needed: false,
                 testing_step: 5,
+                freq_step_exp_core: 3,
             },
             GpuType::Mobile20Series => GpuOcParams {
                 minimum_delta_core_freq_step: 15000,
@@ -341,7 +360,9 @@ impl GpuType {
                 safe_elasticity_per_cycle: 30000,
                 fluctuation_coefficient: 2,
                 is_50_series: false,
+                wakeup_load_needed: false,
                 testing_step: 3,
+                freq_step_exp_core: 3,
             },
             GpuType::Desktop20Series => GpuOcParams {
                 minimum_delta_core_freq_step: 15000,
@@ -350,7 +371,9 @@ impl GpuType {
                 safe_elasticity_per_cycle: 30000,
                 fluctuation_coefficient: 2,
                 is_50_series: false,
+                wakeup_load_needed: false,
                 testing_step: 3,
+                freq_step_exp_core: 3,
             },
             GpuType::Mobile16Series => GpuOcParams {
                 minimum_delta_core_freq_step: 15000,
@@ -359,7 +382,9 @@ impl GpuType {
                 safe_elasticity_per_cycle: 30000,
                 fluctuation_coefficient: 2,
                 is_50_series: false,
+                wakeup_load_needed: false,
                 testing_step: 3,
+                freq_step_exp_core: 3,
             },
             GpuType::Desktop16Series => GpuOcParams {
                 minimum_delta_core_freq_step: 15000,
@@ -368,7 +393,9 @@ impl GpuType {
                 safe_elasticity_per_cycle: 30000,
                 fluctuation_coefficient: 2,
                 is_50_series: false,
+                wakeup_load_needed: false,
                 testing_step: 3,
+                freq_step_exp_core: 3,
             },
             GpuType::Mobile10Series => GpuOcParams {
                 minimum_delta_core_freq_step: 12500,
@@ -377,7 +404,9 @@ impl GpuType {
                 safe_elasticity_per_cycle: 30000,
                 fluctuation_coefficient: 2,
                 is_50_series: false,
+                wakeup_load_needed: false,
                 testing_step: 3,
+                freq_step_exp_core: 3,
             },
             GpuType::Desktop10Series => GpuOcParams {
                 minimum_delta_core_freq_step: 12500,
@@ -386,7 +415,9 @@ impl GpuType {
                 safe_elasticity_per_cycle: 30000,
                 fluctuation_coefficient: 2,
                 is_50_series: false,
+                wakeup_load_needed: false,
                 testing_step: 3,
+                freq_step_exp_core: 3,
             },
             GpuType::Desktop9Series => GpuOcParams {
                 minimum_delta_core_freq_step: 12500,
@@ -395,7 +426,9 @@ impl GpuType {
                 safe_elasticity_per_cycle: 37500,
                 fluctuation_coefficient: 1,
                 is_50_series: false,
+                wakeup_load_needed: false,
                 testing_step: 3,
+                freq_step_exp_core: 3,
             },
             GpuType::Mobile9Series => GpuOcParams {
                 minimum_delta_core_freq_step: 15000,
@@ -404,7 +437,9 @@ impl GpuType {
                 safe_elasticity_per_cycle: 37500,
                 fluctuation_coefficient: 2,
                 is_50_series: false,
+                wakeup_load_needed: false,
                 testing_step: 3,
+                freq_step_exp_core: 3,
             },
             GpuType::ComputationVolta
             | GpuType::WorkstationBlackwell
@@ -425,7 +460,9 @@ impl GpuType {
                 safe_elasticity_per_cycle: 50000,
                 fluctuation_coefficient: 2,
                 is_50_series: false,
+                wakeup_load_needed: false,
                 testing_step: 3,
+                freq_step_exp_core: 3,
             },
             GpuType::Unknown => GpuOcParams {
                 minimum_delta_core_freq_step: 15000,
@@ -434,7 +471,9 @@ impl GpuType {
                 safe_elasticity_per_cycle: 50000,
                 fluctuation_coefficient: 2,
                 is_50_series: false,
+                wakeup_load_needed: false,
                 testing_step: 3,
+                freq_step_exp_core: 3,
             },
         }
     }

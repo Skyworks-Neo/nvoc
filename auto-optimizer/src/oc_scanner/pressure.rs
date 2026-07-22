@@ -35,6 +35,8 @@ pub(super) struct PressureTestConfig<'a> {
     pub(super) cuda_device: Option<u32>,
     /// Extra arguments appended verbatim to the stressor command.
     pub(super) stressor_extra_args: &'a [String],
+    /// 是否需要在掉电时以 MinLoadPulse 唤醒 GPU（仅 30/50 系笔记本端默认开启）。
+    pub(super) wakeup_load_needed: bool,
     pub(super) stressor_profile: &'a str,
     pub(super) stressor_config: Option<&'a str>,
     /// GpuId.0 value of the GPU under test (used for event-log GPU filtering).
@@ -513,6 +515,7 @@ pub(super) fn run_pressure_test(
                     5,
                     cfg.minload_exe,
                     cfg.cuda_device,
+                    cfg.wakeup_load_needed,
                 );
                 test_initialization(gpu, cfg);
 
@@ -742,6 +745,7 @@ pub(super) fn run_pressure_test(
                             5,
                             cfg.minload_exe,
                             cfg.cuda_device,
+                            cfg.wakeup_load_needed,
                         );
                         break;
                     }
@@ -880,6 +884,7 @@ pub(super) fn run_pressure_test(
                         5,
                         cfg.minload_exe,
                         cfg.cuda_device,
+                        cfg.wakeup_load_needed,
                     );
                 }
 

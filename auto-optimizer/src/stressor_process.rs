@@ -98,14 +98,36 @@ pub fn bundled_command(
 
 pub fn resolve_profile(gpu: &GpuTarget<'_>, requested: &str) -> Result<String, Error> {
     // Explicit profile names pass through unchanged. Only "auto" needs an
-    // NVAPI query to choose between the embedded VRAM-sized configurations.
+    // NVAPI query to choose an architecture- and VRAM-appropriate profile.
     if requested != "auto" {
         return Ok(requested.to_string());
     }
 
     let info = run(gpu, QueryGpuInfo)?.output;
     let vram_kib = u64::from(info.physical_frame_buffer.0);
+    profile_for_gpu(&info.name, vram_kib)
+}
+
+fn profile_for_gpu(gpu_name: &str, vram_kib: u64) -> Result<String, Error> {
+    if is_geforce_rtx_40_or_50_series(gpu_name) {
+        return Ok("40-50".to_string());
+    }
     profile_for_vram_kib(vram_kib)
+}
+
+fn is_geforce_rtx_40_or_50_series(gpu_name: &str) -> bool {
+    let words: Vec<_> = gpu_name.split_whitespace().collect();
+    words
+        .iter()
+        .any(|word| word.eq_ignore_ascii_case("GeForce"))
+        && words
+            .windows(2)
+            .any(|pair| pair[0].eq_ignore_ascii_case("RTX") && is_40_or_50_model(pair[1]))
+}
+
+fn is_40_or_50_model(model: &str) -> bool {
+    let digits: String = model.chars().take_while(char::is_ascii_digit).collect();
+    digits.len() == 4 && (digits.starts_with("40") || digits.starts_with("50"))
 }
 
 fn profile_for_vram_kib(vram_kib: u64) -> Result<String, Error> {
@@ -170,6 +192,30 @@ mod tests {
         assert_eq!(profile_for_vram_kib(8 * 1024 * 1024).unwrap(), "low-vram");
         assert_eq!(
             profile_for_vram_kib(8 * 1024 * 1024 + 1).unwrap(),
+            "standard"
+        );
+    }
+
+    #[test]
+    fn automatic_profile_selects_geforce_40_50_series_by_model() {
+        assert_eq!(
+            profile_for_gpu("NVIDIA GeForce RTX 4090", 24 * 1024 * 1024).unwrap(),
+            "40-50"
+        );
+        assert_eq!(
+            profile_for_gpu("NVIDIA GeForce RTX 5070 Ti", 12 * 1024 * 1024).unwrap(),
+            "40-50"
+        );
+        assert_eq!(
+            profile_for_gpu("NVIDIA GeForce RTX 4090 Laptop GPU", 8 * 1024 * 1024).unwrap(),
+            "40-50"
+        );
+        assert_eq!(
+            profile_for_gpu("NVIDIA GeForce RTX 3090", 24 * 1024 * 1024).unwrap(),
+            "standard"
+        );
+        assert_eq!(
+            profile_for_gpu("NVIDIA RTX 4000 Ada Generation", 20 * 1024 * 1024).unwrap(),
             "standard"
         );
     }

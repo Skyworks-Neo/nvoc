@@ -22,7 +22,7 @@ use cli_stressor_cuda_rs::{
     Backend, DeviceInfo, KernelParamOverride, KernelType, PrecisionKind, PrecisionMixtureEntry,
     PrecisionSpec, StressResult, StressRunConfig, parse_kernel_mixture,
     parse_kernel_param_overrides, parse_kernel_type, parse_kernel_type_list, parse_precision_list,
-    parse_stream_mode, run_stress_mixed,
+    parse_stream_mode, run_stress_mixed, validate_intalu_precision_overrides,
 };
 #[cfg(feature = "cuda")]
 use serde::Deserialize;
@@ -112,7 +112,7 @@ struct Args {
 
     #[arg(
         long,
-        value_parser = ["standard", "low-vram", "minload", "dynamic-export"],
+        value_parser = ["standard", "low-vram", "40-50", "minload", "dynamic-export"],
         conflicts_with = "config",
         help = "Use an embedded NVOC stress profile"
     )]
@@ -127,7 +127,11 @@ struct Args {
     #[arg(long, default_value = "2048,4096")]
     fp64_matrix_sizes: String,
 
-    #[arg(long, default_value = "fp16,bf16")]
+    #[arg(
+        long,
+        default_value = "fp16,bf16",
+        help = "Comma-separated precision list: fp64,fp32,tf32,fp16,bf16,fp8,int8,int16,int32 (aliases i8/i16/i32 accepted)"
+    )]
     precisions: String,
 
     #[arg(long, default_value_t = 3)]
@@ -157,8 +161,8 @@ struct Args {
 
     #[arg(
         long,
-        default_value = "gemm,memcpy,memset,transpose,elementwise,reduction,atomic",
-        help = "Enabled kernel paths (comma-separated): gemm,memcpy,memset,transpose,elementwise,reduction,atomic"
+        default_value = "gemm,memcpy,memset,transpose,elementwise,reduction,atomic,intalu",
+        help = "Enabled kernel paths (comma-separated): gemm,memcpy,memset,transpose,elementwise,reduction,atomic,intalu"
     )]
     kernel_types: String,
 
@@ -376,6 +380,7 @@ fn load_builtin_profile(name: &str) -> Result<FileConfig, String> {
     let raw = match name {
         "standard" => include_str!("../profiles/standard.toml"),
         "low-vram" => include_str!("../profiles/low-vram.toml"),
+        "40-50" => include_str!("../profiles/40-50.toml"),
         "minload" => include_str!("../profiles/minload.toml"),
         "dynamic-export" => include_str!("../profiles/dynamic-export.toml"),
         other => return Err(format!("unknown embedded profile: {other}")),
@@ -855,6 +860,35 @@ fn filter_atomic_for_sm(kernel_types: &mut Vec<KernelType>, info: &DeviceInfo) {
     }
 }
 
+/// Warn (do not disable) when INT8 GEMM is requested on a GPU without INT8
+/// tensor cores. cuBLAS still runs a scalar INT8 GEMM on such hardware, which
+/// is valid integer-compute stress — just slower. IMMA tensor cores require
+/// SM >= 7.5 (Turing); DP4A dot units require SM >= 6.1 (Pascal).
+#[cfg(feature = "cuda")]
+fn warn_int8_tensor_op(precisions: &[cli_stressor_cuda_rs::PrecisionSpec], info: &DeviceInfo) {
+    let wants_int8 = precisions
+        .iter()
+        .any(|s| s.kind == cli_stressor_cuda_rs::PrecisionKind::INT8);
+    if !wants_int8 {
+        return;
+    }
+    let sm = info.compute_capability.unwrap_or((0, 0));
+    let has_imma = sm.0 > 7 || (sm.0 == 7 && sm.1 >= 5);
+    if !has_imma {
+        println!(
+            "{}",
+            stylize(
+                &format!(
+                    "INT8 GEMM tensor cores (IMMA) require SM>=7.5 (detected SM{}.{}); \
+                     cuBLAS will use a scalar/DP4A INT8 path (slower, but valid stress)",
+                    sm.0, sm.1
+                ),
+                false
+            )
+        );
+    }
+}
+
 #[cfg(feature = "cuda")]
 fn print_device_info(info: &DeviceInfo) {
     println!(
@@ -1200,6 +1234,7 @@ pub fn run_from_env() {
     };
     let mut kernel_types = kernel_types_all.clone();
     filter_atomic_for_sm(&mut kernel_types, &info);
+    warn_int8_tensor_op(&filtered, &info);
 
     // Additional filtering based on backend-specific runtime availability
     kernel_types.retain(|&k| backend.supports_kernel(k));
@@ -1210,6 +1245,44 @@ pub fn run_from_env() {
             stylize("No runnable kernel types after capability filtering", true)
         );
         std::process::exit(1);
+    }
+
+    // Reject (kernel, precision) combos that have no hardware path before we
+    // enter the dispatch loop. INT16/INT32 expose no cuBLAS GEMM (CUDA_R_16I /
+    // CUDA_R_32I are storage types only); running them against `--kernel-types
+    // gemm` would otherwise soft-skip every iteration and spin the full duration
+    // producing zero work (which looks like a hang). INT8 GEMM is a real,
+    // hardware-accelerated path and is intentionally allowed.
+    let mut incompatible: Vec<&str> = Vec::new();
+    for spec in &filtered {
+        let has_compatible_kernel = kernel_types
+            .iter()
+            .any(|&k| cli_stressor_cuda_rs::kernel_precision_compatible(k, spec.kind));
+        if !has_compatible_kernel {
+            incompatible.push(spec.name);
+        }
+    }
+    if !incompatible.is_empty() {
+        let need = if kernel_types.iter().all(|kind| *kind == KernelType::IntAlu) {
+            "INTALU supports only INT8/INT16/INT32"
+        } else if incompatible.iter().any(|n| *n == "INT16" || *n == "INT32") {
+            "INT16/INT32 have no GEMM path; add `intalu` to --kernel-types"
+        } else {
+            "no compatible kernel type for the requested precision"
+        };
+        eprintln!(
+            "{}",
+            stylize(
+                &format!(
+                    "Precision(s) [{}] have no compatible kernel in --kernel-types ({}). \
+                     Aborting; pick a compatible --kernel-types combination.",
+                    incompatible.join(", "),
+                    need
+                ),
+                true
+            )
+        );
+        std::process::exit(2);
     }
 
     let kernel_mixture_base = if args.kernel_mixture.trim().is_empty() {
@@ -1273,6 +1346,16 @@ pub fn run_from_env() {
         }
     };
     let kernel_param_overrides = merge_kernel_overrides(config_overrides, cli_overrides);
+    if let Err(err) = validate_intalu_precision_overrides(&kernel_param_overrides) {
+        eprintln!(
+            "{}",
+            stylize(
+                &format!("Invalid kernel precision configuration: {err}"),
+                true
+            )
+        );
+        std::process::exit(2);
+    }
 
     let mut overall_passed = true;
 

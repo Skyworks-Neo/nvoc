@@ -106,7 +106,7 @@ pub fn is_elevated() -> bool {
                 token,
                 TOKEN_ELEVATION_CLASS,
                 (&mut elevation as *mut TokenElevation).cast(),
-                core::mem::size_of::<TokenElevation>() as Dword,
+                size_of::<TokenElevation>() as Dword,
                 &mut return_length,
             ) != 0;
             let _ = CloseHandle(token);

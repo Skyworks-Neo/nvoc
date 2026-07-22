@@ -1,9 +1,8 @@
-# CUDA stressor profile for cards with 6G-8G VRAM.
-# The embedded standard profile targets cards with more than 8 GiB VRAM.
+# CUDA stressor profile for NVIDIA GeForce RTX 40- and 50-series cards.
 fp64_matrix_sizes = [2048,4096]
-precisions = ["bf16", "fp16", "fp32","tf32","fp64"]
+precisions = ["bf16", "fp16", "fp32","tf32"]
 validate_interval = 3.0
-validate_size = 512
+validate_size = 1024
 transpose_prob = 0.5
 seed = 12345
 kernel_types = ["gemm", "memcpy", "memset"]
@@ -12,24 +11,24 @@ stream_mode = "dual"
 disable_fp8 = true
 vulkan_only = false
 enable_vulkan_stress = true
-vulkan_image_width = 127
-vulkan_image_height = 255
+vulkan_image_width = 255
+vulkan_image_height = 511
 vulkan_image_depth = 676
 vulkan_image_count = 1
 vulkan_image_msaa = 2
 vulkan_minor_mixture_rate = 0.95
 
 [kernel_params.gemm]
-matrix_sizes = [2048,2049]
+matrix_sizes = [4096,4097,8192,8193]
 precisions = ["bf16", "fp16", "fp32","tf32"]
-precision_weight = [0,0,0.5,0.5]
+precision_weight = [0,0.5,0.25,0.25]
 warmup_iters = 0
 burst_iters = 10
 minor_mixture_rate = 0.25
 weight = 0.40
 
 [kernel_params.memcpy]
-matrix_sizes = [4096, 6144, 8192]
+matrix_sizes = [8192,12800,16384]
 precisions = ["bf16", "fp16", "fp32","tf32"]
 precision_weight = [0.0,0.0,1.0,0.0]
 warmup_iters = 1
@@ -38,7 +37,7 @@ minor_mixture_rate = 0.40
 weight = 0.20
 
 [kernel_params.memset]
-matrix_sizes = [8192,12800]
+matrix_sizes = [8192,12800,16384]
 precisions = ["bf16", "fp16", "fp32","tf32"]
 precision_weight = [0.0,0.0,1.0,0.0]
 warmup_iters = 1
@@ -64,7 +63,7 @@ minor_mixture_rate = 0.80
 weight = 0.00
 
 [kernel_params.reduction]
-matrix_sizes = [8192,12800,16384]
+matrix_sizes = [8192,12800,16384,25600,32768]
 precisions = ["bf16",  "fp16", "fp32","tf32"]
 precision_weight = [0.25,0.25,0.25,0.25]
 warmup_iters = 1

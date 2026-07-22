@@ -72,6 +72,7 @@ pub(super) fn retry_operation_with_backoff<T, F>(
     base_wait_secs: u64,
     minload_exe: &str,
     cuda_device: Option<u32>,
+    wakeup_load_needed: bool,
 ) -> Result<T, Error>
 where
     F: FnMut() -> Result<T, Error>,
@@ -98,7 +99,7 @@ where
                 let s_lower = format!("{:?}", &e).to_lowercase();
                 last_err = Some(e);
 
-                if s_lower.contains("gpunotpowered") {
+                if s_lower.contains("gpunotpowered") && wakeup_load_needed {
                     eprintln!(
                         "{}: GPUnotpowered detected, launching min-load pulse...",
                         label

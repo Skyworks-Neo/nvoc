@@ -288,8 +288,9 @@ uv run --frozen --no-editable --group dev pyinstaller --clean --noconfirm nvoc_t
 ### Autoscan & Stress Testing
 
 Use `nvoc-auto-optimizer optimize --gpu <id>` for the integrated autoscan workflow. It selects
-the embedded `low-vram` profile for 6–8 GiB GPUs and `standard` above 8 GiB; GPUs below 6 GiB
-require an explicit profile/config override. The legacy low-level autoscan commands remain available.
+the embedded `40-50` profile for GeForce RTX 40/50-series GPUs, `low-vram` for other GPUs with
+6–8 GiB, and `standard` for other GPUs above 8 GiB. GPUs below 6 GiB require an explicit
+profile/config override. The legacy low-level autoscan commands remain available.
 
 Do not use the OpenCL stressor as the final stability gate for overclocking. It is not high-pressure enough and can produce autoscan / V-F curve results higher than the GPU can safely sustain, which may cause instability or hardware failure. Revalidate OpenCL-derived results with the CUDA stressor or heavier real workloads before relying on them.
 

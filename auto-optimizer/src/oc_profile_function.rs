@@ -1,5 +1,5 @@
 use super::autoscan_config::{FixResultConfig, VfpExportConfig};
-use super::scan_log::{self, BreakPointResume, ScanArea, ScanLogEvent, VoltagePointResume};
+use super::scan_log::{self, BreakPointResume, ScanDomain, ScanLogEvent, VoltagePointResume};
 use super::scan_support::get_gpu_tdp_temp_limit;
 // oc_set_function
 #[cfg(feature = "stressor-bundled")]
@@ -461,7 +461,7 @@ pub fn handle_vfp_export(gpu: &GpuTarget<'_>, matches: &clap::ArgMatches) -> Res
         // Export the load-default frequency to a temporary file
         // Derive from the output path so it lands in the same directory (e.g. Scan-<UUID>/)
         let temp_file = {
-            let parent = std::path::Path::new(output)
+            let parent = Path::new(output)
                 .parent()
                 .map(|p| p.to_path_buf())
                 .unwrap_or_else(|| std::path::PathBuf::from("."));
@@ -865,8 +865,10 @@ pub fn check_voltage_points(log_filename: &str) -> io::Result<Option<VoltagePoin
 pub fn break_point_continue(
     log_filename: &str,
     testing_step: usize,
+    safe_elastic_khz: i32,
+    min_step_khz: i32,
 ) -> io::Result<BreakPointResume> {
-    scan_log::breakpoint_from_file(log_filename, testing_step)
+    scan_log::breakpoint_from_file(log_filename, testing_step, safe_elastic_khz, min_step_khz)
 }
 
 pub fn export_vfp_from_log(matches: &clap::ArgMatches) -> Result<(), Error> {
@@ -906,18 +908,18 @@ fn export_points_from_jsonl_entries(entries: &[scan_log::ScanLogEntry]) -> Vec<V
     for entry in entries.iter().rev() {
         match entry.event {
             ScanLogEvent::PointFinished {
-                area: ScanArea::Core,
+                domain: ScanDomain::Core,
                 point,
             } => {
                 active_finished_point = Some(point);
             }
             ScanLogEvent::VoltageRange { .. } => break,
             ScanLogEvent::TestResult {
-                area: ScanArea::Core,
+                domain: ScanDomain::Core,
                 point,
                 voltage_uv: Some(voltage_uv),
                 delta_khz,
-                result_code: 100,
+                result_code: Some(100),
                 ..
             } if active_finished_point == Some(point) && exported_points.insert(point) => {
                 eprintln!(
@@ -1220,7 +1222,7 @@ mod tests {
             .expect("system time is after unix epoch")
             .as_nanos();
         let dir = "target/nvoc-auto-optimizer-tests";
-        std::fs::create_dir_all(dir).expect("create test output directory");
+        fs::create_dir_all(dir).expect("create test output directory");
         format!("{dir}/{}-{nanos}-{name}", std::process::id())
     }
 
@@ -1233,38 +1235,41 @@ mod tests {
                 gpu_ranges: Vec::new(),
             }),
             entry(ScanLogEvent::TestResult {
-                area: ScanArea::Core,
+                domain: ScanDomain::Core,
                 phase: scan_log::TestPhase::Short,
                 test_code: 1,
                 point: 42,
                 voltage_uv: Some(875000),
                 delta_khz: 125000,
-                result_code: 0,
+                finished_at: Some("12:34:57".to_string()),
+                result_code: Some(0),
             }),
             entry(ScanLogEvent::TestResult {
-                area: ScanArea::Core,
+                domain: ScanDomain::Core,
                 phase: scan_log::TestPhase::Short,
                 test_code: 2,
                 point: 42,
                 voltage_uv: Some(875000),
                 delta_khz: 150000,
-                result_code: 100,
+                finished_at: Some("12:34:58".to_string()),
+                result_code: Some(100),
             }),
             entry(ScanLogEvent::PointFinished {
-                area: ScanArea::Core,
+                domain: ScanDomain::Core,
                 point: 42,
             }),
             entry(ScanLogEvent::TestResult {
-                area: ScanArea::Memory,
+                domain: ScanDomain::Memory,
                 phase: scan_log::TestPhase::Long,
                 test_code: 1,
                 point: 80,
                 voltage_uv: Some(950000),
                 delta_khz: 900000,
-                result_code: 100,
+                finished_at: Some("12:34:59".to_string()),
+                result_code: Some(100),
             }),
             entry(ScanLogEvent::PointFinished {
-                area: ScanArea::Memory,
+                domain: ScanDomain::Memory,
                 point: 80,
             }),
         ];
@@ -1280,7 +1285,7 @@ mod tests {
     fn export_single_point_writes_comma_delimited_file_output() {
         let init_path = unique_test_path("init.csv");
         let output_path = unique_test_path("output.csv");
-        std::fs::write(
+        fs::write(
             &init_path,
             "voltage,frequency,delta,default_frequency\n875000,123,0,1000\n900000,456,0,2000\n",
         )
@@ -1297,13 +1302,13 @@ mod tests {
         export_single_point_to_paths(point, &output_path, &init_path)
             .expect("export comma-delimited point");
 
-        let output = std::fs::read_to_string(&output_path).expect("read output file");
+        let output = fs::read_to_string(&output_path).expect("read output file");
         assert!(output.contains("875000,1150,150,1000\n"));
         assert!(output.contains("900000,,,2000\n"));
         assert!(!output.contains('\t'));
 
-        let _ = std::fs::remove_file(init_path);
-        let _ = std::fs::remove_file(output_path);
+        let _ = fs::remove_file(init_path);
+        let _ = fs::remove_file(output_path);
     }
 
     // Regression for the autoscan-vfp panic: the scanner reaches
@@ -1313,7 +1318,7 @@ mod tests {
     fn export_single_point_does_not_panic_on_autoscan_matches() {
         let init_path = unique_test_path("autoscan_init.csv");
         let output_path = unique_test_path("autoscan_out.csv");
-        std::fs::write(
+        fs::write(
             &init_path,
             "voltage,frequency,delta,default_frequency\n875000,123,0,1000\n",
         )
@@ -1344,7 +1349,7 @@ mod tests {
         // The scanner uses comma output.
         export_single_point(point, sub).expect("export must not panic on autoscan matches");
 
-        let output = std::fs::read_to_string(&output_path).expect("read output file");
+        let output = fs::read_to_string(&output_path).expect("read output file");
         assert!(
             output.contains(','),
             "scanner output should be comma-delimited"
@@ -1354,7 +1359,7 @@ mod tests {
             "scanner output should not contain tab characters"
         );
 
-        let _ = std::fs::remove_file(init_path);
-        let _ = std::fs::remove_file(output_path);
+        let _ = fs::remove_file(init_path);
+        let _ = fs::remove_file(output_path);
     }
 }
