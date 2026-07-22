@@ -5,7 +5,7 @@ use super::result::{
     ApiRestrictionState, AppliedValue, AutoBoostState, BatchReport, ClockOffset, DisplayInfo,
     EdidData, FanInfo, OperationKind, OperationReport, PstateBaseVoltage, PstateClockRange,
     SupportedApplicationClocks, TargetOutcome, TdpTempLimits, TemperatureThreshold, ThrottleReason,
-    VoltageBoostState, VoltageFrequencyCheck,
+    ViolationEntry, ViolationStatusReport, VoltageBoostState, VoltageFrequencyCheck,
 };
 use super::target::GpuTarget;
 use super::types::{NvapiLockedVoltageTarget, VfpResetDomain};
@@ -223,6 +223,44 @@ impl GpuOperation for QueryThrottleReasons {
                     })
                     .collect()
             })
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct QueryViolationStatus;
+
+fn violation_status_report(
+    items: Vec<(&'static str, low_nvml::ViolationStatus)>,
+) -> Option<ViolationStatusReport> {
+    let reference_time_us = items.iter().find_map(|(_, status)| {
+        (status.reference_time_us != 0).then_some(status.reference_time_us)
+    })?;
+
+    Some(ViolationStatusReport {
+        entries: items
+            .into_iter()
+            .map(|(name, status)| ViolationEntry {
+                name: name.to_string(),
+                violation_time_ns: status.violation_time_ns,
+            })
+            .collect(),
+        reference_time_us,
+    })
+}
+
+impl GpuOperation for QueryViolationStatus {
+    type Output = Option<ViolationStatusReport>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryViolationStatus
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let nvml = target.nvml()?;
+        Ok(
+            low_nvml::get_nvml_violation_status(nvml, target.id.0)
+                .and_then(violation_status_report),
+        )
     }
 }
 
@@ -1640,4 +1678,56 @@ pub fn set_nvapi_legacy_clocks(
         },
     )
     .map(|report| report.output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn violation_report_uses_first_nonzero_reference_time() {
+        let report = violation_status_report(vec![
+            (
+                "Pwr",
+                low_nvml::ViolationStatus {
+                    violation_time_ns: 0,
+                    reference_time_us: 0,
+                },
+            ),
+            (
+                "Thrm",
+                low_nvml::ViolationStatus {
+                    violation_time_ns: 42,
+                    reference_time_us: 1_234_567,
+                },
+            ),
+        ])
+        .expect("a later successful policy should produce a report");
+
+        assert_eq!(report.reference_time_us, 1_234_567);
+        assert_eq!(report.entries.len(), 2);
+        assert_eq!(report.entries[1].violation_time_ns, 42);
+    }
+
+    #[test]
+    fn violation_report_is_none_when_all_policies_are_unavailable() {
+        let report = violation_status_report(vec![
+            (
+                "Pwr",
+                low_nvml::ViolationStatus {
+                    violation_time_ns: 0,
+                    reference_time_us: 0,
+                },
+            ),
+            (
+                "Thrm",
+                low_nvml::ViolationStatus {
+                    violation_time_ns: 0,
+                    reference_time_us: 0,
+                },
+            ),
+        ]);
+
+        assert!(report.is_none());
+    }
 }

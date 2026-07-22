@@ -1,6 +1,6 @@
 [project]
 name = "nvoc-gui"
-version = "0.2.0a1"
+version = "0.2.0a2"
 description = "GUI frontend for nvoc-auto-optimizer"
 readme = "README.md"
 license = { file = "LICENSE" }

@@ -79,6 +79,7 @@ pub enum OperationKind {
     SetEdid,
     ClearEdid,
     QueryThrottleReasons,
+    QueryViolationStatus,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -227,4 +228,26 @@ pub struct VoltageFrequencyCheck {
 pub struct ThrottleReason {
     pub name: String,
     pub active: bool,
+}
+
+/// One NVML performance-policy violation entry.
+///
+/// `violation_time_ns` is the cumulative time the GPU has spent in this
+/// policy's violation state, measured by the driver hardware. `name` is the
+/// short human label (e.g. `"Pwr"`, `"Idle"`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ViolationEntry {
+    pub name: String,
+    pub violation_time_ns: u64,
+}
+
+/// Aggregated NVML violation status across all performance policies.
+///
+/// `reference_time_us` is the driver's reference timestamp (a Unix epoch
+/// microsecond stamp) marking when the cumulative violation counters started;
+/// callers format it as the "Since" wall-clock time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ViolationStatusReport {
+    pub entries: Vec<ViolationEntry>,
+    pub reference_time_us: u64,
 }

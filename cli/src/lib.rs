@@ -10,18 +10,20 @@ use nvoc_core::{
     QueryGpuStatus, QueryLegacyCoreOvervoltRanges, QueryLegacyP0CoreMaxVoltageDelta,
     QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks,
     QueryTdpTempLimits, QueryTemperatureThresholds, QueryThrottleReasons, QueryVfpPointVoltage,
-    QueryVoltageBoost, ResetApplicationsClocks, ResetCoolerLevels, ResetFanSpeed,
-    ResetLockedClocks, ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetPstateBaseVoltages,
-    ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock, ResetVfpLock,
-    SetApiRestriction, SetApplicationsClocks, SetAutoBoost, SetAutoBoostDefault, SetClockOffset,
-    SetCoolerLevels, SetEdid, SetFanSpeed, SetLegacyClocks, SetLockedClocks, SetNvapiPowerLimits,
-    SetNvapiPstateLock, SetNvapiSensorLimits, SetNvmlPstateLock, SetPowerLimit,
-    SetPstateBaseVoltage, SetPstateClockOffset, SetTemperatureLimit, SetVfpFrequencyLock,
-    SetVfpPointDelta, SetVfpRangeDelta, SetVfpVoltageLock, SetVoltageBoost, VfpResetDomain,
-    discover_targets, nvml_pstate_to_str, parse_nvapi_locked_voltage_target,
+    QueryViolationStatus, QueryVoltageBoost, ResetApplicationsClocks, ResetCoolerLevels,
+    ResetFanSpeed, ResetLockedClocks, ResetNvapiPowerLimits, ResetNvapiSensorLimits,
+    ResetPstateBaseVoltages, ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock,
+    ResetVfpLock, SetApiRestriction, SetApplicationsClocks, SetAutoBoost, SetAutoBoostDefault,
+    SetClockOffset, SetCoolerLevels, SetEdid, SetFanSpeed, SetLegacyClocks, SetLockedClocks,
+    SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiSensorLimits, SetNvmlPstateLock,
+    SetPowerLimit, SetPstateBaseVoltage, SetPstateClockOffset, SetTemperatureLimit,
+    SetVfpFrequencyLock, SetVfpPointDelta, SetVfpRangeDelta, SetVfpVoltageLock, SetVoltageBoost,
+    VfpResetDomain, discover_targets, nvml_pstate_to_str, parse_nvapi_locked_voltage_target,
     parse_nvml_fan_control_policy, parse_nvml_pstate, run, select_targets,
 };
 use serde_json::{Value, json};
+use time::OffsetDateTime;
+use time::macros::format_description;
 
 mod output;
 use std::collections::{BTreeMap, BTreeSet};
@@ -1510,12 +1512,33 @@ fn execute_target(
         }
         Command::GetThrottleReasons => {
             let reasons = run(target, QueryThrottleReasons)?.output;
-            Ok(Value::Array(
+            let reasons_json = Value::Array(
                 reasons
                     .into_iter()
                     .map(|item| json!({"name": item.name, "active": item.active}))
                     .collect(),
-            ))
+            );
+            // NVML violation status is queried off the same NVML handle and
+            // appends the driver's cumulative per-policy violation times
+            // (the "how long was each modality limiting" breakdown). It is
+            // best-effort: if the device exposes no violation counters we
+            // still return the throttle-reason snapshot.
+            let violation = run(target, QueryViolationStatus)?.output;
+            let violation_json = violation.map(|report| {
+                json!({
+                    "entries": report.entries.iter().map(|entry| {
+                        json!({
+                            "name": entry.name,
+                            "seconds": entry.violation_time_ns as f64 / 1_000_000_000.0,
+                        })
+                    }).collect::<Vec<_>>(),
+                    "since": format_reference_time(report.reference_time_us),
+                })
+            });
+            Ok(json!({
+                "reasons": reasons_json,
+                "violation": violation_json,
+            }))
         }
         Command::GetTdpTempLimits => {
             let limits = run(target, QueryTdpTempLimits)?.output;
@@ -1600,10 +1623,15 @@ fn execute_target(
         Command::GetEdid => {
             let display_id = parse_display_id(&invocation.positionals[0])?;
             let edid = run(target, QueryEdid { display_id })?.output;
+            let interpreted: Vec<Value> = parse_edid(&edid.bytes)
+                .into_iter()
+                .map(|(k, v)| json!({ k: v }))
+                .collect();
             Ok(json!({
                 "display_id": format!("0x{:08X}", edid.display_id),
                 "bytes": edid.bytes.len(),
                 "edid_hex": bytes_to_upper_hex(&edid.bytes),
+                "interpreted": interpreted,
             }))
         }
         Command::SetCoreOffsetMhz => {
@@ -2242,6 +2270,172 @@ fn bytes_to_upper_hex(bytes: &[u8]) -> String {
     out
 }
 
+/// Interpret a raw EDID base block into a list of `(label, value)` pairs.
+///
+/// Ported from the recovered commit 4b31b1a (`auto-optimizer/src/human.rs::parse_edid`):
+/// decodes the manufacturer PNP code, product code, manufacture date, screen size,
+/// gamma, DPMS/color features, the native detailed timing, and the `0xFC`/`0xFF`/`0xFD`
+/// descriptor tags (model name / serial number / range limits). Returns an empty vec
+/// for anything that is not a valid 128-byte EDID base block.
+fn parse_edid(edid: &[u8]) -> Vec<(String, Value)> {
+    let mut out = Vec::new();
+    if edid.len() < 128 || &edid[0..8] != b"\x00\xFF\xFF\xFF\xFF\xFF\xFF\x00" {
+        return out;
+    }
+
+    let mfg = u16::from_be_bytes([edid[8], edid[9]]);
+    let mfg_id = format!(
+        "{}{}{}",
+        (((mfg >> 10) & 0x1F) as u8 + b'A' - 1) as char,
+        (((mfg >> 5) & 0x1F) as u8 + b'A' - 1) as char,
+        ((mfg & 0x1F) as u8 + b'A' - 1) as char,
+    );
+    out.push(("Manufacturer".into(), json!(mfg_id)));
+
+    let product_code = u16::from_le_bytes([edid[10], edid[11]]);
+    out.push((
+        "Product Code".into(),
+        json!(format!("0x{:04X}", product_code)),
+    ));
+
+    let s_no = u32::from_le_bytes([edid[12], edid[13], edid[14], edid[15]]);
+    if s_no != 0 {
+        out.push(("Serial Number".into(), json!(s_no)));
+    }
+
+    let week = edid[16];
+    let year = edid[17] as u16 + 1990;
+    out.push((
+        "Manufactured".into(),
+        if week > 0 && week <= 54 {
+            json!(format!("Week {}, {}", week, year))
+        } else {
+            json!(year.to_string())
+        },
+    ));
+
+    let digital = (edid[20] & 0x80) != 0;
+    out.push((
+        "Input Signal".into(),
+        json!(if digital { "Digital" } else { "Analog" }),
+    ));
+
+    let width_cm = edid[21];
+    let height_cm = edid[22];
+    if width_cm > 0 && height_cm > 0 {
+        out.push((
+            "Screen Size".into(),
+            json!(format!("{} cm x {} cm", width_cm, height_cm)),
+        ));
+    }
+
+    let gamma = edid[23];
+    if gamma > 0 && gamma != 0xFF {
+        out.push((
+            "Gamma".into(),
+            json!(format!("{:.2}", (gamma as f32 + 100.0) / 100.0)),
+        ));
+    }
+
+    let features = edid[24];
+    let mut dpms = Vec::new();
+    if features & 0x80 != 0 {
+        dpms.push("Standby");
+    }
+    if features & 0x40 != 0 {
+        dpms.push("Suspend");
+    }
+    if features & 0x20 != 0 {
+        dpms.push("ActiveOff");
+    }
+    if !dpms.is_empty() {
+        out.push(("DPMS Features".into(), json!(dpms.join(", "))));
+    }
+
+    let color_type = if digital {
+        match (features >> 3) & 0x03 {
+            0 => "RGB 4:4:4",
+            1 => "RGB 4:4:4 & YCrCb 4:4:4",
+            2 => "RGB 4:4:4 & YCrCb 4:2:2",
+            _ => "RGB 4:4:4 & YCrCb 4:4:4 & 4:2:2",
+        }
+    } else {
+        match (features >> 3) & 0x03 {
+            0 => "Monochrome",
+            1 => "RGB",
+            2 => "Non-RGB",
+            _ => "Undefined",
+        }
+    };
+    out.push(("Color Format".into(), json!(color_type)));
+
+    let mut name = String::new();
+    let mut serial_str = String::new();
+    let mut range_limits = String::new();
+
+    for i in 0..4 {
+        let offset = 54 + i * 18;
+        if offset + 18 > edid.len() {
+            continue;
+        }
+        let block = &edid[offset..offset + 18];
+        if block[0] != 0 || block[1] != 0 || block[2] != 0 {
+            if i == 0 {
+                let pixel_clock = u16::from_le_bytes([block[0], block[1]]);
+                if pixel_clock > 0 {
+                    let hactive = block[2] as u16 | (((block[4] >> 4) as u16) << 8);
+                    let vactive = block[5] as u16 | (((block[7] >> 4) as u16) << 8);
+                    out.push((
+                        "Native Res".into(),
+                        json!(format!("{}x{}", hactive, vactive)),
+                    ));
+                }
+            }
+        } else {
+            let tag = block[3];
+            if tag == 0xFC || tag == 0xFF {
+                let mut text = String::new();
+                for &b in &block[5..18] {
+                    if b == 0x0A {
+                        break;
+                    }
+                    if b.is_ascii_graphic() || b == b' ' {
+                        text.push(b as char);
+                    }
+                }
+                let text = text.trim().to_string();
+                if tag == 0xFC {
+                    name = text;
+                } else if tag == 0xFF {
+                    serial_str = text;
+                }
+            } else if tag == 0xFD {
+                let v_min = block[5];
+                let v_max = block[6];
+                let h_min = block[7];
+                let h_max = block[8];
+                let max_clock = (block[9] as u16) * 10;
+                range_limits = format!(
+                    "{}~{} Hz (V) | {}~{} kHz (H) | Max {} MHz",
+                    v_min, v_max, h_min, h_max, max_clock
+                );
+            }
+        }
+    }
+
+    if !name.is_empty() {
+        out.push(("Model Name".into(), json!(name)));
+    }
+    if !serial_str.is_empty() {
+        out.push(("Serial Number".into(), json!(serial_str)));
+    }
+    if !range_limits.is_empty() {
+        out.push(("Range Limits".into(), json!(range_limits)));
+    }
+
+    out
+}
+
 fn parse_api_restriction_state(raw: &str) -> CliResult<bool> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "restricted" => Ok(true),
@@ -2429,6 +2623,21 @@ fn domain_label(domain: ClockDomain) -> &'static str {
 
 fn pstate_label(pstate: PState) -> &'static str {
     <PState as ConvertEnum>::to_str(&pstate)
+}
+
+/// Format an NVML violation-status `reference_time` (a Unix epoch microsecond
+/// stamp marking when the driver's cumulative counters started) as a UTC
+/// wall-clock string. Returns `None` when the stamp is missing/zero.
+fn format_reference_time(reference_time_us: u64) -> Option<String> {
+    if reference_time_us == 0 {
+        return None;
+    }
+    let nanos = reference_time_us as i128 * 1000;
+    let dt = OffsetDateTime::from_unix_timestamp_nanos(nanos).ok()?;
+    dt.format(&format_description!(
+        "[year]-[month]-[day] [hour]:[minute]:[second] UTC"
+    ))
+    .ok()
 }
 
 fn policy_label(policy: CoolerPolicy) -> &'static str {
@@ -2639,6 +2848,34 @@ mod tests {
         assert!(parse_display_id("display-1").is_err());
         assert!(parse_edid_hex("ABC").is_err());
         assert!(parse_edid_hex("00GG").is_err());
+    }
+
+    #[test]
+    fn parse_edid_interprets_real_u2790b_block() {
+        // Real EDID dumped via `nvoc-cli get-edid 0x80061086` (U2790B 4K monitor).
+        let hex = "00FFFFFFFFFFFF0005E39027B91401001F1D0103803C22782A67A1A5554DA2270E5054BFEF00D1C0B30095008180814081C0010101014DD000A0F0703E803020350055502100001AA36600A0F0701F803020350055502100001A000000FC005532373930420A202020202020000000FD0017501EA03C000A20202020202001DC020333F14C9004031F1301125D5E5F606123090707830100006D030C001000387820006001020367D85DC401788003E30F000C565E00A0A0A029503020350055502100001E023A801871382D40582C450055502100001E011D007251D01E206E28550055502100001E4D6C80A070703E8030203A0055502100001A000000004E";
+        let edid = parse_edid_hex(hex).unwrap();
+        let fields = parse_edid(&edid);
+
+        let lookup = |key: &str| -> String {
+            fields
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.as_str().unwrap_or("").to_string())
+                .unwrap_or_default()
+        };
+
+        assert_eq!(lookup("Manufacturer"), "AOC");
+        assert_eq!(lookup("Model Name"), "U2790B");
+        assert_eq!(lookup("Input Signal"), "Digital");
+        assert_eq!(
+            lookup("Range Limits"),
+            "23~80 Hz (V) | 30~160 kHz (H) | Max 600 MHz"
+        );
+        // Header is parsed (non-empty), and invalid input yields nothing.
+        assert!(!fields.is_empty());
+        assert!(parse_edid(&[0u8; 64]).is_empty());
+        assert!(parse_edid(&[0xFFu8; 128]).is_empty());
     }
 
     #[test]

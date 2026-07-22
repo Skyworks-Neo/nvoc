@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "pynvoc"
-version = "0.2.0a1"
+version = "0.2.0a2"
 description = "Native Python bindings for nvoc-core"
 requires-python = ">=3.8"
 license = { text = "Apache-2.0" }

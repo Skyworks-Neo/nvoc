@@ -80,9 +80,7 @@ fn format_human_output(function: &str, output: &Value) -> Vec<String> {
         "get-temperature-thresholds" => {
             format_object_array(output, &[("name", "Threshold"), ("celsius", "Limit")])
         }
-        "get-throttle-reasons" => {
-            format_object_array(output, &[("name", "Reason"), ("active", "Active")])
-        }
+        "get-throttle-reasons" => format_throttle_reasons_output(output),
         "get-legacy-overvolt-ranges" => format_object_array(
             output,
             &[
@@ -191,6 +189,62 @@ fn format_object_array(output: &Value, fields: &[(&str, &str)]) -> Vec<String> {
             .collect(),
         None => format_value_block(output, 1),
     }
+}
+
+/// Format the combined throttle-reasons + violation-status output.
+///
+/// Prints the instantaneous per-reason active snapshot, then appends the
+/// driver's cumulative per-policy violation times (the "how long was each
+/// modality limiting" breakdown), mirroring the historical `status` output.
+fn format_throttle_reasons_output(output: &Value) -> Vec<String> {
+    let mut lines = Vec::new();
+
+    let reasons = output.get("reasons").unwrap_or(output);
+    lines.extend(format_object_array(
+        reasons,
+        &[("name", "Reason"), ("active", "Active")],
+    ));
+
+    if let Some(violation) = output.get("violation").and_then(Value::as_object) {
+        let entries = violation
+            .get("entries")
+            .and_then(Value::as_array)
+            .map(|array| {
+                array
+                    .iter()
+                    .filter_map(|entry| {
+                        let name = entry.get("name")?.as_str()?;
+                        let secs = entry.get("seconds")?.as_f64()?;
+                        Some((name.to_string(), secs))
+                    })
+                    .filter(|(_, secs)| *secs > 0.0)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        let since = violation.get("since").and_then(Value::as_str);
+        let header = match since {
+            Some(since) => format!("Violation Status (since {since})"),
+            None => "Violation Status".to_string(),
+        };
+        lines.push(nvoc_cli_common::color::stylize_title(&header));
+
+        if entries.is_empty() {
+            lines.push(format!(
+                "  {}",
+                nvoc_cli_common::color::stylize("none", false)
+            ));
+        } else {
+            for (name, secs) in &entries {
+                lines.push(nvoc_cli_common::color::stylize(
+                    &format!("  {:<10} {:>11.1}s", name, secs),
+                    false,
+                ));
+            }
+        }
+    }
+
+    lines
 }
 
 fn format_value_block(value: &Value, indent: usize) -> Vec<String> {
@@ -937,6 +991,49 @@ mod tests {
     }
 
     #[test]
+    fn human_output_throttle_reasons_appends_violation_block() {
+        nvoc_cli_common::color::init(true);
+        let output = json!({
+            "reasons": [
+                {"name": "GPU Idle", "active": true},
+                {"name": "HW Slowdown", "active": false},
+            ],
+            "violation": {
+                "entries": [
+                    {"name": "Pwr", "seconds": 1026.2},
+                    {"name": "Idle", "seconds": 58552.4},
+                    {"name": "AppClk", "seconds": 0.0},
+                ],
+                "since": "2026-05-26 18:00:41 UTC",
+            },
+        });
+
+        let rendered = format_human_output("get-throttle-reasons", &output).join("\n");
+
+        // Instantaneous reasons come first.
+        assert!(rendered.contains("Reason GPU Idle | Active yes"));
+        assert!(rendered.contains("Reason HW Slowdown | Active no"));
+        // Violation block header carries the since timestamp.
+        assert!(rendered.contains("Violation Status (since 2026-05-26 18:00:41 UTC)"));
+        // Non-zero cumulative times are listed; the zero entry is dropped.
+        assert!(rendered.contains("Pwr") && rendered.contains("1026.2s"));
+        assert!(rendered.contains("Idle") && rendered.contains("58552.4s"));
+        assert!(!rendered.contains("AppClk"));
+    }
+
+    #[test]
+    fn human_output_throttle_reasons_handles_missing_violation() {
+        nvoc_cli_common::color::init(true);
+        // Device exposes throttle reasons but no violation counters.
+        let output = json!({"reasons": [{"name": "GPU Idle", "active": true}]});
+
+        let rendered = format_human_output("get-throttle-reasons", &output).join("\n");
+
+        assert!(rendered.contains("Reason GPU Idle | Active yes"));
+        assert!(!rendered.contains("Violation Status"));
+    }
+
+    #[test]
     fn human_output_renders_every_function_without_json_dump() {
         nvoc_cli_common::color::init(true);
 
@@ -1052,7 +1149,20 @@ mod tests {
             Command::GetTemperatureThresholds => {
                 json!([{"name": "shutdown", "celsius": 95}])
             }
-            Command::GetThrottleReasons => json!([{"name": "power", "active": false}]),
+            Command::GetThrottleReasons => json!({
+                "reasons": [
+                    {"name": "GPU Idle", "active": true},
+                    {"name": "HW Slowdown", "active": false},
+                ],
+                "violation": {
+                    "entries": [
+                        {"name": "Pwr", "seconds": 1026.2},
+                        {"name": "Idle", "seconds": 58552.4},
+                        {"name": "AppClk", "seconds": 0.0},
+                    ],
+                    "since": "2026-05-26 18:00:41 UTC",
+                },
+            }),
             Command::GetTdpTempLimits => json!({
                 "min_tdp_percent": 50,
                 "default_tdp_percent": 100,
