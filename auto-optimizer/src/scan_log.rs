@@ -134,7 +134,7 @@ impl ScanLogWriter {
             .read(true)
             .write(true)
             .create(true)
-            .truncate(true)
+            .truncate(false)
             .open(path)?;
         file.seek(SeekFrom::End(0))?;
         Ok(ScanLogWriter {
@@ -921,5 +921,47 @@ mod tests {
             }
             other => panic!("unexpected event: {:?}", other),
         }
+    }
+
+    #[test]
+    fn open_append_preserves_existing_entries() {
+        let path = std::env::temp_dir().join(format!(
+            "nvoc-vfp-jsonl-append-{}.jsonl",
+            std::process::id()
+        ));
+
+        {
+            let mut writer = ScanLogWriter::open_append(path.to_str().unwrap()).unwrap();
+            writer
+                .write_event(ScanLogEvent::ScanMode {
+                    mode: ScanMode::Normal,
+                })
+                .unwrap();
+        }
+        {
+            let mut writer = ScanLogWriter::open_append(path.to_str().unwrap()).unwrap();
+            writer
+                .write_event(ScanLogEvent::ScanCompleted {
+                    scan: ScanKind::GpuBoostV3,
+                })
+                .unwrap();
+        }
+
+        let loaded = read_scan_log(path.to_str().unwrap()).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(loaded.entries.len(), 2);
+        assert!(matches!(
+            loaded.entries[0].event,
+            ScanLogEvent::ScanMode {
+                mode: ScanMode::Normal
+            }
+        ));
+        assert!(matches!(
+            loaded.entries[1].event,
+            ScanLogEvent::ScanCompleted {
+                scan: ScanKind::GpuBoostV3
+            }
+        ));
     }
 }

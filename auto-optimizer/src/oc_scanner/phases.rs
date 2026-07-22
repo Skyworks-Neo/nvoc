@@ -701,26 +701,6 @@ pub(super) fn run_gpuboostv3_long_phase(
             KilohertzDelta(controller.f_current)
         );
         println!("[DEBUG] StepController: {:?}", controller);
-        let started_at = begin_test_result_log(
-            l,
-            ScanDomain::Core,
-            TestPhase::Long,
-            *test_code,
-            point,
-            Some(v),
-            KilohertzDelta(controller.f_current),
-        )?;
-        finish_test_result_log(
-            l,
-            started_at,
-            ScanDomain::Core,
-            TestPhase::Long,
-            *test_code,
-            point,
-            Some(v),
-            KilohertzDelta(controller.f_current),
-            long_duration_flag,
-        )?;
         break;
     }
 
