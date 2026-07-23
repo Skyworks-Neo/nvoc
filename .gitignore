@@ -38,3 +38,27 @@ dist-ssr
 *.sw?
 /nvoc-python/python/pynvoc/_native.pyd
 /.venv/
+
+# Reverse-engineering work artifacts (local analysis only, not source)
+# IDA databases and the proprietary DLLs/binaries under RE
+*.i64
+*.idb
+*.id0
+*.id1
+*.id2
+*.nam
+*.til
+nvapi.dll
+nvapi64.dll
+nvapi64_impl.dll
+nvapi_impl.dll
+nvppe.dll
+GPU-Z.exe
+GPU-Z_unpacked.exe
+# RE scratch tables / probe output
+*_unknown_ids.txt
+gpuz_ids_observed.txt
+nvapi64_impl_qi_table.txt
+rm_opcode_clusters.txt
+subcommand_clusters.txt
+unknown_ids.txt
