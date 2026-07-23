@@ -959,7 +959,141 @@ fn nvapi_therm_channel_info() {
         "=== ThermChannelGetInfo authoritative: hotspot={} memory={} ===",
         has_auth_hotspot, has_auth_memory
     );
-    // No hard assertion: on a laptop GPU GetInfo may be stubbed, in which case
-    // neither authoritative entry appears (the heuristic entries still do).
-    // Re-test on a desktop GPU to confirm the authoritative path.
+    // No hard assertion: the authoritative path is best-effort. If the
+    // driver exposes GetInfo, both authoritative entries appear; otherwise
+    // only the heuristic entries do. (Verified on a laptop dGPU: both appear,
+    // hotspot at channel 1, memory at channel 7.)
 }
+
+/// RAW probe of `NvAPI_GPU_ThermChannelGetInfo` (0x0bc8163d) — calls the FFI
+/// directly, bypassing the hi-layer `allowable_result` degradation so we see
+/// the *actual* NVAPI status code and raw struct bytes on whatever GPU this
+/// runs on. This is the definitive desktop-GPU diagnostic: it tells you
+/// whether GetInfo returns OK (and what the priChIdx LUT / channel records
+/// contain), or which error it returns (NotSupported / NoImplementation /
+/// -104 NvidiaDeviceNotFound / -9 IncompatibleStruct / ...).
+///
+/// Run on the other PC with:
+///   cargo test -p nvoc-core --test gpu_readonly -- --ignored --nocapture nvapi_therm_channel_raw
+#[test]
+#[ignore]
+fn nvapi_therm_channel_raw() {
+    use nvapi_hi::sys::gpu::thermal::private as th;
+    use nvapi_hi::sys::api as api;
+    use nvapi_hi::sys::nvapi::NvVersion;
+    use nvapi_hi::sys::Status;
+
+    let inv = inventory();
+    let target = first_target(&inv);
+    if !target.has_nvapi() {
+        eprintln!("nvapi_therm_channel_raw: no NVAPI backend, skipping");
+        return;
+    }
+    nvapi_hi::initialize().expect("nvapi initialize");
+    let gpus = nvapi_hi::Gpu::enumerate().expect("nvapi enumerate");
+    if gpus.is_empty() {
+        eprintln!("nvapi_therm_channel_raw: no NVAPI GPUs");
+        return;
+    }
+    let gpu = gpus.into_iter().next().unwrap();
+    let handle = *gpu.inner().handle();
+
+    // V2 params struct: version magic (2<<16)|sizeof = (2<<16)|2736.
+    let mut info: th::NV_GPU_THERMAL_THERM_CHANNEL_INFO_PARAMS_V2 =
+        unsafe { std::mem::zeroed() };
+    info.version = NvVersion::new(std::mem::size_of_val(&info), 2);
+
+    let st = unsafe { api::NvAPI_GPU_ThermChannelGetInfo(handle, &mut info) };
+    eprintln!(
+        "=== ThermChannelGetInfo status={:?} ({}), struct_size={}, version_out=0x{:x} ===",
+        st,
+        st as i32,
+        std::mem::size_of_val(&info),
+        u32::from(info.version),
+    );
+
+    if (st as i32) != (Status::Ok as i32) {
+        // Not a test failure — just a diagnostic. Print the error and stop.
+        eprintln!("GetInfo did not return OK.");
+        eprintln!("NotSupported/-104 => driver/GPU genuinely lacks it;");
+        eprintln!("-9 (IncompatibleStruct) => struct size/layout is wrong.");
+        return;
+    }
+
+    eprintln!("channel_mask = 0x{:08x} (popcount={})", info.channel_mask, info.channel_mask.count_ones());
+    let type_names = ["GPU_AVG", "GPU_MAX(hotspot)", "BOARD", "MEMORY(vram)", "PWR_SUPPLY"];
+    eprintln!("pri_ch_idx (primary channel per type):");
+    for (ty, &idx) in info.pri_ch_idx.iter().enumerate() {
+        let populated = (idx as usize) < 32 && (info.channel_mask & (1u32 << idx)) != 0;
+        eprintln!(
+            "  [{}] {:<18} => channel {} {}",
+            ty,
+            type_names.get(ty).copied().unwrap_or("?"),
+            idx,
+            if populated { "(valid)" } else { "(NOT in mask)" }
+        );
+    }
+    eprintln!("per-channel records (first 16 populated):");
+    let mut shown = 0;
+    for i in 0..32 {
+        if info.channel_mask & (1u32 << i) == 0 {
+            continue;
+        }
+        let c = &info.channel[i];
+        eprintln!(
+            "  chan[{:>2}] ch_type={} ch_class={} rel_loc={} tgt_gpu={} range=[{}..{}] off_sw={} off_hw={} flags={}",
+            i, c.ch_type, c.ch_class, c.rel_loc, c.tgt_gpu, c.min_temp, c.max_temp, c.offset_sw, c.offset_hw, c.flags
+        );
+        shown += 1;
+        if shown >= 16 {
+            break;
+        }
+    }
+    if shown == 0 {
+        eprintln!("  (channel_mask is 0 — driver returned OK but exposes no channels)");
+    }
+
+    // Now read the STATUS half using the RTSS ThermChannelGetStatus struct
+    // (same ID 0x65fe3aad as GetThermalSensors, but the channel[32] layout).
+    // Pass GetInfo's channel_mask; channel[i] is then the live temp for
+    // channel i, indexed directly by priChIdx[type].
+    let mut status: th::NV_GPU_THERMAL_THERM_CHANNEL_STATUS_PARAMS_V2 =
+        unsafe { std::mem::zeroed() };
+    status.version = NvVersion::new(std::mem::size_of_val(&status), 2);
+    status.channel_mask = info.channel_mask;
+    // Same FFI as GetThermalSensors (same QueryInterface ID), different struct.
+    let st = unsafe {
+        api::NvAPI_GPU_GetThermalSensors(
+            handle,
+            &mut status as *mut _ as *mut th::NV_GPU_THERMAL_SENSORS,
+        )
+    };
+    eprintln!(
+        "=== ThermChannelGetStatus status={:?} mask=0x{:x} ===",
+        st, info.channel_mask
+    );
+    if (st as i32) == (Status::Ok as i32) {
+        eprintln!("channel[32] (celsius*256), non-zero only:");
+        for (i, &v) in status.channel.iter().enumerate() {
+            if v != 0 {
+                eprintln!("  chan[{:>2}] = {:>8}  => {:.2} C", i, v, v as f32 / 256.0);
+            }
+        }
+        eprintln!("authoritative decode (channel[priChIdx[type]]):");
+        for (ty, &idx) in info.pri_ch_idx.iter().enumerate() {
+            if (idx as usize) >= 32 {
+                continue;
+            }
+            let temp = status.get_temp(idx as usize);
+            eprintln!(
+                "  [{}] {:<18} channel[{}] = {} => {:.2} C",
+                ty,
+                type_names.get(ty).copied().unwrap_or("?"),
+                idx,
+                status.channel.get(idx as usize).copied().unwrap_or(0),
+                temp.unwrap_or(0.0),
+            );
+        }
+    }
+}
+
