@@ -1484,17 +1484,6 @@ pub fn percentage(value: u32) -> Percentage {
     Percentage(value)
 }
 
-pub fn probe_thermal_sensors_mask(target: &GpuTarget<'_>) -> Result<i32, Error> {
-    low_nvapi::probe_thermal_sensors_mask(target.nvapi()?)
-}
-
-pub fn read_thermal_sensors(
-    target: &GpuTarget<'_>,
-    mask: i32,
-) -> Result<nvapi_hi::ThermalSensors, Error> {
-    low_nvapi::read_thermal_sensors(target.nvapi()?, mask)
-}
-
 pub fn set_nvapi_vfp_curve_delta(
     target: &GpuTarget<'_>,
     point: usize,
