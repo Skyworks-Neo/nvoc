@@ -1,3 +1,124 @@
+//! Read-only GPU integration tests.
+//!
+//! Two families of tests live here:
+//!
+//! 1. **Invariants** (`discovery_*`, `selection_*`, `nvml_*`, `nvapi_*` that assert) —
+//!    verify that discovery/selection/clock/voltage/fan offsets behave correctly against a
+//!    real GPU. These are `#[ignore]`d because they need hardware; run with
+//!    `cargo test -p nvoc-core -- --ignored`.
+//!
+//! 2. **Raw probes** (`nvapi_raw_payload_probe` and anything documented under
+//!    "Investigating unknown NVAPI IDs" below) — diagnostic harnesses that **bypass the
+//!    `RawConversion` layer** to dump the raw byte payload an NVAPI call returns. They make
+//!    no assertions about values; they exist to reverse-engineer undocumented/unknown
+//!    NVAPI QueryInterface IDs. See the workflow section at the bottom of this comment.
+//!
+//! # Ground truth
+//!
+//! Assertion tests compare against an optional ground-truth file pointed to by
+//! `NVOC_CORE_GPU_GROUND_TRUTH` (a JSON doc with `gpus[].id` and per-field bounds). When
+//! absent, bound-checks silently no-op (see `assert_optional_min`/`assert_optional_max`).
+//!
+//! # Investigating unknown NVAPI IDs (the raw-probe workflow)
+//!
+//! When nvapi-rs lists an ID as `Unknown_XXXXXXXX` in `nvapi-rs/sys/src/nvid.rs`, the goal
+//! is to decide (a) what it returns, (b) whether its bytes are *live* (change under load)
+//! or a static *descriptor/blob*, and (c) whether wrapping it adds monitoring value. The
+//! static answer comes from IDA (see `docs/gpuz-per-rail-investigation.md`); the dynamic
+//! confirmation comes from this file's `nvapi_raw_payload_probe`.
+//!
+//! ## Why bypass `RawConversion`?
+//!
+//! The op/hi layers (`QueryGpuStatus`, `nvapi_hi::GpuStatus`) call `RawConversion::convert_raw`,
+//! which is *lossy by design*: it validates padding fields and returns
+//! `Err(ArgumentRangeError)` (or `allowable_result` downgrades it to `None`) when padding is
+//! non-zero or an enum discriminant is out of range. That is correct for production reads,
+//! but it **hides unknown bytes** — exactly the data an RE probe needs to see. The raw probe
+//! calls the `sys::api::*` FFI directly with a zeroed struct and inspects every byte.
+//!
+//! ## The probe pattern (copy this for a new ID)
+//!
+//! For an ID that *is* wrapped in nvapi-rs (struct + FFI symbol exist), stamp the version
+//! magic and call the raw FFI:
+//! ```ignore
+//! use nvapi_hi::sys::gpu::power::private as pw;
+//! use nvapi_hi::sys::nvapi::{NvVersion, VersionedStruct};
+//! use nvapi_hi::sys::{api, Status};
+//!
+//! // versioned() is ambiguous (struct impls both StructVersion and StructVersion<1>);
+//! // use this macro instead to zero + stamp the v1 magic.
+//! macro_rules! ver {
+//!     ($ty:ty) => {{
+//!         let mut s = unsafe { std::mem::zeroed::<$ty>() };
+//!         *s.nvapi_version_mut() = NvVersion::with_struct::<$ty>(1);
+//!         s
+//!     }};
+//! }
+//!
+//! let mut s = ver!(pw::SOME_STATUS_STRUCT);
+//! let st = api::NvAPI_GPU_SomeGetStatus(handle, &mut s);
+//! eprintln!("status={:?}", st);
+//! if (st as i32) == (Status::Ok as i32) {
+//!     // dump named fields + a raw hex view of the whole struct
+//!     let bytes: &[u8] = std::slice::from_raw_parts(&s as *const _ as *const u8, std::mem::size_of_val(&s));
+//!     /* walk bytes in 16-byte rows, print non-zero rows */
+//! }
+//! ```
+//!
+//! For an ID that is *not* wrapped (no struct/symbol), call it raw via
+//! `nvapi_QueryInterface` with a scratch buffer, trying candidate sizes until one returns
+//! `Ok` (see the GetPowerMizerInfo probe below for the full template):
+//! ```ignore
+//! use nvapi_hi::sys::nvapi_QueryInterface;
+//! const ID: u32 = 0xXXXXXXXX;
+//! #[repr(C)] struct Scratch { version: u32, data: [u32; 63] }
+//! let mut s = Scratch { version: 0, data: [0; 63] };
+//! for sz in [256, 64, 128] {
+//!     s.version = sz | (1 << 16);                 // version magic = (v1<<16)|size
+//!     s.data = [0; 63];
+//!     let ptr = nvapi_QueryInterface(ID)? as *const ();
+//!     let func: unsafe extern "system" fn(NvPhysicalGpuHandle, *mut Scratch) -> Status =
+//!         std::mem::transmute(ptr);
+//!     let st = func(handle, &mut s);
+//!     if (st as i32) == (Status::Ok as i32) { /* inspect s.data */ break; }
+//! }
+//! ```
+//!
+//! ## Version magic
+//!
+//! NVAPI structs' first `u32` encodes `(version << 16) | struct_size`. `NvVersion::with_struct::<T>(v)`
+//! computes it from the Rust type's size. For raw scratch probes where the size is unknown,
+//! iterate candidate sizes (the driver accepts the call only when the magic's size matches
+//! what it expects, else it returns `-9 INCOMPATIBLE_STRUCT`). IDA's handler analysis gives
+//! the exact accepted magics (e.g. `65608` = v1|sz72 for the power family, `65596` = v1|sz60
+//! for thermal) — prefer those over blind guessing.
+//!
+//! ## Deciding live-vs-descriptor (the decisive test)
+//!
+//! A returning `Ok` with non-zero bytes does **not** mean the value is a live sensor read.
+//! To distinguish a live read from a static blob, run the probe twice under different GPU
+//! load (idle vs a stressor) and compare the bytes:
+//! - **Bytes change with load** → live read candidate (worth wrapping as a status field).
+//! - **Bytes identical across reads AND under load** → static descriptor/capability/blob,
+//!   not a status (do not wrap). See the `Unknown_7457CAB5` finding: it returns a
+//!   deterministic 32-byte payload that never changes under load — a capability blob, not
+//!   the per-rail watts it structurally resembled.
+//!
+//! ## Privilege
+//!
+//! Some IDs route through the privileged `\\.\NvAdminDevice` RM path and return
+//! `NVAPI_INVALID_USER_PRIVILEGE` without elevation. If a probe fails that way, re-run as
+//! administrator. (Note: elevation does not turn a static blob into a live read — it only
+//! unlocks the call.)
+//!
+//! ## What this concluded for the per-rail-watts investigation
+//!
+//! Every power/voltage-tagged ID was probed on the dev laptop; none return live per-rail
+//! watts. GPU-Z's per-rail watts come from a WinRing0 kernel driver doing direct PCI/MMIO,
+//! entirely outside NVAPI. Full write-up + the IDA findings that classify each unknown ID:
+//! `docs/gpuz-per-rail-investigation.md`. The per-ID RE records live as doc-comments on the
+//! `Unknown_*` variants in `nvapi-rs/sys/src/nvid.rs`.
+
 use nvapi_hi::Microvolts;
 use nvml_wrapper::Nvml;
 use nvoc_core::{
@@ -503,4 +624,290 @@ fn nvapi_vf_check_bad_point() {
     let inv = inventory();
     let target = first_target(&inv);
     assert!(run(&target, CheckVoltageFrequency { point: usize::MAX }).is_err());
+}
+
+/// Byte-level probe of the raw driver payloads for the GPU-Z per-rail
+/// investigation. Bypasses `RawConversion` (which silently drops data when
+/// `Padding` fields are non-zero — the suspected "data under-used" mechanism)
+/// and Debug-prints the full raw structs so we can see exactly which bytes the
+/// driver fills. Run with:
+///   cargo test -p nvoc-core -- --ignored --nocapture nvapi_raw_payload_probe
+///
+/// Compare the printed non-zero padding bytes against GPU-Z's
+/// Board/Chip/MVDDC/PWR_SRC/16-Pin readings to recover field semantics.
+#[test]
+#[ignore]
+/// Raw payload probe for undocumented/under-documented NVAPI power/voltage IDs.
+///
+/// This is a **diagnostic harness**, not an assertion test. It bypasses the lossy
+/// `RawConversion` layer (which drops/hides unknown bytes via padding checks) and calls
+/// the `sys::api::*` FFI directly with zeroed versioned structs, dumping the returned
+/// bytes for human inspection. See the module docs ("Investigating unknown NVAPI IDs")
+/// for the full workflow, the probe copy-template, and the live-vs-descriptor decision
+/// test.
+///
+/// Run: `cargo test -p nvoc-core -- --ignored --nocapture nvapi_raw_payload_probe`
+///
+/// What each numbered block probes (see inline comments for findings):
+///  1. `ClientVoltRailsGetStatus` — voltage only; checks if multi-rail volts hide in padding.
+///  2. `ClientPowerTopologyGetInfo/Status` — power channel topology; Status returns -5 on
+///     laptops (empty internal topology table).
+///  3. `PerfPoliciesGetStatus` — 1360-byte struct, full hex dump to find live power/thermal
+///     hiding in padding.
+///  4. `GetVoltages` (NV_VOLT_TABLE) — Maxwell multi-domain voltage table.
+///  5. `ClientPowerPoliciesGetInfo/Status` — V1 vs V2 version-magic probing; V1 layout
+///     read back from a V2-typed buffer.
+///  6. `PerfPoliciesGetInfo` — capability bitset (POWER_LIMIT/THERMAL/...).
+///  7. `GetVoltageDomainsStatus` — Maxwell-tagged, verified on current GPU.
+///  8. `GetPowerMizerInfo` (unwrapped ID `0x76bfa16b`) — raw `nvapi_QueryInterface` call
+///     with a scratch buffer iterating candidate struct sizes (template for probing IDs
+///     that have no Rust struct/FFI yet).
+///
+/// Outcome on the dev laptop: none of these return live per-rail watts. The per-rail
+/// watts source is a WinRing0 PCI/MMIO kernel driver, not NVAPI — see
+/// `docs/gpuz-per-rail-investigation.md`.
+fn nvapi_raw_payload_probe() {
+    use nvapi_hi::sys::gpu::power::private as pw;
+    use nvapi_hi::sys::nvapi::{NvVersion, VersionedStruct};
+    use nvapi_hi::sys::api as api;
+    use nvapi_hi::sys::Status;
+
+    // Helper: zero a versioned struct and stamp its version magic. Avoids the
+    // ambiguous `StructVersion::versioned` call (each struct impls both
+    // StructVersion and StructVersion<1>).
+    macro_rules! ver {
+        ($ty:ty) => {{
+            let mut s = unsafe { std::mem::zeroed::<$ty>() };
+            *s.nvapi_version_mut() = NvVersion::with_struct::<$ty>(1);
+            s
+        }};
+    }
+
+    let inv = inventory();
+    let target = first_target(&inv);
+    if !target.has_nvapi() {
+        eprintln!("nvapi_raw_payload_probe: no NVAPI backend, skipping");
+        return;
+    }
+    // Get the first NVAPI physical GPU handle via nvapi_hi directly (the op
+    // layer in core wraps RawConversion, which is exactly what we want to
+    // sidestep here).
+    nvapi_hi::initialize().expect("nvapi initialize");
+    let gpus = nvapi_hi::Gpu::enumerate().expect("nvapi enumerate");
+    if gpus.is_empty() {
+        eprintln!("nvapi_raw_payload_probe: no NVAPI GPUs");
+        return;
+    }
+    let gpu = gpus.into_iter().next().unwrap();
+    let handle = *gpu.inner().handle();
+
+    unsafe {
+        // 1. NV_GPU_CLIENT_VOLT_RAILS_STATUS (76B) — we only take value_uV and
+        //    *require* the two 8-u32 padding fields to be all-zero, else Err.
+        //    Dump the whole thing to see if multi-rail voltages hide in padding.
+        let mut volt = ver!(pw::NV_GPU_CLIENT_VOLT_RAILS_STATUS);
+        let st = api::NvAPI_GPU_ClientVoltRailsGetStatus(handle, &mut volt);
+        eprintln!("=== ClientVoltRailsGetStatus status={:?} ===", st);
+        if (st as i32) == (Status::Ok as i32) {
+            eprintln!("{:#?}", volt);
+        }
+
+        // 2. NV_GPU_CLIENT_POWER_TOPOLOGY — first query Info (which channels
+        //    exist), then Status for those channels. On this laptop GPU Status
+        //    returns -5 (INCOMPATIBLE_STRUCT) regardless of channels — handler's
+        //    internal topology table is empty (v6[16]==0xFF). Confirm via Info.
+        let mut info = ver!(pw::NV_GPU_CLIENT_POWER_TOPOLOGY_INFO);
+        let st = api::NvAPI_GPU_ClientPowerTopologyGetInfo(handle, &mut info);
+        eprintln!("=== ClientPowerTopologyGetInfo status={:?} ===", st);
+        if (st as i32) == (Status::Ok as i32) {
+            eprintln!("valid={} count={} channels={:?}", info.valid, info.count, info.channels());
+        }
+
+        let mut topo = ver!(pw::NV_GPU_CLIENT_POWER_TOPOLOGY_STATUS);
+        topo.count = 2;
+        topo.entries[0].channel =
+            pw::NV_GPU_CLIENT_POWER_TOPOLOGY_CHANNEL_ID_TOTAL_GPU_POWER;
+        topo.entries[1].channel =
+            pw::NV_GPU_CLIENT_POWER_TOPOLOGY_CHANNEL_ID_NORMALIZED_TOTAL_POWER;
+        let st = api::NvAPI_GPU_ClientPowerTopologyGetStatus(handle, &mut topo);
+        eprintln!("=== ClientPowerTopologyGetStatus status={:?} ===", st);
+        if (st as i32) == (Status::Ok as i32) {
+            eprintln!("count={}", topo.count);
+            for (i, e) in topo.entries.iter().enumerate().take(topo.count as usize + 1) {
+                eprintln!("  entry[{i}] = {:#?}", e);
+            }
+        }
+
+        // 3. NV_GPU_PERF_POLICIES_STATUS_PARAMS (0x550=1360B) — huge, lots of
+        //    unexplained padding. Dump the head AND a hex view of the full
+        //    payload to look for live power/thermal hiding in padding.
+        let mut perf = ver!(pw::NV_GPU_PERF_POLICIES_STATUS_PARAMS);
+        let st = api::NvAPI_GPU_PerfPoliciesGetStatus(handle, &mut perf);
+        eprintln!("=== PerfPoliciesGetStatus status={:?} ===", st);
+        if (st as i32) == (Status::Ok as i32) {
+            eprintln!(
+                "flags={} timer={} limits={:?} unknown={} timers={:?}",
+                perf.flags, perf.timer, perf.limits, perf.unknown, perf.timers
+            );
+            // Raw hex of the whole 1360-byte struct to spot non-zero regions.
+            let bytes: &[u8] = {
+                let p = &perf as *const _ as *const u8;
+                std::slice::from_raw_parts(p, std::mem::size_of_val(&perf))
+            };
+            eprintln!("PerfPolicies raw size={}", bytes.len());
+            let mut i = 0;
+            while i < bytes.len() {
+                let chunk = &bytes[i..(i + 16).min(bytes.len())];
+                let hex: Vec<String> = chunk.iter().map(|b| format!("{:02x}", b)).collect();
+                if chunk.iter().any(|&b| b != 0) {
+                    eprintln!("  +{:04x}: {}", i, hex.join(" "));
+                }
+                i += 16;
+            }
+        }
+
+        // 4. NV_VOLT_TABLE (0x40cc=16588B) — Maxwell multi-domain voltage table.
+        let mut vt = ver!(pw::NV_VOLT_TABLE);
+        let st = api::NvAPI_GPU_GetVoltages(handle, &mut vt);
+        eprintln!("=== GetVoltages status={:?} ===", st);
+        if (st as i32) == (Status::Ok as i32) {
+            eprintln!("flags={} count={}", vt.flags, vt.count);
+            for e in vt.entries() {
+                eprintln!(
+                    "  dom={} uV={} (first pad u32={})",
+                    e.voltage_domain, e.voltage_uV, e.unknown[0]
+                );
+            }
+        }
+
+        // 5. NV_GPU_CLIENT_POWER_POLICIES — try V1 version magic (V2 returned
+        //    -9 here). V1 returns min/def/max in MILLIWATTS (absolute watts),
+        //    the prime candidate for GPU-Z's "Board Power Draw" readouts. The FFI
+        //    symbol is typed V2, but the version magic selects layout — allocate
+        //    a V2-sized buffer, stamp V1 magic, read back as V1 fields.
+        {
+            let mut pinfo = unsafe {
+                std::mem::zeroed::<pw::NV_GPU_CLIENT_POWER_POLICIES_INFO>()
+            };
+            *pinfo.nvapi_version_mut() =
+                NvVersion::with_struct::<pw::NV_GPU_CLIENT_POWER_POLICIES_INFO_V1>(1);
+            let st = api::NvAPI_GPU_ClientPowerPoliciesGetInfo(handle, &mut pinfo);
+            eprintln!("=== ClientPowerPoliciesGetInfo V1magic status={:?} ===", st);
+            // Read the V1 layout (first 2 header bytes + V1 entries) from the
+            // raw buffer regardless of which layout the driver wrote.
+            let raw: &[u8] = {
+                let p = &pinfo as *const _ as *const u8;
+                std::slice::from_raw_parts(p, std::mem::size_of_val(&pinfo))
+            };
+            eprintln!(
+                "  header valid={} count={} first entry u32s={:?}",
+                pinfo.valid,
+                pinfo.count,
+                {
+                    let mut v = Vec::new();
+                    for i in 0..11 {
+                        let off = 4 + i * 4;
+                        if off + 4 <= raw.len() {
+                            v.push(u32::from_le_bytes([
+                                raw[off], raw[off + 1], raw[off + 2], raw[off + 3],
+                            ]));
+                        }
+                    }
+                    v
+                }
+            );
+        }
+        {
+            let mut pstat = unsafe {
+                std::mem::zeroed::<pw::NV_GPU_CLIENT_POWER_POLICIES_STATUS>()
+            };
+            *pstat.nvapi_version_mut() =
+                NvVersion::with_struct::<pw::NV_GPU_CLIENT_POWER_POLICIES_STATUS_V1>(1);
+            let st = api::NvAPI_GPU_ClientPowerPoliciesGetStatus(handle, &mut pstat);
+            eprintln!("=== ClientPowerPoliciesGetStatus V1magic status={:?} ===", st);
+            let raw: &[u8] = {
+                let p = &pstat as *const _ as *const u8;
+                std::slice::from_raw_parts(p, std::mem::size_of_val(&pstat))
+            };
+            // V1 status entry: [policy_id:u32][b:u32][power_target:u32][d:u32] = 16B
+            eprintln!("  header count={}", pstat.count);
+            for i in 0..4 {
+                let off = 8 + i * 16;
+                if off + 16 <= raw.len() {
+                    let pid = u32::from_le_bytes(raw[off..off + 4].try_into().unwrap());
+                    let pt = u32::from_le_bytes(raw[off + 8..off + 12].try_into().unwrap());
+                    if pid != 0 || pt != 0 {
+                        eprintln!("  entry[{i}] policy={} power_target={}", pid, pt);
+                    }
+                }
+            }
+        }
+
+        // V2 explicitly to confirm the -9.
+        let mut pinfo2 = ver!(pw::NV_GPU_CLIENT_POWER_POLICIES_INFO);
+        let st = api::NvAPI_GPU_ClientPowerPoliciesGetInfo(handle, &mut pinfo2);
+        eprintln!("=== ClientPowerPoliciesGetInfo V2 status={:?} ===", st);
+
+        // 6. NV_GPU_PERF_POLICIES_INFO_PARAMS — returns maxUnknown + limitSupport
+        //    bitset (POWER_LIMIT/THERMAL/...). GPU-Z queries this; check for any
+        //    absolute power data in the 76-byte struct.
+        let mut ppinfo = ver!(pw::NV_GPU_PERF_POLICIES_INFO_PARAMS);
+        let st = api::NvAPI_GPU_PerfPoliciesGetInfo(handle, &mut ppinfo);
+        eprintln!("=== PerfPoliciesGetInfo status={:?} ===", st);
+        if (st as i32) == (Status::Ok as i32) {
+            eprintln!(
+                "maxUnknown={} limitSupport={:?}",
+                ppinfo.maxUnknown, ppinfo.limitSupport
+            );
+        }
+
+        // 7. GetVoltageDomainsStatus (NV_VOLT_STATUS, 140B) — Maxwell-tagged but
+        //    verify on this GPU.
+        let mut vds = ver!(pw::NV_VOLT_STATUS);
+        let st = api::NvAPI_GPU_GetVoltageDomainsStatus(handle, &mut vds);
+        eprintln!("=== GetVoltageDomainsStatus status={:?} ===", st);
+        if (st as i32) == (Status::Ok as i32) {
+            eprintln!(
+                "flags={} count={} value_uV={}",
+                vds.flags, vds.count, vds.value_uV
+            );
+        }
+
+        // 8. GetPowerMizerInfo (0x76bfa16b) — NOT wrapped in nvapi-rs. Probe raw
+        //    via QueryInterface to see if it carries live power-state data. The
+        //    struct size is unknown; try a 256-byte scratch buffer with version
+        //    magic guessed as v1|sz256 = (1<<16)|256 = 65792.
+        unsafe {
+            use nvapi_hi::sys::nvapi_QueryInterface;
+            const GET_POWERMIZER_INFO_ID: u32 = 0x76bfa16b;
+            #[repr(C)]
+            struct Scratch {
+                version: u32,
+                data: [u32; 63],
+            }
+            let mut scratch = Scratch { version: 0, data: [0; 63] };
+            for sz in [256u32, 64, 128] {
+                scratch.version = (sz) | (1 << 16);
+                scratch.data = [0; 63];
+                let ptr = match nvapi_QueryInterface(GET_POWERMIZER_INFO_ID) {
+                    Ok(p) => p as *const (),
+                    Err(_) => break,
+                };
+                type Fn = unsafe extern "system" fn(
+                    nvapi_hi::sys::api::NvPhysicalGpuHandle,
+                    *mut Scratch,
+                ) -> nvapi_hi::sys::Status;
+                let func: Fn = std::mem::transmute(ptr);
+                let status = func(handle, &mut scratch);
+                eprintln!(
+                    "=== GetPowerMizerInfo sz={} status={:?} version_out=0x{:x} ===",
+                    sz, status, scratch.version
+                );
+                if (status as i32) == (Status::Ok as i32) {
+                    eprintln!("  data={:?}", &scratch.data[..16]);
+                    break;
+                }
+            }
+        }
+    }
 }
