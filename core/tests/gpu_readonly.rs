@@ -911,3 +911,55 @@ fn nvapi_raw_payload_probe() {
         }
     }
 }
+
+/// Dump the thermal-channel capability descriptor (undocumented
+/// `NvAPI_GPU_ThermChannelGetInfo`, 0x0bc8163d) surfaced via `QueryGpuStatus`.
+///
+/// On success the status now carries authoritative "Hot Spot (authoritative)"
+/// / "Memory (authoritative)" sensors when the driver exposes the priChIdx
+/// LUT. On laptop GPUs the call may be stubbed (returns an error that the
+/// status read tolerates) — this test only verifies it never panics and prints
+/// whatever it finds for human inspection.
+#[test]
+#[ignore]
+fn nvapi_therm_channel_info() {
+    let inv = inventory();
+    let target = first_target(&inv);
+    if !target.has_nvapi() {
+        return;
+    }
+    let status = match run(&target, QueryGpuStatus) {
+        Ok(report) => report.output,
+        Err(e) => {
+            eprintln!("QueryGpuStatus failed (thermal-channel read is best-effort): {e}");
+            return;
+        }
+    };
+
+    eprintln!("=== thermal sensors ({} entries) ===", status.sensors.len());
+    for (desc, temp) in &status.sensors {
+        eprintln!(
+            "  {:<32} target={:?} mask={:?} => {:.2} C",
+            desc.name.as_deref().unwrap_or("(unnamed)"),
+            desc.target,
+            desc.sensor_mask_number,
+            temp
+        );
+    }
+
+    let has_auth_hotspot = status
+        .sensors
+        .iter()
+        .any(|(d, _)| d.name.as_deref() == Some("Hot Spot (authoritative)"));
+    let has_auth_memory = status
+        .sensors
+        .iter()
+        .any(|(d, _)| d.name.as_deref() == Some("Memory (authoritative)"));
+    eprintln!(
+        "=== ThermChannelGetInfo authoritative: hotspot={} memory={} ===",
+        has_auth_hotspot, has_auth_memory
+    );
+    // No hard assertion: on a laptop GPU GetInfo may be stubbed, in which case
+    // neither authoritative entry appears (the heuristic entries still do).
+    // Re-test on a desktop GPU to confirm the authoritative path.
+}
