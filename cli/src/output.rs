@@ -270,6 +270,9 @@ fn format_value_block_with_context(value: &Value, indent: usize, context: &str) 
                 }
 
                 match value {
+                    Value::Object(child) if key == "ids" && is_pci_identifiers(child) => {
+                        lines.extend(format_pci_identifiers(indent, key, child));
+                    }
                     Value::Object(child) if key == "utilization" => {
                         lines.push(format!(
                             "{}{}",
@@ -325,7 +328,7 @@ fn format_value_block_with_context(value: &Value, indent: usize, context: &str) 
                             &join_context(context, key),
                         ));
                     }
-                    _ => lines.push(format_field_line(indent, key, value)),
+                    _ => lines.push(format_leaf_line(indent, key, value, context)),
                 }
             }
 
@@ -667,6 +670,24 @@ fn format_field_line(indent: usize, key: &str, value: &Value) -> String {
     )
 }
 
+/// Leaf scalar line that is aware of its dotted context path (e.g.
+/// `bus.pci_express.lanes`, `driver_model.value`, `physical_frame_buffer`). Used for
+/// `get-info` fields whose formatting depends on the surrounding object, not just the
+/// key suffix. Falls back to the plain field line for non-numeric / unmatched values.
+fn format_leaf_line(indent: usize, key: &str, value: &Value, context: &str) -> String {
+    let rendered = if value.is_number() {
+        format_contextual_scalar(context, key, value)
+    } else {
+        format_scalar(key, value)
+    };
+    format!(
+        "{}{}: {}",
+        indent_spaces(indent),
+        nvoc_cli_common::color::stylize_title(&format_label(key)),
+        nvoc_cli_common::color::stylize(&rendered, false)
+    )
+}
+
 /// Render the per-domain utilization map with friendlier labels (FrameBuffer is
 /// NVAPI's name for the memory-controller domain) and a `%` unit on each value.
 fn format_utilization_entries(
@@ -798,6 +819,98 @@ fn format_sensor_descriptor(indent: usize, descriptor: &serde_json::Map<String, 
     lines
 }
 
+/// True when an object looks like the NVAPI PCI identifier block
+/// (`device_id`, `subsystem_id`, `ext_device_id`, `revision_id`).
+fn is_pci_identifiers(object: &serde_json::Map<String, Value>) -> bool {
+    object.contains_key("device_id")
+        && object.contains_key("subsystem_id")
+        && (object.contains_key("ext_device_id") || object.contains_key("revision_id"))
+}
+
+/// Known PCI sub-vendor ids (subset of `NV_GPU_VENDOR`) for human-friendly labeling.
+/// Matches the value in the low 16 bits of `subsystem_id`.
+fn pci_vendor_name(subvendor: u16) -> Option<&'static str> {
+    match subvendor {
+        0x10de => Some("NVIDIA"),
+        0x1043 => Some("ASUS"),
+        0x1458 => Some("Gigabyte"),
+        0x1462 => Some("MSI"),
+        0x10b0 => Some("Gainward"),
+        0x107d => Some("Leadtek"),
+        0x1048 => Some("Elsa"),
+        0x19da => Some("Zotac"),
+        0x196e => Some("PNY"),
+        _ => None,
+    }
+}
+
+/// Render the NVAPI PCI identifier block as Vendor/Device/Subvendor/Subdevice/Revision
+/// in hex. NVAPI packs: `device_id = (product << 16) | vendor`; for NVIDIA (vendor
+/// `0x10de`) `subsystem_id = (subproduct << 16) | subvendor`. `ext_device_id` is the
+/// real device id (it differs from the high half of `device_id` on some boards).
+fn format_pci_identifiers(
+    indent: usize,
+    key: &str,
+    object: &serde_json::Map<String, Value>,
+) -> Vec<String> {
+    let get = |k: &str| object.get(k).and_then(Value::as_u64).unwrap_or(0) as u32;
+
+    let device_id = get("device_id");
+    let subsystem_id = get("subsystem_id");
+    let ext_device_id = get("ext_device_id");
+    let revision_id = get("revision_id");
+
+    // device_id low 16 = vendor, high 16 = (NVIDIA's internal) product.
+    let vendor = device_id as u16;
+    let product = (device_id >> 16) as u16;
+    // ext_device_id is the canonical PCI device id when present and non-zero.
+    let device = if ext_device_id != 0 {
+        ext_device_id as u16
+    } else {
+        product
+    };
+    // subsystem_id low 16 = subvendor, high 16 = subdevice (NVIDIA packing).
+    let subvendor = subsystem_id as u16;
+    let subdevice = (subsystem_id >> 16) as u16;
+
+    let mut lines = vec![format!(
+        "{}{}",
+        indent_spaces(indent),
+        nvoc_cli_common::color::stylize_title(&format_label(key))
+    )];
+
+    let mut row = |label: &str, value: String| {
+        lines.push(format!(
+            "{}{}: {}",
+            indent_spaces(indent + 1),
+            nvoc_cli_common::color::stylize_title(label),
+            nvoc_cli_common::color::stylize(&value, false)
+        ));
+    };
+
+    let vendor_str = match pci_vendor_name(vendor) {
+        Some(name) => format!("0x{:04X} ({})", vendor, name),
+        None => format!("0x{:04X}", vendor),
+    };
+    row("Vendor", vendor_str);
+    row("Device", format!("0x{:04X}", device));
+
+    if subsystem_id != 0 {
+        let subvendor_str = match pci_vendor_name(subvendor) {
+            Some(name) => format!("0x{:04X} ({})", subvendor, name),
+            None => format!("0x{:04X}", subvendor),
+        };
+        row("Subvendor", subvendor_str);
+        row("Subdevice", format!("0x{:04X}", subdevice));
+    }
+    if revision_id != 0 {
+        // Labeled "CHIP Revision" to distinguish from `Arch.Revision` (NV_GPU_CHIP_REVISION)
+        // elsewhere in get-info.
+        row("CHIP Revision", format!("0x{:02X}", revision_id as u8));
+    }
+    lines
+}
+
 fn field_text(object: &Value, key: &str) -> String {
     object
         .get(key)
@@ -844,7 +957,74 @@ fn format_contextual_scalar(context_key: &str, value_key: &str, value: &Value) -
     if context.contains("voltage") && !context.contains("domain") {
         return format_measurement(number / 1000.0, "mV");
     }
+    // PCI Express link width (e.g. x8 / x16). The JSON key is `lanes`. (serde renders
+    // the bus variant as `pciexpress`, so match that form here.)
+    if context.contains("pciexpress") && value_key == "lanes" {
+        return format!("x{}", number as i64);
+    }
+    // RAM bus width is in bits (top-level GpuInfo field, so check the value key too).
+    if context.contains("bus_width") || value_key.contains("bus_width") {
+        return format!("{} bit", number as i64);
+    }
+    // Frame-buffer sizes are kibibytes -> megabytes (top-level fields too).
+    if context.contains("frame_buffer") || value_key.contains("frame_buffer") {
+        return format_measurement(number / 1024.0, "MB");
+    }
+    // Driver-model value is a packed WDDM version word -> show hex + decoded version.
+    // major = (value >> 12) & 0xf; minor = (value >> 8) & 0xf when major != 2.
+    if context.contains("driver_model") || value_key == "driver_model" {
+        let word = number as u32;
+        let major = ((word >> 12) & 0xf) as u8;
+        let minor = if major == 2 { 0 } else { ((word >> 8) & 0xf) as u8 };
+        return format!("0x{:08X} (WDDM {}.{})", word, major, minor);
+    }
+    // Temperature sensor range bounds (get-info descriptor path): report in degrees C.
+    if context.contains("sensors") && context.contains("range") {
+        return format_measurement(number, "C");
+    }
+    // Compute-capability flags: decode the NV_GPU_COMPUTE_CAPS bitmask into names.
+    // Mirrors the bit definitions in nvapi-rs/sys/src/gpu/mod.rs.
+    if context.contains("compute_capabilities") && value_key == "flags" {
+        return format_compute_caps(number as u32);
+    }
     format_scalar(value_key, value)
+}
+
+/// Decode the `NV_GPU_COMPUTE_CAPS` bitmask (from `NvAPI_GPU_GetComputeCapabilities`)
+/// into `<dec> (0x<hex>: NAME | NAME | ...)`. Unknown set bits are folded into a
+/// trailing `0x...` so no information is lost. Mirrors the bit layout documented on
+/// `NV_GPU_COMPUTE_CAPS` in `nvapi-rs/sys/src/gpu/mod.rs`.
+///
+/// NOTE: despite the "compute caps" name, the bits are PhysX / compute-software /
+/// framebuffer oriented (reversed from handler @0x1801ABAD0), NOT SR-IOV / virt / large-BAR.
+fn format_compute_caps(word: u32) -> String {
+    const KNOWN: &[(u32, &str)] = &[
+        (0x1, "BASE_COMPUTE"),
+        (0x2, "COMPUTE_CAPABLE"),
+        (0x4, "BOARD_DB_MATCH"),
+        (0x100, "PHYSX_INSTALLED"),
+        (0x200, "VRAM_GE_256MB"),
+        (0x400, "PHYSX_GPU_SELECTED"),
+    ];
+    let mut names: Vec<&str> = Vec::new();
+    let mut known_mask = 0u32;
+    for &(bit, name) in KNOWN {
+        if word & bit == bit {
+            names.push(name);
+        }
+        known_mask |= bit;
+    }
+    let unknown = word & !known_mask;
+    let suffix = if unknown != 0 {
+        format!(" | 0x{:X}", unknown)
+    } else {
+        String::new()
+    };
+    if names.is_empty() && unknown == 0 {
+        format!("0 (none)")
+    } else {
+        format!("{} (0x{:X}: {}{})", word, word, names.join(" | "), suffix)
+    }
 }
 
 fn format_measurement(value: f64, unit: &str) -> String {
@@ -956,6 +1136,71 @@ mod tests {
         assert!(rendered.contains("Watt: Max 350 W, Current 250 W, Min 100 W"));
         assert!(!rendered.contains('{'));
         assert!(!rendered.contains("\"current_watt\""));
+    }
+
+    #[test]
+    fn get_info_formats_pci_ids_lanes_buffers_and_ranges() {
+        nvoc_cli_common::color::init(true);
+        // Mirrors the GpuInfo shape from `get-info`. device_id 0x28E010DE packs
+        // vendor 0x10DE (low) + product; ext_device_id 0x28E0 is the canonical device;
+        // subsystem_id 0x20BD1043 packs subdevice 0x20BD (high) + subvendor 0x1043 ASUS.
+        // driver_model.value 0x3200 decodes to WDDM 3.2; frame buffers are KiB.
+        // (serde renders the `Bus::PciExpress` variant tag as `pciexpress`.)
+        let output = json!({
+            "bus": {
+                "bus": {
+                    "pciexpress": {
+                        "ids": {
+                            "device_id": 0x28E010DE_u32,
+                            "ext_device_id": 0x28E0_u32,
+                            "revision_id": 0xA1_u32,
+                            "subsystem_id": 0x20BD1043_u32
+                        },
+                        "lanes": 8
+                    }
+                }
+            },
+            "driver_model": { "value": 0x3200_u32 },
+            "ram_bus_width": 128,
+            "physical_frame_buffer": 8384000,
+            "virtual_frame_buffer": 8384512,
+            "compute_capabilities": { "flags": 1795 },
+            "sensors": [
+                {
+                    "name": "Core",
+                    "range": { "max": 139, "min": -35 }
+                }
+            ]
+        });
+
+        let rendered = format_value_block(&output, 0).join("\n");
+
+        // PCI ids split into hex vendor/device/subvendor/subdevice/revision.
+        assert!(rendered.contains("Vendor: 0x10DE (NVIDIA)"));
+        assert!(rendered.contains("Device: 0x28E0"));
+        assert!(rendered.contains("Subvendor: 0x1043 (ASUS)"));
+        assert!(rendered.contains("Subdevice: 0x20BD"));
+        // PCI revision labeled "CHIP Revision" to disambiguate from Arch.Revision.
+        assert!(rendered.contains("CHIP Revision: 0xA1"));
+        assert!(!rendered.contains("685773022"));
+        // Link width prefixed with `x`.
+        assert!(rendered.contains("Lanes: x8"));
+        // RAM bus width in bits.
+        assert!(rendered.contains("Ram Bus Width: 128 bit"));
+        // Frame buffers KiB -> MB.
+        assert!(rendered.contains("Physical Frame Buffer: 8187.5 MB"));
+        assert!(rendered.contains("Virtual Frame Buffer: 8188 MB"));
+        assert!(!rendered.contains("Physical Frame Buffer: 8384000"));
+        // Compute-capability flags decoded: 1795 = 0x703 = 0x1|0x2|0x100|0x200|0x400 =
+        // BASE_COMPUTE | COMPUTE_CAPABLE | PHYSX_INSTALLED | VRAM_GE_256MB | PHYSX_GPU_SELECTED.
+        // (Bit 0x4 BOARD_DB_MATCH absent — this SKU matched no board-DB row.)
+        assert!(rendered.contains(
+            "Flags: 1795 (0x703: BASE_COMPUTE | COMPUTE_CAPABLE | PHYSX_INSTALLED | VRAM_GE_256MB | PHYSX_GPU_SELECTED)"
+        ));
+        // Driver model value as hex + decoded WDDM version.
+        assert!(rendered.contains("Value: 0x00003200 (WDDM 3.2)"));
+        // Sensor range bounds carry a C unit.
+        assert!(rendered.contains("Range: Max 139 C, Min -35 C"));
     }
 
     #[test]
@@ -1232,7 +1477,8 @@ mod tests {
 
         assert!(rendered.contains("Range: Max 500 MHz, Min -500 MHz"));
         assert!(rendered.contains("Range: Max 1500 MHz, Min -500 MHz"));
-        assert!(rendered.contains("Virtual Frame Buffer: 6291456"));
+        // Frame-buffer sizes are KiB -> MB (6291456 KiB = 6144 MB).
+        assert!(rendered.contains("Virtual Frame Buffer: 6144 MB"));
     }
 
     #[test]
