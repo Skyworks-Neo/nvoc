@@ -939,25 +939,26 @@ fn nvapi_therm_channel_info() {
     eprintln!("=== thermal sensors ({} entries) ===", status.sensors.len());
     for (desc, temp) in &status.sensors {
         eprintln!(
-            "  {:<28} target={:?} channel={:?} ch_type={:?} off_sw={:?} off_hw={:?} => {:.2} C",
-            desc.name.as_deref().unwrap_or("(unnamed)"),
+            "  ch_type={:<3} target={:?} channel={:?} off_sw={:?} off_hw={:?} scaling={:?} => {:.2} C",
+            desc.channel_type.unwrap_or(999),
             desc.target,
-            desc.sensor_mask_number,
-            desc.channel_type,
+            desc.channel_num,
             desc.offset_sw,
             desc.offset_hw,
+            desc.scaling,
             temp
         );
     }
 
-    let has_hotspot = status
-        .sensors
-        .iter()
-        .any(|(d, _)| d.name.as_deref() == Some("Hot Spot"));
+    // Core = channel_type GPU_AVG (0); Hot Spot = GPU_MAX (1).
     let has_core = status
         .sensors
         .first()
-        .is_some_and(|(d, _)| d.name.as_deref() == Some("Core"));
+        .is_some_and(|(d, _)| d.channel_type == Some(0));
+    let has_hotspot = status
+        .sensors
+        .iter()
+        .any(|(d, _)| d.channel_type == Some(1));
     eprintln!(
         "=== unified RTSS path: core_at_index0={} hotspot={} ===",
         has_core, has_hotspot
