@@ -816,6 +816,31 @@ fn format_sensor_descriptor(indent: usize, descriptor: &serde_json::Map<String, 
     if let Some(mask) = descriptor.get("sensor_mask_number") {
         lines.push(field("sensor_mask_number", mask));
     }
+    // RTSS ThermChannel metadata (research fields from GetInfo). channel_type
+    // gets a human tag; offsets/scaling are shown raw (semantics undocumented).
+    if let Some(ch_type) = descriptor.get("channel_type").and_then(Value::as_i64) {
+        let tag = match ch_type {
+            0 => " (GPU_AVG)",
+            1 => " (GPU_MAX)",
+            2 => " (BOARD)",
+            3 => " (MEMORY)",
+            4 => " (PWR_SUPPLY)",
+            255 => " (unclassified)",
+            _ => "",
+        };
+        lines.push(format!(
+            "{}{}: {}{}",
+            indent_spaces(indent),
+            nvoc_cli_common::color::stylize_title("Channel Type"),
+            nvoc_cli_common::color::stylize(&ch_type.to_string(), false),
+            tag
+        ));
+    }
+    for key in ["offset_sw", "offset_hw", "scaling"] {
+        if let Some(val) = descriptor.get(key) {
+            lines.push(field(key, val));
+        }
+    }
     lines
 }
 
@@ -1269,7 +1294,7 @@ mod tests {
                     {
                         "target": "Gpu",
                         "name": "Core",
-                        "sensor_mask_number": 8,
+                        "sensor_mask_number": 0,
                         "range": { "max": 139, "min": -35 }
                     },
                     52.58203125
@@ -1291,7 +1316,7 @@ mod tests {
         // Sensors: target dropped, temperature gets a C unit.
         assert!(!rendered.contains("Target"));
         assert!(rendered.contains("Name: Core"));
-        assert!(rendered.contains("Sensor Mask Number: 8"));
+        assert!(rendered.contains("Sensor Mask Number: 0"));
         assert!(rendered.contains("Range: Max 139 C, Min -35 C"));
         assert!(rendered.contains("- 52.58203125 C"));
     }
@@ -1307,7 +1332,7 @@ mod tests {
                     {
                         "target": "Gpu",
                         "name": "Hot Spot",
-                        "sensor_mask_number": 9,
+                        "sensor_mask_number": 1,
                         "range": { "max": 0, "min": 0 }
                     },
                     78.5

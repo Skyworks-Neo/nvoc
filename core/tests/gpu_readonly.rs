@@ -939,30 +939,33 @@ fn nvapi_therm_channel_info() {
     eprintln!("=== thermal sensors ({} entries) ===", status.sensors.len());
     for (desc, temp) in &status.sensors {
         eprintln!(
-            "  {:<32} target={:?} mask={:?} => {:.2} C",
+            "  {:<28} target={:?} channel={:?} ch_type={:?} off_sw={:?} off_hw={:?} => {:.2} C",
             desc.name.as_deref().unwrap_or("(unnamed)"),
             desc.target,
             desc.sensor_mask_number,
+            desc.channel_type,
+            desc.offset_sw,
+            desc.offset_hw,
             temp
         );
     }
 
-    let has_auth_hotspot = status
+    let has_hotspot = status
         .sensors
         .iter()
-        .any(|(d, _)| d.name.as_deref() == Some("Hot Spot (authoritative)"));
-    let has_auth_memory = status
+        .any(|(d, _)| d.name.as_deref() == Some("Hot Spot"));
+    let has_core = status
         .sensors
-        .iter()
-        .any(|(d, _)| d.name.as_deref() == Some("Memory (authoritative)"));
+        .first()
+        .is_some_and(|(d, _)| d.name.as_deref() == Some("Core"));
     eprintln!(
-        "=== ThermChannelGetInfo authoritative: hotspot={} memory={} ===",
-        has_auth_hotspot, has_auth_memory
+        "=== unified RTSS path: core_at_index0={} hotspot={} ===",
+        has_core, has_hotspot
     );
-    // No hard assertion: the authoritative path is best-effort. If the
-    // driver exposes GetInfo, both authoritative entries appear; otherwise
-    // only the heuristic entries do. (Verified on a laptop dGPU: both appear,
-    // hotspot at channel 1, memory at channel 7.)
+    // Core MUST be sensors[0] — positional consumers take sensors.first() as
+    // the core temperature. Hot Spot presence is best-effort (older GPUs may
+    // only expose Core).
+    assert!(has_core, "Core must be the first thermal sensor");
 }
 
 /// RAW probe of `NvAPI_GPU_ThermChannelGetInfo` (0x0bc8163d) — calls the FFI
@@ -1054,20 +1057,14 @@ fn nvapi_therm_channel_raw() {
     }
 
     // Now read the STATUS half using the RTSS ThermChannelGetStatus struct
-    // (same ID 0x65fe3aad as GetThermalSensors, but the channel[32] layout).
-    // Pass GetInfo's channel_mask; channel[i] is then the live temp for
-    // channel i, indexed directly by priChIdx[type].
+    // (ID 0x65fe3aad, channel[32] layout). Pass GetInfo's channel_mask;
+    // channel[i] is then the live temp for channel i, indexed directly by
+    // priChIdx[type].
     let mut status: th::NV_GPU_THERMAL_THERM_CHANNEL_STATUS_PARAMS_V2 =
         unsafe { std::mem::zeroed() };
     status.version = NvVersion::new(std::mem::size_of_val(&status), 2);
     status.channel_mask = info.channel_mask;
-    // Same FFI as GetThermalSensors (same QueryInterface ID), different struct.
-    let st = unsafe {
-        api::NvAPI_GPU_GetThermalSensors(
-            handle,
-            &mut status as *mut _ as *mut th::NV_GPU_THERMAL_SENSORS,
-        )
-    };
+    let st = unsafe { api::NvAPI_GPU_ThermChannelGetStatus(handle, &mut status) };
     eprintln!(
         "=== ThermChannelGetStatus status={:?} mask=0x{:x} ===",
         st, info.channel_mask

@@ -7,7 +7,6 @@ use super::nvml::{
 };
 use super::result::PstateBaseVoltage;
 use super::types::{NvapiLockedVoltageTarget, VfpResetDomain};
-pub use nvapi_hi::ThermalSensors;
 use nvapi_hi::nvapi::{CelsiusShifted, DisplayIdsFlags, VoltageDomain};
 use nvapi_hi::{
     Celsius, ClockDomain, ClockLockEntry, ClockLockValue, ConnectedIdsFlags, CoolerPolicy,
@@ -1290,20 +1289,4 @@ pub fn set_legacy_clocks_nvapi(gpu: &Gpu, core_mhz: u32, mem_mhz: u32) -> Result
     }
 
     Ok(())
-}
-
-pub(crate) fn probe_thermal_sensors_mask(gpu: &Gpu) -> Result<i32, Error> {
-    for i in 0..32 {
-        let mask: i32 = 1 << i;
-        if let Ok(sensors) = gpu.thermal_sensors(mask)
-            && sensors.values.iter().any(|&v| v != 0)
-        {
-            return Ok(mask);
-        }
-    }
-    Err(Error::Str("no valid NVAPI thermal sensor mask found"))
-}
-
-pub(crate) fn read_thermal_sensors(gpu: &Gpu, mask: i32) -> Result<ThermalSensors, Error> {
-    gpu.thermal_sensors(mask).map_err(Error::from)
 }
