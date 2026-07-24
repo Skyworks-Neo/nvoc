@@ -153,8 +153,8 @@ def test_normalize_status_json_output() -> None:
         "sensors": [
           [
             {
-              "controller": "GpuInternal",
-              "target": "Gpu"
+              "target": "Gpu",
+              "channel_type": 0
             },
             37
           ]
@@ -169,6 +169,11 @@ def test_normalize_status_json_output() -> None:
     assert parsed["mem_clock_mhz"] == 405.0
     assert parsed["voltage_mv"] == 650.0
     assert parsed["temperature_c"] == 37.0
+    # Typed core temp mirrors temperature_c (channel_type 0); the unclassified
+    # channel (type 255) must NOT leak into the typed trio.
+    assert parsed["temp_core"] == 37.0
+    assert "temp_hotspot" not in parsed
+    assert "temp_memory" not in parsed
     assert parsed["power_w"] == 1.0
 
 
