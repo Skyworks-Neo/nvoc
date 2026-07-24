@@ -480,15 +480,31 @@ fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
         map.insert("temperature_c".into(), f64_value(*temp as f64));
     }
     // Full thermal-sensor list as `[descriptor, temp_celsius]` pairs (same shape
-    // as get-status JSON). Downstream consumers (the TUI dashboard) read the
-    // typed channels (channel_type 0=core / 1=hot spot / 3=memory) from this to
-    // render the core/hotspot/VRAM temperatures; `temperature_c` above is kept
-    // as the positional core fallback.
-    if !status.sensors.is_empty()
-        && let Ok(v) = serde_json::to_value(&status.sensors)
-        && !v.is_null()
-    {
-        map.insert("sensors".into(), v);
+    // as get-status JSON), plus the three primary typed temperatures pulled out
+    // by channel_type (0=GPU_AVG/core, 1=GPU_MAX/hot spot, 3=MEMORY/VRAM). The
+    // TUI dashboard reads temp_core/temp_hotspot/temp_memory directly (the
+    // native path bypasses normalize_query_output, so it cannot re-parse the
+    // sensors array itself); `temperature_c` above stays as the core fallback.
+    if !status.sensors.is_empty() {
+        if let Ok(v) = serde_json::to_value(&status.sensors)
+            && !v.is_null()
+        {
+            map.insert("sensors".into(), v);
+        }
+        for (desc, temp) in &status.sensors {
+            match desc.channel_type {
+                Some(0) if !map.contains_key("temp_core") => {
+                    map.insert("temp_core".into(), f64_value(*temp as f64));
+                }
+                Some(1) if !map.contains_key("temp_hotspot") => {
+                    map.insert("temp_hotspot".into(), f64_value(*temp as f64));
+                }
+                Some(3) if !map.contains_key("temp_memory") => {
+                    map.insert("temp_memory".into(), f64_value(*temp as f64));
+                }
+                _ => {}
+            }
+        }
     }
     // Live board power draw (watts). Prefer the NVML reading
     // (`nvmlDeviceGetPowerUsage`, same source as nvidia-smi): on laptop GPUs the
