@@ -1,4 +1,6 @@
 use super::runtime::{retry_operation_with_backoff, run_output};
+#[cfg(debug_assertions)]
+use crate::manual_override::ManualOverride;
 use crate::oc_profile_function::apply_autoscan_profile;
 use crate::progressbar::{ScanProgress, forward_child_output, progress_print};
 use crate::scan_strategy::FluctuationStrategy;
@@ -39,6 +41,8 @@ pub(super) struct PressureTestConfig<'a> {
     pub(super) wakeup_load_needed: bool,
     pub(super) stressor_profile: &'a str,
     pub(super) stressor_config: Option<&'a str>,
+    #[cfg(debug_assertions)]
+    pub(super) manual_override: Option<&'a ManualOverride>,
     /// GpuId.0 value of the GPU under test (used for event-log GPU filtering).
     #[cfg(windows)]
     pub(super) target_gpu_id: u32,
@@ -458,6 +462,10 @@ pub(super) fn run_pressure_test(
         };
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
+        #[cfg(debug_assertions)]
+        if let Some(manual_override) = cfg.manual_override {
+            manual_override.clear();
+        }
         match cmd.spawn() {
             Ok(mut process) => {
                 let mut exit_code = 1;
@@ -520,6 +528,17 @@ pub(super) fn run_pressure_test(
                 test_initialization(gpu, cfg);
 
                 loop {
+                    #[cfg(debug_assertions)]
+                    if let Some(request) = cfg.manual_override.and_then(ManualOverride::take) {
+                        let (code, label) = request.result();
+                        // Use a plain println (not progress_print) so the message
+                        // lands in the scrollable stdout history instead of being
+                        // absorbed into the indicatif progress-bar region.
+                        println!("{}: ending current test early.", label);
+                        force_kill_process(&mut process, label);
+                        exit_code = code;
+                        break;
+                    }
                     if last_fluctuation.elapsed() >= Duration::from_millis(1) {
                         // Frequency fluctuation is intentionally driven while
                         // the stressor is running to expose marginal V/F points.

@@ -1,5 +1,7 @@
 use super::pressure::{PressureTestConfig, run_pressure_test};
 use super::runtime::{MinLoadPulse, run_output};
+#[cfg(debug_assertions)]
+use crate::manual_override::ManualOverride;
 use crate::progressbar::ScanProgress;
 use crate::scan_log::{ScanDomain, ScanLogWriter, TestPhase};
 use crate::scan_strategy::{FluctuationStrategy, StepController};
@@ -32,6 +34,8 @@ pub(super) struct CommonPhaseArgs<'a> {
     pub(super) wakeup_load_needed: bool,
     pub(super) stressor_profile: &'a str,
     pub(super) stressor_config: Option<&'a str>,
+    #[cfg(debug_assertions)]
+    pub(super) manual_override: Option<&'a ManualOverride>,
 }
 
 struct PressureRunSpec {
@@ -109,6 +113,8 @@ impl<'a> CommonPhaseArgs<'a> {
             wakeup_load_needed: self.wakeup_load_needed,
             stressor_profile: self.stressor_profile,
             stressor_config: self.stressor_config,
+            #[cfg(debug_assertions)]
+            manual_override: self.manual_override,
             #[cfg(windows)]
             target_gpu_id: _gpu.id.0,
         }
