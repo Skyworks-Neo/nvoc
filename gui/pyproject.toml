@@ -21,15 +21,15 @@ dependencies = [
     "pynvoc",
     "pystray>=0.19.5",
     "six>=1.17.0",
-    "pyinstaller~=6.19.0",
+    "pyinstaller~=6.21.0",
 ]
 
 [dependency-groups]
 build = [
-    "pyinstaller~=6.19.0",
+    "pyinstaller~=6.21.0",
 ]
 dev = [
-    "pyinstaller~=6.19.0",
+    "pyinstaller~=6.21.0",
     "pytest>=8.3.0",
 ]
 
