@@ -479,6 +479,17 @@ fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
     if let Some((_sensor, temp)) = status.sensors.first() {
         map.insert("temperature_c".into(), f64_value(*temp as f64));
     }
+    // Full thermal-sensor list as `[descriptor, temp_celsius]` pairs (same shape
+    // as get-status JSON). Downstream consumers (the TUI dashboard) read the
+    // typed channels (channel_type 0=core / 1=hot spot / 3=memory) from this to
+    // render the core/hotspot/VRAM temperatures; `temperature_c` above is kept
+    // as the positional core fallback.
+    if !status.sensors.is_empty()
+        && let Ok(v) = serde_json::to_value(&status.sensors)
+        && !v.is_null()
+    {
+        map.insert("sensors".into(), v);
+    }
     // Live board power draw (watts). Prefer the NVML reading
     // (`nvmlDeviceGetPowerUsage`, same source as nvidia-smi): on laptop GPUs the
     // NVAPI power-topology path returns a dimensionless percentage (or nothing),
