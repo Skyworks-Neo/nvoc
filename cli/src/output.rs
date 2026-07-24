@@ -814,6 +814,17 @@ fn format_sensor_descriptor(indent: usize, descriptor: &serde_json::Map<String, 
     if let Some(chan) = descriptor.get("channel_num") {
         lines.push(field("channel_num", chan));
     }
+    // Cross-reference to the raw sibling channel: RTSS exposes two channels
+    // per physical sensor — `(dev, 0)` raw and `(dev, 1)` with `offset_hw`
+    // already applied by the driver. Annotate the `(dev, 1)` half.
+    if let Some(sibling) = descriptor.get("same_sensor_as").and_then(Value::as_i64) {
+        lines.push(format!(
+            "{}{}: ch[{}] with offset_hw",
+            indent_spaces(indent),
+            nvoc_cli_common::color::stylize_title("Same Sensor As"),
+            nvoc_cli_common::color::stylize(&sibling.to_string(), false)
+        ));
+    }
     // RTSS ThermChannel metadata (research fields from GetInfo). channel_type
     // gets a human tag; offsets/scaling are shown raw (semantics undocumented).
     if let Some(ch_type) = descriptor.get("channel_type").and_then(Value::as_i64) {

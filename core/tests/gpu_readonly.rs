@@ -1045,7 +1045,7 @@ fn nvapi_therm_channel_raw() {
         }
         let c = &info.channel[i];
         eprintln!(
-            "  chan[{:>2}] ch_type={} ch_class={} rel_loc={} tgt_gpu={} scaling={} range=[{}..{}] off_sw={} off_hw={} sim={} flags={} data={:?}",
+            "  chan[{:>2}] ch_type={} ch_class={} rel_loc={} tgt_gpu={} scaling={} range=[{}..{}] off_sw={} off_hw={} sim={} flags={} dev=[{},{}]",
             i,
             c.ch_type,
             c.ch_class,
@@ -1058,7 +1058,8 @@ fn nvapi_therm_channel_raw() {
             c.offset_hw,
             c.is_temp_sim_supported,
             c.flags,
-            c.data.data
+            c.therm_dev_idx(),
+            c.therm_dev_prov_idx()
         );
         shown += 1;
         if shown >= 16 {
