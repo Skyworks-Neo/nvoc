@@ -34,7 +34,7 @@ def test_format_metric_lines_full() -> None:
     assert "GPU: 1800 MHz" in text
     assert "MEM: 7500 MHz" in text
     assert "VOLT: 950 mV" in text
-    assert "TEMP: 62 C" in text
+    assert "TEMP: CORE 62 C" in text
     assert "PWR: 132 W" in text
     assert "PSTATE: P0" in text
     assert "LOAD: GPU 100% | MC 0% | VEN 12% | BUS 2%" in text
@@ -43,6 +43,27 @@ def test_format_metric_lines_full() -> None:
     assert "PCIE: x16" in text
     assert "PERF: 0x40" in text
     assert "ARCH: Ada" in text
+
+
+def test_format_metric_lines_thermal_trio() -> None:
+    status = {
+        "temperature_c": 55,
+        "temp_hotspot": 63.5,
+        "temp_memory": 58,
+    }
+
+    text = "\n".join(_format_metric_lines(status, "---"))
+
+    # All three present — core always shown, hotspot/memory appended in order.
+    assert "TEMP: CORE 55 C | HOT 64 C | MEM 58 C" in text
+
+
+def test_format_metric_lines_core_only_when_no_extra_temps() -> None:
+    text = "\n".join(_format_metric_lines({"temperature_c": 47}, "---"))
+
+    assert "TEMP: CORE 47 C" in text
+    assert "HOT" not in text
+    assert "MEM 47 C" not in text
 
 
 def test_format_metric_lines_missing_fields_render_dashes() -> None:
