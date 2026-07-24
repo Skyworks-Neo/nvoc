@@ -86,12 +86,22 @@ def _format_metric_lines(status: dict, architecture: str) -> list[str]:
         f"0x{int(perf_limits):x}" if isinstance(perf_limits, (int, float)) else "---"
     )
 
+    # Thermal sensors: core (GPU_AVG) is always shown; hot spot (GPU_MAX) and
+    # memory/VRAM are appended only when the GPU exposes them, so the line
+    # adapts to whatever channels are available.
+    temp_parts = [f"CORE {_temp_c_str(status.get('temperature_c'))} C"]
+    if isinstance(status.get("temp_hotspot"), (int, float)):
+        temp_parts.append(f"HOT {_temp_c_str(status['temp_hotspot'])} C")
+    if isinstance(status.get("temp_memory"), (int, float)):
+        temp_parts.append(f"MEM {_temp_c_str(status['temp_memory'])} C")
+    temp_text = " | ".join(temp_parts)
+
     return [
         f"GPU: {status.get('gpu_clock_mhz', '---')} MHz",
         f"MEM: {status.get('mem_clock_mhz', '---')} MHz",
         f"VOLT: {status.get('voltage_mv', '---')} mV",
         f"VFP LOCK: {vfp_lock_text}",
-        f"TEMP: {_temp_c_str(status.get('temperature_c'))} C",
+        f"TEMP: {temp_text}",
         f"PWR: {status.get('power_w', '---')} W",
         f"LOAD: {load_text}",
         f"VRAM: {vram_text}",
