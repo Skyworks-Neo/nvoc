@@ -55,7 +55,7 @@ def test_format_metric_lines_thermal_trio() -> None:
     text = "\n".join(_format_metric_lines(status, "---"))
 
     # All three present — core always shown, hotspot/memory appended in order.
-    assert "TEMP: CORE 55 C | HOT 64 C | MEM 58 C" in text
+    assert "TEMP: CORE 55 C | HOTSPOT 64 C | MEM 58 C" in text
 
 
 def test_format_metric_lines_core_only_when_no_extra_temps() -> None:

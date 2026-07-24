@@ -91,7 +91,7 @@ def _format_metric_lines(status: dict, architecture: str) -> list[str]:
     # adapts to whatever channels are available.
     temp_parts = [f"CORE {_temp_c_str(status.get('temperature_c'))} C"]
     if isinstance(status.get("temp_hotspot"), (int, float)):
-        temp_parts.append(f"HOT {_temp_c_str(status['temp_hotspot'])} C")
+        temp_parts.append(f"HOTSPOT {_temp_c_str(status['temp_hotspot'])} C")
     if isinstance(status.get("temp_memory"), (int, float)):
         temp_parts.append(f"MEM {_temp_c_str(status['temp_memory'])} C")
     temp_text = " | ".join(temp_parts)
