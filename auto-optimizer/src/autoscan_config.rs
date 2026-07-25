@@ -282,6 +282,21 @@ mod tests {
     }
 
     #[test]
+    fn manual_override_cli_is_not_exposed() {
+        let app = arg_help::get_arguments();
+        for name in ["autoscan-vfp", "autoscan-vfp-legacy"] {
+            let command = app
+                .get_subcommands()
+                .find(|command| command.get_name() == name)
+                .expect("autoscan subcommand");
+            let exposed = command
+                .get_arguments()
+                .any(|argument| argument.get_id() == "manual_override");
+            assert!(!exposed, "{name}");
+        }
+    }
+
+    #[test]
     fn autoscan_defaults_match_cli_defaults() {
         let matches = subcommand_matches(&["nvoc-auto-optimizer", "autoscan-vfp"]);
         let cfg = GpuBoostAutoscanConfig::from_autoscan_matches(&matches).unwrap();
