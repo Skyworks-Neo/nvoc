@@ -187,45 +187,6 @@ pub fn stylize(message: &str, is_stderr: bool) -> String {
         .join(" ")
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{init, stylize_warning};
-    use std::sync::{Mutex, OnceLock};
-
-    fn color_test_lock() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
-    }
-
-    #[test]
-    fn warning_style_colors_whole_line_when_enabled() {
-        let _guard = color_test_lock();
-        init(false);
-
-        let message = "WARNING: V/F optimization intentionally probes unstable GPU settings.";
-        let styled = stylize_warning(message);
-        if std::env::var_os("NO_COLOR").is_none() {
-            assert_ne!(styled, message);
-            assert!(styled.contains("\u{1b}["));
-            assert!(styled.contains(message));
-        } else {
-            assert_eq!(styled, message);
-        }
-    }
-
-    #[test]
-    fn warning_style_preserves_plain_text_when_disabled() {
-        let _guard = color_test_lock();
-        init(true);
-
-        let message =
-            "Driver resets, display loss, application failure, or a system reboot may occur.";
-        assert_eq!(stylize_warning(message), message);
-
-        init(false);
-    }
-}
-
 pub fn stylize_config(message: &str) -> String {
     if colors_enabled() {
         message.bright_cyan().bold().to_string()
@@ -264,4 +225,43 @@ pub fn stylize_scanner(message: &str, is_stderr: bool) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{init, stylize_warning};
+    use std::sync::{Mutex, OnceLock};
+
+    fn color_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    #[test]
+    fn warning_style_colors_whole_line_when_enabled() {
+        let _guard = color_test_lock();
+        init(false);
+
+        let message = "WARNING: V/F optimization intentionally probes unstable GPU settings.";
+        let styled = stylize_warning(message);
+        if std::env::var_os("NO_COLOR").is_none() {
+            assert_ne!(styled, message);
+            assert!(styled.contains("\u{1b}["));
+            assert!(styled.contains(message));
+        } else {
+            assert_eq!(styled, message);
+        }
+    }
+
+    #[test]
+    fn warning_style_preserves_plain_text_when_disabled() {
+        let _guard = color_test_lock();
+        init(true);
+
+        let message =
+            "Driver resets, display loss, application failure, or a system reboot may occur.";
+        assert_eq!(stylize_warning(message), message);
+
+        init(false);
+    }
 }
