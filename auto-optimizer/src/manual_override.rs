@@ -60,7 +60,7 @@ impl ManualOverride {
         if !io::stdin().is_terminal() {
             return Err(io::Error::new(
                 io::ErrorKind::NotConnected,
-                "--manual-override requires an interactive stdin terminal",
+                "manual override requires an interactive stdin terminal",
             ));
         }
 

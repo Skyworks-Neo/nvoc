@@ -165,9 +165,6 @@ pub struct AutoscanCommonConfig {
     /// None 表示未指定，由调用方根据 GPU 世代决定默认值
     pub recovery_method: Option<bool>,
     pub stressor: StressorConfig,
-    /// 是否启用手动 override 当前压力测试结果（仅开发构建）。
-    #[cfg(debug_assertions)]
-    pub manual_override: bool,
 }
 
 impl AutoscanCommonConfig {
@@ -210,8 +207,6 @@ impl AutoscanCommonConfig {
                 .get_one::<String>("bsod_recovery")
                 .map(|v| v.as_str() == "aggressive"),
             stressor: StressorConfig::from_matches(matches),
-            #[cfg(debug_assertions)]
-            manual_override: matches.get_flag("manual_override"),
         }
     }
 }
@@ -287,7 +282,7 @@ mod tests {
     }
 
     #[test]
-    fn manual_override_cli_matches_build_profile() {
+    fn manual_override_cli_is_not_exposed() {
         let app = arg_help::get_arguments();
         for name in ["autoscan-vfp", "autoscan-vfp-legacy"] {
             let command = app
@@ -297,18 +292,8 @@ mod tests {
             let exposed = command
                 .get_arguments()
                 .any(|argument| argument.get_id() == "manual_override");
-            assert_eq!(exposed, cfg!(debug_assertions), "{name}");
+            assert!(!exposed, "{name}");
         }
-    }
-
-    #[cfg(debug_assertions)]
-    #[test]
-    fn manual_override_flag_is_parsed_in_development_builds() {
-        let matches =
-            subcommand_matches(&["nvoc-auto-optimizer", "autoscan-vfp", "--manual-override"]);
-        let cfg = GpuBoostAutoscanConfig::from_autoscan_matches(&matches).unwrap();
-
-        assert!(cfg.common.manual_override);
     }
 
     #[test]

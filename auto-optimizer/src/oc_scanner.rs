@@ -31,12 +31,8 @@ use std::sync::Arc;
 // use standard println!/eprintln!; do not route prints through progressbar helper
 
 #[cfg(debug_assertions)]
-fn start_manual_override(enabled: bool) -> Result<Option<ManualOverride>, Error> {
-    if !enabled {
-        return Ok(None);
-    }
+fn start_manual_override() -> Result<ManualOverride, Error> {
     ManualOverride::start()
-        .map(Some)
         .map_err(|error| Error::Custom(format!("failed to enable manual override: {error}")))
 }
 
@@ -60,7 +56,7 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
     let log_filename = common.log.as_str();
     let mut l = ScanLogWriter::open_append(log_filename)?;
     #[cfg(debug_assertions)]
-    let manual_override = start_manual_override(common.manual_override)?;
+    let manual_override = start_manual_override()?;
     let delimiter: String = String::from("--");
 
     let mut p1 = 0;
@@ -410,7 +406,7 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
                 stressor_profile,
                 stressor_config,
                 #[cfg(debug_assertions)]
-                manual_override: manual_override.as_ref(),
+                manual_override: &manual_override,
             },
             vfp_set_range,
             freq_step_exp,
@@ -653,7 +649,7 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
                     stressor_profile,
                     stressor_config,
                     #[cfg(debug_assertions)]
-                    manual_override: manual_override.as_ref(),
+                    manual_override: &manual_override,
                 },
                 point,
                 vfp_set_range,
@@ -704,7 +700,7 @@ pub fn autoscan_legacy(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> Resul
     let log_filename = common.log.as_str();
     let mut l = ScanLogWriter::open_append(log_filename)?;
     #[cfg(debug_assertions)]
-    let manual_override = start_manual_override(common.manual_override)?;
+    let manual_override = start_manual_override()?;
     let delimiter: String = String::from("--");
 
     // Legacy GPU: single global offset, no V-F curve scanning
@@ -823,7 +819,7 @@ pub fn autoscan_legacy(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> Resul
                 stressor_profile,
                 stressor_config,
                 #[cfg(debug_assertions)]
-                manual_override: manual_override.as_ref(),
+                manual_override: &manual_override,
             },
             point,
             flat_curve_flag,

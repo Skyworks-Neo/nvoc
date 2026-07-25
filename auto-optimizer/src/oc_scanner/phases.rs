@@ -35,7 +35,7 @@ pub(super) struct CommonPhaseArgs<'a> {
     pub(super) stressor_profile: &'a str,
     pub(super) stressor_config: Option<&'a str>,
     #[cfg(debug_assertions)]
-    pub(super) manual_override: Option<&'a ManualOverride>,
+    pub(super) manual_override: &'a ManualOverride,
 }
 
 struct PressureRunSpec {
