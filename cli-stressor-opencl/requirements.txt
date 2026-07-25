@@ -3,4 +3,4 @@
 
 numpy==2.4.4
 pyopencl
-pyinstaller>=6.0
+pyinstaller>=6.21.0

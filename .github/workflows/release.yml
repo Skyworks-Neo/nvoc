@@ -123,7 +123,7 @@ jobs:
         with:
           cache: "true"
 
-      - uses: astral-sh/setup-uv@v8.2.0
+      - uses: astral-sh/setup-uv@v9.0.0
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: "true"
@@ -246,7 +246,7 @@ jobs:
           done
 
       - name: Upload matrix artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nvoc-release-${{ matrix.platform }}-${{ matrix.arch }}
           path: |
@@ -275,12 +275,12 @@ jobs:
       attestations: write
       contents: read
     steps:
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@v8
         with:
           path: dist/release-artifacts
           pattern: nvoc-release-*
           merge-multiple: true
-      - uses: actions/attest-build-provenance@v2
+      - uses: actions/attest-build-provenance@v4
         with:
           subject-path: dist/release-artifacts/*
 
@@ -298,7 +298,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@v8
         with:
           path: dist/release-artifacts
           pattern: nvoc-release-*
