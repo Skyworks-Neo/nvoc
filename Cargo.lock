@@ -1134,6 +1134,7 @@ dependencies = [
  "serde",
  "serde_json",
  "time",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

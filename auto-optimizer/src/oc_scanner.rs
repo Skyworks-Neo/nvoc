@@ -1,6 +1,8 @@
 mod phases;
 mod pressure;
 mod runtime;
+#[cfg(any(windows, test))]
+mod windows_events;
 
 // Keep this file as the scan orchestrator. The submodules own the lower-level
 // phase loops, stressor process runtime, and retry/wake helpers.
