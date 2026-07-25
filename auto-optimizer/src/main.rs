@@ -34,10 +34,10 @@ use std::process::exit;
 
 fn main() {
     #[cfg(feature = "stressor-bundled")]
-    // A bundled stress worker is still a separate OS process. The environment
+    // A bundled stress worker is still a separate OS process. The hidden argv
     // marker prevents the child from entering the optimizer command router.
-    if std::env::var_os(stressor_process::WORKER_ENV).is_some() {
-        cli_stressor_cuda_rs::runner::run_from_env();
+    if std::env::args_os().any(|arg| arg == std::ffi::OsStr::new(stressor_process::WORKER_ARG)) {
+        cli_stressor_cuda_rs::runner::run_from_args();
         return;
     }
 
