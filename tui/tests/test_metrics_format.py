@@ -85,6 +85,25 @@ def test_format_metric_lines_no_power_monitor() -> None:
     assert "RAILS" not in text
 
 
+def test_format_metric_lines_effective_clocks() -> None:
+    status = {
+        "gpu_clock_mhz": 1800,
+        "mem_clock_mhz": 7500,
+        "eff_gpu_clock_mhz": 1897.5,
+        "eff_mem_clock_mhz": 7500,
+    }
+
+    text = "\n".join(_format_metric_lines(status, "---"))
+
+    assert "ECLK: GPU 1898 | MEM 7500 MHz" in text
+
+
+def test_format_metric_lines_effective_clocks_absent() -> None:
+    text = "\n".join(_format_metric_lines({"gpu_clock_mhz": 1800}, "---"))
+
+    assert "ECLK: ---" in text
+
+
 def test_format_metric_lines_core_only_when_no_extra_temps() -> None:
     text = "\n".join(_format_metric_lines({"temperature_c": 47}, "---"))
 

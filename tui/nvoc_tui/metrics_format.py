@@ -14,6 +14,24 @@ def _temp_c_str(value) -> str:
         return "---"
 
 
+def _effective_clocks_text(status: dict) -> str:
+    """Format the effective (actually-running) clocks line.
+
+    Falls back to ``---`` when the GPU/driver doesn't expose the GetAllClocks
+    V2 layout.
+    """
+    gpu = status.get("eff_gpu_clock_mhz")
+    mem = status.get("eff_mem_clock_mhz")
+    if not isinstance(gpu, (int, float)) and not isinstance(mem, (int, float)):
+        return "---"
+    parts = []
+    if isinstance(gpu, (int, float)):
+        parts.append(f"GPU {round(float(gpu))}")
+    if isinstance(mem, (int, float)):
+        parts.append(f"MEM {round(float(mem))}")
+    return " | ".join(parts) + " MHz"
+
+
 def _format_metric_lines(status: dict, architecture: str) -> list[str]:
     """Build the dashboard metric lines from a normalized status dict.
 
@@ -121,6 +139,7 @@ def _format_metric_lines(status: dict, architecture: str) -> list[str]:
     return [
         f"GPU: {status.get('gpu_clock_mhz', '---')} MHz",
         f"MEM: {status.get('mem_clock_mhz', '---')} MHz",
+        f"ECLK: {_effective_clocks_text(status)}",
         f"VOLT: {status.get('voltage_mv', '---')} mV",
         f"VFP LOCK: {vfp_lock_text}",
         f"TEMP: {temp_text}",
