@@ -106,6 +106,20 @@ pub fn query_nvml_pcie_throughput_mibps(nvml: &Nvml, gpu_id: u32) -> (Option<f32
     (tx, rx)
 }
 
+/// Query the cumulative PCIe replay counter via NVML
+/// (`nvmlDeviceGetPcieReplayCounter`). This is the running count of PCIe
+/// Transaction Layer Packet (TLP) replays triggered by the GPU's flow-control
+/// / error-recovery — a single rising integer (resets only on driver reload).
+/// A steadily-increasing counter signals PCIe link-quality problems (marginal
+/// slot, cable, riser, or board). NVML exposes only this aggregate replay
+/// count; the finer-grained LCRC/NAK/BadTLP/Replay-rollover counters that
+/// HWMonitor shows come from NVAPI `NvAPI_GPU_GetPCIEInfo` (0xE3795199), not
+/// NVML. Returns `None` when the device doesn't expose the counter.
+pub fn query_nvml_pcie_replay_counter(nvml: &Nvml, gpu_id: u32) -> Option<u32> {
+    let device = find_nvml_device(nvml, gpu_id)?;
+    device.pcie_replay_counter().ok()
+}
+
 pub fn set_nvml_auto_boost(nvml: &Nvml, gpu_id: u32, enabled: bool) -> Result<(), Error> {
     let mut device = find_nvml_device_err(nvml, gpu_id)?;
     device

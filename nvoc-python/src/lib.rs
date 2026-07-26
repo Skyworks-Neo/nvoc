@@ -522,6 +522,27 @@ fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
             }
         }
     }
+    // All 32 clock domains from GetAllClocks V2 (superset of effective_clocks):
+    // includes the internal fabric clocks (Gpc, Xbar/crossbar, Sys, Hub, ...).
+    // Emitted as a {domain_name: mhz} dict so the TUI/CLI can render the full
+    // clock breakdown GPU-Z-style.
+    if let Some(all) = &status.all_clocks
+        && !all.is_empty()
+    {
+        let entries = all
+            .iter()
+            .map(|(domain, freq)| {
+                (
+                    domain.to_string(),
+                    f64_value(freq.0 as f64 / 1000.0),
+                )
+            })
+            .collect::<Vec<_>>();
+        map.insert(
+            "all_clocks_mhz".into(),
+            value_object(entries.iter().map(|(k, v)| (k.as_str(), v.clone()))),
+        );
+    }
     if let Some((_sensor, temp)) = status.sensors.first() {
         map.insert("temperature_c".into(), f64_value(*temp as f64));
     }
@@ -586,6 +607,9 @@ fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
         }
         if let Ok(kbps) = device.pcie_throughput(PcieUtilCounter::Receive) {
             map.insert("pcie_rx_mibps".into(), f64_value(kbps as f64 / 1024.0));
+        }
+        if let Ok(replay) = device.pcie_replay_counter() {
+            map.insert("pcie_replay_counter".into(), u64_value(replay as u64));
         }
     }
     map.insert(

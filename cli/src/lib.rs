@@ -1473,6 +1473,11 @@ fn execute_target(
                     if let Some(rx) = rx {
                         map.insert("pcie_rx_mibps".to_string(), json!(rx));
                     }
+                    if let Some(replay) =
+                        nvoc_core::nvml::query_nvml_pcie_replay_counter(nvml, target.id.0)
+                    {
+                        map.insert("pcie_replay_counter".to_string(), json!(replay));
+                    }
                 }
             }
             Ok(value)

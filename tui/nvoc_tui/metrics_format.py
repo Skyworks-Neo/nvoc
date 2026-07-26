@@ -41,6 +41,30 @@ def _format_mibps(mibps: float) -> str:
     return f"{mibps:.1f} MiB/s"
 
 
+# Internal fabric clock domains (from GetAllClocks V2 `all_clocks_mhz`) to surface
+# on a dedicated FCLK line — the "crossbar clock" GPU-Z shows plus the other
+# structurally-interesting fabric clocks. Ordered for stable display.
+_FABRIC_CLOCK_DOMAINS = ["Xbar", "Sys", "Hub", "Host", "Gpc", "Disp", "Hotclk"]
+
+
+def _fabric_clocks_text(status: dict) -> str:
+    """Format the internal-fabric clocks line (Xbar/crossbar, Sys, Hub, ...).
+
+    Reads the per-domain MHz from ``all_clocks_mhz`` (GetAllClocks V2's full
+    32-domain breakdown). Returns ``""`` when no fabric domains are present so
+    the line is omitted entirely.
+    """
+    all_clocks = status.get("all_clocks_mhz")
+    if not isinstance(all_clocks, dict):
+        return ""
+    parts = []
+    for domain in _FABRIC_CLOCK_DOMAINS:
+        mhz = all_clocks.get(domain)
+        if isinstance(mhz, (int, float)) and float(mhz) > 0:
+            parts.append(f"{domain.upper()} {round(float(mhz))}")
+    return " | ".join(parts) + " MHz" if parts else ""
+
+
 def _pcie_bandwidth_text(status: dict) -> str:
     """Bidirectional real-time PCIe bandwidth, nvitop-style (``↑Tx ↓Rx``).
 
@@ -160,6 +184,12 @@ def _format_metric_lines(status: dict, architecture: str) -> list[str]:
     bw = _pcie_bandwidth_text(status)
     if bw:
         pcie_text = f"{pcie_text} {bw}" if pcie_text != "---" else bw
+    # Append the PCIe replay counter (NVML nvmlDeviceGetPcieReplayCounter) when
+    # it is non-zero — a rising count indicates link-quality problems. Zero is
+    # the normal steady state, so it is omitted to keep the line quiet.
+    replay = status.get("pcie_replay_counter")
+    if isinstance(replay, (int, float)) and float(replay) > 0:
+        pcie_text = f"{pcie_text} ⚠replay {int(float(replay))}".strip()
 
     perf = status.get("perf") or {}
     perf_text = _perf_limits_text(perf)
@@ -178,6 +208,7 @@ def _format_metric_lines(status: dict, architecture: str) -> list[str]:
         f"GPU: {status.get('gpu_clock_mhz', '---')} MHz",
         f"MEM: {status.get('mem_clock_mhz', '---')} MHz",
         f"ECLK: {_effective_clocks_text(status)}",
+        f"FCLK: {_fabric_clocks_text(status) or '---'}",
         f"VOLT: {status.get('voltage_mv', '---')} mV",
         f"VFP LOCK: {vfp_lock_text}",
         f"TEMP: {temp_text}",

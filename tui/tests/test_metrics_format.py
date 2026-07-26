@@ -69,6 +69,33 @@ def test_format_metric_lines_pcie_bandwidth_only_lanes_missing() -> None:
     assert "↓0.3 MiB/s" in text
 
 
+def test_format_metric_lines_fabric_clocks() -> None:
+    """FCLK line surfaces internal fabric clocks (Xbar/crossbar, Sys, Hub, ...)
+    from the GetAllClocks V2 all_clocks_mhz breakdown."""
+    status = {
+        "all_clocks_mhz": {
+            "Gpc": 2100.0,
+            "Xbar": 1800.0,  # the "crossbar clock" GPU-Z shows
+            "Sys": 900.0,
+            "Hub": 600.0,
+            "M": 7500.0,  # memory — not in the fabric list
+            "Hotclk": 0.0,  # zero -> omitted
+        }
+    }
+    text = "\n".join(_format_metric_lines(status, "Ada"))
+    assert "FCLK: XBAR 1800 | SYS 900 | HUB 600 | GPC 2100 MHz" in text
+    # Memory and zero clocks must NOT appear on the FCLK line.
+    assert "M 7500" not in text
+    assert "HOTCLK 0" not in text
+
+
+def test_format_metric_lines_fabric_clocks_absent() -> None:
+    """No all_clocks_mhz -> FCLK line shows dashes."""
+    status = {}
+    text = "\n".join(_format_metric_lines(status, "Ada"))
+    assert "FCLK: ---" in text
+
+
 def test_format_metric_lines_perf_decodes_multiple_reasons() -> None:
     # limits = 18 = THERMAL_LIMIT(2) | NO_LOAD_LIMIT(16), decoded in bit order.
     text = "\n".join(
