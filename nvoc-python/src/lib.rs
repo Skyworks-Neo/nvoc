@@ -1,7 +1,7 @@
 use nvapi_hi::{
     Celsius, ClockDomain, CoolerPolicy, KilohertzDelta, MicrovoltsDelta, PState, Percentage,
 };
-use nvml_wrapper::enum_wrappers::device::{Api, PerformanceState};
+use nvml_wrapper::enum_wrappers::device::{Api, PerformanceState, PcieUtilCounter};
 use nvoc_core::{
     BackendSet, CheckVoltageFrequency, ClearEdid, ConvertEnum, GpuTarget, QueryApiRestriction,
     QueryAutoBoost, QueryDisplays, QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo,
@@ -570,6 +570,23 @@ fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
         && let Some(watts) = first_number_in_display(power)
     {
         map.insert("power_w".into(), f64_value(watts));
+    }
+
+    // Bidirectional real-time PCIe bandwidth (MiB/s), nvitop/HWMonitor-style.
+    // `nvmlDeviceGetPcieThroughput` reports KB/s averaged over a ~20ms byte-counter
+    // interval (i.e. it IS the live rate — no sliding window needed). TX = bytes
+    // the GPU sends (GPU->host), RX = bytes the GPU receives (host->GPU), matching
+    // the nvidia-smi / nvitop "Tx/Rx" convention. Maxwell+ only; vGPU unsupported —
+    // `.ok()` so those GPUs just omit the fields instead of erroring.
+    if target.has_nvml()
+        && let Ok(device) = target_nvml_device(target)
+    {
+        if let Ok(kbps) = device.pcie_throughput(PcieUtilCounter::Send) {
+            map.insert("pcie_tx_mibps".into(), f64_value(kbps as f64 / 1024.0));
+        }
+        if let Ok(kbps) = device.pcie_throughput(PcieUtilCounter::Receive) {
+            map.insert("pcie_rx_mibps".into(), f64_value(kbps as f64 / 1024.0));
+        }
     }
     map.insert(
         "vfp_locked".into(),

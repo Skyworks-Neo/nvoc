@@ -82,6 +82,30 @@ pub fn query_nvml_power_draw_watts(nvml: &Nvml, gpu_id: u32) -> Option<f32> {
     Some(mw as f32 / 1000.0)
 }
 
+/// Query bidirectional real-time PCIe bandwidth via NVML
+/// (`nvmlDeviceGetPcieThroughput`), nvitop/HWMonitor-style. Returns `(tx_mibps,
+/// rx_mibps)` where TX = bytes the GPU sends (GPU→host) and RX = bytes the GPU
+/// receives (host→GPU), matching the nvidia-smi / nvitop convention.
+///
+/// NVML reports KB/s averaged over a ~20ms byte-counter interval, so each value
+/// IS the live rate (no sliding window needed). Maxwell+ only; vGPU unsupported.
+/// Returns `None` per-direction when the device doesn't expose that counter.
+pub fn query_nvml_pcie_throughput_mibps(nvml: &Nvml, gpu_id: u32) -> (Option<f32>, Option<f32>) {
+    let Some(device) = find_nvml_device(nvml, gpu_id) else {
+        return (None, None);
+    };
+    use nvml_wrapper::enum_wrappers::device::PcieUtilCounter;
+    let tx = device
+        .pcie_throughput(PcieUtilCounter::Send)
+        .ok()
+        .map(|kbps| kbps as f32 / 1024.0);
+    let rx = device
+        .pcie_throughput(PcieUtilCounter::Receive)
+        .ok()
+        .map(|kbps| kbps as f32 / 1024.0);
+    (tx, rx)
+}
+
 pub fn set_nvml_auto_boost(nvml: &Nvml, gpu_id: u32, enabled: bool) -> Result<(), Error> {
     let mut device = find_nvml_device_err(nvml, gpu_id)?;
     device

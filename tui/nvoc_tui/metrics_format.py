@@ -32,6 +32,36 @@ def _effective_clocks_text(status: dict) -> str:
     return " | ".join(parts) + " MHz"
 
 
+def _format_mibps(mibps: float) -> str:
+    """Format a MiB/s value with a sensible unit (MiB/s or GiB/s)."""
+    if mibps >= 1024.0:
+        return f"{mibps / 1024.0:.1f} GiB/s"
+    if mibps >= 10.0:
+        return f"{mibps:.0f} MiB/s"
+    return f"{mibps:.1f} MiB/s"
+
+
+def _pcie_bandwidth_text(status: dict) -> str:
+    """Bidirectional real-time PCIe bandwidth, nvitop-style (``↑Tx ↓Rx``).
+
+    Reads ``pcie_tx_mibps`` / ``pcie_rx_mibps`` (NVML
+    ``nvmlDeviceGetPcieThroughput``, KB/s over a ~20ms interval → MiB/s). Empty
+    string when the GPU/driver doesn't expose it.
+    """
+    tx = status.get("pcie_tx_mibps")
+    rx = status.get("pcie_rx_mibps")
+    has_tx = isinstance(tx, (int, float))
+    has_rx = isinstance(rx, (int, float))
+    if not has_tx and not has_rx:
+        return ""
+    parts = []
+    if has_tx:
+        parts.append(f"↑{_format_mibps(float(tx))}")
+    if has_rx:
+        parts.append(f"↓{_format_mibps(float(rx))}")
+    return " ".join(parts)
+
+
 # NVAPI PerfFlags bit -> reason name. Bit semantics mirror nvapi-rs
 # (`sys/src/gpu/power.rs`, NV_GPU_PERF_FLAGS + its display table). Ascending
 # bit order so the decoded list reads consistently regardless of active set.
@@ -124,6 +154,12 @@ def _format_metric_lines(status: dict, architecture: str) -> list[str]:
 
     lanes = status.get("pcie_lanes")
     pcie_text = f"x{int(lanes)}" if isinstance(lanes, (int, float)) else "---"
+    # Append bidirectional real-time PCIe bandwidth (nvitop-style) when the GPU
+    # exposes it via NVML nvmlDeviceGetPcieThroughput. ↑ = TX (GPU->host),
+    # ↓ = RX (host->GPU). Omitted entirely on unsupported GPUs.
+    bw = _pcie_bandwidth_text(status)
+    if bw:
+        pcie_text = f"{pcie_text} {bw}" if pcie_text != "---" else bw
 
     perf = status.get("perf") or {}
     perf_text = _perf_limits_text(perf)

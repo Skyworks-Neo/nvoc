@@ -1460,6 +1460,20 @@ fn execute_target(
                 {
                     map.insert("power_draw_w".to_string(), json!(draw_w));
                 }
+                // Bidirectional real-time PCIe bandwidth (MiB/s),
+                // nvitop/HWMonitor-style, from NVML `nvmlDeviceGetPcieThroughput`.
+                // TX = GPU→host, RX = host→GPU. Omitted per-direction when
+                // unsupported (Maxwell+ only; vGPU unsupported).
+                if let Ok(nvml) = target.nvml() {
+                    let (tx, rx) =
+                        nvoc_core::nvml::query_nvml_pcie_throughput_mibps(nvml, target.id.0);
+                    if let Some(tx) = tx {
+                        map.insert("pcie_tx_mibps".to_string(), json!(tx));
+                    }
+                    if let Some(rx) = rx {
+                        map.insert("pcie_rx_mibps".to_string(), json!(rx));
+                    }
+                }
             }
             Ok(value)
         }
