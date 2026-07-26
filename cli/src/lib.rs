@@ -1437,7 +1437,22 @@ fn execute_target(
                     .collect(),
             ))
         }
-        Command::GetInfo => Ok(serde_json::to_value(run(target, QueryGpuInfo)?.output)?),
+        Command::GetInfo => {
+            let mut value = serde_json::to_value(run(target, QueryGpuInfo)?.output)?;
+            // Augment with the max PCIe link generation from NVML
+            // (`nvmlDeviceGetMaxPcieLinkGeneration`) — the platform/slot cap.
+            // NVAPI's GpuInfo doesn't carry PCIe gen. Omitted when unsupported.
+            if let Ok(nvml) = target.nvml()
+                && let Some(map) = value.as_object_mut()
+            {
+                let (_current, max) =
+                    nvoc_core::nvml::query_nvml_pcie_link_gen(nvml, target.id.0);
+                if let Some(max) = max {
+                    map.insert("max_pcie_link_gen".to_string(), json!(max));
+                }
+            }
+            Ok(value)
+        }
         Command::GetUuid => {
             let info = run(target, QueryGpuInfo)?.output;
             Ok(Value::String(info.uuid.unwrap_or_default()))
@@ -1477,6 +1492,14 @@ fn execute_target(
                         nvoc_core::nvml::query_nvml_pcie_replay_counter(nvml, target.id.0)
                     {
                         map.insert("pcie_replay_counter".to_string(), json!(replay));
+                    }
+                    let (current_gen, max_gen) =
+                        nvoc_core::nvml::query_nvml_pcie_link_gen(nvml, target.id.0);
+                    if let Some(current) = current_gen {
+                        map.insert("pcie_link_gen".to_string(), json!(current));
+                    }
+                    if let Some(max) = max_gen {
+                        map.insert("pcie_max_link_gen".to_string(), json!(max));
                     }
                 }
             }

@@ -178,6 +178,15 @@ def _format_metric_lines(status: dict, architecture: str) -> list[str]:
 
     lanes = status.get("pcie_lanes")
     pcie_text = f"x{int(lanes)}" if isinstance(lanes, (int, float)) else "---"
+    # Prepend the PCIe link generation as "Gen<cur>/<max>" (NVML
+    # nvmlDeviceGetCurr/MaxPcieLinkGeneration) when exposed, e.g. "Gen4/4".
+    cur_gen = status.get("pcie_link_gen")
+    max_gen = status.get("pcie_max_link_gen")
+    gen_text = ""
+    if isinstance(cur_gen, (int, float)) and isinstance(max_gen, (int, float)):
+        gen_text = f"Gen{int(float(cur_gen))}/{int(float(max_gen))} "
+    elif isinstance(max_gen, (int, float)):
+        gen_text = f"Gen?/{int(float(max_gen))} "
     # Append bidirectional real-time PCIe bandwidth (nvitop-style) when the GPU
     # exposes it via NVML nvmlDeviceGetPcieThroughput. ↑ = TX (GPU->host),
     # ↓ = RX (host->GPU). Omitted entirely on unsupported GPUs.
@@ -190,6 +199,11 @@ def _format_metric_lines(status: dict, architecture: str) -> list[str]:
     replay = status.get("pcie_replay_counter")
     if isinstance(replay, (int, float)) and float(replay) > 0:
         pcie_text = f"{pcie_text} ⚠replay {int(float(replay))}".strip()
+    # Prepend the PCIe generation once everything else is assembled.
+    if gen_text and pcie_text != "---":
+        pcie_text = f"{gen_text}{pcie_text}"
+    elif gen_text:
+        pcie_text = gen_text.strip()
 
     perf = status.get("perf") or {}
     perf_text = _perf_limits_text(perf)

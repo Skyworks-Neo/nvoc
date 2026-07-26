@@ -106,7 +106,20 @@ pub fn query_nvml_pcie_throughput_mibps(nvml: &Nvml, gpu_id: u32) -> (Option<f32
     (tx, rx)
 }
 
-/// Query the cumulative PCIe replay counter via NVML
+/// Query the current and maximum PCIe link generation (1=Gen1 … 5=Gen5) via
+/// NVML (`nvmlDeviceGetCurrPcieLinkGeneration` / `nvmlDeviceGetMaxPcieLink
+/// Generation`). `max` is the platform/slot cap (the highest generation the
+/// current PCIe link could negotiate); NVML does not expose the GPU's own
+/// silicon cap (`nvmlDeviceGetGpuMaxPcieLinkGeneration`) in this crate
+/// version. Returns `None` per-direction when the device doesn't expose it.
+pub fn query_nvml_pcie_link_gen(nvml: &Nvml, gpu_id: u32) -> (Option<u32>, Option<u32>) {
+    let Some(device) = find_nvml_device(nvml, gpu_id) else {
+        return (None, None);
+    };
+    let current = device.current_pcie_link_gen().ok();
+    let max = device.max_pcie_link_gen().ok();
+    (current, max)
+}
 /// (`nvmlDeviceGetPcieReplayCounter`). This is the running count of PCIe
 /// Transaction Layer Packet (TLP) replays triggered by the GPU's flow-control
 /// / error-recovery — a single rising integer (resets only on driver reload).

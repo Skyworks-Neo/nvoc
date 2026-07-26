@@ -611,6 +611,12 @@ fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
         if let Ok(replay) = device.pcie_replay_counter() {
             map.insert("pcie_replay_counter".into(), u64_value(replay as u64));
         }
+        if let Ok(link_gen) = device.current_pcie_link_gen() {
+            map.insert("pcie_link_gen".into(), u64_value(link_gen as u64));
+        }
+        if let Ok(link_gen) = device.max_pcie_link_gen() {
+            map.insert("pcie_max_link_gen".into(), u64_value(link_gen as u64));
+        }
     }
     map.insert(
         "vfp_locked".into(),

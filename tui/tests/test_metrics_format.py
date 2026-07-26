@@ -26,6 +26,8 @@ def test_format_metric_lines_full() -> None:
             "Cooler1": {"current_level": 45, "current_tach": 1234, "active": True},
         },
         "pcie_lanes": 16,
+        "pcie_link_gen": 4,
+        "pcie_max_link_gen": 4,
         "pcie_tx_mibps": 1234.5,
         "pcie_rx_mibps": 7.8,
         "perf": {"unknown": 0, "limits": 32},
@@ -42,7 +44,8 @@ def test_format_metric_lines_full() -> None:
     assert "LOAD: GPU 100% | MC 0% | VEN 12% | BUS 2%" in text
     assert "VRAM: 2.0 / 8.0 GB" in text
     assert "FAN: 1234 RPM @ 45%" in text
-    assert "PCIE: x16" in text
+    assert "PCIE: Gen4/4 x16" in text
+    # PCIe generation prepended as "Gen<cur>/<max>".
     # Bidirectional bandwidth appended after lane count, nvitop-style (↑Tx ↓Rx).
     # 1234.5 MiB/s -> 1.2 GiB/s; 7.8 -> 7.8 MiB/s.
     assert "↑1.2 GiB/s" in text
