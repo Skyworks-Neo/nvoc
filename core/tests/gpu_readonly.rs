@@ -1205,3 +1205,141 @@ fn nvapi_volt_rails_raw() {
     );
 }
 
+/// Raw probe of `NvAPI_GPU_PowerMonitorGetInfo` (0xC12EB19E).
+///
+/// The driver's handler (`nvapi64_impl.dll` @0x180258170) accepts the caller's
+/// struct ONLY when its first-DWORD version magic `(v<<16)|sizeof` is one of:
+///   65928=(1<<16)|392, 66972=(1<<16)|1436, 69408=(1<<16)|3872, 74968=(1<<16)|9432
+/// Anything else → -9 INCOMPATIBLE_STRUCT_VERSION. The nvapi-rs wrap sizes the
+/// struct after the RTSS header (≈3240B), which matches NONE of these, so the
+/// wrap is rejected on every GPU and `power_monitor` degrades to None.
+///
+/// This probe iterates the 4 accepted sizes with a raw scratch buffer and dumps
+/// status + the first bytes, so a **desktop GPU** run reveals which size is the
+/// current layout and what the descriptor looks like (bSupported / channelMask /
+/// totalGpuChannelIdx). That determines the struct rework needed for live data.
+///
+/// Run: `cargo test -p nvoc-core --test gpu_readonly -- --ignored --nocapture nvapi_power_monitor_raw`
+#[test]
+#[ignore]
+fn nvapi_power_monitor_raw() {
+    use nvapi_hi::sys::nvapi_QueryInterface;
+    use nvapi_hi::sys::Status;
+
+    let inv = inventory();
+    let target = first_target(&inv);
+    if !target.has_nvapi() {
+        eprintln!("nvapi_power_monitor_raw: no NVAPI backend, skipping");
+        return;
+    }
+    nvapi_hi::initialize().expect("nvapi initialize");
+    let gpus = nvapi_hi::Gpu::enumerate().expect("nvapi enumerate");
+    if gpus.is_empty() {
+        eprintln!("nvapi_power_monitor_raw: no NVAPI GPUs");
+        return;
+    }
+    let gpu = gpus.into_iter().next().unwrap();
+    let handle = *gpu.inner().handle();
+
+    const POWER_MONITOR_GET_INFO_ID: u32 = 0xC12EB19E;
+    // Candidate (version, size) pairs to probe. The IDA analysis of the
+    // nvapi64_impl.dll handler found it accepts version-1 magics for sizes
+    // 392/1436/3872/9432, plus an internal v5|9072 buffer. But the deployed
+    // nvapi64.dll on real machines rejected all 4 v1 sizes (-9), so the real
+    // driver expects different magics. Sweep a grid: versions 1..=5 × a set
+    // of plausible sizes (the 4 IDA sizes + the v5 internal size + RTSS-doc
+    // layout sizes), and also try the raw known magics verbatim.
+    let ida_sizes: [u32; 5] = [392, 1436, 3872, 9432, 9072];
+    let versions: [u32; 5] = [1, 2, 3, 4, 5];
+    // Raw magics known from the IDA handler (tried verbatim too).
+    let raw_magics: [u32; 5] = [65928, 66972, 69408, 74968, 336752];
+    // Scratch big enough for the largest size we'll try (9432) + slack.
+    const SCRATCH_U32: usize = 9432 / 4 + 16;
+    #[repr(C)]
+    struct Scratch {
+        version: u32,
+        data: [u32; SCRATCH_U32 - 1],
+    }
+
+    let ptr = match nvapi_QueryInterface(POWER_MONITOR_GET_INFO_ID) {
+        Ok(p) => p as *const (),
+        Err(e) => {
+            eprintln!("nvapi_power_monitor_raw: QueryInterface {:#x} not found: {:?}", POWER_MONITOR_GET_INFO_ID, e);
+            return;
+        }
+    };
+    type Fn = unsafe extern "system" fn(
+        nvapi_hi::sys::api::NvPhysicalGpuHandle,
+        *mut Scratch,
+    ) -> Status;
+    let func: Fn = unsafe { std::mem::transmute(ptr) };
+
+    let mut accepted: Option<(u32, u32, Scratch)> = None; // (version, size, scratch)
+    let mut try_magic = |magic: u32, label: &str| -> Option<Scratch> {
+        let mut scratch = Scratch { version: 0, data: [0; SCRATCH_U32 - 1] };
+        scratch.version = magic;
+        let status = unsafe { func(handle, &mut scratch) };
+        let ok = (status as i32) == (Status::Ok as i32);
+        eprintln!(
+            "  [{}] magic=0x{:X} (v{}|sz{}) status={:?} ({}){}",
+            label, magic, magic >> 16, magic & 0xFFFF, status, status as i32,
+            if ok { "  <<< ACCEPTED" } else { "" },
+        );
+        if ok { Some(scratch) } else { None }
+    };
+
+    eprintln!("=== sweep 1: raw IDA magics (verbatim) ===");
+    for &m in raw_magics.iter() {
+        if let Some(s) = try_magic(m, "raw") {
+            accepted = Some((m >> 16, m & 0xFFFF, s));
+            break;
+        }
+    }
+    if accepted.is_none() {
+        eprintln!("=== sweep 2: version 1..=5 × IDA sizes ===");
+        'outer: for &ver in versions.iter() {
+            for &sz in ida_sizes.iter() {
+                let magic = (ver << 16) | sz;
+                if let Some(s) = try_magic(magic, "grid") {
+                    accepted = Some((ver, sz, s));
+                    break 'outer;
+                }
+            }
+        }
+    }
+
+    match accepted {
+        None => {
+            eprintln!(
+                "no accepted magic found — the real driver's accepted set differs from both\n\
+                 the IDA analysis and the RTSS doc. Needs deeper RE of the deployed nvapi64.dll\n\
+                 handler, or this driver/GPU simply doesn't support PowerMonitor GetInfo."
+            );
+        }
+        Some((ver, sz, scratch)) => {
+            eprintln!("=== ACCEPTED version={} size={} ===", ver, sz);
+            let words: &[u32] = unsafe {
+                std::slice::from_raw_parts(&scratch as *const _ as *const u32, SCRATCH_U32)
+            };
+            eprintln!("  first 16 u32: {:?}", &words[..16]);
+            eprintln!(
+                "  +0x00 version=0x{:X}  +0x04 bSupported?={}  +0x08 samplingPeriodMs?={}  +0x0C sampleCount?={}  +0x10 channelMask?=0x{:X}  +0x14 chRelMask?=0x{:X}  +0x18 totalGpuPowerChannelMask?=0x{:X}  +0x1C totalGpuChannelIdx=0x{:X}",
+                words[0], words[1], words[2], words[3], words[4], words[5], words[6], words[7],
+            );
+            let dump_len = 256.min(sz as usize);
+            let bytes: &[u8] = unsafe {
+                std::slice::from_raw_parts(&scratch as *const _ as *const u8, dump_len)
+            };
+            eprintln!("  first {} bytes (hex):", dump_len);
+            for chunk in bytes.chunks(16) {
+                let hex: Vec<String> = chunk.iter().map(|b| format!("{:02x}", b)).collect();
+                eprintln!(
+                    "    {:04x}: {}",
+                    chunk.as_ptr() as usize - bytes.as_ptr() as usize,
+                    hex.join(" ")
+                );
+            }
+        }
+    }
+}
+
