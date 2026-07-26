@@ -278,6 +278,24 @@ fn format_value_block_with_context(value: &Value, indent: usize, context: &str) 
                         ));
                         lines.extend(format_utilization_entries(indent + 1, child));
                     }
+                    // `perf` carries two raw NVAPI words from PerfPoliciesGetStatus:
+                    // `limits` (a PerfFlags bitmask of throttling reasons) and
+                    // `unknown` (a driver load-level indicator, not an error).
+                    // Both are unreadable as raw ints, so decode them here.
+                    Value::Object(child) if key == "perf" && child.contains_key("limits") => {
+                        lines.push(format!(
+                            "{}{}",
+                            indent_spaces(indent),
+                            nvoc_cli_common::color::stylize_title(&format_label(key))
+                        ));
+                        lines.extend(format_perf_block(indent + 1, child));
+                    }
+                    // `performance_decrease` is the serde form of nvapi-rs's
+                    // `PerformanceDecreaseReason` bitflags struct (`{"bits": N}`);
+                    // decode the bitmask to friendly reason text.
+                    Value::Object(_) if key == "performance_decrease" => {
+                        lines.extend(format_performance_decrease(indent, value));
+                    }
                     Value::Object(child) if key == "memory" && child.contains_key("dedicated") => {
                         lines.push(format!(
                             "{}{}",
@@ -694,6 +712,111 @@ fn format_utilization_entries(
             )
         })
         .collect()
+}
+
+/// NVAPI PerfFlags bit → friendly reason name. Bit semantics mirror
+/// `nvapi-rs/sys/src/gpu/power.rs` (`NV_GPU_PERF_FLAGS` + its display table):
+/// 1 Power, 2 Temperature, 4 Reliability Voltage, 8 Operating Voltage,
+/// 16 No Load, 32 Unknown32. Kept in ascending bit order so the decoded
+/// list reads consistently regardless of which reasons are active.
+const PERF_LIMIT_BITS: &[(u64, &str)] = &[
+    (1, "Power"),
+    (2, "Temperature"),
+    (4, "Reliability Voltage"),
+    (8, "Operating Voltage"),
+    (16, "No Load"),
+    (32, "Unknown32"),
+];
+
+/// Extract a bitmask from a JSON value that may be either a raw integer
+/// (`N`, as emitted by pynvoc) or a bitflags object (`{"bits": N}`, as serde
+/// renders nvapi-rs `nvbits!` structs on the CLI's native get-status path).
+fn bitmask_from_value(value: &Value) -> Option<u64> {
+    match value {
+        Value::Number(n) => n.as_u64(),
+        Value::Object(obj) => obj.get("bits").and_then(Value::as_u64),
+        _ => None,
+    }
+}
+
+/// Decode the NVAPI perf-policy status (`perf` object from PerfPoliciesGetStatus).
+/// `limits` is a PerfFlags bitmask of active throttling reasons; `unknown` is the
+/// driver's load-status level (1 = on load, 3 = low clocks, 7 = idle — see
+/// `nvapi-rs/sys/src/gpu/power.rs` field comment), not an error/unknown value.
+fn format_perf_block(indent: usize, object: &serde_json::Map<String, Value>) -> Vec<String> {
+    let mut lines = Vec::new();
+
+    let limits_raw = object
+        .get("limits")
+        .and_then(bitmask_from_value)
+        .unwrap_or(0);
+    let reasons: Vec<&str> = PERF_LIMIT_BITS
+        .iter()
+        .filter(|(bit, _)| limits_raw & bit != 0)
+        .map(|(_, name)| *name)
+        .collect();
+    let limits_text = if reasons.is_empty() {
+        "None".to_string()
+    } else {
+        reasons.join(", ")
+    };
+    lines.push(format!(
+        "{}{}: {}",
+        indent_spaces(indent),
+        nvoc_cli_common::color::stylize_title("Limits"),
+        nvoc_cli_common::color::stylize(&limits_text, false)
+    ));
+
+    if let Some(unknown) = object.get("unknown").and_then(Value::as_u64) {
+        let load_text = match unknown {
+            1 => "Load".to_string(),
+            3 => "Low Clock".to_string(),
+            7 => "Idle".to_string(),
+            other => format!("{other} (raw)"),
+        };
+        lines.push(format!(
+            "{}{}: {}",
+            indent_spaces(indent),
+            nvoc_cli_common::color::stylize_title("Load Level"),
+            nvoc_cli_common::color::stylize(&load_text, false)
+        ));
+    }
+
+    lines
+}
+
+/// PerformanceDecreaseReason bits (NVAPI_GPU_PERF_DECREASE, `nvapi-rs/sys/src/
+/// gpu/mod.rs`): 1 Thermal Protection, 2 Power Control, 4 AC-Battery,
+/// 8 API Triggered, 16 Insufficient Power. 0 = none.
+const PERF_DECREASE_BITS: &[(u64, &str)] = &[
+    (1, "Thermal Protection"),
+    (2, "Power Control"),
+    (4, "AC-Battery"),
+    (8, "API Triggered"),
+    (16, "Insufficient Power"),
+];
+
+/// Decode the `performance_decrease` value. On the CLI's native get-status path
+/// serde renders the nvapi-rs `PerformanceDecreaseReason` bitflags struct as
+/// `{"bits": N}`; decode the bitmask into reason names (0 -> "None").
+fn format_performance_decrease(indent: usize, value: &Value) -> Vec<String> {
+    let bits = bitmask_from_value(value).unwrap_or(0);
+    let reasons: Vec<&str> = PERF_DECREASE_BITS
+        .iter()
+        .filter(|(bit, _)| bits & bit != 0)
+        .map(|(_, name)| *name)
+        .collect();
+    let text = if reasons.is_empty() {
+        "None".to_string()
+    } else {
+        reasons.join(", ")
+    };
+    vec![format!(
+        "{}{}: {}",
+        indent_spaces(indent),
+        nvoc_cli_common::color::stylize_title("Performance Decrease"),
+        nvoc_cli_common::color::stylize(&text, false)
+    )]
 }
 
 /// Render the VRAM info map. Size fields are kibibytes -> shown in MB;
@@ -1116,6 +1239,64 @@ mod tests {
         assert!(!rendered.contains("Range"));
         assert!(!rendered.contains("Target"));
         assert!(!rendered.contains("Name:"));
+    }
+
+    #[test]
+    fn human_output_decodes_perf_bitset() {
+        nvoc_cli_common::color::init(true);
+        // On the native get-status path serde renders PerfFlags as `{"bits": N}`;
+        // perf.unknown is a load-level indicator (7 = idle). Both must be decoded,
+        // not shown as raw ints.
+        let output = json!({
+            "perf": { "unknown": 7, "limits": { "bits": 16 } }
+        });
+
+        let rendered = format_human_output("get-status", &output).join("\n");
+
+        assert!(rendered.contains("Limits: No Load"));
+        assert!(rendered.contains("Load Level: Idle"));
+        // Raw-int rendering is gone.
+        assert!(!rendered.contains("Bits: 16"));
+        assert!(!rendered.contains("Unknown"));
+    }
+
+    #[test]
+    fn human_output_decodes_perf_multiple_reasons() {
+        nvoc_cli_common::color::init(true);
+        // limits bits = 3 = POWER_LIMIT(1) | THERMAL_LIMIT(2), decoded in bit
+        // order. The raw-int form (pynvoc path) is also accepted.
+        let rendered_obj = format_human_output(
+            "get-status",
+            &json!({ "perf": { "unknown": 1, "limits": { "bits": 3 } } }),
+        )
+        .join("\n");
+        assert!(rendered_obj.contains("Limits: Power, Temperature"));
+        assert!(rendered_obj.contains("Load Level: Load"));
+
+        let rendered_raw = format_human_output(
+            "get-status",
+            &json!({ "perf": { "unknown": 1, "limits": 3 } }),
+        )
+        .join("\n");
+        assert!(rendered_raw.contains("Limits: Power, Temperature"));
+    }
+
+    #[test]
+    fn human_output_decodes_performance_decrease() {
+        nvoc_cli_common::color::init(true);
+        // bits = 3 = THERMAL_PROTECTION(1) | POWER_CONTROL(2), decoded in bit
+        // order to friendly text on a single line.
+        let output = json!({
+            "performance_decrease": { "bits": 3 }
+        });
+        let rendered = format_human_output("get-status", &output).join("\n");
+        assert!(rendered.contains("Performance Decrease: Thermal Protection, Power Control"));
+
+        // bits = 0 (idle GPU) -> None.
+        let rendered_none =
+            format_human_output("get-status", &json!({ "performance_decrease": { "bits": 0 } }))
+                .join("\n");
+        assert!(rendered_none.contains("Performance Decrease: None"));
     }
 
     #[test]
