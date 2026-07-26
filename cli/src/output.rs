@@ -1397,31 +1397,6 @@ mod tests {
     }
 
     #[test]
-    fn human_output_renders_power_monitor() {
-        nvoc_cli_common::color::init(true);
-        // NDA-private PowerMonitor (0xC12EB19E/0xF40238EF): absolute GPU power
-        // + per-channel/per-rail wattage. Surfaces only when the GPU supports it.
-        let output = json!({
-            "power_monitor": {
-                "channel_mask": 3,
-                "total_gpu_power_mw": 128400,
-                "channels": [
-                    [0, "OutputNvvdd", {"pwr_avg_mw": 95000, "curr_ma": 80000, "volt_uv": 950000}],
-                    [1, "OutputFbvdd", {"pwr_avg_mw": 18000, "curr_ma": 15000, "volt_uv": 1200000}]
-                ]
-            }
-        });
-
-        let rendered = format_human_output("get-status", &output).join("\n");
-
-        // The generic renderer title-cases the snake_case field name and
-        // recurses into the nested object/array structure.
-        assert!(rendered.contains("Power Monitor"));
-        assert!(rendered.contains("Total GPU Power Mw: 128400"));
-        assert!(rendered.contains("Pwr Avg Mw: 95000"));
-    }
-
-    #[test]
     fn human_output_compacts_range_fields() {
         nvoc_cli_common::color::init(true);
         let output = json!({

@@ -540,38 +540,6 @@ fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
     {
         map.insert("power_w".into(), f64_value(watts));
     }
-    // NDA-private PowerMonitor (0xC12EB19E/0xF40238EF): absolute GPU power
-    // (mW) + per-channel/per-rail wattage. Emitted as parallel keys because
-    // the TUI native path reads this dict directly (it bypasses normalize).
-    // The hi layer already merged each STATUS channel's rail label from INFO.
-    if let Some(pm) = &status.power_monitor {
-        map.insert(
-            "power_w_abs".into(),
-            f64_value(pm.total_gpu_power_mw as f64 / 1000.0),
-        );
-        // Per-rail: { "<rail>": { avg_w, min_w, max_w, curr_a, volt_v } }.
-        // Unknown rails (None) fall back to the channel index.
-        let rails: Vec<(String, Value)> = pm
-            .channels
-            .iter()
-            .map(|(idx, rail, s)| {
-                let key = rail
-                    .map(|r| format!("{:?}", r))
-                    .unwrap_or_else(|| format!("ch{}", idx));
-                let entry = value_object([
-                    ("avg_w", f64_value(s.pwr_avg_mw as f64 / 1000.0)),
-                    ("min_w", f64_value(s.pwr_min_mw as f64 / 1000.0)),
-                    ("max_w", f64_value(s.pwr_max_mw as f64 / 1000.0)),
-                    ("curr_a", f64_value(s.curr_ma as f64 / 1000.0)),
-                    ("volt_v", f64_value(s.volt_uv as f64 / 1_000_000.0)),
-                ]);
-                (key, entry)
-            })
-            .collect();
-        if !rails.is_empty() {
-            map.insert("power_rails".into(), value_object(rails));
-        }
-    }
     map.insert(
         "vfp_locked".into(),
         bool_value(!status.vfp_locks.is_empty()),
