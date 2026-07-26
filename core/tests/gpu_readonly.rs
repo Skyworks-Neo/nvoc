@@ -1205,3 +1205,110 @@ fn nvapi_volt_rails_raw() {
     );
 }
 
+/// Raw probe of `NvAPI_GPU_PowerMonitorGetInfo` (0xC12EB19E).
+///
+/// The driver's handler (`nvapi64_impl.dll` @0x180258170) accepts the caller's
+/// struct ONLY when its first-DWORD version magic `(v<<16)|sizeof` is one of:
+///   65928=(1<<16)|392, 66972=(1<<16)|1436, 69408=(1<<16)|3872, 74968=(1<<16)|9432
+/// Anything else → -9 INCOMPATIBLE_STRUCT_VERSION. The nvapi-rs wrap sizes the
+/// struct after the RTSS header (≈3240B), which matches NONE of these, so the
+/// wrap is rejected on every GPU and `power_monitor` degrades to None.
+///
+/// This probe iterates the 4 accepted sizes with a raw scratch buffer and dumps
+/// status + the first bytes, so a **desktop GPU** run reveals which size is the
+/// current layout and what the descriptor looks like (bSupported / channelMask /
+/// totalGpuChannelIdx). That determines the struct rework needed for live data.
+///
+/// Run: `cargo test -p nvoc-core --test gpu_readonly -- --ignored --nocapture nvapi_power_monitor_raw`
+#[test]
+#[ignore]
+fn nvapi_power_monitor_raw() {
+    use nvapi_hi::sys::nvapi_QueryInterface;
+    use nvapi_hi::sys::Status;
+
+    let inv = inventory();
+    let target = first_target(&inv);
+    if !target.has_nvapi() {
+        eprintln!("nvapi_power_monitor_raw: no NVAPI backend, skipping");
+        return;
+    }
+    nvapi_hi::initialize().expect("nvapi initialize");
+    let gpus = nvapi_hi::Gpu::enumerate().expect("nvapi enumerate");
+    if gpus.is_empty() {
+        eprintln!("nvapi_power_monitor_raw: no NVAPI GPUs");
+        return;
+    }
+    let gpu = gpus.into_iter().next().unwrap();
+    let handle = *gpu.inner().handle();
+
+    const POWER_MONITOR_GET_INFO_ID: u32 = 0xC12EB19E;
+    // 4 accepted sizes for version 1 (from the IDA handler analysis).
+    const CANDIDATES: [u32; 4] = [392, 1436, 3872, 9432];
+    // One scratch buffer big enough for the largest candidate (9432) + slack.
+    const SCRATCH_U32: usize = 9432 / 4 + 16;
+    #[repr(C)]
+    struct Scratch {
+        version: u32,
+        data: [u32; SCRATCH_U32 - 1],
+    }
+
+    let ptr = match nvapi_QueryInterface(POWER_MONITOR_GET_INFO_ID) {
+        Ok(p) => p as *const (),
+        Err(e) => {
+            eprintln!("nvapi_power_monitor_raw: QueryInterface {:#x} not found: {:?}", POWER_MONITOR_GET_INFO_ID, e);
+            return;
+        }
+    };
+    type Fn = unsafe extern "system" fn(
+        nvapi_hi::sys::api::NvPhysicalGpuHandle,
+        *mut Scratch,
+    ) -> Status;
+    let func: Fn = unsafe { std::mem::transmute(ptr) };
+
+    for &sz in CANDIDATES.iter() {
+        let mut scratch = Scratch { version: 0, data: [0; SCRATCH_U32 - 1] };
+        // version magic = (1<<16) | size
+        scratch.version = (1u32 << 16) | sz;
+        let status = unsafe { func(handle, &mut scratch) };
+        eprintln!(
+            "=== PowerMonitorGetInfo size={} magic=0x{:x} status={:?} ({}) ===",
+            sz, scratch.version, status, status as i32,
+        );
+        if (status as i32) != (Status::Ok as i32) {
+            continue;
+        }
+        // Accepted! Dump the header fields (offsets per RTSS GET_INFO_V2 header;
+        // they're the same across versions for the first few fields).
+        let words: &[u32] =
+            unsafe { std::slice::from_raw_parts(&scratch as *const _ as *const u32, SCRATCH_U32) };
+        eprintln!(
+            "  ACCEPTED size={}. first 16 u32: {:?}",
+            sz, &words[..16]
+        );
+        // Decode known header (best-effort; field meanings may shift between
+        // versions, so print raw + plausible interpretation).
+        eprintln!(
+            "  +0x00 version=0x{:X}  +0x04 bSupported?={}  +0x08 samplingPeriodMs?={}  +0x0C sampleCount?={}  +0x10 channelMask?=0x{:X}  +0x14 chRelMask?=0x{:X}  +0x18 totalGpuPowerChannelMask?=0x{:X}  +0x1C totalGpuChannelIdx=0x{:X}",
+            words[0], words[1], words[2], words[3], words[4], words[5], words[6], words[7],
+        );
+        // First 256 bytes as hex for layout fingerprinting.
+        let bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(&scratch as *const _ as *const u8, 256.min(sz as usize))
+        };
+        eprintln!("  first {} bytes (hex):", bytes.len());
+        for chunk in bytes.chunks(16) {
+            let hex: Vec<String> = chunk.iter().map(|b| format!("{:02x}", b)).collect();
+            eprintln!(
+                "    {:04x}: {}",
+                chunk.as_ptr() as usize - bytes.as_ptr() as usize,
+                hex.join(" ")
+            );
+        }
+        // The first accepted size that returns Ok is the "current" one; stop.
+        break;
+    }
+    eprintln!(
+        "if none returned Ok: this driver build rejects all 4 sizes, or the IDs differ — re-check the handler."
+    );
+}
+
