@@ -271,6 +271,37 @@ fn bool_value(value: bool) -> Value {
     Value::Bool(value)
 }
 
+/// NVAPI PerfFlags bit -> reason name. Bit semantics mirror nvapi-rs
+/// (`sys/src/gpu/power.rs`, NV_GPU_PERF_FLAGS + its display table). Ascending
+/// bit order so the decoded list reads consistently regardless of active set.
+const PERF_LIMIT_BITS: &[(u32, &str)] = &[
+    (1, "Power"),
+    (2, "Temperature"),
+    (4, "Reliability Voltage"),
+    (8, "Operating Voltage"),
+    (16, "No Load"),
+    (32, "Unknown32"),
+];
+
+/// Decode a PerfFlags bitmask into reason names; an empty mask yields `["None"]`.
+fn decode_perf_flags(bits: u32) -> Vec<&'static str> {
+    let reasons: Vec<&'static str> = PERF_LIMIT_BITS
+        .iter()
+        .filter(|(bit, _)| bits & bit != 0)
+        .map(|(_, name)| *name)
+        .collect();
+    if reasons.is_empty() {
+        vec!["None"]
+    } else {
+        reasons
+    }
+}
+
+/// Build a JSON array of strings from the given reason names.
+fn text_array_value(items: Vec<&str>) -> Value {
+    Value::Array(items.into_iter().map(text).collect())
+}
+
 fn percent_value(value: Percentage) -> Value {
     u64_value(value.0 as u64)
 }
@@ -587,12 +618,19 @@ fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
         map.insert("pcie_lanes".into(), u64_value(lanes as u64));
     }
 
-    // NVAPI perf / throttle-limit flags (raw bitset; overlaps NVML throttle reasons).
+    // NVAPI perf / throttle-limit flags (raw bitset; overlaps NVML throttle
+    // reasons). `limits_decoded` is the same mask rendered as reason names so
+    // consumers (TUI/CLI) don't each have to re-decode the bits.
+    let perf_limits_bits = status.perf.limits.bits() as u32;
     map.insert(
         "perf".into(),
         value_object([
             ("unknown", u64_value(status.perf.unknown as u64)),
-            ("limits", u64_value(status.perf.limits.bits() as u64)),
+            ("limits", u64_value(perf_limits_bits as u64)),
+            (
+                "limits_decoded",
+                text_array_value(decode_perf_flags(perf_limits_bits)),
+            ),
         ]),
     );
 
