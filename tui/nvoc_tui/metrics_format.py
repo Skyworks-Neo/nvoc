@@ -96,6 +96,28 @@ def _format_metric_lines(status: dict, architecture: str) -> list[str]:
         temp_parts.append(f"MEM {_temp_c_str(status['temp_memory'])} C")
     temp_text = " | ".join(temp_parts)
 
+    # Absolute GPU power + per-rail wattage from the NDA-private PowerMonitor
+    # pair (NVAPI 0xC12EB19E/0xF40238EF). Only shown when the GPU/driver
+    # exposes it; otherwise the line is omitted entirely.
+    power_abs_lines: list[str] = []
+    if isinstance(status.get("power_w_abs"), (int, float)):
+        power_abs_lines.append(
+            f"PWRABS: {round(float(status['power_w_abs']))} W"
+        )
+        rails = status.get("power_rails")
+        if isinstance(rails, dict) and rails:
+            rail_parts: list[str] = []
+            for rail, entry in rails.items():
+                if not isinstance(entry, dict):
+                    continue
+                avg = entry.get("avg_w")
+                if isinstance(avg, (int, float)):
+                    rail_parts.append(f"{rail} {round(float(avg))} W")
+            if rail_parts:
+                power_abs_lines.append(
+                    "RAILS: " + " | ".join(rail_parts[:4])
+                )
+
     return [
         f"GPU: {status.get('gpu_clock_mhz', '---')} MHz",
         f"MEM: {status.get('mem_clock_mhz', '---')} MHz",
@@ -103,6 +125,7 @@ def _format_metric_lines(status: dict, architecture: str) -> list[str]:
         f"VFP LOCK: {vfp_lock_text}",
         f"TEMP: {temp_text}",
         f"PWR: {status.get('power_w', '---')} W",
+        *power_abs_lines,
         f"LOAD: {load_text}",
         f"VRAM: {vram_text}",
         f"FAN: {fan_text}",

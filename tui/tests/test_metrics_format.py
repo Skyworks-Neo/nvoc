@@ -58,6 +58,33 @@ def test_format_metric_lines_thermal_trio() -> None:
     assert "TEMP: CORE 55 C | HOTSPOT 64 C | MEM 58 C" in text
 
 
+def test_format_metric_lines_power_monitor() -> None:
+    status = {
+        "power_w": 130,
+        "power_w_abs": 128.4,
+        "power_rails": {
+            "OutputNvvdd": {"avg_w": 95.0, "min_w": 90.0, "max_w": 100.0},
+            "OutputFbvdd": {"avg_w": 18.0},
+        },
+    }
+
+    text = "\n".join(_format_metric_lines(status, "---"))
+
+    # Absolute power + up to 4 per-rail wattages rendered from PowerMonitor.
+    assert "PWR: 130 W" in text
+    assert "PWRABS: 128 W" in text
+    assert "RAILS: OutputNvvdd 95 W | OutputFbvdd 18 W" in text
+
+
+def test_format_metric_lines_no_power_monitor() -> None:
+    # Without PowerMonitor keys the PWRABS/RAILS lines are absent.
+    text = "\n".join(_format_metric_lines({"power_w": 100}, "---"))
+
+    assert "PWR: 100 W" in text
+    assert "PWRABS" not in text
+    assert "RAILS" not in text
+
+
 def test_format_metric_lines_core_only_when_no_extra_temps() -> None:
     text = "\n".join(_format_metric_lines({"temperature_c": 47}, "---"))
 
