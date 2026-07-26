@@ -1108,3 +1108,100 @@ fn nvapi_therm_channel_raw() {
     }
 }
 
+/// Raw dump of `NvAPI_GPU_ClientVoltRailsGetStatus` (0x465f9bcf, 76-byte V1).
+///
+/// Three-way cross-check (nvapi-rs / LibreHardwareMonitor / dev-laptop probe)
+/// agrees the layout is 76B with the live core-voltage µV at offset 0x28. The
+/// open question is offset **0x2C** onwards: LHM names 0x2C
+/// `CoreMicrovoltsHigh` (the high 32 bits of a 64-bit µV value); the dev
+/// laptop sees it all-zero, so it can't decide. RTSS iterates a `rails[]`
+/// array form that doesn't fit 76B — its `MAX_ENTRIES`/entry layout are
+/// unknown here.
+///
+/// This probe dumps the full 76 bytes as hex AND as a u32 word table with
+/// offset annotations, so a **desktop GPU** run can settle whether 0x2C+ ever
+/// carries a non-zero high-half (LHM's 64-bit µV) or a multi-rail pattern
+/// (RTSS's array form). The laptop run is just a sanity baseline.
+///
+/// Run: `cargo test -p nvoc-core --test gpu_readonly -- --ignored --nocapture nvapi_volt_rails_raw`
+#[test]
+#[ignore]
+fn nvapi_volt_rails_raw() {
+    use nvapi_hi::sys::gpu::power::private as pw;
+    use nvapi_hi::sys::api as api;
+    use nvapi_hi::sys::nvapi::{NvVersion, VersionedStruct};
+    use nvapi_hi::sys::Status;
+
+    let inv = inventory();
+    let target = first_target(&inv);
+    if !target.has_nvapi() {
+        eprintln!("nvapi_volt_rails_raw: no NVAPI backend, skipping");
+        return;
+    }
+    nvapi_hi::initialize().expect("nvapi initialize");
+    let gpus = nvapi_hi::Gpu::enumerate().expect("nvapi enumerate");
+    if gpus.is_empty() {
+        eprintln!("nvapi_volt_rails_raw: no NVAPI GPUs");
+        return;
+    }
+    let gpu = gpus.into_iter().next().unwrap();
+    let handle = *gpu.inner().handle();
+
+    // 76-byte V1 struct, version magic (1<<16)|76 = 65612.
+    let mut volt: pw::NV_GPU_CLIENT_VOLT_RAILS_STATUS = unsafe { std::mem::zeroed() };
+    *volt.nvapi_version_mut() = NvVersion::with_struct::<pw::NV_GPU_CLIENT_VOLT_RAILS_STATUS>(1);
+
+    let st = unsafe { api::NvAPI_GPU_ClientVoltRailsGetStatus(handle, &mut volt) };
+    eprintln!(
+        "=== ClientVoltRailsGetStatus status={:?} ({}), struct_size={} ===",
+        st,
+        st as i32,
+        std::mem::size_of_val(&volt),
+    );
+    if (st as i32) != (Status::Ok as i32) {
+        eprintln!("Not OK — diagnostic only, not a failure.");
+        return;
+    }
+
+    // Reinterpret the 76 bytes as a raw byte/u32 table to see every word,
+    // bypassing the Rust struct's named fields (which hide 0x2C+ as padding).
+    let len = std::mem::size_of_val(&volt);
+    let bytes: &[u8] = unsafe {
+        std::slice::from_raw_parts(&volt as *const _ as *const u8, len)
+    };
+    eprintln!("raw {} bytes (hex):", len);
+    for chunk in bytes.chunks(16) {
+        let hex: Vec<String> = chunk.iter().map(|b| format!("{:02x}", b)).collect();
+        eprintln!("  {:04x}: {}", chunk.as_ptr() as usize - bytes.as_ptr() as usize, hex.join(" "));
+    }
+    eprintln!("u32 word table (little-endian), with named-offset annotations:");
+    let words: &[u32] =
+        unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const u32, len / 4) };
+    for (i, &w) in words.iter().enumerate() {
+        let off = i * 4;
+        let note = match off {
+            0x00 => "version magic",
+            0x04 => "flags",
+            0x28 => "value_uV / CoreMicrovolts (LIVE core voltage, low 32 bits)",
+            0x2C => "unknown[0] / CoreMicrovoltsHigh (LHM: high 32 bits of 64-bit µV)",
+            _ if (0x08..0x28).contains(&off) => "zero[] padding",
+            _ if (0x30..0x4C).contains(&off) => "unknown[] padding",
+            _ => "",
+        };
+        eprintln!("  +0x{:02X} [{:>2}] = 0x{:08X} ({}) {}", off, i, w, w, note);
+    }
+    // Decode the live value both ways for comparison.
+    let lo = words[0x28 / 4];
+    let hi = words[0x2C / 4];
+    eprintln!(
+        "decoded: value_uV(0x28)={} ({} mV); 64-bit µV=(hi<<32)|lo={} ({} mV)",
+        lo,
+        lo / 1000,
+        ((hi as u64) << 32) | lo as u64,
+        (((hi as u64) << 32) | lo as u64) / 1000,
+    );
+    eprintln!(
+        "desktop verdict: if 0x2C non-zero -> LHM 64-bit µV confirmed; if 0x30..0x4C shows a repeating non-zero pattern -> RTSS rails[] array form"
+    );
+}
+
