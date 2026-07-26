@@ -14,6 +14,33 @@ def _temp_c_str(value) -> str:
         return "---"
 
 
+# NVAPI PerfFlags bit -> reason name. Bit semantics mirror nvapi-rs
+# (`sys/src/gpu/power.rs`, NV_GPU_PERF_FLAGS + its display table). Ascending
+# bit order so the decoded list reads consistently regardless of active set.
+_PERF_LIMIT_BITS = [
+    (1, "Power"),
+    (2, "Temperature"),
+    (4, "Reliability Voltage"),
+    (8, "Operating Voltage"),
+    (16, "No Load"),
+    (32, "Unknown32"),
+]
+
+
+def _perf_limits_text(perf) -> str:
+    """Decode the NVAPI perf-policy limit bitmask (``perf.limits``) to a
+    comma-separated reason list. ``0`` -> ``none``; missing/non-numeric -> ``---``.
+    """
+    if not isinstance(perf, dict):
+        return "---"
+    limits = perf.get("limits")
+    if not isinstance(limits, (int, float)):
+        return "---"
+    bits = int(limits)
+    reasons = [name for bit, name in _PERF_LIMIT_BITS if bits & bit]
+    return ", ".join(reasons) if reasons else "none"
+
+
 def _format_metric_lines(status: dict, architecture: str) -> list[str]:
     """Build the dashboard metric lines from a normalized status dict.
 
@@ -79,10 +106,7 @@ def _format_metric_lines(status: dict, architecture: str) -> list[str]:
     pcie_text = f"x{int(lanes)}" if isinstance(lanes, (int, float)) else "---"
 
     perf = status.get("perf") or {}
-    perf_limits = perf.get("limits") if isinstance(perf, dict) else None
-    perf_text = (
-        f"0x{int(perf_limits):x}" if isinstance(perf_limits, (int, float)) else "---"
-    )
+    perf_text = _perf_limits_text(perf)
 
     return [
         f"GPU: {status.get('gpu_clock_mhz', '---')} MHz",
@@ -96,6 +120,6 @@ def _format_metric_lines(status: dict, architecture: str) -> list[str]:
         f"FAN: {fan_text}",
         f"PCIE: {pcie_text}",
         f"PSTATE: {status.get('pstate', '---')}",
-        f"PERF: {perf_text}",
+        f"PERF LIMIT: {perf_text}",
         f"ARCH: {architecture}",
     ]
