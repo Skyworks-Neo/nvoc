@@ -1303,9 +1303,11 @@ mod tests {
         assert!(rendered.contains("Performance Decrease: Thermal Protection, Power Control"));
 
         // bits = 0 (idle GPU) -> None.
-        let rendered_none =
-            format_human_output("get-status", &json!({ "performance_decrease": { "bits": 0 } }))
-                .join("\n");
+        let rendered_none = format_human_output(
+            "get-status",
+            &json!({ "performance_decrease": { "bits": 0 } }),
+        )
+        .join("\n");
         assert!(rendered_none.contains("Performance Decrease: None"));
     }
 
