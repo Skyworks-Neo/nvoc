@@ -206,6 +206,10 @@ mod nvoc_service {
 
         // Nvml initialization is done here to ensure that the service can be stopped even if Nvml fails to initialize.
         let nvml = Nvml::init().unwrap();
+        // Explicitly initialize the NVAPI library before enumerating GPUs via NVAPI.
+        // Mirrors the `Nvml::init()` above and is required for reliable GPU detection
+        // on older `nvapi.dll` builds (see core/src/target.rs::discover for details).
+        nvapi_hi::initialize().unwrap();
         // let temperature_softwall_offset = 25;
         let gpus = Gpu::enumerate().unwrap();
         let inventory = discover_targets(BackendSet::Both).unwrap();

@@ -203,8 +203,20 @@ pub struct TargetInventory {
 
 impl TargetInventory {
     pub fn discover(backends: BackendSet) -> Result<Self, Error> {
+        // Explicitly initialize the NVAPI library before any NVAPI call. This mirrors
+        // the `Nvml::init()` below and matches the proven working sequence used by
+        // MSI Afterburner's RTHAL.dll (which calls `NvAPI_Initialize` before
+        // `NvAPI_EnumPhysicalGPUs`). nvapi-rs otherwise relies on NVAPI's "implicit
+        // refcount increment on first call" behaviour, which is a newer convenience
+        // and is absent/flaky on older `nvapi.dll` builds — there, enumerating
+        // without a prior explicit `NvAPI_Initialize` returns
+        // `NVAPI_API_NOT_INITIALIZED`/`NVAPI_NVIDIA_DEVICE_NOT_FOUND` and nvoc sees
+        // zero GPUs. Initializing up front fixes GPU detection on legacy drivers.
         let nvapi_gpus = match backends {
-            BackendSet::Nvapi | BackendSet::Both => super::gpu::get_sorted_gpus()?,
+            BackendSet::Nvapi | BackendSet::Both => {
+                nvapi_hi::initialize()?;
+                super::gpu::get_sorted_gpus()?
+            }
             BackendSet::Nvml => Vec::new(),
         };
 
