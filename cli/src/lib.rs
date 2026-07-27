@@ -1464,6 +1464,10 @@ fn execute_target(
             if let Some(map) = value.as_object_mut() {
                 if !verbose {
                     map.remove("vfp");
+                    // power_monitor is the research-grade raw descriptor table
+                    // (units/layout still under validation); keep only the
+                    // confirmed power_rails in the default status output.
+                    map.remove("power_monitor");
                 }
                 // NVAPI's power topology reports a dimensionless percentage and
                 // is empty on most laptop GPUs. Augment with the live board
@@ -1474,6 +1478,26 @@ fn execute_target(
                         nvoc_core::nvml::query_nvml_power_draw_watts(nvml, target.id.0)
                 {
                     map.insert("power_draw_w".to_string(), json!(draw_w));
+                }
+                // Per-rail power (watts) from NVAPI PowerMonitor GetStatus
+                // (units confirmed by exact GPU-Z match). Flatten the nested
+                // power_rails object into top-level scalar W fields so the
+                // human renderer shows them as numbers, and remove the raw
+                // object. Each field present only when the GPU exposes it.
+                if let Some(rails) = map.get("power_rails").and_then(|v| v.as_object()).cloned() {
+                    if let Some(board) = rails.get("board_mw").and_then(|v| v.as_u64()) {
+                        map.insert("power_board_w".to_string(), json!(board as f64 / 1000.0));
+                    }
+                    if let Some(chip) = rails.get("chip_mw").and_then(|v| v.as_u64()) {
+                        map.insert("power_chip_w".to_string(), json!(chip as f64 / 1000.0));
+                    }
+                    if let Some(mvddc) = rails.get("mvddc_mw").and_then(|v| v.as_u64()) {
+                        map.insert("power_mvddc_w".to_string(), json!(mvddc as f64 / 1000.0));
+                    }
+                    if let Some(pwr_src) = rails.get("pwr_src_mw").and_then(|v| v.as_u64()) {
+                        map.insert("power_pwr_src_w".to_string(), json!(pwr_src as f64 / 1000.0));
+                    }
+                    map.remove("power_rails");
                 }
                 // Bidirectional real-time PCIe bandwidth (MiB/s),
                 // nvitop/HWMonitor-style, from NVML `nvmlDeviceGetPcieThroughput`.

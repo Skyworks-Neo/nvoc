@@ -65,6 +65,25 @@ def _fabric_clocks_text(status: dict) -> str:
     return " | ".join(parts) + " MHz" if parts else ""
 
 
+def _power_rails_text(status: dict) -> str:
+    """Per-rail power breakdown (NVAPI PowerMonitor GetStatus, GPU-Z-matched).
+
+    Reads ``power_chip_w`` / ``power_mvddc_w`` / ``power_pwr_src_w`` (board is
+    already on the PWR line via NVML). Returns ``""`` when no rails are present
+    so the line is omitted entirely. Units confirmed: raw mW ÷ 1000 = W.
+    """
+    parts = []
+    for key, label in (
+        ("power_chip_w", "CHIP"),
+        ("power_mvddc_w", "MEM"),
+        ("power_pwr_src_w", "SRC"),
+    ):
+        val = status.get(key)
+        if isinstance(val, (int, float)):
+            parts.append(f"{label} {val:.1f}")
+    return " | ".join(parts) + " W" if parts else ""
+
+
 def _pcie_bandwidth_text(status: dict) -> str:
     """Bidirectional real-time PCIe bandwidth, nvitop-style (``↑Tx ↓Rx``).
 
@@ -227,6 +246,7 @@ def _format_metric_lines(status: dict, architecture: str) -> list[str]:
         f"VFP LOCK: {vfp_lock_text}",
         f"TEMP: {temp_text}",
         f"PWR: {status.get('power_w', '---')} W",
+        f"RAILS: {_power_rails_text(status) or '---'}",
         f"LOAD: {load_text}",
         f"VRAM: {vram_text}",
         f"FAN: {fan_text}",

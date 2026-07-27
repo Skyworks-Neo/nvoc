@@ -1205,7 +1205,7 @@ fn format_with_unit(key: &str, rendered: &str) -> String {
         format!("{rendered} mV")
     } else if key.ends_with("_uv") {
         format!("{rendered} uV")
-    } else if key.ends_with("_watt") {
+    } else if key.ends_with("_watt") || key.ends_with("_w") {
         format!("{rendered} W")
     } else if key.ends_with("_percent") || key == "percent" {
         format!("{rendered}%")

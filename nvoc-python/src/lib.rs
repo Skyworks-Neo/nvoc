@@ -593,6 +593,25 @@ fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
         map.insert("power_w".into(), f64_value(watts));
     }
 
+    // Per-rail power (watts) from NVAPI PowerMonitor GetStatus (units confirmed
+    // by exact GPU-Z match: raw mW / 1000 = W). Board/Chip/MVDDC/PWR_SRC, each
+    // present only when the GPU exposes that rail. Separate from `power_w`
+    // (NVML board total) — these are the per-rail breakdown GPU-Z shows.
+    if let Some(rails) = &status.power_rails {
+        if let Some(board) = rails.board_w() {
+            map.insert("power_board_w".into(), f64_value(board as f64));
+        }
+        if let Some(chip) = rails.chip_w() {
+            map.insert("power_chip_w".into(), f64_value(chip as f64));
+        }
+        if let Some(mvddc) = rails.mvddc_w() {
+            map.insert("power_mvddc_w".into(), f64_value(mvddc as f64));
+        }
+        if let Some(pwr_src) = rails.pwr_src_w() {
+            map.insert("power_pwr_src_w".into(), f64_value(pwr_src as f64));
+        }
+    }
+
     // Bidirectional real-time PCIe bandwidth (MiB/s), nvitop/HWMonitor-style.
     // `nvmlDeviceGetPcieThroughput` reports KB/s averaged over a ~20ms byte-counter
     // interval (i.e. it IS the live rate — no sliding window needed). TX = bytes
