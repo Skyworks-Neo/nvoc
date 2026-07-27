@@ -1407,6 +1407,56 @@ fn nvapi_power_monitor_raw() {
         }
     }
 
+    // For the RICHEST GetInfo layout (v4|6312), walk the per-channel
+    // descriptor array and decode each record's channel_type + PowerRail +
+    // scaling fields. This is the key to resolving the GetStatus unit
+    // ambiguity: the descriptors carry the slope/offset calibration. We scan
+    // for records by their signature (channel_type in 0..=8 followed by a
+    // plausible PowerRail value) since the array stride may be irregular.
+    if let Some((_, _, sz, scratch)) = accepted_per_iid
+        .iter()
+        .find(|(l, v, s, _)| *l == "GetInfo" && *v == 4 && *s == 6312)
+    {
+        let bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(scratch as *const _ as *const u8, *sz as usize)
+        };
+        let words: &[u32] =
+            unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const u32, bytes.len() / 4) };
+        eprintln!(
+            "=== GetInfo v4 descriptor scan (channel_type 0..=8 + plausible PowerRail) ==="
+        );
+        // Scan word-by-word for a (type, rail) signature. type in 1..=8, rail a
+        // known PowerRail value (0..=11 outputs, or 218..=255 inputs) or 0.
+        let known_rail = |r: u32| r == 0 || r <= 11 || (218..=255).contains(&r);
+        let mut found = 0;
+        let mut i = 4; // skip version word
+        while i + 1 < words.len() && found < 32 {
+            let t = words[i];
+            let r = words[i + 1];
+            if (1..=8).contains(&t) && known_rail(r) {
+                // Print the surrounding record (i-1 .. i+13) as u32 fields.
+                let start = if i >= 1 { i - 1 } else { i };
+                let end = (start + 14).min(words.len());
+                let rec: Vec<u32> = words[start..end].to_vec();
+                eprintln!(
+                    "  desc@+0x{:04X}: type={} rail={} (0x{:X}) | record u32: {:?}",
+                    i * 4,
+                    t,
+                    r,
+                    r,
+                    rec
+                );
+                found += 1;
+                i += 8; // skip ahead to avoid re-matching within a record
+            } else {
+                i += 1;
+            }
+        }
+        if found == 0 {
+            eprintln!("  no descriptor signatures found — header/layout differs from assumption");
+        }
+    }
+
     // For GetStatus, sample several times and report which byte offsets vary —
     // those are the LIVE per-channel value slots (units TBD). Static offsets
     // are descriptors/headers. This confirms the data is realtime, not a blob.
