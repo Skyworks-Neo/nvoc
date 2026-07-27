@@ -1694,3 +1694,97 @@ fn rail_name(rail: u32) -> &'static str {
     }
 }
 
+/// Per-bit isolation probe for PowerMonitor GetStatus.
+///
+/// The 4-rail offset map (Board/Chip/MVDDC/PWR_SRC at +0x08/+0x14/+0x2C/+0x98)
+/// was confirmed against GPU-Z but is **channel-order-dependent** — it may
+/// differ on other GPUs. This probe maps each channel BIT to its GetStatus
+/// offset independent of ordering: for each active bit (from GetInfo's
+/// channel_mask), call GetStatus with `channel_mask = (1<<bit)` ONLY, and
+/// record which nonzero offsets fill. That isolates one channel's status slot.
+///
+/// Pair the output with the v4 descriptor scan (nvapi_power_monitor_v4) to get
+/// a stable channel-bit -> offset -> rail map. Run under load so values are
+/// large enough to disambiguate from zero.
+///
+/// Run: `cargo test -p nvoc-core --test gpu_readonly -- --ignored --nocapture nvapi_power_monitor_bit_isolation`
+#[test]
+#[ignore]
+fn nvapi_power_monitor_bit_isolation() {
+    use nvapi_hi::sys::nvapi_QueryInterface;
+
+    let inv = inventory();
+    let target = first_target(&inv);
+    if !target.has_nvapi() {
+        eprintln!("nvapi_power_monitor_bit_isolation: no NVAPI backend, skipping");
+        return;
+    }
+    nvapi_hi::initialize().expect("nvapi initialize");
+    let gpus = nvapi_hi::Gpu::enumerate().expect("nvapi enumerate");
+    if gpus.is_empty() {
+        return;
+    }
+    let gpu = gpus.into_iter().next().unwrap();
+    let handle = *gpu.inner().handle();
+
+    // GetInfo v4 -> channel_mask (which bits exist on this GPU).
+    let info_ptr = match nvapi_QueryInterface(0xC12EB19E) {
+        Ok(p) => p as *const (),
+        Err(e) => {
+            eprintln!("GetInfo not found: {:?}", e);
+            return;
+        }
+    };
+    type InfoFn = unsafe extern "system" fn(
+        nvapi_hi::sys::api::NvPhysicalGpuHandle,
+        *mut u8,
+    ) -> nvapi_hi::sys::Status;
+    let info_fn: InfoFn = unsafe { std::mem::transmute(info_ptr) };
+    let mut info = vec![0u8; 6312];
+    // v4 GetInfo magic = (4<<16)|6312 = 0x418A8 = 268456.
+    info[0..4].copy_from_slice(&268456u32.to_le_bytes());
+    let st = unsafe { info_fn(handle, info.as_mut_ptr()) };
+    if st as i32 != 0 {
+        eprintln!("GetInfo v4 failed: {:?} ({})", st, st as i32);
+        return;
+    }
+    let channel_mask = u32::from_le_bytes(info[0x10..0x14].try_into().unwrap_or([0; 4]));
+    eprintln!("=== GetInfo channel_mask = 0x{:X} ===", channel_mask);
+
+    // GetStatus v1|392: per-bit isolation.
+    let status_ptr = match nvapi_QueryInterface(0xF40238EF) {
+        Ok(p) => p as *const (),
+        Err(e) => {
+            eprintln!("GetStatus not found: {:?}", e);
+            return;
+        }
+    };
+    type StatusFn = unsafe extern "system" fn(
+        nvapi_hi::sys::api::NvPhysicalGpuHandle,
+        *mut u8,
+    ) -> nvapi_hi::sys::Status;
+    let status_fn: StatusFn = unsafe { std::mem::transmute(status_ptr) };
+
+    eprintln!("=== per-bit GetStatus isolation (which offsets fill for each channel bit) ===");
+    for bit in 0..32u32 {
+        if channel_mask & (1 << bit) == 0 {
+            continue;
+        }
+        let mut buf = [0u8; 392];
+        buf[0..4].copy_from_slice(&65928u32.to_le_bytes()); // (1<<16)|392
+        buf[4..8].copy_from_slice(&(1u32 << bit).to_le_bytes());
+        let st = unsafe { status_fn(handle, buf.as_mut_ptr()) };
+        let nz: Vec<(usize, u32)> = buf
+            .chunks_exact(4)
+            .enumerate()
+            .map(|(i, c)| (i * 4, u32::from_le_bytes(c.try_into().unwrap_or([0; 4]))))
+            .filter(|(_, v)| *v != 0)
+            .collect();
+        eprintln!("  bit {:>2}: status={:?} ({}) nonzero={:?}", bit, st, st as i32, nz);
+    }
+    eprintln!(
+        "Pair each bit's nonzero offsets with the v4 descriptor scan\n\
+         (nvapi_power_monitor_v4) to map bit -> offset -> rail."
+    );
+}
+
