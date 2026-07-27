@@ -1360,45 +1360,13 @@ fn nvapi_power_monitor_raw() {
     }
 
     for (label, ver, sz, scratch) in &accepted_per_iid {
-        eprintln!("=== {} ACCEPTED version={} size={} ===", label, ver, sz);
         let words: &[u32] = unsafe {
             std::slice::from_raw_parts(scratch as *const _ as *const u32, SCRATCH_U32)
         };
-        eprintln!("  first 16 u32: {:?}", &words[..16]);
-        eprintln!(
-            "  +0x00 version=0x{:X}  +0x04 bSupported?={}  +0x08 samplingPeriodMs?={}  +0x0C sampleCount?={}  +0x10 channelMask?=0x{:X}  +0x14 chRelMask?=0x{:X}  +0x18 totalGpuPowerChannelMask?=0x{:X}  +0x1C totalGpuChannelIdx=0x{:X}",
-            words[0], words[1], words[2], words[3], words[4], words[5], words[6], words[7],
-        );
-        // Dump the ENTIRE accepted struct (not just 256B) so per-channel
-        // offsets in the v1|392 GetStatus layout are fully visible.
-        let dump_len = (*sz as usize).min(SCRATCH_U32 * 4);
-        let bytes: &[u8] = unsafe {
-            std::slice::from_raw_parts(scratch as *const _ as *const u8, dump_len)
-        };
-        eprintln!("  full {} bytes (hex):", dump_len);
-        for chunk in bytes.chunks(16) {
-            let hex: Vec<String> = chunk.iter().map(|b| format!("{:02x}", b)).collect();
-            eprintln!(
-                "    {:04x}: {}",
-                chunk.as_ptr() as usize - bytes.as_ptr() as usize,
-                hex.join(" ")
-            );
-        }
-        // List every nonzero 32-bit word offset to spotlight the per-channel
-        // value slots (the meat of the GetStatus layout) for layout RE.
-        let nz: Vec<(usize, u32)> = words
-            .iter()
-            .take(*sz as usize / 4)
-            .enumerate()
-            .filter(|(_, w)| **w != 0)
-            .map(|(i, w)| (i * 4, *w))
-            .collect();
-        eprintln!("  nonzero u32 offsets: {:?}", nz);
-        // For GetInfo, decode the power-channel bitmask. In this v1|404 layout
-        // the channel mask lives at byte offset +0x40 (word 16), NOT +0x10 — the
-        // RTSS-derived V2 doc puts it at +0x10, but the deployed v1 handler writes
-        // it later in the struct. Scan words 4..32 for the first plausible mask
-        // (the populated channel set) so we report it regardless of exact slot.
+        // For GetInfo, decode the power-channel bitmask (the populated channel
+        // set) — the rail-identity source. (Skip the per-magic nonzero-offset
+        // raw dump; the descriptor scan + offset+power sections below carry the
+        // actionable info.)
         if *label == "GetInfo" {
             let mask = (4..32.min(words.len()))
                 .map(|i| words[i])
@@ -1407,10 +1375,8 @@ fn nvapi_power_monitor_raw() {
             if mask != 0 {
                 let chans: Vec<u32> = (0..32).filter(|i| mask & (1u32 << i) != 0).collect();
                 eprintln!(
-                    "  GetInfo channelMask=0x{:X} -> {} channels: {:?}",
-                    mask,
-                    chans.len(),
-                    chans
+                    "=== {} v{}|{}: channelMask=0x{:X} -> {} channels: {:?} ===",
+                    label, ver, sz, mask, chans.len(), chans
                 );
             }
         }
@@ -1501,10 +1467,11 @@ fn nvapi_power_monitor_raw() {
                 .map(|(i, w)| (i * 4, *w))
                 .collect()
         };
-        // GetInfo channel_mask for the full-mask call (scan the GetInfo result).
+        // GetInfo channel_mask for the full-mask call (use the first/v1|404
+        // GetInfo result, whose mask is at +0x10; the v5 layout stores it at a
+        // different offset and would mislead the scan).
         let info_mask: u32 = accepted_per_iid
             .iter()
-            .rev()
             .find_map(|(l, _, _, scr)| {
                 if *l != "GetInfo" {
                     return None;
@@ -1549,12 +1516,19 @@ fn nvapi_power_monitor_raw() {
         // that appear for MULTIPLE bits (shared/baseline like +0x44) are shown
         // with ALL candidate channels so ambiguous offsets are disambiguated.
         eprintln!("=== GetStatus per-bit isolation (offset -> which channel(s) fill it) ===");
-        // Recover channel_bit -> rail identity from the richest GetInfo layout.
+        // Recover channel_bit -> rail identity from the v4 GetInfo layout
+        // (the descriptor scan below assumes the v4 header+descriptor offsets;
+        // v5 stores the mask at a different offset and is not used here).
         let richest: Option<&Scratch> = accepted_per_iid
             .iter()
-            .rev()
-            .find(|(l, _, _, _)| *l == "GetInfo")
-            .map(|(_, _, _, s)| s);
+            .find(|(l, v, _, _)| *l == "GetInfo" && *v == 4)
+            .map(|(_, _, _, s)| s)
+            .or_else(|| {
+                accepted_per_iid
+                    .iter()
+                    .find(|(l, _, _, _)| *l == "GetInfo")
+                    .map(|(_, _, _, s)| s)
+            });
         let mut bit_rail: Vec<(u32, u32)> = Vec::new(); // (bit, rail)
         if let Some(scr) = richest {
             let bytes: &[u8] = unsafe {

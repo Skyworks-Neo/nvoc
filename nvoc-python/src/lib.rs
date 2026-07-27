@@ -601,7 +601,14 @@ fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
         let mut rail_map = Map::new();
         for r in rails {
             if r.pwr_mw != 0 {
-                rail_map.insert(r.rail_name.clone(), f64_value(r.pwr_mw as f64 / 1000.0));
+                // Suffix "?" when the rail's value is ambiguous (per-bit
+                // isolation gave a full-board view, not a clean per-channel read).
+                let key = if r.isolated {
+                    r.rail_name.clone()
+                } else {
+                    format!("{}?", r.rail_name)
+                };
+                rail_map.insert(key, f64_value(r.pwr_mw as f64 / 1000.0));
             }
         }
         if !rail_map.is_empty() {
