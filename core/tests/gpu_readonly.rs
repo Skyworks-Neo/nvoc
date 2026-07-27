@@ -1371,17 +1371,25 @@ fn nvapi_power_monitor_raw() {
             .map(|(i, w)| (i * 4, *w))
             .collect();
         eprintln!("  nonzero u32 offsets: {:?}", nz);
-        // For GetInfo, decode the power-channel bitmask so we know how many /
-        // which channels this GPU exposes (the GetStatus values are indexed by it).
-        if *label == "GetInfo" && words.len() > 4 && words[4] != 0 {
-            let mask = words[4];
-            let chans: Vec<u32> = (0..32).filter(|i| mask & (1u32 << i) != 0).collect();
-            eprintln!(
-                "  GetInfo channelMask=0x{:X} -> {} channels: {:?}",
-                mask,
-                chans.len(),
-                chans
-            );
+        // For GetInfo, decode the power-channel bitmask. In this v1|404 layout
+        // the channel mask lives at byte offset +0x40 (word 16), NOT +0x10 — the
+        // RTSS-derived V2 doc puts it at +0x10, but the deployed v1 handler writes
+        // it later in the struct. Scan words 4..32 for the first plausible mask
+        // (the populated channel set) so we report it regardless of exact slot.
+        if *label == "GetInfo" {
+            let mask = (4..32.min(words.len()))
+                .map(|i| words[i])
+                .find(|w| *w != 0 && *w != 1)
+                .unwrap_or(0);
+            if mask != 0 {
+                let chans: Vec<u32> = (0..32).filter(|i| mask & (1u32 << i) != 0).collect();
+                eprintln!(
+                    "  GetInfo channelMask=0x{:X} -> {} channels: {:?}",
+                    mask,
+                    chans.len(),
+                    chans
+                );
+            }
         }
     }
 
