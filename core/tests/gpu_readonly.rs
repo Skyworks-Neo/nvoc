@@ -113,11 +113,17 @@
 //!
 //! ## What this concluded for the per-rail-watts investigation
 //!
-//! Every power/voltage-tagged ID was probed on the dev laptop; none return live per-rail
-//! watts. GPU-Z's per-rail watts come from a WinRing0 kernel driver doing direct PCI/MMIO,
-//! entirely outside NVAPI. Full write-up + the IDA findings that classify each unknown ID:
-//! `docs/gpuz-per-rail-investigation.md`. The per-ID RE records live as doc-comments on the
-//! `Unknown_*` variants in `nvapi-rs/sys/src/nvid.rs`.
+//! HISTORICAL NOTE: this section's original conclusion ("no NVAPI ID returns live
+//! per-rail watts; GPU-Z's per-rail watts come from WinRing0") was scoped to the
+//! specific unknown IDs probed here (Unknown_7457CAB5 etc.) and is correct FOR
+//! THOSE IDs. It was LATER overtaken by the PowerMonitor work
+//! (`nvapi_power_monitor_v4` / `nvapi_power_monitor_raw` tests below): IDs
+//! 0xC12EB19E (GetInfo) + 0xF40238EF (GetStatus) DO return live per-rail power
+//! (Board/Chip/MVDDC/PWR_SRC) in mW once fed the correct per-IID version magics.
+//! GPU-Z likely still uses WinRing0 for some extra rails (per-connector 8pin/
+//! 6pin), but the main rails are NVAPI-reachable. See
+//! `docs/gpuz-per-rail-investigation.md` for the original write-up and the
+//! `powermonitor-*` memory notes for the live PowerMonitor path.
 
 use nvapi_hi::Microvolts;
 use nvml_wrapper::Nvml;
@@ -663,9 +669,12 @@ fn nvapi_vf_check_bad_point() {
 ///     with a scratch buffer iterating candidate struct sizes (template for probing IDs
 ///     that have no Rust struct/FFI yet).
 ///
-/// Outcome on the dev laptop: none of these return live per-rail watts. The per-rail
-/// watts source is a WinRing0 PCI/MMIO kernel driver, not NVAPI — see
-/// `docs/gpuz-per-rail-investigation.md`.
+/// Outcome on the dev laptop: none of THESE probed IDs return live per-rail
+/// watts (the per-rail watts source for them is a WinRing0 PCI/MMIO kernel
+/// driver — see `docs/gpuz-per-rail-investigation.md`). NB: this probe set
+/// predates and does NOT include PowerMonitor 0xC12EB19E/0xF40238EF, which
+/// DO return live per-rail power — see `nvapi_power_monitor_v4` /
+/// `nvapi_power_monitor_raw`.
 fn nvapi_raw_payload_probe() {
     use nvapi_hi::sys::gpu::power::private as pw;
     use nvapi_hi::sys::nvapi::{NvVersion, VersionedStruct};
