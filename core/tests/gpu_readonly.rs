@@ -1205,19 +1205,41 @@ fn nvapi_volt_rails_raw() {
     );
 }
 
-/// Raw probe of `NvAPI_GPU_PowerMonitorGetInfo` (0xC12EB19E).
+/// Raw probe of `NvAPI_GPU_PowerMonitorGetInfo` (0xC12EB19E) AND GetStatus
+/// (0xF40238EF). Both are routed by `nvapi_QueryInterface` to handlers in the
+/// deployed `nvapi64_impl.dll`, then both funnel into the SAME RM escape
+/// 0x06FF0016 (the private per-channel power-monitor RM control) via
+/// sub_1803894A0/sub_180389320. The handler decodes the caller's first-DWORD
+/// version magic as `(version<<16)|sizeof(struct)` and accepts ONLY a fixed set
+/// per IID; anything else → -9 INCOMPATIBLE_STRUCT_VERSION.
 ///
-/// The driver's handler (`nvapi64_impl.dll` @0x180258170) accepts the caller's
-/// struct ONLY when its first-DWORD version magic `(v<<16)|sizeof` is one of:
-///   65928=(1<<16)|392, 66972=(1<<16)|1436, 69408=(1<<16)|3872, 74968=(1<<16)|9432
-/// Anything else → -9 INCOMPATIBLE_STRUCT_VERSION. The nvapi-rs wrap sizes the
-/// struct after the RTSS header (≈3240B), which matches NONE of these, so the
-/// wrap is rejected on every GPU and `power_monitor` degrades to None.
+/// **CORRECTED accepted-magic sets (RE'd from the handler comparisons, 2026-07-27):**
+/// - GetInfo (0xC12EB19E), handler @0x180257660 — accepts:
+///     65940  = (1<<16)|396
+///     68264  = (1<<16)|2728
+///     199848 = (3<<16)|3208
+///     268456 = (4<<16)|6088
+///     377896 = (5<<16)|50216   ← the big v5 layout (50 KiB)
+/// - GetStatus (0xF40238EF), handler @0x180258170 — accepts:
+///     65928  = (1<<16)|392
+///     66972  = (1<<16)|1436
+///     69408  = (1<<16)|3872
+///     74968  = (1<<16)|9432
+///     336752 = (5<<16)|9072    ← the big v5 layout
 ///
-/// This probe iterates the 4 accepted sizes with a raw scratch buffer and dumps
-/// status + the first bytes, so a **desktop GPU** run reveals which size is the
-/// current layout and what the descriptor looks like (bSupported / channelMask /
-/// totalGpuChannelIdx). That determines the struct rework needed for live data.
+/// **PRIOR BUG (why every probe returned -9):** the old probe fed the GetStatus
+/// magics (65928/66972/69408/74968/336752) to GetInfo — a completely different
+/// accepted set — so GetInfo's size gate rejected all of them. The GetInfo and
+/// GetStatus accepted sets share NO members. This corrected probe tries each
+/// IID against its OWN accepted set.
+///
+/// The GetInfo handler populates a per-channel table: `v23[84]` is the channel
+/// type (1/3 scalar, 4 bitset, 5 multi-field, 7 signed+state) and `v25[1]` the
+/// value — exactly the per-rail power/current data GPU-Z shows via WinRing0.
+/// If a desktop GPU ACCEPTS one of these magics, the per-channel power table is
+/// reachable via pure NVAPI and worth wrapping. On laptop/locked GPUs the RM
+/// escape itself returns non-zero and the handler propagates that (RM-level
+/// gate, not a struct-version gate).
 ///
 /// Run: `cargo test -p nvoc-core --test gpu_readonly -- --ignored --nocapture nvapi_power_monitor_raw`
 #[test]
@@ -1241,104 +1263,187 @@ fn nvapi_power_monitor_raw() {
     let gpu = gpus.into_iter().next().unwrap();
     let handle = *gpu.inner().handle();
 
+    // The two PowerMonitor IIDs and their CORRECT accepted-magic sets, RE'd from
+    // the handler size-gates in nvapi64_impl.dll (see the doc comment above).
+    // Each IID only accepts its OWN set; cross-feeding (the prior bug) always -9s.
     const POWER_MONITOR_GET_INFO_ID: u32 = 0xC12EB19E;
-    // Candidate (version, size) pairs to probe. The IDA analysis of the
-    // nvapi64_impl.dll handler found it accepts version-1 magics for sizes
-    // 392/1436/3872/9432, plus an internal v5|9072 buffer. But the deployed
-    // nvapi64.dll on real machines rejected all 4 v1 sizes (-9), so the real
-    // driver expects different magics. Sweep a grid: versions 1..=5 × a set
-    // of plausible sizes (the 4 IDA sizes + the v5 internal size + RTSS-doc
-    // layout sizes), and also try the raw known magics verbatim.
-    let ida_sizes: [u32; 5] = [392, 1436, 3872, 9432, 9072];
-    let versions: [u32; 5] = [1, 2, 3, 4, 5];
-    // Raw magics known from the IDA handler (tried verbatim too).
-    let raw_magics: [u32; 5] = [65928, 66972, 69408, 74968, 336752];
-    // Scratch big enough for the largest size we'll try (9432) + slack.
-    const SCRATCH_U32: usize = 9432 / 4 + 16;
+    const POWER_MONITOR_GET_STATUS_ID: u32 = 0xF40238EF;
+    // (label, iid, accepted magics)
+    let probes: &[(&str, u32, &[u32])] = &[
+        // GetInfo accepted set: v1|396, v1|2728, v3|3208, v4|6088, v5|50216.
+        (
+            "GetInfo",
+            POWER_MONITOR_GET_INFO_ID,
+            &[65940, 68264, 199848, 268456, 377896],
+        ),
+        // GetStatus accepted set: v1|392, v1|1436, v1|3872, v1|9432, v5|9072.
+        (
+            "GetStatus",
+            POWER_MONITOR_GET_STATUS_ID,
+            &[65928, 66972, 69408, 74968, 336752],
+        ),
+    ];
+    // Scratch big enough for the LARGEST layout we'll try (GetInfo v5 = 50216B) + slack.
+    const SCRATCH_U32: usize = 50216 / 4 + 64;
     #[repr(C)]
     struct Scratch {
         version: u32,
         data: [u32; SCRATCH_U32 - 1],
     }
 
-    let ptr = match nvapi_QueryInterface(POWER_MONITOR_GET_INFO_ID) {
-        Ok(p) => p as *const (),
-        Err(e) => {
-            eprintln!("nvapi_power_monitor_raw: QueryInterface {:#x} not found: {:?}", POWER_MONITOR_GET_INFO_ID, e);
-            return;
-        }
-    };
     type Fn = unsafe extern "system" fn(
         nvapi_hi::sys::api::NvPhysicalGpuHandle,
         *mut Scratch,
     ) -> Status;
-    let func: Fn = unsafe { std::mem::transmute(ptr) };
 
-    let mut accepted: Option<(u32, u32, Scratch)> = None; // (version, size, scratch)
-    let mut try_magic = |magic: u32, label: &str| -> Option<Scratch> {
-        let mut scratch = Scratch { version: 0, data: [0; SCRATCH_U32 - 1] };
-        scratch.version = magic;
-        let status = unsafe { func(handle, &mut scratch) };
-        let ok = (status as i32) == (Status::Ok as i32);
+    // Run each IID against its OWN accepted-magic set. Record the first magic
+    // each IID accepts (if any), so a desktop run tells us the live layout.
+    let mut accepted_per_iid: Vec<(&str, u32, u32, Scratch)> = Vec::new(); // (label, version, size, scratch)
+    for (label, iid, magics) in probes {
+        let ptr = match nvapi_QueryInterface(*iid) {
+            Ok(p) => p as *const (),
+            Err(e) => {
+                eprintln!("nvapi_power_monitor_raw: QueryInterface {:#x} ({}) not found: {:?}", iid, label, e);
+                continue;
+            }
+        };
+        let func: Fn = unsafe { std::mem::transmute(ptr) };
+        eprintln!("=== {} ({:#X}): trying its accepted-magic set ===", label, iid);
+        for &magic in *magics {
+            let mut scratch = Scratch { version: 0, data: [0; SCRATCH_U32 - 1] };
+            scratch.version = magic;
+            let status = unsafe { func(handle, &mut scratch) };
+            let ok = (status as i32) == (Status::Ok as i32);
+            eprintln!(
+                "  [{}] magic=0x{:X} (v{}|sz{}) status={:?} ({}){}",
+                label, magic, magic >> 16, magic & 0xFFFF, status, status as i32,
+                if ok { "  <<< ACCEPTED" } else { "" },
+            );
+            if ok {
+                accepted_per_iid.push((label, magic >> 16, magic & 0xFFFF, scratch));
+                break; // first accepted magic for this IID is enough
+            }
+        }
+    }
+
+    if accepted_per_iid.is_empty() {
         eprintln!(
-            "  [{}] magic=0x{:X} (v{}|sz{}) status={:?} ({}){}",
-            label, magic, magic >> 16, magic & 0xFFFF, status, status as i32,
-            if ok { "  <<< ACCEPTED" } else { "" },
+            "no accepted magic for either IID — even with the corrected sets. This means the\n\
+             RM escape 0x06FF0016 itself is gated off on this GPU/driver (RM-level rejection,\n\
+             not a struct-version mismatch). Per-rail power is not reachable via NVAPI here;\n\
+             it needs the WinRing0 PCI/MMIO kernel path (see docs/gpuz-per-rail-investigation.md)."
         );
-        if ok { Some(scratch) } else { None }
-    };
-
-    eprintln!("=== sweep 1: raw IDA magics (verbatim) ===");
-    for &m in raw_magics.iter() {
-        if let Some(s) = try_magic(m, "raw") {
-            accepted = Some((m >> 16, m & 0xFFFF, s));
-            break;
-        }
-    }
-    if accepted.is_none() {
-        eprintln!("=== sweep 2: version 1..=5 × IDA sizes ===");
-        'outer: for &ver in versions.iter() {
-            for &sz in ida_sizes.iter() {
-                let magic = (ver << 16) | sz;
-                if let Some(s) = try_magic(magic, "grid") {
-                    accepted = Some((ver, sz, s));
-                    break 'outer;
-                }
-            }
-        }
+        return;
     }
 
-    match accepted {
-        None => {
+    for (label, ver, sz, scratch) in &accepted_per_iid {
+        eprintln!("=== {} ACCEPTED version={} size={} ===", label, ver, sz);
+        let words: &[u32] = unsafe {
+            std::slice::from_raw_parts(scratch as *const _ as *const u32, SCRATCH_U32)
+        };
+        eprintln!("  first 16 u32: {:?}", &words[..16]);
+        eprintln!(
+            "  +0x00 version=0x{:X}  +0x04 bSupported?={}  +0x08 samplingPeriodMs?={}  +0x0C sampleCount?={}  +0x10 channelMask?=0x{:X}  +0x14 chRelMask?=0x{:X}  +0x18 totalGpuPowerChannelMask?=0x{:X}  +0x1C totalGpuChannelIdx=0x{:X}",
+            words[0], words[1], words[2], words[3], words[4], words[5], words[6], words[7],
+        );
+        // Dump the ENTIRE accepted struct (not just 256B) so per-channel
+        // offsets in the v1|392 GetStatus layout are fully visible.
+        let dump_len = (*sz as usize).min(SCRATCH_U32 * 4);
+        let bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(scratch as *const _ as *const u8, dump_len)
+        };
+        eprintln!("  full {} bytes (hex):", dump_len);
+        for chunk in bytes.chunks(16) {
+            let hex: Vec<String> = chunk.iter().map(|b| format!("{:02x}", b)).collect();
             eprintln!(
-                "no accepted magic found — the real driver's accepted set differs from both\n\
-                 the IDA analysis and the RTSS doc. Needs deeper RE of the deployed nvapi64.dll\n\
-                 handler, or this driver/GPU simply doesn't support PowerMonitor GetInfo."
+                "    {:04x}: {}",
+                chunk.as_ptr() as usize - bytes.as_ptr() as usize,
+                hex.join(" ")
             );
         }
-        Some((ver, sz, scratch)) => {
-            eprintln!("=== ACCEPTED version={} size={} ===", ver, sz);
-            let words: &[u32] = unsafe {
-                std::slice::from_raw_parts(&scratch as *const _ as *const u32, SCRATCH_U32)
-            };
-            eprintln!("  first 16 u32: {:?}", &words[..16]);
+        // List every nonzero 32-bit word offset to spotlight the per-channel
+        // value slots (the meat of the GetStatus layout) for layout RE.
+        let nz: Vec<(usize, u32)> = words
+            .iter()
+            .take(*sz as usize / 4)
+            .enumerate()
+            .filter(|(_, w)| **w != 0)
+            .map(|(i, w)| (i * 4, *w))
+            .collect();
+        eprintln!("  nonzero u32 offsets: {:?}", nz);
+        // For GetInfo, decode the power-channel bitmask so we know how many /
+        // which channels this GPU exposes (the GetStatus values are indexed by it).
+        if *label == "GetInfo" && words.len() > 4 && words[4] != 0 {
+            let mask = words[4];
+            let chans: Vec<u32> = (0..32).filter(|i| mask & (1u32 << i) != 0).collect();
             eprintln!(
-                "  +0x00 version=0x{:X}  +0x04 bSupported?={}  +0x08 samplingPeriodMs?={}  +0x0C sampleCount?={}  +0x10 channelMask?=0x{:X}  +0x14 chRelMask?=0x{:X}  +0x18 totalGpuPowerChannelMask?=0x{:X}  +0x1C totalGpuChannelIdx=0x{:X}",
-                words[0], words[1], words[2], words[3], words[4], words[5], words[6], words[7],
+                "  GetInfo channelMask=0x{:X} -> {} channels: {:?}",
+                mask,
+                chans.len(),
+                chans
             );
-            let dump_len = 256.min(sz as usize);
-            let bytes: &[u8] = unsafe {
-                std::slice::from_raw_parts(&scratch as *const _ as *const u8, dump_len)
+        }
+    }
+
+    // For GetStatus, sample several times and report which byte offsets vary —
+    // those are the LIVE per-channel value slots (units TBD). Static offsets
+    // are descriptors/headers. This confirms the data is realtime, not a blob.
+    if let Some((_, ver, sz, _)) = accepted_per_iid.iter().find(|(l, _, _, _)| *l == "GetStatus") {
+        let ptr = match nvapi_QueryInterface(POWER_MONITOR_GET_STATUS_ID) {
+            Ok(p) => p as *const (),
+            Err(_) => return,
+        };
+        let func: Fn = unsafe { std::mem::transmute(ptr) };
+        let magic = (*ver << 16) | *sz;
+        eprintln!(
+            "=== GetStatus liveness sweep (8 samples, {} bytes each) — varying offsets are live sensor values ===",
+            sz
+        );
+        // Also correlate the live channel value(s) against NVML power_draw (mW)
+        // to deduce units. The most prominent live offset observed is +0x44.
+        let nvml = nvml_wrapper::Nvml::init().ok();
+        let nvml_dev = nvml.as_ref().and_then(|n| n.device_by_index(0).ok());
+        let mut prev: Option<Vec<u8>> = None;
+        let n_words = *sz as usize / 4;
+        for sample in 0..8 {
+            let mut s = Scratch { version: 0, data: [0; SCRATCH_U32 - 1] };
+            s.version = magic;
+            let _ = unsafe { func(handle, &mut s) }; // status may flicker; ignore
+            let bytes: Vec<u8> = unsafe {
+                std::slice::from_raw_parts(&s as *const _ as *const u8, *sz as usize).to_vec()
             };
-            eprintln!("  first {} bytes (hex):", dump_len);
-            for chunk in bytes.chunks(16) {
-                let hex: Vec<String> = chunk.iter().map(|b| format!("{:02x}", b)).collect();
-                eprintln!(
-                    "    {:04x}: {}",
-                    chunk.as_ptr() as usize - bytes.as_ptr() as usize,
-                    hex.join(" ")
-                );
+            let words: &[u32] =
+                unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const u32, n_words) };
+            let nz: Vec<(usize, u32)> = words
+                .iter()
+                .enumerate()
+                .filter(|(_, w)| **w != 0)
+                .map(|(i, w)| (i * 4, *w))
+                .collect();
+            let nvml_mw = nvml_dev
+                .as_ref()
+                .and_then(|d| d.power_usage().ok())
+                .map(|mw| mw as u32)
+                .unwrap_or(0);
+            // Candidate live value at +0x44 (word index 17); show ratio to NVML mW.
+            let ch44 = words.get(17).copied().unwrap_or(0);
+            let ratio = if nvml_mw > 0 { ch44 as f32 / nvml_mw as f32 } else { 0.0 };
+            let mut diff: Vec<(usize, u32)> = Vec::new();
+            if let Some(p) = &prev {
+                diff = bytes
+                    .iter()
+                    .zip(p.iter())
+                    .enumerate()
+                    .filter(|(_, (ab, pb))| ab != pb)
+                    .map(|(i, _)| (i, words[i / 4]))
+                    .collect();
             }
+            eprintln!(
+                "  sample {}: nonzero={:?} changed={:?} | NVML={}mW  +0x44={}  ratio(+0x44/NVML)={:.3}",
+                sample, nz, diff, nvml_mw, ch44, ratio
+            );
+            prev = Some(bytes);
+            std::thread::sleep(std::time::Duration::from_millis(200));
         }
     }
 }
