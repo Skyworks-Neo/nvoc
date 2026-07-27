@@ -1296,8 +1296,12 @@ fn nvapi_power_monitor_raw() {
         *mut Scratch,
     ) -> Status;
 
-    // Run each IID against its OWN accepted-magic set. Record the first magic
-    // each IID accepts (if any), so a desktop run tells us the live layout.
+    // Run each IID against its OWN accepted-magic set. For GetStatus, take the
+    // first accepted magic (one live layout is enough). For GetInfo, try ALL
+    // magics — the larger layouts (v3|3208, v4|6088, v5|50216) may carry the
+    // per-channel DESCRIPTOR/scaling tables (channel_type / pwr_rail /
+    // pwr_corr_slope / pwr_offset_mw) that v1|404 lacks, which are needed to
+    // convert raw GetStatus values to W/A. Keep every accepted GetInfo layout.
     let mut accepted_per_iid: Vec<(&str, u32, u32, Scratch)> = Vec::new(); // (label, version, size, scratch)
     for (label, iid, magics) in probes {
         let ptr = match nvapi_QueryInterface(*iid) {
@@ -1308,20 +1312,30 @@ fn nvapi_power_monitor_raw() {
             }
         };
         let func: Fn = unsafe { std::mem::transmute(ptr) };
+        let try_all = *label == "GetInfo"; // GetInfo: probe every magic for descriptor data
         eprintln!("=== {} ({:#X}): trying its accepted-magic set ===", label, iid);
         for &magic in *magics {
             let mut scratch = Scratch { version: 0, data: [0; SCRATCH_U32 - 1] };
             scratch.version = magic;
             let status = unsafe { func(handle, &mut scratch) };
             let ok = (status as i32) == (Status::Ok as i32);
+            // Count nonzero words as a signal of how much the layout returned.
+            let sz = (magic & 0xFFFF) as usize;
+            let nz_words = scratch.data[..sz / 4]
+                .iter()
+                .filter(|w| **w != 0)
+                .count();
             eprintln!(
-                "  [{}] magic=0x{:X} (v{}|sz{}) status={:?} ({}){}",
+                "  [{}] magic=0x{:X} (v{}|sz{}) status={:?} ({}){} nonzero_words={}",
                 label, magic, magic >> 16, magic & 0xFFFF, status, status as i32,
-                if ok { "  <<< ACCEPTED" } else { "" },
+                if ok { "  <<< ACCEPTED" } else { "" }, nz_words,
             );
             if ok {
                 accepted_per_iid.push((label, magic >> 16, magic & 0xFFFF, scratch));
-                break; // first accepted magic for this IID is enough
+                if !try_all {
+                    break; // GetStatus: first accepted magic is enough
+                }
+                // GetInfo: keep trying larger magics for descriptor data
             }
         }
     }
