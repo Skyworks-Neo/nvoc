@@ -1403,6 +1403,49 @@ fn nvapi_power_monitor_raw() {
         };
         let func: Fn = unsafe { std::mem::transmute(ptr) };
         let magic = (*ver << 16) | *sz;
+
+        // EXPERIMENT: GetStatus takes channel_mask as INPUT (caller selects which
+        // channels to read). With only the version magic set, the driver fills
+        // just channel 0 (total). Try setting the input mask to the FULL GetInfo
+        // channel set (0x80C142B) at +0x04 and see whether the per-rail channels
+        // (MVDDC/Chip/PWR_SRC/16-pin) populate at their per-channel slots.
+        eprintln!(
+            "=== GetStatus per-channel experiment: input channel_mask = full GetInfo set 0x80C142B ==="
+        );
+        {
+            let mut s = Scratch { version: 0, data: [0; SCRATCH_U32 - 1] };
+            s.version = magic;
+            s.data[0] = 0x80C142B; // word[1] = +0x04 = input channel_mask (all 9)
+            let status = unsafe { func(handle, &mut s) };
+            let words: &[u32] =
+                unsafe { std::slice::from_raw_parts(&s as *const _ as *const u32, *sz as usize / 4) };
+            let nz: Vec<(usize, u32)> = words
+                .iter()
+                .enumerate()
+                .filter(|(_, w)| **w != 0)
+                .map(|(i, w)| (i * 4, *w))
+                .collect();
+            eprintln!("  status={:?} ({})  nonzero u32 offsets with full input mask: {:?}", status, status as i32, nz);
+            // The populated offsets are irregular (0x44,0x98,0xE0,0x14C,...),
+            // suggesting records are packed contiguously per active bit. Dump the
+            // region from +0x40 onward in 16-byte rows so the record structure is
+            // visible. Cross-reference values against GPU-Z rails under load.
+            eprintln!("  GetStatus body from +0x40 (16-byte rows) — match values to GPU-Z rails:");
+            let body: &[u8] = unsafe {
+                std::slice::from_raw_parts(
+                    (&s as *const _ as *const u8).add(0x40),
+                    (*sz as usize).saturating_sub(0x40),
+                )
+            };
+            for (i, chunk) in body.chunks(16).enumerate() {
+                let any = chunk.iter().any(|b| *b != 0);
+                if any {
+                    let hex: Vec<String> = chunk.iter().map(|b| format!("{:02x}", b)).collect();
+                    eprintln!("    +{:04X}: {}", 0x40 + i * 16, hex.join(" "));
+                }
+            }
+        }
+
         eprintln!(
             "=== GetStatus liveness sweep (8 samples, {} bytes each) — varying offsets are live sensor values ===",
             sz
