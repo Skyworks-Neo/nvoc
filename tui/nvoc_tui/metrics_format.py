@@ -66,21 +66,37 @@ def _fabric_clocks_text(status: dict) -> str:
 
 
 def _power_rails_text(status: dict) -> str:
-    """Per-rail power breakdown (NVAPI PowerMonitor GetStatus, GPU-Z-matched).
+    """Per-rail power breakdown (NVAPI PowerMonitor, descriptor-driven).
 
-    Reads ``power_chip_w`` / ``power_mvddc_w`` / ``power_pwr_src_w`` (board is
-    already on the PWR line via NVML). Returns ``""`` when no rails are present
-    so the line is omitted entirely. Units confirmed: raw mW ÷ 1000 = W.
+    Reads ``power_rails_w`` — a { "<RailName>": <watts> } map keyed by the
+    descriptor's rail identity (correct on every GPU: a laptop shows
+    InputTotalBoard/InputNvvdd/..., a desktop shows InputPex12v1/PCIe slot/
+    InputExt12v8pin*/InputTotalBoard). Renders each rail as ``<short> <W>``;
+    board total is omitted (it's on the PWR line via NVML). Returns ``""`` when
+    no rails are present so the line is omitted.
     """
+    rails = status.get("power_rails_w")
+    if not isinstance(rails, dict):
+        return ""
+    # Short labels for common rails; others use the full rail name.
+    short = {
+        "InputTotalBoard": "BOARD",
+        "InputNvvdd": "CHIP",
+        "InputFbvdd": "MEM",
+        "InputPwrSrcPp": "SRC",
+        "InputPex12v1": "PCIE",
+        "InputPex12v": "PCIE12V",
+        "InputPex3v3": "PEX3V3",
+    }
     parts = []
-    for key, label in (
-        ("power_chip_w", "CHIP"),
-        ("power_mvddc_w", "MEM"),
-        ("power_pwr_src_w", "SRC"),
-    ):
-        val = status.get(key)
-        if isinstance(val, (int, float)):
-            parts.append(f"{label} {val:.1f}")
+    for name, val in rails.items():
+        if not isinstance(val, (int, float)):
+            continue
+        label = short.get(name, name)
+        # Skip the board-total duplicate (already on the PWR line).
+        if label == "BOARD":
+            continue
+        parts.append(f"{label} {val:.1f}")
     return " | ".join(parts) + " W" if parts else ""
 
 

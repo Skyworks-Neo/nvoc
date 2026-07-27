@@ -1480,22 +1480,24 @@ fn execute_target(
                     map.insert("power_draw_w".to_string(), json!(draw_w));
                 }
                 // Per-rail power (watts) from NVAPI PowerMonitor GetStatus
-                // (units confirmed by exact GPU-Z match). Flatten the nested
-                // power_rails object into top-level scalar W fields so the
-                // human renderer shows them as numbers, and remove the raw
-                // object. Each field present only when the GPU exposes it.
-                if let Some(rails) = map.get("power_rails").and_then(|v| v.as_object()).cloned() {
-                    if let Some(board) = rails.get("board_mw").and_then(|v| v.as_u64()) {
-                        map.insert("power_board_w".to_string(), json!(board as f64 / 1000.0));
+                // Per-rail power (watts) from NVAPI PowerMonitor, keyed by the
+                // descriptor's rail IDENTITY (not a fixed name) so it's correct
+                // on every GPU: e.g. a 4060 laptop shows InputTotalBoard/
+                // InputNvvdd/..., a desktop Turing shows InputPex12v1 (PCIe
+                // slot)/InputExt12v8pin*/InputTotalBoard. Build a
+                // { "<RailName>": <watts> } map from the power_rails array;
+                // unnamed rails use "UNNAMED_<id>". Drop the raw array.
+                if let Some(rails) = map.get("power_rails").and_then(|v| v.as_array()).cloned() {
+                    let mut rail_map = serde_json::Map::new();
+                    for r in &rails {
+                        let name = r.get("rail_name").and_then(|v| v.as_str()).unwrap_or("UNNAMED");
+                        let mw = r.get("pwr_mw").and_then(|v| v.as_u64()).unwrap_or(0);
+                        if mw != 0 {
+                            rail_map.insert(name.to_string(), json!(mw as f64 / 1000.0));
+                        }
                     }
-                    if let Some(chip) = rails.get("chip_mw").and_then(|v| v.as_u64()) {
-                        map.insert("power_chip_w".to_string(), json!(chip as f64 / 1000.0));
-                    }
-                    if let Some(mvddc) = rails.get("mvddc_mw").and_then(|v| v.as_u64()) {
-                        map.insert("power_mvddc_w".to_string(), json!(mvddc as f64 / 1000.0));
-                    }
-                    if let Some(pwr_src) = rails.get("pwr_src_mw").and_then(|v| v.as_u64()) {
-                        map.insert("power_pwr_src_w".to_string(), json!(pwr_src as f64 / 1000.0));
+                    if !rail_map.is_empty() {
+                        map.insert("power_rails_w".to_string(), Value::Object(rail_map));
                     }
                     map.remove("power_rails");
                 }

@@ -1482,92 +1482,120 @@ fn nvapi_power_monitor_raw() {
         // just channel 0 (total). Try setting the input mask to the FULL GetInfo
         // channel set (0x80C142B) at +0x04 and see whether the per-rail channels
         // (MVDDC/Chip/PWR_SRC/16-pin) populate at their per-channel slots.
-        eprintln!(
-            "=== GetStatus per-channel experiment: input channel_mask = full GetInfo set 0x80C142B ==="
-        );
-        {
+        // ── SECTION A: every offset+power combo from a full-mask GetStatus ──
+        // One line per nonzero u32 offset (offset, raw, ÷1000 W), sampled twice
+        // to classify live vs static. This is the cross-reference table for
+        // matching against GPU-Z rail readings.
+        eprintln!("=== GetStatus offset+power map (full channel_mask, 2 samples) ===");
+        let sample_once = |mask: u32| -> Vec<(usize, u32)> {
             let mut s = Scratch { version: 0, data: [0; SCRATCH_U32 - 1] };
             s.version = magic;
-            s.data[0] = 0x80C142B; // word[1] = +0x04 = input channel_mask (all 9)
-            let status = unsafe { func(handle, &mut s) };
+            s.data[0] = mask; // +0x04 input channel_mask
+            let _ = unsafe { func(handle, &mut s) };
             let words: &[u32] =
                 unsafe { std::slice::from_raw_parts(&s as *const _ as *const u32, *sz as usize / 4) };
-            let nz: Vec<(usize, u32)> = words
+            words
                 .iter()
                 .enumerate()
                 .filter(|(_, w)| **w != 0)
                 .map(|(i, w)| (i * 4, *w))
-                .collect();
-            eprintln!("  status={:?} ({})  nonzero u32 offsets with full input mask: {:?}", status, status as i32, nz);
-            // The populated offsets are irregular (0x44,0x98,0xE0,0x14C,...),
-            // suggesting records are packed contiguously per active bit. Dump the
-            // region from +0x40 onward in 16-byte rows so the record structure is
-            // visible. Cross-reference values against GPU-Z rails under load.
-            eprintln!("  GetStatus body from +0x40 (16-byte rows) — match values to GPU-Z rails:");
-            let body: &[u8] = unsafe {
-                std::slice::from_raw_parts(
-                    (&s as *const _ as *const u8).add(0x40),
-                    (*sz as usize).saturating_sub(0x40),
-                )
+                .collect()
+        };
+        // GetInfo channel_mask for the full-mask call (scan the GetInfo result).
+        let info_mask: u32 = accepted_per_iid
+            .iter()
+            .rev()
+            .find_map(|(l, _, _, scr)| {
+                if *l != "GetInfo" {
+                    return None;
+                }
+                let w: &[u32] = unsafe {
+                    std::slice::from_raw_parts(scr as *const _ as *const u32, SCRATCH_U32)
+                };
+                (4..32).map(|i| w[i]).find(|v| *v != 0 && *v != 1)
+            })
+            .unwrap_or(0xFFFF_FFFF);
+        let s1 = sample_once(info_mask);
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        let s2 = sample_once(info_mask);
+        let nvml_mw = nvml_wrapper::Nvml::init()
+            .ok()
+            .and_then(|n| {
+                n.device_by_index(0)
+                    .ok()
+                    .and_then(|d| d.power_usage().ok())
+            })
+            .map(|mw| mw as u32)
+            .unwrap_or(0);
+        eprintln!("  (NVML board total: {} mW)", nvml_mw);
+        for (off, v1) in &s1 {
+            // Skip header slots (version @ +0x00, mask @ +0x04) — not readings.
+            if *off < 0x08 {
+                continue;
+            }
+            let v2 = s2.iter().find(|(o, _)| o == off).map(|(_, v)| *v).unwrap_or(0);
+            let live = if v1 != &v2 { "LIVE" } else { "static" };
+            eprintln!(
+                "  +0x{:04X}: {:>8} mW  ({:>7.2} W)  [{}]",
+                off,
+                v1,
+                *v1 as f64 / 1000.0,
+                live
+            );
+        }
+
+        // ── SECTION B: per-bit sweep — for each channel bit, which offset it
+        // fills, with the rail identity from the GetInfo descriptor. Offsets
+        // that appear for MULTIPLE bits (shared/baseline like +0x44) are shown
+        // with ALL candidate channels so ambiguous offsets are disambiguated.
+        eprintln!("=== GetStatus per-bit isolation (offset -> which channel(s) fill it) ===");
+        // Recover channel_bit -> rail identity from the richest GetInfo layout.
+        let richest: Option<&Scratch> = accepted_per_iid
+            .iter()
+            .rev()
+            .find(|(l, _, _, _)| *l == "GetInfo")
+            .map(|(_, _, _, s)| s);
+        let mut bit_rail: Vec<(u32, u32)> = Vec::new(); // (bit, rail)
+        if let Some(scr) = richest {
+            let bytes: &[u8] = unsafe {
+                std::slice::from_raw_parts(scr as *const _ as *const u8, SCRATCH_U32 * 4)
             };
-            for (i, chunk) in body.chunks(16).enumerate() {
-                let any = chunk.iter().any(|b| *b != 0);
-                if any {
-                    let hex: Vec<String> = chunk.iter().map(|b| format!("{:02x}", b)).collect();
-                    eprintln!("    +{:04X}: {}", 0x40 + i * 16, hex.join(" "));
+            let words: &[u32] =
+                unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const u32, SCRATCH_U32) };
+            // Scan descriptors for (channel_type, rail); pair with set bits.
+            let cmask = (4..32).map(|i| words[i]).find(|v| *v != 0 && *v != 1).unwrap_or(0);
+            let bits: Vec<u32> = (0..32).filter(|i| cmask & (1 << i) != 0).collect();
+            let known = |r: u32| r == 0 || r <= 11 || (218..=255).contains(&r);
+            let mut di = 4usize;
+            let mut bn = 0usize;
+            while di + 1 < words.len() && bn < bits.len() {
+                let t = words[di];
+                let r = words[di + 1];
+                if (1..=8).contains(&t) && known(r) {
+                    bit_rail.push((bits[bn], r));
+                    bn += 1;
+                    di += 8;
+                } else {
+                    di += 1;
                 }
             }
         }
-
-        eprintln!(
-            "=== GetStatus liveness sweep (8 samples, {} bytes each) — varying offsets are live sensor values ===",
-            sz
-        );
-        // Also correlate the live channel value(s) against NVML power_draw (mW)
-        // to deduce units. The most prominent live offset observed is +0x44.
-        let nvml = nvml_wrapper::Nvml::init().ok();
-        let nvml_dev = nvml.as_ref().and_then(|n| n.device_by_index(0).ok());
-        let mut prev: Option<Vec<u8>> = None;
-        let n_words = *sz as usize / 4;
-        for sample in 0..8 {
-            let mut s = Scratch { version: 0, data: [0; SCRATCH_U32 - 1] };
-            s.version = magic;
-            let _ = unsafe { func(handle, &mut s) }; // status may flicker; ignore
-            let bytes: Vec<u8> = unsafe {
-                std::slice::from_raw_parts(&s as *const _ as *const u8, *sz as usize).to_vec()
-            };
-            let words: &[u32] =
-                unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const u32, n_words) };
-            let nz: Vec<(usize, u32)> = words
-                .iter()
-                .enumerate()
-                .filter(|(_, w)| **w != 0)
-                .map(|(i, w)| (i * 4, *w))
-                .collect();
-            let nvml_mw = nvml_dev
-                .as_ref()
-                .and_then(|d| d.power_usage().ok())
-                .map(|mw| mw as u32)
-                .unwrap_or(0);
-            // Candidate live value at +0x44 (word index 17); show ratio to NVML mW.
-            let ch44 = words.get(17).copied().unwrap_or(0);
-            let ratio = if nvml_mw > 0 { ch44 as f32 / nvml_mw as f32 } else { 0.0 };
-            let mut diff: Vec<(usize, u32)> = Vec::new();
-            if let Some(p) = &prev {
-                diff = bytes
-                    .iter()
-                    .zip(p.iter())
-                    .enumerate()
-                    .filter(|(_, (ab, pb))| ab != pb)
-                    .map(|(i, _)| (i, words[i / 4]))
-                    .collect();
+        // Per-bit GetStatus: record offset -> [(bit, rail)].
+        let mut offset_bits: std::collections::BTreeMap<usize, Vec<(u32, u32)>> =
+            std::collections::BTreeMap::new();
+        for &(bit, rail) in &bit_rail {
+            let nz = sample_once(1u32 << bit);
+            for (off, _v) in &nz {
+                offset_bits.entry(*off).or_default().push((bit, rail));
             }
-            eprintln!(
-                "  sample {}: nonzero={:?} changed={:?} | NVML={}mW  +0x44={}  ratio(+0x44/NVML)={:.3}",
-                sample, nz, diff, nvml_mw, ch44, ratio
-            );
-            prev = Some(bytes);
-            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        for (off, chans) in &offset_bits {
+            let names: Vec<String> = chans
+                .iter()
+                .map(|(b, r)| format!("bit{}({})", b, rail_name(*r)))
+                .collect();
+            let tag = if chans.len() > 1 { " MULTI" } else { "" };
+            eprintln!("  +0x{:04X}: {}{}", off, names.join(", "), tag);
         }
     }
 }
