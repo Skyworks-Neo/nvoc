@@ -1563,3 +1563,134 @@ fn nvapi_power_monitor_raw() {
     }
 }
 
+/// Pre-wrapped PowerMonitor v4 view (companion to the byte-dump probe above).
+///
+/// Calls the hi-level `Gpu::status().power_monitor` (GetInfo v4|6312 +
+/// GetStatus v1|392 with the full input channel_mask) and prints every
+/// decoded channel: its byte_offset, channel_type, pwr_rail (named if known,
+/// else `UNNAMED_<n>`), fixed voltage, Q12 slope, and the best-effort live
+/// status for channel 0. Also dumps every distinct `pwr_rail` value seen so
+/// gaps in the `PowerRail` enum (only 44 of 256 named) are visible.
+///
+/// Cross-validate against GPU-Z / HWiNFO under load AND at idle: match each
+/// channel's value to a GPU-Z rail (Board/Chip/MVDDC/PWR_SRC/16-pin) to lock
+/// the channel->rail->units mapping. The descriptor identity (type/rail) is the
+/// stable part; the raw status values are units-unconfirmed (load ratio ~0.95
+/// vs NVML but idle collapses to ~0.15-0.54).
+///
+/// Run: `cargo test -p nvoc-core --test gpu_readonly -- --ignored --nocapture nvapi_power_monitor_v4`
+#[test]
+#[ignore]
+fn nvapi_power_monitor_v4() {
+    use nvapi_hi::Gpu;
+
+    let inv = inventory();
+    let target = first_target(&inv);
+    if !target.has_nvapi() {
+        eprintln!("nvapi_power_monitor_v4: no NVAPI backend, skipping");
+        return;
+    }
+    nvapi_hi::initialize().expect("nvapi initialize");
+    let gpus = Gpu::enumerate().expect("nvapi enumerate");
+    if gpus.is_empty() {
+        eprintln!("nvapi_power_monitor_v4: no NVAPI GPUs");
+        return;
+    }
+    let gpu = gpus.into_iter().next().unwrap();
+
+    let status = match gpu.status() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("nvapi_power_monitor_v4: status() failed: {:?}", e);
+            return;
+        }
+    };
+    let pm = match &status.power_monitor {
+        Some(pm) if !pm.is_empty() => pm,
+        _ => {
+            eprintln!("nvapi_power_monitor_v4: PowerMonitor not exposed on this GPU/driver");
+            return;
+        }
+    };
+
+    eprintln!("=== PowerMonitor v4: {} channels ===", pm.len());
+    let mut rails_seen = std::collections::BTreeSet::new();
+    for ch in pm {
+        rails_seen.insert(ch.pwr_rail);
+        eprintln!(
+            "  @+0x{:04X} type={} rail={}({}) volt_fixed={}uV slope={} | status={:?}",
+            ch.byte_offset,
+            ch.channel_type,
+            ch.pwr_rail,
+            rail_name(ch.pwr_rail),
+            ch.volt_fixed_uv,
+            ch.pwr_corr_slope,
+            ch.raw_status,
+        );
+    }
+    eprintln!("=== distinct pwr_rail values seen (enum-completeness check) ===");
+    for r in &rails_seen {
+        eprintln!("  {} ({})", r, rail_name(*r));
+    }
+    eprintln!(
+        "NOTE: raw status values are UNITS-UNCONFIRMED. Cross-validate against GPU-Z rails\n\
+         under load and at idle before trusting any W/A conversion."
+    );
+}
+
+/// Map a known `NV_GPU_POWER_CHANNEL_POWER_RAIL` value to its name, or
+/// `UNNAMED_<n>` for values the enum doesn't name (the scan observed e.g. 218).
+fn rail_name(rail: u32) -> &'static str {
+    // Outputs (on-GPU regulator outputs), 1..=11.
+    match rail {
+        0 => "Unknown",
+        1 => "OutputNvvdd",
+        2 => "OutputFbvdd",
+        3 => "OutputFbvddq",
+        4 => "OutputFbvddQ",
+        5 => "OutputPexvdd",
+        6 => "OutputA3v3",
+        7 => "Output3v3nv",
+        8 => "OutputTotalGpu",
+        9 => "OutputFbvddqGpu",
+        10 => "OutputFbvddqMem",
+        11 => "OutputSram",
+        // Inputs (board input rails), 222..=255 — named subset.
+        222 => "InputPex12v1",
+        223 => "InputTotalBoard2",
+        224 => "InputHighVolt0",
+        225 => "InputHighVolt1",
+        226 => "InputNvvdd1",
+        227 => "InputNvvdd2",
+        228 => "InputExt12v8pin2",
+        229 => "InputExt12v8pin3",
+        230 => "InputExt12v8pin4",
+        231 => "InputExt12v8pin5",
+        232 => "InputMisc0",
+        233 => "InputMisc1",
+        234 => "InputMisc2",
+        235 => "InputMisc3",
+        236 => "InputUsbc0",
+        237 => "InputUsbc1",
+        238 => "InputFan0",
+        239 => "InputFan1",
+        240 => "InputSram",
+        241 => "InputPwrSrcPp",
+        242 => "Input3v3Pp",
+        243 => "Input3v3Main",
+        244 => "Input3v3Aon",
+        245 => "InputTotalBoard",
+        246 => "InputNvvdd",
+        247 => "InputFbvdd",
+        248 => "InputFbvddq",
+        249 => "InputFbvddQ",
+        250 => "InputExt12v8pin0",
+        251 => "InputExt12v8pin1",
+        252 => "InputExt12v6pin0",
+        253 => "InputExt12v6pin1",
+        254 => "InputPex3v3",
+        255 => "InputPex12v",
+        _ => "UNNAMED",
+    }
+}
+
