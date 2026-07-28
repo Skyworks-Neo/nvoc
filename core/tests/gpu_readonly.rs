@@ -1569,7 +1569,12 @@ fn nvapi_power_monitor_raw() {
                 .map(|(b, r)| format!("bit{}({})", b, rail_name(*r)))
                 .collect();
             let tag = if chans.len() > 1 { " MULTI" } else { "" };
-            eprintln!("  +0x{:04X}: {}{}", off, names.join(", "), tag);
+            // GPU-Z semantic label for this offset (human cross-check only;
+            // from the soft-gate table, not used by production extraction).
+            let gpuz = nvapi_hi::nvapi::gpuz_offset_label(*off)
+                .map(|l| format!("  [GPU-Z: {}]", l))
+                .unwrap_or_default();
+            eprintln!("  +0x{:04X}: {}{}{}", off, names.join(", "), tag, gpuz);
         }
     }
 }
@@ -1707,16 +1712,24 @@ fn rail_name(rail: u32) -> &'static str {
 
 /// Per-bit isolation probe for PowerMonitor GetStatus.
 ///
-/// The 4-rail offset map (Board/Chip/MVDDC/PWR_SRC at +0x08/+0x14/+0x2C/+0x98)
-/// was confirmed against GPU-Z but is **channel-order-dependent** — it may
-/// differ on other GPUs. This probe maps each channel BIT to its GetStatus
-/// offset independent of ordering: for each active bit (from GetInfo's
-/// channel_mask), call GetStatus with `channel_mask = (1<<bit)` ONLY, and
-/// record which nonzero offsets fill. That isolates one channel's status slot.
+/// Maps each channel BIT to the GetStatus offsets it fills, independent of
+/// channel ordering: for each active bit (from GetInfo's channel_mask), call
+/// GetStatus with `channel_mask = (1<<bit)` ONLY and record which nonzero
+/// offsets populate. Section B then shows, per offset, every channel that
+/// fills it (with the descriptor rail identity) plus a `[GPU-Z: <label>]`
+/// annotation when the offset has a confirmed GPU-Z meaning.
 ///
-/// Pair the output with the v4 descriptor scan (nvapi_power_monitor_v4) to get
-/// a stable channel-bit -> offset -> rail map. Run under load so values are
-/// large enough to disambiguate from zero.
+/// This is the data the production reader (`power_rails()`) consumes to assign
+/// each rail a confidence tier:
+///   - an offset filled by ONE bit only → that channel's PRIVATE slot
+///     (Measured, trustworthy);
+///   - an offset filled by several bits but attributable to a unique
+///     un-owned channel whose rail matches the GPU-Z label → Inferred (`~`);
+///   - otherwise → Ambiguous (`?`), a full-board view.
+///
+/// Pair with the v4 descriptor scan (nvapi_power_monitor_v4) to read off the
+/// channel-bit -> offset -> rail map. Run under load so values are large
+/// enough to disambiguate from zero.
 ///
 /// Run: `cargo test -p nvoc-core --test gpu_readonly -- --ignored --nocapture nvapi_power_monitor_bit_isolation`
 #[test]

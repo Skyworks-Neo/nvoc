@@ -1111,6 +1111,11 @@ fn format_contextual_scalar(context_key: &str, value_key: &str, value: &Value) -
     {
         return format_measurement(number / 1000.0, "MHz");
     }
+    // Per-rail power (PowerMonitor `power_rails_w`): values are already in
+    // watts (mW ÷ 1000 at the source); just append the unit.
+    if context.contains("power_rails") {
+        return format_measurement(number, "W");
+    }
     if context.contains("voltage") && !context.contains("domain") {
         return format_measurement(number / 1000.0, "mV");
     }

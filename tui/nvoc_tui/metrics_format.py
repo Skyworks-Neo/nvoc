@@ -78,7 +78,9 @@ def _power_rails_text(status: dict) -> str:
     rails = status.get("power_rails_w")
     if not isinstance(rails, dict):
         return ""
-    # Short labels for common rails; others use the full rail name.
+    # Short labels for common rails; others use the full rail name. Map keys may
+    # carry a confidence suffix (`~` Inferred, `?` Ambiguous) — strip it before
+    # the lookup and re-append so the marker survives in the rendered label.
     short = {
         "InputTotalBoard": "BOARD",
         "InputNvvdd": "CHIP",
@@ -92,11 +94,17 @@ def _power_rails_text(status: dict) -> str:
     for name, val in rails.items():
         if not isinstance(val, (int, float)):
             continue
-        label = short.get(name, name)
+        marker = ""
+        base = name
+        # Strip a trailing confidence marker (~ inferred, ? ambiguous).
+        if base and base[-1] in "~?":
+            marker = base[-1]
+            base = base[:-1]
+        label = short.get(base, base)
         # Skip the board-total duplicate (already on the PWR line).
-        if label == "BOARD":
+        if label == "BOARD" and not marker:
             continue
-        parts.append(f"{label} {val:.1f}")
+        parts.append(f"{label}{marker} {val:.1f}")
     return " | ".join(parts) + " W" if parts else ""
 
 

@@ -1486,28 +1486,25 @@ fn execute_target(
                 // InputNvvdd/..., a desktop Turing shows InputPex12v1 (PCIe
                 // slot)/InputExt12v8pin*/InputTotalBoard. Build a
                 // { "<RailName>": <watts> } map from the power_rails array;
-                // unnamed rails use "UNNAMED_<id>". Drop the raw array.
+                // unnamed rails use "UNNAMED_<id>". The key carries a confidence
+                // marker: plain (Measured), `~` (Inferred — disambiguated from a
+                // shared offset), `?` (Ambiguous — full-board view). Unavailable
+                // rails are omitted. Drop the raw array.
                 if let Some(rails) = map.get("power_rails").and_then(|v| v.as_array()).cloned() {
-                    // Two maps: isolated (trustworthy) + ambiguous (full-board
-                    // view, flagged). Rail name suffixed with "?" when ambiguous.
-                    let mut isolated_map = serde_json::Map::new();
-                    let mut ambiguous_map = serde_json::Map::new();
+                    let mut rail_map = serde_json::Map::new();
                     for r in &rails {
                         let name = r.get("rail_name").and_then(|v| v.as_str()).unwrap_or("UNNAMED");
                         let mw = r.get("pwr_mw").and_then(|v| v.as_u64()).unwrap_or(0);
-                        let isolated = r.get("isolated").and_then(|v| v.as_bool()).unwrap_or(false);
-                        if mw != 0 {
-                            let entry = json!(mw as f64 / 1000.0);
-                            if isolated {
-                                isolated_map.insert(name.to_string(), entry);
-                            } else {
-                                ambiguous_map.insert(format!("{}?", name), entry);
-                            }
+                        if mw == 0 {
+                            continue;
                         }
-                    }
-                    let mut rail_map = isolated_map;
-                    for (k, v) in ambiguous_map {
-                        rail_map.insert(k, v);
+                        let confidence = r.get("confidence").and_then(|v| v.as_str()).unwrap_or("");
+                        let key = match confidence {
+                            "Measured" => name.to_string(),
+                            "Inferred" => format!("{}~", name),
+                            _ => format!("{}?", name), // Ambiguous; Unavailable filtered by mw==0
+                        };
+                        rail_map.insert(key, json!(mw as f64 / 1000.0));
                     }
                     if !rail_map.is_empty() {
                         map.insert("power_rails_w".to_string(), Value::Object(rail_map));

@@ -316,7 +316,7 @@ impl GpuType {
                 safe_elasticity_per_cycle: 30000,
                 fluctuation_coefficient: 1,
                 is_50_series: false,
-                wakeup_load_needed: false,
+                wakeup_load_needed: true,
                 testing_step: 5,
                 freq_step_exp_core: 3,
             },

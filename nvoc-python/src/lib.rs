@@ -596,20 +596,27 @@ fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
     // Per-rail power (watts) from NVAPI PowerMonitor, keyed by the
     // descriptor's rail IDENTITY (correct on every GPU — laptop vs desktop
     // expose different rail sets/orderings). Emits a { "<RailName>": <watts> }
-    // object; only rails with a nonzero reading are included.
+    // object. The key carries a confidence marker: plain (Measured, private
+    // GetStatus offset), `~` (Inferred, disambiguated from a shared offset), or
+    // `?` (Ambiguous, full-board view). Unavailable rails (no GetStatus data)
+    // are omitted entirely.
     if let Some(rails) = &status.power_rails {
         let mut rail_map = Map::new();
         for r in rails {
-            if r.pwr_mw != 0 {
-                // Suffix "?" when the rail's value is ambiguous (per-bit
-                // isolation gave a full-board view, not a clean per-channel read).
-                let key = if r.isolated {
-                    r.rail_name.clone()
-                } else {
-                    format!("{}?", r.rail_name)
-                };
-                rail_map.insert(key, f64_value(r.pwr_mw as f64 / 1000.0));
+            if r.pwr_mw == 0 {
+                continue;
             }
+            let suffix = match r.confidence {
+                nvapi_hi::nvapi::Confidence::Measured => "",
+                nvapi_hi::nvapi::Confidence::Inferred => "~",
+                _ => "?", // Ambiguous (or Unavailable, though pwr_mw!=0 filters most)
+            };
+            let key = if suffix.is_empty() {
+                r.rail_name.clone()
+            } else {
+                format!("{}{}", r.rail_name, suffix)
+            };
+            rail_map.insert(key, f64_value(r.pwr_mw as f64 / 1000.0));
         }
         if !rail_map.is_empty() {
             map.insert("power_rails_w".into(), Value::Object(rail_map));
