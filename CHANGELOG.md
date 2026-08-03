@@ -26,6 +26,8 @@ single source of truth is `[workspace.package].version` in the root
 ### Changed
 
 - CI now runs the `nvoc-auto-optimizer` non-GPU unit test suite.
+- README Quick Start now documents prebuilt release downloads, checksum
+  validation, and GitHub build-provenance verification (#232).
 
 ## [0.1.0] — historical
 
