@@ -1989,6 +1989,9 @@ mod tests {
             }),
             Command::SetTgpWatt => json!({"applied": true, "tgp_watt": 140, "tgp_mw": 140000}),
             Command::ResetTgpWatt => json!({"applied": true, "default_watt": 100.0}),
+            Command::GetQboostPower => json!({"controller_index": 0, "power_watt": 25.0}),
+            Command::SetQboostPower => json!({"applied": true, "controller_index": 0, "qboost_watt": 25, "qboost_mw": 25000}),
+            Command::ResetQboostPower => json!({"applied": true}),
             Command::SetThermalLimitC => json!({"applied": true, "thermal_limit_c": 83}),
             Command::SetFanPercent => {
                 json!({"applied": true, "fan": "all", "policy": "manual", "level_percent": 65})
