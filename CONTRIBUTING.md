@@ -8,6 +8,21 @@ NVOC is a mixed Rust and Python monorepo. Keep changes scoped to the component y
 
 Use the canonical component inventory in [`README.md` → "Components (canonical)"](./README.md#components-canonical). That table defines user-facing products vs internal libraries/modules and is the single source of truth.
 
+### Submodule Forks
+
+The `nvapi-rs` URL in `.gitmodules` is intentionally relative. If you fork NVOC,
+also fork `nvapi-rs` into the same account or organization so the relative URL
+resolves to your fork. If you only fork NVOC, override the submodule URL locally
+before initializing it:
+
+```bash
+git config submodule.nvapi-rs.url git@github.com:Skyworks-Neo/nvapi-rs.git
+git submodule update --init
+```
+
+Do not check out `v0.2.x` or another branch inside the submodule. The
+superproject's pinned commit is the source version validated by CI.
+
 ### Development Checks
 
 Run the checks that match the files you changed:
@@ -39,6 +54,20 @@ NVOC 是一个 Rust 与 Python 混合的单仓库项目。请将修改范围限�
 ### 仓库区域
 
 组件清单请以 [`README.md` 的 “Components (canonical)” 章节](./README.md#components-canonical) 为准。该清单区分了用户向产品与内部库/模块，并作为唯一权威来源。
+
+### 子模块 fork
+
+`.gitmodules` 中的 `nvapi-rs` URL 特意使用相对路径。fork NVOC 时，请同时将
+`nvapi-rs` fork 到同一用户或组织下，使相对 URL 指向你的 fork。如果只 fork
+NVOC，请在初始化子模块前于本地覆盖其 URL：
+
+```bash
+git config submodule.nvapi-rs.url git@github.com:Skyworks-Neo/nvapi-rs.git
+git submodule update --init
+```
+
+请勿在子模块内另行切换到 `v0.2.x` 或其他分支。CI 验证的是主仓库固定的
+submodule commit。
 
 ### 开发检查
 
