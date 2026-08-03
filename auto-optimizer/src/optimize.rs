@@ -2,6 +2,7 @@ use crate::arg_help;
 use crate::oc_profile_function::{fix_result, handle_vfp_export, handle_vfp_import};
 use crate::oc_scanner::{autoscan_gpuboostv3, autoscan_legacy};
 use clap::ArgMatches;
+use nvoc_cli_common::color::stylize_warning;
 use nvoc_core::{
     Error, GpuTarget, QueryGpuInfo, ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpLock,
     VfpResetDomain, run,
@@ -82,8 +83,16 @@ fn select_target<'a>(
 }
 
 fn confirm(matches: &ArgMatches) -> Result<(), Error> {
-    eprintln!("WARNING: V/F optimization intentionally probes unstable GPU settings.");
-    eprintln!("Driver resets, display loss, application failure, or a system reboot may occur.");
+    eprintln!(
+        "{}",
+        stylize_warning("WARNING: V/F optimization intentionally probes unstable GPU settings.")
+    );
+    eprintln!(
+        "{}",
+        stylize_warning(
+            "Driver resets, display loss, application failure, or a system reboot may occur."
+        )
+    );
     if matches.get_flag("yes") {
         return Ok(());
     }
