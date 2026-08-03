@@ -1002,6 +1002,106 @@ impl GpuOperation for SetNvapiPowerLimits {
     }
 }
 
+/// Set the PPAB / Dynamic-Boost controller enable state (notebook dGPU↔CPU
+/// power coordination). NDA-private nvapi ID 0x1504FC3D; raw boolean setter.
+#[derive(Clone, Debug)]
+pub struct SetNvapiDynamicBoost {
+    pub active: bool,
+}
+
+impl GpuOperation for SetNvapiDynamicBoost {
+    type Output = ();
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiDynamicBoost
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target.nvapi()?.set_dynamic_boost(self.active).map_err(Error::from)
+    }
+}
+
+/// Set the GPU TGP in watts (notebook watts-form TGP slider; the range that
+/// appears under the PPAB/Dynamic-Boost enable). NDA-private nvapi triplet:
+/// GET 0x8B3E7343 → patch → SET 0xBFF09E59. `policy_index` selects the entry
+/// (use [`QueryNvapiTgpWattRange`]); if None, defaults to index 2 like GPUMon.
+#[derive(Clone, Debug)]
+pub struct SetNvapiTgpWatt {
+    pub watts: u32,
+    pub policy_index: Option<usize>,
+}
+
+impl GpuOperation for SetNvapiTgpWatt {
+    type Output = u32;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiTgpWatt
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let idx = self.policy_index.unwrap_or(2);
+        target
+            .nvapi()?
+            .set_tgp_watt(self.watts, idx)
+            .map_err(Error::from)
+    }
+}
+
+/// Reset the GPU TGP to its rated/default value (the TGP slider's "Reset").
+#[derive(Clone, Debug, Default)]
+pub struct ResetNvapiTgpWatt {
+    pub policy_index: Option<usize>,
+}
+
+impl GpuOperation for ResetNvapiTgpWatt {
+    type Output = Option<u32>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::ResetNvapiTgpWatt
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let idx = self.policy_index.unwrap_or(2);
+        target.nvapi()?.reset_tgp_watt(idx).map_err(Error::from)
+    }
+}
+
+/// Query the TGP-watts range (min/default/max mW + active policy index) from
+/// the private ClientPowerPoliciesGetInfo variant (NDA 0x67F31384).
+#[derive(Clone, Debug, Default)]
+pub struct QueryNvapiTgpWattRange;
+
+/// TGP-watts range result (all values in **watts**, derived from the NDA
+/// milliwatt struct for ergonomic CLI output).
+#[derive(Clone, Debug)]
+pub struct TgpWattRangeInfo {
+    pub policy_index: usize,
+    pub min_watt: Option<f64>,
+    pub default_watt: Option<f64>,
+    pub max_watt: Option<f64>,
+}
+
+impl GpuOperation for QueryNvapiTgpWattRange {
+    type Output = Option<TgpWattRangeInfo>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiTgpWattRange
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        Ok(target
+            .nvapi()?
+            .tgp_watt_range()
+            .map_err(Error::from)?
+            .map(|r| TgpWattRangeInfo {
+                policy_index: r.policy_index,
+                min_watt: r.min_mw.map(|mw| mw as f64 / 1000.0),
+                default_watt: r.default_mw.map(|mw| mw as f64 / 1000.0),
+                max_watt: r.max_mw.map(|mw| mw as f64 / 1000.0),
+            }))
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct SetNvapiSensorLimits {
     pub limits: Vec<SensorThrottle>,

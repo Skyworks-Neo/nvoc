@@ -1980,6 +1980,15 @@ mod tests {
             }),
             Command::SetPowerWatt => json!({"applied": true, "power_watt": 250}),
             Command::SetPowerPercent => json!({"applied": true, "power_percent": 90}),
+            Command::SetDynamicBoost => json!({"applied": true, "dynamic_boost": true}),
+            Command::GetTgpWattRange => json!({
+                "policy_index": 2,
+                "min_watt": 35.0,
+                "default_watt": 100.0,
+                "max_watt": 140.0,
+            }),
+            Command::SetTgpWatt => json!({"applied": true, "tgp_watt": 140, "tgp_mw": 140000}),
+            Command::ResetTgpWatt => json!({"applied": true, "default_watt": 100.0}),
             Command::SetThermalLimitC => json!({"applied": true, "thermal_limit_c": 83}),
             Command::SetFanPercent => {
                 json!({"applied": true, "fan": "all", "policy": "manual", "level_percent": 65})

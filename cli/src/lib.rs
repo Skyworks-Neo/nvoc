@@ -15,7 +15,7 @@ use nvoc_core::{
     ResetPstateBaseVoltages, ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock,
     ResetVfpLock, SetApiRestriction, SetApplicationsClocks, SetAutoBoost, SetAutoBoostDefault,
     SetClockOffset, SetCoolerLevels, SetEdid, SetFanSpeed, SetLegacyClocks, SetLockedClocks,
-    SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiSensorLimits, SetNvmlPstateLock,
+    SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiSensorLimits, SetNvapiDynamicBoost, SetNvapiTgpWatt, ResetNvapiTgpWatt, QueryNvapiTgpWattRange, SetNvmlPstateLock,
     SetPowerLimit, SetPstateBaseVoltage, SetPstateClockOffset, SetTemperatureLimit,
     SetVfpFrequencyLock, SetVfpPointDelta, SetVfpRangeDelta, SetVfpVoltageLock, SetVoltageBoost,
     VfpResetDomain, discover_targets, nvml_pstate_to_str, parse_nvapi_locked_voltage_target,
@@ -146,6 +146,10 @@ pub enum Command {
     SetClockOffsetMhz,
     SetPowerWatt,
     SetPowerPercent,
+    SetDynamicBoost,
+    GetTgpWattRange,
+    SetTgpWatt,
+    ResetTgpWatt,
     SetThermalLimitC,
     SetFanPercent,
     SetLockedClocksMhz,
@@ -213,6 +217,10 @@ impl Command {
             Self::SetClockOffsetMhz => "set-clock-offset-mhz",
             Self::SetPowerWatt => "set-power-watt",
             Self::SetPowerPercent => "set-power-percent",
+            Self::SetDynamicBoost => "set-dynamic-boost",
+            Self::GetTgpWattRange => "get-tgp-watt-range",
+            Self::SetTgpWatt => "set-tgp-watt",
+            Self::ResetTgpWatt => "reset-tgp-watt",
             Self::SetThermalLimitC => "set-thermal-limit-c",
             Self::SetFanPercent => "set-fan-percent",
             Self::SetLockedClocksMhz => "set-locked-clocks-mhz",
@@ -276,6 +284,10 @@ impl Command {
             Self::SetClockOffsetMhz => "Set clock offset in MHz for any clock domain",
             Self::SetPowerWatt => "Set NVML power limit in watts",
             Self::SetPowerPercent => "Set NVAPI power limit in percent",
+            Self::SetDynamicBoost => "Set NVAPI PPAB / Dynamic-Boost enable (on/off)",
+            Self::GetTgpWattRange => "Read NVAPI notebook TGP-watts range (min/default/max)",
+            Self::SetTgpWatt => "Set NVAPI notebook TGP in watts (watts-form TGP slider)",
+            Self::ResetTgpWatt => "Reset NVAPI notebook TGP to rated/default",
             Self::SetThermalLimitC => "Set thermal limit in Celsius",
             Self::SetFanPercent => "Set fan speed/cooler level in percent",
             Self::SetLockedClocksMhz => "Lock core or memory clocks to a MHz range",
@@ -351,6 +363,8 @@ impl Command {
             | Self::SetClockOffsetMhz
             | Self::SetPowerWatt
             | Self::SetPowerPercent
+            | Self::SetDynamicBoost
+            | Self::SetTgpWatt
             | Self::SetThermalLimitC
             | Self::SetFanPercent
             | Self::SetVfpVoltageLock
@@ -394,6 +408,7 @@ impl Command {
                 &["domain"]
             }
             Self::SetVfpVoltageLock => &["feedback"],
+            Self::SetTgpWatt | Self::ResetTgpWatt => &["policy-index"],
             _ => &[],
         }
     }
@@ -430,6 +445,17 @@ impl Command {
                 "arg_power_percent",
                 "PERCENT",
                 "Power limit percentage, for example 90 or 90%",
+            )],
+            Self::SetDynamicBoost => vec![PositionalArg::finite(
+                "arg_dynamic_boost",
+                "ENABLED",
+                "Whether to enable Dynamic Boost / PPAB (on/off, yes/no, 1/0)",
+                PositionalValueKind::Bool,
+            )],
+            Self::SetTgpWatt => vec![PositionalArg::free(
+                "arg_tgp_watt",
+                "WATT",
+                "TGP in watts, for example 140 or 140W",
             )],
             Self::SetThermalLimitC => vec![PositionalArg::hyphen(
                 "arg_celsius",
@@ -622,6 +648,10 @@ const COMMANDS: &[Command] = &[
     Command::SetClockOffsetMhz,
     Command::SetPowerWatt,
     Command::SetPowerPercent,
+    Command::SetDynamicBoost,
+    Command::GetTgpWattRange,
+    Command::SetTgpWatt,
+    Command::ResetTgpWatt,
     Command::SetThermalLimitC,
     Command::SetFanPercent,
     Command::SetLockedClocksMhz,
@@ -856,6 +886,7 @@ fn option_takes_value(token: &str) -> bool {
             | "--pstate"
             | "--fan"
             | "--policy"
+            | "--policy-index"
             | "--infer-missing-default"
     )
 }
@@ -947,6 +978,11 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .action(ArgAction::Append)
             .global(true)
             .help("Fan policy such as manual or continuous"),
+        "policy-index" => Arg::new("policy-index")
+            .long("policy-index")
+            .value_name("INDEX")
+            .action(ArgAction::Set)
+            .help("TGP power-policy table index (default 2); see get-tgp-watt-range"),
         "infer-missing-default" => Arg::new("infer-missing-default")
             .long("infer-missing-default")
             .value_name("BOOL")
@@ -982,6 +1018,9 @@ fn clap_subcommand(command: Command) -> ClapCommand {
     let (min_args, _) = command.arity();
     for (index, positional) in command.positional_args().into_iter().enumerate() {
         subcommand = subcommand.arg(positional_arg(positional, index < min_args));
+    }
+    for option in command.allowed_options() {
+        subcommand = subcommand.arg(command_specific_arg(option));
     }
     subcommand
 }
@@ -1757,6 +1796,47 @@ fn execute_target(
                 },
             )?;
             Ok(json!({"applied": true, "power_percent": percent}))
+        }
+        Command::SetDynamicBoost => {
+            let active = parse_bool(&invocation.positionals[0])?;
+            run(target, SetNvapiDynamicBoost { active })?;
+            Ok(json!({"applied": true, "dynamic_boost": active}))
+        }
+        Command::GetTgpWattRange => {
+            let range = run(target, QueryNvapiTgpWattRange)?.output;
+            Ok(match range {
+                Some(r) => json!({
+                    "policy_index": r.policy_index,
+                    "min_watt": r.min_watt,
+                    "default_watt": r.default_watt,
+                    "max_watt": r.max_watt,
+                }),
+                None => json!({"supported": false}),
+            })
+        }
+        Command::SetTgpWatt => {
+            let watts = parse_u32_unit(&invocation.positionals[0], "w", "watt")?;
+            let policy_index = option_one(invocation, "policy-index")
+                .map(|s| s.parse::<usize>())
+                .transpose()
+                .map_err(|e| CliError::new(format!("invalid --policy-index: {e}")))?;
+            let mw = run(target, SetNvapiTgpWatt { watts, policy_index })?.output;
+            Ok(json!({"applied": true, "tgp_watt": watts, "tgp_mw": mw}))
+        }
+        Command::ResetTgpWatt => {
+            let policy_index = option_one(invocation, "policy-index")
+                .map(|s| s.parse::<usize>())
+                .transpose()
+                .map_err(|e| CliError::new(format!("invalid --policy-index: {e}")))?;
+            let default_mw = run(
+                target,
+                ResetNvapiTgpWatt { policy_index },
+            )?
+            .output;
+            Ok(json!({
+                "applied": true,
+                "default_watt": default_mw.map(|mw| mw as f64 / 1000.0),
+            }))
         }
         Command::SetThermalLimitC => {
             let celsius = parse_i32_unit(&invocation.positionals[0], "c", "celsius")?;
@@ -2862,6 +2942,10 @@ mod tests {
 
         let invocation = parse_args(["set-auto-boost", "yes"]).unwrap();
         assert_eq!(invocation.positionals, vec!["yes"]);
+
+        let invocation = parse_args(["set-dynamic-boost", "on"]).unwrap();
+        assert_eq!(invocation.command, Some(Command::SetDynamicBoost));
+        assert_eq!(invocation.positionals, vec!["on"]);
 
         let invocation = parse_args(["set-pstate-lock", "0", "p2"]).unwrap();
         assert_eq!(invocation.positionals, vec!["0", "p2"]);
