@@ -1,7 +1,7 @@
 use nvapi_hi::{
     Celsius, ClockDomain, CoolerPolicy, KilohertzDelta, MicrovoltsDelta, PState, Percentage,
 };
-use nvml_wrapper::enum_wrappers::device::{Api, PerformanceState, PcieUtilCounter};
+use nvml_wrapper::enum_wrappers::device::{Api, PcieUtilCounter, PerformanceState};
 use nvoc_core::{
     BackendSet, CheckVoltageFrequency, ClearEdid, ConvertEnum, GpuTarget, QueryApiRestriction,
     QueryAutoBoost, QueryDisplays, QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo,
@@ -513,10 +513,16 @@ fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
         for (clock, freq) in eff {
             match *clock {
                 ClockDomain::Graphics => {
-                    map.insert("eff_gpu_clock_mhz".into(), f64_value(freq.0 as f64 / 1000.0));
+                    map.insert(
+                        "eff_gpu_clock_mhz".into(),
+                        f64_value(freq.0 as f64 / 1000.0),
+                    );
                 }
                 ClockDomain::Memory => {
-                    map.insert("eff_mem_clock_mhz".into(), f64_value(freq.0 as f64 / 1000.0));
+                    map.insert(
+                        "eff_mem_clock_mhz".into(),
+                        f64_value(freq.0 as f64 / 1000.0),
+                    );
                 }
                 _ => {}
             }
@@ -531,12 +537,7 @@ fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
     {
         let entries = all
             .iter()
-            .map(|(domain, freq)| {
-                (
-                    domain.to_string(),
-                    f64_value(freq.0 as f64 / 1000.0),
-                )
-            })
+            .map(|(domain, freq)| (domain.to_string(), f64_value(freq.0 as f64 / 1000.0)))
             .collect::<Vec<_>>();
         map.insert(
             "all_clocks_mhz".into(),

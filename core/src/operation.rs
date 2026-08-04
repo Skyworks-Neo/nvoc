@@ -1017,7 +1017,10 @@ impl GpuOperation for SetNvapiDynamicBoost {
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
-        target.nvapi()?.set_dynamic_boost(self.active).map_err(Error::from)
+        target
+            .nvapi()?
+            .set_dynamic_boost(self.active)
+            .map_err(Error::from)
     }
 }
 

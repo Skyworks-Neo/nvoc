@@ -8,18 +8,20 @@ use nvoc_core::{
     Percentage, ProbeVoltageLimits, QueryApiRestriction, QueryAutoBoost, QueryClockOffset,
     QueryDisplays, QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings,
     QueryGpuStatus, QueryLegacyCoreOvervoltRanges, QueryLegacyP0CoreMaxVoltageDelta,
-    QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks,
-    QueryTdpTempLimits, QueryTemperatureThresholds, QueryThrottleReasons, QueryVfpPointVoltage,
-    QueryViolationStatus, QueryVoltageBoost, ResetApplicationsClocks, ResetCoolerLevels,
-    ResetFanSpeed, ResetLockedClocks, ResetNvapiPowerLimits, ResetNvapiSensorLimits,
-    ResetPstateBaseVoltages, ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock,
-    ResetVfpLock, SetApiRestriction, SetApplicationsClocks, SetAutoBoost, SetAutoBoostDefault,
-    SetClockOffset, SetCoolerLevels, SetEdid, SetFanSpeed, SetLegacyClocks, SetLockedClocks,
-    SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiSensorLimits, SetNvapiDynamicBoost, SetNvapiTgpWatt, ResetNvapiTgpWatt, QueryNvapiTgpWattRange, SetNvmlPstateLock,
-    SetPowerLimit, SetPstateBaseVoltage, SetPstateClockOffset, SetTemperatureLimit,
-    SetVfpFrequencyLock, SetVfpPointDelta, SetVfpRangeDelta, SetVfpVoltageLock, SetVoltageBoost,
-    VfpResetDomain, discover_targets, nvml_pstate_to_str, parse_nvapi_locked_voltage_target,
-    parse_nvml_fan_control_policy, parse_nvml_pstate, run, select_targets,
+    QueryNvapiTgpWattRange, QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates,
+    QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
+    QueryThrottleReasons, QueryVfpPointVoltage, QueryViolationStatus, QueryVoltageBoost,
+    ResetApplicationsClocks, ResetCoolerLevels, ResetFanSpeed, ResetLockedClocks,
+    ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetPstateBaseVoltages,
+    ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock, ResetVfpLock,
+    SetApiRestriction, SetApplicationsClocks, SetAutoBoost, SetAutoBoostDefault, SetClockOffset,
+    SetCoolerLevels, SetEdid, SetFanSpeed, SetLegacyClocks, SetLockedClocks, SetNvapiDynamicBoost,
+    SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiSensorLimits, SetNvapiTgpWatt,
+    SetNvmlPstateLock, SetPowerLimit, SetPstateBaseVoltage, SetPstateClockOffset,
+    SetTemperatureLimit, SetVfpFrequencyLock, SetVfpPointDelta, SetVfpRangeDelta,
+    SetVfpVoltageLock, SetVoltageBoost, VfpResetDomain, discover_targets, nvml_pstate_to_str,
+    parse_nvapi_locked_voltage_target, parse_nvml_fan_control_policy, parse_nvml_pstate, run,
+    select_targets,
 };
 use serde_json::{Value, json};
 use time::OffsetDateTime;
@@ -285,7 +287,9 @@ impl Command {
             Self::SetPowerWatt => "Set NVML power limit in watts",
             Self::SetPowerPercent => "Set NVAPI power limit in percent",
             Self::SetDynamicBoost => "Set NVAPI PPAB / Dynamic-Boost enable (on/off)",
-            Self::GetTgpWattRange => "Read NVAPI TGP-watts range (min/default/max; mobile + desktop)",
+            Self::GetTgpWattRange => {
+                "Read NVAPI TGP-watts range (min/default/max; mobile + desktop)"
+            }
             Self::SetTgpWatt => "Set NVAPI TGP in watts (mobile watts-form TGP slider)",
             Self::ResetTgpWatt => "Reset NVAPI TGP to rated/default (mobile)",
             Self::SetThermalLimitC => "Set thermal limit in Celsius",
@@ -1487,8 +1491,7 @@ fn execute_target(
             if let Ok(nvml) = target.nvml()
                 && let Some(map) = value.as_object_mut()
             {
-                let (_current, max) =
-                    nvoc_core::nvml::query_nvml_pcie_link_gen(nvml, target.id.0);
+                let (_current, max) = nvoc_core::nvml::query_nvml_pcie_link_gen(nvml, target.id.0);
                 if let Some(max) = max {
                     map.insert("max_pcie_link_gen".to_string(), json!(max));
                 }
@@ -1547,7 +1550,10 @@ fn execute_target(
                 if let Some(rails) = map.get("power_rails").and_then(|v| v.as_array()).cloned() {
                     let mut rail_map = serde_json::Map::new();
                     for r in &rails {
-                        let name = r.get("rail_name").and_then(|v| v.as_str()).unwrap_or("UNNAMED");
+                        let name = r
+                            .get("rail_name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("UNNAMED");
                         let mw = r.get("pwr_mw").and_then(|v| v.as_u64()).unwrap_or(0);
                         if mw == 0 {
                             continue;
@@ -1835,7 +1841,14 @@ fn execute_target(
                 .map(|s| s.parse::<usize>())
                 .transpose()
                 .map_err(|e| CliError::new(format!("invalid --policy-index: {e}")))?;
-            let mw = run(target, SetNvapiTgpWatt { watts, policy_index })?.output;
+            let mw = run(
+                target,
+                SetNvapiTgpWatt {
+                    watts,
+                    policy_index,
+                },
+            )?
+            .output;
             Ok(json!({"applied": true, "tgp_watt": watts, "tgp_mw": mw}))
         }
         Command::ResetTgpWatt => {
@@ -1843,11 +1856,7 @@ fn execute_target(
                 .map(|s| s.parse::<usize>())
                 .transpose()
                 .map_err(|e| CliError::new(format!("invalid --policy-index: {e}")))?;
-            let default_mw = run(
-                target,
-                ResetNvapiTgpWatt { policy_index },
-            )?
-            .output;
+            let default_mw = run(target, ResetNvapiTgpWatt { policy_index })?.output;
             Ok(json!({
                 "applied": true,
                 "default_watt": default_mw.map(|mw| mw as f64 / 1000.0),

@@ -676,10 +676,10 @@ fn nvapi_vf_check_bad_point() {
 /// DO return live per-rail power — see `nvapi_power_monitor_v4` /
 /// `nvapi_power_monitor_raw`.
 fn nvapi_raw_payload_probe() {
+    use nvapi_hi::sys::Status;
+    use nvapi_hi::sys::api;
     use nvapi_hi::sys::gpu::power::private as pw;
     use nvapi_hi::sys::nvapi::{NvVersion, VersionedStruct};
-    use nvapi_hi::sys::api as api;
-    use nvapi_hi::sys::Status;
 
     // Helper: zero a versioned struct and stamp its version magic. Avoids the
     // ambiguous `StructVersion::versioned` call (each struct impls both
@@ -729,20 +729,29 @@ fn nvapi_raw_payload_probe() {
         let st = api::NvAPI_GPU_ClientPowerTopologyGetInfo(handle, &mut info);
         eprintln!("=== ClientPowerTopologyGetInfo status={:?} ===", st);
         if (st as i32) == (Status::Ok as i32) {
-            eprintln!("valid={} count={} channels={:?}", info.valid, info.count, info.channels());
+            eprintln!(
+                "valid={} count={} channels={:?}",
+                info.valid,
+                info.count,
+                info.channels()
+            );
         }
 
         let mut topo = ver!(pw::NV_GPU_CLIENT_POWER_TOPOLOGY_STATUS);
         topo.count = 2;
-        topo.entries[0].channel =
-            pw::NV_GPU_CLIENT_POWER_TOPOLOGY_CHANNEL_ID_TOTAL_GPU_POWER;
+        topo.entries[0].channel = pw::NV_GPU_CLIENT_POWER_TOPOLOGY_CHANNEL_ID_TOTAL_GPU_POWER;
         topo.entries[1].channel =
             pw::NV_GPU_CLIENT_POWER_TOPOLOGY_CHANNEL_ID_NORMALIZED_TOTAL_POWER;
         let st = api::NvAPI_GPU_ClientPowerTopologyGetStatus(handle, &mut topo);
         eprintln!("=== ClientPowerTopologyGetStatus status={:?} ===", st);
         if (st as i32) == (Status::Ok as i32) {
             eprintln!("count={}", topo.count);
-            for (i, e) in topo.entries.iter().enumerate().take(topo.count as usize + 1) {
+            for (i, e) in topo
+                .entries
+                .iter()
+                .enumerate()
+                .take(topo.count as usize + 1)
+            {
                 eprintln!("  entry[{i}] = {:#?}", e);
             }
         }
@@ -795,9 +804,7 @@ fn nvapi_raw_payload_probe() {
         //    symbol is typed V2, but the version magic selects layout — allocate
         //    a V2-sized buffer, stamp V1 magic, read back as V1 fields.
         {
-            let mut pinfo = unsafe {
-                std::mem::zeroed::<pw::NV_GPU_CLIENT_POWER_POLICIES_INFO>()
-            };
+            let mut pinfo = unsafe { std::mem::zeroed::<pw::NV_GPU_CLIENT_POWER_POLICIES_INFO>() };
             *pinfo.nvapi_version_mut() =
                 NvVersion::with_struct::<pw::NV_GPU_CLIENT_POWER_POLICIES_INFO_V1>(1);
             let st = api::NvAPI_GPU_ClientPowerPoliciesGetInfo(handle, &mut pinfo);
@@ -818,7 +825,10 @@ fn nvapi_raw_payload_probe() {
                         let off = 4 + i * 4;
                         if off + 4 <= raw.len() {
                             v.push(u32::from_le_bytes([
-                                raw[off], raw[off + 1], raw[off + 2], raw[off + 3],
+                                raw[off],
+                                raw[off + 1],
+                                raw[off + 2],
+                                raw[off + 3],
                             ]));
                         }
                     }
@@ -827,13 +837,15 @@ fn nvapi_raw_payload_probe() {
             );
         }
         {
-            let mut pstat = unsafe {
-                std::mem::zeroed::<pw::NV_GPU_CLIENT_POWER_POLICIES_STATUS>()
-            };
+            let mut pstat =
+                unsafe { std::mem::zeroed::<pw::NV_GPU_CLIENT_POWER_POLICIES_STATUS>() };
             *pstat.nvapi_version_mut() =
                 NvVersion::with_struct::<pw::NV_GPU_CLIENT_POWER_POLICIES_STATUS_V1>(1);
             let st = api::NvAPI_GPU_ClientPowerPoliciesGetStatus(handle, &mut pstat);
-            eprintln!("=== ClientPowerPoliciesGetStatus V1magic status={:?} ===", st);
+            eprintln!(
+                "=== ClientPowerPoliciesGetStatus V1magic status={:?} ===",
+                st
+            );
             let raw: &[u8] = {
                 let p = &pstat as *const _ as *const u8;
                 std::slice::from_raw_parts(p, std::mem::size_of_val(&pstat))
@@ -894,7 +906,10 @@ fn nvapi_raw_payload_probe() {
                 version: u32,
                 data: [u32; 63],
             }
-            let mut scratch = Scratch { version: 0, data: [0; 63] };
+            let mut scratch = Scratch {
+                version: 0,
+                data: [0; 63],
+            };
             for sz in [256u32, 64, 128] {
                 scratch.version = (sz) | (1 << 16);
                 scratch.data = [0; 63];
@@ -991,10 +1006,10 @@ fn nvapi_therm_channel_info() {
 #[test]
 #[ignore]
 fn nvapi_therm_channel_raw() {
-    use nvapi_hi::sys::gpu::thermal::private as th;
-    use nvapi_hi::sys::api as api;
-    use nvapi_hi::sys::nvapi::NvVersion;
     use nvapi_hi::sys::Status;
+    use nvapi_hi::sys::api;
+    use nvapi_hi::sys::gpu::thermal::private as th;
+    use nvapi_hi::sys::nvapi::NvVersion;
 
     let inv = inventory();
     let target = first_target(&inv);
@@ -1012,8 +1027,7 @@ fn nvapi_therm_channel_raw() {
     let handle = *gpu.inner().handle();
 
     // V2 params struct: version magic (2<<16)|sizeof = (2<<16)|2736.
-    let mut info: th::NV_GPU_THERMAL_THERM_CHANNEL_INFO_PARAMS_V2 =
-        unsafe { std::mem::zeroed() };
+    let mut info: th::NV_GPU_THERMAL_THERM_CHANNEL_INFO_PARAMS_V2 = unsafe { std::mem::zeroed() };
     info.version = NvVersion::new(std::mem::size_of_val(&info), 2);
 
     let st = unsafe { api::NvAPI_GPU_ThermChannelGetInfo(handle, &mut info) };
@@ -1033,8 +1047,18 @@ fn nvapi_therm_channel_raw() {
         return;
     }
 
-    eprintln!("channel_mask = 0x{:08x} (popcount={})", info.channel_mask, info.channel_mask.count_ones());
-    let type_names = ["GPU_AVG", "GPU_MAX(hotspot)", "BOARD", "MEMORY(vram)", "PWR_SUPPLY"];
+    eprintln!(
+        "channel_mask = 0x{:08x} (popcount={})",
+        info.channel_mask,
+        info.channel_mask.count_ones()
+    );
+    let type_names = [
+        "GPU_AVG",
+        "GPU_MAX(hotspot)",
+        "BOARD",
+        "MEMORY(vram)",
+        "PWR_SUPPLY",
+    ];
     eprintln!("pri_ch_idx (primary channel per type):");
     for (ty, &idx) in info.pri_ch_idx.iter().enumerate() {
         let populated = (idx as usize) < 32 && (info.channel_mask & (1u32 << idx)) != 0;
@@ -1043,7 +1067,11 @@ fn nvapi_therm_channel_raw() {
             ty,
             type_names.get(ty).copied().unwrap_or("?"),
             idx,
-            if populated { "(valid)" } else { "(NOT in mask)" }
+            if populated {
+                "(valid)"
+            } else {
+                "(NOT in mask)"
+            }
         );
     }
     eprintln!("per-channel records (first 16 populated):");
@@ -1136,10 +1164,10 @@ fn nvapi_therm_channel_raw() {
 #[test]
 #[ignore]
 fn nvapi_volt_rails_raw() {
-    use nvapi_hi::sys::gpu::power::private as pw;
-    use nvapi_hi::sys::api as api;
-    use nvapi_hi::sys::nvapi::{NvVersion, VersionedStruct};
     use nvapi_hi::sys::Status;
+    use nvapi_hi::sys::api;
+    use nvapi_hi::sys::gpu::power::private as pw;
+    use nvapi_hi::sys::nvapi::{NvVersion, VersionedStruct};
 
     let inv = inventory();
     let target = first_target(&inv);
@@ -1175,13 +1203,15 @@ fn nvapi_volt_rails_raw() {
     // Reinterpret the 76 bytes as a raw byte/u32 table to see every word,
     // bypassing the Rust struct's named fields (which hide 0x2C+ as padding).
     let len = std::mem::size_of_val(&volt);
-    let bytes: &[u8] = unsafe {
-        std::slice::from_raw_parts(&volt as *const _ as *const u8, len)
-    };
+    let bytes: &[u8] = unsafe { std::slice::from_raw_parts(&volt as *const _ as *const u8, len) };
     eprintln!("raw {} bytes (hex):", len);
     for chunk in bytes.chunks(16) {
         let hex: Vec<String> = chunk.iter().map(|b| format!("{:02x}", b)).collect();
-        eprintln!("  {:04x}: {}", chunk.as_ptr() as usize - bytes.as_ptr() as usize, hex.join(" "));
+        eprintln!(
+            "  {:04x}: {}",
+            chunk.as_ptr() as usize - bytes.as_ptr() as usize,
+            hex.join(" ")
+        );
     }
     eprintln!("u32 word table (little-endian), with named-offset annotations:");
     let words: &[u32] =
@@ -1254,8 +1284,8 @@ fn nvapi_volt_rails_raw() {
 #[test]
 #[ignore]
 fn nvapi_power_monitor_raw() {
-    use nvapi_hi::sys::nvapi_QueryInterface;
     use nvapi_hi::sys::Status;
+    use nvapi_hi::sys::nvapi_QueryInterface;
 
     let inv = inventory();
     let target = first_target(&inv);
@@ -1300,10 +1330,8 @@ fn nvapi_power_monitor_raw() {
         data: [u32; SCRATCH_U32 - 1],
     }
 
-    type Fn = unsafe extern "system" fn(
-        nvapi_hi::sys::api::NvPhysicalGpuHandle,
-        *mut Scratch,
-    ) -> Status;
+    type Fn =
+        unsafe extern "system" fn(nvapi_hi::sys::api::NvPhysicalGpuHandle, *mut Scratch) -> Status;
 
     // Run each IID against its OWN accepted-magic set. For GetStatus, take the
     // first accepted magic (one live layout is enough). For GetInfo, try ALL
@@ -1316,28 +1344,40 @@ fn nvapi_power_monitor_raw() {
         let ptr = match nvapi_QueryInterface(*iid) {
             Ok(p) => p as *const (),
             Err(e) => {
-                eprintln!("nvapi_power_monitor_raw: QueryInterface {:#x} ({}) not found: {:?}", iid, label, e);
+                eprintln!(
+                    "nvapi_power_monitor_raw: QueryInterface {:#x} ({}) not found: {:?}",
+                    iid, label, e
+                );
                 continue;
             }
         };
         let func: Fn = unsafe { std::mem::transmute(ptr) };
         let try_all = *label == "GetInfo"; // GetInfo: probe every magic for descriptor data
-        eprintln!("=== {} ({:#X}): trying its accepted-magic set ===", label, iid);
+        eprintln!(
+            "=== {} ({:#X}): trying its accepted-magic set ===",
+            label, iid
+        );
         for &magic in *magics {
-            let mut scratch = Scratch { version: 0, data: [0; SCRATCH_U32 - 1] };
+            let mut scratch = Scratch {
+                version: 0,
+                data: [0; SCRATCH_U32 - 1],
+            };
             scratch.version = magic;
             let status = unsafe { func(handle, &mut scratch) };
             let ok = (status as i32) == (Status::Ok as i32);
             // Count nonzero words as a signal of how much the layout returned.
             let sz = (magic & 0xFFFF) as usize;
-            let nz_words = scratch.data[..sz / 4]
-                .iter()
-                .filter(|w| **w != 0)
-                .count();
+            let nz_words = scratch.data[..sz / 4].iter().filter(|w| **w != 0).count();
             eprintln!(
                 "  [{}] magic=0x{:X} (v{}|sz{}) status={:?} ({}){} nonzero_words={}",
-                label, magic, magic >> 16, magic & 0xFFFF, status, status as i32,
-                if ok { "  <<< ACCEPTED" } else { "" }, nz_words,
+                label,
+                magic,
+                magic >> 16,
+                magic & 0xFFFF,
+                status,
+                status as i32,
+                if ok { "  <<< ACCEPTED" } else { "" },
+                nz_words,
             );
             if ok {
                 accepted_per_iid.push((label, magic >> 16, magic & 0xFFFF, scratch));
@@ -1360,9 +1400,8 @@ fn nvapi_power_monitor_raw() {
     }
 
     for (label, ver, sz, scratch) in &accepted_per_iid {
-        let words: &[u32] = unsafe {
-            std::slice::from_raw_parts(scratch as *const _ as *const u32, SCRATCH_U32)
-        };
+        let words: &[u32] =
+            unsafe { std::slice::from_raw_parts(scratch as *const _ as *const u32, SCRATCH_U32) };
         // For GetInfo, decode the power-channel bitmask (the populated channel
         // set) — the rail-identity source. (Skip the per-magic nonzero-offset
         // raw dump; the descriptor scan + offset+power sections below carry the
@@ -1376,7 +1415,12 @@ fn nvapi_power_monitor_raw() {
                 let chans: Vec<u32> = (0..32).filter(|i| mask & (1u32 << i) != 0).collect();
                 eprintln!(
                     "=== {} v{}|{}: channelMask=0x{:X} -> {} channels: {:?} ===",
-                    label, ver, sz, mask, chans.len(), chans
+                    label,
+                    ver,
+                    sz,
+                    mask,
+                    chans.len(),
+                    chans
                 );
             }
         }
@@ -1392,14 +1436,11 @@ fn nvapi_power_monitor_raw() {
         .iter()
         .find(|(l, v, s, _)| *l == "GetInfo" && *v == 4 && *s == 6312)
     {
-        let bytes: &[u8] = unsafe {
-            std::slice::from_raw_parts(scratch as *const _ as *const u8, *sz as usize)
-        };
+        let bytes: &[u8] =
+            unsafe { std::slice::from_raw_parts(scratch as *const _ as *const u8, *sz as usize) };
         let words: &[u32] =
             unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const u32, bytes.len() / 4) };
-        eprintln!(
-            "=== GetInfo v4 descriptor scan (channel_type 0..=8 + plausible PowerRail) ==="
-        );
+        eprintln!("=== GetInfo v4 descriptor scan (channel_type 0..=8 + plausible PowerRail) ===");
         // Scan word-by-word for a (type, rail) signature. type in 1..=8, rail a
         // known PowerRail value (0..=11 outputs, or 218..=255 inputs) or 0.
         let known_rail = |r: u32| r == 0 || r <= 11 || (218..=255).contains(&r);
@@ -1435,7 +1476,10 @@ fn nvapi_power_monitor_raw() {
     // For GetStatus, sample several times and report which byte offsets vary —
     // those are the LIVE per-channel value slots (units TBD). Static offsets
     // are descriptors/headers. This confirms the data is realtime, not a blob.
-    if let Some((_, ver, sz, _)) = accepted_per_iid.iter().find(|(l, _, _, _)| *l == "GetStatus") {
+    if let Some((_, ver, sz, _)) = accepted_per_iid
+        .iter()
+        .find(|(l, _, _, _)| *l == "GetStatus")
+    {
         let ptr = match nvapi_QueryInterface(POWER_MONITOR_GET_STATUS_ID) {
             Ok(p) => p as *const (),
             Err(_) => return,
@@ -1454,12 +1498,16 @@ fn nvapi_power_monitor_raw() {
         // matching against GPU-Z rail readings.
         eprintln!("=== GetStatus offset+power map (full channel_mask, 2 samples) ===");
         let sample_once = |mask: u32| -> Vec<(usize, u32)> {
-            let mut s = Scratch { version: 0, data: [0; SCRATCH_U32 - 1] };
+            let mut s = Scratch {
+                version: 0,
+                data: [0; SCRATCH_U32 - 1],
+            };
             s.version = magic;
             s.data[0] = mask; // +0x04 input channel_mask
             let _ = unsafe { func(handle, &mut s) };
-            let words: &[u32] =
-                unsafe { std::slice::from_raw_parts(&s as *const _ as *const u32, *sz as usize / 4) };
+            let words: &[u32] = unsafe {
+                std::slice::from_raw_parts(&s as *const _ as *const u32, *sz as usize / 4)
+            };
             words
                 .iter()
                 .enumerate()
@@ -1487,11 +1535,7 @@ fn nvapi_power_monitor_raw() {
         let s2 = sample_once(info_mask);
         let nvml_mw = nvml_wrapper::Nvml::init()
             .ok()
-            .and_then(|n| {
-                n.device_by_index(0)
-                    .ok()
-                    .and_then(|d| d.power_usage().ok())
-            })
+            .and_then(|n| n.device_by_index(0).ok().and_then(|d| d.power_usage().ok()))
             .map(|mw| mw as u32)
             .unwrap_or(0);
         eprintln!("  (NVML board total: {} mW)", nvml_mw);
@@ -1500,7 +1544,11 @@ fn nvapi_power_monitor_raw() {
             if *off < 0x08 {
                 continue;
             }
-            let v2 = s2.iter().find(|(o, _)| o == off).map(|(_, v)| *v).unwrap_or(0);
+            let v2 = s2
+                .iter()
+                .find(|(o, _)| o == off)
+                .map(|(_, v)| *v)
+                .unwrap_or(0);
             let live = if v1 != &v2 { "LIVE" } else { "static" };
             eprintln!(
                 "  +0x{:04X}: {:>8} mW  ({:>7.2} W)  [{}]",
@@ -1537,7 +1585,10 @@ fn nvapi_power_monitor_raw() {
             let words: &[u32] =
                 unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const u32, SCRATCH_U32) };
             // Scan descriptors for (channel_type, rail); pair with set bits.
-            let cmask = (4..32).map(|i| words[i]).find(|v| *v != 0 && *v != 1).unwrap_or(0);
+            let cmask = (4..32)
+                .map(|i| words[i])
+                .find(|v| *v != 0 && *v != 1)
+                .unwrap_or(0);
             let bits: Vec<u32> = (0..32).filter(|i| cmask & (1 << i) != 0).collect();
             let known = |r: u32| r == 0 || r <= 11 || (218..=255).contains(&r);
             let mut di = 4usize;
@@ -1804,11 +1855,13 @@ fn nvapi_power_monitor_bit_isolation() {
             .map(|(i, c)| (i * 4, u32::from_le_bytes(c.try_into().unwrap_or([0; 4]))))
             .filter(|(_, v)| *v != 0)
             .collect();
-        eprintln!("  bit {:>2}: status={:?} ({}) nonzero={:?}", bit, st, st as i32, nz);
+        eprintln!(
+            "  bit {:>2}: status={:?} ({}) nonzero={:?}",
+            bit, st, st as i32, nz
+        );
     }
     eprintln!(
         "Pair each bit's nonzero offsets with the v4 descriptor scan\n\
          (nvapi_power_monitor_v4) to map bit -> offset -> rail."
     );
 }
-

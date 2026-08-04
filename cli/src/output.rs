@@ -782,16 +782,16 @@ fn is_power_topology_map(object: &serde_json::Map<String, Value>) -> bool {
         return false;
     }
     object.keys().any(|k| {
-        matches!(k.as_str(), "TotalGpuPower" | "NormalizedTotalPower" | "TotalBoardPower")
+        matches!(
+            k.as_str(),
+            "TotalGpuPower" | "NormalizedTotalPower" | "TotalBoardPower"
+        )
     })
 }
 
 /// Render the power-topology channel map. Each value is a 0–100 plain
 /// percentage of the board power budget, so a `%` unit is appended.
-fn format_power_entries(
-    indent: usize,
-    object: &serde_json::Map<String, Value>,
-) -> Vec<String> {
+fn format_power_entries(indent: usize, object: &serde_json::Map<String, Value>) -> Vec<String> {
     sorted_object_entries(object)
         .iter()
         .map(|(key, value)| {
@@ -891,10 +891,7 @@ fn format_performance_decrease(indent: usize, value: &Value) -> Vec<String> {
 
 /// Render the VRAM info map. Size fields are kibibytes -> shown in MB;
 /// `dedicated_evictions` is a plain count (no unit).
-fn format_memory_entries(
-    indent: usize,
-    object: &serde_json::Map<String, Value>,
-) -> Vec<String> {
+fn format_memory_entries(indent: usize, object: &serde_json::Map<String, Value>) -> Vec<String> {
     sorted_object_entries(object)
         .iter()
         .map(|(key, value)| {
@@ -954,7 +951,10 @@ fn format_sensors_array(indent: usize, items: &[Value]) -> Vec<String> {
 /// temperature limit shown as `Max N C, Min N C`, skipped when it is `{0, 0}`
 /// (the RTSS GetInfo record may report no limits for a channel, so a zero
 /// range carries no information).
-fn format_sensor_descriptor(indent: usize, descriptor: &serde_json::Map<String, Value>) -> Vec<String> {
+fn format_sensor_descriptor(
+    indent: usize,
+    descriptor: &serde_json::Map<String, Value>,
+) -> Vec<String> {
     let field = |key: &str, value: &Value| {
         format!(
             "{}{}: {}",
@@ -969,7 +969,10 @@ fn format_sensor_descriptor(indent: usize, descriptor: &serde_json::Map<String, 
         let max = range.get("max").and_then(Value::as_f64);
         let min = range.get("min").and_then(Value::as_f64);
         // Skip a {0, 0} range (no limit data for undocumented sensors).
-        let is_zero_range = matches!((max, min), (Some(0.0), Some(0.0)) | (Some(0.0), None) | (None, Some(0.0)));
+        let is_zero_range = matches!(
+            (max, min),
+            (Some(0.0), Some(0.0)) | (Some(0.0), None) | (None, Some(0.0))
+        );
         if !is_zero_range
             && let Some(max) = max
             && let Some(min) = min
@@ -1186,7 +1189,11 @@ fn format_contextual_scalar(context_key: &str, value_key: &str, value: &Value) -
     if context.contains("driver_model") || value_key == "driver_model" {
         let word = number as u32;
         let major = ((word >> 12) & 0xf) as u8;
-        let minor = if major == 2 { 0 } else { ((word >> 8) & 0xf) as u8 };
+        let minor = if major == 2 {
+            0
+        } else {
+            ((word >> 8) & 0xf) as u8
+        };
         return format!("0x{:08X} (WDDM {}.{})", word, major, minor);
     }
     // Temperature sensor range bounds (get-info descriptor path): report in degrees C.
@@ -1636,9 +1643,11 @@ mod tests {
         assert!(rendered.contains("Performance Decrease: Thermal Protection, Power Control"));
 
         // bits = 0 (idle GPU) -> None.
-        let rendered_none =
-            format_human_output("get-status", &json!({ "performance_decrease": { "bits": 0 } }))
-                .join("\n");
+        let rendered_none = format_human_output(
+            "get-status",
+            &json!({ "performance_decrease": { "bits": 0 } }),
+        )
+        .join("\n");
         assert!(rendered_none.contains("Performance Decrease: None"));
     }
 
