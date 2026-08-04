@@ -296,7 +296,7 @@ impl Command {
             Self::ResetTgpWatt => "Reset NVAPI TGP to rated/default (mobile)",
             Self::SetThermalLimitC => "Set thermal limit in Celsius",
             Self::SetTemperatureThresholds => {
-                "Set an NVAPI target-temperature (温度墙) policy slot in Celsius"
+                "Set an NVAPI target-temperature (temp-limit) policy slot in Celsius for mobile sku"
             }
             Self::SetFanPercent => "Set fan speed/cooler level in percent",
             Self::SetLockedClocksMhz => "Lock core or memory clocks to a MHz range",
