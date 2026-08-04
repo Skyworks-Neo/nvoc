@@ -169,6 +169,30 @@ def test_format_metric_lines_core_only_when_no_extra_temps() -> None:
     assert "MEM 47 C" not in text
 
 
+def test_format_metric_lines_pairs_live_with_policy_thresholds() -> None:
+    # target_temp_c (policy 2 = target-temperature wall) pairs with the core
+    # reading; max_temp_c (policy 1 = max operating temp) pairs with hot spot.
+    status = {
+        "temperature_c": 46,
+        "target_temp_c": 87,
+        "temp_hotspot": 53,
+        "max_temp_c": 105,
+    }
+
+    text = "\n".join(_format_metric_lines(status, "---"))
+
+    assert "TEMP: CORE 46 / 87 C | HOTSPOT 53 / 105 C" in text
+
+
+def test_format_metric_lines_thresholds_optional() -> None:
+    # Only the target wall present, no max temp: core pairs, hot spot stays bare.
+    status = {"temperature_c": 46, "target_temp_c": 87, "temp_hotspot": 53}
+
+    text = "\n".join(_format_metric_lines(status, "---"))
+
+    assert "TEMP: CORE 46 / 87 C | HOTSPOT 53 C" in text
+
+
 def test_format_metric_lines_missing_fields_render_dashes() -> None:
     text = "\n".join(_format_metric_lines({}, "---"))
 

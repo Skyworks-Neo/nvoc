@@ -6,18 +6,19 @@ use nvoc_core::{
     BackendSet, CheckVoltageFrequency, ClearEdid, ConvertEnum, GpuTarget, QueryApiRestriction,
     QueryAutoBoost, QueryDisplays, QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo,
     QueryGpuSettings, QueryGpuStatus, QueryLegacyCoreOvervoltRanges,
-    QueryLegacyP0CoreMaxVoltageDelta, QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates,
-    QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
-    QueryThrottleReasons, QueryVfpPointVoltage, QueryVoltageBoost, ResetApplicationsClocks,
-    ResetCoolerLevels, ResetFanSpeed, ResetLockedClocks, ResetNvapiPowerLimits,
-    ResetNvapiSensorLimits, ResetPstateBaseVoltages, ResetPstateClockOffsets, ResetVfpDeltas,
-    ResetVfpFrequencyLock, ResetVfpLock, SetApiRestriction, SetApplicationsClocks, SetAutoBoost,
-    SetAutoBoostDefault, SetClockOffset, SetCoolerLevels, SetDomainVfpDeltas, SetEdid, SetFanSpeed,
-    SetLegacyClocks, SetLockedClocks, SetNvapiPowerLimits, SetNvapiPstateLock,
-    SetNvapiSensorLimits, SetNvmlPstateLock, SetPowerLimit, SetPstateBaseVoltage,
-    SetPstateClockOffset, SetTemperatureLimit, SetVfpFrequencyLock, SetVfpPointDelta,
-    SetVfpRangeDelta, SetVfpVoltageLock, SetVoltageBoost, VfpResetDomain, discover_targets,
-    nvml_pstate_to_str, parse_nvml_fan_control_policy, run, try_parse_nvml_pstate,
+    QueryLegacyP0CoreMaxVoltageDelta, QueryNvapiTargetTempPolicies, QueryPowerLimits,
+    QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits,
+    QueryTemperatureThresholds, QueryThrottleReasons, QueryVfpPointVoltage, QueryVoltageBoost,
+    ResetApplicationsClocks, ResetCoolerLevels, ResetFanSpeed, ResetLockedClocks,
+    ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetPstateBaseVoltages,
+    ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock, ResetVfpLock,
+    SetApiRestriction, SetApplicationsClocks, SetAutoBoost, SetAutoBoostDefault, SetClockOffset,
+    SetCoolerLevels, SetDomainVfpDeltas, SetEdid, SetFanSpeed, SetLegacyClocks, SetLockedClocks,
+    SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiSensorLimits, SetNvmlPstateLock,
+    SetPowerLimit, SetPstateBaseVoltage, SetPstateClockOffset, SetTemperatureLimit,
+    SetVfpFrequencyLock, SetVfpPointDelta, SetVfpRangeDelta, SetVfpVoltageLock, SetVoltageBoost,
+    VfpResetDomain, discover_targets, nvml_pstate_to_str, parse_nvml_fan_control_policy, run,
+    try_parse_nvml_pstate,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -569,6 +570,28 @@ fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
                 }
                 Some(3) if !map.contains_key("temp_memory") => {
                     map.insert("temp_memory".into(), f64_value(*temp as f64));
+                }
+                _ => {}
+            }
+        }
+    }
+    // Thermal policy thresholds from the private ClientThermalTarget table
+    // (GET-prime 0xC4554575). Two values the TUI dashboard pairs with the live
+    // sensor readings: policy 2 = the target-temperature wall (nvidia-smi "GPU
+    // Target Temperature" = NVML's GpsCurr channel), policy 1 = max operating
+    // temp (NVML's GpuMax). Emitted as plain keys so the TUI can render
+    // `CORE <live> / <target> C` and `HOTSPOT <live> / <max> C`. Best-effort:
+    // omitted where the driver doesn't expose the slot (desktop GPUs).
+    if target.has_nvapi()
+        && let Ok(policies) = run(target, QueryNvapiTargetTempPolicies)
+    {
+        for p in policies.output {
+            match p.policy_index {
+                2 => {
+                    map.insert("target_temp_c".into(), f64_value(p.celsius as f64));
+                }
+                1 => {
+                    map.insert("max_temp_c".into(), f64_value(p.celsius as f64));
                 }
                 _ => {}
             }

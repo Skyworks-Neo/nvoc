@@ -253,10 +253,27 @@ def _format_metric_lines(status: dict, architecture: str) -> list[str]:
 
     # Thermal sensors: core (GPU_AVG) is always shown; hot spot (GPU_MAX) and
     # memory/VRAM are appended only when the GPU exposes them, so the line
-    # adapts to whatever channels are available.
-    temp_parts = [f"CORE {_temp_c_str(status.get('temperature_c'))} C"]
-    if isinstance(status.get("temp_hotspot"), (int, float)):
-        temp_parts.append(f"HOTSPOT {_temp_c_str(status['temp_hotspot'])} C")
+    # adapts to whatever channels are available. The core reading is paired
+    # with the target-temperature wall (policy 2 = nvidia-smi "GPU Target
+    # Temperature" / NVML GpsCurr) and the hot-spot reading with the max
+    # operating temp (policy 1 = NVML GpuMax), in `live / limit` form.
+    core_live = _temp_c_str(status.get("temperature_c"))
+    target_temp = status.get("target_temp_c")
+    core_part = (
+        f"CORE {core_live} / {_temp_c_str(target_temp)} C"
+        if isinstance(target_temp, (int, float))
+        else f"CORE {core_live} C"
+    )
+    temp_parts = [core_part]
+    hotspot_live = status.get("temp_hotspot")
+    if isinstance(hotspot_live, (int, float)):
+        max_temp = status.get("max_temp_c")
+        hotspot_part = (
+            f"HOTSPOT {_temp_c_str(hotspot_live)} / {_temp_c_str(max_temp)} C"
+            if isinstance(max_temp, (int, float))
+            else f"HOTSPOT {_temp_c_str(hotspot_live)} C"
+        )
+        temp_parts.append(hotspot_part)
     if isinstance(status.get("temp_memory"), (int, float)):
         temp_parts.append(f"MEM {_temp_c_str(status['temp_memory'])} C")
     temp_text = " | ".join(temp_parts)
