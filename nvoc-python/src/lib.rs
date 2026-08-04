@@ -592,6 +592,17 @@ fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
     {
         map.insert("power_w".into(), f64_value(watts));
     }
+    // Current enforced power limit (the live TGP cap, watts). NVML
+    // `nvmlDeviceGetEnforcedPowerLimit` — the same "Current Power Limit"
+    // nvidia-smi -q -d POWER reports (e.g. the `30W` in `1W / 30W`). Preferred
+    // over the configurable `power_management_limit()`, which returns
+    // NotSupported on most mobile GPUs (enforced is universally readable).
+    if target.has_nvml()
+        && let Ok(device) = target_nvml_device(target)
+        && let Ok(mw) = device.enforced_power_limit()
+    {
+        map.insert("power_limit_w".into(), f64_value(mw as f64 / 1000.0));
+    }
 
     // Per-rail power (watts) from NVAPI PowerMonitor, keyed by the
     // descriptor's rail IDENTITY (correct on every GPU — laptop vs desktop

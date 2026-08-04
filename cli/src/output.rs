@@ -281,6 +281,20 @@ fn format_value_block_with_context(value: &Value, indent: usize, context: &str) 
                         ));
                         lines.extend(format_utilization_entries(indent + 1, child));
                     }
+                    // `power` is the NVAPI power-topology map
+                    // (`NvAPI_GPU_ClientPowerTopologyGetStatus`): keys are channel
+                    // names (TotalGpuPower / NormalizedTotalPower / …) and values
+                    // are 0–100 plain percentages of the board power budget. Append
+                    // a `%` unit to each numeric value (it is dimensionless but is
+                    // conventionally reported as a percentage).
+                    Value::Object(child) if is_power_topology_map(child) => {
+                        lines.push(format!(
+                            "{}{}",
+                            indent_spaces(indent),
+                            nvoc_cli_common::color::stylize_title(&format_label(key))
+                        ));
+                        lines.extend(format_power_entries(indent + 1, child));
+                    }
                     // `perf` carries two raw NVAPI words from PerfPoliciesGetStatus:
                     // `limits` (a PerfFlags bitmask of throttling reasons) and
                     // `unknown` (a driver load-level indicator, not an error).
@@ -758,6 +772,41 @@ fn bitmask_from_value(value: &Value) -> Option<u64> {
         Value::Object(obj) => obj.get("bits").and_then(Value::as_u64),
         _ => None,
     }
+}
+
+/// Is this object the NVAPI power-topology channel map? Its keys are channel
+/// names (`TotalGpuPower`, `NormalizedTotalPower`, …) with scalar values; any
+/// all-scalar object with at least one known power-topology channel key matches.
+fn is_power_topology_map(object: &serde_json::Map<String, Value>) -> bool {
+    if !object.values().all(is_scalar_value) {
+        return false;
+    }
+    object.keys().any(|k| {
+        matches!(k.as_str(), "TotalGpuPower" | "NormalizedTotalPower" | "TotalBoardPower")
+    })
+}
+
+/// Render the power-topology channel map. Each value is a 0–100 plain
+/// percentage of the board power budget, so a `%` unit is appended.
+fn format_power_entries(
+    indent: usize,
+    object: &serde_json::Map<String, Value>,
+) -> Vec<String> {
+    sorted_object_entries(object)
+        .iter()
+        .map(|(key, value)| {
+            let rendered = match value {
+                Value::Number(number) => format!("{}%", number),
+                _ => format_scalar(key, value),
+            };
+            format!(
+                "{}{}: {}",
+                indent_spaces(indent),
+                nvoc_cli_common::color::stylize_title(&format_label(key)),
+                nvoc_cli_common::color::stylize(&rendered, false)
+            )
+        })
+        .collect()
 }
 
 /// Decode the NVAPI perf-policy status (`perf` object from PerfPoliciesGetStatus).
@@ -1516,9 +1565,11 @@ mod tests {
 
         let rendered = format_human_output("get-status", &output).join("\n");
 
-        // Both power topology channels (board/GPU split) are shown.
-        assert!(rendered.contains("TotalGpuPower"));
-        assert!(rendered.contains("NormalizedTotalPower"));
+        // Both power topology channels (board/GPU split) are shown, each with a
+        // `%` unit (the values are 0–100 plain percentages). Keys are PascalCase
+        // enum variant names, rendered verbatim by format_label (no `_` to split).
+        assert!(rendered.contains("TotalGpuPower: 84%"));
+        assert!(rendered.contains("NormalizedTotalPower: 82%"));
         // Perf-decrease reason is decoded to friendly text (bitflags name array
         // -> "Power Control"), not the raw enum name.
         assert!(rendered.contains("Power Control"));
@@ -1989,9 +2040,6 @@ mod tests {
             }),
             Command::SetTgpWatt => json!({"applied": true, "tgp_watt": 140, "tgp_mw": 140000}),
             Command::ResetTgpWatt => json!({"applied": true, "default_watt": 100.0}),
-            Command::GetQboostPower => json!({"controller_index": 0, "power_watt": 25.0}),
-            Command::SetQboostPower => json!({"applied": true, "controller_index": 0, "qboost_watt": 25, "qboost_mw": 25000}),
-            Command::ResetQboostPower => json!({"applied": true}),
             Command::SetThermalLimitC => json!({"applied": true, "thermal_limit_c": 83}),
             Command::SetFanPercent => {
                 json!({"applied": true, "fan": "all", "policy": "manual", "level_percent": 65})

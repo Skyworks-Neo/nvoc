@@ -55,6 +55,20 @@ def test_format_metric_lines_full() -> None:
     assert "ARCH: Ada" in text
 
 
+def test_format_metric_lines_pwr_with_power_limit() -> None:
+    """PWR line appends the enforced power limit (live TGP cap) as `draw W / limit W`
+    when the backend reports it — mirroring nvidia-smi's `1W / 30W` form."""
+    status_with_limit = {"power_w": 1.653, "power_limit_w": 30}
+    text = "\n".join(_format_metric_lines(status_with_limit, "Ada"))
+    assert "PWR: 1.653 W / 30 W" in text
+
+    # Without a limit the line keeps the plain `draw W` form.
+    status_no_limit = {"power_w": 132}
+    text = "\n".join(_format_metric_lines(status_no_limit, "Ada"))
+    assert "PWR: 132 W" in text
+    assert "/" not in text
+
+
 def test_format_metric_lines_pcie_bandwidth_absent() -> None:
     """No bandwidth keys -> PCIE line keeps just the lane count."""
     status = {"pcie_lanes": 8}

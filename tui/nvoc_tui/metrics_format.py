@@ -261,6 +261,16 @@ def _format_metric_lines(status: dict, architecture: str) -> list[str]:
         temp_parts.append(f"MEM {_temp_c_str(status['temp_memory'])} C")
     temp_text = " | ".join(temp_parts)
 
+    # PWR line: live board power draw (watts), followed by the current enforced
+    # power limit (the live TGP cap, e.g. nvidia-smi's "Current Power Limit")
+    # when the backend reports it — mirrors nvidia-smi's `1W / 30W` form.
+    power_draw = status.get("power_w", "---")
+    power_limit = status.get("power_limit_w")
+    if isinstance(power_limit, (int, float)):
+        power_text = f"{power_draw} W / {power_limit:g} W"
+    else:
+        power_text = f"{power_draw} W"
+
     return [
         f"GPU: {status.get('gpu_clock_mhz', '---')} MHz",
         f"MEM: {status.get('mem_clock_mhz', '---')} MHz",
@@ -269,7 +279,7 @@ def _format_metric_lines(status: dict, architecture: str) -> list[str]:
         f"VOLT: {status.get('voltage_mv', '---')} mV",
         f"VFP LOCK: {vfp_lock_text}",
         f"TEMP: {temp_text}",
-        f"PWR: {status.get('power_w', '---')} W",
+        f"PWR: {power_text}",
         f"RAILS: {_power_rails_text(status) or '---'}",
         f"LOAD: {load_text}",
         f"VRAM: {vram_text}",

@@ -28,7 +28,7 @@ pub use operation::{
     ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock, ResetVfpLock,
     SetApiRestriction, SetApplicationsClocks, SetAutoBoost, SetAutoBoostDefault, SetClockOffset,
     SetCoolerLevels, SetDomainVfpDeltas, SetEdid, SetFanSpeed, SetLegacyClocks, SetLockedClocks,
-    SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiSensorLimits, SetNvapiDynamicBoost, SetNvapiTgpWatt, ResetNvapiTgpWatt, QueryNvapiTgpWattRange, TgpWattRangeInfo, QueryNvapiQboostPower, QboostPowerInfo, SetNvapiQboostPower, ResetNvapiQboostPower, SetNvmlPstateLock,
+    SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiSensorLimits, SetNvapiDynamicBoost, SetNvapiTgpWatt, ResetNvapiTgpWatt, QueryNvapiTgpWattRange, TgpWattRangeInfo, SetNvmlPstateLock,
     SetPowerLimit, SetPstateBaseVoltage, SetPstateClockOffset, SetTemperatureLimit,
     SetVfpFrequencyLock, SetVfpPointDelta, SetVfpRangeDelta, SetVfpVoltageLock, SetVoltageBoost,
     detect_gpu_type, fetch_gpu_type, find_matching_vfp_point, legacy_core_overvolt_ranges,

@@ -15,7 +15,7 @@ use nvoc_core::{
     ResetPstateBaseVoltages, ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock,
     ResetVfpLock, SetApiRestriction, SetApplicationsClocks, SetAutoBoost, SetAutoBoostDefault,
     SetClockOffset, SetCoolerLevels, SetEdid, SetFanSpeed, SetLegacyClocks, SetLockedClocks,
-    SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiSensorLimits, SetNvapiDynamicBoost, SetNvapiTgpWatt, ResetNvapiTgpWatt, QueryNvapiTgpWattRange, QueryNvapiQboostPower, SetNvapiQboostPower, ResetNvapiQboostPower, SetNvmlPstateLock,
+    SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiSensorLimits, SetNvapiDynamicBoost, SetNvapiTgpWatt, ResetNvapiTgpWatt, QueryNvapiTgpWattRange, SetNvmlPstateLock,
     SetPowerLimit, SetPstateBaseVoltage, SetPstateClockOffset, SetTemperatureLimit,
     SetVfpFrequencyLock, SetVfpPointDelta, SetVfpRangeDelta, SetVfpVoltageLock, SetVoltageBoost,
     VfpResetDomain, discover_targets, nvml_pstate_to_str, parse_nvapi_locked_voltage_target,
@@ -150,9 +150,6 @@ pub enum Command {
     GetTgpWattRange,
     SetTgpWatt,
     ResetTgpWatt,
-    GetQboostPower,
-    SetQboostPower,
-    ResetQboostPower,
     SetThermalLimitC,
     SetFanPercent,
     SetLockedClocksMhz,
@@ -224,9 +221,6 @@ impl Command {
             Self::GetTgpWattRange => "get-tgp-watt-range",
             Self::SetTgpWatt => "set-tgp-watt",
             Self::ResetTgpWatt => "reset-tgp-watt",
-            Self::GetQboostPower => "get-qboost-power",
-            Self::SetQboostPower => "set-qboost-power",
-            Self::ResetQboostPower => "reset-qboost-power",
             Self::SetThermalLimitC => "set-thermal-limit-c",
             Self::SetFanPercent => "set-fan-percent",
             Self::SetLockedClocksMhz => "set-locked-clocks-mhz",
@@ -291,12 +285,9 @@ impl Command {
             Self::SetPowerWatt => "Set NVML power limit in watts",
             Self::SetPowerPercent => "Set NVAPI power limit in percent",
             Self::SetDynamicBoost => "Set NVAPI PPAB / Dynamic-Boost enable (on/off)",
-            Self::GetTgpWattRange => "Read NVAPI notebook TGP-watts range (min/default/max)",
-            Self::SetTgpWatt => "Set NVAPI notebook TGP in watts (watts-form TGP slider)",
-            Self::ResetTgpWatt => "Reset NVAPI notebook TGP to rated/default",
-            Self::GetQboostPower => "Read NVAPI QBoost/Dynamic-Boost controller power",
-            Self::SetQboostPower => "Set NVAPI QBoost/Dynamic-Boost power in watts (PPAB slider)",
-            Self::ResetQboostPower => "Reset NVAPI QBoost/Dynamic-Boost power",
+            Self::GetTgpWattRange => "Read NVAPI TGP-watts range (min/default/max; mobile + desktop)",
+            Self::SetTgpWatt => "Set NVAPI TGP in watts (mobile watts-form TGP slider)",
+            Self::ResetTgpWatt => "Reset NVAPI TGP to rated/default (mobile)",
             Self::SetThermalLimitC => "Set thermal limit in Celsius",
             Self::SetFanPercent => "Set fan speed/cooler level in percent",
             Self::SetLockedClocksMhz => "Lock core or memory clocks to a MHz range",
@@ -374,7 +365,6 @@ impl Command {
             | Self::SetPowerPercent
             | Self::SetDynamicBoost
             | Self::SetTgpWatt
-            | Self::SetQboostPower
             | Self::SetThermalLimitC
             | Self::SetFanPercent
             | Self::SetVfpVoltageLock
@@ -419,7 +409,6 @@ impl Command {
             }
             Self::SetVfpVoltageLock => &["feedback"],
             Self::SetTgpWatt | Self::ResetTgpWatt => &["policy-index"],
-            Self::SetQboostPower | Self::ResetQboostPower => &["controller-index"],
             _ => &[],
         }
     }
@@ -467,11 +456,6 @@ impl Command {
                 "arg_tgp_watt",
                 "WATT",
                 "TGP in watts, for example 140 or 140W",
-            )],
-            Self::SetQboostPower => vec![PositionalArg::free(
-                "arg_qboost_watt",
-                "WATT",
-                "QBoost/Dynamic-Boost power in watts, for example 25 or 25W",
             )],
             Self::SetThermalLimitC => vec![PositionalArg::hyphen(
                 "arg_celsius",
@@ -633,72 +617,72 @@ impl PositionalArg {
     }
 }
 
+// Commands listed in alphabetical order by their CLI subcommand name (the order
+// here is the order they appear in `--help`). The enum variant order is
+// independent and left unchanged (many match arms depend on it).
 const COMMANDS: &[Command] = &[
-    Command::ListGpus,
-    Command::ListDisplays,
-    Command::GetInfo,
-    Command::GetUuid,
-    Command::GetStatus,
-    Command::GetSettings,
-    Command::GetVfp,
-    Command::GetVfpPointVoltageMv,
-    Command::GetPowerWatt,
-    Command::GetClockOffsetMhz,
-    Command::GetPstates,
-    Command::GetSupportedAppClocks,
-    Command::GetFanInfo,
-    Command::GetTemperatureThresholds,
-    Command::GetThrottleReasons,
-    Command::GetTdpTempLimits,
-    Command::ProbeVoltageLimits,
     Command::CheckVoltageFrequency,
+    Command::ClearEdid,
+    Command::GetApiRestriction,
+    Command::GetAutoBoost,
+    Command::GetClockOffsetMhz,
+    Command::GetEdid,
+    Command::GetFanInfo,
+    Command::GetInfo,
     Command::GetLegacyOvervoltRanges,
     Command::GetLegacyP0CoreMaxVoltageDelta,
+    Command::GetPowerWatt,
     Command::GetPstateBaseVoltageUv,
-    Command::GetVoltageBoostPercent,
-    Command::GetAutoBoost,
-    Command::GetApiRestriction,
-    Command::GetEdid,
-    Command::SetCoreOffsetMhz,
-    Command::SetMemoryOffsetMhz,
-    Command::SetClockOffsetMhz,
-    Command::SetPowerWatt,
-    Command::SetPowerPercent,
-    Command::SetDynamicBoost,
+    Command::GetPstates,
+    Command::GetSettings,
+    Command::GetStatus,
+    Command::GetSupportedAppClocks,
+    Command::GetTdpTempLimits,
+    Command::GetTemperatureThresholds,
+    Command::GetThrottleReasons,
     Command::GetTgpWattRange,
-    Command::SetTgpWatt,
-    Command::ResetTgpWatt,
-    Command::GetQboostPower,
-    Command::SetQboostPower,
-    Command::ResetQboostPower,
-    Command::SetThermalLimitC,
-    Command::SetFanPercent,
-    Command::SetLockedClocksMhz,
-    Command::SetVfpVoltageLock,
-    Command::SetVfpPointDeltaMhz,
-    Command::SetVfpRangeDeltaMhz,
-    Command::SetPstateLock,
-    Command::SetApplicationsClocksMhz,
-    Command::SetPstateBaseVoltageUv,
-    Command::SetVoltageBoostPercent,
-    Command::SetAutoBoost,
-    Command::SetAutoBoostDefault,
-    Command::SetApiRestriction,
-    Command::SetEdid,
-    Command::ClearEdid,
-    Command::SetLegacyClocksMhz,
-    Command::ResetCoreOffsetMhz,
-    Command::ResetMemoryOffsetMhz,
+    Command::GetUuid,
+    Command::GetVfp,
+    Command::GetVfpPointVoltageMv,
+    Command::GetVoltageBoostPercent,
+    Command::ListDisplays,
+    Command::ListGpus,
+    Command::ProbeVoltageLimits,
     Command::ResetApplicationsClocks,
-    Command::ResetLockedClocks,
+    Command::ResetCoreOffsetMhz,
     Command::ResetFan,
-    Command::ResetVfpDeltas,
-    Command::ResetVfpLock,
+    Command::ResetLockedClocks,
+    Command::ResetMemoryOffsetMhz,
     Command::ResetPowerPercent,
-    Command::ResetThermalLimitC,
     Command::ResetPstateBaseVoltages,
     Command::ResetPstateClockOffsets,
+    Command::ResetThermalLimitC,
+    Command::ResetTgpWatt,
+    Command::ResetVfpDeltas,
+    Command::ResetVfpLock,
     Command::ResetVoltageBoostPercent,
+    Command::SetApiRestriction,
+    Command::SetApplicationsClocksMhz,
+    Command::SetAutoBoost,
+    Command::SetAutoBoostDefault,
+    Command::SetClockOffsetMhz,
+    Command::SetCoreOffsetMhz,
+    Command::SetDynamicBoost,
+    Command::SetEdid,
+    Command::SetFanPercent,
+    Command::SetLegacyClocksMhz,
+    Command::SetLockedClocksMhz,
+    Command::SetMemoryOffsetMhz,
+    Command::SetPstateBaseVoltageUv,
+    Command::SetPstateLock,
+    Command::SetPowerPercent,
+    Command::SetPowerWatt,
+    Command::SetThermalLimitC,
+    Command::SetTgpWatt,
+    Command::SetVfpPointDeltaMhz,
+    Command::SetVfpRangeDeltaMhz,
+    Command::SetVfpVoltageLock,
+    Command::SetVoltageBoostPercent,
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -906,7 +890,6 @@ fn option_takes_value(token: &str) -> bool {
             | "--fan"
             | "--policy"
             | "--policy-index"
-            | "--controller-index"
             | "--infer-missing-default"
     )
 }
@@ -1003,11 +986,6 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .value_name("INDEX")
             .action(ArgAction::Set)
             .help("TGP power-policy table index (default 2); see get-tgp-watt-range"),
-        "controller-index" => Arg::new("controller-index")
-            .long("controller-index")
-            .value_name("INDEX")
-            .action(ArgAction::Set)
-            .help("QBoost controller index (default: the active controller); see get-qboost-power"),
         "infer-missing-default" => Arg::new("infer-missing-default")
             .long("infer-missing-default")
             .value_name("BOOL")
@@ -1543,6 +1521,18 @@ fn execute_target(
                 {
                     map.insert("power_draw_w".to_string(), json!(draw_w));
                 }
+                // Current enforced power limit (the live TGP cap), from NVML
+                // `nvmlDeviceGetEnforcedPowerLimit` — the same "Current Power
+                // Limit" nvidia-smi -q -d POWER reports (e.g. the `30W` in
+                // `1W / 30W`). Preferred over the configurable management limit,
+                // which returns NotSupported on most mobile GPUs. Available on
+                // both mobile and desktop.
+                if let Ok(nvml) = target.nvml()
+                    && let Some(limit_w) =
+                        nvoc_core::nvml::query_nvml_power_limit_watts(nvml, target.id.0)
+                {
+                    map.insert("power_limit_w".to_string(), json!(limit_w));
+                }
                 // Per-rail power (watts) from NVAPI PowerMonitor GetStatus
                 // Per-rail power (watts) from NVAPI PowerMonitor, keyed by the
                 // descriptor's rail IDENTITY (not a fixed name) so it's correct
@@ -1862,37 +1852,6 @@ fn execute_target(
                 "applied": true,
                 "default_watt": default_mw.map(|mw| mw as f64 / 1000.0),
             }))
-        }
-        Command::GetQboostPower => {
-            let info = run(target, QueryNvapiQboostPower)?.output;
-            Ok(match info {
-                Some(r) => json!({
-                    "controller_index": r.controller_index,
-                    "power_watt": r.power_watt,
-                }),
-                None => json!({"supported": false}),
-            })
-        }
-        Command::SetQboostPower => {
-            let watts = parse_u32_unit(&invocation.positionals[0], "w", "watt")?;
-            let controller_index = option_one(invocation, "controller-index")
-                .map(|s| s.parse::<usize>())
-                .transpose()
-                .map_err(|e| CliError::new(format!("invalid --controller-index: {e}")))?;
-            let (idx, mw) = run(
-                target,
-                SetNvapiQboostPower { watts, controller_index },
-            )?
-            .output;
-            Ok(json!({"applied": true, "controller_index": idx, "qboost_watt": watts, "qboost_mw": mw}))
-        }
-        Command::ResetQboostPower => {
-            let controller_index = option_one(invocation, "controller-index")
-                .map(|s| s.parse::<usize>())
-                .transpose()
-                .map_err(|e| CliError::new(format!("invalid --controller-index: {e}")))?;
-            run(target, ResetNvapiQboostPower { controller_index })?;
-            Ok(json!({"applied": true}))
         }
         Command::SetThermalLimitC => {
             let celsius = parse_i32_unit(&invocation.positionals[0], "c", "celsius")?;

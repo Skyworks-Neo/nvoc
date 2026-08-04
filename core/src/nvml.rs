@@ -82,6 +82,27 @@ pub fn query_nvml_power_draw_watts(nvml: &Nvml, gpu_id: u32) -> Option<f32> {
     Some(mw as f32 / 1000.0)
 }
 
+/// Query the GPU's current **enforced** power limit in watts via NVML.
+///
+/// Wraps `nvmlDeviceGetEnforcedPowerLimit` (`Device::enforced_power_limit`),
+/// the limit currently being enforced by the driver — the same value
+/// `nvidia-smi -q -d POWER` reports as "Current Power Limit" (e.g. the
+/// `30W` in `1W / 30W`). This is the live TGP the GPU is capped at right now.
+///
+/// This is preferred over [`query_nvml_power_watts`]'s
+/// `power_management_limit()` because the *configurable* management limit
+/// returns `NotSupported` on many mobile GPUs (RTX 4060 Laptop included),
+/// while the *enforced* limit is universally readable. On desktop both agree
+/// with the configured limit; on mobile the enforced limit tracks the active
+/// TGP policy.
+///
+/// `gpu_id` uses the NVAPI encoding: `PCI_Bus_Number × 256`.
+pub fn query_nvml_power_limit_watts(nvml: &Nvml, gpu_id: u32) -> Option<f32> {
+    let device = find_nvml_device(nvml, gpu_id)?;
+    let mw = device.enforced_power_limit().ok()?;
+    Some(mw as f32 / 1000.0)
+}
+
 /// Query bidirectional real-time PCIe bandwidth via NVML
 /// (`nvmlDeviceGetPcieThroughput`), nvitop/HWMonitor-style. Returns `(tx_mibps,
 /// rx_mibps)` where TX = bytes the GPU sends (GPU→host) and RX = bytes the GPU
