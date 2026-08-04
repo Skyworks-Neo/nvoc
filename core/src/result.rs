@@ -130,7 +130,7 @@ pub struct TemperatureThreshold {
 /// private ClientThermalTarget GET-prime (0xC4554575). `policy_index` is the
 /// slot in the driver's policy table; on RTX 4060 Laptop index 2 is the "GPU
 /// Target Temperature" wall (matches nvidia-smi and NVML's GpsCurr channel).
-/// Used by `get-temperature-thresholds --nvapi` for per-GPU index discovery.
+/// Used by `get-temp-thresholds --nvapi` for per-GPU index discovery.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TargetTempPolicy {
     pub policy_index: usize,

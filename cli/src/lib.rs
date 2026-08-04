@@ -203,7 +203,7 @@ impl Command {
             Self::GetPstates => "get-pstates",
             Self::GetSupportedAppClocks => "get-supported-app-clocks",
             Self::GetFanInfo => "get-fan-info",
-            Self::GetTemperatureThresholds => "get-temperature-thresholds",
+            Self::GetTemperatureThresholds => "get-temp-thresholds",
             Self::GetThrottleReasons => "get-throttle-reasons",
             Self::GetTdpTempLimits => "get-tdp-temp-limits",
             Self::ProbeVoltageLimits => "probe-voltage-limits",
@@ -225,7 +225,7 @@ impl Command {
             Self::SetTgpWatt => "set-tgp-watt",
             Self::ResetTgpWatt => "reset-tgp-watt",
             Self::SetThermalLimitC => "set-thermal-limit-c",
-            Self::SetTemperatureThresholds => "set-temperature-thresholds",
+            Self::SetTemperatureThresholds => "set-temp-thresholds",
             Self::SetFanPercent => "set-fan-percent",
             Self::SetLockedClocksMhz => "set-locked-clocks-mhz",
             Self::SetVfpVoltageLock => "set-vfp-voltage-lock",
@@ -3086,7 +3086,7 @@ mod tests {
 
     #[test]
     fn temperature_thresholds_supports_both_backends() {
-        // get-temperature-thresholds advertises BOTH backends so `--nvapi`
+        // get-temp-thresholds advertises BOTH backends so `--nvapi`
         // (target-temp policy indices) is accepted, but auto prefers NVML
         // (the classic Shutdown/Slowdown/... table).
         assert!(
@@ -3104,11 +3104,11 @@ mod tests {
             BackendAdapter::Nvml
         );
         // Explicit --nvapi parses and routes to the nvapi backend.
-        let invocation = parse_args(["get-temperature-thresholds", "--nvapi"]).unwrap();
+        let invocation = parse_args(["get-temp-thresholds", "--nvapi"]).unwrap();
         assert_eq!(invocation.command, Some(Command::GetTemperatureThresholds));
         assert_eq!(invocation.backend, BackendChoice::Nvapi);
         // No flag parses to auto (which routes to NVML via auto_preferred_backend).
-        let invocation = parse_args(["get-temperature-thresholds"]).unwrap();
+        let invocation = parse_args(["get-temp-thresholds"]).unwrap();
         assert_eq!(invocation.backend, BackendChoice::Auto);
     }
 

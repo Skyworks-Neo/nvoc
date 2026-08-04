@@ -1109,7 +1109,7 @@ impl GpuOperation for QueryNvapiTgpWattRange {
 /// Query every NVAPI target-temperature (温度墙) policy slot the driver exposes
 /// (private ClientThermalTarget GET-prime 0xC4554575). Returns one
 /// [`TargetTempPolicy`] per slot; empty on GPUs/driver paths that don't expose
-/// the table. Drives the `--nvapi` branch of `get-temperature-thresholds` and
+/// the table. Drives the `--nvapi` branch of `get-temp-thresholds` and
 /// lets callers discover which `policy_index` is the "GPU Target Temperature"
 /// wall (idx 2 on RTX 4060 Laptop) instead of hardcoding it.
 #[derive(Clone, Copy, Debug)]

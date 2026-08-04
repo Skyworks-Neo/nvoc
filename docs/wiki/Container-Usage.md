@@ -32,7 +32,7 @@ Confirmed read-only paths include:
 - `get-power-watt`
 - `get-fan-info`
 - `get-pstates`
-- `get-temperature-thresholds`
+- `get-temp-thresholds`
 - `get-throttle-reasons`
 - `get-clock-offset-mhz`
 

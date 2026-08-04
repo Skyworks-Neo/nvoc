@@ -77,7 +77,7 @@ fn format_human_output(function: &str, output: &Value) -> Vec<String> {
             output,
             &[("memory_mhz", "Memory"), ("graphics_mhz", "Graphics")],
         ),
-        "get-temperature-thresholds" => format_temperature_thresholds_output(output),
+        "get-temp-thresholds" => format_temperature_thresholds_output(output),
         "get-throttle-reasons" => format_throttle_reasons_output(output),
         "get-legacy-overvolt-ranges" => format_object_array(
             output,
@@ -194,7 +194,7 @@ fn format_object_array(output: &Value, fields: &[(&str, &str)]) -> Vec<String> {
 /// Prints the instantaneous per-reason active snapshot, then appends the
 /// driver's cumulative per-policy violation times (the "how long was each
 /// modality limiting" breakdown), mirroring the historical `status` output.
-/// Render the temperature-thresholds array. NVML entries carry `name`+`celsius`;
+/// Render the temp-thresholds array. NVML entries carry `name`+`celsius`;
 /// NVAPI target-temp (温度墙) entries additionally carry `policy_index` (kept in
 /// JSON output, dropped from human output since the index already shows up in
 /// the `TargetTemp[<idx>]` name). The classic NVML row reads
