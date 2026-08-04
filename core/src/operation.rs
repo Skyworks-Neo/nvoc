@@ -1125,22 +1125,46 @@ impl GpuOperation for QueryNvapiTargetTempPolicies {
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
         Ok(target
             .nvapi()?
-            .target_temperature_policies()
+            .target_temperature_policies_with_info()
             .map_err(Error::from)?
             .into_iter()
-            .map(|(policy_index, celsius)| TargetTempPolicy {
-                policy_index,
-                celsius,
+            .map(|entry| TargetTempPolicy {
+                policy_index: entry.policy_index,
+                celsius: entry.current,
+                min: entry.min,
+                default: entry.default,
+                max: entry.max,
             })
             .collect())
     }
 }
 
+/// The auto-discovered target-temp policy index (private GetInfo 0x2F69F8E5):
+/// GPS index if the VBIOS exposes one, else the acoustics fallback (desktop =
+/// NVML AcousticCurr), else None. Lets the CLI tag the wall slot without
+/// hardcoding idx 2 or touching the crate-private `target.nvapi()`.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiTargetTempPolicyIndex;
+
+impl GpuOperation for QueryNvapiTargetTempPolicyIndex {
+    type Output = Option<usize>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiTargetTempPolicyIndex
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .target_temp_policy_index()
+            .map_err(Error::from)
+    }
+}
+
 /// Set one NVAPI target-temperature (温度墙) policy slot (private RMW:
-/// GET-prime 0xC4554575 + SET 0xE097144F). `policy_index` defaults to 2 (the
-/// confirmed target-temp wall on RTX 4060 Laptop); other indices are accepted
-/// but the driver may reject them — the CLI uses this to probe which slots are
-/// actually writable.
+/// GET-prime 0xC4554575 + SET 0xE097144F). `policy_index` defaults to the
+/// auto-discovered slot (private GetInfo: GPS idx, else acoustics fallback) —
+/// pass one explicitly to override or probe writability of other slots.
 #[derive(Clone, Debug, Default)]
 pub struct SetNvapiTargetTemp {
     pub celsius: f32,
@@ -1155,7 +1179,17 @@ impl GpuOperation for SetNvapiTargetTemp {
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
-        let idx = self.policy_index.unwrap_or(2);
+        // Default policy_index is auto-discovered via the private GetInfo
+        // (GPS idx, else acoustics fallback) rather than hardcoded. Falls back
+        // to 2 only if discovery itself fails (legacy path).
+        let idx = match self.policy_index {
+            Some(i) => i,
+            None => target
+                .nvapi()?
+                .target_temp_policy_index()
+                .map_err(Error::from)?
+                .unwrap_or(2),
+        };
         target
             .nvapi()?
             .set_target_temperature(self.celsius, idx)

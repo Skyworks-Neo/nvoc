@@ -194,15 +194,73 @@ fn format_object_array(output: &Value, fields: &[(&str, &str)]) -> Vec<String> {
 /// Prints the instantaneous per-reason active snapshot, then appends the
 /// driver's cumulative per-policy violation times (the "how long was each
 /// modality limiting" breakdown), mirroring the historical `status` output.
-/// Render the temp-thresholds array. NVML entries carry `name`+`celsius`;
-/// NVAPI target-temp (温度墙) entries additionally carry `policy_index` (kept in
-/// JSON output, dropped from human output since the index already shows up in
-/// the `TargetTemp[<idx>]` name). The classic NVML row reads
-/// "Shutdown | Limit 94 C"; an NVAPI policy slot reads "TargetTemp[2] | Limit 87 C"
-/// so the index mapping to nvidia-smi's "GPU Target Temperature" (and NVML's
-/// GpsCurr channel) is visible per-GPU.
+/// Render the temp-thresholds array. Two row shapes:
+/// - NVML: `Shutdown | Limit 94 C` (name + celsius only).
+/// - NVAPI target-temp (温度墙): `Threshold 2 (TargetTemp) | Current 87 C | Min 75 / Max 87 C`
+///   — the auto-discovered wall slot is tagged `(TargetTemp)`, and the VBIOS
+///   min/max range is appended when GetInfo exposed it. An entry is treated as
+///   NVAPI when it carries a `policy_index` field.
 fn format_temperature_thresholds_output(output: &Value) -> Vec<String> {
-    format_object_array(output, &[("name", "Threshold"), ("celsius", "Limit")])
+    let Some(items) = output.as_array() else {
+        return format_value_block(output, 1);
+    };
+    if items.is_empty() {
+        return vec![format!(
+            "  {}",
+            nvoc_cli_common::color::stylize("No entries", false)
+        )];
+    }
+    items
+        .iter()
+        .map(|item| {
+            let obj = item.as_object();
+            let name = obj
+                .and_then(|o| o.get("name"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let render_temp = |key: &str| -> String {
+                obj.and_then(|o| o.get(key))
+                    .map(|v| format_scalar(key, v))
+                    .unwrap_or_else(|| "---".into())
+            };
+            let label = nvoc_cli_common::color::stylize_title("Threshold");
+            let row = if obj.is_some_and(|o| o.contains_key("policy_index")) {
+                // NVAPI row: Current + Min/Max range. format_scalar already
+                // appends the ` C` unit (key ends in _celsius/_c), so don't
+                // add it again here.
+                let cur = nvoc_cli_common::color::stylize(
+                    &format!("Current {}", render_temp("celsius")),
+                    false,
+                );
+                let min = obj
+                    .and_then(|o| o.get("min_c"))
+                    .map(|v| format_scalar("min_c", v));
+                let max = obj
+                    .and_then(|o| o.get("max_c"))
+                    .map(|v| format_scalar("max_c", v));
+                match (min, max) {
+                    (Some(mn), Some(mx)) => {
+                        let range = nvoc_cli_common::color::stylize(
+                            &format!("Min {} / Max {}", mn, mx),
+                            false,
+                        );
+                        format!("{} {} | {} | {}", label, name, cur, range)
+                    }
+                    _ => format!("{} {} | {}", label, name, cur),
+                }
+            } else {
+                // NVML row: single Limit value. celsius is a u32 (no _c key),
+                // so render it bare and add the unit once.
+                let raw = obj
+                    .and_then(|o| o.get("celsius"))
+                    .map(|v| format_scalar("celsius", v))
+                    .unwrap_or_else(|| "N/A".into());
+                let limit = nvoc_cli_common::color::stylize(&format!("Limit {}", raw), false);
+                format!("{} {} | {}", label, name, limit)
+            };
+            format!("  {}", row)
+        })
+        .collect()
 }
 
 fn format_throttle_reasons_output(output: &Value) -> Vec<String> {

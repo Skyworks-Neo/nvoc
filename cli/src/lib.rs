@@ -8,20 +8,20 @@ use nvoc_core::{
     Percentage, ProbeVoltageLimits, QueryApiRestriction, QueryAutoBoost, QueryClockOffset,
     QueryDisplays, QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings,
     QueryGpuStatus, QueryLegacyCoreOvervoltRanges, QueryLegacyP0CoreMaxVoltageDelta,
-    QueryNvapiTargetTempPolicies, QueryNvapiTgpWattRange, QueryPowerLimits, QueryPstateBaseVoltage,
-    QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
-    QueryThrottleReasons, QueryVfpPointVoltage, QueryViolationStatus, QueryVoltageBoost,
-    ResetApplicationsClocks, ResetCoolerLevels, ResetFanSpeed, ResetLockedClocks,
-    ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetPstateBaseVoltages,
-    ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock, ResetVfpLock,
-    SetApiRestriction, SetApplicationsClocks, SetAutoBoost, SetAutoBoostDefault, SetClockOffset,
-    SetCoolerLevels, SetEdid, SetFanSpeed, SetLegacyClocks, SetLockedClocks, SetNvapiDynamicBoost,
-    SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiSensorLimits, SetNvapiTargetTemp,
-    SetNvapiTgpWatt, SetNvmlPstateLock, SetPowerLimit, SetPstateBaseVoltage, SetPstateClockOffset,
-    SetTemperatureLimit, SetVfpFrequencyLock, SetVfpPointDelta, SetVfpRangeDelta,
-    SetVfpVoltageLock, SetVoltageBoost, VfpResetDomain, discover_targets, nvml_pstate_to_str,
-    parse_nvapi_locked_voltage_target, parse_nvml_fan_control_policy, parse_nvml_pstate, run,
-    select_targets,
+    QueryNvapiTargetTempPolicies, QueryNvapiTargetTempPolicyIndex, QueryNvapiTgpWattRange,
+    QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks,
+    QueryTdpTempLimits, QueryTemperatureThresholds, QueryThrottleReasons, QueryVfpPointVoltage,
+    QueryViolationStatus, QueryVoltageBoost, ResetApplicationsClocks, ResetCoolerLevels,
+    ResetFanSpeed, ResetLockedClocks, ResetNvapiPowerLimits, ResetNvapiSensorLimits,
+    ResetNvapiTgpWatt, ResetPstateBaseVoltages, ResetPstateClockOffsets, ResetVfpDeltas,
+    ResetVfpFrequencyLock, ResetVfpLock, SetApiRestriction, SetApplicationsClocks, SetAutoBoost,
+    SetAutoBoostDefault, SetClockOffset, SetCoolerLevels, SetEdid, SetFanSpeed, SetLegacyClocks,
+    SetLockedClocks, SetNvapiDynamicBoost, SetNvapiPowerLimits, SetNvapiPstateLock,
+    SetNvapiSensorLimits, SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvmlPstateLock, SetPowerLimit,
+    SetPstateBaseVoltage, SetPstateClockOffset, SetTemperatureLimit, SetVfpFrequencyLock,
+    SetVfpPointDelta, SetVfpRangeDelta, SetVfpVoltageLock, SetVoltageBoost, VfpResetDomain,
+    discover_targets, nvml_pstate_to_str, parse_nvapi_locked_voltage_target,
+    parse_nvml_fan_control_policy, parse_nvml_pstate, run, select_targets,
 };
 use serde_json::{Value, json};
 use time::OffsetDateTime;
@@ -1711,24 +1711,40 @@ fn execute_target(
             //  - `--nvml` or auto  → NVML table only.
             let mut entries: Vec<Value> = Vec::new();
             if adapter == BackendAdapter::Nvapi {
+                // Auto-discover the target-temp wall index (private GetInfo:
+                // GPS idx, else acoustics fallback) so the "(TargetTemp)" tag
+                // follows the driver's own choice instead of a hardcoded 2.
+                let chosen_idx = run(target, QueryNvapiTargetTempPolicyIndex)
+                    .ok()
+                    .and_then(|r| r.output);
                 let policies = run(target, QueryNvapiTargetTempPolicies)?.output;
                 for p in policies {
                     // Name is just the index (the human renderer prefixes the
-                    // "Threshold" label, so "2" -> "Threshold 2"). Only idx 2
-                    // (the nvidia-smi "GPU Target Temperature" wall on RTX 4060
-                    // Laptop — also NVML's GpsCurr channel) gets the
-                    // "(TargetTemp)" tag. Other indices are not yet mapped to
-                    // a named thermal policy.
-                    let name = if p.policy_index == 2 {
+                    // "Threshold" label, so "2" -> "Threshold 2"). Only the
+                    // auto-discovered wall slot gets the "(TargetTemp)" tag.
+                    let is_wall = chosen_idx == Some(p.policy_index);
+                    let name = if is_wall {
                         format!("{} (TargetTemp)", p.policy_index)
                     } else {
                         format!("{}", p.policy_index)
                     };
-                    entries.push(json!({
+                    let mut entry = json!({
                         "name": name,
                         "policy_index": p.policy_index,
                         "celsius": p.celsius,
-                    }));
+                    });
+                    if let Some(obj) = entry.as_object_mut() {
+                        if let Some(mn) = p.min {
+                            obj.insert("min_c".into(), json!(mn));
+                        }
+                        if let Some(def) = p.default {
+                            obj.insert("default_c".into(), json!(def));
+                        }
+                        if let Some(mx) = p.max {
+                            obj.insert("max_c".into(), json!(mx));
+                        }
+                    }
+                    entries.push(entry);
                 }
             } else {
                 let thresholds = run(target, QueryTemperatureThresholds)?.output;

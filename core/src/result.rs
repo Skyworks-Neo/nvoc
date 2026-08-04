@@ -52,6 +52,7 @@ pub enum OperationKind {
     ResetNvapiTgpWatt,
     QueryNvapiTgpWattRange,
     QueryNvapiTargetTempPolicies,
+    QueryNvapiTargetTempPolicyIndex,
     SetNvapiTargetTemp,
     ResetNvapiPowerLimits,
     ResetNvapiSensorLimits,
@@ -131,10 +132,21 @@ pub struct TemperatureThreshold {
 /// slot in the driver's policy table; on RTX 4060 Laptop index 2 is the "GPU
 /// Target Temperature" wall (matches nvidia-smi and NVML's GpsCurr channel).
 /// Used by `get-temp-thresholds --nvapi` for per-GPU index discovery.
+///
+/// `current` is the live value; `min`/`default`/`max` are the VBIOS range from
+/// the private ClientThermalPolicies GetInfo (0x2F69F8E5), None when the driver
+/// didn't expose that slot's range.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TargetTempPolicy {
     pub policy_index: usize,
+    /// Live current target temp (celsius).
     pub celsius: f32,
+    /// VBIOS minimum (writable floor), if known.
+    pub min: Option<f32>,
+    /// VBIOS rated/default, if known.
+    pub default: Option<f32>,
+    /// VBIOS maximum (writable ceiling), if known.
+    pub max: Option<f32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
