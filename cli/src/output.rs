@@ -308,7 +308,7 @@ fn format_pstate_native_output(output: &Value) -> Vec<String> {
             ("graphics", "Graphics"),
             ("memory", "Memory"),
             ("video", "Video"),
-            ("unknown", "Unknown"),
+            ("host", "Host"),
         ] {
             let max = entry.get(&format!("max_{dom}_mhz")).and_then(Value::as_f64);
             let min = entry.get(&format!("min_{dom}_mhz")).and_then(Value::as_f64);

@@ -1807,7 +1807,7 @@ fn execute_target(
             let domain_name = |d: usize| -> Option<&'static str> {
                 match d {
                     0 => Some("graphics"),
-                    1 => Some("unknown"), // domain 1 — identity unconfirmed, shown as Unknown
+                    1 => Some("host"), // domain 1 = Host (confirmed via TUI)
                     2 => Some("memory"),
                     3 => Some("video"),
                     _ => None,
