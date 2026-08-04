@@ -54,6 +54,8 @@ pub enum OperationKind {
     QueryNvapiTargetTempPolicies,
     QueryNvapiTargetTempPolicyIndex,
     SetNvapiTargetTemp,
+    QueryNvapiDNotifier,
+    SetNvapiDNotifier,
     ResetNvapiPowerLimits,
     ResetNvapiSensorLimits,
     ResetCoolerLevels,
@@ -147,6 +149,32 @@ pub struct TargetTempPolicy {
     pub default: Option<f32>,
     /// VBIOS maximum (writable ceiling), if known.
     pub max: Option<f32>,
+}
+
+/// One D-Notifier (D0-notify / "extern power state") level: the D level number
+/// (1..5) and the power cap it imposes when active. `None` power means
+/// "Unlimited" (only ever true for D1). RE'd from GPUMon `[GPUHandle::
+/// pollDNotifyLimit]` ("D{n}({power}mW)" string); mW values cross-checked live
+/// on RTX 4060 Laptop (D2=55W, D3=45W, D4=33W, D5=10W, D1=Unlimited).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DNotifierLevel {
+    /// D level number, 1..5 (D1..D5). Render as `format!("D{}", level)`.
+    pub level: u8,
+    /// Power cap in **watts** when this level is active; `None` = Unlimited (D1).
+    pub watts: Option<f64>,
+}
+
+/// D-Notifier current state read via the private ClientPowerPoliciesGetInfo
+/// (0x67F31384): the active D level plus the full D1..D5 power-cap table.
+/// Note the D-Notifier cap and the TGP-watts wall share the same power-policy
+/// table, so the effective power limit is the SMALLER of the two — that is why
+/// setting D-Notifier too low silently clamps the TGP wall.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DNotifierInfo {
+    /// The currently-active D level (None when driver reports N/A).
+    pub active: Option<u8>,
+    /// The D1..D5 power-cap table (always 5 entries, in D1→D5 order).
+    pub levels: Vec<DNotifierLevel>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

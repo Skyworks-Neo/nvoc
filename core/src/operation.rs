@@ -2,11 +2,11 @@ use super::error::Error;
 use super::nvapi as low_nvapi;
 use super::nvml as low_nvml;
 use super::result::{
-    ApiRestrictionState, AppliedValue, AutoBoostState, BatchReport, ClockOffset, DisplayInfo,
-    EdidData, FanInfo, OperationKind, OperationReport, PstateBaseVoltage, PstateClockRange,
-    SupportedApplicationClocks, TargetOutcome, TargetTempPolicy, TdpTempLimits,
-    TemperatureThreshold, ThrottleReason, ViolationEntry, ViolationStatusReport, VoltageBoostState,
-    VoltageFrequencyCheck,
+    ApiRestrictionState, AppliedValue, AutoBoostState, BatchReport, ClockOffset, DNotifierInfo,
+    DNotifierLevel, DisplayInfo, EdidData, FanInfo, OperationKind, OperationReport,
+    PstateBaseVoltage, PstateClockRange, SupportedApplicationClocks, TargetOutcome,
+    TargetTempPolicy, TdpTempLimits, TemperatureThreshold, ThrottleReason, ViolationEntry,
+    ViolationStatusReport, VoltageBoostState, VoltageFrequencyCheck,
 };
 use super::target::GpuTarget;
 use super::types::{NvapiLockedVoltageTarget, VfpResetDomain};
@@ -1103,6 +1103,80 @@ impl GpuOperation for QueryNvapiTgpWattRange {
                 default_watt: r.default_mw.map(|mw| mw as f64 / 1000.0),
                 max_watt: r.max_mw.map(|mw| mw as f64 / 1000.0),
             }))
+    }
+}
+
+/// Query the D-Notifier (D0-notify) current level + the D1..D5 power-cap table
+/// via the private ClientPowerPoliciesGetInfo (NDA 0x67F31384) — the same call
+/// `QueryNvapiTgpWattRange` uses; the D-Notifier fields live in the struct's
+/// tail. Returns `None` where the driver doesn't expose the private interface.
+/// Power values are converted mW → watts for ergonomic CLI output.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiDNotifier;
+
+impl GpuOperation for QueryNvapiDNotifier {
+    type Output = Option<DNotifierInfo>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiDNotifier
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        Ok(target
+            .nvapi()?
+            .dnotify_info()
+            .map_err(Error::from)?
+            .map(|r| DNotifierInfo {
+                active: r.active.as_ref().map(|l| l.level),
+                levels: r
+                    .levels
+                    .iter()
+                    .map(|l| DNotifierLevel {
+                        level: l.level,
+                        watts: l.power_mw.map(|mw| mw as f64 / 1000.0),
+                    })
+                    .collect(),
+            }))
+    }
+}
+
+/// Set the D-Notifier (D0-notify) limit to a D level (1..5). Maps the CLI
+/// level to the signed driver code (-1=D1/Unlimited, 0..3=D2..D5) exactly as
+/// GPUMon's `[GPUHandle::setDNotifyLimit]` switch does, then calls the raw
+/// two-arg setter (NDA 0x48E0847D).
+#[derive(Clone, Copy, Debug)]
+pub struct SetNvapiDNotifier {
+    /// D level, 1..5.
+    pub level: u8,
+}
+
+impl SetNvapiDNotifier {
+    /// Map D level (1..5) to the signed driver D-index code the setter takes.
+    /// Returns `Err` for out-of-range levels.
+    fn driver_index(level: u8) -> Result<i32, Error> {
+        match level {
+            1 => Ok(-1),
+            2 => Ok(0),
+            3 => Ok(1),
+            4 => Ok(2),
+            5 => Ok(3),
+            _ => Err(Error::Custom(format!(
+                "D-Notifier level must be 1..5 (D1-D5), got {level}"
+            ))),
+        }
+    }
+}
+
+impl GpuOperation for SetNvapiDNotifier {
+    type Output = ();
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiDNotifier
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let didx = Self::driver_index(self.level)?;
+        target.nvapi()?.set_dnotify_limit(didx).map_err(Error::from)
     }
 }
 

@@ -8,20 +8,21 @@ use nvoc_core::{
     Percentage, ProbeVoltageLimits, QueryApiRestriction, QueryAutoBoost, QueryClockOffset,
     QueryDisplays, QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings,
     QueryGpuStatus, QueryLegacyCoreOvervoltRanges, QueryLegacyP0CoreMaxVoltageDelta,
-    QueryNvapiTargetTempPolicies, QueryNvapiTargetTempPolicyIndex, QueryNvapiTgpWattRange,
-    QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks,
-    QueryTdpTempLimits, QueryTemperatureThresholds, QueryThrottleReasons, QueryVfpPointVoltage,
-    QueryViolationStatus, QueryVoltageBoost, ResetApplicationsClocks, ResetCoolerLevels,
-    ResetFanSpeed, ResetLockedClocks, ResetNvapiPowerLimits, ResetNvapiSensorLimits,
-    ResetNvapiTgpWatt, ResetPstateBaseVoltages, ResetPstateClockOffsets, ResetVfpDeltas,
-    ResetVfpFrequencyLock, ResetVfpLock, SetApiRestriction, SetApplicationsClocks, SetAutoBoost,
-    SetAutoBoostDefault, SetClockOffset, SetCoolerLevels, SetEdid, SetFanSpeed, SetLegacyClocks,
-    SetLockedClocks, SetNvapiDynamicBoost, SetNvapiPowerLimits, SetNvapiPstateLock,
-    SetNvapiSensorLimits, SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvmlPstateLock, SetPowerLimit,
-    SetPstateBaseVoltage, SetPstateClockOffset, SetTemperatureLimit, SetVfpFrequencyLock,
-    SetVfpPointDelta, SetVfpRangeDelta, SetVfpVoltageLock, SetVoltageBoost, VfpResetDomain,
-    discover_targets, nvml_pstate_to_str, parse_nvapi_locked_voltage_target,
-    parse_nvml_fan_control_policy, parse_nvml_pstate, run, select_targets,
+    QueryNvapiDNotifier, QueryNvapiTargetTempPolicies, QueryNvapiTargetTempPolicyIndex,
+    QueryNvapiTgpWattRange, QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates,
+    QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
+    QueryThrottleReasons, QueryVfpPointVoltage, QueryViolationStatus, QueryVoltageBoost,
+    ResetApplicationsClocks, ResetCoolerLevels, ResetFanSpeed, ResetLockedClocks,
+    ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetPstateBaseVoltages,
+    ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock, ResetVfpLock,
+    SetApiRestriction, SetApplicationsClocks, SetAutoBoost, SetAutoBoostDefault, SetClockOffset,
+    SetCoolerLevels, SetEdid, SetFanSpeed, SetLegacyClocks, SetLockedClocks, SetNvapiDNotifier,
+    SetNvapiDynamicBoost, SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiSensorLimits,
+    SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvmlPstateLock, SetPowerLimit, SetPstateBaseVoltage,
+    SetPstateClockOffset, SetTemperatureLimit, SetVfpFrequencyLock, SetVfpPointDelta,
+    SetVfpRangeDelta, SetVfpVoltageLock, SetVoltageBoost, VfpResetDomain, discover_targets,
+    nvml_pstate_to_str, parse_nvapi_locked_voltage_target, parse_nvml_fan_control_policy,
+    parse_nvml_pstate, run, select_targets,
 };
 use serde_json::{Value, json};
 use time::OffsetDateTime;
@@ -152,6 +153,8 @@ pub enum Command {
     GetTgpWattRange,
     SetTgpWatt,
     ResetTgpWatt,
+    GetDNotifier,
+    SetDNotifier,
     SetTemperatureThresholds,
     SetThermalLimitC,
     SetFanPercent,
@@ -224,6 +227,8 @@ impl Command {
             Self::GetTgpWattRange => "get-tgp-watt-range",
             Self::SetTgpWatt => "set-tgp-watt",
             Self::ResetTgpWatt => "reset-tgp-watt",
+            Self::GetDNotifier => "get-dnotifier",
+            Self::SetDNotifier => "set-dnotifier",
             Self::SetThermalLimitC => "set-thermal-limit-c",
             Self::SetTemperatureThresholds => "set-temp-thresholds",
             Self::SetFanPercent => "set-fan-percent",
@@ -271,7 +276,9 @@ impl Command {
             Self::GetPstates => "Read NVML P-State clock ranges",
             Self::GetSupportedAppClocks => "Read NVML supported application clocks",
             Self::GetFanInfo => "Read NVML fan count and range",
-            Self::GetTemperatureThresholds => "Read NVML temperature thresholds",
+            Self::GetTemperatureThresholds => {
+                "Read temperature thresholds (NVML shutdown/slowdown table by default; --nvapi exposes the NVAPI target-temp policy indices with current/min/max)"
+            }
             Self::GetThrottleReasons => "Read NVML throttle reasons",
             Self::GetTdpTempLimits => "Read NVAPI TDP and temperature limits",
             Self::ProbeVoltageLimits => "Probe NVAPI voltage limit points",
@@ -294,6 +301,12 @@ impl Command {
             }
             Self::SetTgpWatt => "Set NVAPI TGP in watts (mobile watts-form TGP slider)",
             Self::ResetTgpWatt => "Reset NVAPI TGP to rated/default (mobile)",
+            Self::GetDNotifier => {
+                "Read NVAPI D-Notifier (D0-notify) level + D1-D5 power-cap table (mobile)"
+            }
+            Self::SetDNotifier => {
+                "Set NVAPI D-Notifier limit level (D1-D5; shares the TGP power-policy table)"
+            }
             Self::SetThermalLimitC => "Set thermal limit in Celsius",
             Self::SetTemperatureThresholds => {
                 "Set an NVAPI target-temperature (temp-limit) policy slot in Celsius for mobile sku"
@@ -387,6 +400,7 @@ impl Command {
             | Self::SetPowerPercent
             | Self::SetDynamicBoost
             | Self::SetTgpWatt
+            | Self::SetDNotifier
             | Self::SetThermalLimitC
             | Self::SetTemperatureThresholds
             | Self::SetFanPercent
@@ -481,6 +495,11 @@ impl Command {
                 "arg_tgp_watt",
                 "WATT",
                 "TGP in watts, for example 140 or 140W",
+            )],
+            Self::SetDNotifier => vec![PositionalArg::free(
+                "arg_dnotifier_level",
+                "LEVEL",
+                "D-Notifier level 1-5 (D1=Unlimited .. D5=lowest cap)",
             )],
             Self::SetThermalLimitC => vec![PositionalArg::hyphen(
                 "arg_celsius",
@@ -656,6 +675,7 @@ const COMMANDS: &[Command] = &[
     Command::GetApiRestriction,
     Command::GetAutoBoost,
     Command::GetClockOffsetMhz,
+    Command::GetDNotifier,
     Command::GetEdid,
     Command::GetFanInfo,
     Command::GetInfo,
@@ -695,6 +715,7 @@ const COMMANDS: &[Command] = &[
     Command::SetApplicationsClocksMhz,
     Command::SetAutoBoost,
     Command::SetAutoBoostDefault,
+    Command::SetDNotifier,
     Command::SetClockOffsetMhz,
     Command::SetCoreOffsetMhz,
     Command::SetDynamicBoost,
@@ -1946,6 +1967,36 @@ fn execute_target(
                 "applied": true,
                 "default_watt": default_mw.map(|mw| mw as f64 / 1000.0),
             }))
+        }
+        Command::GetDNotifier => {
+            let info = run(target, QueryNvapiDNotifier)?.output;
+            Ok(match info {
+                Some(d) => {
+                    let levels: Vec<serde_json::Value> = d
+                        .levels
+                        .iter()
+                        .map(|l| {
+                            json!({
+                                "level": format!("D{}", l.level),
+                                "watts": l.watts,
+                                "active": d.active == Some(l.level),
+                            })
+                        })
+                        .collect();
+                    json!({
+                        "active": d.active.map(|a| format!("D{a}")),
+                        "levels": levels,
+                    })
+                }
+                None => json!({"supported": false}),
+            })
+        }
+        Command::SetDNotifier => {
+            let level: u8 = invocation.positionals[0]
+                .parse()
+                .map_err(|e| CliError::new(format!("invalid D-Notifier level: {e}")))?;
+            run(target, SetNvapiDNotifier { level })?;
+            Ok(json!({"applied": true, "dnotifier_level": format!("D{level}")}))
         }
         Command::SetTemperatureThresholds => {
             // NVAPI-only SET of one target-temperature (温度墙) policy slot.

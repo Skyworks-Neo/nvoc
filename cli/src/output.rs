@@ -2116,6 +2116,17 @@ mod tests {
             }),
             Command::SetTgpWatt => json!({"applied": true, "tgp_watt": 140, "tgp_mw": 140000}),
             Command::ResetTgpWatt => json!({"applied": true, "default_watt": 100.0}),
+            Command::GetDNotifier => json!({
+                "active": "D2",
+                "levels": [
+                    {"level": "D1", "watts": null, "active": false},
+                    {"level": "D2", "watts": 55.0, "active": true},
+                    {"level": "D3", "watts": 45.0, "active": false},
+                    {"level": "D4", "watts": 33.0, "active": false},
+                    {"level": "D5", "watts": 10.0, "active": false},
+                ],
+            }),
+            Command::SetDNotifier => json!({"applied": true, "dnotifier_level": "D3"}),
             Command::SetThermalLimitC => json!({"applied": true, "thermal_limit_c": 83}),
             Command::SetTemperatureThresholds => {
                 json!({"applied": true, "policy_index": 2, "celsius": 85.0})
