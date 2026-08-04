@@ -8,7 +8,8 @@ use nvoc_core::{
     Percentage, ProbeVoltageLimits, QueryApiRestriction, QueryAutoBoost, QueryClockOffset,
     QueryDisplays, QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings,
     QueryGpuStatus, QueryLegacyCoreOvervoltRanges, QueryLegacyP0CoreMaxVoltageDelta,
-    QueryNvapiDNotifier, QueryNvapiTargetTempPolicies, QueryNvapiTargetTempPolicyIndex,
+    QueryNvapiDNotifier, QueryNvapiPStateLevels, QueryNvapiPStateLockStatus,
+    QueryNvapiTargetTempPolicies, QueryNvapiTargetTempPolicyIndex,
     QueryNvapiTgpWattRange, QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates,
     QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
     QueryThrottleReasons, QueryVfpPointVoltage, QueryViolationStatus, QueryVoltageBoost,
@@ -163,6 +164,7 @@ pub enum Command {
     SetVfpPointDeltaMhz,
     SetVfpRangeDeltaMhz,
     SetPstateLock,
+    GetPStateNative,
     SetApplicationsClocksMhz,
     SetPstateBaseVoltageUv,
     SetVoltageBoostPercent,
@@ -203,6 +205,7 @@ impl Command {
             Self::GetVfpPointVoltageMv => "get-vfp-point-voltage-mv",
             Self::GetPowerWatt => "get-power-watt",
             Self::GetClockOffsetMhz => "get-clock-offset-mhz",
+            Self::GetPStateNative => "get-pstate-native",
             Self::GetPstates => "get-pstates",
             Self::GetSupportedAppClocks => "get-supported-app-clocks",
             Self::GetFanInfo => "get-fan-info",
@@ -273,6 +276,9 @@ impl Command {
             Self::GetVfpPointVoltageMv => "Read one VFP point voltage in mV",
             Self::GetPowerWatt => "Read NVML power limits in watts",
             Self::GetClockOffsetMhz => "Read clock offset in MHz",
+            Self::GetPStateNative => {
+                "Read the native NVAPI P-State level table (GPUMon -pstate: P*.Max/P*.Min)"
+            }
             Self::GetPstates => "Read NVML P-State clock ranges",
             Self::GetSupportedAppClocks => "Read NVML supported application clocks",
             Self::GetFanInfo => "Read NVML fan count and range",
@@ -316,7 +322,7 @@ impl Command {
             Self::SetVfpVoltageLock => "Lock VFP by point or voltage",
             Self::SetVfpPointDeltaMhz => "Set one VFP point delta in MHz",
             Self::SetVfpRangeDeltaMhz => "Set a VFP point range delta in MHz",
-            Self::SetPstateLock => "Lock one NVML P-State or a contiguous range",
+            Self::SetPstateLock => "Lock one NVML P-State or a contiguous range via memory freq range",
             Self::SetApplicationsClocksMhz => "Set NVML application clocks in MHz",
             Self::SetPstateBaseVoltageUv => "Set NVAPI P-State base voltage delta in microvolts",
             Self::SetVoltageBoostPercent => "Set NVAPI voltage boost percent",
@@ -424,6 +430,8 @@ impl Command {
 
     fn allowed_options(self) -> &'static [&'static str] {
         match self {
+            Self::GetStatus => &["verbose"],
+            Self::GetPStateNative => &["pstate-domain"],
             Self::GetVfp => &[
                 "domain",
                 "indexed",
@@ -683,6 +691,7 @@ const COMMANDS: &[Command] = &[
     Command::GetLegacyP0CoreMaxVoltageDelta,
     Command::GetPowerWatt,
     Command::GetPstateBaseVoltageUv,
+    Command::GetPStateNative,
     Command::GetPstates,
     Command::GetSettings,
     Command::GetStatus,
@@ -1009,6 +1018,15 @@ fn cli_command(command_hint: Option<Command>) -> ClapCommand {
 
 fn command_specific_arg(name: &'static str) -> Arg {
     match name {
+        "verbose" => Arg::new("verbose")
+            .long("verbose")
+            .action(ArgAction::SetTrue)
+            .help("Show verbose status (VFP table, raw power-monitor descriptors, D-Notifier D1-D5 cap table)"),
+        "pstate-domain" => Arg::new("pstate-domain")
+            .long("domain")
+            .value_name("DOMAIN")
+            .action(ArgAction::Set)
+            .help("Clock-domain index for get-pstate-native MHz values (0=GPC/core default; GPUMon resolves GPC via 0x57B5A5DF)"),
         "domain" => Arg::new("domain")
             .long("domain")
             .value_name("DOMAIN")
@@ -1138,7 +1156,7 @@ fn collect_named_options(
     let mut options = BTreeMap::new();
     for name in allowed_options {
         match *name {
-            "indexed" | "no-infer-missing-default" | "feedback" | "all" => {
+            "indexed" | "no-infer-missing-default" | "feedback" | "all" | "verbose" => {
                 if matches.get_flag(name) {
                     options.insert(name.to_string(), vec!["true".to_string()]);
                 }
@@ -1592,6 +1610,32 @@ fn execute_target(
                 {
                     map.insert("power_limit_w".to_string(), json!(limit_w));
                 }
+                // Current D-Notifier (D0-notify / "extern power state") level,
+                // e.g. "D3". D-Notifier shares the TGP power-policy table, so
+                // its active cap silently clamps the TGP wall above — surfacing
+                // it here makes that interaction visible. Only emitted when the
+                // GPU exposes the private ClientPowerPoliciesGetInfo (0x67F31384)
+                // AND reports an active level (mobile-only feature). With
+                // --verbose, also include the full D1-D5 power-cap table (watts).
+                if let Ok(Some(d)) = run(target, QueryNvapiDNotifier).map(|r| r.output) {
+                    if let Some(active) = d.active {
+                        map.insert("d_notifier".to_string(), json!(format!("D{active}")));
+                    }
+                    if verbose && !d.levels.is_empty() {
+                        let table: Vec<serde_json::Value> = d
+                            .levels
+                            .iter()
+                            .map(|l| {
+                                json!({
+                                    "level": format!("D{}", l.level),
+                                    "watts": l.watts,
+                                    "active": d.active == Some(l.level),
+                                })
+                            })
+                            .collect();
+                        map.insert("d_notifier_table".to_string(), json!(table));
+                    }
+                }
                 // Per-rail power (watts) from NVAPI PowerMonitor GetStatus
                 // Per-rail power (watts) from NVAPI PowerMonitor, keyed by the
                 // descriptor's rail IDENTITY (not a fixed name) so it's correct
@@ -1693,6 +1737,119 @@ fn execute_target(
                     })
                     .collect(),
             ))
+        }
+        Command::GetPStateNative => {
+            // Native NVAPI P-State level table (GPUMon `-pstate` GET listing).
+            // Mirrors GPUMon's "Level[N] P*.Max / Level[N+1] P*.Min" output:
+            // level 0 is reserved for "P0.TDP" (the rated-TDP toggle, index 0 in
+            // GPUMon's SETTER), then each present pstate contributes a .Max then
+            // .Min slot. `index` is the value GPUMon's `-pstate:<index>` SETTER
+            // takes; use it with set-pstate-native (TODO).
+            // Query all 4 clock-domains (the private table exposes per-pstate
+            // min/max for each domain: 0/1/3 are core-ish, 2 is memory on RTX
+            // 4060 Laptop). `--domain` restricts to a single domain if given.
+            let single_domain = option_one(invocation, "pstate-domain")
+                .map(|s| s.parse::<usize>())
+                .transpose()
+                .map_err(|e| CliError::new(format!("invalid --domain: {e}")))?;
+            let domains: Vec<usize> = match &single_domain {
+                Some(d) => vec![*d],
+                None => vec![0, 1, 2, 3],
+            };
+            // Pull each domain's table; bail on the first that's unsupported.
+            let mut per_domain: Vec<Vec<nvoc_core::PStateLevelEntry>> = Vec::new();
+            for d in &domains {
+                let r = run(target, QueryNvapiPStateLevels { domain: *d })?.output;
+                match r {
+                    Some(mut info) => {
+                        info.pstates.sort_by_key(|p| p.pstate);
+                        per_domain.push(info.pstates);
+                    }
+                    None => {
+                        return Ok(json!({"supported": false}));
+                    }
+                }
+            }
+            // Build the union of pstate numbers across all domains, ascending.
+            let mut pstates: Vec<u8> = per_domain
+                .first()
+                .map(|v| v.iter().map(|p| p.pstate).collect())
+                .unwrap_or_default();
+            pstates.sort_unstable();
+            pstates.dedup();
+            // The set of pstates currently LOCKED (via PerfClientLimits
+            // 0x39442CFB), from the private limit-status (0x9962C97C). A level's
+            // pstate is "locked" when it's in this set — the only way to confirm
+            // a SET actually took. None when the driver doesn't expose it.
+            let locked: std::collections::HashSet<u8> =
+                run(target, QueryNvapiPStateLockStatus)?
+                    .output
+                    .unwrap_or_default()
+                    .into_iter()
+                    .collect();
+            let domain_mhz =
+                |d: usize, pstate: u8, max: bool| -> Option<f64> {
+                    per_domain.get(d)?.iter().find(|p| p.pstate == pstate).and_then(|p| {
+                        if max {
+                            p.max_mhz
+                        } else {
+                            p.min_mhz
+                        }
+                    })
+                };
+            // Clock-domain identity (GPU-specific in general; resolved by GPUMon
+            // via 0x57B5A5DF). User-confirmed on RTX 4060 Laptop and matching
+            // NVML's pstate-limits naming: 0=Graphics/core, 2=Memory, 3=Video.
+            // We emit one sub-object per domain named after NVML's domain, each
+            // with max_frequency_mhz/min_frequency_mhz so the renderer compacts
+            // them to "Frequency: Max X MHz, Min Y MHz" (and we omit zeroed
+            // domains entirely to keep output terse).
+            let domain_name = |d: usize| -> Option<&'static str> {
+                match d {
+                    0 => Some("graphics"),
+                    1 => Some("unknown"), // domain 1 — identity unconfirmed, shown as Unknown
+                    2 => Some("memory"),
+                    3 => Some("video"),
+                    _ => None,
+                }
+            };
+            let mut levels: Vec<serde_json::Value> = Vec::new();
+            for pstate in pstates {
+                // One flat entry per pstate: max_<domain>_mhz / min_<domain>_mhz
+                // sibling keys (NVML-style) so the renderer's compact-range
+                // grouping yields one line per domain ("Graphics: Max X MHz,
+                // Min Y MHz"). Plus a locked flag from 0x9962C97C. Pn.Max/Min
+                // are the bounds of the SAME pstate. P0 often reports nothing
+                // (dynamic, not pinned) and is skipped.
+                let mut entry = serde_json::Map::new();
+                entry.insert("pstate".to_string(), json!(format!("P{}", pstate)));
+                if locked.contains(&pstate) {
+                    entry.insert("locked".to_string(), json!(true));
+                }
+                for &d in &domains {
+                    let Some(name) = domain_name(d) else { continue };
+                    let min = domain_mhz(d, pstate, false);
+                    let max = domain_mhz(d, pstate, true);
+                    if max.unwrap_or(0.0) == 0.0 && min.unwrap_or(0.0) == 0.0 {
+                        continue;
+                    }
+                    entry.insert(format!("max_{name}_mhz"), json!(max));
+                    entry.insert(format!("min_{name}_mhz"), json!(min));
+                }
+                // Skip a pstate with no surviving domain ranges UNLESS it is
+                // locked (a locked P0 may report all-zero clocks because it's
+                // dynamic, but the user still wants to see the lock).
+                let header_len = 1 + if locked.contains(&pstate) { 1 } else { 0 };
+                if entry.len() <= header_len && !locked.contains(&pstate) {
+                    continue;
+                }
+                levels.push(Value::Object(entry));
+            }
+            Ok(json!({
+                "supported": true,
+                "locked_pstates": locked.iter().copied().collect::<Vec<u8>>(),
+                "pstates": levels,
+            }))
         }
         Command::GetSupportedAppClocks => {
             let clocks = run(target, QuerySupportedApplicationsClocks)?.output;

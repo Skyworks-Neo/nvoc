@@ -56,6 +56,8 @@ pub enum OperationKind {
     SetNvapiTargetTemp,
     QueryNvapiDNotifier,
     SetNvapiDNotifier,
+    QueryNvapiPStateLevels,
+    QueryNvapiPStateLockStatus,
     ResetNvapiPowerLimits,
     ResetNvapiSensorLimits,
     ResetCoolerLevels,
@@ -175,6 +177,30 @@ pub struct DNotifierInfo {
     pub active: Option<u8>,
     /// The D1..D5 power-cap table (always 5 entries, in D1→D5 order).
     pub levels: Vec<DNotifierLevel>,
+}
+
+/// One P-State entry from the native PerfPstatesGetInfo table (`0x7B30AE0D`):
+/// the pstate number and its min/max core clock in **MHz** (converted from the
+/// driver's kHz for ergonomic CLI output). RE'd from GPUMon's `queryPStateInfo`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PStateLevelEntry {
+    /// P-State number, 0..31 (e.g. 0 for P0).
+    pub pstate: u8,
+    /// Min core clock (MHz), if the driver exposed it.
+    pub min_mhz: Option<f64>,
+    /// Max core clock (MHz), if the driver exposed it.
+    pub max_mhz: Option<f64>,
+}
+
+/// Native P-State level table (the GPUMon `-pstate` GET listing), read via the
+/// private PerfPstatesGetInfo (`0x7B30AE0D`). Distinct from the NVML P-State
+/// table — this is the driver's native P*.Max/P*.Min index used by GPUMon's
+/// `-pstate:<index>` SETTER (index 0 = P0.TDP/rated, then per pstate a .Max
+/// then .Min slot).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PStateLevelsInfo {
+    /// Present P-States in ascending order with min/max core clock (MHz).
+    pub pstates: Vec<PStateLevelEntry>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

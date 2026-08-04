@@ -78,6 +78,7 @@ fn format_human_output(function: &str, output: &Value) -> Vec<String> {
             &[("memory_mhz", "Memory"), ("graphics_mhz", "Graphics")],
         ),
         "get-temp-thresholds" => format_temperature_thresholds_output(output),
+        "get-pstate-native" => format_pstate_native_output(output),
         "get-throttle-reasons" => format_throttle_reasons_output(output),
         "get-legacy-overvolt-ranges" => format_object_array(
             output,
@@ -263,6 +264,86 @@ fn format_temperature_thresholds_output(output: &Value) -> Vec<String> {
         .collect()
 }
 
+fn format_pstate_native_output(output: &Value) -> Vec<String> {
+    use nvoc_cli_common::color::stylize_title;
+    let mut lines = Vec::new();
+    let object = match output.as_object() {
+        Some(o) => o,
+        None => return lines,
+    };
+
+    // Locked pstates summary line (e.g. "Locked: P0, P3").
+    if let Some(locked) = object.get("locked_pstates").and_then(Value::as_array) {
+        let labels: Vec<String> = locked
+            .iter()
+            .filter_map(|v| v.as_u64().map(|n| format!("P{n}")))
+            .collect();
+        if labels.is_empty() {
+            lines.push(format!("  {}", stylize_title("No locked P-States")));
+        } else {
+            lines.push(format!(
+                "  {}: {}",
+                stylize_title("Locked"),
+                labels.join(", ")
+            ));
+        }
+    }
+
+    let Some(pstates) = object.get("pstates").and_then(Value::as_array) else {
+        return lines;
+    };
+    lines.push(format!("  {}", stylize_title("P-States")));
+    for entry in pstates {
+        let pstate = entry.get("pstate").and_then(Value::as_str).unwrap_or("P?");
+        let locked = entry.get("locked").and_then(Value::as_bool).unwrap_or(false);
+        let header = if locked {
+            format!("{pstate} (locked)")
+        } else {
+            pstate.to_string()
+        };
+        lines.push(format!("    {}", stylize_title(&header)));
+        // Per-domain frequency range. Keys are max_<domain>_mhz / min_<domain>_mhz.
+        // Emit in a fixed, NVML-like order.
+        for (dom, label) in [
+            ("graphics", "Graphics"),
+            ("memory", "Memory"),
+            ("video", "Video"),
+            ("unknown", "Unknown"),
+        ] {
+            let max = entry.get(&format!("max_{dom}_mhz")).and_then(Value::as_f64);
+            let min = entry.get(&format!("min_{dom}_mhz")).and_then(Value::as_f64);
+            match (max, min) {
+                (Some(max), Some(min)) => {
+                    if max == 0.0 && min == 0.0 {
+                        continue;
+                    }
+                    let values = format!(
+                        "Max {} MHz, Min {} MHz",
+                        trim_float(max),
+                        trim_float(min)
+                    );
+                    lines.push(format!(
+                        "      {}: {}",
+                        stylize_title(label),
+                        nvoc_cli_common::color::stylize(&values, false)
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
+    lines
+}
+
+/// Render an f64 without a trailing ".0" when it is a whole number.
+fn trim_float(v: f64) -> String {
+    if (v.fract() == 0.0) && v.abs() < 1e15 {
+        format!("{}", v as i64)
+    } else {
+        format!("{v}")
+    }
+}
+
 fn format_throttle_reasons_output(output: &Value) -> Vec<String> {
     let mut lines = Vec::new();
 
@@ -333,6 +414,12 @@ fn format_value_block_with_context(value: &Value, indent: usize, context: &str) 
 
             for (key, value) in sorted_object_entries(object) {
                 if compacted_keys.contains(&key.as_str()) {
+                    continue;
+                }
+                // Skip empty pstate-limit fields to keep output terse:
+                //   frequency_delta = null (rendered "N/A"),
+                //   voltage / voltage_domain when both bounds are 0 or "Undefined".
+                if is_empty_pstate_limit_field(key, value) {
                     continue;
                 }
 
@@ -485,6 +572,30 @@ struct CompactGroup<'a> {
     label_key: String,
     keys: Vec<&'a str>,
     values: Vec<(&'static str, &'a str, &'a Value)>,
+}
+
+/// True when a pstate-limit field carries no useful data and should be hidden
+/// from human output (keeps get-info pstate tables terse). Applies to:
+///   - `frequency_delta` = null (no offset set; otherwise rendered "N/A")
+///   - `voltage` object whose max AND min are both 0/null
+///   - `voltage_domain` = "Undefined"
+fn is_empty_pstate_limit_field(key: &str, value: &Value) -> bool {
+    match key {
+        "frequency_delta" => value.is_null(),
+        "voltage_domain" => value
+            .as_str()
+            .map(|s| s.eq_ignore_ascii_case("Undefined"))
+            .unwrap_or(false),
+        "voltage" => value
+            .as_object()
+            .map(|o| {
+                let max = o.get("max").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                let min = o.get("min").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                max == 0.0 && min == 0.0
+            })
+            .unwrap_or(false),
+        _ => false,
+    }
 }
 
 fn compact_range_groups<'a>(object: &'a serde_json::Map<String, Value>) -> Vec<CompactGroup<'a>> {
@@ -1763,8 +1874,10 @@ mod tests {
 
         assert!(rendered.contains("Frequency: Max 2145 MHz, Min 300 MHz"));
         assert!(rendered.contains("Frequency Delta: Max 1000 MHz, Min -1000 MHz"));
-        assert!(rendered.contains("Voltage: Max 0 mV, Min 0 mV"));
-        assert!(rendered.contains("Voltage Domain: Undefined"));
+        // Empty pstate-limit fields are hidden to keep output terse:
+        // voltage {max:0, min:0} and voltage_domain "Undefined" are dropped.
+        assert!(!rendered.contains("Voltage: Max 0 mV, Min 0 mV"));
+        assert!(!rendered.contains("Voltage Domain: Undefined"));
     }
 
     #[test]
@@ -2039,6 +2152,13 @@ mod tests {
                 "min_memory_mhz": 405,
                 "max_memory_mhz": 10500,
             }]),
+            Command::GetPStateNative => json!({
+                "supported": true,
+                "locked_pstates": [3],
+                "pstates": [
+                    {"pstate": "P3", "locked": true, "clocks": {"graphics": {"max_mhz": 2565.0, "min_mhz": 780.0}, "memory": {"max_mhz": 7001.0, "min_mhz": 7001.0}, "video": {"max_mhz": 2565.0, "min_mhz": 780.0}}},
+                ],
+            }),
             Command::GetSupportedAppClocks => {
                 json!([{"memory_mhz": 10500, "graphics_mhz": 1800}])
             }

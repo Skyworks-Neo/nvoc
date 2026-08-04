@@ -4,9 +4,10 @@ use super::nvml as low_nvml;
 use super::result::{
     ApiRestrictionState, AppliedValue, AutoBoostState, BatchReport, ClockOffset, DNotifierInfo,
     DNotifierLevel, DisplayInfo, EdidData, FanInfo, OperationKind, OperationReport,
-    PstateBaseVoltage, PstateClockRange, SupportedApplicationClocks, TargetOutcome,
-    TargetTempPolicy, TdpTempLimits, TemperatureThreshold, ThrottleReason, ViolationEntry,
-    ViolationStatusReport, VoltageBoostState, VoltageFrequencyCheck,
+    PStateLevelEntry, PStateLevelsInfo, PstateBaseVoltage, PstateClockRange,
+    SupportedApplicationClocks, TargetOutcome, TargetTempPolicy, TdpTempLimits,
+    TemperatureThreshold, ThrottleReason, ViolationEntry, ViolationStatusReport, VoltageBoostState,
+    VoltageFrequencyCheck,
 };
 use super::target::GpuTarget;
 use super::types::{NvapiLockedVoltageTarget, VfpResetDomain};
@@ -1177,6 +1178,68 @@ impl GpuOperation for SetNvapiDNotifier {
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
         let didx = Self::driver_index(self.level)?;
         target.nvapi()?.set_dnotify_limit(didx).map_err(Error::from)
+    }
+}
+
+/// Query the native P-State level table (the GPUMon `-pstate` GET listing) via
+/// the private PerfPstatesGetInfo (NDA 0x7B30AE0D): present P-States with their
+/// min/max clock for the given clock-domain (0=GPC/core by default; GPUMon
+/// resolves the GPC index via 0x57B5A5DF). Returns `None` where the driver
+/// doesn't expose the private interface. Clocks are converted kHz → MHz.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiPStateLevels {
+    /// Clock-domain index (0=GPC/core default).
+    pub domain: usize,
+}
+
+impl Default for QueryNvapiPStateLevels {
+    fn default() -> Self {
+        Self { domain: 0 }
+    }
+}
+
+impl GpuOperation for QueryNvapiPStateLevels {
+    type Output = Option<PStateLevelsInfo>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiPStateLevels
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        Ok(target
+            .nvapi()?
+            .pstate_levels_domain(self.domain)
+            .map_err(Error::from)?
+            .map(|r| PStateLevelsInfo {
+                pstates: r
+                    .pstates
+                    .iter()
+                    .map(|p| PStateLevelEntry {
+                        pstate: p.pstate,
+                        min_mhz: p.min_khz.map(|khz| khz as f64 / 1000.0),
+                        max_mhz: p.max_khz.map(|khz| khz as f64 / 1000.0),
+                    })
+                    .collect(),
+            }))
+    }
+}
+
+/// Query the set of P-State numbers currently locked (via
+/// PerfClientLimitsSetStatus 0x39442CFB), from the private
+/// ClientPStateLimitStatus (NDA 0x9962C97C). Returns `None` where the driver
+/// doesn't expose the private interface; an empty `Vec` means nothing locked.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiPStateLockStatus;
+
+impl GpuOperation for QueryNvapiPStateLockStatus {
+    type Output = Option<Vec<u8>>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiPStateLockStatus
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target.nvapi()?.pstate_lock_status().map_err(Error::from)
     }
 }
 
