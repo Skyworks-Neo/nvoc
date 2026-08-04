@@ -51,6 +51,8 @@ pub enum OperationKind {
     SetNvapiTgpWatt,
     ResetNvapiTgpWatt,
     QueryNvapiTgpWattRange,
+    QueryNvapiTargetTempPolicies,
+    SetNvapiTargetTemp,
     ResetNvapiPowerLimits,
     ResetNvapiSensorLimits,
     ResetCoolerLevels,
@@ -122,6 +124,17 @@ pub struct PowerLimits {
 pub struct TemperatureThreshold {
     pub name: &'static str,
     pub celsius: Option<u32>,
+}
+
+/// One entry of the NVAPI target-temperature (温度墙) policy table, read via the
+/// private ClientThermalTarget GET-prime (0xC4554575). `policy_index` is the
+/// slot in the driver's policy table; on RTX 4060 Laptop index 2 is the "GPU
+/// Target Temperature" wall (matches nvidia-smi and NVML's GpsCurr channel).
+/// Used by `get-temperature-thresholds --nvapi` for per-GPU index discovery.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TargetTempPolicy {
+    pub policy_index: usize,
+    pub celsius: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

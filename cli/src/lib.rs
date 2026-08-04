@@ -8,16 +8,16 @@ use nvoc_core::{
     Percentage, ProbeVoltageLimits, QueryApiRestriction, QueryAutoBoost, QueryClockOffset,
     QueryDisplays, QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings,
     QueryGpuStatus, QueryLegacyCoreOvervoltRanges, QueryLegacyP0CoreMaxVoltageDelta,
-    QueryNvapiTgpWattRange, QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates,
-    QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
+    QueryNvapiTargetTempPolicies, QueryNvapiTgpWattRange, QueryPowerLimits, QueryPstateBaseVoltage,
+    QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
     QueryThrottleReasons, QueryVfpPointVoltage, QueryViolationStatus, QueryVoltageBoost,
     ResetApplicationsClocks, ResetCoolerLevels, ResetFanSpeed, ResetLockedClocks,
     ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetPstateBaseVoltages,
     ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock, ResetVfpLock,
     SetApiRestriction, SetApplicationsClocks, SetAutoBoost, SetAutoBoostDefault, SetClockOffset,
     SetCoolerLevels, SetEdid, SetFanSpeed, SetLegacyClocks, SetLockedClocks, SetNvapiDynamicBoost,
-    SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiSensorLimits, SetNvapiTgpWatt,
-    SetNvmlPstateLock, SetPowerLimit, SetPstateBaseVoltage, SetPstateClockOffset,
+    SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiSensorLimits, SetNvapiTargetTemp,
+    SetNvapiTgpWatt, SetNvmlPstateLock, SetPowerLimit, SetPstateBaseVoltage, SetPstateClockOffset,
     SetTemperatureLimit, SetVfpFrequencyLock, SetVfpPointDelta, SetVfpRangeDelta,
     SetVfpVoltageLock, SetVoltageBoost, VfpResetDomain, discover_targets, nvml_pstate_to_str,
     parse_nvapi_locked_voltage_target, parse_nvml_fan_control_policy, parse_nvml_pstate, run,
@@ -152,6 +152,7 @@ pub enum Command {
     GetTgpWattRange,
     SetTgpWatt,
     ResetTgpWatt,
+    SetTemperatureThresholds,
     SetThermalLimitC,
     SetFanPercent,
     SetLockedClocksMhz,
@@ -224,6 +225,7 @@ impl Command {
             Self::SetTgpWatt => "set-tgp-watt",
             Self::ResetTgpWatt => "reset-tgp-watt",
             Self::SetThermalLimitC => "set-thermal-limit-c",
+            Self::SetTemperatureThresholds => "set-temperature-thresholds",
             Self::SetFanPercent => "set-fan-percent",
             Self::SetLockedClocksMhz => "set-locked-clocks-mhz",
             Self::SetVfpVoltageLock => "set-vfp-voltage-lock",
@@ -293,6 +295,9 @@ impl Command {
             Self::SetTgpWatt => "Set NVAPI TGP in watts (mobile watts-form TGP slider)",
             Self::ResetTgpWatt => "Reset NVAPI TGP to rated/default (mobile)",
             Self::SetThermalLimitC => "Set thermal limit in Celsius",
+            Self::SetTemperatureThresholds => {
+                "Set an NVAPI target-temperature (温度墙) policy slot in Celsius"
+            }
             Self::SetFanPercent => "Set fan speed/cooler level in percent",
             Self::SetLockedClocksMhz => "Lock core or memory clocks to a MHz range",
             Self::SetVfpVoltageLock => "Lock VFP by point or voltage",
@@ -337,12 +342,12 @@ impl Command {
             | Self::ResetCoreOffsetMhz
             | Self::ResetMemoryOffsetMhz
             | Self::ResetLockedClocks
-            | Self::ResetFan => &BOTH_BACKENDS,
+            | Self::ResetFan
+            | Self::GetTemperatureThresholds => &BOTH_BACKENDS,
             Self::GetPowerWatt
             | Self::GetPstates
             | Self::GetSupportedAppClocks
             | Self::GetFanInfo
-            | Self::GetTemperatureThresholds
             | Self::GetThrottleReasons
             | Self::GetAutoBoost
             | Self::GetApiRestriction
@@ -353,6 +358,19 @@ impl Command {
             | Self::SetApiRestriction
             | Self::ResetApplicationsClocks => &NVML_ONLY,
             _ => &NVAPI_ONLY,
+        }
+    }
+
+    /// Backend an `auto` run should prefer when the command advertises both
+    /// (`BOTH_BACKENDS`). Defaults to Nvapi; overridden per-command where the
+    /// classic backend is the more useful default. `GetTemperatureThresholds`
+    /// prefers NVML because the Shutdown/Slowdown/... table is the established
+    /// output — its NVAPI branch (target-temp policy indices) is an opt-in via
+    /// `--nvapi` while the index↔channel mapping is still being worked out.
+    fn auto_preferred_backend(self) -> BackendAdapter {
+        match self {
+            Self::GetTemperatureThresholds => BackendAdapter::Nvml,
+            _ => BackendAdapter::Nvapi,
         }
     }
 
@@ -370,6 +388,7 @@ impl Command {
             | Self::SetDynamicBoost
             | Self::SetTgpWatt
             | Self::SetThermalLimitC
+            | Self::SetTemperatureThresholds
             | Self::SetFanPercent
             | Self::SetVfpVoltageLock
             | Self::SetPstateBaseVoltageUv
@@ -412,7 +431,9 @@ impl Command {
                 &["domain"]
             }
             Self::SetVfpVoltageLock => &["feedback"],
-            Self::SetTgpWatt | Self::ResetTgpWatt => &["policy-index"],
+            Self::SetTgpWatt | Self::ResetTgpWatt | Self::SetTemperatureThresholds => {
+                &["policy-index"]
+            }
             _ => &[],
         }
     }
@@ -465,6 +486,11 @@ impl Command {
                 "arg_celsius",
                 "CELSIUS",
                 "Temperature limit in Celsius, for example 83 or 83C",
+            )],
+            Self::SetTemperatureThresholds => vec![PositionalArg::hyphen(
+                "arg_celsius",
+                "CELSIUS",
+                "Target-temperature threshold in Celsius, for example 85 or 85C",
             )],
             Self::SetFanPercent => vec![PositionalArg::free(
                 "arg_fan_percent",
@@ -683,6 +709,7 @@ const COMMANDS: &[Command] = &[
     Command::SetPowerWatt,
     Command::SetThermalLimitC,
     Command::SetTgpWatt,
+    Command::SetTemperatureThresholds,
     Command::SetVfpPointDeltaMhz,
     Command::SetVfpRangeDeltaMhz,
     Command::SetVfpVoltageLock,
@@ -1136,6 +1163,14 @@ fn execute_auto(invocation: &Invocation, command: Command) -> CliResult<Executio
 
     let supports_nvapi = command.adapters().contains(&BackendAdapter::Nvapi);
     let supports_nvml = command.adapters().contains(&BackendAdapter::Nvml);
+
+    // Where a command advertises both backends, honour its preferred default
+    // before falling back. Commands that prefer NVML (e.g. GetTemperatureThresholds)
+    // short-circuit straight to the NVML path on auto; the NVAPI branch stays
+    // reachable via an explicit `--nvapi`.
+    if supports_nvml && command.auto_preferred_backend() == BackendAdapter::Nvml {
+        return execute_backend(invocation, command, BackendAdapter::Nvml);
+    }
 
     if supports_nvapi {
         let nvapi_attempt = execute_backend(invocation, command, BackendAdapter::Nvapi);
@@ -1661,13 +1696,47 @@ fn execute_target(
             }))
         }
         Command::GetTemperatureThresholds => {
-            let thresholds = run(target, QueryTemperatureThresholds)?.output;
-            Ok(Value::Array(
-                thresholds
-                    .into_iter()
-                    .map(|item| json!({"name": item.name, "celsius": item.celsius}))
-                    .collect(),
-            ))
+            // Two backend flavours of "temperature threshold":
+            //  - NVML: the classic Shutdown/Slowdown/GpuMax/GpsCurr/... table.
+            //  - NVAPI: the private target-temp (温度墙) policy table — every
+            //    policy slot the driver exposes (private GET-prime 0xC4554575).
+            //    On RTX 4060 Laptop idx 2 is the "GPU Target Temperature" wall
+            //    (matches nvidia-smi and NVML's GpsCurr channel); surfacing all
+            //    slots here lets callers discover the right index per-GPU
+            //    instead of hardcoding 2.
+            //
+            // Backend routing (per the user's explicit contract — no merging
+            // while the index↔channel mapping is still being worked out):
+            //  - `--nvapi`         → NVAPI policy indices only.
+            //  - `--nvml` or auto  → NVML table only.
+            let mut entries: Vec<Value> = Vec::new();
+            if adapter == BackendAdapter::Nvapi {
+                let policies = run(target, QueryNvapiTargetTempPolicies)?.output;
+                for p in policies {
+                    // Name is just the index (the human renderer prefixes the
+                    // "Threshold" label, so "2" -> "Threshold 2"). Only idx 2
+                    // (the nvidia-smi "GPU Target Temperature" wall on RTX 4060
+                    // Laptop — also NVML's GpsCurr channel) gets the
+                    // "(TargetTemp)" tag. Other indices are not yet mapped to
+                    // a named thermal policy.
+                    let name = if p.policy_index == 2 {
+                        format!("{} (TargetTemp)", p.policy_index)
+                    } else {
+                        format!("{}", p.policy_index)
+                    };
+                    entries.push(json!({
+                        "name": name,
+                        "policy_index": p.policy_index,
+                        "celsius": p.celsius,
+                    }));
+                }
+            } else {
+                let thresholds = run(target, QueryTemperatureThresholds)?.output;
+                for item in thresholds {
+                    entries.push(json!({"name": item.name, "celsius": item.celsius}));
+                }
+            }
+            Ok(Value::Array(entries))
         }
         Command::GetThrottleReasons => {
             let reasons = run(target, QueryThrottleReasons)?.output;
@@ -1860,6 +1929,30 @@ fn execute_target(
             Ok(json!({
                 "applied": true,
                 "default_watt": default_mw.map(|mw| mw as f64 / 1000.0),
+            }))
+        }
+        Command::SetTemperatureThresholds => {
+            // NVAPI-only SET of one target-temperature (温度墙) policy slot.
+            // `--policy-index` picks the slot (default 2 = the wall); the
+            // driver accepts other indices but may reject them — useful for
+            // probing which slots are actually writable.
+            let celsius = parse_celsius_f32(&invocation.positionals[0])?;
+            let policy_index = option_one(invocation, "policy-index")
+                .map(|s| s.parse::<usize>())
+                .transpose()
+                .map_err(|e| CliError::new(format!("invalid --policy-index: {e}")))?;
+            run(
+                target,
+                SetNvapiTargetTemp {
+                    celsius,
+                    policy_index,
+                },
+            )?;
+            let applied_index = policy_index.unwrap_or(2);
+            Ok(json!({
+                "applied": true,
+                "policy_index": applied_index,
+                "celsius": celsius,
             }))
         }
         Command::SetThermalLimitC => {
@@ -2789,6 +2882,14 @@ fn parse_u32_unit(raw: &str, suffix: &str, label: &str) -> CliResult<u32> {
         .map_err(|_| CliError::new(format!("invalid {label} value {raw:?}")))
 }
 
+/// Parse a Celsius positional (`85`, `85C`, `85c`) into f32 for the
+/// target-temperature threshold setter (Q8 fixed-point accepts sub-degree).
+fn parse_celsius_f32(raw: &str) -> CliResult<f32> {
+    strip_unit(raw, "c", "celsius")
+        .parse::<f32>()
+        .map_err(|_| CliError::new(format!("invalid celsius value {raw:?}")))
+}
+
 fn strip_unit<'a>(raw: &'a str, suffix: &str, label: &str) -> &'a str {
     let trimmed = raw.trim();
     let lower = trimmed.to_ascii_lowercase();
@@ -2981,6 +3082,34 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("conflicts"));
+    }
+
+    #[test]
+    fn temperature_thresholds_supports_both_backends() {
+        // get-temperature-thresholds advertises BOTH backends so `--nvapi`
+        // (target-temp policy indices) is accepted, but auto prefers NVML
+        // (the classic Shutdown/Slowdown/... table).
+        assert!(
+            Command::GetTemperatureThresholds
+                .adapters()
+                .contains(&BackendAdapter::Nvapi)
+        );
+        assert!(
+            Command::GetTemperatureThresholds
+                .adapters()
+                .contains(&BackendAdapter::Nvml)
+        );
+        assert_eq!(
+            Command::GetTemperatureThresholds.auto_preferred_backend(),
+            BackendAdapter::Nvml
+        );
+        // Explicit --nvapi parses and routes to the nvapi backend.
+        let invocation = parse_args(["get-temperature-thresholds", "--nvapi"]).unwrap();
+        assert_eq!(invocation.command, Some(Command::GetTemperatureThresholds));
+        assert_eq!(invocation.backend, BackendChoice::Nvapi);
+        // No flag parses to auto (which routes to NVML via auto_preferred_backend).
+        let invocation = parse_args(["get-temperature-thresholds"]).unwrap();
+        assert_eq!(invocation.backend, BackendChoice::Auto);
     }
 
     #[test]

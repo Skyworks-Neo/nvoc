@@ -77,9 +77,7 @@ fn format_human_output(function: &str, output: &Value) -> Vec<String> {
             output,
             &[("memory_mhz", "Memory"), ("graphics_mhz", "Graphics")],
         ),
-        "get-temperature-thresholds" => {
-            format_object_array(output, &[("name", "Threshold"), ("celsius", "Limit")])
-        }
+        "get-temperature-thresholds" => format_temperature_thresholds_output(output),
         "get-throttle-reasons" => format_throttle_reasons_output(output),
         "get-legacy-overvolt-ranges" => format_object_array(
             output,
@@ -196,6 +194,17 @@ fn format_object_array(output: &Value, fields: &[(&str, &str)]) -> Vec<String> {
 /// Prints the instantaneous per-reason active snapshot, then appends the
 /// driver's cumulative per-policy violation times (the "how long was each
 /// modality limiting" breakdown), mirroring the historical `status` output.
+/// Render the temperature-thresholds array. NVML entries carry `name`+`celsius`;
+/// NVAPI target-temp (温度墙) entries additionally carry `policy_index` (kept in
+/// JSON output, dropped from human output since the index already shows up in
+/// the `TargetTemp[<idx>]` name). The classic NVML row reads
+/// "Shutdown | Limit 94 C"; an NVAPI policy slot reads "TargetTemp[2] | Limit 87 C"
+/// so the index mapping to nvidia-smi's "GPU Target Temperature" (and NVML's
+/// GpsCurr channel) is visible per-GPU.
+fn format_temperature_thresholds_output(output: &Value) -> Vec<String> {
+    format_object_array(output, &[("name", "Threshold"), ("celsius", "Limit")])
+}
+
 fn format_throttle_reasons_output(output: &Value) -> Vec<String> {
     let mut lines = Vec::new();
 
@@ -2050,6 +2059,9 @@ mod tests {
             Command::SetTgpWatt => json!({"applied": true, "tgp_watt": 140, "tgp_mw": 140000}),
             Command::ResetTgpWatt => json!({"applied": true, "default_watt": 100.0}),
             Command::SetThermalLimitC => json!({"applied": true, "thermal_limit_c": 83}),
+            Command::SetTemperatureThresholds => {
+                json!({"applied": true, "policy_index": 2, "celsius": 85.0})
+            }
             Command::SetFanPercent => {
                 json!({"applied": true, "fan": "all", "policy": "manual", "level_percent": 65})
             }

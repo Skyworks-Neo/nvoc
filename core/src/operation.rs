@@ -4,8 +4,9 @@ use super::nvml as low_nvml;
 use super::result::{
     ApiRestrictionState, AppliedValue, AutoBoostState, BatchReport, ClockOffset, DisplayInfo,
     EdidData, FanInfo, OperationKind, OperationReport, PstateBaseVoltage, PstateClockRange,
-    SupportedApplicationClocks, TargetOutcome, TdpTempLimits, TemperatureThreshold, ThrottleReason,
-    ViolationEntry, ViolationStatusReport, VoltageBoostState, VoltageFrequencyCheck,
+    SupportedApplicationClocks, TargetOutcome, TargetTempPolicy, TdpTempLimits,
+    TemperatureThreshold, ThrottleReason, ViolationEntry, ViolationStatusReport, VoltageBoostState,
+    VoltageFrequencyCheck,
 };
 use super::target::GpuTarget;
 use super::types::{NvapiLockedVoltageTarget, VfpResetDomain};
@@ -1102,6 +1103,63 @@ impl GpuOperation for QueryNvapiTgpWattRange {
                 default_watt: r.default_mw.map(|mw| mw as f64 / 1000.0),
                 max_watt: r.max_mw.map(|mw| mw as f64 / 1000.0),
             }))
+    }
+}
+
+/// Query every NVAPI target-temperature (温度墙) policy slot the driver exposes
+/// (private ClientThermalTarget GET-prime 0xC4554575). Returns one
+/// [`TargetTempPolicy`] per slot; empty on GPUs/driver paths that don't expose
+/// the table. Drives the `--nvapi` branch of `get-temperature-thresholds` and
+/// lets callers discover which `policy_index` is the "GPU Target Temperature"
+/// wall (idx 2 on RTX 4060 Laptop) instead of hardcoding it.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiTargetTempPolicies;
+
+impl GpuOperation for QueryNvapiTargetTempPolicies {
+    type Output = Vec<TargetTempPolicy>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiTargetTempPolicies
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        Ok(target
+            .nvapi()?
+            .target_temperature_policies()
+            .map_err(Error::from)?
+            .into_iter()
+            .map(|(policy_index, celsius)| TargetTempPolicy {
+                policy_index,
+                celsius,
+            })
+            .collect())
+    }
+}
+
+/// Set one NVAPI target-temperature (温度墙) policy slot (private RMW:
+/// GET-prime 0xC4554575 + SET 0xE097144F). `policy_index` defaults to 2 (the
+/// confirmed target-temp wall on RTX 4060 Laptop); other indices are accepted
+/// but the driver may reject them — the CLI uses this to probe which slots are
+/// actually writable.
+#[derive(Clone, Debug, Default)]
+pub struct SetNvapiTargetTemp {
+    pub celsius: f32,
+    pub policy_index: Option<usize>,
+}
+
+impl GpuOperation for SetNvapiTargetTemp {
+    type Output = ();
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiTargetTemp
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let idx = self.policy_index.unwrap_or(2);
+        target
+            .nvapi()?
+            .set_target_temperature(self.celsius, idx)
+            .map_err(Error::from)
     }
 }
 
