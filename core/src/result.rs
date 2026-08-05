@@ -156,7 +156,7 @@ pub struct TargetTempPolicy {
 
 /// One D-Notifier (D0-notify / "extern power state") level: the D level number
 /// (1..5) and the power cap it imposes when active. `None` power means
-/// "Unlimited" (only ever true for D1). RE'd from GPUMon `[GPUHandle::
+/// "Unlimited" (only ever true for D1). RE'd from the ref tool `[GPUHandle::
 /// pollDNotifyLimit]` ("D{n}({power}mW)" string); mW values cross-checked live
 /// on RTX 4060 Laptop (D2=55W, D3=45W, D4=33W, D5=10W, D1=Unlimited).
 #[derive(Debug, Clone, PartialEq)]
@@ -182,7 +182,7 @@ pub struct DNotifierInfo {
 
 /// One P-State entry from the native PerfPstatesGetInfo table (`0x7B30AE0D`):
 /// the pstate number and its min/max core clock in **MHz** (converted from the
-/// driver's kHz for ergonomic CLI output). RE'd from GPUMon's `queryPStateInfo`.
+/// driver's kHz for ergonomic CLI output). RE'd from the ref tool's `queryPStateInfo`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PStateLevelEntry {
     /// P-State number, 0..31 (e.g. 0 for P0).
@@ -193,9 +193,9 @@ pub struct PStateLevelEntry {
     pub max_mhz: Option<f64>,
 }
 
-/// Native P-State level table (the GPUMon `-pstate` GET listing), read via the
+/// Native P-State level table (the the ref tool `-pstate` GET listing), read via the
 /// private PerfPstatesGetInfo (`0x7B30AE0D`). Distinct from the NVML P-State
-/// table — this is the driver's native P*.Max/P*.Min index used by GPUMon's
+/// table — this is the driver's native P*.Max/P*.Min index used by the ref tool's
 /// `-pstate:<index>` SETTER (index 0 = P0.TDP/rated, then per pstate a .Max
 /// then .Min slot).
 #[derive(Debug, Clone, PartialEq)]
@@ -204,11 +204,11 @@ pub struct PStateLevelsInfo {
     pub pstates: Vec<PStateLevelEntry>,
 }
 
-/// Native NVAPI P-State lock request (the GPUMon `-pstate:<index>` SETTER).
+/// Native NVAPI P-State lock request (the the ref tool `-pstate:<index>` SETTER).
 /// Core-level mirror of [`nvapi_hi::PStateNativeLock`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NvapiPStateNativeLock {
-    /// Reset all P-State locks to default (GPUMon `-pstate:-1`).
+    /// Reset all P-State locks to default (the ref tool `-pstate:-1`).
     Reset,
     /// Pin the active P-State without locking a frequency.
     PstateOnly { pstate: u8 },

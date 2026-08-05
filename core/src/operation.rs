@@ -1030,7 +1030,7 @@ impl GpuOperation for SetNvapiDynamicBoost {
 /// Set the GPU TGP in watts (notebook watts-form TGP slider; the range that
 /// appears under the PPAB/Dynamic-Boost enable). NDA-private nvapi triplet:
 /// GET 0x8B3E7343 → patch → SET 0xBFF09E59. `policy_index` selects the entry
-/// (use [`QueryNvapiTgpWattRange`]); if None, defaults to index 2 like GPUMon.
+/// (use [`QueryNvapiTgpWattRange`]); if None, defaults to index 2 like the ref tool.
 #[derive(Clone, Debug)]
 pub struct SetNvapiTgpWatt {
     pub watts: u32,
@@ -1144,7 +1144,7 @@ impl GpuOperation for QueryNvapiDNotifier {
 
 /// Set the D-Notifier (D0-notify) limit to a D level (1..5). Maps the CLI
 /// level to the signed driver code (-1=D1/Unlimited, 0..3=D2..D5) exactly as
-/// GPUMon's `[GPUHandle::setDNotifyLimit]` switch does, then calls the raw
+/// the ref tool's `[GPUHandle::setDNotifyLimit]` switch does, then calls the raw
 /// two-arg setter (NDA 0x48E0847D).
 #[derive(Clone, Copy, Debug)]
 pub struct SetNvapiDNotifier {
@@ -1182,9 +1182,9 @@ impl GpuOperation for SetNvapiDNotifier {
     }
 }
 
-/// Query the native P-State level table (the GPUMon `-pstate` GET listing) via
+/// Query the native P-State level table (the the ref tool `-pstate` GET listing) via
 /// the private PerfPstatesGetInfo (NDA 0x7B30AE0D): present P-States with their
-/// min/max clock for the given clock-domain (0=GPC/core by default; GPUMon
+/// min/max clock for the given clock-domain (0=GPC/core by default; the ref tool
 /// resolves the GPC index via 0x57B5A5DF). Returns `None` where the driver
 /// doesn't expose the private interface. Clocks are converted kHz → MHz.
 #[derive(Clone, Copy, Debug)]
@@ -1244,7 +1244,7 @@ impl GpuOperation for QueryNvapiPStateLockStatus {
     }
 }
 
-/// Set the native NVAPI P-State lock (the GPUMon `-pstate:<index>` SETTER) via
+/// Set the native NVAPI P-State lock (the the ref tool `-pstate:<index>` SETTER) via
 /// PerfClientLimitsSetStatus (NDA 0x39442CFB). See [`NvapiPStateNativeLock`] for
 /// the lock shapes (reset / pstate-only / pstate+frequency).
 #[derive(Clone, Copy, Debug)]

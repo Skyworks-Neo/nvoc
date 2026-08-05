@@ -2310,7 +2310,8 @@ mod tests {
                 json!({"applied": true, "domain": "graphics"})
             }
             Command::ResetFan => json!({"applied": true, "fan_indices": [0, 1]}),
-            Command::SetPStateNative => json!({"applied": true, "mode": "pstate"}),
+            Command::SetPStateNative => json!({"applied": true, "pstate": "P3"}),
+            Command::ResetPStateNative => json!({"applied": true}),
         }
     }
 }
