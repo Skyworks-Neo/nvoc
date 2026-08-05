@@ -316,7 +316,7 @@ impl GpuType {
                 safe_elasticity_per_cycle: 30000,
                 fluctuation_coefficient: 1,
                 is_50_series: false,
-                wakeup_load_needed: true,
+                wakeup_load_needed: false,
                 testing_step: 5,
                 freq_step_exp_core: 3,
             },
@@ -551,6 +551,28 @@ impl GpuType {
     /// 是否为 Max-Q / Blackwell 类需要动态 margin check 的世代（50 系）
     pub fn is_maxq(&self) -> bool {
         matches!(self, GpuType::Mobile50Series | GpuType::Desktop50Series)
+    }
+
+    /// 是否为移动端（笔记本 dGPU）。移动端在 610 等新驱动上会激进进入 GC6/GCOFF，
+    /// 写操作前需要 force_gc6_exit 预唤醒；桌面端无 GC6，不需要。Unknown 归为
+    /// 非移动端（保守，不预唤醒，让操作本身报错暴露问题）。
+    pub fn is_mobile(&self) -> bool {
+        matches!(
+            self,
+            GpuType::Mobile50Series
+                | GpuType::Mobile40Series
+                | GpuType::Mobile30Series
+                | GpuType::Mobile20Series
+                | GpuType::Mobile16Series
+                | GpuType::Mobile10Series
+                | GpuType::Mobile9Series
+        )
+    }
+
+    /// 是否为未识别型号。Unknown GPU 保守按"可能移动端"处理（调 force_gc6_exit，
+    /// 靠返回值兜底：桌面 Unknown 会 -104 被忽略），避免漏唤醒。
+    pub fn is_unknown(&self) -> bool {
+        matches!(self, GpuType::Unknown)
     }
 
     /// 核心频率步进（kHz），供 handle_vfp_export / fix_result 使用

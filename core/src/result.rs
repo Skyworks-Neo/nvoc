@@ -94,6 +94,64 @@ pub enum OperationKind {
     QueryViolationStatus,
 }
 
+impl OperationKind {
+    /// Whether this operation *writes* GPU state through NVAPI (set/reset/lock).
+    ///
+    /// Used to decide whether to pre-wake the dGPU via `force_gc6_exit` on
+    /// mobile platforms (610+ drivers aggressively enter GC6/GCOFF at idle,
+    /// causing NVAPI writes to fail with `GpuNotPowered` -220). Query/read
+    /// operations are excluded so that "GPU not powered" remains a visible,
+    /// truthful state for monitoring; NVML-only writes are handled separately
+    /// (they don't go through the NVAPI path that GCOFF blocks).
+    pub fn is_nvapi_write(self) -> bool {
+        use OperationKind::*;
+        matches!(
+            self,
+            SetPowerLimit
+                | SetTemperatureLimit
+                | SetClockOffset
+                | SetApplicationsClocks
+                | ResetApplicationsClocks
+                | SetLockedClocks
+                | ResetLockedClocks
+                | SetFanSpeed
+                | ResetFanSpeed
+                | SetPstateBaseVoltage
+                | ResetPstateBaseVoltages
+                | SetPstateClockOffset
+                | SetCoolerLevels
+                | ResetCoolerLevels
+                | SetVfpFrequencyLock
+                | ResetVfpFrequencyLock
+                | SetVfpVoltageLock
+                | ResetVfpDeltas
+                | ResetVfpLock
+                | SetVfpPointDelta
+                | SetVfpRangeDelta
+                | SetDomainVfpDeltas
+                | SetVoltageBoost
+                | SetNvapiPowerLimits
+                | SetNvapiSensorLimits
+                | SetNvapiDynamicBoost
+                | SetNvapiTgpWatt
+                | ResetNvapiTgpWatt
+                | SetNvapiTargetTemp
+                | SetNvapiDNotifier
+                | SetNvapiPStateNative
+                | ResetNvapiPowerLimits
+                | ResetNvapiSensorLimits
+                | ResetPstateClockOffsets
+                | SetLegacyClocks
+                | SetNvapiPstateLock
+                | SetAutoBoost
+                | SetAutoBoostDefault
+                | SetApiRestriction
+                | SetEdid
+                | ClearEdid
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OperationWarning {
     pub message: String,
