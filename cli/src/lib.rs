@@ -18,9 +18,10 @@ use nvoc_core::{
     ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock, ResetVfpLock,
     SetApiRestriction, SetApplicationsClocks, SetAutoBoost, SetAutoBoostDefault, SetClockOffset,
     SetCoolerLevels, SetEdid, SetFanSpeed, SetLegacyClocks, SetLockedClocks, SetNvapiDNotifier,
-    SetNvapiDynamicBoost, SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiSensorLimits,
-    SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvmlPstateLock, SetPowerLimit, SetPstateBaseVoltage,
-    SetPstateClockOffset, SetTemperatureLimit, SetVfpFrequencyLock, SetVfpPointDelta,
+    SetNvapiDynamicBoost, SetNvapiPowerLimits, SetNvapiPStateNative, SetNvapiPstateLock,
+    SetNvapiSensorLimits, SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvmlPstateLock, SetPowerLimit,
+    SetPstateBaseVoltage, SetPstateClockOffset, SetTemperatureLimit, SetVfpFrequencyLock,
+    SetVfpPointDelta,
     SetVfpRangeDelta, SetVfpVoltageLock, SetVoltageBoost, VfpResetDomain, discover_targets,
     nvml_pstate_to_str, parse_nvapi_locked_voltage_target, parse_nvml_fan_control_policy,
     parse_nvml_pstate, run, select_targets,
@@ -165,6 +166,7 @@ pub enum Command {
     SetVfpRangeDeltaMhz,
     SetPstateLock,
     GetPStateNative,
+    SetPStateNative,
     SetApplicationsClocksMhz,
     SetPstateBaseVoltageUv,
     SetVoltageBoostPercent,
@@ -206,6 +208,7 @@ impl Command {
             Self::GetPowerWatt => "get-power-watt",
             Self::GetClockOffsetMhz => "get-clock-offset-mhz",
             Self::GetPStateNative => "get-pstate-native",
+            Self::SetPStateNative => "set-pstate-native",
             Self::GetPstates => "get-pstates",
             Self::GetSupportedAppClocks => "get-supported-app-clocks",
             Self::GetFanInfo => "get-fan-info",
@@ -278,6 +281,9 @@ impl Command {
             Self::GetClockOffsetMhz => "Read clock offset in MHz",
             Self::GetPStateNative => {
                 "Read the native NVAPI P-State level table (GPUMon -pstate: P*.Max/P*.Min)"
+            }
+            Self::SetPStateNative => {
+                "Set the native NVAPI P-State lock (GPUMon -pstate:<idx>; reset/pstate/pstate+freq)"
             }
             Self::GetPstates => "Read NVML P-State clock ranges",
             Self::GetSupportedAppClocks => "Read NVML supported application clocks",
@@ -407,6 +413,7 @@ impl Command {
             | Self::SetDynamicBoost
             | Self::SetTgpWatt
             | Self::SetDNotifier
+            | Self::SetPStateNative
             | Self::SetThermalLimitC
             | Self::SetTemperatureThresholds
             | Self::SetFanPercent
@@ -432,6 +439,7 @@ impl Command {
         match self {
             Self::GetStatus => &["verbose"],
             Self::GetPStateNative => &["pstate-domain"],
+            Self::SetPStateNative => &["pstate", "freq"],
             Self::GetVfp => &[
                 "domain",
                 "indexed",
@@ -508,6 +516,11 @@ impl Command {
                 "arg_dnotifier_level",
                 "LEVEL",
                 "D-Notifier level 1-5 (D1=Unlimited .. D5=lowest cap)",
+            )],
+            Self::SetPStateNative => vec![PositionalArg::free(
+                "arg_pstate_native_mode",
+                "MODE",
+                "Lock mode: reset | pstate | freq (use --pstate N, and --freq MHz for freq)",
             )],
             Self::SetThermalLimitC => vec![PositionalArg::hyphen(
                 "arg_celsius",
@@ -735,6 +748,7 @@ const COMMANDS: &[Command] = &[
     Command::SetMemoryOffsetMhz,
     Command::SetPstateBaseVoltageUv,
     Command::SetPstateLock,
+    Command::SetPStateNative,
     Command::SetPowerPercent,
     Command::SetPowerWatt,
     Command::SetThermalLimitC,
@@ -1027,6 +1041,11 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .value_name("DOMAIN")
             .action(ArgAction::Set)
             .help("Clock-domain index for get-pstate-native MHz values (0=GPC/core default; GPUMon resolves GPC via 0x57B5A5DF)"),
+        "freq" => Arg::new("freq")
+            .long("freq")
+            .value_name("MHZ")
+            .action(ArgAction::Set)
+            .help("Frequency in MHz (set-pstate-native freq mode)"),
         "domain" => Arg::new("domain")
             .long("domain")
             .value_name("DOMAIN")
@@ -2086,6 +2105,50 @@ fn execute_target(
             run(target, SetNvapiDynamicBoost { active })?;
             Ok(json!({"applied": true, "dynamic_boost": active}))
         }
+        Command::SetPStateNative => {
+            // GPUMon `-pstate:<index>` SETTER. MODE selects the lock shape:
+            //   reset            -> clear all P-State locks
+            //   pstate           -> pin active P-State (--pstate), no freq lock
+            //   freq             -> pin P-State AND lock frequency (--pstate --freq)
+            // --pstate is a P-State number (0,3,4,5,8...); --freq is MHz.
+            use nvoc_core::NvapiPStateNativeLock;
+            let mode = invocation.positionals[0].as_str();
+            let parse_pstate_num = |s: &str| -> CliResult<u8> {
+                s.trim_start_matches('P')
+                    .trim_start_matches('p')
+                    .parse::<u8>()
+                    .map_err(|e| CliError::new(format!("invalid --pstate '{s}': {e}")))
+            };
+            let lock = match mode {
+                "reset" => NvapiPStateNativeLock::Reset,
+                "pstate" | "pstate-only" => {
+                    let pstate = parse_pstate_num(option_one(invocation, "pstate").ok_or_else(
+                        || CliError::new("set-pstate-native pstate requires --pstate <N>"),
+                    )?)?;
+                    NvapiPStateNativeLock::PstateOnly { pstate }
+                }
+                "freq" | "pstate-freq" => {
+                    let pstate = parse_pstate_num(option_one(invocation, "pstate").ok_or_else(
+                        || CliError::new("set-pstate-native freq requires --pstate <N>"),
+                    )?)?;
+                    let freq_mhz = option_one(invocation, "freq")
+                        .ok_or_else(|| CliError::new("set-pstate-native freq requires --freq <MHz>"))
+                        .and_then(|s| parse_u32_unit(s, "m", "mhz").map_err(CliError::from))?;
+                    NvapiPStateNativeLock::PstateAndFreq {
+                        pstate,
+                        freq_khz: freq_mhz.saturating_mul(1000),
+                    }
+                }
+                _ => {
+                    return Err(CliError::new(format!(
+                        "unknown set-pstate-native mode '{mode}'; use reset|pstate|freq"
+                    )));
+                }
+            };
+            run(target, SetNvapiPStateNative { lock })?;
+            Ok(json!({"applied": true, "mode": mode}))
+        }
+
         Command::GetTgpWattRange => {
             let range = run(target, QueryNvapiTgpWattRange)?.output;
             Ok(match range {

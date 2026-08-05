@@ -31,7 +31,8 @@ pub use operation::{
     ResetVfpFrequencyLock, ResetVfpLock, SetApiRestriction, SetApplicationsClocks, SetAutoBoost,
     SetAutoBoostDefault, SetClockOffset, SetCoolerLevels, SetDomainVfpDeltas, SetEdid, SetFanSpeed,
     SetLegacyClocks, SetLockedClocks, SetNvapiDNotifier, SetNvapiDynamicBoost, SetNvapiPowerLimits,
-    SetNvapiPstateLock, SetNvapiSensorLimits, SetNvapiTargetTemp, SetNvapiTgpWatt,
+    SetNvapiPStateNative, SetNvapiPstateLock, SetNvapiSensorLimits, SetNvapiTargetTemp,
+    SetNvapiTgpWatt,
     SetNvmlPstateLock, SetPowerLimit, SetPstateBaseVoltage, SetPstateClockOffset,
     SetTemperatureLimit, SetVfpFrequencyLock, SetVfpPointDelta, SetVfpRangeDelta,
     SetVfpVoltageLock, SetVoltageBoost, TgpWattRangeInfo, detect_gpu_type, fetch_gpu_type,
@@ -44,11 +45,11 @@ pub use operation::{
 };
 pub use result::{
     ApiRestrictionState, AppliedValue, AutoBoostState, BatchReport, ClockOffset, DNotifierInfo,
-    DNotifierLevel, DisplayInfo, EdidData, FanInfo, OperationKind, OperationReport,
-    OperationWarning, PStateLevelEntry, PStateLevelsInfo, PowerLimits, PstateBaseVoltage,
-    PstateClockRange, SupportedApplicationClocks, TargetOutcome, TargetTempPolicy, TdpTempLimits,
-    TemperatureThreshold, ThrottleReason, ViolationEntry, ViolationStatusReport, VoltageBoostState,
-    VoltageFrequencyCheck, VoltageLimits,
+    DNotifierLevel, DisplayInfo, EdidData, FanInfo, NvapiPStateNativeLock, OperationKind,
+    OperationReport, OperationWarning, PStateLevelEntry, PStateLevelsInfo, PowerLimits,
+    PstateBaseVoltage, PstateClockRange, SupportedApplicationClocks, TargetOutcome,
+    TargetTempPolicy, TdpTempLimits, TemperatureThreshold, ThrottleReason, ViolationEntry,
+    ViolationStatusReport, VoltageBoostState, VoltageFrequencyCheck, VoltageLimits,
 };
 pub use target::{
     BackendSet, GpuId, GpuTarget, PciAddress, TargetInventory, discover_targets,

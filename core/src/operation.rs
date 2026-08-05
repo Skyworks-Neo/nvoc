@@ -5,7 +5,8 @@ use super::result::{
     ApiRestrictionState, AppliedValue, AutoBoostState, BatchReport, ClockOffset, DNotifierInfo,
     DNotifierLevel, DisplayInfo, EdidData, FanInfo, OperationKind, OperationReport,
     PStateLevelEntry, PStateLevelsInfo, PstateBaseVoltage, PstateClockRange,
-    SupportedApplicationClocks, TargetOutcome, TargetTempPolicy, TdpTempLimits,
+    SupportedApplicationClocks, TargetOutcome, TargetTempPolicy, NvapiPStateNativeLock,
+    TdpTempLimits,
     TemperatureThreshold, ThrottleReason, ViolationEntry, ViolationStatusReport, VoltageBoostState,
     VoltageFrequencyCheck,
 };
@@ -1240,6 +1241,39 @@ impl GpuOperation for QueryNvapiPStateLockStatus {
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
         target.nvapi()?.pstate_lock_status().map_err(Error::from)
+    }
+}
+
+/// Set the native NVAPI P-State lock (the GPUMon `-pstate:<index>` SETTER) via
+/// PerfClientLimitsSetStatus (NDA 0x39442CFB). See [`NvapiPStateNativeLock`] for
+/// the lock shapes (reset / pstate-only / pstate+frequency).
+#[derive(Clone, Copy, Debug)]
+pub struct SetNvapiPStateNative {
+    pub lock: NvapiPStateNativeLock,
+}
+
+impl GpuOperation for SetNvapiPStateNative {
+    type Output = ();
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiPStateNative
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let lock = match self.lock {
+            NvapiPStateNativeLock::Reset => nvapi_hi::PStateNativeLock::Reset,
+            NvapiPStateNativeLock::PstateOnly { pstate } => {
+                nvapi_hi::PStateNativeLock::PstateOnly { pstate }
+            }
+            NvapiPStateNativeLock::PstateAndFreq {
+                pstate,
+                freq_khz,
+            } => nvapi_hi::PStateNativeLock::PstateAndFreq {
+                pstate,
+                freq_khz,
+            },
+        };
+        target.nvapi()?.set_pstate_native(lock).map_err(Error::from)
     }
 }
 

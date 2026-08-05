@@ -58,6 +58,7 @@ pub enum OperationKind {
     SetNvapiDNotifier,
     QueryNvapiPStateLevels,
     QueryNvapiPStateLockStatus,
+    SetNvapiPStateNative,
     ResetNvapiPowerLimits,
     ResetNvapiSensorLimits,
     ResetCoolerLevels,
@@ -201,6 +202,18 @@ pub struct PStateLevelEntry {
 pub struct PStateLevelsInfo {
     /// Present P-States in ascending order with min/max core clock (MHz).
     pub pstates: Vec<PStateLevelEntry>,
+}
+
+/// Native NVAPI P-State lock request (the GPUMon `-pstate:<index>` SETTER).
+/// Core-level mirror of [`nvapi_hi::PStateNativeLock`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NvapiPStateNativeLock {
+    /// Reset all P-State locks to default (GPUMon `-pstate:-1`).
+    Reset,
+    /// Pin the active P-State without locking a frequency.
+    PstateOnly { pstate: u8 },
+    /// Pin the active P-State AND lock its frequency (freq_khz = MHz × 1000).
+    PstateAndFreq { pstate: u8, freq_khz: u32 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
