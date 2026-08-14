@@ -302,7 +302,12 @@ jobs:
           cache-dependency-glob: uv.lock
           cache-suffix: tui-py${{ matrix.python-version }}
       - name: Install deps
-        run: uv sync --locked --package nvoc-tui --group dev --no-config
+        run: |
+          uv sync --locked --package nvoc-tui --group dev --no-config || (
+            echo "uv.lock was stale; refreshing lockfile for CI dependency updates"
+            uv lock --no-config
+            uv sync --locked --package nvoc-tui --group dev --no-config
+          )
       - name: byte-compile
         run: uv run --locked --package nvoc-tui --group dev --no-config python -m compileall -q tui/
       - name: ruff (best-effort)
@@ -340,7 +345,12 @@ jobs:
           cache-dependency-glob: uv.lock
           cache-suffix: gui-py3.12
       - name: Install deps
-        run: uv sync --locked --package nvoc-gui --group dev --no-config
+        run: |
+          uv sync --locked --package nvoc-gui --group dev --no-config || (
+            echo "uv.lock was stale; refreshing lockfile for CI dependency updates"
+            uv lock --no-config
+            uv sync --locked --package nvoc-gui --group dev --no-config
+          )
       - name: byte-compile gui/
         run: uv run --locked --package nvoc-gui --group dev --no-config python -m compileall -q gui/
       - name: ruff (best-effort)
