@@ -209,9 +209,6 @@ pub struct GpuOcParams {
     pub fluctuation_coefficient: i32,
     /// 是否为 50 系架构（影响 recovery 默认策略）
     pub is_50_series: bool,
-    /// 是否需要在扫描期间以 MinLoadPulse 唤醒 GPU
-    /// （仅 30/50 系笔记本端默认开启，Optimus 掉电唤醒用）
-    pub wakeup_load_needed: bool,
     /// 电压点扫描步长（autoscan_gpuboostv3 的 testing_step）
     pub testing_step: usize,
     /// 核心频率扫描步长指数
@@ -228,7 +225,6 @@ impl Default for GpuOcParams {
             safe_elasticity_per_cycle: 50000,
             fluctuation_coefficient: 2,
             is_50_series: false,
-            wakeup_load_needed: false,
             testing_step: 3,
             freq_step_exp_core: 3,
         }
@@ -294,7 +290,6 @@ impl GpuType {
                 safe_elasticity_per_cycle: 60000,
                 fluctuation_coefficient: 3,
                 is_50_series: true,
-                wakeup_load_needed: true,
                 testing_step: 5,
                 freq_step_exp_core: 4,
             },
@@ -305,7 +300,6 @@ impl GpuType {
                 safe_elasticity_per_cycle: 60000,
                 fluctuation_coefficient: 3,
                 is_50_series: true,
-                wakeup_load_needed: false,
                 testing_step: 5,
                 freq_step_exp_core: 4,
             },
@@ -316,7 +310,6 @@ impl GpuType {
                 safe_elasticity_per_cycle: 30000,
                 fluctuation_coefficient: 1,
                 is_50_series: false,
-                wakeup_load_needed: false,
                 testing_step: 5,
                 freq_step_exp_core: 3,
             },
@@ -327,7 +320,6 @@ impl GpuType {
                 safe_elasticity_per_cycle: 30000,
                 fluctuation_coefficient: 1,
                 is_50_series: false,
-                wakeup_load_needed: false,
                 testing_step: 5,
                 freq_step_exp_core: 3,
             },
@@ -338,7 +330,6 @@ impl GpuType {
                 safe_elasticity_per_cycle: 30000,
                 fluctuation_coefficient: 2,
                 is_50_series: false,
-                wakeup_load_needed: true,
                 testing_step: 5,
                 freq_step_exp_core: 3,
             },
@@ -349,7 +340,6 @@ impl GpuType {
                 safe_elasticity_per_cycle: 30000,
                 fluctuation_coefficient: 2,
                 is_50_series: false,
-                wakeup_load_needed: false,
                 testing_step: 5,
                 freq_step_exp_core: 3,
             },
@@ -360,7 +350,6 @@ impl GpuType {
                 safe_elasticity_per_cycle: 30000,
                 fluctuation_coefficient: 2,
                 is_50_series: false,
-                wakeup_load_needed: false,
                 testing_step: 3,
                 freq_step_exp_core: 3,
             },
@@ -371,7 +360,6 @@ impl GpuType {
                 safe_elasticity_per_cycle: 30000,
                 fluctuation_coefficient: 2,
                 is_50_series: false,
-                wakeup_load_needed: false,
                 testing_step: 3,
                 freq_step_exp_core: 3,
             },
@@ -382,7 +370,6 @@ impl GpuType {
                 safe_elasticity_per_cycle: 30000,
                 fluctuation_coefficient: 2,
                 is_50_series: false,
-                wakeup_load_needed: false,
                 testing_step: 3,
                 freq_step_exp_core: 3,
             },
@@ -393,7 +380,6 @@ impl GpuType {
                 safe_elasticity_per_cycle: 30000,
                 fluctuation_coefficient: 2,
                 is_50_series: false,
-                wakeup_load_needed: false,
                 testing_step: 3,
                 freq_step_exp_core: 3,
             },
@@ -404,7 +390,6 @@ impl GpuType {
                 safe_elasticity_per_cycle: 30000,
                 fluctuation_coefficient: 2,
                 is_50_series: false,
-                wakeup_load_needed: false,
                 testing_step: 3,
                 freq_step_exp_core: 3,
             },
@@ -415,7 +400,6 @@ impl GpuType {
                 safe_elasticity_per_cycle: 30000,
                 fluctuation_coefficient: 2,
                 is_50_series: false,
-                wakeup_load_needed: false,
                 testing_step: 3,
                 freq_step_exp_core: 3,
             },
@@ -426,7 +410,6 @@ impl GpuType {
                 safe_elasticity_per_cycle: 37500,
                 fluctuation_coefficient: 1,
                 is_50_series: false,
-                wakeup_load_needed: false,
                 testing_step: 3,
                 freq_step_exp_core: 3,
             },
@@ -437,7 +420,6 @@ impl GpuType {
                 safe_elasticity_per_cycle: 37500,
                 fluctuation_coefficient: 2,
                 is_50_series: false,
-                wakeup_load_needed: false,
                 testing_step: 3,
                 freq_step_exp_core: 3,
             },
@@ -460,7 +442,6 @@ impl GpuType {
                 safe_elasticity_per_cycle: 50000,
                 fluctuation_coefficient: 2,
                 is_50_series: false,
-                wakeup_load_needed: false,
                 testing_step: 3,
                 freq_step_exp_core: 3,
             },
@@ -471,7 +452,6 @@ impl GpuType {
                 safe_elasticity_per_cycle: 50000,
                 fluctuation_coefficient: 2,
                 is_50_series: false,
-                wakeup_load_needed: false,
                 testing_step: 3,
                 freq_step_exp_core: 3,
             },
@@ -573,6 +553,17 @@ impl GpuType {
     /// 靠返回值兜底：桌面 Unknown 会 -104 被忽略），避免漏唤醒。
     pub fn is_unknown(&self) -> bool {
         matches!(self, GpuType::Unknown)
+    }
+
+    /// 是否需要在 NVAPI 操作前做 GC6 原生唤醒（force_gc6_exit）。与
+    /// core::operation::run 写操作预唤醒钩子同源：全部移动端世代 + Unknown。
+    ///
+    /// 取代旧的 GpuOcParams::wakeup_load_needed 世代表 —— 旧表只标 30/50 系
+    /// 笔记本，恰好漏掉 40 系（而 RTX 4060 Laptop 正是 610 驱动激进 GCOFF 的
+    /// 实测机型）。GCOFF 激进程度由驱动版本决定而非 GPU 世代，故按"是否移动端"
+    /// 一个维度判定；Unknown 保守唤醒，由 force_gc6_exit 返回值兜底。
+    pub fn needs_gc6_wake(&self) -> bool {
+        self.is_mobile() || self.is_unknown()
     }
 
     /// 核心频率步进（kHz），供 handle_vfp_export / fix_result 使用

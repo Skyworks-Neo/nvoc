@@ -99,19 +99,12 @@ fn optimize_command() -> Command {
 
     #[cfg(all(feature = "stressor-external", not(feature = "stressor-bundled")))]
     {
-        cmd = cmd
-            .arg(
-                Arg::new("test_exe")
-                    .long("test-exe")
-                    .value_name("PATH")
-                    .default_value("cli-stressor-cuda-rs"),
-            )
-            .arg(
-                Arg::new("minload_exe")
-                    .long("minload-exe")
-                    .value_name("PATH")
-                    .default_value("cli-stressor-cuda-rs"),
-            );
+        cmd = cmd.arg(
+            Arg::new("test_exe")
+                .long("test-exe")
+                .value_name("PATH")
+                .default_value("cli-stressor-cuda-rs"),
+        );
     }
 
     #[cfg(all(feature = "stressor-bundled", feature = "stressor-external"))]
@@ -126,12 +119,6 @@ fn optimize_command() -> Command {
             .arg(
                 Arg::new("test_exe")
                     .long("test-exe")
-                    .value_name("PATH")
-                    .default_value("cli-stressor-cuda-rs"),
-            )
-            .arg(
-                Arg::new("minload_exe")
-                    .long("minload-exe")
                     .value_name("PATH")
                     .default_value("cli-stressor-cuda-rs"),
             );
@@ -344,24 +331,15 @@ fn vfp_autoscan_command(legacy: bool) -> Command {
 
     #[cfg(all(feature = "stressor-external", not(feature = "stressor-bundled")))]
     {
-        cmd = cmd
-            .arg(
-                Arg::new("test_exe")
-                    .value_name("TEST_EXE")
-                    .short('w')
-                    .long("test-exe")
-                    .num_args(1)
-                    .default_value("cli-stressor-cuda-rs")
-                    .help("External cli-stressor-cuda-rs executable path"),
-            )
-            .arg(
-                Arg::new("minload_exe")
-                    .long("minload-exe")
-                    .value_name("PATH")
-                    .num_args(1)
-                    .default_value("cli-stressor-cuda-rs")
-                    .help("External cli-stressor-cuda-rs executable used for min-load"),
-            );
+        cmd = cmd.arg(
+            Arg::new("test_exe")
+                .value_name("TEST_EXE")
+                .short('w')
+                .long("test-exe")
+                .num_args(1)
+                .default_value("cli-stressor-cuda-rs")
+                .help("External cli-stressor-cuda-rs executable path"),
+        );
     }
 
     #[cfg(all(feature = "stressor-bundled", feature = "stressor-external"))]
@@ -383,14 +361,6 @@ fn vfp_autoscan_command(legacy: bool) -> Command {
                     .num_args(1)
                     .default_value("cli-stressor-cuda-rs")
                     .help("External cli-stressor-cuda-rs executable path"),
-            )
-            .arg(
-                Arg::new("minload_exe")
-                    .long("minload-exe")
-                    .value_name("PATH")
-                    .num_args(1)
-                    .default_value("cli-stressor-cuda-rs")
-                    .help("External cli-stressor-cuda-rs executable used for min-load"),
             );
     }
 

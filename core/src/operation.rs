@@ -47,29 +47,21 @@ pub fn run<O: GpuOperation>(
     // Pre-wake the dGPU before NVAPI write ops. 610+ mobile drivers aggressively
     // enter GC6/GCOFF at idle (5-20s), making NVAPI writes fail with
     // GpuNotPowered (-220). force_gc6_exit independently wakes a GCOFF'd dGPU
-    // (empirically verified — plain GET/SET do NOT wake it). We do NOT pre-classify
-    // mobile vs desktop: force_gc6_exit's own return value IS the native check —
-    // desktop GPUs (no GC6) return NoImplementation (-104), mobile return OK. So
-    // one call both detects the platform and wakes it. The cost on desktop is a
-    // single escape returning -104 per write op (negligible). Errors are ignored
-    // (best-effort wake; the op's own error semantics are unchanged).
+    // (empirically verified — plain GET/SET do NOT wake it).
+    //
+    // Two-stage gate (GpuType::needs_gc6_wake is the single source of truth,
+    // also used by the auto-optimizer's explicit native wakes):
+    //  1. is_mobile() (by GPU model) filters out positively-identified desktop
+    //     GPUs — those skip the wake entirely (zero escape cost).
+    //  2. For mobile OR Unknown OR info()-unreadable (likely already GCOFF)
+    //     GPUs, call force_gc6_exit. Its own return value is the native
+    //     fallback: desktop/unknown-that's-really-desktop returns
+    //     NoImplementation (-104, ignored); mobile returns OK and wakes.
     if operation.is_nvapi_write() {
         if let Ok(gpu) = target.nvapi() {
-            // Pre-wake the dGPU before NVAPI writes on mobile platforms. 610+
-            // mobile drivers aggressively enter GC6/GCOFF at idle (5-20s),
-            // making NVAPI writes fail with GpuNotPowered (-220). force_gc6_exit
-            // independently wakes a GCOFF'd dGPU (plain GET/SET do NOT wake it).
-            //
-            // Two-stage gate to avoid the desktop overhead and the info() paradox:
-            //  1. is_mobile() (by GPU model) filters out positively-identified
-            //     desktop GPUs — those skip the wake entirely (zero escape cost).
-            //  2. For mobile OR Unknown OR info()-unreadable (likely already
-            //     GCOFF) GPUs, call force_gc6_exit. Its own return value is the
-            //     native fallback: desktop/unknown-that's-really-desktop returns
-            //     NoImplementation (-104, ignored); mobile returns OK and wakes.
             let need_wake = match gpu.info() {
                 Ok(info) => match fetch_gpu_type(&info) {
-                    Ok(t) => t.is_mobile() || t.is_unknown(),
+                    Ok(t) => t.needs_gc6_wake(),
                     Err(_) => true, // can't classify -> conservative wake
                 },
                 Err(_) => true, // info() failed (likely GCOFF) -> wake
