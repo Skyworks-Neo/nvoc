@@ -10,7 +10,13 @@ keywords = ["nvidia", "gtx", "gpu", "nvapi", "overclock"]
 readme = "README.md"
 license = "Apache-2.0"
 
-include = ["/src/**", "/README*", "/LICENSE*"]
+include = [
+    "/src/**",
+    "/test/windows_gpu_event_query.ps1",
+    "/test/windows_oc_pnp_recover.ps1",
+    "/README*",
+    "/LICENSE*",
+]
 
 [features]
 default = ["stressor-bundled"]
