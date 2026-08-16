@@ -3,6 +3,11 @@ param(
     [long]$EndMs
 )
 
+# 强制重定向下输出为 UTF-8（默认是 OEM 码页 = 中文系统 GBK，事件文本含中文
+# 会被 Rust 侧的 UTF-8 解码打碎）。脚本执行前 PowerShell 自身的报错仍可能是
+# GBK，由调用侧 decode_console_output 的 OEM 回退兜底。
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
 $startDateTime = [DateTimeOffset]::FromUnixTimeMilliseconds($StartMs).LocalDateTime
 $endDateTime   = [DateTimeOffset]::FromUnixTimeMilliseconds($EndMs).LocalDateTime
 

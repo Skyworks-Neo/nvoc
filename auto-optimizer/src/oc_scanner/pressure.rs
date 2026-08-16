@@ -12,6 +12,10 @@ use nvoc_core::{
 };
 use std::process::{Child, Command, Stdio};
 use std::thread::JoinHandle;
+#[cfg(windows)]
+use std::path::PathBuf;
+#[cfg(windows)]
+use std::sync::OnceLock;
 use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -237,6 +241,84 @@ struct WindowsGpuEvent {
     is_tdr: bool,
 }
 
+// ─────────────── Windows PowerShell 子进程辅助 ───────────────
+//
+// 两个 PowerShell 脚本（事件查询 / PnP 恢复）通过 include_str! 嵌入二进制，
+// 首次调用时落盘到 %TEMP% 再以绝对路径 -File 调用：
+//  1. 消除旧 "./test/*.ps1" 相对路径对工作目录的依赖（从 GUI / 其他 cwd 拉起
+//     时 PowerShell 报"路径不存在"，且该错误文本是 GBK 编码，被
+//     from_utf8_lossy 解成乱码）；
+//  2. 发布的二进制不再需要携带 test/ 目录。
+// 文件名带 PID 后缀避免并发进程互踩；残留文件交给系统 TEMP 清理。
+
+#[cfg(windows)]
+static EVENT_QUERY_SCRIPT: OnceLock<Option<PathBuf>> = OnceLock::new();
+
+#[cfg(windows)]
+static PNP_RECOVER_SCRIPT: OnceLock<Option<PathBuf>> = OnceLock::new();
+
+/// 把嵌入的 .ps1 写到 %TEMP%（每进程一次）。失败返回 None，由调用方降级。
+#[cfg(windows)]
+fn materialize_embedded_script(
+    cache: &'static OnceLock<Option<PathBuf>>,
+    script_stem: &str,
+    body: &'static str,
+) -> Option<PathBuf> {
+    cache
+        .get_or_init(|| {
+            let dir = std::env::temp_dir().join("nvoc-auto-optimizer-scripts");
+            std::fs::create_dir_all(&dir).ok()?;
+            let path = dir.join(format!("{script_stem}-{}.ps1", std::process::id()));
+            std::fs::write(&path, body).ok()?;
+            Some(path)
+        })
+        .clone()
+}
+
+/// 解码 PowerShell 子进程的输出字节。
+///
+/// PowerShell 5.1 重定向输出默认用 OEM 代码页（中文系统 = GBK/CP936），
+/// 直接 `from_utf8_lossy` 会把中文错误文本（如"-File 参数无法匹配实际参数，
+/// 因为路径不存在"）变成 U+FFFD 乱码。这里先试严格 UTF-8（脚本内已把
+/// [Console]::OutputEncoding 设为 UTF8，正常路径输出都是 UTF-8），失败则
+/// 回退用 Win32 `MultiByteToWideChar(CP_OEMCP)` 按 OEM 码页解码 —— 覆盖
+/// 脚本执行前 PowerShell 自身的报错（参数绑定/启动失败等仍是 GBK）。
+#[cfg(windows)]
+fn decode_console_output(bytes: &[u8]) -> String {
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        return text.to_string();
+    }
+
+    type Dword = u32;
+    const CP_OEMCP: Dword = 1;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn MultiByteToWideChar(
+            code_page: Dword,
+            dw_flags: u32,
+            lp_multi_byte_str: *const u8,
+            cb_multi_byte: i32,
+            lp_wide_char_str: *mut u16,
+            cch_wide_char: i32,
+        ) -> i32;
+    }
+
+    // SAFETY: 输入指针/长度指向有效缓冲；先探测所需长度再写入同长缓冲。
+    unsafe {
+        let len = bytes.len() as i32;
+        let needed = MultiByteToWideChar(CP_OEMCP, 0, bytes.as_ptr(), len, std::ptr::null_mut(), 0);
+        if needed > 0 {
+            let mut buf = vec![0u16; needed as usize];
+            let written =
+                MultiByteToWideChar(CP_OEMCP, 0, bytes.as_ptr(), len, buf.as_mut_ptr(), needed);
+            if written > 0 {
+                return String::from_utf16_lossy(&buf[..written as usize]);
+            }
+        }
+    }
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
 #[cfg(windows)]
 fn query_windows_gpu_events(start: SystemTime, end: SystemTime) -> Option<Vec<WindowsGpuEvent>> {
     use std::time::UNIX_EPOCH;
@@ -244,7 +326,12 @@ fn query_windows_gpu_events(start: SystemTime, end: SystemTime) -> Option<Vec<Wi
     let start_ms = start.duration_since(UNIX_EPOCH).ok()?.as_millis();
     let end_ms = end.duration_since(UNIX_EPOCH).ok()?.as_millis();
 
-    let script_path = "./test/windows_gpu_event_query.ps1";
+    let script_path = materialize_embedded_script(
+        &EVENT_QUERY_SCRIPT,
+        "windows_gpu_event_query",
+        include_str!("../../test/windows_gpu_event_query.ps1"),
+    )?;
+    let script_path = script_path.to_str()?;
 
     let output = Command::new("powershell")
         .args([
@@ -265,12 +352,12 @@ fn query_windows_gpu_events(start: SystemTime, end: SystemTime) -> Option<Vec<Wi
     if !output.status.success() {
         eprintln!(
             "Warning: Failed to query Windows Event Log: {}",
-            String::from_utf8_lossy(&output.stderr)
+            decode_console_output(&output.stderr)
         );
         return None;
     }
 
-    let output_text = String::from_utf8_lossy(&output.stdout);
+    let output_text = decode_console_output(&output.stdout);
     let mut events = Vec::new();
     for line in output_text.lines() {
         let line = line.trim();
@@ -363,7 +450,17 @@ fn count_linux_gpu_xid_events_by_time(
 fn pnp_recover_gpu(gpu: &GpuTarget<'_>) -> bool {
     let pci_bus = gpu.id.pci_bus();
 
-    let script_path = "./test/windows_oc_pnp_recover.ps1";
+    let script_path = match materialize_embedded_script(
+        &PNP_RECOVER_SCRIPT,
+        "windows_oc_pnp_recover",
+        include_str!("../../test/windows_oc_pnp_recover.ps1"),
+    ) {
+        Some(path) => path,
+        None => {
+            eprintln!("pnp_recover: failed to stage embedded recovery script to TEMP");
+            return false;
+        }
+    };
     eprintln!(
         "pnp_recover: Triggering PnP disable/enable cycle for GPU at PCI bus {} (GpuId: {})...",
         pci_bus, gpu.id.0
@@ -376,7 +473,7 @@ fn pnp_recover_gpu(gpu: &GpuTarget<'_>) -> bool {
             "-ExecutionPolicy",
             "Bypass",
             "-File",
-            script_path,
+            script_path.to_str().unwrap_or_default(),
             "-TargetPciBus",
             &pci_bus.to_string(),
         ])
@@ -386,14 +483,14 @@ fn pnp_recover_gpu(gpu: &GpuTarget<'_>) -> bool {
         Ok(out) => {
             if out.status.success() {
                 eprintln!("pnp_recover: PnP cycle completed successfully.");
-                eprintln!("stdout: {}", String::from_utf8_lossy(&out.stdout).trim());
+                eprintln!("stdout: {}", decode_console_output(&out.stdout).trim());
                 // Wait for GPU to re-appear in NVML
                 sleep(Duration::from_secs(10));
                 true
             } else {
                 eprintln!(
                     "pnp_recover: PnP cycle failed: {}",
-                    String::from_utf8_lossy(&out.stderr)
+                    decode_console_output(&out.stderr)
                 );
                 false
             }
@@ -897,6 +994,43 @@ pub(super) fn run_pressure_test(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(windows)]
+    fn console_output_decodes_gbk_without_replacement_chars() {
+        // "路径不存在" 的 GBK (CP936) 编码 —— PowerShell 在中文系统上以 OEM
+        // 码页输出错误文本，旧实现 from_utf8_lossy 会把它变成 U+FFFD 乱码。
+        let gbk_bytes = [0xC2, 0xB7, 0xBE, 0xB6, 0xB2, 0xBB, 0xB4, 0xE6, 0xD4, 0xDA];
+        let decoded = decode_console_output(&gbk_bytes);
+        assert!(!decoded.is_empty());
+        assert!(
+            !decoded.contains('\u{FFFD}'),
+            "OEM 回退解码不应产生 U+FFFD，实际: {decoded:?}"
+        );
+        // UTF-8 输入必须原样通过
+        assert_eq!(decode_console_output("ok".as_bytes()), "ok");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn embedded_script_materializes_to_absolute_temp_path() {
+        let path = materialize_embedded_script(
+            &EVENT_QUERY_SCRIPT,
+            "windows_gpu_event_query",
+            include_str!("../../test/windows_gpu_event_query.ps1"),
+        )
+        .expect("staging embedded script must succeed");
+        assert!(path.is_absolute(), "staged path must be absolute: {path:?}");
+        assert!(path.exists(), "staged script must exist: {path:?}");
+        // OnceLock 缓存：第二次调用返回同一路径
+        let again = materialize_embedded_script(
+            &EVENT_QUERY_SCRIPT,
+            "windows_gpu_event_query",
+            include_str!("../../test/windows_gpu_event_query.ps1"),
+        )
+        .expect("second staging must succeed");
+        assert_eq!(path, again);
+    }
 
     #[test]
     fn vfp_curve_range_saturates_low_points() {
