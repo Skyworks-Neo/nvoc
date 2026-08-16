@@ -93,15 +93,14 @@ git clone https://github.com/Skyworks-Neo/nvoc.git
 cd nvoc
 ```
 
-Initialize the `nvapi-rs` submodule and switch it to the required branch:
+Initialize the `nvapi-rs` submodule at the commit pinned by this repository:
 
 ```bash
-git submodule init
-git submodule update
-cd nvapi-rs
-git checkout v0.2.x
-cd ..
+git submodule update --init
 ```
+
+Do not check out a branch inside the submodule: the pinned commit is the version
+validated by NVOC's CI.
 
 ### 2 — Install the Rust toolchain (rustup)
 
@@ -424,15 +423,13 @@ git clone https://github.com/Skyworks-Neo/nvoc.git
 cd nvoc
 ```
 
-初始化 `nvapi-rs` 子模块并切换到所需分支：
+按本仓库固定的 commit 初始化 `nvapi-rs` 子模块：
 
 ```bash
-git submodule init
-git submodule update
-cd nvapi-rs
-git checkout v0.2.x
-cd ..
+git submodule update --init
 ```
+
+请勿在子模块内另行切换分支：NVOC 的 CI 验证的是本仓库固定的 commit。
 
 ### 2 — 安装 Rust 工具链（rustup）
 

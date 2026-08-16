@@ -16,7 +16,7 @@ dependencies = [
     "matplotlib>=3.11.1; python_version >= '3.10'",
     "numpy>=1.24.4,<2; python_version < '3.9'",
     "numpy>=2.0; python_version >= '3.9'",
-    "packaging>=24.0",
+    "packaging>=26.3",
     "pillow>=10.4.0",
     "pynvoc",
     "pystray>=0.19.5",
