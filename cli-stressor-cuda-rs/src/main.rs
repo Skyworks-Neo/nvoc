@@ -119,7 +119,7 @@ struct Args {
 
     #[arg(
         long,
-        value_parser = ["standard", "low-vram", "40-50", "minload", "dynamic-export"],
+        value_parser = ["standard", "low-vram", "40-50", "dynamic-export"],
         conflicts_with = "config",
         help = "Use an embedded NVOC stress profile"
     )]
@@ -388,7 +388,6 @@ fn load_builtin_profile(name: &str) -> Result<FileConfig, String> {
         "standard" => include_str!("../profiles/standard.toml"),
         "low-vram" => include_str!("../profiles/low-vram.toml"),
         "40-50" => include_str!("../profiles/40-50.toml"),
-        "minload" => include_str!("../profiles/minload.toml"),
         "dynamic-export" => include_str!("../profiles/dynamic-export.toml"),
         other => return Err(format!("unknown embedded profile: {other}")),
     };
