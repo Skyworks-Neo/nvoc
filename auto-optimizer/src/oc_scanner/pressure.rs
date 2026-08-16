@@ -29,7 +29,6 @@ pub(super) struct PressureTestConfig<'a> {
     pub(super) minimum_delta_core_freq_step: i32,
     pub(super) fluctuation: FluctuationStrategy,
     pub(super) test_exe: &'a str,
-    pub(super) minload_exe: &'a str,
     pub(super) test_code: String,
     pub(super) timeout_loops: u64,
     pub(super) is_legacy_global_offset: bool,
@@ -39,8 +38,6 @@ pub(super) struct PressureTestConfig<'a> {
     pub(super) cuda_device: Option<u32>,
     /// Extra arguments appended verbatim to the stressor command.
     pub(super) stressor_extra_args: &'a [String],
-    /// 是否需要在掉电时以 MinLoadPulse 唤醒 GPU（仅 30/50 系笔记本端默认开启）。
-    pub(super) wakeup_load_needed: bool,
     pub(super) stressor_profile: &'a str,
     pub(super) stressor_config: Option<&'a str>,
     #[cfg(debug_assertions)]
@@ -435,6 +432,7 @@ pub(super) fn run_pressure_test(
                 let mut fluctuation_h_l_flag = false;
                 let mut thrm_or_pwr_limit_number = 0;
                 let _ = retry_operation_with_backoff(
+                    std::slice::from_ref(gpu),
                     || {
                         run_output(
                             gpu,
@@ -447,9 +445,6 @@ pub(super) fn run_pressure_test(
                     "ResetVfpDeltas",
                     5,
                     5,
-                    cfg.minload_exe,
-                    cfg.cuda_device,
-                    cfg.wakeup_load_needed,
                 );
                 test_initialization(gpu, cfg);
 
@@ -676,6 +671,7 @@ pub(super) fn run_pressure_test(
                         );
                         force_kill_process(&mut process, "in-test timeout");
                         let _ = retry_operation_with_backoff(
+                            std::slice::from_ref(gpu),
                             || {
                                 run_output(
                                     gpu,
@@ -688,9 +684,6 @@ pub(super) fn run_pressure_test(
                             "ResetVfpDeltas (timeout recovery)",
                             5,
                             5,
-                            cfg.minload_exe,
-                            cfg.cuda_device,
-                            cfg.wakeup_load_needed,
                         );
                         break;
                     }
@@ -823,13 +816,11 @@ pub(super) fn run_pressure_test(
                         exit_code
                     );
                     let _ = retry_operation_with_backoff(
+                        std::slice::from_ref(gpu),
                         || apply_autoscan_profile(gpu, matches, 80),
                         "apply_autoscan_profile",
                         5,
                         5,
-                        cfg.minload_exe,
-                        cfg.cuda_device,
-                        cfg.wakeup_load_needed,
                     );
                 }
 

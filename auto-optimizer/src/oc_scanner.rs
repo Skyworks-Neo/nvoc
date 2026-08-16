@@ -10,7 +10,7 @@ use self::phases::{
     CommonPhaseArgs, GpuBoostPhaseArgs, LegacyPhaseArgs, MemOcPhaseArgs, run_gpuboostv3_long_phase,
     run_gpuboostv3_short_phase, run_legacy_long_phase, run_legacy_short_phase, run_mem_oc_phase,
 };
-use self::runtime::{MinLoadPulse, retry_operation_with_backoff, run_output};
+use self::runtime::{native_wake, retry_operation_with_backoff, run_output};
 #[cfg(debug_assertions)]
 use super::manual_override::ManualOverride;
 use super::oc_profile_function::{
@@ -54,7 +54,6 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
     }
 
     let test_exe = common.test_exe.as_str();
-    let minload_exe = common.minload_exe.as_str();
     let log_filename = common.log.as_str();
     let mut l = ScanLogWriter::open_append(log_filename)?;
     #[cfg(debug_assertions)]
@@ -103,23 +102,14 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
 
         None => {
             println!("Voltage scan initialized because values were missing in the log.");
-            // 探测前先读取首个 GPU 的世代，判断是否需要 MinLoadPulse 唤醒。
-            let wakeup_load_needed = gpus
-                .first()
-                .and_then(|g| run_output(g, QueryGpuInfo).ok())
-                .and_then(|info| fetch_gpu_type(&info).ok())
-                .map(|t| t.oc_params().wakeup_load_needed)
-                .unwrap_or(false);
             // New logs need a read-only voltage range probe before any per-point
-            // VFP writes are attempted.
+            // VFP writes are attempted. GPUnotpowered 会在 retry 内部触发原生唤醒。
             let voltage_limits = retry_operation_with_backoff(
+                gpus,
                 || handle_test_voltage_limits(gpus, matches, print_scan_separator),
                 "ProbeVoltageLimits",
                 8,
                 1,
-                minload_exe,
-                cuda_device,
-                wakeup_load_needed,
             )?;
             let lvp = voltage_limits
                 .iter()
@@ -196,16 +186,16 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
                 delta: KilohertzDelta(45000),
             },
         )?;
-        // 仅在需要唤醒的世代（30/50 系笔记本）执行 MinLoadPulse
-        let wakeup_load_needed = gpu_type
+        // GC6 原生唤醒门槛：与 core 预唤醒钩子同源（GpuType::needs_gc6_wake，
+        // 全移动端 + Unknown）。旧 wakeup_load_needed 世代表只标 30/50 系，
+        // 恰好漏掉 40 系笔记本 —— 而 RTX 4060 Laptop 正是 610 激进 GCOFF 实测机型。
+        let needs_gc6_wake = gpu_type
             .as_ref()
-            .map(|t| t.oc_params().wakeup_load_needed)
-            .unwrap_or(false);
-        let _pulse = if wakeup_load_needed {
-            Some(MinLoadPulse::wake(minload_exe, cuda_device))
-        } else {
-            None
-        };
+            .map(|t| t.needs_gc6_wake())
+            .unwrap_or(true); // 识别失败 -> 保守唤醒
+        if needs_gc6_wake {
+            native_wake(gpu);
+        }
         match handle_lock_vfp(gpus, matches, upper_voltage_point, false) {
             Ok(_) => println!("Voltage locked successfully."),
             Err(e) => eprintln!("Error: Failed to lock voltage - {:?}", e),
@@ -234,13 +224,11 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
 
         // Retry QueryGpuStatus with backoff to handle transient GPU power state issues
         let status = retry_operation_with_backoff(
+            std::slice::from_ref(gpu),
             || run_output(gpu, QueryGpuStatus),
             "QueryGpuStatus (initial VFP load)",
             8, // attempts
             1, // base_wait_secs
-            minload_exe,
-            cuda_device,
-            wakeup_load_needed,
         )?;
         let points = status.vfp.ok_or(Error::VfpUnsupported)?.graphics;
 
@@ -397,14 +385,13 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
                     coefficient: fluctuation_coefficient,
                 },
                 test_exe,
-                minload_exe,
                 delimiter: delimiter.as_str(),
                 test_duration,
                 endurance_coefficient,
                 progress: Some(scan_progress.as_ref()),
                 cuda_device,
                 stressor_extra_args,
-                wakeup_load_needed,
+                needs_gc6_wake,
                 stressor_profile,
                 stressor_config,
                 #[cfg(debug_assertions)]
@@ -453,11 +440,10 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
                 .ok_or(Error::Str("invalid point index"))?
                 .default_frequency;
 
-            let _pulse = if wakeup_load_needed {
-                Some(MinLoadPulse::wake(minload_exe, cuda_device))
-            } else {
-                None
-            };
+            // 每个电压点锁定前原生唤醒（读为主的窗口，core 钩子只兜底写操作）
+            if needs_gc6_wake {
+                native_wake(gpu);
+            }
             match handle_lock_vfp(gpus, matches, point, true) {
                 Ok(_) => {
                     flat_curve_flag = false;
@@ -589,13 +575,11 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
 
             // Retry QueryGpuStatus with backoff for memory OC readout
             let status = retry_operation_with_backoff(
+                std::slice::from_ref(gpu),
                 || run_output(gpu, QueryGpuStatus),
                 "QueryGpuStatus (memory OC readout)",
                 5, // attempts
                 1, // base_wait_secs
-                minload_exe,
-                cuda_device,
-                wakeup_load_needed,
             )?;
             let readout_f = status.clone().clocks;
             let mut clocks = Vec::new();
@@ -640,14 +624,13 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
                         coefficient: fluctuation_coefficient,
                     },
                     test_exe,
-                    minload_exe,
                     delimiter: delimiter.as_str(),
                     test_duration,
                     endurance_coefficient,
                     progress: Some(scan_progress.as_ref()),
                     cuda_device,
                     stressor_extra_args,
-                    wakeup_load_needed,
+                    needs_gc6_wake,
                     stressor_profile,
                     stressor_config,
                     #[cfg(debug_assertions)]
@@ -698,7 +681,6 @@ pub fn autoscan_legacy(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> Resul
     let stressor_profile = common.stressor.profile.as_str();
     let stressor_config = common.stressor.config.as_deref();
     let test_exe = common.test_exe.as_str();
-    let minload_exe = common.minload_exe.as_str();
     let log_filename = common.log.as_str();
     let mut l = ScanLogWriter::open_append(log_filename)?;
     #[cfg(debug_assertions)]
@@ -721,10 +703,14 @@ pub fn autoscan_legacy(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> Resul
             safe_elasticity_per_cycle,
             fluctuation_coefficient,
             is_50_series: _, // legacy 路径不区分架构世代
-            wakeup_load_needed,
             testing_step: _,
             freq_step_exp_core,
         } = gpu_type.as_ref().map(|t| t.oc_params()).unwrap_or_default();
+        // GC6 原生唤醒门槛（与 core 预唤醒钩子同源）；识别失败 -> 保守唤醒
+        let needs_gc6_wake = gpu_type
+            .as_ref()
+            .map(|t| t.needs_gc6_wake())
+            .unwrap_or(true);
 
         let core_oc_safe_limit_ref = core_oc_safe_limit;
 
@@ -810,14 +796,13 @@ pub fn autoscan_legacy(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> Resul
                     coefficient: fluctuation_coefficient,
                 },
                 test_exe,
-                minload_exe,
                 delimiter: delimiter.as_str(),
                 test_duration,
                 endurance_coefficient,
                 progress: None,
                 cuda_device,
                 stressor_extra_args,
-                wakeup_load_needed,
+                needs_gc6_wake,
                 stressor_profile,
                 stressor_config,
                 #[cfg(debug_assertions)]
