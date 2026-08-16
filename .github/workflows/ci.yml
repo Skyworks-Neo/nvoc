@@ -302,6 +302,7 @@ jobs:
           cache-dependency-glob: uv.lock
           cache-suffix: tui-py${{ matrix.python-version }}
       - name: Install deps
+        shell: bash
         run: |
           uv sync --locked --package nvoc-tui --group dev --no-config || (
             echo "uv.lock was stale; refreshing lockfile for CI dependency updates"
@@ -345,6 +346,7 @@ jobs:
           cache-dependency-glob: uv.lock
           cache-suffix: gui-py3.12
       - name: Install deps
+        shell: bash
         run: |
           uv sync --locked --package nvoc-gui --group dev --no-config || (
             echo "uv.lock was stale; refreshing lockfile for CI dependency updates"
