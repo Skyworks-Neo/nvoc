@@ -131,8 +131,7 @@ class VFCurveController(PaneController):
                 raise
 
         try:
-            thread = threading.Thread(target=worker, daemon=True, name="vf-refresh")
-            thread.start()
+            self.app.native_service.submit_query(worker)
         except Exception:
             self._end_refresh()
             raise
