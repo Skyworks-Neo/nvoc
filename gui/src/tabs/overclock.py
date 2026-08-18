@@ -13,6 +13,7 @@ from src.widgets.lightweight_controls import (
     LiteButton,
     LiteEntry,
     SegmentRangeSelector,
+    SegmentToggleSelector,
     install_mousewheel_support,
 )
 from src.widgets.hover_tooltip import HoverTooltip
@@ -47,6 +48,12 @@ class OverclockTab:
         self._is_vfp_mode = False
         self._vfp_uniform_offset_mhz = None  # type: Optional[int]
         self._limit_supported_state = True
+        self._limit_panel_mode = "desktop"  # "desktop" | "mobile" | "off"
+        self._mobile_mode = False
+        self._tgp_policy_index = 2
+        self._mobile_ppab_initialized_for = None  # type: Optional[str]
+        self._mobile_limits_gpu = None  # type: Optional[str]
+        self._mobile_load_in_flight = False
         self._is_resize_active = False
         self._pending_limits = None  # type: Optional[Dict[str, Any]]
         self._pending_capabilities = None  # type: Optional[Dict[str, Any]]
@@ -205,6 +212,39 @@ class OverclockTab:
             text_color="gray60",
         )
 
+        # ── Mobile-mode widgets (packed only when a mobile GPU is active) ──
+        self.ppab_var = ctk.BooleanVar(value=False)
+        self.ppab_checkbox = ctk.CTkCheckBox(
+            limit_header,
+            text="PPAB",
+            width=94,
+            height=24,
+            variable=self.ppab_var,
+            command=self._on_ppab_toggled,
+        )
+        ppab_tip = (
+            "PPAB / Dynamic Boost (NVAPI, mobile only).\n"
+            "CPU↔GPU dynamic power shifting (set-dynamic-boost).\n"
+            "No read-back API exists; enabling the panel turns it on."
+        )
+        HoverTooltip(self.ppab_checkbox, ppab_tip)
+
+        self.dnotifier_row = ctk.CTkFrame(self.limit_frame, fg_color="transparent")
+        self.dnotifier_row.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(self.dnotifier_row, text="D-Notifier:", width=90, anchor="w").grid(
+            row=0, column=0, sticky="nw", pady=(5, 0)
+        )
+        self.dnotifier_selector = SegmentToggleSelector(
+            self.dnotifier_row, values=[], command=self._on_dnotifier_selected
+        )
+        self.dnotifier_selector.grid(row=0, column=1, sticky="ew", padx=(5, 8))
+        dnotifier_tip = (
+            "D-Notifier level (D1-D5, mobile NVAPI).\n"
+            "The actual power cap never exceeds the active D-state's\n"
+            "watt budget shown under each level (set-dnotifier)."
+        )
+        HoverTooltip(self.dnotifier_selector, dnotifier_tip)
+
         # Power Limit slider + entry
         self.plimit_label_var = ctk.StringVar(value="Pwr Limit(%):")
         (
@@ -293,26 +333,48 @@ class OverclockTab:
             pass
 
     def _set_limit_panel_supported(self, supported: bool):
-        """Enable/disable the whole power/thermal section with a dimmed visual state."""
-        if supported == self._limit_supported_state:
+        """Back-compat shim: map a boolean onto the panel mode machine."""
+        self._set_limit_panel_mode("desktop" if supported else "off")
+
+    def _set_limit_panel_mode(self, mode: str):
+        """Switch the power/thermal section between desktop/mobile/off modes.
+
+        desktop: original NVAPI%/NVML-W layout.
+        mobile: NVAPI-only mobile layout (PPAB checkbox, D-Notifier selector,
+                TGP watts slider, target-temp slider).
+        off: dimmed/unsupported.
+        """
+        if mode == self._limit_panel_mode:
             return
-        self._limit_supported_state = supported
+        self._limit_panel_mode = mode
+        supported = mode != "off"
+
+        if mode == "mobile":
+            self._enter_mobile_mode()
+        else:
+            self._exit_mobile_mode()
 
         state = "normal" if supported else "disabled"
-        for widget in [
-            self.power_api_selector,
+        widgets = [
             self.plimit_slider,
             self.plimit_entry,
             self.btn_apply_plimit,
             self.tlimit_slider,
             self.tlimit_entry,
             self.btn_apply_tlimit,
-            self.vboost_slider,
-            self.vboost_entry,
-            self.btn_apply_vboost,
             self.btn_apply_limits,
             self.btn_reset_all,
-        ]:
+        ]
+        if mode == "mobile":
+            widgets.append(self.dnotifier_selector)
+        else:
+            widgets.extend([
+                self.power_api_selector,
+                self.vboost_slider,
+                self.vboost_entry,
+                self.btn_apply_vboost,
+            ])
+        for widget in widgets:
             self._safe_set_state(widget, state)
 
         self.limit_frame.configure(
@@ -325,10 +387,223 @@ class OverclockTab:
             if supported
             else self._limit_dim_title_color
         )
+
         if supported:
             self.limit_status_label.pack_forget()
         elif not self.limit_status_label.winfo_manager():
             self.limit_status_label.pack(anchor="w", padx=10, pady=(0, 6))
+
+    # ────────────────────────────────────────────
+    # Mobile (laptop GPU) power & thermal mode
+    # ────────────────────────────────────────────
+    def _enter_mobile_mode(self):
+        """Swap the limit panel into its mobile layout. Idempotent."""
+        if self._mobile_mode:
+            return
+        self._mobile_mode = True
+        self.power_api_selector.pack_forget()
+        # Repack the "→" hint label away alongside the dropdown.
+        for child in self.power_api_selector.master.winfo_children():
+            if (
+                isinstance(child, ctk.CTkLabel)
+                and child.cget("text") == "→"
+                and child is not self.limit_title_label
+            ):
+                child.pack_forget()
+        self.ppab_checkbox.pack(side="right")
+        self.plimit_label_var.set("Pwr Limit(W):")
+        # D-Notifier selector sits above the power slider row.
+        plimit_row = self.plimit_slider.master
+        self.dnotifier_row.pack(fill="x", padx=10, pady=(0, 3), before=plimit_row)
+        # Voltage Boost row is hidden on mobile (unvalidated NVAPI % path).
+        self.vboost_slider.master.pack_forget()
+        self._load_mobile_limits()
+
+    def _exit_mobile_mode(self):
+        """Restore the desktop limit panel layout. Idempotent."""
+        if not self._mobile_mode:
+            return
+        self._mobile_mode = False
+        self.ppab_checkbox.pack_forget()
+        self.dnotifier_row.pack_forget()
+        self.power_api_selector.pack(side="right")
+        # Restore the "→" hint that sits left of the dropdown.
+        header = self.power_api_selector.master
+        for child in header.winfo_children():
+            if (
+                isinstance(child, ctk.CTkLabel)
+                and child.cget("text") == "→"
+                and child is not self.limit_title_label
+            ):
+                child.pack(side="right", padx=(0, 6))
+        self.plimit_label_var.set("Pwr Limit(%):")
+        # Repack the vboost row before the buttons row (original order).
+        btn_limits_row = self.btn_apply_limits.master
+        self.vboost_slider.master.pack(fill="x", padx=10, pady=3, before=btn_limits_row)
+
+    def _load_mobile_limits(self):
+        """Background-load the mobile control surface (TGP range, D-Notifier,
+        target-temp policies) via pynvoc and apply it on the UI thread."""
+        gpu = self.app.selected_gpu_target()
+        if gpu is None or self._mobile_load_in_flight:
+            return
+        self._mobile_load_in_flight = True
+        backend = self.app.backend
+
+        def worker():
+            try:
+                data = backend.query_mobile_limits(gpu)
+            except Exception as exc:
+                data = {"error": str(exc)}
+            try:
+                self.frame.after(0, lambda: self._mobile_limits_loaded(gpu, data))
+            except Exception:
+                self._mobile_load_in_flight = False
+
+        try:
+            self.app.run_background("mobile-limits", worker)
+        except Exception:
+            self._mobile_load_in_flight = False
+            raise
+
+    def _mobile_limits_loaded(self, gpu: str, data: dict):
+        self._mobile_load_in_flight = False
+        if not self._mobile_mode:
+            return
+        self._mobile_limits_gpu = gpu
+        self.update_mobile_limits(data)
+
+        # PPAB has no read-back API; enable it once per GPU on panel load.
+        if self._mobile_ppab_initialized_for != gpu:
+            self._mobile_ppab_initialized_for = gpu
+            self._syncing = True
+            self.ppab_var.set(True)
+            self._syncing = False
+            self.app.run_native_action(
+                "enable dynamic boost",
+                lambda native, gpu=gpu: (
+                    native.set_dynamic_boost(gpu, True)
+                    or "Dynamic Boost (PPAB) enabled."
+                ),
+            )
+
+    def update_mobile_limits(self, data: dict):
+        """Apply the mobile control surface (see NativeBackend.query_mobile_limits)."""
+        if not self._mobile_mode:
+            return
+        tgp = data.get("tgp") if isinstance(data.get("tgp"), dict) else None
+        dnotifier = data.get("dnotifier") if isinstance(data.get("dnotifier"), dict) else None
+        policies = data.get("temp_policies") or []
+        unsupported = []
+
+        if tgp and tgp.get("max_watt") is not None and tgp.get("min_watt") is not None:
+            self._tgp_policy_index = int(tgp.get("policy_index", 2))
+            self._power_default = int(
+                round(float(tgp.get("default_watt") or tgp.get("min_watt")))
+            )
+            self._reconfigure_slider(
+                self.plimit_slider,
+                self.plimit_var,
+                int(round(float(tgp["min_watt"]))),
+                int(round(float(tgp["max_watt"]))),
+                self._power_default,
+                step=1,
+            )
+        else:
+            unsupported.append("TGP")
+            self._safe_set_state(self.plimit_slider, "disabled")
+            self._safe_set_state(self.btn_apply_plimit, "disabled")
+
+        if dnotifier and dnotifier.get("levels"):
+            levels = dnotifier["levels"]
+            values = [str(item.get("level", "")).upper() for item in levels]
+            subtitles = [
+                f"{float(item['watts']):.0f}W" if item.get("watts") is not None else None
+                for item in levels
+            ]
+            self.dnotifier_selector.set_values(values, subtitles)
+            self.dnotifier_selector.set_selection(dnotifier.get("active"))
+            self._safe_set_state(self.dnotifier_selector, "normal")
+        else:
+            unsupported.append("D-Notifier")
+            self._safe_set_state(self.dnotifier_selector, "disabled")
+
+        target = None
+        for policy in policies:
+            # Only the TargetTemp slot exposes a writable range (min < max);
+            # other slots report min == max and must be skipped.
+            if (
+                isinstance(policy, dict)
+                and policy.get("min") is not None
+                and policy.get("max") is not None
+                and float(policy["max"]) > float(policy["min"])
+            ):
+                target = policy
+                break
+        if target is not None:
+            current = int(round(float(target.get("celsius", target.get("default", 83)))))
+            self._thermal_default = current
+            self._reconfigure_slider(
+                self.tlimit_slider,
+                self.tlimit_var,
+                int(round(float(target["min"]))),
+                int(round(float(target["max"]))),
+                current,
+                step=1,
+            )
+        else:
+            unsupported.append("Target Temp")
+            self._safe_set_state(self.tlimit_slider, "disabled")
+            self._safe_set_state(self.btn_apply_tlimit, "disabled")
+
+        if unsupported:
+            self.limit_status_label.configure(
+                text=f"Mobile controls unavailable on this driver: {', '.join(unsupported)}."
+            )
+            self.limit_status_label.pack(anchor="w", padx=10, pady=(0, 6))
+        else:
+            self.limit_status_label.pack_forget()
+
+    def _on_ppab_toggled(self):
+        if self._syncing or not self._mobile_mode:
+            return
+        gpu = self.app.selected_gpu_target()
+        if gpu is None:
+            return
+        active = bool(self.ppab_var.get())
+        self.app.run_native_action(
+            "toggle dynamic boost",
+            lambda native, gpu=gpu, active=active: (
+                native.set_dynamic_boost(gpu, active)
+                or f"Dynamic Boost (PPAB) {'enabled' if active else 'disabled'}."
+            ),
+        )
+
+    def _on_dnotifier_selected(self, level: str):
+        if self._syncing or not self._mobile_mode or not level:
+            return
+        gpu = self.app.selected_gpu_target()
+        if gpu is None:
+            return
+        try:
+            d_level = int(str(level).strip().upper().lstrip("D"))
+        except ValueError:
+            return
+        if not 1 <= d_level <= 5:
+            return
+
+        def on_finished(_code):
+            # D-Notifier SET clamps the TGP wall — refresh levels + slider.
+            self._load_mobile_limits()
+
+        self.app.run_native_action(
+            "set D-Notifier level",
+            lambda native, gpu=gpu, d_level=d_level: (
+                native.set_dnotifier(gpu, d_level)
+                or f"D-Notifier set to D{d_level}."
+            ),
+            on_finished=on_finished,
+        )
 
     def on_resize_state_changed(self, resizing: bool, force_flush: bool = False):
         """Coalesce expensive slider/state updates during active resize."""
@@ -407,6 +682,13 @@ class OverclockTab:
             self._set_slider_value(
                 self.mem_slider, self.mem_var, limits["mem_clock_current"]
             )
+
+        if self._mobile_mode:
+            # Mobile ranges come from update_mobile_limits() (pynvoc NVAPI
+            # private interfaces); the generic %/W desktop keys don't apply.
+            if "supported_pstates" in limits:
+                self.set_supported_pstates(limits.get("supported_pstates"))
+            return
 
         power_backend = self._selected_power_backend()
         if power_backend == "nvml":
@@ -568,7 +850,12 @@ class OverclockTab:
             or gpu_name.endswith(" mx")
         )
 
-        self._set_limit_panel_supported(not is_mobile)
+        self._set_limit_panel_mode("mobile" if is_mobile else "desktop")
+        if is_mobile and self._mobile_mode:
+            # Re-load when switching between two mobile GPUs.
+            gpu = self.app.selected_gpu_target()
+            if gpu is not None and gpu != self._mobile_limits_gpu:
+                self._load_mobile_limits()
         self.fan_section.set_supported(not is_mobile)
         # Maxwell / 900 series and older detection
         # Simple heuristic: architectural series usually exposed in info or if missing VFP
@@ -644,11 +931,15 @@ class OverclockTab:
 
     def _selected_power_backend(self) -> str:
         """Return the selected backend for power-limit commands only."""
+        if self._mobile_mode:
+            return "nvapi"
         selected = self.power_api_var.get().strip().upper()
         return "nvml" if selected == "NVML" else "nvapi"
 
     def _on_power_api_changed(self, _selected: str):
         """Re-sync power slider unit/range and refresh current values via get."""
+        if self._mobile_mode:
+            return
         cached = dict(getattr(self.app, "_gpu_limits_cache", {}) or {})
         if cached:
             self.update_limits(cached)
@@ -935,8 +1226,17 @@ class OverclockTab:
     def _apply_plimit_only(self):
         plimit = self.plimit_var.get().strip()
         if plimit:
-            backend = self._selected_power_backend()
             gpu = self.app.selected_gpu_target()
+            if self._mobile_mode:
+                self.app.run_native_action(
+                    "apply TGP watt limit",
+                    lambda native, gpu=gpu, watts=int(plimit): (
+                        native.set_tgp_watt(gpu, watts, self._tgp_policy_index)
+                        or f"Successfully applied TGP limit {watts} W."
+                    ),
+                )
+                return
+            backend = self._selected_power_backend()
             self.app.run_native_action(
                 "apply power limit",
                 lambda native, gpu=gpu, backend=backend, plimit=int(plimit): (
@@ -949,6 +1249,15 @@ class OverclockTab:
         tlimit = self.tlimit_var.get().strip()
         if tlimit:
             gpu = self.app.selected_gpu_target()
+            if self._mobile_mode:
+                self.app.run_native_action(
+                    "apply target temperature",
+                    lambda native, gpu=gpu, tlimit=float(tlimit): (
+                        native.set_target_temp(gpu, tlimit, 2)
+                        or f"Successfully applied target temperature {tlimit:.0f} C."
+                    ),
+                )
+                return
             self.app.run_native_action(
                 "apply thermal limit",
                 lambda native, gpu=gpu, tlimit=int(tlimit): (
@@ -1058,6 +1367,33 @@ class OverclockTab:
         gpu = self.app.selected_gpu_target()
         actions = []
 
+        if self._mobile_mode:
+            if self.plimit_slider.cget("state") != "disabled":
+                plimit = self.plimit_var.get().strip()
+                if plimit:
+                    actions.append((
+                        "apply TGP watt limit",
+                        lambda native, gpu=gpu, watts=int(plimit): (
+                            native.set_tgp_watt(gpu, watts, self._tgp_policy_index)
+                            or f"Successfully applied TGP limit {watts} W."
+                        ),
+                    ))
+            if self.tlimit_slider.cget("state") != "disabled":
+                tlimit = self.tlimit_var.get().strip()
+                if tlimit:
+                    actions.append((
+                        "apply target temperature",
+                        lambda native, gpu=gpu, tlimit=float(tlimit): (
+                            native.set_target_temp(gpu, tlimit, 2)
+                            or f"Successfully applied target temperature {tlimit:.0f} C."
+                        ),
+                    ))
+            if not actions:
+                self.app.console.append("[GUI] No limit values specified.\n")
+                return
+            self.app.run_native_action_chain(actions)
+            return
+
         if self.plimit_slider.cget("state") != "disabled":
             plimit = self.plimit_var.get().strip()
             if plimit:
@@ -1126,6 +1462,22 @@ class OverclockTab:
         self.vboost_var.set("0")
         self.vboost_slider.set(0)
         self._syncing = False
+
+        if self._mobile_mode:
+            policy_index = self._tgp_policy_index
+
+            def on_finished(_code):
+                self._load_mobile_limits()
+
+            self.app.run_native_action(
+                "reset TGP to default",
+                lambda native, gpu=gpu, policy_index=policy_index: (
+                    native.reset_tgp_watt(gpu, policy_index)
+                    or "Successfully reset TGP to default."
+                ),
+                on_finished=on_finished,
+            )
+            return
 
         self.app.run_native_action(
             "reset all settings",

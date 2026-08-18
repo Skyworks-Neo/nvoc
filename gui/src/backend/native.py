@@ -64,6 +64,33 @@ class NativeBackend:
     def query_domain_vfp_points(self, gpu: str, domain: str = "graphics") -> list[dict]:
         return self._pynvoc().query_domain_vfp_points(gpu, domain, True)
 
+    def query_mobile_limits(self, gpu: str) -> dict[str, Any]:
+        """Fetch the mobile power/thermal control surface (all NVAPI).
+
+        Returns ``{"tgp": dict|None, "dnotifier": dict|None,
+        "temp_policies": list}``; ``None`` sub-dicts mean the private
+        interface isn't exposed by this driver.
+        """
+        native = self._pynvoc()
+        tgp = None
+        dnotifier = None
+        policies: Any = []
+        try:
+            tgp = native.query_tgp_watt_range(gpu)
+        except Exception:
+            tgp = None
+        try:
+            dnotifier = native.query_dnotifier(gpu)
+        except Exception:
+            dnotifier = None
+        try:
+            policies = native.query_target_temp_policies(gpu)
+        except Exception:
+            policies = []
+        if not isinstance(policies, list):
+            policies = []
+        return {"tgp": tgp, "dnotifier": dnotifier, "temp_policies": policies}
+
     def run_action(
         self,
         description: str,

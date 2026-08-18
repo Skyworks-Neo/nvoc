@@ -1,11 +1,20 @@
 from __future__ import annotations
 
+import threading
+
 from textual.widgets import Input, Select
 
 from .base import PaneController
 
 
 class OverclockController(PaneController):
+    def __init__(self, app) -> None:
+        super().__init__(app)
+        self._mobile_limits_gpu: str | None = None
+        self._mobile_load_lock = threading.Lock()
+        self._tgp_policy_index = 2
+        self._tgp_range = (5, 140)
+        self._target_temp_range = (75, 87)
     def available_pstates(self) -> list[str]:
         pstates = self.app.cache.settings.get("supported_pstates", [])
         if not isinstance(pstates, list):
@@ -91,6 +100,7 @@ class OverclockController(PaneController):
                 self.app.query_one(selector, Input).value = value
             except Exception:
                 pass
+        self.load_mobile_limits()
 
     def apply_oc(
         self,
@@ -142,6 +152,147 @@ class OverclockController(PaneController):
             native.set_thermal_limit(gpu, thermal_limit)
             native.set_voltage_boost(gpu, voltage_boost)
         return f"Successfully applied {backend} limits."
+
+    def is_mobile(self) -> bool:
+        gpu_name = str(self.app.cache.info.get("gpu_name", "")).lower()
+        return (
+            "mobile" in gpu_name
+            or "laptop" in gpu_name
+            or " m " in gpu_name
+            or gpu_name.endswith(" m")
+            or " mx " in gpu_name
+            or gpu_name.endswith(" mx")
+        )
+
+    def load_mobile_limits(self, force: bool = False) -> None:
+        """Background-load the mobile control surface via pynvoc (NVAPI)."""
+        gpu = self.app.selected_gpu_target()
+        if gpu is None or not self.is_mobile():
+            return
+        if not force and gpu == self._mobile_limits_gpu:
+            return
+        if not self._mobile_load_lock.acquire(blocking=False):
+            return
+
+        def worker() -> None:
+            try:
+                data = self.app.native_service.query_mobile_limits(gpu)
+            except Exception as exc:
+                data = {"error": str(exc)}
+            finally:
+                self._mobile_load_lock.release()
+            try:
+                self.app.call_from_thread(self._on_mobile_limits, gpu, data)
+            except Exception:
+                pass
+
+        threading.Thread(
+            target=worker, daemon=True, name="nvoc-tui-mobile-limits"
+        ).start()
+
+    def _on_mobile_limits(self, gpu: str, data: dict) -> None:
+        first_load = self._mobile_limits_gpu != gpu
+        self._mobile_limits_gpu = gpu
+        tgp = data.get("tgp") if isinstance(data.get("tgp"), dict) else None
+        dnotifier = (
+            data.get("dnotifier") if isinstance(data.get("dnotifier"), dict) else None
+        )
+        policies = data.get("temp_policies") or []
+        notes: list[str] = []
+
+        if tgp and tgp.get("min_watt") is not None and tgp.get("max_watt") is not None:
+            self._tgp_policy_index = int(tgp.get("policy_index", 2))
+            self._tgp_range = (
+                int(round(float(tgp["min_watt"]))),
+                int(round(float(tgp["max_watt"]))),
+            )
+            default = int(round(float(tgp.get("default_watt") or tgp["min_watt"])))
+            self.set_input("#mobile-tgp", str(default))
+        else:
+            notes.append("TGP range unavailable")
+
+        if dnotifier and dnotifier.get("levels"):
+            options = []
+            for item in dnotifier["levels"]:
+                label = str(item.get("level", "")).upper()
+                try:
+                    level_num = int(label.lstrip("D"))
+                except ValueError:
+                    continue
+                watts = item.get("watts")
+                display = f"{label} · {float(watts):.0f}W" if watts is not None else label
+                options.append((display, level_num))
+            select = self.app.query_one("#mobile-dnotifier", Select)
+            select.set_options(options)
+            active = dnotifier.get("active")
+            if active:
+                try:
+                    select.value = int(str(active).upper().lstrip("D"))
+                except ValueError:
+                    pass
+        else:
+            notes.append("D-Notifier unavailable")
+
+        target = None
+        for policy in policies:
+            if (
+                isinstance(policy, dict)
+                and policy.get("min") is not None
+                and policy.get("max") is not None
+                and float(policy["max"]) > float(policy["min"])
+            ):
+                target = policy
+                break
+        if target is not None:
+            self._target_temp_range = (
+                int(round(float(target["min"]))),
+                int(round(float(target["max"]))),
+            )
+            self.set_input(
+                "#mobile-target-temp", str(int(round(float(target.get("celsius", 87)))))
+            )
+        else:
+            notes.append("Target Temp range unavailable")
+
+        if notes:
+            self.app.write_log("Mobile power: " + ", ".join(notes) + ".")
+
+        # PPAB has no read-back API; enable it once per GPU on load.
+        if first_load:
+            self.app.run_native_action(
+                "enable dynamic boost",
+                lambda native, gpu=gpu: (
+                    native.set_dynamic_boost(gpu, True) or "Dynamic Boost (PPAB) enabled."
+                ),
+            )
+
+    def set_input(self, selector: str, value: str) -> None:
+        try:
+            self.app.query_one(selector, Input).value = value
+        except Exception:
+            pass
+
+    def apply_mobile(
+        self,
+        native,
+        gpu: str,
+        ppab: bool,
+        d_level: int,
+        tgp_watts: int,
+        target_temp: int,
+    ) -> str:
+        native.set_dynamic_boost(gpu, ppab)
+        native.set_dnotifier(gpu, d_level)
+        native.set_tgp_watt(gpu, tgp_watts, self._tgp_policy_index)
+        native.set_target_temp(gpu, float(target_temp), 2)
+        return (
+            f"Successfully applied mobile power: PPAB {'on' if ppab else 'off'}, "
+            f"D{d_level}, TGP {tgp_watts} W, target {target_temp} C."
+        )
+
+    def reset_mobile(self, native, gpu: str) -> str:
+        native.reset_tgp_watt(gpu, self._tgp_policy_index)
+        return "Successfully reset TGP to default."
 
     def apply_fan(
         self,
@@ -332,5 +483,57 @@ class OverclockController(PaneController):
                 "reset fan",
                 reset_fan,
             )
+            return True
+        if button_id == "mobile-apply":
+            gpu = self.app.selected_gpu_target()
+            if gpu is None:
+                self.app.write_log("No GPU selected.")
+                return True
+            ppab = str(self.app.query_one("#mobile-ppab", Select).value or "on") == "on"
+            try:
+                d_level = int(self.app.query_one("#mobile-dnotifier", Select).value or 1)
+            except (TypeError, ValueError):
+                d_level = 1
+            if not 1 <= d_level <= 5:
+                self.app.write_log("D-Notifier level must be D1-D5.")
+                return True
+            tgp_watts = self.get_int("#mobile-tgp", 100)
+            lo, hi = self._tgp_range
+            tgp_watts = max(lo, min(hi, tgp_watts))
+            target_temp = self.get_int("#mobile-target-temp", 87)
+            tlo, thi = self._target_temp_range
+            target_temp = max(tlo, min(thi, target_temp))
+
+            def apply_mobile(
+                native,
+                gpu=gpu,
+                ppab=ppab,
+                d_level=d_level,
+                tgp_watts=tgp_watts,
+                target_temp=target_temp,
+            ) -> str:
+                return self.apply_mobile(
+                    native, gpu, ppab, d_level, tgp_watts, target_temp
+                )
+
+            self.app.run_native_action(
+                "apply mobile power",
+                apply_mobile,
+            )
+            return True
+        if button_id == "mobile-reset":
+            gpu = self.app.selected_gpu_target()
+            if gpu is None:
+                self.app.write_log("No GPU selected.")
+                return True
+
+            def reset_mobile(native, gpu=gpu) -> str:
+                return self.reset_mobile(native, gpu)
+
+            self.app.run_native_action(
+                "reset mobile power",
+                reset_mobile,
+            )
+            self.load_mobile_limits(force=True)
             return True
         return False

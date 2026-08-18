@@ -106,6 +106,57 @@ def compose_overclock() -> ComposeResult:
                             compact=True,
                         )
 
+                with Vertical(classes="subpane") as mobile_pane:
+                    mobile_pane.border_title = mnemonic_text("M", "obile Power")
+                    with Grid(id="mobile-controls"):
+                        with Horizontal(classes="row"):
+                            yield Label("PPAB")
+                            yield Select(
+                                options=[("On", "on"), ("Off", "off")],
+                                value="on",
+                                id="mobile-ppab",
+                                allow_blank=False,
+                                compact=True,
+                            )
+                        with Horizontal(classes="row"):
+                            yield Label("D-Notifier")
+                            yield Select(
+                                options=[
+                                    ("D1", 1),
+                                    ("D2", 2),
+                                    ("D3", 3),
+                                    ("D4", 4),
+                                    ("D5", 5),
+                                ],
+                                value=1,
+                                id="mobile-dnotifier",
+                                allow_blank=False,
+                                compact=True,
+                            )
+                        with Horizontal(classes="row"):
+                            yield Label("TGP (W)")
+                            yield ShortcutInput(
+                                value="100", id="mobile-tgp", compact=True
+                            )
+                        with Horizontal(classes="row"):
+                            yield Label("Target Temp (C)")
+                            yield ShortcutInput(
+                                value="87", id="mobile-target-temp", compact=True
+                            )
+                    with Grid(id="mobile-actions"):
+                        yield Button(
+                            "Apply Mobile",
+                            id="mobile-apply",
+                            classes="red",
+                            compact=True,
+                        )
+                        yield Button(
+                            "Reset Mobile",
+                            id="mobile-reset",
+                            classes="green",
+                            compact=True,
+                        )
+
                 with Vertical(classes="subpane") as fan_pane:
                     fan_pane.border_title = mnemonic_text("a", "n", "F")
                     with Grid(id="fan-controls"):
