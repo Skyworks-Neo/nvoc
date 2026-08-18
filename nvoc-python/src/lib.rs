@@ -6,15 +6,17 @@ use nvoc_core::{
     BackendSet, CheckVoltageFrequency, ClearEdid, ConvertEnum, GpuTarget, QueryApiRestriction,
     QueryAutoBoost, QueryDisplays, QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo,
     QueryGpuSettings, QueryGpuStatus, QueryLegacyCoreOvervoltRanges,
-    QueryLegacyP0CoreMaxVoltageDelta, QueryNvapiTargetTempPolicies, QueryPowerLimits,
+    QueryLegacyP0CoreMaxVoltageDelta, QueryNvapiDNotifier, QueryNvapiTargetTempPolicies,
+    QueryNvapiTgpWattRange, QueryPowerLimits,
     QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits,
     QueryTemperatureThresholds, QueryThrottleReasons, QueryVfpPointVoltage, QueryVoltageBoost,
     ResetApplicationsClocks, ResetCoolerLevels, ResetFanSpeed, ResetLockedClocks,
-    ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetPstateBaseVoltages,
+    ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetPstateBaseVoltages,
     ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock, ResetVfpLock,
     SetApiRestriction, SetApplicationsClocks, SetAutoBoost, SetAutoBoostDefault, SetClockOffset,
     SetCoolerLevels, SetDomainVfpDeltas, SetEdid, SetFanSpeed, SetLegacyClocks, SetLockedClocks,
-    SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiSensorLimits, SetNvmlPstateLock,
+    SetNvapiDNotifier, SetNvapiDynamicBoost, SetNvapiPowerLimits, SetNvapiPstateLock,
+    SetNvapiSensorLimits, SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvmlPstateLock,
     SetPowerLimit, SetPstateBaseVoltage, SetPstateClockOffset, SetTemperatureLimit,
     SetVfpFrequencyLock, SetVfpPointDelta, SetVfpRangeDelta, SetVfpVoltageLock, SetVoltageBoost,
     VfpResetDomain, discover_targets, nvml_pstate_to_str, parse_nvml_fan_control_policy, run,
@@ -186,12 +188,78 @@ fn gpu_id_matches(gpu_id: u32, raw: &str) -> PyResult<bool> {
         || raw.eq_ignore_ascii_case(&format!("0x{gpu_id:X}")))
 }
 
+/// NVAPI/NVML 句柄是驱动侧不透明值；NVML 官方线程安全，NVAPI 查询同样
+/// 被前端多线程并发调用，跨线程共享 inventory 安全。
+struct SyncInventory(nvoc_core::TargetInventory);
+unsafe impl Send for SyncInventory {}
+unsafe impl Sync for SyncInventory {}
+
+/// 进程级 inventory 缓存（按 BackendSet 各一份）。
+///
+/// GUI/TUI 以 0.5-1 Hz 轮询 pynvoc，若每次调用都 `discover_targets`，
+/// 会反复 NVML init + NVAPI 重枚举：Linux 上 libnvidia-api 每次 NVAPI
+/// 调用泄漏 fd（约 1 fd/tick，30-60 分钟耗尽 ulimit 1024 → "too many
+/// open files"），Windows 上驱动/内核句柄累积一整天，退出时逐个拆除
+/// 导致卡死数分钟。缓存后仅在首次使用或 `discover_gpus` 显式刷新时发现。
+struct InventoryCache {
+    both: Option<SyncInventory>,
+    nvapi: Option<SyncInventory>,
+    nvml: Option<SyncInventory>,
+}
+
+static INVENTORY_CACHE: std::sync::Mutex<InventoryCache> = std::sync::Mutex::new(InventoryCache {
+    both: None,
+    nvapi: None,
+    nvml: None,
+});
+
+fn lock_inventory_cache(
+) -> std::sync::MutexGuard<'static, InventoryCache> {
+    INVENTORY_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+impl InventoryCache {
+    /// 获取指定 backend 集的 inventory；首次访问时发现并缓存。
+    fn entry(&mut self, backends: BackendSet) -> PyResult<&nvoc_core::TargetInventory> {
+        let slot = match backends {
+            BackendSet::Both => &mut self.both,
+            BackendSet::Nvapi => &mut self.nvapi,
+            BackendSet::Nvml => &mut self.nvml,
+        };
+        if slot.is_none() {
+            *slot = Some(SyncInventory(
+                discover_targets(backends).map_err(to_py_err)?,
+            ));
+        }
+        Ok(slot.as_ref().map(|cached| &cached.0).expect("slot just filled"))
+    }
+
+    /// 强制重新发现指定集并更新缓存（discover_gpus 的显式刷新入口）。
+    fn refresh(
+        &mut self,
+        backends: BackendSet,
+    ) -> PyResult<&nvoc_core::TargetInventory> {
+        let fresh = discover_targets(backends).map_err(to_py_err)?;
+        let slot = match backends {
+            BackendSet::Both => &mut self.both,
+            BackendSet::Nvapi => &mut self.nvapi,
+            BackendSet::Nvml => &mut self.nvml,
+        };
+        *slot = Some(SyncInventory(fresh));
+        Ok(slot.as_ref().map(|cached| &cached.0).expect("slot just filled"))
+    }
+}
+
 fn with_target<F>(gpu: &str, backends: &str, f: F) -> PyResultValue
 where
     F: FnOnce(&GpuTarget<'_>) -> PyResultValue,
 {
-    let inventory = discover_targets(parse_backends(backends)?).map_err(to_py_err)?;
-    let target = selected_target(&inventory, gpu)?;
+    let backends = parse_backends(backends)?;
+    let mut cache = lock_inventory_cache();
+    let inventory = cache.entry(backends)?;
+    let target = selected_target(inventory, gpu)?;
     f(&target)
 }
 
@@ -1182,13 +1250,13 @@ fn normalize_domain_vfp_points(
     Ok(Value::Array(points))
 }
 
-fn target_inventory(backends: BackendSet) -> PyResult<nvoc_core::TargetInventory> {
-    discover_targets(backends).map_err(to_py_err)
-}
-
 #[pyfunction]
 fn discover_gpus(py: Python<'_>, backends: Option<&str>) -> PyResult<Py<PyAny>> {
-    let inventory = target_inventory(parse_backends(backends.unwrap_or("both"))?)?;
+    let backends = parse_backends(backends.unwrap_or("both"))?;
+    // discover_gpus 是显式发现入口（含 GPU 热插拔刷新）：强制重发现并
+    // 更新进程级缓存，后续轮询查询复用，不再每调用重复 init/枚举。
+    let mut cache = lock_inventory_cache();
+    let inventory = cache.refresh(backends)?;
     let mut items = Vec::new();
     for target in inventory.targets() {
         let mut item = Map::new();
@@ -1335,12 +1403,14 @@ fn query_clock_offset(
     let backend = parse_backend(backends.unwrap_or("nvml"))?;
     let domain = parse_domain(domain)?;
     let pstate = parse_nvml_pstate(pstate.unwrap_or("P0"))?;
-    let inventory = target_inventory(if backend == "nvml" {
+    let backends = if backend == "nvml" {
         BackendSet::Nvml
     } else {
         BackendSet::Both
-    })?;
-    let target = selected_target(&inventory, gpu)?;
+    };
+    let mut cache = lock_inventory_cache();
+    let inventory = cache.entry(backends)?;
+    let target = selected_target(inventory, gpu)?;
     let value = normalize_query_clock_offset(&target, domain, pstate)?;
     py_value(py, &value)
 }
@@ -1404,12 +1474,13 @@ fn set_clock_offset(
 ) -> PyResult<()> {
     let backend = parse_backend(backend)?;
     let domain = parse_domain(domain)?;
-    let inventory = target_inventory(if backend == "nvml" {
+    let mut inventory_cache = lock_inventory_cache();
+    let inventory = inventory_cache.entry(if backend == "nvml" {
         BackendSet::Nvml
     } else {
         BackendSet::Nvapi
     })?;
-    let target = selected_target(&inventory, gpu)?;
+    let target = selected_target(inventory, gpu)?;
     match backend {
         "nvml" => {
             let pstate = parse_nvml_pstate(pstate.unwrap_or("P0"))?;
@@ -1447,12 +1518,13 @@ fn set_clock_offset(
 #[pyfunction]
 fn set_power_limit(gpu: &str, backend: &str, value: u32) -> PyResult<()> {
     let backend = parse_backend(backend)?;
-    let inventory = target_inventory(if backend == "nvml" {
+    let mut inventory_cache = lock_inventory_cache();
+    let inventory = inventory_cache.entry(if backend == "nvml" {
         BackendSet::Nvml
     } else {
         BackendSet::Nvapi
     })?;
-    let target = selected_target(&inventory, gpu)?;
+    let target = selected_target(inventory, gpu)?;
     match backend {
         "nvml" => {
             run(&target, SetPowerLimit { watts: value }).map_err(to_py_err)?;
@@ -1477,8 +1549,9 @@ fn set_power_limit(gpu: &str, backend: &str, value: u32) -> PyResult<()> {
 
 #[pyfunction]
 fn set_thermal_limit(gpu: &str, celsius: i32) -> PyResult<()> {
-    let inventory = target_inventory(BackendSet::Both)?;
-    let target = selected_target(&inventory, gpu)?;
+    let mut inventory_cache = lock_inventory_cache();
+    let inventory = inventory_cache.entry(BackendSet::Both)?;
+    let target = selected_target(inventory, gpu)?;
     if target.has_nvapi() {
         run(
             &target,
@@ -1494,9 +1567,175 @@ fn set_thermal_limit(gpu: &str, celsius: i32) -> PyResult<()> {
 }
 
 #[pyfunction]
+fn set_dynamic_boost(gpu: &str, active: bool) -> PyResult<()> {
+    let mut inventory_cache = lock_inventory_cache();
+    let inventory = inventory_cache.entry(BackendSet::Nvapi)?;
+    let target = selected_target(inventory, gpu)?;
+    run(&target, SetNvapiDynamicBoost { active }).map_err(to_py_err)?;
+    Ok(())
+}
+
+#[pyfunction]
+fn query_tgp_watt_range(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
+    let value = with_target(gpu, "nvapi", |target| {
+        let info = run(target, QueryNvapiTgpWattRange)
+            .map_err(to_py_err)?
+            .output;
+        Ok(match info {
+            None => Value::Null,
+            Some(r) => value_object([
+                ("policy_index", Value::from(r.policy_index)),
+                (
+                    "min_watt",
+                    r.min_watt.map(Value::from).unwrap_or(Value::Null),
+                ),
+                (
+                    "default_watt",
+                    r.default_watt.map(Value::from).unwrap_or(Value::Null),
+                ),
+                (
+                    "max_watt",
+                    r.max_watt.map(Value::from).unwrap_or(Value::Null),
+                ),
+            ]),
+        })
+    })?;
+    py_value(py, &value)
+}
+
+#[pyfunction]
+#[pyo3(signature = (gpu, watts, policy_index = None))]
+fn set_tgp_watt(gpu: &str, watts: u32, policy_index: Option<usize>) -> PyResult<()> {
+    let mut inventory_cache = lock_inventory_cache();
+    let inventory = inventory_cache.entry(BackendSet::Nvapi)?;
+    let target = selected_target(inventory, gpu)?;
+    run(
+        &target,
+        SetNvapiTgpWatt {
+            watts,
+            policy_index,
+        },
+    )
+    .map_err(to_py_err)?;
+    Ok(())
+}
+
+#[pyfunction]
+#[pyo3(signature = (gpu, policy_index = None))]
+fn reset_tgp_watt(gpu: &str, policy_index: Option<usize>) -> PyResult<()> {
+    let mut inventory_cache = lock_inventory_cache();
+    let inventory = inventory_cache.entry(BackendSet::Nvapi)?;
+    let target = selected_target(inventory, gpu)?;
+    run(
+        &target,
+        ResetNvapiTgpWatt {
+            policy_index: policy_index.or(Some(2)),
+        },
+    )
+    .map_err(to_py_err)?;
+    Ok(())
+}
+
+#[pyfunction]
+fn query_dnotifier(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
+    let value = with_target(gpu, "nvapi", |target| {
+        let info = run(target, QueryNvapiDNotifier)
+            .map_err(to_py_err)?
+            .output;
+        Ok(match info {
+            None => Value::Null,
+            Some(r) => value_object([
+                (
+                    "active",
+                    r.active
+                        .map(|l| Value::String(format!("D{l}")))
+                        .unwrap_or(Value::Null),
+                ),
+                (
+                    "levels",
+                    Value::Array(
+                        r.levels
+                            .iter()
+                            .map(|l| {
+                                value_object([
+                                    ("level", Value::String(format!("D{}", l.level))),
+                                    (
+                                        "watts",
+                                        l.watts.map(Value::from).unwrap_or(Value::Null),
+                                    ),
+                                ])
+                            })
+                            .collect(),
+                    ),
+                ),
+            ]),
+        })
+    })?;
+    py_value(py, &value)
+}
+
+#[pyfunction]
+fn set_dnotifier(gpu: &str, level: u8) -> PyResult<()> {
+    if !(1..=5).contains(&level) {
+        return Err(invalid_value("D-Notifier level must be 1..5 (D1-D5)"));
+    }
+    let mut inventory_cache = lock_inventory_cache();
+    let inventory = inventory_cache.entry(BackendSet::Nvapi)?;
+    let target = selected_target(inventory, gpu)?;
+    run(&target, SetNvapiDNotifier { level }).map_err(to_py_err)?;
+    Ok(())
+}
+
+#[pyfunction]
+#[pyo3(signature = (gpu, celsius, policy_index = None))]
+fn set_target_temp(gpu: &str, celsius: f32, policy_index: Option<usize>) -> PyResult<()> {
+    let mut inventory_cache = lock_inventory_cache();
+    let inventory = inventory_cache.entry(BackendSet::Nvapi)?;
+    let target = selected_target(inventory, gpu)?;
+    run(
+        &target,
+        SetNvapiTargetTemp {
+            celsius,
+            policy_index,
+        },
+    )
+    .map_err(to_py_err)?;
+    Ok(())
+}
+
+#[pyfunction]
+fn query_target_temp_policies(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
+    let value = with_target(gpu, "nvapi", |target| {
+        let policies = run(target, QueryNvapiTargetTempPolicies).map_err(to_py_err)?;
+        Ok(Value::Array(
+            policies
+                .output
+                .into_iter()
+                .map(|p| {
+                    value_object([
+                        ("policy_index", Value::from(p.policy_index)),
+                        ("celsius", Value::from(p.celsius as f64)),
+                        ("min", p.min.map(|v| Value::from(v as f64)).unwrap_or(Value::Null)),
+                        (
+                            "default",
+                            p.default
+                                .map(|v| Value::from(v as f64))
+                                .unwrap_or(Value::Null),
+                        ),
+                        ("max", p.max.map(|v| Value::from(v as f64)).unwrap_or(Value::Null)),
+                    ])
+                })
+                .collect(),
+        ))
+    })?;
+    py_value(py, &value)
+}
+
+#[pyfunction]
 fn set_applications_clocks(gpu: &str, memory_mhz: u32, graphics_mhz: u32) -> PyResult<()> {
-    let inventory = target_inventory(BackendSet::Nvml)?;
-    let target = selected_target(&inventory, gpu)?;
+    let mut inventory_cache = lock_inventory_cache();
+    let inventory = inventory_cache.entry(BackendSet::Nvml)?;
+    let target = selected_target(inventory, gpu)?;
     run(
         &target,
         SetApplicationsClocks {
@@ -1510,8 +1749,9 @@ fn set_applications_clocks(gpu: &str, memory_mhz: u32, graphics_mhz: u32) -> PyR
 
 #[pyfunction]
 fn reset_applications_clocks(gpu: &str) -> PyResult<()> {
-    let inventory = target_inventory(BackendSet::Nvml)?;
-    let target = selected_target(&inventory, gpu)?;
+    let mut inventory_cache = lock_inventory_cache();
+    let inventory = inventory_cache.entry(BackendSet::Nvml)?;
+    let target = selected_target(inventory, gpu)?;
     run(&target, ResetApplicationsClocks).map_err(to_py_err)?;
     Ok(())
 }
@@ -1524,8 +1764,9 @@ fn set_locked_clocks(
     min_mhz: u32,
     max_mhz: u32,
 ) -> PyResult<()> {
-    let inventory = target_inventory(BackendSet::Nvml)?;
-    let target = selected_target(&inventory, gpu)?;
+    let mut inventory_cache = lock_inventory_cache();
+    let inventory = inventory_cache.entry(BackendSet::Nvml)?;
+    let target = selected_target(inventory, gpu)?;
     let domain = parse_domain(domain)?;
     if parse_backend(backend)? != "nvml" {
         return Err(invalid_value("locked clocks currently use the NVML path"));
@@ -1544,8 +1785,9 @@ fn set_locked_clocks(
 
 #[pyfunction]
 fn reset_locked_clocks(gpu: &str, backend: &str, domain: &str) -> PyResult<()> {
-    let inventory = target_inventory(BackendSet::Nvml)?;
-    let target = selected_target(&inventory, gpu)?;
+    let mut inventory_cache = lock_inventory_cache();
+    let inventory = inventory_cache.entry(BackendSet::Nvml)?;
+    let target = selected_target(inventory, gpu)?;
     let domain = parse_domain(domain)?;
     if parse_backend(backend)? != "nvml" {
         return Err(invalid_value("locked clocks currently use the NVML path"));
@@ -1556,16 +1798,18 @@ fn reset_locked_clocks(gpu: &str, backend: &str, domain: &str) -> PyResult<()> {
 
 #[pyfunction]
 fn reset_fan_speed(gpu: &str, fan_index: u32) -> PyResult<()> {
-    let inventory = target_inventory(BackendSet::Nvml)?;
-    let target = selected_target(&inventory, gpu)?;
+    let mut inventory_cache = lock_inventory_cache();
+    let inventory = inventory_cache.entry(BackendSet::Nvml)?;
+    let target = selected_target(inventory, gpu)?;
     run(&target, ResetFanSpeed { fan_index }).map_err(to_py_err)?;
     Ok(())
 }
 
 #[pyfunction]
 fn set_pstate_base_voltage(gpu: &str, pstate: &str, delta_uv: i32) -> PyResult<()> {
-    let inventory = target_inventory(BackendSet::Nvapi)?;
-    let target = selected_target(&inventory, gpu)?;
+    let mut inventory_cache = lock_inventory_cache();
+    let inventory = inventory_cache.entry(BackendSet::Nvapi)?;
+    let target = selected_target(inventory, gpu)?;
     run(
         &target,
         SetPstateBaseVoltage {
@@ -1579,16 +1823,18 @@ fn set_pstate_base_voltage(gpu: &str, pstate: &str, delta_uv: i32) -> PyResult<(
 
 #[pyfunction]
 fn reset_pstate_base_voltages(gpu: &str) -> PyResult<()> {
-    let inventory = target_inventory(BackendSet::Nvapi)?;
-    let target = selected_target(&inventory, gpu)?;
+    let mut inventory_cache = lock_inventory_cache();
+    let inventory = inventory_cache.entry(BackendSet::Nvapi)?;
+    let target = selected_target(inventory, gpu)?;
     run(&target, ResetPstateBaseVoltages).map_err(to_py_err)?;
     Ok(())
 }
 
 #[pyfunction]
 fn set_pstate_clock_offset(gpu: &str, pstate: &str, domain: &str, delta: i32) -> PyResult<()> {
-    let inventory = target_inventory(BackendSet::Nvapi)?;
-    let target = selected_target(&inventory, gpu)?;
+    let mut inventory_cache = lock_inventory_cache();
+    let inventory = inventory_cache.entry(BackendSet::Nvapi)?;
+    let target = selected_target(inventory, gpu)?;
     run(
         &target,
         SetPstateClockOffset {
@@ -1603,8 +1849,9 @@ fn set_pstate_clock_offset(gpu: &str, pstate: &str, domain: &str, delta: i32) ->
 
 #[pyfunction]
 fn sync_memory_pstate_as_p0(gpu: &str) -> PyResult<()> {
-    let inventory = target_inventory(BackendSet::Nvapi)?;
-    let target = selected_target(&inventory, gpu)?;
+    let mut inventory_cache = lock_inventory_cache();
+    let inventory = inventory_cache.entry(BackendSet::Nvapi)?;
+    let target = selected_target(inventory, gpu)?;
     nvoc_core::sync_memory_pstate_as_p0(&target).map_err(to_py_err)?;
     Ok(())
 }
@@ -1616,8 +1863,9 @@ fn set_cooler_levels(
     level: u32,
     target_name: Option<&str>,
 ) -> PyResult<()> {
-    let inventory = target_inventory(BackendSet::Nvapi)?;
-    let target = selected_target(&inventory, gpu)?;
+    let mut inventory_cache = lock_inventory_cache();
+    let inventory = inventory_cache.entry(BackendSet::Nvapi)?;
+    let target = selected_target(inventory, gpu)?;
     let cooler_target = match target_name.unwrap_or("all") {
         "1" => nvoc_core::CoolerTarget::Cooler1,
         "2" => nvoc_core::CoolerTarget::Cooler2,
@@ -1643,8 +1891,9 @@ fn set_vfp_frequency_lock(
     upper_khz: i32,
     lower_khz: Option<i32>,
 ) -> PyResult<()> {
-    let inventory = target_inventory(BackendSet::Nvapi)?;
-    let target = selected_target(&inventory, gpu)?;
+    let mut inventory_cache = lock_inventory_cache();
+    let inventory = inventory_cache.entry(BackendSet::Nvapi)?;
+    let target = selected_target(inventory, gpu)?;
     run(
         &target,
         SetVfpFrequencyLock {
@@ -1659,8 +1908,9 @@ fn set_vfp_frequency_lock(
 
 #[pyfunction]
 fn reset_vfp_frequency_lock(gpu: &str, domain: &str) -> PyResult<()> {
-    let inventory = target_inventory(BackendSet::Nvapi)?;
-    let target = selected_target(&inventory, gpu)?;
+    let mut inventory_cache = lock_inventory_cache();
+    let inventory = inventory_cache.entry(BackendSet::Nvapi)?;
+    let target = selected_target(inventory, gpu)?;
     run(
         &target,
         ResetVfpFrequencyLock {
@@ -1678,8 +1928,9 @@ fn set_vfp_voltage_lock(
     voltage_uv: Option<i32>,
     feedback: Option<bool>,
 ) -> PyResult<()> {
-    let inventory = target_inventory(BackendSet::Nvapi)?;
-    let target = selected_target(&inventory, gpu)?;
+    let mut inventory_cache = lock_inventory_cache();
+    let inventory = inventory_cache.entry(BackendSet::Nvapi)?;
+    let target = selected_target(inventory, gpu)?;
     let voltage_target = if let Some(point) = point {
         nvoc_core::NvapiLockedVoltageTarget::Point(point)
     } else if let Some(voltage_uv) = voltage_uv {
@@ -1700,8 +1951,9 @@ fn set_vfp_voltage_lock(
 
 #[pyfunction]
 fn reset_vfp_deltas(gpu: &str, domain: Option<&str>) -> PyResult<()> {
-    let inventory = target_inventory(BackendSet::Nvapi)?;
-    let target = selected_target(&inventory, gpu)?;
+    let mut inventory_cache = lock_inventory_cache();
+    let inventory = inventory_cache.entry(BackendSet::Nvapi)?;
+    let target = selected_target(inventory, gpu)?;
     let domain = match domain.unwrap_or("all") {
         "all" => VfpResetDomain::All,
         "core" => VfpResetDomain::Core,
@@ -1714,8 +1966,9 @@ fn reset_vfp_deltas(gpu: &str, domain: Option<&str>) -> PyResult<()> {
 
 #[pyfunction]
 fn set_vfp_point_delta(gpu: &str, point: usize, delta: i32) -> PyResult<()> {
-    let inventory = target_inventory(BackendSet::Nvapi)?;
-    let target = selected_target(&inventory, gpu)?;
+    let mut inventory_cache = lock_inventory_cache();
+    let inventory = inventory_cache.entry(BackendSet::Nvapi)?;
+    let target = selected_target(inventory, gpu)?;
     run(
         &target,
         SetVfpPointDelta {
@@ -1729,8 +1982,9 @@ fn set_vfp_point_delta(gpu: &str, point: usize, delta: i32) -> PyResult<()> {
 
 #[pyfunction]
 fn set_vfp_range_delta(gpu: &str, start: usize, end: usize, delta: i32) -> PyResult<()> {
-    let inventory = target_inventory(BackendSet::Nvapi)?;
-    let target = selected_target(&inventory, gpu)?;
+    let mut inventory_cache = lock_inventory_cache();
+    let inventory = inventory_cache.entry(BackendSet::Nvapi)?;
+    let target = selected_target(inventory, gpu)?;
     run(
         &target,
         SetVfpRangeDelta {
@@ -1745,8 +1999,9 @@ fn set_vfp_range_delta(gpu: &str, start: usize, end: usize, delta: i32) -> PyRes
 
 #[pyfunction]
 fn set_domain_vfp_deltas(gpu: &str, domain: &str, deltas: Vec<(usize, i32)>) -> PyResult<()> {
-    let inventory = target_inventory(BackendSet::Nvapi)?;
-    let target = selected_target(&inventory, gpu)?;
+    let mut inventory_cache = lock_inventory_cache();
+    let inventory = inventory_cache.entry(BackendSet::Nvapi)?;
+    let target = selected_target(inventory, gpu)?;
     let deltas = deltas
         .into_iter()
         .map(|(p, d)| (p, KilohertzDelta(d)))
@@ -1764,8 +2019,9 @@ fn set_domain_vfp_deltas(gpu: &str, domain: &str, deltas: Vec<(usize, i32)>) -> 
 
 #[pyfunction]
 fn set_nvapi_power_limits(gpu: &str, limits: Vec<u32>) -> PyResult<()> {
-    let inventory = target_inventory(BackendSet::Nvapi)?;
-    let target = selected_target(&inventory, gpu)?;
+    let mut inventory_cache = lock_inventory_cache();
+    let inventory = inventory_cache.entry(BackendSet::Nvapi)?;
+    let target = selected_target(inventory, gpu)?;
     run(
         &target,
         SetNvapiPowerLimits {
@@ -1778,8 +2034,9 @@ fn set_nvapi_power_limits(gpu: &str, limits: Vec<u32>) -> PyResult<()> {
 
 #[pyfunction]
 fn set_nvapi_sensor_limits(gpu: &str, limits: Vec<i32>) -> PyResult<()> {
-    let inventory = target_inventory(BackendSet::Nvapi)?;
-    let target = selected_target(&inventory, gpu)?;
+    let mut inventory_cache = lock_inventory_cache();
+    let inventory = inventory_cache.entry(BackendSet::Nvapi)?;
+    let target = selected_target(inventory, gpu)?;
     run(
         &target,
         SetNvapiSensorLimits {
@@ -1792,32 +2049,36 @@ fn set_nvapi_sensor_limits(gpu: &str, limits: Vec<i32>) -> PyResult<()> {
 
 #[pyfunction]
 fn reset_nvapi_power_limits(gpu: &str) -> PyResult<()> {
-    let inventory = target_inventory(BackendSet::Nvapi)?;
-    let target = selected_target(&inventory, gpu)?;
+    let mut inventory_cache = lock_inventory_cache();
+    let inventory = inventory_cache.entry(BackendSet::Nvapi)?;
+    let target = selected_target(inventory, gpu)?;
     run(&target, ResetNvapiPowerLimits).map_err(to_py_err)?;
     Ok(())
 }
 
 #[pyfunction]
 fn reset_nvapi_sensor_limits(gpu: &str) -> PyResult<()> {
-    let inventory = target_inventory(BackendSet::Nvapi)?;
-    let target = selected_target(&inventory, gpu)?;
+    let mut inventory_cache = lock_inventory_cache();
+    let inventory = inventory_cache.entry(BackendSet::Nvapi)?;
+    let target = selected_target(inventory, gpu)?;
     run(&target, ResetNvapiSensorLimits).map_err(to_py_err)?;
     Ok(())
 }
 
 #[pyfunction]
 fn reset_cooler_levels(gpu: &str) -> PyResult<()> {
-    let inventory = target_inventory(BackendSet::Nvapi)?;
-    let target = selected_target(&inventory, gpu)?;
+    let mut inventory_cache = lock_inventory_cache();
+    let inventory = inventory_cache.entry(BackendSet::Nvapi)?;
+    let target = selected_target(inventory, gpu)?;
     run(&target, ResetCoolerLevels).map_err(to_py_err)?;
     Ok(())
 }
 
 #[pyfunction]
 fn reset_pstate_clock_offsets(gpu: &str, offsets: Vec<(String, String)>) -> PyResult<()> {
-    let inventory = target_inventory(BackendSet::Nvapi)?;
-    let target = selected_target(&inventory, gpu)?;
+    let mut inventory_cache = lock_inventory_cache();
+    let inventory = inventory_cache.entry(BackendSet::Nvapi)?;
+    let target = selected_target(inventory, gpu)?;
     let offsets = offsets
         .into_iter()
         .map(|(pstate, domain)| Ok((parse_pstate(&pstate)?, parse_domain(&domain)?)))
@@ -1828,8 +2089,9 @@ fn reset_pstate_clock_offsets(gpu: &str, offsets: Vec<(String, String)>) -> PyRe
 
 #[pyfunction]
 fn set_legacy_clocks(gpu: &str, core_mhz: u32, memory_mhz: u32) -> PyResult<()> {
-    let inventory = target_inventory(BackendSet::Nvapi)?;
-    let target = selected_target(&inventory, gpu)?;
+    let mut inventory_cache = lock_inventory_cache();
+    let inventory = inventory_cache.entry(BackendSet::Nvapi)?;
+    let target = selected_target(inventory, gpu)?;
     run(
         &target,
         SetLegacyClocks {
@@ -1847,8 +2109,9 @@ fn set_nvapi_pstate_lock(
     first_pstate: &str,
     second_pstate: Option<&str>,
 ) -> PyResult<()> {
-    let inventory = target_inventory(BackendSet::Both)?;
-    let target = selected_target(&inventory, gpu)?;
+    let mut inventory_cache = lock_inventory_cache();
+    let inventory = inventory_cache.entry(BackendSet::Both)?;
+    let target = selected_target(inventory, gpu)?;
     run(
         &target,
         SetNvapiPstateLock {
@@ -1866,8 +2129,9 @@ fn set_nvml_pstate_lock(
     first_pstate: &str,
     second_pstate: Option<&str>,
 ) -> PyResult<()> {
-    let inventory = target_inventory(BackendSet::Nvml)?;
-    let target = selected_target(&inventory, gpu)?;
+    let mut inventory_cache = lock_inventory_cache();
+    let inventory = inventory_cache.entry(BackendSet::Nvml)?;
+    let target = selected_target(inventory, gpu)?;
     run(
         &target,
         SetNvmlPstateLock {
@@ -1881,8 +2145,9 @@ fn set_nvml_pstate_lock(
 
 #[pyfunction]
 fn set_voltage_boost(gpu: &str, value: u32) -> PyResult<()> {
-    let inventory = target_inventory(BackendSet::Nvapi)?;
-    let target = selected_target(&inventory, gpu)?;
+    let mut inventory_cache = lock_inventory_cache();
+    let inventory = inventory_cache.entry(BackendSet::Nvapi)?;
+    let target = selected_target(inventory, gpu)?;
     run(
         &target,
         SetVoltageBoost {
@@ -1895,8 +2160,9 @@ fn set_voltage_boost(gpu: &str, value: u32) -> PyResult<()> {
 
 #[pyfunction]
 fn reset_voltage_boost(gpu: &str) -> PyResult<()> {
-    let inventory = target_inventory(BackendSet::Nvapi)?;
-    let target = selected_target(&inventory, gpu)?;
+    let mut inventory_cache = lock_inventory_cache();
+    let inventory = inventory_cache.entry(BackendSet::Nvapi)?;
+    let target = selected_target(inventory, gpu)?;
     run(
         &target,
         SetVoltageBoost {
@@ -1909,16 +2175,18 @@ fn reset_voltage_boost(gpu: &str) -> PyResult<()> {
 
 #[pyfunction]
 fn set_auto_boost(gpu: &str, enabled: bool) -> PyResult<()> {
-    let inventory = target_inventory(BackendSet::Nvml)?;
-    let target = selected_target(&inventory, gpu)?;
+    let mut inventory_cache = lock_inventory_cache();
+    let inventory = inventory_cache.entry(BackendSet::Nvml)?;
+    let target = selected_target(inventory, gpu)?;
     run(&target, SetAutoBoost { enabled }).map_err(to_py_err)?;
     Ok(())
 }
 
 #[pyfunction]
 fn set_auto_boost_default(gpu: &str, enabled: bool) -> PyResult<()> {
-    let inventory = target_inventory(BackendSet::Nvml)?;
-    let target = selected_target(&inventory, gpu)?;
+    let mut inventory_cache = lock_inventory_cache();
+    let inventory = inventory_cache.entry(BackendSet::Nvml)?;
+    let target = selected_target(inventory, gpu)?;
     run(&target, SetAutoBoostDefault { enabled }).map_err(to_py_err)?;
     Ok(())
 }
@@ -1926,8 +2194,9 @@ fn set_auto_boost_default(gpu: &str, enabled: bool) -> PyResult<()> {
 #[pyfunction]
 fn set_api_restriction(gpu: &str, api_type: &str, restricted: bool) -> PyResult<()> {
     let api_type = parse_api_restriction_api(api_type)?;
-    let inventory = target_inventory(BackendSet::Nvml)?;
-    let target = selected_target(&inventory, gpu)?;
+    let mut inventory_cache = lock_inventory_cache();
+    let inventory = inventory_cache.entry(BackendSet::Nvml)?;
+    let target = selected_target(inventory, gpu)?;
     run(
         &target,
         SetApiRestriction {
@@ -1943,8 +2212,9 @@ fn set_api_restriction(gpu: &str, api_type: &str, restricted: bool) -> PyResult<
 fn set_edid(gpu: &str, display_id: &str, edid_hex: &str) -> PyResult<()> {
     let display_id = parse_display_id(display_id)?;
     let bytes = parse_edid_hex(edid_hex)?;
-    let inventory = target_inventory(BackendSet::Nvapi)?;
-    let target = selected_target(&inventory, gpu)?;
+    let mut inventory_cache = lock_inventory_cache();
+    let inventory = inventory_cache.entry(BackendSet::Nvapi)?;
+    let target = selected_target(inventory, gpu)?;
     run(&target, SetEdid { display_id, bytes }).map_err(to_py_err)?;
     Ok(())
 }
@@ -1952,16 +2222,18 @@ fn set_edid(gpu: &str, display_id: &str, edid_hex: &str) -> PyResult<()> {
 #[pyfunction]
 fn clear_edid(gpu: &str, display_id: &str) -> PyResult<()> {
     let display_id = parse_display_id(display_id)?;
-    let inventory = target_inventory(BackendSet::Nvapi)?;
-    let target = selected_target(&inventory, gpu)?;
+    let mut inventory_cache = lock_inventory_cache();
+    let inventory = inventory_cache.entry(BackendSet::Nvapi)?;
+    let target = selected_target(inventory, gpu)?;
     run(&target, ClearEdid { display_id }).map_err(to_py_err)?;
     Ok(())
 }
 
 #[pyfunction]
 fn set_legacy_voltage_delta(gpu: &str, uv: i32, pstate: Option<&str>) -> PyResult<()> {
-    let inventory = target_inventory(BackendSet::Nvapi)?;
-    let target = selected_target(&inventory, gpu)?;
+    let mut inventory_cache = lock_inventory_cache();
+    let inventory = inventory_cache.entry(BackendSet::Nvapi)?;
+    let target = selected_target(inventory, gpu)?;
     run(
         &target,
         SetPstateBaseVoltage {
@@ -1986,8 +2258,9 @@ fn set_fan(
     let level = level.unwrap_or(60);
     match backend {
         "nvml" | "nvml-cooler" => {
-            let inventory = target_inventory(BackendSet::Nvml)?;
-            let target = selected_target(&inventory, gpu)?;
+            let mut inventory_cache = lock_inventory_cache();
+            let inventory = inventory_cache.entry(BackendSet::Nvml)?;
+            let target = selected_target(inventory, gpu)?;
             let policy = parse_nvml_fan_control_policy(policy.unwrap_or("continuous"))
                 .map_err(invalid_value)?;
             let fan_count = run(&target, QueryFanInfo)
@@ -2011,8 +2284,9 @@ fn set_fan(
             }
         }
         "nvapi" | "nvapi-cooler" => {
-            let inventory = target_inventory(BackendSet::Nvapi)?;
-            let target = selected_target(&inventory, gpu)?;
+            let mut inventory_cache = lock_inventory_cache();
+            let inventory = inventory_cache.entry(BackendSet::Nvapi)?;
+            let target = selected_target(inventory, gpu)?;
             let cooler_target = match fan_id {
                 "1" => nvoc_core::CoolerTarget::Cooler1,
                 "2" => nvoc_core::CoolerTarget::Cooler2,
@@ -2045,12 +2319,13 @@ fn set_fan(
 #[pyfunction]
 fn reset_core_clocks(gpu: &str, backend: &str) -> PyResult<()> {
     let backend = parse_backend(backend)?;
-    let inventory = target_inventory(if backend == "nvml" {
+    let mut inventory_cache = lock_inventory_cache();
+    let inventory = inventory_cache.entry(if backend == "nvml" {
         BackendSet::Nvml
     } else {
         BackendSet::Nvapi
     })?;
-    let target = selected_target(&inventory, gpu)?;
+    let target = selected_target(inventory, gpu)?;
     match backend {
         "nvml" => {
             run(
@@ -2089,12 +2364,13 @@ fn reset_core_clocks(gpu: &str, backend: &str) -> PyResult<()> {
 #[pyfunction]
 fn reset_mem_clocks(gpu: &str, backend: &str) -> PyResult<()> {
     let backend = parse_backend(backend)?;
-    let inventory = target_inventory(if backend == "nvml" {
+    let mut inventory_cache = lock_inventory_cache();
+    let inventory = inventory_cache.entry(if backend == "nvml" {
         BackendSet::Nvml
     } else {
         BackendSet::Nvapi
     })?;
-    let target = selected_target(&inventory, gpu)?;
+    let target = selected_target(inventory, gpu)?;
     match backend {
         "nvml" => {
             run(
@@ -2132,16 +2408,18 @@ fn reset_mem_clocks(gpu: &str, backend: &str) -> PyResult<()> {
 
 #[pyfunction]
 fn reset_vfp_lock(gpu: &str) -> PyResult<()> {
-    let inventory = target_inventory(BackendSet::Nvapi)?;
-    let target = selected_target(&inventory, gpu)?;
+    let mut inventory_cache = lock_inventory_cache();
+    let inventory = inventory_cache.entry(BackendSet::Nvapi)?;
+    let target = selected_target(inventory, gpu)?;
     run(&target, ResetVfpLock).map_err(to_py_err)?;
     Ok(())
 }
 
 #[pyfunction]
 fn reset_all(gpu: &str, domain: Option<&str>) -> PyResult<()> {
-    let inventory = target_inventory(BackendSet::Both)?;
-    let target = selected_target(&inventory, gpu)?;
+    let mut inventory_cache = lock_inventory_cache();
+    let inventory = inventory_cache.entry(BackendSet::Both)?;
+    let target = selected_target(inventory, gpu)?;
     if target.has_nvapi() {
         let vfp_domain = match domain.unwrap_or("all").to_ascii_lowercase().as_str() {
             "all" => VfpResetDomain::All,
@@ -2219,6 +2497,14 @@ fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(set_clock_offset, m)?)?;
     m.add_function(wrap_pyfunction!(set_power_limit, m)?)?;
     m.add_function(wrap_pyfunction!(set_thermal_limit, m)?)?;
+    m.add_function(wrap_pyfunction!(set_dynamic_boost, m)?)?;
+    m.add_function(wrap_pyfunction!(query_tgp_watt_range, m)?)?;
+    m.add_function(wrap_pyfunction!(set_tgp_watt, m)?)?;
+    m.add_function(wrap_pyfunction!(reset_tgp_watt, m)?)?;
+    m.add_function(wrap_pyfunction!(query_dnotifier, m)?)?;
+    m.add_function(wrap_pyfunction!(query_target_temp_policies, m)?)?;
+    m.add_function(wrap_pyfunction!(set_dnotifier, m)?)?;
+    m.add_function(wrap_pyfunction!(set_target_temp, m)?)?;
     m.add_function(wrap_pyfunction!(set_applications_clocks, m)?)?;
     m.add_function(wrap_pyfunction!(reset_applications_clocks, m)?)?;
     m.add_function(wrap_pyfunction!(set_locked_clocks, m)?)?;
