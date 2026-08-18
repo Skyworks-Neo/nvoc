@@ -258,7 +258,10 @@ class OverclockController(PaneController):
             self.app.write_log("Mobile power: " + ", ".join(notes) + ".")
 
         # PPAB has no read-back API; enable it once per GPU on load.
-        if first_load:
+        # Only attempt when the private NVAPI surface actually resolved —
+        # on Linux (libnvidia-api stub) / older drivers the setter is
+        # NO_IMPLEMENTATION and auto-enabling would just log an error.
+        if first_load and (tgp or dnotifier):
             self.app.run_native_action(
                 "enable dynamic boost",
                 lambda native, gpu=gpu: (

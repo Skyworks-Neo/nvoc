@@ -474,7 +474,14 @@ class OverclockTab:
         self.update_mobile_limits(data)
 
         # PPAB has no read-back API; enable it once per GPU on panel load.
-        if self._mobile_ppab_initialized_for != gpu:
+        # Only attempt when the private NVAPI surface actually resolved —
+        # on Linux (libnvidia-api stub) / older drivers the setters are
+        # NO_IMPLEMENTATION and auto-enabling would just log an error.
+        tgp_ok = isinstance(data.get("tgp"), dict) and data.get("tgp")
+        dnotifier_ok = isinstance(data.get("dnotifier"), dict) and data.get(
+            "dnotifier"
+        )
+        if (tgp_ok or dnotifier_ok) and self._mobile_ppab_initialized_for != gpu:
             self._mobile_ppab_initialized_for = gpu
             self._syncing = True
             self.ppab_var.set(True)
