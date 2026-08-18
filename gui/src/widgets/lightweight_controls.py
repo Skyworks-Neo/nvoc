@@ -31,34 +31,39 @@ def install_mousewheel_support(scroll_frame: ctk.CTkScrollableFrame) -> None:
     ``<Button-4>/<Button-5>`` or ``<MouseWheel>`` with tiny deltas. We bind all
     variants and normalize them into canvas unit scrolling.
     """
-    if getattr(scroll_frame, "_nvoc_mousewheel_installed", False):
+    # bind_all 绑在 toplevel 上且 add="+"：旧实现守卫挂在 scroll_frame 上，
+    # 每个含滚动框的 tab 都会再叠 3 个全局 handler 且永不解绑。现在只装
+    # 一个 toplevel 级 handler，动态分派到指针所在滚动框。
+    toplevel = scroll_frame.winfo_toplevel()
+    frames = getattr(toplevel, "_nvoc_mousewheel_frames", None)
+    if frames is None:
+        frames = []
+        setattr(toplevel, "_nvoc_mousewheel_frames", frames)
+    if scroll_frame not in frames:
+        frames.append(scroll_frame)
+    if getattr(toplevel, "_nvoc_mousewheel_installed", False):
         return
-    setattr(scroll_frame, "_nvoc_mousewheel_installed", True)
+    setattr(toplevel, "_nvoc_mousewheel_installed", True)
 
-    def _resolve_canvas() -> Optional[tk.Misc]:
-        canvas = getattr(scroll_frame, "_parent_canvas", None)
-        if canvas is None:
-            return None
-        return canvas
-
-    def _pointer_inside_frame() -> bool:
-        if not scroll_frame.winfo_exists():
-            return False
+    def _frame_at_pointer():
         try:
-            pointer_x = scroll_frame.winfo_pointerx()
-            pointer_y = scroll_frame.winfo_pointery()
-            hovered = scroll_frame.winfo_containing(pointer_x, pointer_y)
+            pointer_x = toplevel.winfo_pointerx()
+            pointer_y = toplevel.winfo_pointery()
+            hovered = toplevel.winfo_containing(pointer_x, pointer_y)
         except tk.TclError:
-            return False
+            return None
         if hovered is None:
-            return False
-        return _is_descendant_widget(hovered, scroll_frame)
+            return None
+        for frame in frames:
+            if frame.winfo_exists() and _is_descendant_widget(hovered, frame):
+                return frame
+        return None
 
     def _on_mousewheel(event) -> Optional[str]:
-        if not _pointer_inside_frame():
+        frame = _frame_at_pointer()
+        if frame is None:
             return None
-
-        canvas = _resolve_canvas()
+        canvas = getattr(frame, "_parent_canvas", None)
         if canvas is None:
             return None
 
@@ -86,7 +91,6 @@ def install_mousewheel_support(scroll_frame: ctk.CTkScrollableFrame) -> None:
             return None
         return "break"
 
-    toplevel = scroll_frame.winfo_toplevel()
     toplevel.bind_all("<MouseWheel>", _on_mousewheel, add="+")
     toplevel.bind_all("<Button-4>", _on_mousewheel, add="+")
     toplevel.bind_all("<Button-5>", _on_mousewheel, add="+")
@@ -552,6 +556,209 @@ class SegmentRangeSelector(ctk.CTkFrame):
                 fill=label_fill,
                 font=("Segoe UI", 10, "bold"),
             )
+
+
+class SegmentToggleSelector(ctk.CTkFrame):
+    """Discrete single-select segmented picker (click-to-select, no dragging).
+
+    Each segment shows a main label (e.g. ``D3``) and an optional subtitle
+    (e.g. ``40W``) rendered beneath it on a shared canvas track.
+    """
+
+    def __init__(
+        self,
+        parent,
+        values: Optional[List[str]] = None,
+        subtitles: Optional[List[Optional[str]]] = None,
+        command=None,
+    ):
+        super().__init__(parent, fg_color="transparent", height=54)
+        self._values = []  # type: List[str]
+        self._subtitles = []  # type: List[Optional[str]]
+        self._command = command
+        self._state = "normal"
+        self._selected_idx = None  # type: Optional[int]
+        self._pad_x = 18
+        self._line_y = 14
+        self._node_r = 5
+
+        self.grid_columnconfigure(0, weight=1)
+
+        self._canvas = tk.Canvas(
+            self, height=54, highlightthickness=0, bd=0, bg="#242424"
+        )
+        self._canvas.grid(row=0, column=0, sticky="ew")
+        self._canvas.bind("<Configure>", lambda _e: self._redraw())
+        self._canvas.bind("<Button-1>", self._on_click)
+
+        self.set_values(values, subtitles)
+
+    def configure(self, **kwargs):
+        if "command" in kwargs:
+            self._command = kwargs.pop("command")
+        if "state" in kwargs:
+            self._state = kwargs.pop("state")
+        super().configure(**kwargs)
+        self._redraw()
+
+    def cget(self, key):
+        if key == "state":
+            return self._state
+        if key == "values":
+            return list(self._values)
+        return super().cget(key)
+
+    def set_values(
+        self,
+        values: Optional[List[str]],
+        subtitles: Optional[List[Optional[str]]] = None,
+    ):
+        old_selection = self.get_selection()
+        normalized = []
+        seen = set()
+        for value in values or []:
+            label = str(value).strip().upper()
+            if not label or label in seen:
+                continue
+            seen.add(label)
+            normalized.append(label)
+
+        subs = list(subtitles or [])
+        normalized_subs = []
+        for i in range(len(normalized)):
+            sub = subs[i] if i < len(subs) else None
+            normalized_subs.append(str(sub) if sub not in (None, "") else None)
+
+        self._values = normalized
+        self._subtitles = normalized_subs
+        if not self._values:
+            self._selected_idx = None
+            self._redraw()
+            return
+        if old_selection in self._values:
+            self._selected_idx = self._values.index(old_selection)
+        else:
+            self._selected_idx = 0
+        self._redraw()
+
+    def set_selection(self, value: Optional[str]):
+        if not self._values:
+            return
+        label = str(value).strip().upper() if value is not None else None
+        if label is None or label not in self._values:
+            self._selected_idx = None
+        else:
+            self._selected_idx = self._values.index(label)
+        self._redraw()
+
+    def get_selection(self) -> Optional[str]:
+        if not self._values or self._selected_idx is None:
+            return None
+        return self._values[self._selected_idx]
+
+    def _positions(self) -> List[float]:
+        width = max(1, self._canvas.winfo_width())
+        if len(self._values) <= 1:
+            return [width / 2.0]
+        x0 = self._pad_x
+        x1 = max(x0 + 1, width - self._pad_x)
+        step = (x1 - x0) / (len(self._values) - 1)
+        return [x0 + step * i for i in range(len(self._values))]
+
+    def _nearest_index(self, x: float) -> int:
+        positions = self._positions()
+        return min(range(len(positions)), key=lambda i: abs(positions[i] - x))
+
+    def _on_click(self, event):
+        if self._state == "disabled" or not self._values:
+            return
+        idx = self._nearest_index(float(event.x))
+        if idx == self._selected_idx:
+            return
+        self._selected_idx = idx
+        self._redraw()
+        if callable(self._command) and self._selected_idx is not None:
+            self._command(self._values[self._selected_idx])
+
+    def _redraw(self):
+        c = self._canvas
+        w = max(1, c.winfo_width())
+        h = max(1, c.winfo_height())
+        c.delete("all")
+
+        if not self._values:
+            c.create_text(
+                w / 2,
+                h / 2,
+                text="No data",
+                fill="#7e8da1",
+                font=("Segoe UI", 10),
+            )
+            return
+
+        positions = self._positions()
+        disabled = self._state == "disabled"
+        base_track = "#4a4a4a" if disabled else "#3a3a3a"
+        label_fill = "#7e8da1" if disabled else "#d6dfeb"
+        sub_fill = "#6b7684" if disabled else "#8a99ab"
+        node_fill = "#707070" if disabled else "#9aa7b5"
+        active_fill = "#6689a8" if disabled else "#3B8ED0"
+
+        has_subtitle = any(self._subtitles)
+        label_y = self._line_y + 18
+        sub_y = label_y + 14
+
+        x0 = positions[0]
+        x1 = positions[-1]
+        c.create_line(
+            x0,
+            self._line_y,
+            x1,
+            self._line_y,
+            fill=base_track,
+            width=4,
+            capstyle=tk.ROUND,
+        )
+
+        if self._selected_idx is not None:
+            c.create_line(
+                x0,
+                self._line_y,
+                positions[self._selected_idx],
+                self._line_y,
+                fill=active_fill,
+                width=5,
+                capstyle=tk.ROUND,
+            )
+
+        for idx, (x, label) in enumerate(zip(positions, self._values)):
+            is_selected = idx == self._selected_idx
+            fill = active_fill if is_selected else node_fill
+            radius = self._node_r + 2 if is_selected else self._node_r
+            c.create_oval(
+                x - radius,
+                self._line_y - radius,
+                x + radius,
+                self._line_y + radius,
+                fill=fill,
+                outline="",
+            )
+            c.create_text(
+                x,
+                label_y,
+                text=label,
+                fill=label_fill if not is_selected else "#f5f7fb",
+                font=("Segoe UI", 10, "bold"),
+            )
+            if has_subtitle:
+                sub = self._subtitles[idx] if idx < len(self._subtitles) else None
+                c.create_text(
+                    x,
+                    sub_y,
+                    text=sub or "—",
+                    fill=sub_fill,
+                    font=("Segoe UI", 9),
+                )
 
 
 class LiteButton(ctk.CTkFrame):
