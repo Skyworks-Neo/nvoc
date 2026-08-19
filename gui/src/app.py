@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import threading
+import time
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 import pystray
@@ -108,6 +109,9 @@ class App(ctk.CTk):
         self._refresh_chain_after_id: Optional[str] = None
         # Idle-time tab prebuild (see _prebuild_next_tab)
         self._tab_prebuild_started = False
+        # Short-TTL query result cache (see run_gpu_query_async)
+        self._query_result_cache: Dict[str, Tuple[float, int, str]] = {}
+        self._query_cache_lock = threading.Lock()
 
         # Global resize session state (used to coalesce expensive per-tab redraw work)
         self._is_resizing = False
@@ -761,6 +765,7 @@ class App(ctk.CTk):
         # Reset dashboard VFP-lock sentinel so first poll after switch always syncs
         if self.tab_dashboard is not None:
             self.tab_dashboard._last_vfp_lock_mv = object()
+        self._invalidate_query_cache()
         self._dashboard_gpu_lock_active = False
         self._dashboard_mem_lock_active = False
         self._vfp_offset_state_cache = None
@@ -1202,11 +1207,28 @@ class App(ctk.CTk):
             thread_name=f"show-{command_name or 'query'}",
         )
 
+    # TTL for reused query results. Tab entry / GPU-switch chains re-query the
+    # same (gpu, command) within a couple of seconds; serving the cached
+    # result collapses those redundant driver round-trips.
+    _QUERY_CACHE_TTL_S = 2.0
+
+    def _query_cache_key(self, gpu: Any, command_name: str) -> Optional[str]:
+        gpu_id = getattr(gpu, "gpu_id", None)
+        if gpu_id is None:
+            uuid = getattr(gpu, "uuid", None)
+            gpu_id = uuid if uuid else repr(gpu)
+        return f"{gpu_id}:{command_name}"
+
+    def _invalidate_query_cache(self) -> None:
+        with self._query_cache_lock:
+            self._query_result_cache.clear()
+
     def run_gpu_query_async(
         self,
         command_args: List[str],
         callback: Callable[[int, str], None],
         thread_name: str = "gpu-query",
+        use_cache: bool = True,
     ) -> bool:
         """Run a GPU-scoped native query asynchronously and return whether it started."""
         gpu = self.selected_gpu_target()
@@ -1217,8 +1239,26 @@ class App(ctk.CTk):
             callback(-1, f"Unsupported native query: {command_name}")
             return False
 
+        cache_key = self._query_cache_key(gpu, command_name)
+        if use_cache:
+            now = time.monotonic()
+            with self._query_cache_lock:
+                cached = self._query_result_cache.get(cache_key)
+                if cached is not None:
+                    ts, retcode, output = cached
+                    if now - ts < self._QUERY_CACHE_TTL_S:
+                        self.after(0, lambda: callback(retcode, output))
+                        return True
+
         def _worker():
             retcode, output, _parsed = self.backend.run_query(gpu, command_name)
+            if retcode == 0:
+                with self._query_cache_lock:
+                    self._query_result_cache[cache_key] = (
+                        time.monotonic(),
+                        retcode,
+                        output,
+                    )
             self.after(0, lambda: callback(retcode, output))
 
         self.run_background(thread_name, _worker)
@@ -1296,6 +1336,8 @@ class App(ctk.CTk):
 
     def _refresh_after_native_action_now(self) -> None:
         self._refresh_chain_after_id = None
+        # A native action mutated GPU state — cached query results are stale.
+        self._invalidate_query_cache()
         self._query_gpu_get()
         self._query_overclock_status()
         if self.tab_dashboard:

@@ -441,7 +441,7 @@ class VFCurveTab:
             scale = 1.0
         fig_dpi = max(72, round(100 * scale))
 
-        self.fig = Figure(figsize=(9, 2.45), dpi=fig_dpi)
+        self.fig = Figure(figsize=(9, 1.63), dpi=fig_dpi)
         self.fig.patch.set_facecolor("#2b2b2b")
         self.ax = self.fig.add_subplot(111)
         # Reserve enough left margin so the Y-axis label is never clipped
@@ -502,6 +502,57 @@ class VFCurveTab:
             self.canvas.mpl_connect("motion_notify_event", self._on_mouse_move),
         ]
 
+        # Blitting: cache the static background after every full draw so
+        # per-second live-point updates and fast curve edits only repaint
+        # their own artists (~2x cheaper than a full-figure Agg render).
+        self._blit_bg = None
+        self._mpl_connection_ids.append(
+            self.canvas.mpl_connect("draw_event", self._on_canvas_draw)
+        )
+
+    def _animated_artists(self):
+        """Artists managed outside the static background (blit overlay)."""
+        artists = []
+        if self._line_current is not None:
+            artists.append(self._line_current)
+        if self._sel_points is not None:
+            artists.append(self._sel_points)
+        for el in self._live_elements:
+            artists.append(el)
+        return artists
+
+    def _on_canvas_draw(self, _event):
+        if self._cleaned_up or self.ax is None:
+            return
+        try:
+            # Full draw finished: static content is in the buffer; cache it,
+            # then paint the animated artists on top (they were skipped).
+            self._blit_bg = self.canvas.copy_from_bbox(self.ax.bbox)
+            overlay_changed = False
+            for artist in self._animated_artists():
+                if getattr(artist, "get_visible", lambda: True)():
+                    self.ax.draw_artist(artist)
+                    overlay_changed = True
+            if overlay_changed:
+                self.canvas.blit(self.ax.bbox)
+        except Exception:
+            self._blit_bg = None
+
+    def _blit_animated(self):
+        """Repaint only the animated artists over the cached background."""
+        if self._blit_bg is None or self._cleaned_up:
+            self.canvas.draw_idle()  # no valid background: full redraw
+            return
+        try:
+            self.canvas.restore_region(self._blit_bg)
+            for artist in self._animated_artists():
+                if getattr(artist, "get_visible", lambda: True)():
+                    self.ax.draw_artist(artist)
+            self.canvas.blit(self.ax.bbox)
+        except Exception:
+            self._blit_bg = None
+            self.canvas.draw_idle()
+
     def _on_chart_resize(self, event):
         """Debounce figure width updates to avoid geometry thrash during live resize."""
         if not hasattr(self, "fig") or not hasattr(self, "canvas"):
@@ -529,6 +580,7 @@ class VFCurveTab:
 
     def _apply_chart_resize(self, width_px: int):
         self._chart_resize_after_id = None
+        self._blit_bg = None  # stale background: size changed
         if not hasattr(self, "fig") or not hasattr(self, "canvas"):
             return
         if width_px <= 0 or not self._chart_frame.winfo_ismapped():
@@ -944,7 +996,8 @@ class VFCurveTab:
             zorder=2,
         )
 
-        # Current curve (solid with point markers)
+        # Current curve (solid with point markers) — animated=True keeps it out
+        # of the cached background so fast edits can blit just this line.
         (self._line_current,) = ax.plot(
             v,
             f,
@@ -957,6 +1010,7 @@ class VFCurveTab:
             markeredgecolor="#00ccff",
             label="Current",
             zorder=3,
+            animated=True,
         )
 
         # Selection highlight
@@ -978,6 +1032,7 @@ class VFCurveTab:
                 zorder=5,
                 edgecolors="#ff8800",
                 linewidths=0.6,
+                animated=True,
             )
 
             # ── Info popup (right side of axes) ──
@@ -1225,7 +1280,7 @@ class VFCurveTab:
                 sel_f = self._frequencies[s : e + 1]
                 offsets = np.column_stack([self._voltages[s : e + 1], sel_f])
                 self._sel_points.set_offsets(offsets)
-            self.canvas.draw_idle()
+            self._blit_animated()
             return
 
         # Selection drag (extending selection while mouse button held)
@@ -1417,7 +1472,7 @@ class VFCurveTab:
         if self._live_volt is None or self._live_freq is None or not self._voltages:
             self._hide_live_point()
             if call_draw_idle:
-                self.canvas.draw_idle()
+                self._blit_animated()
             return
 
         lv = self._live_volt
@@ -1432,10 +1487,12 @@ class VFCurveTab:
             self._live_text.set_text(f"Live: {lv:.1f} mV, {lf:.0f} MHz")
             self._set_live_point_visible(True)
             if call_draw_idle:
-                self.canvas.draw_idle()
+                self._blit_animated()
             return
 
-        crosshair_kw = dict(color="#22cc44", linewidth=1.0, linestyle="--", alpha=0.85)
+        crosshair_kw = dict(
+            color="#22cc44", linewidth=1.0, linestyle="--", alpha=0.85, animated=True
+        )
         hline = ax.axhline(y=lf, zorder=6.0, **crosshair_kw)
         vline = ax.axvline(x=lv, zorder=5.0, **crosshair_kw)
 
@@ -1449,6 +1506,7 @@ class VFCurveTab:
             markeredgewidth=1.2,
             zorder=7.0,
             linestyle="none",
+            animated=True,
         )
 
         # Label (placed slightly below to avoid overlapping with default lock markers)
@@ -1461,6 +1519,7 @@ class VFCurveTab:
             color="#88ffaa",
             fontsize=5,
             zorder=8,
+            animated=True,
         )
 
         self._live_elements.extend([hline, vline, marker, text])
@@ -1470,7 +1529,7 @@ class VFCurveTab:
         self._live_text = text
 
         if call_draw_idle:
-            self.canvas.draw_idle()
+            self._blit_animated()
 
     def _hide_live_point(self) -> None:
         self._set_live_point_visible(False)
@@ -1690,7 +1749,7 @@ class VFCurveTab:
         if line is None or self.ax is None:
             return
         line.set_ydata(self._frequencies)
-        self.canvas.draw_idle()
+        self._blit_animated()
 
     def _on_space_key(self, event=None):
         """Toggle lock state based on selection.

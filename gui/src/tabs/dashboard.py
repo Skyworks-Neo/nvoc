@@ -416,7 +416,10 @@ class DashboardTab:
         self._fetching = True
         self._status_lbl.configure(text="⟳ Fetching…")
         self.app.run_gpu_query_async(
-            ["status", "-a"], self._on_done, thread_name="dash-poll"
+            ["status", "-a"],
+            self._on_done,
+            thread_name="dash-poll",
+            use_cache=False,  # polling wants live data, not TTL reuse
         )
 
     def _on_done(self, retcode: int, output: str) -> None:
