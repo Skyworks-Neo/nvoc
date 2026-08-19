@@ -5,7 +5,10 @@ Usage:  pyinstaller nvoc_gui.spec
         pyinstaller --clean nvoc_gui.spec  (for clean rebuild)
 
 Optimizations:
-  - noarchive=True: Faster startup, modular build
+  - ONEDIR build: the bootloader runs directly from the output directory
+    instead of extracting the whole bundle (numpy/matplotlib/PIL/tcl-tk
+    DLLs) to a fresh %TEMP%\_MEIxxxx dir on EVERY launch — seconds saved
+    per start on slow disks. Distribute the NVOC-GUI/ folder.
   - excludes: Remove unused modules to speed up analysis
   - datas: Only include necessary assets
 """
@@ -53,16 +56,14 @@ pyz = PYZ(a.pure, cipher=None)  # cipher=None: Faster build (no encryption overh
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,  # ONEDIR: binaries/datas go to COLLECT below
     name="NVOC-GUI",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,  # ✓ OPTIMIZATION: Disable UPX (very slow, minimal size gain ~5-10%)
     upx_exclude=[],
-    runtime_tmpdir=None,
     console=False,          # 保留控制台窗口方便调试; 发布时改为 False
     icon=[os.path.join(ctk_path, "assets", "icons", "CustomTkinter_icon_Windows.ico")],
     disable_windowed_traceback=False,
@@ -72,3 +73,14 @@ exe = EXE(
     entitlements_file=None,
     uac_admin=True,
 )
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=False,
+    upx_exclude=[],
+    name="NVOC-GUI",
+)
+
