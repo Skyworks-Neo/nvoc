@@ -306,14 +306,13 @@ class DashboardTab:
         ]:
             self._rows[key] = _MetricRow(card, key, label, unit, vmin, vmax)
 
-        # status bar
-        self._status_lbl = ctk.CTkLabel(
-            self.frame,
-            text="Waiting for first poll…",
-            font=("Consolas", 10),
-            text_color="#556677",
-        )
-        self._status_lbl.pack(anchor="w", padx=14, pady=(2, 0))
+        # Status line removed (user request); keep a no-op sink so the
+        # fetch/resize paths can still call configure(text=...) unconditionally.
+        class _NoopLabel:
+            def configure(self, **_kw):
+                pass
+
+        self._status_lbl = _NoopLabel()
 
         # Host frame for the overclock tab's top panels (Clock Offsets +
         # Power & Thermal Limits) — the dashboard doubles as the control
@@ -516,8 +515,6 @@ class DashboardTab:
             else:
                 self._rows[key].set_error()
 
-        ts = datetime.datetime.now().strftime("%H:%M:%S")
-        self._status_lbl.configure(text=f"✓ {ts}")
 
     # ── Quick-access button handlers ──────────────────────────────────────────
     def _refresh_info(self) -> None:

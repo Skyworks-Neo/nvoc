@@ -195,20 +195,22 @@ class OverclockTab:
             "Shift+Click: apply global offset then sync P2 memory VFP to P0 frequency",
         )
 
-        # Buttons
+        # Buttons — apply/reset each take half the row
         btn_oc = tk.Frame(oc_frame, bg=_PANEL_BG)
         btn_oc.pack(fill="x", padx=(26, 10), pady=(5, 10))
+        btn_oc.columnconfigure(0, weight=1, uniform="oc_btns")
+        btn_oc.columnconfigure(1, weight=1, uniform="oc_btns")
         LiteButton(
-            btn_oc, text="✅ Apply Offset", width=170, command=self._apply_oc
-        ).pack(side="left", padx=5)
+            btn_oc, text="✅ Apply Section", width=10, command=self._apply_oc
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 5))
         LiteButton(
             btn_oc,
-            text="🔄 Reset OC to 0",
-            width=140,
+            text="🔄 Reset Section",
+            width=10,
             fg_color="#c0392b",
             hover_color="#96281b",
             command=self._reset_oc,
-        ).pack(side="left", padx=5)
+        ).grid(row=0, column=1, sticky="ew", padx=(5, 0))
 
         # ═══════════════════════════════════════════
         # Power & Thermal Limits
@@ -345,19 +347,21 @@ class OverclockTab:
 
         btn_limits = tk.Frame(self.limit_frame, bg=_PANEL_BG)
         btn_limits.pack(fill="x", padx=(26, 10), pady=(5, 10))
+        btn_limits.columnconfigure(0, weight=1, uniform="oc_btns")
+        btn_limits.columnconfigure(1, weight=1, uniform="oc_btns")
         self.btn_apply_limits = LiteButton(
-            btn_limits, text="✅ Apply Limits", width=140, command=self._apply_limits
+            btn_limits, text="✅ Apply Section", width=10, command=self._apply_limits
         )
-        self.btn_apply_limits.pack(side="left", padx=5)
+        self.btn_apply_limits.grid(row=0, column=0, sticky="ew", padx=(0, 5))
         self.btn_reset_all = LiteButton(
             btn_limits,
-            text="🔄 Reset All Settings",
-            width=200,
+            text="🔄 Reset Section",
+            width=10,
             fg_color="#c0392b",
             hover_color="#96281b",
             command=self._reset_all,
         )
-        self.btn_reset_all.pack(side="left", padx=5)
+        self.btn_reset_all.grid(row=0, column=1, sticky="ew", padx=(5, 0))
 
         fan_frame = ctk.CTkFrame(scroll)
         fan_frame.pack(fill="x", pady=(0, 10))
