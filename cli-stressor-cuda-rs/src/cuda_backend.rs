@@ -9,6 +9,7 @@
 //! - [`gemm`]: cuBLAS GEMM stress path (FP precisions).
 //! - [`mem_ops`]: memcpy / memset / sgeam (transpose & elementwise) / reduction.
 //! - [`atomic`]: atomic-operation stress kernel (custom NVRTC).
+//! - [`gpu_fill`]: opt-in device-side stress-buffer generation (NVRTC).
 //! - [`kernels`]: shared NVRTC module-loading helpers.
 //! - [`device`]: device enumeration and selection (UUID / PCI / sorted index).
 
@@ -16,6 +17,7 @@ mod atomic;
 mod backend;
 mod device;
 mod gemm;
+mod gpu_fill;
 mod int_alu;
 mod kernels;
 mod lanes;

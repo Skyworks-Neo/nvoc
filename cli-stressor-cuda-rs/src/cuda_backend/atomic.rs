@@ -3,13 +3,10 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use rand::rngs::StdRng;
-use rand::{RngExt, SeedableRng};
-
 use cudarc::driver::{CudaContext, CudaFunction, CudaModule, LaunchConfig, PushKernelArg};
 use cudarc::nvrtc::compile_ptx;
 
-use cli_stressor_cuda_rs::{BackendError, StreamMode};
+use cli_stressor_cuda_rs::{BackendError, StreamMode, fill_random_f32};
 
 use super::backend::CudaBackend;
 use super::kernels::load_kernel;
@@ -46,22 +43,53 @@ impl CudaBackend {
             .ok_or_else(|| BackendError::Other("atomic kernel unavailable".to_string()))?;
         let n = (size * size) as u32;
         let lane_count = Self::lane_count(stream_mode);
-        let mut rng = StdRng::seed_from_u64(seed);
         let mut xs = Vec::with_capacity(lane_count);
         let mut outs = Vec::with_capacity(lane_count);
-        for lane in 0..lane_count {
-            let stream = self.stream_for_lane(lane);
-            let host: Vec<f32> = (0..n).map(|_| rng.random::<f32>()).collect();
-            xs.push(
-                stream
-                    .clone_htod(&host)
-                    .map_err(|err| BackendError::Other(err.to_string()))?,
-            );
-            outs.push(
-                stream
-                    .alloc_zeros::<u32>(1)
-                    .map_err(|err| BackendError::Other(err.to_string()))?,
-            );
+        if self.gpu_generate_enabled() {
+            let kernels = self
+                .gpu_fill
+                .as_ref()
+                .ok_or_else(|| BackendError::Other("gpu fill kernels unavailable".into()))?;
+            let total = n as u64;
+            for lane in 0..lane_count {
+                let stream = self.stream_for_lane(lane);
+                let x = stream
+                    .alloc_zeros::<f32>(n as usize)
+                    .map_err(|err| BackendError::Other(err.to_string()))?;
+                unsafe {
+                    stream
+                        .launch_builder(&kernels.f32_fn)
+                        .arg(&x)
+                        .arg(&total)
+                        .arg(&(seed.wrapping_add(lane as u64)))
+                        .launch(LaunchConfig::for_num_elems(n.max(1)))
+                        .map_err(|err| BackendError::Other(err.to_string()))?;
+                }
+                xs.push(x);
+                outs.push(
+                    stream
+                        .alloc_zeros::<u32>(1)
+                        .map_err(|err| BackendError::Other(err.to_string()))?,
+                );
+            }
+        } else {
+            // One parallel non-crypto fill shared by all lanes; nothing in the
+            // atomic path depends on per-lane input differences.
+            let mut host = vec![0f32; n as usize];
+            fill_random_f32(&mut host, seed);
+            for lane in 0..lane_count {
+                let stream = self.stream_for_lane(lane);
+                xs.push(
+                    stream
+                        .clone_htod(&host)
+                        .map_err(|err| BackendError::Other(err.to_string()))?,
+                );
+                outs.push(
+                    stream
+                        .alloc_zeros::<u32>(1)
+                        .map_err(|err| BackendError::Other(err.to_string()))?,
+                );
+            }
         }
         let cfg = LaunchConfig::for_num_elems(n.max(1));
 
