@@ -52,6 +52,14 @@ fn add_stressor_args(
     if let Some(device) = cuda_device {
         command.args(["--gpu-index", &device.to_string()]);
     }
+    // Device-side buffer generation by default: it removes the host RNG +
+    // H2D gap between bursts, giving more wall-clock to actual stress. The
+    // stressor itself falls back to host generation if the NVRTC fill
+    // kernels fail to build, and an explicit `--gpu-generate` in extra_args
+    // (caller-controlled) suppresses the duplicate flag.
+    if !extra_args.iter().any(|a| a == "--gpu-generate") {
+        command.arg("--gpu-generate");
+    }
     command.args(extra_args);
 }
 
@@ -192,9 +200,27 @@ mod tests {
                 "25",
                 "--gpu-index",
                 "2",
+                "--gpu-generate",
                 "--disable-fp8"
             ]
         );
+    }
+
+    #[test]
+    fn explicit_gpu_generate_flag_is_not_duplicated() {
+        let command = external_command(
+            "cli-stressor-cuda-rs",
+            None,
+            None,
+            10.0,
+            None,
+            &["--gpu-generate".into()],
+        );
+        let count = command
+            .get_args()
+            .filter(|a| *a == "--gpu-generate")
+            .count();
+        assert_eq!(count, 1);
     }
 
     #[test]
