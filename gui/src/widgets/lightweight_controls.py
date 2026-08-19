@@ -3,6 +3,7 @@ Lightweight Tk/CTk hybrid controls for high-density panels.
 """
 
 import tkinter as tk
+import tkinter.font as tk_font
 from typing import List, Optional, Tuple
 
 import customtkinter as ctk
@@ -120,8 +121,10 @@ class CanvasSlider(ctk.CTkFrame):
         self._pending_command_value = None
         self._command_interval_ms = 16
 
+        # width=1: a bare tk.Canvas requests 378px by default, which grid
+        # treats as a hard minimum and clips sibling columns in narrow cards.
         self._canvas = tk.Canvas(
-            self, height=24, highlightthickness=0, bd=0, bg="#2b2b2b"
+            self, width=1, height=24, highlightthickness=0, bd=0, bg="#2b2b2b"
         )
         self._canvas.pack(fill="both", expand=True)
         self._canvas.bind("<Configure>", lambda _e: self._redraw())
@@ -327,8 +330,11 @@ class SegmentRangeSelector(ctk.CTkFrame):
 
         self.grid_columnconfigure(0, weight=1)
 
+        # Summary ("Lock target: P8") is drawn INSIDE the canvas at the same
+        # height as the toggle-selector's watt subtitles, centered — a separate
+        # label row sat lower and left-anchored.
         self._canvas = tk.Canvas(
-            self, height=56, highlightthickness=0, bd=0, bg="#2b2b2b"
+            self, width=1, height=70, highlightthickness=0, bd=0, bg="#2b2b2b"
         )
         self._canvas.grid(row=0, column=0, sticky="ew")
         self._canvas.bind("<Configure>", lambda _e: self._redraw())
@@ -336,14 +342,7 @@ class SegmentRangeSelector(ctk.CTkFrame):
         self._canvas.bind("<B1-Motion>", self._on_drag)
         self._canvas.bind("<ButtonRelease-1>", self._on_release)
 
-        self._summary = ctk.CTkLabel(
-            self,
-            text="No P-State data",
-            anchor="w",
-            font=("Segoe UI", 10),
-            text_color="#7e8da1",
-        )
-        self._summary.grid(row=1, column=0, sticky="ew", pady=(0, 2))
+        self._summary_text = "No P-State data"
 
         self.set_values(self._values)
 
@@ -481,14 +480,13 @@ class SegmentRangeSelector(ctk.CTkFrame):
 
     def _update_summary(self):
         if not self._values:
-            self._summary.configure(text="No P-State data")
+            self._summary_text = "No P-State data"
             return
         start, end = self.get_selection() or ("", "")
         if start == end:
-            text = f"Lock target: {start}"
+            self._summary_text = f"Lock target: {start}"
         else:
-            text = f"Lock range: {start} - {end}"
-        self._summary.configure(text=text)
+            self._summary_text = f"Lock range: {start} - {end}"
 
     def _redraw(self):
         c = self._canvas
@@ -565,6 +563,16 @@ class SegmentRangeSelector(ctk.CTkFrame):
                 font=("Segoe UI", 10, "bold"),
             )
 
+        # Centered summary at the subtitle height (matches the toggle
+        # selector's watt captions).
+        c.create_text(
+            w / 2,
+            h - 9,
+            text=self._summary_text,
+            fill="#7e8da1",
+            font=("Segoe UI", 8),
+        )
+
 
 class SegmentToggleSelector(ctk.CTkFrame):
     """Discrete single-select segmented picker (click-to-select, no dragging).
@@ -580,20 +588,22 @@ class SegmentToggleSelector(ctk.CTkFrame):
         subtitles: Optional[List[Optional[str]]] = None,
         command=None,
     ):
-        super().__init__(parent, fg_color="transparent", height=68)
+        super().__init__(parent, fg_color="transparent", height=62)
         self._values = []  # type: List[str]
         self._subtitles = []  # type: List[Optional[str]]
         self._command = command
         self._state = "normal"
         self._selected_idx = None  # type: Optional[int]
         self._pad_x = 18
-        self._line_y = 15
+        # Track position mirrors the range selector: vertically centered in
+        # the canvas with room below for the labels + watt subtitles.
+        self._line_y = 20
         self._node_r = 5
 
         self.grid_columnconfigure(0, weight=1)
 
         self._canvas = tk.Canvas(
-            self, height=68, highlightthickness=0, bd=0, bg="#2b2b2b"
+            self, width=1, height=62, highlightthickness=0, bd=0, bg="#2b2b2b"
         )
         self._canvas.grid(row=0, column=0, sticky="ew")
         self._canvas.bind("<Configure>", lambda _e: self._redraw())
@@ -713,8 +723,8 @@ class SegmentToggleSelector(ctk.CTkFrame):
         active_fill = "#6689a8" if disabled else "#3B8ED0"
 
         has_subtitle = any(self._subtitles)
-        label_y = self._line_y + 19
-        sub_y = label_y + 15
+        label_y = self._line_y + 16
+        sub_y = label_y + 13
 
         x0 = positions[0]
         x1 = positions[-1]
@@ -728,28 +738,28 @@ class SegmentToggleSelector(ctk.CTkFrame):
             capstyle=tk.ROUND,
         )
 
-        if self._selected_idx is not None:
-            c.create_line(
-                x0,
-                self._line_y,
-                positions[self._selected_idx],
-                self._line_y,
-                fill=active_fill,
-                width=5,
-                capstyle=tk.ROUND,
-            )
-
         for idx, (x, label) in enumerate(zip(positions, self._values)):
             is_selected = idx == self._selected_idx
-            fill = active_fill if is_selected else node_fill
-            radius = self._node_r + 2 if is_selected else self._node_r
+            # Selected style matches the SegmentRangeSelector handles:
+            # white fill + blue outline (single-select: only ONE handle).
+            if is_selected:
+                radius = 9
+                fill = "#f5f7fb"
+                outline = "#59b0ff"
+                outline_w = 2
+            else:
+                radius = self._node_r
+                fill = node_fill
+                outline = ""
+                outline_w = 0
             c.create_oval(
                 x - radius,
                 self._line_y - radius,
                 x + radius,
                 self._line_y + radius,
                 fill=fill,
-                outline="",
+                outline=outline,
+                width=outline_w,
             )
             c.create_text(
                 x,
@@ -767,6 +777,120 @@ class SegmentToggleSelector(ctk.CTkFrame):
                     fill=sub_fill,
                     font=("Segoe UI", 8),
                 )
+
+
+class LiteCheckbutton(tk.Frame):
+    """CTk-styled checkbox with the box drawn to the RIGHT of the text.
+
+    Mimics the default CTkCheckBox look (rounded box, border, blue check)
+    — CTk itself cannot render text-then-box.
+    """
+
+    def __init__(
+        self,
+        master,
+        text: str,
+        variable=None,
+        command=None,
+        font: Tuple[str, int] = ("Segoe UI", 12),
+        box: int = 24,
+        bg: str = "#2b2b2b",
+        fg: str = "#e5e5e5",
+    ):
+        super().__init__(master, bg=bg, bd=0, highlightthickness=0)
+        self._text = text
+        self._variable = variable
+        self._command = command
+        self._font = font
+        self._box = box
+        self._bg = bg
+        self._fg = fg
+        self._state = "normal"
+        self._hovered = False
+
+        self._canvas = tk.Canvas(
+            self, width=1, height=box + 8, highlightthickness=0, bd=0, bg=bg
+        )
+        self._canvas.pack(fill="both", expand=True)
+        self._canvas.bind("<Button-1>", self._on_click)
+        self._canvas.bind("<Enter>", lambda _e: self._set_hover(True))
+        self._canvas.bind("<Leave>", lambda _e: self._set_hover(False))
+        self._canvas.bind("<Configure>", lambda _e: self._redraw())
+        if variable is not None:
+            variable.trace_add("write", lambda *_: self._redraw())
+
+    def _set_hover(self, hovered: bool):
+        self._hovered = hovered
+        self._redraw()
+
+    def _on_click(self, _event):
+        if self._state == "disabled" or self._variable is None:
+            return
+        self._variable.set(not bool(self._variable.get()))
+        if callable(self._command):
+            self._command()
+
+    def configure(self, **kwargs):
+        if "state" in kwargs:
+            self._state = kwargs.pop("state")
+        super().configure(**kwargs)
+        self._redraw()
+
+    def _rounded_rect(self, c, x0, y0, x1, y1, r, **kw):
+        points = [
+            x0 + r, y0, x1 - r, y0, x1, y0, x1, y0 + r, x1, y1 - r, x1, y1,
+            x1 - r, y1, x0 + r, y1, x0, y1, x0, y1 - r, x0, y0 + r, x0, y0,
+        ]
+        return c.create_polygon(points, smooth=True, splinesteps=16, **kw)
+
+    def _redraw(self):
+        c = self._canvas
+        c.delete("all")
+        try:
+            text_w = tk_font.Font(root=self, font=self._font).measure(self._text)
+        except Exception:
+            text_w = 8 * len(self._text)
+        w = text_w + 10 + self._box
+        h = c.winfo_height() or self._box + 8
+        try:
+            c.configure(width=max(w, c.winfo_width()))
+        except Exception:
+            pass
+        b = self._box
+        x1 = w  # box at the far right
+        y0 = (h - b) // 2
+        checked = bool(self._variable.get()) if self._variable is not None else False
+        disabled = self._state == "disabled"
+
+        c.create_text(
+            x1 - b - 10, h // 2,
+            text=self._text, anchor="e",
+            fill="#8a8a8a" if disabled else self._fg,
+            font=self._font,
+        )
+        if checked:
+            self._rounded_rect(
+                c, x1 - b, y0, x1, y0 + b, max(3, b // 5),
+                fill="#3B8ED0", outline="",
+            )
+            m = b // 3
+            c.create_line(
+                x1 - b + m, y0 + b // 2, x1 - b // 2, y0 + b - m,
+                fill="#ffffff", width=2, capstyle=tk.ROUND,
+            )
+            c.create_line(
+                x1 - b // 2, y0 + b - m, x1 - m, y0 + m,
+                fill="#ffffff", width=2, capstyle=tk.ROUND,
+            )
+        else:
+            border = "#6f6f6f" if self._hovered else "#5c5c5c"
+            if disabled:
+                border = "#4a4a4a"
+            self._rounded_rect(
+                c, x1 - b, y0, x1, y0 + b, max(3, b // 5),
+                fill="#3a3a3a" if not disabled else "#333333",
+                outline=border, width=2,
+            )
 
 
 class LiteButton(ctk.CTkFrame):

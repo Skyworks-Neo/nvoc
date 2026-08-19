@@ -54,18 +54,19 @@ class FanControlPane:
     def _build_content(self, parent: ctk.CTkFrame) -> None:
         self.content_row = tk.Frame(parent, bg=_PANE_BG)
         self.content_row.pack(fill="x", pady=(0, 10))
-        self.content_row.grid_columnconfigure(0, weight=1)
-        self.content_row.grid_columnconfigure(1, weight=1)
+        # uniform: strictly equal halves — matches the overclock cards above
+        self.content_row.grid_columnconfigure(0, weight=1, uniform="fan_cards")
+        self.content_row.grid_columnconfigure(1, weight=1, uniform="fan_cards")
 
         self.cooler_frame = ctk.CTkFrame(self.content_row)
         self.cooler_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
 
         cooler_header = tk.Frame(self.cooler_frame, bg=_PANE_BG)
-        cooler_header.pack(fill="x", padx=10, pady=(10, 5))
+        cooler_header.pack(fill="x", padx=10, pady=(10, 9))
         self.cooler_title = tk.Label(
             cooler_header,
-            text="Fan / Cooler Control",
-            font=("Segoe UI", 14, "bold"),
+            text="🌀 Fan Control",
+            font=("Segoe UI", 13, "bold"),
             bg=_PANE_BG,
             fg=_TEXT_FG,
         )
@@ -76,13 +77,10 @@ class FanControlPane:
             cooler_header,
             variable=self.cooler_api_var,
             values=["NVAPI", "NVML"],
-            width=120,
+            width=94,  # match the Clock-offset API selector width
             command=lambda _: self.controller.on_backend_change(),
         )
         self.cooler_api_menu.pack(side="right")
-        tk.Label(cooler_header, text="→", bg=_PANE_BG, fg=_TEXT_FG_DIM).pack(
-            side="right", padx=(0, 6)
-        )
         self._interactive_widgets.append(self.cooler_api_menu)
 
         grid = tk.Frame(self.cooler_frame, bg=_PANE_BG)
@@ -92,8 +90,8 @@ class FanControlPane:
         row = 0
         tk.Label(
             grid,
-            text="Fan Target:",
-            font=("Segoe UI", 12),
+            text="ID:",
+            font=("Segoe UI", 11),
             bg=_PANE_BG,
             fg=_TEXT_FG,
         ).grid(row=row, column=0, sticky="w", padx=5, pady=3)
@@ -106,7 +104,7 @@ class FanControlPane:
 
         row += 1
         tk.Label(
-            grid, text="Policy:", font=("Segoe UI", 12), bg=_PANE_BG, fg=_TEXT_FG
+            grid, text="Policy:", font=("Segoe UI", 11), bg=_PANE_BG, fg=_TEXT_FG
         ).grid(row=row, column=0, sticky="w", padx=5, pady=3)
         self.policy_var = ctk.StringVar(value="continuous")
         self.policy_menu = ctk.CTkOptionMenu(
@@ -121,8 +119,8 @@ class FanControlPane:
         row += 1
         tk.Label(
             grid,
-            text="Fan Level (%):",
-            font=("Segoe UI", 12),
+            text="Level (%):",
+            font=("Segoe UI", 11),
             bg=_PANE_BG,
             fg=_TEXT_FG,
         ).grid(row=row, column=0, sticky="w", padx=5, pady=3)
@@ -184,11 +182,11 @@ class FanControlPane:
         self.preset_title = tk.Label(
             self.preset_frame,
             text="Quick Presets",
-            font=("Segoe UI", 14, "bold"),
+            font=("Segoe UI", 13, "bold"),
             bg=_PANE_BG,
             fg=_TEXT_FG,
         )
-        self.preset_title.pack(anchor="w", padx=10, pady=(10, 5))
+        self.preset_title.pack(anchor="w", padx=10, pady=(10, 9))
 
         preset_grid = tk.Frame(self.preset_frame, bg=_PANE_BG)
         preset_grid.pack(fill="x", padx=10, pady=(0, 10))

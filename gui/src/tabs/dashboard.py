@@ -64,7 +64,7 @@ def _gradient_color(stops: tuple, ratio: float) -> str:
 class _MetricRow:
     """One row: LABEL | segmented-gradient bar | VALUE unit [lock]"""
 
-    _BAR_H = 22
+    _BAR_H = 18
     _SEG_W = 18
     _GAP_W = 4
     _RESIZE_DRAW_DELAY_MS = 45
@@ -86,7 +86,7 @@ class _MetricRow:
         self._stops = _BAR_COLORS.get(key, ("#1e88e5", "#00e5ff"))
 
         row = ctk.CTkFrame(parent, fg_color=_BG_ROW, corner_radius=8)
-        row.pack(fill="x", padx=16, pady=4)
+        row.pack(fill="x", padx=16, pady=3)
 
         # col 0: label
         ctk.CTkLabel(
@@ -96,13 +96,13 @@ class _MetricRow:
             text_color=_FG_LABEL,
             width=56,
             anchor="w",
-        ).grid(row=0, column=0, padx=(14, 6), pady=8)
+        ).grid(row=0, column=0, padx=(14, 6), pady=2)
 
         # col 1: canvas (bar) – expands
         self._canvas = tk.Canvas(
             row, height=self._BAR_H, bg=_BG_BAR, highlightthickness=0
         )
-        self._canvas.grid(row=0, column=1, padx=4, pady=8, sticky="ew")
+        self._canvas.grid(row=0, column=1, padx=4, pady=2, sticky="ew")
         row.columnconfigure(1, weight=1)
         self._canvas.bind("<Configure>", self._on_resize)
         self._ratio = 0.0
@@ -116,11 +116,11 @@ class _MetricRow:
             row,
             text="---",
             width=86,
-            font=("Consolas", 22, "bold"),
+            font=("Consolas", 18, "bold"),
             text_color=_FG_VALUE,
             anchor="e",
         )
-        self._val_lbl.grid(row=0, column=2, padx=(4, 2), pady=8)
+        self._val_lbl.grid(row=0, column=2, padx=(4, 2), pady=2)
 
         # col 3: unit
         ctk.CTkLabel(
@@ -130,13 +130,13 @@ class _MetricRow:
             font=("Consolas", 11),
             text_color=_FG_UNIT,
             anchor="w",
-        ).grid(row=0, column=3, padx=(0, 8), pady=8)
+        ).grid(row=0, column=3, padx=(0, 8), pady=2)
 
         # col 4: lock icon
         self._lock_lbl = ctk.CTkLabel(
             row, text="", width=22, font=("", 13), text_color=_FG_LOCK
         )
-        self._lock_lbl.grid(row=0, column=4, padx=(0, 12), pady=8)
+        self._lock_lbl.grid(row=0, column=4, padx=(0, 12), pady=2)
 
     def _on_resize(self, event):
         width = max(1, int(event.width))

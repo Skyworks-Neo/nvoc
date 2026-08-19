@@ -17,13 +17,14 @@ _PANEL_BG = "#2b2b2b"      # CTk dark frame/scroll background
 _TEXT_FG = "#e5e5e5"       # default label text
 _TEXT_FG_DIM = "#b3b3b3"   # 'gray70' hints
 _TEXT_FG_FAINT = "#999999"  # 'gray60' status text
-_FONT_BODY = ("Segoe UI", 12)
-_FONT_HEADER = ("Segoe UI", 14, "bold")
+_FONT_BODY = ("Segoe UI", 11)
+_FONT_HEADER = ("Segoe UI", 13, "bold")
 
 from src.panes.fan_control import FanControlPane
 from src.widgets.lightweight_controls import (
     CanvasSlider,
     LiteButton,
+    LiteCheckbutton,
     LiteEntry,
     SegmentRangeSelector,
     SegmentToggleSelector,
@@ -85,16 +86,20 @@ class OverclockTab:
 
         content_row = tk.Frame(scroll, bg=_PANEL_BG)
         content_row.pack(fill="x", pady=(0, 10))
-        content_row.grid_columnconfigure(0, weight=1)
-        content_row.grid_columnconfigure(1, weight=1)
+        # uniform: strictly equal card widths regardless of requested sizes
+        content_row.grid_columnconfigure(0, weight=1, uniform="oc_cards")
+        content_row.grid_columnconfigure(1, weight=1, uniform="oc_cards")
 
         # ═══════════════════════════════════════════
         # Clock Offset (OC)
         # ═══════════════════════════════════════════
         oc_frame = ctk.CTkFrame(content_row)
-        oc_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
+        # "new": natural height, top aligned — with "nsew" the two cards
+        # stretch to the taller one's height and the shorter card shows a
+        # large empty gap under its sliders (e.g. mobile mode layout).
+        oc_frame.grid(row=0, column=0, sticky="new", padx=(0, 5))
         oc_header = tk.Frame(oc_frame, bg=_PANEL_BG)
-        oc_header.pack(fill="x", padx=10, pady=(10, 5))
+        oc_header.pack(fill="x", padx=10, pady=(10, 9))
         tk.Label(
             oc_header,
             text="⚡ Clock Offsets",
@@ -111,33 +116,27 @@ class OverclockTab:
             height=28,
         )
         self.oc_api_selector.pack(side="right")
-        oc_api_help = tk.Label(
-            oc_header, text="→", bg=_PANEL_BG, fg=_TEXT_FG_DIM
-        )
-        oc_api_help.pack(side="right", padx=(0, 6))
         oc_api_tip = (
             "Clock offset API selector (core/memory + PState lock).\n"
             "- NVAPI: --core-offset / --mem-offset values are in kHz.\n"
             "- NVML: --core-offset / --mem-offset values are in MHz."
         )
         HoverTooltip(self.oc_api_selector, oc_api_tip)
-        HoverTooltip(oc_api_help, oc_api_tip)
 
         # PState lock selector
         ps_row = tk.Frame(oc_frame, bg=_PANEL_BG)
-        ps_row.pack(fill="x", padx=10, pady=(0, 5))
+        ps_row.pack(fill="x", padx=(26, 10), pady=(0, 5))
         ps_row.grid_columnconfigure(1, weight=1)
         tk.Label(
             ps_row,
-            text="PState Lock:",
-            width=12,
+            text="PState 🔒:",
             anchor="w",
             font=_FONT_BODY,
             bg=_PANEL_BG,
             fg=_TEXT_FG,
         ).grid(row=0, column=0, sticky="nw", pady=(5, 0))
         self.pstate_selector = SegmentRangeSelector(ps_row, values=[])
-        self.pstate_selector.grid(row=0, column=1, sticky="ew", padx=(5, 8))
+        self.pstate_selector.grid(row=0, column=1, sticky="ew", padx=(2, 8))
         ps_btns = tk.Frame(ps_row, bg=_PANEL_BG)
         ps_btns.grid(row=0, column=2, sticky="ne", pady=(4, 0))
         self.btn_apply_pstate = LiteButton(
@@ -159,12 +158,13 @@ class OverclockTab:
         self.core_slider, self.core_entry, self.core_var, btn_apply_core = (
             self._make_slider_row(
                 oc_frame,
-                "Core Offset(MHz):",
+                "Core(MHz):",
                 d["core_clock_min"],
                 d["core_clock_max"],
                 0,
                 step=5,
                 apply_cmd=self._apply_core_only,
+                signed=True,
             )
         )
 
@@ -172,12 +172,13 @@ class OverclockTab:
         self.mem_slider, self.mem_entry, self.mem_var, btn_apply_mem = (
             self._make_slider_row(
                 oc_frame,
-                "Mem Offset(MHz):",
+                "Mem(MHz):",
                 d["mem_clock_min"],
                 d["mem_clock_max"],
                 0,
                 step=10,
                 apply_cmd=self._apply_mem_only,
+                signed=True,
             )
         )
         btn_apply_mem.configure(shift_command=self._apply_mem_with_sync)
@@ -188,7 +189,7 @@ class OverclockTab:
 
         # Buttons
         btn_oc = tk.Frame(oc_frame, bg=_PANEL_BG)
-        btn_oc.pack(fill="x", padx=10, pady=(5, 10))
+        btn_oc.pack(fill="x", padx=(26, 10), pady=(5, 10))
         LiteButton(
             btn_oc, text="✅ Apply Offset", width=170, command=self._apply_oc
         ).pack(side="left", padx=5)
@@ -205,9 +206,9 @@ class OverclockTab:
         # Power & Thermal Limits
         # ═══════════════════════════════════════════
         self.limit_frame = ctk.CTkFrame(content_row)
-        self.limit_frame.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
+        self.limit_frame.grid(row=0, column=1, sticky="new", padx=(5, 0))
         limit_header = tk.Frame(self.limit_frame, bg=_PANEL_BG)
-        limit_header.pack(fill="x", padx=10, pady=(10, 5))
+        limit_header.pack(fill="x", padx=10, pady=(10, 13))
         self.limit_title_label = tk.Label(
             limit_header,
             text="⚡ Power & Thermal Limits",
@@ -226,17 +227,12 @@ class OverclockTab:
             command=self._on_power_api_changed,
         )
         self.power_api_selector.pack(side="right")
-        power_api_help = tk.Label(
-            limit_header, text="→", bg=_PANEL_BG, fg=_TEXT_FG_DIM
-        )
-        power_api_help.pack(side="right", padx=(0, 6))
         power_api_tip = (
             "Power limit API selector (power slider only).\n"
             "- NVAPI: --power-limit is percentage (%).\n"
             "- NVML: --power-limit is watts (W)."
         )
         HoverTooltip(self.power_api_selector, power_api_tip)
-        HoverTooltip(power_api_help, power_api_tip)
         self.limit_status_label = tk.Label(
             self.limit_frame,
             text="Power / thermal controls are unsupported on mobile/laptop GPUs.",
@@ -247,13 +243,15 @@ class OverclockTab:
 
         # ── Mobile-mode widgets (packed only when a mobile GPU is active) ──
         self.ppab_var = ctk.BooleanVar(value=False)
-        self.ppab_checkbox = ctk.CTkCheckBox(
+        # CTk-styled checkbox with the box to the RIGHT of the text.
+        self.ppab_checkbox = LiteCheckbutton(
             limit_header,
             text="PPAB",
-            width=94,
-            height=24,
             variable=self.ppab_var,
             command=self._on_ppab_toggled,
+            font=_FONT_BODY,
+            bg=_PANEL_BG,
+            fg=_TEXT_FG,
         )
         ppab_tip = (
             "PPAB / Dynamic Boost (NVAPI, mobile only).\n"
@@ -267,16 +265,21 @@ class OverclockTab:
         tk.Label(
             self.dnotifier_row,
             text="D-Notifier:",
-            width=12,
             anchor="w",
             font=_FONT_BODY,
             bg=_PANEL_BG,
             fg=_TEXT_FG,
         ).grid(row=0, column=0, sticky="nw", pady=(5, 0))
-        self.dnotifier_selector = SegmentToggleSelector(
-            self.dnotifier_row, values=[], command=self._on_dnotifier_selected
+        # Selection only applies via the ✓ button (mirrors the slider rows).
+        self.dnotifier_selector = SegmentToggleSelector(self.dnotifier_row, values=[])
+        self.dnotifier_selector.grid(row=0, column=1, sticky="ew", padx=(2, 8))
+        self.btn_apply_dnotifier = LiteButton(
+            self.dnotifier_row,
+            text="✓",
+            width=34,
+            command=self._apply_dnotifier,
         )
-        self.dnotifier_selector.grid(row=0, column=1, sticky="ew", padx=(5, 8))
+        self.btn_apply_dnotifier.grid(row=0, column=2, sticky="ne", pady=(4, 0))
         dnotifier_tip = (
             "D-Notifier level (D1-D5, mobile NVAPI).\n"
             "The actual power cap never exceeds the active D-state's\n"
@@ -333,7 +336,7 @@ class OverclockTab:
         )
 
         btn_limits = tk.Frame(self.limit_frame, bg=_PANEL_BG)
-        btn_limits.pack(fill="x", padx=10, pady=(5, 10))
+        btn_limits.pack(fill="x", padx=(26, 10), pady=(5, 10))
         self.btn_apply_limits = LiteButton(
             btn_limits, text="✅ Apply Limits", width=140, command=self._apply_limits
         )
@@ -406,6 +409,7 @@ class OverclockTab:
         ]
         if mode == "mobile":
             widgets.append(self.dnotifier_selector)
+            widgets.append(self.btn_apply_dnotifier)
         else:
             widgets.extend([
                 self.power_api_selector,
@@ -438,19 +442,11 @@ class OverclockTab:
             return
         self._mobile_mode = True
         self.power_api_selector.pack_forget()
-        # Repack the "→" hint label away alongside the dropdown.
-        for child in self.power_api_selector.master.winfo_children():
-            if (
-                isinstance(child, tk.Label)
-                and child.cget("text") == "→"
-                and child is not self.limit_title_label
-            ):
-                child.pack_forget()
         self.ppab_checkbox.pack(side="right")
         self.plimit_label_var.set("Pwr Limit(W):")
         # D-Notifier selector sits above the power slider row.
         plimit_row = self.plimit_slider.master
-        self.dnotifier_row.pack(fill="x", padx=10, pady=(0, 3), before=plimit_row)
+        self.dnotifier_row.pack(fill="x", padx=(26, 10), pady=(0, 3), before=plimit_row)
         # Voltage Boost row is hidden on mobile (unvalidated NVAPI % path).
         self.vboost_slider.master.pack_forget()
         self._load_mobile_limits()
@@ -463,15 +459,6 @@ class OverclockTab:
         self.ppab_checkbox.pack_forget()
         self.dnotifier_row.pack_forget()
         self.power_api_selector.pack(side="right")
-        # Restore the "→" hint that sits left of the dropdown.
-        header = self.power_api_selector.master
-        for child in header.winfo_children():
-            if (
-                isinstance(child, tk.Label)
-                and child.cget("text") == "→"
-                and child is not self.limit_title_label
-            ):
-                child.pack(side="right", padx=(0, 6))
         self.plimit_label_var.set("Pwr Limit(%):")
         # Repack the vboost row before the buttons row (original order).
         btn_limits_row = self.btn_apply_limits.master
@@ -531,13 +518,18 @@ class OverclockTab:
             )
 
     def update_mobile_limits(self, data: dict):
-        """Apply the mobile control surface (see NativeBackend.query_mobile_limits)."""
+        """Apply the mobile control surface (see NativeBackend.query_mobile_limits).
+
+        Mobile controls are assumed SUPPORTED: a missing sub-query is treated
+        as a transient read failure (dGPU powering up after GC6 wake), not a
+        capability verdict — controls stay enabled with the last/default
+        ranges, and a genuinely failing SET reports through the console.
+        """
         if not self._mobile_mode:
             return
         tgp = data.get("tgp") if isinstance(data.get("tgp"), dict) else None
         dnotifier = data.get("dnotifier") if isinstance(data.get("dnotifier"), dict) else None
         policies = data.get("temp_policies") or []
-        unsupported = []
 
         if tgp and tgp.get("max_watt") is not None and tgp.get("min_watt") is not None:
             self._tgp_policy_index = int(tgp.get("policy_index", 2))
@@ -552,10 +544,6 @@ class OverclockTab:
                 self._power_default,
                 step=1,
             )
-        else:
-            unsupported.append("TGP")
-            self._safe_set_state(self.plimit_slider, "disabled")
-            self._safe_set_state(self.btn_apply_plimit, "disabled")
 
         if dnotifier and dnotifier.get("levels"):
             levels = dnotifier["levels"]
@@ -567,9 +555,6 @@ class OverclockTab:
             self.dnotifier_selector.set_values(values, subtitles)
             self.dnotifier_selector.set_selection(dnotifier.get("active"))
             self._safe_set_state(self.dnotifier_selector, "normal")
-        else:
-            unsupported.append("D-Notifier")
-            self._safe_set_state(self.dnotifier_selector, "disabled")
 
         target = None
         for policy in policies:
@@ -594,18 +579,6 @@ class OverclockTab:
                 current,
                 step=1,
             )
-        else:
-            unsupported.append("Target Temp")
-            self._safe_set_state(self.tlimit_slider, "disabled")
-            self._safe_set_state(self.btn_apply_tlimit, "disabled")
-
-        if unsupported:
-            self.limit_status_label.configure(
-                text=f"Mobile controls unavailable on this driver: {', '.join(unsupported)}."
-            )
-            self.limit_status_label.pack(anchor="w", padx=10, pady=(0, 6))
-        else:
-            self.limit_status_label.pack_forget()
 
     def _on_ppab_toggled(self):
         if self._syncing or not self._mobile_mode:
@@ -623,7 +596,15 @@ class OverclockTab:
         )
 
     def _on_dnotifier_selected(self, level: str):
-        if self._syncing or not self._mobile_mode or not level:
+        """Kept for API compatibility — selection no longer auto-applies."""
+        return
+
+    def _apply_dnotifier(self):
+        """Apply the currently selected D-Notifier level (✓ button)."""
+        if self._syncing or not self._mobile_mode:
+            return
+        level = self.dnotifier_selector.get_selection()
+        if not level:
             return
         gpu = self.app.selected_gpu_target()
         if gpu is None:
@@ -1036,8 +1017,15 @@ class OverclockTab:
         slider._oc_step = step
 
         slider.set(default)
-        var.set(str(default))
+        var.set(self._fmt_slider_value(slider, default))
         self._syncing = False
+
+    @staticmethod
+    def _fmt_slider_value(slider: Any, value: int) -> str:
+        """Format an entry value, signed for offset rows (see _make_slider_row)."""
+        if getattr(slider, "_oc_signed", False):
+            return f"{int(value):+d}"
+        return str(int(value))
 
     def _set_slider_value(self, slider: Any, var: ctk.StringVar, value: int):
         """Update a slider's current value without changing its range."""
@@ -1046,7 +1034,7 @@ class OverclockTab:
         clamped = max(min_val, min(max_val, value))
         self._syncing = True
         slider.set(clamped)
-        var.set(str(clamped))
+        var.set(self._fmt_slider_value(slider, clamped))
         self._syncing = False
 
     # ────────────────────────────────────────────
@@ -1061,17 +1049,24 @@ class OverclockTab:
         default: int,
         step: int = 1,
         apply_cmd=None,
+        signed: bool = False,
     ) -> Tuple[Any, ctk.CTkEntry, ctk.StringVar, ctk.CTkButton]:
-        """Create a row with label, slider, numeric entry and apply button."""
+        """Create a row with label, slider, numeric entry and apply button.
+
+        signed=True renders the entry value with an explicit +/- sign
+        (offset rows — avoids reading e.g. 150 as an absolute frequency).
+        """
+
+        def _fmt(v: int) -> str:
+            return f"{int(v):+d}" if signed else str(int(v))
         row_frame = tk.Frame(parent, bg=_PANEL_BG)
-        row_frame.pack(fill="x", padx=10, pady=3)
+        row_frame.pack(fill="x", padx=(26, 10), pady=3)
         row_frame.grid_columnconfigure(1, weight=1)
 
         if isinstance(label, ctk.StringVar):
             tk.Label(
                 row_frame,
                 textvariable=label,
-                width=12,
                 anchor="w",
                 font=_FONT_BODY,
                 bg=_PANEL_BG,
@@ -1081,7 +1076,6 @@ class OverclockTab:
             tk.Label(
                 row_frame,
                 text=label,
-                width=12,
                 anchor="w",
                 font=_FONT_BODY,
                 bg=_PANEL_BG,
@@ -1096,19 +1090,17 @@ class OverclockTab:
             to=max_val,
             number_of_steps=n_steps,
         )
-        # Requested width ~0: the grid column then shrinks the slider instead
-        # of clipping the entry/apply button when the card is narrow.
-        slider.configure(width=1)
         slider.set(default)
-        slider.grid(row=0, column=1, sticky="ew", padx=(5, 10))
+        slider.grid(row=0, column=1, sticky="ew", padx=(2, 8))
 
         # Store range info on the slider for dynamic access in callbacks
         slider._oc_min = min_val
         slider._oc_max = max_val
         slider._oc_step = step
+        slider._oc_signed = signed
 
         # Entry (fixed width, right-aligned value)
-        var = ctk.StringVar(value=str(default))
+        var = ctk.StringVar(value=_fmt(default))
         entry = LiteEntry(row_frame, textvariable=var, width=7, justify="right")
         entry.grid(row=0, column=2, padx=(0, 5))
 
@@ -1119,7 +1111,7 @@ class OverclockTab:
             self._syncing = True
             s = _slider._oc_step
             snapped = round(value / s) * s if s else round(value)
-            _var.set(str(int(snapped)))
+            _var.set(_fmt(snapped))
             self._syncing = False
 
         slider.configure(command=_on_slider)
@@ -1162,7 +1154,7 @@ class OverclockTab:
             if s:
                 clamped = round(clamped / s) * s
             self._syncing = True
-            _var.set(str(int(clamped)))
+            _var.set(_fmt(clamped))
             _slider.set(clamped)
             self._syncing = False
 
