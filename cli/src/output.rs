@@ -295,7 +295,10 @@ fn format_pstate_native_output(output: &Value) -> Vec<String> {
     lines.push(format!("  {}", stylize_title("P-States")));
     for entry in pstates {
         let pstate = entry.get("pstate").and_then(Value::as_str).unwrap_or("P?");
-        let locked = entry.get("locked").and_then(Value::as_bool).unwrap_or(false);
+        let locked = entry
+            .get("locked")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let header = if locked {
             format!("{pstate} (locked)")
         } else {
@@ -317,11 +320,8 @@ fn format_pstate_native_output(output: &Value) -> Vec<String> {
                     if max == 0.0 && min == 0.0 {
                         continue;
                     }
-                    let values = format!(
-                        "Max {} MHz, Min {} MHz",
-                        trim_float(max),
-                        trim_float(min)
-                    );
+                    let values =
+                        format!("Max {} MHz, Min {} MHz", trim_float(max), trim_float(min));
                     lines.push(format!(
                         "      {}: {}",
                         stylize_title(label),

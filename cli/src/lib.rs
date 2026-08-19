@@ -9,22 +9,21 @@ use nvoc_core::{
     QueryDisplays, QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings,
     QueryGpuStatus, QueryLegacyCoreOvervoltRanges, QueryLegacyP0CoreMaxVoltageDelta,
     QueryNvapiDNotifier, QueryNvapiPStateLevels, QueryNvapiPStateLockStatus,
-    QueryNvapiTargetTempPolicies, QueryNvapiTargetTempPolicyIndex,
-    QueryNvapiTgpWattRange, QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates,
-    QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
-    QueryThrottleReasons, QueryVfpPointVoltage, QueryViolationStatus, QueryVoltageBoost,
-    ResetApplicationsClocks, ResetCoolerLevels, ResetFanSpeed, ResetLockedClocks,
-    ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetPstateBaseVoltages,
-    ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock, ResetVfpLock,
-    SetApiRestriction, SetApplicationsClocks, SetAutoBoost, SetAutoBoostDefault, SetClockOffset,
-    SetCoolerLevels, SetEdid, SetFanSpeed, SetLegacyClocks, SetLockedClocks, SetNvapiDNotifier,
-    SetNvapiDynamicBoost, SetNvapiPowerLimits, SetNvapiPStateNative, SetNvapiPstateLock,
-    SetNvapiSensorLimits, SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvmlPstateLock, SetPowerLimit,
-    SetPstateBaseVoltage, SetPstateClockOffset, SetTemperatureLimit, SetVfpFrequencyLock,
-    SetVfpPointDelta,
-    SetVfpRangeDelta, SetVfpVoltageLock, SetVoltageBoost, VfpResetDomain, discover_targets,
-    nvml_pstate_to_str, parse_nvapi_locked_voltage_target, parse_nvml_fan_control_policy,
-    parse_nvml_pstate, run, select_targets,
+    QueryNvapiTargetTempPolicies, QueryNvapiTargetTempPolicyIndex, QueryNvapiTgpWattRange,
+    QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks,
+    QueryTdpTempLimits, QueryTemperatureThresholds, QueryThrottleReasons, QueryVfpPointVoltage,
+    QueryViolationStatus, QueryVoltageBoost, ResetApplicationsClocks, ResetCoolerLevels,
+    ResetFanSpeed, ResetLockedClocks, ResetNvapiPowerLimits, ResetNvapiSensorLimits,
+    ResetNvapiTgpWatt, ResetPstateBaseVoltages, ResetPstateClockOffsets, ResetVfpDeltas,
+    ResetVfpFrequencyLock, ResetVfpLock, SetApiRestriction, SetApplicationsClocks, SetAutoBoost,
+    SetAutoBoostDefault, SetClockOffset, SetCoolerLevels, SetEdid, SetFanSpeed, SetLegacyClocks,
+    SetLockedClocks, SetNvapiDNotifier, SetNvapiDynamicBoost, SetNvapiPStateNative,
+    SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiSensorLimits, SetNvapiTargetTemp,
+    SetNvapiTgpWatt, SetNvmlPstateLock, SetPowerLimit, SetPstateBaseVoltage, SetPstateClockOffset,
+    SetTemperatureLimit, SetVfpFrequencyLock, SetVfpPointDelta, SetVfpRangeDelta,
+    SetVfpVoltageLock, SetVoltageBoost, VfpResetDomain, discover_targets, nvml_pstate_to_str,
+    parse_nvapi_locked_voltage_target, parse_nvml_fan_control_policy, parse_nvml_pstate, run,
+    select_targets,
 };
 use serde_json::{Value, json};
 use time::OffsetDateTime;
@@ -281,12 +280,8 @@ impl Command {
             Self::GetVfpPointVoltageMv => "Read one VFP point voltage in mV",
             Self::GetPowerWatt => "Read NVML power limits in watts",
             Self::GetClockOffsetMhz => "Read clock offset in MHz",
-            Self::GetPStateNative => {
-                "Read the native NVAPI P-State level table"
-            }
-            Self::SetPStateNative => {
-                "Lock the native NVAPI P-State"
-            }
+            Self::GetPStateNative => "Read the native NVAPI P-State level table",
+            Self::SetPStateNative => "Lock the native NVAPI P-State",
             Self::ResetPStateNative => "Clear all native NVAPI P-State locks",
             Self::GetPstates => "Read NVML P-State clock ranges",
             Self::GetSupportedAppClocks => "Read NVML supported application clocks",
@@ -331,7 +326,9 @@ impl Command {
             Self::SetVfpVoltageLock => "Lock VFP by point or voltage",
             Self::SetVfpPointDeltaMhz => "Set one VFP point delta in MHz",
             Self::SetVfpRangeDeltaMhz => "Set a VFP point range delta in MHz",
-            Self::SetPstateLock => "Lock one NVML P-State or a contiguous range via memory freq range",
+            Self::SetPstateLock => {
+                "Lock one NVML P-State or a contiguous range via memory freq range"
+            }
             Self::SetApplicationsClocksMhz => "Set NVML application clocks in MHz",
             Self::SetPstateBaseVoltageUv => "Set NVAPI P-State base voltage delta in microvolts",
             Self::SetVoltageBoostPercent => "Set NVAPI voltage boost percent",
@@ -1799,22 +1796,18 @@ fn execute_target(
             // 0x39442CFB), from the private limit-status (0x9962C97C). A level's
             // pstate is "locked" when it's in this set — the only way to confirm
             // a SET actually took. None when the driver doesn't expose it.
-            let locked: std::collections::HashSet<u8> =
-                run(target, QueryNvapiPStateLockStatus)?
-                    .output
-                    .unwrap_or_default()
-                    .into_iter()
-                    .collect();
-            let domain_mhz =
-                |d: usize, pstate: u8, max: bool| -> Option<f64> {
-                    per_domain.get(d)?.iter().find(|p| p.pstate == pstate).and_then(|p| {
-                        if max {
-                            p.max_mhz
-                        } else {
-                            p.min_mhz
-                        }
-                    })
-                };
+            let locked: std::collections::HashSet<u8> = run(target, QueryNvapiPStateLockStatus)?
+                .output
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
+            let domain_mhz = |d: usize, pstate: u8, max: bool| -> Option<f64> {
+                per_domain
+                    .get(d)?
+                    .iter()
+                    .find(|p| p.pstate == pstate)
+                    .and_then(|p| if max { p.max_mhz } else { p.min_mhz })
+            };
             // Clock-domain identity (GPU-specific in general; resolved by the ref tool
             // via 0x57B5A5DF). User-confirmed on RTX 4060 Laptop and matching
             // NVML's pstate-limits naming: 0=Graphics/core, 2=Memory, 3=Video.
@@ -2113,7 +2106,11 @@ fn execute_target(
             let raw = option_one(invocation, "pstate")
                 .map(str::to_string)
                 .or_else(|| invocation.positionals.get(0).map(|s| s.to_string()))
-                .ok_or_else(|| CliError::new("set-pstate-native requires a P-State, e.g. `set-pstate-native P3`"))?;
+                .ok_or_else(|| {
+                    CliError::new(
+                        "set-pstate-native requires a P-State, e.g. `set-pstate-native P3`",
+                    )
+                })?;
             let pstate = raw
                 .trim_start_matches('P')
                 .trim_start_matches('p')

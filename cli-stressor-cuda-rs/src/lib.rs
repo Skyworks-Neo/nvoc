@@ -738,7 +738,10 @@ fn rng_pool() -> &'static rayon::ThreadPool {
             .unwrap_or_else(|_| {
                 // A 1-thread pool cannot fail to build; parallelism is a
                 // perf knob, not a correctness requirement.
-                rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap()
+                rayon::ThreadPoolBuilder::new()
+                    .num_threads(1)
+                    .build()
+                    .unwrap()
             })
     })
 }
@@ -787,19 +790,21 @@ mod rng_perf_tests {
 /// for a given seed (same seed => same bytes regardless of thread count).
 pub fn fill_random_bytes(buf: &mut [u8], seed: u64) {
     rng_pool().install(|| {
-        buf.par_chunks_mut(RNG_CHUNK).enumerate().for_each(|(ci, c)| {
-            let mut state = seed.wrapping_add((ci as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
-            let mut words = c.chunks_exact_mut(8);
-            for w in &mut words {
-                let x = splitmix64(&mut state).to_le_bytes();
-                w.copy_from_slice(&x);
-            }
-            let rem = words.into_remainder();
-            if !rem.is_empty() {
-                let x = splitmix64(&mut state).to_le_bytes();
-                rem.copy_from_slice(&x[..rem.len()]);
-            }
-        });
+        buf.par_chunks_mut(RNG_CHUNK)
+            .enumerate()
+            .for_each(|(ci, c)| {
+                let mut state = seed.wrapping_add((ci as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+                let mut words = c.chunks_exact_mut(8);
+                for w in &mut words {
+                    let x = splitmix64(&mut state).to_le_bytes();
+                    w.copy_from_slice(&x);
+                }
+                let rem = words.into_remainder();
+                if !rem.is_empty() {
+                    let x = splitmix64(&mut state).to_le_bytes();
+                    rem.copy_from_slice(&x[..rem.len()]);
+                }
+            });
     });
 }
 
@@ -807,25 +812,29 @@ pub fn fill_random_bytes(buf: &mut [u8], seed: u64) {
 /// chunk-deterministic for a given seed.
 pub fn fill_random_f32(buf: &mut [f32], seed: u64) {
     rng_pool().install(|| {
-        buf.par_chunks_mut(RNG_CHUNK).enumerate().for_each(|(ci, c)| {
-            let mut state = seed.wrapping_add((ci as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
-            for v in c.iter_mut() {
-                let x = splitmix64(&mut state);
-                *v = ((x >> 40) as f32) * (1.0f32 / 16_777_216.0f32);
-            }
-        });
+        buf.par_chunks_mut(RNG_CHUNK)
+            .enumerate()
+            .for_each(|(ci, c)| {
+                let mut state = seed.wrapping_add((ci as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+                for v in c.iter_mut() {
+                    let x = splitmix64(&mut state);
+                    *v = ((x >> 40) as f32) * (1.0f32 / 16_777_216.0f32);
+                }
+            });
     });
 }
 
 /// Parallel-fill an i32 buffer with random bits, chunk-deterministic.
 pub fn fill_random_i32(buf: &mut [i32], seed: u64) {
     rng_pool().install(|| {
-        buf.par_chunks_mut(RNG_CHUNK).enumerate().for_each(|(ci, c)| {
-            let mut state = seed.wrapping_add((ci as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
-            for v in c.iter_mut() {
-                *v = (splitmix64(&mut state) >> 32) as i32;
-            }
-        });
+        buf.par_chunks_mut(RNG_CHUNK)
+            .enumerate()
+            .for_each(|(ci, c)| {
+                let mut state = seed.wrapping_add((ci as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+                for v in c.iter_mut() {
+                    *v = (splitmix64(&mut state) >> 32) as i32;
+                }
+            });
     });
 }
 

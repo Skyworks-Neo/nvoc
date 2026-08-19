@@ -3,10 +3,9 @@ use super::nvapi as low_nvapi;
 use super::nvml as low_nvml;
 use super::result::{
     ApiRestrictionState, AppliedValue, AutoBoostState, BatchReport, ClockOffset, DNotifierInfo,
-    DNotifierLevel, DisplayInfo, EdidData, FanInfo, OperationKind, OperationReport,
-    PStateLevelEntry, PStateLevelsInfo, PstateBaseVoltage, PstateClockRange,
-    SupportedApplicationClocks, TargetOutcome, TargetTempPolicy, NvapiPStateNativeLock,
-    TdpTempLimits,
+    DNotifierLevel, DisplayInfo, EdidData, FanInfo, NvapiPStateNativeLock, OperationKind,
+    OperationReport, PStateLevelEntry, PStateLevelsInfo, PstateBaseVoltage, PstateClockRange,
+    SupportedApplicationClocks, TargetOutcome, TargetTempPolicy, TdpTempLimits,
     TemperatureThreshold, ThrottleReason, ViolationEntry, ViolationStatusReport, VoltageBoostState,
     VoltageFrequencyCheck,
 };
@@ -1292,13 +1291,9 @@ impl GpuOperation for SetNvapiPStateNative {
             NvapiPStateNativeLock::PstateOnly { pstate } => {
                 nvapi_hi::PStateNativeLock::PstateOnly { pstate }
             }
-            NvapiPStateNativeLock::PstateAndFreq {
-                pstate,
-                freq_khz,
-            } => nvapi_hi::PStateNativeLock::PstateAndFreq {
-                pstate,
-                freq_khz,
-            },
+            NvapiPStateNativeLock::PstateAndFreq { pstate, freq_khz } => {
+                nvapi_hi::PStateNativeLock::PstateAndFreq { pstate, freq_khz }
+            }
         };
         target.nvapi()?.set_pstate_native(lock).map_err(Error::from)
     }

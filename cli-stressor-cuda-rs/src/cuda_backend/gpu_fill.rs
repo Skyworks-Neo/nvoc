@@ -60,7 +60,9 @@ pub(super) struct GpuFillKernels {
     pub(super) i32_fn: CudaFunction,
 }
 
-pub(super) fn build_gpu_fill_kernels(ctx: &Arc<CudaContext>) -> Result<GpuFillKernels, BackendError> {
+pub(super) fn build_gpu_fill_kernels(
+    ctx: &Arc<CudaContext>,
+) -> Result<GpuFillKernels, BackendError> {
     let ptx = compile_ptx(GPU_FILL_SRC).map_err(|err| BackendError::Other(err.to_string()))?;
     let module = ctx
         .load_module(ptx)

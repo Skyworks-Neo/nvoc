@@ -10,12 +10,12 @@ use nvoc_core::{
     QueryVfpPointVoltage, ResetVfpDeltas, SetVfpPointDelta, SetVfpVoltageLock, VfpResetDomain,
     set_nvapi_pstate_clock_offsets,
 };
-use std::process::{Child, Command, Stdio};
-use std::thread::JoinHandle;
 #[cfg(windows)]
 use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
 #[cfg(windows)]
 use std::sync::OnceLock;
+use std::thread::JoinHandle;
 use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime};
 

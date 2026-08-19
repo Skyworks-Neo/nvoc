@@ -7,20 +7,19 @@ use nvoc_core::{
     QueryAutoBoost, QueryDisplays, QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo,
     QueryGpuSettings, QueryGpuStatus, QueryLegacyCoreOvervoltRanges,
     QueryLegacyP0CoreMaxVoltageDelta, QueryNvapiDNotifier, QueryNvapiTargetTempPolicies,
-    QueryNvapiTgpWattRange, QueryPowerLimits,
-    QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits,
-    QueryTemperatureThresholds, QueryThrottleReasons, QueryVfpPointVoltage, QueryVoltageBoost,
-    ResetApplicationsClocks, ResetCoolerLevels, ResetFanSpeed, ResetLockedClocks,
-    ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetPstateBaseVoltages,
-    ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock, ResetVfpLock,
-    SetApiRestriction, SetApplicationsClocks, SetAutoBoost, SetAutoBoostDefault, SetClockOffset,
-    SetCoolerLevels, SetDomainVfpDeltas, SetEdid, SetFanSpeed, SetLegacyClocks, SetLockedClocks,
-    SetNvapiDNotifier, SetNvapiDynamicBoost, SetNvapiPowerLimits, SetNvapiPstateLock,
-    SetNvapiSensorLimits, SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvmlPstateLock,
-    SetPowerLimit, SetPstateBaseVoltage, SetPstateClockOffset, SetTemperatureLimit,
-    SetVfpFrequencyLock, SetVfpPointDelta, SetVfpRangeDelta, SetVfpVoltageLock, SetVoltageBoost,
-    VfpResetDomain, discover_targets, nvml_pstate_to_str, parse_nvml_fan_control_policy, run,
-    try_parse_nvml_pstate,
+    QueryNvapiTgpWattRange, QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates,
+    QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
+    QueryThrottleReasons, QueryVfpPointVoltage, QueryVoltageBoost, ResetApplicationsClocks,
+    ResetCoolerLevels, ResetFanSpeed, ResetLockedClocks, ResetNvapiPowerLimits,
+    ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetPstateBaseVoltages, ResetPstateClockOffsets,
+    ResetVfpDeltas, ResetVfpFrequencyLock, ResetVfpLock, SetApiRestriction, SetApplicationsClocks,
+    SetAutoBoost, SetAutoBoostDefault, SetClockOffset, SetCoolerLevels, SetDomainVfpDeltas,
+    SetEdid, SetFanSpeed, SetLegacyClocks, SetLockedClocks, SetNvapiDNotifier,
+    SetNvapiDynamicBoost, SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiSensorLimits,
+    SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvmlPstateLock, SetPowerLimit, SetPstateBaseVoltage,
+    SetPstateClockOffset, SetTemperatureLimit, SetVfpFrequencyLock, SetVfpPointDelta,
+    SetVfpRangeDelta, SetVfpVoltageLock, SetVoltageBoost, VfpResetDomain, discover_targets,
+    nvml_pstate_to_str, parse_nvml_fan_control_policy, run, try_parse_nvml_pstate,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -213,8 +212,7 @@ static INVENTORY_CACHE: std::sync::Mutex<InventoryCache> = std::sync::Mutex::new
     nvml: None,
 });
 
-fn lock_inventory_cache(
-) -> std::sync::MutexGuard<'static, InventoryCache> {
+fn lock_inventory_cache() -> std::sync::MutexGuard<'static, InventoryCache> {
     INVENTORY_CACHE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -233,14 +231,14 @@ impl InventoryCache {
                 discover_targets(backends).map_err(to_py_err)?,
             ));
         }
-        Ok(slot.as_ref().map(|cached| &cached.0).expect("slot just filled"))
+        Ok(slot
+            .as_ref()
+            .map(|cached| &cached.0)
+            .expect("slot just filled"))
     }
 
     /// 强制重新发现指定集并更新缓存（discover_gpus 的显式刷新入口）。
-    fn refresh(
-        &mut self,
-        backends: BackendSet,
-    ) -> PyResult<&nvoc_core::TargetInventory> {
+    fn refresh(&mut self, backends: BackendSet) -> PyResult<&nvoc_core::TargetInventory> {
         let fresh = discover_targets(backends).map_err(to_py_err)?;
         let slot = match backends {
             BackendSet::Both => &mut self.both,
@@ -248,7 +246,10 @@ impl InventoryCache {
             BackendSet::Nvml => &mut self.nvml,
         };
         *slot = Some(SyncInventory(fresh));
-        Ok(slot.as_ref().map(|cached| &cached.0).expect("slot just filled"))
+        Ok(slot
+            .as_ref()
+            .map(|cached| &cached.0)
+            .expect("slot just filled"))
     }
 }
 
@@ -1639,9 +1640,7 @@ fn reset_tgp_watt(gpu: &str, policy_index: Option<usize>) -> PyResult<()> {
 #[pyfunction]
 fn query_dnotifier(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
     let value = with_target(gpu, "nvapi", |target| {
-        let info = run(target, QueryNvapiDNotifier)
-            .map_err(to_py_err)?
-            .output;
+        let info = run(target, QueryNvapiDNotifier).map_err(to_py_err)?.output;
         Ok(match info {
             None => Value::Null,
             Some(r) => value_object([
@@ -1659,10 +1658,7 @@ fn query_dnotifier(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
                             .map(|l| {
                                 value_object([
                                     ("level", Value::String(format!("D{}", l.level))),
-                                    (
-                                        "watts",
-                                        l.watts.map(Value::from).unwrap_or(Value::Null),
-                                    ),
+                                    ("watts", l.watts.map(Value::from).unwrap_or(Value::Null)),
                                 ])
                             })
                             .collect(),
@@ -1715,14 +1711,20 @@ fn query_target_temp_policies(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> 
                     value_object([
                         ("policy_index", Value::from(p.policy_index)),
                         ("celsius", Value::from(p.celsius as f64)),
-                        ("min", p.min.map(|v| Value::from(v as f64)).unwrap_or(Value::Null)),
+                        (
+                            "min",
+                            p.min.map(|v| Value::from(v as f64)).unwrap_or(Value::Null),
+                        ),
                         (
                             "default",
                             p.default
                                 .map(|v| Value::from(v as f64))
                                 .unwrap_or(Value::Null),
                         ),
-                        ("max", p.max.map(|v| Value::from(v as f64)).unwrap_or(Value::Null)),
+                        (
+                            "max",
+                            p.max.map(|v| Value::from(v as f64)).unwrap_or(Value::Null),
+                        ),
                     ])
                 })
                 .collect(),
