@@ -242,7 +242,7 @@ PyInstaller produces OS-specific executables; build on the target OS.
 cd gui
 uv sync --group build
 uv run --frozen --no-editable --group build pyinstaller --clean --noconfirm nvoc_gui.spec
-# Output: gui/dist/NVOC-GUI/  (onedir — run dist/NVOC-GUI/NVOC-GUI)
+# Output: gui/dist/NVOC-GUI
 ```
 
 **Windows:**
@@ -251,7 +251,7 @@ uv run --frozen --no-editable --group build pyinstaller --clean --noconfirm nvoc
 Set-Location gui
 uv sync --group build
 uv run --frozen --no-editable --group build pyinstaller --clean --noconfirm nvoc_gui.spec
-# Output: gui\dist\NVOC-GUI\  (onedir — run dist\NVOC-GUI\NVOC-GUI.exe)
+# Output: gui\dist\NVOC-GUI.exe
 ```
 
 #### NVOC-TUI
@@ -546,7 +546,7 @@ PyInstaller 生成对应平台的可执行文件，需在目标操作系统上�
 cd gui
 uv sync --group build
 uv run --frozen --no-editable --group build pyinstaller --clean --noconfirm nvoc_gui.spec
-# 产物：gui/dist/NVOC-GUI/（onedir，运行 dist/NVOC-GUI/NVOC-GUI）
+# 产物：gui/dist/NVOC-GUI
 ```
 
 **Windows：**
@@ -555,7 +555,7 @@ uv run --frozen --no-editable --group build pyinstaller --clean --noconfirm nvoc
 Set-Location gui
 uv sync --group build
 uv run --frozen --no-editable --group build pyinstaller --clean --noconfirm nvoc_gui.spec
-# 产物：gui\dist\NVOC-GUI\（onedir，运行 dist\NVOC-GUI\NVOC-GUI.exe）
+# 产物：gui\dist\NVOC-GUI.exe
 ```
 
 #### NVOC-TUI

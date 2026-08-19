@@ -210,8 +210,7 @@ jobs:
           install -m 755 target/release/nvoc-auto-optimizer "$out/nvoc-auto-optimizer-${RELEASE_VERSION}-linux-${RELEASE_ARCH}"
           install -m 755 target/release/cli-stressor-cuda-rs "$out/cli-stressor-cuda-rs-${RELEASE_VERSION}-linux-${RELEASE_ARCH}"
           install -m 755 tui/dist/nvoc-tui "$out/nvoc-tui-${RELEASE_VERSION}-linux-${RELEASE_ARCH}"
-          # GUI is an onedir build (no per-launch temp extraction) — ship the folder as an archive
-          (cd gui/dist && zip -qr "$GITHUB_WORKSPACE/$out/nvoc-gui-${RELEASE_VERSION}-linux-${RELEASE_ARCH}.zip" NVOC-GUI)
+          install -m 755 gui/dist/NVOC-GUI "$out/nvoc-gui-${RELEASE_VERSION}-linux-${RELEASE_ARCH}"
           install -m 755 cli-stressor-opencl/dist/NVOC-CLI-Stressor-opencl "$out/nvoc-stressor-opencl-${RELEASE_VERSION}-linux-${RELEASE_ARCH}"
 
       - name: Stage Windows release executables
@@ -226,8 +225,7 @@ jobs:
           Copy-Item target/release/nvoc-auto-optimizer.exe "$out/nvoc-auto-optimizer-$env:RELEASE_VERSION-windows-$env:RELEASE_ARCH.exe"
           Copy-Item target/release/cli-stressor-cuda-rs.exe "$out/cli-stressor-cuda-rs-$env:RELEASE_VERSION-windows-$env:RELEASE_ARCH.exe"
           Copy-Item tui/dist/nvoc-tui.exe "$out/nvoc-tui-$env:RELEASE_VERSION-windows-$env:RELEASE_ARCH.exe"
-          # GUI is an onedir build (no per-launch temp extraction) — ship the folder as an archive
-          Compress-Archive -Path gui/dist/NVOC-GUI -DestinationPath "$out/nvoc-gui-$env:RELEASE_VERSION-windows-$env:RELEASE_ARCH.zip"
+          Copy-Item gui/dist/NVOC-GUI.exe "$out/nvoc-gui-$env:RELEASE_VERSION-windows-$env:RELEASE_ARCH.exe"
           if ($env:RELEASE_ARCH -eq "amd64") {
             Copy-Item cli-stressor-opencl/dist/NVOC-CLI-Stressor-opencl.exe "$out/nvoc-stressor-opencl-$env:RELEASE_VERSION-windows-$env:RELEASE_ARCH.exe"
           }
