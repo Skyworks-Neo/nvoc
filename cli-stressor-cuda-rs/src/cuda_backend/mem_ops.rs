@@ -6,10 +6,11 @@ use rand::{RngExt, SeedableRng};
 use std::time::Instant;
 
 use cudarc::cublas::{Asum, AsumConfig, sys as cublas_sys};
-use cudarc::driver::{DevicePtr, DevicePtrMut};
+use cudarc::driver::{DevicePtr, DevicePtrMut, PushKernelArg};
 
 use cli_stressor_cuda_rs::{
     BackendError, PrecisionKind, PrecisionSpec, StreamMode, make_random_host_matrix,
+    tiled_random_bytes,
 };
 
 use super::backend::CudaBackend;
@@ -34,23 +35,59 @@ impl CudaBackend {
             PrecisionKind::INT32 => 4usize,
         };
         let bytes = size * size * elem_size;
-        let mut rng = StdRng::seed_from_u64(seed);
         let lane_count = Self::lane_count(stream_mode);
         let mut srcs = Vec::with_capacity(lane_count);
         let mut dsts = Vec::with_capacity(lane_count);
-        for lane in 0..lane_count {
-            let stream = self.stream_for_lane(lane);
-            let host: Vec<u8> = (0..bytes).map(|_| rng.random::<u8>()).collect();
-            srcs.push(
-                stream
-                    .clone_htod(&host)
-                    .map_err(|err| BackendError::Other(err.to_string()))?,
-            );
-            dsts.push(
-                stream
+        if self.gpu_generate_enabled() {
+            // Device-side generation: no host RNG, no H2D copy. Content is
+            // kernel-generated splitmix data; memcpy never inspects it.
+            let kernels = self
+                .gpu_fill
+                .as_ref()
+                .ok_or_else(|| BackendError::Other("gpu fill kernels unavailable".into()))?;
+            let n = bytes as u64;
+            for lane in 0..lane_count {
+                let stream = self.stream_for_lane(lane);
+                let src = stream
                     .alloc_zeros::<u8>(bytes)
-                    .map_err(|err| BackendError::Other(err.to_string()))?,
-            );
+                    .map_err(|err| BackendError::Other(err.to_string()))?;
+                unsafe {
+                    stream
+                        .launch_builder(&kernels.bytes_fn)
+                        .arg(&src)
+                        .arg(&n)
+                        .arg(&(seed.wrapping_add(lane as u64)))
+                        .launch(cudarc::driver::LaunchConfig::for_num_elems(
+                            bytes.min(u32::MAX as usize) as u32,
+                        ))
+                        .map_err(|err| BackendError::Other(err.to_string()))?;
+                }
+                srcs.push(src);
+                dsts.push(
+                    stream
+                        .alloc_zeros::<u8>(bytes)
+                        .map_err(|err| BackendError::Other(err.to_string()))?,
+                );
+            }
+        } else {
+            // Host path: one random tile repeated at DRAM speed, shared by
+            // all lanes (memcpy does not read the source, per-lane uniqueness
+            // buys nothing and costs wall-clock between bursts).
+            let mut host = vec![0u8; bytes];
+            tiled_random_bytes(&mut host, seed);
+            for lane in 0..lane_count {
+                let stream = self.stream_for_lane(lane);
+                srcs.push(
+                    stream
+                        .clone_htod(&host)
+                        .map_err(|err| BackendError::Other(err.to_string()))?,
+                );
+                dsts.push(
+                    stream
+                        .alloc_zeros::<u8>(bytes)
+                        .map_err(|err| BackendError::Other(err.to_string()))?,
+                );
+            }
         }
         for _ in 0..warmup_iters {
             for lane in 0..lane_count {

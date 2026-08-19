@@ -12,6 +12,7 @@ use rand_distr::StandardNormal;
 use rayon::prelude::*;
 use std::mem::MaybeUninit;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
@@ -716,6 +717,116 @@ pub fn per_element_allclose(diff: &[f32], reference: &[f32], atol: f32, rtol: f3
         .all(|(d, r)| *d <= atol + rtol * r.abs())
 }
 
+/// Number of CPU threads used for host-side stress-buffer generation.
+///
+/// Sized to the target machine's CPU count (`available_parallelism`), with a
+/// conservative fallback of 8 when detection fails. Never hardcoded: the
+/// stressor must scale from laptop parts to multi-socket workstations.
+pub fn rng_thread_count() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(8)
+}
+
+fn rng_pool() -> &'static rayon::ThreadPool {
+    static POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
+    POOL.get_or_init(|| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(rng_thread_count())
+            .thread_name(|i| format!("stress-rng-{i}"))
+            .build()
+            .unwrap_or_else(|_| {
+                // A 1-thread pool cannot fail to build; parallelism is a
+                // perf knob, not a correctness requirement.
+                rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap()
+            })
+    })
+}
+
+/// SplitMix64: fast non-crypto PRNG for stress input data. Stress buffers
+/// never feed validation (which uses its own small `StdRng` matrices), so
+/// crypto quality is unnecessary; throughput is (this runs between bursts
+/// and steals wall-clock from actual stress time).
+#[inline(always)]
+pub fn splitmix64(state: &mut u64) -> u64 {
+    *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut z = *state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+const RNG_CHUNK: usize = 1 << 16;
+
+/// Parallel-fill a byte buffer with splitmix64 output, chunk-deterministic
+/// for a given seed (same seed => same bytes regardless of thread count).
+pub fn fill_random_bytes(buf: &mut [u8], seed: u64) {
+    rng_pool().install(|| {
+        buf.par_chunks_mut(RNG_CHUNK).enumerate().for_each(|(ci, c)| {
+            let mut state = seed.wrapping_add((ci as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+            let mut words = c.chunks_exact_mut(8);
+            for w in &mut words {
+                let x = splitmix64(&mut state).to_le_bytes();
+                w.copy_from_slice(&x);
+            }
+            let rem = words.into_remainder();
+            if !rem.is_empty() {
+                let x = splitmix64(&mut state).to_le_bytes();
+                rem.copy_from_slice(&x[..rem.len()]);
+            }
+        });
+    });
+}
+
+/// Parallel-fill an f32 buffer with uniform [0,1) values (24-bit mantissa),
+/// chunk-deterministic for a given seed.
+pub fn fill_random_f32(buf: &mut [f32], seed: u64) {
+    rng_pool().install(|| {
+        buf.par_chunks_mut(RNG_CHUNK).enumerate().for_each(|(ci, c)| {
+            let mut state = seed.wrapping_add((ci as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+            for v in c.iter_mut() {
+                let x = splitmix64(&mut state);
+                *v = ((x >> 40) as f32) * (1.0f32 / 16_777_216.0f32);
+            }
+        });
+    });
+}
+
+/// Parallel-fill an i32 buffer with random bits, chunk-deterministic.
+pub fn fill_random_i32(buf: &mut [i32], seed: u64) {
+    rng_pool().install(|| {
+        buf.par_chunks_mut(RNG_CHUNK).enumerate().for_each(|(ci, c)| {
+            let mut state = seed.wrapping_add((ci as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+            for v in c.iter_mut() {
+                *v = (splitmix64(&mut state) >> 32) as i32;
+            }
+        });
+    });
+}
+
+/// Size of the random tile generated per buffer before tiling-repeat.
+const RNG_TILE_BYTES: usize = 4 << 20;
+
+/// Cheapest full-random fill for paths that do not care about content
+/// uniqueness (memcpy never reads its source): generate one random tile,
+/// then repeat it via `copy_within` at DRAM speed. Result is fully
+/// deterministic for a given seed.
+pub fn tiled_random_bytes(buf: &mut [u8], seed: u64) {
+    if buf.len() <= RNG_TILE_BYTES {
+        fill_random_bytes(buf, seed);
+        return;
+    }
+    let tile_len = RNG_TILE_BYTES;
+    let (tile, _rest) = buf.split_at_mut(tile_len);
+    fill_random_bytes(tile, seed);
+    let mut filled = tile_len;
+    while filled < buf.len() {
+        let copy_len = filled.min(buf.len() - filled);
+        buf.copy_within(0..copy_len, filled);
+        filled += copy_len;
+    }
+}
+
 pub fn make_random_host_matrix(size: usize, seed: u64) -> HostMatrix {
     let n = size * size;
     let mut data = Vec::<MaybeUninit<f32>>::with_capacity(n);
@@ -731,16 +842,18 @@ pub fn make_random_host_matrix(size: usize, seed: u64) -> HostMatrix {
     // validation path, which compares GPU vs CPU over the same matrix, are
     // unaffected) while saturating all CPU cores.
     const CHUNK: usize = 1 << 16;
-    data.par_chunks_mut(CHUNK)
-        .enumerate()
-        .for_each(|(ci, slice)| {
-            let mut rng = StdRng::seed_from_u64(
-                seed.wrapping_add((ci as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)),
-            );
-            for v in slice.iter_mut() {
-                v.write(rng.sample(StandardNormal));
-            }
-        });
+    rng_pool().install(|| {
+        data.par_chunks_mut(CHUNK)
+            .enumerate()
+            .for_each(|(ci, slice)| {
+                let mut rng = StdRng::seed_from_u64(
+                    seed.wrapping_add((ci as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)),
+                );
+                for v in slice.iter_mut() {
+                    v.write(rng.sample(StandardNormal));
+                }
+            });
+    });
     let len = data.len();
     let capacity = data.capacity();
     let ptr = data.as_mut_ptr().cast::<f32>();
