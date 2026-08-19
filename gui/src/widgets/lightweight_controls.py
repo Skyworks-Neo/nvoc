@@ -8,7 +8,7 @@ from typing import List, Optional, Tuple
 import customtkinter as ctk
 
 # Mouse-wheel scroll multiplier: canvas "units" per wheel notch.
-_WHEEL_STEP_UNITS = 3
+_WHEEL_STEP_UNITS = 6
 
 
 def _is_descendant_widget(widget: tk.Misc, ancestor: tk.Misc) -> bool:
