@@ -66,7 +66,29 @@ class NativeService:
         ]
         return 0, f"Detected {len(gpus)} GPU(s) via pynvoc.", gpus
 
+    def _force_wake(self, gpu: str) -> bool:
+        """Native GC6 wake (force_gc6_exit) via pynvoc.
+
+        Mobile dGPUs drop to GCOFF after a few idle seconds; NVAPI reads then
+        fail and get misreported as 'unsupported'. Best-effort: desktop GPUs
+        return False, and an older pynvoc without force_wake is tolerated.
+        """
+        try:
+            wake = getattr(self._pynvoc(), "force_wake", None)
+            return bool(wake(gpu)) if callable(wake) else False
+        except Exception:
+            return False
+
     def run_query(self, gpu: str, command_name: str) -> tuple[int, str, dict]:
+        retcode, output, parsed = self._run_query_once(gpu, command_name)
+        if retcode != 0:
+            # A failed read on a mobile GPU is often just GCOFF (idle dGPU
+            # powered down) — wake it and retry once before giving up.
+            self._force_wake(gpu)
+            retcode, output, parsed = self._run_query_once(gpu, command_name)
+        return retcode, output, parsed
+
+    def _run_query_once(self, gpu: str, command_name: str) -> tuple[int, str, dict]:
         try:
             native = self._pynvoc()
             if command_name == "info":
@@ -82,7 +104,11 @@ class NativeService:
             return -1, f"pynvoc {command_name} query failed: {exc}", {}
 
     def query_domain_vfp_points(self, gpu: str, domain: str = "graphics") -> list[dict]:
-        return self._pynvoc().query_domain_vfp_points(gpu, domain, True)
+        try:
+            return self._pynvoc().query_domain_vfp_points(gpu, domain, True)
+        except Exception:
+            self._force_wake(gpu)
+            return self._pynvoc().query_domain_vfp_points(gpu, domain, True)
 
     def query_mobile_limits(self, gpu: str) -> dict:
         """Fetch the mobile power/thermal control surface (all NVAPI).
@@ -91,6 +117,18 @@ class NativeService:
         "temp_policies": list}``; ``None`` sub-dicts mean the private
         interface isn't exposed by this driver.
         """
+        data = self._query_mobile_limits_once(gpu)
+        if (
+            data["tgp"] is None
+            and data["dnotifier"] is None
+            and not data["temp_policies"]
+        ):
+            # All three failed at once is the GCOFF signature — wake and retry.
+            self._force_wake(gpu)
+            data = self._query_mobile_limits_once(gpu)
+        return data
+
+    def _query_mobile_limits_once(self, gpu: str) -> dict:
         native = self._pynvoc()
         tgp = None
         dnotifier = None

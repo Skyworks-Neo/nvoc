@@ -1431,6 +1431,21 @@ fn query_domain_vfp_points(
     py_value(py, &value)
 }
 
+/// 原生 GC6 唤醒（force_gc6_exit）。移动端 dGPU 空闲掉电（GCOFF）后，
+/// NVAPI 读操作会失败并被上层误判为"不支持"；长驻 GUI/TUI 在读取
+/// 能力/限制类数据前调用本函数把 GPU 拉回 D0。唤醒非持久。
+/// 桌面 GPU（无 GC6）返回 Ok(false)，唤醒成功返回 Ok(true)。
+#[pyfunction]
+fn force_wake(gpu: &str) -> PyResult<bool> {
+    let backends = parse_backends("nvapi")?;
+    let mut cache = lock_inventory_cache();
+    let inventory = cache.entry(backends)?;
+    let target = selected_target(inventory, gpu)?;
+    // best-effort：桌面端（无 GC6）驱动返回 NoImplementation(-104) 等
+    // 错误，同样按"无需唤醒"返回 false，绝不向 Python 抛异常。
+    Ok(target.force_wake().is_ok())
+}
+
 #[pyfunction]
 fn query_vfp_point_voltage(py: Python<'_>, gpu: &str, point: usize) -> PyResult<Py<PyAny>> {
     let value = with_target(gpu, "nvapi", |target| {
@@ -2473,6 +2488,7 @@ fn reset_all(gpu: &str, domain: Option<&str>) -> PyResult<()> {
 #[pymodule]
 fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(discover_gpus, m)?)?;
+    m.add_function(wrap_pyfunction!(force_wake, m)?)?;
     m.add_function(wrap_pyfunction!(query_info, m)?)?;
     m.add_function(wrap_pyfunction!(query_status, m)?)?;
     m.add_function(wrap_pyfunction!(query_settings, m)?)?;
