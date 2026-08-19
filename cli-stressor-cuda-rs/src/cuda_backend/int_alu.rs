@@ -152,14 +152,20 @@ impl CudaBackend {
                 );
             }
         } else {
-            // One parallel non-crypto fill shared by all lanes.
-            let mut host = vec![0i32; n as usize];
-            fill_random_i32(&mut host, seed);
+            // Page-locked (write-combined) staging for full-bandwidth H2D;
+            // write-only fill, so WC's slow reads never trigger. One fill
+            // shared by all lanes.
+            let mut pinned = unsafe { self._ctx.alloc_pinned::<i32>(n as usize) }
+                .map_err(|err| BackendError::Other(err.to_string()))?;
+            fill_random_i32(
+                pinned.as_mut_slice().map_err(|err| BackendError::Other(err.to_string()))?,
+                seed,
+            );
             for lane in 0..lane_count {
                 let stream = self.stream_for_lane(lane);
                 xs.push(
                     stream
-                        .clone_htod(&host)
+                        .clone_htod(&pinned)
                         .map_err(|err| BackendError::Other(err.to_string()))?,
                 );
                 outs.push(

@@ -9,8 +9,8 @@ use cudarc::cublas::{Asum, AsumConfig, sys as cublas_sys};
 use cudarc::driver::{DevicePtr, DevicePtrMut, PushKernelArg};
 
 use cli_stressor_cuda_rs::{
-    BackendError, PrecisionKind, PrecisionSpec, StreamMode, make_random_host_matrix,
-    tiled_random_bytes,
+    BackendError, PrecisionKind, PrecisionSpec, RNG_TILE_BYTES, StreamMode, fill_random_bytes,
+    make_random_host_matrix,
 };
 
 use super::backend::CudaBackend;
@@ -70,18 +70,30 @@ impl CudaBackend {
                 );
             }
         } else {
-            // Host path: one random tile repeated at DRAM speed, shared by
-            // all lanes (memcpy does not read the source, per-lane uniqueness
-            // buys nothing and costs wall-clock between bursts).
-            let mut host = vec![0u8; bytes];
-            tiled_random_bytes(&mut host, seed);
+            // Host path, tile + device-side repeat: only RNG_TILE_BYTES cross
+            // PCIe (pageable staging cost scales with bytes); the bulk fill
+            // runs D2D on the copy engine at VRAM bandwidth. The tile is
+            // shared by all lanes — memcpy never inspects the source.
+            let tile_len = RNG_TILE_BYTES.min(bytes);
+            let mut tile = vec![0u8; tile_len];
+            fill_random_bytes(&mut tile, seed);
             for lane in 0..lane_count {
                 let stream = self.stream_for_lane(lane);
-                srcs.push(
+                let tile_dev = stream
+                    .clone_htod(&tile)
+                    .map_err(|err| BackendError::Other(err.to_string()))?;
+                let mut src = stream
+                    .alloc_zeros::<u8>(bytes)
+                    .map_err(|err| BackendError::Other(err.to_string()))?;
+                let mut offset = 0;
+                while offset < bytes {
+                    let len = tile_len.min(bytes - offset);
                     stream
-                        .clone_htod(&host)
-                        .map_err(|err| BackendError::Other(err.to_string()))?,
-                );
+                        .memcpy_dtod(&tile_dev.slice(0..len), &mut src.slice_mut(offset..offset + len))
+                        .map_err(|err| BackendError::Other(err.to_string()))?;
+                    offset += len;
+                }
+                srcs.push(src);
                 dsts.push(
                     stream
                         .alloc_zeros::<u8>(bytes)

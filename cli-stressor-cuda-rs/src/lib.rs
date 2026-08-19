@@ -830,7 +830,7 @@ pub fn fill_random_i32(buf: &mut [i32], seed: u64) {
 }
 
 /// Size of the random tile generated per buffer before tiling-repeat.
-const RNG_TILE_BYTES: usize = 4 << 20;
+pub const RNG_TILE_BYTES: usize = 4 << 20;
 
 /// Cheapest full-random fill for paths that do not care about content
 /// uniqueness (memcpy never reads its source): generate one random tile,
