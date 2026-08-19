@@ -510,16 +510,14 @@ class DashboardTab:
             ("TEMP", temp_c, None),
             ("PWR", pwr_w, None),
         ]
-        parsed = 0
         for key, val, lk in updates:
             if val is not None:
                 self._rows[key].update(val, locked=lk)
-                parsed += 1
             else:
                 self._rows[key].set_error()
 
         ts = datetime.datetime.now().strftime("%H:%M:%S")
-        self._status_lbl.configure(text=f"✓ {ts}  ({parsed}/5 metrics parsed)")
+        self._status_lbl.configure(text=f"✓ {ts}")
 
     # ── Quick-access button handlers ──────────────────────────────────────────
     def _refresh_info(self) -> None:
