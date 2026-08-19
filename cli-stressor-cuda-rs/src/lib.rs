@@ -758,6 +758,31 @@ pub fn splitmix64(state: &mut u64) -> u64 {
 
 const RNG_CHUNK: usize = 1 << 16;
 
+#[cfg(test)]
+mod rng_perf_tests {
+    use super::*;
+
+    /// Not a pass/fail test: run manually with
+    /// `cargo test --release -- --ignored tiled_fill_throughput --nocapture`
+    /// to check host generation throughput on the target machine.
+    #[test]
+    #[ignore]
+    fn tiled_fill_throughput() {
+        let gib = 2usize << 30;
+        let mut buf = vec![0u8; gib];
+        let t = std::time::Instant::now();
+        tiled_random_bytes(&mut buf, 42);
+        let elapsed = t.elapsed().as_secs_f64();
+        println!(
+            "tiled fill: {:.2} GiB in {:.3} s = {:.2} GB/s (threads={})",
+            gib as f64 / (1 << 30) as f64,
+            elapsed,
+            gib as f64 / elapsed / 1e9,
+            rng_thread_count()
+        );
+    }
+}
+
 /// Parallel-fill a byte buffer with splitmix64 output, chunk-deterministic
 /// for a given seed (same seed => same bytes regardless of thread count).
 pub fn fill_random_bytes(buf: &mut [u8], seed: u64) {
@@ -809,22 +834,22 @@ const RNG_TILE_BYTES: usize = 4 << 20;
 
 /// Cheapest full-random fill for paths that do not care about content
 /// uniqueness (memcpy never reads its source): generate one random tile,
-/// then repeat it via `copy_within` at DRAM speed. Result is fully
-/// deterministic for a given seed.
+/// then repeat it in parallel at tile granularity. The repeat must be
+/// parallel, not a single `copy_within` walk: the backing allocation is
+/// lazily committed, so first-touch page faults on a fresh multi-GiB
+/// buffer are kernel-serialized per thread (~1 GB/s single-core).
 pub fn tiled_random_bytes(buf: &mut [u8], seed: u64) {
     if buf.len() <= RNG_TILE_BYTES {
         fill_random_bytes(buf, seed);
         return;
     }
-    let tile_len = RNG_TILE_BYTES;
-    let (tile, _rest) = buf.split_at_mut(tile_len);
+    let (tile, rest) = buf.split_at_mut(RNG_TILE_BYTES);
     fill_random_bytes(tile, seed);
-    let mut filled = tile_len;
-    while filled < buf.len() {
-        let copy_len = filled.min(buf.len() - filled);
-        buf.copy_within(0..copy_len, filled);
-        filled += copy_len;
-    }
+    rng_pool().install(|| {
+        rest.par_chunks_mut(RNG_TILE_BYTES).for_each(|chunk| {
+            chunk.copy_from_slice(&tile[..chunk.len()]);
+        });
+    });
 }
 
 pub fn make_random_host_matrix(size: usize, seed: u64) -> HostMatrix {
