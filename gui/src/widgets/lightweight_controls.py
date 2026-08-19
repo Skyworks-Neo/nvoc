@@ -7,6 +7,9 @@ from typing import List, Optional, Tuple
 
 import customtkinter as ctk
 
+# Mouse-wheel scroll multiplier: canvas "units" per wheel notch.
+_WHEEL_STEP_UNITS = 3
+
 
 def _is_descendant_widget(widget: tk.Misc, ancestor: tk.Misc) -> bool:
     """Return True when *widget* is *ancestor* or one of its descendants."""
@@ -86,7 +89,9 @@ def install_mousewheel_support(scroll_frame: ctk.CTkScrollableFrame) -> None:
             return "break"
 
         try:
-            canvas.yview_scroll(steps, "units")
+            # One canvas "unit" is a tiny scroll increment on CTk's inner
+            # canvas — a single unit per notch feels glued; use a multiplier.
+            canvas.yview_scroll(steps * _WHEEL_STEP_UNITS, "units")
         except Exception:
             return None
         return "break"
