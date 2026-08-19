@@ -425,6 +425,21 @@ def analyze_vfp_offsets(
     return any(abs(offset) > eps for offset in offsets), None
 
 
+def get_vfp_offset_state_from_points(
+    points: list[dict[str, Any]],
+) -> Optional[tuple[bool, Optional[int]]]:
+    """Analyze in-memory VFP points (pynvoc dicts, kHz) for offset state."""
+    frequencies: list[float] = []
+    defaults: list[float] = []
+    for point in points:
+        freq = point.get("frequency_khz", 0) / 1000.0
+        default_khz = point.get("default_frequency_khz")
+        default = freq if default_khz is None else default_khz / 1000.0
+        frequencies.append(freq)
+        defaults.append(default)
+    return analyze_vfp_offsets(frequencies, defaults)
+
+
 def get_vfp_offset_state_from_csv(
     csv_path: str,
 ) -> Optional[tuple[bool, Optional[int]]]:

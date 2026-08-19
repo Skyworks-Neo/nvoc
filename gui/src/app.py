@@ -19,7 +19,7 @@ from src.config import Config
 from src.memory_debug import MemoryDebugSampler
 from src.parsing import (
     analyze_vfp_offsets,
-    get_vfp_offset_state_from_csv,
+    get_vfp_offset_state_from_points,
     native_query_payload,
     parse_gpu_list_output,
     parse_info_limits,
@@ -31,7 +31,6 @@ from src.parsing import (
     parse_supported_pstates,
     parse_vfp_lock_bounds,
     voltage_text_to_mv,
-    write_vfp_points,
 )
 from src.task_runner import GuiTaskRunner
 from src.widgets.output_console import OutputConsole
@@ -55,11 +54,53 @@ def find_cli_exe() -> str:
     )
 
 
+def _warm_matplotlib(ready_event: "threading.Event") -> None:
+    """Import matplotlib and build the font cache off the UI thread.
+
+    The first matplotlib use triggers a full system-font scan ("Matplotlib is
+    building the font cache") that can take minutes on slow machines — running
+    it inside the Tk event loop freezes the whole GUI. Doing it here warms the
+    cache before the VF-curve chart is built.
+    """
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.font_manager as fm
+
+        fm.findfont("DejaVu Sans")
+    except Exception:
+        pass  # chart build falls back to importing on its own
+    finally:
+        ready_event.set()
+
+
+def _start_matplotlib_warmup() -> "threading.Event":
+    """Point MPLCONFIGDIR at a persistent dir and start the font-cache warm-up."""
+    if not os.environ.get("MPLCONFIGDIR"):
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        mpl_dir = os.path.join(base, "nvoc-gui", "mpl")
+        try:
+            os.makedirs(mpl_dir, exist_ok=True)
+            os.environ["MPLCONFIGDIR"] = mpl_dir
+        except OSError:
+            pass  # keep matplotlib's default config dir
+    ready = threading.Event()
+    threading.Thread(
+        target=_warm_matplotlib, args=(ready,), name="mpl-warmup", daemon=True
+    ).start()
+    return ready
+
+
 class App(ctk.CTk):
     """Main application window."""
 
     def __init__(self, single_instance_guard: Optional["SingleInstanceGuard"] = None):
         super().__init__()
+
+        # Warm matplotlib (font cache) on a background thread before any tab
+        # builds its chart — keeps the Tk event loop responsive.
+        self._mpl_ready = _start_matplotlib_warmup()
 
         # Global resize session state (used to coalesce expensive per-tab redraw work)
         self._is_resizing = False
@@ -195,7 +236,22 @@ class App(ctk.CTk):
             pos = indices.index(cur_idx)
             delta = -1 if event.delta > 0 else 1
             nxt = indices[(pos + delta) % len(indices)]
-            self._on_gpu_changed(self._gpu_short_label_by_idx[nxt])
+            label = self._gpu_short_label_by_idx[nxt]
+            # Update the selection display immediately, but debounce the heavy
+            # info→status→settings query chain — one wheel gesture over many
+            # GPUs must not fire it per notch.
+            self._programmatic_gpu_set = True
+            try:
+                self.gpu_var.set(label)
+            finally:
+                self._programmatic_gpu_set = False
+            if self._gpu_wheel_after_id is not None:
+                self.after_cancel(self._gpu_wheel_after_id)
+            self._gpu_wheel_after_id = self.after(
+                250, lambda: self._on_gpu_wheel_settled(label)
+            )
+
+        self._gpu_wheel_after_id = None  # type: Optional[str]
 
         self.gpu_dropdown.bind("<MouseWheel>", _on_gpu_wheel)
 
@@ -592,6 +648,10 @@ class App(ctk.CTk):
 
     def _on_gpu_changed(self, selected: str):
         """Called by CTkOptionMenu when the user picks a different GPU."""
+        # A pending wheel-debounced switch is superseded by this explicit pick
+        if self._gpu_wheel_after_id is not None:
+            self.after_cancel(self._gpu_wheel_after_id)
+            self._gpu_wheel_after_id = None
         if self._programmatic_gpu_set:
             return  # ignore changes triggered by our own gpu_var.set() calls
         if selected.startswith("("):
@@ -628,6 +688,11 @@ class App(ctk.CTk):
 
         # Re-run the full init chain: info → limits → status → OC values → curve
         self._query_gpu_info()
+
+    def _on_gpu_wheel_settled(self, label: str):
+        """Fire the GPU-switch query chain after wheel scrolling settles."""
+        self._gpu_wheel_after_id = None
+        self._on_gpu_changed(label)
 
     def _query_gpu_info(self):
         """Run 'info' for the selected GPU and parse hardware limits."""
@@ -919,33 +984,12 @@ class App(ctk.CTk):
         else:
             self.refresh_vfp_offset_state()
 
-    def _get_vfp_cache_path(self) -> str:
-        """Return the VFP CSV cache path for the current GPU."""
-        app_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        cache_dir = os.path.join(app_dir, VFCurveTab._EXPORT_DIR)
-        os.makedirs(cache_dir, exist_ok=True)
-
-        uuid = self.get_current_gpu_uuid()
-        if uuid:
-            fname = f"{uuid}.csv"
-        else:
-            idx = self.get_current_gpu_index()
-            fname = f"gpu_{idx if idx is not None else 0}.csv"
-        return os.path.join(cache_dir, fname)
-
     @staticmethod
     def _analyze_vfp_offsets(
         frequencies: List[float], defaults: List[float]
     ) -> Tuple[bool, Optional[int]]:
         """Return (has_any_offset, uniform_core_offset_mhz_if_flat_curve)."""
         return analyze_vfp_offsets(frequencies, defaults)
-
-    @staticmethod
-    def _get_vfp_offset_state_from_csv(
-        csv_path: str,
-    ) -> Optional[Tuple[bool, Optional[int]]]:
-        """Read a VF export and return (has_any_offset, uniform_core_offset_mhz_if_flat_curve)."""
-        return get_vfp_offset_state_from_csv(csv_path)
 
     def _apply_vfp_offset_state(
         self, has_vfp_offset: bool, uniform_core_offset_mhz: Optional[int] = None
@@ -978,7 +1022,6 @@ class App(ctk.CTk):
         if gpu is None:
             return
 
-        csv_path = self._get_vfp_cache_path()
         self._vfp_offset_refresh_inflight = True
         self._pending_vfp_offset_refresh = False
         gpu_key = self._get_vfp_offset_gpu_key()
@@ -988,8 +1031,7 @@ class App(ctk.CTk):
             vfp_offset_state = None
             try:
                 points = self.backend.query_domain_vfp_points(gpu)
-                write_vfp_points(csv_path, points)
-                vfp_offset_state = self._get_vfp_offset_state_from_csv(csv_path)
+                vfp_offset_state = get_vfp_offset_state_from_points(points)
             except Exception:
                 retcode = -1
             self.after(

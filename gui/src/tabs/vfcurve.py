@@ -399,6 +399,12 @@ class VFCurveTab:
                 return
         except Exception:
             return
+        # Don't import matplotlib on the UI thread while the background warm-up
+        # (font cache build) is still running — retry shortly instead.
+        mpl_ready = getattr(self.app, "_mpl_ready", None)
+        if mpl_ready is not None and not mpl_ready.is_set():
+            self._chart_build_after_id = self.app.after(100, self._build_chart_if_alive)
+            return
         self._build_chart(self._chart_frame)
 
     @staticmethod
@@ -721,7 +727,6 @@ class VFCurveTab:
             self._refresh_curve_pending = True
             return
 
-        csv_path = self._get_csv_path()
         gpu = self.app.selected_gpu_target()
         if gpu is None:
             self.app.console.append("[GUI] No GPU selected.\n")
@@ -732,23 +737,25 @@ class VFCurveTab:
 
         def _worker():
             retcode = 0
+            points = None
             try:
                 points = self.app.backend.query_domain_vfp_points(gpu)
-                self._write_vfp_points(csv_path, points)
             except Exception as exc:
                 retcode = -1
                 self.app.after(0, lambda exc=exc: self.app.console.append(f"{exc}\n"))
-            self.app.after(0, lambda: self._on_export_done(retcode, csv_path))
+            self.app.after(
+                0, lambda: self._on_query_done(retcode, points)
+            )
 
         self.app.run_background("vfcurve-refresh", _worker)
 
-    def _on_export_done(self, retcode: int, csv_path: str):
+    def _on_query_done(self, retcode: int, points):
         self._refresh_curve_inflight = False
-        if retcode != 0:
-            self.app.console.append("[GUI] VFP export failed.\n")
+        if retcode != 0 or points is None:
+            self.app.console.append("[GUI] VFP query failed.\n")
         else:
-            self.app.console.append(f"[GUI] VFP exported to {csv_path}\n")
-            self._load_csv(csv_path)
+            self.app.console.append(f"[GUI] VF curve loaded ({len(points)} points).\n")
+            self._load_points(points)
 
         if self._refresh_curve_pending:
             self._refresh_curve_pending = False
@@ -766,17 +773,27 @@ class VFCurveTab:
     ) -> List[Tuple[int, int]]:
         return load_vfp_deltas(path, reference_points)
 
+    def _load_points(self, points: List[dict]):
+        """Load VFP points (pynvoc dicts, µV/kHz) and redraw the chart."""
+        voltages = []
+        frequencies = []
+        defaults = []
+        for p in points:
+            voltages.append(p["voltage_uv"] / 1000.0)  # µV → mV
+            freq_mhz = p["frequency_khz"] / 1000.0  # kHz → MHz
+            frequencies.append(freq_mhz)
+            default_khz = p.get("default_frequency_khz")
+            defaults.append(
+                freq_mhz if default_khz is None else default_khz / 1000.0
+            )
+        self._apply_curve_data(voltages, frequencies, defaults)
+
     def _load_csv(self, path: str):
-        """Parse CSV and redraw chart."""
+        """Parse CSV (Import button) and redraw chart."""
         if not os.path.isfile(path):
             self.app.console.append(f"[GUI] CSV not found: {path}\n")
             return
 
-        previous_selection = (
-            (self._sel_start, self._sel_end)
-            if self._sel_start is not None and self._sel_end is not None
-            else None
-        )
         voltages = []
         frequencies = []
         defaults = []
@@ -804,6 +821,21 @@ class VFCurveTab:
         except Exception as e:
             self.app.console.append(f"[GUI] Error reading CSV: {e}\n")
             return
+
+        self._apply_curve_data(voltages, frequencies, defaults)
+
+    def _apply_curve_data(
+        self,
+        voltages: List[float],
+        frequencies: List[float],
+        defaults: List[float],
+    ):
+        """Store curve data (mV/MHz), resolve pending lock, and redraw."""
+        previous_selection = (
+            (self._sel_start, self._sel_end)
+            if self._sel_start is not None and self._sel_end is not None
+            else None
+        )
 
         self._voltages = voltages
         self._frequencies = frequencies
