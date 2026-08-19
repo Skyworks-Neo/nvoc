@@ -36,6 +36,8 @@ class CLIRunner:
         self._thread = None  # type: Optional[object]
         self._cancelled = False
         self._busy = False
+        self._cancel_inflight = False
+        self._cancel_target = None  # type: Optional[subprocess.Popen]
         self._current_on_finished = None  # type: Optional[Callable[[int], None]]
         self._lock = Lock()
 
@@ -176,14 +178,22 @@ class CLIRunner:
         except Exception as e:
             return -1, str(e)
 
-    def cancel(self) -> None:
-        """Cancel the currently running process."""
+    def cancel(self, wait: bool = False) -> None:
+        """Cancel the currently running process.
+
+        The terminate/wait/kill sequence runs OFF the calling (UI) thread —
+        a stubborn process holding GPU driver handles can ignore terminate()
+        for the full 3s window, which must not freeze the event loop. The
+        reader worker's _complete() clears _busy once the process exits.
+        Pass wait=True (shutdown path only) for a synchronous teardown.
+        """
         callback = None  # type: Optional[Callable[[int], None]]
         cancelled_pending = False
         with self._lock:
             self._cancelled = True
             process = self._process
             thread = self._thread
+            already_cancelling = self._cancel_inflight and self._cancel_target is process
             if process is None and thread is not None:
                 cancel = getattr(thread, "cancel", None)
                 if callable(cancel) and cancel():
@@ -199,7 +209,10 @@ class CLIRunner:
                 callback(-1)
             return
 
-        if process is not None:
+        if process is None or already_cancelling:
+            return
+
+        def _terminate_job() -> None:
             try:
                 process.terminate()
             except OSError:
@@ -212,10 +225,33 @@ class CLIRunner:
                 except OSError:
                     # Best-effort cancellation: process may have already exited.
                     pass
+            finally:
+                with self._lock:
+                    self._cancel_inflight = False
+
+        with self._lock:
+            self._cancel_inflight = True
+            self._cancel_target = process
+        if wait:
+            _terminate_job()
+        else:
+            submitted = False
+            if self._submit is not None:
+                try:
+                    self._submit("cli-cancel", _terminate_job)
+                    submitted = True
+                except Exception:
+                    submitted = False
+            if not submitted:
+                if self._fallback_executor is None:
+                    self._fallback_executor = ThreadPoolExecutor(
+                        max_workers=1, thread_name_prefix="nvoc-gui-cli"
+                    )
+                self._fallback_executor.submit(_terminate_job)
 
     def shutdown(self) -> None:
         """Stop any active process and release fallback worker threads."""
-        self.cancel()
+        self.cancel(wait=True)
         if self._fallback_executor is not None:
             self._fallback_executor.shutdown(wait=True, cancel_futures=True)
             self._fallback_executor = None

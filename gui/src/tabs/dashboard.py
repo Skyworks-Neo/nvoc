@@ -389,8 +389,18 @@ class DashboardTab:
             self._poll_job = self.app.after(self._interval_ms, self._poll_tick)
 
     def _poll_tick(self) -> None:
-        if self._polling:
-            self._fetch_once()
+        if not self._polling:
+            return
+        # Don't burn a full NVAPI+NVML status sweep per second while the
+        # Dashboard tab is hidden (same gate the VF-curve auto-refresh uses).
+        try:
+            current_tab = self.app.tabview.get()
+            if not str(current_tab).endswith("Dashboard"):
+                self._schedule_next()
+                return
+        except Exception:
+            pass
+        self._fetch_once()
 
     def _fetch_once(self) -> None:
         # Sync lock state from cache at the start of every fetch

@@ -493,6 +493,7 @@ class VFCurveTab:
         self._line_default = None
         self._sel_rect = None  # selection highlight
         self._sel_points = None  # selected point markers
+        self._key_redraw_after_id = None  # deferred full redraw after key/wheel edits
 
         # Connect mouse events
         self._mpl_connection_ids = [
@@ -614,6 +615,13 @@ class VFCurveTab:
                 pass
             self._chart_resize_after_id = None
 
+        if self._key_redraw_after_id is not None:
+            try:
+                self.app.after_cancel(self._key_redraw_after_id)
+            except Exception:
+                pass
+            self._key_redraw_after_id = None
+
         self._stop_auto_refresh()
 
         if self._chart_configure_bind_id is not None:
@@ -733,7 +741,8 @@ class VFCurveTab:
             return
 
         self._refresh_curve_inflight = True
-        self.app.console.append("[GUI] Querying VF curve via pynvoc...\n")
+        if not self._auto_refreshing:
+            self.app.console.append("[GUI] Querying VF curve via pynvoc...\n")
 
         def _worker():
             retcode = 0
@@ -754,7 +763,10 @@ class VFCurveTab:
         if retcode != 0 or points is None:
             self.app.console.append("[GUI] VFP query failed.\n")
         else:
-            self.app.console.append(f"[GUI] VF curve loaded ({len(points)} points).\n")
+            if not self._auto_refreshing:
+                self.app.console.append(
+                    f"[GUI] VF curve loaded ({len(points)} points).\n"
+                )
             self._load_points(points)
 
         if self._refresh_curve_pending:
@@ -786,6 +798,15 @@ class VFCurveTab:
             defaults.append(
                 freq_mhz if default_khz is None else default_khz / 1000.0
             )
+        # Auto-refresh ticks with identical data: no redraw, no console churn
+        # (a full ax.clear() + re-plot + Agg render per second for nothing).
+        if (
+            voltages == self._voltages
+            and frequencies == self._frequencies
+            and defaults == self._defaults
+            and not self._pending_lock_mv
+        ):
+            return
         self._apply_curve_data(voltages, frequencies, defaults)
 
     def _load_csv(self, path: str):
@@ -1652,7 +1673,24 @@ class VFCurveTab:
             self._frequencies[i] = round(self._frequencies[i] + delta_mhz, 3)
 
         self._sync_selection_to_adj()
+        # Fast in-place update per event (drag path pattern); the full
+        # redraw (axes/limits/info text) is deferred until events settle.
+        self._fast_update_current_curve()
+        if self._key_redraw_after_id is not None:
+            self.app.after_cancel(self._key_redraw_after_id)
+        self._key_redraw_after_id = self.app.after(150, self._deferred_key_redraw)
+
+    def _deferred_key_redraw(self):
+        self._key_redraw_after_id = None
         self._redraw()
+
+    def _fast_update_current_curve(self):
+        """Update the current-curve artist in place (no figure rebuild)."""
+        line = getattr(self, "_line_current", None)
+        if line is None or self.ax is None:
+            return
+        line.set_ydata(self._frequencies)
+        self.canvas.draw_idle()
 
     def _on_space_key(self, event=None):
         """Toggle lock state based on selection.

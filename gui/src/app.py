@@ -101,6 +101,13 @@ class App(ctk.CTk):
         # Warm matplotlib (font cache) on a background thread before any tab
         # builds its chart — keeps the Tk event loop responsive.
         self._mpl_ready = _start_matplotlib_warmup()
+        # CLI output batching (see _on_cli_output)
+        self._cli_output_buffer: List[str] = []
+        self._cli_output_flush_id: Optional[str] = None
+        # Post-native-action refresh chain coalescing
+        self._refresh_chain_after_id: Optional[str] = None
+        # Idle-time tab prebuild (see _prebuild_next_tab)
+        self._tab_prebuild_started = False
 
         # Global resize session state (used to coalesce expensive per-tab redraw work)
         self._is_resizing = False
@@ -154,6 +161,13 @@ class App(ctk.CTk):
 
         self.tasks = GuiTaskRunner()
         self._build_ui()
+
+        # Prebuild the tray icon image off-thread so the first minimize-to-tray
+        # doesn't stall the UI thread on Image.open/LANCZOS/font loading.
+        self.after(
+            2000,
+            lambda: self.run_background("tray-icon-prebuild", self._get_tray_image),
+        )
 
         # Setup CLI runner (after console is created)
         self.runner = CLIRunner(
@@ -320,8 +334,10 @@ class App(ctk.CTk):
         #     def clear(self): pass
         # self.console = MockConsole()
 
-        # Show the window layout immediately before rendering heavy tabs
-        self.update()
+        # Show the window layout immediately before rendering heavy tabs.
+        # update_idletasks (layout/paint only) — update() would pump the full
+        # event loop mid-build, re-entering callbacks against half-built tabs.
+        self.update_idletasks()
 
         # Placeholders for tabs
         self.tab_dashboard = None
@@ -335,6 +351,13 @@ class App(ctk.CTk):
     def _on_tab_changed(self):
         """Lazy load tabs when they are selected and handle visibility for performance."""
         current_tab = self.tabview.get()
+
+        # First entry into a tab constructs its whole widget page on the spot
+        # (~3.4 ms per CTk widget — a visible freeze on weak single-cores), so
+        # after startup we prebuild the remaining tabs one per idle slice.
+        if not self._tab_prebuild_started:
+            self._tab_prebuild_started = True
+            self.after(2000, self._prebuild_next_tab)
 
         if current_tab.endswith("Dashboard") and self.tab_dashboard is None:
             self.tab_dashboard = DashboardTab(self.tabview.tab("📊 Dashboard"), self)
@@ -385,6 +408,48 @@ class App(ctk.CTk):
             # Always force-refresh status cache when entering Overclock.
             self._query_overclock_status()
 
+    def _prebuild_next_tab(self):
+        """Construct one not-yet-built tab per call, in idle slices.
+
+        Tk/Tcl is single-threaded — widget construction cannot be moved off
+        the main thread — but building hidden tab pages AFTER first paint
+        (instead of on first click) removes the per-tab entry freeze. One
+        tab per slice keeps the event loop responsive between builds.
+        """
+        builders = [
+            ("tab_autoscan", "🔍 Autoscan", AutoscanTab),
+            ("tab_overclock", "⚡ Overclock", OverclockTab),
+            ("tab_vfcurve", "📈 VF Curve", VFCurveTab),
+        ]
+        for attr, tab_name, cls in builders:
+            if getattr(self, attr, None) is not None:
+                continue
+            try:
+                tab = cls(self.tabview.tab(tab_name), self)
+                setattr(self, attr, tab)
+                self.register_resize_target(tab)
+                if attr == "tab_vfcurve":
+                    if hasattr(self, "_locked_voltage_mv_cache"):
+                        tab.sync_lock_from_voltage(self._locked_voltage_mv_cache)
+                    if hasattr(self, "_gpu_limits_cache") and self._gpu_limits_cache:
+                        tab.sync_freq_locks_from_cache(self._gpu_limits_cache)
+                elif attr == "tab_overclock":
+                    if hasattr(self, "_gpu_limits_cache") and self._gpu_limits_cache:
+                        tab.check_capabilities(self._gpu_limits_cache)
+                        tab.update_limits(self._gpu_limits_cache)
+                    elif self._gpu_pstates_cache:
+                        tab.set_supported_pstates(self._gpu_pstates_cache)
+                    if self._vfp_offset_state_cache is not None:
+                        has_vfp_offset, uniform_offset = self._vfp_offset_state_cache
+                        tab.set_vfp_state(has_vfp_offset, uniform_offset)
+            except Exception:
+                # A failed prebuild must not break startup; the tab will be
+                # built lazily on first entry as before.
+                return
+            self.after(300, self._prebuild_next_tab)
+            return
+        # All tabs prebuilt — nothing further to schedule.
+
         # If an older session suspended tab children, restore once and keep normal geometry.
         # Suspending CTkScrollableFrame-heavy tabs can corrupt layout after repeated resizes.
         for internal_name in [
@@ -430,8 +495,26 @@ class App(ctk.CTk):
             self._refresh_gpu_list()
 
     def _on_cli_output(self, text: str):
-        """Thread-safe callback: schedule append on the main thread."""
-        self.after(0, lambda: self.console.append(text))
+        """Thread-safe callback: buffer output and flush in batches.
+
+        Per-line after(0)+append costs several Tcl round-trips and a
+        see("end") relayout per line; batching bursts into one widget
+        update keeps streaming CLI output (autoscan) from monopolizing
+        the UI thread.
+        """
+        self._cli_output_buffer.append(text)
+        if self._cli_output_flush_id is None:
+            self._cli_output_flush_id = self.after(100, self._flush_cli_output)
+
+    def _flush_cli_output(self):
+        self._cli_output_flush_id = None
+        if not self._cli_output_buffer:
+            return
+        buffered, self._cli_output_buffer = self._cli_output_buffer, []
+        try:
+            self.console.append_batch(buffered)
+        except Exception:
+            pass
 
     def run_background(self, name: str, task: Callable[[], Any]) -> Any:
         """Submit non-UI work to the central GUI task runner."""
@@ -1199,6 +1282,20 @@ class App(ctk.CTk):
             self.refresh_after_native_action()
 
     def refresh_after_native_action(self) -> None:
+        """Re-query everything after a native action (4-query chain).
+
+        Coalesced: bursts (chained actions, PPAB auto-enable during mobile
+        panel load) collapse into one deferred chain instead of stacking
+        callback storms on the UI thread.
+        """
+        if self._refresh_chain_after_id is not None:
+            self.after_cancel(self._refresh_chain_after_id)
+        self._refresh_chain_after_id = self.after(
+            300, self._refresh_after_native_action_now
+        )
+
+    def _refresh_after_native_action_now(self) -> None:
+        self._refresh_chain_after_id = None
         self._query_gpu_get()
         self._query_overclock_status()
         if self.tab_dashboard:
@@ -1434,6 +1531,10 @@ class App(ctk.CTk):
         self.runner.shutdown()
         self.backend.shutdown()
         self.tasks.shutdown(wait=True)
+        self.config.close()
+        if self._refresh_chain_after_id is not None:
+            self.after_cancel(self._refresh_chain_after_id)
+            self._refresh_chain_after_id = None
 
         # 4. Destroy window synchronously
         self.destroy()
