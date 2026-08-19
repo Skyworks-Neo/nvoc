@@ -398,7 +398,9 @@ class App(ctk.CTk):
         elif current_tab.endswith("Overclock"):
             if self.tab_overclock is None:
                 self.tab_overclock = OverclockTab(
-                    self.tabview.tab("⚡ Overclock"), self
+                    self.tabview.tab("⚡ Overclock"),
+                    self,
+                    content_parent=self._overclock_content_host(),
                 )
                 self.register_resize_target(self.tab_overclock)
                 # Sync any cached info if available
@@ -414,6 +416,11 @@ class App(ctk.CTk):
                     self.refresh_vfp_offset_state(force=True)
             # Always force-refresh status cache when entering Overclock.
             self._query_overclock_status()
+
+    def _overclock_content_host(self):
+        """Dashboard frame hosting the overclock top panels (integration mode)."""
+        host = getattr(self.tab_dashboard, "oc_panels_host", None)
+        return host
 
     def _prebuild_next_tab(self):
         """Construct one not-yet-built tab per call, in idle slices.
@@ -432,7 +439,14 @@ class App(ctk.CTk):
             if getattr(self, attr, None) is not None:
                 continue
             try:
-                tab = cls(self.tabview.tab(tab_name), self)
+                if cls is OverclockTab:
+                    tab = cls(
+                        self.tabview.tab(tab_name),
+                        self,
+                        content_parent=self._overclock_content_host(),
+                    )
+                else:
+                    tab = cls(self.tabview.tab(tab_name), self)
                 setattr(self, attr, tab)
                 self.register_resize_target(tab)
                 if attr == "tab_vfcurve":

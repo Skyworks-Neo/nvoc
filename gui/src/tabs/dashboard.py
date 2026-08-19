@@ -315,6 +315,12 @@ class DashboardTab:
         )
         self._status_lbl.pack(anchor="w", padx=14, pady=(2, 0))
 
+        # Host frame for the overclock tab's top panels (Clock Offsets +
+        # Power & Thermal Limits) — the dashboard doubles as the control
+        # center. Empty (zero height) until the overclock tab is built.
+        self.oc_panels_host = tk.Frame(self.frame, bg="#2b2b2b")
+        self.oc_panels_host.pack(fill="x", padx=10, pady=(4, 6))
+
         # Quick-access buttons
         controls = ctk.CTkFrame(self.frame, fg_color="transparent")
         controls.pack(fill="x", padx=10, pady=(4, 6))

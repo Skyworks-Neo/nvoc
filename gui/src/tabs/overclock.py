@@ -55,7 +55,12 @@ class OverclockTab:
         "voltage_boost_max": 100,
     }
 
-    def __init__(self, parent: ctk.CTkFrame, app: "App"):
+    def __init__(
+        self,
+        parent: ctk.CTkFrame,
+        app: "App",
+        content_parent: Optional[Any] = None,
+    ):
         self.app = app
         self.frame = parent
         self._syncing = False  # guard against feedback loops
@@ -84,7 +89,10 @@ class OverclockTab:
 
         d = self._DEFAULTS
 
-        content_row = tk.Frame(scroll, bg=_PANEL_BG)
+        # Top panels (Clock Offsets + Power & Thermal Limits) can be hosted by
+        # the dashboard (integration mode) or live in this tab's scroll frame.
+        content_host = content_parent if content_parent is not None else scroll
+        content_row = tk.Frame(content_host, bg=_PANEL_BG)
         content_row.pack(fill="x", pady=(0, 10))
         # uniform: strictly equal card widths regardless of requested sizes
         content_row.grid_columnconfigure(0, weight=1, uniform="oc_cards")
