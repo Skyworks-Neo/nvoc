@@ -5,7 +5,20 @@ Ranges are queried from GPU hardware via the CLI 'info' command.
 
 from typing import TYPE_CHECKING, Tuple, Dict, Any, Optional, Union
 
+import tkinter as tk
+
 import customtkinter as ctk
+
+# ── De-CTk'd panel palette ──────────────────────────────────────────────
+# Inner layout uses plain tk widgets: one bg for every container (matches
+# CTk dark-theme frame/scroll bg), plus text colors. Keeping these in one
+# place makes the light/dark question a one-spot change.
+_PANEL_BG = "#2b2b2b"      # CTk dark frame/scroll background
+_TEXT_FG = "#e5e5e5"       # default label text
+_TEXT_FG_DIM = "#b3b3b3"   # 'gray70' hints
+_TEXT_FG_FAINT = "#999999"  # 'gray60' status text
+_FONT_BODY = ("Segoe UI", 12)
+_FONT_HEADER = ("Segoe UI", 14, "bold")
 
 from src.panes.fan_control import FanControlPane
 from src.widgets.lightweight_controls import (
@@ -70,7 +83,7 @@ class OverclockTab:
 
         d = self._DEFAULTS
 
-        content_row = ctk.CTkFrame(scroll, fg_color="transparent")
+        content_row = tk.Frame(scroll, bg=_PANEL_BG)
         content_row.pack(fill="x", pady=(0, 10))
         content_row.grid_columnconfigure(0, weight=1)
         content_row.grid_columnconfigure(1, weight=1)
@@ -80,11 +93,15 @@ class OverclockTab:
         # ═══════════════════════════════════════════
         oc_frame = ctk.CTkFrame(content_row)
         oc_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
-        oc_header = ctk.CTkFrame(oc_frame, fg_color="transparent")
+        oc_header = tk.Frame(oc_frame, bg=_PANEL_BG)
         oc_header.pack(fill="x", padx=10, pady=(10, 5))
-        ctk.CTkLabel(oc_header, text="⚡ Clock Offsets", font=("", 14, "bold")).pack(
-            side="left"
-        )
+        tk.Label(
+            oc_header,
+            text="⚡ Clock Offsets",
+            font=_FONT_HEADER,
+            bg=_PANEL_BG,
+            fg=_TEXT_FG,
+        ).pack(side="left")
         self.oc_api_var = ctk.StringVar(value="NVAPI")
         self.oc_api_selector = ctk.CTkOptionMenu(
             oc_header,
@@ -94,7 +111,9 @@ class OverclockTab:
             height=28,
         )
         self.oc_api_selector.pack(side="right")
-        oc_api_help = ctk.CTkLabel(oc_header, text="→", text_color="gray70")
+        oc_api_help = tk.Label(
+            oc_header, text="→", bg=_PANEL_BG, fg=_TEXT_FG_DIM
+        )
         oc_api_help.pack(side="right", padx=(0, 6))
         oc_api_tip = (
             "Clock offset API selector (core/memory + PState lock).\n"
@@ -105,15 +124,21 @@ class OverclockTab:
         HoverTooltip(oc_api_help, oc_api_tip)
 
         # PState lock selector
-        ps_row = ctk.CTkFrame(oc_frame, fg_color="transparent")
+        ps_row = tk.Frame(oc_frame, bg=_PANEL_BG)
         ps_row.pack(fill="x", padx=10, pady=(0, 5))
         ps_row.grid_columnconfigure(1, weight=1)
-        ctk.CTkLabel(ps_row, text="PState Lock:", width=90, anchor="w").grid(
-            row=0, column=0, sticky="nw", pady=(5, 0)
-        )
+        tk.Label(
+            ps_row,
+            text="PState Lock:",
+            width=12,
+            anchor="w",
+            font=_FONT_BODY,
+            bg=_PANEL_BG,
+            fg=_TEXT_FG,
+        ).grid(row=0, column=0, sticky="nw", pady=(5, 0))
         self.pstate_selector = SegmentRangeSelector(ps_row, values=[])
         self.pstate_selector.grid(row=0, column=1, sticky="ew", padx=(5, 8))
-        ps_btns = ctk.CTkFrame(ps_row, fg_color="transparent")
+        ps_btns = tk.Frame(ps_row, bg=_PANEL_BG)
         ps_btns.grid(row=0, column=2, sticky="ne", pady=(4, 0))
         self.btn_apply_pstate = LiteButton(
             ps_btns, text="✅", width=34, command=self._apply_pstate_lock
@@ -162,7 +187,7 @@ class OverclockTab:
         )
 
         # Buttons
-        btn_oc = ctk.CTkFrame(oc_frame, fg_color="transparent")
+        btn_oc = tk.Frame(oc_frame, bg=_PANEL_BG)
         btn_oc.pack(fill="x", padx=10, pady=(5, 10))
         LiteButton(
             btn_oc, text="✅ Apply Offset", width=170, command=self._apply_oc
@@ -181,10 +206,14 @@ class OverclockTab:
         # ═══════════════════════════════════════════
         self.limit_frame = ctk.CTkFrame(content_row)
         self.limit_frame.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
-        limit_header = ctk.CTkFrame(self.limit_frame, fg_color="transparent")
+        limit_header = tk.Frame(self.limit_frame, bg=_PANEL_BG)
         limit_header.pack(fill="x", padx=10, pady=(10, 5))
-        self.limit_title_label = ctk.CTkLabel(
-            limit_header, text="⚡ Power & Thermal Limits", font=("", 14, "bold")
+        self.limit_title_label = tk.Label(
+            limit_header,
+            text="⚡ Power & Thermal Limits",
+            font=_FONT_HEADER,
+            bg=_PANEL_BG,
+            fg=_TEXT_FG,
         )
         self.limit_title_label.pack(side="left")
         self.power_api_var = ctk.StringVar(value="NVAPI")
@@ -197,7 +226,9 @@ class OverclockTab:
             command=self._on_power_api_changed,
         )
         self.power_api_selector.pack(side="right")
-        power_api_help = ctk.CTkLabel(limit_header, text="→", text_color="gray70")
+        power_api_help = tk.Label(
+            limit_header, text="→", bg=_PANEL_BG, fg=_TEXT_FG_DIM
+        )
         power_api_help.pack(side="right", padx=(0, 6))
         power_api_tip = (
             "Power limit API selector (power slider only).\n"
@@ -206,10 +237,12 @@ class OverclockTab:
         )
         HoverTooltip(self.power_api_selector, power_api_tip)
         HoverTooltip(power_api_help, power_api_tip)
-        self.limit_status_label = ctk.CTkLabel(
+        self.limit_status_label = tk.Label(
             self.limit_frame,
             text="Power / thermal controls are unsupported on mobile/laptop GPUs.",
-            text_color="gray60",
+            font=_FONT_BODY,
+            bg=_PANEL_BG,
+            fg=_TEXT_FG_FAINT,
         )
 
         # ── Mobile-mode widgets (packed only when a mobile GPU is active) ──
@@ -229,11 +262,17 @@ class OverclockTab:
         )
         HoverTooltip(self.ppab_checkbox, ppab_tip)
 
-        self.dnotifier_row = ctk.CTkFrame(self.limit_frame, fg_color="transparent")
+        self.dnotifier_row = tk.Frame(self.limit_frame, bg=_PANEL_BG)
         self.dnotifier_row.grid_columnconfigure(1, weight=1)
-        ctk.CTkLabel(self.dnotifier_row, text="D-Notifier:", width=90, anchor="w").grid(
-            row=0, column=0, sticky="nw", pady=(5, 0)
-        )
+        tk.Label(
+            self.dnotifier_row,
+            text="D-Notifier:",
+            width=12,
+            anchor="w",
+            font=_FONT_BODY,
+            bg=_PANEL_BG,
+            fg=_TEXT_FG,
+        ).grid(row=0, column=0, sticky="nw", pady=(5, 0))
         self.dnotifier_selector = SegmentToggleSelector(
             self.dnotifier_row, values=[], command=self._on_dnotifier_selected
         )
@@ -293,7 +332,7 @@ class OverclockTab:
             apply_cmd=self._apply_vboost_only,
         )
 
-        btn_limits = ctk.CTkFrame(self.limit_frame, fg_color="transparent")
+        btn_limits = tk.Frame(self.limit_frame, bg=_PANEL_BG)
         btn_limits.pack(fill="x", padx=10, pady=(5, 10))
         self.btn_apply_limits = LiteButton(
             btn_limits, text="✅ Apply Limits", width=140, command=self._apply_limits
@@ -314,7 +353,7 @@ class OverclockTab:
         self.fan_section = FanControlPane(fan_frame, self.app.backend, embedded=True)
         self._limit_enabled_frame_color = self.limit_frame.cget("fg_color")
         self._limit_dim_frame_color = ("gray86", "gray20")
-        self._limit_enabled_title_color = self.limit_title_label.cget("text_color")
+        self._limit_enabled_title_color = _TEXT_FG  # tk.Label: plain fg color
         self._limit_dim_title_color = "gray55"
 
     # ────────────────────────────────────────────
@@ -383,7 +422,7 @@ class OverclockTab:
             else self._limit_dim_frame_color
         )
         self.limit_title_label.configure(
-            text_color=self._limit_enabled_title_color
+            fg=self._limit_enabled_title_color
             if supported
             else self._limit_dim_title_color
         )
@@ -405,7 +444,7 @@ class OverclockTab:
         # Repack the "→" hint label away alongside the dropdown.
         for child in self.power_api_selector.master.winfo_children():
             if (
-                isinstance(child, ctk.CTkLabel)
+                isinstance(child, tk.Label)
                 and child.cget("text") == "→"
                 and child is not self.limit_title_label
             ):
@@ -431,7 +470,7 @@ class OverclockTab:
         header = self.power_api_selector.master
         for child in header.winfo_children():
             if (
-                isinstance(child, ctk.CTkLabel)
+                isinstance(child, tk.Label)
                 and child.cget("text") == "→"
                 and child is not self.limit_title_label
             ):
@@ -1027,18 +1066,30 @@ class OverclockTab:
         apply_cmd=None,
     ) -> Tuple[Any, ctk.CTkEntry, ctk.StringVar, ctk.CTkButton]:
         """Create a row with label, slider, numeric entry and apply button."""
-        row_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        row_frame = tk.Frame(parent, bg=_PANEL_BG)
         row_frame.pack(fill="x", padx=10, pady=3)
         row_frame.grid_columnconfigure(1, weight=1)
 
         if isinstance(label, ctk.StringVar):
-            ctk.CTkLabel(row_frame, textvariable=label, width=90, anchor="w").grid(
-                row=0, column=0, sticky="w"
-            )
+            tk.Label(
+                row_frame,
+                textvariable=label,
+                width=12,
+                anchor="w",
+                font=_FONT_BODY,
+                bg=_PANEL_BG,
+                fg=_TEXT_FG,
+            ).grid(row=0, column=0, sticky="w")
         else:
-            ctk.CTkLabel(row_frame, text=label, width=90, anchor="w").grid(
-                row=0, column=0, sticky="w"
-            )
+            tk.Label(
+                row_frame,
+                text=label,
+                width=12,
+                anchor="w",
+                font=_FONT_BODY,
+                bg=_PANEL_BG,
+                fg=_TEXT_FG,
+            ).grid(row=0, column=0, sticky="w")
 
         # Slider
         n_steps = (max_val - min_val) // step if step else (max_val - min_val)

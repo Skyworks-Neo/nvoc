@@ -4,12 +4,19 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Sequence
 
+import tkinter as tk
+
 import customtkinter as ctk
 
 from src.controllers.fan_control import (
     FanControlController,
     NVAPI_POLICIES,
 )
+
+# De-CTk'd inner-panel palette (matches overclock.py / CTk dark theme)
+_PANE_BG = "#2b2b2b"
+_TEXT_FG = "#e5e5e5"
+_TEXT_FG_DIM = "#b3b3b3"
 from src.widgets.lightweight_controls import (
     CanvasSlider,
     LiteButton,
@@ -45,7 +52,7 @@ class FanControlPane:
         self._build_content(container)
 
     def _build_content(self, parent: ctk.CTkFrame) -> None:
-        self.content_row = ctk.CTkFrame(parent, fg_color="transparent")
+        self.content_row = tk.Frame(parent, bg=_PANE_BG)
         self.content_row.pack(fill="x", pady=(0, 10))
         self.content_row.grid_columnconfigure(0, weight=1)
         self.content_row.grid_columnconfigure(1, weight=1)
@@ -53,10 +60,14 @@ class FanControlPane:
         self.cooler_frame = ctk.CTkFrame(self.content_row)
         self.cooler_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
 
-        cooler_header = ctk.CTkFrame(self.cooler_frame, fg_color="transparent")
+        cooler_header = tk.Frame(self.cooler_frame, bg=_PANE_BG)
         cooler_header.pack(fill="x", padx=10, pady=(10, 5))
-        self.cooler_title = ctk.CTkLabel(
-            cooler_header, text="Fan / Cooler Control", font=("", 14, "bold")
+        self.cooler_title = tk.Label(
+            cooler_header,
+            text="Fan / Cooler Control",
+            font=("Segoe UI", 14, "bold"),
+            bg=_PANE_BG,
+            fg=_TEXT_FG,
         )
         self.cooler_title.pack(side="left")
 
@@ -69,19 +80,23 @@ class FanControlPane:
             command=lambda _: self.controller.on_backend_change(),
         )
         self.cooler_api_menu.pack(side="right")
-        ctk.CTkLabel(cooler_header, text="→", text_color="gray70").pack(
+        tk.Label(cooler_header, text="→", bg=_PANE_BG, fg=_TEXT_FG_DIM).pack(
             side="right", padx=(0, 6)
         )
         self._interactive_widgets.append(self.cooler_api_menu)
 
-        grid = ctk.CTkFrame(self.cooler_frame, fg_color="transparent")
+        grid = tk.Frame(self.cooler_frame, bg=_PANE_BG)
         grid.pack(fill="x", padx=10, pady=(0, 10))
         grid.columnconfigure(1, weight=1)
 
         row = 0
-        ctk.CTkLabel(grid, text="Fan Target:").grid(
-            row=row, column=0, sticky="w", padx=5, pady=3
-        )
+        tk.Label(
+            grid,
+            text="Fan Target:",
+            font=("Segoe UI", 12),
+            bg=_PANE_BG,
+            fg=_TEXT_FG,
+        ).grid(row=row, column=0, sticky="w", padx=5, pady=3)
         self.fan_id_var = ctk.StringVar(value="All")
         self.fan_id_menu = ctk.CTkOptionMenu(
             grid, variable=self.fan_id_var, values=["All", "Fan 1", "Fan 2"], width=120
@@ -90,9 +105,9 @@ class FanControlPane:
         self._interactive_widgets.append(self.fan_id_menu)
 
         row += 1
-        ctk.CTkLabel(grid, text="Policy:").grid(
-            row=row, column=0, sticky="w", padx=5, pady=3
-        )
+        tk.Label(
+            grid, text="Policy:", font=("Segoe UI", 12), bg=_PANE_BG, fg=_TEXT_FG
+        ).grid(row=row, column=0, sticky="w", padx=5, pady=3)
         self.policy_var = ctk.StringVar(value="continuous")
         self.policy_menu = ctk.CTkOptionMenu(
             grid,
@@ -104,13 +119,18 @@ class FanControlPane:
         self._interactive_widgets.append(self.policy_menu)
 
         row += 1
-        ctk.CTkLabel(grid, text="Fan Level (%):").grid(
-            row=row, column=0, sticky="w", padx=5, pady=3
-        )
+        tk.Label(
+            grid,
+            text="Fan Level (%):",
+            font=("Segoe UI", 12),
+            bg=_PANE_BG,
+            fg=_TEXT_FG,
+        ).grid(row=row, column=0, sticky="w", padx=5, pady=3)
         self.level_var = ctk.StringVar(value="60")
 
-        level_frame = ctk.CTkFrame(grid, fg_color="transparent")
-        level_frame.grid(row=row, column=1, sticky="w", padx=5, pady=3)
+        level_frame = tk.Frame(grid, bg=_PANE_BG)
+        level_frame.grid(row=row, column=1, sticky="ew", padx=5, pady=3)
+        level_frame.grid_columnconfigure(0, weight=1)
 
         self.level_slider = CanvasSlider(
             level_frame,
@@ -119,9 +139,9 @@ class FanControlPane:
             number_of_steps=100,
             command=self.controller.on_slider_change,
         )
-        self.level_slider.configure(width=180)
+        self.level_slider.configure(width=140)
         self.level_slider.set(60)
-        self.level_slider.grid(row=0, column=0, sticky="w", padx=(0, 10))
+        self.level_slider.grid(row=0, column=0, sticky="ew", padx=(0, 10))
         self._interactive_widgets.append(self.level_slider)
 
         self.level_entry = LiteEntry(
@@ -129,7 +149,9 @@ class FanControlPane:
         )
         self.level_entry.grid(row=0, column=1)
         self._interactive_widgets.append(self.level_entry)
-        ctk.CTkLabel(level_frame, text="%").grid(row=0, column=2, padx=(3, 0))
+        tk.Label(
+            level_frame, text="%", font=("Segoe UI", 10), bg=_PANE_BG, fg="#e5e5e5"
+        ).grid(row=0, column=2, padx=(3, 0))
 
         self.level_var.trace_add("write", lambda *_: self.controller.on_entry_change())
 
@@ -159,12 +181,16 @@ class FanControlPane:
 
         self.preset_frame = ctk.CTkFrame(self.content_row)
         self.preset_frame.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
-        self.preset_title = ctk.CTkLabel(
-            self.preset_frame, text="Quick Presets", font=("", 14, "bold")
+        self.preset_title = tk.Label(
+            self.preset_frame,
+            text="Quick Presets",
+            font=("Segoe UI", 14, "bold"),
+            bg=_PANE_BG,
+            fg=_TEXT_FG,
         )
         self.preset_title.pack(anchor="w", padx=10, pady=(10, 5))
 
-        preset_grid = ctk.CTkFrame(self.preset_frame, fg_color="transparent")
+        preset_grid = tk.Frame(self.preset_frame, bg=_PANE_BG)
         preset_grid.pack(fill="x", padx=10, pady=(0, 10))
         preset_grid.grid_columnconfigure(0, weight=1)
         preset_grid.grid_columnconfigure(1, weight=1)
@@ -187,7 +213,7 @@ class FanControlPane:
 
         self._enabled_frame_color = self.cooler_frame.cget("fg_color")
         self._dim_frame_color = ("gray86", "gray20")
-        self._enabled_title_color = self.cooler_title.cget("text_color")
+        self._enabled_title_color = _TEXT_FG  # tk.Label: plain fg color
         self._dim_title_color = "gray55"
 
     def selected_api(self) -> str:
@@ -239,8 +265,8 @@ class FanControlPane:
         title_color = self._enabled_title_color if supported else self._dim_title_color
         self.cooler_frame.configure(fg_color=frame_color)
         self.preset_frame.configure(fg_color=frame_color)
-        self.cooler_title.configure(text_color=title_color)
-        self.preset_title.configure(text_color=title_color)
+        self.cooler_title.configure(fg=title_color)
+        self.preset_title.configure(fg=title_color)
 
     def on_resize_state_changed(
         self, resizing: bool, force_flush: bool = False

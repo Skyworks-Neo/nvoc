@@ -580,20 +580,20 @@ class SegmentToggleSelector(ctk.CTkFrame):
         subtitles: Optional[List[Optional[str]]] = None,
         command=None,
     ):
-        super().__init__(parent, fg_color="transparent", height=54)
+        super().__init__(parent, fg_color="transparent", height=58)
         self._values = []  # type: List[str]
         self._subtitles = []  # type: List[Optional[str]]
         self._command = command
         self._state = "normal"
         self._selected_idx = None  # type: Optional[int]
         self._pad_x = 18
-        self._line_y = 14
+        self._line_y = 13
         self._node_r = 5
 
         self.grid_columnconfigure(0, weight=1)
 
         self._canvas = tk.Canvas(
-            self, height=54, highlightthickness=0, bd=0, bg="#242424"
+            self, height=58, highlightthickness=0, bd=0, bg="#242424"
         )
         self._canvas.grid(row=0, column=0, sticky="ew")
         self._canvas.bind("<Configure>", lambda _e: self._redraw())
@@ -713,8 +713,8 @@ class SegmentToggleSelector(ctk.CTkFrame):
         active_fill = "#6689a8" if disabled else "#3B8ED0"
 
         has_subtitle = any(self._subtitles)
-        label_y = self._line_y + 18
-        sub_y = label_y + 14
+        label_y = self._line_y + 17
+        sub_y = label_y + 13
 
         x0 = positions[0]
         x1 = positions[-1]
@@ -756,7 +756,7 @@ class SegmentToggleSelector(ctk.CTkFrame):
                 label_y,
                 text=label,
                 fill=label_fill if not is_selected else "#f5f7fb",
-                font=("Segoe UI", 10, "bold"),
+                font=("Segoe UI", 9, "bold"),
             )
             if has_subtitle:
                 sub = self._subtitles[idx] if idx < len(self._subtitles) else None
@@ -765,7 +765,7 @@ class SegmentToggleSelector(ctk.CTkFrame):
                     sub_y,
                     text=sub or "—",
                     fill=sub_fill,
-                    font=("Segoe UI", 9),
+                    font=("Segoe UI", 8),
                 )
 
 
