@@ -416,11 +416,8 @@ class OverclockTab:
         for widget in widgets:
             self._safe_set_state(widget, state)
 
-        self.limit_frame.configure(
-            fg_color=self._limit_enabled_frame_color
-            if supported
-            else self._limit_dim_frame_color
-        )
+        # Card background stays unchanged in the dim state: repainting it gray
+        # would mismatch the fixed-bg canvases/labels inside.
         self.limit_title_label.configure(
             fg=self._limit_enabled_title_color
             if supported
@@ -1099,6 +1096,9 @@ class OverclockTab:
             to=max_val,
             number_of_steps=n_steps,
         )
+        # Requested width ~0: the grid column then shrinks the slider instead
+        # of clipping the entry/apply button when the card is narrow.
+        slider.configure(width=1)
         slider.set(default)
         slider.grid(row=0, column=1, sticky="ew", padx=(5, 10))
 

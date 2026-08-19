@@ -261,10 +261,9 @@ class FanControlPane:
             except Exception:
                 pass
 
-        frame_color = self._enabled_frame_color if supported else self._dim_frame_color
         title_color = self._enabled_title_color if supported else self._dim_title_color
-        self.cooler_frame.configure(fg_color=frame_color)
-        self.preset_frame.configure(fg_color=frame_color)
+        # Card backgrounds stay unchanged in the dim state: repainting them
+        # gray would mismatch the fixed-bg canvases inside (ugly black blocks).
         self.cooler_title.configure(fg=title_color)
         self.preset_title.configure(fg=title_color)
 

@@ -121,7 +121,7 @@ class CanvasSlider(ctk.CTkFrame):
         self._command_interval_ms = 16
 
         self._canvas = tk.Canvas(
-            self, height=24, highlightthickness=0, bd=0, bg="#242424"
+            self, height=24, highlightthickness=0, bd=0, bg="#2b2b2b"
         )
         self._canvas.pack(fill="both", expand=True)
         self._canvas.bind("<Configure>", lambda _e: self._redraw())
@@ -328,7 +328,7 @@ class SegmentRangeSelector(ctk.CTkFrame):
         self.grid_columnconfigure(0, weight=1)
 
         self._canvas = tk.Canvas(
-            self, height=56, highlightthickness=0, bd=0, bg="#242424"
+            self, height=56, highlightthickness=0, bd=0, bg="#2b2b2b"
         )
         self._canvas.grid(row=0, column=0, sticky="ew")
         self._canvas.bind("<Configure>", lambda _e: self._redraw())
@@ -580,20 +580,20 @@ class SegmentToggleSelector(ctk.CTkFrame):
         subtitles: Optional[List[Optional[str]]] = None,
         command=None,
     ):
-        super().__init__(parent, fg_color="transparent", height=58)
+        super().__init__(parent, fg_color="transparent", height=68)
         self._values = []  # type: List[str]
         self._subtitles = []  # type: List[Optional[str]]
         self._command = command
         self._state = "normal"
         self._selected_idx = None  # type: Optional[int]
         self._pad_x = 18
-        self._line_y = 13
+        self._line_y = 15
         self._node_r = 5
 
         self.grid_columnconfigure(0, weight=1)
 
         self._canvas = tk.Canvas(
-            self, height=58, highlightthickness=0, bd=0, bg="#242424"
+            self, height=68, highlightthickness=0, bd=0, bg="#2b2b2b"
         )
         self._canvas.grid(row=0, column=0, sticky="ew")
         self._canvas.bind("<Configure>", lambda _e: self._redraw())
@@ -713,8 +713,8 @@ class SegmentToggleSelector(ctk.CTkFrame):
         active_fill = "#6689a8" if disabled else "#3B8ED0"
 
         has_subtitle = any(self._subtitles)
-        label_y = self._line_y + 17
-        sub_y = label_y + 13
+        label_y = self._line_y + 19
+        sub_y = label_y + 15
 
         x0 = positions[0]
         x1 = positions[-1]
@@ -799,7 +799,7 @@ class LiteButton(ctk.CTkFrame):
         self.grid_propagate(False)
         self.pack_propagate(False)
 
-        self._canvas = tk.Canvas(self, highlightthickness=0, bd=0, bg="#242424")
+        self._canvas = tk.Canvas(self, highlightthickness=0, bd=0, bg="#2b2b2b")
         self._canvas.pack(fill="both", expand=True)
         self._canvas.bind("<Configure>", lambda _e: self._redraw())
         self._canvas.bind("<Enter>", self._on_enter)
