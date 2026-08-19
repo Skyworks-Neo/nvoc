@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib
 import json
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -57,12 +58,18 @@ class NativeBackend:
         except Exception:
             return False
 
+    def force_wake(self, gpu: str) -> bool:
+        """Public alias for the GC6 wake (used by the GUI re-probe path)."""
+        return self._force_wake(gpu)
+
     def run_query(self, gpu: str, command_name: str) -> tuple[int, str, dict[str, Any]]:
         retcode, output, parsed = self._run_query_once(gpu, command_name)
         if retcode != 0:
             # A failed read on a mobile GPU is often just GCOFF (idle dGPU
-            # powered down) — wake it and retry once before giving up.
+            # powered down) — wake it, give the D0 transition a moment, and
+            # retry once before giving up.
             self._force_wake(gpu)
+            time.sleep(0.3)
             retcode, output, parsed = self._run_query_once(gpu, command_name)
         return retcode, output, parsed
 
@@ -98,15 +105,21 @@ class NativeBackend:
         interface isn't exposed by this driver.
         """
         data = self._query_mobile_limits_once(gpu)
-        if (
+        attempts = 0
+        while (
             data["tgp"] is None
             and data["dnotifier"] is None
             and not data["temp_policies"]
+            and attempts < 3
         ):
             # All three failed at once is the GCOFF signature, not three
-            # coincidental 'unsupported' verdicts — wake and retry once.
+            # coincidental 'unsupported' verdicts. The wake call returns
+            # before the dGPU actually reaches D0, so allow a few
+            # wake->settle->retry rounds before concluding 'unsupported'.
             self._force_wake(gpu)
+            time.sleep(0.4)
             data = self._query_mobile_limits_once(gpu)
+            attempts += 1
         return data
 
     def _query_mobile_limits_once(self, gpu: str) -> dict[str, Any]:

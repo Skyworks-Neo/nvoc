@@ -109,6 +109,9 @@ class App(ctk.CTk):
         self._refresh_chain_after_id: Optional[str] = None
         # Idle-time tab prebuild (see _prebuild_next_tab)
         self._tab_prebuild_started = False
+        # 'get'-failure re-probe state (see _apply_gpu_get)
+        self._get_reprobe_pending = False
+        self._get_reprobe_count = 0
         # Short-TTL query result cache (see run_gpu_query_async)
         self._query_result_cache: Dict[str, Tuple[float, int, str]] = {}
         self._query_cache_lock = threading.Lock()
@@ -897,21 +900,41 @@ class App(ctk.CTk):
         """Merge supported P-State data from CLI 'get' into the cached GPU state."""
         merged = dict(getattr(self, "_gpu_limits_cache", {}))
         if retcode != 0:
+            # Transient read failure (dGPU waking from GC6): KEEP the last
+            # known-good P-States instead of wiping the cache to 'unsupported',
+            # and schedule a delayed re-probe (wake + re-query).
             self.console.append(
-                "[GUI] Warning: failed to query supported P-States via 'get'.\n"
+                "[GUI] 'get' query failed (GPU may be waking); keeping last known P-States.\n"
             )
-            self._gpu_pstates_cache = []
-            merged["supported_pstates"] = []
+            merged["supported_pstates"] = list(self._gpu_pstates_cache or [])
             self._gpu_limits_cache = merged
             self._sync_dashboard_lock_state_from_cache(merged)
             if self.tab_overclock:
                 self.tab_overclock.update_limits(merged)
             if self.tab_vfcurve:
                 self.tab_vfcurve.sync_freq_locks_from_cache(merged)
+            retries = getattr(self, "_get_reprobe_count", 0)
+            if retries < 2 and getattr(self, "_get_reprobe_pending", False) is False:
+                self._get_reprobe_pending = True
+                self._get_reprobe_count = retries + 1
+                self.after(
+                    1500,
+                    lambda: (
+                        setattr(self, "_get_reprobe_pending", False),
+                        self.run_background(
+                            "wake-gpu",
+                            lambda: self.backend.force_wake(
+                                self.selected_gpu_target() or ""
+                            ),
+                        ),
+                        self._query_gpu_get(),
+                    ),
+                )
             return
 
         native_payload = self._native_query_payload(output)
         if native_payload is not None:
+            self._get_reprobe_count = 0  # success: reset the re-probe budget
             merged.update(native_payload)
             for key in (
                 "vfp_lock_gpu_core_upperbound_mhz",
@@ -922,17 +945,21 @@ class App(ctk.CTk):
                 merged.pop(key, None)
             merged.update(normalize_native_vfp_lock_bounds(native_payload))
             pstates = native_payload.get("supported_pstates", [])
-            self._gpu_pstates_cache = (
+            fresh = (
                 [str(pstate) for pstate in pstates] if isinstance(pstates, list) else []
             )
+            if fresh or not self._gpu_pstates_cache:
+                self._gpu_pstates_cache = fresh
+            # else: empty result on a possibly half-awake GPU — keep the last
+            # known-good list rather than silently downgrading to 'unsupported'.
             merged["supported_pstates"] = self._gpu_pstates_cache
             self._gpu_limits_cache = merged
             self._sync_dashboard_lock_state_from_cache(merged)
-            if self._gpu_pstates_cache:
+            if fresh:
                 self.console.append(
-                    f"[GUI] Supported P-States: {', '.join(self._gpu_pstates_cache)}\n"
+                    f"[GUI] Supported P-States: {', '.join(fresh)}\n"
                 )
-            else:
+            elif not self._gpu_pstates_cache:
                 self.console.append(
                     "[GUI] Warning: native settings returned no supported P-States.\n"
                 )
