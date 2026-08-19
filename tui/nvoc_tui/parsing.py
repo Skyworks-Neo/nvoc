@@ -291,6 +291,25 @@ def normalize_query_output(command: str, output: str) -> dict[str, Any]:
     return {}
 
 
+def vf_curve_points_to_series(
+    points: list[dict[str, Any]],
+) -> tuple[list[float], list[float], list[float]]:
+    """Convert in-memory VFP points (µV/kHz dicts) to (mV, MHz, default MHz)."""
+    voltages: list[float] = []
+    freqs: list[float] = []
+    defaults: list[float] = []
+    for point in points:
+        voltage_uv = point.get("voltage_uv", 0)
+        frequency_khz = point.get("frequency_khz", 0)
+        default_khz = point.get("default_frequency_khz")
+        voltages.append(float(voltage_uv) / 1000.0)
+        freqs.append(float(frequency_khz) / 1000.0)
+        defaults.append(
+            freqs[-1] if default_khz is None else float(default_khz) / 1000.0
+        )
+    return voltages, freqs, defaults
+
+
 def load_vf_curve(path: str) -> tuple[list[float], list[float], list[float]]:
     csv_path = Path(path)
     if not csv_path.is_file():

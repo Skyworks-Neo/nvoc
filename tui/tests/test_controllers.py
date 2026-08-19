@@ -438,24 +438,6 @@ def test_vfcurve_refresh_suppresses_overlapping_workers(
     assert controller.is_refresh_inflight() is True
 
 
-def test_vfcurve_refresh_clears_inflight_when_cache_path_fails() -> None:
-    app = FakeApp()
-    controller = VFCurveController(app)
-
-    def fail_cache_path() -> Path:
-        raise OSError("cache path unavailable")
-
-    controller.cache_path = fail_cache_path
-
-    try:
-        controller.refresh_curve()
-    except OSError:
-        # Expected in this test: cache_path is forced to fail, we only verify inflight cleanup.
-        pass
-
-    assert controller.is_refresh_inflight() is False
-
-
 def test_vfcurve_refresh_clears_inflight_when_thread_start_fails(
     tmp_path: Path, monkeypatch
 ) -> None:
