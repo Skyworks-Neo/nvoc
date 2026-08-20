@@ -1191,6 +1191,97 @@ impl GpuOperation for QueryNvapiVoltRails {
     }
 }
 
+/// Hard driver-side sanity range observed by melonVolt (±250 mV); values
+/// outside it are rejected before any write.
+pub const VOLT_RAIL_OFFSET_SANITY_UV: i32 = 250_000;
+/// melonVolt's software clamp (±100 mV) — the CLI default soft limit.
+pub const VOLT_RAIL_OFFSET_DEFAULT_LIMIT_UV: i32 = 100_000;
+
+/// Set one rail's µV offset via the private VoltRails control object (the
+/// melonVolt write path: GET snapshot → locate entry → sanity/type checks →
+/// patch → SET → readback verify, see `reverse/melonvolt/ANALYSIS.md`).
+/// Payload index 0 is the offset on RTX-5090 MSVDD (rail bit 1, type 3);
+/// type semantics on other GPUs are platform-specific — set `expected_type`
+/// to guard them.
+#[derive(Clone, Copy, Debug)]
+#[allow(non_snake_case)] // uV suffix matches the nvapi-rs field naming
+pub struct SetNvapiVoltRailOffset {
+    /// rail bit within the mask (RTX 5090 MSVDD = 1)
+    pub rail_bit: u32,
+    /// target offset in µV (absolute, not a delta; 0 = stock)
+    pub offset_uV: i32,
+    /// soft limit on |offset|; `None` = [`VOLT_RAIL_OFFSET_DEFAULT_LIMIT_UV`]
+    pub limit_uV: Option<i32>,
+    /// refuse to write unless the entry's current type equals this
+    /// (melonVolt requires 3 on 5090 MSVDD); `None` = no type check
+    pub expected_type: Option<u32>,
+}
+
+impl GpuOperation for SetNvapiVoltRailOffset {
+    type Output = Option<NvapiVoltRailOffsetApplied>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiVoltRailOffset
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let gpu = target.nvapi()?;
+        let rails = gpu.volt_rails().map_err(Error::from)?;
+        let Some(rails) = rails else {
+            return Ok(None);
+        };
+        let entry = rails.control.iter().find(|e| e.rail_bit == self.rail_bit).ok_or_else(|| {
+            Error::Custom(format!(
+                "rail bit {} not present (mask 0x{:08X})",
+                self.rail_bit, rails.rail_mask
+            ))
+        })?;
+        if let Some(expected) = self.expected_type
+            && entry.entry_type != expected
+        {
+            return Err(Error::Custom(format!(
+                "rail {} entry type {} != expected {expected} — refusing to write \
+                 (type semantics differ per platform; override with a different \
+                 --expect-type if you know better)",
+                self.rail_bit, entry.entry_type
+            )));
+        }
+        let limit = self.limit_uV.unwrap_or(VOLT_RAIL_OFFSET_DEFAULT_LIMIT_UV);
+        let magnitude = self.offset_uV.unsigned_abs();
+        if magnitude > VOLT_RAIL_OFFSET_SANITY_UV as u32 {
+            return Err(Error::Custom(format!(
+                "offset {} µV exceeds the ±{} µV driver sanity range",
+                self.offset_uV, VOLT_RAIL_OFFSET_SANITY_UV
+            )));
+        }
+        if magnitude > limit.unsigned_abs() as u32 {
+            return Err(Error::Custom(format!(
+                "offset {} µV exceeds the soft limit ±{} µV (raise --limit-uv deliberately)",
+                self.offset_uV, limit
+            )));
+        }
+        let previous = entry.values[0];
+        let retained = gpu
+            .set_volt_rail_value(self.rail_bit, self.offset_uV)
+            .map_err(Error::from)?
+            .ok_or_else(|| Error::Custom("volt-rails family vanished between reads".into()))?;
+        Ok(Some(NvapiVoltRailOffsetApplied {
+            rail_bit: self.rail_bit,
+            previous_uV: previous,
+            applied_uV: retained,
+        }))
+    }
+}
+
+/// Result of a successful volt-rail offset write.
+#[derive(Clone, Copy, Debug)]
+#[allow(non_snake_case)] // uV suffix matches the nvapi-rs field naming
+pub struct NvapiVoltRailOffsetApplied {
+    pub rail_bit: u32,
+    pub previous_uV: i32,
+    pub applied_uV: i32,
+}
+
 /// Set the D-Notifier (D0-notify) limit to a D level (1..5). Maps the CLI
 /// level to the signed driver code (-1=D1/Unlimited, 0..3=D2..D5) exactly as
 /// the ref tool's `[GPUHandle::setDNotifyLimit]` switch does, then calls the raw

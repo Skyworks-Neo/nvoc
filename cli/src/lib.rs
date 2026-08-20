@@ -11,6 +11,7 @@ use nvoc_core::{
     QueryNvapiDNotifier, QueryNvapiPStateLevels, QueryNvapiPStateLockStatus,
     QueryNvapiTargetTempPolicies, QueryNvapiTargetTempPolicyIndex, QueryNvapiTgpWattRange,
     QueryNvapiVoltRails, QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates,
+    SetNvapiVoltRailOffset,
     QuerySupportedApplicationsClocks,
     QueryTdpTempLimits, QueryTemperatureThresholds, QueryThrottleReasons, QueryVfpPointVoltage,
     QueryViolationStatus, QueryVoltageBoost, ResetApplicationsClocks, ResetCoolerLevels,
@@ -158,6 +159,7 @@ pub enum Command {
     GetDNotifier,
     SetDNotifier,
     GetVoltRails,
+    SetVoltRailOffset,
     SetTemperatureThresholds,
     SetThermalLimitC,
     SetFanPercent,
@@ -238,6 +240,7 @@ impl Command {
             Self::GetDNotifier => "get-dnotifier",
             Self::SetDNotifier => "set-dnotifier",
             Self::GetVoltRails => "get-volt-rails",
+            Self::SetVoltRailOffset => "set-volt-rail-offset",
             Self::SetThermalLimitC => "set-thermal-limit-c",
             Self::SetTemperatureThresholds => "set-temp-thresholds",
             Self::SetFanPercent => "set-fan-percent",
@@ -322,6 +325,9 @@ impl Command {
             }
             Self::GetVoltRails => {
                 "Read private VoltRails family: rail mask + per-rail offsets + live voltages (melonVolt path)"
+            }
+            Self::SetVoltRailOffset => {
+                "Set a volt-rail uV offset (melonVolt write path; 5090 MSVDD = rail 1 type 3)"
             }
             Self::SetThermalLimitC => "Set thermal limit in Celsius",
             Self::SetTemperatureThresholds => {
@@ -766,6 +772,7 @@ const COMMANDS: &[Command] = &[
     Command::SetVfpRangeDeltaMhz,
     Command::SetVfpVoltageLock,
     Command::SetVoltageBoostPercent,
+    Command::SetVoltRailOffset,
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2226,6 +2233,11 @@ fn execute_target(
                     json!({
                         "rail_mask": format!("0x{:08X}", r.rail_mask),
                         "p0": p0,
+                        "rail_descriptors": r.rail_descriptors.iter().map(|d| json!({
+                            "rail_bit": d.rail_bit,
+                            "type": d.entry_type(),
+                            "raw_u32": d.raw_u32,
+                        })).collect::<Vec<_>>(),
                         "control": r.control.iter().map(|e| json!({
                             "rail_bit": e.rail_bit, "type": e.entry_type, "values_uV": e.values,
                         })).collect::<Vec<_>>(),
@@ -2234,6 +2246,37 @@ fn execute_target(
                         })).collect::<Vec<_>>(),
                     })
                 }
+                None => json!({"supported": false}),
+            })
+        }
+        Command::SetVoltRailOffset => {
+            let rail_bit = parse_usize(&invocation.positionals[0], "rail-bit")? as u32;
+            let uv = parse_i32_unit(&invocation.positionals[1], "uv", "microvolt")?;
+            let limit_uv = option_one(invocation, "limit-uv")
+                .map(|s| s.parse::<i32>())
+                .transpose()
+                .map_err(|e| CliError::new(format!("invalid --limit-uv: {e}")))?;
+            let expect_type = option_one(invocation, "expect-type")
+                .map(|s| s.parse::<u32>())
+                .transpose()
+                .map_err(|e| CliError::new(format!("invalid --expect-type: {e}")))?;
+            let out = run(
+                target,
+                SetNvapiVoltRailOffset {
+                    rail_bit,
+                    offset_uV: uv,
+                    limit_uV: limit_uv,
+                    expected_type: expect_type,
+                },
+            )?
+            .output;
+            Ok(match out {
+                Some(a) => json!({
+                    "applied": true,
+                    "rail_bit": a.rail_bit,
+                    "previous_uV": a.previous_uV,
+                    "applied_uV": a.applied_uV,
+                }),
                 None => json!({"supported": false}),
             })
         }
