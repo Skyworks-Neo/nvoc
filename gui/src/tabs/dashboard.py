@@ -248,6 +248,9 @@ class DashboardTab:
         self._poll_job: Optional[str] = None
         self._polling = False
         self._fetching = False
+        # The very first successful sample is mandatory (wake the GPU if
+        # needed); afterwards polling never blocks GC6 sleep.
+        self._first_success = False
         self._interval_ms = self._DEFAULT_INTERVAL_MS
         self._is_resize_active = False
         self._pending_done_payload: Optional[Tuple[int, str]] = None
@@ -422,8 +425,12 @@ class DashboardTab:
         if not self._polling:
             return
         # Don't burn a full NVAPI+NVML status sweep per second while the
-        # Dashboard tab is hidden (same gate the VF-curve auto-refresh uses).
+        # Dashboard tab is hidden or the window is in the tray (the same
+        # gate the VF-curve auto-refresh uses, plus window visibility).
         try:
+            if self.app.state() == "withdrawn":
+                self._schedule_next()
+                return
             current_tab = self.app.tabview.get()
             if not str(current_tab).endswith("Dashboard"):
                 self._schedule_next()
@@ -450,10 +457,13 @@ class DashboardTab:
             self._on_done,
             thread_name="dash-poll",
             use_cache=False,  # polling wants live data, not TTL reuse
+            allow_wake=not self._first_success,  # first sample may wake
         )
 
     def _on_done(self, retcode: int, output: str) -> None:
         self._fetching = False
+        if retcode == 0:
+            self._first_success = True
 
         if self._is_resize_active:
             # Keep only latest sample while resize is active, then flush once.

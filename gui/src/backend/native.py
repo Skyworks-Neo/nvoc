@@ -62,12 +62,15 @@ class NativeBackend:
         """Public alias for the GC6 wake (used by the GUI re-probe path)."""
         return self._force_wake(gpu)
 
-    def run_query(self, gpu: str, command_name: str) -> tuple[int, str, dict[str, Any]]:
+    def run_query(
+        self, gpu: str, command_name: str, allow_wake: bool = True
+    ) -> tuple[int, str, dict[str, Any]]:
         retcode, output, parsed = self._run_query_once(gpu, command_name)
-        if retcode != 0:
+        if retcode != 0 and allow_wake:
             # A failed read on a mobile GPU is often just GCOFF (idle dGPU
             # powered down) — wake it, give the D0 transition a moment, and
-            # retry once before giving up.
+            # retry once before giving up. Monitoring polls pass
+            # allow_wake=False so they never block GC6 sleep.
             self._force_wake(gpu)
             time.sleep(0.3)
             retcode, output, parsed = self._run_query_once(gpu, command_name)

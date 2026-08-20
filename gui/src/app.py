@@ -1331,6 +1331,7 @@ class App(ctk.CTk):
         callback: Callable[[int, str], None],
         thread_name: str = "gpu-query",
         use_cache: bool = True,
+        allow_wake: bool = True,
     ) -> bool:
         """Run a GPU-scoped native query asynchronously and return whether it started."""
         gpu = self.selected_gpu_target()
@@ -1353,7 +1354,9 @@ class App(ctk.CTk):
                         return True
 
         def _worker():
-            retcode, output, _parsed = self.backend.run_query(gpu, command_name)
+            retcode, output, _parsed = self.backend.run_query(
+                gpu, command_name, allow_wake=allow_wake
+            )
             if retcode == 0:
                 with self._query_cache_lock:
                     self._query_result_cache[cache_key] = (
