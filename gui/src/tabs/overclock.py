@@ -60,6 +60,7 @@ class OverclockTab:
         parent: ctk.CTkFrame,
         app: "App",
         content_parent: Optional[Any] = None,
+        fan_parent: Optional[Any] = None,
     ):
         self.app = app
         self.frame = parent
@@ -101,7 +102,10 @@ class OverclockTab:
         # ═══════════════════════════════════════════
         # Clock Offset (OC)
         # ═══════════════════════════════════════════
-        oc_frame = ctk.CTkFrame(content_row)
+        # Thin rounded dark-blue frame marks the section boundary
+        oc_frame = ctk.CTkFrame(
+            content_row, border_width=1, border_color="#1f4e79", corner_radius=10
+        )
         # "new": natural height, top aligned — with "nsew" the two cards
         # stretch to the taller one's height and the shorter card shows a
         # large empty gap under its sliders (e.g. mobile mode layout).
@@ -120,7 +124,7 @@ class OverclockTab:
             oc_header,
             values=["NVAPI", "NVML"],
             variable=self.oc_api_var,
-            width=94,
+            width=84,
             height=28,
         )
         self.oc_api_selector.pack(side="right")
@@ -166,13 +170,14 @@ class OverclockTab:
         self.core_slider, self.core_entry, self.core_var, btn_apply_core = (
             self._make_slider_row(
                 oc_frame,
-                "Core(MHz):",
+                "Core:",
                 d["core_clock_min"],
                 d["core_clock_max"],
                 0,
                 step=5,
                 apply_cmd=self._apply_core_only,
                 signed=True,
+                unit="MHz",
             )
         )
 
@@ -180,13 +185,14 @@ class OverclockTab:
         self.mem_slider, self.mem_entry, self.mem_var, btn_apply_mem = (
             self._make_slider_row(
                 oc_frame,
-                "Mem(MHz):",
+                "Mem:",
                 d["mem_clock_min"],
                 d["mem_clock_max"],
                 0,
                 step=10,
                 apply_cmd=self._apply_mem_only,
                 signed=True,
+                unit="MHz",
             )
         )
         btn_apply_mem.configure(shift_command=self._apply_mem_with_sync)
@@ -215,7 +221,9 @@ class OverclockTab:
         # ═══════════════════════════════════════════
         # Power & Thermal Limits
         # ═══════════════════════════════════════════
-        self.limit_frame = ctk.CTkFrame(content_row)
+        self.limit_frame = ctk.CTkFrame(
+            content_row, border_width=1, border_color="#1f4e79", corner_radius=10
+        )
         self.limit_frame.grid(row=0, column=1, sticky="new", padx=(5, 0))
         limit_header = tk.Frame(self.limit_frame, bg=_PANEL_BG)
         limit_header.pack(fill="x", padx=10, pady=(10, 13))
@@ -232,7 +240,7 @@ class OverclockTab:
             limit_header,
             values=["NVAPI", "NVML"],
             variable=self.power_api_var,
-            width=94,
+            width=84,
             height=28,
             command=self._on_power_api_changed,
         )
@@ -298,7 +306,8 @@ class OverclockTab:
         HoverTooltip(self.dnotifier_selector, dnotifier_tip)
 
         # Power Limit slider + entry
-        self.plimit_label_var = ctk.StringVar(value="Pwr Limit(%):")
+        self.plimit_label_var = ctk.StringVar(value="Pwr Limit:")
+        self.plimit_unit_var = ctk.StringVar(value="%")
         (
             self.plimit_slider,
             self.plimit_entry,
@@ -311,6 +320,7 @@ class OverclockTab:
             d["power_limit_max"],
             d["power_limit_default"],
             apply_cmd=self._apply_plimit_only,
+            unit=self.plimit_unit_var,
         )
 
         # Thermal Limit slider + entry
@@ -321,15 +331,17 @@ class OverclockTab:
             self.btn_apply_tlimit,
         ) = self._make_slider_row(
             self.limit_frame,
-            "Thrm Limit(℃):",
+            "Thrm Limit:",
             d["thermal_limit_min"],
             d["thermal_limit_max"],
             d["thermal_limit_default"],
             apply_cmd=self._apply_tlimit_only,
+            unit="℃",
         )
 
         # Voltage Boost / Offset slider + entry
-        self.vboost_label_var = ctk.StringVar(value="VoltBoost(%):")
+        self.vboost_label_var = ctk.StringVar(value="VoltBoost:")
+        self.vboost_unit_var = ctk.StringVar(value="%")
         (
             self.vboost_slider,
             self.vboost_entry,
@@ -343,6 +355,7 @@ class OverclockTab:
             0,
             step=100,
             apply_cmd=self._apply_vboost_only,
+            unit=self.vboost_unit_var,
         )
 
         btn_limits = tk.Frame(self.limit_frame, bg=_PANEL_BG)
@@ -363,9 +376,10 @@ class OverclockTab:
         )
         self.btn_reset_all.grid(row=0, column=1, sticky="ew", padx=(5, 0))
 
-        fan_frame = ctk.CTkFrame(scroll)
-        fan_frame.pack(fill="x", pady=(0, 10))
-        self.fan_section = FanControlPane(fan_frame, self.app.backend, embedded=True)
+        fan_host = fan_parent if fan_parent is not None else scroll
+        self.fan_section = FanControlPane(
+            fan_host, self.app.backend, embedded=True
+        )
         self._limit_enabled_frame_color = self.limit_frame.cget("fg_color")
         self._limit_dim_frame_color = ("gray86", "gray20")
         self._limit_enabled_title_color = _TEXT_FG  # tk.Label: plain fg color
@@ -454,8 +468,8 @@ class OverclockTab:
             return
         self._mobile_mode = True
         self.power_api_selector.pack_forget()
-        self.ppab_checkbox.pack(side="right")
-        self.plimit_label_var.set("Pwr Limit(W):")
+        self.ppab_checkbox.pack(side="right", padx=(0, 8))
+        self.plimit_unit_var.set("W")
         # D-Notifier selector sits above the power slider row.
         plimit_row = self.plimit_slider.master
         self.dnotifier_row.pack(fill="x", padx=(26, 10), pady=(0, 3), before=plimit_row)
@@ -471,7 +485,7 @@ class OverclockTab:
         self.ppab_checkbox.pack_forget()
         self.dnotifier_row.pack_forget()
         self.power_api_selector.pack(side="right")
-        self.plimit_label_var.set("Pwr Limit(%):")
+        self.plimit_unit_var.set("%")
         # Repack the vboost row before the buttons row (original order).
         btn_limits_row = self.btn_apply_limits.master
         self.vboost_slider.master.pack(fill="x", padx=10, pady=3, before=btn_limits_row)
@@ -728,7 +742,7 @@ class OverclockTab:
 
         power_backend = self._selected_power_backend()
         if power_backend == "nvml":
-            self.plimit_label_var.set("Pwr Limit(W):")
+            self.plimit_unit_var.set("W")
             if (
                 "power_limit_nvml_min_w" in limits
                 and "power_limit_nvml_max_w" in limits
@@ -753,7 +767,7 @@ class OverclockTab:
                     int(limits["power_limit_nvml_current_w"]),
                 )
         else:
-            self.plimit_label_var.set("Pwr Limit(%):")
+            self.plimit_unit_var.set("%")
             if "power_limit_min" in limits and "power_limit_max" in limits:
                 default_raw = limits.get("power_limit_default", 100)
                 default = int(default_raw) if default_raw is not None else 100
@@ -800,7 +814,8 @@ class OverclockTab:
             and "legacy_overvolt_current_mv" in limits
         ):
             current = limits.get("legacy_overvolt_current_mv", 0)
-            self.vboost_label_var.set("Overvolt(mV):")
+            self.vboost_label_var.set("Overvolt:")
+            self.vboost_unit_var.set("mV")
             self._reconfigure_slider(
                 self.vboost_slider,
                 self.vboost_var,
@@ -921,10 +936,12 @@ class OverclockTab:
                         pass
 
             # Legacy GPUs use Overvolt controls in mV terminology.
-            self.vboost_label_var.set("Overvolt(mV):")
+            self.vboost_label_var.set("Overvolt:")
+            self.vboost_unit_var.set("mV")
         else:
             self._is_legacy_gpu = False
-            self.vboost_label_var.set("VoltBoost(%):")
+            self.vboost_label_var.set("VoltBoost:")
+            self.vboost_unit_var.set("%")
 
     @staticmethod
     def _normalize_pstate_label(value: Any) -> Optional[str]:
@@ -1062,6 +1079,7 @@ class OverclockTab:
         step: int = 1,
         apply_cmd=None,
         signed: bool = False,
+        unit: Union[str, ctk.StringVar] = "",
     ) -> Tuple[Any, ctk.CTkEntry, ctk.StringVar, ctk.CTkButton]:
         """Create a row with label, slider, numeric entry and apply button.
 
@@ -1173,9 +1191,27 @@ class OverclockTab:
         entry.bind("<FocusOut>", _on_focusout)
         entry.bind("<Return>", _on_focusout)
 
+        # Unit label right of the entry (matches the fan '%' style)
+        if isinstance(unit, ctk.StringVar):
+            tk.Label(
+                row_frame,
+                textvariable=unit,
+                font=_FONT_BODY,
+                bg=_PANEL_BG,
+                fg=_TEXT_FG_DIM,
+            ).grid(row=0, column=3, padx=(3, 0))
+        elif unit:
+            tk.Label(
+                row_frame,
+                text=unit,
+                font=_FONT_BODY,
+                bg=_PANEL_BG,
+                fg=_TEXT_FG_DIM,
+            ).grid(row=0, column=3, padx=(3, 0))
+
         # Sub-apply button
         btn = LiteButton(row_frame, text="✓", width=34, command=apply_cmd)
-        btn.grid(row=0, column=3, padx=(5, 0))
+        btn.grid(row=0, column=4, padx=(5, 0))
 
         return slider, entry, var, btn
 

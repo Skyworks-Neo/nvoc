@@ -1,10 +1,14 @@
-"""Fan Control pane - cooler policy and level controls."""
+"""Fan Control pane - compact full-width section for the dashboard.
+
+Layout:
+  row 1 : [🌀 Fan Control] [All/Fan dropdown] [0-30-50-70-100 node slider + entry%] ...[NVAPI/NVML]
+  row 2 : [Policy: [menu]] (1/3)      [✅ Apply] (1/3)      [🔄 Reset] (1/3)
+"""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Sequence
-
 import tkinter as tk
+from typing import TYPE_CHECKING, Callable, Optional, Sequence
 
 import customtkinter as ctk
 
@@ -17,203 +21,333 @@ from src.controllers.fan_control import (
 _PANE_BG = "#2b2b2b"
 _TEXT_FG = "#e5e5e5"
 _TEXT_FG_DIM = "#b3b3b3"
+_FONT_BODY = ("Segoe UI", 11)
+_FONT_HEADER = ("Segoe UI", 13, "bold")
+_SECTION_BORDER = "#1f4e79"
+
 from src.widgets.lightweight_controls import (
-    CanvasSlider,
     LiteButton,
     LiteEntry,
-    install_mousewheel_support,
 )
 
 if TYPE_CHECKING:
     from src.backend.cli import CliBackend
 
 
+class FanLevelSelector(tk.Frame):
+    """Fan level control: 5 snap nodes (0/30/50/70/100) on a track.
+
+    - Click/drag snaps to the nearest node (PState/D-selector styling).
+    - Mouse wheel adjusts steplessly (+/- 1%) across 0..100.
+    - Value is mirrored to ``variable`` (the % entry); external writes to
+      the variable redraw the handle.
+    """
+
+    _NODES = (0, 30, 50, 70, 100)
+    _NODE_COLORS = ("#44cc88", "#9acd32", "#f9a825", "#ff8c00", "#e53935")
+    _TRACK_Y = 14
+    _NODE_R = 9
+    _HANDLE_R = 8
+    _PAD_X = 34
+
+    def __init__(
+        self,
+        master,
+        variable: ctk.StringVar,
+        command: Optional[Callable[[int], None]] = None,
+        bg: str = _PANE_BG,
+    ):
+        super().__init__(master, bg=bg, bd=0, highlightthickness=0)
+        self._variable = variable
+        self._command = command
+        self._bg = bg
+        self._value = 60
+        self._syncing = False
+
+        self._canvas = tk.Canvas(
+            self, width=1, height=48, highlightthickness=0, bd=0, bg=bg
+        )
+        self._canvas.pack(fill="both", expand=True)
+        self._canvas.bind("<Button-1>", self._on_click)
+        self._canvas.bind("<B1-Motion>", self._on_drag)
+        self._canvas.bind("<MouseWheel>", self._on_wheel)
+        self._canvas.bind("<Button-4>", lambda e: self._step(-1))
+        self._canvas.bind("<Button-5>", lambda e: self._step(1))
+        self._canvas.bind("<Configure>", lambda _e: self._redraw())
+        variable.trace_add("write", lambda *_: self._on_var())
+
+    # ── geometry helpers ──────────────────────────────────────────────
+    def _track(self):
+        w = max(1, self._canvas.winfo_width())
+        x0 = self._PAD_X
+        x1 = max(x0 + 1, w - self._PAD_X)
+        return x0, x1
+
+    def _value_to_x(self, value: float) -> float:
+        x0, x1 = self._track()
+        return x0 + (value / 100.0) * (x1 - x0)
+
+    def _x_to_value(self, x: float) -> float:
+        x0, x1 = self._track()
+        ratio = max(0.0, min(1.0, (x - x0) / max(1e-9, (x1 - x0))))
+        return ratio * 100.0
+
+    # ── public API (CanvasSlider-compatible subset) ───────────────────
+    def get(self) -> float:
+        return float(self._value)
+
+    def set(self, value) -> None:
+        v = int(max(0, min(100, round(float(value)))))
+        if v == self._value:
+            return
+        self._value = v
+        self._redraw()
+
+    def configure(self, **kwargs):
+        state = kwargs.pop("state", None)
+        if state is not None:
+            self._state = state
+        self._redraw()
+
+    _state = "normal"
+
+    # ── interaction ───────────────────────────────────────────────────
+    def _on_click(self, event):
+        """Click snaps to the nearest preset node."""
+        if getattr(self, "_state", "normal") == "disabled":
+            return
+        value = self._x_to_value(float(event.x))
+        node = min(self._NODES, key=lambda n: abs(n - value))
+        self._commit(node)
+
+    def _on_drag(self, event):
+        """Dragging is stepless — snapping only happens on click."""
+        if getattr(self, "_state", "normal") == "disabled":
+            return
+        self._commit(int(round(self._x_to_value(float(event.x)))))
+
+    def _on_wheel(self, event):
+        if getattr(self, "_state", "normal") == "disabled":
+            return
+        delta = int(getattr(event, "delta", 0) or 0)
+        if delta == 0:
+            return
+        self._step(-1 if delta > 0 else 1)
+
+    def _step(self, direction: int):
+        if getattr(self, "_state", "normal") == "disabled":
+            return
+        self._commit(int(max(0, min(100, self._value + direction))))
+
+    def _commit(self, value: int):
+        value = int(max(0, min(100, value)))
+        if value == self._value:
+            return
+        self._syncing = True
+        try:
+            self._value = value
+            self._variable.set(str(value))
+            if callable(self._command):
+                self._command(value)
+        finally:
+            self._syncing = False
+        self._redraw()
+
+    def _on_var(self):
+        if self._syncing:
+            return
+        try:
+            value = int(float(self._variable.get().strip()))
+        except ValueError:
+            return
+        value = int(max(0, min(100, value)))
+        if value != self._value:
+            self._value = value
+            self._redraw()
+
+    # ── drawing ───────────────────────────────────────────────────────
+    def _redraw(self):
+        c = self._canvas
+        c.delete("all")
+        x0, x1 = self._track()
+
+        c.create_line(
+            x0, self._TRACK_Y, x1, self._TRACK_Y,
+            fill="#3a3a3a", width=4, capstyle=tk.ROUND,
+        )
+
+        for node, color in zip(self._NODES, self._NODE_COLORS):
+            nx = self._value_to_x(node)
+            c.create_oval(
+                nx - self._NODE_R,
+                self._TRACK_Y - self._NODE_R,
+                nx + self._NODE_R,
+                self._TRACK_Y + self._NODE_R,
+                fill=color,
+                outline="",
+            )
+            c.create_text(
+                nx,
+                self._TRACK_Y + 22,
+                text=str(node),
+                fill="#7e8da1",
+                font=("Segoe UI", 8, "bold"),
+            )
+
+        # current-value handle (PState/D handle styling)
+        hx = self._value_to_x(self._value)
+        c.create_oval(
+            hx - self._HANDLE_R,
+            self._TRACK_Y - self._HANDLE_R,
+            hx + self._HANDLE_R,
+            self._TRACK_Y + self._HANDLE_R,
+            fill="#f5f7fb",
+            outline="#59b0ff",
+            width=2,
+        )
+
+
 class FanControlPane:
-    """Fan/cooler control pane."""
+    """Compact fan-control section (dashboard integration)."""
 
     def __init__(
         self,
         parent: ctk.CTkFrame,
         backend: "CliBackend",
-        embedded: bool = False,
+        embedded: bool = True,
+        content_parent: ctk.CTkFrame | None = None,
     ) -> None:
         self.frame = parent
         self.controller = FanControlController(self, backend)
         self._interactive_widgets: list[object] = []
         self._supported_state = True
 
-        if embedded:
-            container = self.frame
-        else:
-            container = ctk.CTkScrollableFrame(self.frame)
-            container.pack(fill="both", expand=True, padx=10, pady=10)
-            install_mousewheel_support(container)
+        host = content_parent if content_parent is not None else parent
+        self._build_content(host)
 
-        self._build_content(container)
+    # ── UI ────────────────────────────────────────────────────────────────
+    def _build_content(self, host: ctk.CTkFrame) -> None:
+        section = ctk.CTkFrame(
+            host, border_width=1, border_color=_SECTION_BORDER, corner_radius=10
+        )
+        section.pack(fill="x", pady=(0, 10))
 
-    def _build_content(self, parent: ctk.CTkFrame) -> None:
-        self.content_row = tk.Frame(parent, bg=_PANE_BG)
-        self.content_row.pack(fill="x", pady=(0, 10))
-        # uniform: strictly equal halves — matches the overclock cards above
-        self.content_row.grid_columnconfigure(0, weight=1, uniform="fan_cards")
-        self.content_row.grid_columnconfigure(1, weight=1, uniform="fan_cards")
+        # ── One shared grid, two rows x (third | separator | third | separator | third).
+        # Hard vertical separators enforce the 1/3 alignment visually.
+        grid = tk.Frame(section, bg=_PANE_BG)
+        grid.pack(fill="x", padx=12, pady=(10, 10))
+        for col in (0, 2, 4):
+            grid.columnconfigure(col, weight=1, uniform="fan_thirds")
+        for col in (1, 3):
+            grid.columnconfigure(col, weight=0)
+        for sep_col in (1, 3):
+            tk.Frame(
+                grid, width=1, height=84, bg="#3f3f3f", bd=0, highlightthickness=0
+            ).grid(row=0, column=sep_col, rowspan=2, sticky="ns", padx=8)
 
-        self.cooler_frame = ctk.CTkFrame(self.content_row)
-        self.cooler_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
-
-        cooler_header = tk.Frame(self.cooler_frame, bg=_PANE_BG)
-        cooler_header.pack(fill="x", padx=10, pady=(10, 9))
+        # Row 0, left third: title + fan ID
+        r0_left = tk.Frame(grid, bg=_PANE_BG)
+        r0_left.grid(row=0, column=0, sticky="ew")
         self.cooler_title = tk.Label(
-            cooler_header,
+            r0_left,
             text="🌀 Fan Control",
-            font=("Segoe UI", 13, "bold"),
+            font=_FONT_HEADER,
             bg=_PANE_BG,
             fg=_TEXT_FG,
         )
         self.cooler_title.pack(side="left")
+        self.fan_id_var = ctk.StringVar(value="All")
+        self.fan_id_menu = ctk.CTkOptionMenu(
+            r0_left, variable=self.fan_id_var, values=["All", "Fan 1", "Fan 2"], width=110
+        )
+        # right-aligned to the 1/3 boundary (matches the Policy dropdown edge)
+        self.fan_id_menu.pack(side="right")
+        self._interactive_widgets.append(self.fan_id_menu)
 
+        # Row 0, middle third: level slider + entry%
+        self.level_var = ctk.StringVar(value="60")
+        r0_mid = tk.Frame(grid, bg=_PANE_BG)
+        r0_mid.grid(row=0, column=2, sticky="ew")
+        self.level_slider = FanLevelSelector(
+            r0_mid,
+            self.level_var,
+            command=self.controller.on_slider_change,
+        )
+        self.level_slider.pack(side="left", fill="x", expand=True)
+        self._interactive_widgets.append(self.level_slider)
+
+        # Row 0, right third: NVAPI/NVML
+        r0_right = tk.Frame(grid, bg=_PANE_BG)
+        r0_right.grid(row=0, column=4, sticky="ew")
+        self.level_entry = LiteEntry(
+            r0_right, textvariable=self.level_var, width=4, justify="right"
+        )
+        self.level_entry.pack(side="left", padx=(0, 2))
+        self._interactive_widgets.append(self.level_entry)
+        tk.Label(
+            r0_right, text="%", font=_FONT_BODY, bg=_PANE_BG, fg=_TEXT_FG_DIM
+        ).pack(side="left", padx=(0, 10))
         self.cooler_api_var = ctk.StringVar(value="NVAPI")
         self.cooler_api_menu = ctk.CTkOptionMenu(
-            cooler_header,
+            r0_right,
             variable=self.cooler_api_var,
             values=["NVAPI", "NVML"],
-            width=94,  # match the Clock-offset API selector width
+            width=84,
             command=lambda _: self.controller.on_backend_change(),
         )
         self.cooler_api_menu.pack(side="right")
         self._interactive_widgets.append(self.cooler_api_menu)
 
-        grid = tk.Frame(self.cooler_frame, bg=_PANE_BG)
-        grid.pack(fill="x", padx=10, pady=(0, 10))
-        grid.columnconfigure(1, weight=1)
+        self.level_var.trace_add(
+            "write", lambda *_: self.controller.on_entry_change()
+        )
 
-        row = 0
+        # Row 1, left third: Policy
+        r1_left = tk.Frame(grid, bg=_PANE_BG)
+        r1_left.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        r1_left.grid_columnconfigure(1, weight=1)
         tk.Label(
-            grid,
-            text="ID:",
-            font=("Segoe UI", 11),
+            r1_left,
+            text="Policy:",
+            font=_FONT_BODY,
             bg=_PANE_BG,
             fg=_TEXT_FG,
-        ).grid(row=row, column=0, sticky="w", padx=5, pady=3)
-        self.fan_id_var = ctk.StringVar(value="All")
-        self.fan_id_menu = ctk.CTkOptionMenu(
-            grid, variable=self.fan_id_var, values=["All", "Fan 1", "Fan 2"], width=120
-        )
-        self.fan_id_menu.grid(row=row, column=1, sticky="w", padx=5, pady=3)
-        self._interactive_widgets.append(self.fan_id_menu)
-
-        row += 1
-        tk.Label(
-            grid, text="Policy:", font=("Segoe UI", 11), bg=_PANE_BG, fg=_TEXT_FG
-        ).grid(row=row, column=0, sticky="w", padx=5, pady=3)
+        ).grid(row=0, column=0, sticky="w")
         self.policy_var = ctk.StringVar(value="continuous")
         self.policy_menu = ctk.CTkOptionMenu(
-            grid,
+            r1_left,
             variable=self.policy_var,
             values=NVAPI_POLICIES,
-            width=220,
+            width=1,  # grid stretches it to fill the third
         )
-        self.policy_menu.grid(row=row, column=1, sticky="w", padx=5, pady=3)
+        self.policy_menu.grid(row=0, column=1, sticky="ew", padx=(6, 0))
         self._interactive_widgets.append(self.policy_menu)
 
-        row += 1
-        tk.Label(
-            grid,
-            text="Level (%):",
-            font=("Segoe UI", 11),
-            bg=_PANE_BG,
-            fg=_TEXT_FG,
-        ).grid(row=row, column=0, sticky="w", padx=5, pady=3)
-        self.level_var = ctk.StringVar(value="60")
-
-        level_frame = tk.Frame(grid, bg=_PANE_BG)
-        level_frame.grid(row=row, column=1, sticky="ew", padx=5, pady=3)
-        level_frame.grid_columnconfigure(0, weight=1)
-
-        self.level_slider = CanvasSlider(
-            level_frame,
-            from_=0,
-            to=100,
-            number_of_steps=100,
-            command=self.controller.on_slider_change,
-        )
-        self.level_slider.configure(width=140)
-        self.level_slider.set(60)
-        self.level_slider.grid(row=0, column=0, sticky="ew", padx=(0, 10))
-        self._interactive_widgets.append(self.level_slider)
-
-        self.level_entry = LiteEntry(
-            level_frame, textvariable=self.level_var, width=6, justify="right"
-        )
-        self.level_entry.grid(row=0, column=1)
-        self._interactive_widgets.append(self.level_entry)
-        tk.Label(
-            level_frame, text="%", font=("Segoe UI", 10), bg=_PANE_BG, fg="#e5e5e5"
-        ).grid(row=0, column=2, padx=(3, 0))
-
-        self.level_var.trace_add("write", lambda *_: self.controller.on_entry_change())
-
-        btn_row = ctk.CTkFrame(self.cooler_frame, fg_color="transparent")
-        btn_row.pack(fill="x", padx=10, pady=(0, 10))
+        # Row 1, middle third: Apply
         self.btn_apply_cooler = LiteButton(
-            btn_row,
-            text="✅ Apply Fan Settings",
-            width=180,
+            grid,
+            text="✅ Apply Section",
+            width=10,
             fg_color="#1a6b2a",
             hover_color="#145220",
             command=self.controller.apply,
         )
-        self.btn_apply_cooler.pack(side="left", padx=5)
+        self.btn_apply_cooler.grid(row=1, column=2, sticky="ew", pady=(8, 0))
         self._interactive_widgets.append(self.btn_apply_cooler)
 
+        # Row 1, right third: Reset
         self.btn_reset_cooler = LiteButton(
-            btn_row,
+            grid,
             text="🔄 Reset to Auto",
-            width=150,
+            width=10,
             fg_color="#c0392b",
             hover_color="#96281b",
             command=self.controller.reset,
         )
-        self.btn_reset_cooler.pack(side="left", padx=5)
+        self.btn_reset_cooler.grid(row=1, column=4, sticky="ew", pady=(8, 0))
         self._interactive_widgets.append(self.btn_reset_cooler)
 
-        self.preset_frame = ctk.CTkFrame(self.content_row)
-        self.preset_frame.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
-        self.preset_title = tk.Label(
-            self.preset_frame,
-            text="Quick Presets",
-            font=("Segoe UI", 13, "bold"),
-            bg=_PANE_BG,
-            fg=_TEXT_FG,
-        )
-        self.preset_title.pack(anchor="w", padx=10, pady=(10, 9))
-
-        preset_grid = tk.Frame(self.preset_frame, bg=_PANE_BG)
-        preset_grid.pack(fill="x", padx=10, pady=(0, 10))
-        preset_grid.grid_columnconfigure(0, weight=1)
-        preset_grid.grid_columnconfigure(1, weight=1)
-
-        presets = [
-            ("Silent (30%)", 30),
-            ("Balanced (50%)", 50),
-            ("Performance (70%)", 70),
-            ("Max (100%)", 100),
-        ]
-        for idx, (label, level) in enumerate(presets):
-            btn = LiteButton(
-                preset_grid,
-                text=label,
-                command=lambda lvl=level: self.controller.set_preset(lvl),
-                width=140,
-            )
-            btn.grid(row=idx // 2, column=idx % 2, sticky="ew", padx=5, pady=5)
-            self._interactive_widgets.append(btn)
-
-        self._enabled_frame_color = self.cooler_frame.cget("fg_color")
-        self._dim_frame_color = ("gray86", "gray20")
-        self._enabled_title_color = _TEXT_FG  # tk.Label: plain fg color
-        self._dim_title_color = "gray55"
-
+    # ── Controller protocol ───────────────────────────────────────────────
     def selected_api(self) -> str:
         return self.cooler_api_var.get()
 
@@ -245,7 +379,7 @@ class FanControlPane:
         self.level_slider.set(level)
 
     def set_supported(self, supported: bool) -> None:
-        self.controller.set_supported(supported)
+        self.set_supported_state(supported)
 
     def set_supported_state(self, supported: bool) -> None:
         if supported == self._supported_state:
@@ -259,11 +393,7 @@ class FanControlPane:
             except Exception:
                 pass
 
-        title_color = self._enabled_title_color if supported else self._dim_title_color
-        # Card backgrounds stay unchanged in the dim state: repainting them
-        # gray would mismatch the fixed-bg canvases inside (ugly black blocks).
-        self.cooler_title.configure(fg=title_color)
-        self.preset_title.configure(fg=title_color)
+        self.cooler_title.configure(fg=_TEXT_FG if supported else "#8a8a8a")
 
     def on_resize_state_changed(
         self, resizing: bool, force_flush: bool = False
