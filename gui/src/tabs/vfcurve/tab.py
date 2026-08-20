@@ -643,6 +643,7 @@ class VFCurveTab:
         if retcode != 0 or points is None:
             self.app.console.append("[GUI] VFP query failed.\n")
         else:
+            self._last_load_ts = _time.monotonic()
             if not self._auto_refreshing:
                 self.app.console.append(
                     f"[GUI] VF curve loaded ({len(points)} points).\n"
