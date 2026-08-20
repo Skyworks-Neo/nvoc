@@ -99,7 +99,7 @@ class AutoscanTab:
         tk.Label(params_grid, text="Output CSV:", font=_FONT_BODY, bg=_PANE_BG, fg=_TEXT_FG).grid(
             row=row, column=0, sticky="w", padx=5, pady=3
         )
-        self.output_csv_var = ctk.StringVar(value=r".\ws\vfp-tem.csv")
+        self.output_csv_var = ctk.StringVar(value="./ws/vfp-tem.csv")
         out_row = tk.Frame(params_grid, bg=_PANE_BG)
         out_row.grid(row=row, column=1, sticky="ew", padx=5, pady=3)
         out_entry = LiteEntry(
@@ -122,7 +122,7 @@ class AutoscanTab:
         tk.Label(params_grid, text="Init CSV:", font=_FONT_BODY, bg=_PANE_BG, fg=_TEXT_FG).grid(
             row=row, column=0, sticky="w", padx=5, pady=3
         )
-        self.init_csv_var = ctk.StringVar(value=r".\ws\vfp-init.csv")
+        self.init_csv_var = ctk.StringVar(value="./ws/vfp-init.csv")
         init_row = tk.Frame(params_grid, bg=_PANE_BG)
         init_row.grid(row=row, column=1, sticky="ew", padx=5, pady=3)
         init_entry = LiteEntry(
@@ -326,8 +326,8 @@ class AutoscanTab:
 
     def _import_final(self) -> None:
         gpu_args = self.app.get_gpu_args()
-        self.app.run_cli_display(gpu_args + ["import-vfp", r".\ws\vfp.csv"])
+        self.app.run_cli_display(gpu_args + ["import-vfp", "./ws/vfp.csv"])
 
     def _export_final(self) -> None:
         gpu_args = self.app.get_gpu_args()
-        self.app.run_cli_display(gpu_args + ["export-vfp", r".\ws\vfp-final.csv"])
+        self.app.run_cli_display(gpu_args + ["export-vfp", "./ws/vfp-final.csv"])
