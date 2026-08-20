@@ -1173,8 +1173,8 @@ impl GpuOperation for QueryNvapiDNotifier {
 /// the private-but-publicly-resolvable 0x2C73AFDC (rail builder) /
 /// 0xA3070DB0 (control GET) / 0x5D0634EE (live status) — see
 /// `reverse/melonvolt/ANALYSIS.md` for the full RE chain. The µV-offset SET
-/// sibling (0x87C55C8A) is intentionally NOT wrapped (needs
-/// snapshot/verify/restore semantics).
+/// sibling (0x87C55C8A) is wrapped as [`SetNvapiVoltRailOffset`] and the
+/// absolute-target convenience as [`SetNvapiVoltRailTarget`].
 /// Returns `None` where the driver doesn't expose the private interface.
 #[derive(Clone, Copy, Debug)]
 pub struct QueryNvapiVoltRails;
@@ -1300,6 +1300,153 @@ pub struct NvapiVoltRailOffsetApplied {
     /// The driver clamps this to `min(target, vbios_wall, vrm_max_wall)`, so
     /// it may be below the requested offset's implied wall. 0 = no type-1
     /// status entry / driver hasn't refreshed yet (re-run get-volt-rails).
+    pub effective_wall_uV: i32,
+}
+
+/// Set a volt-rail to an ABSOLUTE target voltage by deriving the required µV
+/// offset from the live control/status snapshot. Convenience wrapper around
+/// the melonVolt offset SET (see `reverse/melonvolt/ANALYSIS.md`) for
+/// GUI/TUI sliders that think in absolute volts, not offsets.
+///
+/// Derivation (the offset is relative to the factory/default wall):
+///   - `control` entry `.values[0]` = the offset currently applied (µV)
+///   - `status` type-1 entry `.values[1]` = the target wall the driver holds
+///     (µV) — the wall *including* the current offset, before the
+///     VRM/vBIOS clamp
+///   - `base_wall = target_wall − current_offset` recovers the factory wall
+///   - `offset = target_uV − base_wall` is what gets written
+///
+/// Because the initial offset is unknown to a caller that thinks in
+/// absolute volts, this read-compute-write happens inside one operation so
+/// the snapshot is consistent. The driver still clamps the effective wall
+/// (status index 4) to `min(target, vbios_wall, vrm_max_wall)` on its own —
+/// a target past the ceiling is not dangerous, it just caps out there.
+#[derive(Clone, Copy, Debug)]
+#[allow(non_snake_case)] // uV suffix matches the nvapi-rs field naming
+pub struct SetNvapiVoltRailTarget {
+    /// rail bit within the mask (RTX 5090 MSVDD = 1)
+    pub rail_bit: u32,
+    /// absolute target voltage in µV (e.g. 1150000 = 1.15V). Passed through
+    /// after offset derivation — the driver clamps the effective wall itself.
+    pub target_uV: i32,
+    /// refuse to write unless the control entry's current type equals this
+    /// (melonVolt requires 3 on 5090 MSVDD); `None` = no type check
+    pub expected_type: Option<u32>,
+}
+
+impl GpuOperation for SetNvapiVoltRailTarget {
+    type Output = Option<NvapiVoltRailTargetApplied>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiVoltRailTarget
+    }
+
+    #[allow(non_snake_case)] // uV-suffixed locals match the nvapi-rs field naming
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let gpu = target.nvapi()?;
+        let rails = gpu.volt_rails().map_err(Error::from)?;
+        let Some(rails) = rails else {
+            return Ok(None);
+        };
+        let ctrl = rails
+            .control
+            .iter()
+            .find(|e| e.rail_bit == self.rail_bit)
+            .ok_or_else(|| {
+                Error::Custom(format!(
+                    "rail bit {} not present (mask 0x{:08X})",
+                    self.rail_bit, rails.rail_mask
+                ))
+            })?;
+        if let Some(expected) = self.expected_type
+            && ctrl.entry_type != expected
+        {
+            return Err(Error::Custom(format!(
+                "rail {} entry type {} != expected {expected} — refusing to write \
+                 (type semantics differ per platform; override with a different \
+                 --expect-type if you know better)",
+                self.rail_bit, ctrl.entry_type
+            )));
+        }
+        // The offset the driver currently holds for this rail (control entry
+        // payload index 0).
+        let previous_offset_uV = ctrl.values[0];
+        // The target wall the driver currently holds (status type-1 entry,
+        // payload index 1). This is the wall *including* the current offset,
+        // before the VRM/vBIOS clamp — see sys status_values doc.
+        let target_wall_uV = rails
+            .status
+            .iter()
+            .find(|e| e.rail_bit == self.rail_bit && e.entry_type == 1)
+            .and_then(|e| e.values.get(1).copied())
+            .unwrap_or(0);
+        if target_wall_uV == 0 {
+            // The dGPU is likely asleep/idle and hasn't populated status, so
+            // the base wall can't be recovered and the derived offset would
+            // be garbage. The run() pre-wake should normally keep it awake,
+            // but a status value of 0 means the driver hasn't reported one.
+            return Err(Error::Custom(format!(
+                "rail {} status target wall is 0 — the dGPU may be idle/asleep; \
+                 apply a load and retry (cannot derive base wall from an empty \
+                 status)",
+                self.rail_bit
+            )));
+        }
+        // Recover the factory/default wall by removing the current offset
+        // from the target wall (target_wall = base + offset).
+        let base_wall_uV = target_wall_uV - previous_offset_uV;
+        let offset_uV = self.target_uV - base_wall_uV;
+        let applied_uV = gpu
+            .set_volt_rail_value(self.rail_bit, offset_uV)
+            .map_err(Error::from)?
+            .ok_or_else(|| Error::Custom("volt-rails family vanished between reads".into()))?;
+        // Read back the status entry for this rail to surface the effective
+        // wall the driver actually put in force (clamped to VRM/vBIOS max).
+        // The driver may not have refreshed status immediately after SET; a 0
+        // here means "no type-1 entry / not yet updated" — re-run
+        // get-volt-rails to confirm.
+        #[allow(non_snake_case)]
+        let effective_wall_uV = gpu
+            .volt_rails()
+            .map_err(Error::from)?
+            .and_then(|r| {
+                r.status
+                    .iter()
+                    .find(|e| e.rail_bit == self.rail_bit && e.entry_type == 1)
+                    .and_then(|e| e.values.get(4).copied())
+            })
+            .unwrap_or(0);
+        Ok(Some(NvapiVoltRailTargetApplied {
+            rail_bit: self.rail_bit,
+            target_uV: self.target_uV,
+            base_wall_uV,
+            offset_uV,
+            previous_offset_uV,
+            applied_uV,
+            effective_wall_uV,
+        }))
+    }
+}
+
+/// Result of a successful absolute-target volt-rail write.
+#[derive(Clone, Copy, Debug)]
+#[allow(non_snake_case)] // uV suffix matches the nvapi-rs field naming
+pub struct NvapiVoltRailTargetApplied {
+    pub rail_bit: u32,
+    /// absolute target requested (µV)
+    pub target_uV: i32,
+    /// derived factory/default wall = target_wall − previous offset (µV)
+    pub base_wall_uV: i32,
+    /// derived offset actually written (µV) = target − base_wall
+    pub offset_uV: i32,
+    /// offset that was in effect before the write (µV)
+    pub previous_offset_uV: i32,
+    /// offset the driver retained (== offset_uV unless clamped)
+    pub applied_uV: i32,
+    /// effective wall after SET, read back from the status entry's index 4.
+    /// The driver clamps this to `min(target, vbios_wall, vrm_max_wall)`, so
+    /// it may be below the requested target. 0 = no type-1 status entry /
+    /// driver hasn't refreshed yet (re-run get-volt-rails).
     pub effective_wall_uV: i32,
 }
 

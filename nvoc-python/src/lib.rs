@@ -16,11 +16,11 @@ use nvoc_core::{
     SetAutoBoost, SetAutoBoostDefault, SetClockOffset, SetCoolerLevels, SetDomainVfpDeltas,
     SetEdid, SetFanSpeed, SetLegacyClocks, SetLockedClocks, SetNvapiDNotifier,
     SetNvapiDynamicBoost, SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiSensorLimits,
-    SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvapiVoltRailOffset, SetNvmlPstateLock, SetPowerLimit,
-    SetPstateBaseVoltage, SetPstateClockOffset, SetTemperatureLimit, SetVfpFrequencyLock,
-    SetVfpPointDelta, SetVfpRangeDelta, SetVfpVoltageLock, SetVoltageBoost, VfpResetDomain,
-    discover_targets, nvml_pstate_to_str, parse_nvml_fan_control_policy, run,
-    try_parse_nvml_pstate,
+    SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvapiVoltRailOffset, SetNvapiVoltRailTarget,
+    SetNvmlPstateLock, SetPowerLimit, SetPstateBaseVoltage, SetPstateClockOffset,
+    SetTemperatureLimit, SetVfpFrequencyLock, SetVfpPointDelta, SetVfpRangeDelta,
+    SetVfpVoltageLock, SetVoltageBoost, VfpResetDomain, discover_targets, nvml_pstate_to_str,
+    parse_nvml_fan_control_policy, run, try_parse_nvml_pstate,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -1821,6 +1821,51 @@ fn query_volt_rails(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
     py_value(py, &value)
 }
 
+/// Set a volt-rail to an ABSOLUTE target voltage (millivolts). The required
+/// µV offset is derived inside the operation from the live control offset +
+/// status target wall — callers think in mV, not offsets. Returns the
+/// derived base wall, the offset written, and the effective wall read back
+/// (clamped by the driver to min(target, vbios_wall, vrm_max_wall)).
+#[pyfunction]
+fn set_volt_rail_target(
+    py: Python<'_>,
+    gpu: &str,
+    rail_bit: u32,
+    target_mv: i32,
+    expect_type: Option<u32>,
+) -> PyResult<Py<PyAny>> {
+    #[allow(non_snake_case)] // uV-suffixed local matches the nvapi-rs naming
+    let target_uV = target_mv.checked_mul(1000).ok_or_else(|| {
+        PyRuntimeError::new_err(format!("target {target_mv}mV overflows the µV range"))
+    })?;
+    let value = with_target(gpu, "nvapi", |target| {
+        let out = run(
+            target,
+            SetNvapiVoltRailTarget {
+                rail_bit,
+                target_uV,
+                expected_type: expect_type,
+            },
+        )
+        .map_err(to_py_err)?
+        .output;
+        Ok(match out {
+            Some(a) => value_object([
+                ("applied", Value::from(true)),
+                ("rail_bit", Value::from(a.rail_bit)),
+                ("target_uV", Value::from(a.target_uV)),
+                ("base_wall_uV", Value::from(a.base_wall_uV)),
+                ("offset_uV", Value::from(a.offset_uV)),
+                ("previous_offset_uV", Value::from(a.previous_offset_uV)),
+                ("applied_uV", Value::from(a.applied_uV)),
+                ("effective_wall_uV", Value::from(a.effective_wall_uV)),
+            ]),
+            None => value_object([("supported", Value::from(false))]),
+        })
+    })?;
+    py_value(py, &value)
+}
+
 #[pyfunction]
 fn set_volt_rail_offset(
     py: Python<'_>,
@@ -2630,6 +2675,7 @@ fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(set_dnotifier, m)?)?;
     m.add_function(wrap_pyfunction!(query_volt_rails, m)?)?;
     m.add_function(wrap_pyfunction!(set_volt_rail_offset, m)?)?;
+    m.add_function(wrap_pyfunction!(set_volt_rail_target, m)?)?;
     m.add_function(wrap_pyfunction!(set_target_temp, m)?)?;
     m.add_function(wrap_pyfunction!(set_applications_clocks, m)?)?;
     m.add_function(wrap_pyfunction!(reset_applications_clocks, m)?)?;

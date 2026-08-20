@@ -58,6 +58,10 @@ pub enum OperationKind {
     SetNvapiDNotifier,
     QueryNvapiVoltRails,
     SetNvapiVoltRailOffset,
+    /// Set a volt-rail to an absolute target voltage (mV) by deriving the
+    /// required µV offset from the live control/status snapshot. Shares the
+    /// melonVolt write path with [`OperationKind::SetNvapiVoltRailOffset`].
+    SetNvapiVoltRailTarget,
     QueryNvapiPStateLevels,
     QueryNvapiPStateLockStatus,
     SetNvapiPStateNative,
@@ -140,6 +144,8 @@ impl OperationKind {
                 | SetNvapiTargetTemp
                 | SetNvapiDNotifier
                 | SetNvapiPStateNative
+                | SetNvapiVoltRailOffset
+                | SetNvapiVoltRailTarget
                 | ResetNvapiPowerLimits
                 | ResetNvapiSensorLimits
                 | ResetPstateClockOffsets

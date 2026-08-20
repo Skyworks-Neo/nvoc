@@ -20,11 +20,11 @@ use nvoc_core::{
     SetCoolerLevels, SetEdid, SetFanSpeed, SetLegacyClocks, SetLockedClocks, SetNvapiDNotifier,
     SetNvapiDynamicBoost, SetNvapiPStateNative, SetNvapiPowerLimits, SetNvapiPstateLock,
     SetNvapiSensorLimits, SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvapiVoltRailOffset,
-    SetNvmlPstateLock, SetPowerLimit, SetPstateBaseVoltage, SetPstateClockOffset,
-    SetTemperatureLimit, SetVfpFrequencyLock, SetVfpPointDelta, SetVfpRangeDelta,
-    SetVfpVoltageLock, SetVoltageBoost, VfpResetDomain, discover_targets, nvml_pstate_to_str,
-    parse_nvapi_locked_voltage_target, parse_nvml_fan_control_policy, parse_nvml_pstate, run,
-    select_targets,
+    SetNvapiVoltRailTarget, SetNvmlPstateLock, SetPowerLimit, SetPstateBaseVoltage,
+    SetPstateClockOffset, SetTemperatureLimit, SetVfpFrequencyLock, SetVfpPointDelta,
+    SetVfpRangeDelta, SetVfpVoltageLock, SetVoltageBoost, VfpResetDomain, discover_targets,
+    nvml_pstate_to_str, parse_nvapi_locked_voltage_target, parse_nvml_fan_control_policy,
+    parse_nvml_pstate, run, select_targets,
 };
 use serde_json::{Value, json};
 use time::OffsetDateTime;
@@ -159,6 +159,7 @@ pub enum Command {
     SetDNotifier,
     GetVoltRails,
     SetVoltRailOffset,
+    SetVoltRailTarget,
     SetTemperatureThresholds,
     SetThermalLimitC,
     SetFanPercent,
@@ -240,6 +241,7 @@ impl Command {
             Self::SetDNotifier => "set-dnotifier",
             Self::GetVoltRails => "get-volt-rails",
             Self::SetVoltRailOffset => "set-volt-rail-offset",
+            Self::SetVoltRailTarget => "set-volt-rail-target",
             Self::SetThermalLimitC => "set-thermal-limit-c",
             Self::SetTemperatureThresholds => "set-temp-thresholds",
             Self::SetFanPercent => "set-fan-percent",
@@ -327,6 +329,9 @@ impl Command {
             }
             Self::SetVoltRailOffset => {
                 "Set a volt-rail uV offset (melonVolt write path; 5090 MSVDD = rail 1 type 3)"
+            }
+            Self::SetVoltRailTarget => {
+                "Set a volt-rail to an absolute target voltage in mV (derives the uV offset from the live control/status snapshot)"
             }
             Self::SetThermalLimitC => "Set thermal limit in Celsius",
             Self::SetTemperatureThresholds => {
@@ -440,7 +445,8 @@ impl Command {
             | Self::SetApiRestriction
             | Self::SetEdid
             | Self::SetLegacyClocksMhz
-            | Self::SetVoltRailOffset => (2, 2),
+            | Self::SetVoltRailOffset
+            | Self::SetVoltRailTarget => (2, 2),
             Self::SetVfpRangeDeltaMhz => (3, 3),
             Self::SetPstateLock => (1, 2),
             _ => (0, 0),
@@ -476,7 +482,7 @@ impl Command {
             Self::SetTgpWatt | Self::ResetTgpWatt | Self::SetTemperatureThresholds => {
                 &["policy-index"]
             }
-            Self::SetVoltRailOffset => &["expect-type"],
+            Self::SetVoltRailOffset | Self::SetVoltRailTarget => &["expect-type"],
             _ => &[],
         }
     }
@@ -555,6 +561,18 @@ impl Command {
                     "arg_offset_uv",
                     "OFFSET_UV",
                     "Microvolt offset, for example -25000 or +50000uV; passed through verbatim, the driver clamps the effective wall to min(target, vbios_wall, vrm_max_wall)",
+                ),
+            ],
+            Self::SetVoltRailTarget => vec![
+                PositionalArg::free(
+                    "arg_rail_bit",
+                    "RAIL_BIT",
+                    "Volt-rail bit index from get-volt-rails (e.g. 0 for the single rail on a 4060 laptop, 1 for 5090 MSVDD)",
+                ),
+                PositionalArg::hyphen(
+                    "arg_target_mv",
+                    "TARGET_MV",
+                    "Absolute target voltage in millivolts, for example 1150 or 1150mV; the required uV offset is derived from the live control/status snapshot and the driver clamps the effective wall to min(target, vbios_wall, vrm_max_wall)",
                 ),
             ],
             Self::SetFanPercent => vec![PositionalArg::free(
@@ -786,6 +804,7 @@ const COMMANDS: &[Command] = &[
     Command::SetVfpVoltageLock,
     Command::SetVoltageBoostPercent,
     Command::SetVoltRailOffset,
+    Command::SetVoltRailTarget,
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2300,6 +2319,50 @@ fn execute_target(
                 None => json!({"supported": false}),
             })
         }
+        Command::SetVoltRailTarget => {
+            // Absolute-target convenience over SetVoltRailOffset: the caller
+            // thinks in mV, we recover the factory/default wall from the live
+            // control offset + status target wall and derive the µV offset to
+            // write. The driver still clamps the effective wall itself.
+            let rail_bit = parse_usize(&invocation.positionals[0], "rail-bit")? as u32;
+            let target_mv = parse_i32_unit(&invocation.positionals[1], "mv", "millivolt")?;
+            #[allow(non_snake_case)] // uV-suffixed local matches the nvapi-rs naming
+            let target_uV = target_mv.checked_mul(1000).ok_or_else(|| {
+                CliError::new(format!("target {target_mv}mV overflows the µV range"))
+            })?;
+            let expect_type = option_one(invocation, "expect-type")
+                .map(|s| s.parse::<u32>())
+                .transpose()
+                .map_err(|e| CliError::new(format!("invalid --expect-type: {e}")))?;
+            let out = run(
+                target,
+                SetNvapiVoltRailTarget {
+                    rail_bit,
+                    target_uV,
+                    expected_type: expect_type,
+                },
+            )?
+            .output;
+            Ok(match out {
+                Some(a) => json!({
+                    "applied": true,
+                    "rail_bit": a.rail_bit,
+                    "target_uV": a.target_uV,
+                    // factory/default wall recovered from
+                    // (status target wall) − (control current offset)
+                    "base_wall_uV": a.base_wall_uV,
+                    // derived µV offset actually written
+                    "offset_uV": a.offset_uV,
+                    "previous_offset_uV": a.previous_offset_uV,
+                    "applied_uV": a.applied_uV,
+                    // effective wall read back after SET (clamped to
+                    // min(target, vbios_wall, vrm_max_wall)); 0 = driver
+                    // hasn't refreshed status yet — re-run get-volt-rails.
+                    "effective_wall_uV": a.effective_wall_uV,
+                }),
+                None => json!({"supported": false}),
+            })
+        }
         Command::SetTemperatureThresholds => {
             // NVAPI-only SET of one target-temperature (温度墙) policy slot.
             // `--policy-index` picks the slot (default 2 = the wall); the
@@ -3153,13 +3216,16 @@ fn volt_rails_p0_json(rails: &nvoc_core::VoltRails) -> Option<Value> {
     let b = rails.p0_bounds()?;
     // ceiling = min(vbios_wall, vrm_max_wall) − base wall; the µV still
     // available before the driver clamps the effective wall.
-    let ceiling_uV = rails.offset_ceiling_uV(0).or_else(|| {
-        let mut c = b.vrm_max_wall_uV;
-        if b.vbios_wall_uV > 0 && b.vbios_wall_uV < c {
-            c = b.vbios_wall_uV;
-        }
-        Some((c - b.effective_wall_uV).max(0))
-    }).unwrap_or(0);
+    let ceiling_uV = rails
+        .offset_ceiling_uV(0)
+        .or_else(|| {
+            let mut c = b.vrm_max_wall_uV;
+            if b.vbios_wall_uV > 0 && b.vbios_wall_uV < c {
+                c = b.vbios_wall_uV;
+            }
+            Some((c - b.effective_wall_uV).max(0))
+        })
+        .unwrap_or(0);
     Some(json!({
         "current_uV": b.current_uV,
         "target_wall_uV": b.target_wall_uV,

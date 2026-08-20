@@ -2341,6 +2341,16 @@ mod tests {
                 "applied_uV": -25000,
                 "effective_wall_uV": 980000,
             }),
+            Command::SetVoltRailTarget => json!({
+                "applied": true,
+                "rail_bit": 0,
+                "target_uV": 1150000,
+                "base_wall_uV": 1085000,
+                "offset_uV": 65000,
+                "previous_offset_uV": 200000,
+                "applied_uV": 65000,
+                "effective_wall_uV": 1150000,
+            }),
         }
     }
 }
