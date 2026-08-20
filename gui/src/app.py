@@ -918,7 +918,10 @@ class App(ctk.CTk):
     def _query_overclock_status(self):
         """Run 'status' and refresh Overclock current values from latest cache."""
         self.run_gpu_query_async(
-            ["status"], self._apply_overclock_status, thread_name="overclock-status"
+            ["status"],
+            self._apply_overclock_status,
+            thread_name="overclock-status",
+            allow_wake=False,  # automatic refresh chain: never block GC6
         )
 
     @staticmethod
@@ -1388,7 +1391,8 @@ class App(ctk.CTk):
             action,
             self._on_native_output,
             lambda code: self.after(
-                0, lambda: self._after_native_action(code, on_finished)
+                0,
+                lambda: self._after_native_action(code, on_finished, description),
             ),
         )
         if not started:
@@ -1399,12 +1403,18 @@ class App(ctk.CTk):
         self, commands: List[Tuple[str, Callable[[Any], Optional[str]]]]
     ) -> None:
         queue = list(commands)
+        all_commands = list(commands)
 
         def start_next(_code: int = 0) -> None:
             if _code != 0:
                 return
             if not queue:
-                self.refresh_after_native_action()
+                self.refresh_after_native_action(
+                    curve_affecting=any(
+                        k in " ".join(d for d, _ in all_commands).lower()
+                        for k in self._CURVE_AFFECTING
+                    )
+                )
                 return
             description, action = queue.pop(0)
             started = self.backend.run_action(
@@ -1418,21 +1428,34 @@ class App(ctk.CTk):
 
         start_next()
 
+    # Only these actions can change the VF curve; everything else (PPAB,
+    # fan, D-Notifier, TGP, temp ...) skips the curve re-query.
+    _CURVE_AFFECTING = ("vfp", "offset", "curve", "reset all")
+
     def _after_native_action(
-        self, code: int, on_finished: Optional[Callable[[int], None]] = None
+        self,
+        code: int,
+        on_finished: Optional[Callable[[int], None]] = None,
+        description: str = "",
     ) -> None:
         if on_finished is not None:
             on_finished(code)
         if code == 0:
-            self.refresh_after_native_action()
+            low = description.lower()
+            self.refresh_after_native_action(
+                curve_affecting=any(k in low for k in self._CURVE_AFFECTING)
+            )
 
-    def refresh_after_native_action(self) -> None:
+    def refresh_after_native_action(self, curve_affecting: bool = False) -> None:
         """Re-query everything after a native action (4-query chain).
 
         Coalesced: bursts (chained actions, PPAB auto-enable during mobile
         panel load) collapse into one deferred chain instead of stacking
-        callback storms on the UI thread.
+        callback storms on the UI thread. The VF-curve re-query runs only
+        when the action can actually change the curve (offsets / VFP ops).
         """
+        if curve_affecting:
+            self._pending_chain_curve = True
         if self._refresh_chain_after_id is not None:
             self.after_cancel(self._refresh_chain_after_id)
         self._refresh_chain_after_id = self.after(
@@ -1441,13 +1464,15 @@ class App(ctk.CTk):
 
     def _refresh_after_native_action_now(self) -> None:
         self._refresh_chain_after_id = None
+        want_curve = getattr(self, "_pending_chain_curve", False)
+        self._pending_chain_curve = False
         # A native action mutated GPU state — cached query results are stale.
         self._invalidate_query_cache()
         self._query_gpu_get()
         self._query_overclock_status()
         if self.tab_dashboard:
             self.tab_dashboard._fetch_once()
-        if self.tab_vfcurve:
+        if self.tab_vfcurve and want_curve:
             self.tab_vfcurve._refresh_curve()
 
     def run_cli_display(

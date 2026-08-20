@@ -5,6 +5,8 @@ plus VFP export/import, lock/unlock, and point adjustment controls.
 
 import csv
 import os
+import time as _time
+
 import tkinter as tk
 import customtkinter as ctk
 from tkinter import filedialog
@@ -95,6 +97,7 @@ class VFCurveTab:
         self._pending_full_redraw = False
         self._refresh_curve_inflight = False
         self._refresh_curve_pending = False
+        self._last_load_ts = 0.0  # dedupes back-to-back refresh chains
         self._auto_refresh_job: Optional[str] = None
         self._auto_refreshing = False
         self._auto_refresh_interval_ms = self._DEFAULT_AUTO_REFRESH_INTERVAL_MS
@@ -604,6 +607,11 @@ class VFCurveTab:
         """Query VFP points from pynvoc then load and plot them."""
         if self._refresh_curve_inflight:
             self._refresh_curve_pending = True
+            return
+        # A just-loaded curve is still current: skip the duplicate query
+        # when two refresh chains fire back-to-back (e.g. tab entry +
+        # post-PPAB-enable refresh).
+        if _time.monotonic() - self._last_load_ts < 2.5:
             return
 
         gpu = self.app.selected_gpu_target()
