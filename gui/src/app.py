@@ -38,9 +38,9 @@ from src.task_runner import GuiTaskRunner
 from src.widgets.output_console import OutputConsole
 from src.widgets.lightweight_controls import LiteButton
 from src.tabs.dashboard import DashboardTab
-from src.tabs.autoscan import AutoscanTab
-from src.tabs.overclock import OverclockTab
+from src.tabs.dashboard.sections import OverclockTab
 from src.tabs.vfcurve import VFCurveTab
+from src.tabs.vfcurve.sections import AutoscanTab
 
 
 import shutil

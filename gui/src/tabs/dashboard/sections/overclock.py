@@ -20,7 +20,7 @@ _TEXT_FG_FAINT = "#999999"  # 'gray60' status text
 _FONT_BODY = ("Segoe UI", 11)
 _FONT_HEADER = ("Segoe UI", 13, "bold")
 
-from src.panes.fan_control import FanControlPane
+from src.tabs.dashboard.sections.fan import FanControlPane
 from src.widgets.lightweight_controls import (
     CanvasSlider,
     LiteButton,

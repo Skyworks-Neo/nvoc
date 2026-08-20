@@ -268,11 +268,12 @@ class DashboardTab:
         header = ctk.CTkFrame(self.frame, fg_color="transparent")
         header.pack(fill="x", padx=10, pady=(0, 4))
 
-        ctk.CTkLabel(
+        tk.Label(
             header,
             text="📊 GPU Live Monitor",
-            font=("", 15, "bold"),
-            text_color="#aaccff",
+            font=("Segoe UI", 13, "bold"),
+            bg="#2b2b2b",
+            fg="#aaccff",
         ).pack(side="left", padx=8)
 
         # interval: Refresh: [entry] s — label styled to match the VF tab

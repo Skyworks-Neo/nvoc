@@ -4,7 +4,7 @@ import sys
 import types
 
 
-fan_control_stub = types.ModuleType("src.panes.fan_control")
+fan_control_stub = types.ModuleType("src.tabs.dashboard.sections.fan")
 
 
 class FanControlPane:
@@ -12,9 +12,9 @@ class FanControlPane:
 
 
 fan_control_stub.FanControlPane = FanControlPane
-sys.modules.setdefault("src.panes.fan_control", fan_control_stub)
+sys.modules.setdefault("src.tabs.dashboard.sections.fan", fan_control_stub)
 
-from src.tabs.overclock import OverclockTab  # noqa: E402
+from src.tabs.dashboard.sections.overclock import OverclockTab  # noqa: E402
 
 
 class FakeVar:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from src.backend.base import FanSettings
-from src.controllers.fan_control import (
+from src.tabs.dashboard.sections.fan import (
     FanControlController,
     fan_settings_to_cli_args,
 )
