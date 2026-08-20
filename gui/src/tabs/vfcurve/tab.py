@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from src.app import App
 
 from src.widgets.lightweight_controls import (
+    ct_button_font,
     LiteButton,
     LiteEntry,
 )
@@ -199,7 +200,7 @@ class VFCurveTab:
             width=84,
             height=28,
             anchor="center",
-            font=("Segoe UI", 11, "bold"),
+            font=ct_button_font(toolbar),
         )
         self.freq_lock_api_menu.pack(side="left", padx=(0, 5))
 

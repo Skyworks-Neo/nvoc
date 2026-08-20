@@ -12,6 +12,24 @@ import customtkinter as ctk
 _WHEEL_STEP_UNITS = 6
 
 
+def ct_button_font(master, size_pt: int = 10):
+    """CTkFont matching the LiteButton canvas typography.
+
+    LiteButton draws with a raw tk point-size font; CTk converts tuple
+    fonts to CTkFont, which uses PIXEL sizes and does not re-scale when
+    external DPI awareness is set — the same number renders ~half height.
+    Convert points to pixels at the actual screen DPI instead.
+    """
+    import customtkinter as _ctk
+
+    try:
+        dpi = master.winfo_fpixels("1i")
+    except Exception:
+        dpi = 72.0
+    px = max(9, round(size_pt * dpi / 72.0))
+    return _ctk.CTkFont(family="Segoe UI", size=px, weight="bold")
+
+
 def _is_descendant_widget(widget: tk.Misc, ancestor: tk.Misc) -> bool:
     """Return True when *widget* is *ancestor* or one of its descendants."""
     current: Optional[tk.Misc] = widget

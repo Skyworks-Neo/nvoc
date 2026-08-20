@@ -7,6 +7,7 @@ import customtkinter as ctk
 from tkinter import filedialog
 from typing import TYPE_CHECKING, Optional, Tuple
 from src.widgets.lightweight_controls import (
+    ct_button_font,
     LiteButton,
     LiteEntry,
     install_mousewheel_support,
@@ -58,7 +59,7 @@ class AutoscanTab:
             values=["Standard", "Ultrafast", "Legacy"],
             width=140,
             anchor="center",
-            font=("Segoe UI", 11, "bold"),
+            font=ct_button_font(mode_row),
         )
         self.mode_menu.pack(side="left")
         tk.Label(
@@ -71,7 +72,7 @@ class AutoscanTab:
             values=["(auto)", "aggressive", "traditional"],
             width=130,
             anchor="center",
-            font=("Segoe UI", 11, "bold"),
+            font=ct_button_font(mode_row),
         )
         self.bsod_menu.pack(side="left")
 

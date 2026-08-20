@@ -22,6 +22,7 @@ _FONT_HEADER = ("Segoe UI", 13, "bold")
 
 from src.tabs.dashboard.sections.fan import FanControlPane
 from src.widgets.lightweight_controls import (
+    ct_button_font,
     CanvasSlider,
     LiteButton,
     LiteCheckbutton,
@@ -126,7 +127,7 @@ class OverclockTab:
             variable=self.oc_api_var,
             width=84,
             anchor="center",
-            font=("Segoe UI", 11, "bold"),
+            font=ct_button_font(oc_header),
             height=28,
         )
         self.oc_api_selector.pack(side="right")
@@ -244,7 +245,7 @@ class OverclockTab:
             variable=self.power_api_var,
             width=84,
             anchor="center",
-            font=("Segoe UI", 11, "bold"),
+            font=ct_button_font(limit_header),
             height=28,
             command=self._on_power_api_changed,
         )

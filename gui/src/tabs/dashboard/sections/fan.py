@@ -23,6 +23,7 @@ _FONT_HEADER = ("Segoe UI", 13, "bold")
 _SECTION_BORDER = "#1f4e79"
 
 from src.widgets.lightweight_controls import (
+    ct_button_font,
     LiteButton,
     LiteEntry,
 )
@@ -374,7 +375,7 @@ class FanControlPane:
             values=["All", "Fan 1", "Fan 2"],
             width=84,
             anchor="center",
-            font=("Segoe UI", 11, "bold"),
+            font=ct_button_font(r0_left),
         )
         # right-aligned to the 1/3 boundary (matches the Policy dropdown edge)
         self.fan_id_menu.pack(side="right")
@@ -411,7 +412,7 @@ class FanControlPane:
             width=84,
             anchor="center",
             command=lambda _: self.controller.on_backend_change(),
-            font=("Segoe UI", 11, "bold"),
+            font=ct_button_font(r0_right),
         )
         self.cooler_api_menu.pack(side="right")
         self._interactive_widgets.append(self.cooler_api_menu)
@@ -438,7 +439,7 @@ class FanControlPane:
             values=NVAPI_POLICIES,
             width=1,  # grid stretches it to fill the third
             anchor="center",
-            font=("Segoe UI", 11, "bold"),
+            font=ct_button_font(r1_left),
         )
         self.policy_menu.grid(row=0, column=1, sticky="ew", padx=(6, 0))
         self._interactive_widgets.append(self.policy_menu)
