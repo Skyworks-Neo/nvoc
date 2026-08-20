@@ -165,6 +165,7 @@ class FanLevelSelector(tk.Frame):
         self._bg = bg
         self._value = 60
         self._syncing = False
+        self._active = True
 
         self._canvas = tk.Canvas(
             self, width=1, height=48, highlightthickness=0, bd=0, bg=bg
@@ -210,6 +211,12 @@ class FanLevelSelector(tk.Frame):
         if state is not None:
             self._state = state
         self._redraw()
+
+    def set_active(self, active: bool) -> None:
+        """Unsupported GPUs hide the handle (no misleading position)."""
+        if active != self._active:
+            self._active = active
+            self._redraw()
 
     _state = "normal"
 
@@ -296,17 +303,19 @@ class FanLevelSelector(tk.Frame):
                 font=("Segoe UI", 8, "bold"),
             )
 
-        # current-value handle (PState/D handle styling)
-        hx = self._value_to_x(self._value)
-        c.create_oval(
-            hx - self._HANDLE_R,
-            self._TRACK_Y - self._HANDLE_R,
-            hx + self._HANDLE_R,
-            self._TRACK_Y + self._HANDLE_R,
-            fill="#f5f7fb",
-            outline="#59b0ff",
-            width=2,
-        )
+        # current-value handle (PState/D handle styling) — hidden when the
+        # fan control is unsupported so no default position misleads.
+        if self._active:
+            hx = self._value_to_x(self._value)
+            c.create_oval(
+                hx - self._HANDLE_R,
+                self._TRACK_Y - self._HANDLE_R,
+                hx + self._HANDLE_R,
+                self._TRACK_Y + self._HANDLE_R,
+                fill="#f5f7fb",
+                outline="#59b0ff",
+                width=2,
+            )
 
 
 class FanControlPane:
@@ -494,6 +503,15 @@ class FanControlPane:
                 widget.configure(state=state)
             except Exception:
                 pass
+
+        self.level_slider.set_active(supported)
+        if supported:
+            if not self.level_var.get().strip():
+                self.level_var.set(str(int(self.level_slider.get())))
+        else:
+            # No fan control on this GPU: blank the % value instead of
+            # showing the 60 default.
+            self.level_var.set("")
 
         self.cooler_title.configure(fg=_TEXT_FG if supported else "#8a8a8a")
 
