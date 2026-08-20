@@ -13,27 +13,53 @@ _WHEEL_STEP_UNITS = 6
 
 
 def ct_button_font(master, size_pt: int = 10):
-    """CTkFont matching the LiteButton canvas typography.
+    """CTkFont that renders at the same physical height as the LiteButton
+    canvas typography (same family/point baseline).
 
-    LiteButton draws with a raw tk POINT-size font; CTk converts tuple
-    fonts to CTkFont, which uses PIXEL sizes and skips its own scaling
-    under external DPI awareness — the same number renders at a different
-    physical height. Calibrate against the point font's measured
-    linespace instead of trusting any DPI formula.
+    CTk's font pipeline re-scales CTkFont on the widget (and behaves
+    differently from a standalone font object), so calibrate end-to-end:
+    create a throwaway real CTkButton, measure the font actually applied
+    on its canvas, and adjust the CTkFont size until the rendered
+    linespace matches the point font's.
     """
     import customtkinter as _ctk
 
-    probe = tk_font.Font(root=master, family="Segoe UI", size=size_pt, weight="bold")
-    target = probe.metrics("linespace")
-    # Segoe UI pixel-font linespace ≈ 1.3x the em; start there, then adjust.
-    px = max(9, round(target / 1.3))
-    for _ in range(3):
-        cand = tk_font.Font(root=master, family="Segoe UI", size=-px, weight="bold")
-        ls = cand.metrics("linespace")
-        if ls == target:
+    probe_point = tk_font.Font(
+        root=master, family="Segoe UI", size=size_pt, weight="bold"
+    )
+    target = probe_point.metrics("linespace")
+
+    def applied_linespace(font_obj):
+        btn = _ctk.CTkButton(master, text=" ", width=10, height=10, font=font_obj)
+        try:
+            master.update_idletasks()
+            for item in btn._canvas.find_all():
+                if btn._canvas.type(item) == "text":
+                    applied = btn._canvas.itemcget(item, "font")
+                    if applied:
+                        return tk_font.Font(font=applied).metrics("linespace")
+        finally:
+            btn.destroy()
+        return None
+
+    # CTk applies roughly (target/2.8)px for Segoe UI; start from the
+    # measured proportion of a normal pixel font, then adjust on the
+    # REAL widget. Empirical starting point, refined below.
+    px = max(8, round(size_pt * 1.0))
+    best = px
+    for _ in range(4):
+        f = _ctk.CTkFont(family="Segoe UI", size=px, weight="bold")
+        ls = applied_linespace(f)
+        if ls is None:
             break
-        px += 1 if ls < target else -1
-    return _ctk.CTkFont(family="Segoe UI", size=px, weight="bold")
+        if ls == target:
+            return f
+        if ls < target:
+            best = px
+            px += 1
+        else:
+            px -= 1
+    return _ctk.CTkFont(family="Segoe UI", size=max(8, best), weight="bold")
 
 
 def _is_descendant_widget(widget: tk.Misc, ancestor: tk.Misc) -> bool:
