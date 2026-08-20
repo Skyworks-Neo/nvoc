@@ -559,15 +559,28 @@ class OverclockTab:
 
         if tgp and tgp.get("max_watt") is not None and tgp.get("min_watt") is not None:
             self._tgp_policy_index = int(tgp.get("policy_index", 2))
+            min_w = int(round(float(tgp["min_watt"])))
+            max_w = int(round(float(tgp["max_watt"])))
             self._power_default = int(
                 round(float(tgp.get("default_watt") or tgp.get("min_watt")))
             )
+            # Position the slider at the CURRENT limit (from the 'get'
+            # query cache), not the default — otherwise startup shows the
+            # fallback position instead of the real one.
+            current_w = (
+                getattr(self.app, "_gpu_limits_cache", {}) or {}
+            ).get("power_limit_nvml_current_w")
+            position = self._power_default
+            if current_w is not None:
+                current_w = int(round(float(current_w)))
+                if min_w <= current_w <= max_w:
+                    position = current_w
             self._reconfigure_slider(
                 self.plimit_slider,
                 self.plimit_var,
-                int(round(float(tgp["min_watt"]))),
-                int(round(float(tgp["max_watt"]))),
-                self._power_default,
+                min_w,
+                max_w,
+                position,
                 step=1,
             )
 
