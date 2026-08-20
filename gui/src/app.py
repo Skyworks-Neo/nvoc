@@ -184,6 +184,9 @@ class App(ctk.CTk):
         # 'get'-failure re-probe state (see _apply_gpu_get)
         self._get_reprobe_pending = False
         self._get_reprobe_count = 0
+        # Per-GPU capability cache: GPU whose P-States are already known
+        self._pstates_cached_for = None
+        self._last_pstates_logged = None
         # Short-TTL query result cache (see run_gpu_query_async)
         self._query_result_cache: Dict[str, Tuple[float, int, str]] = {}
         self._query_cache_lock = threading.Lock()
@@ -457,8 +460,11 @@ class App(ctk.CTk):
                     )
                 if hasattr(self, "_gpu_limits_cache") and self._gpu_limits_cache:
                     self.tab_vfcurve.sync_freq_locks_from_cache(self._gpu_limits_cache)
-            # Refresh frequency lock states from CLI on every tab entry.
-            self._query_gpu_get()
+            # P-States are a per-GPU capability: query once per GPU
+            # selection, not on every tab entry.
+            gpu = self.selected_gpu_target()
+            if gpu is None or self._pstates_cached_for != gpu:
+                self._query_gpu_get()
             # Always refresh when entering VF Curve to keep the plot up to date.
             self.tab_vfcurve._refresh_curve()
 
@@ -838,6 +844,7 @@ class App(ctk.CTk):
         self._invalidate_query_cache()
         self._dashboard_gpu_lock_active = False
         self._dashboard_mem_lock_active = False
+        self._pstates_cached_for = None
         self._vfp_offset_state_cache = None
         self._gpu_pstates_cache = []
         if self.tab_overclock:
@@ -1002,6 +1009,7 @@ class App(ctk.CTk):
         native_payload = self._native_query_payload(output)
         if native_payload is not None:
             self._get_reprobe_count = 0  # success: reset the re-probe budget
+            self._pstates_cached_for = self.selected_gpu_target()
             merged.update(native_payload)
             for key in (
                 "vfp_lock_gpu_core_upperbound_mhz",
