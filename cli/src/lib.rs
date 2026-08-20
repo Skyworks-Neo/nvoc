@@ -1683,6 +1683,19 @@ fn execute_target(
                         map.insert("d_notifier_table".to_string(), json!(table));
                     }
                 }
+                // P0 voltage bounds from the private VoltRails status entry
+                // (melonVolt path): current / target / effective / vBIOS /
+                // VRM-max walls + min-hold + offset_ceiling. The effective wall
+                // (index 4) is what the driver clamps to min(target, vbios_wall,
+                // vrm_max_wall); offset_ceiling is how much higher the wall can
+                // still go. Only the seven-value p0 block here — the raw
+                // rail_descriptors / control / status arrays live in
+                // get-volt-rails.
+                if let Ok(Some(rails)) = run(target, QueryNvapiVoltRails).map(|r| r.output) {
+                    if let Some(p0) = volt_rails_p0_json(&rails) {
+                        map.insert("p0_voltage".to_string(), p0);
+                    }
+                }
                 // Per-rail power (watts) from NVAPI PowerMonitor GetStatus
                 // Per-rail power (watts) from NVAPI PowerMonitor, keyed by the
                 // descriptor's rail IDENTITY (not a fixed name) so it's correct
@@ -2239,45 +2252,12 @@ fn execute_target(
             let rails = run(target, QueryNvapiVoltRails)?.output;
             Ok(match rails {
                 Some(r) => {
-                    // µV on voltage/offset entries (type 3 = the 5090 MSVDD
-                    // offset melonVolt writes)
-                    let p0 = r.p0_bounds().map(|b| {
-                        // ceiling = min(vbios_wall, vrm_max_wall) − base wall;
-                        // the µV still available before the driver clamps the
-                        // effective wall. base_wall = effective − current offset.
-                        #[allow(non_snake_case)]
-                        let ceiling_uV = r.offset_ceiling_uV(0)
-                            .or_else(|| {
-                                let mut c = b.vrm_max_wall_uV;
-                                if b.vbios_wall_uV > 0 && b.vbios_wall_uV < c {
-                                    c = b.vbios_wall_uV;
-                                }
-                                Some((c - b.effective_wall_uV).max(0))
-                            })
-                            .unwrap_or(0);
-                        json!({
-                            "current_uV": b.current_uV,
-                            // target wall (SET-requested) / effective wall (clamped)
-                            "target_wall_uV": b.target_wall_uV,
-                            "effective_wall_uV": b.effective_wall_uV,
-                            // vBIOS wall (0 on mobile; desktop hard cap)
-                            "vbios_wall_uV": b.vbios_wall_uV,
-                            // VRM-max wall (1.2V) — the voltage ceiling
-                            "vrm_max_wall_uV": b.vrm_max_wall_uV,
-                            // P0 min hold — replaces the old brute-force VFP-
-                            // lock lower-bound scan
-                            "min_hold_uV": b.min_hold_uV,
-                            // how much higher the wall can go before clamping
-                            "offset_ceiling_uV": ceiling_uV,
-                        })
-                    });
                     json!({
                         "rail_mask": format!("0x{:08X}", r.rail_mask),
-                        "p0": p0,
+                        "p0": volt_rails_p0_json(&r),
                         "rail_descriptors": r.rail_descriptors.iter().map(|d| json!({
                             "rail_bit": d.rail_bit,
                             "type": d.entry_type(),
-                            "raw_u32": d.raw_u32,
                         })).collect::<Vec<_>>(),
                         "control": r.control.iter().map(|e| json!({
                             "rail_bit": e.rail_bit, "type": e.entry_type, "values_uV": e.values,
@@ -3163,6 +3143,32 @@ fn option_one<'a>(invocation: &'a Invocation, name: &str) -> Option<&'a str> {
         .get(name)
         .and_then(|values| values.last())
         .map(String::as_str)
+}
+
+/// Build the P0 voltage-bounds JSON block shared by get-status and
+/// get-volt-rails. Returns `None` if the driver exposes no type-1 status
+/// entry (p0_bounds() plausibility check failed).
+#[allow(non_snake_case)]
+fn volt_rails_p0_json(rails: &nvoc_core::VoltRails) -> Option<Value> {
+    let b = rails.p0_bounds()?;
+    // ceiling = min(vbios_wall, vrm_max_wall) − base wall; the µV still
+    // available before the driver clamps the effective wall.
+    let ceiling_uV = rails.offset_ceiling_uV(0).or_else(|| {
+        let mut c = b.vrm_max_wall_uV;
+        if b.vbios_wall_uV > 0 && b.vbios_wall_uV < c {
+            c = b.vbios_wall_uV;
+        }
+        Some((c - b.effective_wall_uV).max(0))
+    }).unwrap_or(0);
+    Some(json!({
+        "current_uV": b.current_uV,
+        "target_wall_uV": b.target_wall_uV,
+        "effective_wall_uV": b.effective_wall_uV,
+        "vbios_wall_uV": b.vbios_wall_uV,
+        "vrm_max_wall_uV": b.vrm_max_wall_uV,
+        "min_hold_uV": b.min_hold_uV,
+        "offset_ceiling_uV": ceiling_uV,
+    }))
 }
 
 fn option_bool(invocation: &Invocation, name: &str, default: bool) -> CliResult<bool> {

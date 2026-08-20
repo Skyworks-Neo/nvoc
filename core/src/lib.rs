@@ -16,6 +16,7 @@ pub use gpu_type::{
     ArchOcPrior, GpuOcParams, GpuType, GpuVoltageLimitParams, GpuVoltageLockParams, OcPriorPoint,
 };
 pub use nvapi::{CoolerTarget, GpuTdpTempLimits, VfpLockRequest};
+pub use nvapi_hi::nvapi::{P0VoltageBounds, VoltRails};
 pub use operation::{
     CheckVoltageFrequency, ClearEdid, GpuOperation, ProbeVoltageLimits, QueryApiRestriction,
     QueryAutoBoost, QueryClockOffset, QueryDisplays, QueryDomainVfpIndices, QueryDomainVfpPoints,

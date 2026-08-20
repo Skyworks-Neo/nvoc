@@ -2326,7 +2326,6 @@ mod tests {
                 "rail_descriptors": [{
                     "rail_bit": 0,
                     "type": 1,
-                    "raw_u32": [0, 1, 2, 3],
                 }],
                 "control": [{
                     "rail_bit": 0, "type": 3, "values_uV": [0, 0, 0, 0, 0, 0],

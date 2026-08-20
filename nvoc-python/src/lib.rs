@@ -1778,14 +1778,22 @@ fn query_volt_rails(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
                     (
                         "p0",
                         match r.p0_bounds() {
-                            Some(b) => value_object([
-                                ("current_uV", Value::from(b.current_uV)),
-                                ("target_wall_uV", Value::from(b.target_wall_uV)),
-                                ("vbios_wall_uV", Value::from(b.vbios_wall_uV)),
-                                ("vrm_max_wall_uV", Value::from(b.vrm_max_wall_uV)),
-                                ("effective_wall_uV", Value::from(b.effective_wall_uV)),
-                                ("min_hold_uV", Value::from(b.min_hold_uV)),
-                            ]),
+                            Some(b) => {
+                                let mut ceiling = b.vrm_max_wall_uV;
+                                if b.vbios_wall_uV > 0 && b.vbios_wall_uV < ceiling {
+                                    ceiling = b.vbios_wall_uV;
+                                }
+                                let ceiling_uV = (ceiling - b.effective_wall_uV).max(0);
+                                value_object([
+                                    ("current_uV", Value::from(b.current_uV)),
+                                    ("target_wall_uV", Value::from(b.target_wall_uV)),
+                                    ("effective_wall_uV", Value::from(b.effective_wall_uV)),
+                                    ("vbios_wall_uV", Value::from(b.vbios_wall_uV)),
+                                    ("vrm_max_wall_uV", Value::from(b.vrm_max_wall_uV)),
+                                    ("min_hold_uV", Value::from(b.min_hold_uV)),
+                                    ("offset_ceiling_uV", Value::from(ceiling_uV)),
+                                ])
+                            }
                             None => Value::Null,
                         },
                     ),
@@ -1798,12 +1806,6 @@ fn query_volt_rails(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
                                     value_object([
                                         ("rail_bit", Value::from(d.rail_bit)),
                                         ("type", Value::from(d.entry_type())),
-                                        (
-                                            "raw_u32",
-                                            Value::Array(
-                                                d.raw_u32.iter().map(|v| Value::from(*v)).collect(),
-                                            ),
-                                        ),
                                     ])
                                 })
                                 .collect(),
