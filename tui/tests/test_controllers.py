@@ -66,9 +66,18 @@ class FakeApp:
             self.write_log(output)
 
     def run_query(
-        self, command_name: str, callback, *, log_output: bool = True
+        self,
+        command_name: str,
+        callback,
+        *,
+        log_output: bool = True,
+        allow_wake: bool = True,
     ) -> None:
-        self.query_calls.append((command_name, callback, log_output))
+        self.query_calls.append((
+            command_name,
+            callback,
+            {"log_output": log_output, "allow_wake": allow_wake},
+        ))
 
     def write_log(self, text: str) -> None:
         self.logs.append(text)
@@ -158,10 +167,11 @@ def test_dashboard_tick_suppresses_status_json_output() -> None:
     DashboardController(app).tick()
 
     assert len(app.query_calls) == 1
-    command_name, callback, log_output = app.query_calls[0]
+    command_name, callback, kwargs = app.query_calls[0]
     assert command_name == "status"
     assert callback.__name__ == "on_status_loaded"
-    assert log_output is False
+    assert kwargs["log_output"] is False
+    assert kwargs["allow_wake"] is False  # first sample not yet succeeded
 
 
 def test_console_maximize_toggle_updates_app_class_and_label() -> None:

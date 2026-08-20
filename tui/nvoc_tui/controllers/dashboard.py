@@ -9,6 +9,9 @@ from .base import PaneController
 
 
 class DashboardController(PaneController):
+    # First sample may wake the GPU; later polls never block GC6 sleep.
+    _first_success = False
+
     def __init__(self, app) -> None:
         super().__init__(app)
         self.poll_timer = None
@@ -26,7 +29,12 @@ class DashboardController(PaneController):
     def tick(self) -> None:
         if self.app.native_service.action_state.running:
             return
-        self.app.run_query("status", self.on_status_loaded, log_output=False)
+        self.app.run_query(
+            "status",
+            self.on_status_loaded,
+            log_output=False,
+            allow_wake=self._first_success,
+        )
 
     def on_info_loaded(self, code: int, output: str, parsed: dict) -> None:
         if code != 0 and not parsed:
@@ -36,6 +44,8 @@ class DashboardController(PaneController):
         self.app.overclock_controller.prime_inputs()
 
     def on_status_loaded(self, code: int, output: str, parsed: dict) -> None:
+        if code == 0:
+            self._first_success = True
         if code != 0 and not parsed:
             return
         self.app.cache.status = parsed
@@ -90,9 +100,9 @@ class DashboardController(PaneController):
             self.app.run_query("info", self.on_info_loaded)
             return True
         if button_id == "dashboard-status":
-            self.app.run_query("status", self.on_status_loaded)
+            self.app.run_query("status", self.on_status_loaded, allow_wake=False)
             return True
         if button_id == "dashboard-get":
-            self.app.run_query("get", self.on_get_loaded)
+            self.app.run_query("get", self.on_get_loaded, allow_wake=False)
             return True
         return False

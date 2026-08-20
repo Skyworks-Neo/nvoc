@@ -193,7 +193,12 @@ class NVOCApp(App[None]):
         start_next()
 
     def run_query(
-        self, command_name: str, callback, *, log_output: bool = True
+        self,
+        command_name: str,
+        callback,
+        *,
+        log_output: bool = True,
+        allow_wake: bool = True,
     ) -> None:
         gpu = self.selected_gpu_target()
         if gpu is None:
@@ -208,7 +213,9 @@ class NVOCApp(App[None]):
             callback(code, output, parsed)
 
         def worker() -> None:
-            code, output, parsed = self.native_service.run_query(gpu, command_name)
+            code, output, parsed = self.native_service.run_query(
+                gpu, command_name, allow_wake=allow_wake
+            )
             self.call_from_thread(finish_query, code, output, parsed)
 
         self.native_service.submit_query(worker)
