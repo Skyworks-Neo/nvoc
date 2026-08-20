@@ -10,7 +10,7 @@ import customtkinter as ctk
 from typing import TYPE_CHECKING, Optional, Dict, Tuple
 
 from src.parsing import as_float, parse_dashboard_status
-from src.widgets.lightweight_controls import LiteButton, LiteEntry
+from src.widgets.lightweight_controls import LiteButton, LiteEntry, ct_button_font
 
 if TYPE_CHECKING:
     from src.app import App

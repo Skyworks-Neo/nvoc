@@ -15,18 +15,24 @@ _WHEEL_STEP_UNITS = 6
 def ct_button_font(master, size_pt: int = 10):
     """CTkFont matching the LiteButton canvas typography.
 
-    LiteButton draws with a raw tk point-size font; CTk converts tuple
-    fonts to CTkFont, which uses PIXEL sizes and does not re-scale when
-    external DPI awareness is set — the same number renders ~half height.
-    Convert points to pixels at the actual screen DPI instead.
+    LiteButton draws with a raw tk POINT-size font; CTk converts tuple
+    fonts to CTkFont, which uses PIXEL sizes and skips its own scaling
+    under external DPI awareness — the same number renders at a different
+    physical height. Calibrate against the point font's measured
+    linespace instead of trusting any DPI formula.
     """
     import customtkinter as _ctk
 
-    try:
-        dpi = master.winfo_fpixels("1i")
-    except Exception:
-        dpi = 72.0
-    px = max(9, round(size_pt * dpi / 72.0))
+    probe = tk_font.Font(root=master, family="Segoe UI", size=size_pt, weight="bold")
+    target = probe.metrics("linespace")
+    # Segoe UI pixel-font linespace ≈ 1.3x the em; start there, then adjust.
+    px = max(9, round(target / 1.3))
+    for _ in range(3):
+        cand = tk_font.Font(root=master, family="Segoe UI", size=-px, weight="bold")
+        ls = cand.metrics("linespace")
+        if ls == target:
+            break
+        px += 1 if ls < target else -1
     return _ctk.CTkFont(family="Segoe UI", size=px, weight="bold")
 
 
