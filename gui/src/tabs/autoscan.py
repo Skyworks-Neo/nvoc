@@ -2,6 +2,7 @@
 Autoscan Tab - VFP auto-scanning workflow.
 """
 
+import tkinter as tk
 import customtkinter as ctk
 from tkinter import filedialog
 from typing import TYPE_CHECKING, Optional, Tuple
@@ -10,6 +11,13 @@ from src.widgets.lightweight_controls import (
     LiteEntry,
     install_mousewheel_support,
 )
+
+# De-CTk'd palette (matches overclock.py / fan_control.py)
+_PANE_BG = "#2b2b2b"
+_TEXT_FG = "#e5e5e5"
+_FONT_BODY = ("Segoe UI", 11)
+_FONT_HEADER = ("Segoe UI", 13, "bold")
+_SECTION_BORDER = "#1f4e79"
 
 if TYPE_CHECKING:
     from src.app import App
@@ -30,51 +38,73 @@ class AutoscanTab:
         install_mousewheel_support(scroll)
 
         # === Mode Selection ===
-        mode_frame = ctk.CTkFrame(scroll)
+        mode_frame = ctk.CTkFrame(
+            scroll, border_width=1, border_color=_SECTION_BORDER, corner_radius=10
+        )
         mode_frame.pack(fill="x", pady=(0, 10))
-        ctk.CTkLabel(mode_frame, text="Scan Mode", font=("", 14, "bold")).pack(
-            anchor="w", padx=10, pady=(10, 5)
-        )
+        tk.Label(
+            mode_frame, text="🔍 Scan Mode", font=_FONT_HEADER, bg=_PANE_BG, fg=_TEXT_FG
+        ).pack(anchor="w", padx=10, pady=(10, 5))
 
-        self.mode_var = ctk.StringVar(value="standard")
-        mode_row = ctk.CTkFrame(mode_frame, fg_color="transparent")
+        self.mode_var = ctk.StringVar(value="Standard")
+        mode_row = tk.Frame(mode_frame, bg=_PANE_BG)
         mode_row.pack(fill="x", padx=10, pady=(0, 10))
-        for val, label in [
-            ("standard", "Standard"),
-            ("ultrafast", "Ultrafast"),
-            ("legacy", "Legacy (Maxwell/9xx)"),
-        ]:
-            ctk.CTkRadioButton(
-                mode_row, text=label, variable=self.mode_var, value=val
-            ).pack(side="left", padx=15)
-
-        # === Parameters ===
-        param_frame = ctk.CTkFrame(scroll)
-        param_frame.pack(fill="x", pady=(0, 10))
-        ctk.CTkLabel(param_frame, text="Parameters", font=("", 14, "bold")).pack(
-            anchor="w", padx=10, pady=(10, 5)
+        tk.Label(
+            mode_row, text="Mode:", font=_FONT_BODY, bg=_PANE_BG, fg=_TEXT_FG
+        ).pack(side="left", padx=(0, 6))
+        self.mode_menu = ctk.CTkOptionMenu(
+            mode_row,
+            variable=self.mode_var,
+            values=["Standard", "Ultrafast", "Legacy"],
+            width=140,
         )
+        self.mode_menu.pack(side="left")
+        tk.Label(
+            mode_row, text="BSOD:", font=_FONT_BODY, bg=_PANE_BG, fg=_TEXT_FG
+        ).pack(side="left", padx=(16, 6))
+        self.bsod_var = ctk.StringVar(value="(auto)")
+        self.bsod_menu = ctk.CTkOptionMenu(
+            mode_row,
+            variable=self.bsod_var,
+            values=["(auto)", "aggressive", "traditional"],
+            width=130,
+        )
+        self.bsod_menu.pack(side="left")
 
-        params_grid = ctk.CTkFrame(param_frame, fg_color="transparent")
+        # === Parameters (left half) | Actions (right half) ===
+        split = tk.Frame(scroll, bg=_PANE_BG)
+        split.pack(fill="x", pady=(0, 10))
+        split.grid_columnconfigure(0, weight=1, uniform="scan_split")
+        split.grid_columnconfigure(1, weight=1, uniform="scan_split")
+
+        param_frame = ctk.CTkFrame(
+            split, border_width=1, border_color=_SECTION_BORDER, corner_radius=10
+        )
+        param_frame.grid(row=0, column=0, sticky="new", padx=(0, 5))
+        tk.Label(
+            param_frame, text="⚙ Parameters", font=_FONT_HEADER, bg=_PANE_BG, fg=_TEXT_FG
+        ).pack(anchor="w", padx=10, pady=(10, 5))
+
+        params_grid = tk.Frame(param_frame, bg=_PANE_BG)
         params_grid.pack(fill="x", padx=10, pady=(0, 10))
         params_grid.columnconfigure(1, weight=0)
 
         row = 0
         # Output CSV
-        ctk.CTkLabel(params_grid, text="Output CSV:").grid(
+        tk.Label(params_grid, text="Output CSV:", font=_FONT_BODY, bg=_PANE_BG, fg=_TEXT_FG).grid(
             row=row, column=0, sticky="w", padx=5, pady=3
         )
         self.output_csv_var = ctk.StringVar(value=r".\ws\vfp-tem.csv")
-        out_row = ctk.CTkFrame(params_grid, fg_color="transparent")
+        out_row = tk.Frame(params_grid, bg=_PANE_BG)
         out_row.grid(row=row, column=1, sticky="ew", padx=5, pady=3)
         out_entry = LiteEntry(
             out_row,
             textvariable=self.output_csv_var,
-            width=52,
-            min_px=420,
+            width=20,
+            min_px=140,
             justify="left",
         )
-        out_entry.pack(side="left")
+        out_entry.pack(side="left", fill="x", expand=True)
         LiteButton(
             out_row,
             text="...",
@@ -84,20 +114,20 @@ class AutoscanTab:
 
         row += 1
         # Init CSV
-        ctk.CTkLabel(params_grid, text="Init CSV:").grid(
+        tk.Label(params_grid, text="Init CSV:", font=_FONT_BODY, bg=_PANE_BG, fg=_TEXT_FG).grid(
             row=row, column=0, sticky="w", padx=5, pady=3
         )
         self.init_csv_var = ctk.StringVar(value=r".\ws\vfp-init.csv")
-        init_row = ctk.CTkFrame(params_grid, fg_color="transparent")
+        init_row = tk.Frame(params_grid, bg=_PANE_BG)
         init_row.grid(row=row, column=1, sticky="ew", padx=5, pady=3)
         init_entry = LiteEntry(
             init_row,
             textvariable=self.init_csv_var,
-            width=52,
-            min_px=420,
+            width=20,
+            min_px=140,
             justify="left",
         )
-        init_entry.pack(side="left")
+        init_entry.pack(side="left", fill="x", expand=True)
         LiteButton(
             init_row,
             text="...",
@@ -105,37 +135,34 @@ class AutoscanTab:
             command=lambda: self._browse_file(self.init_csv_var),
         ).pack(side="left", padx=(5, 0))
 
-        row += 1
-        # BSOD Recovery
-        ctk.CTkLabel(params_grid, text="BSOD Recovery:").grid(
-            row=row, column=0, sticky="w", padx=5, pady=3
+        # === Action Buttons (right half) ===
+        btn_frame = ctk.CTkFrame(
+            split, border_width=1, border_color=_SECTION_BORDER, corner_radius=10
         )
-        self.bsod_var = ctk.StringVar(value="(auto)")
-        ctk.CTkOptionMenu(
-            params_grid,
-            variable=self.bsod_var,
-            values=["(auto)", "aggressive", "traditional"],
-            width=150,
-        ).grid(row=row, column=1, sticky="w", padx=5, pady=3)
+        btn_frame.grid(row=0, column=1, sticky="new", padx=(5, 0))
+        tk.Label(
+            btn_frame, text="▶ Actions", font=_FONT_HEADER, bg=_PANE_BG, fg=_TEXT_FG
+        ).pack(anchor="w", padx=10, pady=(10, 5))
 
-        # === Action Buttons ===
-        btn_frame = ctk.CTkFrame(scroll)
-        btn_frame.pack(fill="x", pady=(0, 10))
-        ctk.CTkLabel(btn_frame, text="Actions", font=("", 14, "bold")).pack(
-            anchor="w", padx=10, pady=(10, 5)
-        )
-
-        btn_row = ctk.CTkFrame(btn_frame, fg_color="transparent")
+        btn_row = tk.Frame(btn_frame, bg=_PANE_BG)
         btn_row.pack(fill="x", padx=10, pady=(0, 10))
 
         LiteButton(
-            btn_row, text="📤 Export Init VFP", width=150, command=self._export_init
-        ).pack(side="left", padx=5)
+            btn_row, text="📤 Export Init VFP", width=10, command=self._export_init
+        ).pack(side="left", fill="x", expand=True, padx=5)
         LiteButton(
-            btn_row, text="🔓 Reset & Unlock VFP", width=170, command=self._reset_unlock
-        ).pack(side="left", padx=5)
+            btn_row,
+            text="🔓 Reset VFP",
+            width=10,
+            fg_color="#c0392b",
+            hover_color="#96281b",
+            command=self._reset_unlock,
+        ).pack(side="left", fill="x", expand=True, padx=5)
+        LiteButton(
+            btn_row, text="🔧 Fix Results", width=10, command=self._fix_result
+        ).pack(side="left", fill="x", expand=True, padx=5)
 
-        btn_row2 = ctk.CTkFrame(btn_frame, fg_color="transparent")
+        btn_row2 = tk.Frame(btn_frame, bg=_PANE_BG)
         btn_row2.pack(fill="x", padx=10, pady=(0, 10))
 
         self.start_btn = LiteButton(
@@ -159,15 +186,12 @@ class AutoscanTab:
         self.stop_btn.configure(state="disabled")
         self.stop_btn.pack(side="left", padx=5)
 
-        btn_row3 = ctk.CTkFrame(btn_frame, fg_color="transparent")
+        btn_row3 = tk.Frame(btn_frame, bg=_PANE_BG)
         btn_row3.pack(fill="x", padx=10, pady=(0, 10))
 
         LiteButton(
-            btn_row3, text="🔧 Fix Results", width=130, command=self._fix_result
-        ).pack(side="left", padx=5)
-        LiteButton(
-            btn_row3, text="📥 Import Final VFP", width=160, command=self._import_final
-        ).pack(side="left", padx=5)
+            btn_row3, text="📥 Import Final VFP", width=10, command=self._import_final
+        ).pack(side="left", fill="x", expand=True, padx=5)
         LiteButton(
             btn_row3, text="📤 Export Final VFP", width=160, command=self._export_final
         ).pack(side="left", padx=5)
@@ -253,7 +277,10 @@ class AutoscanTab:
 
     def _start_scan(self) -> None:
         gpu_args = self.app.get_gpu_args()
-        mode = self.mode_var.get()
+        mode = {
+            "Ultrafast": "ultrafast",
+            "Legacy": "legacy",
+        }.get(self.mode_var.get(), "standard")
 
         if mode == "legacy":
             args = gpu_args + ["autoscan-vfp-legacy"]
@@ -286,7 +313,7 @@ class AutoscanTab:
 
     def _fix_result(self) -> None:
         gpu_args = self.app.get_gpu_args()
-        mode = self.mode_var.get()
+        mode = {"Ultrafast": "ultrafast"}.get(self.mode_var.get(), "standard")
         args = gpu_args + ["fix-vfp-result", "-m", "1"]
         if mode == "ultrafast":
             args.append("-u")

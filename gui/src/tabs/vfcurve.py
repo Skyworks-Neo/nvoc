@@ -5,6 +5,7 @@ plus VFP export/import, lock/unlock, and point adjustment controls.
 
 import csv
 import os
+import tkinter as tk
 import customtkinter as ctk
 from tkinter import filedialog
 from typing import TYPE_CHECKING, List, Optional, Tuple
@@ -17,9 +18,16 @@ if TYPE_CHECKING:
 from src.widgets.lightweight_controls import (
     LiteButton,
     LiteEntry,
-    install_mousewheel_support,
 )
 from src.parsing import load_vfp_deltas, write_vfp_points
+
+# ── De-CTk'd panel palette (matches overclock.py / fan_control.py) ──
+_PANEL_BG = "#2b2b2b"      # CTk dark frame/scroll background
+_TEXT_FG = "#e5e5e5"       # default label text
+_TEXT_FG_DIM = "#b3b3b3"   # 'gray70' hints
+_FONT_BODY = ("Segoe UI", 11)
+_FONT_HEADER = ("Segoe UI", 13, "bold")
+_CARD_KW = dict(border_width=1, border_color="#1f4e79", corner_radius=10)
 
 
 class VFCurveTab:
@@ -70,8 +78,10 @@ class VFCurveTab:
         self._chart_configure_bind_id: Optional[str] = None
         self._mpl_connection_ids: list[int] = []
         self._last_chart_event_width: Optional[int] = None
+        self._last_chart_event_height: Optional[int] = None
         self._last_chart_resize_width: Optional[int] = None
-        self._pending_chart_resize_width: Optional[int] = None
+        self._last_chart_resize_height: Optional[int] = None
+        self._pending_chart_resize_wh: Optional[Tuple[int, int]] = None
         self._is_resize_active = False
         self._pending_live_point: Optional[Tuple[Optional[float], Optional[float]]] = (
             None
@@ -87,19 +97,20 @@ class VFCurveTab:
         self.quick_export_var = ctk.BooleanVar(value=True)
 
         # ── Top: chart area (controls row + plot) ──
-        chart_area = ctk.CTkFrame(self.frame, fg_color="transparent")
+        chart_area = tk.Frame(self.frame, bg=_PANEL_BG)
         chart_area.pack(fill="x", expand=False, padx=10, pady=(10, 5))
 
-        chart_top = ctk.CTkFrame(chart_area, fg_color="transparent")
+        chart_top = tk.Frame(chart_area, bg=_PANEL_BG)
         chart_top.pack(fill="x", pady=(0, 4))
-        ctk.CTkLabel(
+        tk.Label(
             chart_top,
-            text="📈 VF Curve Plot",
-            font=("", 15, "bold"),
-            text_color="#aaccff",
+            text="📈 VF Curve",
+            font=_FONT_HEADER,
+            bg=_PANEL_BG,
+            fg="#aaccff",
         ).pack(side="left", padx=8)
 
-        io_row = ctk.CTkFrame(chart_top, fg_color="transparent")
+        io_row = tk.Frame(chart_top, bg=_PANEL_BG)
         io_row.pack(side="left", padx=(12, 0))
         ctk.CTkCheckBox(
             io_row, text="Quick export", variable=self.quick_export_var, width=100
@@ -119,12 +130,15 @@ class VFCurveTab:
             command=self._reset_vfp,
         ).pack(side="left")
 
-        auto_row = ctk.CTkFrame(chart_top, fg_color="transparent")
+        auto_row = tk.Frame(chart_top, bg=_PANEL_BG)
         auto_row.pack(side="right")
-        self._auto_toggle_btn = ctk.CTkButton(
+        self._auto_toggle_btn = LiteButton(
             auto_row, text="▶ Auto", width=82, command=self._toggle_auto_refresh
         )
-        self._auto_toggle_btn.pack(side="left", padx=(0, 6))
+        self._auto_toggle_btn.pack(side="left", padx=(0, 8))
+        tk.Label(
+            auto_row, text="Refresh:", font=_FONT_BODY, bg=_PANEL_BG, fg=_TEXT_FG
+        ).pack(side="left", padx=(0, 4))
         auto_interval_entry = LiteEntry(
             auto_row,
             textvariable=self._auto_interval_var,
@@ -132,19 +146,21 @@ class VFCurveTab:
             min_px=52,
             justify="right",
         )
-        auto_interval_entry.pack(side="left", padx=(0, 6))
+        auto_interval_entry.pack(side="left", padx=(0, 2))
+        tk.Label(
+            auto_row, text="s", font=_FONT_BODY, bg=_PANEL_BG, fg=_TEXT_FG_DIM
+        ).pack(side="left")
         auto_interval_entry.bind("<Return>", self._on_auto_interval_changed)
         auto_interval_entry.bind("<FocusOut>", self._on_auto_interval_changed)
-        ctk.CTkLabel(auto_row, text="Refresh (s):").pack(side="left")
 
         self._chart_frame = ctk.CTkFrame(chart_area)
-        self._chart_frame.pack(fill="x", expand=False)
+        self._chart_frame.pack(fill="both", expand=True)
 
         # Schedule heavy chart init (and matplotlib import) to occur after UI starts
         self._chart_build_after_id = self.app.after(50, self._build_chart_if_alive)
 
         # ── Chart toolbar ──
-        toolbar = ctk.CTkFrame(self.frame, fg_color="transparent")
+        toolbar = tk.Frame(self.frame, bg=_PANEL_BG)
         toolbar.pack(fill="x", padx=10, pady=(0, 5))
         LiteButton(
             toolbar, text="🔄 Refresh Curve", width=140, command=self._refresh_curve
@@ -163,229 +179,34 @@ class VFCurveTab:
             hover_color="#145220",
             command=self._apply_adj,
         ).pack(side="left", padx=5)
-        ctk.CTkLabel(toolbar, text="API:").pack(side="left", padx=(10, 2))
+        tk.Label(
+            toolbar, text="API:", font=_FONT_BODY, bg=_PANEL_BG, fg=_TEXT_FG
+        ).pack(side="left", padx=(10, 2))
         self.freq_lock_api_var = ctk.StringVar(value="NVML")
         self.freq_lock_api_menu = ctk.CTkOptionMenu(
             toolbar,
             values=["NVAPI", "NVML"],
             variable=self.freq_lock_api_var,
-            width=92,
+            width=84,
             height=28,
         )
         self.freq_lock_api_menu.pack(side="left", padx=(0, 5))
 
-        # ── Bottom: scrollable controls ──
-        scroll = ctk.CTkScrollableFrame(self.frame)
-        scroll.pack(fill="both", expand=True, padx=10, pady=(0, 10))
-        install_mousewheel_support(scroll)
+        # ── Bottom half: host for the autoscan section ──
+        self.autoscan_host = tk.Frame(self.frame, bg=_PANEL_BG)
+        self.autoscan_host.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
-        # === Main Frame ===
-        top_split_frame = ctk.CTkFrame(scroll, fg_color="transparent")
-        top_split_frame.pack(fill="x", pady=(0, 10))
-        for col in range(4):
-            top_split_frame.columnconfigure(col, weight=1, uniform="equal")
-
-        # === Column 1: Point Adjustment ===
-        adj_frame = ctk.CTkFrame(top_split_frame)
-        adj_frame.grid(row=0, column=0, sticky="nsew", padx=(10, 5), pady=5)
-        ctk.CTkLabel(adj_frame, text="📐Point Adj", font=("", 14, "bold")).grid(
-            row=0, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 5)
-        )
-
-        # Point Adjustment Rows
-        ctk.CTkLabel(adj_frame, text="Range:").grid(
-            row=1, column=0, sticky="w", padx=10, pady=3
-        )
-        adj_frame.columnconfigure(0, weight=1)
-        adj_frame.columnconfigure(1, weight=1)
-        range_row = ctk.CTkFrame(adj_frame, fg_color="transparent")
-        range_row.grid(row=1, column=1, sticky="w", padx=6, pady=3)
+        # ── State vars kept for logic compatibility (Point-Adj / lock UIs
+        # removed: chart drag/wheel/space covers those operations) ──
         self.adj_start_var = ctk.StringVar(value="0")
-        range_w = 3
-        LiteEntry(
-            range_row,
-            textvariable=self.adj_start_var,
-            width=range_w,
-            min_px=36,
-            justify="right",
-        ).pack(side="left")
-        ctk.CTkLabel(range_row, text="~").pack(side="left", padx=0)
         self.adj_end_var = ctk.StringVar(value="0")
-        LiteEntry(
-            range_row,
-            textvariable=self.adj_end_var,
-            width=range_w,
-            min_px=38,
-            justify="right",
-        ).pack(side="left")
-
-        ctk.CTkLabel(adj_frame, text="Δf/MHz:").grid(
-            row=2, column=0, sticky="w", padx=10, pady=3
-        )
         self.adj_delta_var = ctk.StringVar(value="0")
-        LiteEntry(
-            adj_frame,
-            textvariable=self.adj_delta_var,
-            width=7,
-            min_px=70,
-            justify="right",
-        ).grid(row=2, column=1, sticky="w", padx=6, pady=3)
-
-        btn_adj = LiteButton(
-            adj_frame, text="✏️ Apply Adj", width=160, command=self._apply_adj
-        )
-        btn_adj.grid(row=3, column=0, columnspan=2, padx=10, pady=(10, 10))
-
-        # === Column 2: Lock Point ===
-        lock_frame = ctk.CTkFrame(top_split_frame)
-        lock_frame.grid(row=0, column=1, sticky="nsew", padx=(5, 10), pady=5)
-        lock_frame.columnconfigure(0, weight=1)
-        lock_frame.columnconfigure(1, weight=1)
-        ctk.CTkLabel(lock_frame, text="🔒Volt Lock", font=("", 14, "bold")).grid(
-            row=0, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 5)
-        )
-
-        # Lock Point Rows
-        ctk.CTkLabel(lock_frame, text="Index:").grid(
-            row=1, column=0, sticky="w", padx=10, pady=3
-        )
         self.lock_point_var = ctk.StringVar(value="55")
-        LiteEntry(
-            lock_frame,
-            textvariable=self.lock_point_var,
-            width=7,
-            min_px=52,
-            justify="right",
-        ).grid(row=1, column=1, sticky="w", padx=10, pady=3)
-
         self.lock_voltage_var = ctk.BooleanVar(value=False)
-        ctk.CTkCheckBox(
-            lock_frame, text="As volt(mV)", variable=self.lock_voltage_var
-        ).grid(row=2, column=0, columnspan=2, sticky="w", padx=10, pady=10)
-
-        # Combine Lock and Unlock buttons into a single cell
-        button_frame = ctk.CTkFrame(
-            lock_frame
-        )  # Create a separate frame for the buttons
-        button_frame.grid(
-            row=3, column=0, columnspan=2, sticky="ew", padx=10, pady=(5, 10)
-        )  # Span across both columns
-
-        btn_lock = LiteButton(
-            button_frame, text="🔒Lock", command=self._lock_vfp, width=70
-        )
-        btn_lock.pack(side="left", fill="x", padx=0)
-
-        btn_unlock_all = LiteButton(
-            button_frame, text="🔓Unlock", command=self._unlock_vfp, width=75
-        )
-        btn_unlock_all.pack(side="right", fill="x", padx=0)
-
-        # === Column 3: Core Clock ===
-        core_lock_frame = ctk.CTkFrame(top_split_frame)
-        core_lock_frame.grid(row=0, column=2, sticky="nsew", padx=(5, 10), pady=5)
-        core_lock_frame.columnconfigure(0, weight=1)
-        core_lock_frame.columnconfigure(1, weight=1)
-        ctk.CTkLabel(
-            core_lock_frame, text="⚙Core Freq Lock", font=("", 14, "bold")
-        ).grid(row=0, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 5))
-
-        # Core Clock Rows
-        ctk.CTkLabel(core_lock_frame, text="Min/MHz:").grid(
-            row=1, column=0, sticky="w", padx=10, pady=3
-        )
         self.core_lock_min_var = ctk.StringVar(value="0")
-        LiteEntry(
-            core_lock_frame,
-            textvariable=self.core_lock_min_var,
-            width=7,
-            min_px=52,
-            justify="right",
-        ).grid(row=1, column=1, sticky="w", padx=10, pady=3)
-
-        ctk.CTkLabel(core_lock_frame, text="Max/MHz:").grid(
-            row=2, column=0, sticky="w", padx=10, pady=3
-        )
         self.core_lock_max_var = ctk.StringVar(value="0")
-        LiteEntry(
-            core_lock_frame,
-            textvariable=self.core_lock_max_var,
-            width=7,
-            min_px=52,
-            justify="right",
-        ).grid(row=2, column=1, sticky="w", padx=10, pady=3)
-
-        # Combine "Lock Core" and "Reset" buttons into a single cell
-        button_frame_core = ctk.CTkFrame(core_lock_frame)
-        button_frame_core.grid(
-            row=3, column=0, columnspan=2, sticky="ew", padx=10, pady=(5, 10)
-        )  # Span across both columns
-
-        btn_core_lock = LiteButton(
-            button_frame_core, text="🔒Lock", width=70, command=self._lock_core_clocks
-        )
-        btn_core_lock.pack(side="left", fill="x", padx=0)
-
-        btn_core_reset = LiteButton(
-            button_frame_core, text="🔓Reset", width=75, command=self._reset_core_clocks
-        )
-        btn_core_reset.pack(side="right", fill="x", padx=0)
-
-        # === Column 4: Memory Clock ===
-        mem_frame = ctk.CTkFrame(top_split_frame)
-        mem_frame.grid(row=0, column=3, sticky="nsew", padx=(5, 10), pady=5)
-        mem_frame.columnconfigure(0, weight=1)
-        mem_frame.columnconfigure(1, weight=1)
-        ctk.CTkLabel(mem_frame, text="⚙Mem Freq Lock", font=("", 14, "bold")).grid(
-            row=0, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 5)
-        )
-
-        # Memory Clock Rows
-        ctk.CTkLabel(mem_frame, text="Min (MHz):").grid(
-            row=1, column=0, sticky="w", padx=10, pady=3
-        )
         self.mem_lock_min_var = ctk.StringVar(value="0")
-        LiteEntry(
-            mem_frame,
-            textvariable=self.mem_lock_min_var,
-            width=7,
-            min_px=52,
-            justify="right",
-        ).grid(row=1, column=1, sticky="w", padx=10, pady=3)
-
-        ctk.CTkLabel(mem_frame, text="Max (MHz):").grid(
-            row=2, column=0, sticky="w", padx=10, pady=3
-        )
         self.mem_lock_max_var = ctk.StringVar(value="0")
-        LiteEntry(
-            mem_frame,
-            textvariable=self.mem_lock_max_var,
-            width=7,
-            min_px=52,
-            justify="right",
-        ).grid(row=2, column=1, sticky="w", padx=10, pady=3)
-        button_frame_mem = ctk.CTkFrame(
-            mem_frame
-        )  # Create a separate frame for the buttons
-        button_frame_mem.grid(
-            row=3, column=0, columnspan=2, sticky="ew", padx=10, pady=(5, 10)
-        )  # Span across both columns
-
-        btn_mem_lock = LiteButton(
-            button_frame_mem,
-            text="🔒Lock",
-            width=70,
-            command=self._lock_mem_clocks,
-        )
-        btn_mem_lock.pack(side="left", fill="x", padx=0)
-
-        btn_mem_reset = LiteButton(
-            button_frame_mem,
-            text="🔓Reset",
-            width=75,
-            command=self._reset_mem_clocks,
-        )
-        btn_mem_reset.pack(side="right", fill="x", padx=0)
 
     # ────────────────────────────────────────────
     # Chart setup
@@ -441,11 +262,11 @@ class VFCurveTab:
             scale = 1.0
         fig_dpi = max(72, round(100 * scale))
 
-        self.fig = Figure(figsize=(9, 1.63), dpi=fig_dpi)
+        self.fig = Figure(figsize=(9, 1.7), dpi=fig_dpi)
         self.fig.patch.set_facecolor("#2b2b2b")
         self.ax = self.fig.add_subplot(111)
         # Reserve enough left margin so the Y-axis label is never clipped
-        self.fig.subplots_adjust(left=0.11, right=0.98, top=0.95, bottom=0.18)
+        self.fig.subplots_adjust(left=0.13, right=0.985, top=0.92, bottom=0.22)
         self._style_axes()
 
         # Placeholder text
@@ -1188,7 +1009,7 @@ class VFCurveTab:
                 )
 
         # Keep fixed margins so Y-axis label is never clipped
-        self.fig.subplots_adjust(left=0.11, right=0.98, top=0.95, bottom=0.18)
+        self.fig.subplots_adjust(left=0.13, right=0.985, top=0.92, bottom=0.22)
 
         self._live_elements.clear()
         self._live_hline = None
