@@ -304,7 +304,7 @@ class DashboardTab:
             text="⏸ Pause",
             width=90,
             command=self._toggle_polling,
-            font=("Segoe UI", 10, "bold"),
+            font=("Segoe UI", 11, "bold"),
         )
         self._toggle_btn.pack(side="right", padx=6)
 
@@ -313,7 +313,7 @@ class DashboardTab:
             text="🔄 Now",
             width=70,
             command=self._fetch_once,
-            font=("Segoe UI", 10, "bold"),
+            font=("Segoe UI", 11, "bold"),
         ).pack(
             side="right", padx=4
         )

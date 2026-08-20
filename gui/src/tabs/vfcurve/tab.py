@@ -199,7 +199,7 @@ class VFCurveTab:
             width=84,
             height=28,
             anchor="center",
-            font=("Segoe UI", 10, "bold"),
+            font=("Segoe UI", 11, "bold"),
         )
         self.freq_lock_api_menu.pack(side="left", padx=(0, 5))
 

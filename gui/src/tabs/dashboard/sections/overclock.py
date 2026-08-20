@@ -126,7 +126,7 @@ class OverclockTab:
             variable=self.oc_api_var,
             width=84,
             anchor="center",
-            font=("Segoe UI", 10, "bold"),
+            font=("Segoe UI", 11, "bold"),
             height=28,
         )
         self.oc_api_selector.pack(side="right")
@@ -244,7 +244,7 @@ class OverclockTab:
             variable=self.power_api_var,
             width=84,
             anchor="center",
-            font=("Segoe UI", 10, "bold"),
+            font=("Segoe UI", 11, "bold"),
             height=28,
             command=self._on_power_api_changed,
         )
