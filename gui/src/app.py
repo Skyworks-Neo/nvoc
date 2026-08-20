@@ -421,7 +421,10 @@ class App(ctk.CTk):
         self.tab_vfcurve = None
 
         # Defer initialization of the default selected tab to avoid blocking startup
-        self.after(50, self._on_tab_changed)
+        # Build the default (Dashboard) tab at the first event-loop turn —
+        # the old after(50) was 50ms of pure scheduler latency before the
+        # first screen. after(0) keeps attribute-init order safe.
+        self.after(0, self._on_tab_changed)
 
     def _on_tab_changed(self):
         """Lazy load tabs when they are selected and handle visibility for performance."""
@@ -458,29 +461,6 @@ class App(ctk.CTk):
             self._query_gpu_get()
             # Always refresh when entering VF Curve to keep the plot up to date.
             self.tab_vfcurve._refresh_curve()
-
-        elif current_tab.endswith("Overclock"):
-            if self.tab_overclock is None:
-                self.tab_overclock = OverclockTab(
-                    self._oc_hidden_host,
-                    self,
-                    content_parent=self._overclock_content_host(),
-                    fan_parent=self._fan_content_host(),
-                )
-                self.register_resize_target(self.tab_overclock)
-                # Sync any cached info if available
-                if hasattr(self, "_gpu_limits_cache") and self._gpu_limits_cache:
-                    self.tab_overclock.check_capabilities(self._gpu_limits_cache)
-                    self.tab_overclock.update_limits(self._gpu_limits_cache)
-                elif self._gpu_pstates_cache:
-                    self.tab_overclock.set_supported_pstates(self._gpu_pstates_cache)
-                if self._vfp_offset_state_cache is not None:
-                    has_vfp_offset, uniform_offset = self._vfp_offset_state_cache
-                    self.tab_overclock.set_vfp_state(has_vfp_offset, uniform_offset)
-                if self.tab_vfcurve is None:
-                    self.refresh_vfp_offset_state(force=True)
-            # Always force-refresh status cache when entering Overclock.
-            self._query_overclock_status()
 
     def _overclock_content_host(self):
         """Dashboard frame hosting the overclock top panels (integration mode)."""

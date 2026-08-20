@@ -10,7 +10,6 @@ import customtkinter as ctk
 from tkinter import filedialog
 from typing import TYPE_CHECKING, List, Optional, Tuple
 
-import numpy as np
 
 if TYPE_CHECKING:
     from src.app import App
@@ -37,6 +36,13 @@ class VFCurveTab:
     _EXPORT_DIR = "vfp_cache"
     _DEFAULT_AUTO_REFRESH_INTERVAL_MS = 1000
 
+    @staticmethod
+    def _np():
+        """Lazy numpy: only the chart interaction paths need it (~34ms import)."""
+        import numpy as np
+
+        return np
+
     def __init__(self, parent: ctk.CTkFrame, app: "App"):
         self.app = app
         self.frame = parent
@@ -62,7 +68,7 @@ class VFCurveTab:
         # Drag state
         self._dragging = False
         self._drag_start_y: Optional[float] = None
-        self._drag_orig_freqs: Optional[np.ndarray] = None
+        self._drag_orig_freqs = None  # numpy array, created lazily
 
         # Live point state
         self._live_volt: Optional[float] = None
@@ -331,6 +337,11 @@ class VFCurveTab:
             self.canvas.mpl_connect("draw_event", self._on_canvas_draw)
         )
 
+        # Data may have loaded before the chart existed — draw it now.
+        if self._pending_full_redraw or self._voltages:
+            self._pending_full_redraw = False
+            self._redraw()
+
     def _animated_artists(self):
         """Artists managed outside the static background (blit overlay)."""
         artists = []
@@ -435,19 +446,6 @@ class VFCurveTab:
     # ────────────────────────────────────────────
     # Data loading
     # ────────────────────────────────────────────
-    def _get_csv_path(self) -> str:
-        """Return the CSV cache path for the current GPU (by UUID)."""
-        app_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        cache_dir = os.path.join(app_dir, self._EXPORT_DIR)
-        os.makedirs(cache_dir, exist_ok=True)
-
-        uuid = self.app.get_current_gpu_uuid()
-        if uuid:
-            fname = f"{uuid}.csv"
-        else:
-            idx = self.app.get_current_gpu_index()
-            fname = f"gpu_{idx if idx is not None else 0}.csv"
-        return os.path.join(cache_dir, fname)
 
     def _start_auto_refresh(self) -> None:
         if self._auto_refreshing:
@@ -783,6 +781,10 @@ class VFCurveTab:
         if self._is_resize_active:
             self._pending_full_redraw = True
             return
+        if getattr(self, "ax", None) is None:
+            # Chart not built yet — retry once it is (build flushes pending).
+            self._pending_full_redraw = True
+            return
 
         ax = self.ax
         ax.clear()
@@ -1026,8 +1028,8 @@ class VFCurveTab:
         """Find the index of the VF point closest to x_data (mV)."""
         if not self._voltages:
             return None
-        arr = np.array(self._voltages)
-        idx = int(np.argmin(np.abs(arr - x_data)))
+        arr = self._np().array(self._voltages)
+        idx = int(self._np().argmin(self._np().abs(arr - x_data)))
         return idx
 
     def _on_mouse_press(self, event):
@@ -1046,7 +1048,9 @@ class VFCurveTab:
                 if s <= idx <= e:
                     self._dragging = True
                     self._drag_start_y = event.ydata
-                    self._drag_orig_freqs = np.array(self._frequencies, dtype=float)
+                    self._drag_orig_freqs = self._np().array(
+                self._frequencies, dtype=float
+            )
                     return
 
             # Otherwise start new selection
@@ -1099,7 +1103,7 @@ class VFCurveTab:
                 self._line_current.set_ydata(self._frequencies)
             if self._sel_points is not None:
                 sel_f = self._frequencies[s : e + 1]
-                offsets = np.column_stack([self._voltages[s : e + 1], sel_f])
+                offsets = self._np().column_stack([self._voltages[s : e + 1], sel_f])
                 self._sel_points.set_offsets(offsets)
             self._blit_animated()
             return
@@ -1547,7 +1551,9 @@ class VFCurveTab:
 
         # Save undo snapshot before first edit in a batch
         if self._drag_orig_freqs is None:
-            self._drag_orig_freqs = np.array(self._frequencies, dtype=float)
+            self._drag_orig_freqs = self._np().array(
+                self._frequencies, dtype=float
+            )
 
         for i in range(s, e + 1):
             self._frequencies[i] = round(self._frequencies[i] + delta_mhz, 3)
@@ -1801,90 +1807,8 @@ class VFCurveTab:
             on_finished=lambda _rc: self.app.after(0, self._refresh_curve),
         )
 
-    def _lock_vfp(self):
-        gpu = self.app.selected_gpu_target()
-        val = self.lock_point_var.get()
-        lock_idx = self._resolve_vfp_lock_idx_from_input()
-        if self.lock_voltage_var.get():
-            try:
-                voltage_uv = int(float(val) * 1000)
-            except ValueError:
-                self.app.console.append(f"[GUI] Invalid lock voltage value: {val}\n")
-                return
-            point = None
-        else:
-            voltage_uv = None
-            try:
-                point = int(val)
-            except ValueError:
-                self.app.console.append(f"[GUI] Invalid lock point value: {val}\n")
-                return
 
-        def _on_finished(rc: int, idx=lock_idx):
-            def _update_ui():
-                self._apply_vfp_lock_ui(idx)
 
-            self.app.after(0, _update_ui)
-
-        self.app.run_native_action(
-            "lock VFP voltage",
-            lambda native, gpu=gpu, point=point, voltage_uv=voltage_uv: (
-                native.set_vfp_voltage_lock(gpu, point, voltage_uv, False)
-                or "Successfully locked VFP voltage."
-            ),
-            on_finished=_on_finished,
-        )
-
-    def _unlock_vfp(self):
-        gpu = self.app.selected_gpu_target()
-
-        def _on_finished(rc: int):
-            def _update_ui():
-                if rc == 0:
-                    self._apply_vfp_unlock_ui()
-
-            self.app.after(0, _update_ui)
-
-        self.app.run_native_action(
-            "reset VFP lock",
-            lambda native, gpu=gpu: (
-                native.reset_vfp_lock(gpu) or "Successfully reset VFP lock."
-            ),
-            on_finished=_on_finished,
-        )
-
-    def _lock_core_clocks(self):
-        if getattr(self, "_is_toggling_lock", False):
-            self.app.console.append("[GUI] Operation in progress. Please wait...\n")
-            return
-
-        try:
-            min_clk = int(self.core_lock_min_var.get().strip())
-            max_clk = int(self.core_lock_max_var.get().strip())
-        except ValueError:
-            self.app.console.append("[GUI] Invalid min/max core clock values.\n")
-            return
-
-        if min_clk > max_clk:
-            min_clk, max_clk = max_clk, min_clk
-
-        self._is_toggling_lock = True
-        gpu = self.app.selected_gpu_target()
-        backend = self._selected_freq_lock_backend()
-        backend_label = self._selected_freq_lock_backend_label()
-        self.app.console.append(
-            f"[GUI] Locking {backend_label} core clocks to {min_clk} - {max_clk} MHz...\n"
-        )
-        self.app.run_native_action(
-            "lock core clocks",
-            lambda native, gpu=gpu, backend=backend, min_clk=min_clk, max_clk=max_clk: (
-                self._lock_core_native(native, gpu, backend, min_clk, max_clk)
-                or f"Successfully locked {backend_label} core clocks."
-            ),
-            on_finished=lambda rc, label=backend_label, backend=backend: (
-                self._on_core_lock_done(rc, min_clk, max_clk, backend, label)
-            ),
-        )
 
     def _on_core_lock_done(
         self, rc: int, min_clk: int, max_clk: int, backend: str, backend_label: str
@@ -1904,26 +1828,6 @@ class VFCurveTab:
 
         self.app.after(0, _update_ui)
 
-    def _reset_core_clocks(self):
-        if getattr(self, "_is_toggling_lock", False):
-            self.app.console.append("[GUI] Operation in progress. Please wait...\n")
-            return
-
-        self._is_toggling_lock = True
-        gpu = self.app.selected_gpu_target()
-        backend = self._core_reset_backend(self._selected_freq_lock_backend())
-        backend_label = self._backend_label(backend)
-        self.app.console.append(f"[GUI] Resetting {backend_label} core clocks...\n")
-        self.app.run_native_action(
-            "reset core clocks",
-            lambda native, gpu=gpu, backend=backend: (
-                self._reset_core_native(native, gpu, backend)
-                or f"Successfully reset {backend_label} core clocks."
-            ),
-            on_finished=lambda rc, label=backend_label: self._on_core_reset_done(
-                rc, label
-            ),
-        )
 
     def _on_core_reset_done(self, rc: int, backend_label: str):
         def _update_ui():
@@ -1941,33 +1845,6 @@ class VFCurveTab:
 
         self.app.after(0, _update_ui)
 
-    def _lock_mem_clocks(self):
-        try:
-            min_clk = int(self.mem_lock_min_var.get().strip())
-            max_clk = int(self.mem_lock_max_var.get().strip())
-        except ValueError:
-            self.app.console.append("[GUI] Invalid min/max memory clock values.\n")
-            return
-
-        if min_clk > max_clk:
-            min_clk, max_clk = max_clk, min_clk
-
-        gpu = self.app.selected_gpu_target()
-        backend = self._selected_freq_lock_backend()
-        backend_label = self._selected_freq_lock_backend_label()
-        self.app.console.append(
-            f"[GUI] Locking {backend_label} memory clocks to {min_clk} - {max_clk} MHz...\n"
-        )
-        self.app.run_native_action(
-            "lock memory clocks",
-            lambda native, gpu=gpu, backend=backend, min_clk=min_clk, max_clk=max_clk: (
-                self._lock_mem_native(native, gpu, backend, min_clk, max_clk)
-                or f"Successfully locked {backend_label} memory clocks."
-            ),
-            on_finished=lambda rc, label=backend_label, backend=backend: (
-                self._on_mem_lock_done(rc, min_clk, max_clk, backend, label)
-            ),
-        )
 
     def _on_mem_lock_done(
         self, rc: int, min_clk: int, max_clk: int, backend: str, backend_label: str
@@ -1986,21 +1863,6 @@ class VFCurveTab:
 
         self.app.after(0, _update_ui)
 
-    def _reset_mem_clocks(self):
-        gpu = self.app.selected_gpu_target()
-        backend = self._mem_reset_backend(self._selected_freq_lock_backend())
-        backend_label = self._backend_label(backend)
-        self.app.console.append(f"[GUI] Resetting {backend_label} memory clocks...\n")
-        self.app.run_native_action(
-            "reset memory clocks",
-            lambda native, gpu=gpu, backend=backend: (
-                self._reset_mem_native(native, gpu, backend)
-                or f"Successfully reset {backend_label} memory clocks."
-            ),
-            on_finished=lambda rc, label=backend_label: self._on_mem_reset_done(
-                rc, label
-            ),
-        )
 
     def _on_mem_reset_done(self, rc: int, backend_label: str):
         def _update_ui():
@@ -2052,7 +1914,9 @@ class VFCurveTab:
         if self._drag_orig_freqs is None or len(self._drag_orig_freqs) != len(
             self._frequencies
         ):
-            self._drag_orig_freqs = np.array(self._frequencies, dtype=float)
+            self._drag_orig_freqs = self._np().array(
+                self._frequencies, dtype=float
+            )
 
         for i in range(start, end + 1):
             self._frequencies[i] = round(self._defaults[i] + target_delta_mhz, 3)
