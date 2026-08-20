@@ -57,6 +57,8 @@ class AutoscanTab:
             variable=self.mode_var,
             values=["Standard", "Ultrafast", "Legacy"],
             width=140,
+            anchor="center",
+            font=("Segoe UI", 10, "bold"),
         )
         self.mode_menu.pack(side="left")
         tk.Label(
@@ -68,6 +70,8 @@ class AutoscanTab:
             variable=self.bsod_var,
             values=["(auto)", "aggressive", "traditional"],
             width=130,
+            anchor="center",
+            font=("Segoe UI", 10, "bold"),
         )
         self.bsod_menu.pack(side="left")
 

@@ -113,6 +113,7 @@ class NativeBackend:
             data["tgp"] is None
             and data["dnotifier"] is None
             and not data["temp_policies"]
+            and data.get("power_limit_w") is None
             and attempts < 3
         ):
             # All three failed at once is the GCOFF signature, not three
@@ -130,6 +131,7 @@ class NativeBackend:
         tgp = None
         dnotifier = None
         policies: Any = []
+        enforced_w = None
         try:
             tgp = native.query_tgp_watt_range(gpu)
         except Exception:
@@ -142,9 +144,21 @@ class NativeBackend:
             policies = native.query_target_temp_policies(gpu)
         except Exception:
             policies = []
+        try:
+            # NVML enforced power limit: the actually-active power wall
+            # (post D-Notifier/load clamp) — the TGP policy itself exposes
+            # no current-value read, so this is the closest real position.
+            enforced_w = native.query_status(gpu, "both").get("power_limit_w")
+        except Exception:
+            enforced_w = None
         if not isinstance(policies, list):
             policies = []
-        return {"tgp": tgp, "dnotifier": dnotifier, "temp_policies": policies}
+        return {
+            "tgp": tgp,
+            "dnotifier": dnotifier,
+            "temp_policies": policies,
+            "power_limit_w": enforced_w,
+        }
 
     def run_action(
         self,

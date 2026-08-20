@@ -404,7 +404,9 @@ class FanControlPane:
             variable=self.cooler_api_var,
             values=["NVAPI", "NVML"],
             width=84,
+            anchor="center",
             command=lambda _: self.controller.on_backend_change(),
+            font=("Segoe UI", 10, "bold"),
         )
         self.cooler_api_menu.pack(side="right")
         self._interactive_widgets.append(self.cooler_api_menu)
@@ -430,6 +432,8 @@ class FanControlPane:
             variable=self.policy_var,
             values=NVAPI_POLICIES,
             width=1,  # grid stretches it to fill the third
+            anchor="center",
+            font=("Segoe UI", 10, "bold"),
         )
         self.policy_menu.grid(row=0, column=1, sticky="ew", padx=(6, 0))
         self._interactive_widgets.append(self.policy_menu)

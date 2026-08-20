@@ -125,6 +125,8 @@ class OverclockTab:
             values=["NVAPI", "NVML"],
             variable=self.oc_api_var,
             width=84,
+            anchor="center",
+            font=("Segoe UI", 10, "bold"),
             height=28,
         )
         self.oc_api_selector.pack(side="right")
@@ -241,6 +243,8 @@ class OverclockTab:
             values=["NVAPI", "NVML"],
             variable=self.power_api_var,
             width=84,
+            anchor="center",
+            font=("Segoe UI", 10, "bold"),
             height=28,
             command=self._on_power_api_changed,
         )
@@ -564,12 +568,11 @@ class OverclockTab:
             self._power_default = int(
                 round(float(tgp.get("default_watt") or tgp.get("min_watt")))
             )
-            # Position the slider at the CURRENT limit (from the 'get'
-            # query cache), not the default — otherwise startup shows the
-            # fallback position instead of the real one.
-            current_w = (
-                getattr(self.app, "_gpu_limits_cache", {}) or {}
-            ).get("power_limit_nvml_current_w")
+            # Position the slider at the enforced power limit (NVML, from
+            # the mobile-limits query) — the actually-active wall. The TGP
+            # policy exposes no current-value read; default_watt is only
+            # the fallback.
+            current_w = data.get("power_limit_w")
             position = self._power_default
             if current_w is not None:
                 current_w = int(round(float(current_w)))

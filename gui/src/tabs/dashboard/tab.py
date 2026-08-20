@@ -300,11 +300,21 @@ class DashboardTab:
         ie.bind("<FocusOut>", self._on_interval_changed)
 
         self._toggle_btn = ctk.CTkButton(
-            header, text="⏸ Pause", width=90, command=self._toggle_polling
+            header,
+            text="⏸ Pause",
+            width=90,
+            command=self._toggle_polling,
+            font=("Segoe UI", 10, "bold"),
         )
         self._toggle_btn.pack(side="right", padx=6)
 
-        ctk.CTkButton(header, text="🔄 Now", width=70, command=self._fetch_once).pack(
+        ctk.CTkButton(
+            header,
+            text="🔄 Now",
+            width=70,
+            command=self._fetch_once,
+            font=("Segoe UI", 10, "bold"),
+        ).pack(
             side="right", padx=4
         )
 
