@@ -476,7 +476,7 @@ impl Command {
             Self::SetTgpWatt | Self::ResetTgpWatt | Self::SetTemperatureThresholds => {
                 &["policy-index"]
             }
-            Self::SetVoltRailOffset => &["limit-uv", "expect-type"],
+            Self::SetVoltRailOffset => &["expect-type"],
             _ => &[],
         }
     }
@@ -554,7 +554,7 @@ impl Command {
                 PositionalArg::hyphen(
                     "arg_offset_uv",
                     "OFFSET_UV",
-                    "Microvolt offset, for example -25000 or +50000uV (±250mV hard limit)",
+                    "Microvolt offset, for example -25000 or +50000uV; passed through verbatim, the driver clamps the effective wall to min(target, vbios_wall, vrm_max_wall)",
                 ),
             ],
             Self::SetFanPercent => vec![PositionalArg::free(
@@ -1124,11 +1124,6 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .action(ArgAction::SetTrue)
             .global(true)
             .help("List all display IDs instead of only connected display IDs"),
-        "limit-uv" => Arg::new("limit-uv")
-            .long("limit-uv")
-            .value_name("UV")
-            .action(ArgAction::Set)
-            .help("Soft cap on the offset magnitude in microvolts (default 100000 = ±100mV; hard limit ±250mV)"),
         "expect-type" => Arg::new("expect-type")
             .long("expect-type")
             .value_name("TYPE")
@@ -2247,19 +2242,33 @@ fn execute_target(
                     // µV on voltage/offset entries (type 3 = the 5090 MSVDD
                     // offset melonVolt writes)
                     let p0 = r.p0_bounds().map(|b| {
+                        // ceiling = min(vbios_wall, vrm_max_wall) − base wall;
+                        // the µV still available before the driver clamps the
+                        // effective wall. base_wall = effective − current offset.
                         #[allow(non_snake_case)]
-                        let headroom_uV = (b.domain_max_uV - b.max_wall_uV).max(0);
+                        let ceiling_uV = r.offset_ceiling_uV(0)
+                            .or_else(|| {
+                                let mut c = b.vrm_max_wall_uV;
+                                if b.vbios_wall_uV > 0 && b.vbios_wall_uV < c {
+                                    c = b.vbios_wall_uV;
+                                }
+                                Some((c - b.effective_wall_uV).max(0))
+                            })
+                            .unwrap_or(0);
                         json!({
                             "current_uV": b.current_uV,
-                            // P0 voltage wall / min-hold — replaces the old
-                            // trial-and-error VFP-lock limit scan
-                            "max_wall_uV": b.max_wall_uV,
+                            // target wall (SET-requested) / effective wall (clamped)
+                            "target_wall_uV": b.target_wall_uV,
+                            "effective_wall_uV": b.effective_wall_uV,
+                            // vBIOS wall (0 on mobile; desktop hard cap)
+                            "vbios_wall_uV": b.vbios_wall_uV,
+                            // VRM-max wall (1.2V) — the voltage ceiling
+                            "vrm_max_wall_uV": b.vrm_max_wall_uV,
+                            // P0 min hold — replaces the old brute-force VFP-
+                            // lock lower-bound scan
                             "min_hold_uV": b.min_hold_uV,
-                            // domain maximum — the hard ceiling the driver
-                            // clamps the wall to (status payload index 3).
-                            "domain_max_uV": b.domain_max_uV,
                             // how much higher the wall can go before clamping
-                            "headroom_uV": headroom_uV,
+                            "offset_ceiling_uV": ceiling_uV,
                         })
                     });
                     json!({
@@ -2284,10 +2293,6 @@ fn execute_target(
         Command::SetVoltRailOffset => {
             let rail_bit = parse_usize(&invocation.positionals[0], "rail-bit")? as u32;
             let uv = parse_i32_unit(&invocation.positionals[1], "uv", "microvolt")?;
-            let limit_uv = option_one(invocation, "limit-uv")
-                .map(|s| s.parse::<i32>())
-                .transpose()
-                .map_err(|e| CliError::new(format!("invalid --limit-uv: {e}")))?;
             let expect_type = option_one(invocation, "expect-type")
                 .map(|s| s.parse::<u32>())
                 .transpose()
@@ -2297,7 +2302,6 @@ fn execute_target(
                 SetNvapiVoltRailOffset {
                     rail_bit,
                     offset_uV: uv,
-                    limit_uV: limit_uv,
                     expected_type: expect_type,
                 },
             )?
@@ -2308,6 +2312,10 @@ fn execute_target(
                     "rail_bit": a.rail_bit,
                     "previous_uV": a.previous_uV,
                     "applied_uV": a.applied_uV,
+                    // effective wall read back after SET (clamped to
+                    // min(target, vbios_wall, vrm_max_wall)); 0 = driver
+                    // hasn't refreshed status yet — re-run get-volt-rails.
+                    "effective_wall_uV": a.effective_wall_uV,
                 }),
                 None => json!({"supported": false}),
             })

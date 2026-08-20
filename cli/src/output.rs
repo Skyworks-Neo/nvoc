@@ -2316,10 +2316,12 @@ mod tests {
                 "rail_mask": "0x00000001",
                 "p0": {
                     "current_uV": 700000,
-                    "max_wall_uV": 750000,
+                    "target_wall_uV": 750000,
+                    "effective_wall_uV": 750000,
+                    "vbios_wall_uV": 0,
+                    "vrm_max_wall_uV": 1200000,
                     "min_hold_uV": 600000,
-                    "domain_max_uV": 1200000,
-                    "headroom_uV": 450000,
+                    "offset_ceiling_uV": 450000,
                 },
                 "rail_descriptors": [{
                     "rail_bit": 0,
@@ -2338,6 +2340,7 @@ mod tests {
                 "rail_bit": 0,
                 "previous_uV": 0,
                 "applied_uV": -25000,
+                "effective_wall_uV": 980000,
             }),
         }
     }

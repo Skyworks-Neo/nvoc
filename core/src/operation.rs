@@ -1191,30 +1191,27 @@ impl GpuOperation for QueryNvapiVoltRails {
     }
 }
 
-/// Hard driver-side sanity range observed by melonVolt (±250 mV); values
-/// outside it are rejected before any write. This is a coarse safety net only —
-/// the real overvolt ceiling is the domain-max-derived bound
-/// ([`SetNvapiVoltRailOffset`] computes it per rail from the type-1 status
-/// entry's `domain_max`, the hard ceiling the driver clamps the wall to).
-pub const VOLT_RAIL_OFFSET_SANITY_UV: i32 = 250_000;
-/// melonVolt's software clamp (±100 mV) — the CLI default soft limit.
-pub const VOLT_RAIL_OFFSET_DEFAULT_LIMIT_UV: i32 = 100_000;
-
 /// Set one rail's µV offset via the private VoltRails control object (the
-/// melonVolt write path: GET snapshot → locate entry → sanity/type checks →
+/// melonVolt write path: GET snapshot → locate entry → type guard →
 /// patch → SET → readback verify, see `reverse/melonvolt/ANALYSIS.md`).
 /// Payload index 0 is the offset on RTX-5090 MSVDD (rail bit 1, type 3);
 /// type semantics on other GPUs are platform-specific — set `expected_type`
 /// to guard them.
+///
+/// No magnitude limit is enforced: the offset is passed through verbatim and
+/// the driver clamps the effective wall (status index 4) to
+/// `min(target, vbios_wall, vrm_max_wall)` on its own. An offset past the
+/// ceiling is not wasted in a dangerous sense — it just cannot raise the
+/// wall further. The post-SET readback reports the effective wall so the
+/// user sees the clamp.
 #[derive(Clone, Copy, Debug)]
 #[allow(non_snake_case)] // uV suffix matches the nvapi-rs field naming
 pub struct SetNvapiVoltRailOffset {
     /// rail bit within the mask (RTX 5090 MSVDD = 1)
     pub rail_bit: u32,
-    /// target offset in µV (absolute, not a delta; 0 = stock)
+    /// target offset in µV (absolute, not a delta; 0 = stock). Passed through
+    /// verbatim — the driver clamps the effective wall itself.
     pub offset_uV: i32,
-    /// soft limit on |offset|; `None` = [`VOLT_RAIL_OFFSET_DEFAULT_LIMIT_UV`]
-    pub limit_uV: Option<i32>,
     /// refuse to write unless the entry's current type equals this
     /// (melonVolt requires 3 on 5090 MSVDD); `None` = no type check
     pub expected_type: Option<u32>,
@@ -1253,47 +1250,41 @@ impl GpuOperation for SetNvapiVoltRailOffset {
                 self.rail_bit, entry.entry_type
             )));
         }
-        let limit = self.limit_uV.unwrap_or(VOLT_RAIL_OFFSET_DEFAULT_LIMIT_UV);
-        let magnitude = self.offset_uV.unsigned_abs();
-        if magnitude > VOLT_RAIL_OFFSET_SANITY_UV as u32 {
-            return Err(Error::Custom(format!(
-                "offset {} µV exceeds the ±{} µV driver sanity range",
-                self.offset_uV, VOLT_RAIL_OFFSET_SANITY_UV
-            )));
-        }
-        // Real overvolt ceiling: domain_max − base_wall, where base_wall is the
-        // P0 wall at offset 0 (current_wall − current_offset). The driver clamps
-        // the wall to domain_max regardless, so an offset past this is silently
-        // wasted — reject it with the exact ceiling instead of letting the user
-        // believe a larger offset did something. Undervolts (negative offsets)
-        // are bounded only by the sanity range above; min_hold is informational.
-        if self.offset_uV > 0 {
-            if let Some(ceiling) = rails.offset_ceiling_uV(self.rail_bit)
-                && self.offset_uV > ceiling
-            {
-                return Err(Error::Custom(format!(
-                    "offset {} µV exceeds the domain-max ceiling {} µV \
-                     (domain_max − base wall; the driver clamps the P0 wall to the \
-                     domain maximum, so a larger offset is silently wasted)",
-                    self.offset_uV, ceiling
-                )));
-            }
-        }
-        if magnitude > limit.unsigned_abs() as u32 {
-            return Err(Error::Custom(format!(
-                "offset {} µV exceeds the soft limit ±{} µV (raise --limit-uv deliberately)",
-                self.offset_uV, limit
-            )));
-        }
+        // No magnitude limit: the offset is passed through verbatim. The
+        // driver clamps the effective wall (status index 4) to
+        // min(target, vbios_wall, vrm_max_wall) on its own — an offset past
+        // the ceiling cannot raise the wall further but is not dangerous, so
+        // we do not reject it. The post-SET readback reports the effective
+        // wall so the user sees the clamp.
         let previous = entry.values[0];
         let retained = gpu
             .set_volt_rail_value(self.rail_bit, self.offset_uV)
             .map_err(Error::from)?
             .ok_or_else(|| Error::Custom("volt-rails family vanished between reads".into()))?;
+        // Read back the status entry for this rail to surface the effective
+        // wall the driver actually put in force (clamped to VRM/vBIOS max).
+        // The driver may not have refreshed status immediately after SET; a 0
+        // here means "no type-1 entry / not yet updated" — re-run
+        // get-volt-rails to confirm.
+        #[allow(non_snake_case)]
+        let effective_wall_uV = gpu
+            .volt_rails()
+            .map_err(Error::from)?
+            .and_then(|r| {
+                r.status
+                    .iter()
+                    .find(|e| e.rail_bit == self.rail_bit && e.entry_type == 1)
+                    // status payload index 4 = effective wall (clamped to
+                    // min(target, vbios_wall, vrm_max_wall)); see
+                    // nvapi-rs sys::gpu::power::private::status_values
+                    .map(|e| e.values[4])
+            })
+            .unwrap_or(0);
         Ok(Some(NvapiVoltRailOffsetApplied {
             rail_bit: self.rail_bit,
             previous_uV: previous,
             applied_uV: retained,
+            effective_wall_uV,
         }))
     }
 }
@@ -1305,6 +1296,11 @@ pub struct NvapiVoltRailOffsetApplied {
     pub rail_bit: u32,
     pub previous_uV: i32,
     pub applied_uV: i32,
+    /// effective wall after SET, read back from the status entry's index 4.
+    /// The driver clamps this to `min(target, vbios_wall, vrm_max_wall)`, so
+    /// it may be below the requested offset's implied wall. 0 = no type-1
+    /// status entry / driver hasn't refreshed yet (re-run get-volt-rails).
+    pub effective_wall_uV: i32,
 }
 
 /// Set the D-Notifier (D0-notify) limit to a D level (1..5). Maps the CLI

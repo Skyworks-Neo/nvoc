@@ -1780,7 +1780,10 @@ fn query_volt_rails(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
                         match r.p0_bounds() {
                             Some(b) => value_object([
                                 ("current_uV", Value::from(b.current_uV)),
-                                ("max_wall_uV", Value::from(b.max_wall_uV)),
+                                ("target_wall_uV", Value::from(b.target_wall_uV)),
+                                ("vbios_wall_uV", Value::from(b.vbios_wall_uV)),
+                                ("vrm_max_wall_uV", Value::from(b.vrm_max_wall_uV)),
+                                ("effective_wall_uV", Value::from(b.effective_wall_uV)),
                                 ("min_hold_uV", Value::from(b.min_hold_uV)),
                             ]),
                             None => Value::Null,
@@ -1822,7 +1825,6 @@ fn set_volt_rail_offset(
     gpu: &str,
     rail_bit: u32,
     offset_uv: i32,
-    limit_uv: Option<i32>,
     expect_type: Option<u32>,
 ) -> PyResult<Py<PyAny>> {
     let value = with_target(gpu, "nvapi", |target| {
@@ -1831,7 +1833,6 @@ fn set_volt_rail_offset(
             SetNvapiVoltRailOffset {
                 rail_bit,
                 offset_uV: offset_uv,
-                limit_uV: limit_uv,
                 expected_type: expect_type,
             },
         )
@@ -1843,6 +1844,7 @@ fn set_volt_rail_offset(
                 ("rail_bit", Value::from(a.rail_bit)),
                 ("previous_uV", Value::from(a.previous_uV)),
                 ("applied_uV", Value::from(a.applied_uV)),
+                ("effective_wall_uV", Value::from(a.effective_wall_uV)),
             ]),
             None => value_object([("supported", Value::from(false))]),
         })
