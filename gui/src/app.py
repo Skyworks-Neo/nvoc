@@ -9,6 +9,7 @@ import re
 import sys
 import threading
 import time
+import tkinter as tk
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 import pystray
@@ -53,6 +54,77 @@ def find_cli_exe() -> str:
     return (
         shutil.which("nvoc-autooptimizer") or shutil.which("nvoc-auto-optimizer") or ""
     )
+
+
+class _ConsoleWindowProxy:
+    """Standalone console window.
+
+    Log lines buffer here until the window is first opened; afterwards they
+    stream to the live widget. Closing the window just withdraws it (the
+    widget and its history stay alive).
+    """
+
+    _MAX_LINES = 500
+
+    def __init__(self, app: "App") -> None:
+        self._app = app
+        self._widget = None  # type: Optional[OutputConsole]
+        self._window = None  # type: Optional[ctk.CTkToplevel]
+        self._buffer: List[str] = []
+        self._lock = threading.Lock()
+
+    # ── widget lifecycle ────────────────────────────────────────────────
+    def _ensure_window(self) -> "OutputConsole":
+        if self._widget is not None and self._widget.winfo_exists():
+            return self._widget
+        win = ctk.CTkToplevel(self._app)
+        win.title("NVOC Console")
+        win.geometry("640x360")
+        win.protocol("WM_DELETE_WINDOW", self.close)
+        widget = OutputConsole(win, height=380)
+        widget.pack(fill="both", expand=True, padx=6, pady=6)
+        with self._lock:
+            backlog, self._buffer = self._buffer[-self._MAX_LINES :], []
+        if backlog:
+            widget.append_batch(backlog)
+        self._window = win
+        self._widget = widget
+        return widget
+
+    def open(self) -> None:
+        self._ensure_window()
+        if self._window is not None:
+            self._window.deiconify()
+
+    def close(self) -> None:
+        if self._window is not None:
+            self._window.withdraw()
+
+    def toggle(self) -> None:
+        if self._window is not None and self._window.state() != "withdrawn":
+            self.close()
+        else:
+            self.open()
+
+    # ── OutputConsole API ───────────────────────────────────────────────
+    def append(self, text: str) -> None:
+        with self._lock:
+            self._buffer.append(text)
+            if len(self._buffer) > self._MAX_LINES:
+                del self._buffer[: len(self._buffer) - self._MAX_LINES]
+            live = self._widget
+        if live is not None and live.winfo_exists():
+            live.append(text)
+
+    def append_batch(self, texts: List[str]) -> None:
+        for text in texts:
+            self.append(text)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._buffer = []
+        if self._widget is not None and self._widget.winfo_exists():
+            self._widget.clear()
 
 
 def _warm_matplotlib(ready_event: "threading.Event") -> None:
@@ -325,21 +397,17 @@ class App(ctk.CTk):
         # We can try to reduce the impact by ensuring the main window doesn't update
         # too many internal state variables during the drag.
 
-        # Create tabs
+        # Create tabs. The Overclock page itself is gone — its sections are
+        # hosted on the Dashboard; the OverclockTab object still exists
+        # (parented to a hidden frame) to own the logic and widgets.
         _tab_dashboard = self.tabview.add("📊 Dashboard")
-        _tab_autoscan = self.tabview.add("🔍 Autoscan")
-        _tab_overclock = self.tabview.add("⚡ Overclock")
         _tab_vfcurve = self.tabview.add("📈 VF Curve")
+        self._oc_hidden_host = tk.Frame(self)
 
-        # === Bottom: Output Console ===
-        # (Created before tabs so the main frame structure is visible during load)
-        self.console = OutputConsole(self, height=200)
-        self.console.pack(fill="x", padx=10, pady=(0, 10))
-
-        # class MockConsole:
-        #     def append(self, text: str): pass
-        #     def clear(self): pass
-        # self.console = MockConsole()
+        # === Output Console lives in its own window now ===
+        # The bottom dock is gone; the dashboard gets a Console button.
+        # Logs buffer until the window is first opened.
+        self.console = _ConsoleWindowProxy(self)
 
         # Show the window layout immediately before rendering heavy tabs.
         # update_idletasks (layout/paint only) — update() would pump the full
@@ -364,7 +432,7 @@ class App(ctk.CTk):
         # after startup we prebuild the remaining tabs one per idle slice.
         if not self._tab_prebuild_started:
             self._tab_prebuild_started = True
-            self.after(2000, self._prebuild_next_tab)
+            self.after(400, self._prebuild_next_tab)
 
         if current_tab.endswith("Dashboard") and self.tab_dashboard is None:
             self.tab_dashboard = DashboardTab(self.tabview.tab("📊 Dashboard"), self)
@@ -391,16 +459,13 @@ class App(ctk.CTk):
             # Always refresh when entering VF Curve to keep the plot up to date.
             self.tab_vfcurve._refresh_curve()
 
-        elif current_tab.endswith("Autoscan") and self.tab_autoscan is None:
-            self.tab_autoscan = AutoscanTab(self.tabview.tab("🔍 Autoscan"), self)
-            self.register_resize_target(self.tab_autoscan)
-
         elif current_tab.endswith("Overclock"):
             if self.tab_overclock is None:
                 self.tab_overclock = OverclockTab(
-                    self.tabview.tab("⚡ Overclock"),
+                    self._oc_hidden_host,
                     self,
                     content_parent=self._overclock_content_host(),
+                    fan_parent=self._fan_content_host(),
                 )
                 self.register_resize_target(self.tab_overclock)
                 # Sync any cached info if available
@@ -419,8 +484,11 @@ class App(ctk.CTk):
 
     def _overclock_content_host(self):
         """Dashboard frame hosting the overclock top panels (integration mode)."""
-        host = getattr(self.tab_dashboard, "oc_panels_host", None)
-        return host
+        return getattr(self.tab_dashboard, "oc_panels_host", None)
+
+    def _fan_content_host(self):
+        """Dashboard frame hosting the fan-control section."""
+        return getattr(self.tab_dashboard, "fan_panels_host", None)
 
     def _prebuild_next_tab(self):
         """Construct one not-yet-built tab per call, in idle slices.
@@ -431,7 +499,6 @@ class App(ctk.CTk):
         tab per slice keeps the event loop responsive between builds.
         """
         builders = [
-            ("tab_autoscan", "🔍 Autoscan", AutoscanTab),
             ("tab_overclock", "⚡ Overclock", OverclockTab),
             ("tab_vfcurve", "📈 VF Curve", VFCurveTab),
         ]
@@ -441,9 +508,10 @@ class App(ctk.CTk):
             try:
                 if cls is OverclockTab:
                     tab = cls(
-                        self.tabview.tab(tab_name),
+                        self._oc_hidden_host,
                         self,
                         content_parent=self._overclock_content_host(),
+                        fan_parent=self._fan_content_host(),
                     )
                 else:
                     tab = cls(self.tabview.tab(tab_name), self)
@@ -467,9 +535,14 @@ class App(ctk.CTk):
                 # A failed prebuild must not break startup; the tab will be
                 # built lazily on first entry as before.
                 return
-            self.after(300, self._prebuild_next_tab)
+            self.after(100, self._prebuild_next_tab)
             return
-        # All tabs prebuilt — nothing further to schedule.
+        if self.tab_autoscan is None and self.tab_vfcurve is not None:
+            try:
+                self.tab_autoscan = AutoscanTab(self.tab_vfcurve.autoscan_host, self)
+                self.register_resize_target(self.tab_autoscan)
+            except Exception:
+                return
 
         # If an older session suspended tab children, restore once and keep normal geometry.
         # Suspending CTkScrollableFrame-heavy tabs can corrupt layout after repeated resizes.

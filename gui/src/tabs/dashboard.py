@@ -10,6 +10,7 @@ import customtkinter as ctk
 from typing import TYPE_CHECKING, Optional, Dict, Tuple
 
 from src.parsing import as_float, parse_dashboard_status
+from src.widgets.lightweight_controls import LiteButton, LiteEntry
 
 if TYPE_CHECKING:
     from src.app import App
@@ -271,15 +272,26 @@ class DashboardTab:
             text_color="#aaccff",
         ).pack(side="left", padx=8)
 
-        # interval
-        ctk.CTkLabel(
-            header, text="Refresh (s):", font=("", 12), text_color=_FG_LABEL
-        ).pack(side="right", padx=(0, 4))
+        # interval: Refresh: [entry] s — label styled to match the VF tab
+        tk.Label(
+            header,
+            text="s",
+            font=("Segoe UI", 11),
+            bg="#2b2b2b",
+            fg="#e5e5e5",
+        ).pack(side="right", padx=(0, 6))
         self._interval_var = ctk.StringVar(value="1.0")
-        ie = ctk.CTkEntry(
-            header, textvariable=self._interval_var, width=52, font=("Consolas", 12)
+        ie = LiteEntry(
+            header, textvariable=self._interval_var, width=5, justify="right"
         )
-        ie.pack(side="right", padx=(0, 6))
+        ie.pack(side="right", padx=(0, 4))
+        tk.Label(
+            header,
+            text="Refresh:",
+            font=("Segoe UI", 11),
+            bg="#2b2b2b",
+            fg="#e5e5e5",
+        ).pack(side="right", padx=(0, 4))
         ie.bind("<Return>", self._on_interval_changed)
         ie.bind("<FocusOut>", self._on_interval_changed)
 
@@ -320,18 +332,31 @@ class DashboardTab:
         self.oc_panels_host = tk.Frame(self.frame, bg="#2b2b2b")
         self.oc_panels_host.pack(fill="x", padx=10, pady=(4, 6))
 
-        # Quick-access buttons
-        controls = ctk.CTkFrame(self.frame, fg_color="transparent")
+        # Host frame for the fan-control section (below the two OC cards).
+        self.fan_panels_host = tk.Frame(self.frame, bg="#2b2b2b")
+        self.fan_panels_host.pack(fill="x", padx=10, pady=(0, 6))
+
+        # Quick-access buttons — four equal slots, LiteButton styling to
+        # match the section buttons above.
+        controls = tk.Frame(self.frame, bg="#2b2b2b")
         controls.pack(fill="x", padx=10, pady=(4, 6))
-        ctk.CTkButton(
-            controls, text="🔄 Refresh Info", width=140, command=self._refresh_info
-        ).pack(side="left", padx=5)
-        ctk.CTkButton(
-            controls, text="📊 Show Status", width=140, command=self._show_status
-        ).pack(side="left", padx=5)
-        ctk.CTkButton(
-            controls, text="📋 Show OC Settings", width=160, command=self._show_get
-        ).pack(side="left", padx=5)
+        for col in range(4):
+            controls.grid_columnconfigure(col, weight=1, uniform="dash_btns")
+        LiteButton(
+            controls, text="🔄 Refresh Info", width=10, command=self._refresh_info
+        ).grid(row=0, column=0, sticky="ew", padx=4)
+        LiteButton(
+            controls, text="📊 Show Status", width=10, command=self._show_status
+        ).grid(row=0, column=1, sticky="ew", padx=4)
+        LiteButton(
+            controls, text="📋 Show OC Settings", width=10, command=self._show_get
+        ).grid(row=0, column=2, sticky="ew", padx=4)
+        LiteButton(
+            controls,
+            text="🖥 Console",
+            width=10,
+            command=lambda: self.app.console.toggle(),
+        ).grid(row=0, column=3, sticky="ew", padx=4)
 
     def _sync_lock_state_from_cache(self) -> None:
         """Refresh dashboard lock flags from app cache even before VF tab is created."""

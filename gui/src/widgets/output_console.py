@@ -14,36 +14,21 @@ class OutputConsole(ctk.CTkFrame):
 
     def __init__(self, master, **kwargs) -> None:
         super().__init__(master, **kwargs)
-        self._expanded = False
+        # Standalone window console: body always expanded, no fold header.
+        self._expanded = True
         self._lock = threading.Lock()
 
-        # Header stays visible; clicking it toggles the console body.
-        self.header = ctk.CTkFrame(
-            self, height=30, fg_color="transparent", cursor="hand2"
-        )
-        self.header.pack(fill="x", padx=5, pady=(5, 0))
-
-        self.toggle_label = ctk.CTkLabel(
-            self.header,
-            text="[+] Output Console",
-            font=("", 13, "bold"),
-            cursor="hand2",
-        )
-        self.toggle_label.pack(side="left")
-        self.toggle_label.bind("<Button-1>", self.toggle)
-        self.header.bind("<Button-1>", self.toggle)
-
         self.clear_button = ctk.CTkButton(
-            self.header, text="Clear", width=60, height=24, command=self.clear
+            self, text="Clear", width=60, height=24, command=self.clear
         )
-        self.clear_button.pack(side="right")
+        self.clear_button.pack(anchor="e", padx=5, pady=(5, 0))
 
         self.textbox = ctk.CTkTextbox(
-            self, state="disabled", font=("Consolas", 12), wrap="none", height=200
+            self, state="disabled", font=("Consolas", 12), wrap="none"
         )
+        self.textbox.pack(fill="both", expand=True, padx=5, pady=(0, 5))
         self.textbox.tag_config("lime", foreground="lime")
         self.textbox.tag_config("red", foreground="red")
-        self._set_expanded(False)
 
     def toggle(self, _event: object = None) -> None:
         """Toggle the console body between folded and expanded."""
