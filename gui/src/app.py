@@ -1578,6 +1578,24 @@ class App(ctk.CTk):
                 pass
         self._tray_icon = self._build_tray_icon()
         self._tray_thread = self.run_background("tray-icon", self._tray_icon.run)
+        # Keep-alive: after long tray idles Windows pages the GUI's working
+        # set out, making the first restore repaint painfully slow. A slow
+        # layout tick keeps the widget pages resident.
+        if self._tray_keepalive_id is None:
+            self._tray_keepalive_tick()
+
+    _tray_keepalive_id = None
+
+    def _tray_keepalive_tick(self):
+        if self._exiting or self.winfo_viewable():
+            self._tray_keepalive_id = None
+            return
+        try:
+            self.update_idletasks()
+        except Exception:
+            self._tray_keepalive_id = None
+            return
+        self._tray_keepalive_id = self.after(30000, self._tray_keepalive_tick)
 
     def _show_from_tray(self, icon=None, item=None):
         """Restore the main window from the tray."""
@@ -1688,6 +1706,9 @@ class App(ctk.CTk):
         if self._tray_icon is not None:
             self._tray_icon.stop()
             self._tray_icon = None
+        if self._tray_keepalive_id is not None:
+            self.after_cancel(self._tray_keepalive_id)
+            self._tray_keepalive_id = None
 
         # 3. Shut down workers (safe on main thread — main thread is not a worker)
         self.runner.shutdown()

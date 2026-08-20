@@ -255,6 +255,7 @@ class DashboardTab:
         self._pending_done_payload: Optional[Tuple[int, str]] = None
 
         self._build_ui()
+        self._restore_snapshot()
         self._sync_lock_state_from_cache()
         # Force one immediate sample so dashboard-only workflows update right away.
         self.app.after(120, self._fetch_once)
@@ -368,6 +369,72 @@ class DashboardTab:
             width=10,
             command=lambda: self.app.console.toggle(),
         ).grid(row=0, column=3, sticky="ew", padx=4)
+
+    _SNAPSHOT_MAX_AGE_S = 24 * 3600
+
+    def _snapshot_path(self):
+        import os
+
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        d = os.path.join(base, "nvoc-gui")
+        try:
+            os.makedirs(d, exist_ok=True)
+            return os.path.join(d, "dashboard_snapshot.json")
+        except OSError:
+            return None
+
+    def _save_snapshot(self, fresh: dict) -> None:
+        """Persist the last dashboard sample (background, best-effort)."""
+
+        def _write():
+            import json
+            import time
+
+            path = self._snapshot_path()
+            if not path:
+                return
+            try:
+                payload = {"ts": time.time(), "values": fresh}
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(payload, f)
+            except OSError:
+                pass
+
+        try:
+            self.app.run_background("dash-snapshot", _write)
+        except Exception:
+            pass
+
+    def _restore_snapshot(self) -> None:
+        """Cold start: paint the last saved sample instantly (stale data,
+        replaced by the first live poll)."""
+        import json
+        import os
+        import time
+
+        path = self._snapshot_path()
+        if not path or not os.path.isfile(path):
+            return
+        try:
+            with open(path, encoding="utf-8") as f:
+                payload = json.load(f)
+        except (OSError, ValueError):
+            return
+        if time.time() - payload.get("ts", 0) > self._SNAPSHOT_MAX_AGE_S:
+            return
+        values = payload.get("values") or {}
+        locks = {
+            "GPU": self.app._dashboard_gpu_lock_active
+            if hasattr(self.app, "_dashboard_gpu_lock_active")
+            else False,
+        }
+        for key, row in self._rows.items():
+            val = values.get(key)
+            if val is not None:
+                try:
+                    row.update(float(val), locked=locks.get(key))
+                except (TypeError, ValueError):
+                    continue
 
     def _sync_lock_state_from_cache(self) -> None:
         """Refresh dashboard lock flags from app cache even before VF tab is created."""
@@ -552,11 +619,15 @@ class DashboardTab:
             ("TEMP", temp_c, None),
             ("PWR", pwr_w, None),
         ]
+        fresh = {}
         for key, val, lk in updates:
             if val is not None:
                 self._rows[key].update(val, locked=lk)
+                fresh[key] = val
             else:
                 self._rows[key].set_error()
+        if fresh:
+            self._save_snapshot(fresh)
 
     # ── Quick-access button handlers ──────────────────────────────────────────
     def _refresh_info(self) -> None:
