@@ -372,7 +372,7 @@ class FanControlPane:
             r0_left,
             variable=self.fan_id_var,
             values=["All", "Fan 1", "Fan 2"],
-            width=110,
+            width=84,
             anchor="center",
             font=("Segoe UI", 11, "bold"),
         )
