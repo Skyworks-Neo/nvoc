@@ -1019,9 +1019,7 @@ class App(ctk.CTk):
             self._sync_dashboard_lock_state_from_cache(merged)
             if fresh and fresh != self._last_pstates_logged:
                 self._last_pstates_logged = list(fresh)
-                self.console.append(
-                    f"[GUI] Supported P-States: {', '.join(fresh)}\n"
-                )
+                self.console.append(f"[GUI] Supported P-States: {', '.join(fresh)}\n")
             elif not self._gpu_pstates_cache:
                 self.console.append(
                     "[GUI] Warning: native settings returned no supported P-States.\n"

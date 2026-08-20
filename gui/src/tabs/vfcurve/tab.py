@@ -24,9 +24,9 @@ from src.widgets.lightweight_controls import (
 from src.parsing import load_vfp_deltas, write_vfp_points
 
 # ── De-CTk'd panel palette (matches overclock.py / fan_control.py) ──
-_PANEL_BG = "#2b2b2b"      # CTk dark frame/scroll background
-_TEXT_FG = "#e5e5e5"       # default label text
-_TEXT_FG_DIM = "#b3b3b3"   # 'gray70' hints
+_PANEL_BG = "#2b2b2b"  # CTk dark frame/scroll background
+_TEXT_FG = "#e5e5e5"  # default label text
+_TEXT_FG_DIM = "#b3b3b3"  # 'gray70' hints
 _FONT_BODY = ("Segoe UI", 11)
 _FONT_HEADER = ("Segoe UI", 13, "bold")
 _CARD_KW = dict(border_width=1, border_color="#1f4e79", corner_radius=10)
@@ -189,9 +189,9 @@ class VFCurveTab:
             hover_color="#145220",
             command=self._apply_adj,
         ).pack(side="left", padx=5)
-        tk.Label(
-            toolbar, text="API:", font=_FONT_BODY, bg=_PANEL_BG, fg=_TEXT_FG
-        ).pack(side="left", padx=(10, 2))
+        tk.Label(toolbar, text="API:", font=_FONT_BODY, bg=_PANEL_BG, fg=_TEXT_FG).pack(
+            side="left", padx=(10, 2)
+        )
         self.freq_lock_api_var = ctk.StringVar(value="NVML")
         self.freq_lock_api_menu = ctk.CTkOptionMenu(
             toolbar,
@@ -634,9 +634,7 @@ class VFCurveTab:
             except Exception as exc:
                 retcode = -1
                 self.app.after(0, lambda exc=exc: self.app.console.append(f"{exc}\n"))
-            self.app.after(
-                0, lambda: self._on_query_done(retcode, points)
-            )
+            self.app.after(0, lambda: self._on_query_done(retcode, points))
 
         self.app.run_background("vfcurve-refresh", _worker)
 
@@ -677,9 +675,7 @@ class VFCurveTab:
             freq_mhz = p["frequency_khz"] / 1000.0  # kHz → MHz
             frequencies.append(freq_mhz)
             default_khz = p.get("default_frequency_khz")
-            defaults.append(
-                freq_mhz if default_khz is None else default_khz / 1000.0
-            )
+            defaults.append(freq_mhz if default_khz is None else default_khz / 1000.0)
         # Auto-refresh ticks with identical data: no redraw, no console churn
         # (a full ax.clear() + re-plot + Agg render per second for nothing).
         if (
@@ -1060,8 +1056,8 @@ class VFCurveTab:
                     self._dragging = True
                     self._drag_start_y = event.ydata
                     self._drag_orig_freqs = self._np().array(
-                self._frequencies, dtype=float
-            )
+                        self._frequencies, dtype=float
+                    )
                     return
 
             # Otherwise start new selection
@@ -1562,9 +1558,7 @@ class VFCurveTab:
 
         # Save undo snapshot before first edit in a batch
         if self._drag_orig_freqs is None:
-            self._drag_orig_freqs = self._np().array(
-                self._frequencies, dtype=float
-            )
+            self._drag_orig_freqs = self._np().array(self._frequencies, dtype=float)
 
         for i in range(s, e + 1):
             self._frequencies[i] = round(self._frequencies[i] + delta_mhz, 3)
@@ -1818,9 +1812,6 @@ class VFCurveTab:
             on_finished=lambda _rc: self.app.after(0, self._refresh_curve),
         )
 
-
-
-
     def _on_core_lock_done(
         self, rc: int, min_clk: int, max_clk: int, backend: str, backend_label: str
     ):
@@ -1839,7 +1830,6 @@ class VFCurveTab:
 
         self.app.after(0, _update_ui)
 
-
     def _on_core_reset_done(self, rc: int, backend_label: str):
         def _update_ui():
             if rc == 0:
@@ -1855,7 +1845,6 @@ class VFCurveTab:
             self._is_toggling_lock = False
 
         self.app.after(0, _update_ui)
-
 
     def _on_mem_lock_done(
         self, rc: int, min_clk: int, max_clk: int, backend: str, backend_label: str
@@ -1873,7 +1862,6 @@ class VFCurveTab:
             self._redraw()
 
         self.app.after(0, _update_ui)
-
 
     def _on_mem_reset_done(self, rc: int, backend_label: str):
         def _update_ui():
@@ -1925,9 +1913,7 @@ class VFCurveTab:
         if self._drag_orig_freqs is None or len(self._drag_orig_freqs) != len(
             self._frequencies
         ):
-            self._drag_orig_freqs = self._np().array(
-                self._frequencies, dtype=float
-            )
+            self._drag_orig_freqs = self._np().array(self._frequencies, dtype=float)
 
         for i in range(start, end + 1):
             self._frequencies[i] = round(self._defaults[i] + target_delta_mhz, 3)

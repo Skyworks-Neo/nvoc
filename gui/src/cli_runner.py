@@ -193,7 +193,9 @@ class CLIRunner:
             self._cancelled = True
             process = self._process
             thread = self._thread
-            already_cancelling = self._cancel_inflight and self._cancel_target is process
+            already_cancelling = (
+                self._cancel_inflight and self._cancel_target is process
+            )
             if process is None and thread is not None:
                 cancel = getattr(thread, "cancel", None)
                 if callable(cancel) and cancel():

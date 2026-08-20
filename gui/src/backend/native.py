@@ -76,7 +76,9 @@ class NativeBackend:
             retcode, output, parsed = self._run_query_once(gpu, command_name)
         return retcode, output, parsed
 
-    def _run_query_once(self, gpu: str, command_name: str) -> tuple[int, str, dict[str, Any]]:
+    def _run_query_once(
+        self, gpu: str, command_name: str
+    ) -> tuple[int, str, dict[str, Any]]:
         try:
             native = self._pynvoc()
             if command_name == "info":

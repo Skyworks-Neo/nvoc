@@ -770,7 +770,6 @@ class SegmentToggleSelector(ctk.CTkFrame):
         label_fill = "#7e8da1" if disabled else "#d6dfeb"
         sub_fill = "#6b7684" if disabled else "#8a99ab"
         node_fill = "#707070" if disabled else "#9aa7b5"
-        active_fill = "#6689a8" if disabled else "#3B8ED0"
 
         has_subtitle = any(self._subtitles)
         label_y = self._line_y + 16
@@ -888,8 +887,30 @@ class LiteCheckbutton(tk.Frame):
 
     def _rounded_rect(self, c, x0, y0, x1, y1, r, **kw):
         points = [
-            x0 + r, y0, x1 - r, y0, x1, y0, x1, y0 + r, x1, y1 - r, x1, y1,
-            x1 - r, y1, x0 + r, y1, x0, y1, x0, y1 - r, x0, y0 + r, x0, y0,
+            x0 + r,
+            y0,
+            x1 - r,
+            y0,
+            x1,
+            y0,
+            x1,
+            y0 + r,
+            x1,
+            y1 - r,
+            x1,
+            y1,
+            x1 - r,
+            y1,
+            x0 + r,
+            y1,
+            x0,
+            y1,
+            x0,
+            y1 - r,
+            x0,
+            y0 + r,
+            x0,
+            y0,
         ]
         return c.create_polygon(points, smooth=True, splinesteps=16, **kw)
 
@@ -913,33 +934,57 @@ class LiteCheckbutton(tk.Frame):
         disabled = self._state == "disabled"
 
         c.create_text(
-            x1 - b - 10, h // 2,
-            text=self._text, anchor="e",
+            x1 - b - 10,
+            h // 2,
+            text=self._text,
+            anchor="e",
             fill="#8a8a8a" if disabled else self._fg,
             font=self._font,
         )
         if checked:
             self._rounded_rect(
-                c, x1 - b, y0, x1, y0 + b, max(3, b // 5),
-                fill="#3B8ED0", outline="",
+                c,
+                x1 - b,
+                y0,
+                x1,
+                y0 + b,
+                max(3, b // 5),
+                fill="#3B8ED0",
+                outline="",
             )
             m = b // 3
             c.create_line(
-                x1 - b + m, y0 + b // 2, x1 - b // 2, y0 + b - m,
-                fill="#ffffff", width=2, capstyle=tk.ROUND,
+                x1 - b + m,
+                y0 + b // 2,
+                x1 - b // 2,
+                y0 + b - m,
+                fill="#ffffff",
+                width=2,
+                capstyle=tk.ROUND,
             )
             c.create_line(
-                x1 - b // 2, y0 + b - m, x1 - m, y0 + m,
-                fill="#ffffff", width=2, capstyle=tk.ROUND,
+                x1 - b // 2,
+                y0 + b - m,
+                x1 - m,
+                y0 + m,
+                fill="#ffffff",
+                width=2,
+                capstyle=tk.ROUND,
             )
         else:
             border = "#6f6f6f" if self._hovered else "#5c5c5c"
             if disabled:
                 border = "#4a4a4a"
             self._rounded_rect(
-                c, x1 - b, y0, x1, y0 + b, max(3, b // 5),
+                c,
+                x1 - b,
+                y0,
+                x1,
+                y0 + b,
+                max(3, b // 5),
                 fill="#3a3a3a" if not disabled else "#333333",
-                outline=border, width=2,
+                outline=border,
+                width=2,
             )
 
 

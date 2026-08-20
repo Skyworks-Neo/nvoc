@@ -9,17 +9,6 @@ import tkinter as tk
 
 import customtkinter as ctk
 
-# ── De-CTk'd panel palette ──────────────────────────────────────────────
-# Inner layout uses plain tk widgets: one bg for every container (matches
-# CTk dark-theme frame/scroll bg), plus text colors. Keeping these in one
-# place makes the light/dark question a one-spot change.
-_PANEL_BG = "#2b2b2b"      # CTk dark frame/scroll background
-_TEXT_FG = "#e5e5e5"       # default label text
-_TEXT_FG_DIM = "#b3b3b3"   # 'gray70' hints
-_TEXT_FG_FAINT = "#999999"  # 'gray60' status text
-_FONT_BODY = ("Segoe UI", 11)
-_FONT_HEADER = ("Segoe UI", 13, "bold")
-
 from src.tabs.dashboard.sections.fan import FanControlPane
 from src.widgets.lightweight_controls import (
     ct_button_font,
@@ -32,6 +21,18 @@ from src.widgets.lightweight_controls import (
     install_mousewheel_support,
 )
 from src.widgets.hover_tooltip import HoverTooltip
+
+# ── De-CTk'd panel palette ──────────────────────────────────────────────
+# Inner layout uses plain tk widgets: one bg for every container (matches
+# CTk dark-theme frame/scroll bg), plus text colors. Keeping these in one
+# place makes the light/dark question a one-spot change.
+_PANEL_BG = "#2b2b2b"  # CTk dark frame/scroll background
+_TEXT_FG = "#e5e5e5"  # default label text
+_TEXT_FG_DIM = "#b3b3b3"  # 'gray70' hints
+_TEXT_FG_FAINT = "#999999"  # 'gray60' status text
+_FONT_BODY = ("Segoe UI", 11)
+_FONT_HEADER = ("Segoe UI", 13, "bold")
+
 
 if TYPE_CHECKING:
     from src.app import App
@@ -382,9 +383,7 @@ class OverclockTab:
         self.btn_reset_all.grid(row=0, column=1, sticky="ew", padx=(5, 0))
 
         fan_host = fan_parent if fan_parent is not None else scroll
-        self.fan_section = FanControlPane(
-            fan_host, self.app.backend, embedded=True
-        )
+        self.fan_section = FanControlPane(fan_host, self.app.backend, embedded=True)
         self._limit_enabled_frame_color = self.limit_frame.cget("fg_color")
         self._limit_dim_frame_color = ("gray86", "gray20")
         self._limit_enabled_title_color = _TEXT_FG  # tk.Label: plain fg color
@@ -532,9 +531,7 @@ class OverclockTab:
         # on Linux (libnvidia-api stub) / older drivers the setters are
         # NO_IMPLEMENTATION and auto-enabling would just log an error.
         tgp_ok = isinstance(data.get("tgp"), dict) and data.get("tgp")
-        dnotifier_ok = isinstance(data.get("dnotifier"), dict) and data.get(
-            "dnotifier"
-        )
+        dnotifier_ok = isinstance(data.get("dnotifier"), dict) and data.get("dnotifier")
         if (tgp_ok or dnotifier_ok) and self._mobile_ppab_initialized_for != gpu:
             self._mobile_ppab_initialized_for = gpu
             self._syncing = True
@@ -559,7 +556,9 @@ class OverclockTab:
         if not self._mobile_mode:
             return
         tgp = data.get("tgp") if isinstance(data.get("tgp"), dict) else None
-        dnotifier = data.get("dnotifier") if isinstance(data.get("dnotifier"), dict) else None
+        dnotifier = (
+            data.get("dnotifier") if isinstance(data.get("dnotifier"), dict) else None
+        )
         policies = data.get("temp_policies") or []
 
         if tgp and tgp.get("max_watt") is not None and tgp.get("min_watt") is not None:
@@ -592,7 +591,9 @@ class OverclockTab:
             levels = dnotifier["levels"]
             values = [str(item.get("level", "")).upper() for item in levels]
             subtitles = [
-                f"{float(item['watts']):.0f}W" if item.get("watts") is not None else None
+                f"{float(item['watts']):.0f}W"
+                if item.get("watts") is not None
+                else None
                 for item in levels
             ]
             self.dnotifier_selector.set_values(values, subtitles)
@@ -612,7 +613,9 @@ class OverclockTab:
                 target = policy
                 break
         if target is not None:
-            current = int(round(float(target.get("celsius", target.get("default", 83)))))
+            current = int(
+                round(float(target.get("celsius", target.get("default", 83))))
+            )
             self._thermal_default = current
             self._reconfigure_slider(
                 self.tlimit_slider,
@@ -666,8 +669,7 @@ class OverclockTab:
         self.app.run_native_action(
             "set D-Notifier level",
             lambda native, gpu=gpu, d_level=d_level: (
-                native.set_dnotifier(gpu, d_level)
-                or f"D-Notifier set to D{d_level}."
+                native.set_dnotifier(gpu, d_level) or f"D-Notifier set to D{d_level}."
             ),
             on_finished=on_finished,
         )
@@ -1106,6 +1108,7 @@ class OverclockTab:
 
         def _fmt(v: int) -> str:
             return f"{int(v):+d}" if signed else str(int(v))
+
         row_frame = tk.Frame(parent, bg=_PANEL_BG)
         row_frame.pack(fill="x", padx=(26, 10), pady=3)
         row_frame.grid_columnconfigure(1, weight=1)

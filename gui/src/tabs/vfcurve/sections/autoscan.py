@@ -87,7 +87,11 @@ class AutoscanTab:
         )
         param_frame.grid(row=0, column=0, sticky="new", padx=(0, 5))
         tk.Label(
-            param_frame, text="⚙ Parameters", font=_FONT_HEADER, bg=_PANE_BG, fg=_TEXT_FG
+            param_frame,
+            text="⚙ Parameters",
+            font=_FONT_HEADER,
+            bg=_PANE_BG,
+            fg=_TEXT_FG,
         ).pack(anchor="w", padx=10, pady=(10, 5))
 
         params_grid = tk.Frame(param_frame, bg=_PANE_BG)
@@ -96,9 +100,9 @@ class AutoscanTab:
 
         row = 0
         # Output CSV
-        tk.Label(params_grid, text="Output CSV:", font=_FONT_BODY, bg=_PANE_BG, fg=_TEXT_FG).grid(
-            row=row, column=0, sticky="w", padx=5, pady=3
-        )
+        tk.Label(
+            params_grid, text="Output CSV:", font=_FONT_BODY, bg=_PANE_BG, fg=_TEXT_FG
+        ).grid(row=row, column=0, sticky="w", padx=5, pady=3)
         self.output_csv_var = ctk.StringVar(value="./ws/vfp-tem.csv")
         out_row = tk.Frame(params_grid, bg=_PANE_BG)
         out_row.grid(row=row, column=1, sticky="ew", padx=5, pady=3)
@@ -119,9 +123,9 @@ class AutoscanTab:
 
         row += 1
         # Init CSV
-        tk.Label(params_grid, text="Init CSV:", font=_FONT_BODY, bg=_PANE_BG, fg=_TEXT_FG).grid(
-            row=row, column=0, sticky="w", padx=5, pady=3
-        )
+        tk.Label(
+            params_grid, text="Init CSV:", font=_FONT_BODY, bg=_PANE_BG, fg=_TEXT_FG
+        ).grid(row=row, column=0, sticky="w", padx=5, pady=3)
         self.init_csv_var = ctk.StringVar(value="./ws/vfp-init.csv")
         init_row = tk.Frame(params_grid, bg=_PANE_BG)
         init_row.grid(row=row, column=1, sticky="ew", padx=5, pady=3)

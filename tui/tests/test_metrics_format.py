@@ -123,9 +123,7 @@ def test_format_metric_lines_perf_decodes_multiple_reasons() -> None:
 
 def test_format_metric_lines_perf_zero_is_none() -> None:
     # No active limit reason -> "none" (not "0x0").
-    text = "\n".join(
-        _format_metric_lines({"perf": {"unknown": 0, "limits": 0}}, "---")
-    )
+    text = "\n".join(_format_metric_lines({"perf": {"unknown": 0, "limits": 0}}, "---"))
     assert "PERF LIMIT: none" in text
 
 

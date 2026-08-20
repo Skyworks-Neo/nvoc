@@ -15,6 +15,7 @@ class OverclockController(PaneController):
         self._tgp_policy_index = 2
         self._tgp_range = (5, 140)
         self._target_temp_range = (75, 87)
+
     def available_pstates(self) -> list[str]:
         pstates = self.app.cache.settings.get("supported_pstates", [])
         if not isinstance(pstates, list):
@@ -220,7 +221,9 @@ class OverclockController(PaneController):
                 except ValueError:
                     continue
                 watts = item.get("watts")
-                display = f"{label} · {float(watts):.0f}W" if watts is not None else label
+                display = (
+                    f"{label} · {float(watts):.0f}W" if watts is not None else label
+                )
                 options.append((display, level_num))
             select = self.app.query_one("#mobile-dnotifier", Select)
             select.set_options(options)
@@ -265,7 +268,8 @@ class OverclockController(PaneController):
             self.app.run_native_action(
                 "enable dynamic boost",
                 lambda native, gpu=gpu: (
-                    native.set_dynamic_boost(gpu, True) or "Dynamic Boost (PPAB) enabled."
+                    native.set_dynamic_boost(gpu, True)
+                    or "Dynamic Boost (PPAB) enabled."
                 ),
             )
 
@@ -494,7 +498,9 @@ class OverclockController(PaneController):
                 return True
             ppab = str(self.app.query_one("#mobile-ppab", Select).value or "on") == "on"
             try:
-                d_level = int(self.app.query_one("#mobile-dnotifier", Select).value or 1)
+                d_level = int(
+                    self.app.query_one("#mobile-dnotifier", Select).value or 1
+                )
             except (TypeError, ValueError):
                 d_level = 1
             if not 1 <= d_level <= 5:

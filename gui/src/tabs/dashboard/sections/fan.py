@@ -12,16 +12,7 @@ from typing import TYPE_CHECKING, Callable, Optional, Protocol, Sequence
 
 import customtkinter as ctk
 
-from src.backend.base import FanSettings
-
-# De-CTk'd inner-panel palette (matches overclock.py / CTk dark theme)
-_PANE_BG = "#2b2b2b"
-_TEXT_FG = "#e5e5e5"
-_TEXT_FG_DIM = "#b3b3b3"
-_FONT_BODY = ("Segoe UI", 11)
-_FONT_HEADER = ("Segoe UI", 13, "bold")
-_SECTION_BORDER = "#1f4e79"
-
+from src.backend.base import FanSettings, GuiBackend
 from src.widgets.lightweight_controls import (
     ct_button_font,
     LiteButton,
@@ -30,6 +21,14 @@ from src.widgets.lightweight_controls import (
 
 if TYPE_CHECKING:
     from src.backend.cli import CliBackend
+
+# De-CTk'd inner-panel palette (matches overclock.py / CTk dark theme)
+_PANE_BG = "#2b2b2b"
+_TEXT_FG = "#e5e5e5"
+_TEXT_FG_DIM = "#b3b3b3"
+_FONT_BODY = ("Segoe UI", 11)
+_FONT_HEADER = ("Segoe UI", 13, "bold")
+_SECTION_BORDER = "#1f4e79"
 
 
 NVAPI_POLICIES = [
@@ -134,7 +133,6 @@ class FanControlController:
 
     def set_supported(self, supported: bool) -> None:
         self.pane.set_supported_state(supported)
-
 
 
 class FanLevelSelector(tk.Frame):
@@ -282,8 +280,13 @@ class FanLevelSelector(tk.Frame):
         x0, x1 = self._track()
 
         c.create_line(
-            x0, self._TRACK_Y, x1, self._TRACK_Y,
-            fill="#3a3a3a", width=4, capstyle=tk.ROUND,
+            x0,
+            self._TRACK_Y,
+            x1,
+            self._TRACK_Y,
+            fill="#3a3a3a",
+            width=4,
+            capstyle=tk.ROUND,
         )
 
         for node, color in zip(self._NODES, self._NODE_COLORS):
@@ -417,9 +420,7 @@ class FanControlPane:
         self.cooler_api_menu.pack(side="right")
         self._interactive_widgets.append(self.cooler_api_menu)
 
-        self.level_var.trace_add(
-            "write", lambda *_: self.controller.on_entry_change()
-        )
+        self.level_var.trace_add("write", lambda *_: self.controller.on_entry_change())
 
         # Row 1, left third: Policy
         r1_left = tk.Frame(grid, bg=_PANE_BG)

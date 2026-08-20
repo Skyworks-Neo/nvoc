@@ -4,7 +4,6 @@ Shows: Core Freq, Mem Freq, Core Voltage (lock indicator), Temperature, Power.
 Auto-refreshes at a configurable interval via CLI 'status' command.
 """
 
-import datetime
 import tkinter as tk
 import customtkinter as ctk
 from typing import TYPE_CHECKING, Optional, Dict, Tuple
@@ -314,9 +313,7 @@ class DashboardTab:
             width=70,
             command=self._fetch_once,
             font=ct_button_font(header),
-        ).pack(
-            side="right", padx=4
-        )
+        ).pack(side="right", padx=4)
 
         # metric card
         card = ctk.CTkFrame(self.frame, fg_color=_BG_CARD, corner_radius=12)
@@ -560,7 +557,6 @@ class DashboardTab:
                 self._rows[key].update(val, locked=lk)
             else:
                 self._rows[key].set_error()
-
 
     # ── Quick-access button handlers ──────────────────────────────────────────
     def _refresh_info(self) -> None:
