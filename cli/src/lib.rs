@@ -440,7 +440,8 @@ impl Command {
             | Self::SetApplicationsClocksMhz
             | Self::SetApiRestriction
             | Self::SetEdid
-            | Self::SetLegacyClocksMhz => (2, 2),
+            | Self::SetLegacyClocksMhz
+            | Self::SetVoltRailOffset => (2, 2),
             Self::SetVfpRangeDeltaMhz => (3, 3),
             Self::SetPstateLock => (1, 2),
             _ => (0, 0),
@@ -476,6 +477,7 @@ impl Command {
             Self::SetTgpWatt | Self::ResetTgpWatt | Self::SetTemperatureThresholds => {
                 &["policy-index"]
             }
+            Self::SetVoltRailOffset => &["limit-uv", "expect-type"],
             _ => &[],
         }
     }
@@ -544,6 +546,18 @@ impl Command {
                 "CELSIUS",
                 "Target-temperature threshold in Celsius, for example 85 or 85C",
             )],
+            Self::SetVoltRailOffset => vec![
+                PositionalArg::free(
+                    "arg_rail_bit",
+                    "RAIL_BIT",
+                    "Volt-rail bit index from get-volt-rails (e.g. 0 for the single rail on a 4060 laptop, 1 for 5090 MSVDD)",
+                ),
+                PositionalArg::hyphen(
+                    "arg_offset_uv",
+                    "OFFSET_UV",
+                    "Microvolt offset, for example -25000 or +50000uV (±250mV hard limit)",
+                ),
+            ],
             Self::SetFanPercent => vec![PositionalArg::free(
                 "arg_fan_percent",
                 "PERCENT",
@@ -1111,6 +1125,16 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .action(ArgAction::SetTrue)
             .global(true)
             .help("List all display IDs instead of only connected display IDs"),
+        "limit-uv" => Arg::new("limit-uv")
+            .long("limit-uv")
+            .value_name("UV")
+            .action(ArgAction::Set)
+            .help("Soft cap on the offset magnitude in microvolts (default 100000 = ±100mV; hard limit ±250mV)"),
+        "expect-type" => Arg::new("expect-type")
+            .long("expect-type")
+            .value_name("TYPE")
+            .action(ArgAction::Set)
+            .help("Require the rail control entry to report this type (e.g. 3 = 5090 MSVDD µV offset); omit to skip the guard"),
         _ => unreachable!("unknown command-specific option {name}"),
     }
 }

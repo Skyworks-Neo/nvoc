@@ -2312,6 +2312,31 @@ mod tests {
             Command::ResetFan => json!({"applied": true, "fan_indices": [0, 1]}),
             Command::SetPStateNative => json!({"applied": true, "pstate": "P3"}),
             Command::ResetPStateNative => json!({"applied": true}),
+            Command::GetVoltRails => json!({
+                "rail_mask": "0x00000001",
+                "p0": {
+                    "current_uV": 700000,
+                    "max_wall_uV": 750000,
+                    "min_hold_uV": 600000,
+                },
+                "rail_descriptors": [{
+                    "rail_bit": 0,
+                    "type": 1,
+                    "raw_u32": [0, 1, 2, 3],
+                }],
+                "control": [{
+                    "rail_bit": 0, "type": 3, "values_uV": [0, 0, 0, 0, 0, 0],
+                }],
+                "status": [{
+                    "rail_bit": 0, "type": 1, "values_uV": [700000, 750000, 0, 1200000, 750000, 600000],
+                }],
+            }),
+            Command::SetVoltRailOffset => json!({
+                "applied": true,
+                "rail_bit": 0,
+                "previous_uV": 0,
+                "applied_uV": -25000,
+            }),
         }
     }
 }
