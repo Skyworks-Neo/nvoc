@@ -369,7 +369,12 @@ class FanControlPane:
         self.cooler_title.pack(side="left")
         self.fan_id_var = ctk.StringVar(value="All")
         self.fan_id_menu = ctk.CTkOptionMenu(
-            r0_left, variable=self.fan_id_var, values=["All", "Fan 1", "Fan 2"], width=110
+            r0_left,
+            variable=self.fan_id_var,
+            values=["All", "Fan 1", "Fan 2"],
+            width=110,
+            anchor="center",
+            font=("Segoe UI", 10, "bold"),
         )
         # right-aligned to the 1/3 boundary (matches the Policy dropdown edge)
         self.fan_id_menu.pack(side="right")
