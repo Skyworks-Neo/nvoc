@@ -20,6 +20,7 @@ from ._native import (
     query_pstates,
     query_settings,
     query_status,
+    query_volt_rails,
     query_supported_applications_clocks,
     query_target_temp_policies,
     query_temperature_thresholds,

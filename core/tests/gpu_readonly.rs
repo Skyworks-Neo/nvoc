@@ -129,7 +129,8 @@ use nvapi_hi::Microvolts;
 use nvml_wrapper::Nvml;
 use nvoc_core::{
     BackendSet, CheckVoltageFrequency, ClockDomain, Error, GpuId, GpuSelector, GpuTarget,
-    QueryClockOffset, QueryFanInfo, QueryGpuInfo, QueryGpuStatus, QueryPowerLimits, QueryPstates,
+    QueryClockOffset, QueryFanInfo, QueryGpuInfo, QueryGpuStatus, QueryNvapiVoltRails,
+    QueryPowerLimits, QueryPstates,
     QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
     QueryVfpPointVoltage, TargetInventory, discover_targets, nvml_pstate_to_index,
     nvml_pstate_to_str, parse_nvml_pstate, run, select_targets,
@@ -1864,4 +1865,44 @@ fn nvapi_power_monitor_bit_isolation() {
         "Pair each bit's nonzero offsets with the v4 descriptor scan\n\
          (nvapi_power_monitor_v4) to map bit -> offset -> rail."
     );
+}
+
+/// Private VoltRails family (the "melonVolt path", see
+/// `reverse/melonvolt/ANALYSIS.md`): rail builder 0x2C73AFDC → control GET
+/// 0xA3070DB0 → live status 0x5D0634EE, all read-only. On a 610.74 mobile
+/// driver this returns rail_mask=0x1 with status entry type=1 carrying live
+/// core-rail µV (e.g. [630000, 1005000, 0, 1200000, 1005000, 630000] idle —
+/// value0 moves with load). The µV-offset SET sibling (0x87C55C8A, the
+/// RTX-5090 MSVDD path) is intentionally unwrapped; this test only reads.
+#[test]
+#[ignore]
+fn nvapi_volt_rails_read() {
+    let inv = inventory();
+    let target = first_target(&inv);
+    let Ok(Some(rails)) = run(&target, QueryNvapiVoltRails).map(|r| r.output) else {
+        // drivers without the private family → Ok(None) is a valid outcome
+        return;
+    };
+    assert_ne!(rails.rail_mask, 0, "a nonzero rail mask is expected when supported");
+    let set_bits = rails.rail_mask.count_ones() as usize;
+    assert_eq!(
+        rails.control.len(),
+        set_bits,
+        "control entries should be dense over the mask bits"
+    );
+    for e in &rails.control {
+        assert!(e.rail_bit < 32);
+        assert_eq!(rails.rail_mask & (1 << e.rail_bit), 1 << e.rail_bit);
+    }
+    if !rails.status.is_empty() {
+        assert_eq!(rails.status.len(), set_bits);
+        // live voltage entries: µV values in a plausible 0..=1.5 V band
+        for e in &rails.status {
+            let v = e.values[0];
+            assert!(
+                (0..=1_500_000).contains(&v),
+                "status value0 {v} µV out of the plausible band"
+            );
+        }
+    }
 }

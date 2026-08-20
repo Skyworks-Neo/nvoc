@@ -10,7 +10,8 @@ use nvoc_core::{
     QueryGpuStatus, QueryLegacyCoreOvervoltRanges, QueryLegacyP0CoreMaxVoltageDelta,
     QueryNvapiDNotifier, QueryNvapiPStateLevels, QueryNvapiPStateLockStatus,
     QueryNvapiTargetTempPolicies, QueryNvapiTargetTempPolicyIndex, QueryNvapiTgpWattRange,
-    QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks,
+    QueryNvapiVoltRails, QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates,
+    QuerySupportedApplicationsClocks,
     QueryTdpTempLimits, QueryTemperatureThresholds, QueryThrottleReasons, QueryVfpPointVoltage,
     QueryViolationStatus, QueryVoltageBoost, ResetApplicationsClocks, ResetCoolerLevels,
     ResetFanSpeed, ResetLockedClocks, ResetNvapiPowerLimits, ResetNvapiSensorLimits,
@@ -156,6 +157,7 @@ pub enum Command {
     ResetTgpWatt,
     GetDNotifier,
     SetDNotifier,
+    GetVoltRails,
     SetTemperatureThresholds,
     SetThermalLimitC,
     SetFanPercent,
@@ -235,6 +237,7 @@ impl Command {
             Self::ResetTgpWatt => "reset-tgp-watt",
             Self::GetDNotifier => "get-dnotifier",
             Self::SetDNotifier => "set-dnotifier",
+            Self::GetVoltRails => "get-volt-rails",
             Self::SetThermalLimitC => "set-thermal-limit-c",
             Self::SetTemperatureThresholds => "set-temp-thresholds",
             Self::SetFanPercent => "set-fan-percent",
@@ -316,6 +319,9 @@ impl Command {
             }
             Self::SetDNotifier => {
                 "Set NVAPI D-Notifier limit level (D1-D5; shares the TGP power-policy table)"
+            }
+            Self::GetVoltRails => {
+                "Read private VoltRails family: rail mask + per-rail offsets + live voltages (melonVolt path)"
             }
             Self::SetThermalLimitC => "Set thermal limit in Celsius",
             Self::SetTemperatureThresholds => {
@@ -717,6 +723,7 @@ const COMMANDS: &[Command] = &[
     Command::GetVfp,
     Command::GetVfpPointVoltageMv,
     Command::GetVoltageBoostPercent,
+    Command::GetVoltRails,
     Command::ListDisplays,
     Command::ListGpus,
     Command::ProbeVoltageLimits,
@@ -2202,6 +2209,33 @@ fn execute_target(
                 .map_err(|e| CliError::new(format!("invalid D-Notifier level: {e}")))?;
             run(target, SetNvapiDNotifier { level })?;
             Ok(json!({"applied": true, "dnotifier_level": format!("D{level}")}))
+        }
+        Command::GetVoltRails => {
+            let rails = run(target, QueryNvapiVoltRails)?.output;
+            Ok(match rails {
+                Some(r) => {
+                    // µV on voltage/offset entries (type 3 = the 5090 MSVDD
+                    // offset melonVolt writes)
+                    let p0 = r.p0_bounds().map(|b| json!({
+                        "current_uV": b.current_uV,
+                        // P0 voltage wall / min-hold — replaces the old
+                        // trial-and-error VFP-lock limit scan
+                        "max_wall_uV": b.max_wall_uV,
+                        "min_hold_uV": b.min_hold_uV,
+                    }));
+                    json!({
+                        "rail_mask": format!("0x{:08X}", r.rail_mask),
+                        "p0": p0,
+                        "control": r.control.iter().map(|e| json!({
+                            "rail_bit": e.rail_bit, "type": e.entry_type, "values_uV": e.values,
+                        })).collect::<Vec<_>>(),
+                        "status": r.status.iter().map(|e| json!({
+                            "rail_bit": e.rail_bit, "type": e.entry_type, "values_uV": e.values,
+                        })).collect::<Vec<_>>(),
+                    })
+                }
+                None => json!({"supported": false}),
+            })
         }
         Command::SetTemperatureThresholds => {
             // NVAPI-only SET of one target-temperature (温度墙) policy slot.

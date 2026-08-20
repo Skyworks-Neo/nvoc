@@ -7,7 +7,8 @@ use nvoc_core::{
     QueryAutoBoost, QueryDisplays, QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo,
     QueryGpuSettings, QueryGpuStatus, QueryLegacyCoreOvervoltRanges,
     QueryLegacyP0CoreMaxVoltageDelta, QueryNvapiDNotifier, QueryNvapiTargetTempPolicies,
-    QueryNvapiTgpWattRange, QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates,
+    QueryNvapiTgpWattRange, QueryNvapiVoltRails, QueryPowerLimits, QueryPstateBaseVoltage,
+    QueryPstates,
     QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
     QueryThrottleReasons, QueryVfpPointVoltage, QueryVoltageBoost, ResetApplicationsClocks,
     ResetCoolerLevels, ResetFanSpeed, ResetLockedClocks, ResetNvapiPowerLimits,
@@ -1749,6 +1750,53 @@ fn query_target_temp_policies(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> 
 }
 
 #[pyfunction]
+fn query_volt_rails(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
+    let value = with_target(gpu, "nvapi", |target| {
+        let rails = run(target, QueryNvapiVoltRails).map_err(to_py_err)?.output;
+        Ok(match rails {
+            Some(r) => {
+                let entries = |list: &[nvapi_hi::nvapi::VoltRailEntry]| {
+                    Value::Array(
+                        list.iter()
+                            .map(|e| {
+                                value_object([
+                                    ("rail_bit", Value::from(e.rail_bit)),
+                                    ("type", Value::from(e.entry_type)),
+                                    (
+                                        "values_uV",
+                                        Value::Array(
+                                            e.values.iter().map(|v| Value::from(*v)).collect(),
+                                        ),
+                                    ),
+                                ])
+                            })
+                            .collect(),
+                    )
+                };
+                value_object([
+                    ("rail_mask", Value::from(format!("0x{:08X}", r.rail_mask))),
+                    (
+                        "p0",
+                        match r.p0_bounds() {
+                            Some(b) => value_object([
+                                ("current_uV", Value::from(b.current_uV)),
+                                ("max_wall_uV", Value::from(b.max_wall_uV)),
+                                ("min_hold_uV", Value::from(b.min_hold_uV)),
+                            ]),
+                            None => Value::Null,
+                        },
+                    ),
+                    ("control", entries(&r.control)),
+                    ("status", entries(&r.status)),
+                ])
+            }
+            None => value_object([("supported", Value::from(false))]),
+        })
+    })?;
+    py_value(py, &value)
+}
+
+#[pyfunction]
 fn set_applications_clocks(gpu: &str, memory_mhz: u32, graphics_mhz: u32) -> PyResult<()> {
     let mut inventory_cache = lock_inventory_cache();
     let inventory = inventory_cache.entry(BackendSet::Nvml)?;
@@ -2522,6 +2570,7 @@ fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(query_dnotifier, m)?)?;
     m.add_function(wrap_pyfunction!(query_target_temp_policies, m)?)?;
     m.add_function(wrap_pyfunction!(set_dnotifier, m)?)?;
+    m.add_function(wrap_pyfunction!(query_volt_rails, m)?)?;
     m.add_function(wrap_pyfunction!(set_target_temp, m)?)?;
     m.add_function(wrap_pyfunction!(set_applications_clocks, m)?)?;
     m.add_function(wrap_pyfunction!(reset_applications_clocks, m)?)?;

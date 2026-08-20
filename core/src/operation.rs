@@ -1168,6 +1168,29 @@ impl GpuOperation for QueryNvapiDNotifier {
     }
 }
 
+/// Read-only snapshot of the private VoltRails family (the "melonVolt path"):
+/// rail mask + per-rail control-offset entries + live per-rail voltages, via
+/// the private-but-publicly-resolvable 0x2C73AFDC (rail builder) /
+/// 0xA3070DB0 (control GET) / 0x5D0634EE (live status) — see
+/// `reverse/melonvolt/ANALYSIS.md` for the full RE chain. The µV-offset SET
+/// sibling (0x87C55C8A) is intentionally NOT wrapped (needs
+/// snapshot/verify/restore semantics).
+/// Returns `None` where the driver doesn't expose the private interface.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiVoltRails;
+
+impl GpuOperation for QueryNvapiVoltRails {
+    type Output = Option<nvapi_hi::nvapi::VoltRails>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiVoltRails
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        Ok(target.nvapi()?.volt_rails().map_err(Error::from)?)
+    }
+}
+
 /// Set the D-Notifier (D0-notify) limit to a D level (1..5). Maps the CLI
 /// level to the signed driver code (-1=D1/Unlimited, 0..3=D2..D5) exactly as
 /// the ref tool's `[GPUHandle::setDNotifyLimit]` switch does, then calls the raw

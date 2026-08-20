@@ -56,6 +56,7 @@ pub enum OperationKind {
     SetNvapiTargetTemp,
     QueryNvapiDNotifier,
     SetNvapiDNotifier,
+    QueryNvapiVoltRails,
     QueryNvapiPStateLevels,
     QueryNvapiPStateLockStatus,
     SetNvapiPStateNative,
