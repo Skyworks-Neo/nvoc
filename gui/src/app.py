@@ -1033,7 +1033,8 @@ class App(ctk.CTk):
             merged["supported_pstates"] = self._gpu_pstates_cache
             self._gpu_limits_cache = merged
             self._sync_dashboard_lock_state_from_cache(merged)
-            if fresh:
+            if fresh and fresh != self._last_pstates_logged:
+                self._last_pstates_logged = list(fresh)
                 self.console.append(
                     f"[GUI] Supported P-States: {', '.join(fresh)}\n"
                 )
@@ -1088,8 +1089,11 @@ class App(ctk.CTk):
         self._gpu_limits_cache = merged
         self._sync_dashboard_lock_state_from_cache(merged)
 
-        if pstates:
+        if pstates and pstates != self._last_pstates_logged:
+            self._last_pstates_logged = list(pstates)
             self.console.append(f"[GUI] Supported P-States: {', '.join(pstates)}\n")
+        elif pstates:
+            pass
         else:
             self.console.append(
                 "[GUI] Warning: 'get' returned no parseable supported P-States.\n"
