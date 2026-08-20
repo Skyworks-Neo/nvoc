@@ -1230,12 +1230,16 @@ impl GpuOperation for SetNvapiVoltRailOffset {
         let Some(rails) = rails else {
             return Ok(None);
         };
-        let entry = rails.control.iter().find(|e| e.rail_bit == self.rail_bit).ok_or_else(|| {
-            Error::Custom(format!(
-                "rail bit {} not present (mask 0x{:08X})",
-                self.rail_bit, rails.rail_mask
-            ))
-        })?;
+        let entry = rails
+            .control
+            .iter()
+            .find(|e| e.rail_bit == self.rail_bit)
+            .ok_or_else(|| {
+                Error::Custom(format!(
+                    "rail bit {} not present (mask 0x{:08X})",
+                    self.rail_bit, rails.rail_mask
+                ))
+            })?;
         if let Some(expected) = self.expected_type
             && entry.entry_type != expected
         {

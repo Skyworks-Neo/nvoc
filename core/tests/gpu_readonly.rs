@@ -130,10 +130,9 @@ use nvml_wrapper::Nvml;
 use nvoc_core::{
     BackendSet, CheckVoltageFrequency, ClockDomain, Error, GpuId, GpuSelector, GpuTarget,
     QueryClockOffset, QueryFanInfo, QueryGpuInfo, QueryGpuStatus, QueryNvapiVoltRails,
-    QueryPowerLimits, QueryPstates,
-    QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
-    QueryVfpPointVoltage, TargetInventory, discover_targets, nvml_pstate_to_index,
-    nvml_pstate_to_str, parse_nvml_pstate, run, select_targets,
+    QueryPowerLimits, QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits,
+    QueryTemperatureThresholds, QueryVfpPointVoltage, TargetInventory, discover_targets,
+    nvml_pstate_to_index, nvml_pstate_to_str, parse_nvml_pstate, run, select_targets,
 };
 use serde_json::Value;
 use std::env;
@@ -1883,7 +1882,10 @@ fn nvapi_volt_rails_read() {
         // drivers without the private family → Ok(None) is a valid outcome
         return;
     };
-    assert_ne!(rails.rail_mask, 0, "a nonzero rail mask is expected when supported");
+    assert_ne!(
+        rails.rail_mask, 0,
+        "a nonzero rail mask is expected when supported"
+    );
     let set_bits = rails.rail_mask.count_ones() as usize;
     assert_eq!(
         rails.control.len(),

@@ -11,17 +11,16 @@ use nvoc_core::{
     QueryNvapiDNotifier, QueryNvapiPStateLevels, QueryNvapiPStateLockStatus,
     QueryNvapiTargetTempPolicies, QueryNvapiTargetTempPolicyIndex, QueryNvapiTgpWattRange,
     QueryNvapiVoltRails, QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates,
-    SetNvapiVoltRailOffset,
-    QuerySupportedApplicationsClocks,
-    QueryTdpTempLimits, QueryTemperatureThresholds, QueryThrottleReasons, QueryVfpPointVoltage,
-    QueryViolationStatus, QueryVoltageBoost, ResetApplicationsClocks, ResetCoolerLevels,
-    ResetFanSpeed, ResetLockedClocks, ResetNvapiPowerLimits, ResetNvapiSensorLimits,
-    ResetNvapiTgpWatt, ResetPstateBaseVoltages, ResetPstateClockOffsets, ResetVfpDeltas,
-    ResetVfpFrequencyLock, ResetVfpLock, SetApiRestriction, SetApplicationsClocks, SetAutoBoost,
-    SetAutoBoostDefault, SetClockOffset, SetCoolerLevels, SetEdid, SetFanSpeed, SetLegacyClocks,
-    SetLockedClocks, SetNvapiDNotifier, SetNvapiDynamicBoost, SetNvapiPStateNative,
-    SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiSensorLimits, SetNvapiTargetTemp,
-    SetNvapiTgpWatt, SetNvmlPstateLock, SetPowerLimit, SetPstateBaseVoltage, SetPstateClockOffset,
+    QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
+    QueryThrottleReasons, QueryVfpPointVoltage, QueryViolationStatus, QueryVoltageBoost,
+    ResetApplicationsClocks, ResetCoolerLevels, ResetFanSpeed, ResetLockedClocks,
+    ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetPstateBaseVoltages,
+    ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock, ResetVfpLock,
+    SetApiRestriction, SetApplicationsClocks, SetAutoBoost, SetAutoBoostDefault, SetClockOffset,
+    SetCoolerLevels, SetEdid, SetFanSpeed, SetLegacyClocks, SetLockedClocks, SetNvapiDNotifier,
+    SetNvapiDynamicBoost, SetNvapiPStateNative, SetNvapiPowerLimits, SetNvapiPstateLock,
+    SetNvapiSensorLimits, SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvapiVoltRailOffset,
+    SetNvmlPstateLock, SetPowerLimit, SetPstateBaseVoltage, SetPstateClockOffset,
     SetTemperatureLimit, SetVfpFrequencyLock, SetVfpPointDelta, SetVfpRangeDelta,
     SetVfpVoltageLock, SetVoltageBoost, VfpResetDomain, discover_targets, nvml_pstate_to_str,
     parse_nvapi_locked_voltage_target, parse_nvml_fan_control_policy, parse_nvml_pstate, run,
@@ -2247,13 +2246,15 @@ fn execute_target(
                 Some(r) => {
                     // µV on voltage/offset entries (type 3 = the 5090 MSVDD
                     // offset melonVolt writes)
-                    let p0 = r.p0_bounds().map(|b| json!({
-                        "current_uV": b.current_uV,
-                        // P0 voltage wall / min-hold — replaces the old
-                        // trial-and-error VFP-lock limit scan
-                        "max_wall_uV": b.max_wall_uV,
-                        "min_hold_uV": b.min_hold_uV,
-                    }));
+                    let p0 = r.p0_bounds().map(|b| {
+                        json!({
+                            "current_uV": b.current_uV,
+                            // P0 voltage wall / min-hold — replaces the old
+                            // trial-and-error VFP-lock limit scan
+                            "max_wall_uV": b.max_wall_uV,
+                            "min_hold_uV": b.min_hold_uV,
+                        })
+                    });
                     json!({
                         "rail_mask": format!("0x{:08X}", r.rail_mask),
                         "p0": p0,
