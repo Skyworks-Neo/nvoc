@@ -3,20 +3,20 @@ NVOC-GUI — NVIDIA GPU VF Curve Optimizer GUI
 Entry point for the application.
 """
 
+import importlib
 import os
 import sys
-
-# Cap BLAS/OpenMP thread pools BEFORE numpy/matplotlib load: the GUI does no
-# matrix math, and the default per-core OpenBLAS arenas commit ~650MB of
-# pagefile for nothing (measured: full-stack commit 681MB -> 70MB).
-for _var in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
-    os.environ.setdefault(_var, "1")
-
-import importlib
 from typing import Any, Callable, Optional
 
 # Ensure the project root is in path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# Cap BLAS/OpenMP thread pools BEFORE numpy/matplotlib load (they arrive via
+# src imports in main()): the GUI does no matrix math, and the default
+# per-core OpenBLAS arenas commit ~650MB of pagefile for nothing (measured:
+# full-stack commit 681MB -> 70MB).
+for _var in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
+    os.environ.setdefault(_var, "1")
 
 # Fix blurry/tiny rendering on Windows HiDPI displays (e.g. 150% scaling).
 if sys.platform == "win32":
