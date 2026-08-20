@@ -1160,11 +1160,14 @@ class App(ctk.CTk):
         else:
             self.console.append("[GUI] VFP lock: None\n")
 
-        # Sync lock state into vfcurve tab, then trigger a full curve refresh
+        # Sync lock state into vfcurve tab. A curve fetch is only needed to
+        # resolve the pending lock before data exists; with data loaded the
+        # sync itself maps the lock to a point index.
         self._locked_voltage_mv_cache = locked_voltage_mv
         if self.tab_vfcurve:
             self.tab_vfcurve.sync_lock_from_voltage(locked_voltage_mv)
-            self.tab_vfcurve._refresh_curve()
+            if not self.tab_vfcurve._voltages:
+                self.tab_vfcurve._refresh_curve()
         else:
             self.refresh_vfp_offset_state()
 
