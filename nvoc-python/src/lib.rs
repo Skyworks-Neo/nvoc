@@ -1783,6 +1783,7 @@ fn query_volt_rails(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
                                 if b.vbios_wall_uV > 0 && b.vbios_wall_uV < ceiling {
                                     ceiling = b.vbios_wall_uV;
                                 }
+                                #[allow(non_snake_case)] // uV-suffixed local matches the nvapi-rs field naming
                                 let ceiling_uV = (ceiling - b.effective_wall_uV).max(0);
                                 value_object([
                                     ("current_uV", Value::from(b.current_uV)),
