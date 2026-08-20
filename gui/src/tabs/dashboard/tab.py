@@ -500,14 +500,19 @@ class DashboardTab:
         if not self._polling:
             return
         # Don't burn a full NVAPI+NVML status sweep per second while the
-        # Dashboard tab is hidden or the window is in the tray (the same
-        # gate the VF-curve auto-refresh uses, plus window visibility).
+        # window is in the tray. Keep it running on the Dashboard (row
+        # refresh) AND on VF Curve: the curve's green live-crosshair
+        # reuses this status poll's voltage/frequency instead of issuing
+        # its own (heavier) VFP-curve query, so the poll must keep firing
+        # while the curve tab is visible or the crosshair freezes.
         try:
             if self.app.state() == "withdrawn":
                 self._schedule_next()
                 return
-            current_tab = self.app.tabview.get()
-            if not str(current_tab).endswith("Dashboard"):
+            current_tab = str(self.app.tabview.get())
+            if not (
+                current_tab.endswith("Dashboard") or current_tab.endswith("VF Curve")
+            ):
                 self._schedule_next()
                 return
         except Exception:

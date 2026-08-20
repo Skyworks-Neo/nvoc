@@ -192,7 +192,7 @@ class VFCurveTab:
         tk.Label(toolbar, text="API:", font=_FONT_BODY, bg=_PANEL_BG, fg=_TEXT_FG).pack(
             side="left", padx=(10, 2)
         )
-        self.freq_lock_api_var = ctk.StringVar(value="NVML")
+        self.freq_lock_api_var = ctk.StringVar(value="NVAPI")
         self.freq_lock_api_menu = ctk.CTkOptionMenu(
             toolbar,
             values=["NVAPI", "NVML"],
