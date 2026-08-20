@@ -79,11 +79,15 @@ class NativeService:
         except Exception:
             return False
 
-    def run_query(self, gpu: str, command_name: str) -> tuple[int, str, dict]:
+    def run_query(
+        self, gpu: str, command_name: str, *, allow_wake: bool = True
+    ) -> tuple[int, str, dict]:
         retcode, output, parsed = self._run_query_once(gpu, command_name)
-        if retcode != 0:
+        if retcode != 0 and allow_wake:
             # A failed read on a mobile GPU is often just GCOFF (idle dGPU
-            # powered down) — wake it and retry once before giving up.
+            # powered down) — wake it and retry once before giving up. Only
+            # the first sample / manual buttons opt in; steady-state polls
+            # pass allow_wake=False so monitoring never blocks GC6 sleep.
             self._force_wake(gpu)
             retcode, output, parsed = self._run_query_once(gpu, command_name)
         return retcode, output, parsed
