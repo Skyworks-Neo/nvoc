@@ -2318,6 +2318,8 @@ mod tests {
                     "current_uV": 700000,
                     "max_wall_uV": 750000,
                     "min_hold_uV": 600000,
+                    "domain_max_uV": 1200000,
+                    "headroom_uV": 450000,
                 },
                 "rail_descriptors": [{
                     "rail_bit": 0,

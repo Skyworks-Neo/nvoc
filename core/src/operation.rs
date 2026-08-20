@@ -1192,7 +1192,10 @@ impl GpuOperation for QueryNvapiVoltRails {
 }
 
 /// Hard driver-side sanity range observed by melonVolt (±250 mV); values
-/// outside it are rejected before any write.
+/// outside it are rejected before any write. This is a coarse safety net only —
+/// the real overvolt ceiling is the domain-max-derived bound
+/// ([`SetNvapiVoltRailOffset`] computes it per rail from the type-1 status
+/// entry's `domain_max`, the hard ceiling the driver clamps the wall to).
 pub const VOLT_RAIL_OFFSET_SANITY_UV: i32 = 250_000;
 /// melonVolt's software clamp (±100 mV) — the CLI default soft limit.
 pub const VOLT_RAIL_OFFSET_DEFAULT_LIMIT_UV: i32 = 100_000;
@@ -1257,6 +1260,24 @@ impl GpuOperation for SetNvapiVoltRailOffset {
                 "offset {} µV exceeds the ±{} µV driver sanity range",
                 self.offset_uV, VOLT_RAIL_OFFSET_SANITY_UV
             )));
+        }
+        // Real overvolt ceiling: domain_max − base_wall, where base_wall is the
+        // P0 wall at offset 0 (current_wall − current_offset). The driver clamps
+        // the wall to domain_max regardless, so an offset past this is silently
+        // wasted — reject it with the exact ceiling instead of letting the user
+        // believe a larger offset did something. Undervolts (negative offsets)
+        // are bounded only by the sanity range above; min_hold is informational.
+        if self.offset_uV > 0 {
+            if let Some(ceiling) = rails.offset_ceiling_uV(self.rail_bit)
+                && self.offset_uV > ceiling
+            {
+                return Err(Error::Custom(format!(
+                    "offset {} µV exceeds the domain-max ceiling {} µV \
+                     (domain_max − base wall; the driver clamps the P0 wall to the \
+                     domain maximum, so a larger offset is silently wasted)",
+                    self.offset_uV, ceiling
+                )));
+            }
         }
         if magnitude > limit.unsigned_abs() as u32 {
             return Err(Error::Custom(format!(

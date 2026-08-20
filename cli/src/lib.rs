@@ -2247,12 +2247,19 @@ fn execute_target(
                     // µV on voltage/offset entries (type 3 = the 5090 MSVDD
                     // offset melonVolt writes)
                     let p0 = r.p0_bounds().map(|b| {
+                        #[allow(non_snake_case)]
+                        let headroom_uV = (b.domain_max_uV - b.max_wall_uV).max(0);
                         json!({
                             "current_uV": b.current_uV,
                             // P0 voltage wall / min-hold — replaces the old
                             // trial-and-error VFP-lock limit scan
                             "max_wall_uV": b.max_wall_uV,
                             "min_hold_uV": b.min_hold_uV,
+                            // domain maximum — the hard ceiling the driver
+                            // clamps the wall to (status payload index 3).
+                            "domain_max_uV": b.domain_max_uV,
+                            // how much higher the wall can go before clamping
+                            "headroom_uV": headroom_uV,
                         })
                     });
                     json!({
