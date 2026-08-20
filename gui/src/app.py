@@ -458,8 +458,10 @@ class App(ctk.CTk):
             gpu = self.selected_gpu_target()
             if gpu is None or self._pstates_cached_for != gpu:
                 self._query_gpu_get()
-            # Always refresh when entering VF Curve to keep the plot up to date.
-            self.tab_vfcurve._refresh_curve()
+            # Load only if the tab has no data yet: curve changes are
+            # covered by the action-triggered refresh chain.
+            if not self.tab_vfcurve._voltages:
+                self.tab_vfcurve._refresh_curve()
 
     def _overclock_content_host(self):
         """Dashboard frame hosting the overclock top panels (integration mode)."""
@@ -501,6 +503,9 @@ class App(ctk.CTk):
                         tab.sync_lock_from_voltage(self._locked_voltage_mv_cache)
                     if hasattr(self, "_gpu_limits_cache") and self._gpu_limits_cache:
                         tab.sync_freq_locks_from_cache(self._gpu_limits_cache)
+                    # Background preload: fetch the curve once the dashboard
+                    # is up so the first tab switch shows data instantly.
+                    self.after(600, tab._refresh_curve)
                 elif attr == "tab_overclock":
                     if hasattr(self, "_gpu_limits_cache") and self._gpu_limits_cache:
                         tab.check_capabilities(self._gpu_limits_cache)
