@@ -364,7 +364,7 @@ impl Command {
                 "Read the private ClockClient V/F-points family: per-bank point masks + V/F curve records (voltage-indexed, units calibrated vs the public GPC VFP)"
             }
             Self::SetVfpPointPrivate => {
-                "Write one V/F curve point via the private SetControl (dangerous V/F edit; bank 0=pstate-class, 1=V/F curve; value is a VOLTAGE-INDEXED frequency lookup in µV (not MHz delta); --absolute for mode 0, default mode 1 delta)"
+                "Write one V/F curve point via the private SetControl (dangerous V/F edit; bank 0=pstate-class, 1=V/F curve; --absolute = kHz freq offset like public VFP, default = µV voltage-axis index)"
             }
             Self::SetVfpRangePrivate => {
                 "Write a range of V/F curve points with the same value via the private SetControl (dangerous batch V/F edit; single RMW cycle; value is voltage-indexed in µV, not MHz)"
@@ -670,7 +670,7 @@ impl Command {
                 PositionalArg::hyphen(
                     "arg_value",
                     "VALUE",
-                    "Voltage-indexed value in µV (NOT MHz): sets the point's target freq to the default freq at (this_voltage + value µV). --absolute for mode 0, default mode 1 delta",
+                    "--absolute: kHz freq offset (same as public VFP, e.g. 200000 = +200 MHz). default (delta): µV voltage-axis index — sets target freq to default freq at (this_voltage + value µV)",
                 ),
             ],
             Self::SetFanPercent => vec![PositionalArg::free(
@@ -2614,9 +2614,18 @@ fn execute_target(
             // patches one record (mode 0 absolute / mode 1 delta), SETs,
             // readbacks, and restores on mismatch. Use get-clk-vf-points to
             // find valid bank/idx values.
+            //
+            // VALUE semantics depend on --absolute:
+            //   mode 0 (--absolute): kHz frequency offset (same as the
+            //     public VFP freqDeltaKHz — 200000 = +200 MHz)
+            //   mode 1 (default): µV voltage-axis index (sets target freq
+            //     to the default freq at this_voltage + value µV)
             let bank = parse_usize(&invocation.positionals[0], "bank")?;
             let idx = parse_usize(&invocation.positionals[1], "index")?;
-            let uv = parse_i32_unit(&invocation.positionals[2], "uv", "microvolts")?;
+            let raw: i32 = invocation.positionals[2]
+                .trim()
+                .parse()
+                .map_err(|e| CliError::new(format!("invalid VALUE: {e}")))?;
             let absolute = option_bool(invocation, "absolute", false)?;
             let out = run(
                 target,
@@ -2624,7 +2633,7 @@ fn execute_target(
                     bank,
                     idx,
                     absolute,
-                    value: uv as u32,
+                    value: raw as u32,
                 },
             )?
             .output;
@@ -2634,8 +2643,9 @@ fn execute_target(
                     "bank": bank,
                     "index": idx,
                     "mode": if absolute { "absolute" } else { "delta" },
-                    "volt_offset_uV": uv,
-                    "retained_uV": retained,
+                    "value": raw,
+                    "unit": if absolute { "kHz" } else { "uV" },
+                    "retained": retained,
                 }),
                 None => json!({"supported": false}),
             })
@@ -2647,6 +2657,7 @@ fn execute_target(
             if start > end {
                 return Err(CliError::new("start must be <= end"));
             }
+            // mode 1 (delta): µV voltage-axis index
             let uv = parse_i32_unit(&invocation.positionals[3], "uv", "microvolts")?;
             let out = run(
                 target,
