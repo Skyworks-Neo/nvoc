@@ -83,6 +83,9 @@ pub enum OperationKind {
     /// (ID 0xFEC00D04, mode 0 absolute / mode 1 delta). DANGEROUS:
     /// snapshots, patches, SETs, readbacks, restores on mismatch.
     SetNvapiVfpPointPrivate,
+    /// Write a range of V/F curve points with the same delta via the
+    /// private SetControl (single RMW cycle).
+    SetNvapiVfpRangePrivate,
     /// Batch-measure physical clocks for a set of domains (V3
     /// MEASURE_FREQ, one RM round-trip per sample for the whole set).
     QueryNvapiClkDomainFreqDetail,

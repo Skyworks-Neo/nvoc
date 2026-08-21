@@ -1520,6 +1520,31 @@ impl GpuOperation for SetNvapiVfpPointPrivate {
     }
 }
 
+/// Write a RANGE of V/F curve points with the same delta via the
+/// private V/F-POINTS SetControl (ID 0xFEC00D04). Single RMW cycle.
+#[derive(Clone, Copy, Debug)]
+pub struct SetNvapiVfpRangePrivate {
+    pub bank: usize,
+    pub start: usize,
+    pub end: usize,
+    pub delta_mhz: i16,
+}
+
+impl GpuOperation for SetNvapiVfpRangePrivate {
+    type Output = Option<()>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiVfpRangePrivate
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        Ok(target
+            .nvapi()?
+            .set_vfp_range_private(self.bank, self.start, self.end, self.delta_mhz)
+            .map_err(Error::from)?)
+    }
+}
+
 /// Batch-measure physical clocks for a set of domains via the V3
 /// MEASURE_FREQ (RM 0x20809006, magic 0x30038) — one RM round-trip per
 /// sample for the whole set, with per-domain V1/V2 fallback.

@@ -23,6 +23,7 @@ use nvoc_core::{
     SetCoolerLevels, SetEdid, SetFanSpeed, SetLegacyClocks, SetLockedClocks,
     SetNvapiClkDomainOffset, SetNvapiDNotifier,
     SetNvapiVfpPointPrivate,
+    SetNvapiVfpRangePrivate,
     SetNvapiDynamicBoost, SetNvapiPStateNative, SetNvapiPowerLimits, SetNvapiPstateLock,
     SetNvapiSensorLimits, SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvapiVoltRailOffset,
     SetNvapiVoltRailTarget, SetNvmlPstateLock, SetPowerLimit, SetPstateBaseVoltage,
@@ -169,6 +170,7 @@ pub enum Command {
     GetClkDomainFreq,
     SetClkDomainOffset,
     SetVfpPointPrivate,
+    SetVfpRangePrivate,
     GetClkVfPoints,
     SetTemperatureThresholds,
     SetThermalLimitC,
@@ -255,6 +257,7 @@ impl Command {
             Self::GetClkDomains => "get-clk-domains",
             Self::GetClkVfPoints => "get-clk-vf-points",
             Self::SetVfpPointPrivate => "set-vfp-point-private",
+            Self::SetVfpRangePrivate => "set-vfp-range-private",
             Self::GetClkDomainFreq => "get-clk-domain-freq",
             Self::SetClkDomainOffset => "set-clk-domain-offset",
             Self::SetThermalLimitC => "set-thermal-limit-c",
@@ -362,6 +365,9 @@ impl Command {
             }
             Self::SetVfpPointPrivate => {
                 "Write one V/F curve point via the private SetControl (dangerous V/F edit; bank 0=pstate-class, 1=V/F curve; --absolute for mode 0, default mode 1 delta)"
+            }
+            Self::SetVfpRangePrivate => {
+                "Write a range of V/F curve points with the same delta via the private SetControl (dangerous batch V/F edit; single RMW cycle)"
             }
             Self::SetThermalLimitC => "Set thermal limit in Celsius",
             Self::SetTemperatureThresholds => {
@@ -479,6 +485,7 @@ impl Command {
             | Self::SetVoltRailTarget
             | Self::SetClkDomainOffset => (2, 2),
             Self::SetVfpPointPrivate => (3, 3),
+            Self::SetVfpRangePrivate => (4, 4),
             Self::GetClkDomainFreq => (0, 1),
             Self::SetVfpRangeDeltaMhz => (3, 3),
             Self::SetPstateLock => (1, 2),
@@ -626,21 +633,26 @@ impl Command {
                     "Signed kilohertz offset, for example -60000 or +30000kHz; 0 is a no-op stock write. The driver may reject or clamp; the post-SET readback is returned. Pass --temporary to restore the snapshot before returning",
                 ),
             ],
-            Self::SetVfpPointPrivate => vec![
+            Self::SetVfpRangePrivate => vec![
                 PositionalArg::free(
                     "arg_bank",
                     "BANK",
                     "Bank: 0 = pstate-class records, 1 = V/F curve points",
                 ),
                 PositionalArg::free(
-                    "arg_index",
-                    "INDEX",
-                    "Point index within the bank (0-2047; use get-clk-vf-points to see which indices are present)",
+                    "arg_start",
+                    "START",
+                    "Start point index (inclusive)",
+                ),
+                PositionalArg::free(
+                    "arg_end",
+                    "END",
+                    "End point index (inclusive)",
                 ),
                 PositionalArg::hyphen(
-                    "arg_value",
-                    "VALUE",
-                    "Value to write: absolute MHz (with --absolute) or signed delta MHz (default mode 1)",
+                    "arg_delta",
+                    "DELTA_MHZ",
+                    "Signed delta in MHz to apply to every point in the range (mode 1 delta)",
                 ),
             ],
             Self::SetFanPercent => vec![PositionalArg::free(
@@ -810,6 +822,7 @@ const COMMANDS: &[Command] = &[
     Command::GetClkDomains,
     Command::GetClkVfPoints,
     Command::SetVfpPointPrivate,
+    Command::SetVfpRangePrivate,
     Command::GetClockOffsetMhz,
     Command::GetDNotifier,
     Command::GetEdid,
@@ -2605,6 +2618,36 @@ fn execute_target(
                     "mode": if absolute { "absolute" } else { "delta" },
                     "value_mhz": mhz,
                     "retained_raw": retained,
+                }),
+                None => json!({"supported": false}),
+            })
+        }
+        Command::SetVfpRangePrivate => {
+            let bank = parse_usize(&invocation.positionals[0], "bank")?;
+            let start = parse_usize(&invocation.positionals[1], "start")?;
+            let end = parse_usize(&invocation.positionals[2], "end")?;
+            if start > end {
+                return Err(CliError::new("start must be <= end"));
+            }
+            let mhz = parse_i32_unit(&invocation.positionals[3], "mhz", "mhz")?;
+            let out = run(
+                target,
+                SetNvapiVfpRangePrivate {
+                    bank,
+                    start,
+                    end,
+                    delta_mhz: mhz as i16,
+                },
+            )?
+            .output;
+            Ok(match out {
+                Some(()) => json!({
+                    "applied": true,
+                    "bank": bank,
+                    "start": start,
+                    "end": end,
+                    "delta_mhz": mhz,
+                    "points_written": end - start + 1,
                 }),
                 None => json!({"supported": false}),
             })
