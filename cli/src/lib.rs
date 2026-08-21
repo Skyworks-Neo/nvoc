@@ -364,10 +364,10 @@ impl Command {
                 "Read the private ClockClient V/F-points family: per-bank point masks + V/F curve records (voltage-indexed, units calibrated vs the public GPC VFP)"
             }
             Self::SetVfpPointPrivate => {
-                "Write one V/F curve point via the private SetControl (dangerous V/F edit; bank 0=pstate-class, 1=V/F curve; --absolute = kHz freq offset like public VFP, default = µV voltage-axis index)"
+                "Write one V/F curve point via the private SetControl (dangerous V/F edit; bank 0=pstate-class, 1=V/F curve; --absolute = kHz freq offset like public VFP, default = 0.1mV voltage-axis index)"
             }
             Self::SetVfpRangePrivate => {
-                "Write a range of V/F curve points with the same value via the private SetControl (dangerous batch V/F edit; single RMW cycle; value is voltage-indexed in µV, not MHz)"
+                "Write a range of V/F curve points with the same value via the private SetControl (dangerous batch V/F edit; single RMW cycle; value is voltage-axis index in 0.1mV, not MHz)"
             }
             Self::SetThermalLimitC => "Set thermal limit in Celsius",
             Self::SetTemperatureThresholds => {
@@ -652,8 +652,8 @@ impl Command {
                 ),
                 PositionalArg::hyphen(
                     "arg_delta",
-                    "DELTA_UV",
-                    "Voltage-indexed delta in µV (NOT MHz): sets each point's target freq to the default freq at (its_voltage + delta µV). RM then re-interpolates to monotonically increasing",
+                    "DELTA_0_1MV",
+                    "Voltage-axis delta in 0.1mV (NOT MHz): sets each point's target freq to the default freq at (its_voltage + delta*100µV). RM then re-interpolates to monotonically increasing",
                 ),
             ],
             Self::SetVfpPointPrivate => vec![
@@ -670,7 +670,7 @@ impl Command {
                 PositionalArg::hyphen(
                     "arg_value",
                     "VALUE",
-                    "--absolute: kHz freq offset (same as public VFP, e.g. 200000 = +200 MHz). default (delta): µV voltage-axis index — sets target freq to default freq at (this_voltage + value µV)",
+                    "--absolute: kHz freq offset (same as public VFP, e.g. 200000 = +200 MHz). default (delta): 0.1mV voltage-axis index — sets target freq to default freq at (this_voltage + value*100µV)",
                 ),
             ],
             Self::SetFanPercent => vec![PositionalArg::free(
@@ -2618,8 +2618,8 @@ fn execute_target(
             // VALUE semantics depend on --absolute:
             //   mode 0 (--absolute): kHz frequency offset (same as the
             //     public VFP freqDeltaKHz — 200000 = +200 MHz)
-            //   mode 1 (default): µV voltage-axis index (sets target freq
-            //     to the default freq at this_voltage + value µV)
+            //   mode 1 (default): 0.1mV voltage-axis index (sets target
+            //     freq to the default freq at this_voltage + value*100µV)
             let bank = parse_usize(&invocation.positionals[0], "bank")?;
             let idx = parse_usize(&invocation.positionals[1], "index")?;
             let raw: i32 = invocation.positionals[2]
@@ -2644,7 +2644,7 @@ fn execute_target(
                     "index": idx,
                     "mode": if absolute { "absolute" } else { "delta" },
                     "value": raw,
-                    "unit": if absolute { "kHz" } else { "uV" },
+                    "unit": if absolute { "kHz" } else { "0.1mV" },
                     "retained": retained,
                 }),
                 None => json!({"supported": false}),
@@ -2657,15 +2657,15 @@ fn execute_target(
             if start > end {
                 return Err(CliError::new("start must be <= end"));
             }
-            // mode 1 (delta): µV voltage-axis index
-            let uv = parse_i32_unit(&invocation.positionals[3], "uv", "microvolts")?;
+            // mode 1 (delta): 0.1mV voltage-axis index
+            let val = parse_i32_unit(&invocation.positionals[3], "0.1mv", "0.1 millivolts")?;
             let out = run(
                 target,
                 SetNvapiVfpRangePrivate {
                     bank,
                     start,
                     end,
-                    delta_mhz: uv as i16,
+                    delta_mhz: val as i16,
                 },
             )?
             .output;
@@ -2675,7 +2675,7 @@ fn execute_target(
                     "bank": bank,
                     "start": start,
                     "end": end,
-                    "volt_offset_uV": uv,
+                    "volt_offset_0.1mV": val,
                     "points_written": end - start + 1,
                 }),
                 None => json!({"supported": false}),
