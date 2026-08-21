@@ -2,7 +2,7 @@
 dependencies = [
   "numpy==2.4.4",
   "pyopencl",
-  "pyinstaller>=6.21.0"
+  "pyinstaller>=6.22.2"
 ]
 description = "An OpenCL GPU stress test tool"
 classifiers = [
