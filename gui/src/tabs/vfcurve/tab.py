@@ -604,17 +604,22 @@ class VFCurveTab:
         except Exception:
             pass
 
-        self._refresh_curve()
+        self._refresh_curve(force=True)
 
-    def _refresh_curve(self):
-        """Query VFP points from pynvoc then load and plot them."""
+    def _refresh_curve(self, force: bool = False):
+        """Query VFP points from pynvoc then load and plot them.
+
+        ``force`` bypasses the 2.5 s back-to-back dedup gate — the auto-refresh
+        timer uses it so a sub-2.5 s interval (the default is 1.0 s) keeps
+        ticking instead of stalling on the gate and never rescheduling.
+        """
         if self._refresh_curve_inflight:
             self._refresh_curve_pending = True
             return
         # A just-loaded curve is still current: skip the duplicate query
         # when two refresh chains fire back-to-back (e.g. tab entry +
-        # post-PPAB-enable refresh).
-        if _time.monotonic() - self._last_load_ts < 2.5:
+        # post-PPAB-enable refresh). Manual/auto timer passes force=True.
+        if not force and _time.monotonic() - self._last_load_ts < 2.5:
             return
 
         gpu = self.app.selected_gpu_target()
