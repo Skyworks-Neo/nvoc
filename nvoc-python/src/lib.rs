@@ -2000,9 +2000,6 @@ fn query_clk_vf_points(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
                                     ("voltage_uV_max", Value::from(s.voltage_uV_max)),
                                     ("freq_default_mhz_min", Value::from(s.freq_default_mhz_min)),
                                     ("freq_default_mhz_max", Value::from(s.freq_default_mhz_max)),
-                                    // applied offset at the segment top — the
-                                    // domain-attribution fingerprint
-                                    ("delta_mhz", Value::from(s.delta_mhz)),
                                 ])
                             })
                             .collect(),

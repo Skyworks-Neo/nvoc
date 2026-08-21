@@ -2473,10 +2473,6 @@ fn execute_target(
                         "voltage_uV_max": s.voltage_uV_max,
                         "freq_default_mhz_min": s.freq_default_mhz_min,
                         "freq_default_mhz_max": s.freq_default_mhz_max,
-                        // (current - default) at the segment top = the
-                        // applied offset this segment's domain carries —
-                        // the domain-attribution fingerprint
-                        "delta_mhz": s.delta_mhz,
                     })).collect::<Vec<_>>(),
                     "points": v.points.iter().map(|p| json!({
                         "bank": p.bank,
