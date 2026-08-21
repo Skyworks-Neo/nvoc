@@ -6,7 +6,8 @@ use nvoc_core::{
     BackendSet, CheckVoltageFrequency, ClearEdid, ConvertEnum, GpuTarget, QueryApiRestriction,
     QueryAutoBoost, QueryDisplays, QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo,
     QueryGpuSettings, QueryGpuStatus, QueryLegacyCoreOvervoltRanges,
-    QueryLegacyP0CoreMaxVoltageDelta, QueryNvapiClkDomainFreq, QueryNvapiClkDomains,
+    QueryLegacyP0CoreMaxVoltageDelta, QueryNvapiClkDomainFreq, QueryNvapiClkDomainFreqsBatch,
+    QueryNvapiClkDomains,
     QueryNvapiClkVfPoints,
     QueryNvapiDNotifier, QueryNvapiTargetTempPolicies, QueryNvapiTgpWattRange,
     QueryNvapiVoltRails, QueryPowerLimits, QueryPstateBaseVoltage,
@@ -15,6 +16,7 @@ use nvoc_core::{
     ResetCoolerLevels, ResetFanSpeed, ResetLockedClocks, ResetNvapiPowerLimits,
     ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetPstateBaseVoltages, ResetPstateClockOffsets,
     ResetVfpDeltas, ResetVfpFrequencyLock, ResetVfpLock, SetApiRestriction, SetApplicationsClocks,
+    GpuType, fetch_gpu_type,
     SetAutoBoost, SetAutoBoostDefault, SetClockOffset, SetCoolerLevels, SetDomainVfpDeltas,
     SetEdid, SetFanSpeed, SetLegacyClocks, SetLockedClocks, SetNvapiClkDomainOffset,
     SetNvapiDNotifier,
@@ -468,6 +470,18 @@ fn normalize_info(target: &GpuTarget<'_>) -> PyResultValue {
     map.insert("arch".into(), text(info.arch));
     map.insert("gpu_architecture".into(), text(info.arch));
     map.insert("gpu_type".into(), text(info.gpu_type));
+    // Generation series from core's gpu_type.rs detect_gpu_type (name +
+    // codename) — the single source of truth. On Ada the ArchInfo enum has
+    // no AD variant and `gpu_architecture` reads 'Unknown:400:7:161', so
+    // capability flags must come from here, not the arch string.
+    let series = fetch_gpu_type(&info).unwrap_or(GpuType::Unknown);
+    map.insert("gpu_series".into(), text(series.to_string()));
+    map.insert("is_mobile".into(), bool_value(series.is_mobile()));
+    map.insert(
+        "is_legacy_voltage".into(),
+        bool_value(series.is_legacy_voltage()),
+    );
+    map.insert("xbar_supported".into(), bool_value(series.supports_xbar_offset()));
     map.insert("bios_version".into(), text(&info.bios_version));
     map.insert("bus".into(), text(info.bus));
     if let Some(vendor) = info.vendor() {
@@ -606,17 +620,58 @@ fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
     // includes the internal fabric clocks (Gpc, Xbar/crossbar, Sys, Hub, ...).
     // Emitted as a {domain_name: mhz} dict so the TUI/CLI can render the full
     // clock breakdown GPU-Z-style.
-    if let Some(all) = &status.all_clocks
+    //
+    // MOBILE FALLBACK: on mobile GPUs the driver returns extended_domain[] all-
+    // zero, so all_clocks is empty/None. In that case, supplement via the private
+    // ClockClient MEASURE_FREQ batch (get-clk-domain-freq's backend) — it reads
+    // every controllable domain's physical clock directly, covering the fabric
+    // domains that GetAllClocks V2 omits on mobile.
+    let all_clocks_mhz = if let Some(all) = &status.all_clocks
         && !all.is_empty()
     {
         let entries = all
             .iter()
             .map(|(domain, freq)| (domain.to_string(), f64_value(freq.0 as f64 / 1000.0)))
             .collect::<Vec<_>>();
-        map.insert(
-            "all_clocks_mhz".into(),
-            value_object(entries.iter().map(|(k, v)| (k.as_str(), v.clone()))),
-        );
+        Some(value_object(entries.iter().map(|(k, v)| (k.as_str(), v.clone()))))
+    } else {
+        // GetAllClocks V2 yielded no fabric clocks — try MEASURE_FREQ batch.
+        // Query the controllable domain set first (for the domain bit list),
+        // then batch-measure them.
+        let domains = run(target, QueryNvapiClkDomains)
+            .map(|report| report.output)
+            .ok()
+            .flatten()
+            .map(|c| c.entries.iter().map(|e| e.bit).collect::<Vec<u32>>())
+            .unwrap_or_default();
+        if domains.is_empty() {
+            None
+        } else {
+            let freqs = run(
+                target,
+                QueryNvapiClkDomainFreqsBatch { domains },
+            )
+            .map(|report| report.output)
+            .ok()
+            .flatten();
+            freqs.and_then(|fs| {
+                if fs.is_empty() {
+                    return None;
+                }
+                let entries = fs
+                    .iter()
+                    .map(|f| {
+                        (f.domain.to_string(), f64_value(f.freq_mhz))
+                    })
+                    .collect::<Vec<_>>();
+                Some(value_object(
+                    entries.iter().map(|(k, v)| (k.as_str(), v.clone())),
+                ))
+            })
+        }
+    };
+    if let Some(v) = all_clocks_mhz {
+        map.insert("all_clocks_mhz".into(), v);
     }
     if let Some((_sensor, temp)) = status.sensors.first() {
         map.insert("temperature_c".into(), f64_value(*temp as f64));
@@ -1489,9 +1544,17 @@ fn set_clock_offset(
     gpu: &str,
     backend: &str,
     domain: &str,
-    value: i32,
+    value: f64,
     pstate: Option<&str>,
 ) -> PyResult<()> {
+    // One decimal MHz is allowed — the 2.5 MHz GUI grid divides both the
+    // 7.5 MHz (30-series+) and 12.5 MHz (10/16/20-series) hardware steps.
+    // NVAPI takes kHz (round to nearest); NVML's API is integer MHz only.
+    if !value.is_finite() {
+        return Err(PyRuntimeError::new_err(format!(
+            "clock offset {value} MHz is not a finite number"
+        )));
+    }
     let backend = parse_backend(backend)?;
     let domain = parse_domain(domain)?;
     let mut inventory_cache = lock_inventory_cache();
@@ -1509,19 +1572,20 @@ fn set_clock_offset(
                 SetClockOffset {
                     domain,
                     pstate,
-                    mhz: value,
+                    mhz: value.round() as i32,
                 },
             )
             .map_err(to_py_err)?;
         }
         "nvapi" => {
             let pstate = parse_pstate(pstate.unwrap_or("P0"))?;
+            let delta_khz = (value * 1000.0).round() as i32;
             run(
                 &target,
                 SetPstateClockOffset {
                     pstate,
                     domain,
-                    delta: KilohertzDelta(value.saturating_mul(1000)),
+                    delta: KilohertzDelta(delta_khz),
                 },
             )
             .map_err(to_py_err)?;
