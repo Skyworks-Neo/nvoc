@@ -3470,13 +3470,38 @@ fn parse_domain(raw: &str) -> CliResult<ClockDomain> {
 fn parse_clk_domain(raw: &str) -> CliResult<u32> {
     let trimmed = raw.trim();
     match trimmed.to_ascii_lowercase().as_str() {
+        "gpc" | "core" | "gpu" | "graphics" | "nv" => Ok(0),
         "xbar" | "xbarclk" => Ok(1),
-        "gpc" | "core" | "gpu" => Ok(0),
         "sys" => Ok(2),
-        "mclk" | "mem" | "memory" => Ok(4),
-        _ => trimmed
-            .parse::<u32>()
-            .map_err(|e| CliError::new(format!("invalid clock domain {raw:?}: {e}"))),
+        "hub" => Ok(3),
+        "mclk" | "mem" | "memory" | "m" => Ok(4),
+        "host" => Ok(5),
+        "disp" | "display" => Ok(6),
+        "hotclk" => Ok(7),
+        "pclk0" => Ok(8),
+        "pclk1" => Ok(9),
+        "bypclk" => Ok(10),
+        "xclk" => Ok(11),
+        "vpv" => Ok(12),
+        "vps" => Ok(13),
+        "gpucacheclk" | "cache" => Ok(14),
+        "gpc2" => Ok(15),
+        "xbar2" | "xbar2clk" => Ok(16),
+        "sys2" => Ok(17),
+        "hub2" => Ok(18),
+        "leg" => Ok(19),
+        "pwr" => Ok(20),
+        "msd" => Ok(21),
+        "utils" => Ok(22),
+        "coldnv" => Ok(23),
+        "coldhotclk" => Ok(24),
+        "ltc2" => Ok(25),
+        "host1x" => Ok(28),
+        _ => trimmed.parse::<u32>().map_err(|_| {
+            CliError::new(format!(
+                "invalid clock domain {raw:?}: use a domain name (gpc/xbar/sys/hub/mclk/host/disp/... ) or a raw domain bit (0-31)"
+            ))
+        }),
     }
 }
 
