@@ -8,7 +8,8 @@ use nvoc_core::{
     Percentage, ProbeVoltageLimits, QueryApiRestriction, QueryAutoBoost, QueryClockOffset,
     QueryDisplays, QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings,
     QueryGpuStatus, QueryLegacyCoreOvervoltRanges, QueryLegacyP0CoreMaxVoltageDelta,
-    QueryNvapiClkDomainFreq, QueryNvapiClkDomains, QueryNvapiClkVfPoints, QueryNvapiDNotifier,
+    QueryNvapiClkDomainFreq, QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomains, QueryNvapiClkVfPoints,
+    QueryNvapiDNotifier,
     QueryNvapiPStateLevels, QueryNvapiPStateLockStatus, QueryNvapiTargetTempPolicies,
     QueryNvapiTargetTempPolicyIndex, QueryNvapiTgpWattRange, QueryNvapiVoltRails,
     QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates,
@@ -165,6 +166,7 @@ pub enum Command {
     GetClkDomains,
     GetClkDomainFreq,
     SetClkDomainOffset,
+    GetClkDomainFreqs,
     GetClkVfPoints,
     SetTemperatureThresholds,
     SetThermalLimitC,
@@ -251,6 +253,7 @@ impl Command {
             Self::GetClkDomains => "get-clk-domains",
             Self::GetClkVfPoints => "get-clk-vf-points",
             Self::GetClkDomainFreq => "get-clk-domain-freq",
+            Self::GetClkDomainFreqs => "get-clk-domain-freqs",
             Self::SetClkDomainOffset => "set-clk-domain-offset",
             Self::SetThermalLimitC => "set-thermal-limit-c",
             Self::SetTemperatureThresholds => "set-temp-thresholds",
@@ -351,6 +354,9 @@ impl Command {
             }
             Self::SetClkDomainOffset => {
                 "Write a signed kHz offset into one clock-domain control record (dangerous XBar clock write; --temporary restores the snapshot)"
+            }
+            Self::GetClkDomainFreqs => {
+                "Batch-measure physical clocks for multiple domains in one RM round-trip per sample (V3 MEASURE_FREQ; no arg = all controllable domains)"
             }
             Self::GetClkVfPoints => {
                 "Read the private ClockClient V/F-points family: per-bank point masks + V/F curve records (voltage-indexed, units calibrated vs the public GPC VFP)"
@@ -781,6 +787,7 @@ const COMMANDS: &[Command] = &[
     Command::GetApiRestriction,
     Command::GetAutoBoost,
     Command::GetClkDomainFreq,
+    Command::GetClkDomainFreqs,
     Command::GetClkDomains,
     Command::GetClkVfPoints,
     Command::GetClockOffsetMhz,
@@ -2441,6 +2448,37 @@ fn execute_target(
                         // slot semantics driver-opaque, slot 0 = signed
                         // frequency offset per the article
                         "values_kHz": e.values_kHz,
+                    })).collect::<Vec<_>>(),
+                }),
+                None => json!({"supported": false}),
+            })
+        }
+        Command::GetClkDomainFreqs => {
+            // no positional = measure every controllable domain (from the
+            // private GetControl mask); otherwise a list of domain names/bits
+            let domains = if invocation.positionals.is_empty() {
+                run(target, QueryNvapiClkDomains)?
+                    .output
+                    .map(|c| c.entries.iter().map(|e| e.bit).collect::<Vec<u32>>())
+                    .unwrap_or_default()
+            } else {
+                invocation
+                    .positionals
+                    .iter()
+                    .map(|p| parse_clk_domain(p))
+                    .collect::<Result<Vec<u32>, _>>()?
+            };
+            let freqs = run(
+                target,
+                QueryNvapiClkDomainFreqsBatch { domains },
+            )?
+            .output;
+            Ok(match freqs {
+                Some(fs) => json!({
+                    "freqs": fs.iter().map(|f| json!({
+                        "domain_bit": f.domain as u32,
+                        "domain": format!("{:?}", f.domain),
+                        "freq_mhz": (f.freq_mhz * 1000.0).round() / 1000.0,
                     })).collect::<Vec<_>>(),
                 }),
                 None => json!({"supported": false}),

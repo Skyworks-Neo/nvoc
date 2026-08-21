@@ -1469,6 +1469,30 @@ impl GpuOperation for QueryNvapiClkDomains {
     }
 }
 
+/// Batch-measure physical clocks for a set of domains via the V3
+/// MEASURE_FREQ (RM 0x20809006, magic 0x30038) — one RM round-trip per
+/// sample for the whole set, with per-domain V1/V2 fallback.
+#[derive(Clone, Debug)]
+pub struct QueryNvapiClkDomainFreqsBatch {
+    /// sequential domain indices (GPC=0, XBAR=1, SYS=2, MCLK=4, …)
+    pub domains: Vec<u32>,
+}
+
+impl GpuOperation for QueryNvapiClkDomainFreqsBatch {
+    type Output = Option<Vec<nvapi_hi::nvapi::ClockDomainFreq>>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiClkDomainFreqsBatch
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        Ok(target
+            .nvapi()?
+            .clk_domain_freqs_batch(&self.domains)
+            .map_err(Error::from)?)
+    }
+}
+
 /// Query the private ClockClient V/F-POINTS read path (GetInfo 0x8895B510 →
 /// GetStatus 0x7FEE9032, RM 0x20809061/0x20809062) — the article's per-domain
 /// V/F curve family. Returns `None` where the driver doesn't expose the
