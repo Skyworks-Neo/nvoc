@@ -1546,6 +1546,14 @@ impl GpuOperation for SetNvapiClkDomainOffset {
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        // guard BEFORE the previous-value lookup below indexes the record's
+        // 8 value dwords — the medium layer checks too, but only after this
+        let slot = self.slot as usize;
+        if slot >= 8 {
+            return Err(Error::Custom(
+                "invalid slot: the clock-domain record has 8 value dwords (0-7)".to_string(),
+            ));
+        }
         let gpu = target.nvapi()?;
         // Capture the previous offset for the result, if the family is present.
         #[allow(non_snake_case)] // kHz suffix matches the nvapi-rs field naming
@@ -1557,7 +1565,7 @@ impl GpuOperation for SetNvapiClkDomainOffset {
                 c.entries
                     .iter()
                     .find(|e| e.bit == self.domain_bit)
-                    .map(|e| e.values_kHz[self.slot as usize])
+                    .map(|e| e.values_kHz[slot])
             })
             .unwrap_or(0);
         let applied = gpu
@@ -1568,7 +1576,7 @@ impl GpuOperation for SetNvapiClkDomainOffset {
             entry_type: entry.entry_type,
             slot: self.slot,
             previous_kHz,
-            applied_kHz: entry.values_kHz[self.slot as usize],
+            applied_kHz: entry.values_kHz[slot],
             values_kHz: entry.values_kHz,
             temporary_restored: self.temporary,
         }))

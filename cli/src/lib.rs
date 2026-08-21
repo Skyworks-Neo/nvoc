@@ -2528,6 +2528,19 @@ fn execute_target(
                 .transpose()
                 .map_err(|e| CliError::new(format!("invalid --slot: {e}")))?
                 .unwrap_or(0);
+            // reject out-of-range slots HERE with a clear message — the
+            // medium layer also guards, but its ArgumentRange error reads
+            // the same as a readback mismatch ("data out of range"), which
+            // made slot >= 8 look like an unprotected write. Live slot
+            // behavior on a 4060 (XBAR): 0/1 accepted (0 = freq offset),
+            // 2-4 rejected by the driver (NVAPI error), 5-7 readback
+            // mismatch — only 0 is documented semantics; treat the rest as
+            // experiments.
+            if slot >= 8 {
+                return Err(CliError::new(format!(
+                    "invalid --slot {slot}: the record has 8 value dwords (0-7)"
+                )));
+            }
             let temporary = option_one(invocation, "temporary")
                 .map(parse_bool)
                 .transpose()?
