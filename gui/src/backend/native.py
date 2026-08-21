@@ -106,8 +106,9 @@ class NativeBackend:
         """Fetch the mobile power/thermal control surface (all NVAPI).
 
         Returns ``{"tgp": dict|None, "dnotifier": dict|None,
-        "temp_policies": list}``; ``None`` sub-dicts mean the private
-        interface isn't exposed by this driver.
+        "temp_policies": list, "volt_rail": dict|None}``;
+        ``None`` sub-dicts mean the private interface isn't exposed by this
+        driver.
         """
         data = self._query_mobile_limits_once(gpu)
         attempts = 0
@@ -115,6 +116,7 @@ class NativeBackend:
             data["tgp"] is None
             and data["dnotifier"] is None
             and not data["temp_policies"]
+            and data.get("volt_rail") is None
             and data.get("power_limit_w") is None
             and attempts < 3
         ):
@@ -134,6 +136,7 @@ class NativeBackend:
         dnotifier = None
         policies: Any = []
         enforced_w = None
+        volt_rail = None
         try:
             tgp = native.query_tgp_watt_range(gpu)
         except Exception:
@@ -153,12 +156,21 @@ class NativeBackend:
             enforced_w = native.query_status(gpu, "both").get("power_limit_w")
         except Exception:
             enforced_w = None
+        try:
+            # Private VoltRails P0 bounds: VBIOS/VRM voltage ceilings + the
+            # currently-effective voltage wall (the limit slider position).
+            volt_rail = native.query_volt_rails(gpu)
+        except Exception:
+            volt_rail = None
         if not isinstance(policies, list):
             policies = []
+        if not isinstance(volt_rail, dict):
+            volt_rail = None
         return {
             "tgp": tgp,
             "dnotifier": dnotifier,
             "temp_policies": policies,
+            "volt_rail": volt_rail,
             "power_limit_w": enforced_w,
         }
 

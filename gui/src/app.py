@@ -19,10 +19,8 @@ from src.backend import NativeBackend
 from src.cli_runner import CLIRunner
 from src.config import Config
 from src.parsing import (
-    analyze_vfp_offsets,
     get_vfp_offset_state_from_points,
     native_query_payload,
-    parse_gpu_list_output,
     parse_info_limits,
     parse_legacy_overvolt_bounds,
     parse_nvapi_power_current_from_get,
@@ -31,7 +29,6 @@ from src.parsing import (
     parse_status_current_values,
     parse_supported_pstates,
     parse_vfp_lock_bounds,
-    voltage_text_to_mv,
 )
 from src.task_runner import GuiTaskRunner
 from src.widgets.output_console import OutputConsole
@@ -197,7 +194,7 @@ class App(ctk.CTk):
         self._resize_targets = []  # type: List[Any]
 
         self.title("NVOC-GUI — NVIDIA GPU VF Curve Optimizer")
-        self.geometry("768x672")
+        self.geometry("768x712")
         self.minsize(768, 360)
         self._single_instance_guard = single_instance_guard
 
@@ -598,13 +595,6 @@ class App(ctk.CTk):
         """Submit non-UI work to the central GUI task runner."""
         return self.tasks.submit(name, task)
 
-    def _debounce_tabview_configure(self, event=None):
-        """Compatibility shim retained for older experiments; intentionally no-op."""
-        return
-
-    def _process_tabview_resize(self):
-        return
-
     def register_resize_target(self, target: Any):
         """Register a tab-like object that supports on_resize_state_changed()."""
         if target is None or target in self._resize_targets:
@@ -650,10 +640,6 @@ class App(ctk.CTk):
             except Exception:
                 pass
         self._resize_settle_after_id = self.after(140, self._end_resize_session)
-
-    def _on_tabview_configure(self, event):
-        """Compatibility shim: tabview-level binding is not used in CustomTkinter."""
-        return
 
     def _refresh_gpu_list(self):
         """Query native GPU discovery and populate GPU dropdown."""
@@ -734,69 +720,6 @@ class App(ctk.CTk):
             self._programmatic_gpu_set = False
         self.console.append(f"[GUI] Found {len(ordered_indices)} GPU(s).\n")
         self._query_gpu_info()
-
-    def _parse_gpu_list(self, retcode: int, output: str):
-        """Parse GPU list output and update dropdown."""
-        self.console.append(output)
-        if retcode != 0:
-            self.console.append("[GUI] Failed to detect GPUs.\n")
-            self.gpu_dropdown.configure(values=["(detection failed)"])
-            self.gpu_var.set("(detection failed)")
-            return
-
-        short_labels, long_labels, gpu_names, uuid_map = parse_gpu_list_output(output)
-        ordered_indices = sorted(short_labels.keys())
-
-        # Use long labels for dropdown entries so users can see full UUID when expanded.
-        gpus = [long_labels[i] for i in ordered_indices]
-
-        if gpus:
-            # Build reverse map: display_text -> gpu_index
-            self.gpu_map = {}
-            for idx in ordered_indices:
-                self.gpu_map[short_labels[idx]] = idx
-                self.gpu_map[long_labels[idx]] = idx
-
-            self._gpu_short_label_by_idx = short_labels
-            self._gpu_long_label_by_idx = long_labels
-
-            # Store GPU names for capabilities check
-            self.gpu_names = gpu_names
-
-            # Store UUID map
-            self.gpu_uuid_map = uuid_map
-
-            self.gpu_dropdown.configure(values=gpus)
-            # Try to restore last selection by index first, then by legacy label
-            last_idx_raw = str(self.config.get("last_gpu_idx", "")).strip()
-            last_idx = int(last_idx_raw) if last_idx_raw.isdigit() else None
-            last = self.config.get("last_gpu_id", "")
-            if last_idx is None and last in self.gpu_map:
-                last_idx = self.gpu_map[last]
-            if last_idx is None and last:
-                m_last = re.match(r"^GPU\s+(\d+)\s*:", last)
-                if m_last:
-                    last_idx = int(m_last.group(1))
-
-            if last_idx not in ordered_indices:
-                last_idx = ordered_indices[0]
-
-            self._programmatic_gpu_set = True
-            try:
-                # Keep collapsed selector compact (no UUID), but dropdown values still include UUID.
-                self.gpu_var.set(short_labels[last_idx])
-            finally:
-                self._programmatic_gpu_set = False
-            self.console.append(f"[GUI] Found {len(gpus)} GPU(s).\n")
-            # Query GPU info for hardware limits
-            self._query_gpu_info()
-        else:
-            self.gpu_dropdown.configure(values=["(no GPUs found)"])
-            self._programmatic_gpu_set = True
-            try:
-                self.gpu_var.set("(no GPUs found)")
-            finally:
-                self._programmatic_gpu_set = False
 
     def _on_gpu_changed(self, selected: str):
         """Called by CTkOptionMenu when the user picks a different GPU."""
@@ -912,11 +835,6 @@ class App(ctk.CTk):
             thread_name="overclock-status",
             allow_wake=False,  # automatic refresh chain: never block GC6
         )
-
-    @staticmethod
-    def _voltage_text_to_mv(value_text: str, unit_text: str) -> int:
-        """Convert a voltage text pair (value + unit) into integer mV."""
-        return voltage_text_to_mv(value_text, unit_text)
 
     @staticmethod
     def _native_query_payload(output: str) -> Optional[Dict[str, Any]]:
@@ -1170,13 +1088,6 @@ class App(ctk.CTk):
                 self.tab_vfcurve._refresh_curve()
         else:
             self.refresh_vfp_offset_state()
-
-    @staticmethod
-    def _analyze_vfp_offsets(
-        frequencies: List[float], defaults: List[float]
-    ) -> Tuple[bool, Optional[int]]:
-        """Return (has_any_offset, uniform_core_offset_mhz_if_flat_curve)."""
-        return analyze_vfp_offsets(frequencies, defaults)
 
     def _apply_vfp_offset_state(
         self, has_vfp_offset: bool, uniform_core_offset_mhz: Optional[int] = None

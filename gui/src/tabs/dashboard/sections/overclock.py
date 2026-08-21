@@ -76,6 +76,8 @@ class OverclockTab:
         self._mobile_ppab_initialized_for = None  # type: Optional[str]
         self._mobile_limits_gpu = None  # type: Optional[str]
         self._mobile_load_in_flight = False
+        self._volt_rail_bit = 0  # VoltRails rail bit (0 on single-rail mobile GPUs)
+        self._xbar_supported = False  # Xbar row: Turing (GTX 16系) and newer
         self._is_resize_active = False
         self._pending_limits = None  # type: Optional[Dict[str, Any]]
         self._pending_capabilities = None  # type: Optional[Dict[str, Any]]
@@ -130,12 +132,14 @@ class OverclockTab:
             anchor="center",
             font=ct_button_font(oc_header),
             height=28,
+            command=self._on_oc_api_changed,
         )
         self.oc_api_selector.pack(side="right")
         oc_api_tip = (
             "Clock offset API selector (core/memory + PState lock).\n"
             "- NVAPI: --core-offset / --mem-offset values are in kHz.\n"
-            "- NVML: --core-offset / --mem-offset values are in MHz."
+            "- NVML: --core-offset / --mem-offset values are in MHz.\n"
+            "NVAPI-only rows (Xbar, Volt Limit) grey out under NVML."
         )
         HoverTooltip(self.oc_api_selector, oc_api_tip)
 
@@ -170,7 +174,10 @@ class OverclockTab:
         self.btn_unlock_pstate.pack(side="left")
         self.set_supported_pstates([])
 
-        # Core Clock slider + entry
+        # Core Clock slider + entry. Step 2.5 MHz with one decimal — the
+        # LCM-friendly grid that divides both the 7.5 MHz frequency step on
+        # 30-series and newer and the 12.5 MHz step on 10/16/20-series.
+        # entry_width=8 like Volt Limit: "+122.5" needs the extra char.
         self.core_slider, self.core_entry, self.core_var, btn_apply_core = (
             self._make_slider_row(
                 oc_frame,
@@ -178,10 +185,12 @@ class OverclockTab:
                 d["core_clock_min"],
                 d["core_clock_max"],
                 0,
-                step=5,
+                step=2.5,
                 apply_cmd=self._apply_core_only,
                 signed=True,
                 unit="MHz",
+                decimals=1,
+                entry_width=8,
             )
         )
 
@@ -193,7 +202,7 @@ class OverclockTab:
                 d["mem_clock_min"],
                 d["mem_clock_max"],
                 0,
-                step=10,
+                step=5,
                 apply_cmd=self._apply_mem_only,
                 signed=True,
                 unit="MHz",
@@ -205,11 +214,39 @@ class OverclockTab:
             "Shift+Click: apply global offset then sync P2 memory VFP to P0 frequency",
         )
 
+        # Xbar (crossbar fabric) clock offset — NVAPI-only private ClockClient
+        # domain offset (pynvoc set_clk_domain_offset, the GUI-MHz face of the
+        # CLI's `set-clk-domain-offset xbar <kHz>`). Same row format as
+        # Core/Mem; arch-gated to Turing (GTX 16-series) and newer, and greyed
+        # under the NVML backend selection. Range ±500 MHz with a 5 MHz
+        # wheel/drag step — the article only documented a ±60 MHz XBAR bound
+        # on GB202, but 50-series fabric clocks run far higher, so leave the
+        # wide range and let the driver reject unsafe writes (the medium
+        # layer snapshot/SET/readback/restore guards the write itself).
+        (
+            self.xbar_slider,
+            self.xbar_entry,
+            self.xbar_var,
+            self.btn_apply_xbar,
+        ) = self._make_slider_row(
+            oc_frame,
+            "Xbar:",
+            -500,
+            500,
+            0,
+            step=5,
+            apply_cmd=self._apply_xbar_only,
+            signed=True,
+            unit="MHz",
+        )
+
         # Buttons — apply/reset each take half the row
         btn_oc = tk.Frame(oc_frame, bg=_PANEL_BG)
         btn_oc.pack(fill="x", padx=(26, 10), pady=(5, 10))
         btn_oc.columnconfigure(0, weight=1, uniform="oc_btns")
         btn_oc.columnconfigure(1, weight=1, uniform="oc_btns")
+        # Anchor for repacking the arch-gated Xbar row (kept just below Mem).
+        self._oc_buttons_row = btn_oc
         LiteButton(
             btn_oc, text="✅ Apply Section", width=10, command=self._apply_oc
         ).grid(row=0, column=0, sticky="ew", padx=(0, 5))
@@ -221,6 +258,10 @@ class OverclockTab:
             hover_color="#96281b",
             command=self._reset_oc,
         ).grid(row=0, column=1, sticky="ew", padx=(5, 0))
+
+        # Xbar is arch-gated (Turing/16-series and newer): hidden until
+        # check_capabilities() sees a matching architecture.
+        self.xbar_slider.master.pack_forget()
 
         # ═══════════════════════════════════════════
         # Power & Thermal Limits
@@ -345,6 +386,33 @@ class OverclockTab:
             unit="℃",
         )
 
+        # Volt Limit slider + entry (mobile-only absolute voltage target on the
+        # private VoltRails path). Min is a hard 300 mV floor; max is overridden
+        # by min(VBIOS, VRM) walls in update_mobile_limits(); the starting
+        # position is the effective voltage wall (post-clamp). Desktop leaves
+        # this row packed-away — VoltBoost is the desktop voltage control.
+        # Step is 2.5 mV (the LCM-friendly grid that divides both the 5 mV
+        # rail step on 30/40-series and the 12.5 mV step on 10/20-series);
+        # decimals=1 renders that half-mV in the entry.
+        self.vlimit_label_var = ctk.StringVar(value="Volt Limit:")
+        (
+            self.vlimit_slider,
+            self.vlimit_entry,
+            self.vlimit_var,
+            self.btn_apply_vlimit,
+        ) = self._make_slider_row(
+            self.limit_frame,
+            self.vlimit_label_var,
+            300,
+            1200,
+            1085,
+            step=2.5,
+            apply_cmd=self._apply_vlimit_only,
+            unit="mV",
+            decimals=1,
+            entry_width=8,
+        )
+
         # Voltage Boost / Offset slider + entry
         self.vboost_label_var = ctk.StringVar(value="VoltBoost:")
         self.vboost_unit_var = ctk.StringVar(value="%")
@@ -363,6 +431,9 @@ class OverclockTab:
             apply_cmd=self._apply_vboost_only,
             unit=self.vboost_unit_var,
         )
+
+        # Volt Limit row is mobile-only; hide it on the default desktop layout.
+        self.vlimit_slider.master.pack_forget()
 
         btn_limits = tk.Frame(self.limit_frame, bg=_PANEL_BG)
         btn_limits.pack(fill="x", padx=(26, 10), pady=(5, 10))
@@ -440,6 +511,9 @@ class OverclockTab:
         if mode == "mobile":
             widgets.append(self.dnotifier_selector)
             widgets.append(self.btn_apply_dnotifier)
+            widgets.append(self.vlimit_slider)
+            widgets.append(self.vlimit_entry)
+            widgets.append(self.btn_apply_vlimit)
         else:
             widgets.extend([
                 self.power_api_selector,
@@ -463,6 +537,10 @@ class OverclockTab:
         elif not self.limit_status_label.winfo_manager():
             self.limit_status_label.pack(anchor="w", padx=10, pady=(0, 6))
 
+        # Re-apply the OC-backend gate: the loop above just re-enabled the
+        # mobile widgets, which would clear an active NVML greying.
+        self._refresh_nvapi_only_rows()
+
     # ────────────────────────────────────────────
     # Mobile (laptop GPU) power & thermal mode
     # ────────────────────────────────────────────
@@ -476,9 +554,21 @@ class OverclockTab:
         self.plimit_unit_var.set("W")
         # D-Notifier selector sits above the power slider row.
         plimit_row = self.plimit_slider.master
+        tlimit_row = self.tlimit_slider.master
         self.dnotifier_row.pack(fill="x", padx=(26, 10), pady=(0, 3), before=plimit_row)
         # Voltage Boost row is hidden on mobile (unvalidated NVAPI % path).
         self.vboost_slider.master.pack_forget()
+        # Tighten the three mobile slider rows (Pwr/Thrm/Volt): repack with a
+        # smaller pady than the desktop default (3) so they read as a group.
+        # Repack in front-to-back order using before= against an already-packed
+        # later sibling so relative order is preserved (dnotifier, plimit,
+        # tlimit, vlimit, buttons).
+        btn_limits_row = self.btn_apply_limits.master
+        self.vlimit_slider.master.pack(
+            fill="x", padx=(26, 10), pady=1, before=btn_limits_row
+        )
+        tlimit_row.pack(fill="x", padx=(26, 10), pady=1, before=self.vlimit_slider.master)
+        plimit_row.pack(fill="x", padx=(26, 10), pady=1, before=tlimit_row)
         self._load_mobile_limits()
 
     def _exit_mobile_mode(self):
@@ -488,11 +578,19 @@ class OverclockTab:
         self._mobile_mode = False
         self.ppab_checkbox.pack_forget()
         self.dnotifier_row.pack_forget()
-        self.power_api_selector.pack(side="right")
-        self.plimit_unit_var.set("%")
-        # Repack the vboost row before the buttons row (original order).
+        self.vlimit_slider.master.pack_forget()
+        # Restore the desktop layout + pady=3. Repack the vboost row before the
+        # buttons row (original order), then anchor plimit/tlimit before it so
+        # the final order is plimit, tlimit, vboost, buttons — matching the
+        # construction order — with pady restored to 3.
         btn_limits_row = self.btn_apply_limits.master
         self.vboost_slider.master.pack(fill="x", padx=10, pady=3, before=btn_limits_row)
+        tlimit_row = self.tlimit_slider.master
+        plimit_row = self.plimit_slider.master
+        tlimit_row.pack(fill="x", padx=(26, 10), pady=3, before=self.vboost_slider.master)
+        plimit_row.pack(fill="x", padx=(26, 10), pady=3, before=tlimit_row)
+        self.power_api_selector.pack(side="right")
+        self.plimit_unit_var.set("%")
 
     def _load_mobile_limits(self):
         """Background-load the mobile control surface (TGP range, D-Notifier,
@@ -626,6 +724,200 @@ class OverclockTab:
                 step=1,
             )
 
+        # Volt Limit (private VoltRails P0 bounds). Slider floor is a hard
+        # 300 mV; the ceiling is min(VBIOS wall, VRM max wall). A wall reading
+        # of 0 means 'not reported' and is skipped; both 0 falls back to
+        # 1200 mV (the ~1.2 V domain ceiling observed on Ada mobile). The
+        # starting position is the effective voltage wall (post-clamp), the
+        # analog of TGP positioning at the enforced power limit — NOT the
+        # live core voltage, which bounces with load. The 2.5 mV step grid is
+        # applied in _volt_limit_bounds_from_p0 (LCM of 5 and 12.5 mV rail
+        # steps) so the entry's one-decimal render and the thumb agree.
+        vr = data.get("volt_rail") if isinstance(data.get("volt_rail"), dict) else None
+        if vr:
+            self._volt_rail_bit = self._resolve_volt_rail_bit(vr)
+            p0 = vr.get("p0") if isinstance(vr.get("p0"), dict) else None
+            if p0:
+                min_mv, max_mv, pos_mv = self._volt_limit_bounds_from_p0(p0)
+                self._reconfigure_slider(
+                    self.vlimit_slider,
+                    self.vlimit_var,
+                    min_mv,
+                    max_mv,
+                    pos_mv,
+                    step=2.5,
+                )
+
+    @staticmethod
+    def _volt_limit_bounds_from_p0(p0: dict) -> tuple[float, float, float]:
+        """Compute (min_mV, max_mV, current_mV) for the Volt Limit slider.
+
+        - min is a hard 300 mV floor
+        - max is min(VBIOS wall, VRM max wall); a wall of 0 ('not reported')
+          is skipped; both 0 falls back to 1200 mV (the ~1.2 V domain ceiling
+          observed on Ada mobile)
+        - current is the effective voltage wall (post-clamp), the analog of
+          TGP positioning at the enforced power limit — NOT the live core
+          voltage, which bounces with load. Clamped into [min, max].
+        Both max and current are snapped to the 2.5 mV grid (LCM of the 5 mV
+        rail step on 30/40-series and the 12.5 mV step on 10/20-series) so
+        the one-decimal entry text and the canvas thumb agree; max snaps
+        DOWN so no offered position exceeds the actual wall.
+        """
+        STEP = 2.5
+        vbios = int(p0.get("vbios_wall_uV", 0) or 0)
+        vrm = int(p0.get("vrm_max_wall_uV", 0) or 0)
+        walls = [w for w in (vbios, vrm) if w > 0]
+        ceiling_uV = min(walls) if walls else 1_200_000
+        max_mv = max(300.0, ceiling_uV / 1000.0)
+        # int() truncates toward zero == floor for the positive span here.
+        max_mv = int(max_mv / STEP) * STEP
+        eff = int(p0.get("effective_wall_uV", 0) or 0)
+        pos_mv = eff / 1000.0 if eff > 0 else max_mv
+        pos_mv = max(300.0, min(max_mv, pos_mv))
+        # Snap the starting position to the grid (round to nearest).
+        pos_mv = round(pos_mv / STEP) * STEP
+        return 300.0, max_mv, max(300.0, pos_mv)
+
+    def _resolve_volt_rail_bit(self, volt_rail: dict) -> int:
+        """Pick the VoltRails rail bit to target.
+
+        Uses the first rail descriptor's ``rail_bit`` when descriptors are
+        exposed; otherwise falls back to the lowest set bit of ``rail_mask``.
+        Single-rail mobile GPUs (e.g. 4060L, mask 0x1) resolve to 0.
+        """
+        descs = volt_rail.get("rail_descriptors")
+        if isinstance(descs, list) and descs:
+            first = descs[0]
+            if isinstance(first, dict) and first.get("rail_bit") is not None:
+                try:
+                    return int(first["rail_bit"])
+                except (TypeError, ValueError):
+                    pass
+        mask = volt_rail.get("rail_mask")
+        if isinstance(mask, str) and mask:
+            try:
+                return (int(mask, 16) & -int(mask, 16)).bit_length() - 1
+            except ValueError:
+                pass
+        return 0
+
+    @staticmethod
+    def _xbar_supported_from_info(info: dict) -> bool:
+        """Xbar support verdict for the GPU described by ``info``.
+
+        Primary signal: the pynvoc ``query_info`` payload's
+        ``xbar_supported`` flag, computed in Rust by core's ``gpu_type.rs``
+        ``detect_gpu_type`` (name + codename) — the project's single source
+        of truth for generation detection. That path is what makes Ada work:
+        ``gpu_architecture`` reads 'Unknown:400:7:161' there (the ArchInfo
+        enum has no AD variant), so string-matching the arch alone cannot
+        see a 40-series.
+
+        Fallback: the local ``_xbar_supported_arch`` heuristic for payloads
+        without the flag (CLI-parsed info, NVML-only info, older pynvoc).
+        """
+        flag = info.get("xbar_supported")
+        if isinstance(flag, bool):
+            return flag
+        return OverclockTab._xbar_supported_arch(
+            str(info.get("gpu_architecture", "") or ""),
+            str(info.get("codename", "") or ""),
+            str(info.get("gpu_name", "") or ""),
+        )
+
+    @staticmethod
+    def _xbar_supported_arch(
+        arch_id: str, codename: str = "", gpu_name: str = ""
+    ) -> bool:
+        """True for Turing (the GTX 16-series) and every newer architecture.
+
+        Three signals, in priority order:
+        1. Chip codes from the codename or the arch string (tu106, ga102,
+           ad107, gb202 — optionally suffixed ":rev", "-B", " (process)").
+           The codename matters: on Ada the pynvoc ArchInfo enum has no AD
+           variant and reports ``gpu_architecture = 'Unknown:400:7:161'``,
+           while ``codename = 'AD107-B'`` carries the real chip code.
+        2. Friendly architecture names (Turing, Ampere, Ada, Blackwell) from
+           the CLI human output.
+        3. Marketing-name fallback: ``RTX 4060`` / ``GTX 1660`` — the model
+           number >= 1600 means 16-series or newer (GTX 1080/10-series and
+           below stay hidden).
+        Pascal (gp), Volta (gv) and older return False — the XBAR
+        ClockClient domain postdates them.
+        """
+        # 1) chip codes (codename first — it is the reliable one on Ada).
+        for raw in (codename, arch_id):
+            head = (
+                raw.lower()
+                .split("(", 1)[0]
+                .split(":", 1)[0]
+                .split("-", 1)[0]
+                .strip()
+            )
+            if head.startswith(("tu", "ga", "ad", "gb")):
+                return True
+        # 2) friendly names.
+        if any(
+            name in arch_id.lower() for name in ("turing", "ampere", "ada", "blackwell")
+        ):
+            return True
+        # 3) marketing name: RTX/GTX + model number, 1600 = 16-series floor.
+        match = __import__("re").search(
+            r"\b(?:rtx|gtx)\s*(\d{3,4})", gpu_name.lower()
+        )
+        if match:
+            return int(match.group(1)) >= 1600
+        return False
+
+    @staticmethod
+    def _format_volt_rail_target_result(target_mv: float, result: Any) -> str:
+        """Build the console message from a ``set_volt_rail_target`` result.
+
+        Unlike the other NVAPI setters (``set_tgp_watt`` etc. return ``None``
+        so ``setter() or "msg"`` works), ``set_volt_rail_target`` always
+        returns a dict — either the applied payload (with the post-clamp
+        ``effective_wall_uV``) or ``{"supported": False}``. A truthy dict
+        would short-circuit ``or`` and yield the dict itself (which then fails
+        ``.endswith`` in the native worker), so format the message here.
+        ``target_mv`` may carry one decimal (2.5 mV grid); :g drops the
+        trailing .0 for whole-mV values.
+        """
+        if isinstance(result, dict):
+            if result.get("applied"):
+                eff = result.get("effective_wall_uV")
+                if isinstance(eff, (int, float)) and eff:
+                    return (
+                        f"Successfully applied Volt Limit {target_mv:g} mV "
+                        f"(effective wall {eff / 1000.0:g} mV)."
+                    )
+                return f"Successfully applied Volt Limit {target_mv:g} mV."
+            if result.get("supported") is False:
+                return "Volt-rail target not supported by this driver."
+        return f"Applied Volt Limit {target_mv:g} mV."
+
+    @staticmethod
+    def _format_xbar_offset_result(offset_mhz: int, result: Any) -> str:
+        """Build the console message from a ``set_clk_domain_offset`` result.
+
+        Like ``set_volt_rail_target``, the pynvoc call returns a dict (the
+        applied payload with the driver's readback ``applied_kHz``, or
+        ``{"supported": False}``) — never ``None`` — so the message must be
+        formatted here rather than via ``setter() or "msg"``.
+        """
+        if isinstance(result, dict):
+            if result.get("applied"):
+                applied = result.get("applied_kHz")
+                if isinstance(applied, (int, float)):
+                    return (
+                        f"Successfully applied Xbar offset {offset_mhz:+d} MHz "
+                        f"(driver readback {applied / 1000.0:+g} MHz)."
+                    )
+                return f"Successfully applied Xbar offset {offset_mhz:+d} MHz."
+            if result.get("supported") is False:
+                return "Xbar clock-domain offset not supported by this driver."
+        return f"Applied Xbar offset {offset_mhz:+d} MHz."
+
     def _on_ppab_toggled(self):
         if self._syncing or not self._mobile_mode:
             return
@@ -730,7 +1022,7 @@ class OverclockTab:
                 limits["core_clock_min"],
                 limits["core_clock_max"],
                 current,
-                step=5,
+                step=2.5,
             )
         elif "core_clock_current" in limits:
             self._set_slider_value(
@@ -745,7 +1037,7 @@ class OverclockTab:
                 limits["mem_clock_min"],
                 limits["mem_clock_max"],
                 current,
-                step=10,
+                step=5,
             )
         elif "mem_clock_current" in limits:
             self._set_slider_value(
@@ -906,19 +1198,29 @@ class OverclockTab:
             self._pending_capabilities = dict(info)
             return
 
-        # Mobile/Laptop GPU test
+        # Mobile/Laptop GPU test. Primary signal: the pynvoc query_info
+        # payload's is_mobile flag (core gpu_type.rs detect_gpu_type — the
+        # single source of truth; it reads name + codename, so it also works
+        # on Ada where gpu_architecture is 'Unknown:...'). Fallback: the
+        # name-keyword heuristic for payloads without the flag (CLI-parsed
+        # info, NVML-only info, older pynvoc).
         gpu_name = str(info.get("gpu_name", "")).lower()
         arch_id = str(info.get("gpu_architecture", "")).lower().strip()
         arch_head = arch_id.split("(", 1)[0].strip().split(":", 1)[0].strip()
-        # Check for mobile/laptop indicators: explicit keywords, RTX XXM (mobile suffix), RTX for laptops with M suffix
-        is_mobile = (
-            "mobile" in gpu_name
-            or "laptop" in gpu_name
-            or " m " in gpu_name
-            or gpu_name.endswith(" m")
-            or " mx " in gpu_name
-            or gpu_name.endswith(" mx")
-        )
+        mobile_flag = info.get("is_mobile")
+        if isinstance(mobile_flag, bool):
+            is_mobile = mobile_flag
+        else:
+            # Check for mobile/laptop indicators: explicit keywords, RTX XXM
+            # (mobile suffix), RTX for laptops with M suffix
+            is_mobile = (
+                "mobile" in gpu_name
+                or "laptop" in gpu_name
+                or " m " in gpu_name
+                or gpu_name.endswith(" m")
+                or " mx " in gpu_name
+                or gpu_name.endswith(" mx")
+            )
 
         self._set_limit_panel_mode("mobile" if is_mobile else "desktop")
         if is_mobile and self._mobile_mode:
@@ -927,19 +1229,44 @@ class OverclockTab:
             if gpu is not None and gpu != self._mobile_limits_gpu:
                 self._load_mobile_limits()
         self.fan_section.set_supported(not is_mobile)
-        # Maxwell / 900 series and older detection
-        # Simple heuristic: architectural series usually exposed in info or if missing VFP
-        # fallback arch check from name
-        is_legacy = False
-        if "gtx" in gpu_name:
-            match = __import__("re").search(r"gtx\s*(\d+)", gpu_name)
-            if match and int(match.group(1)) < 1000:
-                is_legacy = True
-        if not is_legacy and arch_id:
-            if any(x in arch_id for x in ["maxwell", "kepler", "fermi"]):
-                is_legacy = True
-            elif arch_head.startswith(("gm", "gk", "gf")):
-                is_legacy = True
+
+        # Xbar (private ClockClient domain offset) exists from Turing — the
+        # GTX 16-series — onward. Older archs hide the row entirely; when it
+        # is shown, the OC backend dropdown gate also applies (NVML has no
+        # Xbar path).
+        xbar_ok = self._xbar_supported_from_info(info)
+        if xbar_ok != self._xbar_supported:
+            self._xbar_supported = xbar_ok
+            if xbar_ok:
+                self.xbar_slider.master.pack(
+                    fill="x", padx=(26, 10), pady=3, before=self._oc_buttons_row
+                )
+            else:
+                self.xbar_slider.master.pack_forget()
+            self._refresh_nvapi_only_rows()
+        # Maxwell / 900 series and older detection. Primary signal: the
+        # payload's is_legacy_voltage flag (core gpu_type.rs — 9系 GM 及更旧,
+        # 含 Kepler/Fermi 落 Unknown 的保守归类). Fallback heuristic below for
+        # payloads without the flag. NOTE the deliberate semantic difference:
+        # is_legacy_voltage(Unknown) = true (core's write-path conservatism),
+        # so a day-one unrecognized future GPU shows the legacy Overvolt UI
+        # here until detect_gpu_type learns its chip prefix.
+        legacy_flag = info.get("is_legacy_voltage")
+        if isinstance(legacy_flag, bool):
+            is_legacy = legacy_flag
+        else:
+            # Simple heuristic: architectural series usually exposed in info
+            # or if missing VFP, fallback arch check from name
+            is_legacy = False
+            if "gtx" in gpu_name:
+                match = __import__("re").search(r"gtx\s*(\d+)", gpu_name)
+                if match and int(match.group(1)) < 1000:
+                    is_legacy = True
+            if not is_legacy and arch_id:
+                if any(x in arch_id for x in ["maxwell", "kepler", "fermi"]):
+                    is_legacy = True
+                elif arch_head.startswith(("gm", "gk", "gf")):
+                    is_legacy = True
 
         if is_legacy:
             self._is_legacy_gpu = True
@@ -1001,6 +1328,32 @@ class OverclockTab:
         selected = self.oc_api_var.get().strip().upper()
         return "nvml" if selected == "NVML" else "nvapi"
 
+    def _on_oc_api_changed(self, _selected: str):
+        """OC backend dropdown moved: re-apply the NVAPI-only row gate."""
+        self._refresh_nvapi_only_rows()
+
+    def _refresh_nvapi_only_rows(self):
+        """Sync the enabled state of the NVAPI-only rows (Xbar, Volt Limit).
+
+        NVML exposes neither the private ClockClient domain offsets (Xbar)
+        nor the VoltRails family (Volt Limit), so both rows grey out while
+        the Clock Offsets backend dropdown sits on NVML. Volt Limit is only
+        touched in mobile mode — the desktop panel hides the row and the
+        'off' mode has already disabled the whole panel (this re-applies the
+        gate after _set_limit_panel_mode re-enables the mobile widgets).
+        """
+        state = "disabled" if self._selected_oc_backend() == "nvml" else "normal"
+        if self._xbar_supported:
+            for widget in (self.xbar_slider, self.xbar_entry, self.btn_apply_xbar):
+                self._safe_set_state(widget, state)
+        if self._limit_panel_mode == "mobile":
+            for widget in (
+                self.vlimit_slider,
+                self.vlimit_entry,
+                self.btn_apply_vlimit,
+            ):
+                self._safe_set_state(widget, state)
+
     def _selected_power_backend(self) -> str:
         """Return the selected backend for power-limit commands only."""
         if self._mobile_mode:
@@ -1018,26 +1371,19 @@ class OverclockTab:
         # get now refreshes both NVML(W) and NVAPI(%) power current values.
         self.app._query_gpu_get()
 
-    @staticmethod
-    def _format_oc_value_for_backend(mhz_text: str, backend: str) -> str | None:
-        """Convert entry MHz text into CLI units for the selected OC backend."""
-        try:
-            mhz = int(mhz_text)
-        except ValueError:
-            return None
-        return str(mhz if backend == "nvml" else mhz * 1000)
-
     def _reconfigure_slider(
         self,
         slider: Any,
         var: ctk.StringVar,
-        min_val: int,
-        max_val: int,
-        default: int,
-        step: int = 1,
+        min_val: float,
+        max_val: float,
+        default: float,
+        step: float = 1,
     ):
         """Reconfigure a slider's range, steps, and reset to default value."""
-        n_steps = (max_val - min_val) // step if step else (max_val - min_val)
+        # int() (truncation) == floor for the non-negative span/step here; use
+        # it instead of // so a fractional step like 2.5 mV works.
+        n_steps = int((max_val - min_val) / step) if step else int(max_val - min_val)
 
         # Preserve the current state (disabled/normal) before reconfiguring
         current_state = self._safe_get_state(slider)
@@ -1069,16 +1415,25 @@ class OverclockTab:
         self._syncing = False
 
     @staticmethod
-    def _fmt_slider_value(slider: Any, value: int) -> str:
-        """Format an entry value, signed for offset rows (see _make_slider_row)."""
-        if getattr(slider, "_oc_signed", False):
+    def _fmt_slider_value(slider: Any, value: float) -> str:
+        """Format an entry value, signed for offset rows (see _make_slider_row).
+
+        ``:+`` renders an explicit sign on positives AND on zero (``+0.0``) —
+        offset rows read 0 as "no offset applied", so the + keeps the column
+        visually consistent.
+        """
+        decimals = getattr(slider, "_oc_decimals", 0)
+        signed = getattr(slider, "_oc_signed", False)
+        if decimals:
+            return f"{float(value):{'+.' if signed else '.'}{decimals}f}"
+        if signed:
             return f"{int(value):+d}"
         return str(int(value))
 
-    def _set_slider_value(self, slider: Any, var: ctk.StringVar, value: int):
+    def _set_slider_value(self, slider: Any, var: ctk.StringVar, value: float):
         """Update a slider's current value without changing its range."""
-        min_val = getattr(slider, "_oc_min", int(slider.cget("from_")))
-        max_val = getattr(slider, "_oc_max", int(slider.cget("to")))
+        min_val = getattr(slider, "_oc_min", float(slider.cget("from_")))
+        max_val = getattr(slider, "_oc_max", float(slider.cget("to")))
         clamped = max(min_val, min(max_val, value))
         self._syncing = True
         slider.set(clamped)
@@ -1092,21 +1447,31 @@ class OverclockTab:
         self,
         parent: ctk.CTkFrame,
         label: Union[str, ctk.StringVar],
-        min_val: int,
-        max_val: int,
-        default: int,
-        step: int = 1,
+        min_val: float,
+        max_val: float,
+        default: float,
+        step: float = 1,
         apply_cmd=None,
         signed: bool = False,
         unit: Union[str, ctk.StringVar] = "",
+        decimals: int = 0,
+        entry_width: int = 7,
     ) -> Tuple[Any, ctk.CTkEntry, ctk.StringVar, ctk.CTkButton]:
         """Create a row with label, slider, numeric entry and apply button.
 
         signed=True renders the entry value with an explicit +/- sign
         (offset rows — avoids reading e.g. 150 as an absolute frequency).
+
+        decimals>0 switches the entry to a fixed-point render (e.g.
+        ``decimals=1`` → ``1082.5``) and parses typed input as float — used by
+        the Volt Limit row whose 2.5 mV step needs one decimal on 10/20-series.
         """
 
-        def _fmt(v: int) -> str:
+        def _fmt(v: float) -> str:
+            # `:+` also signs zero (+0 / +0.0) — offset rows show 0 as an
+            # explicitly-applied zero offset (see _fmt_slider_value).
+            if decimals:
+                return f"{float(v):{'+.' if signed else '.'}{decimals}f}"
             return f"{int(v):+d}" if signed else str(int(v))
 
         row_frame = tk.Frame(parent, bg=_PANEL_BG)
@@ -1133,7 +1498,7 @@ class OverclockTab:
             ).grid(row=0, column=0, sticky="w")
 
         # Slider
-        n_steps = (max_val - min_val) // step if step else (max_val - min_val)
+        n_steps = int((max_val - min_val) / step) if step else int(max_val - min_val)
         slider = CanvasSlider(
             row_frame,
             from_=min_val,
@@ -1148,10 +1513,11 @@ class OverclockTab:
         slider._oc_max = max_val
         slider._oc_step = step
         slider._oc_signed = signed
+        slider._oc_decimals = decimals
 
         # Entry (fixed width, right-aligned value)
         var = ctk.StringVar(value=_fmt(default))
-        entry = LiteEntry(row_frame, textvariable=var, width=7, justify="right")
+        entry = LiteEntry(row_frame, textvariable=var, width=entry_width, justify="right")
         entry.grid(row=0, column=2, padx=(0, 5))
 
         # ── Sync: slider → entry ──
@@ -1177,7 +1543,7 @@ class OverclockTab:
             if text == "Curve":
                 return
             try:
-                val = int(text)
+                val = float(text) if _slider._oc_decimals else int(text)
             except ValueError:
                 return
             clamped = max(_slider._oc_min, min(_slider._oc_max, val))
@@ -1193,12 +1559,12 @@ class OverclockTab:
             if text == "Curve":
                 return
             try:
-                val = int(text)
+                val = float(text) if _slider._oc_decimals else int(text)
             except ValueError:
-                val = getattr(_slider, "_oc_min", int(_slider.cget("from_")))
+                val = getattr(_slider, "_oc_min", float(_slider.cget("from_")))
             clamped = max(
-                getattr(_slider, "_oc_min", int(_slider.cget("from_"))),
-                min(getattr(_slider, "_oc_max", int(_slider.cget("to"))), val),
+                getattr(_slider, "_oc_min", float(_slider.cget("from_"))),
+                min(getattr(_slider, "_oc_max", float(_slider.cget("to"))), val),
             )
             s = getattr(_slider, "_oc_step", 1)
             if s:
@@ -1291,7 +1657,10 @@ class OverclockTab:
 
         backend = self._selected_oc_backend()
         try:
-            value = int(core_mhz)
+            # One decimal allowed — the 2.5 MHz grid divides both the 7.5 MHz
+            # (30系+) and 12.5 MHz (10/16/20系) hardware frequency steps;
+            # pynvoc floors it to kHz (NVML rounds to integer MHz).
+            value = float(core_mhz)
         except ValueError:
             return
         gpu = self.app.selected_gpu_target()
@@ -1299,7 +1668,7 @@ class OverclockTab:
             "apply core offset",
             lambda native, gpu=gpu, backend=backend, value=value: (
                 native.set_clock_offset(gpu, backend, "core", value, self._oc_pstate())
-                or f"Successfully applied core offset {value} MHz."
+                or f"Successfully applied core offset {value:g} MHz."
             ),
         )
 
@@ -1339,6 +1708,31 @@ class OverclockTab:
                 native.sync_memory_pstate_as_p0(gpu),
                 f"Applied memory offset {value} MHz + synced P2→P0.",
             )[-1],
+        )
+
+    def _apply_xbar_only(self):
+        """Apply the Xbar fabric-clock offset (NVAPI-only ClockClient path).
+
+        The GUI speaks signed MHz like Core/Mem; pynvoc's
+        ``set_clk_domain_offset`` takes kHz (the CLI spelling is
+        ``set-clk-domain-offset xbar <kHz>``; xbar = domain bit 1). The
+        medium layer snapshots the control block, patches, SETs, readbacks,
+        and restores on mismatch.
+        """
+        xbar = self.xbar_var.get().strip()
+        try:
+            value = int(xbar)
+        except ValueError:
+            return
+        gpu = self.app.selected_gpu_target()
+        self.app.run_native_action(
+            "apply xbar offset",
+            lambda native, gpu=gpu, value=value: (
+                self._format_xbar_offset_result(
+                    value,
+                    native.set_clk_domain_offset(gpu, 1, value * 1000, None, None),
+                )
+            ),
         )
 
     def _apply_plimit_only(self):
@@ -1384,6 +1778,41 @@ class OverclockTab:
                 ),
             )
 
+    def _apply_vlimit_only(self):
+        """Apply the Volt Limit (absolute target mV on the VoltRails path).
+
+        The driver derives the µV offset internally and clamps the effective
+        wall to min(target, vbios_wall, vrm_max_wall); on completion we
+        re-load mobile limits so the slider reflects the new effective wall.
+        ``target_mv`` is parsed as float to honor the 2.5 mV grid (one decimal
+        on 10/20-series); it is floored to µV in the pynvoc layer.
+        """
+        vlimit = self.vlimit_var.get().strip()
+        if not vlimit:
+            return
+        try:
+            target_mv = float(vlimit)
+        except ValueError:
+            return
+        gpu = self.app.selected_gpu_target()
+        if gpu is None:
+            return
+        rail_bit = self._volt_rail_bit
+
+        def on_finished(_code):
+            self._load_mobile_limits()
+
+        self.app.run_native_action(
+            "apply volt-rail target",
+            lambda native, gpu=gpu, rail_bit=rail_bit, target_mv=target_mv: (
+                self._format_volt_rail_target_result(
+                    target_mv,
+                    native.set_volt_rail_target(gpu, rail_bit, target_mv, None),
+                )
+            ),
+            on_finished=on_finished,
+        )
+
     def _apply_vboost_only(self):
         vboost = self.vboost_var.get().strip()
         if vboost:
@@ -1419,14 +1848,15 @@ class OverclockTab:
         actions = []
         if core_mhz != "Curve":
             try:
-                core_value = int(core_mhz)
+                # One decimal (2.5 MHz grid) — see _apply_core_only.
+                core_value = float(core_mhz)
                 actions.append((
                     "apply core offset",
                     lambda native, gpu=gpu, backend=backend, core_value=core_value: (
                         native.set_clock_offset(
                             gpu, backend, "core", core_value, self._oc_pstate()
                         )
-                        or f"Successfully applied core offset {core_value} MHz."
+                        or f"Successfully applied core offset {core_value:g} MHz."
                     ),
                 ))
             except ValueError:
@@ -1446,6 +1876,26 @@ class OverclockTab:
         except ValueError:
             pass
 
+        # Xbar is NVAPI-only: the row is disabled under the NVML backend
+        # selection, and the state check skips it there (and on archs where
+        # the row is hidden).
+        if self._xbar_supported and self.xbar_slider.cget("state") != "disabled":
+            try:
+                xbar_value = int(self.xbar_var.get().strip())
+                actions.append((
+                    "apply xbar offset",
+                    lambda native, gpu=gpu, xbar_value=xbar_value: (
+                        self._format_xbar_offset_result(
+                            xbar_value,
+                            native.set_clk_domain_offset(
+                                gpu, 1, xbar_value * 1000, None, None
+                            ),
+                        )
+                    ),
+                ))
+            except ValueError:
+                pass
+
         if not actions:
             self.app.console.append("[GUI] No valid clock offset values.\n")
             return
@@ -1453,16 +1903,20 @@ class OverclockTab:
 
     def _reset_oc(self):
         gpu = self.app.selected_gpu_target()
-        # Reset both sliders to 0
+        # Reset sliders to 0 — var text goes through the row formatter so the
+        # sign convention (+0 / +0.0) matches what typing/focusout renders.
         self._syncing = True
-        self.core_var.set("0")
         self.core_slider.set(0)
-        self.mem_var.set("0")
+        self.core_var.set(self._fmt_slider_value(self.core_slider, 0))
         self.mem_slider.set(0)
+        self.mem_var.set(self._fmt_slider_value(self.mem_slider, 0))
+        if self._xbar_supported:
+            self.xbar_slider.set(0)
+            self.xbar_var.set(self._fmt_slider_value(self.xbar_slider, 0))
         self._syncing = False
 
         backend = self._selected_oc_backend()
-        self.app.run_native_action_chain([
+        resets = [
             (
                 "reset core offset",
                 lambda native, gpu=gpu, backend=backend: (
@@ -1479,7 +1933,17 @@ class OverclockTab:
                     or "Successfully reset memory offset."
                 ),
             ),
-        ])
+        ]
+        if self._xbar_supported:
+            resets.append((
+                "reset xbar offset",
+                lambda native, gpu=gpu: (
+                    self._format_xbar_offset_result(
+                        0, native.set_clk_domain_offset(gpu, 1, 0, None, None)
+                    )
+                ),
+            ))
+        self.app.run_native_action_chain(resets)
 
     def _apply_limits(self):
         gpu = self.app.selected_gpu_target()
@@ -1506,6 +1970,24 @@ class OverclockTab:
                             or f"Successfully applied target temperature {tlimit:.0f} C."
                         ),
                     ))
+            if self.vlimit_slider.cget("state") != "disabled":
+                vlimit = self.vlimit_var.get().strip()
+                if vlimit:
+                    try:
+                        target_mv = float(vlimit)
+                    except ValueError:
+                        target_mv = None
+                    if target_mv is not None:
+                        rail_bit = self._volt_rail_bit
+                        actions.append((
+                            "apply volt-rail target",
+                            lambda native, gpu=gpu, rail_bit=rail_bit, target_mv=target_mv: (
+                                self._format_volt_rail_target_result(
+                                    target_mv,
+                                    native.set_volt_rail_target(gpu, rail_bit, target_mv, None),
+                                )
+                            ),
+                        ))
             if not actions:
                 self.app.console.append("[GUI] No limit values specified.\n")
                 return
@@ -1567,12 +2049,13 @@ class OverclockTab:
 
     def _reset_all(self):
         gpu = self.app.selected_gpu_target()
-        # Reset sliders to their defaults from GPU info
+        # Reset sliders to their defaults from GPU info (var text through the
+        # row formatter for the +0/+0.0 sign convention)
         self._syncing = True
-        self.core_var.set("0")
         self.core_slider.set(0)
-        self.mem_var.set("0")
+        self.core_var.set(self._fmt_slider_value(self.core_slider, 0))
         self.mem_slider.set(0)
+        self.mem_var.set(self._fmt_slider_value(self.mem_slider, 0))
         self.plimit_var.set(str(self._power_default))
         self.plimit_slider.set(self._power_default)
         self.tlimit_var.set(str(self._thermal_default))
@@ -1585,6 +2068,11 @@ class OverclockTab:
             policy_index = self._tgp_policy_index
 
             def on_finished(_code):
+                # Re-loads TGP/D-Notifier/temp-policies AND volt-rail bounds,
+                # which reconfigures the Volt Limit slider back to the live
+                # effective wall. pynvoc exposes no per-rail volt-rail reset,
+                # so there is no separate reset command — the slider simply
+                # re-anchors to the hardware's current voltage wall.
                 self._load_mobile_limits()
 
             self.app.run_native_action(

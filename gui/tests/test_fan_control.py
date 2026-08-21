@@ -1,10 +1,7 @@
 from __future__ import annotations
 
 from src.backend.base import FanSettings
-from src.tabs.dashboard.sections.fan import (
-    FanControlController,
-    fan_settings_to_cli_args,
-)
+from src.tabs.dashboard.sections.fan import FanControlController
 
 
 class FakePane:
@@ -167,27 +164,3 @@ def test_entry_change_clamps_level() -> None:
     FanControlController(pane, FakeBackend()).on_entry_change()
 
     assert pane.level == 100
-
-
-def test_fan_settings_to_cli_args() -> None:
-    args = fan_settings_to_cli_args(
-        ["--gpu=0"],
-        FanSettings(
-            backend="nvml-cooler",
-            fan_id="2",
-            policy="manual",
-            level=55,
-        ),
-    )
-
-    assert args == [
-        "--gpu=0",
-        "set",
-        "nvml-cooler",
-        "--id",
-        "2",
-        "--policy",
-        "manual",
-        "--level",
-        "55",
-    ]

@@ -21,7 +21,7 @@ from src.widgets.lightweight_controls import (
     LiteButton,
     LiteEntry,
 )
-from src.parsing import load_vfp_deltas, write_vfp_points
+from src.parsing import analyze_vfp_offsets, load_vfp_deltas, write_vfp_points
 
 # ── De-CTk'd panel palette (matches overclock.py / fan_control.py) ──
 _PANEL_BG = "#2b2b2b"  # CTk dark frame/scroll background
@@ -763,16 +763,9 @@ class VFCurveTab:
                 )
 
         # Check whether VF offsets are present and whether all points share one uniform offset.
-        analyze_vfp_offsets = getattr(self.app, "_analyze_vfp_offsets", None)
-        if callable(analyze_vfp_offsets):
-            has_vfp_offset, uniform_core_offset_mhz = analyze_vfp_offsets(
-                frequencies, defaults
-            )
-        else:
-            has_vfp_offset = any(
-                abs(f - d) > 1e-4 for f, d in zip(frequencies, defaults)
-            )
-            uniform_core_offset_mhz = None
+        has_vfp_offset, uniform_core_offset_mhz = analyze_vfp_offsets(
+            frequencies, defaults
+        )
         apply_vfp_state = getattr(self.app, "_apply_vfp_offset_state", None)
         if callable(apply_vfp_state):
             apply_vfp_state(has_vfp_offset, uniform_core_offset_mhz)

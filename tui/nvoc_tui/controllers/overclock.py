@@ -155,6 +155,16 @@ class OverclockController(PaneController):
         return f"Successfully applied {backend} limits."
 
     def is_mobile(self) -> bool:
+        """Mobile-GPU verdict for the Mobile Power pane.
+
+        Primary signal: the query_info payload's ``is_mobile`` flag computed
+        in Rust by core's gpu_type.rs detect_gpu_type (name + codename — the
+        single source of truth). Fallback: the name-keyword heuristic for
+        payloads without the flag (older pynvoc, CLI-parsed info).
+        """
+        flag = self.app.cache.info.get("is_mobile")
+        if isinstance(flag, bool):
+            return flag
         gpu_name = str(self.app.cache.info.get("gpu_name", "")).lower()
         return (
             "mobile" in gpu_name

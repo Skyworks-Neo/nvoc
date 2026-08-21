@@ -19,9 +19,6 @@ from src.widgets.lightweight_controls import (
     LiteEntry,
 )
 
-if TYPE_CHECKING:
-    from src.backend.cli import CliBackend
-
 # De-CTk'd inner-panel palette (matches overclock.py / CTk dark theme)
 _PANE_BG = "#2b2b2b"
 _TEXT_FG = "#e5e5e5"
@@ -54,16 +51,6 @@ class FanControlPaneProtocol(Protocol):
     def set_policy(self, policy: str) -> None: ...
     def set_level(self, level: int) -> None: ...
     def set_supported_state(self, supported: bool) -> None: ...
-
-
-def fan_settings_to_cli_args(
-    gpu_args: Sequence[str], settings: FanSettings
-) -> list[str]:
-    args = list(gpu_args) + ["set", settings.backend]
-    if settings.fan_id:
-        args.extend(["--id", settings.fan_id])
-    args.extend(["--policy", settings.policy, "--level", str(settings.level)])
-    return args
 
 
 class FanControlController:
@@ -328,7 +315,7 @@ class FanControlPane:
     def __init__(
         self,
         parent: ctk.CTkFrame,
-        backend: "CliBackend",
+        backend: GuiBackend,
         embedded: bool = True,
         content_parent: ctk.CTkFrame | None = None,
     ) -> None:
