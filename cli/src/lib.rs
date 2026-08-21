@@ -2470,17 +2470,36 @@ fn execute_target(
             };
             let freqs = run(
                 target,
-                QueryNvapiClkDomainFreqsBatch { domains },
+                QueryNvapiClkDomainFreqsBatch { domains: domains.clone() },
             )?
             .output;
             Ok(match freqs {
-                Some(fs) => json!({
-                    "freqs": fs.iter().map(|f| json!({
-                        "domain_bit": f.domain as u32,
-                        "domain": format!("{:?}", f.domain),
-                        "freq_mhz": (f.freq_mhz * 1000.0).round() / 1000.0,
-                    })).collect::<Vec<_>>(),
-                }),
+                Some(fs) => {
+                    // make the readability census explicit: domains that
+                    // were requested but don't come back were skipped by
+                    // the per-domain fallback (driver refuses their
+                    // measure — e.g. Pascal gpc/xbar)
+                    let returned: Vec<u32> =
+                        fs.iter().map(|f| f.domain as u32).collect();
+                    let skipped: Vec<String> = domains
+                        .iter()
+                        .filter(|b| !returned.contains(b))
+                        .map(|b| {
+                            format!(
+                                "{:?}(bit {b})",
+                                parse_clk_domain_name(*b)
+                            )
+                        })
+                        .collect();
+                    json!({
+                        "freqs": fs.iter().map(|f| json!({
+                            "domain_bit": f.domain as u32,
+                            "domain": format!("{:?}", f.domain),
+                            "freq_mhz": (f.freq_mhz * 1000.0).round() / 1000.0,
+                        })).collect::<Vec<_>>(),
+                        "skipped_unreadable": skipped,
+                    })
+                }
                 None => json!({"supported": false}),
             })
         }
@@ -3540,6 +3559,41 @@ fn parse_domain(raw: &str) -> CliResult<ClockDomain> {
 /// `ClockDomain`), this returns the raw domain bit used by GET_CONTROL /
 /// MEASURE_FREQ — XBAR (1) is not representable in the public enum. Accepts
 /// names (xbar/gpc/sys/mclk) or a bare integer bit.
+/// Canonical domain name for a raw domain bit (reverse of
+/// [`parse_clk_domain`]'s alias table; "bit N" when unmapped).
+fn parse_clk_domain_name(bit: u32) -> String {
+    match bit {
+        0 => "Gpc".into(),
+        1 => "Xbar".into(),
+        2 => "Sys".into(),
+        3 => "Hub".into(),
+        4 => "M".into(),
+        5 => "Host".into(),
+        6 => "Disp".into(),
+        7 => "Hotclk".into(),
+        8 => "Pclk0".into(),
+        9 => "Pclk1".into(),
+        10 => "Bypclk".into(),
+        11 => "Xclk".into(),
+        12 => "Vpv".into(),
+        13 => "Vps".into(),
+        14 => "Gpucacheclk".into(),
+        15 => "Gpc2".into(),
+        16 => "Xbar2".into(),
+        17 => "Sys2".into(),
+        18 => "Hub2".into(),
+        19 => "Leg".into(),
+        20 => "Pwr".into(),
+        21 => "Msd".into(),
+        22 => "Utils".into(),
+        23 => "ColdNv".into(),
+        24 => "ColdHotclk".into(),
+        25 => "Ltc2".into(),
+        28 => "Host1x".into(),
+        _ => format!("bit {bit}"),
+    }
+}
+
 fn parse_clk_domain(raw: &str) -> CliResult<u32> {
     let trimmed = raw.trim();
     match trimmed.to_ascii_lowercase().as_str() {
