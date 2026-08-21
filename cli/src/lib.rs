@@ -524,6 +524,7 @@ impl Command {
             }
             Self::SetVoltRailOffset | Self::SetVoltRailTarget => &["expect-type"],
             Self::SetClkDomainOffset => &["temporary", "slot"],
+            Self::SetVfpPointPrivate => &["absolute"],
             _ => &[],
         }
     }
