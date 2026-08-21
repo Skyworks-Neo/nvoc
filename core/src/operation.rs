@@ -1492,6 +1492,34 @@ impl GpuOperation for QueryNvapiClkDomainFreqDetail {
     }
 }
 
+/// Write one V/F curve point via the private ClockClient V/F-POINTS
+/// SetControl (ID 0xFEC00D04). DANGEROUS: snapshots the full control block,
+/// patches one record (mode 0 absolute / mode 1 delta), SETs, readbacks,
+/// restores on mismatch. `bank` 0 = pstate-class, 1 = V/F curve points;
+/// `idx` 0..2048.
+#[derive(Clone, Copy, Debug)]
+pub struct SetNvapiVfpPointPrivate {
+    pub bank: usize,
+    pub idx: usize,
+    pub absolute: bool,
+    pub value: u32,
+}
+
+impl GpuOperation for SetNvapiVfpPointPrivate {
+    type Output = Option<u32>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiVfpPointPrivate
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        Ok(target
+            .nvapi()?
+            .set_vfp_point_private(self.bank, self.idx, self.absolute, self.value)
+            .map_err(Error::from)?)
+    }
+}
+
 /// Batch-measure physical clocks for a set of domains via the V3
 /// MEASURE_FREQ (RM 0x20809006, magic 0x30038) — one RM round-trip per
 /// sample for the whole set, with per-domain V1/V2 fallback.

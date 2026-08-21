@@ -22,6 +22,7 @@ use nvoc_core::{
     SetApiRestriction, SetApplicationsClocks, SetAutoBoost, SetAutoBoostDefault, SetClockOffset,
     SetCoolerLevels, SetEdid, SetFanSpeed, SetLegacyClocks, SetLockedClocks,
     SetNvapiClkDomainOffset, SetNvapiDNotifier,
+    SetNvapiVfpPointPrivate,
     SetNvapiDynamicBoost, SetNvapiPStateNative, SetNvapiPowerLimits, SetNvapiPstateLock,
     SetNvapiSensorLimits, SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvapiVoltRailOffset,
     SetNvapiVoltRailTarget, SetNvmlPstateLock, SetPowerLimit, SetPstateBaseVoltage,
@@ -167,6 +168,7 @@ pub enum Command {
     GetClkDomains,
     GetClkDomainFreq,
     SetClkDomainOffset,
+    SetVfpPointPrivate,
     GetClkVfPoints,
     SetTemperatureThresholds,
     SetThermalLimitC,
@@ -252,6 +254,7 @@ impl Command {
             Self::SetVoltRailTarget => "set-volt-rail-target",
             Self::GetClkDomains => "get-clk-domains",
             Self::GetClkVfPoints => "get-clk-vf-points",
+            Self::SetVfpPointPrivate => "set-vfp-point-private",
             Self::GetClkDomainFreq => "get-clk-domain-freq",
             Self::SetClkDomainOffset => "set-clk-domain-offset",
             Self::SetThermalLimitC => "set-thermal-limit-c",
@@ -356,6 +359,9 @@ impl Command {
             }
             Self::GetClkVfPoints => {
                 "Read the private ClockClient V/F-points family: per-bank point masks + V/F curve records (voltage-indexed, units calibrated vs the public GPC VFP)"
+            }
+            Self::SetVfpPointPrivate => {
+                "Write one V/F curve point via the private SetControl (dangerous V/F edit; bank 0=pstate-class, 1=V/F curve; --absolute for mode 0, default mode 1 delta)"
             }
             Self::SetThermalLimitC => "Set thermal limit in Celsius",
             Self::SetTemperatureThresholds => {
@@ -472,6 +478,7 @@ impl Command {
             | Self::SetVoltRailOffset
             | Self::SetVoltRailTarget
             | Self::SetClkDomainOffset => (2, 2),
+            Self::SetVfpPointPrivate => (3, 3),
             Self::GetClkDomainFreq => (0, 1),
             Self::SetVfpRangeDeltaMhz => (3, 3),
             Self::SetPstateLock => (1, 2),
@@ -617,6 +624,23 @@ impl Command {
                     "arg_offset_khz",
                     "OFFSET_KHZ",
                     "Signed kilohertz offset, for example -60000 or +30000kHz; 0 is a no-op stock write. The driver may reject or clamp; the post-SET readback is returned. Pass --temporary to restore the snapshot before returning",
+                ),
+            ],
+            Self::SetVfpPointPrivate => vec![
+                PositionalArg::free(
+                    "arg_bank",
+                    "BANK",
+                    "Bank: 0 = pstate-class records, 1 = V/F curve points",
+                ),
+                PositionalArg::free(
+                    "arg_index",
+                    "INDEX",
+                    "Point index within the bank (0-2047; use get-clk-vf-points to see which indices are present)",
+                ),
+                PositionalArg::hyphen(
+                    "arg_value",
+                    "VALUE",
+                    "Value to write: absolute MHz (with --absolute) or signed delta MHz (default mode 1)",
                 ),
             ],
             Self::SetFanPercent => vec![PositionalArg::free(
@@ -785,6 +809,7 @@ const COMMANDS: &[Command] = &[
     Command::GetClkDomainFreq,
     Command::GetClkDomains,
     Command::GetClkVfPoints,
+    Command::SetVfpPointPrivate,
     Command::GetClockOffsetMhz,
     Command::GetDNotifier,
     Command::GetEdid,
@@ -1200,6 +1225,10 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .long("temporary")
             .action(ArgAction::SetTrue)
             .help("Restore the pre-write control snapshot before returning (safe XBar experiment mode; see xbar.txt safety recipe)"),
+        "absolute" => Arg::new("absolute")
+            .long("absolute")
+            .action(ArgAction::SetTrue)
+            .help("Use mode 0 (absolute value) instead of mode 1 (delta) for set-vfp-point-private"),
         "slot" => Arg::new("slot")
             .long("slot")
             .value_name("SLOT")
@@ -1280,7 +1309,7 @@ fn collect_named_options(
     for name in allowed_options {
         match *name {
             "indexed" | "no-infer-missing-default" | "feedback" | "all" | "verbose"
-            | "temporary" => {
+            | "temporary" | "absolute" => {
                 if matches.get_flag(name) {
                     options.insert(name.to_string(), vec!["true".to_string()]);
                 }
@@ -2545,6 +2574,38 @@ fn execute_target(
                         "skipped_unreadable": skipped,
                     })
                 }
+                None => json!({"supported": false}),
+            })
+        }
+        Command::SetVfpPointPrivate => {
+            // DANGEROUS V/F curve write via private SetControl 0xFEC00D04.
+            // The medium layer snapshots the full control block (GetControl),
+            // patches one record (mode 0 absolute / mode 1 delta), SETs,
+            // readbacks, and restores on mismatch. Use get-clk-vf-points to
+            // find valid bank/idx values.
+            let bank = parse_usize(&invocation.positionals[0], "bank")?;
+            let idx = parse_usize(&invocation.positionals[1], "index")?;
+            let mhz = parse_i32_unit(&invocation.positionals[2], "mhz", "mhz")?;
+            let absolute = option_bool(invocation, "absolute", false)?;
+            let out = run(
+                target,
+                SetNvapiVfpPointPrivate {
+                    bank,
+                    idx,
+                    absolute,
+                    value: mhz as u32,
+                },
+            )?
+            .output;
+            Ok(match out {
+                Some(retained) => json!({
+                    "applied": true,
+                    "bank": bank,
+                    "index": idx,
+                    "mode": if absolute { "absolute" } else { "delta" },
+                    "value_mhz": mhz,
+                    "retained_raw": retained,
+                }),
                 None => json!({"supported": false}),
             })
         }

@@ -20,6 +20,7 @@ use nvoc_core::{
     SetAutoBoost, SetAutoBoostDefault, SetClockOffset, SetCoolerLevels, SetDomainVfpDeltas,
     SetEdid, SetFanSpeed, SetLegacyClocks, SetLockedClocks, SetNvapiClkDomainOffset,
     SetNvapiDNotifier,
+    SetNvapiVfpPointPrivate,
     SetNvapiDynamicBoost, SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiSensorLimits,
     SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvapiVoltRailOffset, SetNvapiVoltRailTarget,
     SetNvmlPstateLock, SetPowerLimit, SetPstateBaseVoltage, SetPstateClockOffset,
@@ -2169,6 +2170,49 @@ fn set_clk_domain_offset(
     py_value(py, &value)
 }
 
+/// Write one V/F curve point via the private ClockClient V/F-POINTS
+/// SetControl (ID 0xFEC00D04). DANGEROUS: snapshots the full control
+/// block, patches one record (mode 0 absolute / mode 1 delta), SETs,
+/// readbacks, restores on mismatch. `bank` 0 = pstate-class, 1 = V/F
+/// curve points; `idx` 0..2047. `absolute` = mode 0 (u32) vs mode 1
+/// (i16 delta). Returns `{"supported": false}` when the driver refuses.
+#[pyfunction]
+fn set_vfp_point_private(
+    py: Python<'_>,
+    gpu: &str,
+    bank: usize,
+    idx: usize,
+    value_mhz: i32,
+    absolute: Option<bool>,
+) -> PyResult<Py<PyAny>> {
+    let absolute = absolute.unwrap_or(false);
+    let value = with_target(gpu, "nvapi", |target| {
+        let out = run(
+            target,
+            SetNvapiVfpPointPrivate {
+                bank,
+                idx,
+                absolute,
+                value: value_mhz as u32,
+            },
+        )
+        .map_err(to_py_err)?
+        .output;
+        Ok(match out {
+            Some(retained) => value_object([
+                ("applied", Value::from(true)),
+                ("bank", Value::from(bank as u64)),
+                ("index", Value::from(idx as u64)),
+                ("mode", Value::from(if absolute { "absolute" } else { "delta" })),
+                ("value_mhz", Value::from(value_mhz)),
+                ("retained_raw", Value::from(retained)),
+            ]),
+            None => value_object([("supported", Value::from(false))]),
+        })
+    })?;
+    py_value(py, &value)
+}
+
 #[pyfunction]
 fn set_applications_clocks(gpu: &str, memory_mhz: u32, graphics_mhz: u32) -> PyResult<()> {
     let mut inventory_cache = lock_inventory_cache();
@@ -2950,6 +2994,7 @@ fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(query_clk_domain_freq, m)?)?;
     m.add_function(wrap_pyfunction!(query_clk_vf_points, m)?)?;
     m.add_function(wrap_pyfunction!(set_clk_domain_offset, m)?)?;
+    m.add_function(wrap_pyfunction!(set_vfp_point_private, m)?)?;
     m.add_function(wrap_pyfunction!(set_target_temp, m)?)?;
     m.add_function(wrap_pyfunction!(set_applications_clocks, m)?)?;
     m.add_function(wrap_pyfunction!(reset_applications_clocks, m)?)?;

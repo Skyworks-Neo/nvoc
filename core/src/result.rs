@@ -79,6 +79,10 @@ pub enum OperationKind {
     /// → GetStatus 0x7FEE9032) — per-bank point masks + V/F curve records
     /// (units calibrated vs the public GPC VFP curve).
     QueryNvapiClkVfPoints,
+    /// Write one V/F curve point via the private V/F-POINTS SetControl
+    /// (ID 0xFEC00D04, mode 0 absolute / mode 1 delta). DANGEROUS:
+    /// snapshots, patches, SETs, readbacks, restores on mismatch.
+    SetNvapiVfpPointPrivate,
     /// Batch-measure physical clocks for a set of domains (V3
     /// MEASURE_FREQ, one RM round-trip per sample for the whole set).
     QueryNvapiClkDomainFreqDetail,
