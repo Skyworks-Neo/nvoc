@@ -6,15 +6,18 @@ use nvoc_core::{
     BackendSet, CheckVoltageFrequency, ClearEdid, ConvertEnum, GpuTarget, QueryApiRestriction,
     QueryAutoBoost, QueryDisplays, QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo,
     QueryGpuSettings, QueryGpuStatus, QueryLegacyCoreOvervoltRanges,
-    QueryLegacyP0CoreMaxVoltageDelta, QueryNvapiDNotifier, QueryNvapiTargetTempPolicies,
-    QueryNvapiTgpWattRange, QueryNvapiVoltRails, QueryPowerLimits, QueryPstateBaseVoltage,
+    QueryLegacyP0CoreMaxVoltageDelta, QueryNvapiClkDomainFreq, QueryNvapiClkDomains,
+    QueryNvapiClkVfPoints,
+    QueryNvapiDNotifier, QueryNvapiTargetTempPolicies, QueryNvapiTgpWattRange,
+    QueryNvapiVoltRails, QueryPowerLimits, QueryPstateBaseVoltage,
     QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
     QueryThrottleReasons, QueryVfpPointVoltage, QueryVoltageBoost, ResetApplicationsClocks,
     ResetCoolerLevels, ResetFanSpeed, ResetLockedClocks, ResetNvapiPowerLimits,
     ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetPstateBaseVoltages, ResetPstateClockOffsets,
     ResetVfpDeltas, ResetVfpFrequencyLock, ResetVfpLock, SetApiRestriction, SetApplicationsClocks,
     SetAutoBoost, SetAutoBoostDefault, SetClockOffset, SetCoolerLevels, SetDomainVfpDeltas,
-    SetEdid, SetFanSpeed, SetLegacyClocks, SetLockedClocks, SetNvapiDNotifier,
+    SetEdid, SetFanSpeed, SetLegacyClocks, SetLockedClocks, SetNvapiClkDomainOffset,
+    SetNvapiDNotifier,
     SetNvapiDynamicBoost, SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiSensorLimits,
     SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvapiVoltRailOffset, SetNvapiVoltRailTarget,
     SetNvmlPstateLock, SetPowerLimit, SetPstateBaseVoltage, SetPstateClockOffset,
@@ -1822,21 +1825,30 @@ fn query_volt_rails(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
     py_value(py, &value)
 }
 
-/// Set a volt-rail to an ABSOLUTE target voltage (millivolts). The required
-/// µV offset is derived inside the operation from the live control offset +
-/// status target wall — callers think in mV, not offsets. Returns the
-/// derived base wall, the offset written, and the effective wall read back
-/// (clamped by the driver to min(target, vbios_wall, vrm_max_wall)).
+/// Set a volt-rail to an ABSOLUTE target voltage (millivolts, may carry one
+/// decimal — e.g. 1082.5 mV for the 2.5 mV rail step on 10/20-series). The
+/// required µV offset is derived inside the operation from the live control
+/// offset + status target wall — callers think in mV, not offsets. Returns
+/// the derived base wall, the offset written, and the effective wall read
+/// back (clamped by the driver to min(target, vbios_wall, vrm_max_wall)).
 #[pyfunction]
 fn set_volt_rail_target(
     py: Python<'_>,
     gpu: &str,
     rail_bit: u32,
-    target_mv: i32,
+    target_mv: f64,
     expect_type: Option<u32>,
 ) -> PyResult<Py<PyAny>> {
+    // mV → µV. One decimal mV (0.1 mV = 100 µV) is well below any hardware
+    // rail step, so round to the nearest µV — the driver clamps to its own
+    // step grid anyway. Reject NaN/inf before touching the value.
+    if !target_mv.is_finite() {
+        return Err(PyRuntimeError::new_err(format!(
+            "target {target_mv}mV is not a finite number"
+        )));
+    }
     #[allow(non_snake_case)] // uV-suffixed local matches the nvapi-rs naming
-    let target_uV = target_mv.checked_mul(1000).ok_or_else(|| {
+    let target_uV = i32::try_from((target_mv * 1000.0).round() as i64).map_err(|_| {
         PyRuntimeError::new_err(format!("target {target_mv}mV overflows the µV range"))
     })?;
     let value = with_target(gpu, "nvapi", |target| {
@@ -1893,6 +1905,167 @@ fn set_volt_rail_offset(
                 ("previous_uV", Value::from(a.previous_uV)),
                 ("applied_uV", Value::from(a.applied_uV)),
                 ("effective_wall_uV", Value::from(a.effective_wall_uV)),
+            ]),
+            None => value_object([("supported", Value::from(false))]),
+        })
+    })?;
+    py_value(py, &value)
+}
+
+/// Read the private ClockClient domain-control block: the controllable-domain
+/// mask + per-domain offset/range records. This is the XBar physical-clock
+/// family (RM 0x2080901b GET_CONTROL). Returns `{"supported": false}` when the
+/// driver does not expose the private interface.
+#[pyfunction]
+fn query_clk_domains(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
+    let value = with_target(gpu, "nvapi", |target| {
+        let ctrl = run(target, QueryNvapiClkDomains).map_err(to_py_err)?.output;
+        Ok(match ctrl {
+            Some(c) => value_object([
+                ("controllable_mask", Value::from(format!("0x{:08X}", c.mask))),
+                (
+                    "entries",
+                    Value::Array(
+                        c.entries
+                            .iter()
+                            .map(|e| {
+                                value_object([
+                                    ("bit", Value::from(e.bit)),
+                                    ("type", Value::from(e.entry_type)),
+                                    // false = the protocol doesn't marshal this
+                                    // record type's value fields (e.g. 0x02) —
+                                    // values_kHz below is NOT driver data.
+                                    ("values_valid", Value::from(e.values_valid)),
+                                    // 8 value dwords (V2 rec+268..296); slot
+                                    // semantics driver-opaque, slot 0 = the
+                                    // signed frequency offset per the article
+                                    ("values_kHz", Value::Array(
+                                        e.values_kHz.iter().map(|v| Value::from(*v)).collect(),
+                                    )),
+                                ])
+                            })
+                            .collect(),
+                    ),
+                ),
+            ]),
+            None => value_object([("supported", Value::from(false))]),
+        })
+    })?;
+    py_value(py, &value)
+}
+
+/// Read the private ClockClient V/F-points family (GetInfo 0x8895B510 →
+/// GetStatus 0x7FEE9032): per-bank point masks + V/F curve records.
+/// Records are voltage-indexed; units live-calibrated vs the public GPC VFP
+/// curve (voltage µV, default/current MHz). Bank 0 packs multiple domains:
+/// type-8 segments are V/F curves (GPC first, then the 127-point XBAR
+/// candidate), type-7 segments are per-domain pstate frequency lists.
+/// Returns `{"supported": false}` when the driver doesn't expose it.
+#[pyfunction]
+fn query_clk_vf_points(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
+    let value = with_target(gpu, "nvapi", |target| {
+        let vfp = run(target, QueryNvapiClkVfPoints).map_err(to_py_err)?.output;
+        Ok(match vfp {
+            Some(v) => value_object([
+                (
+                    "masks",
+                    Value::Array(
+                        v.masks.iter().map(|m| Value::from(format!("0x{:016X}", m))).collect(),
+                    ),
+                ),
+                (
+                    "points",
+                    Value::Array(
+                        v.points
+                            .iter()
+                            .map(|p| {
+                                value_object([
+                                    ("bank", Value::from(p.bank)),
+                                    ("index", Value::from(p.index)),
+                                    ("type", Value::from(p.record_type)),
+                                    // the V/F grid axis (µV): 450000 = 450 mV
+                                    ("voltage_uV", Value::from(p.voltage_uV)),
+                                    // default MHz at this voltage
+                                    ("freq_default_mhz", Value::from(p.freq_default_mhz)),
+                                    // current MHz = default + applied offset
+                                    ("freq_current_mhz", Value::from(p.freq_current_mhz)),
+                                ])
+                            })
+                            .collect(),
+                    ),
+                ),
+            ]),
+            None => value_object([("supported", Value::from(false))]),
+        })
+    })?;
+    py_value(py, &value)
+}
+
+/// Measure one clock domain's physical clock via two-sample MEASURE_FREQ (RM
+/// 0x20809006). `domain_bit` is the sequential domain index: GPC=0, XBAR=1,
+/// SYS=2, MCLK=4. Returns the frequency in MHz, or `{"supported": false}`.
+#[pyfunction]
+fn query_clk_domain_freq(py: Python<'_>, gpu: &str, domain_bit: u32) -> PyResult<Py<PyAny>> {
+    let value = with_target(gpu, "nvapi", |target| {
+        let freq = run(target, QueryNvapiClkDomainFreq { domain_bit })
+            .map_err(to_py_err)?
+            .output;
+        Ok(match freq {
+            Some(f) => value_object([
+                ("domain_bit", Value::from(domain_bit)),
+                ("freq_mhz", Value::from(f.freq_mhz)),
+            ]),
+            None => value_object([
+                ("supported", Value::from(false)),
+                ("domain_bit", Value::from(domain_bit)),
+            ]),
+        })
+    })?;
+    py_value(py, &value)
+}
+
+/// Write a signed kHz offset into one clock-domain control record (RM
+/// 0x2080d01c SET_CONTROL). DANGEROUS GPU clock write: the operation snapshots
+/// the full V2 GetControl block, version-gates (magic 0x261A4), patches a copy,
+/// SETs, readbacks, and restores on mismatch. When `temporary` is true the
+/// snapshot is restored before returning (the article's reversible experiment
+/// recipe). `slot` picks which of the record's 8 value dwords to write (0-7,
+/// default 0 = the signed frequency offset; other slots are driver-opaque).
+/// No magnitude limit is enforced — the caller owns offset/range policy (the
+/// article bounds XBAR ±60000 kHz on GB202).
+#[pyfunction]
+fn set_clk_domain_offset(
+    py: Python<'_>,
+    gpu: &str,
+    domain_bit: u32,
+    offset_khz: i32,
+    slot: Option<u32>,
+    temporary: Option<bool>,
+) -> PyResult<Py<PyAny>> {
+    let value = with_target(gpu, "nvapi", |target| {
+        let out = run(
+            target,
+            SetNvapiClkDomainOffset {
+                domain_bit,
+                offset_kHz: offset_khz,
+                slot: slot.unwrap_or(0),
+                temporary: temporary.unwrap_or(false),
+            },
+        )
+        .map_err(to_py_err)?
+        .output;
+        Ok(match out {
+            Some(a) => value_object([
+                ("applied", Value::from(true)),
+                ("bit", Value::from(a.bit)),
+                ("type", Value::from(a.entry_type)),
+                ("slot", Value::from(a.slot)),
+                ("previous_kHz", Value::from(a.previous_kHz)),
+                ("applied_kHz", Value::from(a.applied_kHz)),
+                ("values_kHz", Value::Array(
+                    a.values_kHz.iter().map(|v| Value::from(*v)).collect(),
+                )),
+                ("temporary_restored", Value::from(a.temporary_restored)),
             ]),
             None => value_object([("supported", Value::from(false))]),
         })
@@ -2677,6 +2850,10 @@ fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(query_volt_rails, m)?)?;
     m.add_function(wrap_pyfunction!(set_volt_rail_offset, m)?)?;
     m.add_function(wrap_pyfunction!(set_volt_rail_target, m)?)?;
+    m.add_function(wrap_pyfunction!(query_clk_domains, m)?)?;
+    m.add_function(wrap_pyfunction!(query_clk_domain_freq, m)?)?;
+    m.add_function(wrap_pyfunction!(query_clk_vf_points, m)?)?;
+    m.add_function(wrap_pyfunction!(set_clk_domain_offset, m)?)?;
     m.add_function(wrap_pyfunction!(set_target_temp, m)?)?;
     m.add_function(wrap_pyfunction!(set_applications_clocks, m)?)?;
     m.add_function(wrap_pyfunction!(reset_applications_clocks, m)?)?;

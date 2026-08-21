@@ -62,6 +62,23 @@ pub enum OperationKind {
     /// required µV offset from the live control/status snapshot. Shares the
     /// melonVolt write path with [`OperationKind::SetNvapiVoltRailOffset`].
     SetNvapiVoltRailTarget,
+    /// Query the controllable clock-domain block (private ClockClient
+    /// GetControl, RM 0x2080901b) — mask + per-domain type/range/offset.
+    /// The Blackwell XBar family (reverse/melonvolt/xbar.txt).
+    QueryNvapiClkDomains,
+    /// Measure one domain's physical clock (private ClockClient
+    /// MEASURE_FREQ, RM 0x20809006) via two-sample Δcounter/Δtimestamp.
+    QueryNvapiClkDomainFreq,
+    /// Write a signed kHz offset into one clock-domain's control record
+    /// (private ClockClient SET_CONTROL, RM 0x2080d01c). DANGEROUS GPU clock
+    /// write: snapshots the full GetControl block, version-gates (magic
+    /// 0x10964), patches a copy, SETs, readbacks, restores on mismatch;
+    /// `temporary` restores the snapshot before returning.
+    SetNvapiClkDomainOffset,
+    /// Query the private ClockClient V/F-POINTS read path (GetInfo 0x8895B510
+    /// → GetStatus 0x7FEE9032) — per-bank point masks + V/F curve records
+    /// (units calibrated vs the public GPC VFP curve).
+    QueryNvapiClkVfPoints,
     QueryNvapiPStateLevels,
     QueryNvapiPStateLockStatus,
     SetNvapiPStateNative,
@@ -146,6 +163,7 @@ impl OperationKind {
                 | SetNvapiPStateNative
                 | SetNvapiVoltRailOffset
                 | SetNvapiVoltRailTarget
+                | SetNvapiClkDomainOffset
                 | ResetNvapiPowerLimits
                 | ResetNvapiSensorLimits
                 | ResetPstateClockOffsets

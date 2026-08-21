@@ -8,16 +8,18 @@ use nvoc_core::{
     Percentage, ProbeVoltageLimits, QueryApiRestriction, QueryAutoBoost, QueryClockOffset,
     QueryDisplays, QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings,
     QueryGpuStatus, QueryLegacyCoreOvervoltRanges, QueryLegacyP0CoreMaxVoltageDelta,
-    QueryNvapiDNotifier, QueryNvapiPStateLevels, QueryNvapiPStateLockStatus,
-    QueryNvapiTargetTempPolicies, QueryNvapiTargetTempPolicyIndex, QueryNvapiTgpWattRange,
-    QueryNvapiVoltRails, QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates,
+    QueryNvapiClkDomainFreq, QueryNvapiClkDomains, QueryNvapiClkVfPoints, QueryNvapiDNotifier,
+    QueryNvapiPStateLevels, QueryNvapiPStateLockStatus, QueryNvapiTargetTempPolicies,
+    QueryNvapiTargetTempPolicyIndex, QueryNvapiTgpWattRange, QueryNvapiVoltRails,
+    QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates,
     QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
     QueryThrottleReasons, QueryVfpPointVoltage, QueryViolationStatus, QueryVoltageBoost,
     ResetApplicationsClocks, ResetCoolerLevels, ResetFanSpeed, ResetLockedClocks,
     ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetPstateBaseVoltages,
     ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock, ResetVfpLock,
     SetApiRestriction, SetApplicationsClocks, SetAutoBoost, SetAutoBoostDefault, SetClockOffset,
-    SetCoolerLevels, SetEdid, SetFanSpeed, SetLegacyClocks, SetLockedClocks, SetNvapiDNotifier,
+    SetCoolerLevels, SetEdid, SetFanSpeed, SetLegacyClocks, SetLockedClocks,
+    SetNvapiClkDomainOffset, SetNvapiDNotifier,
     SetNvapiDynamicBoost, SetNvapiPStateNative, SetNvapiPowerLimits, SetNvapiPstateLock,
     SetNvapiSensorLimits, SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvapiVoltRailOffset,
     SetNvapiVoltRailTarget, SetNvmlPstateLock, SetPowerLimit, SetPstateBaseVoltage,
@@ -160,6 +162,10 @@ pub enum Command {
     GetVoltRails,
     SetVoltRailOffset,
     SetVoltRailTarget,
+    GetClkDomains,
+    GetClkDomainFreq,
+    SetClkDomainOffset,
+    GetClkVfPoints,
     SetTemperatureThresholds,
     SetThermalLimitC,
     SetFanPercent,
@@ -242,6 +248,10 @@ impl Command {
             Self::GetVoltRails => "get-volt-rails",
             Self::SetVoltRailOffset => "set-volt-rail-offset",
             Self::SetVoltRailTarget => "set-volt-rail-target",
+            Self::GetClkDomains => "get-clk-domains",
+            Self::GetClkVfPoints => "get-clk-vf-points",
+            Self::GetClkDomainFreq => "get-clk-domain-freq",
+            Self::SetClkDomainOffset => "set-clk-domain-offset",
             Self::SetThermalLimitC => "set-thermal-limit-c",
             Self::SetTemperatureThresholds => "set-temp-thresholds",
             Self::SetFanPercent => "set-fan-percent",
@@ -332,6 +342,18 @@ impl Command {
             }
             Self::SetVoltRailTarget => {
                 "Set a volt-rail to an absolute target voltage in mV (derives the uV offset from the live control/status snapshot)"
+            }
+            Self::GetClkDomains => {
+                "Read the private ClockClient domain-control block: controllable mask + per-domain offset/range records (XBar physical-clock path)"
+            }
+            Self::GetClkDomainFreq => {
+                "Measure one clock domain's physical clock via two-sample MEASURE_FREQ (XBar=1, GPC=0, SYS=2, MCLK=4)"
+            }
+            Self::SetClkDomainOffset => {
+                "Write a signed kHz offset into one clock-domain control record (dangerous XBar clock write; --temporary restores the snapshot)"
+            }
+            Self::GetClkVfPoints => {
+                "Read the private ClockClient V/F-points family: per-bank point masks + V/F curve records (voltage-indexed, units calibrated vs the public GPC VFP)"
             }
             Self::SetThermalLimitC => "Set thermal limit in Celsius",
             Self::SetTemperatureThresholds => {
@@ -446,7 +468,9 @@ impl Command {
             | Self::SetEdid
             | Self::SetLegacyClocksMhz
             | Self::SetVoltRailOffset
-            | Self::SetVoltRailTarget => (2, 2),
+            | Self::SetVoltRailTarget
+            | Self::SetClkDomainOffset => (2, 2),
+            Self::GetClkDomainFreq => (1, 1),
             Self::SetVfpRangeDeltaMhz => (3, 3),
             Self::SetPstateLock => (1, 2),
             _ => (0, 0),
@@ -483,6 +507,7 @@ impl Command {
                 &["policy-index"]
             }
             Self::SetVoltRailOffset | Self::SetVoltRailTarget => &["expect-type"],
+            Self::SetClkDomainOffset => &["temporary", "slot"],
             _ => &[],
         }
     }
@@ -573,6 +598,23 @@ impl Command {
                     "arg_target_mv",
                     "TARGET_MV",
                     "Absolute target voltage in millivolts, for example 1150 or 1150mV; the required uV offset is derived from the live control/status snapshot and the driver clamps the effective wall to min(target, vbios_wall, vrm_max_wall)",
+                ),
+            ],
+            Self::GetClkDomainFreq => vec![PositionalArg::free(
+                "arg_domain",
+                "DOMAIN",
+                "Clock domain: xbar (1), gpc/core (0), sys (2), or mclk/mem (4)",
+            )],
+            Self::SetClkDomainOffset => vec![
+                PositionalArg::free(
+                    "arg_domain",
+                    "DOMAIN",
+                    "Clock domain to offset: xbar (1), gpc/core (0), sys (2), or mclk/mem (4)",
+                ),
+                PositionalArg::hyphen(
+                    "arg_offset_khz",
+                    "OFFSET_KHZ",
+                    "Signed kilohertz offset, for example -60000 or +30000kHz; 0 is a no-op stock write. The driver may reject or clamp; the post-SET readback is returned. Pass --temporary to restore the snapshot before returning",
                 ),
             ],
             Self::SetFanPercent => vec![PositionalArg::free(
@@ -738,6 +780,9 @@ const COMMANDS: &[Command] = &[
     Command::ClearEdid,
     Command::GetApiRestriction,
     Command::GetAutoBoost,
+    Command::GetClkDomainFreq,
+    Command::GetClkDomains,
+    Command::GetClkVfPoints,
     Command::GetClockOffsetMhz,
     Command::GetDNotifier,
     Command::GetEdid,
@@ -784,6 +829,7 @@ const COMMANDS: &[Command] = &[
     Command::SetAutoBoostDefault,
     Command::SetDNotifier,
     Command::SetClockOffsetMhz,
+    Command::SetClkDomainOffset,
     Command::SetCoreOffsetMhz,
     Command::SetDynamicBoost,
     Command::SetEdid,
@@ -1148,6 +1194,15 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .value_name("TYPE")
             .action(ArgAction::Set)
             .help("Require the rail control entry to report this type (e.g. 3 = 5090 MSVDD µV offset); omit to skip the guard"),
+        "temporary" => Arg::new("temporary")
+            .long("temporary")
+            .action(ArgAction::SetTrue)
+            .help("Restore the pre-write control snapshot before returning (safe XBar experiment mode; see xbar.txt safety recipe)"),
+        "slot" => Arg::new("slot")
+            .long("slot")
+            .value_name("SLOT")
+            .action(ArgAction::Set)
+            .help("Which of the record's 8 value dwords to write (0-7; default 0 = the signed frequency offset; other slots are driver-opaque — identify via A/B with get-clk-domain-freq)"),
         _ => unreachable!("unknown command-specific option {name}"),
     }
 }
@@ -1222,7 +1277,8 @@ fn collect_named_options(
     let mut options = BTreeMap::new();
     for name in allowed_options {
         match *name {
-            "indexed" | "no-infer-missing-default" | "feedback" | "all" | "verbose" => {
+            "indexed" | "no-infer-missing-default" | "feedback" | "all" | "verbose"
+            | "temporary" => {
                 if matches.get_flag(name) {
                     options.insert(name.to_string(), vec!["true".to_string()]);
                 }
@@ -2321,15 +2377,20 @@ fn execute_target(
         }
         Command::SetVoltRailTarget => {
             // Absolute-target convenience over SetVoltRailOffset: the caller
-            // thinks in mV, we recover the factory/default wall from the live
+            // thinks in mV (one decimal allowed — 10/20-series rail step is
+            // 12.5 mV), we recover the factory/default wall from the live
             // control offset + status target wall and derive the µV offset to
             // write. The driver still clamps the effective wall itself.
             let rail_bit = parse_usize(&invocation.positionals[0], "rail-bit")? as u32;
-            let target_mv = parse_i32_unit(&invocation.positionals[1], "mv", "millivolt")?;
+            let target_mv = parse_mv_f64(&invocation.positionals[1])?;
+            if !target_mv.is_finite() {
+                return Err(CliError::new(format!(
+                    "target {target_mv}mV is not a finite number"
+                )));
+            }
             #[allow(non_snake_case)] // uV-suffixed local matches the nvapi-rs naming
-            let target_uV = target_mv.checked_mul(1000).ok_or_else(|| {
-                CliError::new(format!("target {target_mv}mV overflows the µV range"))
-            })?;
+            let target_uV = i32::try_from((target_mv * 1000.0).round() as i64)
+                .map_err(|_| CliError::new(format!("target {target_mv}mV overflows the µV range")))?;
             let expect_type = option_one(invocation, "expect-type")
                 .map(|s| s.parse::<u32>())
                 .transpose()
@@ -2359,6 +2420,112 @@ fn execute_target(
                     // min(target, vbios_wall, vrm_max_wall)); 0 = driver
                     // hasn't refreshed status yet — re-run get-volt-rails.
                     "effective_wall_uV": a.effective_wall_uV,
+                }),
+                None => json!({"supported": false}),
+            })
+        }
+        Command::GetClkDomains => {
+            let ctrl = run(target, QueryNvapiClkDomains)?.output;
+            Ok(match ctrl {
+                Some(c) => json!({
+                    "controllable_mask": format!("0x{:08X}", c.mask),
+                    "entries": c.entries.iter().map(|e| json!({
+                        "bit": e.bit,
+                        "domain": e.domain().map(|d| format!("{:?}", d)).unwrap_or_else(|| "Unknown".to_string()),
+                        "type": e.entry_type,
+                        // false = the protocol doesn't marshal this record
+                        // type's value fields (e.g. type 0x02) — values_kHz
+                        // below is NOT driver data.
+                        "values_valid": e.values_valid,
+                        // the record's 8 value dwords (V2 rec+268..296);
+                        // slot semantics driver-opaque, slot 0 = signed
+                        // frequency offset per the article
+                        "values_kHz": e.values_kHz,
+                    })).collect::<Vec<_>>(),
+                }),
+                None => json!({"supported": false}),
+            })
+        }
+        Command::GetClkVfPoints => {
+            let vfp = run(target, QueryNvapiClkVfPoints)?.output;
+            Ok(match vfp {
+                Some(v) => json!({
+                    // bank0 = masks[0..4], bank1 = masks[4..8] (2048 bits each)
+                    "masks": v.masks.iter().map(|m| format!("0x{:016X}", m)).collect::<Vec<_>>(),
+                    "points": v.points.iter().map(|p| json!({
+                        "bank": p.bank,
+                        "index": p.index,
+                        "type": p.record_type,
+                        // the V/F grid axis (µV): 450000 = 450 mV
+                        "voltage_uV": p.voltage_uV,
+                        // default MHz at this voltage (public "default" column)
+                        "freq_default_mhz": p.freq_default_mhz,
+                        // current MHz = default + applied offset
+                        "freq_current_mhz": p.freq_current_mhz,
+                    })).collect::<Vec<_>>(),
+                }),
+                None => json!({"supported": false}),
+            })
+        }
+        Command::GetClkDomainFreq => {
+            let domain_bit = parse_clk_domain(&invocation.positionals[0])?;
+            let freq = run(target, QueryNvapiClkDomainFreq { domain_bit })?
+                .output;
+            Ok(match freq {
+                Some(f) => json!({
+                    "domain_bit": domain_bit,
+                    "domain": format!("{:?}", f.domain),
+                    "freq_mhz": (f.freq_mhz * 1000.0).round() / 1000.0,
+                }),
+                None => json!({"supported": false, "domain_bit": domain_bit}),
+            })
+        }
+        Command::SetClkDomainOffset => {
+            // DANGEROUS clock write — see xbar.txt safety recipe. The medium
+            // layer snapshots the full V2 GetControl block, version-gates
+            // (magic 0x261A4), patches a copy, SETs, readbacks, and restores
+            // on mismatch. --temporary additionally restores the snapshot
+            // before returning (the article's reversible experiment recipe).
+            // --slot picks which of the record's 8 value dwords to write
+            // (default 0 = the article's signed frequency offset; the other
+            // slots are driver-opaque range/voltage terms — identify by
+            // A/B with get-clk-domain-freq).
+            let domain_bit = parse_clk_domain(&invocation.positionals[0])?;
+            #[allow(non_snake_case)] // kHz suffix matches the nvapi-rs field naming
+            let offset_kHz = parse_i32_unit(
+                &invocation.positionals[1],
+                "khz",
+                "kilohertz",
+            )?;
+            let slot = option_one(invocation, "slot")
+                .map(|s| s.parse::<u32>())
+                .transpose()
+                .map_err(|e| CliError::new(format!("invalid --slot: {e}")))?
+                .unwrap_or(0);
+            let temporary = option_one(invocation, "temporary")
+                .map(parse_bool)
+                .transpose()?
+                .unwrap_or(false);
+            let out = run(
+                target,
+                SetNvapiClkDomainOffset {
+                    domain_bit,
+                    offset_kHz,
+                    slot,
+                    temporary,
+                },
+            )?
+            .output;
+            Ok(match out {
+                Some(a) => json!({
+                    "applied": true,
+                    "bit": a.bit,
+                    "type": a.entry_type,
+                    "slot": a.slot,
+                    "previous_kHz": a.previous_kHz,
+                    "applied_kHz": a.applied_kHz,
+                    "values_kHz": a.values_kHz,
+                    "temporary_restored": a.temporary_restored,
                 }),
                 None => json!({"supported": false}),
             })
@@ -3295,6 +3462,24 @@ fn parse_domain(raw: &str) -> CliResult<ClockDomain> {
     }
 }
 
+/// Parse a clock-domain name or numeric bit for the private ClockClient
+/// family. Unlike `parse_domain` (which maps to the 4-value public
+/// `ClockDomain`), this returns the raw domain bit used by GET_CONTROL /
+/// MEASURE_FREQ — XBAR (1) is not representable in the public enum. Accepts
+/// names (xbar/gpc/sys/mclk) or a bare integer bit.
+fn parse_clk_domain(raw: &str) -> CliResult<u32> {
+    let trimmed = raw.trim();
+    match trimmed.to_ascii_lowercase().as_str() {
+        "xbar" | "xbarclk" => Ok(1),
+        "gpc" | "core" | "gpu" => Ok(0),
+        "sys" => Ok(2),
+        "mclk" | "mem" | "memory" => Ok(4),
+        _ => trimmed
+            .parse::<u32>()
+            .map_err(|e| CliError::new(format!("invalid clock domain {raw:?}: {e}"))),
+    }
+}
+
 fn parse_pstate_nvapi(raw: &str) -> CliResult<PState> {
     let normalized = raw.trim().to_ascii_uppercase();
     <PState as ConvertEnum>::from_str(&normalized).map_err(CliError::from)
@@ -3349,6 +3534,15 @@ fn parse_celsius_f32(raw: &str) -> CliResult<f32> {
     strip_unit(raw, "c", "celsius")
         .parse::<f32>()
         .map_err(|_| CliError::new(format!("invalid celsius value {raw:?}")))
+}
+
+/// Parse a millivolt positional (`1082.5`, `1082.5mV`, `1082.5millivolts`)
+/// into f64. Volt-rail targets may carry one decimal on 10/20-series GPUs
+/// whose hardware step is 12.5 mV; the value is floored to µV downstream.
+fn parse_mv_f64(raw: &str) -> CliResult<f64> {
+    strip_unit(raw, "mv", "millivolt")
+        .parse::<f64>()
+        .map_err(|_| CliError::new(format!("invalid millivolt value {raw:?}")))
 }
 
 fn strip_unit<'a>(raw: &'a str, suffix: &str, label: &str) -> &'a str {
@@ -3645,6 +3839,30 @@ mod tests {
         assert!(parse_display_id("display-1").is_err());
         assert!(parse_edid_hex("ABC").is_err());
         assert!(parse_edid_hex("00GG").is_err());
+    }
+
+    #[test]
+    fn parses_volt_rail_target_mv_as_f64() {
+        // One decimal mV is allowed (2.5 mV rail step on 10/20-series).
+        assert_eq!(parse_mv_f64("1082.5").unwrap(), 1082.5);
+        assert_eq!(parse_mv_f64("1085").unwrap(), 1085.0);
+        // Unit suffixes are accepted (mirrors parse_*_unit).
+        assert_eq!(parse_mv_f64("1082.5mV").unwrap(), 1082.5);
+        assert_eq!(parse_mv_f64("1082.5millivolts").unwrap(), 1082.5);
+        assert!(parse_mv_f64("abc").is_err());
+    }
+
+    #[test]
+    fn set_volt_rail_target_floors_decimal_mv_to_uv() {
+        // The command path converts the f64 mV to i32 µV (rounds to nearest µV).
+        // Exercise the same parse+convert the dispatcher runs, without needing
+        // a live GPU.
+        let mv = parse_mv_f64("1082.5").unwrap();
+        let uv = i32::try_from((mv * 1000.0).round() as i64).unwrap();
+        assert_eq!(uv, 1_082_500);
+        let mv = parse_mv_f64("1085").unwrap();
+        let uv = i32::try_from((mv * 1000.0).round() as i64).unwrap();
+        assert_eq!(uv, 1_085_000);
     }
 
     #[test]

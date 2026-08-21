@@ -1450,6 +1450,151 @@ pub struct NvapiVoltRailTargetApplied {
     pub effective_wall_uV: i32,
 }
 
+/// Query the controllable clock-domain block (private ClockClient
+/// GetControl, RM 0x2080901b). The Blackwell XBar family
+/// (reverse/melonvolt/xbar.txt). Returns `None` where the driver doesn't
+/// expose the private interface.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiClkDomains;
+
+impl GpuOperation for QueryNvapiClkDomains {
+    type Output = Option<nvapi_hi::nvapi::ClockDomainControl>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiClkDomains
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        Ok(target.nvapi()?.clk_domains_control().map_err(Error::from)?)
+    }
+}
+
+/// Query the private ClockClient V/F-POINTS read path (GetInfo 0x8895B510 →
+/// GetStatus 0x7FEE9032, RM 0x20809061/0x20809062) — the article's per-domain
+/// V/F curve family. Returns `None` where the driver doesn't expose the
+/// private interface. Units live-calibrated vs the public GPC VFP curve
+/// (see `nvapi::ClkVfPointPrivate`).
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiClkVfPoints;
+
+impl GpuOperation for QueryNvapiClkVfPoints {
+    type Output = Option<nvapi_hi::nvapi::ClkVfPointsPrivate>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiClkVfPoints
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        Ok(target.nvapi()?.clk_vf_points_private().map_err(Error::from)?)
+    }
+}
+
+/// Measure one clock-domain's physical clock (private ClockClient
+/// MEASURE_FREQ, RM 0x20809006) via two-sample Δcounter/Δtimestamp.
+/// `domain_bit` is the sequential domain index (GPC=0, XBAR=1, SYS=2, MCLK=4).
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiClkDomainFreq {
+    pub domain_bit: u32,
+}
+
+impl GpuOperation for QueryNvapiClkDomainFreq {
+    type Output = Option<nvapi_hi::nvapi::ClockDomainFreq>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiClkDomainFreq
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        Ok(target
+            .nvapi()?
+            .clk_domain_freq(self.domain_bit)
+            .map_err(Error::from)?)
+    }
+}
+
+/// Write a signed kHz offset into one clock-domain's control record (private
+/// ClockClient SET_CONTROL, RM 0x2080d01c). DANGEROUS GPU clock write: the
+/// operation snapshots the full GetControl block, version-gates (magic
+/// 0x10964), patches a copy, SETs, readbacks, and restores on mismatch. If
+/// `temporary`, the snapshot is restored before returning (the article's
+/// reversible experiment recipe, xbar.txt:62-72).
+///
+/// No magnitude limit is enforced — the caller owns offset/range policy (the
+/// article bounds XBAR ±60000 kHz on GB202). The driver may reject or clamp
+/// the offset; the post-SET readback surfaces what was actually retained.
+#[derive(Clone, Copy, Debug)]
+#[allow(non_snake_case)] // kHz suffix matches the nvapi-rs field naming
+pub struct SetNvapiClkDomainOffset {
+    /// domain index / mask bit (XBAR=1)
+    pub domain_bit: u32,
+    /// signed kHz offset to write (0 = stock)
+    pub offset_kHz: i32,
+    /// which of the record's 8 value dwords to write (0-7; slot 0 is the
+    /// article's signed frequency offset, the rest are driver-opaque
+    /// range/voltage terms — A/B with MEASURE_FREQ to identify)
+    pub slot: u32,
+    /// if true, restore the pre-write snapshot before returning (safe
+    /// experiment mode); if false, persist the offset
+    pub temporary: bool,
+}
+
+impl GpuOperation for SetNvapiClkDomainOffset {
+    type Output = Option<NvapiClkDomainOffsetApplied>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiClkDomainOffset
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let gpu = target.nvapi()?;
+        // Capture the previous offset for the result, if the family is present.
+        #[allow(non_snake_case)] // kHz suffix matches the nvapi-rs field naming
+        let previous_kHz = gpu
+            .clk_domains_control()
+            .ok()
+            .flatten()
+            .and_then(|c| {
+                c.entries
+                    .iter()
+                    .find(|e| e.bit == self.domain_bit)
+                    .map(|e| e.values_kHz[self.slot as usize])
+            })
+            .unwrap_or(0);
+        let applied = gpu
+            .set_clk_domain_offset(self.domain_bit, self.offset_kHz, self.slot, self.temporary)
+            .map_err(Error::from)?;
+        Ok(applied.map(|entry| NvapiClkDomainOffsetApplied {
+            bit: entry.bit,
+            entry_type: entry.entry_type,
+            slot: self.slot,
+            previous_kHz,
+            applied_kHz: entry.values_kHz[self.slot as usize],
+            values_kHz: entry.values_kHz,
+            temporary_restored: self.temporary,
+        }))
+    }
+}
+
+/// Result of a successful clock-domain offset write.
+#[derive(Clone, Copy, Debug)]
+#[allow(non_snake_case)] // kHz suffix matches the nvapi-rs field naming
+pub struct NvapiClkDomainOffsetApplied {
+    /// domain index / mask bit
+    pub bit: u32,
+    /// record type byte (0x0A on offset-capable domains)
+    pub entry_type: u8,
+    /// value-dword slot that was written (0-7)
+    pub slot: u32,
+    /// slot value in effect before the write (kHz, semantics per slot)
+    pub previous_kHz: i32,
+    /// slot value the driver retained (== requested unless rejected/clamped)
+    pub applied_kHz: i32,
+    /// the record's full 8 value dwords after the write (driver-opaque slots)
+    pub values_kHz: [i32; 8],
+    /// whether the pre-write snapshot was restored (temporary mode)
+    pub temporary_restored: bool,
+}
+
 /// Set the D-Notifier (D0-notify) limit to a D level (1..5). Maps the CLI
 /// level to the signed driver code (-1=D1/Unlimited, 0..3=D2..D5) exactly as
 /// the ref tool's `[GPUHandle::setDNotifyLimit]` switch does, then calls the raw
