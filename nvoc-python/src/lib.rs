@@ -1981,6 +1981,8 @@ fn query_clk_vf_points(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
                             .map(|s| {
                                 value_object([
                                     ("bank", Value::from(s.bank)),
+                                    // EMPIRICAL advisory attribution
+                                    ("domain", Value::from(s.domain_hint.as_str())),
                                     (
                                         "kind",
                                         Value::from(match s.kind {

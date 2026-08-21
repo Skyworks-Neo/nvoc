@@ -2458,6 +2458,9 @@ fn execute_target(
                     // vf_curve segment, not the whole point list
                     "segments": v.segments.iter().map(|s| json!({
                         "bank": s.bank,
+                        // EMPIRICAL advisory attribution (ordinal-based;
+                        // confirm by domain-offset A/B)
+                        "domain": s.domain_hint.as_str(),
                         "kind": match s.kind {
                             nvoc_core::ClkVfSegmentKind::VfCurve => "vf_curve",
                             nvoc_core::ClkVfSegmentKind::PstateBins => "pstate_bins",
