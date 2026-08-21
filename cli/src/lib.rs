@@ -2452,6 +2452,29 @@ fn execute_target(
                 Some(v) => json!({
                     // bank0 = masks[0..4], bank1 = masks[4..8] (2048 bits each)
                     "masks": v.masks.iter().map(|m| format!("0x{:016X}", m)).collect::<Vec<_>>(),
+                    // contiguous same-type runs — bank 0 packs multiple
+                    // domains back-to-back (GPC curve, mem pstate bins,
+                    // XBAR curve, HOST curve, ...), so plot ONE curve per
+                    // vf_curve segment, not the whole point list
+                    "segments": v.segments.iter().map(|s| json!({
+                        "bank": s.bank,
+                        "kind": match s.kind {
+                            nvoc_core::ClkVfSegmentKind::VfCurve => "vf_curve",
+                            nvoc_core::ClkVfSegmentKind::PstateBins => "pstate_bins",
+                        },
+                        "type": s.record_type,
+                        "start_index": s.start_index,
+                        "end_index": s.end_index,
+                        "count": s.count,
+                        "voltage_uV_min": s.voltage_uV_min,
+                        "voltage_uV_max": s.voltage_uV_max,
+                        "freq_default_mhz_min": s.freq_default_mhz_min,
+                        "freq_default_mhz_max": s.freq_default_mhz_max,
+                        // (current - default) at the segment top = the
+                        // applied offset this segment's domain carries —
+                        // the domain-attribution fingerprint
+                        "delta_mhz": s.delta_mhz,
+                    })).collect::<Vec<_>>(),
                     "points": v.points.iter().map(|p| json!({
                         "bank": p.bank,
                         "index": p.index,

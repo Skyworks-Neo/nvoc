@@ -1974,6 +1974,39 @@ fn query_clk_vf_points(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
                     ),
                 ),
                 (
+                    "segments",
+                    Value::Array(
+                        v.segments
+                            .iter()
+                            .map(|s| {
+                                value_object([
+                                    ("bank", Value::from(s.bank)),
+                                    (
+                                        "kind",
+                                        Value::from(match s.kind {
+                                            nvapi_hi::nvapi::ClkVfSegmentKind::VfCurve =>
+                                                "vf_curve",
+                                            nvapi_hi::nvapi::ClkVfSegmentKind::PstateBins =>
+                                                "pstate_bins",
+                                        }),
+                                    ),
+                                    ("type", Value::from(s.record_type)),
+                                    ("start_index", Value::from(s.start_index)),
+                                    ("end_index", Value::from(s.end_index)),
+                                    ("count", Value::from(s.count)),
+                                    ("voltage_uV_min", Value::from(s.voltage_uV_min)),
+                                    ("voltage_uV_max", Value::from(s.voltage_uV_max)),
+                                    ("freq_default_mhz_min", Value::from(s.freq_default_mhz_min)),
+                                    ("freq_default_mhz_max", Value::from(s.freq_default_mhz_max)),
+                                    // applied offset at the segment top — the
+                                    // domain-attribution fingerprint
+                                    ("delta_mhz", Value::from(s.delta_mhz)),
+                                ])
+                            })
+                            .collect(),
+                    ),
+                ),
+                (
                     "points",
                     Value::Array(
                         v.points
