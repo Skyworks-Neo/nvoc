@@ -2615,7 +2615,7 @@ fn execute_target(
             // find valid bank/idx values.
             let bank = parse_usize(&invocation.positionals[0], "bank")?;
             let idx = parse_usize(&invocation.positionals[1], "index")?;
-            let mhz = parse_i32_unit(&invocation.positionals[2], "mhz", "mhz")?;
+            let uv = parse_i32_unit(&invocation.positionals[2], "uv", "microvolts")?;
             let absolute = option_bool(invocation, "absolute", false)?;
             let out = run(
                 target,
@@ -2623,7 +2623,7 @@ fn execute_target(
                     bank,
                     idx,
                     absolute,
-                    value: mhz as u32,
+                    value: uv as u32,
                 },
             )?
             .output;
@@ -2633,8 +2633,8 @@ fn execute_target(
                     "bank": bank,
                     "index": idx,
                     "mode": if absolute { "absolute" } else { "delta" },
-                    "value_mhz": mhz,
-                    "retained_raw": retained,
+                    "volt_offset_uV": uv,
+                    "retained_uV": retained,
                 }),
                 None => json!({"supported": false}),
             })
@@ -2646,14 +2646,14 @@ fn execute_target(
             if start > end {
                 return Err(CliError::new("start must be <= end"));
             }
-            let mhz = parse_i32_unit(&invocation.positionals[3], "mhz", "mhz")?;
+            let uv = parse_i32_unit(&invocation.positionals[3], "uv", "microvolts")?;
             let out = run(
                 target,
                 SetNvapiVfpRangePrivate {
                     bank,
                     start,
                     end,
-                    delta_mhz: mhz as i16,
+                    delta_mhz: uv as i16,
                 },
             )?
             .output;
@@ -2663,7 +2663,7 @@ fn execute_target(
                     "bank": bank,
                     "start": start,
                     "end": end,
-                    "delta_mhz": mhz,
+                    "volt_offset_uV": uv,
                     "points_written": end - start + 1,
                 }),
                 None => json!({"supported": false}),
