@@ -81,6 +81,7 @@ pub enum OperationKind {
     QueryNvapiClkVfPoints,
     /// Batch-measure physical clocks for a set of domains (V3
     /// MEASURE_FREQ, one RM round-trip per sample for the whole set).
+    QueryNvapiClkDomainFreqDetail,
     QueryNvapiClkDomainFreqsBatch,
     QueryNvapiPStateLevels,
     QueryNvapiPStateLockStatus,

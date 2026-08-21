@@ -8,7 +8,8 @@ use nvoc_core::{
     Percentage, ProbeVoltageLimits, QueryApiRestriction, QueryAutoBoost, QueryClockOffset,
     QueryDisplays, QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings,
     QueryGpuStatus, QueryLegacyCoreOvervoltRanges, QueryLegacyP0CoreMaxVoltageDelta,
-    QueryNvapiClkDomainFreq, QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomains, QueryNvapiClkVfPoints,
+    QueryNvapiClkDomainFreq, QueryNvapiClkDomainFreqDetail,
+    QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomains, QueryNvapiClkVfPoints,
     QueryNvapiDNotifier,
     QueryNvapiPStateLevels, QueryNvapiPStateLockStatus, QueryNvapiTargetTempPolicies,
     QueryNvapiTargetTempPolicyIndex, QueryNvapiTgpWattRange, QueryNvapiVoltRails,
@@ -166,7 +167,6 @@ pub enum Command {
     GetClkDomains,
     GetClkDomainFreq,
     SetClkDomainOffset,
-    GetClkDomainFreqs,
     GetClkVfPoints,
     SetTemperatureThresholds,
     SetThermalLimitC,
@@ -253,7 +253,6 @@ impl Command {
             Self::GetClkDomains => "get-clk-domains",
             Self::GetClkVfPoints => "get-clk-vf-points",
             Self::GetClkDomainFreq => "get-clk-domain-freq",
-            Self::GetClkDomainFreqs => "get-clk-domain-freqs",
             Self::SetClkDomainOffset => "set-clk-domain-offset",
             Self::SetThermalLimitC => "set-thermal-limit-c",
             Self::SetTemperatureThresholds => "set-temp-thresholds",
@@ -354,9 +353,6 @@ impl Command {
             }
             Self::SetClkDomainOffset => {
                 "Write a signed kHz offset into one clock-domain control record (dangerous XBar clock write; --temporary restores the snapshot)"
-            }
-            Self::GetClkDomainFreqs => {
-                "Batch-measure physical clocks for multiple domains in one RM round-trip per sample (V3 MEASURE_FREQ; no arg = all controllable domains)"
             }
             Self::GetClkVfPoints => {
                 "Read the private ClockClient V/F-points family: per-bank point masks + V/F curve records (voltage-indexed, units calibrated vs the public GPC VFP)"
@@ -476,7 +472,7 @@ impl Command {
             | Self::SetVoltRailOffset
             | Self::SetVoltRailTarget
             | Self::SetClkDomainOffset => (2, 2),
-            Self::GetClkDomainFreq => (1, 1),
+            Self::GetClkDomainFreq => (0, 1),
             Self::SetVfpRangeDeltaMhz => (3, 3),
             Self::SetPstateLock => (1, 2),
             _ => (0, 0),
@@ -609,7 +605,7 @@ impl Command {
             Self::GetClkDomainFreq => vec![PositionalArg::free(
                 "arg_domain",
                 "DOMAIN",
-                "Clock domain: xbar (1), gpc/core (0), sys (2), or mclk/mem (4)",
+                "Clock domain: xbar (1), gpc/core (0), sys (2), or mclk/mem (4); omit to measure every controllable domain",
             )],
             Self::SetClkDomainOffset => vec![
                 PositionalArg::free(
@@ -787,7 +783,6 @@ const COMMANDS: &[Command] = &[
     Command::GetApiRestriction,
     Command::GetAutoBoost,
     Command::GetClkDomainFreq,
-    Command::GetClkDomainFreqs,
     Command::GetClkDomains,
     Command::GetClkVfPoints,
     Command::GetClockOffsetMhz,
@@ -2453,56 +2448,6 @@ fn execute_target(
                 None => json!({"supported": false}),
             })
         }
-        Command::GetClkDomainFreqs => {
-            // no positional = measure every controllable domain (from the
-            // private GetControl mask); otherwise a list of domain names/bits
-            let domains = if invocation.positionals.is_empty() {
-                run(target, QueryNvapiClkDomains)?
-                    .output
-                    .map(|c| c.entries.iter().map(|e| e.bit).collect::<Vec<u32>>())
-                    .unwrap_or_default()
-            } else {
-                invocation
-                    .positionals
-                    .iter()
-                    .map(|p| parse_clk_domain(p))
-                    .collect::<Result<Vec<u32>, _>>()?
-            };
-            let freqs = run(
-                target,
-                QueryNvapiClkDomainFreqsBatch { domains: domains.clone() },
-            )?
-            .output;
-            Ok(match freqs {
-                Some(fs) => {
-                    // make the readability census explicit: domains that
-                    // were requested but don't come back were skipped by
-                    // the per-domain fallback (driver refuses their
-                    // measure — e.g. Pascal gpc/xbar)
-                    let returned: Vec<u32> =
-                        fs.iter().map(|f| f.domain as u32).collect();
-                    let skipped: Vec<String> = domains
-                        .iter()
-                        .filter(|b| !returned.contains(b))
-                        .map(|b| {
-                            format!(
-                                "{:?}(bit {b})",
-                                parse_clk_domain_name(*b)
-                            )
-                        })
-                        .collect();
-                    json!({
-                        "freqs": fs.iter().map(|f| json!({
-                            "domain_bit": f.domain as u32,
-                            "domain": format!("{:?}", f.domain),
-                            "freq_mhz": (f.freq_mhz * 1000.0).round() / 1000.0,
-                        })).collect::<Vec<_>>(),
-                        "skipped_unreadable": skipped,
-                    })
-                }
-                None => json!({"supported": false}),
-            })
-        }
         Command::GetClkVfPoints => {
             let vfp = run(target, QueryNvapiClkVfPoints)?.output;
             Ok(match vfp {
@@ -2547,16 +2492,60 @@ fn execute_target(
             })
         }
         Command::GetClkDomainFreq => {
-            let domain_bit = parse_clk_domain(&invocation.positionals[0])?;
-            let freq = run(target, QueryNvapiClkDomainFreq { domain_bit })?
-                .output;
-            Ok(match freq {
-                Some(f) => json!({
-                    "domain_bit": domain_bit,
-                    "domain": format!("{:?}", f.domain),
-                    "freq_mhz": (f.freq_mhz * 1000.0).round() / 1000.0,
-                }),
-                None => json!({"supported": false, "domain_bit": domain_bit}),
+            // with a domain argument: detailed single-domain measure — the
+            // raw second-sample {counter, timestamp, extra} plus the
+            // accepted protocol form (V1 0x10020 / V2 0x20020), for
+            // counter-unit calibration (Pascal M) and forensics
+            if let Some(pos) = invocation.positionals.first() {
+                let domain_bit = parse_clk_domain(pos)?;
+                let detail = run(target, QueryNvapiClkDomainFreqDetail { domain_bit })?
+                    .output;
+                return Ok(match detail {
+                    Some(d) => json!({
+                        "domain_bit": domain_bit,
+                        "domain": format!("{:?}", d.domain),
+                        "freq_mhz": (d.freq_mhz * 1000.0).round() / 1000.0,
+                        // 1 = V1 magic 0x10020 (u32 counter), 2 = V2 0x20020 (u64)
+                        "protocol": d.protocol,
+                        // raw second-sample values
+                        "counter": d.counter,
+                        "timestamp_ns": d.timestamp_ns,
+                        "extra": d.extra,
+                    }),
+                    None => json!({"supported": false, "domain_bit": domain_bit}),
+                });
+            }
+            // no argument: batch-measure EVERY controllable domain
+            let domains = run(target, QueryNvapiClkDomains)?
+                .output
+                .map(|c| c.entries.iter().map(|e| e.bit).collect::<Vec<u32>>())
+                .unwrap_or_default();
+            let freqs = run(
+                target,
+                QueryNvapiClkDomainFreqsBatch { domains: domains.clone() },
+            )?
+            .output;
+            Ok(match freqs {
+                Some(fs) => {
+                    // readability census: requested domains that don't come
+                    // back were skipped by the per-domain fallback (the
+                    // driver refuses their measure — e.g. Pascal gpc/xbar)
+                    let returned: Vec<u32> = fs.iter().map(|f| f.domain as u32).collect();
+                    let skipped: Vec<String> = domains
+                        .iter()
+                        .filter(|b| !returned.contains(b))
+                        .map(|b| format!("{}(bit {b})", parse_clk_domain_name(*b)))
+                        .collect();
+                    json!({
+                        "freqs": fs.iter().map(|f| json!({
+                            "domain_bit": f.domain as u32,
+                            "domain": format!("{:?}", f.domain),
+                            "freq_mhz": (f.freq_mhz * 1000.0).round() / 1000.0,
+                        })).collect::<Vec<_>>(),
+                        "skipped_unreadable": skipped,
+                    })
+                }
+                None => json!({"supported": false}),
             })
         }
         Command::SetClkDomainOffset => {

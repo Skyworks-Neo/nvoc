@@ -1469,6 +1469,29 @@ impl GpuOperation for QueryNvapiClkDomains {
     }
 }
 
+/// Detailed single-domain measure (private MEASURE_FREQ) — frequency plus
+/// the second sample's raw {counter, timestamp, extra} and the accepted
+/// protocol form (V1 0x10020 / V2 0x20020).
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiClkDomainFreqDetail {
+    pub domain_bit: u32,
+}
+
+impl GpuOperation for QueryNvapiClkDomainFreqDetail {
+    type Output = Option<nvapi_hi::nvapi::ClockDomainFreqDetail>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiClkDomainFreqDetail
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        Ok(target
+            .nvapi()?
+            .clk_domain_freq_detail(self.domain_bit)
+            .map_err(Error::from)?)
+    }
+}
+
 /// Batch-measure physical clocks for a set of domains via the V3
 /// MEASURE_FREQ (RM 0x20809006, magic 0x30038) — one RM round-trip per
 /// sample for the whole set, with per-domain V1/V2 fallback.
