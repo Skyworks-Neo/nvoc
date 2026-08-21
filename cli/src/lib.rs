@@ -364,10 +364,10 @@ impl Command {
                 "Read the private ClockClient V/F-points family: per-bank point masks + V/F curve records (voltage-indexed, units calibrated vs the public GPC VFP)"
             }
             Self::SetVfpPointPrivate => {
-                "Write one V/F curve point via the private SetControl (dangerous V/F edit; bank 0=pstate-class, 1=V/F curve; --absolute for mode 0, default mode 1 delta)"
+                "Write one V/F curve point via the private SetControl (dangerous V/F edit; bank 0=pstate-class, 1=V/F curve; value is a VOLTAGE-INDEXED frequency lookup (not MHz delta); --absolute for mode 0, default mode 1 delta)"
             }
             Self::SetVfpRangePrivate => {
-                "Write a range of V/F curve points with the same delta via the private SetControl (dangerous batch V/F edit; single RMW cycle)"
+                "Write a range of V/F curve points with the same value via the private SetControl (dangerous batch V/F edit; single RMW cycle; value is voltage-indexed, not MHz)"
             }
             Self::SetThermalLimitC => "Set thermal limit in Celsius",
             Self::SetTemperatureThresholds => {
@@ -651,8 +651,25 @@ impl Command {
                 ),
                 PositionalArg::hyphen(
                     "arg_delta",
-                    "DELTA_MHZ",
-                    "Signed delta in MHz to apply to every point in the range (mode 1 delta)",
+                    "DELTA_UV",
+                    "Voltage-indexed delta (NOT MHz): sets each point's target freq to the default freq at (its_voltage + delta). RM then re-interpolates to monotonically increasing",
+                ),
+            ],
+            Self::SetVfpPointPrivate => vec![
+                PositionalArg::free(
+                    "arg_bank",
+                    "BANK",
+                    "Bank: 0 = pstate-class records, 1 = V/F curve points",
+                ),
+                PositionalArg::free(
+                    "arg_index",
+                    "INDEX",
+                    "Point index within the bank (0-2047; use get-clk-vf-points to see which indices are present)",
+                ),
+                PositionalArg::hyphen(
+                    "arg_value",
+                    "VALUE",
+                    "Voltage-indexed value (NOT MHz): sets the point's target freq to the default freq at (this_voltage + value). --absolute for mode 0, default mode 1 delta",
                 ),
             ],
             Self::SetFanPercent => vec![PositionalArg::free(
