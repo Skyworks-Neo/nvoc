@@ -1935,7 +1935,7 @@ fn query_clk_domains(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
                                     // false = the protocol doesn't marshal this
                                     // record type's value fields (e.g. 0x02) —
                                     // values_kHz below is NOT driver data.
-                                    ("values_valid", Value::from(e.values_valid)),
+                                    ("value_modifiable", Value::from(e.value_modifiable)),
                                     // 8 value dwords (V2 rec+268..296); slot
                                     // semantics driver-opaque, slot 0 = the
                                     // signed frequency offset per the article

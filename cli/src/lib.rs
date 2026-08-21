@@ -2436,7 +2436,7 @@ fn execute_target(
                         // false = the protocol doesn't marshal this record
                         // type's value fields (e.g. type 0x02) — values_kHz
                         // below is NOT driver data.
-                        "values_valid": e.values_valid,
+                        "value_modifiable": e.value_modifiable,
                         // the record's 8 value dwords (V2 rec+268..296);
                         // slot semantics driver-opaque, slot 0 = signed
                         // frequency offset per the article

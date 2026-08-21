@@ -491,6 +491,16 @@ fn format_value_block_with_context(value: &Value, indent: usize, context: &str) 
                             &join_context(context, key),
                         ));
                     }
+                    // P0 voltage bounds (get-status `p0_voltage`): render as a
+                    // multi-line section like Memory, not the generic
+                    // comma-separated measurement-map line. Must precede the
+                    // measurement-map arm — `p0_voltage` matches it (key contains
+                    // "voltage"). Values are µV shown in mV, and the redundant
+                    // `UV` per-field label suffix is dropped (the mV unit already
+                    // carries the dimension).
+                    Value::Object(child) if key == "p0_voltage" => {
+                        lines.extend(format_p0_voltage_block(indent, child));
+                    }
                     Value::Object(child) if object_is_measurement_map(key, child) => {
                         lines.push(format_measurement_map_line(indent, key, child));
                     }
@@ -745,6 +755,55 @@ fn format_measurement_map_line(
         nvoc_cli_common::color::stylize_title(&format_label(key)),
         nvoc_cli_common::color::stylize(&values, false)
     )
+}
+
+/// Render the P0 voltage-bounds block (`p0_voltage` from get-status) as a
+/// multi-line section — a header on its own line followed by one indented
+/// `Label: N mV` line per bound — mirroring the Memory block rather than the
+/// generic comma-separated `format_measurement_map_line`.
+///
+/// Values are stored in microvolts (`*_uV`) but shown in millivolts. The
+/// redundant `UV` label suffix that `format_label` would append (from the
+/// `_uV` key suffix) is stripped, since the `mV` unit already carries the
+/// dimension — otherwise each line read "Current UV 900 mV".
+fn format_p0_voltage_block(indent: usize, object: &serde_json::Map<String, Value>) -> Vec<String> {
+    let mut lines = vec![format!(
+        "{}{}",
+        indent_spaces(indent),
+        nvoc_cli_common::color::stylize_title("P0 Voltage Limit")
+    )];
+    // Fixed logical order: current, then the wall hierarchy (target → effective
+    // → VBIOS → VRM-max), then the remaining offset headroom and min-hold floor.
+    // Values are stored under `<stem>_uV` keys.
+    const ORDER: [&str; 7] = [
+        "current_uV",
+        "target_wall_uV",
+        "effective_wall_uV",
+        "vbios_wall_uV",
+        "vrm_max_wall_uV",
+        "offset_ceiling_uV",
+        "min_hold_uV",
+    ];
+    for (field_key, value) in ORDER
+        .iter()
+        .copied()
+        .filter_map(|k| object.get(k).map(|v| (k, v)))
+    {
+        // Label from the key minus the `_uV` suffix (e.g. "effective_wall").
+        // `format_contextual_scalar` still receives the original `*_uV` key so
+        // the "voltage" context maps µV -> mV.
+        let label_key = field_key.strip_suffix("_uV").unwrap_or(field_key);
+        lines.push(format!(
+            "{}{}: {}",
+            indent_spaces(indent + 1),
+            nvoc_cli_common::color::stylize_title(&format_label(label_key)),
+            nvoc_cli_common::color::stylize(
+                &format_contextual_scalar("p0_voltage", field_key, value),
+                false,
+            ),
+        ));
+    }
+    lines
 }
 
 fn format_pff_points(indent: usize, items: &[Value]) -> Vec<String> {
@@ -1770,6 +1829,45 @@ mod tests {
     }
 
     #[test]
+    fn human_output_renders_p0_voltage_block() {
+        nvoc_cli_common::color::init(true);
+        // P0 voltage bounds from the private VoltRails status entry. Values are
+        // stored in µV and rendered in mV; the block is a multi-line section
+        // (like Memory), not a comma-separated measurement-map line, and the
+        // redundant per-field "UV" label suffix is dropped (the mV unit carries
+        // the dimension).
+        let output = json!({
+            "p0_voltage": {
+                "current_uV": 900000,
+                "target_wall_uV": 1200000,
+                "effective_wall_uV": 1200000,
+                "vbios_wall_uV": 0,
+                "vrm_max_wall_uV": 1200000,
+                "min_hold_uV": 625000,
+                "offset_ceiling_uV": 195500
+            }
+        });
+
+        let rendered = format_human_output("get-status", &output).join("\n");
+
+        // Section title is "P0 Voltage Limit" (not "P0 Voltage:"), header has
+        // no trailing colon, and each bound is its own indented `Label: N mV`.
+        assert!(rendered.contains("P0 Voltage Limit"));
+        assert!(!rendered.contains("P0 Voltage:"));
+        assert!(rendered.contains("Current: 900 mV"));
+        assert!(rendered.contains("Effective Wall: 1200 mV"));
+        assert!(rendered.contains("Min Hold: 625 mV"));
+        assert!(rendered.contains("Offset Ceiling: 195.5 mV"));
+        assert!(rendered.contains("Target Wall: 1200 mV"));
+        assert!(rendered.contains("Vbios Wall: 0 mV"));
+        assert!(rendered.contains("Vrm Max Wall: 1200 mV"));
+        // No comma-separated single line, no redundant "UV" label suffix.
+        assert!(!rendered.contains("Current UV"));
+        assert!(!rendered.contains("Effective Wall UV"));
+        assert!(!rendered.contains("Offset Ceiling UV 195.5 mV"));
+    }
+
+    #[test]
     fn human_output_decodes_perf_bitset() {
         nvoc_cli_common::color::init(true);
         // On the native get-status path serde renders PerfFlags as `{"bits": N}`;
@@ -2350,6 +2448,20 @@ mod tests {
                 "previous_offset_uV": 200000,
                 "applied_uV": 65000,
                 "effective_wall_uV": 1150000,
+            }),
+            Command::GetClkDomains => json!({
+                "controllable_mask": "0x000000FF",
+                "entries": [{
+                    "bit": 1, "type": 10, "value_modifiable": false, "offset_kHz": 0,
+                    "range_min_kHz": 0, "range_max_kHz": 0, "applied_kHz": 0,
+                }],
+            }),
+            Command::GetClkDomainFreq => json!({
+                "domain_bit": 1, "domain": "Xbar", "freq_mhz": 2004.0,
+            }),
+            Command::SetClkDomainOffset => json!({
+                "applied": true, "bit": 1, "type": 10,
+                "previous_kHz": 0, "applied_kHz": -60000, "temporary_restored": true,
             }),
         }
     }
