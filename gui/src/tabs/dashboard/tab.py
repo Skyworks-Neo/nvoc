@@ -570,18 +570,39 @@ class DashboardTab:
             self._schedule_next()
             return
 
-        self._apply_done_payload(retcode, output)
+        # On the VF Curve tab the metric rows / snapshot are invisible — only
+        # the live crosshair (voltage/frequency) consumes the poll. Skip the
+        # row redraws + snapshot write to keep the main thread free for the
+        # curve's drag/blit event stream (a full _parse_and_update every
+        # second interrupted point drags).
+        live_only = self._vfcurve_active()
+        self._apply_done_payload(retcode, output, live_only=live_only)
         self._schedule_next()
 
-    def _apply_done_payload(self, retcode: int, output: str) -> None:
-        """Apply a status poll result to the UI in one batched update."""
+    def _vfcurve_active(self) -> bool:
+        """True when the VF Curve tab is the currently shown tab."""
+        try:
+            return str(self.app.tabview.get()).endswith("VF Curve")
+        except Exception:
+            return False
+
+    def _apply_done_payload(
+        self, retcode: int, output: str, live_only: bool = False
+    ) -> None:
+        """Apply a status poll result to the UI in one batched update.
+
+        ``live_only`` (VF Curve tab) skips the metric-row redraws and the
+        snapshot write — only the live crosshair's voltage/frequency are
+        forwarded to the curve tab.
+        """
 
         if retcode == 0:
-            self._parse_and_update(output)
+            self._parse_and_update(output, live_only=live_only)
         else:
-            self._status_lbl.configure(text="⚠ CLI error")
-            for row in self._rows.values():
-                row.set_error()
+            if not live_only:
+                self._status_lbl.configure(text="⚠ CLI error")
+                for row in self._rows.values():
+                    row.set_error()
 
     def on_resize_state_changed(
         self, resizing: bool, force_flush: bool = False
@@ -598,13 +619,23 @@ class DashboardTab:
             self._apply_done_payload(retcode, output)
 
     # ── Parsing ───────────────────────────────────────────────────────────────
-    def _parse_and_update(self, output: str) -> None:
+    def _parse_and_update(self, output: str, live_only: bool = False) -> None:
         parsed_status = parse_dashboard_status(output)
         gpu_mhz = as_float(parsed_status.get("gpu_clock_mhz"))
         mem_mhz = as_float(parsed_status.get("mem_clock_mhz"))
         volt_mv = as_float(parsed_status.get("voltage_mv"))
         temp_c = as_float(parsed_status.get("temperature_c"))
         pwr_w = as_float(parsed_status.get("power_w"))
+
+        # VF Curve tab: only the live crosshair (voltage/frequency) is visible.
+        # Forward just those two and return — skip the lock sync, the 5 metric
+        # rows, and the snapshot write, so the main thread stays free for the
+        # curve's drag/blit event stream.
+        if live_only:
+            if getattr(self.app, "tab_vfcurve", None) is not None:
+                self.app.tab_vfcurve.update_live_point(volt_mv, gpu_mhz)
+            return
+
         locked_value = parsed_status.get("vfp_locked")
         locked: Optional[bool] = (
             bool(locked_value) if isinstance(locked_value, bool) else None
