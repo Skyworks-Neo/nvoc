@@ -199,6 +199,49 @@ fn gpu_type_detection() {
 }
 
 #[test]
+fn gpu_type_xbar_support() {
+    // XBAR ClockClient domain offsets exist from Turing (GTX 16系) onward —
+    // mobile AND desktop alike.
+    let supported = [
+        GpuType::Mobile50Series,
+        GpuType::Desktop50Series,
+        GpuType::Mobile40Series,
+        GpuType::Desktop40Series,
+        GpuType::Mobile30Series,
+        GpuType::Desktop30Series,
+        GpuType::Mobile20Series,
+        GpuType::Desktop20Series,
+        GpuType::Mobile16Series,
+        GpuType::Desktop16Series,
+        GpuType::WorkstationTuring,
+        GpuType::ServerTuringTesla,
+    ];
+    let unsupported = [
+        GpuType::Mobile10Series,
+        GpuType::Desktop10Series,
+        GpuType::Mobile9Series,
+        GpuType::Desktop9Series,
+        GpuType::ServerVolta,
+        GpuType::ComputationVolta,
+        GpuType::WorkstationPascal,
+        GpuType::ServerPascal,
+        GpuType::Unknown,
+    ];
+    for t in supported {
+        assert!(t.supports_xbar_offset(), "{t:?} should support xbar");
+    }
+    for t in unsupported {
+        assert!(!t.supports_xbar_offset(), "{t:?} should NOT support xbar");
+    }
+
+    // End-to-end through the name-based detector (the pynvoc payload path):
+    // the 4060 Laptop name+codename that the GUI gates on live.
+    assert!(detect_gpu_type("NVIDIA GeForce RTX 4060 Laptop GPUAD107-B")
+        .supports_xbar_offset());
+    assert!(!detect_gpu_type("NVIDIA GeForce GTX 1080 GP104").supports_xbar_offset());
+}
+
+#[test]
 fn gpu_type_params() {
     let mobile_50 = GpuType::Mobile50Series;
     assert!(mobile_50.oc_params().is_50_series);

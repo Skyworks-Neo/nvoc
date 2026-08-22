@@ -2459,6 +2459,23 @@ mod tests {
             Command::GetClkDomainFreq => json!({
                 "domain_bit": 1, "domain": "Xbar", "freq_mhz": 2004.0,
             }),
+            Command::GetClkVfPoints => json!({
+                // Output shape mirrors the Command::GetClkVfPoints execution
+                // arm (banked masks + contiguous same-type segments + the
+                // flat point grid).
+                "masks": ["0x0000000000000000"],
+                "segments": [{
+                    "bank": 0, "domain": "gpc", "kind": "vf_curve", "type": 1,
+                    "start_index": 0, "end_index": 39, "count": 40,
+                    "voltage_uV_min": 450000, "voltage_uV_max": 1080500,
+                    "freq_default_mhz_min": 210, "freq_default_mhz_max": 2700,
+                }],
+                "points": [{
+                    "bank": 0, "index": 0, "type": 1,
+                    "voltage_uV": 450000,
+                    "freq_default_mhz": 210, "freq_current_mhz": 210,
+                }],
+            }),
             Command::SetClkDomainOffset => json!({
                 "applied": true, "bit": 1, "type": 10,
                 "previous_kHz": 0, "applied_kHz": -60000, "temporary_restored": true,

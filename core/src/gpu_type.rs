@@ -555,6 +555,35 @@ impl GpuType {
         matches!(self, GpuType::Unknown)
     }
 
+    /// XBAR ClockClient 域偏移（set-clk-domain-offset xbar / pynvoc
+    /// set_clk_domain_offset）自 Turing（GTX 16系）起存在 —— 16/20/30/40/50 系
+    /// 移动端与桌面端皆可超。Pascal（10系）及更旧、Volta、Unknown 不支持。
+    /// workstation/server 的 Turing+ 卡一并放行（写入本身有 snapshot/
+    /// readback/restore 保护，个别不支持会由驱动报错）。
+    pub fn supports_xbar_offset(&self) -> bool {
+        matches!(
+            self,
+            GpuType::Mobile50Series
+                | GpuType::Desktop50Series
+                | GpuType::Mobile40Series
+                | GpuType::Desktop40Series
+                | GpuType::Mobile30Series
+                | GpuType::Desktop30Series
+                | GpuType::Mobile20Series
+                | GpuType::Desktop20Series
+                | GpuType::Mobile16Series
+                | GpuType::Desktop16Series
+                | GpuType::WorkstationBlackwell
+                | GpuType::WorkstationLovelace
+                | GpuType::WorkstationAmpere
+                | GpuType::WorkstationTuring
+                | GpuType::ServerBlackwell
+                | GpuType::ServerLovelace
+                | GpuType::ServerAmpere
+                | GpuType::ServerTuringTesla
+        )
+    }
+
     /// 是否需要在 NVAPI 操作前做 GC6 原生唤醒（force_gc6_exit）。与
     /// core::operation::run 写操作预唤醒钩子同源：全部移动端世代 + Unknown。
     ///

@@ -1000,7 +1000,14 @@ pub fn handle_test_voltage_limits(
         let info = gpu.info()?;
         let gpu_type = fetch_gpu_type(&info);
 
-        if !(info.name.contains("Laptop") || info.name.contains("Device")) {
+        // 桌面端先拉满 voltage boost 再探测电压界限；移动端与未识别型号
+        // 跳过（原为 name.contains("Laptop"/"Device") 的自发启发式，现统一
+        // 走 gpu_type 判定）。
+        let skip_boost_max = match gpu_type {
+            Ok(ref t) => t.is_mobile() || t.is_unknown(),
+            Err(_) => true,
+        };
+        if !skip_boost_max {
             let _ = gpu.set_voltage_boost(Percentage(100));
         }
 
