@@ -2172,9 +2172,9 @@ fn set_clk_domain_offset(
 
 /// Write one V/F curve point via the private ClockClient V/F-POINTS
 /// SetControl (ID 0xFEC00D04). DANGEROUS: snapshots the full control
-/// block, patches one record (mode 0 absolute / mode 1 delta), SETs,
+/// block, patches one record (mode 0 freq-offset / mode 1 delta), SETs,
 /// readbacks, restores on mismatch. `bank` 0 = pstate-class, 1 = V/F
-/// curve points; `idx` 0..2047. `absolute` = mode 0 (u32) vs mode 1
+/// curve points; `idx` 0..2047. `freq_mode` = mode 0 (u32 kHz) vs mode 1
 /// (i16 delta). Returns `{"supported": false}` when the driver refuses.
 #[pyfunction]
 fn set_vfp_point_private(
@@ -2183,16 +2183,16 @@ fn set_vfp_point_private(
     bank: usize,
     idx: usize,
     value_mhz: i32,
-    absolute: Option<bool>,
+    freq_mode: Option<bool>,
 ) -> PyResult<Py<PyAny>> {
-    let absolute = absolute.unwrap_or(false);
+    let freq_mode = freq_mode.unwrap_or(false);
     let value = with_target(gpu, "nvapi", |target| {
         let out = run(
             target,
             SetNvapiVfpPointPrivate {
                 bank,
                 idx,
-                absolute,
+                freq_mode,
                 value: value_mhz as u32,
             },
         )
@@ -2203,7 +2203,7 @@ fn set_vfp_point_private(
                 ("applied", Value::from(true)),
                 ("bank", Value::from(bank as u64)),
                 ("index", Value::from(idx as u64)),
-                ("mode", Value::from(if absolute { "absolute" } else { "delta" })),
+                ("mode", Value::from(if freq_mode { "freq" } else { "delta" })),
                 ("value_mhz", Value::from(value_mhz)),
                 ("retained_raw", Value::from(retained)),
             ]),
