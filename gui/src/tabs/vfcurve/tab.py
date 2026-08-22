@@ -359,6 +359,8 @@ class VFCurveTab:
         artists = []
         if self._line_current is not None:
             artists.append(self._line_current)
+        if self._sel_rect is not None:
+            artists.append(self._sel_rect)
         if self._sel_points is not None:
             artists.append(self._sel_points)
         for el in self._live_elements:
@@ -876,8 +878,13 @@ class VFCurveTab:
             sel_v = v[s : e + 1]
             sel_f = f[s : e + 1]
 
-            # Shaded region
-            ax.axvspan(v[s], v[e], alpha=0.15, color="#ffcc00", zorder=1)
+            # Shaded region — persistent animated artist so selection-range
+            # drags can update just the span (voltage-axis only, independent
+            # of the moving curve points) via _update_selection_span without
+            # a full _redraw. Re-created here on each full redraw.
+            self._sel_rect = ax.axvspan(
+                v[s], v[e], alpha=0.15, color="#ffcc00", zorder=1, animated=True
+            )
 
             # Highlighted points
             self._sel_points = ax.scatter(
@@ -1148,7 +1155,10 @@ class VFCurveTab:
             self._blit_animated()
             return
 
-        # Selection drag (extending selection while mouse button held)
+        # Selection drag (extending selection while mouse button held). The
+        # range is voltage-axis only, so update just the span overlay + blit —
+        # no full _redraw, keeping the selection smooth and immune to the
+        # per-second live-point blit. Point markers update on release.
         if (
             event.button == 1
             and event.inaxes == self.ax
@@ -1158,7 +1168,7 @@ class VFCurveTab:
             idx = self._find_nearest_index(event.xdata)
             if idx is not None and idx != self._sel_end:
                 self._sel_end = idx
-                self._redraw()
+                self._update_selection_span()
 
     def sync_lock_from_voltage(self, voltage_mv: Optional[float]):
         """Called at startup: sync VFP lock state from CLI into _locked_points.
@@ -1405,6 +1415,47 @@ class VFCurveTab:
 
     def _hide_live_point(self) -> None:
         self._set_live_point_visible(False)
+
+    def _update_selection_span(self) -> None:
+        """Lightweight selection-range repaint (no full _redraw).
+
+        The selection span is purely a voltage-axis range (it does not depend
+        on the curve points' frequencies, which move during a point drag). So
+        a selection-range drag — extending the selection by moving the mouse
+        along the voltage axis — can update just the axvspan's x bounds and
+        blit, instead of clearing the axes and rebuilding every artist. This
+        keeps the selection visual perfectly smooth and immune to the
+        per-second live-point blit (which restores the static background that
+        no longer contains the span — the span is now an animated overlay).
+        """
+        if self.ax is None or self._cleaned_up:
+            return
+        if not self._voltages:
+            return
+        if self._sel_start is None or self._sel_end is None:
+            # Clear the span if one exists.
+            if self._sel_rect is not None:
+                self._sel_rect.set_visible(False)
+                self._blit_animated()
+            return
+        s = min(self._sel_start, self._sel_end)
+        e = max(self._sel_start, self._sel_end)
+        v = self._voltages
+        x0, x1 = v[s], v[e]
+        if self._sel_rect is None:
+            # First selection before any full redraw built one — create it.
+            self._sel_rect = self.ax.axvspan(
+                x0, x1, alpha=0.15, color="#ffcc00", zorder=1, animated=True
+            )
+        else:
+            # axvspan returns a Polygon; update its x bounds in place.
+            import numpy as _np
+
+            xs = _np.array([x0, x1, x1, x0, x0])
+            ys = _np.array([0.0, 0.0, 1.0, 1.0, 0.0])
+            self._sel_rect.set_xy(_np.column_stack([xs, ys]))
+            self._sel_rect.set_visible(True)
+        self._blit_animated()
 
     def _set_live_point_visible(self, visible: bool) -> None:
         for el in self._live_elements:
