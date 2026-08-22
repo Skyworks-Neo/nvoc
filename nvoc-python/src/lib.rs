@@ -1583,12 +1583,23 @@ fn check_voltage_frequency(py: Python<'_>, gpu: &str, point: usize) -> PyResult<
 
 #[pyfunction]
 fn set_clock_offset(
+    py: Python<'_>,
     gpu: &str,
     backend: &str,
     domain: &str,
     value: f64,
     pstate: Option<&str>,
 ) -> PyResult<()> {
+    let gpu__own = gpu.to_string();
+    let backend__own = backend.to_string();
+    let domain__own = domain.to_string();
+    let pstate__own = pstate.map(|s| s.to_string());
+    py.detach(|| -> PyResult<()> {
+        let gpu: &str = &gpu__own;
+        let backend: &str = &backend__own;
+        let domain: &str = &domain__own;
+        let pstate: Option<&str> = pstate__own.as_deref();
+
     // One decimal MHz is allowed — the 2.5 MHz GUI grid divides both the
     // 7.5 MHz (30-series+) and 12.5 MHz (10/16/20-series) hardware steps.
     // NVAPI takes kHz (round to nearest); NVML's API is integer MHz only.
@@ -1641,10 +1652,19 @@ fn set_clock_offset(
         }
     }
     Ok(())
+
+    })
 }
 
 #[pyfunction]
-fn set_power_limit(gpu: &str, backend: &str, value: u32) -> PyResult<()> {
+fn set_power_limit(
+    py: Python<'_>,gpu: &str, backend: &str, value: u32) -> PyResult<()> {
+    let gpu__own = gpu.to_string();
+    let backend__own = backend.to_string();
+    py.detach(|| -> PyResult<()> {
+        let gpu: &str = &gpu__own;
+        let backend: &str = &backend__own;
+
     let backend = parse_backend(backend)?;
     let inventory = {
         let mut inventory_cache = lock_inventory_cache();
@@ -1675,10 +1695,17 @@ fn set_power_limit(gpu: &str, backend: &str, value: u32) -> PyResult<()> {
         }
     }
     Ok(())
+
+    })
 }
 
 #[pyfunction]
-fn set_thermal_limit(gpu: &str, celsius: i32) -> PyResult<()> {
+fn set_thermal_limit(
+    py: Python<'_>,gpu: &str, celsius: i32) -> PyResult<()> {
+    let gpu__own = gpu.to_string();
+    py.detach(|| -> PyResult<()> {
+        let gpu: &str = &gpu__own;
+
     let inventory = {
         let mut inventory_cache = lock_inventory_cache();
         inventory_cache.entry(BackendSet::Both)?
@@ -1696,6 +1723,8 @@ fn set_thermal_limit(gpu: &str, celsius: i32) -> PyResult<()> {
         run(&target, SetTemperatureLimit { celsius }).map_err(to_py_err)?;
     }
     Ok(())
+
+    })
 }
 
 #[pyfunction]
@@ -1739,7 +1768,12 @@ fn query_tgp_watt_range(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
 
 #[pyfunction]
 #[pyo3(signature = (gpu, watts, policy_index = None))]
-fn set_tgp_watt(gpu: &str, watts: u32, policy_index: Option<usize>) -> PyResult<()> {
+fn set_tgp_watt(
+    py: Python<'_>,gpu: &str, watts: u32, policy_index: Option<usize>) -> PyResult<()> {
+    let gpu__own = gpu.to_string();
+    py.detach(|| -> PyResult<()> {
+        let gpu: &str = &gpu__own;
+
     let inventory = {
         let mut inventory_cache = lock_inventory_cache();
         inventory_cache.entry(BackendSet::Nvapi)?
@@ -1754,11 +1788,18 @@ fn set_tgp_watt(gpu: &str, watts: u32, policy_index: Option<usize>) -> PyResult<
     )
     .map_err(to_py_err)?;
     Ok(())
+
+    })
 }
 
 #[pyfunction]
 #[pyo3(signature = (gpu, policy_index = None))]
-fn reset_tgp_watt(gpu: &str, policy_index: Option<usize>) -> PyResult<()> {
+fn reset_tgp_watt(
+    py: Python<'_>,gpu: &str, policy_index: Option<usize>) -> PyResult<()> {
+    let gpu__own = gpu.to_string();
+    py.detach(|| -> PyResult<()> {
+        let gpu: &str = &gpu__own;
+
     let inventory = {
         let mut inventory_cache = lock_inventory_cache();
         inventory_cache.entry(BackendSet::Nvapi)?
@@ -1772,6 +1813,8 @@ fn reset_tgp_watt(gpu: &str, policy_index: Option<usize>) -> PyResult<()> {
     )
     .map_err(to_py_err)?;
     Ok(())
+
+    })
 }
 
 #[pyfunction]
@@ -1808,7 +1851,12 @@ fn query_dnotifier(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
 }
 
 #[pyfunction]
-fn set_dnotifier(gpu: &str, level: u8) -> PyResult<()> {
+fn set_dnotifier(
+    py: Python<'_>,gpu: &str, level: u8) -> PyResult<()> {
+    let gpu__own = gpu.to_string();
+    py.detach(|| -> PyResult<()> {
+        let gpu: &str = &gpu__own;
+
     if !(1..=5).contains(&level) {
         return Err(invalid_value("D-Notifier level must be 1..5 (D1-D5)"));
     }
@@ -1819,11 +1867,18 @@ fn set_dnotifier(gpu: &str, level: u8) -> PyResult<()> {
     let target = selected_target(&inventory.0, gpu)?;
     run(&target, SetNvapiDNotifier { level }).map_err(to_py_err)?;
     Ok(())
+
+    })
 }
 
 #[pyfunction]
 #[pyo3(signature = (gpu, celsius, policy_index = None))]
-fn set_target_temp(gpu: &str, celsius: f32, policy_index: Option<usize>) -> PyResult<()> {
+fn set_target_temp(
+    py: Python<'_>,gpu: &str, celsius: f32, policy_index: Option<usize>) -> PyResult<()> {
+    let gpu__own = gpu.to_string();
+    py.detach(|| -> PyResult<()> {
+        let gpu: &str = &gpu__own;
+
     let inventory = {
         let mut inventory_cache = lock_inventory_cache();
         inventory_cache.entry(BackendSet::Nvapi)?
@@ -1838,6 +1893,8 @@ fn set_target_temp(gpu: &str, celsius: f32, policy_index: Option<usize>) -> PyRe
     )
     .map_err(to_py_err)?;
     Ok(())
+
+    })
 }
 
 #[pyfunction]
@@ -2301,12 +2358,21 @@ fn reset_applications_clocks(gpu: &str) -> PyResult<()> {
 
 #[pyfunction]
 fn set_locked_clocks(
+    py: Python<'_>,
     gpu: &str,
     backend: &str,
     domain: &str,
     min_mhz: u32,
     max_mhz: u32,
 ) -> PyResult<()> {
+    let gpu__own = gpu.to_string();
+    let backend__own = backend.to_string();
+    let domain__own = domain.to_string();
+    py.detach(|| -> PyResult<()> {
+        let gpu: &str = &gpu__own;
+        let backend: &str = &backend__own;
+        let domain: &str = &domain__own;
+
     let inventory = {
         let mut inventory_cache = lock_inventory_cache();
         inventory_cache.entry(BackendSet::Nvml)?
@@ -2326,10 +2392,19 @@ fn set_locked_clocks(
     )
     .map_err(to_py_err)?;
     Ok(())
+
+    })
 }
 
 #[pyfunction]
-fn reset_locked_clocks(gpu: &str, backend: &str, domain: &str) -> PyResult<()> {
+fn reset_locked_clocks(
+    py: Python<'_>,gpu: &str, backend: &str, domain: &str) -> PyResult<()> {
+    let gpu__own = gpu.to_string();
+    let backend__own = backend.to_string();
+    py.detach(|| -> PyResult<()> {
+        let gpu: &str = &gpu__own;
+        let backend: &str = &backend__own;
+
     let inventory = {
         let mut inventory_cache = lock_inventory_cache();
         inventory_cache.entry(BackendSet::Nvml)?
@@ -2341,6 +2416,8 @@ fn reset_locked_clocks(gpu: &str, backend: &str, domain: &str) -> PyResult<()> {
     }
     run(&target, ResetLockedClocks { domain }).map_err(to_py_err)?;
     Ok(())
+
+    })
 }
 
 #[pyfunction]
@@ -2403,7 +2480,10 @@ fn set_pstate_clock_offset(gpu: &str, pstate: &str, domain: &str, delta: i32) ->
 }
 
 #[pyfunction]
-fn sync_memory_pstate_as_p0(gpu: &str) -> PyResult<()> {
+fn sync_memory_pstate_as_p0(
+    py: Python<'_>,gpu: &str) -> PyResult<()> {
+    py.detach(|| -> PyResult<()> {
+
     let inventory = {
         let mut inventory_cache = lock_inventory_cache();
         inventory_cache.entry(BackendSet::Nvapi)?
@@ -2411,6 +2491,8 @@ fn sync_memory_pstate_as_p0(gpu: &str) -> PyResult<()> {
     let target = selected_target(&inventory.0, gpu)?;
     nvoc_core::sync_memory_pstate_as_p0(&target).map_err(to_py_err)?;
     Ok(())
+
+    })
 }
 
 #[pyfunction]
@@ -2445,11 +2527,18 @@ fn set_cooler_levels(
 
 #[pyfunction]
 fn set_vfp_frequency_lock(
+    py: Python<'_>,
     gpu: &str,
     domain: &str,
     upper_khz: i32,
     lower_khz: Option<i32>,
 ) -> PyResult<()> {
+    let gpu__own = gpu.to_string();
+    let domain__own = domain.to_string();
+    py.detach(|| -> PyResult<()> {
+        let gpu: &str = &gpu__own;
+        let domain: &str = &domain__own;
+
     let inventory = {
         let mut inventory_cache = lock_inventory_cache();
         inventory_cache.entry(BackendSet::Nvapi)?
@@ -2465,10 +2554,17 @@ fn set_vfp_frequency_lock(
     )
     .map_err(to_py_err)?;
     Ok(())
+
+    })
 }
 
 #[pyfunction]
-fn reset_vfp_frequency_lock(gpu: &str, domain: &str) -> PyResult<()> {
+fn reset_vfp_frequency_lock(
+    py: Python<'_>,gpu: &str, domain: &str) -> PyResult<()> {
+    let gpu__own = gpu.to_string();
+    py.detach(|| -> PyResult<()> {
+        let gpu: &str = &gpu__own;
+
     let inventory = {
         let mut inventory_cache = lock_inventory_cache();
         inventory_cache.entry(BackendSet::Nvapi)?
@@ -2482,15 +2578,22 @@ fn reset_vfp_frequency_lock(gpu: &str, domain: &str) -> PyResult<()> {
     )
     .map_err(to_py_err)?;
     Ok(())
+
+    })
 }
 
 #[pyfunction]
 fn set_vfp_voltage_lock(
+    py: Python<'_>,
     gpu: &str,
     point: Option<usize>,
     voltage_uv: Option<i32>,
     feedback: Option<bool>,
 ) -> PyResult<()> {
+    let gpu__own = gpu.to_string();
+    py.detach(|| -> PyResult<()> {
+        let gpu: &str = &gpu__own;
+
     let inventory = {
         let mut inventory_cache = lock_inventory_cache();
         inventory_cache.entry(BackendSet::Nvapi)?
@@ -2512,10 +2615,19 @@ fn set_vfp_voltage_lock(
     )
     .map_err(to_py_err)?;
     Ok(())
+
+    })
 }
 
 #[pyfunction]
-fn reset_vfp_deltas(gpu: &str, domain: Option<&str>) -> PyResult<()> {
+fn reset_vfp_deltas(
+    py: Python<'_>,gpu: &str, domain: Option<&str>) -> PyResult<()> {
+    let gpu__own = gpu.to_string();
+    let domain__own = domain.map(|s| s.to_string());
+    py.detach(|| -> PyResult<()> {
+        let gpu: &str = &gpu__own;
+        let domain: Option<&str> = domain__own.as_deref();
+
     let inventory = {
         let mut inventory_cache = lock_inventory_cache();
         inventory_cache.entry(BackendSet::Nvapi)?
@@ -2529,6 +2641,8 @@ fn reset_vfp_deltas(gpu: &str, domain: Option<&str>) -> PyResult<()> {
     };
     run(&target, ResetVfpDeltas { domain }).map_err(to_py_err)?;
     Ok(())
+
+    })
 }
 
 #[pyfunction]
@@ -2550,7 +2664,12 @@ fn set_vfp_point_delta(gpu: &str, point: usize, delta: i32) -> PyResult<()> {
 }
 
 #[pyfunction]
-fn set_vfp_range_delta(gpu: &str, start: usize, end: usize, delta: i32) -> PyResult<()> {
+fn set_vfp_range_delta(
+    py: Python<'_>,gpu: &str, start: usize, end: usize, delta: i32) -> PyResult<()> {
+    let gpu__own = gpu.to_string();
+    py.detach(|| -> PyResult<()> {
+        let gpu: &str = &gpu__own;
+
     let inventory = {
         let mut inventory_cache = lock_inventory_cache();
         inventory_cache.entry(BackendSet::Nvapi)?
@@ -2566,10 +2685,19 @@ fn set_vfp_range_delta(gpu: &str, start: usize, end: usize, delta: i32) -> PyRes
     )
     .map_err(to_py_err)?;
     Ok(())
+
+    })
 }
 
 #[pyfunction]
-fn set_domain_vfp_deltas(gpu: &str, domain: &str, deltas: Vec<(usize, i32)>) -> PyResult<()> {
+fn set_domain_vfp_deltas(
+    py: Python<'_>,gpu: &str, domain: &str, deltas: Vec<(usize, i32)>) -> PyResult<()> {
+    let gpu__own = gpu.to_string();
+    let domain__own = domain.to_string();
+    py.detach(|| -> PyResult<()> {
+        let gpu: &str = &gpu__own;
+        let domain: &str = &domain__own;
+
     let inventory = {
         let mut inventory_cache = lock_inventory_cache();
         inventory_cache.entry(BackendSet::Nvapi)?
@@ -2588,6 +2716,8 @@ fn set_domain_vfp_deltas(gpu: &str, domain: &str, deltas: Vec<(usize, i32)>) -> 
     )
     .map_err(to_py_err)?;
     Ok(())
+
+    })
 }
 
 #[pyfunction]
@@ -2692,10 +2822,19 @@ fn set_legacy_clocks(gpu: &str, core_mhz: u32, memory_mhz: u32) -> PyResult<()> 
 
 #[pyfunction]
 fn set_nvapi_pstate_lock(
+    py: Python<'_>,
     gpu: &str,
     first_pstate: &str,
     second_pstate: Option<&str>,
 ) -> PyResult<()> {
+    let gpu__own = gpu.to_string();
+    let first_pstate__own = first_pstate.to_string();
+    let second_pstate__own = second_pstate.map(|s| s.to_string());
+    py.detach(|| -> PyResult<()> {
+        let gpu: &str = &gpu__own;
+        let first_pstate: &str = &first_pstate__own;
+        let second_pstate: Option<&str> = second_pstate__own.as_deref();
+
     let inventory = {
         let mut inventory_cache = lock_inventory_cache();
         inventory_cache.entry(BackendSet::Both)?
@@ -2710,14 +2849,25 @@ fn set_nvapi_pstate_lock(
     )
     .map_err(to_py_err)?;
     Ok(())
+
+    })
 }
 
 #[pyfunction]
 fn set_nvml_pstate_lock(
+    py: Python<'_>,
     gpu: &str,
     first_pstate: &str,
     second_pstate: Option<&str>,
 ) -> PyResult<()> {
+    let gpu__own = gpu.to_string();
+    let first_pstate__own = first_pstate.to_string();
+    let second_pstate__own = second_pstate.map(|s| s.to_string());
+    py.detach(|| -> PyResult<()> {
+        let gpu: &str = &gpu__own;
+        let first_pstate: &str = &first_pstate__own;
+        let second_pstate: Option<&str> = second_pstate__own.as_deref();
+
     let inventory = {
         let mut inventory_cache = lock_inventory_cache();
         inventory_cache.entry(BackendSet::Nvml)?
@@ -2732,10 +2882,17 @@ fn set_nvml_pstate_lock(
     )
     .map_err(to_py_err)?;
     Ok(())
+
+    })
 }
 
 #[pyfunction]
-fn set_voltage_boost(gpu: &str, value: u32) -> PyResult<()> {
+fn set_voltage_boost(
+    py: Python<'_>,gpu: &str, value: u32) -> PyResult<()> {
+    let gpu__own = gpu.to_string();
+    py.detach(|| -> PyResult<()> {
+        let gpu: &str = &gpu__own;
+
     let inventory = {
         let mut inventory_cache = lock_inventory_cache();
         inventory_cache.entry(BackendSet::Nvapi)?
@@ -2749,6 +2906,8 @@ fn set_voltage_boost(gpu: &str, value: u32) -> PyResult<()> {
     )
     .map_err(to_py_err)?;
     Ok(())
+
+    })
 }
 
 #[pyfunction]
@@ -2835,7 +2994,14 @@ fn clear_edid(gpu: &str, display_id: &str) -> PyResult<()> {
 }
 
 #[pyfunction]
-fn set_legacy_voltage_delta(gpu: &str, uv: i32, pstate: Option<&str>) -> PyResult<()> {
+fn set_legacy_voltage_delta(
+    py: Python<'_>,gpu: &str, uv: i32, pstate: Option<&str>) -> PyResult<()> {
+    let gpu__own = gpu.to_string();
+    let pstate__own = pstate.map(|s| s.to_string());
+    py.detach(|| -> PyResult<()> {
+        let gpu: &str = &gpu__own;
+        let pstate: Option<&str> = pstate__own.as_deref();
+
     let inventory = {
         let mut inventory_cache = lock_inventory_cache();
         inventory_cache.entry(BackendSet::Nvapi)?
@@ -2850,16 +3016,29 @@ fn set_legacy_voltage_delta(gpu: &str, uv: i32, pstate: Option<&str>) -> PyResul
     )
     .map_err(to_py_err)?;
     Ok(())
+
+    })
 }
 
 #[pyfunction]
 fn set_fan(
+    py: Python<'_>,
     gpu: &str,
     backend: &str,
     fan_id: Option<&str>,
     policy: Option<&str>,
     level: Option<u32>,
 ) -> PyResult<()> {
+    let gpu__own = gpu.to_string();
+    let backend__own = backend.to_string();
+    let fan_id__own = fan_id.map(|s| s.to_string());
+    let policy__own = policy.map(|s| s.to_string());
+    py.detach(|| -> PyResult<()> {
+        let gpu: &str = &gpu__own;
+        let backend: &str = &backend__own;
+        let fan_id: Option<&str> = fan_id__own.as_deref();
+        let policy: Option<&str> = policy__own.as_deref();
+
     let backend = parse_backend(backend)?;
     let fan_id = fan_id.unwrap_or("all");
     let level = level.unwrap_or(60);
@@ -2925,10 +3104,17 @@ fn set_fan(
         }
     }
     Ok(())
+
+    })
 }
 
 #[pyfunction]
-fn reset_core_clocks(gpu: &str, backend: &str) -> PyResult<()> {
+fn reset_core_clocks(
+    py: Python<'_>,gpu: &str, backend: &str) -> PyResult<()> {
+    let gpu__own = gpu.to_string();
+    py.detach(|| -> PyResult<()> {
+        let gpu: &str = &gpu__own;
+
     let backend = parse_backend(backend)?;
     let inventory = {
         let mut inventory_cache = lock_inventory_cache();
@@ -2972,10 +3158,17 @@ fn reset_core_clocks(gpu: &str, backend: &str) -> PyResult<()> {
         }
     }
     Ok(())
+
+    })
 }
 
 #[pyfunction]
-fn reset_mem_clocks(gpu: &str, backend: &str) -> PyResult<()> {
+fn reset_mem_clocks(
+    py: Python<'_>,gpu: &str, backend: &str) -> PyResult<()> {
+    let gpu__own = gpu.to_string();
+    py.detach(|| -> PyResult<()> {
+        let gpu: &str = &gpu__own;
+
     let backend = parse_backend(backend)?;
     let inventory = {
         let mut inventory_cache = lock_inventory_cache();
@@ -3019,10 +3212,15 @@ fn reset_mem_clocks(gpu: &str, backend: &str) -> PyResult<()> {
         }
     }
     Ok(())
+
+    })
 }
 
 #[pyfunction]
-fn reset_vfp_lock(gpu: &str) -> PyResult<()> {
+fn reset_vfp_lock(
+    py: Python<'_>,gpu: &str) -> PyResult<()> {
+    py.detach(|| -> PyResult<()> {
+
     let inventory = {
         let mut inventory_cache = lock_inventory_cache();
         inventory_cache.entry(BackendSet::Nvapi)?
@@ -3030,10 +3228,19 @@ fn reset_vfp_lock(gpu: &str) -> PyResult<()> {
     let target = selected_target(&inventory.0, gpu)?;
     run(&target, ResetVfpLock).map_err(to_py_err)?;
     Ok(())
+
+    })
 }
 
 #[pyfunction]
-fn reset_all(gpu: &str, domain: Option<&str>) -> PyResult<()> {
+fn reset_all(
+    py: Python<'_>,gpu: &str, domain: Option<&str>) -> PyResult<()> {
+    let gpu__own = gpu.to_string();
+    let domain__own = domain.map(|s| s.to_string());
+    py.detach(|| -> PyResult<()> {
+        let gpu: &str = &gpu__own;
+        let domain: Option<&str> = domain__own.as_deref();
+
     let inventory = {
         let mut inventory_cache = lock_inventory_cache();
         inventory_cache.entry(BackendSet::Both)?
@@ -3085,6 +3292,8 @@ fn reset_all(gpu: &str, domain: Option<&str>) -> PyResult<()> {
         );
     }
     Ok(())
+
+    })
 }
 
 #[pymodule]
