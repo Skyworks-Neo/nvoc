@@ -11,26 +11,10 @@ Optimizations:
 """
 
 import os
-import sys
 import importlib
 
-# ── Fail fast on Python 3.14+ (Tcl/Tk 9 zipfs) ──
-# Python 3.14 ships Tcl/Tk 9.0 with the library data embedded in the DLL's
-# zipfs virtual filesystem ('//zipfs:/lib/tcl/...') instead of real on-disk
-# directories. PyInstaller's TclTkInfo cannot collect from zipfs and only
-# emits warnings — the resulting exe bundles ZERO tcl/tk data files and dies
-# at first launch with:
-#   FileNotFoundError: Tcl data directory "..._MEI..._tcl_data" not found
-# Build with Python 3.13 (Tcl/Tk 8.6, real tcl\tcl8.6\ dirs) until PyInstaller
-# gains zipfs support.
-if sys.version_info >= (3, 14):
-    raise SystemExit(
-        "ERROR: Python %d.%d detected. Tcl/Tk 9.0 embeds its library data in "
-        "the DLL zipfs, which PyInstaller cannot bundle — the exe would fail "
-        "at first launch with '_tcl_data not found'. Rebuild with Python "
-        "3.13 (e.g. `uv venv -p 3.13 && uv pip install -r requirements.txt`)."
-        % sys.version_info[:2]
-    )
+# NOTE: requires PyInstaller >= 6.22 for Tcl/Tk 9 (Python 3.14) embedded
+# data-archive support; older versions silently bundle zero tcl/tk files.
 
 # ── Locate customtkinter assets automatically ──
 ctk_path = os.path.dirname(importlib.import_module("customtkinter").__file__)
