@@ -92,6 +92,12 @@ class VFCurveTab:
         self._last_chart_resize_height: Optional[int] = None
         self._pending_chart_resize_wh: Optional[Tuple[int, int]] = None
         self._is_resize_active = False
+        # True while a mouse button is held on the chart (point drag /
+        # selection drag). The dashboard poll's live-point update is deferred
+        # to pending during interaction — its per-second matplotlib blit was
+        # contending with the drag's own blit over the cached background,
+        # making point drags stutter once per second.
+        self._mouse_pressed = False
         self._pending_live_point: Optional[Tuple[Optional[float], Optional[float]]] = (
             None
         )
@@ -1064,6 +1070,7 @@ class VFCurveTab:
             return
 
         if event.button == 1:  # Left click = start selection / drag
+            self._mouse_pressed = True
             idx = self._find_nearest_index(event.xdata)
             if idx is None:
                 return
@@ -1091,6 +1098,12 @@ class VFCurveTab:
 
     def _on_mouse_release(self, event):
         if event.button == 1:
+            if self._mouse_pressed:
+                self._mouse_pressed = False
+                # Apply any live-point update deferred during the interaction
+                # (the dashboard poll's crosshair blit would otherwise contend
+                # with the drag's blit over the cached background).
+                self._flush_pending_live_point()
             if self._dragging:
                 self._dragging = False
                 self._drag_start_y = None
@@ -1287,10 +1300,19 @@ class VFCurveTab:
             return
         self._live_volt = volt_mv
         self._live_freq = freq_mhz
-        if self._is_resize_active or not self._chart_should_draw():
+        if self._is_resize_active or self._mouse_pressed or not self._chart_should_draw():
             self._pending_live_point = (volt_mv, freq_mhz)
             return
         self._draw_live_point()
+
+    def _flush_pending_live_point(self):
+        """Apply a deferred live-point update after resize/interaction ends."""
+        if self._pending_live_point is None:
+            return
+        self._live_volt, self._live_freq = self._pending_live_point
+        self._pending_live_point = None
+        if self._chart_should_draw():
+            self._draw_live_point()
 
     def _chart_should_draw(self) -> bool:
         if not hasattr(self, "canvas") or not hasattr(self, "_chart_frame"):
@@ -1316,11 +1338,7 @@ class VFCurveTab:
             self._pending_full_redraw = False
             self._redraw()
 
-        if self._pending_live_point is not None:
-            self._live_volt, self._live_freq = self._pending_live_point
-            self._pending_live_point = None
-            if self._chart_should_draw():
-                self._draw_live_point()
+        self._flush_pending_live_point()
 
     def _draw_live_point(self, call_draw_idle: bool = True):
         if self._live_volt is None or self._live_freq is None or not self._voltages:
