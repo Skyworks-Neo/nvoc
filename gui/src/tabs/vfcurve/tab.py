@@ -378,6 +378,12 @@ class VFCurveTab:
     def _on_canvas_draw(self, _event):
         if self._cleaned_up or self.ax is None:
             return
+        # Skip the post-draw overlay blit while a mouse button is held: it
+        # contends with the drag's own blit over the cached background and, if
+        # it lands in the Tcl queue ahead of a pending press, delays the click.
+        # The drag/release path re-establishes the overlay as needed.
+        if self._mouse_pressed or self._dragging:
+            return
         try:
             # Full draw finished: static content is in the buffer; cache it,
             # then paint the animated artists on top (they were skipped).
