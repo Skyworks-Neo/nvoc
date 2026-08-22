@@ -255,6 +255,7 @@ class DashboardTab:
         self._first_snapshot_done = False  # one snapshot on first render only
         self._interval_ms = self._DEFAULT_INTERVAL_MS
         self._is_resize_active = False
+        self._vfcurve_active = False  # set by _set_vfcurve_active on tab change
         self._pending_done_payload: Optional[Tuple[int, str]] = None
 
         self._build_ui()
@@ -576,16 +577,18 @@ class DashboardTab:
         # row redraws + snapshot write to keep the main thread free for the
         # curve's drag/blit event stream (a full _parse_and_update every
         # second interrupted point drags).
-        live_only = self._vfcurve_active()
+        live_only = self._vfcurve_active
         self._apply_done_payload(retcode, output, live_only=live_only)
         self._schedule_next()
 
-    def _vfcurve_active(self) -> bool:
-        """True when the VF Curve tab is the currently shown tab."""
-        try:
-            return str(self.app.tabview.get()).endswith("VF Curve")
-        except Exception:
-            return False
+    def _set_vfcurve_active(self, active: bool) -> None:
+        """Mark whether the VF Curve tab owns the crosshair refresh.
+
+        When active, this dashboard poll's completion pushes volt/freq into
+        vfcurve's thread-safe sink (no blit) instead of scheduling an after(0)
+        blit, so a pending mouse-press on the curve is never delayed.
+        """
+        self._vfcurve_active = active
 
     def _apply_done_payload(
         self, retcode: int, output: str, live_only: bool = False
@@ -629,12 +632,13 @@ class DashboardTab:
         pwr_w = as_float(parsed_status.get("power_w"))
 
         # VF Curve tab: only the live crosshair (voltage/frequency) is visible.
-        # Forward just those two and return — skip the lock sync, the 5 metric
-        # rows, and the snapshot write, so the main thread stays free for the
-        # curve's drag/blit event stream.
+        # Push the values into vfcurve's thread-safe sink (no blit here) — the
+        # vfcurve live timer drains them. Scheduling a blit from this after(0)
+        # completion would interpose it ahead of a pending mouse-press in the
+        # Tcl queue and delay the first click on the curve.
         if live_only:
             if getattr(self.app, "tab_vfcurve", None) is not None:
-                self.app.tab_vfcurve.update_live_point(volt_mv, gpu_mhz)
+                self.app.tab_vfcurve.set_live_pending(volt_mv, gpu_mhz)
             return
 
         locked_value = parsed_status.get("vfp_locked")

@@ -445,6 +445,14 @@ class App(ctk.CTk):
             self._query_gpu_get()
             self.tab_dashboard._fetch_once()
 
+        # Leaving VF Curve: stop its crosshair timer and hand polling back to
+        # the dashboard so the metric rows refresh again.
+        if not current_tab.endswith("VF Curve"):
+            if self.tab_vfcurve is not None:
+                self.tab_vfcurve.stop_live_poll()
+            if self.tab_dashboard is not None:
+                self.tab_dashboard._set_vfcurve_active(False)
+
         elif current_tab.endswith("VF Curve"):
             if self.tab_vfcurve is None:
                 self.tab_vfcurve = VFCurveTab(self.tabview.tab("📈 VF Curve"), self)
@@ -455,6 +463,12 @@ class App(ctk.CTk):
                     )
                 if hasattr(self, "_gpu_limits_cache") and self._gpu_limits_cache:
                     self.tab_vfcurve.sync_freq_locks_from_cache(self._gpu_limits_cache)
+            # Crosshair refresh is owned by vfcurve's own low-cadence timer so
+            # the dashboard poll's after(0) completion cannot interpose a blit
+            # ahead of a mouse-press on the curve.
+            self.tab_vfcurve.start_live_poll()
+            if self.tab_dashboard is not None:
+                self.tab_dashboard._set_vfcurve_active(True)
             # P-States are a per-GPU capability: query once per GPU
             # selection, not on every tab entry.
             gpu = self.selected_gpu_target()

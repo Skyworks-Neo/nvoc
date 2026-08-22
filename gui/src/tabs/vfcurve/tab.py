@@ -111,6 +111,14 @@ class VFCurveTab:
         self._auto_interval_var = ctk.StringVar(value="1.0")
         self._auto_toggle_btn = None
         self.quick_export_var = ctk.BooleanVar(value=True)
+        # Live crosshair poller — independent of the dashboard poll so its
+        # after(0,_on_done) cannot interpose a blit ahead of a mouse-press
+        # event in the Tcl queue. The worker writes volt/freq into
+        # _live_pending (GIL-safe scalar); this timer picks them up and
+        # blits at a low cadence, skipping while the user is interacting.
+        self._live_poll_job: Optional[str] = None
+        self._live_pending: Tuple[Optional[float], Optional[float]] = (None, None)
+        self._live_poll_inflight = False
 
         # ── Top: chart area (controls row + plot) ──
         chart_area = tk.Frame(self.frame, bg=_PANEL_BG)
@@ -508,6 +516,7 @@ class VFCurveTab:
             self._key_redraw_after_id = None
 
         self._stop_auto_refresh()
+        self.stop_live_poll()
 
         if self._chart_configure_bind_id is not None:
             try:
@@ -1323,6 +1332,53 @@ class VFCurveTab:
         self._pending_live_point = None
         if self._chart_should_draw():
             self._draw_live_point()
+
+    # ── Live crosshair poller (independent of the dashboard poll) ──
+    _LIVE_POLL_MS = 1000
+
+    def set_live_pending(self, volt_mv: Optional[float], freq_mhz: Optional[float]) -> None:
+        """Thread-safe sink for volt/freq from a background poll worker.
+
+        The dashboard poll feeds the crosshair through this instead of
+        scheduling an after(0) blit, so its completion cannot interpose a
+        blit ahead of a mouse-press in the Tcl event queue (which delayed
+        the first click on the curve). The live timer below drains it.
+        """
+        self._live_pending = (volt_mv, freq_mhz)
+
+    def start_live_poll(self) -> None:
+        """Begin the low-cadence crosshair refresh (VF Curve tab active)."""
+        if self._live_poll_job is None:
+            self._live_poll_job = self.app.after(
+                self._LIVE_POLL_MS, self._live_poll_tick
+            )
+
+    def stop_live_poll(self) -> None:
+        if self._live_poll_job is not None:
+            try:
+                self.app.after_cancel(self._live_poll_job)
+            except Exception:
+                pass
+            self._live_poll_job = None
+
+    def _live_poll_tick(self) -> None:
+        self._live_poll_job = None
+        if self._cleaned_up:
+            return
+        # Drain the latest volt/freq pushed by the background poll worker and
+        # blit — but only when idle. During a drag/press the value is held and
+        # flushed on release via _flush_pending_live_point.
+        volt, freq = self._live_pending
+        self._live_volt = volt
+        self._live_freq = freq
+        if not (self._is_resize_active or self._mouse_pressed) and self._chart_should_draw():
+            self._draw_live_point()
+        elif self._mouse_pressed or self._is_resize_active:
+            # hold for the release/resize-end flush
+            self._pending_live_point = (volt, freq)
+        self._live_poll_job = self.app.after(
+            self._LIVE_POLL_MS, self._live_poll_tick
+        )
 
     @property
     def is_interacting(self) -> bool:
