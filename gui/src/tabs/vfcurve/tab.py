@@ -1324,6 +1324,14 @@ class VFCurveTab:
         if self._chart_should_draw():
             self._draw_live_point()
 
+    @property
+    def is_interacting(self) -> bool:
+        """True while the user is actively dragging points or extending a
+        selection on the curve. The dashboard poll pauses during interaction
+        so its per-second NVAPI sweep + main-thread completion callback
+        (parse/rows/snapshot/live-point) cannot interrupt the drag."""
+        return bool(self._mouse_pressed or self._dragging)
+
     def _chart_should_draw(self) -> bool:
         if not hasattr(self, "canvas") or not hasattr(self, "_chart_frame"):
             return False

@@ -509,6 +509,14 @@ class DashboardTab:
         if self._is_resize_active:
             self._schedule_next()
             return
+        # Pause while the VF Curve tab is being interacted with (point drag /
+        # selection drag): the per-second NVAPI sweep's main-thread completion
+        # (parse + rows + snapshot + live-point) interrupts the drag's event
+        # stream. The next tick after the interaction ends resumes polling.
+        tab_vfcurve = getattr(self.app, "tab_vfcurve", None)
+        if tab_vfcurve is not None and getattr(tab_vfcurve, "is_interacting", False):
+            self._schedule_next()
+            return
         # Don't burn a full NVAPI+NVML status sweep per second while the
         # window is in the tray. Keep it running on the Dashboard (row
         # refresh) AND on VF Curve: the curve's green live-crosshair
