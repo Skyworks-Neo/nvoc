@@ -1545,6 +1545,34 @@ impl GpuOperation for SetNvapiVfpRangePrivate {
     }
 }
 
+/// Per-point variant of [`SetNvapiVfpRangePrivate`]: writes a DIFFERENT raw
+/// mode-1 value to each point in `[start, end]` in a single RMW cycle.
+/// `deltas.len()` must equal `end - start + 1`. Used by the CLI
+/// `--raw-converted` path which translates one MHz target through each
+/// point's own g(def) prior.
+#[derive(Clone, Debug)]
+pub struct SetNvapiVfpRangePerPointPrivate {
+    pub bank: usize,
+    pub start: usize,
+    pub end: usize,
+    pub deltas: Vec<i16>,
+}
+
+impl GpuOperation for SetNvapiVfpRangePerPointPrivate {
+    type Output = Option<()>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiVfpRangePrivate
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        Ok(target
+            .nvapi()?
+            .set_vfp_range_per_point_private(self.bank, self.start, self.end, &self.deltas)
+            .map_err(Error::from)?)
+    }
+}
+
 /// Batch-measure physical clocks for a set of domains via the V3
 /// MEASURE_FREQ (RM 0x20809006, magic 0x30038) — one RM round-trip per
 /// sample for the whole set, with per-domain V1/V2 fallback.

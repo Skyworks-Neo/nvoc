@@ -24,6 +24,7 @@ use nvoc_core::{
     SetNvapiClkDomainOffset, SetNvapiDNotifier,
     SetNvapiVfpPointPrivate,
     SetNvapiVfpRangePrivate,
+    SetNvapiVfpRangePerPointPrivate,
     SetNvapiDynamicBoost, SetNvapiPStateNative, SetNvapiPowerLimits, SetNvapiPstateLock,
     SetNvapiSensorLimits, SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvapiVoltRailOffset,
     SetNvapiVoltRailTarget, SetNvmlPstateLock, SetPowerLimit, SetPstateBaseVoltage,
@@ -367,7 +368,7 @@ impl Command {
                 "Write one V/F curve point via the private SetControl (dangerous V/F edit; bank 0=V/F curve, 1=pstate-class; default/--freq-mode = kHz freq offset (same as public VFP, safest; also reaches xbar/host domains); --raw-converted = MHz target translated to a raw f-offset control value via the universal g(def) prior; --raw = write the raw f-offset control value verbatim)"
             }
             Self::SetVfpRangePrivate => {
-                "Write a range of V/F curve points with the same raw f-offset control value via the private SetControl (dangerous batch V/F edit; single RMW cycle; value is the raw mode-1 control word)"
+                "Write a range of V/F curve points via the private SetControl (dangerous batch V/F edit; single RMW cycle; default/--freq-mode = same kHz freq offset on every point, --raw-converted = one MHz target translated per-point via g(def), --raw = one raw control word on every point)"
             }
             Self::SetThermalLimitC => "Set thermal limit in Celsius",
             Self::SetTemperatureThresholds => {
@@ -525,6 +526,7 @@ impl Command {
             Self::SetVoltRailOffset | Self::SetVoltRailTarget => &["expect-type"],
             Self::SetClkDomainOffset => &["temporary", "slot"],
             Self::SetVfpPointPrivate => &["freq-mode", "raw", "raw-converted"],
+            Self::SetVfpRangePrivate => &["freq-mode", "raw", "raw-converted"],
             _ => &[],
         }
     }
@@ -653,7 +655,7 @@ impl Command {
                 PositionalArg::hyphen(
                     "arg_delta",
                     "VALUE",
-                    "Raw f-offset control value written to every point in the range (NOT MHz and NOT 0.1mV — it is the opaque mode-1 control word; effect_mhz = C(def)*(delta-D0) per the universal g(def) prior)",
+                    "default/--freq-mode: kHz freq offset applied to every point (e.g. 200000 = +200 MHz). --raw-converted: MHz target translated per-point to a raw f-offset control value via g(def) (each point gets its own C(def)/D0). --raw: raw f-offset control word applied to every point",
                 ),
             ],
             Self::SetVfpPointPrivate => vec![
@@ -2697,29 +2699,112 @@ fn execute_target(
             if start > end {
                 return Err(CliError::new("start must be <= end"));
             }
-            // mode 1 raw reverse-voltage control word (NOT 0.1mV — that label was wrong)
-            let val = parse_i32_unit(&invocation.positionals[3], "", "raw control value")?;
-            let out = run(
-                target,
-                SetNvapiVfpRangePrivate {
-                    bank,
-                    start,
-                    end,
-                    delta_mhz: val as i16,
-                },
-            )?
-            .output;
-            Ok(match out {
-                Some(()) => json!({
+            let val: i32 = invocation.positionals[3]
+                .trim()
+                .parse()
+                .map_err(|e| CliError::new(format!("invalid VALUE: {e}")))?;
+            let raw_flag = option_bool(invocation, "raw", false)?;
+            let raw_converted = option_bool(invocation, "raw-converted", false)?;
+            if raw_flag && raw_converted {
+                return Err(CliError::new("--raw and --raw-converted are mutually exclusive"));
+            }
+            let freq_mode = !raw_flag && !raw_converted;
+
+            if freq_mode {
+                // mode 0 kHz offset: the batch range method only writes mode 1,
+                // so loop the single-point setter (verified safe). One RMW per
+                // point — slower than a single SET but correct for mode 0.
+                for idx in start..=end {
+                    let _ = run(
+                        target,
+                        SetNvapiVfpPointPrivate {
+                            bank,
+                            idx,
+                            freq_mode: true,
+                            value: val as u32,
+                        },
+                    )?;
+                }
+                Ok(json!({
                     "applied": true,
                     "bank": bank,
                     "start": start,
                     "end": end,
-                    "raw_f_offset_control_value": val,
+                    "mode": "freq_offset",
+                    "value": val,
+                    "unit": "kHz",
                     "points_written": end - start + 1,
-                }),
-                None => json!({"supported": false}),
-            })
+                }))
+            } else if raw_flag {
+                // mode 1: same raw control word on every point
+                let out = run(
+                    target,
+                    SetNvapiVfpRangePrivate {
+                        bank,
+                        start,
+                        end,
+                        delta_mhz: val as i16,
+                    },
+                )?
+                .output;
+                Ok(match out {
+                    Some(()) => json!({
+                        "applied": true,
+                        "bank": bank,
+                        "start": start,
+                        "end": end,
+                        "mode": "raw_f_offset_control",
+                        "value": val,
+                        "unit": "raw",
+                        "points_written": end - start + 1,
+                    }),
+                    None => json!({"supported": false}),
+                })
+            } else {
+                // --raw-converted: translate the MHz target per-point via g(def)
+                let vfp = run(target, QueryNvapiClkVfPoints)?.output;
+                let vfp = vfp
+                    .as_ref()
+                    .ok_or_else(|| CliError::new("could not read V/F points — pass --raw"))?;
+                let class_for = |idx: usize| -> nvoc_core::ClkVfDomainClass {
+                    match vfp.segments.iter().find(|s| {
+                        s.bank as usize == bank && idx >= s.start_index as usize && idx <= s.end_index as usize
+                    }).map(|s| s.domain_hint) {
+                        Some(nvoc_core::ClkVfDomainHint::Xbar) | Some(nvoc_core::ClkVfDomainHint::Host) => nvoc_core::ClkVfDomainClass::Fabric,
+                        _ => nvoc_core::ClkVfDomainClass::Graphics,
+                    }
+                };
+                let mut deltas: Vec<i16> = Vec::with_capacity(end - start + 1);
+                for idx in start..=end {
+                    let point = vfp.points.iter().find(|p| p.bank as usize == bank && p.index as usize == idx)
+                        .ok_or_else(|| CliError::new(format!("point {idx} not present — pass --raw")))?;
+                    let def = point.freq_default_mhz as u32;
+                    if def == 0 {
+                        return Err(CliError::new(format!("point {idx} default frequency is 0 — pass --raw")));
+                    }
+                    let delta = nvoc_core::clk_vf_delta_for_target(def, val as f64, class_for(idx))
+                        .ok_or_else(|| CliError::new(format!("no g(def) prior for point {idx} def={def} — pass --raw")))?;
+                    deltas.push(delta.clamp(-1000, 1000) as i16);
+                }
+                let out = run(
+                    target,
+                    SetNvapiVfpRangePerPointPrivate { bank, start, end, deltas: deltas.clone() },
+                )?
+                .output;
+                Ok(match out {
+                    Some(()) => json!({
+                        "applied": true,
+                        "bank": bank,
+                        "start": start,
+                        "end": end,
+                        "mode": "raw_f_offset_control",
+                        "target_mhz": val,
+                        "per_point_raw_values": deltas,
+                        "points_written": end - start + 1,
+                    }),
+                    None => json!({"supported": false}),
+                })
+            }
         }
         Command::SetClkDomainOffset => {
             // DANGEROUS clock write — see xbar.txt safety recipe. The medium

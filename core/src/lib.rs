@@ -37,7 +37,7 @@ pub use operation::{
     SetLockedClocks, SetNvapiClkDomainOffset, SetNvapiDNotifier, SetNvapiDynamicBoost, SetNvapiPStateNative,
     SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiSensorLimits, SetNvapiTargetTemp,
     SetNvapiTgpWatt, SetNvapiVoltRailOffset, SetNvapiVoltRailTarget,
-    SetNvapiVfpPointPrivate, SetNvapiVfpRangePrivate, SetNvmlPstateLock,
+    SetNvapiVfpPointPrivate, SetNvapiVfpRangePrivate, SetNvapiVfpRangePerPointPrivate, SetNvmlPstateLock,
     SetPowerLimit, SetPstateBaseVoltage, SetPstateClockOffset, SetTemperatureLimit,
     SetVfpFrequencyLock, SetVfpPointDelta, SetVfpRangeDelta, SetVfpVoltageLock, SetVoltageBoost,
     TgpWattRangeInfo, detect_gpu_type, fetch_gpu_type, find_matching_vfp_point,
