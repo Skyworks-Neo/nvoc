@@ -252,6 +252,7 @@ class DashboardTab:
         # The very first successful sample is mandatory (wake the GPU if
         # needed); afterwards polling never blocks GC6 sleep.
         self._first_success = False
+        self._first_snapshot_done = False  # one snapshot on first render only
         self._interval_ms = self._DEFAULT_INTERVAL_MS
         self._is_resize_active = False
         self._pending_done_payload: Optional[Tuple[int, str]] = None
@@ -680,8 +681,12 @@ class DashboardTab:
                 fresh[key] = val
             else:
                 self._rows[key].set_error()
-        if fresh:
+        # Persist one snapshot on the first successful render — it is only a
+        # cold-start fallback to paint stale data before the first live poll.
+        # Re-writing it every poll was wasted main-thread file I/O.
+        if fresh and not self._first_snapshot_done:
             self._save_snapshot(fresh)
+            self._first_snapshot_done = True
 
     # ── Quick-access button handlers ──────────────────────────────────────────
     def _refresh_info(self) -> None:
