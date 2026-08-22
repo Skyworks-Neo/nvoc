@@ -2714,8 +2714,11 @@ fn execute_target(
                 // mode 0 kHz offset: the batch range method only writes mode 1,
                 // so loop the single-point setter (verified safe). One RMW per
                 // point — slower than a single SET but correct for mode 0.
+                // The setter readback-verifies; if the driver silently rejects
+                // (e.g. CMP 170HX doesn't support mode 0), hi returns Ok(None)
+                // — surface that as "not supported" instead of "applied".
                 for idx in start..=end {
-                    let _ = run(
+                    let out = run(
                         target,
                         SetNvapiVfpPointPrivate {
                             bank,
@@ -2723,7 +2726,11 @@ fn execute_target(
                             freq_mode: true,
                             value: val as u32,
                         },
-                    )?;
+                    )?
+                    .output;
+                    if out.is_none() {
+                        return Ok(json!({"supported": false}));
+                    }
                 }
                 Ok(json!({
                     "applied": true,
