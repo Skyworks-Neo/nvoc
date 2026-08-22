@@ -191,6 +191,11 @@ class App(ctk.CTk):
         self._is_resizing = False
         self._resize_settle_after_id = None  # type: Optional[str]
         self._last_root_width = None  # type: Optional[int]
+        # Last root geometry (x, y, w, h) — any change (incl. a pure title-bar
+        # drag that moves the window without resizing) starts an interaction
+        # session that pauses polling, so DWM compositing doesn't contend
+        # with the NVAPI sweep and the drag doesn't stutter once per second.
+        self._last_root_geom: Optional[Tuple[int, int, int, int]] = None
         self._resize_targets = []  # type: List[Any]
 
         self.title("NVOC-GUI — NVIDIA GPU VF Curve Optimizer")
@@ -626,13 +631,24 @@ class App(ctk.CTk):
         self._notify_resize_targets(resizing=False, force_flush=True)
 
     def _on_root_configure(self, event):
-        """Track active drag-resize sessions from root window size changes."""
+        """Track active drag-resize AND title-bar move sessions.
+
+        A Windows title-bar drag fires <Configure> with the same w/h but a
+        changing x/y — so gating on width alone missed pure moves and the
+        dashboard NVAPI sweep kept firing once per second, contending with
+        DWM compositing and stuttering the drag. Any geometry change
+        (x/y/w/h) starts (or re-arms) an interaction session that pauses
+        polling; 140 ms of quiet ends it and flushes deferred work.
+        """
         if event.widget is not self:
             return
-        width = int(event.width)
-        if self._last_root_width == width:
+        geom = (int(event.x), int(event.y), int(event.width), int(event.height))
+        # Only width is used downstream by resize-sensitive redraws, but the
+        # session itself keys on the full geometry so moves are covered.
+        self._last_root_width = geom[2]
+        if self._last_root_geom == geom:
             return
-        self._last_root_width = width
+        self._last_root_geom = geom
         self._begin_resize_session()
         if self._resize_settle_after_id:
             try:
