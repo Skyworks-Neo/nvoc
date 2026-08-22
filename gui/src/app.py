@@ -854,12 +854,19 @@ class App(ctk.CTk):
         self._on_gpu_changed(label)
 
     def _query_gpu_info(self):
-        """Run 'info' for the selected GPU and parse hardware limits."""
+        """Run 'info' for the selected GPU and parse hardware limits.
+
+        'get' (P-States / OC capabilities) has no dependency on 'info' — fire
+        it concurrently; pynvoc queries run lock-free against the Arc'd
+        inventory snapshot, so they genuinely overlap instead of queueing.
+        'status' stays chained after info (its merge wants the info cache).
+        """
         self.run_gpu_query_async(
             ["info"],
             lambda _retcode, output: self._parse_gpu_info(output),
             thread_name="gpu-info",
         )
+        self.run_gpu_query_async(["get"], self._apply_gpu_get, thread_name="gpu-get")
 
     def _parse_gpu_info(self, output: str):
         """Parse 'info' output to extract hardware limits for overclock tab."""
@@ -908,8 +915,8 @@ class App(ctk.CTk):
 
         # Always query status after info, regardless of parse result.
         # _apply_initial_status will merge into whatever _gpu_limits_cache contains.
+        # ('get' was already fired concurrently with 'info' in _query_gpu_info.)
         self._query_initial_status()
-        self._query_gpu_get()
 
     def _query_initial_status(self):
         """Run 'status' once at startup to detect VFP lock, then refresh VF curve."""

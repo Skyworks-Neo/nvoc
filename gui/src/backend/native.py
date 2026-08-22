@@ -132,36 +132,41 @@ class NativeBackend:
 
     def _query_mobile_limits_once(self, gpu: str) -> dict[str, Any]:
         native = self._pynvoc()
-        tgp = None
-        dnotifier = None
-        policies: Any = []
-        enforced_w = None
-        volt_rail = None
-        try:
-            tgp = native.query_tgp_watt_range(gpu)
-        except Exception:
-            tgp = None
-        try:
-            dnotifier = native.query_dnotifier(gpu)
-        except Exception:
-            dnotifier = None
-        try:
-            policies = native.query_target_temp_policies(gpu)
-        except Exception:
-            policies = []
-        try:
-            # NVML enforced power limit: the actually-active power wall
-            # (post D-Notifier/load clamp) — the TGP policy itself exposes
-            # no current-value read, so this is the closest real position.
-            enforced_w = native.query_status(gpu, "both").get("power_limit_w")
-        except Exception:
-            enforced_w = None
-        try:
+        # All five sub-queries are independent NVAPI reads and pynvoc runs
+        # them lock-free against the Arc'd inventory snapshot — fan them out
+        # so the mobile control surface loads in ~max(query) instead of the
+        # sum (each sweep is 100-500ms on a woken dGPU).
+        from concurrent.futures import ThreadPoolExecutor
+
+        def _safe(fn, default):
+            try:
+                return fn()
+            except Exception:
+                return default
+
+        with ThreadPoolExecutor(max_workers=5, thread_name_prefix="nvoc-mobile") as pool:
+            tgp_f = pool.submit(_safe, lambda: native.query_tgp_watt_range(gpu), None)
+            dnotifier_f = pool.submit(_safe, lambda: native.query_dnotifier(gpu), None)
+            policies_f = pool.submit(
+                _safe, lambda: native.query_target_temp_policies(gpu), []
+            )
+            enforced_f = pool.submit(
+                _safe,
+                # NVML enforced power limit: the actually-active power wall
+                # (post D-Notifier/load clamp) — the TGP policy itself exposes
+                # no current-value read, so this is the closest real position.
+                lambda: native.query_status(gpu, "both").get("power_limit_w"),
+                None,
+            )
             # Private VoltRails P0 bounds: VBIOS/VRM voltage ceilings + the
             # currently-effective voltage wall (the limit slider position).
-            volt_rail = native.query_volt_rails(gpu)
-        except Exception:
-            volt_rail = None
+            volt_rail_f = pool.submit(_safe, lambda: native.query_volt_rails(gpu), None)
+
+        tgp = tgp_f.result()
+        dnotifier = dnotifier_f.result()
+        policies = policies_f.result()
+        enforced_w = enforced_f.result()
+        volt_rail = volt_rail_f.result()
         if not isinstance(policies, list):
             policies = []
         if not isinstance(volt_rail, dict):
