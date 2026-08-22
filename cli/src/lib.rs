@@ -364,7 +364,7 @@ impl Command {
                 "Read the private ClockClient V/F-points family: per-bank point masks + V/F curve records (voltage-indexed, units calibrated vs the public GPC VFP)"
             }
             Self::SetVfpPointPrivate => {
-                "Write one V/F curve point via the private SetControl (dangerous V/F edit; bank 0=pstate-class, 1=V/F curve; default/--freq-mode = kHz freq offset (same as public VFP, safest; also reaches xbar/host domains); --raw-converted = MHz target translated to a raw f-offset control value via the universal g(def) prior; --raw = write the raw f-offset control value verbatim)"
+                "Write one V/F curve point via the private SetControl (dangerous V/F edit; bank 0=V/F curve, 1=pstate-class; default/--freq-mode = kHz freq offset (same as public VFP, safest; also reaches xbar/host domains); --raw-converted = MHz target translated to a raw f-offset control value via the universal g(def) prior; --raw = write the raw f-offset control value verbatim)"
             }
             Self::SetVfpRangePrivate => {
                 "Write a range of V/F curve points with the same raw f-offset control value via the private SetControl (dangerous batch V/F edit; single RMW cycle; value is the raw mode-1 control word)"
@@ -638,7 +638,7 @@ impl Command {
                 PositionalArg::free(
                     "arg_bank",
                     "BANK",
-                    "Bank: 0 = pstate-class records, 1 = V/F curve points",
+                    "Bank: 0 = V/F curve points, 1 = pstate-class records",
                 ),
                 PositionalArg::free(
                     "arg_start",
@@ -660,7 +660,7 @@ impl Command {
                 PositionalArg::free(
                     "arg_bank",
                     "BANK",
-                    "Bank: 0 = pstate-class records, 1 = V/F curve points",
+                    "Bank: 0 = V/F curve points, 1 = pstate-class records",
                 ),
                 PositionalArg::free(
                     "arg_index",

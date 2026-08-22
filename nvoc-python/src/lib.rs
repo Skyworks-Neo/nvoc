@@ -2173,7 +2173,7 @@ fn set_clk_domain_offset(
 /// Write one V/F curve point via the private ClockClient V/F-POINTS
 /// SetControl (ID 0xFEC00D04). DANGEROUS: snapshots the full control
 /// block, patches one record (mode 0 freq-offset / mode 1 delta), SETs,
-/// readbacks, restores on mismatch. `bank` 0 = pstate-class, 1 = V/F
+/// readbacks, restores on mismatch. `bank` 0 = V/F curve, 1 = pstate-class
 /// curve points; `idx` 0..2047. `freq_mode` = mode 0 (u32 kHz) vs mode 1
 /// (i16 delta). Returns `{"supported": false}` when the driver refuses.
 #[pyfunction]

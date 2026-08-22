@@ -1495,7 +1495,7 @@ impl GpuOperation for QueryNvapiClkDomainFreqDetail {
 /// Write one V/F curve point via the private ClockClient V/F-POINTS
 /// SetControl (ID 0xFEC00D04). DANGEROUS: snapshots the full control block,
 /// patches one record (mode 0 freq-offset / mode 1 reverse-volt), SETs, readbacks,
-/// restores on mismatch. `bank` 0 = pstate-class, 1 = V/F curve points;
+/// restores on mismatch. `bank` 0 = V/F curve points, 1 = pstate-class;
 /// `idx` 0..2048.
 #[derive(Clone, Copy, Debug)]
 pub struct SetNvapiVfpPointPrivate {
