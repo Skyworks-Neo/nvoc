@@ -64,8 +64,10 @@ pub use types::{NvapiLockedVoltageTarget, VfpResetDomain};
 
 
 pub use nvapi_hi::{
-    Celsius, ClkVfSegmentKind, ClockDomain, CoolerControl, CoolerPolicy, CoolerSettings,
+    Celsius, ClkVfDomainClass, ClkVfDomainHint, ClkVfPointPrivate, ClkVfPointsPrivate,
+    ClkVfSegmentKind, ClockDomain, CoolerControl, CoolerPolicy, CoolerSettings,
     DisplayId, FanCoolerId,
     GpuInfo, GpuSettings, GpuStatus, Kilohertz, KilohertzDelta, Microvolts, MicrovoltsDelta,
     PState, Percentage, SensorThrottle, VfPoint, VfPointType, VoltageDomain,
 };
+pub use nvapi_hi::nvapi::clk_vf_delta_for_target;

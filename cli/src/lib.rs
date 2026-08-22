@@ -364,10 +364,10 @@ impl Command {
                 "Read the private ClockClient V/F-points family: per-bank point masks + V/F curve records (voltage-indexed, units calibrated vs the public GPC VFP)"
             }
             Self::SetVfpPointPrivate => {
-                "Write one V/F curve point via the private SetControl (dangerous V/F edit; bank 0=pstate-class, 1=V/F curve; --freq-mode = kHz freq offset (same as public VFP), default = reverse-voltage lookup)"
+                "Write one V/F curve point via the private SetControl (dangerous V/F edit; bank 0=pstate-class, 1=V/F curve; default/--freq-mode = kHz freq offset (same as public VFP, safest; also reaches xbar/host domains); --raw-converted = MHz target translated to a raw f-offset control value via the universal g(def) prior; --raw = write the raw f-offset control value verbatim)"
             }
             Self::SetVfpRangePrivate => {
-                "Write a range of V/F curve points with the same value via the private SetControl (dangerous batch V/F edit; single RMW cycle; value is reverse-voltage lookup, not MHz)"
+                "Write a range of V/F curve points with the same raw f-offset control value via the private SetControl (dangerous batch V/F edit; single RMW cycle; value is the raw mode-1 control word)"
             }
             Self::SetThermalLimitC => "Set thermal limit in Celsius",
             Self::SetTemperatureThresholds => {
@@ -524,7 +524,7 @@ impl Command {
             }
             Self::SetVoltRailOffset | Self::SetVoltRailTarget => &["expect-type"],
             Self::SetClkDomainOffset => &["temporary", "slot"],
-            Self::SetVfpPointPrivate => &["freq-mode"],
+            Self::SetVfpPointPrivate => &["freq-mode", "raw", "raw-converted"],
             _ => &[],
         }
     }
@@ -652,8 +652,8 @@ impl Command {
                 ),
                 PositionalArg::hyphen(
                     "arg_delta",
-                    "DELTA_0_1MV",
-                    "Voltage-axis delta in 0.1mV (NOT MHz): sets each point's target freq to the default freq at (its_voltage + delta*100µV). RM then re-interpolates to monotonically increasing",
+                    "VALUE",
+                    "Raw f-offset control value written to every point in the range (NOT MHz and NOT 0.1mV — it is the opaque mode-1 control word; effect_mhz = C(def)*(delta-D0) per the universal g(def) prior)",
                 ),
             ],
             Self::SetVfpPointPrivate => vec![
@@ -670,7 +670,7 @@ impl Command {
                 PositionalArg::hyphen(
                     "arg_value",
                     "VALUE",
-                    "--freq-mode: kHz freq offset (same as public VFP, e.g. 200000 = +200 MHz). default: reverse-voltage lookup — delta maps to a voltage shift, then looks up the default freq at that shifted voltage",
+                    "default/--freq-mode: kHz freq offset (e.g. 200000 = +200 MHz). --raw-converted: MHz target translated to a raw f-offset control value via the universal g(def) prior (effect_mhz = C(def)*(delta-D0)). --raw: raw f-offset control value verbatim",
                 ),
             ],
             Self::SetFanPercent => vec![PositionalArg::free(
@@ -1259,12 +1259,20 @@ fn command_specific_arg(name: &'static str) -> Arg {
         "freq-mode" => Arg::new("freq-mode")
             .long("freq-mode")
             .action(ArgAction::SetTrue)
-            .help("Use kHz frequency offset mode (same as public VFP freqDeltaKHz) instead of default reverse-voltage lookup"),
+            .help("kHz frequency offset mode (same as public VFP freqDeltaKHz; this is the DEFAULT — flag is an explicit alias. Reaches xbar/host domains unlike the public API)"),
         "slot" => Arg::new("slot")
             .long("slot")
             .value_name("SLOT")
             .action(ArgAction::Set)
             .help("Which of the record's 8 value dwords to write (0-7; default 0 = the signed frequency offset; other slots are driver-opaque — identify via A/B with get-clk-domain-freq)"),
+        "raw" => Arg::new("raw")
+            .long("raw")
+            .action(ArgAction::SetTrue)
+            .help("Write VALUE as the raw f-offset control value (mode 1) verbatim"),
+        "raw-converted" => Arg::new("raw-converted")
+            .long("raw-converted")
+            .action(ArgAction::SetTrue)
+            .help("Translate VALUE (a MHz target) to a raw f-offset control value via the universal g(def) prior"),
         _ => unreachable!("unknown command-specific option {name}"),
     }
 }
@@ -1340,7 +1348,7 @@ fn collect_named_options(
     for name in allowed_options {
         match *name {
             "indexed" | "no-infer-missing-default" | "feedback" | "all" | "verbose"
-            | "temporary" | "freq-mode" => {
+            | "temporary" | "freq-mode" | "raw" | "raw-converted" => {
                 if matches.get_flag(name) {
                     options.insert(name.to_string(), vec!["true".to_string()]);
                 }
@@ -2610,30 +2618,62 @@ fn execute_target(
         }
         Command::SetVfpPointPrivate => {
             // DANGEROUS V/F curve write via private SetControl 0xFEC00D04.
-            // The medium layer snapshots the full control block (GetControl),
-            // patches one record (mode 0 freq-offset / mode 1 reverse-volt), SETs,
-            // readbacks, and restores on mismatch. Use get-clk-vf-points to
-            // find valid bank/idx values.
             //
-            // VALUE semantics depend on --freq-mode:
-            //   mode 0 (--freq-mode): kHz frequency offset (same as the
-            //     public VFP freqDeltaKHz — 200000 = +200 MHz)
-            //   mode 1 (default): reverse-voltage lookup (sets target
-            //     freq to the default freq at this_voltage + value*100µV)
+            // VALUE semantics:
+            //   --freq-mode: mode 0, VALUE is a kHz frequency offset (200000 = +200 MHz)
+            //   --raw:       mode 1, VALUE is the raw f-offset control value
+            //   default:     mode 1, VALUE is a MHz target — translated to a raw
+            //                f-offset control value via the universal g(def) prior
+            //                (effect_mhz = C(def)*(delta-D0)) using this point's
+            //                default frequency + domain class from get-clk-vf-points.
             let bank = parse_usize(&invocation.positionals[0], "bank")?;
             let idx = parse_usize(&invocation.positionals[1], "index")?;
-            let raw: i32 = invocation.positionals[2]
+            let value: i32 = invocation.positionals[2]
                 .trim()
                 .parse()
                 .map_err(|e| CliError::new(format!("invalid VALUE: {e}")))?;
-            let freq_mode = option_bool(invocation, "freq-mode", false)?;
+            let raw_flag = option_bool(invocation, "raw", false)?;
+            let raw_converted = option_bool(invocation, "raw-converted", false)?;
+            if raw_flag && raw_converted {
+                return Err(CliError::new("--raw and --raw-converted are mutually exclusive"));
+            }
+            // default (no flag) = freq_mode, same as public VFP but reaches
+            // xbar/host; --freq-mode is the explicit alias of the default.
+            let freq_mode = !raw_flag && !raw_converted;
+
+            let (mode_label, raw_value, translated_mhz) = if freq_mode {
+                ("freq_offset", value, Some(value as f64 / 1000.0))
+            } else if raw_flag {
+                ("raw_f_offset_control", value, None)
+            } else {
+                // --raw-converted: translate MHz target -> raw f-offset via g(def)
+                let vfp = run(target, QueryNvapiClkVfPoints)?.output;
+                let point = vfp
+                    .as_ref()
+                    .and_then(|v| v.points.iter().find(|p| p.bank as usize == bank && p.index as usize == idx))
+                    .ok_or_else(|| CliError::new("could not read default frequency for this point — pass --raw to write a raw control value"))?;
+                let def = point.freq_default_mhz as u32;
+                if def == 0 {
+                    return Err(CliError::new("default frequency is 0 for this point — pass --raw to write a raw control value"));
+                }
+                let class = match vfp.as_ref().and_then(|v| {
+                    v.segments.iter().find(|s| s.bank as usize == bank && idx >= s.start_index as usize && idx <= s.end_index as usize).map(|s| s.domain_hint)
+                }) {
+                    Some(nvoc_core::ClkVfDomainHint::Xbar) | Some(nvoc_core::ClkVfDomainHint::Host) => nvoc_core::ClkVfDomainClass::Fabric,
+                    _ => nvoc_core::ClkVfDomainClass::Graphics,
+                };
+                let delta = nvoc_core::clk_vf_delta_for_target(def, value as f64, class)
+                    .ok_or_else(|| CliError::new(format!("no g(def) prior for def={def} MHz — pass --raw")))?;
+                ("raw_f_offset_control", delta, Some(value as f64))
+            };
+
             let out = run(
                 target,
                 SetNvapiVfpPointPrivate {
                     bank,
                     idx,
                     freq_mode,
-                    value: raw as u32,
+                    value: raw_value as u32,
                 },
             )?
             .output;
@@ -2642,9 +2682,9 @@ fn execute_target(
                     "applied": true,
                     "bank": bank,
                     "index": idx,
-                    "mode": if freq_mode { "freq_offset" } else { "reverse_volt" },
-                    "value": raw,
-                    "unit": if freq_mode { "kHz" } else { "0.1mV" },
+                    "mode": mode_label,
+                    "value": raw_value,
+                    "unit": translated_mhz.map(|m| format!("{:.0} MHz", m)).unwrap_or_else(|| "raw".to_string()),
                     "retained": retained,
                 }),
                 None => json!({"supported": false}),
@@ -2657,8 +2697,8 @@ fn execute_target(
             if start > end {
                 return Err(CliError::new("start must be <= end"));
             }
-            // mode 1 (delta): 0.1mV voltage-axis index
-            let val = parse_i32_unit(&invocation.positionals[3], "0.1mv", "0.1 millivolts")?;
+            // mode 1 raw reverse-voltage control word (NOT 0.1mV — that label was wrong)
+            let val = parse_i32_unit(&invocation.positionals[3], "", "raw control value")?;
             let out = run(
                 target,
                 SetNvapiVfpRangePrivate {
@@ -2675,7 +2715,7 @@ fn execute_target(
                     "bank": bank,
                     "start": start,
                     "end": end,
-                    "volt_offset_0.1mV": val,
+                    "raw_f_offset_control_value": val,
                     "points_written": end - start + 1,
                 }),
                 None => json!({"supported": false}),

@@ -2480,6 +2480,15 @@ mod tests {
                 "applied": true, "bit": 1, "type": 10,
                 "previous_kHz": 0, "applied_kHz": -60000, "temporary_restored": true,
             }),
+            Command::SetVfpPointPrivate => json!({
+                "applied": true, "bank": 0, "index": 191,
+                "mode": "raw_f_offset_control", "value": 100,
+                "unit": "raw", "retained": 100,
+            }),
+            Command::SetVfpRangePrivate => json!({
+                "applied": true, "bank": 0, "start": 191, "end": 191,
+                "raw_f_offset_control_value": 100, "points_written": 1,
+            }),
         }
     }
 }
