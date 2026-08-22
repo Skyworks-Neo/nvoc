@@ -1494,14 +1494,14 @@ impl GpuOperation for QueryNvapiClkDomainFreqDetail {
 
 /// Write one V/F curve point via the private ClockClient V/F-POINTS
 /// SetControl (ID 0xFEC00D04). DANGEROUS: snapshots the full control block,
-/// patches one record (mode 0 absolute / mode 1 delta), SETs, readbacks,
+/// patches one record (mode 0 freq-offset / mode 1 reverse-volt), SETs, readbacks,
 /// restores on mismatch. `bank` 0 = pstate-class, 1 = V/F curve points;
 /// `idx` 0..2048.
 #[derive(Clone, Copy, Debug)]
 pub struct SetNvapiVfpPointPrivate {
     pub bank: usize,
     pub idx: usize,
-    pub absolute: bool,
+    pub freq_mode: bool,
     pub value: u32,
 }
 
@@ -1515,7 +1515,7 @@ impl GpuOperation for SetNvapiVfpPointPrivate {
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
         Ok(target
             .nvapi()?
-            .set_vfp_point_private(self.bank, self.idx, self.absolute, self.value)
+            .set_vfp_point_private(self.bank, self.idx, self.freq_mode, self.value)
             .map_err(Error::from)?)
     }
 }

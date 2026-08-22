@@ -364,10 +364,10 @@ impl Command {
                 "Read the private ClockClient V/F-points family: per-bank point masks + V/F curve records (voltage-indexed, units calibrated vs the public GPC VFP)"
             }
             Self::SetVfpPointPrivate => {
-                "Write one V/F curve point via the private SetControl (dangerous V/F edit; bank 0=pstate-class, 1=V/F curve; --absolute = kHz freq offset like public VFP, default = 0.1mV voltage-axis index)"
+                "Write one V/F curve point via the private SetControl (dangerous V/F edit; bank 0=pstate-class, 1=V/F curve; --freq-mode = kHz freq offset (same as public VFP), default = reverse-voltage lookup)"
             }
             Self::SetVfpRangePrivate => {
-                "Write a range of V/F curve points with the same value via the private SetControl (dangerous batch V/F edit; single RMW cycle; value is voltage-axis index in 0.1mV, not MHz)"
+                "Write a range of V/F curve points with the same value via the private SetControl (dangerous batch V/F edit; single RMW cycle; value is reverse-voltage lookup, not MHz)"
             }
             Self::SetThermalLimitC => "Set thermal limit in Celsius",
             Self::SetTemperatureThresholds => {
@@ -524,7 +524,7 @@ impl Command {
             }
             Self::SetVoltRailOffset | Self::SetVoltRailTarget => &["expect-type"],
             Self::SetClkDomainOffset => &["temporary", "slot"],
-            Self::SetVfpPointPrivate => &["absolute"],
+            Self::SetVfpPointPrivate => &["freq-mode"],
             _ => &[],
         }
     }
@@ -670,7 +670,7 @@ impl Command {
                 PositionalArg::hyphen(
                     "arg_value",
                     "VALUE",
-                    "--absolute: kHz freq offset (same as public VFP, e.g. 200000 = +200 MHz). default (delta): 0.1mV voltage-axis index — sets target freq to default freq at (this_voltage + value*100µV)",
+                    "--freq-mode: kHz freq offset (same as public VFP, e.g. 200000 = +200 MHz). default: reverse-voltage lookup — delta maps to a voltage shift, then looks up the default freq at that shifted voltage",
                 ),
             ],
             Self::SetFanPercent => vec![PositionalArg::free(
@@ -1256,10 +1256,10 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .long("temporary")
             .action(ArgAction::SetTrue)
             .help("Restore the pre-write control snapshot before returning (safe XBar experiment mode; see xbar.txt safety recipe)"),
-        "absolute" => Arg::new("absolute")
-            .long("absolute")
+        "freq-mode" => Arg::new("freq-mode")
+            .long("freq-mode")
             .action(ArgAction::SetTrue)
-            .help("Use mode 0 (absolute value) instead of mode 1 (delta) for set-vfp-point-private"),
+            .help("Use kHz frequency offset mode (same as public VFP freqDeltaKHz) instead of default reverse-voltage lookup"),
         "slot" => Arg::new("slot")
             .long("slot")
             .value_name("SLOT")
@@ -1340,7 +1340,7 @@ fn collect_named_options(
     for name in allowed_options {
         match *name {
             "indexed" | "no-infer-missing-default" | "feedback" | "all" | "verbose"
-            | "temporary" | "absolute" => {
+            | "temporary" | "freq-mode" => {
                 if matches.get_flag(name) {
                     options.insert(name.to_string(), vec!["true".to_string()]);
                 }
@@ -2611,14 +2611,14 @@ fn execute_target(
         Command::SetVfpPointPrivate => {
             // DANGEROUS V/F curve write via private SetControl 0xFEC00D04.
             // The medium layer snapshots the full control block (GetControl),
-            // patches one record (mode 0 absolute / mode 1 delta), SETs,
+            // patches one record (mode 0 freq-offset / mode 1 reverse-volt), SETs,
             // readbacks, and restores on mismatch. Use get-clk-vf-points to
             // find valid bank/idx values.
             //
-            // VALUE semantics depend on --absolute:
-            //   mode 0 (--absolute): kHz frequency offset (same as the
+            // VALUE semantics depend on --freq-mode:
+            //   mode 0 (--freq-mode): kHz frequency offset (same as the
             //     public VFP freqDeltaKHz — 200000 = +200 MHz)
-            //   mode 1 (default): 0.1mV voltage-axis index (sets target
+            //   mode 1 (default): reverse-voltage lookup (sets target
             //     freq to the default freq at this_voltage + value*100µV)
             let bank = parse_usize(&invocation.positionals[0], "bank")?;
             let idx = parse_usize(&invocation.positionals[1], "index")?;
@@ -2626,13 +2626,13 @@ fn execute_target(
                 .trim()
                 .parse()
                 .map_err(|e| CliError::new(format!("invalid VALUE: {e}")))?;
-            let absolute = option_bool(invocation, "absolute", false)?;
+            let freq_mode = option_bool(invocation, "freq-mode", false)?;
             let out = run(
                 target,
                 SetNvapiVfpPointPrivate {
                     bank,
                     idx,
-                    absolute,
+                    freq_mode,
                     value: raw as u32,
                 },
             )?
@@ -2642,9 +2642,9 @@ fn execute_target(
                     "applied": true,
                     "bank": bank,
                     "index": idx,
-                    "mode": if absolute { "absolute" } else { "delta" },
+                    "mode": if freq_mode { "freq_offset" } else { "reverse_volt" },
                     "value": raw,
-                    "unit": if absolute { "kHz" } else { "0.1mV" },
+                    "unit": if freq_mode { "kHz" } else { "0.1mV" },
                     "retained": retained,
                 }),
                 None => json!({"supported": false}),
