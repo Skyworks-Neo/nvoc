@@ -289,8 +289,11 @@ class App(ctk.CTk):
         # Guard to suppress _on_gpu_changed during programmatic gpu_var.set() calls
         self._programmatic_gpu_set: bool = False
 
-        # Initial GPU list
-        self.after(500, self._refresh_gpu_list)
+        # Initial GPU list — start immediately: discovery runs on a worker
+        # thread (pynvoc import + nvapi64 load + NVAPI init never touches Tk),
+        # so it overlaps UI construction instead of waiting out an arbitrary
+        # 500 ms delay after the window is already up.
+        self.after(10, self._refresh_gpu_list)
 
         if self._single_instance_guard is not None:
             self.after(200, self._poll_single_instance_signal)
@@ -526,7 +529,24 @@ class App(ctk.CTk):
                     if hasattr(self, "_gpu_limits_cache") and self._gpu_limits_cache:
                         tab.check_capabilities(self._gpu_limits_cache)
                         tab.update_limits(self._gpu_limits_cache)
-                    elif self._gpu_pstates_cache:
+                    else:
+                        # No live info yet (GPU detection still running) —
+                        # pre-apply LAST session's limits from config so the
+                        # first paint is already the correct layout (mobile/
+                        # desktop rows, Xbar row, legacy terminology, slider
+                        # ranges). When the real info query completes, the
+                        # verdicts match (mode early-return, xbar no-op) and
+                        # nothing jumps. A stale cache (GPU swapped between
+                        # sessions) corrects itself with one layout switch —
+                        # the same behavior as before this cache existed.
+                        cached = self.config.get("last_gpu_limits")
+                        if isinstance(cached, dict) and cached:
+                            try:
+                                tab.check_capabilities(dict(cached))
+                                tab.update_limits(dict(cached))
+                            except Exception:
+                                pass
+                    if self._gpu_pstates_cache:
                         tab.set_supported_pstates(self._gpu_pstates_cache)
                     if self._vfp_offset_state_cache is not None:
                         has_vfp_offset, uniform_offset = self._vfp_offset_state_cache
@@ -832,6 +852,18 @@ class App(ctk.CTk):
             # spawned *after* _gpu_limits_cache is fully populated, so
             # _apply_initial_status always sees a complete cache.
             self._gpu_limits_cache = limits
+            # Persist for next session's first-paint layout pre-apply (see
+            # _prebuild_next_tab): the payload carries the capability flags
+            # (is_mobile / xbar_supported / is_legacy_voltage, from gpu_type.rs)
+            # plus the slider ranges. Validate JSON-safety first — a
+            # non-serializable value would kill config's flush-loop thread.
+            import json as _json
+
+            try:
+                _json.loads(_json.dumps(limits))
+                self.config.set("last_gpu_limits", limits)
+            except (TypeError, ValueError):
+                pass
             if self.tab_overclock:
                 self.tab_overclock.check_capabilities(limits)
                 self.tab_overclock.update_limits(limits)
