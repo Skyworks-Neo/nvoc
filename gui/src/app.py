@@ -272,6 +272,7 @@ class App(ctk.CTk):
         self.gpu_arches: Dict[
             int, str
         ] = {}  # gpu_index -> architecture string from 'info'
+        self._gpu_flags_by_idx: Dict[int, Dict[str, Any]] = {}  # probe-time caps
         self.gpu_uuid_map: Dict[int, str] = {}  # gpu_index -> UUID string
         self._gpu_short_label_by_idx: Dict[int, str] = {}
         self._gpu_long_label_by_idx: Dict[int, str] = {}
@@ -289,11 +290,10 @@ class App(ctk.CTk):
         # Guard to suppress _on_gpu_changed during programmatic gpu_var.set() calls
         self._programmatic_gpu_set: bool = False
 
-        # Initial GPU list — start immediately: discovery runs on a worker
-        # thread (pynvoc import + nvapi64 load + NVAPI init never touches Tk),
-        # so it overlaps UI construction instead of waiting out an arbitrary
-        # 500 ms delay after the window is already up.
-        self.after(10, self._refresh_gpu_list)
+        # Initial GPU list — start immediately (no after() hop): discovery
+        # runs on a worker thread (pynvoc import + nvapi64 load + NVAPI init
+        # never touch Tk), so it overlaps UI construction from tick zero.
+        self._refresh_gpu_list()
 
         if self._single_instance_guard is not None:
             self.after(200, self._poll_single_instance_signal)
@@ -530,22 +530,31 @@ class App(ctk.CTk):
                         tab.check_capabilities(self._gpu_limits_cache)
                         tab.update_limits(self._gpu_limits_cache)
                     else:
-                        # No live info yet (GPU detection still running) —
-                        # pre-apply LAST session's limits from config so the
-                        # first paint is already the correct layout (mobile/
-                        # desktop rows, Xbar row, legacy terminology, slider
-                        # ranges). When the real info query completes, the
-                        # verdicts match (mode early-return, xbar no-op) and
-                        # nothing jumps. A stale cache (GPU swapped between
-                        # sessions) corrects itself with one layout switch —
-                        # the same behavior as before this cache existed.
-                        cached = self.config.get("last_gpu_limits")
-                        if isinstance(cached, dict) and cached:
-                            try:
-                                tab.check_capabilities(dict(cached))
-                                tab.update_limits(dict(cached))
-                            except Exception:
-                                pass
+                        # First paint must already be the correct layout.
+                        # Priority: (1) probe-time capability flags from GPU
+                        # discovery (gpu_type.rs verdict — is_mobile etc.),
+                        # (2) LAST session's persisted limits from config
+                        # (also carries slider ranges). With either applied,
+                        # the later info query finds matching verdicts (mode
+                        # early-return, xbar no-op) and nothing re-packs.
+                        # A stale config cache (GPU swapped) self-corrects
+                        # with one layout switch — the pre-cache behavior.
+                        last_idx = self.get_current_gpu_index()
+                        flags = (
+                            self._gpu_flags_by_idx.get(last_idx)
+                            if last_idx is not None
+                            else None
+                        )
+                        try:
+                            if flags:
+                                tab.check_capabilities(dict(flags))
+                            else:
+                                cached = self.config.get("last_gpu_limits")
+                                if isinstance(cached, dict) and cached:
+                                    tab.check_capabilities(dict(cached))
+                                    tab.update_limits(dict(cached))
+                        except Exception:
+                            pass
                     if self._gpu_pstates_cache:
                         tab.set_supported_pstates(self._gpu_pstates_cache)
                     if self._vfp_offset_state_cache is not None:
@@ -716,6 +725,11 @@ class App(ctk.CTk):
         long_labels: Dict[int, str] = {}
         gpu_names: Dict[int, str] = {}
         gpu_uuid_map: Dict[int, str] = {}
+        # Probe-time capability flags (gpu_type.rs detect_gpu_type computed in
+        # discover_gpus) — available the moment detection lands, before the
+        # info query, so the overclock panel never paints the desktop modal
+        # first and re-packs on a mobile GPU.
+        self._gpu_flags_by_idx: Dict[int, Dict[str, Any]] = {}
 
         for fallback_idx, item in enumerate(items):
             try:
@@ -734,6 +748,14 @@ class App(ctk.CTk):
             arch = str(item.get("arch") or item.get("codename") or "").strip()
             if arch:
                 self.gpu_arches[idx] = arch
+            self._gpu_flags_by_idx[idx] = {
+                "gpu_name": name,
+                "gpu_architecture": arch,
+                "codename": str(item.get("codename") or ""),
+                "is_mobile": item.get("is_mobile"),
+                "is_legacy_voltage": item.get("is_legacy_voltage"),
+                "xbar_supported": item.get("xbar_supported"),
+            }
 
         ordered_indices = sorted(short_labels.keys())
         if not ordered_indices:
@@ -769,6 +791,16 @@ class App(ctk.CTk):
         finally:
             self._programmatic_gpu_set = False
         self.console.append(f"[GUI] Found {len(ordered_indices)} GPU(s).\n")
+        # Detection landed after the overclock panel was built (slow NVAPI
+        # init / GCOFF wake): apply the probe-time capability flags now so
+        # the mobile/desktop layout corrects immediately, not at info time.
+        if self.tab_overclock is not None:
+            flags = self._gpu_flags_by_idx.get(last_idx)
+            if flags:
+                try:
+                    self.tab_overclock.check_capabilities(dict(flags))
+                except Exception:
+                    pass
         self._query_gpu_info()
 
     def _on_gpu_changed(self, selected: str):

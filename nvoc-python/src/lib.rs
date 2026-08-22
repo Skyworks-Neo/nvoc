@@ -16,7 +16,7 @@ use nvoc_core::{
     ResetCoolerLevels, ResetFanSpeed, ResetLockedClocks, ResetNvapiPowerLimits,
     ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetPstateBaseVoltages, ResetPstateClockOffsets,
     ResetVfpDeltas, ResetVfpFrequencyLock, ResetVfpLock, SetApiRestriction, SetApplicationsClocks,
-    GpuType, fetch_gpu_type,
+    GpuType, detect_gpu_type, fetch_gpu_type,
     SetAutoBoost, SetAutoBoostDefault, SetClockOffset, SetCoolerLevels, SetDomainVfpDeltas,
     SetEdid, SetFanSpeed, SetLegacyClocks, SetLockedClocks, SetNvapiClkDomainOffset,
     SetNvapiDNotifier,
@@ -1327,9 +1327,23 @@ fn discover_gpus(py: Python<'_>, backends: Option<&str>) -> PyResult<Py<PyAny>> 
         item.insert("backend_nvapi".into(), bool_value(target.has_nvapi()));
         item.insert("backend_nvml".into(), bool_value(target.has_nvml()));
         if let Ok(info) = run(&target, QueryGpuInfo).map(|report| report.output) {
+            // Capability flags from gpu_type.rs detect_gpu_type (name +
+            // codename) right at probe time — the GUI builds the correct
+            // mobile/desktop layout on FIRST paint instead of drawing the
+            // desktop modal and re-packing when the info query lands.
+            let series = detect_gpu_type(&format!("{}{}", info.name, info.codename));
             item.insert("name".into(), text(info.name));
             item.insert("codename".into(), text(info.codename));
             item.insert("arch".into(), text(info.arch));
+            item.insert("is_mobile".into(), bool_value(series.is_mobile()));
+            item.insert(
+                "is_legacy_voltage".into(),
+                bool_value(series.is_legacy_voltage()),
+            );
+            item.insert(
+                "xbar_supported".into(),
+                bool_value(series.supports_xbar_offset()),
+            );
         }
         items.push(Value::Object(item));
     }
