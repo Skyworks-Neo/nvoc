@@ -588,6 +588,13 @@ class VFCurveTab:
         if not self._auto_refreshing:
             return
 
+        # Skip the VFP RM-escape query during a resize drag: it is a heavier
+        # sweep than the status poll and also contends with DWM at the driver
+        # level. Re-arm; resize end re-renders from cached points.
+        if self._is_resize_active:
+            self._schedule_next_auto_refresh()
+            return
+
         if self.app.selected_gpu_target() is None:
             self._schedule_next_auto_refresh()
             return
@@ -613,6 +620,14 @@ class VFCurveTab:
         timer uses it so a sub-2.5 s interval (the default is 1.0 s) keeps
         ticking instead of stalling on the gate and never rescheduling.
         """
+        # Teardown guard: after cleanup() the matplotlib canvas/figure are
+        # gone. An inflight worker may still complete and re-arm this chain
+        # via after(0,_refresh_curve) — short-circuit instead of touching
+        # freed resources or submitting new work to a shutting-down runner.
+        if self._cleaned_up:
+            self._refresh_curve_inflight = False
+            self._refresh_curve_pending = False
+            return
         if self._refresh_curve_inflight:
             self._refresh_curve_pending = True
             return
@@ -645,6 +660,12 @@ class VFCurveTab:
 
     def _on_query_done(self, retcode: int, points):
         self._refresh_curve_inflight = False
+        # After cleanup() the figure/canvas are gone — drop the result and
+        # do NOT re-arm the refresh chain, or a late worker would re-submit
+        # into a shutting-down GuiTaskRunner (RuntimeError / join extension).
+        if self._cleaned_up:
+            self._refresh_curve_pending = False
+            return
         if retcode != 0 or points is None:
             self.app.console.append("[GUI] VFP query failed.\n")
         else:
@@ -1262,6 +1283,8 @@ class VFCurveTab:
 
     def update_live_point(self, volt_mv: Optional[float], freq_mhz: Optional[float]):
         """Update the real-time crosshair overlay for the current operating point."""
+        if self._cleaned_up:
+            return
         self._live_volt = volt_mv
         self._live_freq = freq_mhz
         if self._is_resize_active or not self._chart_should_draw():

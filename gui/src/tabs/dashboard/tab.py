@@ -139,6 +139,8 @@ class _MetricRow:
         self._lock_lbl.grid(row=0, column=4, padx=(0, 12), pady=2)
 
     def _on_resize(self, event):
+        if self._is_resize_active:
+            return
         width = max(1, int(event.width))
         if (
             self._last_draw_width is not None
@@ -498,6 +500,14 @@ class DashboardTab:
 
     def _poll_tick(self) -> None:
         if not self._polling:
+            return
+        # Pause the NVAPI+NVML sweep during a resize drag: the background
+        # query contends with DWM at the GPU-driver level (synchronized
+        # stutter once per poll interval) and its after(0,...) completion
+        # interrupts the high-frequency Configure event burst on the main
+        # thread. Resize end flushes the last sample via on_resize_state_changed.
+        if self._is_resize_active:
+            self._schedule_next()
             return
         # Don't burn a full NVAPI+NVML status sweep per second while the
         # window is in the tray. Keep it running on the Dashboard (row

@@ -1272,12 +1272,19 @@ class App(ctk.CTk):
                         retcode,
                         output,
                     )
-            self.after(0, lambda: callback(retcode, output))
+            # Guard the main-thread marshal during shutdown: an inflight
+            # worker (dash-poll / vfcurve-refresh) may complete after
+            # _do_shutdown sets _exiting and tears down widgets; scheduling
+            # after() on a destroyed root raises a Tcl error.
+            if not getattr(self, "_exiting", False):
+                self.after(0, lambda: callback(retcode, output))
 
         self.run_background(thread_name, _worker)
         return True
 
     def _on_native_output(self, text: str, _level: str = "info") -> None:
+        if getattr(self, "_exiting", False):
+            return
         self.after(0, lambda: self.console.append(text))
 
     def run_native_action(
@@ -1295,9 +1302,13 @@ class App(ctk.CTk):
             description,
             action,
             self._on_native_output,
-            lambda code: self.after(
-                0,
-                lambda: self._after_native_action(code, on_finished, description),
+            lambda code: (
+                None
+                if getattr(self, "_exiting", False)
+                else self.after(
+                    0,
+                    lambda: self._after_native_action(code, on_finished, description),
+                )
             ),
         )
         if not started:
@@ -1599,19 +1610,28 @@ class App(ctk.CTk):
 
     def _do_shutdown(self):
         """Perform shutdown cleanup. Must run on the main Tk thread."""
-        # 1. Stop all periodic timers
+        # 1. Stop all periodic timers FIRST so they cannot re-arm during
+        # the join below and submit new work into a draining runner.
         if hasattr(self, "tab_dashboard") and self.tab_dashboard is not None:
             self.tab_dashboard._stop_polling()
 
-        if hasattr(self, "tab_overclock") and self.tab_overclock is not None:
-            if hasattr(self.tab_overclock, "_stop_auto_refresh"):
-                self.tab_overclock._stop_auto_refresh()
-            if hasattr(self.tab_overclock, "cleanup"):
-                self.tab_overclock.cleanup()
-
         if hasattr(self, "tab_vfcurve") and self.tab_vfcurve is not None:
+            if hasattr(self.tab_vfcurve, "_stop_auto_refresh"):
+                self.tab_vfcurve._stop_auto_refresh()
             if hasattr(self.tab_vfcurve, "cleanup"):
                 self.tab_vfcurve.cleanup()
+
+        # Cancel the post-native-action refresh chain BEFORE joining workers:
+        # a vfcurve-refresh worker inflight when the curve tab was active can
+        # take seconds (VFP RM escape + GCOFF wake+retry, serialized on the
+        # pynvoc InventoryCache mutex with the dash-poll worker). Its
+        # after(0,...) completion re-arms this chain; cancel it now.
+        if getattr(self, "_refresh_chain_after_id", None) is not None:
+            try:
+                self.after_cancel(self._refresh_chain_after_id)
+            except Exception:
+                pass
+            self._refresh_chain_after_id = None
 
         # 2. Stop tray icon (no-op if already stopped from tray thread)
         if self._tray_icon is not None:
@@ -1621,14 +1641,17 @@ class App(ctk.CTk):
             self.after_cancel(self._tray_keepalive_id)
             self._tray_keepalive_id = None
 
-        # 3. Shut down workers (safe on main thread — main thread is not a worker)
+        # 3. Shut down workers. Use wait=False: GuiTaskRunner workers are
+        # daemon threads, so an inflight NVAPI call (which can block seconds
+        # on a GCOFF mobile dGPU, holding the InventoryCache mutex) won't
+        # deadlock the main thread in a join — the process reaps the daemons
+        # on exit. cancel_futures drops anything still queued. The
+        # _cleaned_up guard in vfcurve._refresh_curve/_on_query_done stops
+        # the curve refresh chain from re-submitting after cleanup.
         self.runner.shutdown()
         self.backend.shutdown()
-        self.tasks.shutdown(wait=True)
+        self.tasks.shutdown(wait=False, cancel_futures=True)
         self.config.close()
-        if self._refresh_chain_after_id is not None:
-            self.after_cancel(self._refresh_chain_after_id)
-            self._refresh_chain_after_id = None
 
         # 4. Destroy window synchronously
         self.destroy()
