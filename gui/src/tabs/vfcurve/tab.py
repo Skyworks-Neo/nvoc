@@ -1419,42 +1419,74 @@ class VFCurveTab:
     def _update_selection_span(self) -> None:
         """Lightweight selection-range repaint (no full _redraw).
 
-        The selection span is purely a voltage-axis range (it does not depend
-        on the curve points' frequencies, which move during a point drag). So
-        a selection-range drag — extending the selection by moving the mouse
-        along the voltage axis — can update just the axvspan's x bounds and
-        blit, instead of clearing the axes and rebuilding every artist. This
-        keeps the selection visual perfectly smooth and immune to the
-        per-second live-point blit (which restores the static background that
-        no longer contains the span — the span is now an animated overlay).
+        The selection span (yellow band) is purely a voltage-axis range — it
+        does not depend on the curve points' frequencies, which only move
+        during a point drag, not a selection drag. So a selection-range drag
+        can rebuild just the span + the selected-point markers and blit,
+        instead of clearing the axes and rebuilding every artist. This keeps
+        the selection visual perfectly smooth and immune to the per-second
+        live-point blit (which restores the static background that no longer
+        contains the span or the markers — both are animated overlays now).
+
+        axvspan's Polygon uses a blended transform (x in data coords, y in
+        axes coords), so in-place set_xy can't be used; remove+recreate is
+        cheap and correct. The selected-point scatter's offsets are updated
+        in place from the current frequencies so the markers track the band.
         """
         if self.ax is None or self._cleaned_up:
             return
         if not self._voltages:
             return
         if self._sel_start is None or self._sel_end is None:
-            # Clear the span if one exists.
+            # Clear the span + markers if they exist.
+            changed = False
             if self._sel_rect is not None:
                 self._sel_rect.set_visible(False)
+                changed = True
+            if self._sel_points is not None:
+                self._sel_points.set_visible(False)
+                changed = True
+            if changed:
                 self._blit_animated()
             return
         s = min(self._sel_start, self._sel_end)
         e = max(self._sel_start, self._sel_end)
         v = self._voltages
+        f = self._frequencies
         x0, x1 = v[s], v[e]
-        if self._sel_rect is None:
-            # First selection before any full redraw built one — create it.
-            self._sel_rect = self.ax.axvspan(
-                x0, x1, alpha=0.15, color="#ffcc00", zorder=1, animated=True
+
+        # Recreate the span (blended transform makes set_xy unsafe).
+        if self._sel_rect is not None:
+            try:
+                self._sel_rect.remove()
+            except Exception:
+                pass
+        self._sel_rect = self.ax.axvspan(
+            x0, x1, alpha=0.15, color="#ffcc00", zorder=1, animated=True
+        )
+
+        # Update selected-point markers in place to track the band.
+        import numpy as _np
+
+        sel_v = v[s : e + 1]
+        sel_f = f[s : e + 1]
+        if self._sel_points is None:
+            self._sel_points = self.ax.scatter(
+                sel_v,
+                sel_f,
+                color="#ffcc00",
+                s=14,
+                zorder=5,
+                edgecolors="#ff8800",
+                linewidths=0.6,
+                animated=True,
             )
         else:
-            # axvspan returns a Polygon; update its x bounds in place.
-            import numpy as _np
+            self._sel_points.set_offsets(
+                _np.column_stack([sel_v, sel_f])
+            )
+            self._sel_points.set_visible(True)
 
-            xs = _np.array([x0, x1, x1, x0, x0])
-            ys = _np.array([0.0, 0.0, 1.0, 1.0, 0.0])
-            self._sel_rect.set_xy(_np.column_stack([xs, ys]))
-            self._sel_rect.set_visible(True)
         self._blit_animated()
 
     def _set_live_point_visible(self, visible: bool) -> None:
