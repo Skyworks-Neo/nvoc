@@ -1313,58 +1313,71 @@ fn normalize_domain_vfp_points(
 
 #[pyfunction]
 fn discover_gpus(py: Python<'_>, backends: Option<&str>) -> PyResult<Py<PyAny>> {
-    let backends = parse_backends(backends.unwrap_or("both"))?;
-    // discover_gpus 是显式发现入口（含 GPU 热插拔刷新）：强制重发现并
-    // 更新进程级缓存，后续轮询查询复用，不再每调用重复 init/枚举。
-    let mut cache = lock_inventory_cache();
-    let inventory = cache.refresh(backends)?;
-    let mut items = Vec::new();
-    for target in inventory.targets() {
-        let mut item = Map::new();
-        item.insert("index".into(), u64_value(target.index as u64));
-        item.insert("gpu_id".into(), u64_value(target.id.0 as u64));
-        item.insert("gpu_id_hex".into(), text(format!("0x{:04X}", target.id.0)));
-        item.insert("backend_nvapi".into(), bool_value(target.has_nvapi()));
-        item.insert("backend_nvml".into(), bool_value(target.has_nvml()));
-        if let Ok(info) = run(&target, QueryGpuInfo).map(|report| report.output) {
-            // Capability flags from gpu_type.rs detect_gpu_type (name +
-            // codename) right at probe time — the GUI builds the correct
-            // mobile/desktop layout on FIRST paint instead of drawing the
-            // desktop modal and re-packing when the info query lands.
-            let series = detect_gpu_type(&format!("{}{}", info.name, info.codename));
-            item.insert("name".into(), text(info.name));
-            item.insert("codename".into(), text(info.codename));
-            item.insert("arch".into(), text(info.arch));
-            item.insert("is_mobile".into(), bool_value(series.is_mobile()));
-            item.insert(
-                "is_legacy_voltage".into(),
-                bool_value(series.is_legacy_voltage()),
-            );
-            item.insert(
-                "xbar_supported".into(),
-                bool_value(series.supports_xbar_offset()),
-            );
+    let backends_str = backends.unwrap_or("both").to_string();
+    // Release the GIL: discovery loads nvapi64 + inits NVAPI (hundreds of
+    // ms) and the GUI calls it at tick zero to overlap UI construction —
+    // holding the GIL would stall the main thread's Python widget build.
+    let items = py.detach(|| -> PyResult<Vec<Value>> {
+        let backends = parse_backends(&backends_str)?;
+        let mut cache = lock_inventory_cache();
+        let inventory = cache.refresh(backends)?;
+        let mut items = Vec::new();
+        for target in inventory.targets() {
+            let mut item = Map::new();
+            item.insert("index".into(), u64_value(target.index as u64));
+            item.insert("gpu_id".into(), u64_value(target.id.0 as u64));
+            item.insert("gpu_id_hex".into(), text(format!("0x{:04X}", target.id.0)));
+            item.insert("backend_nvapi".into(), bool_value(target.has_nvapi()));
+            item.insert("backend_nvml".into(), bool_value(target.has_nvml()));
+            if let Ok(info) = run(&target, QueryGpuInfo).map(|report| report.output) {
+                // Capability flags from gpu_type.rs detect_gpu_type (name +
+                // codename) right at probe time — the GUI builds the correct
+                // mobile/desktop layout on FIRST paint instead of drawing the
+                // desktop modal and re-packing when the info query lands.
+                let series = detect_gpu_type(&format!("{}{}", info.name, info.codename));
+                item.insert("name".into(), text(info.name));
+                item.insert("codename".into(), text(info.codename));
+                item.insert("arch".into(), text(info.arch));
+                item.insert("is_mobile".into(), bool_value(series.is_mobile()));
+                item.insert(
+                    "is_legacy_voltage".into(),
+                    bool_value(series.is_legacy_voltage()),
+                );
+                item.insert(
+                    "xbar_supported".into(),
+                    bool_value(series.supports_xbar_offset()),
+                );
+            }
+            items.push(Value::Object(item));
         }
-        items.push(Value::Object(item));
-    }
+        Ok(items)
+    })?;
     py_value(py, &Value::Array(items))
 }
 
 #[pyfunction]
 fn query_info(py: Python<'_>, gpu: &str, backends: Option<&str>) -> PyResult<Py<PyAny>> {
-    let value = with_target(gpu, backends.unwrap_or("both"), normalize_info)?;
+    let gpu = gpu.to_string();
+    let backends = backends.unwrap_or("both").to_string();
+    let value = py.detach(|| with_target(&gpu, &backends, normalize_info))?;
     py_value(py, &value)
 }
 
 #[pyfunction]
 fn query_status(py: Python<'_>, gpu: &str, backends: Option<&str>) -> PyResult<Py<PyAny>> {
-    let value = with_target(gpu, backends.unwrap_or("both"), normalize_status)?;
+    // GIL released: the 1 Hz dashboard poll runs this sweep while the GUI
+    // main thread handles events — holding the GIL stalls drag/click streams.
+    let gpu = gpu.to_string();
+    let backends = backends.unwrap_or("both").to_string();
+    let value = py.detach(|| with_target(&gpu, &backends, normalize_status))?;
     py_value(py, &value)
 }
 
 #[pyfunction]
 fn query_settings(py: Python<'_>, gpu: &str, backends: Option<&str>) -> PyResult<Py<PyAny>> {
-    let value = with_target(gpu, backends.unwrap_or("both"), normalize_settings)?;
+    let gpu = gpu.to_string();
+    let backends = backends.unwrap_or("both").to_string();
+    let value = py.detach(|| with_target(&gpu, &backends, normalize_settings))?;
     py_value(py, &value)
 }
 
@@ -1499,8 +1512,13 @@ fn query_domain_vfp_points(
     infer_missing_default: bool,
 ) -> PyResult<Py<PyAny>> {
     let domain = parse_domain(domain.unwrap_or("graphics"))?;
-    let value = with_target(gpu, "nvapi", |target| {
-        normalize_domain_vfp_points(target, domain, infer_missing_default)
+    let gpu = gpu.to_string();
+    // GIL released: the VFP table RM escape is the heaviest read (curve
+    // refresh / auto-refresh) and must not stall the GUI event stream.
+    let value = py.detach(|| {
+        with_target(&gpu, "nvapi", |target| {
+            normalize_domain_vfp_points(target, domain, infer_missing_default)
+        })
     })?;
     py_value(py, &value)
 }
