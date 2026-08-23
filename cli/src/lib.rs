@@ -802,6 +802,21 @@ impl Command {
                 "PSTATE",
                 "P-State number to force (e.g. 0 for P0)",
             )],
+            Self::SetBb2 => vec![PositionalArg::free(
+                "arg_state",
+                "ENABLE",
+                "1=enable, 0=disable",
+            )],
+            Self::SetWm2 => vec![PositionalArg::free(
+                "arg_state",
+                "ENABLE",
+                "1=enable, 0=disable",
+            )],
+            Self::SetWm2Mode => vec![PositionalArg::free(
+                "arg_mode",
+                "MODE",
+                "Acoustic mode: 0=quieter, 1=quiet, 2=balanced",
+            )],
             Self::SetVoltageBoostPercent => vec![PositionalArg::free(
                 "arg_boost_percent",
                 "PERCENT",
@@ -1000,7 +1015,6 @@ const COMMANDS: &[Command] = &[
     Command::SetVoltRailTarget,
     Command::SetWm2,
     Command::SetWm2Mode,
-    Command::SetVoltRailTarget,
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
