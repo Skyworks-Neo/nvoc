@@ -135,6 +135,9 @@ pub enum OperationKind {
     OemOcScanner,
     /// Force a P-State via the private SetForcePstate (0x025BFB10).
     SetForcePstate,
+    /// Release a force-locked pstate via EnableDynamicPstates(enable=0).
+    /// SetForcePstate has no unlock path of its own; this is the escape hatch.
+    ResetForcePstate,
     /// Restart the display driver (0xB4B26B65) — legacy "apply OC" trigger.
     RestartDisplayDriver,
 }
@@ -199,6 +202,7 @@ impl OperationKind {
                 | ClearEdid
                 | OemOcScanner
                 | SetForcePstate
+                | ResetForcePstate
                 | RestartDisplayDriver
         )
     }

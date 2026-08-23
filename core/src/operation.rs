@@ -1015,6 +1015,27 @@ impl GpuOperation for RestartDisplayDriver {
     }
 }
 
+/// Release a force-locked pstate via EnableDynamicPstates(enable=0).
+/// SetForcePstate (0x025BFB10) has no unlock path — all set_type values
+/// force-lock. This is the escape hatch when a pstate gets stuck locked.
+#[derive(Clone, Copy, Debug)]
+pub struct ResetForcePstate;
+
+impl GpuOperation for ResetForcePstate {
+    type Output = ();
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::ResetForcePstate
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .enable_dynamic_pstates(0)
+            .map_err(Error::from)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct SetDomainVfpDeltas {
     pub domain: ClockDomain,

@@ -31,7 +31,7 @@ use nvoc_core::{
     SetNvapiVoltRailTarget, SetNvmlPstateLock, SetPowerLimit, SetPstateBaseVoltage,
     SetPstateClockOffset, SetTemperatureLimit, SetVfpFrequencyLock, SetVfpPointDelta,
     SetVfpRangeDelta, SetVfpVoltageLock, SetVoltageBoost, VfpResetDomain, discover_targets,
-    OemOcScanner, OemOcScannerAction, SetForcePstate, RestartDisplayDriver,
+    OemOcScanner, OemOcScannerAction, SetForcePstate, ResetForcePstate, RestartDisplayDriver,
     nvml_pstate_to_str, parse_nvapi_locked_voltage_target, parse_nvml_fan_control_policy,
     parse_nvml_pstate, run, select_targets,
 };
@@ -183,6 +183,7 @@ pub enum Command {
     SetVfpVoltageLock,
     OemOcScanner,
     SetForcePstate,
+    ResetForcePstate,
     RestartDisplayDriver,
     SetVfpPointDeltaMhz,
     SetVfpRangeDeltaMhz,
@@ -276,6 +277,7 @@ impl Command {
             Self::SetVfpVoltageLock => "set-vfp-voltage-lock",
             Self::OemOcScanner => "oem-oc-scanner",
             Self::SetForcePstate => "set-force-pstate",
+            Self::ResetForcePstate => "reset-force-pstate",
             Self::RestartDisplayDriver => "restart-display-driver",
             Self::SetVfpPointDeltaMhz => "set-vfp-point-delta-mhz",
             Self::SetVfpRangeDeltaMhz => "set-vfp-range-delta-mhz",
@@ -396,7 +398,10 @@ impl Command {
                 "Control NVIDIA's driver-side (OEM) OC Scanner: --start (driver scans in background and applies V/F offsets itself), --stop, --revert (restore pre-scan curve); drivers >= 455.00; no console progress output"
             },
             Self::SetForcePstate => {
-                "Force a P-State via private SetForcePstate (0x025BFB10); set_type 2=force until released, 0=release"
+                "Force a P-State via private SetForcePstate (0x025BFB10); set_type 0/1/2 all force-lock, none release (to unlock use reset-force-pstate)"
+            },
+            Self::ResetForcePstate => {
+                "Release a force-locked pstate via EnableDynamicPstates(enable=0) — escape hatch when set-force-pstate locks the GPU and won't release"
             },
             Self::RestartDisplayDriver => {
                 "Restart the display driver (0xB4B26B65); legacy apply-OC trigger"
@@ -503,6 +508,7 @@ impl Command {
             | Self::ClearEdid
             | Self::SetVoltageBoostPercent => (1, 1),
             Self::OemOcScanner => (0, 0),
+            Self::ResetForcePstate => (0, 0),
             Self::RestartDisplayDriver => (0, 0),
             Self::SetForcePstate => (1, 1),
             Self::SetLockedClocksMhz
@@ -912,6 +918,7 @@ const COMMANDS: &[Command] = &[
     Command::ListGpus,
     Command::OemOcScanner,
     Command::ProbeVoltageLimits,
+    Command::ResetForcePstate,
     Command::RestartDisplayDriver,
     Command::ResetApplicationsClocks,
     Command::ResetCoreOffsetMhz,
@@ -1316,7 +1323,7 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .long("set-type")
             .value_name("TYPE")
             .action(ArgAction::Set)
-            .help("SetForcePstate type: 2 = force until released (default), 0 = release"),
+            .help("SetForcePstate type (0/1/2 all force-lock; none release; default 2 = nvapioc convention)"),
         "all" => Arg::new("all")
             .long("all")
             .action(ArgAction::SetTrue)
@@ -3065,6 +3072,10 @@ fn execute_target(
         Command::RestartDisplayDriver => {
             run(target, RestartDisplayDriver)?;
             Ok(json!({"applied": true}))
+        }
+        Command::ResetForcePstate => {
+            run(target, ResetForcePstate)?;
+            Ok(json!({"applied": true, "action": "release"}))
         }
         Command::SetVfpPointDeltaMhz => {
             let point = parse_usize(&invocation.positionals[0], "point")?;
