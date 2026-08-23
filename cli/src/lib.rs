@@ -426,7 +426,7 @@ impl Command {
                 "Whisper Mode 2.0 enable/disable (0xD27D0629); mobile-only; 1=enable 0=disable"
             },
             Self::SetWm2Mode => {
-                "Whisper Mode 2.0 acoustic mode (0xD27D0629); 0=quieter 1=quiet 2=balanced"
+                "Whisper Mode 2.0 acoustic mode (0xD2561B69); quieter/quiet/balanced"
             },
             Self::SetVfpPointDeltaMhz => "Set one VFP point delta in MHz",
             Self::SetVfpRangeDeltaMhz => "Set a VFP point range delta in MHz",
@@ -815,7 +815,7 @@ impl Command {
             Self::SetWm2Mode => vec![PositionalArg::free(
                 "arg_mode",
                 "MODE",
-                "Acoustic mode: 0=quieter, 1=quiet, 2=balanced",
+                "Acoustic mode: quieter, quiet, or balanced (or 0/1/2)",
             )],
             Self::SetVoltageBoostPercent => vec![PositionalArg::free(
                 "arg_boost_percent",
@@ -3162,15 +3162,17 @@ fn execute_target(
             Ok(json!({"applied": true, "wm2": enable}))
         }
         Command::SetWm2Mode => {
-            let mode_idx = parse_u32(&invocation.positionals[0], "mode")?;
-            let mode = match mode_idx {
-                0 => Wm2AcousticMode::Quieter,
-                1 => Wm2AcousticMode::Quiet,
-                2 => Wm2AcousticMode::Balanced,
-                _ => return Err(CliError::new("mode must be 0 (quieter), 1 (quiet), or 2 (balanced)")),
+            let raw = invocation.positionals[0].trim().to_ascii_lowercase();
+            let (mode, label) = match raw.as_str() {
+                "0" | "quieter" => (Wm2AcousticMode::Quieter, "quieter"),
+                "1" | "quiet" => (Wm2AcousticMode::Quiet, "quiet"),
+                "2" | "balanced" => (Wm2AcousticMode::Balanced, "balanced"),
+                _ => return Err(CliError::new(
+                    "mode must be quieter, quiet, or balanced (or 0/1/2)",
+                )),
             };
             run(target, SetWm2Mode { mode })?;
-            Ok(json!({"applied": true, "wm2_mode": mode_idx}))
+            Ok(json!({"applied": true, "wm2_mode": label}))
         }
         Command::SetVfpPointDeltaMhz => {
             let point = parse_usize(&invocation.positionals[0], "point")?;
