@@ -4,7 +4,9 @@ use super::nvml as low_nvml;
 use super::Wm2AcousticMode;
 use super::result::{
     ApiRestrictionState, AppliedValue, AutoBoostState, BatchReport, ClockOffset, DNotifierInfo,
-    DNotifierLevel, DisplayInfo, EdidData, FanInfo, NvapiPStateNativeLock, OperationKind,
+    DNotifierLevel, DisplayInfo, EdidData, FanCurvePointReadout, FanCurveReadout, FanInfo,
+    NvapiPerfFreqCap,
+    NvapiPStateNativeLock, OperationKind,
     OperationReport, OvervoltApplied, PStateLevelEntry, PStateLevelsInfo, PstateBaseVoltage,
     PstateClockRange,
     SupportedApplicationClocks, TargetOutcome, TargetTempPolicy, TdpTempLimits, ThermalSensorReading,
@@ -237,8 +239,8 @@ impl GpuOperation for QueryNvapiThermalSettings {
     }
 }
 
-/// NVCP power-mode (均衡/高性能) read via the ClientPowerModes family —
-/// the NVIDIA App's Balanced/Max toggle. Reports the support gate
+/// NVIDIA App power-mode (均衡/高性能) read via the ClientPowerModes family —
+/// the App's Balanced/Max toggle. Reports the support gate
 /// (`max_mode_idx == 1`) alongside the active mode.
 #[derive(Clone, Copy, Debug)]
 pub struct GetPowerMode;
@@ -271,7 +273,7 @@ impl GpuOperation for GetPowerMode {
     }
 }
 
-/// NVCP power-mode SET (`Max` = 高性能, `false` = 均衡 Balanced).
+/// NVIDIA App power-mode SET (`Max` = 高性能, `false` = 均衡 Balanced).
 #[derive(Clone, Copy, Debug)]
 pub struct SetPowerMode {
     pub max: bool,
@@ -303,6 +305,86 @@ impl GpuOperation for SetPowerMode {
         Ok(AppliedValue {
             requested: self.max,
             applied: self.max,
+        })
+    }
+}
+
+/// Read the GPU fan-curve table (`ClientFanPoliciesGetControl` NDA
+/// 0xE543C540, struct magic 0x200DC). RE'd from GPUMon.exe pollFanCurve —
+/// one snapshot holds up to 4 curve slots × 3 (temp, RPM) points. Curves
+/// are typically settable/readable on desktops only; mobile boards drive
+/// their fans through the EC.
+#[derive(Clone, Copy, Debug)]
+pub struct GetFanCurves;
+
+impl GpuOperation for GetFanCurves {
+    type Output = Vec<FanCurveReadout>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::GetFanCurves
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .inner()
+            .fan_curves()
+            .map_err(Error::from)
+            .map(|curves| {
+                curves
+                    .into_iter()
+                    .map(|c| FanCurveReadout {
+                        index: c.index,
+                        points: c
+                            .points
+                            .into_iter()
+                            .map(|p| FanCurvePointReadout {
+                                temp_c: p.temp_c,
+                                rpm: p.rpm,
+                            })
+                            .collect(),
+                    })
+                    .collect()
+            })
+    }
+}
+
+/// Write one fan-curve slot via the GPUMon RMW protocol (GET snapshot →
+/// patch the target slot's 3 (temp, RPM) points → SET the whole table back).
+/// Driver enforces strict monotonicity across all lanes.
+#[derive(Clone, Debug)]
+pub struct SetFanCurve {
+    pub index: u8,
+    pub points: Vec<FanCurvePointReadout>,
+}
+
+impl GpuOperation for SetFanCurve {
+    type Output = AppliedValue<Vec<FanCurvePointReadout>>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetFanCurve
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let curve = nvapi_hi::FanCurve {
+            index: self.index,
+            points: self
+                .points
+                .iter()
+                .map(|p| nvapi_hi::FanCurvePoint {
+                    temp_c: p.temp_c,
+                    rpm: p.rpm,
+                })
+                .collect(),
+        };
+        target
+            .nvapi()?
+            .inner()
+            .set_fan_curve(&curve)
+            .map_err(Error::from)?;
+        Ok(AppliedValue {
+            requested: self.points.clone(),
+            applied: self.points.clone(),
         })
     }
 }
@@ -2183,6 +2265,33 @@ impl GpuOperation for SetNvapiPStateNative {
             }
         };
         target.nvapi()?.set_pstate_native(lock).map_err(Error::from)
+    }
+}
+
+/// Set the GPU frequency perf-cap (the ref tool `-gpuclk:<MHz>` SETTER,
+/// PerfLimitsSetStatus NDA 0x32CA4983). Clamps the perf max/min frequency to
+/// a cap value — NOT an offset, NOT a P-state lock (see [`SetNvapiPStateNative`]).
+/// `freq_khz` is MHz × 1000; `Reset` clears the cap (`-gpuclk:-1`).
+#[derive(Clone, Copy, Debug)]
+pub struct SetNvapiPerfFreqCap {
+    pub cap: NvapiPerfFreqCap,
+}
+
+impl GpuOperation for SetNvapiPerfFreqCap {
+    type Output = ();
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiPerfFreqCap
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let cap = match self.cap {
+            NvapiPerfFreqCap::Reset => nvapi_hi::PerfFreqCap::Reset,
+            NvapiPerfFreqCap::Cap { max_khz, min_khz } => {
+                nvapi_hi::PerfFreqCap::Cap { max_khz, min_khz }
+            }
+        };
+        target.nvapi()?.set_perf_freq_cap(cap).map_err(Error::from)
     }
 }
 

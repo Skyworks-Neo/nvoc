@@ -149,6 +149,19 @@ pub enum OperationKind {
     SetWm2Active,
     /// Whisper Mode 2.0 acoustic mode (0xD27D0629). Mobile-only.
     SetWm2Mode,
+    /// Set the GPU frequency perf-cap (PerfLimitsSetStatus NDA 0x32CA4983) —
+    /// clamp the perf max/min frequency to a cap value. The ref tool's
+    /// `-gpuclk:<MHz>`. Distinct from P-state lock (SetNvapiPStateNative).
+    SetNvapiPerfFreqCap,
+    /// Read the GPU fan-curve table (ClientFanPoliciesGetControl NDA
+    /// 0xE543C540, struct magic 0x200DC) — up to 4 curve slots × 3
+    /// monotonic (temperature, RPM) points. Desktop-only (mobile drives
+    /// fans through the EC).
+    GetFanCurves,
+    /// Write one fan-curve slot (ClientFanPoliciesSetControl NDA 0xC181947A,
+    /// struct magic 0x200DC) via the GPUMon RMW protocol — GET snapshot,
+    /// patch the target slot, SET the whole table back. Desktop-only.
+    SetFanCurve,
 }
 
 impl OperationKind {
@@ -216,6 +229,7 @@ impl OperationKind {
                 | SetBb2Active
                 | SetWm2Active
                 | SetWm2Mode
+                | SetNvapiPerfFreqCap
         )
     }
 }
@@ -252,7 +266,25 @@ pub struct PowerLimits {
     pub max_watts: f32,
 }
 
-/// NVCP power-mode view (均衡/高性能): the App's Balanced/Max toggle via
+/// One temperature→RPM point of a GPU fan curve (`ClientFanPolicies` table,
+/// struct magic `0x200DC`, RE'd from GPUMon `DialogFanCurve`). Desktop-only:
+/// mobile boards drive fans through the EC, not NVAPI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FanCurvePointReadout {
+    pub temp_c: u16,
+    pub rpm: u32,
+}
+
+/// One fan-curve slot as reported by the driver. The 0x200DC table holds up
+/// to 4 slots; `count` (the table's first byte after the magic) is the
+/// authoritative number of populated curves.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FanCurveReadout {
+    pub index: u8,
+    pub points: Vec<FanCurvePointReadout>,
+}
+
+/// NVIDIA App power-mode view (均衡/高性能): the App's Balanced/Max toggle via
 /// the ClientPowerModes family (0xF21C2D56/0x180A9468/0x3CC8C552, RE'd
 /// from NVIDIA App nvxdapix). `supported` mirrors the App's gate
 /// (`max_mode_idx == 1`); false on e.g. Ada mobile (0xFFFF).
@@ -375,6 +407,18 @@ pub enum NvapiPStateNativeLock {
     PstateOnly { pstate: u8 },
     /// Pin the active P-State AND lock its frequency (freq_khz = MHz × 1000).
     PstateAndFreq { pstate: u8, freq_khz: u32 },
+}
+
+/// GPU frequency perf-cap request (the ref tool `-gpuclk:<MHz>` SETTER,
+/// PerfLimitsSetStatus NDA 0x32CA4983). Core-level mirror of
+/// [`nvapi_hi::PerfFreqCap`]: clamps the perf max/min frequency to a cap
+/// value (NOT an offset, NOT a P-state lock). `freq_khz` = MHz × 1000.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NvapiPerfFreqCap {
+    /// Clear the perf frequency cap (`-gpuclk:-1`).
+    Reset,
+    /// Clamp perf frequency to `[min_khz, max_khz]` (MHz × 1000).
+    Cap { max_khz: u32, min_khz: u32 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

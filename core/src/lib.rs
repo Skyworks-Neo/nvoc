@@ -38,9 +38,10 @@ pub use operation::{
     ResetVfpLock, SetApiRestriction, SetApplicationsClocks, SetAutoBoost, SetAutoBoostDefault,
     SetClockOffset, SetCoolerLevels, SetDomainVfpDeltas, SetEdid, SetFanSpeed, SetLegacyClocks,
     SetLockedClocks, SetNvapiClkDomainOffset, SetNvapiDNotifier, SetNvapiDynamicBoost, SetNvapiPStateNative,
-    GetPowerMode, SetPowerMode, QueryNvapiThermalSettings, SetNvapiOvervolt, SetNvapiPowerLimits,
+    GetFanCurves, GetPowerMode, SetFanCurve, SetPowerMode, QueryNvapiThermalSettings, SetNvapiOvervolt, SetNvapiPowerLimits,
     SetNvapiPstateLock, SetNvapiSensorLimits, SetNvapiTargetTemp,
     SetNvapiTgpWatt, SetNvapiVoltRailOffset, SetNvapiVoltRailTarget,
+    SetNvapiPerfFreqCap,
     SetNvapiVfpPointPrivate, SetNvapiVfpRangePrivate, SetNvapiVfpRangePerPointPrivate, SetNvmlPstateLock,
     SetPowerLimit, SetPstateBaseVoltage, SetPstateClockOffset, SetTemperatureLimit,
     SetVfpFrequencyLock, SetVfpPointDelta, SetVfpRangeDelta, SetVfpVoltageLock, SetVoltageBoost,
@@ -54,7 +55,9 @@ pub use operation::{
 };
 pub use result::{
     ApiRestrictionState, AppliedValue, AutoBoostState, BatchReport, ClockOffset, DNotifierInfo,
-    DNotifierLevel, DisplayInfo, EdidData, FanInfo, NvapiPStateNativeLock, OperationKind,
+    DNotifierLevel, DisplayInfo, EdidData, FanCurvePointReadout, FanCurveReadout, FanInfo,
+    NvapiPerfFreqCap,
+    NvapiPStateNativeLock, OperationKind,
     OperationReport, OperationWarning, PStateLevelEntry, PStateLevelsInfo, PowerLimits, PowerModeStatus,
     PstateBaseVoltage, PstateClockRange, SupportedApplicationClocks, TargetOutcome,
     TargetTempPolicy, TdpTempLimits, TemperatureThreshold, ThermalSensorReading, ThrottleReason,

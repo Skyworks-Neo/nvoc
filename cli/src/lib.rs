@@ -7,6 +7,7 @@ use nvoc_core::{
     CoolerTarget, GpuSelector, GpuTarget, Kilohertz, KilohertzDelta, MicrovoltsDelta, PState,
     Percentage, ProbeVoltageLimits, QueryApiRestriction, QueryAutoBoost, QueryClockOffset,
     QueryDisplays, QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings,
+    GetFanCurves, SetFanCurve, FanCurvePointReadout,
     QueryGpuStatus, QueryLegacyCoreOvervoltRanges, QueryLegacyP0CoreMaxVoltageDelta,
     QueryNvapiClkDomainFreqDetail,
     QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomains, QueryNvapiClkVfPoints,
@@ -22,7 +23,7 @@ use nvoc_core::{
     ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock, ResetVfpLock,
     SetApiRestriction, SetApplicationsClocks, SetAutoBoost, SetAutoBoostDefault, SetClockOffset,
     SetCoolerLevels, SetEdid, SetFanSpeed, SetLegacyClocks, SetLockedClocks,
-    SetNvapiClkDomainOffset, SetNvapiDNotifier,
+    SetNvapiClkDomainOffset, SetNvapiDNotifier, SetNvapiPerfFreqCap, NvapiPerfFreqCap,
     SetNvapiVfpPointPrivate,
     SetNvapiVfpRangePrivate,
     SetNvapiVfpRangePerPointPrivate,
@@ -144,6 +145,8 @@ pub enum Command {
     GetPstates,
     GetSupportedAppClocks,
     GetFanInfo,
+    GetFanCurve,
+    SetFanCurve,
     GetTemperatureThresholds,
     GetThermalSettings,
     GetPowerMode,
@@ -176,6 +179,8 @@ pub enum Command {
     GetClkDomains,
     GetClkDomainFreq,
     SetClkDomainOffset,
+    SetGpuClock,
+    ResetGpuClock,
     SetVfpPointPrivate,
     SetVfpRangePrivate,
     GetClkVfPoints,
@@ -243,6 +248,8 @@ impl Command {
             Self::GetPstates => "get-pstates",
             Self::GetSupportedAppClocks => "get-supported-app-clocks",
             Self::GetFanInfo => "get-fan-info",
+            Self::GetFanCurve => "get-fan-curve",
+            Self::SetFanCurve => "set-fan-curve",
             Self::GetTemperatureThresholds => "get-temp-thresholds",
             Self::GetThermalSettings => "get-thermal-settings",
             Self::GetPowerMode => "get-power-mode",
@@ -278,6 +285,8 @@ impl Command {
             Self::SetVfpRangePrivate => "set-vfp-range-private",
             Self::GetClkDomainFreq => "get-clk-domain-freq",
             Self::SetClkDomainOffset => "set-clk-domain-offset",
+            Self::SetGpuClock => "set-perf-freq-caps",
+            Self::ResetGpuClock => "reset-perf-freq-caps",
             Self::SetThermalLimitC => "set-thermal-limit-c",
             Self::SetTemperatureThresholds => "set-temp-thresholds",
             Self::SetFanPercent => "set-fan-percent",
@@ -337,14 +346,20 @@ impl Command {
             Self::GetPstates => "Read NVML P-State clock ranges",
             Self::GetSupportedAppClocks => "Read NVML supported application clocks",
             Self::GetFanInfo => "Read NVML fan count and range",
+            Self::GetFanCurve => {
+                "Read the NVAPI fan-curve table (ClientFanPolicies, struct 0x200DC; desktop-only)"
+            }
+            Self::SetFanCurve => {
+                "Write one fan-curve slot (RMW: --curve idx --points temp:rpm,temp:rpm,temp:rpm)"
+            }
             Self::GetTemperatureThresholds => {
                 "Read temperature thresholds (NVML by default; --nvapi exposes target-temp policy)"
             }
             Self::GetThermalSettings => {
                 "Read NVAPI legacy 3-sensor thermal view (GPU/Memory/Board, live + physical range)"
             }
-            Self::GetPowerMode => "Read NVCP power mode (Balanced/Max with support gate)",
-            Self::SetPowerMode => "Set NVCP power mode: max | balanced (NVIDIA App Balanced/Max toggle)",
+            Self::GetPowerMode => "Read NVIDIA App power mode (Balanced/Max with support gate)",
+            Self::SetPowerMode => "Set NVIDIA App power mode: max | balanced (the App's Balanced/Max toggle)",
             Self::GetThrottleReasons => "Read NVML throttle reasons",
             Self::GetTdpTempLimits => "Read NVAPI TDP and temperature limits",
             Self::ProbeVoltageLimits => "Probe NVAPI voltage limit points",
@@ -390,6 +405,12 @@ impl Command {
             }
             Self::SetClkDomainOffset => {
                 "Write a signed kHz offset into one clock-domain control record (dangerous XBar clock write; --temporary restores the snapshot)"
+            }
+            Self::SetGpuClock => {
+                "Set the GPU frequency perf-cap in MHz (PerfLimitsSetStatus NDA; clamp perf max/min freq; --min for the lower bound, default both bounds equal). Use reset-perf-freq-caps to clear"
+            }
+            Self::ResetGpuClock => {
+                "Clear the GPU frequency perf-cap (PerfLimitsSetStatus NDA, enable=0 on both entries; the GPUMonCmd -gpuclk:-1 path)"
             }
             Self::GetClkVfPoints => {
                 "Read the private ClockClient V/F-points family: per-bank point masks + V/F curve records (voltage-indexed, units calibrated vs the public GPC VFP)"
@@ -530,6 +551,7 @@ impl Command {
             | Self::ClearEdid
             | Self::SetVoltageBoostPercent
             | Self::SetPowerMode => (1, 1),
+            Self::SetFanCurve => (2, 2),
             Self::OemOcScanner => (0, 0),
             Self::ResetForcePstate => (0, 0),
             Self::RestartDisplayDriver => (0, 0),
@@ -546,6 +568,8 @@ impl Command {
             | Self::SetVoltRailOffset
             | Self::SetVoltRailTarget
             | Self::SetClkDomainOffset => (2, 2),
+            Self::SetGpuClock => (1, 1),
+            Self::ResetGpuClock => (0, 0),
             Self::SetVfpPointPrivate => (3, 3),
             Self::SetVfpRangePrivate => (4, 4),
             Self::GetClkDomainFreq => (0, 1),
@@ -581,6 +605,7 @@ impl Command {
                 &["domain"]
             }
             Self::SetVfpVoltageLock => &["feedback"],
+            Self::SetGpuClock => &["min"],
             Self::OemOcScanner => &["start", "stop", "revert", "status"],
             Self::SetForcePstate => &["set-type"],
             Self::SetTgpWatt | Self::ResetTgpWatt | Self::SetTemperatureThresholds => {
@@ -699,6 +724,12 @@ impl Command {
                     "Signed kilohertz offset, for example -60000 or +30000kHz; 0 is a no-op stock write. The driver may reject or clamp; the post-SET readback is returned. Pass --temporary to restore the snapshot before returning",
                 ),
             ],
+            Self::ResetGpuClock => vec![],
+            Self::SetGpuClock => vec![PositionalArg::hyphen(
+                "arg_max_mhz",
+                "MAX_MHZ",
+                "Perf max-frequency cap in MHz (e.g. 300). --min sets the min-frequency cap (defaults to MAX_MHZ); both are clamped by the driver. Distinct from a clock offset or P-state lock; use reset-perf-freq-caps to clear",
+            )],
             Self::SetVfpRangePrivate => vec![
                 PositionalArg::free(
                     "arg_bank",
@@ -827,6 +858,18 @@ impl Command {
                 "MODE",
                 "Power mode: max | balanced",
             )],
+            Self::SetFanCurve => vec![
+                PositionalArg::free(
+                    "arg_curve",
+                    "CURVE",
+                    "Fan-curve slot index (0-3, driver count reports available slots)",
+                ),
+                PositionalArg::free(
+                    "arg_points",
+                    "POINTS",
+                    "Three monotonic points temp:rpm, e.g. 40:800,60:1200,75:1800",
+                ),
+            ],
             Self::SetAutoBoost | Self::SetAutoBoostDefault => vec![PositionalArg::finite(
                 "arg_enabled",
                 "ENABLED",
@@ -940,6 +983,7 @@ const COMMANDS: &[Command] = &[
     Command::GetDNotifier,
     Command::GetEdid,
     Command::GetFanInfo,
+    Command::GetFanCurve,
     Command::GetInfo,
     Command::GetLegacyOvervoltRanges,
     Command::GetLegacyP0CoreMaxVoltageDelta,
@@ -990,10 +1034,13 @@ const COMMANDS: &[Command] = &[
     Command::SetDNotifier,
     Command::SetClockOffsetMhz,
     Command::SetClkDomainOffset,
+    Command::SetGpuClock,
+    Command::ResetGpuClock,
     Command::SetCoreOffsetMhz,
     Command::SetDynamicBoost,
     Command::SetEdid,
     Command::SetFanPercent,
+    Command::SetFanCurve,
     Command::SetForcePstate,
     Command::SetLegacyClocksMhz,
     Command::SetLockedClocksMhz,
@@ -1406,6 +1453,11 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .long("raw-converted")
             .action(ArgAction::SetTrue)
             .help("Translate VALUE (a MHz target) to a raw f-offset control value via the universal g(def) prior"),
+        "min" => Arg::new("min")
+            .long("min")
+            .value_name("MIN_MHZ")
+            .action(ArgAction::Set)
+            .help("Perf min-frequency cap in MHz (defaults to MAX_MHZ); both bounds are clamped by the driver"),
         _ => unreachable!("unknown command-specific option {name}"),
     }
 }
@@ -2211,6 +2263,48 @@ fn execute_target(
                 "count": fan.count,
                 "min_percent": fan.min_speed,
                 "max_percent": fan.max_speed,
+            }))
+        }
+        Command::GetFanCurve => {
+            let curves = run(target, GetFanCurves)?.output;
+            Ok(json!({
+                "curves": curves
+                    .iter()
+                    .map(|c| json!({
+                        "index": c.index,
+                        "points": c.points.iter().map(|p| json!({
+                            "temp_c": p.temp_c,
+                            "rpm": p.rpm,
+                        })).collect::<Vec<_>>(),
+                    }))
+                    .collect::<Vec<_>>(),
+            }))
+        }
+        Command::SetFanCurve => {
+            let index: u8 = invocation.positionals[0]
+                .parse()
+                .map_err(|e| CliError::new(format!("invalid curve index {:?}: {e}", invocation.positionals[0])))?;
+            let points = parse_fan_curve_points(&invocation.positionals[1])?;
+            if points.len() != 3 {
+                return Err(CliError::new(format!(
+                    "expected 3 points (temp:rpm,temp:rpm,temp:rpm), got {}",
+                    points.len()
+                )));
+            }
+            // Driver requires strictly-increasing temperature AND RPM lanes.
+            for w in points.windows(2) {
+                if w[1].temp_c <= w[0].temp_c || w[1].rpm <= w[0].rpm {
+                    return Err(CliError::new(
+                        "fan-curve points must be strictly increasing in both temperature and RPM",
+                    ));
+                }
+            }
+            let curve = run(target, SetFanCurve { index, points })?;
+            Ok(json!({
+                "applied": curve.output.applied.iter().map(|p| json!({
+                    "temp_c": p.temp_c,
+                    "rpm": p.rpm,
+                })).collect::<Vec<_>>(),
             }))
         }
         Command::GetTemperatureThresholds => {
@@ -3052,6 +3146,54 @@ fn execute_target(
                 }),
                 None => json!({"supported": false}),
             })
+        }
+        Command::SetGpuClock => {
+            // GPU frequency perf-cap (PerfLimitsSetStatus NDA 0x32CA4983, the
+            // ref tool `-gpuclk:<MHz>`): clamp the perf max/min frequency to a
+            // cap value — NOT an offset, NOT a P-state lock. The positional is
+            // the max cap; --min the min cap (defaults to max). Use
+            // reset-perf-freq-caps to clear (not -1).
+            let max_mhz = parse_i32_unit(&invocation.positionals[0], "mhz", "mhz")?;
+            if max_mhz < 0 {
+                return Err(CliError::new(
+                    "negative MHz is not valid for set-perf-freq-caps; use `reset-perf-freq-caps` to clear the cap",
+                ));
+            }
+            let min_mhz = option_one(invocation, "min")
+                .map(|s| s.parse::<i32>())
+                .transpose()
+                .map_err(|e| CliError::new(format!("invalid --min: {e}")))?
+                .unwrap_or(max_mhz);
+            if min_mhz < 0 {
+                return Err(CliError::new(
+                    "negative --min is not valid for set-perf-freq-caps; use `reset-perf-freq-caps` to clear the cap",
+                ));
+            }
+            run(
+                target,
+                SetNvapiPerfFreqCap {
+                    cap: NvapiPerfFreqCap::Cap {
+                        max_khz: (max_mhz as u32).saturating_mul(1000),
+                        min_khz: (min_mhz as u32).saturating_mul(1000),
+                    },
+                },
+            )?;
+            Ok(json!({
+                "applied": true,
+                "max_mhz": max_mhz,
+                "min_mhz": min_mhz,
+            }))
+        }
+        Command::ResetGpuClock => {
+            // Clear the GPU frequency perf-cap (PerfLimitsSetStatus NDA, the
+            // -gpuclk:-1 path): enable=0 on both entries, no frequency written.
+            run(
+                target,
+                SetNvapiPerfFreqCap {
+                    cap: NvapiPerfFreqCap::Reset,
+                },
+            )?;
+            Ok(json!({"applied": true, "reset": true}))
         }
         Command::SetTemperatureThresholds => {
             // NVAPI-only SET of one target-temperature (温度墙) policy slot.
@@ -4181,6 +4323,29 @@ fn parse_u32(raw: &str, label: &str) -> CliResult<u32> {
     raw.trim()
         .parse::<u32>()
         .map_err(|_| CliError::new(format!("invalid {label} {raw:?}")))
+}
+
+/// Parse a fan-curve points positional (`40:800,60:1200,75:1800`) into
+/// strictly-applied `FanCurvePointReadout`s. The driver requires strictly
+/// increasing temperature AND RPM across the three points.
+fn parse_fan_curve_points(raw: &str) -> CliResult<Vec<FanCurvePointReadout>> {
+    raw.split(',')
+        .map(|pair| {
+            let (t, r) = pair
+                .split_once(':')
+                .ok_or_else(|| CliError::new(format!("invalid fan-curve point {pair:?}: expected temp:rpm")))?;
+            Ok(FanCurvePointReadout {
+                temp_c: t
+                    .trim()
+                    .parse()
+                    .map_err(|_| CliError::new(format!("invalid fan-curve temperature {t:?}")))?,
+                rpm: r
+                    .trim()
+                    .parse()
+                    .map_err(|_| CliError::new(format!("invalid fan-curve rpm {r:?}")))?,
+            })
+        })
+        .collect()
 }
 
 fn parse_i32_unit(raw: &str, suffix: &str, label: &str) -> CliResult<i32> {

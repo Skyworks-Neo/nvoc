@@ -24,6 +24,7 @@ use nvoc_core::{
     SetNvapiVfpPointPrivate,
     SetNvapiDynamicBoost, SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiSensorLimits,
     SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvapiVoltRailOffset, SetNvapiVoltRailTarget,
+    SetNvapiPerfFreqCap, NvapiPerfFreqCap,
     SetNvmlPstateLock, SetPowerLimit, SetPstateBaseVoltage, SetPstateClockOffset,
     SetTemperatureLimit, SetVfpFrequencyLock, SetVfpPointDelta, SetVfpRangeDelta,
     SetVfpVoltageLock, SetVoltageBoost, VfpResetDomain, discover_targets, nvml_pstate_to_str,
@@ -2058,6 +2059,35 @@ fn set_volt_rail_target(
     py_value(py, &value)
 }
 
+/// Set the GPU frequency perf-cap (NVAPI PerfLimitsSetStatus 0x32CA4983, the
+/// ref tool `-gpuclk:<MHz>` SETTER). Clamp the perf max/min frequency.
+/// `max_mhz`/`min_mhz` are in MHz; pass -1 for both to reset the cap. The
+/// GUI/CLI speak MHz; the underlying NVAPI struct takes kHz (×1000). Either
+/// bound may be 0 to leave that side unset (GPUMon sets both to the same cap).
+#[pyfunction]
+fn set_perf_freq_cap(
+    py: Python<'_>,
+    gpu: &str,
+    max_mhz: i32,
+    min_mhz: i32,
+) -> PyResult<Py<PyAny>> {
+    let cap = if max_mhz < 0 && min_mhz < 0 {
+        NvapiPerfFreqCap::Reset
+    } else {
+        NvapiPerfFreqCap::Cap {
+            max_khz: (max_mhz.max(0) as u32).saturating_mul(1000),
+            min_khz: (min_mhz.max(0) as u32).saturating_mul(1000),
+        }
+    };
+    let value = py.detach(|| {
+        with_target(gpu, "nvapi", |target| {
+            run(target, SetNvapiPerfFreqCap { cap }).map_err(to_py_err)?;
+            Ok(value_object([("applied", Value::from(true))]))
+        })
+    })?;
+    py_value(py, &value)
+}
+
 #[pyfunction]
 fn set_volt_rail_offset(
     py: Python<'_>,
@@ -3336,6 +3366,7 @@ fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(query_volt_rails, m)?)?;
     m.add_function(wrap_pyfunction!(set_volt_rail_offset, m)?)?;
     m.add_function(wrap_pyfunction!(set_volt_rail_target, m)?)?;
+    m.add_function(wrap_pyfunction!(set_perf_freq_cap, m)?)?;
     m.add_function(wrap_pyfunction!(query_clk_domains, m)?)?;
     m.add_function(wrap_pyfunction!(query_clk_domain_freq, m)?)?;
     m.add_function(wrap_pyfunction!(query_clk_vf_points, m)?)?;
