@@ -128,6 +128,11 @@ pub enum OperationKind {
     ClearEdid,
     QueryThrottleReasons,
     QueryViolationStatus,
+    /// Control NVIDIA's driver-side ("OEM") OC Scanner — the family MSI's
+    /// MSIOCScanner drives on drivers >= 455.00 (Start 0xBC4AEE25 /
+    /// Stop 0xC28B73DE / Revert 0xCC727B22). The scan runs inside the
+    /// driver; the resulting V/F offsets are applied by the driver itself.
+    OemOcScanner,
 }
 
 impl OperationKind {
@@ -188,6 +193,7 @@ impl OperationKind {
                 | SetApiRestriction
                 | SetEdid
                 | ClearEdid
+                | OemOcScanner
         )
     }
 }

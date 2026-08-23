@@ -935,6 +935,40 @@ impl GpuOperation for SetVfpRangeDelta {
     }
 }
 
+/// Which driver-side ("OEM"/NVIDIA) OC Scanner action to perform.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OemOcScannerAction {
+    Start,
+    Stop,
+    Revert,
+}
+
+/// Control NVIDIA's driver-side OC Scanner (drivers >= 455.00). The scan
+/// runs inside the driver and applies the resulting V/F offsets itself;
+/// Start is fire-and-forget, Revert restores the pre-scan curve.
+#[derive(Clone, Copy, Debug)]
+pub struct OemOcScanner {
+    pub action: OemOcScannerAction,
+}
+
+impl GpuOperation for OemOcScanner {
+    type Output = ();
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::OemOcScanner
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let gpu = target.nvapi()?;
+        let res = match self.action {
+            OemOcScannerAction::Start => gpu.oem_oc_scanner_start(),
+            OemOcScannerAction::Stop => gpu.oem_oc_scanner_stop(),
+            OemOcScannerAction::Revert => gpu.oem_oc_scanner_revert(),
+        };
+        res.map_err(Error::from)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct SetDomainVfpDeltas {
     pub domain: ClockDomain,

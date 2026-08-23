@@ -2371,6 +2371,9 @@ mod tests {
                 json!({"applied": true, "domain": "graphics", "min_mhz": 1500, "max_mhz": 1800})
             }
             Command::SetVfpVoltageLock => json!({"applied": true, "target": "900mv"}),
+            Command::OemOcScanner => {
+                json!({"applied": true, "action": "start"})
+            }
             Command::SetVfpPointDeltaMhz => {
                 json!({"applied": true, "point": 12, "delta_mhz": 15})
             }

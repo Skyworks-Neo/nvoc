@@ -31,6 +31,7 @@ use nvoc_core::{
     SetNvapiVoltRailTarget, SetNvmlPstateLock, SetPowerLimit, SetPstateBaseVoltage,
     SetPstateClockOffset, SetTemperatureLimit, SetVfpFrequencyLock, SetVfpPointDelta,
     SetVfpRangeDelta, SetVfpVoltageLock, SetVoltageBoost, VfpResetDomain, discover_targets,
+    OemOcScanner, OemOcScannerAction,
     nvml_pstate_to_str, parse_nvapi_locked_voltage_target, parse_nvml_fan_control_policy,
     parse_nvml_pstate, run, select_targets,
 };
@@ -180,6 +181,7 @@ pub enum Command {
     SetFanPercent,
     SetLockedClocksMhz,
     SetVfpVoltageLock,
+    OemOcScanner,
     SetVfpPointDeltaMhz,
     SetVfpRangeDeltaMhz,
     SetPstateLock,
@@ -270,6 +272,7 @@ impl Command {
             Self::SetFanPercent => "set-fan-percent",
             Self::SetLockedClocksMhz => "set-locked-clocks-mhz",
             Self::SetVfpVoltageLock => "set-vfp-voltage-lock",
+            Self::OemOcScanner => "oem-oc-scanner",
             Self::SetVfpPointDeltaMhz => "set-vfp-point-delta-mhz",
             Self::SetVfpRangeDeltaMhz => "set-vfp-range-delta-mhz",
             Self::SetPstateLock => "set-pstate-lock",
@@ -385,6 +388,9 @@ impl Command {
             Self::SetFanPercent => "Set fan speed/cooler level in percent",
             Self::SetLockedClocksMhz => "Lock core or memory clocks to a MHz range",
             Self::SetVfpVoltageLock => "Lock VFP by point or voltage",
+            Self::OemOcScanner => {
+                "Control NVIDIA's driver-side (OEM) OC Scanner: --start (driver scans in background and applies V/F offsets itself), --stop, --revert (restore pre-scan curve); drivers >= 455.00; no console progress output"
+            },
             Self::SetVfpPointDeltaMhz => "Set one VFP point delta in MHz",
             Self::SetVfpRangeDeltaMhz => "Set a VFP point range delta in MHz",
             Self::SetPstateLock => {
@@ -486,6 +492,7 @@ impl Command {
             | Self::SetAutoBoostDefault
             | Self::ClearEdid
             | Self::SetVoltageBoostPercent => (1, 1),
+            Self::OemOcScanner => (0, 0),
             Self::SetLockedClocksMhz
             | Self::SetVfpPointDeltaMhz
             | Self::SetApplicationsClocksMhz
@@ -530,6 +537,7 @@ impl Command {
                 &["domain"]
             }
             Self::SetVfpVoltageLock => &["feedback"],
+            Self::OemOcScanner => &["start", "stop", "revert"],
             Self::SetTgpWatt | Self::ResetTgpWatt | Self::SetTemperatureThresholds => {
                 &["policy-index"]
             }
@@ -884,6 +892,7 @@ const COMMANDS: &[Command] = &[
     Command::GetVoltRails,
     Command::ListDisplays,
     Command::ListGpus,
+    Command::OemOcScanner,
     Command::ProbeVoltageLimits,
     Command::ResetApplicationsClocks,
     Command::ResetCoreOffsetMhz,
@@ -1267,6 +1276,18 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .action(ArgAction::SetTrue)
             .global(true)
             .help("Enable feedback for VFP voltage lock"),
+        "start" => Arg::new("start")
+            .long("start")
+            .action(ArgAction::SetTrue)
+            .help("Start the driver-side (OEM) OC scanner; it runs in the background and applies the resulting V/F offsets itself (no console progress output)"),
+        "stop" => Arg::new("stop")
+            .long("stop")
+            .action(ArgAction::SetTrue)
+            .help("Stop the driver-side OC scanner"),
+        "revert" => Arg::new("revert")
+            .long("revert")
+            .action(ArgAction::SetTrue)
+            .help("Revert the OC applied by the driver-side scanner (restore the pre-scan curve)"),
         "all" => Arg::new("all")
             .long("all")
             .action(ArgAction::SetTrue)
@@ -1378,7 +1399,8 @@ fn collect_named_options(
     for name in allowed_options {
         match *name {
             "indexed" | "no-infer-missing-default" | "feedback" | "all" | "verbose"
-            | "temporary" | "freq-mode" | "raw" | "raw-converted" => {
+            | "temporary" | "freq-mode" | "raw" | "raw-converted"
+            | "start" | "stop" | "revert" => {
                 if matches.get_flag(name) {
                     options.insert(name.to_string(), vec!["true".to_string()]);
                 }
@@ -2974,6 +2996,30 @@ fn execute_target(
                 },
             )?;
             Ok(json!({"applied": true, "target": invocation.positionals[0]}))
+        }
+        Command::OemOcScanner => {
+            let start = option_bool(invocation, "start", false)?;
+            let stop = option_bool(invocation, "stop", false)?;
+            let revert = option_bool(invocation, "revert", false)?;
+            let action = match (start, stop, revert) {
+                (true, false, false) => OemOcScannerAction::Start,
+                (false, true, false) => OemOcScannerAction::Stop,
+                (false, false, true) => OemOcScannerAction::Revert,
+                _ => {
+                    return Err(CliError::new(
+                        "exactly one of --start / --stop / --revert is required",
+                    ))
+                }
+            };
+            run(target, OemOcScanner { action })?;
+            Ok(json!({
+                "applied": true,
+                "action": match action {
+                    OemOcScannerAction::Start => "start",
+                    OemOcScannerAction::Stop => "stop",
+                    OemOcScannerAction::Revert => "revert",
+                }
+            }))
         }
         Command::SetVfpPointDeltaMhz => {
             let point = parse_usize(&invocation.positionals[0], "point")?;
