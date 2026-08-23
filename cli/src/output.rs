@@ -2371,6 +2371,9 @@ mod tests {
             Command::SetPstateBaseVoltageUv => {
                 json!({"applied": true, "pstate": "P0", "delta_uv": 100000})
             }
+            Command::SetOvervoltUv => {
+                json!({"applied": true, "overvolt_delta_uv": 50000})
+            }
             Command::SetVoltageBoostPercent => {
                 json!({"applied": true, "voltage_boost_percent": 25})
             }

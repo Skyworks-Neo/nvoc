@@ -4,7 +4,8 @@ use super::nvml as low_nvml;
 use super::result::{
     ApiRestrictionState, AppliedValue, AutoBoostState, BatchReport, ClockOffset, DNotifierInfo,
     DNotifierLevel, DisplayInfo, EdidData, FanInfo, NvapiPStateNativeLock, OperationKind,
-    OperationReport, PStateLevelEntry, PStateLevelsInfo, PstateBaseVoltage, PstateClockRange,
+    OperationReport, OvervoltApplied, PStateLevelEntry, PStateLevelsInfo, PstateBaseVoltage,
+    PstateClockRange,
     SupportedApplicationClocks, TargetOutcome, TargetTempPolicy, TdpTempLimits,
     TemperatureThreshold, ThrottleReason, ViolationEntry, ViolationStatusReport, VoltageBoostState,
     VoltageFrequencyCheck,
@@ -630,6 +631,30 @@ impl GpuOperation for QueryPstateBaseVoltage {
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
         low_nvapi::query_pstate_base_voltage(target.nvapi()?, self.pstate)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct SetNvapiOvervolt {
+    pub delta_uv: MicrovoltsDelta,
+}
+
+impl GpuOperation for SetNvapiOvervolt {
+    type Output = OvervoltApplied;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiOvervolt
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let ov_reported = low_nvapi::set_nvapi_overvolt(target.nvapi()?, self.delta_uv)?;
+        Ok(OvervoltApplied {
+            applied: AppliedValue {
+                requested: self.delta_uv,
+                applied: self.delta_uv,
+            },
+            driver_ov_entries: ov_reported,
+        })
     }
 }
 

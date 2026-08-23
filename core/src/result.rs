@@ -43,6 +43,7 @@ pub enum OperationKind {
     QueryDomainVfpIndices,
     QueryLegacyCoreOvervoltRanges,
     QueryLegacyP0CoreMaxVoltageDelta,
+    SetNvapiOvervolt,
     QueryVoltageBoost,
     SetVoltageBoost,
     SetNvapiPowerLimits,
@@ -151,6 +152,7 @@ impl OperationKind {
                 | SetFanSpeed
                 | ResetFanSpeed
                 | SetPstateBaseVoltage
+                | SetNvapiOvervolt
                 | ResetPstateBaseVoltages
                 | SetPstateClockOffset
                 | SetCoolerLevels
@@ -390,6 +392,16 @@ pub struct FanInfo {
 pub struct AppliedValue<T> {
     pub requested: T,
     pub applied: T,
+}
+
+/// Result of the global OV SET: the applied delta plus whether the driver's
+/// GET-side table reports global OV entries at all. `driver_ov_entries ==
+/// false` means the SET was accepted but is observed to be silently ignored
+/// on such SKUs (Ada mobile).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OvervoltApplied {
+    pub applied: AppliedValue<nvapi_hi::MicrovoltsDelta>,
+    pub driver_ov_entries: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

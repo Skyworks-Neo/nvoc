@@ -25,7 +25,7 @@ use nvoc_core::{
     SetNvapiVfpPointPrivate,
     SetNvapiVfpRangePrivate,
     SetNvapiVfpRangePerPointPrivate,
-    SetNvapiDynamicBoost, SetNvapiPStateNative, SetNvapiPowerLimits, SetNvapiPstateLock,
+    SetNvapiDynamicBoost, SetNvapiOvervolt, SetNvapiPStateNative, SetNvapiPowerLimits, SetNvapiPstateLock,
     SetNvapiSensorLimits, SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvapiVoltRailOffset,
     SetNvapiVoltRailTarget, SetNvmlPstateLock, SetPowerLimit, SetPstateBaseVoltage,
     SetPstateClockOffset, SetTemperatureLimit, SetVfpFrequencyLock, SetVfpPointDelta,
@@ -186,6 +186,7 @@ pub enum Command {
     ResetPStateNative,
     SetApplicationsClocksMhz,
     SetPstateBaseVoltageUv,
+    SetOvervoltUv,
     SetVoltageBoostPercent,
     SetAutoBoost,
     SetAutoBoostDefault,
@@ -271,6 +272,7 @@ impl Command {
             Self::SetPstateLock => "set-pstate-lock",
             Self::SetApplicationsClocksMhz => "set-applications-clocks-mhz",
             Self::SetPstateBaseVoltageUv => "set-pstate-base-voltage-uv",
+            Self::SetOvervoltUv => "set-overvolt-uv",
             Self::SetVoltageBoostPercent => "set-voltage-boost-percent",
             Self::SetAutoBoost => "set-auto-boost",
             Self::SetAutoBoostDefault => "set-auto-boost-default",
@@ -384,6 +386,7 @@ impl Command {
             }
             Self::SetApplicationsClocksMhz => "Set NVML application clocks in MHz",
             Self::SetPstateBaseVoltageUv => "Set NVAPI P-State base voltage delta in microvolts",
+            Self::SetOvervoltUv => "Set global NVAPI over-voltage offset in microvolts (PSTATES20 V2 OV array)",
             Self::SetVoltageBoostPercent => "Set NVAPI voltage boost percent",
             Self::SetAutoBoost => "Set NVML auto-boost state",
             Self::SetAutoBoostDefault => "Set NVML default auto-boost state",
@@ -472,6 +475,7 @@ impl Command {
             | Self::SetFanPercent
             | Self::SetVfpVoltageLock
             | Self::SetPstateBaseVoltageUv
+            | Self::SetOvervoltUv
             | Self::SetAutoBoost
             | Self::SetAutoBoostDefault
             | Self::ClearEdid
@@ -729,6 +733,11 @@ impl Command {
                 "DELTA_UV",
                 "Base voltage delta in microvolts, for example 100000 or -25000uV",
             )],
+            Self::SetOvervoltUv => vec![PositionalArg::hyphen(
+                "arg_delta_uv",
+                "DELTA_UV",
+                "Global over-voltage offset in microvolts (PSTATES20 V2 OV array; HYDRA NvApiSetOverVoltageOffset path)",
+            )],
             Self::SetVoltageBoostPercent => vec![PositionalArg::free(
                 "arg_boost_percent",
                 "PERCENT",
@@ -898,6 +907,7 @@ const COMMANDS: &[Command] = &[
     Command::SetLockedClocksMhz,
     Command::SetMemoryOffsetMhz,
     Command::SetPstateBaseVoltageUv,
+    Command::SetOvervoltUv,
     Command::SetPstateLock,
     Command::SetPStateNative,
     Command::SetPowerPercent,
@@ -1081,6 +1091,12 @@ fn parse_output_format(raw: &str) -> CliResult<OutputFormat> {
 }
 
 fn parse_command(raw: &str) -> CliResult<Command> {
+    // Naming-compat aliases: the per-pstate baseVoltage SET predates the
+    // "legacy overvolt" GET naming; alias keeps the get/set pair obvious.
+    let raw = match raw {
+        "set-legacy-overvolt-uv" => "set-pstate-base-voltage-uv",
+        _ => raw,
+    };
     COMMANDS
         .iter()
         .copied()
@@ -1281,6 +1297,11 @@ fn command_specific_arg(name: &'static str) -> Arg {
 
 fn clap_subcommand(command: Command) -> ClapCommand {
     let mut subcommand = ClapCommand::new(command.name()).about(command.about());
+    // Naming-compat alias: pairs the per-pstate baseVoltage SET with the
+    // "legacy overvolt" GET naming (same operation, Maxwell-era path).
+    if command == Command::SetPstateBaseVoltageUv {
+        subcommand = subcommand.alias("set-legacy-overvolt-uv");
+    }
     let (min_args, _) = command.arity();
     for (index, positional) in command.positional_args().into_iter().enumerate() {
         subcommand = subcommand.arg(positional_arg(positional, index < min_args));
@@ -3026,6 +3047,23 @@ fn execute_target(
                 "applied": true,
                 "pstate": pstate_label(pstate),
                 "delta_uv": delta_uv,
+            }))
+        }
+        Command::SetOvervoltUv => {
+            let delta_uv = parse_i32_unit(&invocation.positionals[0], "uv", "microvolt")?;
+            let result = run(
+                target,
+                SetNvapiOvervolt {
+                    delta_uv: MicrovoltsDelta(delta_uv),
+                },
+            )?;
+            Ok(json!({
+                "applied": true,
+                "overvolt_delta_uv": delta_uv,
+                "driver_ov_entries": result.output.driver_ov_entries,
+                "note": if result.output.driver_ov_entries { "" } else {
+                    "driver reports no global OV entries — SET accepted but silently ignored on this GPU (observed on Ada mobile)"
+                },
             }))
         }
         Command::SetVoltageBoostPercent => {
