@@ -178,7 +178,7 @@ class OverclockTab:
         # LCM-friendly grid that divides both the 7.5 MHz frequency step on
         # 30-series and newer and the 12.5 MHz step on 10/16/20-series.
         # entry_width=8 like Volt Limit: "+122.5" needs the extra char.
-        self.core_slider, self.core_entry, self.core_var, btn_apply_core = (
+        self.core_slider, self.core_entry, self.core_var, _ = (
             self._make_slider_row(
                 oc_frame,
                 "Core:",
