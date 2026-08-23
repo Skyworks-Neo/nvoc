@@ -45,7 +45,7 @@ pub use operation::{
     SetVfpFrequencyLock, SetVfpPointDelta, SetVfpRangeDelta, SetVfpVoltageLock, SetVoltageBoost,
     TgpWattRangeInfo, detect_gpu_type, fetch_gpu_type, find_matching_vfp_point,
     legacy_core_overvolt_ranges, legacy_p0_core_max_voltage_delta, nvml_pstate_to_index,
-    nvml_pstate_to_str, parse_nvapi_locked_voltage_target, parse_nvml_fan_control_policy, OemOcScanner, OemOcScannerAction,
+    nvml_pstate_to_str, parse_nvapi_locked_voltage_target, parse_nvml_fan_control_policy, OemOcScanner, OemOcScannerAction, SetForcePstate, RestartDisplayDriver,
     parse_nvml_pstate, query_domain_vf_points_indexed, query_domain_vfp_indices, run, run_many,
     set_nvapi_cooler_settings, set_nvapi_domain_vfp_deltas, set_nvapi_legacy_clocks,
     set_nvapi_pstate_clock_offsets, set_nvapi_vfp_curve_delta, sync_memory_pstate_as_p0,

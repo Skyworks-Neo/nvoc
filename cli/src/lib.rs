@@ -31,7 +31,7 @@ use nvoc_core::{
     SetNvapiVoltRailTarget, SetNvmlPstateLock, SetPowerLimit, SetPstateBaseVoltage,
     SetPstateClockOffset, SetTemperatureLimit, SetVfpFrequencyLock, SetVfpPointDelta,
     SetVfpRangeDelta, SetVfpVoltageLock, SetVoltageBoost, VfpResetDomain, discover_targets,
-    OemOcScanner, OemOcScannerAction,
+    OemOcScanner, OemOcScannerAction, SetForcePstate, RestartDisplayDriver,
     nvml_pstate_to_str, parse_nvapi_locked_voltage_target, parse_nvml_fan_control_policy,
     parse_nvml_pstate, run, select_targets,
 };
@@ -182,6 +182,8 @@ pub enum Command {
     SetLockedClocksMhz,
     SetVfpVoltageLock,
     OemOcScanner,
+    SetForcePstate,
+    RestartDisplayDriver,
     SetVfpPointDeltaMhz,
     SetVfpRangeDeltaMhz,
     SetPstateLock,
@@ -273,6 +275,8 @@ impl Command {
             Self::SetLockedClocksMhz => "set-locked-clocks-mhz",
             Self::SetVfpVoltageLock => "set-vfp-voltage-lock",
             Self::OemOcScanner => "oem-oc-scanner",
+            Self::SetForcePstate => "set-force-pstate",
+            Self::RestartDisplayDriver => "restart-display-driver",
             Self::SetVfpPointDeltaMhz => "set-vfp-point-delta-mhz",
             Self::SetVfpRangeDeltaMhz => "set-vfp-range-delta-mhz",
             Self::SetPstateLock => "set-pstate-lock",
@@ -391,6 +395,12 @@ impl Command {
             Self::OemOcScanner => {
                 "Control NVIDIA's driver-side (OEM) OC Scanner: --start (driver scans in background and applies V/F offsets itself), --stop, --revert (restore pre-scan curve); drivers >= 455.00; no console progress output"
             },
+            Self::SetForcePstate => {
+                "Force a P-State via private SetForcePstate (0x025BFB10); set_type 2=force until released, 0=release"
+            },
+            Self::RestartDisplayDriver => {
+                "Restart the display driver (0xB4B26B65); legacy apply-OC trigger"
+            },
             Self::SetVfpPointDeltaMhz => "Set one VFP point delta in MHz",
             Self::SetVfpRangeDeltaMhz => "Set a VFP point range delta in MHz",
             Self::SetPstateLock => {
@@ -493,6 +503,8 @@ impl Command {
             | Self::ClearEdid
             | Self::SetVoltageBoostPercent => (1, 1),
             Self::OemOcScanner => (0, 0),
+            Self::RestartDisplayDriver => (0, 0),
+            Self::SetForcePstate => (1, 1),
             Self::SetLockedClocksMhz
             | Self::SetVfpPointDeltaMhz
             | Self::SetApplicationsClocksMhz
@@ -537,7 +549,8 @@ impl Command {
                 &["domain"]
             }
             Self::SetVfpVoltageLock => &["feedback"],
-            Self::OemOcScanner => &["start", "stop", "revert"],
+            Self::OemOcScanner => &["start", "stop", "revert", "status"],
+            Self::SetForcePstate => &["set-type"],
             Self::SetTgpWatt | Self::ResetTgpWatt | Self::SetTemperatureThresholds => {
                 &["policy-index"]
             }
@@ -752,6 +765,11 @@ impl Command {
                 "DELTA_UV",
                 "Global over-voltage offset in microvolts (PSTATES20 V2 OV array; HYDRA NvApiSetOverVoltageOffset path)",
             )],
+            Self::SetForcePstate => vec![PositionalArg::free(
+                "arg_pstate",
+                "PSTATE",
+                "P-State number to force (e.g. 0 for P0)",
+            )],
             Self::SetVoltageBoostPercent => vec![PositionalArg::free(
                 "arg_boost_percent",
                 "PERCENT",
@@ -894,6 +912,7 @@ const COMMANDS: &[Command] = &[
     Command::ListGpus,
     Command::OemOcScanner,
     Command::ProbeVoltageLimits,
+    Command::RestartDisplayDriver,
     Command::ResetApplicationsClocks,
     Command::ResetCoreOffsetMhz,
     Command::ResetFan,
@@ -919,6 +938,7 @@ const COMMANDS: &[Command] = &[
     Command::SetDynamicBoost,
     Command::SetEdid,
     Command::SetFanPercent,
+    Command::SetForcePstate,
     Command::SetLegacyClocksMhz,
     Command::SetLockedClocksMhz,
     Command::SetMemoryOffsetMhz,
@@ -1288,6 +1308,15 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .long("revert")
             .action(ArgAction::SetTrue)
             .help("Revert the OC applied by the driver-side scanner (restore the pre-scan curve)"),
+        "status" => Arg::new("status")
+            .long("status")
+            .action(ArgAction::SetTrue)
+            .help("Query the last OC scanner run status (Ok = idle/has-result; error = busy/not-supported)"),
+        "set-type" => Arg::new("set-type")
+            .long("set-type")
+            .value_name("TYPE")
+            .action(ArgAction::Set)
+            .help("SetForcePstate type: 2 = force until released (default), 0 = release"),
         "all" => Arg::new("all")
             .long("all")
             .action(ArgAction::SetTrue)
@@ -1400,7 +1429,7 @@ fn collect_named_options(
         match *name {
             "indexed" | "no-infer-missing-default" | "feedback" | "all" | "verbose"
             | "temporary" | "freq-mode" | "raw" | "raw-converted"
-            | "start" | "stop" | "revert" => {
+            | "start" | "stop" | "revert" | "status" => {
                 if matches.get_flag(name) {
                     options.insert(name.to_string(), vec!["true".to_string()]);
                 }
@@ -3001,13 +3030,15 @@ fn execute_target(
             let start = option_bool(invocation, "start", false)?;
             let stop = option_bool(invocation, "stop", false)?;
             let revert = option_bool(invocation, "revert", false)?;
-            let action = match (start, stop, revert) {
-                (true, false, false) => OemOcScannerAction::Start,
-                (false, true, false) => OemOcScannerAction::Stop,
-                (false, false, true) => OemOcScannerAction::Revert,
+            let status = option_bool(invocation, "status", false)?;
+            let action = match (start, stop, revert, status) {
+                (true, false, false, false) => OemOcScannerAction::Start,
+                (false, true, false, false) => OemOcScannerAction::Stop,
+                (false, false, true, false) => OemOcScannerAction::Revert,
+                (false, false, false, true) => OemOcScannerAction::Status,
                 _ => {
                     return Err(CliError::new(
-                        "exactly one of --start / --stop / --revert is required",
+                        "exactly one of --start / --stop / --revert / --status is required",
                     ))
                 }
             };
@@ -3018,8 +3049,22 @@ fn execute_target(
                     OemOcScannerAction::Start => "start",
                     OemOcScannerAction::Stop => "stop",
                     OemOcScannerAction::Revert => "revert",
+                    OemOcScannerAction::Status => "status",
                 }
             }))
+        }
+        Command::SetForcePstate => {
+            let pstate = parse_u32(&invocation.positionals[0], "pstate")?;
+            let set_type = match invocation.options.get("set-type").and_then(|v| v.first()) {
+                Some(s) => parse_u32(s, "set-type")?,
+                None => 2,
+            };
+            run(target, SetForcePstate { pstate, set_type })?;
+            Ok(json!({"applied": true, "pstate": pstate, "set_type": set_type}))
+        }
+        Command::RestartDisplayDriver => {
+            run(target, RestartDisplayDriver)?;
+            Ok(json!({"applied": true}))
         }
         Command::SetVfpPointDeltaMhz => {
             let point = parse_usize(&invocation.positionals[0], "point")?;

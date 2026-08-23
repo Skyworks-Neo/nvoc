@@ -941,6 +941,9 @@ pub enum OemOcScannerAction {
     Start,
     Stop,
     Revert,
+    /// Query last-run status (does not write per-point results; returns Ok
+    /// if idle/has-result, or a status error if busy/not-supported).
+    Status,
 }
 
 /// Control NVIDIA's driver-side OC Scanner (drivers >= 455.00). The scan
@@ -964,8 +967,51 @@ impl GpuOperation for OemOcScanner {
             OemOcScannerAction::Start => gpu.oem_oc_scanner_start(),
             OemOcScannerAction::Stop => gpu.oem_oc_scanner_stop(),
             OemOcScannerAction::Revert => gpu.oem_oc_scanner_revert(),
+            OemOcScannerAction::Status => gpu.oem_oc_scanner_status(),
         };
         res.map_err(Error::from)
+    }
+}
+
+/// Force a P-State via the private SetForcePstate (NDA 0x025BFB10).
+/// `set_type`: 2 = force until released (nvapioc convention), 0 = release.
+#[derive(Clone, Copy, Debug)]
+pub struct SetForcePstate {
+    pub pstate: u32,
+    pub set_type: u32,
+}
+
+impl GpuOperation for SetForcePstate {
+    type Output = ();
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetForcePstate
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .set_force_pstate(self.pstate, self.set_type)
+            .map_err(Error::from)
+    }
+}
+
+/// Restart the display driver (NDA 0xB4B26B65) — legacy "apply OC" trigger.
+#[derive(Clone, Copy, Debug)]
+pub struct RestartDisplayDriver;
+
+impl GpuOperation for RestartDisplayDriver {
+    type Output = ();
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::RestartDisplayDriver
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .restart_display_driver()
+            .map_err(Error::from)
     }
 }
 

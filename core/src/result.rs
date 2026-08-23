@@ -133,6 +133,10 @@ pub enum OperationKind {
     /// Stop 0xC28B73DE / Revert 0xCC727B22). The scan runs inside the
     /// driver; the resulting V/F offsets are applied by the driver itself.
     OemOcScanner,
+    /// Force a P-State via the private SetForcePstate (0x025BFB10).
+    SetForcePstate,
+    /// Restart the display driver (0xB4B26B65) — legacy "apply OC" trigger.
+    RestartDisplayDriver,
 }
 
 impl OperationKind {
@@ -194,6 +198,8 @@ impl OperationKind {
                 | SetEdid
                 | ClearEdid
                 | OemOcScanner
+                | SetForcePstate
+                | RestartDisplayDriver
         )
     }
 }
