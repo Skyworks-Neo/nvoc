@@ -307,6 +307,35 @@ impl GpuOperation for SetPowerMode {
     }
 }
 
+/// NVCP "电源模式" SET — the Control Panel's Adaptive/Maximum Performance
+/// dropdown via `NvAPI_GPU_SetPerfLevel` (0x75dd3e6a).
+#[derive(Clone, Copy, Debug)]
+pub struct SetNvapiPowerLevel {
+    pub level: u32, // 0=Adaptive, 1=Maximum, 2=Auto
+}
+
+impl GpuOperation for SetNvapiPowerLevel {
+    type Output = AppliedValue<u32>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiPowerLevel
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        use nvapi_hi::nvapi::sys::gpu::power::private::PowerLevel;
+        let level = match self.level {
+            0 => PowerLevel::Adaptive,
+            1 => PowerLevel::MaxPerformance,
+            2 => PowerLevel::Auto,
+            _ => return Err(Error::Custom(format!(
+                "invalid power level {}: expected 0=Adaptive, 1=Maximum, 2=Auto", self.level
+            ))),
+        };
+        target.nvapi()?.inner().set_perf_level(level).map_err(Error::from)?;
+        Ok(AppliedValue { requested: self.level, applied: self.level })
+    }
+}
+
 impl GpuOperation for QueryTemperatureThresholds {
     type Output = Vec<TemperatureThreshold>;
 

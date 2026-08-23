@@ -46,6 +46,7 @@ pub enum OperationKind {
     QueryNvapiThermalSettings,
     GetPowerMode,
     SetPowerMode,
+    SetNvapiPowerLevel,
     SetNvapiOvervolt,
     QueryVoltageBoost,
     SetVoltageBoost,
