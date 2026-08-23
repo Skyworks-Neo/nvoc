@@ -1101,9 +1101,16 @@ impl GpuOperation for ResetForcePstate {
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        // Release a force-locked pstate. IDA-verified: SetForcePstate has no
+        // dedicated unlock path, but pstate=16 is the "all pstates" sentinel
+        // that sets bitmask=0 — the same value GetForcePstate returns (16)
+        // when no force is active. So SetForcePstate(pstate=16, set_type=0)
+        // is the most likely release: it sends bitmask=0 + mode=0 via the
+        // same RM escape 0x7000056. EnableDynamicPstates(enable=0) was also
+        // tested live and does NOT release (different escape 0x70000BB).
         target
             .nvapi()?
-            .enable_dynamic_pstates(0)
+            .set_force_pstate(16, 0)
             .map_err(Error::from)
     }
 }

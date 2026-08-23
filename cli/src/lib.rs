@@ -414,7 +414,7 @@ impl Command {
                 "Force a P-State via private SetForcePstate (0x025BFB10); set_type 0/1/2 all force-lock, none release (to unlock use reset-force-pstate)"
             },
             Self::ResetForcePstate => {
-                "Attempt to release a force-locked pstate via EnableDynamicPstates(enable=0). WARNING: live-tested 4060L, did NOT release — release path is still being RE'd; this is best-effort"
+                "Release a force-locked pstate via SetForcePstate(pstate=16, set_type=0) — pstate=16 is the bitmask=0 sentinel (GetForcePstate returns 16 when no force active). IDA-verified as the most likely release path."
             },
             Self::RestartDisplayDriver => {
                 "Restart the display driver (0xB4B26B65); legacy apply-OC trigger"
