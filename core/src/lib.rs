@@ -18,6 +18,7 @@ pub use gpu_type::{
 pub use nvapi::{
     CoolerTarget, GpuTdpTempLimits, VfpLockRequest, nvapi_overvolt_reported, set_nvapi_overvolt,
 };
+pub use nvapi_hi::nvapi::sys::gpu::power::private::Wm2AcousticMode;
 pub use nvapi_hi::nvapi::{P0VoltageBounds, VoltRails};
 pub use operation::{
     CheckVoltageFrequency, ClearEdid, GpuOperation, ProbeVoltageLimits, QueryApiRestriction,
@@ -37,15 +38,15 @@ pub use operation::{
     ResetVfpLock, SetApiRestriction, SetApplicationsClocks, SetAutoBoost, SetAutoBoostDefault,
     SetClockOffset, SetCoolerLevels, SetDomainVfpDeltas, SetEdid, SetFanSpeed, SetLegacyClocks,
     SetLockedClocks, SetNvapiClkDomainOffset, SetNvapiDNotifier, SetNvapiDynamicBoost, SetNvapiPStateNative,
-    QueryNvapiThermalSettings, SetNvapiOvervolt, SetNvapiPowerLimits, SetNvapiPstateLock,
-    SetNvapiSensorLimits, SetNvapiTargetTemp,
+    GetPowerMode, SetPowerMode, QueryNvapiThermalSettings, SetNvapiOvervolt, SetNvapiPowerLimits,
+    SetNvapiPstateLock, SetNvapiSensorLimits, SetNvapiTargetTemp,
     SetNvapiTgpWatt, SetNvapiVoltRailOffset, SetNvapiVoltRailTarget,
     SetNvapiVfpPointPrivate, SetNvapiVfpRangePrivate, SetNvapiVfpRangePerPointPrivate, SetNvmlPstateLock,
     SetPowerLimit, SetPstateBaseVoltage, SetPstateClockOffset, SetTemperatureLimit,
     SetVfpFrequencyLock, SetVfpPointDelta, SetVfpRangeDelta, SetVfpVoltageLock, SetVoltageBoost,
     TgpWattRangeInfo, detect_gpu_type, fetch_gpu_type, find_matching_vfp_point,
     legacy_core_overvolt_ranges, legacy_p0_core_max_voltage_delta, nvml_pstate_to_index,
-    nvml_pstate_to_str, parse_nvapi_locked_voltage_target, parse_nvml_fan_control_policy, OemOcScanner, OemOcScannerAction, SetForcePstate, ResetForcePstate, RestartDisplayDriver,
+    nvml_pstate_to_str, parse_nvapi_locked_voltage_target, parse_nvml_fan_control_policy, OemOcScanner, OemOcScannerAction, SetForcePstate, ResetForcePstate, RestartDisplayDriver, SetBb2Active, SetWm2Active, SetWm2Mode,
     parse_nvml_pstate, query_domain_vf_points_indexed, query_domain_vfp_indices, run, run_many,
     set_nvapi_cooler_settings, set_nvapi_domain_vfp_deltas, set_nvapi_legacy_clocks,
     set_nvapi_pstate_clock_offsets, set_nvapi_vfp_curve_delta, sync_memory_pstate_as_p0,
@@ -54,7 +55,7 @@ pub use operation::{
 pub use result::{
     ApiRestrictionState, AppliedValue, AutoBoostState, BatchReport, ClockOffset, DNotifierInfo,
     DNotifierLevel, DisplayInfo, EdidData, FanInfo, NvapiPStateNativeLock, OperationKind,
-    OperationReport, OperationWarning, PStateLevelEntry, PStateLevelsInfo, PowerLimits,
+    OperationReport, OperationWarning, PStateLevelEntry, PStateLevelsInfo, PowerLimits, PowerModeStatus,
     PstateBaseVoltage, PstateClockRange, SupportedApplicationClocks, TargetOutcome,
     TargetTempPolicy, TdpTempLimits, TemperatureThreshold, ThermalSensorReading, ThrottleReason,
     ViolationEntry,

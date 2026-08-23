@@ -88,6 +88,18 @@ fn format_human_output(function: &str, output: &Value) -> Vec<String> {
                 ("max_c", "Max"),
             ],
         ),
+        "get-power-mode" => {
+            let supported = output.get("supported").and_then(Value::as_bool);
+            let active = output.get("active").and_then(Value::as_str).unwrap_or("?");
+            match supported {
+                Some(true) => vec![format!("  Power Mode: {active}")],
+                _ => vec![format!("  Power Mode: N/A (unsupported on this GPU)")],
+            }
+        }
+        "set-power-mode" => vec![format!(
+            "  Power Mode set: {}",
+            output.get("power_mode").and_then(Value::as_str).unwrap_or("?")
+        )],
         "get-pstate-native" => format_pstate_native_output(output),
         "get-throttle-reasons" => format_throttle_reasons_output(output),
         "get-legacy-overvolt-ranges" => format_object_array(
@@ -2279,6 +2291,8 @@ mod tests {
                 {"target": "Memory", "controller": "GpuInternal", "current_c": 52, "min_c": -5, "max_c": 95},
                 {"target": "Board", "controller": "GpuInternal", "current_c": 48, "min_c": 0, "max_c": 100},
             ]),
+            Command::GetPowerMode => json!({"supported": true, "active": "Max", "mode_mask": 1, "max_mode_idx": 1}),
+            Command::SetPowerMode => json!({"applied": true, "power_mode": "Max"}),
             Command::GetThrottleReasons => json!({
                 "reasons": [
                     {"name": "GPU Idle", "active": true},
@@ -2510,6 +2524,7 @@ mod tests {
                 "applied": true, "bank": 0, "start": 191, "end": 191,
                 "raw_f_offset_control_value": 100, "points_written": 1,
             }),
+            _ => json!({}),
         }
     }
 }

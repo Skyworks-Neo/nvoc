@@ -1,12 +1,14 @@
 use super::error::Error;
 use super::nvapi as low_nvapi;
 use super::nvml as low_nvml;
+use super::Wm2AcousticMode;
 use super::result::{
     ApiRestrictionState, AppliedValue, AutoBoostState, BatchReport, ClockOffset, DNotifierInfo,
     DNotifierLevel, DisplayInfo, EdidData, FanInfo, NvapiPStateNativeLock, OperationKind,
     OperationReport, OvervoltApplied, PStateLevelEntry, PStateLevelsInfo, PstateBaseVoltage,
     PstateClockRange,
     SupportedApplicationClocks, TargetOutcome, TargetTempPolicy, TdpTempLimits, ThermalSensorReading,
+    PowerModeStatus,
     TemperatureThreshold, ThrottleReason, ViolationEntry, ViolationStatusReport, VoltageBoostState,
     VoltageFrequencyCheck,
 };
@@ -232,6 +234,76 @@ impl GpuOperation for QueryNvapiThermalSettings {
                 max_c: s.default_temperature_range.max.0,
             })
             .collect())
+    }
+}
+
+/// NVCP power-mode (均衡/高性能) read via the ClientPowerModes family —
+/// the NVIDIA App's Balanced/Max toggle. Reports the support gate
+/// (`max_mode_idx == 1`) alongside the active mode.
+#[derive(Clone, Copy, Debug)]
+pub struct GetPowerMode;
+
+impl GpuOperation for GetPowerMode {
+    type Output = PowerModeStatus;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::GetPowerMode
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let gpu = target.nvapi()?;
+        let (mode_mask, max_mode_idx) = gpu
+            .inner()
+            .power_modes_capability()
+            .map_err(Error::from)?;
+        let supported = max_mode_idx == 1;
+        let active = if supported {
+            gpu.inner().power_mode().map_err(Error::from)?
+        } else {
+            "N/A"
+        };
+        Ok(PowerModeStatus {
+            supported,
+            active,
+            mode_mask,
+            max_mode_idx,
+        })
+    }
+}
+
+/// NVCP power-mode SET (`Max` = 高性能, `false` = 均衡 Balanced).
+#[derive(Clone, Copy, Debug)]
+pub struct SetPowerMode {
+    pub max: bool,
+}
+
+impl GpuOperation for SetPowerMode {
+    type Output = AppliedValue<bool>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetPowerMode
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let gpu = target.nvapi()?;
+        // Reject on unsupported GPUs with the App's own gate so the user
+        // gets a clear message instead of a driver -9/-1.
+        let (_, max_mode_idx) = gpu
+            .inner()
+            .power_modes_capability()
+            .map_err(Error::from)?;
+        if max_mode_idx != 1 {
+            return Err(Error::Custom(format!(
+                "power mode (Balanced/Max) not supported on this GPU (max_mode_idx={max_mode_idx:#x})"
+            )));
+        }
+        gpu.inner()
+            .set_power_mode(self.max)
+            .map_err(Error::from)?;
+        Ok(AppliedValue {
+            requested: self.max,
+            applied: self.max,
+        })
     }
 }
 
@@ -1033,6 +1105,63 @@ impl GpuOperation for ResetForcePstate {
             .nvapi()?
             .enable_dynamic_pstates(0)
             .map_err(Error::from)
+    }
+}
+
+/// Battery Boost 2.0 enable/disable (NDA 0xD27D0629). GPUMonCmd `-bb`.
+/// Mobile-only feature.
+#[derive(Clone, Copy, Debug)]
+pub struct SetBb2Active {
+    pub enable: bool,
+}
+
+impl GpuOperation for SetBb2Active {
+    type Output = ();
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetBb2Active
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target.nvapi()?.set_bb2_active(self.enable).map_err(Error::from)
+    }
+}
+
+/// Whisper Mode 2.0 enable/disable (NDA 0xD27D0629). GPUMonCmd `-wm`.
+/// Mobile-only feature.
+#[derive(Clone, Copy, Debug)]
+pub struct SetWm2Active {
+    pub enable: bool,
+}
+
+impl GpuOperation for SetWm2Active {
+    type Output = ();
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetWm2Active
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target.nvapi()?.set_wm2_active(self.enable).map_err(Error::from)
+    }
+}
+
+/// Whisper Mode 2.0 acoustic mode (NDA 0xD27D0629). GPUMonCmd `-wmMode`.
+/// 0=Quieter, 1=Quiet, 2=Balanced.
+#[derive(Clone, Copy, Debug)]
+pub struct SetWm2Mode {
+    pub mode: Wm2AcousticMode,
+}
+
+impl GpuOperation for SetWm2Mode {
+    type Output = ();
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetWm2Mode
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target.nvapi()?.set_wm2_mode(self.mode).map_err(Error::from)
     }
 }
 

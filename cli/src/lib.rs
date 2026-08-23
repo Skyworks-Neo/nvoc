@@ -32,6 +32,7 @@ use nvoc_core::{
     SetPstateClockOffset, SetTemperatureLimit, SetVfpFrequencyLock, SetVfpPointDelta,
     SetVfpRangeDelta, SetVfpVoltageLock, SetVoltageBoost, VfpResetDomain, discover_targets,
     OemOcScanner, OemOcScannerAction, SetForcePstate, ResetForcePstate, RestartDisplayDriver,
+    SetBb2Active, SetWm2Active, SetWm2Mode, Wm2AcousticMode, GetPowerMode, SetPowerMode,
     nvml_pstate_to_str, parse_nvapi_locked_voltage_target, parse_nvml_fan_control_policy,
     parse_nvml_pstate, run, select_targets,
 };
@@ -145,6 +146,8 @@ pub enum Command {
     GetFanInfo,
     GetTemperatureThresholds,
     GetThermalSettings,
+    GetPowerMode,
+    SetPowerMode,
     GetThrottleReasons,
     GetTdpTempLimits,
     ProbeVoltageLimits,
@@ -185,6 +188,9 @@ pub enum Command {
     SetForcePstate,
     ResetForcePstate,
     RestartDisplayDriver,
+    SetBb2,
+    SetWm2,
+    SetWm2Mode,
     SetVfpPointDeltaMhz,
     SetVfpRangeDeltaMhz,
     SetPstateLock,
@@ -239,6 +245,8 @@ impl Command {
             Self::GetFanInfo => "get-fan-info",
             Self::GetTemperatureThresholds => "get-temp-thresholds",
             Self::GetThermalSettings => "get-thermal-settings",
+            Self::GetPowerMode => "get-power-mode",
+            Self::SetPowerMode => "set-power-mode",
             Self::GetThrottleReasons => "get-throttle-reasons",
             Self::GetTdpTempLimits => "get-tdp-temp-limits",
             Self::ProbeVoltageLimits => "probe-voltage-limits",
@@ -279,6 +287,9 @@ impl Command {
             Self::SetForcePstate => "set-force-pstate",
             Self::ResetForcePstate => "reset-force-pstate",
             Self::RestartDisplayDriver => "restart-display-driver",
+            Self::SetBb2 => "set-bb2",
+            Self::SetWm2 => "set-wm2",
+            Self::SetWm2Mode => "set-wm2-mode",
             Self::SetVfpPointDeltaMhz => "set-vfp-point-delta-mhz",
             Self::SetVfpRangeDeltaMhz => "set-vfp-range-delta-mhz",
             Self::SetPstateLock => "set-pstate-lock",
@@ -332,6 +343,8 @@ impl Command {
             Self::GetThermalSettings => {
                 "Read NVAPI legacy 3-sensor thermal view (GPU/Memory/Board, live + physical range)"
             }
+            Self::GetPowerMode => "Read NVCP power mode (Balanced/Max with support gate)",
+            Self::SetPowerMode => "Set NVCP power mode: max | balanced (NVIDIA App Balanced/Max toggle)",
             Self::GetThrottleReasons => "Read NVML throttle reasons",
             Self::GetTdpTempLimits => "Read NVAPI TDP and temperature limits",
             Self::ProbeVoltageLimits => "Probe NVAPI voltage limit points",
@@ -401,10 +414,19 @@ impl Command {
                 "Force a P-State via private SetForcePstate (0x025BFB10); set_type 0/1/2 all force-lock, none release (to unlock use reset-force-pstate)"
             },
             Self::ResetForcePstate => {
-                "Release a force-locked pstate via EnableDynamicPstates(enable=0) — escape hatch when set-force-pstate locks the GPU and won't release"
+                "Attempt to release a force-locked pstate via EnableDynamicPstates(enable=0). WARNING: live-tested 4060L, did NOT release — release path is still being RE'd; this is best-effort"
             },
             Self::RestartDisplayDriver => {
                 "Restart the display driver (0xB4B26B65); legacy apply-OC trigger"
+            },
+            Self::SetBb2 => {
+                "Battery Boost 2.0 enable/disable (0xD27D0629); mobile-only; 1=enable 0=disable"
+            },
+            Self::SetWm2 => {
+                "Whisper Mode 2.0 enable/disable (0xD27D0629); mobile-only; 1=enable 0=disable"
+            },
+            Self::SetWm2Mode => {
+                "Whisper Mode 2.0 acoustic mode (0xD27D0629); 0=quieter 1=quiet 2=balanced"
             },
             Self::SetVfpPointDeltaMhz => "Set one VFP point delta in MHz",
             Self::SetVfpRangeDeltaMhz => "Set a VFP point range delta in MHz",
@@ -506,10 +528,14 @@ impl Command {
             | Self::SetAutoBoost
             | Self::SetAutoBoostDefault
             | Self::ClearEdid
-            | Self::SetVoltageBoostPercent => (1, 1),
+            | Self::SetVoltageBoostPercent
+            | Self::SetPowerMode => (1, 1),
             Self::OemOcScanner => (0, 0),
             Self::ResetForcePstate => (0, 0),
             Self::RestartDisplayDriver => (0, 0),
+            Self::SetBb2 => (1, 1),
+            Self::SetWm2 => (1, 1),
+            Self::SetWm2Mode => (1, 1),
             Self::SetForcePstate => (1, 1),
             Self::SetLockedClocksMhz
             | Self::SetVfpPointDeltaMhz
@@ -781,6 +807,11 @@ impl Command {
                 "PERCENT",
                 "Voltage boost percentage",
             )],
+            Self::SetPowerMode => vec![PositionalArg::free(
+                "arg_mode",
+                "MODE",
+                "Power mode: max | balanced",
+            )],
             Self::SetAutoBoost | Self::SetAutoBoostDefault => vec![PositionalArg::finite(
                 "arg_enabled",
                 "ENABLED",
@@ -907,6 +938,8 @@ const COMMANDS: &[Command] = &[
     Command::GetTdpTempLimits,
     Command::GetTemperatureThresholds,
     Command::GetThermalSettings,
+    Command::GetPowerMode,
+    Command::SetPowerMode,
     Command::GetThrottleReasons,
     Command::GetTgpWattRange,
     Command::GetUuid,
@@ -938,6 +971,7 @@ const COMMANDS: &[Command] = &[
     Command::SetApplicationsClocksMhz,
     Command::SetAutoBoost,
     Command::SetAutoBoostDefault,
+    Command::SetBb2,
     Command::SetDNotifier,
     Command::SetClockOffsetMhz,
     Command::SetClkDomainOffset,
@@ -963,6 +997,9 @@ const COMMANDS: &[Command] = &[
     Command::SetVfpVoltageLock,
     Command::SetVoltageBoostPercent,
     Command::SetVoltRailOffset,
+    Command::SetVoltRailTarget,
+    Command::SetWm2,
+    Command::SetWm2Mode,
     Command::SetVoltRailTarget,
 ];
 
@@ -2238,6 +2275,29 @@ fn execute_target(
                     .collect(),
             ))
         }
+        Command::GetPowerMode => {
+            let s = run(target, GetPowerMode)?.output;
+            Ok(json!({
+                "supported": s.supported,
+                "active": s.active,
+                "mode_mask": s.mode_mask,
+                "max_mode_idx": s.max_mode_idx,
+            }))
+        }
+        Command::SetPowerMode => {
+            let arg = invocation.positionals[0].to_lowercase();
+            let max = match arg.as_str() {
+                "max" | "high" | "performance" => true,
+                "balanced" | "normal" | "adaptive" => false,
+                _ => {
+                    return Err(CliError::new(format!(
+                        "invalid power mode {arg:?}: expected max|balanced"
+                    )))
+                }
+            };
+            run(target, SetPowerMode { max })?;
+            Ok(json!({"applied": true, "power_mode": if max { "Max" } else { "Balanced" } }))
+        }
         Command::GetThrottleReasons => {
             let reasons = run(target, QueryThrottleReasons)?.output;
             let reasons_json = Value::Array(
@@ -3076,6 +3136,27 @@ fn execute_target(
         Command::ResetForcePstate => {
             run(target, ResetForcePstate)?;
             Ok(json!({"applied": true, "action": "release"}))
+        }
+        Command::SetBb2 => {
+            let enable = parse_bool(&invocation.positionals[0])?;
+            run(target, SetBb2Active { enable })?;
+            Ok(json!({"applied": true, "bb2": enable}))
+        }
+        Command::SetWm2 => {
+            let enable = parse_bool(&invocation.positionals[0])?;
+            run(target, SetWm2Active { enable })?;
+            Ok(json!({"applied": true, "wm2": enable}))
+        }
+        Command::SetWm2Mode => {
+            let mode_idx = parse_u32(&invocation.positionals[0], "mode")?;
+            let mode = match mode_idx {
+                0 => Wm2AcousticMode::Quieter,
+                1 => Wm2AcousticMode::Quiet,
+                2 => Wm2AcousticMode::Balanced,
+                _ => return Err(CliError::new("mode must be 0 (quieter), 1 (quiet), or 2 (balanced)")),
+            };
+            run(target, SetWm2Mode { mode })?;
+            Ok(json!({"applied": true, "wm2_mode": mode_idx}))
         }
         Command::SetVfpPointDeltaMhz => {
             let point = parse_usize(&invocation.positionals[0], "point")?;

@@ -44,6 +44,8 @@ pub enum OperationKind {
     QueryLegacyCoreOvervoltRanges,
     QueryLegacyP0CoreMaxVoltageDelta,
     QueryNvapiThermalSettings,
+    GetPowerMode,
+    SetPowerMode,
     SetNvapiOvervolt,
     QueryVoltageBoost,
     SetVoltageBoost,
@@ -140,6 +142,12 @@ pub enum OperationKind {
     ResetForcePstate,
     /// Restart the display driver (0xB4B26B65) — legacy "apply OC" trigger.
     RestartDisplayDriver,
+    /// Battery Boost 2.0 enable/disable (0xD27D0629). Mobile-only.
+    SetBb2Active,
+    /// Whisper Mode 2.0 enable/disable (0xD27D0629). Mobile-only.
+    SetWm2Active,
+    /// Whisper Mode 2.0 acoustic mode (0xD27D0629). Mobile-only.
+    SetWm2Mode,
 }
 
 impl OperationKind {
@@ -204,6 +212,9 @@ impl OperationKind {
                 | SetForcePstate
                 | ResetForcePstate
                 | RestartDisplayDriver
+                | SetBb2Active
+                | SetWm2Active
+                | SetWm2Mode
         )
     }
 }
@@ -238,6 +249,20 @@ pub struct PowerLimits {
     pub min_watts: f32,
     pub current_watts: f32,
     pub max_watts: f32,
+}
+
+/// NVCP power-mode view (均衡/高性能): the App's Balanced/Max toggle via
+/// the ClientPowerModes family (0xF21C2D56/0x180A9468/0x3CC8C552, RE'd
+/// from NVIDIA App nvxdapix). `supported` mirrors the App's gate
+/// (`max_mode_idx == 1`); false on e.g. Ada mobile (0xFFFF).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PowerModeStatus {
+    pub supported: bool,
+    /// "Balanced" | "Max" (valid when supported).
+    pub active: &'static str,
+    /// Raw driver fields for diagnostics: (mode_mask, max_mode_idx).
+    pub mode_mask: u16,
+    pub max_mode_idx: u16,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
