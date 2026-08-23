@@ -12,7 +12,8 @@ use nvoc_core::{
     QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomains, QueryNvapiClkVfPoints,
     QueryNvapiDNotifier,
     QueryNvapiPStateLevels, QueryNvapiPStateLockStatus, QueryNvapiTargetTempPolicies,
-    QueryNvapiTargetTempPolicyIndex, QueryNvapiTgpWattRange, QueryNvapiVoltRails,
+    QueryNvapiTargetTempPolicyIndex, QueryNvapiThermalSettings, QueryNvapiTgpWattRange,
+    QueryNvapiVoltRails,
     QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates,
     QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
     QueryThrottleReasons, QueryVfpPointVoltage, QueryViolationStatus, QueryVoltageBoost,
@@ -142,6 +143,7 @@ pub enum Command {
     GetSupportedAppClocks,
     GetFanInfo,
     GetTemperatureThresholds,
+    GetThermalSettings,
     GetThrottleReasons,
     GetTdpTempLimits,
     ProbeVoltageLimits,
@@ -231,6 +233,7 @@ impl Command {
             Self::GetSupportedAppClocks => "get-supported-app-clocks",
             Self::GetFanInfo => "get-fan-info",
             Self::GetTemperatureThresholds => "get-temp-thresholds",
+            Self::GetThermalSettings => "get-thermal-settings",
             Self::GetThrottleReasons => "get-throttle-reasons",
             Self::GetTdpTempLimits => "get-tdp-temp-limits",
             Self::ProbeVoltageLimits => "probe-voltage-limits",
@@ -316,6 +319,9 @@ impl Command {
             Self::GetFanInfo => "Read NVML fan count and range",
             Self::GetTemperatureThresholds => {
                 "Read temperature thresholds (NVML by default; --nvapi exposes target-temp policy)"
+            }
+            Self::GetThermalSettings => {
+                "Read NVAPI legacy 3-sensor thermal view (GPU/Memory/Board, live + physical range)"
             }
             Self::GetThrottleReasons => "Read NVML throttle reasons",
             Self::GetTdpTempLimits => "Read NVAPI TDP and temperature limits",
@@ -868,6 +874,7 @@ const COMMANDS: &[Command] = &[
     Command::GetSupportedAppClocks,
     Command::GetTdpTempLimits,
     Command::GetTemperatureThresholds,
+    Command::GetThermalSettings,
     Command::GetThrottleReasons,
     Command::GetTgpWattRange,
     Command::GetUuid,
@@ -2155,6 +2162,23 @@ fn execute_target(
                 }
             }
             Ok(Value::Array(entries))
+        }
+        Command::GetThermalSettings => {
+            let sensors = run(target, QueryNvapiThermalSettings)?.output;
+            Ok(Value::Array(
+                sensors
+                    .into_iter()
+                    .map(|s| {
+                        json!({
+                            "target": format!("{:?}", s.target),
+                            "controller": format!("{:?}", s.controller),
+                            "current_c": s.current_c,
+                            "min_c": s.min_c,
+                            "max_c": s.max_c,
+                        })
+                    })
+                    .collect(),
+            ))
         }
         Command::GetThrottleReasons => {
             let reasons = run(target, QueryThrottleReasons)?.output;

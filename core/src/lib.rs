@@ -37,7 +37,8 @@ pub use operation::{
     ResetVfpLock, SetApiRestriction, SetApplicationsClocks, SetAutoBoost, SetAutoBoostDefault,
     SetClockOffset, SetCoolerLevels, SetDomainVfpDeltas, SetEdid, SetFanSpeed, SetLegacyClocks,
     SetLockedClocks, SetNvapiClkDomainOffset, SetNvapiDNotifier, SetNvapiDynamicBoost, SetNvapiPStateNative,
-    SetNvapiOvervolt, SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiSensorLimits, SetNvapiTargetTemp,
+    QueryNvapiThermalSettings, SetNvapiOvervolt, SetNvapiPowerLimits, SetNvapiPstateLock,
+    SetNvapiSensorLimits, SetNvapiTargetTemp,
     SetNvapiTgpWatt, SetNvapiVoltRailOffset, SetNvapiVoltRailTarget,
     SetNvapiVfpPointPrivate, SetNvapiVfpRangePrivate, SetNvapiVfpRangePerPointPrivate, SetNvmlPstateLock,
     SetPowerLimit, SetPstateBaseVoltage, SetPstateClockOffset, SetTemperatureLimit,
@@ -55,7 +56,8 @@ pub use result::{
     DNotifierLevel, DisplayInfo, EdidData, FanInfo, NvapiPStateNativeLock, OperationKind,
     OperationReport, OperationWarning, PStateLevelEntry, PStateLevelsInfo, PowerLimits,
     PstateBaseVoltage, PstateClockRange, SupportedApplicationClocks, TargetOutcome,
-    TargetTempPolicy, TdpTempLimits, TemperatureThreshold, ThrottleReason, ViolationEntry,
+    TargetTempPolicy, TdpTempLimits, TemperatureThreshold, ThermalSensorReading, ThrottleReason,
+    ViolationEntry,
     ViolationStatusReport, VoltageBoostState, VoltageFrequencyCheck, VoltageLimits,
 };
 pub use target::{

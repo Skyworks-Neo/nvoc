@@ -43,6 +43,7 @@ pub enum OperationKind {
     QueryDomainVfpIndices,
     QueryLegacyCoreOvervoltRanges,
     QueryLegacyP0CoreMaxVoltageDelta,
+    QueryNvapiThermalSettings,
     SetNvapiOvervolt,
     QueryVoltageBoost,
     SetVoltageBoost,
@@ -227,6 +228,27 @@ pub struct PowerLimits {
 pub struct TemperatureThreshold {
     pub name: &'static str,
     pub celsius: Option<u32>,
+}
+
+/// One sensor of the legacy 3-sensor thermal view
+/// (`NvAPI_GPU_GetThermalSettings`, 0xE3640A56, struct V2/0x20044 — the
+/// same call AmpereOC's thermal-attenuation estimator reads per-frame:
+/// filter `target == GPU` and use `current`). Reports the sensor's
+/// physical range (defaultMinTemp/defaultMaxTemp) alongside the live
+/// value — data the ThermChannel view doesn't carry. Distinct from
+/// ThermChannel (get-status sensors: 8 channels, finer-grained) and from
+/// the policy tables (get-temp-thresholds: thresholds, not readings).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ThermalSensorReading {
+    /// Sensor target: GPU core / Memory / Board.
+    pub target: nvapi_hi::nvapi::ThermalTarget,
+    /// Controller (internal / ADM1032 / ...).
+    pub controller: nvapi_hi::nvapi::ThermalController,
+    /// Live reading.
+    pub current_c: i32,
+    /// Sensor physical range (defaultMinTemp..defaultMaxTemp).
+    pub min_c: i32,
+    pub max_c: i32,
 }
 
 /// One entry of the NVAPI target-temperature (温度墙) policy table, read via the

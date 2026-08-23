@@ -6,7 +6,7 @@ use super::result::{
     DNotifierLevel, DisplayInfo, EdidData, FanInfo, NvapiPStateNativeLock, OperationKind,
     OperationReport, OvervoltApplied, PStateLevelEntry, PStateLevelsInfo, PstateBaseVoltage,
     PstateClockRange,
-    SupportedApplicationClocks, TargetOutcome, TargetTempPolicy, TdpTempLimits,
+    SupportedApplicationClocks, TargetOutcome, TargetTempPolicy, TdpTempLimits, ThermalSensorReading,
     TemperatureThreshold, ThrottleReason, ViolationEntry, ViolationStatusReport, VoltageBoostState,
     VoltageFrequencyCheck,
 };
@@ -201,6 +201,39 @@ impl GpuOperation for SetPowerLimit {
 
 #[derive(Clone, Copy, Debug)]
 pub struct QueryTemperatureThresholds;
+
+/// Legacy 3-sensor thermal view via `NvAPI_GPU_GetThermalSettings`
+/// (0xE3640A56, struct V2/0x20044, sensorIndex=ALL). Reports the GPU core /
+/// Memory / Board sensors with their physical ranges — the same source
+/// AmpereOC's thermal-attenuation estimator reads (target==GPU → current).
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiThermalSettings;
+
+impl GpuOperation for QueryNvapiThermalSettings {
+    type Output = Vec<ThermalSensorReading>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiThermalSettings
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let sensors = target
+            .nvapi()?
+            .inner()
+            .thermal_settings(None)
+            .map_err(Error::from)?;
+        Ok(sensors
+            .into_iter()
+            .map(|s| ThermalSensorReading {
+                target: s.target,
+                controller: s.controller,
+                current_c: s.current_temperature.0,
+                min_c: s.default_temperature_range.min.0,
+                max_c: s.default_temperature_range.max.0,
+            })
+            .collect())
+    }
+}
 
 impl GpuOperation for QueryTemperatureThresholds {
     type Output = Vec<TemperatureThreshold>;

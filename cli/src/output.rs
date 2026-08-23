@@ -78,6 +78,16 @@ fn format_human_output(function: &str, output: &Value) -> Vec<String> {
             &[("memory_mhz", "Memory"), ("graphics_mhz", "Graphics")],
         ),
         "get-temp-thresholds" => format_temperature_thresholds_output(output),
+        "get-thermal-settings" => format_object_array(
+            output,
+            &[
+                ("target", "Target"),
+                ("controller", "Controller"),
+                ("current_c", "Current"),
+                ("min_c", "Min"),
+                ("max_c", "Max"),
+            ],
+        ),
         "get-pstate-native" => format_pstate_native_output(output),
         "get-throttle-reasons" => format_throttle_reasons_output(output),
         "get-legacy-overvolt-ranges" => format_object_array(
@@ -2264,6 +2274,11 @@ mod tests {
             Command::GetTemperatureThresholds => {
                 json!([{"name": "shutdown", "celsius": 95}])
             }
+            Command::GetThermalSettings => json!([
+                {"target": "Gpu", "controller": "GpuInternal", "current_c": 50, "min_c": -5, "max_c": 95},
+                {"target": "Memory", "controller": "GpuInternal", "current_c": 52, "min_c": -5, "max_c": 95},
+                {"target": "Board", "controller": "GpuInternal", "current_c": 48, "min_c": 0, "max_c": 100},
+            ]),
             Command::GetThrottleReasons => json!({
                 "reasons": [
                     {"name": "GPU Idle", "active": true},
