@@ -459,6 +459,11 @@ impl GpuOperation for QueryNvapiCoolerInfo {
             .into_iter()
             .map(|c| NvapiCoolerInfoEntry {
                 index: c.index,
+                cooler_type: c.cooler_type,
+                min: c.min,
+                max: c.max,
+                current: c.current,
+                current_pwm_percent: c.current_pwm_percent,
             })
             .collect())
     }

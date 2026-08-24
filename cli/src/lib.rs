@@ -618,7 +618,8 @@ impl Command {
             | Self::SetPstateBaseVoltageUv => &["pstate"],
             Self::SetFanPercent => &["fan", "policy"],
             Self::ResetFan => &["fan"],
-            Self::ResetFanCurveCmd | Self::SetFanStopCmd | Self::SetFanRpmCmd => &["curve"],
+            Self::ResetFanCurveCmd | Self::SetFanStopCmd => &["curve"],
+            Self::SetFanRpmCmd => &["cooler"],
             Self::SetLockedClocksMhz | Self::ResetLockedClocks | Self::ResetVfpDeltas => {
                 &["domain"]
             }
@@ -1487,6 +1488,11 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .value_name("IDX")
             .action(ArgAction::Set)
             .help("Fan-curve slot index (0-3; default 0)"),
+        "cooler" => Arg::new("cooler")
+            .long("cooler")
+            .value_name("IDX")
+            .action(ArgAction::Set)
+            .help("Cooler index (0-31; default 0 — see get-fan-info --nvapi for the presence mask)"),
         _ => unreachable!("unknown command-specific option {name}"),
     }
 }
@@ -2299,15 +2305,23 @@ fn execute_target(
         Command::GetFanInfo => {
             match adapter {
                 BackendAdapter::Nvapi => {
-                    // Private FanCoolerGetInfo (NDA 0x65CE5BFC): per-cooler
-                    // info — type (active/pwm/pwm-tach) + min/max RPM range.
-                    // RE'd from GPUMon setFanSim. Falls back to the public
-                    // GetCoolerSettings if the private path is unsupported.
+                    // Private FanCoolers family: presence mask (GetInfo
+                    // 0x65CE5BFC) + type/min/max (GetControl 0xCF86B990) +
+                    // current speed/PWM (GetStatus 0x3CC2D181). RE'd from
+                    // GPUMon pollFanSpeed. Speed fields are in the DRIVER's
+                    // scale — on some GPUs that's the 0..65536 duty grid
+                    // (2070 desktop observed), not physical RPM; the duty
+                    // percent is the cross-checkable observable.
                     let coolers = run(target, QueryNvapiCoolerInfo)?.output;
                     Ok(json!({
                         "count": coolers.len(),
                         "coolers": coolers.iter().map(|c| json!({
                             "index": c.index,
+                            "type": c.cooler_type,
+                            "min": c.min,
+                            "max": c.max,
+                            "current": c.current,
+                            "current_pwm_percent": c.current_pwm_percent,
                         })).collect::<Vec<_>>(),
                     }))
                 }
@@ -2414,11 +2428,10 @@ fn execute_target(
             let rpm_raw = invocation.positionals[0]
                 .parse::<i32>()
                 .map_err(|e| CliError::new(format!("invalid RPM: {e}")))?;
-            let cooler = option_one(invocation, "curve")
-                .or_else(|| option_one(invocation, "cooler"))
+            let cooler = option_one(invocation, "cooler")
                 .map(|s| s.parse::<u32>())
                 .transpose()
-                .map_err(|e| CliError::new(format!("invalid --curve: {e}")))?
+                .map_err(|e| CliError::new(format!("invalid --cooler: {e}")))?
                 .unwrap_or(0);
             let r = run(
                 target,

@@ -442,10 +442,20 @@ pub enum NvapiPerfFreqCap {
     Cap { max_khz: u32, min_khz: u32 },
 }
 
-/// Per-cooler info from the private FanCoolerGetInfo (NDA 0x65CE5BFC).
+/// Per-cooler info aggregated from the private FanCoolers family (NDA):
+/// presence mask + control type/min/max + status current speed/PWM.
+/// Speed fields are in the DRIVER's scale (may be the 0..65536 duty grid
+/// rather than physical RPM — 2070 desktop observed); surface everything
+/// so the caller can see the actual grid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NvapiCoolerInfoEntry {
     pub index: u32,
+    /// 0=active, 1=pwm, 2=pwm-tach
+    pub cooler_type: u32,
+    pub min: u32,
+    pub max: u32,
+    pub current: u32,
+    pub current_pwm_percent: u32,
 }
 
 /// Result of a set_fan_rpm call (private FanCoolerSetControl NDA 0xEB44E8AA).
