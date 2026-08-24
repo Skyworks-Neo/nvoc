@@ -8,7 +8,7 @@ Layout:
 from __future__ import annotations
 
 import tkinter as tk
-from typing import TYPE_CHECKING, Callable, Optional, Protocol, Sequence
+from typing import Callable, Optional, Protocol, Sequence
 
 import customtkinter as ctk
 

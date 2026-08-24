@@ -52,9 +52,13 @@ class FakeNative:
         # the other setters), so the apply path must format the message from
         # it rather than use `setter() or "msg"`. Mirror the real payload
         # (target_uV is an i32 µV integer in the real binding).
-        self.calls.append(
-            ("set_volt_rail_target", gpu, rail_bit, target_mv, expect_type)
-        )
+        self.calls.append((
+            "set_volt_rail_target",
+            gpu,
+            rail_bit,
+            target_mv,
+            expect_type,
+        ))
         return {"applied": True, "effective_wall_uV": int(target_mv * 1000)}
 
     def set_tgp_watt(self, gpu: str, watts: int, policy_index: int) -> None:
@@ -66,9 +70,14 @@ class FakeNative:
         # Like set_volt_rail_target: always returns a dict (never None), so
         # the apply paths must format the message from it. Mirror the real
         # payload (applied_kHz is the driver readback).
-        self.calls.append(
-            ("set_clk_domain_offset", gpu, domain_bit, offset_khz, slot, temporary)
-        )
+        self.calls.append((
+            "set_clk_domain_offset",
+            gpu,
+            domain_bit,
+            offset_khz,
+            slot,
+            temporary,
+        ))
         return {"applied": True, "bit": domain_bit, "applied_kHz": offset_khz}
 
     def set_target_temp(self, gpu: str, tlimit: float, policy_index: int) -> None:

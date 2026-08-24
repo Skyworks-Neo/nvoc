@@ -58,18 +58,18 @@ pub fn run<O: GpuOperation>(
     //     GPUs, call force_gc6_exit. Its own return value is the native
     //     fallback: desktop/unknown-that's-really-desktop returns
     //     NoImplementation (-104, ignored); mobile returns OK and wakes.
-    if operation.is_nvapi_write() {
-        if let Ok(gpu) = target.nvapi() {
-            let need_wake = match gpu.info() {
-                Ok(info) => match fetch_gpu_type(&info) {
-                    Ok(t) => t.needs_gc6_wake(),
-                    Err(_) => true, // can't classify -> conservative wake
-                },
-                Err(_) => true, // info() failed (likely GCOFF) -> wake
-            };
-            if need_wake {
-                let _ = gpu.force_gc6_exit(); // best-effort; -104 etc. ignored
-            }
+    if operation.is_nvapi_write()
+        && let Ok(gpu) = target.nvapi()
+    {
+        let need_wake = match gpu.info() {
+            Ok(info) => match fetch_gpu_type(&info) {
+                Ok(t) => t.needs_gc6_wake(),
+                Err(_) => true, // can't classify -> conservative wake
+            },
+            Err(_) => true, // info() failed (likely GCOFF) -> wake
+        };
+        if need_wake {
+            let _ = gpu.force_gc6_exit(); // best-effort; -104 etc. ignored
         }
     }
     let output = op.run(target)?;
@@ -1596,7 +1596,7 @@ impl GpuOperation for QueryNvapiVoltRails {
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
-        Ok(target.nvapi()?.volt_rails().map_err(Error::from)?)
+        target.nvapi()?.volt_rails().map_err(Error::from)
     }
 }
 
@@ -1874,7 +1874,7 @@ impl GpuOperation for QueryNvapiClkDomains {
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
-        Ok(target.nvapi()?.clk_domains_control().map_err(Error::from)?)
+        target.nvapi()?.clk_domains_control().map_err(Error::from)
     }
 }
 
@@ -1894,10 +1894,10 @@ impl GpuOperation for QueryNvapiClkDomainFreqDetail {
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
-        Ok(target
+        target
             .nvapi()?
             .clk_domain_freq_detail(self.domain_bit)
-            .map_err(Error::from)?)
+            .map_err(Error::from)
     }
 }
 
@@ -1922,10 +1922,10 @@ impl GpuOperation for SetNvapiVfpPointPrivate {
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
-        Ok(target
+        target
             .nvapi()?
             .set_vfp_point_private(self.bank, self.idx, self.freq_mode, self.value)
-            .map_err(Error::from)?)
+            .map_err(Error::from)
     }
 }
 
@@ -1947,10 +1947,10 @@ impl GpuOperation for SetNvapiVfpRangePrivate {
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
-        Ok(target
+        target
             .nvapi()?
             .set_vfp_range_private(self.bank, self.start, self.end, self.delta_mhz)
-            .map_err(Error::from)?)
+            .map_err(Error::from)
     }
 }
 
@@ -1975,10 +1975,10 @@ impl GpuOperation for SetNvapiVfpRangePerPointPrivate {
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
-        Ok(target
+        target
             .nvapi()?
             .set_vfp_range_per_point_private(self.bank, self.start, self.end, &self.deltas)
-            .map_err(Error::from)?)
+            .map_err(Error::from)
     }
 }
 
@@ -1999,10 +1999,10 @@ impl GpuOperation for QueryNvapiClkDomainFreqsBatch {
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
-        Ok(target
+        target
             .nvapi()?
             .clk_domain_freqs_batch(&self.domains)
-            .map_err(Error::from)?)
+            .map_err(Error::from)
     }
 }
 
@@ -2022,10 +2022,7 @@ impl GpuOperation for QueryNvapiClkVfPoints {
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
-        Ok(target
-            .nvapi()?
-            .clk_vf_points_private()
-            .map_err(Error::from)?)
+        target.nvapi()?.clk_vf_points_private().map_err(Error::from)
     }
 }
 
@@ -2045,10 +2042,10 @@ impl GpuOperation for QueryNvapiClkDomainFreq {
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
-        Ok(target
+        target
             .nvapi()?
             .clk_domain_freq(self.domain_bit)
-            .map_err(Error::from)?)
+            .map_err(Error::from)
     }
 }
 
@@ -2188,16 +2185,10 @@ impl GpuOperation for SetNvapiDNotifier {
 /// min/max clock for the given clock-domain (0=GPC/core by default; the ref tool
 /// resolves the GPC index via 0x57B5A5DF). Returns `None` where the driver
 /// doesn't expose the private interface. Clocks are converted kHz → MHz.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct QueryNvapiPStateLevels {
     /// Clock-domain index (0=GPC/core default).
     pub domain: usize,
-}
-
-impl Default for QueryNvapiPStateLevels {
-    fn default() -> Self {
-        Self { domain: 0 }
-    }
 }
 
 impl GpuOperation for QueryNvapiPStateLevels {

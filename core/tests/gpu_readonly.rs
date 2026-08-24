@@ -686,7 +686,7 @@ fn nvapi_raw_payload_probe() {
     // StructVersion and StructVersion<1>).
     macro_rules! ver {
         ($ty:ty) => {{
-            let mut s = unsafe { std::mem::zeroed::<$ty>() };
+            let mut s = std::mem::zeroed::<$ty>();
             *s.nvapi_version_mut() = NvVersion::with_struct::<$ty>(1);
             s
         }};
@@ -804,7 +804,7 @@ fn nvapi_raw_payload_probe() {
         //    symbol is typed V2, but the version magic selects layout — allocate
         //    a V2-sized buffer, stamp V1 magic, read back as V1 fields.
         {
-            let mut pinfo = unsafe { std::mem::zeroed::<pw::NV_GPU_CLIENT_POWER_POLICIES_INFO>() };
+            let mut pinfo = std::mem::zeroed::<pw::NV_GPU_CLIENT_POWER_POLICIES_INFO>();
             *pinfo.nvapi_version_mut() =
                 NvVersion::with_struct::<pw::NV_GPU_CLIENT_POWER_POLICIES_INFO_V1>(1);
             let st = api::NvAPI_GPU_ClientPowerPoliciesGetInfo(handle, &mut pinfo);
@@ -837,8 +837,7 @@ fn nvapi_raw_payload_probe() {
             );
         }
         {
-            let mut pstat =
-                unsafe { std::mem::zeroed::<pw::NV_GPU_CLIENT_POWER_POLICIES_STATUS>() };
+            let mut pstat = std::mem::zeroed::<pw::NV_GPU_CLIENT_POWER_POLICIES_STATUS>();
             *pstat.nvapi_version_mut() =
                 NvVersion::with_struct::<pw::NV_GPU_CLIENT_POWER_POLICIES_STATUS_V1>(1);
             let st = api::NvAPI_GPU_ClientPowerPoliciesGetStatus(handle, &mut pstat);
@@ -898,39 +897,37 @@ fn nvapi_raw_payload_probe() {
         //    via QueryInterface to see if it carries live power-state data. The
         //    struct size is unknown; try a 256-byte scratch buffer with version
         //    magic guessed as v1|sz256 = (1<<16)|256 = 65792.
-        unsafe {
-            use nvapi_hi::sys::nvapi_QueryInterface;
-            const GET_POWERMIZER_INFO_ID: u32 = 0x76bfa16b;
-            #[repr(C)]
-            struct Scratch {
-                version: u32,
-                data: [u32; 63],
-            }
-            let mut scratch = Scratch {
-                version: 0,
-                data: [0; 63],
+        use nvapi_hi::sys::nvapi_QueryInterface;
+        const GET_POWERMIZER_INFO_ID: u32 = 0x76bfa16b;
+        #[repr(C)]
+        struct Scratch {
+            version: u32,
+            data: [u32; 63],
+        }
+        let mut scratch = Scratch {
+            version: 0,
+            data: [0; 63],
+        };
+        for sz in [256u32, 64, 128] {
+            scratch.version = (sz) | (1 << 16);
+            scratch.data = [0; 63];
+            let ptr = match nvapi_QueryInterface(GET_POWERMIZER_INFO_ID) {
+                Ok(p) => p as *const (),
+                Err(_) => break,
             };
-            for sz in [256u32, 64, 128] {
-                scratch.version = (sz) | (1 << 16);
-                scratch.data = [0; 63];
-                let ptr = match nvapi_QueryInterface(GET_POWERMIZER_INFO_ID) {
-                    Ok(p) => p as *const (),
-                    Err(_) => break,
-                };
-                type Fn = unsafe extern "system" fn(
-                    nvapi_hi::sys::api::NvPhysicalGpuHandle,
-                    *mut Scratch,
-                ) -> nvapi_hi::sys::Status;
-                let func: Fn = std::mem::transmute(ptr);
-                let status = func(handle, &mut scratch);
-                eprintln!(
-                    "=== GetPowerMizerInfo sz={} status={:?} version_out=0x{:x} ===",
-                    sz, status, scratch.version
-                );
-                if (status as i32) == (Status::Ok as i32) {
-                    eprintln!("  data={:?}", &scratch.data[..16]);
-                    break;
-                }
+            type Fn = unsafe extern "system" fn(
+                nvapi_hi::sys::api::NvPhysicalGpuHandle,
+                *mut Scratch,
+            ) -> nvapi_hi::sys::Status;
+            let func: Fn = std::mem::transmute(ptr);
+            let status = func(handle, &mut scratch);
+            eprintln!(
+                "=== GetPowerMizerInfo sz={} status={:?} version_out=0x{:x} ===",
+                sz, status, scratch.version
+            );
+            if (status as i32) == (Status::Ok as i32) {
+                eprintln!("  data={:?}", &scratch.data[..16]);
+                break;
             }
         }
     }
@@ -1254,17 +1251,17 @@ fn nvapi_volt_rails_raw() {
 ///
 /// **CORRECTED accepted-magic sets (RE'd from the handler comparisons, 2026-07-27):**
 /// - GetInfo (0xC12EB19E), handler @0x180257660 — accepts:
-///     65940  = (1<<16)|396
-///     68264  = (1<<16)|2728
-///     199848 = (3<<16)|3208
-///     268456 = (4<<16)|6088
-///     377896 = (5<<16)|50216   ← the big v5 layout (50 KiB)
+///   65940  = (1<<16)|396
+///   68264  = (1<<16)|2728
+///   199848 = (3<<16)|3208
+///   268456 = (4<<16)|6088
+///   377896 = (5<<16)|50216   ← the big v5 layout (50 KiB)
 /// - GetStatus (0xF40238EF), handler @0x180258170 — accepts:
-///     65928  = (1<<16)|392
-///     66972  = (1<<16)|1436
-///     69408  = (1<<16)|3872
-///     74968  = (1<<16)|9432
-///     336752 = (5<<16)|9072    ← the big v5 layout
+///   65928  = (1<<16)|392
+///   66972  = (1<<16)|1436
+///   69408  = (1<<16)|3872
+///   74968  = (1<<16)|9432
+///   336752 = (5<<16)|9072    ← the big v5 layout
 ///
 /// **PRIOR BUG (why every probe returned -9):** the old probe fed the GetStatus
 /// magics (65928/66972/69408/74968/336752) to GetInfo — a completely different
@@ -1536,7 +1533,6 @@ fn nvapi_power_monitor_raw() {
         let nvml_mw = nvml_wrapper::Nvml::init()
             .ok()
             .and_then(|n| n.device_by_index(0).ok().and_then(|d| d.power_usage().ok()))
-            .map(|mw| mw as u32)
             .unwrap_or(0);
         eprintln!("  (NVML board total: {} mW)", nvml_mw);
         for (off, v1) in &s1 {

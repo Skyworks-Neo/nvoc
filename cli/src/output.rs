@@ -338,22 +338,18 @@ fn format_pstate_native_output(output: &Value) -> Vec<String> {
             ("video", "Video"),
             ("host", "Host"),
         ] {
-            let max = entry.get(&format!("max_{dom}_mhz")).and_then(Value::as_f64);
-            let min = entry.get(&format!("min_{dom}_mhz")).and_then(Value::as_f64);
-            match (max, min) {
-                (Some(max), Some(min)) => {
-                    if max == 0.0 && min == 0.0 {
-                        continue;
-                    }
-                    let values =
-                        format!("Max {} MHz, Min {} MHz", trim_float(max), trim_float(min));
-                    lines.push(format!(
-                        "      {}: {}",
-                        stylize_title(label),
-                        nvoc_cli_common::color::stylize(&values, false)
-                    ));
+            let max = entry.get(format!("max_{dom}_mhz")).and_then(Value::as_f64);
+            let min = entry.get(format!("min_{dom}_mhz")).and_then(Value::as_f64);
+            if let (Some(max), Some(min)) = (max, min) {
+                if max == 0.0 && min == 0.0 {
+                    continue;
                 }
-                _ => {}
+                let values = format!("Max {} MHz, Min {} MHz", trim_float(max), trim_float(min));
+                lines.push(format!(
+                    "      {}: {}",
+                    stylize_title(label),
+                    nvoc_cli_common::color::stylize(&values, false)
+                ));
             }
         }
     }
@@ -1186,7 +1182,7 @@ fn format_sensors_array(indent: usize, items: &[Value]) -> Vec<String> {
             lines.extend(format_value_block_with_context(sensor, indent, "sensors"));
             continue;
         };
-        let descriptor = tuple.get(0).and_then(Value::as_object);
+        let descriptor = tuple.first().and_then(Value::as_object);
         let temp = tuple.get(1);
 
         if let Some(descriptor) = descriptor {
@@ -1501,7 +1497,7 @@ fn format_compute_caps(word: u32) -> String {
         String::new()
     };
     if names.is_empty() && unknown == 0 {
-        format!("0 (none)")
+        "0 (none)".to_string()
     } else {
         format!("{} (0x{:X}: {}{})", word, word, names.join(" | "), suffix)
     }

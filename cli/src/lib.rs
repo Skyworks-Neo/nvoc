@@ -2027,10 +2027,10 @@ fn execute_target(
                 // still go. Only the seven-value p0 block here — the raw
                 // rail_descriptors / control / status arrays live in
                 // get-volt-rails.
-                if let Ok(Some(rails)) = run(target, QueryNvapiVoltRails).map(|r| r.output) {
-                    if let Some(p0) = volt_rails_p0_json(&rails) {
-                        map.insert("p0_voltage".to_string(), p0);
-                    }
+                if let Ok(Some(rails)) = run(target, QueryNvapiVoltRails).map(|r| r.output)
+                    && let Some(p0) = volt_rails_p0_json(&rails)
+                {
+                    map.insert("p0_voltage".to_string(), p0);
                 }
                 // Per-rail power (watts) from NVAPI PowerMonitor GetStatus
                 // Per-rail power (watts) from NVAPI PowerMonitor, keyed by the
@@ -2571,7 +2571,7 @@ fn execute_target(
             use nvoc_core::NvapiPStateNativeLock;
             let raw = option_one(invocation, "pstate")
                 .map(str::to_string)
-                .or_else(|| invocation.positionals.get(0).map(|s| s.to_string()))
+                .or_else(|| invocation.positionals.first().map(|s| s.to_string()))
                 .ok_or_else(|| {
                     CliError::new(
                         "set-pstate-native requires a P-State, e.g. `set-pstate-native P3`",
