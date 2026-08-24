@@ -5,7 +5,8 @@ use super::nvml as low_nvml;
 use super::result::{
     ApiRestrictionState, AppliedValue, AutoBoostState, BatchReport, ClockOffset, DNotifierInfo,
     DNotifierLevel, DisplayInfo, EdidData, FanCurvePointReadout, FanCurveReadout, FanInfo,
-    NvapiPStateNativeLock, NvapiPerfFreqCap, OperationKind, OperationReport, OvervoltApplied,
+    NvapiCoolerInfoEntry, NvapiFanRpmResult, NvapiPStateNativeLock, NvapiPerfFreqCap,
+    OperationKind, OperationReport, OvervoltApplied,
     PStateLevelEntry, PStateLevelsInfo, PowerModeStatus, PstateBaseVoltage, PstateClockRange,
     SupportedApplicationClocks, TargetOutcome, TargetTempPolicy, TdpTempLimits,
     TemperatureThreshold, ThermalSensorReading, ThrottleReason, ViolationEntry,
@@ -435,6 +436,63 @@ impl GpuOperation for SetFanStop {
         Ok(AppliedValue {
             requested: self.enable,
             applied: self.enable,
+        })
+    }
+}
+
+/// Query per-cooler info via the private FanCoolerGetInfo (NDA 0x65CE5BFC).
+/// Returns one entry per cooler with its index. RE'd from GPUMon setFanSim —
+/// the private path, richer than public GetCoolerSettings.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiCoolerInfo;
+
+impl GpuOperation for QueryNvapiCoolerInfo {
+    type Output = Vec<NvapiCoolerInfoEntry>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiCoolerInfo
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let infos = target.nvapi()?.inner().cooler_info_private().map_err(Error::from)?;
+        Ok(infos
+            .into_iter()
+            .map(|c| NvapiCoolerInfoEntry {
+                index: c.index,
+            })
+            .collect())
+    }
+}
+
+/// Set fan speed by RPM via the private FanCoolerSetControl (NDA 0xEB44E8AA).
+/// RE'd from GPUMon.exe setFanSim: GET control snapshot → patch the target
+/// cooler's enable+level per its type → SET back. `rpm=None` disables
+/// simulation (returns to auto/driver control).
+#[derive(Clone, Copy, Debug)]
+pub struct SetFanRpm {
+    pub cooler_index: u32,
+    pub rpm: Option<u32>,
+}
+
+impl GpuOperation for SetFanRpm {
+    type Output = NvapiFanRpmResult;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetFanRpm
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let r = target
+            .nvapi()?
+            .inner()
+            .set_fan_rpm(self.cooler_index, self.rpm)
+            .map_err(Error::from)?;
+        Ok(NvapiFanRpmResult {
+            cooler_index: r.cooler_index,
+            cooler_type: r.cooler_type,
+            min_rpm: r.min_rpm,
+            max_rpm: r.max_rpm,
+            applied_rpm: r.applied_rpm,
         })
     }
 }

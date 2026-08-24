@@ -20,7 +20,7 @@ use nvoc_core::{
     ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock, ResetVfpLock,
     RestartDisplayDriver, SetApiRestriction, SetApplicationsClocks, SetAutoBoost,
     SetAutoBoostDefault, SetBb2Active, SetClockOffset, SetCoolerLevels, SetEdid, SetFanCurve,
-    ResetFanCurve, SetFanStop,
+    ResetFanCurve, SetFanStop, SetFanRpm, QueryNvapiCoolerInfo,
     SetFanSpeed, SetForcePstate, SetLegacyClocks, SetLockedClocks, SetNvapiClkDomainOffset,
     SetNvapiDNotifier, SetNvapiDynamicBoost, SetNvapiOvervolt, SetNvapiPStateNative,
     SetNvapiPerfFreqCap, SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiSensorLimits,
@@ -144,6 +144,7 @@ pub enum Command {
     SetFanCurve,
     ResetFanCurveCmd,
     SetFanStopCmd,
+    SetFanRpmCmd,
     GetTemperatureThresholds,
     GetThermalSettings,
     GetPowerMode,
@@ -249,6 +250,7 @@ impl Command {
             Self::SetFanCurve => "set-fan-curve",
             Self::ResetFanCurveCmd => "reset-fan-curve",
             Self::SetFanStopCmd => "set-fan-stop",
+            Self::SetFanRpmCmd => "set-fan-rpm",
             Self::GetTemperatureThresholds => "get-temp-thresholds",
             Self::GetThermalSettings => "get-thermal-settings",
             Self::GetPowerMode => "get-power-mode",
@@ -344,7 +346,7 @@ impl Command {
             Self::ResetPStateNative => "Clear all native NVAPI P-State locks",
             Self::GetPstates => "Read NVML P-State clock ranges",
             Self::GetSupportedAppClocks => "Read NVML supported application clocks",
-            Self::GetFanInfo => "Read NVML fan count and range",
+            Self::GetFanInfo => "Read fan/cooler info (NVML: count + min/max percent; NVAPI: per-cooler info via private FanCoolerGetInfo)",
             Self::GetFanCurve => {
                 "Read the NVAPI fan-curve table (ClientFanPolicies, struct 0x200DC; desktop-only)"
             }
@@ -356,6 +358,9 @@ impl Command {
             }
             Self::SetFanStopCmd => {
                 "Toggle fan stop / zero-RPM for a curve slot (FanArbiterSet NDA 0x44CD3014): on | off"
+            }
+            Self::SetFanRpmCmd => {
+                "Set fan speed by RPM via private FanCoolerSetControl (GPUMon setFanSim path; --cooler N, -1 disables sim)"
             }
             Self::GetTemperatureThresholds => {
                 "Read temperature thresholds (NVML by default; --nvapi exposes target-temp policy)"
@@ -503,11 +508,11 @@ impl Command {
             | Self::ResetMemoryOffsetMhz
             | Self::ResetLockedClocks
             | Self::ResetFan
-            | Self::GetTemperatureThresholds => &BOTH_BACKENDS,
+            | Self::GetTemperatureThresholds
+            | Self::GetFanInfo => &BOTH_BACKENDS,
             Self::GetPowerWatt
             | Self::GetPstates
             | Self::GetSupportedAppClocks
-            | Self::GetFanInfo
             | Self::GetThrottleReasons
             | Self::GetAutoBoost
             | Self::GetApiRestriction
@@ -563,6 +568,7 @@ impl Command {
             Self::SetFanCurve => (2, 2),
             Self::ResetFanCurveCmd => (0, 0),
             Self::SetFanStopCmd => (1, 1),
+            Self::SetFanRpmCmd => (1, 1),
             Self::OemOcScanner => (0, 0),
             Self::ResetForcePstate => (0, 0),
             Self::RestartDisplayDriver => (0, 0),
@@ -612,7 +618,7 @@ impl Command {
             | Self::SetPstateBaseVoltageUv => &["pstate"],
             Self::SetFanPercent => &["fan", "policy"],
             Self::ResetFan => &["fan"],
-            Self::ResetFanCurveCmd | Self::SetFanStopCmd => &["curve"],
+            Self::ResetFanCurveCmd | Self::SetFanStopCmd | Self::SetFanRpmCmd => &["curve"],
             Self::SetLockedClocksMhz | Self::ResetLockedClocks | Self::ResetVfpDeltas => {
                 &["domain"]
             }
@@ -880,6 +886,11 @@ impl Command {
                 "STATE",
                 "on = allow the fan to stop at idle (zero-RPM), off = always spin",
             )],
+            Self::SetFanRpmCmd => vec![PositionalArg::free(
+                "arg_rpm",
+                "RPM",
+                "Target fan speed in RPM (e.g. 1200); pass -1 to disable simulation and return to auto/driver control",
+            )],
             Self::SetAutoBoost | Self::SetAutoBoostDefault => vec![PositionalArg::finite(
                 "arg_enabled",
                 "ENABLED",
@@ -1053,6 +1064,7 @@ const COMMANDS: &[Command] = &[
     Command::SetFanCurve,
     Command::ResetFanCurveCmd,
     Command::SetFanStopCmd,
+    Command::SetFanRpmCmd,
     Command::SetForcePstate,
     Command::SetLegacyClocksMhz,
     Command::SetLockedClocksMhz,
@@ -2285,12 +2297,29 @@ fn execute_target(
             ))
         }
         Command::GetFanInfo => {
-            let fan = run(target, QueryFanInfo)?.output;
-            Ok(json!({
-                "count": fan.count,
-                "min_percent": fan.min_speed,
-                "max_percent": fan.max_speed,
-            }))
+            match adapter {
+                BackendAdapter::Nvapi => {
+                    // Private FanCoolerGetInfo (NDA 0x65CE5BFC): per-cooler
+                    // info — type (active/pwm/pwm-tach) + min/max RPM range.
+                    // RE'd from GPUMon setFanSim. Falls back to the public
+                    // GetCoolerSettings if the private path is unsupported.
+                    let coolers = run(target, QueryNvapiCoolerInfo)?.output;
+                    Ok(json!({
+                        "count": coolers.len(),
+                        "coolers": coolers.iter().map(|c| json!({
+                            "index": c.index,
+                        })).collect::<Vec<_>>(),
+                    }))
+                }
+                BackendAdapter::Nvml => {
+                    let fan = run(target, QueryFanInfo)?.output;
+                    Ok(json!({
+                        "count": fan.count,
+                        "min_percent": fan.min_speed,
+                        "max_percent": fan.max_speed,
+                    }))
+                }
+            }
         }
         Command::GetFanCurve => {
             let curves = run(target, GetFanCurves)?.output;
@@ -2376,6 +2405,36 @@ fn execute_target(
                 .unwrap_or(0);
             run(target, SetFanStop { curve_index: curve, enable })?;
             Ok(json!({"applied": true, "curve": curve, "fan_stop": enable}))
+        }
+        Command::SetFanRpmCmd => {
+            // Private FanCoolerSetControl (NDA 0xEB44E8AA): RPM-direct
+            // fan simulation. RE'd from GPUMon setFanSim: RMW the
+            // control block, patch enable+level per cooler type. -1
+            // disables simulation (returns to auto/driver control).
+            let rpm_raw = invocation.positionals[0]
+                .parse::<i32>()
+                .map_err(|e| CliError::new(format!("invalid RPM: {e}")))?;
+            let cooler = option_one(invocation, "curve")
+                .or_else(|| option_one(invocation, "cooler"))
+                .map(|s| s.parse::<u32>())
+                .transpose()
+                .map_err(|e| CliError::new(format!("invalid --curve: {e}")))?
+                .unwrap_or(0);
+            let r = run(
+                target,
+                SetFanRpm {
+                    cooler_index: cooler,
+                    rpm: if rpm_raw < 0 { None } else { Some(rpm_raw as u32) },
+                },
+            )?;
+            Ok(json!({
+                "applied": true,
+                "cooler_index": r.output.cooler_index,
+                "cooler_type": r.output.cooler_type,
+                "min_rpm": r.output.min_rpm,
+                "max_rpm": r.output.max_rpm,
+                "applied_rpm": r.output.applied_rpm,
+            }))
         }
         Command::GetTemperatureThresholds => {
             // Two backend flavours of "temperature threshold":

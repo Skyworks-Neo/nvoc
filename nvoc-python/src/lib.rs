@@ -12,7 +12,8 @@ use nvoc_core::{
     QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks,
     QueryTdpTempLimits, QueryTemperatureThresholds, QueryThrottleReasons, QueryVfpPointVoltage,
     QueryVoltageBoost, ResetApplicationsClocks, ResetCoolerLevels, ResetFanCurve, ResetFanSpeed,
-    SetFanStop, ResetLockedClocks, ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetNvapiTgpWatt,
+    SetFanStop, SetFanRpm, QueryNvapiCoolerInfo,
+    ResetLockedClocks, ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetNvapiTgpWatt,
     ResetPstateBaseVoltages, ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock,
     ResetVfpLock, SetApiRestriction, SetApplicationsClocks, SetAutoBoost, SetAutoBoostDefault,
     SetClockOffset, SetCoolerLevels, SetDomainVfpDeltas, SetEdid, SetFanSpeed, SetLegacyClocks,
@@ -3314,6 +3315,45 @@ fn set_fan_stop(
     py_value(py, &value)
 }
 
+/// Set fan speed by RPM via the private FanCoolerSetControl (NDA 0xEB44E8AA).
+/// RE'd from GPUMon.exe setFanSim: RMW the control block, patch enable+level
+/// per cooler type. Pass rpm=-1 to disable simulation (return to auto).
+#[pyfunction]
+fn set_fan_rpm(
+    py: Python<'_>,
+    gpu: &str,
+    rpm: i32,
+    cooler_index: Option<u32>,
+) -> PyResult<Py<PyAny>> {
+    let ci = cooler_index.unwrap_or(0);
+    let value = py.detach(|| {
+        with_target(gpu, "nvapi", |target| {
+            let r = run(
+                target,
+                SetFanRpm {
+                    cooler_index: ci,
+                    rpm: if rpm < 0 { None } else { Some(rpm as u32) },
+                },
+            )
+            .map_err(to_py_err)?
+            .output;
+            let applied = match r.applied_rpm {
+                Some(rpm) => Value::from(rpm),
+                None => Value::Null,
+            };
+            Ok(value_object([
+                ("applied", Value::from(true)),
+                ("cooler_index", Value::from(r.cooler_index)),
+                ("cooler_type", Value::from(r.cooler_type)),
+                ("min_rpm", Value::from(r.min_rpm)),
+                ("max_rpm", Value::from(r.max_rpm)),
+                ("applied_rpm", applied),
+            ]))
+        })
+    })?;
+    py_value(py, &value)
+}
+
 #[pyfunction]
 fn reset_core_clocks(py: Python<'_>, gpu: &str, backend: &str) -> PyResult<()> {
     let gpu_own = gpu.to_string();
@@ -3577,6 +3617,7 @@ fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(set_legacy_voltage_delta, m)?)?;
     m.add_function(wrap_pyfunction!(set_fan, m)?)?;
     m.add_function(wrap_pyfunction!(set_fan_stop, m)?)?;
+    m.add_function(wrap_pyfunction!(set_fan_rpm, m)?)?;
     m.add_function(wrap_pyfunction!(reset_core_clocks, m)?)?;
     m.add_function(wrap_pyfunction!(reset_mem_clocks, m)?)?;
     m.add_function(wrap_pyfunction!(reset_vfp_lock, m)?)?;

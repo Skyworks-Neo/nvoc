@@ -78,6 +78,7 @@ EXPECTED_EXPORTS = [
     "set_edid",
     "set_fan",
     "set_fan_stop",
+    "set_fan_rpm",
     "set_legacy_clocks",
     "set_legacy_voltage_delta",
     "set_locked_clocks",

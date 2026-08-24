@@ -172,6 +172,13 @@ pub enum OperationKind {
     /// Toggle fan stop / zero-RPM for a curve slot (FanArbiterSet NDA
     /// 0x44CD3014, struct magic 0x10144, enable bit0 at +0x28).
     SetFanStop,
+    /// Query per-cooler info via the private FanCoolerGetInfo (NDA
+    /// 0x65CE5BFC): cooler count + per-cooler index.
+    QueryNvapiCoolerInfo,
+    /// Set fan speed by RPM via the private FanCoolerSetControl (NDA
+    /// 0xEB44E8AA): RMW the control block, patch enable+level per cooler
+    /// type. RE'd from GPUMon setFanSim.
+    SetFanRpm,
 }
 
 impl OperationKind {
@@ -225,6 +232,7 @@ impl OperationKind {
                 | SetFanCurve
                 | ResetFanCurve
                 | SetFanStop
+                | SetFanRpm
                 | ResetNvapiPowerLimits
                 | ResetNvapiSensorLimits
                 | ResetPstateClockOffsets
@@ -432,6 +440,24 @@ pub enum NvapiPerfFreqCap {
     Reset,
     /// Clamp perf frequency to `[min_khz, max_khz]` (MHz × 1000).
     Cap { max_khz: u32, min_khz: u32 },
+}
+
+/// Per-cooler info from the private FanCoolerGetInfo (NDA 0x65CE5BFC).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NvapiCoolerInfoEntry {
+    pub index: u32,
+}
+
+/// Result of a set_fan_rpm call (private FanCoolerSetControl NDA 0xEB44E8AA).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NvapiFanRpmResult {
+    pub cooler_index: u32,
+    /// 0=active, 1=pwm, 2=pwm-tach
+    pub cooler_type: u32,
+    pub min_rpm: u32,
+    pub max_rpm: u32,
+    /// None = simulation disabled (returned to auto)
+    pub applied_rpm: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
