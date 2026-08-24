@@ -3316,8 +3316,9 @@ fn set_fan_stop(
 }
 
 /// Set fan speed by RPM via the private FanCoolerSetControl (NDA 0xEB44E8AA).
-/// RE'd from GPUMon.exe setFanSim: RMW the control block, patch enable+level
-/// per cooler type. Pass rpm=-1 to disable simulation (return to auto).
+/// RE'd from GPUMon.exe setFanSim: RMW the control block, patch enable+level.
+/// cooler_index=None targets every present cooler. Pass rpm=-1 to disable
+/// simulation (return to auto).
 #[pyfunction]
 fn set_fan_rpm(
     py: Python<'_>,
@@ -3325,29 +3326,36 @@ fn set_fan_rpm(
     rpm: i32,
     cooler_index: Option<u32>,
 ) -> PyResult<Py<PyAny>> {
-    let ci = cooler_index.unwrap_or(0);
     let value = py.detach(|| {
         with_target(gpu, "nvapi", |target| {
-            let r = run(
+            let rs = run(
                 target,
                 SetFanRpm {
-                    cooler_index: ci,
+                    cooler_index,
                     rpm: if rpm < 0 { None } else { Some(rpm as u32) },
                 },
             )
             .map_err(to_py_err)?
             .output;
-            let applied = match r.applied_rpm {
-                Some(rpm) => Value::from(rpm),
-                None => Value::Null,
-            };
+            let coolers: Vec<Value> = rs
+                .iter()
+                .map(|r| {
+                    let applied = match r.applied_rpm {
+                        Some(rpm) => Value::from(rpm),
+                        None => Value::Null,
+                    };
+                    value_object([
+                        ("cooler_index", Value::from(r.cooler_index)),
+                        ("cooler_type", Value::from(r.cooler_type)),
+                        ("min_rpm", Value::from(r.min_rpm)),
+                        ("max_rpm", Value::from(r.max_rpm)),
+                        ("applied_rpm", applied),
+                    ])
+                })
+                .collect();
             Ok(value_object([
                 ("applied", Value::from(true)),
-                ("cooler_index", Value::from(r.cooler_index)),
-                ("cooler_type", Value::from(r.cooler_type)),
-                ("min_rpm", Value::from(r.min_rpm)),
-                ("max_rpm", Value::from(r.max_rpm)),
-                ("applied_rpm", applied),
+                ("coolers", Value::Array(coolers)),
             ]))
         })
     })?;

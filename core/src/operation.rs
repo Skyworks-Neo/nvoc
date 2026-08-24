@@ -475,30 +475,34 @@ impl GpuOperation for QueryNvapiCoolerInfo {
 /// simulation (returns to auto/driver control).
 #[derive(Clone, Copy, Debug)]
 pub struct SetFanRpm {
-    pub cooler_index: u32,
+    /// `None` targets every cooler present in the info mask.
+    pub cooler_index: Option<u32>,
     pub rpm: Option<u32>,
 }
 
 impl GpuOperation for SetFanRpm {
-    type Output = NvapiFanRpmResult;
+    type Output = Vec<NvapiFanRpmResult>;
 
     fn kind(&self) -> OperationKind {
         OperationKind::SetFanRpm
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
-        let r = target
+        let rs = target
             .nvapi()?
             .inner()
             .set_fan_rpm(self.cooler_index, self.rpm)
             .map_err(Error::from)?;
-        Ok(NvapiFanRpmResult {
-            cooler_index: r.cooler_index,
-            cooler_type: r.cooler_type,
-            min_rpm: r.min_rpm,
-            max_rpm: r.max_rpm,
-            applied_rpm: r.applied_rpm,
-        })
+        Ok(rs
+            .into_iter()
+            .map(|r| NvapiFanRpmResult {
+                cooler_index: r.cooler_index,
+                cooler_type: r.cooler_type,
+                min_rpm: r.min_rpm,
+                max_rpm: r.max_rpm,
+                applied_rpm: r.applied_rpm,
+            })
+            .collect())
     }
 }
 

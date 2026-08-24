@@ -362,10 +362,10 @@ impl Command {
                 "Toggle fan stop / zero-RPM for a curve slot (FanArbiterSet NDA 0x44CD3014): on | off"
             }
             Self::SetFanRpmCmd => {
-                "Set fan speed by physical RPM (private FanCoolerSetControl; raw = rpm/max*65536; --cooler N selects the cooler, range from get-fan-info --nvapi)"
+                "Set fan speed by physical RPM (private FanCoolerSetControl; raw = rpm/max*65536; defaults to ALL coolers, --cooler N picks one; range from get-fan-info --nvapi)"
             }
             Self::ResetFanRpmCmd => {
-                "Disable fan-speed simulation and return the cooler to auto/driver control (clears the enable bit)"
+                "Disable fan-speed simulation and return to auto/driver control (clears the enable bit; defaults to ALL coolers, --cooler N picks one)"
             }
             Self::GetTemperatureThresholds => {
                 "Read temperature thresholds (NVML by default; --nvapi exposes target-temp policy)"
@@ -2452,8 +2452,7 @@ fn execute_target(
             let cooler = option_one(invocation, "cooler")
                 .map(|s| s.parse::<u32>())
                 .transpose()
-                .map_err(|e| CliError::new(format!("invalid --cooler: {e}")))?
-                .unwrap_or(0);
+                .map_err(|e| CliError::new(format!("invalid --cooler: {e}")))?;
             let r = run(
                 target,
                 SetFanRpm {
@@ -2461,31 +2460,45 @@ fn execute_target(
                     rpm: Some(rpm_raw as u32),
                 },
             )?;
+            let coolers: Vec<Value> = r
+                .output
+                .iter()
+                .map(|c| {
+                    json!({
+                        "cooler_index": c.cooler_index,
+                        "cooler_type": c.cooler_type,
+                        "min_rpm": c.min_rpm,
+                        "max_rpm": c.max_rpm,
+                        "applied_rpm": c.applied_rpm,
+                    })
+                })
+                .collect();
             Ok(json!({
                 "applied": true,
-                "cooler_index": r.output.cooler_index,
-                "cooler_type": r.output.cooler_type,
-                "min_rpm": r.output.min_rpm,
-                "max_rpm": r.output.max_rpm,
-                "applied_rpm": r.output.applied_rpm,
+                "coolers": coolers,
             }))
         }
         Command::ResetFanRpmCmd => {
             // Disable fan-speed simulation: RMW the control block and
             // clear the cooler's enable bit → auto/driver control.
+            // Without --cooler this resets EVERY present cooler.
             let cooler = option_one(invocation, "cooler")
                 .map(|s| s.parse::<u32>())
                 .transpose()
-                .map_err(|e| CliError::new(format!("invalid --cooler: {e}")))?
-                .unwrap_or(0);
-            run(
+                .map_err(|e| CliError::new(format!("invalid --cooler: {e}")))?;
+            let r = run(
                 target,
                 SetFanRpm {
                     cooler_index: cooler,
                     rpm: None,
                 },
             )?;
-            Ok(json!({"applied": true, "cooler_index": cooler, "reset": true}))
+            let coolers: Vec<Value> = r
+                .output
+                .iter()
+                .map(|c| json!({ "cooler_index": c.cooler_index }))
+                .collect();
+            Ok(json!({"applied": true, "reset": true, "coolers": coolers}))
         }
         Command::GetTemperatureThresholds => {
             // Two backend flavours of "temperature threshold":
