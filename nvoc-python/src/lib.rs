@@ -12,7 +12,7 @@ use nvoc_core::{
     QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks,
     QueryTdpTempLimits, QueryTemperatureThresholds, QueryThrottleReasons, QueryVfpPointVoltage,
     QueryVoltageBoost, ResetApplicationsClocks, ResetCoolerLevels, ResetFanCurve, ResetFanSpeed,
-    SetFanStop, SetFanRpm, QueryNvapiCoolerInfo,
+    SetFanStop, SetFanRpm,
     ResetLockedClocks, ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetNvapiTgpWatt,
     ResetPstateBaseVoltages, ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock,
     ResetVfpLock, SetApiRestriction, SetApplicationsClocks, SetAutoBoost, SetAutoBoostDefault,
