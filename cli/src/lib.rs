@@ -145,6 +145,7 @@ pub enum Command {
     ResetFanCurveCmd,
     SetFanStopCmd,
     SetFanRpmCmd,
+    ResetFanRpmCmd,
     GetTemperatureThresholds,
     GetThermalSettings,
     GetPowerMode,
@@ -251,6 +252,7 @@ impl Command {
             Self::ResetFanCurveCmd => "reset-fan-curve",
             Self::SetFanStopCmd => "set-fan-stop",
             Self::SetFanRpmCmd => "set-fan-rpm",
+            Self::ResetFanRpmCmd => "reset-fan-rpm",
             Self::GetTemperatureThresholds => "get-temp-thresholds",
             Self::GetThermalSettings => "get-thermal-settings",
             Self::GetPowerMode => "get-power-mode",
@@ -360,7 +362,10 @@ impl Command {
                 "Toggle fan stop / zero-RPM for a curve slot (FanArbiterSet NDA 0x44CD3014): on | off"
             }
             Self::SetFanRpmCmd => {
-                "Set fan speed by RPM via private FanCoolerSetControl (GPUMon setFanSim path; --cooler N, -1 disables sim)"
+                "Set fan speed by physical RPM (private FanCoolerSetControl; raw = rpm/max*65536; --cooler N selects the cooler, range from get-fan-info --nvapi)"
+            }
+            Self::ResetFanRpmCmd => {
+                "Disable fan-speed simulation and return the cooler to auto/driver control (clears the enable bit)"
             }
             Self::GetTemperatureThresholds => {
                 "Read temperature thresholds (NVML by default; --nvapi exposes target-temp policy)"
@@ -569,6 +574,7 @@ impl Command {
             Self::ResetFanCurveCmd => (0, 0),
             Self::SetFanStopCmd => (1, 1),
             Self::SetFanRpmCmd => (1, 1),
+            Self::ResetFanRpmCmd => (0, 0),
             Self::OemOcScanner => (0, 0),
             Self::ResetForcePstate => (0, 0),
             Self::RestartDisplayDriver => (0, 0),
@@ -619,7 +625,7 @@ impl Command {
             Self::SetFanPercent => &["fan", "policy"],
             Self::ResetFan => &["fan"],
             Self::ResetFanCurveCmd | Self::SetFanStopCmd => &["curve"],
-            Self::SetFanRpmCmd => &["cooler"],
+            Self::SetFanRpmCmd | Self::ResetFanRpmCmd => &["cooler"],
             Self::SetLockedClocksMhz | Self::ResetLockedClocks | Self::ResetVfpDeltas => {
                 &["domain"]
             }
@@ -890,8 +896,9 @@ impl Command {
             Self::SetFanRpmCmd => vec![PositionalArg::free(
                 "arg_rpm",
                 "RPM",
-                "Target fan speed in RPM (e.g. 1200); pass -1 to disable simulation and return to auto/driver control",
+                "Target fan speed in physical RPM (clamped to the cooler's [min, max] from get-fan-info --nvapi; 100% = max RPM)",
             )],
+            Self::ResetFanRpmCmd => vec![],
             Self::SetAutoBoost | Self::SetAutoBoostDefault => vec![PositionalArg::finite(
                 "arg_enabled",
                 "ENABLED",
@@ -1066,6 +1073,7 @@ const COMMANDS: &[Command] = &[
     Command::ResetFanCurveCmd,
     Command::SetFanStopCmd,
     Command::SetFanRpmCmd,
+    Command::ResetFanRpmCmd,
     Command::SetForcePstate,
     Command::SetLegacyClocksMhz,
     Command::SetLockedClocksMhz,
@@ -2423,11 +2431,16 @@ fn execute_target(
         Command::SetFanRpmCmd => {
             // Private FanCoolerSetControl (NDA 0xEB44E8AA): RPM-direct
             // fan simulation. RE'd from GPUMon setFanSim: RMW the
-            // control block, patch enable+level per cooler type. -1
-            // disables simulation (returns to auto/driver control).
+            // control block, patch enable+level per cooler type. Use
+            // reset-fan-rpm to disable simulation.
             let rpm_raw = invocation.positionals[0]
                 .parse::<i32>()
                 .map_err(|e| CliError::new(format!("invalid RPM: {e}")))?;
+            if rpm_raw < 0 {
+                return Err(CliError::new(
+                    "negative RPM is not valid for set-fan-rpm; use `reset-fan-rpm` to disable simulation",
+                ));
+            }
             let cooler = option_one(invocation, "cooler")
                 .map(|s| s.parse::<u32>())
                 .transpose()
@@ -2437,7 +2450,7 @@ fn execute_target(
                 target,
                 SetFanRpm {
                     cooler_index: cooler,
-                    rpm: if rpm_raw < 0 { None } else { Some(rpm_raw as u32) },
+                    rpm: Some(rpm_raw as u32),
                 },
             )?;
             Ok(json!({
@@ -2448,6 +2461,23 @@ fn execute_target(
                 "max_rpm": r.output.max_rpm,
                 "applied_rpm": r.output.applied_rpm,
             }))
+        }
+        Command::ResetFanRpmCmd => {
+            // Disable fan-speed simulation: RMW the control block and
+            // clear the cooler's enable bit → auto/driver control.
+            let cooler = option_one(invocation, "cooler")
+                .map(|s| s.parse::<u32>())
+                .transpose()
+                .map_err(|e| CliError::new(format!("invalid --cooler: {e}")))?
+                .unwrap_or(0);
+            run(
+                target,
+                SetFanRpm {
+                    cooler_index: cooler,
+                    rpm: None,
+                },
+            )?;
+            Ok(json!({"applied": true, "cooler_index": cooler, "reset": true}))
         }
         Command::GetTemperatureThresholds => {
             // Two backend flavours of "temperature threshold":
