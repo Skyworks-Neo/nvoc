@@ -98,7 +98,10 @@ fn format_human_output(function: &str, output: &Value) -> Vec<String> {
         }
         "set-power-mode" => vec![format!(
             "  Power Mode set: {}",
-            output.get("power_mode").and_then(Value::as_str).unwrap_or("?")
+            output
+                .get("power_mode")
+                .and_then(Value::as_str)
+                .unwrap_or("?")
         )],
         "get-pstate-native" => format_pstate_native_output(output),
         "get-throttle-reasons" => format_throttle_reasons_output(output),
@@ -2291,7 +2294,9 @@ mod tests {
                 {"target": "Memory", "controller": "GpuInternal", "current_c": 52, "min_c": -5, "max_c": 95},
                 {"target": "Board", "controller": "GpuInternal", "current_c": 48, "min_c": 0, "max_c": 100},
             ]),
-            Command::GetPowerMode => json!({"supported": true, "active": "Max", "mode_mask": 1, "max_mode_idx": 1}),
+            Command::GetPowerMode => {
+                json!({"supported": true, "active": "Max", "mode_mask": 1, "max_mode_idx": 1})
+            }
             Command::SetPowerMode => json!({"applied": true, "power_mode": "Max"}),
             Command::GetThrottleReasons => json!({
                 "reasons": [

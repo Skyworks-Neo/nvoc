@@ -4,36 +4,30 @@ use clap::{
 };
 use nvoc_core::{
     BackendSet, CheckVoltageFrequency, ClearEdid, ClockDomain, ConvertEnum, CoolerPolicy,
-    CoolerTarget, GpuSelector, GpuTarget, Kilohertz, KilohertzDelta, MicrovoltsDelta, PState,
-    Percentage, ProbeVoltageLimits, QueryApiRestriction, QueryAutoBoost, QueryClockOffset,
+    CoolerTarget, FanCurvePointReadout, GetFanCurves, GetPowerMode, GpuSelector, GpuTarget,
+    Kilohertz, KilohertzDelta, MicrovoltsDelta, NvapiPerfFreqCap, OemOcScanner, OemOcScannerAction,
+    PState, Percentage, ProbeVoltageLimits, QueryApiRestriction, QueryAutoBoost, QueryClockOffset,
     QueryDisplays, QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings,
-    GetFanCurves, SetFanCurve, FanCurvePointReadout,
     QueryGpuStatus, QueryLegacyCoreOvervoltRanges, QueryLegacyP0CoreMaxVoltageDelta,
-    QueryNvapiClkDomainFreqDetail,
-    QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomains, QueryNvapiClkVfPoints,
-    QueryNvapiDNotifier,
-    QueryNvapiPStateLevels, QueryNvapiPStateLockStatus, QueryNvapiTargetTempPolicies,
-    QueryNvapiTargetTempPolicyIndex, QueryNvapiThermalSettings, QueryNvapiTgpWattRange,
-    QueryNvapiVoltRails,
-    QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates,
-    QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
+    QueryNvapiClkDomainFreqDetail, QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomains,
+    QueryNvapiClkVfPoints, QueryNvapiDNotifier, QueryNvapiPStateLevels, QueryNvapiPStateLockStatus,
+    QueryNvapiTargetTempPolicies, QueryNvapiTargetTempPolicyIndex, QueryNvapiTgpWattRange,
+    QueryNvapiThermalSettings, QueryNvapiVoltRails, QueryPowerLimits, QueryPstateBaseVoltage,
+    QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
     QueryThrottleReasons, QueryVfpPointVoltage, QueryViolationStatus, QueryVoltageBoost,
-    ResetApplicationsClocks, ResetCoolerLevels, ResetFanSpeed, ResetLockedClocks,
+    ResetApplicationsClocks, ResetCoolerLevels, ResetFanSpeed, ResetForcePstate, ResetLockedClocks,
     ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetPstateBaseVoltages,
     ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock, ResetVfpLock,
-    SetApiRestriction, SetApplicationsClocks, SetAutoBoost, SetAutoBoostDefault, SetClockOffset,
-    SetCoolerLevels, SetEdid, SetFanSpeed, SetLegacyClocks, SetLockedClocks,
-    SetNvapiClkDomainOffset, SetNvapiDNotifier, SetNvapiPerfFreqCap, NvapiPerfFreqCap,
-    SetNvapiVfpPointPrivate,
-    SetNvapiVfpRangePrivate,
-    SetNvapiVfpRangePerPointPrivate,
-    SetNvapiDynamicBoost, SetNvapiOvervolt, SetNvapiPStateNative, SetNvapiPowerLimits, SetNvapiPstateLock,
-    SetNvapiSensorLimits, SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvapiVoltRailOffset,
-    SetNvapiVoltRailTarget, SetNvmlPstateLock, SetPowerLimit, SetPstateBaseVoltage,
-    SetPstateClockOffset, SetTemperatureLimit, SetVfpFrequencyLock, SetVfpPointDelta,
-    SetVfpRangeDelta, SetVfpVoltageLock, SetVoltageBoost, VfpResetDomain, discover_targets,
-    OemOcScanner, OemOcScannerAction, SetForcePstate, ResetForcePstate, RestartDisplayDriver,
-    SetBb2Active, SetWm2Active, SetWm2Mode, Wm2AcousticMode, GetPowerMode, SetPowerMode,
+    RestartDisplayDriver, SetApiRestriction, SetApplicationsClocks, SetAutoBoost,
+    SetAutoBoostDefault, SetBb2Active, SetClockOffset, SetCoolerLevels, SetEdid, SetFanCurve,
+    SetFanSpeed, SetForcePstate, SetLegacyClocks, SetLockedClocks, SetNvapiClkDomainOffset,
+    SetNvapiDNotifier, SetNvapiDynamicBoost, SetNvapiOvervolt, SetNvapiPStateNative,
+    SetNvapiPerfFreqCap, SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiSensorLimits,
+    SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvapiVfpPointPrivate, SetNvapiVfpRangePerPointPrivate,
+    SetNvapiVfpRangePrivate, SetNvapiVoltRailOffset, SetNvapiVoltRailTarget, SetNvmlPstateLock,
+    SetPowerLimit, SetPowerMode, SetPstateBaseVoltage, SetPstateClockOffset, SetTemperatureLimit,
+    SetVfpFrequencyLock, SetVfpPointDelta, SetVfpRangeDelta, SetVfpVoltageLock, SetVoltageBoost,
+    SetWm2Active, SetWm2Mode, VfpResetDomain, Wm2AcousticMode, discover_targets,
     nvml_pstate_to_str, parse_nvapi_locked_voltage_target, parse_nvml_fan_control_policy,
     parse_nvml_pstate, run, select_targets,
 };
@@ -359,7 +353,9 @@ impl Command {
                 "Read NVAPI legacy 3-sensor thermal view (GPU/Memory/Board, live + physical range)"
             }
             Self::GetPowerMode => "Read NVIDIA App power mode (Balanced/Max with support gate)",
-            Self::SetPowerMode => "Set NVIDIA App power mode: max | balanced (the App's Balanced/Max toggle)",
+            Self::SetPowerMode => {
+                "Set NVIDIA App power mode: max | balanced (the App's Balanced/Max toggle)"
+            }
             Self::GetThrottleReasons => "Read NVML throttle reasons",
             Self::GetTdpTempLimits => "Read NVAPI TDP and temperature limits",
             Self::ProbeVoltageLimits => "Probe NVAPI voltage limit points",
@@ -430,25 +426,25 @@ impl Command {
             Self::SetVfpVoltageLock => "Lock VFP by point or voltage",
             Self::OemOcScanner => {
                 "Control NVIDIA's driver-side (OEM) OC Scanner: --start (driver scans in background and applies V/F offsets itself), --stop, --revert (restore pre-scan curve); drivers >= 455.00; no console progress output"
-            },
+            }
             Self::SetForcePstate => {
                 "Force a P-State via private SetForcePstate (0x025BFB10); set_type 0/1/2 all force-lock, none release (to unlock use reset-force-pstate)"
-            },
+            }
             Self::ResetForcePstate => {
                 "Release a force-locked pstate via SetForcePstate(pstate=16, set_type=0) — pstate=16 is the bitmask=0 sentinel (GetForcePstate returns 16 when no force active). IDA-verified as the most likely release path."
-            },
+            }
             Self::RestartDisplayDriver => {
                 "Restart the display driver (0xB4B26B65); legacy apply-OC trigger"
-            },
+            }
             Self::SetBb2 => {
                 "Battery Boost 2.0 enable/disable (0xD27D0629); mobile-only; 1=enable 0=disable"
-            },
+            }
             Self::SetWm2 => {
                 "Whisper Mode 2.0 enable/disable (0xD27D0629); mobile-only; 1=enable 0=disable"
-            },
+            }
             Self::SetWm2Mode => {
                 "Whisper Mode 2.0 acoustic mode (0xD2561B69); quieter/quiet/balanced"
-            },
+            }
             Self::SetVfpPointDeltaMhz => "Set one VFP point delta in MHz",
             Self::SetVfpRangeDeltaMhz => "Set a VFP point range delta in MHz",
             Self::SetPstateLock => {
@@ -456,7 +452,9 @@ impl Command {
             }
             Self::SetApplicationsClocksMhz => "Set NVML application clocks in MHz",
             Self::SetPstateBaseVoltageUv => "Set NVAPI P-State base voltage delta in microvolts",
-            Self::SetOvervoltUv => "Set global NVAPI over-voltage offset in microvolts (PSTATES20 V2 OV array)",
+            Self::SetOvervoltUv => {
+                "Set global NVAPI over-voltage offset in microvolts (PSTATES20 V2 OV array)"
+            }
             Self::SetVoltageBoostPercent => "Set NVAPI voltage boost percent",
             Self::SetAutoBoost => "Set NVML auto-boost state",
             Self::SetAutoBoostDefault => "Set NVML default auto-boost state",
@@ -736,16 +734,8 @@ impl Command {
                     "BANK",
                     "Bank: 0 = V/F curve points, 1 = pstate-class records",
                 ),
-                PositionalArg::free(
-                    "arg_start",
-                    "START",
-                    "Start point index (inclusive)",
-                ),
-                PositionalArg::free(
-                    "arg_end",
-                    "END",
-                    "End point index (inclusive)",
-                ),
+                PositionalArg::free("arg_start", "START", "Start point index (inclusive)"),
+                PositionalArg::free("arg_end", "END", "End point index (inclusive)"),
                 PositionalArg::hyphen(
                     "arg_delta",
                     "VALUE",
@@ -1537,9 +1527,19 @@ fn collect_named_options(
     let mut options = BTreeMap::new();
     for name in allowed_options {
         match *name {
-            "indexed" | "no-infer-missing-default" | "feedback" | "all" | "verbose"
-            | "temporary" | "freq-mode" | "raw" | "raw-converted"
-            | "start" | "stop" | "revert" | "status" => {
+            "indexed"
+            | "no-infer-missing-default"
+            | "feedback"
+            | "all"
+            | "verbose"
+            | "temporary"
+            | "freq-mode"
+            | "raw"
+            | "raw-converted"
+            | "start"
+            | "stop"
+            | "revert"
+            | "status" => {
                 if matches.get_flag(name) {
                     options.insert(name.to_string(), vec!["true".to_string()]);
                 }
@@ -2281,9 +2281,12 @@ fn execute_target(
             }))
         }
         Command::SetFanCurve => {
-            let index: u8 = invocation.positionals[0]
-                .parse()
-                .map_err(|e| CliError::new(format!("invalid curve index {:?}: {e}", invocation.positionals[0])))?;
+            let index: u8 = invocation.positionals[0].parse().map_err(|e| {
+                CliError::new(format!(
+                    "invalid curve index {:?}: {e}",
+                    invocation.positionals[0]
+                ))
+            })?;
             let points = parse_fan_curve_points(&invocation.positionals[1])?;
             if points.len() != 3 {
                 return Err(CliError::new(format!(
@@ -2400,7 +2403,7 @@ fn execute_target(
                 _ => {
                     return Err(CliError::new(format!(
                         "invalid power mode {arg:?}: expected max|balanced"
-                    )))
+                    )));
                 }
             };
             run(target, SetPowerMode { max })?;
@@ -2732,8 +2735,9 @@ fn execute_target(
                 )));
             }
             #[allow(non_snake_case)] // uV-suffixed local matches the nvapi-rs naming
-            let target_uV = i32::try_from((target_mv * 1000.0).round() as i64)
-                .map_err(|_| CliError::new(format!("target {target_mv}mV overflows the µV range")))?;
+            let target_uV = i32::try_from((target_mv * 1000.0).round() as i64).map_err(|_| {
+                CliError::new(format!("target {target_mv}mV overflows the µV range"))
+            })?;
             let expect_type = option_one(invocation, "expect-type")
                 .map(|s| s.parse::<u32>())
                 .transpose()
@@ -2839,8 +2843,7 @@ fn execute_target(
             // counter-unit calibration (Pascal M) and forensics
             if let Some(pos) = invocation.positionals.first() {
                 let domain_bit = parse_clk_domain(pos)?;
-                let detail = run(target, QueryNvapiClkDomainFreqDetail { domain_bit })?
-                    .output;
+                let detail = run(target, QueryNvapiClkDomainFreqDetail { domain_bit })?.output;
                 return Ok(match detail {
                     Some(d) => json!({
                         "domain_bit": domain_bit,
@@ -2863,7 +2866,9 @@ fn execute_target(
                 .unwrap_or_default();
             let freqs = run(
                 target,
-                QueryNvapiClkDomainFreqsBatch { domains: domains.clone() },
+                QueryNvapiClkDomainFreqsBatch {
+                    domains: domains.clone(),
+                },
             )?
             .output;
             Ok(match freqs {
@@ -2908,7 +2913,9 @@ fn execute_target(
             let raw_flag = option_bool(invocation, "raw", false)?;
             let raw_converted = option_bool(invocation, "raw-converted", false)?;
             if raw_flag && raw_converted {
-                return Err(CliError::new("--raw and --raw-converted are mutually exclusive"));
+                return Err(CliError::new(
+                    "--raw and --raw-converted are mutually exclusive",
+                ));
             }
             // default (no flag) = freq_mode, same as public VFP but reaches
             // xbar/host; --freq-mode is the explicit alias of the default.
@@ -2927,16 +2934,28 @@ fn execute_target(
                     .ok_or_else(|| CliError::new("could not read default frequency for this point — pass --raw to write a raw control value"))?;
                 let def = point.freq_default_mhz as u32;
                 if def == 0 {
-                    return Err(CliError::new("default frequency is 0 for this point — pass --raw to write a raw control value"));
+                    return Err(CliError::new(
+                        "default frequency is 0 for this point — pass --raw to write a raw control value",
+                    ));
                 }
                 let class = match vfp.as_ref().and_then(|v| {
-                    v.segments.iter().find(|s| s.bank as usize == bank && idx >= s.start_index as usize && idx <= s.end_index as usize).map(|s| s.domain_hint)
+                    v.segments
+                        .iter()
+                        .find(|s| {
+                            s.bank as usize == bank
+                                && idx >= s.start_index as usize
+                                && idx <= s.end_index as usize
+                        })
+                        .map(|s| s.domain_hint)
                 }) {
-                    Some(nvoc_core::ClkVfDomainHint::Xbar) | Some(nvoc_core::ClkVfDomainHint::Host) => nvoc_core::ClkVfDomainClass::Fabric,
+                    Some(nvoc_core::ClkVfDomainHint::Xbar)
+                    | Some(nvoc_core::ClkVfDomainHint::Host) => nvoc_core::ClkVfDomainClass::Fabric,
                     _ => nvoc_core::ClkVfDomainClass::Graphics,
                 };
                 let delta = nvoc_core::clk_vf_delta_for_target(def, value as f64, class)
-                    .ok_or_else(|| CliError::new(format!("no g(def) prior for def={def} MHz — pass --raw")))?;
+                    .ok_or_else(|| {
+                        CliError::new(format!("no g(def) prior for def={def} MHz — pass --raw"))
+                    })?;
                 ("raw_f_offset_control", delta, Some(value as f64))
             };
 
@@ -2977,7 +2996,9 @@ fn execute_target(
             let raw_flag = option_bool(invocation, "raw", false)?;
             let raw_converted = option_bool(invocation, "raw-converted", false)?;
             if raw_flag && raw_converted {
-                return Err(CliError::new("--raw and --raw-converted are mutually exclusive"));
+                return Err(CliError::new(
+                    "--raw and --raw-converted are mutually exclusive",
+                ));
             }
             let freq_mode = !raw_flag && !raw_converted;
 
@@ -3045,28 +3066,54 @@ fn execute_target(
                     .as_ref()
                     .ok_or_else(|| CliError::new("could not read V/F points — pass --raw"))?;
                 let class_for = |idx: usize| -> nvoc_core::ClkVfDomainClass {
-                    match vfp.segments.iter().find(|s| {
-                        s.bank as usize == bank && idx >= s.start_index as usize && idx <= s.end_index as usize
-                    }).map(|s| s.domain_hint) {
-                        Some(nvoc_core::ClkVfDomainHint::Xbar) | Some(nvoc_core::ClkVfDomainHint::Host) => nvoc_core::ClkVfDomainClass::Fabric,
+                    match vfp
+                        .segments
+                        .iter()
+                        .find(|s| {
+                            s.bank as usize == bank
+                                && idx >= s.start_index as usize
+                                && idx <= s.end_index as usize
+                        })
+                        .map(|s| s.domain_hint)
+                    {
+                        Some(nvoc_core::ClkVfDomainHint::Xbar)
+                        | Some(nvoc_core::ClkVfDomainHint::Host) => {
+                            nvoc_core::ClkVfDomainClass::Fabric
+                        }
                         _ => nvoc_core::ClkVfDomainClass::Graphics,
                     }
                 };
                 let mut deltas: Vec<i16> = Vec::with_capacity(end - start + 1);
                 for idx in start..=end {
-                    let point = vfp.points.iter().find(|p| p.bank as usize == bank && p.index as usize == idx)
-                        .ok_or_else(|| CliError::new(format!("point {idx} not present — pass --raw")))?;
+                    let point = vfp
+                        .points
+                        .iter()
+                        .find(|p| p.bank as usize == bank && p.index as usize == idx)
+                        .ok_or_else(|| {
+                            CliError::new(format!("point {idx} not present — pass --raw"))
+                        })?;
                     let def = point.freq_default_mhz as u32;
                     if def == 0 {
-                        return Err(CliError::new(format!("point {idx} default frequency is 0 — pass --raw")));
+                        return Err(CliError::new(format!(
+                            "point {idx} default frequency is 0 — pass --raw"
+                        )));
                     }
                     let delta = nvoc_core::clk_vf_delta_for_target(def, val as f64, class_for(idx))
-                        .ok_or_else(|| CliError::new(format!("no g(def) prior for point {idx} def={def} — pass --raw")))?;
+                        .ok_or_else(|| {
+                            CliError::new(format!(
+                                "no g(def) prior for point {idx} def={def} — pass --raw"
+                            ))
+                        })?;
                     deltas.push(delta.clamp(-1000, 1000) as i16);
                 }
                 let out = run(
                     target,
-                    SetNvapiVfpRangePerPointPrivate { bank, start, end, deltas: deltas.clone() },
+                    SetNvapiVfpRangePerPointPrivate {
+                        bank,
+                        start,
+                        end,
+                        deltas: deltas.clone(),
+                    },
                 )?
                 .output;
                 Ok(match out {
@@ -3096,11 +3143,7 @@ fn execute_target(
             // A/B with get-clk-domain-freq).
             let domain_bit = parse_clk_domain(&invocation.positionals[0])?;
             #[allow(non_snake_case)] // kHz suffix matches the nvapi-rs field naming
-            let offset_kHz = parse_i32_unit(
-                &invocation.positionals[1],
-                "khz",
-                "kilohertz",
-            )?;
+            let offset_kHz = parse_i32_unit(&invocation.positionals[1], "khz", "kilohertz")?;
             let slot = option_one(invocation, "slot")
                 .map(|s| s.parse::<u32>())
                 .transpose()
@@ -3262,7 +3305,7 @@ fn execute_target(
                 _ => {
                     return Err(CliError::new(
                         "exactly one of --start / --stop / --revert / --status is required",
-                    ))
+                    ));
                 }
             };
             run(target, OemOcScanner { action })?;
@@ -3309,9 +3352,11 @@ fn execute_target(
                 "0" | "quieter" => (Wm2AcousticMode::Quieter, "quieter"),
                 "1" | "quiet" => (Wm2AcousticMode::Quiet, "quiet"),
                 "2" | "balanced" => (Wm2AcousticMode::Balanced, "balanced"),
-                _ => return Err(CliError::new(
-                    "mode must be quieter, quiet, or balanced (or 0/1/2)",
-                )),
+                _ => {
+                    return Err(CliError::new(
+                        "mode must be quieter, quiet, or balanced (or 0/1/2)",
+                    ));
+                }
             };
             run(target, SetWm2Mode { mode })?;
             Ok(json!({"applied": true, "wm2_mode": label}))
@@ -4331,9 +4376,11 @@ fn parse_u32(raw: &str, label: &str) -> CliResult<u32> {
 fn parse_fan_curve_points(raw: &str) -> CliResult<Vec<FanCurvePointReadout>> {
     raw.split(',')
         .map(|pair| {
-            let (t, r) = pair
-                .split_once(':')
-                .ok_or_else(|| CliError::new(format!("invalid fan-curve point {pair:?}: expected temp:rpm")))?;
+            let (t, r) = pair.split_once(':').ok_or_else(|| {
+                CliError::new(format!(
+                    "invalid fan-curve point {pair:?}: expected temp:rpm"
+                ))
+            })?;
             Ok(FanCurvePointReadout {
                 temp_c: t
                     .trim()

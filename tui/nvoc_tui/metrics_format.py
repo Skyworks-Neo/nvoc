@@ -177,13 +177,15 @@ def _format_metric_lines(status: dict, architecture: str) -> list[str]:
         value = util.get(key)
         return f"{round(float(value))}%" if isinstance(value, (int, float)) else "---"
 
-    load_text = " | ".join([
-        f"GPU {_pct('Graphics')}",
-        # FrameBuffer is NVAPI's name for the memory-controller utilization domain.
-        f"MC {_pct('FrameBuffer')}",
-        f"VEN {_pct('VideoEngine')}",
-        f"BUS {_pct('BusInterface')}",
-    ])
+    load_text = " | ".join(
+        [
+            f"GPU {_pct('Graphics')}",
+            # FrameBuffer is NVAPI's name for the memory-controller utilization domain.
+            f"MC {_pct('FrameBuffer')}",
+            f"VEN {_pct('VideoEngine')}",
+            f"BUS {_pct('BusInterface')}",
+        ]
+    )
 
     vram = status.get("vram") or {}
 

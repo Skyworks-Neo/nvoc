@@ -259,7 +259,8 @@ pub fn set_nvapi_overvolt(gpu: &Gpu, delta_uv: MicrovoltsDelta) -> Result<bool, 
 
 pub fn legacy_core_overvolt_ranges(
     gpu: &Gpu,
-) -> Result<Vec<(PState, MicrovoltsDelta, MicrovoltsDelta, MicrovoltsDelta)>, Error> {    let pstates = gpu.inner().pstates().map_err(Error::from)?;
+) -> Result<Vec<(PState, MicrovoltsDelta, MicrovoltsDelta, MicrovoltsDelta)>, Error> {
+    let pstates = gpu.inner().pstates().map_err(Error::from)?;
     Ok(pstates
         .pstates
         .iter()

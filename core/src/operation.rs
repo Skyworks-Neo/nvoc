@@ -1,18 +1,15 @@
+use super::Wm2AcousticMode;
 use super::error::Error;
 use super::nvapi as low_nvapi;
 use super::nvml as low_nvml;
-use super::Wm2AcousticMode;
 use super::result::{
     ApiRestrictionState, AppliedValue, AutoBoostState, BatchReport, ClockOffset, DNotifierInfo,
     DNotifierLevel, DisplayInfo, EdidData, FanCurvePointReadout, FanCurveReadout, FanInfo,
-    NvapiPerfFreqCap,
-    NvapiPStateNativeLock, OperationKind,
-    OperationReport, OvervoltApplied, PStateLevelEntry, PStateLevelsInfo, PstateBaseVoltage,
-    PstateClockRange,
-    SupportedApplicationClocks, TargetOutcome, TargetTempPolicy, TdpTempLimits, ThermalSensorReading,
-    PowerModeStatus,
-    TemperatureThreshold, ThrottleReason, ViolationEntry, ViolationStatusReport, VoltageBoostState,
-    VoltageFrequencyCheck,
+    NvapiPStateNativeLock, NvapiPerfFreqCap, OperationKind, OperationReport, OvervoltApplied,
+    PStateLevelEntry, PStateLevelsInfo, PowerModeStatus, PstateBaseVoltage, PstateClockRange,
+    SupportedApplicationClocks, TargetOutcome, TargetTempPolicy, TdpTempLimits,
+    TemperatureThreshold, ThermalSensorReading, ThrottleReason, ViolationEntry,
+    ViolationStatusReport, VoltageBoostState, VoltageFrequencyCheck,
 };
 use super::target::GpuTarget;
 use super::types::{NvapiLockedVoltageTarget, VfpResetDomain};
@@ -254,10 +251,8 @@ impl GpuOperation for GetPowerMode {
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
         let gpu = target.nvapi()?;
-        let (mode_mask, max_mode_idx) = gpu
-            .inner()
-            .power_modes_capability()
-            .map_err(Error::from)?;
+        let (mode_mask, max_mode_idx) =
+            gpu.inner().power_modes_capability().map_err(Error::from)?;
         let supported = max_mode_idx == 1;
         let active = if supported {
             gpu.inner().power_mode().map_err(Error::from)?
@@ -290,18 +285,13 @@ impl GpuOperation for SetPowerMode {
         let gpu = target.nvapi()?;
         // Reject on unsupported GPUs with the App's own gate so the user
         // gets a clear message instead of a driver -9/-1.
-        let (_, max_mode_idx) = gpu
-            .inner()
-            .power_modes_capability()
-            .map_err(Error::from)?;
+        let (_, max_mode_idx) = gpu.inner().power_modes_capability().map_err(Error::from)?;
         if max_mode_idx != 1 {
             return Err(Error::Custom(format!(
                 "power mode (Balanced/Max) not supported on this GPU (max_mode_idx={max_mode_idx:#x})"
             )));
         }
-        gpu.inner()
-            .set_power_mode(self.max)
-            .map_err(Error::from)?;
+        gpu.inner().set_power_mode(self.max).map_err(Error::from)?;
         Ok(AppliedValue {
             requested: self.max,
             applied: self.max,
@@ -409,12 +399,22 @@ impl GpuOperation for SetNvapiPowerLevel {
             0 => PowerLevel::Adaptive,
             1 => PowerLevel::MaxPerformance,
             2 => PowerLevel::Auto,
-            _ => return Err(Error::Custom(format!(
-                "invalid power level {}: expected 0=Adaptive, 1=Maximum, 2=Auto", self.level
-            ))),
+            _ => {
+                return Err(Error::Custom(format!(
+                    "invalid power level {}: expected 0=Adaptive, 1=Maximum, 2=Auto",
+                    self.level
+                )));
+            }
         };
-        target.nvapi()?.inner().set_perf_level(level).map_err(Error::from)?;
-        Ok(AppliedValue { requested: self.level, applied: self.level })
+        target
+            .nvapi()?
+            .inner()
+            .set_perf_level(level)
+            .map_err(Error::from)?;
+        Ok(AppliedValue {
+            requested: self.level,
+            applied: self.level,
+        })
     }
 }
 
@@ -1219,10 +1219,7 @@ impl GpuOperation for ResetForcePstate {
         // is the most likely release: it sends bitmask=0 + mode=0 via the
         // same RM escape 0x7000056. EnableDynamicPstates(enable=0) was also
         // tested live and does NOT release (different escape 0x70000BB).
-        target
-            .nvapi()?
-            .set_force_pstate(16, 0)
-            .map_err(Error::from)
+        target.nvapi()?.set_force_pstate(16, 0).map_err(Error::from)
     }
 }
 
@@ -1241,7 +1238,10 @@ impl GpuOperation for SetBb2Active {
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
-        target.nvapi()?.set_bb2_active(self.enable).map_err(Error::from)
+        target
+            .nvapi()?
+            .set_bb2_active(self.enable)
+            .map_err(Error::from)
     }
 }
 
@@ -1260,7 +1260,10 @@ impl GpuOperation for SetWm2Active {
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
-        target.nvapi()?.set_wm2_active(self.enable).map_err(Error::from)
+        target
+            .nvapi()?
+            .set_wm2_active(self.enable)
+            .map_err(Error::from)
     }
 }
 
@@ -2019,7 +2022,10 @@ impl GpuOperation for QueryNvapiClkVfPoints {
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
-        Ok(target.nvapi()?.clk_vf_points_private().map_err(Error::from)?)
+        Ok(target
+            .nvapi()?
+            .clk_vf_points_private()
+            .map_err(Error::from)?)
     }
 }
 

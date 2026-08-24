@@ -1325,7 +1325,11 @@ class VFCurveTab:
             return
         self._live_volt = volt_mv
         self._live_freq = freq_mhz
-        if self._is_resize_active or self._mouse_pressed or not self._chart_should_draw():
+        if (
+            self._is_resize_active
+            or self._mouse_pressed
+            or not self._chart_should_draw()
+        ):
             self._pending_live_point = (volt_mv, freq_mhz)
             return
         self._draw_live_point()
@@ -1342,7 +1346,9 @@ class VFCurveTab:
     # ── Live crosshair poller (independent of the dashboard poll) ──
     _LIVE_POLL_MS = 1000
 
-    def set_live_pending(self, volt_mv: Optional[float], freq_mhz: Optional[float]) -> None:
+    def set_live_pending(
+        self, volt_mv: Optional[float], freq_mhz: Optional[float]
+    ) -> None:
         """Thread-safe sink for volt/freq from a background poll worker.
 
         The dashboard poll feeds the crosshair through this instead of
@@ -1377,14 +1383,15 @@ class VFCurveTab:
         volt, freq = self._live_pending
         self._live_volt = volt
         self._live_freq = freq
-        if not (self._is_resize_active or self._mouse_pressed) and self._chart_should_draw():
+        if (
+            not (self._is_resize_active or self._mouse_pressed)
+            and self._chart_should_draw()
+        ):
             self._draw_live_point()
         elif self._mouse_pressed or self._is_resize_active:
             # hold for the release/resize-end flush
             self._pending_live_point = (volt, freq)
-        self._live_poll_job = self.app.after(
-            self._LIVE_POLL_MS, self._live_poll_tick
-        )
+        self._live_poll_job = self.app.after(self._LIVE_POLL_MS, self._live_poll_tick)
 
     @property
     def is_interacting(self) -> bool:
@@ -1552,9 +1559,7 @@ class VFCurveTab:
                 animated=True,
             )
         else:
-            self._sel_points.set_offsets(
-                _np.column_stack([sel_v, sel_f])
-            )
+            self._sel_points.set_offsets(_np.column_stack([sel_v, sel_f]))
             self._sel_points.set_visible(True)
 
         self._blit_animated()

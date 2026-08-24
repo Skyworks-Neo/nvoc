@@ -236,8 +236,7 @@ fn gpu_type_xbar_support() {
 
     // End-to-end through the name-based detector (the pynvoc payload path):
     // the 4060 Laptop name+codename that the GUI gates on live.
-    assert!(detect_gpu_type("NVIDIA GeForce RTX 4060 Laptop GPUAD107-B")
-        .supports_xbar_offset());
+    assert!(detect_gpu_type("NVIDIA GeForce RTX 4060 Laptop GPUAD107-B").supports_xbar_offset());
     assert!(!detect_gpu_type("NVIDIA GeForce GTX 1080 GP104").supports_xbar_offset());
 }
 

@@ -73,11 +73,13 @@ class FakeApp:
         log_output: bool = True,
         allow_wake: bool = True,
     ) -> None:
-        self.query_calls.append((
-            command_name,
-            callback,
-            {"log_output": log_output, "allow_wake": allow_wake},
-        ))
+        self.query_calls.append(
+            (
+                command_name,
+                callback,
+                {"log_output": log_output, "allow_wake": allow_wake},
+            )
+        )
 
     def write_log(self, text: str) -> None:
         self.logs.append(text)
@@ -103,12 +105,14 @@ class FakeNative:
         self.raise_on_set_clock: Exception | None = None
 
     def query_domain_vfp_points(self, gpu, domain, infer_missing_default):
-        self.calls.append((
-            "query_domain_vfp_points",
-            gpu,
-            domain,
-            infer_missing_default,
-        ))
+        self.calls.append(
+            (
+                "query_domain_vfp_points",
+                gpu,
+                domain,
+                infer_missing_default,
+            )
+        )
         return [
             {
                 "index": 7,

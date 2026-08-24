@@ -144,7 +144,9 @@ class NativeBackend:
             except Exception:
                 return default
 
-        with ThreadPoolExecutor(max_workers=5, thread_name_prefix="nvoc-mobile") as pool:
+        with ThreadPoolExecutor(
+            max_workers=5, thread_name_prefix="nvoc-mobile"
+        ) as pool:
             tgp_f = pool.submit(_safe, lambda: native.query_tgp_watt_range(gpu), None)
             dnotifier_f = pool.submit(_safe, lambda: native.query_dnotifier(gpu), None)
             policies_f = pool.submit(

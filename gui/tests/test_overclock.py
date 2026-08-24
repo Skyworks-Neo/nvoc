@@ -186,7 +186,9 @@ def make_mobile_tab(
     tab.app = app
     tab._syncing = False
     tab._mobile_mode = True
-    tab._mobile_load_in_flight = True  # short-circuit _load_mobile_limits() in on_finished
+    tab._mobile_load_in_flight = (
+        True  # short-circuit _load_mobile_limits() in on_finished
+    )
     tab._volt_rail_bit = 0
     tab.vlimit_var = FakeVar(vlimit_value)
     tab.vlimit_slider = FakeSlider(vlimit_state)
@@ -199,15 +201,21 @@ def make_mobile_tab(
 
 
 def test_volt_limit_bounds_takes_min_of_walls() -> None:
-    p0 = {"vbios_wall_uV": 1_210_000, "vrm_max_wall_uV": 1_180_000,
-          "effective_wall_uV": 1_080_000}
+    p0 = {
+        "vbios_wall_uV": 1_210_000,
+        "vrm_max_wall_uV": 1_180_000,
+        "effective_wall_uV": 1_080_000,
+    }
     assert OverclockTab._volt_limit_bounds_from_p0(p0) == (300.0, 1180.0, 1080.0)
 
 
 def test_volt_limit_bounds_ignores_zero_wall() -> None:
     # VRM not reported (0) → ceiling is the VBIOS wall alone.
-    p0 = {"vbios_wall_uV": 1_210_000, "vrm_max_wall_uV": 0,
-          "effective_wall_uV": 1_080_000}
+    p0 = {
+        "vbios_wall_uV": 1_210_000,
+        "vrm_max_wall_uV": 0,
+        "effective_wall_uV": 1_080_000,
+    }
     assert OverclockTab._volt_limit_bounds_from_p0(p0) == (300.0, 1210.0, 1080.0)
 
 
@@ -218,31 +226,42 @@ def test_volt_limit_bounds_falls_back_to_1200mv_when_both_zero() -> None:
 
 def test_volt_limit_bounds_clamps_position_into_range() -> None:
     # effective wall above the ceiling → clamped down to max.
-    p0 = {"vbios_wall_uV": 1_100_000, "vrm_max_wall_uV": 1_100_000,
-          "effective_wall_uV": 1_250_000}
+    p0 = {
+        "vbios_wall_uV": 1_100_000,
+        "vrm_max_wall_uV": 1_100_000,
+        "effective_wall_uV": 1_250_000,
+    }
     assert OverclockTab._volt_limit_bounds_from_p0(p0) == (300.0, 1100.0, 1100.0)
 
 
 def test_volt_limit_bounds_snaps_position_to_2_5mv_grid() -> None:
     # effective wall not on the 2.5 mV slider grid → snapped to nearest so
     # the one-decimal entry text and the canvas thumb agree (1083 mV → 1082.5).
-    p0 = {"vbios_wall_uV": 1_210_000, "vrm_max_wall_uV": 1_180_000,
-          "effective_wall_uV": 1_083_000}  # 1083 mV → snaps to 1082.5
+    p0 = {
+        "vbios_wall_uV": 1_210_000,
+        "vrm_max_wall_uV": 1_180_000,
+        "effective_wall_uV": 1_083_000,
+    }  # 1083 mV → snaps to 1082.5
     assert OverclockTab._volt_limit_bounds_from_p0(p0) == (300, 1180, 1082.5)
 
 
 def test_volt_limit_bounds_snaps_ceiling_down_to_grid() -> None:
     # A ceiling that is not on the 2.5 mV grid snaps DOWN so no offered slider
     # position exceeds the actual wall (1186 mV → 1185, not 1187.5).
-    p0 = {"vbios_wall_uV": 1_186_000, "vrm_max_wall_uV": 0,
-          "effective_wall_uV": 1_080_000}
+    p0 = {
+        "vbios_wall_uV": 1_186_000,
+        "vrm_max_wall_uV": 0,
+        "effective_wall_uV": 1_080_000,
+    }
     min_mv, max_mv, _pos = OverclockTab._volt_limit_bounds_from_p0(p0)
     assert (min_mv, max_mv) == (300, 1185)
 
 
 def test_resolve_volt_rail_bit_from_descriptors() -> None:
     vr = {"rail_descriptors": [{"rail_bit": 1, "type": 3}]}
-    assert OverclockTab._resolve_volt_rail_bit(OverclockTab.__new__(OverclockTab), vr) == 1
+    assert (
+        OverclockTab._resolve_volt_rail_bit(OverclockTab.__new__(OverclockTab), vr) == 1
+    )
 
 
 def test_resolve_volt_rail_bit_falls_back_to_mask_lsb() -> None:
@@ -257,9 +276,7 @@ def test_apply_vlimit_only_calls_set_volt_rail_target() -> None:
     tab._apply_vlimit_only()
 
     assert app.actions == ["apply volt-rail target"]
-    assert app.native.calls == [
-        ("set_volt_rail_target", "GPU0", 0, 1085.0, None)
-    ]
+    assert app.native.calls == [("set_volt_rail_target", "GPU0", 0, 1085.0, None)]
 
 
 def test_apply_vlimit_only_accepts_decimal_mv() -> None:
@@ -270,9 +287,7 @@ def test_apply_vlimit_only_accepts_decimal_mv() -> None:
     tab._apply_vlimit_only()
 
     assert app.actions == ["apply volt-rail target"]
-    assert app.native.calls == [
-        ("set_volt_rail_target", "GPU0", 0, 1082.5, None)
-    ]
+    assert app.native.calls == [("set_volt_rail_target", "GPU0", 0, 1082.5, None)]
 
 
 def test_apply_vlimit_action_returns_str_not_dict() -> None:
@@ -338,9 +353,7 @@ def test_apply_limits_mobile_includes_volt_rail() -> None:
 
     # All three mobile limit actions are chained.
     assert "apply volt-rail target" in app.actions
-    assert app.native.calls[-1] == (
-        "set_volt_rail_target", "GPU0", 0, 1085.0, None
-    )
+    assert app.native.calls[-1] == ("set_volt_rail_target", "GPU0", 0, 1085.0, None)
 
 
 def test_apply_limits_mobile_skips_disabled_volt_slider() -> None:
@@ -348,10 +361,7 @@ def test_apply_limits_mobile_skips_disabled_volt_slider() -> None:
 
     tab._apply_limits()
 
-    assert not any(
-        call[0] == "set_volt_rail_target" for call in app.native.calls
-    )
-
+    assert not any(call[0] == "set_volt_rail_target" for call in app.native.calls)
 
 
 # ── Xbar (ClockClient domain offset, NVAPI-only) ───────────────────────────
@@ -447,9 +457,7 @@ def test_apply_oc_skips_xbar_when_unsupported() -> None:
 
     tab._apply_oc()
 
-    assert not any(
-        c[0] == "set_clk_domain_offset" for c in app.native.calls
-    )
+    assert not any(c[0] == "set_clk_domain_offset" for c in app.native.calls)
 
 
 def test_apply_oc_skips_xbar_when_disabled() -> None:
@@ -459,9 +467,7 @@ def test_apply_oc_skips_xbar_when_disabled() -> None:
 
     tab._apply_oc()
 
-    assert not any(
-        c[0] == "set_clk_domain_offset" for c in app.native.calls
-    )
+    assert not any(c[0] == "set_clk_domain_offset" for c in app.native.calls)
 
 
 def test_reset_oc_resets_xbar_when_supported() -> None:
