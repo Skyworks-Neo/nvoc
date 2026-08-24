@@ -12,7 +12,6 @@ license = "Apache-2.0"
 
 include = [
     "/src/**",
-    "/test/windows_gpu_event_query.ps1",
     "/test/windows_oc_pnp_recover.ps1",
     "/README*",
     "/LICENSE*",
@@ -42,3 +41,6 @@ colored = { workspace = true }
 indicatif = "0.18.4"
 once_cell = "1.21.4"
 cli-stressor-cuda-rs = { path = "../cli-stressor-cuda-rs", optional = true, default-features = false }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_System_EventLog"] }

@@ -2,7 +2,7 @@ use nvoc_core::{Error, GpuTarget, GpuType, QueryGpuInfo, fetch_gpu_type, run};
 use std::process::Command;
 
 #[cfg(feature = "stressor-bundled")]
-pub const WORKER_ENV: &str = "NVOC_STRESSOR_CUDA_RS_WORKER";
+pub const WORKER_ARG: &str = "--nvoc-stressor-cuda-rs-worker";
 // Internal marker used in scan configuration instead of a filesystem path.
 // It never reaches Command::new; bundled_command resolves it to current_exe().
 pub const BUNDLED_SENTINEL: &str = "@bundled:cli-stressor-cuda-rs";
@@ -79,7 +79,7 @@ pub fn bundled_command(
     let mut command = Command::new(executable);
     // main() checks this before parsing optimizer commands and dispatches the
     // child directly into the embedded cli-stressor-cuda-rs runner.
-    command.env(WORKER_ENV, "1");
+    command.arg(WORKER_ARG);
     add_stressor_args(
         &mut command,
         profile,
@@ -158,6 +158,18 @@ mod tests {
     fn bundled_sentinel_is_exact() {
         assert!(is_bundled(BUNDLED_SENTINEL));
         assert!(!is_bundled("cli-stressor-cuda-rs"));
+    }
+
+    #[test]
+    #[cfg(feature = "stressor-bundled")]
+    fn bundled_command_marks_worker_in_argv() {
+        let command =
+            bundled_command(Some("minload"), None, 15.0, Some(0), &[]).expect("bundled command");
+        let args: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(args.iter().any(|arg| arg == WORKER_ARG));
     }
 
     #[test]

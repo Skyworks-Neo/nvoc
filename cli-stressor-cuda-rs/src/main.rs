@@ -105,6 +105,13 @@ fn run_vulkan_for_duration(duration_s: f64, image_config: VulkanImageConfig) -> 
 )]
 struct Args {
     #[arg(
+        long = "nvoc-stressor-cuda-rs-worker",
+        hide = true,
+        default_value_t = false
+    )]
+    _nvoc_stressor_worker: bool,
+
+    #[arg(
         long,
         help = "Optional TOML config file. Supports [kernel_params.<kernel>] for per-kernel precisions/precision_mixture/matrix_sizes/warmup_iters/burst_iters/transpose_prob/minor_mixture_rate"
     )]
@@ -1010,7 +1017,7 @@ fn print_summary(results: &[StressResult], info: &DeviceInfo) {
 }
 
 #[cfg(feature = "cuda")]
-pub fn run_from_env() {
+pub fn run_from_args() {
     let (mut args, cli_set) = parse_args_with_cli_sources();
     // --config reads a user-supplied runtime file, whereas --profile selects
     // one of the TOML documents compiled into the binary above.
@@ -1614,7 +1621,7 @@ pub fn run_from_env() {
 }
 
 #[cfg(all(not(feature = "cuda"), feature = "vulkan"))]
-pub fn run_from_env() {
+pub fn run_from_args() {
     let args = Args::parse();
     if args.vulkan_only || args.enable_vulkan_stress {
         let image_config = VulkanImageConfig {
@@ -1635,7 +1642,7 @@ pub fn run_from_env() {
 }
 
 #[cfg(all(not(feature = "cuda"), not(feature = "vulkan")))]
-pub fn run_from_env() {
+pub fn run_from_args() {
     let _ = Args::parse();
     eprintln!(
         "{}",
@@ -1649,5 +1656,5 @@ pub fn run_from_env() {
 
 #[allow(dead_code)]
 fn main() {
-    run_from_env();
+    run_from_args();
 }

@@ -62,6 +62,30 @@ Platform support and feature availability vary by GPU generation and backend. Th
 
 ## Quick Start
 
+### Download a prebuilt release (recommended)
+
+Download the executable for your operating system and architecture from the
+[GitHub Releases page](https://github.com/Skyworks-Neo/nvoc/releases), together with
+`SHA256SUMS`. Artifact names include the component, version, operating system, and
+architecture; for example, choose the `nvoc-auto-optimizer-...-linux-amd64` artifact
+for 64-bit x86 Linux.
+
+Keep the executable and `SHA256SUMS` in the same directory, then verify the downloaded
+artifact on Linux, WSL, or another environment providing GNU `sha256sum`:
+
+```bash
+sha256sum --check --ignore-missing SHA256SUMS
+gh attestation verify <downloaded-artifact> --repo Skyworks-Neo/nvoc
+```
+
+The checksum command must report the downloaded artifact as `OK`, and the GitHub CLI
+command must verify its build-provenance attestation before you run it. Linux
+executables may also need `chmod +x <downloaded-artifact>`.
+
+Windows executables are not currently Authenticode-signed, so a SmartScreen warning is
+expected. NVIDIA driver, CUDA, Vulkan, and OpenCL runtime libraries are not bundled;
+consult the relevant component README for runtime requirements.
+
 ### 1 — Clone the monorepo
 
 ```bash
@@ -69,15 +93,14 @@ git clone https://github.com/Skyworks-Neo/nvoc.git
 cd nvoc
 ```
 
-Initialize the `nvapi-rs` submodule and switch it to the required branch:
+Initialize the `nvapi-rs` submodule at the commit pinned by this repository:
 
 ```bash
-git submodule init
-git submodule update
-cd nvapi-rs
-git checkout v0.2.x
-cd ..
+git submodule update --init
 ```
+
+Do not check out a branch inside the submodule: the pinned commit is the version
+validated by NVOC's CI.
 
 ### 2 — Install the Rust toolchain (rustup)
 
@@ -372,6 +395,27 @@ NVOC 是一个 NVIDIA GPU 超频与稳定性工具的 monorepo。核心是 Rust 
 
 ## 快速开始
 
+### 下载预构建版本（推荐）
+
+从 [GitHub Releases 页面](https://github.com/Skyworks-Neo/nvoc/releases)下载与操作系统和
+架构匹配的可执行文件，并同时下载 `SHA256SUMS`。产物名包含组件、版本、操作系统和架构；
+例如，64 位 x86 Linux 应选择 `nvoc-auto-optimizer-...-linux-amd64` 产物。
+
+将可执行文件与 `SHA256SUMS` 放在同一目录，然后在 Linux、WSL 或其他提供 GNU
+`sha256sum` 的环境中验证下载的产物：
+
+```bash
+sha256sum --check --ignore-missing SHA256SUMS
+gh attestation verify <下载的产物> --repo Skyworks-Neo/nvoc
+```
+
+运行产物前，校验和命令必须将下载的产物报告为 `OK`，GitHub CLI 命令必须成功验证其构建
+来源证明。Linux 可执行文件可能还需要执行 `chmod +x <下载的产物>`。
+
+Windows 产物目前没有 Authenticode 签名，因此出现 SmartScreen 警告属于预期行为。
+发布产物不捆绑 NVIDIA 驱动、CUDA、Vulkan 和 OpenCL 运行库；运行要求请查阅对应组件的
+README。
+
 ### 1 — 克隆 monorepo
 
 ```bash
@@ -379,15 +423,13 @@ git clone https://github.com/Skyworks-Neo/nvoc.git
 cd nvoc
 ```
 
-初始化 `nvapi-rs` 子模块并切换到所需分支：
+按本仓库固定的 commit 初始化 `nvapi-rs` 子模块：
 
 ```bash
-git submodule init
-git submodule update
-cd nvapi-rs
-git checkout v0.2.x
-cd ..
+git submodule update --init
 ```
+
+请勿在子模块内另行切换分支：NVOC 的 CI 验证的是本仓库固定的 commit。
 
 ### 2 — 安装 Rust 工具链（rustup）
 

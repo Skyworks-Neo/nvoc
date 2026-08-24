@@ -1,4 +1,6 @@
 use super::runtime::{retry_operation_with_backoff, run_output};
+#[cfg(windows)]
+use super::windows_events::{WindowsGpuEvent, query_windows_gpu_events};
 use crate::oc_profile_function::apply_autoscan_profile;
 use crate::progressbar::{ScanProgress, forward_child_output, progress_print};
 use crate::scan_strategy::FluctuationStrategy;
@@ -227,32 +229,15 @@ fn force_kill_process(process: &mut Child, reason: &str) {
     }
 }
 
-#[cfg(windows)]
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-struct WindowsGpuEvent {
-    event_id: u32,
-    /// Raw GPUID from event message (matches `GpuId.0` which = pci_bus * 256).
-    /// `None` for system-wide events (e.g. `\Device\Video3`) that carry no GPUID.
-    gpu_bus_id: Option<u32>,
-    /// True when the event message contains Graphics FECS Exception.
-    is_fecs: bool,
-    /// True when the event message contains Restarting TDR or Reset TDR.
-    is_tdr: bool,
-}
-
 // ─────────────── Windows PowerShell 子进程辅助 ───────────────
 //
-// 两个 PowerShell 脚本（事件查询 / PnP 恢复）通过 include_str! 嵌入二进制，
+// PnP 恢复 PowerShell 脚本通过 include_str! 嵌入二进制，
 // 首次调用时落盘到 %TEMP% 再以绝对路径 -File 调用：
 //  1. 消除旧 "./test/*.ps1" 相对路径对工作目录的依赖（从 GUI / 其他 cwd 拉起
 //     时 PowerShell 报"路径不存在"，且该错误文本是 GBK 编码，被
 //     from_utf8_lossy 解成乱码）；
 //  2. 发布的二进制不再需要携带 test/ 目录。
 // 文件名带 PID 后缀避免并发进程互踩；残留文件交给系统 TEMP 清理。
-
-#[cfg(windows)]
-static EVENT_QUERY_SCRIPT: OnceLock<Option<PathBuf>> = OnceLock::new();
 
 #[cfg(windows)]
 static PNP_RECOVER_SCRIPT: OnceLock<Option<PathBuf>> = OnceLock::new();
@@ -317,71 +302,6 @@ fn decode_console_output(bytes: &[u8]) -> String {
         }
     }
     String::from_utf8_lossy(bytes).into_owned()
-}
-
-#[cfg(windows)]
-fn query_windows_gpu_events(start: SystemTime, end: SystemTime) -> Option<Vec<WindowsGpuEvent>> {
-    use std::time::UNIX_EPOCH;
-
-    let start_ms = start.duration_since(UNIX_EPOCH).ok()?.as_millis();
-    let end_ms = end.duration_since(UNIX_EPOCH).ok()?.as_millis();
-
-    let script_path = materialize_embedded_script(
-        &EVENT_QUERY_SCRIPT,
-        "windows_gpu_event_query",
-        include_str!("../../test/windows_gpu_event_query.ps1"),
-    )?;
-    let script_path = script_path.to_str()?;
-
-    let output = Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            script_path,
-            "-StartMs",
-            &start_ms.to_string(),
-            "-EndMs",
-            &end_ms.to_string(),
-        ])
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        eprintln!(
-            "Warning: Failed to query Windows Event Log: {}",
-            decode_console_output(&output.stderr)
-        );
-        return None;
-    }
-
-    let output_text = decode_console_output(&output.stdout);
-    let mut events = Vec::new();
-    for line in output_text.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let mut parts = line.splitn(5, '|');
-        let event_id = parts.next()?.parse::<u32>().ok()?;
-        let gpu_bus_str = parts.next()?;
-        let gpu_bus_id = if gpu_bus_str.is_empty() {
-            None
-        } else {
-            gpu_bus_str.parse::<u32>().ok()
-        };
-        let is_fecs = parts.next() == Some("1");
-        let is_tdr = parts.next() == Some("1");
-        events.push(WindowsGpuEvent {
-            event_id,
-            gpu_bus_id,
-            is_fecs,
-            is_tdr,
-        });
-    }
-    Some(events)
 }
 
 #[cfg(not(windows))]
@@ -1015,18 +935,18 @@ mod tests {
     #[cfg(windows)]
     fn embedded_script_materializes_to_absolute_temp_path() {
         let path = materialize_embedded_script(
-            &EVENT_QUERY_SCRIPT,
-            "windows_gpu_event_query",
-            include_str!("../../test/windows_gpu_event_query.ps1"),
+            &PNP_RECOVER_SCRIPT,
+            "windows_oc_pnp_recover",
+            include_str!("../../test/windows_oc_pnp_recover.ps1"),
         )
         .expect("staging embedded script must succeed");
         assert!(path.is_absolute(), "staged path must be absolute: {path:?}");
         assert!(path.exists(), "staged script must exist: {path:?}");
         // OnceLock 缓存：第二次调用返回同一路径
         let again = materialize_embedded_script(
-            &EVENT_QUERY_SCRIPT,
-            "windows_gpu_event_query",
-            include_str!("../../test/windows_gpu_event_query.ps1"),
+            &PNP_RECOVER_SCRIPT,
+            "windows_oc_pnp_recover",
+            include_str!("../../test/windows_oc_pnp_recover.ps1"),
         )
         .expect("second staging must succeed");
         assert_eq!(path, again);

@@ -2,6 +2,7 @@ use crate::arg_help;
 use crate::oc_profile_function::{fix_result, handle_vfp_export, handle_vfp_import};
 use crate::oc_scanner::{autoscan_gpuboostv3, autoscan_legacy};
 use clap::ArgMatches;
+use nvoc_cli_common::color::stylize_warning;
 use nvoc_core::{
     Error, GpuTarget, QueryGpuInfo, ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpLock,
     VfpResetDomain, run,
@@ -82,8 +83,16 @@ fn select_target<'a>(
 }
 
 fn confirm(matches: &ArgMatches) -> Result<(), Error> {
-    eprintln!("WARNING: V/F optimization intentionally probes unstable GPU settings.");
-    eprintln!("Driver resets, display loss, application failure, or a system reboot may occur.");
+    eprintln!(
+        "{}",
+        stylize_warning("WARNING: V/F optimization intentionally probes unstable GPU settings.")
+    );
+    eprintln!(
+        "{}",
+        stylize_warning(
+            "Driver resets, display loss, application failure, or a system reboot may occur."
+        )
+    );
     if matches.get_flag("yes") {
         return Ok(());
     }
@@ -155,8 +164,7 @@ fn reset_pstate_offsets(gpu: &GpuTarget<'_>) -> Result<(), Error> {
 fn command_prefix(gpu: &GpuTarget<'_>) -> Vec<String> {
     vec![
         "nvoc-auto-optimizer".to_string(),
-        "--gpu".to_string(),
-        gpu.id.0.to_string(),
+        format!("--gpu={}", gpu.id.0),
     ]
 }
 
@@ -322,8 +330,27 @@ pub fn run_optimize(targets: &[GpuTarget<'_>], matches: &ArgMatches) -> Result<(
 
 #[cfg(test)]
 mod tests {
-    use super::validate_workspace;
+    use super::{parse_subcommand, validate_workspace};
     use std::path::Path;
+
+    #[test]
+    fn internal_gpu_selector_does_not_consume_subcommand() {
+        let matches = parse_subcommand(
+            vec![
+                "nvoc-auto-optimizer".to_string(),
+                "--gpu=256".to_string(),
+                "export-vfp".to_string(),
+                "GPUScan-test/vfp-init.csv".to_string(),
+            ],
+            "export-vfp",
+        )
+        .expect("internal export command should parse");
+
+        assert_eq!(
+            matches.get_one::<String>("output").map(String::as_str),
+            Some("GPUScan-test/vfp-init.csv")
+        );
+    }
 
     #[test]
     fn workspace_must_stay_relative_and_contained() {
