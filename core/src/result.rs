@@ -162,6 +162,16 @@ pub enum OperationKind {
     /// struct magic 0x200DC) via the GPUMon RMW protocol — GET snapshot,
     /// patch the target slot, SET the whole table back. Desktop-only.
     SetFanCurve,
+    /// Reset one fan-curve slot to factory (FanPolicySetControl NDA
+    /// 0x2B2A2A45, struct magic 0x214AC): GET the policy block, OR
+    /// `1 << curve_index` into the +0x08 reset bitmask, SET. This is
+    /// GPUMon's NVAPI fan reset — works where the public
+    /// RestoreCoolerSettings is rejected with NOT_SUPPORTED (desktop
+    /// 3060/2070).
+    ResetFanCurve,
+    /// Toggle fan stop / zero-RPM for a curve slot (FanArbiterSet NDA
+    /// 0x44CD3014, struct magic 0x10144, enable bit0 at +0x28).
+    SetFanStop,
 }
 
 impl OperationKind {
@@ -212,6 +222,9 @@ impl OperationKind {
                 | SetNvapiVoltRailOffset
                 | SetNvapiVoltRailTarget
                 | SetNvapiClkDomainOffset
+                | SetFanCurve
+                | ResetFanCurve
+                | SetFanStop
                 | ResetNvapiPowerLimits
                 | ResetNvapiSensorLimits
                 | ResetPstateClockOffsets

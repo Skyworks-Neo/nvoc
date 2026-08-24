@@ -20,6 +20,7 @@ use nvoc_core::{
     ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock, ResetVfpLock,
     RestartDisplayDriver, SetApiRestriction, SetApplicationsClocks, SetAutoBoost,
     SetAutoBoostDefault, SetBb2Active, SetClockOffset, SetCoolerLevels, SetEdid, SetFanCurve,
+    ResetFanCurve, SetFanStop,
     SetFanSpeed, SetForcePstate, SetLegacyClocks, SetLockedClocks, SetNvapiClkDomainOffset,
     SetNvapiDNotifier, SetNvapiDynamicBoost, SetNvapiOvervolt, SetNvapiPStateNative,
     SetNvapiPerfFreqCap, SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiSensorLimits,
@@ -141,6 +142,8 @@ pub enum Command {
     GetFanInfo,
     GetFanCurve,
     SetFanCurve,
+    ResetFanCurveCmd,
+    SetFanStopCmd,
     GetTemperatureThresholds,
     GetThermalSettings,
     GetPowerMode,
@@ -244,6 +247,8 @@ impl Command {
             Self::GetFanInfo => "get-fan-info",
             Self::GetFanCurve => "get-fan-curve",
             Self::SetFanCurve => "set-fan-curve",
+            Self::ResetFanCurveCmd => "reset-fan-curve",
+            Self::SetFanStopCmd => "set-fan-stop",
             Self::GetTemperatureThresholds => "get-temp-thresholds",
             Self::GetThermalSettings => "get-thermal-settings",
             Self::GetPowerMode => "get-power-mode",
@@ -345,6 +350,12 @@ impl Command {
             }
             Self::SetFanCurve => {
                 "Write one fan-curve slot (RMW: --curve idx --points temp:rpm,temp:rpm,temp:rpm)"
+            }
+            Self::ResetFanCurveCmd => {
+                "Reset one fan-curve slot to factory (GPUMon's private FanPolicy path 0x2B2A2A45; works where restore-fan/cooler-settings is NOT_SUPPORTED, e.g. desktop 3060/2070)"
+            }
+            Self::SetFanStopCmd => {
+                "Toggle fan stop / zero-RPM for a curve slot (FanArbiterSet NDA 0x44CD3014): on | off"
             }
             Self::GetTemperatureThresholds => {
                 "Read temperature thresholds (NVML by default; --nvapi exposes target-temp policy)"
@@ -550,6 +561,8 @@ impl Command {
             | Self::SetVoltageBoostPercent
             | Self::SetPowerMode => (1, 1),
             Self::SetFanCurve => (2, 2),
+            Self::ResetFanCurveCmd => (0, 0),
+            Self::SetFanStopCmd => (1, 1),
             Self::OemOcScanner => (0, 0),
             Self::ResetForcePstate => (0, 0),
             Self::RestartDisplayDriver => (0, 0),
@@ -599,6 +612,7 @@ impl Command {
             | Self::SetPstateBaseVoltageUv => &["pstate"],
             Self::SetFanPercent => &["fan", "policy"],
             Self::ResetFan => &["fan"],
+            Self::ResetFanCurveCmd | Self::SetFanStopCmd => &["curve"],
             Self::SetLockedClocksMhz | Self::ResetLockedClocks | Self::ResetVfpDeltas => {
                 &["domain"]
             }
@@ -860,6 +874,12 @@ impl Command {
                     "Three monotonic points temp:rpm, e.g. 40:800,60:1200,75:1800",
                 ),
             ],
+            Self::ResetFanCurveCmd => vec![],
+            Self::SetFanStopCmd => vec![PositionalArg::free(
+                "arg_state",
+                "STATE",
+                "on = allow the fan to stop at idle (zero-RPM), off = always spin",
+            )],
             Self::SetAutoBoost | Self::SetAutoBoostDefault => vec![PositionalArg::finite(
                 "arg_enabled",
                 "ENABLED",
@@ -1031,6 +1051,8 @@ const COMMANDS: &[Command] = &[
     Command::SetEdid,
     Command::SetFanPercent,
     Command::SetFanCurve,
+    Command::ResetFanCurveCmd,
+    Command::SetFanStopCmd,
     Command::SetForcePstate,
     Command::SetLegacyClocksMhz,
     Command::SetLockedClocksMhz,
@@ -1448,6 +1470,11 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .value_name("MIN_MHZ")
             .action(ArgAction::Set)
             .help("Perf min-frequency cap in MHz (defaults to MAX_MHZ); both bounds are clamped by the driver"),
+        "curve" => Arg::new("curve")
+            .long("curve")
+            .value_name("IDX")
+            .action(ArgAction::Set)
+            .help("Fan-curve slot index (0-3; default 0)"),
         _ => unreachable!("unknown command-specific option {name}"),
     }
 }
@@ -2309,6 +2336,46 @@ fn execute_target(
                     "rpm": p.rpm,
                 })).collect::<Vec<_>>(),
             }))
+        }
+        Command::ResetFanCurveCmd => {
+            // GPUMon's NVAPI fan reset: private FanPolicySetControl (NDA
+            // 0x2B2A2A45, struct 0x214AC) — GET the policy block, OR
+            // `1 << curve` into the +0x08 reset bitmask, SET. Works where the
+            // public RestoreCoolerSettings is rejected with NOT_SUPPORTED
+            // (desktop 3060/2070 without a user-mode cooler table).
+            let curve = option_one(invocation, "curve")
+                .map(|s| s.parse::<u8>())
+                .transpose()
+                .map_err(|e| CliError::new(format!("invalid --curve: {e}")))?
+                .unwrap_or(0);
+            if curve >= 4 {
+                return Err(CliError::new(format!(
+                    "invalid --curve {curve}: slot range is 0-3"
+                )));
+            }
+            run(target, ResetFanCurve { index: curve })?;
+            Ok(json!({"applied": true, "curve": curve, "reset": true}))
+        }
+        Command::SetFanStopCmd => {
+            // FanArbiterSet NDA 0x44CD3014 (struct 0x10144): toggle
+            // zero-RPM fan stop for a curve slot. RE'd from GPUMon
+            // setFanCurve's tail call.
+            let enable = match invocation.positionals[0].to_lowercase().as_str() {
+                "on" | "1" | "true" => true,
+                "off" | "0" | "false" => false,
+                other => {
+                    return Err(CliError::new(format!(
+                        "invalid fan-stop state {other:?}: expected on|off"
+                    )))
+                }
+            };
+            let curve = option_one(invocation, "curve")
+                .map(|s| s.parse::<u8>())
+                .transpose()
+                .map_err(|e| CliError::new(format!("invalid --curve: {e}")))?
+                .unwrap_or(0);
+            run(target, SetFanStop { curve_index: curve, enable })?;
+            Ok(json!({"applied": true, "curve": curve, "fan_stop": enable}))
         }
         Command::GetTemperatureThresholds => {
             // Two backend flavours of "temperature threshold":

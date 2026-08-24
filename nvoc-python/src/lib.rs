@@ -1,7 +1,7 @@
 use nvapi_hi::{
     Celsius, ClockDomain, CoolerPolicy, KilohertzDelta, MicrovoltsDelta, PState, Percentage,
 };
-use nvml_wrapper::enum_wrappers::device::{Api, PcieUtilCounter, PerformanceState};
+use nvml_wrapper::enum_wrappers::device::{Api, PerformanceState};
 use nvoc_core::{
     BackendSet, CheckVoltageFrequency, ClearEdid, ConvertEnum, GpuTarget, GpuType,
     NvapiPerfFreqCap, QueryApiRestriction, QueryAutoBoost, QueryDisplays, QueryDomainVfpPoints,
@@ -11,8 +11,8 @@ use nvoc_core::{
     QueryNvapiDNotifier, QueryNvapiTargetTempPolicies, QueryNvapiTgpWattRange, QueryNvapiVoltRails,
     QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks,
     QueryTdpTempLimits, QueryTemperatureThresholds, QueryThrottleReasons, QueryVfpPointVoltage,
-    QueryVoltageBoost, ResetApplicationsClocks, ResetCoolerLevels, ResetFanSpeed,
-    ResetLockedClocks, ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetNvapiTgpWatt,
+    QueryVoltageBoost, ResetApplicationsClocks, ResetCoolerLevels, ResetFanCurve, ResetFanSpeed,
+    SetFanStop, ResetLockedClocks, ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetNvapiTgpWatt,
     ResetPstateBaseVoltages, ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock,
     ResetVfpLock, SetApiRestriction, SetApplicationsClocks, SetAutoBoost, SetAutoBoostDefault,
     SetClockOffset, SetCoolerLevels, SetDomainVfpDeltas, SetEdid, SetFanSpeed, SetLegacyClocks,
@@ -223,6 +223,52 @@ fn lock_inventory_cache() -> std::sync::MutexGuard<'static, InventoryCache> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// Process-level cache of the NVML-enforced power limit (TGP wall, watts),
+/// keyed by GPU id. Populated by `normalize_info` (which runs at GPU-switch /
+/// Refresh-Info time — a low-frequency, user-initiated path where the dGPU is
+/// already D0 and the NVML device handle is valid). Consumed by
+/// `normalize_status`'s 1Hz dashboard poll.
+///
+/// Why this split: `nvmlDeviceGetEnforcedPowerLimit` (like every NVML
+/// device-level query) segfaults inside nvml.dll on a stale device handle when
+/// the dGPU is mid-transition (D3cold↔D0) — verified crash at
+/// `nvmlDeviceGetEnforcedPowerLimit+0x276` when the user re-enables a powered-
+/// off dGPU. NVAPI recovers BEFORE NVML's handle state during that window, so
+/// an earlier attempt to gate NVML with an NVAPI-derived liveness proof was
+/// true while the NVML handle was still stale — it crashed on re-enable. There
+/// is NO pre-call way to detect this (the `GpuLost` error code is never
+/// returned — the fault is a native segfault). The only safe course is to
+/// never call NVML device queries from the high-frequency poll.
+/// The enforced limit is quasi-static (TGP wall, rarely changes), so caching it
+/// from the info path loses no real-time accuracy that matters.
+static POWER_LIMIT_CACHE: std::sync::Mutex<Option<(u32, std::time::Instant, f64)>> =
+    std::sync::Mutex::new(None);
+
+/// Cache TTL: the enforced power limit is the TGP wall, which only moves on a
+/// deliberate user action (set-tgp-watt / D-Notifier change). 5 minutes is far
+/// shorter than any real change cadence while bounding how stale a cached value
+/// can get after a dGPU round-trip.
+const POWER_LIMIT_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+
+fn cache_power_limit(gpu_id: u32, watts: f64) {
+    if let Ok(mut cache) = POWER_LIMIT_CACHE.lock() {
+        *cache = Some((gpu_id, std::time::Instant::now(), watts));
+    }
+}
+
+/// Return the cached enforced power limit for `gpu_id` if fresh, else `None`.
+fn cached_power_limit(gpu_id: u32) -> Option<f64> {
+    let cache = POWER_LIMIT_CACHE.lock().ok()?;
+    let (cached_id, ts, watts) = cache.as_ref()?;
+    if *cached_id != gpu_id {
+        return None;
+    }
+    if ts.elapsed() > POWER_LIMIT_CACHE_TTL {
+        return None;
+    }
+    Some(*watts)
+}
+
 impl InventoryCache {
     /// 获取指定 backend 集的 inventory；首次访问时发现并缓存。
     /// 返回 Arc 快照 —— 调用方在锁外持有并查询，并发查询互不阻塞。
@@ -267,8 +313,32 @@ where
         let mut cache = lock_inventory_cache();
         cache.entry(backends)?
     };
-    let target = selected_target(&inventory.0, gpu)?;
-    f(&target)
+    // Resolve the requested GPU against the cached inventory. If it isn't
+    // listed (the dGPU was switched off / removed from the bus between polls),
+    // refresh the inventory ONCE and retry against the freshly re-enumerated
+    // set. `refresh` re-runs `discover_targets` (NVAPI re-enumerate +
+    // `Nvml::init`), rebuilding the stale handle table so subsequent polls
+    // either find the GPU again (it came back / was just GCOFF) or cleanly
+    // omit it. Without this, a dGPU that disappears mid-session leaves
+    // `selected_target` permanently erroring and the dashboard never recovers
+    // even after the dGPU returns.
+    match selected_target(&inventory.0, gpu) {
+        Ok(target) => f(&target),
+        Err(first_err) => {
+            // Cache miss: re-enumerate once. The refreshed Arc<SyncInventory>
+            // lives in this frame for the duration of the query (the borrow
+            // into `target` is valid while `inventory` is alive). If the GPU is
+            // still absent, surface the original error.
+            let inventory = {
+                let mut cache = lock_inventory_cache();
+                cache.refresh(backends)?
+            };
+            match selected_target(&inventory.0, gpu) {
+                Ok(target) => f(&target),
+                Err(_) => Err(first_err),
+            }
+        }
+    }
 }
 
 fn value_object(entries: impl IntoIterator<Item = (impl Into<String>, Value)>) -> Value {
@@ -543,6 +613,22 @@ fn normalize_info(target: &GpuTarget<'_>) -> PyResultValue {
         );
         map.insert("power_watt_max".into(), f64_value(power.max_watts as f64));
     }
+    // Populate the process-level enforced-power-limit cache for the 1Hz
+    // `normalize_status` poll. `nvmlDeviceGetEnforcedPowerLimit` (the live TGP
+    // wall) is an NVML device-level query that segfaults during dGPU power-state
+    // transitions, so it CANNOT run in the per-poll path. It runs here instead
+    // — `normalize_info` executes at GPU-switch / Refresh-Info time, a
+    // low-frequency user-initiated path where the dGPU is D0 and the NVML
+    // handle is valid (the same path already runs `QueryPowerLimits`, another
+    // NVML device query, without incident). On failure the cache is left
+    // untouched (a stale but plausible value is better than nothing; the poll
+    // path falls back to `---` only if the cache is empty/expired).
+    if target.has_nvml()
+        && let Ok(device) = target_nvml_device(target)
+        && let Ok(mw) = device.enforced_power_limit()
+    {
+        cache_power_limit(target.id.0, mw as f64 / 1000.0);
+    }
     if let Some(limit) = info.sensor_limits.first() {
         map.insert(
             "thermal_limit_min".into(),
@@ -580,6 +666,19 @@ fn normalize_info(target: &GpuTarget<'_>) -> PyResultValue {
 
 fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
     let status = run(target, QueryGpuStatus).map_err(to_py_err)?.output;
+    // NOTE on NVML: this function is the GUI/TUI 1Hz dashboard poll and must
+    // NOT call any NVML device-level query (`power_usage`,
+    // `enforced_power_limit`, `pcie_throughput`, ...). Those segfault inside
+    // nvml.dll on a stale device handle during dGPU power-state transitions
+    // (D3cold↔D0), and NVAPI recovers BEFORE NVML's handle state in that window
+    // — so there is no pre-call liveness proof that makes NVML safe. The only
+    // previously-live NVML reads were `power_usage`, `enforced_power_limit`, and
+    // the PCIe block; all three are now either replaced by NVAPI
+    // (`power_w` ← NVAPI PowerMonitor Board rail) or served from the
+    // process-level `POWER_LIMIT_CACHE` (filled by the info path). NVAPI
+    // returns clean error codes on a lost dGPU (no deref), so the NVAPI reads
+    // below are all segfault-safe — they simply yield nothing and the dashboard
+    // shows `---`.
     let mut map = Map::new();
     map.insert("gpu_id".into(), u64_value(target.id.0 as u64));
     map.insert("gpu_id_hex".into(), text(format!("0x{:04X}", target.id.0)));
@@ -726,35 +825,66 @@ fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
             }
         }
     }
-    // Live board power draw (watts). Prefer the NVML reading
-    // (`nvmlDeviceGetPowerUsage`, same source as nvidia-smi): on laptop GPUs the
-    // NVAPI power-topology path returns a dimensionless percentage (or nothing),
-    // so it is neither accurate nor usually present. Fall back to the NVAPI
-    // value only when NVML is unavailable.
+    // Live board power draw (watts). PREFER the NVAPI PowerMonitor "Board"
+    // rail (InputTotalBoard, pwr_rail 245/223) over NVML's
+    // `nvmlDeviceGetPowerUsage`:
+    //
+    //   - SAME semantic (total board power draw ≈ nvidia-smi's power_usage).
+    //   - NVAPI returns a clean NvAPI_Status error when the dGPU is
+    //     D3cold/GCOFF; NVML's `nvmlDeviceGetPowerUsage` segfaults inside
+    //     nvml.dll on the stale handle (verified: INVALID_POINTER_READ at
+    //     nvmlDeviceGetPowerUsage+0x268, killing NVOC-GUI when the user
+    //     switches to 核显模式 / powers the dGPU off). The NVML call is a
+    //     native segfault — uncatchable by `panic="abort"` or any try/except,
+    //     so it MUST be prevented, not caught.
+    //   - Zero extra cost: `status.power_rails` is already populated by
+    //     `Gpu::status()` above (the NVAPI PowerMonitor sweep). No new NVAPI
+    //     call, no dGPU wake — the dashboard's 1Hz poll does NOT wake the GPU.
+    //
+    // NVML's `nvmlDeviceGetPowerUsage` is intentionally NOT used as a fallback.
+    // It segfaults inside nvml.dll on a stale handle during dGPU transitions
+    // (verified: `nvmlDeviceGetPowerUsage+0x268`), and NVAPI recovers before
+    // NVML in that window so no pre-call check can make it safe. If neither
+    // NVAPI path yields a reading, `power_w` is simply omitted (`---`).
     let mut power_w_set = false;
-    if target.has_nvml()
-        && let Ok(device) = target_nvml_device(target)
-        && let Ok(mw) = device.power_usage()
-    {
-        map.insert("power_w".into(), f64_value(mw as f64 / 1000.0));
-        power_w_set = true;
+    if let Some(rails) = &status.power_rails {
+        // InputTotalBoard (245) / InputTotalBoard2 (223) = total board power,
+        // the GPU-Z "Board Power" equivalent of NVML power_usage. Prefer 245
+        // (primary), then 223 (second board-total on some SKUs).
+        let board = rails
+            .iter()
+            .find(|r| r.pwr_rail == 245 && r.pwr_mw > 0)
+            .or_else(|| rails.iter().find(|r| r.pwr_rail == 223 && r.pwr_mw > 0));
+        if let Some(r) = board {
+            map.insert("power_w".into(), f64_value(r.pwr_mw as f64 / 1000.0));
+            power_w_set = true;
+        }
     }
     if !power_w_set
         && let Some((_channel, power)) = status.power.iter().next()
         && let Some(watts) = first_number_in_display(power)
     {
+        // Legacy NVAPI power-topology fallback (dimensionless % on some GPUs,
+        // but real watts where present). Does not touch NVML.
         map.insert("power_w".into(), f64_value(watts));
     }
-    // Current enforced power limit (the live TGP cap, watts). NVML
-    // `nvmlDeviceGetEnforcedPowerLimit` — the same "Current Power Limit"
-    // nvidia-smi -q -d POWER reports (e.g. the `30W` in `1W / 30W`). Preferred
-    // over the configurable `power_management_limit()`, which returns
-    // NotSupported on most mobile GPUs (enforced is universally readable).
-    if target.has_nvml()
-        && let Ok(device) = target_nvml_device(target)
-        && let Ok(mw) = device.enforced_power_limit()
-    {
-        map.insert("power_limit_w".into(), f64_value(mw as f64 / 1000.0));
+    // Current enforced power limit (the live TGP cap, watts). NVML-only
+    // (`nvmlDeviceGetEnforcedPowerLimit`, same "Current Power Limit" nvidia-smi
+    // -q -d POWER reports).
+    //
+    // NOT read live here: `nvmlDeviceGetEnforcedPowerLimit` is an NVML
+    // device-level query that segfaults inside nvml.dll on a stale handle
+    // during dGPU power-state transitions (verified crash at
+    // `nvmlDeviceGetEnforcedPowerLimit+0x276` when re-enabling a powered-off
+    // dGPU — NVAPI recovers before NVML's handle state, so no pre-call liveness
+    // proof can make NVML device queries safe). The enforced limit is
+    // quasi-static (TGP wall), so it is populated by the info path
+    // (`normalize_info`, user-initiated / GPU-switch time, when the dGPU is D0)
+    // and served from the process-level `POWER_LIMIT_CACHE` here. On cache
+    // miss/expiry (e.g. the dGPU was off when info last ran) the field is
+    // simply omitted — the dashboard shows `---` rather than crashing.
+    if let Some(watts) = cached_power_limit(target.id.0) {
+        map.insert("power_limit_w".into(), f64_value(watts));
     }
 
     // Per-rail power (watts) from NVAPI PowerMonitor, keyed by the
@@ -791,27 +921,18 @@ fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
     // `nvmlDeviceGetPcieThroughput` reports KB/s averaged over a ~20ms byte-counter
     // interval (i.e. it IS the live rate — no sliding window needed). TX = bytes
     // the GPU sends (GPU->host), RX = bytes the GPU receives (host->GPU), matching
-    // the nvidia-smi / nvitop "Tx/Rx" convention. Maxwell+ only; vGPU unsupported —
-    // `.ok()` so those GPUs just omit the fields instead of erroring.
-    if target.has_nvml()
-        && let Ok(device) = target_nvml_device(target)
-    {
-        if let Ok(kbps) = device.pcie_throughput(PcieUtilCounter::Send) {
-            map.insert("pcie_tx_mibps".into(), f64_value(kbps as f64 / 1024.0));
-        }
-        if let Ok(kbps) = device.pcie_throughput(PcieUtilCounter::Receive) {
-            map.insert("pcie_rx_mibps".into(), f64_value(kbps as f64 / 1024.0));
-        }
-        if let Ok(replay) = device.pcie_replay_counter() {
-            map.insert("pcie_replay_counter".into(), u64_value(replay as u64));
-        }
-        if let Ok(link_gen) = device.current_pcie_link_gen() {
-            map.insert("pcie_link_gen".into(), u64_value(link_gen as u64));
-        }
-        if let Ok(link_gen) = device.max_pcie_link_gen() {
-            map.insert("pcie_max_link_gen".into(), u64_value(link_gen as u64));
-        }
-    }
+    // the nvidia-smi / nvitop "Tx/Rx" convention. Maxwell+ only; vGPU unsupported.
+    //
+    // REMOVED from the per-poll path: these are NVML device-level queries on
+    // the cached handle and segfault inside nvml.dll during dGPU power-state
+    // transitions (same fault class as `nvmlDeviceGetEnforcedPowerLimit` — NVAPI
+    // recovers before NVML's handle state, so no pre-call proof can guard them).
+    // The fields are simply omitted on the dashboard poll; they are not part of
+    // the metric rows (GPU/MEM/VOLT/TEMP/PWR) and only appeared in the
+    // `status -a` JSON, so omitting them has no dashboard impact. A future
+    // low-frequency info-path read (mirroring the power-limit cache) could
+    // restore them if a consumer needs them.
+    // (previously: target_nvml_device + pcie_throughput/replay_counter/link_gen)
     map.insert(
         "vfp_locked".into(),
         bool_value(!status.vfp_locks.is_empty()),
@@ -3126,11 +3247,14 @@ fn set_fan(
                 };
                 let target = selected_target(&inventory.0, gpu)?;
                 if is_reset {
-                    // NvAPI_GPU_RestoreCoolerSettings — the documented
-                    // restore-default call. The old path set policy
-                    // TemperatureContinuous (= follow the ClientFanPolicies
-                    // curve table) with level 0.
-                    run(&target, ResetCoolerLevels).map_err(to_py_err)?;
+                    // GPUMon's NVAPI fan reset: FanPolicySetControl (NDA
+                    // 0x2B2A2A45, struct 0x214AC) — GET the policy block, OR
+                    // `1 << curve` into the +0x08 reset bitmask, SET. Unlike
+                    // the public RestoreCoolerSettings (rejected with
+                    // NOT_SUPPORTED on GPUs without a user-mode cooler table,
+                    // e.g. desktop 3060/2070), this private path works there.
+                    // Reset curve slot 0 (GPUMon's reset button).
+                    run(&target, ResetFanCurve { index: 0 }).map_err(to_py_err)?;
                 } else {
                     let cooler_target = match fan_id {
                         "1" => nvoc_core::CoolerTarget::Cooler1,
@@ -3161,6 +3285,33 @@ fn set_fan(
         }
         Ok(())
     })
+}
+
+/// Toggle fan stop / zero-RPM for a fan-curve slot (NVAPI FanArbiterSet NDA
+/// 0x44CD3014, struct magic 0x10144). RE'd from GPUMon.exe setFanCurve's
+/// tail call. `curve_index` is the slot (default 0); `enable` true = allow
+/// the fan to stop at idle, false = always spin.
+#[pyfunction]
+fn set_fan_stop(
+    py: Python<'_>,
+    gpu: &str,
+    enable: bool,
+    curve_index: Option<u8>,
+) -> PyResult<Py<PyAny>> {
+    let value = py.detach(|| {
+        with_target(gpu, "nvapi", |target| {
+            run(
+                target,
+                SetFanStop {
+                    curve_index: curve_index.unwrap_or(0),
+                    enable,
+                },
+            )
+            .map_err(to_py_err)?;
+            Ok(value_object([("applied", Value::from(true))]))
+        })
+    })?;
+    py_value(py, &value)
 }
 
 #[pyfunction]
@@ -3425,6 +3576,7 @@ fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(clear_edid, m)?)?;
     m.add_function(wrap_pyfunction!(set_legacy_voltage_delta, m)?)?;
     m.add_function(wrap_pyfunction!(set_fan, m)?)?;
+    m.add_function(wrap_pyfunction!(set_fan_stop, m)?)?;
     m.add_function(wrap_pyfunction!(reset_core_clocks, m)?)?;
     m.add_function(wrap_pyfunction!(reset_mem_clocks, m)?)?;
     m.add_function(wrap_pyfunction!(reset_vfp_lock, m)?)?;

@@ -37,7 +37,7 @@ pub use operation::{
     ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock, ResetVfpLock,
     RestartDisplayDriver, SetApiRestriction, SetApplicationsClocks, SetAutoBoost,
     SetAutoBoostDefault, SetBb2Active, SetClockOffset, SetCoolerLevels, SetDomainVfpDeltas,
-    SetEdid, SetFanCurve, SetFanSpeed, SetForcePstate, SetLegacyClocks, SetLockedClocks,
+    SetEdid, SetFanCurve, SetFanSpeed, SetFanStop, ResetFanCurve, SetForcePstate, SetLegacyClocks, SetLockedClocks,
     SetNvapiClkDomainOffset, SetNvapiDNotifier, SetNvapiDynamicBoost, SetNvapiOvervolt,
     SetNvapiPStateNative, SetNvapiPerfFreqCap, SetNvapiPowerLimits, SetNvapiPstateLock,
     SetNvapiSensorLimits, SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvapiVfpPointPrivate,

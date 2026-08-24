@@ -379,6 +379,66 @@ impl GpuOperation for SetFanCurve {
     }
 }
 
+/// Reset one fan-curve slot to factory (GPUMon.exe `GPUHandle::resetFanCurve`:
+/// FanPolicySetControl NDA 0x2B2A2A45, struct magic 0x214AC — GET the policy
+/// block, OR `1 << index` into the +0x08 reset bitmask, SET). This is
+/// GPUMon's NVAPI fan reset; unlike the public RestoreCoolerSettings it works
+/// on GPUs whose user-mode cooler table isn't exposed (desktop 3060/2070
+/// reject RestoreCoolerSettings with NOT_SUPPORTED).
+#[derive(Clone, Copy, Debug)]
+pub struct ResetFanCurve {
+    pub index: u8,
+}
+
+impl GpuOperation for ResetFanCurve {
+    type Output = AppliedValue<u8>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::ResetFanCurve
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .inner()
+            .reset_fan_curve(self.index as u32)
+            .map_err(Error::from)?;
+        Ok(AppliedValue {
+            requested: self.index,
+            applied: self.index,
+        })
+    }
+}
+
+/// Toggle fan stop / zero-RPM for a curve slot (FanArbiterSet NDA 0x44CD3014,
+/// struct magic 0x10144, enable bit0 at +0x28). RE'd from GPUMon.exe
+/// setFanCurve's tail call.
+#[derive(Clone, Copy, Debug)]
+pub struct SetFanStop {
+    pub curve_index: u8,
+    pub enable: bool,
+}
+
+impl GpuOperation for SetFanStop {
+    type Output = AppliedValue<bool>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetFanStop
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .inner()
+            .set_fan_stop(self.curve_index as u32, self.enable)
+            .map_err(Error::from)?;
+        Ok(AppliedValue {
+            requested: self.enable,
+            applied: self.enable,
+        })
+    }
+}
+
 /// NVCP "电源模式" SET — the Control Panel's Adaptive/Maximum Performance
 /// dropdown via `NvAPI_GPU_SetPerfLevel` (0x75dd3e6a).
 #[derive(Clone, Copy, Debug)]
