@@ -1507,6 +1507,14 @@ fn command_specific_arg(name: &'static str) -> Arg {
 
 fn clap_subcommand(command: Command) -> ClapCommand {
     let mut subcommand = ClapCommand::new(command.name()).about(command.about());
+    // Zero-arg invocation prints the FULL help (including every option)
+    // instead of a terse usage line that hides the options — the error
+    // usage line only lists missing positionals, which made e.g.
+    // `set-fan-rpm` (no args) not show --cooler at all.
+    let (min_args, _) = command.arity();
+    if min_args > 0 {
+        subcommand = subcommand.arg_required_else_help(true);
+    }
     // Naming-compat alias: pairs the per-pstate baseVoltage SET with the
     // "legacy overvolt" GET naming (same operation, Maxwell-era path).
     if command == Command::SetPstateBaseVoltageUv {
