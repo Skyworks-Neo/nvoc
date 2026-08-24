@@ -3074,6 +3074,13 @@ fn set_fan(
         let backend = parse_backend(backend)?;
         let fan_id = fan_id.unwrap_or("all");
         let level = level.unwrap_or(60);
+        // "auto" is the reset semantic (the GUI/TUI "reset to auto" button).
+        // True reset — NOT the SW temperature-continuous policy: on GPUs
+        // whose ClientFanPolicies curve table is empty (default fan control
+        // is firmware-side), switching to the curve-following mode parks the
+        // fan near 0 RPM until the temp spikes.
+        let is_reset = policy
+            .is_some_and(|p| p.eq_ignore_ascii_case("auto"));
         match backend {
             "nvml" | "nvml-cooler" => {
                 let inventory = {
@@ -3081,8 +3088,6 @@ fn set_fan(
                     inventory_cache.entry(BackendSet::Nvml)?
                 };
                 let target = selected_target(&inventory.0, gpu)?;
-                let policy = parse_nvml_fan_control_policy(policy.unwrap_or("continuous"))
-                    .map_err(invalid_value)?;
                 let fan_count = run(&target, QueryFanInfo)
                     .map(|report| report.output.count)
                     .unwrap_or(1);
@@ -3091,16 +3096,27 @@ fn set_fan(
                 } else {
                     vec![fan_id.parse::<u32>().map_err(invalid_value)?]
                 };
-                for fan_index in fan_indices {
-                    run(
-                        &target,
-                        SetFanSpeed {
-                            fan_index,
-                            policy,
-                            level,
-                        },
-                    )
-                    .map_err(to_py_err)?;
+                if is_reset {
+                    // nvmlDeviceSetDefaultFanSpeed_v2 — the documented
+                    // "restore default control policy" call. The old path set
+                    // the SW curve policy AND wrote 0% duty on top.
+                    for fan_index in fan_indices {
+                        run(&target, ResetFanSpeed { fan_index }).map_err(to_py_err)?;
+                    }
+                } else {
+                    let policy = parse_nvml_fan_control_policy(policy.unwrap_or("continuous"))
+                        .map_err(invalid_value)?;
+                    for fan_index in fan_indices {
+                        run(
+                            &target,
+                            SetFanSpeed {
+                                fan_index,
+                                policy,
+                                level,
+                            },
+                        )
+                        .map_err(to_py_err)?;
+                    }
                 }
             }
             "nvapi" | "nvapi-cooler" => {
@@ -3109,25 +3125,33 @@ fn set_fan(
                     inventory_cache.entry(BackendSet::Nvapi)?
                 };
                 let target = selected_target(&inventory.0, gpu)?;
-                let cooler_target = match fan_id {
-                    "1" => nvoc_core::CoolerTarget::Cooler1,
-                    "2" => nvoc_core::CoolerTarget::Cooler2,
-                    _ => nvoc_core::CoolerTarget::All,
-                };
-                let mode = match policy.unwrap_or("continuous").to_ascii_lowercase().as_str() {
-                    "auto" | "continuous" => CoolerPolicy::TemperatureContinuous,
-                    "manual" => CoolerPolicy::Manual,
-                    other => CoolerPolicy::from_str(other).map_err(invalid_value)?,
-                };
-                run(
-                    &target,
-                    SetCoolerLevels {
-                        policy: mode,
-                        level,
-                        cooler_target,
-                    },
-                )
-                .map_err(to_py_err)?;
+                if is_reset {
+                    // NvAPI_GPU_RestoreCoolerSettings — the documented
+                    // restore-default call. The old path set policy
+                    // TemperatureContinuous (= follow the ClientFanPolicies
+                    // curve table) with level 0.
+                    run(&target, ResetCoolerLevels).map_err(to_py_err)?;
+                } else {
+                    let cooler_target = match fan_id {
+                        "1" => nvoc_core::CoolerTarget::Cooler1,
+                        "2" => nvoc_core::CoolerTarget::Cooler2,
+                        _ => nvoc_core::CoolerTarget::All,
+                    };
+                    let mode = match policy.unwrap_or("continuous").to_ascii_lowercase().as_str() {
+                        "continuous" => CoolerPolicy::TemperatureContinuous,
+                        "manual" => CoolerPolicy::Manual,
+                        other => CoolerPolicy::from_str(other).map_err(invalid_value)?,
+                    };
+                    run(
+                        &target,
+                        SetCoolerLevels {
+                            policy: mode,
+                            level,
+                            cooler_target,
+                        },
+                    )
+                    .map_err(to_py_err)?;
+                }
             }
             _ => {
                 return Err(invalid_value(
