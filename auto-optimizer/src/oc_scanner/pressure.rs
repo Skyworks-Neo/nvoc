@@ -1,4 +1,6 @@
 use super::runtime::{retry_operation_with_backoff, run_output};
+#[cfg(windows)]
+use super::windows_events::{WindowsGpuEvent, query_windows_gpu_events};
 #[cfg(debug_assertions)]
 use crate::manual_override::ManualOverride;
 use crate::oc_profile_function::apply_autoscan_profile;
@@ -228,80 +230,6 @@ fn force_kill_process(process: &mut Child, reason: &str) {
             }
         },
     }
-}
-
-#[cfg(windows)]
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-struct WindowsGpuEvent {
-    event_id: u32,
-    /// Raw GPUID from event message (matches `GpuId.0` which = pci_bus * 256).
-    /// `None` for system-wide events (e.g. `\Device\Video3`) that carry no GPUID.
-    gpu_bus_id: Option<u32>,
-    /// True when the event message contains Graphics FECS Exception.
-    is_fecs: bool,
-    /// True when the event message contains Restarting TDR or Reset TDR.
-    is_tdr: bool,
-}
-
-#[cfg(windows)]
-fn query_windows_gpu_events(start: SystemTime, end: SystemTime) -> Option<Vec<WindowsGpuEvent>> {
-    use std::time::UNIX_EPOCH;
-
-    let start_ms = start.duration_since(UNIX_EPOCH).ok()?.as_millis();
-    let end_ms = end.duration_since(UNIX_EPOCH).ok()?.as_millis();
-
-    let script_path = "./test/windows_gpu_event_query.ps1";
-
-    let output = Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            script_path,
-            "-StartMs",
-            &start_ms.to_string(),
-            "-EndMs",
-            &end_ms.to_string(),
-        ])
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        eprintln!(
-            "Warning: Failed to query Windows Event Log: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return None;
-    }
-
-    let output_text = String::from_utf8_lossy(&output.stdout);
-    let mut events = Vec::new();
-    for line in output_text.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let mut parts = line.splitn(5, '|');
-        let event_id = parts.next()?.parse::<u32>().ok()?;
-        let gpu_bus_str = parts.next()?;
-        let gpu_bus_id = if gpu_bus_str.is_empty() {
-            None
-        } else {
-            gpu_bus_str.parse::<u32>().ok()
-        };
-        let is_fecs = parts.next() == Some("1");
-        let is_tdr = parts.next() == Some("1");
-        events.push(WindowsGpuEvent {
-            event_id,
-            gpu_bus_id,
-            is_fecs,
-            is_tdr,
-        });
-    }
-    Some(events)
 }
 
 #[cfg(not(windows))]
