@@ -476,6 +476,25 @@ fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
             _ => {}
         }
     }
+    if let Some(effective) = &status.effective_clocks {
+        for (clock, frequency) in effective {
+            match *clock {
+                ClockDomain::Graphics => {
+                    map.insert(
+                        "eff_gpu_clock_mhz".into(),
+                        f64_value(frequency.0 as f64 / 1000.0),
+                    );
+                }
+                ClockDomain::Memory => {
+                    map.insert(
+                        "eff_mem_clock_mhz".into(),
+                        f64_value(frequency.0 as f64 / 1000.0),
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
     if let Some((_sensor, temp)) = status.sensors.first() {
         map.insert("temperature_c".into(), f64_value(*temp as f64));
     }

@@ -14,6 +14,18 @@ def _temp_c_str(value) -> str:
         return "---"
 
 
+def _effective_clocks_text(status: dict) -> str:
+    """Format effective, actually-running clocks when the driver exposes them."""
+    gpu = status.get("eff_gpu_clock_mhz")
+    memory = status.get("eff_mem_clock_mhz")
+    parts = []
+    if isinstance(gpu, (int, float)):
+        parts.append(f"GPU {round(float(gpu))}")
+    if isinstance(memory, (int, float)):
+        parts.append(f"MEM {round(float(memory))}")
+    return " | ".join(parts) + " MHz" if parts else "---"
+
+
 def _format_metric_lines(status: dict, architecture: str) -> list[str]:
     """Build the dashboard metric lines from a normalized status dict.
 
@@ -97,6 +109,7 @@ def _format_metric_lines(status: dict, architecture: str) -> list[str]:
     return [
         f"GPU: {status.get('gpu_clock_mhz', '---')} MHz",
         f"MEM: {status.get('mem_clock_mhz', '---')} MHz",
+        f"ECLK: {_effective_clocks_text(status)}",
         f"VOLT: {status.get('voltage_mv', '---')} mV",
         f"VFP LOCK: {vfp_lock_text}",
         f"TEMP: {temp_text}",
