@@ -66,6 +66,17 @@ def test_format_metric_lines_core_only_when_no_extra_temps() -> None:
     assert "MEM 47 C" not in text
 
 
+def test_format_metric_lines_effective_clocks() -> None:
+    status = {"eff_gpu_clock_mhz": 1897.5, "eff_mem_clock_mhz": 7500}
+    text = "\n".join(_format_metric_lines(status, "Ada"))
+    assert "ECLK: GPU 1898 | MEM 7500 MHz" in text
+
+
+def test_format_metric_lines_effective_clocks_are_optional() -> None:
+    text = "\n".join(_format_metric_lines({"gpu_clock_mhz": 1800}, "Ada"))
+    assert "ECLK: ---" in text
+
+
 def test_format_metric_lines_missing_fields_render_dashes() -> None:
     text = "\n".join(_format_metric_lines({}, "---"))
 
