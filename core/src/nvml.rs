@@ -183,6 +183,16 @@ pub fn set_nvml_temperature_limit(nvml: &Nvml, gpu_id: u32, limit_c: i32) -> Res
     )
 }
 
+/// Set NVML's acoustic target-temperature channel (`ACOUSTIC_CURR`).
+pub fn set_nvml_acoustic_temperature(nvml: &Nvml, gpu_id: u32, limit_c: i32) -> Result<(), Error> {
+    set_nvml_temperature_threshold(
+        nvml,
+        gpu_id,
+        nvml_wrapper::enum_wrappers::device::TemperatureThreshold::AcousticCurr,
+        limit_c,
+    )
+}
+
 #[allow(clippy::type_complexity)]
 pub fn get_nvml_temperature_thresholds(
     nvml: &Nvml,

@@ -1522,6 +1522,9 @@ mod tests {
             Command::SetPowerWatt => json!({"applied": true, "power_watt": 250}),
             Command::SetPowerPercent => json!({"applied": true, "power_percent": 90}),
             Command::SetThermalLimitC => json!({"applied": true, "thermal_limit_c": 83}),
+            Command::SetAcousticTempC => {
+                json!({"applied": true, "acoustic_target_temp_c": 80})
+            }
             Command::SetFanPercent => {
                 json!({"applied": true, "fan": "all", "policy": "manual", "level_percent": 65})
             }

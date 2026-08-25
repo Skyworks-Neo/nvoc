@@ -15,6 +15,10 @@ pub enum OperationKind {
     QueryTemperatureThresholds,
     QueryNvapiThermalSettings,
     SetTemperatureLimit,
+    /// Set the NVML acoustic target temperature (`ACOUSTIC_CURR` threshold).
+    /// This channel is supported by Linux drivers; Windows rejects the NVML
+    /// temperature-threshold setter family.
+    SetNvmlAcousticTemp,
     QueryPstates,
     QuerySupportedApplicationsClocks,
     QueryClockOffset,
