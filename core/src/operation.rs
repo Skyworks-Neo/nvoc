@@ -2134,6 +2134,34 @@ impl GpuOperation for SetNvapiVfpRangePerPointPrivate {
     }
 }
 
+/// Reset every present V/F curve point on `bank` to default by clearing its
+/// mode-0 (absolute kHz) override via the private V/F-POINTS SetControl
+/// (ID 0xFEC00D04) in a single RMW cycle. Unlike `ResetVfpDeltas` /
+/// `CoreResetVfp` (which route through the pstate20 or public Client
+/// VfPoints families and cannot reach private mode-0 state), this writes
+/// the same private SetControl that `SetNvapiVfpPointPrivate` uses.
+/// Returns `Some(count)` of points written, or `None` where the family
+/// is absent.
+#[derive(Clone, Copy, Debug)]
+pub struct ResetNvapiVfpPrivate {
+    pub bank: usize,
+}
+
+impl GpuOperation for ResetNvapiVfpPrivate {
+    type Output = Option<usize>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::ResetNvapiVfpPrivate
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .reset_vfp_private(self.bank)
+            .map_err(Error::from)
+    }
+}
+
 /// Batch-measure physical clocks for a set of domains via the V3
 /// MEASURE_FREQ (RM 0x20809006, magic 0x30038) — one RM round-trip per
 /// sample for the whole set, with per-domain V1/V2 fallback.

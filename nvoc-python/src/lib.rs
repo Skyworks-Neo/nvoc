@@ -15,7 +15,8 @@ use nvoc_core::{
     SetFanStop, SetFanRpm,
     ResetLockedClocks, ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetNvapiTgpWatt,
     ResetPstateBaseVoltages, ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock,
-    ResetVfpLock, SetApiRestriction, SetApplicationsClocks, SetAutoBoost, SetAutoBoostDefault,
+    ResetVfpLock, ResetNvapiVfpPrivate, SetApiRestriction, SetApplicationsClocks, SetAutoBoost,
+    SetAutoBoostDefault,
     SetClockOffset, SetCoolerLevels, SetDomainVfpDeltas, SetEdid, SetFanSpeed, SetLegacyClocks,
     SetLockedClocks, SetNvapiClkDomainOffset, SetNvapiDNotifier, SetNvapiDynamicBoost,
     SetNvapiPerfFreqCap, SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiSensorLimits,
@@ -2485,6 +2486,32 @@ fn set_vfp_point_private(
     py_value(py, &value)
 }
 
+/// Reset every present V/F curve point on `bank` to default by clearing its
+/// mode-0 (absolute kHz) override via the private SetControl (single RMW
+/// cycle). The only way to clear raw/converted mode-0 offsets written via
+/// `set_vfp_point_private(freq_mode=True)` — the public `reset_vfp_deltas`
+/// routes through the pstate20 / public Client VfPoints families and cannot
+/// reach private mode-0 state. Returns a dict with `applied` and
+/// `points_reset` count, or `{"supported": false}` where the family is
+/// absent.
+#[pyfunction]
+fn reset_vfp_private(py: Python<'_>, gpu: &str, bank: usize) -> PyResult<Py<PyAny>> {
+    let value = with_target(gpu, "nvapi", |target| {
+        let out = run(target, ResetNvapiVfpPrivate { bank })
+            .map_err(to_py_err)?
+            .output;
+        Ok(match out {
+            Some(count) => value_object([
+                ("applied", Value::from(true)),
+                ("bank", Value::from(bank as u64)),
+                ("points_reset", Value::from(count as u64)),
+            ]),
+            None => value_object([("supported", Value::from(false))]),
+        })
+    })?;
+    py_value(py, &value)
+}
+
 #[pyfunction]
 fn set_applications_clocks(gpu: &str, memory_mhz: u32, graphics_mhz: u32) -> PyResult<()> {
     let inventory = {
@@ -3587,6 +3614,7 @@ fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(query_clk_vf_points, m)?)?;
     m.add_function(wrap_pyfunction!(set_clk_domain_offset, m)?)?;
     m.add_function(wrap_pyfunction!(set_vfp_point_private, m)?)?;
+    m.add_function(wrap_pyfunction!(reset_vfp_private, m)?)?;
     m.add_function(wrap_pyfunction!(set_target_temp, m)?)?;
     m.add_function(wrap_pyfunction!(set_applications_clocks, m)?)?;
     m.add_function(wrap_pyfunction!(reset_applications_clocks, m)?)?;

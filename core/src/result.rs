@@ -95,6 +95,9 @@ pub enum OperationKind {
     /// Write a range of V/F curve points with the same delta via the
     /// private SetControl (single RMW cycle).
     SetNvapiVfpRangePrivate,
+    /// Reset every present V/F curve point on a bank by clearing its
+    /// mode-0 override via the private SetControl (single RMW cycle).
+    ResetNvapiVfpPrivate,
     /// Batch-measure physical clocks for a set of domains (V3
     /// MEASURE_FREQ, one RM round-trip per sample for the whole set).
     QueryNvapiClkDomainFreqDetail,

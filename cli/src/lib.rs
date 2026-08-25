@@ -16,8 +16,9 @@ use nvoc_core::{
     QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
     QueryThrottleReasons, QueryVfpPointVoltage, QueryViolationStatus, QueryVoltageBoost,
     ResetApplicationsClocks, ResetCoolerLevels, ResetFanSpeed, ResetForcePstate, ResetLockedClocks,
-    ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetPstateBaseVoltages,
-    ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock, ResetVfpLock,
+    ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetNvapiVfpPrivate,
+    ResetPstateBaseVoltages, ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock,
+    ResetVfpLock,
     RestartDisplayDriver, SetApiRestriction, SetApplicationsClocks, SetAutoBoost,
     SetAutoBoostDefault, SetBb2Active, SetClockOffset, SetCoolerLevels, SetEdid, SetFanCurve,
     ResetFanCurve, SetFanStop, SetFanRpm, QueryNvapiCoolerInfo,
@@ -220,6 +221,7 @@ pub enum Command {
     ResetFan,
     ResetVfpDeltas,
     ResetVfpLock,
+    ResetVfpPrivate,
     ResetPowerPercent,
     ResetThermalLimitC,
     ResetPstateBaseVoltages,
@@ -325,6 +327,7 @@ impl Command {
             Self::ResetFan => "reset-fan",
             Self::ResetVfpDeltas => "reset-vfp-deltas",
             Self::ResetVfpLock => "reset-vfp-lock",
+            Self::ResetVfpPrivate => "reset-vfp-private",
             Self::ResetPowerPercent => "reset-power-percent",
             Self::ResetThermalLimitC => "reset-thermal-limit-c",
             Self::ResetPstateBaseVoltages => "reset-pstate-base-voltages",
@@ -496,6 +499,7 @@ impl Command {
             Self::ResetFan => "Restore fan/cooler control",
             Self::ResetVfpDeltas => "Reset NVAPI VFP deltas",
             Self::ResetVfpLock => "Reset NVAPI VFP lock",
+            Self::ResetVfpPrivate => "Reset private V/F-POINTS mode-0 overrides (clear raw/converted kHz offsets the public/pstate20 reset paths cannot reach)",
             Self::ResetPowerPercent => "Reset NVAPI power limits",
             Self::ResetThermalLimitC => "Reset NVAPI sensor limits",
             Self::ResetPstateBaseVoltages => "Reset NVAPI P-State base voltages",
@@ -603,6 +607,7 @@ impl Command {
             Self::ResetGpuClock => (0, 0),
             Self::SetVfpPointPrivate => (3, 3),
             Self::SetVfpRangePrivate => (4, 4),
+            Self::ResetVfpPrivate => (1, 1),
             Self::GetClkDomainFreq => (0, 1),
             Self::SetVfpRangeDeltaMhz => (3, 3),
             Self::SetPstateLock => (1, 2),
@@ -782,6 +787,11 @@ impl Command {
                     "default/--freq-mode: kHz freq offset applied to every point (e.g. 200000 = +200 MHz). --raw-converted: MHz target translated per-point to a raw f-offset control value via g(def) (each point gets its own C(def)/D0). --raw: raw f-offset control word applied to every point",
                 ),
             ],
+            Self::ResetVfpPrivate => vec![PositionalArg::free(
+                "arg_bank",
+                "BANK",
+                "Bank to reset: 0 = V/F curve points (clears mode-0 kHz offsets written via set-vfp-point/range-private default/--freq-mode), 1 = pstate-class records",
+            )],
             Self::SetVfpPointPrivate => vec![
                 PositionalArg::free(
                     "arg_bank",
@@ -1067,6 +1077,7 @@ const COMMANDS: &[Command] = &[
     Command::ResetTgpWatt,
     Command::ResetVfpDeltas,
     Command::ResetVfpLock,
+    Command::ResetVfpPrivate,
     Command::ResetVoltageBoostPercent,
     Command::SetAcousticTempC,
     Command::SetApiRestriction,
@@ -3797,6 +3808,22 @@ fn execute_target(
         Command::ResetVfpLock => {
             run(target, ResetVfpLock)?;
             Ok(json!({"applied": true}))
+        }
+        Command::ResetVfpPrivate => {
+            let bank = parse_usize(&invocation.positionals[0], "bank")?;
+            if bank > 1 {
+                return Err(CliError::new("bank must be 0 or 1"));
+            }
+            let out = run(target, ResetNvapiVfpPrivate { bank })?.output;
+            Ok(match out {
+                Some(count) => json!({
+                    "applied": true,
+                    "bank": bank,
+                    "mode": "freq_offset_clear",
+                    "points_reset": count,
+                }),
+                None => json!({"supported": false}),
+            })
         }
         Command::ResetPowerPercent => {
             run(target, ResetNvapiPowerLimits)?;
