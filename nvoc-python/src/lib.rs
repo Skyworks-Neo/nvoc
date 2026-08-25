@@ -477,7 +477,7 @@ fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
         }
     }
     if let Some((_sensor, temp)) = status.sensors.first() {
-        map.insert("temperature_c".into(), f64_value(temp.0 as f64));
+        map.insert("temperature_c".into(), f64_value(*temp as f64));
     }
     if let Some((_channel, power)) = status.power.iter().next()
         && let Some(watts) = first_number_in_display(power)
