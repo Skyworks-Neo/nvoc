@@ -41,6 +41,15 @@ def _perf_limits_text(perf) -> str:
     return ", ".join(reasons) if reasons else "none"
 
 
+def _format_mibps(value: float) -> str:
+    """Format PCIe throughput using MiB/s or GiB/s."""
+    if value >= 1024.0:
+        return f"{value / 1024.0:.1f} GiB/s"
+    if value >= 10.0:
+        return f"{value:.0f} MiB/s"
+    return f"{value:.1f} MiB/s"
+
+
 def _format_metric_lines(status: dict, architecture: str) -> list[str]:
     """Build the dashboard metric lines from a normalized status dict.
 
@@ -104,6 +113,32 @@ def _format_metric_lines(status: dict, architecture: str) -> list[str]:
 
     lanes = status.get("pcie_lanes")
     pcie_text = f"x{int(lanes)}" if isinstance(lanes, (int, float)) else "---"
+
+    current_gen = status.get("pcie_link_gen")
+    max_gen = status.get("pcie_max_link_gen")
+    if isinstance(current_gen, (int, float)) and isinstance(max_gen, (int, float)):
+        generation = f"Gen{int(current_gen)}/{int(max_gen)}"
+    elif isinstance(max_gen, (int, float)):
+        generation = f"Gen?/{int(max_gen)}"
+    else:
+        generation = ""
+
+    tx = status.get("pcie_tx_mibps")
+    rx = status.get("pcie_rx_mibps")
+    bandwidth = []
+    if isinstance(tx, (int, float)):
+        bandwidth.append(f"↑{_format_mibps(float(tx))}")
+    if isinstance(rx, (int, float)):
+        bandwidth.append(f"↓{_format_mibps(float(rx))}")
+
+    parts = [
+        part for part in (generation, pcie_text if pcie_text != "---" else "") if part
+    ]
+    parts.extend(bandwidth)
+    replay = status.get("pcie_replay_counter")
+    if isinstance(replay, (int, float)) and replay > 0:
+        parts.append(f"⚠replay {int(replay)}")
+    pcie_text = " ".join(parts) if parts else "---"
 
     perf = status.get("perf") or {}
     perf_text = _perf_limits_text(perf)

@@ -1441,7 +1441,30 @@ fn execute_target(
             let info = run(target, QueryGpuInfo)?.output;
             Ok(Value::String(info.uuid.unwrap_or_default()))
         }
-        Command::GetStatus => Ok(serde_json::to_value(run(target, QueryGpuStatus)?.output)?),
+        Command::GetStatus => {
+            let mut value = serde_json::to_value(run(target, QueryGpuStatus)?.output)?;
+            if let Ok(nvml) = target.nvml()
+                && let Some(map) = value.as_object_mut()
+            {
+                let pcie = nvoc_core::nvml::query_nvml_pcie_telemetry(nvml, target.id.0);
+                if let Some(tx) = pcie.tx_mibps {
+                    map.insert("pcie_tx_mibps".to_string(), json!(tx));
+                }
+                if let Some(rx) = pcie.rx_mibps {
+                    map.insert("pcie_rx_mibps".to_string(), json!(rx));
+                }
+                if let Some(replay) = pcie.replay_counter {
+                    map.insert("pcie_replay_counter".to_string(), json!(replay));
+                }
+                if let Some(generation) = pcie.current_generation {
+                    map.insert("pcie_link_gen".to_string(), json!(generation));
+                }
+                if let Some(generation) = pcie.max_generation {
+                    map.insert("pcie_max_link_gen".to_string(), json!(generation));
+                }
+            }
+            Ok(value)
+        }
         Command::GetSettings => Ok(serde_json::to_value(run(target, QueryGpuSettings)?.output)?),
         Command::GetVfp => get_vfp(target, invocation),
         Command::GetVfpPointVoltageMv => {
