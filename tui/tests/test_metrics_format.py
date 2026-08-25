@@ -88,8 +88,6 @@ def test_format_metric_lines_effective_clocks() -> None:
 def test_format_metric_lines_effective_clocks_are_optional() -> None:
     text = "\n".join(_format_metric_lines({"gpu_clock_mhz": 1800}, "Ada"))
     assert "ECLK: ---" in text
-
-
 def test_format_metric_lines_perf_zero_is_none() -> None:
     # No active limit reason -> "none" (not "0x0").
     text = "\n".join(_format_metric_lines({"perf": {"unknown": 0, "limits": 0}}, "---"))

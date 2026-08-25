@@ -60,8 +60,6 @@ def _effective_clocks_text(status: dict) -> str:
     if isinstance(memory, (int, float)):
         parts.append(f"MEM {round(float(memory))}")
     return " | ".join(parts) + " MHz" if parts else "---"
-
-
 def _format_metric_lines(status: dict, architecture: str) -> list[str]:
     """Build the dashboard metric lines from a normalized status dict.
 

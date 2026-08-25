@@ -599,7 +599,6 @@ fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
             map.insert("pcie_max_link_gen".into(), u64_value(generation as u64));
         }
     }
-
     // NVAPI perf / throttle-limit flags (raw bitset; overlaps NVML throttle
     // reasons). `limits_decoded` is the same mask rendered as reason names so
     // consumers (TUI/CLI) don't each have to re-decode the bits.
