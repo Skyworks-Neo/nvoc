@@ -1044,6 +1044,8 @@ fn format_with_unit(key: &str, rendered: &str) -> String {
         format!("{rendered}%")
     } else if key.ends_with("_c") || key == "celsius" {
         format!("{rendered} C")
+    } else if key.ends_with("_mibps") {
+        format!("{rendered} MiB/s")
     } else if key == "voltage" {
         // Core voltage is reported in microvolts.
         format!("{rendered} uV")
@@ -1180,6 +1182,8 @@ mod tests {
         let output = json!({
             "voltage": 940000,
             "pcie_lanes": 8,
+            "pcie_tx_mibps": 1234.5,
+            "pcie_rx_mibps": 7.8,
             "memory": {
                 "dedicated": 8384512,
                 "dedicated_available": 8146944,
@@ -1208,6 +1212,8 @@ mod tests {
         assert!(rendered.contains("Voltage: 940000 uV"));
         // PCIe link width gets an `x` prefix.
         assert!(rendered.contains("Pcie Lanes: x8"));
+        assert!(rendered.contains("Pcie Tx Mibps: 1234.5 MiB/s"));
+        assert!(rendered.contains("Pcie Rx Mibps: 7.8 MiB/s"));
         // Memory size fields are KiB -> MB; the eviction *count* has no unit.
         assert!(rendered.contains("Dedicated: 8188 MB"));
         assert!(rendered.contains("Shared: 32573.785 MB"));

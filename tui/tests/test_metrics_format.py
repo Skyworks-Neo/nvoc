@@ -26,6 +26,11 @@ def test_format_metric_lines_full() -> None:
             "Cooler1": {"current_level": 45, "current_tach": 1234, "active": True},
         },
         "pcie_lanes": 16,
+        "pcie_link_gen": 4,
+        "pcie_max_link_gen": 4,
+        "pcie_tx_mibps": 1234.5,
+        "pcie_rx_mibps": 7.8,
+        "pcie_replay_counter": 2,
         "perf": {"unknown": 0, "limits": 32},
     }
 
@@ -40,7 +45,7 @@ def test_format_metric_lines_full() -> None:
     assert "LOAD: GPU 100% | MC 0% | VEN 12% | BUS 2%" in text
     assert "VRAM: 2.0 / 8.0 GB" in text
     assert "FAN: 1234 RPM @ 45%" in text
-    assert "PCIE: x16" in text
+    assert "PCIE: Gen4/4 x16 ↑1.2 GiB/s ↓7.8 MiB/s ⚠replay 2" in text
     # limits = 32 = UNKNOWN_32 bit -> decoded reason name, not raw hex.
     assert "PERF LIMIT: Unknown32" in text
     assert "ARCH: Ada" in text
@@ -90,6 +95,26 @@ def test_format_metric_lines_perf_zero_is_none() -> None:
     # No active limit reason -> "none" (not "0x0").
     text = "\n".join(_format_metric_lines({"perf": {"unknown": 0, "limits": 0}}, "---"))
     assert "PERF LIMIT: none" in text
+
+
+def test_format_metric_lines_pcie_telemetry_is_optional() -> None:
+    text = "\n".join(_format_metric_lines({"pcie_lanes": 8}, "Ada"))
+    assert "PCIE: x8" in text
+    assert "Gen" not in text
+    assert "↑" not in text
+    assert "replay" not in text
+
+
+def test_format_metric_lines_pcie_telemetry_without_lanes() -> None:
+    status = {
+        "pcie_max_link_gen": 5,
+        "pcie_tx_mibps": 0.5,
+        "pcie_rx_mibps": 0.3,
+        "pcie_replay_counter": 0,
+    }
+    text = "\n".join(_format_metric_lines(status, "Ada"))
+    assert "PCIE: Gen?/5 ↑0.5 MiB/s ↓0.3 MiB/s" in text
+    assert "replay" not in text
 
 
 def test_format_metric_lines_missing_fields_render_dashes() -> None:

@@ -219,6 +219,28 @@ fn nvml_power_ok() {
 
 #[test]
 #[ignore]
+fn nvml_pcie_telemetry_ok() {
+    let inv = inventory();
+    let target = first_target(&inv);
+    let telemetry = nvoc_core::nvml::query_nvml_pcie_telemetry(nvml(&inv), target.id.0);
+
+    for throughput in [telemetry.tx_mibps, telemetry.rx_mibps]
+        .into_iter()
+        .flatten()
+    {
+        assert!(throughput.is_finite());
+        assert!(throughput >= 0.0);
+    }
+    for generation in [telemetry.current_generation, telemetry.max_generation]
+        .into_iter()
+        .flatten()
+    {
+        assert!((1..=7).contains(&generation));
+    }
+}
+
+#[test]
+#[ignore]
 fn nvml_power_bad_gpu() {
     let bad_target = GpuTarget::without_backends(GpuId(INVALID_GPU_ID), 0);
     assert!(run(&bad_target, QueryPowerLimits).is_err());
