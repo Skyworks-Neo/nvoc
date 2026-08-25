@@ -753,10 +753,11 @@ fn format_sensors_array(indent: usize, items: &[Value]) -> Vec<String> {
 }
 
 /// Render a sensor descriptor (everything except `target`) as indented fields.
-/// `name` and `sensor_mask_number` are emitted verbatim; `range` is a
+/// `channel_num` is emitted verbatim; `channel_type` gets a human tag
+/// (GPU_AVG/GPU_MAX/BOARD/MEMORY/PWR_SUPPLY/unclassified); `range` is a
 /// temperature limit shown as `Max N C, Min N C`, skipped when it is `{0, 0}`
-/// (the undocumented thermal-sensors API reports no limits for hot-spot /
-/// memory sensors, so a zero range carries no information).
+/// (the RTSS GetInfo record may report no limits for a channel, so a zero
+/// range carries no information).
 fn format_sensor_descriptor(
     indent: usize,
     descriptor: &serde_json::Map<String, Value>,
@@ -771,9 +772,6 @@ fn format_sensor_descriptor(
     };
 
     let mut lines = Vec::new();
-    if let Some(name) = descriptor.get("name") {
-        lines.push(field("name", name));
-    }
     if let Some(range) = descriptor.get("range").and_then(Value::as_object) {
         let max = range.get("max").and_then(Value::as_f64);
         let min = range.get("min").and_then(Value::as_f64);
@@ -795,8 +793,44 @@ fn format_sensor_descriptor(
             ));
         }
     }
-    if let Some(mask) = descriptor.get("sensor_mask_number") {
-        lines.push(field("sensor_mask_number", mask));
+    if let Some(chan) = descriptor.get("channel_num") {
+        lines.push(field("channel_num", chan));
+    }
+    // Cross-reference to the raw sibling channel: RTSS exposes two channels
+    // per physical sensor — `(dev, 0)` raw and `(dev, 1)` with `offset_hw`
+    // already applied by the driver. Annotate the `(dev, 1)` half.
+    if let Some(sibling) = descriptor.get("same_sensor_as").and_then(Value::as_i64) {
+        lines.push(format!(
+            "{}{}: ch[{}] with offset_hw",
+            indent_spaces(indent),
+            nvoc_cli_common::color::stylize_title("Same Sensor As"),
+            nvoc_cli_common::color::stylize(&sibling.to_string(), false)
+        ));
+    }
+    // RTSS ThermChannel metadata (research fields from GetInfo). channel_type
+    // gets a human tag; offsets/scaling are shown raw (semantics undocumented).
+    if let Some(ch_type) = descriptor.get("channel_type").and_then(Value::as_i64) {
+        let tag = match ch_type {
+            0 => " (GPU_AVG)",
+            1 => " (GPU_MAX)",
+            2 => " (BOARD)",
+            3 => " (MEMORY)",
+            4 => " (PWR_SUPPLY)",
+            255 => " (unclassified)",
+            _ => "",
+        };
+        lines.push(format!(
+            "{}{}: {}{}",
+            indent_spaces(indent),
+            nvoc_cli_common::color::stylize_title("Channel Type"),
+            nvoc_cli_common::color::stylize(&ch_type.to_string(), false),
+            tag
+        ));
+    }
+    for key in ["offset_sw", "offset_hw", "scaling"] {
+        if let Some(val) = descriptor.get(key) {
+            lines.push(field(key, val));
+        }
     }
     lines
 }
@@ -1026,8 +1060,8 @@ mod tests {
                 [
                     {
                         "target": "Gpu",
-                        "name": "Core",
-                        "sensor_mask_number": 8,
+                        "channel_num": 0,
+                        "channel_type": 0,
                         "range": { "max": 139, "min": -35 }
                     },
                     52.58203125
@@ -1046,10 +1080,12 @@ mod tests {
         assert!(rendered.contains("Shared: 32573.785 MB"));
         assert!(rendered.contains("Dedicated Evictions: 0"));
         assert!(!rendered.contains("Dedicated: 8384512"));
-        // Sensors: target dropped, temperature gets a C unit.
+        // Sensors: target dropped, classified by channel type (no Name line),
+        // temperature gets a C unit.
         assert!(!rendered.contains("Target"));
-        assert!(rendered.contains("Name: Core"));
-        assert!(rendered.contains("Sensor Mask Number: 8"));
+        assert!(!rendered.contains("Name:"));
+        assert!(rendered.contains("Channel Num: 0"));
+        assert!(rendered.contains("Channel Type: 0 (GPU_AVG)"));
         assert!(rendered.contains("Range: Max 139 C, Min -35 C"));
         assert!(rendered.contains("- 52.58203125 C"));
     }
@@ -1057,15 +1093,15 @@ mod tests {
     #[test]
     fn human_output_hides_zero_sensor_range() {
         nvoc_cli_common::color::init(true);
-        // Undocumented sensors (hot spot / memory junction) carry no limit data,
-        // so their range is {0, 0}; that uninformative line is suppressed.
+        // A channel whose GetInfo record reports no limit data has range
+        // {0, 0}; that uninformative line is suppressed.
         let output = json!({
             "sensors": [
                 [
                     {
                         "target": "Gpu",
-                        "name": "Hot Spot",
-                        "sensor_mask_number": 9,
+                        "channel_num": 1,
+                        "channel_type": 1,
                         "range": { "max": 0, "min": 0 }
                     },
                     78.5
@@ -1075,10 +1111,11 @@ mod tests {
 
         let rendered = format_human_output("get-status", &output).join("\n");
 
-        assert!(rendered.contains("Name: Hot Spot"));
+        assert!(rendered.contains("Channel Type: 1 (GPU_MAX)"));
         assert!(rendered.contains("- 78.5 C"));
         assert!(!rendered.contains("Range"));
         assert!(!rendered.contains("Target"));
+        assert!(!rendered.contains("Name:"));
     }
 
     #[test]

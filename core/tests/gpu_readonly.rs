@@ -504,3 +504,31 @@ fn nvapi_vf_check_bad_point() {
     let target = first_target(&inv);
     assert!(run(&target, CheckVoltageFrequency { point: usize::MAX }).is_err());
 }
+
+#[test]
+#[ignore]
+fn nvapi_thermal_channels_have_core_first_and_unique_indices() {
+    let inv = inventory();
+    let target = first_target(&inv);
+    if !target.has_nvapi() {
+        return;
+    }
+
+    let status = run(&target, QueryGpuStatus)
+        .expect("GPU status should include best-effort thermal channels")
+        .output;
+    let (core, _) = status
+        .sensors
+        .first()
+        .expect("at least the GPU average thermal channel should be present");
+    assert_eq!(core.channel_type, Some(0), "GPU_AVG must remain first");
+
+    let mut channels = status
+        .sensors
+        .iter()
+        .filter_map(|(sensor, _)| sensor.channel_num)
+        .collect::<Vec<_>>();
+    channels.sort_unstable();
+    channels.dedup();
+    assert_eq!(channels.len(), status.sensors.len());
+}
