@@ -1545,7 +1545,6 @@ fn clap_subcommand(command: Command) -> ClapCommand {
     if command == Command::SetPstateBaseVoltageUv {
         subcommand = subcommand.alias("set-legacy-overvolt-uv");
     }
-    let (min_args, _) = command.arity();
     for (index, positional) in command.positional_args().into_iter().enumerate() {
         subcommand = subcommand.arg(positional_arg(positional, index < min_args));
     }
