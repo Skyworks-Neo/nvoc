@@ -26,7 +26,8 @@ use nvoc_core::{
     SetNvapiPerfFreqCap, SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiSensorLimits,
     SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvapiVfpPointPrivate, SetNvapiVfpRangePerPointPrivate,
     SetNvapiVfpRangePrivate, SetNvapiVoltRailOffset, SetNvapiVoltRailTarget, SetNvmlPstateLock,
-    SetPowerLimit, SetPowerMode, SetPstateBaseVoltage, SetPstateClockOffset, SetTemperatureLimit,
+    SetNvmlAcousticTemp, SetPowerLimit, SetPowerMode, SetPstateBaseVoltage, SetPstateClockOffset,
+    SetTemperatureLimit,
     SetVfpFrequencyLock, SetVfpPointDelta, SetVfpRangeDelta, SetVfpVoltageLock, SetVoltageBoost,
     SetWm2Active, SetWm2Mode, VfpResetDomain, Wm2AcousticMode, discover_targets,
     nvml_pstate_to_str, parse_nvapi_locked_voltage_target, parse_nvml_fan_control_policy,
@@ -185,6 +186,7 @@ pub enum Command {
     GetClkVfPoints,
     SetTemperatureThresholds,
     SetThermalLimitC,
+    SetAcousticTempC,
     SetFanPercent,
     SetLockedClocksMhz,
     SetVfpVoltageLock,
@@ -291,6 +293,7 @@ impl Command {
             Self::SetGpuClock => "set-perf-freq-caps",
             Self::ResetGpuClock => "reset-perf-freq-caps",
             Self::SetThermalLimitC => "set-thermal-limit-c",
+            Self::SetAcousticTempC => "set-acoustic-temp-c",
             Self::SetTemperatureThresholds => "set-temp-thresholds",
             Self::SetFanPercent => "set-fan-percent",
             Self::SetLockedClocksMhz => "set-locked-clocks-mhz",
@@ -439,6 +442,9 @@ impl Command {
                 "Write a range of V/F curve points via the private SetControl (dangerous batch V/F edit; single RMW cycle; default/--freq-mode = same kHz freq offset on every point, --raw-converted = one MHz target translated per-point via g(def), --raw = one raw control word on every point)"
             }
             Self::SetThermalLimitC => "Set thermal limit in Celsius",
+            Self::SetAcousticTempC => {
+                "Set acoustic target temperature in Celsius via NVML (Linux channel; Windows rejects the NVML threshold setter -- use set-temp-thresholds there)"
+            }
             Self::SetTemperatureThresholds => {
                 "Set an NVAPI target-temp (temp-limit) policy slot in Celsius for mobile sku"
             }
@@ -526,7 +532,8 @@ impl Command {
             | Self::SetAutoBoost
             | Self::SetAutoBoostDefault
             | Self::SetApiRestriction
-            | Self::ResetApplicationsClocks => &NVML_ONLY,
+            | Self::ResetApplicationsClocks
+            | Self::SetAcousticTempC => &NVML_ONLY,
             _ => &NVAPI_ONLY,
         }
     }
@@ -560,6 +567,7 @@ impl Command {
             | Self::SetDNotifier
             | Self::SetPStateNative
             | Self::SetThermalLimitC
+            | Self::SetAcousticTempC
             | Self::SetTemperatureThresholds
             | Self::SetFanPercent
             | Self::SetVfpVoltageLock
@@ -702,6 +710,11 @@ impl Command {
                 "arg_celsius",
                 "CELSIUS",
                 "Temperature limit in Celsius, for example 83 or 83C",
+            )],
+            Self::SetAcousticTempC => vec![PositionalArg::hyphen(
+                "arg_celsius",
+                "CELSIUS",
+                "Acoustic target temperature in Celsius, for example 80 or 80C",
             )],
             Self::SetTemperatureThresholds => vec![PositionalArg::hyphen(
                 "arg_celsius",
@@ -1055,6 +1068,7 @@ const COMMANDS: &[Command] = &[
     Command::ResetVfpDeltas,
     Command::ResetVfpLock,
     Command::ResetVoltageBoostPercent,
+    Command::SetAcousticTempC,
     Command::SetApiRestriction,
     Command::SetApplicationsClocksMhz,
     Command::SetAutoBoost,
@@ -3468,6 +3482,15 @@ fn execute_target(
                 }
             }
             Ok(json!({"applied": true, "thermal_limit_c": celsius}))
+        }
+        Command::SetAcousticTempC => {
+            // NVML acoustic (target) temperature — the Linux-native channel
+            // (ACOUSTIC_CURR threshold, same one nvidia_oc uses). Windows
+            // rejects the NVML threshold setter with InvalidArg; the NVAPI
+            // wall (set-temp-thresholds) is the Windows path.
+            let celsius = parse_i32_unit(&invocation.positionals[0], "c", "celsius")?;
+            run(target, SetNvmlAcousticTemp { celsius })?;
+            Ok(json!({"applied": true, "acoustic_target_temp_c": celsius}))
         }
         Command::SetFanPercent => set_fan_percent(target, adapter, invocation),
         Command::SetLockedClocksMhz => set_locked_clocks(target, adapter, invocation),

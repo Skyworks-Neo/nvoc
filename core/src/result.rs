@@ -14,6 +14,10 @@ pub enum OperationKind {
     SetPowerLimit,
     QueryTemperatureThresholds,
     SetTemperatureLimit,
+    /// Set the NVML acoustic target temperature (`ACOUSTIC_CURR` threshold) —
+    /// the Linux-native target-temp channel. Windows rejects the NVML
+    /// threshold setter family; see `SetNvmlAcousticTemp`.
+    SetNvmlAcousticTemp,
     QueryPstates,
     QuerySupportedApplicationsClocks,
     QueryClockOffset,
@@ -196,6 +200,7 @@ impl OperationKind {
             self,
             SetPowerLimit
                 | SetTemperatureLimit
+                | SetNvmlAcousticTemp
                 | SetClockOffset
                 | SetApplicationsClocks
                 | ResetApplicationsClocks

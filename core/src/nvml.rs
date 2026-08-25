@@ -273,6 +273,21 @@ pub fn set_nvml_temperature_limit(nvml: &Nvml, gpu_id: u32, limit_c: i32) -> Res
     )
 }
 
+/// Set the acoustic (target) temperature threshold — NVML's Linux-side
+/// target-temp channel (`ACOUSTIC_CURR`), the same one nvidia_oc and MSI
+/// Afterburner's "target temperature" feature use. Windows drivers reject
+/// the whole NVML threshold-setter family (InvalidArg), so this channel is
+/// only meaningful on Linux; on Windows use the NVAPI target-temp wall
+/// (`SetNvapiTargetTemp`).
+pub fn set_nvml_acoustic_temperature(nvml: &Nvml, gpu_id: u32, limit_c: i32) -> Result<(), Error> {
+    set_nvml_temperature_threshold(
+        nvml,
+        gpu_id,
+        nvml_wrapper::enum_wrappers::device::TemperatureThreshold::AcousticCurr,
+        limit_c,
+    )
+}
+
 #[allow(clippy::type_complexity)]
 pub fn get_nvml_temperature_thresholds(
     nvml: &Nvml,
