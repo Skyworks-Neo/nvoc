@@ -532,7 +532,6 @@ fn nvapi_thermal_channels_have_core_first_and_unique_indices() {
     channels.dedup();
     assert_eq!(channels.len(), status.sensors.len());
 }
-
 #[test]
 #[ignore]
 fn nvapi_legacy_thermal_settings_have_valid_ranges() {

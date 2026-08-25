@@ -479,6 +479,33 @@ fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
     if let Some((_sensor, temp)) = status.sensors.first() {
         map.insert("temperature_c".into(), f64_value(*temp as f64));
     }
+    // Full thermal-sensor list as `[descriptor, temp_celsius]` pairs (same shape
+    // as get-status JSON), plus the three primary typed temperatures pulled out
+    // by channel_type (0=GPU_AVG/core, 1=GPU_MAX/hot spot, 3=MEMORY/VRAM). The
+    // TUI dashboard reads temp_core/temp_hotspot/temp_memory directly (the
+    // native path bypasses normalize_query_output, so it cannot re-parse the
+    // sensors array itself); `temperature_c` above stays as the core fallback.
+    if !status.sensors.is_empty() {
+        if let Ok(v) = serde_json::to_value(&status.sensors)
+            && !v.is_null()
+        {
+            map.insert("sensors".into(), v);
+        }
+        for (desc, temp) in &status.sensors {
+            match desc.channel_type {
+                Some(0) if !map.contains_key("temp_core") => {
+                    map.insert("temp_core".into(), f64_value(*temp as f64));
+                }
+                Some(1) if !map.contains_key("temp_hotspot") => {
+                    map.insert("temp_hotspot".into(), f64_value(*temp as f64));
+                }
+                Some(3) if !map.contains_key("temp_memory") => {
+                    map.insert("temp_memory".into(), f64_value(*temp as f64));
+                }
+                _ => {}
+            }
+        }
+    }
     if let Some((_channel, power)) = status.power.iter().next()
         && let Some(watts) = first_number_in_display(power)
     {
@@ -494,6 +521,52 @@ fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
             break;
         }
     }
+
+    // Per-domain utilization %: { Graphics, FrameBuffer(=memory controller),
+    // VideoEngine, BusInterface }. Serialized verbatim (matches get-status JSON).
+    if let Ok(v) = serde_json::to_value(&status.utilization)
+        && !v.is_null()
+    {
+        map.insert("utilization".into(), v);
+    }
+
+    // VRAM (KiB): used = dedicated - dedicated_available_current.
+    if let Some(mem) = status.memory {
+        let total = mem.dedicated.0;
+        let free = mem.dedicated_available_current.0;
+        let used = total.saturating_sub(free);
+        map.insert(
+            "vram".into(),
+            value_object([
+                ("total_kib", u64_value(total as u64)),
+                ("used_kib", u64_value(used as u64)),
+                ("free_kib", u64_value(free as u64)),
+                ("shared_kib", u64_value(mem.shared.0 as u64)),
+            ]),
+        );
+    }
+
+    // Per-cooler fan status (rpm + level % + active), serialized verbatim.
+    if let Ok(v) = serde_json::to_value(&status.coolers)
+        && !v.is_null()
+    {
+        map.insert("coolers".into(), v);
+    }
+
+    // PCIe link width (downstream lane count).
+    if let Some(lanes) = status.pcie_lanes {
+        map.insert("pcie_lanes".into(), u64_value(lanes as u64));
+    }
+
+    // NVAPI perf / throttle-limit flags (raw bitset; overlaps NVML throttle reasons).
+    map.insert(
+        "perf".into(),
+        value_object([
+            ("unknown", u64_value(status.perf.unknown as u64)),
+            ("limits", u64_value(status.perf.limits.bits() as u64)),
+        ]),
+    );
+
     Ok(Value::Object(map))
 }
 
