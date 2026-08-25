@@ -26,7 +26,7 @@ def test_format_metric_lines_full() -> None:
             "Cooler1": {"current_level": 45, "current_tach": 1234, "active": True},
         },
         "pcie_lanes": 16,
-        "perf": {"unknown": 0, "limits": 64},
+        "perf": {"unknown": 0, "limits": 32},
     }
 
     text = "\n".join(_format_metric_lines(status, "Ada"))
@@ -41,7 +41,8 @@ def test_format_metric_lines_full() -> None:
     assert "VRAM: 2.0 / 8.0 GB" in text
     assert "FAN: 1234 RPM @ 45%" in text
     assert "PCIE: x16" in text
-    assert "PERF: 0x40" in text
+    # limits = 32 = UNKNOWN_32 bit -> decoded reason name, not raw hex.
+    assert "PERF LIMIT: Unknown32" in text
     assert "ARCH: Ada" in text
 
 
@@ -77,6 +78,20 @@ def test_format_metric_lines_effective_clocks_are_optional() -> None:
     assert "ECLK: ---" in text
 
 
+def test_format_metric_lines_perf_decodes_multiple_reasons() -> None:
+    # limits = 18 = THERMAL_LIMIT(2) | NO_LOAD_LIMIT(16), decoded in bit order.
+    text = "\n".join(
+        _format_metric_lines({"perf": {"unknown": 0, "limits": 18}}, "---")
+    )
+    assert "PERF LIMIT: Temperature, No Load" in text
+
+
+def test_format_metric_lines_perf_zero_is_none() -> None:
+    # No active limit reason -> "none" (not "0x0").
+    text = "\n".join(_format_metric_lines({"perf": {"unknown": 0, "limits": 0}}, "---"))
+    assert "PERF LIMIT: none" in text
+
+
 def test_format_metric_lines_missing_fields_render_dashes() -> None:
     text = "\n".join(_format_metric_lines({}, "---"))
 
@@ -85,7 +100,7 @@ def test_format_metric_lines_missing_fields_render_dashes() -> None:
     assert "FAN: ---" in text
     assert "PCIE: ---" in text
     assert "PSTATE: ---" in text
-    assert "PERF: ---" in text
+    assert "PERF LIMIT: ---" in text
 
 
 def test_format_metric_lines_multi_cooler_labels() -> None:
