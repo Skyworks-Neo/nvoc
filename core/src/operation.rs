@@ -4,8 +4,9 @@ use super::nvml as low_nvml;
 use super::result::{
     ApiRestrictionState, AppliedValue, AutoBoostState, BatchReport, ClockOffset, DisplayInfo,
     EdidData, FanInfo, OperationKind, OperationReport, PstateBaseVoltage, PstateClockRange,
-    SupportedApplicationClocks, TargetOutcome, TdpTempLimits, TemperatureThreshold, ThrottleReason,
-    ViolationEntry, ViolationStatusReport, VoltageBoostState, VoltageFrequencyCheck,
+    SupportedApplicationClocks, TargetOutcome, TdpTempLimits, TemperatureThreshold,
+    ThermalSensorReading, ThrottleReason, ViolationEntry, ViolationStatusReport, VoltageBoostState,
+    VoltageFrequencyCheck,
 };
 use super::target::GpuTarget;
 use super::types::{NvapiLockedVoltageTarget, VfpResetDomain};
@@ -171,6 +172,38 @@ impl GpuOperation for SetPowerLimit {
 
 #[derive(Clone, Copy, Debug)]
 pub struct QueryTemperatureThresholds;
+
+/// Query NVAPI's legacy three-sensor thermal view, including physical ranges.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiThermalSettings;
+
+impl GpuOperation for QueryNvapiThermalSettings {
+    type Output = Vec<ThermalSensorReading>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiThermalSettings
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .inner()
+            .thermal_settings(None)
+            .map_err(Error::from)
+            .map(|sensors| {
+                sensors
+                    .into_iter()
+                    .map(|sensor| ThermalSensorReading {
+                        target: sensor.target,
+                        controller: sensor.controller,
+                        current_c: sensor.current_temperature.0,
+                        min_c: sensor.default_temperature_range.min.0,
+                        max_c: sensor.default_temperature_range.max.0,
+                    })
+                    .collect()
+            })
+    }
+}
 
 impl GpuOperation for QueryTemperatureThresholds {
     type Output = Vec<TemperatureThreshold>;

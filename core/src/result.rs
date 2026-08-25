@@ -13,6 +13,7 @@ pub enum OperationKind {
     QueryPowerLimits,
     SetPowerLimit,
     QueryTemperatureThresholds,
+    QueryNvapiThermalSettings,
     SetTemperatureLimit,
     QueryPstates,
     QuerySupportedApplicationsClocks,
@@ -118,6 +119,16 @@ pub struct PowerLimits {
 pub struct TemperatureThreshold {
     pub name: &'static str,
     pub celsius: Option<u32>,
+}
+
+/// One entry from NVAPI's legacy GPU, memory, and board thermal view.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ThermalSensorReading {
+    pub target: nvapi_hi::nvapi::ThermalTarget,
+    pub controller: nvapi_hi::nvapi::ThermalController,
+    pub current_c: i32,
+    pub min_c: i32,
+    pub max_c: i32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

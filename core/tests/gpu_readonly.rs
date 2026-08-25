@@ -2,10 +2,10 @@ use nvapi_hi::Microvolts;
 use nvml_wrapper::Nvml;
 use nvoc_core::{
     BackendSet, CheckVoltageFrequency, ClockDomain, Error, GpuId, GpuSelector, GpuTarget,
-    QueryClockOffset, QueryFanInfo, QueryGpuInfo, QueryGpuStatus, QueryPowerLimits, QueryPstates,
-    QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
-    QueryVfpPointVoltage, TargetInventory, discover_targets, nvml_pstate_to_index,
-    nvml_pstate_to_str, parse_nvml_pstate, run, select_targets,
+    QueryClockOffset, QueryFanInfo, QueryGpuInfo, QueryGpuStatus, QueryNvapiThermalSettings,
+    QueryPowerLimits, QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits,
+    QueryTemperatureThresholds, QueryVfpPointVoltage, TargetInventory, discover_targets,
+    nvml_pstate_to_index, nvml_pstate_to_str, parse_nvml_pstate, run, select_targets,
 };
 use serde_json::Value;
 use std::env;
@@ -531,4 +531,25 @@ fn nvapi_thermal_channels_have_core_first_and_unique_indices() {
     channels.sort_unstable();
     channels.dedup();
     assert_eq!(channels.len(), status.sensors.len());
+}
+
+#[test]
+#[ignore]
+fn nvapi_legacy_thermal_settings_have_valid_ranges() {
+    let inv = inventory();
+    let target = first_target(&inv);
+    if !target.has_nvapi() {
+        return;
+    }
+
+    let sensors = run(&target, QueryNvapiThermalSettings)
+        .expect("legacy thermal settings should be readable")
+        .output;
+    assert!(!sensors.is_empty());
+    assert!(sensors.len() <= 3);
+    for sensor in sensors {
+        assert!(sensor.min_c <= sensor.max_c);
+        assert!(sensor.current_c >= sensor.min_c);
+        assert!(sensor.current_c <= sensor.max_c);
+    }
 }
