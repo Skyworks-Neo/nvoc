@@ -980,6 +980,9 @@ fn command_specific_arg(name: &'static str) -> Arg {
 fn clap_subcommand(command: Command) -> ClapCommand {
     let mut subcommand = ClapCommand::new(command.name()).about(command.about());
     let (min_args, _) = command.arity();
+    if min_args > 0 {
+        subcommand = subcommand.arg_required_else_help(true);
+    }
     for (index, positional) in command.positional_args().into_iter().enumerate() {
         subcommand = subcommand.arg(positional_arg(positional, index < min_args));
     }
@@ -2750,6 +2753,15 @@ mod tests {
             .to_string();
         assert!(help.contains("<ENABLED>"));
         assert!(help.contains("[possible values: on, off]"));
+    }
+
+    #[test]
+    fn missing_required_positionals_prints_full_subcommand_help() {
+        let help = parse_args(["set-fan-percent"]).unwrap_err().to_string();
+
+        assert!(help.contains("<PERCENT>"));
+        assert!(help.contains("--fan"));
+        assert!(help.contains("--policy"));
     }
 
     #[test]
