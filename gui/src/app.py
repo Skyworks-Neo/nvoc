@@ -41,6 +41,29 @@ from src.tabs.vfcurve.sections import AutoscanTab
 
 import shutil
 
+
+def _is_discovery_offline_error(output: str) -> bool:
+    """True when a failed GPU discovery's error indicates the dGPU is gone.
+
+    Discovery re-runs on the offline-backoff cadence (after the user disabled
+    the dGPU), and `NvAPI_EnumPhysicalGPUs` returns ApiNotInitialized /
+    NoImplementation / NvidiaDeviceNotFound while the dGPU is off. Suppressing
+    these per-tick errors keeps the console quiet during backoff; the dashboard
+    already logged a single "dGPU probably offline" hint.
+    """
+    if not output:
+        return False
+    lowered = output.lower()
+    return (
+        "not_initialized" in lowered
+        or "api_not_initialized" in lowered
+        or "noimplementation" in lowered
+        or "nvidia_device_not_found" in lowered
+        or "novidevicefound" in lowered
+        or "gpu is lost" in lowered
+    )
+
+
 if TYPE_CHECKING:
     from src.single_instance import SingleInstanceGuard
 
@@ -289,6 +312,11 @@ class App(ctk.CTk):
 
         # Guard to suppress _on_gpu_changed during programmatic gpu_var.set() calls
         self._programmatic_gpu_set: bool = False
+        # Background GPU re-probe timer: when startup discovery finds no GPU
+        # (dGPU disabled at launch) or detection fails, this re-runs discovery
+        # periodically so the dGPU is auto-detected when the user re-enables it.
+        # Cancelled as soon as a non-empty GPU list lands (or on shutdown).
+        self._gpu_reprobe_after_id: Optional[str] = None
 
         # Initial GPU list — start immediately (no after() hop): discovery
         # runs on a worker thread (pynvoc import + nvapi64 load + NVAPI init
@@ -710,15 +738,57 @@ class App(ctk.CTk):
 
         self.run_background("gpu-list", _worker)
 
+    def _start_gpu_reprobe(self) -> None:
+        """Begin background GPU rediscovery (scenario A: no GPU at startup).
+
+        Re-runs discovery every few seconds until a non-empty GPU list lands,
+        then stops itself. Lets the GUI pick up the dGPU the moment the user
+        re-enables it without requiring a manual 'Detect' click.
+        """
+        if getattr(self, "_exiting", False):
+            return
+        if self._gpu_reprobe_after_id is not None:
+            return  # already armed
+        self._gpu_reprobe_after_id = self.after(5000, self._gpu_reprobe_tick)
+
+    def _gpu_reprobe_tick(self) -> None:
+        self._gpu_reprobe_after_id = None
+        if getattr(self, "_exiting", False):
+            return
+        # Still no usable GPU? re-probe. _apply_gpu_list re-arms the timer if
+        # the list is still empty/failed, and stops it once a GPU lands.
+        if not self.selected_gpu_target():
+            self._refresh_gpu_list()
+        # else: a GPU is selected now — _apply_gpu_list already stopped the
+        # reprobe when it populated the dropdown.
+
+    def _stop_gpu_reprobe(self) -> None:
+        if self._gpu_reprobe_after_id is not None:
+            try:
+                self.after_cancel(self._gpu_reprobe_after_id)
+            except Exception:
+                pass
+            self._gpu_reprobe_after_id = None
+
     def _apply_gpu_list(
         self, retcode: int, output: str, items: List[Dict[str, Any]]
     ) -> None:
         """Apply native GPU discovery results to the dropdown."""
-        self.console.append(output if output.endswith("\n") else f"{output}\n")
+        # Suppress per-tick discovery-error spam during offline backoff: the
+        # dashboard already logged one "dGPU probably offline" hint and is
+        # re-probing on a slow cadence. Logging every failed re-probe (each
+        # producing "NvAPI_EnumPhysicalGPUs failed: API_NOT_INITIALIZED")
+        # floods the console just like the pre-backoff status spam did.
+        if not (retcode != 0 and _is_discovery_offline_error(output)):
+            self.console.append(output if output.endswith("\n") else f"{output}\n")
         if retcode != 0:
-            self.console.append("[GUI] Failed to detect GPUs.\n")
+            if not _is_discovery_offline_error(output):
+                self.console.append("[GUI] Failed to detect GPUs.\n")
             self.gpu_dropdown.configure(values=["(detection failed)"])
             self.gpu_var.set("(detection failed)")
+            # No GPU detected (e.g. dGPU disabled at launch) — start a background
+            # re-probe so the dGPU is picked up when re-enabled.
+            self._start_gpu_reprobe()
             return
 
         short_labels: Dict[int, str] = {}
@@ -765,6 +835,8 @@ class App(ctk.CTk):
                 self.gpu_var.set("(no GPUs found)")
             finally:
                 self._programmatic_gpu_set = False
+            # No GPUs visible — re-probe in the background.
+            self._start_gpu_reprobe()
             return
 
         self.gpu_map = {}
@@ -791,6 +863,8 @@ class App(ctk.CTk):
         finally:
             self._programmatic_gpu_set = False
         self.console.append(f"[GUI] Found {len(ordered_indices)} GPU(s).\n")
+        # A GPU landed — stop the background re-probe (no longer needed).
+        self._stop_gpu_reprobe()
         # Detection landed after the overclock panel was built (slow NVAPI
         # init / GCOFF wake): apply the probe-time capability flags now so
         # the mobile/desktop layout corrects immediately, not at info time.
@@ -1715,6 +1789,9 @@ class App(ctk.CTk):
         # the join below and submit new work into a draining runner.
         if hasattr(self, "tab_dashboard") and self.tab_dashboard is not None:
             self.tab_dashboard._stop_polling()
+        # Cancel the background GPU re-probe timer (scenario A).
+        if hasattr(self, "_stop_gpu_reprobe"):
+            self._stop_gpu_reprobe()
 
         if hasattr(self, "tab_vfcurve") and self.tab_vfcurve is not None:
             if hasattr(self.tab_vfcurve, "_stop_auto_refresh"):

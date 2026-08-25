@@ -35,6 +35,27 @@ from .panes.overclock import compose_overclock
 from .panes.vfcurve import compose_vfcurve
 
 
+def _is_offline_error(output: str) -> bool:
+    """True when a failed query's error indicates the dGPU is gone/unreachable.
+
+    Matches the signatures seen when the user disables the dGPU (stale NVAPI
+    handle → ApiNotInitialized) or when enumeration finds no GPU
+    (NoImplementation / NvidiaDeviceNotFound). Used to suppress per-tick error
+    spam and trigger backoff instead of flooding the console.
+    """
+    if not output:
+        return False
+    lowered = output.lower()
+    return (
+        "not_initialized" in lowered
+        or "api_not_initialized" in lowered
+        or "noimplementation" in lowered
+        or "nvidia_device_not_found" in lowered
+        or "novidevicefound" in lowered
+        or "gpu is lost" in lowered
+    )
+
+
 class NVOCApp(App[None]):
     TITLE = "NVOC-TUI"
     MIN_WIDTH = 55
@@ -93,6 +114,9 @@ class NVOCApp(App[None]):
         self.native_service = NativeService(self.root_dir)
         self.gpus: list[GpuDescriptor] = []
         self.cache = GpuCache()
+        # Background GPU re-probe timer (scenario A: dGPU disabled at startup).
+        # Re-runs discovery until a GPU lands, then stops itself.
+        self._gpu_reprobe_timer = None
 
         self.header_controller = HeaderController(self)
         self.dashboard_controller = DashboardController(self)
@@ -208,6 +232,13 @@ class NVOCApp(App[None]):
             return
 
         def finish_query(code: int, output: str, parsed: dict) -> None:
+            # Suppress per-tick error spam when the dGPU is offline: the
+            # dashboard controller counts these and enters a backoff that
+            # logs a single hint + re-probes. Logging every failed tick
+            # (every second) flooded the console with ApiNotInitialized.
+            if code != 0 and _is_offline_error(output):
+                callback(code, output, parsed)
+                return
             if output and (log_output or code != 0):
                 self.write_log(output)
             callback(code, output, parsed)
@@ -228,6 +259,27 @@ class NVOCApp(App[None]):
             )
 
         self.native_service.submit_query(worker)
+
+    def start_gpu_reprobe(self) -> None:
+        """Begin background GPU rediscovery (scenario A: no GPU at startup).
+
+        Re-runs discovery every few seconds until a non-empty GPU list lands,
+        then stops itself. Lets the TUI pick up the dGPU when re-enabled.
+        """
+        if self._gpu_reprobe_timer is not None:
+            return
+        self._gpu_reprobe_timer = self.set_interval(5.0, self._gpu_reprobe_tick)
+
+    def _gpu_reprobe_tick(self) -> None:
+        if not self.gpus:
+            self.refresh_gpu_list()
+        else:
+            self._stop_gpu_reprobe()
+
+    def _stop_gpu_reprobe(self) -> None:
+        if self._gpu_reprobe_timer is not None:
+            self._gpu_reprobe_timer.stop()
+            self._gpu_reprobe_timer = None
 
     def focus_dashboard_tab_switcher(self) -> None:
         self.switch_to_tab("dashboard")
