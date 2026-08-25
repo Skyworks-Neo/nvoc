@@ -49,7 +49,24 @@ fn parse_gpu_id(raw: &str) -> Result<usize, Error> {
     }
 }
 
+/// Explicitly initialize NVAPI exactly once before first use. nvapi-rs relies
+/// on the driver's implicit initialization, which fails on some old/legacy
+/// drivers where tools that call NvAPI_Initialize up front (MSI Afterburner,
+/// the GPUMon plugin) still work — so we call it explicitly, like they do.
+/// Failure is non-fatal: enumeration proceeds via the implicit path, which is
+/// enough on every modern driver.
+fn ensure_nvapi_initialized() {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        if let Err(e) = nvapi_hi::initialize() {
+            eprintln!("warning: NvAPI_Initialize failed ({e:?}); continuing via implicit init");
+        }
+    });
+}
+
 pub fn get_sorted_gpus() -> nvapi_hi::Result<Vec<Gpu>> {
+    ensure_nvapi_initialized();
     let mut gpus = Gpu::enumerate()?;
     gpus.sort_by_key(|g| g.id());
     Ok(gpus)

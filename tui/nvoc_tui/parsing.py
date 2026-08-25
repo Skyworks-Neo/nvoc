@@ -78,14 +78,29 @@ def _normalize_status_json(value: dict[str, Any]) -> dict[str, Any]:
 
     sensors = value.get("sensors")
     if isinstance(sensors, list):
+        # Thermal sensors are `[descriptor, temp]` pairs. The descriptor's
+        # `channel_type` identifies the sensor: 0=GPU_AVG (core), 1=GPU_MAX
+        # (hot spot), 3=MEMORY (VRAM). Keep the core temp on `temperature_c`
+        # (positional default — first sensor) and also expose the typed trio
+        # so the dashboard can render whichever are present.
         for entry in sensors:
-            if (
+            if not (
                 isinstance(entry, list)
                 and len(entry) >= 2
                 and isinstance(entry[1], (int, float))
             ):
-                normalized["temperature_c"] = float(entry[1])
-                break
+                continue
+            temp = float(entry[1])
+            if "temperature_c" not in normalized:
+                normalized["temperature_c"] = temp
+            descriptor = entry[0] if isinstance(entry[0], dict) else {}
+            ch_type = descriptor.get("channel_type")
+            if ch_type == 0 and "temp_core" not in normalized:
+                normalized["temp_core"] = temp
+            elif ch_type == 1 and "temp_hotspot" not in normalized:
+                normalized["temp_hotspot"] = temp
+            elif ch_type == 3 and "temp_memory" not in normalized:
+                normalized["temp_memory"] = temp
 
     power = value.get("power")
     if isinstance(power, dict):

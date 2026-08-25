@@ -8,17 +8,18 @@ use nvoc_core::{
     Percentage, ProbeVoltageLimits, QueryApiRestriction, QueryAutoBoost, QueryClockOffset,
     QueryDisplays, QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings,
     QueryGpuStatus, QueryLegacyCoreOvervoltRanges, QueryLegacyP0CoreMaxVoltageDelta,
-    QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks,
-    QueryTdpTempLimits, QueryTemperatureThresholds, QueryThrottleReasons, QueryVfpPointVoltage,
-    QueryViolationStatus, QueryVoltageBoost, ResetApplicationsClocks, ResetCoolerLevels,
-    ResetFanSpeed, ResetLockedClocks, ResetNvapiPowerLimits, ResetNvapiSensorLimits,
-    ResetPstateBaseVoltages, ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock,
-    ResetVfpLock, SetApiRestriction, SetApplicationsClocks, SetAutoBoost, SetAutoBoostDefault,
-    SetClockOffset, SetCoolerLevels, SetEdid, SetFanSpeed, SetLegacyClocks, SetLockedClocks,
-    SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiSensorLimits, SetNvmlPstateLock,
-    SetPowerLimit, SetPstateBaseVoltage, SetPstateClockOffset, SetTemperatureLimit,
-    SetVfpFrequencyLock, SetVfpPointDelta, SetVfpRangeDelta, SetVfpVoltageLock, SetVoltageBoost,
-    VfpResetDomain, discover_targets, nvml_pstate_to_str, parse_nvapi_locked_voltage_target,
+    QueryNvapiThermalSettings, QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates,
+    QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
+    QueryThrottleReasons, QueryVfpPointVoltage, QueryViolationStatus, QueryVoltageBoost,
+    ResetApplicationsClocks, ResetCoolerLevels, ResetFanSpeed, ResetLockedClocks,
+    ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetPstateBaseVoltages,
+    ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock, ResetVfpLock,
+    SetApiRestriction, SetApplicationsClocks, SetAutoBoost, SetAutoBoostDefault, SetClockOffset,
+    SetCoolerLevels, SetEdid, SetFanSpeed, SetLegacyClocks, SetLockedClocks, SetNvapiPowerLimits,
+    SetNvapiPstateLock, SetNvapiSensorLimits, SetNvmlPstateLock, SetPowerLimit,
+    SetPstateBaseVoltage, SetPstateClockOffset, SetTemperatureLimit, SetVfpFrequencyLock,
+    SetVfpPointDelta, SetVfpRangeDelta, SetVfpVoltageLock, SetVoltageBoost, VfpResetDomain,
+    discover_targets, nvml_pstate_to_str, parse_nvapi_locked_voltage_target,
     parse_nvml_fan_control_policy, parse_nvml_pstate, run, select_targets,
 };
 use serde_json::{Value, json};
@@ -130,6 +131,7 @@ pub enum Command {
     GetSupportedAppClocks,
     GetFanInfo,
     GetTemperatureThresholds,
+    GetThermalSettings,
     GetThrottleReasons,
     GetTdpTempLimits,
     ProbeVoltageLimits,
@@ -197,6 +199,7 @@ impl Command {
             Self::GetSupportedAppClocks => "get-supported-app-clocks",
             Self::GetFanInfo => "get-fan-info",
             Self::GetTemperatureThresholds => "get-temperature-thresholds",
+            Self::GetThermalSettings => "get-thermal-settings",
             Self::GetThrottleReasons => "get-throttle-reasons",
             Self::GetTdpTempLimits => "get-tdp-temp-limits",
             Self::ProbeVoltageLimits => "probe-voltage-limits",
@@ -260,6 +263,9 @@ impl Command {
             Self::GetSupportedAppClocks => "Read NVML supported application clocks",
             Self::GetFanInfo => "Read NVML fan count and range",
             Self::GetTemperatureThresholds => "Read NVML temperature thresholds",
+            Self::GetThermalSettings => {
+                "Read NVAPI legacy GPU, memory, and board temperatures with physical ranges"
+            }
             Self::GetThrottleReasons => "Read NVML throttle reasons",
             Self::GetTdpTempLimits => "Read NVAPI TDP and temperature limits",
             Self::ProbeVoltageLimits => "Probe NVAPI voltage limit points",
@@ -606,6 +612,7 @@ const COMMANDS: &[Command] = &[
     Command::GetSupportedAppClocks,
     Command::GetFanInfo,
     Command::GetTemperatureThresholds,
+    Command::GetThermalSettings,
     Command::GetThrottleReasons,
     Command::GetTdpTempLimits,
     Command::ProbeVoltageLimits,
@@ -980,6 +987,9 @@ fn command_specific_arg(name: &'static str) -> Arg {
 fn clap_subcommand(command: Command) -> ClapCommand {
     let mut subcommand = ClapCommand::new(command.name()).about(command.about());
     let (min_args, _) = command.arity();
+    if min_args > 0 {
+        subcommand = subcommand.arg_required_else_help(true);
+    }
     for (index, positional) in command.positional_args().into_iter().enumerate() {
         subcommand = subcommand.arg(positional_arg(positional, index < min_args));
     }
@@ -1530,6 +1540,23 @@ fn execute_target(
                 thresholds
                     .into_iter()
                     .map(|item| json!({"name": item.name, "celsius": item.celsius}))
+                    .collect(),
+            ))
+        }
+        Command::GetThermalSettings => {
+            let sensors = run(target, QueryNvapiThermalSettings)?.output;
+            Ok(Value::Array(
+                sensors
+                    .into_iter()
+                    .map(|sensor| {
+                        json!({
+                            "target": format!("{:?}", sensor.target),
+                            "controller": format!("{:?}", sensor.controller),
+                            "current_c": sensor.current_c,
+                            "min_c": sensor.min_c,
+                            "max_c": sensor.max_c,
+                        })
+                    })
                     .collect(),
             ))
         }
@@ -2773,6 +2800,15 @@ mod tests {
             .to_string();
         assert!(help.contains("<ENABLED>"));
         assert!(help.contains("[possible values: on, off]"));
+    }
+
+    #[test]
+    fn missing_required_positionals_prints_full_subcommand_help() {
+        let help = parse_args(["set-fan-percent"]).unwrap_err().to_string();
+
+        assert!(help.contains("<PERCENT>"));
+        assert!(help.contains("--fan"));
+        assert!(help.contains("--policy"));
     }
 
     #[test]
