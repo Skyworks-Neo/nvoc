@@ -562,6 +562,25 @@ fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
         map.insert("pcie_lanes".into(), u64_value(lanes as u64));
     }
 
+    if let Ok(nvml) = target.nvml() {
+        let pcie = nvoc_core::nvml::query_nvml_pcie_telemetry(nvml, target.id.0);
+        if let Some(tx) = pcie.tx_mibps {
+            map.insert("pcie_tx_mibps".into(), f64_value(tx as f64));
+        }
+        if let Some(rx) = pcie.rx_mibps {
+            map.insert("pcie_rx_mibps".into(), f64_value(rx as f64));
+        }
+        if let Some(replay) = pcie.replay_counter {
+            map.insert("pcie_replay_counter".into(), u64_value(replay as u64));
+        }
+        if let Some(generation) = pcie.current_generation {
+            map.insert("pcie_link_gen".into(), u64_value(generation as u64));
+        }
+        if let Some(generation) = pcie.max_generation {
+            map.insert("pcie_max_link_gen".into(), u64_value(generation as u64));
+        }
+    }
+
     // NVAPI perf / throttle-limit flags (raw bitset; overlaps NVML throttle
     // reasons). `limits_decoded` is the same mask rendered as reason names so
     // consumers (TUI/CLI) don't each have to re-decode the bits.

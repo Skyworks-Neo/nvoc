@@ -2,7 +2,7 @@ use super::conv::{nvml_pstate_to_index, nvml_pstate_to_str};
 use super::error::Error;
 use super::target::GpuId;
 use nvml_wrapper::Nvml;
-use nvml_wrapper::enum_wrappers::device::{Api, PerformanceState};
+use nvml_wrapper::enum_wrappers::device::{Api, PcieUtilCounter, PerformanceState};
 use nvml_wrapper::enums::device::FanControlPolicy;
 
 pub type NvmlPStateClockRange = (PerformanceState, u32, u32, u32, u32);
@@ -62,6 +62,43 @@ pub fn query_nvml_power_watts(nvml: &Nvml, gpu_id: u32) -> Option<(f32, f32, f32
         current_mw as f32 / 1000.0,
         max_mw as f32 / 1000.0,
     ))
+}
+
+/// Read-only PCIe link telemetry available through NVML.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct NvmlPcieTelemetry {
+    /// GPU-to-host throughput, averaged by NVML over its sampling interval.
+    pub tx_mibps: Option<f32>,
+    /// Host-to-GPU throughput, averaged by NVML over its sampling interval.
+    pub rx_mibps: Option<f32>,
+    /// Cumulative transaction replay count since the driver was loaded.
+    pub replay_counter: Option<u32>,
+    /// Currently negotiated PCIe generation.
+    pub current_generation: Option<u32>,
+    /// Maximum PCIe generation exposed by this NVML API.
+    pub max_generation: Option<u32>,
+}
+
+/// Query PCIe throughput, replay count, and link generation without waking or
+/// modifying the GPU. Unsupported counters are returned as `None` individually.
+pub fn query_nvml_pcie_telemetry(nvml: &Nvml, gpu_id: u32) -> NvmlPcieTelemetry {
+    let Some(device) = find_nvml_device(nvml, gpu_id) else {
+        return NvmlPcieTelemetry::default();
+    };
+
+    NvmlPcieTelemetry {
+        tx_mibps: device
+            .pcie_throughput(PcieUtilCounter::Send)
+            .ok()
+            .map(|kbps| kbps as f32 / 1024.0),
+        rx_mibps: device
+            .pcie_throughput(PcieUtilCounter::Receive)
+            .ok()
+            .map(|kbps| kbps as f32 / 1024.0),
+        replay_counter: device.pcie_replay_counter().ok(),
+        current_generation: device.current_pcie_link_gen().ok(),
+        max_generation: device.max_pcie_link_gen().ok(),
+    }
 }
 
 pub fn set_nvml_auto_boost(nvml: &Nvml, gpu_id: u32, enabled: bool) -> Result<(), Error> {
