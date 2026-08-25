@@ -554,3 +554,23 @@ fn nvapi_thermal_channels_have_core_first_and_unique_indices() {
     channels.dedup();
     assert_eq!(channels.len(), status.sensors.len());
 }
+
+#[test]
+#[ignore]
+fn nvapi_effective_clocks_are_positive_when_available() {
+    let inv = inventory();
+    let target = first_target(&inv);
+    if !target.has_nvapi() {
+        return;
+    }
+
+    let status = run(&target, QueryGpuStatus)
+        .expect("GPU status should read effective clocks best-effort")
+        .output;
+    if let Some(clocks) = status.effective_clocks {
+        for frequency in clocks.values() {
+            assert!(frequency.0 > 0);
+            assert!(frequency.0 < 20_000_000);
+        }
+    }
+}
