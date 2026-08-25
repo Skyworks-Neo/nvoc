@@ -26,7 +26,7 @@ def test_format_metric_lines_full() -> None:
             "Cooler1": {"current_level": 45, "current_tach": 1234, "active": True},
         },
         "pcie_lanes": 16,
-        "perf": {"unknown": 0, "limits": 64},
+        "perf": {"unknown": 0, "limits": 32},
     }
 
     text = "\n".join(_format_metric_lines(status, "Ada"))
@@ -41,7 +41,8 @@ def test_format_metric_lines_full() -> None:
     assert "VRAM: 2.0 / 8.0 GB" in text
     assert "FAN: 1234 RPM @ 45%" in text
     assert "PCIE: x16" in text
-    assert "PERF: 0x40" in text
+    # limits = 32 = UNKNOWN_32 bit -> decoded reason name, not raw hex.
+    assert "PERF LIMIT: Unknown32" in text
     assert "ARCH: Ada" in text
 
 
@@ -74,7 +75,7 @@ def test_format_metric_lines_missing_fields_render_dashes() -> None:
     assert "FAN: ---" in text
     assert "PCIE: ---" in text
     assert "PSTATE: ---" in text
-    assert "PERF: ---" in text
+    assert "PERF LIMIT: ---" in text
 
 
 def test_format_metric_lines_multi_cooler_labels() -> None:
