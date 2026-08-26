@@ -1297,7 +1297,7 @@ class App(ctk.CTk):
             retcode = 0
             vfp_offset_state = None
             try:
-                points = self.backend.query_domain_vfp_points(gpu)
+                points = self.backend.query_public_vftable(gpu)
                 vfp_offset_state = get_vfp_offset_state_from_points(points)
             except Exception:
                 retcode = -1

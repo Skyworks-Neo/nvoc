@@ -96,9 +96,9 @@ class TestDomainValidation:
         with pytest.raises(ValueError, match="invalid clock domain"):
             pynvoc.set_clock_offset("0", "nvml", "video", 100, "P0")
 
-    def test_invalid_domain_query_domain_vfp_points(self, pynvoc):
+    def test_invalid_domain_query_public_vftable(self, pynvoc):
         with pytest.raises(ValueError, match="invalid clock domain"):
-            pynvoc.query_domain_vfp_points("0", "video")
+            pynvoc.query_public_vftable("0", "video")
 
 
 class TestEdidValidation:
@@ -224,9 +224,9 @@ class TestEdidAliases:
             pass  # No GPU hardware available, but display ID string was accepted
 
     @pytest.mark.parametrize("alias", ["core", "gpu", "graphics", "mem", "memory"])
-    def test_query_domain_vfp_points_domain_alias_accepted(self, pynvoc, alias):
+    def test_query_public_vftable_domain_alias_accepted(self, pynvoc, alias):
         try:
-            pynvoc.query_domain_vfp_points("0", alias)
+            pynvoc.query_public_vftable("0", alias)
         except ValueError:
             pytest.fail(f"'{alias}' should be a valid domain alias")
         except RuntimeError:

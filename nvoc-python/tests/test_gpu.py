@@ -99,7 +99,7 @@ class TestQuerySettings:
 
 class TestQueryDomainVfpPoints:
     def test_returns_list(self, pynvoc, gpu):
-        result = pynvoc.query_domain_vfp_points(gpu, "graphics")
+        result = pynvoc.query_public_vftable(gpu, "graphics")
         assert isinstance(result, list)
         if result:
             expected_keys = {

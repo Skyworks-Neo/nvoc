@@ -160,9 +160,9 @@ class FakeNative:
         self.raise_on_set_vfp_point_private: Exception | None = None
         self.direct_freq_khz: int = 0
 
-    def query_domain_vfp_points(self, gpu, domain, infer_missing_default):
+    def query_public_vftable(self, gpu, domain, infer_missing_default):
         self.calls.append((
-            "query_domain_vfp_points",
+            "query_public_vftable",
             gpu,
             domain,
             infer_missing_default,
@@ -177,12 +177,12 @@ class FakeNative:
             }
         ]
 
-    def query_clk_vf_points(self, gpu):
-        self.calls.append(("query_clk_vf_points", gpu))
+    def query_private_vftable(self, gpu):
+        self.calls.append(("query_private_vftable", gpu))
         return None
 
-    def query_clk_domain_freq_direct(self, gpu, domain_bit):
-        self.calls.append(("query_clk_domain_freq_direct", gpu, domain_bit))
+    def query_private_freq_domain_status(self, gpu, domain_bit):
+        self.calls.append(("query_private_freq_domain_status", gpu, domain_bit))
         return {"domain_bit": domain_bit, "freq_khz": self.direct_freq_khz}
 
     def set_vfp_point_private(self, gpu, bank, index, delta_khz, freq_mode):
@@ -661,7 +661,7 @@ def test_vfcurve_refresh_keeps_points_in_memory(tmp_path: Path) -> None:
             "default_frequency_khz": 1750000,
         }
     ]
-    app.native_service.query_domain_vfp_points = lambda _gpu: points
+    app.native_service.query_public_vftable = lambda _gpu: points
     app.native_service.submit_query = lambda job: job()
     controller = VFCurveController(app)
     rendered: list[bool] = []
@@ -1017,8 +1017,8 @@ def test_vfcurve_direct_read_updates_live_point() -> None:
     controller._active_curve = "xbar"
     scheduled: list[object] = []
     app.native_service.submit_query = lambda job: scheduled.append(job)
-    app.native_service.query_clk_domain_freq_direct = (
-        app.native.query_clk_domain_freq_direct
+    app.native_service.query_private_freq_domain_status = (
+        app.native.query_private_freq_domain_status
     )
     app.native.direct_freq_khz = 1350000
 

@@ -1647,7 +1647,7 @@ fn query_clock_offset(
 
 #[pyfunction]
 #[pyo3(signature = (gpu, domain = None, infer_missing_default = true))]
-fn query_domain_vfp_points(
+fn query_public_vftable(
     py: Python<'_>,
     gpu: &str,
     domain: Option<&str>,
@@ -2253,7 +2253,7 @@ fn set_volt_rail_offset(
 /// family (RM 0x2080901b GET_CONTROL). Returns `{"supported": false}` when the
 /// driver does not expose the private interface.
 #[pyfunction]
-fn query_clk_domains(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
+fn query_private_freq_domain_info(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
     let value = with_target(gpu, "nvapi", |target| {
         let ctrl = run(target, QueryNvapiClkDomains).map_err(to_py_err)?.output;
         Ok(match ctrl {
@@ -2304,7 +2304,7 @@ fn query_clk_domains(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
 /// candidate), type-7 segments are per-domain pstate frequency lists.
 /// Returns `{"supported": false}` when the driver doesn't expose it.
 #[pyfunction]
-fn query_clk_vf_points(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
+fn query_private_vftable(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
     let value = with_target(gpu, "nvapi", |target| {
         let vfp = run(target, QueryNvapiClkVfPoints)
             .map_err(to_py_err)?
@@ -2413,7 +2413,7 @@ fn query_clk_domain_freq(py: Python<'_>, gpu: &str, domain_bit: u32) -> PyResult
 /// or the domain isn't measurable through this interface → caller should not
 /// draw a live point. Returns `{"supported": false}` when the family is absent.
 #[pyfunction]
-fn query_clk_domain_freq_direct(py: Python<'_>, gpu: &str, domain_bit: u32) -> PyResult<Py<PyAny>> {
+fn query_private_freq_domain_status(py: Python<'_>, gpu: &str, domain_bit: u32) -> PyResult<Py<PyAny>> {
     let value = with_target(gpu, "nvapi", |target| {
         let freq = run(target, QueryNvapiClkDomainFreqDirect { domain_bit })
             .map_err(to_py_err)?
@@ -3944,7 +3944,7 @@ fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(list_displays, m)?)?;
     m.add_function(wrap_pyfunction!(query_edid, m)?)?;
     m.add_function(wrap_pyfunction!(query_clock_offset, m)?)?;
-    m.add_function(wrap_pyfunction!(query_domain_vfp_points, m)?)?;
+    m.add_function(wrap_pyfunction!(query_public_vftable, m)?)?;
     m.add_function(wrap_pyfunction!(query_vfp_point_voltage, m)?)?;
     m.add_function(wrap_pyfunction!(query_legacy_p0_core_max_voltage_delta, m)?)?;
     m.add_function(wrap_pyfunction!(query_tdp_temp_limits, m)?)?;
@@ -3964,10 +3964,10 @@ fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(set_volt_rail_offset, m)?)?;
     m.add_function(wrap_pyfunction!(set_volt_rail_target, m)?)?;
     m.add_function(wrap_pyfunction!(set_perf_freq_cap, m)?)?;
-    m.add_function(wrap_pyfunction!(query_clk_domains, m)?)?;
+    m.add_function(wrap_pyfunction!(query_private_freq_domain_info, m)?)?;
     m.add_function(wrap_pyfunction!(query_clk_domain_freq, m)?)?;
-    m.add_function(wrap_pyfunction!(query_clk_domain_freq_direct, m)?)?;
-    m.add_function(wrap_pyfunction!(query_clk_vf_points, m)?)?;
+    m.add_function(wrap_pyfunction!(query_private_freq_domain_status, m)?)?;
+    m.add_function(wrap_pyfunction!(query_private_vftable, m)?)?;
     m.add_function(wrap_pyfunction!(set_clk_domain_offset, m)?)?;
     m.add_function(wrap_pyfunction!(set_vfp_point_private, m)?)?;
     m.add_function(wrap_pyfunction!(set_vfp_range_per_point_private, m)?)?;

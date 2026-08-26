@@ -136,11 +136,11 @@ class VFCurveController(PaneController):
             gpc_err: str | None = None
             clk_data: dict | None = None
             try:
-                gpc_points = self.app.native_service.query_domain_vfp_points(gpu)
+                gpc_points = self.app.native_service.query_public_vftable(gpu)
             except Exception as exc:
                 gpc_err = str(exc)
             try:
-                clk_data = self.app.native_service.query_clk_vf_points(gpu)
+                clk_data = self.app.native_service.query_private_vftable(gpu)
             except Exception:
                 clk_data = None
             try:
@@ -448,7 +448,7 @@ class VFCurveController(PaneController):
 
         def worker() -> None:
             try:
-                result = self.app.native_service.query_clk_domain_freq_direct(
+                result = self.app.native_service.query_private_freq_domain_status(
                     gpu, domain_bit
                 )
             except Exception:
@@ -516,7 +516,7 @@ class VFCurveController(PaneController):
             gpu = self.app.selected_gpu_target()
 
             def export(native, gpu=gpu, path=path) -> str:
-                points = native.query_domain_vfp_points(gpu, "graphics", True)
+                points = native.query_public_vftable(gpu, "graphics", True)
                 write_vf_curve_points(path, points)
                 return f"Exported {len(points)} VFP point(s) to {path}."
 
@@ -531,7 +531,7 @@ class VFCurveController(PaneController):
             gpu = self.app.selected_gpu_target()
 
             def import_curve(native, gpu=gpu, path=path) -> str:
-                points = native.query_domain_vfp_points(gpu, "graphics", True)
+                points = native.query_public_vftable(gpu, "graphics", True)
                 deltas = load_vf_curve_deltas(path, points)
                 native.set_domain_vfp_deltas(gpu, "graphics", deltas)
                 return f"Imported {len(deltas)} VFP point delta(s) from {path}."

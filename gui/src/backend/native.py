@@ -95,14 +95,14 @@ class NativeBackend:
         except Exception as exc:
             return -1, f"pynvoc {command_name} query failed: {exc}", {}
 
-    def query_domain_vfp_points(self, gpu: str, domain: str = "graphics") -> list[dict]:
+    def query_public_vftable(self, gpu: str, domain: str = "graphics") -> list[dict]:
         try:
-            return self._pynvoc().query_domain_vfp_points(gpu, domain, True)
+            return self._pynvoc().query_public_vftable(gpu, domain, True)
         except Exception:
             self._force_wake(gpu)
-            return self._pynvoc().query_domain_vfp_points(gpu, domain, True)
+            return self._pynvoc().query_public_vftable(gpu, domain, True)
 
-    def query_clk_vf_points(self, gpu: str) -> dict | None:
+    def query_private_vftable(self, gpu: str) -> dict | None:
         """Read the private ClockClient V/F-POINTS table (segments + points).
 
         Returns ``None`` when the private family is absent (the open VFP
@@ -110,15 +110,15 @@ class NativeBackend:
         public read.
         """
         try:
-            return self._pynvoc().query_clk_vf_points(gpu)
+            return self._pynvoc().query_private_vftable(gpu)
         except Exception:
             self._force_wake(gpu)
             try:
-                return self._pynvoc().query_clk_vf_points(gpu)
+                return self._pynvoc().query_private_vftable(gpu)
             except Exception:
                 return None
 
-    def query_clk_domain_freq_direct(self, gpu: str, domain_bit: int) -> dict | None:
+    def query_private_freq_domain_status(self, gpu: str, domain_bit: int) -> dict | None:
         """Direct physical clock for one domain (green-curve MEASURE 0x527FC458).
 
         Returns ``{"domain_bit", "freq_khz"}`` (``freq_khz == 0`` ⇒ driver
@@ -128,11 +128,11 @@ class NativeBackend:
         live-point polling: one call, no 50 ms sleep.
         """
         try:
-            return self._pynvoc().query_clk_domain_freq_direct(gpu, int(domain_bit))
+            return self._pynvoc().query_private_freq_domain_status(gpu, int(domain_bit))
         except Exception:
             self._force_wake(gpu)
             try:
-                return self._pynvoc().query_clk_domain_freq_direct(gpu, int(domain_bit))
+                return self._pynvoc().query_private_freq_domain_status(gpu, int(domain_bit))
             except Exception:
                 return None
 

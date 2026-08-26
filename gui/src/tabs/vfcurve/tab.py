@@ -52,7 +52,7 @@ class _CurveData:
 
     ``voltages``/``frequencies``/``defaults`` are in display units (mV / MHz).
     ``source`` is "public" (GPC via the open VFP interface) or "private"
-    (any segment from ``query_clk_vf_points``). ``seg_start``/``seg_end`` are
+    (any segment from ``query_private_vftable``). ``seg_start``/``seg_end`` are
     the inclusive private point indices within ``bank`` (used for private
     apply/reset); for the public GPC curve they mirror the public index range.
     ``write_mode`` decides how ``_apply_adj`` / reset reach the GPU.
@@ -760,11 +760,11 @@ class VFCurveTab:
             gpc_err = None
             clk_data = None
             try:
-                gpc_points = self.app.backend.query_domain_vfp_points(gpu)
+                gpc_points = self.app.backend.query_public_vftable(gpu)
             except Exception as exc:
                 gpc_err = str(exc)
             try:
-                clk_data = self.app.backend.query_clk_vf_points(gpu)
+                clk_data = self.app.backend.query_private_vftable(gpu)
             except Exception:
                 clk_data = None
             self.app.after(
@@ -1908,7 +1908,7 @@ class VFCurveTab:
         self._direct_read_inflight = True
 
         def _worker():
-            result = self.app.backend.query_clk_domain_freq_direct(gpu, domain_bit)
+            result = self.app.backend.query_private_freq_domain_status(gpu, domain_bit)
             self.app.after(
                 0, lambda: self._on_direct_read_done(result, curve_id, volts, freqs)
             )
@@ -2580,7 +2580,7 @@ class VFCurveTab:
             return
 
         def export(native, gpu=gpu, path=path) -> str:
-            points = native.query_domain_vfp_points(gpu, "graphics", True)
+            points = native.query_public_vftable(gpu, "graphics", True)
             self._write_vfp_points(path, points)
             return f"Exported {len(points)} VFP point(s) to {path}."
 
@@ -2598,7 +2598,7 @@ class VFCurveTab:
             return
 
         def import_curve(native, gpu=gpu, path=path) -> str:
-            points = native.query_domain_vfp_points(gpu, "graphics", True)
+            points = native.query_public_vftable(gpu, "graphics", True)
             deltas = self._load_vfp_deltas(path, points)
             native.set_domain_vfp_deltas(gpu, "graphics", deltas)
             return f"Imported {len(deltas)} VFP point delta(s) from {path}."
