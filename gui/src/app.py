@@ -44,6 +44,22 @@ from src.tabs.vfcurve import VFCurveTab
 
 import shutil
 
+
+def _is_discovery_offline_error(output: str) -> bool:
+    """Return whether discovery failed because the NVIDIA GPU disappeared."""
+    if not output:
+        return False
+    lowered = output.lower()
+    return (
+        "not_initialized" in lowered
+        or "api_not_initialized" in lowered
+        or "noimplementation" in lowered
+        or "nvidia_device_not_found" in lowered
+        or "novidevicefound" in lowered
+        or "gpu is lost" in lowered
+    )
+
+
 if TYPE_CHECKING:
     from src.single_instance import SingleInstanceGuard
 
@@ -151,6 +167,9 @@ class App(ctk.CTk):
 
         # Guard to suppress _on_gpu_changed during programmatic gpu_var.set() calls
         self._programmatic_gpu_set: bool = False
+        # When no NVIDIA GPU is visible, periodically re-run discovery so an
+        # eGPU or a re-enabled laptop dGPU appears without restarting the GUI.
+        self._gpu_reprobe_after_id: Optional[str] = None
 
         # Initial GPU list
         self.after(500, self._refresh_gpu_list)
@@ -457,15 +476,41 @@ class App(ctk.CTk):
 
         self.run_background("gpu-list", _worker)
 
+    def _start_gpu_reprobe(self) -> None:
+        """Schedule discovery retries until an NVIDIA GPU becomes available."""
+        if self._exiting or self._gpu_reprobe_after_id is not None:
+            return
+        self._gpu_reprobe_after_id = self.after(5000, self._gpu_reprobe_tick)
+
+    def _gpu_reprobe_tick(self) -> None:
+        self._gpu_reprobe_after_id = None
+        if self._exiting:
+            return
+        if self.selected_gpu_target() is None:
+            self._refresh_gpu_list()
+
+    def _stop_gpu_reprobe(self) -> None:
+        if self._gpu_reprobe_after_id is None:
+            return
+        try:
+            self.after_cancel(self._gpu_reprobe_after_id)
+        except Exception:
+            pass
+        self._gpu_reprobe_after_id = None
+
     def _apply_gpu_list(
         self, retcode: int, output: str, items: List[Dict[str, Any]]
     ) -> None:
         """Apply native GPU discovery results to the dropdown."""
-        self.console.append(output if output.endswith("\n") else f"{output}\n")
+        offline_error = retcode != 0 and _is_discovery_offline_error(output)
+        if output and not offline_error:
+            self.console.append(output if output.endswith("\n") else f"{output}\n")
         if retcode != 0:
-            self.console.append("[GUI] Failed to detect GPUs.\n")
+            if not offline_error:
+                self.console.append("[GUI] Failed to detect GPUs.\n")
             self.gpu_dropdown.configure(values=["(detection failed)"])
             self.gpu_var.set("(detection failed)")
+            self._start_gpu_reprobe()
             return
 
         short_labels: Dict[int, str] = {}
@@ -499,6 +544,7 @@ class App(ctk.CTk):
                 self.gpu_var.set("(no GPUs found)")
             finally:
                 self._programmatic_gpu_set = False
+            self._start_gpu_reprobe()
             return
 
         self.gpu_map = {}
@@ -525,6 +571,7 @@ class App(ctk.CTk):
         finally:
             self._programmatic_gpu_set = False
         self.console.append(f"[GUI] Found {len(ordered_indices)} GPU(s).\n")
+        self._stop_gpu_reprobe()
         self._query_gpu_info()
 
     def _parse_gpu_list(self, retcode: int, output: str):
@@ -1372,6 +1419,8 @@ class App(ctk.CTk):
 
         if hasattr(self, "tab_dashboard") and self.tab_dashboard is not None:
             self.tab_dashboard._stop_polling()
+
+        self._stop_gpu_reprobe()
 
         if hasattr(self, "tab_overclock") and self.tab_overclock is not None:
             if hasattr(self.tab_overclock, "_stop_auto_refresh"):
