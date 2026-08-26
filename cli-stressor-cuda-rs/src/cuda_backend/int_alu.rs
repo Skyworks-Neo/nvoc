@@ -158,7 +158,9 @@ impl CudaBackend {
             let mut pinned = unsafe { self._ctx.alloc_pinned::<i32>(n as usize) }
                 .map_err(|err| BackendError::Other(err.to_string()))?;
             fill_random_i32(
-                pinned.as_mut_slice().map_err(|err| BackendError::Other(err.to_string()))?,
+                pinned
+                    .as_mut_slice()
+                    .map_err(|err| BackendError::Other(err.to_string()))?,
                 seed,
             );
             for lane in 0..lane_count {

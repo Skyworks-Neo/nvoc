@@ -89,7 +89,10 @@ impl CudaBackend {
                 while offset < bytes {
                     let len = tile_len.min(bytes - offset);
                     stream
-                        .memcpy_dtod(&tile_dev.slice(0..len), &mut src.slice_mut(offset..offset + len))
+                        .memcpy_dtod(
+                            &tile_dev.slice(0..len),
+                            &mut src.slice_mut(offset..offset + len),
+                        )
                         .map_err(|err| BackendError::Other(err.to_string()))?;
                     offset += len;
                 }
