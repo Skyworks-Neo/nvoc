@@ -375,7 +375,7 @@ class VFCurveTab:
         # y tick labels are back OUTSIDE the spine — left margin fits the
         # GHz numbers ("0.5", "1.0") plus a little headroom so the digits
         # never kiss the frame edge
-        self.fig.subplots_adjust(left=0.062, right=0.995, top=0.92, bottom=0.22)
+        self.fig.subplots_adjust(left=0.062, right=0.995, top=0.92, bottom=0.12)
         self._style_axes()
 
         # Placeholder text
@@ -1569,7 +1569,7 @@ class VFCurveTab:
 
         # Keep margins in sync with _create_chart (see the note there) —
         # re-applying the old 0.13 here would re-create the left gutter
-        self.fig.subplots_adjust(left=0.062, right=0.995, top=0.92, bottom=0.22)
+        self.fig.subplots_adjust(left=0.062, right=0.995, top=0.92, bottom=0.12)
 
         self._live_elements.clear()
         self._live_hline = None
