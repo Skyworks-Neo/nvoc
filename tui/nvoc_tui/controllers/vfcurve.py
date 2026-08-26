@@ -124,7 +124,7 @@ class VFCurveController(PaneController):
             raise
 
     def on_curve_loaded(
-        self, output: str, points: "list[dict] | None", code: int
+        self, output: str, points: list[dict] | None, code: int
     ) -> None:
         self._end_refresh()
         if output:

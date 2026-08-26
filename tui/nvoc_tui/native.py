@@ -21,28 +21,30 @@ class NativeService:
         self._native: Any | None = None
         self._lock = threading.Lock()
         self.action_state = ActionState()
-        # 单一常驻查询线程：轮询（dashboard 1 Hz + vfcurve 0.5 Hz）原来
-        # 每 tick 新开一个 threading.Thread，线程本身会退出，但每次都
-        # 并发进入 Rust 的后端发现路径；改为串行队列后也顺带消除了
-        # 重叠 tick 造成的并发 NVAPI/NVML 初始化。
-        self._query_queue: queue.Queue = queue.Queue()
+        self._query_queue: queue.Queue[Callable[[], None] | None] = queue.Queue()
         self._query_worker = threading.Thread(
-            target=self._query_loop, daemon=True, name="nvoc-tui-query"
+            target=self._query_loop,
+            daemon=True,
+            name="nvoc-tui-query",
         )
         self._query_worker.start()
 
     def _query_loop(self) -> None:
         while True:
             job = self._query_queue.get()
-            if job is None:
-                break
             try:
+                if job is None:
+                    return
                 job()
             except Exception:
+                # Query jobs marshal their own errors to the UI. Keep the
+                # shared worker alive if a callback itself unexpectedly fails.
                 pass
+            finally:
+                self._query_queue.task_done()
 
     def submit_query(self, job: Callable[[], None]) -> None:
-        """Run `job` on the shared query thread (serializes poll work)."""
+        """Run a read-only frontend query on the shared serial worker."""
         self._query_queue.put(job)
 
     def _pynvoc(self) -> Any:

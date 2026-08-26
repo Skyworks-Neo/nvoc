@@ -428,17 +428,12 @@ def test_vfcurve_export_action_writes_static_curve(tmp_path: Path) -> None:
     ]
 
 
-def test_vfcurve_refresh_suppresses_overlapping_workers(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_vfcurve_refresh_suppresses_overlapping_workers(tmp_path: Path) -> None:
     app = FakeApp()
     app.root_dir = tmp_path
     scheduled: list[object] = []
 
-    def fake_submit(job) -> None:
-        scheduled.append(job)
-
-    app.native_service.submit_query = fake_submit
+    app.native_service.submit_query = scheduled.append
     controller = VFCurveController(app)
 
     controller.refresh_curve()
@@ -448,13 +443,37 @@ def test_vfcurve_refresh_suppresses_overlapping_workers(
     assert controller.is_refresh_inflight() is True
 
 
+def test_vfcurve_refresh_keeps_points_in_memory(tmp_path: Path) -> None:
+    app = FakeApp()
+    app.root_dir = tmp_path
+    points = [
+        {
+            "voltage_uv": 800000,
+            "frequency_khz": 1800000,
+            "default_frequency_khz": 1750000,
+        }
+    ]
+    app.native_service.query_domain_vfp_points = lambda _gpu: points
+    app.native_service.submit_query = lambda job: job()
+    controller = VFCurveController(app)
+    rendered: list[bool] = []
+    controller.render_plot = lambda: rendered.append(True)
+
+    controller.refresh_curve()
+
+    assert app.cache.vf_curve_points == points
+    assert rendered == [True]
+    assert not (tmp_path / "vfp_cache").exists()
+    assert controller.is_refresh_inflight() is False
+
+
 def test_vfcurve_refresh_clears_inflight_when_thread_start_fails(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path,
 ) -> None:
     app = FakeApp()
     app.root_dir = tmp_path
 
-    def fail_submit(job) -> None:
+    def fail_submit(_job) -> None:
         raise RuntimeError("query queue unavailable")
 
     app.native_service.submit_query = fail_submit

@@ -346,6 +346,18 @@ fn nvml_power_ok() {
 
 #[test]
 #[ignore]
+fn nvml_live_power_draw_ok() {
+    let inv = inventory();
+    let target = first_target(&inv);
+    let draw = nvoc_core::nvml::query_nvml_power_draw_watts(nvml(&inv), target.id.0)
+        .expect("live NVML power draw should be readable");
+    assert!(draw.is_finite());
+    assert!(draw >= 0.0);
+    assert!(nvoc_core::nvml::query_nvml_power_draw_watts(nvml(&inv), INVALID_GPU_ID).is_none());
+}
+
+#[test]
+#[ignore]
 fn nvml_power_bad_gpu() {
     let bad_target = GpuTarget::without_backends(GpuId(INVALID_GPU_ID), 0);
     assert!(run(&bad_target, QueryPowerLimits).is_err());

@@ -14,10 +14,8 @@
 
 import os
 
-# Cap BLAS/OpenMP thread pools BEFORE numpy loads (pulled in via
-# textual-plotext): the TUI does no matrix math, and the default per-core
-# OpenBLAS arenas commit ~650MB of pagefile for nothing (measured: full
-# import stack 673MB -> ~50MB).
+# Cap BLAS/OpenMP thread pools before numpy loads through textual-plotext. The
+# TUI does no matrix math, so per-core worker pools only reserve excess memory.
 for _var in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
     os.environ.setdefault(_var, "1")
 
