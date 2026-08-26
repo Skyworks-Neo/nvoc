@@ -369,10 +369,10 @@ class VFCurveTab:
         self.fig = Figure(figsize=(9, 1.7), dpi=fig_dpi)
         self.fig.patch.set_facecolor("#2b2b2b")
         self.ax = self.fig.add_subplot(111)
-        # y tick labels live INSIDE the plot (negative tick pad), so the
-        # axes can start almost at the figure's left edge — the plot area
-        # spans nearly the full frame width
-        self.fig.subplots_adjust(left=0.006, right=0.985, top=0.92, bottom=0.22)
+        # y tick labels are back OUTSIDE the spine — left margin only fits
+        # the short GHz numbers ("0.5", "1", "1.5"), far slimmer than the
+        # old rotated-ylabel 0.13
+        self.fig.subplots_adjust(left=0.045, right=0.985, top=0.92, bottom=0.22)
         self._style_axes()
 
         # Placeholder text
@@ -553,26 +553,20 @@ class VFCurveTab:
         # axis labels one size smaller; ticks relabeled in V / GHz so the
         # numbers stay short (0.5 / 0.6 / ... and 0.5 / 1 / 1.5 / ...) —
         # plot data itself stays in mV / MHz
-        # x-axis unit caption INSIDE the axes, bottom-right ("Volt/V") —
-        # same style as the y-axis caption above the axis top
-        ax.text(
-            0.99,
-            0.02,
-            "Volt/V",
-            transform=ax.transAxes,
-            ha="right",
-            va="bottom",
-            color="#e08020",
-            fontsize=7,
-        )
-        # y-axis unit caption rides ABOVE the axis top end ("f/GHz") instead
-        # of a rotated ylabel — frees the whole left margin for the plot
+        # x-axis unit caption sits OUTSIDE the axes, immediately right of
+        # the last voltage tick number (bottom-right corner, below axis)
+        ax.set_xlabel("Volt/V", color="#e08020", fontsize=7)
+        ax.xaxis.set_label_coords(1.0, -0.02)
+        ax.xaxis.label.set_ha("left")
+        ax.xaxis.label.set_va("top")
+        # y-axis unit caption directly ABOVE the topmost frequency number
+        # (right-aligned to the spine, outside the plot)
         ax.text(
             0.0,
             1.02,
             "f/GHz",
             transform=ax.transAxes,
-            ha="left",
+            ha="right",
             va="bottom",
             color="#e08020",
             fontsize=7,
@@ -580,8 +574,6 @@ class VFCurveTab:
         ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _pos: f"{v / 1000.0:g}"))
         ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _pos: f"{v / 1000.0:g}"))
         ax.tick_params(colors="#cccccc", labelsize=6)
-        # y tick labels INSIDE the plot (negative pad) — no left gutter left
-        ax.tick_params(axis="y", pad=-14)
         for spine in ax.spines.values():
             spine.set_color("#555555")
         ax.grid(True, color="#333333", linewidth=0.5, alpha=0.7)
@@ -1554,10 +1546,9 @@ class VFCurveTab:
                     zorder=5,
                 )
 
-        # Keep margins in sync with _create_chart: y tick labels live inside
-        # the axes (negative tick pad) so the left margin stays near-zero —
+        # Keep margins in sync with _create_chart (see the note there) —
         # re-applying the old 0.13 here would re-create the left gutter
-        self.fig.subplots_adjust(left=0.006, right=0.985, top=0.92, bottom=0.22)
+        self.fig.subplots_adjust(left=0.045, right=0.985, top=0.92, bottom=0.22)
 
         self._live_elements.clear()
         self._live_hline = None
