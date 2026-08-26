@@ -76,6 +76,10 @@ class App(ctk.CTk):
     def __init__(self, single_instance_guard: Optional["SingleInstanceGuard"] = None):
         super().__init__()
 
+        self._cli_output_buffer: List[str] = []
+        self._cli_output_flush_id: Optional[str] = None
+        self._cli_output_lock = threading.Lock()
+
         # Global resize session state (used to coalesce expensive per-tab redraw work)
         self._is_resizing = False
         self._resize_settle_after_id = None  # type: Optional[str]
@@ -386,8 +390,19 @@ class App(ctk.CTk):
             self._refresh_gpu_list()
 
     def _on_cli_output(self, text: str):
-        """Thread-safe callback: schedule append on the main thread."""
-        self.after(0, lambda: self.console.append(text))
+        """Buffer worker output and schedule one batched UI update."""
+        with self._cli_output_lock:
+            self._cli_output_buffer.append(text)
+            if self._cli_output_flush_id is None:
+                self._cli_output_flush_id = self.after(100, self._flush_cli_output)
+
+    def _flush_cli_output(self) -> None:
+        with self._cli_output_lock:
+            self._cli_output_flush_id = None
+            if not self._cli_output_buffer:
+                return
+            buffered, self._cli_output_buffer = self._cli_output_buffer, []
+        self.console.append_batch(buffered)
 
     def run_background(self, name: str, task: Callable[[], Any]) -> Any:
         """Submit non-UI work to the central GUI task runner."""
@@ -1421,6 +1436,7 @@ class App(ctk.CTk):
         self.runner.shutdown()
         self.backend.shutdown()
         self.tasks.shutdown(wait=True)
+        self._flush_cli_output()
         self.config.close()
 
         # 4. Destroy window synchronously
