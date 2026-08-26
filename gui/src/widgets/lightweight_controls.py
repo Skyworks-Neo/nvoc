@@ -160,7 +160,10 @@ class CanvasSlider(ctk.CTkFrame):
         return super().cget(key)
 
     def set(self, value):
-        self._value = self._clamp(float(value))
+        clamped = self._clamp(float(value))
+        if abs(clamped - self._value) < 1e-9:
+            return
+        self._value = clamped
         self._redraw()
 
     def get(self):
