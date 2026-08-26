@@ -553,6 +553,55 @@ impl GpuType {
         matches!(self, GpuType::Mobile50Series | GpuType::Desktop50Series)
     }
 
+    /// 是否为移动端（笔记本 dGPU）。
+    pub fn is_mobile(&self) -> bool {
+        matches!(
+            self,
+            GpuType::Mobile50Series
+                | GpuType::Mobile40Series
+                | GpuType::Mobile30Series
+                | GpuType::Mobile20Series
+                | GpuType::Mobile16Series
+                | GpuType::Mobile10Series
+                | GpuType::Mobile9Series
+        )
+    }
+
+    /// 是否为 Unknown 类型
+    pub fn is_unknown(&self) -> bool {
+        matches!(self, GpuType::Unknown)
+    }
+
+    /// XBAR ClockClient domain offsets are available from Turing onward.
+    pub fn supports_xbar_offset(&self) -> bool {
+        matches!(
+            self,
+            GpuType::Mobile50Series
+                | GpuType::Desktop50Series
+                | GpuType::Mobile40Series
+                | GpuType::Desktop40Series
+                | GpuType::Mobile30Series
+                | GpuType::Desktop30Series
+                | GpuType::Mobile20Series
+                | GpuType::Desktop20Series
+                | GpuType::Mobile16Series
+                | GpuType::Desktop16Series
+                | GpuType::WorkstationBlackwell
+                | GpuType::WorkstationLovelace
+                | GpuType::WorkstationAmpere
+                | GpuType::WorkstationTuring
+                | GpuType::ServerBlackwell
+                | GpuType::ServerLovelace
+                | GpuType::ServerAmpere
+                | GpuType::ServerTuringTesla
+        )
+    }
+
+    /// 移动端或未知 GPU 在 OC 写入前需要 GC6 唤醒
+    pub fn needs_gc6_wake(&self) -> bool {
+        self.is_mobile() || self.is_unknown()
+    }
+
     /// 核心频率步进（kHz），供 handle_vfp_export / fix_result 使用
     /// 直接委托 oc_params()，保持单一数据源
     pub fn minimum_freq_step_khz(&self) -> i32 {
