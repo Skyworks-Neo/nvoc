@@ -59,6 +59,20 @@ pub use operation::{
     set_nvapi_pstate_clock_offsets, set_nvapi_vfp_curve_delta, sync_memory_pstate_as_p0,
     try_parse_nvml_pstate,
 };
+
+// Compatibility aliases for internal consumers that have not adopted the
+// normalized CLI terminology yet. Keep the operation implementation single-
+// sourced while allowing optimizer and Python bindings to migrate separately.
+pub use operation::{
+    ResetAutoboostStatus as SetAutoBoostDefault, ResetFreqLock as ResetLockedClocks,
+    ResetLegacyApplicationFreqLock as ResetApplicationsClocks,
+    ResetLegacyGpcRailOvervoltLimit as ResetPstateBaseVoltages,
+    ResetPstateGlobalFreqOffset as ResetPstateClockOffsets,
+    ResetPublicVftableGpcLock as ResetVfpLock, ResetPublicVftableOffset as ResetVfpDeltas,
+    SetAutoboostStatus as SetAutoBoost, SetAutoboostSupport as SetApiRestriction,
+    SetGpcVoltLock as SetVfpVoltageLock, SetPublicVftablePointOffset as SetVfpPointDelta,
+    SetPublicVftableRangeOffset as SetVfpRangeDelta,
+};
 pub use result::{
     ApiRestrictionState, AppliedValue, AutoBoostState, BatchReport, ClockOffset, DNotifierInfo,
     DNotifierLevel, DisplayInfo, EdidData, FanCurvePointReadout, FanCurveReadout, FanInfo,
