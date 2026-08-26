@@ -433,21 +433,37 @@ def test_vfcurve_refresh_suppresses_overlapping_workers(tmp_path: Path) -> None:
     assert controller.is_refresh_inflight() is True
 
 
-def test_vfcurve_refresh_clears_inflight_when_cache_path_fails() -> None:
+def test_vfcurve_refresh_keeps_points_in_memory(tmp_path: Path, monkeypatch) -> None:
     app = FakeApp()
+    app.root_dir = tmp_path
+    points = [
+        {
+            "voltage_uv": 800000,
+            "frequency_khz": 1800000,
+            "default_frequency_khz": 1750000,
+        }
+    ]
+    app.native_service.query_domain_vfp_points = lambda _gpu: points
+
+    class ImmediateThread:
+        def __init__(self, *, target, daemon, name) -> None:
+            self.target = target
+
+        def start(self) -> None:
+            self.target()
+
+    monkeypatch.setattr(
+        "nvoc_tui.controllers.vfcurve.threading.Thread", ImmediateThread
+    )
     controller = VFCurveController(app)
+    rendered: list[bool] = []
+    controller.render_plot = lambda: rendered.append(True)
 
-    def fail_cache_path() -> Path:
-        raise OSError("cache path unavailable")
+    controller.refresh_curve()
 
-    controller.cache_path = fail_cache_path
-
-    try:
-        controller.refresh_curve()
-    except OSError:
-        # Expected in this test: cache_path is forced to fail, we only verify inflight cleanup.
-        pass
-
+    assert app.cache.vf_curve_points == points
+    assert rendered == [True]
+    assert not (tmp_path / "vfp_cache").exists()
     assert controller.is_refresh_inflight() is False
 
 
