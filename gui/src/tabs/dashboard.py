@@ -430,6 +430,14 @@ class DashboardTab:
                 return
         except Exception:
             pass
+        # Other tabs do not display dashboard metrics, so defer the expensive
+        # status sweep until the dashboard becomes visible again.
+        try:
+            if not str(self.app.tabview.get()).endswith("Dashboard"):
+                self._schedule_next()
+                return
+        except Exception:
+            pass
         if self._in_offline_backoff:
             self.app._refresh_gpu_list()
             self._schedule_next()
