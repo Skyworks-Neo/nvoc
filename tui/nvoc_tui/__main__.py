@@ -12,6 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
+
+# Cap BLAS/OpenMP thread pools before numpy loads through textual-plotext. The
+# TUI does no matrix math, so per-core worker pools only reserve excess memory.
+for _var in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
+    os.environ.setdefault(_var, "1")
+
 if __package__:
     from .app import NVOCApp
 else:
