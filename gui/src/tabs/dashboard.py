@@ -422,6 +422,14 @@ class DashboardTab:
     def _poll_tick(self) -> None:
         if not self._polling:
             return
+        # The dashboard is not visible while the app lives in the system tray;
+        # avoid a full NVAPI/NVML sweep every second until the window returns.
+        try:
+            if self.app.state() == "withdrawn":
+                self._schedule_next()
+                return
+        except Exception:
+            pass
         if self._in_offline_backoff:
             self.app._refresh_gpu_list()
             self._schedule_next()
