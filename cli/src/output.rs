@@ -283,8 +283,8 @@ fn format_private_vfp_output(output: &Value) -> Vec<String> {
                 .and_then(Value::as_f64)
                 .unwrap_or_default();
             let voltage = format!("{:.1} mV", voltage_uv / 1000.0);
-            // plain MHz integers — field_text would append "MHz" to each,
-            // doubling the unit on the row; state it once after "current"
+            // plain MHz integers — format_scalar(key, _) would append the
+            // key-derived unit ("MHz") itself; render explicitly instead
             let current = point
                 .get("freq_current_mhz")
                 .and_then(Value::as_i64)
@@ -294,7 +294,7 @@ fn format_private_vfp_output(output: &Value) -> Vec<String> {
                 .and_then(Value::as_i64)
                 .unwrap_or_default();
             lines.push(nvoc_cli_common::color::stylize(
-                &format!("    #{index}: {voltage}, current {current} MHz, default {default}"),
+                &format!("    #{index}: {voltage}, current {current} MHz, default {default} MHz"),
                 false,
             ));
         }
