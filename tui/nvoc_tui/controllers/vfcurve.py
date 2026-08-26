@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import threading
-from pathlib import Path
 
 from rich.text import Text
 from textual.widgets import Button, Checkbox, Input, Select
@@ -10,8 +9,8 @@ from textual_plotext import PlotextPlot
 from ..parsing import (
     compute_vf_plot_bounds,
     find_curve_point_for_voltage,
-    load_vf_curve,
     load_vf_curve_deltas,
+    vf_curve_points_to_series,
     write_vf_curve_points,
 )
 from ..widgets import mnemonic_text
@@ -84,15 +83,6 @@ class VFCurveController(PaneController):
         with self._refresh_lock:
             self.refresh_inflight = False
 
-    def cache_path(self) -> Path:
-        cache_dir = self.app.root_dir / "vfp_cache"
-        cache_dir.mkdir(exist_ok=True)
-        gpu = self.app.current_gpu()
-        if gpu and gpu.uuid:
-            return cache_dir / f"{gpu.uuid}.csv"
-        idx = self.app.selected_gpu_idx() or 0
-        return cache_dir / f"gpu_{idx}.csv"
-
     def sync_from_ui(self) -> None:
         self.app.config_data.vfcurve.default_path = self.app.query_one(
             "#vf-path", Input
@@ -103,7 +93,6 @@ class VFCurveController(PaneController):
         if not self._begin_refresh():
             return
         try:
-            cache_path = self.cache_path()
             gpu = self.app.selected_gpu_target()
         except Exception:
             self._end_refresh()
@@ -116,16 +105,14 @@ class VFCurveController(PaneController):
         def worker() -> None:
             output = ""
             code = 0
+            points: list[dict] | None = None
             try:
                 points = self.app.native_service.query_domain_vfp_points(gpu)
-                write_vf_curve_points(str(cache_path), points)
             except Exception as exc:
                 output = f"pynvoc VFP curve query failed: {exc}"
                 code = -1
             try:
-                self.app.call_from_thread(
-                    self.on_curve_loaded, output, str(cache_path), code
-                )
+                self.app.call_from_thread(self.on_curve_loaded, output, points, code)
             except Exception:
                 self._end_refresh()
                 raise
@@ -137,15 +124,17 @@ class VFCurveController(PaneController):
             self._end_refresh()
             raise
 
-    def on_curve_loaded(self, output: str, path: str, code: int) -> None:
+    def on_curve_loaded(
+        self, output: str, points: list[dict] | None, code: int
+    ) -> None:
         self._end_refresh()
         if output:
             self.app.write_log(output)
-        self.app.cache.vf_curve_path = path
+        self.app.cache.vf_curve_points = points if code == 0 else None
         if code == 0:
             self.render_plot()
         else:
-            self.clear_plot("VF curve export failed.")
+            self.clear_plot("VF curve query failed.")
 
     def clear_plot(self, title: str) -> None:
         widget = self.app.query_one("#vf-plot", PlotextPlot)
@@ -159,10 +148,11 @@ class VFCurveController(PaneController):
         widget.refresh()
 
     def render_plot(self) -> None:
-        if not self.app.cache.vf_curve_path:
-            self.clear_plot("No VF curve cache loaded.")
+        points = self.app.cache.vf_curve_points
+        if not points:
+            self.clear_plot("No VF curve loaded.")
             return
-        voltages, freqs, defaults = load_vf_curve(self.app.cache.vf_curve_path)
+        voltages, freqs, defaults = vf_curve_points_to_series(points)
         if not voltages:
             self.clear_plot("VF curve cache is empty.")
             return

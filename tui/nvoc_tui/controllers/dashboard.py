@@ -40,7 +40,7 @@ class DashboardController(PaneController):
             return
         self.app.cache.status = parsed
         self.update_metrics()
-        if self.app.cache.vf_curve_path:
+        if self.app.cache.vf_curve_points:
             self.app.vfcurve_controller.render_plot()
 
     def on_get_loaded(self, code: int, output: str, parsed: dict) -> None:

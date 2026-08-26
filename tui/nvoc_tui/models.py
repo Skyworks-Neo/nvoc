@@ -69,7 +69,7 @@ class GpuCache:
     info: dict[str, Any] = field(default_factory=dict)
     status: dict[str, Any] = field(default_factory=dict)
     settings: dict[str, Any] = field(default_factory=dict)
-    vf_curve_path: str = ""
+    vf_curve_points: list[dict[str, Any]] | None = None
 
 
 @dataclass(slots=True)

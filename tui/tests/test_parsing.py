@@ -24,6 +24,7 @@ from nvoc_tui.parsing import (
     parse_info_output,
     parse_json_output,
     parse_status_output,
+    vf_curve_points_to_series,
 )
 
 
@@ -230,6 +231,21 @@ def test_load_vf_curve(tmp_path: Path) -> None:
     assert voltages == [800.0, 825.0, 850.0]
     assert freqs == [1800.0, 1840.0, 1900.0]
     assert defaults == [1750.0, 1775.0, 1800.0]
+
+
+def test_vf_curve_points_to_series_uses_frequency_as_missing_default() -> None:
+    voltages, frequencies, defaults = vf_curve_points_to_series([
+        {
+            "voltage_uv": 800000,
+            "frequency_khz": 1800000,
+            "default_frequency_khz": 1750000,
+        },
+        {"voltage_uv": 825000, "frequency_khz": 1840000},
+    ])
+
+    assert voltages == [800.0, 825.0]
+    assert frequencies == [1800.0, 1840.0]
+    assert defaults == [1750.0, 1840.0]
 
 
 def test_load_vf_curve_deltas_skips_invalid_rows(tmp_path: Path) -> None:
