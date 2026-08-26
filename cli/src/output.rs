@@ -103,15 +103,8 @@ fn format_human_output(function: &str, output: &Value) -> Vec<String> {
                 .and_then(Value::as_str)
                 .unwrap_or("?")
         )],
-        // PCF platform status (0xC80068A1), NOT the PPAB enable readback —
-        // see nvapi-rs examples/probe_pcf_dynamic_boost.rs
-        "get-dynamic-boost" => vec![format!(
-            "  PCF Dynamic Boost Active: {}",
-            match output.get("pcf_dynamic_boost_active").and_then(Value::as_bool) {
-                Some(v) => if v { "yes" } else { "no" },
-                None => "N/A (unsupported)",
-            }
-        )],
+        // "get-dynamic-boost" withdrawn 2026-08-26: 0xC80068A1 reads PCF
+        // platform status, not the PPAB enable readback (probe_pcf_dynamic_boost)
         "get-pstate-native" => format_pstate_native_output(output),
         "get-throttle-reasons" => format_throttle_reasons_output(output),
         "get-legacy-overvolt-ranges" => format_object_array(

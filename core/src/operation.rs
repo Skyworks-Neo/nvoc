@@ -2192,25 +2192,11 @@ impl GpuOperation for QueryNvapiPowerMizer {
     }
 }
 
-/// PPAB / Dynamic-Boost enable GET (0xC80068A1) — the readback half of
-/// `SetNvapiDynamicBoost`.
-#[derive(Clone, Copy, Debug)]
-pub struct QueryNvapiDynamicBoost;
-
-impl GpuOperation for QueryNvapiDynamicBoost {
-    type Output = Option<bool>;
-
-    fn kind(&self) -> OperationKind {
-        OperationKind::QueryNvapiDynamicBoost
-    }
-
-    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
-        target
-            .nvapi()?
-            .dynamic_boost_enabled()
-            .map_err(Error::from)
-    }
-}
+// NOTE (2026-08-26): QueryNvapiDynamicBoost withdrawn. 0xC80068A1 reads the
+// PCF controller table's platform status bytes (rec[+60]/rec[+61]), NOT the
+// PPAB enable written by 0x1504FC3D — live-probed both bytes = 2 with PPAB
+// enforcing (see nvapi-rs examples/probe_pcf_dynamic_boost.rs). The nvapi-rs
+// layer keeps the wrap; re-expose only when a true readback is identified.
 
 /// Core-voltage control-object GET (0xA91F88EB, escape 0x07000045) — half
 /// of the RMW pair with [`SetNvapiCoreVoltageControl`]. Distinct SET path

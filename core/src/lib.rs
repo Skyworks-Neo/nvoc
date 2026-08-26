@@ -35,7 +35,7 @@ pub use operation::{
     QueryThrottleReasons, QueryVfpPointVoltage, QueryViolationStatus, QueryVoltageBoost,
     ResetApplicationsClocks, ResetCoolerLevels, ResetFanSpeed, ResetForcePstate, ResetLockedClocks,
     ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetNvapiVfpPrivate,
-    QueryNvapiPowerMizer, QueryNvapiDynamicBoost, QueryNvapiCoreVoltageControl,
+    QueryNvapiPowerMizer, QueryNvapiCoreVoltageControl,
     SetNvapiCoreVoltageControl, QueryNvapiPmgrVoltageArbiter, SetNvapiPmgrVoltageArbiter,
     QueryNvapiRatedTdp, SetNvapiBackgroundOcScanner, QueryNvapiOcScannerIncomplete,
     QueryNvapiThermalSim, SetNvapiThermalSim, DisableNvapiThermalSim, SetNvapiPowerLevel,

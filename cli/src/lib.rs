@@ -13,7 +13,7 @@ use nvoc_core::{
     QueryNvapiClkVfPoints, QueryNvapiDNotifier, QueryNvapiPStateLevels, QueryNvapiPStateLockStatus,
     QueryNvapiTargetTempPolicies, QueryNvapiTargetTempPolicyIndex, QueryNvapiTgpWattRange,
     QueryNvapiThermalSettings, QueryNvapiVoltRails, QueryPowerLimits, QueryPstateBaseVoltage,
-    QueryNvapiPowerMizer, QueryNvapiDynamicBoost, QueryNvapiCoreVoltageControl,
+    QueryNvapiPowerMizer, QueryNvapiCoreVoltageControl,
     SetNvapiCoreVoltageControl, QueryNvapiPmgrVoltageArbiter, SetNvapiPmgrVoltageArbiter,
     QueryNvapiRatedTdp, SetNvapiBackgroundOcScanner, QueryNvapiOcScannerIncomplete,
     QueryNvapiThermalSim, SetNvapiThermalSim, DisableNvapiThermalSim, SetNvapiPowerLevel,
@@ -182,7 +182,6 @@ pub enum Command {
     SetVoltRailOffset,
     SetVoltRailTarget,
     GetPowerMizer,
-    GetDynamicBoost,
     GetCoreVoltageControl,
     SetCoreVoltageControl,
     GetPmgrArbiter,
@@ -302,7 +301,6 @@ impl Command {
             Self::SetVoltRailOffset => "set-volt-rail-offset",
             Self::SetVoltRailTarget => "set-volt-rail-target",
             Self::GetPowerMizer => "get-power-mizer",
-            Self::GetDynamicBoost => "get-dynamic-boost",
             Self::GetCoreVoltageControl => "get-core-voltage-control",
             Self::SetCoreVoltageControl => "set-core-voltage-control",
             Self::GetPmgrArbiter => "get-pmgr-arbiter",
@@ -447,7 +445,6 @@ impl Command {
                 "Set a volt-rail to an absolute target voltage in mV (derives the uV offset from the live control/status snapshot)"
             }
             Self::GetPowerMizer => "Read the PowerMizer mode (NVCP power dropdown readback, 0x76BFA16B; returns 6/7)",
-            Self::GetDynamicBoost => "Read the PCF platform dynamic-boost status (0xC80068A1; NOT the PPAB enable readback — separate platform table, see probe_pcf_dynamic_boost)",
             Self::GetCoreVoltageControl => "Read the core-voltage control object (0xA91F88EB, escape 0x07000045)",
             Self::SetCoreVoltageControl => "Set the core-voltage control (0xDC2BD4A6, escape 0x07000044; admin; distinct from volt-rail paths)",
             Self::GetPmgrArbiter => "Read the PMGR voltage-request arbiter values (0x717648FD, escape 0x0700019F)",
@@ -1198,7 +1195,6 @@ const COMMANDS: &[Command] = &[
     Command::SetVoltRailOffset,
     Command::SetVoltRailTarget,
     Command::GetPowerMizer,
-    Command::GetDynamicBoost,
     Command::GetCoreVoltageControl,
     Command::SetCoreVoltageControl,
     Command::GetPmgrArbiter,
@@ -3002,13 +2998,6 @@ fn execute_target(
                     "mode_raw": mode,
                     "mode": if mode == 6 { "first" } else if mode == 7 { "second" } else { "unknown" },
                 }),
-                None => json!({"supported": false}),
-            })
-        }
-        Command::GetDynamicBoost => {
-            let out = run(target, QueryNvapiDynamicBoost)?.output;
-            Ok(match out {
-                Some(active) => json!({"pcf_dynamic_boost_active": active}),
                 None => json!({"supported": false}),
             })
         }

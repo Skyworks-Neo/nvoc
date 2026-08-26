@@ -27,7 +27,7 @@ use nvoc_core::{
     SetVfpPointDelta, SetVfpRangeDelta, SetVfpVoltageLock, SetVoltageBoost, VfpResetDomain,
     ClkVfDomainClass, VfPointType, clk_vf_delta_for_target, detect_gpu_type, discover_targets,
     fetch_gpu_type, nvml_pstate_to_str, parse_nvml_fan_control_policy, run, try_parse_nvml_pstate,
-    QueryNvapiPowerMizer, QueryNvapiDynamicBoost, QueryNvapiCoreVoltageControl,
+    QueryNvapiPowerMizer, QueryNvapiCoreVoltageControl,
     SetNvapiCoreVoltageControl, QueryNvapiPmgrVoltageArbiter, SetNvapiPmgrVoltageArbiter,
     QueryNvapiRatedTdp, SetNvapiBackgroundOcScanner, QueryNvapiOcScannerIncomplete,
     QueryNvapiThermalSim, SetNvapiThermalSim, DisableNvapiThermalSim, SetNvapiPowerLevel,
@@ -2577,19 +2577,10 @@ fn get_power_mizer(py: Python<'_>, gpu: &str, power_source: u32) -> PyResult<Py<
     py_value(py, &value)
 }
 
-/// Read the PPAB / Dynamic-Boost enable state (0xC80068A1) — readback of
-/// `set_dynamic_boost`. Returns `{"enabled": bool}` or `{"supported": false}`.
-#[pyfunction]
-fn get_dynamic_boost(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
-    let value = with_target(gpu, "nvapi", |target| {
-        let out = run(target, QueryNvapiDynamicBoost).map_err(to_py_err)?.output;
-        Ok(match out {
-            Some(enabled) => value_object([("enabled", Value::from(enabled))]),
-            None => value_object([("supported", Value::from(false))]),
-        })
-    })?;
-    py_value(py, &value)
-}
+// NOTE (2026-08-26): get_dynamic_boost withdrawn — 0xC80068A1 reads the PCF
+// platform status bytes, NOT the PPAB enable written by set_dynamic_boost
+// (live-probed; see nvapi-rs examples/probe_pcf_dynamic_boost.rs). The
+// nvapi-rs layer keeps the wrap; re-expose only when a true readback is found.
 
 /// Read the core-voltage control object (0xA91F88EB). Raw u32.
 #[pyfunction]
@@ -3982,7 +3973,6 @@ fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(clk_vf_delta_for_target_mhz, m)?)?;
     m.add_function(wrap_pyfunction!(reset_vfp_private, m)?)?;
     m.add_function(wrap_pyfunction!(get_power_mizer, m)?)?;
-    m.add_function(wrap_pyfunction!(get_dynamic_boost, m)?)?;
     m.add_function(wrap_pyfunction!(get_core_voltage_control, m)?)?;
     m.add_function(wrap_pyfunction!(set_core_voltage_control, m)?)?;
     m.add_function(wrap_pyfunction!(get_pmgr_arbiter, m)?)?;

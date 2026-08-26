@@ -100,7 +100,8 @@ pub enum OperationKind {
     ResetNvapiVfpPrivate,
     // OC-gap wraps (2026-08-26 audit follow-up)
     QueryNvapiPowerMizer,
-    QueryNvapiDynamicBoost,
+    // QueryNvapiDynamicBoost withdrawn with the op (2026-08-26) — the ID is
+    // PCF platform status, not the PPAB enable readback.
     QueryNvapiCoreVoltageControl,
     SetNvapiCoreVoltageControl,
     QueryNvapiPmgrVoltageArbiter,
