@@ -2409,80 +2409,11 @@ impl GpuOperation for DisableNvapiThermalSim {
     }
 }
 
-/// Query the RM voltage-frequency equation directory (PerfVfeEqu GetInfo,
-/// ID 0x8D49471C, RM 0x2080A0B5) — the third V/F editing surface, distinct
-/// from the public VfPoints and the private ClockClient V/F-POINTS families.
-/// Returns the equation-presence mask (bits 0..8191) and decoded entries
-/// (type/name per entry). `None` where the driver doesn't expose the family.
-#[derive(Clone, Copy, Debug)]
-pub struct QueryNvapiVfeEquInfo;
-
-impl GpuOperation for QueryNvapiVfeEquInfo {
-    type Output = Option<nvapi_hi::nvapi::VfeEquInfo>;
-
-    fn kind(&self) -> OperationKind {
-        OperationKind::QueryNvapiVfeEquInfo
-    }
-
-    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
-        target.nvapi()?.vfe_equ_info().map_err(Error::from)
-    }
-}
-
-/// Query the RM V/F equation control block (PerfVfeEqu GetControl,
-/// ID 0x4C75C9FE, RM 0x2080A0B6). Masks are IN/OUT: the driver echoes an
-/// expanded readable set. The SET twin (0x68B798C4) is elevation-gated and
-/// intentionally medium-only.
-#[derive(Clone, Copy, Debug)]
-pub struct QueryNvapiVfeEquControl;
-
-impl GpuOperation for QueryNvapiVfeEquControl {
-    type Output = Option<nvapi_hi::nvapi::VfeEquControl>;
-
-    fn kind(&self) -> OperationKind {
-        OperationKind::QueryNvapiVfeEquControl
-    }
-
-    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
-        target.nvapi()?.vfe_equ_control().map_err(Error::from)
-    }
-}
-
-/// Query the RM V/F variable directory (PerfVfeVar GetInfo,
-/// ID 0xB9DA41D6, RM 0x2080A0B1). Returns the variable mask (0..255) and
-/// typed entries.
-#[derive(Clone, Copy, Debug)]
-pub struct QueryNvapiVfeVarInfo;
-
-impl GpuOperation for QueryNvapiVfeVarInfo {
-    type Output = Option<nvapi_hi::nvapi::VfeVarInfo>;
-
-    fn kind(&self) -> OperationKind {
-        OperationKind::QueryNvapiVfeVarInfo
-    }
-
-    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
-        target.nvapi()?.vfe_var_info().map_err(Error::from)
-    }
-}
-
-/// Query the RM V/F variable control block (PerfVfeVar GetControl,
-/// ID 0x5D387298, RM 0x2080A0B3). The SET twin (0x79FA23A2) is
-/// elevation-gated and intentionally medium-only.
-#[derive(Clone, Copy, Debug)]
-pub struct QueryNvapiVfeVarControl;
-
-impl GpuOperation for QueryNvapiVfeVarControl {
-    type Output = Option<nvapi_hi::nvapi::VfeVarControl>;
-
-    fn kind(&self) -> OperationKind {
-        OperationKind::QueryNvapiVfeVarControl
-    }
-
-    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
-        target.nvapi()?.vfe_var_control().map_err(Error::from)
-    }
-}
+// NOTE (2026-08-26): the PerfVfeEqu/PerfVfeVar ×4 query operations were
+// deliberately withdrawn from core/CLI/Python — the surface is not yet
+// calibrated enough to expose to users (equ-control records are
+// variable-length and remain raw). The nvapi-rs layer keeps the full
+// wrap + tests; re-expose here only after per-type field decoding lands.
 
 /// Batch-measure physical clocks for a set of domains via the V3
 /// MEASURE_FREQ (RM 0x20809006, magic 0x30038) — one RM round-trip per

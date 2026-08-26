@@ -38,7 +38,6 @@ pub use operation::{
     QueryNvapiPowerMizer, QueryNvapiDynamicBoost, QueryNvapiCoreVoltageControl,
     SetNvapiCoreVoltageControl, QueryNvapiPmgrVoltageArbiter, SetNvapiPmgrVoltageArbiter,
     QueryNvapiRatedTdp, SetNvapiBackgroundOcScanner, QueryNvapiOcScannerIncomplete,
-    QueryNvapiVfeEquInfo, QueryNvapiVfeEquControl, QueryNvapiVfeVarInfo, QueryNvapiVfeVarControl,
     QueryNvapiThermalSim, SetNvapiThermalSim, DisableNvapiThermalSim, SetNvapiPowerLevel,
     ResetPstateBaseVoltages,
     ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock, ResetVfpLock,

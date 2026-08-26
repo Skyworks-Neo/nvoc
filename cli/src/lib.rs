@@ -16,7 +16,6 @@ use nvoc_core::{
     QueryNvapiPowerMizer, QueryNvapiDynamicBoost, QueryNvapiCoreVoltageControl,
     SetNvapiCoreVoltageControl, QueryNvapiPmgrVoltageArbiter, SetNvapiPmgrVoltageArbiter,
     QueryNvapiRatedTdp, SetNvapiBackgroundOcScanner, QueryNvapiOcScannerIncomplete,
-    QueryNvapiVfeEquInfo, QueryNvapiVfeEquControl, QueryNvapiVfeVarInfo, QueryNvapiVfeVarControl,
     QueryNvapiThermalSim, SetNvapiThermalSim, DisableNvapiThermalSim, SetNvapiPowerLevel,
     QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
     QueryThrottleReasons, QueryVfpPointVoltage, QueryViolationStatus, QueryVoltageBoost,
@@ -197,10 +196,6 @@ pub enum Command {
     SetVfpPointPrivate,
     SetVfpRangePrivate,
     GetClkVfPoints,
-    GetVfeEquInfo,
-    GetVfeEquControl,
-    GetVfeVarInfo,
-    GetVfeVarControl,
     SetPowerLevel,
     GetThermalSim,
     SetThermalSim,
@@ -315,10 +310,6 @@ impl Command {
             Self::GetRatedTdp => "get-rated-tdp",
             Self::GetClkDomains => "get-clk-domains",
             Self::GetClkVfPoints => "get-clk-vf-points",
-            Self::GetVfeEquInfo => "get-vfe-equ-info",
-            Self::GetVfeEquControl => "get-vfe-equ-control",
-            Self::GetVfeVarInfo => "get-vfe-var-info",
-            Self::GetVfeVarControl => "get-vfe-var-control",
             Self::SetPowerLevel => "set-power-level",
             Self::GetThermalSim => "get-thermal-sim",
             Self::SetThermalSim => "set-thermal-sim",
@@ -456,7 +447,7 @@ impl Command {
                 "Set a volt-rail to an absolute target voltage in mV (derives the uV offset from the live control/status snapshot)"
             }
             Self::GetPowerMizer => "Read the PowerMizer mode (NVCP power dropdown readback, 0x76BFA16B; returns 6/7)",
-            Self::GetDynamicBoost => "Read the PPAB / Dynamic-Boost enable state (0xC80068A1 readback of set-dynamic-boost)",
+            Self::GetDynamicBoost => "Read the PCF platform dynamic-boost status (0xC80068A1; NOT the PPAB enable readback — separate platform table, see probe_pcf_dynamic_boost)",
             Self::GetCoreVoltageControl => "Read the core-voltage control object (0xA91F88EB, escape 0x07000045)",
             Self::SetCoreVoltageControl => "Set the core-voltage control (0xDC2BD4A6, escape 0x07000044; admin; distinct from volt-rail paths)",
             Self::GetPmgrArbiter => "Read the PMGR voltage-request arbiter values (0x717648FD, escape 0x0700019F)",
@@ -479,18 +470,6 @@ impl Command {
             }
             Self::GetClkVfPoints => {
                 "Read the private ClockClient V/F-points family: per-bank point masks + V/F curve records (voltage-indexed, units calibrated vs the public GPC VFP)"
-            }
-            Self::GetVfeEquInfo => {
-                "Read the RM voltage-frequency EQUATION directory (PerfVfeEqu GetInfo 0x8D49471C): equation mask + typed entries — the third V/F surface (raw; per-type fields not yet calibrated)"
-            }
-            Self::GetVfeEquControl => {
-                "Read the RM V/F equation control block (PerfVfeEqu GetControl 0x4C75C9FE, IN/OUT mask the driver expands) — raw entries"
-            }
-            Self::GetVfeVarInfo => {
-                "Read the RM V/F VARIABLE directory (PerfVfeVar GetInfo 0xB9DA41D6): variable mask + typed entries — raw"
-            }
-            Self::GetVfeVarControl => {
-                "Read the RM V/F variable control block (PerfVfeVar GetControl 0x5D387298) — raw records"
             }
             Self::SetPowerLevel => {
                 "Set the NVCP power-mode dropdown (SetPerfLevel 0x75DD3E6A): 0=Adaptive, 1=Maximum Performance, 2=Auto"
@@ -1155,10 +1134,6 @@ const COMMANDS: &[Command] = &[
     Command::GetVfp,
     Command::GetVfpPointVoltageMv,
     Command::GetVoltageBoostPercent,
-    Command::GetVfeEquControl,
-    Command::GetVfeEquInfo,
-    Command::GetVfeVarControl,
-    Command::GetVfeVarInfo,
     Command::GetVoltRails,
     Command::ListDisplays,
     Command::ListGpus,
@@ -3033,7 +3008,7 @@ fn execute_target(
         Command::GetDynamicBoost => {
             let out = run(target, QueryNvapiDynamicBoost)?.output;
             Ok(match out {
-                Some(active) => json!({"dynamic_boost_enabled": active}),
+                Some(active) => json!({"pcf_dynamic_boost_active": active}),
                 None => json!({"supported": false}),
             })
         }
@@ -3084,63 +3059,6 @@ fn execute_target(
                     "control_mode": control_mode,
                     "info_capabilities": caps,
                     "status_raw": raw,
-                }),
-                None => json!({"supported": false}),
-            })
-        }
-        Command::GetVfeEquInfo => {
-            let out = run(target, QueryNvapiVfeEquInfo)?.output;
-            Ok(match out {
-                Some(v) => json!({
-                    "mask_bits": v.mask_bits,
-                    "entries": v.entries.iter().map(|e| json!({
-                        "index": e.index,
-                        "type": e.entry_type,
-                        "name": format!("0x{:04X}", e.name),
-                        "aux": e.aux,
-                        "dwords": e.dwords,
-                    })).collect::<Vec<_>>(),
-                }),
-                None => json!({"supported": false}),
-            })
-        }
-        Command::GetVfeEquControl => {
-            let out = run(target, QueryNvapiVfeEquControl)?.output;
-            Ok(match out {
-                Some(v) => json!({
-                    "mask_bits": v.mask_bits,
-                    "entries": v.entries.iter().map(|e| json!({
-                        "index": e.index,
-                        "type_raw": e.type_raw,
-                        "dwords": e.dwords,
-                    })).collect::<Vec<_>>(),
-                }),
-                None => json!({"supported": false}),
-            })
-        }
-        Command::GetVfeVarInfo => {
-            let out = run(target, QueryNvapiVfeVarInfo)?.output;
-            Ok(match out {
-                Some(v) => json!({
-                    "mask_bits": v.mask_bits,
-                    "entries": v.entries.iter().map(|e| json!({
-                        "index": e.index,
-                        "type": e.entry_type,
-                        "dwords": e.dwords,
-                    })).collect::<Vec<_>>(),
-                }),
-                None => json!({"supported": false}),
-            })
-        }
-        Command::GetVfeVarControl => {
-            let out = run(target, QueryNvapiVfeVarControl)?.output;
-            Ok(match out {
-                Some(v) => json!({
-                    "count": v.count,
-                    "entries": v.entries.iter().map(|e| json!({
-                        "index": e.index,
-                        "dwords": e.dwords,
-                    })).collect::<Vec<_>>(),
                 }),
                 None => json!({"supported": false}),
             })

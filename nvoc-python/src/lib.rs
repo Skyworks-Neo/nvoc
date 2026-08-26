@@ -31,7 +31,6 @@ use nvoc_core::{
     SetNvapiCoreVoltageControl, QueryNvapiPmgrVoltageArbiter, SetNvapiPmgrVoltageArbiter,
     QueryNvapiRatedTdp, SetNvapiBackgroundOcScanner, QueryNvapiOcScannerIncomplete,
     QueryNvapiThermalSim, SetNvapiThermalSim, DisableNvapiThermalSim, SetNvapiPowerLevel,
-    QueryNvapiVfeEquInfo, QueryNvapiVfeEquControl, QueryNvapiVfeVarInfo, QueryNvapiVfeVarControl,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -2787,137 +2786,10 @@ fn set_power_level(py: Python<'_>, gpu: &str, level: u32) -> PyResult<Py<PyAny>>
     py_value(py, &v)
 }
 
-fn u32_array(v: &[u32]) -> Value {
-    Value::Array(v.iter().map(|&d| Value::from(d)).collect())
-}
+// NOTE (2026-08-26): get_vfe_equ_info/-control and get_vfe_var_info/-control
+// were withdrawn — the PerfVfeEqu/Var surface is not calibrated enough for
+// users (equ-control records stay raw). The nvapi-rs layer keeps the wrap.
 
-/// Read the RM V/F equation directory (PerfVfeEqu GetInfo 0x8D49471C) —
-/// the third V/F surface (raw research decode).
-#[pyfunction]
-fn get_vfe_equ_info(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
-    let value = with_target(gpu, "nvapi", |target| {
-        let out = run(target, QueryNvapiVfeEquInfo).map_err(to_py_err)?.output;
-        Ok(match out {
-            Some(v) => value_object([
-                ("mask_bits", u32_array(&v.mask_bits)),
-                (
-                    "entries",
-                    Value::Array(
-                        v.entries
-                            .iter()
-                            .map(|e| {
-                                value_object([
-                                    ("index", Value::from(e.index)),
-                                    ("type", Value::from(e.entry_type)),
-                                    ("name", Value::from(format!("0x{:04X}", e.name))),
-                                    ("aux", Value::from(e.aux)),
-                                    ("dwords", u32_array(&e.dwords)),
-                                ])
-                            })
-                            .collect(),
-                    ),
-                ),
-            ]),
-            None => value_object([("supported", Value::from(false))]),
-        })
-    })?;
-    py_value(py, &value)
-}
-
-/// Read the RM V/F equation control block (PerfVfeEqu GetControl
-/// 0x4C75C9FE; IN/OUT mask the driver expands) — raw decode.
-#[pyfunction]
-fn get_vfe_equ_control(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
-    let value = with_target(gpu, "nvapi", |target| {
-        let out = run(target, QueryNvapiVfeEquControl)
-            .map_err(to_py_err)?
-            .output;
-        Ok(match out {
-            Some(v) => value_object([
-                ("mask_bits", u32_array(&v.mask_bits)),
-                (
-                    "entries",
-                    Value::Array(
-                        v.entries
-                            .iter()
-                            .map(|e| {
-                                value_object([
-                                    ("index", Value::from(e.index)),
-                                    ("type_raw", Value::from(e.type_raw)),
-                                    ("dwords", u32_array(&e.dwords)),
-                                ])
-                            })
-                            .collect(),
-                    ),
-                ),
-            ]),
-            None => value_object([("supported", Value::from(false))]),
-        })
-    })?;
-    py_value(py, &value)
-}
-
-/// Read the RM V/F variable directory (PerfVfeVar GetInfo 0xB9DA41D6).
-#[pyfunction]
-fn get_vfe_var_info(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
-    let value = with_target(gpu, "nvapi", |target| {
-        let out = run(target, QueryNvapiVfeVarInfo).map_err(to_py_err)?.output;
-        Ok(match out {
-            Some(v) => value_object([
-                ("mask_bits", u32_array(&v.mask_bits)),
-                (
-                    "entries",
-                    Value::Array(
-                        v.entries
-                            .iter()
-                            .map(|e| {
-                                value_object([
-                                    ("index", Value::from(e.index)),
-                                    ("type", Value::from(e.entry_type)),
-                                    ("dwords", u32_array(&e.dwords)),
-                                ])
-                            })
-                            .collect(),
-                    ),
-                ),
-            ]),
-            None => value_object([("supported", Value::from(false))]),
-        })
-    })?;
-    py_value(py, &value)
-}
-
-/// Read the RM V/F variable control block (PerfVfeVar GetControl
-/// 0x5D387298) — raw records.
-#[pyfunction]
-fn get_vfe_var_control(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
-    let value = with_target(gpu, "nvapi", |target| {
-        let out = run(target, QueryNvapiVfeVarControl)
-            .map_err(to_py_err)?
-            .output;
-        Ok(match out {
-            Some(v) => value_object([
-                ("count", Value::from(v.count)),
-                (
-                    "entries",
-                    Value::Array(
-                        v.entries
-                            .iter()
-                            .map(|e| {
-                                value_object([
-                                    ("index", Value::from(e.index)),
-                                    ("dwords", u32_array(&e.dwords)),
-                                ])
-                            })
-                            .collect(),
-                    ),
-                ),
-            ]),
-            None => value_object([("supported", Value::from(false))]),
-        })
-    })?;
-    py_value(py, &value)
-}
 /// SetControl (ID 0xFEC00D04) using mode-1 (raw f-offset) per-point values
 /// in a single RMW cycle. DANGEROUS: snapshots the full control block,
 /// patches each record in [start, end], SETs, readbacks, restores on
@@ -4122,10 +3994,6 @@ fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(set_thermal_sim, m)?)?;
     m.add_function(wrap_pyfunction!(disable_thermal_sim, m)?)?;
     m.add_function(wrap_pyfunction!(set_power_level, m)?)?;
-    m.add_function(wrap_pyfunction!(get_vfe_equ_info, m)?)?;
-    m.add_function(wrap_pyfunction!(get_vfe_equ_control, m)?)?;
-    m.add_function(wrap_pyfunction!(get_vfe_var_info, m)?)?;
-    m.add_function(wrap_pyfunction!(get_vfe_var_control, m)?)?;
     m.add_function(wrap_pyfunction!(set_target_temp, m)?)?;
     m.add_function(wrap_pyfunction!(set_applications_clocks, m)?)?;
     m.add_function(wrap_pyfunction!(reset_applications_clocks, m)?)?;

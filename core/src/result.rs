@@ -108,17 +108,8 @@ pub enum OperationKind {
     QueryNvapiRatedTdp,
     SetNvapiBackgroundOcScanner,
     QueryNvapiOcScannerIncomplete,
-    /// RM voltage-frequency equation directory (PerfVfeEqu GetInfo
-    /// 0x8D49471C) — third V/F surface: mask + typed equation entries.
-    QueryNvapiVfeEquInfo,
-    /// RM V/F equation control block (PerfVfeEqu GetControl 0x4C75C9FE,
-    /// IN/OUT mask). SET twin is elevation-gated, medium-only.
-    QueryNvapiVfeEquControl,
-    /// RM V/F variable directory (PerfVfeVar GetInfo 0xB9DA41D6).
-    QueryNvapiVfeVarInfo,
-    /// RM V/F variable control block (PerfVfeVar GetControl 0x5D387298).
-    /// SET twin is elevation-gated, medium-only.
-    QueryNvapiVfeVarControl,
+    // PerfVfeEqu/Var ×4 query kinds withdrawn with the ops (2026-08-26) —
+    // see the note in operation.rs.
     /// Temperature-simulation state GET (`GetThermalSimulationMode`) —
     /// `(enable, temperature_celsius)`; Secured-Overrides gated.
     QueryNvapiThermalSim,
