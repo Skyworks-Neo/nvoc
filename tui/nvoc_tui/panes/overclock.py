@@ -56,6 +56,14 @@ def compose_overclock() -> ComposeResult:
                             yield ShortcutInput(
                                 value="0", id="mem-offset", compact=True
                             )
+                        with Horizontal(classes="row"):
+                            # Fabric-clock offset (NVAPI-only ClockClient path,
+                            # xbar = domain bit 1). Arch-gated: the controller
+                            # disables this row for pre-Turing GPUs.
+                            yield Label("Xbar Offset")
+                            yield ShortcutInput(
+                                value="0", id="xbar-offset", compact=True
+                            )
                     with Grid(id="clock-actions"):
                         yield Button(
                             "Apply OC", id="oc-apply", classes="red", compact=True
@@ -102,6 +110,66 @@ def compose_overclock() -> ComposeResult:
                         yield Button(
                             "Reset Limits",
                             id="reset-limits",
+                            classes="green",
+                            compact=True,
+                        )
+
+                with Vertical(classes="subpane") as mobile_pane:
+                    mobile_pane.border_title = mnemonic_text("M", "obile Power")
+                    with Grid(id="mobile-controls"):
+                        with Horizontal(classes="row"):
+                            yield Label("PPAB")
+                            yield Select(
+                                options=[("On", "on"), ("Off", "off")],
+                                value="on",
+                                id="mobile-ppab",
+                                allow_blank=False,
+                                compact=True,
+                            )
+                        with Horizontal(classes="row"):
+                            yield Label("D-Notifier")
+                            yield Select(
+                                options=[
+                                    ("D1", 1),
+                                    ("D2", 2),
+                                    ("D3", 3),
+                                    ("D4", 4),
+                                    ("D5", 5),
+                                ],
+                                value=1,
+                                id="mobile-dnotifier",
+                                allow_blank=False,
+                                compact=True,
+                            )
+                        with Horizontal(classes="row"):
+                            yield Label("TGP (W)")
+                            yield ShortcutInput(
+                                value="100", id="mobile-tgp", compact=True
+                            )
+                        with Horizontal(classes="row"):
+                            yield Label("Target Temp (C)")
+                            yield ShortcutInput(
+                                value="87", id="mobile-target-temp", compact=True
+                            )
+                        with Horizontal(classes="row"):
+                            # Absolute voltage target on the private VoltRails
+                            # path (mobile-only, NVAPI). Bounds + starting
+                            # position come from the volt-rail P0 walls in
+                            # _on_mobile_limits; disabled until they load.
+                            yield Label("Volt Limit (mV)")
+                            yield ShortcutInput(
+                                value="", id="mobile-volt-limit", compact=True
+                            )
+                    with Grid(id="mobile-actions"):
+                        yield Button(
+                            "Apply Mobile",
+                            id="mobile-apply",
+                            classes="red",
+                            compact=True,
+                        )
+                        yield Button(
+                            "Reset Mobile",
+                            id="mobile-reset",
                             classes="green",
                             compact=True,
                         )

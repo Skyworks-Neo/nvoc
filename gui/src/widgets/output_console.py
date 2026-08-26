@@ -4,6 +4,7 @@ Output Console Widget - A read-only scrollable text area for CLI output.
 
 import threading
 import sys
+
 import tkinter.font as tk_font
 
 import customtkinter as ctk
@@ -16,36 +17,21 @@ class OutputConsole(ctk.CTkFrame):
 
     def __init__(self, master, **kwargs) -> None:
         super().__init__(master, **kwargs)
-        self._expanded = False
+        # Standalone window console: body always expanded, no fold header.
+        self._expanded = True
         self._lock = threading.Lock()
 
-        # Header stays visible; clicking it toggles the console body.
-        self.header = ctk.CTkFrame(
-            self, height=30, fg_color="transparent", cursor="hand2"
-        )
-        self.header.pack(fill="x", padx=5, pady=(5, 0))
-
-        self.toggle_label = ctk.CTkLabel(
-            self.header,
-            text="[+] Output Console",
-            font=("", 13, "bold"),
-            cursor="hand2",
-        )
-        self.toggle_label.pack(side="left")
-        self.toggle_label.bind("<Button-1>", self.toggle)
-        self.header.bind("<Button-1>", self.toggle)
-
         self.clear_button = ctk.CTkButton(
-            self.header, text="Clear", width=60, height=24, command=self.clear
+            self, text="Clear", width=60, height=24, command=self.clear
         )
-        self.clear_button.pack(side="right")
+        self.clear_button.pack(anchor="e", padx=5, pady=(5, 0))
 
         self.textbox = ctk.CTkTextbox(
-            self, state="disabled", font=self._mono_font(), wrap="none", height=200
+            self, state="disabled", font=self._mono_font(), wrap="none"
         )
+        self.textbox.pack(fill="both", expand=True, padx=5, pady=(0, 5))
         self.textbox.tag_config("lime", foreground="lime")
         self.textbox.tag_config("red", foreground="red")
-        self._set_expanded(False)
 
     @staticmethod
     def _mono_font() -> tuple[str, int]:
@@ -75,7 +61,13 @@ class OutputConsole(ctk.CTkFrame):
         self.append_batch([text])
 
     def append_batch(self, texts: list[str]) -> None:
-        """Append multiple chunks with one text-widget update."""
+        """Append multiple chunks in ONE text-widget update.
+
+        Each per-chunk append costs several Tcl round-trips plus see("end")
+        (which forces scroll relayout); batching N chunks into a single
+        insert/trim/see is ~150x cheaper for large bursts (e.g. streaming
+        autoscan output).
+        """
         if not texts:
             return
         with self._lock:
@@ -104,6 +96,7 @@ class OutputConsole(ctk.CTkFrame):
             if line_count > self._MAX_LINES:
                 self.textbox.delete("1.0", f"{line_count - self._MAX_LINES}.0")
 
+            # Scrolling a folded console is wasted re-render work
             if self._expanded:
                 self.textbox.see("end")
             self.textbox.configure(state="disabled")
