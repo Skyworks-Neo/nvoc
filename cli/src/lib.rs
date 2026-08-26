@@ -11,7 +11,8 @@ use nvoc_core::{
     QueryDisplays, QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings,
     QueryGpuStatus, QueryLegacyCoreOvervoltRanges, QueryLegacyP0CoreMaxVoltageDelta,
     QueryNvapiClkDomainFreqDetail, QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomains,
-    QueryNvapiClkVfPoints, QueryNvapiDNotifier, QueryNvapiPStateLevels, QueryNvapiPStateLockStatus,
+    QueryNvapiClkVfPoints, QueryNvapiClkVfControl, QueryNvapiDNotifier, QueryNvapiPStateLevels,
+    QueryNvapiPStateLockStatus,
     QueryNvapiTargetTempPolicies, QueryNvapiTargetTempPolicyIndex, QueryNvapiTgpWattRange,
     QueryNvapiThermalSettings, QueryNvapiVoltRails, QueryPowerLimits, QueryPstateBaseVoltage,
     QueryNvapiPowerMizer, QueryNvapiCoreVoltageControl,
@@ -3097,6 +3098,21 @@ fn execute_target(
                 None => 0,
             };
             let vfp = run(target, QueryNvapiClkVfPoints)?.output;
+            // raw control override table (GetControl 0xDA025C3E) — the
+            // direct readback of what set-private-vftable-*-offset writes;
+            // joined per point by (bank, index)
+            let ctrl_map: std::collections::HashMap<(u8, u16), (u32, u32)> = run(
+                target,
+                QueryNvapiClkVfControl,
+            )?
+            .output
+            .map(|c| {
+                c.points
+                    .into_iter()
+                    .map(|p| ((p.bank, p.index), (p.mode, p.value)))
+                    .collect()
+            })
+            .unwrap_or_default();
             Ok(match vfp {
                 Some(v) => json!({
                     "bank": bank,
@@ -3127,17 +3143,57 @@ fn execute_target(
                         "freq_default_mhz_min": s.freq_default_mhz_min,
                         "freq_default_mhz_max": s.freq_default_mhz_max,
                     })).collect::<Vec<_>>(),
-                    "points": v.points.iter().filter(|p| p.bank as usize == bank).map(|p| json!({
-                        "bank": p.bank,
-                        "index": p.index,
-                        "type": p.record_type,
-                        // the V/F grid axis (µV): 450000 = 450 mV
-                        "voltage_uV": p.voltage_uV,
-                        // default MHz at this voltage (public "default" column)
-                        "freq_default_mhz": p.freq_default_mhz,
-                        // current MHz = default + applied offset
-                        "freq_current_mhz": p.freq_current_mhz,
-                    })).collect::<Vec<_>>(),
+                    "points": v.points.iter().filter(|p| p.bank as usize == bank).map(|p| {
+                        let ctrl = ctrl_map.get(&(p.bank, p.index)).copied();
+                        let (mode, value) = ctrl.unwrap_or((0, 0));
+                        // effective offset in MHz: mode 0 is u32 kHz; mode 1
+                        // is a raw i16 f-offset control — convert through the
+                        // g(def) prior (segment domain -> class)
+                        let effect_mhz = ctrl.and_then(|_| {
+                            if mode == 0 {
+                                Some(value as f64 / 1000.0)
+                            } else if value == 0 {
+                                // no override written — the g(def) prior's D0
+                                // term would show a phantom offset at raw 0
+                                Some(0.0)
+                            } else {
+                                let class = match v.segments.iter()
+                                    .find(|s| s.bank == p.bank
+                                        && p.index >= s.start_index
+                                        && p.index <= s.end_index)
+                                    .map(|s| s.domain_hint)
+                                {
+                                    Some(nvoc_core::ClkVfDomainHint::Xbar)
+                                    | Some(nvoc_core::ClkVfDomainHint::Host) => {
+                                        nvoc_core::ClkVfDomainClass::Fabric
+                                    }
+                                    _ => nvoc_core::ClkVfDomainClass::Graphics,
+                                };
+                                nvoc_core::clk_vf_effect_for_delta(
+                                    p.freq_default_mhz,
+                                    value as i16 as i32,
+                                    class,
+                                )
+                            }
+                        });
+                        json!({
+                            "bank": p.bank,
+                            "index": p.index,
+                            "type": p.record_type,
+                            // the V/F grid axis (µV): 450000 = 450 mV
+                            "voltage_uV": p.voltage_uV,
+                            // default MHz at this voltage (public "default" column)
+                            "freq_default_mhz": p.freq_default_mhz,
+                            // current MHz = default + applied offset
+                            "freq_current_mhz": p.freq_current_mhz,
+                            // raw override readback (GetControl 0xDA025C3E):
+                            // mode 0 = absolute kHz offset, 1 = raw delta
+                            "control_mode": ctrl.map(|(m, _)| m),
+                            "control_value": ctrl.map(|(_, v)| v),
+                            // effective offset MHz (mode 1 via g(def) prior)
+                            "control_effect_mhz": effect_mhz,
+                        })
+                    }).collect::<Vec<_>>(),
                 }),
                 None => json!({"supported": false}),
             })

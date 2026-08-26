@@ -27,7 +27,7 @@ pub use operation::{
     QueryGpuInfo, QueryGpuSettings, QueryGpuStatus, QueryLegacyCoreOvervoltRanges,
     QueryLegacyP0CoreMaxVoltageDelta, QueryNvapiClkDomainFreq, QueryNvapiClkDomainFreqDetail,
     QueryNvapiClkDomainFreqDirect, QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomains,
-    QueryNvapiClkVfPoints,
+    QueryNvapiClkVfPoints, QueryNvapiClkVfControl,
     QueryNvapiDNotifier, QueryNvapiPStateLevels, QueryNvapiPStateLockStatus,
     QueryNvapiTargetTempPolicies, QueryNvapiTargetTempPolicyIndex, QueryNvapiTgpWattRange,
     QueryNvapiThermalSettings, QueryNvapiVoltRails, QueryPowerLimits, QueryPstateBaseVoltage,
@@ -77,9 +77,10 @@ pub use target::{
 };
 pub use types::{NvapiLockedVoltageTarget, VfpResetDomain};
 
-pub use nvapi_hi::nvapi::clk_vf_delta_for_target;
+pub use nvapi_hi::nvapi::{clk_vf_delta_for_target, clk_vf_effect_for_delta};
 pub use nvapi_hi::{
-    Celsius, ClkVfDomainClass, ClkVfDomainHint, ClkVfPointPrivate, ClkVfPointsPrivate,
+    Celsius, ClkVfControlPointPrivate, ClkVfControlPrivate, ClkVfDomainClass, ClkVfDomainHint,
+    ClkVfPointPrivate, ClkVfPointsPrivate,
     ClkVfSegmentKind, ClockDomain, CoolerControl, CoolerPolicy, CoolerSettings, DisplayId,
     FanCoolerId, GpuInfo, GpuSettings, GpuStatus, Kilohertz, KilohertzDelta, Microvolts,
     MicrovoltsDelta, PState, Percentage, SensorThrottle, VfPoint, VfPointType, VoltageDomain,

@@ -88,6 +88,10 @@ pub enum OperationKind {
     /// → GetStatus 0x7FEE9032) — per-bank point masks + V/F curve records
     /// (units calibrated vs the public GPC VFP curve).
     QueryNvapiClkVfPoints,
+    /// Read the private V/F-POINTS CONTROL override table (GetControl
+    /// 0xDA025C3E) — the raw mode/value readback for everything the private
+    /// SetControl 0xFEC00D04 writes. All-zero at stock.
+    QueryNvapiClkVfControl,
     /// Write one V/F curve point via the private V/F-POINTS SetControl
     /// (ID 0xFEC00D04, mode 0 absolute / mode 1 delta). DANGEROUS:
     /// snapshots, patches, SETs, readbacks, restores on mismatch.

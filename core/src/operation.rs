@@ -2440,6 +2440,26 @@ impl GpuOperation for QueryNvapiClkVfPoints {
     }
 }
 
+/// Read the private V/F-POINTS CONTROL override table (GetControl
+/// 0xDA025C3E, masks seeded from GetInfo): per-point mode (0 = absolute
+/// kHz offset / 1 = raw delta) + value — the direct readback of raw
+/// control values written by `SetNvapiVfpPointPrivate` & friends. Returns
+/// `None` where the driver doesn't expose the private interface.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiClkVfControl;
+
+impl GpuOperation for QueryNvapiClkVfControl {
+    type Output = Option<nvapi_hi::nvapi::ClkVfControlPrivate>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiClkVfControl
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target.nvapi()?.clk_vf_control_private().map_err(Error::from)
+    }
+}
+
 /// Measure one clock-domain's physical clock (private ClockClient
 /// MEASURE_FREQ, RM 0x20809006) via two-sample Δcounter/Δtimestamp.
 /// `domain_bit` is the sequential domain index (GPC=0, XBAR=1, SYS=2, MCLK=4).
