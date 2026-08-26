@@ -565,8 +565,9 @@ class VFCurveTab:
             color="#e08020",
             fontsize=7,
         )
-        ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _pos: f"{v / 1000.0:g}"))
-        ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _pos: f"{v / 1000.0:g}"))
+        # one decimal on BOTH axes (0.5 / 1.0 / 1.5 ...) — uniform columns
+        ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _pos: f"{v / 1000.0:.1f}"))
+        ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _pos: f"{v / 1000.0:.1f}"))
         ax.tick_params(colors="#cccccc", labelsize=6)
         for spine in ax.spines.values():
             spine.set_color("#555555")
