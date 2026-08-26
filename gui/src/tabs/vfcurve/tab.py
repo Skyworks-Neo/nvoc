@@ -154,6 +154,9 @@ class VFCurveTab:
         self._live_marker = None
         self._live_text = None
         self._cleaned_up = False
+        # x-tick value whose label renders as "Volt/V" (set after each
+        # curve load; consumed by the x-axis FuncFormatter in _style_axes)
+        self._volt_unit_tick: Optional[float] = None
         self._chart_build_after_id: Optional[str] = None
         self._chart_resize_after_id = None
         self._chart_configure_bind_id: Optional[str] = None
@@ -372,7 +375,7 @@ class VFCurveTab:
         # y tick labels are back OUTSIDE the spine — left margin fits the
         # GHz numbers ("0.5", "1.0") plus a little headroom so the digits
         # never kiss the frame edge
-        self.fig.subplots_adjust(left=0.062, right=0.985, top=0.92, bottom=0.22)
+        self.fig.subplots_adjust(left=0.062, right=0.995, top=0.92, bottom=0.22)
         self._style_axes()
 
         # Placeholder text
@@ -565,8 +568,17 @@ class VFCurveTab:
             color="#e08020",
             fontsize=7,
         )
-        # one decimal on BOTH axes (0.5 / 1.0 / 1.5 ...) — uniform columns
-        ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _pos: f"{v / 1000.0:.1f}"))
+        # one decimal on BOTH axes (0.5 / 1.0 / 1.5 ...) — uniform columns.
+        # NOTE: with a FuncFormatter attached, matplotlib regenerates tick
+        # TEXT on every draw, so the "Volt/V" unit caption must come FROM
+        # the formatter itself — a later set_text() on the label would be
+        # silently overwritten (color survives, text doesn't).
+        def x_format(v, _pos):
+            if self._volt_unit_tick is not None and v == self._volt_unit_tick:
+                return "Volt/V"
+            return f"{v / 1000.0:.1f}"
+
+        ax.xaxis.set_major_formatter(FuncFormatter(x_format))
         ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _pos: f"{v / 1000.0:.1f}"))
         ax.tick_params(colors="#cccccc", labelsize=6)
         for spine in ax.spines.values():
@@ -1493,13 +1505,17 @@ class VFCurveTab:
         ax.set_ylim(f_min - f_pad, f_max + f_pad)
         # the LAST VISIBLE voltage tick number gives its slot to the unit
         # caption — the raw tick list can end beyond xlim (e.g. a 1.3 tick
-        # past a 1.24 V max), so pick the last tick inside the view, not
-        # just the list's tail
+        # past a 1.24 V max), so pick the last tick inside the view. Only
+        # stash the tick VALUE here: the formatter (see _style_axes) turns
+        # it into "Volt/V" at draw time; set_text would be overwritten.
+        self._volt_unit_tick = None
         xlim = ax.get_xlim()
-        for tick, label in zip(reversed(ax.get_xticks()), reversed(ax.get_xticklabels())):
+        for tick in reversed(ax.get_xticks()):
             if xlim[0] <= tick <= xlim[1]:
-                label.set_text("Volt/V")
-                label.set_color("#e08020")
+                self._volt_unit_tick = tick
+                for label in ax.get_xticklabels():
+                    if label.get_position()[0] == tick:
+                        label.set_color("#e08020")
                 break
 
         # Draw frequency lock visualization (after limits are known)
@@ -1553,7 +1569,7 @@ class VFCurveTab:
 
         # Keep margins in sync with _create_chart (see the note there) —
         # re-applying the old 0.13 here would re-create the left gutter
-        self.fig.subplots_adjust(left=0.062, right=0.985, top=0.92, bottom=0.22)
+        self.fig.subplots_adjust(left=0.062, right=0.995, top=0.92, bottom=0.22)
 
         self._live_elements.clear()
         self._live_hline = None
