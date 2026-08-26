@@ -13,8 +13,6 @@
 # limitations under the License.
 from __future__ import annotations
 
-import threading
-
 from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -212,9 +210,7 @@ class NVOCApp(App[None]):
             code, output, parsed = self.native_service.run_query(gpu, command_name)
             self.call_from_thread(finish_query, code, output, parsed)
 
-        threading.Thread(
-            target=worker, daemon=True, name=f"query-{command_name}"
-        ).start()
+        self.native_service.submit_query(worker)
 
     def refresh_gpu_list(self) -> None:
         def worker() -> None:
@@ -223,7 +219,7 @@ class NVOCApp(App[None]):
                 self.header_controller.on_gpu_list_loaded, code, output, gpus
             )
 
-        threading.Thread(target=worker, daemon=True, name="gpu-list").start()
+        self.native_service.submit_query(worker)
 
     def focus_dashboard_tab_switcher(self) -> None:
         self.switch_to_tab("dashboard")
