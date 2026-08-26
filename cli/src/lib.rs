@@ -187,9 +187,9 @@ pub enum Command {
     SetPrivateVftableRangeOffset,
     GetPrivateVftable,
     SetPrivatePermanentPstateLockUser,
-    GetThermalSim,
-    SetThermalSim,
-    DisableThermalSim,
+    GetTempSim,
+    SetTempSim,
+    ResetTempSim,
     SetTemperatureThresholds,
     SetTempLimit,
     SetFanSpeed,
@@ -288,9 +288,9 @@ impl Command {
             Self::GetPrivateFreqDomainInfo => "get-private-freq-domain-info",
             Self::GetPrivateVftable => "get-private-vftable",
             Self::SetPrivatePermanentPstateLockUser => "set-private-permanent-pstate-lock-user",
-            Self::GetThermalSim => "get-thermal-sim",
-            Self::SetThermalSim => "set-thermal-sim",
-            Self::DisableThermalSim => "disable-thermal-sim",
+            Self::GetTempSim => "get-temp-sim",
+            Self::SetTempSim => "set-temp-sim",
+            Self::ResetTempSim => "reset-temp-sim",
             Self::SetPrivateVftablePointOffset => "set-private-vftable-point-offset",
             Self::SetPrivateVftableRangeOffset => "set-private-vftable-range-offset",
             Self::GetPrivateFreqDomainStatus => "get-private-freq-domain-status",
@@ -434,13 +434,13 @@ impl Command {
             Self::SetPrivatePermanentPstateLockUser => {
                 "Admin-free pstate lock (SetPerfLevel 0x75DD3E6A, escape 0x7000040): level is an INDEX into the GPU's real available P-State list (see get-pstate-lock) — NOT a fixed P8..P0 enum and NOT the NVCP power-mode dropdown. No release value exists (only valid indices accepted); the lock survives reset-private-forced-pstate-lock-user/reset-pstate-lock and only a reboot/driver reload clears it; re-locking re-targets"
             }
-            Self::GetThermalSim => {
+            Self::GetTempSim => {
                 "Read the temperature-simulation state (GetThermalSimulationMode; Secured-Overrides 'Temp faking allowed' gated)"
             }
-            Self::SetThermalSim => {
+            Self::SetTempSim => {
                 "Fake the driver-visible GPU temperature in Celsius (DANGEROUS research tool; Extended->basic fallback; Secured-Overrides gated)"
             }
-            Self::DisableThermalSim => {
+            Self::ResetTempSim => {
                 "Disable temperature simulation and restore the real sensor reading"
             }
             Self::SetPrivateVftablePointOffset => {
@@ -593,7 +593,7 @@ impl Command {
             Self::SetPrivateVftablePointOffset => (3, 3),
             Self::SetPrivateVftableRangeOffset => (4, 4),
             Self::SetPrivatePermanentPstateLockUser => (1, 1),
-            Self::SetThermalSim => (1, 1),
+            Self::SetTempSim => (1, 1),
             Self::GetPowerMizer => (0, 1),
             Self::SetCoreVoltageControl => (1, 1),
             Self::SetPmgrArbiter => (1, 1),
@@ -800,7 +800,7 @@ impl Command {
                 "LEVEL",
                 "Index into this GPU's real P-State list (get-pstate-native; on the 4060 Laptop: 0=P8, 1=P5, 2=P4, 3=P3, 4=P0). Admin-free; no release value — reboot clears",
             )],
-            Self::SetThermalSim => vec![PositionalArg::free(
+            Self::SetTempSim => vec![PositionalArg::free(
                 "arg_temp_c",
                 "TEMP_C",
                 "Fake temperature in Celsius the driver will see (DANGEROUS research tool)",
@@ -1009,7 +1009,6 @@ impl PositionalArg {
 // The enum variant order is independent and left unchanged (family-grouped).
 const COMMANDS: &[Command] = &[
     Command::ClearEdid,
-    Command::DisableThermalSim,
     Command::GetAutoboostStatus,
     Command::GetAutoboostSupport,
     Command::GetCoreVoltageControl,
@@ -1040,8 +1039,8 @@ const COMMANDS: &[Command] = &[
     Command::GetSettings,
     Command::GetStatus,
     Command::GetSupportedLegacyApplicationFreq,
+    Command::GetTempSim,
     Command::GetTemperatureThresholds,
-    Command::GetThermalSim,
     Command::GetThrottleReasons,
     Command::GetUuid,
     Command::GetVoltRailInfo,
@@ -1065,6 +1064,7 @@ const COMMANDS: &[Command] = &[
     Command::ResetPublicVftableGpcLock,
     Command::ResetPublicVftableOffset,
     Command::ResetTempLimit,
+    Command::ResetTempSim,
     Command::RestartDisplayDriver,
     Command::SetAutoboostStatus,
     Command::SetAutoboostSupport,
@@ -1099,8 +1099,8 @@ const COMMANDS: &[Command] = &[
     Command::SetPublicVftablePointOffset,
     Command::SetPublicVftableRangeOffset,
     Command::SetTempLimit,
+    Command::SetTempSim,
     Command::SetTemperatureThresholds,
-    Command::SetThermalSim,
     Command::SetVoltRailLimit,
     Command::SetWm2,
     Command::SetWm2Mode,
@@ -2920,14 +2920,14 @@ fn execute_target(
                 "note": "level is an index into this GPU's real P-State list (see get-pstate-native), not a fixed P8..P0 enum; no release value exists — reboot/driver reload clears the lock",
             }))
         }
-        Command::GetThermalSim => {
+        Command::GetTempSim => {
             let out = run(target, QueryNvapiThermalSim)?.output;
             Ok(match out {
                 Some((enable, temp)) => json!({"enabled": enable, "temperature_c": temp}),
                 None => json!({"supported": false}),
             })
         }
-        Command::SetThermalSim => {
+        Command::SetTempSim => {
             let temp = parse_i32_unit(&invocation.positionals[0], "temp-c", "celsius")?;
             let out = run(target, SetNvapiThermalSim { temperature_c: temp })?.output;
             Ok(match out {
@@ -2935,7 +2935,7 @@ fn execute_target(
                 None => json!({"supported": false}),
             })
         }
-        Command::DisableThermalSim => {
+        Command::ResetTempSim => {
             let out = run(target, DisableNvapiThermalSim)?.output;
             Ok(match out {
                 Some(()) => json!({"applied": true, "disabled": true}),

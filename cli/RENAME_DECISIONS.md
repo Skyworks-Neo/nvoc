@@ -98,9 +98,9 @@
 | `set-acoustic-temp-c` | **合并到 `set-temp-limit` 的 NVML 分支**,**加 `--domain gpu\|acoustic`** ✅ DONE(NVAPI 分支拒绝 --domain) | NVML set_temperature_threshold |
 | `get-tdp-temp-limits` | **拆分为 `get-public-power-limit` + `get-public-temp-limit`** ✅ DONE(同用 QueryTdpTempLimits,分别渲染 tdp%/temp 部分) | NVAPI `0x34206D86`+`0x0D258BB5` |
 | `get-throttle-reasons` | 保留 | NVML |
-| `get-thermal-sim` | 保留 | NVAPI GetThermalSimulationMode |
-| `set-thermal-sim` | 保留 | NVAPI SetThermalSimulationMode |
-| `disable-thermal-sim` | 保留 | NVAPI DisableThermalSimulation |
+| `get-thermal-sim` | → `get-temp-sim` ✅ DONE(R3 thermal→temp 统一) | NVAPI GetThermalSimulationMode |
+| `set-thermal-sim` | → `set-temp-sim` ✅ DONE | NVAPI SetThermalSimulationMode |
+| `disable-thermal-sim` | → `reset-temp-sim` ✅ DONE(R2 对称,语义=恢复真实传感) | NVAPI DisableThermalSimulation |
 | `get-rated-tdp` | 保留 | NVAPI `0xED2BEA09`等 |
 
 注:`temp-limit` 取代 `thermal-limit`。`public-power-limit`/`public-temp-limit` 拆分自 `tdp-temp-limits`,用 `public-` 前缀对齐 `public-tgp-percent`/`public-vftable` 体系。
