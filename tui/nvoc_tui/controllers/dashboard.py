@@ -9,6 +9,13 @@ from .base import PaneController
 
 
 class DashboardController(PaneController):
+    # First sample may wake the GPU; later polls never block GC6 sleep.
+    _first_success = False
+    # dGPU-offline backoff: consecutive failed polls whose error looks like a
+    # dead/disappearing GPU (ApiNotInitialized after the user disabled the
+    # dGPU, NoImplementation when enumeration finds no GPU) trigger a slow
+    # re-probe cadence. Each backoff tick re-runs GPU discovery so the dGPU is
+    # auto-detected when it returns; one successful poll exits backoff.
     _OFFLINE_FAIL_THRESHOLD = 3
     _OFFLINE_BACKOFF_S = 5.0
     _OFFLINE_BACKOFF_CAP_S = 15.0
@@ -27,12 +34,12 @@ class DashboardController(PaneController):
         self._user_interval = interval
         self.app.config_data.dashboard.refresh_interval = interval
         self.app.save_config()
+        # In backoff we ignore the user interval and use the slow re-probe rate.
+        effective = self._effective_interval()
         if self.poll_timer is not None:
             self.poll_timer.stop()
         self._timer_paused = False
-        self.poll_timer = self.app.set_interval(
-            self._effective_interval(), self.tick, pause=False
-        )
+        self.poll_timer = self.app.set_interval(effective, self.tick, pause=False)
 
     def _effective_interval(self) -> float:
         if not self._in_offline_backoff:
@@ -43,10 +50,19 @@ class DashboardController(PaneController):
     def tick(self) -> None:
         if self.app.native_service.action_state.running:
             return
+        # In offline backoff, re-probe GPU discovery instead of a doomed NVAPI
+        # status sweep. discover re-enumerates from the driver, so the dGPU is
+        # picked up the moment it returns; the next status poll then succeeds
+        # and exits backoff.
         if self._in_offline_backoff:
             self.app.refresh_gpu_list()
             return
-        self.app.run_query("status", self.on_status_loaded, log_output=False)
+        self.app.run_query(
+            "status",
+            self.on_status_loaded,
+            log_output=False,
+            allow_wake=not self._first_success,
+        )
 
     @staticmethod
     def _looks_like_offline_error(output: str) -> bool:
@@ -74,17 +90,27 @@ class DashboardController(PaneController):
         self._in_offline_backoff = True
         if not self._offline_hint_logged:
             self._offline_hint_logged = True
-            self.app.write_log(
-                "dGPU probably offline — polling paused, re-probing for the "
-                "GPU to come back."
-            )
+            try:
+                self.app.write_log(
+                    "dGPU probably offline — polling paused, re-probing for the "
+                    "GPU to come back."
+                )
+            except Exception:
+                pass
+        # Re-arm the timer at the backoff cadence and kick a rediscovery now.
         self.set_poll_timer(self._user_interval)
-        self.app.refresh_gpu_list()
+        try:
+            self.app.refresh_gpu_list()
+        except Exception:
+            pass
 
     def _exit_offline_backoff(self) -> None:
         if self._in_offline_backoff:
             self._in_offline_backoff = False
-            self.app.write_log("dGPU back online — resuming polling.")
+            try:
+                self.app.write_log("dGPU back online — resuming polling.")
+            except Exception:
+                pass
             self.set_poll_timer(self._user_interval)
         self._consecutive_offline = 0
         self._offline_hint_logged = False
@@ -98,16 +124,20 @@ class DashboardController(PaneController):
 
     def on_status_loaded(self, code: int, output: str, parsed: dict) -> None:
         if code == 0:
+            self._first_success = True
             self._exit_offline_backoff()
         elif self._looks_like_offline_error(output):
+            # Suppress the per-second error spam; backoff handles re-probing.
             self._record_offline_failure()
             return
         if code != 0 and not parsed:
             return
         self.app.cache.status = parsed
         self.update_metrics()
-        if self.app.cache.vf_curve_points:
-            self.app.vfcurve_controller.render_plot()
+        if self.app.cache.vf_curve_points or self.app.cache.vf_curves:
+            # Re-render the GPC live point (status feed) and kick the
+            # direct-read poll when the active curve is xbar/host.
+            self.app.vfcurve_controller.poll_live()
 
     def on_get_loaded(self, code: int, output: str, parsed: dict) -> None:
         if code != 0:
@@ -156,9 +186,9 @@ class DashboardController(PaneController):
             self.app.run_query("info", self.on_info_loaded)
             return True
         if button_id == "dashboard-status":
-            self.app.run_query("status", self.on_status_loaded)
+            self.app.run_query("status", self.on_status_loaded, allow_wake=False)
             return True
         if button_id == "dashboard-get":
-            self.app.run_query("get", self.on_get_loaded)
+            self.app.run_query("get", self.on_get_loaded, allow_wake=False)
             return True
         return False

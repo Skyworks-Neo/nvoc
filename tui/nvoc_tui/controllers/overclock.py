@@ -1,11 +1,26 @@
 from __future__ import annotations
 
+import re
+import threading
+
 from textual.widgets import Input, Select
 
 from .base import PaneController
 
 
 class OverclockController(PaneController):
+    def __init__(self, app) -> None:
+        super().__init__(app)
+        self._mobile_limits_gpu: str | None = None
+        self._mobile_load_lock = threading.Lock()
+        self._tgp_policy_index = 2
+        self._tgp_range = (5, 140)
+        self._target_temp_range = (75, 87)
+        # VoltRails state for the mobile Volt Limit row (GUI dashboard parity).
+        self._volt_rail_bit = 0  # rail bit (0 on single-rail mobile GPUs)
+        self._volt_limit_range = (300.0, 1200.0)  # mV, walls refine the ceiling
+        self._volt_limit_supported = False
+
     def available_pstates(self) -> list[str]:
         pstates = self.app.cache.settings.get("supported_pstates", [])
         if not isinstance(pstates, list):
@@ -91,6 +106,16 @@ class OverclockController(PaneController):
                 self.app.query_one(selector, Input).value = value
             except Exception:
                 pass
+        # Xbar is NVAPI-only; grey the row out under NVML or on pre-Turing
+        # archs (GUI hides the row entirely — the TUI keeps layout stable
+        # and disables instead).
+        try:
+            self.app.query_one("#xbar-offset", Input).disabled = not (
+                self.xbar_supported()
+            )
+        except Exception:
+            pass
+        self.load_mobile_limits()
 
     def apply_oc(
         self,
@@ -99,10 +124,192 @@ class OverclockController(PaneController):
         backend: str,
         core_offset: int,
         mem_offset: int,
+        xbar_offset: int | None = None,
     ) -> str:
+        messages = []
         native.set_clock_offset(gpu, backend, "core", core_offset, "P0")
         native.set_clock_offset(gpu, backend, "memory", mem_offset, "P0")
-        return f"Successfully applied {backend} overclock."
+        messages.append(f"Successfully applied {backend} overclock.")
+        if xbar_offset is not None:
+            messages.append(
+                self._format_xbar_offset_result(
+                    xbar_offset,
+                    native.set_clk_domain_offset(
+                        gpu, 1, xbar_offset * 1000, None, None
+                    ),
+                )
+            )
+        return "\n".join(messages)
+
+    def xbar_supported(self) -> bool:
+        """Xbar support verdict (port of the GUI dashboard gate).
+
+        Primary signal: the query_info payload's ``xbar_supported`` flag,
+        computed in Rust by core's gpu_type.rs detect_gpu_type — the single
+        source of truth for generation detection (the ArchInfo enum has no
+        AD variant, so Ada reports ``Unknown:400:7:161`` and only the
+        codename/flag carry the real chip). Fallback: the architecture
+        heuristic below for payloads without the flag.
+        """
+        flag = self.app.cache.info.get("xbar_supported")
+        if isinstance(flag, bool):
+            return flag
+        return self._xbar_supported_arch(
+            str(self.app.cache.info.get("gpu_architecture", "") or ""),
+            str(self.app.cache.info.get("codename", "") or ""),
+            str(self.app.cache.info.get("gpu_name", "") or ""),
+        )
+
+    @staticmethod
+    def _xbar_supported_arch(
+        arch_id: str, codename: str = "", gpu_name: str = ""
+    ) -> bool:
+        """True for Turing (the GTX 16-series) and every newer architecture.
+
+        Three signals, in priority order:
+        1. Chip codes from the codename or the arch string (tu106, ga102,
+           ad107, gb202 — optionally suffixed ":rev", "-B", " (process)").
+           The codename matters: on Ada the pynvoc ArchInfo enum has no AD
+           variant and reports ``gpu_architecture = 'Unknown:400:7:161'``,
+           while ``codename = 'AD107-B'`` carries the real chip code.
+        2. Friendly architecture names (Turing, Ampere, Ada, Blackwell).
+        3. Marketing-name fallback: RTX/GTX + model number, 1600 = 16-series
+           floor (GTX 1080/10-series and below stay hidden).
+        Pascal (gp), Volta (gv) and older return False — the XBAR
+        ClockClient domain postdates them.
+        """
+        for raw in (codename, arch_id):
+            head = (
+                raw.lower().split("(", 1)[0].split(":", 1)[0].split("-", 1)[0].strip()
+            )
+            if head.startswith(("tu", "ga", "ad", "gb")):
+                return True
+        if any(
+            name in arch_id.lower() for name in ("turing", "ampere", "ada", "blackwell")
+        ):
+            return True
+        match = re.search(r"\b(?:rtx|gtx)\s*(\d{3,4})", gpu_name.lower())
+        if match:
+            return int(match.group(1)) >= 1600
+        return False
+
+    @staticmethod
+    def _format_xbar_offset_result(offset_mhz: int, result: object) -> str:
+        """Build the log message from a ``set_clk_domain_offset`` result.
+
+        The pynvoc call returns a dict (the applied payload with the
+        driver's readback ``applied_kHz``, or ``{"supported": False}``) —
+        never ``None`` — so the message is formatted here.
+        """
+        if isinstance(result, dict):
+            if result.get("applied"):
+                applied = result.get("applied_kHz")
+                if isinstance(applied, (int, float)):
+                    return (
+                        f"Successfully applied Xbar offset {offset_mhz:+d} MHz "
+                        f"(driver readback {applied / 1000.0:+g} MHz)."
+                    )
+                return f"Successfully applied Xbar offset {offset_mhz:+d} MHz."
+            if result.get("supported") is False:
+                return "Xbar clock-domain offset not supported by this driver."
+        return f"Applied Xbar offset {offset_mhz:+d} MHz."
+
+    @staticmethod
+    def _format_volt_rail_result(target_mv: float, result: object) -> str:
+        """Build the log message from a ``set_volt_rail_target`` result.
+
+        Like ``set_clk_domain_offset``, the pynvoc call returns a dict —
+        either the applied payload (with the post-clamp
+        ``effective_wall_uV``) or ``{"supported": False}`` — never ``None``,
+        so the message is formatted here. ``target_mv`` may carry one
+        decimal (2.5 mV grid); :g drops the trailing .0.
+        """
+        if isinstance(result, dict):
+            if result.get("applied"):
+                eff = result.get("effective_wall_uV")
+                if isinstance(eff, (int, float)) and eff:
+                    return (
+                        f"Successfully applied Volt Limit {target_mv:g} mV "
+                        f"(effective wall {eff / 1000.0:g} mV)."
+                    )
+                return f"Successfully applied Volt Limit {target_mv:g} mV."
+            if result.get("supported") is False:
+                return "Volt-rail target not supported by this driver."
+        return f"Applied Volt Limit {target_mv:g} mV."
+
+    @staticmethod
+    def _resolve_volt_rail_bit(volt_rail: dict) -> int:
+        """Pick the VoltRails rail bit to target (GUI dashboard port).
+
+        First rail descriptor's ``rail_bit`` when descriptors are exposed;
+        otherwise the lowest set bit of ``rail_mask``. Single-rail mobile
+        GPUs (e.g. 4060 Laptop, mask 0x1) resolve to 0.
+        """
+        descs = volt_rail.get("rail_descriptors")
+        if isinstance(descs, list) and descs:
+            first = descs[0]
+            if isinstance(first, dict) and first.get("rail_bit") is not None:
+                try:
+                    return int(first["rail_bit"])
+                except (TypeError, ValueError):
+                    pass
+        mask = volt_rail.get("rail_mask")
+        if isinstance(mask, str) and mask:
+            try:
+                value = int(mask, 16)
+                return (value & -value).bit_length() - 1
+            except ValueError:
+                pass
+        return 0
+
+    @staticmethod
+    def _volt_limit_bounds_from_p0(p0: dict) -> tuple[float, float, float]:
+        """Compute (min_mV, max_mV, pos_mV) for the Volt Limit input.
+
+        - min is a hard 300 mV floor
+        - max is min(VBIOS wall, VRM max wall); 0 = 'not reported' is
+          skipped; both 0 falls back to 1200 mV (the ~1.2 V domain ceiling
+          observed on Ada mobile)
+        - pos is the effective voltage wall (post-clamp) — the analog of
+          TGP positioning at the enforced power limit, NOT the live core
+          voltage. Both max and pos snap to the 2.5 mV grid (LCM of the
+          5 mV rail step on 30/40-series and 12.5 mV on 10/20-series); max
+          snaps DOWN so no offered position exceeds the actual wall.
+        """
+        step = 2.5
+        vbios = int(p0.get("vbios_wall_uV", 0) or 0)
+        vrm = int(p0.get("vrm_max_wall_uV", 0) or 0)
+        walls = [w for w in (vbios, vrm) if w > 0]
+        ceiling_uV = min(walls) if walls else 1_200_000
+        max_mv = max(300.0, ceiling_uV / 1000.0)
+        max_mv = int(max_mv / step) * step
+        eff = int(p0.get("effective_wall_uV", 0) or 0)
+        pos_mv = eff / 1000.0 if eff > 0 else max_mv
+        pos_mv = max(300.0, min(max_mv, pos_mv))
+        pos_mv = round(pos_mv / step) * step
+        return 300.0, max_mv, max(300.0, pos_mv)
+
+    def is_legacy_voltage(self) -> bool:
+        """Legacy-voltage verdict (Maxwell / GTX 900 series and older).
+
+        Primary signal: the query_info payload's ``is_legacy_voltage`` flag
+        (core gpu_type.rs). Fallback heuristic: GTX model < 1000, or a
+        Maxwell/Kepler/Fermi arch string / gm/gk/gf chip prefix.
+        """
+        flag = self.app.cache.info.get("is_legacy_voltage")
+        if isinstance(flag, bool):
+            return flag
+        gpu_name = str(self.app.cache.info.get("gpu_name", "")).lower()
+        arch = str(self.app.cache.info.get("gpu_architecture", "") or "").lower()
+        codename = str(self.app.cache.info.get("codename", "") or "").lower()
+        if "gtx" in gpu_name:
+            match = re.search(r"gtx\s*(\d+)", gpu_name)
+            if match and int(match.group(1)) < 1000:
+                return True
+        if any(x in arch for x in ("maxwell", "kepler", "fermi")):
+            return True
+        head = codename.split("(", 1)[0].split(":", 1)[0].split("-", 1)[0].strip()
+        return head.startswith(("gm", "gk", "gf"))
 
     def apply_pstate_limits(
         self,
@@ -140,8 +347,208 @@ class OverclockController(PaneController):
         native.set_power_limit(gpu, backend, power_limit)
         if backend == "nvapi":
             native.set_thermal_limit(gpu, thermal_limit)
-            native.set_voltage_boost(gpu, voltage_boost)
+            if self.is_legacy_voltage():
+                # Maxwell/900-series and older: the boost input is an
+                # Overvolt value in mV, routed to the legacy delta path.
+                native.set_legacy_voltage_delta(gpu, voltage_boost * 1000, "P0")
+            else:
+                native.set_voltage_boost(gpu, voltage_boost)
         return f"Successfully applied {backend} limits."
+
+    def is_mobile(self) -> bool:
+        """Mobile-GPU verdict for the Mobile Power pane.
+
+        Primary signal: the query_info payload's ``is_mobile`` flag computed
+        in Rust by core's gpu_type.rs detect_gpu_type (name + codename — the
+        single source of truth). Fallback: the name-keyword heuristic for
+        payloads without the flag (older pynvoc, CLI-parsed info).
+        """
+        flag = self.app.cache.info.get("is_mobile")
+        if isinstance(flag, bool):
+            return flag
+        gpu_name = str(self.app.cache.info.get("gpu_name", "")).lower()
+        return (
+            "mobile" in gpu_name
+            or "laptop" in gpu_name
+            or " m " in gpu_name
+            or gpu_name.endswith(" m")
+            or " mx " in gpu_name
+            or gpu_name.endswith(" mx")
+        )
+
+    def load_mobile_limits(self, force: bool = False) -> None:
+        """Background-load the mobile control surface via pynvoc (NVAPI)."""
+        gpu = self.app.selected_gpu_target()
+        if gpu is None or not self.is_mobile():
+            return
+        if not force and gpu == self._mobile_limits_gpu:
+            return
+        if not self._mobile_load_lock.acquire(blocking=False):
+            return
+
+        def worker() -> None:
+            try:
+                data = self.app.native_service.query_mobile_limits(gpu)
+            except Exception as exc:
+                data = {"error": str(exc)}
+            finally:
+                self._mobile_load_lock.release()
+            try:
+                self.app.call_from_thread(self._on_mobile_limits, gpu, data)
+            except Exception:
+                pass
+
+        threading.Thread(
+            target=worker, daemon=True, name="nvoc-tui-mobile-limits"
+        ).start()
+
+    def _on_mobile_limits(self, gpu: str, data: dict) -> None:
+        first_load = self._mobile_limits_gpu != gpu
+        self._mobile_limits_gpu = gpu
+        tgp = data.get("tgp") if isinstance(data.get("tgp"), dict) else None
+        dnotifier = (
+            data.get("dnotifier") if isinstance(data.get("dnotifier"), dict) else None
+        )
+        policies = data.get("temp_policies") or []
+        notes: list[str] = []
+
+        if tgp and tgp.get("min_watt") is not None and tgp.get("max_watt") is not None:
+            self._tgp_policy_index = int(tgp.get("policy_index", 2))
+            self._tgp_range = (
+                int(round(float(tgp["min_watt"]))),
+                int(round(float(tgp["max_watt"]))),
+            )
+            default = int(round(float(tgp.get("default_watt") or tgp["min_watt"])))
+            self.set_input("#mobile-tgp", str(default))
+        else:
+            notes.append("TGP range unavailable")
+
+        if dnotifier and dnotifier.get("levels"):
+            options = []
+            for item in dnotifier["levels"]:
+                label = str(item.get("level", "")).upper()
+                try:
+                    level_num = int(label.lstrip("D"))
+                except ValueError:
+                    continue
+                watts = item.get("watts")
+                display = (
+                    f"{label} · {float(watts):.0f}W" if watts is not None else label
+                )
+                options.append((display, level_num))
+            select = self.app.query_one("#mobile-dnotifier", Select)
+            select.set_options(options)
+            active = dnotifier.get("active")
+            if active:
+                try:
+                    select.value = int(str(active).upper().lstrip("D"))
+                except ValueError:
+                    pass
+        else:
+            notes.append("D-Notifier unavailable")
+
+        target = None
+        for policy in policies:
+            if (
+                isinstance(policy, dict)
+                and policy.get("min") is not None
+                and policy.get("max") is not None
+                and float(policy["max"]) > float(policy["min"])
+            ):
+                target = policy
+                break
+        if target is not None:
+            self._target_temp_range = (
+                int(round(float(target["min"]))),
+                int(round(float(target["max"]))),
+            )
+            self.set_input(
+                "#mobile-target-temp", str(int(round(float(target.get("celsius", 87)))))
+            )
+        else:
+            notes.append("Target Temp range unavailable")
+
+        # Volt Limit (private VoltRails P0 bounds; GUI dashboard parity).
+        vr = data.get("volt_rail") if isinstance(data.get("volt_rail"), dict) else None
+        p0 = vr.get("p0") if vr and isinstance(vr.get("p0"), dict) else None
+        if p0:
+            self._volt_rail_bit = self._resolve_volt_rail_bit(vr)
+            min_mv, max_mv, pos_mv = self._volt_limit_bounds_from_p0(p0)
+            self._volt_limit_range = (min_mv, max_mv)
+            self._volt_limit_supported = True
+            # Strip the trailing .0 of whole-mV positions (:g-style).
+            self.set_input(
+                "#mobile-volt-limit",
+                f"{pos_mv:g}",
+            )
+        else:
+            self._volt_limit_supported = False
+            notes.append("Volt Limit unavailable")
+        try:
+            self.app.query_one("#mobile-volt-limit", Input).disabled = not (
+                self._volt_limit_supported
+            )
+        except Exception:
+            pass
+
+        if notes:
+            self.app.write_log("Mobile power: " + ", ".join(notes) + ".")
+
+        # PPAB has no read-back API; enable it once per GPU on load.
+        # Only attempt when the private NVAPI surface actually resolved —
+        # on Linux (libnvidia-api stub) / older drivers the setter is
+        # NO_IMPLEMENTATION and auto-enabling would just log an error.
+        if first_load and (tgp or dnotifier):
+            self.app.run_native_action(
+                "enable dynamic boost",
+                lambda native, gpu=gpu: (
+                    native.set_ppab_status(gpu, True)
+                    or "Dynamic Boost (PPAB) enabled."
+                ),
+            )
+
+    def set_input(self, selector: str, value: str) -> None:
+        try:
+            self.app.query_one(selector, Input).value = value
+        except Exception:
+            pass
+
+    def apply_mobile(
+        self,
+        native,
+        gpu: str,
+        ppab: bool,
+        d_level: int,
+        tgp_watts: int,
+        target_temp: int,
+        volt_limit_mv: float | None = None,
+        volt_rail_bit: int | None = None,
+    ) -> str:
+        native.set_ppab_status(gpu, ppab)
+        native.set_dnotifier(gpu, d_level)
+        native.set_tgp_watt(gpu, tgp_watts, self._tgp_policy_index)
+        native.set_target_temp(gpu, float(target_temp), 2)
+        message = (
+            f"Successfully applied mobile power: PPAB {'on' if ppab else 'off'}, "
+            f"D{d_level}, TGP {tgp_watts} W, target {target_temp} C."
+        )
+        if volt_limit_mv is not None:
+            # set_volt_rail_target returns a dict (never None), so the
+            # message is appended rather than ``or``-chained.
+            message += "\n" + self._format_volt_rail_result(
+                volt_limit_mv,
+                native.set_volt_rail_target(
+                    gpu,
+                    self._volt_rail_bit if volt_rail_bit is None else volt_rail_bit,
+                    volt_limit_mv,
+                    None,
+                ),
+            )
+        return message
+
+    def reset_mobile(self, native, gpu: str) -> str:
+        native.reset_tgp_watt(gpu, self._tgp_policy_index)
+        return "Successfully reset TGP to default."
 
     def apply_fan(
         self,
@@ -166,6 +573,13 @@ class OverclockController(PaneController):
             backend = str(self.app.query_one("#oc-api", Select).value or "nvapi")
             core_offset = self.get_int("#core-offset")
             mem_offset = self.get_int("#mem-offset")
+            # Xbar rides the NVAPI-only ClockClient path — skipped under NVML
+            # and on pre-Turing archs (row is disabled, input stays 0).
+            xbar_offset = (
+                self.get_int("#xbar-offset")
+                if backend == "nvapi" and self.xbar_supported()
+                else None
+            )
 
             def apply_oc(
                 native,
@@ -173,8 +587,11 @@ class OverclockController(PaneController):
                 backend=backend,
                 core_offset=core_offset,
                 mem_offset=mem_offset,
+                xbar_offset=xbar_offset,
             ) -> str:
-                return self.apply_oc(native, gpu, backend, core_offset, mem_offset)
+                return self.apply_oc(
+                    native, gpu, backend, core_offset, mem_offset, xbar_offset
+                )
 
             self.app.run_native_action(
                 "apply overclock",
@@ -226,7 +643,7 @@ class OverclockController(PaneController):
             if gpu is None:
                 self.app.write_log("No GPU selected.")
                 return True
-            self.app.run_action_chain([
+            resets = [
                 (
                     "reset core offset",
                     lambda native, gpu=gpu, backend=str(backend): (
@@ -241,7 +658,15 @@ class OverclockController(PaneController):
                         or "Successfully reset memory offset."
                     ),
                 ),
-            ])
+            ]
+            if str(backend) == "nvapi" and self.xbar_supported():
+                resets.append((
+                    "reset xbar offset",
+                    lambda native, gpu=gpu: self._format_xbar_offset_result(
+                        0, native.set_clk_domain_offset(gpu, 1, 0, None, None)
+                    ),
+                ))
+            self.app.run_action_chain(resets)
             return True
         if button_id == "limits-apply":
             gpu = self.app.selected_gpu_target()
@@ -332,5 +757,87 @@ class OverclockController(PaneController):
                 "reset fan",
                 reset_fan,
             )
+            return True
+        if button_id == "mobile-apply":
+            gpu = self.app.selected_gpu_target()
+            if gpu is None:
+                self.app.write_log("No GPU selected.")
+                return True
+            ppab = str(self.app.query_one("#mobile-ppab", Select).value or "on") == "on"
+            try:
+                d_level = int(
+                    self.app.query_one("#mobile-dnotifier", Select).value or 1
+                )
+            except (TypeError, ValueError):
+                d_level = 1
+            if not 1 <= d_level <= 5:
+                self.app.write_log("D-Notifier level must be D1-D5.")
+                return True
+            tgp_watts = self.get_int("#mobile-tgp", 100)
+            lo, hi = self._tgp_range
+            tgp_watts = max(lo, min(hi, tgp_watts))
+            target_temp = self.get_int("#mobile-target-temp", 87)
+            tlo, thi = self._target_temp_range
+            target_temp = max(tlo, min(thi, target_temp))
+            # Volt Limit rides along when the VoltRails surface resolved;
+            # empty input = leave the wall untouched.
+            volt_limit = None
+            if self._volt_limit_supported:
+                raw = self.app.query_one("#mobile-volt-limit", Input).value.strip()
+                if raw:
+                    try:
+                        volt_limit = float(raw)
+                    except ValueError:
+                        self.app.write_log(
+                            f"Invalid Volt Limit value: {raw!r} (expected mV)."
+                        )
+                        return True
+                    vlo, vhi = self._volt_limit_range
+                    volt_limit = max(vlo, min(vhi, volt_limit))
+
+            def apply_mobile(
+                native,
+                gpu=gpu,
+                ppab=ppab,
+                d_level=d_level,
+                tgp_watts=tgp_watts,
+                target_temp=target_temp,
+                volt_limit=volt_limit,
+                reload_after=volt_limit is not None,
+            ) -> str:
+                result = self.apply_mobile(
+                    native, gpu, ppab, d_level, tgp_watts, target_temp, volt_limit
+                )
+                if reload_after:
+                    # The driver clamps the effective wall to min(target,
+                    # VBIOS, VRM); re-load so the input reflects the real
+                    # wall (the GUI reloads after its Volt Limit apply for
+                    # the same reason). Scheduled via call_from_thread so
+                    # it runs on the UI thread AFTER the SET completed.
+                    try:
+                        self.app.call_from_thread(self.load_mobile_limits, True)
+                    except Exception:
+                        pass
+                return result
+
+            self.app.run_native_action(
+                "apply mobile power",
+                apply_mobile,
+            )
+            return True
+        if button_id == "mobile-reset":
+            gpu = self.app.selected_gpu_target()
+            if gpu is None:
+                self.app.write_log("No GPU selected.")
+                return True
+
+            def reset_mobile(native, gpu=gpu) -> str:
+                return self.reset_mobile(native, gpu)
+
+            self.app.run_native_action(
+                "reset mobile power",
+                reset_mobile,
+            )
+            self.load_mobile_limits(force=True)
             return True
         return False

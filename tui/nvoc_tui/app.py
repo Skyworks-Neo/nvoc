@@ -17,7 +17,7 @@ from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container
-from textual.widgets import Button, Label, Select, TabbedContent
+from textual.widgets import Button, Checkbox, Label, Select, TabbedContent
 
 from .config import ConfigStore
 from .controllers.console import ConsoleController
@@ -35,7 +35,13 @@ from .panes.vfcurve import compose_vfcurve
 
 
 def _is_offline_error(output: str) -> bool:
-    """Return whether a query failed because the NVIDIA GPU disappeared."""
+    """True when a failed query's error indicates the dGPU is gone/unreachable.
+
+    Matches the signatures seen when the user disables the dGPU (stale NVAPI
+    handle → ApiNotInitialized) or when enumeration finds no GPU
+    (NoImplementation / NvidiaDeviceNotFound). Used to suppress per-tick error
+    spam and trigger backoff instead of flooding the console.
+    """
     if not output:
         return False
     lowered = output.lower()
@@ -107,6 +113,8 @@ class NVOCApp(App[None]):
         self.native_service = NativeService(self.root_dir)
         self.gpus: list[GpuDescriptor] = []
         self.cache = GpuCache()
+        # Background GPU re-probe timer (scenario A: dGPU disabled at startup).
+        # Re-runs discovery until a GPU lands, then stops itself.
         self._gpu_reprobe_timer = None
 
         self.header_controller = HeaderController(self)
@@ -208,7 +216,12 @@ class NVOCApp(App[None]):
         start_next()
 
     def run_query(
-        self, command_name: str, callback, *, log_output: bool = True
+        self,
+        command_name: str,
+        callback,
+        *,
+        log_output: bool = True,
+        allow_wake: bool = True,
     ) -> None:
         gpu = self.selected_gpu_target()
         if gpu is None:
@@ -218,6 +231,10 @@ class NVOCApp(App[None]):
             return
 
         def finish_query(code: int, output: str, parsed: dict) -> None:
+            # Suppress per-tick error spam when the dGPU is offline: the
+            # dashboard controller counts these and enters a backoff that
+            # logs a single hint + re-probes. Logging every failed tick
+            # (every second) flooded the console with ApiNotInitialized.
             if code != 0 and _is_offline_error(output):
                 callback(code, output, parsed)
                 return
@@ -226,15 +243,31 @@ class NVOCApp(App[None]):
             callback(code, output, parsed)
 
         def worker() -> None:
-            code, output, parsed = self.native_service.run_query(gpu, command_name)
+            code, output, parsed = self.native_service.run_query(
+                gpu, command_name, allow_wake=allow_wake
+            )
             self.call_from_thread(finish_query, code, output, parsed)
 
         self.native_service.submit_query(worker)
 
+    def refresh_gpu_list(self) -> None:
+        def worker() -> None:
+            code, output, gpus = self.native_service.list_gpus()
+            self.call_from_thread(
+                self.header_controller.on_gpu_list_loaded, code, output, gpus
+            )
+
+        self.native_service.submit_query(worker)
+
     def start_gpu_reprobe(self) -> None:
-        """Retry discovery until an NVIDIA GPU becomes available."""
-        if self._gpu_reprobe_timer is None:
-            self._gpu_reprobe_timer = self.set_interval(5.0, self._gpu_reprobe_tick)
+        """Begin background GPU rediscovery (scenario A: no GPU at startup).
+
+        Re-runs discovery every few seconds until a non-empty GPU list lands,
+        then stops itself. Lets the TUI pick up the dGPU when re-enabled.
+        """
+        if self._gpu_reprobe_timer is not None:
+            return
+        self._gpu_reprobe_timer = self.set_interval(5.0, self._gpu_reprobe_tick)
 
     def _gpu_reprobe_tick(self) -> None:
         if not self.gpus:
@@ -246,15 +279,6 @@ class NVOCApp(App[None]):
         if self._gpu_reprobe_timer is not None:
             self._gpu_reprobe_timer.stop()
             self._gpu_reprobe_timer = None
-
-    def refresh_gpu_list(self) -> None:
-        def worker() -> None:
-            code, output, gpus = self.native_service.list_gpus()
-            self.call_from_thread(
-                self.header_controller.on_gpu_list_loaded, code, output, gpus
-            )
-
-        self.native_service.submit_query(worker)
 
     def focus_dashboard_tab_switcher(self) -> None:
         self.switch_to_tab("dashboard")
@@ -367,6 +391,35 @@ class NVOCApp(App[None]):
     def on_select_changed(self, event: Select.Changed) -> None:
         if event.select.id == "gpu-select":
             self.header_controller.on_gpu_selected(event.value)
+        elif event.select.id == "vf-active-curve":
+            if self.vfcurve_controller._syncing:
+                # Echo of a programmatic sync write — acting on it resonates
+                # into a switch ping-pong (render storm + leaked workers).
+                return
+            if event.value is Select.BLANK:
+                # set_options() transiently blanks the Select; treating the
+                # blank as a real switch would re-enter the sync path and
+                # can resonate into an event echo loop.
+                return
+            curve_id = str(event.value)
+            # Programmatic sync echoes arrive with the value already active —
+            # the controller ignores no-op switches.
+            self.vfcurve_controller._switch_active_curve(curve_id)
+
+    def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
+        checkbox_id = event.checkbox.id or ""
+        if not checkbox_id.startswith("vf-curve-"):
+            return
+        if self.vfcurve_controller._syncing:
+            return  # programmatic sync echo — not a user toggle
+        curve_id = checkbox_id[len("vf-curve-") :]
+        # Only act when the requested state differs from the current one —
+        # programmatic syncs and veto snap-backs echo through here.
+        if bool(event.value) == self.vfcurve_controller._curve_visible.get(
+            curve_id, True
+        ):
+            return
+        self.vfcurve_controller._toggle_curve_visible(curve_id, event.checkbox)
 
     def on_resize(self, event) -> None:
         del event
