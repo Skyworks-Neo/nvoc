@@ -835,13 +835,13 @@ impl GpuOperation for SetApplicationsClocks {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct ResetApplicationsClocks;
+pub struct ResetLegacyApplicationFreqLock;
 
-impl GpuOperation for ResetApplicationsClocks {
+impl GpuOperation for ResetLegacyApplicationFreqLock {
     type Output = ();
 
     fn kind(&self) -> OperationKind {
-        OperationKind::ResetApplicationsClocks
+        OperationKind::ResetLegacyApplicationFreqLock
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
@@ -885,15 +885,15 @@ impl GpuOperation for SetLockedClocks {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct ResetLockedClocks {
+pub struct ResetFreqLock {
     pub domain: ClockDomain,
 }
 
-impl GpuOperation for ResetLockedClocks {
+impl GpuOperation for ResetFreqLock {
     type Output = ();
 
     fn kind(&self) -> OperationKind {
-        OperationKind::ResetLockedClocks
+        OperationKind::ResetFreqLock
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
@@ -1048,13 +1048,13 @@ impl GpuOperation for SetPstateBaseVoltage {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct ResetPstateBaseVoltages;
+pub struct ResetLegacyGpcRailOvervoltLimit;
 
-impl GpuOperation for ResetPstateBaseVoltages {
+impl GpuOperation for ResetLegacyGpcRailOvervoltLimit {
     type Output = ();
 
     fn kind(&self) -> OperationKind {
-        OperationKind::ResetPstateBaseVoltages
+        OperationKind::ResetLegacyGpcRailOvervoltLimit
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
@@ -1167,16 +1167,16 @@ impl GpuOperation for ResetVfpFrequencyLock {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct SetVfpVoltageLock {
+pub struct SetGpcVoltLock {
     pub voltage_target: NvapiLockedVoltageTarget,
     pub feedback: bool,
 }
 
-impl GpuOperation for SetVfpVoltageLock {
+impl GpuOperation for SetGpcVoltLock {
     type Output = ();
 
     fn kind(&self) -> OperationKind {
-        OperationKind::SetVfpVoltageLock
+        OperationKind::SetGpcVoltLock
     }
 
     fn run(&self, gpu: &GpuTarget<'_>) -> Result<Self::Output, Error> {
@@ -1193,15 +1193,15 @@ impl GpuOperation for SetVfpVoltageLock {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct ResetVfpDeltas {
+pub struct ResetPublicVftableOffset {
     pub domain: VfpResetDomain,
 }
 
-impl GpuOperation for ResetVfpDeltas {
+impl GpuOperation for ResetPublicVftableOffset {
     type Output = ();
 
     fn kind(&self) -> OperationKind {
-        OperationKind::ResetVfpDeltas
+        OperationKind::ResetPublicVftableOffset
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
@@ -1210,13 +1210,13 @@ impl GpuOperation for ResetVfpDeltas {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct ResetVfpLock;
+pub struct ResetPublicVftableGpcLock;
 
-impl GpuOperation for ResetVfpLock {
+impl GpuOperation for ResetPublicVftableGpcLock {
     type Output = ();
 
     fn kind(&self) -> OperationKind {
-        OperationKind::ResetVfpLock
+        OperationKind::ResetPublicVftableGpcLock
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
@@ -1225,16 +1225,16 @@ impl GpuOperation for ResetVfpLock {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct SetVfpPointDelta {
+pub struct SetPublicVftablePointOffset {
     pub point: usize,
     pub delta: KilohertzDelta,
 }
 
-impl GpuOperation for SetVfpPointDelta {
+impl GpuOperation for SetPublicVftablePointOffset {
     type Output = AppliedValue<KilohertzDelta>;
 
     fn kind(&self) -> OperationKind {
-        OperationKind::SetVfpPointDelta
+        OperationKind::SetPublicVftablePointOffset
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
@@ -1247,17 +1247,17 @@ impl GpuOperation for SetVfpPointDelta {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct SetVfpRangeDelta {
+pub struct SetPublicVftableRangeOffset {
     pub start: usize,
     pub end: usize,
     pub delta: KilohertzDelta,
 }
 
-impl GpuOperation for SetVfpRangeDelta {
+impl GpuOperation for SetPublicVftableRangeOffset {
     type Output = AppliedValue<KilohertzDelta>;
 
     fn kind(&self) -> OperationKind {
-        OperationKind::SetVfpRangeDelta
+        OperationKind::SetPublicVftableRangeOffset
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
@@ -2135,7 +2135,7 @@ impl GpuOperation for SetNvapiVfpRangePerPointPrivate {
 
 /// Reset every present V/F curve point on `bank` to default by clearing its
 /// mode-0 (absolute kHz) override via the private V/F-POINTS SetControl
-/// (ID 0xFEC00D04) in a single RMW cycle. Unlike `ResetVfpDeltas` /
+/// (ID 0xFEC00D04) in a single RMW cycle. Unlike `ResetPublicVftableOffset` /
 /// `CoreResetVfp` (which route through the pstate20 or public Client
 /// VfPoints families and cannot reach private mode-0 state), this writes
 /// the same private SetControl that `SetNvapiVfpPointPrivate` uses.
@@ -2144,6 +2144,9 @@ impl GpuOperation for SetNvapiVfpRangePerPointPrivate {
 #[derive(Clone, Copy, Debug)]
 pub struct ResetNvapiVfpPrivate {
     pub bank: usize,
+    /// clear only points currently in this mode (0 = absolute kHz,
+    /// 1 = raw delta); None clears both
+    pub only_mode: Option<u8>,
 }
 
 impl GpuOperation for ResetNvapiVfpPrivate {
@@ -2156,7 +2159,7 @@ impl GpuOperation for ResetNvapiVfpPrivate {
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
         target
             .nvapi()?
-            .reset_vfp_private(self.bank, None)
+            .reset_vfp_private(self.bank, self.only_mode.map(u32::from))
             .map_err(Error::from)
     }
 }
@@ -2441,6 +2444,29 @@ impl GpuOperation for QueryNvapiClkVfPoints {
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
         target.nvapi()?.clk_vf_points_private().map_err(Error::from)
+    }
+}
+
+/// Read the private V/F-POINTS CONTROL override table (GetControl
+/// 0xDA025C3E, masks seeded from GetInfo): per-point mode (0 = absolute
+/// kHz offset / 1 = raw delta) + value — the direct readback of raw
+/// control values written by `SetNvapiVfpPointPrivate` & friends. Returns
+/// `None` where the driver doesn't expose the private interface.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiClkVfControl;
+
+impl GpuOperation for QueryNvapiClkVfControl {
+    type Output = Option<nvapi_hi::nvapi::ClkVfControlPrivate>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiClkVfControl
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .clk_vf_control_private()
+            .map_err(Error::from)
     }
 }
 
@@ -2905,15 +2931,15 @@ impl GpuOperation for ResetCoolerLevels {
 }
 
 #[derive(Clone, Debug)]
-pub struct ResetPstateClockOffsets {
+pub struct ResetPstateGlobalFreqOffset {
     pub offsets: Vec<(PState, ClockDomain)>,
 }
 
-impl GpuOperation for ResetPstateClockOffsets {
+impl GpuOperation for ResetPstateGlobalFreqOffset {
     type Output = ();
 
     fn kind(&self) -> OperationKind {
-        OperationKind::ResetPstateClockOffsets
+        OperationKind::ResetPstateGlobalFreqOffset
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
@@ -3183,15 +3209,15 @@ impl GpuOperation for QueryAutoBoost {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct SetAutoBoost {
+pub struct SetAutoboostStatus {
     pub enabled: bool,
 }
 
-impl GpuOperation for SetAutoBoost {
+impl GpuOperation for SetAutoboostStatus {
     type Output = ();
 
     fn kind(&self) -> OperationKind {
-        OperationKind::SetAutoBoost
+        OperationKind::SetAutoboostStatus
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
@@ -3200,15 +3226,15 @@ impl GpuOperation for SetAutoBoost {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct SetAutoBoostDefault {
+pub struct ResetAutoboostStatus {
     pub enabled: bool,
 }
 
-impl GpuOperation for SetAutoBoostDefault {
+impl GpuOperation for ResetAutoboostStatus {
     type Output = ();
 
     fn kind(&self) -> OperationKind {
-        OperationKind::SetAutoBoostDefault
+        OperationKind::ResetAutoboostStatus
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
@@ -3239,16 +3265,16 @@ impl GpuOperation for QueryApiRestriction {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct SetApiRestriction {
+pub struct SetAutoboostSupport {
     pub api_type: Api,
     pub restricted: bool,
 }
 
-impl GpuOperation for SetApiRestriction {
+impl GpuOperation for SetAutoboostSupport {
     type Output = ();
 
     fn kind(&self) -> OperationKind {
-        OperationKind::SetApiRestriction
+        OperationKind::SetAutoboostSupport
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
@@ -3324,7 +3350,7 @@ pub fn set_nvapi_vfp_curve_delta(
         })?;
         run(
             target,
-            SetVfpRangeDelta {
+            SetPublicVftableRangeOffset {
                 start,
                 end: point + vfp_set_range,
                 delta: KilohertzDelta(main_delta),
@@ -3333,7 +3359,7 @@ pub fn set_nvapi_vfp_curve_delta(
     } else {
         run(
             target,
-            SetVfpRangeDelta {
+            SetPublicVftableRangeOffset {
                 start: point,
                 end: point + vfp_set_range,
                 delta: KilohertzDelta(main_delta),
@@ -3350,7 +3376,7 @@ pub fn set_nvapi_vfp_curve_delta(
             })?;
             run(
                 target,
-                SetVfpRangeDelta {
+                SetPublicVftableRangeOffset {
                     start,
                     end,
                     delta: KilohertzDelta(ld),

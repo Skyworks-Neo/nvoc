@@ -62,8 +62,9 @@ pub(super) fn format_human(execution: &Execution) -> String {
 fn format_human_output(function: &str, output: &Value) -> Vec<String> {
     match function {
         "get-settings" => format_get_settings_output(output),
-        "get-vfp" => format_vfp_output(output),
-        "get-pstates" => format_object_array(
+        "get-public-vftable" => format_vfp_output(output),
+        "get-private-vftable" => format_private_vfp_output(output),
+        "get-pstate-freq-range" => format_object_array(
             output,
             &[
                 ("pstate", "P-State"),
@@ -73,12 +74,12 @@ fn format_human_output(function: &str, output: &Value) -> Vec<String> {
                 ("max_memory_mhz", "Memory Max"),
             ],
         ),
-        "get-supported-app-clocks" => format_object_array(
+        "get-supported-legacy-application-freq" => format_object_array(
             output,
             &[("memory_mhz", "Memory"), ("graphics_mhz", "Graphics")],
         ),
         "get-temp-thresholds" => format_temperature_thresholds_output(output),
-        "get-thermal-settings" => format_object_array(
+        "get-legacy-temp-sensor" => format_object_array(
             output,
             &[
                 ("target", "Target"),
@@ -105,7 +106,7 @@ fn format_human_output(function: &str, output: &Value) -> Vec<String> {
         )],
         // "get-dynamic-boost" withdrawn 2026-08-26: 0xC80068A1 reads PCF
         // platform status, not the PPAB enable readback (probe_pcf_dynamic_boost)
-        "get-pstate-native" => format_pstate_native_output(output),
+        "get-pstate-lock" => format_pstate_native_output(output),
         "get-throttle-reasons" => format_throttle_reasons_output(output),
         "get-legacy-overvolt-ranges" => format_object_array(
             output,
@@ -167,21 +168,184 @@ fn format_vfp_output(output: &Value) -> Vec<String> {
                 "  {}",
                 nvoc_cli_common::color::stylize_title("V-F Points")
             ));
+            let mut current_domain: Option<&str> = None;
             for point in points {
+                let domain = point.get("domain").and_then(Value::as_str);
+                if domain != current_domain {
+                    current_domain = domain;
+                    // Segment separator: the public table concatenates the
+                    // graphics curve (index 0..~126) and the trailing memory
+                    // entries (~127..131); make the boundary explicit.
+                    let seg_note = object
+                        .get("segments")
+                        .and_then(Value::as_array)
+                        .and_then(|segs| {
+                            segs.iter()
+                                .find(|seg| seg.get("domain").and_then(Value::as_str) == domain)
+                        })
+                        .map(|seg| {
+                            format!(
+                                " (index {}..{})",
+                                field_text(seg, "first_index"),
+                                field_text(seg, "last_index")
+                            )
+                        })
+                        .unwrap_or_default();
+                    if let Some(domain) = domain {
+                        lines.push(nvoc_cli_common::color::stylize(
+                            &format!("    --- {domain}{seg_note} ---"),
+                            false,
+                        ));
+                    }
+                }
                 let index = field_text(point, "index");
+                let point_type = point
+                    .get("point_type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("?");
                 let voltage = field_text(point, "voltage_mv");
                 let frequency = field_text(point, "frequency_mhz");
                 let delta = field_text(point, "delta_mhz");
                 let default_frequency = field_text(point, "default_frequency_mhz");
                 lines.push(nvoc_cli_common::color::stylize(
                     &format!(
-                        "    #{index}: {voltage}, {frequency}, delta {delta}, default {default_frequency}"
+                        "    #{index} [{point_type}]: {voltage}, {frequency}, delta {delta}, default {default_frequency}"
                     ),
                     false,
                 ));
             }
         }
     } else {
+        lines.extend(format_value_block(output, 1));
+    }
+    lines
+}
+
+/// Human format for `get-private-vftable` — mirrors the public V-F table
+/// layout (segment separators + one row per point), minus `point_type`
+/// (private records don't carry it) and with `delta` replaced by `current`
+/// (private GetStatus reports default AND current MHz per point).
+fn format_private_vfp_output(output: &Value) -> Vec<String> {
+    let mut lines = Vec::new();
+    let Some(object) = output.as_object() else {
+        return format_value_block(output, 1);
+    };
+    let segments = object.get("segments").and_then(Value::as_array);
+    let points = object.get("points").and_then(Value::as_array);
+
+    if let Some(points) = points {
+        lines.push(format!(
+            "  {}",
+            nvoc_cli_common::color::stylize_title("V-F Points")
+        ));
+        // track which segment (by position in the array) each row belongs to
+        let mut current_segment: Option<usize> = None;
+        for point in points {
+            let matching_segment = segments.and_then(|segs| {
+                segs.iter().position(|seg| {
+                    let (Some(seg_bank), Some(seg_type)) = (
+                        seg.get("bank").and_then(Value::as_i64),
+                        seg.get("type").and_then(Value::as_i64),
+                    ) else {
+                        return false;
+                    };
+                    let bank_matches = point.get("bank").and_then(Value::as_i64) == Some(seg_bank);
+                    let type_matches = point.get("type").and_then(Value::as_i64) == Some(seg_type);
+                    let index = point.get("index").and_then(Value::as_i64).unwrap_or(-1);
+                    let start = seg.get("start_index").and_then(Value::as_i64).unwrap_or(-1);
+                    let end = seg.get("end_index").and_then(Value::as_i64).unwrap_or(-1);
+                    bank_matches && type_matches && start <= index && index <= end
+                })
+            });
+            if matching_segment != current_segment {
+                current_segment = matching_segment;
+                if let Some(seg) = matching_segment.and_then(|i| segments.map(|s| &s[i])) {
+                    let domain = seg.get("domain").and_then(Value::as_str).unwrap_or("?");
+                    let kind = seg.get("kind").and_then(Value::as_str).unwrap_or("?");
+                    let bank = seg.get("bank").and_then(Value::as_i64).unwrap_or(0);
+                    lines.push(nvoc_cli_common::color::stylize(
+                        &format!(
+                            "    --- bank{bank} {domain} {kind} (index {}..{}) ---",
+                            field_text(seg, "start_index"),
+                            field_text(seg, "end_index")
+                        ),
+                        false,
+                    ));
+                }
+            }
+            let index = field_text(point, "index");
+            // voltage axis is µV in this table (450000 = 450.0 mV)
+            let voltage_uv = point
+                .get("voltage_uV")
+                .and_then(Value::as_f64)
+                .unwrap_or_default();
+            let voltage = format!("{:.1} mV", voltage_uv / 1000.0);
+            // plain MHz integers — format_scalar(key, _) would append the
+            // key-derived unit ("MHz") itself; render explicitly instead
+            let current = point
+                .get("freq_current_mhz")
+                .and_then(Value::as_i64)
+                .unwrap_or_default();
+            let default = point
+                .get("freq_default_mhz")
+                .and_then(Value::as_i64)
+                .unwrap_or_default();
+            // raw control override readback (GetControl 0xDA025C3E):
+            // mode 0 = absolute kHz offset ("freq"), mode 1 = raw delta;
+            // effect MHz comes pre-computed (g(def) prior for mode 1)
+            let control = point
+                .get("mode")
+                .and_then(Value::as_i64)
+                .map(|mode| {
+                    let value = point
+                        .get("offset")
+                        .and_then(Value::as_i64)
+                        .unwrap_or_default();
+                    let effect = point
+                        .get("offset_effect_mhz")
+                        .and_then(Value::as_f64)
+                        .unwrap_or_default();
+                    if mode == 0 {
+                        format!(", mode: freq(0), offset: {effect:.1} MHz ({value} as raw)")
+                    } else {
+                        format!(", mode: raw(1), offset: {effect:.1} MHz ({value} as raw)")
+                    }
+                })
+                .unwrap_or_default();
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!(
+                    "    #{index}: {voltage}, current {current} MHz, default {default} MHz{control}"
+                ),
+                false,
+            ));
+        }
+    }
+
+    // segment summaries stay visible even when their points were filtered
+    // out or attributed only by ordinal — one compact line per segment
+    if let Some(segments) = segments {
+        lines.push(format!(
+            "  {}",
+            nvoc_cli_common::color::stylize_title("Segments")
+        ));
+        for seg in segments {
+            let domain = seg.get("domain").and_then(Value::as_str).unwrap_or("?");
+            let kind = seg.get("kind").and_then(Value::as_str).unwrap_or("?");
+            let bank = seg.get("bank").and_then(Value::as_i64).unwrap_or(0);
+            let record_type = field_text(seg, "type");
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!(
+                    "    bank{bank} {domain} {kind} type {record_type}: index {}..{} ({} pts)",
+                    field_text(seg, "start_index"),
+                    field_text(seg, "end_index"),
+                    field_text(seg, "count"),
+                ),
+                false,
+            ));
+        }
+    }
+
+    if points.is_none() && segments.is_none() {
         lines.extend(format_value_block(output, 1));
     }
     lines
@@ -1687,24 +1851,42 @@ mod tests {
     fn human_output_formats_vfp_points_as_rows() {
         nvoc_cli_common::color::init(true);
         let output = json!({
-            "domain": "graphics",
+            "domain": "all",
             "indexed": true,
             "infer_missing_default": true,
+            "segments": [
+                {"domain": "graphics", "count": 1, "first_index": 12, "last_index": 12},
+                {"domain": "memory", "count": 1, "first_index": 127, "last_index": 127},
+            ],
             "points": [
                 {
+                    "domain": "graphics",
                     "index": 12,
+                    "point_type": "programmable",
                     "voltage_mv": 900.0,
                     "frequency_mhz": 1800.0,
                     "delta_mhz": 15.0,
                     "default_frequency_mhz": 1785.0,
+                },
+                {
+                    "domain": "memory",
+                    "index": 127,
+                    "point_type": "fixed",
+                    "voltage_mv": 600.0,
+                    "frequency_mhz": 405.0,
+                    "delta_mhz": 0.0,
+                    "default_frequency_mhz": 405.0,
                 }
             ],
         });
 
-        let rendered = format_human_output("get-vfp", &output).join("\n");
+        let rendered = format_human_output("get-public-vftable", &output).join("\n");
 
         assert!(rendered.contains("V-F Points"));
-        assert!(rendered.contains("#12: 900.0 mV, 1800.0 MHz, delta 15.0 MHz"));
+        assert!(rendered.contains("#12 [programmable]: 900.0 mV, 1800.0 MHz, delta 15.0 MHz"));
+        // Segment separators make the graphics/memory boundary explicit.
+        assert!(rendered.contains("--- graphics (index 12..12) ---"));
+        assert!(rendered.contains("--- memory (index 127..127) ---"));
         assert!(!rendered.contains("\"points\""));
     }
 
@@ -2206,7 +2388,7 @@ mod tests {
 
     fn sample_output(command: Command) -> Value {
         match command {
-            Command::ListGpus => json!({
+            Command::GetGpuList => json!({
                 "index": 0,
                 "gpu_id": 1,
                 "gpu_id_hex": "0x0001",
@@ -2216,7 +2398,7 @@ mod tests {
                 "uuid": "GPU-12345678-abcd-1234-abcd-1234567890ab",
                 "name": "GPU",
             }),
-            Command::ListDisplays => json!([{
+            Command::GetDisplayList => json!([{
                 "display_id": "0x00010001",
                 "display_id_u32": 65537,
                 "connector": "DisplayPort",
@@ -2245,7 +2427,7 @@ mod tests {
                 "thermal_limit_c": 83,
                 "voltage_boost_percent": 0,
             }),
-            Command::GetVfp => json!({
+            Command::GetPublicVftable => json!({
                 "domain": "graphics",
                 "indexed": true,
                 "infer_missing_default": true,
@@ -2257,37 +2439,34 @@ mod tests {
                     "default_frequency_mhz": 1500.0,
                 }],
             }),
-            Command::GetVfpPointVoltageMv => {
-                json!({"point": 0, "voltage_uv": 800000, "voltage_mv": 800.0})
+            Command::GetPowerLimit => {
+                json!({"source": "nvml", "min_watt": 100, "current_watt": 250, "max_watt": 350})
             }
-            Command::GetPowerWatt => {
-                json!({"min_watt": 100, "current_watt": 250, "max_watt": 350})
-            }
-            Command::GetClockOffsetMhz => {
+            Command::GetPstateGlobalFreqOffset => {
                 json!({"domain": "graphics", "pstate": "P0", "offset_mhz": 120})
             }
-            Command::GetPstates => json!([{
+            Command::GetPstateFreqRange => json!([{
                 "pstate": "P0",
                 "min_core_mhz": 300,
                 "max_core_mhz": 2700,
                 "min_memory_mhz": 405,
                 "max_memory_mhz": 10500,
             }]),
-            Command::GetPStateNative => json!({
+            Command::GetPStateLock => json!({
                 "supported": true,
                 "locked_pstates": [3],
                 "pstates": [
                     {"pstate": "P3", "locked": true, "clocks": {"graphics": {"max_mhz": 2565.0, "min_mhz": 780.0}, "memory": {"max_mhz": 7001.0, "min_mhz": 7001.0}, "video": {"max_mhz": 2565.0, "min_mhz": 780.0}}},
                 ],
             }),
-            Command::GetSupportedAppClocks => {
+            Command::GetSupportedLegacyApplicationFreq => {
                 json!([{"memory_mhz": 10500, "graphics_mhz": 1800}])
             }
             Command::GetFanInfo => json!({"count": 2, "min_percent": 30, "max_percent": 100}),
             Command::GetTemperatureThresholds => {
                 json!([{"name": "shutdown", "celsius": 95}])
             }
-            Command::GetThermalSettings => json!([
+            Command::GetLegacyTempSensor => json!([
                 {"target": "Gpu", "controller": "GpuInternal", "current_c": 50, "min_c": -5, "max_c": 95},
                 {"target": "Memory", "controller": "GpuInternal", "current_c": 52, "min_c": -5, "max_c": 95},
                 {"target": "Board", "controller": "GpuInternal", "current_c": 48, "min_c": 0, "max_c": 100},
@@ -2310,24 +2489,22 @@ mod tests {
                     "since": "2026-05-26 18:00:41 UTC",
                 },
             }),
-            Command::GetTdpTempLimits => json!({
+            Command::GetPublicPowerLimit => json!({
                 "min_tdp_percent": 50,
                 "default_tdp_percent": 100,
                 "max_tdp_percent": 120,
+            }),
+            Command::GetPublicTempLimit => json!({
                 "min_temp_c": 65,
                 "default_temp_c": 83,
                 "max_temp_c": 91,
                 "curve": "Default",
             }),
-            Command::ProbeVoltageLimits => json!({"lower_point": 0, "upper_point": 80}),
-            Command::CheckVoltageFrequency => {
-                json!({"point": 42, "precise": true, "matched_point": 42})
-            }
             Command::GetLegacyOvervoltRanges => {
                 json!([{"pstate": "P0", "min_uv": 0, "current_uv": 0, "max_uv": 100000}])
             }
             Command::GetLegacyP0CoreMaxVoltageDelta => json!({"max_delta_uv": 100000}),
-            Command::GetPstateBaseVoltageUv => json!({
+            Command::GetLegacyGpcRailOvervoltLimit => json!({
                 "pstate": "P0",
                 "voltage_domain": "core",
                 "editable": true,
@@ -2336,9 +2513,9 @@ mod tests {
                 "min_delta_uv": 0,
                 "max_delta_uv": 100000,
             }),
-            Command::GetVoltageBoostPercent => json!({"voltage_boost_percent": 25}),
-            Command::GetAutoBoost => json!({"enabled": true, "default_enabled": false}),
-            Command::GetApiRestriction => {
+            Command::GetPublicGpcRailVoltBoost => json!({"voltage_boost_percent": 25}),
+            Command::GetAutoboostStatus => json!({"enabled": true, "default_enabled": false}),
+            Command::GetAutoboostSupport => {
                 json!({"api": "app-clocks", "restricted": true})
             }
             Command::GetEdid => json!({
@@ -2346,26 +2523,17 @@ mod tests {
                 "bytes": 4,
                 "edid_hex": "00FFFFFF",
             }),
-            Command::SetCoreOffsetMhz
-            | Command::SetMemoryOffsetMhz
-            | Command::SetClockOffsetMhz => json!({
+            Command::SetPstateGlobalFreqOffset => json!({
                 "applied": true,
                 "backend": "nvapi",
                 "domain": "graphics",
                 "pstate": "P0",
                 "offset_mhz": 120,
             }),
-            Command::SetPowerWatt => json!({"applied": true, "power_watt": 250}),
-            Command::SetPowerPercent => json!({"applied": true, "power_percent": 90}),
-            Command::SetDynamicBoost => json!({"applied": true, "dynamic_boost": true}),
-            Command::GetTgpWattRange => json!({
-                "policy_index": 2,
-                "min_watt": 35.0,
-                "default_watt": 100.0,
-                "max_watt": 140.0,
-            }),
-            Command::SetTgpWatt => json!({"applied": true, "tgp_watt": 140, "tgp_mw": 140000}),
-            Command::ResetTgpWatt => json!({"applied": true, "default_watt": 100.0}),
+            Command::SetPublicTgpPercent => json!({"applied": true, "power_percent": 90}),
+            Command::SetPpabStatus => json!({"applied": true, "dynamic_boost": true}),
+            Command::SetPowerLimit => json!({"applied": true, "tgp_watt": 140, "tgp_mw": 140000}),
+            Command::ResetPowerLimit => json!({"applied": true, "default_watt": 100.0}),
             Command::GetDNotifier => json!({
                 "active": "D2",
                 "levels": [
@@ -2377,45 +2545,45 @@ mod tests {
                 ],
             }),
             Command::SetDNotifier => json!({"applied": true, "dnotifier_level": "D3"}),
-            Command::SetThermalLimitC => json!({"applied": true, "thermal_limit_c": 83}),
-            Command::SetTemperatureThresholds => {
+            Command::SetTempLimit => json!({"applied": true, "thermal_limit_c": 83}),
+            Command::SetPrivateTargetTempLimit => {
                 json!({"applied": true, "policy_index": 2, "celsius": 85.0})
             }
-            Command::SetFanPercent => {
+            Command::SetFanSpeed => {
                 json!({"applied": true, "fan": "all", "policy": "manual", "level_percent": 65})
             }
-            Command::SetLockedClocksMhz => {
+            Command::SetFreqLock => {
                 json!({"applied": true, "domain": "graphics", "min_mhz": 1500, "max_mhz": 1800})
             }
-            Command::SetVfpVoltageLock => json!({"applied": true, "target": "900mv"}),
+            Command::SetGpcVoltLock => json!({"applied": true, "target": "900mv"}),
             Command::OemOcScanner => {
                 json!({"applied": true, "action": "start"})
             }
-            Command::SetVfpPointDeltaMhz => {
+            Command::SetPublicVftablePointOffset => {
                 json!({"applied": true, "point": 12, "delta_mhz": 15})
             }
-            Command::SetVfpRangeDeltaMhz => {
+            Command::SetPublicVftableRangeOffset => {
                 json!({"applied": true, "start": 12, "end": 16, "delta_mhz": 15})
             }
-            Command::SetPstateLock => {
+            Command::SetPstateLockViaMemRange => {
                 json!({"applied": true, "pstate_range": "P0..P2", "min_lock_mhz": 300, "max_lock_mhz": 1800})
             }
-            Command::SetApplicationsClocksMhz => {
+            Command::SetLegacyApplicationFreqLock => {
                 json!({"applied": true, "memory_mhz": 10500, "graphics_mhz": 1800})
             }
-            Command::SetPstateBaseVoltageUv => {
+            Command::SetLegacyGpcRailOvervoltLimit => {
                 json!({"applied": true, "pstate": "P0", "delta_uv": 100000})
             }
             Command::SetOvervoltUv => {
                 json!({"applied": true, "overvolt_delta_uv": 50000})
             }
-            Command::SetVoltageBoostPercent => {
+            Command::SetPublicGpcRailVoltBoost => {
                 json!({"applied": true, "voltage_boost_percent": 25})
             }
-            Command::SetAutoBoost | Command::SetAutoBoostDefault => {
+            Command::SetAutoboostStatus | Command::ResetAutoboostStatus => {
                 json!({"applied": true, "enabled": true})
             }
-            Command::SetApiRestriction => {
+            Command::SetAutoboostSupport => {
                 json!({"applied": true, "api": "app-clocks", "restricted": true})
             }
             Command::SetEdid => {
@@ -2424,31 +2592,25 @@ mod tests {
             Command::ClearEdid => {
                 json!({"applied": true, "display_id": "0x00010001"})
             }
-            Command::SetLegacyClocksMhz => {
-                json!({"applied": true, "core_mhz": 900, "memory_mhz": 1800})
+            Command::SetLegacyFreq => {
+                json!({"applied": true, "domain": "core", "mhz": 900, "core_mhz": 900, "memory_mhz": 0})
             }
-            Command::ResetCoreOffsetMhz | Command::ResetMemoryOffsetMhz => json!({
-                "applied": true,
-                "domain": "graphics",
-                "pstate": "P0",
-                "offset_mhz": 0,
-            }),
-            Command::ResetApplicationsClocks
-            | Command::ResetVfpLock
-            | Command::ResetPowerPercent
-            | Command::ResetThermalLimitC
-            | Command::ResetPstateBaseVoltages
-            | Command::ResetPstateClockOffsets => json!({"applied": true}),
-            Command::ResetVoltageBoostPercent => {
+            Command::ResetLegacyApplicationFreqLock
+            | Command::ResetPublicVftableGpcLock
+            | Command::ResetPublicTgpPercent
+            | Command::ResetTempLimit
+            | Command::ResetLegacyGpcRailOvervoltLimit
+            | Command::ResetPstateGlobalFreqOffset => json!({"applied": true}),
+            Command::ResetPublicGpcRailVoltBoost => {
                 json!({"applied": true, "voltage_boost_percent": 0})
             }
-            Command::ResetLockedClocks | Command::ResetVfpDeltas => {
+            Command::ResetFreqLock | Command::ResetPublicVftableOffset => {
                 json!({"applied": true, "domain": "graphics"})
             }
-            Command::ResetFan => json!({"applied": true, "fan_indices": [0, 1]}),
-            Command::SetPStateNative => json!({"applied": true, "pstate": "P3"}),
-            Command::ResetPStateNative => json!({"applied": true}),
-            Command::GetVoltRails => json!({
+            Command::ResetFanSpeed => json!({"applied": true, "fan_indices": [0, 1]}),
+            Command::SetPStateLock => json!({"applied": true, "pstate": "P3"}),
+            Command::ResetPStateLock => json!({"applied": true}),
+            Command::GetVoltRailInfo => json!({
                 "rail_mask": "0x00000001",
                 "p0": {
                     "current_uV": 700000,
@@ -2470,35 +2632,25 @@ mod tests {
                     "rail_bit": 0, "type": 1, "values_uV": [700000, 750000, 0, 1200000, 750000, 600000],
                 }],
             }),
-            Command::SetVoltRailOffset => json!({
+            Command::SetVoltRailLimit => json!({
                 "applied": true,
                 "rail_bit": 0,
                 "previous_uV": 0,
                 "applied_uV": -25000,
                 "effective_wall_uV": 980000,
             }),
-            Command::SetVoltRailTarget => json!({
-                "applied": true,
-                "rail_bit": 0,
-                "target_uV": 1150000,
-                "base_wall_uV": 1085000,
-                "offset_uV": 65000,
-                "previous_offset_uV": 200000,
-                "applied_uV": 65000,
-                "effective_wall_uV": 1150000,
-            }),
-            Command::GetClkDomains => json!({
+            Command::GetPrivateFreqDomainInfo => json!({
                 "controllable_mask": "0x000000FF",
                 "entries": [{
                     "bit": 1, "type": 10, "value_modifiable": false, "offset_kHz": 0,
                     "range_min_kHz": 0, "range_max_kHz": 0, "applied_kHz": 0,
                 }],
             }),
-            Command::GetClkDomainFreq => json!({
+            Command::GetPrivateFreqDomainStatus => json!({
                 "domain_bit": 1, "domain": "Xbar", "freq_mhz": 2004.0,
             }),
-            Command::GetClkVfPoints => json!({
-                // Output shape mirrors the Command::GetClkVfPoints execution
+            Command::GetPrivateVftable => json!({
+                // Output shape mirrors the Command::GetPrivateVftable execution
                 // arm (banked masks + contiguous same-type segments + the
                 // flat point grid).
                 "masks": ["0x0000000000000000"],
@@ -2514,16 +2666,16 @@ mod tests {
                     "freq_default_mhz": 210, "freq_current_mhz": 210,
                 }],
             }),
-            Command::SetClkDomainOffset => json!({
+            Command::SetPrivateFreqDomainGlobalOffset => json!({
                 "applied": true, "bit": 1, "type": 10,
                 "previous_kHz": 0, "applied_kHz": -60000, "temporary_restored": true,
             }),
-            Command::SetVfpPointPrivate => json!({
+            Command::SetPrivateVftablePointOffset => json!({
                 "applied": true, "bank": 0, "index": 191,
                 "mode": "raw_f_offset_control", "value": 100,
                 "unit": "raw", "retained": 100,
             }),
-            Command::SetVfpRangePrivate => json!({
+            Command::SetPrivateVftableRangeOffset => json!({
                 "applied": true, "bank": 0, "start": 191, "end": 191,
                 "raw_f_offset_control_value": 100, "points_written": 1,
             }),
