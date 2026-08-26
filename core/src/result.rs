@@ -98,10 +98,42 @@ pub enum OperationKind {
     /// Reset every present V/F curve point on a bank by clearing its
     /// mode-0 override via the private SetControl (single RMW cycle).
     ResetNvapiVfpPrivate,
+    // OC-gap wraps (2026-08-26 audit follow-up)
+    QueryNvapiPowerMizer,
+    QueryNvapiDynamicBoost,
+    QueryNvapiCoreVoltageControl,
+    SetNvapiCoreVoltageControl,
+    QueryNvapiPmgrVoltageArbiter,
+    SetNvapiPmgrVoltageArbiter,
+    QueryNvapiRatedTdp,
+    SetNvapiBackgroundOcScanner,
+    QueryNvapiOcScannerIncomplete,
+    /// RM voltage-frequency equation directory (PerfVfeEqu GetInfo
+    /// 0x8D49471C) — third V/F surface: mask + typed equation entries.
+    QueryNvapiVfeEquInfo,
+    /// RM V/F equation control block (PerfVfeEqu GetControl 0x4C75C9FE,
+    /// IN/OUT mask). SET twin is elevation-gated, medium-only.
+    QueryNvapiVfeEquControl,
+    /// RM V/F variable directory (PerfVfeVar GetInfo 0xB9DA41D6).
+    QueryNvapiVfeVarInfo,
+    /// RM V/F variable control block (PerfVfeVar GetControl 0x5D387298).
+    /// SET twin is elevation-gated, medium-only.
+    QueryNvapiVfeVarControl,
+    /// Temperature-simulation state GET (`GetThermalSimulationMode`) —
+    /// `(enable, temperature_celsius)`; Secured-Overrides gated.
+    QueryNvapiThermalSim,
+    /// Temperature-simulation SET — fake the driver-visible GPU temp.
+    /// DANGEROUS; Secured-Overrides gated.
+    SetNvapiThermalSim,
+    /// Temperature-simulation disable (restore the real sensor).
+    DisableNvapiThermalSim,
     /// Batch-measure physical clocks for a set of domains (V3
     /// MEASURE_FREQ, one RM round-trip per sample for the whole set).
     QueryNvapiClkDomainFreqDetail,
     QueryNvapiClkDomainFreqsBatch,
+    /// Direct physical clock for one domain — the green-curve MEASURE path
+    /// (ID 0x527FC458). One call returns `freq_khz` (no two-sample Δt).
+    QueryNvapiClkDomainFreqDirect,
     QueryNvapiPStateLevels,
     QueryNvapiPStateLockStatus,
     SetNvapiPStateNative,

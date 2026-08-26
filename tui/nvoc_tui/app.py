@@ -18,7 +18,7 @@ from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container
-from textual.widgets import Button, Label, Select, TabbedContent
+from textual.widgets import Button, Checkbox, Label, Select, TabbedContent
 
 from .config import ConfigStore
 from .controllers.console import ConsoleController
@@ -392,6 +392,35 @@ class NVOCApp(App[None]):
     def on_select_changed(self, event: Select.Changed) -> None:
         if event.select.id == "gpu-select":
             self.header_controller.on_gpu_selected(event.value)
+        elif event.select.id == "vf-active-curve":
+            if self.vfcurve_controller._syncing:
+                # Echo of a programmatic sync write — acting on it resonates
+                # into a switch ping-pong (render storm + leaked workers).
+                return
+            if event.value is Select.BLANK:
+                # set_options() transiently blanks the Select; treating the
+                # blank as a real switch would re-enter the sync path and
+                # can resonate into an event echo loop.
+                return
+            curve_id = str(event.value)
+            # Programmatic sync echoes arrive with the value already active —
+            # the controller ignores no-op switches.
+            self.vfcurve_controller._switch_active_curve(curve_id)
+
+    def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
+        checkbox_id = event.checkbox.id or ""
+        if not checkbox_id.startswith("vf-curve-"):
+            return
+        if self.vfcurve_controller._syncing:
+            return  # programmatic sync echo — not a user toggle
+        curve_id = checkbox_id[len("vf-curve-") :]
+        # Only act when the requested state differs from the current one —
+        # programmatic syncs and veto snap-backs echo through here.
+        if bool(event.value) == self.vfcurve_controller._curve_visible.get(
+            curve_id, True
+        ):
+            return
+        self.vfcurve_controller._toggle_curve_visible(curve_id, event.checkbox)
 
     def on_resize(self, event) -> None:
         del event

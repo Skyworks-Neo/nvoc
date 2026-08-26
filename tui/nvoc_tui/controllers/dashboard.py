@@ -134,8 +134,10 @@ class DashboardController(PaneController):
             return
         self.app.cache.status = parsed
         self.update_metrics()
-        if self.app.cache.vf_curve_points:
-            self.app.vfcurve_controller.render_plot()
+        if self.app.cache.vf_curve_points or self.app.cache.vf_curves:
+            # Re-render the GPC live point (status feed) and kick the
+            # direct-read poll when the active curve is xbar/host.
+            self.app.vfcurve_controller.poll_live()
 
     def on_get_loaded(self, code: int, output: str, parsed: dict) -> None:
         if code != 0:

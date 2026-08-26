@@ -2162,6 +2162,328 @@ impl GpuOperation for ResetNvapiVfpPrivate {
     }
 }
 
+// ---------------------------------------------------------------------------
+// OC-gap wraps (2026-08-26 audit follow-up) — RE spec: docs/oc-gaps-re-spec.md
+// ---------------------------------------------------------------------------
+
+/// PowerMizer mode GET readback (0x76BFA16B, 4-arg RE'd R610.74). The
+/// readview the SetPerfLevel-based power-level SET never had. The SET twin
+/// (`SetPowerMizerInfo` 0x50016C78, distinct escape 0x700003A vs
+/// SetPerfLevel's 0x07000040) is medium-only — same NVCP dropdown, do not
+/// surface a parallel SET.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiPowerMizer {
+    /// 1|2 (AC/DC selector)
+    pub power_source: u32,
+}
+
+impl GpuOperation for QueryNvapiPowerMizer {
+    type Output = Option<u32>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiPowerMizer
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .power_mizer_mode(self.power_source)
+            .map_err(Error::from)
+    }
+}
+
+/// PPAB / Dynamic-Boost enable GET (0xC80068A1) — the readback half of
+/// `SetNvapiDynamicBoost`.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiDynamicBoost;
+
+impl GpuOperation for QueryNvapiDynamicBoost {
+    type Output = Option<bool>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiDynamicBoost
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .dynamic_boost_enabled()
+            .map_err(Error::from)
+    }
+}
+
+/// Core-voltage control-object GET (0xA91F88EB, escape 0x07000045) — half
+/// of the RMW pair with [`SetNvapiCoreVoltageControl`]. Distinct SET path
+/// from the VoltVoltRails µV-offset family.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiCoreVoltageControl;
+
+impl GpuOperation for QueryNvapiCoreVoltageControl {
+    type Output = Option<u32>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiCoreVoltageControl
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target.nvapi()?.core_voltage_control().map_err(Error::from)
+    }
+}
+
+/// Core-voltage control SET (0xDC2BD4A6, escape 0x07000044). A third
+/// voltage write path (distinct from VoltVoltRails offset and
+/// ClientVoltRails percent). Elevation-gated (-104 without admin).
+#[derive(Clone, Copy, Debug)]
+pub struct SetNvapiCoreVoltageControl {
+    pub value: u32,
+}
+
+impl GpuOperation for SetNvapiCoreVoltageControl {
+    type Output = Option<()>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiCoreVoltageControl
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .set_core_voltage_control(self.value)
+            .map_err(Error::from)
+    }
+}
+
+/// PMGR voltage-request arbiter GET (0x717648FD, escape 0x0700019F, v2
+/// struct 0x20030). Returns the 11 raw arbiter dwords.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiPmgrVoltageArbiter;
+
+impl GpuOperation for QueryNvapiPmgrVoltageArbiter {
+    type Output = Option<[u32; 11]>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiPmgrVoltageArbiter
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target.nvapi()?.pmgr_voltage_arbiter().map_err(Error::from)
+    }
+}
+
+/// PMGR voltage-request arbiter SET (0x9C4BB8D0). Elevation-gated. Prefer
+/// GET → patch → SET (raw dwords, semantics not yet calibrated).
+#[derive(Clone, Copy, Debug)]
+pub struct SetNvapiPmgrVoltageArbiter {
+    pub values: [u32; 11],
+}
+
+impl GpuOperation for SetNvapiPmgrVoltageArbiter {
+    type Output = Option<()>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiPmgrVoltageArbiter
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .set_pmgr_voltage_arbiter(&self.values)
+            .map_err(Error::from)
+    }
+}
+
+/// Rated-TDP readback trio (0xED2BEA09 / 0x87BD35EF / 0xFCBDF642). Returns
+/// `(control_mode, info_capabilities, status_raw[10])`.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiRatedTdp;
+
+impl GpuOperation for QueryNvapiRatedTdp {
+    type Output = Option<(u32, u8, [u32; 10])>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiRatedTdp
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target.nvapi()?.rated_tdp_readback().map_err(Error::from)
+    }
+}
+
+/// Background OC-scanner enable/disable (0x06DC7CE8, 72B struct 0x10048
+/// with the validated 9-byte feature GUID).
+#[derive(Clone, Copy, Debug)]
+pub struct SetNvapiBackgroundOcScanner {
+    pub enable: bool,
+}
+
+impl GpuOperation for SetNvapiBackgroundOcScanner {
+    type Output = Option<()>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiBackgroundOcScanner
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .oem_oc_scanner_set_background(self.enable)
+            .map_err(Error::from)
+    }
+}
+
+/// Query the last INCOMPLETE OC-scanner run's partial results
+/// (0xBE371D0A). `Ok(Some(()))` = call accepted (status-code semantics,
+/// like `OemOcScannerStatus`).
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiOcScannerIncomplete;
+
+impl GpuOperation for QueryNvapiOcScannerIncomplete {
+    type Output = Option<()>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiOcScannerIncomplete
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .oem_oc_scanner_incomplete_results()
+            .map_err(Error::from)
+    }
+}
+
+/// Temperature-simulation GET (`NvAPI_GPU_GetThermalSimulationMode`) —
+/// readback `(enable, temperature_celsius)` of the thermal-sim trio.
+/// Gated by the driver's Secured-Overrides "Temp faking allowed" flag.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiThermalSim;
+
+impl GpuOperation for QueryNvapiThermalSim {
+    type Output = Option<(bool, i32)>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiThermalSim
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target.nvapi()?.temp_sim().map_err(Error::from)
+    }
+}
+
+/// Temperature-simulation SET (Extended → basic fallback): fake the GPU
+/// temperature the driver sees. DANGEROUS research tool; requires the
+/// Secured-Overrides gate.
+#[derive(Clone, Copy, Debug)]
+pub struct SetNvapiThermalSim {
+    pub temperature_c: i32,
+}
+
+impl GpuOperation for SetNvapiThermalSim {
+    type Output = Option<()>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiThermalSim
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .set_temp_sim(self.temperature_c)
+            .map_err(Error::from)
+    }
+}
+
+/// Temperature-simulation disable (restore the real sensor reading).
+#[derive(Clone, Copy, Debug)]
+pub struct DisableNvapiThermalSim;
+
+impl GpuOperation for DisableNvapiThermalSim {
+    type Output = Option<()>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::DisableNvapiThermalSim
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target.nvapi()?.disable_temp_sim().map_err(Error::from)
+    }
+}
+
+/// Query the RM voltage-frequency equation directory (PerfVfeEqu GetInfo,
+/// ID 0x8D49471C, RM 0x2080A0B5) — the third V/F editing surface, distinct
+/// from the public VfPoints and the private ClockClient V/F-POINTS families.
+/// Returns the equation-presence mask (bits 0..8191) and decoded entries
+/// (type/name per entry). `None` where the driver doesn't expose the family.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiVfeEquInfo;
+
+impl GpuOperation for QueryNvapiVfeEquInfo {
+    type Output = Option<nvapi_hi::nvapi::VfeEquInfo>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiVfeEquInfo
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target.nvapi()?.vfe_equ_info().map_err(Error::from)
+    }
+}
+
+/// Query the RM V/F equation control block (PerfVfeEqu GetControl,
+/// ID 0x4C75C9FE, RM 0x2080A0B6). Masks are IN/OUT: the driver echoes an
+/// expanded readable set. The SET twin (0x68B798C4) is elevation-gated and
+/// intentionally medium-only.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiVfeEquControl;
+
+impl GpuOperation for QueryNvapiVfeEquControl {
+    type Output = Option<nvapi_hi::nvapi::VfeEquControl>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiVfeEquControl
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target.nvapi()?.vfe_equ_control().map_err(Error::from)
+    }
+}
+
+/// Query the RM V/F variable directory (PerfVfeVar GetInfo,
+/// ID 0xB9DA41D6, RM 0x2080A0B1). Returns the variable mask (0..255) and
+/// typed entries.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiVfeVarInfo;
+
+impl GpuOperation for QueryNvapiVfeVarInfo {
+    type Output = Option<nvapi_hi::nvapi::VfeVarInfo>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiVfeVarInfo
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target.nvapi()?.vfe_var_info().map_err(Error::from)
+    }
+}
+
+/// Query the RM V/F variable control block (PerfVfeVar GetControl,
+/// ID 0x5D387298, RM 0x2080A0B3). The SET twin (0x79FA23A2) is
+/// elevation-gated and intentionally medium-only.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiVfeVarControl;
+
+impl GpuOperation for QueryNvapiVfeVarControl {
+    type Output = Option<nvapi_hi::nvapi::VfeVarControl>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiVfeVarControl
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target.nvapi()?.vfe_var_control().map_err(Error::from)
+    }
+}
+
 /// Batch-measure physical clocks for a set of domains via the V3
 /// MEASURE_FREQ (RM 0x20809006, magic 0x30038) — one RM round-trip per
 /// sample for the whole set, with per-domain V1/V2 fallback.
@@ -2225,6 +2547,31 @@ impl GpuOperation for QueryNvapiClkDomainFreq {
         target
             .nvapi()?
             .clk_domain_freq(self.domain_bit)
+            .map_err(Error::from)
+    }
+}
+
+/// Direct physical clock for one domain — the green-curve MEASURE path
+/// (ID 0x527FC458). One call returns `freq_khz` (no two-sample Δt + sleep).
+/// `domain_bit`: GPC=0, XBAR=1, SYS=2, MCLK=4, HOST=5. `freq_khz == 0` when
+/// the driver refuses / the domain isn't measurable through this interface.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiClkDomainFreqDirect {
+    pub domain_bit: u32,
+}
+
+impl GpuOperation for QueryNvapiClkDomainFreqDirect {
+    type Output = Option<nvapi_hi::nvapi::ClockDomainFreqDirect>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiClkDomainFreqDirect
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        // hi wrapper already folds NotSupported/NoImplementation → Ok(None).
+        target
+            .nvapi()?
+            .clk_domain_freq_direct(self.domain_bit)
             .map_err(Error::from)
     }
 }

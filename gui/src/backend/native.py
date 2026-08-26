@@ -102,6 +102,40 @@ class NativeBackend:
             self._force_wake(gpu)
             return self._pynvoc().query_domain_vfp_points(gpu, domain, True)
 
+    def query_clk_vf_points(self, gpu: str) -> dict | None:
+        """Read the private ClockClient V/F-POINTS table (segments + points).
+
+        Returns ``None`` when the private family is absent (the open VFP
+        interface is the only source for that GPU). Best-effort wake like the
+        public read.
+        """
+        try:
+            return self._pynvoc().query_clk_vf_points(gpu)
+        except Exception:
+            self._force_wake(gpu)
+            try:
+                return self._pynvoc().query_clk_vf_points(gpu)
+            except Exception:
+                return None
+
+    def query_clk_domain_freq_direct(self, gpu: str, domain_bit: int) -> dict | None:
+        """Direct physical clock for one domain (green-curve MEASURE 0x527FC458).
+
+        Returns ``{"domain_bit", "freq_khz"}`` (``freq_khz == 0`` ⇒ driver
+        refused / not measurable — caller should not draw a live point), or
+        ``{"supported": false}`` when the family is absent, or ``None`` on a
+        transient error. Preferred over the counter-based read for XBAR/HOST
+        live-point polling: one call, no 50 ms sleep.
+        """
+        try:
+            return self._pynvoc().query_clk_domain_freq_direct(gpu, int(domain_bit))
+        except Exception:
+            self._force_wake(gpu)
+            try:
+                return self._pynvoc().query_clk_domain_freq_direct(gpu, int(domain_bit))
+            except Exception:
+                return None
+
     def query_mobile_limits(self, gpu: str) -> dict[str, Any]:
         """Fetch the mobile power/thermal control surface (all NVAPI).
 

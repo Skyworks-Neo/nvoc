@@ -114,18 +114,53 @@ class NativeService:
             self._force_wake(gpu)
             return self._pynvoc().query_domain_vfp_points(gpu, domain, True)
 
+    def query_clk_vf_points(self, gpu: str) -> dict | None:
+        """Private ClockClient V/F-POINTS table (segments + points).
+
+        Returns ``None`` when the private family is absent (the open VFP
+        interface is the only source for that GPU). Best-effort wake like
+        the public read. Mirrors the GUI backend adapter.
+        """
+        try:
+            return self._pynvoc().query_clk_vf_points(gpu)
+        except Exception:
+            self._force_wake(gpu)
+            try:
+                return self._pynvoc().query_clk_vf_points(gpu)
+            except Exception:
+                return None
+
+    def query_clk_domain_freq_direct(self, gpu: str, domain_bit: int) -> dict | None:
+        """Direct physical clock for one domain (green-curve MEASURE 0x527FC458).
+
+        Returns ``{"domain_bit", "freq_khz"}`` (``freq_khz == 0`` ⇒ driver
+        refused / not measurable — caller should not draw a live point),
+        ``{"supported": false}`` when the family is absent, or ``None`` on a
+        transient error. Preferred over the counter-based read for XBAR/HOST
+        live-point polling: one call, no 50 ms sleep.
+        """
+        try:
+            return self._pynvoc().query_clk_domain_freq_direct(gpu, int(domain_bit))
+        except Exception:
+            self._force_wake(gpu)
+            try:
+                return self._pynvoc().query_clk_domain_freq_direct(gpu, int(domain_bit))
+            except Exception:
+                return None
+
     def query_mobile_limits(self, gpu: str) -> dict:
         """Fetch the mobile power/thermal control surface (all NVAPI).
 
         Returns ``{"tgp": dict|None, "dnotifier": dict|None,
-        "temp_policies": list}``; ``None`` sub-dicts mean the private
-        interface isn't exposed by this driver.
+        "temp_policies": list, "volt_rail": dict|None}``; ``None`` sub-dicts
+        mean the private interface isn't exposed by this driver.
         """
         data = self._query_mobile_limits_once(gpu)
         if (
             data["tgp"] is None
             and data["dnotifier"] is None
             and not data["temp_policies"]
+            and data["volt_rail"] is None
         ):
             # All three failed at once is the GCOFF signature — wake and retry.
             self._force_wake(gpu)
@@ -137,6 +172,7 @@ class NativeService:
         tgp = None
         dnotifier = None
         policies: Any = []
+        volt_rail = None
         try:
             tgp = native.query_tgp_watt_range(gpu)
         except Exception:
@@ -151,7 +187,18 @@ class NativeService:
             policies = []
         if not isinstance(policies, list):
             policies = []
-        return {"tgp": tgp, "dnotifier": dnotifier, "temp_policies": policies}
+        try:
+            volt_rail = native.query_volt_rails(gpu)
+        except Exception:
+            volt_rail = None
+        if not isinstance(volt_rail, dict):
+            volt_rail = None
+        return {
+            "tgp": tgp,
+            "dnotifier": dnotifier,
+            "temp_policies": policies,
+            "volt_rail": volt_rail,
+        }
 
     def run_action(
         self,

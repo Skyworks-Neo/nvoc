@@ -10,7 +10,7 @@ import time as _time
 import tkinter as tk
 import customtkinter as ctk
 from tkinter import filedialog
-from typing import TYPE_CHECKING, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 
 if TYPE_CHECKING:
@@ -30,6 +30,60 @@ _TEXT_FG_DIM = "#b3b3b3"  # 'gray70' hints
 _FONT_BODY = ("Segoe UI", 11)
 _FONT_HEADER = ("Segoe UI", 13, "bold")
 _CARD_KW = dict(border_width=1, border_color="#1f4e79", corner_radius=10)
+
+# ── Multi-curve palette ──
+# Per-curve current/default colors. The current/default line styles
+# (solid+marker / dashed) are inherited from the original single-curve look.
+_CURVE_COLORS = {
+    "gpc": {"current": "#00ccff", "default": "#1f4e79"},  # cyan / deep blue
+    "xbar": {"current": "#FF8C00", "default": "#7a3d00"},  # bright orange / dark orange
+    "host": {"current": "#B026FF", "default": "#4B0082"},  # bright purple / dark purple
+}
+# Display label + private-domain class for the raw-converted prior.
+_CURVE_META = {
+    "gpc": {"label": "GPC", "class": "graphics", "domain_bit": 0},
+    "xbar": {"label": "XBAR", "class": "fabric", "domain_bit": 1},
+    "host": {"label": "HOST", "class": "fabric", "domain_bit": 5},
+}
+
+
+class _CurveData:
+    """One VF curve (GPC/XBAR/HOST) loaded from public or private NVAPI.
+
+    ``voltages``/``frequencies``/``defaults`` are in display units (mV / MHz).
+    ``source`` is "public" (GPC via the open VFP interface) or "private"
+    (any segment from ``query_clk_vf_points``). ``seg_start``/``seg_end`` are
+    the inclusive private point indices within ``bank`` (used for private
+    apply/reset); for the public GPC curve they mirror the public index range.
+    ``write_mode`` decides how ``_apply_adj`` / reset reach the GPU.
+    """
+
+    __slots__ = (
+        "curve_id",
+        "voltages",
+        "frequencies",
+        "defaults",
+        "source",
+        "bank",
+        "seg_start",
+        "seg_end",
+        "write_mode",
+        "has_fixed",
+    )
+
+    def __init__(self, curve_id: str):
+        self.curve_id = curve_id
+        self.voltages: List[float] = []
+        self.frequencies: List[float] = []
+        self.defaults: List[float] = []
+        self.source = "public"
+        self.bank = 0
+        self.seg_start = 0
+        self.seg_end = 0
+        # "public" (open VFP) | "private_mode0" (private freq-kHz offset) |
+        # "private_raw_converted" (private mode-1 raw f-offset via g(def))
+        self.write_mode = "public"
+        self.has_fixed = False
 
 
 class VFCurveTab:
@@ -54,6 +108,24 @@ class VFCurveTab:
         self._voltages: List[float] = []
         self._frequencies: List[float] = []  # current
         self._defaults: List[float] = []  # default_frequency
+
+        # ── Multi-curve state ──
+        # One _CurveData per discovered curve (gpc/xbar/host). _voltages /
+        # _frequencies / _defaults above are kept as a live view of the active
+        # curve's lists (same object references) so every existing single-curve
+        # call site (drag, keyboard, space-key, lock, dashboard poll, tests)
+        # continues to operate on the active curve unchanged.
+        self._curves: Dict[str, _CurveData] = {}
+        self._active_curve: str = "gpc"
+        self._curve_visible: Dict[str, bool] = {}
+        self._curve_lines: Dict[str, dict] = {}  # curve_id -> {"current","default"}
+        self._curve_selector_row: Optional[tk.Frame] = None
+        self._curve_selector_btns: Dict[str, tk.Frame] = {}
+        # per-GPU probe of which private write mode each curve supports, so a
+        # mode-0 capability probe isn't repeated every refresh.
+        self._curve_probe_cache: Dict[str, Dict[str, str]] = {}
+        # Monotonic guard so a stale async query doesn't overwrite a newer load.
+        self._curve_query_epoch: int = 0
 
         # Selection state  (indices into the data arrays)
         self._sel_start: Optional[int] = None
@@ -119,12 +191,14 @@ class VFCurveTab:
         self._live_poll_job: Optional[str] = None
         self._live_pending: Tuple[Optional[float], Optional[float]] = (None, None)
         self._live_poll_inflight = False
+        # Direct-read inflight guard for xbar/host live-point polling.
+        self._direct_read_inflight = False
 
         # ── Top: chart area (controls row + plot) ──
-        chart_area = tk.Frame(self.frame, bg=_PANEL_BG)
-        chart_area.pack(fill="x", expand=False, padx=10, pady=(10, 5))
+        self._chart_area = tk.Frame(self.frame, bg=_PANEL_BG)
+        self._chart_area.pack(fill="x", expand=False, padx=10, pady=(10, 5))
 
-        chart_top = tk.Frame(chart_area, bg=_PANEL_BG)
+        chart_top = tk.Frame(self._chart_area, bg=_PANEL_BG)
         chart_top.pack(fill="x", pady=(0, 4))
         tk.Label(
             chart_top,
@@ -177,8 +251,12 @@ class VFCurveTab:
         auto_interval_entry.bind("<Return>", self._on_auto_interval_changed)
         auto_interval_entry.bind("<FocusOut>", self._on_auto_interval_changed)
 
-        self._chart_frame = ctk.CTkFrame(chart_area)
+        self._chart_frame = ctk.CTkFrame(self._chart_area)
         self._chart_frame.pack(fill="both", expand=True)
+
+        # ── Per-curve selector row (below the chart, above the toolbar) ──
+        # Only packed when more than one curve is discovered (see _rebuild_selector).
+        self._curve_selector_host = tk.Frame(self.frame, bg=_PANEL_BG)
 
         # Schedule heavy chart init (and matplotlib import) to occur after UI starts
         self._chart_build_after_id = self.app.after(50, self._build_chart_if_alive)
@@ -361,6 +439,10 @@ class VFCurveTab:
         if self._pending_full_redraw or self._voltages:
             self._pending_full_redraw = False
             self._redraw()
+
+        # The selector row couldn't pack before the chart existed (its host
+        # uses after=self._chart_area, which needs the chart area mapped).
+        self._rebuild_selector()
 
     def _animated_artists(self):
         """Artists managed outside the static background (blit overlay)."""
@@ -637,7 +719,7 @@ class VFCurveTab:
         self._refresh_curve(force=True)
 
     def _refresh_curve(self, force: bool = False):
-        """Query VFP points from pynvoc then load and plot them.
+        """Query VFP points (public GPC + private XBAR/HOST) then load+plot.
 
         ``force`` bypasses the 2.5 s back-to-back dedup gate — the auto-refresh
         timer uses it so a sub-2.5 s interval (the default is 1.0 s) keeps
@@ -669,19 +751,32 @@ class VFCurveTab:
         if not self._auto_refreshing:
             self.app.console.append("[GUI] Querying VF curve via pynvoc...\n")
 
+        # Epoch guard: a newer refresh must not be overwritten by a stale one.
+        epoch = self._curve_query_epoch + 1
+        self._curve_query_epoch = epoch
+
         def _worker():
-            retcode = 0
-            points = None
+            gpc_points = None
+            gpc_err = None
+            clk_data = None
             try:
-                points = self.app.backend.query_domain_vfp_points(gpu)
+                gpc_points = self.app.backend.query_domain_vfp_points(gpu)
             except Exception as exc:
-                retcode = -1
-                self.app.after(0, lambda exc=exc: self.app.console.append(f"{exc}\n"))
-            self.app.after(0, lambda: self._on_query_done(retcode, points))
+                gpc_err = str(exc)
+            try:
+                clk_data = self.app.backend.query_clk_vf_points(gpu)
+            except Exception:
+                clk_data = None
+            self.app.after(
+                0,
+                lambda: self._on_multi_query_done(
+                    epoch, gpu, gpc_points, gpc_err, clk_data
+                ),
+            )
 
         self.app.run_background("vfcurve-refresh", _worker)
 
-    def _on_query_done(self, retcode: int, points):
+    def _on_multi_query_done(self, epoch, gpu, gpc_points, gpc_err, clk_data):
         self._refresh_curve_inflight = False
         # After cleanup() the figure/canvas are gone — drop the result and
         # do NOT re-arm the refresh chain, or a late worker would re-submit
@@ -689,21 +784,320 @@ class VFCurveTab:
         if self._cleaned_up:
             self._refresh_curve_pending = False
             return
-        if retcode != 0 or points is None:
-            self.app.console.append("[GUI] VFP query failed.\n")
+        # Stale worker (a newer refresh superseded this one): drop silently.
+        if epoch != self._curve_query_epoch:
+            return
+
+        public_unsupported = gpc_err is not None and (
+            "not supported" in gpc_err.lower() or "no implementation" in gpc_err.lower()
+        )
+        built = self._build_curves(
+            gpu, gpc_points, gpc_err, public_unsupported, clk_data
+        )
+        if not built:
+            if gpc_err and not public_unsupported:
+                self.app.console.append(f"[GUI] VFP query failed: {gpc_err}\n")
+            else:
+                self.app.console.append("[GUI] VFP query failed.\n")
         else:
             self._last_load_ts = _time.monotonic()
             if not self._auto_refreshing:
+                cur = self._curves.get(self._active_curve)
+                n = len(cur.voltages) if cur else 0
                 self.app.console.append(
-                    f"[GUI] VF curve loaded ({len(points)} points).\n"
+                    f"[GUI] VF curve loaded ({n} points on {self._active_curve.upper()}).\n"
                 )
-            self._load_points(points)
+            self._load_active_curve()
 
         if self._refresh_curve_pending:
             self._refresh_curve_pending = False
             self.app.after(0, self._refresh_curve)
         elif self._auto_refreshing:
             self._schedule_next_auto_refresh()
+
+    def _build_curves(
+        self, gpu, gpc_points, gpc_err, public_unsupported, clk_data
+    ) -> bool:
+        """Populate ``self._curves`` from public + private reads.
+
+        Returns False when no curve could be built at all. Per-curve
+        ``write_mode`` is set so ``_apply_adj`` / reset know how to reach the
+        GPU:
+
+        * GPC via the open VFP interface and no Fixed points  → ``"public"``
+        * any private segment, or GPC with Fixed points / public unsupported
+          → ``"private"`` (apply dynamically tries mode-0 then falls back to
+          raw-converted)
+
+        Point-id ranges (seg_start/seg_end, bank) come straight from the
+        private segment structure — never hardcoded.
+        """
+        curves: Dict[str, _CurveData] = {}
+        prev_visible = self._curve_visible or {}
+
+        # ── GPC: prefer the open interface; fall back to the private GPC
+        # segment when the public one is explicitly unsupported. ──
+        gpc_curve = None
+        if gpc_points:
+            gpc_curve = _CurveData("gpc")
+            gpc_curve.source = "public"
+            gpc_curve.voltages = [p["voltage_uv"] / 1000.0 for p in gpc_points]
+            gpc_curve.frequencies = [p["frequency_khz"] / 1000.0 for p in gpc_points]
+            gpc_curve.defaults = [
+                (p.get("default_frequency_khz") or p["frequency_khz"]) / 1000.0
+                for p in gpc_points
+            ]
+            gpc_curve.has_fixed = any(
+                p.get("point_type") == "fixed" for p in gpc_points
+            )
+            gpc_curve.seg_start = 0
+            gpc_curve.seg_end = len(gpc_points) - 1 if gpc_points else 0
+            # Public family present: traditional OC unless a point is Fixed.
+            gpc_curve.write_mode = "private" if gpc_curve.has_fixed else "public"
+        elif public_unsupported:
+            # Open family rejected — the private GPC segment (if any) is the
+            # only GPC source. Located below from clk_data.
+            pass
+
+        # ── Private segments: GPC (fallback), XBAR, HOST. ──
+        private_gpc: Optional[_CurveData] = None
+        if clk_data and clk_data.get("segments"):
+            segs = clk_data["segments"]
+            pts = clk_data.get("points", [])
+            for seg in segs:
+                if seg.get("kind") != "vf_curve":
+                    continue  # pstate_bins are not curves — never plotted
+                hint = seg.get("domain", "unknown")
+                bank = int(seg.get("bank", 0))
+                s = int(seg.get("start_index", 0))
+                e = int(seg.get("end_index", s))
+                seg_pts = [
+                    p
+                    for p in pts
+                    if int(p.get("bank", 0)) == bank
+                    and s <= int(p.get("index", -1)) <= e
+                ]
+                if not seg_pts:
+                    continue
+                cd = _CurveData(hint if hint in _CURVE_COLORS else "gpc")
+                cd.source = "private"
+                cd.bank = bank
+                cd.seg_start = s
+                cd.seg_end = e
+                cd.voltages = [p["voltage_uV"] / 1000.0 for p in seg_pts]
+                cd.frequencies = [p["freq_current_mhz"] for p in seg_pts]
+                cd.defaults = [p["freq_default_mhz"] for p in seg_pts]
+                cd.write_mode = "private"
+                if cd.curve_id == "gpc":
+                    private_gpc = cd
+                elif cd.curve_id in _CURVE_COLORS:
+                    curves[cd.curve_id] = cd
+                # unknown domains are skipped (only gpc/xbar/host displayed)
+
+        # Resolve GPC source: public preferred, private fallback.
+        if gpc_curve is not None:
+            curves["gpc"] = gpc_curve
+        elif private_gpc is not None:
+            curves["gpc"] = private_gpc
+
+        if not curves:
+            self._curves = {}
+            self._curve_visible = {}
+            return False
+
+        # Carry over visibility (default: every discovered curve visible), and
+        # keep the active curve valid (fallback to first visible).
+        self._curves = curves
+        self._curve_visible = {cid: prev_visible.get(cid, True) for cid in curves}
+        if (
+            not self._curve_visible.get(self._active_curve)
+            or self._active_curve not in curves
+        ):
+            self._active_curve = next(
+                (cid for cid in curves if self._curve_visible.get(cid)), "gpc"
+            )
+        return True
+
+    def _load_active_curve(self):
+        """灌 active curve 数据进 _voltages/_frequencies/_defaults 并重绘。
+
+        Keeps the legacy single-curve attributes as a live view of the active
+        curve so all existing call sites (drag/keyboard/lock/dashboard/tests)
+        keep working. Also rebuilds the per-curve selector row.
+        """
+        curve = self._curves.get(self._active_curve)
+        if curve is None:
+            return
+        # Refresh only the active curve's data identity check (auto-refresh
+        # short-circuit) before assigning.
+        if (
+            curve.voltages == self._voltages
+            and curve.frequencies == self._frequencies
+            and curve.defaults == self._defaults
+            and not getattr(self, "_pending_lock_mv", None)
+            and len(self._curves) <= 1
+        ):
+            # Single-curve no-op fast path (auto-refresh identity tick).
+            pass
+        self._voltages = curve.voltages
+        self._frequencies = curve.frequencies
+        self._defaults = curve.defaults
+        self._drag_orig_freqs = None
+        # Sync the curve's mutated frequencies back (same list refs, no-op).
+        self._rebuild_selector()
+        self._apply_curve_data(curve.voltages, curve.frequencies, curve.defaults)
+
+    def _switch_active_curve(self, curve_id: str):
+        """Select which curve drag/keyboard/apply target — point on rect btn."""
+        if curve_id not in self._curves or curve_id == self._active_curve:
+            return
+        if not self._curve_visible.get(curve_id):
+            return  # activating a hidden curve makes no sense
+        self._active_curve = curve_id
+        curve = self._curves[curve_id]
+        self._sel_start = None
+        self._sel_end = None
+        self._drag_orig_freqs = None
+        self._voltages = curve.voltages
+        self._frequencies = curve.frequencies
+        self._defaults = curve.defaults
+        self._rebuild_selector()
+        self._redraw()
+        # Live-point handoff: when leaving GPC the dashboard-fed (volt,freq)
+        # is stale; clear it and let the direct-read path repopulate for
+        # xbar/host. When switching back to GPC, clear so the dashboard poll's
+        # next tick refills it (don't show an xbar freq on the GPC curve).
+        self._live_pending = (None, None)
+        self._live_volt = None
+        self._live_freq = None
+        self._hide_live_point()
+        if curve_id in ("xbar", "host") and not self._direct_read_inflight:
+            self._kick_direct_read(curve_id)
+        self.app.console.append(
+            f"[GUI] Active curve: {curve_id.upper()} "
+            f"({curve.source}, {curve.write_mode}).\n"
+        )
+
+    def _toggle_curve_visible(self, curve_id: str):
+        """Toggle a curve's visibility (checkbox). Hidden curves are not drawn
+        and not queried on refresh. Always keeps at least the active curve
+        visible."""
+        if curve_id not in self._curves:
+            return
+        if self._curve_visible.get(curve_id) and curve_id == self._active_curve:
+            # Don't allow hiding the only visible / active curve.
+            visible_count = sum(1 for v in self._curve_visible.values() if v)
+            if visible_count <= 1:
+                return
+        self._curve_visible[curve_id] = not self._curve_visible.get(curve_id, True)
+        # If the hidden curve was feeding the live point (GPC via dashboard, or
+        # xbar/host via direct read), clear the crosshair so a hidden curve is
+        # never polled/drawn — including GPC.
+        if not self._curve_visible.get(curve_id):
+            if curve_id == "gpc":
+                # Stop accepting the dashboard feed until GPC is active again.
+                self._live_pending = (None, None)
+            if curve_id == self._active_curve:
+                self._live_volt = None
+                self._live_freq = None
+                self._pending_live_point = None
+        if not self._curve_visible.get(self._active_curve):
+            self._active_curve = next(
+                (c for c, v in self._curve_visible.items() if v), self._active_curve
+            )
+            curve = self._curves.get(self._active_curve)
+            if curve is not None:
+                self._voltages = curve.voltages
+                self._frequencies = curve.frequencies
+                self._defaults = curve.defaults
+                self._sel_start = None
+                self._sel_end = None
+                self._drag_orig_freqs = None
+            # New active curve's live point starts fresh; kick a direct read
+            # immediately if it's xbar/host (GPC will be refed by dashboard).
+            self._live_pending = (None, None)
+            self._live_volt = None
+            self._live_freq = None
+            self._hide_live_point()
+            if (
+                self._active_curve in ("xbar", "host")
+                and not self._direct_read_inflight
+            ):
+                self._kick_direct_read(self._active_curve)
+        self._rebuild_selector()
+        self._redraw()
+
+    def _rebuild_selector(self):
+        """Rebuild the per-curve selector row (rect buttons + checkboxes).
+
+        Only shown when more than one curve was discovered. Each curve gets a
+        rectangular button: clicking the box toggles visibility, clicking the
+        button body activates that curve for drag/keyboard/apply.
+        """
+        if getattr(self, "_chart_frame", None) is None or self._cleaned_up:
+            return
+        host = getattr(self, "_curve_selector_host", None)
+        if host is None:
+            return  # UI not built yet (selector host created in _build_chart)
+        for child in host.winfo_children():
+            child.destroy()
+        self._curve_selector_btns = {}
+        curves = list(self._curves.items())
+        if len(curves) <= 1:
+            host.pack_forget()
+            return
+        host.pack(fill="x", padx=10, pady=(2, 6), after=self._chart_area)
+        for cid, curve in curves:
+            btn = tk.Frame(
+                host,
+                bg=_PANEL_BG,
+                highlightthickness=2,
+                highlightcolor=_CURVE_COLORS[cid]["current"],
+                highlightbackground="#444444",
+                bd=0,
+            )
+            btn.pack(side="left", padx=6)
+            # Checkbox (left): toggles visibility. Stops propagation so the
+            # outer button's <Button-1> (activate) doesn't also fire.
+            var = tk.BooleanVar(value=self._curve_visible.get(cid, True))
+            ckb = ctk.CTkCheckBox(
+                btn,
+                text="",
+                variable=var,
+                width=20,
+                height=20,
+                command=lambda c=cid, v=var: self._on_selector_checkbox(c, v),
+            )
+            ckb.pack(side="left", padx=(4, 2), pady=4)
+            # Label (right): curve name + active indicator.
+            colors = _CURVE_COLORS[cid]
+            active = cid == self._active_curve
+            label_text = _CURVE_META[cid]["label"]
+            lbl = tk.Label(
+                btn,
+                text=label_text,
+                font=_FONT_BODY,
+                bg=_PANEL_BG,
+                fg=colors["current"],
+            )
+            lbl.pack(side="left", padx=(0, 6))
+            if active:
+                lbl.config(font=("Segoe UI", 11, "bold"))
+                btn.config(highlightbackground=colors["current"])
+            # Click anywhere on the button body (not the checkbox) activates.
+            btn.bind("<Button-1>", lambda e, c=cid: self._switch_active_curve(c))
+            lbl.bind("<Button-1>", lambda e, c=cid: self._switch_active_curve(c))
+            self._curve_selector_btns[cid] = btn
+
+    def _on_selector_checkbox(self, curve_id: str, var: tk.BooleanVar):
+        # The checkbox already toggled `var`. Route through the canonical
+        # toggle path so the "can't hide the only visible curve" guard and
+        # live-point clearing (no crosshair for hidden curves, incl. GPC) are
+        # applied consistently. If the guard vetoes, restore the checkbox.
+        before = self._curve_visible.get(curve_id, True)
+        self._toggle_curve_visible(curve_id)
+        if self._curve_visible.get(curve_id, True) == before:
+            var.set(before)  # vetoed (only-visible guard) — snap checkbox back
 
     @staticmethod
     def _write_vfp_points(path: str, points: List[dict]) -> None:
@@ -716,26 +1110,32 @@ class VFCurveTab:
         return load_vfp_deltas(path, reference_points)
 
     def _load_points(self, points: List[dict]):
-        """Load VFP points (pynvoc dicts, µV/kHz) and redraw the chart."""
-        voltages = []
-        frequencies = []
-        defaults = []
+        """Load VFP points (pynvoc dicts, µV/kHz) and redraw the chart.
+
+        Legacy single-curve entry — used by tests and any caller that hands a
+        flat public point list. Rebuilds a GPC-only curve set.
+        """
+        gpc = _CurveData("gpc")
+        gpc.source = "public"
         for p in points:
-            voltages.append(p["voltage_uv"] / 1000.0)  # µV → mV
-            freq_mhz = p["frequency_khz"] / 1000.0  # kHz → MHz
-            frequencies.append(freq_mhz)
+            gpc.voltages.append(p["voltage_uv"] / 1000.0)
+            freq_mhz = p["frequency_khz"] / 1000.0
+            gpc.frequencies.append(freq_mhz)
             default_khz = p.get("default_frequency_khz")
-            defaults.append(freq_mhz if default_khz is None else default_khz / 1000.0)
-        # Auto-refresh ticks with identical data: no redraw, no console churn
-        # (a full ax.clear() + re-plot + Agg render per second for nothing).
-        if (
-            voltages == self._voltages
-            and frequencies == self._frequencies
-            and defaults == self._defaults
-            and not self._pending_lock_mv
-        ):
-            return
-        self._apply_curve_data(voltages, frequencies, defaults)
+            gpc.defaults.append(
+                freq_mhz if default_khz is None else default_khz / 1000.0
+            )
+            if p.get("point_type") == "fixed":
+                gpc.has_fixed = True
+        gpc.write_mode = "private" if gpc.has_fixed else "public"
+        gpc.seg_end = len(points) - 1 if points else 0
+        self._curves = {"gpc": gpc}
+        self._curve_visible = {"gpc": True}
+        self._active_curve = "gpc"
+        self._voltages = gpc.voltages
+        self._frequencies = gpc.frequencies
+        self._defaults = gpc.defaults
+        self._apply_curve_data(gpc.voltages, gpc.frequencies, gpc.defaults)
 
     def _load_csv(self, path: str):
         """Parse CSV (Import button) and redraw chart."""
@@ -858,33 +1258,74 @@ class VFCurveTab:
         f = self._frequencies
         d = self._defaults
 
-        # Default curve (dashed)
+        # ── Draw every visible curve ──
+        # Non-active curves are static (baked into the cached background);
+        # the active curve's current line is animated (animated=True) so the
+        # drag/keyboard/wheel fast-edit path can blit just it.
+        self._curve_lines = {}
+        active_colors = _CURVE_COLORS.get(self._active_curve, _CURVE_COLORS["gpc"])
+        active_label = _CURVE_META.get(self._active_curve, _CURVE_META["gpc"])["label"]
+
+        # Non-active visible curves first (lower zorder, static).
+        for cid, curve in self._curves.items():
+            if cid == self._active_curve:
+                continue
+            if not self._curve_visible.get(cid):
+                continue
+            colors = _CURVE_COLORS.get(cid, _CURVE_COLORS["gpc"])
+            lbl = _CURVE_META.get(cid, {"label": cid.upper()})["label"]
+            ax.plot(
+                curve.voltages,
+                curve.defaults,
+                color=colors["default"],
+                linestyle="--",
+                linewidth=0.9,
+                label=f"{lbl} Default",
+                zorder=2,
+            )
+            (line_cur,) = ax.plot(
+                curve.voltages,
+                curve.frequencies,
+                color=colors["current"],
+                linestyle="-",
+                linewidth=1.1,
+                marker="s",
+                markersize=0.9,
+                markerfacecolor=colors["current"],
+                markeredgecolor=colors["current"],
+                label=f"{lbl} Current",
+                zorder=3,
+            )
+            self._curve_lines[cid] = {"current": line_cur, "default": None}
+
+        # Active curve (default dashed + current solid+marker, animated).
         (self._line_default,) = ax.plot(
             v,
             d,
-            color="#888888",
+            color=active_colors["default"],
             linestyle="--",
             linewidth=0.9,
-            label="Default",
+            label=f"{active_label} Default",
             zorder=2,
         )
-
-        # Current curve (solid with point markers) — animated=True keeps it out
-        # of the cached background so fast edits can blit just this line.
         (self._line_current,) = ax.plot(
             v,
             f,
-            color="#00ccff",
+            color=active_colors["current"],
             linestyle="-",
             linewidth=1.1,
             marker="s",
             markersize=0.9,
-            markerfacecolor="#00ccff",
-            markeredgecolor="#00ccff",
-            label="Current",
-            zorder=3,
+            markerfacecolor=active_colors["current"],
+            markeredgecolor=active_colors["current"],
+            label=f"{active_label} Current",
+            zorder=4,
             animated=True,
         )
+        self._curve_lines[self._active_curve] = {
+            "current": self._line_current,
+            "default": self._line_default,
+        }
 
         # Selection highlight
         if self._sel_start is not None and self._sel_end is not None:
@@ -1001,10 +1442,17 @@ class VFCurveTab:
                     zorder=8,
                 )
 
-        # Axis range with some padding
+        # Axis range with some padding — span every visible curve so all fit.
         v_min, v_max = min(v), max(v)
-        all_f = f + d
-        f_min, f_max = min(f), max(all_f)
+        f_vals = list(f) + list(d)
+        for cid, curve in self._curves.items():
+            if cid == self._active_curve or not self._curve_visible.get(cid):
+                continue
+            if curve.voltages:
+                v_min = min(v_min, min(curve.voltages))
+                v_max = max(v_max, max(curve.voltages))
+            f_vals += list(curve.frequencies) + list(curve.defaults)
+        f_min, f_max = min(f_vals), max(f_vals) if f_vals else (0, 1)
 
         # Adjust Y limits if freq lock is outside default range
         if self._freq_core_lock is not None:
@@ -1355,7 +1803,17 @@ class VFCurveTab:
         scheduling an after(0) blit, so its completion cannot interpose a
         blit ahead of a mouse-press in the Tcl event queue (which delayed
         the first click on the curve). The live timer below drains it.
+
+        This feed is GPC-only (the dashboard polls gpu_clock / voltage for the
+        graphics domain). Accept it only when GPC is the active AND visible
+        curve — otherwise it would pollute the live point with GPC freq while
+        the user is looking at an XBAR/HOST curve (whose freq comes from the
+        direct-read path), and it would keep "polling" a GPC crosshair the user
+        has unchecked. XBAR/HOST live data is pushed here by the direct-read
+        completion callback instead.
         """
+        if self._active_curve != "gpc" or not self._curve_visible.get("gpc"):
+            return
         self._live_pending = (volt_mv, freq_mhz)
 
     def start_live_poll(self) -> None:
@@ -1377,6 +1835,32 @@ class VFCurveTab:
         self._live_poll_job = None
         if self._cleaned_up:
             return
+        # Only the active+visible curve gets a live-point crosshair. A curve
+        # that's unchecked (not visible) is never polled — including GPC, whose
+        # dashboard feed is gated in set_live_pending. The active curve is
+        # always visible by construction, but guard anyway.
+        if not self._curve_visible.get(self._active_curve):
+            self._live_volt = None
+            self._live_freq = None
+            self._hide_live_point()
+            self._live_poll_job = self.app.after(
+                self._LIVE_POLL_MS, self._live_poll_tick
+            )
+            return
+
+        # When the active curve is XBAR/HOST, the operating point's frequency
+        # comes from the green-curve direct read (0x527FC458), not the GPC
+        # gpu_clock the dashboard poll feeds. Kick an async direct read each
+        # tick; the result lands in _live_pending and is drawn next tick (or
+        # immediately if idle and the read already completed).
+        curve = self._curves.get(self._active_curve)
+        if (
+            curve is not None
+            and self._active_curve in ("xbar", "host")
+            and not self._direct_read_inflight
+        ):
+            self._kick_direct_read(self._active_curve)
+
         # Drain the latest volt/freq pushed by the background poll worker and
         # blit — but only when idle. During a drag/press the value is held and
         # flushed on release via _flush_pending_live_point.
@@ -1392,6 +1876,109 @@ class VFCurveTab:
             # hold for the release/resize-end flush
             self._pending_live_point = (volt, freq)
         self._live_poll_job = self.app.after(self._LIVE_POLL_MS, self._live_poll_tick)
+
+    def _kick_direct_read(self, curve_id: str) -> None:
+        """Async direct-read of the active xbar/host domain's physical clock.
+
+        On completion the worker reverse-looks-up the voltage on the active
+        curve (freq → voltage interpolation) and pushes (volt, freq_mhz) into
+        ``_live_pending`` for the next tick to blit. Direct read only gives
+        frequency; the voltage is recovered from the curve itself (xbar/host
+        have no pstate-off-curve excursion, so the reverse lookup is faithful).
+        """
+        gpu = self.app.selected_gpu_target()
+        if gpu is None:
+            return
+        domain_bit = _CURVE_META[curve_id]["domain_bit"]
+        curve = self._curves.get(curve_id)
+        if curve is None or not curve.voltages:
+            return
+        # Snapshot the curve points for the main-thread callback (the dict may
+        # be replaced by a refresh between submit and completion).
+        volts = list(curve.voltages)
+        freqs = list(curve.frequencies)
+        self._direct_read_inflight = True
+
+        def _worker():
+            result = self.app.backend.query_clk_domain_freq_direct(gpu, domain_bit)
+            self.app.after(
+                0, lambda: self._on_direct_read_done(result, curve_id, volts, freqs)
+            )
+
+        self.app.run_background("vfcurve-direct-read", _worker)
+
+    def _on_direct_read_done(self, result, curve_id, volts, freqs):
+        self._direct_read_inflight = False
+        if self._cleaned_up:
+            return
+        # Stale result for a different active curve than we're now showing,
+        # or the curve got unchecked (hidden) while the read was in flight —
+        # a hidden curve gets no crosshair, so drop the result.
+        if curve_id != self._active_curve or not self._curve_visible.get(curve_id):
+            return
+        if not isinstance(result, dict):
+            return
+        if result.get("supported") is False:
+            # Family absent — no live point for this domain.
+            self._live_pending = (None, None)
+            return
+        freq_khz = result.get("freq_khz")
+        if not freq_khz:
+            # 0 ⇒ driver refused / not measurable through this interface.
+            return
+        freq_mhz = freq_khz / 1000.0
+        volt = self._reverse_lookup_voltage(volts, freqs, freq_mhz)
+        if volt is None:
+            return
+        self._live_pending = (volt, freq_mhz)
+        # If idle, blit immediately rather than waiting for the next tick.
+        if (
+            not (self._is_resize_active or self._mouse_pressed)
+            and self._chart_should_draw()
+        ):
+            self._live_volt = volt
+            self._live_freq = freq_mhz
+            self._draw_live_point()
+
+    @staticmethod
+    def _reverse_lookup_voltage(
+        volts: List[float], freqs: List[float], target_freq: float
+    ) -> Optional[float]:
+        """Find the voltage on the curve whose frequency is closest to
+        ``target_freq``, linearly interpolating between the two nearest points.
+
+        xbar/host curves are monotonic in frequency vs voltage (no pstate
+        off-curve excursion), so the reverse lookup is single-valued. Returns
+        ``None`` when the curve is empty.
+        """
+        n = len(freqs)
+        if n == 0:
+            return None
+        if n == 1:
+            return volts[0]
+        # Find the segment [i, i+1] whose freq span contains target_freq, or
+        # the nearest end if target is outside the range (clamp to the closer
+        # end so the crosshair still marks the working point at the edge).
+        # Curve should be freq-ascending with voltage; handle either direction.
+        ascending = freqs[-1] >= freqs[0]
+        sfreqs = freqs
+        svolts = volts
+        if not ascending:
+            sfreqs = list(reversed(freqs))
+            svolts = list(reversed(volts))
+        if target_freq <= sfreqs[0]:
+            return svolts[0]
+        if target_freq >= sfreqs[-1]:
+            return svolts[-1]
+        for i in range(n - 1):
+            f0, f1 = sfreqs[i], sfreqs[i + 1]
+            if f0 <= target_freq <= f1:
+                v0, v1 = svolts[i], svolts[i + 1]
+                if f1 == f0:
+                    return v0
+                t = (target_freq - f0) / (f1 - f0)
+                return v0 + (v1 - v0) * t
+        return svolts[-1]
 
     @property
     def is_interacting(self) -> bool:
@@ -1827,7 +2414,9 @@ class VFCurveTab:
             def action(native) -> str:
                 native.reset_vfp_lock(gpu)
                 self._lock_core_native(native, gpu, lock_backend, cur_f, cur_f)
-                return f"Applied {lock_backend_label} lock for point {idx}."
+                return (
+                    f"Successfully applied {lock_backend_label} lock for point {idx}."
+                )
 
             def done(rc: int, local_f=cur_f, backend=lock_backend) -> None:
                 self._locked_points.clear()
@@ -1842,7 +2431,7 @@ class VFCurveTab:
 
             def action(native) -> str:
                 self._reset_core_native(native, gpu, active_freq_backend)
-                return f"Reset {active_freq_backend_label} lock."
+                return f"Successfully reset {active_freq_backend_label} lock."
 
             def done(rc: int) -> None:
                 if rc == 0:
@@ -1858,7 +2447,9 @@ class VFCurveTab:
                 if has_vfp_locks:
                     native.reset_vfp_lock(gpu)
                 self._lock_core_native(native, gpu, lock_backend, cur_f, cur_f)
-                return f"Applied {lock_backend_label} lock for point {idx}."
+                return (
+                    f"Successfully applied {lock_backend_label} lock for point {idx}."
+                )
 
             def done(rc: int, local_f=cur_f, backend=lock_backend) -> None:
                 self._locked_points.clear()
@@ -1893,7 +2484,7 @@ class VFCurveTab:
 
             def action(native) -> str:
                 self._reset_core_native(native, gpu, active_freq_backend)
-                return f"Reset {active_freq_backend_label} range lock."
+                return f"Successfully reset {active_freq_backend_label} range lock."
 
             def done(rc: int) -> None:
                 if rc == 0:
@@ -1910,7 +2501,7 @@ class VFCurveTab:
                     native.reset_vfp_lock(gpu)
                 self._lock_core_native(native, gpu, lock_backend, min_f, max_f)
                 return (
-                    f"Applied {lock_backend_label} lock for range {s}-{e} "
+                    f"Successfully applied {lock_backend_label} lock for range {s}-{e} "
                     f"({min_f}-{max_f} MHz)."
                 )
 
@@ -2079,9 +2670,13 @@ class VFCurveTab:
     def _apply_adj(self):
         """Apply the current frequency edits for the selected range to the GPU.
 
-        Uses the Delta (MHz) field as the target offset vs default for the
-        selected range, updates the in-memory curve, then groups consecutive
-        equal-delta points and runs pointwiseoc calls sequentially.
+        Routes by the active curve's ``write_mode``:
+
+        * ``public``  — open VFP ``set_vfp_range_delta`` (grouped, unchanged).
+        * ``private`` — try private mode-0 (kHz offset) per point; on
+          ArgumentRange (mode-0 rejected, e.g. CMP170HX / Fixed points) fall
+          back to raw-converted mode-1 via ``clk_vf_delta_for_target`` +
+          ``set_vfp_range_per_point_private``. Console-logs which path ran.
         """
         gpu = self.app.selected_gpu_target()
         try:
@@ -2118,57 +2713,204 @@ class VFCurveTab:
 
         self._redraw()
 
-        # Build per-point delta list (kHz, integer)
+        curve = self._curves.get(self._active_curve)
+        # Build per-point delta list (kHz, integer) vs default.
         deltas_khz = [
             round((self._frequencies[i] - self._defaults[i]) * 1000)
             for i in range(start, end + 1)
         ]
 
-        # Group consecutive points with identical delta → fewer CLI calls
-        groups = []  # type: List[Tuple[int, int, int]]  # (from_idx, to_idx, delta_khz)
-        g_start = start
-        g_delta = deltas_khz[0]
-        for offset, dkz in enumerate(deltas_khz[1:], start=1):
-            if dkz != g_delta:
-                groups.append((g_start, start + offset - 1, g_delta))
-                g_start = start + offset
-                g_delta = dkz
-        groups.append((g_start, end, g_delta))
+        # ── Public path: GPC via the open VFP interface (unchanged). ──
+        if curve is not None and curve.write_mode == "public":
+            groups = []  # type: List[Tuple[int,int,int]]
+            g_start = start
+            g_delta = deltas_khz[0]
+            for offset, dkz in enumerate(deltas_khz[1:], start=1):
+                if dkz != g_delta:
+                    groups.append((g_start, start + offset - 1, g_delta))
+                    g_start = start + offset
+                    g_delta = dkz
+            groups.append((g_start, end, g_delta))
 
+            self.app.console.append(
+                f"[GUI] Applying {len(groups)} public VFP group(s) "
+                f"to {self._active_curve.upper()} {start}–{end}…\n"
+            )
+
+            def apply_groups(native, gpu=gpu, groups=groups) -> str:
+                applied = 0
+                failed = 0
+                messages = []
+                for frm, to, dkz in groups:
+                    try:
+                        native.set_vfp_range_delta(gpu, frm, to, dkz)
+                    except Exception as exc:
+                        failed += 1
+                        messages.append(
+                            f"Warning: failed VFP delta group {frm}-{to} ({dkz} kHz): {exc}"
+                        )
+                        continue
+                    applied += 1
+                messages.append(
+                    f"Applied {applied} VFP delta group(s); {failed} failed."
+                )
+                return "\n".join(messages)
+
+            self.app.run_native_action(
+                "apply VFP point deltas",
+                apply_groups,
+                on_finished=lambda _rc: self.app.after(0, self._refresh_curve),
+            )
+            return
+
+        # ── Private path: mode-0 first, raw-converted fallback. ──
+        if curve is None:
+            self.app.console.append("[GUI] Active curve missing — cannot apply.\n")
+            return
+        bank = curve.bank
+        base = curve.seg_start + start  # absolute private index of `start`
+        class_name = _CURVE_META[curve.curve_id]["class"]
+        defaults_mhz = list(self._defaults)
         self.app.console.append(
-            f"[GUI] Applying {len(groups)} pointwiseoc group(s) "
-            f"for range {start}–{end}…\n"
+            f"[GUI] Applying private VFP to {curve.curve_id.upper()} "
+            f"{start}–{end} (bank {bank}, mode-0 → raw-converted fallback)…\n"
         )
 
-        def apply_groups(native, gpu=gpu, groups=groups) -> str:
-            applied = 0
-            failed = 0
-            messages = []
-            for frm, to, dkz in groups:
-                try:
-                    native.set_vfp_range_delta(gpu, frm, to, dkz)
-                except Exception as exc:
-                    failed += 1
-                    messages.append(
-                        f"Warning: failed VFP delta group {frm}-{to} ({dkz} kHz): {exc}"
+        def apply_private(
+            native,
+            gpu=gpu,
+            bank=bank,
+            base=base,
+            class_name=class_name,
+            defaults_mhz=defaults_mhz,
+            deltas_khz=deltas_khz,
+            start=start,
+            curve_id=curve.curve_id,
+        ) -> str:
+            # 1) Try mode-0 (kHz frequency offset) per point.
+            try:
+                for offset, dkz in enumerate(deltas_khz):
+                    r = native.set_vfp_point_private(
+                        gpu, bank, base + offset, dkz, True
                     )
-                    continue
-                applied += 1
-            messages.append(f"Applied {applied} VFP delta group(s); {failed} failed.")
-            return "\n".join(messages)
+                    if isinstance(r, dict) and r.get("supported") is False:
+                        raise RuntimeError("private VFP family unsupported")
+                return (
+                    f"Successfully applied private mode-0 offsets to {curve_id.upper()} "
+                    f"({len(deltas_khz)} pts)."
+                )
+            except Exception as exc:
+                msg = str(exc).lower()
+                if "argument" not in msg and "unsupported" not in msg:
+                    raise
+                # mode-0 rejected at readback → fall through to raw-converted.
+            # 2) Raw-converted: translate each MHz offset to a raw mode-1
+            # f-offset control value via the universal g(def) prior.
+            raw_deltas = []
+            for offset in range(len(deltas_khz)):
+                def_mhz = int(round(defaults_mhz[start + offset]))
+                tgt_mhz = deltas_khz[offset] / 1000.0
+                r = native.clk_vf_delta_for_target_mhz(def_mhz, tgt_mhz, class_name)
+                d = r.get("delta") if isinstance(r, dict) else None
+                if d is None:
+                    return (
+                        f"raw-converted translation failed at def={def_mhz} MHz "
+                        f"({curve_id.upper()}); apply aborted."
+                    )
+                raw_deltas.append(int(d))
+            last = base + len(deltas_khz) - 1
+            r2 = native.set_vfp_range_per_point_private(
+                gpu, bank, base, last, raw_deltas
+            )
+            if isinstance(r2, dict) and r2.get("supported") is False:
+                return f"private VFP write unsupported on {curve_id.upper()}."
+            return (
+                f"Successfully applied private raw-converted offsets to {curve_id.upper()} "
+                f"({len(raw_deltas)} pts)."
+            )
 
         self.app.run_native_action(
             "apply VFP point deltas",
-            apply_groups,
+            apply_private,
             on_finished=lambda _rc: self.app.after(0, self._refresh_curve),
         )
 
     def _reset_vfp(self):
+        """Reset the active curve to default (selected-curve semantics).
+
+        Public GPC → open ``set_vfp_range_delta`` 0 over the segment. Private
+        (XBAR/HOST, or GPC when public is unsupported) → mode-0 clear per
+        point, raw-converted clear fallback (delta 0 → raw f-offset that
+        zeroes the effect). Never touches other curves' segments.
+        """
+        curve = self._curves.get(self._active_curve)
+        if curve is None:
+            self.app.console.append("[GUI] No active curve to reset.\n")
+            return
         gpu = self.app.selected_gpu_target()
+        cid = curve.curve_id.upper()
+
+        if curve.write_mode == "public":
+            s, e = curve.seg_start, curve.seg_end
+
+            def reset_public(native, gpu=gpu, s=s, e=e, cid=cid) -> str:
+                native.set_vfp_range_delta(gpu, s, e, 0)
+                return f"Successfully reset {cid} curve to default ({s}–{e}, public)."
+
+            self.app.run_native_action(
+                "reset VFP deltas",
+                reset_public,
+                on_finished=lambda _rc: self.app.after(0, self._refresh_curve),
+            )
+            return
+
+        bank = curve.bank
+        base = curve.seg_start
+        end_idx = curve.seg_end
+        class_name = _CURVE_META[curve.curve_id]["class"]
+        defaults_mhz = list(curve.defaults)
+
+        def reset_private(
+            native,
+            gpu=gpu,
+            bank=bank,
+            base=base,
+            end_idx=end_idx,
+            class_name=class_name,
+            defaults_mhz=defaults_mhz,
+            cid=cid,
+        ) -> str:
+            # 1) mode-0 clear (value 0) per point in the segment.
+            try:
+                for idx in range(base, end_idx + 1):
+                    r = native.set_vfp_point_private(gpu, bank, idx, 0, True)
+                    if isinstance(r, dict) and r.get("supported") is False:
+                        raise RuntimeError("private VFP family unsupported")
+                return f"Successfully reset {cid} (private mode-0, {base}–{end_idx})."
+            except Exception as exc:
+                msg = str(exc).lower()
+                if "argument" not in msg and "unsupported" not in msg:
+                    raise
+            # 2) raw-converted clear: delta 0 → the raw f-offset that zeroes
+            # the effect (≈ D0 per the prior).
+            raw_deltas = []
+            for idx in range(base, end_idx + 1):
+                local = idx - base
+                def_mhz = (
+                    int(round(defaults_mhz[local])) if local < len(defaults_mhz) else 0
+                )
+                r = native.clk_vf_delta_for_target_mhz(def_mhz, 0.0, class_name)
+                d = r.get("delta") if isinstance(r, dict) else None
+                raw_deltas.append(int(d) if d is not None else 0)
+            r2 = native.set_vfp_range_per_point_private(
+                gpu, bank, base, end_idx, raw_deltas
+            )
+            if isinstance(r2, dict) and r2.get("supported") is False:
+                return f"private reset unsupported on {cid}."
+            return f"Successfully reset {cid} (private raw, {base}–{end_idx})."
+
         self.app.run_native_action(
             "reset VFP deltas",
-            lambda native, gpu=gpu: (
-                native.reset_vfp_deltas(gpu, "all") or "Successfully reset VFP deltas."
-            ),
+            reset_private,
             on_finished=lambda _rc: self.app.after(0, self._refresh_curve),
         )

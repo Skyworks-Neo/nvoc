@@ -65,11 +65,34 @@ class AppConfig:
 
 
 @dataclass(slots=True)
+class CurveData:
+    """One plotted V/F curve (GPC public / XBAR / HOST private)."""
+
+    curve_id: str
+    source: str = "public"  # "public" | "private"
+    write_mode: str = "public"  # "public" | "private"
+    bank: int = 0
+    seg_start: int = 0
+    seg_end: int = 0
+    voltages: list[float] = field(default_factory=list)  # mV
+    frequencies: list[float] = field(default_factory=list)  # MHz (current)
+    defaults: list[float] = field(default_factory=list)  # MHz (default)
+    has_fixed: bool = False
+
+
+@dataclass(slots=True)
 class GpuCache:
     info: dict[str, Any] = field(default_factory=dict)
     status: dict[str, Any] = field(default_factory=dict)
     settings: dict[str, Any] = field(default_factory=dict)
     vf_curve_points: list[dict[str, Any]] | None = None
+    # Multi-curve state (controller-owned; cache is the cross-pane view).
+    vf_curves: dict[str, CurveData] | None = None
+    curve_visible: dict[str, bool] = field(default_factory=dict)
+    active_curve: str = "gpc"
+    # Live crosshair for the active private curve (xbar/host), set by the
+    # direct-read poll path (voltage mV, frequency MHz).
+    vf_live_point: tuple[float, float] | None = None
 
 
 @dataclass(slots=True)

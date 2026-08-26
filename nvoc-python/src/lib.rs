@@ -7,7 +7,8 @@ use nvoc_core::{
     NvapiPerfFreqCap, QueryApiRestriction, QueryAutoBoost, QueryDisplays, QueryDomainVfpPoints,
     QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings, QueryGpuStatus,
     QueryLegacyCoreOvervoltRanges, QueryLegacyP0CoreMaxVoltageDelta, QueryNvapiClkDomainFreq,
-    QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomains, QueryNvapiClkVfPoints,
+    QueryNvapiClkDomainFreqDirect, QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomains,
+    QueryNvapiClkVfPoints,
     QueryNvapiDNotifier, QueryNvapiTargetTempPolicies, QueryNvapiTgpWattRange, QueryNvapiVoltRails,
     QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks,
     QueryTdpTempLimits, QueryTemperatureThresholds, QueryThrottleReasons, QueryVfpPointVoltage,
@@ -20,12 +21,17 @@ use nvoc_core::{
     SetClockOffset, SetCoolerLevels, SetDomainVfpDeltas, SetEdid, SetFanSpeed, SetLegacyClocks,
     SetLockedClocks, SetNvapiClkDomainOffset, SetNvapiDNotifier, SetNvapiDynamicBoost,
     SetNvapiPerfFreqCap, SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiSensorLimits,
-    SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvapiVfpPointPrivate, SetNvapiVoltRailOffset,
-    SetNvapiVoltRailTarget, SetNvmlPstateLock, SetPowerLimit, SetPstateBaseVoltage,
-    SetPstateClockOffset, SetTemperatureLimit, SetVfpFrequencyLock, SetVfpPointDelta,
-    SetVfpRangeDelta, SetVfpVoltageLock, SetVoltageBoost, VfpResetDomain, detect_gpu_type,
-    discover_targets, fetch_gpu_type, nvml_pstate_to_str, parse_nvml_fan_control_policy, run,
-    try_parse_nvml_pstate,
+    SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvapiVfpPointPrivate, SetNvapiVfpRangePerPointPrivate,
+    SetNvapiVoltRailOffset, SetNvapiVoltRailTarget, SetNvmlPstateLock, SetPowerLimit,
+    SetPstateBaseVoltage, SetPstateClockOffset, SetTemperatureLimit, SetVfpFrequencyLock,
+    SetVfpPointDelta, SetVfpRangeDelta, SetVfpVoltageLock, SetVoltageBoost, VfpResetDomain,
+    ClkVfDomainClass, VfPointType, clk_vf_delta_for_target, detect_gpu_type, discover_targets,
+    fetch_gpu_type, nvml_pstate_to_str, parse_nvml_fan_control_policy, run, try_parse_nvml_pstate,
+    QueryNvapiPowerMizer, QueryNvapiDynamicBoost, QueryNvapiCoreVoltageControl,
+    SetNvapiCoreVoltageControl, QueryNvapiPmgrVoltageArbiter, SetNvapiPmgrVoltageArbiter,
+    QueryNvapiRatedTdp, SetNvapiBackgroundOcScanner, QueryNvapiOcScannerIncomplete,
+    QueryNvapiThermalSim, SetNvapiThermalSim, DisableNvapiThermalSim, SetNvapiPowerLevel,
+    QueryNvapiVfeEquInfo, QueryNvapiVfeEquControl, QueryNvapiVfeVarInfo, QueryNvapiVfeVarControl,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -1419,6 +1425,15 @@ fn normalize_domain_vfp_points(
     .output
     .into_iter()
     .map(|(index, point)| {
+        // point_type exposes the per-point editability class so the GUI can
+        // detect Fixed/Dyn points (traditional public VFP OC cannot move
+        // them) and fall back to the private raw/raw-converted path.
+        let ptype = match point.point_type {
+            VfPointType::Prog => "prog",
+            VfPointType::Fixed => "fixed",
+            VfPointType::Dyn => "dyn",
+            _ => "unknown",
+        };
         value_object([
             ("index", u64_value(index as u64)),
             ("voltage_uv", u64_value(point.voltage.0 as u64)),
@@ -1428,6 +1443,7 @@ fn normalize_domain_vfp_points(
                 "default_frequency_khz",
                 u64_value(point.default_frequency.0 as u64),
             ),
+            ("point_type", Value::from(ptype)),
         ])
     })
     .collect();
@@ -2390,6 +2406,33 @@ fn query_clk_domain_freq(py: Python<'_>, gpu: &str, domain_bit: u32) -> PyResult
     py_value(py, &value)
 }
 
+/// Direct physical clock for one domain via the green-curve MEASURE path (ID
+/// 0x527FC458). One call returns `freq_khz` directly — no two-sample Δcounter
+/// /Δtimestamp sleep. Preferred over `query_clk_domain_freq` (counter-based)
+/// for XBAR/HOST live-point polling: cheaper and no 50 ms sleep. `domain_bit`:
+/// GPC=0, XBAR=1, SYS=2, MCLK=4, HOST=5. `freq_khz == 0` ⇒ the driver refused
+/// or the domain isn't measurable through this interface → caller should not
+/// draw a live point. Returns `{"supported": false}` when the family is absent.
+#[pyfunction]
+fn query_clk_domain_freq_direct(py: Python<'_>, gpu: &str, domain_bit: u32) -> PyResult<Py<PyAny>> {
+    let value = with_target(gpu, "nvapi", |target| {
+        let freq = run(target, QueryNvapiClkDomainFreqDirect { domain_bit })
+            .map_err(to_py_err)?
+            .output;
+        Ok(match freq {
+            Some(f) => value_object([
+                ("domain_bit", Value::from(domain_bit)),
+                ("freq_khz", Value::from(f.freq_khz)),
+            ]),
+            None => value_object([
+                ("supported", Value::from(false)),
+                ("domain_bit", Value::from(domain_bit)),
+            ]),
+        })
+    })?;
+    py_value(py, &value)
+}
+
 /// Write a signed kHz offset into one clock-domain control record (RM
 /// 0x2080d01c SET_CONTROL). DANGEROUS GPU clock write: the operation snapshots
 /// the full V2 GetControl block, version-gates (magic 0x261A4), patches a copy,
@@ -2509,6 +2552,454 @@ fn reset_vfp_private(py: Python<'_>, gpu: &str, bank: usize) -> PyResult<Py<PyAn
             None => value_object([("supported", Value::from(false))]),
         })
     })?;
+    py_value(py, &value)
+}
+
+// ---------------------------------------------------------------------------
+// OC-gap wraps (2026-08-26 audit follow-up) — Python bindings
+// ---------------------------------------------------------------------------
+
+/// Read the PowerMizer mode (0x76BFA16B). `power_source` 1|2 (AC/DC).
+/// Returns `{"mode": u32}` (6/7) or `{"supported": false}`.
+#[pyfunction]
+fn get_power_mizer(py: Python<'_>, gpu: &str, power_source: u32) -> PyResult<Py<PyAny>> {
+    let value = with_target(gpu, "nvapi", |target| {
+        let out = run(target, QueryNvapiPowerMizer { power_source })
+            .map_err(to_py_err)?
+            .output;
+        Ok(match out {
+            Some(mode) => value_object([
+                ("mode", Value::from(mode)),
+                ("mode_name", Value::from(if mode == 6 { "Adaptive" } else { "Maximum Performance" })),
+            ]),
+            None => value_object([("supported", Value::from(false))]),
+        })
+    })?;
+    py_value(py, &value)
+}
+
+/// Read the PPAB / Dynamic-Boost enable state (0xC80068A1) — readback of
+/// `set_dynamic_boost`. Returns `{"enabled": bool}` or `{"supported": false}`.
+#[pyfunction]
+fn get_dynamic_boost(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
+    let value = with_target(gpu, "nvapi", |target| {
+        let out = run(target, QueryNvapiDynamicBoost).map_err(to_py_err)?.output;
+        Ok(match out {
+            Some(enabled) => value_object([("enabled", Value::from(enabled))]),
+            None => value_object([("supported", Value::from(false))]),
+        })
+    })?;
+    py_value(py, &value)
+}
+
+/// Read the core-voltage control object (0xA91F88EB). Raw u32.
+#[pyfunction]
+fn get_core_voltage_control(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
+    let value = with_target(gpu, "nvapi", |target| {
+        let out = run(target, QueryNvapiCoreVoltageControl)
+            .map_err(to_py_err)?
+            .output;
+        Ok(match out {
+            Some(raw) => value_object([("value", Value::from(raw))]),
+            None => value_object([("supported", Value::from(false))]),
+        })
+    })?;
+    py_value(py, &value)
+}
+
+/// Set the core-voltage control object (0xDC2BD4A6, admin). Distinct from
+/// the volt-rail paths.
+#[pyfunction]
+fn set_core_voltage_control(py: Python<'_>, gpu: &str, value: u32) -> PyResult<Py<PyAny>> {
+    let v = with_target(gpu, "nvapi", |target| {
+        let out = run(target, SetNvapiCoreVoltageControl { value })
+            .map_err(to_py_err)?
+            .output;
+        Ok(match out {
+            Some(()) => value_object([("applied", Value::from(true)), ("value", Value::from(value))]),
+            None => value_object([("supported", Value::from(false))]),
+        })
+    })?;
+    py_value(py, &v)
+}
+
+/// Read the PMGR voltage-request arbiter values (0x717648FD) — 11 dwords.
+#[pyfunction]
+fn get_pmgr_arbiter(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
+    let value = with_target(gpu, "nvapi", |target| {
+        let out = run(target, QueryNvapiPmgrVoltageArbiter)
+            .map_err(to_py_err)?
+            .output;
+        Ok(match out {
+            Some(values) => value_object([(
+                "values",
+                Value::Array(values.iter().map(|&d| Value::from(d)).collect()),
+            )]),
+            None => value_object([("supported", Value::from(false))]),
+        })
+    })?;
+    py_value(py, &value)
+}
+
+/// Set the PMGR voltage-request arbiter values (0x9C4BB8D0, admin).
+/// `values` must contain exactly 11 dwords (GET-patch-SET recommended).
+#[pyfunction]
+fn set_pmgr_arbiter(py: Python<'_>, gpu: &str, values: Vec<u32>) -> PyResult<Py<PyAny>> {
+    if values.len() != 11 {
+        return Err(invalid_value("values must contain exactly 11 dwords"));
+    }
+    let mut arr = [0u32; 11];
+    arr.copy_from_slice(&values);
+    let v = with_target(gpu, "nvapi", |target| {
+        let out = run(target, SetNvapiPmgrVoltageArbiter { values: arr })
+            .map_err(to_py_err)?
+            .output;
+        Ok(match out {
+            Some(()) => value_object([("applied", Value::from(true))]),
+            None => value_object([("supported", Value::from(false))]),
+        })
+    })?;
+    py_value(py, &v)
+}
+
+/// Rated-TDP readback trio (0xED2BEA09/0x87BD35EF/0xFCBDF642).
+#[pyfunction]
+fn get_rated_tdp(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
+    let value = with_target(gpu, "nvapi", |target| {
+        let out = run(target, QueryNvapiRatedTdp).map_err(to_py_err)?.output;
+        Ok(match out {
+            Some((control_mode, caps, raw)) => value_object([
+                ("control_mode", Value::from(control_mode)),
+                ("info_capabilities", Value::from(caps)),
+                (
+                    "status_raw",
+                    Value::Array(raw.iter().map(|&d| Value::from(d)).collect()),
+                ),
+            ]),
+            None => value_object([("supported", Value::from(false))]),
+        })
+    })?;
+    py_value(py, &value)
+}
+
+/// Enable/disable the background OC scanner (0x06DC7CE8).
+#[pyfunction]
+fn set_background_oc_scanner(py: Python<'_>, gpu: &str, enable: bool) -> PyResult<Py<PyAny>> {
+    let v = with_target(gpu, "nvapi", |target| {
+        let out = run(target, SetNvapiBackgroundOcScanner { enable })
+            .map_err(to_py_err)?
+            .output;
+        Ok(match out {
+            Some(()) => value_object([("applied", Value::from(true)), ("enable", Value::from(enable))]),
+            None => value_object([("supported", Value::from(false))]),
+        })
+    })?;
+    py_value(py, &v)
+}
+
+/// Query the last INCOMPLETE OC-scanner run's partial results (0xBE371D0A).
+#[pyfunction]
+fn get_oc_scanner_incomplete(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
+    let value = with_target(gpu, "nvapi", |target| {
+        let out = run(target, QueryNvapiOcScannerIncomplete)
+            .map_err(to_py_err)?
+            .output;
+        Ok(match out {
+            Some(()) => value_object([("queried", Value::from(true))]),
+            None => value_object([("supported", Value::from(false))]),
+        })
+    })?;
+    py_value(py, &value)
+}
+
+/// Read the temperature-simulation state (Secured-Overrides gated).
+#[pyfunction]
+fn get_thermal_sim(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
+    let value = with_target(gpu, "nvapi", |target| {
+        let out = run(target, QueryNvapiThermalSim).map_err(to_py_err)?.output;
+        Ok(match out {
+            Some((enable, temp)) => value_object([
+                ("enabled", Value::from(enable)),
+                ("temperature_c", Value::from(temp)),
+            ]),
+            None => value_object([("supported", Value::from(false))]),
+        })
+    })?;
+    py_value(py, &value)
+}
+
+/// Fake the driver-visible GPU temperature (DANGEROUS research tool;
+/// Secured-Overrides gated).
+#[pyfunction]
+fn set_thermal_sim(py: Python<'_>, gpu: &str, temperature_c: i32) -> PyResult<Py<PyAny>> {
+    let v = with_target(gpu, "nvapi", |target| {
+        let out = run(target, SetNvapiThermalSim { temperature_c })
+            .map_err(to_py_err)?
+            .output;
+        Ok(match out {
+            Some(()) => value_object([
+                ("applied", Value::from(true)),
+                ("temperature_c", Value::from(temperature_c)),
+            ]),
+            None => value_object([("supported", Value::from(false))]),
+        })
+    })?;
+    py_value(py, &v)
+}
+
+/// Disable temperature simulation (restore the real sensor reading).
+#[pyfunction]
+fn disable_thermal_sim(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
+    let v = with_target(gpu, "nvapi", |target| {
+        let out = run(target, DisableNvapiThermalSim)
+            .map_err(to_py_err)?
+            .output;
+        Ok(match out {
+            Some(()) => value_object([("applied", Value::from(true)), ("disabled", Value::from(true))]),
+            None => value_object([("supported", Value::from(false))]),
+        })
+    })?;
+    py_value(py, &v)
+}
+
+/// Set the NVCP power-mode dropdown (SetPerfLevel 0x75DD3E6A):
+/// 0=Adaptive, 1=Maximum Performance, 2=Auto.
+#[pyfunction]
+fn set_power_level(py: Python<'_>, gpu: &str, level: u32) -> PyResult<Py<PyAny>> {
+    let v = with_target(gpu, "nvapi", |target| {
+        let out = run(target, SetNvapiPowerLevel { level })
+            .map_err(to_py_err)?
+            .output;
+        Ok(value_object([
+            ("applied", Value::from(true)),
+            ("level", Value::from(out.applied)),
+            (
+                "level_name",
+                Value::from(match out.applied {
+                    0 => "Adaptive",
+                    1 => "Maximum Performance",
+                    2 => "Auto",
+                    _ => "unknown",
+                }),
+            ),
+        ]))
+    })?;
+    py_value(py, &v)
+}
+
+fn u32_array(v: &[u32]) -> Value {
+    Value::Array(v.iter().map(|&d| Value::from(d)).collect())
+}
+
+/// Read the RM V/F equation directory (PerfVfeEqu GetInfo 0x8D49471C) —
+/// the third V/F surface (raw research decode).
+#[pyfunction]
+fn get_vfe_equ_info(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
+    let value = with_target(gpu, "nvapi", |target| {
+        let out = run(target, QueryNvapiVfeEquInfo).map_err(to_py_err)?.output;
+        Ok(match out {
+            Some(v) => value_object([
+                ("mask_bits", u32_array(&v.mask_bits)),
+                (
+                    "entries",
+                    Value::Array(
+                        v.entries
+                            .iter()
+                            .map(|e| {
+                                value_object([
+                                    ("index", Value::from(e.index)),
+                                    ("type", Value::from(e.entry_type)),
+                                    ("name", Value::from(format!("0x{:04X}", e.name))),
+                                    ("aux", Value::from(e.aux)),
+                                    ("dwords", u32_array(&e.dwords)),
+                                ])
+                            })
+                            .collect(),
+                    ),
+                ),
+            ]),
+            None => value_object([("supported", Value::from(false))]),
+        })
+    })?;
+    py_value(py, &value)
+}
+
+/// Read the RM V/F equation control block (PerfVfeEqu GetControl
+/// 0x4C75C9FE; IN/OUT mask the driver expands) — raw decode.
+#[pyfunction]
+fn get_vfe_equ_control(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
+    let value = with_target(gpu, "nvapi", |target| {
+        let out = run(target, QueryNvapiVfeEquControl)
+            .map_err(to_py_err)?
+            .output;
+        Ok(match out {
+            Some(v) => value_object([
+                ("mask_bits", u32_array(&v.mask_bits)),
+                (
+                    "entries",
+                    Value::Array(
+                        v.entries
+                            .iter()
+                            .map(|e| {
+                                value_object([
+                                    ("index", Value::from(e.index)),
+                                    ("type_raw", Value::from(e.type_raw)),
+                                    ("dwords", u32_array(&e.dwords)),
+                                ])
+                            })
+                            .collect(),
+                    ),
+                ),
+            ]),
+            None => value_object([("supported", Value::from(false))]),
+        })
+    })?;
+    py_value(py, &value)
+}
+
+/// Read the RM V/F variable directory (PerfVfeVar GetInfo 0xB9DA41D6).
+#[pyfunction]
+fn get_vfe_var_info(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
+    let value = with_target(gpu, "nvapi", |target| {
+        let out = run(target, QueryNvapiVfeVarInfo).map_err(to_py_err)?.output;
+        Ok(match out {
+            Some(v) => value_object([
+                ("mask_bits", u32_array(&v.mask_bits)),
+                (
+                    "entries",
+                    Value::Array(
+                        v.entries
+                            .iter()
+                            .map(|e| {
+                                value_object([
+                                    ("index", Value::from(e.index)),
+                                    ("type", Value::from(e.entry_type)),
+                                    ("dwords", u32_array(&e.dwords)),
+                                ])
+                            })
+                            .collect(),
+                    ),
+                ),
+            ]),
+            None => value_object([("supported", Value::from(false))]),
+        })
+    })?;
+    py_value(py, &value)
+}
+
+/// Read the RM V/F variable control block (PerfVfeVar GetControl
+/// 0x5D387298) — raw records.
+#[pyfunction]
+fn get_vfe_var_control(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
+    let value = with_target(gpu, "nvapi", |target| {
+        let out = run(target, QueryNvapiVfeVarControl)
+            .map_err(to_py_err)?
+            .output;
+        Ok(match out {
+            Some(v) => value_object([
+                ("count", Value::from(v.count)),
+                (
+                    "entries",
+                    Value::Array(
+                        v.entries
+                            .iter()
+                            .map(|e| {
+                                value_object([
+                                    ("index", Value::from(e.index)),
+                                    ("dwords", u32_array(&e.dwords)),
+                                ])
+                            })
+                            .collect(),
+                    ),
+                ),
+            ]),
+            None => value_object([("supported", Value::from(false))]),
+        })
+    })?;
+    py_value(py, &value)
+}
+/// SetControl (ID 0xFEC00D04) using mode-1 (raw f-offset) per-point values
+/// in a single RMW cycle. DANGEROUS: snapshots the full control block,
+/// patches each record in [start, end], SETs, readbacks, restores on
+/// mismatch. `bank` 0 = V/F curve, 1 = pstate-class records; `start`/`end`
+/// are inclusive point indices within the bank; `deltas` is the per-point
+/// raw i16 f-offset control value (one per point in the range). The GUI's
+/// raw-converted path translates MHz targets into these i16 values via
+/// `clk_vf_delta_for_target` (the universal g(def) prior) before calling
+/// this. Returns `{"supported": false}` when the driver refuses the family.
+#[pyfunction]
+fn set_vfp_range_per_point_private(
+    py: Python<'_>,
+    gpu: &str,
+    bank: usize,
+    start: usize,
+    end: usize,
+    deltas: Vec<i16>,
+) -> PyResult<Py<PyAny>> {
+    let count = end.saturating_sub(start).saturating_add(1);
+    if deltas.len() < count {
+        return Err(invalid_value(format!(
+            "deltas has {} value(s) but range {start}..{end} needs {count}",
+            deltas.len()
+        )));
+    }
+    let value = with_target(gpu, "nvapi", |target| {
+        let out = run(
+            target,
+            SetNvapiVfpRangePerPointPrivate {
+                bank,
+                start,
+                end,
+                deltas: deltas.clone(),
+            },
+        )
+        .map_err(to_py_err)?
+        .output;
+        Ok(match out {
+            Some(()) => value_object([
+                ("applied", Value::from(true)),
+                ("bank", Value::from(bank as u64)),
+                ("start", Value::from(start as u64)),
+                ("end", Value::from(end as u64)),
+                ("mode", Value::from("raw")),
+                ("points_written", Value::from(count as u64)),
+            ]),
+            None => value_object([("supported", Value::from(false))]),
+        })
+    })?;
+    py_value(py, &value)
+}
+
+/// Translate a MHz target offset into a private mode-1 raw f-offset control
+/// value via the universal g(def) prior (`clk_vf_delta_for_target`). `class`
+/// is "graphics" (GPC) or "fabric" (XBAR/HOST). Returns `{"delta": <i32>}` on
+/// success or `{"delta": null}` when the prior has no C for this def band.
+/// Used by the GUI's raw-converted apply path when the traditional public
+/// VFP interface is explicitly unsupported.
+#[pyfunction]
+fn clk_vf_delta_for_target_mhz(
+    py: Python<'_>,
+    def_mhz: u32,
+    target_mhz: f64,
+    class: &str,
+) -> PyResult<Py<PyAny>> {
+    let class_enum = match class.trim().to_ascii_lowercase().as_str() {
+        "graphics" | "gpc" | "core" | "gpu" => ClkVfDomainClass::Graphics,
+        "fabric" | "xbar" | "host" => ClkVfDomainClass::Fabric,
+        other => {
+            return Err(invalid_value(format!(
+                "invalid class {other:?}; expected 'graphics'/'gpc' or 'fabric'/'xbar'/'host'"
+            )))
+        }
+    };
+    let delta = clk_vf_delta_for_target(def_mhz, target_mhz, class_enum);
+    let value = value_object([(
+        "delta",
+        match delta {
+            Some(d) => Value::from(d),
+            None => Value::Null,
+        },
+    )]);
     py_value(py, &value)
 }
 
@@ -3611,10 +4102,30 @@ fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(set_perf_freq_cap, m)?)?;
     m.add_function(wrap_pyfunction!(query_clk_domains, m)?)?;
     m.add_function(wrap_pyfunction!(query_clk_domain_freq, m)?)?;
+    m.add_function(wrap_pyfunction!(query_clk_domain_freq_direct, m)?)?;
     m.add_function(wrap_pyfunction!(query_clk_vf_points, m)?)?;
     m.add_function(wrap_pyfunction!(set_clk_domain_offset, m)?)?;
     m.add_function(wrap_pyfunction!(set_vfp_point_private, m)?)?;
+    m.add_function(wrap_pyfunction!(set_vfp_range_per_point_private, m)?)?;
+    m.add_function(wrap_pyfunction!(clk_vf_delta_for_target_mhz, m)?)?;
     m.add_function(wrap_pyfunction!(reset_vfp_private, m)?)?;
+    m.add_function(wrap_pyfunction!(get_power_mizer, m)?)?;
+    m.add_function(wrap_pyfunction!(get_dynamic_boost, m)?)?;
+    m.add_function(wrap_pyfunction!(get_core_voltage_control, m)?)?;
+    m.add_function(wrap_pyfunction!(set_core_voltage_control, m)?)?;
+    m.add_function(wrap_pyfunction!(get_pmgr_arbiter, m)?)?;
+    m.add_function(wrap_pyfunction!(set_pmgr_arbiter, m)?)?;
+    m.add_function(wrap_pyfunction!(get_rated_tdp, m)?)?;
+    m.add_function(wrap_pyfunction!(set_background_oc_scanner, m)?)?;
+    m.add_function(wrap_pyfunction!(get_oc_scanner_incomplete, m)?)?;
+    m.add_function(wrap_pyfunction!(get_thermal_sim, m)?)?;
+    m.add_function(wrap_pyfunction!(set_thermal_sim, m)?)?;
+    m.add_function(wrap_pyfunction!(disable_thermal_sim, m)?)?;
+    m.add_function(wrap_pyfunction!(set_power_level, m)?)?;
+    m.add_function(wrap_pyfunction!(get_vfe_equ_info, m)?)?;
+    m.add_function(wrap_pyfunction!(get_vfe_equ_control, m)?)?;
+    m.add_function(wrap_pyfunction!(get_vfe_var_info, m)?)?;
+    m.add_function(wrap_pyfunction!(get_vfe_var_control, m)?)?;
     m.add_function(wrap_pyfunction!(set_target_temp, m)?)?;
     m.add_function(wrap_pyfunction!(set_applications_clocks, m)?)?;
     m.add_function(wrap_pyfunction!(reset_applications_clocks, m)?)?;

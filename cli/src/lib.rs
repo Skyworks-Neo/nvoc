@@ -13,6 +13,11 @@ use nvoc_core::{
     QueryNvapiClkVfPoints, QueryNvapiDNotifier, QueryNvapiPStateLevels, QueryNvapiPStateLockStatus,
     QueryNvapiTargetTempPolicies, QueryNvapiTargetTempPolicyIndex, QueryNvapiTgpWattRange,
     QueryNvapiThermalSettings, QueryNvapiVoltRails, QueryPowerLimits, QueryPstateBaseVoltage,
+    QueryNvapiPowerMizer, QueryNvapiDynamicBoost, QueryNvapiCoreVoltageControl,
+    SetNvapiCoreVoltageControl, QueryNvapiPmgrVoltageArbiter, SetNvapiPmgrVoltageArbiter,
+    QueryNvapiRatedTdp, SetNvapiBackgroundOcScanner, QueryNvapiOcScannerIncomplete,
+    QueryNvapiVfeEquInfo, QueryNvapiVfeEquControl, QueryNvapiVfeVarInfo, QueryNvapiVfeVarControl,
+    QueryNvapiThermalSim, SetNvapiThermalSim, DisableNvapiThermalSim, SetNvapiPowerLevel,
     QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
     QueryThrottleReasons, QueryVfpPointVoltage, QueryViolationStatus, QueryVoltageBoost,
     ResetApplicationsClocks, ResetCoolerLevels, ResetFanSpeed, ResetForcePstate, ResetLockedClocks,
@@ -177,6 +182,13 @@ pub enum Command {
     GetVoltRails,
     SetVoltRailOffset,
     SetVoltRailTarget,
+    GetPowerMizer,
+    GetDynamicBoost,
+    GetCoreVoltageControl,
+    SetCoreVoltageControl,
+    GetPmgrArbiter,
+    SetPmgrArbiter,
+    GetRatedTdp,
     GetClkDomains,
     GetClkDomainFreq,
     SetClkDomainOffset,
@@ -185,6 +197,14 @@ pub enum Command {
     SetVfpPointPrivate,
     SetVfpRangePrivate,
     GetClkVfPoints,
+    GetVfeEquInfo,
+    GetVfeEquControl,
+    GetVfeVarInfo,
+    GetVfeVarControl,
+    SetPowerLevel,
+    GetThermalSim,
+    SetThermalSim,
+    DisableThermalSim,
     SetTemperatureThresholds,
     SetThermalLimitC,
     SetAcousticTempC,
@@ -286,8 +306,23 @@ impl Command {
             Self::GetVoltRails => "get-volt-rails",
             Self::SetVoltRailOffset => "set-volt-rail-offset",
             Self::SetVoltRailTarget => "set-volt-rail-target",
+            Self::GetPowerMizer => "get-power-mizer",
+            Self::GetDynamicBoost => "get-dynamic-boost",
+            Self::GetCoreVoltageControl => "get-core-voltage-control",
+            Self::SetCoreVoltageControl => "set-core-voltage-control",
+            Self::GetPmgrArbiter => "get-pmgr-arbiter",
+            Self::SetPmgrArbiter => "set-pmgr-arbiter",
+            Self::GetRatedTdp => "get-rated-tdp",
             Self::GetClkDomains => "get-clk-domains",
             Self::GetClkVfPoints => "get-clk-vf-points",
+            Self::GetVfeEquInfo => "get-vfe-equ-info",
+            Self::GetVfeEquControl => "get-vfe-equ-control",
+            Self::GetVfeVarInfo => "get-vfe-var-info",
+            Self::GetVfeVarControl => "get-vfe-var-control",
+            Self::SetPowerLevel => "set-power-level",
+            Self::GetThermalSim => "get-thermal-sim",
+            Self::SetThermalSim => "set-thermal-sim",
+            Self::DisableThermalSim => "disable-thermal-sim",
             Self::SetVfpPointPrivate => "set-vfp-point-private",
             Self::SetVfpRangePrivate => "set-vfp-range-private",
             Self::GetClkDomainFreq => "get-clk-domain-freq",
@@ -420,6 +455,13 @@ impl Command {
             Self::SetVoltRailTarget => {
                 "Set a volt-rail to an absolute target voltage in mV (derives the uV offset from the live control/status snapshot)"
             }
+            Self::GetPowerMizer => "Read the PowerMizer mode (NVCP power dropdown readback, 0x76BFA16B; returns 6/7)",
+            Self::GetDynamicBoost => "Read the PPAB / Dynamic-Boost enable state (0xC80068A1 readback of set-dynamic-boost)",
+            Self::GetCoreVoltageControl => "Read the core-voltage control object (0xA91F88EB, escape 0x07000045)",
+            Self::SetCoreVoltageControl => "Set the core-voltage control (0xDC2BD4A6, escape 0x07000044; admin; distinct from volt-rail paths)",
+            Self::GetPmgrArbiter => "Read the PMGR voltage-request arbiter values (0x717648FD, escape 0x0700019F)",
+            Self::SetPmgrArbiter => "Set the PMGR voltage-request arbiter values (0x9C4BB8D0; admin; GET-patch-SET RMW recommended)",
+            Self::GetRatedTdp => "Rated-TDP readback trio (0xED2BEA09/0x87BD35EF/0xFCBDF642)",
             Self::GetClkDomains => {
                 "Read the private ClockClient domain-control block: controllable mask + per-domain offset/range records (XBar physical-clock path)"
             }
@@ -437,6 +479,30 @@ impl Command {
             }
             Self::GetClkVfPoints => {
                 "Read the private ClockClient V/F-points family: per-bank point masks + V/F curve records (voltage-indexed, units calibrated vs the public GPC VFP)"
+            }
+            Self::GetVfeEquInfo => {
+                "Read the RM voltage-frequency EQUATION directory (PerfVfeEqu GetInfo 0x8D49471C): equation mask + typed entries — the third V/F surface (raw; per-type fields not yet calibrated)"
+            }
+            Self::GetVfeEquControl => {
+                "Read the RM V/F equation control block (PerfVfeEqu GetControl 0x4C75C9FE, IN/OUT mask the driver expands) — raw entries"
+            }
+            Self::GetVfeVarInfo => {
+                "Read the RM V/F VARIABLE directory (PerfVfeVar GetInfo 0xB9DA41D6): variable mask + typed entries — raw"
+            }
+            Self::GetVfeVarControl => {
+                "Read the RM V/F variable control block (PerfVfeVar GetControl 0x5D387298) — raw records"
+            }
+            Self::SetPowerLevel => {
+                "Set the NVCP power-mode dropdown (SetPerfLevel 0x75DD3E6A): 0=Adaptive, 1=Maximum Performance, 2=Auto"
+            }
+            Self::GetThermalSim => {
+                "Read the temperature-simulation state (GetThermalSimulationMode; Secured-Overrides 'Temp faking allowed' gated)"
+            }
+            Self::SetThermalSim => {
+                "Fake the driver-visible GPU temperature in Celsius (DANGEROUS research tool; Extended->basic fallback; Secured-Overrides gated)"
+            }
+            Self::DisableThermalSim => {
+                "Disable temperature simulation and restore the real sensor reading"
             }
             Self::SetVfpPointPrivate => {
                 "Write one V/F curve point via the private SetControl (dangerous V/F edit; bank 0=V/F curve, 1=pstate-class; default/--freq-mode = kHz freq offset (same as public VFP, safest; also reaches xbar/host domains); --raw-converted = MHz target translated to a raw f-offset control value via the universal g(def) prior; --raw = write the raw f-offset control value verbatim)"
@@ -607,6 +673,11 @@ impl Command {
             Self::ResetGpuClock => (0, 0),
             Self::SetVfpPointPrivate => (3, 3),
             Self::SetVfpRangePrivate => (4, 4),
+            Self::SetPowerLevel => (1, 1),
+            Self::SetThermalSim => (1, 1),
+            Self::GetPowerMizer => (0, 1),
+            Self::SetCoreVoltageControl => (1, 1),
+            Self::SetPmgrArbiter => (1, 1),
             Self::ResetVfpPrivate => (1, 1),
             Self::GetClkDomainFreq => (0, 1),
             Self::SetVfpRangeDeltaMhz => (3, 3),
@@ -644,7 +715,7 @@ impl Command {
             }
             Self::SetVfpVoltageLock => &["feedback"],
             Self::SetGpuClock => &["min"],
-            Self::OemOcScanner => &["start", "stop", "revert", "status"],
+            Self::OemOcScanner => &["start", "stop", "revert", "status", "background-on", "background-off", "incomplete"],
             Self::SetForcePstate => &["set-type"],
             Self::SetTgpWatt | Self::ResetTgpWatt | Self::SetTemperatureThresholds => {
                 &["policy-index"]
@@ -750,6 +821,21 @@ impl Command {
                     "Absolute target voltage in millivolts, for example 1150 or 1150mV; the required uV offset is derived from the live control/status snapshot and the driver clamps the effective wall to min(target, vbios_wall, vrm_max_wall)",
                 ),
             ],
+            Self::GetPowerMizer => vec![PositionalArg::free(
+                "arg_power_source",
+                "POWER_SOURCE",
+                "1=AC, 2=DC (default 1)",
+            )],
+            Self::SetCoreVoltageControl => vec![PositionalArg::hyphen(
+                "arg_value",
+                "VALUE",
+                "Raw control word to write (units uncalibrated — read with get-core-voltage-control first)",
+            )],
+            Self::SetPmgrArbiter => vec![PositionalArg::hyphen(
+                "arg_values",
+                "CSV",
+                "Exactly 11 comma-separated dwords (get-pmgr-arbiter output order)",
+            )],
             Self::GetClkDomainFreq => vec![PositionalArg::free(
                 "arg_domain",
                 "DOMAIN",
@@ -813,6 +899,16 @@ impl Command {
                 "arg_fan_percent",
                 "PERCENT",
                 "Fan speed/cooler level percentage",
+            )],
+            Self::SetPowerLevel => vec![PositionalArg::free(
+                "arg_level",
+                "LEVEL",
+                "Power level: 0=Adaptive, 1=Maximum Performance, 2=Auto (the NVCP power-mode dropdown)",
+            )],
+            Self::SetThermalSim => vec![PositionalArg::free(
+                "arg_temp_c",
+                "TEMP_C",
+                "Fake temperature in Celsius the driver will see (DANGEROUS research tool)",
             )],
             Self::SetLockedClocksMhz => vec![
                 PositionalArg::free("arg_min_mhz", "MIN_MHZ", "Minimum clock in MHz"),
@@ -1049,6 +1145,8 @@ const COMMANDS: &[Command] = &[
     Command::GetTdpTempLimits,
     Command::GetTemperatureThresholds,
     Command::GetThermalSettings,
+    Command::GetThermalSim,
+    Command::DisableThermalSim,
     Command::GetPowerMode,
     Command::SetPowerMode,
     Command::GetThrottleReasons,
@@ -1057,6 +1155,10 @@ const COMMANDS: &[Command] = &[
     Command::GetVfp,
     Command::GetVfpPointVoltageMv,
     Command::GetVoltageBoostPercent,
+    Command::GetVfeEquControl,
+    Command::GetVfeEquInfo,
+    Command::GetVfeVarControl,
+    Command::GetVfeVarInfo,
     Command::GetVoltRails,
     Command::ListDisplays,
     Command::ListGpus,
@@ -1107,9 +1209,11 @@ const COMMANDS: &[Command] = &[
     Command::SetOvervoltUv,
     Command::SetPstateLock,
     Command::SetPStateNative,
+    Command::SetPowerLevel,
     Command::SetPowerPercent,
     Command::SetPowerWatt,
     Command::SetThermalLimitC,
+    Command::SetThermalSim,
     Command::SetTgpWatt,
     Command::SetTemperatureThresholds,
     Command::SetVfpPointDeltaMhz,
@@ -1118,6 +1222,13 @@ const COMMANDS: &[Command] = &[
     Command::SetVoltageBoostPercent,
     Command::SetVoltRailOffset,
     Command::SetVoltRailTarget,
+    Command::GetPowerMizer,
+    Command::GetDynamicBoost,
+    Command::GetCoreVoltageControl,
+    Command::SetCoreVoltageControl,
+    Command::GetPmgrArbiter,
+    Command::SetPmgrArbiter,
+    Command::GetRatedTdp,
     Command::SetWm2,
     Command::SetWm2Mode,
 ];
@@ -1526,6 +1637,18 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .value_name("IDX")
             .action(ArgAction::Set)
             .help("Cooler index (0-31; default 0 — see get-fan-info --nvapi for the presence mask)"),
+        "background-on" => Arg::new("background-on")
+            .long("background-on")
+            .action(ArgAction::SetTrue)
+            .help("Enable the background OC scanner (0x06DC7CE8)"),
+        "background-off" => Arg::new("background-off")
+            .long("background-off")
+            .action(ArgAction::SetTrue)
+            .help("Disable the background OC scanner"),
+        "incomplete" => Arg::new("incomplete")
+            .long("incomplete")
+            .action(ArgAction::SetTrue)
+            .help("Query the last INCOMPLETE OC-scanner run's partial results (0xBE371D0A)"),
         _ => unreachable!("unknown command-specific option {name}"),
     }
 }
@@ -1624,7 +1747,10 @@ fn collect_named_options(
             | "start"
             | "stop"
             | "revert"
-            | "status" => {
+            | "status"
+            | "background-on"
+            | "background-off"
+            | "incomplete" => {
                 if matches.get_flag(name) {
                     options.insert(name.to_string(), vec!["true".to_string()]);
                 }
@@ -2883,6 +3009,178 @@ fn execute_target(
             run(target, SetNvapiDNotifier { level })?;
             Ok(json!({"applied": true, "dnotifier_level": format!("D{level}")}))
         }
+        Command::GetPowerMizer => {
+            let power_source: u32 = invocation
+                .positionals
+                .first()
+                .map(|v| v.parse())
+                .transpose()
+                .map_err(|e| CliError::new(format!("invalid POWER_SOURCE: {e}")))?
+                .unwrap_or(1);
+            if power_source != 1 && power_source != 2 {
+                return Err(CliError::new("POWER_SOURCE must be 1 (AC) or 2 (DC)"));
+            }
+            let out = run(target, QueryNvapiPowerMizer { power_source })?.output;
+            Ok(match out {
+                Some(mode) => json!({
+                    "power_source": power_source,
+                    "mode_raw": mode,
+                    "mode": if mode == 6 { "first" } else if mode == 7 { "second" } else { "unknown" },
+                }),
+                None => json!({"supported": false}),
+            })
+        }
+        Command::GetDynamicBoost => {
+            let out = run(target, QueryNvapiDynamicBoost)?.output;
+            Ok(match out {
+                Some(active) => json!({"dynamic_boost_enabled": active}),
+                None => json!({"supported": false}),
+            })
+        }
+        Command::GetCoreVoltageControl => {
+            let out = run(target, QueryNvapiCoreVoltageControl)?.output;
+            Ok(match out {
+                Some(v) => json!({"value_raw": v}),
+                None => json!({"supported": false}),
+            })
+        }
+        Command::SetCoreVoltageControl => {
+            let value = parse_usize(&invocation.positionals[0], "value")? as u32;
+            let out = run(target, SetNvapiCoreVoltageControl { value })?.output;
+            Ok(match out {
+                Some(()) => json!({"applied": true, "value": value}),
+                None => json!({"supported": false}),
+            })
+        }
+        Command::GetPmgrArbiter => {
+            let out = run(target, QueryNvapiPmgrVoltageArbiter)?.output;
+            Ok(match out {
+                Some(values) => json!({"values": values}),
+                None => json!({"supported": false}),
+            })
+        }
+        Command::SetPmgrArbiter => {
+            let parts: Vec<&str> = invocation.positionals[0].split(',').collect();
+            if parts.len() != 11 {
+                return Err(CliError::new("CSV must contain exactly 11 comma-separated dwords"));
+            }
+            let mut values = [0u32; 11];
+            for (i, part) in parts.iter().enumerate() {
+                values[i] = part
+                    .trim()
+                    .parse()
+                    .map_err(|e| CliError::new(format!("invalid dword {i}: {e}")))?;
+            }
+            let out = run(target, SetNvapiPmgrVoltageArbiter { values })?.output;
+            Ok(match out {
+                Some(()) => json!({"applied": true}),
+                None => json!({"supported": false}),
+            })
+        }
+        Command::GetRatedTdp => {
+            let out = run(target, QueryNvapiRatedTdp)?.output;
+            Ok(match out {
+                Some((control_mode, caps, raw)) => json!({
+                    "control_mode": control_mode,
+                    "info_capabilities": caps,
+                    "status_raw": raw,
+                }),
+                None => json!({"supported": false}),
+            })
+        }
+        Command::GetVfeEquInfo => {
+            let out = run(target, QueryNvapiVfeEquInfo)?.output;
+            Ok(match out {
+                Some(v) => json!({
+                    "mask_bits": v.mask_bits,
+                    "entries": v.entries.iter().map(|e| json!({
+                        "index": e.index,
+                        "type": e.entry_type,
+                        "name": format!("0x{:04X}", e.name),
+                        "aux": e.aux,
+                        "dwords": e.dwords,
+                    })).collect::<Vec<_>>(),
+                }),
+                None => json!({"supported": false}),
+            })
+        }
+        Command::GetVfeEquControl => {
+            let out = run(target, QueryNvapiVfeEquControl)?.output;
+            Ok(match out {
+                Some(v) => json!({
+                    "mask_bits": v.mask_bits,
+                    "entries": v.entries.iter().map(|e| json!({
+                        "index": e.index,
+                        "type_raw": e.type_raw,
+                        "dwords": e.dwords,
+                    })).collect::<Vec<_>>(),
+                }),
+                None => json!({"supported": false}),
+            })
+        }
+        Command::GetVfeVarInfo => {
+            let out = run(target, QueryNvapiVfeVarInfo)?.output;
+            Ok(match out {
+                Some(v) => json!({
+                    "mask_bits": v.mask_bits,
+                    "entries": v.entries.iter().map(|e| json!({
+                        "index": e.index,
+                        "type": e.entry_type,
+                        "dwords": e.dwords,
+                    })).collect::<Vec<_>>(),
+                }),
+                None => json!({"supported": false}),
+            })
+        }
+        Command::GetVfeVarControl => {
+            let out = run(target, QueryNvapiVfeVarControl)?.output;
+            Ok(match out {
+                Some(v) => json!({
+                    "count": v.count,
+                    "entries": v.entries.iter().map(|e| json!({
+                        "index": e.index,
+                        "dwords": e.dwords,
+                    })).collect::<Vec<_>>(),
+                }),
+                None => json!({"supported": false}),
+            })
+        }
+        Command::SetPowerLevel => {
+            let level = parse_usize(&invocation.positionals[0], "level")? as u32;
+            let out = run(target, SetNvapiPowerLevel { level })?.output;
+            Ok(json!({
+                "applied": true,
+                "level": out.applied,
+                "level_name": match out.applied {
+                    0 => "Adaptive",
+                    1 => "Maximum Performance",
+                    2 => "Auto",
+                    _ => "unknown",
+                },
+            }))
+        }
+        Command::GetThermalSim => {
+            let out = run(target, QueryNvapiThermalSim)?.output;
+            Ok(match out {
+                Some((enable, temp)) => json!({"enabled": enable, "temperature_c": temp}),
+                None => json!({"supported": false}),
+            })
+        }
+        Command::SetThermalSim => {
+            let temp = parse_i32_unit(&invocation.positionals[0], "temp-c", "celsius")?;
+            let out = run(target, SetNvapiThermalSim { temperature_c: temp })?.output;
+            Ok(match out {
+                Some(()) => json!({"applied": true, "temperature_c": temp}),
+                None => json!({"supported": false}),
+            })
+        }
+        Command::DisableThermalSim => {
+            let out = run(target, DisableNvapiThermalSim)?.output;
+            Ok(match out {
+                Some(()) => json!({"applied": true, "disabled": true}),
+                None => json!({"supported": false}),
+            })
+        }
         Command::GetVoltRails => {
             let rails = run(target, QueryNvapiVoltRails)?.output;
             Ok(match rails {
@@ -3520,6 +3818,24 @@ fn execute_target(
             let stop = option_bool(invocation, "stop", false)?;
             let revert = option_bool(invocation, "revert", false)?;
             let status = option_bool(invocation, "status", false)?;
+            let background_on = option_bool(invocation, "background-on", false)?;
+            let background_off = option_bool(invocation, "background-off", false)?;
+            let incomplete = option_bool(invocation, "incomplete", false)?;
+            if background_on || background_off {
+                let out = run(target, SetNvapiBackgroundOcScanner { enable: background_on })?
+                    .output;
+                return Ok(match out {
+                    Some(()) => json!({"applied": true, "background_scanner": background_on}),
+                    None => json!({"supported": false}),
+                });
+            }
+            if incomplete {
+                let out = run(target, QueryNvapiOcScannerIncomplete)?.output;
+                return Ok(match out {
+                    Some(()) => json!({"queried": true, "incomplete_results": "accepted"}),
+                    None => json!({"supported": false}),
+                });
+            }
             let action = match (start, stop, revert, status) {
                 (true, false, false, false) => OemOcScannerAction::Start,
                 (false, true, false, false) => OemOcScannerAction::Stop,
@@ -3527,7 +3843,7 @@ fn execute_target(
                 (false, false, false, true) => OemOcScannerAction::Status,
                 _ => {
                     return Err(CliError::new(
-                        "exactly one of --start / --stop / --revert / --status is required",
+                        "exactly one of --start / --stop / --revert / --status (or --background-on/--background-off/--incomplete) is required",
                     ));
                 }
             };
