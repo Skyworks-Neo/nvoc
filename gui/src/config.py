@@ -15,8 +15,8 @@ DEFAULT_CONFIG: Dict[str, JSONValue] = {
     "last_gpu_idx": "",
     "autoscan": {
         "mode": "standard",  # standard / ultrafast / legacy
-        "output_csv": r".\ws\vfp-tem.csv",
-        "init_csv": r".\ws\vfp-init.csv",
+        "output_csv": "./ws/vfp-tem.csv",
+        "init_csv": "./ws/vfp-init.csv",
         "bsod_recovery": "",
     },
 }
