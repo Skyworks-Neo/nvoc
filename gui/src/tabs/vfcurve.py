@@ -805,6 +805,14 @@ class VFCurveTab:
             self.app.console.append(f"[GUI] Error reading CSV: {e}\n")
             return
 
+        if (
+            voltages == self._voltages
+            and frequencies == self._frequencies
+            and defaults == self._defaults
+            and getattr(self, "_pending_lock_mv", None) is None
+        ):
+            return
+
         self._voltages = voltages
         self._frequencies = frequencies
         self._defaults = defaults
