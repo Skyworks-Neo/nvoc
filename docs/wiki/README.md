@@ -1,6 +1,9 @@
 # Wiki Source Policy
 
 This directory is the canonical source for long-form project documentation.
+Generated evidence and dated investigation snapshots are indexed separately in
+[`../reverse-engineering/`](../reverse-engineering/README.md); wiki pages contain
+the maintained conclusions and project policy.
 
 ## Workflow
 
