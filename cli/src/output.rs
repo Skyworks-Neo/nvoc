@@ -63,6 +63,7 @@ fn format_human_output(function: &str, output: &Value) -> Vec<String> {
     match function {
         "get-settings" => format_get_settings_output(output),
         "get-public-vftable" => format_vfp_output(output),
+        "get-private-vftable" => format_private_vfp_output(output),
         "get-pstate-freq-range" => format_object_array(
             output,
             &[
@@ -216,6 +217,114 @@ fn format_vfp_output(output: &Value) -> Vec<String> {
             }
         }
     } else {
+        lines.extend(format_value_block(output, 1));
+    }
+    lines
+}
+
+/// Human format for `get-private-vftable` — mirrors the public V-F table
+/// layout (segment separators + one row per point), minus `point_type`
+/// (private records don't carry it) and with `delta` replaced by `current`
+/// (private GetStatus reports default AND current MHz per point).
+fn format_private_vfp_output(output: &Value) -> Vec<String> {
+    let mut lines = Vec::new();
+    let Some(object) = output.as_object() else {
+        return format_value_block(output, 1);
+    };
+    let segments = object.get("segments").and_then(Value::as_array);
+    let points = object.get("points").and_then(Value::as_array);
+
+    if let Some(points) = points {
+        lines.push(format!(
+            "  {}",
+            nvoc_cli_common::color::stylize_title("V-F Points")
+        ));
+        // track which segment (by position in the array) each row belongs to
+        let mut current_segment: Option<usize> = None;
+        for point in points {
+            let matching_segment = segments.and_then(|segs| {
+                segs.iter().position(|seg| {
+                    let (Some(seg_bank), Some(seg_type)) = (
+                        seg.get("bank").and_then(Value::as_i64),
+                        seg.get("type").and_then(Value::as_i64),
+                    ) else {
+                        return false;
+                    };
+                    let bank_matches =
+                        point.get("bank").and_then(Value::as_i64) == Some(seg_bank);
+                    let type_matches =
+                        point.get("type").and_then(Value::as_i64) == Some(seg_type);
+                    let index = point.get("index").and_then(Value::as_i64).unwrap_or(-1);
+                    let start = seg.get("start_index").and_then(Value::as_i64).unwrap_or(-1);
+                    let end = seg.get("end_index").and_then(Value::as_i64).unwrap_or(-1);
+                    bank_matches && type_matches && start <= index && index <= end
+                })
+            });
+            if matching_segment != current_segment {
+                current_segment = matching_segment;
+                if let Some(seg) = matching_segment.and_then(|i| segments.map(|s| &s[i])) {
+                    let domain = seg.get("domain").and_then(Value::as_str).unwrap_or("?");
+                    let kind = seg.get("kind").and_then(Value::as_str).unwrap_or("?");
+                    let bank = seg.get("bank").and_then(Value::as_i64).unwrap_or(0);
+                    lines.push(nvoc_cli_common::color::stylize(
+                        &format!(
+                            "    --- bank{bank} {domain} {kind} (index {}..{}) ---",
+                            field_text(seg, "start_index"),
+                            field_text(seg, "end_index")
+                        ),
+                        false,
+                    ));
+                }
+            }
+            let index = field_text(point, "index");
+            // voltage axis is µV in this table (450000 = 450.0 mV)
+            let voltage_uv = point
+                .get("voltage_uV")
+                .and_then(Value::as_f64)
+                .unwrap_or_default();
+            let voltage = format!("{:.1} mV", voltage_uv / 1000.0);
+            // plain MHz integers — field_text would append "MHz" to each,
+            // doubling the unit on the row; state it once after "current"
+            let current = point
+                .get("freq_current_mhz")
+                .and_then(Value::as_i64)
+                .unwrap_or_default();
+            let default = point
+                .get("freq_default_mhz")
+                .and_then(Value::as_i64)
+                .unwrap_or_default();
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!("    #{index}: {voltage}, current {current} MHz, default {default}"),
+                false,
+            ));
+        }
+    }
+
+    // segment summaries stay visible even when their points were filtered
+    // out or attributed only by ordinal — one compact line per segment
+    if let Some(segments) = segments {
+        lines.push(format!(
+            "  {}",
+            nvoc_cli_common::color::stylize_title("Segments")
+        ));
+        for seg in segments {
+            let domain = seg.get("domain").and_then(Value::as_str).unwrap_or("?");
+            let kind = seg.get("kind").and_then(Value::as_str).unwrap_or("?");
+            let bank = seg.get("bank").and_then(Value::as_i64).unwrap_or(0);
+            let record_type = field_text(seg, "type");
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!(
+                    "    bank{bank} {domain} {kind} type {record_type}: index {}..{} ({} pts)",
+                    field_text(seg, "start_index"),
+                    field_text(seg, "end_index"),
+                    field_text(seg, "count"),
+                ),
+                false,
+            ));
+        }
+    }
+
+    if points.is_none() && segments.is_none() {
         lines.extend(format_value_block(output, 1));
     }
     lines

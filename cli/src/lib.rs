@@ -7,6 +7,7 @@ use nvoc_core::{
     CoolerTarget, FanCurvePointReadout, GetFanCurves, GetPowerMode, GpuSelector, GpuTarget,
     Kilohertz, KilohertzDelta, MicrovoltsDelta, NvapiPerfFreqCap, OemOcScanner, OemOcScannerAction,
     PState, Percentage, QueryApiRestriction, QueryAutoBoost, QueryClockOffset,
+    VfPointType,
     QueryDisplays, QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings,
     QueryGpuStatus, QueryLegacyCoreOvervoltRanges, QueryLegacyP0CoreMaxVoltageDelta,
     QueryNvapiClkDomainFreqDetail, QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomains,
@@ -4163,6 +4164,7 @@ fn get_vfp(target: &GpuTarget<'_>, invocation: &Invocation) -> CliResult<Value> 
     };
 
     let mut points = Vec::new();
+    let mut segments = Vec::new();
     let mut missing_domains = Vec::new();
     for &domain in &domains {
         match run(
@@ -4174,10 +4176,15 @@ fn get_vfp(target: &GpuTarget<'_>, invocation: &Invocation) -> CliResult<Value> 
             },
         ) {
             Ok(out) => {
-                for (index, point) in out.output {
+                let output = out.output;
+                let seg_count = output.len();
+                let first_index = output.first().map(|(i, _)| *i);
+                let last_index = output.last().map(|(i, _)| *i);
+                for (index, point) in output {
                     points.push(json!({
                         "domain": domain_label(domain),
                         "index": index,
+                        "point_type": vfp_point_type_label(point.point_type),
                         "voltage_uv": point.voltage.0,
                         "voltage_mv": point.voltage.0 as f64 / 1000.0,
                         "frequency_khz": point.frequency.0,
@@ -4188,6 +4195,12 @@ fn get_vfp(target: &GpuTarget<'_>, invocation: &Invocation) -> CliResult<Value> 
                         "default_frequency_mhz": point.default_frequency.0 as f64 / 1000.0,
                     }));
                 }
+                segments.push(json!({
+                    "domain": domain_label(domain),
+                    "count": seg_count,
+                    "first_index": first_index,
+                    "last_index": last_index,
+                }));
             }
             // A GPU without a memory V/F segment (or a driver that rejects the
             // domain) is not fatal for the default all-domains dump — report
@@ -4204,9 +4217,21 @@ fn get_vfp(target: &GpuTarget<'_>, invocation: &Invocation) -> CliResult<Value> 
         "domain": if domains.len() == 1 { json!(domain_label(domains[0])) } else { json!("all") },
         "indexed": indexed,
         "infer_missing_default": infer_missing_default,
+        "segments": segments,
         "missing_domains": missing_domains,
         "points": points,
     }))
+}
+
+/// Human-friendly label for the public VFP point type
+/// (NV_GPU_CLOCK_CLIENT_CLK_VF_POINT_TYPE).
+fn vfp_point_type_label(point_type: VfPointType) -> &'static str {
+    match point_type {
+        VfPointType::Prog => "programmable",
+        VfPointType::Fixed => "fixed",
+        VfPointType::Dyn => "dyn",
+        _ => "unknown",
+    }
 }
 
 fn get_clock_offset(
