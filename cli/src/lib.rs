@@ -1390,6 +1390,7 @@ fn list_gpus_execution(
 fn discovery_backend_set(command: Command, adapter: BackendAdapter) -> BackendSet {
     match (command, adapter) {
         (Command::GetInfo, BackendAdapter::Nvapi) => BackendSet::Both,
+        (Command::GetStatus, BackendAdapter::Nvapi) => BackendSet::Both,
         (Command::GetUuid, BackendAdapter::Nvapi) => BackendSet::Both,
         (Command::SetPstateLock, BackendAdapter::Nvapi) => BackendSet::Both,
         (_, BackendAdapter::Nvapi) => BackendSet::Nvapi,
@@ -1456,6 +1457,11 @@ fn execute_target(
             if let Ok(nvml) = target.nvml()
                 && let Some(map) = value.as_object_mut()
             {
+                if let Some(draw_w) =
+                    nvoc_core::nvml::query_nvml_power_draw_watts(nvml, target.id.0)
+                {
+                    map.insert("power_draw_w".to_string(), json!(draw_w));
+                }
                 let pcie = nvoc_core::nvml::query_nvml_pcie_telemetry(nvml, target.id.0);
                 if let Some(tx) = pcie.tx_mibps {
                     map.insert("pcie_tx_mibps".to_string(), json!(tx));
