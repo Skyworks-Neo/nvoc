@@ -3188,10 +3188,10 @@ fn execute_target(
                             "freq_current_mhz": p.freq_current_mhz,
                             // raw override readback (GetControl 0xDA025C3E):
                             // mode 0 = absolute kHz offset, 1 = raw delta
-                            "control_mode": ctrl.map(|(m, _)| m),
-                            "control_value": ctrl.map(|(_, v)| v),
+                            "mode": ctrl.map(|(m, _)| m),
+                            "offset": ctrl.map(|(_, v)| v),
                             // effective offset MHz (mode 1 via g(def) prior)
-                            "control_effect_mhz": effect_mhz,
+                            "offset_effect_mhz": effect_mhz,
                         })
                     }).collect::<Vec<_>>(),
                 }),

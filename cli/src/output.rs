@@ -296,23 +296,19 @@ fn format_private_vfp_output(output: &Value) -> Vec<String> {
             // raw control override readback (GetControl 0xDA025C3E):
             // mode 0 = absolute kHz offset ("freq"), mode 1 = raw delta;
             // effect MHz comes pre-computed (g(def) prior for mode 1)
-            let control = point.get("control_mode").and_then(Value::as_i64).map(|mode| {
+            let control = point.get("mode").and_then(Value::as_i64).map(|mode| {
                 let value = point
-                    .get("control_value")
+                    .get("offset")
                     .and_then(Value::as_i64)
                     .unwrap_or_default();
                 let effect = point
-                    .get("control_effect_mhz")
+                    .get("offset_effect_mhz")
                     .and_then(Value::as_f64)
                     .unwrap_or_default();
                 if mode == 0 {
-                    format!(
-                        ", controlmode: freq(0), controlvalue: {effect:.1} MHz ({value} as raw)"
-                    )
+                    format!(", mode: freq(0), offset: {effect:.1} MHz ({value} as raw)")
                 } else {
-                    format!(
-                        ", controlmode: raw(1), controlvalue: {effect:.1} MHz ({value} as raw)"
-                    )
+                    format!(", mode: raw(1), offset: {effect:.1} MHz ({value} as raw)")
                 }
             })
             .unwrap_or_default();
