@@ -34,6 +34,21 @@ from .panes.overclock import compose_overclock
 from .panes.vfcurve import compose_vfcurve
 
 
+def _is_offline_error(output: str) -> bool:
+    """Return whether a query failed because the NVIDIA GPU disappeared."""
+    if not output:
+        return False
+    lowered = output.lower()
+    return (
+        "not_initialized" in lowered
+        or "api_not_initialized" in lowered
+        or "noimplementation" in lowered
+        or "nvidia_device_not_found" in lowered
+        or "novidevicefound" in lowered
+        or "gpu is lost" in lowered
+    )
+
+
 class NVOCApp(App[None]):
     TITLE = "NVOC-TUI"
     MIN_WIDTH = 55
@@ -92,6 +107,7 @@ class NVOCApp(App[None]):
         self.native_service = NativeService(self.root_dir)
         self.gpus: list[GpuDescriptor] = []
         self.cache = GpuCache()
+        self._gpu_reprobe_timer = None
 
         self.header_controller = HeaderController(self)
         self.dashboard_controller = DashboardController(self)
@@ -202,6 +218,9 @@ class NVOCApp(App[None]):
             return
 
         def finish_query(code: int, output: str, parsed: dict) -> None:
+            if code != 0 and _is_offline_error(output):
+                callback(code, output, parsed)
+                return
             if output and (log_output or code != 0):
                 self.write_log(output)
             callback(code, output, parsed)
@@ -211,6 +230,22 @@ class NVOCApp(App[None]):
             self.call_from_thread(finish_query, code, output, parsed)
 
         self.native_service.submit_query(worker)
+
+    def start_gpu_reprobe(self) -> None:
+        """Retry discovery until an NVIDIA GPU becomes available."""
+        if self._gpu_reprobe_timer is None:
+            self._gpu_reprobe_timer = self.set_interval(5.0, self._gpu_reprobe_tick)
+
+    def _gpu_reprobe_tick(self) -> None:
+        if not self.gpus:
+            self.refresh_gpu_list()
+        else:
+            self._stop_gpu_reprobe()
+
+    def _stop_gpu_reprobe(self) -> None:
+        if self._gpu_reprobe_timer is not None:
+            self._gpu_reprobe_timer.stop()
+            self._gpu_reprobe_timer = None
 
     def refresh_gpu_list(self) -> None:
         def worker() -> None:

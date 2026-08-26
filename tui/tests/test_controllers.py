@@ -4,12 +4,13 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from nvoc_tui.app import NVOCApp
+from nvoc_tui.app import NVOCApp, _is_offline_error
 from nvoc_tui.controllers.console import ConsoleController
 from nvoc_tui.controllers.dashboard import DashboardController
+from nvoc_tui.controllers.header import HeaderController
 from nvoc_tui.controllers.overclock import OverclockController
 from nvoc_tui.controllers.vfcurve import VFCurveController
-from nvoc_tui.models import AppConfig, GpuCache
+from nvoc_tui.models import AppConfig, GpuCache, GpuDescriptor
 
 
 class FakeApp:
@@ -27,6 +28,13 @@ class FakeApp:
             action_state=SimpleNamespace(running=False)
         )
         self.classes: set[str] = set()
+        self.gpus = []
+        self.refreshes = 0
+        self.reprobe_starts = 0
+        self.reprobe_stops = 0
+        self.timers: list[FakeTimer] = []
+        self.dashboard_focuses = 0
+        self.full_refreshes = 0
 
     def query_one(self, selector: str, _widget_type=None):
         return self.widgets[selector]
@@ -72,6 +80,43 @@ class FakeApp:
 
     def write_log(self, text: str) -> None:
         self.logs.append(text)
+
+    def set_interval(self, interval: float, callback, *, pause: bool = False):
+        timer = FakeTimer(interval, callback, pause)
+        self.timers.append(timer)
+        return timer
+
+    def refresh_gpu_list(self) -> None:
+        self.refreshes += 1
+
+    def start_gpu_reprobe(self) -> None:
+        self.reprobe_starts += 1
+
+    def _stop_gpu_reprobe(self) -> None:
+        self.reprobe_stops += 1
+
+    def focus_dashboard_tab_switcher(self) -> None:
+        self.dashboard_focuses += 1
+
+    def refresh_all_state(self) -> None:
+        self.full_refreshes += 1
+
+
+class FakeTimer:
+    def __init__(self, interval: float, callback, pause: bool = False) -> None:
+        self.interval = interval
+        self.callback = callback
+        self.paused = pause
+        self.stopped = False
+
+    def stop(self) -> None:
+        self.stopped = True
+
+    def pause(self) -> None:
+        self.paused = True
+
+    def resume(self) -> None:
+        self.paused = False
 
 
 class FakePanel:
@@ -162,6 +207,82 @@ def test_dashboard_tick_suppresses_status_json_output() -> None:
     assert command_name == "status"
     assert callback.__name__ == "on_status_loaded"
     assert log_output is False
+
+
+def test_offline_error_classification_excludes_unsupported_features() -> None:
+    assert _is_offline_error("NvAPI: API_NOT_INITIALIZED")
+    assert DashboardController._looks_like_offline_error("GPU is lost")
+    assert not _is_offline_error("NVAPI_NOT_SUPPORTED")
+    assert not DashboardController._looks_like_offline_error("function not supported")
+
+
+def test_dashboard_enters_backoff_after_three_offline_failures() -> None:
+    app = FakeApp()
+    controller = DashboardController(app)
+    controller.set_poll_timer(1.0)
+
+    for _ in range(3):
+        controller.on_status_loaded(-1, "API_NOT_INITIALIZED", {})
+
+    assert controller._in_offline_backoff is True
+    assert controller._effective_interval() == 5.0
+    assert app.refreshes == 1
+    assert app.logs == [
+        "dGPU probably offline — polling paused, re-probing for the GPU to come back."
+    ]
+    assert app.timers[-1].interval == 5.0
+
+
+def test_dashboard_backoff_tick_reprobes_instead_of_querying() -> None:
+    app = FakeApp()
+    controller = DashboardController(app)
+    controller._in_offline_backoff = True
+
+    controller.tick()
+
+    assert app.refreshes == 1
+    assert app.query_calls == []
+
+
+def test_dashboard_success_restores_user_poll_interval() -> None:
+    app = FakeApp()
+    app.widgets["#metrics"] = SimpleNamespace(update=lambda _value: None)
+    controller = DashboardController(app)
+    controller._user_interval = 2.5
+    controller._in_offline_backoff = True
+    controller._consecutive_offline = 4
+    controller._offline_hint_logged = True
+
+    controller.on_status_loaded(0, "", {})
+
+    assert controller._in_offline_backoff is False
+    assert controller._consecutive_offline == 0
+    assert app.logs == ["dGPU back online — resuming polling."]
+    assert app.timers[-1].interval == 2.5
+
+
+def test_header_reprobes_empty_gpu_list_and_stops_after_gpu_returns() -> None:
+    app = FakeApp()
+    select = SimpleNamespace(options=[], value=None)
+    select.set_options = lambda options: setattr(select, "options", options)
+    app.widgets["#gpu-select"] = select
+    controller = HeaderController(app)
+
+    controller.on_gpu_list_loaded(-1, "API_NOT_INITIALIZED", [])
+
+    assert app.logs == []
+    assert app.reprobe_starts == 1
+    assert select.value == "-1"
+
+    controller.on_gpu_list_loaded(
+        0, "", [GpuDescriptor(index=2, name="RTX", gpu_id_hex="0x2")]
+    )
+
+    assert app.reprobe_stops == 1
+    assert select.options == [("GPU 2: RTX [0x2]", "2")]
+    assert select.value == "2"
+    assert app.dashboard_focuses == 1
+    assert app.full_refreshes == 1
 
 
 def test_console_maximize_toggle_updates_app_class_and_label() -> None:
@@ -433,7 +554,7 @@ def test_vfcurve_refresh_suppresses_overlapping_workers(tmp_path: Path) -> None:
     assert controller.is_refresh_inflight() is True
 
 
-def test_vfcurve_refresh_keeps_points_in_memory(tmp_path: Path, monkeypatch) -> None:
+def test_vfcurve_refresh_keeps_points_in_memory(tmp_path: Path) -> None:
     app = FakeApp()
     app.root_dir = tmp_path
     points = [
@@ -445,16 +566,7 @@ def test_vfcurve_refresh_keeps_points_in_memory(tmp_path: Path, monkeypatch) -> 
     ]
     app.native_service.query_domain_vfp_points = lambda _gpu: points
 
-    class ImmediateThread:
-        def __init__(self, *, target, daemon, name) -> None:
-            self.target = target
-
-        def start(self) -> None:
-            self.target()
-
-    monkeypatch.setattr(
-        "nvoc_tui.controllers.vfcurve.threading.Thread", ImmediateThread
-    )
+    app.native_service.submit_query = lambda job: job()
     controller = VFCurveController(app)
     rendered: list[bool] = []
     controller.render_plot = lambda: rendered.append(True)
