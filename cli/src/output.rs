@@ -167,15 +167,49 @@ fn format_vfp_output(output: &Value) -> Vec<String> {
                 "  {}",
                 nvoc_cli_common::color::stylize_title("V-F Points")
             ));
+            let mut current_domain: Option<&str> = None;
             for point in points {
+                let domain = point.get("domain").and_then(Value::as_str);
+                if domain != current_domain {
+                    current_domain = domain;
+                    // Segment separator: the public table concatenates the
+                    // graphics curve (index 0..~126) and the trailing memory
+                    // entries (~127..131); make the boundary explicit.
+                    let seg_note = object
+                        .get("segments")
+                        .and_then(Value::as_array)
+                        .and_then(|segs| {
+                            segs.iter().find(|seg| {
+                                seg.get("domain").and_then(Value::as_str) == domain
+                            })
+                        })
+                        .map(|seg| {
+                            format!(
+                                " (index {}..{})",
+                                field_text(seg, "first_index"),
+                                field_text(seg, "last_index")
+                            )
+                        })
+                        .unwrap_or_default();
+                    if let Some(domain) = domain {
+                        lines.push(nvoc_cli_common::color::stylize(
+                            &format!("    --- {domain}{seg_note} ---"),
+                            false,
+                        ));
+                    }
+                }
                 let index = field_text(point, "index");
+                let point_type = point
+                    .get("point_type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("?");
                 let voltage = field_text(point, "voltage_mv");
                 let frequency = field_text(point, "frequency_mhz");
                 let delta = field_text(point, "delta_mhz");
                 let default_frequency = field_text(point, "default_frequency_mhz");
                 lines.push(nvoc_cli_common::color::stylize(
                     &format!(
-                        "    #{index}: {voltage}, {frequency}, delta {delta}, default {default_frequency}"
+                        "    #{index} [{point_type}]: {voltage}, {frequency}, delta {delta}, default {default_frequency}"
                     ),
                     false,
                 ));
@@ -1687,16 +1721,31 @@ mod tests {
     fn human_output_formats_vfp_points_as_rows() {
         nvoc_cli_common::color::init(true);
         let output = json!({
-            "domain": "graphics",
+            "domain": "all",
             "indexed": true,
             "infer_missing_default": true,
+            "segments": [
+                {"domain": "graphics", "count": 1, "first_index": 12, "last_index": 12},
+                {"domain": "memory", "count": 1, "first_index": 127, "last_index": 127},
+            ],
             "points": [
                 {
+                    "domain": "graphics",
                     "index": 12,
+                    "point_type": "programmable",
                     "voltage_mv": 900.0,
                     "frequency_mhz": 1800.0,
                     "delta_mhz": 15.0,
                     "default_frequency_mhz": 1785.0,
+                },
+                {
+                    "domain": "memory",
+                    "index": 127,
+                    "point_type": "fixed",
+                    "voltage_mv": 600.0,
+                    "frequency_mhz": 405.0,
+                    "delta_mhz": 0.0,
+                    "default_frequency_mhz": 405.0,
                 }
             ],
         });
@@ -1704,7 +1753,11 @@ mod tests {
         let rendered = format_human_output("get-public-vftable", &output).join("\n");
 
         assert!(rendered.contains("V-F Points"));
-        assert!(rendered.contains("#12: 900.0 mV, 1800.0 MHz, delta 15.0 MHz"));
+        assert!(rendered
+            .contains("#12 [programmable]: 900.0 mV, 1800.0 MHz, delta 15.0 MHz"));
+        // Segment separators make the graphics/memory boundary explicit.
+        assert!(rendered.contains("--- graphics (index 12..12) ---"));
+        assert!(rendered.contains("--- memory (index 127..127) ---"));
         assert!(!rendered.contains("\"points\""));
     }
 
