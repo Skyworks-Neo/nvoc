@@ -6,6 +6,8 @@
 mod arg_help;
 mod autoscan_config;
 mod cleanup;
+#[cfg(debug_assertions)]
+mod manual_override;
 mod oc_profile_function;
 mod oc_scanner;
 mod optimize;

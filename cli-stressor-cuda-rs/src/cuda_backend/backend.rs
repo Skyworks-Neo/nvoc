@@ -39,9 +39,6 @@ pub struct CudaBackend {
     pub(super) atomic_fn: Option<CudaFunction>,
     pub(super) _intalu_module: Option<Arc<CudaModule>>,
     pub(super) intalu_fn: Option<CudaFunction>,
-    /// Opt-in device-side stress-buffer generation (`--gpu-generate`).
-    pub(super) gpu_generate: bool,
-    pub(super) gpu_fill: Option<super::gpu_fill::GpuFillKernels>,
     pub(super) info: DeviceInfo,
 }
 
@@ -143,8 +140,6 @@ impl CudaBackend {
             atomic_fn,
             _intalu_module: intalu_module,
             intalu_fn,
-            gpu_generate: false,
-            gpu_fill: None,
             info,
         })
     }

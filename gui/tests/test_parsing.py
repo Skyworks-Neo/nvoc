@@ -9,6 +9,7 @@ from src.parsing import (
     native_query_payload,
     normalize_native_vfp_lock_bounds,
     parse_dashboard_status,
+    parse_gpu_list_output,
     parse_info_limits,
     parse_legacy_overvolt_bounds,
     parse_status_current_values,
@@ -16,6 +17,20 @@ from src.parsing import (
     parse_vfp_lock_bounds,
     write_vfp_points,
 )
+
+
+def test_parse_gpu_list_output_keeps_first_name_and_uuid() -> None:
+    output = """
+    GPU 0: NVIDIA GeForce RTX 3060 UUID=GPU-1234-5678
+    GPU 0: ID:0x0800 bus:12345678
+    """
+
+    short, long, names, uuid_map = parse_gpu_list_output(output)
+
+    assert short == {0: "GPU 0: NVIDIA GeForce RTX 3060"}
+    assert long == {0: "GPU 0: NVIDIA GeForce RTX 3060  [GPU-1234-5678]"}
+    assert names == {0: "NVIDIA GeForce RTX 3060"}
+    assert uuid_map == {0: "GPU-1234-5678"}
 
 
 def test_parse_info_limits_text_output() -> None:

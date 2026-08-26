@@ -14,7 +14,6 @@
 from pathlib import Path
 
 from nvoc_tui.parsing import (
-    build_vf_curves,
     compute_vf_plot_bounds,
     find_curve_point_for_voltage,
     load_vf_curve,
@@ -26,8 +25,6 @@ from nvoc_tui.parsing import (
     parse_json_output,
     parse_status_output,
     vf_curve_points_to_series,
-    public_vfp_unsupported,
-    reverse_lookup_voltage,
 )
 
 
@@ -161,14 +158,6 @@ def test_normalize_status_json_output() -> None:
               "channel_type": 0
             },
             37
-          ],
-          [
-            {
-              "target": "Gpu",
-              "channel_num": 2,
-              "channel_type": 255
-            },
-            48.25
           ]
         ]
       }
@@ -316,177 +305,3 @@ def test_compute_vf_plot_bounds_includes_live_and_working_points() -> None:
     assert x_max > 875.0
     assert y_min == 0.0
     assert y_max > 2100.0
-
-
-def test_public_vfp_unsupported_substring_match() -> None:
-    assert public_vfp_unsupported(None) is False
-    assert public_vfp_unsupported("pynvoc VFP query failed: boom") is False
-    assert public_vfp_unsupported("Rusty VFP error: Not Supported") is True
-    assert public_vfp_unsupported("driver said no implementation") is True
-
-
-def test_build_vf_curves_public_only() -> None:
-    gpc_points = [
-        {
-            "index": 0,
-            "voltage_uv": 800000,
-            "frequency_khz": 1800000,
-            "default_frequency_khz": 1785000,
-            "point_type": "prog",
-        }
-    ]
-
-    curves = build_vf_curves(gpc_points, None, None)
-
-    assert set(curves) == {"gpc"}
-    assert curves["gpc"].source == "public"
-    assert curves["gpc"].write_mode == "public"
-    assert curves["gpc"].has_fixed is False
-    assert curves["gpc"].voltages == [800.0]
-    assert curves["gpc"].frequencies == [1800.0]
-    assert curves["gpc"].defaults == [1785.0]
-
-
-def test_build_vf_curves_fixed_point_forces_private_write() -> None:
-    gpc_points = [
-        {
-            "index": 0,
-            "voltage_uv": 800000,
-            "frequency_khz": 1800000,
-            "default_frequency_khz": 1785000,
-            "point_type": "fixed",
-        }
-    ]
-
-    curves = build_vf_curves(gpc_points, None, None)
-
-    assert curves["gpc"].has_fixed is True
-    assert curves["gpc"].write_mode == "private"
-
-
-def test_build_vf_curves_private_segments_and_skips() -> None:
-    clk_data = {
-        "segments": [
-            {
-                "kind": "vf_curve",
-                "domain": "gpc",
-                "bank": 0,
-                "start_index": 0,
-                "end_index": 1,
-            },
-            {
-                "kind": "vf_curve",
-                "domain": "xbar",
-                "bank": 1,
-                "start_index": 2,
-                "end_index": 3,
-            },
-            {
-                "kind": "vf_curve",
-                "domain": "host",
-                "bank": 2,
-                "start_index": 6,
-                "end_index": 7,
-            },
-            # pstate_bins and unknown domains are never curves.
-            {
-                "kind": "pstate_bins",
-                "domain": "gpc",
-                "bank": 3,
-                "start_index": 0,
-                "end_index": 9,
-            },
-            {
-                "kind": "vf_curve",
-                "domain": "sysclk",
-                "bank": 4,
-                "start_index": 0,
-                "end_index": 2,
-            },
-        ],
-        "points": [
-            {
-                "bank": 0,
-                "index": 0,
-                "voltage_uV": 700000,
-                "freq_current_mhz": 1000.0,
-                "freq_default_mhz": 1000.0,
-            },
-            {
-                "bank": 0,
-                "index": 1,
-                "voltage_uV": 750000,
-                "freq_current_mhz": 1100.0,
-                "freq_default_mhz": 1100.0,
-            },
-            {
-                "bank": 1,
-                "index": 2,
-                "voltage_uV": 700000,
-                "freq_current_mhz": 1200.0,
-                "freq_default_mhz": 1200.0,
-            },
-            {
-                "bank": 1,
-                "index": 3,
-                "voltage_uV": 750000,
-                "freq_current_mhz": 1300.0,
-                "freq_default_mhz": 1300.0,
-            },
-            {
-                "bank": 2,
-                "index": 6,
-                "voltage_uV": 600000,
-                "freq_current_mhz": 900.0,
-                "freq_default_mhz": 900.0,
-            },
-            {
-                "bank": 2,
-                "index": 7,
-                "voltage_uV": 650000,
-                "freq_current_mhz": 950.0,
-                "freq_default_mhz": 950.0,
-            },
-            {
-                "bank": 4,
-                "index": 0,
-                "voltage_uV": 500000,
-                "freq_current_mhz": 800.0,
-                "freq_default_mhz": 800.0,
-            },
-        ],
-    }
-
-    curves = build_vf_curves(None, "driver said Not Supported", clk_data)
-
-    # Public read unsupported → private GPC segment is the GPC source.
-    assert set(curves) == {"gpc", "xbar", "host"}
-    assert curves["gpc"].source == "private"
-    assert curves["gpc"].bank == 0
-    assert (curves["gpc"].seg_start, curves["gpc"].seg_end) == (0, 1)
-    assert curves["xbar"].bank == 1
-    assert (curves["xbar"].seg_start, curves["xbar"].seg_end) == (2, 3)
-    assert curves["host"].voltages == [600.0, 650.0]
-    for curve in curves.values():
-        assert curve.write_mode == "private"
-
-
-def test_build_vf_curves_none_when_no_source() -> None:
-    assert build_vf_curves(None, "boom", None) is None
-    assert build_vf_curves([], None, {"segments": [], "points": []}) is None
-
-
-def test_reverse_lookup_voltage_interpolates_and_clamps() -> None:
-    volts = [700.0, 750.0, 800.0]
-    freqs = [1200.0, 1300.0, 1400.0]
-
-    assert reverse_lookup_voltage(volts, freqs, 1350.0) == 775.0
-    assert reverse_lookup_voltage(volts, freqs, 1100.0) == 700.0
-    assert reverse_lookup_voltage(volts, freqs, 1500.0) == 800.0
-    # Descending order still resolves.
-    assert (
-        reverse_lookup_voltage(list(reversed(volts)), list(reversed(freqs)), 1250.0)
-        == 725.0
-    )
-    assert reverse_lookup_voltage([], [], 1000.0) is None
-    assert reverse_lookup_voltage([700.0], [1200.0], 900.0) == 700.0

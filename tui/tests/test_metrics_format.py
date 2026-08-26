@@ -30,6 +30,7 @@ def test_format_metric_lines_full() -> None:
         "pcie_max_link_gen": 4,
         "pcie_tx_mibps": 1234.5,
         "pcie_rx_mibps": 7.8,
+        "pcie_replay_counter": 2,
         "perf": {"unknown": 0, "limits": 32},
     }
 
@@ -44,73 +45,42 @@ def test_format_metric_lines_full() -> None:
     assert "LOAD: GPU 100% | MC 0% | VEN 12% | BUS 2%" in text
     assert "VRAM: 2.0 / 8.0 GB" in text
     assert "FAN: 1234 RPM @ 45%" in text
-    assert "PCIE: Gen4/4 x16" in text
-    # PCIe generation prepended as "Gen<cur>/<max>".
-    # Bidirectional bandwidth appended after lane count, nvitop-style (↑Tx ↓Rx).
-    # 1234.5 MiB/s -> 1.2 GiB/s; 7.8 -> 7.8 MiB/s.
-    assert "↑1.2 GiB/s" in text
-    assert "↓7.8 MiB/s" in text
+    assert "PCIE: Gen4/4 x16 ↑1.2 GiB/s ↓7.8 MiB/s ⚠replay 2" in text
     # limits = 32 = UNKNOWN_32 bit -> decoded reason name, not raw hex.
     assert "PERF LIMIT: Unknown32" in text
     assert "ARCH: Ada" in text
 
 
-def test_format_metric_lines_pwr_with_power_limit() -> None:
-    """PWR line appends the enforced power limit (live TGP cap) as `draw W / limit W`
-    when the backend reports it — mirroring nvidia-smi's `1W / 30W` form."""
-    status_with_limit = {"power_w": 1.653, "power_limit_w": 30}
-    text = "\n".join(_format_metric_lines(status_with_limit, "Ada"))
-    assert "PWR: 1.653 W / 30 W" in text
-
-    # Without a limit the line keeps the plain `draw W` form.
-    status_no_limit = {"power_w": 132}
-    text = "\n".join(_format_metric_lines(status_no_limit, "Ada"))
-    assert "PWR: 132 W" in text
-    assert "/" not in text
-
-
-def test_format_metric_lines_pcie_bandwidth_absent() -> None:
-    """No bandwidth keys -> PCIE line keeps just the lane count."""
-    status = {"pcie_lanes": 8}
-    text = "\n".join(_format_metric_lines(status, "Ada"))
-    assert "PCIE: x8" in text
-    assert "↑" not in text
-    assert "↓" not in text
-
-
-def test_format_metric_lines_pcie_bandwidth_only_lanes_missing() -> None:
-    """Bandwidth present but no lane count -> shows bandwidth alone."""
-    status = {"pcie_tx_mibps": 0.5, "pcie_rx_mibps": 0.3}
-    text = "\n".join(_format_metric_lines(status, "Ada"))
-    assert "↑0.5 MiB/s" in text
-    assert "↓0.3 MiB/s" in text
-
-
-def test_format_metric_lines_fabric_clocks() -> None:
-    """FCLK line surfaces internal fabric clocks (Xbar/crossbar, Sys, Hub, ...)
-    from the GetAllClocks V2 all_clocks_mhz breakdown."""
+def test_format_metric_lines_thermal_trio() -> None:
     status = {
-        "all_clocks_mhz": {
-            "Gpc": 2100.0,
-            "Xbar": 1800.0,  # the "crossbar clock" GPU-Z shows
-            "Sys": 900.0,
-            "Hub": 600.0,
-            "M": 7500.0,  # memory — not in the fabric list
-            "Hotclk": 0.0,  # zero -> omitted
-        }
+        "temperature_c": 55,
+        "temp_hotspot": 63.5,
+        "temp_memory": 58,
     }
-    text = "\n".join(_format_metric_lines(status, "Ada"))
-    assert "FCLK: XBAR 1800 | SYS 900 | HUB 600 | GPC 2100 MHz" in text
-    # Memory and zero clocks must NOT appear on the FCLK line.
-    assert "M 7500" not in text
-    assert "HOTCLK 0" not in text
+
+    text = "\n".join(_format_metric_lines(status, "---"))
+
+    # All three present — core always shown, hotspot/memory appended in order.
+    assert "TEMP: CORE 55 C | HOTSPOT 64 C | MEM 58 C" in text
 
 
-def test_format_metric_lines_fabric_clocks_absent() -> None:
-    """No all_clocks_mhz -> FCLK line shows dashes."""
-    status = {}
+def test_format_metric_lines_core_only_when_no_extra_temps() -> None:
+    text = "\n".join(_format_metric_lines({"temperature_c": 47}, "---"))
+
+    assert "TEMP: CORE 47 C" in text
+    assert "HOT" not in text
+    assert "MEM 47 C" not in text
+
+
+def test_format_metric_lines_effective_clocks() -> None:
+    status = {"eff_gpu_clock_mhz": 1897.5, "eff_mem_clock_mhz": 7500}
     text = "\n".join(_format_metric_lines(status, "Ada"))
-    assert "FCLK: ---" in text
+    assert "ECLK: GPU 1898 | MEM 7500 MHz" in text
+
+
+def test_format_metric_lines_effective_clocks_are_optional() -> None:
+    text = "\n".join(_format_metric_lines({"gpu_clock_mhz": 1800}, "Ada"))
+    assert "ECLK: ---" in text
 
 
 def test_format_metric_lines_perf_decodes_multiple_reasons() -> None:
@@ -127,68 +97,24 @@ def test_format_metric_lines_perf_zero_is_none() -> None:
     assert "PERF LIMIT: none" in text
 
 
-def test_format_metric_lines_thermal_trio() -> None:
+def test_format_metric_lines_pcie_telemetry_is_optional() -> None:
+    text = "\n".join(_format_metric_lines({"pcie_lanes": 8}, "Ada"))
+    assert "PCIE: x8" in text
+    assert "Gen" not in text
+    assert "↑" not in text
+    assert "replay" not in text
+
+
+def test_format_metric_lines_pcie_telemetry_without_lanes() -> None:
     status = {
-        "temperature_c": 55,
-        "temp_hotspot": 63.5,
-        "temp_memory": 58,
+        "pcie_max_link_gen": 5,
+        "pcie_tx_mibps": 0.5,
+        "pcie_rx_mibps": 0.3,
+        "pcie_replay_counter": 0,
     }
-
-    text = "\n".join(_format_metric_lines(status, "---"))
-
-    # All three present — core always shown, hotspot/memory appended in order.
-    assert "TEMP: CORE 55 C | HOTSPOT 64 C | MEM 58 C" in text
-
-
-def test_format_metric_lines_effective_clocks() -> None:
-    status = {
-        "gpu_clock_mhz": 1800,
-        "mem_clock_mhz": 7500,
-        "eff_gpu_clock_mhz": 1897.5,
-        "eff_mem_clock_mhz": 7500,
-    }
-
-    text = "\n".join(_format_metric_lines(status, "---"))
-
-    assert "ECLK: GPU 1898 | MEM 7500 MHz" in text
-
-
-def test_format_metric_lines_effective_clocks_absent() -> None:
-    text = "\n".join(_format_metric_lines({"gpu_clock_mhz": 1800}, "---"))
-
-    assert "ECLK: ---" in text
-
-
-def test_format_metric_lines_core_only_when_no_extra_temps() -> None:
-    text = "\n".join(_format_metric_lines({"temperature_c": 47}, "---"))
-
-    assert "TEMP: CORE 47 C" in text
-    assert "HOT" not in text
-    assert "MEM 47 C" not in text
-
-
-def test_format_metric_lines_pairs_live_with_policy_thresholds() -> None:
-    # target_temp_c (policy 2 = target-temperature wall) pairs with the core
-    # reading; max_temp_c (policy 1 = max operating temp) pairs with hot spot.
-    status = {
-        "temperature_c": 46,
-        "target_temp_c": 87,
-        "temp_hotspot": 53,
-        "max_temp_c": 105,
-    }
-
-    text = "\n".join(_format_metric_lines(status, "---"))
-
-    assert "TEMP: CORE 46 / 87 C | HOTSPOT 53 / 105 C" in text
-
-
-def test_format_metric_lines_thresholds_optional() -> None:
-    # Only the target wall present, no max temp: core pairs, hot spot stays bare.
-    status = {"temperature_c": 46, "target_temp_c": 87, "temp_hotspot": 53}
-
-    text = "\n".join(_format_metric_lines(status, "---"))
-
-    assert "TEMP: CORE 46 / 87 C | HOTSPOT 53 C" in text
+    text = "\n".join(_format_metric_lines(status, "Ada"))
+    assert "PCIE: Gen?/5 ↑0.5 MiB/s ↓0.3 MiB/s" in text
+    assert "replay" not in text
 
 
 def test_format_metric_lines_missing_fields_render_dashes() -> None:

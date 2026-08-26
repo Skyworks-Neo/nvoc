@@ -1039,11 +1039,9 @@ pub fn apply_autoscan_profile(
     cooler_level: u32,
 ) -> Result<(), Error> {
     let info = run_output(gpu, QueryGpuInfo)?;
-    let gpu_type = fetch_gpu_type(&info).unwrap_or(GpuType::Unknown);
+    let gpu_name = &info.name;
 
-    // 移动端判定走 gpu_type（原为 name.contains("Laptop"/"Device") 的自发
-    // 启发式）；Unknown 一并按移动端保守跳过，对应旧 "Device" 检查的意图。
-    if gpu_type.is_mobile() || gpu_type.is_unknown() {
+    if gpu_name.contains("Laptop") || gpu_name.contains("Device") {
         println!("TDP/Temp/VDDQ control not available on MOBILE chips! Skipping...");
         return Ok(());
     }
@@ -1051,6 +1049,7 @@ pub fn apply_autoscan_profile(
     // 根据 GPU 世代选择电压设置方式
     // 900 系（Maxwell，GM 代号）及更早 → 使用 set_pstate_base_voltage（P0 baseVoltages delta）
     // 10 系（Pascal，GP1 代号）及以后  → 使用 set_voltage_boost（VoltRails boost）
+    let gpu_type = fetch_gpu_type(&info).unwrap_or(GpuType::Unknown);
 
     if gpu_type.is_legacy_voltage() {
         // 900 系及更早：通过 SetPstates20 写 P0 baseVoltage delta（最大允许値，即尽量升压）

@@ -2,7 +2,7 @@ use super::conv::{nvml_pstate_to_index, nvml_pstate_to_str};
 use super::error::Error;
 use super::target::GpuId;
 use nvml_wrapper::Nvml;
-use nvml_wrapper::enum_wrappers::device::{Api, PerformanceState};
+use nvml_wrapper::enum_wrappers::device::{Api, PcieUtilCounter, PerformanceState};
 use nvml_wrapper::enums::device::FanControlPolicy;
 
 pub type NvmlPStateClockRange = (PerformanceState, u32, u32, u32, u32);
@@ -64,6 +64,43 @@ pub fn query_nvml_power_watts(nvml: &Nvml, gpu_id: u32) -> Option<(f32, f32, f32
     ))
 }
 
+/// Read-only PCIe link telemetry available through NVML.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct NvmlPcieTelemetry {
+    /// GPU-to-host throughput, averaged by NVML over its sampling interval.
+    pub tx_mibps: Option<f32>,
+    /// Host-to-GPU throughput, averaged by NVML over its sampling interval.
+    pub rx_mibps: Option<f32>,
+    /// Cumulative transaction replay count since the driver was loaded.
+    pub replay_counter: Option<u32>,
+    /// Currently negotiated PCIe generation.
+    pub current_generation: Option<u32>,
+    /// Maximum PCIe generation exposed by this NVML API.
+    pub max_generation: Option<u32>,
+}
+
+/// Query PCIe throughput, replay count, and link generation without waking or
+/// modifying the GPU. Unsupported counters are returned as `None` individually.
+pub fn query_nvml_pcie_telemetry(nvml: &Nvml, gpu_id: u32) -> NvmlPcieTelemetry {
+    let Some(device) = find_nvml_device(nvml, gpu_id) else {
+        return NvmlPcieTelemetry::default();
+    };
+
+    NvmlPcieTelemetry {
+        tx_mibps: device
+            .pcie_throughput(PcieUtilCounter::Send)
+            .ok()
+            .map(|kbps| kbps as f32 / 1024.0),
+        rx_mibps: device
+            .pcie_throughput(PcieUtilCounter::Receive)
+            .ok()
+            .map(|kbps| kbps as f32 / 1024.0),
+        replay_counter: device.pcie_replay_counter().ok(),
+        current_generation: device.current_pcie_link_gen().ok(),
+        max_generation: device.max_pcie_link_gen().ok(),
+    }
+}
+
 /// Query the live (instantaneous) GPU power draw in watts via NVML.
 ///
 /// Wraps `nvmlDeviceGetPowerUsage` (`Device::power_usage`), which reports the
@@ -80,78 +117,6 @@ pub fn query_nvml_power_draw_watts(nvml: &Nvml, gpu_id: u32) -> Option<f32> {
     let device = find_nvml_device(nvml, gpu_id)?;
     let mw = device.power_usage().ok()?;
     Some(mw as f32 / 1000.0)
-}
-
-/// Query the GPU's current **enforced** power limit in watts via NVML.
-///
-/// Wraps `nvmlDeviceGetEnforcedPowerLimit` (`Device::enforced_power_limit`),
-/// the limit currently being enforced by the driver — the same value
-/// `nvidia-smi -q -d POWER` reports as "Current Power Limit" (e.g. the
-/// `30W` in `1W / 30W`). This is the live TGP the GPU is capped at right now.
-///
-/// This is preferred over [`query_nvml_power_watts`]'s
-/// `power_management_limit()` because the *configurable* management limit
-/// returns `NotSupported` on many mobile GPUs (RTX 4060 Laptop included),
-/// while the *enforced* limit is universally readable. On desktop both agree
-/// with the configured limit; on mobile the enforced limit tracks the active
-/// TGP policy.
-///
-/// `gpu_id` uses the NVAPI encoding: `PCI_Bus_Number × 256`.
-pub fn query_nvml_power_limit_watts(nvml: &Nvml, gpu_id: u32) -> Option<f32> {
-    let device = find_nvml_device(nvml, gpu_id)?;
-    let mw = device.enforced_power_limit().ok()?;
-    Some(mw as f32 / 1000.0)
-}
-
-/// Query bidirectional real-time PCIe bandwidth via NVML
-/// (`nvmlDeviceGetPcieThroughput`), nvitop/HWMonitor-style. Returns `(tx_mibps,
-/// rx_mibps)` where TX = bytes the GPU sends (GPU→host) and RX = bytes the GPU
-/// receives (host→GPU), matching the nvidia-smi / nvitop convention.
-///
-/// NVML reports KB/s averaged over a ~20ms byte-counter interval, so each value
-/// IS the live rate (no sliding window needed). Maxwell+ only; vGPU unsupported.
-/// Returns `None` per-direction when the device doesn't expose that counter.
-pub fn query_nvml_pcie_throughput_mibps(nvml: &Nvml, gpu_id: u32) -> (Option<f32>, Option<f32>) {
-    let Some(device) = find_nvml_device(nvml, gpu_id) else {
-        return (None, None);
-    };
-    use nvml_wrapper::enum_wrappers::device::PcieUtilCounter;
-    let tx = device
-        .pcie_throughput(PcieUtilCounter::Send)
-        .ok()
-        .map(|kbps| kbps as f32 / 1024.0);
-    let rx = device
-        .pcie_throughput(PcieUtilCounter::Receive)
-        .ok()
-        .map(|kbps| kbps as f32 / 1024.0);
-    (tx, rx)
-}
-
-/// Query the current and maximum PCIe link generation (1=Gen1 … 5=Gen5) via
-/// NVML (`nvmlDeviceGetCurrPcieLinkGeneration` / `nvmlDeviceGetMaxPcieLink
-/// Generation`). `max` is the platform/slot cap (the highest generation the
-/// current PCIe link could negotiate); NVML does not expose the GPU's own
-/// silicon cap (`nvmlDeviceGetGpuMaxPcieLinkGeneration`) in this crate
-/// version. Returns `None` per-direction when the device doesn't expose it.
-pub fn query_nvml_pcie_link_gen(nvml: &Nvml, gpu_id: u32) -> (Option<u32>, Option<u32>) {
-    let Some(device) = find_nvml_device(nvml, gpu_id) else {
-        return (None, None);
-    };
-    let current = device.current_pcie_link_gen().ok();
-    let max = device.max_pcie_link_gen().ok();
-    (current, max)
-}
-/// (`nvmlDeviceGetPcieReplayCounter`). This is the running count of PCIe
-/// Transaction Layer Packet (TLP) replays triggered by the GPU's flow-control
-/// / error-recovery — a single rising integer (resets only on driver reload).
-/// A steadily-increasing counter signals PCIe link-quality problems (marginal
-/// slot, cable, riser, or board). NVML exposes only this aggregate replay
-/// count; the finer-grained LCRC/NAK/BadTLP/Replay-rollover counters that
-/// HWMonitor shows come from NVAPI `NvAPI_GPU_GetPCIEInfo` (0xE3795199), not
-/// NVML. Returns `None` when the device doesn't expose the counter.
-pub fn query_nvml_pcie_replay_counter(nvml: &Nvml, gpu_id: u32) -> Option<u32> {
-    let device = find_nvml_device(nvml, gpu_id)?;
-    device.pcie_replay_counter().ok()
 }
 
 pub fn set_nvml_auto_boost(nvml: &Nvml, gpu_id: u32, enabled: bool) -> Result<(), Error> {
@@ -273,12 +238,7 @@ pub fn set_nvml_temperature_limit(nvml: &Nvml, gpu_id: u32, limit_c: i32) -> Res
     )
 }
 
-/// Set the acoustic (target) temperature threshold — NVML's Linux-side
-/// target-temp channel (`ACOUSTIC_CURR`), the same one nvidia_oc and MSI
-/// Afterburner's "target temperature" feature use. Windows drivers reject
-/// the whole NVML threshold-setter family (InvalidArg), so this channel is
-/// only meaningful on Linux; on Windows use the NVAPI target-temp wall
-/// (`SetNvapiTargetTemp`).
+/// Set NVML's acoustic target-temperature channel (`ACOUSTIC_CURR`).
 pub fn set_nvml_acoustic_temperature(nvml: &Nvml, gpu_id: u32, limit_c: i32) -> Result<(), Error> {
     set_nvml_temperature_threshold(
         nvml,

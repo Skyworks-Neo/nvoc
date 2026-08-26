@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.tabs.vfcurve.tab import VFCurveTab
+from src.tabs.vfcurve import VFCurveTab
 
 
 class FakeVar:

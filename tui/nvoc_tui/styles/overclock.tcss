@@ -1,19 +1,18 @@
 #overclock-groups {
-    grid-size: 4 1;
-    grid-columns: 1fr 1fr 1fr 1fr;
+    grid-size: 3 1;
+    grid-columns: 1fr 1fr 1fr;
     grid-gutter: 0 1;
     height: auto;
 }
 
 .narrow #overclock-groups {
-    grid-size: 1 4;
+    grid-size: 1 3;
     grid-columns: 1fr;
 }
 
 #clock-controls,
 #pstate-controls,
 #power-controls,
-#mobile-controls,
 #fan-controls {
     grid-gutter: 0 1;
     height: auto;
@@ -21,10 +20,7 @@
     grid-columns: 1fr;
 }
 
-#clock-controls {
-    grid-size: 1 3;
-}
-
+#clock-controls,
 #pstate-controls {
     grid-size: 1 2;
 }
@@ -34,15 +30,7 @@
     grid-size: 1 4;
 }
 
-#mobile-controls {
-    grid-size: 1 5;
-}
-
-.wide #clock-controls {
-    grid-size: 2 2;
-    grid-columns: 1fr 1fr;
-}
-
+.wide #clock-controls,
 .wide #pstate-controls {
     grid-size: 2 1;
     grid-columns: 1fr 1fr;
@@ -54,15 +42,9 @@
     grid-columns: 1fr 1fr;
 }
 
-.wide #mobile-controls {
-    grid-size: 2 3;
-    grid-columns: 1fr 1fr;
-}
-
 #clock-actions,
 #pstate-actions,
 #power-actions,
-#mobile-actions,
 #fan-actions {
     grid-gutter: 0 1;
     height: auto;

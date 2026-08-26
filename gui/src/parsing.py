@@ -35,6 +35,45 @@ def as_float(value: object) -> Optional[float]:
     return None
 
 
+def parse_gpu_list_output(
+    output: str,
+) -> tuple[dict[int, str], dict[int, str], dict[int, str], dict[int, str]]:
+    gpu_pattern = re.compile(r"^GPU\s+(\d+)\s*:\s*(.+)$")
+    uuid_pattern = re.compile(r"^UUID=(GPU-[\w-]+)")
+    short_labels: dict[int, str] = {}
+    gpu_names: dict[int, str] = {}
+    uuid_map: dict[int, str] = {}
+    last_gpu_idx: Optional[int] = None
+
+    for line in output.strip().split("\n"):
+        line = line.strip()
+        match = gpu_pattern.match(line)
+        if match:
+            idx = int(match.group(1))
+            name = match.group(2).strip()
+            inline_uuid = re.search(r"(?i)\buuid\s*[:=]\s*(GPU-[\w-]+)", name)
+            if inline_uuid:
+                uuid_map[idx] = inline_uuid.group(1)
+            name = re.split(r"(?i)\buuid\s*[:=]\s*gpu-[\w-]+", name, maxsplit=1)[
+                0
+            ].strip()
+            name = re.sub(r"\s*\[\s*GPU-[\w-]+\s*\].*$", "", name, flags=re.IGNORECASE)
+            last_gpu_idx = idx
+            if idx not in short_labels:
+                short_labels[idx] = f"GPU {idx}: {name}"
+                gpu_names[idx] = name
+            continue
+        uuid_match = uuid_pattern.match(line)
+        if uuid_match and last_gpu_idx is not None:
+            uuid_map[last_gpu_idx] = uuid_match.group(1)
+
+    long_labels = {
+        idx: f"{short}  [{uuid_map[idx]}]" if idx in uuid_map else short
+        for idx, short in short_labels.items()
+    }
+    return short_labels, long_labels, gpu_names, uuid_map
+
+
 def parse_info_limits(output: str) -> dict[str, Any]:
     native_payload = native_query_payload(output)
     if native_payload is not None:
@@ -384,21 +423,6 @@ def analyze_vfp_offsets(
             return False, None
         return True, int(round(offsets[0]))
     return any(abs(offset) > eps for offset in offsets), None
-
-
-def get_vfp_offset_state_from_points(
-    points: list[dict[str, Any]],
-) -> Optional[tuple[bool, Optional[int]]]:
-    """Analyze in-memory VFP points (pynvoc dicts, kHz) for offset state."""
-    frequencies: list[float] = []
-    defaults: list[float] = []
-    for point in points:
-        freq = point.get("frequency_khz", 0) / 1000.0
-        default_khz = point.get("default_frequency_khz")
-        default = freq if default_khz is None else default_khz / 1000.0
-        frequencies.append(freq)
-        defaults.append(default)
-    return analyze_vfp_offsets(frequencies, defaults)
 
 
 def get_vfp_offset_state_from_csv(

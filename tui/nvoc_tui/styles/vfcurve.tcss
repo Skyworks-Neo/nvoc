@@ -72,20 +72,6 @@
     grid-columns: auto auto auto auto auto auto;
 }
 
-#vf-curve-selector {
-    height: auto;
-    align-vertical: middle;
-    margin: 0 1;
-}
-
-#vf-curve-selector Label {
-    margin: 0 1;
-}
-
-#vf-active-curve {
-    width: 12;
-}
-
 #vf-plot {
     min-height: 20;
     height: 1fr;

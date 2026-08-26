@@ -129,7 +129,7 @@ use nvapi_hi::Microvolts;
 use nvml_wrapper::Nvml;
 use nvoc_core::{
     BackendSet, CheckVoltageFrequency, ClockDomain, Error, GpuId, GpuSelector, GpuTarget,
-    QueryClockOffset, QueryFanInfo, QueryGpuInfo, QueryGpuStatus, QueryNvapiVoltRails,
+    QueryClockOffset, QueryFanInfo, QueryGpuInfo, QueryGpuStatus, QueryNvapiThermalSettings,
     QueryPowerLimits, QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits,
     QueryTemperatureThresholds, QueryVfpPointVoltage, TargetInventory, discover_targets,
     nvml_pstate_to_index, nvml_pstate_to_str, parse_nvml_pstate, run, select_targets,
@@ -354,6 +354,28 @@ fn nvml_live_power_draw_ok() {
     assert!(draw.is_finite());
     assert!(draw >= 0.0);
     assert!(nvoc_core::nvml::query_nvml_power_draw_watts(nvml(&inv), INVALID_GPU_ID).is_none());
+}
+
+#[test]
+#[ignore]
+fn nvml_pcie_telemetry_ok() {
+    let inv = inventory();
+    let target = first_target(&inv);
+    let telemetry = nvoc_core::nvml::query_nvml_pcie_telemetry(nvml(&inv), target.id.0);
+
+    for throughput in [telemetry.tx_mibps, telemetry.rx_mibps]
+        .into_iter()
+        .flatten()
+    {
+        assert!(throughput.is_finite());
+        assert!(throughput >= 0.0);
+    }
+    for generation in [telemetry.current_generation, telemetry.max_generation]
+        .into_iter()
+        .flatten()
+    {
+        assert!((1..=7).contains(&generation));
+    }
 }
 
 #[test]
@@ -644,6 +666,74 @@ fn nvapi_vf_check_bad_point() {
     assert!(run(&target, CheckVoltageFrequency { point: usize::MAX }).is_err());
 }
 
+#[test]
+#[ignore]
+fn nvapi_thermal_channels_have_core_first_and_unique_indices() {
+    let inv = inventory();
+    let target = first_target(&inv);
+    if !target.has_nvapi() {
+        return;
+    }
+
+    let status = run(&target, QueryGpuStatus)
+        .expect("GPU status should include best-effort thermal channels")
+        .output;
+    let (core, _) = status
+        .sensors
+        .first()
+        .expect("at least the GPU average thermal channel should be present");
+    assert_eq!(core.channel_type, Some(0), "GPU_AVG must remain first");
+
+    let mut channels = status
+        .sensors
+        .iter()
+        .filter_map(|(sensor, _)| sensor.channel_num)
+        .collect::<Vec<_>>();
+    channels.sort_unstable();
+    channels.dedup();
+    assert_eq!(channels.len(), status.sensors.len());
+}
+#[test]
+#[ignore]
+fn nvapi_legacy_thermal_settings_have_valid_ranges() {
+    let inv = inventory();
+    let target = first_target(&inv);
+    if !target.has_nvapi() {
+        return;
+    }
+
+    let sensors = run(&target, QueryNvapiThermalSettings)
+        .expect("legacy thermal settings should be readable")
+        .output;
+    assert!(!sensors.is_empty());
+    assert!(sensors.len() <= 3);
+    for sensor in sensors {
+        assert!(sensor.min_c <= sensor.max_c);
+        assert!(sensor.current_c >= sensor.min_c);
+        assert!(sensor.current_c <= sensor.max_c);
+    }
+}
+
+#[test]
+#[ignore]
+fn nvapi_effective_clocks_are_positive_when_available() {
+    let inv = inventory();
+    let target = first_target(&inv);
+    if !target.has_nvapi() {
+        return;
+    }
+
+    let status = run(&target, QueryGpuStatus)
+        .expect("GPU status should read effective clocks best-effort")
+        .output;
+    if let Some(clocks) = status.effective_clocks {
+        for frequency in clocks.values() {
+            assert!(frequency.0 > 0);
+            assert!(frequency.0 < 20_000_000);
+        }
+    }
+}
+
 /// Byte-level probe of the raw driver payloads for the GPU-Z per-rail
 /// investigation. Bypasses `RawConversion` (which silently drops data when
 /// `Padding` fields are non-zero — the suspected "data under-used" mechanism)
@@ -687,6 +777,7 @@ fn nvapi_vf_check_bad_point() {
 /// predates and does NOT include PowerMonitor 0xC12EB19E/0xF40238EF, which
 /// DO return live per-rail power — see `nvapi_power_monitor_v4` /
 /// `nvapi_power_monitor_raw`.
+#[allow(unused_unsafe)]
 fn nvapi_raw_payload_probe() {
     use nvapi_hi::sys::Status;
     use nvapi_hi::sys::api;
@@ -698,7 +789,7 @@ fn nvapi_raw_payload_probe() {
     // StructVersion and StructVersion<1>).
     macro_rules! ver {
         ($ty:ty) => {{
-            let mut s = std::mem::zeroed::<$ty>();
+            let mut s = unsafe { std::mem::zeroed::<$ty>() };
             *s.nvapi_version_mut() = NvVersion::with_struct::<$ty>(1);
             s
         }};
@@ -816,7 +907,7 @@ fn nvapi_raw_payload_probe() {
         //    symbol is typed V2, but the version magic selects layout — allocate
         //    a V2-sized buffer, stamp V1 magic, read back as V1 fields.
         {
-            let mut pinfo = std::mem::zeroed::<pw::NV_GPU_CLIENT_POWER_POLICIES_INFO>();
+            let mut pinfo = unsafe { std::mem::zeroed::<pw::NV_GPU_CLIENT_POWER_POLICIES_INFO>() };
             *pinfo.nvapi_version_mut() =
                 NvVersion::with_struct::<pw::NV_GPU_CLIENT_POWER_POLICIES_INFO_V1>(1);
             let st = api::NvAPI_GPU_ClientPowerPoliciesGetInfo(handle, &mut pinfo);
@@ -849,7 +940,8 @@ fn nvapi_raw_payload_probe() {
             );
         }
         {
-            let mut pstat = std::mem::zeroed::<pw::NV_GPU_CLIENT_POWER_POLICIES_STATUS>();
+            let mut pstat =
+                unsafe { std::mem::zeroed::<pw::NV_GPU_CLIENT_POWER_POLICIES_STATUS>() };
             *pstat.nvapi_version_mut() =
                 NvVersion::with_struct::<pw::NV_GPU_CLIENT_POWER_POLICIES_STATUS_V1>(1);
             let st = api::NvAPI_GPU_ClientPowerPoliciesGetStatus(handle, &mut pstat);
@@ -909,251 +1001,43 @@ fn nvapi_raw_payload_probe() {
         //    via QueryInterface to see if it carries live power-state data. The
         //    struct size is unknown; try a 256-byte scratch buffer with version
         //    magic guessed as v1|sz256 = (1<<16)|256 = 65792.
-        use nvapi_hi::sys::nvapi_QueryInterface;
-        const GET_POWERMIZER_INFO_ID: u32 = 0x76bfa16b;
-        #[repr(C)]
-        struct Scratch {
-            version: u32,
-            data: [u32; 63],
-        }
-        let mut scratch = Scratch {
-            version: 0,
-            data: [0; 63],
-        };
-        for sz in [256u32, 64, 128] {
-            scratch.version = (sz) | (1 << 16);
-            scratch.data = [0; 63];
-            let ptr = match nvapi_QueryInterface(GET_POWERMIZER_INFO_ID) {
-                Ok(p) => p as *const (),
-                Err(_) => break,
+        unsafe {
+            use nvapi_hi::sys::nvapi_QueryInterface;
+            const GET_POWERMIZER_INFO_ID: u32 = 0x76bfa16b;
+            #[repr(C)]
+            struct Scratch {
+                version: u32,
+                data: [u32; 63],
+            }
+            let mut scratch = Scratch {
+                version: 0,
+                data: [0; 63],
             };
-            type Fn = unsafe extern "system" fn(
-                nvapi_hi::sys::api::NvPhysicalGpuHandle,
-                *mut Scratch,
-            ) -> nvapi_hi::sys::Status;
-            let func: Fn = std::mem::transmute(ptr);
-            let status = func(handle, &mut scratch);
-            eprintln!(
-                "=== GetPowerMizerInfo sz={} status={:?} version_out=0x{:x} ===",
-                sz, status, scratch.version
-            );
-            if (status as i32) == (Status::Ok as i32) {
-                eprintln!("  data={:?}", &scratch.data[..16]);
-                break;
+            for sz in [256u32, 64, 128] {
+                scratch.version = (sz) | (1 << 16);
+                scratch.data = [0; 63];
+                let ptr = match nvapi_QueryInterface(GET_POWERMIZER_INFO_ID) {
+                    Ok(p) => p as *const (),
+                    Err(_) => break,
+                };
+                type Fn = unsafe extern "system" fn(
+                    nvapi_hi::sys::api::NvPhysicalGpuHandle,
+                    *mut Scratch,
+                ) -> nvapi_hi::sys::Status;
+                let func: Fn = std::mem::transmute(ptr);
+                let status = func(handle, &mut scratch);
+                eprintln!(
+                    "=== GetPowerMizerInfo sz={} status={:?} version_out=0x{:x} ===",
+                    sz, status, scratch.version
+                );
+                if (status as i32) == (Status::Ok as i32) {
+                    eprintln!("  data={:?}", &scratch.data[..16]);
+                    break;
+                }
             }
         }
     }
 }
-
-/// Dump the thermal-channel capability descriptor (undocumented
-/// `NvAPI_GPU_ThermChannelGetInfo`, 0x0bc8163d) surfaced via `QueryGpuStatus`.
-///
-/// On success the status now carries authoritative "Hot Spot (authoritative)"
-/// / "Memory (authoritative)" sensors when the driver exposes the priChIdx
-/// LUT. On laptop GPUs the call may be stubbed (returns an error that the
-/// status read tolerates) — this test only verifies it never panics and prints
-/// whatever it finds for human inspection.
-#[test]
-#[ignore]
-fn nvapi_therm_channel_info() {
-    let inv = inventory();
-    let target = first_target(&inv);
-    if !target.has_nvapi() {
-        return;
-    }
-    let status = match run(&target, QueryGpuStatus) {
-        Ok(report) => report.output,
-        Err(e) => {
-            eprintln!("QueryGpuStatus failed (thermal-channel read is best-effort): {e}");
-            return;
-        }
-    };
-
-    eprintln!("=== thermal sensors ({} entries) ===", status.sensors.len());
-    for (desc, temp) in &status.sensors {
-        eprintln!(
-            "  ch_type={:<3} target={:?} channel={:?} off_sw={:?} off_hw={:?} scaling={:?} => {:.2} C",
-            desc.channel_type.unwrap_or(999),
-            desc.target,
-            desc.channel_num,
-            desc.offset_sw,
-            desc.offset_hw,
-            desc.scaling,
-            temp
-        );
-    }
-
-    // Core = channel_type GPU_AVG (0); Hot Spot = GPU_MAX (1).
-    let has_core = status
-        .sensors
-        .first()
-        .is_some_and(|(d, _)| d.channel_type == Some(0));
-    let has_hotspot = status
-        .sensors
-        .iter()
-        .any(|(d, _)| d.channel_type == Some(1));
-    eprintln!(
-        "=== unified RTSS path: core_at_index0={} hotspot={} ===",
-        has_core, has_hotspot
-    );
-    // Core MUST be sensors[0] — positional consumers take sensors.first() as
-    // the core temperature. Hot Spot presence is best-effort (older GPUs may
-    // only expose Core).
-    assert!(has_core, "Core must be the first thermal sensor");
-}
-
-/// RAW probe of `NvAPI_GPU_ThermChannelGetInfo` (0x0bc8163d) — calls the FFI
-/// directly, bypassing the hi-layer `allowable_result` degradation so we see
-/// the *actual* NVAPI status code and raw struct bytes on whatever GPU this
-/// runs on. This is the definitive desktop-GPU diagnostic: it tells you
-/// whether GetInfo returns OK (and what the priChIdx LUT / channel records
-/// contain), or which error it returns (NotSupported / NoImplementation /
-/// -104 NvidiaDeviceNotFound / -9 IncompatibleStruct / ...).
-///
-/// Run on the other PC with:
-///   cargo test -p nvoc-core --test gpu_readonly -- --ignored --nocapture nvapi_therm_channel_raw
-#[test]
-#[ignore]
-fn nvapi_therm_channel_raw() {
-    use nvapi_hi::sys::Status;
-    use nvapi_hi::sys::api;
-    use nvapi_hi::sys::gpu::thermal::private as th;
-    use nvapi_hi::sys::nvapi::NvVersion;
-
-    let inv = inventory();
-    let target = first_target(&inv);
-    if !target.has_nvapi() {
-        eprintln!("nvapi_therm_channel_raw: no NVAPI backend, skipping");
-        return;
-    }
-    nvapi_hi::initialize().expect("nvapi initialize");
-    let gpus = nvapi_hi::Gpu::enumerate().expect("nvapi enumerate");
-    if gpus.is_empty() {
-        eprintln!("nvapi_therm_channel_raw: no NVAPI GPUs");
-        return;
-    }
-    let gpu = gpus.into_iter().next().unwrap();
-    let handle = *gpu.inner().handle();
-
-    // V2 params struct: version magic (2<<16)|sizeof = (2<<16)|2736.
-    let mut info: th::NV_GPU_THERMAL_THERM_CHANNEL_INFO_PARAMS_V2 = unsafe { std::mem::zeroed() };
-    info.version = NvVersion::new(std::mem::size_of_val(&info), 2);
-
-    let st = unsafe { api::NvAPI_GPU_ThermChannelGetInfo(handle, &mut info) };
-    eprintln!(
-        "=== ThermChannelGetInfo status={:?} ({}), struct_size={}, version_out=0x{:x} ===",
-        st,
-        st as i32,
-        std::mem::size_of_val(&info),
-        u32::from(info.version),
-    );
-
-    if (st as i32) != (Status::Ok as i32) {
-        // Not a test failure — just a diagnostic. Print the error and stop.
-        eprintln!("GetInfo did not return OK.");
-        eprintln!("NotSupported/-104 => driver/GPU genuinely lacks it;");
-        eprintln!("-9 (IncompatibleStruct) => struct size/layout is wrong.");
-        return;
-    }
-
-    eprintln!(
-        "channel_mask = 0x{:08x} (popcount={})",
-        info.channel_mask,
-        info.channel_mask.count_ones()
-    );
-    let type_names = [
-        "GPU_AVG",
-        "GPU_MAX(hotspot)",
-        "BOARD",
-        "MEMORY(vram)",
-        "PWR_SUPPLY",
-    ];
-    eprintln!("pri_ch_idx (primary channel per type):");
-    for (ty, &idx) in info.pri_ch_idx.iter().enumerate() {
-        let populated = (idx as usize) < 32 && (info.channel_mask & (1u32 << idx)) != 0;
-        eprintln!(
-            "  [{}] {:<18} => channel {} {}",
-            ty,
-            type_names.get(ty).copied().unwrap_or("?"),
-            idx,
-            if populated {
-                "(valid)"
-            } else {
-                "(NOT in mask)"
-            }
-        );
-    }
-    eprintln!("per-channel records (first 16 populated):");
-    let mut shown = 0;
-    for i in 0..32 {
-        if info.channel_mask & (1u32 << i) == 0 {
-            continue;
-        }
-        let c = &info.channel[i];
-        eprintln!(
-            "  chan[{:>2}] ch_type={} ch_class={} rel_loc={} tgt_gpu={} scaling={} range=[{}..{}] off_sw={} off_hw={} sim={} flags={} dev=[{},{}]",
-            i,
-            c.ch_type,
-            c.ch_class,
-            c.rel_loc,
-            c.tgt_gpu,
-            c.scaling,
-            c.min_temp,
-            c.max_temp,
-            c.offset_sw,
-            c.offset_hw,
-            c.is_temp_sim_supported,
-            c.flags,
-            c.therm_dev_idx(),
-            c.therm_dev_prov_idx()
-        );
-        shown += 1;
-        if shown >= 16 {
-            break;
-        }
-    }
-    if shown == 0 {
-        eprintln!("  (channel_mask is 0 — driver returned OK but exposes no channels)");
-    }
-
-    // Now read the STATUS half using the RTSS ThermChannelGetStatus struct
-    // (ID 0x65fe3aad, channel[32] layout). Pass GetInfo's channel_mask;
-    // channel[i] is then the live temp for channel i, indexed directly by
-    // priChIdx[type].
-    let mut status: th::NV_GPU_THERMAL_THERM_CHANNEL_STATUS_PARAMS_V2 =
-        unsafe { std::mem::zeroed() };
-    status.version = NvVersion::new(std::mem::size_of_val(&status), 2);
-    status.channel_mask = info.channel_mask;
-    let st = unsafe { api::NvAPI_GPU_ThermChannelGetStatus(handle, &mut status) };
-    eprintln!(
-        "=== ThermChannelGetStatus status={:?} mask=0x{:x} ===",
-        st, info.channel_mask
-    );
-    if (st as i32) == (Status::Ok as i32) {
-        eprintln!("channel[32] (celsius*256), non-zero only:");
-        for (i, &v) in status.channel.iter().enumerate() {
-            if v != 0 {
-                eprintln!("  chan[{:>2}] = {:>8}  => {:.2} C", i, v, v as f32 / 256.0);
-            }
-        }
-        eprintln!("authoritative decode (channel[priChIdx[type]]):");
-        for (ty, &idx) in info.pri_ch_idx.iter().enumerate() {
-            if (idx as usize) >= 32 {
-                continue;
-            }
-            let temp = status.get_temp(idx as usize);
-            eprintln!(
-                "  [{}] {:<18} channel[{}] = {} => {:.2} C",
-                ty,
-                type_names.get(ty).copied().unwrap_or("?"),
-                idx,
-                status.channel.get(idx as usize).copied().unwrap_or(0),
-                temp.unwrap_or(0.0),
-            );
-        }
-    }
-}
-
 /// Raw dump of `NvAPI_GPU_ClientVoltRailsGetStatus` (0x465f9bcf, 76-byte V1).
 ///
 /// Three-way cross-check (nvapi-rs / LibreHardwareMonitor / dev-laptop probe)
@@ -1409,12 +1293,43 @@ fn nvapi_power_monitor_raw() {
     }
 
     for (label, ver, sz, scratch) in &accepted_per_iid {
+        eprintln!("=== {} ACCEPTED version={} size={} ===", label, ver, sz);
         let words: &[u32] =
             unsafe { std::slice::from_raw_parts(scratch as *const _ as *const u32, SCRATCH_U32) };
-        // For GetInfo, decode the power-channel bitmask (the populated channel
-        // set) — the rail-identity source. (Skip the per-magic nonzero-offset
-        // raw dump; the descriptor scan + offset+power sections below carry the
-        // actionable info.)
+        eprintln!("  first 16 u32: {:?}", &words[..16]);
+        eprintln!(
+            "  +0x00 version=0x{:X}  +0x04 bSupported?={}  +0x08 samplingPeriodMs?={}  +0x0C sampleCount?={}  +0x10 channelMask?=0x{:X}  +0x14 chRelMask?=0x{:X}  +0x18 totalGpuPowerChannelMask?=0x{:X}  +0x1C totalGpuChannelIdx=0x{:X}",
+            words[0], words[1], words[2], words[3], words[4], words[5], words[6], words[7],
+        );
+        // Dump the ENTIRE accepted struct (not just 256B) so per-channel
+        // offsets in the v1|392 GetStatus layout are fully visible.
+        let dump_len = (*sz as usize).min(SCRATCH_U32 * 4);
+        let bytes: &[u8] =
+            unsafe { std::slice::from_raw_parts(scratch as *const _ as *const u8, dump_len) };
+        eprintln!("  full {} bytes (hex):", dump_len);
+        for chunk in bytes.chunks(16) {
+            let hex: Vec<String> = chunk.iter().map(|b| format!("{:02x}", b)).collect();
+            eprintln!(
+                "    {:04x}: {}",
+                chunk.as_ptr() as usize - bytes.as_ptr() as usize,
+                hex.join(" ")
+            );
+        }
+        // List every nonzero 32-bit word offset to spotlight the per-channel
+        // value slots (the meat of the GetStatus layout) for layout RE.
+        let nz: Vec<(usize, u32)> = words
+            .iter()
+            .take(*sz as usize / 4)
+            .enumerate()
+            .filter(|(_, w)| **w != 0)
+            .map(|(i, w)| (i * 4, *w))
+            .collect();
+        eprintln!("  nonzero u32 offsets: {:?}", nz);
+        // For GetInfo, decode the power-channel bitmask. In this v1|404 layout
+        // the channel mask lives at byte offset +0x40 (word 16), NOT +0x10 — the
+        // RTSS-derived V2 doc puts it at +0x10, but the deployed v1 handler writes
+        // it later in the struct. Scan words 4..32 for the first plausible mask
+        // (the populated channel set) so we report it regardless of exact slot.
         if *label == "GetInfo" {
             let mask = (4..32.min(words.len()))
                 .map(|i| words[i])
@@ -1423,10 +1338,7 @@ fn nvapi_power_monitor_raw() {
             if mask != 0 {
                 let chans: Vec<u32> = (0..32).filter(|i| mask & (1u32 << i) != 0).collect();
                 eprintln!(
-                    "=== {} v{}|{}: channelMask=0x{:X} -> {} channels: {:?} ===",
-                    label,
-                    ver,
-                    sz,
+                    "  GetInfo channelMask=0x{:X} -> {} channels: {:?}",
                     mask,
                     chans.len(),
                     chans
@@ -1501,139 +1413,105 @@ fn nvapi_power_monitor_raw() {
         // just channel 0 (total). Try setting the input mask to the FULL GetInfo
         // channel set (0x80C142B) at +0x04 and see whether the per-rail channels
         // (MVDDC/Chip/PWR_SRC/16-pin) populate at their per-channel slots.
-        // ── SECTION A: every offset+power combo from a full-mask GetStatus ──
-        // One line per nonzero u32 offset (offset, raw, ÷1000 W), sampled twice
-        // to classify live vs static. This is the cross-reference table for
-        // matching against GPU-Z rail readings.
-        eprintln!("=== GetStatus offset+power map (full channel_mask, 2 samples) ===");
-        let sample_once = |mask: u32| -> Vec<(usize, u32)> {
+        eprintln!(
+            "=== GetStatus per-channel experiment: input channel_mask = full GetInfo set 0x80C142B ==="
+        );
+        {
             let mut s = Scratch {
                 version: 0,
                 data: [0; SCRATCH_U32 - 1],
             };
             s.version = magic;
-            s.data[0] = mask; // +0x04 input channel_mask
-            let _ = unsafe { func(handle, &mut s) };
+            s.data[0] = 0x80C142B; // word[1] = +0x04 = input channel_mask (all 9)
+            let status = unsafe { func(handle, &mut s) };
             let words: &[u32] = unsafe {
                 std::slice::from_raw_parts(&s as *const _ as *const u32, *sz as usize / 4)
             };
-            words
+            let nz: Vec<(usize, u32)> = words
                 .iter()
                 .enumerate()
                 .filter(|(_, w)| **w != 0)
                 .map(|(i, w)| (i * 4, *w))
-                .collect()
-        };
-        // GetInfo channel_mask for the full-mask call (use the first/v1|404
-        // GetInfo result, whose mask is at +0x10; the v5 layout stores it at a
-        // different offset and would mislead the scan).
-        let info_mask: u32 = accepted_per_iid
-            .iter()
-            .find_map(|(l, _, _, scr)| {
-                if *l != "GetInfo" {
-                    return None;
-                }
-                let w: &[u32] = unsafe {
-                    std::slice::from_raw_parts(scr as *const _ as *const u32, SCRATCH_U32)
-                };
-                (4..32).map(|i| w[i]).find(|v| *v != 0 && *v != 1)
-            })
-            .unwrap_or(0xFFFF_FFFF);
-        let s1 = sample_once(info_mask);
-        std::thread::sleep(std::time::Duration::from_millis(120));
-        let s2 = sample_once(info_mask);
-        let nvml_mw = nvml_wrapper::Nvml::init()
-            .ok()
-            .and_then(|n| n.device_by_index(0).ok().and_then(|d| d.power_usage().ok()))
-            .unwrap_or(0);
-        eprintln!("  (NVML board total: {} mW)", nvml_mw);
-        for (off, v1) in &s1 {
-            // Skip header slots (version @ +0x00, mask @ +0x04) — not readings.
-            if *off < 0x08 {
-                continue;
-            }
-            let v2 = s2
-                .iter()
-                .find(|(o, _)| o == off)
-                .map(|(_, v)| *v)
-                .unwrap_or(0);
-            let live = if v1 != &v2 { "LIVE" } else { "static" };
+                .collect();
             eprintln!(
-                "  +0x{:04X}: {:>8} mW  ({:>7.2} W)  [{}]",
-                off,
-                v1,
-                *v1 as f64 / 1000.0,
-                live
+                "  status={:?} ({})  nonzero u32 offsets with full input mask: {:?}",
+                status, status as i32, nz
             );
+            // The populated offsets are irregular (0x44,0x98,0xE0,0x14C,...),
+            // suggesting records are packed contiguously per active bit. Dump the
+            // region from +0x40 onward in 16-byte rows so the record structure is
+            // visible. Cross-reference values against GPU-Z rails under load.
+            eprintln!("  GetStatus body from +0x40 (16-byte rows) — match values to GPU-Z rails:");
+            let body: &[u8] = unsafe {
+                std::slice::from_raw_parts(
+                    (&s as *const _ as *const u8).add(0x40),
+                    (*sz as usize).saturating_sub(0x40),
+                )
+            };
+            for (i, chunk) in body.chunks(16).enumerate() {
+                let any = chunk.iter().any(|b| *b != 0);
+                if any {
+                    let hex: Vec<String> = chunk.iter().map(|b| format!("{:02x}", b)).collect();
+                    eprintln!("    +{:04X}: {}", 0x40 + i * 16, hex.join(" "));
+                }
+            }
         }
 
-        // ── SECTION B: per-bit sweep — for each channel bit, which offset it
-        // fills, with the rail identity from the GetInfo descriptor. Offsets
-        // that appear for MULTIPLE bits (shared/baseline like +0x44) are shown
-        // with ALL candidate channels so ambiguous offsets are disambiguated.
-        eprintln!("=== GetStatus per-bit isolation (offset -> which channel(s) fill it) ===");
-        // Recover channel_bit -> rail identity from the v4 GetInfo layout
-        // (the descriptor scan below assumes the v4 header+descriptor offsets;
-        // v5 stores the mask at a different offset and is not used here).
-        let richest: Option<&Scratch> = accepted_per_iid
-            .iter()
-            .find(|(l, v, _, _)| *l == "GetInfo" && *v == 4)
-            .map(|(_, _, _, s)| s)
-            .or_else(|| {
-                accepted_per_iid
-                    .iter()
-                    .find(|(l, _, _, _)| *l == "GetInfo")
-                    .map(|(_, _, _, s)| s)
-            });
-        let mut bit_rail: Vec<(u32, u32)> = Vec::new(); // (bit, rail)
-        if let Some(scr) = richest {
-            let bytes: &[u8] = unsafe {
-                std::slice::from_raw_parts(scr as *const _ as *const u8, SCRATCH_U32 * 4)
+        eprintln!(
+            "=== GetStatus liveness sweep (8 samples, {} bytes each) — varying offsets are live sensor values ===",
+            sz
+        );
+        // Also correlate the live channel value(s) against NVML power_draw (mW)
+        // to deduce units. The most prominent live offset observed is +0x44.
+        let nvml = nvml_wrapper::Nvml::init().ok();
+        let nvml_dev = nvml.as_ref().and_then(|n| n.device_by_index(0).ok());
+        let mut prev: Option<Vec<u8>> = None;
+        let n_words = *sz as usize / 4;
+        for sample in 0..8 {
+            let mut s = Scratch {
+                version: 0,
+                data: [0; SCRATCH_U32 - 1],
+            };
+            s.version = magic;
+            let _ = unsafe { func(handle, &mut s) }; // status may flicker; ignore
+            let bytes: Vec<u8> = unsafe {
+                std::slice::from_raw_parts(&s as *const _ as *const u8, *sz as usize).to_vec()
             };
             let words: &[u32] =
-                unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const u32, SCRATCH_U32) };
-            // Scan descriptors for (channel_type, rail); pair with set bits.
-            let cmask = (4..32)
-                .map(|i| words[i])
-                .find(|v| *v != 0 && *v != 1)
-                .unwrap_or(0);
-            let bits: Vec<u32> = (0..32).filter(|i| cmask & (1 << i) != 0).collect();
-            let known = |r: u32| r == 0 || r <= 11 || (218..=255).contains(&r);
-            let mut di = 4usize;
-            let mut bn = 0usize;
-            while di + 1 < words.len() && bn < bits.len() {
-                let t = words[di];
-                let r = words[di + 1];
-                if (1..=8).contains(&t) && known(r) {
-                    bit_rail.push((bits[bn], r));
-                    bn += 1;
-                    di += 8;
-                } else {
-                    di += 1;
-                }
-            }
-        }
-        // Per-bit GetStatus: record offset -> [(bit, rail)].
-        let mut offset_bits: std::collections::BTreeMap<usize, Vec<(u32, u32)>> =
-            std::collections::BTreeMap::new();
-        for &(bit, rail) in &bit_rail {
-            let nz = sample_once(1u32 << bit);
-            for (off, _v) in &nz {
-                offset_bits.entry(*off).or_default().push((bit, rail));
-            }
-        }
-        for (off, chans) in &offset_bits {
-            let names: Vec<String> = chans
+                unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const u32, n_words) };
+            let nz: Vec<(usize, u32)> = words
                 .iter()
-                .map(|(b, r)| format!("bit{}({})", b, rail_name(*r)))
+                .enumerate()
+                .filter(|(_, w)| **w != 0)
+                .map(|(i, w)| (i * 4, *w))
                 .collect();
-            let tag = if chans.len() > 1 { " MULTI" } else { "" };
-            // GPU-Z semantic label for this offset (human cross-check only;
-            // from the soft-gate table, not used by production extraction).
-            let gpuz = nvapi_hi::nvapi::gpuz_offset_label(*off)
-                .map(|l| format!("  [GPU-Z: {}]", l))
-                .unwrap_or_default();
-            eprintln!("  +0x{:04X}: {}{}{}", off, names.join(", "), tag, gpuz);
+            let nvml_mw = nvml_dev
+                .as_ref()
+                .and_then(|d| d.power_usage().ok())
+                .unwrap_or(0);
+            // Candidate live value at +0x44 (word index 17); show ratio to NVML mW.
+            let ch44 = words.get(17).copied().unwrap_or(0);
+            let ratio = if nvml_mw > 0 {
+                ch44 as f32 / nvml_mw as f32
+            } else {
+                0.0
+            };
+            let mut diff: Vec<(usize, u32)> = Vec::new();
+            if let Some(p) = &prev {
+                diff = bytes
+                    .iter()
+                    .zip(p.iter())
+                    .enumerate()
+                    .filter(|(_, (ab, pb))| ab != pb)
+                    .map(|(i, _)| (i, words[i / 4]))
+                    .collect();
+            }
+            eprintln!(
+                "  sample {}: nonzero={:?} changed={:?} | NVML={}mW  +0x44={}  ratio(+0x44/NVML)={:.3}",
+                sample, nz, diff, nvml_mw, ch44, ratio
+            );
+            prev = Some(bytes);
+            std::thread::sleep(std::time::Duration::from_millis(200));
         }
     }
 }
@@ -1771,24 +1649,16 @@ fn rail_name(rail: u32) -> &'static str {
 
 /// Per-bit isolation probe for PowerMonitor GetStatus.
 ///
-/// Maps each channel BIT to the GetStatus offsets it fills, independent of
-/// channel ordering: for each active bit (from GetInfo's channel_mask), call
-/// GetStatus with `channel_mask = (1<<bit)` ONLY and record which nonzero
-/// offsets populate. Section B then shows, per offset, every channel that
-/// fills it (with the descriptor rail identity) plus a `[GPU-Z: <label>]`
-/// annotation when the offset has a confirmed GPU-Z meaning.
+/// The 4-rail offset map (Board/Chip/MVDDC/PWR_SRC at +0x08/+0x14/+0x2C/+0x98)
+/// was confirmed against GPU-Z but is **channel-order-dependent** — it may
+/// differ on other GPUs. This probe maps each channel BIT to its GetStatus
+/// offset independent of ordering: for each active bit (from GetInfo's
+/// channel_mask), call GetStatus with `channel_mask = (1<<bit)` ONLY, and
+/// record which nonzero offsets fill. That isolates one channel's status slot.
 ///
-/// This is the data the production reader (`power_rails()`) consumes to assign
-/// each rail a confidence tier:
-///   - an offset filled by ONE bit only → that channel's PRIVATE slot
-///     (Measured, trustworthy);
-///   - an offset filled by several bits but attributable to a unique
-///     un-owned channel whose rail matches the GPU-Z label → Inferred (`~`);
-///   - otherwise → Ambiguous (`?`), a full-board view.
-///
-/// Pair with the v4 descriptor scan (nvapi_power_monitor_v4) to read off the
-/// channel-bit -> offset -> rail map. Run under load so values are large
-/// enough to disambiguate from zero.
+/// Pair the output with the v4 descriptor scan (nvapi_power_monitor_v4) to get
+/// a stable channel-bit -> offset -> rail map. Run under load so values are
+/// large enough to disambiguate from zero.
 ///
 /// Run: `cargo test -p nvoc-core --test gpu_readonly -- --ignored --nocapture nvapi_power_monitor_bit_isolation`
 #[test]
@@ -1872,47 +1742,4 @@ fn nvapi_power_monitor_bit_isolation() {
         "Pair each bit's nonzero offsets with the v4 descriptor scan\n\
          (nvapi_power_monitor_v4) to map bit -> offset -> rail."
     );
-}
-
-/// Private VoltRails family (the "melonVolt path", see
-/// `reverse/melonvolt/ANALYSIS.md`): rail builder 0x2C73AFDC → control GET
-/// 0xA3070DB0 → live status 0x5D0634EE, all read-only. On a 610.74 mobile
-/// driver this returns rail_mask=0x1 with status entry type=1 carrying live
-/// core-rail µV (e.g. [630000, 1005000, 0, 1200000, 1005000, 630000] idle —
-/// value0 moves with load). The µV-offset SET sibling (0x87C55C8A, the
-/// RTX-5090 MSVDD path) is intentionally unwrapped; this test only reads.
-#[test]
-#[ignore]
-fn nvapi_volt_rails_read() {
-    let inv = inventory();
-    let target = first_target(&inv);
-    let Ok(Some(rails)) = run(&target, QueryNvapiVoltRails).map(|r| r.output) else {
-        // drivers without the private family → Ok(None) is a valid outcome
-        return;
-    };
-    assert_ne!(
-        rails.rail_mask, 0,
-        "a nonzero rail mask is expected when supported"
-    );
-    let set_bits = rails.rail_mask.count_ones() as usize;
-    assert_eq!(
-        rails.control.len(),
-        set_bits,
-        "control entries should be dense over the mask bits"
-    );
-    for e in &rails.control {
-        assert!(e.rail_bit < 32);
-        assert_eq!(rails.rail_mask & (1 << e.rail_bit), 1 << e.rail_bit);
-    }
-    if !rails.status.is_empty() {
-        assert_eq!(rails.status.len(), set_bits);
-        // live voltage entries: µV values in a plausible 0..=1.5 V band
-        for e in &rails.status {
-            let v = e.values[0];
-            assert!(
-                (0..=1_500_000).contains(&v),
-                "status value0 {v} µV out of the plausible band"
-            );
-        }
-    }
 }

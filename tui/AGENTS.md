@@ -42,9 +42,9 @@ This repository contains `nvoc-tui`, a Textual-based terminal UI for the externa
   - `info`
   - `status`
   - `settings`
-  - `vf_curve_points` (in-memory VFP points; no disk round-trip)
+  - `vf_curve_path`
 - GPU selection is derived from `#gpu-select`; command helpers should go through `gpu_args()` instead of re-implementing `--gpu=...`.
-- VF curve refresh happens fully in memory; CSV files are only written/read by the explicit export/import actions.
+- VF curve exports are cached under `vfp_cache/` in the repo root, keyed by GPU UUID when available.
 
 ## Concurrency Notes
 

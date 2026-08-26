@@ -184,19 +184,6 @@ impl<'a> GpuTarget<'a> {
         self.nvml.is_some()
     }
 
-    /// 原生 GC6 唤醒：force_gc6_exit（NVAPI 0x55590CB2，单参数、无 struct），
-    /// 一次性把 GCOFF 掉电的 dGPU 拉回 D0（610+ 移动驱动空闲 5-20s 即进 GC6）。
-    /// 唤醒非持久 —— 空闲后仍会重新掉电，因此只对紧随其后的操作有效。
-    /// 桌面端（无 GC6）驱动返回 NoImplementation(-104) 等错误，由调用方决定
-    /// 按 best-effort 忽略还是上报。
-    ///
-    /// NVAPI 写操作通常无需手动调用：core::operation::run 已按
-    /// GpuType::needs_gc6_wake() 自动预唤醒。本方法供读操作序列、长驻进程
-    /// 的显式唤醒等场景使用（auto-optimizer 的原生唤醒即走此入口）。
-    pub fn force_wake(&self) -> Result<(), Error> {
-        self.nvapi()?.force_gc6_exit().map_err(Error::from)
-    }
-
     pub(crate) fn nvapi(&self) -> Result<&'a Gpu, Error> {
         self.nvapi
             .ok_or_else(|| Error::Custom(format!("GPU {} has no NvAPI backend", self.id.0)))

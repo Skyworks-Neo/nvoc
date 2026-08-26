@@ -8,8 +8,6 @@ import os
 import re
 import sys
 import threading
-import time
-import tkinter as tk
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 import pystray
@@ -19,8 +17,10 @@ from src.backend import NativeBackend
 from src.cli_runner import CLIRunner
 from src.config import Config
 from src.parsing import (
-    get_vfp_offset_state_from_points,
+    analyze_vfp_offsets,
+    get_vfp_offset_state_from_csv,
     native_query_payload,
+    parse_gpu_list_output,
     parse_info_limits,
     parse_legacy_overvolt_bounds,
     parse_nvapi_power_current_from_get,
@@ -29,28 +29,23 @@ from src.parsing import (
     parse_status_current_values,
     parse_supported_pstates,
     parse_vfp_lock_bounds,
+    voltage_text_to_mv,
+    write_vfp_points,
 )
 from src.task_runner import GuiTaskRunner
 from src.widgets.output_console import OutputConsole
 from src.widgets.lightweight_controls import LiteButton
 from src.tabs.dashboard import DashboardTab
-from src.tabs.dashboard.sections import OverclockTab
+from src.tabs.autoscan import AutoscanTab
+from src.tabs.overclock import OverclockTab
 from src.tabs.vfcurve import VFCurveTab
-from src.tabs.vfcurve.sections import AutoscanTab
 
 
 import shutil
 
 
 def _is_discovery_offline_error(output: str) -> bool:
-    """True when a failed GPU discovery's error indicates the dGPU is gone.
-
-    Discovery re-runs on the offline-backoff cadence (after the user disabled
-    the dGPU), and `NvAPI_EnumPhysicalGPUs` returns ApiNotInitialized /
-    NoImplementation / NvidiaDeviceNotFound while the dGPU is off. Suppressing
-    these per-tick errors keeps the console quiet during backoff; the dashboard
-    already logged a single "dGPU probably offline" hint.
-    """
+    """Return whether discovery failed because the NVIDIA GPU disappeared."""
     if not output:
         return False
     lowered = output.lower()
@@ -75,155 +70,25 @@ def find_cli_exe() -> str:
     )
 
 
-class _ConsoleWindowProxy:
-    """Standalone console window.
-
-    Log lines buffer here until the window is first opened; afterwards they
-    stream to the live widget. Closing the window just withdraws it (the
-    widget and its history stay alive).
-    """
-
-    _MAX_LINES = 500
-
-    def __init__(self, app: "App") -> None:
-        self._app = app
-        self._widget = None  # type: Optional[OutputConsole]
-        self._window = None  # type: Optional[ctk.CTkToplevel]
-        self._buffer: List[str] = []
-        self._lock = threading.Lock()
-
-    # ── widget lifecycle ────────────────────────────────────────────────
-    def _ensure_window(self) -> "OutputConsole":
-        if self._widget is not None and self._widget.winfo_exists():
-            return self._widget
-        win = ctk.CTkToplevel(self._app)
-        win.title("NVOC Console")
-        win.geometry("640x360")
-        win.protocol("WM_DELETE_WINDOW", self.close)
-        widget = OutputConsole(win, height=380)
-        widget.pack(fill="both", expand=True, padx=6, pady=6)
-        with self._lock:
-            backlog, self._buffer = self._buffer[-self._MAX_LINES :], []
-        if backlog:
-            widget.append_batch(backlog)
-        self._window = win
-        self._widget = widget
-        return widget
-
-    def open(self) -> None:
-        self._ensure_window()
-        if self._window is not None:
-            self._window.deiconify()
-
-    def close(self) -> None:
-        if self._window is not None:
-            self._window.withdraw()
-
-    def toggle(self) -> None:
-        if self._window is not None and self._window.state() != "withdrawn":
-            self.close()
-        else:
-            self.open()
-
-    # ── OutputConsole API ───────────────────────────────────────────────
-    def append(self, text: str) -> None:
-        with self._lock:
-            self._buffer.append(text)
-            if len(self._buffer) > self._MAX_LINES:
-                del self._buffer[: len(self._buffer) - self._MAX_LINES]
-            live = self._widget
-        if live is not None and live.winfo_exists():
-            live.append(text)
-
-    def append_batch(self, texts: List[str]) -> None:
-        for text in texts:
-            self.append(text)
-
-    def clear(self) -> None:
-        with self._lock:
-            self._buffer = []
-        if self._widget is not None and self._widget.winfo_exists():
-            self._widget.clear()
-
-
-def _warm_matplotlib(ready_event: "threading.Event") -> None:
-    """Import matplotlib and build the font cache off the UI thread.
-
-    The first matplotlib use triggers a full system-font scan ("Matplotlib is
-    building the font cache") that can take minutes on slow machines — running
-    it inside the Tk event loop freezes the whole GUI. Doing it here warms the
-    cache before the VF-curve chart is built.
-    """
-    try:
-        import matplotlib
-
-        matplotlib.use("Agg")
-        import matplotlib.font_manager as fm
-
-        fm.findfont("DejaVu Sans")
-    except Exception:
-        pass  # chart build falls back to importing on its own
-    finally:
-        ready_event.set()
-
-
-def _start_matplotlib_warmup() -> "threading.Event":
-    """Point MPLCONFIGDIR at a persistent dir and start the font-cache warm-up."""
-    if not os.environ.get("MPLCONFIGDIR"):
-        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-        mpl_dir = os.path.join(base, "nvoc-gui", "mpl")
-        try:
-            os.makedirs(mpl_dir, exist_ok=True)
-            os.environ["MPLCONFIGDIR"] = mpl_dir
-        except OSError:
-            pass  # keep matplotlib's default config dir
-    ready = threading.Event()
-    threading.Thread(
-        target=_warm_matplotlib, args=(ready,), name="mpl-warmup", daemon=True
-    ).start()
-    return ready
-
-
 class App(ctk.CTk):
     """Main application window."""
 
     def __init__(self, single_instance_guard: Optional["SingleInstanceGuard"] = None):
         super().__init__()
 
-        # Warm matplotlib (font cache) on a background thread before any tab
-        # builds its chart — keeps the Tk event loop responsive.
-        self._mpl_ready = _start_matplotlib_warmup()
-        # CLI output batching (see _on_cli_output)
         self._cli_output_buffer: List[str] = []
         self._cli_output_flush_id: Optional[str] = None
         self._cli_output_lock = threading.Lock()
-        # Post-native-action refresh chain coalescing
         self._refresh_chain_after_id: Optional[str] = None
-        # Idle-time tab prebuild (see _prebuild_next_tab)
-        self._tab_prebuild_started = False
-        # 'get'-failure re-probe state (see _apply_gpu_get)
-        self._get_reprobe_pending = False
-        self._get_reprobe_count = 0
-        # Per-GPU capability cache: GPU whose P-States are already known
-        self._pstates_cached_for = None
-        self._last_pstates_logged = None
-        # Short-TTL query result cache (see run_gpu_query_async)
-        self._query_result_cache: Dict[str, Tuple[float, int, str]] = {}
-        self._query_cache_lock = threading.Lock()
 
         # Global resize session state (used to coalesce expensive per-tab redraw work)
         self._is_resizing = False
         self._resize_settle_after_id = None  # type: Optional[str]
         self._last_root_width = None  # type: Optional[int]
-        # Last root geometry (x, y, w, h) — any change (incl. a pure title-bar
-        # drag that moves the window without resizing) starts an interaction
-        # session that pauses polling, so DWM compositing doesn't contend
-        # with the NVAPI sweep and the drag doesn't stutter once per second.
-        self._last_root_geom: Optional[Tuple[int, int, int, int]] = None
         self._resize_targets = []  # type: List[Any]
 
         self.title("NVOC-GUI — NVIDIA GPU VF Curve Optimizer")
-        self.geometry("768x712")
+        self.geometry("768x672")
         self.minsize(768, 360)
         self._single_instance_guard = single_instance_guard
 
@@ -268,13 +133,6 @@ class App(ctk.CTk):
         self.tasks = GuiTaskRunner()
         self._build_ui()
 
-        # Prebuild the tray icon image off-thread so the first minimize-to-tray
-        # doesn't stall the UI thread on Image.open/LANCZOS/font loading.
-        self.after(
-            2000,
-            lambda: self.run_background("tray-icon-prebuild", self._get_tray_image),
-        )
-
         # Setup CLI runner (after console is created)
         self.runner = CLIRunner(
             exe_path,
@@ -296,7 +154,6 @@ class App(ctk.CTk):
         self.gpu_arches: Dict[
             int, str
         ] = {}  # gpu_index -> architecture string from 'info'
-        self._gpu_flags_by_idx: Dict[int, Dict[str, Any]] = {}  # probe-time caps
         self.gpu_uuid_map: Dict[int, str] = {}  # gpu_index -> UUID string
         self._gpu_short_label_by_idx: Dict[int, str] = {}
         self._gpu_long_label_by_idx: Dict[int, str] = {}
@@ -313,16 +170,12 @@ class App(ctk.CTk):
 
         # Guard to suppress _on_gpu_changed during programmatic gpu_var.set() calls
         self._programmatic_gpu_set: bool = False
-        # Background GPU re-probe timer: when startup discovery finds no GPU
-        # (dGPU disabled at launch) or detection fails, this re-runs discovery
-        # periodically so the dGPU is auto-detected when the user re-enables it.
-        # Cancelled as soon as a non-empty GPU list lands (or on shutdown).
+        # When no NVIDIA GPU is visible, periodically re-run discovery so an
+        # eGPU or a re-enabled laptop dGPU appears without restarting the GUI.
         self._gpu_reprobe_after_id: Optional[str] = None
 
-        # Initial GPU list — start immediately (no after() hop): discovery
-        # runs on a worker thread (pynvoc import + nvapi64 load + NVAPI init
-        # never touch Tk), so it overlaps UI construction from tick zero.
-        self._refresh_gpu_list()
+        # Initial GPU list
+        self.after(500, self._refresh_gpu_list)
 
         if self._single_instance_guard is not None:
             self.after(200, self._poll_single_instance_signal)
@@ -359,22 +212,7 @@ class App(ctk.CTk):
             pos = indices.index(cur_idx)
             delta = -1 if event.delta > 0 else 1
             nxt = indices[(pos + delta) % len(indices)]
-            label = self._gpu_short_label_by_idx[nxt]
-            # Update the selection display immediately, but debounce the heavy
-            # info→status→settings query chain — one wheel gesture over many
-            # GPUs must not fire it per notch.
-            self._programmatic_gpu_set = True
-            try:
-                self.gpu_var.set(label)
-            finally:
-                self._programmatic_gpu_set = False
-            if self._gpu_wheel_after_id is not None:
-                self.after_cancel(self._gpu_wheel_after_id)
-            self._gpu_wheel_after_id = self.after(
-                250, lambda: self._on_gpu_wheel_settled(label)
-            )
-
-        self._gpu_wheel_after_id = None  # type: Optional[str]
+            self._on_gpu_changed(self._gpu_short_label_by_idx[nxt])
 
         self.gpu_dropdown.bind("<MouseWheel>", _on_gpu_wheel)
 
@@ -427,21 +265,24 @@ class App(ctk.CTk):
         # We can try to reduce the impact by ensuring the main window doesn't update
         # too many internal state variables during the drag.
 
-        # Create tabs. The Overclock page itself is gone — its sections are
-        # hosted on the Dashboard; the OverclockTab object still exists
-        # (parented to a hidden frame) to own the logic and widgets.
+        # Create tabs
         _tab_dashboard = self.tabview.add("📊 Dashboard")
+        _tab_autoscan = self.tabview.add("🔍 Autoscan")
+        _tab_overclock = self.tabview.add("⚡ Overclock")
         _tab_vfcurve = self.tabview.add("📈 VF Curve")
-        self._oc_hidden_host = tk.Frame(self)
 
-        # === Output Console lives in its own window now ===
-        # The bottom dock is gone; the dashboard gets a Console button.
-        # Logs buffer until the window is first opened.
-        self.console = _ConsoleWindowProxy(self)
+        # === Bottom: Output Console ===
+        # (Created before tabs so the main frame structure is visible during load)
+        self.console = OutputConsole(self, height=200)
+        self.console.pack(fill="x", padx=10, pady=(0, 10))
 
-        # Show the window layout immediately before rendering heavy tabs.
-        # update_idletasks (layout/paint only) — update() would pump the full
-        # event loop mid-build, re-entering callbacks against half-built tabs.
+        # class MockConsole:
+        #     def append(self, text: str): pass
+        #     def clear(self): pass
+        # self.console = MockConsole()
+
+        # Flush layout and paint work without dispatching arbitrary callbacks
+        # against the still-partially-built tab state.
         self.update_idletasks()
 
         # Placeholders for tabs
@@ -451,21 +292,11 @@ class App(ctk.CTk):
         self.tab_vfcurve = None
 
         # Defer initialization of the default selected tab to avoid blocking startup
-        # Build the default (Dashboard) tab at the first event-loop turn —
-        # the old after(50) was 50ms of pure scheduler latency before the
-        # first screen. after(0) keeps attribute-init order safe.
-        self.after(0, self._on_tab_changed)
+        self.after(50, self._on_tab_changed)
 
     def _on_tab_changed(self):
         """Lazy load tabs when they are selected and handle visibility for performance."""
         current_tab = self.tabview.get()
-
-        # First entry into a tab constructs its whole widget page on the spot
-        # (~3.4 ms per CTk widget — a visible freeze on weak single-cores), so
-        # after startup we prebuild the remaining tabs one per idle slice.
-        if not self._tab_prebuild_started:
-            self._tab_prebuild_started = True
-            self.after(400, self._prebuild_next_tab)
 
         if current_tab.endswith("Dashboard") and self.tab_dashboard is None:
             self.tab_dashboard = DashboardTab(self.tabview.tab("📊 Dashboard"), self)
@@ -477,14 +308,6 @@ class App(ctk.CTk):
             self._query_gpu_get()
             self.tab_dashboard._fetch_once()
 
-        # Leaving VF Curve: stop its crosshair timer and hand polling back to
-        # the dashboard so the metric rows refresh again.
-        if not current_tab.endswith("VF Curve"):
-            if self.tab_vfcurve is not None:
-                self.tab_vfcurve.stop_live_poll()
-            if self.tab_dashboard is not None:
-                self.tab_dashboard._set_vfcurve_active(False)
-
         elif current_tab.endswith("VF Curve"):
             if self.tab_vfcurve is None:
                 self.tab_vfcurve = VFCurveTab(self.tabview.tab("📈 VF Curve"), self)
@@ -495,112 +318,34 @@ class App(ctk.CTk):
                     )
                 if hasattr(self, "_gpu_limits_cache") and self._gpu_limits_cache:
                     self.tab_vfcurve.sync_freq_locks_from_cache(self._gpu_limits_cache)
-            # Crosshair refresh is owned by vfcurve's own low-cadence timer so
-            # the dashboard poll's after(0) completion cannot interpose a blit
-            # ahead of a mouse-press on the curve.
-            self.tab_vfcurve.start_live_poll()
-            if self.tab_dashboard is not None:
-                self.tab_dashboard._set_vfcurve_active(True)
-            # P-States are a per-GPU capability: query once per GPU
-            # selection, not on every tab entry.
-            gpu = self.selected_gpu_target()
-            if gpu is None or self._pstates_cached_for != gpu:
-                self._query_gpu_get()
-            # Load only if the tab has no data yet: curve changes are
-            # covered by the action-triggered refresh chain.
-            if not self.tab_vfcurve._voltages:
-                self.tab_vfcurve._refresh_curve()
+            # Refresh frequency lock states from CLI on every tab entry.
+            self._query_gpu_get()
+            # Always refresh when entering VF Curve to keep the plot up to date.
+            self.tab_vfcurve._refresh_curve()
 
-    def _overclock_content_host(self):
-        """Dashboard frame hosting the overclock top panels (integration mode)."""
-        return getattr(self.tab_dashboard, "oc_panels_host", None)
+        elif current_tab.endswith("Autoscan") and self.tab_autoscan is None:
+            self.tab_autoscan = AutoscanTab(self.tabview.tab("🔍 Autoscan"), self)
+            self.register_resize_target(self.tab_autoscan)
 
-    def _fan_content_host(self):
-        """Dashboard frame hosting the fan-control section."""
-        return getattr(self.tab_dashboard, "fan_panels_host", None)
-
-    def _prebuild_next_tab(self):
-        """Construct one not-yet-built tab per call, in idle slices.
-
-        Tk/Tcl is single-threaded — widget construction cannot be moved off
-        the main thread — but building hidden tab pages AFTER first paint
-        (instead of on first click) removes the per-tab entry freeze. One
-        tab per slice keeps the event loop responsive between builds.
-        """
-        builders = [
-            ("tab_overclock", "⚡ Overclock", OverclockTab),
-            ("tab_vfcurve", "📈 VF Curve", VFCurveTab),
-        ]
-        for attr, tab_name, cls in builders:
-            if getattr(self, attr, None) is not None:
-                continue
-            try:
-                if cls is OverclockTab:
-                    tab = cls(
-                        self._oc_hidden_host,
-                        self,
-                        content_parent=self._overclock_content_host(),
-                        fan_parent=self._fan_content_host(),
-                    )
-                else:
-                    tab = cls(self.tabview.tab(tab_name), self)
-                setattr(self, attr, tab)
-                self.register_resize_target(tab)
-                if attr == "tab_vfcurve":
-                    if hasattr(self, "_locked_voltage_mv_cache"):
-                        tab.sync_lock_from_voltage(self._locked_voltage_mv_cache)
-                    if hasattr(self, "_gpu_limits_cache") and self._gpu_limits_cache:
-                        tab.sync_freq_locks_from_cache(self._gpu_limits_cache)
-                    # Background preload: fetch the curve once the dashboard
-                    # is up so the first tab switch shows data instantly.
-                    self.after(600, tab._refresh_curve)
-                elif attr == "tab_overclock":
-                    if hasattr(self, "_gpu_limits_cache") and self._gpu_limits_cache:
-                        tab.check_capabilities(self._gpu_limits_cache)
-                        tab.update_limits(self._gpu_limits_cache)
-                    else:
-                        # First paint must already be the correct layout.
-                        # Priority: (1) probe-time capability flags from GPU
-                        # discovery (gpu_type.rs verdict — is_mobile etc.),
-                        # (2) LAST session's persisted limits from config
-                        # (also carries slider ranges). With either applied,
-                        # the later info query finds matching verdicts (mode
-                        # early-return, xbar no-op) and nothing re-packs.
-                        # A stale config cache (GPU swapped) self-corrects
-                        # with one layout switch — the pre-cache behavior.
-                        last_idx = self.get_current_gpu_index()
-                        flags = (
-                            self._gpu_flags_by_idx.get(last_idx)
-                            if last_idx is not None
-                            else None
-                        )
-                        try:
-                            if flags:
-                                tab.check_capabilities(dict(flags))
-                            else:
-                                cached = self.config.get("last_gpu_limits")
-                                if isinstance(cached, dict) and cached:
-                                    tab.check_capabilities(dict(cached))
-                                    tab.update_limits(dict(cached))
-                        except Exception:
-                            pass
-                    if self._gpu_pstates_cache:
-                        tab.set_supported_pstates(self._gpu_pstates_cache)
-                    if self._vfp_offset_state_cache is not None:
-                        has_vfp_offset, uniform_offset = self._vfp_offset_state_cache
-                        tab.set_vfp_state(has_vfp_offset, uniform_offset)
-            except Exception:
-                # A failed prebuild must not break startup; the tab will be
-                # built lazily on first entry as before.
-                return
-            self.after(100, self._prebuild_next_tab)
-            return
-        if self.tab_autoscan is None and self.tab_vfcurve is not None:
-            try:
-                self.tab_autoscan = AutoscanTab(self.tab_vfcurve.autoscan_host, self)
-                self.register_resize_target(self.tab_autoscan)
-            except Exception:
-                return
+        elif current_tab.endswith("Overclock"):
+            if self.tab_overclock is None:
+                self.tab_overclock = OverclockTab(
+                    self.tabview.tab("⚡ Overclock"), self
+                )
+                self.register_resize_target(self.tab_overclock)
+                # Sync any cached info if available
+                if hasattr(self, "_gpu_limits_cache") and self._gpu_limits_cache:
+                    self.tab_overclock.check_capabilities(self._gpu_limits_cache)
+                    self.tab_overclock.update_limits(self._gpu_limits_cache)
+                elif self._gpu_pstates_cache:
+                    self.tab_overclock.set_supported_pstates(self._gpu_pstates_cache)
+                if self._vfp_offset_state_cache is not None:
+                    has_vfp_offset, uniform_offset = self._vfp_offset_state_cache
+                    self.tab_overclock.set_vfp_state(has_vfp_offset, uniform_offset)
+                if self.tab_vfcurve is None:
+                    self.refresh_vfp_offset_state(force=True)
+            # Always force-refresh status cache when entering Overclock.
+            self._query_overclock_status()
 
         # If an older session suspended tab children, restore once and keep normal geometry.
         # Suspending CTkScrollableFrame-heavy tabs can corrupt layout after repeated resizes.
@@ -665,6 +410,13 @@ class App(ctk.CTk):
         """Submit non-UI work to the central GUI task runner."""
         return self.tasks.submit(name, task)
 
+    def _debounce_tabview_configure(self, event=None):
+        """Compatibility shim retained for older experiments; intentionally no-op."""
+        return
+
+    def _process_tabview_resize(self):
+        return
+
     def register_resize_target(self, target: Any):
         """Register a tab-like object that supports on_resize_state_changed()."""
         if target is None or target in self._resize_targets:
@@ -696,24 +448,13 @@ class App(ctk.CTk):
         self._notify_resize_targets(resizing=False, force_flush=True)
 
     def _on_root_configure(self, event):
-        """Track active drag-resize AND title-bar move sessions.
-
-        A Windows title-bar drag fires <Configure> with the same w/h but a
-        changing x/y — so gating on width alone missed pure moves and the
-        dashboard NVAPI sweep kept firing once per second, contending with
-        DWM compositing and stuttering the drag. Any geometry change
-        (x/y/w/h) starts (or re-arms) an interaction session that pauses
-        polling; 140 ms of quiet ends it and flushes deferred work.
-        """
+        """Track active drag-resize sessions from root window size changes."""
         if event.widget is not self:
             return
-        geom = (int(event.x), int(event.y), int(event.width), int(event.height))
-        # Only width is used downstream by resize-sensitive redraws, but the
-        # session itself keys on the full geometry so moves are covered.
-        self._last_root_width = geom[2]
-        if self._last_root_geom == geom:
+        width = int(event.width)
+        if self._last_root_width == width:
             return
-        self._last_root_geom = geom
+        self._last_root_width = width
         self._begin_resize_session()
         if self._resize_settle_after_id:
             try:
@@ -721,6 +462,10 @@ class App(ctk.CTk):
             except Exception:
                 pass
         self._resize_settle_after_id = self.after(140, self._end_resize_session)
+
+    def _on_tabview_configure(self, event):
+        """Compatibility shim: tabview-level binding is not used in CustomTkinter."""
+        return
 
     def _refresh_gpu_list(self):
         """Query native GPU discovery and populate GPU dropdown."""
@@ -733,55 +478,39 @@ class App(ctk.CTk):
         self.run_background("gpu-list", _worker)
 
     def _start_gpu_reprobe(self) -> None:
-        """Begin background GPU rediscovery (scenario A: no GPU at startup).
-
-        Re-runs discovery every few seconds until a non-empty GPU list lands,
-        then stops itself. Lets the GUI pick up the dGPU the moment the user
-        re-enables it without requiring a manual 'Detect' click.
-        """
-        if getattr(self, "_exiting", False):
+        """Schedule discovery retries until an NVIDIA GPU becomes available."""
+        if self._exiting or self._gpu_reprobe_after_id is not None:
             return
-        if self._gpu_reprobe_after_id is not None:
-            return  # already armed
         self._gpu_reprobe_after_id = self.after(5000, self._gpu_reprobe_tick)
 
     def _gpu_reprobe_tick(self) -> None:
         self._gpu_reprobe_after_id = None
-        if getattr(self, "_exiting", False):
+        if self._exiting:
             return
-        # Still no usable GPU? re-probe. _apply_gpu_list re-arms the timer if
-        # the list is still empty/failed, and stops it once a GPU lands.
-        if not self.selected_gpu_target():
+        if self.selected_gpu_target() is None:
             self._refresh_gpu_list()
-        # else: a GPU is selected now — _apply_gpu_list already stopped the
-        # reprobe when it populated the dropdown.
 
     def _stop_gpu_reprobe(self) -> None:
-        if self._gpu_reprobe_after_id is not None:
-            try:
-                self.after_cancel(self._gpu_reprobe_after_id)
-            except Exception:
-                pass
-            self._gpu_reprobe_after_id = None
+        if self._gpu_reprobe_after_id is None:
+            return
+        try:
+            self.after_cancel(self._gpu_reprobe_after_id)
+        except Exception:
+            pass
+        self._gpu_reprobe_after_id = None
 
     def _apply_gpu_list(
         self, retcode: int, output: str, items: List[Dict[str, Any]]
     ) -> None:
         """Apply native GPU discovery results to the dropdown."""
-        # Suppress per-tick discovery-error spam during offline backoff: the
-        # dashboard already logged one "dGPU probably offline" hint and is
-        # re-probing on a slow cadence. Logging every failed re-probe (each
-        # producing "NvAPI_EnumPhysicalGPUs failed: API_NOT_INITIALIZED")
-        # floods the console just like the pre-backoff status spam did.
-        if output and not (retcode != 0 and _is_discovery_offline_error(output)):
+        offline_error = retcode != 0 and _is_discovery_offline_error(output)
+        if output and not offline_error:
             self.console.append(output if output.endswith("\n") else f"{output}\n")
         if retcode != 0:
-            if not _is_discovery_offline_error(output):
+            if not offline_error:
                 self.console.append("[GUI] Failed to detect GPUs.\n")
             self.gpu_dropdown.configure(values=["(detection failed)"])
             self.gpu_var.set("(detection failed)")
-            # No GPU detected (e.g. dGPU disabled at launch) — start a background
-            # re-probe so the dGPU is picked up when re-enabled.
             self._start_gpu_reprobe()
             return
 
@@ -789,11 +518,6 @@ class App(ctk.CTk):
         long_labels: Dict[int, str] = {}
         gpu_names: Dict[int, str] = {}
         gpu_uuid_map: Dict[int, str] = {}
-        # Probe-time capability flags (gpu_type.rs detect_gpu_type computed in
-        # discover_gpus) — available the moment detection lands, before the
-        # info query, so the overclock panel never paints the desktop modal
-        # first and re-packs on a mobile GPU.
-        self._gpu_flags_by_idx: Dict[int, Dict[str, Any]] = {}
 
         for fallback_idx, item in enumerate(items):
             try:
@@ -812,14 +536,6 @@ class App(ctk.CTk):
             arch = str(item.get("arch") or item.get("codename") or "").strip()
             if arch:
                 self.gpu_arches[idx] = arch
-            self._gpu_flags_by_idx[idx] = {
-                "gpu_name": name,
-                "gpu_architecture": arch,
-                "codename": str(item.get("codename") or ""),
-                "is_mobile": item.get("is_mobile"),
-                "is_legacy_voltage": item.get("is_legacy_voltage"),
-                "xbar_supported": item.get("xbar_supported"),
-            }
 
         ordered_indices = sorted(short_labels.keys())
         if not ordered_indices:
@@ -829,7 +545,6 @@ class App(ctk.CTk):
                 self.gpu_var.set("(no GPUs found)")
             finally:
                 self._programmatic_gpu_set = False
-            # No GPUs visible — re-probe in the background.
             self._start_gpu_reprobe()
             return
 
@@ -857,26 +572,74 @@ class App(ctk.CTk):
         finally:
             self._programmatic_gpu_set = False
         self.console.append(f"[GUI] Found {len(ordered_indices)} GPU(s).\n")
-        # A GPU landed — stop the background re-probe (no longer needed).
         self._stop_gpu_reprobe()
-        # Detection landed after the overclock panel was built (slow NVAPI
-        # init / GCOFF wake): apply the probe-time capability flags now so
-        # the mobile/desktop layout corrects immediately, not at info time.
-        if self.tab_overclock is not None:
-            flags = self._gpu_flags_by_idx.get(last_idx)
-            if flags:
-                try:
-                    self.tab_overclock.check_capabilities(dict(flags))
-                except Exception:
-                    pass
         self._query_gpu_info()
+
+    def _parse_gpu_list(self, retcode: int, output: str):
+        """Parse GPU list output and update dropdown."""
+        self.console.append(output)
+        if retcode != 0:
+            self.console.append("[GUI] Failed to detect GPUs.\n")
+            self.gpu_dropdown.configure(values=["(detection failed)"])
+            self.gpu_var.set("(detection failed)")
+            return
+
+        short_labels, long_labels, gpu_names, uuid_map = parse_gpu_list_output(output)
+        ordered_indices = sorted(short_labels.keys())
+
+        # Use long labels for dropdown entries so users can see full UUID when expanded.
+        gpus = [long_labels[i] for i in ordered_indices]
+
+        if gpus:
+            # Build reverse map: display_text -> gpu_index
+            self.gpu_map = {}
+            for idx in ordered_indices:
+                self.gpu_map[short_labels[idx]] = idx
+                self.gpu_map[long_labels[idx]] = idx
+
+            self._gpu_short_label_by_idx = short_labels
+            self._gpu_long_label_by_idx = long_labels
+
+            # Store GPU names for capabilities check
+            self.gpu_names = gpu_names
+
+            # Store UUID map
+            self.gpu_uuid_map = uuid_map
+
+            self.gpu_dropdown.configure(values=gpus)
+            # Try to restore last selection by index first, then by legacy label
+            last_idx_raw = str(self.config.get("last_gpu_idx", "")).strip()
+            last_idx = int(last_idx_raw) if last_idx_raw.isdigit() else None
+            last = self.config.get("last_gpu_id", "")
+            if last_idx is None and last in self.gpu_map:
+                last_idx = self.gpu_map[last]
+            if last_idx is None and last:
+                m_last = re.match(r"^GPU\s+(\d+)\s*:", last)
+                if m_last:
+                    last_idx = int(m_last.group(1))
+
+            if last_idx not in ordered_indices:
+                last_idx = ordered_indices[0]
+
+            self._programmatic_gpu_set = True
+            try:
+                # Keep collapsed selector compact (no UUID), but dropdown values still include UUID.
+                self.gpu_var.set(short_labels[last_idx])
+            finally:
+                self._programmatic_gpu_set = False
+            self.console.append(f"[GUI] Found {len(gpus)} GPU(s).\n")
+            # Query GPU info for hardware limits
+            self._query_gpu_info()
+        else:
+            self.gpu_dropdown.configure(values=["(no GPUs found)"])
+            self._programmatic_gpu_set = True
+            try:
+                self.gpu_var.set("(no GPUs found)")
+            finally:
+                self._programmatic_gpu_set = False
 
     def _on_gpu_changed(self, selected: str):
         """Called by CTkOptionMenu when the user picks a different GPU."""
-        # A pending wheel-debounced switch is superseded by this explicit pick
-        if self._gpu_wheel_after_id is not None:
-            self.after_cancel(self._gpu_wheel_after_id)
-            self._gpu_wheel_after_id = None
         if self._programmatic_gpu_set:
             return  # ignore changes triggered by our own gpu_var.set() calls
         if selected.startswith("("):
@@ -903,10 +666,8 @@ class App(ctk.CTk):
         # Reset dashboard VFP-lock sentinel so first poll after switch always syncs
         if self.tab_dashboard is not None:
             self.tab_dashboard._last_vfp_lock_mv = object()
-        self._invalidate_query_cache()
         self._dashboard_gpu_lock_active = False
         self._dashboard_mem_lock_active = False
-        self._pstates_cached_for = None
         self._vfp_offset_state_cache = None
         self._gpu_pstates_cache = []
         if self.tab_overclock:
@@ -916,25 +677,13 @@ class App(ctk.CTk):
         # Re-run the full init chain: info → limits → status → OC values → curve
         self._query_gpu_info()
 
-    def _on_gpu_wheel_settled(self, label: str):
-        """Fire the GPU-switch query chain after wheel scrolling settles."""
-        self._gpu_wheel_after_id = None
-        self._on_gpu_changed(label)
-
     def _query_gpu_info(self):
-        """Run 'info' for the selected GPU and parse hardware limits.
-
-        'get' (P-States / OC capabilities) has no dependency on 'info' — fire
-        it concurrently; pynvoc queries run lock-free against the Arc'd
-        inventory snapshot, so they genuinely overlap instead of queueing.
-        'status' stays chained after info (its merge wants the info cache).
-        """
+        """Run 'info' for the selected GPU and parse hardware limits."""
         self.run_gpu_query_async(
             ["info"],
             lambda _retcode, output: self._parse_gpu_info(output),
             thread_name="gpu-info",
         )
-        self.run_gpu_query_async(["get"], self._apply_gpu_get, thread_name="gpu-get")
 
     def _parse_gpu_info(self, output: str):
         """Parse 'info' output to extract hardware limits for overclock tab."""
@@ -959,18 +708,6 @@ class App(ctk.CTk):
             # spawned *after* _gpu_limits_cache is fully populated, so
             # _apply_initial_status always sees a complete cache.
             self._gpu_limits_cache = limits
-            # Persist for next session's first-paint layout pre-apply (see
-            # _prebuild_next_tab): the payload carries the capability flags
-            # (is_mobile / xbar_supported / is_legacy_voltage, from gpu_type.rs)
-            # plus the slider ranges. Validate JSON-safety first — a
-            # non-serializable value would kill config's flush-loop thread.
-            import json as _json
-
-            try:
-                _json.loads(_json.dumps(limits))
-                self.config.set("last_gpu_limits", limits)
-            except (TypeError, ValueError):
-                pass
             if self.tab_overclock:
                 self.tab_overclock.check_capabilities(limits)
                 self.tab_overclock.update_limits(limits)
@@ -983,8 +720,8 @@ class App(ctk.CTk):
 
         # Always query status after info, regardless of parse result.
         # _apply_initial_status will merge into whatever _gpu_limits_cache contains.
-        # ('get' was already fired concurrently with 'info' in _query_gpu_info.)
         self._query_initial_status()
+        self._query_gpu_get()
 
     def _query_initial_status(self):
         """Run 'status' once at startup to detect VFP lock, then refresh VF curve."""
@@ -999,11 +736,13 @@ class App(ctk.CTk):
     def _query_overclock_status(self):
         """Run 'status' and refresh Overclock current values from latest cache."""
         self.run_gpu_query_async(
-            ["status"],
-            self._apply_overclock_status,
-            thread_name="overclock-status",
-            allow_wake=False,  # automatic refresh chain: never block GC6
+            ["status"], self._apply_overclock_status, thread_name="overclock-status"
         )
+
+    @staticmethod
+    def _voltage_text_to_mv(value_text: str, unit_text: str) -> int:
+        """Convert a voltage text pair (value + unit) into integer mV."""
+        return voltage_text_to_mv(value_text, unit_text)
 
     @staticmethod
     def _native_query_payload(output: str) -> Optional[Dict[str, Any]]:
@@ -1053,42 +792,21 @@ class App(ctk.CTk):
         """Merge supported P-State data from CLI 'get' into the cached GPU state."""
         merged = dict(getattr(self, "_gpu_limits_cache", {}))
         if retcode != 0:
-            # Transient read failure (dGPU waking from GC6): KEEP the last
-            # known-good P-States instead of wiping the cache to 'unsupported',
-            # and schedule a delayed re-probe (wake + re-query).
             self.console.append(
-                "[GUI] 'get' query failed (GPU may be waking); keeping last known P-States.\n"
+                "[GUI] Warning: failed to query supported P-States via 'get'.\n"
             )
-            merged["supported_pstates"] = list(self._gpu_pstates_cache or [])
+            self._gpu_pstates_cache = []
+            merged["supported_pstates"] = []
             self._gpu_limits_cache = merged
             self._sync_dashboard_lock_state_from_cache(merged)
             if self.tab_overclock:
                 self.tab_overclock.update_limits(merged)
             if self.tab_vfcurve:
                 self.tab_vfcurve.sync_freq_locks_from_cache(merged)
-            retries = getattr(self, "_get_reprobe_count", 0)
-            if retries < 2 and getattr(self, "_get_reprobe_pending", False) is False:
-                self._get_reprobe_pending = True
-                self._get_reprobe_count = retries + 1
-                self.after(
-                    1500,
-                    lambda: (
-                        setattr(self, "_get_reprobe_pending", False),
-                        self.run_background(
-                            "wake-gpu",
-                            lambda: self.backend.force_wake(
-                                self.selected_gpu_target() or ""
-                            ),
-                        ),
-                        self._query_gpu_get(),
-                    ),
-                )
             return
 
         native_payload = self._native_query_payload(output)
         if native_payload is not None:
-            self._get_reprobe_count = 0  # success: reset the re-probe budget
-            self._pstates_cached_for = self.selected_gpu_target()
             merged.update(native_payload)
             for key in (
                 "vfp_lock_gpu_core_upperbound_mhz",
@@ -1099,20 +817,17 @@ class App(ctk.CTk):
                 merged.pop(key, None)
             merged.update(normalize_native_vfp_lock_bounds(native_payload))
             pstates = native_payload.get("supported_pstates", [])
-            fresh = (
+            self._gpu_pstates_cache = (
                 [str(pstate) for pstate in pstates] if isinstance(pstates, list) else []
             )
-            if fresh or not self._gpu_pstates_cache:
-                self._gpu_pstates_cache = fresh
-            # else: empty result on a possibly half-awake GPU — keep the last
-            # known-good list rather than silently downgrading to 'unsupported'.
             merged["supported_pstates"] = self._gpu_pstates_cache
             self._gpu_limits_cache = merged
             self._sync_dashboard_lock_state_from_cache(merged)
-            if fresh and fresh != self._last_pstates_logged:
-                self._last_pstates_logged = list(fresh)
-                self.console.append(f"[GUI] Supported P-States: {', '.join(fresh)}\n")
-            elif not self._gpu_pstates_cache:
+            if self._gpu_pstates_cache:
+                self.console.append(
+                    f"[GUI] Supported P-States: {', '.join(self._gpu_pstates_cache)}\n"
+                )
+            else:
                 self.console.append(
                     "[GUI] Warning: native settings returned no supported P-States.\n"
                 )
@@ -1163,11 +878,8 @@ class App(ctk.CTk):
         self._gpu_limits_cache = merged
         self._sync_dashboard_lock_state_from_cache(merged)
 
-        if pstates and pstates != self._last_pstates_logged:
-            self._last_pstates_logged = list(pstates)
+        if pstates:
             self.console.append(f"[GUI] Supported P-States: {', '.join(pstates)}\n")
-        elif pstates:
-            pass
         else:
             self.console.append(
                 "[GUI] Warning: 'get' returned no parseable supported P-States.\n"
@@ -1247,16 +959,41 @@ class App(ctk.CTk):
         else:
             self.console.append("[GUI] VFP lock: None\n")
 
-        # Sync lock state into vfcurve tab. A curve fetch is only needed to
-        # resolve the pending lock before data exists; with data loaded the
-        # sync itself maps the lock to a point index.
+        # Sync lock state into vfcurve tab, then trigger a full curve refresh
         self._locked_voltage_mv_cache = locked_voltage_mv
         if self.tab_vfcurve:
             self.tab_vfcurve.sync_lock_from_voltage(locked_voltage_mv)
-            if not self.tab_vfcurve._voltages:
-                self.tab_vfcurve._refresh_curve()
+            self.tab_vfcurve._refresh_curve()
         else:
             self.refresh_vfp_offset_state()
+
+    def _get_vfp_cache_path(self) -> str:
+        """Return the VFP CSV cache path for the current GPU."""
+        app_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        cache_dir = os.path.join(app_dir, VFCurveTab._EXPORT_DIR)
+        os.makedirs(cache_dir, exist_ok=True)
+
+        uuid = self.get_current_gpu_uuid()
+        if uuid:
+            fname = f"{uuid}.csv"
+        else:
+            idx = self.get_current_gpu_index()
+            fname = f"gpu_{idx if idx is not None else 0}.csv"
+        return os.path.join(cache_dir, fname)
+
+    @staticmethod
+    def _analyze_vfp_offsets(
+        frequencies: List[float], defaults: List[float]
+    ) -> Tuple[bool, Optional[int]]:
+        """Return (has_any_offset, uniform_core_offset_mhz_if_flat_curve)."""
+        return analyze_vfp_offsets(frequencies, defaults)
+
+    @staticmethod
+    def _get_vfp_offset_state_from_csv(
+        csv_path: str,
+    ) -> Optional[Tuple[bool, Optional[int]]]:
+        """Read a VF export and return (has_any_offset, uniform_core_offset_mhz_if_flat_curve)."""
+        return get_vfp_offset_state_from_csv(csv_path)
 
     def _apply_vfp_offset_state(
         self, has_vfp_offset: bool, uniform_core_offset_mhz: Optional[int] = None
@@ -1289,6 +1026,7 @@ class App(ctk.CTk):
         if gpu is None:
             return
 
+        csv_path = self._get_vfp_cache_path()
         self._vfp_offset_refresh_inflight = True
         self._pending_vfp_offset_refresh = False
         gpu_key = self._get_vfp_offset_gpu_key()
@@ -1298,7 +1036,8 @@ class App(ctk.CTk):
             vfp_offset_state = None
             try:
                 points = self.backend.query_domain_vfp_points(gpu)
-                vfp_offset_state = get_vfp_offset_state_from_points(points)
+                write_vfp_points(csv_path, points)
+                vfp_offset_state = self._get_vfp_offset_state_from_csv(csv_path)
             except Exception:
                 retcode = -1
             self.after(
@@ -1386,29 +1125,11 @@ class App(ctk.CTk):
             thread_name=f"show-{command_name or 'query'}",
         )
 
-    # TTL for reused query results. Tab entry / GPU-switch chains re-query the
-    # same (gpu, command) within a couple of seconds; serving the cached
-    # result collapses those redundant driver round-trips.
-    _QUERY_CACHE_TTL_S = 2.0
-
-    def _query_cache_key(self, gpu: Any, command_name: str) -> Optional[str]:
-        gpu_id = getattr(gpu, "gpu_id", None)
-        if gpu_id is None:
-            uuid = getattr(gpu, "uuid", None)
-            gpu_id = uuid if uuid else repr(gpu)
-        return f"{gpu_id}:{command_name}"
-
-    def _invalidate_query_cache(self) -> None:
-        with self._query_cache_lock:
-            self._query_result_cache.clear()
-
     def run_gpu_query_async(
         self,
         command_args: List[str],
         callback: Callable[[int, str], None],
         thread_name: str = "gpu-query",
-        use_cache: bool = True,
-        allow_wake: bool = True,
     ) -> bool:
         """Run a GPU-scoped native query asynchronously and return whether it started."""
         gpu = self.selected_gpu_target()
@@ -1419,41 +1140,14 @@ class App(ctk.CTk):
             callback(-1, f"Unsupported native query: {command_name}")
             return False
 
-        cache_key = self._query_cache_key(gpu, command_name)
-        if use_cache:
-            now = time.monotonic()
-            with self._query_cache_lock:
-                cached = self._query_result_cache.get(cache_key)
-                if cached is not None:
-                    ts, retcode, output = cached
-                    if now - ts < self._QUERY_CACHE_TTL_S:
-                        self.after(0, lambda: callback(retcode, output))
-                        return True
-
         def _worker():
-            retcode, output, _parsed = self.backend.run_query(
-                gpu, command_name, allow_wake=allow_wake
-            )
-            if retcode == 0:
-                with self._query_cache_lock:
-                    self._query_result_cache[cache_key] = (
-                        time.monotonic(),
-                        retcode,
-                        output,
-                    )
-            # Guard the main-thread marshal during shutdown: an inflight
-            # worker (dash-poll / vfcurve-refresh) may complete after
-            # _do_shutdown sets _exiting and tears down widgets; scheduling
-            # after() on a destroyed root raises a Tcl error.
-            if not getattr(self, "_exiting", False):
-                self.after(0, lambda: callback(retcode, output))
+            retcode, output, _parsed = self.backend.run_query(gpu, command_name)
+            self.after(0, lambda: callback(retcode, output))
 
         self.run_background(thread_name, _worker)
         return True
 
     def _on_native_output(self, text: str, _level: str = "info") -> None:
-        if getattr(self, "_exiting", False):
-            return
         self.after(0, lambda: self.console.append(text))
 
     def run_native_action(
@@ -1471,13 +1165,8 @@ class App(ctk.CTk):
             description,
             action,
             self._on_native_output,
-            lambda code: (
-                None
-                if getattr(self, "_exiting", False)
-                else self.after(
-                    0,
-                    lambda: self._after_native_action(code, on_finished, description),
-                )
+            lambda code: self.after(
+                0, lambda: self._after_native_action(code, on_finished)
             ),
         )
         if not started:
@@ -1488,18 +1177,12 @@ class App(ctk.CTk):
         self, commands: List[Tuple[str, Callable[[Any], Optional[str]]]]
     ) -> None:
         queue = list(commands)
-        all_commands = list(commands)
 
         def start_next(_code: int = 0) -> None:
             if _code != 0:
                 return
             if not queue:
-                self.refresh_after_native_action(
-                    curve_affecting=any(
-                        k in " ".join(d for d, _ in all_commands).lower()
-                        for k in self._CURVE_AFFECTING
-                    )
-                )
+                self.refresh_after_native_action()
                 return
             description, action = queue.pop(0)
             started = self.backend.run_action(
@@ -1513,34 +1196,16 @@ class App(ctk.CTk):
 
         start_next()
 
-    # Only these actions can change the VF curve; everything else (PPAB,
-    # fan, D-Notifier, TGP, temp ...) skips the curve re-query.
-    _CURVE_AFFECTING = ("vfp", "offset", "curve", "reset all")
-
     def _after_native_action(
-        self,
-        code: int,
-        on_finished: Optional[Callable[[int], None]] = None,
-        description: str = "",
+        self, code: int, on_finished: Optional[Callable[[int], None]] = None
     ) -> None:
         if on_finished is not None:
             on_finished(code)
         if code == 0:
-            low = description.lower()
-            self.refresh_after_native_action(
-                curve_affecting=any(k in low for k in self._CURVE_AFFECTING)
-            )
+            self.refresh_after_native_action()
 
-    def refresh_after_native_action(self, curve_affecting: bool = False) -> None:
-        """Re-query everything after a native action (4-query chain).
-
-        Coalesced: bursts (chained actions, PPAB auto-enable during mobile
-        panel load) collapse into one deferred chain instead of stacking
-        callback storms on the UI thread. The VF-curve re-query runs only
-        when the action can actually change the curve (offsets / VFP ops).
-        """
-        if curve_affecting:
-            self._pending_chain_curve = True
+    def refresh_after_native_action(self) -> None:
+        """Coalesce bursts into one deferred status refresh chain."""
         if self._refresh_chain_after_id is not None:
             self.after_cancel(self._refresh_chain_after_id)
         self._refresh_chain_after_id = self.after(
@@ -1549,15 +1214,11 @@ class App(ctk.CTk):
 
     def _refresh_after_native_action_now(self) -> None:
         self._refresh_chain_after_id = None
-        want_curve = getattr(self, "_pending_chain_curve", False)
-        self._pending_chain_curve = False
-        # A native action mutated GPU state — cached query results are stale.
-        self._invalidate_query_cache()
         self._query_gpu_get()
         self._query_overclock_status()
         if self.tab_dashboard:
             self.tab_dashboard._fetch_once()
-        if self.tab_vfcurve and want_curve:
+        if self.tab_vfcurve:
             self.tab_vfcurve._refresh_curve()
 
     def run_cli_display(
@@ -1669,24 +1330,6 @@ class App(ctk.CTk):
                 pass
         self._tray_icon = self._build_tray_icon()
         self._tray_thread = self.run_background("tray-icon", self._tray_icon.run)
-        # Keep-alive: after long tray idles Windows pages the GUI's working
-        # set out, making the first restore repaint painfully slow. A slow
-        # layout tick keeps the widget pages resident.
-        if self._tray_keepalive_id is None:
-            self._tray_keepalive_tick()
-
-    _tray_keepalive_id = None
-
-    def _tray_keepalive_tick(self):
-        if self._exiting or self.winfo_viewable():
-            self._tray_keepalive_id = None
-            return
-        try:
-            self.update_idletasks()
-        except Exception:
-            self._tray_keepalive_id = None
-            return
-        self._tray_keepalive_id = self.after(30000, self._tray_keepalive_tick)
 
     def _show_from_tray(self, icon=None, item=None):
         """Restore the main window from the tray."""
@@ -1779,50 +1422,35 @@ class App(ctk.CTk):
 
     def _do_shutdown(self):
         """Perform shutdown cleanup. Must run on the main Tk thread."""
-        # 1. Stop all periodic timers FIRST so they cannot re-arm during
-        # the join below and submit new work into a draining runner.
+        # 1. Stop all periodic timers
+        if self._refresh_chain_after_id is not None:
+            self.after_cancel(self._refresh_chain_after_id)
+            self._refresh_chain_after_id = None
+
         if hasattr(self, "tab_dashboard") and self.tab_dashboard is not None:
             self.tab_dashboard._stop_polling()
-        # Cancel the background GPU re-probe timer (scenario A).
-        if hasattr(self, "_stop_gpu_reprobe"):
-            self._stop_gpu_reprobe()
+
+        self._stop_gpu_reprobe()
+
+        if hasattr(self, "tab_overclock") and self.tab_overclock is not None:
+            if hasattr(self.tab_overclock, "_stop_auto_refresh"):
+                self.tab_overclock._stop_auto_refresh()
+            if hasattr(self.tab_overclock, "cleanup"):
+                self.tab_overclock.cleanup()
 
         if hasattr(self, "tab_vfcurve") and self.tab_vfcurve is not None:
-            if hasattr(self.tab_vfcurve, "_stop_auto_refresh"):
-                self.tab_vfcurve._stop_auto_refresh()
             if hasattr(self.tab_vfcurve, "cleanup"):
                 self.tab_vfcurve.cleanup()
-
-        # Cancel the post-native-action refresh chain BEFORE joining workers:
-        # a vfcurve-refresh worker inflight when the curve tab was active can
-        # take seconds (VFP RM escape + GCOFF wake+retry, serialized on the
-        # pynvoc InventoryCache mutex with the dash-poll worker). Its
-        # after(0,...) completion re-arms this chain; cancel it now.
-        if getattr(self, "_refresh_chain_after_id", None) is not None:
-            try:
-                self.after_cancel(self._refresh_chain_after_id)
-            except Exception:
-                pass
-            self._refresh_chain_after_id = None
 
         # 2. Stop tray icon (no-op if already stopped from tray thread)
         if self._tray_icon is not None:
             self._tray_icon.stop()
             self._tray_icon = None
-        if self._tray_keepalive_id is not None:
-            self.after_cancel(self._tray_keepalive_id)
-            self._tray_keepalive_id = None
 
-        # 3. Shut down workers. Use wait=False: GuiTaskRunner workers are
-        # daemon threads, so an inflight NVAPI call (which can block seconds
-        # on a GCOFF mobile dGPU, holding the InventoryCache mutex) won't
-        # deadlock the main thread in a join — the process reaps the daemons
-        # on exit. cancel_futures drops anything still queued. The
-        # _cleaned_up guard in vfcurve._refresh_curve/_on_query_done stops
-        # the curve refresh chain from re-submitting after cleanup.
+        # 3. Shut down workers (safe on main thread — main thread is not a worker)
         self.runner.shutdown()
         self.backend.shutdown()
-        self.tasks.shutdown(wait=False, cancel_futures=True)
+        self.tasks.shutdown(wait=True)
         self._flush_cli_output()
         self.config.close()
 

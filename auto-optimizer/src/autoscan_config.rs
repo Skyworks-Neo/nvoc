@@ -7,8 +7,8 @@
 //! legacy 路径携带 gpuboostv3 专属字段。
 
 use super::platform::{
-    default_test_exe_path, default_vfp_csv_path, default_vfp_init_csv_path, default_vfp_log_path,
-    default_vfp_temp_csv_path,
+    default_minload_exe_path, default_test_exe_path, default_vfp_csv_path,
+    default_vfp_init_csv_path, default_vfp_log_path, default_vfp_temp_csv_path,
 };
 use clap::ArgMatches;
 use nvoc_core::ClockDomain;
@@ -153,6 +153,8 @@ impl StressorConfig {
 pub struct AutoscanCommonConfig {
     /// 压力测试可执行文件路径
     pub test_exe: String,
+    /// Min-load Vulkan 可执行文件路径（唤醒 Optimus 笔记本上的 GPU）
+    pub minload_exe: String,
     /// 扫描日志文件路径
     pub log: String,
     /// 单轮超时循环次数
@@ -192,6 +194,7 @@ impl AutoscanCommonConfig {
         };
         AutoscanCommonConfig {
             test_exe: selected_executable("test_exe", default_test_exe_path()),
+            minload_exe: selected_executable("minload_exe", default_minload_exe_path()),
             log: matches
                 .get_one::<String>("log")
                 .cloned()
@@ -299,6 +302,7 @@ mod tests {
         let cfg = GpuBoostAutoscanConfig::from_autoscan_matches(&matches).unwrap();
 
         assert_eq!(cfg.common.test_exe, default_test_exe_path());
+        assert_eq!(cfg.common.minload_exe, default_minload_exe_path());
         assert_eq!(cfg.common.log, default_vfp_log_path());
         assert_eq!(cfg.common.timeout_loops, 30);
         assert_eq!(cfg.common.recovery_method, None);
@@ -319,6 +323,7 @@ mod tests {
         let cfg = LegacyAutoscanConfig::from_legacy_matches(&matches).unwrap();
 
         assert_eq!(cfg.common.test_exe, default_test_exe_path());
+        assert_eq!(cfg.common.minload_exe, default_minload_exe_path());
         assert_eq!(cfg.common.log, default_vfp_log_path());
         assert_eq!(cfg.common.timeout_loops, 30);
         assert_eq!(cfg.common.recovery_method, None);
@@ -340,6 +345,7 @@ mod tests {
         let cfg = GpuBoostAutoscanConfig::from_autoscan_matches(&matches).unwrap();
 
         assert_eq!(cfg.common.test_exe, "cli-stressor-cuda-rs");
+        assert_eq!(cfg.common.minload_exe, "cli-stressor-cuda-rs");
     }
 
     #[test]

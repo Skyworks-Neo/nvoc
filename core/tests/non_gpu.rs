@@ -199,48 +199,6 @@ fn gpu_type_detection() {
 }
 
 #[test]
-fn gpu_type_xbar_support() {
-    // XBAR ClockClient domain offsets exist from Turing (GTX 16系) onward —
-    // mobile AND desktop alike.
-    let supported = [
-        GpuType::Mobile50Series,
-        GpuType::Desktop50Series,
-        GpuType::Mobile40Series,
-        GpuType::Desktop40Series,
-        GpuType::Mobile30Series,
-        GpuType::Desktop30Series,
-        GpuType::Mobile20Series,
-        GpuType::Desktop20Series,
-        GpuType::Mobile16Series,
-        GpuType::Desktop16Series,
-        GpuType::WorkstationTuring,
-        GpuType::ServerTuringTesla,
-    ];
-    let unsupported = [
-        GpuType::Mobile10Series,
-        GpuType::Desktop10Series,
-        GpuType::Mobile9Series,
-        GpuType::Desktop9Series,
-        GpuType::ServerVolta,
-        GpuType::ComputationVolta,
-        GpuType::WorkstationPascal,
-        GpuType::ServerPascal,
-        GpuType::Unknown,
-    ];
-    for t in supported {
-        assert!(t.supports_xbar_offset(), "{t:?} should support xbar");
-    }
-    for t in unsupported {
-        assert!(!t.supports_xbar_offset(), "{t:?} should NOT support xbar");
-    }
-
-    // End-to-end through the name-based detector (the pynvoc payload path):
-    // the 4060 Laptop name+codename that the GUI gates on live.
-    assert!(detect_gpu_type("NVIDIA GeForce RTX 4060 Laptop GPUAD107-B").supports_xbar_offset());
-    assert!(!detect_gpu_type("NVIDIA GeForce GTX 1080 GP104").supports_xbar_offset());
-}
-
-#[test]
 fn gpu_type_params() {
     let mobile_50 = GpuType::Mobile50Series;
     assert!(mobile_50.oc_params().is_50_series);
@@ -259,19 +217,16 @@ fn gpu_type_params() {
     assert_eq!(unknown.minimum_freq_step_khz(), 15000);
     assert_eq!(unknown.vfp_point_range(), 126);
 
-    // GC6 原生唤醒门槛（needs_gc6_wake）：全部移动端世代 + Unknown 保守唤醒。
-    // 旧 wakeup_load_needed 世代表只标 30/50 系、漏掉 40 系笔记本 —— 而
-    // RTX 4060 Laptop 正是 610 驱动激进 GCOFF 的实测机型，故改为按移动端判定。
-    assert!(GpuType::Mobile50Series.needs_gc6_wake());
-    assert!(GpuType::Mobile40Series.needs_gc6_wake());
-    assert!(GpuType::Mobile30Series.needs_gc6_wake());
-    assert!(GpuType::Mobile20Series.needs_gc6_wake());
-    assert!(GpuType::Unknown.needs_gc6_wake());
-    // 桌面 / 服务器 / 工作站不唤醒（无 GC6，force_gc6_exit 只会返回 -104）
-    assert!(!GpuType::Desktop50Series.needs_gc6_wake());
-    assert!(!GpuType::Desktop30Series.needs_gc6_wake());
-    assert!(!GpuType::Desktop40Series.needs_gc6_wake());
-    assert!(!GpuType::ServerBlackwell.needs_gc6_wake());
+    // MinLoadPulse 唤醒仅在 30/50 系笔记本端默认开启
+    assert!(GpuType::Mobile50Series.oc_params().wakeup_load_needed);
+    assert!(GpuType::Mobile30Series.oc_params().wakeup_load_needed);
+    // 其余世代（含同代桌面、其他笔记本世代、服务器/工作站）一律关闭
+    assert!(!GpuType::Desktop50Series.oc_params().wakeup_load_needed);
+    assert!(!GpuType::Desktop30Series.oc_params().wakeup_load_needed);
+    assert!(!GpuType::Mobile40Series.oc_params().wakeup_load_needed);
+    assert!(!GpuType::Mobile20Series.oc_params().wakeup_load_needed);
+    assert!(!GpuType::Unknown.oc_params().wakeup_load_needed);
+    assert!(!GpuType::ServerBlackwell.oc_params().wakeup_load_needed);
 }
 
 #[test]

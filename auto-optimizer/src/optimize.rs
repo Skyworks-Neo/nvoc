@@ -254,7 +254,13 @@ pub fn run_optimize(targets: &[GpuTarget<'_>], matches: &ArgMatches) -> Result<(
             .ok()
             .flatten()
             .ok_or_else(|| error("external stressor backend requires --test-exe"))?;
+        let minload_exe = matches
+            .try_get_one::<String>("minload_exe")
+            .ok()
+            .flatten()
+            .ok_or_else(|| error("external stressor backend requires --minload-exe"))?;
         scan_args.extend(["--test-exe".into(), test_exe.clone()]);
+        scan_args.extend(["--minload-exe".into(), minload_exe.clone()]);
         if matches
             .try_get_one::<String>("stressor_backend")
             .ok()
