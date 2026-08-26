@@ -28,6 +28,7 @@ def make_dashboard(
     dashboard._polling = True
     dashboard._poll_job = None
     dashboard._interval_ms = 1000
+    dashboard._is_resize_active = False
     dashboard._consecutive_offline = 0
     dashboard._in_offline_backoff = False
     return dashboard, app

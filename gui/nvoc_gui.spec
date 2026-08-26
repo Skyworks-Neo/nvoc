@@ -13,6 +13,9 @@ Optimizations:
 import os
 import importlib
 
+# NOTE: requires PyInstaller >= 6.22 for Tcl/Tk 9 (Python 3.14) embedded
+# data-archive support; older versions silently bundle zero tcl/tk files.
+
 # ── Locate customtkinter assets automatically ──
 ctk_path = os.path.dirname(importlib.import_module("customtkinter").__file__)
 
