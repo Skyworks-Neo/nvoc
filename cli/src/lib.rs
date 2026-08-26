@@ -498,7 +498,7 @@ impl Command {
             Self::ResetFanSpeed => "Restore fan/cooler control: default resets the NVAPI cooler levels / NVML fan to default; --rpm (NVAPI-only) instead disables fan-speed simulation and clears the enable bit (--cooler N picks one cooler)",
             Self::ResetPublicVftableOffset => "Reset NVAPI VFP deltas",
             Self::ResetPublicVftableGpcLock => "Reset NVAPI VFP lock",
-            Self::ResetPrivateVftableOffset => "Reset private V/F-POINTS mode-0 overrides (clear raw/converted kHz offsets the public/pstate20 reset paths cannot reach)",
+            Self::ResetPrivateVftableOffset => "Reset private V/F-POINTS overrides (clear freq/raw offsets the public/pstate20 reset paths cannot reach; --mode freq|raw clears only that mode, default both)",
             Self::ResetPublicTgpPercent => "Reset NVAPI power limits",
             Self::ResetTempLimit => "Reset NVAPI sensor limits",
             Self::ResetLegacyGpcRailOvervoltLimit => "Reset NVAPI P-State base voltages",
@@ -627,7 +627,7 @@ impl Command {
                 &["domain"]
             }
             Self::GetPrivateVftable => &["bank", "domain"],
-            Self::ResetPrivateVftableOffset => &["domain"],
+            Self::ResetPrivateVftableOffset => &["domain", "mode"],
             Self::SetGpcVoltLock => &["feedback"],
             Self::SetGpuClock => &["min"],
             Self::OemOcScanner => &["start", "stop", "revert", "status", "background-on", "background-off", "incomplete"],
@@ -1540,7 +1540,7 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .long("mode")
             .value_name("MODE")
             .action(ArgAction::Set)
-            .help("Whisper Mode 2.0 acoustic mode: quieter, quiet, or balanced (or 0/1/2)"),
+            .help("Whisper Mode 2.0 acoustic mode: quieter, quiet, or balanced (or 0/1/2); on reset-private-vftable-offset: freq or raw (clear only that mode's offsets; default both)"),
         _ => unreachable!("unknown command-specific option {name}"),
     }
 }
@@ -4160,12 +4160,31 @@ fn execute_target(
                     "points_reset": reset,
                 }));
             }
-            let out = run(target, ResetNvapiVfpPrivate { bank })?.output;
+            // --mode freq|raw (0|1): clear only points currently in that
+            // mode; default clears BOTH modes (mode-1 raw leftovers survive
+            // a mode-0-only reset)
+            let only_mode = match invocation.options.get("mode").and_then(|v| v.first()) {
+                Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+                    "freq" | "0" => Some(0u8),
+                    "raw" | "1" => Some(1u8),
+                    other => {
+                        return Err(CliError::new(format!(
+                            "invalid --mode {other:?}: expected freq or raw"
+                        )))
+                    }
+                },
+                None => None,
+            };
+            let out = run(target, ResetNvapiVfpPrivate { bank, only_mode })?.output;
             Ok(match out {
                 Some(count) => json!({
                     "applied": true,
                     "bank": bank,
-                    "mode": "freq_offset_clear",
+                    "mode": match only_mode {
+                        Some(0) => "freq_offset_clear",
+                        Some(1) => "raw_offset_clear",
+                        _ => "all_offsets_clear",
+                    },
                     "points_reset": count,
                 }),
                 None => json!({"supported": false}),

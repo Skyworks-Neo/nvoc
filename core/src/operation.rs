@@ -2140,6 +2140,9 @@ impl GpuOperation for SetNvapiVfpRangePerPointPrivate {
 #[derive(Clone, Copy, Debug)]
 pub struct ResetNvapiVfpPrivate {
     pub bank: usize,
+    /// clear only points currently in this mode (0 = absolute kHz,
+    /// 1 = raw delta); None clears both
+    pub only_mode: Option<u8>,
 }
 
 impl GpuOperation for ResetNvapiVfpPrivate {
@@ -2152,7 +2155,7 @@ impl GpuOperation for ResetNvapiVfpPrivate {
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
         target
             .nvapi()?
-            .reset_vfp_private(self.bank)
+            .reset_vfp_private(self.bank, self.only_mode.map(u32::from))
             .map_err(Error::from)
     }
 }

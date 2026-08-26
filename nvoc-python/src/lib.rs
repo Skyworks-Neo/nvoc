@@ -2528,18 +2528,23 @@ fn set_vfp_point_private(
     py_value(py, &value)
 }
 
-/// Reset every present V/F curve point on `bank` to default by clearing its
-/// mode-0 (absolute kHz) override via the private SetControl (single RMW
-/// cycle). The only way to clear raw/converted mode-0 offsets written via
-/// `set_vfp_point_private(freq_mode=True)` — the public `reset_vfp_deltas`
-/// routes through the pstate20 / public Client VfPoints families and cannot
-/// reach private mode-0 state. Returns a dict with `applied` and
-/// `points_reset` count, or `{"supported": false}` where the family is
+/// Reset present V/F curve points on `bank` to default via the private
+/// SetControl (single RMW cycle). `only_mode` 0|1 restricts the clear to
+/// points in that mode (0 = absolute kHz, 1 = raw delta); None clears both.
+/// The only way to clear raw/converted private offsets — the public
+/// `reset_vfp_deltas` routes through the pstate20 / public Client VfPoints
+/// families and cannot reach private state. Returns a dict with `applied`
+/// and `points_reset` count, or `{"supported": false}` where the family is
 /// absent.
 #[pyfunction]
-fn reset_vfp_private(py: Python<'_>, gpu: &str, bank: usize) -> PyResult<Py<PyAny>> {
+fn reset_vfp_private(
+    py: Python<'_>,
+    gpu: &str,
+    bank: usize,
+    only_mode: Option<u8>,
+) -> PyResult<Py<PyAny>> {
     let value = with_target(gpu, "nvapi", |target| {
-        let out = run(target, ResetNvapiVfpPrivate { bank })
+        let out = run(target, ResetNvapiVfpPrivate { bank, only_mode })
             .map_err(to_py_err)?
             .output;
         Ok(match out {
