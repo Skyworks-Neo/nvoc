@@ -418,23 +418,12 @@ def test_vfcurve_export_action_writes_static_curve(tmp_path: Path) -> None:
     ]
 
 
-def test_vfcurve_refresh_suppresses_overlapping_workers(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_vfcurve_refresh_suppresses_overlapping_workers(tmp_path: Path) -> None:
     app = FakeApp()
     app.root_dir = tmp_path
     scheduled: list[object] = []
 
-    class FakeThread:
-        def __init__(self, *, target, daemon, name) -> None:
-            self.target = target
-            self.daemon = daemon
-            self.name = name
-
-        def start(self) -> None:
-            scheduled.append(self)
-
-    monkeypatch.setattr("nvoc_tui.controllers.vfcurve.threading.Thread", FakeThread)
+    app.native_service.submit_query = scheduled.append
     controller = VFCurveController(app)
 
     controller.refresh_curve()
@@ -463,21 +452,15 @@ def test_vfcurve_refresh_clears_inflight_when_cache_path_fails() -> None:
 
 
 def test_vfcurve_refresh_clears_inflight_when_thread_start_fails(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path,
 ) -> None:
     app = FakeApp()
     app.root_dir = tmp_path
 
-    class FakeThread:
-        def __init__(self, *, target, daemon, name) -> None:
-            self.target = target
-            self.daemon = daemon
-            self.name = name
+    def fail_submit(_job) -> None:
+        raise RuntimeError("query queue unavailable")
 
-        def start(self) -> None:
-            raise RuntimeError("thread unavailable")
-
-    monkeypatch.setattr("nvoc_tui.controllers.vfcurve.threading.Thread", FakeThread)
+    app.native_service.submit_query = fail_submit
     controller = VFCurveController(app)
 
     with pytest.raises(RuntimeError):

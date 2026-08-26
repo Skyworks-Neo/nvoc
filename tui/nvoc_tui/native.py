@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import queue
 import threading
 from pathlib import Path
 from typing import Any, Callable
@@ -20,6 +21,31 @@ class NativeService:
         self._native: Any | None = None
         self._lock = threading.Lock()
         self.action_state = ActionState()
+        self._query_queue: queue.Queue[Callable[[], None] | None] = queue.Queue()
+        self._query_worker = threading.Thread(
+            target=self._query_loop,
+            daemon=True,
+            name="nvoc-tui-query",
+        )
+        self._query_worker.start()
+
+    def _query_loop(self) -> None:
+        while True:
+            job = self._query_queue.get()
+            try:
+                if job is None:
+                    return
+                job()
+            except Exception:
+                # Query jobs marshal their own errors to the UI. Keep the
+                # shared worker alive if a callback itself unexpectedly fails.
+                pass
+            finally:
+                self._query_queue.task_done()
+
+    def submit_query(self, job: Callable[[], None]) -> None:
+        """Run a read-only frontend query on the shared serial worker."""
+        self._query_queue.put(job)
 
     def _pynvoc(self) -> Any:
         if self._native is None:
