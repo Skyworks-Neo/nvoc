@@ -3,6 +3,7 @@ Output Console Widget - A read-only scrollable text area for CLI output.
 """
 
 import threading
+import sys
 
 import tkinter.font as tk_font
 
@@ -33,14 +34,12 @@ class OutputConsole(ctk.CTkFrame):
         self.textbox.tag_config("red", foreground="red")
 
     @staticmethod
-    def _mono_font():
-        """Cross-platform monospace (Consolas on Windows, native elsewhere)."""
-        import sys
-
+    def _mono_font() -> tuple[str, int]:
+        """Use Consolas on Windows and Tk's native fixed font elsewhere."""
         if sys.platform == "win32":
             return ("Consolas", 12)
         fixed = tk_font.nametofont("TkFixedFont")
-        return (fixed.cget("family"), max(10, fixed.cget("size")))
+        return (str(fixed.cget("family")), max(10, int(fixed.cget("size"))))
 
     def toggle(self, _event: object = None) -> None:
         """Toggle the console body between folded and expanded."""
