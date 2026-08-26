@@ -430,7 +430,7 @@ impl Command {
                 "Clear the GPU frequency perf-cap (PerfLimitsSetStatus NDA, enable=0 on both entries; the GPUMonCmd -gpuclk:-1 path)"
             }
             Self::GetPrivateVftable => {
-                "Read the private ClockClient V/F-points family: per-bank point masks + V/F curve records (voltage-indexed, units calibrated vs the public GPC VFP)"
+                "Read the private ClockClient V/F-points family: per-bank point masks + V/F curve records (voltage-indexed, units calibrated vs the public GPC VFP); --bank 0|1 selects the mask window (default 0)"
             }
             Self::SetPrivatePermanentPstateLockUser => {
                 "Admin-free pstate lock (SetPerfLevel 0x75DD3E6A, escape 0x7000040): level is an INDEX into the GPU's real available P-State list (see get-pstate-lock) — NOT a fixed P8..P0 enum and NOT the NVCP power-mode dropdown. No release value exists (only valid indices accepted); the lock survives reset-private-forced-pstate-lock-user/reset-pstate-lock and only a reboot/driver reload clears it; re-locking re-targets"
@@ -625,7 +625,7 @@ impl Command {
             Self::SetFreqLock | Self::ResetFreqLock | Self::ResetPublicVftableOffset => {
                 &["domain"]
             }
-            Self::GetPrivateVftable => &["domain"],
+            Self::GetPrivateVftable => &["bank", "domain"],
             Self::ResetPrivateVftableOffset => &["domain"],
             Self::SetGpcVoltLock => &["feedback"],
             Self::SetGpuClock => &["min"],
@@ -1386,6 +1386,10 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .value_name("DOMAIN")
             .action(ArgAction::Set)
             .help("Clock-domain index for get-pstate-native MHz values (0=GPC/core default; the ref tool resolves GPC via 0x57B5A5DF)"),
+        "bank" => Arg::new("bank")
+            .long("bank")
+            .value_name("BANK")
+            .help("ClockClient V/F-points bank selector (0 or 1; default 0)"),
         "domain" => Arg::new("domain")
             .long("domain")
             .value_name("DOMAIN")
@@ -3076,16 +3080,36 @@ fn execute_target(
             })
         }
         Command::GetPrivateVftable => {
+            // --bank 0|1 (default 0): masks/segments/points all carry a bank
+            // tag — filter to the requested bank's 2048-bit mask window too
+            let bank = match invocation.options.get("bank").and_then(|v| v.first()) {
+                Some(raw) => {
+                    let b = raw.parse::<usize>().map_err(|_| {
+                        CliError::new(format!("invalid --bank {raw:?}: expected 0 or 1"))
+                    })?;
+                    if b > 1 {
+                        return Err(CliError::new(format!(
+                            "invalid --bank {b}: expected 0 or 1"
+                        )));
+                    }
+                    b
+                }
+                None => 0,
+            };
             let vfp = run(target, QueryNvapiClkVfPoints)?.output;
             Ok(match vfp {
                 Some(v) => json!({
+                    "bank": bank,
                     // bank0 = masks[0..4], bank1 = masks[4..8] (2048 bits each)
-                    "masks": v.masks.iter().map(|m| format!("0x{:016X}", m)).collect::<Vec<_>>(),
+                    "masks": v.masks[bank * 4..bank * 4 + 4]
+                        .iter()
+                        .map(|m| format!("0x{:016X}", m))
+                        .collect::<Vec<_>>(),
                     // contiguous same-type runs — bank 0 packs multiple
                     // domains back-to-back (GPC curve, mem pstate bins,
                     // XBAR curve, HOST curve, ...), so plot ONE curve per
                     // vf_curve segment, not the whole point list
-                    "segments": v.segments.iter().map(|s| json!({
+                    "segments": v.segments.iter().filter(|s| s.bank as usize == bank).map(|s| json!({
                         "bank": s.bank,
                         // EMPIRICAL advisory attribution (ordinal-based;
                         // confirm by domain-offset A/B)
@@ -3103,7 +3127,7 @@ fn execute_target(
                         "freq_default_mhz_min": s.freq_default_mhz_min,
                         "freq_default_mhz_max": s.freq_default_mhz_max,
                     })).collect::<Vec<_>>(),
-                    "points": v.points.iter().map(|p| json!({
+                    "points": v.points.iter().filter(|p| p.bank as usize == bank).map(|p| json!({
                         "bank": p.bank,
                         "index": p.index,
                         "type": p.record_type,
