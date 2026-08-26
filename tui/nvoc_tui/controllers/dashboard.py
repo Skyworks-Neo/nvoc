@@ -61,7 +61,7 @@ class DashboardController(PaneController):
             "status",
             self.on_status_loaded,
             log_output=False,
-            allow_wake=self._first_success,
+            allow_wake=not self._first_success,
         )
 
     @staticmethod

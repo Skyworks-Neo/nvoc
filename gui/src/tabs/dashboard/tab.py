@@ -518,10 +518,10 @@ class DashboardTab:
             # In offline backoff the poll cadence is the slow re-probe rate,
             # not the user's configured interval. Each backoff tick also kicks a
             # GPU rediscovery so the dGPU is picked up when it comes back.
-            delay = self._current_backoff_ms()
+            delay = self._current_poll_interval_ms()
             self._poll_job = self.app.after(delay, self._poll_tick)
 
-    def _current_backoff_ms(self) -> int:
+    def _current_poll_interval_ms(self) -> int:
         if not self._in_offline_backoff:
             return self._interval_ms
         # Exponential-ish backoff capped: 5s -> 10s -> 15s -> 15s ...

@@ -779,7 +779,7 @@ class App(ctk.CTk):
         # re-probing on a slow cadence. Logging every failed re-probe (each
         # producing "NvAPI_EnumPhysicalGPUs failed: API_NOT_INITIALIZED")
         # floods the console just like the pre-backoff status spam did.
-        if not (retcode != 0 and _is_discovery_offline_error(output)):
+        if output and not (retcode != 0 and _is_discovery_offline_error(output)):
             self.console.append(output if output.endswith("\n") else f"{output}\n")
         if retcode != 0:
             if not _is_discovery_offline_error(output):
