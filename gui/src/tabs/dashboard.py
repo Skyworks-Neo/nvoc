@@ -239,6 +239,9 @@ class DashboardTab:
     """Dashboard tab with real-time GPU metric bars."""
 
     _DEFAULT_INTERVAL_MS = 1000
+    _OFFLINE_FAIL_THRESHOLD = 3
+    _OFFLINE_BACKOFF_MS = 5000
+    _OFFLINE_BACKOFF_CAP_MS = 15000
 
     def __init__(self, parent: ctk.CTkFrame, app: "App") -> None:
         self.app = app
@@ -250,6 +253,9 @@ class DashboardTab:
         self._interval_ms = self._DEFAULT_INTERVAL_MS
         self._is_resize_active = False
         self._pending_done_payload: Optional[Tuple[int, str]] = None
+        self._consecutive_offline = 0
+        self._in_offline_backoff = False
+        self._offline_hint_logged = False
 
         self._build_ui()
         self._sync_lock_state_from_cache()
@@ -386,11 +392,41 @@ class DashboardTab:
 
     def _schedule_next(self) -> None:
         if self._polling:
-            self._poll_job = self.app.after(self._interval_ms, self._poll_tick)
+            self._poll_job = self.app.after(
+                self._current_poll_interval_ms(), self._poll_tick
+            )
+
+    def _current_poll_interval_ms(self) -> int:
+        if not self._in_offline_backoff:
+            return self._interval_ms
+        step = max(1, self._consecutive_offline - self._OFFLINE_FAIL_THRESHOLD + 1)
+        return min(
+            self._OFFLINE_BACKOFF_MS * step,
+            self._OFFLINE_BACKOFF_CAP_MS,
+        )
+
+    @staticmethod
+    def _looks_like_offline_error(output: str) -> bool:
+        if not output:
+            return False
+        lowered = output.lower()
+        return (
+            "not_initialized" in lowered
+            or "api_not_initialized" in lowered
+            or "noimplementation" in lowered
+            or "nvidia_device_not_found" in lowered
+            or "novidevicefound" in lowered
+            or "gpu is lost" in lowered
+        )
 
     def _poll_tick(self) -> None:
-        if self._polling:
-            self._fetch_once()
+        if not self._polling:
+            return
+        if self._in_offline_backoff:
+            self.app._refresh_gpu_list()
+            self._schedule_next()
+            return
+        self._fetch_once()
 
     def _fetch_once(self) -> None:
         # Sync lock state from cache at the start of every fetch
@@ -412,6 +448,9 @@ class DashboardTab:
     def _on_done(self, retcode: int, output: str) -> None:
         self._fetching = False
 
+        if retcode == 0:
+            self._exit_offline_backoff()
+
         if self._is_resize_active:
             # Keep only latest sample while resize is active, then flush once.
             self._pending_done_payload = (retcode, output)
@@ -419,8 +458,41 @@ class DashboardTab:
             self._schedule_next()
             return
 
+        if retcode != 0 and self._looks_like_offline_error(output):
+            self._record_offline_failure()
+            self._status_lbl.configure(text="⚠ dGPU offline")
+            for row in self._rows.values():
+                row.set_error()
+            self._schedule_next()
+            return
+
         self._apply_done_payload(retcode, output)
         self._schedule_next()
+
+    def _record_offline_failure(self) -> None:
+        self._consecutive_offline += 1
+        if (
+            not self._in_offline_backoff
+            and self._consecutive_offline >= self._OFFLINE_FAIL_THRESHOLD
+        ):
+            self._enter_offline_backoff()
+
+    def _enter_offline_backoff(self) -> None:
+        self._in_offline_backoff = True
+        if not self._offline_hint_logged:
+            self._offline_hint_logged = True
+            self.app.console.append(
+                "[GUI] dGPU probably offline — polling paused, "
+                "re-probing for the GPU to come back.\n"
+            )
+        self.app._refresh_gpu_list()
+
+    def _exit_offline_backoff(self) -> None:
+        if self._in_offline_backoff:
+            self._in_offline_backoff = False
+            self.app.console.append("[GUI] dGPU back online — resuming polling.\n")
+        self._consecutive_offline = 0
+        self._offline_hint_logged = False
 
     def _apply_done_payload(self, retcode: int, output: str) -> None:
         """Apply a status poll result to the UI in one batched update."""
