@@ -553,6 +553,27 @@ impl GpuType {
         matches!(self, GpuType::Mobile50Series | GpuType::Desktop50Series)
     }
 
+    /// 是否为移动端 GPU（20/30/40/50 系移动端）
+    pub fn is_mobile(&self) -> bool {
+        matches!(
+            self,
+            GpuType::Mobile50Series
+                | GpuType::Mobile40Series
+                | GpuType::Mobile30Series
+                | GpuType::Mobile20Series
+        )
+    }
+
+    /// 是否为 Unknown 类型
+    pub fn is_unknown(&self) -> bool {
+        matches!(self, GpuType::Unknown)
+    }
+
+    /// 移动端或未知 GPU 在 OC 写入前需要 GC6 唤醒
+    pub fn needs_gc6_wake(&self) -> bool {
+        self.is_mobile() || self.is_unknown()
+    }
+
     /// 核心频率步进（kHz），供 handle_vfp_export / fix_result 使用
     /// 直接委托 oc_params()，保持单一数据源
     pub fn minimum_freq_step_khz(&self) -> i32 {
