@@ -1554,8 +1554,10 @@ class VFCurveTab:
                     zorder=5,
                 )
 
-        # Keep fixed margins so Y-axis label is never clipped
-        self.fig.subplots_adjust(left=0.13, right=0.985, top=0.92, bottom=0.22)
+        # Keep margins in sync with _create_chart: y tick labels live inside
+        # the axes (negative tick pad) so the left margin stays near-zero —
+        # re-applying the old 0.13 here would re-create the left gutter
+        self.fig.subplots_adjust(left=0.006, right=0.985, top=0.92, bottom=0.22)
 
         self._live_elements.clear()
         self._live_hline = None
