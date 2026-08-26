@@ -502,7 +502,7 @@ class OverclockController(PaneController):
             self.app.run_native_action(
                 "enable dynamic boost",
                 lambda native, gpu=gpu: (
-                    native.set_dynamic_boost(gpu, True)
+                    native.set_ppab_status(gpu, True)
                     or "Dynamic Boost (PPAB) enabled."
                 ),
             )
@@ -524,7 +524,7 @@ class OverclockController(PaneController):
         volt_limit_mv: float | None = None,
         volt_rail_bit: int | None = None,
     ) -> str:
-        native.set_dynamic_boost(gpu, ppab)
+        native.set_ppab_status(gpu, ppab)
         native.set_dnotifier(gpu, d_level)
         native.set_tgp_watt(gpu, tgp_watts, self._tgp_policy_index)
         native.set_target_temp(gpu, float(target_temp), 2)

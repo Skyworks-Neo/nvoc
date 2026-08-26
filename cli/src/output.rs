@@ -2206,7 +2206,7 @@ mod tests {
 
     fn sample_output(command: Command) -> Value {
         match command {
-            Command::ListGpus => json!({
+            Command::GetGpuList => json!({
                 "index": 0,
                 "gpu_id": 1,
                 "gpu_id_hex": "0x0001",
@@ -2216,7 +2216,7 @@ mod tests {
                 "uuid": "GPU-12345678-abcd-1234-abcd-1234567890ab",
                 "name": "GPU",
             }),
-            Command::ListDisplays => json!([{
+            Command::GetDisplayList => json!([{
                 "display_id": "0x00010001",
                 "display_id_u32": 65537,
                 "connector": "DisplayPort",
@@ -2349,7 +2349,7 @@ mod tests {
                 "offset_mhz": 120,
             }),
             Command::SetPublicTgpPercent => json!({"applied": true, "power_percent": 90}),
-            Command::SetDynamicBoost => json!({"applied": true, "dynamic_boost": true}),
+            Command::SetPpabStatus => json!({"applied": true, "dynamic_boost": true}),
             Command::SetPowerLimit => json!({"applied": true, "tgp_watt": 140, "tgp_mw": 140000}),
             Command::ResetPowerLimit => json!({"applied": true, "default_watt": 100.0}),
             Command::GetDNotifier => json!({
@@ -2364,7 +2364,7 @@ mod tests {
             }),
             Command::SetDNotifier => json!({"applied": true, "dnotifier_level": "D3"}),
             Command::SetTempLimit => json!({"applied": true, "thermal_limit_c": 83}),
-            Command::SetTemperatureThresholds => {
+            Command::SetPrivateTargetTempLimit => {
                 json!({"applied": true, "policy_index": 2, "celsius": 85.0})
             }
             Command::SetFanSpeed => {

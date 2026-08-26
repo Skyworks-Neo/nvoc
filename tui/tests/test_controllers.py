@@ -248,8 +248,8 @@ class FakeNative:
         self.calls.append(("set_volt_rail_target", gpu, rail_bit, target_mv, unknown))
         return {"applied": True, "effective_wall_uV": int(target_mv * 1000)}
 
-    def set_dynamic_boost(self, gpu, enabled):
-        self.calls.append(("set_dynamic_boost", gpu, enabled))
+    def set_ppab_status(self, gpu, enabled):
+        self.calls.append(("set_ppab_status", gpu, enabled))
 
     def set_dnotifier(self, gpu, level):
         self.calls.append(("set_dnotifier", gpu, level))

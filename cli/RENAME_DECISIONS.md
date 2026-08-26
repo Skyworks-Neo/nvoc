@@ -31,6 +31,13 @@
 
 ## 已完成族决策
 
+### 基础枚举命令
+
+| 原名 | 决策 | 底层线 |
+|---|---|---|
+| `list-gpus` | → `get-gpu-list` ✅ DONE(R5 动词规范:只读统一 get) | target::discover_targets |
+| `list-displays` | → `get-display-list` ✅ DONE(R5;pynvoc `get_display_list` 同步) | NVAPI display enum |
+
 ### vfp-curve 族(9→6,3 移除)
 
 | 原名 | 决策 | 底层线 |
@@ -82,7 +89,10 @@
 | `set-power-watt` / `set-tgp-watt` | **合并为 `set-power-limit`** ✅ DONE(R1 去单位,R2 对称 `reset-power-limit`;auto,NVAPI 也有写入原语 `0xAFFC2279`/`0xBFF09E59`,走 auto;core op SetNvapiTgpWatt/SetNvmlPowerLimit 名不变) | NVAPI+NVML |
 | `set-power-percent` | → `set-public-tgp-percent`(仅 NVAPI) | ClientPowerPoliciesSetStatus `0xAD95F5ED` |
 | `reset-power-percent` | → `reset-public-tgp-percent`(仅 NVAPI) | ClientPowerPoliciesGetInfo+SetStatus |
-| `set-dynamic-boost` | → `set-ppab-status`(PPAB = Persistent Performance Auto Boost;与 autoboost-status 体系对齐,全小写规避 clap 大写问题) | SetNvapiDynamicBoost `0x1504FC3D` |
+| `set-dynamic-boost` | → `set-ppab-status` ✅ DONE(PPAB = Persistent Performance Auto Boost;与 autoboost-status 体系对齐,全小写规避 clap 大写问题;pynvoc `set_ppab_status` 同步) | SetNvapiDynamicBoost `0x1504FC3D` |
+| `set-temp-thresholds` | → `set-private-target-temp-limit` ✅ DONE(mobile 私有 target-temp policy 槽,语义对齐 temp-limit 术语) | SetNvapiTargetTemp `0xE097144F` |
+| `set-wm2` + `set-wm2-mode` | **合并为 `set-whispermode2-status`** ✅ DONE(positional on/off;`--mode quieter\|quiet\|balanced` 附加写 acoustic mode) | SetWm2Active `0xD27D0629` + SetWm2Mode `0xD2561B69` |
+| `set-bb2` | → `set-batteryboost2-status` ✅ DONE(专有名词全拼,-status 对齐) | SetBb2Active `0xD27D0629` |
 
 注:NVAPI ClientPowerPolicies 有瓦特写入原语(实测 `set-tgp-watt 60` via nvapi 成功),非只有百分比。`set-dynamic-boost` 改 `set-ppab-status`,PPAB 是该功能的技术名(区别于 NVML auto-boost)。与 get/set/reset-autoboost-status 体系对齐用 -status 后缀。`get/set-tgp-watt` 带 watt 单位,改 `get/set-power-limit` 去单位更通用;`reset-power-percent` 保留 tgp-percent(区分 percent 面且保留 tgp 术语标识 NVAPI ClientPowerPolicies)。
 
@@ -115,7 +125,7 @@
 | `get-fan-curve` | 保留 | NVAPI ClientFanPolicies `0x200DC` |
 | `set-fan-curve` | 保留 | NVAPI ClientFanPolicies `0x200DC` |
 | `reset-fan-curve` | 保留 | NVAPI ClientFanPolicies `0x200DC` |
-| `set-fan-stop` | 保留 | NVAPI |
+| `set-fan-stop` | → `set-fanstop-status` ✅ DONE(fanstop 是专有名词功能,连写+`-status`) | NVAPI |
 
 注:`set-fan-speed` 用 `--percent`/`--rpm` 模式统一原 percent/rpm 两命令;`reset-fan-speed` 同理分派。fan-curve 独立保留(曲线 vs 单点不同概念)。
 

@@ -133,8 +133,8 @@ pub enum OutputFormat {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
-    ListGpus,
-    ListDisplays,
+    GetGpuList,
+    GetDisplayList,
     GetInfo,
     GetUuid,
     GetStatus,
@@ -148,7 +148,7 @@ pub enum Command {
     GetFanCurve,
     SetFanCurve,
     ResetFanCurveCmd,
-    SetFanStopCmd,
+    SetFanstopStatus,
     GetTemperatureThresholds,
     GetLegacyTempSensor,
     GetPowerMode,
@@ -165,7 +165,7 @@ pub enum Command {
     GetEdid,
     SetPstateGlobalFreqOffset,
     SetPublicTgpPercent,
-    SetDynamicBoost,
+    SetPpabStatus,
     SetPowerLimit,
     ResetPowerLimit,
     GetDNotifier,
@@ -190,7 +190,7 @@ pub enum Command {
     GetTempSim,
     SetTempSim,
     ResetTempSim,
-    SetTemperatureThresholds,
+    SetPrivateTargetTempLimit,
     SetTempLimit,
     SetFanSpeed,
     SetFreqLock,
@@ -199,9 +199,8 @@ pub enum Command {
     SetPrivateForcedPstateLockUser,
     ResetPrivateForcedPstateLockUser,
     RestartDisplayDriver,
-    SetBb2,
-    SetWm2,
-    SetWm2Mode,
+    SetBatteryBoost2Status,
+    SetWhisperMode2Status,
     SetPublicVftablePointOffset,
     SetPublicVftableRangeOffset,
     SetPstateLockViaMemRange,
@@ -238,8 +237,8 @@ static BOTH_BACKENDS: [BackendAdapter; 2] = [BackendAdapter::Nvapi, BackendAdapt
 impl Command {
     pub fn name(self) -> &'static str {
         match self {
-            Self::ListGpus => "list-gpus",
-            Self::ListDisplays => "list-displays",
+            Self::GetGpuList => "get-gpu-list",
+            Self::GetDisplayList => "get-display-list",
             Self::GetInfo => "get-info",
             Self::GetUuid => "get-uuid",
             Self::GetStatus => "get-status",
@@ -255,7 +254,7 @@ impl Command {
             Self::GetFanCurve => "get-fan-curve",
             Self::SetFanCurve => "set-fan-curve",
             Self::ResetFanCurveCmd => "reset-fan-curve",
-            Self::SetFanStopCmd => "set-fan-stop",
+            Self::SetFanstopStatus => "set-fanstop-status",
             Self::GetTemperatureThresholds => "get-temp-thresholds",
             Self::GetLegacyTempSensor => "get-legacy-temp-sensor",
             Self::GetPowerMode => "get-power-mode",
@@ -272,7 +271,7 @@ impl Command {
             Self::GetEdid => "get-edid",
             Self::SetPstateGlobalFreqOffset => "set-pstate-global-freq-offset",
             Self::SetPublicTgpPercent => "set-public-tgp-percent",
-            Self::SetDynamicBoost => "set-dynamic-boost",
+            Self::SetPpabStatus => "set-ppab-status",
             Self::SetPowerLimit => "set-power-limit",
             Self::ResetPowerLimit => "reset-power-limit",
             Self::GetDNotifier => "get-dnotifier",
@@ -298,7 +297,7 @@ impl Command {
             Self::SetGpuClock => "set-perf-freq-caps",
             Self::ResetGpuClock => "reset-perf-freq-caps",
             Self::SetTempLimit => "set-temp-limit",
-            Self::SetTemperatureThresholds => "set-temp-thresholds",
+            Self::SetPrivateTargetTempLimit => "set-private-target-temp-limit",
             Self::SetFanSpeed => "set-fan-speed",
             Self::SetFreqLock => "set-freq-lock",
             Self::SetGpcVoltLock => "set-gpc-volt-lock",
@@ -306,9 +305,8 @@ impl Command {
             Self::SetPrivateForcedPstateLockUser => "set-private-forced-pstate-lock-user",
             Self::ResetPrivateForcedPstateLockUser => "reset-private-forced-pstate-lock-user",
             Self::RestartDisplayDriver => "restart-display-driver",
-            Self::SetBb2 => "set-bb2",
-            Self::SetWm2 => "set-wm2",
-            Self::SetWm2Mode => "set-wm2-mode",
+            Self::SetBatteryBoost2Status => "set-batteryboost2-status",
+            Self::SetWhisperMode2Status => "set-whispermode2-status",
             Self::SetPublicVftablePointOffset => "set-public-vftable-point-offset",
             Self::SetPublicVftableRangeOffset => "set-public-vftable-range-offset",
             Self::SetPstateLockViaMemRange => "set-pstate-lock-via-mem-range",
@@ -339,8 +337,8 @@ impl Command {
 
     fn about(self) -> &'static str {
         match self {
-            Self::ListGpus => "List discovered GPUs and available backends",
-            Self::ListDisplays => "List NVAPI display IDs for EDID operations",
+            Self::GetGpuList => "List discovered GPUs and available backends",
+            Self::GetDisplayList => "List NVAPI display IDs for EDID operations",
             Self::GetInfo => "Read NVAPI GPU identity and capability information",
             Self::GetUuid => "Read GPU UUID",
             Self::GetStatus => "Read NVAPI live GPU status",
@@ -363,7 +361,7 @@ impl Command {
             Self::ResetFanCurveCmd => {
                 "Reset one fan-curve slot to factory (GPUMon's private FanPolicy path 0x2B2A2A45; works where restore-fan/cooler-settings is NOT_SUPPORTED, e.g. desktop 3060/2070)"
             }
-            Self::SetFanStopCmd => {
+            Self::SetFanstopStatus => {
                 "Toggle fan stop / zero-RPM for a curve slot (FanArbiterSet NDA 0x44CD3014): on | off"
             }
             Self::GetTemperatureThresholds => {
@@ -392,7 +390,7 @@ impl Command {
             Self::GetEdid => "Read display EDID through NVAPI",
             Self::SetPstateGlobalFreqOffset => "Set clock offset in MHz for any clock domain",
             Self::SetPublicTgpPercent => "Set NVAPI power limit in percent",
-            Self::SetDynamicBoost => "Set NVAPI PPAB / Dynamic-Boost enable (on/off)",
+            Self::SetPpabStatus => "Set NVAPI PPAB / Dynamic-Boost enable (on/off)",
             Self::SetPowerLimit => "Set TGP in watts: NVAPI path writes the mobile TGP slider (ClientPowerPolicies, --policy-index); NVML path writes the power-management limit (nvidia-smi -pl). Auto prefers NVAPI",
             Self::ResetPowerLimit => "Reset NVAPI TGP to rated/default (mobile)",
             Self::GetDNotifier => {
@@ -449,8 +447,8 @@ impl Command {
             Self::SetPrivateVftableRangeOffset => {
                 "Write a range of V/F curve points via the private SetControl (dangerous batch V/F edit; single RMW cycle; default/--freq-mode = same kHz freq offset on every point, --raw-converted = one MHz target translated per-point via g(def), --raw = one raw control word on every point)"
             }
-            Self::SetTempLimit => "Set thermal limit in Celsius: NVAPI path writes the sensor limit; NVML path writes the GPU max-temp threshold, or the acoustic target temp with --domain acoustic (Linux channel; Windows rejects the NVML threshold setter -- use set-temp-thresholds there)",
-            Self::SetTemperatureThresholds => {
+            Self::SetTempLimit => "Set thermal limit in Celsius: NVAPI path writes the sensor limit; NVML path writes the GPU max-temp threshold, or the acoustic target temp with --domain acoustic (Linux channel; Windows rejects the NVML threshold setter -- use set-private-target-temp-limit there)",
+            Self::SetPrivateTargetTempLimit => {
                 "Set an NVAPI target-temp (temp-limit) policy slot in Celsius for mobile sku"
             }
             Self::SetFanSpeed => "Set fan speed: --percent (default) sets cooler level in percent (NVAPI SetCoolerLevels / NVML set_fan_speed); --rpm sets physical RPM via private FanCoolerSetControl (NVAPI-only)",
@@ -468,14 +466,11 @@ impl Command {
             Self::RestartDisplayDriver => {
                 "Restart the display driver (0xB4B26B65); legacy apply-OC trigger"
             }
-            Self::SetBb2 => {
+            Self::SetBatteryBoost2Status => {
                 "Battery Boost 2.0 enable/disable (0xD27D0629); mobile-only; 1=enable 0=disable"
             }
-            Self::SetWm2 => {
-                "Whisper Mode 2.0 enable/disable (0xD27D0629); mobile-only; 1=enable 0=disable"
-            }
-            Self::SetWm2Mode => {
-                "Whisper Mode 2.0 acoustic mode (0xD2561B69); quieter/quiet/balanced"
+            Self::SetWhisperMode2Status => {
+                "Whisper Mode 2.0 status (0xD27D0629, mobile-only): on/off enable; --mode quieter|quiet|balanced also writes the acoustic mode (0xD2561B69)"
             }
             Self::SetPublicVftablePointOffset => "Set one VFP point delta in MHz",
             Self::SetPublicVftableRangeOffset => "Set a VFP point range delta in MHz",
@@ -510,7 +505,7 @@ impl Command {
 
     fn adapters(self) -> &'static [BackendAdapter] {
         match self {
-            Self::ListGpus
+            Self::GetGpuList
             | Self::GetPstateGlobalFreqOffset
             | Self::SetPstateGlobalFreqOffset
             | Self::SetTempLimit
@@ -555,12 +550,12 @@ impl Command {
             Self::GetAutoboostSupport | Self::GetEdid => (1, 1),
             Self::SetPstateGlobalFreqOffset
             | Self::SetPublicTgpPercent
-            | Self::SetDynamicBoost
+            | Self::SetPpabStatus
             | Self::SetPowerLimit
             | Self::SetDNotifier
             | Self::SetPStateLock
             | Self::SetTempLimit
-            | Self::SetTemperatureThresholds
+            | Self::SetPrivateTargetTempLimit
             | Self::SetFanSpeed
             | Self::SetGpcVoltLock
             | Self::SetLegacyGpcRailOvervoltLimit
@@ -573,13 +568,12 @@ impl Command {
             | Self::SetLegacyFreq => (1, 1),
             Self::SetFanCurve => (2, 2),
             Self::ResetFanCurveCmd => (0, 0),
-            Self::SetFanStopCmd => (1, 1),
+            Self::SetFanstopStatus => (1, 1),
             Self::OemOcScanner => (0, 0),
             Self::ResetPrivateForcedPstateLockUser => (0, 0),
             Self::RestartDisplayDriver => (0, 0),
-            Self::SetBb2 => (1, 1),
-            Self::SetWm2 => (1, 1),
-            Self::SetWm2Mode => (1, 1),
+            Self::SetBatteryBoost2Status => (1, 1),
+            Self::SetWhisperMode2Status => (1, 1),
             Self::SetPrivateForcedPstateLockUser => (1, 1),
             Self::SetFreqLock
             | Self::SetPublicVftablePointOffset
@@ -616,7 +610,7 @@ impl Command {
                 "infer-missing-default",
                 "no-infer-missing-default",
             ],
-            Self::ListDisplays => &["all"],
+            Self::GetDisplayList => &["all"],
             Self::GetPstateGlobalFreqOffset => &["domain", "pstate"],
             Self::SetPstateGlobalFreqOffset => &["domain", "pstate"],
             Self::GetLegacyGpcRailOvervoltLimit | Self::SetLegacyGpcRailOvervoltLimit => {
@@ -624,7 +618,7 @@ impl Command {
             }
             Self::SetFanSpeed => &["fan", "policy", "cooler", "percent", "rpm"],
             Self::ResetFanSpeed => &["fan", "cooler", "rpm"],
-            Self::ResetFanCurveCmd | Self::SetFanStopCmd => &["curve"],
+            Self::ResetFanCurveCmd | Self::SetFanstopStatus => &["curve"],
             Self::SetFreqLock | Self::ResetFreqLock | Self::ResetPublicVftableOffset => {
                 &["domain"]
             }
@@ -634,7 +628,7 @@ impl Command {
             Self::SetGpuClock => &["min"],
             Self::OemOcScanner => &["start", "stop", "revert", "status", "background-on", "background-off", "incomplete"],
             Self::SetPrivateForcedPstateLockUser => &["set-type"],
-            Self::SetPowerLimit | Self::ResetPowerLimit | Self::SetTemperatureThresholds => {
+            Self::SetPowerLimit | Self::ResetPowerLimit | Self::SetPrivateTargetTempLimit => {
                 &["policy-index"]
             }
             Self::SetVoltRailLimit => &["expect-type", "offset", "target"],
@@ -642,6 +636,7 @@ impl Command {
             Self::SetPrivateVftablePointOffset => &["freq-mode", "raw", "raw-converted"],
             Self::SetPrivateVftableRangeOffset => &["freq-mode", "raw", "raw-converted"],
             Self::SetTempLimit => &["domain"],
+            Self::SetWhisperMode2Status => &["mode"],
             Self::SetLegacyFreq => &["domain"],
             Self::ResetPstateGlobalFreqOffset => &["domain"],
             _ => &[],
@@ -673,7 +668,7 @@ impl Command {
                 "PERCENT",
                 "Power limit percentage, for example 90 or 90%",
             )],
-            Self::SetDynamicBoost => vec![PositionalArg::finite(
+            Self::SetPpabStatus => vec![PositionalArg::finite(
                 "arg_dynamic_boost",
                 "ENABLED",
                 "Whether to enable Dynamic Boost / PPAB (on/off, yes/no, 1/0)",
@@ -699,7 +694,7 @@ impl Command {
                 "CELSIUS",
                 "Temperature limit in Celsius, for example 83 or 83C; on the NVML path --domain acoustic targets the acoustic temp instead",
             )],
-            Self::SetTemperatureThresholds => vec![PositionalArg::hyphen(
+            Self::SetPrivateTargetTempLimit => vec![PositionalArg::hyphen(
                 "arg_celsius",
                 "CELSIUS",
                 "Target-temperature threshold in Celsius, for example 85 or 85C",
@@ -864,20 +859,16 @@ impl Command {
                 "PSTATE",
                 "P-State number to force (e.g. 0 for P0)",
             )],
-            Self::SetBb2 => vec![PositionalArg::free(
+            Self::SetBatteryBoost2Status => vec![PositionalArg::free(
                 "arg_state",
                 "ENABLE",
                 "1=enable, 0=disable",
             )],
-            Self::SetWm2 => vec![PositionalArg::free(
+            Self::SetWhisperMode2Status => vec![PositionalArg::finite(
                 "arg_state",
                 "ENABLE",
-                "1=enable, 0=disable",
-            )],
-            Self::SetWm2Mode => vec![PositionalArg::free(
-                "arg_mode",
-                "MODE",
-                "Acoustic mode: quieter, quiet, or balanced (or 0/1/2)",
+                "Whether to enable Whisper Mode 2.0 (on/off, yes/no, 1/0)",
+                PositionalValueKind::Bool,
             )],
             Self::SetPublicGpcRailVoltBoost => vec![PositionalArg::free(
                 "arg_boost_percent",
@@ -902,7 +893,7 @@ impl Command {
                 ),
             ],
             Self::ResetFanCurveCmd => vec![],
-            Self::SetFanStopCmd => vec![PositionalArg::free(
+            Self::SetFanstopStatus => vec![PositionalArg::free(
                 "arg_state",
                 "STATE",
                 "on = allow the fan to stop at idle (zero-RPM), off = always spin",
@@ -1012,10 +1003,12 @@ const COMMANDS: &[Command] = &[
     Command::GetAutoboostStatus,
     Command::GetAutoboostSupport,
     Command::GetCoreVoltageControl,
+    Command::GetDisplayList,
     Command::GetDNotifier,
     Command::GetEdid,
     Command::GetFanCurve,
     Command::GetFanInfo,
+    Command::GetGpuList,
     Command::GetInfo,
     Command::GetLegacyGpcRailOvervoltLimit,
     Command::GetLegacyOvervoltRanges,
@@ -1044,8 +1037,6 @@ const COMMANDS: &[Command] = &[
     Command::GetThrottleReasons,
     Command::GetUuid,
     Command::GetVoltRailInfo,
-    Command::ListDisplays,
-    Command::ListGpus,
     Command::OemOcScanner,
     Command::ResetAutoboostStatus,
     Command::ResetFanCurveCmd,
@@ -1068,14 +1059,13 @@ const COMMANDS: &[Command] = &[
     Command::RestartDisplayDriver,
     Command::SetAutoboostStatus,
     Command::SetAutoboostSupport,
-    Command::SetBb2,
+    Command::SetBatteryBoost2Status,
     Command::SetCoreVoltageControl,
     Command::SetDNotifier,
-    Command::SetDynamicBoost,
     Command::SetEdid,
     Command::SetFanCurve,
     Command::SetFanSpeed,
-    Command::SetFanStopCmd,
+    Command::SetFanstopStatus,
     Command::SetFreqLock,
     Command::SetGpcVoltLock,
     Command::SetLegacyApplicationFreqLock,
@@ -1086,9 +1076,11 @@ const COMMANDS: &[Command] = &[
     Command::SetPmgrArbiter,
     Command::SetPowerLimit,
     Command::SetPowerMode,
+    Command::SetPpabStatus,
     Command::SetPrivateForcedPstateLockUser,
     Command::SetPrivateFreqDomainGlobalOffset,
     Command::SetPrivatePermanentPstateLockUser,
+    Command::SetPrivateTargetTempLimit,
     Command::SetPrivateVftablePointOffset,
     Command::SetPrivateVftableRangeOffset,
     Command::SetPstateGlobalFreqOffset,
@@ -1100,10 +1092,8 @@ const COMMANDS: &[Command] = &[
     Command::SetPublicVftableRangeOffset,
     Command::SetTempLimit,
     Command::SetTempSim,
-    Command::SetTemperatureThresholds,
     Command::SetVoltRailLimit,
-    Command::SetWm2,
-    Command::SetWm2Mode,
+    Command::SetWhisperMode2Status,
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1538,6 +1528,11 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .long("incomplete")
             .action(ArgAction::SetTrue)
             .help("Query the last INCOMPLETE OC-scanner run's partial results (0xBE371D0A)"),
+        "mode" => Arg::new("mode")
+            .long("mode")
+            .value_name("MODE")
+            .action(ArgAction::Set)
+            .help("Whisper Mode 2.0 acoustic mode: quieter, quiet, or balanced (or 0/1/2)"),
         _ => unreachable!("unknown command-specific option {name}"),
     }
 }
@@ -1683,7 +1678,7 @@ fn execute(invocation: &Invocation) -> CliResult<Execution> {
 }
 
 fn execute_auto(invocation: &Invocation, command: Command) -> CliResult<Execution> {
-    if command == Command::ListGpus {
+    if command == Command::GetGpuList {
         return execute_list_gpus_auto(invocation);
     }
 
@@ -1771,7 +1766,7 @@ fn execute_backend(
     let inventory = discover_targets(discovery)?;
     let all_targets = inventory.targets();
 
-    if command == Command::ListGpus {
+    if command == Command::GetGpuList {
         return list_gpus_execution(
             command,
             adapter.label().to_string(),
@@ -1914,7 +1909,7 @@ fn execute_list_gpus_auto(invocation: &Invocation) -> CliResult<Execution> {
         .or_else(|_| discover_targets(BackendSet::Nvml))?;
     let all_targets = inventory.targets();
     list_gpus_execution(
-        Command::ListGpus,
+        Command::GetGpuList,
         "auto".to_string(),
         &all_targets,
         invocation,
@@ -2024,8 +2019,8 @@ fn execute_target(
     invocation: &Invocation,
 ) -> CliResult<Value> {
     match command {
-        Command::ListGpus => unreachable!("list-gpus is handled before target execution"),
-        Command::ListDisplays => {
+        Command::GetGpuList => unreachable!("get-gpu-list is handled before target execution"),
+        Command::GetDisplayList => {
             let all = option_bool(invocation, "all", false)?;
             let displays = run(target, QueryDisplays { all })?.output;
             Ok(Value::Array(
@@ -2476,7 +2471,7 @@ fn execute_target(
             run(target, ResetFanCurve { index: curve })?;
             Ok(json!({"applied": true, "curve": curve, "reset": true}))
         }
-        Command::SetFanStopCmd => {
+        Command::SetFanstopStatus => {
             // FanArbiterSet NDA 0x44CD3014 (struct 0x10144): toggle
             // zero-RPM fan stop for a curve slot. RE'd from GPUMon
             // setFanCurve's tail call.
@@ -2726,7 +2721,7 @@ fn execute_target(
             )?;
             Ok(json!({"applied": true, "power_percent": percent}))
         }
-        Command::SetDynamicBoost => {
+        Command::SetPpabStatus => {
             let active = parse_bool(&invocation.positionals[0])?;
             run(target, SetNvapiDynamicBoost { active })?;
             Ok(json!({"applied": true, "dynamic_boost": active}))
@@ -3522,7 +3517,7 @@ fn execute_target(
             )?;
             Ok(json!({"applied": true, "reset": true}))
         }
-        Command::SetTemperatureThresholds => {
+        Command::SetPrivateTargetTempLimit => {
             // NVAPI-only SET of one target-temperature (温度墙) policy slot.
             // `--policy-index` picks the slot (default 2 = the wall); the
             // driver accepts other indices but may reject them — useful for
@@ -3569,7 +3564,7 @@ fn execute_target(
                     // the ACOUSTIC_CURR target temp (the old
                     // set-acoustic-temp-c; Linux-native channel — Windows
                     // rejects the NVML threshold setter, use
-                    // set-temp-thresholds / --nvapi there).
+                    // set-private-target-temp-limit / --nvapi there).
                     match option_one(invocation, "domain").unwrap_or("gpu") {
                         "gpu" => {
                             run(target, SetTemperatureLimit { celsius })?;
@@ -3726,30 +3721,31 @@ fn execute_target(
             run(target, ResetForcePstate)?;
             Ok(json!({"applied": true, "action": "release"}))
         }
-        Command::SetBb2 => {
+        Command::SetBatteryBoost2Status => {
             let enable = parse_bool(&invocation.positionals[0])?;
             run(target, SetBb2Active { enable })?;
             Ok(json!({"applied": true, "bb2": enable}))
         }
-        Command::SetWm2 => {
+        Command::SetWhisperMode2Status => {
             let enable = parse_bool(&invocation.positionals[0])?;
             run(target, SetWm2Active { enable })?;
-            Ok(json!({"applied": true, "wm2": enable}))
-        }
-        Command::SetWm2Mode => {
-            let raw = invocation.positionals[0].trim().to_ascii_lowercase();
-            let (mode, label) = match raw.as_str() {
-                "0" | "quieter" => (Wm2AcousticMode::Quieter, "quieter"),
-                "1" | "quiet" => (Wm2AcousticMode::Quiet, "quiet"),
-                "2" | "balanced" => (Wm2AcousticMode::Balanced, "balanced"),
-                _ => {
-                    return Err(CliError::new(
-                        "mode must be quieter, quiet, or balanced (or 0/1/2)",
-                    ));
-                }
-            };
-            run(target, SetWm2Mode { mode })?;
-            Ok(json!({"applied": true, "wm2_mode": label}))
+            let mut out = json!({"applied": true, "whispermode2": enable});
+            if let Some(mode_raw) = invocation.options.get("mode").and_then(|v| v.first()) {
+                let raw = mode_raw.trim().to_ascii_lowercase();
+                let (mode, label) = match raw.as_str() {
+                    "0" | "quieter" => (Wm2AcousticMode::Quieter, "quieter"),
+                    "1" | "quiet" => (Wm2AcousticMode::Quiet, "quiet"),
+                    "2" | "balanced" => (Wm2AcousticMode::Balanced, "balanced"),
+                    _ => {
+                        return Err(CliError::new(
+                            "mode must be quieter, quiet, or balanced (or 0/1/2)",
+                        ));
+                    }
+                };
+                run(target, SetWm2Mode { mode })?;
+                out["mode"] = json!(label);
+            }
+            Ok(out)
         }
         Command::SetPublicVftablePointOffset => {
             let point = parse_usize(&invocation.positionals[0], "point")?;
@@ -5033,8 +5029,8 @@ mod tests {
 
     #[test]
     fn parses_new_getter_commands() {
-        let invocation = parse_args(["list-displays", "--all"]).unwrap();
-        assert_eq!(invocation.command, Some(Command::ListDisplays));
+        let invocation = parse_args(["get-display-list", "--all"]).unwrap();
+        assert_eq!(invocation.command, Some(Command::GetDisplayList));
         assert!(option_bool(&invocation, "all", false).unwrap());
 
         let invocation = parse_args(["get-legacy-gpc-rail-overvolt-limit", "--pstate", "P2"]).unwrap();
@@ -5093,8 +5089,8 @@ mod tests {
         let invocation = parse_args(["set-autoboost-status", "yes"]).unwrap();
         assert_eq!(invocation.positionals, vec!["yes"]);
 
-        let invocation = parse_args(["set-dynamic-boost", "on"]).unwrap();
-        assert_eq!(invocation.command, Some(Command::SetDynamicBoost));
+        let invocation = parse_args(["set-ppab-status", "on"]).unwrap();
+        assert_eq!(invocation.command, Some(Command::SetPpabStatus));
         assert_eq!(invocation.positionals, vec!["on"]);
 
         let invocation = parse_args(["set-pstate-lock-via-mem-range", "0", "p2"]).unwrap();
@@ -5103,7 +5099,7 @@ mod tests {
 
     #[test]
     fn rejects_backend_conflict() {
-        let err = parse_args(["--nvapi", "--nvml", "list-gpus"])
+        let err = parse_args(["--nvapi", "--nvml", "get-gpu-list"])
             .unwrap_err()
             .to_string();
         assert!(err.contains("conflicts"));
@@ -5283,7 +5279,7 @@ mod tests {
         );
         assert_eq!(Command::SetPowerLimit.adapters(), &BOTH_BACKENDS);
         assert_eq!(Command::SetPublicTgpPercent.adapters(), &NVAPI_ONLY);
-        assert_eq!(Command::ListDisplays.adapters(), &NVAPI_ONLY);
+        assert_eq!(Command::GetDisplayList.adapters(), &NVAPI_ONLY);
         assert_eq!(Command::GetAutoboostStatus.adapters(), &NVML_ONLY);
         assert_eq!(Command::GetAutoboostSupport.adapters(), &NVML_ONLY);
         assert_eq!(Command::GetEdid.adapters(), &NVAPI_ONLY);
@@ -5299,6 +5295,27 @@ mod tests {
         assert_eq!(invocation.positionals, vec!["1200"]);
         assert!(option_bool(&invocation, "rpm", false).unwrap());
         assert_eq!(option_one(&invocation, "cooler"), Some("0"));
+
+        // set-whispermode2-status on --mode quiet (merged set-wm2 + set-wm2-mode)
+        let invocation = parse_args(["set-whispermode2-status", "--mode", "quiet", "on"]).unwrap();
+        assert_eq!(invocation.command, Some(Command::SetWhisperMode2Status));
+        assert_eq!(invocation.positionals, vec!["on"]);
+        assert_eq!(option_one(&invocation, "mode"), Some("quiet"));
+        let invocation = parse_args(["set-whispermode2-status", "off"]).unwrap();
+        assert_eq!(invocation.command, Some(Command::SetWhisperMode2Status));
+        assert_eq!(option_one(&invocation, "mode"), None);
+
+        // set-fanstop-status (renamed set-fan-stop; fanstop is a proper noun)
+        let invocation = parse_args(["set-fanstop-status", "on"]).unwrap();
+        assert_eq!(invocation.command, Some(Command::SetFanstopStatus));
+
+        // set-ppab-status / set-batteryboost2-status / set-private-target-temp-limit
+        let invocation = parse_args(["set-ppab-status", "on"]).unwrap();
+        assert_eq!(invocation.command, Some(Command::SetPpabStatus));
+        let invocation = parse_args(["set-batteryboost2-status", "1"]).unwrap();
+        assert_eq!(invocation.command, Some(Command::SetBatteryBoost2Status));
+        let invocation = parse_args(["set-private-target-temp-limit", "80"]).unwrap();
+        assert_eq!(invocation.command, Some(Command::SetPrivateTargetTempLimit));
 
         // reset-fan-speed --rpm (merged reset; --cooler picks one cooler)
         let invocation = parse_args(["reset-fan-speed", "--rpm", "--nvapi", "--cooler", "1"])

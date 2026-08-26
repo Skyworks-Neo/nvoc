@@ -1608,7 +1608,7 @@ fn query_api_restriction(py: Python<'_>, gpu: &str, api_type: &str) -> PyResult<
 
 #[pyfunction]
 #[pyo3(signature = (gpu, all = false))]
-fn list_displays(py: Python<'_>, gpu: &str, all: bool) -> PyResult<Py<PyAny>> {
+fn get_display_list(py: Python<'_>, gpu: &str, all: bool) -> PyResult<Py<PyAny>> {
     let value = with_target(gpu, "nvapi", |target| normalize_displays(target, all))?;
     py_value(py, &value)
 }
@@ -1858,7 +1858,7 @@ fn set_thermal_limit(py: Python<'_>, gpu: &str, celsius: i32) -> PyResult<()> {
 }
 
 #[pyfunction]
-fn set_dynamic_boost(gpu: &str, active: bool) -> PyResult<()> {
+fn set_ppab_status(gpu: &str, active: bool) -> PyResult<()> {
     let inventory = {
         let mut inventory_cache = lock_inventory_cache();
         inventory_cache.entry(BackendSet::Nvapi)?
@@ -2578,7 +2578,7 @@ fn get_power_mizer(py: Python<'_>, gpu: &str, power_source: u32) -> PyResult<Py<
 }
 
 // NOTE (2026-08-26): get_dynamic_boost withdrawn — 0xC80068A1 reads the PCF
-// platform status bytes, NOT the PPAB enable written by set_dynamic_boost
+// platform status bytes, NOT the PPAB enable written by set_ppab_status
 // (live-probed; see nvapi-rs examples/probe_pcf_dynamic_boost.rs). The
 // nvapi-rs layer keeps the wrap; re-expose only when a true readback is found.
 
@@ -2704,7 +2704,7 @@ fn get_oc_scanner_incomplete(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
 
 /// Read the temperature-simulation state (Secured-Overrides gated).
 #[pyfunction]
-fn get_thermal_sim(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
+fn get_temp_sim(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
     let value = with_target(gpu, "nvapi", |target| {
         let out = run(target, QueryNvapiThermalSim).map_err(to_py_err)?.output;
         Ok(match out {
@@ -2721,7 +2721,7 @@ fn get_thermal_sim(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
 /// Fake the driver-visible GPU temperature (DANGEROUS research tool;
 /// Secured-Overrides gated).
 #[pyfunction]
-fn set_thermal_sim(py: Python<'_>, gpu: &str, temperature_c: i32) -> PyResult<Py<PyAny>> {
+fn set_temp_sim(py: Python<'_>, gpu: &str, temperature_c: i32) -> PyResult<Py<PyAny>> {
     let v = with_target(gpu, "nvapi", |target| {
         let out = run(target, SetNvapiThermalSim { temperature_c })
             .map_err(to_py_err)?
@@ -2739,7 +2739,7 @@ fn set_thermal_sim(py: Python<'_>, gpu: &str, temperature_c: i32) -> PyResult<Py
 
 /// Disable temperature simulation (restore the real sensor reading).
 #[pyfunction]
-fn disable_thermal_sim(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
+fn reset_temp_sim(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
     let v = with_target(gpu, "nvapi", |target| {
         let out = run(target, DisableNvapiThermalSim)
             .map_err(to_py_err)?
@@ -3675,7 +3675,7 @@ fn set_fan(
 /// tail call. `curve_index` is the slot (default 0); `enable` true = allow
 /// the fan to stop at idle, false = always spin.
 #[pyfunction]
-fn set_fan_stop(
+fn set_fanstop_status(
     py: Python<'_>,
     gpu: &str,
     enable: bool,
@@ -3941,7 +3941,7 @@ fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(query_voltage_boost, m)?)?;
     m.add_function(wrap_pyfunction!(query_auto_boost, m)?)?;
     m.add_function(wrap_pyfunction!(query_api_restriction, m)?)?;
-    m.add_function(wrap_pyfunction!(list_displays, m)?)?;
+    m.add_function(wrap_pyfunction!(get_display_list, m)?)?;
     m.add_function(wrap_pyfunction!(query_edid, m)?)?;
     m.add_function(wrap_pyfunction!(query_clock_offset, m)?)?;
     m.add_function(wrap_pyfunction!(query_public_vftable, m)?)?;
@@ -3953,7 +3953,7 @@ fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(set_clock_offset, m)?)?;
     m.add_function(wrap_pyfunction!(set_power_limit, m)?)?;
     m.add_function(wrap_pyfunction!(set_thermal_limit, m)?)?;
-    m.add_function(wrap_pyfunction!(set_dynamic_boost, m)?)?;
+    m.add_function(wrap_pyfunction!(set_ppab_status, m)?)?;
     m.add_function(wrap_pyfunction!(query_tgp_watt_range, m)?)?;
     m.add_function(wrap_pyfunction!(set_tgp_watt, m)?)?;
     m.add_function(wrap_pyfunction!(reset_tgp_watt, m)?)?;
@@ -3981,9 +3981,9 @@ fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(get_rated_tdp, m)?)?;
     m.add_function(wrap_pyfunction!(set_background_oc_scanner, m)?)?;
     m.add_function(wrap_pyfunction!(get_oc_scanner_incomplete, m)?)?;
-    m.add_function(wrap_pyfunction!(get_thermal_sim, m)?)?;
-    m.add_function(wrap_pyfunction!(set_thermal_sim, m)?)?;
-    m.add_function(wrap_pyfunction!(disable_thermal_sim, m)?)?;
+    m.add_function(wrap_pyfunction!(get_temp_sim, m)?)?;
+    m.add_function(wrap_pyfunction!(set_temp_sim, m)?)?;
+    m.add_function(wrap_pyfunction!(reset_temp_sim, m)?)?;
     m.add_function(wrap_pyfunction!(set_pstate_lock_level, m)?)?;
     m.add_function(wrap_pyfunction!(set_target_temp, m)?)?;
     m.add_function(wrap_pyfunction!(set_applications_clocks, m)?)?;
@@ -4022,7 +4022,7 @@ fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(clear_edid, m)?)?;
     m.add_function(wrap_pyfunction!(set_legacy_voltage_delta, m)?)?;
     m.add_function(wrap_pyfunction!(set_fan, m)?)?;
-    m.add_function(wrap_pyfunction!(set_fan_stop, m)?)?;
+    m.add_function(wrap_pyfunction!(set_fanstop_status, m)?)?;
     m.add_function(wrap_pyfunction!(set_fan_rpm, m)?)?;
     m.add_function(wrap_pyfunction!(reset_core_clocks, m)?)?;
     m.add_function(wrap_pyfunction!(reset_mem_clocks, m)?)?;
