@@ -318,6 +318,28 @@ impl GpuOperation for SetTemperatureLimit {
     }
 }
 
+/// Set the NVML acoustic target temperature (`ACOUSTIC_CURR`).
+#[derive(Clone, Copy, Debug)]
+pub struct SetNvmlAcousticTemp {
+    pub celsius: i32,
+}
+
+impl GpuOperation for SetNvmlAcousticTemp {
+    type Output = AppliedValue<i32>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvmlAcousticTemp
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        low_nvml::set_nvml_acoustic_temperature(target.nvml()?, target.id.0, self.celsius)?;
+        Ok(AppliedValue {
+            requested: self.celsius,
+            applied: self.celsius,
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct QueryPstates;
 

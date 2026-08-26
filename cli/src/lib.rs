@@ -16,10 +16,10 @@ use nvoc_core::{
     ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock, ResetVfpLock,
     SetApiRestriction, SetApplicationsClocks, SetAutoBoost, SetAutoBoostDefault, SetClockOffset,
     SetCoolerLevels, SetEdid, SetFanSpeed, SetLegacyClocks, SetLockedClocks, SetNvapiPowerLimits,
-    SetNvapiPstateLock, SetNvapiSensorLimits, SetNvmlPstateLock, SetPowerLimit,
-    SetPstateBaseVoltage, SetPstateClockOffset, SetTemperatureLimit, SetVfpFrequencyLock,
-    SetVfpPointDelta, SetVfpRangeDelta, SetVfpVoltageLock, SetVoltageBoost, VfpResetDomain,
-    discover_targets, nvml_pstate_to_str, parse_nvapi_locked_voltage_target,
+    SetNvapiPstateLock, SetNvapiSensorLimits, SetNvmlAcousticTemp, SetNvmlPstateLock,
+    SetPowerLimit, SetPstateBaseVoltage, SetPstateClockOffset, SetTemperatureLimit,
+    SetVfpFrequencyLock, SetVfpPointDelta, SetVfpRangeDelta, SetVfpVoltageLock, SetVoltageBoost,
+    VfpResetDomain, discover_targets, nvml_pstate_to_str, parse_nvapi_locked_voltage_target,
     parse_nvml_fan_control_policy, parse_nvml_pstate, run, select_targets,
 };
 use serde_json::{Value, json};
@@ -149,6 +149,7 @@ pub enum Command {
     SetPowerWatt,
     SetPowerPercent,
     SetThermalLimitC,
+    SetAcousticTempC,
     SetFanPercent,
     SetLockedClocksMhz,
     SetVfpVoltageLock,
@@ -217,6 +218,7 @@ impl Command {
             Self::SetPowerWatt => "set-power-watt",
             Self::SetPowerPercent => "set-power-percent",
             Self::SetThermalLimitC => "set-thermal-limit-c",
+            Self::SetAcousticTempC => "set-acoustic-temp-c",
             Self::SetFanPercent => "set-fan-percent",
             Self::SetLockedClocksMhz => "set-locked-clocks-mhz",
             Self::SetVfpVoltageLock => "set-vfp-voltage-lock",
@@ -283,6 +285,9 @@ impl Command {
             Self::SetPowerWatt => "Set NVML power limit in watts",
             Self::SetPowerPercent => "Set NVAPI power limit in percent",
             Self::SetThermalLimitC => "Set thermal limit in Celsius",
+            Self::SetAcousticTempC => {
+                "Set acoustic target temperature in Celsius through NVML (Linux only)"
+            }
             Self::SetFanPercent => "Set fan speed/cooler level in percent",
             Self::SetLockedClocksMhz => "Lock core or memory clocks to a MHz range",
             Self::SetVfpVoltageLock => "Lock VFP by point or voltage",
@@ -341,7 +346,8 @@ impl Command {
             | Self::SetAutoBoost
             | Self::SetAutoBoostDefault
             | Self::SetApiRestriction
-            | Self::ResetApplicationsClocks => &NVML_ONLY,
+            | Self::ResetApplicationsClocks
+            | Self::SetAcousticTempC => &NVML_ONLY,
             _ => &NVAPI_ONLY,
         }
     }
@@ -358,6 +364,7 @@ impl Command {
             | Self::SetPowerWatt
             | Self::SetPowerPercent
             | Self::SetThermalLimitC
+            | Self::SetAcousticTempC
             | Self::SetFanPercent
             | Self::SetVfpVoltageLock
             | Self::SetPstateBaseVoltageUv
@@ -441,6 +448,11 @@ impl Command {
                 "arg_celsius",
                 "CELSIUS",
                 "Temperature limit in Celsius, for example 83 or 83C",
+            )],
+            Self::SetAcousticTempC => vec![PositionalArg::hyphen(
+                "arg_celsius",
+                "CELSIUS",
+                "Acoustic target temperature in Celsius, for example 80 or 80C",
             )],
             Self::SetFanPercent => vec![PositionalArg::free(
                 "arg_fan_percent",
@@ -630,6 +642,7 @@ const COMMANDS: &[Command] = &[
     Command::SetPowerWatt,
     Command::SetPowerPercent,
     Command::SetThermalLimitC,
+    Command::SetAcousticTempC,
     Command::SetFanPercent,
     Command::SetLockedClocksMhz,
     Command::SetVfpVoltageLock,
@@ -1731,6 +1744,11 @@ fn execute_target(
                 }
             }
             Ok(json!({"applied": true, "thermal_limit_c": celsius}))
+        }
+        Command::SetAcousticTempC => {
+            let celsius = parse_i32_unit(&invocation.positionals[0], "c", "celsius")?;
+            run(target, SetNvmlAcousticTemp { celsius })?;
+            Ok(json!({"applied": true, "acoustic_target_temp_c": celsius}))
         }
         Command::SetFanPercent => set_fan_percent(target, adapter, invocation),
         Command::SetLockedClocksMhz => set_locked_clocks(target, adapter, invocation),
