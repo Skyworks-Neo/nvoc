@@ -1531,7 +1531,12 @@ fn nvapi_power_monitor_raw() {
 /// stable part; the raw status values are units-unconfirmed (load ratio ~0.95
 /// vs NVML but idle collapses to ~0.15-0.54).
 ///
+/// Disabled in this umbrella because the required high-level PowerMonitor
+/// wrapper is not present in the published nvapi-rs revision used by `main`.
+/// The raw QueryInterface probes below remain runnable without that wrapper.
+///
 /// Run: `cargo test -p nvoc-core --test gpu_readonly -- --ignored --nocapture nvapi_power_monitor_v4`
+#[cfg(any())]
 #[test]
 #[ignore]
 fn nvapi_power_monitor_v4() {
@@ -1593,6 +1598,7 @@ fn nvapi_power_monitor_v4() {
 
 /// Map a known `NV_GPU_POWER_CHANNEL_POWER_RAIL` value to its name, or
 /// `UNNAMED_<n>` for values the enum doesn't name (the scan observed e.g. 218).
+#[cfg(any())]
 fn rail_name(rail: u32) -> &'static str {
     // Outputs (on-GPU regulator outputs), 1..=11.
     match rail {
