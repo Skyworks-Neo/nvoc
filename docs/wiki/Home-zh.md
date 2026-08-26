@@ -14,6 +14,7 @@ NVOC 是一个围绕 NVIDIA GPU 超频与稳定性验证的 Rust/Python monorepo
 - [压力测试器](./Stressors.md)
 - [前端](./Frontends.md)
 - [兼容性矩阵](./Compatibility-Matrix.md)
+- [逆向工程归档](./Reverse-Engineering.md)
 - [安全与恢复](./Safety-and-Recovery.md)
 - [贡献指南](./Contributing.md)
 - [FAQ](./FAQ.md)

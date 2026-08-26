@@ -55,6 +55,7 @@ nvapi_impl.dll
 nvppe.dll
 GPU-Z.exe
 GPU-Z_unpacked.exe
+
 # RE scratch tables / probe output
 *_unknown_ids.txt
 gpuz_ids_observed.txt

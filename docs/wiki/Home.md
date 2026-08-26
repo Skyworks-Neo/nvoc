@@ -17,6 +17,7 @@ This wiki is split by component responsibilities, architecture, build/test comma
 - [Stressors](./Stressors.md)
 - [Frontends](./Frontends.md)
 - [Compatibility Matrix](./Compatibility-Matrix.md)
+- [Reverse Engineering](./Reverse-Engineering.md)
 - [Safety and Recovery](./Safety-and-Recovery.md)
 - [Contributing](./Contributing.md)
 - [FAQ](./FAQ.md)
