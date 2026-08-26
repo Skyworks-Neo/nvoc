@@ -705,6 +705,7 @@ pub fn autoscan_legacy(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> Resul
             is_50_series: _, // legacy 路径不区分架构世代
             testing_step: _,
             freq_step_exp_core,
+            ..
         } = gpu_type.as_ref().map(|t| t.oc_params()).unwrap_or_default();
         // GC6 原生唤醒门槛（与 core 预唤醒钩子同源）；识别失败 -> 保守唤醒
         let needs_gc6_wake = gpu_type
