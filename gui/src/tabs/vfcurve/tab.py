@@ -369,8 +369,10 @@ class VFCurveTab:
         self.fig = Figure(figsize=(9, 1.7), dpi=fig_dpi)
         self.fig.patch.set_facecolor("#2b2b2b")
         self.ax = self.fig.add_subplot(111)
-        # Reserve enough left margin so the Y-axis label is never clipped
-        self.fig.subplots_adjust(left=0.13, right=0.985, top=0.92, bottom=0.22)
+        # Left margin only needs to fit the short GHz tick labels + the
+        # rotated axis label — shrinking from 0.13 reclaims ~50-100 px of
+        # plot width so the labels sit flush against the frame's left edge
+        self.fig.subplots_adjust(left=0.055, right=0.985, top=0.92, bottom=0.22)
         self._style_axes()
 
         # Placeholder text
