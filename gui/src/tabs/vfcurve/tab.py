@@ -544,10 +544,17 @@ class VFCurveTab:
         self.canvas.draw_idle()
 
     def _style_axes(self):
+        from matplotlib.ticker import FuncFormatter
+
         ax = self.ax
         ax.set_facecolor("#1e1e1e")
-        ax.set_xlabel("Voltage (mV)", color="#e08020", fontsize=8)
-        ax.set_ylabel("Frequency (MHz)", color="#e08020", fontsize=8, labelpad=10)
+        # axis labels one size smaller; ticks relabeled in V / GHz so the
+        # numbers stay short (0.5 / 0.6 / ... and 0.5 / 1 / 1.5 / ...) —
+        # plot data itself stays in mV / MHz
+        ax.set_xlabel("Voltage (V)", color="#e08020", fontsize=7)
+        ax.set_ylabel("Frequency (GHz)", color="#e08020", fontsize=7, labelpad=10)
+        ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _pos: f"{v / 1000.0:g}"))
+        ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _pos: f"{v / 1000.0:g}"))
         ax.tick_params(colors="#cccccc", labelsize=6)
         for spine in ax.spines.values():
             spine.set_color("#555555")
