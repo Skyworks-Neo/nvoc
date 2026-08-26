@@ -25,8 +25,8 @@ use super::scan_support::{handle_lock_vfp, handle_test_voltage_limits, print_sca
 use clap::ArgMatches;
 use nvoc_core::{
     ClockDomain, Error, GpuOcParams, GpuTarget, KilohertzDelta, PState, QueryGpuInfo,
-    QueryGpuStatus, QueryVfpPointVoltage, SetVfpPointDelta, VfPoint, VfPointType, fetch_gpu_type,
-    set_nvapi_pstate_clock_offsets,
+    QueryGpuStatus, QueryVfpPointVoltage, SetPublicVftablePointOffset, VfPoint, VfPointType,
+    fetch_gpu_type, set_nvapi_pstate_clock_offsets,
 };
 use std::sync::Arc;
 
@@ -181,7 +181,7 @@ pub fn autoscan_gpuboostv3(gpus: &Vec<GpuTarget<'_>>, matches: &ArgMatches) -> R
 
         run_output(
             gpu,
-            SetVfpPointDelta {
+            SetPublicVftablePointOffset {
                 point: upper_voltage_point,
                 delta: KilohertzDelta(45000),
             },

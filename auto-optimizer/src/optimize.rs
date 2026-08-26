@@ -4,8 +4,8 @@ use crate::oc_scanner::{autoscan_gpuboostv3, autoscan_legacy};
 use clap::ArgMatches;
 use nvoc_cli_common::color::stylize_warning;
 use nvoc_core::{
-    Error, GpuTarget, QueryGpuInfo, ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpLock,
-    VfpResetDomain, run,
+    Error, GpuTarget, QueryGpuInfo, ResetPstateGlobalFreqOffset, ResetPublicVftableGpcLock,
+    ResetPublicVftableOffset, VfpResetDomain, run,
 };
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, IsTerminal, Write};
@@ -157,7 +157,7 @@ fn reset_pstate_offsets(gpu: &GpuTarget<'_>) -> Result<(), Error> {
                 .map(move |(&domain, _)| (pstate, domain))
         })
         .collect();
-    run(gpu, ResetPstateClockOffsets { offsets })?;
+    run(gpu, ResetPstateGlobalFreqOffset { offsets })?;
     Ok(())
 }
 
@@ -213,11 +213,11 @@ pub fn run_optimize(targets: &[GpuTarget<'_>], matches: &ArgMatches) -> Result<(
     reset_pstate_offsets(gpu)?;
     run(
         gpu,
-        ResetVfpDeltas {
+        ResetPublicVftableOffset {
             domain: VfpResetDomain::All,
         },
     )?;
-    run(gpu, ResetVfpLock)?;
+    run(gpu, ResetPublicVftableGpcLock)?;
 
     if !init.exists() {
         let mut args = command_prefix(gpu);

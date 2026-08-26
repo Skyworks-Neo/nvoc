@@ -18,7 +18,7 @@ use nvoc_core::{
 use nvoc_core::{Error, QueryGpuStatus, set_nvapi_pstate_clock_offsets};
 use nvoc_core::{
     GpuOperation, GpuType, QueryGpuInfo, SetNvapiPowerLimits, SetNvapiSensorLimits,
-    SetPstateBaseVoltage, SetVfpPointDelta, SetVoltageBoost, fetch_gpu_type,
+    SetPstateBaseVoltage, SetPublicVftablePointOffset, SetVoltageBoost, fetch_gpu_type,
     legacy_p0_core_max_voltage_delta, query_domain_vf_points_indexed, query_domain_vfp_indices,
     run, set_nvapi_cooler_settings, set_nvapi_domain_vfp_deltas, sync_memory_pstate_as_p0,
 };
@@ -608,7 +608,7 @@ pub fn handle_vfp_import(gpu: &GpuTarget<'_>, matches: &clap::ArgMatches) -> Res
 
     if domain == ClockDomain::Graphics {
         for (point, delta) in deltas {
-            run_output(gpu, SetVfpPointDelta { point, delta })?;
+            run_output(gpu, SetPublicVftablePointOffset { point, delta })?;
         }
     } else {
         set_domain_vfp_deltas_raw(gpu, domain, &deltas)?;

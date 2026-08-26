@@ -11,15 +11,15 @@ use crate::stressor_process::{bundled_command, external_command, is_bundled, res
 use clap::ArgMatches;
 use nvoc_core::{
     ClockDomain, GpuTarget, KilohertzDelta, NvapiLockedVoltageTarget, PState, QueryGpuStatus,
-    QueryVfpPointVoltage, ResetVfpDeltas, SetVfpPointDelta, SetVfpVoltageLock, VfpResetDomain,
-    set_nvapi_pstate_clock_offsets,
+    QueryVfpPointVoltage, ResetPublicVftableOffset, SetGpcVoltLock, SetPublicVftablePointOffset,
+    VfpResetDomain, set_nvapi_pstate_clock_offsets,
 };
-use std::process::{Child, Command, Stdio};
-use std::thread::JoinHandle;
 #[cfg(windows)]
 use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
 #[cfg(windows)]
 use std::sync::OnceLock;
+use std::thread::JoinHandle;
 use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -58,7 +58,7 @@ fn set_vfp_range_warn(gpu: &GpuTarget<'_>, range: std::ops::RangeInclusive<usize
     for offset in range {
         match run_output(
             gpu,
-            SetVfpPointDelta {
+            SetPublicVftablePointOffset {
                 point: offset,
                 delta: KilohertzDelta(delta_khz),
             },
@@ -525,13 +525,13 @@ pub(super) fn run_pressure_test(
                     || {
                         run_output(
                             gpu,
-                            ResetVfpDeltas {
+                            ResetPublicVftableOffset {
                                 domain: VfpResetDomain::Core,
                             },
                         )
                         .map(|_| ())
                     },
-                    "ResetVfpDeltas",
+                    "ResetPublicVftableOffset",
                     5,
                     5,
                 );
@@ -666,7 +666,7 @@ pub(super) fn run_pressure_test(
                                     // ensure voltage lock is applied as before
                                     run_output(
                                         gpu,
-                                        SetVfpVoltageLock {
+                                        SetGpcVoltLock {
                                             voltage_target: NvapiLockedVoltageTarget::Voltage(v),
                                             feedback: false,
                                         },
@@ -764,13 +764,13 @@ pub(super) fn run_pressure_test(
                             || {
                                 run_output(
                                     gpu,
-                                    ResetVfpDeltas {
+                                    ResetPublicVftableOffset {
                                         domain: VfpResetDomain::All,
                                     },
                                 )
                                 .map(|_| ())
                             },
-                            "ResetVfpDeltas (timeout recovery)",
+                            "ResetPublicVftableOffset (timeout recovery)",
                             5,
                             5,
                         );

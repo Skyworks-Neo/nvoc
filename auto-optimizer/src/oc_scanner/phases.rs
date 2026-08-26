@@ -10,7 +10,7 @@ use clap::ArgMatches;
 use nvoc_core::sync_memory_pstate_as_p0;
 use nvoc_core::{
     ClockDomain, Error, GpuTarget, KilohertzDelta, Microvolts, NvapiLockedVoltageTarget, PState,
-    QueryVfpPointVoltage, ResetVfpDeltas, SetVfpVoltageLock, VfpResetDomain,
+    QueryVfpPointVoltage, ResetPublicVftableOffset, SetGpcVoltLock, VfpResetDomain,
     set_nvapi_pstate_clock_offsets, set_nvapi_vfp_curve_delta,
 };
 use std::io;
@@ -198,7 +198,7 @@ fn set_vfp_and_recheck(
         if let Ok(locked_v) = run_output(gpu, QueryVfpPointVoltage { point }) {
             let _ = run_output(
                 gpu,
-                SetVfpVoltageLock {
+                SetGpcVoltLock {
                     voltage_target: NvapiLockedVoltageTarget::Voltage(locked_v),
                     feedback: false,
                 },
@@ -540,7 +540,7 @@ pub(super) fn run_gpuboostv3_short_phase(
         if test_flag != 0 {
             run_output(
                 gpu,
-                ResetVfpDeltas {
+                ResetPublicVftableOffset {
                     domain: VfpResetDomain::Core,
                 },
             )?;
@@ -664,7 +664,7 @@ pub(super) fn run_gpuboostv3_long_phase(
         if long_duration_flag != 0 {
             run_output(
                 gpu,
-                ResetVfpDeltas {
+                ResetPublicVftableOffset {
                     domain: VfpResetDomain::Core,
                 },
             )?;
