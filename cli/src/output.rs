@@ -105,7 +105,7 @@ fn format_human_output(function: &str, output: &Value) -> Vec<String> {
         )],
         // "get-dynamic-boost" withdrawn 2026-08-26: 0xC80068A1 reads PCF
         // platform status, not the PPAB enable readback (probe_pcf_dynamic_boost)
-        "get-pstate-native" => format_pstate_native_output(output),
+        "get-pstate-lock" => format_pstate_native_output(output),
         "get-throttle-reasons" => format_throttle_reasons_output(output),
         "get-legacy-overvolt-ranges" => format_object_array(
             output,
@@ -2257,11 +2257,8 @@ mod tests {
                     "default_frequency_mhz": 1500.0,
                 }],
             }),
-            Command::GetVfpPointVoltageMv => {
-                json!({"point": 0, "voltage_uv": 800000, "voltage_mv": 800.0})
-            }
-            Command::GetPowerWatt => {
-                json!({"min_watt": 100, "current_watt": 250, "max_watt": 350})
+            Command::GetTgpWatt => {
+                json!({"source": "nvml", "min_watt": 100, "current_watt": 250, "max_watt": 350})
             }
             Command::GetPstateGlobalFreqOffset => {
                 json!({"domain": "graphics", "pstate": "P0", "offset_mhz": 120})
@@ -2273,7 +2270,7 @@ mod tests {
                 "min_memory_mhz": 405,
                 "max_memory_mhz": 10500,
             }]),
-            Command::GetPStateNative => json!({
+            Command::GetPStateLock => json!({
                 "supported": true,
                 "locked_pstates": [3],
                 "pstates": [
@@ -2310,19 +2307,17 @@ mod tests {
                     "since": "2026-05-26 18:00:41 UTC",
                 },
             }),
-            Command::GetTdpTempLimits => json!({
+            Command::GetPublicPowerLimit => json!({
                 "min_tdp_percent": 50,
                 "default_tdp_percent": 100,
                 "max_tdp_percent": 120,
+            }),
+            Command::GetPublicTempLimit => json!({
                 "min_temp_c": 65,
                 "default_temp_c": 83,
                 "max_temp_c": 91,
                 "curve": "Default",
             }),
-            Command::ProbeVoltageLimits => json!({"lower_point": 0, "upper_point": 80}),
-            Command::CheckVoltageFrequency => {
-                json!({"point": 42, "precise": true, "matched_point": 42})
-            }
             Command::GetLegacyOvervoltRanges => {
                 json!([{"pstate": "P0", "min_uv": 0, "current_uv": 0, "max_uv": 100000}])
             }
@@ -2346,24 +2341,15 @@ mod tests {
                 "bytes": 4,
                 "edid_hex": "00FFFFFF",
             }),
-            Command::SetCoreOffsetMhz
-            | Command::SetMemoryOffsetMhz
-            | Command::SetPstateGlobalFreqOffset => json!({
+            Command::SetPstateGlobalFreqOffset => json!({
                 "applied": true,
                 "backend": "nvapi",
                 "domain": "graphics",
                 "pstate": "P0",
                 "offset_mhz": 120,
             }),
-            Command::SetPowerWatt => json!({"applied": true, "power_watt": 250}),
             Command::SetPublicTgpPercent => json!({"applied": true, "power_percent": 90}),
             Command::SetDynamicBoost => json!({"applied": true, "dynamic_boost": true}),
-            Command::GetTgpWattRange => json!({
-                "policy_index": 2,
-                "min_watt": 35.0,
-                "default_watt": 100.0,
-                "max_watt": 140.0,
-            }),
             Command::SetTgpWatt => json!({"applied": true, "tgp_watt": 140, "tgp_mw": 140000}),
             Command::ResetTgpWatt => json!({"applied": true, "default_watt": 100.0}),
             Command::GetDNotifier => json!({
@@ -2381,7 +2367,7 @@ mod tests {
             Command::SetTemperatureThresholds => {
                 json!({"applied": true, "policy_index": 2, "celsius": 85.0})
             }
-            Command::SetFanPercent => {
+            Command::SetFanSpeed => {
                 json!({"applied": true, "fan": "all", "policy": "manual", "level_percent": 65})
             }
             Command::SetFreqLock => {
@@ -2425,14 +2411,8 @@ mod tests {
                 json!({"applied": true, "display_id": "0x00010001"})
             }
             Command::SetLegacyFreq => {
-                json!({"applied": true, "core_mhz": 900, "memory_mhz": 1800})
+                json!({"applied": true, "domain": "core", "mhz": 900, "core_mhz": 900, "memory_mhz": 0})
             }
-            Command::ResetCoreOffsetMhz | Command::ResetMemoryOffsetMhz => json!({
-                "applied": true,
-                "domain": "graphics",
-                "pstate": "P0",
-                "offset_mhz": 0,
-            }),
             Command::ResetLegacyApplicationFreqLock
             | Command::ResetPublicVftableGpcLock
             | Command::ResetPublicTgpPercent
@@ -2445,10 +2425,10 @@ mod tests {
             Command::ResetFreqLock | Command::ResetPublicVftableOffset => {
                 json!({"applied": true, "domain": "graphics"})
             }
-            Command::ResetFan => json!({"applied": true, "fan_indices": [0, 1]}),
-            Command::SetPStateNative => json!({"applied": true, "pstate": "P3"}),
-            Command::ResetPStateNative => json!({"applied": true}),
-            Command::GetVoltRails => json!({
+            Command::ResetFanSpeed => json!({"applied": true, "fan_indices": [0, 1]}),
+            Command::SetPStateLock => json!({"applied": true, "pstate": "P3"}),
+            Command::ResetPStateLock => json!({"applied": true}),
+            Command::GetVoltRailInfo => json!({
                 "rail_mask": "0x00000001",
                 "p0": {
                     "current_uV": 700000,
@@ -2470,35 +2450,25 @@ mod tests {
                     "rail_bit": 0, "type": 1, "values_uV": [700000, 750000, 0, 1200000, 750000, 600000],
                 }],
             }),
-            Command::SetVoltRailOffset => json!({
+            Command::SetVoltRailLimit => json!({
                 "applied": true,
                 "rail_bit": 0,
                 "previous_uV": 0,
                 "applied_uV": -25000,
                 "effective_wall_uV": 980000,
             }),
-            Command::SetVoltRailTarget => json!({
-                "applied": true,
-                "rail_bit": 0,
-                "target_uV": 1150000,
-                "base_wall_uV": 1085000,
-                "offset_uV": 65000,
-                "previous_offset_uV": 200000,
-                "applied_uV": 65000,
-                "effective_wall_uV": 1150000,
-            }),
-            Command::GetClkDomains => json!({
+            Command::GetPrivateFreqDomainInfo => json!({
                 "controllable_mask": "0x000000FF",
                 "entries": [{
                     "bit": 1, "type": 10, "value_modifiable": false, "offset_kHz": 0,
                     "range_min_kHz": 0, "range_max_kHz": 0, "applied_kHz": 0,
                 }],
             }),
-            Command::GetClkDomainFreq => json!({
+            Command::GetPrivateFreqDomainStatus => json!({
                 "domain_bit": 1, "domain": "Xbar", "freq_mhz": 2004.0,
             }),
-            Command::GetClkVfPoints => json!({
-                // Output shape mirrors the Command::GetClkVfPoints execution
+            Command::GetPrivateVftable => json!({
+                // Output shape mirrors the Command::GetPrivateVftable execution
                 // arm (banked masks + contiguous same-type segments + the
                 // flat point grid).
                 "masks": ["0x0000000000000000"],
@@ -2514,16 +2484,16 @@ mod tests {
                     "freq_default_mhz": 210, "freq_current_mhz": 210,
                 }],
             }),
-            Command::SetClkDomainOffset => json!({
+            Command::SetPrivateFreqDomainGlobalOffset => json!({
                 "applied": true, "bit": 1, "type": 10,
                 "previous_kHz": 0, "applied_kHz": -60000, "temporary_restored": true,
             }),
-            Command::SetVfpPointPrivate => json!({
+            Command::SetPrivateVftablePointOffset => json!({
                 "applied": true, "bank": 0, "index": 191,
                 "mode": "raw_f_offset_control", "value": 100,
                 "unit": "raw", "retained": 100,
             }),
-            Command::SetVfpRangePrivate => json!({
+            Command::SetPrivateVftableRangeOffset => json!({
                 "applied": true, "bank": 0, "start": 191, "end": 191,
                 "raw_f_offset_control_value": 100, "points_written": 1,
             }),

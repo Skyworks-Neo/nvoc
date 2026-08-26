@@ -36,9 +36,9 @@
 | 原名 | 决策 | 底层线 |
 |---|---|---|
 | `get-vfp` | → `get-public-vftable` | VfPoints `0x21537AD4`等 |
-| `get-vfp-point-voltage-mv` | **移除**(历史遗留,无消费) | — |
-| `probe-voltage-limits` | **移除**(功能被 get-volt-rails P0 电压上下限覆盖) | — |
-| `check-voltage-frequency` | **移除**(中层接口历史外露) | — |
+| `get-vfp-point-voltage-mv` | **移除**(历史遗留,无消费)✅ DONE | — |
+| `probe-voltage-limits` | **移除**(功能被 get-volt-rails P0 电压上下限覆盖)✅ DONE | — |
+| `check-voltage-frequency` | **移除**(中层接口历史外露)✅ DONE | — |
 | `set-vfp-voltage-lock` | → `set-gpc-volt-lock` | PerfClientLimits `0x39442CFB` |
 | `set-vfp-point-delta-mhz` | → `set-public-vftable-point-offset` | VfSetControl `0x0733E009` |
 | `set-vfp-range-delta-mhz` | → `set-public-vftable-range-offset` | VfSetControl `0x0733E009` |
@@ -52,14 +52,14 @@
 | 原名 | 决策 | 底层线 |
 |---|---|---|
 | `get-clock-offset-mhz` | → `get-pstate-global-freq-offset` | GetPstates20 `0x6FF81213` |
-| `set-core-offset-mhz` | **移除**(被通用版替代) | — |
-| `set-memory-offset-mhz` | **移除**(被通用版替代) | — |
+| `set-core-offset-mhz` | **移除**(被通用版替代)✅ DONE | — |
+| `set-memory-offset-mhz` | **移除**(被通用版替代)✅ DONE | — |
 | `set-clock-offset-mhz` | → `set-pstate-global-freq-offset` | SetPstates20 `0x0F4DAE6B` |
-| `reset-core-offset-mhz` | **移除**(与 set 对称) | — |
-| `reset-memory-offset-mhz` | **移除**(与 set 对称) | — |
-| `reset-pstate-clock-offsets` | → `reset-pstate-global-freq-offset`(**+需支持 --domain 选择**) | GetPstates20+SetPstates20 |
+| `reset-core-offset-mhz` | **移除**(与 set 对称)✅ DONE | — |
+| `reset-memory-offset-mhz` | **移除**(与 set 对称)✅ DONE | — |
+| `reset-pstate-clock-offsets` | → `reset-pstate-global-freq-offset`(**+需支持 --domain 选择**)✅ DONE(--domain 过滤已实现) | GetPstates20+SetPstates20 |
 
-注:`global` 对应 `public-vftable` 的 `point`(点级 vs 全局)。core/memory 快捷命令全砍,统一走 `--domain`。reset 改单数 + `--domain` 过滤(非批量清所有,需改 medium 层枚举逻辑加 domain 过滤)。
+注:`global` 对应 `public-vftable` 的 `point`(点级 vs 全局)。core/memory 快捷命令全砍,统一走 `--domain`。reset 单数 + `--domain` 过滤已落地(对 touched (pstate,domain) 对列表按 domain 过滤后统一走 ResetPstateGlobalFreqOffset,未动 medium 层)。
 
 ### pstate-appclock-legacy 族(6 命令)
 
@@ -70,20 +70,21 @@
 | `set-applications-clocks-mhz` | → `set-legacy-application-freq-lock` | NVML set_applications_clocks |
 | `get-supported-app-clocks` | → `get-supported-legacy-application-freq` | NVML supported_*_clocks |
 | `reset-applications-clocks` | → `reset-legacy-application-freq-lock` | NVML reset_applications_clocks |
-| `set-legacy-clocks-mhz` | → `set-legacy-freq`(**分 domain core/mem,Kepler 未测**) | SetClocks `0x6F151055` |
+| `set-legacy-clocks-mhz` | → `set-legacy-freq`(**分 domain core/mem,Kepler 未测**)✅ DONE | SetClocks `0x6F151055` |
 
-注:#6 改为单值 + `--domain`(与 set-pstate-global-freq-offset 的 --domain 一致),Kepler 老驱动接口尚未测试。
+注:#6 已落地为单值 + `--domain core|mem`(默认 core,另一路 clock 以 0 传入 legacy SetClocks;Kepler 老驱动接口尚未实机测试)。
 
 ### power 族(4 命令,合并方案)
 
 | 原名 | 决策 | 底层线 |
 |---|---|---|
-| `get-power-watt` + `get-tgp-watt-range` | **合并为 `get-tgp-watt`**(auto: NVAPI 优先读 ClientPowerPoliciesGetInfo `0x34206D86` 取 TGP 范围,NVML 兜底读 power_management_limit) | NVAPI+NVML |
-| `set-power-watt` | → 合并入 `set-tgp-watt`(auto,NVAPI 也有写入原语 `0xAFFC2279`/`0xBFF09E59`,走 auto) | NVAPI+NVML |
+| `get-tgp-watt` + `get-tgp-watt-range` | **合并保留名 `get-tgp-watt`** ✅ DONE(auto: NVML power limits 优先,NVAPI ClientPowerPoliciesGetInfo `0x34206D86` TGP 范围兜底;`get-tgp-watt-range` CLI 已移除,core op QueryNvapiTgpWattRange 保留) | NVAPI+NVML |
+| `set-power-watt` | → 合并入 `set-power-limit`(auto,NVAPI 也有写入原语 `0xAFFC2279`/`0xBFF09E59`,走 auto) | NVAPI+NVML |
 | `set-power-percent` | → `set-public-tgp-percent`(仅 NVAPI) | ClientPowerPoliciesSetStatus `0xAD95F5ED` |
 | `reset-power-percent` | → `reset-public-tgp-percent`(仅 NVAPI) | ClientPowerPoliciesGetInfo+SetStatus |
+| `set-dynamic-boost` | → `set-ppab-status`(PPAB = Persistent Performance Auto Boost;与 autoboost-status 体系对齐,全小写规避 clap 大写问题) | SetNvapiDynamicBoost `0x1504FC3D` |
 
-注:NVAPI ClientPowerPolicies 有瓦特写入原语(实测 `set-tgp-watt 60` via nvapi 成功),非只有百分比。
+注:NVAPI ClientPowerPolicies 有瓦特写入原语(实测 `set-tgp-watt 60` via nvapi 成功),非只有百分比。`set-dynamic-boost` 改 `set-ppab-status`,PPAB 是该功能的技术名(区别于 NVML auto-boost)。与 get/set/reset-autoboost-status 体系对齐用 -status 后缀。`get/set-tgp-watt` 带 watt 单位,改 `get/set-power-limit` 去单位更通用;`reset-power-percent` 保留 tgp-percent(区分 percent 面且保留 tgp 术语标识 NVAPI ClientPowerPolicies)。
 
 ### thermal 族(12 命令,恢复后范围)
 
@@ -94,8 +95,8 @@
 | `get-thermal-settings` | → `get-legacy-temp-sensor` | NVAPI GetThermalSettings `0xE3640A56` |
 | `set-thermal-limit-c` | → `set-temp-limit`(去 -c) | NVAPI ThermalPoliciesSetStatus `0x34C0B13D` / NVML |
 | `reset-thermal-limit-c` | → `reset-temp-limit`(跟随 set 词干) | NVAPI `0x0D258BB5`+`0x34C0B13D` |
-| `set-acoustic-temp-c` | **合并到 `set-temp-limit` 的 NVML 分支**,**加 `--domain` 选择**(AcousticCurr/GpuMax 等 enum 作为 domain) | NVML set_temperature_threshold |
-| `get-tdp-temp-limits` | **拆分为 `get-public-power-limit` + `get-public-temp-limit`** | NVAPI `0x34206D86`+`0x0D258BB5` |
+| `set-acoustic-temp-c` | **合并到 `set-temp-limit` 的 NVML 分支**,**加 `--domain gpu\|acoustic`** ✅ DONE(NVAPI 分支拒绝 --domain) | NVML set_temperature_threshold |
+| `get-tdp-temp-limits` | **拆分为 `get-public-power-limit` + `get-public-temp-limit`** ✅ DONE(同用 QueryTdpTempLimits,分别渲染 tdp%/temp 部分) | NVAPI `0x34206D86`+`0x0D258BB5` |
 | `get-throttle-reasons` | 保留 | NVML |
 | `get-thermal-sim` | 保留 | NVAPI GetThermalSimulationMode |
 | `set-thermal-sim` | 保留 | NVAPI SetThermalSimulationMode |
@@ -110,7 +111,7 @@
 |---|---|---|
 | `get-fan-info` | 保留 | NVML+NVAPI FanCoolerGetInfo |
 | `set-fan-percent` + `set-fan-rpm` | **合并为 `set-fan-speed`**(`--percent`/`--rpm` 模式分派):NVAPI 分支默认 `--percent` 走原 set-fan-percent(ClientFanCoolersSetControl `0xA58971A5`),`--rpm` 走原 set-fan-rpm;NVML 分支默认 `--percent` 接入 NVML set_fan_speed | NVAPI `0xA58971A5`/NVML |
-| `reset-fan` + `reset-fan-rpm` | **合并为 `reset-fan-speed`**(遵循一致的 NVAPI/NVML 分派逻辑):NVAPI 重置 cooler levels, NVML set_default_fan_speed | NVAPI `0x8F6ED0FB`/NVML |
+| `reset-fan` + `reset-fan-rpm` | **合并为 `reset-fan-speed`**(遵循一致的 NVAPI/NVML 分派逻辑):NVAPI 重置 cooler levels, NVML set_default_fan_speed;`--rpm` 走原 reset-fan-rpm(SetFanRpm{rpm:None} 关仿真,`--cooler` 选 cooler)✅ DONE | NVAPI `0x8F6ED0FB`/NVML |
 | `get-fan-curve` | 保留 | NVAPI ClientFanPolicies `0x200DC` |
 | `set-fan-curve` | 保留 | NVAPI ClientFanPolicies `0x200DC` |
 | `reset-fan-curve` | 保留 | NVAPI ClientFanPolicies `0x200DC` |
@@ -215,7 +216,7 @@
 | `set-clk-domain-offset` | → `set-private-freq-domain-global-offset` | ClockClient `0x20809019`族 |
 | `set-vfp-point-private` | → `set-private-vftable-point-offset` | 私有 V/F-POINTS |
 | `set-vfp-range-private` | → `set-private-vftable-range-offset` | 私有 V/F-POINTS |
-| `reset-vfp-private` | → `reset-private-vftable-offset`(**+支持 `--domain` 选择如 gpc/xbar/host**) | 私有 V/F-POINTS |
+| `reset-vfp-private` | → `reset-private-vftable-offset`(**+支持 `--domain` 选择如 gpc/xbar/host**)✅ DONE(--domain 时按 QueryNvapiClkVfPoints 段 domain_hint 过滤,逐点 SetNvapiVfpPointPrivate{freq_mode:true,value:0};无 --domain 整 bank 重置) | 私有 V/F-POINTS |
 | `get-clk-domains` | → `get-private-freq-domain-info` | ClockClient `0x20809019` |
 | `get-clk-domain-freq` | → `get-private-freq-domain-status` | ClockClient MEASURE_FREQ |
 | `get-clk-vf-points` | → `get-private-vftable`(**+添加 `--domain` 选择器如 --gpc xbar host**) | ClockClient VfPoints |
@@ -251,7 +252,8 @@
 | `legacy-` | 老驱动/老接口 | legacy-temp-sensor / legacy-application-freq-lock / legacy-freq / legacy-gpc-rail-overvolt-limit / legacy-gpc-rail-volt-range |
 | `freq-lock` / `freq-range` / `freq-offset` | 频率锁/范围/偏移 | set-freq-lock / get-pstate-freq-range / set-pstate-global-freq-offset |
 | `temp-limit` | 温度限制(取代 thermal-limit) | set-temp-limit / reset-temp-limit |
-| `autoboost-status` / `autoboost-support` | 自动加速状态/支持 | get-autoboost-status / get-autoboost-support |
+| `autoboost-status` / `autoboost-support` | 自动加速状态/支持(NVML) | get-autoboost-status / get-autoboost-support |
+| `ppab-status` | Persistent Performance Auto Boost(NVAPI,区别于 NVML autoboost) | set-ppab-status |
 | `pstate-lock` | admin 最高优先级 pstate 锁 | get/set/reset-pstate-lock |
 | `tgp` | 统一功率族 | get-tgp-watt / set-tgp-watt / set-public-tgp-percent |
 | `volt-rail-limit` | volt-rail 偏移/目标(合并) | set-volt-rail-limit(--offset/--target) |
