@@ -369,10 +369,10 @@ class VFCurveTab:
         self.fig = Figure(figsize=(9, 1.7), dpi=fig_dpi)
         self.fig.patch.set_facecolor("#2b2b2b")
         self.ax = self.fig.add_subplot(111)
-        # No rotated ylabel anymore ("f/GHz" rides above the axis top), so
-        # the left margin only needs the short GHz tick labels — shrinking
-        # from 0.13 reclaims ~50-100 px of plot width
-        self.fig.subplots_adjust(left=0.04, right=0.985, top=0.92, bottom=0.22)
+        # y tick labels live INSIDE the plot (negative tick pad), so the
+        # axes can start almost at the figure's left edge — the plot area
+        # spans nearly the full frame width
+        self.fig.subplots_adjust(left=0.006, right=0.985, top=0.92, bottom=0.22)
         self._style_axes()
 
         # Placeholder text
@@ -553,7 +553,18 @@ class VFCurveTab:
         # axis labels one size smaller; ticks relabeled in V / GHz so the
         # numbers stay short (0.5 / 0.6 / ... and 0.5 / 1 / 1.5 / ...) —
         # plot data itself stays in mV / MHz
-        ax.set_xlabel("Voltage (V)", color="#e08020", fontsize=7)
+        # x-axis unit caption INSIDE the axes, bottom-right ("Volt/V") —
+        # same style as the y-axis caption above the axis top
+        ax.text(
+            0.99,
+            0.02,
+            "Volt/V",
+            transform=ax.transAxes,
+            ha="right",
+            va="bottom",
+            color="#e08020",
+            fontsize=7,
+        )
         # y-axis unit caption rides ABOVE the axis top end ("f/GHz") instead
         # of a rotated ylabel — frees the whole left margin for the plot
         ax.text(
@@ -569,6 +580,8 @@ class VFCurveTab:
         ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _pos: f"{v / 1000.0:g}"))
         ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _pos: f"{v / 1000.0:g}"))
         ax.tick_params(colors="#cccccc", labelsize=6)
+        # y tick labels INSIDE the plot (negative pad) — no left gutter left
+        ax.tick_params(axis="y", pad=-14)
         for spine in ax.spines.values():
             spine.set_color("#555555")
         ax.grid(True, color="#333333", linewidth=0.5, alpha=0.7)
