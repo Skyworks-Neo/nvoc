@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import subprocess
+
 from src import cli_runner
 from src.cli_runner import CLIRunner
 
@@ -95,3 +97,111 @@ def test_cli_runner_captures_per_run_callback(monkeypatch) -> None:
 
     assert finished == ["first:7"]
     assert not runner.is_running
+
+
+def test_cli_runner_cancel_schedules_process_wait_off_caller_thread() -> None:
+    queued: list[QueuedJob] = []
+
+    def submit(_name, task):
+        job = QueuedJob(task)
+        queued.append(job)
+        return job
+
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.terminated = 0
+            self.waited = 0
+
+        def terminate(self) -> None:
+            self.terminated += 1
+
+        def wait(self, timeout: int) -> int:
+            assert timeout == 3
+            self.waited += 1
+            return 0
+
+    process = FakeProcess()
+    runner = CLIRunner("nvoc-autooptimizer", lambda _text: None, submit=submit)
+    runner._process = process
+    runner._busy = True
+
+    runner.cancel()
+
+    assert process.terminated == 0
+    assert process.waited == 0
+    assert len(queued) == 1
+    assert runner._cancel_inflight is True
+
+    queued[0].task()
+
+    assert process.terminated == 1
+    assert process.waited == 1
+    assert runner._cancel_inflight is False
+
+
+def test_cli_runner_reuses_one_cancel_job_per_process() -> None:
+    queued: list[QueuedJob] = []
+
+    def submit(_name, task):
+        job = QueuedJob(task)
+        queued.append(job)
+        return job
+
+    process = type(
+        "FakeProcess",
+        (),
+        {"terminate": lambda self: None, "wait": lambda self, timeout: 0},
+    )()
+    runner = CLIRunner("nvoc-autooptimizer", lambda _text: None, submit=submit)
+    runner._process = process
+    runner._busy = True
+
+    runner.cancel()
+    runner.cancel()
+
+    assert len(queued) == 1
+
+
+def test_cli_runner_shutdown_cancels_synchronously(monkeypatch) -> None:
+    process = type(
+        "FakeProcess",
+        (),
+        {"terminate": lambda self: None, "wait": lambda self, timeout: 0},
+    )()
+    runner = CLIRunner("nvoc-autooptimizer", lambda _text: None)
+    runner._process = process
+    waits: list[bool] = []
+    original_cancel = runner.cancel
+
+    def record_cancel(wait: bool = False) -> None:
+        waits.append(wait)
+        original_cancel(wait=wait)
+
+    monkeypatch.setattr(runner, "cancel", record_cancel)
+
+    runner.shutdown()
+
+    assert waits == [True]
+
+
+def test_cli_runner_cancel_kills_process_after_timeout() -> None:
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.killed = False
+
+        def terminate(self) -> None:
+            return
+
+        def wait(self, timeout: int) -> int:
+            raise subprocess.TimeoutExpired("nvoc", timeout)
+
+        def kill(self) -> None:
+            self.killed = True
+
+    process = FakeProcess()
+    runner = CLIRunner("nvoc-autooptimizer", lambda _text: None)
+    runner._process = process
+
+    runner.cancel(wait=True)
+
+    assert process.killed is True
