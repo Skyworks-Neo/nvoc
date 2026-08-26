@@ -6,6 +6,21 @@ from ..models import GpuDescriptor
 from .base import PaneController
 
 
+def _is_discovery_offline_error(output: str) -> bool:
+    """Return whether discovery failed because the NVIDIA GPU disappeared."""
+    if not output:
+        return False
+    lowered = output.lower()
+    return (
+        "not_initialized" in lowered
+        or "api_not_initialized" in lowered
+        or "noimplementation" in lowered
+        or "nvidia_device_not_found" in lowered
+        or "novidevicefound" in lowered
+        or "gpu is lost" in lowered
+    )
+
+
 class HeaderController(PaneController):
     def selected_gpu_idx(self) -> int | None:
         try:
@@ -39,13 +54,16 @@ class HeaderController(PaneController):
     def on_gpu_list_loaded(
         self, code: int, output: str, gpus: list[GpuDescriptor]
     ) -> None:
-        self.app.write_log(output or "GPU detection finished.")
+        if code == 0 or not _is_discovery_offline_error(output):
+            self.app.write_log(output or "GPU detection finished.")
         self.app.gpus = gpus
         select = self.app.query_one("#gpu-select", Select)
         if not gpus:
             select.set_options([("(no GPUs found)", "-1")])
             select.value = "-1"
+            self.app.start_gpu_reprobe()
             return
+        self.app._stop_gpu_reprobe()
         select.set_options([(gpu.long_label, str(gpu.index)) for gpu in gpus])
         target = self.app.config_data.last_gpu_idx
         if target is None or all(gpu.index != target for gpu in gpus):

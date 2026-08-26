@@ -9,24 +9,85 @@ from .base import PaneController
 
 
 class DashboardController(PaneController):
+    _OFFLINE_FAIL_THRESHOLD = 3
+    _OFFLINE_BACKOFF_S = 5.0
+    _OFFLINE_BACKOFF_CAP_S = 15.0
+
     def __init__(self, app) -> None:
         super().__init__(app)
         self.poll_timer = None
         self._timer_paused = False
+        self._user_interval = 1.0
+        self._consecutive_offline = 0
+        self._in_offline_backoff = False
+        self._offline_hint_logged = False
 
     def set_poll_timer(self, interval: float) -> None:
         interval = max(0.2, min(interval, 60.0))
+        self._user_interval = interval
         self.app.config_data.dashboard.refresh_interval = interval
         self.app.save_config()
         if self.poll_timer is not None:
             self.poll_timer.stop()
         self._timer_paused = False
-        self.poll_timer = self.app.set_interval(interval, self.tick, pause=False)
+        self.poll_timer = self.app.set_interval(
+            self._effective_interval(), self.tick, pause=False
+        )
+
+    def _effective_interval(self) -> float:
+        if not self._in_offline_backoff:
+            return self._user_interval
+        step = max(1, self._consecutive_offline - self._OFFLINE_FAIL_THRESHOLD + 1)
+        return min(self._OFFLINE_BACKOFF_S * step, self._OFFLINE_BACKOFF_CAP_S)
 
     def tick(self) -> None:
         if self.app.native_service.action_state.running:
             return
+        if self._in_offline_backoff:
+            self.app.refresh_gpu_list()
+            return
         self.app.run_query("status", self.on_status_loaded, log_output=False)
+
+    @staticmethod
+    def _looks_like_offline_error(output: str) -> bool:
+        if not output:
+            return False
+        lowered = output.lower()
+        return (
+            "not_initialized" in lowered
+            or "api_not_initialized" in lowered
+            or "noimplementation" in lowered
+            or "nvidia_device_not_found" in lowered
+            or "novidevicefound" in lowered
+            or "gpu is lost" in lowered
+        )
+
+    def _record_offline_failure(self) -> None:
+        self._consecutive_offline += 1
+        if (
+            not self._in_offline_backoff
+            and self._consecutive_offline >= self._OFFLINE_FAIL_THRESHOLD
+        ):
+            self._enter_offline_backoff()
+
+    def _enter_offline_backoff(self) -> None:
+        self._in_offline_backoff = True
+        if not self._offline_hint_logged:
+            self._offline_hint_logged = True
+            self.app.write_log(
+                "dGPU probably offline — polling paused, re-probing for the "
+                "GPU to come back."
+            )
+        self.set_poll_timer(self._user_interval)
+        self.app.refresh_gpu_list()
+
+    def _exit_offline_backoff(self) -> None:
+        if self._in_offline_backoff:
+            self._in_offline_backoff = False
+            self.app.write_log("dGPU back online — resuming polling.")
+            self.set_poll_timer(self._user_interval)
+        self._consecutive_offline = 0
+        self._offline_hint_logged = False
 
     def on_info_loaded(self, code: int, output: str, parsed: dict) -> None:
         if code != 0 and not parsed:
@@ -36,6 +97,11 @@ class DashboardController(PaneController):
         self.app.overclock_controller.prime_inputs()
 
     def on_status_loaded(self, code: int, output: str, parsed: dict) -> None:
+        if code == 0:
+            self._exit_offline_backoff()
+        elif self._looks_like_offline_error(output):
+            self._record_offline_failure()
+            return
         if code != 0 and not parsed:
             return
         self.app.cache.status = parsed
