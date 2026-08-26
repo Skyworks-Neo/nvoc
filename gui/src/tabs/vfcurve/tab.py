@@ -369,10 +369,10 @@ class VFCurveTab:
         self.fig = Figure(figsize=(9, 1.7), dpi=fig_dpi)
         self.fig.patch.set_facecolor("#2b2b2b")
         self.ax = self.fig.add_subplot(111)
-        # y tick labels are back OUTSIDE the spine — left margin only fits
-        # the short GHz numbers ("0.5", "1", "1.5"), far slimmer than the
-        # old rotated-ylabel 0.13
-        self.fig.subplots_adjust(left=0.045, right=0.985, top=0.92, bottom=0.22)
+        # y tick labels are back OUTSIDE the spine — left margin fits the
+        # GHz numbers ("0.5", "1.0") plus a little headroom so the digits
+        # never kiss the frame edge
+        self.fig.subplots_adjust(left=0.062, right=0.985, top=0.92, bottom=0.22)
         self._style_axes()
 
         # Placeholder text
@@ -1491,13 +1491,16 @@ class VFCurveTab:
         f_pad = max(150, (f_max - f_min) * 0.18)
         ax.set_xlim(v_min - 1, v_max + 1)
         ax.set_ylim(f_min - f_pad, f_max + f_pad)
-        # the LAST voltage tick number gives its slot to the unit caption —
-        # a label past the last tick would fall out of the figure's right
-        # edge, so "Volt/V" replaces the number instead
-        xlabels = ax.get_xticklabels()
-        if xlabels:
-            xlabels[-1].set_text("Volt/V")
-            xlabels[-1].set_color("#e08020")
+        # the LAST VISIBLE voltage tick number gives its slot to the unit
+        # caption — the raw tick list can end beyond xlim (e.g. a 1.3 tick
+        # past a 1.24 V max), so pick the last tick inside the view, not
+        # just the list's tail
+        xlim = ax.get_xlim()
+        for tick, label in zip(reversed(ax.get_xticks()), reversed(ax.get_xticklabels())):
+            if xlim[0] <= tick <= xlim[1]:
+                label.set_text("Volt/V")
+                label.set_color("#e08020")
+                break
 
         # Draw frequency lock visualization (after limits are known)
         if self._freq_core_lock is not None:
@@ -1550,7 +1553,7 @@ class VFCurveTab:
 
         # Keep margins in sync with _create_chart (see the note there) —
         # re-applying the old 0.13 here would re-create the left gutter
-        self.fig.subplots_adjust(left=0.045, right=0.985, top=0.92, bottom=0.22)
+        self.fig.subplots_adjust(left=0.062, right=0.985, top=0.92, bottom=0.22)
 
         self._live_elements.clear()
         self._live_hline = None
