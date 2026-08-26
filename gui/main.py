@@ -8,6 +8,12 @@ import os
 import sys
 from typing import Any, Callable, Optional
 
+# Cap BLAS/OpenMP thread pools BEFORE numpy/matplotlib load: the GUI does no
+# matrix math, and the default per-core OpenBLAS arenas commit ~650MB of
+# pagefile for nothing (measured: full-stack commit 681MB -> 70MB).
+for _var in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
+    os.environ.setdefault(_var, "1")
+
 # Ensure the project root is in path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
