@@ -12,19 +12,19 @@ use nvoc_core::{
     QueryNvapiDNotifier, QueryNvapiTargetTempPolicies, QueryNvapiTgpWattRange, QueryNvapiVoltRails,
     QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks,
     QueryTdpTempLimits, QueryTemperatureThresholds, QueryThrottleReasons, QueryVfpPointVoltage,
-    QueryVoltageBoost, ResetApplicationsClocks, ResetCoolerLevels, ResetFanCurve, ResetFanSpeed,
+    QueryVoltageBoost, ResetLegacyApplicationFreqLock, ResetCoolerLevels, ResetFanCurve, ResetFanSpeed,
     SetFanStop, SetFanRpm,
-    ResetLockedClocks, ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetNvapiTgpWatt,
-    ResetPstateBaseVoltages, ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock,
-    ResetVfpLock, ResetNvapiVfpPrivate, SetApiRestriction, SetApplicationsClocks, SetAutoBoost,
-    SetAutoBoostDefault,
+    ResetFreqLock, ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetNvapiTgpWatt,
+    ResetLegacyGpcRailOvervoltLimit, ResetPstateGlobalFreqOffset, ResetPublicVftableOffset, ResetVfpFrequencyLock,
+    ResetPublicVftableGpcLock, ResetNvapiVfpPrivate, SetAutoboostSupport, SetApplicationsClocks, SetAutoboostStatus,
+    ResetAutoboostStatus,
     SetClockOffset, SetCoolerLevels, SetDomainVfpDeltas, SetEdid, SetFanSpeed, SetLegacyClocks,
     SetLockedClocks, SetNvapiClkDomainOffset, SetNvapiDNotifier, SetNvapiDynamicBoost,
     SetNvapiPerfFreqCap, SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiSensorLimits,
     SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvapiVfpPointPrivate, SetNvapiVfpRangePerPointPrivate,
     SetNvapiVoltRailOffset, SetNvapiVoltRailTarget, SetNvmlPstateLock, SetPowerLimit,
     SetPstateBaseVoltage, SetPstateClockOffset, SetTemperatureLimit, SetVfpFrequencyLock,
-    SetVfpPointDelta, SetVfpRangeDelta, SetVfpVoltageLock, SetVoltageBoost, VfpResetDomain,
+    SetPublicVftablePointOffset, SetPublicVftableRangeOffset, SetGpcVoltLock, SetVoltageBoost, VfpResetDomain,
     ClkVfDomainClass, VfPointType, clk_vf_delta_for_target, detect_gpu_type, discover_targets,
     fetch_gpu_type, nvml_pstate_to_str, parse_nvml_fan_control_policy, run, try_parse_nvml_pstate,
     QueryNvapiPowerMizer, QueryNvapiCoreVoltageControl,
@@ -2892,7 +2892,7 @@ fn reset_applications_clocks(gpu: &str) -> PyResult<()> {
         inventory_cache.entry(BackendSet::Nvml)?
     };
     let target = selected_target(&inventory.0, gpu)?;
-    run(&target, ResetApplicationsClocks).map_err(to_py_err)?;
+    run(&target, ResetLegacyApplicationFreqLock).map_err(to_py_err)?;
     Ok(())
 }
 
@@ -2952,7 +2952,7 @@ fn reset_locked_clocks(py: Python<'_>, gpu: &str, backend: &str, domain: &str) -
         if parse_backend(backend)? != "nvml" {
             return Err(invalid_value("locked clocks currently use the NVML path"));
         }
-        run(&target, ResetLockedClocks { domain }).map_err(to_py_err)?;
+        run(&target, ResetFreqLock { domain }).map_err(to_py_err)?;
         Ok(())
     })
 }
@@ -2993,7 +2993,7 @@ fn reset_pstate_base_voltages(gpu: &str) -> PyResult<()> {
         inventory_cache.entry(BackendSet::Nvapi)?
     };
     let target = selected_target(&inventory.0, gpu)?;
-    run(&target, ResetPstateBaseVoltages).map_err(to_py_err)?;
+    run(&target, ResetLegacyGpcRailOvervoltLimit).map_err(to_py_err)?;
     Ok(())
 }
 
@@ -3141,7 +3141,7 @@ fn set_vfp_voltage_lock(
         };
         run(
             &target,
-            SetVfpVoltageLock {
+            SetGpcVoltLock {
                 voltage_target,
                 feedback: feedback.unwrap_or(false),
             },
@@ -3170,7 +3170,7 @@ fn reset_vfp_deltas(py: Python<'_>, gpu: &str, domain: Option<&str>) -> PyResult
             "memory" => VfpResetDomain::Memory,
             other => return Err(invalid_value(format!("invalid VFP reset domain {other:?}"))),
         };
-        run(&target, ResetVfpDeltas { domain }).map_err(to_py_err)?;
+        run(&target, ResetPublicVftableOffset { domain }).map_err(to_py_err)?;
         Ok(())
     })
 }
@@ -3184,7 +3184,7 @@ fn set_vfp_point_delta(gpu: &str, point: usize, delta: i32) -> PyResult<()> {
     let target = selected_target(&inventory.0, gpu)?;
     run(
         &target,
-        SetVfpPointDelta {
+        SetPublicVftablePointOffset {
             point,
             delta: KilohertzDelta(delta),
         },
@@ -3212,7 +3212,7 @@ fn set_vfp_range_delta(
         let target = selected_target(&inventory.0, gpu)?;
         run(
             &target,
-            SetVfpRangeDelta {
+            SetPublicVftableRangeOffset {
                 start,
                 end,
                 delta: KilohertzDelta(delta),
@@ -3335,7 +3335,7 @@ fn reset_pstate_clock_offsets(gpu: &str, offsets: Vec<(String, String)>) -> PyRe
         .into_iter()
         .map(|(pstate, domain)| Ok((parse_pstate(&pstate)?, parse_domain(&domain)?)))
         .collect::<PyResult<Vec<_>>>()?;
-    run(&target, ResetPstateClockOffsets { offsets }).map_err(to_py_err)?;
+    run(&target, ResetPstateGlobalFreqOffset { offsets }).map_err(to_py_err)?;
     Ok(())
 }
 
@@ -3467,7 +3467,7 @@ fn set_auto_boost(gpu: &str, enabled: bool) -> PyResult<()> {
         inventory_cache.entry(BackendSet::Nvml)?
     };
     let target = selected_target(&inventory.0, gpu)?;
-    run(&target, SetAutoBoost { enabled }).map_err(to_py_err)?;
+    run(&target, SetAutoboostStatus { enabled }).map_err(to_py_err)?;
     Ok(())
 }
 
@@ -3478,7 +3478,7 @@ fn set_auto_boost_default(gpu: &str, enabled: bool) -> PyResult<()> {
         inventory_cache.entry(BackendSet::Nvml)?
     };
     let target = selected_target(&inventory.0, gpu)?;
-    run(&target, SetAutoBoostDefault { enabled }).map_err(to_py_err)?;
+    run(&target, ResetAutoboostStatus { enabled }).map_err(to_py_err)?;
     Ok(())
 }
 
@@ -3492,7 +3492,7 @@ fn set_api_restriction(gpu: &str, api_type: &str, restricted: bool) -> PyResult<
     let target = selected_target(&inventory.0, gpu)?;
     run(
         &target,
-        SetApiRestriction {
+        SetAutoboostSupport {
             api_type,
             restricted,
         },
@@ -3764,7 +3764,7 @@ fn reset_core_clocks(py: Python<'_>, gpu: &str, backend: &str) -> PyResult<()> {
             "nvml" => {
                 run(
                     &target,
-                    ResetLockedClocks {
+                    ResetFreqLock {
                         domain: ClockDomain::Graphics,
                     },
                 )
@@ -3780,7 +3780,7 @@ fn reset_core_clocks(py: Python<'_>, gpu: &str, backend: &str) -> PyResult<()> {
                 .map_err(to_py_err)?;
                 run(
                     &target,
-                    ResetPstateClockOffsets {
+                    ResetPstateGlobalFreqOffset {
                         offsets: vec![(PState::P0, ClockDomain::Graphics)],
                     },
                 )
@@ -3816,7 +3816,7 @@ fn reset_mem_clocks(py: Python<'_>, gpu: &str, backend: &str) -> PyResult<()> {
             "nvml" => {
                 run(
                     &target,
-                    ResetLockedClocks {
+                    ResetFreqLock {
                         domain: ClockDomain::Memory,
                     },
                 )
@@ -3832,7 +3832,7 @@ fn reset_mem_clocks(py: Python<'_>, gpu: &str, backend: &str) -> PyResult<()> {
                 .map_err(to_py_err)?;
                 run(
                     &target,
-                    ResetPstateClockOffsets {
+                    ResetPstateGlobalFreqOffset {
                         offsets: vec![(PState::P0, ClockDomain::Memory)],
                     },
                 )
@@ -3856,7 +3856,7 @@ fn reset_vfp_lock(py: Python<'_>, gpu: &str) -> PyResult<()> {
             inventory_cache.entry(BackendSet::Nvapi)?
         };
         let target = selected_target(&inventory.0, gpu)?;
-        run(&target, ResetVfpLock).map_err(to_py_err)?;
+        run(&target, ResetPublicVftableGpcLock).map_err(to_py_err)?;
         Ok(())
     })
 }
@@ -3891,12 +3891,12 @@ fn reset_all(py: Python<'_>, gpu: &str, domain: Option<&str>) -> PyResult<()> {
             run(&target, ResetNvapiSensorLimits).map_err(to_py_err)?;
             run(&target, ResetNvapiPowerLimits).map_err(to_py_err)?;
             run(&target, ResetCoolerLevels).map_err(to_py_err)?;
-            run(&target, ResetVfpDeltas { domain: vfp_domain }).map_err(to_py_err)?;
-            run(&target, ResetVfpLock).map_err(to_py_err)?;
-            run(&target, ResetPstateBaseVoltages).map_err(to_py_err)?;
+            run(&target, ResetPublicVftableOffset { domain: vfp_domain }).map_err(to_py_err)?;
+            run(&target, ResetPublicVftableGpcLock).map_err(to_py_err)?;
+            run(&target, ResetLegacyGpcRailOvervoltLimit).map_err(to_py_err)?;
             run(
                 &target,
-                ResetPstateClockOffsets {
+                ResetPstateGlobalFreqOffset {
                     offsets: vec![
                         (PState::P0, ClockDomain::Graphics),
                         (PState::P0, ClockDomain::Memory),
@@ -3908,13 +3908,13 @@ fn reset_all(py: Python<'_>, gpu: &str, domain: Option<&str>) -> PyResult<()> {
         if target.has_nvml() {
             let _ = run(
                 &target,
-                ResetLockedClocks {
+                ResetFreqLock {
                     domain: ClockDomain::Graphics,
                 },
             );
             let _ = run(
                 &target,
-                ResetLockedClocks {
+                ResetFreqLock {
                     domain: ClockDomain::Memory,
                 },
             );

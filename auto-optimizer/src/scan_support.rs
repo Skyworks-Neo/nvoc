@@ -3,7 +3,7 @@ use nvoc_cli_common::color::stylize;
 use nvoc_core::{
     CheckVoltageFrequency, ClockDomain, ConvertEnum, Error, GpuOperation, GpuTarget, Kilohertz,
     Microvolts, ProbeVoltageLimits, QueryTdpTempLimits, QueryVfpPointVoltage, SetVfpFrequencyLock,
-    SetVfpVoltageLock, TdpTempLimits, VfpLockRequest, run,
+    SetGpcVoltLock, TdpTempLimits, VfpLockRequest, run,
 };
 use std::str::FromStr;
 use time::{OffsetDateTime, format_description::parse_borrowed};
@@ -56,14 +56,14 @@ fn apply_vfp_lock(
     match request {
         VfpLockRequest::VoltagePoint(point) => run_output(
             gpu,
-            SetVfpVoltageLock {
+            SetGpcVoltLock {
                 voltage_target: nvoc_core::NvapiLockedVoltageTarget::Point(point),
                 feedback,
             },
         ),
         VfpLockRequest::Voltage(voltage) => run_output(
             gpu,
-            SetVfpVoltageLock {
+            SetGpcVoltLock {
                 voltage_target: nvoc_core::NvapiLockedVoltageTarget::Voltage(voltage),
                 feedback,
             },

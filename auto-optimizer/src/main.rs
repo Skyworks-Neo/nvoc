@@ -21,7 +21,7 @@ mod stressor_process;
 use anyhow::Result;
 use cleanup::{AutoscanExit, cleanup_autoscan_exit};
 use nvoc_core::{
-    BackendSet, ConvertEnum, GpuSelector, GpuTarget, ResetVfpDeltas, VfpResetDomain,
+    BackendSet, ConvertEnum, GpuSelector, GpuTarget, ResetPublicVftableOffset, VfpResetDomain,
     discover_targets, run, select_targets, sync_memory_pstate_as_p0,
 };
 use oc_profile_function::{export_vfp_from_log, fix_result, handle_vfp_export, handle_vfp_import};
@@ -170,7 +170,7 @@ fn main_result() -> Result<i32, Box<dyn std::error::Error>> {
                 .transpose()?
                 .unwrap_or(VfpResetDomain::All);
             for gpu in &nvapi_selected {
-                run(gpu, ResetVfpDeltas { domain })?;
+                run(gpu, ResetPublicVftableOffset { domain })?;
             }
         }
         Some(("export-vfp", matches)) => {

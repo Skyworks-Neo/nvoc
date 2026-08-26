@@ -11,7 +11,7 @@ use crate::stressor_process::{bundled_command, external_command, is_bundled, res
 use clap::ArgMatches;
 use nvoc_core::{
     ClockDomain, GpuTarget, KilohertzDelta, NvapiLockedVoltageTarget, PState, QueryGpuStatus,
-    QueryVfpPointVoltage, ResetVfpDeltas, SetVfpPointDelta, SetVfpVoltageLock, VfpResetDomain,
+    QueryVfpPointVoltage, ResetPublicVftableOffset, SetPublicVftablePointOffset, SetGpcVoltLock, VfpResetDomain,
     set_nvapi_pstate_clock_offsets,
 };
 use std::process::{Child, Command, Stdio};
@@ -57,7 +57,7 @@ fn set_vfp_range_warn(gpu: &GpuTarget<'_>, range: std::ops::RangeInclusive<usize
     for offset in range {
         match run_output(
             gpu,
-            SetVfpPointDelta {
+            SetPublicVftablePointOffset {
                 point: offset,
                 delta: KilohertzDelta(delta_khz),
             },
@@ -438,13 +438,13 @@ pub(super) fn run_pressure_test(
                     || {
                         run_output(
                             gpu,
-                            ResetVfpDeltas {
+                            ResetPublicVftableOffset {
                                 domain: VfpResetDomain::Core,
                             },
                         )
                         .map(|_| ())
                     },
-                    "ResetVfpDeltas",
+                    "ResetPublicVftableOffset",
                     5,
                     5,
                     cfg.minload_exe,
@@ -582,7 +582,7 @@ pub(super) fn run_pressure_test(
                                     // ensure voltage lock is applied as before
                                     run_output(
                                         gpu,
-                                        SetVfpVoltageLock {
+                                        SetGpcVoltLock {
                                             voltage_target: NvapiLockedVoltageTarget::Voltage(v),
                                             feedback: false,
                                         },
@@ -679,13 +679,13 @@ pub(super) fn run_pressure_test(
                             || {
                                 run_output(
                                     gpu,
-                                    ResetVfpDeltas {
+                                    ResetPublicVftableOffset {
                                         domain: VfpResetDomain::All,
                                     },
                                 )
                                 .map(|_| ())
                             },
-                            "ResetVfpDeltas (timeout recovery)",
+                            "ResetPublicVftableOffset (timeout recovery)",
                             5,
                             5,
                             cfg.minload_exe,

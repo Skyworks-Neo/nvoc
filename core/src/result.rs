@@ -24,24 +24,24 @@ pub enum OperationKind {
     QueryPstateBaseVoltage,
     SetClockOffset,
     SetApplicationsClocks,
-    ResetApplicationsClocks,
+    ResetLegacyApplicationFreqLock,
     SetLockedClocks,
-    ResetLockedClocks,
+    ResetFreqLock,
     QueryFanInfo,
     SetFanSpeed,
     ResetFanSpeed,
     SetPstateBaseVoltage,
-    ResetPstateBaseVoltages,
+    ResetLegacyGpcRailOvervoltLimit,
     SetPstateClockOffset,
     SetCoolerLevels,
     QueryVfpPointVoltage,
     SetVfpFrequencyLock,
     ResetVfpFrequencyLock,
-    SetVfpVoltageLock,
-    ResetVfpDeltas,
-    ResetVfpLock,
-    SetVfpPointDelta,
-    SetVfpRangeDelta,
+    SetGpcVoltLock,
+    ResetPublicVftableOffset,
+    ResetPublicVftableGpcLock,
+    SetPublicVftablePointOffset,
+    SetPublicVftableRangeOffset,
     SetDomainVfpDeltas,
     QueryDomainVfpPoints,
     QueryDomainVfpIndices,
@@ -132,7 +132,7 @@ pub enum OperationKind {
     ResetNvapiPowerLimits,
     ResetNvapiSensorLimits,
     ResetCoolerLevels,
-    ResetPstateClockOffsets,
+    ResetPstateGlobalFreqOffset,
     QueryTdpTempLimits,
     ProbeVoltageLimits,
     CheckVoltageFrequency,
@@ -151,10 +151,10 @@ pub enum OperationKind {
     /// remains distinct from a caller directly requesting
     /// [`OperationKind::SetLockedClocks`].
     SetNvmlPstateLock,
-    SetAutoBoost,
-    SetAutoBoostDefault,
+    SetAutoboostStatus,
+    ResetAutoboostStatus,
     QueryAutoBoost,
-    SetApiRestriction,
+    SetAutoboostSupport,
     QueryApiRestriction,
     QueryDisplays,
     QueryEdid,
@@ -230,24 +230,24 @@ impl OperationKind {
                 | SetNvmlAcousticTemp
                 | SetClockOffset
                 | SetApplicationsClocks
-                | ResetApplicationsClocks
+                | ResetLegacyApplicationFreqLock
                 | SetLockedClocks
-                | ResetLockedClocks
+                | ResetFreqLock
                 | SetFanSpeed
                 | ResetFanSpeed
                 | SetPstateBaseVoltage
                 | SetNvapiOvervolt
-                | ResetPstateBaseVoltages
+                | ResetLegacyGpcRailOvervoltLimit
                 | SetPstateClockOffset
                 | SetCoolerLevels
                 | ResetCoolerLevels
                 | SetVfpFrequencyLock
                 | ResetVfpFrequencyLock
-                | SetVfpVoltageLock
-                | ResetVfpDeltas
-                | ResetVfpLock
-                | SetVfpPointDelta
-                | SetVfpRangeDelta
+                | SetGpcVoltLock
+                | ResetPublicVftableOffset
+                | ResetPublicVftableGpcLock
+                | SetPublicVftablePointOffset
+                | SetPublicVftableRangeOffset
                 | SetDomainVfpDeltas
                 | SetVoltageBoost
                 | SetNvapiPowerLimits
@@ -267,12 +267,12 @@ impl OperationKind {
                 | SetFanRpm
                 | ResetNvapiPowerLimits
                 | ResetNvapiSensorLimits
-                | ResetPstateClockOffsets
+                | ResetPstateGlobalFreqOffset
                 | SetLegacyClocks
                 | SetNvapiPstateLock
-                | SetAutoBoost
-                | SetAutoBoostDefault
-                | SetApiRestriction
+                | SetAutoboostStatus
+                | ResetAutoboostStatus
+                | SetAutoboostSupport
                 | SetEdid
                 | ClearEdid
                 | OemOcScanner

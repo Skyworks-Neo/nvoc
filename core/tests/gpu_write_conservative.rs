@@ -3,7 +3,7 @@ use nvml_wrapper::enum_wrappers::device::PerformanceState;
 use nvml_wrapper::enums::device::FanControlPolicy;
 use nvoc_core::{
     BackendSet, Error, GpuId, GpuTarget, QueryClockOffset, QueryPowerLimits, QueryPstates,
-    ResetApplicationsClocks, ResetFanSpeed, ResetLockedClocks, ResetVfpDeltas,
+    ResetLegacyApplicationFreqLock, ResetFanSpeed, ResetFreqLock, ResetPublicVftableOffset,
     ResetVfpFrequencyLock, SetClockOffset, SetFanSpeed, SetLockedClocks, SetPowerLimit,
     SetPstateClockOffset, TargetInventory, VfpResetDomain, discover_targets, parse_nvml_pstate,
     run,
@@ -155,13 +155,13 @@ impl<'a> NvmlCleanupGuard<'a> {
         for (label, result) in [
             (
                 "NVML application clocks reset",
-                run(&self.target, ResetApplicationsClocks).map(|_| ()),
+                run(&self.target, ResetLegacyApplicationFreqLock).map(|_| ()),
             ),
             (
                 "NVML core locked clocks reset",
                 run(
                     &self.target,
-                    ResetLockedClocks {
+                    ResetFreqLock {
                         domain: ClockDomain::Graphics,
                     },
                 )
@@ -171,7 +171,7 @@ impl<'a> NvmlCleanupGuard<'a> {
                 "NVML memory locked clocks reset",
                 run(
                     &self.target,
-                    ResetLockedClocks {
+                    ResetFreqLock {
                         domain: ClockDomain::Memory,
                     },
                 )
@@ -242,7 +242,7 @@ impl<'a> NvapiCleanupGuard<'a> {
 
         if let Err(err) = run(
             &self.target,
-            ResetVfpDeltas {
+            ResetPublicVftableOffset {
                 domain: VfpResetDomain::All,
             },
         ) {
@@ -303,11 +303,11 @@ fn nvml_bad_gpu_rejects() {
         .map(|_| ()),
     );
     assert_invalid_gpu_id_error(run(&bad_target, ResetFanSpeed { fan_index: 0 }).map(|_| ()));
-    assert_invalid_gpu_id_error(run(&bad_target, ResetApplicationsClocks).map(|_| ()));
+    assert_invalid_gpu_id_error(run(&bad_target, ResetLegacyApplicationFreqLock).map(|_| ()));
     assert_invalid_gpu_id_error(
         run(
             &bad_target,
-            ResetLockedClocks {
+            ResetFreqLock {
                 domain: ClockDomain::Graphics,
             },
         )
@@ -316,7 +316,7 @@ fn nvml_bad_gpu_rejects() {
     assert_invalid_gpu_id_error(
         run(
             &bad_target,
-            ResetLockedClocks {
+            ResetFreqLock {
                 domain: ClockDomain::Memory,
             },
         )
@@ -487,17 +487,17 @@ fn nvml_resets() {
     let mut cleanup = NvmlCleanupGuard::new(target);
 
     for result in [
-        run(&target, ResetApplicationsClocks).map(|_| ()),
+        run(&target, ResetLegacyApplicationFreqLock).map(|_| ()),
         run(
             &target,
-            ResetLockedClocks {
+            ResetFreqLock {
                 domain: ClockDomain::Graphics,
             },
         )
         .map(|_| ()),
         run(
             &target,
-            ResetLockedClocks {
+            ResetFreqLock {
                 domain: ClockDomain::Memory,
             },
         )
@@ -546,7 +546,7 @@ fn nvapi_vfp_delta_reset() {
     let mut cleanup = NvapiCleanupGuard::new(target);
     match run(
         &target,
-        ResetVfpDeltas {
+        ResetPublicVftableOffset {
             domain: VfpResetDomain::All,
         },
     ) {

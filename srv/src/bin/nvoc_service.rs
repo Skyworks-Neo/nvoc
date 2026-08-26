@@ -36,8 +36,8 @@ mod nvoc_service {
         enum_wrappers::device::{TemperatureSensor, TemperatureThreshold},
     };
     use nvoc_core::{
-        BackendSet, GpuId, NvapiLockedVoltageTarget, ResetVfpFrequencyLock, ResetVfpLock,
-        SetVfpVoltageLock, discover_targets, find_matching_vfp_point, run as run_gpu_operation,
+        BackendSet, GpuId, NvapiLockedVoltageTarget, ResetVfpFrequencyLock, ResetPublicVftableGpcLock,
+        SetGpcVoltLock, discover_targets, find_matching_vfp_point, run as run_gpu_operation,
     };
     use std::{
         cmp::{max, min},
@@ -357,7 +357,7 @@ mod nvoc_service {
                             if let Some(target) = maybe_target {
                                 match run_gpu_operation(
                                     &target,
-                                    SetVfpVoltageLock {
+                                    SetGpcVoltLock {
                                         voltage_target: NvapiLockedVoltageTarget::Point(next),
                                         feedback: true,
                                     },
@@ -372,7 +372,7 @@ mod nvoc_service {
                             if let Some(target) = maybe_target {
                                 match run_gpu_operation(
                                     &target,
-                                    SetVfpVoltageLock {
+                                    SetGpcVoltLock {
                                         voltage_target: NvapiLockedVoltageTarget::Point(next),
                                         feedback: true,
                                     },
@@ -385,7 +385,7 @@ mod nvoc_service {
                             // 已回到正常上限，完全解锁
                             gpu_dynamic_lock_point[idx] = vfp_highest_lock_point;
                             if let Some(target) = maybe_target {
-                                if let Err(e) = run_gpu_operation(&target, ResetVfpLock) {
+                                if let Err(e) = run_gpu_operation(&target, ResetPublicVftableGpcLock) {
                                     error!("GPU {}: failed to reset VFP voltage lock: {:?}", i, e);
                                 }
                                 for domain in [ClockDomain::Graphics, ClockDomain::Memory] {

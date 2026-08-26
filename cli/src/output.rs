@@ -62,8 +62,8 @@ pub(super) fn format_human(execution: &Execution) -> String {
 fn format_human_output(function: &str, output: &Value) -> Vec<String> {
     match function {
         "get-settings" => format_get_settings_output(output),
-        "get-vfp" => format_vfp_output(output),
-        "get-pstates" => format_object_array(
+        "get-public-vftable" => format_vfp_output(output),
+        "get-pstate-freq-range" => format_object_array(
             output,
             &[
                 ("pstate", "P-State"),
@@ -73,12 +73,12 @@ fn format_human_output(function: &str, output: &Value) -> Vec<String> {
                 ("max_memory_mhz", "Memory Max"),
             ],
         ),
-        "get-supported-app-clocks" => format_object_array(
+        "get-supported-legacy-application-freq" => format_object_array(
             output,
             &[("memory_mhz", "Memory"), ("graphics_mhz", "Graphics")],
         ),
         "get-temp-thresholds" => format_temperature_thresholds_output(output),
-        "get-thermal-settings" => format_object_array(
+        "get-legacy-temp-sensor" => format_object_array(
             output,
             &[
                 ("target", "Target"),
@@ -1701,7 +1701,7 @@ mod tests {
             ],
         });
 
-        let rendered = format_human_output("get-vfp", &output).join("\n");
+        let rendered = format_human_output("get-public-vftable", &output).join("\n");
 
         assert!(rendered.contains("V-F Points"));
         assert!(rendered.contains("#12: 900.0 mV, 1800.0 MHz, delta 15.0 MHz"));
@@ -2245,7 +2245,7 @@ mod tests {
                 "thermal_limit_c": 83,
                 "voltage_boost_percent": 0,
             }),
-            Command::GetVfp => json!({
+            Command::GetPublicVftable => json!({
                 "domain": "graphics",
                 "indexed": true,
                 "infer_missing_default": true,
@@ -2263,10 +2263,10 @@ mod tests {
             Command::GetPowerWatt => {
                 json!({"min_watt": 100, "current_watt": 250, "max_watt": 350})
             }
-            Command::GetClockOffsetMhz => {
+            Command::GetPstateGlobalFreqOffset => {
                 json!({"domain": "graphics", "pstate": "P0", "offset_mhz": 120})
             }
-            Command::GetPstates => json!([{
+            Command::GetPstateFreqRange => json!([{
                 "pstate": "P0",
                 "min_core_mhz": 300,
                 "max_core_mhz": 2700,
@@ -2280,14 +2280,14 @@ mod tests {
                     {"pstate": "P3", "locked": true, "clocks": {"graphics": {"max_mhz": 2565.0, "min_mhz": 780.0}, "memory": {"max_mhz": 7001.0, "min_mhz": 7001.0}, "video": {"max_mhz": 2565.0, "min_mhz": 780.0}}},
                 ],
             }),
-            Command::GetSupportedAppClocks => {
+            Command::GetSupportedLegacyApplicationFreq => {
                 json!([{"memory_mhz": 10500, "graphics_mhz": 1800}])
             }
             Command::GetFanInfo => json!({"count": 2, "min_percent": 30, "max_percent": 100}),
             Command::GetTemperatureThresholds => {
                 json!([{"name": "shutdown", "celsius": 95}])
             }
-            Command::GetThermalSettings => json!([
+            Command::GetLegacyTempSensor => json!([
                 {"target": "Gpu", "controller": "GpuInternal", "current_c": 50, "min_c": -5, "max_c": 95},
                 {"target": "Memory", "controller": "GpuInternal", "current_c": 52, "min_c": -5, "max_c": 95},
                 {"target": "Board", "controller": "GpuInternal", "current_c": 48, "min_c": 0, "max_c": 100},
@@ -2327,7 +2327,7 @@ mod tests {
                 json!([{"pstate": "P0", "min_uv": 0, "current_uv": 0, "max_uv": 100000}])
             }
             Command::GetLegacyP0CoreMaxVoltageDelta => json!({"max_delta_uv": 100000}),
-            Command::GetPstateBaseVoltageUv => json!({
+            Command::GetLegacyGpcRailOvervoltLimit => json!({
                 "pstate": "P0",
                 "voltage_domain": "core",
                 "editable": true,
@@ -2336,9 +2336,9 @@ mod tests {
                 "min_delta_uv": 0,
                 "max_delta_uv": 100000,
             }),
-            Command::GetVoltageBoostPercent => json!({"voltage_boost_percent": 25}),
-            Command::GetAutoBoost => json!({"enabled": true, "default_enabled": false}),
-            Command::GetApiRestriction => {
+            Command::GetPublicGpcRailVoltBoost => json!({"voltage_boost_percent": 25}),
+            Command::GetAutoboostStatus => json!({"enabled": true, "default_enabled": false}),
+            Command::GetAutoboostSupport => {
                 json!({"api": "app-clocks", "restricted": true})
             }
             Command::GetEdid => json!({
@@ -2348,7 +2348,7 @@ mod tests {
             }),
             Command::SetCoreOffsetMhz
             | Command::SetMemoryOffsetMhz
-            | Command::SetClockOffsetMhz => json!({
+            | Command::SetPstateGlobalFreqOffset => json!({
                 "applied": true,
                 "backend": "nvapi",
                 "domain": "graphics",
@@ -2356,7 +2356,7 @@ mod tests {
                 "offset_mhz": 120,
             }),
             Command::SetPowerWatt => json!({"applied": true, "power_watt": 250}),
-            Command::SetPowerPercent => json!({"applied": true, "power_percent": 90}),
+            Command::SetPublicTgpPercent => json!({"applied": true, "power_percent": 90}),
             Command::SetDynamicBoost => json!({"applied": true, "dynamic_boost": true}),
             Command::GetTgpWattRange => json!({
                 "policy_index": 2,
@@ -2377,45 +2377,45 @@ mod tests {
                 ],
             }),
             Command::SetDNotifier => json!({"applied": true, "dnotifier_level": "D3"}),
-            Command::SetThermalLimitC => json!({"applied": true, "thermal_limit_c": 83}),
+            Command::SetTempLimit => json!({"applied": true, "thermal_limit_c": 83}),
             Command::SetTemperatureThresholds => {
                 json!({"applied": true, "policy_index": 2, "celsius": 85.0})
             }
             Command::SetFanPercent => {
                 json!({"applied": true, "fan": "all", "policy": "manual", "level_percent": 65})
             }
-            Command::SetLockedClocksMhz => {
+            Command::SetFreqLock => {
                 json!({"applied": true, "domain": "graphics", "min_mhz": 1500, "max_mhz": 1800})
             }
-            Command::SetVfpVoltageLock => json!({"applied": true, "target": "900mv"}),
+            Command::SetGpcVoltLock => json!({"applied": true, "target": "900mv"}),
             Command::OemOcScanner => {
                 json!({"applied": true, "action": "start"})
             }
-            Command::SetVfpPointDeltaMhz => {
+            Command::SetPublicVftablePointOffset => {
                 json!({"applied": true, "point": 12, "delta_mhz": 15})
             }
-            Command::SetVfpRangeDeltaMhz => {
+            Command::SetPublicVftableRangeOffset => {
                 json!({"applied": true, "start": 12, "end": 16, "delta_mhz": 15})
             }
-            Command::SetPstateLock => {
+            Command::SetPstateLockViaMemRange => {
                 json!({"applied": true, "pstate_range": "P0..P2", "min_lock_mhz": 300, "max_lock_mhz": 1800})
             }
-            Command::SetApplicationsClocksMhz => {
+            Command::SetLegacyApplicationFreqLock => {
                 json!({"applied": true, "memory_mhz": 10500, "graphics_mhz": 1800})
             }
-            Command::SetPstateBaseVoltageUv => {
+            Command::SetLegacyGpcRailOvervoltLimit => {
                 json!({"applied": true, "pstate": "P0", "delta_uv": 100000})
             }
             Command::SetOvervoltUv => {
                 json!({"applied": true, "overvolt_delta_uv": 50000})
             }
-            Command::SetVoltageBoostPercent => {
+            Command::SetPublicGpcRailVoltBoost => {
                 json!({"applied": true, "voltage_boost_percent": 25})
             }
-            Command::SetAutoBoost | Command::SetAutoBoostDefault => {
+            Command::SetAutoboostStatus | Command::ResetAutoboostStatus => {
                 json!({"applied": true, "enabled": true})
             }
-            Command::SetApiRestriction => {
+            Command::SetAutoboostSupport => {
                 json!({"applied": true, "api": "app-clocks", "restricted": true})
             }
             Command::SetEdid => {
@@ -2424,7 +2424,7 @@ mod tests {
             Command::ClearEdid => {
                 json!({"applied": true, "display_id": "0x00010001"})
             }
-            Command::SetLegacyClocksMhz => {
+            Command::SetLegacyFreq => {
                 json!({"applied": true, "core_mhz": 900, "memory_mhz": 1800})
             }
             Command::ResetCoreOffsetMhz | Command::ResetMemoryOffsetMhz => json!({
@@ -2433,16 +2433,16 @@ mod tests {
                 "pstate": "P0",
                 "offset_mhz": 0,
             }),
-            Command::ResetApplicationsClocks
-            | Command::ResetVfpLock
-            | Command::ResetPowerPercent
-            | Command::ResetThermalLimitC
-            | Command::ResetPstateBaseVoltages
-            | Command::ResetPstateClockOffsets => json!({"applied": true}),
-            Command::ResetVoltageBoostPercent => {
+            Command::ResetLegacyApplicationFreqLock
+            | Command::ResetPublicVftableGpcLock
+            | Command::ResetPublicTgpPercent
+            | Command::ResetTempLimit
+            | Command::ResetLegacyGpcRailOvervoltLimit
+            | Command::ResetPstateGlobalFreqOffset => json!({"applied": true}),
+            Command::ResetPublicGpcRailVoltBoost => {
                 json!({"applied": true, "voltage_boost_percent": 0})
             }
-            Command::ResetLockedClocks | Command::ResetVfpDeltas => {
+            Command::ResetFreqLock | Command::ResetPublicVftableOffset => {
                 json!({"applied": true, "domain": "graphics"})
             }
             Command::ResetFan => json!({"applied": true, "fan_indices": [0, 1]}),
