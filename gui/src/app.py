@@ -79,6 +79,7 @@ class App(ctk.CTk):
         self._cli_output_buffer: List[str] = []
         self._cli_output_flush_id: Optional[str] = None
         self._cli_output_lock = threading.Lock()
+        self._refresh_chain_after_id: Optional[str] = None
 
         # Global resize session state (used to coalesce expensive per-tab redraw work)
         self._is_resizing = False
@@ -1203,6 +1204,15 @@ class App(ctk.CTk):
             self.refresh_after_native_action()
 
     def refresh_after_native_action(self) -> None:
+        """Coalesce bursts into one deferred status refresh chain."""
+        if self._refresh_chain_after_id is not None:
+            self.after_cancel(self._refresh_chain_after_id)
+        self._refresh_chain_after_id = self.after(
+            300, self._refresh_after_native_action_now
+        )
+
+    def _refresh_after_native_action_now(self) -> None:
+        self._refresh_chain_after_id = None
         self._query_gpu_get()
         self._query_overclock_status()
         if self.tab_dashboard:
@@ -1412,6 +1422,10 @@ class App(ctk.CTk):
     def _do_shutdown(self):
         """Perform shutdown cleanup. Must run on the main Tk thread."""
         # 1. Stop all periodic timers
+        if self._refresh_chain_after_id is not None:
+            self.after_cancel(self._refresh_chain_after_id)
+            self._refresh_chain_after_id = None
+
         if hasattr(self, "tab_dashboard") and self.tab_dashboard is not None:
             self.tab_dashboard._stop_polling()
 
