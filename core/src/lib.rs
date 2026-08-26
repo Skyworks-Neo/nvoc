@@ -38,7 +38,7 @@ pub use operation::{
     QueryNvapiPowerMizer, QueryNvapiCoreVoltageControl,
     SetNvapiCoreVoltageControl, QueryNvapiPmgrVoltageArbiter, SetNvapiPmgrVoltageArbiter,
     QueryNvapiRatedTdp, SetNvapiBackgroundOcScanner, QueryNvapiOcScannerIncomplete,
-    QueryNvapiThermalSim, SetNvapiThermalSim, DisableNvapiThermalSim, SetNvapiPowerLevel,
+    QueryNvapiThermalSim, SetNvapiThermalSim, DisableNvapiThermalSim, SetNvapiPerfLevelLock,
     ResetPstateBaseVoltages,
     ResetPstateClockOffsets, ResetVfpDeltas, ResetVfpFrequencyLock, ResetVfpLock,
     RestartDisplayDriver, SetApiRestriction, SetApplicationsClocks, SetAutoBoost,

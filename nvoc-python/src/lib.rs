@@ -30,7 +30,7 @@ use nvoc_core::{
     QueryNvapiPowerMizer, QueryNvapiCoreVoltageControl,
     SetNvapiCoreVoltageControl, QueryNvapiPmgrVoltageArbiter, SetNvapiPmgrVoltageArbiter,
     QueryNvapiRatedTdp, SetNvapiBackgroundOcScanner, QueryNvapiOcScannerIncomplete,
-    QueryNvapiThermalSim, SetNvapiThermalSim, DisableNvapiThermalSim, SetNvapiPowerLevel,
+    QueryNvapiThermalSim, SetNvapiThermalSim, DisableNvapiThermalSim, SetNvapiPerfLevelLock,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -2752,25 +2752,26 @@ fn disable_thermal_sim(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
     py_value(py, &v)
 }
 
-/// Set the NVCP power-mode dropdown (SetPerfLevel 0x75DD3E6A):
-/// 0=Adaptive, 1=Maximum Performance, 2=Auto.
+/// Admin-free pstate lock (SetPerfLevel 0x75DD3E6A, escape 0x7000040):
+/// `level` is an INDEX into the GPU's real available P-State list
+/// (get-pstate-native) — not a fixed P8..P0 enum and not the NVCP
+/// power-mode dropdown. No release value exists (only valid indices
+/// accepted); reboot/driver reload clears the lock; re-locking re-targets.
 #[pyfunction]
-fn set_power_level(py: Python<'_>, gpu: &str, level: u32) -> PyResult<Py<PyAny>> {
+fn set_pstate_lock_level(py: Python<'_>, gpu: &str, level: u32) -> PyResult<Py<PyAny>> {
     let v = with_target(gpu, "nvapi", |target| {
-        let out = run(target, SetNvapiPowerLevel { level })
+        let out = run(target, SetNvapiPerfLevelLock { level })
             .map_err(to_py_err)?
             .output;
         Ok(value_object([
             ("applied", Value::from(true)),
             ("level", Value::from(out.applied)),
             (
-                "level_name",
-                Value::from(match out.applied {
-                    0 => "Adaptive",
-                    1 => "Maximum Performance",
-                    2 => "Auto",
-                    _ => "unknown",
-                }),
+                "note",
+                Value::from(
+                    "index into this GPU's real P-State list (get-pstate-native); \
+                     no release value — reboot/driver reload clears",
+                ),
             ),
         ]))
     })?;
@@ -3983,7 +3984,7 @@ fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(get_thermal_sim, m)?)?;
     m.add_function(wrap_pyfunction!(set_thermal_sim, m)?)?;
     m.add_function(wrap_pyfunction!(disable_thermal_sim, m)?)?;
-    m.add_function(wrap_pyfunction!(set_power_level, m)?)?;
+    m.add_function(wrap_pyfunction!(set_pstate_lock_level, m)?)?;
     m.add_function(wrap_pyfunction!(set_target_temp, m)?)?;
     m.add_function(wrap_pyfunction!(set_applications_clocks, m)?)?;
     m.add_function(wrap_pyfunction!(reset_applications_clocks, m)?)?;

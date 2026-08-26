@@ -506,37 +506,32 @@ impl GpuOperation for SetFanRpm {
     }
 }
 
-/// NVCP "电源模式" SET — the Control Panel's Adaptive/Maximum Performance
-/// dropdown via `NvAPI_GPU_SetPerfLevel` (0x75dd3e6a).
+/// Admin-free pstate lock via `NvAPI_GPU_SetPerfLevel` (0x75dd3e6a, escape
+/// 0x7000040). 2026-08-26 correction — NOT the NVCP power-mode dropdown:
+/// `level` is an INDEX into the GPU's actual available P-State list (see
+/// `QueryNvapiPstateNative`/get-pstate-native), not a fixed enum — on the
+/// 4060 Laptop the measured mapping is 0=P8, 1=P5, 2=P4, 3=P3, 4=P0, but
+/// other GPUs expose a different P-State set. Re-locking re-targets (last
+/// call wins). No release argument exists (RM accepts only valid indices)
+/// and the lock survives every other known release API — only a driver
+/// reload/reboot clears it.
 #[derive(Clone, Copy, Debug)]
-pub struct SetNvapiPowerLevel {
-    pub level: u32, // 0=Adaptive, 1=Maximum, 2=Auto
+pub struct SetNvapiPerfLevelLock {
+    pub level: u32, // index into the GPU's real P-State list (driver-validated)
 }
 
-impl GpuOperation for SetNvapiPowerLevel {
+impl GpuOperation for SetNvapiPerfLevelLock {
     type Output = AppliedValue<u32>;
 
     fn kind(&self) -> OperationKind {
-        OperationKind::SetNvapiPowerLevel
+        OperationKind::SetNvapiPerfLevelLock
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
-        use nvapi_hi::nvapi::sys::gpu::power::private::PowerLevel;
-        let level = match self.level {
-            0 => PowerLevel::Adaptive,
-            1 => PowerLevel::MaxPerformance,
-            2 => PowerLevel::Auto,
-            _ => {
-                return Err(Error::Custom(format!(
-                    "invalid power level {}: expected 0=Adaptive, 1=Maximum, 2=Auto",
-                    self.level
-                )));
-            }
-        };
         target
             .nvapi()?
             .inner()
-            .set_perf_level(level)
+            .set_pstate_lock(self.level)
             .map_err(Error::from)?;
         Ok(AppliedValue {
             requested: self.level,

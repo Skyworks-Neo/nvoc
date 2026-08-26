@@ -16,7 +16,7 @@ use nvoc_core::{
     QueryNvapiPowerMizer, QueryNvapiCoreVoltageControl,
     SetNvapiCoreVoltageControl, QueryNvapiPmgrVoltageArbiter, SetNvapiPmgrVoltageArbiter,
     QueryNvapiRatedTdp, SetNvapiBackgroundOcScanner, QueryNvapiOcScannerIncomplete,
-    QueryNvapiThermalSim, SetNvapiThermalSim, DisableNvapiThermalSim, SetNvapiPowerLevel,
+    QueryNvapiThermalSim, SetNvapiThermalSim, DisableNvapiThermalSim, SetNvapiPerfLevelLock,
     QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
     QueryThrottleReasons, QueryVfpPointVoltage, QueryViolationStatus, QueryVoltageBoost,
     ResetApplicationsClocks, ResetCoolerLevels, ResetFanSpeed, ResetForcePstate, ResetLockedClocks,
@@ -195,7 +195,7 @@ pub enum Command {
     SetVfpPointPrivate,
     SetVfpRangePrivate,
     GetClkVfPoints,
-    SetPowerLevel,
+    SetPerfLevel,
     GetThermalSim,
     SetThermalSim,
     DisableThermalSim,
@@ -308,7 +308,7 @@ impl Command {
             Self::GetRatedTdp => "get-rated-tdp",
             Self::GetClkDomains => "get-clk-domains",
             Self::GetClkVfPoints => "get-clk-vf-points",
-            Self::SetPowerLevel => "set-power-level",
+            Self::SetPerfLevel => "set-perf-level",
             Self::GetThermalSim => "get-thermal-sim",
             Self::SetThermalSim => "set-thermal-sim",
             Self::DisableThermalSim => "disable-thermal-sim",
@@ -468,8 +468,8 @@ impl Command {
             Self::GetClkVfPoints => {
                 "Read the private ClockClient V/F-points family: per-bank point masks + V/F curve records (voltage-indexed, units calibrated vs the public GPC VFP)"
             }
-            Self::SetPowerLevel => {
-                "Set the NVCP power-mode dropdown (SetPerfLevel 0x75DD3E6A): 0=Adaptive, 1=Maximum Performance, 2=Auto"
+            Self::SetPerfLevel => {
+                "Admin-free pstate lock (SetPerfLevel 0x75DD3E6A, escape 0x7000040): level is an INDEX into the GPU's real available P-State list (see get-pstate-native) — NOT a fixed P8..P0 enum and NOT the NVCP power-mode dropdown. No release value exists (only valid indices accepted); the lock survives reset-force-pstate/reset-pstate-native and only a reboot/driver reload clears it; re-locking re-targets"
             }
             Self::GetThermalSim => {
                 "Read the temperature-simulation state (GetThermalSimulationMode; Secured-Overrides 'Temp faking allowed' gated)"
@@ -649,7 +649,7 @@ impl Command {
             Self::ResetGpuClock => (0, 0),
             Self::SetVfpPointPrivate => (3, 3),
             Self::SetVfpRangePrivate => (4, 4),
-            Self::SetPowerLevel => (1, 1),
+            Self::SetPerfLevel => (1, 1),
             Self::SetThermalSim => (1, 1),
             Self::GetPowerMizer => (0, 1),
             Self::SetCoreVoltageControl => (1, 1),
@@ -876,10 +876,10 @@ impl Command {
                 "PERCENT",
                 "Fan speed/cooler level percentage",
             )],
-            Self::SetPowerLevel => vec![PositionalArg::free(
+            Self::SetPerfLevel => vec![PositionalArg::free(
                 "arg_level",
                 "LEVEL",
-                "Power level: 0=Adaptive, 1=Maximum Performance, 2=Auto (the NVCP power-mode dropdown)",
+                "Index into this GPU's real P-State list (get-pstate-native; on the 4060 Laptop: 0=P8, 1=P5, 2=P4, 3=P3, 4=P0). Admin-free; no release value — reboot clears",
             )],
             Self::SetThermalSim => vec![PositionalArg::free(
                 "arg_temp_c",
@@ -1181,7 +1181,7 @@ const COMMANDS: &[Command] = &[
     Command::SetOvervoltUv,
     Command::SetPstateLock,
     Command::SetPStateNative,
-    Command::SetPowerLevel,
+    Command::SetPerfLevel,
     Command::SetPowerPercent,
     Command::SetPowerWatt,
     Command::SetThermalLimitC,
@@ -3052,18 +3052,13 @@ fn execute_target(
                 None => json!({"supported": false}),
             })
         }
-        Command::SetPowerLevel => {
+        Command::SetPerfLevel => {
             let level = parse_usize(&invocation.positionals[0], "level")? as u32;
-            let out = run(target, SetNvapiPowerLevel { level })?.output;
+            let out = run(target, SetNvapiPerfLevelLock { level })?.output;
             Ok(json!({
                 "applied": true,
                 "level": out.applied,
-                "level_name": match out.applied {
-                    0 => "Adaptive",
-                    1 => "Maximum Performance",
-                    2 => "Auto",
-                    _ => "unknown",
-                },
+                "note": "level is an index into this GPU's real P-State list (see get-pstate-native), not a fixed P8..P0 enum; no release value exists — reboot/driver reload clears the lock",
             }))
         }
         Command::GetThermalSim => {
