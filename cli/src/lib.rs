@@ -343,7 +343,9 @@ impl Command {
             Self::GetUuid => "Read GPU UUID",
             Self::GetStatus => "Read NVAPI live GPU status",
             Self::GetSettings => "Read NVAPI overclock settings",
-            Self::GetPublicVftable => "Read V-F curve points",
+            Self::GetPublicVftable => {
+                "Read the public V-F curve table: default dumps all domains (graphics points plus the trailing memory entries, e.g. index 127..131 on 30/40 series); --domain gpc|memory narrows to one segment"
+            }
             Self::GetPowerLimit => "Read power limits in watts: NVML min/current/max by default; falls back to the NVAPI TGP-watts range (min/default/max) where NVML is unsupported",
             Self::GetPstateGlobalFreqOffset => "Read clock offset in MHz",
             Self::GetPStateLock => "Read the native NVAPI P-State level table",
@@ -4146,43 +4148,64 @@ fn execute_target(
 }
 
 fn get_vfp(target: &GpuTarget<'_>, invocation: &Invocation) -> CliResult<Value> {
-    let domain = option_domain(invocation, ClockDomain::Graphics)?;
+    // Default: dump every domain the public VFP table exposes (graphics 0..N
+    // plus the trailing memory entries, e.g. 127..131 on 30/40 series);
+    // --domain gpc|memory narrows to one segment via the per-domain table.
+    let domains: Vec<ClockDomain> = match option_one(invocation, "domain") {
+        Some(raw) => vec![parse_domain(raw)?],
+        None => vec![ClockDomain::Graphics, ClockDomain::Memory],
+    };
     let indexed = option_bool(invocation, "indexed", true)?;
     let infer_missing_default = if option_bool(invocation, "no-infer-missing-default", false)? {
         false
     } else {
         option_bool(invocation, "infer-missing-default", true)?
     };
-    let points = run(
-        target,
-        QueryDomainVfpPoints {
-            domain,
-            infer_missing_default,
-            indexed,
-        },
-    )?
-    .output;
+
+    let mut points = Vec::new();
+    let mut missing_domains = Vec::new();
+    for &domain in &domains {
+        match run(
+            target,
+            QueryDomainVfpPoints {
+                domain,
+                infer_missing_default,
+                indexed,
+            },
+        ) {
+            Ok(out) => {
+                for (index, point) in out.output {
+                    points.push(json!({
+                        "domain": domain_label(domain),
+                        "index": index,
+                        "voltage_uv": point.voltage.0,
+                        "voltage_mv": point.voltage.0 as f64 / 1000.0,
+                        "frequency_khz": point.frequency.0,
+                        "frequency_mhz": point.frequency.0 as f64 / 1000.0,
+                        "delta_khz": point.delta.0,
+                        "delta_mhz": point.delta.0 as f64 / 1000.0,
+                        "default_frequency_khz": point.default_frequency.0,
+                        "default_frequency_mhz": point.default_frequency.0 as f64 / 1000.0,
+                    }));
+                }
+            }
+            // A GPU without a memory V/F segment (or a driver that rejects the
+            // domain) is not fatal for the default all-domains dump — report
+            // it and still emit the graphics curve.
+            Err(err) if domains.len() > 1 => missing_domains.push(json!({
+                "domain": domain_label(domain),
+                "error": err.to_string(),
+            })),
+            Err(err) => return Err(err.into()),
+        }
+    }
 
     Ok(json!({
-        "domain": domain_label(domain),
+        "domain": if domains.len() == 1 { json!(domain_label(domains[0])) } else { json!("all") },
         "indexed": indexed,
         "infer_missing_default": infer_missing_default,
-        "points": points
-            .into_iter()
-            .map(|(index, point)| {
-                json!({
-                    "index": index,
-                    "voltage_uv": point.voltage.0,
-                    "voltage_mv": point.voltage.0 as f64 / 1000.0,
-                    "frequency_khz": point.frequency.0,
-                    "frequency_mhz": point.frequency.0 as f64 / 1000.0,
-                    "delta_khz": point.delta.0,
-                    "delta_mhz": point.delta.0 as f64 / 1000.0,
-                    "default_frequency_khz": point.default_frequency.0,
-                    "default_frequency_mhz": point.default_frequency.0 as f64 / 1000.0,
-                })
-            })
-            .collect::<Vec<_>>(),
+        "missing_domains": missing_domains,
+        "points": points,
     }))
 }
 
@@ -4725,7 +4748,7 @@ fn parse_bool(raw: &str) -> CliResult<bool> {
 
 fn parse_domain(raw: &str) -> CliResult<ClockDomain> {
     match raw.trim().to_ascii_lowercase().as_str() {
-        "core" | "gpu" | "graphics" => Ok(ClockDomain::Graphics),
+        "core" | "gpu" | "gpc" | "graphics" => Ok(ClockDomain::Graphics),
         "mem" | "memory" => Ok(ClockDomain::Memory),
         "processor" | "sm" => Ok(ClockDomain::Processor),
         "video" => Ok(ClockDomain::Video),
