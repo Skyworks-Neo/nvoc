@@ -7,6 +7,9 @@ from typing import List, Optional, Tuple
 
 import customtkinter as ctk
 
+# Mouse-wheel scroll multiplier: canvas "units" per wheel notch.
+_WHEEL_STEP_UNITS = 6
+
 
 def _is_descendant_widget(widget: tk.Misc, ancestor: tk.Misc) -> bool:
     """Return True when *widget* is *ancestor* or one of its descendants."""
@@ -31,34 +34,40 @@ def install_mousewheel_support(scroll_frame: ctk.CTkScrollableFrame) -> None:
     ``<Button-4>/<Button-5>`` or ``<MouseWheel>`` with tiny deltas. We bind all
     variants and normalize them into canvas unit scrolling.
     """
-    if getattr(scroll_frame, "_nvoc_mousewheel_installed", False):
+    # ``bind_all(..., add="+")`` installs handlers on the toplevel. Guarding
+    # each frame separately stacks three more global callbacks for every tab.
+    # Keep one toplevel dispatcher and register the frames it may target.
+    toplevel = scroll_frame.winfo_toplevel()
+    frames = getattr(toplevel, "_nvoc_mousewheel_frames", None)
+    if frames is None:
+        frames = []
+        setattr(toplevel, "_nvoc_mousewheel_frames", frames)
+    if scroll_frame not in frames:
+        frames.append(scroll_frame)
+    if getattr(toplevel, "_nvoc_mousewheel_installed", False):
         return
-    setattr(scroll_frame, "_nvoc_mousewheel_installed", True)
+    setattr(toplevel, "_nvoc_mousewheel_installed", True)
 
-    def _resolve_canvas() -> Optional[tk.Misc]:
-        canvas = getattr(scroll_frame, "_parent_canvas", None)
-        if canvas is None:
-            return None
-        return canvas
-
-    def _pointer_inside_frame() -> bool:
-        if not scroll_frame.winfo_exists():
-            return False
+    def _frame_at_pointer():
         try:
-            pointer_x = scroll_frame.winfo_pointerx()
-            pointer_y = scroll_frame.winfo_pointery()
-            hovered = scroll_frame.winfo_containing(pointer_x, pointer_y)
+            pointer_x = toplevel.winfo_pointerx()
+            pointer_y = toplevel.winfo_pointery()
+            hovered = toplevel.winfo_containing(pointer_x, pointer_y)
         except tk.TclError:
-            return False
+            return None
         if hovered is None:
-            return False
-        return _is_descendant_widget(hovered, scroll_frame)
+            return None
+        for frame in frames:
+            if frame.winfo_exists() and _is_descendant_widget(hovered, frame):
+                return frame
+        return None
 
     def _on_mousewheel(event) -> Optional[str]:
-        if not _pointer_inside_frame():
+        frame = _frame_at_pointer()
+        if frame is None:
             return None
 
-        canvas = _resolve_canvas()
+        canvas = getattr(frame, "_parent_canvas", None)
         if canvas is None:
             return None
 
@@ -81,12 +90,11 @@ def install_mousewheel_support(scroll_frame: ctk.CTkScrollableFrame) -> None:
             return "break"
 
         try:
-            canvas.yview_scroll(steps, "units")
+            canvas.yview_scroll(steps * _WHEEL_STEP_UNITS, "units")
         except Exception:
             return None
         return "break"
 
-    toplevel = scroll_frame.winfo_toplevel()
     toplevel.bind_all("<MouseWheel>", _on_mousewheel, add="+")
     toplevel.bind_all("<Button-4>", _on_mousewheel, add="+")
     toplevel.bind_all("<Button-5>", _on_mousewheel, add="+")
