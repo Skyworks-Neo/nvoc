@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 from src.widgets import lightweight_controls
+from src.widgets.lightweight_controls import CanvasSlider
 
 
 class FakeCanvas:
@@ -85,3 +87,30 @@ def test_linux_wheel_event_uses_same_scroll_multiplier(monkeypatch) -> None:
 
     assert result == "break"
     assert frame._parent_canvas.scrolls == [(-6, "units")]
+
+
+def test_canvas_slider_skips_redraw_when_clamped_value_is_unchanged() -> None:
+    slider = CanvasSlider.__new__(CanvasSlider)
+    slider._from = 0.0
+    slider._to = 100.0
+    slider._steps = 100
+    slider._value = 50.0
+    slider._redraw = Mock()
+
+    slider.set(50)
+
+    slider._redraw.assert_not_called()
+
+
+def test_canvas_slider_redraws_when_value_changes() -> None:
+    slider = CanvasSlider.__new__(CanvasSlider)
+    slider._from = 0.0
+    slider._to = 100.0
+    slider._steps = 100
+    slider._value = 50.0
+    slider._redraw = Mock()
+
+    slider.set(51)
+
+    assert slider._value == 51.0
+    slider._redraw.assert_called_once_with()
