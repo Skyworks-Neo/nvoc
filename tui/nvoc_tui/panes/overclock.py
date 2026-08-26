@@ -56,6 +56,14 @@ def compose_overclock() -> ComposeResult:
                             yield ShortcutInput(
                                 value="0", id="mem-offset", compact=True
                             )
+                        with Horizontal(classes="row"):
+                            # Fabric-clock offset (NVAPI-only ClockClient path,
+                            # xbar = domain bit 1). Arch-gated: the controller
+                            # disables this row for pre-Turing GPUs.
+                            yield Label("Xbar Offset")
+                            yield ShortcutInput(
+                                value="0", id="xbar-offset", compact=True
+                            )
                     with Grid(id="clock-actions"):
                         yield Button(
                             "Apply OC", id="oc-apply", classes="red", compact=True
@@ -142,6 +150,15 @@ def compose_overclock() -> ComposeResult:
                             yield Label("Target Temp (C)")
                             yield ShortcutInput(
                                 value="87", id="mobile-target-temp", compact=True
+                            )
+                        with Horizontal(classes="row"):
+                            # Absolute voltage target on the private VoltRails
+                            # path (mobile-only, NVAPI). Bounds + starting
+                            # position come from the volt-rail P0 walls in
+                            # _on_mobile_limits; disabled until they load.
+                            yield Label("Volt Limit (mV)")
+                            yield ShortcutInput(
+                                value="", id="mobile-volt-limit", compact=True
                             )
                     with Grid(id="mobile-actions"):
                         yield Button(

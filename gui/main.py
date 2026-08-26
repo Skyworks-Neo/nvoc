@@ -45,12 +45,14 @@ def _tkinter_install_hint() -> str:
     if sys.platform == "win32":
         return (
             "Install Python from python.org with the Tcl/Tk option enabled, "
-            "then recreate or resync the virtual environment."
+            "then recreate or resync the virtual environment.\n"
+            'Verify the interpreter first: `python -c "import tkinter"`.'
         )
     if sys.platform == "darwin":
         return (
             "Install a Python build that includes Tcl/Tk support, then recreate "
-            "or resync the virtual environment."
+            "or resync the virtual environment.\n"
+            'Verify the interpreter first: `python -c "import tkinter"`.'
         )
     return (
         "Install Tk support for the Python interpreter, then recreate or resync "
