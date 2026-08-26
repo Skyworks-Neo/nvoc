@@ -1421,6 +1421,7 @@ class App(ctk.CTk):
         self.runner.shutdown()
         self.backend.shutdown()
         self.tasks.shutdown(wait=True)
+        self.config.close()
 
         # 4. Destroy window synchronously
         self.destroy()
