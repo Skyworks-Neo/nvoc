@@ -369,10 +369,10 @@ class VFCurveTab:
         self.fig = Figure(figsize=(9, 1.7), dpi=fig_dpi)
         self.fig.patch.set_facecolor("#2b2b2b")
         self.ax = self.fig.add_subplot(111)
-        # Left margin only needs to fit the short GHz tick labels + the
-        # rotated axis label — shrinking from 0.13 reclaims ~50-100 px of
-        # plot width so the labels sit flush against the frame's left edge
-        self.fig.subplots_adjust(left=0.055, right=0.985, top=0.92, bottom=0.22)
+        # No rotated ylabel anymore ("f/GHz" rides above the axis top), so
+        # the left margin only needs the short GHz tick labels — shrinking
+        # from 0.13 reclaims ~50-100 px of plot width
+        self.fig.subplots_adjust(left=0.04, right=0.985, top=0.92, bottom=0.22)
         self._style_axes()
 
         # Placeholder text
@@ -554,7 +554,18 @@ class VFCurveTab:
         # numbers stay short (0.5 / 0.6 / ... and 0.5 / 1 / 1.5 / ...) —
         # plot data itself stays in mV / MHz
         ax.set_xlabel("Voltage (V)", color="#e08020", fontsize=7)
-        ax.set_ylabel("Frequency (GHz)", color="#e08020", fontsize=7, labelpad=10)
+        # y-axis unit caption rides ABOVE the axis top end ("f/GHz") instead
+        # of a rotated ylabel — frees the whole left margin for the plot
+        ax.text(
+            0.0,
+            1.02,
+            "f/GHz",
+            transform=ax.transAxes,
+            ha="left",
+            va="bottom",
+            color="#e08020",
+            fontsize=7,
+        )
         ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _pos: f"{v / 1000.0:g}"))
         ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _pos: f"{v / 1000.0:g}"))
         ax.tick_params(colors="#cccccc", labelsize=6)
