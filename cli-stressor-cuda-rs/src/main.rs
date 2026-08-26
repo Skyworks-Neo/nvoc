@@ -1111,19 +1111,19 @@ pub fn run_from_args() {
             std::process::exit(1);
         }
     };
-    if args.gpu_generate {
-        if let Err(err) = backend.enable_gpu_generate() {
-            eprintln!(
-                "{}",
-                stylize(
-                    &format!(
-                        "GPU buffer generation unavailable ({}); falling back to host generation",
-                        err
-                    ),
-                    true
-                )
-            );
-        }
+    if args.gpu_generate
+        && let Err(err) = backend.enable_gpu_generate()
+    {
+        eprintln!(
+            "{}",
+            stylize(
+                &format!(
+                    "GPU buffer generation unavailable ({}); falling back to host generation",
+                    err
+                ),
+                true
+            )
+        );
     }
 
     #[cfg(feature = "vulkan")]
