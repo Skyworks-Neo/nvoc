@@ -78,8 +78,8 @@
 
 | 原名 | 决策 | 底层线 |
 |---|---|---|
-| `get-tgp-watt` + `get-tgp-watt-range` | **合并保留名 `get-tgp-watt`** ✅ DONE(auto: NVML power limits 优先,NVAPI ClientPowerPoliciesGetInfo `0x34206D86` TGP 范围兜底;`get-tgp-watt-range` CLI 已移除,core op QueryNvapiTgpWattRange 保留) | NVAPI+NVML |
-| `set-power-watt` | → 合并入 `set-power-limit`(auto,NVAPI 也有写入原语 `0xAFFC2279`/`0xBFF09E59`,走 auto) | NVAPI+NVML |
+| `get-tgp-watt` + `get-tgp-watt-range` | **合并为 `get-power-limit`** ✅ DONE(R1 去单位;auto: NVML power limits 优先,NVAPI ClientPowerPoliciesGetInfo `0x34206D86` TGP 范围兜底;`get-tgp-watt-range` CLI 已移除,core op QueryNvapiTgpWattRange 保留) | NVAPI+NVML |
+| `set-power-watt` / `set-tgp-watt` | **合并为 `set-power-limit`** ✅ DONE(R1 去单位,R2 对称 `reset-power-limit`;auto,NVAPI 也有写入原语 `0xAFFC2279`/`0xBFF09E59`,走 auto;core op SetNvapiTgpWatt/SetNvmlPowerLimit 名不变) | NVAPI+NVML |
 | `set-power-percent` | → `set-public-tgp-percent`(仅 NVAPI) | ClientPowerPoliciesSetStatus `0xAD95F5ED` |
 | `reset-power-percent` | → `reset-public-tgp-percent`(仅 NVAPI) | ClientPowerPoliciesGetInfo+SetStatus |
 | `set-dynamic-boost` | → `set-ppab-status`(PPAB = Persistent Performance Auto Boost;与 autoboost-status 体系对齐,全小写规避 clap 大写问题) | SetNvapiDynamicBoost `0x1504FC3D` |

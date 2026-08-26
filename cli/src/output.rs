@@ -2257,7 +2257,7 @@ mod tests {
                     "default_frequency_mhz": 1500.0,
                 }],
             }),
-            Command::GetTgpWatt => {
+            Command::GetPowerLimit => {
                 json!({"source": "nvml", "min_watt": 100, "current_watt": 250, "max_watt": 350})
             }
             Command::GetPstateGlobalFreqOffset => {
@@ -2350,8 +2350,8 @@ mod tests {
             }),
             Command::SetPublicTgpPercent => json!({"applied": true, "power_percent": 90}),
             Command::SetDynamicBoost => json!({"applied": true, "dynamic_boost": true}),
-            Command::SetTgpWatt => json!({"applied": true, "tgp_watt": 140, "tgp_mw": 140000}),
-            Command::ResetTgpWatt => json!({"applied": true, "default_watt": 100.0}),
+            Command::SetPowerLimit => json!({"applied": true, "tgp_watt": 140, "tgp_mw": 140000}),
+            Command::ResetPowerLimit => json!({"applied": true, "default_watt": 100.0}),
             Command::GetDNotifier => json!({
                 "active": "D2",
                 "levels": [

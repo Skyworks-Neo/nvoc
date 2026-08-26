@@ -31,7 +31,7 @@ use nvoc_core::{
     SetNvapiPerfFreqCap, SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiSensorLimits,
     SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvapiVfpPointPrivate, SetNvapiVfpRangePerPointPrivate,
     SetNvapiVfpRangePrivate, SetNvapiVoltRailOffset, SetNvapiVoltRailTarget, SetNvmlPstateLock,
-    SetNvmlAcousticTemp, SetPowerLimit, SetPowerMode, SetPstateBaseVoltage, SetPstateClockOffset,
+    SetNvmlAcousticTemp, SetPowerLimit as SetNvmlPowerLimit, SetPowerMode, SetPstateBaseVoltage, SetPstateClockOffset,
     SetTemperatureLimit,
     SetVfpFrequencyLock, SetPublicVftablePointOffset, SetPublicVftableRangeOffset, SetGpcVoltLock, SetVoltageBoost,
     SetWm2Active, SetWm2Mode, VfpResetDomain, Wm2AcousticMode, discover_targets,
@@ -140,7 +140,7 @@ pub enum Command {
     GetStatus,
     GetSettings,
     GetPublicVftable,
-    GetTgpWatt,
+    GetPowerLimit,
     GetPstateGlobalFreqOffset,
     GetPstateFreqRange,
     GetSupportedLegacyApplicationFreq,
@@ -166,8 +166,8 @@ pub enum Command {
     SetPstateGlobalFreqOffset,
     SetPublicTgpPercent,
     SetDynamicBoost,
-    SetTgpWatt,
-    ResetTgpWatt,
+    SetPowerLimit,
+    ResetPowerLimit,
     GetDNotifier,
     SetDNotifier,
     GetVoltRailInfo,
@@ -245,7 +245,7 @@ impl Command {
             Self::GetStatus => "get-status",
             Self::GetSettings => "get-settings",
             Self::GetPublicVftable => "get-public-vftable",
-            Self::GetTgpWatt => "get-tgp-watt",
+            Self::GetPowerLimit => "get-power-limit",
             Self::GetPstateGlobalFreqOffset => "get-pstate-global-freq-offset",
             Self::GetPStateLock => "get-pstate-lock",
             Self::SetPStateLock => "set-pstate-lock",
@@ -273,8 +273,8 @@ impl Command {
             Self::SetPstateGlobalFreqOffset => "set-pstate-global-freq-offset",
             Self::SetPublicTgpPercent => "set-public-tgp-percent",
             Self::SetDynamicBoost => "set-dynamic-boost",
-            Self::SetTgpWatt => "set-tgp-watt",
-            Self::ResetTgpWatt => "reset-tgp-watt",
+            Self::SetPowerLimit => "set-power-limit",
+            Self::ResetPowerLimit => "reset-power-limit",
             Self::GetDNotifier => "get-dnotifier",
             Self::SetDNotifier => "set-dnotifier",
             Self::GetVoltRailInfo => "get-volt-rail-info",
@@ -346,7 +346,7 @@ impl Command {
             Self::GetStatus => "Read NVAPI live GPU status",
             Self::GetSettings => "Read NVAPI overclock settings",
             Self::GetPublicVftable => "Read V-F curve points",
-            Self::GetTgpWatt => "Read power limits in watts: NVML min/current/max by default; falls back to the NVAPI TGP-watts range (min/default/max) where NVML is unsupported",
+            Self::GetPowerLimit => "Read power limits in watts: NVML min/current/max by default; falls back to the NVAPI TGP-watts range (min/default/max) where NVML is unsupported",
             Self::GetPstateGlobalFreqOffset => "Read clock offset in MHz",
             Self::GetPStateLock => "Read the native NVAPI P-State level table",
             Self::SetPStateLock => "Lock the native NVAPI P-State",
@@ -393,8 +393,8 @@ impl Command {
             Self::SetPstateGlobalFreqOffset => "Set clock offset in MHz for any clock domain",
             Self::SetPublicTgpPercent => "Set NVAPI power limit in percent",
             Self::SetDynamicBoost => "Set NVAPI PPAB / Dynamic-Boost enable (on/off)",
-            Self::SetTgpWatt => "Set TGP in watts: NVAPI path writes the mobile TGP slider (ClientPowerPolicies, --policy-index); NVML path writes the power-management limit (nvidia-smi -pl). Auto prefers NVAPI",
-            Self::ResetTgpWatt => "Reset NVAPI TGP to rated/default (mobile)",
+            Self::SetPowerLimit => "Set TGP in watts: NVAPI path writes the mobile TGP slider (ClientPowerPolicies, --policy-index); NVML path writes the power-management limit (nvidia-smi -pl). Auto prefers NVAPI",
+            Self::ResetPowerLimit => "Reset NVAPI TGP to rated/default (mobile)",
             Self::GetDNotifier => {
                 "Read NVAPI D-Notifier (D0-notify) level + D1-D5 power-cap table (mobile)"
             }
@@ -521,8 +521,8 @@ impl Command {
             | Self::ResetFanSpeed
             | Self::GetTemperatureThresholds
             | Self::GetFanInfo
-            | Self::SetTgpWatt
-            | Self::GetTgpWatt => &BOTH_BACKENDS,
+            | Self::SetPowerLimit
+            | Self::GetPowerLimit => &BOTH_BACKENDS,
             Self::GetPstateFreqRange
             | Self::GetSupportedLegacyApplicationFreq
             | Self::GetThrottleReasons
@@ -545,7 +545,7 @@ impl Command {
     /// `--nvapi` while the index↔channel mapping is still being worked out.
     fn auto_preferred_backend(self) -> BackendAdapter {
         match self {
-            Self::GetTemperatureThresholds | Self::GetTgpWatt => BackendAdapter::Nvml,
+            Self::GetTemperatureThresholds | Self::GetPowerLimit => BackendAdapter::Nvml,
             _ => BackendAdapter::Nvapi,
         }
     }
@@ -556,7 +556,7 @@ impl Command {
             Self::SetPstateGlobalFreqOffset
             | Self::SetPublicTgpPercent
             | Self::SetDynamicBoost
-            | Self::SetTgpWatt
+            | Self::SetPowerLimit
             | Self::SetDNotifier
             | Self::SetPStateLock
             | Self::SetTempLimit
@@ -634,7 +634,7 @@ impl Command {
             Self::SetGpuClock => &["min"],
             Self::OemOcScanner => &["start", "stop", "revert", "status", "background-on", "background-off", "incomplete"],
             Self::SetPrivateForcedPstateLockUser => &["set-type"],
-            Self::SetTgpWatt | Self::ResetTgpWatt | Self::SetTemperatureThresholds => {
+            Self::SetPowerLimit | Self::ResetPowerLimit | Self::SetTemperatureThresholds => {
                 &["policy-index"]
             }
             Self::SetVoltRailLimit => &["expect-type", "offset", "target"],
@@ -679,7 +679,7 @@ impl Command {
                 "Whether to enable Dynamic Boost / PPAB (on/off, yes/no, 1/0)",
                 PositionalValueKind::Bool,
             )],
-            Self::SetTgpWatt => vec![PositionalArg::free(
+            Self::SetPowerLimit => vec![PositionalArg::free(
                 "arg_tgp_watt",
                 "WATT",
                 "TGP in watts, for example 140 or 140W",
@@ -1023,6 +1023,7 @@ const COMMANDS: &[Command] = &[
     Command::GetLegacyP0CoreMaxVoltageDelta,
     Command::GetLegacyTempSensor,
     Command::GetPmgrArbiter,
+    Command::GetPowerLimit,
     Command::GetPowerMizer,
     Command::GetPowerMode,
     Command::GetPrivateFreqDomainInfo,
@@ -1040,7 +1041,6 @@ const COMMANDS: &[Command] = &[
     Command::GetStatus,
     Command::GetSupportedLegacyApplicationFreq,
     Command::GetTemperatureThresholds,
-    Command::GetTgpWatt,
     Command::GetThermalSim,
     Command::GetThrottleReasons,
     Command::GetUuid,
@@ -1055,6 +1055,7 @@ const COMMANDS: &[Command] = &[
     Command::ResetLegacyApplicationFreqLock,
     Command::ResetLegacyGpcRailOvervoltLimit,
     Command::ResetGpuClock,
+    Command::ResetPowerLimit,
     Command::ResetPrivateForcedPstateLockUser,
     Command::ResetPrivateVftableOffset,
     Command::ResetPstateGlobalFreqOffset,
@@ -1064,7 +1065,6 @@ const COMMANDS: &[Command] = &[
     Command::ResetPublicVftableGpcLock,
     Command::ResetPublicVftableOffset,
     Command::ResetTempLimit,
-    Command::ResetTgpWatt,
     Command::RestartDisplayDriver,
     Command::SetAutoboostStatus,
     Command::SetAutoboostSupport,
@@ -1084,6 +1084,7 @@ const COMMANDS: &[Command] = &[
     Command::SetOvervoltUv,
     Command::SetGpuClock,
     Command::SetPmgrArbiter,
+    Command::SetPowerLimit,
     Command::SetPowerMode,
     Command::SetPrivateForcedPstateLockUser,
     Command::SetPrivateFreqDomainGlobalOffset,
@@ -1099,7 +1100,6 @@ const COMMANDS: &[Command] = &[
     Command::SetPublicVftableRangeOffset,
     Command::SetTempLimit,
     Command::SetTemperatureThresholds,
-    Command::SetTgpWatt,
     Command::SetThermalSim,
     Command::SetVoltRailLimit,
     Command::SetWm2,
@@ -1421,7 +1421,7 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .long("policy-index")
             .value_name("INDEX")
             .action(ArgAction::Set)
-            .help("TGP power-policy table index (default 2); see get-tgp-watt (NVAPI fallback)"),
+            .help("TGP power-policy table index (default 2); see get-power-limit (NVAPI fallback)"),
         "infer-missing-default" => Arg::new("infer-missing-default")
             .long("infer-missing-default")
             .value_name("BOOL")
@@ -1990,11 +1990,11 @@ fn discovery_backend_set(command: Command, adapter: BackendAdapter) -> BackendSe
         (Command::GetStatus, BackendAdapter::Nvapi) => BackendSet::Both,
         (Command::GetUuid, BackendAdapter::Nvapi) => BackendSet::Both,
         (Command::SetPstateLockViaMemRange, BackendAdapter::Nvapi) => BackendSet::Both,
-        // get-tgp-watt tries NVML first then falls back to the NVAPI TGP
+        // get-power-limit tries NVML first then falls back to the NVAPI TGP
         // range inside one execute — both handles must be on the target
         // whichever adapter routes the run.
-        (Command::GetTgpWatt, BackendAdapter::Nvapi) => BackendSet::Both,
-        (Command::GetTgpWatt, BackendAdapter::Nvml) => BackendSet::Both,
+        (Command::GetPowerLimit, BackendAdapter::Nvapi) => BackendSet::Both,
+        (Command::GetPowerLimit, BackendAdapter::Nvml) => BackendSet::Both,
         (_, BackendAdapter::Nvapi) => BackendSet::Nvapi,
         (_, BackendAdapter::Nvml) => BackendSet::Nvml,
     }
@@ -2208,12 +2208,12 @@ fn execute_target(
         }
         Command::GetSettings => Ok(serde_json::to_value(run(target, QueryGpuSettings)?.output)?),
         Command::GetPublicVftable => get_vfp(target, invocation),
-        Command::GetTgpWatt => {
+        Command::GetPowerLimit => {
             // Merged power-limit getter: the NVML power-management limits
             // (min/current/max) are the primary surface; where NVML is
             // unavailable or unsupported (or on an explicit --nvapi run),
             // fall back to the NVAPI TGP-watts range (min/default/max,
-            // the old get-tgp-watt-range surface).
+            // the old get-power-limit-range surface).
             match run(target, QueryPowerLimits) {
                 Ok(power) => Ok(json!({
                     "source": "nvml",
@@ -2768,11 +2768,11 @@ fn execute_target(
             Ok(json!({"applied": true}))
         }
 
-        Command::SetTgpWatt => {
+        Command::SetPowerLimit => {
             // Merged TGP-watt setter: NVAPI path writes ClientPowerPolicies
             // (SetNvapiTgpWatt, mobile watts-form TGP slider, honors
             // --policy-index); NVML path writes the power-management limit
-            // (SetPowerLimit, the classic nvidia-smi -pl input). On auto the
+            // (SetNvmlPowerLimit, the classic nvidia-smi -pl input). On auto the
             // NVAPI path is preferred (it understands the mobile TGP table);
             // NVML is the fallback for desktops without ClientPowerPolicies.
             let watts = parse_u32_unit(&invocation.positionals[0], "w", "watt")?;
@@ -2793,12 +2793,12 @@ fn execute_target(
                     Ok(json!({"applied": true, "backend": "nvapi", "tgp_watt": watts, "tgp_mw": mw}))
                 }
                 BackendAdapter::Nvml => {
-                    run(target, SetPowerLimit { watts })?;
+                    run(target, SetNvmlPowerLimit { watts })?;
                     Ok(json!({"applied": true, "backend": "nvml", "power_watt": watts}))
                 }
             }
         }
-        Command::ResetTgpWatt => {
+        Command::ResetPowerLimit => {
             let policy_index = option_one(invocation, "policy-index")
                 .map(|s| s.parse::<usize>())
                 .transpose()
@@ -5139,7 +5139,7 @@ mod tests {
 
     #[test]
     fn rejects_option_not_valid_for_command() {
-        let err = parse_args(["get-tgp-watt", "--domain", "memory"])
+        let err = parse_args(["get-power-limit", "--domain", "memory"])
             .unwrap_err()
             .to_string();
         assert!(err.contains("--domain"));
@@ -5281,7 +5281,7 @@ mod tests {
                 .adapters()
                 .contains(&BackendAdapter::Nvml)
         );
-        assert_eq!(Command::SetTgpWatt.adapters(), &BOTH_BACKENDS);
+        assert_eq!(Command::SetPowerLimit.adapters(), &BOTH_BACKENDS);
         assert_eq!(Command::SetPublicTgpPercent.adapters(), &NVAPI_ONLY);
         assert_eq!(Command::ListDisplays.adapters(), &NVAPI_ONLY);
         assert_eq!(Command::GetAutoboostStatus.adapters(), &NVML_ONLY);
@@ -5313,13 +5313,13 @@ mod tests {
         assert_eq!(invocation.command, Some(Command::ResetFanSpeed));
         assert!(!option_bool(&invocation, "rpm", false).unwrap());
 
-        // get-tgp-watt (merged NVML + NVAPI-range fallback)
-        let invocation = parse_args(["get-tgp-watt"]).unwrap();
-        assert_eq!(invocation.command, Some(Command::GetTgpWatt));
+        // get-power-limit (merged NVML + NVAPI-range fallback)
+        let invocation = parse_args(["get-power-limit"]).unwrap();
+        assert_eq!(invocation.command, Some(Command::GetPowerLimit));
         assert_eq!(invocation.backend, BackendChoice::Auto);
-        assert_eq!(Command::GetTgpWatt.adapters(), &BOTH_BACKENDS);
+        assert_eq!(Command::GetPowerLimit.adapters(), &BOTH_BACKENDS);
         assert_eq!(
-            Command::GetTgpWatt.auto_preferred_backend(),
+            Command::GetPowerLimit.auto_preferred_backend(),
             BackendAdapter::Nvml
         );
 
