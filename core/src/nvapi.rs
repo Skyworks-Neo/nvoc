@@ -217,6 +217,46 @@ pub fn legacy_p0_core_max_voltage_delta(gpu: &Gpu) -> Result<Option<MicrovoltsDe
         }))
 }
 
+/// Global over-voltage offset via the PSTATES20 V2 `voltages[]` OV array
+/// (HYDRA 2.2B PRO "NvApiSetOverVoltageOffset" path: numVoltages@+7316 /
+/// voltages[0].voltDelta_uV@+7332 on the 7416B V2 struct). Distinct from
+/// per-pstate baseVoltage deltas: one core-domain OV offset, clamped to the
+/// range the GET-side `pstates().overvolt` reports.
+/// Whether the driver's GET-side pstates table reports global OV entries
+/// (Core domain). False → the V2 OV SET is accepted but observed to be
+/// silently ignored on such SKUs (Ada mobile).
+pub fn nvapi_overvolt_reported(gpu: &Gpu) -> Result<bool, Error> {
+    let pstates = gpu.inner().pstates().map_err(Error::from)?;
+    Ok(pstates
+        .overvolt
+        .iter()
+        .any(|v| v.voltage_domain == VoltageDomain::Core))
+}
+
+/// Returns whether the driver's GET-side pstates table reports any global
+/// OV entries. When false the SET is still issued (the driver accepts it),
+/// but live testing on such SKUs (Ada mobile observed) shows the write is
+/// silently ignored — the caller should surface that.
+pub fn set_nvapi_overvolt(gpu: &Gpu, delta_uv: MicrovoltsDelta) -> Result<bool, Error> {
+    let pstates = gpu.inner().pstates().map_err(Error::from)?;
+    // Clamp when the GET-side OV array reports a range.
+    let reported = pstates
+        .overvolt
+        .iter()
+        .find(|v| v.voltage_domain == VoltageDomain::Core);
+    if let Some(ov) = reported {
+        let range = ov.voltage_delta.range;
+        if delta_uv.0 < range.min.0 || delta_uv.0 > range.max.0 {
+            return Err(Error::from(format!(
+                "overvolt delta {}μV out of allowed range [{}μV, {}μV]",
+                delta_uv.0, range.min.0, range.max.0
+            )));
+        }
+    }
+    gpu.inner().set_overvolt(delta_uv).map_err(Error::from)?;
+    Ok(reported.is_some())
+}
+
 pub fn legacy_core_overvolt_ranges(
     gpu: &Gpu,
 ) -> Result<Vec<(PState, MicrovoltsDelta, MicrovoltsDelta, MicrovoltsDelta)>, Error> {
@@ -1000,7 +1040,14 @@ pub fn handle_test_voltage_limits(
         let info = gpu.info()?;
         let gpu_type = fetch_gpu_type(&info);
 
-        if !(info.name.contains("Laptop") || info.name.contains("Device")) {
+        // 桌面端先拉满 voltage boost 再探测电压界限；移动端与未识别型号
+        // 跳过（原为 name.contains("Laptop"/"Device") 的自发启发式，现统一
+        // 走 gpu_type 判定）。
+        let skip_boost_max = match gpu_type {
+            Ok(ref t) => t.is_mobile() || t.is_unknown(),
+            Err(_) => true,
+        };
+        if !skip_boost_max {
             let _ = gpu.set_voltage_boost(Percentage(100));
         }
 

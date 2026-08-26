@@ -119,6 +119,39 @@ pub fn query_nvml_power_draw_watts(nvml: &Nvml, gpu_id: u32) -> Option<f32> {
     Some(mw as f32 / 1000.0)
 }
 
+/// Query the current enforced power limit (live TGP cap) via NVML
+/// `nvmlDeviceGetEnforcedPowerLimit` — the same "Current Power Limit"
+/// nvidia-smi -q -d POWER reports. Preferred over the configurable management
+/// limit, which returns NotSupported on most mobile GPUs.
+pub fn query_nvml_power_limit_watts(nvml: &Nvml, gpu_id: u32) -> Option<f32> {
+    let device = find_nvml_device(nvml, gpu_id)?;
+    let mw = device.enforced_power_limit().ok()?;
+    Some(mw as f32 / 1000.0)
+}
+
+/// Query bidirectional real-time PCIe bandwidth (TX, RX) in MiB/s, as a thin
+/// wrapper over [`query_nvml_pcie_telemetry`].
+pub fn query_nvml_pcie_throughput_mibps(
+    nvml: &Nvml,
+    gpu_id: u32,
+) -> (Option<f32>, Option<f32>) {
+    let t = query_nvml_pcie_telemetry(nvml, gpu_id);
+    (t.tx_mibps, t.rx_mibps)
+}
+
+/// Query the cumulative PCIe replay counter, as a thin wrapper over
+/// [`query_nvml_pcie_telemetry`].
+pub fn query_nvml_pcie_replay_counter(nvml: &Nvml, gpu_id: u32) -> Option<u32> {
+    query_nvml_pcie_telemetry(nvml, gpu_id).replay_counter
+}
+
+/// Query the current and maximum PCIe link generation, as a thin wrapper
+/// over [`query_nvml_pcie_telemetry`]. Returns `(current, max)`.
+pub fn query_nvml_pcie_link_gen(nvml: &Nvml, gpu_id: u32) -> (Option<u32>, Option<u32>) {
+    let t = query_nvml_pcie_telemetry(nvml, gpu_id);
+    (t.current_generation, t.max_generation)
+}
+
 pub fn set_nvml_auto_boost(nvml: &Nvml, gpu_id: u32, enabled: bool) -> Result<(), Error> {
     let mut device = find_nvml_device_err(nvml, gpu_id)?;
     device
