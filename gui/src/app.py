@@ -281,8 +281,9 @@ class App(ctk.CTk):
         #     def clear(self): pass
         # self.console = MockConsole()
 
-        # Show the window layout immediately before rendering heavy tabs
-        self.update()
+        # Flush layout and paint work without dispatching arbitrary callbacks
+        # against the still-partially-built tab state.
+        self.update_idletasks()
 
         # Placeholders for tabs
         self.tab_dashboard = None
