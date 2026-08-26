@@ -1171,6 +1171,14 @@ class VFCurveTab:
             self.app.console.append(f"[GUI] Error reading CSV: {e}\n")
             return
 
+        if (
+            voltages == self._voltages
+            and frequencies == self._frequencies
+            and defaults == self._defaults
+            and getattr(self, "_pending_lock_mv", None) is None
+        ):
+            return
+
         self._apply_curve_data(voltages, frequencies, defaults)
 
     def _apply_curve_data(
