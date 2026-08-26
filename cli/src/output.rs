@@ -62,8 +62,9 @@ pub(super) fn format_human(execution: &Execution) -> String {
 fn format_human_output(function: &str, output: &Value) -> Vec<String> {
     match function {
         "get-settings" => format_get_settings_output(output),
-        "get-vfp" => format_vfp_output(output),
-        "get-pstates" => format_object_array(
+        "get-public-vftable" => format_vfp_output(output),
+        "get-private-vftable" => format_private_vfp_output(output),
+        "get-pstate-freq-range" => format_object_array(
             output,
             &[
                 ("pstate", "P-State"),
@@ -73,14 +74,12 @@ fn format_human_output(function: &str, output: &Value) -> Vec<String> {
                 ("max_memory_mhz", "Memory Max"),
             ],
         ),
-        "get-supported-app-clocks" => format_object_array(
+        "get-supported-legacy-application-freq" => format_object_array(
             output,
             &[("memory_mhz", "Memory"), ("graphics_mhz", "Graphics")],
         ),
-        "get-temperature-thresholds" => {
-            format_object_array(output, &[("name", "Threshold"), ("celsius", "Limit")])
-        }
-        "get-thermal-settings" => format_object_array(
+        "get-temp-thresholds" => format_temperature_thresholds_output(output),
+        "get-legacy-temp-sensor" => format_object_array(
             output,
             &[
                 ("target", "Target"),
@@ -90,6 +89,24 @@ fn format_human_output(function: &str, output: &Value) -> Vec<String> {
                 ("max_c", "Max"),
             ],
         ),
+        "get-power-mode" => {
+            let supported = output.get("supported").and_then(Value::as_bool);
+            let active = output.get("active").and_then(Value::as_str).unwrap_or("?");
+            match supported {
+                Some(true) => vec![format!("  Power Mode: {active}")],
+                _ => vec![format!("  Power Mode: N/A (unsupported on this GPU)")],
+            }
+        }
+        "set-power-mode" => vec![format!(
+            "  Power Mode set: {}",
+            output
+                .get("power_mode")
+                .and_then(Value::as_str)
+                .unwrap_or("?")
+        )],
+        // "get-dynamic-boost" withdrawn 2026-08-26: 0xC80068A1 reads PCF
+        // platform status, not the PPAB enable readback (probe_pcf_dynamic_boost)
+        "get-pstate-lock" => format_pstate_native_output(output),
         "get-throttle-reasons" => format_throttle_reasons_output(output),
         "get-legacy-overvolt-ranges" => format_object_array(
             output,
@@ -151,21 +168,184 @@ fn format_vfp_output(output: &Value) -> Vec<String> {
                 "  {}",
                 nvoc_cli_common::color::stylize_title("V-F Points")
             ));
+            let mut current_domain: Option<&str> = None;
             for point in points {
+                let domain = point.get("domain").and_then(Value::as_str);
+                if domain != current_domain {
+                    current_domain = domain;
+                    // Segment separator: the public table concatenates the
+                    // graphics curve (index 0..~126) and the trailing memory
+                    // entries (~127..131); make the boundary explicit.
+                    let seg_note = object
+                        .get("segments")
+                        .and_then(Value::as_array)
+                        .and_then(|segs| {
+                            segs.iter()
+                                .find(|seg| seg.get("domain").and_then(Value::as_str) == domain)
+                        })
+                        .map(|seg| {
+                            format!(
+                                " (index {}..{})",
+                                field_text(seg, "first_index"),
+                                field_text(seg, "last_index")
+                            )
+                        })
+                        .unwrap_or_default();
+                    if let Some(domain) = domain {
+                        lines.push(nvoc_cli_common::color::stylize(
+                            &format!("    --- {domain}{seg_note} ---"),
+                            false,
+                        ));
+                    }
+                }
                 let index = field_text(point, "index");
+                let point_type = point
+                    .get("point_type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("?");
                 let voltage = field_text(point, "voltage_mv");
                 let frequency = field_text(point, "frequency_mhz");
                 let delta = field_text(point, "delta_mhz");
                 let default_frequency = field_text(point, "default_frequency_mhz");
                 lines.push(nvoc_cli_common::color::stylize(
                     &format!(
-                        "    #{index}: {voltage}, {frequency}, delta {delta}, default {default_frequency}"
+                        "    #{index} [{point_type}]: {voltage}, {frequency}, delta {delta}, default {default_frequency}"
                     ),
                     false,
                 ));
             }
         }
     } else {
+        lines.extend(format_value_block(output, 1));
+    }
+    lines
+}
+
+/// Human format for `get-private-vftable` — mirrors the public V-F table
+/// layout (segment separators + one row per point), minus `point_type`
+/// (private records don't carry it) and with `delta` replaced by `current`
+/// (private GetStatus reports default AND current MHz per point).
+fn format_private_vfp_output(output: &Value) -> Vec<String> {
+    let mut lines = Vec::new();
+    let Some(object) = output.as_object() else {
+        return format_value_block(output, 1);
+    };
+    let segments = object.get("segments").and_then(Value::as_array);
+    let points = object.get("points").and_then(Value::as_array);
+
+    if let Some(points) = points {
+        lines.push(format!(
+            "  {}",
+            nvoc_cli_common::color::stylize_title("V-F Points")
+        ));
+        // track which segment (by position in the array) each row belongs to
+        let mut current_segment: Option<usize> = None;
+        for point in points {
+            let matching_segment = segments.and_then(|segs| {
+                segs.iter().position(|seg| {
+                    let (Some(seg_bank), Some(seg_type)) = (
+                        seg.get("bank").and_then(Value::as_i64),
+                        seg.get("type").and_then(Value::as_i64),
+                    ) else {
+                        return false;
+                    };
+                    let bank_matches = point.get("bank").and_then(Value::as_i64) == Some(seg_bank);
+                    let type_matches = point.get("type").and_then(Value::as_i64) == Some(seg_type);
+                    let index = point.get("index").and_then(Value::as_i64).unwrap_or(-1);
+                    let start = seg.get("start_index").and_then(Value::as_i64).unwrap_or(-1);
+                    let end = seg.get("end_index").and_then(Value::as_i64).unwrap_or(-1);
+                    bank_matches && type_matches && start <= index && index <= end
+                })
+            });
+            if matching_segment != current_segment {
+                current_segment = matching_segment;
+                if let Some(seg) = matching_segment.and_then(|i| segments.map(|s| &s[i])) {
+                    let domain = seg.get("domain").and_then(Value::as_str).unwrap_or("?");
+                    let kind = seg.get("kind").and_then(Value::as_str).unwrap_or("?");
+                    let bank = seg.get("bank").and_then(Value::as_i64).unwrap_or(0);
+                    lines.push(nvoc_cli_common::color::stylize(
+                        &format!(
+                            "    --- bank{bank} {domain} {kind} (index {}..{}) ---",
+                            field_text(seg, "start_index"),
+                            field_text(seg, "end_index")
+                        ),
+                        false,
+                    ));
+                }
+            }
+            let index = field_text(point, "index");
+            // voltage axis is µV in this table (450000 = 450.0 mV)
+            let voltage_uv = point
+                .get("voltage_uV")
+                .and_then(Value::as_f64)
+                .unwrap_or_default();
+            let voltage = format!("{:.1} mV", voltage_uv / 1000.0);
+            // plain MHz integers — format_scalar(key, _) would append the
+            // key-derived unit ("MHz") itself; render explicitly instead
+            let current = point
+                .get("freq_current_mhz")
+                .and_then(Value::as_i64)
+                .unwrap_or_default();
+            let default = point
+                .get("freq_default_mhz")
+                .and_then(Value::as_i64)
+                .unwrap_or_default();
+            // raw control override readback (GetControl 0xDA025C3E):
+            // mode 0 = absolute kHz offset ("freq"), mode 1 = raw delta;
+            // effect MHz comes pre-computed (g(def) prior for mode 1)
+            let control = point
+                .get("mode")
+                .and_then(Value::as_i64)
+                .map(|mode| {
+                    let value = point
+                        .get("offset")
+                        .and_then(Value::as_i64)
+                        .unwrap_or_default();
+                    let effect = point
+                        .get("offset_effect_mhz")
+                        .and_then(Value::as_f64)
+                        .unwrap_or_default();
+                    if mode == 0 {
+                        format!(", mode: freq(0), offset: {effect:.1} MHz ({value} as raw)")
+                    } else {
+                        format!(", mode: raw(1), offset: {effect:.1} MHz ({value} as raw)")
+                    }
+                })
+                .unwrap_or_default();
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!(
+                    "    #{index}: {voltage}, current {current} MHz, default {default} MHz{control}"
+                ),
+                false,
+            ));
+        }
+    }
+
+    // segment summaries stay visible even when their points were filtered
+    // out or attributed only by ordinal — one compact line per segment
+    if let Some(segments) = segments {
+        lines.push(format!(
+            "  {}",
+            nvoc_cli_common::color::stylize_title("Segments")
+        ));
+        for seg in segments {
+            let domain = seg.get("domain").and_then(Value::as_str).unwrap_or("?");
+            let kind = seg.get("kind").and_then(Value::as_str).unwrap_or("?");
+            let bank = seg.get("bank").and_then(Value::as_i64).unwrap_or(0);
+            let record_type = field_text(seg, "type");
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!(
+                    "    bank{bank} {domain} {kind} type {record_type}: index {}..{} ({} pts)",
+                    field_text(seg, "start_index"),
+                    field_text(seg, "end_index"),
+                    field_text(seg, "count"),
+                ),
+                false,
+            ));
+        }
+    }
+
+    if points.is_none() && segments.is_none() {
         lines.extend(format_value_block(output, 1));
     }
     lines
@@ -206,6 +386,151 @@ fn format_object_array(output: &Value, fields: &[(&str, &str)]) -> Vec<String> {
 /// Prints the instantaneous per-reason active snapshot, then appends the
 /// driver's cumulative per-policy violation times (the "how long was each
 /// modality limiting" breakdown), mirroring the historical `status` output.
+/// Render the temp-thresholds array. Two row shapes:
+/// - NVML: `Shutdown | Limit 94 C` (name + celsius only).
+/// - NVAPI target-temp (温度墙): `Threshold 2 (TargetTemp) | Current 87 C | Min 75 / Max 87 C`
+///   — the auto-discovered wall slot is tagged `(TargetTemp)`, and the VBIOS
+///   min/max range is appended when GetInfo exposed it. An entry is treated as
+///   NVAPI when it carries a `policy_index` field.
+fn format_temperature_thresholds_output(output: &Value) -> Vec<String> {
+    let Some(items) = output.as_array() else {
+        return format_value_block(output, 1);
+    };
+    if items.is_empty() {
+        return vec![format!(
+            "  {}",
+            nvoc_cli_common::color::stylize("No entries", false)
+        )];
+    }
+    items
+        .iter()
+        .map(|item| {
+            let obj = item.as_object();
+            let name = obj
+                .and_then(|o| o.get("name"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let render_temp = |key: &str| -> String {
+                obj.and_then(|o| o.get(key))
+                    .map(|v| format_scalar(key, v))
+                    .unwrap_or_else(|| "---".into())
+            };
+            let label = nvoc_cli_common::color::stylize_title("Threshold");
+            let row = if obj.is_some_and(|o| o.contains_key("policy_index")) {
+                // NVAPI row: Current + Min/Max range. format_scalar already
+                // appends the ` C` unit (key ends in _celsius/_c), so don't
+                // add it again here.
+                let cur = nvoc_cli_common::color::stylize(
+                    &format!("Current {}", render_temp("celsius")),
+                    false,
+                );
+                let min = obj
+                    .and_then(|o| o.get("min_c"))
+                    .map(|v| format_scalar("min_c", v));
+                let max = obj
+                    .and_then(|o| o.get("max_c"))
+                    .map(|v| format_scalar("max_c", v));
+                match (min, max) {
+                    (Some(mn), Some(mx)) => {
+                        let range = nvoc_cli_common::color::stylize(
+                            &format!("Min {} / Max {}", mn, mx),
+                            false,
+                        );
+                        format!("{} {} | {} | {}", label, name, cur, range)
+                    }
+                    _ => format!("{} {} | {}", label, name, cur),
+                }
+            } else {
+                // NVML row: single Limit value. celsius is a u32 (no _c key),
+                // so render it bare and add the unit once.
+                let raw = obj
+                    .and_then(|o| o.get("celsius"))
+                    .map(|v| format_scalar("celsius", v))
+                    .unwrap_or_else(|| "N/A".into());
+                let limit = nvoc_cli_common::color::stylize(&format!("Limit {}", raw), false);
+                format!("{} {} | {}", label, name, limit)
+            };
+            format!("  {}", row)
+        })
+        .collect()
+}
+
+fn format_pstate_native_output(output: &Value) -> Vec<String> {
+    use nvoc_cli_common::color::stylize_title;
+    let mut lines = Vec::new();
+    let object = match output.as_object() {
+        Some(o) => o,
+        None => return lines,
+    };
+
+    // Locked pstates summary line (e.g. "Locked: P0, P3").
+    if let Some(locked) = object.get("locked_pstates").and_then(Value::as_array) {
+        let labels: Vec<String> = locked
+            .iter()
+            .filter_map(|v| v.as_u64().map(|n| format!("P{n}")))
+            .collect();
+        if labels.is_empty() {
+            lines.push(format!("  {}", stylize_title("No locked P-States")));
+        } else {
+            lines.push(format!(
+                "  {}: {}",
+                stylize_title("Locked"),
+                labels.join(", ")
+            ));
+        }
+    }
+
+    let Some(pstates) = object.get("pstates").and_then(Value::as_array) else {
+        return lines;
+    };
+    lines.push(format!("  {}", stylize_title("P-States")));
+    for entry in pstates {
+        let pstate = entry.get("pstate").and_then(Value::as_str).unwrap_or("P?");
+        let locked = entry
+            .get("locked")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let header = if locked {
+            format!("{pstate} (locked)")
+        } else {
+            pstate.to_string()
+        };
+        lines.push(format!("    {}", stylize_title(&header)));
+        // Per-domain frequency range. Keys are max_<domain>_mhz / min_<domain>_mhz.
+        // Emit in a fixed, NVML-like order.
+        for (dom, label) in [
+            ("graphics", "Graphics"),
+            ("memory", "Memory"),
+            ("video", "Video"),
+            ("host", "Host"),
+        ] {
+            let max = entry.get(format!("max_{dom}_mhz")).and_then(Value::as_f64);
+            let min = entry.get(format!("min_{dom}_mhz")).and_then(Value::as_f64);
+            if let (Some(max), Some(min)) = (max, min) {
+                if max == 0.0 && min == 0.0 {
+                    continue;
+                }
+                let values = format!("Max {} MHz, Min {} MHz", trim_float(max), trim_float(min));
+                lines.push(format!(
+                    "      {}: {}",
+                    stylize_title(label),
+                    nvoc_cli_common::color::stylize(&values, false)
+                ));
+            }
+        }
+    }
+    lines
+}
+
+/// Render an f64 without a trailing ".0" when it is a whole number.
+fn trim_float(v: f64) -> String {
+    if (v.fract() == 0.0) && v.abs() < 1e15 {
+        format!("{}", v as i64)
+    } else {
+        format!("{v}")
+    }
+}
+
 fn format_throttle_reasons_output(output: &Value) -> Vec<String> {
     let mut lines = Vec::new();
 
@@ -278,8 +603,17 @@ fn format_value_block_with_context(value: &Value, indent: usize, context: &str) 
                 if compacted_keys.contains(&key.as_str()) {
                     continue;
                 }
+                // Skip empty pstate-limit fields to keep output terse:
+                //   frequency_delta = null (rendered "N/A"),
+                //   voltage / voltage_domain when both bounds are 0 or "Undefined".
+                if is_empty_pstate_limit_field(key, value) {
+                    continue;
+                }
 
                 match value {
+                    Value::Object(child) if key == "ids" && is_pci_identifiers(child) => {
+                        lines.extend(format_pci_identifiers(indent, key, child));
+                    }
                     Value::Object(child) if key == "utilization" => {
                         lines.push(format!(
                             "{}{}",
@@ -287,6 +621,20 @@ fn format_value_block_with_context(value: &Value, indent: usize, context: &str) 
                             nvoc_cli_common::color::stylize_title(&format_label(key))
                         ));
                         lines.extend(format_utilization_entries(indent + 1, child));
+                    }
+                    // `power` is the NVAPI power-topology map
+                    // (`NvAPI_GPU_ClientPowerTopologyGetStatus`): keys are channel
+                    // names (TotalGpuPower / NormalizedTotalPower / …) and values
+                    // are 0–100 plain percentages of the board power budget. Append
+                    // a `%` unit to each numeric value (it is dimensionless but is
+                    // conventionally reported as a percentage).
+                    Value::Object(child) if is_power_topology_map(child) => {
+                        lines.push(format!(
+                            "{}{}",
+                            indent_spaces(indent),
+                            nvoc_cli_common::color::stylize_title(&format_label(key))
+                        ));
+                        lines.extend(format_power_entries(indent + 1, child));
                     }
                     // `perf` carries two raw NVAPI words from PerfPoliciesGetStatus:
                     // `limits` (a PerfFlags bitmask of throttling reasons) and
@@ -330,6 +678,16 @@ fn format_value_block_with_context(value: &Value, indent: usize, context: &str) 
                             &join_context(context, key),
                         ));
                     }
+                    // P0 voltage bounds (get-status `p0_voltage`): render as a
+                    // multi-line section like Memory, not the generic
+                    // comma-separated measurement-map line. Must precede the
+                    // measurement-map arm — `p0_voltage` matches it (key contains
+                    // "voltage"). Values are µV shown in mV, and the redundant
+                    // `UV` per-field label suffix is dropped (the mV unit already
+                    // carries the dimension).
+                    Value::Object(child) if key == "p0_voltage" => {
+                        lines.extend(format_p0_voltage_block(indent, child));
+                    }
                     Value::Object(child) if object_is_measurement_map(key, child) => {
                         lines.push(format_measurement_map_line(indent, key, child));
                     }
@@ -353,7 +711,7 @@ fn format_value_block_with_context(value: &Value, indent: usize, context: &str) 
                             &join_context(context, key),
                         ));
                     }
-                    _ => lines.push(format_field_line(indent, key, value)),
+                    _ => lines.push(format_leaf_line(indent, key, value, context)),
                 }
             }
 
@@ -411,6 +769,30 @@ struct CompactGroup<'a> {
     label_key: String,
     keys: Vec<&'a str>,
     values: Vec<(&'static str, &'a str, &'a Value)>,
+}
+
+/// True when a pstate-limit field carries no useful data and should be hidden
+/// from human output (keeps get-info pstate tables terse). Applies to:
+///   - `frequency_delta` = null (no offset set; otherwise rendered "N/A")
+///   - `voltage` object whose max AND min are both 0/null
+///   - `voltage_domain` = "Undefined"
+fn is_empty_pstate_limit_field(key: &str, value: &Value) -> bool {
+    match key {
+        "frequency_delta" => value.is_null(),
+        "voltage_domain" => value
+            .as_str()
+            .map(|s| s.eq_ignore_ascii_case("Undefined"))
+            .unwrap_or(false),
+        "voltage" => value
+            .as_object()
+            .map(|o| {
+                let max = o.get("max").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                let min = o.get("min").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                max == 0.0 && min == 0.0
+            })
+            .unwrap_or(false),
+        _ => false,
+    }
 }
 
 fn compact_range_groups<'a>(object: &'a serde_json::Map<String, Value>) -> Vec<CompactGroup<'a>> {
@@ -562,6 +944,55 @@ fn format_measurement_map_line(
     )
 }
 
+/// Render the P0 voltage-bounds block (`p0_voltage` from get-status) as a
+/// multi-line section — a header on its own line followed by one indented
+/// `Label: N mV` line per bound — mirroring the Memory block rather than the
+/// generic comma-separated `format_measurement_map_line`.
+///
+/// Values are stored in microvolts (`*_uV`) but shown in millivolts. The
+/// redundant `UV` label suffix that `format_label` would append (from the
+/// `_uV` key suffix) is stripped, since the `mV` unit already carries the
+/// dimension — otherwise each line read "Current UV 900 mV".
+fn format_p0_voltage_block(indent: usize, object: &serde_json::Map<String, Value>) -> Vec<String> {
+    let mut lines = vec![format!(
+        "{}{}",
+        indent_spaces(indent),
+        nvoc_cli_common::color::stylize_title("P0 Voltage Limit")
+    )];
+    // Fixed logical order: current, then the wall hierarchy (target → effective
+    // → VBIOS → VRM-max), then the remaining offset headroom and min-hold floor.
+    // Values are stored under `<stem>_uV` keys.
+    const ORDER: [&str; 7] = [
+        "current_uV",
+        "target_wall_uV",
+        "effective_wall_uV",
+        "vbios_wall_uV",
+        "vrm_max_wall_uV",
+        "offset_ceiling_uV",
+        "min_hold_uV",
+    ];
+    for (field_key, value) in ORDER
+        .iter()
+        .copied()
+        .filter_map(|k| object.get(k).map(|v| (k, v)))
+    {
+        // Label from the key minus the `_uV` suffix (e.g. "effective_wall").
+        // `format_contextual_scalar` still receives the original `*_uV` key so
+        // the "voltage" context maps µV -> mV.
+        let label_key = field_key.strip_suffix("_uV").unwrap_or(field_key);
+        lines.push(format!(
+            "{}{}: {}",
+            indent_spaces(indent + 1),
+            nvoc_cli_common::color::stylize_title(&format_label(label_key)),
+            nvoc_cli_common::color::stylize(
+                &format_contextual_scalar("p0_voltage", field_key, value),
+                false,
+            ),
+        ));
+    }
+    lines
+}
+
 fn format_pff_points(indent: usize, items: &[Value]) -> Vec<String> {
     items
         .iter()
@@ -695,6 +1126,24 @@ fn format_field_line(indent: usize, key: &str, value: &Value) -> String {
     )
 }
 
+/// Leaf scalar line that is aware of its dotted context path (e.g.
+/// `bus.pci_express.lanes`, `driver_model.value`, `physical_frame_buffer`). Used for
+/// `get-info` fields whose formatting depends on the surrounding object, not just the
+/// key suffix. Falls back to the plain field line for non-numeric / unmatched values.
+fn format_leaf_line(indent: usize, key: &str, value: &Value, context: &str) -> String {
+    let rendered = if value.is_number() {
+        format_contextual_scalar(context, key, value)
+    } else {
+        format_scalar(key, value)
+    };
+    format!(
+        "{}{}: {}",
+        indent_spaces(indent),
+        nvoc_cli_common::color::stylize_title(&format_label(key)),
+        nvoc_cli_common::color::stylize(&rendered, false)
+    )
+}
+
 /// Render the per-domain utilization map with friendlier labels (FrameBuffer is
 /// NVAPI's name for the memory-controller domain) and a `%` unit on each value.
 fn format_utilization_entries(
@@ -747,6 +1196,41 @@ fn bitmask_from_value(value: &Value) -> Option<u64> {
         Value::Object(obj) => obj.get("bits").and_then(Value::as_u64),
         _ => None,
     }
+}
+
+/// Is this object the NVAPI power-topology channel map? Its keys are channel
+/// names (`TotalGpuPower`, `NormalizedTotalPower`, …) with scalar values; any
+/// all-scalar object with at least one known power-topology channel key matches.
+fn is_power_topology_map(object: &serde_json::Map<String, Value>) -> bool {
+    if !object.values().all(is_scalar_value) {
+        return false;
+    }
+    object.keys().any(|k| {
+        matches!(
+            k.as_str(),
+            "TotalGpuPower" | "NormalizedTotalPower" | "TotalBoardPower"
+        )
+    })
+}
+
+/// Render the power-topology channel map. Each value is a 0–100 plain
+/// percentage of the board power budget, so a `%` unit is appended.
+fn format_power_entries(indent: usize, object: &serde_json::Map<String, Value>) -> Vec<String> {
+    sorted_object_entries(object)
+        .iter()
+        .map(|(key, value)| {
+            let rendered = match value {
+                Value::Number(number) => format!("{}%", number),
+                _ => format_scalar(key, value),
+            };
+            format!(
+                "{}{}: {}",
+                indent_spaces(indent),
+                nvoc_cli_common::color::stylize_title(&format_label(key)),
+                nvoc_cli_common::color::stylize(&rendered, false)
+            )
+        })
+        .collect()
 }
 
 /// Decode the NVAPI perf-policy status (`perf` object from PerfPoliciesGetStatus).
@@ -968,6 +1452,98 @@ fn format_sensor_descriptor(
     lines
 }
 
+/// True when an object looks like the NVAPI PCI identifier block
+/// (`device_id`, `subsystem_id`, `ext_device_id`, `revision_id`).
+fn is_pci_identifiers(object: &serde_json::Map<String, Value>) -> bool {
+    object.contains_key("device_id")
+        && object.contains_key("subsystem_id")
+        && (object.contains_key("ext_device_id") || object.contains_key("revision_id"))
+}
+
+/// Known PCI sub-vendor ids (subset of `NV_GPU_VENDOR`) for human-friendly labeling.
+/// Matches the value in the low 16 bits of `subsystem_id`.
+fn pci_vendor_name(subvendor: u16) -> Option<&'static str> {
+    match subvendor {
+        0x10de => Some("NVIDIA"),
+        0x1043 => Some("ASUS"),
+        0x1458 => Some("Gigabyte"),
+        0x1462 => Some("MSI"),
+        0x10b0 => Some("Gainward"),
+        0x107d => Some("Leadtek"),
+        0x1048 => Some("Elsa"),
+        0x19da => Some("Zotac"),
+        0x196e => Some("PNY"),
+        _ => None,
+    }
+}
+
+/// Render the NVAPI PCI identifier block as Vendor/Device/Subvendor/Subdevice/Revision
+/// in hex. NVAPI packs: `device_id = (product << 16) | vendor`; for NVIDIA (vendor
+/// `0x10de`) `subsystem_id = (subproduct << 16) | subvendor`. `ext_device_id` is the
+/// real device id (it differs from the high half of `device_id` on some boards).
+fn format_pci_identifiers(
+    indent: usize,
+    key: &str,
+    object: &serde_json::Map<String, Value>,
+) -> Vec<String> {
+    let get = |k: &str| object.get(k).and_then(Value::as_u64).unwrap_or(0) as u32;
+
+    let device_id = get("device_id");
+    let subsystem_id = get("subsystem_id");
+    let ext_device_id = get("ext_device_id");
+    let revision_id = get("revision_id");
+
+    // device_id low 16 = vendor, high 16 = (NVIDIA's internal) product.
+    let vendor = device_id as u16;
+    let product = (device_id >> 16) as u16;
+    // ext_device_id is the canonical PCI device id when present and non-zero.
+    let device = if ext_device_id != 0 {
+        ext_device_id as u16
+    } else {
+        product
+    };
+    // subsystem_id low 16 = subvendor, high 16 = subdevice (NVIDIA packing).
+    let subvendor = subsystem_id as u16;
+    let subdevice = (subsystem_id >> 16) as u16;
+
+    let mut lines = vec![format!(
+        "{}{}",
+        indent_spaces(indent),
+        nvoc_cli_common::color::stylize_title(&format_label(key))
+    )];
+
+    let mut row = |label: &str, value: String| {
+        lines.push(format!(
+            "{}{}: {}",
+            indent_spaces(indent + 1),
+            nvoc_cli_common::color::stylize_title(label),
+            nvoc_cli_common::color::stylize(&value, false)
+        ));
+    };
+
+    let vendor_str = match pci_vendor_name(vendor) {
+        Some(name) => format!("0x{:04X} ({})", vendor, name),
+        None => format!("0x{:04X}", vendor),
+    };
+    row("Vendor", vendor_str);
+    row("Device", format!("0x{:04X}", device));
+
+    if subsystem_id != 0 {
+        let subvendor_str = match pci_vendor_name(subvendor) {
+            Some(name) => format!("0x{:04X} ({})", subvendor, name),
+            None => format!("0x{:04X}", subvendor),
+        };
+        row("Subvendor", subvendor_str);
+        row("Subdevice", format!("0x{:04X}", subdevice));
+    }
+    if revision_id != 0 {
+        // Labeled "CHIP Revision" to distinguish from `Arch.Revision` (NV_GPU_CHIP_REVISION)
+        // elsewhere in get-info.
+        row("CHIP Revision", format!("0x{:02X}", revision_id as u8));
+    }
+    lines
+}
+
 fn field_text(object: &Value, key: &str) -> String {
     object
         .get(key)
@@ -1011,10 +1587,86 @@ fn format_contextual_scalar(context_key: &str, value_key: &str, value: &Value) -
     {
         return format_measurement(number / 1000.0, "MHz");
     }
+    // Per-rail power (PowerMonitor `power_rails_w`): values are already in
+    // watts (mW ÷ 1000 at the source); just append the unit.
+    if context.contains("power_rails") {
+        return format_measurement(number, "W");
+    }
     if context.contains("voltage") && !context.contains("domain") {
         return format_measurement(number / 1000.0, "mV");
     }
+    // PCI Express link width (e.g. x8 / x16). The JSON key is `lanes`. (serde renders
+    // the bus variant as `pciexpress`, so match that form here.)
+    if context.contains("pciexpress") && value_key == "lanes" {
+        return format!("x{}", number as i64);
+    }
+    // RAM bus width is in bits (top-level GpuInfo field, so check the value key too).
+    if context.contains("bus_width") || value_key.contains("bus_width") {
+        return format!("{} bit", number as i64);
+    }
+    // Frame-buffer sizes are kibibytes -> megabytes (top-level fields too).
+    if context.contains("frame_buffer") || value_key.contains("frame_buffer") {
+        return format_measurement(number / 1024.0, "MB");
+    }
+    // Driver-model value is a packed WDDM version word -> show hex + decoded version.
+    // major = (value >> 12) & 0xf; minor = (value >> 8) & 0xf when major != 2.
+    if context.contains("driver_model") || value_key == "driver_model" {
+        let word = number as u32;
+        let major = ((word >> 12) & 0xf) as u8;
+        let minor = if major == 2 {
+            0
+        } else {
+            ((word >> 8) & 0xf) as u8
+        };
+        return format!("0x{:08X} (WDDM {}.{})", word, major, minor);
+    }
+    // Temperature sensor range bounds (get-info descriptor path): report in degrees C.
+    if context.contains("sensors") && context.contains("range") {
+        return format_measurement(number, "C");
+    }
+    // Compute-capability flags: decode the NV_GPU_COMPUTE_CAPS bitmask into names.
+    // Mirrors the bit definitions in nvapi-rs/sys/src/gpu/mod.rs.
+    if context.contains("compute_capabilities") && value_key == "flags" {
+        return format_compute_caps(number as u32);
+    }
     format_scalar(value_key, value)
+}
+
+/// Decode the `NV_GPU_COMPUTE_CAPS` bitmask (from `NvAPI_GPU_GetComputeCapabilities`)
+/// into `<dec> (0x<hex>: NAME | NAME | ...)`. Unknown set bits are folded into a
+/// trailing `0x...` so no information is lost. Mirrors the bit layout documented on
+/// `NV_GPU_COMPUTE_CAPS` in `nvapi-rs/sys/src/gpu/mod.rs`.
+///
+/// NOTE: despite the "compute caps" name, the bits are PhysX / compute-software /
+/// framebuffer oriented (reversed from handler @0x1801ABAD0), NOT SR-IOV / virt / large-BAR.
+fn format_compute_caps(word: u32) -> String {
+    const KNOWN: &[(u32, &str)] = &[
+        (0x1, "BASE_COMPUTE"),
+        (0x2, "COMPUTE_CAPABLE"),
+        (0x4, "BOARD_DB_MATCH"),
+        (0x100, "PHYSX_INSTALLED"),
+        (0x200, "VRAM_GE_256MB"),
+        (0x400, "PHYSX_GPU_SELECTED"),
+    ];
+    let mut names: Vec<&str> = Vec::new();
+    let mut known_mask = 0u32;
+    for &(bit, name) in KNOWN {
+        if word & bit == bit {
+            names.push(name);
+        }
+        known_mask |= bit;
+    }
+    let unknown = word & !known_mask;
+    let suffix = if unknown != 0 {
+        format!(" | 0x{:X}", unknown)
+    } else {
+        String::new()
+    };
+    if names.is_empty() && unknown == 0 {
+        "0 (none)".to_string()
+    } else {
+        format!("{} (0x{:X}: {}{})", word, word, names.join(" | "), suffix)
+    }
 }
 
 fn format_measurement(value: f64, unit: &str) -> String {
@@ -1038,7 +1690,7 @@ fn format_with_unit(key: &str, rendered: &str) -> String {
         format!("{rendered} mV")
     } else if key.ends_with("_uv") {
         format!("{rendered} uV")
-    } else if key.ends_with("_watt") {
+    } else if key.ends_with("_watt") || key.ends_with("_w") {
         format!("{rendered} W")
     } else if key.ends_with("_percent") || key == "percent" {
         format!("{rendered}%")
@@ -1131,27 +1783,110 @@ mod tests {
     }
 
     #[test]
+    fn get_info_formats_pci_ids_lanes_buffers_and_ranges() {
+        nvoc_cli_common::color::init(true);
+        // Mirrors the GpuInfo shape from `get-info`. device_id 0x28E010DE packs
+        // vendor 0x10DE (low) + product; ext_device_id 0x28E0 is the canonical device;
+        // subsystem_id 0x20BD1043 packs subdevice 0x20BD (high) + subvendor 0x1043 ASUS.
+        // driver_model.value 0x3200 decodes to WDDM 3.2; frame buffers are KiB.
+        // (serde renders the `Bus::PciExpress` variant tag as `pciexpress`.)
+        let output = json!({
+            "bus": {
+                "bus": {
+                    "pciexpress": {
+                        "ids": {
+                            "device_id": 0x28E010DE_u32,
+                            "ext_device_id": 0x28E0_u32,
+                            "revision_id": 0xA1_u32,
+                            "subsystem_id": 0x20BD1043_u32
+                        },
+                        "lanes": 8
+                    }
+                }
+            },
+            "driver_model": { "value": 0x3200_u32 },
+            "ram_bus_width": 128,
+            "physical_frame_buffer": 8384000,
+            "virtual_frame_buffer": 8384512,
+            "compute_capabilities": { "flags": 1795 },
+            "sensors": [
+                {
+                    "name": "Core",
+                    "range": { "max": 139, "min": -35 }
+                }
+            ]
+        });
+
+        let rendered = format_value_block(&output, 0).join("\n");
+
+        // PCI ids split into hex vendor/device/subvendor/subdevice/revision.
+        assert!(rendered.contains("Vendor: 0x10DE (NVIDIA)"));
+        assert!(rendered.contains("Device: 0x28E0"));
+        assert!(rendered.contains("Subvendor: 0x1043 (ASUS)"));
+        assert!(rendered.contains("Subdevice: 0x20BD"));
+        // PCI revision labeled "CHIP Revision" to disambiguate from Arch.Revision.
+        assert!(rendered.contains("CHIP Revision: 0xA1"));
+        assert!(!rendered.contains("685773022"));
+        // Link width prefixed with `x`.
+        assert!(rendered.contains("Lanes: x8"));
+        // RAM bus width in bits.
+        assert!(rendered.contains("Ram Bus Width: 128 bit"));
+        // Frame buffers KiB -> MB.
+        assert!(rendered.contains("Physical Frame Buffer: 8187.5 MB"));
+        assert!(rendered.contains("Virtual Frame Buffer: 8188 MB"));
+        assert!(!rendered.contains("Physical Frame Buffer: 8384000"));
+        // Compute-capability flags decoded: 1795 = 0x703 = 0x1|0x2|0x100|0x200|0x400 =
+        // BASE_COMPUTE | COMPUTE_CAPABLE | PHYSX_INSTALLED | VRAM_GE_256MB | PHYSX_GPU_SELECTED.
+        // (Bit 0x4 BOARD_DB_MATCH absent — this SKU matched no board-DB row.)
+        assert!(rendered.contains(
+            "Flags: 1795 (0x703: BASE_COMPUTE | COMPUTE_CAPABLE | PHYSX_INSTALLED | VRAM_GE_256MB | PHYSX_GPU_SELECTED)"
+        ));
+        // Driver model value as hex + decoded WDDM version.
+        assert!(rendered.contains("Value: 0x00003200 (WDDM 3.2)"));
+        // Sensor range bounds carry a C unit.
+        assert!(rendered.contains("Range: Max 139 C, Min -35 C"));
+    }
+
+    #[test]
     fn human_output_formats_vfp_points_as_rows() {
         nvoc_cli_common::color::init(true);
         let output = json!({
-            "domain": "graphics",
+            "domain": "all",
             "indexed": true,
             "infer_missing_default": true,
+            "segments": [
+                {"domain": "graphics", "count": 1, "first_index": 12, "last_index": 12},
+                {"domain": "memory", "count": 1, "first_index": 127, "last_index": 127},
+            ],
             "points": [
                 {
+                    "domain": "graphics",
                     "index": 12,
+                    "point_type": "programmable",
                     "voltage_mv": 900.0,
                     "frequency_mhz": 1800.0,
                     "delta_mhz": 15.0,
                     "default_frequency_mhz": 1785.0,
+                },
+                {
+                    "domain": "memory",
+                    "index": 127,
+                    "point_type": "fixed",
+                    "voltage_mv": 600.0,
+                    "frequency_mhz": 405.0,
+                    "delta_mhz": 0.0,
+                    "default_frequency_mhz": 405.0,
                 }
             ],
         });
 
-        let rendered = format_human_output("get-vfp", &output).join("\n");
+        let rendered = format_human_output("get-public-vftable", &output).join("\n");
 
         assert!(rendered.contains("V-F Points"));
-        assert!(rendered.contains("#12: 900.0 mV, 1800.0 MHz, delta 15.0 MHz"));
+        assert!(rendered.contains("#12 [programmable]: 900.0 mV, 1800.0 MHz, delta 15.0 MHz"));
+        // Segment separators make the graphics/memory boundary explicit.
+        assert!(rendered.contains("--- graphics (index 12..12) ---"));
+        assert!(rendered.contains("--- memory (index 127..127) ---"));
         assert!(!rendered.contains("\"points\""));
     }
 
@@ -1212,6 +1947,8 @@ mod tests {
         assert!(rendered.contains("Voltage: 940000 uV"));
         // PCIe link width gets an `x` prefix.
         assert!(rendered.contains("Pcie Lanes: x8"));
+        // Bidirectional PCIe bandwidth (NVML nvmlDeviceGetPcieThroughput) gets
+        // a MiB/s unit, nvitop-style.
         assert!(rendered.contains("Pcie Tx Mibps: 1234.5 MiB/s"));
         assert!(rendered.contains("Pcie Rx Mibps: 7.8 MiB/s"));
         // Memory size fields are KiB -> MB; the eviction *count* has no unit.
@@ -1255,6 +1992,84 @@ mod tests {
         assert!(!rendered.contains("Range"));
         assert!(!rendered.contains("Target"));
         assert!(!rendered.contains("Name:"));
+    }
+
+    #[test]
+    fn human_output_renders_p2_monitoring_fields() {
+        nvoc_cli_common::color::init(true);
+        // P2 dimensions surfaced in get-status: the board/GPU power split
+        // (both topology channels), the perf-decrease reason bitset, the fan
+        // arbiter (zero-RPM) status/control, and the legacy thermal/fan levels.
+        let output = json!({
+            "power": {
+                "TotalGpuPower": 84,
+                "NormalizedTotalPower": 82
+            },
+            "performance_decrease": { "bits": 2 },
+            "fan_arbiter_status": { "0": { "fan_stopped": false } },
+            "fan_arbiter_control": { "0": { "stop_fan": true } },
+            "current_thermal_level": 3,
+            "current_fan_speed_level": 2
+        });
+
+        let rendered = format_human_output("get-status", &output).join("\n");
+
+        // Both power topology channels (board/GPU split) are shown, each with a
+        // `%` unit (the values are 0–100 plain percentages). Keys are PascalCase
+        // enum variant names, rendered verbatim by format_label (no `_` to split).
+        assert!(rendered.contains("TotalGpuPower: 84%"));
+        assert!(rendered.contains("NormalizedTotalPower: 82%"));
+        // Perf-decrease reason is decoded to friendly text (bitflags name array
+        // -> "Power Control"), not the raw enum name.
+        assert!(rendered.contains("Power Control"));
+        assert!(rendered.contains("Performance Decrease"));
+        // Fan arbiter (zero-RPM) and legacy levels. Field labels are title-cased
+        // by the generic renderer (snake_case -> "Fan Stopped" / "Stop Fan").
+        assert!(rendered.contains("Fan Arbiter Status"));
+        assert!(rendered.contains("Fan Arbiter Control"));
+        assert!(rendered.contains("Fan Stopped"));
+        assert!(rendered.contains("Stop Fan"));
+        assert!(rendered.contains("Current Thermal Level"));
+        assert!(rendered.contains("Current Fan Speed Level"));
+    }
+
+    #[test]
+    fn human_output_renders_p0_voltage_block() {
+        nvoc_cli_common::color::init(true);
+        // P0 voltage bounds from the private VoltRails status entry. Values are
+        // stored in µV and rendered in mV; the block is a multi-line section
+        // (like Memory), not a comma-separated measurement-map line, and the
+        // redundant per-field "UV" label suffix is dropped (the mV unit carries
+        // the dimension).
+        let output = json!({
+            "p0_voltage": {
+                "current_uV": 900000,
+                "target_wall_uV": 1200000,
+                "effective_wall_uV": 1200000,
+                "vbios_wall_uV": 0,
+                "vrm_max_wall_uV": 1200000,
+                "min_hold_uV": 625000,
+                "offset_ceiling_uV": 195500
+            }
+        });
+
+        let rendered = format_human_output("get-status", &output).join("\n");
+
+        // Section title is "P0 Voltage Limit" (not "P0 Voltage:"), header has
+        // no trailing colon, and each bound is its own indented `Label: N mV`.
+        assert!(rendered.contains("P0 Voltage Limit"));
+        assert!(!rendered.contains("P0 Voltage:"));
+        assert!(rendered.contains("Current: 900 mV"));
+        assert!(rendered.contains("Effective Wall: 1200 mV"));
+        assert!(rendered.contains("Min Hold: 625 mV"));
+        assert!(rendered.contains("Offset Ceiling: 195.5 mV"));
+        assert!(rendered.contains("Target Wall: 1200 mV"));
+        assert!(rendered.contains("Vbios Wall: 0 mV"));
+        assert!(rendered.contains("Vrm Max Wall: 1200 mV"));
+        // No comma-separated single line, no redundant "UV" label suffix.
+        assert!(!rendered.contains("Current UV"));
+        assert!(!rendered.contains("Effective Wall UV"));
+        assert!(!rendered.contains("Offset Ceiling UV 195.5 mV"));
     }
 
     #[test]
@@ -1362,8 +2177,10 @@ mod tests {
 
         assert!(rendered.contains("Frequency: Max 2145 MHz, Min 300 MHz"));
         assert!(rendered.contains("Frequency Delta: Max 1000 MHz, Min -1000 MHz"));
-        assert!(rendered.contains("Voltage: Max 0 mV, Min 0 mV"));
-        assert!(rendered.contains("Voltage Domain: Undefined"));
+        // Empty pstate-limit fields are hidden to keep output terse:
+        // voltage {max:0, min:0} and voltage_domain "Undefined" are dropped.
+        assert!(!rendered.contains("Voltage: Max 0 mV, Min 0 mV"));
+        assert!(!rendered.contains("Voltage Domain: Undefined"));
     }
 
     #[test]
@@ -1435,7 +2252,8 @@ mod tests {
 
         assert!(rendered.contains("Range: Max 500 MHz, Min -500 MHz"));
         assert!(rendered.contains("Range: Max 1500 MHz, Min -500 MHz"));
-        assert!(rendered.contains("Virtual Frame Buffer: 6291456"));
+        // Frame-buffer sizes are KiB -> MB (6291456 KiB = 6144 MB).
+        assert!(rendered.contains("Virtual Frame Buffer: 6144 MB"));
     }
 
     #[test]
@@ -1570,7 +2388,7 @@ mod tests {
 
     fn sample_output(command: Command) -> Value {
         match command {
-            Command::ListGpus => json!({
+            Command::GetGpuList => json!({
                 "index": 0,
                 "gpu_id": 1,
                 "gpu_id_hex": "0x0001",
@@ -1580,7 +2398,7 @@ mod tests {
                 "uuid": "GPU-12345678-abcd-1234-abcd-1234567890ab",
                 "name": "GPU",
             }),
-            Command::ListDisplays => json!([{
+            Command::GetDisplayList => json!([{
                 "display_id": "0x00010001",
                 "display_id_u32": 65537,
                 "connector": "DisplayPort",
@@ -1609,7 +2427,7 @@ mod tests {
                 "thermal_limit_c": 83,
                 "voltage_boost_percent": 0,
             }),
-            Command::GetVfp => json!({
+            Command::GetPublicVftable => json!({
                 "domain": "graphics",
                 "indexed": true,
                 "infer_missing_default": true,
@@ -1621,34 +2439,42 @@ mod tests {
                     "default_frequency_mhz": 1500.0,
                 }],
             }),
-            Command::GetVfpPointVoltageMv => {
-                json!({"point": 0, "voltage_uv": 800000, "voltage_mv": 800.0})
+            Command::GetPowerLimit => {
+                json!({"source": "nvml", "min_watt": 100, "current_watt": 250, "max_watt": 350})
             }
-            Command::GetPowerWatt => {
-                json!({"min_watt": 100, "current_watt": 250, "max_watt": 350})
-            }
-            Command::GetClockOffsetMhz => {
+            Command::GetPstateGlobalFreqOffset => {
                 json!({"domain": "graphics", "pstate": "P0", "offset_mhz": 120})
             }
-            Command::GetPstates => json!([{
+            Command::GetPstateFreqRange => json!([{
                 "pstate": "P0",
                 "min_core_mhz": 300,
                 "max_core_mhz": 2700,
                 "min_memory_mhz": 405,
                 "max_memory_mhz": 10500,
             }]),
-            Command::GetSupportedAppClocks => {
+            Command::GetPStateLock => json!({
+                "supported": true,
+                "locked_pstates": [3],
+                "pstates": [
+                    {"pstate": "P3", "locked": true, "clocks": {"graphics": {"max_mhz": 2565.0, "min_mhz": 780.0}, "memory": {"max_mhz": 7001.0, "min_mhz": 7001.0}, "video": {"max_mhz": 2565.0, "min_mhz": 780.0}}},
+                ],
+            }),
+            Command::GetSupportedLegacyApplicationFreq => {
                 json!([{"memory_mhz": 10500, "graphics_mhz": 1800}])
             }
             Command::GetFanInfo => json!({"count": 2, "min_percent": 30, "max_percent": 100}),
             Command::GetTemperatureThresholds => {
                 json!([{"name": "shutdown", "celsius": 95}])
             }
-            Command::GetThermalSettings => json!([
+            Command::GetLegacyTempSensor => json!([
                 {"target": "Gpu", "controller": "GpuInternal", "current_c": 50, "min_c": -5, "max_c": 95},
                 {"target": "Memory", "controller": "GpuInternal", "current_c": 52, "min_c": -5, "max_c": 95},
                 {"target": "Board", "controller": "GpuInternal", "current_c": 48, "min_c": 0, "max_c": 100},
             ]),
+            Command::GetPowerMode => {
+                json!({"supported": true, "active": "Max", "mode_mask": 1, "max_mode_idx": 1})
+            }
+            Command::SetPowerMode => json!({"applied": true, "power_mode": "Max"}),
             Command::GetThrottleReasons => json!({
                 "reasons": [
                     {"name": "GPU Idle", "active": true},
@@ -1663,24 +2489,22 @@ mod tests {
                     "since": "2026-05-26 18:00:41 UTC",
                 },
             }),
-            Command::GetTdpTempLimits => json!({
+            Command::GetPublicPowerLimit => json!({
                 "min_tdp_percent": 50,
                 "default_tdp_percent": 100,
                 "max_tdp_percent": 120,
+            }),
+            Command::GetPublicTempLimit => json!({
                 "min_temp_c": 65,
                 "default_temp_c": 83,
                 "max_temp_c": 91,
                 "curve": "Default",
             }),
-            Command::ProbeVoltageLimits => json!({"lower_point": 0, "upper_point": 80}),
-            Command::CheckVoltageFrequency => {
-                json!({"point": 42, "precise": true, "matched_point": 42})
-            }
             Command::GetLegacyOvervoltRanges => {
                 json!([{"pstate": "P0", "min_uv": 0, "current_uv": 0, "max_uv": 100000}])
             }
             Command::GetLegacyP0CoreMaxVoltageDelta => json!({"max_delta_uv": 100000}),
-            Command::GetPstateBaseVoltageUv => json!({
+            Command::GetLegacyGpcRailOvervoltLimit => json!({
                 "pstate": "P0",
                 "voltage_domain": "core",
                 "editable": true,
@@ -1689,9 +2513,9 @@ mod tests {
                 "min_delta_uv": 0,
                 "max_delta_uv": 100000,
             }),
-            Command::GetVoltageBoostPercent => json!({"voltage_boost_percent": 25}),
-            Command::GetAutoBoost => json!({"enabled": true, "default_enabled": false}),
-            Command::GetApiRestriction => {
+            Command::GetPublicGpcRailVoltBoost => json!({"voltage_boost_percent": 25}),
+            Command::GetAutoboostStatus => json!({"enabled": true, "default_enabled": false}),
+            Command::GetAutoboostSupport => {
                 json!({"api": "app-clocks", "restricted": true})
             }
             Command::GetEdid => json!({
@@ -1699,50 +2523,67 @@ mod tests {
                 "bytes": 4,
                 "edid_hex": "00FFFFFF",
             }),
-            Command::SetCoreOffsetMhz
-            | Command::SetMemoryOffsetMhz
-            | Command::SetClockOffsetMhz => json!({
+            Command::SetPstateGlobalFreqOffset => json!({
                 "applied": true,
                 "backend": "nvapi",
                 "domain": "graphics",
                 "pstate": "P0",
                 "offset_mhz": 120,
             }),
-            Command::SetPowerWatt => json!({"applied": true, "power_watt": 250}),
-            Command::SetPowerPercent => json!({"applied": true, "power_percent": 90}),
-            Command::SetThermalLimitC => json!({"applied": true, "thermal_limit_c": 83}),
-            Command::SetAcousticTempC => {
-                json!({"applied": true, "acoustic_target_temp_c": 80})
+            Command::SetPublicTgpPercent => json!({"applied": true, "power_percent": 90}),
+            Command::SetPpabStatus => json!({"applied": true, "dynamic_boost": true}),
+            Command::SetPowerLimit => json!({"applied": true, "tgp_watt": 140, "tgp_mw": 140000}),
+            Command::ResetPowerLimit => json!({"applied": true, "default_watt": 100.0}),
+            Command::GetDNotifier => json!({
+                "active": "D2",
+                "levels": [
+                    {"level": "D1", "watts": null, "active": false},
+                    {"level": "D2", "watts": 55.0, "active": true},
+                    {"level": "D3", "watts": 45.0, "active": false},
+                    {"level": "D4", "watts": 33.0, "active": false},
+                    {"level": "D5", "watts": 10.0, "active": false},
+                ],
+            }),
+            Command::SetDNotifier => json!({"applied": true, "dnotifier_level": "D3"}),
+            Command::SetTempLimit => json!({"applied": true, "thermal_limit_c": 83}),
+            Command::SetPrivateTargetTempLimit => {
+                json!({"applied": true, "policy_index": 2, "celsius": 85.0})
             }
-            Command::SetFanPercent => {
+            Command::SetFanSpeed => {
                 json!({"applied": true, "fan": "all", "policy": "manual", "level_percent": 65})
             }
-            Command::SetLockedClocksMhz => {
+            Command::SetFreqLock => {
                 json!({"applied": true, "domain": "graphics", "min_mhz": 1500, "max_mhz": 1800})
             }
-            Command::SetVfpVoltageLock => json!({"applied": true, "target": "900mv"}),
-            Command::SetVfpPointDeltaMhz => {
+            Command::SetGpcVoltLock => json!({"applied": true, "target": "900mv"}),
+            Command::OemOcScanner => {
+                json!({"applied": true, "action": "start"})
+            }
+            Command::SetPublicVftablePointOffset => {
                 json!({"applied": true, "point": 12, "delta_mhz": 15})
             }
-            Command::SetVfpRangeDeltaMhz => {
+            Command::SetPublicVftableRangeOffset => {
                 json!({"applied": true, "start": 12, "end": 16, "delta_mhz": 15})
             }
-            Command::SetPstateLock => {
+            Command::SetPstateLockViaMemRange => {
                 json!({"applied": true, "pstate_range": "P0..P2", "min_lock_mhz": 300, "max_lock_mhz": 1800})
             }
-            Command::SetApplicationsClocksMhz => {
+            Command::SetLegacyApplicationFreqLock => {
                 json!({"applied": true, "memory_mhz": 10500, "graphics_mhz": 1800})
             }
-            Command::SetPstateBaseVoltageUv => {
+            Command::SetLegacyGpcRailOvervoltLimit => {
                 json!({"applied": true, "pstate": "P0", "delta_uv": 100000})
             }
-            Command::SetVoltageBoostPercent => {
+            Command::SetOvervoltUv => {
+                json!({"applied": true, "overvolt_delta_uv": 50000})
+            }
+            Command::SetPublicGpcRailVoltBoost => {
                 json!({"applied": true, "voltage_boost_percent": 25})
             }
-            Command::SetAutoBoost | Command::SetAutoBoostDefault => {
+            Command::SetAutoboostStatus | Command::ResetAutoboostStatus => {
                 json!({"applied": true, "enabled": true})
             }
-            Command::SetApiRestriction => {
+            Command::SetAutoboostSupport => {
                 json!({"applied": true, "api": "app-clocks", "restricted": true})
             }
             Command::SetEdid => {
@@ -1751,28 +2592,94 @@ mod tests {
             Command::ClearEdid => {
                 json!({"applied": true, "display_id": "0x00010001"})
             }
-            Command::SetLegacyClocksMhz => {
-                json!({"applied": true, "core_mhz": 900, "memory_mhz": 1800})
+            Command::SetLegacyFreq => {
+                json!({"applied": true, "domain": "core", "mhz": 900, "core_mhz": 900, "memory_mhz": 0})
             }
-            Command::ResetCoreOffsetMhz | Command::ResetMemoryOffsetMhz => json!({
-                "applied": true,
-                "domain": "graphics",
-                "pstate": "P0",
-                "offset_mhz": 0,
-            }),
-            Command::ResetApplicationsClocks
-            | Command::ResetVfpLock
-            | Command::ResetPowerPercent
-            | Command::ResetThermalLimitC
-            | Command::ResetPstateBaseVoltages
-            | Command::ResetPstateClockOffsets => json!({"applied": true}),
-            Command::ResetVoltageBoostPercent => {
+            Command::ResetLegacyApplicationFreqLock
+            | Command::ResetPublicVftableGpcLock
+            | Command::ResetPublicTgpPercent
+            | Command::ResetTempLimit
+            | Command::ResetLegacyGpcRailOvervoltLimit
+            | Command::ResetPstateGlobalFreqOffset => json!({"applied": true}),
+            Command::ResetPublicGpcRailVoltBoost => {
                 json!({"applied": true, "voltage_boost_percent": 0})
             }
-            Command::ResetLockedClocks | Command::ResetVfpDeltas => {
+            Command::ResetFreqLock | Command::ResetPublicVftableOffset => {
                 json!({"applied": true, "domain": "graphics"})
             }
-            Command::ResetFan => json!({"applied": true, "fan_indices": [0, 1]}),
+            Command::ResetFanSpeed => json!({"applied": true, "fan_indices": [0, 1]}),
+            Command::SetPStateLock => json!({"applied": true, "pstate": "P3"}),
+            Command::ResetPStateLock => json!({"applied": true}),
+            Command::GetVoltRailInfo => json!({
+                "rail_mask": "0x00000001",
+                "p0": {
+                    "current_uV": 700000,
+                    "target_wall_uV": 750000,
+                    "effective_wall_uV": 750000,
+                    "vbios_wall_uV": 0,
+                    "vrm_max_wall_uV": 1200000,
+                    "min_hold_uV": 600000,
+                    "offset_ceiling_uV": 450000,
+                },
+                "rail_descriptors": [{
+                    "rail_bit": 0,
+                    "type": 1,
+                }],
+                "control": [{
+                    "rail_bit": 0, "type": 3, "values_uV": [0, 0, 0, 0, 0, 0],
+                }],
+                "status": [{
+                    "rail_bit": 0, "type": 1, "values_uV": [700000, 750000, 0, 1200000, 750000, 600000],
+                }],
+            }),
+            Command::SetVoltRailLimit => json!({
+                "applied": true,
+                "rail_bit": 0,
+                "previous_uV": 0,
+                "applied_uV": -25000,
+                "effective_wall_uV": 980000,
+            }),
+            Command::GetPrivateFreqDomainInfo => json!({
+                "controllable_mask": "0x000000FF",
+                "entries": [{
+                    "bit": 1, "type": 10, "value_modifiable": false, "offset_kHz": 0,
+                    "range_min_kHz": 0, "range_max_kHz": 0, "applied_kHz": 0,
+                }],
+            }),
+            Command::GetPrivateFreqDomainStatus => json!({
+                "domain_bit": 1, "domain": "Xbar", "freq_mhz": 2004.0,
+            }),
+            Command::GetPrivateVftable => json!({
+                // Output shape mirrors the Command::GetPrivateVftable execution
+                // arm (banked masks + contiguous same-type segments + the
+                // flat point grid).
+                "masks": ["0x0000000000000000"],
+                "segments": [{
+                    "bank": 0, "domain": "gpc", "kind": "vf_curve", "type": 1,
+                    "start_index": 0, "end_index": 39, "count": 40,
+                    "voltage_uV_min": 450000, "voltage_uV_max": 1080500,
+                    "freq_default_mhz_min": 210, "freq_default_mhz_max": 2700,
+                }],
+                "points": [{
+                    "bank": 0, "index": 0, "type": 1,
+                    "voltage_uV": 450000,
+                    "freq_default_mhz": 210, "freq_current_mhz": 210,
+                }],
+            }),
+            Command::SetPrivateFreqDomainGlobalOffset => json!({
+                "applied": true, "bit": 1, "type": 10,
+                "previous_kHz": 0, "applied_kHz": -60000, "temporary_restored": true,
+            }),
+            Command::SetPrivateVftablePointOffset => json!({
+                "applied": true, "bank": 0, "index": 191,
+                "mode": "raw_f_offset_control", "value": 100,
+                "unit": "raw", "retained": 100,
+            }),
+            Command::SetPrivateVftableRangeOffset => json!({
+                "applied": true, "bank": 0, "start": 191, "end": 191,
+                "raw_f_offset_control_value": 100, "points_written": 1,
+            }),
+            _ => json!({}),
         }
     }
 }

@@ -1,11 +1,15 @@
+use super::Wm2AcousticMode;
 use super::error::Error;
 use super::nvapi as low_nvapi;
 use super::nvml as low_nvml;
 use super::result::{
-    ApiRestrictionState, AppliedValue, AutoBoostState, BatchReport, ClockOffset, DisplayInfo,
-    EdidData, FanInfo, OperationKind, OperationReport, PstateBaseVoltage, PstateClockRange,
-    SupportedApplicationClocks, TargetOutcome, TdpTempLimits, TemperatureThreshold,
-    ThermalSensorReading, ThrottleReason, ViolationEntry, ViolationStatusReport, VoltageBoostState,
+    ApiRestrictionState, AppliedValue, AutoBoostState, BatchReport, ClockOffset, DNotifierInfo,
+    DNotifierLevel, DisplayInfo, EdidData, FanCurvePointReadout, FanCurveReadout, FanInfo,
+    NvapiCoolerInfoEntry, NvapiFanRpmResult, NvapiPStateNativeLock, NvapiPerfFreqCap,
+    OperationKind, OperationReport, OvervoltApplied, PStateLevelEntry, PStateLevelsInfo,
+    PowerModeStatus, PstateBaseVoltage, PstateClockRange, SupportedApplicationClocks,
+    TargetOutcome, TargetTempPolicy, TdpTempLimits, TemperatureThreshold, ThermalSensorReading,
+    ThrottleReason, ViolationEntry, ViolationStatusReport, VoltageBoostState,
     VoltageFrequencyCheck,
 };
 use super::target::GpuTarget;
@@ -42,6 +46,33 @@ pub fn run<O: GpuOperation>(
     op: O,
 ) -> Result<OperationReport<O::Output>, Error> {
     let operation = op.kind();
+    // Pre-wake the dGPU before NVAPI write ops. 610+ mobile drivers aggressively
+    // enter GC6/GCOFF at idle (5-20s), making NVAPI writes fail with
+    // GpuNotPowered (-220). force_gc6_exit independently wakes a GCOFF'd dGPU
+    // (empirically verified — plain GET/SET do NOT wake it).
+    //
+    // Two-stage gate (GpuType::needs_gc6_wake is the single source of truth,
+    // also used by the auto-optimizer's explicit native wakes):
+    //  1. is_mobile() (by GPU model) filters out positively-identified desktop
+    //     GPUs — those skip the wake entirely (zero escape cost).
+    //  2. For mobile OR Unknown OR info()-unreadable (likely already GCOFF)
+    //     GPUs, call force_gc6_exit. Its own return value is the native
+    //     fallback: desktop/unknown-that's-really-desktop returns
+    //     NoImplementation (-104, ignored); mobile returns OK and wakes.
+    if operation.is_nvapi_write()
+        && let Ok(gpu) = target.nvapi()
+    {
+        let need_wake = match gpu.info() {
+            Ok(info) => match fetch_gpu_type(&info) {
+                Ok(t) => t.needs_gc6_wake(),
+                Err(_) => true, // can't classify -> conservative wake
+            },
+            Err(_) => true, // info() failed (likely GCOFF) -> wake
+        };
+        if need_wake {
+            let _ = gpu.force_gc6_exit(); // best-effort; -104 etc. ignored
+        }
+    }
     let output = op.run(target)?;
     Ok(OperationReport {
         target: target.id,
@@ -173,7 +204,10 @@ impl GpuOperation for SetPowerLimit {
 #[derive(Clone, Copy, Debug)]
 pub struct QueryTemperatureThresholds;
 
-/// Query NVAPI's legacy three-sensor thermal view, including physical ranges.
+/// Legacy 3-sensor thermal view via `NvAPI_GPU_GetThermalSettings`
+/// (0xE3640A56, struct V2/0x20044, sensorIndex=ALL). Reports the GPU core /
+/// Memory / Board sensors with their physical ranges — the same source
+/// AmpereOC's thermal-attenuation estimator reads (target==GPU → current).
 #[derive(Clone, Copy, Debug)]
 pub struct QueryNvapiThermalSettings;
 
@@ -185,23 +219,328 @@ impl GpuOperation for QueryNvapiThermalSettings {
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
-        target
+        let sensors = target
             .nvapi()?
             .inner()
             .thermal_settings(None)
+            .map_err(Error::from)?;
+        Ok(sensors
+            .into_iter()
+            .map(|s| ThermalSensorReading {
+                target: s.target,
+                controller: s.controller,
+                current_c: s.current_temperature.0,
+                min_c: s.default_temperature_range.min.0,
+                max_c: s.default_temperature_range.max.0,
+            })
+            .collect())
+    }
+}
+
+/// NVIDIA App power-mode (均衡/高性能) read via the ClientPowerModes family —
+/// the App's Balanced/Max toggle. Reports the support gate
+/// (`max_mode_idx == 1`) alongside the active mode.
+#[derive(Clone, Copy, Debug)]
+pub struct GetPowerMode;
+
+impl GpuOperation for GetPowerMode {
+    type Output = PowerModeStatus;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::GetPowerMode
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let gpu = target.nvapi()?;
+        let (mode_mask, max_mode_idx) =
+            gpu.inner().power_modes_capability().map_err(Error::from)?;
+        let supported = max_mode_idx == 1;
+        let active = if supported {
+            gpu.inner().power_mode().map_err(Error::from)?
+        } else {
+            "N/A"
+        };
+        Ok(PowerModeStatus {
+            supported,
+            active,
+            mode_mask,
+            max_mode_idx,
+        })
+    }
+}
+
+/// NVIDIA App power-mode SET (`Max` = 高性能, `false` = 均衡 Balanced).
+#[derive(Clone, Copy, Debug)]
+pub struct SetPowerMode {
+    pub max: bool,
+}
+
+impl GpuOperation for SetPowerMode {
+    type Output = AppliedValue<bool>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetPowerMode
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let gpu = target.nvapi()?;
+        // Reject on unsupported GPUs with the App's own gate so the user
+        // gets a clear message instead of a driver -9/-1.
+        let (_, max_mode_idx) = gpu.inner().power_modes_capability().map_err(Error::from)?;
+        if max_mode_idx != 1 {
+            return Err(Error::Custom(format!(
+                "power mode (Balanced/Max) not supported on this GPU (max_mode_idx={max_mode_idx:#x})"
+            )));
+        }
+        gpu.inner().set_power_mode(self.max).map_err(Error::from)?;
+        Ok(AppliedValue {
+            requested: self.max,
+            applied: self.max,
+        })
+    }
+}
+
+/// Read the GPU fan-curve table (`ClientFanPoliciesGetControl` NDA
+/// 0xE543C540, struct magic 0x200DC). RE'd from GPUMon.exe pollFanCurve —
+/// one snapshot holds up to 4 curve slots × 3 (temp, RPM) points. Curves
+/// are typically settable/readable on desktops only; mobile boards drive
+/// their fans through the EC.
+#[derive(Clone, Copy, Debug)]
+pub struct GetFanCurves;
+
+impl GpuOperation for GetFanCurves {
+    type Output = Vec<FanCurveReadout>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::GetFanCurves
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .inner()
+            .fan_curves()
             .map_err(Error::from)
-            .map(|sensors| {
-                sensors
+            .map(|curves| {
+                curves
                     .into_iter()
-                    .map(|sensor| ThermalSensorReading {
-                        target: sensor.target,
-                        controller: sensor.controller,
-                        current_c: sensor.current_temperature.0,
-                        min_c: sensor.default_temperature_range.min.0,
-                        max_c: sensor.default_temperature_range.max.0,
+                    .map(|c| FanCurveReadout {
+                        index: c.index,
+                        points: c
+                            .points
+                            .into_iter()
+                            .map(|p| FanCurvePointReadout {
+                                temp_c: p.temp_c,
+                                rpm: p.rpm,
+                            })
+                            .collect(),
                     })
                     .collect()
             })
+    }
+}
+
+/// Write one fan-curve slot via the GPUMon RMW protocol (GET snapshot →
+/// patch the target slot's 3 (temp, RPM) points → SET the whole table back).
+/// Driver enforces strict monotonicity across all lanes.
+#[derive(Clone, Debug)]
+pub struct SetFanCurve {
+    pub index: u8,
+    pub points: Vec<FanCurvePointReadout>,
+}
+
+impl GpuOperation for SetFanCurve {
+    type Output = AppliedValue<Vec<FanCurvePointReadout>>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetFanCurve
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let curve = nvapi_hi::FanCurve {
+            index: self.index,
+            points: self
+                .points
+                .iter()
+                .map(|p| nvapi_hi::FanCurvePoint {
+                    temp_c: p.temp_c,
+                    rpm: p.rpm,
+                })
+                .collect(),
+        };
+        target
+            .nvapi()?
+            .inner()
+            .set_fan_curve(&curve)
+            .map_err(Error::from)?;
+        Ok(AppliedValue {
+            requested: self.points.clone(),
+            applied: self.points.clone(),
+        })
+    }
+}
+
+/// Reset one fan-curve slot to factory (GPUMon.exe `GPUHandle::resetFanCurve`:
+/// FanPolicySetControl NDA 0x2B2A2A45, struct magic 0x214AC — GET the policy
+/// block, OR `1 << index` into the +0x08 reset bitmask, SET). This is
+/// GPUMon's NVAPI fan reset; unlike the public RestoreCoolerSettings it works
+/// on GPUs whose user-mode cooler table isn't exposed (desktop 3060/2070
+/// reject RestoreCoolerSettings with NOT_SUPPORTED).
+#[derive(Clone, Copy, Debug)]
+pub struct ResetFanCurve {
+    pub index: u8,
+}
+
+impl GpuOperation for ResetFanCurve {
+    type Output = AppliedValue<u8>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::ResetFanCurve
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .inner()
+            .reset_fan_curve(self.index as u32)
+            .map_err(Error::from)?;
+        Ok(AppliedValue {
+            requested: self.index,
+            applied: self.index,
+        })
+    }
+}
+
+/// Toggle fan stop / zero-RPM for a curve slot (FanArbiterSet NDA 0x44CD3014,
+/// struct magic 0x10144, enable bit0 at +0x28). RE'd from GPUMon.exe
+/// setFanCurve's tail call.
+#[derive(Clone, Copy, Debug)]
+pub struct SetFanStop {
+    pub curve_index: u8,
+    pub enable: bool,
+}
+
+impl GpuOperation for SetFanStop {
+    type Output = AppliedValue<bool>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetFanStop
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .inner()
+            .set_fan_stop(self.curve_index as u32, self.enable)
+            .map_err(Error::from)?;
+        Ok(AppliedValue {
+            requested: self.enable,
+            applied: self.enable,
+        })
+    }
+}
+
+/// Query per-cooler info via the private FanCoolerGetInfo (NDA 0x65CE5BFC).
+/// Returns one entry per cooler with its index. RE'd from GPUMon setFanSim —
+/// the private path, richer than public GetCoolerSettings.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiCoolerInfo;
+
+impl GpuOperation for QueryNvapiCoolerInfo {
+    type Output = Vec<NvapiCoolerInfoEntry>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiCoolerInfo
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let infos = target
+            .nvapi()?
+            .inner()
+            .cooler_info_private()
+            .map_err(Error::from)?;
+        Ok(infos
+            .into_iter()
+            .map(|c| NvapiCoolerInfoEntry {
+                index: c.index,
+                cooler_type: c.cooler_type,
+                min: c.min,
+                max: c.max,
+                current: c.current,
+                current_pwm_percent: c.current_pwm_percent,
+            })
+            .collect())
+    }
+}
+
+/// Set fan speed by RPM via the private FanCoolerSetControl (NDA 0xEB44E8AA).
+/// RE'd from GPUMon.exe setFanSim: GET control snapshot → patch the target
+/// cooler's enable+level per its type → SET back. `rpm=None` disables
+/// simulation (returns to auto/driver control).
+#[derive(Clone, Copy, Debug)]
+pub struct SetFanRpm {
+    /// `None` targets every cooler present in the info mask.
+    pub cooler_index: Option<u32>,
+    pub rpm: Option<u32>,
+}
+
+impl GpuOperation for SetFanRpm {
+    type Output = Vec<NvapiFanRpmResult>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetFanRpm
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let rs = target
+            .nvapi()?
+            .inner()
+            .set_fan_rpm(self.cooler_index, self.rpm)
+            .map_err(Error::from)?;
+        Ok(rs
+            .into_iter()
+            .map(|r| NvapiFanRpmResult {
+                cooler_index: r.cooler_index,
+                cooler_type: r.cooler_type,
+                min_rpm: r.min_rpm,
+                max_rpm: r.max_rpm,
+                applied_rpm: r.applied_rpm,
+            })
+            .collect())
+    }
+}
+
+/// Admin-free pstate lock via `NvAPI_GPU_SetPerfLevel` (0x75dd3e6a, escape
+/// 0x7000040). 2026-08-26 correction — NOT the NVCP power-mode dropdown:
+/// `level` is an INDEX into the GPU's actual available P-State list (see
+/// `QueryNvapiPstateNative`/get-pstate-native), not a fixed enum — on the
+/// 4060 Laptop the measured mapping is 0=P8, 1=P5, 2=P4, 3=P3, 4=P0, but
+/// other GPUs expose a different P-State set. Re-locking re-targets (last
+/// call wins). No release argument exists (RM accepts only valid indices)
+/// and the lock survives every other known release API — only a driver
+/// reload/reboot clears it.
+#[derive(Clone, Copy, Debug)]
+pub struct SetNvapiPerfLevelLock {
+    pub level: u32, // index into the GPU's real P-State list (driver-validated)
+}
+
+impl GpuOperation for SetNvapiPerfLevelLock {
+    type Output = AppliedValue<u32>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiPerfLevelLock
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .inner()
+            .set_pstate_lock(self.level)
+            .map_err(Error::from)?;
+        Ok(AppliedValue {
+            requested: self.level,
+            applied: self.level,
+        })
     }
 }
 
@@ -318,7 +657,10 @@ impl GpuOperation for SetTemperatureLimit {
     }
 }
 
-/// Set the NVML acoustic target temperature (`ACOUSTIC_CURR`).
+/// Set the NVML acoustic target temperature (`ACOUSTIC_CURR` threshold) — the
+/// Linux-native target-temp channel (same one nvidia_oc / MSI Afterburner
+/// "target temperature" use). Windows rejects the NVML threshold setter
+/// outright; use the NVAPI wall ([`SetNvapiTargetTemp`]) there.
 #[derive(Clone, Copy, Debug)]
 pub struct SetNvmlAcousticTemp {
     pub celsius: i32,
@@ -493,13 +835,13 @@ impl GpuOperation for SetApplicationsClocks {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct ResetApplicationsClocks;
+pub struct ResetLegacyApplicationFreqLock;
 
-impl GpuOperation for ResetApplicationsClocks {
+impl GpuOperation for ResetLegacyApplicationFreqLock {
     type Output = ();
 
     fn kind(&self) -> OperationKind {
-        OperationKind::ResetApplicationsClocks
+        OperationKind::ResetLegacyApplicationFreqLock
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
@@ -543,15 +885,15 @@ impl GpuOperation for SetLockedClocks {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct ResetLockedClocks {
+pub struct ResetFreqLock {
     pub domain: ClockDomain,
 }
 
-impl GpuOperation for ResetLockedClocks {
+impl GpuOperation for ResetFreqLock {
     type Output = ();
 
     fn kind(&self) -> OperationKind {
-        OperationKind::ResetLockedClocks
+        OperationKind::ResetFreqLock
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
@@ -660,6 +1002,30 @@ impl GpuOperation for QueryPstateBaseVoltage {
 }
 
 #[derive(Clone, Copy, Debug)]
+pub struct SetNvapiOvervolt {
+    pub delta_uv: MicrovoltsDelta,
+}
+
+impl GpuOperation for SetNvapiOvervolt {
+    type Output = OvervoltApplied;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiOvervolt
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let ov_reported = low_nvapi::set_nvapi_overvolt(target.nvapi()?, self.delta_uv)?;
+        Ok(OvervoltApplied {
+            applied: AppliedValue {
+                requested: self.delta_uv,
+                applied: self.delta_uv,
+            },
+            driver_ov_entries: ov_reported,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
 pub struct SetPstateBaseVoltage {
     pub pstate: PState,
     pub delta_uv: MicrovoltsDelta,
@@ -682,13 +1048,13 @@ impl GpuOperation for SetPstateBaseVoltage {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct ResetPstateBaseVoltages;
+pub struct ResetLegacyGpcRailOvervoltLimit;
 
-impl GpuOperation for ResetPstateBaseVoltages {
+impl GpuOperation for ResetLegacyGpcRailOvervoltLimit {
     type Output = ();
 
     fn kind(&self) -> OperationKind {
-        OperationKind::ResetPstateBaseVoltages
+        OperationKind::ResetLegacyGpcRailOvervoltLimit
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
@@ -801,16 +1167,16 @@ impl GpuOperation for ResetVfpFrequencyLock {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct SetVfpVoltageLock {
+pub struct SetGpcVoltLock {
     pub voltage_target: NvapiLockedVoltageTarget,
     pub feedback: bool,
 }
 
-impl GpuOperation for SetVfpVoltageLock {
+impl GpuOperation for SetGpcVoltLock {
     type Output = ();
 
     fn kind(&self) -> OperationKind {
-        OperationKind::SetVfpVoltageLock
+        OperationKind::SetGpcVoltLock
     }
 
     fn run(&self, gpu: &GpuTarget<'_>) -> Result<Self::Output, Error> {
@@ -827,15 +1193,15 @@ impl GpuOperation for SetVfpVoltageLock {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct ResetVfpDeltas {
+pub struct ResetPublicVftableOffset {
     pub domain: VfpResetDomain,
 }
 
-impl GpuOperation for ResetVfpDeltas {
+impl GpuOperation for ResetPublicVftableOffset {
     type Output = ();
 
     fn kind(&self) -> OperationKind {
-        OperationKind::ResetVfpDeltas
+        OperationKind::ResetPublicVftableOffset
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
@@ -844,13 +1210,13 @@ impl GpuOperation for ResetVfpDeltas {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct ResetVfpLock;
+pub struct ResetPublicVftableGpcLock;
 
-impl GpuOperation for ResetVfpLock {
+impl GpuOperation for ResetPublicVftableGpcLock {
     type Output = ();
 
     fn kind(&self) -> OperationKind {
-        OperationKind::ResetVfpLock
+        OperationKind::ResetPublicVftableGpcLock
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
@@ -859,16 +1225,16 @@ impl GpuOperation for ResetVfpLock {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct SetVfpPointDelta {
+pub struct SetPublicVftablePointOffset {
     pub point: usize,
     pub delta: KilohertzDelta,
 }
 
-impl GpuOperation for SetVfpPointDelta {
+impl GpuOperation for SetPublicVftablePointOffset {
     type Output = AppliedValue<KilohertzDelta>;
 
     fn kind(&self) -> OperationKind {
-        OperationKind::SetVfpPointDelta
+        OperationKind::SetPublicVftablePointOffset
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
@@ -881,17 +1247,17 @@ impl GpuOperation for SetVfpPointDelta {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct SetVfpRangeDelta {
+pub struct SetPublicVftableRangeOffset {
     pub start: usize,
     pub end: usize,
     pub delta: KilohertzDelta,
 }
 
-impl GpuOperation for SetVfpRangeDelta {
+impl GpuOperation for SetPublicVftableRangeOffset {
     type Output = AppliedValue<KilohertzDelta>;
 
     fn kind(&self) -> OperationKind {
-        OperationKind::SetVfpRangeDelta
+        OperationKind::SetPublicVftableRangeOffset
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
@@ -900,6 +1266,174 @@ impl GpuOperation for SetVfpRangeDelta {
             requested: self.delta,
             applied: self.delta,
         })
+    }
+}
+
+/// Which driver-side ("OEM"/NVIDIA) OC Scanner action to perform.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OemOcScannerAction {
+    Start,
+    Stop,
+    Revert,
+    /// Query last-run status (does not write per-point results; returns Ok
+    /// if idle/has-result, or a status error if busy/not-supported).
+    Status,
+}
+
+/// Control NVIDIA's driver-side OC Scanner (drivers >= 455.00). The scan
+/// runs inside the driver and applies the resulting V/F offsets itself;
+/// Start is fire-and-forget, Revert restores the pre-scan curve.
+#[derive(Clone, Copy, Debug)]
+pub struct OemOcScanner {
+    pub action: OemOcScannerAction,
+}
+
+impl GpuOperation for OemOcScanner {
+    type Output = ();
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::OemOcScanner
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let gpu = target.nvapi()?;
+        let res = match self.action {
+            OemOcScannerAction::Start => gpu.oem_oc_scanner_start(),
+            OemOcScannerAction::Stop => gpu.oem_oc_scanner_stop(),
+            OemOcScannerAction::Revert => gpu.oem_oc_scanner_revert(),
+            OemOcScannerAction::Status => gpu.oem_oc_scanner_status(),
+        };
+        res.map_err(Error::from)
+    }
+}
+
+/// Force a P-State via the private SetForcePstate (NDA 0x025BFB10).
+/// `set_type`: 2 = force until released (nvapioc convention), 0 = release.
+#[derive(Clone, Copy, Debug)]
+pub struct SetForcePstate {
+    pub pstate: u32,
+    pub set_type: u32,
+}
+
+impl GpuOperation for SetForcePstate {
+    type Output = ();
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetForcePstate
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .set_force_pstate(self.pstate, self.set_type)
+            .map_err(Error::from)
+    }
+}
+
+/// Restart the display driver (NDA 0xB4B26B65) — legacy "apply OC" trigger.
+#[derive(Clone, Copy, Debug)]
+pub struct RestartDisplayDriver;
+
+impl GpuOperation for RestartDisplayDriver {
+    type Output = ();
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::RestartDisplayDriver
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .restart_display_driver()
+            .map_err(Error::from)
+    }
+}
+
+/// Release a force-locked pstate via EnableDynamicPstates(enable=0).
+/// SetForcePstate (0x025BFB10) has no unlock path — all set_type values
+/// force-lock. This is the escape hatch when a pstate gets stuck locked.
+#[derive(Clone, Copy, Debug)]
+pub struct ResetForcePstate;
+
+impl GpuOperation for ResetForcePstate {
+    type Output = ();
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::ResetForcePstate
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        // Release a force-locked pstate. IDA-verified: SetForcePstate has no
+        // dedicated unlock path, but pstate=16 is the "all pstates" sentinel
+        // that sets bitmask=0 — the same value GetForcePstate returns (16)
+        // when no force is active. So SetForcePstate(pstate=16, set_type=0)
+        // is the most likely release: it sends bitmask=0 + mode=0 via the
+        // same RM escape 0x7000056. EnableDynamicPstates(enable=0) was also
+        // tested live and does NOT release (different escape 0x70000BB).
+        target.nvapi()?.set_force_pstate(16, 0).map_err(Error::from)
+    }
+}
+
+/// Battery Boost 2.0 enable/disable (NDA 0xD27D0629). GPUMonCmd `-bb`.
+/// Mobile-only feature.
+#[derive(Clone, Copy, Debug)]
+pub struct SetBb2Active {
+    pub enable: bool,
+}
+
+impl GpuOperation for SetBb2Active {
+    type Output = ();
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetBb2Active
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .set_bb2_active(self.enable)
+            .map_err(Error::from)
+    }
+}
+
+/// Whisper Mode 2.0 enable/disable (NDA 0xD27D0629). GPUMonCmd `-wm`.
+/// Mobile-only feature.
+#[derive(Clone, Copy, Debug)]
+pub struct SetWm2Active {
+    pub enable: bool,
+}
+
+impl GpuOperation for SetWm2Active {
+    type Output = ();
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetWm2Active
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .set_wm2_active(self.enable)
+            .map_err(Error::from)
+    }
+}
+
+/// Whisper Mode 2.0 acoustic mode (NDA 0xD27D0629). GPUMonCmd `-wmMode`.
+/// 0=Quieter, 1=Quiet, 2=Balanced.
+#[derive(Clone, Copy, Debug)]
+pub struct SetWm2Mode {
+    pub mode: Wm2AcousticMode,
+}
+
+impl GpuOperation for SetWm2Mode {
+    type Output = ();
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetWm2Mode
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target.nvapi()?.set_wm2_mode(self.mode).map_err(Error::from)
     }
 }
 
@@ -1057,6 +1591,1267 @@ impl GpuOperation for SetNvapiPowerLimits {
     }
 }
 
+/// Set the PPAB / Dynamic-Boost controller enable state (notebook dGPU↔CPU
+/// power coordination). NDA-private nvapi ID 0x1504FC3D; raw boolean setter.
+#[derive(Clone, Debug)]
+pub struct SetNvapiDynamicBoost {
+    pub active: bool,
+}
+
+impl GpuOperation for SetNvapiDynamicBoost {
+    type Output = ();
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiDynamicBoost
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .set_dynamic_boost(self.active)
+            .map_err(Error::from)
+    }
+}
+
+/// Set the GPU TGP in watts (notebook watts-form TGP slider; the range that
+/// appears under the PPAB/Dynamic-Boost enable). NDA-private nvapi triplet:
+/// GET 0x8B3E7343 → patch → SET 0xBFF09E59. `policy_index` selects the entry
+/// (use [`QueryNvapiTgpWattRange`]); if None, defaults to index 2 like the ref tool.
+#[derive(Clone, Debug)]
+pub struct SetNvapiTgpWatt {
+    pub watts: u32,
+    pub policy_index: Option<usize>,
+}
+
+impl GpuOperation for SetNvapiTgpWatt {
+    type Output = u32;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiTgpWatt
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let idx = self.policy_index.unwrap_or(2);
+        target
+            .nvapi()?
+            .set_tgp_watt(self.watts, idx)
+            .map_err(Error::from)
+    }
+}
+
+/// Reset the GPU TGP to its rated/default value (the TGP slider's "Reset").
+#[derive(Clone, Debug, Default)]
+pub struct ResetNvapiTgpWatt {
+    pub policy_index: Option<usize>,
+}
+
+impl GpuOperation for ResetNvapiTgpWatt {
+    type Output = Option<u32>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::ResetNvapiTgpWatt
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let idx = self.policy_index.unwrap_or(2);
+        target.nvapi()?.reset_tgp_watt(idx).map_err(Error::from)
+    }
+}
+
+/// Query the TGP-watts range (min/default/max mW + active policy index) from
+/// the private ClientPowerPoliciesGetInfo variant (NDA 0x67F31384).
+#[derive(Clone, Debug, Default)]
+pub struct QueryNvapiTgpWattRange;
+
+/// TGP-watts range result (all values in **watts**, derived from the NDA
+/// milliwatt struct for ergonomic CLI output).
+#[derive(Clone, Debug)]
+pub struct TgpWattRangeInfo {
+    pub policy_index: usize,
+    pub min_watt: Option<f64>,
+    pub default_watt: Option<f64>,
+    pub max_watt: Option<f64>,
+}
+
+impl GpuOperation for QueryNvapiTgpWattRange {
+    type Output = Option<TgpWattRangeInfo>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiTgpWattRange
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        Ok(target
+            .nvapi()?
+            .tgp_watt_range()
+            .map_err(Error::from)?
+            .map(|r| TgpWattRangeInfo {
+                policy_index: r.policy_index,
+                min_watt: r.min_mw.map(|mw| mw as f64 / 1000.0),
+                default_watt: r.default_mw.map(|mw| mw as f64 / 1000.0),
+                max_watt: r.max_mw.map(|mw| mw as f64 / 1000.0),
+            }))
+    }
+}
+
+/// Query the D-Notifier (D0-notify) current level + the D1..D5 power-cap table
+/// via the private ClientPowerPoliciesGetInfo (NDA 0x67F31384) — the same call
+/// `QueryNvapiTgpWattRange` uses; the D-Notifier fields live in the struct's
+/// tail. Returns `None` where the driver doesn't expose the private interface.
+/// Power values are converted mW → watts for ergonomic CLI output.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiDNotifier;
+
+impl GpuOperation for QueryNvapiDNotifier {
+    type Output = Option<DNotifierInfo>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiDNotifier
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        Ok(target
+            .nvapi()?
+            .dnotify_info()
+            .map_err(Error::from)?
+            .map(|r| DNotifierInfo {
+                active: r.active.as_ref().map(|l| l.level),
+                levels: r
+                    .levels
+                    .iter()
+                    .map(|l| DNotifierLevel {
+                        level: l.level,
+                        watts: l.power_mw.map(|mw| mw as f64 / 1000.0),
+                    })
+                    .collect(),
+            }))
+    }
+}
+
+/// Read-only snapshot of the private VoltRails family (the "melonVolt path"):
+/// rail mask + per-rail control-offset entries + live per-rail voltages, via
+/// the private-but-publicly-resolvable 0x2C73AFDC (rail builder) /
+/// 0xA3070DB0 (control GET) / 0x5D0634EE (live status) — see
+/// `reverse/melonvolt/ANALYSIS.md` for the full RE chain. The µV-offset SET
+/// sibling (0x87C55C8A) is wrapped as [`SetNvapiVoltRailOffset`] and the
+/// absolute-target convenience as [`SetNvapiVoltRailTarget`].
+/// Returns `None` where the driver doesn't expose the private interface.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiVoltRails;
+
+impl GpuOperation for QueryNvapiVoltRails {
+    type Output = Option<nvapi_hi::nvapi::VoltRails>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiVoltRails
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target.nvapi()?.volt_rails().map_err(Error::from)
+    }
+}
+
+/// Set one rail's µV offset via the private VoltRails control object (the
+/// melonVolt write path: GET snapshot → locate entry → type guard →
+/// patch → SET → readback verify, see `reverse/melonvolt/ANALYSIS.md`).
+/// Payload index 0 is the offset on RTX-5090 MSVDD (rail bit 1, type 3);
+/// type semantics on other GPUs are platform-specific — set `expected_type`
+/// to guard them.
+///
+/// No magnitude limit is enforced: the offset is passed through verbatim and
+/// the driver clamps the effective wall (status index 4) to
+/// `min(target, vbios_wall, vrm_max_wall)` on its own. An offset past the
+/// ceiling is not wasted in a dangerous sense — it just cannot raise the
+/// wall further. The post-SET readback reports the effective wall so the
+/// user sees the clamp.
+#[derive(Clone, Copy, Debug)]
+#[allow(non_snake_case)] // uV suffix matches the nvapi-rs field naming
+pub struct SetNvapiVoltRailOffset {
+    /// rail bit within the mask (RTX 5090 MSVDD = 1)
+    pub rail_bit: u32,
+    /// target offset in µV (absolute, not a delta; 0 = stock). Passed through
+    /// verbatim — the driver clamps the effective wall itself.
+    pub offset_uV: i32,
+    /// refuse to write unless the entry's current type equals this
+    /// (melonVolt requires 3 on 5090 MSVDD); `None` = no type check
+    pub expected_type: Option<u32>,
+}
+
+impl GpuOperation for SetNvapiVoltRailOffset {
+    type Output = Option<NvapiVoltRailOffsetApplied>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiVoltRailOffset
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let gpu = target.nvapi()?;
+        let rails = gpu.volt_rails().map_err(Error::from)?;
+        let Some(rails) = rails else {
+            return Ok(None);
+        };
+        let entry = rails
+            .control
+            .iter()
+            .find(|e| e.rail_bit == self.rail_bit)
+            .ok_or_else(|| {
+                Error::Custom(format!(
+                    "rail bit {} not present (mask 0x{:08X})",
+                    self.rail_bit, rails.rail_mask
+                ))
+            })?;
+        if let Some(expected) = self.expected_type
+            && entry.entry_type != expected
+        {
+            return Err(Error::Custom(format!(
+                "rail {} entry type {} != expected {expected} — refusing to write \
+                 (type semantics differ per platform; override with a different \
+                 --expect-type if you know better)",
+                self.rail_bit, entry.entry_type
+            )));
+        }
+        // No magnitude limit: the offset is passed through verbatim. The
+        // driver clamps the effective wall (status index 4) to
+        // min(target, vbios_wall, vrm_max_wall) on its own — an offset past
+        // the ceiling cannot raise the wall further but is not dangerous, so
+        // we do not reject it. The post-SET readback reports the effective
+        // wall so the user sees the clamp.
+        let previous = entry.values[0];
+        let retained = gpu
+            .set_volt_rail_value(self.rail_bit, self.offset_uV)
+            .map_err(Error::from)?
+            .ok_or_else(|| Error::Custom("volt-rails family vanished between reads".into()))?;
+        // Read back the status entry for this rail to surface the effective
+        // wall the driver actually put in force (clamped to VRM/vBIOS max).
+        // The driver may not have refreshed status immediately after SET; a 0
+        // here means "no type-1 entry / not yet updated" — re-run
+        // get-volt-rails to confirm.
+        #[allow(non_snake_case)]
+        let effective_wall_uV = gpu
+            .volt_rails()
+            .map_err(Error::from)?
+            .and_then(|r| {
+                r.status
+                    .iter()
+                    .find(|e| e.rail_bit == self.rail_bit && e.entry_type == 1)
+                    // status payload index 4 = effective wall (clamped to
+                    // min(target, vbios_wall, vrm_max_wall)); see
+                    // nvapi-rs sys::gpu::power::private::status_values
+                    .map(|e| e.values[4])
+            })
+            .unwrap_or(0);
+        Ok(Some(NvapiVoltRailOffsetApplied {
+            rail_bit: self.rail_bit,
+            previous_uV: previous,
+            applied_uV: retained,
+            effective_wall_uV,
+        }))
+    }
+}
+
+/// Result of a successful volt-rail offset write.
+#[derive(Clone, Copy, Debug)]
+#[allow(non_snake_case)] // uV suffix matches the nvapi-rs field naming
+pub struct NvapiVoltRailOffsetApplied {
+    pub rail_bit: u32,
+    pub previous_uV: i32,
+    pub applied_uV: i32,
+    /// effective wall after SET, read back from the status entry's index 4.
+    /// The driver clamps this to `min(target, vbios_wall, vrm_max_wall)`, so
+    /// it may be below the requested offset's implied wall. 0 = no type-1
+    /// status entry / driver hasn't refreshed yet (re-run get-volt-rails).
+    pub effective_wall_uV: i32,
+}
+
+/// Set a volt-rail to an ABSOLUTE target voltage by deriving the required µV
+/// offset from the live control/status snapshot. Convenience wrapper around
+/// the melonVolt offset SET (see `reverse/melonvolt/ANALYSIS.md`) for
+/// GUI/TUI sliders that think in absolute volts, not offsets.
+///
+/// Derivation (the offset is relative to the factory/default wall):
+///   - `control` entry `.values[0]` = the offset currently applied (µV)
+///   - `status` type-1 entry `.values[1]` = the target wall the driver holds
+///     (µV) — the wall *including* the current offset, before the
+///     VRM/vBIOS clamp
+///   - `base_wall = target_wall − current_offset` recovers the factory wall
+///   - `offset = target_uV − base_wall` is what gets written
+///
+/// Because the initial offset is unknown to a caller that thinks in
+/// absolute volts, this read-compute-write happens inside one operation so
+/// the snapshot is consistent. The driver still clamps the effective wall
+/// (status index 4) to `min(target, vbios_wall, vrm_max_wall)` on its own —
+/// a target past the ceiling is not dangerous, it just caps out there.
+#[derive(Clone, Copy, Debug)]
+#[allow(non_snake_case)] // uV suffix matches the nvapi-rs field naming
+pub struct SetNvapiVoltRailTarget {
+    /// rail bit within the mask (RTX 5090 MSVDD = 1)
+    pub rail_bit: u32,
+    /// absolute target voltage in µV (e.g. 1150000 = 1.15V). Passed through
+    /// after offset derivation — the driver clamps the effective wall itself.
+    pub target_uV: i32,
+    /// refuse to write unless the control entry's current type equals this
+    /// (melonVolt requires 3 on 5090 MSVDD); `None` = no type check
+    pub expected_type: Option<u32>,
+}
+
+impl GpuOperation for SetNvapiVoltRailTarget {
+    type Output = Option<NvapiVoltRailTargetApplied>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiVoltRailTarget
+    }
+
+    #[allow(non_snake_case)] // uV-suffixed locals match the nvapi-rs field naming
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let gpu = target.nvapi()?;
+        let rails = gpu.volt_rails().map_err(Error::from)?;
+        let Some(rails) = rails else {
+            return Ok(None);
+        };
+        let ctrl = rails
+            .control
+            .iter()
+            .find(|e| e.rail_bit == self.rail_bit)
+            .ok_or_else(|| {
+                Error::Custom(format!(
+                    "rail bit {} not present (mask 0x{:08X})",
+                    self.rail_bit, rails.rail_mask
+                ))
+            })?;
+        if let Some(expected) = self.expected_type
+            && ctrl.entry_type != expected
+        {
+            return Err(Error::Custom(format!(
+                "rail {} entry type {} != expected {expected} — refusing to write \
+                 (type semantics differ per platform; override with a different \
+                 --expect-type if you know better)",
+                self.rail_bit, ctrl.entry_type
+            )));
+        }
+        // The offset the driver currently holds for this rail (control entry
+        // payload index 0).
+        let previous_offset_uV = ctrl.values[0];
+        // The target wall the driver currently holds (status type-1 entry,
+        // payload index 1). This is the wall *including* the current offset,
+        // before the VRM/vBIOS clamp — see sys status_values doc.
+        let target_wall_uV = rails
+            .status
+            .iter()
+            .find(|e| e.rail_bit == self.rail_bit && e.entry_type == 1)
+            .and_then(|e| e.values.get(1).copied())
+            .unwrap_or(0);
+        if target_wall_uV == 0 {
+            // The dGPU is likely asleep/idle and hasn't populated status, so
+            // the base wall can't be recovered and the derived offset would
+            // be garbage. The run() pre-wake should normally keep it awake,
+            // but a status value of 0 means the driver hasn't reported one.
+            return Err(Error::Custom(format!(
+                "rail {} status target wall is 0 — the dGPU may be idle/asleep; \
+                 apply a load and retry (cannot derive base wall from an empty \
+                 status)",
+                self.rail_bit
+            )));
+        }
+        // Recover the factory/default wall by removing the current offset
+        // from the target wall (target_wall = base + offset).
+        let base_wall_uV = target_wall_uV - previous_offset_uV;
+        let offset_uV = self.target_uV - base_wall_uV;
+        let applied_uV = gpu
+            .set_volt_rail_value(self.rail_bit, offset_uV)
+            .map_err(Error::from)?
+            .ok_or_else(|| Error::Custom("volt-rails family vanished between reads".into()))?;
+        // Read back the status entry for this rail to surface the effective
+        // wall the driver actually put in force (clamped to VRM/vBIOS max).
+        // The driver may not have refreshed status immediately after SET; a 0
+        // here means "no type-1 entry / not yet updated" — re-run
+        // get-volt-rails to confirm.
+        #[allow(non_snake_case)]
+        let effective_wall_uV = gpu
+            .volt_rails()
+            .map_err(Error::from)?
+            .and_then(|r| {
+                r.status
+                    .iter()
+                    .find(|e| e.rail_bit == self.rail_bit && e.entry_type == 1)
+                    .and_then(|e| e.values.get(4).copied())
+            })
+            .unwrap_or(0);
+        Ok(Some(NvapiVoltRailTargetApplied {
+            rail_bit: self.rail_bit,
+            target_uV: self.target_uV,
+            base_wall_uV,
+            offset_uV,
+            previous_offset_uV,
+            applied_uV,
+            effective_wall_uV,
+        }))
+    }
+}
+
+/// Result of a successful absolute-target volt-rail write.
+#[derive(Clone, Copy, Debug)]
+#[allow(non_snake_case)] // uV suffix matches the nvapi-rs field naming
+pub struct NvapiVoltRailTargetApplied {
+    pub rail_bit: u32,
+    /// absolute target requested (µV)
+    pub target_uV: i32,
+    /// derived factory/default wall = target_wall − previous offset (µV)
+    pub base_wall_uV: i32,
+    /// derived offset actually written (µV) = target − base_wall
+    pub offset_uV: i32,
+    /// offset that was in effect before the write (µV)
+    pub previous_offset_uV: i32,
+    /// offset the driver retained (== offset_uV unless clamped)
+    pub applied_uV: i32,
+    /// effective wall after SET, read back from the status entry's index 4.
+    /// The driver clamps this to `min(target, vbios_wall, vrm_max_wall)`, so
+    /// it may be below the requested target. 0 = no type-1 status entry /
+    /// driver hasn't refreshed yet (re-run get-volt-rails).
+    pub effective_wall_uV: i32,
+}
+
+/// Query the controllable clock-domain block (private ClockClient
+/// GetControl, RM 0x2080901b). The Blackwell XBar family
+/// (reverse/melonvolt/xbar.txt). Returns `None` where the driver doesn't
+/// expose the private interface.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiClkDomains;
+
+impl GpuOperation for QueryNvapiClkDomains {
+    type Output = Option<nvapi_hi::nvapi::ClockDomainControl>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiClkDomains
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target.nvapi()?.clk_domains_control().map_err(Error::from)
+    }
+}
+
+/// Detailed single-domain measure (private MEASURE_FREQ) — frequency plus
+/// the second sample's raw {counter, timestamp, extra} and the accepted
+/// protocol form (V1 0x10020 / V2 0x20020).
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiClkDomainFreqDetail {
+    pub domain_bit: u32,
+}
+
+impl GpuOperation for QueryNvapiClkDomainFreqDetail {
+    type Output = Option<nvapi_hi::nvapi::ClockDomainFreqDetail>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiClkDomainFreqDetail
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .clk_domain_freq_detail(self.domain_bit)
+            .map_err(Error::from)
+    }
+}
+
+/// Write one V/F curve point via the private ClockClient V/F-POINTS
+/// SetControl (ID 0xFEC00D04). DANGEROUS: snapshots the full control block,
+/// patches one record (mode 0 freq-offset / mode 1 reverse-volt), SETs, readbacks,
+/// restores on mismatch. `bank` 0 = V/F curve points, 1 = pstate-class;
+/// `idx` 0..2048.
+#[derive(Clone, Copy, Debug)]
+pub struct SetNvapiVfpPointPrivate {
+    pub bank: usize,
+    pub idx: usize,
+    pub freq_mode: bool,
+    pub value: u32,
+}
+
+impl GpuOperation for SetNvapiVfpPointPrivate {
+    type Output = Option<u32>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiVfpPointPrivate
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .set_vfp_point_private(self.bank, self.idx, self.freq_mode, self.value)
+            .map_err(Error::from)
+    }
+}
+
+/// Write a RANGE of V/F curve points with the same delta via the
+/// private V/F-POINTS SetControl (ID 0xFEC00D04). Single RMW cycle.
+#[derive(Clone, Copy, Debug)]
+pub struct SetNvapiVfpRangePrivate {
+    pub bank: usize,
+    pub start: usize,
+    pub end: usize,
+    pub delta_mhz: i16,
+}
+
+impl GpuOperation for SetNvapiVfpRangePrivate {
+    type Output = Option<()>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiVfpRangePrivate
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .set_vfp_range_private(self.bank, self.start, self.end, self.delta_mhz)
+            .map_err(Error::from)
+    }
+}
+
+/// Per-point variant of [`SetNvapiVfpRangePrivate`]: writes a DIFFERENT raw
+/// mode-1 value to each point in `[start, end]` in a single RMW cycle.
+/// `deltas.len()` must equal `end - start + 1`. Used by the CLI
+/// `--raw-converted` path which translates one MHz target through each
+/// point's own g(def) prior.
+#[derive(Clone, Debug)]
+pub struct SetNvapiVfpRangePerPointPrivate {
+    pub bank: usize,
+    pub start: usize,
+    pub end: usize,
+    pub deltas: Vec<i16>,
+}
+
+impl GpuOperation for SetNvapiVfpRangePerPointPrivate {
+    type Output = Option<()>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiVfpRangePrivate
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .set_vfp_range_per_point_private(self.bank, self.start, self.end, &self.deltas)
+            .map_err(Error::from)
+    }
+}
+
+/// Reset every present V/F curve point on `bank` to default by clearing its
+/// mode-0 (absolute kHz) override via the private V/F-POINTS SetControl
+/// (ID 0xFEC00D04) in a single RMW cycle. Unlike `ResetPublicVftableOffset` /
+/// `CoreResetVfp` (which route through the pstate20 or public Client
+/// VfPoints families and cannot reach private mode-0 state), this writes
+/// the same private SetControl that `SetNvapiVfpPointPrivate` uses.
+/// Returns `Some(count)` of points written, or `None` where the family
+/// is absent.
+#[derive(Clone, Copy, Debug)]
+pub struct ResetNvapiVfpPrivate {
+    pub bank: usize,
+    /// clear only points currently in this mode (0 = absolute kHz,
+    /// 1 = raw delta); None clears both
+    pub only_mode: Option<u8>,
+}
+
+impl GpuOperation for ResetNvapiVfpPrivate {
+    type Output = Option<usize>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::ResetNvapiVfpPrivate
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .reset_vfp_private(self.bank, self.only_mode.map(u32::from))
+            .map_err(Error::from)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// OC-gap wraps (2026-08-26 audit follow-up) — RE spec: docs/oc-gaps-re-spec.md
+// ---------------------------------------------------------------------------
+
+/// PowerMizer mode GET readback (0x76BFA16B, 4-arg RE'd R610.74). The
+/// readview the SetPerfLevel-based power-level SET never had. The SET twin
+/// (`SetPowerMizerInfo` 0x50016C78, distinct escape 0x700003A vs
+/// SetPerfLevel's 0x07000040) is medium-only — same NVCP dropdown, do not
+/// surface a parallel SET.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiPowerMizer {
+    /// 1|2 (AC/DC selector)
+    pub power_source: u32,
+}
+
+impl GpuOperation for QueryNvapiPowerMizer {
+    type Output = Option<u32>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiPowerMizer
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .power_mizer_mode(self.power_source)
+            .map_err(Error::from)
+    }
+}
+
+// NOTE (2026-08-26): QueryNvapiDynamicBoost withdrawn. 0xC80068A1 reads the
+// PCF controller table's platform status bytes (rec[+60]/rec[+61]), NOT the
+// PPAB enable written by 0x1504FC3D — live-probed both bytes = 2 with PPAB
+// enforcing (see nvapi-rs examples/probe_pcf_dynamic_boost.rs). The nvapi-rs
+// layer keeps the wrap; re-expose only when a true readback is identified.
+
+/// Core-voltage control-object GET (0xA91F88EB, escape 0x07000045) — half
+/// of the RMW pair with [`SetNvapiCoreVoltageControl`]. Distinct SET path
+/// from the VoltVoltRails µV-offset family.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiCoreVoltageControl;
+
+impl GpuOperation for QueryNvapiCoreVoltageControl {
+    type Output = Option<u32>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiCoreVoltageControl
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target.nvapi()?.core_voltage_control().map_err(Error::from)
+    }
+}
+
+/// Core-voltage control SET (0xDC2BD4A6, escape 0x07000044). A third
+/// voltage write path (distinct from VoltVoltRails offset and
+/// ClientVoltRails percent). Elevation-gated (-104 without admin).
+#[derive(Clone, Copy, Debug)]
+pub struct SetNvapiCoreVoltageControl {
+    pub value: u32,
+}
+
+impl GpuOperation for SetNvapiCoreVoltageControl {
+    type Output = Option<()>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiCoreVoltageControl
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .set_core_voltage_control(self.value)
+            .map_err(Error::from)
+    }
+}
+
+/// PMGR voltage-request arbiter GET (0x717648FD, escape 0x0700019F, v2
+/// struct 0x20030). Returns the 11 raw arbiter dwords.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiPmgrVoltageArbiter;
+
+impl GpuOperation for QueryNvapiPmgrVoltageArbiter {
+    type Output = Option<[u32; 11]>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiPmgrVoltageArbiter
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target.nvapi()?.pmgr_voltage_arbiter().map_err(Error::from)
+    }
+}
+
+/// PMGR voltage-request arbiter SET (0x9C4BB8D0). Elevation-gated. Prefer
+/// GET → patch → SET (raw dwords, semantics not yet calibrated).
+#[derive(Clone, Copy, Debug)]
+pub struct SetNvapiPmgrVoltageArbiter {
+    pub values: [u32; 11],
+}
+
+impl GpuOperation for SetNvapiPmgrVoltageArbiter {
+    type Output = Option<()>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiPmgrVoltageArbiter
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .set_pmgr_voltage_arbiter(&self.values)
+            .map_err(Error::from)
+    }
+}
+
+/// Rated-TDP readback trio (0xED2BEA09 / 0x87BD35EF / 0xFCBDF642). Returns
+/// `(control_mode, info_capabilities, status_raw[10])`.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiRatedTdp;
+
+impl GpuOperation for QueryNvapiRatedTdp {
+    type Output = Option<(u32, u8, [u32; 10])>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiRatedTdp
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target.nvapi()?.rated_tdp_readback().map_err(Error::from)
+    }
+}
+
+/// Background OC-scanner enable/disable (0x06DC7CE8, 72B struct 0x10048
+/// with the validated 9-byte feature GUID).
+#[derive(Clone, Copy, Debug)]
+pub struct SetNvapiBackgroundOcScanner {
+    pub enable: bool,
+}
+
+impl GpuOperation for SetNvapiBackgroundOcScanner {
+    type Output = Option<()>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiBackgroundOcScanner
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .oem_oc_scanner_set_background(self.enable)
+            .map_err(Error::from)
+    }
+}
+
+/// Query the last INCOMPLETE OC-scanner run's partial results
+/// (0xBE371D0A). `Ok(Some(()))` = call accepted (status-code semantics,
+/// like `OemOcScannerStatus`).
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiOcScannerIncomplete;
+
+impl GpuOperation for QueryNvapiOcScannerIncomplete {
+    type Output = Option<()>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiOcScannerIncomplete
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .oem_oc_scanner_incomplete_results()
+            .map_err(Error::from)
+    }
+}
+
+/// Temperature-simulation GET (`NvAPI_GPU_GetThermalSimulationMode`) —
+/// readback `(enable, temperature_celsius)` of the thermal-sim trio.
+/// Gated by the driver's Secured-Overrides "Temp faking allowed" flag.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiThermalSim;
+
+impl GpuOperation for QueryNvapiThermalSim {
+    type Output = Option<(bool, i32)>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiThermalSim
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target.nvapi()?.temp_sim().map_err(Error::from)
+    }
+}
+
+/// Temperature-simulation SET (Extended → basic fallback): fake the GPU
+/// temperature the driver sees. DANGEROUS research tool; requires the
+/// Secured-Overrides gate.
+#[derive(Clone, Copy, Debug)]
+pub struct SetNvapiThermalSim {
+    pub temperature_c: i32,
+}
+
+impl GpuOperation for SetNvapiThermalSim {
+    type Output = Option<()>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiThermalSim
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .set_temp_sim(self.temperature_c)
+            .map_err(Error::from)
+    }
+}
+
+/// Temperature-simulation disable (restore the real sensor reading).
+#[derive(Clone, Copy, Debug)]
+pub struct DisableNvapiThermalSim;
+
+impl GpuOperation for DisableNvapiThermalSim {
+    type Output = Option<()>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::DisableNvapiThermalSim
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target.nvapi()?.disable_temp_sim().map_err(Error::from)
+    }
+}
+
+// NOTE (2026-08-26): the PerfVfeEqu/PerfVfeVar ×4 query operations were
+// deliberately withdrawn from core/CLI/Python — the surface is not yet
+// calibrated enough to expose to users (equ-control records are
+// variable-length and remain raw). The nvapi-rs layer keeps the full
+// wrap + tests; re-expose here only after per-type field decoding lands.
+
+/// Batch-measure physical clocks for a set of domains via the V3
+/// MEASURE_FREQ (RM 0x20809006, magic 0x30038) — one RM round-trip per
+/// sample for the whole set, with per-domain V1/V2 fallback.
+#[derive(Clone, Debug)]
+pub struct QueryNvapiClkDomainFreqsBatch {
+    /// sequential domain indices (GPC=0, XBAR=1, SYS=2, MCLK=4, …)
+    pub domains: Vec<u32>,
+}
+
+impl GpuOperation for QueryNvapiClkDomainFreqsBatch {
+    type Output = Option<Vec<nvapi_hi::nvapi::ClockDomainFreq>>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiClkDomainFreqsBatch
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .clk_domain_freqs_batch(&self.domains)
+            .map_err(Error::from)
+    }
+}
+
+/// Query the private ClockClient V/F-POINTS read path (GetInfo 0x8895B510 →
+/// GetStatus 0x7FEE9032, RM 0x20809061/0x20809062) — the article's per-domain
+/// V/F curve family. Returns `None` where the driver doesn't expose the
+/// private interface. Units live-calibrated vs the public GPC VFP curve
+/// (see `nvapi::ClkVfPointPrivate`).
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiClkVfPoints;
+
+impl GpuOperation for QueryNvapiClkVfPoints {
+    type Output = Option<nvapi_hi::nvapi::ClkVfPointsPrivate>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiClkVfPoints
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target.nvapi()?.clk_vf_points_private().map_err(Error::from)
+    }
+}
+
+/// Read the private V/F-POINTS CONTROL override table (GetControl
+/// 0xDA025C3E, masks seeded from GetInfo): per-point mode (0 = absolute
+/// kHz offset / 1 = raw delta) + value — the direct readback of raw
+/// control values written by `SetNvapiVfpPointPrivate` & friends. Returns
+/// `None` where the driver doesn't expose the private interface.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiClkVfControl;
+
+impl GpuOperation for QueryNvapiClkVfControl {
+    type Output = Option<nvapi_hi::nvapi::ClkVfControlPrivate>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiClkVfControl
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .clk_vf_control_private()
+            .map_err(Error::from)
+    }
+}
+
+/// Measure one clock-domain's physical clock (private ClockClient
+/// MEASURE_FREQ, RM 0x20809006) via two-sample Δcounter/Δtimestamp.
+/// `domain_bit` is the sequential domain index (GPC=0, XBAR=1, SYS=2, MCLK=4).
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiClkDomainFreq {
+    pub domain_bit: u32,
+}
+
+impl GpuOperation for QueryNvapiClkDomainFreq {
+    type Output = Option<nvapi_hi::nvapi::ClockDomainFreq>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiClkDomainFreq
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .clk_domain_freq(self.domain_bit)
+            .map_err(Error::from)
+    }
+}
+
+/// Direct physical clock for one domain — the green-curve MEASURE path
+/// (ID 0x527FC458). One call returns `freq_khz` (no two-sample Δt + sleep).
+/// `domain_bit`: GPC=0, XBAR=1, SYS=2, MCLK=4, HOST=5. `freq_khz == 0` when
+/// the driver refuses / the domain isn't measurable through this interface.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiClkDomainFreqDirect {
+    pub domain_bit: u32,
+}
+
+impl GpuOperation for QueryNvapiClkDomainFreqDirect {
+    type Output = Option<nvapi_hi::nvapi::ClockDomainFreqDirect>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiClkDomainFreqDirect
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        // hi wrapper already folds NotSupported/NoImplementation → Ok(None).
+        target
+            .nvapi()?
+            .clk_domain_freq_direct(self.domain_bit)
+            .map_err(Error::from)
+    }
+}
+
+/// Write a signed kHz offset into one clock-domain's control record (private
+/// ClockClient SET_CONTROL, RM 0x2080d01c). DANGEROUS GPU clock write: the
+/// operation snapshots the full GetControl block, version-gates (magic
+/// 0x10964), patches a copy, SETs, readbacks, and restores on mismatch. If
+/// `temporary`, the snapshot is restored before returning (the article's
+/// reversible experiment recipe, xbar.txt:62-72).
+///
+/// No magnitude limit is enforced — the caller owns offset/range policy (the
+/// article bounds XBAR ±60000 kHz on GB202). The driver may reject or clamp
+/// the offset; the post-SET readback surfaces what was actually retained.
+#[derive(Clone, Copy, Debug)]
+#[allow(non_snake_case)] // kHz suffix matches the nvapi-rs field naming
+pub struct SetNvapiClkDomainOffset {
+    /// domain index / mask bit (XBAR=1)
+    pub domain_bit: u32,
+    /// signed kHz offset to write (0 = stock)
+    pub offset_kHz: i32,
+    /// which of the record's 8 value dwords to write (0-7; slot 0 is the
+    /// article's signed frequency offset, the rest are driver-opaque
+    /// range/voltage terms — A/B with MEASURE_FREQ to identify)
+    pub slot: u32,
+    /// if true, restore the pre-write snapshot before returning (safe
+    /// experiment mode); if false, persist the offset
+    pub temporary: bool,
+}
+
+impl GpuOperation for SetNvapiClkDomainOffset {
+    type Output = Option<NvapiClkDomainOffsetApplied>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiClkDomainOffset
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        // guard BEFORE the previous-value lookup below indexes the record's
+        // 8 value dwords — the medium layer checks too, but only after this
+        let slot = self.slot as usize;
+        if slot >= 8 {
+            return Err(Error::Custom(
+                "invalid slot: the clock-domain record has 8 value dwords (0-7)".to_string(),
+            ));
+        }
+        let gpu = target.nvapi()?;
+        // Capture the previous offset for the result, if the family is present.
+        #[allow(non_snake_case)] // kHz suffix matches the nvapi-rs field naming
+        let previous_kHz = gpu
+            .clk_domains_control()
+            .ok()
+            .flatten()
+            .and_then(|c| {
+                c.entries
+                    .iter()
+                    .find(|e| e.bit == self.domain_bit)
+                    .map(|e| e.values_kHz[slot])
+            })
+            .unwrap_or(0);
+        let applied = gpu
+            .set_clk_domain_offset(self.domain_bit, self.offset_kHz, self.slot, self.temporary)
+            .map_err(Error::from)?;
+        Ok(applied.map(|entry| NvapiClkDomainOffsetApplied {
+            bit: entry.bit,
+            entry_type: entry.entry_type,
+            slot: self.slot,
+            previous_kHz,
+            applied_kHz: entry.values_kHz[slot],
+            values_kHz: entry.values_kHz,
+            temporary_restored: self.temporary,
+        }))
+    }
+}
+
+/// Result of a successful clock-domain offset write.
+#[derive(Clone, Copy, Debug)]
+#[allow(non_snake_case)] // kHz suffix matches the nvapi-rs field naming
+pub struct NvapiClkDomainOffsetApplied {
+    /// domain index / mask bit
+    pub bit: u32,
+    /// record type byte (0x0A on offset-capable domains)
+    pub entry_type: u8,
+    /// value-dword slot that was written (0-7)
+    pub slot: u32,
+    /// slot value in effect before the write (kHz, semantics per slot)
+    pub previous_kHz: i32,
+    /// slot value the driver retained (== requested unless rejected/clamped)
+    pub applied_kHz: i32,
+    /// the record's full 8 value dwords after the write (driver-opaque slots)
+    pub values_kHz: [i32; 8],
+    /// whether the pre-write snapshot was restored (temporary mode)
+    pub temporary_restored: bool,
+}
+
+/// Set the D-Notifier (D0-notify) limit to a D level (1..5). Maps the CLI
+/// level to the signed driver code (-1=D1/Unlimited, 0..3=D2..D5) exactly as
+/// the ref tool's `[GPUHandle::setDNotifyLimit]` switch does, then calls the raw
+/// two-arg setter (NDA 0x48E0847D).
+#[derive(Clone, Copy, Debug)]
+pub struct SetNvapiDNotifier {
+    /// D level, 1..5.
+    pub level: u8,
+}
+
+impl SetNvapiDNotifier {
+    /// Map D level (1..5) to the signed driver D-index code the setter takes.
+    /// Returns `Err` for out-of-range levels.
+    fn driver_index(level: u8) -> Result<i32, Error> {
+        match level {
+            1 => Ok(-1),
+            2 => Ok(0),
+            3 => Ok(1),
+            4 => Ok(2),
+            5 => Ok(3),
+            _ => Err(Error::Custom(format!(
+                "D-Notifier level must be 1..5 (D1-D5), got {level}"
+            ))),
+        }
+    }
+}
+
+impl GpuOperation for SetNvapiDNotifier {
+    type Output = ();
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiDNotifier
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let didx = Self::driver_index(self.level)?;
+        target.nvapi()?.set_dnotify_limit(didx).map_err(Error::from)
+    }
+}
+
+/// Query the native P-State level table (the the ref tool `-pstate` GET listing) via
+/// the private PerfPstatesGetInfo (NDA 0x7B30AE0D): present P-States with their
+/// min/max clock for the given clock-domain (0=GPC/core by default; the ref tool
+/// resolves the GPC index via 0x57B5A5DF). Returns `None` where the driver
+/// doesn't expose the private interface. Clocks are converted kHz → MHz.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct QueryNvapiPStateLevels {
+    /// Clock-domain index (0=GPC/core default).
+    pub domain: usize,
+}
+
+impl GpuOperation for QueryNvapiPStateLevels {
+    type Output = Option<PStateLevelsInfo>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiPStateLevels
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        Ok(target
+            .nvapi()?
+            .pstate_levels_domain(self.domain)
+            .map_err(Error::from)?
+            .map(|r| PStateLevelsInfo {
+                pstates: r
+                    .pstates
+                    .iter()
+                    .map(|p| PStateLevelEntry {
+                        pstate: p.pstate,
+                        min_mhz: p.min_khz.map(|khz| khz as f64 / 1000.0),
+                        max_mhz: p.max_khz.map(|khz| khz as f64 / 1000.0),
+                    })
+                    .collect(),
+            }))
+    }
+}
+
+/// Query the set of P-State numbers currently locked (via
+/// PerfClientLimitsSetStatus 0x39442CFB), from the private
+/// ClientPStateLimitStatus (NDA 0x9962C97C). Returns `None` where the driver
+/// doesn't expose the private interface; an empty `Vec` means nothing locked.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiPStateLockStatus;
+
+impl GpuOperation for QueryNvapiPStateLockStatus {
+    type Output = Option<Vec<u8>>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiPStateLockStatus
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target.nvapi()?.pstate_lock_status().map_err(Error::from)
+    }
+}
+
+/// Set the native NVAPI P-State lock (the the ref tool `-pstate:<index>` SETTER) via
+/// PerfClientLimitsSetStatus (NDA 0x39442CFB). See [`NvapiPStateNativeLock`] for
+/// the lock shapes (reset / pstate-only / pstate+frequency).
+#[derive(Clone, Copy, Debug)]
+pub struct SetNvapiPStateNative {
+    pub lock: NvapiPStateNativeLock,
+}
+
+impl GpuOperation for SetNvapiPStateNative {
+    type Output = ();
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiPStateNative
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let lock = match self.lock {
+            NvapiPStateNativeLock::Reset => nvapi_hi::PStateNativeLock::Reset,
+            NvapiPStateNativeLock::PstateOnly { pstate } => {
+                nvapi_hi::PStateNativeLock::PstateOnly { pstate }
+            }
+            NvapiPStateNativeLock::PstateAndFreq { pstate, freq_khz } => {
+                nvapi_hi::PStateNativeLock::PstateAndFreq { pstate, freq_khz }
+            }
+        };
+        target.nvapi()?.set_pstate_native(lock).map_err(Error::from)
+    }
+}
+
+/// Set the GPU frequency perf-cap (the ref tool `-gpuclk:<MHz>` SETTER,
+/// PerfLimitsSetStatus NDA 0x32CA4983). Clamps the perf max/min frequency to
+/// a cap value — NOT an offset, NOT a P-state lock (see [`SetNvapiPStateNative`]).
+/// `freq_khz` is MHz × 1000; `Reset` clears the cap (`-gpuclk:-1`).
+#[derive(Clone, Copy, Debug)]
+pub struct SetNvapiPerfFreqCap {
+    pub cap: NvapiPerfFreqCap,
+}
+
+impl GpuOperation for SetNvapiPerfFreqCap {
+    type Output = ();
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiPerfFreqCap
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let cap = match self.cap {
+            NvapiPerfFreqCap::Reset => nvapi_hi::PerfFreqCap::Reset,
+            NvapiPerfFreqCap::Cap { max_khz, min_khz } => {
+                nvapi_hi::PerfFreqCap::Cap { max_khz, min_khz }
+            }
+        };
+        target.nvapi()?.set_perf_freq_cap(cap).map_err(Error::from)
+    }
+}
+
+/// Query every NVAPI target-temperature (温度墙) policy slot the driver exposes
+/// (private ClientThermalTarget GET-prime 0xC4554575). Returns one
+/// [`TargetTempPolicy`] per slot; empty on GPUs/driver paths that don't expose
+/// the table. Drives the `--nvapi` branch of `get-temp-thresholds` and
+/// lets callers discover which `policy_index` is the "GPU Target Temperature"
+/// wall (idx 2 on RTX 4060 Laptop) instead of hardcoding it.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiTargetTempPolicies;
+
+impl GpuOperation for QueryNvapiTargetTempPolicies {
+    type Output = Vec<TargetTempPolicy>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiTargetTempPolicies
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        Ok(target
+            .nvapi()?
+            .target_temperature_policies_with_info()
+            .map_err(Error::from)?
+            .into_iter()
+            .map(|entry| TargetTempPolicy {
+                policy_index: entry.policy_index,
+                celsius: entry.current,
+                min: entry.min,
+                default: entry.default,
+                max: entry.max,
+            })
+            .collect())
+    }
+}
+
+/// The auto-discovered target-temp policy index (private GetInfo 0x2F69F8E5):
+/// GPS index if the VBIOS exposes one, else the acoustics fallback (desktop =
+/// NVML AcousticCurr), else None. Lets the CLI tag the wall slot without
+/// hardcoding idx 2 or touching the crate-private `target.nvapi()`.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiTargetTempPolicyIndex;
+
+impl GpuOperation for QueryNvapiTargetTempPolicyIndex {
+    type Output = Option<usize>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiTargetTempPolicyIndex
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .target_temp_policy_index()
+            .map_err(Error::from)
+    }
+}
+
+/// Set one NVAPI target-temperature (温度墙) policy slot (private RMW:
+/// GET-prime 0xC4554575 + SET 0xE097144F). `policy_index` defaults to the
+/// auto-discovered slot (private GetInfo: GPS idx, else acoustics fallback) —
+/// pass one explicitly to override or probe writability of other slots.
+#[derive(Clone, Debug, Default)]
+pub struct SetNvapiTargetTemp {
+    pub celsius: f32,
+    pub policy_index: Option<usize>,
+}
+
+impl GpuOperation for SetNvapiTargetTemp {
+    type Output = ();
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiTargetTemp
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        // Default policy_index is auto-discovered via the private GetInfo
+        // (GPS idx, else acoustics fallback) rather than hardcoded. Falls back
+        // to 2 only if discovery itself fails (legacy path).
+        let idx = match self.policy_index {
+            Some(i) => i,
+            None => target
+                .nvapi()?
+                .target_temp_policy_index()
+                .map_err(Error::from)?
+                .unwrap_or(2),
+        };
+        target
+            .nvapi()?
+            .set_target_temperature(self.celsius, idx)
+            .map_err(Error::from)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct SetNvapiSensorLimits {
     pub limits: Vec<SensorThrottle>,
@@ -1136,15 +2931,15 @@ impl GpuOperation for ResetCoolerLevels {
 }
 
 #[derive(Clone, Debug)]
-pub struct ResetPstateClockOffsets {
+pub struct ResetPstateGlobalFreqOffset {
     pub offsets: Vec<(PState, ClockDomain)>,
 }
 
-impl GpuOperation for ResetPstateClockOffsets {
+impl GpuOperation for ResetPstateGlobalFreqOffset {
     type Output = ();
 
     fn kind(&self) -> OperationKind {
-        OperationKind::ResetPstateClockOffsets
+        OperationKind::ResetPstateGlobalFreqOffset
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
@@ -1414,15 +3209,15 @@ impl GpuOperation for QueryAutoBoost {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct SetAutoBoost {
+pub struct SetAutoboostStatus {
     pub enabled: bool,
 }
 
-impl GpuOperation for SetAutoBoost {
+impl GpuOperation for SetAutoboostStatus {
     type Output = ();
 
     fn kind(&self) -> OperationKind {
-        OperationKind::SetAutoBoost
+        OperationKind::SetAutoboostStatus
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
@@ -1431,15 +3226,15 @@ impl GpuOperation for SetAutoBoost {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct SetAutoBoostDefault {
+pub struct ResetAutoboostStatus {
     pub enabled: bool,
 }
 
-impl GpuOperation for SetAutoBoostDefault {
+impl GpuOperation for ResetAutoboostStatus {
     type Output = ();
 
     fn kind(&self) -> OperationKind {
-        OperationKind::SetAutoBoostDefault
+        OperationKind::ResetAutoboostStatus
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
@@ -1470,16 +3265,16 @@ impl GpuOperation for QueryApiRestriction {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct SetApiRestriction {
+pub struct SetAutoboostSupport {
     pub api_type: Api,
     pub restricted: bool,
 }
 
-impl GpuOperation for SetApiRestriction {
+impl GpuOperation for SetAutoboostSupport {
     type Output = ();
 
     fn kind(&self) -> OperationKind {
-        OperationKind::SetApiRestriction
+        OperationKind::SetAutoboostSupport
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
@@ -1555,7 +3350,7 @@ pub fn set_nvapi_vfp_curve_delta(
         })?;
         run(
             target,
-            SetVfpRangeDelta {
+            SetPublicVftableRangeOffset {
                 start,
                 end: point + vfp_set_range,
                 delta: KilohertzDelta(main_delta),
@@ -1564,7 +3359,7 @@ pub fn set_nvapi_vfp_curve_delta(
     } else {
         run(
             target,
-            SetVfpRangeDelta {
+            SetPublicVftableRangeOffset {
                 start: point,
                 end: point + vfp_set_range,
                 delta: KilohertzDelta(main_delta),
@@ -1581,7 +3376,7 @@ pub fn set_nvapi_vfp_curve_delta(
             })?;
             run(
                 target,
-                SetVfpRangeDelta {
+                SetPublicVftableRangeOffset {
                     start,
                     end,
                     delta: KilohertzDelta(ld),
