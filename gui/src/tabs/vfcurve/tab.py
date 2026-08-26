@@ -580,7 +580,9 @@ class VFCurveTab:
 
         ax.xaxis.set_major_formatter(FuncFormatter(x_format))
         ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _pos: f"{v / 1000.0:.1f}"))
-        ax.tick_params(colors="#cccccc", labelsize=6)
+        # tick marks grow INWARD from the spines (direction="in"); the
+        # numbers stay outside, so each axis reads number + inward bar
+        ax.tick_params(colors="#cccccc", labelsize=6, direction="in")
         for spine in ax.spines.values():
             spine.set_color("#555555")
         ax.grid(True, color="#333333", linewidth=0.5, alpha=0.7)
@@ -1515,7 +1517,11 @@ class VFCurveTab:
                 self._volt_unit_tick = tick
                 for label in ax.get_xticklabels():
                     if label.get_position()[0] == tick:
+                        # match the f/GHz caption: orange, one size up from
+                        # the plain tick digits (survives formatter redraws
+                        # — only the TEXT is regenerated, not style)
                         label.set_color("#e08020")
+                        label.set_fontsize(7)
                 break
 
         # Draw frequency lock visualization (after limits are known)
