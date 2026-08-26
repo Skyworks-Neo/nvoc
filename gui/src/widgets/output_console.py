@@ -60,7 +60,7 @@ class OutputConsole(ctk.CTkFrame):
         """Append text to the console (thread-safe) and keep only the last 100 lines."""
         self.append_batch([text])
 
-    def append_batch(self, texts: list) -> None:
+    def append_batch(self, texts: list[str]) -> None:
         """Append multiple chunks in ONE text-widget update.
 
         Each per-chunk append costs several Tcl round-trips plus see("end")
@@ -68,6 +68,8 @@ class OutputConsole(ctk.CTkFrame):
         insert/trim/see is ~150x cheaper for large bursts (e.g. streaming
         autoscan output).
         """
+        if not texts:
+            return
         with self._lock:
             self.textbox.configure(state="normal")
 

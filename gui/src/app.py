@@ -196,6 +196,7 @@ class App(ctk.CTk):
         # CLI output batching (see _on_cli_output)
         self._cli_output_buffer: List[str] = []
         self._cli_output_flush_id: Optional[str] = None
+        self._cli_output_lock = threading.Lock()
         # Post-native-action refresh chain coalescing
         self._refresh_chain_after_id: Optional[str] = None
         # Idle-time tab prebuild (see _prebuild_next_tab)
@@ -646,26 +647,19 @@ class App(ctk.CTk):
             self._refresh_gpu_list()
 
     def _on_cli_output(self, text: str):
-        """Thread-safe callback: buffer output and flush in batches.
+        """Buffer worker output and schedule one batched UI update."""
+        with self._cli_output_lock:
+            self._cli_output_buffer.append(text)
+            if self._cli_output_flush_id is None:
+                self._cli_output_flush_id = self.after(100, self._flush_cli_output)
 
-        Per-line after(0)+append costs several Tcl round-trips and a
-        see("end") relayout per line; batching bursts into one widget
-        update keeps streaming CLI output (autoscan) from monopolizing
-        the UI thread.
-        """
-        self._cli_output_buffer.append(text)
-        if self._cli_output_flush_id is None:
-            self._cli_output_flush_id = self.after(100, self._flush_cli_output)
-
-    def _flush_cli_output(self):
-        self._cli_output_flush_id = None
-        if not self._cli_output_buffer:
-            return
-        buffered, self._cli_output_buffer = self._cli_output_buffer, []
-        try:
-            self.console.append_batch(buffered)
-        except Exception:
-            pass
+    def _flush_cli_output(self) -> None:
+        with self._cli_output_lock:
+            self._cli_output_flush_id = None
+            if not self._cli_output_buffer:
+                return
+            buffered, self._cli_output_buffer = self._cli_output_buffer, []
+        self.console.append_batch(buffered)
 
     def run_background(self, name: str, task: Callable[[], Any]) -> Any:
         """Submit non-UI work to the central GUI task runner."""
@@ -1829,6 +1823,7 @@ class App(ctk.CTk):
         self.runner.shutdown()
         self.backend.shutdown()
         self.tasks.shutdown(wait=False, cancel_futures=True)
+        self._flush_cli_output()
         self.config.close()
 
         # 4. Destroy window synchronously
