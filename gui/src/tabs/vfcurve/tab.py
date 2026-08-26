@@ -553,20 +553,14 @@ class VFCurveTab:
         # axis labels one size smaller; ticks relabeled in V / GHz so the
         # numbers stay short (0.5 / 0.6 / ... and 0.5 / 1 / 1.5 / ...) —
         # plot data itself stays in mV / MHz
-        # x-axis unit caption sits OUTSIDE the axes, immediately right of
-        # the last voltage tick number (bottom-right corner, below axis)
-        ax.set_xlabel("Volt/V", color="#e08020", fontsize=7)
-        ax.xaxis.set_label_coords(1.0, -0.02)
-        ax.xaxis.label.set_ha("left")
-        ax.xaxis.label.set_va("top")
-        # y-axis unit caption directly ABOVE the topmost frequency number
-        # (right-aligned to the spine, outside the plot)
+        # y-axis unit caption hugs the spine's RIGHT side at the axis top
+        # (extending left would push it out of the figure)
         ax.text(
             0.0,
             1.02,
             "f/GHz",
             transform=ax.transAxes,
-            ha="right",
+            ha="left",
             va="bottom",
             color="#e08020",
             fontsize=7,
@@ -1496,6 +1490,13 @@ class VFCurveTab:
         f_pad = max(150, (f_max - f_min) * 0.18)
         ax.set_xlim(v_min - 1, v_max + 1)
         ax.set_ylim(f_min - f_pad, f_max + f_pad)
+        # the LAST voltage tick number gives its slot to the unit caption —
+        # a label past the last tick would fall out of the figure's right
+        # edge, so "Volt/V" replaces the number instead
+        xlabels = ax.get_xticklabels()
+        if xlabels:
+            xlabels[-1].set_text("Volt/V")
+            xlabels[-1].set_color("#e08020")
 
         # Draw frequency lock visualization (after limits are known)
         if self._freq_core_lock is not None:
