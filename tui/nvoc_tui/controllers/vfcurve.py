@@ -52,6 +52,11 @@ class VFCurveController(PaneController):
         # into an unbounded switch ping-pong (each hop = full plot render +
         # a Log thread worker that never completes under load).
         self._syncing = False
+        # P0 voltage-boundary display lines (deep red floor/ceiling + light
+        # red effective). Pure display — no drag/apply in the TUI. Cached
+        # once per GPU (hardware walls are immutable), like the GUI.
+        self._p0_bounds: dict | None = None
+        self._p0_bounds_gpu: str | None = None
 
     def auto_refresh_label(self) -> Text:
         state = "On" if self.app.config_data.vfcurve.auto_refresh else "Off"
@@ -193,6 +198,14 @@ class VFCurveController(PaneController):
         self.app.cache.vf_live_point = None
         self.render_plot()
         self._sync_curve_widgets()
+        # P0 voltage-boundary lines: queried once per GPU (cache hit on
+        # repeat refresh), so this never adds a per-tick NVAPI read.
+        try:
+            p0_gpu = self.app.selected_gpu_target()
+        except Exception:
+            p0_gpu = None
+        if p0_gpu is not None:
+            self._ensure_p0_bounds(p0_gpu)
         if self._active_curve in ("xbar", "host") and not self._direct_read_inflight:
             self._kick_direct_read(self._active_curve)
 
@@ -318,6 +331,25 @@ class VFCurveController(PaneController):
             (x_min, x_max), (y_min, y_max) = bounds
             plt.xlim(x_min, x_max)
             plt.ylim(y_min, y_max)
+        # P0 voltage-boundary vertical lines (display only). Deep red
+        # (floor = min_hold, ceiling = min(vbios, vrm)) are immutable per-GPU;
+        # light red is the live effective wall. All fall inside the curve's
+        # voltage range by design — no axis adjustment.
+        p0 = self._p0_bounds
+        if isinstance(p0, dict):
+            floor_uv = int(p0.get("min_hold_uV", 0) or 0)
+            if floor_uv > 0:
+                plt.vline(floor_uv / 1000.0, color="red")
+            vbios_uv = int(p0.get("vbios_wall_uV", 0) or 0)
+            vrm_uv = int(p0.get("vrm_max_wall_uV", 0) or 0)
+            walls = [w for w in (vbios_uv, vrm_uv) if w > 0]
+            if walls:
+                plt.vline(min(walls) / 1000.0, color="red")
+            eff_uv = int(p0.get("effective_wall_uV", 0) or 0)
+            if eff_uv > 0:
+                # plotext has no "light red" color name — "red+" resolves to
+                # bright red (256-color code 9), the closest light-red.
+                plt.vline(eff_uv / 1000.0, color="red+")
         plt.title("VF Curve")
         plt.xlabel("mV")
         plt.ylabel("MHz")
@@ -496,6 +528,42 @@ class VFCurveController(PaneController):
         if volt is None:
             return
         self.app.cache.vf_live_point = (volt, freq_mhz)
+        self.render_plot()
+
+    # ── P0 voltage-boundary display (deep red walls + light red effective) ──
+    def _ensure_p0_bounds(self, gpu: str) -> None:
+        """Query P0 voltage bounds once per GPU (hardware walls don't move).
+
+        Pure display in the TUI — no drag/apply. Short-circuits on a cache
+        hit so the per-tick auto-refresh never re-queries volt_rails.
+        """
+        if self._p0_bounds_gpu == gpu and self._p0_bounds is not None:
+            return
+        if self._p0_bounds_gpu != gpu:
+            self._p0_bounds = None
+        self._p0_bounds_gpu = gpu
+        if gpu is None:
+            return
+
+        def worker() -> None:
+            vr = self.app.native_service.query_volt_rails(gpu)
+            try:
+                self.app.call_from_thread(self._on_p0_bounds_loaded, gpu, vr)
+            except Exception:
+                pass
+
+        try:
+            self.app.native_service.submit_query(worker)
+        except Exception:
+            pass
+
+    def _on_p0_bounds_loaded(self, gpu: str, vr: dict | None) -> None:
+        if self._p0_bounds_gpu != gpu:
+            return  # a newer GPU switch superseded this query
+        p0 = None
+        if isinstance(vr, dict):
+            p0 = vr.get("p0") if isinstance(vr.get("p0"), dict) else None
+        self._p0_bounds = p0
         self.render_plot()
 
     def handle_button(self, button_id: str) -> bool:

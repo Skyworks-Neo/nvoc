@@ -50,6 +50,14 @@ class RejectingSubmitApp(FakeApp):
         raise RuntimeError("runner stopped")
 
 
+def test_native_backend_exposes_query_volt_rails() -> None:
+    """The VF Curve tab's P0 boundary lines call backend.query_volt_rails
+    directly (not just via query_mobile_limits). Guard against the method
+    going missing — without it the P0 lines silently never load."""
+    assert hasattr(NativeBackend, "query_volt_rails")
+    assert callable(getattr(NativeBackend, "query_volt_rails"))
+
+
 def test_list_gpus_uses_pynvoc_discovery() -> None:
     app = FakeApp()
     backend = NativeBackend(app)

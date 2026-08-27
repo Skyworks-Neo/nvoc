@@ -197,6 +197,31 @@ class VFCurveTab:
         # Direct-read inflight guard for xbar/host live-point polling.
         self._direct_read_inflight = False
 
+        # ── P0 voltage-boundary vertical lines ──
+        # Hardware walls (floor = min_hold, ceiling = min(vbios,vrm)) are
+        # immutable per-GPU → cached once on first load, never re-queried on
+        # subsequent refreshes. The effective wall (light red) is pushed in by
+        # the overclock panel after a Volt Limit apply, since it only changes
+        # on SET. None = not available / not drawn. All three lines fall
+        # inside the curve's voltage range by design — no axis adjustment.
+        self._p0_bounds: Optional[dict] = None
+        self._p0_bounds_gpu: Optional[str] = None
+        self._p0_effective_wall_mv: Optional[float] = None
+        # The light-red effective wall is draggable: a drag moves a *pending*
+        # dashed copy (clamp to [floor, ceiling]); on "Apply to GPU" the
+        # pending value is written via set_volt_rail_target and the returned
+        # effective wall updates the solid line. _p0_rail_bit is the rail the
+        # setter targets (resolved once from the volt_rails descriptor/mask).
+        self._pending_wall_mv: Optional[float] = None
+        self._dragging_wall: bool = False
+        self._p0_rail_bit: int = 0
+        self._pending_wall_line = None  # animated dashed axvline (blit overlay)
+        # Wall-drag handle: a triangle in the top figure margin (above the
+        # axes) whose tip points down at the wall line. Clicks on it have
+        # inaxes=None (it's outside the axes), so they never reach the
+        # point-select logic — zero interference with curve editing.
+        self._wall_handle = None  # animated Polygon patch (blit overlay)
+
         # ── Top: chart area (controls row + plot) ──
         self._chart_area = tk.Frame(self.frame, bg=_PANEL_BG)
         self._chart_area.pack(fill="x", expand=False, padx=10, pady=(10, 5))
@@ -458,6 +483,11 @@ class VFCurveTab:
             artists.append(self._sel_rect)
         if self._sel_points is not None:
             artists.append(self._sel_points)
+        if self._pending_wall_line is not None:
+            artists.append(self._pending_wall_line)
+        # NOTE: _wall_handle is NOT animated — it lives in the figure margin
+        # above ax.bbox, which the blit overlay cannot repaint. It is static,
+        # repainted on each full _redraw.
         for el in self._live_elements:
             artists.append(el)
         return artists
@@ -669,6 +699,8 @@ class VFCurveTab:
         self._line_default = None
         self._sel_rect = None
         self._sel_points = None
+        self._pending_wall_line = None
+        self._wall_handle = None
 
         if canvas is not None:
             try:
@@ -843,6 +875,10 @@ class VFCurveTab:
                     f"[GUI] VF curve loaded ({n} points on {self._active_curve.upper()}).\n"
                 )
             self._load_active_curve()
+            # P0 voltage-boundary lines: hardware walls are queried once per
+            # GPU (cache hit short-circuits here on subsequent refreshes), so
+            # this never adds a per-second NVAPI read to the auto-refresh.
+            self.ensure_p0_bounds(gpu)
 
         if self._refresh_curve_pending:
             self._refresh_curve_pending = False
@@ -981,6 +1017,103 @@ class VFCurveTab:
         # Sync the curve's mutated frequencies back (same list refs, no-op).
         self._rebuild_selector()
         self._apply_curve_data(curve.voltages, curve.frequencies, curve.defaults)
+
+    # ────────────────────────────────────────────
+    # P0 voltage-boundary lines (deep red walls + light red effective)
+    # ────────────────────────────────────────────
+    def ensure_p0_bounds(self, gpu: str) -> None:
+        """Query P0 voltage bounds once per GPU (hardware walls don't move).
+
+        Called the first time the VF curve loads for a given GPU. The full
+        ``p0`` dict is cached and the effective-wall line seeded; subsequent
+        refreshes short-circuit on the gpu key (no per-second NVAPI read).
+        The overclock panel's post-apply path calls
+        :meth:`update_p0_effective_wall` to move just the light-red line.
+        """
+        if self._p0_bounds_gpu == gpu and self._p0_bounds is not None:
+            return
+        # GPU changed (or first load): clear any stale line so the old GPU's
+        # effective wall isn't briefly shown over the new curve.
+        if self._p0_bounds_gpu != gpu:
+            self._p0_bounds = None
+            self._p0_effective_wall_mv = None
+            self._pending_wall_mv = None
+        self._p0_bounds_gpu = gpu
+
+        def _worker():
+            try:
+                vr = self.app.backend.query_volt_rails(gpu)
+            except Exception:
+                vr = None
+            self.app.after(0, lambda: self._on_p0_bounds_loaded(gpu, vr))
+
+        self.app.run_background("vfcurve-p0-bounds", _worker)
+
+    @staticmethod
+    def _resolve_rail_bit(volt_rail: dict) -> int:
+        """Pick the VoltRails rail bit for set_volt_rail_target.
+
+        Mirrors the overclock panel's ``_resolve_volt_rail_bit``: first rail
+        descriptor's ``rail_bit`` when exposed, else the lowest set bit of
+        ``rail_mask``. Single-rail mobile GPUs (4060 Laptop, mask 0x1) → 0.
+        """
+        descs = volt_rail.get("rail_descriptors")
+        if isinstance(descs, list) and descs:
+            first = descs[0]
+            if isinstance(first, dict) and first.get("rail_bit") is not None:
+                try:
+                    return int(first["rail_bit"])
+                except (TypeError, ValueError):
+                    pass
+        mask = volt_rail.get("rail_mask")
+        if isinstance(mask, str) and mask:
+            try:
+                value = int(mask, 16)
+                return (value & -value).bit_length() - 1
+            except ValueError:
+                pass
+        return 0
+
+    def _on_p0_bounds_loaded(self, gpu: str, vr) -> None:
+        if self._cleaned_up:
+            return
+        # A newer GPU switch may have superseded this query — drop it.
+        if self._p0_bounds_gpu != gpu:
+            return
+        if not isinstance(vr, dict):
+            self._p0_bounds = None
+            self._p0_effective_wall_mv = None
+            self._redraw()
+            return
+        p0 = vr.get("p0") if isinstance(vr.get("p0"), dict) else None
+        if not isinstance(p0, dict):
+            self._p0_bounds = None
+            self._p0_effective_wall_mv = None
+            self._redraw()
+            return
+        self._p0_bounds = p0
+        self._p0_rail_bit = self._resolve_rail_bit(vr)
+        eff = int(p0.get("effective_wall_uV", 0) or 0)
+        self._p0_effective_wall_mv = (eff / 1000.0) if eff > 0 else None
+        self._redraw()
+
+    def update_p0_effective_wall(self, effective_wall_uV: int) -> None:
+        """Push a new effective wall (light-red line) after a Volt Limit apply.
+
+        Hardware walls (floor/ceiling) are untouched — they don't move. Only
+        the effective wall tracks a SET; the overclock panel calls this from
+        its ``update_mobile_limits`` tail once the refreshed status lands.
+        Any pending drag value is cleared — the applied value supersedes it.
+        """
+        if self._cleaned_up:
+            return
+        eff = int(effective_wall_uV or 0)
+        mv = (eff / 1000.0) if eff > 0 else None
+        if mv == self._p0_effective_wall_mv and self._pending_wall_mv is None:
+            return
+        self._p0_effective_wall_mv = mv
+        self._pending_wall_mv = None
+        self._redraw()
 
     def _switch_active_curve(self, curve_id: str):
         """Select which curve drag/keyboard/apply target — point on rect btn."""
@@ -1306,6 +1439,10 @@ class VFCurveTab:
         # the active curve's current line is animated (animated=True) so the
         # drag/keyboard/wheel fast-edit path can blit just it.
         self._curve_lines = {}
+        # ax.clear() above destroyed the static artists/patches; drop the
+        # stale references so the _draw_*_handle calls below recreate them.
+        self._pending_wall_line = None
+        self._wall_handle = None
         active_colors = _CURVE_COLORS.get(self._active_curve, _CURVE_COLORS["gpc"])
         active_label = _CURVE_META.get(self._active_curve, _CURVE_META["gpc"])["label"]
 
@@ -1574,6 +1711,87 @@ class VFCurveTab:
                     zorder=5,
                 )
 
+        # ── P0 voltage-boundary vertical lines ──
+        # Deep red (solid): hardware floor (min_hold) + ceiling
+        # min(vbios_wall, vrm_max_wall) — immutable per-GPU, cached once.
+        # Light red (solid): effective wall — live, pushed by the overclock
+        # panel after a Volt Limit apply. All three fall inside the curve's
+        # voltage range by design, so no axis adjustment is needed. Labels
+        # are rotated 90° to survive narrow charts; zorder sits above the
+        # curves (2-4) but below the locked crosshair (5.5-7.5).
+        p0 = self._p0_bounds
+        if isinstance(p0, dict):
+            floor_uv = int(p0.get("min_hold_uV", 0) or 0)
+            if floor_uv > 0:
+                floor_mv = floor_uv / 1000.0
+                ax.axvline(
+                    x=floor_mv,
+                    color="#8b0000",
+                    linewidth=1.2,
+                    linestyle="-",
+                    alpha=0.8,
+                    zorder=4.2,
+                )
+                ax.text(
+                    floor_mv,
+                    f_max - (f_max - f_min) * 0.02,
+                    " P0 floor",
+                    color="#d96666",
+                    fontsize=6,
+                    alpha=0.85,
+                    ha="left",
+                    va="top",
+                    zorder=5,
+                    rotation=90,
+                )
+            vbios_uv = int(p0.get("vbios_wall_uV", 0) or 0)
+            vrm_uv = int(p0.get("vrm_max_wall_uV", 0) or 0)
+            walls = [w for w in (vbios_uv, vrm_uv) if w > 0]
+            if walls:
+                ceil_mv = min(walls) / 1000.0
+                ax.axvline(
+                    x=ceil_mv,
+                    color="#8b0000",
+                    linewidth=1.2,
+                    linestyle="-",
+                    alpha=0.8,
+                    zorder=4.2,
+                )
+                ax.text(
+                    ceil_mv,
+                    f_max - (f_max - f_min) * 0.02,
+                    " P0 ceiling ",
+                    color="#d96666",
+                    fontsize=6,
+                    alpha=0.85,
+                    ha="right",
+                    va="top",
+                    zorder=5,
+                    rotation=90,
+                )
+        if self._p0_effective_wall_mv is not None:
+            eff_mv = self._p0_effective_wall_mv
+            ax.axvline(
+                x=eff_mv,
+                color="#ff6b6b",
+                linewidth=1.0,
+                linestyle="-",
+                alpha=0.75,
+                zorder=4.1,
+            )
+            ax.text(
+                eff_mv,
+                f_min + (f_max - f_min) * 0.02,
+                " P0 eff volt lim ",
+                color="#ff9999",
+                fontsize=6,
+                alpha=0.8,
+                ha="right",
+                va="bottom",
+                zorder=5,
+                rotation=90,
+            )
+
         # Keep margins in sync with _create_chart (see the note there) —
         # re-applying the old 0.13 here would re-create the left gutter
         self.fig.subplots_adjust(left=0.062, right=0.995, top=0.92, bottom=0.12)
@@ -1584,7 +1802,114 @@ class VFCurveTab:
         self._live_marker = None
         self._live_text = None
         self._draw_live_point(call_draw_idle=False)
+        self._draw_pending_wall(call_draw_idle=False)
+        self._draw_wall_handle(call_draw_idle=False)
         self.canvas.draw_idle()
+
+    def _draw_pending_wall(self, call_draw_idle: bool = True):
+        """Draw (or hide) the pending wall — the dashed light-red vline a
+        drag moves before "Apply to GPU" writes it. It lives in the blit
+        overlay (animated) so a drag can move it without a full _redraw,
+        mirroring the live-point crosshair pattern.
+        """
+        if self._pending_wall_mv is None:
+            self._hide_pending_wall()
+            if call_draw_idle:
+                self._blit_animated()
+            return
+        mv = self._pending_wall_mv
+        if self._pending_wall_line is not None:
+            self._pending_wall_line.set_xdata([mv, mv])
+            self._pending_wall_line.set_visible(True)
+        else:
+            self._pending_wall_line = self.ax.axvline(
+                x=mv,
+                color="#ff6b6b",
+                linewidth=1.2,
+                linestyle="--",
+                alpha=0.85,
+                zorder=4.15,
+                animated=True,
+            )
+        if call_draw_idle:
+            self._blit_animated()
+
+    def _hide_pending_wall(self) -> None:
+        if self._pending_wall_line is not None:
+            try:
+                self._pending_wall_line.set_visible(False)
+            except Exception:
+                # Artist may be stale/removed during redraw churn.
+                pass
+
+    def _draw_wall_handle(self, call_draw_idle: bool = True):
+        """Position the wall-drag triangle in the top figure margin.
+
+        A downward-pointing triangle sits just above the axes top spine, its
+        tip at the wall's x. Clicks on it land outside the axes (inaxes=None),
+        so they never enter the point-select logic — the triangle is the sole
+        drag affordance for the light-red wall. Tracks ``_pending_wall_mv``
+        when a drag is in progress, else the applied effective wall.
+
+        NOT animated: it lives in the figure margin above the axes, outside
+        ``ax.bbox``, so the blit overlay (which only repaints ax.bbox) cannot
+        reach it. It is a static artist repainted on each full ``_redraw``,
+        which is fine — it only moves when the wall moves, and a wall move
+        already triggers a redraw.
+        """
+        mv = self._pending_wall_mv
+        if mv is None:
+            mv = self._p0_effective_wall_mv
+        if mv is None or self.ax is None or self.fig is None:
+            self._hide_wall_handle()
+            if call_draw_idle:
+                self._blit_animated()
+            return
+        import matplotlib.patches as mpatches
+        from matplotlib.transforms import blended_transform_factory
+
+        trans = blended_transform_factory(self.ax.transData, self.fig.transFigure)
+        # Half-width in DATA mV so the triangle keeps a stable visual width
+        # as the x-axis zooms (~6‰ of the curve's voltage span, ≥4 mV).
+        if self._voltages and len(self._voltages) >= 2:
+            span = self._voltages[-1] - self._voltages[0]
+            hw = max(4.0, span * 0.006)
+        else:
+            hw = 8.0
+        # Tip down at the axes top (fig fraction 0.925); base at the figure
+        # top margin (0.995). The triangle straddles the axes top spine.
+        verts = [(mv, 0.925), (mv - hw, 0.995), (mv + hw, 0.995)]
+        if self._wall_handle is not None:
+            self._wall_handle.set_xy(verts)
+            self._wall_handle.set_visible(True)
+        else:
+            self._wall_handle = mpatches.Polygon(
+                verts,
+                closed=True,
+                transform=trans,
+                facecolor="#ff6b6b",
+                edgecolor="white",
+                linewidth=0.8,
+                alpha=0.9,
+                zorder=15,
+            )
+            # The triangle lives in the figure margin ABOVE the axes bbox;
+            # the default axes clip would erase it. Disable clipping so it
+            # renders outside the axes.
+            self._wall_handle.set_clip_on(False)
+            self.ax.add_patch(self._wall_handle)
+        # Static artist: a full _redraw already calls canvas.draw_idle() which
+        # repaints it into the figure buffer. No blit needed here.
+        if call_draw_idle:
+            self.canvas.draw_idle()
+
+    def _hide_wall_handle(self) -> None:
+        if self._wall_handle is not None:
+            try:
+                self._wall_handle.set_visible(False)
+            except Exception:
+                # Artist may be stale/removed during redraw churn.
+                pass
 
     # ────────────────────────────────────────────
     # Mouse interaction
@@ -1597,7 +1922,66 @@ class VFCurveTab:
         idx = int(self._np().argmin(self._np().abs(arr - x_data)))
         return idx
 
+    def _hit_wall_handle(self, event) -> bool:
+        """True when a click lands on the wall-drag triangle (the handle in
+        the top figure margin). The handle lives outside the axes, so its
+        clicks have ``inaxes=None`` and never reach the point-select logic —
+        this is the sole entry point for a wall drag. Uses the handle's
+        display bbox, so the hit area tracks the triangle exactly.
+        """
+        if self._wall_handle is None or event.x is None or event.y is None:
+            return False
+        try:
+            bbox = self._wall_handle.get_window_extent()
+        except Exception:
+            return False
+        if bbox is None or bbox.width <= 0 or bbox.height <= 0:
+            return False
+        return bbox.x0 <= event.x <= bbox.x1 and bbox.y0 <= event.y <= bbox.y1
+
+    def _wall_clamp_bounds(self) -> Tuple[Optional[float], Optional[float]]:
+        """(lo_mV, hi_mV) the pending wall drag is clamped to.
+
+        The effective wall may be dragged BELOW the P0 min_hold floor (the
+        driver allows undervolting below it), so the lower bound is the plot's
+        left x-edge (or a hard 450 mV floor as a safety backstop), NOT the P0
+        floor. The upper bound stays the hardware ceiling
+        ``min(vbios_wall, vrm_max_wall)`` — the driver would clamp a SET
+        above it anyway. Returns (None, None) when no p0 bounds are cached
+        (best-effort unclamped; the driver clamps on SET).
+        """
+        p0 = self._p0_bounds
+        if not isinstance(p0, dict):
+            return None, None
+        # Lower bound: the plot's left x-edge, but never below 450 mV.
+        lo = 450.0
+        try:
+            xlim_lo = self.ax.get_xlim()[0]
+            if xlim_lo is not None:
+                lo = max(450.0, float(xlim_lo))
+        except Exception:
+            pass
+        vbios_uv = int(p0.get("vbios_wall_uV", 0) or 0)
+        vrm_uv = int(p0.get("vrm_max_wall_uV", 0) or 0)
+        walls = [w for w in (vbios_uv, vrm_uv) if w > 0]
+        hi = (min(walls) / 1000.0) if walls else None
+        return lo, hi
+
     def _on_mouse_press(self, event):
+        # Wall-drag handle lives ABOVE the axes (in the top figure margin),
+        # so a click on it has inaxes=None. Handle it before the inaxes guard
+        # below so the point-select logic is never entered for a handle grab.
+        if event.button == 1 and self._hit_wall_handle(event):
+            self._mouse_pressed = True
+            self._dragging_wall = True
+            wall_mv = self._pending_wall_mv
+            if wall_mv is None:
+                wall_mv = self._p0_effective_wall_mv
+            if wall_mv is not None:
+                self._pending_wall_mv = wall_mv
+                self._draw_pending_wall()
+            return
+
         if event.inaxes != self.ax or not self._voltages:
             return
 
@@ -1636,6 +2020,17 @@ class VFCurveTab:
                 # (the dashboard poll's crosshair blit would otherwise contend
                 # with the drag's blit over the cached background).
                 self._flush_pending_live_point()
+            if self._dragging_wall:
+                self._dragging_wall = False
+                # Keep _pending_wall_mv — it stays as a dashed line until the
+                # user clicks "Apply to GPU", which writes it via
+                # set_volt_rail_target and clears the pending state.
+                if self._pending_wall_mv is not None:
+                    self.app.console.append(
+                        f"[GUI] P0 wall pending: {self._pending_wall_mv:.1f} mV "
+                        f"(press Apply to GPU to write).\n"
+                    )
+                return
             if self._dragging:
                 self._dragging = False
                 self._drag_start_y = None
@@ -1655,6 +2050,23 @@ class VFCurveTab:
 
     def _on_mouse_move(self, event):
         if not self._voltages:
+            return
+
+        if self._dragging_wall and event.x is not None:
+            # The drag handle is above the axes (inaxes=None during the drag),
+            # so recover the data-x from the display pixel rather than using
+            # event.xdata (which is None outside the axes).
+            try:
+                mv = float(self.ax.transData.inverted().transform((event.x, 0.0))[0])
+            except Exception:
+                return
+            lo, hi = self._wall_clamp_bounds()
+            if lo is not None:
+                mv = max(lo, min(hi, mv))
+            if mv != self._pending_wall_mv:
+                self._pending_wall_mv = mv
+                self._draw_pending_wall()
+                self._draw_wall_handle()
             return
 
         if (
@@ -2761,6 +3173,18 @@ class VFCurveTab:
             self.app.console.append("[GUI] Invalid Delta (MHz) value.\n")
             return
 
+        # Consume a pending wall drag (if any). A wall apply shares the
+        # "Apply to GPU" button with VFP point deltas: when there is no VFP
+        # edit (delta == 0), the wall is applied alone; otherwise it is
+        # prepended to the VFP apply lambda so both write in one action.
+        pending_wall = self._pending_wall_mv
+        self._pending_wall_mv = None
+        wall_only = pending_wall is not None and target_delta_mhz == 0
+        if wall_only:
+            self._apply_wall_target(pending_wall)
+            self._redraw()
+            return
+
         n = len(self._frequencies)
         start = max(0, min(start, n - 1))
         end = max(0, min(end, n - 1))
@@ -2799,10 +3223,18 @@ class VFCurveTab:
                 f"to {self._active_curve.upper()} {start}–{end}…\n"
             )
 
-            def apply_groups(native, gpu=gpu, groups=groups) -> str:
+            def apply_groups(
+                native,
+                gpu=gpu,
+                groups=groups,
+                pending_wall=pending_wall,
+                rail_bit=self._p0_rail_bit,
+            ) -> str:
                 applied = 0
                 failed = 0
                 messages = []
+                if pending_wall is not None:
+                    messages.append(self._apply_wall_inline(native, gpu, pending_wall, rail_bit))
                 for frm, to, dkz in groups:
                     try:
                         native.set_vfp_range_delta(gpu, frm, to, dkz)
@@ -2848,7 +3280,12 @@ class VFCurveTab:
             deltas_khz=deltas_khz,
             start=start,
             curve_id=curve.curve_id,
+            pending_wall=pending_wall,
+            rail_bit=self._p0_rail_bit,
         ) -> str:
+            wall_msg = ""
+            if pending_wall is not None:
+                wall_msg = self._apply_wall_inline(native, gpu, pending_wall, rail_bit) + "\n"
             # 1) Try mode-0 (kHz frequency offset) per point.
             try:
                 for offset, dkz in enumerate(deltas_khz):
@@ -2857,7 +3294,7 @@ class VFCurveTab:
                     )
                     if isinstance(r, dict) and r.get("supported") is False:
                         raise RuntimeError("private VFP family unsupported")
-                return (
+                return wall_msg + (
                     f"Successfully applied private mode-0 offsets to {curve_id.upper()} "
                     f"({len(deltas_khz)} pts)."
                 )
@@ -2875,7 +3312,7 @@ class VFCurveTab:
                 r = native.clk_vf_delta_for_target_mhz(def_mhz, tgt_mhz, class_name)
                 d = r.get("delta") if isinstance(r, dict) else None
                 if d is None:
-                    return (
+                    return wall_msg + (
                         f"raw-converted translation failed at def={def_mhz} MHz "
                         f"({curve_id.upper()}); apply aborted."
                     )
@@ -2885,8 +3322,8 @@ class VFCurveTab:
                 gpu, bank, base, last, raw_deltas
             )
             if isinstance(r2, dict) and r2.get("supported") is False:
-                return f"private VFP write unsupported on {curve_id.upper()}."
-            return (
+                return wall_msg + f"private VFP write unsupported on {curve_id.upper()}."
+            return wall_msg + (
                 f"Successfully applied private raw-converted offsets to {curve_id.upper()} "
                 f"({len(raw_deltas)} pts)."
             )
@@ -2896,6 +3333,72 @@ class VFCurveTab:
             apply_private,
             on_finished=lambda _rc: self.app.after(0, self._refresh_curve),
         )
+
+    # ── P0 wall apply (drag → Apply to GPU) ──
+    _WALL_STEP_MV = 2.5  # LCM of 5 mV (30/40-series) and 12.5 mV (10/20-series)
+
+    def _snap_wall_mv(self, mv: float) -> float:
+        """Snap a free-continuous drag value to the 2.5 mV rail grid."""
+        return round(mv / self._WALL_STEP_MV) * self._WALL_STEP_MV
+
+    @staticmethod
+    def _format_wall_result(target_mv: float, result: object) -> str:
+        """Console message from a set_volt_rail_target result dict."""
+        if not isinstance(result, dict):
+            return f"P0 wall target {target_mv:g} mV: applied (no readback)."
+        if result.get("supported") is False:
+            return f"P0 wall target {target_mv:g} mV: unsupported."
+        eff = result.get("effective_wall_uV", 0)
+        eff_mv = (int(eff) / 1000.0) if eff else target_mv
+        return (
+            f"P0 wall target {target_mv:g} mV → effective {eff_mv:g} mV "
+            f"(clamped to min(target, vbios_wall, vrm_max_wall))."
+        )
+
+    def _apply_wall_inline(self, native, gpu: str, pending_mv: float, rail_bit: int) -> str:
+        """Write a pending wall target from inside an apply lambda (worker
+        thread). Returns a console message and schedules the effective-line
+        update on the UI thread. Best-effort: a failure is logged, not
+        raised, so a combined wall+VFP apply still completes the VFP half.
+        """
+        target_mv = self._snap_wall_mv(pending_mv)
+        try:
+            r = native.set_volt_rail_target(gpu, rail_bit, target_mv, None)
+        except Exception as exc:
+            return f"Warning: P0 wall target {target_mv:g} mV failed: {exc}"
+        eff = 0
+        if isinstance(r, dict):
+            eff = int(r.get("effective_wall_uV", 0) or 0)
+        eff_mv = (eff / 1000.0) if eff > 0 else target_mv
+        self.app.after(0, lambda em=eff_mv: self._on_wall_applied(em))
+        return self._format_wall_result(target_mv, r)
+
+    def _apply_wall_target(self, mv: float) -> None:
+        """Apply ONLY a pending wall (no VFP edit) via set_volt_rail_target."""
+        gpu = self.app.selected_gpu_target()
+        if gpu is None:
+            self.app.console.append("[GUI] No GPU selected.\n")
+            return
+        target_mv = self._snap_wall_mv(mv)
+        rail_bit = self._p0_rail_bit
+
+        def apply_wall(
+            native, gpu=gpu, rail_bit=rail_bit, target_mv=target_mv
+        ) -> str:
+            return self._apply_wall_inline(native, gpu, target_mv, rail_bit)
+
+        self.app.console.append(
+            f"[GUI] Applying P0 wall target {target_mv:g} mV…\n"
+        )
+        self.app.run_native_action("apply P0 volt-rail target", apply_wall)
+
+    def _on_wall_applied(self, eff_mv: float) -> None:
+        """Update the solid effective line after a wall SET lands."""
+        if self._cleaned_up:
+            return
+        self._p0_effective_wall_mv = eff_mv
+        self._pending_wall_mv = None
+        self._redraw()
 
     def _reset_vfp(self):
         """Reset the active curve to default (selected-curve semantics).

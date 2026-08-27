@@ -154,6 +154,22 @@ class NativeService:
             except Exception:
                 return None
 
+    def query_volt_rails(self, gpu: str) -> dict | None:
+        """Private VoltRails family (rail mask + P0 voltage bounds).
+
+        Returns the pynvoc ``query_volt_rails`` dict (with a ``p0`` sub-dict
+        of floor/ceiling/effective walls) or ``None`` on a transient error.
+        Best-effort wake like the other private reads. Mirrors the GUI backend.
+        """
+        try:
+            return self._pynvoc().query_volt_rails(gpu)
+        except Exception:
+            self._force_wake(gpu)
+            try:
+                return self._pynvoc().query_volt_rails(gpu)
+            except Exception:
+                return None
+
     def query_mobile_limits(self, gpu: str) -> dict:
         """Fetch the mobile power/thermal control surface (all NVAPI).
 

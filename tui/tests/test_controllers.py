@@ -1239,3 +1239,85 @@ def test_overclock_format_volt_rail_result_messages() -> None:
         OverclockController._format_volt_rail_result(1050.0, {"applied": True})
         == "Successfully applied Volt Limit 1050 mV."
     )
+
+
+class _RecordingPlt(_FakePlt):
+    """_FakePlt that records vline coordinates for assertion."""
+
+    def __init__(self) -> None:
+        self.vlines: list[float] = []
+
+    def vline(self, coordinate, color=None, xside=None) -> None:
+        self.vlines.append(float(coordinate))
+
+
+def _vfcurve_controller_with_plot() -> tuple[VFCurveController, _RecordingPlt]:
+    app = FakeApp()
+    app.widgets = _selector_widgets()
+    plt = _RecordingPlt()
+    app.widgets["#vf-plot"] = SimpleNamespace(plt=plt, refresh=lambda: None)
+    controller = VFCurveController(app)
+    controller._curves = {
+        "gpc": CurveData(
+            "gpc",
+            voltages=[700.0, 800.0, 900.0, 1000.0, 1100.0],
+            frequencies=[1400.0, 1500.0, 1600.0, 1700.0, 1800.0],
+            defaults=[1400.0, 1500.0, 1600.0, 1700.0, 1800.0],
+        )
+    }
+    controller._curve_visible = {"gpc": True}
+    controller._active_curve = "gpc"
+    app.native_service.submit_query = lambda job: None
+    return controller, plt
+
+
+def test_vfcurve_render_plot_draws_p0_boundary_vlines() -> None:
+    controller, plt = _vfcurve_controller_with_plot()
+    # Inject cached P0 bounds directly (as if a query had landed).
+    controller._p0_bounds = {
+        "min_hold_uV": 625_000,
+        "effective_wall_uV": 1_005_000,
+        "vbios_wall_uV": 0,
+        "vrm_max_wall_uV": 1_200_000,
+    }
+
+    controller.render_plot()
+
+    # floor (625), ceiling (1200), effective (1005) — three vlines.
+    assert 625.0 in plt.vlines
+    assert 1200.0 in plt.vlines
+    assert 1005.0 in plt.vlines
+    assert len(plt.vlines) == 3
+
+
+def test_vfcurve_render_plot_skips_p0_vlines_when_absent() -> None:
+    controller, plt = _vfcurve_controller_with_plot()
+    controller._p0_bounds = None
+
+    controller.render_plot()
+
+    # No P0 vlines (the live-point/lock vlines may still be present; the P0
+    # set is empty here because no bounds are cached).
+    assert 625.0 not in plt.vlines
+    assert 1200.0 not in plt.vlines
+
+
+def test_vfcurve_ensure_p0_bounds_caches_per_gpu() -> None:
+    app = FakeApp()
+    app.widgets = _selector_widgets()
+    controller = VFCurveController(app)
+    submitted: list[object] = []
+    app.native_service.submit_query = lambda job: submitted.append(job)
+    app.native_service.query_volt_rails = lambda gpu: {
+        "p0": {"min_hold_uV": 625_000, "effective_wall_uV": 1_005_000,
+               "vbios_wall_uV": 0, "vrm_max_wall_uV": 1_200_000}
+    }
+
+    controller._ensure_p0_bounds("GPU0")
+    assert len(submitted) == 1
+    submitted[0]()  # run worker → _on_p0_bounds_loaded
+    assert controller._p0_bounds is not None
+
+    # Same GPU again → cache hit, no new submission.
+    controller._ensure_p0_bounds("GPU0")
+    assert len(submitted) == 1

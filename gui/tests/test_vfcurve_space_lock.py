@@ -95,6 +95,13 @@ def make_tab(api: str, start: int = 1, end: int = 1) -> tuple[VFCurveTab, FakeAp
     tab._freq_mem_lock = None
     tab._freq_core_lock_backend = None
     tab._freq_mem_lock_backend = None
+    tab._p0_bounds = None
+    tab._p0_bounds_gpu = None
+    tab._p0_effective_wall_mv = None
+    tab._pending_wall_mv = None
+    tab._dragging_wall = False
+    tab._p0_rail_bit = 0
+    tab._pending_wall_line = None
     tab.freq_lock_api_var = FakeVar(api)
     tab.adj_start_var = FakeVar("0")
     tab.adj_end_var = FakeVar("0")
