@@ -36,8 +36,9 @@ mod nvoc_service {
         enum_wrappers::device::{TemperatureSensor, TemperatureThreshold},
     };
     use nvoc_core::{
-        BackendSet, GpuId, NvapiLockedVoltageTarget, ResetVfpFrequencyLock, ResetPublicVftableGpcLock,
-        SetGpcVoltLock, discover_targets, find_matching_vfp_point, run as run_gpu_operation,
+        BackendSet, GpuId, NvapiLockedVoltageTarget, ResetPublicVftableGpcLock,
+        ResetVfpFrequencyLock, SetGpcVoltLock, discover_targets, find_matching_vfp_point,
+        run as run_gpu_operation,
     };
     use std::{
         cmp::{max, min},

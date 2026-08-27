@@ -6,11 +6,11 @@ use super::result::{
     ApiRestrictionState, AppliedValue, AutoBoostState, BatchReport, ClockOffset, DNotifierInfo,
     DNotifierLevel, DisplayInfo, EdidData, FanCurvePointReadout, FanCurveReadout, FanInfo,
     NvapiCoolerInfoEntry, NvapiFanRpmResult, NvapiPStateNativeLock, NvapiPerfFreqCap,
-    OperationKind, OperationReport, OvervoltApplied,
-    PStateLevelEntry, PStateLevelsInfo, PowerModeStatus, PstateBaseVoltage, PstateClockRange,
-    SupportedApplicationClocks, TargetOutcome, TargetTempPolicy, TdpTempLimits,
-    TemperatureThreshold, ThermalSensorReading, ThrottleReason, ViolationEntry,
-    ViolationStatusReport, VoltageBoostState, VoltageFrequencyCheck,
+    OperationKind, OperationReport, OvervoltApplied, PStateLevelEntry, PStateLevelsInfo,
+    PowerModeStatus, PstateBaseVoltage, PstateClockRange, SupportedApplicationClocks,
+    TargetOutcome, TargetTempPolicy, TdpTempLimits, TemperatureThreshold, ThermalSensorReading,
+    ThrottleReason, ViolationEntry, ViolationStatusReport, VoltageBoostState,
+    VoltageFrequencyCheck,
 };
 use super::target::GpuTarget;
 use super::types::{NvapiLockedVoltageTarget, VfpResetDomain};
@@ -301,7 +301,7 @@ impl GpuOperation for SetPowerMode {
 }
 
 /// Read the GPU fan-curve table (`ClientFanPoliciesGetControl` NDA
-/// 0xE543C540, struct magic 0x200DC). RE'd from GPUMon.exe pollFanCurve —
+/// 0xE543C540, struct magic 0x200DC). RE'd from ref tool's pollFanCurve —
 /// one snapshot holds up to 4 curve slots × 3 (temp, RPM) points. Curves
 /// are typically settable/readable on desktops only; mobile boards drive
 /// their fans through the EC.
@@ -340,7 +340,7 @@ impl GpuOperation for GetFanCurves {
     }
 }
 
-/// Write one fan-curve slot via the GPUMon RMW protocol (GET snapshot →
+/// Write one fan-curve slot via the ref tool RMW protocol (GET snapshot →
 /// patch the target slot's 3 (temp, RPM) points → SET the whole table back).
 /// Driver enforces strict monotonicity across all lanes.
 #[derive(Clone, Debug)]
@@ -380,10 +380,10 @@ impl GpuOperation for SetFanCurve {
     }
 }
 
-/// Reset one fan-curve slot to factory (GPUMon.exe `GPUHandle::resetFanCurve`:
+/// Reset one fan-curve slot to factory (ref tool 2's `GPUHandle::resetFanCurve`:
 /// FanPolicySetControl NDA 0x2B2A2A45, struct magic 0x214AC — GET the policy
 /// block, OR `1 << index` into the +0x08 reset bitmask, SET). This is
-/// GPUMon's NVAPI fan reset; unlike the public RestoreCoolerSettings it works
+/// ref tool 2's NVAPI fan reset; unlike the public RestoreCoolerSettings it works
 /// on GPUs whose user-mode cooler table isn't exposed (desktop 3060/2070
 /// reject RestoreCoolerSettings with NOT_SUPPORTED).
 #[derive(Clone, Copy, Debug)]
@@ -412,7 +412,7 @@ impl GpuOperation for ResetFanCurve {
 }
 
 /// Toggle fan stop / zero-RPM for a curve slot (FanArbiterSet NDA 0x44CD3014,
-/// struct magic 0x10144, enable bit0 at +0x28). RE'd from GPUMon.exe
+/// struct magic 0x10144, enable bit0 at +0x28). RE'd from ref tool
 /// setFanCurve's tail call.
 #[derive(Clone, Copy, Debug)]
 pub struct SetFanStop {
@@ -441,7 +441,7 @@ impl GpuOperation for SetFanStop {
 }
 
 /// Query per-cooler info via the private FanCoolerGetInfo (NDA 0x65CE5BFC).
-/// Returns one entry per cooler with its index. RE'd from GPUMon setFanSim —
+/// Returns one entry per cooler with its index. RE'd from ref tool's setFanSim —
 /// the private path, richer than public GetCoolerSettings.
 #[derive(Clone, Copy, Debug)]
 pub struct QueryNvapiCoolerInfo;
@@ -454,7 +454,11 @@ impl GpuOperation for QueryNvapiCoolerInfo {
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
-        let infos = target.nvapi()?.inner().cooler_info_private().map_err(Error::from)?;
+        let infos = target
+            .nvapi()?
+            .inner()
+            .cooler_info_private()
+            .map_err(Error::from)?;
         Ok(infos
             .into_iter()
             .map(|c| NvapiCoolerInfoEntry {
@@ -470,7 +474,7 @@ impl GpuOperation for QueryNvapiCoolerInfo {
 }
 
 /// Set fan speed by RPM via the private FanCoolerSetControl (NDA 0xEB44E8AA).
-/// RE'd from GPUMon.exe setFanSim: GET control snapshot → patch the target
+/// RE'd from ref tool's setFanSim: GET control snapshot → patch the target
 /// cooler's enable+level per its type → SET back. `rpm=None` disables
 /// simulation (returns to auto/driver control).
 #[derive(Clone, Copy, Debug)]
@@ -1370,7 +1374,7 @@ impl GpuOperation for ResetForcePstate {
     }
 }
 
-/// Battery Boost 2.0 enable/disable (NDA 0xD27D0629). GPUMonCmd `-bb`.
+/// Battery Boost 2.0 enable/disable (0xD27D0629).
 /// Mobile-only feature.
 #[derive(Clone, Copy, Debug)]
 pub struct SetBb2Active {
@@ -1392,7 +1396,7 @@ impl GpuOperation for SetBb2Active {
     }
 }
 
-/// Whisper Mode 2.0 enable/disable (NDA 0xD27D0629). GPUMonCmd `-wm`.
+/// Whisper Mode 2.0 enable/disable (NDA 0xD27D0629).
 /// Mobile-only feature.
 #[derive(Clone, Copy, Debug)]
 pub struct SetWm2Active {
@@ -1414,7 +1418,7 @@ impl GpuOperation for SetWm2Active {
     }
 }
 
-/// Whisper Mode 2.0 acoustic mode (NDA 0xD27D0629). GPUMonCmd `-wmMode`.
+/// Whisper Mode 2.0 acoustic mode (NDA 0xD27D0629).
 /// 0=Quieter, 1=Quiet, 2=Balanced.
 #[derive(Clone, Copy, Debug)]
 pub struct SetWm2Mode {
@@ -2459,7 +2463,10 @@ impl GpuOperation for QueryNvapiClkVfControl {
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
-        target.nvapi()?.clk_vf_control_private().map_err(Error::from)
+        target
+            .nvapi()?
+            .clk_vf_control_private()
+            .map_err(Error::from)
     }
 }
 

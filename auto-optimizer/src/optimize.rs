@@ -4,8 +4,8 @@ use crate::oc_scanner::{autoscan_gpuboostv3, autoscan_legacy};
 use clap::ArgMatches;
 use nvoc_cli_common::color::stylize_warning;
 use nvoc_core::{
-    Error, GpuTarget, QueryGpuInfo, ResetPstateGlobalFreqOffset, ResetPublicVftableOffset, ResetPublicVftableGpcLock,
-    VfpResetDomain, run,
+    Error, GpuTarget, QueryGpuInfo, ResetPstateGlobalFreqOffset, ResetPublicVftableGpcLock,
+    ResetPublicVftableOffset, VfpResetDomain, run,
 };
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, IsTerminal, Write};

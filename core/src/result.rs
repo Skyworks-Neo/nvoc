@@ -194,13 +194,13 @@ pub enum OperationKind {
     /// fans through the EC).
     GetFanCurves,
     /// Write one fan-curve slot (ClientFanPoliciesSetControl NDA 0xC181947A,
-    /// struct magic 0x200DC) via the GPUMon RMW protocol — GET snapshot,
+    /// struct magic 0x200DC) via the ref tool RMW protocol — GET snapshot,
     /// patch the target slot, SET the whole table back. Desktop-only.
     SetFanCurve,
     /// Reset one fan-curve slot to factory (FanPolicySetControl NDA
     /// 0x2B2A2A45, struct magic 0x214AC): GET the policy block, OR
     /// `1 << curve_index` into the +0x08 reset bitmask, SET. This is
-    /// GPUMon's NVAPI fan reset — works where the public
+    /// ref tool 2's NVAPI fan reset — works where the public
     /// RestoreCoolerSettings is rejected with NOT_SUPPORTED (desktop
     /// 3060/2070).
     ResetFanCurve,
@@ -212,7 +212,7 @@ pub enum OperationKind {
     QueryNvapiCoolerInfo,
     /// Set fan speed by RPM via the private FanCoolerSetControl (NDA
     /// 0xEB44E8AA): RMW the control block, patch enable+level per cooler
-    /// type. RE'd from GPUMon setFanSim.
+    /// type. RE'd from ref tool setFanSim.
     SetFanRpm,
 }
 
@@ -324,7 +324,7 @@ pub struct PowerLimits {
 }
 
 /// One temperature→RPM point of a GPU fan curve (`ClientFanPolicies` table,
-/// struct magic `0x200DC`, RE'd from GPUMon `DialogFanCurve`). Desktop-only:
+/// struct magic `0x200DC`, RE'd from ref tool `DialogFanCurve`). Desktop-only:
 /// mobile boards drive fans through the EC, not NVAPI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FanCurvePointReadout {

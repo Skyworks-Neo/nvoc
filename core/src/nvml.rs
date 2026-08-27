@@ -131,10 +131,7 @@ pub fn query_nvml_power_limit_watts(nvml: &Nvml, gpu_id: u32) -> Option<f32> {
 
 /// Query bidirectional real-time PCIe bandwidth (TX, RX) in MiB/s, as a thin
 /// wrapper over [`query_nvml_pcie_telemetry`].
-pub fn query_nvml_pcie_throughput_mibps(
-    nvml: &Nvml,
-    gpu_id: u32,
-) -> (Option<f32>, Option<f32>) {
+pub fn query_nvml_pcie_throughput_mibps(nvml: &Nvml, gpu_id: u32) -> (Option<f32>, Option<f32>) {
     let t = query_nvml_pcie_telemetry(nvml, gpu_id);
     (t.tx_mibps, t.rx_mibps)
 }

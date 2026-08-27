@@ -25,8 +25,8 @@ use super::scan_support::{handle_lock_vfp, handle_test_voltage_limits, print_sca
 use clap::ArgMatches;
 use nvoc_core::{
     ClockDomain, Error, GpuOcParams, GpuTarget, KilohertzDelta, PState, QueryGpuInfo,
-    QueryGpuStatus, QueryVfpPointVoltage, SetPublicVftablePointOffset, VfPoint, VfPointType, fetch_gpu_type,
-    set_nvapi_pstate_clock_offsets,
+    QueryGpuStatus, QueryVfpPointVoltage, SetPublicVftablePointOffset, VfPoint, VfPointType,
+    fetch_gpu_type, set_nvapi_pstate_clock_offsets,
 };
 use std::sync::Arc;
 

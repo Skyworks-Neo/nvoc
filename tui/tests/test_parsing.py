@@ -245,14 +245,16 @@ def test_load_vf_curve(tmp_path: Path) -> None:
 
 
 def test_vf_curve_points_to_series_uses_frequency_as_missing_default() -> None:
-    voltages, frequencies, defaults = vf_curve_points_to_series([
-        {
-            "voltage_uv": 800000,
-            "frequency_khz": 1800000,
-            "default_frequency_khz": 1750000,
-        },
-        {"voltage_uv": 825000, "frequency_khz": 1840000},
-    ])
+    voltages, frequencies, defaults = vf_curve_points_to_series(
+        [
+            {
+                "voltage_uv": 800000,
+                "frequency_khz": 1800000,
+                "default_frequency_khz": 1750000,
+            },
+            {"voltage_uv": 825000, "frequency_khz": 1840000},
+        ]
+    )
 
     assert voltages == [800.0, 825.0]
     assert frequencies == [1800.0, 1840.0]

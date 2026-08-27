@@ -92,11 +92,13 @@ class FakeApp:
         log_output: bool = True,
         allow_wake: bool = True,
     ) -> None:
-        self.query_calls.append((
-            command_name,
-            callback,
-            {"log_output": log_output, "allow_wake": allow_wake},
-        ))
+        self.query_calls.append(
+            (
+                command_name,
+                callback,
+                {"log_output": log_output, "allow_wake": allow_wake},
+            )
+        )
 
     def write_log(self, text: str) -> None:
         self.logs.append(text)
@@ -161,12 +163,14 @@ class FakeNative:
         self.direct_freq_khz: int = 0
 
     def query_public_vftable(self, gpu, domain, infer_missing_default):
-        self.calls.append((
-            "query_public_vftable",
-            gpu,
-            domain,
-            infer_missing_default,
-        ))
+        self.calls.append(
+            (
+                "query_public_vftable",
+                gpu,
+                domain,
+                infer_missing_default,
+            )
+        )
         return [
             {
                 "index": 7,
@@ -186,39 +190,45 @@ class FakeNative:
         return {"domain_bit": domain_bit, "freq_khz": self.direct_freq_khz}
 
     def set_vfp_point_private(self, gpu, bank, index, delta_khz, freq_mode):
-        self.calls.append((
-            "set_vfp_point_private",
-            gpu,
-            bank,
-            index,
-            delta_khz,
-            freq_mode,
-        ))
+        self.calls.append(
+            (
+                "set_vfp_point_private",
+                gpu,
+                bank,
+                index,
+                delta_khz,
+                freq_mode,
+            )
+        )
         if self.raise_on_set_vfp_point_private is not None:
             raise self.raise_on_set_vfp_point_private
         return {"applied": True}
 
     def set_vfp_range_per_point_private(self, gpu, bank, start, end, deltas):
-        self.calls.append((
-            "set_vfp_range_per_point_private",
-            gpu,
-            bank,
-            start,
-            end,
-            list(deltas),
-        ))
+        self.calls.append(
+            (
+                "set_vfp_range_per_point_private",
+                gpu,
+                bank,
+                start,
+                end,
+                list(deltas),
+            )
+        )
         return {"applied": True}
 
     def clk_vf_delta_for_target_mhz(self, def_mhz, delta_mhz, class_name):
         # Mirrors the call semantics used by the GUI/TUI raw-converted path:
         # the 2nd argument is the desired MHz offset (not an absolute
         # target); the raw f-offset scales it 10×.
-        self.calls.append((
-            "clk_vf_delta_for_target_mhz",
-            def_mhz,
-            delta_mhz,
-            class_name,
-        ))
+        self.calls.append(
+            (
+                "clk_vf_delta_for_target_mhz",
+                def_mhz,
+                delta_mhz,
+                class_name,
+            )
+        )
         return {"delta": int(delta_mhz * 10)}
 
     def set_power_limit(self, gpu, backend, value):
@@ -234,14 +244,16 @@ class FakeNative:
         self.calls.append(("set_legacy_voltage_delta", gpu, delta_uv, pstate))
 
     def set_clk_domain_offset(self, gpu, domain_bit, offset_khz, flags, unknown):
-        self.calls.append((
-            "set_clk_domain_offset",
-            gpu,
-            domain_bit,
-            offset_khz,
-            flags,
-            unknown,
-        ))
+        self.calls.append(
+            (
+                "set_clk_domain_offset",
+                gpu,
+                domain_bit,
+                offset_khz,
+                flags,
+                unknown,
+            )
+        )
         return {"applied": True, "applied_kHz": offset_khz}
 
     def set_volt_rail_target(self, gpu, rail_bit, target_mv, unknown):
@@ -1179,11 +1191,13 @@ def test_overclock_mobile_apply_skips_volt_limit_when_unavailable() -> None:
 
 
 def test_overclock_volt_limit_bounds_from_p0_walls() -> None:
-    bounds = OverclockController._volt_limit_bounds_from_p0({
-        "vbios_wall_uV": 1_085_000,
-        "vrm_max_wall_uV": 1_100_000,
-        "effective_wall_uV": 1_060_000,
-    })
+    bounds = OverclockController._volt_limit_bounds_from_p0(
+        {
+            "vbios_wall_uV": 1_085_000,
+            "vrm_max_wall_uV": 1_100_000,
+            "effective_wall_uV": 1_060_000,
+        }
+    )
     # min(VBIOS, VRM) = 1085 mV snapped down to the 2.5 mV grid; position
     # 1060 mV is already on-grid.
     assert bounds == (300.0, 1085.0, 1060.0)
@@ -1198,9 +1212,11 @@ def test_overclock_volt_limit_bounds_from_p0_walls() -> None:
 
 def test_overclock_resolve_volt_rail_bit() -> None:
     assert (
-        OverclockController._resolve_volt_rail_bit({
-            "rail_descriptors": [{"rail_bit": 2}],
-        })
+        OverclockController._resolve_volt_rail_bit(
+            {
+                "rail_descriptors": [{"rail_bit": 2}],
+            }
+        )
         == 2
     )
     assert OverclockController._resolve_volt_rail_bit({"rail_mask": "0x5"}) == 0

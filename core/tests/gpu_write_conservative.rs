@@ -3,7 +3,7 @@ use nvml_wrapper::enum_wrappers::device::PerformanceState;
 use nvml_wrapper::enums::device::FanControlPolicy;
 use nvoc_core::{
     BackendSet, Error, GpuId, GpuTarget, QueryClockOffset, QueryPowerLimits, QueryPstates,
-    ResetLegacyApplicationFreqLock, ResetFanSpeed, ResetFreqLock, ResetPublicVftableOffset,
+    ResetFanSpeed, ResetFreqLock, ResetLegacyApplicationFreqLock, ResetPublicVftableOffset,
     ResetVfpFrequencyLock, SetClockOffset, SetFanSpeed, SetLockedClocks, SetPowerLimit,
     SetPstateClockOffset, TargetInventory, VfpResetDomain, discover_targets, parse_nvml_pstate,
     run,

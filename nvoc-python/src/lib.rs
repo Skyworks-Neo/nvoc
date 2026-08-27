@@ -3,34 +3,34 @@ use nvapi_hi::{
 };
 use nvml_wrapper::enum_wrappers::device::{Api, PerformanceState};
 use nvoc_core::{
-    BackendSet, CheckVoltageFrequency, ClearEdid, ConvertEnum, GpuTarget, GpuType,
-    NvapiPerfFreqCap, QueryApiRestriction, QueryAutoBoost, QueryDisplays, QueryDomainVfpPoints,
-    QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings, QueryGpuStatus,
-    QueryLegacyCoreOvervoltRanges, QueryLegacyP0CoreMaxVoltageDelta, QueryNvapiClkDomainFreq,
-    QueryNvapiClkDomainFreqDirect, QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomains,
-    QueryNvapiClkVfPoints,
-    QueryNvapiDNotifier, QueryNvapiTargetTempPolicies, QueryNvapiTgpWattRange, QueryNvapiVoltRails,
-    QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks,
-    QueryTdpTempLimits, QueryTemperatureThresholds, QueryThrottleReasons, QueryVfpPointVoltage,
-    QueryVoltageBoost, ResetLegacyApplicationFreqLock, ResetCoolerLevels, ResetFanCurve, ResetFanSpeed,
-    SetFanStop, SetFanRpm,
-    ResetFreqLock, ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetNvapiTgpWatt,
-    ResetLegacyGpcRailOvervoltLimit, ResetPstateGlobalFreqOffset, ResetPublicVftableOffset, ResetVfpFrequencyLock,
-    ResetPublicVftableGpcLock, ResetNvapiVfpPrivate, SetAutoboostSupport, SetApplicationsClocks, SetAutoboostStatus,
-    ResetAutoboostStatus,
-    SetClockOffset, SetCoolerLevels, SetDomainVfpDeltas, SetEdid, SetFanSpeed, SetLegacyClocks,
-    SetLockedClocks, SetNvapiClkDomainOffset, SetNvapiDNotifier, SetNvapiDynamicBoost,
-    SetNvapiPerfFreqCap, SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiSensorLimits,
-    SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvapiVfpPointPrivate, SetNvapiVfpRangePerPointPrivate,
+    BackendSet, CheckVoltageFrequency, ClearEdid, ClkVfDomainClass, ConvertEnum,
+    DisableNvapiThermalSim, GpuTarget, GpuType, NvapiPerfFreqCap, QueryApiRestriction,
+    QueryAutoBoost, QueryDisplays, QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo,
+    QueryGpuSettings, QueryGpuStatus, QueryLegacyCoreOvervoltRanges,
+    QueryLegacyP0CoreMaxVoltageDelta, QueryNvapiClkDomainFreq, QueryNvapiClkDomainFreqDirect,
+    QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomains, QueryNvapiClkVfPoints,
+    QueryNvapiCoreVoltageControl, QueryNvapiDNotifier, QueryNvapiOcScannerIncomplete,
+    QueryNvapiPmgrVoltageArbiter, QueryNvapiPowerMizer, QueryNvapiRatedTdp,
+    QueryNvapiTargetTempPolicies, QueryNvapiTgpWattRange, QueryNvapiThermalSim,
+    QueryNvapiVoltRails, QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates,
+    QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
+    QueryThrottleReasons, QueryVfpPointVoltage, QueryVoltageBoost, ResetAutoboostStatus,
+    ResetCoolerLevels, ResetFanCurve, ResetFanSpeed, ResetFreqLock, ResetLegacyApplicationFreqLock,
+    ResetLegacyGpcRailOvervoltLimit, ResetNvapiPowerLimits, ResetNvapiSensorLimits,
+    ResetNvapiTgpWatt, ResetNvapiVfpPrivate, ResetPstateGlobalFreqOffset,
+    ResetPublicVftableGpcLock, ResetPublicVftableOffset, ResetVfpFrequencyLock,
+    SetApplicationsClocks, SetAutoboostStatus, SetAutoboostSupport, SetClockOffset,
+    SetCoolerLevels, SetDomainVfpDeltas, SetEdid, SetFanRpm, SetFanSpeed, SetFanStop,
+    SetGpcVoltLock, SetLegacyClocks, SetLockedClocks, SetNvapiBackgroundOcScanner,
+    SetNvapiClkDomainOffset, SetNvapiCoreVoltageControl, SetNvapiDNotifier, SetNvapiDynamicBoost,
+    SetNvapiPerfFreqCap, SetNvapiPerfLevelLock, SetNvapiPmgrVoltageArbiter, SetNvapiPowerLimits,
+    SetNvapiPstateLock, SetNvapiSensorLimits, SetNvapiTargetTemp, SetNvapiTgpWatt,
+    SetNvapiThermalSim, SetNvapiVfpPointPrivate, SetNvapiVfpRangePerPointPrivate,
     SetNvapiVoltRailOffset, SetNvapiVoltRailTarget, SetNvmlPstateLock, SetPowerLimit,
-    SetPstateBaseVoltage, SetPstateClockOffset, SetTemperatureLimit, SetVfpFrequencyLock,
-    SetPublicVftablePointOffset, SetPublicVftableRangeOffset, SetGpcVoltLock, SetVoltageBoost, VfpResetDomain,
-    ClkVfDomainClass, VfPointType, clk_vf_delta_for_target, detect_gpu_type, discover_targets,
+    SetPstateBaseVoltage, SetPstateClockOffset, SetPublicVftablePointOffset,
+    SetPublicVftableRangeOffset, SetTemperatureLimit, SetVfpFrequencyLock, SetVoltageBoost,
+    VfPointType, VfpResetDomain, clk_vf_delta_for_target, detect_gpu_type, discover_targets,
     fetch_gpu_type, nvml_pstate_to_str, parse_nvml_fan_control_policy, run, try_parse_nvml_pstate,
-    QueryNvapiPowerMizer, QueryNvapiCoreVoltageControl,
-    SetNvapiCoreVoltageControl, QueryNvapiPmgrVoltageArbiter, SetNvapiPmgrVoltageArbiter,
-    QueryNvapiRatedTdp, SetNvapiBackgroundOcScanner, QueryNvapiOcScannerIncomplete,
-    QueryNvapiThermalSim, SetNvapiThermalSim, DisableNvapiThermalSim, SetNvapiPerfLevelLock,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -2195,7 +2195,7 @@ fn set_volt_rail_target(
 /// ref tool `-gpuclk:<MHz>` SETTER). Clamp the perf max/min frequency.
 /// `max_mhz`/`min_mhz` are in MHz; pass -1 for both to reset the cap. The
 /// GUI/CLI speak MHz; the underlying NVAPI struct takes kHz (×1000). Either
-/// bound may be 0 to leave that side unset (GPUMon sets both to the same cap).
+/// bound may be 0 to leave that side unset (ref tool sets both to the same cap).
 #[pyfunction]
 fn set_perf_freq_cap(py: Python<'_>, gpu: &str, max_mhz: i32, min_mhz: i32) -> PyResult<Py<PyAny>> {
     let cap = if max_mhz < 0 && min_mhz < 0 {
@@ -2413,7 +2413,11 @@ fn query_clk_domain_freq(py: Python<'_>, gpu: &str, domain_bit: u32) -> PyResult
 /// or the domain isn't measurable through this interface → caller should not
 /// draw a live point. Returns `{"supported": false}` when the family is absent.
 #[pyfunction]
-fn query_private_freq_domain_status(py: Python<'_>, gpu: &str, domain_bit: u32) -> PyResult<Py<PyAny>> {
+fn query_private_freq_domain_status(
+    py: Python<'_>,
+    gpu: &str,
+    domain_bit: u32,
+) -> PyResult<Py<PyAny>> {
     let value = with_target(gpu, "nvapi", |target| {
         let freq = run(target, QueryNvapiClkDomainFreqDirect { domain_bit })
             .map_err(to_py_err)?
@@ -2574,7 +2578,14 @@ fn get_power_mizer(py: Python<'_>, gpu: &str, power_source: u32) -> PyResult<Py<
         Ok(match out {
             Some(mode) => value_object([
                 ("mode", Value::from(mode)),
-                ("mode_name", Value::from(if mode == 6 { "Adaptive" } else { "Maximum Performance" })),
+                (
+                    "mode_name",
+                    Value::from(if mode == 6 {
+                        "Adaptive"
+                    } else {
+                        "Maximum Performance"
+                    }),
+                ),
             ]),
             None => value_object([("supported", Value::from(false))]),
         })
@@ -2611,7 +2622,10 @@ fn set_core_voltage_control(py: Python<'_>, gpu: &str, value: u32) -> PyResult<P
             .map_err(to_py_err)?
             .output;
         Ok(match out {
-            Some(()) => value_object([("applied", Value::from(true)), ("value", Value::from(value))]),
+            Some(()) => value_object([
+                ("applied", Value::from(true)),
+                ("value", Value::from(value)),
+            ]),
             None => value_object([("supported", Value::from(false))]),
         })
     })?;
@@ -2685,7 +2699,10 @@ fn set_background_oc_scanner(py: Python<'_>, gpu: &str, enable: bool) -> PyResul
             .map_err(to_py_err)?
             .output;
         Ok(match out {
-            Some(()) => value_object([("applied", Value::from(true)), ("enable", Value::from(enable))]),
+            Some(()) => value_object([
+                ("applied", Value::from(true)),
+                ("enable", Value::from(enable)),
+            ]),
             None => value_object([("supported", Value::from(false))]),
         })
     })?;
@@ -2750,7 +2767,10 @@ fn reset_temp_sim(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
             .map_err(to_py_err)?
             .output;
         Ok(match out {
-            Some(()) => value_object([("applied", Value::from(true)), ("disabled", Value::from(true))]),
+            Some(()) => value_object([
+                ("applied", Value::from(true)),
+                ("disabled", Value::from(true)),
+            ]),
             None => value_object([("supported", Value::from(false))]),
         })
     })?;
@@ -2858,7 +2878,7 @@ fn clk_vf_delta_for_target_mhz(
         other => {
             return Err(invalid_value(format!(
                 "invalid class {other:?}; expected 'graphics'/'gpc' or 'fabric'/'xbar'/'host'"
-            )))
+            )));
         }
     };
     let delta = clk_vf_delta_for_target(def_mhz, target_mhz, class_enum);
@@ -3588,8 +3608,7 @@ fn set_fan(
         // whose ClientFanPolicies curve table is empty (default fan control
         // is firmware-side), switching to the curve-following mode parks the
         // fan near 0 RPM until the temp spikes.
-        let is_reset = policy
-            .is_some_and(|p| p.eq_ignore_ascii_case("auto"));
+        let is_reset = policy.is_some_and(|p| p.eq_ignore_ascii_case("auto"));
         match backend {
             "nvml" | "nvml-cooler" => {
                 let inventory = {
@@ -3635,13 +3654,13 @@ fn set_fan(
                 };
                 let target = selected_target(&inventory.0, gpu)?;
                 if is_reset {
-                    // GPUMon's NVAPI fan reset: FanPolicySetControl (NDA
+                    // ref tool's NVAPI fan reset: FanPolicySetControl (NDA
                     // 0x2B2A2A45, struct 0x214AC) — GET the policy block, OR
                     // `1 << curve` into the +0x08 reset bitmask, SET. Unlike
                     // the public RestoreCoolerSettings (rejected with
                     // NOT_SUPPORTED on GPUs without a user-mode cooler table,
                     // e.g. desktop 3060/2070), this private path works there.
-                    // Reset curve slot 0 (GPUMon's reset button).
+                    // Reset curve slot 0 (ref tool's reset button).
                     run(&target, ResetFanCurve { index: 0 }).map_err(to_py_err)?;
                 } else {
                     let cooler_target = match fan_id {
@@ -3676,7 +3695,7 @@ fn set_fan(
 }
 
 /// Toggle fan stop / zero-RPM for a fan-curve slot (NVAPI FanArbiterSet NDA
-/// 0x44CD3014, struct magic 0x10144). RE'd from GPUMon.exe setFanCurve's
+/// 0x44CD3014, struct magic 0x10144). RE'd from ref tool 2's setFanCurve's
 /// tail call. `curve_index` is the slot (default 0); `enable` true = allow
 /// the fan to stop at idle, false = always spin.
 #[pyfunction]
@@ -3703,7 +3722,7 @@ fn set_fanstop_status(
 }
 
 /// Set fan speed by RPM via the private FanCoolerSetControl (NDA 0xEB44E8AA).
-/// RE'd from GPUMon.exe setFanSim: RMW the control block, patch enable+level.
+/// RE'd from ref tool 2's setFanSim: RMW the control block, patch enable+level.
 /// cooler_index=None targets every present cooler. Pass rpm=-1 to disable
 /// simulation (return to auto).
 #[pyfunction]

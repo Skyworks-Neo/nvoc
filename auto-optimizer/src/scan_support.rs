@@ -2,8 +2,8 @@ use clap::ArgMatches;
 use nvoc_cli_common::color::stylize;
 use nvoc_core::{
     CheckVoltageFrequency, ClockDomain, ConvertEnum, Error, GpuOperation, GpuTarget, Kilohertz,
-    Microvolts, ProbeVoltageLimits, QueryTdpTempLimits, QueryVfpPointVoltage, SetVfpFrequencyLock,
-    SetGpcVoltLock, TdpTempLimits, VfpLockRequest, run,
+    Microvolts, ProbeVoltageLimits, QueryTdpTempLimits, QueryVfpPointVoltage, SetGpcVoltLock,
+    SetVfpFrequencyLock, TdpTempLimits, VfpLockRequest, run,
 };
 use std::str::FromStr;
 use time::{OffsetDateTime, format_description::parse_borrowed};

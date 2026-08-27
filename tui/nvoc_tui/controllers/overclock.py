@@ -502,8 +502,7 @@ class OverclockController(PaneController):
             self.app.run_native_action(
                 "enable dynamic boost",
                 lambda native, gpu=gpu: (
-                    native.set_ppab_status(gpu, True)
-                    or "Dynamic Boost (PPAB) enabled."
+                    native.set_ppab_status(gpu, True) or "Dynamic Boost (PPAB) enabled."
                 ),
             )
 
@@ -660,12 +659,14 @@ class OverclockController(PaneController):
                 ),
             ]
             if str(backend) == "nvapi" and self.xbar_supported():
-                resets.append((
-                    "reset xbar offset",
-                    lambda native, gpu=gpu: self._format_xbar_offset_result(
-                        0, native.set_clk_domain_offset(gpu, 1, 0, None, None)
-                    ),
-                ))
+                resets.append(
+                    (
+                        "reset xbar offset",
+                        lambda native, gpu=gpu: self._format_xbar_offset_result(
+                            0, native.set_clk_domain_offset(gpu, 1, 0, None, None)
+                        ),
+                    )
+                )
             self.app.run_action_chain(resets)
             return True
         if button_id == "limits-apply":

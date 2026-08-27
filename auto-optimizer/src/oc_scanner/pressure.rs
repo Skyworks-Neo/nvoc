@@ -11,8 +11,8 @@ use crate::stressor_process::{bundled_command, external_command, is_bundled, res
 use clap::ArgMatches;
 use nvoc_core::{
     ClockDomain, GpuTarget, KilohertzDelta, NvapiLockedVoltageTarget, PState, QueryGpuStatus,
-    QueryVfpPointVoltage, ResetPublicVftableOffset, SetPublicVftablePointOffset, SetGpcVoltLock, VfpResetDomain,
-    set_nvapi_pstate_clock_offsets,
+    QueryVfpPointVoltage, ResetPublicVftableOffset, SetGpcVoltLock, SetPublicVftablePointOffset,
+    VfpResetDomain, set_nvapi_pstate_clock_offsets,
 };
 use std::process::{Child, Command, Stdio};
 use std::thread::JoinHandle;

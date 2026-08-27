@@ -207,12 +207,14 @@ def test_load_csv_preserves_selection_for_space_round_robin_refresh(tmp_path) ->
     tab, _app = make_tab("NVAPI", start=1, end=1)
     csv_path = tmp_path / "curve.csv"
     csv_path.write_text(
-        "\n".join([
-            "voltage,frequency,delta,default_frequency",
-            "800000,1400000,0,1400000",
-            "900000,1500000,0,1500000",
-            "1000000,1600000,0,1600000",
-        ]),
+        "\n".join(
+            [
+                "voltage,frequency,delta,default_frequency",
+                "800000,1400000,0,1400000",
+                "900000,1500000,0,1500000",
+                "1000000,1600000,0,1600000",
+            ]
+        ),
         encoding="utf-8",
     )
 

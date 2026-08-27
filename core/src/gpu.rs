@@ -52,7 +52,7 @@ fn parse_gpu_id(raw: &str) -> Result<usize, Error> {
 /// Explicitly initialize NVAPI exactly once before first use. nvapi-rs relies
 /// on the driver's implicit initialization, which fails on some old/legacy
 /// drivers where tools that call NvAPI_Initialize up front (MSI Afterburner,
-/// the GPUMon plugin) still work — so we call it explicitly, like they do.
+/// the ref tool plugin) still work — so we call it explicitly, like they do.
 /// Failure is non-fatal: enumeration proceeds via the implicit path, which is
 /// enough on every modern driver.
 fn ensure_nvapi_initialized() {

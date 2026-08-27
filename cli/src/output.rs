@@ -180,9 +180,8 @@ fn format_vfp_output(output: &Value) -> Vec<String> {
                         .get("segments")
                         .and_then(Value::as_array)
                         .and_then(|segs| {
-                            segs.iter().find(|seg| {
-                                seg.get("domain").and_then(Value::as_str) == domain
-                            })
+                            segs.iter()
+                                .find(|seg| seg.get("domain").and_then(Value::as_str) == domain)
                         })
                         .map(|seg| {
                             format!(
@@ -250,10 +249,8 @@ fn format_private_vfp_output(output: &Value) -> Vec<String> {
                     ) else {
                         return false;
                     };
-                    let bank_matches =
-                        point.get("bank").and_then(Value::as_i64) == Some(seg_bank);
-                    let type_matches =
-                        point.get("type").and_then(Value::as_i64) == Some(seg_type);
+                    let bank_matches = point.get("bank").and_then(Value::as_i64) == Some(seg_bank);
+                    let type_matches = point.get("type").and_then(Value::as_i64) == Some(seg_type);
                     let index = point.get("index").and_then(Value::as_i64).unwrap_or(-1);
                     let start = seg.get("start_index").and_then(Value::as_i64).unwrap_or(-1);
                     let end = seg.get("end_index").and_then(Value::as_i64).unwrap_or(-1);
@@ -296,22 +293,25 @@ fn format_private_vfp_output(output: &Value) -> Vec<String> {
             // raw control override readback (GetControl 0xDA025C3E):
             // mode 0 = absolute kHz offset ("freq"), mode 1 = raw delta;
             // effect MHz comes pre-computed (g(def) prior for mode 1)
-            let control = point.get("mode").and_then(Value::as_i64).map(|mode| {
-                let value = point
-                    .get("offset")
-                    .and_then(Value::as_i64)
-                    .unwrap_or_default();
-                let effect = point
-                    .get("offset_effect_mhz")
-                    .and_then(Value::as_f64)
-                    .unwrap_or_default();
-                if mode == 0 {
-                    format!(", mode: freq(0), offset: {effect:.1} MHz ({value} as raw)")
-                } else {
-                    format!(", mode: raw(1), offset: {effect:.1} MHz ({value} as raw)")
-                }
-            })
-            .unwrap_or_default();
+            let control = point
+                .get("mode")
+                .and_then(Value::as_i64)
+                .map(|mode| {
+                    let value = point
+                        .get("offset")
+                        .and_then(Value::as_i64)
+                        .unwrap_or_default();
+                    let effect = point
+                        .get("offset_effect_mhz")
+                        .and_then(Value::as_f64)
+                        .unwrap_or_default();
+                    if mode == 0 {
+                        format!(", mode: freq(0), offset: {effect:.1} MHz ({value} as raw)")
+                    } else {
+                        format!(", mode: raw(1), offset: {effect:.1} MHz ({value} as raw)")
+                    }
+                })
+                .unwrap_or_default();
             lines.push(nvoc_cli_common::color::stylize(
                 &format!(
                     "    #{index}: {voltage}, current {current} MHz, default {default} MHz{control}"
@@ -1883,8 +1883,7 @@ mod tests {
         let rendered = format_human_output("get-public-vftable", &output).join("\n");
 
         assert!(rendered.contains("V-F Points"));
-        assert!(rendered
-            .contains("#12 [programmable]: 900.0 mV, 1800.0 MHz, delta 15.0 MHz"));
+        assert!(rendered.contains("#12 [programmable]: 900.0 mV, 1800.0 MHz, delta 15.0 MHz"));
         // Segment separators make the graphics/memory boundary explicit.
         assert!(rendered.contains("--- graphics (index 12..12) ---"));
         assert!(rendered.contains("--- memory (index 127..127) ---"));
