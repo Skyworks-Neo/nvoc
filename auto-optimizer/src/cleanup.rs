@@ -1,8 +1,8 @@
 use nvml_wrapper::enums::device::FanControlPolicy;
 use nvoc_core::{
     ClockDomain, CoolerPolicy, CoolerTarget, Error, GpuTarget, QueryFanInfo, ResetCoolerLevels,
-    ResetFanSpeed, ResetVfpDeltas, ResetVfpFrequencyLock, ResetVfpLock, SetCoolerLevels,
-    SetFanSpeed, VfpResetDomain, run,
+    ResetFanSpeed, ResetPublicVftableGpcLock, ResetPublicVftableOffset, ResetVfpFrequencyLock,
+    SetCoolerLevels, SetFanSpeed, VfpResetDomain, run,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -92,7 +92,7 @@ fn reset_vfp(gpu: &GpuTarget<'_>) {
         "reset VFP deltas",
         run(
             gpu,
-            ResetVfpDeltas {
+            ResetPublicVftableOffset {
                 domain: VfpResetDomain::All,
             },
         ),
@@ -100,7 +100,11 @@ fn reset_vfp(gpu: &GpuTarget<'_>) {
 }
 
 fn reset_locks(gpu: &GpuTarget<'_>) {
-    ignore_cleanup_error(gpu, "reset VFP voltage lock", run(gpu, ResetVfpLock));
+    ignore_cleanup_error(
+        gpu,
+        "reset VFP voltage lock",
+        run(gpu, ResetPublicVftableGpcLock),
+    );
     ignore_cleanup_error(
         gpu,
         "reset graphics VFP frequency lock",

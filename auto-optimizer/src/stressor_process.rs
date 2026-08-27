@@ -1,4 +1,4 @@
-use nvoc_core::{Error, GpuTarget, QueryGpuInfo, run};
+use nvoc_core::{Error, GpuTarget, GpuType, QueryGpuInfo, fetch_gpu_type, run};
 use std::process::Command;
 
 #[cfg(feature = "stressor-bundled")]
@@ -51,6 +51,14 @@ fn add_stressor_args(
     command.args(["--duration", &duration_secs.to_string()]);
     if let Some(device) = cuda_device {
         command.args(["--gpu-index", &device.to_string()]);
+    }
+    // Device-side buffer generation by default: it removes the host RNG +
+    // H2D gap between bursts, giving more wall-clock to actual stress. The
+    // stressor itself falls back to host generation if the NVRTC fill
+    // kernels fail to build, and an explicit `--gpu-generate` in extra_args
+    // (caller-controlled) suppresses the duplicate flag.
+    if !extra_args.iter().any(|a| a == "--gpu-generate") {
+        command.arg("--gpu-generate");
     }
     command.args(extra_args);
 }
@@ -105,29 +113,24 @@ pub fn resolve_profile(gpu: &GpuTarget<'_>, requested: &str) -> Result<String, E
 
     let info = run(gpu, QueryGpuInfo)?.output;
     let vram_kib = u64::from(info.physical_frame_buffer.0);
-    profile_for_gpu(&info.name, vram_kib)
+    // Generation verdict from core gpu_type.rs (name + codename) — the old
+    // name-tokenizing heuristic ("GeForce" + "RTX 40xx/50xx") duplicated
+    // gpu_type knowledge and could not see past the marketing name.
+    let gpu_type = fetch_gpu_type(&info).unwrap_or(GpuType::Unknown);
+    profile_for_gpu(&gpu_type, vram_kib)
 }
 
-fn profile_for_gpu(gpu_name: &str, vram_kib: u64) -> Result<String, Error> {
-    if is_geforce_rtx_40_or_50_series(gpu_name) {
+fn profile_for_gpu(gpu_type: &GpuType, vram_kib: u64) -> Result<String, Error> {
+    if matches!(
+        gpu_type,
+        GpuType::Mobile40Series
+            | GpuType::Desktop40Series
+            | GpuType::Mobile50Series
+            | GpuType::Desktop50Series
+    ) {
         return Ok("40-50".to_string());
     }
     profile_for_vram_kib(vram_kib)
-}
-
-fn is_geforce_rtx_40_or_50_series(gpu_name: &str) -> bool {
-    let words: Vec<_> = gpu_name.split_whitespace().collect();
-    words
-        .iter()
-        .any(|word| word.eq_ignore_ascii_case("GeForce"))
-        && words
-            .windows(2)
-            .any(|pair| pair[0].eq_ignore_ascii_case("RTX") && is_40_or_50_model(pair[1]))
-}
-
-fn is_40_or_50_model(model: &str) -> bool {
-    let digits: String = model.chars().take_while(char::is_ascii_digit).collect();
-    digits.len() == 4 && (digits.starts_with("40") || digits.starts_with("50"))
 }
 
 fn profile_for_vram_kib(vram_kib: u64) -> Result<String, Error> {
@@ -192,9 +195,27 @@ mod tests {
                 "25",
                 "--gpu-index",
                 "2",
+                "--gpu-generate",
                 "--disable-fp8"
             ]
         );
+    }
+
+    #[test]
+    fn explicit_gpu_generate_flag_is_not_duplicated() {
+        let command = external_command(
+            "cli-stressor-cuda-rs",
+            None,
+            None,
+            10.0,
+            None,
+            &["--gpu-generate".into()],
+        );
+        let count = command
+            .get_args()
+            .filter(|a| *a == "--gpu-generate")
+            .count();
+        assert_eq!(count, 1);
     }
 
     #[test]
@@ -209,25 +230,28 @@ mod tests {
     }
 
     #[test]
-    fn automatic_profile_selects_geforce_40_50_series_by_model() {
+    fn automatic_profile_selects_40_50_series_by_generation() {
+        // The name→GpuType mapping itself is covered by core's
+        // gpu_type_detection test; this checks the profile choice per type.
         assert_eq!(
-            profile_for_gpu("NVIDIA GeForce RTX 4090", 24 * 1024 * 1024).unwrap(),
+            profile_for_gpu(&GpuType::Desktop40Series, 24 * 1024 * 1024).unwrap(),
             "40-50"
         );
         assert_eq!(
-            profile_for_gpu("NVIDIA GeForce RTX 5070 Ti", 12 * 1024 * 1024).unwrap(),
+            profile_for_gpu(&GpuType::Desktop50Series, 12 * 1024 * 1024).unwrap(),
             "40-50"
         );
         assert_eq!(
-            profile_for_gpu("NVIDIA GeForce RTX 4090 Laptop GPU", 8 * 1024 * 1024).unwrap(),
+            profile_for_gpu(&GpuType::Mobile40Series, 8 * 1024 * 1024).unwrap(),
             "40-50"
         );
         assert_eq!(
-            profile_for_gpu("NVIDIA GeForce RTX 3090", 24 * 1024 * 1024).unwrap(),
+            profile_for_gpu(&GpuType::Desktop30Series, 24 * 1024 * 1024).unwrap(),
             "standard"
         );
+        // Workstation Ada is Lovelace but not a GeForce 40/50 card → VRAM path.
         assert_eq!(
-            profile_for_gpu("NVIDIA RTX 4000 Ada Generation", 20 * 1024 * 1024).unwrap(),
+            profile_for_gpu(&GpuType::WorkstationLovelace, 20 * 1024 * 1024).unwrap(),
             "standard"
         );
     }

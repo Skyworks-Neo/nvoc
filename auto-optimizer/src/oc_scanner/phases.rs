@@ -1,5 +1,5 @@
 use super::pressure::{PressureTestConfig, run_pressure_test};
-use super::runtime::{MinLoadPulse, run_output};
+use super::runtime::{native_wake, run_output};
 #[cfg(debug_assertions)]
 use crate::manual_override::ManualOverride;
 use crate::progressbar::ScanProgress;
@@ -10,7 +10,7 @@ use clap::ArgMatches;
 use nvoc_core::sync_memory_pstate_as_p0;
 use nvoc_core::{
     ClockDomain, Error, GpuTarget, KilohertzDelta, Microvolts, NvapiLockedVoltageTarget, PState,
-    QueryVfpPointVoltage, ResetVfpDeltas, SetVfpVoltageLock, VfpResetDomain,
+    QueryVfpPointVoltage, ResetPublicVftableOffset, SetGpcVoltLock, VfpResetDomain,
     set_nvapi_pstate_clock_offsets, set_nvapi_vfp_curve_delta,
 };
 use std::io;
@@ -24,14 +24,16 @@ pub(super) struct CommonPhaseArgs<'a> {
     pub(super) minimum_delta_core_freq_step: i32,
     pub(super) fluctuation: FluctuationStrategy,
     pub(super) test_exe: &'a str,
-    pub(super) minload_exe: &'a str,
     pub(super) delimiter: &'a str,
     pub(super) test_duration: u64,
     pub(super) endurance_coefficient: u64,
     pub(super) progress: Option<&'a ScanProgress>,
     pub(super) cuda_device: Option<u32>,
     pub(super) stressor_extra_args: &'a [String],
-    pub(super) wakeup_load_needed: bool,
+    /// 是否需要 GC6 原生唤醒（GpuType::needs_gc6_wake：全移动端 + Unknown）。
+    /// 在电压锁定等"读操作为主"的窗口前显式调用 native_wake；NVAPI 写操作
+    /// 由 core::operation::run 预唤醒钩子自动兜底。
+    pub(super) needs_gc6_wake: bool,
     pub(super) stressor_profile: &'a str,
     pub(super) stressor_config: Option<&'a str>,
     #[cfg(debug_assertions)]
@@ -102,7 +104,6 @@ impl<'a> CommonPhaseArgs<'a> {
             minimum_delta_core_freq_step: self.minimum_delta_core_freq_step,
             fluctuation: self.fluctuation.clone(),
             test_exe: self.test_exe,
-            minload_exe: self.minload_exe,
             test_code: spec.test_code,
             timeout_loops: spec.timeout_loops,
             is_legacy_global_offset: spec.is_legacy_global_offset,
@@ -110,7 +111,6 @@ impl<'a> CommonPhaseArgs<'a> {
             progress: self.progress,
             cuda_device: self.cuda_device,
             stressor_extra_args: self.stressor_extra_args,
-            wakeup_load_needed: self.wakeup_load_needed,
             stressor_profile: self.stressor_profile,
             stressor_config: self.stressor_config,
             #[cfg(debug_assertions)]
@@ -176,16 +176,14 @@ fn set_vfp_and_recheck(
     init_core_oc_value: i32,
     minimum_delta_core_freq_step: i32,
     max_attempts: i32,
-    minload_exe: &str,
-    cuda_device: Option<u32>,
-    wakeup_load_needed: bool,
+    needs_gc6_wake: bool,
 ) -> Result<(), Error> {
     for attempt in 1..=max_attempts {
-        let _pulse = if wakeup_load_needed {
-            Some(MinLoadPulse::wake(minload_exe, cuda_device))
-        } else {
-            None
-        };
+        // 每轮尝试前原生唤醒：等待退避（最长 64s）期间 GPU 可能已重新 GCOFF，
+        // 后续的 V/F recheck 是读操作、不走 core 写预唤醒钩子。
+        if needs_gc6_wake {
+            native_wake(gpu);
+        }
 
         set_nvapi_vfp_curve_delta(
             gpu,
@@ -200,7 +198,7 @@ fn set_vfp_and_recheck(
         if let Ok(locked_v) = run_output(gpu, QueryVfpPointVoltage { point }) {
             let _ = run_output(
                 gpu,
-                SetVfpVoltageLock {
+                SetGpcVoltLock {
                     voltage_target: NvapiLockedVoltageTarget::Voltage(locked_v),
                     feedback: false,
                 },
@@ -489,9 +487,7 @@ pub(super) fn run_gpuboostv3_short_phase(
             controller.f_current,
             args.common.minimum_delta_core_freq_step,
             10,
-            args.common.minload_exe,
-            args.common.cuda_device,
-            args.common.wakeup_load_needed,
+            args.common.needs_gc6_wake,
         )?;
 
         controller.test_progress_num += 1;
@@ -544,7 +540,7 @@ pub(super) fn run_gpuboostv3_short_phase(
         if test_flag != 0 {
             run_output(
                 gpu,
-                ResetVfpDeltas {
+                ResetPublicVftableOffset {
                     domain: VfpResetDomain::Core,
                 },
             )?;
@@ -619,9 +615,7 @@ pub(super) fn run_gpuboostv3_long_phase(
             controller.f_current,
             args.common.minimum_delta_core_freq_step,
             5,
-            args.common.minload_exe,
-            args.common.cuda_device,
-            args.common.wakeup_load_needed,
+            args.common.needs_gc6_wake,
         )?;
 
         *test_code += 1;
@@ -670,7 +664,7 @@ pub(super) fn run_gpuboostv3_long_phase(
         if long_duration_flag != 0 {
             run_output(
                 gpu,
-                ResetVfpDeltas {
+                ResetPublicVftableOffset {
                     domain: VfpResetDomain::Core,
                 },
             )?;
@@ -735,14 +729,10 @@ pub(super) fn run_mem_oc_phase(
     let mut mem_test_code: usize = 0;
 
     loop {
-        let _pulse = if args.common.wakeup_load_needed {
-            Some(MinLoadPulse::wake(
-                args.common.minload_exe,
-                args.common.cuda_device,
-            ))
-        } else {
-            None
-        };
+        // 显存 OC 循环内，锁定电压（读为主的窗口）前原生唤醒
+        if args.common.needs_gc6_wake {
+            native_wake(gpu);
+        }
         match handle_lock_vfp(gpus, args.common.matches, args.point, false) {
             Ok(_) => println!("Voltage locked successfully."),
             Err(e) => eprintln!("Error: Failed to lock voltage - {:?}", e),

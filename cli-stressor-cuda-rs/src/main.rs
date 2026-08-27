@@ -119,7 +119,7 @@ struct Args {
 
     #[arg(
         long,
-        value_parser = ["standard", "low-vram", "40-50", "minload", "dynamic-export"],
+        value_parser = ["standard", "low-vram", "40-50", "dynamic-export"],
         conflicts_with = "config",
         help = "Use an embedded NVOC stress profile"
     )]
@@ -204,6 +204,12 @@ struct Args {
     #[arg(long, default_value_t = false)]
     vulkan_only: bool,
 
+    /// Generate stress buffers on the GPU (NVRTC fill kernels) instead of
+    /// host-side parallel RNG + H2D copy; cuts the non-compute gap between
+    /// bursts (default off)
+    #[arg(long, default_value_t = false)]
+    gpu_generate: bool,
+
     /// Vulkan image width for 3D render stress
     #[arg(long, default_value_t = 8192)]
     vulkan_image_width: u32,
@@ -279,6 +285,9 @@ struct FileConfig {
     #[serde(alias = "vulkan-only")]
     vulkan_only: Option<bool>,
     kernel_params: Option<HashMap<String, FileKernelParam>>,
+    /// Generate stress buffers on the GPU via NVRTC fill kernels (default
+    /// off; host generation remains the conservative path).
+    gpu_generate: Option<bool>,
     gpu_index: Option<u32>,
     pci_bus: Option<String>,
     gpu_uuid: Option<String>,
@@ -388,7 +397,6 @@ fn load_builtin_profile(name: &str) -> Result<FileConfig, String> {
         "standard" => include_str!("../profiles/standard.toml"),
         "low-vram" => include_str!("../profiles/low-vram.toml"),
         "40-50" => include_str!("../profiles/40-50.toml"),
-        "minload" => include_str!("../profiles/minload.toml"),
         "dynamic-export" => include_str!("../profiles/dynamic-export.toml"),
         other => return Err(format!("unknown embedded profile: {other}")),
     };
@@ -513,6 +521,7 @@ fn parse_args_with_cli_sources() -> (Args, std::collections::HashSet<&'static st
         "kernel_types",
         "kernel_mixture",
         "kernel_params",
+        "gpu_generate",
         "enable_vulkan_stress",
         "vulkan_only",
         "stream_mode",
@@ -612,6 +621,9 @@ fn apply_file_config_to_args(
     }
     if let (true, Some(v)) = (!cli_set.contains("stream_mode"), &parsed.stream_mode) {
         args.stream_mode = v.clone();
+    }
+    if let (true, Some(v)) = (!cli_set.contains("gpu_generate"), parsed.gpu_generate) {
+        args.gpu_generate = v;
     }
     if let (true, Some(v)) = (!cli_set.contains("disable_fp8"), parsed.disable_fp8) {
         args.disable_fp8 = v;
@@ -1099,6 +1111,20 @@ pub fn run_from_args() {
             std::process::exit(1);
         }
     };
+    if args.gpu_generate
+        && let Err(err) = backend.enable_gpu_generate()
+    {
+        eprintln!(
+            "{}",
+            stylize(
+                &format!(
+                    "GPU buffer generation unavailable ({}); falling back to host generation",
+                    err
+                ),
+                true
+            )
+        );
+    }
 
     #[cfg(feature = "vulkan")]
     let cuda_device_identity = match backend.device_identity() {
@@ -1429,6 +1455,12 @@ pub fn run_from_args() {
         "{}",
         stylize_config(&format!("  Validation size: {}", args.validate_size))
     );
+    if args.gpu_generate {
+        println!(
+            "{}",
+            stylize_config("  Buffer generation: GPU (NVRTC fill kernels)")
+        );
+    }
 
     let minor_mixture_display = if kernel_param_overrides
         .iter()

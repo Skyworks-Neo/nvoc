@@ -18,7 +18,7 @@ use nvoc_core::{
 use nvoc_core::{Error, QueryGpuStatus, set_nvapi_pstate_clock_offsets};
 use nvoc_core::{
     GpuOperation, GpuType, QueryGpuInfo, SetNvapiPowerLimits, SetNvapiSensorLimits,
-    SetPstateBaseVoltage, SetVfpPointDelta, SetVoltageBoost, fetch_gpu_type,
+    SetPstateBaseVoltage, SetPublicVftablePointOffset, SetVoltageBoost, fetch_gpu_type,
     legacy_p0_core_max_voltage_delta, query_domain_vf_points_indexed, query_domain_vfp_indices,
     run, set_nvapi_cooler_settings, set_nvapi_domain_vfp_deltas, sync_memory_pstate_as_p0,
 };
@@ -608,7 +608,7 @@ pub fn handle_vfp_import(gpu: &GpuTarget<'_>, matches: &clap::ArgMatches) -> Res
 
     if domain == ClockDomain::Graphics {
         for (point, delta) in deltas {
-            run_output(gpu, SetVfpPointDelta { point, delta })?;
+            run_output(gpu, SetPublicVftablePointOffset { point, delta })?;
         }
     } else {
         set_domain_vfp_deltas_raw(gpu, domain, &deltas)?;
@@ -1039,9 +1039,11 @@ pub fn apply_autoscan_profile(
     cooler_level: u32,
 ) -> Result<(), Error> {
     let info = run_output(gpu, QueryGpuInfo)?;
-    let gpu_name = &info.name;
+    let gpu_type = fetch_gpu_type(&info).unwrap_or(GpuType::Unknown);
 
-    if gpu_name.contains("Laptop") || gpu_name.contains("Device") {
+    // 移动端判定走 gpu_type（原为 name.contains("Laptop"/"Device") 的自发
+    // 启发式）；Unknown 一并按移动端保守跳过，对应旧 "Device" 检查的意图。
+    if gpu_type.is_mobile() || gpu_type.is_unknown() {
         println!("TDP/Temp/VDDQ control not available on MOBILE chips! Skipping...");
         return Ok(());
     }
@@ -1049,7 +1051,6 @@ pub fn apply_autoscan_profile(
     // 根据 GPU 世代选择电压设置方式
     // 900 系（Maxwell，GM 代号）及更早 → 使用 set_pstate_base_voltage（P0 baseVoltages delta）
     // 10 系（Pascal，GP1 代号）及以后  → 使用 set_voltage_boost（VoltRails boost）
-    let gpu_type = fetch_gpu_type(&info).unwrap_or(GpuType::Unknown);
 
     if gpu_type.is_legacy_voltage() {
         // 900 系及更早：通过 SetPstates20 写 P0 baseVoltage delta（最大允许値，即尽量升压）
