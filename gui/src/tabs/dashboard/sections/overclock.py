@@ -957,7 +957,8 @@ class OverclockTab:
         self.app.run_native_action(
             "set D-Notifier level",
             lambda native, gpu=gpu, d_level=d_level: (
-                native.set_dnotifier(gpu, d_level) or f"Successfully set D-Notifier to D{d_level}."
+                native.set_dnotifier(gpu, d_level)
+                or f"Successfully set D-Notifier to D{d_level}."
             ),
             on_finished=on_finished,
         )

@@ -118,7 +118,9 @@ class NativeBackend:
             except Exception:
                 return None
 
-    def query_private_freq_domain_status(self, gpu: str, domain_bit: int) -> dict | None:
+    def query_private_freq_domain_status(
+        self, gpu: str, domain_bit: int
+    ) -> dict | None:
         """Direct physical clock for one domain (green-curve MEASURE 0x527FC458).
 
         Returns ``{"domain_bit", "freq_khz"}`` (``freq_khz == 0`` ⇒ driver
@@ -132,7 +134,9 @@ class NativeBackend:
         except Exception:
             self._force_wake(gpu)
             try:
-                return self._pynvoc().query_private_freq_domain_status(gpu, int(domain_bit))
+                return self._pynvoc().query_private_freq_domain_status(
+                    gpu, int(domain_bit)
+                )
             except Exception:
                 return None
 

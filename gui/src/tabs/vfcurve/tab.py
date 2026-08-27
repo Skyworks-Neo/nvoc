@@ -568,6 +568,7 @@ class VFCurveTab:
             color="#e08020",
             fontsize=7,
         )
+
         # one decimal on BOTH axes (0.5 / 1.0 / 1.5 ...) — uniform columns.
         # NOTE: with a FuncFormatter attached, matplotlib regenerates tick
         # TEXT on every draw, so the "Volt/V" unit caption must come FROM
