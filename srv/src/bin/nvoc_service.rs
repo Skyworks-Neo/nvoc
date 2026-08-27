@@ -28,9 +28,9 @@ mod nvoc_service {
     use futures_util::StreamExt;
     use gag::Redirect;
     use log::{LevelFilter, error, info, warn};
-    use nvapi_hi::Gpu;
-    use nvapi_hi::nvapi::ClockFrequencyType;
-    use nvapi_hi::{ClockDomain, KilohertzDelta, PState};
+    use nvapi::hi::Gpu;
+    use nvapi::ClockFrequencyType;
+    use nvapi::hi::{ClockDomain, KilohertzDelta, PState};
     use nvml_wrapper::{
         Nvml,
         enum_wrappers::device::{TemperatureSensor, TemperatureThreshold},

@@ -1,6 +1,6 @@
 use super::Error;
 use super::target::gpu_id_from_nvml_device;
-use nvapi_hi::Gpu;
+use ::nvapi::hi::Gpu;
 use nvml_wrapper::Nvml;
 use std::str::FromStr;
 
@@ -59,13 +59,13 @@ fn ensure_nvapi_initialized() {
     use std::sync::Once;
     static INIT: Once = Once::new();
     INIT.call_once(|| {
-        if let Err(e) = nvapi_hi::initialize() {
+        if let Err(e) = ::nvapi::hi::initialize() {
             eprintln!("warning: NvAPI_Initialize failed ({e:?}); continuing via implicit init");
         }
     });
 }
 
-pub fn get_sorted_gpus() -> nvapi_hi::Result<Vec<Gpu>> {
+pub fn get_sorted_gpus() -> ::nvapi::hi::Result<Vec<Gpu>> {
     ensure_nvapi_initialized();
     let mut gpus = Gpu::enumerate()?;
     gpus.sort_by_key(|g| g.id());

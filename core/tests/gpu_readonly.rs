@@ -1,4 +1,4 @@
-use nvapi_hi::Microvolts;
+use nvapi::hi::Microvolts;
 use nvml_wrapper::Nvml;
 use nvoc_core::{
     BackendSet, CheckVoltageFrequency, ClockDomain, Error, GpuId, GpuSelector, GpuTarget,

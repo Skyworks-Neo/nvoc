@@ -372,9 +372,9 @@ pub struct TemperatureThreshold {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ThermalSensorReading {
     /// Sensor target: GPU core / Memory / Board.
-    pub target: nvapi_hi::nvapi::ThermalTarget,
+    pub target: ::nvapi::ThermalTarget,
     /// Controller (internal / ADM1032 / ...).
-    pub controller: nvapi_hi::nvapi::ThermalController,
+    pub controller: ::nvapi::ThermalController,
     /// Live reading.
     pub current_c: i32,
     /// Sensor physical range (defaultMinTemp..defaultMaxTemp).
@@ -455,7 +455,7 @@ pub struct PStateLevelsInfo {
 }
 
 /// Native NVAPI P-State lock request (the the ref tool `-pstate:<index>` SETTER).
-/// Core-level mirror of [`nvapi_hi::PStateNativeLock`].
+/// Core-level mirror of [`::nvapi::hi::PStateNativeLock`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NvapiPStateNativeLock {
     /// Reset all P-State locks to default (the ref tool `-pstate:-1`).
@@ -468,7 +468,7 @@ pub enum NvapiPStateNativeLock {
 
 /// GPU frequency perf-cap request (the ref tool `-gpuclk:<MHz>` SETTER,
 /// PerfLimitsSetStatus NDA 0x32CA4983). Core-level mirror of
-/// [`nvapi_hi::PerfFreqCap`]: clamps the perf max/min frequency to a cap
+/// [`::nvapi::hi::PerfFreqCap`]: clamps the perf max/min frequency to a cap
 /// value (NOT an offset, NOT a P-state lock). `freq_khz` = MHz × 1000.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NvapiPerfFreqCap {
@@ -513,18 +513,18 @@ pub struct ClockOffset {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PstateBaseVoltage {
-    pub pstate: nvapi_hi::PState,
-    pub voltage_domain: nvapi_hi::VoltageDomain,
+    pub pstate: ::nvapi::hi::PState,
+    pub voltage_domain: ::nvapi::hi::VoltageDomain,
     pub editable: bool,
-    pub voltage: nvapi_hi::Microvolts,
-    pub delta: nvapi_hi::MicrovoltsDelta,
-    pub min_delta: nvapi_hi::MicrovoltsDelta,
-    pub max_delta: nvapi_hi::MicrovoltsDelta,
+    pub voltage: ::nvapi::hi::Microvolts,
+    pub delta: ::nvapi::hi::MicrovoltsDelta,
+    pub min_delta: ::nvapi::hi::MicrovoltsDelta,
+    pub max_delta: ::nvapi::hi::MicrovoltsDelta,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VoltageBoostState {
-    pub voltage_boost: Option<nvapi_hi::Percentage>,
+    pub voltage_boost: Option<::nvapi::hi::Percentage>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -593,7 +593,7 @@ pub struct AppliedValue<T> {
 /// on such SKUs (Ada mobile).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OvervoltApplied {
-    pub applied: AppliedValue<nvapi_hi::MicrovoltsDelta>,
+    pub applied: AppliedValue<::nvapi::hi::MicrovoltsDelta>,
     pub driver_ov_entries: bool,
 }
 
@@ -605,13 +605,13 @@ pub struct VoltageLimits {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TdpTempLimits {
-    pub min_tdp: nvapi_hi::Percentage,
-    pub default_tdp: nvapi_hi::Percentage,
-    pub max_tdp: nvapi_hi::Percentage,
-    pub min_temp: nvapi_hi::Celsius,
-    pub default_temp: nvapi_hi::Celsius,
-    pub max_temp: nvapi_hi::Celsius,
-    pub throttle_curve: nvapi_hi::PffCurve,
+    pub min_tdp: ::nvapi::hi::Percentage,
+    pub default_tdp: ::nvapi::hi::Percentage,
+    pub max_tdp: ::nvapi::hi::Percentage,
+    pub min_temp: ::nvapi::hi::Celsius,
+    pub default_temp: ::nvapi::hi::Celsius,
+    pub max_temp: ::nvapi::hi::Celsius,
+    pub throttle_curve: ::nvapi::hi::PffCurve,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

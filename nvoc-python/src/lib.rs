@@ -1,4 +1,4 @@
-use nvapi_hi::{
+use nvapi::hi::{
     Celsius, ClockDomain, CoolerPolicy, KilohertzDelta, MicrovoltsDelta, PState, Percentage,
 };
 use nvml_wrapper::enum_wrappers::device::{Api, PerformanceState};
@@ -7,7 +7,7 @@ use nvoc_core::{
     DisableNvapiThermalSim, GpuTarget, GpuType, NvapiPerfFreqCap, QueryApiRestriction,
     QueryAutoBoost, QueryDisplays, QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo,
     QueryGpuSettings, QueryGpuStatus, QueryLegacyCoreOvervoltRanges,
-    QueryLegacyP0CoreMaxVoltageDelta, QueryNvapiClkDomainFreq, QueryNvapiClkDomainFreqDirect,
+    QueryNvapiClkDomainFreq, QueryNvapiClkDomainFreqDirect,
     QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomains, QueryNvapiClkVfPoints,
     QueryNvapiCoreVoltageControl, QueryNvapiDNotifier, QueryNvapiOcScannerIncomplete,
     QueryNvapiPmgrVoltageArbiter, QueryNvapiPowerMizer, QueryNvapiRatedTdp,
@@ -908,8 +908,8 @@ fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
                 continue;
             }
             let suffix = match r.confidence {
-                nvapi_hi::nvapi::Confidence::Measured => "",
-                nvapi_hi::nvapi::Confidence::Inferred => "~",
+                nvapi::Confidence::Measured => "",
+                nvapi::Confidence::Inferred => "~",
                 _ => "?", // Ambiguous (or Unavailable, though pwr_mw!=0 filters most)
             };
             let key = if suffix.is_empty() {
@@ -1223,11 +1223,17 @@ fn normalize_throttle_reasons(target: &GpuTarget<'_>) -> PyResultValue {
     Ok(Value::Array(items))
 }
 
-fn normalize_legacy_overvolt_ranges(target: &GpuTarget<'_>) -> PyResultValue {
+fn normalize_legacy_overvolt_ranges(
+    target: &GpuTarget<'_>,
+    pstate_filter: Option<PState>,
+) -> PyResultValue {
     let items = run(target, QueryLegacyCoreOvervoltRanges)
         .map_err(to_py_err)?
         .output
         .into_iter()
+        .filter(|(pstate, _, _, _)| {
+            pstate_filter.map_or(true, |filter| *pstate == filter)
+        })
         .map(|(pstate, current, min, max)| {
             value_object([
                 ("pstate", text(pstate)),
@@ -1342,16 +1348,6 @@ fn normalize_query_vfp_point(target: &GpuTarget<'_>, point: usize) -> PyResultVa
         .map_err(to_py_err)?
         .output;
     Ok(value_object([("microvolts", u64_value(voltage.0 as u64))]))
-}
-
-fn normalize_legacy_p0_delta(target: &GpuTarget<'_>) -> PyResultValue {
-    let value = run(target, QueryLegacyP0CoreMaxVoltageDelta)
-        .map_err(to_py_err)?
-        .output;
-    Ok(value_object([(
-        "microvolts",
-        value.map(|v| u64_value(v.0 as u64)).unwrap_or(Value::Null),
-    )]))
 }
 
 fn normalize_tdp_temp_limits(target: &GpuTarget<'_>) -> PyResultValue {
@@ -1566,8 +1562,19 @@ fn query_throttle_reasons(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
 }
 
 #[pyfunction]
-fn query_legacy_overvolt_ranges(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
-    let value = with_target(gpu, "nvapi", normalize_legacy_overvolt_ranges)?;
+#[pyo3(signature = (gpu, pstate = None))]
+fn query_legacy_gpc_rail_volt_range(
+    py: Python<'_>,
+    gpu: &str,
+    pstate: Option<&str>,
+) -> PyResult<Py<PyAny>> {
+    let pstate_filter = match pstate {
+        Some(s) => Some(parse_pstate(s)?),
+        None => None,
+    };
+    let value = with_target(gpu, "nvapi", |target| {
+        normalize_legacy_overvolt_ranges(target, pstate_filter)
+    })?;
     py_value(py, &value)
 }
 
@@ -1687,12 +1694,6 @@ fn query_vfp_point_voltage(py: Python<'_>, gpu: &str, point: usize) -> PyResult<
     let value = with_target(gpu, "nvapi", |target| {
         normalize_query_vfp_point(target, point)
     })?;
-    py_value(py, &value)
-}
-
-#[pyfunction]
-fn query_legacy_p0_core_max_voltage_delta(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
-    let value = with_target(gpu, "nvapi", normalize_legacy_p0_delta)?;
     py_value(py, &value)
 }
 
@@ -2069,7 +2070,7 @@ fn query_volt_rails(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
         let rails = run(target, QueryNvapiVoltRails).map_err(to_py_err)?.output;
         Ok(match rails {
             Some(r) => {
-                let entries = |list: &[nvapi_hi::nvapi::VoltRailEntry]| {
+                let entries = |list: &[nvapi::VoltRailEntry]| {
                     Value::Array(
                         list.iter()
                             .map(|e| {
@@ -2333,10 +2334,10 @@ fn query_private_vftable(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
                                     (
                                         "kind",
                                         Value::from(match s.kind {
-                                            nvapi_hi::nvapi::ClkVfSegmentKind::VfCurve => {
+                                            nvapi::ClkVfSegmentKind::VfCurve => {
                                                 "vf_curve"
                                             }
-                                            nvapi_hi::nvapi::ClkVfSegmentKind::PstateBins => {
+                                            nvapi::ClkVfSegmentKind::PstateBins => {
                                                 "pstate_bins"
                                             }
                                         }),
@@ -3107,8 +3108,8 @@ fn set_vfp_frequency_lock(
             &target,
             SetVfpFrequencyLock {
                 domain: parse_domain(domain)?,
-                upper: nvapi_hi::Kilohertz(upper_khz.max(0) as u32),
-                lower: lower_khz.map(|v| nvapi_hi::Kilohertz(v.max(0) as u32)),
+                upper: nvapi::hi::Kilohertz(upper_khz.max(0) as u32),
+                lower: lower_khz.map(|v| nvapi::hi::Kilohertz(v.max(0) as u32)),
             },
         )
         .map_err(to_py_err)?;
@@ -3158,7 +3159,7 @@ fn set_vfp_voltage_lock(
         let voltage_target = if let Some(point) = point {
             nvoc_core::NvapiLockedVoltageTarget::Point(point)
         } else if let Some(voltage_uv) = voltage_uv {
-            nvoc_core::NvapiLockedVoltageTarget::Voltage(nvapi_hi::Microvolts(
+            nvoc_core::NvapiLockedVoltageTarget::Voltage(nvapi::hi::Microvolts(
                 voltage_uv.max(0) as u32
             ))
         } else {
@@ -3960,7 +3961,7 @@ fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(query_fan_info, m)?)?;
     m.add_function(wrap_pyfunction!(query_temperature_thresholds, m)?)?;
     m.add_function(wrap_pyfunction!(query_throttle_reasons, m)?)?;
-    m.add_function(wrap_pyfunction!(query_legacy_overvolt_ranges, m)?)?;
+    m.add_function(wrap_pyfunction!(query_legacy_gpc_rail_volt_range, m)?)?;
     m.add_function(wrap_pyfunction!(query_pstate_base_voltage, m)?)?;
     m.add_function(wrap_pyfunction!(query_voltage_boost, m)?)?;
     m.add_function(wrap_pyfunction!(query_auto_boost, m)?)?;
@@ -3970,7 +3971,6 @@ fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(query_clock_offset, m)?)?;
     m.add_function(wrap_pyfunction!(query_public_vftable, m)?)?;
     m.add_function(wrap_pyfunction!(query_vfp_point_voltage, m)?)?;
-    m.add_function(wrap_pyfunction!(query_legacy_p0_core_max_voltage_delta, m)?)?;
     m.add_function(wrap_pyfunction!(query_tdp_temp_limits, m)?)?;
     m.add_function(wrap_pyfunction!(probe_voltage_limits, m)?)?;
     m.add_function(wrap_pyfunction!(check_voltage_frequency, m)?)?;

@@ -15,11 +15,11 @@ pub use gpu::GpuSelector;
 pub use gpu_type::{
     ArchOcPrior, GpuOcParams, GpuType, GpuVoltageLimitParams, GpuVoltageLockParams, OcPriorPoint,
 };
-pub use nvapi::{
+pub use self::nvapi::{
     CoolerTarget, GpuTdpTempLimits, VfpLockRequest, nvapi_overvolt_reported, set_nvapi_overvolt,
 };
-pub use nvapi_hi::nvapi::sys::gpu::power::private::Wm2AcousticMode;
-pub use nvapi_hi::nvapi::{P0VoltageBounds, VoltRails};
+pub use ::nvapi::sys::gpu::power::private::Wm2AcousticMode;
+pub use ::nvapi::{P0VoltageBounds, VoltRails};
 pub use operation::{
     CheckVoltageFrequency, ClearEdid, DisableNvapiThermalSim, GetFanCurves, GetPowerMode,
     GpuOperation, OemOcScanner, OemOcScannerAction, ProbeVoltageLimits, QueryApiRestriction,
@@ -75,8 +75,8 @@ pub use target::{
 };
 pub use types::{NvapiLockedVoltageTarget, VfpResetDomain};
 
-pub use nvapi_hi::nvapi::{clk_vf_delta_for_target, clk_vf_effect_for_delta};
-pub use nvapi_hi::{
+pub use ::nvapi::{clk_vf_delta_for_target, clk_vf_effect_for_delta};
+pub use ::nvapi::hi::{
     Celsius, ClkVfControlPointPrivate, ClkVfControlPrivate, ClkVfDomainClass, ClkVfDomainHint,
     ClkVfPointPrivate, ClkVfPointsPrivate, ClkVfSegmentKind, ClockDomain, CoolerControl,
     CoolerPolicy, CoolerSettings, DisplayId, FanCoolerId, GpuInfo, GpuSettings, GpuStatus,

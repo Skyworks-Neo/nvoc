@@ -3,7 +3,7 @@
 //! 将散落在 `basic_func.rs` 和 `oc_get_set_function.rs` 中的 GpuType 枚举、
 //! OC 扫描参数、电压限制探测参数、电压锁定参数统一管理于此文件。
 
-use nvapi_hi::GpuInfo;
+use ::nvapi::hi::GpuInfo;
 use std::fmt;
 
 use super::error::Error;

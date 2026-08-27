@@ -52,7 +52,7 @@ colored = "3.1.1"
 num-traits = "0.2.19"
 nvml-wrapper = "0.12.1"
 nvml-wrapper-sys = "0.9.1"
-nvapi-hi = { path = "./nvapi-rs/hi", features = [
+nvapi = { path = "./nvapi-rs", features = [
   "serde",
 ] }
 quick-error = "2.0.1"

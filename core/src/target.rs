@@ -1,5 +1,5 @@
 use super::Error;
-use nvapi_hi::Gpu;
+use ::nvapi::hi::Gpu;
 use nvml_wrapper::Nvml;
 use std::fmt;
 use std::str::FromStr;

@@ -1,6 +1,6 @@
 use super::error::Error;
 use super::types::VfpResetDomain;
-use nvapi_hi::{ClockDomain, CoolerPolicy, PState};
+use ::nvapi::hi::{ClockDomain, CoolerPolicy, PState};
 use nvml_wrapper::enum_wrappers::device::PerformanceState;
 
 pub fn try_parse_nvml_pstate(nvml_pstate_val: &str) -> Result<PerformanceState, Error> {

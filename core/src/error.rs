@@ -5,7 +5,7 @@ use std::num::{ParseFloatError, ParseIntError};
 quick_error! {
     #[derive(Debug)]
     pub enum Error {
-        Nvapi(err: nvapi_hi::Error) {from()source(err)display("NVAPI error: {}", err)}
+        Nvapi(err: ::nvapi::hi::Error) {from()source(err)display("NVAPI error: {}", err)}
         VfpUnsupported {display("VFP unsupported")}
         DeviceNotFound {display("no matching device found")}
         Io(err: io::Error) {from()source(err)display("IO error: {}", err)}
@@ -17,9 +17,9 @@ quick_error! {
     }
 }
 
-impl From<nvapi_hi::NvapiError> for Error {
-    fn from(e: nvapi_hi::NvapiError) -> Self {
-        Self::from(nvapi_hi::Error::from(e))
+impl From<::nvapi::hi::NvapiError> for Error {
+    fn from(e: ::nvapi::hi::NvapiError) -> Self {
+        Self::from(::nvapi::hi::Error::from(e))
     }
 }
 
@@ -27,10 +27,10 @@ impl Error {
     pub fn is_allowable_nvapi_reset_error(&self) -> bool {
         matches!(
             self,
-            Error::Nvapi(nvapi_hi::Error::Nvapi(nvapi_hi::NvapiError {
-                status: nvapi_hi::Status::NotSupported | nvapi_hi::Status::NoImplementation,
+            Error::Nvapi(::nvapi::hi::Error::Nvapi(::nvapi::hi::NvapiError {
+                status: ::nvapi::hi::Status::NotSupported | ::nvapi::hi::Status::NoImplementation,
                 ..
-            })) | Error::Nvapi(nvapi_hi::Error::ArgumentRange(..))
+            })) | Error::Nvapi(::nvapi::hi::Error::ArgumentRange(..))
         )
     }
 }

@@ -14,7 +14,7 @@ use super::result::{
 };
 use super::target::GpuTarget;
 use super::types::{NvapiLockedVoltageTarget, VfpResetDomain};
-use nvapi_hi::{
+use ::nvapi::hi::{
     ClockDomain, CoolerPolicy, Kilohertz, KilohertzDelta, MicrovoltsDelta, PState, Percentage,
     SensorThrottle, VfPoint,
 };
@@ -107,7 +107,7 @@ pub fn run_many<O: GpuOperation + Clone>(
 pub struct QueryGpuInfo;
 
 impl GpuOperation for QueryGpuInfo {
-    type Output = nvapi_hi::GpuInfo;
+    type Output = ::nvapi::hi::GpuInfo;
 
     fn kind(&self) -> OperationKind {
         OperationKind::QueryGpuInfo
@@ -128,7 +128,7 @@ impl GpuOperation for QueryGpuInfo {
 pub struct QueryGpuSettings;
 
 impl GpuOperation for QueryGpuSettings {
-    type Output = nvapi_hi::GpuSettings;
+    type Output = ::nvapi::hi::GpuSettings;
 
     fn kind(&self) -> OperationKind {
         OperationKind::QueryGpuSettings
@@ -143,7 +143,7 @@ impl GpuOperation for QueryGpuSettings {
 pub struct QueryGpuStatus;
 
 impl GpuOperation for QueryGpuStatus {
-    type Output = nvapi_hi::GpuStatus;
+    type Output = ::nvapi::hi::GpuStatus;
 
     fn kind(&self) -> OperationKind {
         OperationKind::QueryGpuStatus
@@ -357,12 +357,12 @@ impl GpuOperation for SetFanCurve {
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
-        let curve = nvapi_hi::FanCurve {
+        let curve = ::nvapi::hi::FanCurve {
             index: self.index,
             points: self
                 .points
                 .iter()
-                .map(|p| nvapi_hi::FanCurvePoint {
+                .map(|p| ::nvapi::hi::FanCurvePoint {
                     temp_c: p.temp_c,
                     rpm: p.rpm,
                 })
@@ -1119,7 +1119,7 @@ pub struct QueryVfpPointVoltage {
 }
 
 impl GpuOperation for QueryVfpPointVoltage {
-    type Output = nvapi_hi::Microvolts;
+    type Output = ::nvapi::hi::Microvolts;
 
     fn kind(&self) -> OperationKind {
         OperationKind::QueryVfpPointVoltage
@@ -1740,7 +1740,7 @@ impl GpuOperation for QueryNvapiDNotifier {
 pub struct QueryNvapiVoltRails;
 
 impl GpuOperation for QueryNvapiVoltRails {
-    type Output = Option<nvapi_hi::nvapi::VoltRails>;
+    type Output = Option<::nvapi::VoltRails>;
 
     fn kind(&self) -> OperationKind {
         OperationKind::QueryNvapiVoltRails
@@ -2018,7 +2018,7 @@ pub struct NvapiVoltRailTargetApplied {
 pub struct QueryNvapiClkDomains;
 
 impl GpuOperation for QueryNvapiClkDomains {
-    type Output = Option<nvapi_hi::nvapi::ClockDomainControl>;
+    type Output = Option<::nvapi::ClockDomainControl>;
 
     fn kind(&self) -> OperationKind {
         OperationKind::QueryNvapiClkDomains
@@ -2038,7 +2038,7 @@ pub struct QueryNvapiClkDomainFreqDetail {
 }
 
 impl GpuOperation for QueryNvapiClkDomainFreqDetail {
-    type Output = Option<nvapi_hi::nvapi::ClockDomainFreqDetail>;
+    type Output = Option<::nvapi::ClockDomainFreqDetail>;
 
     fn kind(&self) -> OperationKind {
         OperationKind::QueryNvapiClkDomainFreqDetail
@@ -2413,7 +2413,7 @@ pub struct QueryNvapiClkDomainFreqsBatch {
 }
 
 impl GpuOperation for QueryNvapiClkDomainFreqsBatch {
-    type Output = Option<Vec<nvapi_hi::nvapi::ClockDomainFreq>>;
+    type Output = Option<Vec<::nvapi::ClockDomainFreq>>;
 
     fn kind(&self) -> OperationKind {
         OperationKind::QueryNvapiClkDomainFreqsBatch
@@ -2431,12 +2431,12 @@ impl GpuOperation for QueryNvapiClkDomainFreqsBatch {
 /// GetStatus 0x7FEE9032, RM 0x20809061/0x20809062) — the article's per-domain
 /// V/F curve family. Returns `None` where the driver doesn't expose the
 /// private interface. Units live-calibrated vs the public GPC VFP curve
-/// (see `nvapi::ClkVfPointPrivate`).
+/// (see `::nvapi::ClkVfPointPrivate`).
 #[derive(Clone, Copy, Debug)]
 pub struct QueryNvapiClkVfPoints;
 
 impl GpuOperation for QueryNvapiClkVfPoints {
-    type Output = Option<nvapi_hi::nvapi::ClkVfPointsPrivate>;
+    type Output = Option<::nvapi::ClkVfPointsPrivate>;
 
     fn kind(&self) -> OperationKind {
         OperationKind::QueryNvapiClkVfPoints
@@ -2456,7 +2456,7 @@ impl GpuOperation for QueryNvapiClkVfPoints {
 pub struct QueryNvapiClkVfControl;
 
 impl GpuOperation for QueryNvapiClkVfControl {
-    type Output = Option<nvapi_hi::nvapi::ClkVfControlPrivate>;
+    type Output = Option<::nvapi::ClkVfControlPrivate>;
 
     fn kind(&self) -> OperationKind {
         OperationKind::QueryNvapiClkVfControl
@@ -2479,7 +2479,7 @@ pub struct QueryNvapiClkDomainFreq {
 }
 
 impl GpuOperation for QueryNvapiClkDomainFreq {
-    type Output = Option<nvapi_hi::nvapi::ClockDomainFreq>;
+    type Output = Option<::nvapi::ClockDomainFreq>;
 
     fn kind(&self) -> OperationKind {
         OperationKind::QueryNvapiClkDomainFreq
@@ -2503,7 +2503,7 @@ pub struct QueryNvapiClkDomainFreqDirect {
 }
 
 impl GpuOperation for QueryNvapiClkDomainFreqDirect {
-    type Output = Option<nvapi_hi::nvapi::ClockDomainFreqDirect>;
+    type Output = Option<::nvapi::ClockDomainFreqDirect>;
 
     fn kind(&self) -> OperationKind {
         OperationKind::QueryNvapiClkDomainFreqDirect
@@ -2722,12 +2722,12 @@ impl GpuOperation for SetNvapiPStateNative {
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
         let lock = match self.lock {
-            NvapiPStateNativeLock::Reset => nvapi_hi::PStateNativeLock::Reset,
+            NvapiPStateNativeLock::Reset => ::nvapi::hi::PStateNativeLock::Reset,
             NvapiPStateNativeLock::PstateOnly { pstate } => {
-                nvapi_hi::PStateNativeLock::PstateOnly { pstate }
+                ::nvapi::hi::PStateNativeLock::PstateOnly { pstate }
             }
             NvapiPStateNativeLock::PstateAndFreq { pstate, freq_khz } => {
-                nvapi_hi::PStateNativeLock::PstateAndFreq { pstate, freq_khz }
+                ::nvapi::hi::PStateNativeLock::PstateAndFreq { pstate, freq_khz }
             }
         };
         target.nvapi()?.set_pstate_native(lock).map_err(Error::from)
@@ -2752,9 +2752,9 @@ impl GpuOperation for SetNvapiPerfFreqCap {
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
         let cap = match self.cap {
-            NvapiPerfFreqCap::Reset => nvapi_hi::PerfFreqCap::Reset,
+            NvapiPerfFreqCap::Reset => ::nvapi::hi::PerfFreqCap::Reset,
             NvapiPerfFreqCap::Cap { max_khz, min_khz } => {
-                nvapi_hi::PerfFreqCap::Cap { max_khz, min_khz }
+                ::nvapi::hi::PerfFreqCap::Cap { max_khz, min_khz }
             }
         };
         target.nvapi()?.set_perf_freq_cap(cap).map_err(Error::from)
@@ -3315,14 +3315,14 @@ pub fn detect_gpu_type(gpu_name: &str) -> super::gpu_type::GpuType {
     super::gpu_type::detect_gpu_type(gpu_name)
 }
 
-pub fn fetch_gpu_type(info: &nvapi_hi::GpuInfo) -> Result<super::gpu_type::GpuType, Error> {
+pub fn fetch_gpu_type(info: &::nvapi::hi::GpuInfo) -> Result<super::gpu_type::GpuType, Error> {
     super::gpu_type::fetch_gpu_type(info)
 }
 
 pub fn find_matching_vfp_point(
-    vfp_table: &std::collections::BTreeMap<usize, nvapi_hi::VfpPoint>,
-    sensor_v: nvapi_hi::Microvolts,
-) -> Option<(&usize, &nvapi_hi::VfpPoint)> {
+    vfp_table: &std::collections::BTreeMap<usize, ::nvapi::hi::VfpPoint>,
+    sensor_v: ::nvapi::hi::Microvolts,
+) -> Option<(&usize, &::nvapi::hi::VfpPoint)> {
     low_nvapi::find_matching_vfp_point(vfp_table, sensor_v)
 }
 
@@ -3450,7 +3450,7 @@ where
 
 pub fn set_nvapi_cooler_settings<I>(target: &GpuTarget<'_>, settings: I) -> Result<(), Error>
 where
-    I: IntoIterator<Item = (nvapi_hi::FanCoolerId, nvapi_hi::CoolerSettings)>,
+    I: IntoIterator<Item = (::nvapi::hi::FanCoolerId, ::nvapi::hi::CoolerSettings)>,
 {
     target
         .nvapi()?

@@ -7,8 +7,8 @@ use super::nvml::{
 };
 use super::result::PstateBaseVoltage;
 use super::types::{NvapiLockedVoltageTarget, VfpResetDomain};
-use nvapi_hi::nvapi::{CelsiusShifted, DisplayIdsFlags, VoltageDomain};
-use nvapi_hi::{
+use ::nvapi::{CelsiusShifted, DisplayIdsFlags, VoltageDomain};
+use ::nvapi::hi::{
     Celsius, ClockDomain, ClockLockEntry, ClockLockValue, ConnectedIdsFlags, CoolerPolicy,
     CoolerSettings, FanCoolerId, Gpu, Kilohertz, KilohertzDelta, Microvolts, MicrovoltsDelta,
     PState, Percentage, PerfLimitId, PffCurve, PffPoint, VfpPoint,
@@ -124,7 +124,7 @@ pub fn set_pstate_base_voltage(
     delta_uv: MicrovoltsDelta,
     target_pstate: PState,
 ) -> Result<(), Error> {
-    use nvapi_hi::sys::gpu::pstate as sys_pstate;
+    use ::nvapi::sys::gpu::pstate as sys_pstate;
 
     // 1. 先读取当前 pstate 信息，确认目标 pstate 的 baseVoltages 可写并取得允许范围
     let pstates = gpu
@@ -166,7 +166,7 @@ pub fn set_pstate_base_voltage(
 
     // 2. 构造最小化的 NV_GPU_PERF_PSTATES20_INFO，只填目标 pstate 的 baseVoltages，不修改时钟
     let mut info = sys_pstate::NV_GPU_PERF_PSTATES20_INFO::default();
-    info.bIsEditable = nvapi_hi::sys::types::BoolU32::from(true);
+    info.bIsEditable = ::nvapi::sys::types::BoolU32::from(true);
     info.numPstates = 1;
     info.numClocks = 0; // 不修改时钟
     info.numBaseVoltages = 1; // 一个核心电压条目
@@ -174,11 +174,11 @@ pub fn set_pstate_base_voltage(
     {
         let pe = &mut info.pstates[0];
         pe.pstateId = target_pstate.value();
-        pe.bIsEditable = nvapi_hi::sys::types::BoolU32::from(true);
+        pe.bIsEditable = ::nvapi::sys::types::BoolU32::from(true);
 
         let ve = &mut pe.baseVoltages[0];
         ve.domainId = VoltageDomain::Core.value();
-        ve.bIsEditable = nvapi_hi::sys::types::BoolU32::from(true);
+        ve.bIsEditable = ::nvapi::sys::types::BoolU32::from(true);
         ve.volt_uV = base_volt.voltage.0;
         ve.voltDelta_uV.value = delta_uv.0;
         ve.voltDelta_uV.min = range.min.0;
@@ -427,7 +427,7 @@ fn restore_memory_vfp(gpu: &Gpu, vfp: &BTreeMap<usize, KilohertzDelta>) -> Resul
 /// 单个 pstate 失败时打印警告并继续，不中断其他 pstate 的清零。
 #[allow(clippy::field_reassign_with_default)] // struct literal form fails: NV_GPU_PERF_PSTATES20_INFO V1/V2 type alias mismatch
 pub fn reset_all_pstate_base_voltages(gpu: &Gpu) -> Result<(), Error> {
-    use nvapi_hi::sys::gpu::pstate as sys_pstate;
+    use ::nvapi::sys::gpu::pstate as sys_pstate;
 
     let pstates = gpu
         .inner()
@@ -453,7 +453,7 @@ pub fn reset_all_pstate_base_voltages(gpu: &Gpu) -> Result<(), Error> {
 
         // 构造单 pstate 写入结构
         let mut info = sys_pstate::NV_GPU_PERF_PSTATES20_INFO::default();
-        info.bIsEditable = nvapi_hi::sys::types::BoolU32::from(true);
+        info.bIsEditable = ::nvapi::sys::types::BoolU32::from(true);
         info.numPstates = 1;
         info.numClocks = 0;
         info.numBaseVoltages = 1;
@@ -461,11 +461,11 @@ pub fn reset_all_pstate_base_voltages(gpu: &Gpu) -> Result<(), Error> {
         {
             let pe = &mut info.pstates[0];
             pe.pstateId = ps.id.value();
-            pe.bIsEditable = nvapi_hi::sys::types::BoolU32::from(true);
+            pe.bIsEditable = ::nvapi::sys::types::BoolU32::from(true);
 
             let ve = &mut pe.baseVoltages[0];
             ve.domainId = VoltageDomain::Core.value();
-            ve.bIsEditable = nvapi_hi::sys::types::BoolU32::from(true);
+            ve.bIsEditable = ::nvapi::sys::types::BoolU32::from(true);
             ve.volt_uV = base_volt.voltage.0;
             ve.voltDelta_uV.value = 0; // 清零
             ve.voltDelta_uV.min = range.min.0;
@@ -918,7 +918,7 @@ pub fn query_domain_vf_points_indexed(
     gpu: &Gpu,
     domain: ClockDomain,
     infer_missing_default: bool,
-) -> Result<Vec<(usize, nvapi_hi::VfPoint)>, Error> {
+) -> Result<Vec<(usize, ::nvapi::hi::VfPoint)>, Error> {
     let info = gpu.inner().vfp_info()?;
     let curve = gpu.inner().vfp_curve(&info)?;
     let table = gpu.inner().vfp_table(&info)?;
@@ -938,7 +938,7 @@ pub fn query_domain_vf_points_indexed(
             Ordering::Equal => {
                 let (i, point) = pts.next().unwrap();
                 let (_, delta) = dts.next().unwrap();
-                let mut point = nvapi_hi::VfPoint {
+                let mut point = ::nvapi::hi::VfPoint {
                     point_type: point.point_type,
                     voltage: point.configured().voltage,
                     frequency: point.configured().frequency,
@@ -972,7 +972,7 @@ pub fn set_nvapi_domain_vfp_deltas(
     domain: ClockDomain,
     deltas: &[(usize, KilohertzDelta)],
 ) -> Result<(), Error> {
-    use nvapi_hi::sys::gpu::clock::private::NV_GPU_CLOCK_CLIENT_CLK_VF_POINTS_CONTROL;
+    use ::nvapi::sys::gpu::clock::private::NV_GPU_CLOCK_CLIENT_CLK_VF_POINTS_CONTROL;
 
     let info = gpu
         .inner()
@@ -986,11 +986,11 @@ pub fn set_nvapi_domain_vfp_deltas(
     };
 
     unsafe {
-        let status = nvapi_hi::sys::api::NvAPI_GPU_ClockClientClkVfPointsGetControl(
+        let status = ::nvapi::sys::api::NvAPI_GPU_ClockClientClkVfPointsGetControl(
             *gpu.inner().handle(),
             &mut data,
         );
-        nvapi_hi::sys::status_result(status).map_err(|e| {
+        ::nvapi::sys::status_result(status).map_err(|e| {
             Error::Custom(format!(
                 "NvAPI_GPU_ClockClientClkVfPointsGetControl failed: {:?}",
                 e
@@ -1010,11 +1010,11 @@ pub fn set_nvapi_domain_vfp_deltas(
     }
 
     unsafe {
-        let status = nvapi_hi::sys::api::NvAPI_GPU_ClockClientClkVfPointsSetControl(
+        let status = ::nvapi::sys::api::NvAPI_GPU_ClockClientClkVfPointsSetControl(
             *gpu.inner().handle(),
             &data,
         );
-        nvapi_hi::sys::status_result(status).map_err(|e| {
+        ::nvapi::sys::status_result(status).map_err(|e| {
             Error::Custom(format!(
                 "NvAPI_GPU_ClockClientClkVfPointsSetControl failed: {:?}",
                 e
@@ -1286,7 +1286,7 @@ pub fn set_vfp_range(
 }
 
 pub fn set_legacy_clocks_nvapi(gpu: &Gpu, core_mhz: u32, mem_mhz: u32) -> Result<(), Error> {
-    use nvapi_hi::sys::nvapi_QueryInterface;
+    use ::nvapi::sys::nvapi_QueryInterface;
     use std::mem;
 
     const NVAPI_GPU_SET_CLOCKS_ID: u32 = 0x6f151055;
@@ -1320,14 +1320,14 @@ pub fn set_legacy_clocks_nvapi(gpu: &Gpu, core_mhz: u32, mem_mhz: u32) -> Result
 
         #[allow(improper_ctypes_definitions)]
         type SetClocksFn = unsafe extern "system" fn(
-            h_physical_gpu: nvapi_hi::sys::api::NvPhysicalGpuHandle,
+            h_physical_gpu: ::nvapi::sys::api::NvPhysicalGpuHandle,
             p_clks: *mut NvClocksInfo,
-        ) -> nvapi_hi::sys::Status;
+        ) -> ::nvapi::sys::Status;
 
         let func: SetClocksFn = mem::transmute(ptr);
         let status = func(*gpu.inner().handle(), &mut info);
 
-        if status != nvapi_hi::sys::Status::Ok {
+        if status != ::nvapi::sys::Status::Ok {
             return Err(Error::Custom(format!(
                 "Failed to call legacy interface NvAPI_GPU_SetClocks, error code: {:?}",
                 status
