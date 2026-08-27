@@ -173,11 +173,11 @@ pub fn set_pstate_base_voltage(
 
     {
         let pe = &mut info.pstates[0];
-        pe.pstateId = target_pstate.raw();
+        pe.pstateId = target_pstate.value();
         pe.bIsEditable = nvapi_hi::sys::types::BoolU32::from(true);
 
         let ve = &mut pe.baseVoltages[0];
-        ve.domainId = VoltageDomain::Core.raw();
+        ve.domainId = VoltageDomain::Core.value();
         ve.bIsEditable = nvapi_hi::sys::types::BoolU32::from(true);
         ve.volt_uV = base_volt.voltage.0;
         ve.voltDelta_uV.value = delta_uv.0;
@@ -460,11 +460,11 @@ pub fn reset_all_pstate_base_voltages(gpu: &Gpu) -> Result<(), Error> {
 
         {
             let pe = &mut info.pstates[0];
-            pe.pstateId = ps.id.raw();
+            pe.pstateId = ps.id.value();
             pe.bIsEditable = nvapi_hi::sys::types::BoolU32::from(true);
 
             let ve = &mut pe.baseVoltages[0];
-            ve.domainId = VoltageDomain::Core.raw();
+            ve.domainId = VoltageDomain::Core.value();
             ve.bIsEditable = nvapi_hi::sys::types::BoolU32::from(true);
             ve.volt_uV = base_volt.voltage.0;
             ve.voltDelta_uV.value = 0; // 清零
