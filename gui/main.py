@@ -17,6 +17,13 @@ for _var in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
 # Ensure the project root is in path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# Cap BLAS/OpenMP thread pools BEFORE numpy/matplotlib load (they arrive via
+# src imports in main()): the GUI does no matrix math, and the default
+# per-core OpenBLAS arenas commit ~650MB of pagefile for nothing (measured:
+# full-stack commit 681MB -> 70MB).
+for _var in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
+    os.environ.setdefault(_var, "1")
+
 # Fix blurry/tiny rendering on Windows HiDPI displays (e.g. 150% scaling).
 if sys.platform == "win32":
     try:
@@ -38,12 +45,14 @@ def _tkinter_install_hint() -> str:
     if sys.platform == "win32":
         return (
             "Install Python from python.org with the Tcl/Tk option enabled, "
-            "then recreate or resync the virtual environment."
+            "then recreate or resync the virtual environment.\n"
+            'Verify the interpreter first: `python -c "import tkinter"`.'
         )
     if sys.platform == "darwin":
         return (
             "Install a Python build that includes Tcl/Tk support, then recreate "
-            "or resync the virtual environment."
+            "or resync the virtual environment.\n"
+            'Verify the interpreter first: `python -c "import tkinter"`.'
         )
     return (
         "Install Tk support for the Python interpreter, then recreate or resync "
