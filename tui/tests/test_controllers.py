@@ -10,7 +10,7 @@ from nvoc_tui.controllers.dashboard import DashboardController
 from nvoc_tui.controllers.header import HeaderController
 from nvoc_tui.controllers.overclock import OverclockController
 from nvoc_tui.controllers.vfcurve import VFCurveController
-from nvoc_tui.models import AppConfig, GpuCache, GpuDescriptor
+from nvoc_tui.models import AppConfig, CurveData, GpuCache, GpuDescriptor
 
 
 class FakeApp:
@@ -66,6 +66,9 @@ class FakeApp:
     def call_from_thread(self, callback, *args) -> None:
         callback(*args)
 
+    def call_after_refresh(self, callback, *args) -> None:
+        callback(*args)
+
     def run_native_action(self, description: str, action) -> None:
         self.actions.append(description)
         output = action(self.native)
@@ -73,10 +76,27 @@ class FakeApp:
         if output:
             self.write_log(output)
 
+    def run_action_chain(self, commands) -> None:
+        for description, action in commands:
+            self.actions.append(description)
+            output = action(self.native)
+            self.action_outputs.append(output)
+            if output:
+                self.write_log(output)
+
     def run_query(
-        self, command_name: str, callback, *, log_output: bool = True
+        self,
+        command_name: str,
+        callback,
+        *,
+        log_output: bool = True,
+        allow_wake: bool = True,
     ) -> None:
-        self.query_calls.append((command_name, callback, log_output))
+        self.query_calls.append((
+            command_name,
+            callback,
+            {"log_output": log_output, "allow_wake": allow_wake},
+        ))
 
     def write_log(self, text: str) -> None:
         self.logs.append(text)
@@ -137,10 +157,12 @@ class FakeNative:
     def __init__(self) -> None:
         self.calls: list[tuple] = []
         self.raise_on_set_clock: Exception | None = None
+        self.raise_on_set_vfp_point_private: Exception | None = None
+        self.direct_freq_khz: int = 0
 
-    def query_domain_vfp_points(self, gpu, domain, infer_missing_default):
+    def query_public_vftable(self, gpu, domain, infer_missing_default):
         self.calls.append((
-            "query_domain_vfp_points",
+            "query_public_vftable",
             gpu,
             domain,
             infer_missing_default,
@@ -155,6 +177,50 @@ class FakeNative:
             }
         ]
 
+    def query_private_vftable(self, gpu):
+        self.calls.append(("query_private_vftable", gpu))
+        return None
+
+    def query_private_freq_domain_status(self, gpu, domain_bit):
+        self.calls.append(("query_private_freq_domain_status", gpu, domain_bit))
+        return {"domain_bit": domain_bit, "freq_khz": self.direct_freq_khz}
+
+    def set_vfp_point_private(self, gpu, bank, index, delta_khz, freq_mode):
+        self.calls.append((
+            "set_vfp_point_private",
+            gpu,
+            bank,
+            index,
+            delta_khz,
+            freq_mode,
+        ))
+        if self.raise_on_set_vfp_point_private is not None:
+            raise self.raise_on_set_vfp_point_private
+        return {"applied": True}
+
+    def set_vfp_range_per_point_private(self, gpu, bank, start, end, deltas):
+        self.calls.append((
+            "set_vfp_range_per_point_private",
+            gpu,
+            bank,
+            start,
+            end,
+            list(deltas),
+        ))
+        return {"applied": True}
+
+    def clk_vf_delta_for_target_mhz(self, def_mhz, delta_mhz, class_name):
+        # Mirrors the call semantics used by the GUI/TUI raw-converted path:
+        # the 2nd argument is the desired MHz offset (not an absolute
+        # target); the raw f-offset scales it 10×.
+        self.calls.append((
+            "clk_vf_delta_for_target_mhz",
+            def_mhz,
+            delta_mhz,
+            class_name,
+        ))
+        return {"delta": int(delta_mhz * 10)}
+
     def set_power_limit(self, gpu, backend, value):
         self.calls.append(("set_power_limit", gpu, backend, value))
 
@@ -163,6 +229,36 @@ class FakeNative:
 
     def set_voltage_boost(self, gpu, value):
         self.calls.append(("set_voltage_boost", gpu, value))
+
+    def set_legacy_voltage_delta(self, gpu, delta_uv, pstate):
+        self.calls.append(("set_legacy_voltage_delta", gpu, delta_uv, pstate))
+
+    def set_clk_domain_offset(self, gpu, domain_bit, offset_khz, flags, unknown):
+        self.calls.append((
+            "set_clk_domain_offset",
+            gpu,
+            domain_bit,
+            offset_khz,
+            flags,
+            unknown,
+        ))
+        return {"applied": True, "applied_kHz": offset_khz}
+
+    def set_volt_rail_target(self, gpu, rail_bit, target_mv, unknown):
+        self.calls.append(("set_volt_rail_target", gpu, rail_bit, target_mv, unknown))
+        return {"applied": True, "effective_wall_uV": int(target_mv * 1000)}
+
+    def set_ppab_status(self, gpu, enabled):
+        self.calls.append(("set_ppab_status", gpu, enabled))
+
+    def set_dnotifier(self, gpu, level):
+        self.calls.append(("set_dnotifier", gpu, level))
+
+    def set_tgp_watt(self, gpu, watts, policy_index):
+        self.calls.append(("set_tgp_watt", gpu, watts, policy_index))
+
+    def set_target_temp(self, gpu, celsius, policy_index):
+        self.calls.append(("set_target_temp", gpu, celsius, policy_index))
 
     def set_fan(self, gpu, backend, fan_id, policy, level):
         self.calls.append(("set_fan", gpu, backend, fan_id, policy, level))
@@ -203,10 +299,11 @@ def test_dashboard_tick_suppresses_status_json_output() -> None:
     DashboardController(app).tick()
 
     assert len(app.query_calls) == 1
-    command_name, callback, log_output = app.query_calls[0]
+    command_name, callback, kwargs = app.query_calls[0]
     assert command_name == "status"
     assert callback.__name__ == "on_status_loaded"
-    assert log_output is False
+    assert kwargs["log_output"] is False
+    assert kwargs["allow_wake"] is True  # first sample may wake the GPU
 
 
 def test_offline_error_classification_excludes_unsupported_features() -> None:
@@ -564,8 +661,7 @@ def test_vfcurve_refresh_keeps_points_in_memory(tmp_path: Path) -> None:
             "default_frequency_khz": 1750000,
         }
     ]
-    app.native_service.query_domain_vfp_points = lambda _gpu: points
-
+    app.native_service.query_public_vftable = lambda _gpu: points
     app.native_service.submit_query = lambda job: job()
     controller = VFCurveController(app)
     rendered: list[bool] = []
@@ -642,13 +738,54 @@ def test_vfcurve_lock_voltage_accepts_mv_value() -> None:
 
 def test_vfcurve_reset_vfp_reports_success() -> None:
     app = FakeApp()
+    controller = VFCurveController(app)
+    controller._curves = {
+        "gpc": CurveData(
+            "gpc",
+            write_mode="public",
+            seg_start=0,
+            seg_end=1,
+            frequencies=[1800.0, 1900.0],
+            defaults=[1785.0, 1890.0],
+        )
+    }
 
-    assert VFCurveController(app).handle_button("vf-reset") is True
+    assert controller.handle_button("vf-reset") is True
 
     assert app.actions == ["reset VFP deltas"]
-    assert app.action_outputs == ["Successfully reset VFP deltas."]
-    assert app.logs == ["Successfully reset VFP deltas."]
-    assert app.native.calls == [("reset_vfp_deltas", "0x0000", "all")]
+    assert app.action_outputs == [
+        "Successfully reset GPC curve to default (0-1, public)."
+    ]
+    assert app.logs == ["Successfully reset GPC curve to default (0-1, public)."]
+    assert app.native.calls == [("set_vfp_range_delta", "0x0000", 0, 1, 0)]
+
+
+def test_vfcurve_reset_private_curve_uses_mode0_clear() -> None:
+    app = FakeApp()
+    controller = VFCurveController(app)
+    controller._curves = {
+        "xbar": CurveData(
+            "xbar",
+            source="private",
+            write_mode="private",
+            bank=1,
+            seg_start=2,
+            seg_end=4,
+            frequencies=[1000.0, 1100.0, 1200.0],
+            defaults=[1000.0, 1100.0, 1200.0],
+        )
+    }
+    controller._active_curve = "xbar"
+
+    assert controller.handle_button("vf-reset") is True
+
+    assert app.actions == ["reset VFP deltas"]
+    assert app.native.calls == [
+        ("set_vfp_point_private", "0x0000", 1, 2, 0, True),
+        ("set_vfp_point_private", "0x0000", 1, 3, 0, True),
+        ("set_vfp_point_private", "0x0000", 1, 4, 0, True),
+    ]
+    assert "Successfully reset XBAR (private mode-0, 2-4)." in app.action_outputs
 
 
 def test_vfcurve_apply_adjustment_reports_success() -> None:
@@ -658,8 +795,17 @@ def test_vfcurve_apply_adjustment_reports_success() -> None:
         "#vf-range-end": SimpleNamespace(value="5"),
         "#vf-delta": SimpleNamespace(value="125"),
     }
+    controller = VFCurveController(app)
+    controller._curves = {
+        "gpc": CurveData(
+            "gpc",
+            write_mode="public",
+            frequencies=[1800.0] * 11,
+            defaults=[1785.0] * 11,
+        )
+    }
 
-    assert VFCurveController(app).handle_button("vf-apply-adj") is True
+    assert controller.handle_button("vf-apply-adj") is True
 
     assert app.actions == ["apply VFP range delta"]
     assert app.action_outputs == [
@@ -667,3 +813,413 @@ def test_vfcurve_apply_adjustment_reports_success() -> None:
     ]
     assert app.logs == ["Successfully applied 125 MHz VFP delta to points 5-10."]
     assert app.native.calls == [("set_vfp_range_delta", "0x0000", 5, 10, 125000)]
+
+
+def test_vfcurve_apply_private_mode0_then_raw_fallback() -> None:
+    app = FakeApp()
+    app.native.raise_on_set_vfp_point_private = RuntimeError("Argument range")
+    app.widgets = {
+        "#vf-range-start": SimpleNamespace(value="1"),
+        "#vf-range-end": SimpleNamespace(value="2"),
+        "#vf-delta": SimpleNamespace(value="100"),
+    }
+    controller = VFCurveController(app)
+    controller._curves = {
+        "xbar": CurveData(
+            "xbar",
+            source="private",
+            write_mode="private",
+            bank=1,
+            seg_start=5,
+            frequencies=[1000.0, 1100.0, 1200.0, 1300.0],
+            defaults=[1000.0, 1100.0, 1200.0, 1300.0],
+        )
+    }
+    controller._active_curve = "xbar"
+
+    assert controller.handle_button("vf-apply-adj") is True
+
+    # mode-0 attempted on the first point, rejected, then the whole range is
+    # re-applied via the raw-converted path.
+    assert app.native.calls[0] == (
+        "set_vfp_point_private",
+        "0x0000",
+        1,
+        6,
+        100000,
+        True,
+    )
+    assert ("clk_vf_delta_for_target_mhz", 1100, 100.0, "fabric") in app.native.calls
+    assert ("clk_vf_delta_for_target_mhz", 1200, 100.0, "fabric") in app.native.calls
+    range_call = app.native.calls[-1]
+    assert range_call[0] == "set_vfp_range_per_point_private"
+    assert range_call[1:5] == ("0x0000", 1, 6, 7)
+    assert range_call[5] == [1000, 1000]  # (100 MHz target) * 10 per FakeNative
+    assert (
+        "Successfully applied private raw-converted offsets to XBAR (2 pts)."
+        in app.action_outputs
+    )
+
+
+class _FakePlt:
+    def clear_figure(self) -> None:
+        pass
+
+    def clear_data(self) -> None:
+        pass
+
+    def clear_color(self) -> None:
+        pass
+
+    def plot(self, *args, **kwargs) -> None:
+        pass
+
+    def scatter(self, *args, **kwargs) -> None:
+        pass
+
+    def vline(self, *args, **kwargs) -> None:
+        pass
+
+    def hline(self, *args, **kwargs) -> None:
+        pass
+
+    def text(self, *args, **kwargs) -> None:
+        pass
+
+    def xlim(self, *args, **kwargs) -> None:
+        pass
+
+    def ylim(self, *args, **kwargs) -> None:
+        pass
+
+    def title(self, *args, **kwargs) -> None:
+        pass
+
+    def xlabel(self, *args, **kwargs) -> None:
+        pass
+
+    def ylabel(self, *args, **kwargs) -> None:
+        pass
+
+
+def _plot_widget() -> SimpleNamespace:
+    return SimpleNamespace(plt=_FakePlt(), refresh=lambda: None)
+
+
+def _selector_widgets() -> dict[str, SimpleNamespace]:
+    return {
+        "#vf-plot": _plot_widget(),
+        "#vf-active-curve": SimpleNamespace(
+            value="gpc", set_options=lambda options: None, disabled=False
+        ),
+        "#vf-curve-gpc": SimpleNamespace(value=True, disabled=False),
+        "#vf-curve-xbar": SimpleNamespace(value=True, disabled=False),
+        "#vf-curve-host": SimpleNamespace(value=True, disabled=False),
+    }
+
+
+def test_vfcurve_toggle_visibility_guards_last_visible_curve() -> None:
+    app = FakeApp()
+    app.widgets = _selector_widgets()
+    controller = VFCurveController(app)
+    controller._curves = {
+        "gpc": CurveData("gpc", frequencies=[1800.0], defaults=[1785.0]),
+        "xbar": CurveData("xbar", frequencies=[1200.0], defaults=[1200.0]),
+    }
+    controller._curve_visible = {"gpc": True, "xbar": True}
+    gpc_checkbox = app.widgets["#vf-curve-gpc"]
+    # Active falls back to xbar on hide → direct-read kick needs a queue.
+    app.native_service.submit_query = lambda job: None
+
+    # Hide GPC (active): allowed, active falls back to the other visible curve.
+    controller._toggle_curve_visible("gpc", gpc_checkbox)
+    assert controller._curve_visible == {"gpc": False, "xbar": True}
+    assert controller._active_curve == "xbar"
+
+    # Hide XBAR too (now the only visible curve): vetoed, checkbox snaps back.
+    xbar_checkbox = app.widgets["#vf-curve-xbar"]
+    controller._toggle_curve_visible("xbar", xbar_checkbox)
+    assert controller._curve_visible == {"gpc": False, "xbar": True}
+    assert xbar_checkbox.value is True
+
+
+def test_vfcurve_on_curve_loaded_builds_multi_curves() -> None:
+    app = FakeApp()
+    app.widgets = _selector_widgets()
+    controller = VFCurveController(app)
+    gpc_points = [
+        {
+            "index": 0,
+            "voltage_uv": 800000,
+            "frequency_khz": 1800000,
+            "default_frequency_khz": 1785000,
+        }
+    ]
+    clk_data = {
+        "segments": [
+            {
+                "kind": "vf_curve",
+                "domain": "xbar",
+                "bank": 1,
+                "start_index": 2,
+                "end_index": 3,
+            },
+            {
+                "kind": "pstate_bins",
+                "domain": "unknown",
+                "bank": 9,
+                "start_index": 0,
+                "end_index": 5,
+            },
+        ],
+        "points": [
+            {
+                "bank": 1,
+                "index": 2,
+                "voltage_uV": 700000,
+                "freq_current_mhz": 1200.0,
+                "freq_default_mhz": 1200.0,
+            },
+            {
+                "bank": 1,
+                "index": 3,
+                "voltage_uV": 750000,
+                "freq_current_mhz": 1300.0,
+                "freq_default_mhz": 1300.0,
+            },
+        ],
+    }
+
+    controller.on_curve_loaded(gpc_points, None, clk_data)
+
+    assert set(controller._curves) == {"gpc", "xbar"}
+    assert controller._curves["gpc"].write_mode == "public"
+    assert controller._curves["xbar"].bank == 1
+    assert controller._curves["xbar"].seg_start == 2
+    assert controller._curves["xbar"].seg_end == 3
+    assert app.cache.vf_curves is controller._curves
+    assert app.cache.curve_visible == {"gpc": True, "xbar": True}
+
+
+def test_vfcurve_direct_read_updates_live_point() -> None:
+    app = FakeApp()
+    app.widgets = _selector_widgets()
+    controller = VFCurveController(app)
+    controller._curves = {
+        "xbar": CurveData(
+            "xbar",
+            voltages=[700.0, 750.0, 800.0],
+            frequencies=[1200.0, 1300.0, 1400.0],
+            defaults=[1200.0, 1300.0, 1400.0],
+        )
+    }
+    controller._curve_visible = {"xbar": True}
+    controller._active_curve = "xbar"
+    scheduled: list[object] = []
+    app.native_service.submit_query = lambda job: scheduled.append(job)
+    app.native_service.query_private_freq_domain_status = (
+        app.native.query_private_freq_domain_status
+    )
+    app.native.direct_freq_khz = 1350000
+
+    controller._kick_direct_read("xbar")
+    assert controller._direct_read_inflight is True
+    assert len(scheduled) == 1
+
+    # 1350 MHz → halfway between the 1300/1400 points → 775 mV.
+    scheduled[0]()
+    assert controller._direct_read_inflight is False
+    assert app.cache.vf_live_point == (775.0, 1350.0)
+
+
+def _oc_app(**info: object) -> FakeApp:
+    app = FakeApp()
+    app.cache.info = dict(info)
+    app.widgets = {
+        "#oc-api": SimpleNamespace(value="nvapi"),
+        "#power-api": SimpleNamespace(value="nvapi"),
+        "#core-offset": SimpleNamespace(value="100"),
+        "#mem-offset": SimpleNamespace(value="200"),
+        "#xbar-offset": SimpleNamespace(value="60"),
+        "#power-limit": SimpleNamespace(value="110"),
+        "#thermal-limit": SimpleNamespace(value="88"),
+        "#voltage-boost": SimpleNamespace(value="25"),
+        "#mobile-ppab": SimpleNamespace(value="on"),
+        "#mobile-dnotifier": SimpleNamespace(value=3),
+        "#mobile-tgp": SimpleNamespace(value="100"),
+        "#mobile-target-temp": SimpleNamespace(value="85"),
+        "#mobile-volt-limit": SimpleNamespace(value="1050"),
+    }
+    return app
+
+
+def test_overclock_apply_oc_includes_xbar_when_supported() -> None:
+    app = _oc_app(xbar_supported=True)
+
+    assert OverclockController(app).handle_button("oc-apply") is True
+
+    assert app.actions == ["apply overclock"]
+    calls = app.native.calls
+    assert calls == [
+        ("set_clock_offset", "0x0000", "nvapi", "core", 100, "P0"),
+        ("set_clock_offset", "0x0000", "nvapi", "memory", 200, "P0"),
+        ("set_clk_domain_offset", "0x0000", 1, 60000, None, None),
+    ]
+    assert "Successfully applied nvapi overclock." in app.action_outputs[0]
+    assert "Successfully applied Xbar offset +60 MHz" in app.action_outputs[0]
+
+
+def test_overclock_apply_oc_skips_xbar_when_unsupported() -> None:
+    app = _oc_app(xbar_supported=False)
+
+    OverclockController(app).handle_button("oc-apply")
+
+    assert not any(c[0] == "set_clk_domain_offset" for c in app.native.calls)
+
+
+def test_overclock_apply_oc_skips_xbar_under_nvml_backend() -> None:
+    app = _oc_app(xbar_supported=True)
+    app.widgets["#oc-api"] = SimpleNamespace(value="nvml")
+
+    OverclockController(app).handle_button("oc-apply")
+
+    assert not any(c[0] == "set_clk_domain_offset" for c in app.native.calls)
+
+
+def test_overclock_xbar_supported_arch_heuristic() -> None:
+    app = _oc_app(codename="AD107-B", gpu_architecture="Unknown:400:7:161")
+    controller = OverclockController(app)
+    assert controller.xbar_supported() is True
+
+    app2 = _oc_app(gpu_name="NVIDIA GeForce GTX 1080")
+    assert OverclockController(app2).xbar_supported() is False
+
+    app3 = _oc_app(gpu_name="NVIDIA GeForce RTX 4060 Laptop GPU")
+    assert OverclockController(app3).xbar_supported() is True
+
+
+def test_overclock_reset_oc_chain_resets_xbar_when_supported() -> None:
+    app = _oc_app(xbar_supported=True)
+
+    assert OverclockController(app).handle_button("oc-reset") is True
+
+    assert app.actions == [
+        "reset core offset",
+        "reset memory offset",
+        "reset xbar offset",
+    ]
+    assert ("set_clk_domain_offset", "0x0000", 1, 0, None, None) in app.native.calls
+    assert "Successfully applied Xbar offset +0 MHz" in "\n".join(app.logs)
+
+
+def test_overclock_reset_oc_chain_skips_xbar_when_unsupported() -> None:
+    app = _oc_app(xbar_supported=False)
+
+    OverclockController(app).handle_button("oc-reset")
+
+    assert app.actions == ["reset core offset", "reset memory offset"]
+    assert not any(c[0] == "set_clk_domain_offset" for c in app.native.calls)
+
+
+def test_overclock_apply_limits_routes_legacy_overvolt() -> None:
+    app = _oc_app(is_legacy_voltage=True)
+
+    assert OverclockController(app).handle_button("limits-apply") is True
+
+    assert app.native.calls == [
+        ("set_power_limit", "0x0000", "nvapi", 110),
+        ("set_thermal_limit", "0x0000", 88),
+        ("set_legacy_voltage_delta", "0x0000", 25000, "P0"),
+    ]
+
+
+def test_overclock_is_legacy_voltage_heuristic() -> None:
+    app = _oc_app(gpu_name="NVIDIA GeForce GTX 970")
+    assert OverclockController(app).is_legacy_voltage() is True
+
+    app2 = _oc_app(gpu_name="NVIDIA GeForce RTX 4060 Laptop GPU")
+    assert OverclockController(app2).is_legacy_voltage() is False
+
+    app3 = _oc_app(codename="GM204")
+    assert OverclockController(app3).is_legacy_voltage() is True
+
+
+def test_overclock_mobile_apply_includes_volt_limit() -> None:
+    app = _oc_app(is_mobile=True)
+    controller = OverclockController(app)
+    controller._volt_limit_supported = True
+    controller._volt_limit_range = (300.0, 1100.0)
+    controller._volt_rail_bit = 0
+
+    assert controller.handle_button("mobile-apply") is True
+
+    assert ("set_volt_rail_target", "0x0000", 0, 1050.0, None) in app.native.calls
+    assert "Successfully applied Volt Limit 1050 mV" in app.action_outputs[0]
+
+
+def test_overclock_mobile_apply_clamps_volt_limit_to_walls() -> None:
+    app = _oc_app(is_mobile=True)
+    app.widgets["#mobile-volt-limit"] = SimpleNamespace(value="1500")
+    controller = OverclockController(app)
+    controller._volt_limit_supported = True
+    controller._volt_limit_range = (300.0, 1100.0)
+
+    controller.handle_button("mobile-apply")
+
+    assert ("set_volt_rail_target", "0x0000", 0, 1100.0, None) in app.native.calls
+
+
+def test_overclock_mobile_apply_skips_volt_limit_when_unavailable() -> None:
+    app = _oc_app(is_mobile=True)
+    controller = OverclockController(app)
+
+    controller.handle_button("mobile-apply")
+
+    assert not any(c[0] == "set_volt_rail_target" for c in app.native.calls)
+
+
+def test_overclock_volt_limit_bounds_from_p0_walls() -> None:
+    bounds = OverclockController._volt_limit_bounds_from_p0({
+        "vbios_wall_uV": 1_085_000,
+        "vrm_max_wall_uV": 1_100_000,
+        "effective_wall_uV": 1_060_000,
+    })
+    # min(VBIOS, VRM) = 1085 mV snapped down to the 2.5 mV grid; position
+    # 1060 mV is already on-grid.
+    assert bounds == (300.0, 1085.0, 1060.0)
+
+    # No walls reported → 1200 mV fallback; no effective wall → sit at max.
+    assert OverclockController._volt_limit_bounds_from_p0({}) == (
+        300.0,
+        1200.0,
+        1200.0,
+    )
+
+
+def test_overclock_resolve_volt_rail_bit() -> None:
+    assert (
+        OverclockController._resolve_volt_rail_bit({
+            "rail_descriptors": [{"rail_bit": 2}],
+        })
+        == 2
+    )
+    assert OverclockController._resolve_volt_rail_bit({"rail_mask": "0x5"}) == 0
+    assert OverclockController._resolve_volt_rail_bit({"rail_mask": "0x8"}) == 3
+    assert OverclockController._resolve_volt_rail_bit({}) == 0
+
+
+def test_overclock_format_volt_rail_result_messages() -> None:
+    assert (
+        OverclockController._format_volt_rail_result(
+            1050.0, {"applied": True, "effective_wall_uV": 1_045_000}
+        )
+        == "Successfully applied Volt Limit 1050 mV (effective wall 1045 mV)."
+    )
+    assert (
+        OverclockController._format_volt_rail_result(1050.0, {"supported": False})
+        == "Volt-rail target not supported by this driver."
+    )
+    assert (
+        OverclockController._format_volt_rail_result(1050.0, {"applied": True})
+        == "Successfully applied Volt Limit 1050 mV."
+    )
