@@ -18,7 +18,7 @@ pub use gpu_type::{
 pub use self::nvapi::{
     CoolerTarget, GpuTdpTempLimits, VfpLockRequest, nvapi_overvolt_reported, set_nvapi_overvolt,
 };
-pub use ::nvapi::sys::gpu::power::private::Wm2AcousticMode;
+pub use ::nvapi::sys::gpu::power::undocumented::Wm2AcousticMode;
 pub use ::nvapi::{P0VoltageBounds, VoltRails};
 pub use operation::{
     CheckVoltageFrequency, ClearEdid, DisableNvapiThermalSim, GetFanCurves, GetPowerMode,

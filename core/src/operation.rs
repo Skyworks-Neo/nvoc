@@ -1836,7 +1836,7 @@ impl GpuOperation for SetNvapiVoltRailOffset {
                     .find(|e| e.rail_bit == self.rail_bit && e.entry_type == 1)
                     // status payload index 4 = effective wall (clamped to
                     // min(target, vbios_wall, vrm_max_wall)); see
-                    // nvapi-rs sys::gpu::power::private::status_values
+                    // nvapi-rs sys::gpu::power::undocumented::status_values
                     .map(|e| e.values[4])
             })
             .unwrap_or(0);

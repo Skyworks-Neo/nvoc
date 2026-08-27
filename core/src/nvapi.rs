@@ -187,7 +187,7 @@ pub fn set_pstate_base_voltage(
 
     // 3. 调用私有 undocumented API，返回值 0 = NVAPI_OK
     let status =
-        unsafe { sys_pstate::private::NvAPI_GPU_SetPstates20(*gpu.inner().handle(), &info) };
+        unsafe { sys_pstate::undocumented::NvAPI_GPU_SetPstates20(*gpu.inner().handle(), &info) };
 
     if status != 0 {
         return Err(Error::from(format!(
@@ -473,7 +473,7 @@ pub fn reset_all_pstate_base_voltages(gpu: &Gpu) -> Result<(), Error> {
         }
 
         let status =
-            unsafe { sys_pstate::private::NvAPI_GPU_SetPstates20(*gpu.inner().handle(), &info) };
+            unsafe { sys_pstate::undocumented::NvAPI_GPU_SetPstates20(*gpu.inner().handle(), &info) };
 
         let _ = status;
     }
@@ -972,7 +972,7 @@ pub fn set_nvapi_domain_vfp_deltas(
     domain: ClockDomain,
     deltas: &[(usize, KilohertzDelta)],
 ) -> Result<(), Error> {
-    use ::nvapi::sys::gpu::clock::private::NV_GPU_CLOCK_CLIENT_CLK_VF_POINTS_CONTROL;
+    use ::nvapi::sys::gpu::clock::undocumented::NV_GPU_CLOCK_CLIENT_CLK_VF_POINTS_CONTROL;
 
     let info = gpu
         .inner()
