@@ -35,8 +35,9 @@ use nvoc_core::{
     SetPstateClockOffset, SetPublicVftablePointOffset, SetPublicVftableRangeOffset,
     SetTemperatureLimit, SetVfpFrequencyLock, SetVoltageBoost, SetWm2Active, SetWm2Mode,
     VfPointType, VfpResetDomain, Wm2AcousticMode, discover_targets, nvml_pstate_to_str,
-    parse_nvapi_locked_voltage_target, parse_nvml_fan_control_policy, parse_nvml_pstate, run,
-    select_targets,
+    parse_nvapi_locked_voltage_target, parse_nvml_fan_control_policy, parse_nvml_pstate,
+    query_domain_vf_points_indexed, query_domain_vfp_indices, run, select_targets,
+    set_nvapi_domain_vfp_deltas, sync_memory_pstate_as_p0,
 };
 use serde_json::{Value, json};
 use time::OffsetDateTime;
@@ -140,6 +141,7 @@ pub enum Command {
     GetStatus,
     GetSettings,
     GetPublicVftable,
+    SyncVfpMemoryPstate,
     GetPowerLimit,
     GetPstateGlobalFreqOffset,
     GetPstateFreqRange,
@@ -243,6 +245,7 @@ impl Command {
             Self::GetStatus => "get-status",
             Self::GetSettings => "get-settings",
             Self::GetPublicVftable => "get-public-vftable",
+            Self::SyncVfpMemoryPstate => "sync-vfp-memory-pstate",
             Self::GetPowerLimit => "get-power-limit",
             Self::GetPstateGlobalFreqOffset => "get-pstate-global-freq-offset",
             Self::GetPStateLock => "get-pstate-lock",
@@ -342,7 +345,10 @@ impl Command {
             Self::GetStatus => "Read NVAPI live GPU status",
             Self::GetSettings => "Read NVAPI overclock settings",
             Self::GetPublicVftable => {
-                "Read the public V-F curve table: default dumps all domains (graphics points plus the trailing memory entries, e.g. index 127..131 on 30/40 series); --domain gpc|memory narrows to one segment"
+                "Read the public V-F curve table: default dumps all domains (graphics points plus the trailing memory entries, e.g. index 127..131 on 30/40 series); --domain gpc|memory narrows to one segment; --output-csv PATH writes the single-domain curve as CSV (voltage,frequency,delta,default_frequency)"
+            }
+            Self::SyncVfpMemoryPstate => {
+                "Copy the memory VFP second-stage curve onto P0 (same core path as auto-optimizer's sync-vfp-memory-pstate)"
             }
             Self::GetPowerLimit => {
                 "Read power limits in watts: NVML min/current/max by default; falls back to the NVAPI TGP-watts range (min/default/max) where NVML is unsupported"
@@ -495,7 +501,9 @@ impl Command {
             Self::SetWhisperMode2Status => {
                 "Whisper Mode 2.0 status (0xD27D0629, mobile-only): on/off enable; --mode quieter|quiet|balanced also writes the acoustic mode (0xD2561B69)"
             }
-            Self::SetPublicVftablePointOffset => "Set one VFP point delta in MHz",
+            Self::SetPublicVftablePointOffset => {
+                "Set one VFP point delta in MHz; --import-csv PATH (with no positionals) applies a whole CSV curve (voltage,frequency,delta,default_frequency) instead — graphics domain sets points individually, other domains batch"
+            }
             Self::SetPublicVftableRangeOffset => "Set a VFP point range delta in MHz",
             Self::SetPstateLockViaMemRange => {
                 "Lock one NVML P-State or a contiguous range via memory freq range"
@@ -642,7 +650,9 @@ impl Command {
                 "indexed",
                 "infer-missing-default",
                 "no-infer-missing-default",
+                "output-csv",
             ],
+            Self::SetPublicVftablePointOffset => &["domain", "import-csv"],
             Self::GetDisplayList => &["all"],
             Self::GetPstateGlobalFreqOffset => &["domain", "pstate"],
             Self::SetPstateGlobalFreqOffset => &["domain", "pstate"],
@@ -1132,6 +1142,7 @@ const COMMANDS: &[Command] = &[
     Command::SetTempSim,
     Command::SetVoltRailLimit,
     Command::SetWhisperMode2Status,
+    Command::SyncVfpMemoryPstate,
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1257,6 +1268,21 @@ fn validate_invocation(invocation: &Invocation) -> CliResult<()> {
     }
 
     let (min_args, max_args) = command.arity();
+    // --import-csv replaces the positional single-point mode entirely: the CSV
+    // path carries the payload, so the 2 required positionals are waived (and
+    // must not be mixed in).
+    let (min_args, max_args) = if command == Command::SetPublicVftablePointOffset
+        && invocation.options.contains_key("import-csv")
+    {
+        if !invocation.positionals.is_empty() {
+            return Err(CliError::new(
+                "set-public-vftable-point-offset: positional args cannot be combined with --import-csv",
+            ));
+        }
+        (0, 0)
+    } else {
+        (min_args, max_args)
+    };
     if invocation.positionals.len() < min_args || invocation.positionals.len() > max_args {
         let expected = if min_args == max_args {
             min_args.to_string()
@@ -1431,6 +1457,16 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .action(ArgAction::Append)
             .global(true)
             .help("Domain selector, meaning depends on the command: clock domain (core/memory/processor/video), gpu|acoustic (set-temp-limit NVML path), core|mem (set-legacy-freq), or gpc|xbar|host (reset-private-vftable-offset)"),
+        "output-csv" => Arg::new("output-csv")
+            .long("output-csv")
+            .value_name("PATH")
+            .action(ArgAction::Set)
+            .help("get-public-vftable: write the single-domain curve to this CSV file (voltage,frequency,delta,default_frequency) instead of the JSON dump; requires --domain"),
+        "import-csv" => Arg::new("import-csv")
+            .long("import-csv")
+            .value_name("PATH")
+            .action(ArgAction::Set)
+            .help("set-public-vftable-point-offset: apply a whole CSV curve (voltage,frequency,delta,default_frequency) instead of a single point; takes no positionals (see --domain)"),
         "pstate" => Arg::new("pstate")
             .long("pstate")
             .value_name("PSTATE")
@@ -1595,7 +1631,15 @@ fn clap_subcommand(command: Command) -> ClapCommand {
         subcommand = subcommand.alias("set-legacy-overvolt-uv");
     }
     for (index, positional) in command.positional_args().into_iter().enumerate() {
-        subcommand = subcommand.arg(positional_arg(positional, index < min_args));
+        let arg = positional_arg(positional, index < min_args);
+        // --import-csv replaces the positional single-point payload; see
+        // validate_invocation for the matching arity waiver.
+        let arg = if command == Command::SetPublicVftablePointOffset {
+            arg.required(false).required_unless_present("import-csv")
+        } else {
+            arg
+        };
+        subcommand = subcommand.arg(arg);
     }
     for option in command.allowed_options() {
         subcommand = subcommand.arg(command_specific_arg(option));
@@ -2246,6 +2290,10 @@ fn execute_target(
         }
         Command::GetSettings => Ok(serde_json::to_value(run(target, QueryGpuSettings)?.output)?),
         Command::GetPublicVftable => get_vfp(target, invocation),
+        Command::SyncVfpMemoryPstate => {
+            sync_memory_pstate_as_p0(target)?;
+            Ok(json!({"applied": true}))
+        }
         Command::GetPowerLimit => {
             // Merged power-limit getter: the NVML power-management limits
             // (min/current/max) are the primary surface; where NVML is
@@ -3895,6 +3943,64 @@ fn execute_target(
             Ok(out)
         }
         Command::SetPublicVftablePointOffset => {
+            // --import-csv mode: apply a whole CSV curve (validated positionless
+            // in validate_invocation). Mirrors auto-optimizer's handle_vfp_import:
+            // graphics sets points individually via SetPublicVftablePointOffset,
+            // other domains (notably memory) batch via set_nvapi_domain_vfp_deltas.
+            if let Some(path) = option_one(invocation, "import-csv") {
+                let domain = match option_one(invocation, "domain") {
+                    Some(raw) => parse_domain(raw)?,
+                    None => ClockDomain::Graphics,
+                };
+                let rows = parse_vfp_csv(path)?;
+                if rows.is_empty() {
+                    return Err(CliError::new(format!("CSV file {path:?} has no data rows")));
+                }
+
+                let deltas: Vec<(usize, KilohertzDelta)> = if domain == ClockDomain::Memory {
+                    let vfp_indices = query_domain_vfp_indices(target, domain)?;
+                    if rows.len() != vfp_indices.len() {
+                        return Err(CliError::new(format!(
+                            "Memory VFP import row count mismatch: CSV has {} rows but GPU table \
+                             has {} points; export the current curve first to ensure row counts \
+                             match",
+                            rows.len(),
+                            vfp_indices.len()
+                        )));
+                    }
+                    rows.into_iter()
+                        .zip(vfp_indices.iter())
+                        .map(|((_voltage, _frequency, delta, _default), i)| {
+                            (*i, KilohertzDelta(delta))
+                        })
+                        .collect()
+                } else {
+                    let vfp = query_domain_vf_points_indexed(target, domain, false)?;
+                    rows.into_iter()
+                        .filter_map(|(voltage, _frequency, delta, _default)| {
+                            vfp.iter()
+                                .find(|&(_, v)| v.voltage.0 == voltage)
+                                .map(|(i, _)| (*i, KilohertzDelta(delta)))
+                        })
+                        .collect()
+                };
+
+                let applied = deltas.len();
+                if domain == ClockDomain::Graphics {
+                    for (point, delta) in deltas {
+                        run(target, SetPublicVftablePointOffset { point, delta })?;
+                    }
+                } else {
+                    set_nvapi_domain_vfp_deltas(target, domain, &deltas)?;
+                }
+                return Ok(json!({
+                    "applied": true,
+                    "domain": domain_label(domain),
+                    "points": applied,
+                    "csv_path": path,
+                }));
+            }
+
             let point = parse_usize(&invocation.positionals[0], "point")?;
             let mhz = parse_i32_unit(&invocation.positionals[1], "mhz", "mhz")?;
             run(
@@ -4311,7 +4417,85 @@ fn execute_target(
     }
 }
 
+/// Parse a VFP CSV file (header `voltage,frequency,delta,default_frequency`,
+/// then one row per curve point). Fixed 4-column plain-integer format — same
+/// as the auto-optimizer exporter wrote, no quoting to handle.
+fn parse_vfp_csv(path: &str) -> CliResult<Vec<(u32, u32, i32, u32)>> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|err| CliError::new(format!("cannot read CSV file {path:?}: {err}")))?;
+    let mut rows = Vec::new();
+    for (number, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        // Optional header (the exporter writes one); skip it.
+        if number == 0 && line.starts_with("voltage") {
+            continue;
+        }
+        let mut fields = line.split(',');
+        let parse = |field: Option<&str>, column: &str| -> CliResult<i64> {
+            field
+                .and_then(|raw| raw.trim().parse().ok())
+                .ok_or_else(|| {
+                    CliError::new(format!(
+                        "{path:?} line {}: missing or non-numeric {column}",
+                        number + 1
+                    ))
+                })
+        };
+        let voltage = parse(fields.next(), "voltage")? as u32;
+        let frequency = parse(fields.next(), "frequency")? as u32;
+        let delta = parse(fields.next(), "delta")? as i32;
+        let default_frequency = parse(fields.next(), "default_frequency")? as u32;
+        rows.push((voltage, frequency, delta, default_frequency));
+    }
+    Ok(rows)
+}
+
 fn get_vfp(target: &GpuTarget<'_>, invocation: &Invocation) -> CliResult<Value> {
+    // CSV variant: single-domain curve to a file, same column order the
+    // auto-optimizer exporter wrote (voltage,frequency,delta,default_frequency).
+    if let Some(path) = option_one(invocation, "output-csv") {
+        let domain = option_one(invocation, "domain")
+            .map(parse_domain)
+            .transpose()?
+            .ok_or_else(|| {
+                CliError::new(
+                    "get-public-vftable --output-csv requires --domain (a CSV file carries one \
+                     domain's curve; use gpc or memory)",
+                )
+            })?;
+        let infer_missing_default = !option_bool(invocation, "no-infer-missing-default", false)?;
+        let points = run(
+            target,
+            QueryDomainVfpPoints {
+                domain,
+                infer_missing_default,
+                indexed: true,
+            },
+        )?
+        .output;
+        let mut csv = String::from("voltage,frequency,delta,default_frequency\n");
+        for (_, point) in &points {
+            csv.push_str(&format!(
+                "{},{},{},{}\n",
+                point.voltage.0,
+                point.frequency.0,
+                point.delta.0,
+                point.default_frequency.0
+            ));
+        }
+        std::fs::write(path, &csv).map_err(|err| {
+            CliError::new(format!("cannot write CSV file {path:?}: {err}"))
+        })?;
+        return Ok(json!({
+            "csv_path": path,
+            "domain": domain_label(domain),
+            "rows": points.len(),
+        }));
+    }
+
     // Default: dump every domain the public VFP table exposes (graphics 0..N
     // plus the trailing memory entries, e.g. 127..131 on 30/40 series);
     // --domain gpc|memory narrows to one segment via the per-domain table.
