@@ -108,7 +108,7 @@ fn format_human_output(function: &str, output: &Value) -> Vec<String> {
         // platform status, not the PPAB enable readback (probe_pcf_dynamic_boost)
         "get-pstate-lock" => format_pstate_native_output(output),
         "get-throttle-reasons" => format_throttle_reasons_output(output),
-        "get-legacy-overvolt-ranges" => format_object_array(
+        "get-legacy-gpc-rail-volt-range" => format_object_array(
             output,
             &[
                 ("pstate", "P-State"),
@@ -2500,10 +2500,9 @@ mod tests {
                 "max_temp_c": 91,
                 "curve": "Default",
             }),
-            Command::GetLegacyOvervoltRanges => {
+            Command::GetLegacyGpcRailVoltRange => {
                 json!([{"pstate": "P0", "min_uv": 0, "current_uv": 0, "max_uv": 100000}])
             }
-            Command::GetLegacyP0CoreMaxVoltageDelta => json!({"max_delta_uv": 100000}),
             Command::GetLegacyGpcRailOvervoltLimit => json!({
                 "pstate": "P0",
                 "voltage_domain": "core",

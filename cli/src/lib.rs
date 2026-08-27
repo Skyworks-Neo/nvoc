@@ -8,7 +8,7 @@ use nvoc_core::{
     GpuTarget, Kilohertz, KilohertzDelta, MicrovoltsDelta, NvapiPerfFreqCap, OemOcScanner,
     OemOcScannerAction, PState, Percentage, QueryApiRestriction, QueryAutoBoost, QueryClockOffset,
     QueryDisplays, QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings,
-    QueryGpuStatus, QueryLegacyCoreOvervoltRanges, QueryLegacyP0CoreMaxVoltageDelta,
+    QueryGpuStatus, QueryLegacyCoreOvervoltRanges,
     QueryNvapiClkDomainFreqDetail, QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomains,
     QueryNvapiClkVfControl, QueryNvapiClkVfPoints, QueryNvapiCoolerInfo,
     QueryNvapiCoreVoltageControl, QueryNvapiDNotifier, QueryNvapiOcScannerIncomplete,
@@ -156,8 +156,7 @@ pub enum Command {
     GetThrottleReasons,
     GetPublicPowerLimit,
     GetPublicTempLimit,
-    GetLegacyOvervoltRanges,
-    GetLegacyP0CoreMaxVoltageDelta,
+    GetLegacyGpcRailVoltRange,
     GetLegacyGpcRailOvervoltLimit,
     GetPublicGpcRailVoltBoost,
     GetAutoboostStatus,
@@ -262,8 +261,7 @@ impl Command {
             Self::GetThrottleReasons => "get-throttle-reasons",
             Self::GetPublicPowerLimit => "get-public-power-limit",
             Self::GetPublicTempLimit => "get-public-temp-limit",
-            Self::GetLegacyOvervoltRanges => "get-legacy-overvolt-ranges",
-            Self::GetLegacyP0CoreMaxVoltageDelta => "get-legacy-p0-core-max-voltage-delta",
+            Self::GetLegacyGpcRailVoltRange => "get-legacy-gpc-rail-volt-range",
             Self::GetLegacyGpcRailOvervoltLimit => "get-legacy-gpc-rail-overvolt-limit",
             Self::GetPublicGpcRailVoltBoost => "get-public-gpc-rail-volt-boost",
             Self::GetAutoboostStatus => "get-autoboost-status",
@@ -387,8 +385,9 @@ impl Command {
             Self::GetPublicTempLimit => {
                 "Read the NVAPI public temp-limit range (min/default/max Celsius + throttle curve)"
             }
-            Self::GetLegacyOvervoltRanges => "Read NVAPI legacy core overvolt ranges",
-            Self::GetLegacyP0CoreMaxVoltageDelta => "Read NVAPI legacy P0 max voltage delta",
+            Self::GetLegacyGpcRailVoltRange => {
+                "Read NVAPI legacy core overvolt ranges (per-pstate min/current/max; --pstate filters to one)"
+            }
             Self::GetLegacyGpcRailOvervoltLimit => {
                 "Read NVAPI P-State base voltage delta in microvolts"
             }
@@ -647,9 +646,9 @@ impl Command {
             Self::GetDisplayList => &["all"],
             Self::GetPstateGlobalFreqOffset => &["domain", "pstate"],
             Self::SetPstateGlobalFreqOffset => &["domain", "pstate"],
-            Self::GetLegacyGpcRailOvervoltLimit | Self::SetLegacyGpcRailOvervoltLimit => {
-                &["pstate"]
-            }
+            Self::GetLegacyGpcRailVoltRange
+            | Self::GetLegacyGpcRailOvervoltLimit
+            | Self::SetLegacyGpcRailOvervoltLimit => &["pstate"],
             Self::SetFanSpeed => &["fan", "policy", "cooler", "percent", "rpm"],
             Self::ResetFanSpeed => &["fan", "cooler", "rpm"],
             Self::ResetFanCurveCmd | Self::SetFanstopStatus => &["curve"],
@@ -1051,8 +1050,7 @@ const COMMANDS: &[Command] = &[
     Command::GetGpuList,
     Command::GetInfo,
     Command::GetLegacyGpcRailOvervoltLimit,
-    Command::GetLegacyOvervoltRanges,
-    Command::GetLegacyP0CoreMaxVoltageDelta,
+    Command::GetLegacyGpcRailVoltRange,
     Command::GetLegacyTempSensor,
     Command::GetPmgrArbiter,
     Command::GetPowerLimit,
@@ -2692,10 +2690,23 @@ fn execute_target(
                 "curve": format!("{:?}", limits.throttle_curve),
             }))
         }
-        Command::GetLegacyOvervoltRanges => {
+        Command::GetLegacyGpcRailVoltRange => {
+            // Merged from get-legacy-overvolt-ranges + get-legacy-p0-core-max-voltage-delta.
+            // QueryLegacyCoreOvervoltRanges returns (pstate, min, current, max) per pstate;
+            // --pstate filters to one (the old P0-max-delta command was the P0 .max field).
+            let pstate_filter = option_one(invocation, "pstate");
             let ranges = run(target, QueryLegacyCoreOvervoltRanges)?.output;
+            let filtered = ranges
+                .into_iter()
+                .filter(|(pstate, _, _, _)| {
+                    pstate_filter
+                        .as_deref()
+                        .map(|s| pstate_label(*pstate).eq_ignore_ascii_case(s.trim()))
+                        .unwrap_or(true)
+                })
+                .collect::<Vec<_>>();
             Ok(Value::Array(
-                ranges
+                filtered
                     .into_iter()
                     .map(|(pstate, min, current, max)| {
                         json!({
@@ -2707,10 +2718,6 @@ fn execute_target(
                     })
                     .collect(),
             ))
-        }
-        Command::GetLegacyP0CoreMaxVoltageDelta => {
-            let delta = run(target, QueryLegacyP0CoreMaxVoltageDelta)?.output;
-            Ok(json!({"max_delta_uv": delta.map(|v| v.0)}))
         }
         Command::GetLegacyGpcRailOvervoltLimit => {
             let pstate = option_pstate_nvapi(invocation)?;
