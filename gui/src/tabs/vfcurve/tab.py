@@ -185,7 +185,6 @@ class VFCurveTab:
         self._auto_refresh_interval_ms = self._DEFAULT_AUTO_REFRESH_INTERVAL_MS
         self._auto_interval_var = ctk.StringVar(value="1.0")
         self._auto_toggle_btn = None
-        self.quick_export_var = ctk.BooleanVar(value=True)
         # Live crosshair poller — independent of the dashboard poll so its
         # after(0,_on_done) cannot interpose a blit ahead of a mouse-press
         # event in the Tcl queue. The worker writes volt/freq into
@@ -238,9 +237,6 @@ class VFCurveTab:
 
         io_row = tk.Frame(chart_top, bg=_PANEL_BG)
         io_row.pack(side="left", padx=(12, 0))
-        ctk.CTkCheckBox(
-            io_row, text="Quick export", variable=self.quick_export_var, width=100
-        ).pack(side="left", padx=(0, 8))
         LiteButton(io_row, text="📤Export", width=75, command=self._export_vfp).pack(
             side="left", padx=(0, 4)
         )
@@ -3028,7 +3024,7 @@ class VFCurveTab:
                 self.adj_delta_var.set(f"{avg:+.1f}")
 
     # ────────────────────────────────────────────
-    # Actions (CLI calls)
+    # Actions (native pynvoc calls)
     # ────────────────────────────────────────────
     def _export_vfp(self):
         gpu = self.app.selected_gpu_target()
@@ -3039,10 +3035,6 @@ class VFCurveTab:
             filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")],
         )
         if not path:
-            return
-
-        if not self.quick_export_var.get():
-            self.app.run_cli_display(self.app.get_gpu_args() + ["export-vfp", path])
             return
 
         def export(native, gpu=gpu, path=path) -> str:
