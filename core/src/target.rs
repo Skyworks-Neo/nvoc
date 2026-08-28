@@ -153,6 +153,12 @@ pub struct GpuTarget<'a> {
     pub index: usize,
     nvapi: Option<&'a Gpu>,
     nvml: Option<&'a Nvml>,
+    /// Why `nvml` is `None` when the backend set requested NVML (`BackendSet::Both`):
+    /// carries the original `Nvml::init()` failure reason so a later `nvml()` call
+    /// can surface the root cause ("NVML init failed: ...") instead of the bare
+    /// "has no NVML backend" message. `None` when NVML was never attempted
+    /// (`BackendSet::Nvapi`) or when NVML initialized successfully.
+    nvml_error: Option<&'a str>,
 }
 
 impl fmt::Debug for GpuTarget<'_> {
@@ -173,6 +179,7 @@ impl<'a> GpuTarget<'a> {
             index,
             nvapi: None,
             nvml: None,
+            nvml_error: None,
         }
     }
 
@@ -203,8 +210,17 @@ impl<'a> GpuTarget<'a> {
     }
 
     pub fn nvml(&self) -> Result<&'a Nvml, Error> {
-        self.nvml
-            .ok_or_else(|| Error::Custom(format!("GPU {} has no NVML backend", self.id.0)))
+        self.nvml.ok_or_else(|| {
+            // Preserve the root cause when NVML was requested but unavailable
+            // (degraded `BackendSet::Both`): the original `Nvml::init()` error
+            // is far more actionable than a bare "has no NVML backend".
+            match self.nvml_error {
+                Some(reason) => {
+                    Error::Custom(format!("GPU {} has no NVML backend ({reason})", self.id.0))
+                }
+                None => Error::Custom(format!("GPU {} has no NVML backend", self.id.0)),
+            }
+        })
     }
 }
 
@@ -212,6 +228,13 @@ pub struct TargetInventory {
     nvml: Option<Nvml>,
     nvapi_gpus: Vec<Gpu>,
     nvml_ids: Vec<u32>,
+    /// Root-cause string stashed when `BackendSet::Both` degraded to NVAPI-only
+    /// because `Nvml::init()` failed. Surfaced by [`GpuTarget::nvml`] so callers
+    /// that genuinely need NVML see "NVML init failed: ..." rather than a bare
+    /// "has no NVML backend". `None` for `BackendSet::Nvapi` (never attempted),
+    /// `BackendSet::Nvml` (init failure is a hard error, never stored), or a
+    /// healthy `BackendSet::Both`.
+    nvml_error: Option<String>,
 }
 
 impl TargetInventory {
@@ -221,11 +244,35 @@ impl TargetInventory {
             BackendSet::Nvml => Vec::new(),
         };
 
-        let nvml = match backends {
-            BackendSet::Nvml | BackendSet::Both => Some(
-                Nvml::init().map_err(|e| Error::Custom(format!("NVML init failed: {:?}", e)))?,
+        // NVML availability policy:
+        //  - `Nvml` (explicit `--nvml` / NVML-only commands): a missing NVML is
+        //    a real error — the user asked for NVML, so surface it and stop.
+        //  - `Both` (the auto/default path, and every `--nvapi` "augment"
+        //    command): NVML is best-effort. NVAPI already enumerated the GPUs
+        //    above and GPU identity is PCI-bus-based, so when `Nvml::init()`
+        //    fails we degrade to an NVAPI-only inventory (nvml: None) instead
+        //    of failing the whole discovery — commands that augment with NVML
+        //    data guard on `target.nvml()`/`has_nvml()` and simply omit those
+        //    fields. This is what unblocks `get-info`, `get-status`, GUI
+        //    discovery, etc. on machines with no NVML binding.
+        //  - `Nvapi`: never attempt NVML.
+        let (nvml, nvml_error) = match backends {
+            BackendSet::Nvml => (
+                Some(
+                    Nvml::init()
+                        .map_err(|e| Error::Custom(format!("NVML init failed: {:?}", e)))?,
+                ),
+                None,
             ),
-            BackendSet::Nvapi => None,
+            BackendSet::Both => match Nvml::init() {
+                Ok(nvml) => (Some(nvml), None),
+                Err(e) => {
+                    let reason = format!("NVML init failed: {:?}", e);
+                    eprintln!("warning: {reason}; continuing with NVAPI-only backends");
+                    (None, Some(reason))
+                }
+            },
+            BackendSet::Nvapi => (None, None),
         };
 
         let nvml_ids = match &nvml {
@@ -237,6 +284,7 @@ impl TargetInventory {
             nvml,
             nvapi_gpus,
             nvml_ids,
+            nvml_error,
         })
     }
 
@@ -260,6 +308,7 @@ impl TargetInventory {
                     .iter()
                     .find(|gpu| gpu_id_from_nvapi_gpu(gpu).0 == id),
                 nvml: self.nvml.as_ref(),
+                nvml_error: self.nvml_error.as_deref(),
             })
             .collect()
     }

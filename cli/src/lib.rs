@@ -2074,8 +2074,28 @@ fn execute_auto(invocation: &Invocation, command: Command) -> CliResult<Executio
     // before falling back. Commands that prefer NVML (e.g. GetTemperatureThresholds)
     // short-circuit straight to the NVML path on auto; the NVAPI branch stays
     // reachable via an explicit `--nvapi`.
+    //
+    // Resilience: when the NVML-preferred attempt cannot serve the command at
+    // all (NVML unavailable — `discover(Nvml)` hard-errors, or the degraded
+    // `discover(Both)` leaves no NVML-backed target), fall back to the NVAPI
+    // branch instead of hard-failing. This preserves the NVML-preferred default
+    // on machines where NVML is available and only rescues the no-NVML case.
+    // `execute_backend` returns `Err` solely for discovery/no-applicable-target
+    // failures; per-target runtime errors are captured in the `Ok` Execution, so
+    // this fallback never masks a genuine NVML query failure on a working NVML.
     if supports_nvml && command.auto_preferred_backend() == BackendAdapter::Nvml {
-        return execute_backend(invocation, command, BackendAdapter::Nvml);
+        return match execute_backend(invocation, command, BackendAdapter::Nvml) {
+            Ok(execution) => Ok(execution),
+            Err(nvml_err) if supports_nvapi => {
+                let mut execution = execute_backend(invocation, command, BackendAdapter::Nvapi)?;
+                execution.warnings.insert(
+                    0,
+                    format!("NVML preferred backend failed; fell back to NVAPI: {nvml_err}"),
+                );
+                Ok(execution)
+            }
+            Err(err) => Err(err),
+        };
     }
 
     if supports_nvapi {

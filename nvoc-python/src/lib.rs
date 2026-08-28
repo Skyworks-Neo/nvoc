@@ -1401,6 +1401,31 @@ fn normalize_query_clock_offset(
     Ok(value_object([("mhz", i64_value(value.mhz as i64))]))
 }
 
+/// NVAPI clock-offset read: the live per-pstate clock-offset delta (kHz) from
+/// `QueryGpuSettings.pstate_deltas` — the same surface `SetPstateClockOffset`
+/// writes, and the source the CLI's `get-pstate-global-freq-offset --nvapi`
+/// reads. Unlike NVML (integer MHz only), NVAPI carries sub-MHz resolution
+/// (2.5 MHz steps on 10/16/20-series), so the offset is emitted as a
+/// fractional MHz value. P-states the driver reports as non-editable are
+/// absent from `pstate_deltas`; they read as 0 (no offset), matching the CLI.
+fn normalize_query_clock_offset_nvapi(
+    target: &GpuTarget<'_>,
+    domain: ClockDomain,
+    pstate: PState,
+) -> PyResultValue {
+    let settings = run(target, QueryGpuSettings).map_err(to_py_err)?.output;
+    let offset_khz = settings
+        .pstate_deltas
+        .get(&pstate)
+        .and_then(|domains| domains.get(&domain))
+        .map(|delta| delta.0)
+        .unwrap_or(0);
+    Ok(value_object([(
+        "mhz",
+        f64_value(offset_khz as f64 / 1000.0),
+    )]))
+}
+
 fn normalize_domain_vfp_points(
     target: &GpuTarget<'_>,
     domain: ClockDomain,
@@ -1635,18 +1660,36 @@ fn query_clock_offset(
 ) -> PyResult<Py<PyAny>> {
     let backend = parse_backend(backends.unwrap_or("nvml"))?;
     let domain = parse_domain(domain)?;
-    let pstate = parse_nvml_pstate(pstate.unwrap_or("P0"))?;
-    let backends = if backend == "nvml" {
-        BackendSet::Nvml
-    } else {
-        BackendSet::Both
-    };
+    // Dispatch per-backend like set_clock_offset: NVML reads NVML's
+    // clock-offset API (integer MHz, PerformanceState); NVAPI reads the live
+    // pstate delta (kHz, sub-MHz, PState) from QueryGpuSettings — the field
+    // SetPstateClockOffset writes. The two backends use different pstate enums,
+    // so the pstate string is parsed inside each branch. NVAPI uses
+    // BackendSet::Nvapi (a pure NVAPI read needs no NVML handle), not Both.
     let inventory = {
         let mut cache = lock_inventory_cache();
-        cache.entry(backends)?
+        cache.entry(if backend == "nvml" {
+            BackendSet::Nvml
+        } else {
+            BackendSet::Nvapi
+        })?
     };
     let target = selected_target(&inventory.0, gpu)?;
-    let value = normalize_query_clock_offset(&target, domain, pstate)?;
+    let value = match backend {
+        "nvml" => {
+            let pstate = parse_nvml_pstate(pstate.unwrap_or("P0"))?;
+            normalize_query_clock_offset(&target, domain, pstate)?
+        }
+        "nvapi" => {
+            let pstate = parse_pstate(pstate.unwrap_or("P0"))?;
+            normalize_query_clock_offset_nvapi(&target, domain, pstate)?
+        }
+        _ => {
+            return Err(invalid_value(
+                "clock offsets require backend 'nvapi' or 'nvml'",
+            ));
+        }
+    };
     py_value(py, &value)
 }
 
