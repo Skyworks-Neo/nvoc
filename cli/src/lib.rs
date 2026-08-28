@@ -12,23 +12,23 @@ use nvoc_core::{
     QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomains, QueryNvapiClkVfControl,
     QueryNvapiClkVfPoints, QueryNvapiCoolerInfo, QueryNvapiCoreVoltageControl, QueryNvapiDNotifier,
     QueryNvapiOcScannerIncomplete, QueryNvapiPStateLevels, QueryNvapiPStateLockStatus,
-    QueryNvapiPmgrVoltageArbiter, QueryNvapiPowerMizer, QueryNvapiRatedTdp,
-    QueryNvapiTargetTempPolicies, QueryNvapiTargetTempPolicyIndex, QueryNvapiTgpWattRange,
-    QueryNvapiThermalSettings, QueryNvapiThermalSim, QueryNvapiVoltRails, QueryPowerLimits,
-    QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits,
-    QueryTemperatureThresholds, QueryThrottleReasons, QueryViolationStatus, QueryVoltageBoost,
-    ResetAutoboostStatus, ResetCoolerLevels, ResetFanCurve, ResetFanSpeed, ResetForcePstate,
-    ResetFreqLock, ResetLegacyApplicationFreqLock, ResetLegacyGpcRailOvervoltLimit,
-    ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetNvapiVfpPrivate,
-    ResetPstateGlobalFreqOffset, ResetPublicVftableGpcLock, ResetPublicVftableOffset,
-    ResetVfpFrequencyLock, RestartDisplayDriver, SetApplicationsClocks, SetAutoboostStatus,
-    SetAutoboostSupport, SetBb2Active, SetClockOffset, SetCoolerLevels, SetEdid, SetFanCurve,
-    SetFanRpm, SetFanSpeed, SetFanStop, SetForcePstate, SetGpcVoltLock, SetLegacyClocks,
-    SetLockedClocks, SetNvapiBackgroundOcScanner, SetNvapiClkDomainOffset,
-    SetNvapiCoreVoltageControl, SetNvapiDNotifier, SetNvapiDynamicBoost, SetNvapiOvervolt,
-    SetNvapiPStateNative, SetNvapiPerfFreqCap, SetNvapiPerfLevelLock, SetNvapiPmgrVoltageArbiter,
-    SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiSensorLimits, SetNvapiTargetTemp,
-    SetNvapiTgpWatt, SetNvapiThermalSim, SetNvapiVfpPointPrivate, SetNvapiVfpRangePerPointPrivate,
+    QueryNvapiPmgrVoltageArbiter, QueryNvapiRatedTdp, QueryNvapiTargetTempPolicies,
+    QueryNvapiTargetTempPolicyIndex, QueryNvapiTgpWattRange, QueryNvapiThermalSettings,
+    QueryNvapiThermalSim, QueryNvapiVoltRails, QueryPowerLimits, QueryPstateBaseVoltage,
+    QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
+    QueryThrottleReasons, QueryViolationStatus, QueryVoltageBoost, ResetAutoboostStatus,
+    ResetCoolerLevels, ResetFanCurve, ResetFanSpeed, ResetForcePstate, ResetFreqLock,
+    ResetLegacyApplicationFreqLock, ResetLegacyGpcRailOvervoltLimit, ResetNvapiPowerLimits,
+    ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetNvapiVfpPrivate, ResetPstateGlobalFreqOffset,
+    ResetPublicVftableGpcLock, ResetPublicVftableOffset, ResetVfpFrequencyLock,
+    RestartDisplayDriver, SetApplicationsClocks, SetAutoboostStatus, SetAutoboostSupport,
+    SetBb2Active, SetClockOffset, SetCoolerLevels, SetEdid, SetFanCurve, SetFanRpm, SetFanSpeed,
+    SetFanStop, SetForcePstate, SetGpcVoltLock, SetLegacyClocks, SetLockedClocks,
+    SetNvapiBackgroundOcScanner, SetNvapiClkDomainOffset, SetNvapiCoreVoltageControl,
+    SetNvapiDNotifier, SetNvapiDynamicBoost, SetNvapiOvervolt, SetNvapiPStateNative,
+    SetNvapiPerfFreqCap, SetNvapiPerfLevelLock, SetNvapiPmgrVoltageArbiter, SetNvapiPowerLimits,
+    SetNvapiPstateLock, SetNvapiSensorLimits, SetNvapiTargetTemp, SetNvapiTgpWatt,
+    SetNvapiThermalSim, SetNvapiVfpPointPrivate, SetNvapiVfpRangePerPointPrivate,
     SetNvapiVfpRangePrivate, SetNvapiVoltRailOffset, SetNvapiVoltRailTarget, SetNvmlAcousticTemp,
     SetNvmlPstateLock, SetPowerLimit as SetNvmlPowerLimit, SetPowerMode, SetPstateBaseVoltage,
     SetPstateClockOffset, SetPublicVftablePointOffset, SetPublicVftableRangeOffset,
@@ -183,7 +183,6 @@ pub enum Command {
     SetDNotifier,
     GetVoltRailInfo,
     SetVoltRailLimit,
-    GetPowerMizer,
     GetCoreVoltageControl,
     SetCoreVoltageControl,
     GetPmgrArbiter,
@@ -550,18 +549,6 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     adapters: &BOTH_BACKENDS,
                     preferred: BackendAdapter::Nvml,
                     ..CommandSpec::new("get-power-limit", Group::Power, "Read power limits in watts: NVML min/current/max by default; falls back to the NVAPI TGP-watts range (min/default/max) where NVML is unsupported")
-                },
-            ),
-            (
-                Command::GetPowerMizer,
-                CommandSpec {
-                    arity: (0, 1),
-                    positionals: Box::leak(Box::new([PositionalArg::free(
-                    "arg_power_source",
-                    "POWER_SOURCE",
-                    "1=AC, 2=DC (default 1)",
-                )])),
-                    ..CommandSpec::new("get-power-mizer", Group::Power, "Read the PowerMizer mode (NVCP power dropdown readback, 0x76BFA16B; returns 6/7)")
                 },
             ),
             (
@@ -3064,7 +3051,6 @@ fn execute_target(
                 .iter()
                 .filter(|(pstate, _, _, _)| {
                     pstate_filter
-                        .as_deref()
                         .map(|s| pstate_label(*pstate).eq_ignore_ascii_case(s.trim()))
                         .unwrap_or(true)
                 })
@@ -3257,27 +3243,6 @@ fn execute_target(
                 .map_err(|e| CliError::new(format!("invalid D-Notifier level: {e}")))?;
             run(target, SetNvapiDNotifier { level })?;
             Ok(json!({"applied": true, "dnotifier_level": format!("D{level}")}))
-        }
-        Command::GetPowerMizer => {
-            let power_source: u32 = invocation
-                .positionals
-                .first()
-                .map(|v| v.parse())
-                .transpose()
-                .map_err(|e| CliError::new(format!("invalid POWER_SOURCE: {e}")))?
-                .unwrap_or(1);
-            if power_source != 1 && power_source != 2 {
-                return Err(CliError::new("POWER_SOURCE must be 1 (AC) or 2 (DC)"));
-            }
-            let out = run(target, QueryNvapiPowerMizer { power_source })?.output;
-            Ok(match out {
-                Some(mode) => json!({
-                    "power_source": power_source,
-                    "mode_raw": mode,
-                    "mode": if mode == 6 { "first" } else if mode == 7 { "second" } else { "unknown" },
-                }),
-                None => json!({"supported": false}),
-            })
         }
         Command::GetCoreVoltageControl => {
             let out = run(target, QueryNvapiCoreVoltageControl)?.output;
@@ -5748,7 +5713,6 @@ mod tests {
             | Command::SetDNotifier
             | Command::GetVoltRailInfo
             | Command::SetVoltRailLimit
-            | Command::GetPowerMizer
             | Command::GetCoreVoltageControl
             | Command::SetCoreVoltageControl
             | Command::GetPmgrArbiter

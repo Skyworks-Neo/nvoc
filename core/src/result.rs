@@ -103,7 +103,8 @@ pub enum OperationKind {
     /// mode-0 override via the private SetControl (single RMW cycle).
     ResetNvapiVfpPrivate,
     // OC-gap wraps (2026-08-26 audit follow-up)
-    QueryNvapiPowerMizer,
+    // QueryNvapiPowerMizer withdrawn with the op (2026-08-28) — the GET is a
+    // boot-time constant, not a readback (see docs reverse-engineering notes).
     // QueryNvapiDynamicBoost withdrawn with the op (2026-08-26) — the ID is
     // PCF platform status, not the PPAB enable readback.
     QueryNvapiCoreVoltageControl,

@@ -9,8 +9,8 @@ use nvoc_core::{
     QueryGpuSettings, QueryGpuStatus, QueryLegacyCoreOvervoltRanges, QueryNvapiClkDomainFreq,
     QueryNvapiClkDomainFreqDirect, QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomains,
     QueryNvapiClkVfPoints, QueryNvapiCoreVoltageControl, QueryNvapiDNotifier,
-    QueryNvapiOcScannerIncomplete, QueryNvapiPmgrVoltageArbiter, QueryNvapiPowerMizer,
-    QueryNvapiRatedTdp, QueryNvapiTargetTempPolicies, QueryNvapiTgpWattRange, QueryNvapiThermalSim,
+    QueryNvapiOcScannerIncomplete, QueryNvapiPmgrVoltageArbiter, QueryNvapiRatedTdp,
+    QueryNvapiTargetTempPolicies, QueryNvapiTgpWattRange, QueryNvapiThermalSim,
     QueryNvapiVoltRails, QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates,
     QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
     QueryThrottleReasons, QueryVfpPointVoltage, QueryVoltageBoost, ResetAutoboostStatus,
@@ -2561,32 +2561,6 @@ fn reset_vfp_private(
 // OC-gap wraps (2026-08-26 audit follow-up) — Python bindings
 // ---------------------------------------------------------------------------
 
-/// Read the PowerMizer mode (0x76BFA16B). `power_source` 1|2 (AC/DC).
-/// Returns `{"mode": u32}` (6/7) or `{"supported": false}`.
-#[pyfunction]
-fn get_power_mizer(py: Python<'_>, gpu: &str, power_source: u32) -> PyResult<Py<PyAny>> {
-    let value = with_target(gpu, "nvapi", |target| {
-        let out = run(target, QueryNvapiPowerMizer { power_source })
-            .map_err(to_py_err)?
-            .output;
-        Ok(match out {
-            Some(mode) => value_object([
-                ("mode", Value::from(mode)),
-                (
-                    "mode_name",
-                    Value::from(if mode == 6 {
-                        "Adaptive"
-                    } else {
-                        "Maximum Performance"
-                    }),
-                ),
-            ]),
-            None => value_object([("supported", Value::from(false))]),
-        })
-    })?;
-    py_value(py, &value)
-}
-
 // NOTE (2026-08-26): get_dynamic_boost withdrawn — 0xC80068A1 reads the PCF
 // platform status bytes, NOT the PPAB enable written by set_ppab_status
 // (live-probed; see nvapi-rs examples/probe_pcf_dynamic_boost.rs). The
@@ -3990,7 +3964,6 @@ fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(set_vfp_range_per_point_private, m)?)?;
     m.add_function(wrap_pyfunction!(clk_vf_delta_for_target_mhz, m)?)?;
     m.add_function(wrap_pyfunction!(reset_vfp_private, m)?)?;
-    m.add_function(wrap_pyfunction!(get_power_mizer, m)?)?;
     m.add_function(wrap_pyfunction!(get_core_voltage_control, m)?)?;
     m.add_function(wrap_pyfunction!(set_core_voltage_control, m)?)?;
     m.add_function(wrap_pyfunction!(get_pmgr_arbiter, m)?)?;

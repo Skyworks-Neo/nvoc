@@ -2168,32 +2168,13 @@ impl GpuOperation for ResetNvapiVfpPrivate {
 // OC-gap wraps (2026-08-26 audit follow-up) — RE spec: docs/oc-gaps-re-spec.md
 // ---------------------------------------------------------------------------
 
-/// PowerMizer mode GET readback (0x76BFA16B, 4-arg RE'd R610.74). The
-/// readview the SetPerfLevel-based power-level SET never had. The SET twin
-/// (`SetPowerMizerInfo` 0x50016C78, distinct escape 0x700003A vs
-/// SetPerfLevel's 0x07000040) is medium-only — same NVCP dropdown, do not
-/// surface a parallel SET.
-#[derive(Clone, Copy, Debug)]
-pub struct QueryNvapiPowerMizer {
-    /// 1|2 (AC/DC selector)
-    pub power_source: u32,
-}
-
-impl GpuOperation for QueryNvapiPowerMizer {
-    type Output = Option<u32>;
-
-    fn kind(&self) -> OperationKind {
-        OperationKind::QueryNvapiPowerMizer
-    }
-
-    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
-        target
-            .nvapi()?
-            .power_mizer_mode(self.power_source)
-            .map_err(Error::from)
-    }
-}
-
+// NOTE (2026-08-28): QueryNvapiPowerMizer withdrawn. GetPowerMizerInfo
+// (0x76BFA16B) is NOT a readback — elevated SET experiment (mode=6, both
+// sources, rc=0) leaves the GET at its boot-time constant 7, and neither the
+// NVCP power dropdown nor AC/DC transitions move it. The GET reports a
+// constant; SetPowerMizerInfo (0x50016C78) has no runtime effect. Full
+// evidence: docs/reverse-engineering/nvapi/power-mizer-corevolt-pmgr-semantics.md
+// (probe: build/probe_pmizer.ps1).
 // NOTE (2026-08-26): QueryNvapiDynamicBoost withdrawn. 0xC80068A1 reads the
 // PCF controller table's platform status bytes (rec[+60]/rec[+61]), NOT the
 // PPAB enable written by 0x1504FC3D — live-probed both bytes = 2 with PPAB

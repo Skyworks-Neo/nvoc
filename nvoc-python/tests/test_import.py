@@ -26,7 +26,6 @@ EXPECTED_EXPORTS = [
     "get_display_list",
     "get_oc_scanner_incomplete",
     "get_pmgr_arbiter",
-    "get_power_mizer",
     "get_rated_tdp",
     "get_temp_sim",
     "probe_voltage_limits",
