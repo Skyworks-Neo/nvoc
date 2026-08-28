@@ -289,7 +289,30 @@ pub fn set_pstate_clock_offset_preserve(
     target_domain: ClockDomain,
     target_delta: KilohertzDelta,
 ) -> Result<(), Error> {
-    let graphics_vfp = if target_domain == ClockDomain::Memory {
+    // On legacy GPUs (Maxwell and earlier: Fermi/Kepler/Maxwell, Volta
+    // compute, Unknown) the private VFP SetControl that the graphics-VFP
+    // save/restore relies on is kernel-unimplemented → the restore would fail
+    // with NVAPI_ERROR and block the whole mem-offset path. On those GPUs the
+    // pstates20 write carries BOTH core and mem deltas (from target_ps.clocks),
+    // so the global core/gpc offset is preserved by pstates20 itself and no VFP
+    // round-trip is needed (the SetPstates20 "clears graphics VFP" side-effect
+    // only happens on modern GPUs where the private VFP path exists). Skip the
+    // capture → `graphics_vfp = None` → the restore below is a no-op. Same
+    // legacy set as `reset_vfp_deltas` (nvapi.rs:779).
+    let info = gpu.info().map_err(Error::from)?;
+    let is_legacy = matches!(
+        fetch_gpu_type(&info),
+        Ok(GpuType::Mobile9Series)
+            | Ok(GpuType::Desktop9Series)
+            | Ok(GpuType::MobileKepler)
+            | Ok(GpuType::DesktopKepler)
+            | Ok(GpuType::MobileFermi)
+            | Ok(GpuType::DesktopFermi)
+            | Ok(GpuType::ComputationVolta)
+            | Ok(GpuType::Unknown)
+            | Err(_)
+    );
+    let graphics_vfp = if target_domain == ClockDomain::Memory && !is_legacy {
         capture_graphics_vfp(gpu)?
     } else {
         None
@@ -774,11 +797,16 @@ pub fn reset_vfp_deltas(gpu: &Gpu, domain: VfpResetDomain) -> Result<(), Error> 
     let info = gpu.info().map_err(Error::from)?;
     let gpu_type = fetch_gpu_type(&info);
 
-    // 9 系及更早（Maxwell 及之前）不支持 VFP 曲线，只能通过 set_pstates 单点清零
+    // 9 系及更早（Maxwell/Kepler/Fermi）不支持 VFP 曲线，只能通过 set_pstates
+    // 单点清零。Volta 计算卡同样走此路径。
     let is_legacy = matches!(
         gpu_type,
         Ok(GpuType::Mobile9Series)
             | Ok(GpuType::Desktop9Series)
+            | Ok(GpuType::MobileKepler)
+            | Ok(GpuType::DesktopKepler)
+            | Ok(GpuType::MobileFermi)
+            | Ok(GpuType::DesktopFermi)
             | Ok(GpuType::ComputationVolta)
             | Ok(GpuType::Unknown)
             | Err(_)
@@ -1063,7 +1091,15 @@ pub fn handle_test_voltage_limits(
                 margin_threshold_check = 1;
             }
 
-            if matches!(t, GpuType::Mobile9Series | GpuType::Desktop9Series) {
+            if matches!(
+                t,
+                GpuType::Mobile9Series
+                    | GpuType::Desktop9Series
+                    | GpuType::MobileKepler
+                    | GpuType::DesktopKepler
+                    | GpuType::MobileFermi
+                    | GpuType::DesktopFermi
+            ) {
                 drop(Error::VfpUnsupported);
             }
         }
