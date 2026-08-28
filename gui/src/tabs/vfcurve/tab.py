@@ -3226,7 +3226,9 @@ class VFCurveTab:
                 failed = 0
                 messages = []
                 if pending_wall is not None:
-                    messages.append(self._apply_wall_inline(native, gpu, pending_wall, rail_bit))
+                    messages.append(
+                        self._apply_wall_inline(native, gpu, pending_wall, rail_bit)
+                    )
                 for frm, to, dkz in groups:
                     try:
                         native.set_vfp_range_delta(gpu, frm, to, dkz)
@@ -3277,7 +3279,9 @@ class VFCurveTab:
         ) -> str:
             wall_msg = ""
             if pending_wall is not None:
-                wall_msg = self._apply_wall_inline(native, gpu, pending_wall, rail_bit) + "\n"
+                wall_msg = (
+                    self._apply_wall_inline(native, gpu, pending_wall, rail_bit) + "\n"
+                )
             # 1) Try mode-0 (kHz frequency offset) per point.
             try:
                 for offset, dkz in enumerate(deltas_khz):
@@ -3314,7 +3318,9 @@ class VFCurveTab:
                 gpu, bank, base, last, raw_deltas
             )
             if isinstance(r2, dict) and r2.get("supported") is False:
-                return wall_msg + f"private VFP write unsupported on {curve_id.upper()}."
+                return (
+                    wall_msg + f"private VFP write unsupported on {curve_id.upper()}."
+                )
             return wall_msg + (
                 f"Successfully applied private raw-converted offsets to {curve_id.upper()} "
                 f"({len(raw_deltas)} pts)."
@@ -3347,7 +3353,9 @@ class VFCurveTab:
             f"(clamped to min(target, vbios_wall, vrm_max_wall))."
         )
 
-    def _apply_wall_inline(self, native, gpu: str, pending_mv: float, rail_bit: int) -> str:
+    def _apply_wall_inline(
+        self, native, gpu: str, pending_mv: float, rail_bit: int
+    ) -> str:
         """Write a pending wall target from inside an apply lambda (worker
         thread). Returns a console message and schedules the effective-line
         update on the UI thread. Best-effort: a failure is logged, not
@@ -3374,14 +3382,10 @@ class VFCurveTab:
         target_mv = self._snap_wall_mv(mv)
         rail_bit = self._p0_rail_bit
 
-        def apply_wall(
-            native, gpu=gpu, rail_bit=rail_bit, target_mv=target_mv
-        ) -> str:
+        def apply_wall(native, gpu=gpu, rail_bit=rail_bit, target_mv=target_mv) -> str:
             return self._apply_wall_inline(native, gpu, target_mv, rail_bit)
 
-        self.app.console.append(
-            f"[GUI] Applying P0 wall target {target_mv:g} mV…\n"
-        )
+        self.app.console.append(f"[GUI] Applying P0 wall target {target_mv:g} mV…\n")
         self.app.run_native_action("apply P0 volt-rail target", apply_wall)
 
     def _on_wall_applied(self, eff_mv: float) -> None:

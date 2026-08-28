@@ -1309,8 +1309,12 @@ def test_vfcurve_ensure_p0_bounds_caches_per_gpu() -> None:
     submitted: list[object] = []
     app.native_service.submit_query = lambda job: submitted.append(job)
     app.native_service.query_volt_rails = lambda gpu: {
-        "p0": {"min_hold_uV": 625_000, "effective_wall_uV": 1_005_000,
-               "vbios_wall_uV": 0, "vrm_max_wall_uV": 1_200_000}
+        "p0": {
+            "min_hold_uV": 625_000,
+            "effective_wall_uV": 1_005_000,
+            "vbios_wall_uV": 0,
+            "vrm_max_wall_uV": 1_200_000,
+        }
     }
 
     controller._ensure_p0_bounds("GPU0")

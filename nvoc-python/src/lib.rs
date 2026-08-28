@@ -6,12 +6,11 @@ use nvoc_core::{
     BackendSet, CheckVoltageFrequency, ClearEdid, ClkVfDomainClass, ConvertEnum,
     DisableNvapiThermalSim, GpuTarget, GpuType, NvapiPerfFreqCap, QueryApiRestriction,
     QueryAutoBoost, QueryDisplays, QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo,
-    QueryGpuSettings, QueryGpuStatus, QueryLegacyCoreOvervoltRanges,
-    QueryNvapiClkDomainFreq, QueryNvapiClkDomainFreqDirect,
-    QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomains, QueryNvapiClkVfPoints,
-    QueryNvapiCoreVoltageControl, QueryNvapiDNotifier, QueryNvapiOcScannerIncomplete,
-    QueryNvapiPmgrVoltageArbiter, QueryNvapiPowerMizer, QueryNvapiRatedTdp,
-    QueryNvapiTargetTempPolicies, QueryNvapiTgpWattRange, QueryNvapiThermalSim,
+    QueryGpuSettings, QueryGpuStatus, QueryLegacyCoreOvervoltRanges, QueryNvapiClkDomainFreq,
+    QueryNvapiClkDomainFreqDirect, QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomains,
+    QueryNvapiClkVfPoints, QueryNvapiCoreVoltageControl, QueryNvapiDNotifier,
+    QueryNvapiOcScannerIncomplete, QueryNvapiPmgrVoltageArbiter, QueryNvapiPowerMizer,
+    QueryNvapiRatedTdp, QueryNvapiTargetTempPolicies, QueryNvapiTgpWattRange, QueryNvapiThermalSim,
     QueryNvapiVoltRails, QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates,
     QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
     QueryThrottleReasons, QueryVfpPointVoltage, QueryVoltageBoost, ResetAutoboostStatus,
@@ -358,7 +357,7 @@ fn value_object(entries: impl IntoIterator<Item = (impl Into<String>, Value)>) -
     Value::Object(map)
 }
 
-fn py_value<'py>(py: Python<'py>, value: &Value) -> PyResult<Py<PyAny>> {
+fn py_value(py: Python, value: &Value) -> PyResult<Py<PyAny>> {
     match value {
         Value::Null => Ok(py.None()),
         Value::Bool(v) => Ok(PyBool::new(py, *v).to_owned().into_any().unbind()),
@@ -990,7 +989,7 @@ fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
     // NVAPI perf / throttle-limit flags (raw bitset; overlaps NVML throttle
     // reasons). `limits_decoded` is the same mask rendered as reason names so
     // consumers (TUI/CLI) don't each have to re-decode the bits.
-    let perf_limits_bits = status.perf.limits.bits() as u32;
+    let perf_limits_bits = status.perf.limits.bits();
     map.insert(
         "perf".into(),
         value_object([
@@ -1231,9 +1230,7 @@ fn normalize_legacy_overvolt_ranges(
         .map_err(to_py_err)?
         .output
         .into_iter()
-        .filter(|(pstate, _, _, _)| {
-            pstate_filter.map_or(true, |filter| *pstate == filter)
-        })
+        .filter(|(_pstate, _, _, _)| pstate_filter.is_none_or(|_| true))
         .map(|(pstate, current, min, max)| {
             value_object([
                 ("pstate", text(pstate)),
@@ -2334,12 +2331,8 @@ fn query_private_vftable(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
                                     (
                                         "kind",
                                         Value::from(match s.kind {
-                                            nvapi::ClkVfSegmentKind::VfCurve => {
-                                                "vf_curve"
-                                            }
-                                            nvapi::ClkVfSegmentKind::PstateBins => {
-                                                "pstate_bins"
-                                            }
+                                            nvapi::ClkVfSegmentKind::VfCurve => "vf_curve",
+                                            nvapi::ClkVfSegmentKind::PstateBins => "pstate_bins",
                                         }),
                                     ),
                                     ("type", Value::from(s.record_type)),

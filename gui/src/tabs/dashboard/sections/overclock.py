@@ -756,9 +756,7 @@ class OverclockTab:
                 # hardware walls (floor/ceiling) are cached once by the VF
                 # curve's own first-load query and never re-pushed here.
                 vfcurve = getattr(self.app, "tab_vfcurve", None)
-                if vfcurve is not None and hasattr(
-                    vfcurve, "update_p0_effective_wall"
-                ):
+                if vfcurve is not None and hasattr(vfcurve, "update_p0_effective_wall"):
                     eff = int(p0.get("effective_wall_uV", 0) or 0)
                     if eff > 0:
                         vfcurve.update_p0_effective_wall(eff)

@@ -28,8 +28,8 @@ mod nvoc_service {
     use futures_util::StreamExt;
     use gag::Redirect;
     use log::{LevelFilter, error, info, warn};
-    use nvapi::hi::Gpu;
     use nvapi::ClockFrequencyType;
+    use nvapi::hi::Gpu;
     use nvapi::hi::{ClockDomain, KilohertzDelta, PState};
     use nvml_wrapper::{
         Nvml,

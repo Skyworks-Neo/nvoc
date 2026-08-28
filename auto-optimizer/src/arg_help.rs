@@ -154,7 +154,9 @@ fn vfp_export_command() -> Command {
                 .short('q')
                 .long("quick")
                 .action(ArgAction::SetTrue)
-                .help("Deprecated: static export moved to nvoc-cli get-public-vftable --output-csv"),
+                .help(
+                    "Deprecated: static export moved to nvoc-cli get-public-vftable --output-csv",
+                ),
         )
         .arg(
             Arg::new("nocheck")

@@ -7,12 +7,12 @@ use super::nvml::{
 };
 use super::result::PstateBaseVoltage;
 use super::types::{NvapiLockedVoltageTarget, VfpResetDomain};
-use ::nvapi::{CelsiusShifted, DisplayIdsFlags, VoltageDomain};
 use ::nvapi::hi::{
     Celsius, ClockDomain, ClockLockEntry, ClockLockValue, ConnectedIdsFlags, CoolerPolicy,
     CoolerSettings, FanCoolerId, Gpu, Kilohertz, KilohertzDelta, Microvolts, MicrovoltsDelta,
     PState, Percentage, PerfLimitId, PffCurve, PffPoint, VfpPoint,
 };
+use ::nvapi::{CelsiusShifted, DisplayIdsFlags, VoltageDomain};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
 use std::iter;
@@ -472,8 +472,9 @@ pub fn reset_all_pstate_base_voltages(gpu: &Gpu) -> Result<(), Error> {
             ve.voltDelta_uV.max = range.max.0;
         }
 
-        let status =
-            unsafe { sys_pstate::undocumented::NvAPI_GPU_SetPstates20(*gpu.inner().handle(), &info) };
+        let status = unsafe {
+            sys_pstate::undocumented::NvAPI_GPU_SetPstates20(*gpu.inner().handle(), &info)
+        };
 
         let _ = status;
     }
