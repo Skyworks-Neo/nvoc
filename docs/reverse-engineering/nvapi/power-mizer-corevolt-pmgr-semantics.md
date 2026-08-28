@@ -120,16 +120,35 @@ dwords @ +0x38..0x44, +0x50..0x5C), v2 0x20030 (+3 dwords @ +0x48..0x4C, +0x60).
 The GET copies back exactly the payload dwords; SET forwards them. The values are
 opaque to the user-mode layer (no validation, no scaling).
 
-**Identity (medium-high):** the RM power manager's (PMGR) voltage-request
-arbiter — the component that collects per-client voltage requests (clock clients,
-VFE tables, rail offsets) and arbitrates the final core-rail request. The payload
-dwords are the per-client/selector arbitration values. Same spec family as the
-VoltRails controls it would arbitrate against.
+**Verdict (2026-08-28, closed): the method is not registered on consumer
+drivers — permanently unsupported there.**
 
-**Live (4060L):** GET returns NVAPI_NOT_SUPPORTED/NO_IMPLEMENTATION — the surface
-is not implemented for this SKU/driver (`get-pmgr-arbiter` prints
-`Supported: no`). Expect support only on PMGR/PMU-managed parts (datacenter /
-special SKUs); SET is unreachable here and should stay experimental.
+- User sweep: RTX 20 desktop, RTX 30 desktop and RTX 40 laptop all return
+  `supported: no` from `get-pmgr-arbiter`.
+- Raw-status probe (`build/probe_pmgr.ps1`, P/Invoke 0x717648FD): wrong version
+  magic → -9 (call reaches the kernel), correct v1/v2 → **-104
+  (NVAPI_NOT_SUPPORTED)**, identical elevated and non-elevated → NOT the admin
+  gate; the kernel-side method table has no entry for interface 7 / method
+  0x19F on this driver.
+- Kernel dispatcher (nvlddmkm sub_1418F4BA0): the NvApi kernel API is
+  interface-numbered (0x0700xxxx ⇒ interface 7, method < 0x1000) and resolves
+  methods through a runtime-populated table; consumer builds don't carry this
+  one.
+- GSP firmware evidence (gsp_ga10x.bin, uncompressed ELF, 84 MB): PMGR = RM
+  Power Manager — `PMGR_PWR_CHANNEL_*` (incl. `OUTPUT_VOLTAGE`),
+  `PMGR_PWR_MONITOR_*`, `PMGR_PWR_POLICY_*` with `WORKLOAD_DIE` /
+  `WORKLOAD_PHYSICAL_SINGLE` types (the workload power-capping machinery
+  PPAB/Dynamic-Boost sits on), `PmgrIddq*` / `PmgrIsense*` current-sense
+  overrides, `PmgrOverride` / `PmgrPmuOverride` knobs. But the string
+  "arbiter" (any case) has **zero occurrences**, and no VoltRequest enums —
+  the voltage-request arbitration component is not compiled into consumer
+  GSP-RM at all.
+
+**Identity:** the NDA nvVoltage.spec surface for PMGR's per-client voltage
+request arbitration (combining requests from clock clients / VFE tables / rail
+offsets into the final core-rail request). Its natural home is the server/
+datacenter GSP builds with multi-rail telemetry; consumer SKUs will never
+register it. Practical value on consumer hardware: none.
 
 ## CLI / pynvoc surface status
 
@@ -139,7 +158,7 @@ special SKUs); SET is unreachable here and should stay experimental.
 | set-power-mizer | rolled back | — | stays out — SET accepted (rc=0 elevated) with zero effect |
 | get-core-voltage-control | `get-core-voltage-control` | `get_core_voltage_control` | keep — harmless capability/state read |
 | set-core-voltage-control | `set-core-voltage-control` | `set_core_voltage_control` | demote/hide (RENAME_DECISIONS "待确认" resolves to: likely inert on Ada mobile, no validation, do not expose) |
-| get-pmgr-arbiter | `get-pmgr-arbiter` | `get_pmgr_arbiter` | keep as capability probe (`supported: false` here) |
+| get-pmgr-arbiter | `get-pmgr-arbiter` | `get_pmgr_arbiter` | keep as capability probe — reports the raw status now (`status_code: -104 NotSupported` on consumer SKUs) |
 | set-pmgr-arbiter | `set-pmgr-arbiter` | `set_pmgr_arbiter` | keep but experimental-only (unreachable on this GPU) |
 
 `GetCoreVoltage` 0x58337FA3 (measurement twin) exists in nvapi-rs

@@ -6,9 +6,9 @@ use nvoc_core::{
     BackendSet, ClearEdid, ClkVfDomainHint, ClockDomain, ConvertEnum, CoolerPolicy, CoolerTarget,
     DisableNvapiThermalSim, FanCurvePointReadout, GetFanCurves, GetPowerMode, GpuSelector,
     GpuTarget, Kilohertz, KilohertzDelta, MicrovoltsDelta, NvapiPerfFreqCap, OemOcScanner,
-    OemOcScannerAction, PState, Percentage, QueryApiRestriction, QueryAutoBoost, QueryClockOffset,
-    QueryDisplays, QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings,
-    QueryGpuStatus, QueryLegacyCoreOvervoltRanges, QueryNvapiClkDomainFreqDetail,
+    OemOcScannerAction, PState, Percentage, PmgrArbiterProbe, QueryApiRestriction, QueryAutoBoost,
+    QueryClockOffset, QueryDisplays, QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo,
+    QueryGpuSettings, QueryGpuStatus, QueryLegacyCoreOvervoltRanges, QueryNvapiClkDomainFreqDetail,
     QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomains, QueryNvapiClkVfControl,
     QueryNvapiClkVfPoints, QueryNvapiCoolerInfo, QueryNvapiCoreVoltageControl, QueryNvapiDNotifier,
     QueryNvapiOcScannerIncomplete, QueryNvapiPStateLevels, QueryNvapiPStateLockStatus,
@@ -33,10 +33,10 @@ use nvoc_core::{
     SetNvmlPstateLock, SetPowerLimit as SetNvmlPowerLimit, SetPowerMode, SetPstateBaseVoltage,
     SetPstateClockOffset, SetPublicVftablePointOffset, SetPublicVftableRangeOffset,
     SetTemperatureLimit, SetVfpFrequencyLock, SetVoltageBoost, SetWm2Active, SetWm2Mode,
-    VfPointType, VfpResetDomain, Wm2AcousticMode, discover_targets, nvml_pstate_to_str,
-    parse_nvapi_locked_voltage_target, parse_nvml_fan_control_policy, parse_nvml_pstate,
-    query_domain_vf_points_indexed, query_domain_vfp_indices, run, select_targets,
-    set_nvapi_domain_vfp_deltas, sync_memory_pstate_as_p0,
+    VfPointType, VfpResetDomain, Wm2AcousticMode, discover_targets, nvapi_status_name,
+    nvml_pstate_to_str, parse_nvapi_locked_voltage_target, parse_nvml_fan_control_policy,
+    parse_nvml_pstate, query_domain_vf_points_indexed, query_domain_vfp_indices, run,
+    select_targets, set_nvapi_domain_vfp_deltas, sync_memory_pstate_as_p0,
 };
 use serde_json::{Value, json};
 use time::OffsetDateTime;
@@ -3262,8 +3262,12 @@ fn execute_target(
         Command::GetPmgrArbiter => {
             let out = run(target, QueryNvapiPmgrVoltageArbiter)?.output;
             Ok(match out {
-                Some(values) => json!({"values": values}),
-                None => json!({"supported": false}),
+                PmgrArbiterProbe::Values(values) => json!({ "values": values }),
+                PmgrArbiterProbe::Unsupported { status_code } => json!({
+                    "supported": false,
+                    "status_code": status_code,
+                    "status_name": nvapi_status_name(status_code),
+                }),
             })
         }
         Command::SetPmgrArbiter => {

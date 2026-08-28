@@ -22,9 +22,9 @@ pub use gpu_type::{
 };
 pub use operation::{
     CheckVoltageFrequency, ClearEdid, DisableNvapiThermalSim, GetFanCurves, GetPowerMode,
-    GpuOperation, OemOcScanner, OemOcScannerAction, ProbeVoltageLimits, QueryApiRestriction,
-    QueryAutoBoost, QueryClockOffset, QueryDisplays, QueryDomainVfpIndices, QueryDomainVfpPoints,
-    QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings, QueryGpuStatus,
+    GpuOperation, OemOcScanner, OemOcScannerAction, PmgrArbiterProbe, ProbeVoltageLimits,
+    QueryApiRestriction, QueryAutoBoost, QueryClockOffset, QueryDisplays, QueryDomainVfpIndices,
+    QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings, QueryGpuStatus,
     QueryLegacyCoreOvervoltRanges, QueryLegacyP0CoreMaxVoltageDelta, QueryNvapiClkDomainFreq,
     QueryNvapiClkDomainFreqDetail, QueryNvapiClkDomainFreqDirect, QueryNvapiClkDomainFreqsBatch,
     QueryNvapiClkDomains, QueryNvapiClkVfControl, QueryNvapiClkVfPoints, QueryNvapiCoolerInfo,
@@ -52,7 +52,7 @@ pub use operation::{
     SetPublicVftablePointOffset, SetPublicVftableRangeOffset, SetTemperatureLimit,
     SetVfpFrequencyLock, SetVoltageBoost, SetWm2Active, SetWm2Mode, TgpWattRangeInfo,
     detect_gpu_type, fetch_gpu_type, find_matching_vfp_point, legacy_core_overvolt_ranges,
-    legacy_p0_core_max_voltage_delta, nvml_pstate_to_index, nvml_pstate_to_str,
+    legacy_p0_core_max_voltage_delta, nvapi_status_name, nvml_pstate_to_index, nvml_pstate_to_str,
     parse_nvapi_locked_voltage_target, parse_nvml_fan_control_policy, parse_nvml_pstate,
     query_domain_vf_points_indexed, query_domain_vfp_indices, run, run_many,
     set_nvapi_cooler_settings, set_nvapi_domain_vfp_deltas, set_nvapi_legacy_clocks,

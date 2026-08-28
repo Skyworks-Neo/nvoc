@@ -4,11 +4,11 @@ use nvapi::hi::{
 use nvml_wrapper::enum_wrappers::device::{Api, PerformanceState};
 use nvoc_core::{
     BackendSet, CheckVoltageFrequency, ClearEdid, ClkVfDomainClass, ConvertEnum,
-    DisableNvapiThermalSim, GpuTarget, GpuType, NvapiPerfFreqCap, QueryApiRestriction,
-    QueryAutoBoost, QueryDisplays, QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo,
-    QueryGpuSettings, QueryGpuStatus, QueryLegacyCoreOvervoltRanges, QueryNvapiClkDomainFreq,
-    QueryNvapiClkDomainFreqDirect, QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomains,
-    QueryNvapiClkVfPoints, QueryNvapiCoreVoltageControl, QueryNvapiDNotifier,
+    DisableNvapiThermalSim, GpuTarget, GpuType, NvapiPerfFreqCap, PmgrArbiterProbe,
+    QueryApiRestriction, QueryAutoBoost, QueryDisplays, QueryDomainVfpPoints, QueryEdid,
+    QueryFanInfo, QueryGpuInfo, QueryGpuSettings, QueryGpuStatus, QueryLegacyCoreOvervoltRanges,
+    QueryNvapiClkDomainFreq, QueryNvapiClkDomainFreqDirect, QueryNvapiClkDomainFreqsBatch,
+    QueryNvapiClkDomains, QueryNvapiClkVfPoints, QueryNvapiCoreVoltageControl, QueryNvapiDNotifier,
     QueryNvapiOcScannerIncomplete, QueryNvapiPmgrVoltageArbiter, QueryNvapiRatedTdp,
     QueryNvapiTargetTempPolicies, QueryNvapiTgpWattRange, QueryNvapiThermalSim,
     QueryNvapiVoltRails, QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates,
@@ -29,7 +29,8 @@ use nvoc_core::{
     SetPstateBaseVoltage, SetPstateClockOffset, SetPublicVftablePointOffset,
     SetPublicVftableRangeOffset, SetTemperatureLimit, SetVfpFrequencyLock, SetVoltageBoost,
     VfPointType, VfpResetDomain, clk_vf_delta_for_target, detect_gpu_type, discover_targets,
-    fetch_gpu_type, nvml_pstate_to_str, parse_nvml_fan_control_policy, run, try_parse_nvml_pstate,
+    fetch_gpu_type, nvapi_status_name, nvml_pstate_to_str, parse_nvml_fan_control_policy, run,
+    try_parse_nvml_pstate,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -2608,11 +2609,15 @@ fn get_pmgr_arbiter(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
             .map_err(to_py_err)?
             .output;
         Ok(match out {
-            Some(values) => value_object([(
+            PmgrArbiterProbe::Values(values) => value_object([(
                 "values",
                 Value::Array(values.iter().map(|&d| Value::from(d)).collect()),
             )]),
-            None => value_object([("supported", Value::from(false))]),
+            PmgrArbiterProbe::Unsupported { status_code } => value_object([
+                ("supported", Value::from(false)),
+                ("status_code", Value::from(status_code)),
+                ("status_name", Value::from(nvapi_status_name(status_code))),
+            ]),
         })
     })?;
     py_value(py, &value)

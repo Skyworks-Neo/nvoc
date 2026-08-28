@@ -2223,19 +2223,57 @@ impl GpuOperation for SetNvapiCoreVoltageControl {
 }
 
 /// PMGR voltage-request arbiter GET (0x717648FD, escape 0x0700019F, v2
-/// struct 0x20030). Returns the 11 raw arbiter dwords.
+/// struct 0x20030). Calls the FFI directly instead of the hi-layer wrapper:
+/// the wrapper collapses NVAPI_NOT_SUPPORTED (-104) and
+/// NVAPI_NO_IMPLEMENTATION (-3) into the same `None`, hiding *why* the
+/// surface is absent — live-probed, consumer SKUs return -104 because the
+/// kernel-side method is not registered there at all (see
+/// docs/reverse-engineering/nvapi/power-mizer-corevolt-pmgr-semantics.md).
 #[derive(Clone, Copy, Debug)]
 pub struct QueryNvapiPmgrVoltageArbiter;
 
+/// Probe outcome: the 11 raw arbiter dwords, or the raw NVAPI status code
+/// that rejected the call.
+#[derive(Clone, Copy, Debug)]
+pub enum PmgrArbiterProbe {
+    Values([u32; 11]),
+    Unsupported { status_code: i32 },
+}
+
+/// Compact name for a raw NVAPI status code ("NotSupported", "Error", …),
+/// `UNKNOWN` outside the known enum range.
+pub fn nvapi_status_name(code: i32) -> String {
+    match ::nvapi::sys::Status::from_raw(code) {
+        Ok(status) => format!("{status:?}"),
+        Err(_) => "UNKNOWN".to_string(),
+    }
+}
+
 impl GpuOperation for QueryNvapiPmgrVoltageArbiter {
-    type Output = Option<[u32; 11]>;
+    type Output = PmgrArbiterProbe;
 
     fn kind(&self) -> OperationKind {
         OperationKind::QueryNvapiPmgrVoltageArbiter
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
-        target.nvapi()?.pmgr_voltage_arbiter().map_err(Error::from)
+        use ::nvapi::sys::gpu::power::undocumented::NV_PMGR_VOLTAGE_ARBITER_VALUES;
+        use ::nvapi::sys::nvapi::NvVersion;
+        use ::nvapi::sys::nvapi::VersionedStructField;
+
+        let handle = *target.nvapi()?.inner().handle();
+        let mut values = unsafe { std::mem::zeroed::<NV_PMGR_VOLTAGE_ARBITER_VALUES>() };
+        *values.nvapi_version_mut() = NvVersion::with_version(0x20030);
+        let status = unsafe {
+            ::nvapi::sys::api::NvAPI_GPU_GetPMGRVoltageRequestArbiterValues(handle, &mut values)
+        };
+        if status == 0 {
+            Ok(PmgrArbiterProbe::Values(values.values))
+        } else {
+            Ok(PmgrArbiterProbe::Unsupported {
+                status_code: status,
+            })
+        }
     }
 }
 
