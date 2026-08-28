@@ -1,4 +1,4 @@
-use crate::Execution;
+use crate::{Command, Execution};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
@@ -45,7 +45,7 @@ pub(super) fn format_human(execution: &Execution) -> String {
                 false,
             ));
             if let Some(output) = &result.output {
-                lines.extend(format_human_output(execution.function, output));
+                lines.extend(render_command_output(execution.command, output));
             }
         } else {
             let error = result.error.as_deref().unwrap_or("unknown error");
@@ -59,69 +59,81 @@ pub(super) fn format_human(execution: &Execution) -> String {
     lines.join("\n")
 }
 
-fn format_human_output(function: &str, output: &Value) -> Vec<String> {
-    match function {
-        "get-settings" => format_get_settings_output(output),
-        "get-public-vftable" => format_vfp_output(output),
-        "get-private-vftable" => format_private_vfp_output(output),
-        "get-pstate-freq-range" => format_object_array(
-            output,
-            &[
-                ("pstate", "P-State"),
-                ("min_core_mhz", "Core Min"),
-                ("max_core_mhz", "Core Max"),
-                ("min_memory_mhz", "Memory Min"),
-                ("max_memory_mhz", "Memory Max"),
-            ],
-        ),
-        "get-supported-legacy-application-freq" => format_object_array(
-            output,
-            &[("memory_mhz", "Memory"), ("graphics_mhz", "Graphics")],
-        ),
-        "get-temp-thresholds" => format_temperature_thresholds_output(output),
-        "get-legacy-temp-sensor" => format_object_array(
-            output,
-            &[
-                ("target", "Target"),
-                ("controller", "Controller"),
-                ("current_c", "Current"),
-                ("min_c", "Min"),
-                ("max_c", "Max"),
-            ],
-        ),
-        "get-power-mode" => {
-            let supported = output.get("supported").and_then(Value::as_bool);
-            let active = output.get("active").and_then(Value::as_str).unwrap_or("?");
-            match supported {
-                Some(true) => vec![format!("  Power Mode: {active}")],
-                _ => vec![format!("  Power Mode: N/A (unsupported on this GPU)")],
-            }
-        }
-        "set-power-mode" => vec![format!(
-            "  Power Mode set: {}",
-            output
-                .get("power_mode")
-                .and_then(Value::as_str)
-                .unwrap_or("?")
-        )],
-        // "get-dynamic-boost" withdrawn 2026-08-26: 0xC80068A1 reads PCF
-        // platform status, not the PPAB enable readback (probe_pcf_dynamic_boost)
-        "get-pstate-lock" => format_pstate_native_output(output),
-        "get-throttle-reasons" => format_throttle_reasons_output(output),
-        "get-legacy-gpc-rail-volt-range" => format_object_array(
-            output,
-            &[
-                ("pstate", "P-State"),
-                ("min_uv", "Min"),
-                ("current_uv", "Current"),
-                ("max_uv", "Max"),
-            ],
-        ),
-        _ => format_value_block(output, 1),
+/// Per-command human renderer, dispatched through the CommandSpec table
+/// (`formatter` field); commands without a dedicated renderer fall back to
+/// the generic value block.
+pub(super) fn render_command_output(command: Command, output: &Value) -> Vec<String> {
+    match command.spec().formatter {
+        Some(formatter) => formatter(output),
+        None => format_value_block(output, 1),
     }
 }
 
-fn format_get_settings_output(output: &Value) -> Vec<String> {
+pub(super) fn format_pstate_freq_range(output: &Value) -> Vec<String> {
+    format_object_array(
+        output,
+        &[
+            ("pstate", "P-State"),
+            ("min_core_mhz", "Core Min"),
+            ("max_core_mhz", "Core Max"),
+            ("min_memory_mhz", "Memory Min"),
+            ("max_memory_mhz", "Memory Max"),
+        ],
+    )
+}
+
+pub(super) fn format_supported_legacy_app_freq(output: &Value) -> Vec<String> {
+    format_object_array(
+        output,
+        &[("memory_mhz", "Memory"), ("graphics_mhz", "Graphics")],
+    )
+}
+
+pub(super) fn format_legacy_temp_sensor(output: &Value) -> Vec<String> {
+    format_object_array(
+        output,
+        &[
+            ("target", "Target"),
+            ("controller", "Controller"),
+            ("current_c", "Current"),
+            ("min_c", "Min"),
+            ("max_c", "Max"),
+        ],
+    )
+}
+
+pub(super) fn format_legacy_gpc_rail_volt_range(output: &Value) -> Vec<String> {
+    format_object_array(
+        output,
+        &[
+            ("pstate", "P-State"),
+            ("min_uv", "Min"),
+            ("current_uv", "Current"),
+            ("max_uv", "Max"),
+        ],
+    )
+}
+
+pub(super) fn format_power_mode(output: &Value) -> Vec<String> {
+    let supported = output.get("supported").and_then(Value::as_bool);
+    let active = output.get("active").and_then(Value::as_str).unwrap_or("?");
+    match supported {
+        Some(true) => vec![format!("  Power Mode: {active}")],
+        _ => vec![format!("  Power Mode: N/A (unsupported on this GPU)")],
+    }
+}
+
+pub(super) fn format_set_power_mode(output: &Value) -> Vec<String> {
+    vec![format!(
+        "  Power Mode set: {}",
+        output
+            .get("power_mode")
+            .and_then(Value::as_str)
+            .unwrap_or("?")
+    )]
+}
+
+pub(super) fn format_get_settings_output(output: &Value) -> Vec<String> {
     let Some(object) = output.as_object() else {
         return format_value_block(output, 1);
     };
@@ -154,7 +166,7 @@ fn format_get_settings_output(output: &Value) -> Vec<String> {
     lines
 }
 
-fn format_vfp_output(output: &Value) -> Vec<String> {
+pub(super) fn format_vfp_output(output: &Value) -> Vec<String> {
     let mut lines = Vec::new();
     if let Some(object) = output.as_object() {
         for key in ["domain", "indexed", "infer_missing_default"] {
@@ -225,7 +237,7 @@ fn format_vfp_output(output: &Value) -> Vec<String> {
 /// layout (segment separators + one row per point), minus `point_type`
 /// (private records don't carry it) and with `delta` replaced by `current`
 /// (private GetStatus reports default AND current MHz per point).
-fn format_private_vfp_output(output: &Value) -> Vec<String> {
+pub(super) fn format_private_vfp_output(output: &Value) -> Vec<String> {
     let mut lines = Vec::new();
     let Some(object) = output.as_object() else {
         return format_value_block(output, 1);
@@ -392,7 +404,7 @@ fn format_object_array(output: &Value, fields: &[(&str, &str)]) -> Vec<String> {
 ///   — the auto-discovered wall slot is tagged `(TargetTemp)`, and the VBIOS
 ///   min/max range is appended when GetInfo exposed it. An entry is treated as
 ///   NVAPI when it carries a `policy_index` field.
-fn format_temperature_thresholds_output(output: &Value) -> Vec<String> {
+pub(super) fn format_temperature_thresholds_output(output: &Value) -> Vec<String> {
     let Some(items) = output.as_array() else {
         return format_value_block(output, 1);
     };
@@ -455,7 +467,7 @@ fn format_temperature_thresholds_output(output: &Value) -> Vec<String> {
         .collect()
 }
 
-fn format_pstate_native_output(output: &Value) -> Vec<String> {
+pub(super) fn format_pstate_native_output(output: &Value) -> Vec<String> {
     use nvoc_cli_common::color::stylize_title;
     let mut lines = Vec::new();
     let object = match output.as_object() {
@@ -531,7 +543,7 @@ fn trim_float(v: f64) -> String {
     }
 }
 
-fn format_throttle_reasons_output(output: &Value) -> Vec<String> {
+pub(super) fn format_throttle_reasons_output(output: &Value) -> Vec<String> {
     let mut lines = Vec::new();
 
     let reasons = output.get("reasons").unwrap_or(output);
@@ -1752,7 +1764,7 @@ fn indent_spaces(indent: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{COMMANDS, Command, TargetResult};
+    use crate::{Command, TargetResult, all_commands};
     use serde_json::json;
 
     #[test]
@@ -1760,6 +1772,7 @@ mod tests {
         nvoc_cli_common::color::init(true);
         let execution = Execution {
             function: "get-power-watt",
+            command: Command::GetPowerLimit,
             backend: "nvml".to_string(),
             warnings: Vec::new(),
             results: vec![TargetResult {
@@ -1880,7 +1893,7 @@ mod tests {
             ],
         });
 
-        let rendered = format_human_output("get-public-vftable", &output).join("\n");
+        let rendered = render_command_output(Command::GetPublicVftable, &output).join("\n");
 
         assert!(rendered.contains("V-F Points"));
         assert!(rendered.contains("#12 [programmable]: 900.0 mV, 1800.0 MHz, delta 15.0 MHz"));
@@ -1902,7 +1915,7 @@ mod tests {
             }
         });
 
-        let rendered = format_human_output("get-status", &output).join("\n");
+        let rendered = render_command_output(Command::GetStatus, &output).join("\n");
 
         assert!(rendered.contains("Utilization"));
         // FrameBuffer is NVAPI's memory-controller domain -> relabelled.
@@ -1941,7 +1954,7 @@ mod tests {
             ]
         });
 
-        let rendered = format_human_output("get-status", &output).join("\n");
+        let rendered = render_command_output(Command::GetStatus, &output).join("\n");
 
         // Voltage reported in microvolts.
         assert!(rendered.contains("Voltage: 940000 uV"));
@@ -1985,7 +1998,7 @@ mod tests {
             ]
         });
 
-        let rendered = format_human_output("get-status", &output).join("\n");
+        let rendered = render_command_output(Command::GetStatus, &output).join("\n");
 
         assert!(rendered.contains("Channel Type: 1 (GPU_MAX)"));
         assert!(rendered.contains("- 78.5 C"));
@@ -2012,7 +2025,7 @@ mod tests {
             "current_fan_speed_level": 2
         });
 
-        let rendered = format_human_output("get-status", &output).join("\n");
+        let rendered = render_command_output(Command::GetStatus, &output).join("\n");
 
         // Both power topology channels (board/GPU split) are shown, each with a
         // `%` unit (the values are 0–100 plain percentages). Keys are PascalCase
@@ -2053,7 +2066,7 @@ mod tests {
             }
         });
 
-        let rendered = format_human_output("get-status", &output).join("\n");
+        let rendered = render_command_output(Command::GetStatus, &output).join("\n");
 
         // Section title is "P0 Voltage Limit" (not "P0 Voltage:"), header has
         // no trailing colon, and each bound is its own indented `Label: N mV`.
@@ -2082,7 +2095,7 @@ mod tests {
             "perf": { "unknown": 7, "limits": { "bits": 16 } }
         });
 
-        let rendered = format_human_output("get-status", &output).join("\n");
+        let rendered = render_command_output(Command::GetStatus, &output).join("\n");
 
         assert!(rendered.contains("Limits: No Load"));
         assert!(rendered.contains("Load Level: Idle"));
@@ -2096,16 +2109,16 @@ mod tests {
         nvoc_cli_common::color::init(true);
         // limits bits = 3 = POWER_LIMIT(1) | THERMAL_LIMIT(2), decoded in bit
         // order. The raw-int form (pynvoc path) is also accepted.
-        let rendered_obj = format_human_output(
-            "get-status",
+        let rendered_obj = render_command_output(
+            Command::GetStatus,
             &json!({ "perf": { "unknown": 1, "limits": { "bits": 3 } } }),
         )
         .join("\n");
         assert!(rendered_obj.contains("Limits: Power, Temperature"));
         assert!(rendered_obj.contains("Load Level: Load"));
 
-        let rendered_raw = format_human_output(
-            "get-status",
+        let rendered_raw = render_command_output(
+            Command::GetStatus,
             &json!({ "perf": { "unknown": 1, "limits": 3 } }),
         )
         .join("\n");
@@ -2120,12 +2133,12 @@ mod tests {
         let output = json!({
             "performance_decrease": { "bits": 3 }
         });
-        let rendered = format_human_output("get-status", &output).join("\n");
+        let rendered = render_command_output(Command::GetStatus, &output).join("\n");
         assert!(rendered.contains("Performance Decrease: Thermal Protection, Power Control"));
 
         // bits = 0 (idle GPU) -> None.
-        let rendered_none = format_human_output(
-            "get-status",
+        let rendered_none = render_command_output(
+            Command::GetStatus,
             &json!({ "performance_decrease": { "bits": 0 } }),
         )
         .join("\n");
@@ -2144,7 +2157,7 @@ mod tests {
             },
         });
 
-        let rendered = format_human_output("get-info", &output).join("\n");
+        let rendered = render_command_output(Command::GetInfo, &output).join("\n");
 
         assert!(rendered.contains("Voltage: Max 0 mV, Min 0 mV"));
         assert!(rendered.contains("Voltage: Max 0 mV, Min 0 mV"));
@@ -2173,7 +2186,7 @@ mod tests {
             },
         });
 
-        let rendered = format_human_output("get-info", &output).join("\n");
+        let rendered = render_command_output(Command::GetInfo, &output).join("\n");
 
         assert!(rendered.contains("Frequency: Max 2145 MHz, Min 300 MHz"));
         assert!(rendered.contains("Frequency Delta: Max 1000 MHz, Min -1000 MHz"));
@@ -2198,7 +2211,7 @@ mod tests {
             "bios_version": "90.16.34.00.60",
         });
 
-        let rendered = format_human_output("get-info", &output).join("\n");
+        let rendered = render_command_output(Command::GetInfo, &output).join("\n");
 
         assert!(rendered.contains("Base Clocks: Graphics 1530 MHz, Memory 4001 MHz"));
         assert!(rendered.contains("Boost Clocks: Graphics 1830 MHz, Memory 4001 MHz"));
@@ -2218,7 +2231,7 @@ mod tests {
             },
         });
 
-        let rendered = format_human_output("get-info", &output).join("\n");
+        let rendered = render_command_output(Command::GetInfo, &output).join("\n");
 
         assert!(rendered.contains("#0: Temperature 83 C -> Frequency 1830 MHz"));
         assert!(rendered.contains("#1: Temperature 88 C -> Frequency 1830 MHz"));
@@ -2248,7 +2261,7 @@ mod tests {
             "virtual_frame_buffer": 6291456,
         });
 
-        let rendered = format_human_output("get-info", &output).join("\n");
+        let rendered = render_command_output(Command::GetInfo, &output).join("\n");
 
         assert!(rendered.contains("Range: Max 500 MHz, Min -500 MHz"));
         assert!(rendered.contains("Range: Max 1500 MHz, Min -500 MHz"));
@@ -2275,7 +2288,7 @@ mod tests {
             },
         });
 
-        let rendered = format_human_output("get-settings", &output).join("\n");
+        let rendered = render_command_output(Command::GetSettings, &output).join("\n");
 
         assert!(rendered.contains("VFP Deltas"));
         assert!(rendered.contains("Graphics: 4 points, 2 changed: #2 15 MHz, #10 -30 MHz"));
@@ -2294,7 +2307,7 @@ mod tests {
             },
         });
 
-        let rendered = format_human_output("get-info", &output).join("\n");
+        let rendered = render_command_output(Command::GetInfo, &output).join("\n");
         let one = rendered.find("1: one").unwrap();
         let two = rendered.find("2: two").unwrap();
         let ten = rendered.find("10: ten").unwrap();
@@ -2321,7 +2334,7 @@ mod tests {
             },
         });
 
-        let rendered = format_human_output("get-throttle-reasons", &output).join("\n");
+        let rendered = render_command_output(Command::GetThrottleReasons, &output).join("\n");
 
         // Instantaneous reasons come first.
         assert!(rendered.contains("Reason GPU Idle | Active yes"));
@@ -2340,7 +2353,7 @@ mod tests {
         // Device exposes throttle reasons but no violation counters.
         let output = json!({"reasons": [{"name": "GPU Idle", "active": true}]});
 
-        let rendered = format_human_output("get-throttle-reasons", &output).join("\n");
+        let rendered = render_command_output(Command::GetThrottleReasons, &output).join("\n");
 
         assert!(rendered.contains("Reason GPU Idle | Active yes"));
         assert!(!rendered.contains("Violation Status"));
@@ -2350,8 +2363,8 @@ mod tests {
     fn human_output_renders_every_function_without_json_dump() {
         nvoc_cli_common::color::init(true);
 
-        for command in COMMANDS {
-            let rendered = format_human_output(command.name(), &sample_output(*command)).join("\n");
+        for command in all_commands() {
+            let rendered = render_command_output(command, &sample_output(command)).join("\n");
             assert!(
                 !rendered.contains('{') && !rendered.contains('}') && !rendered.contains('"'),
                 "{} still renders JSON-like output:\n{}",
@@ -2365,6 +2378,7 @@ mod tests {
     fn json_output_is_compact() {
         let execution = Execution {
             function: "get-power-watt",
+            command: Command::GetPowerLimit,
             backend: "nvml".to_string(),
             warnings: Vec::new(),
             results: vec![TargetResult {
