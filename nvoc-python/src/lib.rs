@@ -2576,19 +2576,26 @@ fn set_clk_domain_offset(
         .map_err(to_py_err)?
         .output;
         Ok(match out {
-            Some(a) => value_object([
-                ("applied", Value::from(true)),
-                ("bit", Value::from(a.bit)),
-                ("type", Value::from(a.entry_type)),
-                ("slot", Value::from(a.slot)),
-                ("previous_kHz", Value::from(a.previous_kHz)),
-                ("applied_kHz", Value::from(a.applied_kHz)),
-                (
-                    "values_kHz",
-                    Value::Array(a.values_kHz.iter().map(|v| Value::from(*v)).collect()),
-                ),
-                ("temporary_restored", Value::from(a.temporary_restored)),
-            ]),
+            Some(a) => {
+                #[allow(non_snake_case)]
+                // MHz-suffixed locals: the offset input is MHz now; the raw
+                // 8-dword record dump stays in kHz (driver-opaque terms).
+                let (previous_mHz, applied_mHz) =
+                    (a.previous_kHz as f64 / 1000.0, a.applied_kHz as f64 / 1000.0);
+                value_object([
+                    ("applied", Value::from(true)),
+                    ("bit", Value::from(a.bit)),
+                    ("type", Value::from(a.entry_type)),
+                    ("slot", Value::from(a.slot)),
+                    ("previous_mHz", Value::from(previous_mHz)),
+                    ("applied_mHz", Value::from(applied_mHz)),
+                    (
+                        "values_kHz",
+                        Value::Array(a.values_kHz.iter().map(|v| Value::from(*v)).collect()),
+                    ),
+                    ("temporary_restored", Value::from(a.temporary_restored)),
+                ])
+            }
             None => value_object([("supported", Value::from(false))]),
         })
     })?;

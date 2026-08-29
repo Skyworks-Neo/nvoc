@@ -71,7 +71,7 @@ class FakeNative:
     ) -> dict:
         # Like set_volt_rail_target: always returns a dict (never None), so
         # the apply paths must format the message from it. Mirror the real
-        # payload (applied_kHz is the driver readback).
+        # payload (applied_mHz is the driver readback, MHz).
         self.calls.append(
             (
                 "set_clk_domain_offset",
@@ -82,7 +82,7 @@ class FakeNative:
                 temporary,
             )
         )
-        return {"applied": True, "bit": domain_bit, "applied_kHz": offset_khz}
+        return {"applied": True, "bit": domain_bit, "applied_mHz": offset_khz / 1000.0}
 
     def set_target_temp(self, gpu: str, tlimit: float, policy_index: int) -> None:
         self.calls.append(("set_target_temp", gpu, tlimit, policy_index))

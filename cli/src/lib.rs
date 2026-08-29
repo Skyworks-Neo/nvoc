@@ -4087,16 +4087,24 @@ fn execute_target(
             )?
             .output;
             Ok(match out {
-                Some(a) => json!({
-                    "applied": true,
-                    "bit": a.bit,
-                    "type": a.entry_type,
-                    "slot": a.slot,
-                    "previous_kHz": a.previous_kHz,
-                    "applied_kHz": a.applied_kHz,
-                    "values_kHz": a.values_kHz,
-                    "temporary_restored": a.temporary_restored,
-                }),
+                Some(a) => {
+                    #[allow(non_snake_case)]
+                    // MHz-suffixed locals: the offset positional is MHz now;
+                    // the raw 8-dword record dump stays in kHz (its slot
+                    // semantics are driver-opaque kHz terms).
+                    let (previous_mHz, applied_mHz) =
+                        (a.previous_kHz as f64 / 1000.0, a.applied_kHz as f64 / 1000.0);
+                    json!({
+                        "applied": true,
+                        "bit": a.bit,
+                        "type": a.entry_type,
+                        "slot": a.slot,
+                        "previous_mHz": previous_mHz,
+                        "applied_mHz": applied_mHz,
+                        "values_kHz": a.values_kHz,
+                        "temporary_restored": a.temporary_restored,
+                    })
+                }
                 None => json!({"supported": false}),
             })
         }

@@ -200,16 +200,20 @@ class OverclockController(PaneController):
         """Build the log message from a ``set_clk_domain_offset`` result.
 
         The pynvoc call returns a dict (the applied payload with the
-        driver's readback ``applied_kHz``, or ``{"supported": False}``) —
-        never ``None`` — so the message is formatted here.
+        driver's readback ``applied_mHz`` (or the legacy ``applied_kHz``),
+        or ``{"supported": False}``) — never ``None`` — so the message is
+        formatted here.
         """
         if isinstance(result, dict):
             if result.get("applied"):
-                applied = result.get("applied_kHz")
+                applied = result.get("applied_mHz")
+                if applied is None:
+                    legacy = result.get("applied_kHz")
+                    applied = legacy / 1000.0 if isinstance(legacy, (int, float)) else None
                 if isinstance(applied, (int, float)):
                     return (
                         f"Successfully applied Xbar offset {offset_mhz:+d} MHz "
-                        f"(driver readback {applied / 1000.0:+g} MHz)."
+                        f"(driver readback {applied:+g} MHz)."
                     )
                 return f"Successfully applied Xbar offset {offset_mhz:+d} MHz."
             if result.get("supported") is False:

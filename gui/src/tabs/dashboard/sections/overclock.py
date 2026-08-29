@@ -908,17 +908,21 @@ class OverclockTab:
         """Build the console message from a ``set_clk_domain_offset`` result.
 
         Like ``set_volt_rail_target``, the pynvoc call returns a dict (the
-        applied payload with the driver's readback ``applied_kHz``, or
+        applied payload with the driver's readback ``applied_mHz`` (or the
+        legacy ``applied_kHz``), or
         ``{"supported": False}``) — never ``None`` — so the message must be
         formatted here rather than via ``setter() or "msg"``.
         """
         if isinstance(result, dict):
             if result.get("applied"):
-                applied = result.get("applied_kHz")
+                applied = result.get("applied_mHz")
+                if applied is None:
+                    legacy = result.get("applied_kHz")
+                    applied = legacy / 1000.0 if isinstance(legacy, (int, float)) else None
                 if isinstance(applied, (int, float)):
                     return (
                         f"Successfully applied Xbar offset {offset_mhz:+d} MHz "
-                        f"(driver readback {applied / 1000.0:+g} MHz)."
+                        f"(driver readback {applied:+g} MHz)."
                     )
                 return f"Successfully applied Xbar offset {offset_mhz:+d} MHz."
             if result.get("supported") is False:

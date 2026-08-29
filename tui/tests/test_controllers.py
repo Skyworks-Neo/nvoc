@@ -254,7 +254,7 @@ class FakeNative:
                 unknown,
             )
         )
-        return {"applied": True, "applied_kHz": offset_khz}
+        return {"applied": True, "applied_mHz": offset_khz / 1000.0}
 
     def set_volt_rail_target(self, gpu, rail_bit, target_mv, unknown):
         self.calls.append(("set_volt_rail_target", gpu, rail_bit, target_mv, unknown))

@@ -2797,7 +2797,7 @@ mod tests {
             }),
             Command::SetPrivateFreqDomainGlobalOffset => json!({
                 "applied": true, "bit": 1, "type": 10,
-                "previous_kHz": 0, "applied_kHz": -60000, "temporary_restored": true,
+                "previous_mHz": 0, "applied_mHz": -60, "temporary_restored": true,
             }),
             Command::SetPrivateVftablePointOffset => json!({
                 "applied": true, "bank": 0, "index": 191,
