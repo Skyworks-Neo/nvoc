@@ -209,7 +209,9 @@ class OverclockController(PaneController):
                 applied = result.get("applied_mHz")
                 if applied is None:
                     legacy = result.get("applied_kHz")
-                    applied = legacy / 1000.0 if isinstance(legacy, (int, float)) else None
+                    applied = (
+                        legacy / 1000.0 if isinstance(legacy, (int, float)) else None
+                    )
                 if isinstance(applied, (int, float)):
                     return (
                         f"Successfully applied Xbar offset {offset_mhz:+d} MHz "

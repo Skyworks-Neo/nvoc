@@ -2580,8 +2580,10 @@ fn set_clk_domain_offset(
                 #[allow(non_snake_case)]
                 // MHz-suffixed locals: the offset input is MHz now; the raw
                 // 8-dword record dump stays in kHz (driver-opaque terms).
-                let (previous_mHz, applied_mHz) =
-                    (a.previous_kHz as f64 / 1000.0, a.applied_kHz as f64 / 1000.0);
+                let (previous_mHz, applied_mHz) = (
+                    a.previous_kHz as f64 / 1000.0,
+                    a.applied_kHz as f64 / 1000.0,
+                );
                 value_object([
                     ("applied", Value::from(true)),
                     ("bit", Value::from(a.bit)),

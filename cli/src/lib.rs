@@ -4092,8 +4092,10 @@ fn execute_target(
                     // MHz-suffixed locals: the offset positional is MHz now;
                     // the raw 8-dword record dump stays in kHz (its slot
                     // semantics are driver-opaque kHz terms).
-                    let (previous_mHz, applied_mHz) =
-                        (a.previous_kHz as f64 / 1000.0, a.applied_kHz as f64 / 1000.0);
+                    let (previous_mHz, applied_mHz) = (
+                        a.previous_kHz as f64 / 1000.0,
+                        a.applied_kHz as f64 / 1000.0,
+                    );
                     json!({
                         "applied": true,
                         "bit": a.bit,
