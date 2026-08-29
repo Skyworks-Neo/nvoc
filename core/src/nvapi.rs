@@ -14,7 +14,7 @@ use ::nvapi::hi::{
 };
 use ::nvapi::{CelsiusShifted, DisplayIdsFlags, VoltageDomain};
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::iter;
 use std::str::FromStr;
 use std::thread::sleep;
@@ -955,6 +955,50 @@ pub fn query_domain_vf_points_indexed(
     let points = curve.points.get(&domain).cloned().unwrap_or_default();
     let deltas = table.delta_points.get(&domain).cloned().unwrap_or_default();
 
+    // Pascal server/workstation default inference. On these cards the public
+    // VFP table is read-only (every point Fixed): the public `delta` stays 0
+    // even with an offset active (offsets reach the hardware only through the
+    // private SetControl), so the generic `current − delta` inference would
+    // just echo the OC'd current. There the TRUE stock default comes from the
+    // private table, where — Pascal semantics — the `default` field carries
+    // the CURRENT frequency (moves with the offset) and the mode-0 control
+    // offset sits on the 2× axis (raw 129300 = 64.65 MHz, live P100; GTX
+    // 1080 cross-check: public OC +f → private reads 2f):
+    //   true_default = private.freq_default − private_offset_raw / 2
+    // Scope: ServerPascal | WorkstationPascal (per the generation owner);
+    // consumer Pascal still infers via the working public delta, everything
+    // else keeps the generic path.
+    let private_defaults = if infer_missing_default {
+        let pascal_fixed = fetch_gpu_type(&gpu.info()?)
+            .is_ok_and(|t| matches!(t, GpuType::ServerPascal | GpuType::WorkstationPascal));
+        if pascal_fixed {
+            // Best-effort: a private-family read failure falls back to the
+            // generic current−delta inference below rather than failing the
+            // whole public query.
+            let (Ok(pts), Ok(ctrl)) = (
+                gpu.inner().clk_vf_points_private(),
+                gpu.inner().clk_vf_control_private(),
+            ) else {
+                return Err(Error::Custom(
+                    "private V/F table unavailable for Pascal default inference".into(),
+                ));
+            };
+            let mut map: HashMap<u16, (u32, u32, u32)> = HashMap::new();
+            for p in &ctrl.points {
+                map.insert(p.index, (0, p.mode, p.value));
+            }
+            for p in &pts.points {
+                let e = map.entry(p.index).or_insert((p.freq_default_mhz, 0, 0));
+                e.0 = p.freq_default_mhz;
+            }
+            Some(map)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     let mut pts = points.into_iter().peekable();
     let mut dts = deltas.into_iter().peekable();
     let mut result = Vec::new();
@@ -975,8 +1019,21 @@ pub fn query_domain_vf_points_indexed(
                     delta,
                 };
                 if infer_missing_default && point.default_frequency.0 == 0 {
-                    let base = point.frequency.0 as i64 - point.delta.0 as i64;
-                    point.default_frequency = Kilohertz(base.max(0) as u32);
+                    if let Some((def_mhz, mode, raw)) =
+                        private_defaults.as_ref().and_then(|m| m.get(&(i as u16)))
+                    {
+                        // Pascal 2× axis: mode-0 value is 2× the real kHz →
+                        // real offset kHz = raw / 2. Mode-1 (raw f-offset
+                        // control) has no Pascal calibration — leave the
+                        // current as the default there rather than applying
+                        // the Ada g(def) prior to the wrong axis.
+                        let offset_khz = if *mode == 0 { raw / 2 } else { 0 };
+                        let default_khz = (*def_mhz as i64) * 1000 - offset_khz as i64;
+                        point.default_frequency = Kilohertz(default_khz.max(0) as u32);
+                    } else {
+                        let base = point.frequency.0 as i64 - point.delta.0 as i64;
+                        point.default_frequency = Kilohertz(base.max(0) as u32);
+                    }
                 }
                 result.push((i, point));
             }
