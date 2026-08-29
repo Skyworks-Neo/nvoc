@@ -170,6 +170,19 @@ class NativeService:
             except Exception:
                 return None
 
+    def query_fan_info(self, gpu: str) -> dict | None:
+        """NVML fan info (count / min / max / current percent).
+
+        Returns the pynvoc ``query_fan_info`` dict or ``None`` when NVML
+        can't answer. On legacy GPUs (≤ Kepler) this is the authoritative
+        fan source: the private NVAPI cooler family reports zero coolers
+        there, while NVML's v1 ``nvmlDeviceGetFanSpeed`` answers.
+        """
+        try:
+            return self._pynvoc().query_fan_info(gpu)
+        except Exception:
+            return None
+
     def query_mobile_limits(self, gpu: str) -> dict:
         """Fetch the mobile power/thermal control surface (all NVAPI).
 

@@ -1237,6 +1237,7 @@ class OverclockTab:
             if gpu is not None and gpu != self._mobile_limits_gpu:
                 self._load_mobile_limits()
         self.fan_section.set_supported(not is_mobile)
+        self._refresh_fan_surface(is_mobile)
 
         # Xbar (private ClockClient domain offset) exists from Turing — the
         # GTX 16-series — onward. Older archs hide the row entirely; when it
@@ -1296,6 +1297,73 @@ class OverclockTab:
             self._is_legacy_gpu = False
             self.vboost_label_var.set("VoltBoost:")
             self.vboost_unit_var.set("%")
+
+    # ── Fan surface (dropdown / initial level / backend preselect) ──────────
+    def _refresh_fan_surface(self, is_mobile: bool) -> None:
+        """Query NVML fan info and adapt the Fan Control pane.
+
+        On legacy GPUs (≤ Kepler) the private NVAPI cooler family reports
+        zero coolers while NVML still answers (v1 GetFanSpeed: count=1,
+        live current percent). In that case the dropdown is restricted to
+        the real cooler count (no "Fan 2"), the level slider starts at the
+        live current duty, and the backend preselects NVML so Apply goes
+        through the working path. Modern GPUs keep the All/Fan1/Fan2
+        defaults (NVAPI count is authoritative there).
+        """
+        if is_mobile or getattr(self, "_fan_surface_load_in_flight", False):
+            return
+        gpu = self.app.selected_gpu_target()
+        if gpu is None:
+            return
+        backend = self.app.backend
+        self._fan_surface_load_in_flight = True
+
+        def worker():
+            try:
+                data = backend.query_fan_info(gpu)
+            except Exception:
+                data = None
+            try:
+                self.frame.after(0, lambda: self._fan_surface_loaded(data))
+            except Exception:
+                self._fan_surface_load_in_flight = False
+
+        try:
+            self.app.run_background("fan-surface", worker)
+        except Exception:
+            self._fan_surface_load_in_flight = False
+            raise
+
+    def _fan_surface_loaded(self, data: Optional[dict]) -> None:
+        self._fan_surface_load_in_flight = False
+        if not isinstance(data, dict):
+            return
+        try:
+            count = data.get("count")
+            count = count if isinstance(count, int) else 0
+            current = data.get("current_percent")
+            current = current if isinstance(current, int) else None
+
+            # Legacy signature: NVML sees fans where the NVAPI cooler family
+            # reports none. (A modern GPU's NVML count also matches its NVAPI
+            # count, so this branch is legacy-only in practice.)
+            if count >= 1:
+                # Modern NVAPI CoolerPolicy types (continuous etc.) are
+                # rejected by legacy drivers — restrict the dropdown to
+                # manual/default and default the selection to manual. Keep the
+                # NVAPI backend selected: on legacy GPUs the NVML control path
+                # binds v2-only symbols (SetFanControlPolicy/SetFanSpeed_v2,
+                # absent in R391's nvml.dll), so NVAPI manual is the working
+                # control path (verified: `set-fan-speed --nvapi` manual).
+                self.fan_section.set_legacy_nvapi(True)
+                choices = ["All"] + [f"Fan {i}" for i in range(1, count + 1)]
+                self.fan_section.set_fan_choices(choices)
+                if count == 1 and current is not None:
+                    # Seed the level with the live duty so the slider starts
+                    # where the fan actually is.
+                    self.fan_section.set_level(max(0, min(100, int(current))))
+        except Exception:
+            pass
 
     @staticmethod
     def _normalize_pstate_label(value: Any) -> Optional[str]:

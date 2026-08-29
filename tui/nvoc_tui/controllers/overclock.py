@@ -13,6 +13,7 @@ class OverclockController(PaneController):
         super().__init__(app)
         self._mobile_limits_gpu: str | None = None
         self._mobile_load_lock = threading.Lock()
+        self._fan_surface_lock = threading.Lock()
         self._tgp_policy_index = 2
         self._tgp_range = (5, 140)
         self._target_temp_range = (75, 87)
@@ -116,6 +117,7 @@ class OverclockController(PaneController):
         except Exception:
             pass
         self.load_mobile_limits()
+        self._load_fan_surface()
 
     def apply_oc(
         self,
@@ -395,6 +397,72 @@ class OverclockController(PaneController):
             or " mx " in gpu_name
             or gpu_name.endswith(" mx")
         )
+
+    def _load_fan_surface(self) -> None:
+        """Background-load NVML fan info and adapt the Fan pane.
+
+        On legacy GPUs (≤ Kepler) the private NVAPI cooler family reports
+        zero coolers while NVML still answers (v1 GetFanSpeed: count=1 +
+        live current percent). Restrict the fan Target dropdown to the real
+        count (no "Fan 2" on single-fan cards), seed the Level input with
+        the live duty, and preselect NVML so Apply uses the working path.
+        Modern GPUs keep the All/Fan1/Fan2 defaults (NVAPI is authoritative
+        there) — the adaptation only fires when NVML reports ≥1 fan.
+        """
+        gpu = self.app.selected_gpu_target()
+        if gpu is None or not self._fan_surface_lock.acquire(blocking=False):
+            return
+
+        def worker() -> None:
+            try:
+                data = self.app.native_service.query_fan_info(gpu)
+            except Exception:
+                data = None
+            finally:
+                self._fan_surface_lock.release()
+            try:
+                self.app.call_from_thread(self._on_fan_surface, data)
+            except Exception:
+                pass
+
+        threading.Thread(
+            target=worker, daemon=True, name="nvoc-tui-fan-surface"
+        ).start()
+
+    def _on_fan_surface(self, data: dict | None) -> None:
+        if not isinstance(data, dict):
+            return
+        try:
+            count = data.get("count")
+            count = count if isinstance(count, int) else 0
+            current = data.get("current_percent")
+            current = current if isinstance(current, int) else None
+            if count >= 1:
+                options = [("All", "all")] + [
+                    (f"Fan {i}", str(i)) for i in range(1, count + 1)
+                ]
+                select = self.app.query_one("#fan-id", Select)
+                current_value = str(select.value or "all")
+                select.set_options(options)
+                if current_value in {value for _, value in options}:
+                    select.value = current_value
+                # Legacy GPUs (≤ Kepler): modern NVAPI CoolerPolicy types are
+                # rejected by the old driver — restrict the policy dropdown to
+                # default/manual and default to manual. Keep the NVAPI backend
+                # (the working control path there; NVML's control path binds
+                # v2-only symbols absent in R391's nvml.dll).
+                policy_select = self.app.query_one("#fan-policy", Select)
+                policy_value = str(policy_select.value or "continuous")
+                policy_select.set_options(
+                    [("default", "default"), ("manual", "manual")]
+                )
+                policy_select.value = (
+                    policy_value if policy_value in {"default", "manual"} else "manual"
+                )
+                if count == 1 and current is not None:
+                    self.set_input("#fan-level", str(max(0, min(100, int(current)))))
+        except Exception:
+            pass
 
     def load_mobile_limits(self, force: bool = False) -> None:
         """Background-load the mobile control surface via pynvoc (NVAPI)."""

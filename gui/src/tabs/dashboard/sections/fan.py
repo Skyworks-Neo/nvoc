@@ -38,6 +38,11 @@ NVAPI_POLICIES = [
     "software",
     "default32",
 ]
+# Legacy GPUs (≤ Kepler): the modern CoolerPolicy types (TemperatureContinuous
+# etc.) are rejected by the old driver — only the classic CoolerControl
+# manual/default levels work there (verified: `set-fan-speed --nvapi` with
+# policy manual applies on GT730/Fermi R391.35).
+NVAPI_LEGACY_POLICIES = ["default", "manual"]
 NVML_POLICIES = ["continuous", "manual"]
 
 
@@ -49,6 +54,10 @@ class FanControlPaneProtocol(Protocol):
     def fan_level_text(self) -> str: ...
     def set_policy_values(self, values: Sequence[str]) -> None: ...
     def set_policy(self, policy: str) -> None: ...
+    def set_fan_choices(
+        self, values: Sequence[str], selected: Optional[str] = None
+    ) -> None: ...
+    def set_backend(self, backend: str) -> None: ...
     def set_level(self, level: int) -> None: ...
     def set_supported_state(self, supported: bool) -> None: ...
 
@@ -57,6 +66,9 @@ class FanControlController:
     def __init__(self, pane: FanControlPaneProtocol, backend: GuiBackend) -> None:
         self.pane = pane
         self.backend = backend
+        # Legacy GPUs (≤ Kepler): modern NVAPI CoolerPolicy types are rejected
+        # by the old driver; restrict the policy dropdown to manual/default.
+        self.legacy_nvapi = False
 
     def selected_backend(self) -> str:
         selected = self.pane.selected_api().strip().upper()
@@ -65,15 +77,33 @@ class FanControlController:
     def allowed_policies(self) -> list[str]:
         if self.selected_backend() == "nvml-cooler":
             return list(NVML_POLICIES)
+        if self.legacy_nvapi:
+            return list(NVAPI_LEGACY_POLICIES)
         return list(NVAPI_POLICIES)
 
     def normalize_policy(self) -> str:
         policy = self.pane.selected_policy().lower().strip()
         allowed = self.allowed_policies()
         if policy not in allowed:
-            policy = "continuous" if "continuous" in allowed else allowed[0]
+            # Legacy NVAPI list has no "continuous" — default to "manual"
+            # (the CoolerControl path that works on old drivers).
+            if "continuous" in allowed:
+                policy = "continuous"
+            elif "manual" in allowed:
+                policy = "manual"
+            else:
+                policy = allowed[0]
             self.pane.set_policy(policy)
         return policy
+
+    def set_legacy_nvapi(self, legacy: bool) -> None:
+        """Flag a legacy GPU (≤ Kepler): restrict the NVAPI policy dropdown
+        to manual/default and re-normalize the current selection."""
+        if self.legacy_nvapi == legacy:
+            return
+        self.legacy_nvapi = legacy
+        self.pane.set_policy_values(self.allowed_policies())
+        self.normalize_policy()
 
     def fan_id(self) -> Optional[str]:
         selected = self.pane.selected_fan_id().strip()
@@ -481,6 +511,29 @@ class FanControlPane:
     def set_policy(self, policy: str) -> None:
         self.policy_var.set(policy)
 
+    def set_fan_choices(
+        self, values: Sequence[str], selected: Optional[str] = None
+    ) -> None:
+        """Restrict the fan dropdown to the coolers the driver reports.
+
+        Default UI offers All/Fan 1/Fan 2; a GPU with a single fan should not
+        show Fan 2, and a GPU reporting zero fans through both backends
+        should only keep "All".
+        """
+        new_values = list(values) or ["All"]
+        current = self.fan_id_var.get()
+        self.fan_id_menu.configure(values=new_values)
+        if selected is not None and selected in new_values:
+            self.fan_id_var.set(selected)
+        elif current not in new_values:
+            self.fan_id_var.set(new_values[0])
+
+    def set_backend(self, backend: str) -> None:
+        """Preselect the NVAPI/NVML dropdown (e.g. force NVML on legacy GPUs
+        where the private NVAPI cooler family reports zero fans)."""
+        if backend in ("NVAPI", "NVML"):
+            self.cooler_api_var.set(backend)
+
     def set_level(self, level: int) -> None:
         text = str(level)
         if self.level_var.get() != text:
@@ -489,6 +542,9 @@ class FanControlPane:
 
     def set_supported(self, supported: bool) -> None:
         self.set_supported_state(supported)
+
+    def set_legacy_nvapi(self, legacy: bool) -> None:
+        self.controller.set_legacy_nvapi(legacy)
 
     def set_supported_state(self, supported: bool) -> None:
         if supported == self._supported_state:

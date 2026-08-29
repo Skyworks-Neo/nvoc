@@ -1223,6 +1223,9 @@ fn normalize_fan_info(target: &GpuTarget<'_>) -> PyResultValue {
         ("count", u64_value(fan.count as u64)),
         ("min_percent", option_u32(fan.min_speed)),
         ("max_percent", option_u32(fan.max_speed)),
+        // v1 `nvmlDeviceGetFanSpeed` on legacy NVML — the one live value on
+        // legacy GPUs (min/max are v2-only and absent there).
+        ("current_percent", option_u32(fan.current_speed)),
     ]))
 }
 
