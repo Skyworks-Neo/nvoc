@@ -36,6 +36,7 @@ use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString};
 use serde_json::{Map, Number, Value};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 type PyResultValue = PyResult<Value>;
@@ -2416,12 +2417,103 @@ fn query_private_freq_domain_info(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAn
 /// type-8 segments are V/F curves (GPC first, then the 127-point XBAR
 /// candidate), type-7 segments are per-domain pstate frequency lists.
 /// Returns `{"supported": false}` when the driver doesn't expose it.
+///
+/// Voltage fallback: some drivers leave the private voltage fields unfilled
+/// (e.g. GP100/TCC 582.41 — every record reads 0 µV, live-verified). The
+/// private records are INDEXED BY VOLTAGE, so the j-th point of ANY V/F
+/// segment sits at the same grid level as the j-th point of every other
+/// segment — including the public GPC VFP curve, which DOES carry voltage on
+/// those same drivers. When a V/F segment's voltage range is degenerate
+/// (max==0), we borrow the public GPC voltage grid by index-within-segment
+/// (point at offset j ← public point j) so the GUI plots the curve against a
+/// real voltage axis instead of collapsing every point to V=0. Cards whose
+/// private voltage IS filled (Ada/R610.74) are untouched.
 #[pyfunction]
 fn query_private_vftable(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
     let value = with_target(gpu, "nvapi", |target| {
-        let vfp = run(target, QueryNvapiClkVfPoints)
+        let mut vfp = run(target, QueryNvapiClkVfPoints)
             .map_err(to_py_err)?
             .output;
+        if let Some(v) = vfp.as_mut() {
+            // Detect degenerate-voltage V/F segments (driver left voltage at 0).
+            let degenerate: Vec<&nvapi::ClkVfSegment> = v
+                .segments
+                .iter()
+                .filter(|s| s.kind == nvapi::ClkVfSegmentKind::VfCurve && s.voltage_uV_max == 0)
+                .collect();
+            if !degenerate.is_empty() {
+                // Borrow the public GPC voltage grid. Best-effort: if the
+                // public query fails or is too short, leave voltages at 0
+                // (the pre-fallback behavior — no regression).
+                if let Ok(pub_report) = run(
+                    target,
+                    QueryDomainVfpPoints {
+                        domain: ClockDomain::Graphics,
+                        infer_missing_default: true,
+                        indexed: true,
+                    },
+                ) {
+                    let pub_pts = pub_report.output;
+                    // public point (index, VfPoint) → voltage at that grid level
+                    let mut grid = vec![0u32; pub_pts.len()];
+                    let mut max_idx = 0usize;
+                    for (idx, p) in &pub_pts {
+                        if *idx < grid.len() {
+                            grid[*idx] = p.voltage.0 as u32;
+                            max_idx = max_idx.max(*idx);
+                        }
+                    }
+                    let grid = &grid[..=max_idx.min(grid.len() - 1)];
+                    // Patch each point in a degenerate segment by offset.
+                    for p in v.points.iter_mut() {
+                        let in_deg = degenerate.iter().any(|s| {
+                            s.bank == p.bank
+                                && s.start_index as usize <= p.index as usize
+                                && p.index as usize <= s.end_index as usize
+                        });
+                        if !in_deg {
+                            continue;
+                        }
+                        let off = p.index as usize - {
+                            // find this point's segment start
+                            degenerate
+                                .iter()
+                                .find(|s| {
+                                    s.bank == p.bank
+                                        && s.start_index as usize <= p.index as usize
+                                        && p.index as usize <= s.end_index as usize
+                                })
+                                .map(|s| s.start_index as usize)
+                                .unwrap_or(0)
+                        };
+                        if off < grid.len() {
+                            p.voltage_uV = grid[off];
+                        }
+                    }
+                    // Refresh segment voltage ranges so the JSON mirrors the patch.
+                    for s in v.segments.iter_mut() {
+                        if s.kind != nvapi::ClkVfSegmentKind::VfCurve || s.voltage_uV_max != 0 {
+                            continue;
+                        }
+                        let pts: Vec<u32> = v
+                            .points
+                            .iter()
+                            .filter(|p| {
+                                s.bank == p.bank
+                                    && s.start_index as usize <= p.index as usize
+                                    && p.index as usize <= s.end_index as usize
+                            })
+                            .map(|p| p.voltage_uV)
+                            .collect();
+                        if let Some((&mn, &mx)) = pts.iter().min().zip(pts.iter().max()) {
+                            s.voltage_uV_min = mn;
+                            s.voltage_uV_max = mx;
+                        }
+                    }
+                }
+            }
+        }
+        let vfp = vfp;
         Ok(match vfp {
             Some(v) => value_object([
                 (
@@ -2477,8 +2569,22 @@ fn query_private_vftable(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
                                     ("voltage_uV", Value::from(p.voltage_uV)),
                                     // default MHz at this voltage
                                     ("freq_default_mhz", Value::from(p.freq_default_mhz)),
-                                    // current MHz = default + applied offset
-                                    ("freq_current_mhz", Value::from(p.freq_current_mhz)),
+                                    // current MHz = default + applied offset.
+                                    // Some drivers don't maintain the
+                                    // current field (P100/TCC 582.41: every
+                                    // record reads current=0 while default
+                                    // is filled — GetControl is the real
+                                    // offset readback there). Fall back to
+                                    // default so the plotted "current" line
+                                    // doesn't collapse to a flat 0 curve.
+                                    (
+                                        "freq_current_mhz",
+                                        Value::from(if p.freq_current_mhz == 0 {
+                                            p.freq_default_mhz
+                                        } else {
+                                            p.freq_current_mhz
+                                        }),
+                                    ),
                                 ])
                             })
                             .collect(),
@@ -2521,6 +2627,10 @@ fn query_clk_domain_freq(py: Python<'_>, gpu: &str, domain_bit: u32) -> PyResult
 /// GPC=0, XBAR=1, SYS=2, MCLK=4, HOST=5. `freq_khz == 0` ⇒ the driver refused
 /// or the domain isn't measurable through this interface → caller should not
 /// draw a live point. Returns `{"supported": false}` when the family is absent.
+///
+/// `freq_khz` is ALREADY DECODED for HBM MEM (÷4 — see
+/// `ClockDomainFreqDirect::mem_scale_divisor`); the raw driver counter is
+/// `freq_khz × mem_scale_divisor` (also returned, for diagnostics).
 #[pyfunction]
 fn query_private_freq_domain_status(
     py: Python<'_>,
@@ -2535,6 +2645,7 @@ fn query_private_freq_domain_status(
             Some(f) => value_object([
                 ("domain_bit", Value::from(domain_bit)),
                 ("freq_khz", Value::from(f.freq_khz)),
+                ("mem_scale_divisor", Value::from(f.mem_scale_divisor)),
             ]),
             None => value_object([
                 ("supported", Value::from(false)),
@@ -2608,26 +2719,37 @@ fn set_clk_domain_offset(
 /// SetControl (ID 0xFEC00D04). DANGEROUS: snapshots the full control
 /// block, patches one record (mode 0 freq-offset / mode 1 delta), SETs,
 /// readbacks, restores on mismatch. `bank` 0 = V/F curve, 1 = pstate-class
-/// curve points; `idx` 0..2047. `freq_mode` = mode 0 (u32 kHz) vs mode 1
-/// (i16 delta). Returns `{"supported": false}` when the driver refuses.
+/// curve points; `idx` 0..2047. `freq_mode` = mode 0 (u32 kHz — the GUI
+/// sends its `deltas_khz` here verbatim) vs mode 1 (i16 delta). Returns
+/// `{"supported": false}` when the driver refuses.
 #[pyfunction]
 fn set_vfp_point_private(
     py: Python<'_>,
     gpu: &str,
     bank: usize,
     idx: usize,
-    value_mhz: i32,
+    value_khz: i32,
     freq_mode: Option<bool>,
 ) -> PyResult<Py<PyAny>> {
     let freq_mode = freq_mode.unwrap_or(false);
     let value = with_target(gpu, "nvapi", |target| {
+        // Pascal 2× axis (all Pascal — GpuType::is_pascal): a mode-0 kHz
+        // offset must be written as raw = real ×2; mode-1 raw deltas stay
+        // verbatim (raw semantics are raw semantics). `value_khz` is the
+        // REAL kHz the caller intends — the GUI vfcurve editors pass it.
+        let pascal_2x = freq_mode && pascal_2x_axis_cached(gpu, target);
+        let written = if pascal_2x {
+            value_khz.saturating_mul(2)
+        } else {
+            value_khz
+        };
         let out = run(
             target,
             SetNvapiVfpPointPrivate {
                 bank,
                 idx,
                 freq_mode,
-                value: value_mhz as u32,
+                value: written as u32,
             },
         )
         .map_err(to_py_err)?
@@ -2641,7 +2763,9 @@ fn set_vfp_point_private(
                     "mode",
                     Value::from(if freq_mode { "freq" } else { "delta" }),
                 ),
-                ("value_mhz", Value::from(value_mhz)),
+                ("value_khz", Value::from(value_khz)),
+                ("written_value", Value::from(written)),
+                ("pascal_2x_write", Value::from(pascal_2x)),
                 ("retained_raw", Value::from(retained)),
             ]),
             None => value_object([("supported", Value::from(false))]),
@@ -2955,12 +3079,39 @@ fn set_vfp_range_per_point_private(
     py_value(py, &value)
 }
 
+/// Pascal 2× private-axis gate, cached per GPU id. The chip generation is
+/// static for the session and the GUI apply loops call per point — the cheap
+/// full_name+short_name escapes behind a cache keep an 80-point apply at one
+/// detection, not 80 QueryGpuInfo builds.
+fn pascal_2x_axis_cached(gpu: &str, target: &GpuTarget<'_>) -> bool {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<String, bool>>> =
+        std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    let mut map = match cache.lock() {
+        Ok(m) => m,
+        Err(p) => p.into_inner(),
+    };
+    *map.entry(gpu.to_string()).or_insert_with(|| {
+        // QueryGpuInfo is heavy, but the cache collapses it to once per GPU
+        // per session — an 80-point GUI apply then costs zero extra escapes.
+        run(target, QueryGpuInfo)
+            .ok()
+            .and_then(|r| fetch_gpu_type(&r.output).ok())
+            .is_some_and(|t| t.is_pascal())
+    })
+}
+
 /// Translate a MHz target offset into a private mode-1 raw f-offset control
 /// value via the universal g(def) prior (`clk_vf_delta_for_target`). `class`
 /// is "graphics" (GPC) or "fabric" (XBAR/HOST). Returns `{"delta": <i32>}` on
 /// success or `{"delta": null}` when the prior has no C for this def band.
 /// Used by the GUI's raw-converted apply path when the traditional public
 /// VFP interface is explicitly unsupported.
+///
+/// NO Pascal 2× axis scaling here: the mode-1 control word and its g(def)
+/// prior are 1:1 on Pascal (live A/B on P100 — a doubled-target write lifted
+/// a mid-curve point by ~2.15× the requested MHz, so the prior itself is
+/// already correct; only the mode-0 kHz field carries the 2× encoding).
 #[pyfunction]
 fn clk_vf_delta_for_target_mhz(
     py: Python<'_>,
