@@ -698,7 +698,28 @@ fn format_value_block_with_context(value: &Value, indent: usize, context: &str) 
                     // `UV` per-field label suffix is dropped (the mV unit already
                     // carries the dimension).
                     Value::Object(child) if key == "p0_voltage" => {
-                        lines.extend(format_p0_voltage_block(indent, child));
+                        lines.extend(format_p0_voltage_block(indent, "P0 Voltage Limit", child));
+                    }
+                    // Per-rail P0 bounds (get-volt-rail-info `p0_rails`, one
+                    // entry per rail in the mask): each renders the same
+                    // multi-line block as `p0_voltage`, titled with its rail
+                    // bit — on multi-rail parts (GB10 / 50-series) this
+                    // surfaces the Xbar rail's bounds below the core's.
+                    Value::Array(items)
+                        if key == "p0_rails"
+                            && items
+                                .iter()
+                                .all(|v| v.as_object().is_some_and(|o| o.contains_key("rail_bit"))) =>
+                    {
+                        for item in items {
+                            let object = item.as_object().expect("checked above");
+                            let bit = object.get("rail_bit").and_then(Value::as_i64);
+                            let title = match bit {
+                                Some(bit) => format!("P0 Voltage Limit (rail {bit})"),
+                                None => "P0 Voltage Limit".to_string(),
+                            };
+                            lines.extend(format_p0_voltage_block(indent, &title, object));
+                        }
                     }
                     Value::Object(child) if object_is_measurement_map(key, child) => {
                         lines.push(format_measurement_map_line(indent, key, child));
@@ -1025,11 +1046,15 @@ fn format_measurement_map_line(
 /// redundant `UV` label suffix that `format_label` would append (from the
 /// `_uV` key suffix) is stripped, since the `mV` unit already carries the
 /// dimension — otherwise each line read "Current UV 900 mV".
-fn format_p0_voltage_block(indent: usize, object: &serde_json::Map<String, Value>) -> Vec<String> {
+fn format_p0_voltage_block(
+    indent: usize,
+    title: &str,
+    object: &serde_json::Map<String, Value>,
+) -> Vec<String> {
     let mut lines = vec![format!(
         "{}{}",
         indent_spaces(indent),
-        nvoc_cli_common::color::stylize_title("P0 Voltage Limit")
+        nvoc_cli_common::color::stylize_title(title)
     )];
     // Fixed logical order: current, then the wall hierarchy (target → effective
     // → VBIOS → VRM-max), then the remaining offset headroom and min-hold floor.
@@ -2686,7 +2711,7 @@ mod tests {
             Command::SetPStateLock => json!({"applied": true, "pstate": "P3"}),
             Command::ResetPStateLock => json!({"applied": true}),
             Command::GetVoltRailInfo => json!({
-                "rail_mask": "0x00000001",
+                "rail_mask": "0x00000003",
                 "p0": {
                     "current_uV": 700000,
                     "target_wall_uV": 750000,
@@ -2696,15 +2721,44 @@ mod tests {
                     "min_hold_uV": 600000,
                     "offset_ceiling_uV": 450000,
                 },
+                "p0_rails": [
+                    {
+                        "rail_bit": 0,
+                        "current_uV": 700000,
+                        "target_wall_uV": 750000,
+                        "effective_wall_uV": 750000,
+                        "vbios_wall_uV": 0,
+                        "vrm_max_wall_uV": 1200000,
+                        "min_hold_uV": 600000,
+                        "offset_ceiling_uV": 450000,
+                    },
+                    {
+                        "rail_bit": 1,
+                        "current_uV": 710000,
+                        "target_wall_uV": 760000,
+                        "effective_wall_uV": 760000,
+                        "vbios_wall_uV": 0,
+                        "vrm_max_wall_uV": 1200000,
+                        "min_hold_uV": 610000,
+                        "offset_ceiling_uV": 440000,
+                    },
+                ],
                 "rail_descriptors": [{
                     "rail_bit": 0,
                     "type": 1,
+                }, {
+                    "rail_bit": 1,
+                    "type": 3,
                 }],
                 "control": [{
                     "rail_bit": 0, "type": 3, "values_uV": [0, 0, 0, 0, 0, 0],
+                }, {
+                    "rail_bit": 1, "type": 3, "values_uV": [0, 0, 0, 0, 0, 0],
                 }],
                 "status": [{
                     "rail_bit": 0, "type": 1, "values_uV": [700000, 750000, 0, 1200000, 750000, 600000],
+                }, {
+                    "rail_bit": 1, "type": 3, "values_uV": [710000, 760000, 0, 1200000, 760000, 610000],
                 }],
             }),
             Command::SetVoltRailLimit => json!({

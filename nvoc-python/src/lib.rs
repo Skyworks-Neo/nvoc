@@ -2167,6 +2167,42 @@ fn query_volt_rails(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
                 };
                 value_object([
                     ("rail_mask", Value::from(format!("0x{:08X}", r.rail_mask))),
+                    // Per-rail P0 bounds (multi-rail parts: GB10 / 50-series
+                    // core + Xbar). Status entries are matched by rail_bit —
+                    // the entry type is a per-rail protocol tag (Xbar = 3),
+                    // not a layout marker. Each entry carries rail_bit plus
+                    // the same seven fields as `p0`.
+                    (
+                        "p0_rails",
+                        Value::Array({
+                            let mut bits: Vec<u32> =
+                                r.status.iter().map(|e| e.rail_bit).collect();
+                            bits.sort_unstable();
+                            bits.dedup();
+                            bits.into_iter()
+                                .filter_map(|bit| {
+                                    let b = r.p0_bounds_for(bit)?;
+                                    let mut ceiling = b.vrm_max_wall_uV;
+                                    if b.vbios_wall_uV > 0 && b.vbios_wall_uV < ceiling {
+                                        ceiling = b.vbios_wall_uV;
+                                    }
+                                    #[allow(non_snake_case)]
+                                    // uV-suffixed local matches the nvapi-rs field naming
+                                    let ceiling_uV = (ceiling - b.effective_wall_uV).max(0);
+                                    Some(value_object([
+                                        ("rail_bit", Value::from(bit)),
+                                        ("current_uV", Value::from(b.current_uV)),
+                                        ("target_wall_uV", Value::from(b.target_wall_uV)),
+                                        ("effective_wall_uV", Value::from(b.effective_wall_uV)),
+                                        ("vbios_wall_uV", Value::from(b.vbios_wall_uV)),
+                                        ("vrm_max_wall_uV", Value::from(b.vrm_max_wall_uV)),
+                                        ("min_hold_uV", Value::from(b.min_hold_uV)),
+                                        ("offset_ceiling_uV", Value::from(ceiling_uV)),
+                                    ]))
+                                })
+                                .collect()
+                        }),
+                    ),
                     (
                         "p0",
                         match r.p0_bounds() {

@@ -3447,6 +3447,7 @@ fn execute_target(
                     json!({
                         "rail_mask": format!("0x{:08X}", r.rail_mask),
                         "p0": volt_rails_p0_json(&r),
+                        "p0_rails": volt_rails_p0_rails_json(&r),
                         "rail_descriptors": r.rail_descriptors.iter().map(|d| json!({
                             "rail_bit": d.rail_bit,
                             "type": d.entry_type(),
@@ -5479,16 +5480,17 @@ fn option_one<'a>(invocation: &'a Invocation, name: &str) -> Option<&'a str> {
         .map(String::as_str)
 }
 
-/// Build the P0 voltage-bounds JSON block shared by get-status and
-/// get-volt-rails. Returns `None` if the driver exposes no type-1 status
-/// entry (p0_bounds() plausibility check failed).
+/// Build one rail's P0 voltage-bounds JSON object (µV fields), matched by
+/// `rail_bit` — the status entry type is a per-rail protocol tag (GB10 /
+/// 50-series Xbar status = 3), not a layout marker. Returns `None` if the
+/// rail has no status entry or it fails the p0_bounds plausibility check.
 #[allow(non_snake_case)]
-fn volt_rails_p0_json(rails: &nvoc_core::VoltRails) -> Option<Value> {
-    let b = rails.p0_bounds()?;
+fn volt_rails_p0_json_for(rails: &nvoc_core::VoltRails, rail_bit: u32) -> Option<Value> {
+    let b = rails.p0_bounds_for(rail_bit)?;
     // ceiling = min(vbios_wall, vrm_max_wall) − base wall; the µV still
     // available before the driver clamps the effective wall.
     let ceiling_uV = rails
-        .offset_ceiling_uV(0)
+        .offset_ceiling_uV(rail_bit)
         .or_else(|| {
             let mut c = b.vrm_max_wall_uV;
             if b.vbios_wall_uV > 0 && b.vbios_wall_uV < c {
@@ -5506,6 +5508,43 @@ fn volt_rails_p0_json(rails: &nvoc_core::VoltRails) -> Option<Value> {
         "min_hold_uV": b.min_hold_uV,
         "offset_ceiling_uV": ceiling_uV,
     }))
+}
+
+/// Rail bits present in the volt-rails status list, ascending.
+fn volt_rail_bits(rails: &nvoc_core::VoltRails) -> Vec<u32> {
+    let mut bits: Vec<u32> = rails.status.iter().map(|e| e.rail_bit).collect();
+    bits.sort_unstable();
+    bits.dedup();
+    bits
+}
+
+/// Build the core-rail P0 voltage-bounds JSON block shared by get-status and
+/// get-volt-rails: the lowest rail_bit whose status entry parses (rail 0,
+/// the core, on every observed platform). Returns `None` if no status entry
+/// passes the p0_bounds() plausibility check.
+fn volt_rails_p0_json(rails: &nvoc_core::VoltRails) -> Option<Value> {
+    volt_rail_bits(rails)
+        .into_iter()
+        .find_map(|bit| volt_rails_p0_json_for(rails, bit))
+}
+
+/// Per-rail P0 voltage-bounds blocks for every rail in the mask whose status
+/// entry parses — on multi-rail parts (GB10 / 50-series: core + Xbar) this
+/// surfaces the same bounds for the Xbar rail that the core-rail `p0` block
+/// shows, each tagged with its `rail_bit`.
+fn volt_rails_p0_rails_json(rails: &nvoc_core::VoltRails) -> Value {
+    Value::Array(
+        volt_rail_bits(rails)
+            .into_iter()
+            .filter_map(|bit| {
+                volt_rails_p0_json_for(rails, bit).map(|v| {
+                    let mut obj = v.as_object().cloned().unwrap_or_default();
+                    obj.insert("rail_bit".to_string(), json!(bit));
+                    Value::Object(obj)
+                })
+            })
+            .collect(),
+    )
 }
 
 fn option_bool(invocation: &Invocation, name: &str, default: bool) -> CliResult<bool> {

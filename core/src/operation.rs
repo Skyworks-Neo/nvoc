@@ -1860,7 +1860,7 @@ impl GpuOperation for SetNvapiVoltRailOffset {
         // Read back the status entry for this rail to surface the effective
         // wall the driver actually put in force (clamped to VRM/vBIOS max).
         // The driver may not have refreshed status immediately after SET; a 0
-        // here means "no type-1 entry / not yet updated" — re-run
+        // here means "no status entry / not yet updated" — re-run
         // get-volt-rails to confirm.
         #[allow(non_snake_case)]
         let effective_wall_uV = gpu
@@ -1869,10 +1869,13 @@ impl GpuOperation for SetNvapiVoltRailOffset {
             .and_then(|r| {
                 r.status
                     .iter()
-                    .find(|e| e.rail_bit == self.rail_bit && e.entry_type == 1)
+                    .find(|e| e.rail_bit == self.rail_bit)
                     // status payload index 4 = effective wall (clamped to
                     // min(target, vbios_wall, vrm_max_wall)); see
-                    // nvapi-rs sys::gpu::power::undocumented::status_values
+                    // nvapi-rs sys::gpu::power::undocumented::status_values.
+                    // Entry type is a per-rail protocol tag (GB10/50-series
+                    // Xbar status = 3), not a layout marker — match by
+                    // rail_bit only.
                     .map(|e| e.values[4])
             })
             .unwrap_or(0);
@@ -1894,8 +1897,8 @@ pub struct NvapiVoltRailOffsetApplied {
     pub applied_uV: i32,
     /// effective wall after SET, read back from the status entry's index 4.
     /// The driver clamps this to `min(target, vbios_wall, vrm_max_wall)`, so
-    /// it may be below the requested offset's implied wall. 0 = no type-1
-    /// status entry / driver hasn't refreshed yet (re-run get-volt-rails).
+    /// it may be below the requested offset's implied wall. 0 = no status
+    /// entry / driver hasn't refreshed yet (re-run get-volt-rails).
     pub effective_wall_uV: i32,
 }
 
@@ -1906,9 +1909,11 @@ pub struct NvapiVoltRailOffsetApplied {
 ///
 /// Derivation (the offset is relative to the factory/default wall):
 ///   - `control` entry `.values[0]` = the offset currently applied (µV)
-///   - `status` type-1 entry `.values[1]` = the target wall the driver holds
-///     (µV) — the wall *including* the current offset, before the
-///     VRM/vBIOS clamp
+///   - `status` entry `.values[1]` = the target wall the driver holds (µV) —
+///     the wall *including* the current offset, before the VRM/vBIOS clamp.
+///     Status entries are matched by `rail_bit` only: the entry type is a
+///     per-rail protocol tag (GB10/50-series Xbar status = 3) with the same
+///     six-value layout as a type-1 core entry
 ///   - `base_wall = target_wall − current_offset` recovers the factory wall
 ///   - `offset = target_uV − base_wall` is what gets written
 ///
@@ -1967,13 +1972,15 @@ impl GpuOperation for SetNvapiVoltRailTarget {
         // The offset the driver currently holds for this rail (control entry
         // payload index 0).
         let previous_offset_uV = ctrl.values[0];
-        // The target wall the driver currently holds (status type-1 entry,
-        // payload index 1). This is the wall *including* the current offset,
-        // before the VRM/vBIOS clamp — see sys status_values doc.
+        // The target wall the driver currently holds (status entry for this
+        // rail, payload index 1). This is the wall *including* the current
+        // offset, before the VRM/vBIOS clamp — see sys status_values doc.
+        // Matched by rail_bit only: the entry type is a per-rail protocol
+        // tag (GB10/50-series Xbar status = 3), not a layout marker.
         let target_wall_uV = rails
             .status
             .iter()
-            .find(|e| e.rail_bit == self.rail_bit && e.entry_type == 1)
+            .find(|e| e.rail_bit == self.rail_bit)
             .and_then(|e| e.values.get(1).copied())
             .unwrap_or(0);
         if target_wall_uV == 0 {
@@ -1999,7 +2006,7 @@ impl GpuOperation for SetNvapiVoltRailTarget {
         // Read back the status entry for this rail to surface the effective
         // wall the driver actually put in force (clamped to VRM/vBIOS max).
         // The driver may not have refreshed status immediately after SET; a 0
-        // here means "no type-1 entry / not yet updated" — re-run
+        // here means "no status entry / not yet updated" — re-run
         // get-volt-rails to confirm.
         #[allow(non_snake_case)]
         let effective_wall_uV = gpu
@@ -2008,7 +2015,7 @@ impl GpuOperation for SetNvapiVoltRailTarget {
             .and_then(|r| {
                 r.status
                     .iter()
-                    .find(|e| e.rail_bit == self.rail_bit && e.entry_type == 1)
+                    .find(|e| e.rail_bit == self.rail_bit)
                     .and_then(|e| e.values.get(4).copied())
             })
             .unwrap_or(0);
@@ -2041,7 +2048,7 @@ pub struct NvapiVoltRailTargetApplied {
     pub applied_uV: i32,
     /// effective wall after SET, read back from the status entry's index 4.
     /// The driver clamps this to `min(target, vbios_wall, vrm_max_wall)`, so
-    /// it may be below the requested target. 0 = no type-1 status entry /
+    /// it may be below the requested target. 0 = no status entry /
     /// driver hasn't refreshed yet (re-run get-volt-rails).
     pub effective_wall_uV: i32,
 }
