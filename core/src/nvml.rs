@@ -442,7 +442,56 @@ pub fn get_nvml_min_max_fan_speed(nvml: &Nvml, gpu_id: u32) -> Option<(u32, u32)
 
 pub fn get_nvml_num_fans(nvml: &Nvml, gpu_id: u32) -> Option<u32> {
     let device = find_nvml_device(nvml, gpu_id)?;
-    device.num_fans().ok()
+    if let Ok(count) = device.num_fans() {
+        return Some(count);
+    }
+    // Legacy NVML (e.g. R391) lacks `nvmlDeviceGetNumFans` AND the wrapper's
+    // `fan_speed()` binds the `_v2` symbol (also absent there) — both fail at
+    // the symbol level. Fall back to a raw call of `nvmlDeviceGetFanSpeed` v1,
+    // present since the earliest NVML: index 0 answering means one fan.
+    // SAFETY: the handle is a live NVML device obtained from this `Nvml`.
+    let speed = v1_fan_speed(unsafe { device.handle() }.cast());
+    if speed.is_some() {
+        return Some(1);
+    }
+    None
+}
+
+/// Raw `nvmlDeviceGetFanSpeed` (v1) call against the resolved nvml.dll.
+/// Windows reuses the already-loaded module for the same absolute path, so
+/// this never double-loads the library nvml-wrapper initialized. The handle
+/// is cached for the process lifetime on purpose — dlclose would only drop
+/// OUR reference, but re-opening per call is wasted work.
+#[cfg(windows)]
+fn v1_fan_speed(device: *mut std::ffi::c_void) -> Option<u32> {
+    use std::sync::OnceLock;
+
+    struct RawLib(libloading::Library);
+    unsafe impl Send for RawLib {}
+    unsafe impl Sync for RawLib {}
+
+    static LIB: OnceLock<Option<RawLib>> = OnceLock::new();
+    let lib = LIB
+        .get_or_init(|| {
+            // SAFETY: Library::new only loads a DLL (same-path loads reuse the
+            // module nvml-wrapper already loaded).
+            crate::dll_path::resolved_nvml_path()
+                .and_then(|path| unsafe { libloading::Library::new(path) }.ok())
+                .map(RawLib)
+        })
+        .as_ref()?;
+
+    type FanSpeedFn = unsafe extern "C" fn(device: *mut std::ffi::c_void, speed: *mut u32) -> i32;
+    let sym: libloading::Symbol<FanSpeedFn> =
+        unsafe { lib.0.get(b"nvmlDeviceGetFanSpeed\0") }.ok()?;
+    let mut speed: u32 = 0;
+    let rc = unsafe { sym(device, &mut speed) };
+    if rc == 0 { Some(speed) } else { None }
+}
+
+#[cfg(not(windows))]
+fn v1_fan_speed(_device: *mut std::ffi::c_void) -> Option<u32> {
+    None
 }
 
 // ---------------------------------------------------------------------------

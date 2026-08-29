@@ -259,12 +259,12 @@ impl TargetInventory {
         let (nvml, nvml_error) = match backends {
             BackendSet::Nvml => (
                 Some(
-                    Nvml::init()
+                    super::dll_path::init_nvml()
                         .map_err(|e| Error::Custom(format!("NVML init failed: {:?}", e)))?,
                 ),
                 None,
             ),
-            BackendSet::Both => match Nvml::init() {
+            BackendSet::Both => match super::dll_path::init_nvml() {
                 Ok(nvml) => (Some(nvml), None),
                 Err(e) => {
                     let reason = format!("NVML init failed: {:?}", e);

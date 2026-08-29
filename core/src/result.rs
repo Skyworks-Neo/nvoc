@@ -92,6 +92,14 @@ pub enum OperationKind {
     /// 0xDA025C3E) — the raw mode/value readback for everything the private
     /// SetControl 0xFEC00D04 writes. All-zero at stock.
     QueryNvapiClkVfControl,
+    /// Read the full VBIOS image via `NvAPI_GPU_GetVbiosImage`
+    /// (0xFC13EE11, escape 0x0700004F). On legacy drivers this escape
+    /// succeeds where the VFP-curve escape 0x0700004A is
+    /// kernel-unimplemented, making it the viable path to the V/F curve
+    /// (BIT VoltageTable) on old GPUs.
+    QueryVbiosImage,
+    /// Read the VBIOS version string via `NvAPI_GPU_GetVbiosVersionString`.
+    QueryVbiosVersion,
     /// Write one V/F curve point via the private V/F-POINTS SetControl
     /// (ID 0xFEC00D04, mode 0 absolute / mode 1 delta). DANGEROUS:
     /// snapshots, patches, SETs, readbacks, restores on mismatch.
@@ -211,6 +219,10 @@ pub enum OperationKind {
     /// Query per-cooler info via the private FanCoolerGetInfo (NDA
     /// 0x65CE5BFC): cooler count + per-cooler index.
     QueryNvapiCoolerInfo,
+    /// Query fan-policy capabilities via the private
+    /// ClientFanPoliciesGetInfo (NDA 0x52B76D12): V2 raw block on modern
+    /// drivers, legacy V1 (policy list + active + flag bits) on R391-era.
+    QueryNvapiFanPolicyInfo,
     /// Set fan speed by RPM via the private FanCoolerSetControl (NDA
     /// 0xEB44E8AA): RMW the control block, patch enable+level per cooler
     /// type. RE'd from ref tool setFanSim.
@@ -493,6 +505,28 @@ pub struct NvapiCoolerInfoEntry {
     pub max: u32,
     pub current: u32,
     pub current_pwm_percent: u32,
+}
+
+/// Fan-policy capabilities (private ClientFanPoliciesGetInfo 0x52B76D12).
+/// `layout` distinguishes the modern V2 block (raw payload for offline
+/// decoding) from the legacy R391-era V1 block (decoded policy entries:
+/// which fan policies exist, which is active, two capability flag bits).
+#[derive(Debug, Clone)]
+pub struct NvapiFanPolicyInfo {
+    /// "v2" (0x2004C raw) or "v1" (0x1003C decoded)
+    pub layout: &'static str,
+    /// V2 only: opaque driver payload (hex in output).
+    pub raw: Vec<u8>,
+    /// V1 only: decoded per-policy entries.
+    pub entries: Vec<NvapiFanPolicyEntry>,
+}
+
+/// One legacy-V1 fan-policy entry.
+#[derive(Debug, Clone, Copy)]
+pub struct NvapiFanPolicyEntry {
+    pub dword0: u32,
+    pub active: bool,
+    pub flags: u32,
 }
 
 /// Result of a set_fan_rpm call (private FanCoolerSetControl NDA 0xEB44E8AA).

@@ -771,10 +771,70 @@ fn join_context(parent: &str, key: &str) -> String {
 
 fn sorted_object_entries(object: &serde_json::Map<String, Value>) -> Vec<(&String, &Value)> {
     let mut entries = object.iter().collect::<Vec<_>>();
+    // Numeric keys (clock domains, pstate numbers) sort numerically.
     if entries.iter().all(|(key, _)| key.parse::<i64>().is_ok()) {
         entries.sort_by_key(|(key, _)| key.parse::<i64>().unwrap_or_default());
+        return entries;
+    }
+    // C-style enum keys serialized by serde as variant names (e.g. "P0", "P8",
+    // "P12" from NV_GPU_PERF_PSTATE_ID). Without this the BTreeMap's numeric
+    // order is lost on the JSON boundary (serde serializes enum variants as
+    // their name string, not their discriminant) and we'd emit P0/P12/P8 in
+    // insertion order. Sort by the numeric suffix.
+    if entries
+        .iter()
+        .all(|(key, _)| key.len() > 1 && key.starts_with('P') && key[1..].parse::<u32>().is_ok())
+    {
+        entries.sort_by_key(|(key, _)| key[1..].parse::<u32>().unwrap_or_default());
+        return entries;
     }
     entries
+}
+
+#[cfg(test)]
+mod sort_tests {
+    use super::*;
+
+    #[test]
+    fn pstate_keys_sort_numerically() {
+        // Reproduces the classic "P0 / P12 / P8" ordering bug: BTreeMap<PState>
+        // is numeric on the Rust side, but serde serializes enum variants as
+        // their name strings ("P0", "P8", "P12"), so the JSON object loses the
+        // numeric ordering and we'd emit P0/P12/P8 (insertion order).
+        let mut object = serde_json::Map::new();
+        // Insert deliberately out of numeric order.
+        object.insert("P8".to_string(), json!({"v": 8}));
+        object.insert("P0".to_string(), json!({"v": 0}));
+        object.insert("P12".to_string(), json!({"v": 12}));
+        let entries = sorted_object_entries(&object);
+        let keys: Vec<&str> = entries.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(
+            keys,
+            vec!["P0", "P8", "P12"],
+            "pstate keys must be numeric, not lexicographic"
+        );
+    }
+
+    #[test]
+    fn plain_numeric_keys_still_sort() {
+        let mut object = serde_json::Map::new();
+        object.insert("12".to_string(), json!(12));
+        object.insert("0".to_string(), json!(0));
+        object.insert("8".to_string(), json!(8));
+        let entries = sorted_object_entries(&object);
+        let keys: Vec<&str> = entries.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, vec!["0", "8", "12"]);
+    }
+
+    #[test]
+    fn mixed_keys_do_not_panic() {
+        let mut object = serde_json::Map::new();
+        object.insert("Graphics".to_string(), json!("g"));
+        object.insert("Memory".to_string(), json!("m"));
+        // Should return in insertion order (no numeric/P-prefix sort applied).
+        let entries = sorted_object_entries(&object);
+        assert_eq!(entries.len(), 2);
+    }
 }
 
 struct CompactGroup<'a> {
@@ -1621,15 +1681,12 @@ fn format_contextual_scalar(context_key: &str, value_key: &str, value: &Value) -
         return format_measurement(number / 1024.0, "MB");
     }
     // Driver-model value is a packed WDDM version word -> show hex + decoded version.
-    // major = (value >> 12) & 0xf; minor = (value >> 8) & 0xf when major != 2.
+    // major = (value >> 12) & 0xf; minor = (value >> 8) & 0xf — one decimal digit
+    // for every major (WDDM 2.x spans 2.0-2.9, e.g. 0x00002300 = WDDM 2.3).
     if context.contains("driver_model") || value_key == "driver_model" {
         let word = number as u32;
         let major = ((word >> 12) & 0xf) as u8;
-        let minor = if major == 2 {
-            0
-        } else {
-            ((word >> 8) & 0xf) as u8
-        };
+        let minor = ((word >> 8) & 0xf) as u8;
         return format!("0x{:08X} (WDDM {}.{})", word, major, minor);
     }
     // Temperature sensor range bounds (get-info descriptor path): report in degrees C.
@@ -1856,6 +1913,11 @@ mod tests {
         ));
         // Driver model value as hex + decoded WDDM version.
         assert!(rendered.contains("Value: 0x00003200 (WDDM 3.2)"));
+        // WDDM 2.x minor is a full one-decimal nibble (0x2300 = 2.3, NOT 2.0 —
+        // the legacy "2.x == 2.0" special case was wrong).
+        let legacy =
+            format_value_block(&json!({ "driver_model": { "value": 0x2300_u32 } }), 0).join("\n");
+        assert!(legacy.contains("Value: 0x00002300 (WDDM 2.3)"));
         // Sensor range bounds carry a C unit.
         assert!(rendered.contains("Range: Max 139 C, Min -35 C"));
     }

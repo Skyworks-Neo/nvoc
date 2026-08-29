@@ -13,5 +13,9 @@ nvapi = { workspace = true }
 nvml-wrapper = { workspace = true }
 quick-error = { workspace = true }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true }
+libloading = { workspace = true }
+
 [dev-dependencies]
 serde_json = { workspace = true }

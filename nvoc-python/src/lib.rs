@@ -4,27 +4,27 @@ use nvapi::hi::{
 use nvml_wrapper::enum_wrappers::device::{Api, PerformanceState};
 use nvoc_core::{
     BackendSet, CheckVoltageFrequency, ClearEdid, ClkVfDomainClass, ConvertEnum,
-    DisableNvapiThermalSim, GpuTarget, GpuType, NvapiPerfFreqCap, PmgrArbiterProbe,
-    QueryApiRestriction, QueryAutoBoost, QueryDisplays, QueryDomainVfpPoints, QueryEdid,
-    QueryFanInfo, QueryGpuInfo, QueryGpuSettings, QueryGpuStatus, QueryLegacyCoreOvervoltRanges,
-    QueryNvapiClkDomainFreq, QueryNvapiClkDomainFreqDirect, QueryNvapiClkDomainFreqsBatch,
-    QueryNvapiClkDomains, QueryNvapiClkVfPoints, QueryNvapiCoreVoltageControl, QueryNvapiDNotifier,
-    QueryNvapiOcScannerIncomplete, QueryNvapiPmgrVoltageArbiter, QueryNvapiRatedTdp,
-    QueryNvapiTargetTempPolicies, QueryNvapiTgpWattRange, QueryNvapiThermalSim,
-    QueryNvapiVoltRails, QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates,
-    QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
-    QueryThrottleReasons, QueryVfpPointVoltage, QueryVoltageBoost, ResetAutoboostStatus,
-    ResetCoolerLevels, ResetFanCurve, ResetFanSpeed, ResetFreqLock, ResetLegacyApplicationFreqLock,
-    ResetLegacyGpcRailOvervoltLimit, ResetNvapiPowerLimits, ResetNvapiSensorLimits,
-    ResetNvapiTgpWatt, ResetNvapiVfpPrivate, ResetPstateGlobalFreqOffset,
+    DisableNvapiThermalSim, GpuTarget, GpuType, NvapiPStateNativeLock, NvapiPerfFreqCap,
+    PmgrArbiterProbe, QueryApiRestriction, QueryAutoBoost, QueryDisplays, QueryDomainVfpPoints,
+    QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings, QueryGpuStatus,
+    QueryLegacyCoreOvervoltRanges, QueryNvapiClkDomainFreq, QueryNvapiClkDomainFreqDirect,
+    QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomains, QueryNvapiClkVfPoints,
+    QueryNvapiCoreVoltageControl, QueryNvapiDNotifier, QueryNvapiOcScannerIncomplete,
+    QueryNvapiPmgrVoltageArbiter, QueryNvapiRatedTdp, QueryNvapiTargetTempPolicies,
+    QueryNvapiTgpWattRange, QueryNvapiThermalSim, QueryNvapiVoltRails, QueryPowerLimits,
+    QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits,
+    QueryTemperatureThresholds, QueryThrottleReasons, QueryVfpPointVoltage, QueryVoltageBoost,
+    ResetAutoboostStatus, ResetCoolerLevels, ResetFanCurve, ResetFanSpeed, ResetFreqLock,
+    ResetLegacyApplicationFreqLock, ResetLegacyGpcRailOvervoltLimit, ResetNvapiPowerLimits,
+    ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetNvapiVfpPrivate, ResetPstateGlobalFreqOffset,
     ResetPublicVftableGpcLock, ResetPublicVftableOffset, ResetVfpFrequencyLock,
     SetApplicationsClocks, SetAutoboostStatus, SetAutoboostSupport, SetClockOffset,
     SetCoolerLevels, SetDomainVfpDeltas, SetEdid, SetFanRpm, SetFanSpeed, SetFanStop,
     SetGpcVoltLock, SetLegacyClocks, SetLockedClocks, SetNvapiBackgroundOcScanner,
     SetNvapiClkDomainOffset, SetNvapiCoreVoltageControl, SetNvapiDNotifier, SetNvapiDynamicBoost,
-    SetNvapiPerfFreqCap, SetNvapiPerfLevelLock, SetNvapiPmgrVoltageArbiter, SetNvapiPowerLimits,
-    SetNvapiPstateLock, SetNvapiSensorLimits, SetNvapiTargetTemp, SetNvapiTgpWatt,
-    SetNvapiThermalSim, SetNvapiVfpPointPrivate, SetNvapiVfpRangePerPointPrivate,
+    SetNvapiPStateNative, SetNvapiPerfFreqCap, SetNvapiPerfLevelLock, SetNvapiPmgrVoltageArbiter,
+    SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiSensorLimits, SetNvapiTargetTemp,
+    SetNvapiTgpWatt, SetNvapiThermalSim, SetNvapiVfpPointPrivate, SetNvapiVfpRangePerPointPrivate,
     SetNvapiVoltRailOffset, SetNvapiVoltRailTarget, SetNvmlPstateLock, SetPowerLimit,
     SetPstateBaseVoltage, SetPstateClockOffset, SetPublicVftablePointOffset,
     SetPublicVftableRangeOffset, SetTemperatureLimit, SetVfpFrequencyLock, SetVoltageBoost,
@@ -88,6 +88,13 @@ fn parse_pstate(raw: &str) -> PyResult<PState> {
 
 fn parse_nvml_pstate(raw: &str) -> PyResult<PerformanceState> {
     try_parse_nvml_pstate(raw).map_err(invalid_value)
+}
+
+/// Parse a P-State label ("P0", "p12", "12") into its numeric id (u8).
+/// Mirrors the CLI `set-pstate-lock` parse logic.
+fn parse_pstate_number(raw: &str) -> Result<u8, String> {
+    let normalized = raw.trim().trim_start_matches('P').trim_start_matches('p');
+    normalized.parse::<u8>().map_err(|e| e.to_string())
 }
 
 fn parse_api_restriction_api(raw: &str) -> PyResult<Api> {
@@ -691,8 +698,18 @@ fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
     map.insert("gpu_id_hex".into(), text(format!("0x{:04X}", target.id.0)));
     map.insert("index".into(), u64_value(target.index as u64));
     map.insert("pstate".into(), text(status.pstate));
-    if let Some(voltage) = status.voltage {
-        map.insert("voltage_mv".into(), f64_value(voltage.0 as f64 / 1000.0));
+    // Core voltage. Prefer the private core_voltage() reading; on legacy
+    // GPUs (≤ Kepler, e.g. GT730/Fermi) that path yields nothing, so fall
+    // back to the PUBLIC GetVoltageDomainsStatus value (the same number the
+    // CLI renders as "Voltage Domains → Voltage: 880000 uV" in get-status).
+    // Both sources are µV; the domains readout is the driver's authoritative
+    // core-domain voltage on those generations.
+    let core_voltage_uv = status
+        .voltage
+        .map(|v| v.0)
+        .or_else(|| status.voltage_domains.map(|d| d.voltage.0));
+    if let Some(voltage_uv) = core_voltage_uv {
+        map.insert("voltage_mv".into(), f64_value(voltage_uv as f64 / 1000.0));
     }
     for (clock, freq) in &status.clocks {
         match *clock {
@@ -1065,6 +1082,22 @@ fn normalize_settings(target: &GpuTarget<'_>) -> PyResultValue {
         }
         map.insert("supported_pstates".into(), Value::Array(labels));
         map.insert("pstate_ranges".into(), Value::Array(ranges));
+    } else {
+        // NVML-only QueryPstates failed (NVAPI-only backend, e.g. GT730 on
+        // R391.35 where Nvml::init() returns an error). Fall back to the
+        // `pstates` list the `QueryGpuSettings` call above ALREADY fetched
+        // (via NvAPI_GPU_GetPstates20 — the same source get-info renders).
+        // This reuses the in-hand `settings.pstates` roster; no extra NVAPI
+        // call and no full `QueryGpuInfo` round-trip. `pstate_ranges` (the
+        // NVML-shaped clock bounds) is left empty on this path.
+        if !settings.pstates.is_empty() {
+            let labels: Vec<Value> = settings
+                .pstates
+                .iter()
+                .map(|pstate| Value::String(pstate.to_string()))
+                .collect();
+            map.insert("supported_pstates".into(), Value::Array(labels));
+        }
     }
 
     if let Ok(power) = run(target, QueryPowerLimits).map(|report| report.output) {
@@ -3462,6 +3495,60 @@ fn set_nvml_pstate_lock(
     })
 }
 
+/// Pin the active NVAPI P-State to a single state (the `set-pstate-lock` CLI
+/// path: `PerfClientLimitsSetStatus` NDA 0x39442CFB, mode-1 PstateSelect).
+/// Pure NVAPI — no NVML, no memory-clock-range derivation. This is the fallback
+/// for NVAPI-only GPUs (e.g. GT730/391.35) where `set_nvapi_pstate_lock` (which
+/// derives a memory-clock window from NVML P-State ranges) cannot run.
+///
+/// Unlike the mem-range lock this interface pins a SINGLE P-State — there is
+/// no range form. Callers must force point-mode (start == end) in the UI.
+#[pyfunction]
+fn set_pstate_native_lock(py: Python<'_>, gpu: &str, pstate: &str) -> PyResult<()> {
+    let gpu_own = gpu.to_string();
+    let pstate_num = parse_pstate_number(pstate)
+        .map_err(|e| invalid_value(format!("invalid P-State '{pstate}': {e}")))?;
+    py.detach(|| -> PyResult<()> {
+        let gpu: &str = &gpu_own;
+        let inventory = {
+            let mut inventory_cache = lock_inventory_cache();
+            inventory_cache.entry(BackendSet::Nvapi)?
+        };
+        let target = selected_target(&inventory.0, gpu)?;
+        run(
+            &target,
+            SetNvapiPStateNative {
+                lock: NvapiPStateNativeLock::PstateOnly { pstate: pstate_num },
+            },
+        )
+        .map_err(to_py_err)?;
+        Ok(())
+    })
+}
+
+/// Clear all native NVAPI P-State locks (the `reset-pstate-lock` CLI path:
+/// `PerfClientLimitsSetStatus` with Reset). Pure NVAPI, no NVML.
+#[pyfunction]
+fn reset_pstate_native_lock(py: Python<'_>, gpu: &str) -> PyResult<()> {
+    let gpu_own = gpu.to_string();
+    py.detach(|| -> PyResult<()> {
+        let gpu: &str = &gpu_own;
+        let inventory = {
+            let mut inventory_cache = lock_inventory_cache();
+            inventory_cache.entry(BackendSet::Nvapi)?
+        };
+        let target = selected_target(&inventory.0, gpu)?;
+        run(
+            &target,
+            SetNvapiPStateNative {
+                lock: NvapiPStateNativeLock::Reset,
+            },
+        )
+        .map_err(to_py_err)?;
+        Ok(())
+    })
+}
+
 #[pyfunction]
 fn set_voltage_boost(py: Python<'_>, gpu: &str, value: u32) -> PyResult<()> {
     let gpu_own = gpu.to_string();
@@ -3677,7 +3764,23 @@ fn set_fan(
                     // NOT_SUPPORTED on GPUs without a user-mode cooler table,
                     // e.g. desktop 3060/2070), this private path works there.
                     // Reset curve slot 0 (ref tool's reset button).
-                    run(&target, ResetFanCurve { index: 0 }).map_err(to_py_err)?;
+                    //
+                    // Legacy drivers (e.g. R391/Fermi) reject the NDA GET/SET
+                    // outright (NVAPI_ERROR/-1 — no fan-policy table in the
+                    // user-mode DLL at all), so fall back to the public
+                    // RestoreCoolerSettings, which works there (GT730 live).
+                    // Only surface a combined error when BOTH paths fail:
+                    // NDA-first is what makes this work on the no-cooler-table
+                    // desktop cards, public-first would break those.
+                    if let Err(nda_err) = run(&target, ResetFanCurve { index: 0 })
+                        && let Err(public_err) = run(&target, ResetCoolerLevels)
+                    {
+                        return Err(invalid_value(format!(
+                            "fan reset failed on both NVAPI paths: \
+                             private FanPolicy reset: {nda_err}; \
+                             public RestoreCoolerSettings: {public_err}"
+                        )));
+                    }
                 } else {
                     let cooler_target = match fan_id {
                         "1" => nvoc_core::CoolerTarget::Cooler1,
@@ -4051,6 +4154,8 @@ fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(set_legacy_clocks, m)?)?;
     m.add_function(wrap_pyfunction!(set_nvapi_pstate_lock, m)?)?;
     m.add_function(wrap_pyfunction!(set_nvml_pstate_lock, m)?)?;
+    m.add_function(wrap_pyfunction!(set_pstate_native_lock, m)?)?;
+    m.add_function(wrap_pyfunction!(reset_pstate_native_lock, m)?)?;
     m.add_function(wrap_pyfunction!(set_voltage_boost, m)?)?;
     m.add_function(wrap_pyfunction!(reset_voltage_boost, m)?)?;
     m.add_function(wrap_pyfunction!(set_auto_boost, m)?)?;

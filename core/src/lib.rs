@@ -1,4 +1,5 @@
 mod conv;
+pub mod dll_path;
 mod error;
 mod gpu;
 mod gpu_type;
@@ -28,12 +29,13 @@ pub use operation::{
     QueryLegacyCoreOvervoltRanges, QueryLegacyP0CoreMaxVoltageDelta, QueryNvapiClkDomainFreq,
     QueryNvapiClkDomainFreqDetail, QueryNvapiClkDomainFreqDirect, QueryNvapiClkDomainFreqsBatch,
     QueryNvapiClkDomains, QueryNvapiClkVfControl, QueryNvapiClkVfPoints, QueryNvapiCoolerInfo,
-    QueryNvapiCoreVoltageControl, QueryNvapiDNotifier, QueryNvapiOcScannerIncomplete,
-    QueryNvapiPStateLevels, QueryNvapiPStateLockStatus, QueryNvapiPmgrVoltageArbiter,
-    QueryNvapiRatedTdp, QueryNvapiTargetTempPolicies, QueryNvapiTargetTempPolicyIndex,
-    QueryNvapiTgpWattRange, QueryNvapiThermalSettings, QueryNvapiThermalSim, QueryNvapiVoltRails,
-    QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks,
-    QueryTdpTempLimits, QueryTemperatureThresholds, QueryThrottleReasons, QueryVfpPointVoltage,
+    QueryNvapiCoreVoltageControl, QueryNvapiDNotifier, QueryNvapiFanPolicyInfo,
+    QueryNvapiOcScannerIncomplete, QueryNvapiPStateLevels, QueryNvapiPStateLockStatus,
+    QueryNvapiPmgrVoltageArbiter, QueryNvapiRatedTdp, QueryNvapiTargetTempPolicies,
+    QueryNvapiTargetTempPolicyIndex, QueryNvapiTgpWattRange, QueryNvapiThermalSettings,
+    QueryNvapiThermalSim, QueryNvapiVoltRails, QueryPowerLimits, QueryPstateBaseVoltage,
+    QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
+    QueryThrottleReasons, QueryVbiosImage, QueryVbiosVersion, QueryVfpPointVoltage,
     QueryViolationStatus, QueryVoltageBoost, ResetAutoboostStatus, ResetCoolerLevels,
     ResetFanCurve, ResetFanSpeed, ResetForcePstate, ResetFreqLock, ResetLegacyApplicationFreqLock,
     ResetLegacyGpcRailOvervoltLimit, ResetNvapiPowerLimits, ResetNvapiSensorLimits,
@@ -62,12 +64,12 @@ pub use operation::{
 pub use result::{
     ApiRestrictionState, AppliedValue, AutoBoostState, BatchReport, ClockOffset, DNotifierInfo,
     DNotifierLevel, DisplayInfo, EdidData, FanCurvePointReadout, FanCurveReadout, FanInfo,
-    NvapiCoolerInfoEntry, NvapiFanRpmResult, NvapiPStateNativeLock, NvapiPerfFreqCap,
-    OperationKind, OperationReport, OperationWarning, PStateLevelEntry, PStateLevelsInfo,
-    PowerLimits, PowerModeStatus, PstateBaseVoltage, PstateClockRange, SupportedApplicationClocks,
-    TargetOutcome, TargetTempPolicy, TdpTempLimits, TemperatureThreshold, ThermalSensorReading,
-    ThrottleReason, ViolationEntry, ViolationStatusReport, VoltageBoostState,
-    VoltageFrequencyCheck, VoltageLimits,
+    NvapiCoolerInfoEntry, NvapiFanPolicyEntry, NvapiFanPolicyInfo, NvapiFanRpmResult,
+    NvapiPStateNativeLock, NvapiPerfFreqCap, OperationKind, OperationReport, OperationWarning,
+    PStateLevelEntry, PStateLevelsInfo, PowerLimits, PowerModeStatus, PstateBaseVoltage,
+    PstateClockRange, SupportedApplicationClocks, TargetOutcome, TargetTempPolicy, TdpTempLimits,
+    TemperatureThreshold, ThermalSensorReading, ThrottleReason, ViolationEntry,
+    ViolationStatusReport, VoltageBoostState, VoltageFrequencyCheck, VoltageLimits,
 };
 pub use target::{
     BackendSet, GpuId, GpuTarget, PciAddress, TargetInventory, discover_targets,

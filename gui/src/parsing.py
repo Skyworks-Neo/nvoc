@@ -323,9 +323,24 @@ def parse_dashboard_status(output: str) -> dict[str, Any]:
         )
         return parsed
 
+    in_voltage_domains_block = False
     for raw in output.splitlines():
         line = raw.strip()
         low = line.lower()
+        # "Voltage Domains" opens an indented block; its "Voltage: 880000 uV"
+        # line is the legacy (≤ Kepler) core-domain voltage fallback when the
+        # primary "Voltage:" field is N/A. Track block membership by the
+        # indentation of the raw line (block children are indented).
+        if re.fullmatch(r"voltage\s*domains", low):
+            in_voltage_domains_block = True
+            continue
+        if in_voltage_domains_block:
+            if raw and not raw[0].isspace():
+                in_voltage_domains_block = False
+            elif parsed["voltage_mv"] is None:
+                match = re.search(r"voltage:\s*(\d+)\s*uv", low)
+                if match:
+                    parsed["voltage_mv"] = float(match.group(1)) / 1000.0
         if parsed["gpu_clock_mhz"] is None and re.search(
             r"graphics.clock|core.clock|gpu.clock", low
         ):

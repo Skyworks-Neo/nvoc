@@ -11,15 +11,16 @@ use nvoc_core::{
     QueryGpuSettings, QueryGpuStatus, QueryLegacyCoreOvervoltRanges, QueryNvapiClkDomainFreqDetail,
     QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomains, QueryNvapiClkVfControl,
     QueryNvapiClkVfPoints, QueryNvapiCoolerInfo, QueryNvapiCoreVoltageControl, QueryNvapiDNotifier,
-    QueryNvapiOcScannerIncomplete, QueryNvapiPStateLevels, QueryNvapiPStateLockStatus,
-    QueryNvapiPmgrVoltageArbiter, QueryNvapiRatedTdp, QueryNvapiTargetTempPolicies,
-    QueryNvapiTargetTempPolicyIndex, QueryNvapiTgpWattRange, QueryNvapiThermalSettings,
-    QueryNvapiThermalSim, QueryNvapiVoltRails, QueryPowerLimits, QueryPstateBaseVoltage,
-    QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
-    QueryThrottleReasons, QueryViolationStatus, QueryVoltageBoost, ResetAutoboostStatus,
-    ResetCoolerLevels, ResetFanCurve, ResetFanSpeed, ResetForcePstate, ResetFreqLock,
-    ResetLegacyApplicationFreqLock, ResetLegacyGpcRailOvervoltLimit, ResetNvapiPowerLimits,
-    ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetNvapiVfpPrivate, ResetPstateGlobalFreqOffset,
+    QueryNvapiFanPolicyInfo, QueryNvapiOcScannerIncomplete, QueryNvapiPStateLevels,
+    QueryNvapiPStateLockStatus, QueryNvapiPmgrVoltageArbiter, QueryNvapiRatedTdp,
+    QueryNvapiTargetTempPolicies, QueryNvapiTargetTempPolicyIndex, QueryNvapiTgpWattRange,
+    QueryNvapiThermalSettings, QueryNvapiThermalSim, QueryNvapiVoltRails, QueryPowerLimits,
+    QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits,
+    QueryTemperatureThresholds, QueryThrottleReasons, QueryVbiosImage, QueryVbiosVersion,
+    QueryViolationStatus, QueryVoltageBoost, ResetAutoboostStatus, ResetCoolerLevels,
+    ResetFanCurve, ResetFanSpeed, ResetForcePstate, ResetFreqLock, ResetLegacyApplicationFreqLock,
+    ResetLegacyGpcRailOvervoltLimit, ResetNvapiPowerLimits, ResetNvapiSensorLimits,
+    ResetNvapiTgpWatt, ResetNvapiVfpPrivate, ResetPstateGlobalFreqOffset,
     ResetPublicVftableGpcLock, ResetPublicVftableOffset, ResetVfpFrequencyLock,
     RestartDisplayDriver, SetApplicationsClocks, SetAutoboostStatus, SetAutoboostSupport,
     SetBb2Active, SetClockOffset, SetCoolerLevels, SetEdid, SetFanCurve, SetFanRpm, SetFanSpeed,
@@ -43,6 +44,7 @@ use time::OffsetDateTime;
 use time::macros::format_description;
 
 mod output;
+mod vbios;
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error as StdError;
 use std::fmt;
@@ -158,6 +160,7 @@ pub enum Command {
     GetSupportedLegacyApplicationFreq,
     GetFanInfo,
     GetFanCurve,
+    GetFanPolicyInfo,
     SetFanCurve,
     ResetFanCurveCmd,
     SetFanstopStatus,
@@ -196,6 +199,7 @@ pub enum Command {
     SetPrivateVftablePointOffset,
     SetPrivateVftableRangeOffset,
     GetPrivateVftable,
+    GetVbios,
     SetPrivatePermanentPstateLockUser,
     GetTempSim,
     SetTempSim,
@@ -443,6 +447,11 @@ impl CommandSpec {
 }
 
 /// Single source of truth for command metadata, sorted by CLI name (the
+/// Locate the NVIDIA BIT (BIOS Information Table) signature in a VBIOS image.
+fn find_bit_signature(image: &[u8]) -> Option<usize> {
+    vbios::find_bit(image)
+}
+
 /// `--help` listing order; kept sorted by test). Adding a command = one enum
 /// variant, one row here, one `execute_target` arm; the
 /// `table_covers_every_variant` test rejects a variant with no row.
@@ -520,6 +529,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 },
             ),
             (Command::GetInfo, CommandSpec::new("get-info", Group::Info, "Read NVAPI GPU identity and capability information")),
+            (Command::GetFanPolicyInfo, CommandSpec::new("get-legacy-fan-policy", Group::Fan, "Read fan-policy capabilities (ClientFanPoliciesGetInfo NDA 0x52B76D12: V2 raw block on modern drivers; legacy V1 decoded on R391-era — policy list + active marker + flag bits, no curve points)")),
             (
                 Command::GetLegacyGpcRailOvervoltLimit,
                 CommandSpec {
@@ -656,6 +666,13 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 },
             ),
             (Command::GetUuid, CommandSpec::new("get-uuid", Group::Info, "Read GPU UUID")),
+            (
+                Command::GetVbios,
+                CommandSpec {
+                    options: Box::leak(Box::new(["out", "dump"])),
+                    ..CommandSpec::new("get-vbios", Group::Info, "Read the VBIOS via NvAPI_GPU_GetVbiosImage (0xFC13EE11, escape 0x0700004F): prints version/size/BIT summary; --out <file> writes the raw image (e.g. vbios.rom); --dump prints the full BIT token table + Fermi-model raw blocks")
+                },
+            ),
             (Command::GetVoltRailInfo, CommandSpec::new("get-volt-rail-info", Group::Voltage, "Read private VoltRails family: rail mask + per-rail offsets + live voltages (melonVolt path)")),
             (
                 Command::List,
@@ -1431,6 +1448,13 @@ pub struct Invocation {
     pub backend: BackendChoice,
     pub output: OutputFormat,
     pub no_color: bool,
+    /// `--nvml-path`: explicit nvml.dll path. Also injected into
+    /// `nvoc_core::dll_path::NVML_PATH_ENV` at parse time so core's NVML
+    /// resolution picks it up (GUI/pynvoc use the env directly).
+    pub nvml_path: Option<String>,
+    /// `--nvapi-path`: DLL search-path directory for nvapi64.dll. Injected
+    /// into `nvoc_core::dll_path::NVAPI_PATH_ENV` at parse time.
+    pub nvapi_path: Option<String>,
     pub gpu_specs: Vec<String>,
     pub command: Option<Command>,
     pub positionals: Vec<String>,
@@ -1511,6 +1535,21 @@ where
         .get_one::<String>("output")
         .map_or(Ok(OutputFormat::Human), |raw| parse_output_format(raw))?;
     let no_color = command_matches.get_flag("no-color");
+    let nvml_path = command_matches.get_one::<String>("nvml-path").cloned();
+    let nvapi_path = command_matches.get_one::<String>("nvapi-path").cloned();
+    // 注入 env(core 的 dll_path 解析读 env 而非传参——GUI/pynvoc 不经 CLI,
+    // 用同一开关即可)。parse_args 返回前完成,先于任何后端 discovery;
+    // edition 2024 下 set_var 为 unsafe,此处进程启动期单线程,安全。
+    // SAFETY: single-threaded process startup; no other threads read these
+    // vars concurrently at this point.
+    unsafe {
+        if let Some(path) = &nvml_path {
+            std::env::set_var(nvoc_core::dll_path::NVML_PATH_ENV, path);
+        }
+        if let Some(path) = &nvapi_path {
+            std::env::set_var(nvoc_core::dll_path::NVAPI_PATH_ENV, path);
+        }
+    }
     let gpu_specs = command_matches
         .get_many::<String>("gpu")
         .map(|values| values.cloned().collect())
@@ -1526,6 +1565,8 @@ where
         backend,
         output,
         no_color,
+        nvml_path,
+        nvapi_path,
         gpu_specs,
         command,
         positionals,
@@ -1699,6 +1740,20 @@ fn cli_command(command_hint: Option<Command>) -> ClapCommand {
                 .conflicts_with("nvapi")
                 .global(true)
                 .help("Force the NVML backend"),
+        )
+        .arg(
+            Arg::new("nvml-path")
+                .long("nvml-path")
+                .value_name("PATH")
+                .global(true)
+                .help("Explicit nvml.dll path (overrides NVOC_NVML_PATH / auto-probe; legacy drivers keep NVML outside the DLL search path, e.g. ...\\NVSMI\\nvml.dll)"),
+        )
+        .arg(
+            Arg::new("nvapi-path")
+                .long("nvapi-path")
+                .value_name("PATH")
+                .global(true)
+                .help("Directory (or nvapi64.dll file) inserted into the DLL search path before NVAPI loads (overrides NVOC_NVAPI_PATH)"),
         )
         .arg(
             Arg::new("output")
@@ -1905,6 +1960,15 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .value_name("MODE")
             .action(ArgAction::Set)
             .help("Whisper Mode 2.0 acoustic mode: quieter, quiet, or balanced (or 0/1/2); on reset-private-vftable-offset: freq or raw (clear only that mode's offsets; default both)"),
+        "out" => Arg::new("out")
+            .long("out")
+            .value_name("FILE")
+            .action(ArgAction::Set)
+            .help("Write the VBIOS image to FILE (e.g. vbios.rom); without it a summary is printed"),
+        "dump" => Arg::new("dump")
+            .long("dump")
+            .action(ArgAction::SetTrue)
+            .help("Print the full BIT token table + Fermi-model raw blocks instead of the brief summary"),
         _ => unreachable!("unknown command-specific option {name}"),
     }
 }
@@ -2018,6 +2082,7 @@ fn collect_named_options(
             | "percent"
             | "rpm"
             | "offset"
+            | "dump"
             | "target" => {
                 if matches.get_flag(name) {
                     options.insert(name.to_string(), vec!["true".to_string()]);
@@ -2836,6 +2901,22 @@ fn execute_target(
                     .collect::<Vec<_>>(),
             }))
         }
+        Command::GetFanPolicyInfo => {
+            let info = run(target, QueryNvapiFanPolicyInfo)?.output;
+            Ok(match info {
+                None => json!({"supported": false}),
+                Some(i) => json!({
+                    "supported": true,
+                    "layout": i.layout,
+                    "raw": i.raw.iter().map(|b| format!("{:02x}", b)).collect::<String>(),
+                    "entries": i.entries.iter().map(|e| json!({
+                        "dword0": e.dword0,
+                        "active": e.active,
+                        "flags": e.flags,
+                    })).collect::<Vec<_>>(),
+                }),
+            })
+        }
         Command::SetFanCurve => {
             let index: u8 = invocation.positionals[0].parse().map_err(|e| {
                 CliError::new(format!(
@@ -3609,6 +3690,59 @@ fn execute_target(
                 }),
                 None => json!({"supported": false}),
             })
+        }
+        Command::GetVbios => {
+            // NvAPI_GPU_GetVbiosImage (0xFC13EE11, escape 0x0700004F). Reads
+            // the full VBIOS image. Brief output by default (version, size,
+            // BIT location); --dump prints the full structural dump (BIT
+            // token table + Fermi-model raw blocks);
+            // --out <file> writes the raw image.
+            let image = run(target, QueryVbiosImage)?.output;
+            match invocation.options.get("out").and_then(|v| v.first()) {
+                Some(path) => {
+                    std::fs::write(path, &image).map_err(|e| {
+                        CliError::new(format!("failed to write --output {path:?}: {e}"))
+                    })?;
+                    Ok(json!({
+                        "size": image.len(),
+                        "path": path,
+                        "bit_offset": find_bit_signature(&image),
+                    }))
+                }
+                None => {
+                    let version = run(target, QueryVbiosVersion).ok().map(|r| r.output);
+                    let dump = invocation.options.contains_key("dump");
+                    if dump {
+                        let bit_summary = vbios::parse_bit(&image).ok();
+                        let fermi_model = bit_summary
+                            .as_ref()
+                            .map(|s| vbios::parse_fermi_model(&image, s));
+                        Ok(json!({
+                            "version": version,
+                            "size": image.len(),
+                            "boot_magic": format!("{:02x} {:02x}", image[0], image[1]),
+                            "bit": bit_summary.as_ref().map(|s| s.to_json()),
+                            "fermi_model": fermi_model,
+                        }))
+                    } else {
+                        // brief: version, size, BIT offset + token count, perf
+                        // layout byte — everything else needs --dump
+                        let bit = vbios::parse_bit(&image).ok();
+                        let perf_layout = bit.as_ref().and_then(|s| {
+                            s.token_raw(&image, 'P')
+                                .filter(|raw| raw.len() >= 2)
+                                .map(|raw| raw[1])
+                        });
+                        Ok(json!({
+                            "version": version,
+                            "size": image.len(),
+                            "bit_offset": bit.as_ref().map(|s| s.bit_offset),
+                            "bit_tokens": bit.as_ref().map(|s| s.tokens.len()),
+                            "perf_table_layout": perf_layout.map(|b| format!("{:#04x}", b)),
+                        }))
+                    }
+                }
+            }
         }
         Command::GetPrivateFreqDomainStatus => {
             // with a domain argument: detailed single-domain measure — the
@@ -5712,6 +5846,7 @@ mod tests {
             | Command::GetSupportedLegacyApplicationFreq
             | Command::GetFanInfo
             | Command::GetFanCurve
+            | Command::GetFanPolicyInfo
             | Command::SetFanCurve
             | Command::ResetFanCurveCmd
             | Command::SetFanstopStatus
@@ -5791,6 +5926,8 @@ mod tests {
             | Command::ResetTempLimit
             | Command::ResetLegacyGpcRailOvervoltLimit
             | Command::ResetPstateGlobalFreqOffset
+            | Command::GetVbios
+            | Command::GetFanPolicyInfo
             | Command::ResetPublicGpcRailVoltBoost => {}
         }
     }

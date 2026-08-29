@@ -286,6 +286,12 @@ class FakeNative:
     def set_nvapi_pstate_lock(self, gpu, pstart, pend):
         self.calls.append(("set_nvapi_pstate_lock", gpu, pstart, pend))
 
+    def set_pstate_native_lock(self, gpu, pstate):
+        self.calls.append(("set_pstate_native_lock", gpu, pstate))
+
+    def reset_pstate_native_lock(self, gpu):
+        self.calls.append(("reset_pstate_native_lock", gpu))
+
     def reset_locked_clocks(self, gpu, backend, domain):
         self.calls.append(("reset_locked_clocks", gpu, backend, domain))
 
@@ -605,7 +611,39 @@ def test_overclock_pstate_reset_uses_nvml_memory_locked_clocks() -> None:
     assert app.native.calls == [("reset_locked_clocks", "0x0000", "nvml", "memory")]
 
 
-def test_overclock_fan_reset_preserves_target() -> None:
+def test_overclock_pstate_limits_nvapi_only_uses_native_point_lock() -> None:
+    # Legacy/NVAPI-only GPU: native single-P-State pin, NOT the mem-range lock.
+    # pend is collapsed to pstart (no range form). GT730 GK208 → is_legacy_voltage.
+    app = _oc_app(codename="GK208")
+    app.cache.settings["supported_pstates"] = ["P0", "P8", "P12"]
+    app.widgets.update(
+        {
+            "#oc-api": SimpleNamespace(value="nvapi"),
+            "#pstate-start": SimpleNamespace(value="P8"),
+            "#pstate-end": SimpleNamespace(value="P12"),  # ignored on NVAPI-only
+        }
+    )
+
+    assert OverclockController(app).handle_button("pstate-limits-apply") is True
+
+    assert app.actions == ["apply PState limits"]
+    assert app.action_outputs == ["Successfully pinned NVAPI P-State P8."]
+    assert app.native.calls == [("set_pstate_native_lock", "0x0000", "P8")]
+
+
+def test_overclock_pstate_reset_nvapi_only_uses_native_reset() -> None:
+    app = _oc_app(codename="GK208")
+    app.widgets.update(
+        {
+            "#oc-api": SimpleNamespace(value="nvapi"),
+        }
+    )
+
+    assert OverclockController(app).handle_button("pstate-limits-reset") is True
+
+    assert app.actions == ["reset PState limits"]
+    assert app.action_outputs == ["Successfully reset NVAPI P-State lock."]
+    assert app.native.calls == [("reset_pstate_native_lock", "0x0000")]
     app = FakeApp()
     app.widgets = {
         "#fan-api": SimpleNamespace(value="nvml"),

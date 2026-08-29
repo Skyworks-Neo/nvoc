@@ -311,6 +311,18 @@ class OverclockController(PaneController):
         head = codename.split("(", 1)[0].split(":", 1)[0].split("-", 1)[0].strip()
         return head.startswith(("gm", "gk", "gf"))
 
+    def is_nvapi_only(self) -> bool:
+        """True when the GPU has no NVML backend (native P-State pin path).
+
+        NVAPI-only GPUs (e.g. GT730/391.35 where NVML init fails) cannot use
+        the memory-clock-range P-State lock — they use the native NVAPI
+        P-State pin (``set_pstate_native_lock``), which accepts a SINGLE
+        P-State. Reuses the legacy-voltage arch heuristic (Maxwell/Kepler/Fermi
+        = the NVAPI-only population) since the TUI info cache has no
+        ``backend_nvml`` field.
+        """
+        return self.is_legacy_voltage()
+
     def apply_pstate_limits(
         self,
         native,
@@ -319,6 +331,11 @@ class OverclockController(PaneController):
         pstart: str,
         pend: str,
     ) -> str:
+        if self.is_nvapi_only():
+            # Native single-P-State pin (no range form). In point-mode the
+            # caller forces pend == pstart; use pstart as the single target.
+            native.set_pstate_native_lock(gpu, pstart)
+            return f"Successfully pinned NVAPI P-State {pstart}."
         try:
             if backend == "nvml":
                 native.set_nvml_pstate_lock(gpu, pstart, pend)
@@ -329,6 +346,9 @@ class OverclockController(PaneController):
         return f"Successfully applied {backend} PState limits {pstart}-{pend}."
 
     def reset_pstate_limits(self, native, gpu: str, backend: str) -> str:
+        if self.is_nvapi_only():
+            native.reset_pstate_native_lock(gpu)
+            return "Successfully reset NVAPI P-State lock."
         if backend == "nvml":
             native.reset_locked_clocks(gpu, backend, "memory")
         else:
@@ -608,6 +628,10 @@ class OverclockController(PaneController):
                 self.normalize_pstate(self.app.query_one("#pstate-end", Input).value)
                 or pstart
             )
+            # NVAPI-only GPUs use the native P-State pin (no range form):
+            # collapse to the single high-perf endpoint.
+            if self.is_nvapi_only():
+                pend = pstart
 
             pstate_error = self.validate_pstates(pstart, pend)
             if pstate_error:

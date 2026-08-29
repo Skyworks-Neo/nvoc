@@ -1320,11 +1320,35 @@ class OverclockTab:
 
         self._supported_pstates = normalized
         self.pstate_selector.set_values(normalized)
+        # Legacy GPUs use the native P-State pin (set-pstate-lock), which
+        # accepts a SINGLE P-State — no range form. Fuse the selector into
+        # point-mode so the slider drags one handle, not a range.
+        self.pstate_selector.set_point_mode(self._uses_native_pstate_lock())
 
         state = "normal" if normalized else "disabled"
         self._safe_set_state(self.pstate_selector, state)
         self._safe_set_state(self.btn_apply_pstate, state)
         self._safe_set_state(self.btn_unlock_pstate, state)
+
+    def _uses_native_pstate_lock(self) -> bool:
+        """True when the GPU must use the native single-P-State pin.
+
+        判据 = legacy 代际(``is_legacy_voltage``:Maxwell/Kepler/Fermi,与
+        core 写路径及 TUI 同源),而 **不是** backend_nvml——NVML DLL 可加载
+        (含 NVSMI 路径 fallback)后老卡的 backend_nvml 也是 True,但 mem-range
+        锁依赖的 NVML P-State 显存时钟范围查询在 Fermi 上 Not Supported,且
+        native pin 本就只有单点形式。Unknown(无 flags/未识别代号)保守按
+        legacy 处理,与 core ``is_legacy_voltage(Unknown) == true`` 一致。
+        """
+        flags = getattr(self.app, "_gpu_flags_by_idx", {}) or {}
+        gpu_idx = self.app.get_current_gpu_index()
+        if gpu_idx is None:
+            return False
+        entry = flags.get(gpu_idx) or {}
+        legacy = entry.get("is_legacy_voltage")
+        if isinstance(legacy, bool):
+            return legacy
+        return True
 
     @staticmethod
     def _oc_pstate() -> str:
@@ -1616,7 +1640,12 @@ class OverclockTab:
     # ────────────────────────────────────────────
 
     def _apply_pstate_lock(self):
-        """Apply P-State lock range with the selected OC backend."""
+        """Apply P-State lock with the selected OC backend.
+
+        Legacy GPUs (Maxwell/Kepler/Fermi) use the native NVAPI P-State pin
+        (``set_pstate_native_lock``), which accepts a SINGLE P-State — the
+        selector is in point-mode, so ``selection[0] == selection[1]``.
+        """
         selection = self.pstate_selector.get_selection()
         gpu = self.app.selected_gpu_target()
         if gpu is None or selection is None:
@@ -1633,6 +1662,18 @@ class OverclockTab:
         except ValueError:
             pass
 
+        if self._uses_native_pstate_lock():
+            # Native single-P-State pin (no range form on legacy GPUs).
+            pstate = start
+            self.app.run_native_action(
+                "apply P-State lock",
+                lambda native, gpu=gpu, pstate=pstate: (
+                    native.set_pstate_native_lock(gpu, pstate)
+                    or f"Successfully pinned NVAPI P-State {pstate}."
+                ),
+            )
+            return
+
         backend = self._selected_oc_backend()
         self.app.run_native_action(
             "apply P-State lock",
@@ -1647,9 +1688,23 @@ class OverclockTab:
         )
 
     def _unlock_pstate_lock(self):
-        """Remove memory lock settings for the selected OC backend."""
+        """Remove P-State lock for the selected OC backend.
+
+        Legacy GPUs use the native NVAPI P-State reset
+        (``reset_pstate_native_lock``); the NVML/VFP memory-clock reset path
+        does not apply.
+        """
         gpu = self.app.selected_gpu_target()
         if gpu is None:
+            return
+        if self._uses_native_pstate_lock():
+            self.app.run_native_action(
+                "reset P-State lock",
+                lambda native, gpu=gpu: (
+                    native.reset_pstate_native_lock(gpu)
+                    or "Successfully reset NVAPI P-State lock."
+                ),
+            )
             return
         backend = self._selected_oc_backend()
         self.app.run_native_action(

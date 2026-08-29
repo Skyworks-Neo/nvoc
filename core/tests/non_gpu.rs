@@ -189,6 +189,18 @@ fn gpu_type_detection() {
             "NVIDIA GeForce GTX 980M Laptop GPU GM204",
             GpuType::Mobile9Series,
         ),
+        // Kepler (GK) — GT 730 Kepler 变体不再落 Unknown
+        ("NVIDIA GeForce GT 730 GK208", GpuType::DesktopKepler),
+        (
+            "NVIDIA GeForce GTX 780M Laptop GPU GK104",
+            GpuType::MobileKepler,
+        ),
+        ("NVIDIA Quadro K5000 GK104", GpuType::WorkstationKepler),
+        ("NVIDIA Tesla K40 GK110", GpuType::ServerKepler),
+        // Fermi (GF) — GT 730 Fermi 变体
+        ("NVIDIA GeForce GT 730 GF108", GpuType::DesktopFermi),
+        ("NVIDIA GeForce GTX 580 GF110", GpuType::DesktopFermi),
+        ("NVIDIA Tesla M2090 GF100", GpuType::ServerFermi),
     ];
 
     for (name, expected) in cases {
@@ -227,6 +239,20 @@ fn gpu_type_params() {
     assert!(!GpuType::Mobile20Series.oc_params().wakeup_load_needed);
     assert!(!GpuType::Unknown.oc_params().wakeup_load_needed);
     assert!(!GpuType::ServerBlackwell.oc_params().wakeup_load_needed);
+
+    // Kepler/Fermi 走 legacy 电压路径（SetPstates20 baseVoltage delta），
+    // 不支持 XBAR offset、VFP 曲线；移动端需 GC6 唤醒。
+    assert!(GpuType::DesktopKepler.is_legacy_voltage());
+    assert!(GpuType::DesktopFermi.is_legacy_voltage());
+    assert!(!GpuType::DesktopKepler.is_legacy_vfp());
+    assert!(!GpuType::DesktopKepler.supports_xbar_offset());
+    assert!(!GpuType::DesktopFermi.supports_xbar_offset());
+    assert!(GpuType::MobileKepler.is_mobile());
+    assert!(GpuType::MobileKepler.needs_gc6_wake());
+    assert!(!GpuType::DesktopKepler.is_mobile());
+    // 工作站/服务器 Kepler/Fermi 与同代桌面/移动端共用 conservative 参数
+    assert!(!GpuType::WorkstationKepler.oc_params().wakeup_load_needed);
+    assert!(!GpuType::ServerFermi.oc_params().is_50_series);
 }
 
 #[test]

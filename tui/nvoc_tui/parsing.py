@@ -73,6 +73,15 @@ def _normalize_status_json(value: dict[str, Any]) -> dict[str, Any]:
             normalized["mem_clock_mhz"] = memory / 1000.0
 
     voltage = _as_float(value.get("voltage"))
+    if voltage is None:
+        # Legacy GPUs (≤ Kepler): the private core_voltage() read yields
+        # nothing, but the PUBLIC GetVoltageDomainsStatus value in the same
+        # status payload carries the authoritative core-domain voltage (the
+        # "Voltage Domains → Voltage: 880000 uV" field). Fall back to it so
+        # the dashboard shows a real voltage instead of `---`.
+        domains = value.get("voltage_domains")
+        if isinstance(domains, dict):
+            voltage = _as_float(domains.get("voltage"))
     if voltage is not None:
         normalized["voltage_mv"] = voltage / 1000.0
 

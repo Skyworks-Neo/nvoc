@@ -5,12 +5,12 @@ use super::nvml as low_nvml;
 use super::result::{
     ApiRestrictionState, AppliedValue, AutoBoostState, BatchReport, ClockOffset, DNotifierInfo,
     DNotifierLevel, DisplayInfo, EdidData, FanCurvePointReadout, FanCurveReadout, FanInfo,
-    NvapiCoolerInfoEntry, NvapiFanRpmResult, NvapiPStateNativeLock, NvapiPerfFreqCap,
-    OperationKind, OperationReport, OvervoltApplied, PStateLevelEntry, PStateLevelsInfo,
-    PowerModeStatus, PstateBaseVoltage, PstateClockRange, SupportedApplicationClocks,
-    TargetOutcome, TargetTempPolicy, TdpTempLimits, TemperatureThreshold, ThermalSensorReading,
-    ThrottleReason, ViolationEntry, ViolationStatusReport, VoltageBoostState,
-    VoltageFrequencyCheck,
+    NvapiCoolerInfoEntry, NvapiFanPolicyEntry, NvapiFanPolicyInfo, NvapiFanRpmResult,
+    NvapiPStateNativeLock, NvapiPerfFreqCap, OperationKind, OperationReport, OvervoltApplied,
+    PStateLevelEntry, PStateLevelsInfo, PowerModeStatus, PstateBaseVoltage, PstateClockRange,
+    SupportedApplicationClocks, TargetOutcome, TargetTempPolicy, TdpTempLimits,
+    TemperatureThreshold, ThermalSensorReading, ThrottleReason, ViolationEntry,
+    ViolationStatusReport, VoltageBoostState, VoltageFrequencyCheck,
 };
 use super::target::GpuTarget;
 use super::types::{NvapiLockedVoltageTarget, VfpResetDomain};
@@ -470,6 +470,38 @@ impl GpuOperation for QueryNvapiCoolerInfo {
                 current_pwm_percent: c.current_pwm_percent,
             })
             .collect())
+    }
+}
+
+/// Query fan-policy capabilities via the private ClientFanPoliciesGetInfo
+/// (NDA 0x52B76D12). Modern drivers answer the V2 block (raw); R391-era
+/// drivers answer the legacy V1 block (decoded: policy list + active marker
+/// + two capability flag bits per policy — no curve points in either).
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiFanPolicyInfo;
+
+impl GpuOperation for QueryNvapiFanPolicyInfo {
+    type Output = Option<NvapiFanPolicyInfo>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiFanPolicyInfo
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let info = target.nvapi()?.fan_policy_info()?;
+        Ok(info.map(|i| NvapiFanPolicyInfo {
+            layout: if i.stamp == 0x1003C { "v1" } else { "v2" },
+            raw: i.raw,
+            entries: i
+                .entries
+                .into_iter()
+                .map(|e| NvapiFanPolicyEntry {
+                    dword0: e.dword0,
+                    active: e.active,
+                    flags: e.flags,
+                })
+                .collect(),
+        }))
     }
 }
 
@@ -2486,6 +2518,43 @@ impl GpuOperation for QueryNvapiClkVfControl {
             .nvapi()?
             .clk_vf_control_private()
             .map_err(Error::from)
+    }
+}
+
+/// Read the full VBIOS image via `NvAPI_GPU_GetVbiosImage` (0xFC13EE11,
+/// escape 0x0700004F). On legacy drivers (391.35) this escape succeeds where
+/// the VFP-curve escape 0x0700004A is kernel-unimplemented, making this the
+/// viable path to the V/F curve (BIT VoltageTable) on old GPUs.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryVbiosImage;
+
+impl GpuOperation for QueryVbiosImage {
+    type Output = Vec<u8>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryVbiosImage
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target.nvapi()?.vbios_image().map_err(Error::from)
+    }
+}
+
+/// Read the VBIOS version string (e.g. "70.08.0F.00.05") via
+/// `NvAPI_GPU_GetVbiosVersionString` — the brief companion to
+/// [`QueryVbiosImage`].
+#[derive(Clone, Copy, Debug)]
+pub struct QueryVbiosVersion;
+
+impl GpuOperation for QueryVbiosVersion {
+    type Output = String;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryVbiosVersion
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target.nvapi()?.vbios_version_string().map_err(Error::from)
     }
 }
 

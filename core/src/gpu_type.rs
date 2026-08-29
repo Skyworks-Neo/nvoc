@@ -26,11 +26,20 @@ pub enum GpuType {
     Desktop10Series,
     Mobile9Series,
     Desktop9Series,
+    // ── Kepler (GK) — GeForce 600/700 系列 (2012) ──
+    MobileKepler,
+    DesktopKepler,
+    // ── Fermi (GF) — GeForce 400/500 系列 (2010) ──
+    MobileFermi,
+    DesktopFermi,
     WorkstationBlackwell,
     WorkstationLovelace,
     WorkstationAmpere,
     WorkstationTuring,
     WorkstationPascal,
+    // Kepler/Fermi 工作站 (Quadro K / Quadro 4000-6000 系列)
+    WorkstationKepler,
+    WorkstationFermi,
     ServerBlackwell,
     ServerHopper,
     ServerLovelace,
@@ -38,6 +47,9 @@ pub enum GpuType {
     ServerVolta,
     ServerPascal,
     ServerTuringTesla,
+    // Kepler/Fermi 服务器 (Tesla K20/K40/K80 / Tesla M-class)
+    ServerKepler,
+    ServerFermi,
     ComputationVolta,
     Unknown,
 }
@@ -61,6 +73,10 @@ impl fmt::Display for GpuType {
             GpuType::Desktop10Series => write!(f, "10 series desktop detected"),
             GpuType::Mobile9Series => write!(f, "9 series mobile detected"),
             GpuType::Desktop9Series => write!(f, "9 series desktop detected"),
+            GpuType::MobileKepler => write!(f, "Kepler series mobile detected"),
+            GpuType::DesktopKepler => write!(f, "Kepler series desktop detected"),
+            GpuType::MobileFermi => write!(f, "Fermi series mobile detected"),
+            GpuType::DesktopFermi => write!(f, "Fermi series desktop detected"),
             GpuType::ComputationVolta => write!(f, "Volta series computational card detected"),
             GpuType::WorkstationBlackwell => {
                 write!(f, "Blackwell series workstation card detected")
@@ -69,6 +85,10 @@ impl fmt::Display for GpuType {
             GpuType::WorkstationAmpere => write!(f, "Ampere series workstation card detected"),
             GpuType::WorkstationTuring => write!(f, "Turing series workstation card detected"),
             GpuType::WorkstationPascal => write!(f, "Pascal series workstation card detected"),
+            GpuType::WorkstationKepler => {
+                write!(f, "Kepler series workstation card detected")
+            }
+            GpuType::WorkstationFermi => write!(f, "Fermi series workstation card detected"),
             GpuType::ServerBlackwell => write!(f, "Blackwell series server card detected"),
             GpuType::ServerHopper => write!(f, "Hopper series server card detected"),
             GpuType::ServerLovelace => write!(f, "Lovelace series server card detected"),
@@ -78,6 +98,8 @@ impl fmt::Display for GpuType {
             GpuType::ServerTuringTesla => {
                 write!(f, "Turing Tesla series server card (e.g. T4) detected")
             }
+            GpuType::ServerKepler => write!(f, "Kepler series server card detected"),
+            GpuType::ServerFermi => write!(f, "Fermi series server card detected"),
             GpuType::Unknown => write!(f, "Unknown"),
         }
     }
@@ -173,6 +195,30 @@ pub fn detect_gpu_type(gpu_name: &str) -> GpuType {
             GpuType::Mobile9Series
         } else {
             GpuType::Desktop9Series
+        }
+    } else if gpu_name.contains("GK") {
+        // Kepler (GK): GeForce 600/700 系列 (含 GT 730 GK208/GK107 变体)。
+        // Tesla K20/K40/K80 → server；Quadro K 系列 → workstation。
+        if is_server {
+            GpuType::ServerKepler
+        } else if is_quadro {
+            GpuType::WorkstationKepler
+        } else if gpu_name.contains("Laptop") {
+            GpuType::MobileKepler
+        } else {
+            GpuType::DesktopKepler
+        }
+    } else if gpu_name.contains("GF") {
+        // Fermi (GF): GeForce 400/500 系列 (含 GT 730 GF108 变体)。
+        // Tesla M-class → server；Quadro 4000/5000/6000 → workstation。
+        if is_server {
+            GpuType::ServerFermi
+        } else if is_quadro {
+            GpuType::WorkstationFermi
+        } else if gpu_name.contains("Laptop") {
+            GpuType::MobileFermi
+        } else {
+            GpuType::DesktopFermi
         }
     } else if gpu_name.contains("GV") {
         if is_server {
@@ -447,13 +493,23 @@ impl GpuType {
             | GpuType::WorkstationAmpere
             | GpuType::WorkstationTuring
             | GpuType::WorkstationPascal
+            | GpuType::WorkstationKepler
+            | GpuType::WorkstationFermi
             | GpuType::ServerBlackwell
             | GpuType::ServerHopper
             | GpuType::ServerLovelace
             | GpuType::ServerAmpere
             | GpuType::ServerVolta
             | GpuType::ServerPascal
-            | GpuType::ServerTuringTesla => GpuOcParams {
+            | GpuType::ServerTuringTesla
+            | GpuType::ServerKepler
+            | GpuType::ServerFermi
+            // Kepler/Fermi 消费端：legacy 电压架构，使用保守扫描参数
+            // （与 Unknown/Workstation 同档：小步进、低上限、大弹性余量）。
+            | GpuType::MobileKepler
+            | GpuType::DesktopKepler
+            | GpuType::MobileFermi
+            | GpuType::DesktopFermi => GpuOcParams {
                 minimum_delta_core_freq_step: 15000,
                 core_oc_safe_limit: 300000,
                 init_core_oc_value: 0,
@@ -544,7 +600,13 @@ impl GpuType {
     pub fn is_legacy_voltage(&self) -> bool {
         matches!(
             self,
-            GpuType::Mobile9Series | GpuType::Desktop9Series | GpuType::Unknown
+            GpuType::Mobile9Series
+                | GpuType::Desktop9Series
+                | GpuType::MobileKepler
+                | GpuType::DesktopKepler
+                | GpuType::MobileFermi
+                | GpuType::DesktopFermi
+                | GpuType::Unknown
         )
     }
 
@@ -553,7 +615,7 @@ impl GpuType {
         matches!(self, GpuType::Mobile50Series | GpuType::Desktop50Series)
     }
 
-    /// 是否为移动端 GPU（20/30/40/50 系移动端）
+    /// 是否为移动端 GPU（20/30/40/50 系移动端 + Kepler/Fermi 移动端）
     pub fn is_mobile(&self) -> bool {
         matches!(
             self,
@@ -561,6 +623,8 @@ impl GpuType {
                 | GpuType::Mobile40Series
                 | GpuType::Mobile30Series
                 | GpuType::Mobile20Series
+                | GpuType::MobileKepler
+                | GpuType::MobileFermi
         )
     }
 

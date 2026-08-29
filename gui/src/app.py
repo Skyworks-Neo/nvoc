@@ -819,6 +819,7 @@ class App(ctk.CTk):
                 "is_mobile": item.get("is_mobile"),
                 "is_legacy_voltage": item.get("is_legacy_voltage"),
                 "xbar_supported": item.get("xbar_supported"),
+                "backend_nvml": item.get("backend_nvml"),
             }
 
         ordered_indices = sorted(short_labels.keys())

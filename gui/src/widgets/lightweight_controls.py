@@ -371,6 +371,11 @@ class SegmentRangeSelector(ctk.CTkFrame):
         self._end_idx = 0
         self._active_handle = None  # type: Optional[str]
         self._last_active_handle = "end"
+        # Point-mode: both handles fused into one (start == end always).
+        # Used for the native NVAPI P-State pin (no range lock) on NVAPI-only
+        # GPUs — dragging moves the single point, the selection is always a
+        # single P-State, never a range.
+        self._point_mode = False
         self._pad_x = 18
         self._line_y = 26
         self._node_r = 5
@@ -444,6 +449,10 @@ class SegmentRangeSelector(ctk.CTkFrame):
             self._start_idx = default_idx
             self._end_idx = default_idx
 
+        if self._point_mode:
+            # Keep the fused handle collapsed after a value refresh.
+            self._end_idx = self._start_idx
+
         self._update_summary()
         self._redraw()
 
@@ -456,10 +465,29 @@ class SegmentRangeSelector(ctk.CTkFrame):
             return
         self._start_idx = self._values.index(start_label)
         self._end_idx = self._values.index(end_label)
-        if self._start_idx > self._end_idx:
+        if self._point_mode:
+            self._end_idx = self._start_idx
+        elif self._start_idx > self._end_idx:
             self._start_idx, self._end_idx = self._end_idx, self._start_idx
         self._update_summary()
         self._redraw()
+
+    def set_point_mode(self, enabled: bool):
+        """Fuse both handles into one (single-P-State selection, no range).
+
+        On NVAPI-only GPUs the native P-State pin (`set-pstate-lock`) only
+        accepts a single P-State — there is no range form. Point-mode keeps
+        start == end so ``get_selection`` always returns a single label and
+        dragging moves the fused handle.
+        """
+        prev = self._point_mode
+        self._point_mode = bool(enabled)
+        if self._point_mode and self._values:
+            # Collapse any existing range to its high-perf (start) endpoint.
+            self._end_idx = self._start_idx
+        if prev != self._point_mode:
+            self._update_summary()
+            self._redraw()
 
     def get_selection(self) -> Optional[Tuple[str, str]]:
         if not self._values:
@@ -502,7 +530,11 @@ class SegmentRangeSelector(ctk.CTkFrame):
         return "start" if dist_start <= dist_end else "end"
 
     def _apply_drag_index(self, idx: int):
-        if self._active_handle == "start":
+        if self._point_mode:
+            # Fused handle: move the single point, keep start == end.
+            self._start_idx = idx
+            self._end_idx = idx
+        elif self._active_handle == "start":
             self._start_idx = min(idx, self._end_idx)
         elif self._active_handle == "end":
             self._end_idx = max(idx, self._start_idx)

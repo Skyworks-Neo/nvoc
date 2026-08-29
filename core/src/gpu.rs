@@ -59,6 +59,9 @@ fn ensure_nvapi_initialized() {
     use std::sync::Once;
     static INIT: Once = Once::new();
     INIT.call_once(|| {
+        // 显式 NVOC_NVAPI_PATH 覆盖要先于任何 LoadLibraryA("nvapi64.dll")
+        // 把目录插进传统搜索序(见 dll_path::prepare_nvapi 文档)。
+        super::dll_path::prepare_nvapi();
         if let Err(e) = ::nvapi::hi::initialize() {
             eprintln!("warning: NvAPI_Initialize failed ({e:?}); continuing via implicit init");
         }
