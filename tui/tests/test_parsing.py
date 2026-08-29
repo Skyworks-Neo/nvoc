@@ -477,6 +477,9 @@ def test_build_vf_curves_private_segments_and_skips() -> None:
 
     # Public read unsupported → private GPC segment is the GPC source.
     assert set(curves) == {"gpc", "xbar", "sys", "unknown1"}
+    # Canonical display order: GPC → XBAR → SYS → unknownN, even though the
+    # GPC segment is resolved last (the selector/plot iterate this dict).
+    assert list(curves) == ["gpc", "xbar", "sys", "unknown1"]
     assert curves["gpc"].source == "private"
     assert curves["gpc"].bank == 0
     assert (curves["gpc"].seg_start, curves["gpc"].seg_end) == (0, 1)

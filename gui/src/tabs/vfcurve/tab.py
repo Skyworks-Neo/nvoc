@@ -1008,6 +1008,13 @@ class VFCurveTab:
             self._curve_visible = {}
             return False
 
+        # Canonical display order GPC → XBAR → SYS → others (unknownN keep
+        # discovery order; stable sort). The selector, plot draws and legend
+        # all iterate this dict directly — without this, a public-source GPC
+        # (inserted last above) would sort after the private segments.
+        order = {"gpc": 0, "xbar": 1, "sys": 2}
+        curves = dict(sorted(curves.items(), key=lambda kv: order.get(kv[0], 3)))
+
         # Carry over visibility (default: every discovered curve visible), and
         # keep the active curve valid (fallback to first visible).
         self._curves = curves

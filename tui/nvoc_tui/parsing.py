@@ -581,7 +581,14 @@ def build_vf_curves(
     elif private_gpc is not None:
         curves["gpc"] = private_gpc
 
-    return curves or None
+    if not curves:
+        return None
+    # Canonical display order GPC → XBAR → SYS → others (unknownN keep
+    # discovery order; stable sort). Consumers (selector, plot draws)
+    # iterate this dict — without this, a public-source GPC (inserted
+    # last above) would sort after the private segments.
+    order = {"gpc": 0, "xbar": 1, "sys": 2}
+    return dict(sorted(curves.items(), key=lambda kv: order.get(kv[0], 3)))
 
 
 def reverse_lookup_voltage(

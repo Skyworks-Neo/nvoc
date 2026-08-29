@@ -41,6 +41,14 @@ def _curve_colors_for(cid: str) -> tuple[str, str]:
 _CURVE_ORDER = ("gpc", "xbar", "sys")
 
 
+def _discovered_cids(curves: dict) -> list[str]:
+    """Canonical display order: GPC → XBAR → SYS → others (dict order;
+    build_vf_curves already returns the dict canonically sorted, so the
+    tail is unknownN in discovery order)."""
+    known = [cid for cid in _CURVE_ORDER if cid in curves]
+    return known + [cid for cid in curves if cid not in _CURVE_ORDER]
+
+
 class VFCurveController(PaneController):
     def __init__(self, app) -> None:
         super().__init__(app)
@@ -242,8 +250,8 @@ class VFCurveController(PaneController):
             return
         visible = [
             curves[cid]
-            for cid in _CURVE_ORDER
-            if cid in curves and self._curve_visible.get(cid, True)
+            for cid in _discovered_cids(curves)
+            if self._curve_visible.get(cid, True)
         ]
         if not visible:
             self.clear_plot("No VF curve visible.")
@@ -391,9 +399,7 @@ class VFCurveController(PaneController):
             select = self.app.query_one("#vf-active-curve", Select)
         except Exception:
             return
-        discovered = [cid for cid in _CURVE_ORDER if cid in self._curves] + [
-            cid for cid in self._curves if cid not in _CURVE_ORDER
-        ]
+        discovered = _discovered_cids(self._curves)
         options = [(curve_meta(cid)["label"], cid) for cid in discovered] or [
             ("GPC", "gpc")
         ]
