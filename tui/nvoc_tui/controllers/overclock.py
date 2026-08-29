@@ -116,6 +116,16 @@ class OverclockController(PaneController):
             )
         except Exception:
             pass
+        # Mobile Power pane: mobile GPUs only. Same verdict the loader uses
+        # (is_mobile — Rust detect_gpu_type flag primary, name heuristic
+        # fallback); desktop/compute cards (P100/TCC, Fermi GT730, …) have
+        # no PPAB/D-Notifier/TGP/target-temp surface, so hide the whole
+        # subpane — load_mobile_limits already refuses to load values there,
+        # leaving a dead panel of default inputs + no-op Apply buttons.
+        try:
+            self.app.query_one("#mobile-power-pane").display = self.is_mobile()
+        except Exception:
+            pass
         self.load_mobile_limits()
         self._load_fan_surface()
 

@@ -114,7 +114,7 @@ def compose_overclock() -> ComposeResult:
                             compact=True,
                         )
 
-                with Vertical(classes="subpane") as mobile_pane:
+                with Vertical(classes="subpane", id="mobile-power-pane") as mobile_pane:
                     mobile_pane.border_title = mnemonic_text("M", "obile Power")
                     with Grid(id="mobile-controls"):
                         with Horizontal(classes="row"):
