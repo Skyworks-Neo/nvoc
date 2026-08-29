@@ -169,7 +169,7 @@ pub(super) fn format_get_settings_output(output: &Value) -> Vec<String> {
 pub(super) fn format_vfp_output(output: &Value) -> Vec<String> {
     let mut lines = Vec::new();
     if let Some(object) = output.as_object() {
-        for key in ["domain", "indexed", "infer_missing_default"] {
+        for key in ["domain", "indexed", "infer_missing_field"] {
             if let Some(value) = object.get(key) {
                 lines.push(format_field_line(1, key, value));
             }
@@ -292,15 +292,16 @@ pub(super) fn format_private_vfp_output(output: &Value) -> Vec<String> {
                 .and_then(Value::as_f64)
                 .unwrap_or_default();
             let voltage = format!("{:.1} mV", voltage_uv / 1000.0);
-            // plain MHz integers — format_scalar(key, _) would append the
-            // key-derived unit ("MHz") itself; render explicitly instead
+            // MHz values — plain integers in faithful mode, one-decimal
+            // floats under --infer-missing-field's Pascal remap (true
+            // default = current − offset); as_f64 covers both
             let current = point
                 .get("freq_current_mhz")
-                .and_then(Value::as_i64)
+                .and_then(Value::as_f64)
                 .unwrap_or_default();
             let default = point
                 .get("freq_default_mhz")
-                .and_then(Value::as_i64)
+                .and_then(Value::as_f64)
                 .unwrap_or_default();
             // raw control override readback (GetControl 0xDA025C3E):
             // mode 0 = absolute kHz offset ("freq"), mode 1 = raw delta;
@@ -326,7 +327,7 @@ pub(super) fn format_private_vfp_output(output: &Value) -> Vec<String> {
                 .unwrap_or_default();
             lines.push(nvoc_cli_common::color::stylize(
                 &format!(
-                    "    #{index}: {voltage}, current {current} MHz, default {default} MHz{control}"
+                    "    #{index}: {voltage}, current {current:.1} MHz, default {default:.1} MHz{control}"
                 ),
                 false,
             ));

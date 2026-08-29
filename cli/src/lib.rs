@@ -34,10 +34,11 @@ use nvoc_core::{
     SetNvmlPstateLock, SetPowerLimit as SetNvmlPowerLimit, SetPowerMode, SetPstateBaseVoltage,
     SetPstateClockOffset, SetPublicVftablePointOffset, SetPublicVftableRangeOffset,
     SetTemperatureLimit, SetVfpFrequencyLock, SetVoltageBoost, SetWm2Active, SetWm2Mode,
-    VfPointType, VfpResetDomain, Wm2AcousticMode, discover_targets, nvapi_status_name,
-    nvml_pstate_to_str, parse_nvapi_locked_voltage_target, parse_nvml_fan_control_policy,
-    parse_nvml_pstate, query_domain_vf_points_indexed, query_domain_vfp_indices, run,
-    select_targets, set_nvapi_domain_vfp_deltas, sync_memory_pstate_as_p0,
+    VfPointType, VfpResetDomain, Wm2AcousticMode, discover_targets, fetch_gpu_type,
+    nvapi_status_name, nvml_pstate_to_str, parse_nvapi_locked_voltage_target,
+    parse_nvml_fan_control_policy, parse_nvml_pstate, query_domain_vf_points_indexed,
+    query_domain_vfp_indices, run, select_targets, set_nvapi_domain_vfp_deltas,
+    sync_memory_pstate_as_p0,
 };
 use serde_json::{Value, json};
 use time::OffsetDateTime;
@@ -584,9 +585,9 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
             (
                 Command::GetPrivateVftable,
                 CommandSpec {
-                    options: Box::leak(Box::new(["bank", "domain"])),
+                    options: Box::leak(Box::new(["bank", "domain", "infer-missing-field"])),
                     formatter: Some(output::format_private_vfp_output),
-                    ..CommandSpec::new("get-private-vftable", Group::Vfp, "Read the private ClockClient V/F-points family: per-bank point masks + V/F curve records (voltage-indexed, units calibrated vs the public GPC VFP); --bank 0|1 selects the mask window (default 0)")
+                    ..CommandSpec::new("get-private-vftable", Group::Vfp, "Read the private ClockClient V/F-points family: per-bank point masks + V/F curve records (voltage-indexed, units calibrated vs the public GPC VFP); --bank 0|1 selects the mask window (default 0). Faithful read by default; --infer-missing-field fills driver-unmaintained fields — PASCAL ONLY (voltage borrowed from the public grid; the default field is shown as current and the true default = current − offset). Turing's private table is fully populated and needs no inference")
                 },
             ),
             (
@@ -619,9 +620,9 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
             (
                 Command::GetPublicVftable,
                 CommandSpec {
-                    options: Box::leak(Box::new(["domain", "indexed", "infer-missing-default", "no-infer-missing-default", "output-csv"])),
+                    options: Box::leak(Box::new(["domain", "indexed", "infer-missing-field", "output-csv"])),
                     formatter: Some(output::format_vfp_output),
-                    ..CommandSpec::new("get-public-vftable", Group::Vfp, "Read the public V-F curve table: default dumps all domains (graphics points plus the trailing memory entries, e.g. index 127..131 on 30/40 series); --domain gpc|memory narrows to one segment; --output-csv PATH writes the single-domain curve as CSV (voltage,frequency,delta,default_frequency)")
+                    ..CommandSpec::new("get-public-vftable", Group::Vfp, "Read the public V-F curve table: default dumps all domains (graphics points plus the trailing memory entries, e.g. index 127..131 on 30/40 series); --domain gpc|memory narrows to one segment; --output-csv PATH writes the single-domain curve as CSV (voltage,frequency,delta,default_frequency). Faithful read by default (driver-reported default column, zeros included); --infer-missing-field derives the default as current − delta where the driver leaves it empty (Pascal/Turing)")
                 },
             ),
             (Command::GetRatedTdp, CommandSpec::new("get-rated-tdp", Group::Power, "Rated-TDP readback trio (0xED2BEA09/0x87BD35EF/0xFCBDF642)")),
@@ -1706,7 +1707,6 @@ fn option_takes_value(token: &str) -> bool {
             | "--fan"
             | "--policy"
             | "--policy-index"
-            | "--infer-missing-default"
     )
 }
 
@@ -1839,22 +1839,16 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .value_name("INDEX")
             .action(ArgAction::Set)
             .help("TGP power-policy table index (default 2); see get-power-limit (NVAPI fallback)"),
-        "infer-missing-default" => Arg::new("infer-missing-default")
-            .long("infer-missing-default")
-            .value_name("BOOL")
-            .action(ArgAction::Append)
+        "infer-missing-field" => Arg::new("infer-missing-field")
+            .long("infer-missing-field")
+            .action(ArgAction::SetTrue)
             .global(true)
-            .help("Infer missing default VFP values"),
+            .help("Fill driver-unmaintained VFP fields (public: default = current − delta on Pascal/Turing; private: PASCAL ONLY — voltage from the public grid + default/current semantic remap; Turing's private table is fully populated)"),
         "indexed" => Arg::new("indexed")
             .long("indexed")
             .action(ArgAction::SetTrue)
             .global(true)
             .help("Preserve hardware VFP indices"),
-        "no-infer-missing-default" => Arg::new("no-infer-missing-default")
-            .long("no-infer-missing-default")
-            .action(ArgAction::SetTrue)
-            .global(true)
-            .help("Do not infer missing default VFP values"),
         "feedback" => Arg::new("feedback")
             .long("feedback")
             .action(ArgAction::SetTrue)
@@ -2064,7 +2058,7 @@ fn collect_named_options(
     for name in allowed_options {
         match *name {
             "indexed"
-            | "no-infer-missing-default"
+            | "infer-missing-field"
             | "feedback"
             | "all"
             | "verbose"
@@ -3608,9 +3602,104 @@ fn execute_target(
                             .collect()
                     })
                     .unwrap_or_default();
+            // Pascal server/workstation private V/F axis is 2×-encoded —
+            // decode the kHz→MHz display through an extra ÷2 there (see
+            // pascal_private_2x_axis); every other generation is 1:1.
+            let pascal_2x_axis = pascal_private_2x_axis(target);
+            let mode0_khz_to_mhz = if pascal_2x_axis { 2000.0 } else { 1000.0 };
+            // Faithful read by default: emit exactly what the driver
+            // reported, zeros included. --infer-missing-field fills the
+            // fields some kernels leave unmaintained:
+            //   (a) Voltage — PASCAL ONLY (Turing's private table carries
+            //       real voltage/current and must stay untouched): e.g.
+            //       GP100/TCC 582.41 never fills the private voltage fields.
+            //       The records are voltage-INDEXED, so the j-th point of
+            //       ANY V/F segment sits at the same grid level as the j-th
+            //       point of the public GPC curve — borrow that voltage by
+            //       index-within-segment. (Data-gated: a segment whose
+            //       voltage is already filled is never touched.)
+            //   (b) Pascal semantics — the private "default" field carries
+            //       the CURRENT frequency (moves with the offset) and
+            //       freq_current reads 0: display current = <default field>,
+            //       true default = current − decoded offset.
+            let infer = option_bool(invocation, "infer-missing-field", false)?;
+            let mut vfp = vfp;
+            if infer {
+                if let Some(v) = vfp.as_mut() {
+                    let degenerate: Vec<(u8, u16, u16)> = v
+                        .segments
+                        .iter()
+                        .filter(|s| {
+                            s.kind == nvoc_core::ClkVfSegmentKind::VfCurve && s.voltage_uV_max == 0
+                        })
+                        .map(|s| (s.bank, s.start_index, s.end_index))
+                        .collect();
+                    if !degenerate.is_empty() {
+                        // Public grid is best-effort — on failure stay
+                        // faithful (zero voltages) instead of failing the read.
+                        if let Ok(pub_report) = run(
+                            target,
+                            QueryDomainVfpPoints {
+                                domain: ClockDomain::Graphics,
+                                infer_missing_default: false,
+                                indexed: true,
+                            },
+                        ) {
+                            let pub_pts = pub_report.output;
+                            let max_idx = pub_pts.iter().map(|(i, _)| *i).max().unwrap_or(0);
+                            let mut grid = vec![0u32; max_idx + 1];
+                            for (idx, p) in &pub_pts {
+                                if *idx < grid.len() {
+                                    grid[*idx] = p.voltage.0 as u32;
+                                }
+                            }
+                            for p in v.points.iter_mut() {
+                                let off = degenerate
+                                    .iter()
+                                    .find(|(b, s, e)| {
+                                        *b == p.bank
+                                            && *s as usize <= p.index as usize
+                                            && p.index as usize <= *e as usize
+                                    })
+                                    .map(|&(_, s, _)| p.index as usize - s as usize);
+                                if let Some(off) = off {
+                                    if off < grid.len() {
+                                        p.voltage_uV = grid[off];
+                                    }
+                                }
+                            }
+                            // refresh degenerate segments' voltage ranges
+                            for s in v.segments.iter_mut() {
+                                if s.kind != nvoc_core::ClkVfSegmentKind::VfCurve
+                                    || s.voltage_uV_max != 0
+                                {
+                                    continue;
+                                }
+                                let vals: Vec<u32> = v
+                                    .points
+                                    .iter()
+                                    .filter(|p| {
+                                        s.bank == p.bank
+                                            && s.start_index as usize <= p.index as usize
+                                            && p.index as usize <= s.end_index as usize
+                                    })
+                                    .map(|p| p.voltage_uV)
+                                    .collect();
+                                if let (Some(&mn), Some(&mx)) =
+                                    (vals.iter().min(), vals.iter().max())
+                                {
+                                    s.voltage_uV_min = mn;
+                                    s.voltage_uV_max = mx;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             Ok(match vfp {
                 Some(v) => json!({
                     "bank": bank,
+                    "infer_missing_field": infer,
                     // bank0 = masks[0..4], bank1 = masks[4..8] (2048 bits each)
                     "masks": v.masks[bank * 4..bank * 4 + 4]
                         .iter()
@@ -3646,7 +3735,9 @@ fn execute_target(
                         // g(def) prior (segment domain -> class)
                         let effect_mhz = ctrl.and_then(|_| {
                             if mode == 0 {
-                                Some(value as f64 / 1000.0)
+                                // ÷1000 kHz→MHz (÷2000 on the Pascal 2× axis —
+                                // see pascal_2x_axis above)
+                                Some(value as f64 / mode0_khz_to_mhz)
                             } else if value == 0 {
                                 // no override written — the g(def) prior's D0
                                 // term would show a phantom offset at raw 0
@@ -3664,6 +3755,13 @@ fn execute_target(
                                     }
                                     _ => nvoc_core::ClkVfDomainClass::Graphics,
                                 };
+                                // mode-1 g(def) decode is 1:1 on Pascal too —
+                                // live A/B: a doubled-target write lifted
+                                // #30 (stock 1215) by 215 MHz ≈ the raw
+                                // Ada-effect, so the prior needs NO axis
+                                // scaling on either side. Residual per-point
+                                // error (±10%) is prior quantization plus
+                                // decode-at-shifted-def once offsets stack.
                                 nvoc_core::clk_vf_effect_for_delta(
                                     p.freq_default_mhz,
                                     value as i16 as i32,
@@ -3671,16 +3769,33 @@ fn execute_target(
                                 )
                             }
                         });
+                        // Pascal semantic remap (--infer-missing-field): the
+                        // readback "default" field carries the CURRENT
+                        // frequency, so current = <default field> and the
+                        // TRUE default = current − decoded offset. Every
+                        // other generation keeps the literal fields.
+                        let pascal_semantic = infer && pascal_2x_axis;
+                        let (current_mhz, default_mhz) = if pascal_semantic {
+                            let cur = p.freq_default_mhz as f64;
+                            (
+                                cur,
+                                (cur - effect_mhz.unwrap_or(0.0)).max(0.0),
+                            )
+                        } else {
+                            (p.freq_current_mhz as f64, p.freq_default_mhz as f64)
+                        };
                         json!({
                             "bank": p.bank,
                             "index": p.index,
                             "type": p.record_type,
                             // the V/F grid axis (µV): 450000 = 450 mV
                             "voltage_uV": p.voltage_uV,
-                            // default MHz at this voltage (public "default" column)
-                            "freq_default_mhz": p.freq_default_mhz,
-                            // current MHz = default + applied offset
-                            "freq_current_mhz": p.freq_current_mhz,
+                            // stock default at this voltage (Pascal+infer:
+                            // current − offset; otherwise the literal field)
+                            "freq_default_mhz": default_mhz,
+                            // current MHz (Pascal+infer: the readback default
+                            // field, which moves with the offset)
+                            "freq_current_mhz": current_mhz,
                             // raw override readback (GetControl 0xDA025C3E):
                             // mode 0 = absolute kHz offset, 1 = raw delta
                             "mode": ctrl.map(|(m, _)| m),
@@ -3830,13 +3945,25 @@ fn execute_target(
             // default (no flag) = freq_mode, same as public VFP but reaches
             // xbar/host; --freq-mode is the explicit alias of the default.
             let freq_mode = !raw_flag && !raw_converted;
+            // Pascal 2× axis: freq-mode writes the real kHz ×2; --raw is the
+            // one mode that stays verbatim (raw semantics are raw semantics).
+            let pascal_2x = pascal_private_2x_axis(target);
+            let axis_scale: i32 = if pascal_2x && freq_mode { 2 } else { 1 };
 
             let (mode_label, raw_value, translated_mhz) = if freq_mode {
-                ("freq_offset", value, Some(value as f64 / 1000.0))
+                (
+                    "freq_offset",
+                    value.saturating_mul(axis_scale),
+                    Some(value as f64 / 1000.0),
+                )
             } else if raw_flag {
                 ("raw_f_offset_control", value, None)
             } else {
-                // --raw-converted: translate MHz target -> raw f-offset via g(def)
+                // --raw-converted: translate MHz target -> raw f-offset via
+                // g(def). On the Pascal 2× axis the effect slope halves (the
+                // D0 zero-point is axis-invariant), so the lift target is
+                // doubled INTO the translation — the written control word is
+                // what an unfixed run would compute for 2× the MHz input.
                 let vfp = run(target, QueryNvapiClkVfPoints)?.output;
                 let point = vfp
                     .as_ref()
@@ -3862,10 +3989,14 @@ fn execute_target(
                     | Some(nvoc_core::ClkVfDomainHint::Sys) => nvoc_core::ClkVfDomainClass::Fabric,
                     _ => nvoc_core::ClkVfDomainClass::Graphics,
                 };
-                let delta = nvoc_core::clk_vf_delta_for_target(def, value as f64, class)
-                    .ok_or_else(|| {
-                        CliError::new(format!("no g(def) prior for def={def} MHz — pass --raw"))
-                    })?;
+                let delta = nvoc_core::clk_vf_delta_for_target(
+                    def,
+                    value as f64 * axis_scale as f64,
+                    class,
+                )
+                .ok_or_else(|| {
+                    CliError::new(format!("no g(def) prior for def={def} MHz — pass --raw"))
+                })?;
                 ("raw_f_offset_control", delta, Some(value as f64))
             };
 
@@ -3885,7 +4016,10 @@ fn execute_target(
                     "bank": bank,
                     "index": idx,
                     "mode": mode_label,
+                    // written raw control word (= VALUE ×2 on the Pascal 2×
+                    // axis; = VALUE verbatim elsewhere / under --raw)
                     "value": raw_value,
+                    "pascal_2x_write": pascal_2x && freq_mode,
                     "unit": translated_mhz.map(|m| format!("{:.0} MHz", m)).unwrap_or_else(|| "raw".to_string()),
                     "retained": retained,
                 }),
@@ -3911,6 +4045,13 @@ fn execute_target(
                 ));
             }
             let freq_mode = !raw_flag && !raw_converted;
+            // Pascal 2× axis applies to the mode-0 kHz field ONLY (live A/B:
+            // mode-0 raw 129300 ↔ 64.65 MHz real; mode-1 g(def) translation
+            // is 1:1 on Pascal — a doubled target lifted #30 by 215 MHz for
+            // an input of 100). So: freq-mode writes VALUE ×2; --raw-converted
+            // translates the MHz lift verbatim; --raw stays verbatim.
+            let pascal_2x = pascal_private_2x_axis(target);
+            let axis_scale: i32 = if pascal_2x && freq_mode { 2 } else { 1 };
 
             if freq_mode {
                 // mode 0 kHz offset: the batch range method only writes mode 1,
@@ -3926,7 +4067,7 @@ fn execute_target(
                             bank,
                             idx,
                             freq_mode: true,
-                            value: val as u32,
+                            value: val.saturating_mul(axis_scale) as u32,
                         },
                     )?
                     .output;
@@ -3941,6 +4082,10 @@ fn execute_target(
                     "end": end,
                     "mode": "freq_offset",
                     "value": val,
+                    // written raw control word (= VALUE ×2 on the Pascal 2×
+                    // axis; = VALUE verbatim elsewhere)
+                    "written_value": val.saturating_mul(axis_scale),
+                    "pascal_2x_write": axis_scale == 2,
                     "unit": "kHz",
                     "points_written": end - start + 1,
                 }))
@@ -4921,7 +5066,7 @@ fn get_vfp(target: &GpuTarget<'_>, invocation: &Invocation) -> CliResult<Value> 
                      domain's curve; use gpc or memory)",
                 )
             })?;
-        let infer_missing_default = !option_bool(invocation, "no-infer-missing-default", false)?;
+        let infer_missing_default = option_bool(invocation, "infer-missing-field", false)?;
         let points = run(
             target,
             QueryDomainVfpPoints {
@@ -4955,11 +5100,9 @@ fn get_vfp(target: &GpuTarget<'_>, invocation: &Invocation) -> CliResult<Value> 
         None => vec![ClockDomain::Graphics, ClockDomain::Memory],
     };
     let indexed = option_bool(invocation, "indexed", true)?;
-    let infer_missing_default = if option_bool(invocation, "no-infer-missing-default", false)? {
-        false
-    } else {
-        option_bool(invocation, "infer-missing-default", true)?
-    };
+    // Faithful read by default; the flag opts into deriving the default as
+    // current − delta where the driver leaves it empty (Pascal/Turing).
+    let infer_missing_default = option_bool(invocation, "infer-missing-field", false)?;
 
     let mut points = Vec::new();
     let mut segments = Vec::new();
@@ -5014,7 +5157,7 @@ fn get_vfp(target: &GpuTarget<'_>, invocation: &Invocation) -> CliResult<Value> 
     Ok(json!({
         "domain": if domains.len() == 1 { json!(domain_label(domains[0])) } else { json!("all") },
         "indexed": indexed,
-        "infer_missing_default": infer_missing_default,
+        "infer_missing_field": infer_missing_default,
         "segments": segments,
         "missing_domains": missing_domains,
         "points": points,
@@ -5797,6 +5940,23 @@ fn parse_i32_unit(raw: &str, suffix: &str, label: &str) -> CliResult<i32> {
     strip_unit(raw, suffix, label)
         .parse::<i32>()
         .map_err(|_| CliError::new(format!("invalid {label} value {raw:?}")))
+}
+
+/// Pascal private V/F control axis is 2×-encoded for the mode-0 kHz field on
+/// ALL Pascal generations (see GpuType::is_pascal): the mode-0 control value
+/// is 2× the real kHz (live P100: raw 129300 ↔ 64.65 MHz real; GTX 1080
+/// cross-check: a public OC of +f reads back 2f in the private mode-0
+/// field). Consumer cards normally write through the public path (no 2×
+/// issue), but the private path is 2× for them too. Freq-mode writes
+/// therefore DOUBLE the kHz value; --raw-converted and --raw stay verbatim
+/// (mode-1's g(def) prior is 1:1 on Pascal — live A/B: a doubled target
+/// lifted a mid-curve point 2.15× the request). Read paths decode
+/// symmetrically (see get-private-vftable's mode0_khz_to_mhz).
+fn pascal_private_2x_axis(target: &GpuTarget) -> bool {
+    run(target, QueryGpuInfo)
+        .ok()
+        .and_then(|r| fetch_gpu_type(&r.output).ok())
+        .is_some_and(|t| t.is_pascal())
 }
 
 /// Parse the freq-domain offset positional for
