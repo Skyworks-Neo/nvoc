@@ -36,6 +36,8 @@ def _curve_colors_for(cid: str) -> tuple[str, str]:
     (plotext's fixed 16-color terminal palette has no yellow-green:
     yellow ≈ light, green ≈ dark)."""
     return _CURVE_COLORS.get(cid) or ("yellow", "green")
+
+
 _CURVE_ORDER = ("gpc", "xbar", "sys")
 
 
@@ -416,8 +418,10 @@ class VFCurveController(PaneController):
                 try:
                     selector = self.app.query_one("#vf-curve-selector")
                     checkbox = Checkbox(
-                        curve_meta(cid)["label"], value=True,
-                        id=f"vf-curve-{cid}", compact=True,
+                        curve_meta(cid)["label"],
+                        value=True,
+                        id=f"vf-curve-{cid}",
+                        compact=True,
                     )
                     selector.mount(checkbox)
                 except Exception:
