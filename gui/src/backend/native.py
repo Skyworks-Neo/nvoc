@@ -130,15 +130,35 @@ class NativeBackend:
         live-point polling: one call, no 50 ms sleep.
         """
         try:
-            return self._pynvoc().query_private_freq_domain_status(gpu, int(domain_bit))
+            result = self._pynvoc().query_private_freq_domain_status(
+                gpu, int(domain_bit)
+            )
         except Exception:
             self._force_wake(gpu)
             try:
-                return self._pynvoc().query_private_freq_domain_status(
+                result = self._pynvoc().query_private_freq_domain_status(
                     gpu, int(domain_bit)
                 )
             except Exception:
                 return None
+
+        # Direct-family fallback: some kernels don't implement the
+        # green-curve escape (live P100/TCC 582.41 → supported=false).
+        # Retry once through the counter-based two-sample MEASURE — same
+        # domain bit, same HBM MEM decode, ~50 ms sleep (fine at the 1 Hz
+        # crosshair cadence, unlike the dashboard poll loop).
+        if isinstance(result, dict) and result.get("supported") is False:
+            try:
+                r = self._pynvoc().query_clk_domain_freq(gpu, int(domain_bit))
+                if isinstance(r, dict) and r.get("freq_mhz"):
+                    return {
+                        "domain_bit": int(domain_bit),
+                        "freq_khz": int(r["freq_mhz"] * 1000),
+                        "counter_fallback": True,
+                    }
+            except Exception:
+                return None
+        return result
 
     def query_volt_rails(self, gpu: str) -> dict | None:
         """Private VoltRails family (rail mask + P0 voltage bounds).

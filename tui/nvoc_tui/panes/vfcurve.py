@@ -191,4 +191,8 @@ def compose_vfcurve(config: AppConfig, auto_refresh_label: Text) -> ComposeResul
                 yield Checkbox("GPC", value=True, id="vf-curve-gpc", compact=True)
                 yield Checkbox("XBAR", value=True, id="vf-curve-xbar", compact=True)
                 yield Checkbox("SYS", value=True, id="vf-curve-sys", compact=True)
+                # HBM MEM (Pascal-HBM compute cards) — hidden like the others
+                # when the GPU has no mem V/F curve; mounted dynamically for
+                # any other unnamed domain (unknownN).
+                yield Checkbox("MEM", value=True, id="vf-curve-mem", compact=True)
             yield PlotextPlot(id="vf-plot")

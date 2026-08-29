@@ -219,7 +219,7 @@ class FakeNative:
 
     def clk_vf_delta_for_target_mhz(self, def_mhz, delta_mhz, class_name):
         # Mirrors the call semantics used by the GUI/TUI raw-converted path:
-        # the 2nd argument is the desired MHz offset (not an absolute
+        # the 3rd argument is the desired MHz offset (not an absolute
         # target); the raw f-offset scales it 10×.
         self.calls.append(
             (
@@ -1020,6 +1020,58 @@ def test_vfcurve_toggle_visibility_guards_last_visible_curve() -> None:
     controller._toggle_curve_visible("xbar", xbar_checkbox)
     assert controller._curve_visible == {"gpc": False, "xbar": True}
     assert xbar_checkbox.value is True
+
+
+def test_vfcurve_sync_hides_absent_static_checkboxes() -> None:
+    """P100 shape: gpc+mem only — the static XBAR/SYS checkboxes must hide.
+
+    The sync loop once iterated only the DISCOVERED set, so an absent
+    domain's static checkbox was never visited and stayed visible forever.
+    """
+    app = FakeApp()
+    app.widgets = _selector_widgets()
+    # the pane markup now carries a static MEM box too
+    app.widgets["#vf-curve-mem"] = SimpleNamespace(value=True, disabled=False)
+    controller = VFCurveController(app)
+    controller._curves = {
+        "gpc": CurveData("gpc", frequencies=[1800.0], defaults=[1785.0]),
+        "mem": CurveData("mem", frequencies=[715.0], defaults=[715.0]),
+    }
+    controller._curve_visible = {"gpc": True, "mem": True}
+    controller._active_curve = "gpc"
+
+    controller._sync_curve_widgets()
+
+    assert app.widgets["#vf-curve-gpc"].display is True
+    assert app.widgets["#vf-curve-mem"].display is True
+    assert app.widgets["#vf-curve-xbar"].display is False
+    assert app.widgets["#vf-curve-sys"].display is False
+
+
+def test_vfcurve_sync_hides_absent_static_checkboxes() -> None:
+    """P100 shape: gpc+mem only — the static XBAR/SYS checkboxes must hide.
+
+    The sync loop once iterated only the DISCOVERED set, so an absent
+    domain's static checkbox was never visited and stayed visible forever.
+    """
+    app = FakeApp()
+    app.widgets = _selector_widgets()
+    # the pane markup now carries a static MEM box too
+    app.widgets["#vf-curve-mem"] = SimpleNamespace(value=True, disabled=False)
+    controller = VFCurveController(app)
+    controller._curves = {
+        "gpc": CurveData("gpc", frequencies=[1800.0], defaults=[1785.0]),
+        "mem": CurveData("mem", frequencies=[715.0], defaults=[715.0]),
+    }
+    controller._curve_visible = {"gpc": True, "mem": True}
+    controller._active_curve = "gpc"
+
+    controller._sync_curve_widgets()
+
+    assert app.widgets["#vf-curve-gpc"].display is True
+    assert app.widgets["#vf-curve-mem"].display is True
+    assert app.widgets["#vf-curve-xbar"].display is False
+    assert app.widgets["#vf-curve-sys"].display is False
 
 
 def test_vfcurve_on_curve_loaded_builds_multi_curves() -> None:

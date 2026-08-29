@@ -41,6 +41,19 @@ def _curve_colors_for(cid: str) -> tuple[str, str]:
 _CURVE_ORDER = ("gpc", "xbar", "sys")
 
 
+def _curve_direct_readable(curve_id: str) -> bool:
+    """Whether the live crosshair must DIRECT-READ this curve's domain.
+
+    True for xbar/sys/mem — curves whose live clock only the private
+    MEASURE_FREQ path can see (the dashboard poll has no public clock for
+    them). GPC is False even though it has a domain_bit: its operating point
+    is fed by the dashboard's public Graphics clock instead. unknownN curves
+    have no domain_bit. Replaces the old hardcoded ("xbar", "sys") gates
+    that left MEM (HBM) crosshair-less.
+    """
+    return curve_id != "gpc" and curve_meta(curve_id)["domain_bit"] is not None
+
+
 def _discovered_cids(curves: dict) -> list[str]:
     """Canonical display order: GPC → XBAR → SYS → others (dict order;
     build_vf_curves already returns the dict canonically sorted, so the
@@ -226,7 +239,10 @@ class VFCurveController(PaneController):
             p0_gpu = None
         if p0_gpu is not None:
             self._ensure_p0_bounds(p0_gpu)
-        if self._active_curve in ("xbar", "sys") and not self._direct_read_inflight:
+        if (
+            _curve_direct_readable(self._active_curve)
+            and not self._direct_read_inflight
+        ):
             self._kick_direct_read(self._active_curve)
 
     def clear_plot(self, title: str) -> None:
@@ -380,7 +396,10 @@ class VFCurveController(PaneController):
         if not self._curves:
             return
         self.render_plot()
-        if self._active_curve in ("xbar", "sys") and not self._direct_read_inflight:
+        if (
+            _curve_direct_readable(self._active_curve)
+            and not self._direct_read_inflight
+        ):
             self._kick_direct_read(self._active_curve)
 
     def _sync_curve_widgets(self) -> None:
@@ -413,14 +432,23 @@ class VFCurveController(PaneController):
         # so its checkbox is hidden entirely (not merely disabled); with a
         # single discovered curve there is nothing to show/hide either —
         # hide the whole checkbox group until ≥2 curves exist.
+        # The loop covers the discovered set PLUS every statically-marked-up
+        # curve id (gpc/xbar/sys/mem): iterating only the discovered set left
+        # an absent domain's static checkbox never visited, hence never
+        # hidden — e.g. P100 (gpc+mem only) kept showing XBAR/SYS boxes.
         show_checkboxes = len(discovered) >= 2
-        for cid in discovered:
+        static_cids = [cid for cid in CURVE_META if cid != "unknown"]
+        all_cids = list(dict.fromkeys(discovered + static_cids))
+        for cid in all_cids:
             try:
                 checkbox = self.app.query_one(f"#vf-curve-{cid}", Checkbox)
             except Exception:
                 # unknownN curves have no static checkbox — mount one into
                 # the selector row on first sight (ids are stable per
-                # refresh, so a later query_one finds it)
+                # refresh, so a later query_one finds it). Only discovered
+                # curves get mounted; an absent static id stays absent.
+                if cid not in self._curves:
+                    continue
                 try:
                     selector = self.app.query_one("#vf-curve-selector")
                     checkbox = Checkbox(
@@ -454,7 +482,7 @@ class VFCurveController(PaneController):
         self.app.cache.vf_live_point = None
         self.render_plot()
         self._sync_curve_widgets()
-        if curve_id in ("xbar", "sys") and not self._direct_read_inflight:
+        if _curve_direct_readable(curve_id) and not self._direct_read_inflight:
             self._kick_direct_read(curve_id)
         curve = self._curves[curve_id]
         self.app.write_log(
@@ -491,7 +519,10 @@ class VFCurveController(PaneController):
         self.app.cache.active_curve = self._active_curve
         self.render_plot()
         self._sync_curve_widgets()
-        if self._active_curve in ("xbar", "sys") and not self._direct_read_inflight:
+        if (
+            _curve_direct_readable(self._active_curve)
+            and not self._direct_read_inflight
+        ):
             self._kick_direct_read(self._active_curve)
 
     def _kick_direct_read(self, curve_id: str) -> None:

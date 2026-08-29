@@ -468,6 +468,10 @@ CURVE_META: dict[str, dict[str, Any]] = {
     "gpc": {"label": "GPC", "class": "graphics", "domain_bit": 0},
     "xbar": {"label": "XBAR", "class": "fabric", "domain_bit": 1},
     "sys": {"label": "SYS", "class": "fabric", "domain_bit": 2},
+    # Pascal-HBM compute cards (GP100/V100): bank 0's 2nd 80-pt curve is
+    # the HBM MEM V/F curve (live A/B: the MEM domain offset hits it).
+    # class "graphics" = the neutral g(def) prior (no HBM calibration yet).
+    "mem": {"label": "MEM", "class": "graphics", "domain_bit": 4},
 }
 
 
@@ -587,8 +591,8 @@ def build_vf_curves(
     # discovery order; stable sort). Consumers (selector, plot draws)
     # iterate this dict — without this, a public-source GPC (inserted
     # last above) would sort after the private segments.
-    order = {"gpc": 0, "xbar": 1, "sys": 2}
-    return dict(sorted(curves.items(), key=lambda kv: order.get(kv[0], 3)))
+    order = {"gpc": 0, "xbar": 1, "sys": 2, "mem": 3}
+    return dict(sorted(curves.items(), key=lambda kv: order.get(kv[0], 4)))
 
 
 def reverse_lookup_voltage(

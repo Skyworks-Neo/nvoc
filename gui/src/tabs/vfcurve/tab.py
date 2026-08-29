@@ -38,6 +38,9 @@ _CURVE_COLORS = {
     "gpc": {"current": "#00ccff", "default": "#1f4e79"},  # cyan / deep blue
     "xbar": {"current": "#FF8C00", "default": "#7a3d00"},  # bright orange / dark orange
     "sys": {"current": "#B026FF", "default": "#4B0082"},  # bright purple / dark purple
+    # Pascal-HBM compute cards (GP100/V100): bank 0's 2nd 80-pt curve is
+    # the HBM MEM V/F curve (live A/B: the MEM domain offset hits it).
+    "mem": {"current": "#00CC66", "default": "#004D25"},  # bright green / dark green
 }
 # Display label + private-domain class for the raw-converted prior.
 # The third curve was initially mislabeled HOST until a voltage-lock A/B
@@ -51,6 +54,10 @@ _CURVE_META = {
     "gpc": {"label": "GPC", "class": "graphics", "domain_bit": 0},
     "xbar": {"label": "XBAR", "class": "fabric", "domain_bit": 1},
     "sys": {"label": "SYS", "class": "fabric", "domain_bit": 2},
+    # HBM MEM (Pascal-HBM compute cards): class "graphics" = the neutral
+    # g(def) prior — no HBM-specific C(def) calibration exists yet, so the
+    # raw-converted path uses the base table like GPC.
+    "mem": {"label": "MEM", "class": "graphics", "domain_bit": 4},
 }
 
 # ── Unknown-curve support ──
@@ -68,6 +75,19 @@ def _curve_meta_for(cid: str) -> dict:
     label = "UNK" + cid[len("unknown") :] if cid.startswith("unknown") else cid.upper()
     # class "graphics" = neutral g(def) prior; only used for raw conversions.
     return {"label": label, "class": "graphics", "domain_bit": None}
+
+
+def _curve_direct_readable(cid: str) -> bool:
+    """Whether the live crosshair must DIRECT-READ this curve's domain.
+
+    True for xbar/sys/mem — curves whose live clock only the private
+    MEASURE_FREQ path can see (the dashboard poll has no public clock for
+    them). GPC is False even though it has a domain_bit: its operating point
+    is fed by the dashboard's public Graphics clock instead. unknownN curves
+    have no domain_bit. This single gate replaced the old hardcoded
+    ("xbar", "sys") tuple that left the MEM (HBM) curve crosshair-less.
+    """
+    return cid != "gpc" and _curve_meta_for(cid)["domain_bit"] is not None
 
 
 def _curve_colors_for(cid: str) -> dict:
@@ -1008,12 +1028,13 @@ class VFCurveTab:
             self._curve_visible = {}
             return False
 
-        # Canonical display order GPC → XBAR → SYS → others (unknownN keep
-        # discovery order; stable sort). The selector, plot draws and legend
-        # all iterate this dict directly — without this, a public-source GPC
-        # (inserted last above) would sort after the private segments.
-        order = {"gpc": 0, "xbar": 1, "sys": 2}
-        curves = dict(sorted(curves.items(), key=lambda kv: order.get(kv[0], 3)))
+        # Canonical display order GPC → XBAR → SYS → MEM → others (unknownN
+        # keep discovery order; stable sort). The selector, plot draws and
+        # legend all iterate this dict directly — without this, a
+        # public-source GPC (inserted last above) would sort after the
+        # private segments.
+        order = {"gpc": 0, "xbar": 1, "sys": 2, "mem": 3}
+        curves = dict(sorted(curves.items(), key=lambda kv: order.get(kv[0], 4)))
 
         # Carry over visibility (default: every discovered curve visible), and
         # keep the active curve valid (fallback to first visible).
@@ -1178,7 +1199,7 @@ class VFCurveTab:
         self._live_volt = None
         self._live_freq = None
         self._hide_live_point()
-        if curve_id in ("xbar", "sys") and not self._direct_read_inflight:
+        if _curve_direct_readable(curve_id) and not self._direct_read_inflight:
             self._kick_direct_read(curve_id)
         self.app.console.append(
             f"[GUI] Active curve: {curve_id.upper()} "
@@ -1226,7 +1247,10 @@ class VFCurveTab:
             self._live_volt = None
             self._live_freq = None
             self._hide_live_point()
-            if self._active_curve in ("xbar", "sys") and not self._direct_read_inflight:
+            if (
+                _curve_direct_readable(self._active_curve)
+                and not self._direct_read_inflight
+            ):
                 self._kick_direct_read(self._active_curve)
         self._rebuild_selector()
         self._redraw()
@@ -2372,7 +2396,7 @@ class VFCurveTab:
         curve = self._curves.get(self._active_curve)
         if (
             curve is not None
-            and self._active_curve in ("xbar", "sys")
+            and _curve_direct_readable(self._active_curve)
             and not self._direct_read_inflight
         ):
             self._kick_direct_read(self._active_curve)
