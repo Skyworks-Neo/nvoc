@@ -66,7 +66,7 @@ class AppConfig:
 
 @dataclass(slots=True)
 class CurveData:
-    """One plotted V/F curve (GPC public / XBAR / HOST private)."""
+    """One plotted V/F curve (GPC public / XBAR / SYS private)."""
 
     curve_id: str
     source: str = "public"  # "public" | "private"

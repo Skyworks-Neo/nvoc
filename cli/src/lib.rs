@@ -3659,7 +3659,7 @@ fn execute_target(
                                     .map(|s| s.domain_hint)
                                 {
                                     Some(nvoc_core::ClkVfDomainHint::Xbar)
-                                    | Some(nvoc_core::ClkVfDomainHint::Host) => {
+                                    | Some(nvoc_core::ClkVfDomainHint::Sys) => {
                                         nvoc_core::ClkVfDomainClass::Fabric
                                     }
                                     _ => nvoc_core::ClkVfDomainClass::Graphics,
@@ -3859,7 +3859,7 @@ fn execute_target(
                         .map(|s| s.domain_hint)
                 }) {
                     Some(nvoc_core::ClkVfDomainHint::Xbar)
-                    | Some(nvoc_core::ClkVfDomainHint::Host) => nvoc_core::ClkVfDomainClass::Fabric,
+                    | Some(nvoc_core::ClkVfDomainHint::Sys) => nvoc_core::ClkVfDomainClass::Fabric,
                     _ => nvoc_core::ClkVfDomainClass::Graphics,
                 };
                 let delta = nvoc_core::clk_vf_delta_for_target(def, value as f64, class)
@@ -3987,7 +3987,7 @@ fn execute_target(
                         .map(|s| s.domain_hint)
                     {
                         Some(nvoc_core::ClkVfDomainHint::Xbar)
-                        | Some(nvoc_core::ClkVfDomainHint::Host) => {
+                        | Some(nvoc_core::ClkVfDomainHint::Sys) => {
                             nvoc_core::ClkVfDomainClass::Fabric
                         }
                         _ => nvoc_core::ClkVfDomainClass::Graphics,
@@ -4718,20 +4718,24 @@ fn execute_target(
             if bank > 1 {
                 return Err(CliError::new("bank must be 0 or 1"));
             }
-            // --domain gpc|xbar|host|mem: restrict the reset to that
+            // --domain gpc|xbar|sys|disp|mem: restrict the reset to that
             // domain's segments within the bank (per-point mode-0/value-0
             // writes via the private point setter — the same write the
             // whole-bank reset performs, scoped to the segment's index
             // range from get-private-vftable's advisory attribution).
+            // The sys curve was initially mislabeled host (voltage-lock A/B
+            // proved SYS); the disp bins were also mislabeled host.
             if let Some(domain_raw) = option_one(invocation, "domain") {
                 let hint = match domain_raw.trim().to_ascii_lowercase().as_str() {
                     "gpc" | "core" | "gpu" | "graphics" => ClkVfDomainHint::Gpc,
                     "xbar" => ClkVfDomainHint::Xbar,
-                    "host" => ClkVfDomainHint::Host,
+                    // legacy alias from before the SYS relabel
+                    "sys" | "host" => ClkVfDomainHint::Sys,
+                    "disp" | "display" => ClkVfDomainHint::Disp,
                     "mem" | "memory" => ClkVfDomainHint::Mem,
                     other => {
                         return Err(CliError::new(format!(
-                            "invalid --domain {other:?}; expected gpc, xbar, host, or mem"
+                            "invalid --domain {other:?}; expected gpc, xbar, sys, disp, or mem"
                         )));
                     }
                 };
@@ -5646,6 +5650,13 @@ fn parse_clk_domain_name(bit: u32) -> String {
 }
 
 fn parse_clk_domain(raw: &str) -> CliResult<u32> {
+    // NOTE: this bit→name table is imported wholesale from the RTSS
+    // NV_GPU_CLOCK_DOMAIN_ID (GetAllClocks V2 public space). The private
+    // ClockClient ClkDomains family is indexed by ITS OWN record bits and
+    // the equivalence "bit == RTSS domain id" was never driver-verified —
+    // e.g. offsetting the bit-5 record shifts the SYS VF curve (see
+    // ClkVfSegment::domain_hint). MEASURE_FREQ per-bit readings are the
+    // ground truth for what a bit physically drives.
     let trimmed = raw.trim();
     match trimmed.to_ascii_lowercase().as_str() {
         "gpc" | "core" | "gpu" | "graphics" | "nv" => Ok(0),

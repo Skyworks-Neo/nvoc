@@ -458,10 +458,14 @@ def compute_vf_plot_bounds(
 
 # Per-curve metadata: plot label, g(def) prior class for raw-converted
 # translation, and the ClockDomain bit for the direct-read live crosshair.
+# The third curve was initially mislabeled HOST until a voltage-lock A/B
+# proved it tracks SYS — see ClkVfSegment::domain_hint in nvapi-rs.
+# domain_bit is the ClkDomains record whose offset shifts this curve
+# (bit 5's record, labeled Host by the RTSS-derived table).
 CURVE_META: dict[str, dict[str, Any]] = {
     "gpc": {"label": "GPC", "class": "graphics", "domain_bit": 0},
     "xbar": {"label": "XBAR", "class": "fabric", "domain_bit": 1},
-    "host": {"label": "HOST", "class": "fabric", "domain_bit": 5},
+    "sys": {"label": "SYS", "class": "fabric", "domain_bit": 5},
 }
 
 
@@ -481,7 +485,7 @@ def build_vf_curves(
     """Classify public + private V/F reads into per-domain curves.
 
     Port of the GUI ``_build_curves``: GPC prefers the open interface
-    (Fixed points flip it to private writes); XBAR/HOST come from the private
+    (Fixed points flip it to private writes); XBAR/SYS come from the private
     ClockClient V/F-POINTS ``vf_curve`` segments (pstate_bins / unknown
     domains are skipped). Point-id ranges come straight from the segment
     structure — never hardcoded. Returns ``None`` when no curve can be built.
@@ -543,7 +547,7 @@ def build_vf_curves(
                 private_gpc = cd
             elif cd.curve_id in CURVE_META:
                 curves[cd.curve_id] = cd
-            # unknown domains are skipped (only gpc/xbar/host displayed)
+            # unknown domains are skipped (only gpc/xbar/sys displayed)
 
     # Resolve GPC source: public preferred, private fallback.
     if gpc_curve is not None:
@@ -559,7 +563,7 @@ def reverse_lookup_voltage(
 ) -> float | None:
     """Voltage on the curve closest to ``target_freq`` (linear interpolation).
 
-    xbar/host curves are monotonic in frequency vs voltage (no pstate
+    xbar/sys curves are monotonic in frequency vs voltage (no pstate
     off-curve excursion), so the reverse lookup is single-valued; targets
     outside the range clamp to the nearer end. Port of the GUI helper.
     """

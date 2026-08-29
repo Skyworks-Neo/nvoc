@@ -140,7 +140,7 @@ class NativeService:
         Returns ``{"domain_bit", "freq_khz"}`` (``freq_khz == 0`` ⇒ driver
         refused / not measurable — caller should not draw a live point),
         ``{"supported": false}`` when the family is absent, or ``None`` on a
-        transient error. Preferred over the counter-based read for XBAR/HOST
+        transient error. Preferred over the counter-based read for XBAR/SYS
         live-point polling: one call, no 50 ms sleep.
         """
         try:

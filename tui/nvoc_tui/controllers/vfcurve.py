@@ -21,12 +21,14 @@ from ..widgets import mnemonic_text
 from .base import PaneController
 
 # Per-curve plotext colors: (current line, default scatter).
+# The third curve was initially mislabeled HOST until a voltage-lock A/B
+# proved it tracks SYS — see ClkVfSegment::domain_hint in nvapi-rs.
 _CURVE_COLORS = {
     "gpc": ("cyan+", "white"),
     "xbar": ("orange+", "gray+"),
-    "host": ("magenta+", "gray+"),
+    "sys": ("magenta+", "gray+"),
 }
-_CURVE_ORDER = ("gpc", "xbar", "host")
+_CURVE_ORDER = ("gpc", "xbar", "sys")
 
 
 class VFCurveController(PaneController):
@@ -206,7 +208,7 @@ class VFCurveController(PaneController):
             p0_gpu = None
         if p0_gpu is not None:
             self._ensure_p0_bounds(p0_gpu)
-        if self._active_curve in ("xbar", "host") and not self._direct_read_inflight:
+        if self._active_curve in ("xbar", "sys") and not self._direct_read_inflight:
             self._kick_direct_read(self._active_curve)
 
     def clear_plot(self, title: str) -> None:
@@ -262,7 +264,7 @@ class VFCurveController(PaneController):
                 curve.voltages, curve.defaults, marker="braille", color=default_color
             )
         # Live crosshair only on the active curve: GPC from the dashboard
-        # status feed, XBAR/HOST from the direct-read poll path. Hidden
+        # status feed, XBAR/SYS from the direct-read poll path. Hidden
         # curves are neither plotted nor polled.
         live_point: tuple[float, float] | None = None
         live_color = "yellow+"
@@ -362,7 +364,7 @@ class VFCurveController(PaneController):
         if not self._curves:
             return
         self.render_plot()
-        if self._active_curve in ("xbar", "host") and not self._direct_read_inflight:
+        if self._active_curve in ("xbar", "sys") and not self._direct_read_inflight:
             self._kick_direct_read(self._active_curve)
 
     def _sync_curve_widgets(self) -> None:
@@ -391,12 +393,17 @@ class VFCurveController(PaneController):
         self._syncing = True
         if select.value != self._active_curve:
             select.value = self._active_curve
+        # Checkbox visibility: an undiscovered curve has nothing to toggle,
+        # so its checkbox is hidden entirely (not merely disabled); with a
+        # single discovered curve there is nothing to show/hide either —
+        # hide the whole checkbox group until ≥2 curves exist.
+        show_checkboxes = len(discovered) >= 2
         for cid in _CURVE_ORDER:
             try:
                 checkbox = self.app.query_one(f"#vf-curve-{cid}", Checkbox)
             except Exception:
                 continue
-            checkbox.disabled = cid not in self._curves
+            checkbox.display = show_checkboxes and cid in self._curves
             want = cid in self._curves and self._curve_visible.get(cid, True)
             if checkbox.value != want:
                 checkbox.value = want
@@ -418,7 +425,7 @@ class VFCurveController(PaneController):
         self.app.cache.vf_live_point = None
         self.render_plot()
         self._sync_curve_widgets()
-        if curve_id in ("xbar", "host") and not self._direct_read_inflight:
+        if curve_id in ("xbar", "sys") and not self._direct_read_inflight:
             self._kick_direct_read(curve_id)
         curve = self._curves[curve_id]
         self.app.write_log(
@@ -455,7 +462,7 @@ class VFCurveController(PaneController):
         self.app.cache.active_curve = self._active_curve
         self.render_plot()
         self._sync_curve_widgets()
-        if self._active_curve in ("xbar", "host") and not self._direct_read_inflight:
+        if self._active_curve in ("xbar", "sys") and not self._direct_read_inflight:
             self._kick_direct_read(self._active_curve)
 
     def _kick_direct_read(self, curve_id: str) -> None:
@@ -608,7 +615,7 @@ class VFCurveController(PaneController):
             return True
         if button_id == "vf-reset":
             # Active-curve semantics: public GPC resets its own segment via
-            # the open interface; private curves (XBAR/HOST, or GPC when the
+            # the open interface; private curves (XBAR/SYS, or GPC when the
             # public family is unsupported) clear per point with a
             # raw-converted fallback. Never touches other curves' segments.
             curve = self._curves.get(self._active_curve)

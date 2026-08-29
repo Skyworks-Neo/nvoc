@@ -37,18 +37,23 @@ _CARD_KW = dict(border_width=1, border_color="#1f4e79", corner_radius=10)
 _CURVE_COLORS = {
     "gpc": {"current": "#00ccff", "default": "#1f4e79"},  # cyan / deep blue
     "xbar": {"current": "#FF8C00", "default": "#7a3d00"},  # bright orange / dark orange
-    "host": {"current": "#B026FF", "default": "#4B0082"},  # bright purple / dark purple
+    "sys": {"current": "#B026FF", "default": "#4B0082"},  # bright purple / dark purple
 }
 # Display label + private-domain class for the raw-converted prior.
+# The third curve was initially mislabeled HOST until a voltage-lock A/B
+# proved it tracks SYS (0.89 V → curve 1980 MHz vs live SYS 1994 MHz; the
+# Host clock never exceeds 1350 MHz) — see ClkVfSegment::domain_hint in
+# nvapi-rs. domain_bit is the ClkDomains record whose offset shifts this
+# curve (bit 5's record, labeled Host by the RTSS-derived table).
 _CURVE_META = {
     "gpc": {"label": "GPC", "class": "graphics", "domain_bit": 0},
     "xbar": {"label": "XBAR", "class": "fabric", "domain_bit": 1},
-    "host": {"label": "HOST", "class": "fabric", "domain_bit": 5},
+    "sys": {"label": "SYS", "class": "fabric", "domain_bit": 5},
 }
 
 
 class _CurveData:
-    """One VF curve (GPC/XBAR/HOST) loaded from public or private NVAPI.
+    """One VF curve (GPC/XBAR/SYS) loaded from public or private NVAPI.
 
     ``voltages``/``frequencies``/``defaults`` are in display units (mV / MHz).
     ``source`` is "public" (GPC via the open VFP interface) or "private"
@@ -110,7 +115,7 @@ class VFCurveTab:
         self._defaults: List[float] = []  # default_frequency
 
         # ── Multi-curve state ──
-        # One _CurveData per discovered curve (gpc/xbar/host). _voltages /
+        # One _CurveData per discovered curve (gpc/xbar/sys). _voltages /
         # _frequencies / _defaults above are kept as a live view of the active
         # curve's lists (same object references) so every existing single-curve
         # call site (drag, keyboard, space-key, lock, dashboard poll, tests)
@@ -193,7 +198,7 @@ class VFCurveTab:
         self._live_poll_job: Optional[str] = None
         self._live_pending: Tuple[Optional[float], Optional[float]] = (None, None)
         self._live_poll_inflight = False
-        # Direct-read inflight guard for xbar/host live-point polling.
+        # Direct-read inflight guard for xbar/sys live-point polling.
         self._direct_read_inflight = False
 
         # ── P0 voltage-boundary vertical lines ──
@@ -1135,7 +1140,7 @@ class VFCurveTab:
         self._live_volt = None
         self._live_freq = None
         self._hide_live_point()
-        if curve_id in ("xbar", "host") and not self._direct_read_inflight:
+        if curve_id in ("xbar", "sys") and not self._direct_read_inflight:
             self._kick_direct_read(curve_id)
         self.app.console.append(
             f"[GUI] Active curve: {curve_id.upper()} "
@@ -1184,7 +1189,7 @@ class VFCurveTab:
             self._live_freq = None
             self._hide_live_point()
             if (
-                self._active_curve in ("xbar", "host")
+                self._active_curve in ("xbar", "sys")
                 and not self._direct_read_inflight
             ):
                 self._kick_direct_read(self._active_curve)
@@ -2326,7 +2331,7 @@ class VFCurveTab:
         curve = self._curves.get(self._active_curve)
         if (
             curve is not None
-            and self._active_curve in ("xbar", "host")
+            and self._active_curve in ("xbar", "sys")
             and not self._direct_read_inflight
         ):
             self._kick_direct_read(self._active_curve)

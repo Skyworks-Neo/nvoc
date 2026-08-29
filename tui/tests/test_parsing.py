@@ -385,7 +385,7 @@ def test_build_vf_curves_private_segments_and_skips() -> None:
             },
             {
                 "kind": "vf_curve",
-                "domain": "host",
+                "domain": "sys",
                 "bank": 2,
                 "start_index": 6,
                 "end_index": 7,
@@ -462,13 +462,13 @@ def test_build_vf_curves_private_segments_and_skips() -> None:
     curves = build_vf_curves(None, "driver said Not Supported", clk_data)
 
     # Public read unsupported → private GPC segment is the GPC source.
-    assert set(curves) == {"gpc", "xbar", "host"}
+    assert set(curves) == {"gpc", "xbar", "sys"}
     assert curves["gpc"].source == "private"
     assert curves["gpc"].bank == 0
     assert (curves["gpc"].seg_start, curves["gpc"].seg_end) == (0, 1)
     assert curves["xbar"].bank == 1
     assert (curves["xbar"].seg_start, curves["xbar"].seg_end) == (2, 3)
-    assert curves["host"].voltages == [600.0, 650.0]
+    assert curves["sys"].voltages == [600.0, 650.0]
     for curve in curves.values():
         assert curve.write_mode == "private"
 

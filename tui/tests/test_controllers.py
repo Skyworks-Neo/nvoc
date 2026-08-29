@@ -964,7 +964,7 @@ def _selector_widgets() -> dict[str, SimpleNamespace]:
         ),
         "#vf-curve-gpc": SimpleNamespace(value=True, disabled=False),
         "#vf-curve-xbar": SimpleNamespace(value=True, disabled=False),
-        "#vf-curve-host": SimpleNamespace(value=True, disabled=False),
+        "#vf-curve-sys": SimpleNamespace(value=True, disabled=False),
     }
 
 

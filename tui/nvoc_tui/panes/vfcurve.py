@@ -177,7 +177,8 @@ def compose_vfcurve(config: AppConfig, auto_refresh_label: Text) -> ComposeResul
                             )
             # Curve selector: active curve (Select) + visibility checkboxes.
             # Options/state are refreshed by the controller once curves are
-            # discovered; undiscovered curves stay disabled.
+            # discovered; undiscovered curves' checkboxes are hidden entirely (see
+            # _sync_curve_widgets).
             with Horizontal(id="vf-curve-selector"):
                 yield Label("Curve")
                 yield Select(
@@ -189,5 +190,5 @@ def compose_vfcurve(config: AppConfig, auto_refresh_label: Text) -> ComposeResul
                 )
                 yield Checkbox("GPC", value=True, id="vf-curve-gpc", compact=True)
                 yield Checkbox("XBAR", value=True, id="vf-curve-xbar", compact=True)
-                yield Checkbox("HOST", value=True, id="vf-curve-host", compact=True)
+                yield Checkbox("SYS", value=True, id="vf-curve-sys", compact=True)
             yield PlotextPlot(id="vf-plot")
