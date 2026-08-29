@@ -2175,8 +2175,7 @@ fn query_volt_rails(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
                     (
                         "p0_rails",
                         Value::Array({
-                            let mut bits: Vec<u32> =
-                                r.status.iter().map(|e| e.rail_bit).collect();
+                            let mut bits: Vec<u32> = r.status.iter().map(|e| e.rail_bit).collect();
                             bits.sort_unstable();
                             bits.dedup();
                             bits.into_iter()

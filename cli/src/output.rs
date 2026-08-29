@@ -707,9 +707,9 @@ fn format_value_block_with_context(value: &Value, indent: usize, context: &str) 
                     // surfaces the Xbar rail's bounds below the core's.
                     Value::Array(items)
                         if key == "p0_rails"
-                            && items
-                                .iter()
-                                .all(|v| v.as_object().is_some_and(|o| o.contains_key("rail_bit"))) =>
+                            && items.iter().all(|v| {
+                                v.as_object().is_some_and(|o| o.contains_key("rail_bit"))
+                            }) =>
                     {
                         for item in items {
                             let object = item.as_object().expect("checked above");
