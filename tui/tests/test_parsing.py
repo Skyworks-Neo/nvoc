@@ -15,6 +15,7 @@ from pathlib import Path
 
 from nvoc_tui.parsing import (
     build_vf_curves,
+    curve_meta,
     compute_vf_plot_bounds,
     find_curve_point_for_voltage,
     load_vf_curve,
@@ -366,6 +367,18 @@ def test_build_vf_curves_fixed_point_forces_private_write() -> None:
     assert curves["gpc"].write_mode == "private"
 
 
+def test_curve_meta_fallback_for_unknown_ids() -> None:
+    # Known ids resolve through CURVE_META unchanged.
+    assert curve_meta("gpc")["label"] == "GPC"
+    assert curve_meta("sys")["domain_bit"] == 5
+    # unknownN ids synthesize display-only meta: no domain bit (no live
+    # crosshair), neutral prior class, label UNK<n>.
+    meta = curve_meta("unknown1")
+    assert meta["label"] == "UNK1"
+    assert meta["domain_bit"] is None
+    assert meta["class"] == "graphics"
+
+
 def test_build_vf_curves_private_segments_and_skips() -> None:
     clk_data = {
         "segments": [
@@ -390,7 +403,8 @@ def test_build_vf_curves_private_segments_and_skips() -> None:
                 "start_index": 6,
                 "end_index": 7,
             },
-            # pstate_bins and unknown domains are never curves.
+            # pstate_bins are never curves; the unnamed "sysclk" domain
+            # displays as unknown1 (50-series fourth-curve support).
             {
                 "kind": "pstate_bins",
                 "domain": "gpc",
@@ -462,13 +476,16 @@ def test_build_vf_curves_private_segments_and_skips() -> None:
     curves = build_vf_curves(None, "driver said Not Supported", clk_data)
 
     # Public read unsupported → private GPC segment is the GPC source.
-    assert set(curves) == {"gpc", "xbar", "sys"}
+    assert set(curves) == {"gpc", "xbar", "sys", "unknown1"}
     assert curves["gpc"].source == "private"
     assert curves["gpc"].bank == 0
     assert (curves["gpc"].seg_start, curves["gpc"].seg_end) == (0, 1)
     assert curves["xbar"].bank == 1
     assert (curves["xbar"].seg_start, curves["xbar"].seg_end) == (2, 3)
     assert curves["sys"].voltages == [600.0, 650.0]
+    # Unnamed domain → unknown1, plotted like any curve (one point here).
+    assert curves["unknown1"].voltages == [500.0]
+    assert curves["unknown1"].frequencies == [800.0]
     for curve in curves.values():
         assert curve.write_mode == "private"
 

@@ -469,6 +469,26 @@ CURVE_META: dict[str, dict[str, Any]] = {
 }
 
 
+def curve_meta(curve_id: str) -> dict[str, Any]:
+    """Meta lookup with a synthesized fallback for unknownN curves.
+
+    50-series (GB10) packs a fourth vf_curve the ordinal hint table can't
+    name (domain "unknown"); such curves get ids "unknown1", "unknown2", …
+    (in segment order) and display like any other curve — but with no
+    domain_bit, so no live crosshair / direct read.
+    """
+    meta = CURVE_META.get(curve_id)
+    if meta is not None:
+        return meta
+    label = (
+        "UNK" + curve_id[len("unknown"):]
+        if curve_id.startswith("unknown")
+        else curve_id.upper()
+    )
+    # class "graphics" = neutral g(def) prior; only used for raw conversions.
+    return {"label": label, "class": "graphics", "domain_bit": None}
+
+
 def public_vfp_unsupported(gpc_err: str | None) -> bool:
     """True when the open VFP interface explicitly rejected the query."""
     if not gpc_err:
@@ -486,11 +506,13 @@ def build_vf_curves(
 
     Port of the GUI ``_build_curves``: GPC prefers the open interface
     (Fixed points flip it to private writes); XBAR/SYS come from the private
-    ClockClient V/F-POINTS ``vf_curve`` segments (pstate_bins / unknown
-    domains are skipped). Point-id ranges come straight from the segment
+    ClockClient V/F-POINTS ``vf_curve`` segments; unnamed domains (the
+    50-series fourth curve) display as unknownN; pstate_bins are skipped.
+    Point-id ranges come straight from the segment
     structure — never hardcoded. Returns ``None`` when no curve can be built.
     """
     curves: dict[str, CurveData] = {}
+    unknown_count = 0
 
     gpc_curve: CurveData | None = None
     if gpc_points:
@@ -530,11 +552,14 @@ def build_vf_curves(
             ]
             if not seg_pts:
                 continue
-            if hint not in CURVE_META:
-                # Unknown clock domains (sysclk etc.) are never displayed —
-                # and must not be mistaken for the private GPC fallback.
-                continue
-            cd = CurveData(hint)
+            if hint in CURVE_META:
+                curve_id = hint
+            else:
+                # Unnamed domain (50-series fourth curve): display as
+                # unknownN — and NEVER as the private-GPC fallback.
+                unknown_count += 1
+                curve_id = f"unknown{unknown_count}"
+            cd = CurveData(curve_id)
             cd.source = "private"
             cd.bank = bank
             cd.seg_start = s
@@ -545,9 +570,8 @@ def build_vf_curves(
             cd.write_mode = "private"
             if cd.curve_id == "gpc":
                 private_gpc = cd
-            elif cd.curve_id in CURVE_META:
+            else:
                 curves[cd.curve_id] = cd
-            # unknown domains are skipped (only gpc/xbar/sys displayed)
 
     # Resolve GPC source: public preferred, private fallback.
     if gpc_curve is not None:

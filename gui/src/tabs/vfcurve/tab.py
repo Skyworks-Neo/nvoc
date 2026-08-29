@@ -51,6 +51,28 @@ _CURVE_META = {
     "sys": {"label": "SYS", "class": "fabric", "domain_bit": 5},
 }
 
+# ── Unknown-curve support ──
+# 50-series (GB10) packs a FOURTH vf_curve the ordinal hint table can't
+# name (domain "unknown"). Rather than dropping it, such curves get ids
+# "unknown1", "unknown2", … (in segment order) and are displayed like any
+# other curve — but with no domain_bit, so no live crosshair / direct read.
+
+
+def _curve_meta_for(cid: str) -> dict:
+    """Meta lookup with a synthesized fallback for unknownN curves."""
+    meta = _CURVE_META.get(cid)
+    if meta is not None:
+        return meta
+    label = "UNK" + cid[len("unknown"):] if cid.startswith("unknown") else cid.upper()
+    # class "graphics" = neutral g(def) prior; only used for raw conversions.
+    return {"label": label, "class": "graphics", "domain_bit": None}
+
+
+def _curve_colors_for(cid: str) -> dict:
+    """Color lookup with a fixed fallback palette for unknownN curves
+    (light yellow-green current / dark yellow-green default)."""
+    return _CURVE_COLORS.get(cid) or {"current": "#B2E834", "default": "#557A1C"}
+
 
 class _CurveData:
     """One VF curve (GPC/XBAR/SYS) loaded from public or private NVAPI.
@@ -931,8 +953,9 @@ class VFCurveTab:
             # only GPC source. Located below from clk_data.
             pass
 
-        # ── Private segments: GPC (fallback), XBAR, HOST. ──
+        # ── Private segments: GPC (fallback), XBAR, SYS, unknownN. ──
         private_gpc: Optional[_CurveData] = None
+        unknown_count = 0
         if clk_data and clk_data.get("segments"):
             segs = clk_data["segments"]
             pts = clk_data.get("points", [])
@@ -951,7 +974,14 @@ class VFCurveTab:
                 ]
                 if not seg_pts:
                     continue
-                cd = _CurveData(hint if hint in _CURVE_COLORS else "gpc")
+                if hint in _CURVE_COLORS:
+                    curve_id = hint
+                else:
+                    # Unnamed domain (50-series 4th curve): display as
+                    # unknownN — and NEVER as the private-GPC fallback.
+                    unknown_count += 1
+                    curve_id = f"unknown{unknown_count}"
+                cd = _CurveData(curve_id)
                 cd.source = "private"
                 cd.bank = bank
                 cd.seg_start = s
@@ -962,9 +992,8 @@ class VFCurveTab:
                 cd.write_mode = "private"
                 if cd.curve_id == "gpc":
                     private_gpc = cd
-                elif cd.curve_id in _CURVE_COLORS:
+                else:
                     curves[cd.curve_id] = cd
-                # unknown domains are skipped (only gpc/xbar/host displayed)
 
         # Resolve GPC source: public preferred, private fallback.
         if gpc_curve is not None:
@@ -1188,10 +1217,7 @@ class VFCurveTab:
             self._live_volt = None
             self._live_freq = None
             self._hide_live_point()
-            if (
-                self._active_curve in ("xbar", "sys")
-                and not self._direct_read_inflight
-            ):
+            if self._active_curve in ("xbar", "sys") and not self._direct_read_inflight:
                 self._kick_direct_read(self._active_curve)
         self._rebuild_selector()
         self._redraw()
@@ -1221,7 +1247,7 @@ class VFCurveTab:
                 host,
                 bg=_PANEL_BG,
                 highlightthickness=2,
-                highlightcolor=_CURVE_COLORS[cid]["current"],
+                highlightcolor=_curve_colors_for(cid)["current"],
                 highlightbackground="#444444",
                 bd=0,
             )
@@ -1239,9 +1265,9 @@ class VFCurveTab:
             )
             ckb.pack(side="left", padx=(4, 2), pady=4)
             # Label (right): curve name + active indicator.
-            colors = _CURVE_COLORS[cid]
+            colors = _curve_colors_for(cid)
             active = cid == self._active_curve
-            label_text = _CURVE_META[cid]["label"]
+            label_text = _curve_meta_for(cid)["label"]
             lbl = tk.Label(
                 btn,
                 text=label_text,
@@ -1444,8 +1470,8 @@ class VFCurveTab:
         # stale references so the _draw_*_handle calls below recreate them.
         self._pending_wall_line = None
         self._wall_handle = None
-        active_colors = _CURVE_COLORS.get(self._active_curve, _CURVE_COLORS["gpc"])
-        active_label = _CURVE_META.get(self._active_curve, _CURVE_META["gpc"])["label"]
+        active_colors = _curve_colors_for(self._active_curve)
+        active_label = _curve_meta_for(self._active_curve)["label"]
 
         # Non-active visible curves first (lower zorder, static).
         for cid, curve in self._curves.items():
@@ -1453,8 +1479,8 @@ class VFCurveTab:
                 continue
             if not self._curve_visible.get(cid):
                 continue
-            colors = _CURVE_COLORS.get(cid, _CURVE_COLORS["gpc"])
-            lbl = _CURVE_META.get(cid, {"label": cid.upper()})["label"]
+            colors = _curve_colors_for(cid)
+            lbl = _curve_meta_for(cid)["label"]
             ax.plot(
                 curve.voltages,
                 curve.defaults,
@@ -1582,14 +1608,20 @@ class VFCurveTab:
         else:
             self._sel_points = None
 
-        ax.legend(
+        legend = ax.legend(
             loc="upper left",
-            fontsize=6,
+            fontsize=5,
             framealpha=0.5,
             facecolor="#2b2b2b",
             edgecolor="#555555",
             labelcolor="#cccccc",
         )
+        # Thin the sample lines (they inherit the plotted curve's width).
+        for handle in getattr(legend, "legend_handles", []) or legend.get_lines():
+            try:
+                handle.set_linewidth(0.75)
+            except AttributeError:
+                pass
 
         # Draw crosshairs for locked points
         for idx in self._locked_points:
@@ -2364,7 +2396,9 @@ class VFCurveTab:
         gpu = self.app.selected_gpu_target()
         if gpu is None:
             return
-        domain_bit = _CURVE_META[curve_id]["domain_bit"]
+        domain_bit = _curve_meta_for(curve_id)["domain_bit"]
+        if domain_bit is None:
+            return  # unknownN curves have no measurable domain bit
         curve = self._curves.get(curve_id)
         if curve is None or not curve.voltages:
             return
@@ -3262,7 +3296,7 @@ class VFCurveTab:
             return
         bank = curve.bank
         base = curve.seg_start + start  # absolute private index of `start`
-        class_name = _CURVE_META[curve.curve_id]["class"]
+        class_name = _curve_meta_for(curve.curve_id)["class"]
         defaults_mhz = list(self._defaults)
         self.app.console.append(
             f"[GUI] Applying private VFP to {curve.curve_id.upper()} "
@@ -3433,7 +3467,7 @@ class VFCurveTab:
         bank = curve.bank
         base = curve.seg_start
         end_idx = curve.seg_end
-        class_name = _CURVE_META[curve.curve_id]["class"]
+        class_name = _curve_meta_for(curve.curve_id)["class"]
         defaults_mhz = list(curve.defaults)
 
         def reset_private(

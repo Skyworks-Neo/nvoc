@@ -9,6 +9,7 @@ from textual_plotext import PlotextPlot
 from ..models import CurveData
 from ..parsing import (
     CURVE_META,
+    curve_meta,
     build_vf_curves,
     compute_vf_plot_bounds_multi,
     find_curve_point_for_voltage,
@@ -28,6 +29,13 @@ _CURVE_COLORS = {
     "xbar": ("orange+", "gray+"),
     "sys": ("magenta+", "gray+"),
 }
+
+
+def _curve_colors_for(cid: str) -> tuple[str, str]:
+    """Color lookup with a yellow-green fallback for unknownN curves
+    (plotext's fixed 16-color terminal palette has no yellow-green:
+    yellow ≈ light, green ≈ dark)."""
+    return _CURVE_COLORS.get(cid) or ("yellow", "green")
 _CURVE_ORDER = ("gpc", "xbar", "sys")
 
 
@@ -249,10 +257,8 @@ class VFCurveController(PaneController):
         plt.clear_data()
         plt.clear_color()
         for curve in visible:
-            current_color, default_color = _CURVE_COLORS.get(
-                curve.curve_id, _CURVE_COLORS["gpc"]
-            )
-            label = CURVE_META.get(curve.curve_id, CURVE_META["gpc"])["label"]
+            current_color, default_color = _curve_colors_for(curve.curve_id)
+            label = curve_meta(curve.curve_id)["label"]
             plt.plot(
                 curve.voltages,
                 curve.frequencies,
@@ -383,8 +389,10 @@ class VFCurveController(PaneController):
             select = self.app.query_one("#vf-active-curve", Select)
         except Exception:
             return
-        discovered = [cid for cid in _CURVE_ORDER if cid in self._curves]
-        options = [(CURVE_META[cid]["label"], cid) for cid in discovered] or [
+        discovered = [cid for cid in _CURVE_ORDER if cid in self._curves] + [
+            cid for cid in self._curves if cid not in _CURVE_ORDER
+        ]
+        options = [(curve_meta(cid)["label"], cid) for cid in discovered] or [
             ("GPC", "gpc")
         ]
         if self._synced_options != options:
@@ -398,11 +406,22 @@ class VFCurveController(PaneController):
         # single discovered curve there is nothing to show/hide either —
         # hide the whole checkbox group until ≥2 curves exist.
         show_checkboxes = len(discovered) >= 2
-        for cid in _CURVE_ORDER:
+        for cid in discovered:
             try:
                 checkbox = self.app.query_one(f"#vf-curve-{cid}", Checkbox)
             except Exception:
-                continue
+                # unknownN curves have no static checkbox — mount one into
+                # the selector row on first sight (ids are stable per
+                # refresh, so a later query_one finds it)
+                try:
+                    selector = self.app.query_one("#vf-curve-selector")
+                    checkbox = Checkbox(
+                        curve_meta(cid)["label"], value=True,
+                        id=f"vf-curve-{cid}", compact=True,
+                    )
+                    selector.mount(checkbox)
+                except Exception:
+                    continue
             checkbox.display = show_checkboxes and cid in self._curves
             want = cid in self._curves and self._curve_visible.get(cid, True)
             if checkbox.value != want:
@@ -478,7 +497,9 @@ class VFCurveController(PaneController):
             return
         if gpu is None:
             return
-        domain_bit = CURVE_META[curve_id]["domain_bit"]
+        domain_bit = curve_meta(curve_id)["domain_bit"]
+        if domain_bit is None:
+            return  # unknownN curves have no measurable domain bit
         # Snapshot for the completion callback (a refresh may replace the
         # curve dicts while the read is in flight).
         volts = list(curve.voltages)
