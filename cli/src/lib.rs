@@ -1074,14 +1074,14 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     positionals: Box::leak(Box::new([PositionalArg::free(
                         "arg_domain",
                         "DOMAIN",
-                        "Clock domain to offset: xbar (1), gpc/core (0), sys (2), or mclk/mem (4)",
+                        "Clock domain to offset (WRITE map): xbar (1), gpc/core (0), sys/host/uncore (5, the record that moves the SYS/uncore cluster), or a raw bit 0-31",
                     ),
                     PositionalArg::hyphen(
-                        "arg_offset_khz",
-                        "OFFSET_KHZ",
-                        "Signed kilohertz offset, for example -60000 or +30000kHz; 0 is a no-op stock write. The driver may reject or clamp; the post-SET readback is returned. Pass --temporary to restore the snapshot before returning",
+                        "arg_offset",
+                        "OFFSET",
+                        "Signed offset in MHz by default (one decimal allowed), for example -60, +15.5 or 0 (no-op stock write); an explicit khz/kilohertz suffix keeps the legacy unit. The driver may reject or clamp; the post-SET readback is returned. Pass --temporary to restore the snapshot before returning",
                     )])),
-                    ..CommandSpec::new("set-private-freq-domain-global-offset", Group::Vfp, "Write a signed kHz offset into one clock-domain control record (dangerous XBar clock write; --temporary restores the snapshot)")
+                    ..CommandSpec::new("set-private-freq-domain-global-offset", Group::Vfp, "Write a signed MHz offset into one clock-domain control record (dangerous XBar clock write; --temporary restores the snapshot). NOTE: names resolve through the WRITE map — sys/host/uncore all target bit 5, the record that moves the SYS/uncore cluster; the MEASURE bit for SYS is 2 (get-private-freq-domain-status). Pass a bare integer to target a raw record")
                 },
             ),
             (
@@ -4051,9 +4051,9 @@ fn execute_target(
             // (default 0 = the article's signed frequency offset; the other
             // slots are driver-opaque range/voltage terms — identify by
             // A/B with get-clk-domain-freq).
-            let domain_bit = parse_clk_domain(&invocation.positionals[0])?;
+            let domain_bit = parse_clk_domain_write(&invocation.positionals[0])?;
             #[allow(non_snake_case)] // kHz suffix matches the nvapi-rs field naming
-            let offset_kHz = parse_i32_unit(&invocation.positionals[1], "khz", "kilohertz")?;
+            let offset_kHz = parse_domain_offset_kHz(&invocation.positionals[1])?;
             let slot = option_one(invocation, "slot")
                 .map(|s| s.parse::<u32>())
                 .transpose()
@@ -5658,6 +5658,34 @@ fn parse_clk_domain(raw: &str) -> CliResult<u32> {
     // ClkVfSegment::domain_hint). MEASURE_FREQ per-bit readings are the
     // ground truth for what a bit physically drives.
     let trimmed = raw.trim();
+    parse_clk_domain_table(trimmed)
+}
+
+/// Resolve a clock-domain name for the ClkDomains offset WRITE path
+/// (`set-private-freq-domain-global-offset`). The private control block's
+/// WRITE records are NOT the MEASURE_FREQ/RTSS bits on this driver
+/// generation (live-verified on RTX 4060 Laptop / R610 family):
+///   - MEASURE reads SYS at bit 2 and Host at bit 5,
+///   - but the offset record that actually moves the SYS/uncore cluster
+///     (the third VF curve AND its clocks) is bit 5 — writing bit 2 has no
+///     effect on SYS.
+///
+/// So names here resolve to the WRITE record: sys/host/uncore → 5.
+/// A bare integer bypasses the remap and targets that raw record.
+fn parse_clk_domain_write(raw: &str) -> CliResult<u32> {
+    let trimmed = raw.trim();
+    match trimmed.to_ascii_lowercase().as_str() {
+        // the uncore-cluster offset record — the bit-5 WRITE, not the
+        // bit-2 measure; both names address the same record on this
+        // driver (see parse_clk_domain's note)
+        "sys" | "host" | "uncore" => Ok(5),
+        _ => parse_clk_domain_table(trimmed),
+    }
+}
+
+/// The shared RTSS-derived name→bit table used by parse_clk_domain and
+/// parse_clk_domain_write.
+fn parse_clk_domain_table(trimmed: &str) -> CliResult<u32> {
     match trimmed.to_ascii_lowercase().as_str() {
         "gpc" | "core" | "gpu" | "graphics" | "nv" => Ok(0),
         "xbar" | "xbarclk" => Ok(1),
@@ -5688,7 +5716,7 @@ fn parse_clk_domain(raw: &str) -> CliResult<u32> {
         "host1x" => Ok(28),
         _ => trimmed.parse::<u32>().map_err(|_| {
             CliError::new(format!(
-                "invalid clock domain {raw:?}: use a domain name (gpc/xbar/sys/hub/mclk/host/disp/... ) or a raw domain bit (0-31)"
+                "invalid clock domain {trimmed:?}: use a domain name (gpc/xbar/sys/hub/mclk/host/disp/... ) or a raw domain bit (0-31)"
             ))
         }),
     }
@@ -5759,6 +5787,38 @@ fn parse_i32_unit(raw: &str, suffix: &str, label: &str) -> CliResult<i32> {
     strip_unit(raw, suffix, label)
         .parse::<i32>()
         .map_err(|_| CliError::new(format!("invalid {label} value {raw:?}")))
+}
+
+/// Parse the freq-domain offset positional for
+/// `set-private-freq-domain-global-offset`. Default unit is MHz (one
+/// decimal allowed — the record itself resolves to kHz); an explicit
+/// `khz`/`kilohertz` suffix keeps the legacy kHz unit for old scripts.
+#[allow(non_snake_case)]
+fn parse_domain_offset_kHz(raw: &str) -> CliResult<i32> {
+    let trimmed = raw.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    for suffix in ["khz", "kilohertz"] {
+        if let Some(without) = lower.strip_suffix(suffix) {
+            return trimmed[..without.len()]
+                .trim()
+                .parse::<i32>()
+                .map_err(|_| CliError::new(format!("invalid kHz offset {raw:?}")));
+        }
+    }
+    let mhz_str = match lower
+        .strip_suffix("mhz")
+        .or_else(|| lower.strip_suffix("megahertz"))
+    {
+        Some(without) => trimmed[..without.len()].trim(),
+        None => trimmed,
+    };
+    let mhz: f64 = mhz_str
+        .parse()
+        .map_err(|_| CliError::new(format!("invalid MHz offset {raw:?}")))?;
+    if !mhz.is_finite() || mhz.abs() >= 2_000_000.0 {
+        return Err(CliError::new(format!("invalid MHz offset {raw:?}")));
+    }
+    Ok((mhz * 1000.0).round() as i32)
 }
 
 fn parse_u32_unit(raw: &str, suffix: &str, label: &str) -> CliResult<u32> {
