@@ -3410,8 +3410,8 @@ pub fn parse_nvml_pstate(raw: &str) -> Result<PerformanceState, Error> {
     try_parse_nvml_pstate(raw)
 }
 
-pub fn detect_gpu_type(gpu_name: &str) -> super::gpu_type::GpuType {
-    super::gpu_type::detect_gpu_type(gpu_name)
+pub fn detect_gpu_type(gpu_name: &str, codename: &str) -> super::gpu_type::GpuType {
+    super::gpu_type::detect_gpu_type(gpu_name, codename)
 }
 
 pub fn fetch_gpu_type(info: &::nvapi::hi::GpuInfo) -> Result<super::gpu_type::GpuType, Error> {

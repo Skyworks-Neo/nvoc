@@ -108,119 +108,133 @@ impl fmt::Display for GpuType {
 // ─────────────────────────── 检测 / 构造 ─────────────────────────────────────
 
 /// 根据 GPU 名称 + codename 字符串判定世代
-pub fn detect_gpu_type(gpu_name: &str) -> GpuType {
-    let is_rtx_a = gpu_name.contains("RTX A");
-    let is_rtx_professional = gpu_name.contains("RTX")
-        && (gpu_name.contains("2000")
-            || gpu_name.contains("3000")
-            || gpu_name.contains("4000")
-            || gpu_name.contains("5000")
-            || gpu_name.contains("6000"))
-        && !gpu_name.contains("GeForce");
-    let is_quadro = gpu_name.contains("Quadro");
-    let is_tesla = gpu_name.contains("Tesla");
+/// Chip-family detection. The chip prefix (GB202 / GH100 / AD102 / GA102 /
+/// TU104 / GP104 / GM204 / GK104 / GF108 / GV100 …) is a property of the
+/// CODENAME, never of the product name — matching it against the product
+/// name misclassified Tesla VRAM suffixes as chip generations (live P100:
+/// "Tesla P100-PCIE-16GB" + "GP100GL-A" hit `contains("GB")` on the "16GB"
+/// capacity → ServerBlackwell, wrongly enabling Turing+ gates like the XBAR
+/// offset). `chip` is matched case-sensitively from the codename only;
+/// `gpu_name` drives the product-keyword classification (Tesla / Laptop /
+/// Quadro / RTX professional / server SKU numbers).
+pub fn detect_gpu_type(gpu_name: &str, codename: &str) -> GpuType {
+    // Both sources feed the keyword checks: the product name carries
+    // "Tesla"/"Laptop"/"Quadro", the codename carries "GP100"-style SKU
+    // roots — either legitimately identifies a server card.
+    let combined = format!("{gpu_name}{codename}");
+    let is_rtx_a = combined.contains("RTX A");
+    let is_rtx_professional = combined.contains("RTX")
+        && (combined.contains("2000")
+            || combined.contains("3000")
+            || combined.contains("4000")
+            || combined.contains("5000")
+            || combined.contains("6000"))
+        && !combined.contains("GeForce");
+    let is_quadro = combined.contains("Quadro");
+    let is_tesla = combined.contains("Tesla");
     let is_server = is_tesla
-        || gpu_name.contains("H100")
-        || gpu_name.contains("H800")
-        || gpu_name.contains("A100")
-        || gpu_name.contains("A800")
-        || gpu_name.contains("B100")
-        || gpu_name.contains("B200")
-        || gpu_name.contains("V100")
-        || gpu_name.contains("P100")
-        || gpu_name.contains("L40")
-        || gpu_name.contains("L4");
+        || combined.contains("H100")
+        || combined.contains("H800")
+        || combined.contains("A100")
+        || combined.contains("A800")
+        || combined.contains("B100")
+        || combined.contains("B200")
+        || combined.contains("V100")
+        || combined.contains("P100")
+        || combined.contains("L40")
+        || combined.contains("L4");
 
-    if gpu_name.contains("GB") {
+    // Chip family: CODENAME prefix only (see the doc comment above).
+    if codename.starts_with("GB") {
         if is_server {
             GpuType::ServerBlackwell
         } else if is_rtx_professional || is_quadro {
             GpuType::WorkstationBlackwell
-        } else if gpu_name.contains("Laptop") {
+        } else if combined.contains("Laptop") {
             GpuType::Mobile50Series
         } else {
             GpuType::Desktop50Series
         }
-    } else if gpu_name.contains("GH") {
+    } else if codename.starts_with("GH") {
         GpuType::ServerHopper
-    } else if gpu_name.contains("AD") {
+    } else if codename.starts_with("AD") {
         if is_server {
             GpuType::ServerLovelace // L40/L4 are Ada/Lovelace server cards
         } else if is_rtx_professional || is_quadro || is_rtx_a {
             GpuType::WorkstationLovelace
-        } else if gpu_name.contains("Laptop") {
+        } else if combined.contains("Laptop") {
             GpuType::Mobile40Series
         } else {
             GpuType::Desktop40Series
         }
-    } else if gpu_name.contains("GA") {
+    } else if codename.starts_with("GA") {
         if is_server {
             GpuType::ServerAmpere
         } else if is_rtx_professional || is_quadro || is_rtx_a {
             GpuType::WorkstationAmpere
-        } else if gpu_name.contains("Laptop") {
+        } else if combined.contains("Laptop") {
             GpuType::Mobile30Series
         } else {
             GpuType::Desktop30Series
         }
-    } else if gpu_name.contains("TU10") {
+    } else if codename.starts_with("TU10") {
         if is_server {
             GpuType::ServerTuringTesla
         } else if is_rtx_professional || is_quadro {
             GpuType::WorkstationTuring
-        } else if gpu_name.contains("Laptop") {
+        } else if combined.contains("Laptop") {
             GpuType::Mobile20Series
         } else {
             GpuType::Desktop20Series
         }
-    } else if gpu_name.contains("TU11") {
-        if gpu_name.contains("Laptop") {
+    } else if codename.starts_with("TU11") {
+        if combined.contains("Laptop") {
             GpuType::Mobile16Series
         } else {
             GpuType::Desktop16Series
         }
-    } else if gpu_name.contains("GP1") {
+    } else if codename.starts_with("GP1") {
         // Do NOT mess up with 'GPU'
         if is_server {
             GpuType::ServerPascal
         } else if is_quadro {
             GpuType::WorkstationPascal
-        } else if gpu_name.contains("Laptop") {
+        } else if combined.contains("Laptop") {
             GpuType::Mobile10Series
         } else {
             GpuType::Desktop10Series
         }
-    } else if gpu_name.contains("GM") {
-        if gpu_name.contains("Laptop") {
+    } else if codename.starts_with("GM") {
+        if combined.contains("Laptop") {
             GpuType::Mobile9Series
         } else {
             GpuType::Desktop9Series
         }
-    } else if gpu_name.contains("GK") {
+    } else if codename.starts_with("GK") {
         // Kepler (GK): GeForce 600/700 系列 (含 GT 730 GK208/GK107 变体)。
         // Tesla K20/K40/K80 → server；Quadro K 系列 → workstation。
         if is_server {
             GpuType::ServerKepler
         } else if is_quadro {
             GpuType::WorkstationKepler
-        } else if gpu_name.contains("Laptop") {
+        } else if combined.contains("Laptop") {
             GpuType::MobileKepler
         } else {
             GpuType::DesktopKepler
         }
-    } else if gpu_name.contains("GF") {
+    } else if codename.starts_with("GF") {
         // Fermi (GF): GeForce 400/500 系列 (含 GT 730 GF108 变体)。
         // Tesla M-class → server；Quadro 4000/5000/6000 → workstation。
         if is_server {
             GpuType::ServerFermi
         } else if is_quadro {
             GpuType::WorkstationFermi
-        } else if gpu_name.contains("Laptop") {
+        } else if combined.contains("Laptop") {
             GpuType::MobileFermi
         } else {
             GpuType::DesktopFermi
         }
-    } else if gpu_name.contains("GV") {
+    } else if codename.starts_with("GV") {
         if is_server {
             GpuType::ServerVolta
         } else {
@@ -233,8 +247,7 @@ pub fn detect_gpu_type(gpu_name: &str) -> GpuType {
 
 /// 从 `GpuInfo` 获取 GPU 世代类型
 pub fn fetch_gpu_type(info: &GpuInfo) -> Result<GpuType, Error> {
-    let criteria = format!("{}{}", info.name, info.codename);
-    Ok(detect_gpu_type(&criteria))
+    Ok(detect_gpu_type(&info.name, &info.codename))
 }
 
 // ─────────────────────── GpuOcParams: OC 扫描参数 ────────────────────────────
@@ -613,6 +626,23 @@ impl GpuType {
     /// 是否为 Max-Q / Blackwell 类需要动态 margin check 的世代（50 系）
     pub fn is_maxq(&self) -> bool {
         matches!(self, GpuType::Mobile50Series | GpuType::Desktop50Series)
+    }
+
+    /// 是否为 Pascal 世代（消费 10 系 / 工作站 / 服务器）。
+    ///
+    /// Pascal 私有 V/F 控制轴整体 2× 编码（1080 实测：公开超频 +f → 私有
+    /// mode-0 读 2f；P100 实测：raw 129300 ↔ 真实 64.65 MHz；点值 raw 也是
+    /// 2×，reader 已按 type-1 ÷2）。私有面的**读解码与写加倍**都以本判定
+    /// 为准——消费卡日常用 public 路径写（无 2× 问题），但 private 路径
+    /// （set-private-vftable-*、私有表读回）在消费卡上同样 2×。
+    pub fn is_pascal(&self) -> bool {
+        matches!(
+            self,
+            GpuType::Mobile10Series
+                | GpuType::Desktop10Series
+                | GpuType::WorkstationPascal
+                | GpuType::ServerPascal
+        )
     }
 
     /// 是否为移动端 GPU（20/30/40/50 系移动端 + Kepler/Fermi 移动端）

@@ -169,45 +169,76 @@ fn gpu_id_selection_rejects_bad_specs() {
 
 #[test]
 fn gpu_type_detection() {
+    // (product name, codename, expected) — the chip prefix is matched
+    // against the CODENAME only; product names carry marketing strings
+    // like "16GB" that must never read as chip generations.
     let cases = [
         (
-            "NVIDIA GeForce RTX 5090 Laptop GPU GB203",
+            "NVIDIA GeForce RTX 5090 Laptop GPU",
+            "GB203",
             GpuType::Mobile50Series,
         ),
-        ("NVIDIA GeForce RTX 5090 GB202", GpuType::Desktop50Series),
-        ("NVIDIA GeForce RTX 4090 AD102", GpuType::Desktop40Series),
+        ("NVIDIA GeForce RTX 5090", "GB202", GpuType::Desktop50Series),
+        ("NVIDIA GeForce RTX 4090", "AD102", GpuType::Desktop40Series),
         (
-            "NVIDIA GeForce RTX 4080 Laptop GPU AD104",
+            "NVIDIA GeForce RTX 4080 Laptop GPU",
+            "AD104",
             GpuType::Mobile40Series,
         ),
-        ("NVIDIA RTX A6000 GA102", GpuType::WorkstationAmpere),
-        ("NVIDIA L40 AD102", GpuType::ServerLovelace),
-        ("NVIDIA H100 GH100", GpuType::ServerHopper),
-        ("NVIDIA Tesla V100 GV100", GpuType::ServerVolta),
-        ("NVIDIA GeForce GTX 1080 GP104", GpuType::Desktop10Series),
+        ("NVIDIA RTX A6000", "GA102", GpuType::WorkstationAmpere),
+        ("NVIDIA L40", "AD102", GpuType::ServerLovelace),
+        ("NVIDIA H100", "GH100", GpuType::ServerHopper),
+        ("NVIDIA Tesla V100", "GV100", GpuType::ServerVolta),
+        ("NVIDIA GeForce GTX 1080", "GP104", GpuType::Desktop10Series),
         (
-            "NVIDIA GeForce GTX 980M Laptop GPU GM204",
+            "NVIDIA GeForce GTX 980M Laptop GPU",
+            "GM204",
             GpuType::Mobile9Series,
         ),
         // Kepler (GK) — GT 730 Kepler 变体不再落 Unknown
-        ("NVIDIA GeForce GT 730 GK208", GpuType::DesktopKepler),
+        ("NVIDIA GeForce GT 730", "GK208", GpuType::DesktopKepler),
         (
-            "NVIDIA GeForce GTX 780M Laptop GPU GK104",
+            "NVIDIA GeForce GTX 780M Laptop GPU",
+            "GK104",
             GpuType::MobileKepler,
         ),
-        ("NVIDIA Quadro K5000 GK104", GpuType::WorkstationKepler),
-        ("NVIDIA Tesla K40 GK110", GpuType::ServerKepler),
+        ("NVIDIA Quadro K5000", "GK104", GpuType::WorkstationKepler),
+        ("NVIDIA Tesla K40", "GK110", GpuType::ServerKepler),
         // Fermi (GF) — GT 730 Fermi 变体
-        ("NVIDIA GeForce GT 730 GF108", GpuType::DesktopFermi),
-        ("NVIDIA GeForce GTX 580 GF110", GpuType::DesktopFermi),
-        ("NVIDIA Tesla M2090 GF100", GpuType::ServerFermi),
+        ("NVIDIA GeForce GT 730", "GF108", GpuType::DesktopFermi),
+        ("NVIDIA GeForce GTX 580", "GF110", GpuType::DesktopFermi),
+        ("NVIDIA Tesla M2090", "GF100", GpuType::ServerFermi),
+        // VRAM-size chip-prefix traps (live P100 regression): the capacity
+        // suffix in the product name must not classify the card — the
+        // codename does. P100-16GB was detected as ServerBlackwell via
+        // "16GB".contains("GB") and wrongly enabled Turing+ gates.
+        (
+            "NVIDIA Tesla P100-PCIE-16GB",
+            "GP100GL-A",
+            GpuType::ServerPascal,
+        ),
+        (
+            "NVIDIA Tesla V100-SXM2-16GB",
+            "GV100GL-A",
+            GpuType::ServerVolta,
+        ),
+        ("NVIDIA A100-SXM4-40GB", "GA100", GpuType::ServerAmpere),
+        (
+            "NVIDIA GeForce RTX 4090D 24GB",
+            "AD102",
+            GpuType::Desktop40Series,
+        ),
+        // No codename → Unknown (no chip family to key on).
+        ("NVIDIA Experimental GPU", "", GpuType::Unknown),
     ];
 
-    for (name, expected) in cases {
-        assert_eq!(detect_gpu_type(name), expected, "{name}");
+    for (name, codename, expected) in cases {
+        assert_eq!(
+            detect_gpu_type(name, codename),
+            expected,
+            "{name}/{codename}"
+        );
     }
-
-    assert_eq!(detect_gpu_type("NVIDIA Experimental GPU"), GpuType::Unknown);
 }
 
 #[test]

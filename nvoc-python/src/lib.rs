@@ -1529,7 +1529,7 @@ fn discover_gpus(py: Python<'_>, backends: Option<&str>) -> PyResult<Py<PyAny>> 
                 // codename) right at probe time — the GUI builds the correct
                 // mobile/desktop layout on FIRST paint instead of drawing the
                 // desktop modal and re-packing when the info query lands.
-                let series = detect_gpu_type(&format!("{}{}", info.name, info.codename));
+                let series = detect_gpu_type(&info.name, &info.codename);
                 item.insert("name".into(), text(info.name));
                 item.insert("codename".into(), text(info.codename));
                 item.insert("arch".into(), text(info.arch));
