@@ -91,6 +91,13 @@ class _ConsoleWindowProxy:
         self._window = None  # type: Optional[ctk.CTkToplevel]
         self._buffer: List[str] = []
         self._lock = threading.Lock()
+        # Identical-consecutive-line collapse: a per-second poll logging the
+        # same expected condition forever (e.g. "GPU N has no NvAPI backend"
+        # on a chip without one) must show once, not flood the console. The
+        # first occurrence shows; repeats are counted and flushed as a
+        # one-line "repeated N×" summary when a different message arrives.
+        self._last_text: Optional[str] = None
+        self._repeat_count = 0
 
     # ── widget lifecycle ────────────────────────────────────────────────
     def _ensure_window(self) -> "OutputConsole":
@@ -127,13 +134,25 @@ class _ConsoleWindowProxy:
 
     # ── OutputConsole API ───────────────────────────────────────────────
     def append(self, text: str) -> None:
+        pending: List[str] = []
         with self._lock:
+            if text == self._last_text:
+                # Identical consecutive line — count it, show nothing.
+                self._repeat_count += 1
+                return
+            if self._repeat_count:
+                pending.append(
+                    f"[GUI] (previous line repeated {self._repeat_count}×)\n"
+                )
+                self._repeat_count = 0
+            self._last_text = text
             self._buffer.append(text)
             if len(self._buffer) > self._MAX_LINES:
                 del self._buffer[: len(self._buffer) - self._MAX_LINES]
+            pending.append(text)
             live = self._widget
         if live is not None and live.winfo_exists():
-            live.append(text)
+            live.append_batch(pending)
 
     def append_batch(self, texts: List[str]) -> None:
         for text in texts:
@@ -142,6 +161,8 @@ class _ConsoleWindowProxy:
     def clear(self) -> None:
         with self._lock:
             self._buffer = []
+            self._last_text = None
+            self._repeat_count = 0
         if self._widget is not None and self._widget.winfo_exists():
             self._widget.clear()
 

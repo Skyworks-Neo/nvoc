@@ -400,6 +400,35 @@ def test_header_reprobes_empty_gpu_list_and_stops_after_gpu_returns() -> None:
     assert app.full_refreshes == 1
 
 
+def test_console_write_log_collapses_identical_runs() -> None:
+    # A per-second poll logging the same expected condition forever (e.g.
+    # "GPU N has no NvAPI backend" on a chip without one) shows once; the
+    # repeat count flushes as a one-line summary on the next distinct line.
+    written: list[str] = []
+
+    class _Log:
+        def write_line(self, line: str) -> None:
+            written.append(line)
+
+        def scroll_end(self) -> None:
+            pass
+
+    log = _Log()
+    app = FakeApp()
+    app.widgets = {"#output-log": log}
+    app.query_one = lambda selector, expect=None: log
+
+    controller = ConsoleController(app)
+    for _ in range(5):
+        controller.write_log("pynvoc query failed: GPU 256 has no NvAPI backend\n")
+
+    assert written == ["pynvoc query failed: GPU 256 has no NvAPI backend"]
+
+    controller.write_log("different message\n")
+
+    assert written[-1] == "(previous line repeated 4×)"
+
+
 def test_console_maximize_toggle_updates_app_class_and_label() -> None:
     app = FakeApp()
     log = SimpleNamespace(focused=False)
