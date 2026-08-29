@@ -440,6 +440,19 @@ pub fn get_nvml_min_max_fan_speed(nvml: &Nvml, gpu_id: u32) -> Option<(u32, u32)
     device.min_max_fan_speed().ok()
 }
 
+/// Current fan duty in percent. Tries the v2 symbol (modern NVML) first,
+/// then falls back to the v1 `nvmlDeviceGetFanSpeed` raw call — legacy NVML
+/// (R391) only exports the latter, and it answers on GPUs where the v2
+/// family is absent (verified: nvidia-smi renders the same number).
+pub fn get_nvml_fan_speed_current(nvml: &Nvml, gpu_id: u32) -> Option<u32> {
+    let device = find_nvml_device(nvml, gpu_id)?;
+    if let Ok(speed) = device.fan_speed(0) {
+        return Some(speed);
+    }
+    // SAFETY: live NVML device handle from this `Nvml`.
+    v1_fan_speed(unsafe { device.handle() }.cast())
+}
+
 pub fn get_nvml_num_fans(nvml: &Nvml, gpu_id: u32) -> Option<u32> {
     let device = find_nvml_device(nvml, gpu_id)?;
     if let Ok(count) = device.num_fans() {

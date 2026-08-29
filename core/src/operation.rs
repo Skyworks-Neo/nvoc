@@ -962,10 +962,14 @@ impl GpuOperation for QueryFanInfo {
             Some((min, max)) => (Some(min), Some(max)),
             None => (None, None),
         };
+        // Best-effort: legacy NVML only answers the v1 symbol (min/max are
+        // v2-only there), so current is often the single live value.
+        let current_speed = low_nvml::get_nvml_fan_speed_current(nvml, target.id.0);
         Ok(FanInfo {
             count,
             min_speed,
             max_speed,
+            current_speed,
         })
     }
 }

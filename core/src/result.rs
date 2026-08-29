@@ -614,6 +614,9 @@ pub struct FanInfo {
     pub count: u32,
     pub min_speed: Option<u32>,
     pub max_speed: Option<u32>,
+    /// Current fan duty in percent (v1 `nvmlDeviceGetFanSpeed` on legacy
+    /// NVML, v2 on modern). `None` where neither symbol answers.
+    pub current_speed: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

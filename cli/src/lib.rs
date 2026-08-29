@@ -2882,6 +2882,7 @@ fn execute_target(
                         "count": fan.count,
                         "min_percent": fan.min_speed,
                         "max_percent": fan.max_speed,
+                        "current_percent": fan.current_speed,
                     }))
                 }
             }
