@@ -43,12 +43,14 @@ _CURVE_COLORS = {
 # The third curve was initially mislabeled HOST until a voltage-lock A/B
 # proved it tracks SYS (0.89 V → curve 1980 MHz vs live SYS 1994 MHz; the
 # Host clock never exceeds 1350 MHz) — see ClkVfSegment::domain_hint in
-# nvapi-rs. domain_bit is the ClkDomains record whose offset shifts this
-# curve (bit 5's record, labeled Host by the RTSS-derived table).
+# nvapi-rs. NOTE the two bits are DIFFERENT records: domain_bit below is
+# the bit whose MEASURE_FREQ reads the live clock for the crosshair
+# (bit 2 = SYS); the record whose offset WRITE shifts this curve is bit 5
+# (labeled Host by the RTSS-derived name table) — don't conflate them.
 _CURVE_META = {
     "gpc": {"label": "GPC", "class": "graphics", "domain_bit": 0},
     "xbar": {"label": "XBAR", "class": "fabric", "domain_bit": 1},
-    "sys": {"label": "SYS", "class": "fabric", "domain_bit": 5},
+    "sys": {"label": "SYS", "class": "fabric", "domain_bit": 2},
 }
 
 # ── Unknown-curve support ──
@@ -63,7 +65,7 @@ def _curve_meta_for(cid: str) -> dict:
     meta = _CURVE_META.get(cid)
     if meta is not None:
         return meta
-    label = "UNK" + cid[len("unknown"):] if cid.startswith("unknown") else cid.upper()
+    label = "UNK" + cid[len("unknown") :] if cid.startswith("unknown") else cid.upper()
     # class "graphics" = neutral g(def) prior; only used for raw conversions.
     return {"label": label, "class": "graphics", "domain_bit": None}
 

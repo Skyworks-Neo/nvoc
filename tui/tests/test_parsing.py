@@ -370,7 +370,7 @@ def test_build_vf_curves_fixed_point_forces_private_write() -> None:
 def test_curve_meta_fallback_for_unknown_ids() -> None:
     # Known ids resolve through CURVE_META unchanged.
     assert curve_meta("gpc")["label"] == "GPC"
-    assert curve_meta("sys")["domain_bit"] == 5
+    assert curve_meta("sys")["domain_bit"] == 2
     # unknownN ids synthesize display-only meta: no domain bit (no live
     # crosshair), neutral prior class, label UNK<n>.
     meta = curve_meta("unknown1")

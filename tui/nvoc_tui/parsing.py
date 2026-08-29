@@ -460,12 +460,14 @@ def compute_vf_plot_bounds(
 # translation, and the ClockDomain bit for the direct-read live crosshair.
 # The third curve was initially mislabeled HOST until a voltage-lock A/B
 # proved it tracks SYS — see ClkVfSegment::domain_hint in nvapi-rs.
-# domain_bit is the ClkDomains record whose offset shifts this curve
-# (bit 5's record, labeled Host by the RTSS-derived table).
+# NOTE the two bits are DIFFERENT records: domain_bit below is the bit
+# whose MEASURE_FREQ reads the live clock for the crosshair (bit 2 =
+# SYS); the record whose offset WRITE shifts this curve is bit 5
+# (labeled Host by the RTSS-derived name table) — don't conflate them.
 CURVE_META: dict[str, dict[str, Any]] = {
     "gpc": {"label": "GPC", "class": "graphics", "domain_bit": 0},
     "xbar": {"label": "XBAR", "class": "fabric", "domain_bit": 1},
-    "sys": {"label": "SYS", "class": "fabric", "domain_bit": 5},
+    "sys": {"label": "SYS", "class": "fabric", "domain_bit": 2},
 }
 
 
@@ -481,7 +483,7 @@ def curve_meta(curve_id: str) -> dict[str, Any]:
     if meta is not None:
         return meta
     label = (
-        "UNK" + curve_id[len("unknown"):]
+        "UNK" + curve_id[len("unknown") :]
         if curve_id.startswith("unknown")
         else curve_id.upper()
     )
