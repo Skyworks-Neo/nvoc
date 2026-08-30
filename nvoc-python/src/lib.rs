@@ -3123,10 +3123,10 @@ fn clk_vf_delta_for_target_mhz(
 ) -> PyResult<Py<PyAny>> {
     let class_enum = match class.trim().to_ascii_lowercase().as_str() {
         "graphics" | "gpc" | "core" | "gpu" => ClkVfDomainClass::Graphics,
-        "fabric" | "xbar" | "host" => ClkVfDomainClass::Fabric,
+        "fabric" | "xbar" | "host" | "msd" => ClkVfDomainClass::Fabric,
         other => {
             return Err(invalid_value(format!(
-                "invalid class {other:?}; expected 'graphics'/'gpc' or 'fabric'/'xbar'/'host'"
+                "invalid class {other:?}; expected 'graphics'/'gpc' or 'fabric'/'xbar'/'msd'"
             )));
         }
     };

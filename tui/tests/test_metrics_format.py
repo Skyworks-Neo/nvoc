@@ -87,20 +87,23 @@ def test_format_metric_lines_pcie_bandwidth_only_lanes_missing() -> None:
 
 
 def test_format_metric_lines_fabric_clocks() -> None:
-    """FCLK line surfaces internal fabric clocks (Xbar/crossbar, Sys, Hub, ...)
-    from the GetAllClocks V2 all_clocks_mhz breakdown."""
+    """FCLK line surfaces internal fabric clocks (Xbar/crossbar, Sys, Msd,
+    Hub, ...) from the GetAllClocks V2 all_clocks_mhz breakdown. Msd renders:
+    it is the uncore-band domain the ClkDomains bit-5 offset record drives
+    (it was hidden back when it read as memory-subsystem noise)."""
     status = {
         "all_clocks_mhz": {
             "Gpc": 2100.0,
             "Xbar": 1800.0,  # the "crossbar clock" GPU-Z shows
             "Sys": 900.0,
+            "Msd": 2460.0,
             "Hub": 600.0,
             "M": 7500.0,  # memory — not in the fabric list
             "Hotclk": 0.0,  # zero -> omitted
         }
     }
     text = "\n".join(_format_metric_lines(status, "Ada"))
-    assert "FCLK: GPC 2100 | XBAR 1800 | SYS 900 | HUB 600 MHz" in text
+    assert "FCLK: GPC 2100 | XBAR 1800 | SYS 900 | MSD 2460 | HUB 600 MHz" in text
     # Memory and zero clocks must NOT appear on the FCLK line.
     assert "M 7500" not in text
     assert "HOTCLK 0" not in text

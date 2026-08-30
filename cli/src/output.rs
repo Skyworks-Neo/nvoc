@@ -821,7 +821,11 @@ fn format_value_block_with_context(value: &Value, indent: usize, context: &str) 
                         for item in items {
                             let object = item.as_object().expect("checked above");
                             let bit = object.get("rail_bit").and_then(Value::as_i64);
+                            // Rail identity: bit 0 is the core rail on every
+                            // observed part; higher bits are platform-specific
+                            // (5090 MSVDD vs GB10 Xbar) and stay unnamed.
                             let title = match bit {
+                                Some(0) => "P0 Voltage Limit (rail 0 / gpc)".to_string(),
                                 Some(bit) => format!("P0 Voltage Limit (rail {bit})"),
                                 None => "P0 Voltage Limit".to_string(),
                             };
@@ -2819,15 +2823,6 @@ mod tests {
             Command::ResetPStateLock => json!({"applied": true}),
             Command::GetVoltRailInfo => json!({
                 "rail_mask": "0x00000003",
-                "p0": {
-                    "current_uV": 700000,
-                    "target_wall_uV": 750000,
-                    "effective_wall_uV": 750000,
-                    "vbios_wall_uV": 0,
-                    "vrm_max_wall_uV": 1200000,
-                    "min_hold_uV": 600000,
-                    "offset_ceiling_uV": 450000,
-                },
                 "p0_rails": [
                     {
                         "rail_bit": 0,

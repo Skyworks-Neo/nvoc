@@ -37,23 +37,28 @@ _CARD_KW = dict(border_width=1, border_color="#1f4e79", corner_radius=10)
 _CURVE_COLORS = {
     "gpc": {"current": "#00ccff", "default": "#1f4e79"},  # cyan / deep blue
     "xbar": {"current": "#FF8C00", "default": "#7a3d00"},  # bright orange / dark orange
-    "sys": {"current": "#B026FF", "default": "#4B0082"},  # bright purple / dark purple
+    "msd": {"current": "#B026FF", "default": "#4B0082"},  # bright purple / dark purple
     # Pascal-HBM compute cards (GP100/V100): bank 0's 2nd 80-pt curve is
     # the HBM MEM V/F curve (live A/B: the MEM domain offset hits it).
     "mem": {"current": "#00CC66", "default": "#004D25"},  # bright green / dark green
 }
 # Display label + private-domain class for the raw-converted prior.
-# The third curve was initially mislabeled HOST until a voltage-lock A/B
-# proved it tracks SYS (0.89 V → curve 1980 MHz vs live SYS 1994 MHz; the
-# Host clock never exceeds 1350 MHz) — see ClkVfSegment::domain_hint in
-# nvapi-rs. NOTE the two bits are DIFFERENT records: domain_bit below is
-# the bit whose MEASURE_FREQ reads the live clock for the crosshair
-# (bit 2 = SYS); the record whose offset WRITE shifts this curve is bit 5
-# (labeled Host by the RTSS-derived name table) — don't conflate them.
+# The third curve's attribution moved twice — HOST → SYS (voltage-lock)
+# → MSD, pinned by the bit-5 offset A/B (+200 MHz into the ClkDomains
+# bit-5 record shifted every point; the Host MEASURE channel stayed in
+# its 825–1350 band) — see ClkVfSegment::domain_hint in nvapi-rs.
+# NOTE the bits are DIFFERENT records: domain_bit below is the bit whose
+# MEASURE_FREQ reads the live clock for the crosshair. For MSD that is
+# bit 21 (the Msd channel — the domain this curve IS): the SYS channel
+# (bit 2) co-moves in the same uncore band but reads a DIFFERENT value,
+# so sampling bit 2 puts the green cross off the curve (live-seen: bit2
+# 2095.8 vs bit21 2070.2 MHz at the same instant). The record whose
+# offset WRITE shifts this curve is bit 5 (surfaced as MSD by the CLI's
+# WRITE map).
 _CURVE_META = {
     "gpc": {"label": "GPC", "class": "graphics", "domain_bit": 0},
     "xbar": {"label": "XBAR", "class": "fabric", "domain_bit": 1},
-    "sys": {"label": "SYS", "class": "fabric", "domain_bit": 2},
+    "msd": {"label": "MSD", "class": "fabric", "domain_bit": 21},
     # HBM MEM (Pascal-HBM compute cards): class "graphics" = the neutral
     # g(def) prior — no HBM-specific C(def) calibration exists yet, so the
     # raw-converted path uses the base table like GPC.
@@ -80,7 +85,7 @@ def _curve_meta_for(cid: str) -> dict:
 def _curve_direct_readable(cid: str) -> bool:
     """Whether the live crosshair must DIRECT-READ this curve's domain.
 
-    True for xbar/sys/mem — curves whose live clock only the private
+    True for xbar/msd/mem — curves whose live clock only the private
     MEASURE_FREQ path can see (the dashboard poll has no public clock for
     them). GPC is False even though it has a domain_bit: its operating point
     is fed by the dashboard's public Graphics clock instead. unknownN curves
@@ -97,7 +102,7 @@ def _curve_colors_for(cid: str) -> dict:
 
 
 # ── Curve → VoltRails rail mapping ──
-# GPC (and SYS, which has no rail of its own) ride the PRIMARY rail — the
+# GPC (and MSD, which has no rail of its own) ride the PRIMARY rail — the
 # lowest rail bit, the core rail on every observed platform. XBAR and the
 # Pascal-HBM MEM curve are fed by the SECONDARY rail (the next-lowest bit):
 # RTX 50-series MSVDD powers the XBAR curve, GP100/GV100's bit-1 rail is the
@@ -107,7 +112,7 @@ _SECONDARY_RAIL_CURVES = ("xbar", "mem")
 
 
 class _CurveData:
-    """One VF curve (GPC/XBAR/SYS) loaded from public or private NVAPI.
+    """One VF curve (GPC/XBAR/MSD) loaded from public or private NVAPI.
 
     ``voltages``/``frequencies``/``defaults`` are in display units (mV / MHz).
     ``source`` is "public" (GPC via the open VFP interface) or "private"
@@ -169,7 +174,7 @@ class VFCurveTab:
         self._defaults: List[float] = []  # default_frequency
 
         # ── Multi-curve state ──
-        # One _CurveData per discovered curve (gpc/xbar/sys). _voltages /
+        # One _CurveData per discovered curve (gpc/xbar/msd). _voltages /
         # _frequencies / _defaults above are kept as a live view of the active
         # curve's lists (same object references) so every existing single-curve
         # call site (drag, keyboard, space-key, lock, dashboard poll, tests)
@@ -252,8 +257,13 @@ class VFCurveTab:
         self._live_poll_job: Optional[str] = None
         self._live_pending: Tuple[Optional[float], Optional[float]] = (None, None)
         self._live_poll_inflight = False
-        # Direct-read inflight guard for xbar/sys live-point polling.
+        # Direct-read inflight guard for xbar/msd live-point polling.
         self._direct_read_inflight = False
+        # Crosshair rail voltage (private VoltRails current — the true
+        # operating voltage; see _live_poll_tick) + its poll guard. Refreshed
+        # once per live tick; None ⇒ fall back to the status-setpoint feed.
+        self._rail_volt_mv: Optional[float] = None
+        self._rail_volt_inflight = False
 
         # ── P0 voltage-boundary vertical lines ──
         # Hardware walls (floor = min_hold, ceiling = min(vbios,vrm)) are
@@ -267,7 +277,7 @@ class VFCurveTab:
         # Per-rail bounds: multi-rail parts (Pascal-HBM P100: core + HBM,
         # GB10/50-series: core + MSVDD) carry one p0 dict per rail_bit in the
         # ``p0_rails`` payload. The floor/ceiling/effective lines and the
-        # wall-drag handle follow the ACTIVE curve's rail (gpc/sys → primary,
+        # wall-drag handle follow the ACTIVE curve's rail (gpc/msd → primary,
         # xbar/mem → secondary — see _SECONDARY_RAIL_CURVES).
         self._p0_rails: list = []  # raw p0_rails payload
         self._p0_bounds_by_rail: Dict[int, dict] = {}  # rail_bit → bounds dict
@@ -863,7 +873,7 @@ class VFCurveTab:
         self._refresh_curve(force=True)
 
     def _refresh_curve(self, force: bool = False):
-        """Query VFP points (public GPC + private XBAR/HOST) then load+plot.
+        """Query VFP points (public GPC + private XBAR/MSD) then load+plot.
 
         ``force`` bypasses the 2.5 s back-to-back dedup gate — the auto-refresh
         timer uses it so a sub-2.5 s interval (the default is 1.0 s) keeps
@@ -1027,7 +1037,7 @@ class VFCurveTab:
             # only GPC source. Located below from clk_data.
             pass
 
-        # ── Private segments: GPC (fallback), XBAR, SYS, unknownN. ──
+        # ── Private segments: GPC (fallback), XBAR, MSD, unknownN. ──
         private_gpc: Optional[_CurveData] = None
         unknown_count = 0
         if clk_data and clk_data.get("segments"):
@@ -1080,12 +1090,12 @@ class VFCurveTab:
             self._curve_visible = {}
             return False
 
-        # Canonical display order GPC → XBAR → SYS → MEM → others (unknownN
+        # Canonical display order GPC → XBAR → MSD → MEM → others (unknownN
         # keep discovery order; stable sort). The selector, plot draws and
         # legend all iterate this dict directly — without this, a
         # public-source GPC (inserted last above) would sort after the
         # private segments.
-        order = {"gpc": 0, "xbar": 1, "sys": 2, "mem": 3}
+        order = {"gpc": 0, "xbar": 1, "msd": 2, "mem": 3}
         curves = dict(sorted(curves.items(), key=lambda kv: order.get(kv[0], 4)))
 
         # Carry over visibility (default: every discovered curve visible), and
@@ -1194,6 +1204,8 @@ class VFCurveTab:
             self._p0_effective_by_rail = {}
             self._p0_effective_wall_mv = None
             self._pending_wall_mv = None
+            # Stale crosshair rail voltage from the previous GPU.
+            self._rail_volt_mv = None
         self._p0_bounds_gpu = gpu
 
         def _worker():
@@ -1279,12 +1291,12 @@ class VFCurveTab:
         self._p0_effective_wall_mv = None
         self._pending_wall_mv = None
 
-    # ── Active-curve rail resolution (gpc/sys → primary, xbar/mem → 2nd) ──
+    # ── Active-curve rail resolution (gpc/msd → primary, xbar/mem → 2nd) ──
 
     def _active_p0_rail_bit(self) -> int:
         """The VoltRails rail that feeds the ACTIVE curve.
 
-        Primary (lowest rail bit with bounds) for gpc/sys; the secondary rail
+        Primary (lowest rail bit with bounds) for gpc/msd; the secondary rail
         for xbar/mem when the part exposes one (Pascal-HBM MEM rail, 50-series
         MSVDD). Single-rail parts resolve every curve to the primary rail.
         """
@@ -1300,7 +1312,7 @@ class VFCurveTab:
 
         The wall drag always writes the rail ``_active_p0_rail_bit()`` resolves
         to. On single-rail parts every curve resolves to the primary (GPC)
-        rail, so with XBAR/SYS/… selected the triangle would silently adjust
+        rail, so with XBAR/MSD/… selected the triangle would silently adjust
         the GPC voltage rail — disable it to make that explicit. Multi-rail
         parts give xbar/mem their own secondary rail, so dragging there stays
         meaningful and enabled.
@@ -1981,7 +1993,7 @@ class VFCurveTab:
         # min(vbios_wall, vrm_max_wall) — immutable per-GPU, cached once.
         # Light red (solid): effective wall — live, pushed by the overclock
         # panel after a Volt Limit apply. All three track the ACTIVE curve's
-        # volt rail (gpc/sys → primary, xbar/mem → the secondary HBM/MSVDD
+        # volt rail (gpc/msd → primary, xbar/mem → the secondary HBM/MSVDD
         # rail) and fall inside the curve's voltage range by design, so no
         # axis adjustment is needed. Labels are rotated 90° to survive narrow
         # charts; zorder sits above the curves (2-4) but below the locked
@@ -2585,9 +2597,9 @@ class VFCurveTab:
         This feed is GPC-only (the dashboard polls gpu_clock / voltage for the
         graphics domain). Accept it only when GPC is the active AND visible
         curve — otherwise it would pollute the live point with GPC freq while
-        the user is looking at an XBAR/HOST curve (whose freq comes from the
+        the user is looking at an XBAR/MSD curve (whose freq comes from the
         direct-read path), and it would keep "polling" a GPC crosshair the user
-        has unchecked. XBAR/HOST live data is pushed here by the direct-read
+        has unchecked. XBAR/MSD live data is pushed here by the direct-read
         completion callback instead.
         """
         if self._active_curve != "gpc" or not self._curve_visible.get("gpc"):
@@ -2626,7 +2638,7 @@ class VFCurveTab:
             )
             return
 
-        # When the active curve is XBAR/HOST, the operating point's frequency
+        # When the active curve is XBAR/MSD, the operating point's frequency
         # comes from the green-curve direct read (0x527FC458), not the GPC
         # gpu_clock the dashboard poll feeds. Kick an async direct read each
         # tick; the result lands in _live_pending and is drawn next tick (or
@@ -2641,8 +2653,16 @@ class VFCurveTab:
 
         # Drain the latest volt/freq pushed by the background poll worker and
         # blit — but only when idle. During a drag/press the value is held and
-        # flushed on release via _flush_pending_live_point.
+        # flushed on release via _flush_pending_live_point. The VOLTAGE drawn
+        # is the rail current (self._rail_volt_mv, refreshed once per tick
+        # below), not the status setpoint the poll worker pushes: the public
+        # status voltage is a quantized setpoint (pinned 900 mV under load
+        # live-observed) while the private VoltRails current is live-sensed
+        # (910-920 mV the same moment) — one true source for every curve, no
+        # 5-20 mV split between GPC and the fabric curves.
         volt, freq = self._live_pending
+        if self._rail_volt_mv is not None:
+            volt = self._rail_volt_mv
         self._live_volt = volt
         self._live_freq = freq
         if (
@@ -2653,7 +2673,38 @@ class VFCurveTab:
         elif self._mouse_pressed or self._is_resize_active:
             # hold for the release/resize-end flush
             self._pending_live_point = (volt, freq)
+        self._kick_rail_volt_poll()
         self._live_poll_job = self.app.after(self._LIVE_POLL_MS, self._live_poll_tick)
+
+    def _kick_rail_volt_poll(self) -> None:
+        """Refresh the crosshair rail voltage in the background, once per
+        live tick. The result lands in ``_rail_volt_mv`` and is drawn by the
+        NEXT tick (one-tick staleness at a 1 s cadence — the same freshness
+        the status feed itself has). Failure keeps the previous value; the
+        crosshair then silently falls back to the status voltage."""
+        if self._rail_volt_inflight or self._cleaned_up:
+            return
+        gpu = self.app.selected_gpu_target()
+        if gpu is None:
+            return
+        self._rail_volt_inflight = True
+
+        def _worker():
+            try:
+                rail_mv = self._poll_rail_current_mv(gpu)
+            except Exception:
+                rail_mv = None
+            self.app.after(
+                0,
+                lambda: self._on_rail_volt_polled(rail_mv),
+            )
+
+        self.app.run_background("vfcurve-rail-volt", _worker)
+
+    def _on_rail_volt_polled(self, rail_mv: Optional[float]) -> None:
+        self._rail_volt_inflight = False
+        if rail_mv is not None:
+            self._rail_volt_mv = rail_mv
 
     def _kick_direct_read(self, curve_id: str) -> None:
         """Async direct-read of the active xbar/host domain's physical clock.
@@ -2695,11 +2746,15 @@ class VFCurveTab:
         """Live voltage of the ACTIVE curve's rail, for the crosshair.
 
         Multi-rail parts get a real per-rail reading (50-series MSVDD for
-        xbar, Pascal-HBM for mem); single-rail parts' primary rail IS the
-        GPC voltage every domain shares. Queried fresh here because the
-        cached P0 bounds (walls are immutable) snapshot ``current_uV`` once.
+        xbar, Pascal-HBM for mem) — a physically separate rail the status
+        feed's core voltage says nothing about. Single-rail parts read the
+        primary rail's live ``current_uV``. The status voltage (public,
+        quantized setpoint — pinned 900 mV under load live-observed, while
+        the private VoltRails current reads 910-920 mV the same moment) is
+        a DIFFERENT quantity and is only used as the fallback when the
+        rail read fails — every curve's crosshair draws the rail current.
         Returns None on any failure → the caller falls back to a reverse
-        curve lookup.
+        curve lookup / the status feed.
         """
         try:
             vr = self.app.backend.query_volt_rails(gpu)
@@ -3771,7 +3826,7 @@ class VFCurveTab:
         """Reset the active curve to default (selected-curve semantics).
 
         Public GPC → open ``set_vfp_range_delta`` 0 over the segment. Private
-        (XBAR/HOST, or GPC when public is unsupported) → mode-0 clear per
+        (XBAR/MSD, or GPC when public is unsupported) → mode-0 clear per
         point, raw-converted clear fallback (delta 0 → raw f-offset that
         zeroes the effect). Never touches other curves' segments.
 

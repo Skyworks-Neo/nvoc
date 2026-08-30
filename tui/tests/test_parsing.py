@@ -370,7 +370,7 @@ def test_build_vf_curves_fixed_point_forces_private_write() -> None:
 def test_curve_meta_fallback_for_unknown_ids() -> None:
     # Known ids resolve through CURVE_META unchanged.
     assert curve_meta("gpc")["label"] == "GPC"
-    assert curve_meta("sys")["domain_bit"] == 2
+    assert curve_meta("msd")["domain_bit"] == 21
     # unknownN ids synthesize display-only meta: no domain bit (no live
     # crosshair), neutral prior class, label UNK<n>.
     meta = curve_meta("unknown1")
@@ -398,7 +398,7 @@ def test_build_vf_curves_private_segments_and_skips() -> None:
             },
             {
                 "kind": "vf_curve",
-                "domain": "sys",
+                "domain": "msd",
                 "bank": 2,
                 "start_index": 6,
                 "end_index": 7,
@@ -476,16 +476,16 @@ def test_build_vf_curves_private_segments_and_skips() -> None:
     curves = build_vf_curves(None, "driver said Not Supported", clk_data)
 
     # Public read unsupported → private GPC segment is the GPC source.
-    assert set(curves) == {"gpc", "xbar", "sys", "unknown1"}
-    # Canonical display order: GPC → XBAR → SYS → unknownN, even though the
+    assert set(curves) == {"gpc", "xbar", "msd", "unknown1"}
+    # Canonical display order: GPC → XBAR → MSD → unknownN, even though the
     # GPC segment is resolved last (the selector/plot iterate this dict).
-    assert list(curves) == ["gpc", "xbar", "sys", "unknown1"]
+    assert list(curves) == ["gpc", "xbar", "msd", "unknown1"]
     assert curves["gpc"].source == "private"
     assert curves["gpc"].bank == 0
     assert (curves["gpc"].seg_start, curves["gpc"].seg_end) == (0, 1)
     assert curves["xbar"].bank == 1
     assert (curves["xbar"].seg_start, curves["xbar"].seg_end) == (2, 3)
-    assert curves["sys"].voltages == [600.0, 650.0]
+    assert curves["msd"].voltages == [600.0, 650.0]
     # Unnamed domain → unknown1, plotted like any curve (one point here).
     assert curves["unknown1"].voltages == [500.0]
     assert curves["unknown1"].frequencies == [800.0]
