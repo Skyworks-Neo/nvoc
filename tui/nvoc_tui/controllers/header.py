@@ -57,6 +57,10 @@ class HeaderController(PaneController):
             self.app.config_data.last_gpu_idx = int(value)
             self.app.save_config()
             self.app.refresh_all_state()
+            # GPU switch: reload (or clear, when the new part has no V/F
+            # interface) the VF curve — without this the previous GPU's
+            # curve lingers on the plot.
+            self.app.vfcurve_controller.on_gpu_changed()
 
     def on_gpu_list_loaded(
         self, code: int, output: str, gpus: list[GpuDescriptor]

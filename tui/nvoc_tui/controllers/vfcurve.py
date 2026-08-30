@@ -100,6 +100,10 @@ class VFCurveController(PaneController):
         self._p0_bounds_gpu: str | None = None
         self._p0_rails: list = []  # raw p0_rails payload
         self._p0_bounds_by_rail: dict[int, dict] = {}  # rail_bit → bounds
+        # A refresh requested while another was inflight (e.g. a GPU switch
+        # racing the auto-refresh tick): re-run once the inflight one lands,
+        # so the new GPU's verdict (curve or none) is final.
+        self._refresh_pending = False
 
     def auto_refresh_label(self) -> Text:
         state = "On" if self.app.config_data.vfcurve.auto_refresh else "Off"
@@ -168,6 +172,11 @@ class VFCurveController(PaneController):
 
     def refresh_curve(self) -> None:
         if not self._begin_refresh():
+            # Inflight — remember the request and re-run after it lands
+            # (see _consume_pending_refresh). Without this, a GPU switch
+            # arriving mid-flight would be swallowed by the inflight guard
+            # and the previous GPU's curve would linger on the plot.
+            self._refresh_pending = True
             return
         try:
             gpu = self.app.selected_gpu_target()
@@ -205,6 +214,37 @@ class VFCurveController(PaneController):
             self._end_refresh()
             raise
 
+    def on_gpu_changed(self) -> None:
+        """GPU switch: drop the previous GPU's curve and reload for the new one.
+
+        The old curve's point indices / voltages / lock state / P0 walls are
+        meaningless against another part — clear them immediately (the plot
+        says "loading" rather than showing stale data), then re-query. A GPU
+        with no V/F interface stays cleared ("not supported") once the
+        refresh lands.
+        """
+        self._curves = {}
+        self._curve_visible = {}
+        self._active_curve = "gpc"
+        self.app.cache.vf_curve_points = None
+        self.app.cache.vf_curves = None
+        self.app.cache.curve_visible = {}
+        self.app.cache.active_curve = "gpc"
+        self.app.cache.vf_live_point = None
+        self._p0_bounds = None
+        self._p0_rails = []
+        self._p0_bounds_by_rail = {}
+        self._p0_bounds_gpu = None
+        self.clear_plot("Loading VF curve…")
+        self._sync_curve_widgets()
+        self.refresh_curve()
+
+    def _consume_pending_refresh(self) -> None:
+        """Run one deferred refresh when one was requested mid-flight."""
+        if self._refresh_pending:
+            self._refresh_pending = False
+            self.refresh_curve()
+
     def on_curve_loaded(
         self,
         gpc_points: "list[dict] | None",
@@ -220,10 +260,16 @@ class VFCurveController(PaneController):
             self._curve_visible = {}
             self.app.cache.curve_visible = {}
             self.app.cache.vf_live_point = None
-            if gpc_err and not public_vfp_unsupported(gpc_err):
-                self.app.write_log(f"pynvoc VFP curve query failed: {gpc_err}")
-            self.clear_plot("VF curve query failed.")
+            if public_vfp_unsupported(gpc_err):
+                # This GPU has no V/F-curve interface at all — say so on the
+                # plot instead of "query failed" (same verdict as the GUI).
+                self.clear_plot("VF curve not supported on this GPU.")
+            else:
+                if gpc_err:
+                    self.app.write_log(f"pynvoc VFP curve query failed: {gpc_err}")
+                self.clear_plot("VF curve query failed.")
             self._sync_curve_widgets()
+            self._consume_pending_refresh()
             return
         # Carry over visibility (default: every discovered curve visible) and
         # keep the active curve valid (must exist and be visible).
@@ -254,6 +300,7 @@ class VFCurveController(PaneController):
             and not self._direct_read_inflight
         ):
             self._kick_direct_read(self._active_curve)
+        self._consume_pending_refresh()
 
     def clear_plot(self, title: str) -> None:
         try:

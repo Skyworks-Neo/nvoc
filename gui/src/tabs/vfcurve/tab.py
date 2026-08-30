@@ -930,6 +930,12 @@ class VFCurveTab:
             return
         # Stale worker (a newer refresh superseded this one): drop silently.
         if epoch != self._curve_query_epoch:
+            # A refresh requested while this one was inflight (notably the
+            # reload fired by a GPU switch) still needs to run — consume
+            # the pending flag here, or it would linger forever.
+            if self._refresh_curve_pending:
+                self._refresh_curve_pending = False
+                self.app.after(0, lambda: self._refresh_curve(force=True))
             return
 
         public_unsupported = gpc_err is not None and (
@@ -939,7 +945,21 @@ class VFCurveTab:
             gpu, gpc_points, gpc_err, public_unsupported, clk_data
         )
         if not built:
-            if gpc_err and not public_unsupported:
+            # No curve on THIS GPU. When the GPU genuinely has no V/F
+            # interface (open family rejected AND no private segments),
+            # the previous GPU's curve must leave the chart; a transient
+            # error keeps the current display (same-GPU refresh blip).
+            no_vf_interface = public_unsupported or (
+                gpc_err is None
+                and not gpc_points
+                and not (clk_data and clk_data.get("segments"))
+            )
+            if no_vf_interface:
+                self._clear_curve_display("No VF curve on this GPU")
+                self.app.console.append(
+                    "[GUI] VF curve not supported on this GPU.\n"
+                )
+            elif gpc_err:
                 self.app.console.append(f"[GUI] VFP query failed: {gpc_err}\n")
             else:
                 self.app.console.append("[GUI] VFP query failed.\n")
@@ -1080,6 +1100,47 @@ class VFCurveTab:
                 (cid for cid in curves if self._curve_visible.get(cid)), "gpc"
             )
         return True
+
+    def _clear_curve_display(self, message: str = "No data"):
+        """Drop every curve and redraw the empty chart.
+
+        Called when the selected GPU changes or a query verdicts the current
+        GPU as having no V/F-curve interface: the previous GPU's curve
+        (voltages, point indices, lock state, P0 walls) is meaningless
+        against another part and must not linger on the chart.
+        """
+        self._curves = {}
+        self._curve_visible = {}
+        self._active_curve = "gpc"
+        self._voltages = []
+        self._frequencies = []
+        self._defaults = []
+        self._sel_start = None
+        self._sel_end = None
+        self._drag_orig_freqs = None
+        self._locked_points.clear()
+        self._pending_live_point = None
+        self._live_pending = (None, None)
+        self._live_volt = None
+        self._live_freq = None
+        # P0 walls / effective line / pending wall drag are per-GPU state.
+        self._clear_p0_bounds()
+        self._hide_live_point()
+        self._rebuild_selector()
+        self._redraw(empty_message=message)
+
+    def on_gpu_changed(self) -> None:
+        """GPU switch: drop the previous GPU's curve and reload for the new one.
+
+        Bumping the query epoch also invalidates any inflight worker for the
+        previous GPU — its result must not repopulate the chart after the
+        clear (the completion path drops mismatched epochs).
+        """
+        if self._cleaned_up:
+            return
+        self._curve_query_epoch += 1
+        self._clear_curve_display()
+        self._refresh_curve(force=True)
 
     def _load_active_curve(self):
         """灌 active curve 数据进 _voltages/_frequencies/_defaults 并重绘。
@@ -1595,8 +1656,13 @@ class VFCurveTab:
         self.app.console.append(f"[GUI] Loaded {len(voltages)} VF points.\n")
         self._redraw()
 
-    def _redraw(self):
-        """Redraw the chart with current data."""
+    def _redraw(self, empty_message: str = "No data"):
+        """Redraw the chart with current data.
+
+        ``empty_message`` replaces the placeholder text on an empty chart so
+        the GPU-switch / unsupported-GPU paths can say WHY there is no curve
+        (``_clear_curve_display``) instead of a bare "No data".
+        """
         if self._is_resize_active:
             self._pending_full_redraw = True
             return
@@ -1613,7 +1679,7 @@ class VFCurveTab:
             ax.text(
                 0.5,
                 0.5,
-                "No data",
+                empty_message,
                 transform=ax.transAxes,
                 ha="center",
                 va="center",

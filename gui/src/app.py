@@ -873,11 +873,24 @@ class App(ctk.CTk):
         if last_idx not in ordered_indices:
             last_idx = ordered_indices[0]
 
+        # Programmatic selection below is guarded (no _on_gpu_changed), so a
+        # re-detection that silently falls back to another GPU (the selected
+        # part disappeared) must clear the VF curve itself — otherwise the
+        # removed GPU's curve lingers on the chart. Compare native targets
+        # (uuid > index): a re-indexed list can seat a different card on the
+        # same index.
+        prev_target = self.selected_gpu_target()
         self._programmatic_gpu_set = True
         try:
             self.gpu_var.set(short_labels[last_idx])
         finally:
             self._programmatic_gpu_set = False
+        if (
+            prev_target is not None
+            and prev_target != self.selected_gpu_target()
+            and self.tab_vfcurve is not None
+        ):
+            self.tab_vfcurve.on_gpu_changed()
         self.console.append(f"[GUI] Found {len(ordered_indices)} GPU(s).\n")
         # A GPU landed — stop the background re-probe (no longer needed).
         self._stop_gpu_reprobe()
@@ -934,6 +947,11 @@ class App(ctk.CTk):
         if self.tab_overclock:
             self.tab_overclock.set_vfp_state(False)
             self.tab_overclock.set_supported_pstates([])
+        # VF curve: the previous GPU's curve (point indices, voltages, lock
+        # state, P0 walls) is meaningless against the new part — clear it and
+        # reload; a GPU with no V/F interface stays cleared with a message.
+        if self.tab_vfcurve is not None:
+            self.tab_vfcurve.on_gpu_changed()
 
         # Re-run the full init chain: info → limits → status → OC values → curve
         self._query_gpu_info()
