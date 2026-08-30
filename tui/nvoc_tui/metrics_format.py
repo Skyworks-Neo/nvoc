@@ -198,6 +198,31 @@ def _perf_limits_text(perf) -> str:
     return ", ".join(reasons) if reasons else "none"
 
 
+def _voltage_text(status: dict) -> str:
+    """Format the VOLT value.
+
+    Plain ``950 mV`` by default; on multi-rail parts the dashboard poll
+    attaches ``rail_volts_mv`` (a ``[(label, mV), ...]`` list built from the
+    volt-rails status currents) and the line becomes per-rail —
+    ``GPC 1050 mV | MEM 681.25 mV`` (HBM parts) or ``... | MSVDD ...``
+    (50-series fabric rail). Fewer than two usable readings fall back to the
+    plain core-voltage form.
+    """
+    rails = status.get("rail_volts_mv")
+    if isinstance(rails, list):
+        parts = []
+        for entry in rails:
+            if not (isinstance(entry, (list, tuple)) and len(entry) == 2):
+                continue
+            label, mv = entry
+            if isinstance(mv, (int, float)) and mv > 0:
+                text = f"{float(mv):.2f}".rstrip("0").rstrip(".")
+                parts.append(f"{label} {text} mV")
+        if len(parts) >= 2:
+            return " | ".join(parts)
+    return f"{status.get('voltage_mv', '---')} mV"
+
+
 def _format_metric_lines(status: dict, architecture: str) -> list[str]:
     """Build the dashboard metric lines from a normalized status dict.
 
@@ -335,7 +360,7 @@ def _format_metric_lines(status: dict, architecture: str) -> list[str]:
         f"MEM: {status.get('mem_clock_mhz', '---')} MHz",
         f"ECLK: {_effective_clocks_text(status)}",
         f"FCLK: {_fabric_clocks_text(status) or '---'}",
-        f"VOLT: {status.get('voltage_mv', '---')} mV",
+        f"VOLT: {_voltage_text(status)}",
         f"VFP LOCK: {vfp_lock_text}",
         f"TEMP: {temp_text}",
         f"PWR: {power_text}",

@@ -1210,6 +1210,64 @@ def test_vfcurve_direct_read_rail_failure_falls_back() -> None:
     assert app.cache.vf_live_point == (775.0, 1350.0)
 
 
+def test_dashboard_rail_poll_labels_multi_rail_volt_line() -> None:
+    """The status sweep piggybacks a volt-rails read; on a multi-rail HBM
+    part the VOLT line goes per-rail (GPC | MEM), on an MSVDD part the
+    second label is MSVDD."""
+    app = FakeApp()
+    app.widgets["#metrics"] = SimpleNamespace(update=lambda _v: None)
+    controller = DashboardController(app)
+    scheduled: list[object] = []
+    app.native_service.submit_query = lambda job: scheduled.append(job)
+    app.native_service.query_volt_rails = app.native.query_volt_rails
+
+    # HBM part (P100): second rail is memory.
+    app.cache.info = {"arch": "Pascal", "codename": "GP100", "name": "P100"}
+    app.native.volt_rails_payload = {
+        "p0_rails": [
+            {"rail_bit": 0, "current_uV": 1_050_000},
+            {"rail_bit": 1, "current_uV": 681_250},
+        ]
+    }
+    controller.on_status_loaded(0, "", {"voltage_mv": 950})
+    assert len(scheduled) == 1
+    scheduled[0]()  # FakeApp.call_from_thread runs the callback inline
+    assert app.cache.rail_volts == [("GPC", 1050.0), ("MEM", 681.25)]
+
+    # MSVDD part (50-series): second rail is the fabric supply.
+    app.cache.info = {"arch": "Blackwell", "codename": "GB205"}
+    app.native.volt_rails_payload = {
+        "p0_rails": [
+            {"rail_bit": 0, "current_uV": 1_000_000},
+            {"rail_bit": 1, "current_uV": 655_500},
+        ]
+    }
+    controller.on_status_loaded(0, "", {"voltage_mv": 950})
+    scheduled[1]()
+    assert app.cache.rail_volts == [("GPC", 1000.0), ("MSVDD", 655.5)]
+
+
+def test_dashboard_rail_poll_disables_after_failures() -> None:
+    """A part without the volt-rails family must not burn an escape per
+    tick forever — three consecutive failures disable the poll."""
+    app = FakeApp()
+    app.widgets["#metrics"] = SimpleNamespace(update=lambda _v: None)
+    controller = DashboardController(app)
+    scheduled: list[object] = []
+    app.native_service.submit_query = lambda job: scheduled.append(job)
+    # No query_volt_rails wiring → the worker's read raises → vr=None.
+
+    for _ in range(3):
+        controller.on_status_loaded(0, "", {"voltage_mv": 950})
+        scheduled.pop()()
+    assert controller._rail_poll_disabled is True
+
+    # Disabled: no further polls are scheduled.
+    controller.on_status_loaded(0, "", {"voltage_mv": 950})
+    assert len(scheduled) == 0
+    assert app.cache.rail_volts is None
+
+
 def _oc_app(**info: object) -> FakeApp:
     app = FakeApp()
     app.cache.info = dict(info)

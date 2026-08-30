@@ -227,6 +227,37 @@ def test_format_metric_lines_thresholds_optional() -> None:
     assert "TEMP: CORE 46 / 87 C | HOTSPOT 53 C" in text
 
 
+def test_format_metric_lines_multi_rail_voltage() -> None:
+    """Multi-rail part: VOLT goes per-rail (GPC | MEM/MSVDD) using the live
+    rail currents the dashboard poll attaches; fractional mV kept, whole mV
+    rendered bare."""
+    status = {
+        "voltage_mv": 950,
+        "rail_volts_mv": [("GPC", 1050.0), ("MEM", 681.25)],
+    }
+    text = "\n".join(_format_metric_lines(status, "Pascal"))
+    assert "VOLT: GPC 1050 mV | MEM 681.25 mV" in text
+
+    # Fabric rail (50-series MSVDD) uses its own label.
+    status["rail_volts_mv"] = [("GPC", 1000.0), ("MSVDD", 655.5)]
+    text = "\n".join(_format_metric_lines(status, "Blackwell"))
+    assert "VOLT: GPC 1000 mV | MSVDD 655.5 mV" in text
+
+
+def test_format_metric_lines_voltage_falls_back_without_two_rails() -> None:
+    """Fewer than two usable rail readings keep the plain core-voltage form."""
+    # Single rail only.
+    status = {"voltage_mv": 950, "rail_volts_mv": [("GPC", 950.0)]}
+    text = "\n".join(_format_metric_lines(status, "Ada"))
+    assert "VOLT: 950 mV" in text
+    assert "GPC" not in text
+
+    # Second rail present but reading zero (idle) — dropped, plain form.
+    status["rail_volts_mv"] = [("GPC", 950.0), ("MSVDD", 0.0)]
+    text = "\n".join(_format_metric_lines(status, "Ada"))
+    assert "VOLT: 950 mV" in text
+
+
 def test_format_metric_lines_missing_fields_render_dashes() -> None:
     text = "\n".join(_format_metric_lines({}, "---"))
 

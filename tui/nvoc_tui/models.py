@@ -93,6 +93,10 @@ class GpuCache:
     # Live crosshair for the active private curve (xbar/host), set by the
     # direct-read poll path (voltage mV, frequency MHz).
     vf_live_point: tuple[float, float] | None = None
+    # Per-rail live voltages [(label, mV), ...] for the dashboard VOLT line,
+    # refreshed by the rail poll piggybacked on the status sweep. None on
+    # single-rail / volt-rails-unsupported parts (plain VOLT form then).
+    rail_volts: list[tuple[str, float]] | None = None
 
 
 @dataclass(slots=True)
