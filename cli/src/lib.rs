@@ -3658,18 +3658,18 @@ fn execute_target(
         }
         Command::GetPrivateFreqDomainInfo => {
             let ctrl = run(target, QueryNvapiClkDomains)?.output;
-            // Ada write-map labels are empirical (slot-0 full-bit A/B);
-            // every other generation shows the advisory RTSS name.
-            let ada = run(target, QueryGpuInfo)
+            // Write-map labels are empirical per A/B'd generation;
+            // everything else shows the advisory RTSS name.
+            let gpu_type = run(target, QueryGpuInfo)
                 .ok()
                 .and_then(|r| fetch_gpu_type(&r.output).ok())
-                .is_some_and(|t| t.is_ada());
+                .unwrap_or(nvoc_core::GpuType::Unknown);
             Ok(match ctrl {
                 Some(c) => json!({
                     "controllable_mask": format!("0x{:08X}", c.mask),
                     "entries": c.entries.iter().map(|e| json!({
                         "bit": e.bit,
-                        "domain": clk_client_record_name(e.bit, ada),
+                        "domain": clk_client_record_name(e.bit, gpu_type),
                         "type": e.entry_type,
                         // false = the protocol doesn't marshal this record
                         // type's value fields (e.g. type 0x02) — values_kHz
@@ -5892,30 +5892,62 @@ fn parse_domain(raw: &str) -> CliResult<ClockDomain> {
 /// numbering as MEASURE_FREQ, but the WRITE record's physical attribution
 /// does NOT follow the RTSS label table.
 ///
-/// On Ada (live slot-0 A/B, RTX 4060 Laptop / R610, 2026-08-31) the
-/// empirical write map is: bit0=pure GPC, bit1=SYS+XBAR move together,
-/// bit2=memory M, bit3=pure SYS, bit5=MSD, bit9=pure Host; bit1 and bit3
-/// effects on SYS are ADDITIVE (writing both stacks). bit4/7/8 show
-/// no observable GetAllClocks reaction, bit6 is type-0x02 (protocol
-/// marshals neither). Only Ada uses these labels — every other
-/// generation falls back to the advisory RTSS name until it is A/B'd.
-fn clk_client_record_name(bit: u32, ada: bool) -> String {
-    if ada {
-        return match bit {
+/// Empirical slot-0 write maps (live A/B, 2026-08-31, bits 0..=7 on
+/// Pascal/Turing/Ampere, 0..=9 on Ada):
+/// - bit0=Gpc, bit2=Mem, bit3=Sys, bit4/7=no observable GetAllClocks
+///   reaction, bit6=Disp (type-0x02) — IDENTICAL across Pascal/Turing/
+///   Ampere/Ada. bit9=Host (Ada only bit tested so far).
+/// - Two generation-dependent axes:
+///   * Xbar↔Sys coupling via bit1 (Ampere+Ada: bit1 moves Sys+Xbar
+///     together, additive with bit3 on Sys; Pascal+Turing: bit1 is pure
+///     Xbar, no coupling).
+///   * MSD domain presence (Pascal has none → bit5 SET unsupported;
+///     Turing/Ampere/Ada: bit5=Msd).
+///
+/// Only A/B'd generations use these labels — everything else falls back
+/// to the advisory RTSS name.
+fn clk_client_record_name(bit: u32, gpu_type: nvoc_core::GpuType) -> String {
+    use nvoc_core::GpuType;
+    // (xbar_sys_coupled, has_msd); None = generation not yet A/B'd
+    let empirical: Option<(bool, bool)> = match gpu_type {
+        GpuType::Mobile40Series
+        | GpuType::Desktop40Series
+        | GpuType::WorkstationLovelace
+        | GpuType::Mobile30Series
+        | GpuType::Desktop30Series
+        | GpuType::WorkstationAmpere
+        | GpuType::ServerAmpere => Some((true, true)),
+        GpuType::Mobile20Series
+        | GpuType::Desktop20Series
+        | GpuType::Mobile16Series
+        | GpuType::Desktop16Series
+        | GpuType::WorkstationTuring
+        | GpuType::ServerTuringTesla => Some((false, true)),
+        GpuType::Mobile10Series
+        | GpuType::Desktop10Series
+        | GpuType::WorkstationPascal
+        | GpuType::ServerPascal => Some((false, false)),
+        _ => None,
+    };
+    match empirical {
+        Some((coupled, msd)) => match bit {
             0 => "Gpc".into(),
-            1 => "Sys+Xbar, Sys additive w/ bit3 (RTSS: Xbar)".into(),
+            1 if coupled => "Sys+Xbar, Sys additive w/ bit3 (RTSS: Xbar)".into(),
+            1 => "Xbar (pure — no Sys coupling this gen)".into(),
             2 => "Mem (RTSS: Sys)".into(),
-            3 => "Sys, additive w/ bit1 (RTSS: Hub)".into(),
+            3 if coupled => "Sys, additive w/ bit1 (RTSS: Hub)".into(),
+            3 => "Sys".into(),
             4 => "Unattributed (RTSS: M)".into(),
-            5 => "Msd (RTSS: Host)".into(),
+            5 if msd => "Msd (RTSS: Host)".into(),
+            5 => "SET not supported — no MSD domain this gen (RTSS: Host)".into(),
             6 => "Disp".into(),
             7 => "Unattributed (RTSS: Hotclk)".into(),
             8 => "Unattributed (RTSS: Pclk0)".into(),
             9 => "Host (RTSS: Pclk1)".into(),
             _ => parse_clk_domain_name(bit),
-        };
+        },
+        None => parse_clk_domain_name(bit),
     }
-    parse_clk_domain_name(bit)
 }
 
 /// Canonical domain name for a raw domain bit (reverse of
