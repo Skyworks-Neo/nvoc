@@ -13,14 +13,13 @@ use nvoc_core::{
     QueryNvapiClkVfPoints, QueryNvapiCoolerInfo, QueryNvapiCoreVoltageControl, QueryNvapiDNotifier,
     QueryNvapiFanPolicyInfo, QueryNvapiOcScannerIncomplete, QueryNvapiPStateLevels,
     QueryNvapiPStateLockStatus, QueryNvapiPmgrVoltageArbiter, QueryNvapiPstates20Private,
-    QueryNvapiRatedTdp,
-    QueryNvapiTargetTempPolicies, QueryNvapiTargetTempPolicyIndex, QueryNvapiTgpWattRange,
-    QueryNvapiThermalSettings, QueryNvapiThermalSim, QueryNvapiVoltRails, QueryPowerLimits,
-    QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits,
-    QueryTemperatureThresholds, QueryThrottleReasons, QueryVbiosImage, QueryVbiosSecurityInfo,
-    QueryVbiosStatusString, QueryVbiosVersion,
-    QueryViolationStatus, QueryVoltageBoost, ResetAutoboostStatus, ResetCoolerLevels,
-    ResetFanCurve, ResetFanSpeed, ResetForcePstate, ResetFreqLock, ResetLegacyApplicationFreqLock,
+    QueryNvapiRatedTdp, QueryNvapiTargetTempPolicies, QueryNvapiTargetTempPolicyIndex,
+    QueryNvapiTgpWattRange, QueryNvapiThermalSettings, QueryNvapiThermalSim, QueryNvapiVoltRails,
+    QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks,
+    QueryTdpTempLimits, QueryTemperatureThresholds, QueryThrottleReasons, QueryVbiosImage,
+    QueryVbiosSecurityInfo, QueryVbiosStatusString, QueryVbiosVersion, QueryViolationStatus,
+    QueryVoltageBoost, ResetAutoboostStatus, ResetCoolerLevels, ResetFanCurve, ResetFanSpeed,
+    ResetForcePstate, ResetFreqLock, ResetLegacyApplicationFreqLock,
     ResetLegacyGpcRailOvervoltLimit, ResetNvapiPowerLimits, ResetNvapiSensorLimits,
     ResetNvapiTgpWatt, ResetNvapiVfpPrivate, ResetPstateGlobalFreqOffset,
     ResetPublicVftableGpcLock, ResetPublicVftableOffset, ResetVfpFrequencyLock,
@@ -28,20 +27,19 @@ use nvoc_core::{
     SetBb2Active, SetClockOffset, SetCoolerLevels, SetEdid, SetFanCurve, SetFanRpm, SetFanSpeed,
     SetFanStop, SetForcePstate, SetGpcVoltLock, SetLegacyClocks, SetLockedClocks,
     SetNvapiBackgroundOcScanner, SetNvapiClkDomainOffset, SetNvapiCoreVoltageControl,
-    SetNvapiDNotifier, SetNvapiDynamicBoost, SetNvapiOvervolt, SetNvapiPStateNative,
-    SetNvapiOverclockedPstates, SetNvapiPstates20PrivateDelta, SetNvapiPerfFreqCap,
-    SetNvapiPerfLevelLock, SetNvapiPmgrVoltageArbiter, SetNvapiPowerLimits,
-    SetNvapiPstateLock, SetNvapiSensorLimits, SetNvapiTargetTemp, SetNvapiTgpWatt,
-    SetNvapiThermalSim, SetNvapiVfpPointPrivate, SetNvapiVfpRangePerPointPrivate,
-    SetNvapiVfpRangePrivate, SetNvapiVoltRailOffset, SetNvapiVoltRailTarget, SetNvmlAcousticTemp,
-    SetNvmlPstateLock, SetPowerLimit as SetNvmlPowerLimit, SetPowerMode, SetPstateBaseVoltage,
-    SetPstateClockOffset, SetPublicVftablePointOffset, SetPublicVftableRangeOffset,
-    SetTemperatureLimit, SetVfpFrequencyLock, SetVoltageBoost, SetWm2Active, SetWm2Mode,
-    VfPointType, VfpResetDomain, Wm2AcousticMode, discover_targets, fetch_gpu_type,
-    nvapi_status_name, nvml_pstate_to_str, parse_nvapi_locked_voltage_target,
-    parse_nvml_fan_control_policy, parse_nvml_pstate, query_domain_vf_points_indexed,
-    query_domain_vfp_indices, run, select_targets, set_nvapi_domain_vfp_deltas,
-    sync_memory_pstate_as_p0,
+    SetNvapiDNotifier, SetNvapiDynamicBoost, SetNvapiOverclockedPstates, SetNvapiOvervolt,
+    SetNvapiPStateNative, SetNvapiPerfFreqCap, SetNvapiPerfLevelLock, SetNvapiPmgrVoltageArbiter,
+    SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiPstates20PrivateDelta, SetNvapiSensorLimits,
+    SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvapiThermalSim, SetNvapiVfpPointPrivate,
+    SetNvapiVfpRangePerPointPrivate, SetNvapiVfpRangePrivate, SetNvapiVoltRailOffset,
+    SetNvapiVoltRailTarget, SetNvmlAcousticTemp, SetNvmlPstateLock,
+    SetPowerLimit as SetNvmlPowerLimit, SetPowerMode, SetPstateBaseVoltage, SetPstateClockOffset,
+    SetPublicVftablePointOffset, SetPublicVftableRangeOffset, SetTemperatureLimit,
+    SetVfpFrequencyLock, SetVoltageBoost, SetWm2Active, SetWm2Mode, VfPointType, VfpResetDomain,
+    Wm2AcousticMode, discover_targets, fetch_gpu_type, nvapi_status_name, nvml_pstate_to_str,
+    parse_nvapi_locked_voltage_target, parse_nvml_fan_control_policy, parse_nvml_pstate,
+    query_domain_vf_points_indexed, query_domain_vfp_indices, run, select_targets,
+    set_nvapi_domain_vfp_deltas, sync_memory_pstate_as_p0,
 };
 use serde_json::{Value, json};
 use time::OffsetDateTime;
@@ -1203,7 +1201,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                         "DELTA",
                         "Raw delta word written verbatim into the table slot. Native unit NOT live-calibrated: the public-path marshalling stores 100*delta_kHz/domainMax (i.e. percent of domain max), but the kernel-side interpretation is unverified — on P100 writes are not retained",
                     )])),
-                    ..CommandSpec::new("set-pstates20-private-delta", Group::Clock, "DANGEROUS RMW of one delta in the private pstates table (SetPstates20Private 0x4C0B519A); --pstate/--domain take the raw ids printed by get-pstates20-private; --flags ORs bits into the byte@+4 flags word (bit1 = RM apply flag)")
+                    ..CommandSpec::new("set-pstates20-private-delta", Group::Clock, "DANGEROUS RMW of one delta in the private pstates table (SetPstates20Private 0x4C0B519A); --domain takes a domain name (gpc/xbar/m/gpc2/…) or the raw id printed by get-pstates20-private; --flags ORs bits into the byte@+4 flags word (bit1 = RM apply flag)")
                 },
             ),
             (
@@ -3297,10 +3295,10 @@ fn execute_target(
                 .map_err(|e| CliError::new(format!("invalid --pstate: {e}")))?
                 .unwrap_or(0);
             let domain_raw = option_one(invocation, "domain")
-                .map(|s| s.parse::<u32>())
+                .map(parse_private_domain_id)
                 .transpose()
                 .map_err(|e| CliError::new(format!("invalid --domain: {e}")))?
-                .unwrap_or(3);
+                .unwrap_or(0);
             let retained = run(
                 target,
                 SetNvapiPstates20PrivateDelta {
@@ -3308,7 +3306,12 @@ fn execute_target(
                     domain_raw,
                     delta,
                     flags: option_one(invocation, "flags")
-                        .and_then(|s| s.strip_prefix("0x").map_or_else(|| s.parse::<u32>().ok(), |h| u32::from_str_radix(h, 16).ok()))
+                        .and_then(|s| {
+                            s.strip_prefix("0x").map_or_else(
+                                || s.parse::<u32>().ok(),
+                                |h| u32::from_str_radix(h, 16).ok(),
+                            )
+                        })
                         .unwrap_or(0),
                 },
             )?
@@ -3916,12 +3919,8 @@ fn execute_target(
         Command::GetVbios => {
             // meta companions (best-effort): the VBIOS security word and the
             // status string never gate the image read
-            let security_flags = run(target, QueryVbiosSecurityInfo)
-                .ok()
-                .map(|r| r.output);
-            let status_string = run(target, QueryVbiosStatusString)
-                .ok()
-                .map(|r| r.output);
+            let security_flags = run(target, QueryVbiosSecurityInfo).ok().map(|r| r.output);
+            let status_string = run(target, QueryVbiosStatusString).ok().map(|r| r.output);
             // NvAPI_GPU_GetVbiosImage (0xFC13EE11, escape 0x0700004F). Reads
             // the full VBIOS image. Brief output by default (version, size,
             // BIT location); --dump prints the full structural dump (BIT
@@ -6165,6 +6164,63 @@ fn domain_label(domain: ClockDomain) -> &'static str {
         ClockDomain::Video => "video",
         _ => "unknown",
     }
+}
+
+/// Resolve a `set-pstates20-private-delta --domain` argument into the
+/// private pstates table's 32-domain clock-domain id (RTSS naming space —
+/// same ids `get-pstates20-private` prints). Accepts the domain name
+/// (case-insensitive, e.g. `gpc`, `Gpc2`, `mem`/`m`) or a bare integer 0-31.
+fn parse_private_domain_id(raw: &str) -> Result<u32, String> {
+    const NAMES: &[(&str, u32)] = &[
+        ("gpc", 0),
+        ("xbar", 1),
+        ("sys", 2),
+        ("hub", 3),
+        ("m", 4),
+        ("mem", 4),
+        ("host", 5),
+        ("disp", 6),
+        ("hotclk", 7),
+        ("pclk0", 8),
+        ("pclk1", 9),
+        ("bypclk", 10),
+        ("xclk", 11),
+        ("vpv", 12),
+        ("vps", 13),
+        ("gpucacheclk", 14),
+        ("gpc2", 15),
+        ("xbar2", 16),
+        ("sys2", 17),
+        ("hub2", 18),
+        ("leg", 19),
+        ("pwr", 20),
+        ("msd", 21),
+        ("utils", 22),
+        ("coldnv", 23),
+        ("coldhotclk", 24),
+        ("ltc2", 25),
+        ("2d", 26),
+        ("3d", 27),
+        ("host1x", 28),
+        ("disp0", 29),
+        ("disp1", 30),
+        ("pciegen", 31),
+    ];
+    let lowered = raw.trim().to_ascii_lowercase();
+    for (name, id) in NAMES {
+        if lowered == *name {
+            return Ok(*id);
+        }
+    }
+    lowered
+        .parse::<u32>()
+        .ok()
+        .filter(|id| *id <= 31)
+        .ok_or_else(|| {
+            format!(
+                "unknown domain {raw:?} — use a name (gpc, xbar, m, gpc2, …) or 0-31"
+            )
+        })
 }
 
 fn pstate_label(pstate: PState) -> &'static str {

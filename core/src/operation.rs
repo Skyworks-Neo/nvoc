@@ -3064,6 +3064,7 @@ impl GpuOperation for SetNvapiPstates20PrivateDelta {
         let num_pstates = u32_at(&buf, 8).min(32);
         let num_clocks = u32_at(&buf, 12).min(22);
         let mut hit = None;
+        let mut slot_disabled = false;
         'outer: for i in 0..num_pstates {
             let base = 20 + 968 * i as usize;
             if base + 968 > buf.len() {
@@ -3076,10 +3077,19 @@ impl GpuOperation for SetNvapiPstates20PrivateDelta {
             for j in 0..num_clocks {
                 let slot = base + 8 + 44 * j as usize;
                 if u32_at(&buf, slot) == self.domain_raw {
+                    slot_disabled = u32_at(&buf, slot + 8) & 1 == 0;
                     hit = Some(slot + 12);
                     break 'outer;
                 }
             }
+        }
+        if slot_disabled {
+            return Err(Error::from(format!(
+                "the pstate {} domain {} slot is DISABLED in the private table \
+                 (see get-pstates20-private) — the kernel rejects writes to \
+                 disabled slots with NVAPI_ERROR",
+                self.pstate_id, self.domain_raw
+            )));
         }
         let off = hit.ok_or_else(|| {
             Error::from(format!(
