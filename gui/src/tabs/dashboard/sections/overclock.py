@@ -1821,9 +1821,7 @@ class OverclockTab:
                 # ranges — their absence (Not Supported) marks a pre-Kepler
                 # part. Marshal the fallback to the main thread; this worker
                 # thread must not touch widgets.
-                self.app.after(
-                    0, lambda: self._on_mem_range_lock_failed(start, end)
-                )
+                self.app.after(0, lambda: self._on_mem_range_lock_failed(start, end))
                 raise
             message = (
                 f"Successfully applied {backend.upper()} P-State lock {start}-{end}."

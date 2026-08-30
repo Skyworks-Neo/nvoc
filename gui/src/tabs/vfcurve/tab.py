@@ -966,9 +966,7 @@ class VFCurveTab:
             )
             if no_vf_interface:
                 self._clear_curve_display("No VF curve on this GPU")
-                self.app.console.append(
-                    "[GUI] VF curve not supported on this GPU.\n"
-                )
+                self.app.console.append("[GUI] VF curve not supported on this GPU.\n")
             elif gpc_err:
                 self.app.console.append(f"[GUI] VFP query failed: {gpc_err}\n")
             else:

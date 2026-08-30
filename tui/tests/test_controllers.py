@@ -700,9 +700,7 @@ def test_overclock_pstate_limits_mem_range_failure_falls_back_to_pin() -> None:
 
     assert app.actions == ["apply PState limits"]
     output = app.action_outputs[0]
-    assert output.startswith(
-        "Memory-range P-State lock unavailable on this GPU"
-    )
+    assert output.startswith("Memory-range P-State lock unavailable on this GPU")
     assert "Successfully pinned NVAPI P-State P8." in output
     # Mem-range attempted first, then the pin fallback.
     assert app.native.calls == [

@@ -170,9 +170,7 @@ def make_tab(
     legacy_voltage: bool | None = False,
     mem_lock_error: Exception | None = None,
 ) -> tuple[OverclockTab, FakeApp]:
-    app = FakeApp(
-        legacy_voltage=legacy_voltage, mem_lock_error=mem_lock_error
-    )
+    app = FakeApp(legacy_voltage=legacy_voltage, mem_lock_error=mem_lock_error)
     tab = OverclockTab.__new__(OverclockTab)
     tab.app = app
     tab._syncing = False
@@ -576,8 +574,12 @@ def test_xbar_supported_from_info_falls_back_without_flag() -> None:
     f = OverclockTab._xbar_supported_from_info
     assert f({"codename": "AD107-B", "gpu_name": "RTX 4060 Laptop"}) is True
     assert f({"gpu_architecture": "tu116"}) is True
-    assert f({"gpu_name": "NVIDIA GeForce GTX 1080"}) is True  # GTX 1080 = Pascal, supported
-    assert f({"gpu_name": "NVIDIA GeForce GTX 980"}) is False  # 9-series = Maxwell, too old
+    assert (
+        f({"gpu_name": "NVIDIA GeForce GTX 1080"}) is True
+    )  # GTX 1080 = Pascal, supported
+    assert (
+        f({"gpu_name": "NVIDIA GeForce GTX 980"}) is False
+    )  # 9-series = Maxwell, too old
     assert f({}) is False
 
 
