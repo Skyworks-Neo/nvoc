@@ -354,6 +354,60 @@ def test_wall_handle_follows_pending() -> None:
     assert tab._wall_handle.get_xy()[0][0] == 1100.0
 
 
+# ── Wall-handle disable on single-rail parts (non-GPC curve active) ──
+
+# Gray + translucent when the drag is disabled — mirrors the literals in
+# VFCurveTab._draw_wall_handle.
+_DISABLED_FACE = "#8a8a8a"
+_ENABLED_FACE = "#ff6b6b"
+
+
+def test_wall_drag_disabled_single_rail_non_gpc() -> None:
+    """Single-rail part + SYS/XBAR active: the wall drag writes the GPC
+    (primary) rail regardless of the selected curve, so the handle must be
+    inert — press refused, no pending wall, console explains, handle gray."""
+    tab = _make_tab()
+    tab.ensure_p0_bounds("GPU0")  # populates only the primary rail
+    assert len(tab._p0_bounds_by_rail) == 1
+    tab._active_curve = "sys"
+    assert tab._wall_drag_disabled() is True
+
+    _build_wall_handle(tab)
+    import matplotlib.colors as mcolors
+
+    assert mcolors.to_hex(tab._wall_handle.get_facecolor()) == _DISABLED_FACE
+    assert tab._wall_handle.get_alpha() == 0.4
+
+    cx, cy = _handle_center(tab)
+    press = _FakeMouseEvent(xdata=None, x=cx, y=cy, inaxes=None)
+    tab._on_mouse_press(press)
+    assert tab._dragging_wall is False
+    assert tab._pending_wall_mv is None
+    assert any("disabled" in m for m in tab.app.console.messages)
+
+
+def test_wall_drag_enabled_on_gpc_single_rail() -> None:
+    """GPC active: the handle stays draggable even on single-rail parts."""
+    tab = _make_tab()
+    tab.ensure_p0_bounds("GPU0")
+    tab._active_curve = "gpc"
+    assert tab._wall_drag_disabled() is False
+    _build_wall_handle(tab)
+    import matplotlib.colors as mcolors
+
+    assert mcolors.to_hex(tab._wall_handle.get_facecolor()) == _ENABLED_FACE
+
+
+def test_wall_drag_enabled_multi_rail_xbar() -> None:
+    """Multi-rail part + XBAR active: xbar resolves to its own secondary
+    rail, so dragging stays meaningful and the handle stays enabled."""
+    tab = _make_tab()
+    tab.ensure_p0_bounds("GPU0")
+    tab._p0_bounds_by_rail[1] = dict(tab._p0_bounds)  # secondary rail present
+    tab._active_curve = "xbar"
+    assert tab._wall_drag_disabled() is False
+
+
 class _ApplyNative:
     """Records set_volt_rail_target / set_vfp_range_delta calls."""
 

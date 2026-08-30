@@ -1222,6 +1222,20 @@ class VFCurveTab:
             return bits[1]
         return bits[0]
 
+    def _wall_drag_disabled(self) -> bool:
+        """True when the wall triangle must not be draggable.
+
+        The wall drag always writes the rail ``_active_p0_rail_bit()`` resolves
+        to. On single-rail parts every curve resolves to the primary (GPC)
+        rail, so with XBAR/SYS/… selected the triangle would silently adjust
+        the GPC voltage rail — disable it to make that explicit. Multi-rail
+        parts give xbar/mem their own secondary rail, so dragging there stays
+        meaningful and enabled.
+        """
+        if self._active_curve == "gpc":
+            return False
+        return len(sorted(self._p0_bounds_by_rail)) <= 1
+
     def _active_p0_bounds(self) -> Optional[dict]:
         """The P0 bounds dict for the active curve's rail (primary fallback)."""
         bounds = self._p0_bounds_by_rail.get(self._active_p0_rail_bit())
@@ -2055,18 +2069,25 @@ class VFCurveTab:
         # Tip down at the axes top (fig fraction 0.925); base at the figure
         # top margin (0.995). The triangle straddles the axes top spine.
         verts = [(mv, 0.925), (mv - hw, 0.995), (mv + hw, 0.995)]
+        # Gray + translucent when the drag is disabled (single-rail part with
+        # a non-GPC curve active — the handle would adjust the GPC rail).
+        disabled = self._wall_drag_disabled()
+        face = "#8a8a8a" if disabled else "#ff6b6b"
+        alpha = 0.4 if disabled else 0.9
         if self._wall_handle is not None:
             self._wall_handle.set_xy(verts)
+            self._wall_handle.set_facecolor(face)
+            self._wall_handle.set_alpha(alpha)
             self._wall_handle.set_visible(True)
         else:
             self._wall_handle = mpatches.Polygon(
                 verts,
                 closed=True,
                 transform=trans,
-                facecolor="#ff6b6b",
+                facecolor=face,
                 edgecolor="white",
                 linewidth=0.8,
-                alpha=0.9,
+                alpha=alpha,
                 zorder=15,
             )
             # The triangle lives in the figure margin ABOVE the axes bbox;
@@ -2149,6 +2170,17 @@ class VFCurveTab:
         # so a click on it has inaxes=None. Handle it before the inaxes guard
         # below so the point-select logic is never entered for a handle grab.
         if event.button == 1 and self._hit_wall_handle(event):
+            if self._wall_drag_disabled():
+                # Single-rail part with a non-GPC curve active: the wall drag
+                # writes the GPC (primary) rail regardless of the selected
+                # curve — refuse the grab so the grayed handle means what it
+                # shows.
+                label = _curve_meta_for(self._active_curve)["label"]
+                self.app.console.append(
+                    f"[GUI] Volt Limit handle disabled on {label}: this part has a "
+                    f"single (GPC) voltage rail — switch to GPC to drag it.\n"
+                )
+                return
             self._mouse_pressed = True
             self._dragging_wall = True
             wall_mv = self._pending_wall_mv
