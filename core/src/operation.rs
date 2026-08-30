@@ -2897,6 +2897,212 @@ impl GpuOperation for SetNvapiPerfFreqCap {
     }
 }
 
+/// Toggle the overclocked-pstate unlock (EnableOverclockedPstates NDA
+/// 0xB23B70EE, escape 0x070000BA). enable=true opens the extended/OC pstate
+/// range — run BEFORE a SetPstates20 delta write so the delta can exceed the
+/// stock VBIOS clamp (P100 pstate-delta-plane experiment entry).
+#[derive(Clone, Copy, Debug)]
+pub struct SetNvapiOverclockedPstates {
+    pub enable: bool,
+}
+
+impl GpuOperation for SetNvapiOverclockedPstates {
+    type Output = ();
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiOverclockedPstates
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .enable_overclocked_pstates(self.enable)
+            .map_err(Error::from)
+    }
+}
+
+/// Read-only raw dump of the private pstates-2.0 delta table
+/// (GetPstates20Private 0xC5DDF56E) — the frequency-ceiling "plane A"
+/// storage. Returns header fields + the raw buffer.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiPstates20Private {
+    /// Version stamp: 81044 (base) or 146840 (extended tail).
+    pub stamp: u32,
+}
+
+/// One clock slot of a private-pstates pstate block (raw table words; no
+/// unit is asserted — the native delta unit is percent-of-domainMax per the
+/// public-path marshalling but is unverified per SKU).
+pub struct Pstates20PrivateClock {
+    pub domain_id: u32,
+    pub fmt: u32,
+    pub enabled: bool,
+    pub delta_raw: i32,
+}
+
+/// One pstate block of the private pstates table.
+pub struct Pstates20PrivatePstate {
+    pub pstate_id: u32,
+    pub enabled: bool,
+    pub clocks: Vec<Pstates20PrivateClock>,
+}
+
+/// Parsed header of the private pstates table (user layout, little-endian).
+pub struct Pstates20PrivateDump {
+    pub stamp: u32,
+    pub caps_editable: bool,
+    pub flags_raw: u32,
+    pub num_pstates: u32,
+    pub num_clocks: u32,
+    pub num_voltages: u32,
+    pub pstates: Vec<Pstates20PrivatePstate>,
+    pub raw_len: usize,
+}
+
+fn parse_pstates20_private(buf: &[u8]) -> Pstates20PrivateDump {
+    fn u32_at(b: &[u8], off: usize) -> u32 {
+        u32::from_ne_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]])
+    }
+    let stamp = u32_at(buf, 0);
+    let flags_raw = u32_at(buf, 4);
+    let num_pstates = u32_at(buf, 8);
+    let num_clocks = u32_at(buf, 12);
+    let num_voltages = u32_at(buf, 16);
+    let mut pstates = Vec::new();
+    for i in 0..num_pstates.min(32) {
+        let base = 20 + 968 * i as usize;
+        if base + 968 > buf.len() {
+            break;
+        }
+        let pstate_id = u32_at(buf, base);
+        let enabled = u32_at(buf, base + 4) & 1 == 1;
+        let mut clocks = Vec::new();
+        for j in 0..num_clocks.min(22) {
+            let slot = base + 8 + 44 * j as usize;
+            if slot + 44 > buf.len() {
+                break;
+            }
+            clocks.push(Pstates20PrivateClock {
+                domain_id: u32_at(buf, slot),
+                fmt: u32_at(buf, slot + 4),
+                enabled: u32_at(buf, slot + 8) & 1 == 1,
+                delta_raw: u32_at(buf, slot + 12) as i32,
+            });
+        }
+        pstates.push(Pstates20PrivatePstate {
+            pstate_id,
+            enabled,
+            clocks,
+        });
+    }
+    Pstates20PrivateDump {
+        stamp,
+        caps_editable: flags_raw & 1 == 1,
+        flags_raw,
+        num_pstates,
+        num_clocks,
+        num_voltages,
+        pstates,
+        raw_len: buf.len(),
+    }
+}
+
+impl GpuOperation for QueryNvapiPstates20Private {
+    type Output = Pstates20PrivateDump;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiPstates20Private
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let buf = target
+            .nvapi()?
+            .pstates20_private_raw(self.stamp)
+            .map_err(Error::from)?;
+        Ok(parse_pstates20_private(&buf))
+    }
+}
+
+/// RMW write of one delta in the private pstates-2.0 table
+/// (SetPstates20Private 0x4C0B519A): GET → locate the (pstate, domain) clock
+/// slot → patch the delta dword → SET → GET verify. `delta` is in the
+/// table's native percent-of-domainMax units. `domain_raw`/`pstate_id` use
+/// the raw ids found by [`QueryNvapiPstates20Private`] (0xFFFF wildcard
+/// matches the first slot with that id).
+#[derive(Clone, Copy, Debug)]
+pub struct SetNvapiPstates20PrivateDelta {
+    pub pstate_id: u32,
+    pub domain_raw: u32,
+    pub delta: i32,
+    /// Extra bits ORed into the flags word at byte@+4 (bit1 = the RM apply
+    /// flag the public path sets from NV_GPU_PERF_PSTATES20_INFO bit1).
+    pub flags: u32,
+}
+
+impl GpuOperation for SetNvapiPstates20PrivateDelta {
+    type Output = i32;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiPstates20PrivateDelta
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let gpu = target.nvapi()?;
+        const STAMP: u32 = 81044;
+        let mut buf = gpu.pstates20_private_raw(STAMP).map_err(Error::from)?;
+        if self.flags != 0 {
+            buf[4] |= (self.flags & 0xFF) as u8;
+        }
+
+        fn u32_at(b: &[u8], off: usize) -> u32 {
+            u32::from_ne_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]])
+        }
+        fn set_u32(b: &mut [u8], off: usize, v: u32) {
+            b[off..off + 4].copy_from_slice(&v.to_ne_bytes());
+        }
+
+        let num_pstates = u32_at(&buf, 8).min(32);
+        let num_clocks = u32_at(&buf, 12).min(22);
+        let mut hit = None;
+        'outer: for i in 0..num_pstates {
+            let base = 20 + 968 * i as usize;
+            if base + 968 > buf.len() {
+                break;
+            }
+            let pid = u32_at(&buf, base);
+            if pid != self.pstate_id {
+                continue;
+            }
+            for j in 0..num_clocks {
+                let slot = base + 8 + 44 * j as usize;
+                if u32_at(&buf, slot) == self.domain_raw {
+                    hit = Some(slot + 12);
+                    break 'outer;
+                }
+            }
+        }
+        let off = hit.ok_or_else(|| {
+            Error::from(format!(
+                "no clock slot with pstate_id={} domain_raw={} in the private pstates table",
+                self.pstate_id, self.domain_raw
+            ))
+        })?;
+        set_u32(&mut buf, off, self.delta as u32);
+        gpu.set_pstates20_private_raw(&buf).map_err(Error::from)?;
+
+        // Verify via fresh GET.
+        let verify = gpu.pstates20_private_raw(STAMP).map_err(Error::from)?;
+        let got = u32_at(&verify, off) as i32;
+        if got != self.delta {
+            return Err(Error::from(format!(
+                "driver did not retain the delta (wrote {}, read back {})",
+                self.delta, got
+            )));
+        }
+        Ok(got)
+    }
+}
+
 /// Query every NVAPI target-temperature (温度墙) policy slot the driver exposes
 /// (private ClientThermalTarget GET-prime 0xC4554575). Returns one
 /// [`TargetTempPolicy`] per slot; empty on GPUs/driver paths that don't expose

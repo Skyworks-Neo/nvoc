@@ -82,6 +82,112 @@ pub(super) fn format_pstate_freq_range(output: &Value) -> Vec<String> {
     )
 }
 
+/// Human renderer for `get-pstates20-private` — the private pstates-2.0
+/// delta table (GetPstates20Private 0xC5DDF56E). All numbers are RAW table
+/// words (no unit conversion): `delta_raw` is in the table's native units
+/// (percent-of-domainMax per the public-path marshalling, unverified per
+/// SKU), `domain_id` is the 32-domain RTSS-space clock-domain id.
+pub(super) fn format_pstates20_private(output: &Value) -> Vec<String> {
+    use nvoc_cli_common::color::stylize_title;
+
+    fn domain_name(id: u64) -> &'static str {
+        match id {
+            0 => "Gpc",
+            1 => "Xbar",
+            2 => "Sys",
+            3 => "Hub",
+            4 => "M",
+            5 => "Host",
+            6 => "Disp",
+            7 => "Hotclk",
+            8 => "Pclk0",
+            9 => "Pclk1",
+            10 => "Bypclk",
+            11 => "Xclk",
+            12 => "Vpv",
+            13 => "Vps",
+            14 => "Gpucacheclk",
+            15 => "Gpc2",
+            16 => "Xbar2",
+            17 => "Sys2",
+            18 => "Hub2",
+            19 => "Leg",
+            20 => "Pwr",
+            21 => "Msd",
+            22 => "Utils",
+            23 => "ColdNv",
+            24 => "ColdHotclk",
+            25 => "Ltc2",
+            26 => "2D",
+            27 => "3D",
+            28 => "Host1x",
+            29 => "Disp0",
+            30 => "Disp1",
+            31 => "Pciegen",
+            _ => "?",
+        }
+    }
+
+    let mut lines = Vec::new();
+    let caps = output.get("caps_editable").and_then(Value::as_bool);
+    if let Some(editable) = caps {
+        lines.push(format!(
+            "{} {}",
+            stylize_title("Caps Editable"),
+            if editable { "yes" } else { "no" }
+        ));
+    }
+    for (key, label) in [
+        ("flags_raw", "Flags Raw"),
+        ("num_pstates", "Num Pstates"),
+        ("num_clocks", "Num Clocks"),
+        ("num_voltages", "Num Voltages"),
+    ] {
+        if let Some(v) = output.get(key).and_then(Value::as_u64) {
+            lines.push(format!("{} {v}", stylize_title(label)));
+        }
+    }
+    let Some(pstates) = output.get("pstates").and_then(Value::as_array) else {
+        return lines;
+    };
+    for pstate in pstates {
+        let pid = pstate.get("pstate_id").and_then(Value::as_u64);
+        let enabled = pstate.get("enabled").and_then(Value::as_bool);
+        lines.push(format!(
+            "{} P{}{}",
+            stylize_title("Pstate"),
+            pid.unwrap_or_default(),
+            match enabled {
+                Some(true) => " (enabled)",
+                Some(false) => " (disabled)",
+                None => "",
+            }
+        ));
+        let Some(clocks) = pstate.get("clocks").and_then(Value::as_array) else {
+            continue;
+        };
+        for clock in clocks {
+            let id = clock.get("domain_id").and_then(Value::as_u64);
+            let fmt = clock.get("fmt").and_then(Value::as_u64);
+            let cen = clock.get("enabled").and_then(Value::as_bool);
+            let delta = clock.get("delta_raw").and_then(Value::as_i64);
+            lines.push(format!(
+                "  domain {:>2} {:<11} fmt {} enabled {:<5} delta_raw {}",
+                id.map(|v| v.to_string()).unwrap_or_else(|| "?".into()),
+                domain_name(id.unwrap_or(u64::MAX)),
+                fmt.map(|v| v.to_string()).unwrap_or_else(|| "?".into()),
+                match cen {
+                    Some(true) => "yes",
+                    Some(false) => "no",
+                    None => "?",
+                },
+                delta.map(|v| v.to_string()).unwrap_or_else(|| "?".into()),
+            ));
+        }
+    }
+    lines
+}
+
 pub(super) fn format_supported_legacy_app_freq(output: &Value) -> Vec<String> {
     format_object_array(
         output,

@@ -12,7 +12,8 @@ use nvoc_core::{
     QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomains, QueryNvapiClkVfControl,
     QueryNvapiClkVfPoints, QueryNvapiCoolerInfo, QueryNvapiCoreVoltageControl, QueryNvapiDNotifier,
     QueryNvapiFanPolicyInfo, QueryNvapiOcScannerIncomplete, QueryNvapiPStateLevels,
-    QueryNvapiPStateLockStatus, QueryNvapiPmgrVoltageArbiter, QueryNvapiRatedTdp,
+    QueryNvapiPStateLockStatus, QueryNvapiPmgrVoltageArbiter, QueryNvapiPstates20Private,
+    QueryNvapiRatedTdp,
     QueryNvapiTargetTempPolicies, QueryNvapiTargetTempPolicyIndex, QueryNvapiTgpWattRange,
     QueryNvapiThermalSettings, QueryNvapiThermalSim, QueryNvapiVoltRails, QueryPowerLimits,
     QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits,
@@ -28,7 +29,8 @@ use nvoc_core::{
     SetFanStop, SetForcePstate, SetGpcVoltLock, SetLegacyClocks, SetLockedClocks,
     SetNvapiBackgroundOcScanner, SetNvapiClkDomainOffset, SetNvapiCoreVoltageControl,
     SetNvapiDNotifier, SetNvapiDynamicBoost, SetNvapiOvervolt, SetNvapiPStateNative,
-    SetNvapiPerfFreqCap, SetNvapiPerfLevelLock, SetNvapiPmgrVoltageArbiter, SetNvapiPowerLimits,
+    SetNvapiOverclockedPstates, SetNvapiPstates20PrivateDelta, SetNvapiPerfFreqCap,
+    SetNvapiPerfLevelLock, SetNvapiPmgrVoltageArbiter, SetNvapiPowerLimits,
     SetNvapiPstateLock, SetNvapiSensorLimits, SetNvapiTargetTemp, SetNvapiTgpWatt,
     SetNvapiThermalSim, SetNvapiVfpPointPrivate, SetNvapiVfpRangePerPointPrivate,
     SetNvapiVfpRangePrivate, SetNvapiVoltRailOffset, SetNvapiVoltRailTarget, SetNvmlAcousticTemp,
@@ -180,6 +182,9 @@ pub enum Command {
     GetAutoboostSupport,
     GetEdid,
     SetPstateGlobalFreqOffset,
+    SetOverclockedPstates,
+    GetPstates20Private,
+    SetPstates20PrivateDelta,
     SetPublicTgpPercent,
     SetPpabStatus,
     SetPowerLimit,
@@ -1169,6 +1174,39 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 },
             ),
             (
+                Command::SetOverclockedPstates,
+                CommandSpec {
+                    arity: (1, 1),
+                    positionals: Box::leak(Box::new([PositionalArg::finite(
+                        "arg_enable",
+                        "ENABLE",
+                        "Whether to unlock the overclocked-pstate range (on/off, yes/no, 1/0)",
+                        PositionalValueKind::Bool,
+                    )])),
+                    ..CommandSpec::new("set-overclocked-pstates", Group::Clock, "Toggle the overclocked-pstate unlock (EnableOverclockedPstates 0xB23B70EE): 1 opens the extended/OC pstate range before a set-pstate-global-freq-offset --nvapi delta write, 0 restores")
+                },
+            ),
+            (
+                Command::GetPstates20Private,
+                CommandSpec {
+                    formatter: Some(output::format_pstates20_private),
+                    ..CommandSpec::new("get-pstates20-private", Group::Clock, "Read-only dump of the private pstates-2.0 delta table (GetPstates20Private 0xC5DDF56E) — the storage whose deltas move the frequency-request ceiling; caps bit0 = kernel 'editable'")
+                },
+            ),
+            (
+                Command::SetPstates20PrivateDelta,
+                CommandSpec {
+                    arity: (1, 1),
+                    options: Box::leak(Box::new(["pstate", "domain", "flags"])),
+                    positionals: Box::leak(Box::new([PositionalArg::hyphen(
+                        "arg_delta",
+                        "DELTA",
+                        "Raw delta word written verbatim into the table slot. Native unit NOT live-calibrated: the public-path marshalling stores 100*delta_kHz/domainMax (i.e. percent of domain max), but the kernel-side interpretation is unverified — on P100 writes are not retained",
+                    )])),
+                    ..CommandSpec::new("set-pstates20-private-delta", Group::Clock, "DANGEROUS RMW of one delta in the private pstates table (SetPstates20Private 0x4C0B519A); --pstate/--domain take the raw ids printed by get-pstates20-private; --flags ORs bits into the byte@+4 flags word (bit1 = RM apply flag)")
+                },
+            ),
+            (
                 Command::SetPStateLock,
                 CommandSpec {
                     arity: (1, 1),
@@ -1964,6 +2002,11 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .long("dump")
             .action(ArgAction::SetTrue)
             .help("Print the full BIT token table + Fermi-model raw blocks instead of the brief summary"),
+        "flags" => Arg::new("flags")
+            .long("flags")
+            .value_name("BITS")
+            .action(ArgAction::Set)
+            .help("Extra bits ORed into the byte@+4 flags word of the private pstates table (bit1 = RM apply flag)"),
         _ => unreachable!("unknown command-specific option {name}"),
     }
 }
@@ -3215,6 +3258,67 @@ fn execute_target(
         Command::SetPstateGlobalFreqOffset => {
             let domain = option_domain(invocation, ClockDomain::Graphics)?;
             set_clock_offset(target, adapter, invocation, domain)
+        }
+        Command::SetOverclockedPstates => {
+            let enable = parse_bool(&invocation.positionals[0])?;
+            run(target, SetNvapiOverclockedPstates { enable })?;
+            Ok(json!({
+                "applied": true,
+                "overclocked_pstates": if enable { "unlocked" } else { "restored" },
+            }))
+        }
+        Command::GetPstates20Private => {
+            let dump = run(target, QueryNvapiPstates20Private { stamp: 81044 })?.output;
+            Ok(json!({
+                "source": "GetPstates20Private 0xC5DDF56E (stamp 81044)",
+                "caps_editable": dump.caps_editable,
+                "flags_raw": dump.flags_raw,
+                "num_pstates": dump.num_pstates,
+                "num_clocks": dump.num_clocks,
+                "num_voltages": dump.num_voltages,
+                "raw_len": dump.raw_len,
+                "pstates": dump.pstates.iter().map(|ps| json!({
+                    "pstate_id": ps.pstate_id,
+                    "enabled": ps.enabled,
+                    "clocks": ps.clocks.iter().map(|c| json!({
+                        "domain_id": c.domain_id,
+                        "fmt": c.fmt,
+                        "enabled": c.enabled,
+                        "delta_raw": c.delta_raw,
+                    })).collect::<Vec<_>>(),
+                })).collect::<Vec<_>>(),
+            }))
+        }
+        Command::SetPstates20PrivateDelta => {
+            let delta = parse_i32_unit(&invocation.positionals[0], "delta", "delta")?;
+            let pstate_id = option_one(invocation, "pstate")
+                .map(|s| s.trim_start_matches('P').parse::<u32>())
+                .transpose()
+                .map_err(|e| CliError::new(format!("invalid --pstate: {e}")))?
+                .unwrap_or(0);
+            let domain_raw = option_one(invocation, "domain")
+                .map(|s| s.parse::<u32>())
+                .transpose()
+                .map_err(|e| CliError::new(format!("invalid --domain: {e}")))?
+                .unwrap_or(3);
+            let retained = run(
+                target,
+                SetNvapiPstates20PrivateDelta {
+                    pstate_id,
+                    domain_raw,
+                    delta,
+                    flags: option_one(invocation, "flags")
+                        .and_then(|s| s.strip_prefix("0x").map_or_else(|| s.parse::<u32>().ok(), |h| u32::from_str_radix(h, 16).ok()))
+                        .unwrap_or(0),
+                },
+            )?
+            .output;
+            Ok(json!({
+                "applied": true,
+                "pstate_id": pstate_id,
+                "domain_raw": domain_raw,
+                "delta_percent": retained,
+            }))
         }
         Command::SetPublicTgpPercent => {
             let percent = parse_u32_unit(&invocation.positionals[0], "%", "percent")?;
@@ -6159,6 +6263,7 @@ mod tests {
             | Command::GetAutoboostSupport
             | Command::GetEdid
             | Command::SetPstateGlobalFreqOffset
+            | Command::SetOverclockedPstates
             | Command::SetPublicTgpPercent
             | Command::SetPpabStatus
             | Command::SetPowerLimit

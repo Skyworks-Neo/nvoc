@@ -199,6 +199,16 @@ pub enum OperationKind {
     /// clamp the perf max/min frequency to a cap value. The ref tool's
     /// `-gpuclk:<MHz>`. Distinct from P-state lock (SetNvapiPStateNative).
     SetNvapiPerfFreqCap,
+    /// Toggle the overclocked-pstate unlock (EnableOverclockedPstates NDA
+    /// 0xB23B70EE) — opens the extended/OC pstate range before a
+    /// SetPstates20 delta write.
+    SetNvapiOverclockedPstates,
+    /// Read-only raw dump of the private pstates-2.0 delta table
+    /// (GetPstates20Private 0xC5DDF56E) — the frequency-ceiling storage.
+    QueryNvapiPstates20Private,
+    /// RMW one delta in the private pstates-2.0 table
+    /// (SetPstates20Private 0x4C0B519A).
+    SetNvapiPstates20PrivateDelta,
     /// Read the GPU fan-curve table (ClientFanPoliciesGetControl NDA
     /// 0xE543C540, struct magic 0x200DC) — up to 4 curve slots × 3
     /// monotonic (temperature, RPM) points. Desktop-only (mobile drives
@@ -302,6 +312,8 @@ impl OperationKind {
                 | SetWm2Active
                 | SetWm2Mode
                 | SetNvapiPerfFreqCap
+                | SetNvapiOverclockedPstates
+                | SetNvapiPstates20PrivateDelta
         )
     }
 }
