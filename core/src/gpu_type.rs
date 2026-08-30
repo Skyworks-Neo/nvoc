@@ -689,9 +689,10 @@ impl GpuType {
     }
 
     /// XBAR ClockClient 域偏移（set-clk-domain-offset xbar / pynvoc
-    /// set_clk_domain_offset）自 Turing（GTX 16系）起存在 —— 16/20/30/40/50 系
-    /// 移动端与桌面端皆可超。Pascal（10系）及更旧、Volta、Unknown 不支持。
-    /// workstation/server 的 Turing+ 卡一并放行（写入本身有 snapshot/
+    /// set_clk_domain_offset）—— Pascal（10系）起所有架构放行：Pascal 经
+    /// nvoc-cli 实测可用（2026-08-31），Volta（P100 与 T4 之间的服务器卡
+    /// 系）一并放行。Kepler 及更旧、Unknown 不支持。
+    /// workstation/server 卡一并放行（写入本身有 snapshot/
     /// readback/restore 保护，个别不支持会由驱动报错）。
     pub fn supports_xbar_offset(&self) -> bool {
         matches!(
@@ -706,6 +707,12 @@ impl GpuType {
                 | GpuType::Desktop20Series
                 | GpuType::Mobile16Series
                 | GpuType::Desktop16Series
+                | GpuType::Mobile10Series
+                | GpuType::Desktop10Series
+                | GpuType::WorkstationPascal
+                | GpuType::ServerPascal
+                | GpuType::ServerVolta
+                | GpuType::ComputationVolta
                 | GpuType::WorkstationBlackwell
                 | GpuType::WorkstationLovelace
                 | GpuType::WorkstationAmpere

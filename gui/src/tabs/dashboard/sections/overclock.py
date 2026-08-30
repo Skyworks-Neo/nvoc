@@ -85,7 +85,7 @@ class OverclockTab:
         # the is_server classification (ServerLovelace L40/L4 carry fans).
         self._fanned_gpus = set()  # type: Set[str]
         self._fan_surface_gpu = None  # type: Optional[str]
-        self._xbar_supported = False  # Xbar row: Turing (GTX 16系) and newer
+        self._xbar_supported = False  # Xbar row: Pascal (GTX 10系) and newer
         self._is_resize_active = False
         self._pending_limits = None  # type: Optional[Dict[str, Any]]
         self._pending_capabilities = None  # type: Optional[Dict[str, Any]]
@@ -851,38 +851,44 @@ class OverclockTab:
     def _xbar_supported_arch(
         arch_id: str, codename: str = "", gpu_name: str = ""
     ) -> bool:
-        """True for Turing (the GTX 16-series) and every newer architecture.
+        """True for Pascal (GTX 10-series) and every newer architecture.
+
+        Pascal is included since the Xbar offset was live-verified there
+        (nvoc-cli set-private-freq-domain-global-offset xbar, 2026-08-31),
+        and Volta (the server-card generation between P100 and T4) is
+        allowed through alongside it. Kepler and older return False — the
+        XBAR ClockClient domain postdates them.
 
         Three signals, in priority order:
-        1. Chip codes from the codename or the arch string (tu106, ga102,
-           ad107, gb202 — optionally suffixed ":rev", "-B", " (process)").
-           The codename matters: on Ada the pynvoc ArchInfo enum has no AD
-           variant and reports ``gpu_architecture = 'Unknown:400:7:161'``,
-           while ``codename = 'AD107-B'`` carries the real chip code.
-        2. Friendly architecture names (Turing, Ampere, Ada, Blackwell) from
-           the CLI human output.
-        3. Marketing-name fallback: ``RTX 4060`` / ``GTX 1660`` — the model
-           number >= 1600 means 16-series or newer (GTX 1080/10-series and
-           below stay hidden).
-        Pascal (gp), Volta (gv) and older return False — the XBAR
-        ClockClient domain postdates them.
-        """
+        1. Chip codes from the codename or the arch string (gp104, tu106,
+           ga102, ad107, gb202 — optionally suffixed ":rev", "-B",
+           " (process)"). The codename matters: on Ada the pynvoc ArchInfo
+           enum has no AD variant and reports
+           ``gpu_architecture = 'Unknown:400:7:161'``, while
+           ``codename = 'AD107-B'`` carries the real chip code.
+        2. Friendly architecture names (Pascal, Turing, Ampere, Ada,
+           Blackwell) from the CLI human output.
+        3. Marketing-name fallback: ``RTX 4060`` / ``GTX 1660`` / ``GTX
+           1080`` — the model number >= 1000 means 10-series or newer
+           (GTX 980/9-series and below stay hidden).
+"""
         # 1) chip codes (codename first — it is the reliable one on Ada).
         for raw in (codename, arch_id):
             head = (
                 raw.lower().split("(", 1)[0].split(":", 1)[0].split("-", 1)[0].strip()
             )
-            if head.startswith(("tu", "ga", "ad", "gb")):
+            if head.startswith(("gp", "gv", "tu", "ga", "ad", "gb")):
                 return True
         # 2) friendly names.
         if any(
-            name in arch_id.lower() for name in ("turing", "ampere", "ada", "blackwell")
+            name in arch_id.lower()
+            for name in ("pascal", "volta", "turing", "ampere", "ada", "blackwell")
         ):
             return True
-        # 3) marketing name: RTX/GTX + model number, 1600 = 16-series floor.
+        # 3) marketing name: RTX/GTX + model number, 1000 = 10-series floor.
         match = __import__("re").search(r"\b(?:rtx|gtx)\s*(\d{3,4})", gpu_name.lower())
         if match:
-            return int(match.group(1)) >= 1600
+            return int(match.group(1)) >= 1000
         return False
 
     @staticmethod

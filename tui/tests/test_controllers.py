@@ -1331,8 +1331,21 @@ def test_overclock_xbar_supported_arch_heuristic() -> None:
     controller = OverclockController(app)
     assert controller.xbar_supported() is True
 
+    # Pascal: live-verified Xbar offset target (2026-08-31) — now supported
+    # via the chip code, the friendly name, and the marketing floor.
+    app_gp = _oc_app(codename="GP104")
+    assert OverclockController(app_gp).xbar_supported() is True
+    app_pascal = _oc_app(gpu_architecture="Pascal")
+    assert OverclockController(app_pascal).xbar_supported() is True
     app2 = _oc_app(gpu_name="NVIDIA GeForce GTX 1080")
-    assert OverclockController(app2).xbar_supported() is False
+    assert OverclockController(app2).xbar_supported() is True
+
+    # Volta (server-card generation between P100 and T4) is allowed through.
+    app_gv = _oc_app(codename="GV100")
+    assert OverclockController(app_gv).xbar_supported() is True
+    # 9-series and below stay hidden.
+    app_980 = _oc_app(gpu_name="NVIDIA GeForce GTX 980")
+    assert OverclockController(app_980).xbar_supported() is False
 
     app3 = _oc_app(gpu_name="NVIDIA GeForce RTX 4060 Laptop GPU")
     assert OverclockController(app3).xbar_supported() is True
