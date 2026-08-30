@@ -273,6 +273,12 @@ class VFCurveTab:
         self._p0_bounds_by_rail: Dict[int, dict] = {}  # rail_bit → bounds dict
         self._p0_effective_by_rail: Dict[int, Optional[float]] = {}  # bit → eff mV
         self._p0_effective_wall_mv: Optional[float] = None  # ACTIVE rail's wall
+        # Shift held at the moment the 🔁Reset button was pressed (captured by
+        # the <Button-1> binding — Tk button commands carry no modifier state).
+        # Shift+Reset clears the WHOLE private bank in one RMW write instead
+        # of the per-point segment loop (slow on wide private curves: P100's
+        # bank spans ~80–160 points × one escape each).
+        self._reset_with_shift = False
         # The light-red effective wall is draggable: a drag moves a *pending*
         # dashed copy (clamp to [floor, ceiling]); on "Apply to GPU" the
         # pending value is written via set_volt_rail_target and the returned
@@ -312,14 +318,20 @@ class VFCurveTab:
         LiteButton(io_row, text="📥Import", width=75, command=self._import_vfp).pack(
             side="left", padx=(0, 4)
         )
-        LiteButton(
+        reset_btn = LiteButton(
             io_row,
             text="🔁Reset",
             width=75,
             fg_color="#c0392b",
             hover_color="#96281b",
             command=self._reset_vfp,
-        ).pack(side="left")
+        )
+        # Shift+Reset → whole-bank private reset (one RMW, the
+        # reset-private-vftable-offset path) instead of the per-point
+        # segment clear. Tk button commands carry no modifier state, so
+        # capture it on the press binding that fires before the command.
+        reset_btn.bind("<Button-1>", self._on_reset_button_press, add="+")
+        reset_btn.pack(side="left")
 
         auto_row = tk.Frame(chart_top, bg=_PANEL_BG)
         auto_row.pack(side="right")
@@ -1912,6 +1924,23 @@ class VFCurveTab:
         rail_tag = self._active_p0_rail_tag()
         if isinstance(p0, dict):
             floor_uv = int(p0.get("min_hold_uV", 0) or 0)
+            _vbios_uv = int(p0.get("vbios_wall_uV", 0) or 0)
+            _vrm_uv = int(p0.get("vrm_max_wall_uV", 0) or 0)
+            _walls = [w for w in (_vbios_uv, _vrm_uv) if w > 0]
+            # Workable-region shading: slightly darken the band between the
+            # hardware floor and ceiling so the actually-operable voltage
+            # range reads as a distinct region. Static like the walls
+            # themselves (one artist, redrawn only with the curve); zorder
+            # keeps it above the grid but below the curves (2-4).
+            if floor_uv > 0 and _walls and min(_walls) > floor_uv:
+                ax.axvspan(
+                    floor_uv / 1000.0,
+                    min(_walls) / 1000.0,
+                    color="black",
+                    alpha=0.15,
+                    lw=0,
+                    zorder=1.5,
+                )
             if floor_uv > 0:
                 floor_mv = floor_uv / 1000.0
                 ax.axvline(

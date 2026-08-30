@@ -9,6 +9,8 @@ Covers:
 
 from __future__ import annotations
 
+import types
+
 import matplotlib
 
 matplotlib.use("Agg")  # headless: no Tk display required
@@ -622,3 +624,81 @@ def test_multirail_primary_apply_keeps_mem_view_intact() -> None:
     # Per-rail record updated for rail 0, but the visible MEM wall stands.
     assert tab._p0_effective_by_rail[0] == 1050.0
     assert tab._p0_effective_wall_mv == 1018.75
+
+
+# ── Shift+Reset: whole-bank private reset (one RMW) ──
+
+
+class _FullResetNative(_ApplyNative):
+    """Records reset_vfp_private (the reset-private-vftable-offset path)."""
+
+    def __init__(self):
+        super().__init__()
+        self.full_resets: list[tuple] = []
+
+    def reset_vfp_private(self, gpu, bank, only_mode):
+        self.full_resets.append(("reset_vfp_private", gpu, bank, only_mode))
+        return {"applied": True, "bank": bank, "points_reset": 160}
+
+    def set_vfp_point_private(self, gpu, bank, idx, value, freq_mode):
+        self.calls.append(("set_vfp_point_private", gpu, bank, idx, value, freq_mode))
+        return {"applied": True}
+
+
+def _make_private_curve_tab() -> VFCurveTab:
+    tab = _make_tab()
+    tab.app = _ApplyApp(tab.app.backend)
+    tab.app._native = _FullResetNative()
+    curve = types.SimpleNamespace(
+        curve_id="gpc",
+        bank=0,
+        write_mode="private",
+        seg_start=0,
+        seg_end=79,
+        defaults=[1500.0] * 80,
+    )
+    tab._curves = {"gpc": curve}
+    tab._refresh_curve = lambda: None  # the post-apply refresh is out of scope
+    return tab
+
+
+def test_shift_reset_uses_whole_bank_private_reset() -> None:
+    tab = _make_private_curve_tab()
+    tab._reset_with_shift = True
+
+    tab._reset_vfp()
+
+    native = tab.app._native
+    # ONE whole-bank RMW, both modes, no per-point writes.
+    assert native.full_resets == [("reset_vfp_private", "GPU0", 0, None)]
+    assert not any(c[0] == "set_vfp_point_private" for c in native.calls)
+    assert tab._reset_with_shift is False  # consumed
+
+
+def test_plain_reset_keeps_per_point_segment_path() -> None:
+    tab = _make_private_curve_tab()
+    tab._reset_with_shift = False
+
+    tab._reset_vfp()
+
+    native = tab.app._native
+    assert native.full_resets == []
+    # Falls through to the per-point mode-0 loop over the segment.
+    point_writes = [c for c in native.calls if c[0] == "set_vfp_point_private"]
+    assert point_writes  # per-point path taken
+
+
+def test_shift_capture_from_button_press_event() -> None:
+    tab = _make_tab()
+
+    class _Ev:
+        pass
+
+    ev = _Ev()
+    ev.state = 0x0001  # Shift mask
+    tab._on_reset_button_press(ev)
+    assert tab._reset_with_shift is True
+
+    ev.state = 0x0004  # Control only
+    tab._on_reset_button_press(ev)
+    assert tab._reset_with_shift is False
