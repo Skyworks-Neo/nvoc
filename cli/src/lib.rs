@@ -3858,11 +3858,10 @@ fn execute_target(
                         // brief: version, size, BIT offset + token count, perf
                         // layout byte — everything else needs --dump
                         let bit = vbios::parse_bit(&image).ok();
-                        let perf_layout = bit.as_ref().and_then(|s| {
-                            s.token_raw(&image, 'P')
-                                .filter(|raw| raw.len() >= 2)
-                                .map(|raw| raw[1])
-                        });
+                        let perf_layout = bit
+                            .as_ref()
+                            .and_then(|s| s.token_raw(&image, 'P'))
+                            .and_then(|raw| vbios::perf_layout_byte(&image, raw));
                         Ok(json!({
                             "version": version,
                             "size": image.len(),

@@ -40,6 +40,11 @@ pub struct BitToken {
     pub offset: u16,
 }
 
+/// Perf-table layout bytes seen across generations: FermiBiosEditor
+/// {0x10,0x11,0x12} (2010 layouts), 0x81 (GT730/GF108, undecoded), 0x50
+/// (Pascal — nouveau only models up to 0x40, so 0x50 is undecoded too).
+pub const KNOWN_PERF_LAYOUTS: [u8; 5] = [0x10, 0x11, 0x12, 0x50, 0x81];
+
 /// Parsed BIT-table summary of a VBIOS image.
 #[derive(Debug, Clone)]
 pub struct BitSummary {
@@ -47,6 +52,15 @@ pub struct BitSummary {
     pub bit_offset: usize,
     /// BIT header version byte.
     pub bit_version: u8,
+    /// Base the token sub-table offsets resolve against. Fermi-era images
+    /// carry BIT-RELATIVE offsets; Pascal images carry IMAGE-RELATIVE ones
+    /// (data segment at image start, BIT header in its standard slot —
+    /// live P100: BIT@0x1e2 and the token offsets only resolve at base 0;
+    /// resolving BIT-relative read garbage, e.g. perf layout 0x0a instead
+    /// of the real 0x50). Auto-detected via the 'P' layout byte: the first
+    /// of {bit_offset, 0} whose resolved 'P' table carries a known layout
+    /// byte at +1 or +2 wins; without a 'P' token the legacy base stands.
+    pub data_base: usize,
     /// All token-table entries.
     pub tokens: Vec<BitToken>,
 }
@@ -55,6 +69,7 @@ impl BitSummary {
     pub fn to_json(&self) -> Value {
         json!({
             "bit_offset": self.bit_offset,
+            "data_base": self.data_base,
             "bit_version": self.bit_version,
             "tokens": self.tokens.iter().map(|t| json!({
                 "token": t.token.to_string(),
@@ -65,11 +80,13 @@ impl BitSummary {
         })
     }
 
-    /// Raw bytes of a token's sub-table (offset is BIT-relative), if present.
+    /// Raw bytes of a token's sub-table, if present. Offsets resolve
+    /// against [`BitSummary::data_base`] (BIT-relative on Fermi-era
+    /// images, image-relative on Pascal).
     pub fn token_raw<'a>(&self, image: &'a [u8], token: char) -> Option<&'a [u8]> {
         self.tokens.iter().find(|t| t.token == token).and_then(|t| {
             image
-                .get(self.bit_offset + t.offset as usize..)?
+                .get(self.data_base + t.offset as usize..)?
                 .get(..t.size as usize)
         })
     }
@@ -109,7 +126,7 @@ pub fn parse_fermi_model(image: &[u8], bit: &BitSummary) -> Value {
         .filter(|raw| raw.len() >= 2)
         .map(|raw| RawBlock {
             token: 'P',
-            layout_version: Some(raw[1]),
+            layout_version: perf_layout_byte(image, raw),
             raw: raw.to_vec(),
         })
         .map(|b| b.to_json());
@@ -203,11 +220,61 @@ pub fn parse_bit(image: &[u8]) -> Result<BitSummary, String> {
 
     let (_, tokens) =
         best.ok_or_else(|| "BIT token table not found (no anchored chain)".to_string())?;
+    let data_base = detect_data_base(image, bit, &tokens);
     Ok(BitSummary {
         bit_offset: bit,
         bit_version,
+        data_base,
         tokens,
     })
+}
+
+/// Pick the base token offsets resolve against (see [`BitSummary::data_base`]).
+/// Legacy BIT-relative is tried first so Fermi-era behavior is preserved;
+/// the image-relative base only wins when the legacy resolve is garbage.
+/// Two accepted forms:
+/// - flat: the 'P' table itself carries a known layout byte at +1/+2
+///   (Fermi-era {0x10,0x11,0x12}, GT730 0x81);
+/// - pointer directory (Pascal): the 'P' table is an array of u32 image
+///   offsets and the first target's first byte is the layout version
+///   (live P100: P@750 → ptr 0xb05a → image[0xb05a] == 0x50). The
+///   directory form self-validates the base — a wrong base resolves the
+///   first u32 to an out-of-image pointer (BIT-relative on P100 gives
+///   0x740aee ≫ image size).
+fn detect_data_base(image: &[u8], bit: usize, tokens: &[BitToken]) -> usize {
+    let Some(p) = tokens.iter().find(|t| t.token == 'P') else {
+        return bit;
+    };
+    for &base in &[bit, 0] {
+        let raw = image
+            .get(base + p.offset as usize..)
+            .and_then(|s| s.get(..p.size as usize));
+        if let Some(raw) = raw {
+            if perf_layout_byte(image, raw).is_some() {
+                return base;
+            }
+        }
+    }
+    bit
+}
+
+/// The perf table's layout/version byte. Flat form: at +1 on the Fermi-era
+/// layouts (GT730's 0x81 also at +1); directory form (Pascal): the first
+/// u32 of the directory points at the real table whose first byte is the
+/// version (P100: 0x50 — nouveau only models up to 0x40).
+pub fn perf_layout_byte(image: &[u8], raw: &[u8]) -> Option<u8> {
+    for i in [1usize, 2] {
+        if raw.get(i).is_some_and(|b| KNOWN_PERF_LAYOUTS.contains(b)) {
+            return Some(raw[i]);
+        }
+    }
+    let ptr = raw
+        .get(..4)
+        .map(|b| u32::from_le_bytes(b.try_into().unwrap()) as usize)?;
+    image
+        .get(ptr)
+        .copied()
+        .filter(|&b| KNOWN_PERF_LAYOUTS.contains(&b))
 }
 
 #[cfg(test)]
@@ -221,6 +288,37 @@ mod tests {
         img[1] = 0xAA;
         img[0x1a6..0x1a9].copy_from_slice(b"BIT");
         assert_eq!(find_bit(&img), Some(0x1a6));
+    }
+
+    #[test]
+    fn pascal_directory_data_base() {
+        // Pascal form: token offsets are IMAGE-relative and the 'P' token is
+        // a u32 pointer directory; the first target's first byte is the perf
+        // table version. BIT-relative resolution reads a garbage first u32
+        // that lands outside the image — the discriminator.
+        let mut img = vec![0u8; 0x8000];
+        img[0] = 0x55;
+        img[1] = 0xAA;
+        let bit = 0x1e2; // Pascal standard slot
+        img[bit..bit + 3].copy_from_slice(b"BIT");
+        img[bit + 3] = 0x00;
+        // real perf table at 0xb05a, version byte 0x50
+        img[0xb05a] = 0x50;
+        let t = bit + 16;
+        // 'P' directory entry: offset 750 (image-relative), size 16
+        img[t..t + 6].copy_from_slice(&[b'P', 2, 16, 0, 0xf6, 0x02]);
+        // directory body: first u32 = 0xb05a
+        let dir = 750usize;
+        img[dir..dir + 4].copy_from_slice(&0xb05au32.to_le_bytes());
+        // + 3 more tokens to clear the >=4 chain bar
+        img[t + 6..t + 12].copy_from_slice(&[b'B', 2, 4, 0, 0x10, 0x03]);
+        img[t + 12..t + 18].copy_from_slice(&[b'S', 2, 8, 0, 0x20, 0x03]);
+        img[t + 18..t + 24].copy_from_slice(&[b'V', 1, 6, 0, 0x30, 0x03]);
+        img[t + 24..t + 30].copy_from_slice(&[0; 6]);
+        let sum = parse_bit(&img).expect("parse");
+        assert_eq!(sum.data_base, 0, "image-relative base must win");
+        let raw = sum.token_raw(&img, 'P').expect("P raw");
+        assert_eq!(perf_layout_byte(&img, raw), Some(0x50));
     }
 
     #[test]
