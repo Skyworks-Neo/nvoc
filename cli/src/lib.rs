@@ -1188,7 +1188,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 Command::GetPstates20Private,
                 CommandSpec {
                     formatter: Some(output::format_pstates20_private),
-                    ..CommandSpec::new("get-pstates20-private", Group::Clock, "Read-only dump of the private pstates-2.0 delta table (GetPstates20Private 0xC5DDF56E) — the storage whose deltas move the frequency-request ceiling; caps bit0 = kernel 'editable'")
+                    ..CommandSpec::new("get-private-legacy-pstates20-freq-domain-info", Group::Clock, "Read-only dump of the private pstates-2.0 delta table (GetPstates20Private 0xC5DDF56E) — the storage whose deltas move the frequency-request ceiling; caps bit0 = kernel 'editable'")
                 },
             ),
             (
@@ -1201,7 +1201,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                         "DELTA",
                         "Raw delta word written verbatim into the table slot. Native unit NOT live-calibrated: the public-path marshalling stores 100*delta_kHz/domainMax (i.e. percent of domain max), but the kernel-side interpretation is unverified — on P100 writes are not retained",
                     )])),
-                    ..CommandSpec::new("set-pstates20-private-delta", Group::Clock, "DANGEROUS RMW of one delta in the private pstates table (SetPstates20Private 0x4C0B519A); --domain takes a domain name (gpc/xbar/m/gpc2/…) or the raw id printed by get-pstates20-private; --flags ORs bits into the byte@+4 flags word (bit1 = RM apply flag)")
+                    ..CommandSpec::new("set-private-legacy-pstates20-freq-domain-global-offset", Group::Clock, "DANGEROUS RMW of one delta in the private pstates table (SetPstates20Private 0x4C0B519A); --domain takes a domain name (gpc/xbar/m/gpc2/…) or the raw id printed by get-private-legacy-pstates20-freq-domain-info; --flags ORs bits into the byte@+4 flags word (bit1 = RM apply flag)")
                 },
             ),
             (
@@ -6166,9 +6166,9 @@ fn domain_label(domain: ClockDomain) -> &'static str {
     }
 }
 
-/// Resolve a `set-pstates20-private-delta --domain` argument into the
+/// Resolve a `set-private-legacy-pstates20-freq-domain-global-offset --domain` argument into the
 /// private pstates table's 32-domain clock-domain id (RTSS naming space —
-/// same ids `get-pstates20-private` prints). Accepts the domain name
+/// same ids `get-private-legacy-pstates20-freq-domain-info` prints). Accepts the domain name
 /// (case-insensitive, e.g. `gpc`, `Gpc2`, `mem`/`m`) or a bare integer 0-31.
 fn parse_private_domain_id(raw: &str) -> Result<u32, String> {
     const NAMES: &[(&str, u32)] = &[

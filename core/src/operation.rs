@@ -3086,7 +3086,7 @@ impl GpuOperation for SetNvapiPstates20PrivateDelta {
         if slot_disabled {
             return Err(Error::from(format!(
                 "the pstate {} domain {} slot is DISABLED in the private table \
-                 (see get-pstates20-private) — the kernel rejects writes to \
+                 (see get-private-legacy-pstates20-freq-domain-info) — the kernel rejects writes to \
                  disabled slots with NVAPI_ERROR",
                 self.pstate_id, self.domain_raw
             )));

@@ -82,7 +82,7 @@ pub(super) fn format_pstate_freq_range(output: &Value) -> Vec<String> {
     )
 }
 
-/// Human renderer for `get-pstates20-private` — the private pstates-2.0
+/// Human renderer for `get-private-legacy-pstates20-freq-domain-info` — the private pstates-2.0
 /// delta table (GetPstates20Private 0xC5DDF56E). All numbers are RAW table
 /// words (no unit conversion): `delta_raw` is in the table's native units
 /// (percent-of-domainMax per the public-path marshalling, unverified per
