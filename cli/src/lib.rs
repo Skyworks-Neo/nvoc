@@ -5958,6 +5958,20 @@ fn parse_clk_domain(raw: &str) -> CliResult<u32> {
 /// sys/host/uncore are legacy attributions of the same record — the curve
 /// was called HOST, then SYS, before the bit-5 offset A/B pinned MSD).
 /// A bare integer bypasses the remap and targets that raw record.
+///
+/// ARCH-DEPENDENT: the bit-5 write record's cluster is NOT universal — on
+/// Pascal (GTX 1080, live-reported 2026-08-31) writing `host` (= bit 5)
+/// moves the GetAllClocks SYS domain instead of an MSD cluster. The
+/// record-bit → physical-domain wiring is per-generation; only the 4060
+/// (Ada) mapping is live-verified in nvoc.
+///
+/// READBACK NOTE: a global offset written here does NOT project into the
+/// per-point V/F control readback (get-private-vftable's `offset:` field,
+/// ClkVfPoints GetControl 0xDA025C3E) — verified 2026-08-31 on the 4060
+/// for bits 0 and 5, before and after a genuine bank-0 point reset. It
+/// surfaces in exactly two places: this command's own record dump
+/// (get-private-freq-domain-info slot 0) and the curve points' freq_current
+/// shifting away from freq_default.
 fn parse_clk_domain_write(raw: &str) -> CliResult<u32> {
     let trimmed = raw.trim();
     match trimmed.to_ascii_lowercase().as_str() {
