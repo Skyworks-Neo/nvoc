@@ -618,6 +618,13 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     ..CommandSpec::new("get-pstate-lock", Group::Clock, "Read the native NVAPI P-State level table")
                 },
             ),
+            (
+                Command::GetPstates20Private,
+                CommandSpec {
+                    formatter: Some(output::format_pstates20_private),
+                    ..CommandSpec::new("get-pstates20-private", Group::Clock, "Read-only dump of the private pstates-2.0 delta table (GetPstates20Private 0xC5DDF56E) — the storage whose deltas move the frequency-request ceiling; caps bit0 = kernel 'editable'")
+                },
+            ),
             (Command::GetPublicGpcRailVoltBoost, CommandSpec::new("get-public-gpc-rail-volt-boost", Group::Voltage, "Read NVAPI voltage boost percent")),
             (Command::GetPublicPowerLimit, CommandSpec::new("get-public-power-limit", Group::Power, "Read the NVAPI public power-limit range (TDP min/default/max percent, ClientPowerPolicies)")),
             (Command::GetPublicTempLimit, CommandSpec::new("get-public-temp-limit", Group::Thermal, "Read the NVAPI public temp-limit range (min/default/max Celsius + throttle curve)")),
@@ -982,6 +989,19 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 },
             ),
             (
+                Command::SetOverclockedPstates,
+                CommandSpec {
+                    arity: (1, 1),
+                    positionals: Box::leak(Box::new([PositionalArg::finite(
+                        "arg_enable",
+                        "ENABLE",
+                        "Whether to unlock the overclocked-pstate range (on/off, yes/no, 1/0)",
+                        PositionalValueKind::Bool,
+                    )])),
+                    ..CommandSpec::new("set-overclocked-pstates", Group::Clock, "Toggle the overclocked-pstate unlock (EnableOverclockedPstates 0xB23B70EE): 1 opens the extended/OC pstate range before a set-pstate-global-freq-offset --nvapi delta write, 0 restores")
+                },
+            ),
+            (
                 Command::SetOvervoltUv,
                 CommandSpec {
                     arity: (1, 1),
@@ -1172,39 +1192,6 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 },
             ),
             (
-                Command::SetOverclockedPstates,
-                CommandSpec {
-                    arity: (1, 1),
-                    positionals: Box::leak(Box::new([PositionalArg::finite(
-                        "arg_enable",
-                        "ENABLE",
-                        "Whether to unlock the overclocked-pstate range (on/off, yes/no, 1/0)",
-                        PositionalValueKind::Bool,
-                    )])),
-                    ..CommandSpec::new("set-overclocked-pstates", Group::Clock, "Toggle the overclocked-pstate unlock (EnableOverclockedPstates 0xB23B70EE): 1 opens the extended/OC pstate range before a set-pstate-global-freq-offset --nvapi delta write, 0 restores")
-                },
-            ),
-            (
-                Command::GetPstates20Private,
-                CommandSpec {
-                    formatter: Some(output::format_pstates20_private),
-                    ..CommandSpec::new("get-pstates20-private", Group::Clock, "Read-only dump of the private pstates-2.0 delta table (GetPstates20Private 0xC5DDF56E) — the storage whose deltas move the frequency-request ceiling; caps bit0 = kernel 'editable'")
-                },
-            ),
-            (
-                Command::SetPstates20PrivateDelta,
-                CommandSpec {
-                    arity: (1, 1),
-                    options: Box::leak(Box::new(["pstate", "domain", "flags"])),
-                    positionals: Box::leak(Box::new([PositionalArg::hyphen(
-                        "arg_delta",
-                        "DELTA",
-                        "Raw delta word written verbatim into the table slot. Native unit NOT live-calibrated: the public-path marshalling stores 100*delta_kHz/domainMax (i.e. percent of domain max), but the kernel-side interpretation is unverified — on P100 writes are not retained",
-                    )])),
-                    ..CommandSpec::new("set-pstates20-private-delta", Group::Clock, "DANGEROUS RMW of one delta in the private pstates table (SetPstates20Private 0x4C0B519A); --domain takes a domain name (gpc/xbar/m/gpc2/…) or the raw id printed by get-pstates20-private; --flags ORs bits into the byte@+4 flags word (bit1 = RM apply flag)")
-                },
-            ),
-            (
                 Command::SetPStateLock,
                 CommandSpec {
                     arity: (1, 1),
@@ -1235,6 +1222,19 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                         PositionalValueKind::Pstate,
                     )])),
                     ..CommandSpec::new("set-pstate-lock-via-mem-range", Group::Clock, "Lock one NVML P-State or a contiguous range via memory freq range")
+                },
+            ),
+            (
+                Command::SetPstates20PrivateDelta,
+                CommandSpec {
+                    arity: (1, 1),
+                    options: Box::leak(Box::new(["pstate", "domain", "flags"])),
+                    positionals: Box::leak(Box::new([PositionalArg::hyphen(
+                        "arg_delta",
+                        "DELTA",
+                        "Raw delta word written verbatim into the table slot. Native unit NOT live-calibrated: the public-path marshalling stores 100*delta_kHz/domainMax (i.e. percent of domain max), but the kernel-side interpretation is unverified — on P100 writes are not retained",
+                    )])),
+                    ..CommandSpec::new("set-pstates20-private-delta", Group::Clock, "DANGEROUS RMW of one delta in the private pstates table (SetPstates20Private 0x4C0B519A); --domain takes a domain name (gpc/xbar/m/gpc2/…) or the raw id printed by get-pstates20-private; --flags ORs bits into the byte@+4 flags word (bit1 = RM apply flag)")
                 },
             ),
             (
@@ -6296,6 +6296,7 @@ mod tests {
             | Command::GetPowerLimit
             | Command::GetPstateGlobalFreqOffset
             | Command::GetPstateFreqRange
+            | Command::GetPstates20Private
             | Command::GetSupportedLegacyApplicationFreq
             | Command::GetFanInfo
             | Command::GetFanCurve
@@ -6317,6 +6318,7 @@ mod tests {
             | Command::GetAutoboostSupport
             | Command::GetEdid
             | Command::SetPstateGlobalFreqOffset
+            | Command::SetPstates20PrivateDelta
             | Command::SetOverclockedPstates
             | Command::SetPublicTgpPercent
             | Command::SetPpabStatus
