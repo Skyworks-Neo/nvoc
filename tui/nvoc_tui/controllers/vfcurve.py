@@ -309,7 +309,8 @@ class VFCurveController(PaneController):
         # status feed, XBAR/SYS from the direct-read poll path. Hidden
         # curves are neither plotted nor polled.
         live_point: tuple[float, float] | None = None
-        live_color = "yellow+"
+        # Single measured working-point crosshair, green on every curve.
+        live_color = "green+"
         live_voltage: float | None = None
         if active is not None:
             if active_id == "gpc":
@@ -320,7 +321,6 @@ class VFCurveController(PaneController):
                 ):
                     live_point = (float(live_voltage), float(live_clock))
             else:
-                live_color = "green+"
                 cached_point = self.app.cache.vf_live_point
                 if cached_point is not None:
                     live_point = cached_point
@@ -347,8 +347,11 @@ class VFCurveController(PaneController):
             if lock_curve_point is not None:
                 lock_point = (lock_voltage_mv, lock_curve_point[1])
         if lock_point is not None:
+            # A single vertical line at the lock voltage — no horizontal
+            # marker: the lock clamps voltage, it doesn't pin frequency, so
+            # any hline would just be a (wrong after clamping) reverse curve
+            # lookup like the old working-point line was.
             plt.vline(lock_point[0], color="orange+")
-            plt.hline(lock_point[1], color="orange+")
             plt.text(
                 "Locked at {} mV".format(lock_voltage_mv),
                 lock_point[0],
@@ -356,20 +359,16 @@ class VFCurveController(PaneController):
                 color="orange+",
                 alignment="right",
             )
-        working_point = None
-        if active is not None:
-            working_point = find_curve_point_for_voltage(
-                active.voltages,
-                active.frequencies,
-                float(live_voltage) if isinstance(live_voltage, (int, float)) else None,
-            )
-        if working_point is not None:
-            plt.hline(working_point[1], color="green+")
+        # No separate "working point" line: the live crosshair IS the working
+        # point. The old green hline reverse-looked-up the curve at the live
+        # voltage, which goes wrong once the P0 voltage floor (effective wall
+        # / Volt Limit) clamps the rail — the running GPC frequency no longer
+        # matches the curve value at that voltage — and, being drawn after
+        # the crosshair, it overprinted the (correct) live hline anyway.
         bounds = compute_vf_plot_bounds_multi(
             visible,
             live_point=live_point,
             lock_point=lock_point,
-            working_point=working_point,
         )
         if bounds is not None:
             (x_min, x_max), (y_min, y_max) = bounds
