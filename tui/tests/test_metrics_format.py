@@ -247,16 +247,28 @@ def test_format_metric_lines_multi_rail_voltage() -> None:
     assert "VOLT: GPC 1000 mV | MSVDD 655.5 mV" in text
 
 
-def test_format_metric_lines_voltage_falls_back_without_two_rails() -> None:
-    """Fewer than two usable rail readings keep the plain core-voltage form."""
-    # Single rail only.
-    status = {"voltage_mv": 950, "rail_volts_mv": [("GPC", 950.0)]}
+def test_format_metric_lines_single_rail_uses_real_rail_current() -> None:
+    """Single-rail part: VOLT shows the real rail current_uV (volt-rails
+    status), not the coarse NVAPI ``voltage_mv`` field — they differ by a
+    few mV on a 4060 Laptop (1020 rail vs 1010 voltage_mv). Plain form,
+    no label (only one rail to name)."""
+    # Real rail 1020 mV, voltage_mv would say 1010 — the rail value wins.
+    status = {"voltage_mv": 1010, "rail_volts_mv": [("GPC", 1020.0)]}
+    text = "\n".join(_format_metric_lines(status, "Ada"))
+    assert "VOLT: 1020 mV" in text
+    assert "1010" not in text  # voltage_mv must NOT leak in
+    assert "GPC" not in text  # no label on single-rail form
+
+    # Second rail present but reading zero (idle) — dropped, stays single-rail.
+    status["rail_volts_mv"] = [("GPC", 950.0), ("MSVDD", 0.0)]
     text = "\n".join(_format_metric_lines(status, "Ada"))
     assert "VOLT: 950 mV" in text
-    assert "GPC" not in text
 
-    # Second rail present but reading zero (idle) — dropped, plain form.
-    status["rail_volts_mv"] = [("GPC", 950.0), ("MSVDD", 0.0)]
+
+def test_format_metric_lines_voltage_falls_back_without_rails() -> None:
+    """No rail data at all (volt-rails family unsupported on this part):
+    fall back to the NVAPI ``voltage_mv`` field."""
+    status = {"voltage_mv": 950}
     text = "\n".join(_format_metric_lines(status, "Ada"))
     assert "VOLT: 950 mV" in text
 

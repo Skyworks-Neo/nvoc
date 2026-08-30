@@ -871,7 +871,7 @@ class OverclockTab:
         3. Marketing-name fallback: ``RTX 4060`` / ``GTX 1660`` / ``GTX
            1080`` — the model number >= 1000 means 10-series or newer
            (GTX 980/9-series and below stay hidden).
-"""
+        """
         # 1) chip codes (codename first — it is the reliable one on Ada).
         for raw in (codename, arch_id):
             head = (

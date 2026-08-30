@@ -216,7 +216,7 @@ class OverclockController(PaneController):
            Blackwell).
         3. Marketing-name fallback: RTX/GTX + model number, 1000 =
            10-series floor (GTX 980/9-series and below stay hidden).
-"""
+        """
         for raw in (codename, arch_id):
             head = (
                 raw.lower().split("(", 1)[0].split(":", 1)[0].split("-", 1)[0].strip()
