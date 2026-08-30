@@ -587,6 +587,13 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 },
             ),
             (
+                Command::GetPstates20Private,
+                CommandSpec {
+                    formatter: Some(output::format_pstates20_private),
+                    ..CommandSpec::new("get-private-legacy-pstates20-freq-domain-info", Group::Clock, "Read-only dump of the private pstates-2.0 delta table (GetPstates20Private 0xC5DDF56E) — the storage whose deltas move the frequency-request ceiling; caps bit0 = kernel 'editable'")
+                },
+            ),
+            (
                 Command::GetPrivateVftable,
                 CommandSpec {
                     options: Box::leak(Box::new(["bank", "domain", "infer-missing-field"])),
@@ -616,13 +623,6 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     options: Box::leak(Box::new(["pstate-domain"])),
                     formatter: Some(output::format_pstate_native_output),
                     ..CommandSpec::new("get-pstate-lock", Group::Clock, "Read the native NVAPI P-State level table")
-                },
-            ),
-            (
-                Command::GetPstates20Private,
-                CommandSpec {
-                    formatter: Some(output::format_pstates20_private),
-                    ..CommandSpec::new("get-private-legacy-pstates20-freq-domain-info", Group::Clock, "Read-only dump of the private pstates-2.0 delta table (GetPstates20Private 0xC5DDF56E) — the storage whose deltas move the frequency-request ceiling; caps bit0 = kernel 'editable'")
                 },
             ),
             (Command::GetPublicGpcRailVoltBoost, CommandSpec::new("get-public-gpc-rail-volt-boost", Group::Voltage, "Read NVAPI voltage boost percent")),
@@ -1110,6 +1110,19 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 },
             ),
             (
+                Command::SetPstates20PrivateDelta,
+                CommandSpec {
+                    arity: (1, 1),
+                    options: Box::leak(Box::new(["pstate", "domain", "flags"])),
+                    positionals: Box::leak(Box::new([PositionalArg::hyphen(
+                        "arg_delta",
+                        "DELTA",
+                        "Raw delta word written verbatim into the table slot. Native unit NOT live-calibrated: the public-path marshalling stores 100*delta_kHz/domainMax (i.e. percent of domain max), but the kernel-side interpretation is unverified — on P100 writes are not retained",
+                    )])),
+                    ..CommandSpec::new("set-private-legacy-pstates20-freq-domain-global-offset", Group::Clock, "DANGEROUS RMW of one delta in the private pstates table (SetPstates20Private 0x4C0B519A); --domain takes a domain name (gpc/xbar/m/gpc2/…) or the raw id printed by get-private-legacy-pstates20-freq-domain-info; --flags ORs bits into the byte@+4 flags word (bit1 = RM apply flag)")
+                },
+            ),
+            (
                 Command::SetPrivatePermanentPstateLockUser,
                 CommandSpec {
                     arity: (1, 1),
@@ -1222,19 +1235,6 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                         PositionalValueKind::Pstate,
                     )])),
                     ..CommandSpec::new("set-pstate-lock-via-mem-range", Group::Clock, "Lock one NVML P-State or a contiguous range via memory freq range")
-                },
-            ),
-            (
-                Command::SetPstates20PrivateDelta,
-                CommandSpec {
-                    arity: (1, 1),
-                    options: Box::leak(Box::new(["pstate", "domain", "flags"])),
-                    positionals: Box::leak(Box::new([PositionalArg::hyphen(
-                        "arg_delta",
-                        "DELTA",
-                        "Raw delta word written verbatim into the table slot. Native unit NOT live-calibrated: the public-path marshalling stores 100*delta_kHz/domainMax (i.e. percent of domain max), but the kernel-side interpretation is unverified — on P100 writes are not retained",
-                    )])),
-                    ..CommandSpec::new("set-private-legacy-pstates20-freq-domain-global-offset", Group::Clock, "DANGEROUS RMW of one delta in the private pstates table (SetPstates20Private 0x4C0B519A); --domain takes a domain name (gpc/xbar/m/gpc2/…) or the raw id printed by get-private-legacy-pstates20-freq-domain-info; --flags ORs bits into the byte@+4 flags word (bit1 = RM apply flag)")
                 },
             ),
             (
