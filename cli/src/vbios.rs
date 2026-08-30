@@ -296,7 +296,7 @@ mod tests {
         // a u32 pointer directory; the first target's first byte is the perf
         // table version. BIT-relative resolution reads a garbage first u32
         // that lands outside the image — the discriminator.
-        let mut img = vec![0u8; 0x8000];
+        let mut img = vec![0u8; 0x10000];
         img[0] = 0x55;
         img[1] = 0xAA;
         let bit = 0x1e2; // Pascal standard slot
