@@ -6217,9 +6217,7 @@ fn parse_private_domain_id(raw: &str) -> Result<u32, String> {
         .ok()
         .filter(|id| *id <= 31)
         .ok_or_else(|| {
-            format!(
-                "unknown domain {raw:?} — use a name (gpc, xbar, m, gpc2, …) or 0-31"
-            )
+            format!("unknown domain {raw:?} — use a name (gpc, xbar, m, gpc2, …) or 0-31")
         })
 }
 
