@@ -37,8 +37,14 @@ class FakeConsole:
 
 
 class FakeNative:
-    def __init__(self) -> None:
+    def __init__(self, mem_lock_error: Exception | None = None) -> None:
         self.calls: list[tuple] = []
+        # What the mem-range pstate setters return (pynvoc: None on a clean
+        # apply, else the overlap warning string).
+        self.pstate_lock_warning: str | None = None
+        # Raised by the mem-range pstate setters when set (pre-Kepler part:
+        # the NVML pstate query is Not Supported).
+        self.mem_lock_error = mem_lock_error
 
     def set_clock_offset(
         self, gpu: str, backend: str, domain: str, offset: int, pstate: str
@@ -93,24 +99,40 @@ class FakeNative:
     def reset_pstate_native_lock(self, gpu: str) -> None:
         self.calls.append(("reset_pstate_native_lock", gpu))
 
-    def set_nvml_pstate_lock(self, gpu: str, first: str, second: str) -> None:
+    def set_nvml_pstate_lock(self, gpu: str, first: str, second: str) -> str | None:
         self.calls.append(("set_nvml_pstate_lock", gpu, first, second))
+        if self.mem_lock_error is not None:
+            raise self.mem_lock_error
+        return self.pstate_lock_warning
 
-    def set_nvapi_pstate_lock(self, gpu: str, first: str, second: str) -> None:
+    def set_nvapi_pstate_lock(self, gpu: str, first: str, second: str) -> str | None:
         self.calls.append(("set_nvapi_pstate_lock", gpu, first, second))
+        if self.mem_lock_error is not None:
+            raise self.mem_lock_error
+        return self.pstate_lock_warning
 
     def reset_mem_clocks(self, gpu: str, backend: str) -> None:
         self.calls.append(("reset_mem_clocks", gpu, backend))
 
 
 class FakeApp:
-    def __init__(self, *, legacy_voltage: bool | None = False) -> None:
+    def __init__(
+        self,
+        *,
+        legacy_voltage: bool | None = False,
+        mem_lock_error: Exception | None = None,
+    ) -> None:
         self.console = FakeConsole()
-        self.native = FakeNative()
+        self.native = FakeNative(mem_lock_error=mem_lock_error)
         self.actions: list[str] = []
+        self.action_outputs: list[str | None] = []
         # Per-GPU flags surfaced from get-gpu-list (see app.py
-        # _populate_gpu_dropdown). None → unknown.
-        self._gpu_flags_by_idx = {0: {"is_legacy_voltage": legacy_voltage}}
+        # _populate_gpu_dropdown). None → unknown/absent.
+        self._gpu_flags_by_idx = {
+            0: {
+                "is_legacy_voltage": legacy_voltage,
+            }
+        }
 
     def get_current_gpu_index(self) -> int | None:
         return 0
@@ -119,11 +141,22 @@ class FakeApp:
         return "GPU0"
 
     def run_native_action(self, description: str, action, on_finished=None) -> bool:
+        # Mirror the backend worker: run the action, catch its exception
+        # (error output), and never let it escape into the caller.
         self.actions.append(description)
-        action(self.native)
+        try:
+            output = action(self.native)
+        except Exception as exc:
+            self.action_outputs.append(f"{exc}")
+        else:
+            self.action_outputs.append(output)
         if on_finished is not None:
             on_finished(0)
         return True
+
+    def after(self, _delay: int, callback) -> None:
+        # Run immediately so the worker-thread fallback lands synchronously.
+        callback()
 
     def run_native_action_chain(self, commands) -> None:
         for description, action in commands:
@@ -135,8 +168,11 @@ def make_tab(
     xbar_supported: bool = False,
     xbar_value: str = "10",
     legacy_voltage: bool | None = False,
+    mem_lock_error: Exception | None = None,
 ) -> tuple[OverclockTab, FakeApp]:
-    app = FakeApp(legacy_voltage=legacy_voltage)
+    app = FakeApp(
+        legacy_voltage=legacy_voltage, mem_lock_error=mem_lock_error
+    )
     tab = OverclockTab.__new__(OverclockTab)
     tab.app = app
     tab._syncing = False
@@ -608,38 +644,87 @@ class _FakePstateSelector:
         pass
 
 
-def test_pstate_lock_legacy_uses_native_point_lock() -> None:
-    # Legacy GPU (Maxwell/Kepler/Fermi): must call the native single-P-State
-    # pin, NOT the mem-range lock — the mem-range path needs NVML P-State
-    # memory-clock ranges that are Not Supported on e.g. Fermi.
+def test_pstate_lock_mem_range_first_on_any_gpu() -> None:
+    # Mem-range is ALWAYS the first choice — no generation gating. Even a
+    # legacy-voltage part (Maxwell Titan X / Kepler) gets the range lock
+    # (with the full range preserved) until it actually fails.
     tab, app = make_tab(legacy_voltage=True)
-    tab.pstate_selector = _FakePstateSelector(("P8", "P8"))
+    tab.pstate_selector = _FakePstateSelector(("P0", "P2"))
 
     tab._apply_pstate_lock()
 
     assert app.actions == ["apply P-State lock"]
-    assert app.native.calls == [("set_pstate_native_lock", "GPU0", "P8")]
+    assert app.native.calls == [("set_nvapi_pstate_lock", "GPU0", "P0", "P2")]
 
 
-def test_pstate_lock_legacy_reset_uses_native_reset() -> None:
-    tab, app = make_tab(legacy_voltage=True)
+def test_pstate_lock_mem_range_failure_falls_back_to_pin() -> None:
+    # Runtime mem-range failure (pre-Kepler part: NVML pstate mem-clock
+    # query Not Supported) → native single-P-State pin, point-mode fused.
+    tab, app = make_tab(mem_lock_error=RuntimeError("Not Supported"))
+    tab.pstate_selector = _FakePstateSelector(("P0", "P2"))
+
+    tab._apply_pstate_lock()
+    # FakeApp.after runs the fallback inline: mem-range attempt raises
+    # (recorded), then the pin re-apply fires.
+    assert app.native.calls == [
+        ("set_nvapi_pstate_lock", "GPU0", "P0", "P2"),
+        ("set_pstate_native_lock", "GPU0", "P0"),
+    ]
+    assert tab.pstate_selector.point_mode is True
+    assert tab._pstate_pin_fallback is True
+    # The fallback is announced in the console.
+    assert any(
+        "falling back to the native single-P-State pin" in m
+        for m in app.console.messages
+    )
+
+
+def test_pstate_pin_sticky_after_fallback() -> None:
+    # After the fallback armed, subsequent applies go straight to the pin
+    # (no pointless mem-range retry) and unlock resets the pin.
+    tab, app = make_tab(mem_lock_error=RuntimeError("Not Supported"))
+    tab.pstate_selector = _FakePstateSelector(("P0", "P2"))
+    tab._apply_pstate_lock()
+
+    tab._apply_pstate_lock()
+    assert app.native.calls[-1] == ("set_pstate_native_lock", "GPU0", "P0")
 
     tab._unlock_pstate_lock()
-
-    assert app.actions == ["reset P-State lock"]
-    assert app.native.calls == [("reset_pstate_native_lock", "GPU0")]
+    assert app.native.calls[-1] == ("reset_pstate_native_lock", "GPU0")
 
 
-def test_pstate_lock_legacy_with_nvml_available_still_native() -> None:
-    # Regression: the fallback is gated on legacy GENERATION, not NVML
-    # availability — after the NVSMI path fix made NVML load on the GT730,
-    # a backend_nvml-based gate flipped this back to the mem-range lock.
+def test_pstate_fallback_cleared_on_pstate_refresh() -> None:
+    # A fresh p-state roster (get / GPU switch) clears the fallback and
+    # restores the range selector.
+    tab, app = make_tab(mem_lock_error=RuntimeError("Not Supported"))
+    tab.pstate_selector = _FakePstateSelector(("P0", "P2"))
+    tab._apply_pstate_lock()
+    assert tab.pstate_selector.point_mode is True
+
+    tab.btn_apply_pstate = FakeSlider("normal")
+    tab.btn_unlock_pstate = FakeSlider("normal")
+    tab.set_supported_pstates(["P0", "P2", "P8"])
+
+    assert tab._pstate_pin_fallback is False
+    assert tab.pstate_selector.point_mode is False
+
+
+def test_pstate_lock_mem_range_warning_surfaced() -> None:
+    # Overlapping P-States outside the requested range (identical memory
+    # clocks after a VBIOS edit): applied anyway, warning surfaced first.
     tab, app = make_tab(legacy_voltage=True)
-    tab.pstate_selector = _FakePstateSelector(("P8", "P8"))
+    tab.pstate_selector = _FakePstateSelector(("P0", "P0"))
+    app.native.pstate_lock_warning = (
+        "P0 maps to memory lock window 3501-3601 MHz, which also overlaps "
+        "NVML P-States outside the requested range: P2 — applying anyway"
+    )
 
     tab._apply_pstate_lock()
 
-    assert app.native.calls == [("set_pstate_native_lock", "GPU0", "P8")]
+    assert app.native.calls == [("set_nvapi_pstate_lock", "GPU0", "P0", "P0")]
+    output = app.action_outputs[0]
+    assert output.startswith("Warning: P0 maps to memory lock window")
+    assert "Successfully applied NVAPI P-State lock P0-P0." in output
 
 
 def test_pstate_lock_modern_uses_mem_range() -> None:
@@ -654,22 +739,10 @@ def test_pstate_lock_modern_uses_mem_range() -> None:
     assert app.native.calls == [("set_nvapi_pstate_lock", "GPU0", "P0", "P2")]
 
 
-def test_pstate_point_mode_set_on_legacy() -> None:
-    # When the P-State list updates on a legacy GPU, the selector must be
-    # fused into point-mode (single-P-State pin has no range form).
+def test_pstate_range_mode_default() -> None:
+    # The selector starts in range mode — point-mode only fuses after a
+    # runtime mem-range failure.
     tab, _app = make_tab(legacy_voltage=True)
-    tab.pstate_selector = _FakePstateSelector(("P8", "P8"))
-    # set_supported_pstates also pokes the apply/unlock buttons.
-    tab.btn_apply_pstate = FakeSlider("normal")
-    tab.btn_unlock_pstate = FakeSlider("normal")
-
-    tab.set_supported_pstates(["P0", "P8", "P12"])
-
-    assert tab.pstate_selector.point_mode is True
-
-
-def test_pstate_range_mode_preserved_on_modern_gpu() -> None:
-    tab, _app = make_tab(legacy_voltage=False)
     tab.pstate_selector = _FakePstateSelector(("P0", "P8"))
     tab.btn_apply_pstate = FakeSlider("normal")
     tab.btn_unlock_pstate = FakeSlider("normal")

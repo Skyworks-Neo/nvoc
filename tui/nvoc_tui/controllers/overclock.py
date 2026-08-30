@@ -28,6 +28,10 @@ class OverclockController(PaneController):
         self._volt_rail_bit = 0  # rail bit (0 on single-rail mobile GPUs)
         self._volt_limit_range = (300.0, 1200.0)  # mV, walls refine the ceiling
         self._volt_limit_supported = False
+        # Set when a mem-range P-State lock failed at runtime (pre-Kepler
+        # part: the NVML pstate mem-clock query is Not Supported there) —
+        # apply/reset then use the native single-P-State pin instead.
+        self._pstate_pin_fallback = False
 
     def available_pstates(self) -> list[str]:
         pstates = self.app.cache.settings.get("supported_pstates", [])
@@ -149,6 +153,10 @@ class OverclockController(PaneController):
             pass
         self.load_mobile_limits()
         self._load_fan_surface()
+        # Fresh get/settings load (also fires on GPU switch) — drop any
+        # mem-range-failure pin fallback from the previous GPU; the pin
+        # re-arms per GPU when its own mem-range attempt fails.
+        self._pstate_pin_fallback = False
 
     def apply_oc(
         self,
@@ -350,18 +358,6 @@ class OverclockController(PaneController):
         head = codename.split("(", 1)[0].split(":", 1)[0].split("-", 1)[0].strip()
         return head.startswith(("gm", "gk", "gf"))
 
-    def is_nvapi_only(self) -> bool:
-        """True when the GPU has no NVML backend (native P-State pin path).
-
-        NVAPI-only GPUs (e.g. GT730/391.35 where NVML init fails) cannot use
-        the memory-clock-range P-State lock — they use the native NVAPI
-        P-State pin (``set_pstate_native_lock``), which accepts a SINGLE
-        P-State. Reuses the legacy-voltage arch heuristic (Maxwell/Kepler/Fermi
-        = the NVAPI-only population) since the TUI info cache has no
-        ``backend_nvml`` field.
-        """
-        return self.is_legacy_voltage()
-
     def apply_pstate_limits(
         self,
         native,
@@ -370,22 +366,48 @@ class OverclockController(PaneController):
         pstart: str,
         pend: str,
     ) -> str:
-        if self.is_nvapi_only():
-            # Native single-P-State pin (no range form). In point-mode the
-            # caller forces pend == pstart; use pstart as the single target.
+        """Mem-range range lock first; native single-state pin on failure.
+
+        A runtime failure on the mem-range lock marks a pre-Kepler part (the
+        NVML pstate mem-clock query the window derivation needs is Not
+        Supported there) — retry once with the native pin, collapsing the
+        range to its high-perf endpoint (the pin has no range form).
+        """
+        if self._pstate_pin_fallback:
+            # Native single-P-State pin (no range form). The caller collapses
+            # pend == pstart; pstart is the single target.
             native.set_pstate_native_lock(gpu, pstart)
             return f"Successfully pinned NVAPI P-State {pstart}."
         try:
-            if backend == "nvml":
+            warning = (
                 native.set_nvml_pstate_lock(gpu, pstart, pend)
-            else:
-                native.set_nvapi_pstate_lock(gpu, pstart, pend)
+                if backend == "nvml"
+                else native.set_nvapi_pstate_lock(gpu, pstart, pend)
+            )
         except Exception as exc:
-            raise self.enrich_pstate_exception(exc) from exc
-        return f"Successfully applied {backend} PState limits {pstart}-{pend}."
+            # First mem-range attempt failed → pre-Kepler part. The NVML
+            # pstate mem-clock ranges the window derivation needs are Not
+            # Supported there; the native single-state pin is the only path.
+            self._pstate_pin_fallback = True
+            try:
+                native.set_pstate_native_lock(gpu, pstart)
+            except Exception as pin_exc:
+                raise self.enrich_pstate_exception(pin_exc) from pin_exc
+            return (
+                "Memory-range P-State lock unavailable on this GPU — "
+                f"falling back to the native single-P-State pin.\n"
+                f"Successfully pinned NVAPI P-State {pstart}."
+            )
+        message = f"Successfully applied {backend} PState limits {pstart}-{pend}."
+        if warning:
+            # Overlapping P-States ride the same memory window by
+            # construction (e.g. a VBIOS edit pinning P2 to P0's clocks) —
+            # the lock applied anyway; surface the caveat.
+            message = f"Warning: {warning}\n{message}"
+        return message
 
     def reset_pstate_limits(self, native, gpu: str, backend: str) -> str:
-        if self.is_nvapi_only():
+        if self._pstate_pin_fallback:
             native.reset_pstate_native_lock(gpu)
             return "Successfully reset NVAPI P-State lock."
         if backend == "nvml":
@@ -778,9 +800,9 @@ class OverclockController(PaneController):
                 self.normalize_pstate(self.app.query_one("#pstate-end", Input).value)
                 or pstart
             )
-            # NVAPI-only GPUs use the native P-State pin (no range form):
-            # collapse to the single high-perf endpoint.
-            if self.is_nvapi_only():
+            # After a mem-range failure (pre-Kepler part) the native pin has
+            # no range form — collapse to the single high-perf endpoint.
+            if self._pstate_pin_fallback:
                 pend = pstart
 
             pstate_error = self.validate_pstates(pstart, pend)

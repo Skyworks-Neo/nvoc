@@ -620,7 +620,7 @@ pub fn set_nvml_pstate_lock(
     gpu_id: u32,
     first_pstate: PerformanceState,
     second_pstate: PerformanceState,
-) -> Result<(String, u32, u32), Error> {
+) -> Result<(String, u32, u32, Option<String>), Error> {
     let pstates = get_nvml_pstate_info(nvml, gpu_id).ok_or_else(|| {
         Error::Custom(format!(
             "Failed to query NVML P-State information for GPU {}",
@@ -669,18 +669,24 @@ pub fn set_nvml_pstate_lock(
     let outside_requested_range =
         collect_outside_requested_range(&overlapping_pstates, min_index, max_index);
 
-    if !outside_requested_range.is_empty() {
-        return Err(Error::Custom(format!(
-            "{} would map to memory lock window {}-{} MHz, but that also overlaps NVML P-States outside the requested range: {}. Use --nvml-locked-mem-clocks for a manual range instead.",
+    // Mirror the NVAPI variant's policy: overlapping P-States outside the
+    // requested range (identical memory clocks after a VBIOS edit) are a
+    // warning, not an error — the window cannot exclude them by construction,
+    // so lock anyway and surface the caveat via the 4th output element.
+    let warning = if outside_requested_range.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "{} maps to memory lock window {}-{} MHz, which also overlaps NVML P-States outside the requested range: {} — applying anyway (the window cannot exclude them; use --nvml-locked-mem-clocks for a manual range if exclusion is required).",
             range_label,
             min_lock_mhz,
             max_lock_mhz,
             outside_requested_range.join(", "),
-        )));
-    }
+        ))
+    };
 
     set_nvml_mem_locked_clocks(nvml, gpu_id, min_lock_mhz, max_lock_mhz)?;
-    Ok((range_label, min_lock_mhz, max_lock_mhz))
+    Ok((range_label, min_lock_mhz, max_lock_mhz, warning))
 }
 
 // ---------------------------------------------------------------------------

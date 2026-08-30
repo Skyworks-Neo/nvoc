@@ -3631,17 +3631,23 @@ fn set_legacy_clocks(gpu: &str, core_mhz: u32, memory_mhz: u32) -> PyResult<()> 
     Ok(())
 }
 
+/// Lock one NVML P-State or a contiguous range via a memory-clock window
+/// (NVAPI locked clocks). Returns None on a clean apply, or a warning string
+/// when the derived window also overlaps P-States outside the requested
+/// range — identical memory clocks across P-States (e.g. a VBIOS edit
+/// pinning P2 to P0's clocks) make the ranges inseparable, so the lock is
+/// applied anyway and the caveat surfaced for the UI to display.
 #[pyfunction]
 fn set_nvapi_pstate_lock(
     py: Python<'_>,
     gpu: &str,
     first_pstate: &str,
     second_pstate: Option<&str>,
-) -> PyResult<()> {
+) -> PyResult<Option<String>> {
     let gpu_own = gpu.to_string();
     let first_pstate_own = first_pstate.to_string();
     let second_pstate_own = second_pstate.map(|s| s.to_string());
-    py.detach(|| -> PyResult<()> {
+    py.detach(|| -> PyResult<Option<String>> {
         let gpu: &str = &gpu_own;
         let first_pstate: &str = &first_pstate_own;
         let second_pstate: Option<&str> = second_pstate_own.as_deref();
@@ -3651,7 +3657,7 @@ fn set_nvapi_pstate_lock(
             inventory_cache.entry(BackendSet::Both)?
         };
         let target = selected_target(&inventory.0, gpu)?;
-        run(
+        let report = run(
             &target,
             SetNvapiPstateLock {
                 first_pstate: parse_nvml_pstate(first_pstate)?,
@@ -3659,21 +3665,23 @@ fn set_nvapi_pstate_lock(
             },
         )
         .map_err(to_py_err)?;
-        Ok(())
+        Ok(report.output.3)
     })
 }
 
+/// NVML-adapter twin of [`set_nvapi_pstate_lock`] (memory locked clocks).
+/// Same warning contract: None on a clean apply, else the overlap caveat.
 #[pyfunction]
 fn set_nvml_pstate_lock(
     py: Python<'_>,
     gpu: &str,
     first_pstate: &str,
     second_pstate: Option<&str>,
-) -> PyResult<()> {
+) -> PyResult<Option<String>> {
     let gpu_own = gpu.to_string();
     let first_pstate_own = first_pstate.to_string();
     let second_pstate_own = second_pstate.map(|s| s.to_string());
-    py.detach(|| -> PyResult<()> {
+    py.detach(|| -> PyResult<Option<String>> {
         let gpu: &str = &gpu_own;
         let first_pstate: &str = &first_pstate_own;
         let second_pstate: Option<&str> = second_pstate_own.as_deref();
@@ -3683,7 +3691,7 @@ fn set_nvml_pstate_lock(
             inventory_cache.entry(BackendSet::Nvml)?
         };
         let target = selected_target(&inventory.0, gpu)?;
-        run(
+        let report = run(
             &target,
             SetNvmlPstateLock {
                 first_pstate: parse_nvml_pstate(first_pstate)?,
@@ -3691,15 +3699,16 @@ fn set_nvml_pstate_lock(
             },
         )
         .map_err(to_py_err)?;
-        Ok(())
+        Ok(report.output.3)
     })
 }
 
 /// Pin the active NVAPI P-State to a single state (the `set-pstate-lock` CLI
 /// path: `PerfClientLimitsSetStatus` NDA 0x39442CFB, mode-1 PstateSelect).
-/// Pure NVAPI — no NVML, no memory-clock-range derivation. This is the fallback
-/// for NVAPI-only GPUs (e.g. GT730/391.35) where `set_nvapi_pstate_lock` (which
-/// derives a memory-clock window from NVML P-State ranges) cannot run.
+/// Pure NVAPI — no NVML, no memory-clock-range derivation. This is the
+/// fallback for pre-Kepler GPUs (e.g. GT730/391.35) where
+/// `set_nvapi_pstate_lock` (which derives a memory-clock window from NVML
+/// P-State ranges) cannot run — the NVML query is Not Supported there.
 ///
 /// Unlike the mem-range lock this interface pins a SINGLE P-State — there is
 /// no range form. Callers must force point-mode (start == end) in the UI.

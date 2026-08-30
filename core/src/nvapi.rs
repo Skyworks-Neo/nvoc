@@ -652,7 +652,7 @@ pub fn set_nvapi_pstate_lock(
     gpu_id: u32,
     first_pstate: nvml_wrapper::enum_wrappers::device::PerformanceState,
     second_pstate: nvml_wrapper::enum_wrappers::device::PerformanceState,
-) -> Result<(String, u32, u32), Error> {
+) -> Result<(String, u32, u32, Option<String>), Error> {
     let pstates = get_nvml_pstate_info(nvml, gpu_id).ok_or_else(|| {
         Error::Custom(format!(
             "Failed to query NVML P-State information for GPU {}",
@@ -703,15 +703,23 @@ pub fn set_nvapi_pstate_lock(
     let outside_requested_range =
         collect_outside_requested_range(&overlapping_pstates, min_index, max_index);
 
-    if !outside_requested_range.is_empty() {
-        return Err(Error::Custom(format!(
-            "{} would map to memory lock window {}-{} MHz, but that also overlaps NVML P-States outside the requested range: {}. Use --locked-mem-clocks for a manual NVAPI range instead.",
+    // A window that also admits P-States outside the requested range is NOT
+    // a hard error: identical memory clocks across P-States (e.g. a VBIOS
+    // edit pinning P2 to P0's clocks) make the ranges inseparable by design
+    // — locking the window anyway is exactly what the user asked for. Warn
+    // (returned as the 4th output element for CLI/GUI/TUI to surface) and
+    // apply.
+    let warning = if outside_requested_range.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "{} maps to memory lock window {}-{} MHz, which also overlaps NVML P-States outside the requested range: {} — applying anyway (the window cannot exclude them; use --locked-mem-clocks for a manual NVAPI range if exclusion is required).",
             range_label,
             min_lock_mhz,
             max_lock_mhz,
             outside_requested_range.join(", "),
-        )));
-    }
+        ))
+    };
 
     set_vfp_frequency_lock(
         gpu,
@@ -720,7 +728,7 @@ pub fn set_nvapi_pstate_lock(
         Some(Kilohertz(min_lock_mhz.saturating_mul(1000))),
     )?;
 
-    Ok((range_label, min_lock_mhz, max_lock_mhz))
+    Ok((range_label, min_lock_mhz, max_lock_mhz, warning))
 }
 
 pub fn lock_vfp(gpus: &[&Gpu], request: VfpLockRequest, feedback_flag: bool) -> Result<(), Error> {

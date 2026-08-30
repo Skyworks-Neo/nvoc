@@ -160,7 +160,13 @@ class FakeNative:
         self.calls: list[tuple] = []
         self.raise_on_set_clock: Exception | None = None
         self.raise_on_set_vfp_point_private: Exception | None = None
+        # Raised by the mem-range nvapi pstate lock when set (pre-Kepler
+        # part: the NVML pstate query is Not Supported).
+        self.raise_on_set_nvapi_pstate_lock: Exception | None = None
         self.direct_freq_khz: int = 0
+        # What the mem-range pstate setters return (pynvoc: None on a clean
+        # apply, else the overlap warning string).
+        self.pstate_lock_warning: str | None = None
 
     def query_public_vftable(self, gpu, domain, infer_missing_default):
         self.calls.append(
@@ -286,9 +292,13 @@ class FakeNative:
 
     def set_nvml_pstate_lock(self, gpu, pstart, pend):
         self.calls.append(("set_nvml_pstate_lock", gpu, pstart, pend))
+        return self.pstate_lock_warning
 
     def set_nvapi_pstate_lock(self, gpu, pstart, pend):
         self.calls.append(("set_nvapi_pstate_lock", gpu, pstart, pend))
+        if self.raise_on_set_nvapi_pstate_lock is not None:
+            raise self.raise_on_set_nvapi_pstate_lock
+        return self.pstate_lock_warning
 
     def set_pstate_native_lock(self, gpu, pstate):
         self.calls.append(("set_pstate_native_lock", gpu, pstate))
@@ -593,6 +603,11 @@ def test_overclock_pstate_limits_defaults_blank_end_to_start_and_calls_nvml() ->
 
 
 def test_overclock_pstate_limits_enriches_native_unknown_pstate() -> None:
+    # A mem-range failure whose message mentions an unknown pstate still
+    # enriches with the available list — but under the fallback design any
+    # mem-range failure first arms the native pin (that IS the contract:
+    # failure ⇒ pre-Kepler part). The enrichment surfaces when the pin
+    # path itself raises unknown-pstate.
     app = FakeApp()
     app.cache.settings["supported_pstates"] = ["P0", "P2"]
     app.native.raise_on_set_clock = RuntimeError("unknown pstate")
@@ -602,13 +617,14 @@ def test_overclock_pstate_limits_enriches_native_unknown_pstate() -> None:
         "#pstate-end": SimpleNamespace(value=""),
     }
 
-    original = app.native.set_nvapi_pstate_lock
+    original = app.native.set_pstate_native_lock
 
     def raise_unknown(*args):
         original(*args)
         raise app.native.raise_on_set_clock
 
-    app.native.set_nvapi_pstate_lock = raise_unknown
+    app.native.set_pstate_native_lock = raise_unknown
+    app.native.raise_on_set_nvapi_pstate_lock = RuntimeError("Not Supported")
 
     try:
         OverclockController(app).handle_button("pstate-limits-apply")
@@ -644,39 +660,126 @@ def test_overclock_pstate_reset_uses_nvml_memory_locked_clocks() -> None:
     assert app.native.calls == [("reset_locked_clocks", "0x0000", "nvml", "memory")]
 
 
-def test_overclock_pstate_limits_nvapi_only_uses_native_point_lock() -> None:
-    # Legacy/NVAPI-only GPU: native single-P-State pin, NOT the mem-range lock.
-    # pend is collapsed to pstart (no range form). GT730 GK208 → is_legacy_voltage.
-    app = _oc_app(codename="GK208")
-    app.cache.settings["supported_pstates"] = ["P0", "P8", "P12"]
+def test_overclock_pstate_limits_mem_range_first_on_any_gpu() -> None:
+    # Mem-range is ALWAYS the first choice — no generation gating. A
+    # legacy-voltage part (Maxwell Titan X) gets the range lock until it
+    # actually fails.
+    app = _oc_app(codename="GM200", arch="Maxwell")
+    app.cache.settings["supported_pstates"] = ["P0", "P2"]
     app.widgets.update(
         {
             "#oc-api": SimpleNamespace(value="nvapi"),
-            "#pstate-start": SimpleNamespace(value="P8"),
-            "#pstate-end": SimpleNamespace(value="P12"),  # ignored on NVAPI-only
+            "#pstate-start": SimpleNamespace(value="P0"),
+            "#pstate-end": SimpleNamespace(value="P2"),
         }
     )
 
     assert OverclockController(app).handle_button("pstate-limits-apply") is True
 
     assert app.actions == ["apply PState limits"]
-    assert app.action_outputs == ["Successfully pinned NVAPI P-State P8."]
-    assert app.native.calls == [("set_pstate_native_lock", "0x0000", "P8")]
+    assert app.action_outputs == ["Successfully applied nvapi PState limits P0-P2."]
+    assert app.native.calls == [("set_nvapi_pstate_lock", "0x0000", "P0", "P2")]
 
 
-def test_overclock_pstate_reset_nvapi_only_uses_native_reset() -> None:
-    app = _oc_app(codename="GK208")
+def test_overclock_pstate_limits_mem_range_failure_falls_back_to_pin() -> None:
+    # Runtime mem-range failure (pre-Kepler part: NVML pstate mem-clock
+    # query Not Supported) → retry with the native single-P-State pin on the
+    # range's high-perf endpoint.
+    app = _oc_app(codename="GF108")
+    app.cache.settings["supported_pstates"] = ["P0", "P8", "P12"]
     app.widgets.update(
         {
             "#oc-api": SimpleNamespace(value="nvapi"),
+            "#pstate-start": SimpleNamespace(value="P8"),
+            "#pstate-end": SimpleNamespace(value="P12"),
         }
     )
+    app.native.raise_on_set_nvapi_pstate_lock = RuntimeError("Not Supported")
 
-    assert OverclockController(app).handle_button("pstate-limits-reset") is True
+    assert OverclockController(app).handle_button("pstate-limits-apply") is True
 
-    assert app.actions == ["reset PState limits"]
-    assert app.action_outputs == ["Successfully reset NVAPI P-State lock."]
-    assert app.native.calls == [("reset_pstate_native_lock", "0x0000")]
+    assert app.actions == ["apply PState limits"]
+    output = app.action_outputs[0]
+    assert output.startswith(
+        "Memory-range P-State lock unavailable on this GPU"
+    )
+    assert "Successfully pinned NVAPI P-State P8." in output
+    # Mem-range attempted first, then the pin fallback.
+    assert app.native.calls == [
+        ("set_nvapi_pstate_lock", "0x0000", "P8", "P12"),
+        ("set_pstate_native_lock", "0x0000", "P8"),
+    ]
+
+
+def test_overclock_pstate_pin_sticky_after_fallback() -> None:
+    # After the fallback armed, subsequent applies go straight to the pin
+    # (no mem-range retry) and reset clears the pin.
+    app = _oc_app(codename="GF108")
+    app.cache.settings["supported_pstates"] = ["P0", "P8"]
+    app.widgets.update(
+        {
+            "#oc-api": SimpleNamespace(value="nvapi"),
+            "#pstate-start": SimpleNamespace(value="P8"),
+            "#pstate-end": SimpleNamespace(value=""),
+        }
+    )
+    app.native.raise_on_set_nvapi_pstate_lock = RuntimeError("Not Supported")
+    controller = OverclockController(app)
+    controller.handle_button("pstate-limits-apply")
+
+    controller.handle_button("pstate-limits-apply")
+    assert app.native.calls[-1] == ("set_pstate_native_lock", "0x0000", "P8")
+
+    controller.handle_button("pstate-limits-reset")
+    assert app.native.calls[-1] == ("reset_pstate_native_lock", "0x0000")
+
+
+def test_overclock_pstate_fallback_cleared_on_prime() -> None:
+    # A fresh settings load (also fires on GPU switch) clears the fallback.
+    app = _oc_app(codename="GF108")
+    app.cache.settings["supported_pstates"] = ["P0", "P8"]
+    app.widgets.update(
+        {
+            "#oc-api": SimpleNamespace(value="nvapi"),
+            "#pstate-start": SimpleNamespace(value="P8"),
+            "#pstate-end": SimpleNamespace(value=""),
+        }
+    )
+    app.native.raise_on_set_nvapi_pstate_lock = RuntimeError("Not Supported")
+    controller = OverclockController(app)
+    controller.handle_button("pstate-limits-apply")
+    assert controller._pstate_pin_fallback is True
+
+    controller.prime_inputs()
+
+    assert controller._pstate_pin_fallback is False
+
+
+def test_overclock_pstate_limits_mem_range_warning_surfaced() -> None:
+    # Overlapping P-States outside the requested range (identical memory
+    # clocks after a VBIOS edit): the lock applies anyway and the action
+    # output leads with the warning.
+    app = _oc_app(codename="GM200", arch="Maxwell")
+    app.cache.settings["supported_pstates"] = ["P0"]
+    app.widgets.update(
+        {
+            "#oc-api": SimpleNamespace(value="nvapi"),
+            "#pstate-start": SimpleNamespace(value="P0"),
+            "#pstate-end": SimpleNamespace(value="P0"),
+        }
+    )
+    app.native.pstate_lock_warning = (
+        "P0 maps to memory lock window 3501-3601 MHz, which also overlaps "
+        "NVML P-States outside the requested range: P2 — applying anyway"
+    )
+
+    assert OverclockController(app).handle_button("pstate-limits-apply") is True
+
+    assert app.actions == ["apply PState limits"]
+    output = app.action_outputs[0]
+    assert output.startswith("Warning: P0 maps to memory lock window")
+    assert "Successfully applied nvapi PState limits P0-P0." in output
+    assert app.native.calls == [("set_nvapi_pstate_lock", "0x0000", "P0", "P0")]
     app = FakeApp()
     app.widgets = {
         "#fan-api": SimpleNamespace(value="nvml"),
@@ -774,6 +877,85 @@ def test_vfcurve_refresh_clears_inflight_when_thread_start_fails(
         controller.refresh_curve()
 
     assert controller.is_refresh_inflight() is False
+
+
+def test_header_gpu_switch_reloads_vf_curve() -> None:
+    """Switching GPUs must drop the previous GPU's curve and re-query it
+    (regression: the old curve lingered on the plot when the new part had
+    no V/F interface and auto-refresh was off)."""
+    app = FakeApp()
+    app.widgets = _selector_widgets()
+    submitted: list[object] = []
+    app.native_service.submit_query = submitted.append
+    controller = VFCurveController(app)
+    app.vfcurve_controller = controller
+    # Previous GPU's curve + per-GPU P0 walls loaded.
+    controller._curves = {
+        "gpc": CurveData("gpc", voltages=[800.0], frequencies=[1500.0])
+    }
+    controller._p0_bounds = {"min_hold_uV": 600_000}
+    controller._p0_bounds_gpu = "0x0000"
+
+    HeaderController(app).on_gpu_selected("1")
+
+    assert app.full_refreshes == 1
+    assert controller._curves == {}
+    assert controller._p0_bounds is None
+    assert controller._p0_bounds_gpu is None
+    # The reload query was submitted for the new GPU.
+    assert len(submitted) == 1
+
+
+def test_vfcurve_unsupported_gpu_clears_plot_with_message() -> None:
+    """A GPU with no V/F-curve interface must clear the plot and say so —
+    not "query failed", and not the previous GPU's curve."""
+    app = FakeApp()
+    app.widgets = _selector_widgets()
+    titles: list[str] = []
+    plot = _plot_widget()
+    plot.plt.title = titles.append
+    app.widgets["#vf-plot"] = plot
+
+    def unsupported(_gpu, _domain="graphics", _infer=True):
+        raise RuntimeError("NvAPI function not supported")
+
+    app.native_service.query_public_vftable = unsupported
+    app.native_service.query_private_vftable = lambda _gpu: None
+    app.native_service.submit_query = lambda job: job()
+    controller = VFCurveController(app)
+    controller._curves = {
+        "gpc": CurveData("gpc", voltages=[800.0], frequencies=[1500.0])
+    }
+
+    controller.refresh_curve()
+
+    assert controller._curves == {}
+    assert "not supported" in titles[-1]
+
+
+def test_vfcurve_refresh_requested_inflight_reruns_after_landing() -> None:
+    """A refresh requested while another was inflight (a GPU switch racing
+    the auto-refresh tick) must re-run once the inflight one lands."""
+    app = FakeApp()
+
+    def unsupported(_gpu, _domain="graphics", _infer=True):
+        raise RuntimeError("NvAPI function not supported")
+
+    app.native_service.query_public_vftable = unsupported
+    app.native_service.query_private_vftable = lambda _gpu: None
+    submitted: list[object] = []
+    app.native_service.submit_query = submitted.append
+    controller = VFCurveController(app)
+
+    controller.refresh_curve()  # inflight (worker not yet run)
+    controller.refresh_curve()  # deferred behind the inflight one
+    assert len(submitted) == 1
+    assert controller._refresh_pending is True
+
+    submitted[0]()  # inflight worker lands
+
+    assert controller._refresh_pending is False
+    assert len(submitted) == 2  # deferred refresh re-submitted
 
 
 def test_vfcurve_lock_voltage_rejects_invalid_point() -> None:

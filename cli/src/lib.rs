@@ -4750,7 +4750,7 @@ fn execute_target(
                 .map(String::as_str)
                 .unwrap_or(&invocation.positionals[0]);
             let second = parse_nvml_pstate(second_raw)?;
-            let (range, min_mhz, max_mhz) = match adapter {
+            let (range, min_mhz, max_mhz, warning) = match adapter {
                 BackendAdapter::Nvapi => {
                     run(
                         target,
@@ -4772,12 +4772,18 @@ fn execute_target(
                     .output
                 }
             };
-            Ok(json!({
+            let mut value = json!({
                 "applied": true,
                 "pstate_range": range,
                 "min_lock_mhz": min_mhz,
                 "max_lock_mhz": max_mhz,
-            }))
+            });
+            // Overlapping P-States outside the requested range (identical
+            // memory clocks, e.g. after a VBIOS edit) — applied anyway.
+            if let Some(warning) = warning {
+                value["warning"] = json!(warning);
+            }
+            Ok(value)
         }
         Command::SetLegacyApplicationFreqLock => {
             let memory_mhz = parse_u32_unit(&invocation.positionals[0], "mhz", "mhz")?;

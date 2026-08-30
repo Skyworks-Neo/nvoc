@@ -372,9 +372,9 @@ class SegmentRangeSelector(ctk.CTkFrame):
         self._active_handle = None  # type: Optional[str]
         self._last_active_handle = "end"
         # Point-mode: both handles fused into one (start == end always).
-        # Used for the native NVAPI P-State pin (no range lock) on NVAPI-only
-        # GPUs — dragging moves the single point, the selection is always a
-        # single P-State, never a range.
+        # Entered after a mem-range lock failure reveals a pre-Kepler part —
+        # the native P-State pin fallback only accepts a single P-State, so
+        # the selector collapses to one fused handle.
         self._point_mode = False
         self._pad_x = 18
         self._line_y = 26
@@ -475,10 +475,10 @@ class SegmentRangeSelector(ctk.CTkFrame):
     def set_point_mode(self, enabled: bool):
         """Fuse both handles into one (single-P-State selection, no range).
 
-        On NVAPI-only GPUs the native P-State pin (`set-pstate-lock`) only
-        accepts a single P-State — there is no range form. Point-mode keeps
-        start == end so ``get_selection`` always returns a single label and
-        dragging moves the fused handle.
+        The native P-State pin (`set-pstate-lock`) only accepts a single
+        P-State — there is no range form. Point-mode keeps start == end so
+        ``get_selection`` always returns a single label and dragging moves
+        the fused handle.
         """
         prev = self._point_mode
         self._point_mode = bool(enabled)

@@ -3481,10 +3481,12 @@ impl GpuOperation for SetLegacyClocks {
 ///
 /// This is a logical P-State operation in the structured API. Internally it
 /// queries NVML P-State memory clock ranges, derives a memory VFP frequency
-/// window, rejects windows that would overlap P-States outside the requested
-/// range, then applies the window with NVAPI.
+/// window, warns (but proceeds) when the window also overlaps P-States
+/// outside the requested range — identical memory clocks across P-States
+/// (e.g. a VBIOS edit pinning P2 to P0's clocks) make the ranges inseparable
+/// by construction — then applies the window with NVAPI.
 ///
-/// The output is `(range_label, min_lock_mhz, max_lock_mhz)`.
+/// The output is `(range_label, min_lock_mhz, max_lock_mhz, warning)`.
 #[derive(Clone, Copy, Debug)]
 pub struct SetNvapiPstateLock {
     pub first_pstate: PerformanceState,
@@ -3492,7 +3494,7 @@ pub struct SetNvapiPstateLock {
 }
 
 impl GpuOperation for SetNvapiPstateLock {
-    type Output = (String, u32, u32);
+    type Output = (String, u32, u32, Option<String>);
 
     fn kind(&self) -> OperationKind {
         OperationKind::SetNvapiPstateLock
@@ -3513,10 +3515,12 @@ impl GpuOperation for SetNvapiPstateLock {
 ///
 /// This is a logical P-State operation in the structured API. Internally it
 /// queries NVML P-State memory clock ranges, derives a memory locked-clock
-/// window, rejects windows that would overlap P-States outside the requested
-/// range, then applies the window with NVML memory locked clocks.
+/// window, warns (but proceeds) when the window also overlaps P-States
+/// outside the requested range (same policy as the NVAPI variant — see
+/// [`SetNvapiPstateLock`]), then applies the window with NVML memory locked
+/// clocks.
 ///
-/// The output is `(range_label, min_lock_mhz, max_lock_mhz)`.
+/// The output is `(range_label, min_lock_mhz, max_lock_mhz, warning)`.
 #[derive(Clone, Copy, Debug)]
 pub struct SetNvmlPstateLock {
     pub first_pstate: PerformanceState,
@@ -3524,7 +3528,7 @@ pub struct SetNvmlPstateLock {
 }
 
 impl GpuOperation for SetNvmlPstateLock {
-    type Output = (String, u32, u32);
+    type Output = (String, u32, u32, Option<String>);
 
     fn kind(&self) -> OperationKind {
         OperationKind::SetNvmlPstateLock
