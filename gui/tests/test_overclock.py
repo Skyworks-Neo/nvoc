@@ -677,3 +677,121 @@ def test_pstate_range_mode_preserved_on_modern_gpu() -> None:
     tab.set_supported_pstates(["P0", "P8", "P12"])
 
     assert tab.pstate_selector.point_mode is False
+
+
+# ── Fan-section verdict: fanless server cards grey out (is_server + count) ──
+
+
+class _FanSectionRecorder:
+    def __init__(self) -> None:
+        self.supported: bool | None = None
+        self.calls: list[tuple] = []
+
+    def set_supported(self, supported: bool) -> None:
+        self.supported = supported
+        self.calls.append(("set_supported", supported))
+
+    def set_legacy_nvapi(self, legacy: bool) -> None:
+        self.calls.append(("set_legacy_nvapi", legacy))
+
+    def set_fan_choices(self, choices) -> None:
+        self.calls.append(("set_fan_choices", tuple(choices)))
+
+    def set_level(self, level: int) -> None:
+        self.calls.append(("set_level", level))
+
+
+def _make_fan_tab() -> tuple[OverclockTab, _FanSectionRecorder]:
+    tab, _app = make_tab()
+    tab.fan_section = _FanSectionRecorder()
+    tab._fanless_gpus = set()
+    tab._fanned_gpus = set()
+    tab._fan_surface_gpu = None
+    tab._fan_surface_load_in_flight = False
+    tab._mobile_mode = False
+    tab._set_limit_panel_mode = lambda mode: None
+    tab._load_mobile_limits = lambda *a, **k: None
+    tab._refresh_fan_surface = lambda is_mobile: None
+    tab.vboost_label_var = FakeVar("VoltBoost:")
+    tab.vboost_unit_var = FakeVar("%")
+    return tab, tab.fan_section
+
+
+def _fan_info_payload(**overrides) -> dict:
+    payload = {
+        "gpu_name": "NVIDIA Tesla P100-PCIE-16GB",
+        "gpu_architecture": "GP100",
+        "is_mobile": False,
+        "is_server": False,
+        "is_legacy_voltage": False,
+        "xbar_supported": False,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_fan_supported_on_desktop_gpu() -> None:
+    tab, fan = _make_fan_tab()
+    tab.check_capabilities(_fan_info_payload())
+    assert fan.supported is True
+
+
+def test_fan_greys_out_on_mobile_gpu() -> None:
+    tab, fan = _make_fan_tab()
+    tab.check_capabilities(_fan_info_payload(is_mobile=True))
+    assert fan.supported is False
+
+
+def test_fan_greys_out_synchronously_on_server_flag() -> None:
+    """gpu_type.rs is_server classification — no fan query needed."""
+    tab, fan = _make_fan_tab()
+    tab.check_capabilities(_fan_info_payload(is_server=True))
+    assert fan.supported is False
+
+
+def test_fan_server_flag_waived_by_observed_fans() -> None:
+    """ServerLovelace L40/L4 carry onboard fans: the observed count ≥ 1
+    (recorded in _fanned_gpus by _fan_surface_loaded) wins over the
+    classification, and stays winning on later capability refreshes."""
+    tab, fan = _make_fan_tab()
+    tab._fanned_gpus.add("GPU0")
+    tab.check_capabilities(_fan_info_payload(is_server=True))
+    assert fan.supported is True
+
+
+def test_fan_surface_loaded_count_zero_greys_out_and_sticks() -> None:
+    tab, fan = _make_fan_tab()
+    tab._fan_surface_gpu = "GPU0"
+    tab._fan_surface_loaded("GPU0", {"count": 0})
+    assert "GPU0" in tab._fanless_gpus
+    assert "GPU0" not in tab._fanned_gpus
+    assert fan.supported is False
+    # The recorded verdict survives later capability refreshes (no flags).
+    tab.check_capabilities(_fan_info_payload())
+    assert fan.supported is False
+
+
+def test_fan_surface_loaded_count_positive_re_enables_server_card() -> None:
+    tab, fan = _make_fan_tab()
+    tab._fan_surface_gpu = "GPU0"
+    # Server flag greys it first…
+    tab.check_capabilities(_fan_info_payload(is_server=True))
+    assert fan.supported is False
+    # …then NVML reports a fan (L40 case) — pane re-enables and the
+    # classification is waived on every later refresh.
+    tab._fan_surface_loaded("GPU0", {"count": 1, "current_percent": 37})
+    assert fan.supported is True
+    assert "GPU0" in tab._fanned_gpus
+    tab.check_capabilities(_fan_info_payload(is_server=True))
+    assert fan.supported is True
+
+
+def test_fan_surface_loaded_stale_gpu_ignored() -> None:
+    """A fan verdict landing after a GPU switch must not re-verdict the
+    newly selected card."""
+    tab, fan = _make_fan_tab()
+    tab._fan_surface_gpu = "GPU1"  # selection moved on
+    tab.check_capabilities(_fan_info_payload())
+    tab._fan_surface_loaded("GPU0", {"count": 0})
+    assert "GPU0" not in tab._fanless_gpus
+    assert fan.supported is True

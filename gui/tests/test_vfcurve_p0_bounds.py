@@ -92,6 +92,9 @@ def _make_tab(p0: dict | None = _sample_p0(), gpu: str = "GPU0") -> VFCurveTab:
     tab._p0_bounds = None
     tab._p0_bounds_gpu = None
     tab._p0_effective_wall_mv = None
+    tab._p0_rails = []
+    tab._p0_bounds_by_rail = {}
+    tab._p0_effective_by_rail = {}
     tab._pending_wall_mv = None
     tab._dragging_wall = False
     tab._p0_rail_bit = 0
@@ -422,3 +425,146 @@ def test_apply_snaps_to_2_5mv_grid() -> None:
     wall_call = next(c for c in tab.app._native.calls if c[0] == "set_volt_rail_target")
     # round(1007.3 / 2.5) * 2.5 = 1007.5
     assert wall_call[3] == 1007.5
+
+
+# ── Multi-rail parts: per-curve VoltRails rail selection (P100 / 50-series) ──
+
+
+def _p100_payload() -> dict:
+    """A P100-shaped query_volt_rails payload: rail 0 = core/GPC, rail 1 =
+    HBM MEM (status values [current, target, vbios, vrm, effective,
+    min_hold] µV, from a live GP100)."""
+    rail0 = {
+        "rail_bit": 0,
+        "current_uV": 675_000,
+        "target_wall_uV": 1_131_250,
+        "effective_wall_uV": 1_125_000,
+        "vbios_wall_uV": 0,
+        "vrm_max_wall_uV": 1_125_000,
+        "min_hold_uV": 675_000,
+        "offset_ceiling_uV": 0,
+    }
+    rail1 = {
+        "rail_bit": 1,
+        "current_uV": 681_250,
+        "target_wall_uV": 1_018_750,
+        "effective_wall_uV": 1_018_750,
+        "vbios_wall_uV": 0,
+        "vrm_max_wall_uV": 1_125_000,
+        "min_hold_uV": 681_250,
+        "offset_ceiling_uV": 0,
+    }
+    return {"p0": rail0, "p0_rails": [rail0, rail1]}
+
+
+class _MultiRailBackend(_FakeBackend):
+    def __init__(self, payload: dict) -> None:
+        super().__init__(None)
+        self._payload = payload
+
+    def query_volt_rails(self, gpu: str) -> dict:
+        self.calls.append(gpu)
+        return self._payload
+
+
+def _make_multirail_tab() -> VFCurveTab:
+    tab = _make_tab()
+    tab.app = _ApplyApp(_MultiRailBackend(_p100_payload()))
+    return tab
+
+
+def _vline_positions(ax) -> set[float]:
+    """Data-x of every drawn (constant-x) axvline on the axes."""
+    import matplotlib.lines as mlines
+
+    out = set()
+    for ln in ax.get_lines():
+        if not isinstance(ln, mlines.Line2D):
+            continue
+        if ln.get_linestyle() in (None, "None", "none", ""):
+            continue
+        xs = ln.get_xdata()
+        if len(xs) == 2 and xs[0] == xs[1]:
+            out.add(float(xs[0]))
+    return out
+
+
+def test_multirail_gpc_active_uses_primary_rail() -> None:
+    tab = _make_multirail_tab()
+    tab.ensure_p0_bounds("GPU0")
+    tab.ax.clear()
+
+    assert tab._active_p0_rail_bit() == 0
+    assert tab._p0_effective_wall_mv == 1125.0
+    tab._redraw()
+    assert _vline_positions(tab.ax) == {675.0, 1125.0}
+
+
+def test_multirail_mem_active_uses_secondary_rail() -> None:
+    tab = _make_multirail_tab()
+    tab.ensure_p0_bounds("GPU0")
+    tab._active_curve = "mem"
+    tab._sync_active_p0_view()
+    tab.ax.clear()
+
+    assert tab._active_p0_rail_bit() == 1
+    assert tab._p0_effective_wall_mv == 1018.75
+    # Clamp ceiling follows the MEM rail's hardware walls.
+    assert tab._wall_clamp_bounds()[1] == 1125.0
+    tab._redraw()
+    # floor 681.25 / ceiling 1125.0 / effective 1018.75 — all rail-1.
+    assert _vline_positions(tab.ax) == {681.25, 1125.0, 1018.75}
+    # The secondary-rail label tag shows up when the rail isn't primary.
+    assert tab._active_p0_rail_tag() == " (MEM)"
+
+
+def test_multirail_curve_switch_drops_pending_wall() -> None:
+    """A pending wall drag is clamped against the OLD rail's walls — it must
+    not survive a curve switch to another rail."""
+    tab = _make_multirail_tab()
+    tab.ensure_p0_bounds("GPU0")
+    tab._pending_wall_mv = 1100.0
+    tab._dragging_wall = True
+
+    tab._active_curve = "mem"
+    tab._sync_active_p0_view()
+
+    assert tab._pending_wall_mv is None
+    assert tab._dragging_wall is False
+    assert tab._p0_effective_wall_mv == 1018.75
+
+
+def test_multirail_wall_apply_targets_active_rail() -> None:
+    """Applying a wall while the MEM curve is selected must SET rail 1."""
+    tab = _make_multirail_tab()
+    tab.ensure_p0_bounds("GPU0")
+    tab._active_curve = "mem"
+    tab._sync_active_p0_view()
+    tab._pending_wall_mv = 1000.0
+    tab.adj_start_var = type("V", (), {"get": lambda self: "0"})()
+    tab.adj_end_var = type("V", (), {"get": lambda self: "0"})()
+    tab.adj_delta_var = type("V", (), {"get": lambda self: "0"})()
+    tab._drag_orig_freqs = None
+
+    tab._apply_adj()
+
+    wall_call = next(c for c in tab.app._native.calls if c[0] == "set_volt_rail_target")
+    assert wall_call[2] == 1  # rail_bit 1 (HBM MEM)
+    assert wall_call[3] == 1000.0
+
+
+def test_multirail_primary_apply_keeps_mem_view_intact() -> None:
+    """A Volt Limit SET on the PRIMARY rail (overclock panel apply) must not
+    move the MEM curve's displayed wall."""
+    tab = _make_multirail_tab()
+    tab.ensure_p0_bounds("GPU0")
+    tab._active_curve = "mem"
+    tab._sync_active_p0_view()
+    assert tab._p0_effective_wall_mv == 1018.75
+
+    # Overclock panel applies on the primary rail (no rail_bit arg).
+    tab.update_p0_effective_wall(1_050_000, 0)
+
+    # Per-rail record updated for rail 0, but the visible MEM wall stands.
+    assert tab._p0_effective_by_rail[0] == 1050.0
+    assert tab._p0_effective_wall_mv == 1018.75

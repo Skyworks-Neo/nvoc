@@ -1048,32 +1048,6 @@ def test_vfcurve_sync_hides_absent_static_checkboxes() -> None:
     assert app.widgets["#vf-curve-sys"].display is False
 
 
-def test_vfcurve_sync_hides_absent_static_checkboxes() -> None:
-    """P100 shape: gpc+mem only — the static XBAR/SYS checkboxes must hide.
-
-    The sync loop once iterated only the DISCOVERED set, so an absent
-    domain's static checkbox was never visited and stayed visible forever.
-    """
-    app = FakeApp()
-    app.widgets = _selector_widgets()
-    # the pane markup now carries a static MEM box too
-    app.widgets["#vf-curve-mem"] = SimpleNamespace(value=True, disabled=False)
-    controller = VFCurveController(app)
-    controller._curves = {
-        "gpc": CurveData("gpc", frequencies=[1800.0], defaults=[1785.0]),
-        "mem": CurveData("mem", frequencies=[715.0], defaults=[715.0]),
-    }
-    controller._curve_visible = {"gpc": True, "mem": True}
-    controller._active_curve = "gpc"
-
-    controller._sync_curve_widgets()
-
-    assert app.widgets["#vf-curve-gpc"].display is True
-    assert app.widgets["#vf-curve-mem"].display is True
-    assert app.widgets["#vf-curve-xbar"].display is False
-    assert app.widgets["#vf-curve-sys"].display is False
-
-
 def test_vfcurve_on_curve_loaded_builds_multi_curves() -> None:
     app = FakeApp()
     app.widgets = _selector_widgets()
@@ -1444,3 +1418,169 @@ def test_vfcurve_ensure_p0_bounds_caches_per_gpu() -> None:
     # Same GPU again → cache hit, no new submission.
     controller._ensure_p0_bounds("GPU0")
     assert len(submitted) == 1
+
+
+# ── Fan pane verdict: fanless server cards (is_server + NVML count) ──
+
+
+def _overclock_controller_with_fan_panes() -> tuple[OverclockController, FakeApp]:
+    app = FakeApp()
+    fan_controls = SimpleNamespace(disabled=False)
+    fan_actions = SimpleNamespace(disabled=False)
+    app.widgets["#fan-controls"] = fan_controls
+    app.widgets["#fan-actions"] = fan_actions
+    return OverclockController(app), app
+
+
+def test_overclock_is_server_flag() -> None:
+    controller, app = _overclock_controller_with_fan_panes()
+    assert controller.is_server() is False
+    app.cache.info["is_server"] = True
+    assert controller.is_server() is True
+
+
+def test_overclock_fan_surface_count_zero_disables_pane() -> None:
+    controller, app = _overclock_controller_with_fan_panes()
+    gpu = app.selected_gpu_target()  # FakeApp reports "0x0000"
+    controller._on_fan_surface(gpu, {"count": 0})
+    assert gpu in controller._fanless_gpus
+    assert gpu not in controller._fanned_gpus
+    assert app.widgets["#fan-controls"].disabled is True
+    assert app.widgets["#fan-actions"].disabled is True
+
+
+def test_overclock_fan_surface_count_positive_re_enables() -> None:
+    """ServerLovelace L40/L4 carry fans: count ≥ 1 re-enables the pane and
+    waives the is_server classification."""
+    controller, app = _overclock_controller_with_fan_panes()
+    gpu = app.selected_gpu_target()
+    app.cache.info["is_server"] = True
+    controller._on_fan_surface(gpu, {"count": 0})
+    assert app.widgets["#fan-controls"].disabled is True
+
+    controller._on_fan_surface(gpu, {"count": 2})
+    assert gpu in controller._fanned_gpus
+    assert gpu not in controller._fanless_gpus
+    assert app.widgets["#fan-controls"].disabled is False
+
+
+def test_overclock_prime_inputs_greys_pane_for_server_gpu() -> None:
+    """The synchronous is_server classification greys the pane immediately,
+    no fan query needed (the async load only refines it)."""
+    controller, app = _overclock_controller_with_fan_panes()
+    # Minimal input surface for prime_inputs (it seeds every field before the
+    # fan-verdict block).
+    for selector in (
+        "#core-offset",
+        "#mem-offset",
+        "#power-limit",
+        "#thermal-limit",
+        "#voltage-boost",
+        "#core-clock-min",
+        "#core-clock-max",
+        "#mem-clock-min",
+        "#mem-clock-max",
+    ):
+        app.widgets.setdefault(selector, SimpleNamespace(value="0"))
+    app.widgets.setdefault("#fan-level", SimpleNamespace(value="30"))
+    app.cache.info["is_server"] = True
+
+    controller.prime_inputs()
+
+    assert app.widgets["#fan-controls"].disabled is True
+    assert app.widgets["#fan-actions"].disabled is True
+
+
+def test_overclock_fan_surface_stale_gpu_ignored() -> None:
+    """A fan verdict landing after a GPU switch must not re-verdict the
+    newly selected card."""
+    controller, app = _overclock_controller_with_fan_panes()
+    # FakeApp.selected_gpu_target returns "GPU0"; simulate the switch by
+    # having the callback carry a different gpu.
+    controller._on_fan_surface("GPU1", {"count": 0})
+    assert "GPU1" not in controller._fanless_gpus
+    assert app.widgets["#fan-controls"].disabled is False
+
+
+# ── VF curve: per-curve VoltRails rail selection (P100 HBM / 50-series) ──
+
+
+_P100_RAIL0 = {
+    "rail_bit": 0,
+    "current_uV": 675_000,
+    "target_wall_uV": 1_131_250,
+    "effective_wall_uV": 1_125_000,
+    "vbios_wall_uV": 0,
+    "vrm_max_wall_uV": 1_125_000,
+    "min_hold_uV": 675_000,
+}
+_P100_RAIL1 = {
+    "rail_bit": 1,
+    "current_uV": 681_250,
+    "target_wall_uV": 1_018_750,
+    "effective_wall_uV": 1_018_750,
+    "vbios_wall_uV": 0,
+    "vrm_max_wall_uV": 1_125_000,
+    "min_hold_uV": 681_250,
+}
+
+
+def test_vfcurve_multirail_mem_curve_uses_hbm_rail_vlines() -> None:
+    controller, plt = _vfcurve_controller_with_plot()
+    controller._p0_bounds = dict(_P100_RAIL0)
+    controller._p0_bounds_by_rail = {0: _P100_RAIL0, 1: _P100_RAIL1}
+    controller._active_curve = "mem"
+
+    controller.render_plot()
+
+    # floor 681.25 / ceiling 1125.0 / effective 1018.75 — all rail-1 (HBM).
+    assert 681.25 in plt.vlines
+    assert 1125.0 in plt.vlines
+    assert 1018.75 in plt.vlines
+
+
+def test_vfcurve_multirail_gpc_curve_uses_primary_rail_vlines() -> None:
+    controller, plt = _vfcurve_controller_with_plot()
+    controller._p0_bounds = dict(_P100_RAIL0)
+    controller._p0_bounds_by_rail = {0: _P100_RAIL0, 1: _P100_RAIL1}
+    controller._active_curve = "gpc"
+
+    controller.render_plot()
+
+    assert 675.0 in plt.vlines  # rail-0 floor
+    assert 1125.0 in plt.vlines
+    assert 1018.75 not in plt.vlines  # the MEM rail's effective stays hidden
+
+
+def test_vfcurve_on_p0_bounds_loaded_builds_rail_map() -> None:
+    app = FakeApp()
+    app.widgets = _selector_widgets()
+    controller = VFCurveController(app)
+    controller._p0_bounds_gpu = "GPU0"
+    controller._curves = {}
+    app.widgets["#vf-plot"] = SimpleNamespace(plt=_RecordingPlt(), refresh=lambda: None)
+
+    controller._on_p0_bounds_loaded(
+        "GPU0", {"p0": _P100_RAIL0, "p0_rails": [_P100_RAIL0, _P100_RAIL1]}
+    )
+
+    assert controller._p0_bounds_by_rail.keys() == {0, 1}
+    assert controller._active_p0_bounds()["min_hold_uV"] == 675_000
+    controller._active_curve = "mem"
+    assert controller._active_p0_bounds()["min_hold_uV"] == 681_250
+
+
+def test_vfcurve_single_rail_falls_back_to_primary_for_mem() -> None:
+    controller, plt = _vfcurve_controller_with_plot()
+    single = {
+        "rail_bit": 0,
+        "min_hold_uV": 625_000,
+        "effective_wall_uV": 1_005_000,
+        "vbios_wall_uV": 0,
+        "vrm_max_wall_uV": 1_200_000,
+    }
+    controller._p0_bounds = dict(single)
+    controller._p0_bounds_by_rail = {0: single}
+    controller._active_curve = "mem"
+
+    assert controller._active_p0_bounds()["min_hold_uV"] == 625_000
