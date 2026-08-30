@@ -205,25 +205,37 @@ def _perf_limits_text(perf) -> str:
 def _voltage_text(status: dict) -> str:
     """Format the VOLT value.
 
-    Plain ``950 mV`` by default; on multi-rail parts the dashboard poll
-    attaches ``rail_volts_mv`` (a ``[(label, mV), ...]`` list built from the
-    volt-rails status currents) and the line becomes per-rail —
+    On single- and multi-rail parts the dashboard poll attaches
+    ``rail_volts_mv`` (a ``[(label, mV), ...]`` list built from the volt-rails
+    status currents). Multi-rail parts render per-rail —
     ``GPC 1050 mV | MEM 681.25 mV`` (HBM parts) or ``... | MSVDD ...``
-    (50-series fabric rail). Fewer than two usable readings fall back to the
-    plain core-voltage form.
+    (50-series fabric rail); single-rail parts render the plain form
+    ``1020 mV`` (no label, since there is only one rail to name). The real
+    rail ``current_uV`` is preferred over the NVAPI generic ``voltage_mv``
+    field: the latter is a coarse rounded figure that lags the live rail
+    value by up to a few mV (e.g. 1020 rail vs 1010 voltage_mv on a 4060
+    Laptop). No rail data at all (family unsupported on this part) falls
+    back to ``voltage_mv``.
     """
     rails = status.get("rail_volts_mv")
     if isinstance(rails, list):
-        parts = []
+        usable: list[tuple[str, float]] = []
         for entry in rails:
             if not (isinstance(entry, (list, tuple)) and len(entry) == 2):
                 continue
             label, mv = entry
             if isinstance(mv, (int, float)) and mv > 0:
-                text = f"{float(mv):.2f}".rstrip("0").rstrip(".")
-                parts.append(f"{label} {text} mV")
-        if len(parts) >= 2:
-            return " | ".join(parts)
+                usable.append((label, float(mv)))
+        if usable:
+            if len(usable) >= 2:
+                parts = [
+                    f"{lbl} {mv:.2f}".rstrip("0").rstrip(".") + " mV"
+                    for lbl, mv in usable
+                ]
+                return " | ".join(parts)
+            # single rail: real rail current, plain form (label adds nothing
+            # when there is only one rail to name).
+            return f"{usable[0][1]:.2f}".rstrip("0").rstrip(".") + " mV"
     return f"{status.get('voltage_mv', '---')} mV"
 
 

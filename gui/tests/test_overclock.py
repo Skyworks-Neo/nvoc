@@ -448,9 +448,9 @@ def test_xbar_supported_arch_chip_codes() -> None:
     assert f("AD107M:A1") is True
     assert f("ga102") is True  # Ampere (30系)
     assert f("gb202") is True  # Blackwell (50系)
-    assert f("gp104") is False  # Pascal (10系) — too old
-    assert f("gv100") is False  # Volta — too old
-    assert f("gm204") is False
+    assert f("gp104") is True  # Pascal (10系) — Xbar offset live-verified
+    assert f("gv100") is True  # Volta — allowed through alongside Pascal
+    assert f("gm204") is False  # Maxwell and older — predates XBAR ClockClient
     assert f("") is False
 
 
@@ -461,7 +461,8 @@ def test_xbar_supported_arch_friendly_names() -> None:
     assert f("Ampere") is True
     assert f("Ada") is True
     assert f("Blackwell") is True
-    assert f("Pascal") is False
+    assert f("Pascal") is True  # Xbar offset live-verified on Pascal
+    assert f("Volta") is True
     assert f("Maxwell") is False
 
 
@@ -575,7 +576,8 @@ def test_xbar_supported_from_info_falls_back_without_flag() -> None:
     f = OverclockTab._xbar_supported_from_info
     assert f({"codename": "AD107-B", "gpu_name": "RTX 4060 Laptop"}) is True
     assert f({"gpu_architecture": "tu116"}) is True
-    assert f({"gpu_name": "NVIDIA GeForce GTX 1080"}) is False
+    assert f({"gpu_name": "NVIDIA GeForce GTX 1080"}) is True  # GTX 1080 = Pascal, supported
+    assert f({"gpu_name": "NVIDIA GeForce GTX 980"}) is False  # 9-series = Maxwell, too old
     assert f({}) is False
 
 

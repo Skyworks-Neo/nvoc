@@ -613,7 +613,7 @@ pub fn parse_nvapi_locked_voltage_target(raw: &str) -> Result<NvapiLockedVoltage
         let mv: f64 = v.trim().parse().map_err(|_| {
             Error::from("Invalid --nvapi-locked-voltage value: expected POINT or <N>mV/<N>uV")
         })?;
-        if !mv.is_finite() || mv < 0.0 || mv >= 10_000.0 {
+        if !mv.is_finite() || !(0.0..10_000.0).contains(&mv) {
             return Err(Error::from(
                 "Invalid --nvapi-locked-voltage value: expected POINT or <N>mV/<N>uV",
             ));

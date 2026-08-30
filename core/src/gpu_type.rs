@@ -645,6 +645,22 @@ impl GpuType {
         )
     }
 
+    /// 是否为 Ada Lovelace 世代（消费 40 系 / 工作站）。
+    ///
+    /// Ada 的 ClkDomains 私有写记录→物理域映射已 slot-0 全位 A/B 实证
+    /// （RTX 4060 Laptop / R610，2026-08-31）：
+    /// bit0=纯GPC、bit1=SYS+XBAR 同动、bit2=显存 M、bit3=纯SYS、
+    /// bit5=MSD、bit9=纯HOST；bit1 与 bit3 对 SYS 的效果叠加；
+    /// bit4/7/8 在 GetAllClocks 无可观测反应、
+    /// bit6 type-0x02 协议不搬运。其它世代未实证——显示层仅在本判定
+    /// 为真时使用 Ada 实证名。
+    pub fn is_ada(&self) -> bool {
+        matches!(
+            self,
+            GpuType::Mobile40Series | GpuType::Desktop40Series | GpuType::WorkstationLovelace
+        )
+    }
+
     /// 是否为移动端 GPU（20/30/40/50 系移动端 + Kepler/Fermi 移动端）
     pub fn is_mobile(&self) -> bool {
         matches!(
@@ -689,9 +705,10 @@ impl GpuType {
     }
 
     /// XBAR ClockClient 域偏移（set-clk-domain-offset xbar / pynvoc
-    /// set_clk_domain_offset）自 Turing（GTX 16系）起存在 —— 16/20/30/40/50 系
-    /// 移动端与桌面端皆可超。Pascal（10系）及更旧、Volta、Unknown 不支持。
-    /// workstation/server 的 Turing+ 卡一并放行（写入本身有 snapshot/
+    /// set_clk_domain_offset）—— Pascal（10系）起所有架构放行：Pascal 经
+    /// nvoc-cli 实测可用（2026-08-31），Volta（P100 与 T4 之间的服务器卡
+    /// 系）一并放行。Kepler 及更旧、Unknown 不支持。
+    /// workstation/server 卡一并放行（写入本身有 snapshot/
     /// readback/restore 保护，个别不支持会由驱动报错）。
     pub fn supports_xbar_offset(&self) -> bool {
         matches!(
@@ -706,6 +723,12 @@ impl GpuType {
                 | GpuType::Desktop20Series
                 | GpuType::Mobile16Series
                 | GpuType::Desktop16Series
+                | GpuType::Mobile10Series
+                | GpuType::Desktop10Series
+                | GpuType::WorkstationPascal
+                | GpuType::ServerPascal
+                | GpuType::ServerVolta
+                | GpuType::ComputationVolta
                 | GpuType::WorkstationBlackwell
                 | GpuType::WorkstationLovelace
                 | GpuType::WorkstationAmpere

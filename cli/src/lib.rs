@@ -1106,7 +1106,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                         "OFFSET",
                         "Signed offset in MHz by default (one decimal allowed), for example -60, +15.5 or 0 (no-op stock write); an explicit khz/kilohertz suffix keeps the legacy unit. The driver may reject or clamp; the post-SET readback is returned. Pass --temporary to restore the snapshot before returning",
                     )])),
-                    ..CommandSpec::new("set-private-freq-domain-global-offset", Group::Vfp, "Write a signed MHz offset into one clock-domain control record (dangerous XBar clock write; --temporary restores the snapshot). NOTE: names resolve through the WRITE map — msd targets bit 5, the record that moves the MSD/uncore cluster (third V/F curve + the clocks measured at bits 2/21); sys/host/uncore are legacy aliases of the same record. Pass a bare integer to target a raw record")
+                    ..CommandSpec::new("set-private-freq-domain-global-offset", Group::Vfp, "Write a signed MHz offset into one clock-domain control record (dangerous XBar clock write; --temporary restores the snapshot). Names are the ADVISORY RTSS table — the record's physical target does NOT follow it and is per-generation (Ada live A/B: bit0=GPC, bit1=SYS+XBAR, bit2=Mem, bit3=SYS, bit5=MSD, bit9=Host; see get-private-freq-domain-info). Cross-generation A/B: address records by bare integer")
                 },
             ),
             (
@@ -3658,12 +3658,18 @@ fn execute_target(
         }
         Command::GetPrivateFreqDomainInfo => {
             let ctrl = run(target, QueryNvapiClkDomains)?.output;
+            // Write-map labels are empirical per A/B'd generation;
+            // everything else shows the advisory RTSS name.
+            let gpu_type = run(target, QueryGpuInfo)
+                .ok()
+                .and_then(|r| fetch_gpu_type(&r.output).ok())
+                .unwrap_or(nvoc_core::GpuType::Unknown);
             Ok(match ctrl {
                 Some(c) => json!({
                     "controllable_mask": format!("0x{:08X}", c.mask),
                     "entries": c.entries.iter().map(|e| json!({
                         "bit": e.bit,
-                        "domain": clk_client_record_name(e.bit),
+                        "domain": clk_client_record_name(e.bit, gpu_type),
                         "type": e.entry_type,
                         // false = the protocol doesn't marshal this record
                         // type's value fields (e.g. type 0x02) — values_kHz
@@ -3731,73 +3737,69 @@ fn execute_target(
             //       true default = current − decoded offset.
             let infer = option_bool(invocation, "infer-missing-field", false)?;
             let mut vfp = vfp;
-            if infer {
-                if let Some(v) = vfp.as_mut() {
-                    let degenerate: Vec<(u8, u16, u16)> = v
-                        .segments
-                        .iter()
-                        .filter(|s| {
-                            s.kind == nvoc_core::ClkVfSegmentKind::VfCurve && s.voltage_uV_max == 0
-                        })
-                        .map(|s| (s.bank, s.start_index, s.end_index))
-                        .collect();
-                    if !degenerate.is_empty() {
-                        // Public grid is best-effort — on failure stay
-                        // faithful (zero voltages) instead of failing the read.
-                        if let Ok(pub_report) = run(
-                            target,
-                            QueryDomainVfpPoints {
-                                domain: ClockDomain::Graphics,
-                                infer_missing_default: false,
-                                indexed: true,
-                            },
-                        ) {
-                            let pub_pts = pub_report.output;
-                            let max_idx = pub_pts.iter().map(|(i, _)| *i).max().unwrap_or(0);
-                            let mut grid = vec![0u32; max_idx + 1];
-                            for (idx, p) in &pub_pts {
-                                if *idx < grid.len() {
-                                    grid[*idx] = p.voltage.0 as u32;
-                                }
+            if infer && let Some(v) = vfp.as_mut() {
+                let degenerate: Vec<(u8, u16, u16)> = v
+                    .segments
+                    .iter()
+                    .filter(|s| {
+                        s.kind == nvoc_core::ClkVfSegmentKind::VfCurve && s.voltage_uV_max == 0
+                    })
+                    .map(|s| (s.bank, s.start_index, s.end_index))
+                    .collect();
+                if !degenerate.is_empty() {
+                    // Public grid is best-effort — on failure stay
+                    // faithful (zero voltages) instead of failing the read.
+                    if let Ok(pub_report) = run(
+                        target,
+                        QueryDomainVfpPoints {
+                            domain: ClockDomain::Graphics,
+                            infer_missing_default: false,
+                            indexed: true,
+                        },
+                    ) {
+                        let pub_pts = pub_report.output;
+                        let max_idx = pub_pts.iter().map(|(i, _)| *i).max().unwrap_or(0);
+                        let mut grid = vec![0u32; max_idx + 1];
+                        for (idx, p) in &pub_pts {
+                            if *idx < grid.len() {
+                                grid[*idx] = p.voltage.0;
                             }
-                            for p in v.points.iter_mut() {
-                                let off = degenerate
-                                    .iter()
-                                    .find(|(b, s, e)| {
-                                        *b == p.bank
-                                            && *s as usize <= p.index as usize
-                                            && p.index as usize <= *e as usize
-                                    })
-                                    .map(|&(_, s, _)| p.index as usize - s as usize);
-                                if let Some(off) = off {
-                                    if off < grid.len() {
-                                        p.voltage_uV = grid[off];
-                                    }
-                                }
+                        }
+                        for p in v.points.iter_mut() {
+                            let off = degenerate
+                                .iter()
+                                .find(|(b, s, e)| {
+                                    *b == p.bank
+                                        && *s as usize <= p.index as usize
+                                        && p.index as usize <= *e as usize
+                                })
+                                .map(|&(_, s, _)| p.index as usize - s as usize);
+                            if let Some(off) = off
+                                && off < grid.len()
+                            {
+                                p.voltage_uV = grid[off];
                             }
-                            // refresh degenerate segments' voltage ranges
-                            for s in v.segments.iter_mut() {
-                                if s.kind != nvoc_core::ClkVfSegmentKind::VfCurve
-                                    || s.voltage_uV_max != 0
-                                {
-                                    continue;
-                                }
-                                let vals: Vec<u32> = v
-                                    .points
-                                    .iter()
-                                    .filter(|p| {
-                                        s.bank == p.bank
-                                            && s.start_index as usize <= p.index as usize
-                                            && p.index as usize <= s.end_index as usize
-                                    })
-                                    .map(|p| p.voltage_uV)
-                                    .collect();
-                                if let (Some(&mn), Some(&mx)) =
-                                    (vals.iter().min(), vals.iter().max())
-                                {
-                                    s.voltage_uV_min = mn;
-                                    s.voltage_uV_max = mx;
-                                }
+                        }
+                        // refresh degenerate segments' voltage ranges
+                        for s in v.segments.iter_mut() {
+                            if s.kind != nvoc_core::ClkVfSegmentKind::VfCurve
+                                || s.voltage_uV_max != 0
+                            {
+                                continue;
+                            }
+                            let vals: Vec<u32> = v
+                                .points
+                                .iter()
+                                .filter(|p| {
+                                    s.bank == p.bank
+                                        && s.start_index as usize <= p.index as usize
+                                        && p.index as usize <= s.end_index as usize
+                                })
+                                .map(|p| p.voltage_uV)
+                                .collect();
+                            if let (Some(&mn), Some(&mx)) = (vals.iter().min(), vals.iter().max()) {
+                                s.voltage_uV_min = mn;
+                                s.voltage_uV_max = mx;
                             }
                         }
                     }
@@ -5893,16 +5895,64 @@ fn parse_domain(raw: &str) -> CliResult<ClockDomain> {
 /// names (xbar/gpc/sys/mclk) or a bare integer bit.
 /// Display name for a private ClockClient CONTROL-RECORD bit (the
 /// get-private-freq-domain-info listing / the SET write map). Same bit
-/// numbering as MEASURE_FREQ, but the physical attribution of record 5
-/// differs from the RTSS label: the bit-5 record drives MSD (live A/B —
-/// +200 MHz into it shifted the third V/F curve while the Host MEASURE
-/// channel stayed in its 825–1350 band), so it is surfaced as "Msd"
-/// rather than the RTSS index-5 name "Host". Every other bit keeps the
-/// advisory RTSS name.
-fn clk_client_record_name(bit: u32) -> String {
-    match bit {
-        5 => "Msd".into(),
-        _ => parse_clk_domain_name(bit),
+/// numbering as MEASURE_FREQ, but the WRITE record's physical attribution
+/// does NOT follow the RTSS label table.
+///
+/// Empirical slot-0 write maps (live A/B, 2026-08-31, bits 0..=7 on
+/// Pascal/Turing/Ampere, 0..=9 on Ada):
+/// - bit0=Gpc, bit2=Mem, bit3=Sys, bit4/7=no observable GetAllClocks
+///   reaction, bit6=Disp (type-0x02) — IDENTICAL across Pascal/Turing/
+///   Ampere/Ada. bit9=Host (Ada only bit tested so far).
+/// - Two generation-dependent axes:
+///   * Xbar↔Sys coupling via bit1 (Ampere+Ada: bit1 moves Sys+Xbar
+///     together, additive with bit3 on Sys; Pascal+Turing: bit1 is pure
+///     Xbar, no coupling).
+///   * MSD domain presence (Pascal has none → bit5 SET unsupported;
+///     Turing/Ampere/Ada: bit5=Msd).
+///
+/// Only A/B'd generations use these labels — everything else falls back
+/// to the advisory RTSS name.
+fn clk_client_record_name(bit: u32, gpu_type: nvoc_core::GpuType) -> String {
+    use nvoc_core::GpuType;
+    // (xbar_sys_coupled, has_msd); None = generation not yet A/B'd
+    let empirical: Option<(bool, bool)> = match gpu_type {
+        GpuType::Mobile40Series
+        | GpuType::Desktop40Series
+        | GpuType::WorkstationLovelace
+        | GpuType::Mobile30Series
+        | GpuType::Desktop30Series
+        | GpuType::WorkstationAmpere
+        | GpuType::ServerAmpere => Some((true, true)),
+        GpuType::Mobile20Series
+        | GpuType::Desktop20Series
+        | GpuType::Mobile16Series
+        | GpuType::Desktop16Series
+        | GpuType::WorkstationTuring
+        | GpuType::ServerTuringTesla => Some((false, true)),
+        GpuType::Mobile10Series
+        | GpuType::Desktop10Series
+        | GpuType::WorkstationPascal
+        | GpuType::ServerPascal => Some((false, false)),
+        _ => None,
+    };
+    match empirical {
+        Some((coupled, msd)) => match bit {
+            0 => "Gpc".into(),
+            1 if coupled => "Sys+Xbar, Sys additive w/ bit3 (RTSS: Xbar)".into(),
+            1 => "Xbar (pure — no Sys coupling this gen)".into(),
+            2 => "Mem (RTSS: Sys)".into(),
+            3 if coupled => "Sys, additive w/ bit1 (RTSS: Hub)".into(),
+            3 => "Sys".into(),
+            4 => "Unattributed (RTSS: M)".into(),
+            5 if msd => "Msd (RTSS: Host)".into(),
+            5 => "SET not supported — no MSD domain this gen (RTSS: Host)".into(),
+            6 => "Disp".into(),
+            7 => "Unattributed (RTSS: Hotclk)".into(),
+            8 => "Unattributed (RTSS: Pclk0)".into(),
+            9 => "Host (RTSS: Pclk1)".into(),
+            _ => parse_clk_domain_name(bit),
+        },
+        None => parse_clk_domain_name(bit),
     }
 }
 
@@ -5954,29 +6004,31 @@ fn parse_clk_domain(raw: &str) -> CliResult<u32> {
 }
 
 /// Resolve a clock-domain name for the ClkDomains offset WRITE path
-/// (`set-private-freq-domain-global-offset`). The private control block's
-/// WRITE records are NOT the MEASURE_FREQ/RTSS bits on this driver
-/// generation (live-verified on RTX 4060 Laptop / R610 family):
-///   - MEASURE reads SYS at bit 2 and a 825–1350 MHz Host-band clock at
-///     bit 5, but offsetting the bit-5 RECORD moves neither of those —
-///   - it moves the MSD/uncore cluster instead: the third VF curve
-///     (MSD-attributed) AND the clocks measured at MEASURE bits 2 AND 21
-///     (which co-scale with a fixed ~75 MHz gap) — writing bit 2 has no
-///     effect.
+/// (`set-private-freq-domain-global-offset`).
 ///
-/// So names here resolve to the WRITE record: msd → 5 (canonical;
-/// sys/host/uncore are legacy attributions of the same record — the curve
-/// was called HOST, then SYS, before the bit-5 offset A/B pinned MSD).
-/// A bare integer bypasses the remap and targets that raw record.
+/// NO ALIAS ROUTING: names resolve through the plain RTSS position table
+/// only (`parse_clk_domain_table`), same as the MEASURE path. The record
+/// bits' physical attribution is per-generation and does NOT follow the
+/// RTSS labels — the historical msd/sys/host→bit-5 remap was removed
+/// (2026-08-31) because it papered over exactly that arch-dependence:
+///   - Ada 4060 slot-0 A/B: bit1 moves SYS+XBAR, bit2 moves memory M,
+///     bit3 pure SYS, bit5 MSD, bit9 pure Host (see
+///     [`clk_client_record_name`]);
+///   - Pascal 1080 (live-reported): bit 5 moves GetAllClocks SYS.
+///
+/// For cross-generation A/B work, address records by BARE INTEGER — the
+/// name table is advisory only. The medium layer rejects bits outside
+/// the driver's controllable mask.
+///
+/// READBACK NOTE: a global offset written here does NOT project into the
+/// per-point V/F control readback (get-private-vftable's `offset:` field,
+/// ClkVfPoints GetControl 0xDA025C3E) — verified 2026-08-31 on the 4060
+/// for bits 0 and 5, before and after a genuine bank-0 point reset. It
+/// surfaces in exactly two places: this command's own record dump
+/// (get-private-freq-domain-info slot 0) and the curve points' freq_current
+/// shifting away from freq_default.
 fn parse_clk_domain_write(raw: &str) -> CliResult<u32> {
-    let trimmed = raw.trim();
-    match trimmed.to_ascii_lowercase().as_str() {
-        // the MSD/uncore-cluster offset record (bit 5). "msd" is the
-        // canonical name; "sys"/"host"/"uncore" are kept so older
-        // invocations keep hitting the same record (see the module note)
-        "msd" | "sys" | "host" | "uncore" => Ok(5),
-        _ => parse_clk_domain_table(trimmed),
-    }
+    parse_clk_domain_table(raw.trim())
 }
 
 /// The shared RTSS-derived name→bit table used by parse_clk_domain and
