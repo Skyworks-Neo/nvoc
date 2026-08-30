@@ -17,7 +17,7 @@ matplotlib.use("Agg")  # headless: no Tk display required
 
 import matplotlib.pyplot as plt  # noqa: E402
 
-from src.tabs.vfcurve.tab import VFCurveTab  # noqa: E402
+from src.tabs.vfcurve.tab import VFCurveTab, _CurveData  # noqa: E402
 
 # Deep-red (floor/ceiling) and light-red (effective) line colors — mirror
 # the literals in VFCurveTab._redraw so the assertions track the draw.
@@ -702,3 +702,59 @@ def test_shift_capture_from_button_press_event() -> None:
     ev.state = 0x0004  # Control only
     tab._on_reset_button_press(ev)
     assert tab._reset_with_shift is False
+
+
+# ── Rail-aware live crosshair voltage (direct-read poll) ──
+
+
+class _DirectReadBackend(_MultiRailBackend):
+    """Multi-rail backend that also serves a private domain-clock read."""
+
+    def __init__(self, payload: dict, freq_khz: int) -> None:
+        super().__init__(payload)
+        self._freq_khz = freq_khz
+
+    def query_private_freq_domain_status(self, gpu, domain_bit):
+        return {"domain_bit": domain_bit, "freq_khz": self._freq_khz}
+
+
+def _make_direct_read_tab(freq_khz: int = 1_350_000) -> VFCurveTab:
+    tab = _make_multirail_tab()
+    # Swap in the direct-read backend BEFORE ensure_p0_bounds so the bounds
+    # load (which drives _active_p0_rail_bit) comes from the same payload.
+    tab.app = _ApplyApp(_DirectReadBackend(_p100_payload(), freq_khz))
+    tab._direct_read_inflight = False
+    tab.ensure_p0_bounds("GPU0")  # populates _p0_bounds_by_rail (both rails)
+    # MEM curve on the P100 (HBM) payload rides the secondary rail (bit 1,
+    # current 681.25 mV). Reverse lookup at 1350 MHz over [700,750,800]×
+    # [1200,1300,1400] would give 775 mV — the rail current must win.
+    mem = _CurveData("mem")
+    mem.voltages = [700.0, 750.0, 800.0]
+    mem.frequencies = [1200.0, 1300.0, 1400.0]
+    tab._curves = {"mem": mem}
+    tab._curve_visible = {"mem": True}
+    tab._active_curve = "mem"
+    tab._sync_active_p0_view()
+    return tab
+
+
+def test_direct_read_prefers_rail_voltage() -> None:
+    """Multi-rail: the crosshair voltage is the active rail's live current,
+    NOT the curve reverse lookup."""
+    tab = _make_direct_read_tab()
+    tab._kick_direct_read("mem")
+    # rail 1 (MEM) current = 681250 µV → 681.25 mV; freq 1350 MHz.
+    assert tab._live_pending == (681.25, 1350.0)
+
+
+def test_direct_read_rail_unavailable_falls_back() -> None:
+    """No usable rail reading → reverse curve lookup drives the crosshair."""
+    tab = _make_direct_read_tab()
+    # Strip the live currents so _poll_rail_current_mv finds nothing > 0.
+    payload = _p100_payload()
+    for rail in payload["p0_rails"]:
+        rail["current_uV"] = 0
+    tab.app = _ApplyApp(_DirectReadBackend(payload, 1_350_000))
+    tab._kick_direct_read("mem")
+    # 1350 MHz is halfway between the 1300/1400 points → 775 mV.
+    assert tab._live_pending == (775.0, 1350.0)

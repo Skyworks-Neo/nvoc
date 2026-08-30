@@ -602,9 +602,10 @@ class VFCurveController(PaneController):
                 # guard a raised escape leaves it stuck True forever and the
                 # live crosshair silently dies (or retry logic spins).
                 result = None
+            rail_mv = self._poll_rail_current_mv(curve_id, gpu)
             try:
                 self.app.call_from_thread(
-                    self._on_direct_read_done, result, curve_id, volts, freqs
+                    self._on_direct_read_done, result, curve_id, volts, freqs, rail_mv
                 )
             except Exception:
                 self._direct_read_inflight = False
@@ -616,12 +617,52 @@ class VFCurveController(PaneController):
             self._direct_read_inflight = False
             raise
 
+    def _poll_rail_current_mv(self, curve_id: str, gpu: str) -> float | None:
+        """Live voltage of the rail this curve rides, for the crosshair.
+
+        gpc/sys ride the PRIMARY (core) rail; xbar/mem the SECONDARY rail
+        (50-series MSVDD, Pascal-HBM) when the part exposes one — the rail's
+        real ``current_uV`` IS the operating voltage for those domains, and
+        on single-rail parts (e.g. 40-series) the primary rail's current is
+        the GPC voltage every domain shares. Queried fresh here because the
+        cached P0 bounds (walls are immutable) snapshot ``current_uV`` once.
+        Falls back to None → reverse curve lookup in the caller.
+        """
+        try:
+            vr = self.app.native_service.query_volt_rails(gpu)
+        except Exception:
+            return None
+        if not isinstance(vr, dict):
+            return None
+        rails = vr.get("p0_rails")
+        entries = (
+            [e for e in rails if isinstance(e, dict)] if isinstance(rails, list) else []
+        )
+        try:
+            bits = sorted({int(e["rail_bit"]) for e in entries if "rail_bit" in e})
+        except (TypeError, ValueError):
+            return None
+        if not bits:
+            return None
+        bit = (
+            bits[1]
+            if (curve_id in _SECONDARY_RAIL_CURVES and len(bits) > 1)
+            else bits[0]
+        )
+        for e in entries:
+            if e.get("rail_bit") == bit:
+                cur = e.get("current_uV")
+                if isinstance(cur, (int, float)) and cur > 0:
+                    return float(cur) / 1000.0
+        return None
+
     def _on_direct_read_done(
         self,
         result: dict | None,
         curve_id: str,
         volts: list[float],
         freqs: list[float],
+        rail_mv: float | None = None,
     ) -> None:
         self._direct_read_inflight = False
         # Stale (different active curve now) or hidden while in flight — a
@@ -638,7 +679,16 @@ class VFCurveController(PaneController):
             # 0 ⇒ driver refused / not measurable through this interface.
             return
         freq_mhz = freq_khz / 1000.0
-        volt = reverse_lookup_voltage(volts, freqs, freq_mhz)
+        # Voltage preference: the curve's own RAIL current (freshly polled —
+        # multi-rail parts get a real per-rail reading: 50-series MSVDD for
+        # xbar, Pascal-HBM for mem; single-rail parts' primary rail IS the
+        # GPC voltage every domain shares). Reverse curve lookup is only the
+        # fallback when the rail reading is unavailable.
+        volt = (
+            float(rail_mv)
+            if isinstance(rail_mv, (int, float)) and rail_mv > 0
+            else reverse_lookup_voltage(volts, freqs, freq_mhz)
+        )
         if volt is None:
             return
         self.app.cache.vf_live_point = (volt, freq_mhz)

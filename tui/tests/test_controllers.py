@@ -189,6 +189,10 @@ class FakeNative:
         self.calls.append(("query_private_freq_domain_status", gpu, domain_bit))
         return {"domain_bit": domain_bit, "freq_khz": self.direct_freq_khz}
 
+    def query_volt_rails(self, gpu):
+        self.calls.append(("query_volt_rails", gpu))
+        return getattr(self, "volt_rails_payload", None)
+
     def set_vfp_point_private(self, gpu, bank, index, delta_khz, freq_mode):
         self.calls.append(
             (
@@ -1134,6 +1138,75 @@ def test_vfcurve_direct_read_updates_live_point() -> None:
     # 1350 MHz → halfway between the 1300/1400 points → 775 mV.
     scheduled[0]()
     assert controller._direct_read_inflight is False
+    assert app.cache.vf_live_point == (775.0, 1350.0)
+
+
+def test_vfcurve_direct_read_prefers_rail_voltage() -> None:
+    """Multi-rail part: the crosshair voltage is the secondary rail's live
+    current (xbar on MSVDD/HBM parts), NOT the curve reverse lookup."""
+    app = FakeApp()
+    app.widgets = _selector_widgets()
+    controller = VFCurveController(app)
+    controller._curves = {
+        "xbar": CurveData(
+            "xbar",
+            voltages=[700.0, 750.0, 800.0],
+            frequencies=[1200.0, 1300.0, 1400.0],
+            defaults=[1200.0, 1300.0, 1400.0],
+        )
+    }
+    controller._curve_visible = {"xbar": True}
+    controller._active_curve = "xbar"
+    scheduled: list[object] = []
+    app.native_service.submit_query = lambda job: scheduled.append(job)
+    app.native_service.query_private_freq_domain_status = (
+        app.native.query_private_freq_domain_status
+    )
+    app.native.direct_freq_khz = 1350000
+    app.native_service.query_volt_rails = app.native.query_volt_rails
+    # Two rails: primary (bit 0) 1050 mV, secondary (bit 1) 681.25 mV.
+    app.native.volt_rails_payload = {
+        "p0_rails": [
+            {"rail_bit": 0, "current_uV": 1_050_000},
+            {"rail_bit": 1, "current_uV": 681_250},
+        ]
+    }
+
+    controller._kick_direct_read("xbar")
+    scheduled[0]()
+
+    # Reverse lookup would say 775 mV — the rail current must win.
+    assert app.cache.vf_live_point == (681.25, 1350.0)
+
+
+def test_vfcurve_direct_read_rail_failure_falls_back() -> None:
+    """Volt-rails query failing/empty leaves the reverse lookup in charge."""
+    app = FakeApp()
+    app.widgets = _selector_widgets()
+    controller = VFCurveController(app)
+    controller._curves = {
+        "xbar": CurveData(
+            "xbar",
+            voltages=[700.0, 750.0, 800.0],
+            frequencies=[1200.0, 1300.0, 1400.0],
+            defaults=[1200.0, 1300.0, 1400.0],
+        )
+    }
+    controller._curve_visible = {"xbar": True}
+    controller._active_curve = "xbar"
+    scheduled: list[object] = []
+    app.native_service.submit_query = lambda job: scheduled.append(job)
+    app.native_service.query_private_freq_domain_status = (
+        app.native.query_private_freq_domain_status
+    )
+    app.native.direct_freq_khz = 1350000
+    app.native_service.query_volt_rails = app.native.query_volt_rails
+    # Payload present but with no usable rails (empty p0_rails).
+    app.native.volt_rails_payload = {"p0_rails": []}
+
+    controller._kick_direct_read("xbar")
+    scheduled[0]()
+
     assert app.cache.vf_live_point == (775.0, 1350.0)
 
 

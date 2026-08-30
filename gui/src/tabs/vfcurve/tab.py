@@ -2592,11 +2592,11 @@ class VFCurveTab:
     def _kick_direct_read(self, curve_id: str) -> None:
         """Async direct-read of the active xbar/host domain's physical clock.
 
-        On completion the worker reverse-looks-up the voltage on the active
-        curve (freq → voltage interpolation) and pushes (volt, freq_mhz) into
+        On completion the worker pushes (volt, freq_mhz) into
         ``_live_pending`` for the next tick to blit. Direct read only gives
-        frequency; the voltage is recovered from the curve itself (xbar/host
-        have no pstate-off-curve excursion, so the reverse lookup is faithful).
+        frequency; the voltage comes from the curve's own RAIL current
+        (polled alongside — see ``_poll_rail_current_mv``), falling back to
+        a reverse lookup on the curve when the rail reading is unavailable.
         """
         gpu = self.app.selected_gpu_target()
         if gpu is None:
@@ -2615,13 +2615,48 @@ class VFCurveTab:
 
         def _worker():
             result = self.app.backend.query_private_freq_domain_status(gpu, domain_bit)
+            rail_mv = self._poll_rail_current_mv(gpu)
             self.app.after(
-                0, lambda: self._on_direct_read_done(result, curve_id, volts, freqs)
+                0,
+                lambda: self._on_direct_read_done(
+                    result, curve_id, volts, freqs, rail_mv
+                ),
             )
 
         self.app.run_background("vfcurve-direct-read", _worker)
 
-    def _on_direct_read_done(self, result, curve_id, volts, freqs):
+    def _poll_rail_current_mv(self, gpu) -> Optional[float]:
+        """Live voltage of the ACTIVE curve's rail, for the crosshair.
+
+        Multi-rail parts get a real per-rail reading (50-series MSVDD for
+        xbar, Pascal-HBM for mem); single-rail parts' primary rail IS the
+        GPC voltage every domain shares. Queried fresh here because the
+        cached P0 bounds (walls are immutable) snapshot ``current_uV`` once.
+        Returns None on any failure → the caller falls back to a reverse
+        curve lookup.
+        """
+        try:
+            vr = self.app.backend.query_volt_rails(gpu)
+        except Exception:
+            return None
+        if not isinstance(vr, dict):
+            return None
+        rails = vr.get("p0_rails")
+        entries = (
+            [e for e in rails if isinstance(e, dict)] if isinstance(rails, list) else []
+        )
+        bit = self._active_p0_rail_bit()
+        for e in entries:
+            try:
+                if int(e.get("rail_bit")) == bit:
+                    cur = e.get("current_uV")
+                    if isinstance(cur, (int, float)) and cur > 0:
+                        return float(cur) / 1000.0
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    def _on_direct_read_done(self, result, curve_id, volts, freqs, rail_mv=None):
         self._direct_read_inflight = False
         if self._cleaned_up:
             return
@@ -2641,7 +2676,16 @@ class VFCurveTab:
             # 0 ⇒ driver refused / not measurable through this interface.
             return
         freq_mhz = freq_khz / 1000.0
-        volt = self._reverse_lookup_voltage(volts, freqs, freq_mhz)
+        # Voltage preference: the curve's own RAIL current (freshly polled —
+        # multi-rail parts get a real per-rail reading: 50-series MSVDD for
+        # xbar, Pascal-HBM for mem; single-rail parts' primary rail IS the
+        # GPC voltage every domain shares). Reverse curve lookup is only the
+        # fallback when the rail reading is unavailable.
+        volt = (
+            float(rail_mv)
+            if isinstance(rail_mv, (int, float)) and rail_mv > 0
+            else self._reverse_lookup_voltage(volts, freqs, freq_mhz)
+        )
         if volt is None:
             return
         self._live_pending = (volt, freq_mhz)
