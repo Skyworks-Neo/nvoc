@@ -100,10 +100,46 @@ def test_format_metric_lines_fabric_clocks() -> None:
         }
     }
     text = "\n".join(_format_metric_lines(status, "Ada"))
-    assert "FCLK: XBAR 1800 | SYS 900 | HUB 600 | GPC 2100 MHz" in text
+    assert "FCLK: GPC 2100 | XBAR 1800 | SYS 900 | HUB 600 MHz" in text
     # Memory and zero clocks must NOT appear on the FCLK line.
     assert "M 7500" not in text
     assert "HOTCLK 0" not in text
+
+
+def test_format_metric_lines_fabric_clocks_v2_suffixed_names() -> None:
+    """Server Pascal (P100) reports the V2-suffixed Pascal-cluster domain
+    names — Gpc2/Xbar2/Sys2/Hub2/Ltc2 plus Pwr/Utils — which must all render
+    (regression: only bare names matched and FCLK showed HOST alone)."""
+    status = {
+        "all_clocks_mhz": {
+            "Gpc2": 1256.923,
+            "Xbar2": 1235.302,
+            "Sys2": 1130.459,
+            "Hub2": 1296.0,
+            "Ltc2": 1209.988,
+            "Host": 571.428,
+            "Pwr": 540.0,
+            "Utils": 108.0,
+            "M": 715.5,  # memory — stays off FCLK
+        }
+    }
+    text = "\n".join(_format_metric_lines(status, "Pascal"))
+    assert (
+        "FCLK: GPC 1257 | XBAR 1235 | SYS 1130 | HUB 1296 | HOST 571"
+        " | LTC 1210 | PWR 540 | UTILS 108 MHz" in text
+    )
+    assert "M 716" not in text
+    # No "2" suffix leaks into a rendered label.
+    assert "GPC2" not in text
+
+
+def test_format_metric_lines_fabric_clocks_prefers_first_of_duplicates() -> None:
+    """A payload carrying both the bare and V2-suffixed spelling of one
+    domain must not print the cluster twice."""
+    status = {"all_clocks_mhz": {"Gpc": 2100.0, "Gpc2": 2099.0}}
+    text = "\n".join(_format_metric_lines(status, "Ada"))
+    assert text.count("GPC ") == 1
+    assert "GPC 2100" in text
 
 
 def test_format_metric_lines_fabric_clocks_absent() -> None:

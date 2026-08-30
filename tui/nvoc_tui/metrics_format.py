@@ -43,25 +43,67 @@ def _format_mibps(mibps: float) -> str:
 
 # Internal fabric clock domains (from GetAllClocks V2 `all_clocks_mhz`) to surface
 # on a dedicated FCLK line — the "crossbar clock" GPU-Z shows plus the other
-# structurally-interesting fabric clocks. Ordered for stable display.
-_FABRIC_CLOCK_DOMAINS = ["Xbar", "Sys", "Hub", "Host", "Gpc", "Disp", "Hotclk"]
+# structurally-interesting fabric clocks. Ordered for stable display. Memory
+# ("M") stays off this line: it's already on MEM/ECLK.
+_FABRIC_CLOCK_DOMAINS = [
+    "Gpc",
+    "Xbar",
+    "Sys",
+    "Hub",
+    "Host",
+    "Ltc",
+    "Disp",
+    "Hotclk",
+    "Pwr",
+    "Utils",
+]
+# Domains that never render on FCLK even when present in the payload.
+_FABRIC_HIDDEN_DOMAINS = {"m", "msd", "pciegen", "host1x"}
+
+
+def _fabric_canonical_key(domain: str) -> str:
+    """Canonical key for a fabric-domain name: lowercase with any trailing
+    digits stripped. The same domain arrives under different namings
+    depending on the driver path — server Pascal reports the V2 suffixed
+    Pascal-cluster names (``Gpc2``/``Xbar2``/``Sys2``/``Hub2``/``Ltc2``),
+    other platforms the bare names (``Gpc``/``Xbar``/...) — both must match."""
+    return str(domain).rstrip("0123456789").lower()
 
 
 def _fabric_clocks_text(status: dict) -> str:
     """Format the internal-fabric clocks line (Xbar/crossbar, Sys, Hub, ...).
 
     Reads the per-domain MHz from ``all_clocks_mhz`` (GetAllClocks V2's full
-    32-domain breakdown). Returns ``""`` when no fabric domains are present so
-    the line is omitted entirely.
+    32-domain breakdown; V2-suffixed domain names are canonicalized — see
+    ``_fabric_canonical_key``). Returns ``""`` when no fabric domains are
+    present so the line is omitted entirely.
     """
     all_clocks = status.get("all_clocks_mhz")
     if not isinstance(all_clocks, dict):
         return ""
-    parts = []
+    by_key: dict[str, float] = {}
+    for domain, mhz in all_clocks.items():
+        if not isinstance(mhz, (int, float)) or float(mhz) <= 0:
+            continue
+        key = _fabric_canonical_key(domain)
+        if key in _FABRIC_HIDDEN_DOMAINS:
+            continue
+        # First occurrence of a canonical key wins (a payload carrying both
+        # Gpc and Gpc2 shouldn't print the cluster twice).
+        by_key.setdefault(key, float(mhz))
+    parts: list[str] = []
+    seen: set[str] = set()
     for domain in _FABRIC_CLOCK_DOMAINS:
-        mhz = all_clocks.get(domain)
-        if isinstance(mhz, (int, float)) and float(mhz) > 0:
-            parts.append(f"{domain.upper()} {round(float(mhz))}")
+        key = domain.lower()
+        mhz = by_key.get(key)
+        if mhz is not None:
+            parts.append(f"{domain.upper()} {round(mhz)}")
+            seen.add(key)
+    # Unknown-but-present domains still surface, in payload order, so a new
+    # domain naming never silently drops a reading.
+    for key, mhz in by_key.items():
+        if key not in seen:
+            parts.append(f"{key.upper()} {round(mhz)}")
     return " | ".join(parts) + " MHz" if parts else ""
 
 
