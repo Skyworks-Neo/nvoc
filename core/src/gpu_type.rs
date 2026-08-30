@@ -645,6 +645,22 @@ impl GpuType {
         )
     }
 
+    /// 是否为 Ada Lovelace 世代（消费 40 系 / 工作站）。
+    ///
+    /// Ada 的 ClkDomains 私有写记录→物理域映射已 slot-0 全位 A/B 实证
+    /// （RTX 4060 Laptop / R610，2026-08-31）：
+    /// bit0=纯GPC、bit1=SYS+XBAR 同动、bit2=显存 M、bit3=纯SYS、
+    /// bit5=MSD、bit9=纯HOST；bit1 与 bit3 对 SYS 的效果叠加；
+    /// bit4/7/8 在 GetAllClocks 无可观测反应、
+    /// bit6 type-0x02 协议不搬运。其它世代未实证——显示层仅在本判定
+    /// 为真时使用 Ada 实证名。
+    pub fn is_ada(&self) -> bool {
+        matches!(
+            self,
+            GpuType::Mobile40Series | GpuType::Desktop40Series | GpuType::WorkstationLovelace
+        )
+    }
+
     /// 是否为移动端 GPU（20/30/40/50 系移动端 + Kepler/Fermi 移动端）
     pub fn is_mobile(&self) -> bool {
         matches!(
