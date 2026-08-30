@@ -5903,12 +5903,16 @@ fn parse_domain(raw: &str) -> CliResult<ClockDomain> {
 /// - bit0=Gpc, bit2=Mem, bit3=Sys, bit4/7=no observable GetAllClocks
 ///   reaction, bit6=Disp (type-0x02) — IDENTICAL across Pascal/Turing/
 ///   Ampere/Ada. bit9=Host (Ada only bit tested so far).
-/// - Two generation-dependent axes:
+/// - Three generation-dependent axes:
 ///   * Xbar↔Sys coupling via bit1 (Ampere+Ada: bit1 moves Sys+Xbar
-///     together, additive with bit3 on Sys; Pascal+Turing: bit1 is pure
-///     Xbar, no coupling).
+///     together, additive with bit3 on Sys; GTX16/Turing20+Pascal:
+///     bit1 is pure Xbar, no coupling).
 ///   * MSD domain presence (Pascal has none → bit5 SET unsupported;
-///     Turing/Ampere/Ada: bit5=Msd).
+///     GTX16/Turing/Ampere/Ada: bit5=Msd).
+///   * Record-universe size — NOT monotonic by generation: Pascal10/
+///     RTX20/Ampere30 = 8 records (0xFF; bits 8/9 absent), but GTX16 =
+///     10 records (0x3FF accepted, MSD + bits 8/9 present, 2026-08-31
+///     live), same as Ada's 10. 50 series untested.
 ///
 /// Only A/B'd generations use these labels — everything else falls back
 /// to the advisory RTSS name.

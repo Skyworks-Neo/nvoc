@@ -654,6 +654,15 @@ impl GpuType {
     /// bit4/7/8 在 GetAllClocks 无可观测反应、
     /// bit6 type-0x02 协议不搬运。其它世代未实证——显示层仅在本判定
     /// 为真时使用 Ada 实证名。
+    ///
+    /// 跨代汇总（2026-08-31 实测 Pascal10/GTX16/RTX20/Ampere30 + Ada）：
+    /// 记录宇宙大小**不随代际单调增长**——GTX16 竟返回 10 条
+    /// （0x3FF 被接受，有 MSD 与 bits 8/9），而更新的 RTX20/Ampere30
+    /// 反而只有 8 条（0xFF，无 bits 8/9）。bit1 耦合轴：Ampere30+Ada
+    /// 耦合（bit1 动 Sys+Xbar 且与 bit3 叠加），Pascal/GTX16/RTX20
+    /// 不耦合（bit1 纯 Xbar）。MSD 轴：Pascal 无（bit5 SET 不支持），
+    /// GTX16/Turing/Ampere/Ada 均有（bit5=Msd）。bit0/2/3/4/6/7 语义
+    /// 五代逐位一致。50 系待测。
     pub fn is_ada(&self) -> bool {
         matches!(
             self,
