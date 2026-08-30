@@ -99,6 +99,8 @@ pub enum OperationKind {
     /// (BIT VoltageTable) on old GPUs.
     QueryVbiosImage,
     /// Read the VBIOS version string via `NvAPI_GPU_GetVbiosVersionString`.
+    QueryVbiosSecurityInfo,
+    QueryVbiosStatusString,
     QueryVbiosVersion,
     /// Write one V/F curve point via the private V/F-POINTS SetControl
     /// (ID 0xFEC00D04, mode 0 absolute / mode 1 delta). DANGEROUS:

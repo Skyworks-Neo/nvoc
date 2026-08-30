@@ -2569,6 +2569,43 @@ impl GpuOperation for QueryVbiosVersion {
     }
 }
 
+/// Read the VBIOS security configuration word via
+/// `NvAPI_GPU_GetVbiosSecurityInfo` (0x8d3ac6b9, struct stamp 0x1000C).
+/// Raw flags dword — P100 server/TCC reads 0x0203; bit semantics
+/// driver-opaque (compare across SKUs before assigning meaning).
+#[derive(Clone, Copy, Debug)]
+pub struct QueryVbiosSecurityInfo;
+
+impl GpuOperation for QueryVbiosSecurityInfo {
+    type Output = u32;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryVbiosSecurityInfo
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target.nvapi()?.vbios_security_flags().map_err(Error::from)
+    }
+}
+
+/// Read the human-readable VBIOS status via
+/// `NvAPI_GPU_GetVbiosStatusString` (0x8011c22c). State-dependent text —
+/// don't parse; compare across cards/states.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryVbiosStatusString;
+
+impl GpuOperation for QueryVbiosStatusString {
+    type Output = String;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryVbiosStatusString
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target.nvapi()?.vbios_status_string().map_err(Error::from)
+    }
+}
+
 /// Measure one clock-domain's physical clock (private ClockClient
 /// MEASURE_FREQ, RM 0x20809006) via two-sample Δcounter/Δtimestamp.
 /// `domain_bit` is the sequential domain index (GPC=0, XBAR=1, SYS=2, MCLK=4).

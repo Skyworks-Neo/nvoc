@@ -16,7 +16,8 @@ use nvoc_core::{
     QueryNvapiTargetTempPolicies, QueryNvapiTargetTempPolicyIndex, QueryNvapiTgpWattRange,
     QueryNvapiThermalSettings, QueryNvapiThermalSim, QueryNvapiVoltRails, QueryPowerLimits,
     QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits,
-    QueryTemperatureThresholds, QueryThrottleReasons, QueryVbiosImage, QueryVbiosVersion,
+    QueryTemperatureThresholds, QueryThrottleReasons, QueryVbiosImage, QueryVbiosSecurityInfo,
+    QueryVbiosStatusString, QueryVbiosVersion,
     QueryViolationStatus, QueryVoltageBoost, ResetAutoboostStatus, ResetCoolerLevels,
     ResetFanCurve, ResetFanSpeed, ResetForcePstate, ResetFreqLock, ResetLegacyApplicationFreqLock,
     ResetLegacyGpcRailOvervoltLimit, ResetNvapiPowerLimits, ResetNvapiSensorLimits,
@@ -3809,6 +3810,14 @@ fn execute_target(
             })
         }
         Command::GetVbios => {
+            // meta companions (best-effort): the VBIOS security word and the
+            // status string never gate the image read
+            let security_flags = run(target, QueryVbiosSecurityInfo)
+                .ok()
+                .map(|r| r.output);
+            let status_string = run(target, QueryVbiosStatusString)
+                .ok()
+                .map(|r| r.output);
             // NvAPI_GPU_GetVbiosImage (0xFC13EE11, escape 0x0700004F). Reads
             // the full VBIOS image. Brief output by default (version, size,
             // BIT location); --dump prints the full structural dump (BIT
@@ -3824,6 +3833,8 @@ fn execute_target(
                         "size": image.len(),
                         "path": path,
                         "bit_offset": find_bit_signature(&image),
+                        "security_flags": security_flags.map(|f| format!("{:#010x}", f)),
+                        "status_string": status_string,
                     }))
                 }
                 None => {
@@ -3840,6 +3851,8 @@ fn execute_target(
                             "boot_magic": format!("{:02x} {:02x}", image[0], image[1]),
                             "bit": bit_summary.as_ref().map(|s| s.to_json()),
                             "fermi_model": fermi_model,
+                            "security_flags": security_flags.map(|f| format!("{:#010x}", f)),
+                            "status_string": status_string,
                         }))
                     } else {
                         // brief: version, size, BIT offset + token count, perf
@@ -3856,6 +3869,8 @@ fn execute_target(
                             "bit_offset": bit.as_ref().map(|s| s.bit_offset),
                             "bit_tokens": bit.as_ref().map(|s| s.tokens.len()),
                             "perf_table_layout": perf_layout.map(|b| format!("{:#04x}", b)),
+                            "security_flags": security_flags.map(|f| format!("{:#010x}", f)),
+                            "status_string": status_string,
                         }))
                     }
                 }
