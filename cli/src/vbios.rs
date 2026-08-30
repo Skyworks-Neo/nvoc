@@ -306,7 +306,7 @@ mod tests {
         img[0xb05a] = 0x50;
         let t = bit + 16;
         // 'P' directory entry: offset 750 (image-relative), size 16
-        img[t..t + 6].copy_from_slice(&[b'P', 2, 16, 0, 0xf6, 0x02]);
+        img[t..t + 6].copy_from_slice(&[b'P', 2, 16, 0, 0xee, 0x02]);
         // directory body: first u32 = 0xb05a
         let dir = 750usize;
         img[dir..dir + 4].copy_from_slice(&0xb05au32.to_le_bytes());
