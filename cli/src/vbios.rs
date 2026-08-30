@@ -249,10 +249,10 @@ fn detect_data_base(image: &[u8], bit: usize, tokens: &[BitToken]) -> usize {
         let raw = image
             .get(base + p.offset as usize..)
             .and_then(|s| s.get(..p.size as usize));
-        if let Some(raw) = raw {
-            if perf_layout_byte(image, raw).is_some() {
-                return base;
-            }
+        if let Some(raw) = raw
+            && perf_layout_byte(image, raw).is_some()
+        {
+            return base;
         }
     }
     bit

@@ -2461,7 +2461,7 @@ fn query_private_vftable(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
                     let mut max_idx = 0usize;
                     for (idx, p) in &pub_pts {
                         if *idx < grid.len() {
-                            grid[*idx] = p.voltage.0 as u32;
+                            grid[*idx] = p.voltage.0;
                             max_idx = max_idx.max(*idx);
                         }
                     }

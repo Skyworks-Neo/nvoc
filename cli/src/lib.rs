@@ -3731,73 +3731,69 @@ fn execute_target(
             //       true default = current − decoded offset.
             let infer = option_bool(invocation, "infer-missing-field", false)?;
             let mut vfp = vfp;
-            if infer {
-                if let Some(v) = vfp.as_mut() {
-                    let degenerate: Vec<(u8, u16, u16)> = v
-                        .segments
-                        .iter()
-                        .filter(|s| {
-                            s.kind == nvoc_core::ClkVfSegmentKind::VfCurve && s.voltage_uV_max == 0
-                        })
-                        .map(|s| (s.bank, s.start_index, s.end_index))
-                        .collect();
-                    if !degenerate.is_empty() {
-                        // Public grid is best-effort — on failure stay
-                        // faithful (zero voltages) instead of failing the read.
-                        if let Ok(pub_report) = run(
-                            target,
-                            QueryDomainVfpPoints {
-                                domain: ClockDomain::Graphics,
-                                infer_missing_default: false,
-                                indexed: true,
-                            },
-                        ) {
-                            let pub_pts = pub_report.output;
-                            let max_idx = pub_pts.iter().map(|(i, _)| *i).max().unwrap_or(0);
-                            let mut grid = vec![0u32; max_idx + 1];
-                            for (idx, p) in &pub_pts {
-                                if *idx < grid.len() {
-                                    grid[*idx] = p.voltage.0 as u32;
-                                }
+            if infer && let Some(v) = vfp.as_mut() {
+                let degenerate: Vec<(u8, u16, u16)> = v
+                    .segments
+                    .iter()
+                    .filter(|s| {
+                        s.kind == nvoc_core::ClkVfSegmentKind::VfCurve && s.voltage_uV_max == 0
+                    })
+                    .map(|s| (s.bank, s.start_index, s.end_index))
+                    .collect();
+                if !degenerate.is_empty() {
+                    // Public grid is best-effort — on failure stay
+                    // faithful (zero voltages) instead of failing the read.
+                    if let Ok(pub_report) = run(
+                        target,
+                        QueryDomainVfpPoints {
+                            domain: ClockDomain::Graphics,
+                            infer_missing_default: false,
+                            indexed: true,
+                        },
+                    ) {
+                        let pub_pts = pub_report.output;
+                        let max_idx = pub_pts.iter().map(|(i, _)| *i).max().unwrap_or(0);
+                        let mut grid = vec![0u32; max_idx + 1];
+                        for (idx, p) in &pub_pts {
+                            if *idx < grid.len() {
+                                grid[*idx] = p.voltage.0;
                             }
-                            for p in v.points.iter_mut() {
-                                let off = degenerate
-                                    .iter()
-                                    .find(|(b, s, e)| {
-                                        *b == p.bank
-                                            && *s as usize <= p.index as usize
-                                            && p.index as usize <= *e as usize
-                                    })
-                                    .map(|&(_, s, _)| p.index as usize - s as usize);
-                                if let Some(off) = off {
-                                    if off < grid.len() {
-                                        p.voltage_uV = grid[off];
-                                    }
-                                }
+                        }
+                        for p in v.points.iter_mut() {
+                            let off = degenerate
+                                .iter()
+                                .find(|(b, s, e)| {
+                                    *b == p.bank
+                                        && *s as usize <= p.index as usize
+                                        && p.index as usize <= *e as usize
+                                })
+                                .map(|&(_, s, _)| p.index as usize - s as usize);
+                            if let Some(off) = off
+                                && off < grid.len()
+                            {
+                                p.voltage_uV = grid[off];
                             }
-                            // refresh degenerate segments' voltage ranges
-                            for s in v.segments.iter_mut() {
-                                if s.kind != nvoc_core::ClkVfSegmentKind::VfCurve
-                                    || s.voltage_uV_max != 0
-                                {
-                                    continue;
-                                }
-                                let vals: Vec<u32> = v
-                                    .points
-                                    .iter()
-                                    .filter(|p| {
-                                        s.bank == p.bank
-                                            && s.start_index as usize <= p.index as usize
-                                            && p.index as usize <= s.end_index as usize
-                                    })
-                                    .map(|p| p.voltage_uV)
-                                    .collect();
-                                if let (Some(&mn), Some(&mx)) =
-                                    (vals.iter().min(), vals.iter().max())
-                                {
-                                    s.voltage_uV_min = mn;
-                                    s.voltage_uV_max = mx;
-                                }
+                        }
+                        // refresh degenerate segments' voltage ranges
+                        for s in v.segments.iter_mut() {
+                            if s.kind != nvoc_core::ClkVfSegmentKind::VfCurve
+                                || s.voltage_uV_max != 0
+                            {
+                                continue;
+                            }
+                            let vals: Vec<u32> = v
+                                .points
+                                .iter()
+                                .filter(|p| {
+                                    s.bank == p.bank
+                                        && s.start_index as usize <= p.index as usize
+                                        && p.index as usize <= s.end_index as usize
+                                })
+                                .map(|p| p.voltage_uV)
+                                .collect();
+                            if let (Some(&mn), Some(&mx)) = (vals.iter().min(), vals.iter().max()) {
+                                s.voltage_uV_min = mn;
+                                s.voltage_uV_max = mx;
                             }
                         }
                     }
