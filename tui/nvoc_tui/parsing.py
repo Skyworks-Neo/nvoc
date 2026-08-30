@@ -458,16 +458,22 @@ def compute_vf_plot_bounds(
 
 # Per-curve metadata: plot label, g(def) prior class for raw-converted
 # translation, and the ClockDomain bit for the direct-read live crosshair.
-# The third curve was initially mislabeled HOST until a voltage-lock A/B
-# proved it tracks SYS — see ClkVfSegment::domain_hint in nvapi-rs.
-# NOTE the two bits are DIFFERENT records: domain_bit below is the bit
-# whose MEASURE_FREQ reads the live clock for the crosshair (bit 2 =
-# SYS); the record whose offset WRITE shifts this curve is bit 5
-# (labeled Host by the RTSS-derived name table) — don't conflate them.
+# The third curve's attribution moved twice — HOST → SYS (voltage-lock)
+# → MSD, pinned by the bit-5 offset A/B (+200 MHz into the ClkDomains
+# bit-5 record shifted every point; the Host MEASURE channel stayed in
+# its 825–1350 band) — see ClkVfSegment::domain_hint in nvapi-rs.
+# NOTE the bits are DIFFERENT records: domain_bit below is the bit whose
+# MEASURE_FREQ reads the live clock for the crosshair. For MSD that is
+# bit 21 (the Msd channel — the domain this curve IS): the SYS channel
+# (bit 2) co-moves in the same uncore band but reads a DIFFERENT value,
+# so sampling bit 2 puts the green cross off the curve (live-seen: bit2
+# 2095.8 vs bit21 2070.2 MHz at the same instant). The record whose
+# offset WRITE shifts this curve is bit 5 (surfaced as MSD by the CLI's
+# WRITE map).
 CURVE_META: dict[str, dict[str, Any]] = {
     "gpc": {"label": "GPC", "class": "graphics", "domain_bit": 0},
     "xbar": {"label": "XBAR", "class": "fabric", "domain_bit": 1},
-    "sys": {"label": "SYS", "class": "fabric", "domain_bit": 2},
+    "msd": {"label": "MSD", "class": "fabric", "domain_bit": 21},
     # Pascal-HBM compute cards (GP100/V100): bank 0's 2nd 80-pt curve is
     # the HBM MEM V/F curve (live A/B: the MEM domain offset hits it).
     # class "graphics" = the neutral g(def) prior (no HBM calibration yet).
@@ -511,7 +517,7 @@ def build_vf_curves(
     """Classify public + private V/F reads into per-domain curves.
 
     Port of the GUI ``_build_curves``: GPC prefers the open interface
-    (Fixed points flip it to private writes); XBAR/SYS come from the private
+    (Fixed points flip it to private writes); XBAR/MSD come from the private
     ClockClient V/F-POINTS ``vf_curve`` segments; unnamed domains (the
     50-series fourth curve) display as unknownN; pstate_bins are skipped.
     Point-id ranges come straight from the segment
@@ -587,11 +593,11 @@ def build_vf_curves(
 
     if not curves:
         return None
-    # Canonical display order GPC → XBAR → SYS → others (unknownN keep
+    # Canonical display order GPC → XBAR → MSD → others (unknownN keep
     # discovery order; stable sort). Consumers (selector, plot draws)
     # iterate this dict — without this, a public-source GPC (inserted
     # last above) would sort after the private segments.
-    order = {"gpc": 0, "xbar": 1, "sys": 2, "mem": 3}
+    order = {"gpc": 0, "xbar": 1, "msd": 2, "mem": 3}
     return dict(sorted(curves.items(), key=lambda kv: order.get(kv[0], 4)))
 
 
@@ -600,7 +606,7 @@ def reverse_lookup_voltage(
 ) -> float | None:
     """Voltage on the curve closest to ``target_freq`` (linear interpolation).
 
-    xbar/sys curves are monotonic in frequency vs voltage (no pstate
+    xbar/msd curves are monotonic in frequency vs voltage (no pstate
     off-curve excursion), so the reverse lookup is single-valued; targets
     outside the range clamp to the nearer end. Port of the GUI helper.
     """

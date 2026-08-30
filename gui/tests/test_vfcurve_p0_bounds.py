@@ -365,13 +365,13 @@ _ENABLED_FACE = "#ff6b6b"
 
 
 def test_wall_drag_disabled_single_rail_non_gpc() -> None:
-    """Single-rail part + SYS/XBAR active: the wall drag writes the GPC
+    """Single-rail part + MSD/XBAR active: the wall drag writes the GPC
     (primary) rail regardless of the selected curve, so the handle must be
     inert — press refused, no pending wall, console explains, handle gray."""
     tab = _make_tab()
     tab.ensure_p0_bounds("GPU0")  # populates only the primary rail
     assert len(tab._p0_bounds_by_rail) == 1
-    tab._active_curve = "sys"
+    tab._active_curve = "msd"
     assert tab._wall_drag_disabled() is True
 
     _build_wall_handle(tab)

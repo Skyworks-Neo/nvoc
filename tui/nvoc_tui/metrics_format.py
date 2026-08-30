@@ -44,11 +44,15 @@ def _format_mibps(mibps: float) -> str:
 # Internal fabric clock domains (from GetAllClocks V2 `all_clocks_mhz`) to surface
 # on a dedicated FCLK line — the "crossbar clock" GPU-Z shows plus the other
 # structurally-interesting fabric clocks. Ordered for stable display. Memory
-# ("M") stays off this line: it's already on MEM/ECLK.
+# ("M") stays off this line: it's already on MEM/ECLK. MSD IS shown: it is
+# the uncore-band domain the ClkDomains bit-5 offset record drives (the
+# third V/F curve) — it was hidden back when it read as memory-subsystem
+# noise, but it is now a first-class OC surface.
 _FABRIC_CLOCK_DOMAINS = [
     "Gpc",
     "Xbar",
     "Sys",
+    "Msd",
     "Hub",
     "Host",
     "Ltc",
@@ -58,7 +62,7 @@ _FABRIC_CLOCK_DOMAINS = [
     "Utils",
 ]
 # Domains that never render on FCLK even when present in the payload.
-_FABRIC_HIDDEN_DOMAINS = {"m", "msd", "pciegen", "host1x"}
+_FABRIC_HIDDEN_DOMAINS = {"m", "pciegen", "host1x"}
 
 
 def _fabric_canonical_key(domain: str) -> str:

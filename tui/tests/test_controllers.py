@@ -997,7 +997,7 @@ def _selector_widgets() -> dict[str, SimpleNamespace]:
         ),
         "#vf-curve-gpc": SimpleNamespace(value=True, disabled=False),
         "#vf-curve-xbar": SimpleNamespace(value=True, disabled=False),
-        "#vf-curve-sys": SimpleNamespace(value=True, disabled=False),
+        "#vf-curve-msd": SimpleNamespace(value=True, disabled=False),
     }
 
 
@@ -1027,7 +1027,7 @@ def test_vfcurve_toggle_visibility_guards_last_visible_curve() -> None:
 
 
 def test_vfcurve_sync_hides_absent_static_checkboxes() -> None:
-    """P100 shape: gpc+mem only — the static XBAR/SYS checkboxes must hide.
+    """P100 shape: gpc+mem only — the static XBAR/MSD checkboxes must hide.
 
     The sync loop once iterated only the DISCOVERED set, so an absent
     domain's static checkbox was never visited and stayed visible forever.
@@ -1049,7 +1049,7 @@ def test_vfcurve_sync_hides_absent_static_checkboxes() -> None:
     assert app.widgets["#vf-curve-gpc"].display is True
     assert app.widgets["#vf-curve-mem"].display is True
     assert app.widgets["#vf-curve-xbar"].display is False
-    assert app.widgets["#vf-curve-sys"].display is False
+    assert app.widgets["#vf-curve-msd"].display is False
 
 
 def test_vfcurve_on_curve_loaded_builds_multi_curves() -> None:

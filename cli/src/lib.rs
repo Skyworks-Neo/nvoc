@@ -771,7 +771,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     positionals: Box::leak(Box::new([PositionalArg::free(
                     "arg_bank",
                     "BANK",
-                    "Bank to reset: 0 = V/F curve points (clears mode-0 kHz offsets written via set-vfp-point/range-private default/--freq-mode), 1 = pstate-class records; --domain gpc|xbar|host restricts the reset to that domain's segments (bank 0 only)",
+                    "Bank to reset: 0 = V/F curve points (clears mode-0 kHz offsets written via set-vfp-point/range-private default/--freq-mode), 1 = pstate-class records; --domain gpc|xbar|msd|disp|mem restricts the reset to that domain's segments (bank 0 only; legacy sys/host alias msd)",
                 )])),
                     ..CommandSpec::new("reset-private-vftable-offset", Group::Vfp, "Reset private V/F-POINTS overrides (clear freq/raw offsets the public/pstate20 reset paths cannot reach; --mode freq|raw clears only that mode, default both)")
                 },
@@ -1099,14 +1099,14 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     positionals: Box::leak(Box::new([PositionalArg::free(
                         "arg_domain",
                         "DOMAIN",
-                        "Clock domain to offset (WRITE map): xbar (1), gpc/core (0), sys/host/uncore (5, the record that moves the SYS/uncore cluster), or a raw bit 0-31",
+                        "Clock domain to offset (WRITE map): xbar (1), gpc/core (0), msd (5, the record that moves the MSD/uncore cluster — the third V/F curve; legacy aliases sys/host/uncore), or a raw bit 0-31",
                     ),
                     PositionalArg::hyphen(
                         "arg_offset",
                         "OFFSET",
                         "Signed offset in MHz by default (one decimal allowed), for example -60, +15.5 or 0 (no-op stock write); an explicit khz/kilohertz suffix keeps the legacy unit. The driver may reject or clamp; the post-SET readback is returned. Pass --temporary to restore the snapshot before returning",
                     )])),
-                    ..CommandSpec::new("set-private-freq-domain-global-offset", Group::Vfp, "Write a signed MHz offset into one clock-domain control record (dangerous XBar clock write; --temporary restores the snapshot). NOTE: names resolve through the WRITE map — sys/host/uncore all target bit 5, the record that moves the SYS/uncore cluster; the MEASURE bit for SYS is 2 (get-private-freq-domain-status). Pass a bare integer to target a raw record")
+                    ..CommandSpec::new("set-private-freq-domain-global-offset", Group::Vfp, "Write a signed MHz offset into one clock-domain control record (dangerous XBar clock write; --temporary restores the snapshot). NOTE: names resolve through the WRITE map — msd targets bit 5, the record that moves the MSD/uncore cluster (third V/F curve + the clocks measured at bits 2/21); sys/host/uncore are legacy aliases of the same record. Pass a bare integer to target a raw record")
                 },
             ),
             (
@@ -1154,7 +1154,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                         "VALUE",
                         "default/--freq-mode: kHz freq offset (e.g. 200000 = +200 MHz). --raw-converted: MHz target translated to a raw f-offset control value via the universal g(def) prior (effect_mhz = C(def)*(delta-D0)). --raw: raw f-offset control value verbatim",
                     )])),
-                    ..CommandSpec::new("set-private-vftable-point-offset", Group::Vfp, "Write one V/F curve point via the private SetControl (dangerous V/F edit; bank 0=V/F curve, 1=pstate-class; default/--freq-mode = kHz freq offset (same as public VFP, safest; also reaches xbar/host domains); --raw-converted = MHz target translated to a raw f-offset control value via the universal g(def) prior; --raw = write the raw f-offset control value verbatim)")
+                    ..CommandSpec::new("set-private-vftable-point-offset", Group::Vfp, "Write one V/F curve point via the private SetControl (dangerous V/F edit; bank 0=V/F curve, 1=pstate-class; default/--freq-mode = kHz freq offset (same as public VFP, safest; also reaches xbar/msd domains); --raw-converted = MHz target translated to a raw f-offset control value via the universal g(def) prior; --raw = write the raw f-offset control value verbatim)")
                 },
             ),
             (
@@ -1842,7 +1842,7 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .value_name("DOMAIN")
             .action(ArgAction::Append)
             .global(true)
-            .help("Domain selector, meaning depends on the command: clock domain (core/memory/processor/video), gpu|acoustic (set-temp-limit NVML path), core|mem (set-legacy-freq), or gpc|xbar|host (reset-private-vftable-offset)"),
+            .help("Domain selector, meaning depends on the command: clock domain (core/memory/processor/video), gpu|acoustic (set-temp-limit NVML path), core|mem (set-legacy-freq), or gpc|xbar|msd|disp|mem (reset-private-vftable-offset; legacy sys/host alias msd)"),
         "output-csv" => Arg::new("output-csv")
             .long("output-csv")
             .value_name("PATH")
@@ -1945,7 +1945,7 @@ fn command_specific_arg(name: &'static str) -> Arg {
         "freq-mode" => Arg::new("freq-mode")
             .long("freq-mode")
             .action(ArgAction::SetTrue)
-            .help("kHz frequency offset mode (same as public VFP freqDeltaKHz; this is the DEFAULT — flag is an explicit alias. Reaches xbar/host domains unlike the public API)"),
+            .help("kHz frequency offset mode (same as public VFP freqDeltaKHz; this is the DEFAULT — flag is an explicit alias. Reaches xbar/msd domains unlike the public API)"),
         "slot" => Arg::new("slot")
             .long("slot")
             .value_name("SLOT")
@@ -3664,7 +3664,7 @@ fn execute_target(
                     "controllable_mask": format!("0x{:08X}", c.mask),
                     "entries": c.entries.iter().map(|e| json!({
                         "bit": e.bit,
-                        "domain": e.domain().map(|d| format!("{:?}", d)).unwrap_or_else(|| "Unknown".to_string()),
+                        "domain": clk_client_record_name(e.bit),
                         "type": e.entry_type,
                         // false = the protocol doesn't marshal this record
                         // type's value fields (e.g. type 0x02) — values_kHz
@@ -3858,7 +3858,7 @@ fn execute_target(
                                     .map(|s| s.domain_hint)
                                 {
                                     Some(nvoc_core::ClkVfDomainHint::Xbar)
-                                    | Some(nvoc_core::ClkVfDomainHint::Sys) => {
+                                    | Some(nvoc_core::ClkVfDomainHint::Msd) => {
                                         nvoc_core::ClkVfDomainClass::Fabric
                                     }
                                     _ => nvoc_core::ClkVfDomainClass::Graphics,
@@ -4060,7 +4060,7 @@ fn execute_target(
                 ));
             }
             // default (no flag) = freq_mode, same as public VFP but reaches
-            // xbar/host; --freq-mode is the explicit alias of the default.
+            // xbar/msd; --freq-mode is the explicit alias of the default.
             let freq_mode = !raw_flag && !raw_converted;
             // Pascal 2× axis: freq-mode writes the real kHz ×2; --raw is the
             // one mode that stays verbatim (raw semantics are raw semantics).
@@ -4103,7 +4103,7 @@ fn execute_target(
                         .map(|s| s.domain_hint)
                 }) {
                     Some(nvoc_core::ClkVfDomainHint::Xbar)
-                    | Some(nvoc_core::ClkVfDomainHint::Sys) => nvoc_core::ClkVfDomainClass::Fabric,
+                    | Some(nvoc_core::ClkVfDomainHint::Msd) => nvoc_core::ClkVfDomainClass::Fabric,
                     _ => nvoc_core::ClkVfDomainClass::Graphics,
                 };
                 let delta = nvoc_core::clk_vf_delta_for_target(
@@ -4249,7 +4249,7 @@ fn execute_target(
                         .map(|s| s.domain_hint)
                     {
                         Some(nvoc_core::ClkVfDomainHint::Xbar)
-                        | Some(nvoc_core::ClkVfDomainHint::Sys) => {
+                        | Some(nvoc_core::ClkVfDomainHint::Msd) => {
                             nvoc_core::ClkVfDomainClass::Fabric
                         }
                         _ => nvoc_core::ClkVfDomainClass::Graphics,
@@ -4990,24 +4990,26 @@ fn execute_target(
             if bank > 1 {
                 return Err(CliError::new("bank must be 0 or 1"));
             }
-            // --domain gpc|xbar|sys|disp|mem: restrict the reset to that
+            // --domain gpc|xbar|msd|disp|mem: restrict the reset to that
             // domain's segments within the bank (per-point mode-0/value-0
             // writes via the private point setter — the same write the
             // whole-bank reset performs, scoped to the segment's index
             // range from get-private-vftable's advisory attribution).
-            // The sys curve was initially mislabeled host (voltage-lock A/B
-            // proved SYS); the disp bins were also mislabeled host.
+            // The third curve's attribution moved twice: HOST → SYS → MSD
+            // (the bit-5 offset A/B pinned MSD); sys/host remain accepted
+            // as legacy aliases. The disp bins were also once mislabeled
+            // host.
             if let Some(domain_raw) = option_one(invocation, "domain") {
                 let hint = match domain_raw.trim().to_ascii_lowercase().as_str() {
                     "gpc" | "core" | "gpu" | "graphics" => ClkVfDomainHint::Gpc,
                     "xbar" => ClkVfDomainHint::Xbar,
-                    // legacy alias from before the SYS relabel
-                    "sys" | "host" => ClkVfDomainHint::Sys,
+                    // legacy aliases from the HOST/SYS naming eras
+                    "msd" | "sys" | "host" => ClkVfDomainHint::Msd,
                     "disp" | "display" => ClkVfDomainHint::Disp,
                     "mem" | "memory" => ClkVfDomainHint::Mem,
                     other => {
                         return Err(CliError::new(format!(
-                            "invalid --domain {other:?}; expected gpc, xbar, sys, disp, or mem"
+                            "invalid --domain {other:?}; expected gpc, xbar, msd, disp, or mem"
                         )));
                     }
                 };
@@ -5884,6 +5886,21 @@ fn parse_domain(raw: &str) -> CliResult<ClockDomain> {
 /// `ClockDomain`), this returns the raw domain bit used by GET_CONTROL /
 /// MEASURE_FREQ — XBAR (1) is not representable in the public enum. Accepts
 /// names (xbar/gpc/sys/mclk) or a bare integer bit.
+/// Display name for a private ClockClient CONTROL-RECORD bit (the
+/// get-private-freq-domain-info listing / the SET write map). Same bit
+/// numbering as MEASURE_FREQ, but the physical attribution of record 5
+/// differs from the RTSS label: the bit-5 record drives MSD (live A/B —
+/// +200 MHz into it shifted the third V/F curve while the Host MEASURE
+/// channel stayed in its 825–1350 band), so it is surfaced as "Msd"
+/// rather than the RTSS index-5 name "Host". Every other bit keeps the
+/// advisory RTSS name.
+fn clk_client_record_name(bit: u32) -> String {
+    match bit {
+        5 => "Msd".into(),
+        _ => parse_clk_domain_name(bit),
+    }
+}
+
 /// Canonical domain name for a raw domain bit (reverse of
 /// [`parse_clk_domain`]'s alias table; "bit N" when unmapped).
 fn parse_clk_domain_name(bit: u32) -> String {
@@ -5923,10 +5940,10 @@ fn parse_clk_domain(raw: &str) -> CliResult<u32> {
     // NOTE: this bit→name table is imported wholesale from the RTSS
     // NV_GPU_CLOCK_DOMAIN_ID (GetAllClocks V2 public space). The private
     // ClockClient ClkDomains family is indexed by ITS OWN record bits and
-    // the equivalence "bit == RTSS domain id" was never driver-verified —
-    // e.g. offsetting the bit-5 record shifts the SYS VF curve (see
-    // ClkVfSegment::domain_hint). MEASURE_FREQ per-bit readings are the
-    // ground truth for what a bit physically drives.
+    // the equivalence "bit == RTSS domain id" does NOT fully hold —
+    // live-verified counterexample: the bit-5 WRITE record drives MSD, not
+    // Host (see parse_clk_domain_write / clk_client_record_name). MEASURE
+    // _FREQ per-bit readings are the ground truth for what a bit measures.
     let trimmed = raw.trim();
     parse_clk_domain_table(trimmed)
 }
@@ -5935,20 +5952,24 @@ fn parse_clk_domain(raw: &str) -> CliResult<u32> {
 /// (`set-private-freq-domain-global-offset`). The private control block's
 /// WRITE records are NOT the MEASURE_FREQ/RTSS bits on this driver
 /// generation (live-verified on RTX 4060 Laptop / R610 family):
-///   - MEASURE reads SYS at bit 2 and Host at bit 5,
-///   - but the offset record that actually moves the SYS/uncore cluster
-///     (the third VF curve AND its clocks) is bit 5 — writing bit 2 has no
-///     effect on SYS.
+///   - MEASURE reads SYS at bit 2 and a 825–1350 MHz Host-band clock at
+///     bit 5, but offsetting the bit-5 RECORD moves neither of those —
+///   - it moves the MSD/uncore cluster instead: the third VF curve
+///     (MSD-attributed) AND the clocks measured at MEASURE bits 2 AND 21
+///     (which co-scale with a fixed ~75 MHz gap) — writing bit 2 has no
+///     effect.
 ///
-/// So names here resolve to the WRITE record: sys/host/uncore → 5.
+/// So names here resolve to the WRITE record: msd → 5 (canonical;
+/// sys/host/uncore are legacy attributions of the same record — the curve
+/// was called HOST, then SYS, before the bit-5 offset A/B pinned MSD).
 /// A bare integer bypasses the remap and targets that raw record.
 fn parse_clk_domain_write(raw: &str) -> CliResult<u32> {
     let trimmed = raw.trim();
     match trimmed.to_ascii_lowercase().as_str() {
-        // the uncore-cluster offset record — the bit-5 WRITE, not the
-        // bit-2 measure; both names address the same record on this
-        // driver (see parse_clk_domain's note)
-        "sys" | "host" | "uncore" => Ok(5),
+        // the MSD/uncore-cluster offset record (bit 5). "msd" is the
+        // canonical name; "sys"/"host"/"uncore" are kept so older
+        // invocations keep hitting the same record (see the module note)
+        "msd" | "sys" | "host" | "uncore" => Ok(5),
         _ => parse_clk_domain_table(trimmed),
     }
 }
