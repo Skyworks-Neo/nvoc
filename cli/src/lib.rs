@@ -3548,7 +3548,6 @@ fn execute_target(
                 Some(r) => {
                     json!({
                         "rail_mask": format!("0x{:08X}", r.rail_mask),
-                        "p0": volt_rails_p0_json(&r),
                         "p0_rails": volt_rails_p0_rails_json(&r),
                         "rail_descriptors": r.rail_descriptors.iter().map(|d| json!({
                             "rail_bit": d.rail_bit,
