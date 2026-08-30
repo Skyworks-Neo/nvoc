@@ -257,8 +257,13 @@ class VFCurveTab:
         self._live_poll_job: Optional[str] = None
         self._live_pending: Tuple[Optional[float], Optional[float]] = (None, None)
         self._live_poll_inflight = False
-        # Direct-read inflight guard for xbar/sys live-point polling.
+        # Direct-read inflight guard for xbar/msd live-point polling.
         self._direct_read_inflight = False
+        # Crosshair rail voltage (private VoltRails current — the true
+        # operating voltage; see _live_poll_tick) + its poll guard. Refreshed
+        # once per live tick; None ⇒ fall back to the status-setpoint feed.
+        self._rail_volt_mv: Optional[float] = None
+        self._rail_volt_inflight = False
 
         # ── P0 voltage-boundary vertical lines ──
         # Hardware walls (floor = min_hold, ceiling = min(vbios,vrm)) are
@@ -1138,6 +1143,8 @@ class VFCurveTab:
             self._p0_effective_by_rail = {}
             self._p0_effective_wall_mv = None
             self._pending_wall_mv = None
+            # Stale crosshair rail voltage from the previous GPU.
+            self._rail_volt_mv = None
         self._p0_bounds_gpu = gpu
 
         def _worker():
@@ -2580,8 +2587,16 @@ class VFCurveTab:
 
         # Drain the latest volt/freq pushed by the background poll worker and
         # blit — but only when idle. During a drag/press the value is held and
-        # flushed on release via _flush_pending_live_point.
+        # flushed on release via _flush_pending_live_point. The VOLTAGE drawn
+        # is the rail current (self._rail_volt_mv, refreshed once per tick
+        # below), not the status setpoint the poll worker pushes: the public
+        # status voltage is a quantized setpoint (pinned 900 mV under load
+        # live-observed) while the private VoltRails current is live-sensed
+        # (910-920 mV the same moment) — one true source for every curve, no
+        # 5-20 mV split between GPC and the fabric curves.
         volt, freq = self._live_pending
+        if self._rail_volt_mv is not None:
+            volt = self._rail_volt_mv
         self._live_volt = volt
         self._live_freq = freq
         if (
@@ -2592,7 +2607,38 @@ class VFCurveTab:
         elif self._mouse_pressed or self._is_resize_active:
             # hold for the release/resize-end flush
             self._pending_live_point = (volt, freq)
+        self._kick_rail_volt_poll()
         self._live_poll_job = self.app.after(self._LIVE_POLL_MS, self._live_poll_tick)
+
+    def _kick_rail_volt_poll(self) -> None:
+        """Refresh the crosshair rail voltage in the background, once per
+        live tick. The result lands in ``_rail_volt_mv`` and is drawn by the
+        NEXT tick (one-tick staleness at a 1 s cadence — the same freshness
+        the status feed itself has). Failure keeps the previous value; the
+        crosshair then silently falls back to the status voltage."""
+        if self._rail_volt_inflight or self._cleaned_up:
+            return
+        gpu = self.app.selected_gpu_target()
+        if gpu is None:
+            return
+        self._rail_volt_inflight = True
+
+        def _worker():
+            try:
+                rail_mv = self._poll_rail_current_mv(gpu)
+            except Exception:
+                rail_mv = None
+            self.app.after(
+                0,
+                lambda: self._on_rail_volt_polled(rail_mv),
+            )
+
+        self.app.run_background("vfcurve-rail-volt", _worker)
+
+    def _on_rail_volt_polled(self, rail_mv: Optional[float]) -> None:
+        self._rail_volt_inflight = False
+        if rail_mv is not None:
+            self._rail_volt_mv = rail_mv
 
     def _kick_direct_read(self, curve_id: str) -> None:
         """Async direct-read of the active xbar/host domain's physical clock.
@@ -2634,11 +2680,15 @@ class VFCurveTab:
         """Live voltage of the ACTIVE curve's rail, for the crosshair.
 
         Multi-rail parts get a real per-rail reading (50-series MSVDD for
-        xbar, Pascal-HBM for mem); single-rail parts' primary rail IS the
-        GPC voltage every domain shares. Queried fresh here because the
-        cached P0 bounds (walls are immutable) snapshot ``current_uV`` once.
+        xbar, Pascal-HBM for mem) — a physically separate rail the status
+        feed's core voltage says nothing about. Single-rail parts read the
+        primary rail's live ``current_uV``. The status voltage (public,
+        quantized setpoint — pinned 900 mV under load live-observed, while
+        the private VoltRails current reads 910-920 mV the same moment) is
+        a DIFFERENT quantity and is only used as the fallback when the
+        rail read fails — every curve's crosshair draws the rail current.
         Returns None on any failure → the caller falls back to a reverse
-        curve lookup.
+        curve lookup / the status feed.
         """
         try:
             vr = self.app.backend.query_volt_rails(gpu)

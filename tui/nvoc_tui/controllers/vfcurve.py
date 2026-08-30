@@ -305,16 +305,26 @@ class VFCurveController(PaneController):
             plt.scatter(
                 curve.voltages, curve.defaults, marker="braille", color=default_color
             )
-        # Live crosshair only on the active curve: GPC from the dashboard
-        # status feed, XBAR/SYS from the direct-read poll path. Hidden
-        # curves are neither plotted nor polled.
+        # Live crosshair only on the active curve: GPC frequency from the
+        # dashboard status feed, XBAR/MSD from the direct-read poll path.
+        # The crosshair VOLTAGE is the rail current on every curve (the
+        # dashboard sweep's rail_volts["GPC"] for GPC, the direct-read
+        # rail poll for the fabric curves): the public status voltage is a
+        # quantized setpoint (pinned 900 mV under load live-observed) while
+        # the private VoltRails current is live-sensed (910-920 mV the same
+        # moment) — one true source, no 5-20 mV split between curves.
+        # Hidden curves are neither plotted nor polled.
         live_point: tuple[float, float] | None = None
         # Single measured working-point crosshair, green on every curve.
         live_color = "green+"
         live_voltage: float | None = None
         if active is not None:
             if active_id == "gpc":
-                live_voltage = self.app.cache.status.get("voltage_mv")
+                rail_volts = self.app.cache.rail_volts
+                if rail_volts:
+                    live_voltage = rail_volts[0][1]
+                else:
+                    live_voltage = self.app.cache.status.get("voltage_mv")
                 live_clock = self.app.cache.status.get("gpu_clock_mhz")
                 if isinstance(live_voltage, (int, float)) and isinstance(
                     live_clock, (int, float)
@@ -620,12 +630,16 @@ class VFCurveController(PaneController):
     def _poll_rail_current_mv(self, curve_id: str, gpu: str) -> float | None:
         """Live voltage of the rail this curve rides, for the crosshair.
 
-        gpc/sys ride the PRIMARY (core) rail; xbar/mem the SECONDARY rail
+        gpc/msd ride the PRIMARY (core) rail; xbar/mem the SECONDARY rail
         (50-series MSVDD, Pascal-HBM) when the part exposes one — the rail's
-        real ``current_uV`` IS the operating voltage for those domains, and
-        on single-rail parts (e.g. 40-series) the primary rail's current is
-        the GPC voltage every domain shares. Queried fresh here because the
-        cached P0 bounds (walls are immutable) snapshot ``current_uV`` once.
+        real ``current_uV`` IS the operating voltage for those domains.
+        Single-rail parts read the primary rail's live ``current_uV`` too.
+        The status voltage (public, quantized setpoint — pinned 900 mV under
+        load live-observed, while the private VoltRails current reads
+        910-920 mV the same moment) is a DIFFERENT quantity and is only the
+        fallback when the rail read fails — every curve's crosshair draws
+        the rail current (GPC via the dashboard sweep's rail_volts, the
+        fabric curves via this fresh poll).
         Falls back to None → reverse curve lookup in the caller.
         """
         try:

@@ -945,6 +945,10 @@ def test_vfcurve_apply_private_mode0_then_raw_fallback() -> None:
 
 
 class _FakePlt:
+    def __init__(self) -> None:
+        # scatter recording for live-point assertions (no-ops otherwise).
+        self.scatter_calls: list[tuple] = []
+
     def clear_figure(self) -> None:
         pass
 
@@ -958,7 +962,7 @@ class _FakePlt:
         pass
 
     def scatter(self, *args, **kwargs) -> None:
-        pass
+        self.scatter_calls.append((args, kwargs))
 
     def vline(self, *args, **kwargs) -> None:
         pass
@@ -1469,6 +1473,7 @@ class _RecordingPlt(_FakePlt):
     """_FakePlt that records vline coordinates for assertion."""
 
     def __init__(self) -> None:
+        super().__init__()
         self.vlines: list[float] = []
         self.texts: list[str] = []
 
@@ -1524,6 +1529,34 @@ def test_vfcurve_render_plot_draws_p0_boundary_vlines() -> None:
     bars = [t for t in plt.texts if t and set(t) == {"█"}]
     assert len(bars) == 1
     assert len(bars[0]) >= 50
+
+
+def test_vfcurve_render_plot_gpc_live_point_uses_rail_voltage() -> None:
+    """GPC crosshair voltage is the rail current (dashboard sweep's
+    rail_volts), NOT the status setpoint — one true source for every
+    curve (status 900 mV pinned vs rail 915 mV live-observed)."""
+    controller, plt = _vfcurve_controller_with_plot()
+    controller.app.cache.status = {"voltage_mv": 900.0, "gpu_clock_mhz": 1600.0}
+    controller.app.cache.rail_volts = [("GPC", 915.0), ("MSVDD", 655.5)]
+
+    controller.render_plot()
+
+    live = [call for call in plt.scatter_calls if call[1].get("label") == "Live Point"]
+    assert len(live) == 1
+    assert live[0][0][0] == [915.0]  # rail current, not the 900 setpoint
+
+
+def test_vfcurve_render_plot_gpc_live_point_falls_back_to_status() -> None:
+    """No rail reading yet (family absent / first tick) → status voltage."""
+    controller, plt = _vfcurve_controller_with_plot()
+    controller.app.cache.status = {"voltage_mv": 900.0, "gpu_clock_mhz": 1600.0}
+    controller.app.cache.rail_volts = None
+
+    controller.render_plot()
+
+    live = [call for call in plt.scatter_calls if call[1].get("label") == "Live Point"]
+    assert len(live) == 1
+    assert live[0][0][0] == [900.0]
 
 
 def test_vfcurve_render_plot_skips_p0_vlines_when_absent() -> None:
