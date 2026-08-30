@@ -77,6 +77,14 @@ class OverclockTab:
         self._mobile_limits_gpu = None  # type: Optional[str]
         self._mobile_load_in_flight = False
         self._volt_rail_bit = 0  # VoltRails rail bit (0 on single-rail mobile GPUs)
+        # GPUs whose NVML fan-info reports zero coolers (fanless server cards:
+        # P100/A100 …) — the Fan pane greys out for these via the same
+        # set_supported_state path the mobile verdict drives.
+        self._fanless_gpus = set()  # type: Set[str]
+        # GPUs whose NVML cooler count came back ≥ 1 — observed fans win over
+        # the is_server classification (ServerLovelace L40/L4 carry fans).
+        self._fanned_gpus = set()  # type: Set[str]
+        self._fan_surface_gpu = None  # type: Optional[str]
         self._xbar_supported = False  # Xbar row: Turing (GTX 16系) and newer
         self._is_resize_active = False
         self._pending_limits = None  # type: Optional[Dict[str, Any]]
@@ -1242,7 +1250,19 @@ class OverclockTab:
             gpu = self.app.selected_gpu_target()
             if gpu is not None and gpu != self._mobile_limits_gpu:
                 self._load_mobile_limits()
-        self.fan_section.set_supported(not is_mobile)
+        # Fan verdict: mobile GPUs AND fanless server cards both grey the
+        # pane out through the same set_supported_state path. Server verdict
+        # is synchronous (gpu_type.rs is_server flag in this payload — Tesla
+        # P100/A100/… are passive); the async NVML cooler count refines it
+        # (ServerLovelace L40/L4 carry onboard fans, count ≥ 1 re-enables).
+        fan_gpu = self.app.selected_gpu_target()
+        server_flag = info.get("is_server")
+        fanless = (fan_gpu is not None and fan_gpu in self._fanless_gpus) or (
+            isinstance(server_flag, bool)
+            and server_flag
+            and fan_gpu not in self._fanned_gpus
+        )
+        self.fan_section.set_supported(not is_mobile and not fanless)
         self._refresh_fan_surface(is_mobile)
 
         # Xbar (private ClockClient domain offset) exists from Turing — the
@@ -1323,6 +1343,7 @@ class OverclockTab:
             return
         backend = self.app.backend
         self._fan_surface_load_in_flight = True
+        self._fan_surface_gpu = gpu
 
         def worker():
             try:
@@ -1330,7 +1351,7 @@ class OverclockTab:
             except Exception:
                 data = None
             try:
-                self.frame.after(0, lambda: self._fan_surface_loaded(data))
+                self.frame.after(0, lambda: self._fan_surface_loaded(gpu, data))
             except Exception:
                 self._fan_surface_load_in_flight = False
 
@@ -1340,9 +1361,13 @@ class OverclockTab:
             self._fan_surface_load_in_flight = False
             raise
 
-    def _fan_surface_loaded(self, data: Optional[dict]) -> None:
+    def _fan_surface_loaded(self, gpu: str, data: Optional[dict]) -> None:
         self._fan_surface_load_in_flight = False
         if not isinstance(data, dict):
+            return
+        # A GPU switch between dispatch and completion must not re-verdict
+        # the pane for the wrong card.
+        if gpu != self._fan_surface_gpu:
             return
         try:
             count = data.get("count")
@@ -1354,6 +1379,9 @@ class OverclockTab:
             # reports none. (A modern GPU's NVML count also matches its NVAPI
             # count, so this branch is legacy-only in practice.)
             if count >= 1:
+                self._fanless_gpus.discard(gpu)
+                self._fanned_gpus.add(gpu)
+                self.fan_section.set_supported(True)
                 # Modern NVAPI CoolerPolicy types (continuous etc.) are
                 # rejected by legacy drivers — restrict the dropdown to
                 # manual/default and default the selection to manual. Keep the
@@ -1368,6 +1396,14 @@ class OverclockTab:
                     # Seed the level with the live duty so the slider starts
                     # where the fan actually is.
                     self.fan_section.set_level(max(0, min(100, int(current))))
+            elif count == 0:
+                # Fanless server card (P100/A100 …): NVML reports zero
+                # coolers and the private NVAPI cooler family answers
+                # NOT_SUPPORTED — grey the section out (same path mobile
+                # takes) instead of leaving dead controls behind.
+                self._fanless_gpus.add(gpu)
+                self._fanned_gpus.discard(gpu)
+                self.fan_section.set_supported(False)
         except Exception:
             pass
 

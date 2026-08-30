@@ -14,6 +14,13 @@ class OverclockController(PaneController):
         self._mobile_limits_gpu: str | None = None
         self._mobile_load_lock = threading.Lock()
         self._fan_surface_lock = threading.Lock()
+        # GPUs whose NVML fan-info reports zero coolers (fanless server cards:
+        # P100/A100 …) — the Fan pane greys out for these, the same verdict
+        # surface the GUI drives through set_supported_state.
+        self._fanless_gpus: set[str] = set()
+        # GPUs whose NVML cooler count came back ≥ 1 — observed fans win over
+        # the is_server classification (ServerLovelace L40/L4 carry fans).
+        self._fanned_gpus: set[str] = set()
         self._tgp_policy_index = 2
         self._tgp_range = (5, 140)
         self._target_temp_range = (75, 87)
@@ -124,6 +131,20 @@ class OverclockController(PaneController):
         # leaving a dead panel of default inputs + no-op Apply buttons.
         try:
             self.app.query_one("#mobile-power-pane").display = self.is_mobile()
+        except Exception:
+            pass
+        # Fan pane: apply the fanless verdict known for THIS gpu immediately —
+        # the observed cooler-count sets when re-entering the tab, plus the
+        # synchronous gpu_type.rs is_server classification (Tesla P100/A100 …
+        # are passive; observed fans exempt L40/L4). The async surface load
+        # refines it.
+        try:
+            gpu_now = self.app.selected_gpu_target()
+            fanless = gpu_now is not None and (
+                gpu_now in self._fanless_gpus
+                or (self.is_server() and gpu_now not in self._fanned_gpus)
+            )
+            self._set_fan_pane_disabled(fanless)
         except Exception:
             pass
         self.load_mobile_limits()
@@ -414,6 +435,18 @@ class OverclockController(PaneController):
             or gpu_name.endswith(" mx")
         )
 
+    def is_server(self) -> bool:
+        """Server-grade verdict (Tesla/datacenter passive parts: P100/A100 …).
+
+        Primary signal: the query_info payload's ``is_server`` flag from core
+        gpu_type.rs detect_gpu_type — Server* variants only (ComputationVolta
+        / Titan V has a blower fan and is excluded). Used to grey the Fan
+        pane out synchronously; the async NVML cooler count refines it
+        (ServerLovelace L40/L4 carry onboard fans, count ≥ 1 re-enables).
+        """
+        flag = self.app.cache.info.get("is_server")
+        return isinstance(flag, bool) and flag
+
     def _load_fan_surface(self) -> None:
         """Background-load NVML fan info and adapt the Fan pane.
 
@@ -422,8 +455,10 @@ class OverclockController(PaneController):
         live current percent). Restrict the fan Target dropdown to the real
         count (no "Fan 2" on single-fan cards), seed the Level input with
         the live duty, and preselect NVML so Apply uses the working path.
+        Fanless server cards (P100/A100 …) report count=0 — the whole pane
+        greys out (same verdict surface as the GUI's set_supported_state).
         Modern GPUs keep the All/Fan1/Fan2 defaults (NVAPI is authoritative
-        there) — the adaptation only fires when NVML reports ≥1 fan.
+        there) — the dropdown adaptation only fires when NVML reports ≥1 fan.
         """
         gpu = self.app.selected_gpu_target()
         if gpu is None or not self._fan_surface_lock.acquire(blocking=False):
@@ -437,7 +472,7 @@ class OverclockController(PaneController):
             finally:
                 self._fan_surface_lock.release()
             try:
-                self.app.call_from_thread(self._on_fan_surface, data)
+                self.app.call_from_thread(self._on_fan_surface, gpu, data)
             except Exception:
                 pass
 
@@ -445,15 +480,39 @@ class OverclockController(PaneController):
             target=worker, daemon=True, name="nvoc-tui-fan-surface"
         ).start()
 
-    def _on_fan_surface(self, data: dict | None) -> None:
+    def _set_fan_pane_disabled(self, disabled: bool) -> None:
+        """Grey out (or restore) the whole Fan pane.
+
+        Textual's ``disabled`` reactive cascades to every child widget
+        (Select/Input/Button refuse interaction) and the ``:disabled``
+        pseudo-class drives the dim style in overclock.tcss — the TUI
+        counterpart of the GUI fan pane's ``set_supported_state``.
+        """
+        for selector in ("#fan-controls", "#fan-actions"):
+            try:
+                self.app.query_one(selector).disabled = disabled
+            except Exception:
+                pass
+
+    def _on_fan_surface(self, gpu: str, data: dict | None) -> None:
         if not isinstance(data, dict):
             return
+        # A GPU switch between dispatch and completion must not re-verdict
+        # the pane for the wrong card.
+        try:
+            if gpu != self.app.selected_gpu_target():
+                return
+        except Exception:
+            pass
         try:
             count = data.get("count")
             count = count if isinstance(count, int) else 0
             current = data.get("current_percent")
             current = current if isinstance(current, int) else None
             if count >= 1:
+                self._fanless_gpus.discard(gpu)
+                self._fanned_gpus.add(gpu)
+                self._set_fan_pane_disabled(False)
                 options = [("All", "all")] + [
                     (f"Fan {i}", str(i)) for i in range(1, count + 1)
                 ]
@@ -477,6 +536,13 @@ class OverclockController(PaneController):
                 )
                 if count == 1 and current is not None:
                     self.set_input("#fan-level", str(max(0, min(100, int(current)))))
+            elif count == 0:
+                # Fanless card (P100/A100 server parts — the private NVAPI
+                # cooler family also reports NOT_SUPPORTED there): grey the
+                # pane out instead of leaving dead Apply buttons behind.
+                self._fanless_gpus.add(gpu)
+                self._fanned_gpus.discard(gpu)
+                self._set_fan_pane_disabled(True)
         except Exception:
             pass
 

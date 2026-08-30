@@ -663,6 +663,26 @@ impl GpuType {
         matches!(self, GpuType::Unknown)
     }
 
+    /// 是否为服务器级 GPU(Tesla/数据中心被动散热卡:P100/A100/H100 …)。
+    /// 这类卡绝大多数无板载可控风扇(NVML cooler count == 0),前端用该标志
+    /// 同步灰化 Fan 面板,再由实际 fan count 纠错(例外:L40/L4 归入
+    /// ServerLovelace 但带板载风扇,count ≥ 1 会重新点亮)。
+    /// 注意 ComputationVolta(Titan V,GV100 消费版)有涡轮风扇,不算 server。
+    pub fn is_server(&self) -> bool {
+        matches!(
+            self,
+            GpuType::ServerBlackwell
+                | GpuType::ServerHopper
+                | GpuType::ServerLovelace
+                | GpuType::ServerAmpere
+                | GpuType::ServerVolta
+                | GpuType::ServerPascal
+                | GpuType::ServerTuringTesla
+                | GpuType::ServerKepler
+                | GpuType::ServerFermi
+        )
+    }
+
     /// 移动端或未知 GPU 在 OC 写入前需要 GC6 唤醒
     pub fn needs_gc6_wake(&self) -> bool {
         self.is_mobile() || self.is_unknown()

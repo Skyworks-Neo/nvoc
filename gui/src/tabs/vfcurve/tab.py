@@ -96,6 +96,16 @@ def _curve_colors_for(cid: str) -> dict:
     return _CURVE_COLORS.get(cid) or {"current": "#B2E834", "default": "#557A1C"}
 
 
+# ── Curve → VoltRails rail mapping ──
+# GPC (and SYS, which has no rail of its own) ride the PRIMARY rail — the
+# lowest rail bit, the core rail on every observed platform. XBAR and the
+# Pascal-HBM MEM curve are fed by the SECONDARY rail (the next-lowest bit):
+# RTX 50-series MSVDD powers the XBAR curve, GP100/GV100's bit-1 rail is the
+# HBM MEM rail. Single-rail parts (mobile 4060, mask 0x1) fall back to the
+# primary rail for every curve.
+_SECONDARY_RAIL_CURVES = ("xbar", "mem")
+
+
 class _CurveData:
     """One VF curve (GPC/XBAR/SYS) loaded from public or private NVAPI.
 
@@ -254,12 +264,22 @@ class VFCurveTab:
         # inside the curve's voltage range by design — no axis adjustment.
         self._p0_bounds: Optional[dict] = None
         self._p0_bounds_gpu: Optional[str] = None
-        self._p0_effective_wall_mv: Optional[float] = None
+        # Per-rail bounds: multi-rail parts (Pascal-HBM P100: core + HBM,
+        # GB10/50-series: core + MSVDD) carry one p0 dict per rail_bit in the
+        # ``p0_rails`` payload. The floor/ceiling/effective lines and the
+        # wall-drag handle follow the ACTIVE curve's rail (gpc/sys → primary,
+        # xbar/mem → secondary — see _SECONDARY_RAIL_CURVES).
+        self._p0_rails: list = []  # raw p0_rails payload
+        self._p0_bounds_by_rail: Dict[int, dict] = {}  # rail_bit → bounds dict
+        self._p0_effective_by_rail: Dict[int, Optional[float]] = {}  # bit → eff mV
+        self._p0_effective_wall_mv: Optional[float] = None  # ACTIVE rail's wall
         # The light-red effective wall is draggable: a drag moves a *pending*
         # dashed copy (clamp to [floor, ceiling]); on "Apply to GPU" the
         # pending value is written via set_volt_rail_target and the returned
-        # effective wall updates the solid line. _p0_rail_bit is the rail the
-        # setter targets (resolved once from the volt_rails descriptor/mask).
+        # effective wall updates the solid line. _p0_rail_bit is the PRIMARY
+        # rail (resolved once from the volt_rails descriptor/mask) — the rail
+        # the overclock panel's applies target; an active-curve wall apply
+        # resolves its own rail via _active_p0_rail_bit().
         self._pending_wall_mv: Optional[float] = None
         self._dragging_wall: bool = False
         self._p0_rail_bit: int = 0
@@ -1096,6 +1116,9 @@ class VFCurveTab:
         # effective wall isn't briefly shown over the new curve.
         if self._p0_bounds_gpu != gpu:
             self._p0_bounds = None
+            self._p0_rails = []
+            self._p0_bounds_by_rail = {}
+            self._p0_effective_by_rail = {}
             self._p0_effective_wall_mv = None
             self._pending_wall_mv = None
         self._p0_bounds_gpu = gpu
@@ -1141,34 +1164,113 @@ class VFCurveTab:
         if self._p0_bounds_gpu != gpu:
             return
         if not isinstance(vr, dict):
-            self._p0_bounds = None
-            self._p0_effective_wall_mv = None
+            self._clear_p0_bounds()
             self._redraw()
             return
         p0 = vr.get("p0") if isinstance(vr.get("p0"), dict) else None
         if not isinstance(p0, dict):
-            self._p0_bounds = None
-            self._p0_effective_wall_mv = None
+            self._clear_p0_bounds()
             self._redraw()
             return
         self._p0_bounds = p0
         self._p0_rail_bit = self._resolve_rail_bit(vr)
-        eff = int(p0.get("effective_wall_uV", 0) or 0)
-        self._p0_effective_wall_mv = (eff / 1000.0) if eff > 0 else None
+        # rail_bit → bounds map. Falls back to the primary p0 payload alone
+        # (CLI backend / older pynvoc without the p0_rails list).
+        rails = vr.get("p0_rails")
+        self._p0_rails = rails if isinstance(rails, list) else []
+        by_rail: Dict[int, dict] = {}
+        for entry in self._p0_rails:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                bit = int(entry.get("rail_bit"))
+            except (TypeError, ValueError):
+                continue
+            by_rail[bit] = entry
+        by_rail.setdefault(self._p0_rail_bit, p0)
+        self._p0_bounds_by_rail = by_rail
+        self._p0_effective_by_rail = {
+            bit: (int(b.get("effective_wall_uV", 0) or 0) / 1000.0)
+            if int(b.get("effective_wall_uV", 0) or 0) > 0
+            else None
+            for bit, b in by_rail.items()
+        }
+        self._sync_active_p0_view()
         self._redraw()
 
-    def update_p0_effective_wall(self, effective_wall_uV: int) -> None:
+    def _clear_p0_bounds(self) -> None:
+        self._p0_bounds = None
+        self._p0_rails = []
+        self._p0_bounds_by_rail = {}
+        self._p0_effective_by_rail = {}
+        self._p0_effective_wall_mv = None
+        self._pending_wall_mv = None
+
+    # ── Active-curve rail resolution (gpc/sys → primary, xbar/mem → 2nd) ──
+
+    def _active_p0_rail_bit(self) -> int:
+        """The VoltRails rail that feeds the ACTIVE curve.
+
+        Primary (lowest rail bit with bounds) for gpc/sys; the secondary rail
+        for xbar/mem when the part exposes one (Pascal-HBM MEM rail, 50-series
+        MSVDD). Single-rail parts resolve every curve to the primary rail.
+        """
+        bits = sorted(self._p0_bounds_by_rail)
+        if not bits:
+            return self._p0_rail_bit
+        if self._active_curve in _SECONDARY_RAIL_CURVES and len(bits) > 1:
+            return bits[1]
+        return bits[0]
+
+    def _active_p0_bounds(self) -> Optional[dict]:
+        """The P0 bounds dict for the active curve's rail (primary fallback)."""
+        bounds = self._p0_bounds_by_rail.get(self._active_p0_rail_bit())
+        if bounds is not None:
+            return bounds
+        return self._p0_bounds
+
+    def _active_p0_rail_tag(self) -> str:
+        """Label suffix for the P0 lines when the active rail isn't the
+        primary one (e.g. " (MEM)" on a Pascal-HBM card) — disambiguates the
+        two rails' walls on multi-rail charts."""
+        bits = sorted(self._p0_bounds_by_rail)
+        if bits and self._active_p0_rail_bit() != bits[0]:
+            return f" ({_curve_meta_for(self._active_curve)['label']})"
+        return ""
+
+    def _sync_active_p0_view(self) -> None:
+        """Re-derive the active-rail view after a curve switch or a rails
+        load: the scalar effective wall follows the active rail and a pending
+        drag (clamped against the previous rail's walls) never survives the
+        switch."""
+        self._p0_effective_wall_mv = self._p0_effective_by_rail.get(
+            self._active_p0_rail_bit()
+        )
+        self._pending_wall_mv = None
+        self._dragging_wall = False
+
+    def update_p0_effective_wall(
+        self, effective_wall_uV: int, rail_bit: Optional[int] = None
+    ) -> None:
         """Push a new effective wall (light-red line) after a Volt Limit apply.
 
         Hardware walls (floor/ceiling) are untouched — they don't move. Only
         the effective wall tracks a SET; the overclock panel calls this from
         its ``update_mobile_limits`` tail once the refreshed status lands.
-        Any pending drag value is cleared — the applied value supersedes it.
+        ``rail_bit`` selects which rail the SET targeted (default: the
+        primary/core rail the overclock panel writes). A rail other than the
+        active curve's rail updates only the per-rail map — the active view
+        (and therefore the chart) is untouched, as is that curve's pending
+        drag.
         """
         if self._cleaned_up:
             return
+        bit = self._p0_rail_bit if rail_bit is None else int(rail_bit)
         eff = int(effective_wall_uV or 0)
         mv = (eff / 1000.0) if eff > 0 else None
+        self._p0_effective_by_rail[bit] = mv
+        if bit != self._active_p0_rail_bit():
+            return
         if mv == self._p0_effective_wall_mv and self._pending_wall_mv is None:
             return
         self._p0_effective_wall_mv = mv
@@ -1189,6 +1291,9 @@ class VFCurveTab:
         self._voltages = curve.voltages
         self._frequencies = curve.frequencies
         self._defaults = curve.defaults
+        # P0 walls follow the active curve's rail (mem → HBM rail, xbar →
+        # MSVDD on 50-series); a pending drag on the previous rail is dropped.
+        self._sync_active_p0_view()
         self._rebuild_selector()
         self._redraw()
         # Live-point handoff: when leaving GPC the dashboard-fed (volt,freq)
@@ -1241,6 +1346,8 @@ class VFCurveTab:
                 self._sel_start = None
                 self._sel_end = None
                 self._drag_orig_freqs = None
+            # The P0 walls follow the (re-assigned) active curve's rail.
+            self._sync_active_p0_view()
             # New active curve's live point starts fresh; kick a direct read
             # immediately if it's xbar/host (GPC will be refed by dashboard).
             self._live_pending = (None, None)
@@ -1781,11 +1888,14 @@ class VFCurveTab:
         # Deep red (solid): hardware floor (min_hold) + ceiling
         # min(vbios_wall, vrm_max_wall) — immutable per-GPU, cached once.
         # Light red (solid): effective wall — live, pushed by the overclock
-        # panel after a Volt Limit apply. All three fall inside the curve's
-        # voltage range by design, so no axis adjustment is needed. Labels
-        # are rotated 90° to survive narrow charts; zorder sits above the
-        # curves (2-4) but below the locked crosshair (5.5-7.5).
-        p0 = self._p0_bounds
+        # panel after a Volt Limit apply. All three track the ACTIVE curve's
+        # volt rail (gpc/sys → primary, xbar/mem → the secondary HBM/MSVDD
+        # rail) and fall inside the curve's voltage range by design, so no
+        # axis adjustment is needed. Labels are rotated 90° to survive narrow
+        # charts; zorder sits above the curves (2-4) but below the locked
+        # crosshair (5.5-7.5).
+        p0 = self._active_p0_bounds()
+        rail_tag = self._active_p0_rail_tag()
         if isinstance(p0, dict):
             floor_uv = int(p0.get("min_hold_uV", 0) or 0)
             if floor_uv > 0:
@@ -1801,7 +1911,7 @@ class VFCurveTab:
                 ax.text(
                     floor_mv,
                     f_max - (f_max - f_min) * 0.02,
-                    " P0 floor",
+                    f" P0 floor{rail_tag}",
                     color="#d96666",
                     fontsize=6,
                     alpha=0.85,
@@ -1826,7 +1936,7 @@ class VFCurveTab:
                 ax.text(
                     ceil_mv,
                     f_max - (f_max - f_min) * 0.02,
-                    " P0 ceiling ",
+                    f" P0 ceiling{rail_tag} ",
                     color="#d96666",
                     fontsize=6,
                     alpha=0.85,
@@ -1848,7 +1958,7 @@ class VFCurveTab:
             ax.text(
                 eff_mv,
                 f_min + (f_max - f_min) * 0.02,
-                " P0 eff volt lim ",
+                f" P0 eff volt lim{rail_tag} ",
                 color="#ff9999",
                 fontsize=6,
                 alpha=0.8,
@@ -2013,10 +2123,11 @@ class VFCurveTab:
         left x-edge (or a hard 450 mV floor as a safety backstop), NOT the P0
         floor. The upper bound stays the hardware ceiling
         ``min(vbios_wall, vrm_max_wall)`` — the driver would clamp a SET
-        above it anyway. Returns (None, None) when no p0 bounds are cached
-        (best-effort unclamped; the driver clamps on SET).
+        above it anyway. Bounds come from the ACTIVE curve's rail (mem → the
+        HBM rail, xbar → MSVDD). Returns (None, None) when no p0 bounds are
+        cached (best-effort unclamped; the driver clamps on SET).
         """
-        p0 = self._p0_bounds
+        p0 = self._active_p0_bounds()
         if not isinstance(p0, dict):
             return None, None
         # Lower bound: the plot's left x-edge, but never below 450 mV.
@@ -3292,7 +3403,7 @@ class VFCurveTab:
                 gpu=gpu,
                 groups=groups,
                 pending_wall=pending_wall,
-                rail_bit=self._p0_rail_bit,
+                rail_bit=self._active_p0_rail_bit(),
             ) -> str:
                 applied = 0
                 failed = 0
@@ -3347,7 +3458,7 @@ class VFCurveTab:
             start=start,
             curve_id=curve.curve_id,
             pending_wall=pending_wall,
-            rail_bit=self._p0_rail_bit,
+            rail_bit=self._active_p0_rail_bit(),
         ) -> str:
             wall_msg = ""
             if pending_wall is not None:
@@ -3442,17 +3553,20 @@ class VFCurveTab:
         if isinstance(r, dict):
             eff = int(r.get("effective_wall_uV", 0) or 0)
         eff_mv = (eff / 1000.0) if eff > 0 else target_mv
-        self.app.after(0, lambda em=eff_mv: self._on_wall_applied(em))
+        self.app.after(0, lambda em=eff_mv, rb=rail_bit: self._on_wall_applied(em, rb))
         return self._format_wall_result(target_mv, r)
 
     def _apply_wall_target(self, mv: float) -> None:
-        """Apply ONLY a pending wall (no VFP edit) via set_volt_rail_target."""
+        """Apply ONLY a pending wall (no VFP edit) via set_volt_rail_target.
+
+        Targets the ACTIVE curve's rail (mem → HBM rail, xbar → MSVDD).
+        """
         gpu = self.app.selected_gpu_target()
         if gpu is None:
             self.app.console.append("[GUI] No GPU selected.\n")
             return
         target_mv = self._snap_wall_mv(mv)
-        rail_bit = self._p0_rail_bit
+        rail_bit = self._active_p0_rail_bit()
 
         def apply_wall(native, gpu=gpu, rail_bit=rail_bit, target_mv=target_mv) -> str:
             return self._apply_wall_inline(native, gpu, target_mv, rail_bit)
@@ -3460,9 +3574,17 @@ class VFCurveTab:
         self.app.console.append(f"[GUI] Applying P0 wall target {target_mv:g} mV…\n")
         self.app.run_native_action("apply P0 volt-rail target", apply_wall)
 
-    def _on_wall_applied(self, eff_mv: float) -> None:
-        """Update the solid effective line after a wall SET lands."""
+    def _on_wall_applied(self, eff_mv: float, rail_bit: Optional[int] = None) -> None:
+        """Update the solid effective line after a wall SET lands.
+
+        The value is recorded per rail; only an apply on the ACTIVE curve's
+        rail moves the visible line (and drops that rail's pending drag).
+        """
         if self._cleaned_up:
+            return
+        bit = self._p0_rail_bit if rail_bit is None else int(rail_bit)
+        self._p0_effective_by_rail[bit] = eff_mv
+        if bit != self._active_p0_rail_bit():
             return
         self._p0_effective_wall_mv = eff_mv
         self._pending_wall_mv = None

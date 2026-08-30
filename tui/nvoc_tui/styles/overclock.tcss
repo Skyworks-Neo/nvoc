@@ -86,3 +86,13 @@
 #overclock .nvapi-nvml-select {
     width: 8;
 }
+
+/* Fanless server cards (P100/A100 …): the whole Fan pane greys out.
+   #fan-controls is set .disabled by the controller; the :disabled
+   pseudo-class cascades to every child (built-in widget dim styles) and
+   the pane-level opacity tints the rows with no interactive widget. */
+#fan-controls:disabled,
+#fan-actions:disabled {
+    opacity: 0.45;
+    text-opacity: 0.55;
+}

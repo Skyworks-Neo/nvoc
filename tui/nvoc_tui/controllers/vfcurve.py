@@ -40,6 +40,12 @@ def _curve_colors_for(cid: str) -> tuple[str, str]:
 
 _CURVE_ORDER = ("gpc", "xbar", "sys")
 
+# ── Curve → VoltRails rail mapping (display-only in the TUI) ──
+# GPC/SYS ride the PRIMARY rail (lowest bit — the core rail); XBAR and the
+# Pascal-HBM MEM curve are fed by the SECONDARY rail (RTX 50-series MSVDD /
+# GP100·GV100 HBM). Single-rail parts resolve every curve to the primary.
+_SECONDARY_RAIL_CURVES = ("xbar", "mem")
+
 
 def _curve_direct_readable(curve_id: str) -> bool:
     """Whether the live crosshair must DIRECT-READ this curve's domain.
@@ -87,9 +93,13 @@ class VFCurveController(PaneController):
         self._syncing = False
         # P0 voltage-boundary display lines (deep red floor/ceiling + light
         # red effective). Pure display — no drag/apply in the TUI. Cached
-        # once per GPU (hardware walls are immutable), like the GUI.
+        # once per GPU (hardware walls are immutable), like the GUI. The
+        # per-rail map lets the lines follow the ACTIVE curve's rail
+        # (gpc/sys → primary, xbar/mem → the secondary HBM/MSVDD rail).
         self._p0_bounds: dict | None = None
         self._p0_bounds_gpu: str | None = None
+        self._p0_rails: list = []  # raw p0_rails payload
+        self._p0_bounds_by_rail: dict[int, dict] = {}  # rail_bit → bounds
 
     def auto_refresh_label(self) -> Text:
         state = "On" if self.app.config_data.vfcurve.auto_refresh else "Off"
@@ -368,8 +378,11 @@ class VFCurveController(PaneController):
         # P0 voltage-boundary vertical lines (display only). Deep red
         # (floor = min_hold, ceiling = min(vbios, vrm)) are immutable per-GPU;
         # light red is the live effective wall. All fall inside the curve's
-        # voltage range by design — no axis adjustment.
-        p0 = self._p0_bounds
+        # voltage range by design — no axis adjustment. The walls follow the
+        # ACTIVE curve's rail: gpc/sys → primary (lowest bit, core); xbar/mem
+        # → the second bit when present (Pascal-HBM MEM rail, 50-series
+        # MSVDD); single-rail parts fall back to the primary for every curve.
+        p0 = self._active_p0_bounds()
         if isinstance(p0, dict):
             floor_uv = int(p0.get("min_hold_uV", 0) or 0)
             if floor_uv > 0:
@@ -610,6 +623,8 @@ class VFCurveController(PaneController):
             return
         if self._p0_bounds_gpu != gpu:
             self._p0_bounds = None
+            self._p0_rails = []
+            self._p0_bounds_by_rail = {}
         self._p0_bounds_gpu = gpu
         if gpu is None:
             return
@@ -630,10 +645,43 @@ class VFCurveController(PaneController):
         if self._p0_bounds_gpu != gpu:
             return  # a newer GPU switch superseded this query
         p0 = None
+        rails: list = []
         if isinstance(vr, dict):
             p0 = vr.get("p0") if isinstance(vr.get("p0"), dict) else None
+            raw_rails = vr.get("p0_rails")
+            if isinstance(raw_rails, list):
+                rails = raw_rails
         self._p0_bounds = p0
+        # rail_bit → bounds map (fallback: the primary p0 payload alone when
+        # the payload has no p0_rails list).
+        by_rail: dict[int, dict] = {}
+        for entry in rails:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                bit = int(entry.get("rail_bit"))
+            except (TypeError, ValueError):
+                continue
+            by_rail[bit] = entry
+        if p0 is not None:
+            by_rail.setdefault(0, p0)
+        self._p0_rails = rails
+        self._p0_bounds_by_rail = by_rail
         self.render_plot()
+
+    def _active_p0_bounds(self) -> "dict | None":
+        """The P0 bounds dict of the ACTIVE curve's rail (primary fallback).
+
+        gpc/sys → the lowest rail bit (core rail); xbar/mem → the second-lowest
+        bit when the part exposes one (Pascal-HBM MEM rail, 50-series MSVDD).
+        Falls back to the plain ``p0`` payload when no per-rail map exists.
+        """
+        bits = sorted(self._p0_bounds_by_rail)
+        if not bits:
+            return self._p0_bounds
+        if self._active_curve in _SECONDARY_RAIL_CURVES and len(bits) > 1:
+            return self._p0_bounds_by_rail.get(bits[1]) or self._p0_bounds
+        return self._p0_bounds_by_rail.get(bits[0]) or self._p0_bounds
 
     def handle_button(self, button_id: str) -> bool:
         if button_id == "vf-refresh":

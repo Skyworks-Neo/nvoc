@@ -563,6 +563,7 @@ fn normalize_info(target: &GpuTarget<'_>) -> PyResultValue {
     let series = fetch_gpu_type(&info).unwrap_or(GpuType::Unknown);
     map.insert("gpu_series".into(), text(series.to_string()));
     map.insert("is_mobile".into(), bool_value(series.is_mobile()));
+    map.insert("is_server".into(), bool_value(series.is_server()));
     map.insert(
         "is_legacy_voltage".into(),
         bool_value(series.is_legacy_voltage()),
@@ -1535,6 +1536,7 @@ fn discover_gpus(py: Python<'_>, backends: Option<&str>) -> PyResult<Py<PyAny>> 
                 item.insert("codename".into(), text(info.codename));
                 item.insert("arch".into(), text(info.arch));
                 item.insert("is_mobile".into(), bool_value(series.is_mobile()));
+                item.insert("is_server".into(), bool_value(series.is_server()));
                 item.insert(
                     "is_legacy_voltage".into(),
                     bool_value(series.is_legacy_voltage()),
