@@ -608,11 +608,18 @@ pub fn parse_nvapi_locked_voltage_target(raw: &str) -> Result<NvapiLockedVoltage
     let lower = input.to_ascii_lowercase();
 
     if let Some(v) = lower.strip_suffix("mv") {
-        let mv = u32::from_str(v.trim()).map_err(|_| {
+        // mV accepts one decimal — the hardware grid is 12.5/6.25 mV-class,
+        // so "981.25mV" is a legitimate target. Rounds to the nearest µV.
+        let mv: f64 = v.trim().parse().map_err(|_| {
             Error::from("Invalid --nvapi-locked-voltage value: expected POINT or <N>mV/<N>uV")
         })?;
+        if !mv.is_finite() || mv < 0.0 || mv >= 10_000.0 {
+            return Err(Error::from(
+                "Invalid --nvapi-locked-voltage value: expected POINT or <N>mV/<N>uV",
+            ));
+        }
         return Ok(NvapiLockedVoltageTarget::Voltage(Microvolts(
-            mv.saturating_mul(1000),
+            (mv * 1000.0).round() as u32,
         )));
     }
 
