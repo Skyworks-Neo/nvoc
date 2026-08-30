@@ -1339,16 +1339,22 @@ class _RecordingPlt(_FakePlt):
 
     def __init__(self) -> None:
         self.vlines: list[float] = []
+        self.texts: list[str] = []
 
     def vline(self, coordinate, color=None, xside=None) -> None:
         self.vlines.append(float(coordinate))
+
+    def text(self, text, *args, **kwargs) -> None:
+        self.texts.append(str(text))
 
 
 def _vfcurve_controller_with_plot() -> tuple[VFCurveController, _RecordingPlt]:
     app = FakeApp()
     app.widgets = _selector_widgets()
     plt = _RecordingPlt()
-    app.widgets["#vf-plot"] = SimpleNamespace(plt=plt, refresh=lambda: None)
+    app.widgets["#vf-plot"] = SimpleNamespace(
+        plt=plt, refresh=lambda: None, size=SimpleNamespace(width=100)
+    )
     controller = VFCurveController(app)
     controller._curves = {
         "gpc": CurveData(
@@ -1381,6 +1387,12 @@ def test_vfcurve_render_plot_draws_p0_boundary_vlines() -> None:
     assert 1200.0 in plt.vlines
     assert 1005.0 in plt.vlines
     assert len(plt.vlines) == 3
+    # Blue workable-region bar: a full-block-only text on the bottom row.
+    # Band 625→1200 mV over an x-range of ~700→1125 mV on a ~94-col plot
+    # area ≈ 50+ columns.
+    bars = [t for t in plt.texts if t and set(t) == {"█"}]
+    assert len(bars) == 1
+    assert len(bars[0]) >= 50
 
 
 def test_vfcurve_render_plot_skips_p0_vlines_when_absent() -> None:

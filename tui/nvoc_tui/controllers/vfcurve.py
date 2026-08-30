@@ -391,11 +391,44 @@ class VFCurveController(PaneController):
             walls = [w for w in (vbios_uv, vrm_uv) if w > 0]
             if walls:
                 plt.vline(min(walls) / 1000.0, color="red")
+            # Workable-region indicator: a blue horizontal bar on the row
+            # just above the x-axis, spanning floor → ceiling. Region
+            # shading isn't expressible in plotext (no background colors;
+            # fill attempts drown the curve in marker noise), but a single
+            # text-layer full-block row reads as a clean bar. That row is
+            # below the curve's in-band segment (the curve only reaches the
+            # bottom at its low-voltage end, left of the floor), so it
+            # collides with nothing. Text length is in terminal columns —
+            # convert the band's data width via the plot's column estimate.
+            if (
+                floor_uv > 0
+                and walls
+                and min(walls) > floor_uv
+                and bounds is not None
+                and widget.size.width > 0
+            ):
+                plot_cols = max(widget.size.width - 6, 10)  # minus y-axis gutter
+                span_cols = int(
+                    (min(walls) - floor_uv) / 1000.0 / (x_max - x_min) * plot_cols
+                )
+                if span_cols >= 2:
+                    # Full-block glyphs render as a solid bar rather than a
+                    # rule line — reads unmistakably as a region.
+                    plt.text(
+                        "█" * span_cols,
+                        floor_uv / 1000.0,
+                        y_min,
+                        color="blue+",
+                        alignment="left",
+                    )
             eff_uv = int(p0.get("effective_wall_uV", 0) or 0)
             if eff_uv > 0:
-                # plotext has no "light red" color name — "red+" resolves to
-                # bright red (256-color code 9), the closest light-red.
-                plt.vline(eff_uv / 1000.0, color="red+")
+                # The live wall gets a distinct hue from the immutable deep-red
+                # floor/ceiling AND from the orange+ lock crosshair — plotext
+                # has no named brown, so pass the 256-color code directly:
+                # 130 = #af5f00 brown. (Integer color codes 0-255 are valid
+                # plotext colors, same validation path as the names.)
+                plt.vline(eff_uv / 1000.0, color=130)
         plt.title("VF Curve")
         plt.xlabel("mV")
         plt.ylabel("MHz")
