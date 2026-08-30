@@ -3651,6 +3651,12 @@ class VFCurveTab:
         self._pending_wall_mv = None
         self._redraw()
 
+    def _on_reset_button_press(self, event) -> None:
+        """Record Shift at Reset-press time (Tk button commands carry no
+        modifier state; the <Button-1> binding fires before the command)."""
+        # 0x0001 = Shift mask in the X/Tk modifier bitfield.
+        self._reset_with_shift = bool(event.state & 0x0001)
+
     def _reset_vfp(self):
         """Reset the active curve to default (selected-curve semantics).
 
@@ -3658,6 +3664,11 @@ class VFCurveTab:
         (XBAR/HOST, or GPC when public is unsupported) → mode-0 clear per
         point, raw-converted clear fallback (delta 0 → raw f-offset that
         zeroes the effect). Never touches other curves' segments.
+
+        Shift+Reset on a private curve → ``reset_vfp_private`` (the
+        reset-private-vftable-offset path): ONE RMW write clearing every
+        point on the bank — the per-point loop is O(points) private
+        SetControl escapes, painfully slow on wide Pascal banks.
         """
         curve = self._curves.get(self._active_curve)
         if curve is None:
@@ -3665,6 +3676,32 @@ class VFCurveTab:
             return
         gpu = self.app.selected_gpu_target()
         cid = curve.curve_id.upper()
+
+        shift_full = self._reset_with_shift
+        self._reset_with_shift = False
+        if shift_full and curve.write_mode != "public":
+            bank = curve.bank
+
+            def reset_full(native, gpu=gpu, bank=bank, cid=cid) -> str:
+                r = native.reset_vfp_private(gpu, bank, None)
+                if isinstance(r, dict) and r.get("supported") is False:
+                    return f"private whole-bank reset unsupported on {cid}."
+                count = r.get("points_reset") if isinstance(r, dict) else None
+                count_txt = f", {count} points cleared" if count else ""
+                return (
+                    f"Successfully reset ALL {cid} curve points "
+                    f"(private whole-bank{count_txt})."
+                )
+
+            self.app.console.append(
+                "[GUI] Shift+Reset: clearing the whole private bank in one write…\n"
+            )
+            self.app.run_native_action(
+                "reset VFP whole bank",
+                reset_full,
+                on_finished=lambda _rc: self.app.after(0, self._refresh_curve),
+            )
+            return
 
         if curve.write_mode == "public":
             s, e = curve.seg_start, curve.seg_end
