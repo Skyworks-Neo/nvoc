@@ -818,12 +818,24 @@ class OverclockController(PaneController):
 
         if tgp and tgp.get("min_watt") is not None and tgp.get("max_watt") is not None:
             self._tgp_policy_index = int(tgp.get("policy_index", 2))
-            self._tgp_range = (
-                int(round(float(tgp["min_watt"]))),
-                int(round(float(tgp["max_watt"]))),
-            )
-            default = int(round(float(tgp.get("default_watt") or tgp["min_watt"])))
-            self.set_input("#mobile-tgp", str(default))
+            lo = int(round(float(tgp["min_watt"])))
+            hi = int(round(float(tgp["max_watt"])))
+            self._tgp_range = (lo, hi)
+            # Anchor the input at the actually-effective power wall
+            # (``power_limit_w`` — min of requested TGP and the active
+            # D-Notifier cap, i.e. nvidia-smi's PPAB Ceiling "Current"),
+            # clamped into the TGP range. The VBIOS ``default_watt`` is only
+            # the no-reading fallback: anchoring at the default made the
+            # input jump to a value that is neither the old nor the new real
+            # wall after every D-Notifier apply/reset.
+            position = int(round(float(tgp.get("default_watt") or lo)))
+            current = data.get("power_limit_w")
+            if current is not None:
+                try:
+                    position = max(lo, min(hi, int(round(float(current)))))
+                except (TypeError, ValueError):
+                    pass
+            self.set_input("#mobile-tgp", str(position))
         else:
             notes.append("TGP range unavailable")
 
@@ -1289,21 +1301,22 @@ class OverclockController(PaneController):
                 tgp_watts=tgp_watts,
                 target_temp=target_temp,
                 volt_limit=volt_limit,
-                reload_after=volt_limit is not None,
             ) -> str:
                 result = self.apply_mobile(
                     native, gpu, ppab, d_level, tgp_watts, target_temp, volt_limit
                 )
-                if reload_after:
-                    # The driver clamps the effective wall to min(target,
-                    # VBIOS, VRM); re-load so the input reflects the real
-                    # wall (the GUI reloads after its Volt Limit apply for
-                    # the same reason). Scheduled via call_from_thread so
-                    # it runs on the UI thread AFTER the SET completed.
-                    try:
-                        self.app.call_from_thread(self.load_mobile_limits, True)
-                    except Exception:
-                        pass
+                # ALWAYS re-load after a mobile apply (not just when a Volt
+                # Limit rode along): the D-Notifier level clamps the TGP
+                # wall and the driver may clamp the TGP SET itself, so the
+                # typed values can differ from what took effect — re-anchor
+                # every input to the real wall before the user reads them
+                # (the GUI reloads after each of its applies for the same
+                # reason). Scheduled via call_from_thread so it runs on the
+                # UI thread AFTER the SET completed.
+                try:
+                    self.app.call_from_thread(self.load_mobile_limits, True)
+                except Exception:
+                    pass
                 return result
 
             self.app.run_native_action(

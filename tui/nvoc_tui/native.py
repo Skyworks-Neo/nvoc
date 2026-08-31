@@ -221,8 +221,12 @@ class NativeService:
         """Fetch the mobile power/thermal control surface (all NVAPI).
 
         Returns ``{"tgp": dict|None, "dnotifier": dict|None,
-        "temp_policies": list, "volt_rail": dict|None}``; ``None`` sub-dicts
-        mean the private interface isn't exposed by this driver.
+        "temp_policies": list, "volt_rail": dict|None,
+        "power_limit_w": float|None}``; ``None`` sub-dicts mean the private
+        interface isn't exposed by this driver. ``power_limit_w`` is the
+        actually-effective power wall (min of requested TGP and the active
+        D-Notifier cap — nvidia-smi's PPAB Ceiling "Current" value), used to
+        anchor the TGP input.
         """
         data = self._query_mobile_limits_once(gpu)
         if (
@@ -242,6 +246,7 @@ class NativeService:
         dnotifier = None
         policies: Any = []
         volt_rail = None
+        ceiling = None
         try:
             tgp = native.query_tgp_watt_range(gpu)
         except Exception:
@@ -262,11 +267,21 @@ class NativeService:
             volt_rail = None
         if not isinstance(volt_rail, dict):
             volt_rail = None
+        # The actually-effective power wall (min of requested TGP and the
+        # active D-Notifier cap — nvidia-smi's PPAB Ceiling "Current" value).
+        try:
+            ceiling = native.query_power_ceiling(gpu)
+        except Exception:
+            ceiling = None
+        if not isinstance(ceiling, dict):
+            ceiling = None
+        power_limit_w = ceiling.get("ceiling_watt") if ceiling else None
         return {
             "tgp": tgp,
             "dnotifier": dnotifier,
             "temp_policies": policies,
             "volt_rail": volt_rail,
+            "power_limit_w": power_limit_w,
         }
 
     def run_action(

@@ -1740,6 +1740,43 @@ def test_overclock_is_legacy_voltage_heuristic() -> None:
     assert OverclockController(app3).is_legacy_voltage() is True
 
 
+def test_overclock_mobile_limits_anchor_tgp_at_power_wall() -> None:
+    """The TGP input anchors at the actually-effective power wall
+    (power_limit_w = min of requested TGP and the active D-Notifier cap,
+    nvidia-smi's PPAB Ceiling "Current") — not at the VBIOS default, which
+    made the input jump to a value that is neither the old nor the new real
+    wall after a D-Notifier apply/reset."""
+    app = _oc_app(is_mobile=True)
+    app.widgets["#mobile-dnotifier"] = SimpleNamespace(
+        value=2, set_options=lambda _opts: None
+    )
+    controller = OverclockController(app)
+
+    controller._on_mobile_limits(
+        "0x0000",
+        {
+            "tgp": {
+                "policy_index": 2,
+                "min_watt": 5.0,
+                "default_watt": 100.0,
+                "max_watt": 140.0,
+            },
+            "dnotifier": {
+                "active": "D2",
+                "levels": [
+                    {"level": "D1", "watts": None},
+                    {"level": "D2", "watts": 55.0},
+                ],
+            },
+            "temp_policies": [],
+            "volt_rail": None,
+            "power_limit_w": 55.0,
+        },
+    )
+
+    assert app.widgets["#mobile-tgp"].value == "55"
+
+
 def test_overclock_mobile_apply_includes_volt_limit() -> None:
     app = _oc_app(is_mobile=True)
     controller = OverclockController(app)
