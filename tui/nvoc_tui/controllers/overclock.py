@@ -118,15 +118,12 @@ class OverclockController(PaneController):
                 self.app.query_one(selector, Input).value = value
             except Exception:
                 pass
-        # Xbar is NVAPI-only; grey the row out under NVML or on pre-Turing
-        # archs (GUI hides the row entirely — the TUI keeps layout stable
-        # and disables instead).
-        try:
-            self.app.query_one("#xbar-offset", Input).disabled = not (
-                self.xbar_supported()
-            )
-        except Exception:
-            pass
+        # Fabric/uncore rows (Xbar/Sys/Msd/Host) are NVAPI-only; grey them out
+        # under NVML or on pre-Pascal archs. Per-row presence (Sys bit3/Msd
+        # bit5/Host bit9) is refined by the controllable mask polled below.
+        # Default-disabled until the mask lands.
+        self._prime_fabric_inputs()
+        self._poll_clk_domain_mask()
         # Mobile Power pane: mobile GPUs only. Same verdict the loader uses
         # (is_mobile — Rust detect_gpu_type flag primary, name heuristic
         # fallback); desktop/compute cards (P100/TCC, Fermi GT730, …) have
@@ -166,17 +163,87 @@ class OverclockController(PaneController):
         core_offset: int,
         mem_offset: int,
         xbar_offset: int | None = None,
+        sys_offset: int | None = None,
+        msd_offset: int | None = None,
+        host_offset: int | None = None,
     ) -> str:
-        messages = []
-        native.set_clock_offset(gpu, backend, "core", core_offset, "P0")
-        native.set_clock_offset(gpu, backend, "memory", mem_offset, "P0")
-        messages.append(f"Successfully applied {backend} overclock.")
+        messages: list[str] = []
+        coupled = self.is_ampere_plus()
+
+        def apply_pstate20(domain: str, value: int, bit: int, label: str) -> str:
+            # pstate20 public path first; -104 NotSupported → ClkDomains bit.
+            try:
+                native.set_clock_offset(gpu, backend, domain, value, "P0")
+                return f"Successfully applied {label} offset {value} MHz."
+            except Exception as exc:
+                msg = str(exc)
+                if (
+                    "NotSupported" in msg
+                    or "-104" in msg
+                    or "not supported" in msg.lower()
+                ):
+                    res = native.set_clk_domain_offset(
+                        gpu, bit, value * 1000, None, None
+                    )
+                    return self._format_clk_domain_offset_result(label, value, res) + (
+                        f" (pstate20 -104 fallback bit{bit})"
+                    )
+                raise
+
+        messages.append(apply_pstate20("core", core_offset, 0, "core"))
+        messages.append(apply_pstate20("memory", mem_offset, 2, "memory"))
+
+        # Xbar (bit1). 30系+ couples SYS → RMW the cancel onto bit3
+        # (current − f) so a Sys offset already there survives; only the
+        # coupling drift is removed. 10/16/20/Pascal: bit1 pure, direct write.
         if xbar_offset is not None:
             messages.append(
                 self._format_xbar_offset_result(
                     xbar_offset,
                     native.set_clk_domain_offset(
                         gpu, 1, xbar_offset * 1000, None, None
+                    ),
+                )
+            )
+            if coupled:
+                cur_khz = self._clk_domain_current_offset(native, gpu, 3)
+                new_khz = cur_khz - xbar_offset * 1000
+                messages.append(
+                    self._format_clk_domain_offset_result(
+                        "Sys-cancel",
+                        -xbar_offset,
+                        native.set_clk_domain_offset(gpu, 3, new_khz, None, None),
+                    )
+                    + f" (bit3 {int(round(cur_khz / 1000)):+d} → {int(round(new_khz / 1000)):+d} MHz)"
+                )
+        # Sys (bit3) RMW: read current offset, +f, write back. Skipped at 0
+        # (no-op — avoids overwriting an Xbar-cancel sitting on bit3).
+        if sys_offset:
+            cur_khz = self._clk_domain_current_offset(native, gpu, 3)
+            new_khz = cur_khz + sys_offset * 1000
+            messages.append(
+                self._format_clk_domain_offset_result(
+                    "Sys",
+                    sys_offset,
+                    native.set_clk_domain_offset(gpu, 3, new_khz, None, None),
+                )
+                + f" (bit3 {int(round(cur_khz / 1000)):+d} → {int(round(new_khz / 1000)):+d} MHz)"
+            )
+        if msd_offset:
+            messages.append(
+                self._format_clk_domain_offset_result(
+                    "Msd",
+                    msd_offset,
+                    native.set_clk_domain_offset(gpu, 5, msd_offset * 1000, None, None),
+                )
+            )
+        if host_offset:
+            messages.append(
+                self._format_clk_domain_offset_result(
+                    "Host",
+                    host_offset,
+                    native.set_clk_domain_offset(
+                        gpu, 9, host_offset * 1000, None, None
                     ),
                 )
             )
@@ -267,6 +334,144 @@ class OverclockController(PaneController):
             if result.get("supported") is False:
                 return "Xbar clock-domain offset not supported by this driver."
         return f"Applied Xbar offset {offset_mhz:+d} MHz."
+
+    @staticmethod
+    def _format_clk_domain_offset_result(
+        label: str, offset_mhz: int, result: object
+    ) -> str:
+        """Generic version of _format_xbar_offset_result for Sys/Msd/Host."""
+        if isinstance(result, dict):
+            if result.get("applied"):
+                applied = result.get("applied_mHz")
+                if applied is None:
+                    legacy = result.get("applied_kHz")
+                    applied = (
+                        legacy / 1000.0 if isinstance(legacy, (int, float)) else None
+                    )
+                if isinstance(applied, (int, float)):
+                    return (
+                        f"Successfully applied {label} offset {offset_mhz:+d} MHz "
+                        f"(driver readback {applied:+g} MHz)."
+                    )
+                return f"Successfully applied {label} offset {offset_mhz:+d} MHz."
+            if result.get("supported") is False:
+                return f"{label} clock-domain offset not supported by this driver."
+        return f"Applied {label} offset {offset_mhz:+d} MHz."
+
+    def is_ampere_plus(self) -> bool:
+        """30系+ (Ampere/Ada/Blackwell): bit1 couples SYS, so an Xbar write
+        must also write bit3=-f to cancel the SYS drift. Pascal/GTX16/RTX20
+        are pure Xbar (direct write). Primary signal: the query_info payload's
+        ``is_ampere_plus`` flag (core gpu_type.rs); fallback None → False
+        (conservative: direct write, no cancel)."""
+        flag = self.app.cache.info.get("is_ampere_plus")
+        if isinstance(flag, bool):
+            return flag
+        return False
+
+    def _is_pascal(self) -> bool:
+        """Pascal detection for the MSD grey-out (Pascal bit5 SET N/A)."""
+        series = str(self.app.cache.info.get("gpu_series") or "").lower()
+        if "10 series" in series:
+            return True
+        return str(self.app.cache.info.get("codename") or "").lower().startswith("gp")
+
+    def _sys_supported(self) -> bool:
+        mask = self.app.cache.clk_domain_mask
+        return mask is not None and bool(mask & (1 << 3))
+
+    def _msd_supported(self) -> bool:
+        # Pascal: bit5 SET N/A even if the mask claims the record.
+        mask = self.app.cache.clk_domain_mask
+        return mask is not None and bool(mask & (1 << 5)) and not self._is_pascal()
+
+    def _host_supported(self) -> bool:
+        mask = self.app.cache.clk_domain_mask
+        return mask is not None and bool(mask & (1 << 9))
+
+    def _poll_clk_domain_mask(self) -> None:
+        """Async poll the controllable mask for the Sys/Msd/Host row gates.
+        Piggybacks on a worker thread; never on the render path."""
+        gpu = self.app.selected_gpu_target()
+        if gpu is None or not self.xbar_supported():
+            return
+
+        def worker() -> None:
+            try:
+                data = self.app.native_service.query_private_freq_domain_info(gpu)
+            except Exception:
+                data = None
+            try:
+                self.app.call_from_thread(self._on_clk_domain_mask_loaded, data)
+            except Exception:
+                pass
+
+        try:
+            self.app.native_service.submit_query(worker)
+        except Exception:
+            pass
+
+    def _on_clk_domain_mask_loaded(self, data: object) -> None:
+        if not isinstance(data, dict):
+            return
+        mask_str = data.get("controllable_mask")
+        try:
+            mask = int(str(mask_str), 0) if mask_str is not None else None
+        except ValueError:
+            mask = None
+        if mask is None:
+            return
+        self.app.cache.clk_domain_mask = mask
+        # Re-apply the row disabled states now that the mask is known.
+        try:
+            self._prime_fabric_inputs()
+        except Exception:
+            pass
+
+    def _prime_fabric_inputs(self) -> None:
+        """Set the enabled state of the fabric/uncore offset rows from the
+        cached controllable mask + generation (Pascal MSD greyed)."""
+        fabric = self.xbar_supported() and self._oc_backend_is_nvapi()
+        for wid, ok in (
+            ("#xbar-offset", True),
+            ("#sys-offset", self._sys_supported()),
+            ("#msd-offset", self._msd_supported()),
+            ("#host-offset", self._host_supported()),
+        ):
+            try:
+                self.app.query_one(wid, Input).disabled = not (fabric and ok)
+            except Exception:
+                pass
+
+    def _oc_backend_is_nvapi(self) -> bool:
+        try:
+            return (
+                str(self.app.query_one("#oc-api", Select).value or "nvapi") == "nvapi"
+            )
+        except Exception:
+            return True
+
+    def _clk_domain_current_offset(self, native, gpu: str, bit: int) -> int:
+        """Read a ClkDomains WRITE record's slot-0 offset (kHz) for the Sys
+        RMW baseline. Returns 0 on any failure."""
+        try:
+            info = native.query_private_freq_domain_info(gpu)
+        except Exception:
+            return 0
+        if not isinstance(info, dict):
+            return 0
+        entries = info.get("entries") or []
+        if isinstance(entries, list):
+            for e in entries:
+                if isinstance(e, dict) and e.get("bit") == bit:
+                    vals = e.get("values_kHz") or []
+                    if isinstance(vals, list) and vals:
+                        try:
+                            return int(vals[0] or 0)
+                        except (TypeError, ValueError):
+                            return 0
+                    break
+        return 0
 
     @staticmethod
     def _format_volt_rail_result(target_mv: float, result: object) -> str:
@@ -771,11 +976,23 @@ class OverclockController(PaneController):
             backend = str(self.app.query_one("#oc-api", Select).value or "nvapi")
             core_offset = self.get_int("#core-offset")
             mem_offset = self.get_int("#mem-offset")
-            # Xbar rides the NVAPI-only ClockClient path — skipped under NVML
-            # and on pre-Turing archs (row is disabled, input stays 0).
-            xbar_offset = (
-                self.get_int("#xbar-offset")
-                if backend == "nvapi" and self.xbar_supported()
+            # Fabric/uncore ride the NVAPI-only ClockClient path — skipped under
+            # NVML and on pre-Pascal archs (rows disabled, inputs stay 0).
+            fabric_ok = backend == "nvapi" and self.xbar_supported()
+            xbar_offset = self.get_int("#xbar-offset") if fabric_ok else None
+            sys_offset = (
+                self.get_int("#sys-offset")
+                if fabric_ok and self._sys_supported()
+                else None
+            )
+            msd_offset = (
+                self.get_int("#msd-offset")
+                if fabric_ok and self._msd_supported()
+                else None
+            )
+            host_offset = (
+                self.get_int("#host-offset")
+                if fabric_ok and self._host_supported()
                 else None
             )
 
@@ -786,9 +1003,20 @@ class OverclockController(PaneController):
                 core_offset=core_offset,
                 mem_offset=mem_offset,
                 xbar_offset=xbar_offset,
+                sys_offset=sys_offset,
+                msd_offset=msd_offset,
+                host_offset=host_offset,
             ) -> str:
                 return self.apply_oc(
-                    native, gpu, backend, core_offset, mem_offset, xbar_offset
+                    native,
+                    gpu,
+                    backend,
+                    core_offset,
+                    mem_offset,
+                    xbar_offset,
+                    sys_offset,
+                    msd_offset,
+                    host_offset,
                 )
 
             self.app.run_native_action(
@@ -862,6 +1090,7 @@ class OverclockController(PaneController):
                 ),
             ]
             if str(backend) == "nvapi" and self.xbar_supported():
+                coupled = self.is_ampere_plus()
                 resets.append(
                     (
                         "reset xbar offset",
@@ -870,6 +1099,59 @@ class OverclockController(PaneController):
                         ),
                     )
                 )
+                # 30+ couples bit3 — clear the -f cancel too (bit3=0).
+                if coupled:
+                    resets.append(
+                        (
+                            "reset sys-cancel",
+                            lambda native, gpu=gpu: (
+                                self._format_clk_domain_offset_result(
+                                    "Sys-cancel",
+                                    0,
+                                    native.set_clk_domain_offset(gpu, 3, 0, None, None),
+                                )
+                            ),
+                        )
+                    )
+                if self._sys_supported():
+                    resets.append(
+                        (
+                            "reset sys offset",
+                            lambda native, gpu=gpu: (
+                                self._format_clk_domain_offset_result(
+                                    "Sys",
+                                    0,
+                                    native.set_clk_domain_offset(gpu, 3, 0, None, None),
+                                )
+                            ),
+                        )
+                    )
+                if self._msd_supported():
+                    resets.append(
+                        (
+                            "reset msd offset",
+                            lambda native, gpu=gpu: (
+                                self._format_clk_domain_offset_result(
+                                    "Msd",
+                                    0,
+                                    native.set_clk_domain_offset(gpu, 5, 0, None, None),
+                                )
+                            ),
+                        )
+                    )
+                if self._host_supported():
+                    resets.append(
+                        (
+                            "reset host offset",
+                            lambda native, gpu=gpu: (
+                                self._format_clk_domain_offset_result(
+                                    "Host",
+                                    0,
+                                    native.set_clk_domain_offset(gpu, 9, 0, None, None),
+                                )
+                            ),
+                        )
+                    )
             self.app.run_action_chain(resets)
             return True
         if button_id == "limits-apply":

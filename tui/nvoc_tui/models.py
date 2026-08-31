@@ -97,6 +97,11 @@ class GpuCache:
     # refreshed by the rail poll piggybacked on the status sweep. None on
     # single-rail / volt-rails-unsupported parts (plain VOLT form then).
     rail_volts: list[tuple[str, float]] | None = None
+    # ClkDomains controllable mask from query_private_freq_domain_info
+    # (refined by generation: Pascal MSD greyed regardless). None until the
+    # overclock tab's first mask poll lands. Drives the Sys/Msd/Host row
+    # enabled state on the Overclock pane.
+    clk_domain_mask: int | None = None
 
 
 @dataclass(slots=True)

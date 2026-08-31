@@ -190,6 +190,20 @@ class NativeService:
             except Exception:
                 return None
 
+    def query_private_freq_domain_info(self, gpu: str) -> dict | None:
+        """Private ClockClient ClkDomains GetControl: controllable mask +
+        per-domain WRITE records. Drives the Sys/Msd/Host row presence
+        (bit3/bit5/bit9 in the mask) and the bit3 RMW baseline. Mirrors the
+        GUI backend (best-effort wake like the other private reads)."""
+        try:
+            return self._pynvoc().query_private_freq_domain_info(gpu)
+        except Exception:
+            self._force_wake(gpu)
+            try:
+                return self._pynvoc().query_private_freq_domain_info(gpu)
+            except Exception:
+                return None
+
     def query_fan_info(self, gpu: str) -> dict | None:
         """NVML fan info (count / min / max / current percent).
 

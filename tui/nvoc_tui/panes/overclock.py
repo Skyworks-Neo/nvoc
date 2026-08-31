@@ -59,10 +59,33 @@ def compose_overclock() -> ComposeResult:
                         with Horizontal(classes="row"):
                             # Fabric-clock offset (NVAPI-only ClockClient path,
                             # xbar = domain bit 1). Arch-gated: the controller
-                            # disables this row for pre-Turing GPUs.
+                            # disables this row for pre-Pascal GPUs.
                             yield Label("Xbar Offset")
                             yield ShortcutInput(
                                 value="0", id="xbar-offset", compact=True
+                            )
+                        with Horizontal(classes="row"):
+                            # Sys = ClkDomains bit3 (pure SYS). RMW: read bit3
+                            # current offset, +f, write back. 30系+ bit1 couples
+                            # SYS so an Xbar write also drags bit3 — the Sys RMW
+                            # stacks on top rather than overwriting the -f cancel.
+                            yield Label("Sys Offset")
+                            yield ShortcutInput(
+                                value="0", id="sys-offset", compact=True
+                            )
+                        with Horizontal(classes="row"):
+                            # Msd = ClkDomains bit5. Pascal: bit5 SET N/A →
+                            # controller disables this row on Pascal.
+                            yield Label("Msd Offset")
+                            yield ShortcutInput(
+                                value="0", id="msd-offset", compact=True
+                            )
+                        with Horizontal(classes="row"):
+                            # Host = ClkDomains bit9 (presence via controllable
+                            # mask: 0x3FF has bit9, 0xFF does not).
+                            yield Label("Host Offset")
+                            yield ShortcutInput(
+                                value="0", id="host-offset", compact=True
                             )
                     with Grid(id="clock-actions"):
                         yield Button(

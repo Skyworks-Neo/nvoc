@@ -266,6 +266,17 @@ class FakeNative:
         )
         return {"applied": True, "applied_mHz": offset_khz / 1000.0}
 
+    def query_private_freq_domain_info(self, gpu):
+        self.calls.append(("query_private_freq_domain_info", gpu))
+        # controllable mask 0x3FF (bits 0-9 incl. bit3 SYS, bit5 MSD, bit9 HOST);
+        # bit3 slot-0 current offset (kHz) for the Sys/Xbar-cancel RMW baseline.
+        return {
+            "controllable_mask": "0x000003FF",
+            "entries": [
+                {"bit": 3, "values_kHz": [getattr(self, "bit3_current_khz", 0)]},
+            ],
+        }
+
     def set_volt_rail_target(self, gpu, rail_bit, target_mv, unknown):
         self.calls.append(("set_volt_rail_target", gpu, rail_bit, target_mv, unknown))
         return {"applied": True, "effective_wall_uV": int(target_mv * 1000)}
@@ -547,7 +558,8 @@ def test_overclock_apply_ignores_pstate_fields() -> None:
     assert OverclockController(app).handle_button("oc-apply") is True
 
     assert app.actions == ["apply overclock"]
-    assert app.action_outputs == ["Successfully applied nvapi overclock."]
+    assert "Successfully applied core offset 100 MHz." in app.action_outputs[0]
+    assert "Successfully applied memory offset 200 MHz." in app.action_outputs[0]
     assert app.native.calls == [
         ("set_clock_offset", "0x0000", "nvapi", "core", 100, "P0"),
         ("set_clock_offset", "0x0000", "nvapi", "memory", 200, "P0"),
@@ -1461,6 +1473,9 @@ def _oc_app(**info: object) -> FakeApp:
         "#core-offset": SimpleNamespace(value="100"),
         "#mem-offset": SimpleNamespace(value="200"),
         "#xbar-offset": SimpleNamespace(value="60"),
+        "#sys-offset": SimpleNamespace(value="30"),
+        "#msd-offset": SimpleNamespace(value="20"),
+        "#host-offset": SimpleNamespace(value="10"),
         "#power-limit": SimpleNamespace(value="110"),
         "#thermal-limit": SimpleNamespace(value="88"),
         "#voltage-boost": SimpleNamespace(value="25"),
@@ -1471,6 +1486,152 @@ def _oc_app(**info: object) -> FakeApp:
         "#mobile-volt-limit": SimpleNamespace(value="1050"),
     }
     return app
+
+
+def test_overclock_apply_xbar_30plus_writes_bit3_cancel() -> None:
+    """30系+ (is_ampere_plus): bit1 couples SYS → Xbar write must also RMW
+    bit3 (current − f) to cancel the SYS drift. Stock bit3=0 → −f.
+    (sys offset held at 0 so the Sys RMW doesn't run — tested separately.)"""
+    app = _oc_app(xbar_supported=True, is_ampere_plus=True)
+    app.cache.clk_domain_mask = 0x3FF
+    app.widgets["#sys-offset"] = SimpleNamespace(value="0")
+
+    OverclockController(app).handle_button("oc-apply")
+
+    clk_calls = [c for c in app.native.calls if c[0] == "set_clk_domain_offset"]
+    bits = {c[2]: c[3] for c in clk_calls}
+    assert bits.get(1) == 60000  # Xbar +60 MHz
+    assert bits.get(3) == -60000  # Sys-cancel -60 MHz
+
+
+def test_overclock_apply_xbar_cancel_preserves_existing_sys_offset() -> None:
+    """The coupled cancel is an RMW (current − f): a Sys offset already on
+    bit3 survives. bit3 preloaded +30 MHz → Xbar +60 writes bit3 = +30−60."""
+    app = _oc_app(xbar_supported=True, is_ampere_plus=True)
+    app.cache.clk_domain_mask = 0x3FF
+    app.native.bit3_current_khz = 30000  # Sys +30 already on bit3
+    app.widgets["#sys-offset"] = SimpleNamespace(value="0")
+
+    OverclockController(app).handle_button("oc-apply")
+
+    clk_calls = [c for c in app.native.calls if c[0] == "set_clk_domain_offset"]
+    bits = {c[2]: c[3] for c in clk_calls}
+    assert bits.get(3) == 30000 - 60000  # +30 preserved, −60 drift removed
+    out = app.action_outputs[0]
+    assert "bit3 +30 → -30 MHz" in out
+
+
+def test_overclock_apply_xbar_pascal_direct_no_cancel() -> None:
+    """Pascal/GTX16/RTX20 (not ampere_plus): bit1 is pure Xbar → direct write,
+    no bit3 cancel."""
+    app = _oc_app(xbar_supported=True, is_ampere_plus=False)
+    app.cache.clk_domain_mask = 0x3FF
+    app.widgets["#sys-offset"] = SimpleNamespace(value="0")
+
+    OverclockController(app).handle_button("oc-apply")
+
+    clk_calls = [c for c in app.native.calls if c[0] == "set_clk_domain_offset"]
+    bits = {c[2]: c[3] for c in clk_calls}
+    assert bits.get(1) == 60000
+    assert -60000 not in bits.values()  # no Sys-cancel on non-coupled arch
+
+
+def test_overclock_apply_sys_rmw_stacks_on_current() -> None:
+    """Sys (bit3) RMW: read current offset, +f, write back — stacking on any
+    Xbar-cancel already on bit3 rather than overwriting."""
+    app = _oc_app(xbar_supported=True, is_ampere_plus=False)
+    app.cache.clk_domain_mask = 0x3FF  # bit3 present
+    app.native.bit3_current_khz = 10000  # +10 MHz already on bit3
+
+    OverclockController(app).handle_button("oc-apply")
+
+    clk_calls = [c for c in app.native.calls if c[0] == "set_clk_domain_offset"]
+    bit3 = next(c for c in clk_calls if c[2] == 3)
+    assert bit3[3] == 10000 + 30000  # current 10 + requested 30 = 40 MHz
+    out = app.action_outputs[0]
+    assert "bit3 +10 → +40 MHz" in out
+
+
+def test_overclock_apply_core_fallback_on_not_supported() -> None:
+    """pstate20 returns -104 NotSupported → core offset falls back to
+    ClkDomains bit0 (Gpc)."""
+    app = _oc_app(xbar_supported=False)
+    app.native.raise_on_set_clock = RuntimeError("NVAPI NotSupported -104")
+
+    OverclockController(app).handle_button("oc-apply")
+
+    clk_calls = [c for c in app.native.calls if c[0] == "set_clk_domain_offset"]
+    # core → bit0, +100 MHz
+    assert any(c[2] == 0 and c[3] == 100000 for c in clk_calls)
+    assert "pstate20 -104 fallback bit0" in app.action_outputs[0]
+
+
+def test_overclock_apply_mem_fallback_on_not_supported() -> None:
+    """pstate20 -104 → mem offset falls back to ClkDomains bit2 (WRITE bit2 =
+    显存 M, NOT the MEASURE bit2 which reads SYS)."""
+    app = _oc_app(xbar_supported=False)
+    app.native.raise_on_set_clock = RuntimeError("NVAPI NotSupported -104")
+
+    OverclockController(app).handle_button("oc-apply")
+
+    clk_calls = [c for c in app.native.calls if c[0] == "set_clk_domain_offset"]
+    # mem → bit2, +200 MHz
+    assert any(c[2] == 2 and c[3] == 200000 for c in clk_calls)
+    assert "pstate20 -104 fallback bit2" in app.action_outputs[0]
+
+
+def test_overclock_apply_msd_skipped_on_pascal() -> None:
+    """Pascal: bit5 SET N/A → MSD row disabled even if the mask claims bit5."""
+    app = _oc_app(
+        xbar_supported=True,
+        is_ampere_plus=False,
+        gpu_series="10 series desktop detected",
+    )
+    app.cache.clk_domain_mask = 0x3FF  # bit5 present in mask...
+
+    ctrl = OverclockController(app)
+    # Pascal MSD gate: mask has bit5 but _msd_supported() is False
+    assert ctrl._msd_supported() is False
+
+    ctrl.handle_button("oc-apply")
+    clk_calls = [c for c in app.native.calls if c[0] == "set_clk_domain_offset"]
+    # bit5 must NOT be written on Pascal
+    assert not any(c[2] == 5 for c in clk_calls)
+
+
+def test_overclock_apply_msd_written_on_non_pascal() -> None:
+    """Non-Pascal with bit5 in mask → MSD offset writes bit5."""
+    app = _oc_app(
+        xbar_supported=True, is_ampere_plus=True, gpu_series="40 series mobile detected"
+    )
+    app.cache.clk_domain_mask = 0x3FF
+
+    OverclockController(app).handle_button("oc-apply")
+
+    clk_calls = [c for c in app.native.calls if c[0] == "set_clk_domain_offset"]
+    assert any(c[2] == 5 and c[3] == 20000 for c in clk_calls)  # Msd +20 MHz
+
+
+def test_overclock_apply_host_when_bit9_present() -> None:
+    """Host offset writes bit9 when the controllable mask has bit9 (0x3FF)."""
+    app = _oc_app(xbar_supported=True, is_ampere_plus=True)
+    app.cache.clk_domain_mask = 0x3FF
+
+    OverclockController(app).handle_button("oc-apply")
+
+    clk_calls = [c for c in app.native.calls if c[0] == "set_clk_domain_offset"]
+    assert any(c[2] == 9 and c[3] == 10000 for c in clk_calls)  # Host +10 MHz
+
+
+def test_overclock_apply_host_skipped_when_bit9_absent() -> None:
+    """Mask 0xFF (no bit9) → Host offset skipped (bit9 not controllable)."""
+    app = _oc_app(xbar_supported=True, is_ampere_plus=True)
+    app.cache.clk_domain_mask = 0xFF
+
+    OverclockController(app).handle_button("oc-apply")
+
+    clk_calls = [c for c in app.native.calls if c[0] == "set_clk_domain_offset"]
+    assert not any(c[2] == 9 for c in clk_calls)
 
 
 def test_overclock_apply_oc_includes_xbar_when_supported() -> None:
@@ -1485,8 +1646,10 @@ def test_overclock_apply_oc_includes_xbar_when_supported() -> None:
         ("set_clock_offset", "0x0000", "nvapi", "memory", 200, "P0"),
         ("set_clk_domain_offset", "0x0000", 1, 60000, None, None),
     ]
-    assert "Successfully applied nvapi overclock." in app.action_outputs[0]
-    assert "Successfully applied Xbar offset +60 MHz" in app.action_outputs[0]
+    out = app.action_outputs[0]
+    assert "Successfully applied core offset 100 MHz." in out
+    assert "Successfully applied memory offset 200 MHz." in out
+    assert "Successfully applied Xbar offset +60 MHz" in out
 
 
 def test_overclock_apply_oc_skips_xbar_when_unsupported() -> None:
