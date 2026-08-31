@@ -160,6 +160,20 @@ class NativeBackend:
                 return None
         return result
 
+    def query_private_freq_domain_info(self, gpu: str) -> dict | None:
+        """Private ClockClient ClkDomains GetControl (controllable mask + per-
+        domain WRITE records). Used by the GUI overclock tab to decide which
+        fabric/uncore domains (Sys bit3 / Msd bit5 / Host bit9) the driver
+        exposes, and to read bit3's current offset for the Sys RMW write."""
+        try:
+            return self._pynvoc().query_private_freq_domain_info(gpu)
+        except Exception:
+            self._force_wake(gpu)
+            try:
+                return self._pynvoc().query_private_freq_domain_info(gpu)
+            except Exception:
+                return None
+
     def query_volt_rails(self, gpu: str) -> dict | None:
         """Private VoltRails family (rail mask + P0 voltage bounds).
 

@@ -45,11 +45,28 @@ class FakeNative:
         # Raised by the mem-range pstate setters when set (pre-Kepler part:
         # the NVML pstate query is Not Supported).
         self.mem_lock_error = mem_lock_error
+        # Raise from set_clock_offset (e.g. pstate20 NotSupported -104) to
+        # exercise the ClkDomains fallback path.
+        self.raise_on_set_clock: Exception | None = None
+        # What query_private_freq_domain_info reports for bit3's slot-0 offset
+        # (kHz) — the Sys RMW baseline.
+        self.bit3_current_khz: int = 0
 
     def set_clock_offset(
         self, gpu: str, backend: str, domain: str, offset: int, pstate: str
     ) -> None:
         self.calls.append(("set_clock_offset", gpu, backend, domain, offset, pstate))
+        if self.raise_on_set_clock is not None:
+            raise self.raise_on_set_clock
+
+    def query_private_freq_domain_info(self, gpu: str) -> dict:
+        self.calls.append(("query_private_freq_domain_info", gpu))
+        return {
+            "controllable_mask": "0x000003FF",
+            "entries": [
+                {"bit": 3, "values_kHz": [self.bit3_current_khz]},
+            ],
+        }
 
     def set_volt_rail_target(
         self, gpu: str, rail_bit: int, target_mv: float, expect_type
@@ -187,7 +204,158 @@ def make_tab(
     tab.xbar_var = FakeVar(xbar_value)
     tab.xbar_slider = FakeSlider("normal")
     tab._supported_pstates = []
+    # Pager state (the new fabric/uncore pages)
+    tab._has_oc_pager = xbar_supported
+    tab._oc_page = 0
+    tab._oc_n_pages = 3 if xbar_supported else 1
+    tab._is_ampere_plus = False
+    tab._is_pascal_gpu = False
+    tab._clk_domain_mask = 0x3FF if xbar_supported else 0
+    tab._sys_supported = bool(tab._clk_domain_mask & (1 << 3))
+    tab._msd_supported = bool(tab._clk_domain_mask & (1 << 5))
+    tab._host_supported = bool(tab._clk_domain_mask & (1 << 9))
+    tab.sys_var = FakeVar("0")
+    tab.msd_var = FakeVar("0")
+    tab.host_var = FakeVar("0")
+    tab.sys_slider = FakeStateWidget("normal")
+    tab.msd_slider = FakeStateWidget("normal")
+    tab.host_slider = FakeStateWidget("normal")
+    # The pager grey-gate (_refresh_nvapi_only_rows) touches every fabric/
+    # uncore row's slider/entry/apply widgets plus the limit-panel mode.
+    tab.xbar_slider = FakeStateWidget("normal")
+    tab.xbar_entry = FakeStateWidget("normal")
+    tab.btn_apply_xbar = FakeStateWidget("normal")
+    tab.btn_reset_xbar = FakeStateWidget("normal")
+    tab.sys_entry = FakeStateWidget("normal")
+    tab.btn_apply_sys = FakeStateWidget("normal")
+    tab.btn_reset_sys = FakeStateWidget("normal")
+    tab.msd_entry = FakeStateWidget("normal")
+    tab.btn_apply_msd = FakeStateWidget("normal")
+    tab.btn_reset_msd = FakeStateWidget("normal")
+    tab.host_entry = FakeStateWidget("normal")
+    tab.btn_apply_host = FakeStateWidget("normal")
+    tab.btn_reset_host = FakeStateWidget("normal")
+    # Pager chrome (round-robin arrows + indicator)
+    tab._oc_btn_prev = FakeStateWidget("normal")
+    tab._oc_btn_next = FakeStateWidget("normal")
+    tab._oc_page_indicator = FakeVar("1/1")
+    tab._limit_panel_mode = "off"
     return tab, app
+
+
+def test_core_offset_falls_back_to_clk_domain_bit0_on_not_supported() -> None:
+    """pstate20 -104 NotSupported → core offset via ClkDomains bit0 (Gpc)."""
+    tab, app = make_tab()
+    app.native.raise_on_set_clock = RuntimeError("NVAPI NotSupported -104")
+
+    msg = OverclockTab._apply_core_only_action(app.native, "GPU0", "nvapi", 125.0, "P0")
+
+    clk_calls = [c for c in app.native.calls if c[0] == "set_clk_domain_offset"]
+    assert any(c[2] == 0 and c[3] == 125000 for c in clk_calls)
+    assert "via ClkDomains bit0" in msg
+
+
+def test_mem_offset_falls_back_to_clk_domain_bit2_on_not_supported() -> None:
+    """pstate20 -104 → mem offset via ClkDomains bit2 (WRITE bit2 = 显存 M,
+    NOT the MEASURE bit2 which reads SYS)."""
+    tab, app = make_tab()
+    app.native.raise_on_set_clock = RuntimeError("NVAPI NotSupported -104")
+
+    msg = OverclockTab._apply_mem_only_action(app.native, "GPU0", "nvapi", 200, "P0")
+
+    clk_calls = [c for c in app.native.calls if c[0] == "set_clk_domain_offset"]
+    assert any(c[2] == 2 and c[3] == 200000 for c in clk_calls)
+    assert "via ClkDomains bit2" in msg
+
+
+def test_clk_domain_caps_enables_msd_and_host_rows() -> None:
+    """Regression: the caps-loaded callback must not reach for an info cache
+    the GUI App doesn't have (that crashed the callback and left Msd/Host
+    greyed forever on every card, incl. a 4060 Laptop with mask 0x3FF)."""
+    tab, _app = make_tab(xbar_supported=True)
+    tab._sys_supported = False
+    tab._msd_supported = False
+    tab._host_supported = False
+
+    tab._on_clk_domain_caps_loaded({"controllable_mask": "0x000003FF"})
+
+    assert tab._clk_domain_mask == 0x3FF
+    assert tab._sys_supported is True
+    assert tab._msd_supported is True
+    assert tab._host_supported is True
+
+
+def test_clk_domain_caps_pascal_forces_msd_off() -> None:
+    """Pascal bit5 SET N/A → MSD stays greyed even when the mask claims it."""
+    tab, _app = make_tab(xbar_supported=True)
+    tab._is_pascal_gpu = True
+
+    tab._on_clk_domain_caps_loaded({"controllable_mask": "0x000003FF"})
+
+    assert tab._msd_supported is False
+    assert tab._host_supported is True  # bit9 unaffected by the Pascal gate
+
+
+def test_clk_domain_caps_mask_without_bit9_disables_host() -> None:
+    """0xFF (no bit9) → Host greyed."""
+    tab, _app = make_tab(xbar_supported=True)
+
+    tab._on_clk_domain_caps_loaded({"controllable_mask": "0x000000FF"})
+
+    assert tab._host_supported is False
+    assert tab._msd_supported is True  # bit5 present
+
+
+def test_xbar_30plus_writes_bit3_cancel() -> None:
+    """30系+ (coupled): Xbar +f writes bit1=+f AND RMWs bit3 (current−f) to
+    cancel SYS. Stock bit3=0 → cancel lands at −f."""
+    tab, app = make_tab(xbar_supported=True)
+
+    msg = OverclockTab._apply_xbar_only_action(app.native, "GPU0", 60, coupled=True)
+
+    bits = {c[2]: c[3] for c in app.native.calls if c[0] == "set_clk_domain_offset"}
+    assert bits.get(1) == 60000
+    assert bits.get(3) == -60000
+    assert "Sys-cancel" in msg
+
+
+def test_xbar_30plus_cancel_preserves_existing_sys_offset() -> None:
+    """The coupled cancel is an RMW (current − f): a Sys offset already on
+    bit3 survives — only the coupling drift is subtracted. Sys +30 then
+    Xbar +60 → bit3 = +30 − 60 = −30 (SYS stays at +30 net of the +60
+    coupling: −30 + 60 = +30)."""
+    tab, app = make_tab(xbar_supported=True)
+    app.native.bit3_current_khz = 30000  # Sys +30 already applied
+
+    msg = OverclockTab._apply_xbar_only_action(app.native, "GPU0", 60, coupled=True)
+
+    bits = {c[2]: c[3] for c in app.native.calls if c[0] == "set_clk_domain_offset"}
+    assert bits.get(3) == 30000 - 60000  # +30 preserved, −60 drift removed
+    assert "bit3 +30 → -30 MHz" in msg
+
+
+def test_xbar_non_coupled_direct_write_no_cancel() -> None:
+    """Pascal/GTX16/RTX20 (not coupled): Xbar +f writes bit1 only."""
+    tab, app = make_tab(xbar_supported=True)
+
+    OverclockTab._apply_xbar_only_action(app.native, "GPU0", 60, coupled=False)
+
+    bits = {c[2]: c[3] for c in app.native.calls if c[0] == "set_clk_domain_offset"}
+    assert bits.get(1) == 60000
+    assert 3 not in bits
+
+
+def test_sys_rmw_stacks_on_current_offset() -> None:
+    """Sys (bit3) RMW: read current offset, +f, write back — stacks on any
+    Xbar-cancel already on bit3 rather than overwriting."""
+    tab, app = make_tab(xbar_supported=True)
+    app.native.bit3_current_khz = 10000  # +10 MHz already on bit3
+
+    msg = OverclockTab._apply_sys_only_action(app.native, "GPU0", 30)
+
+    bits = {c[2]: c[3] for c in app.native.calls if c[0] == "set_clk_domain_offset"}
+    assert bits.get(3) == 10000 + 30000  # current 10 + requested 30 = 40 MHz
+    assert "bit3 +10 → +40 MHz" in msg
 
 
 def test_vfp_state_does_not_replace_core_offset_display() -> None:
@@ -239,6 +407,26 @@ class FakeSlider:
         if key == "state":
             return self._state
         return ""
+
+    def set(self, _value) -> None:
+        pass
+
+
+class FakeStateWidget:
+    """Slider/entry/button stub for the pager grey-gate + reset paths
+    (state get/set via cget/configure, slider value via set)."""
+
+    def __init__(self, state: str = "normal") -> None:
+        self._state = state
+
+    def cget(self, key: str) -> str:
+        if key == "state":
+            return self._state
+        return ""
+
+    def configure(self, **_kw) -> None:
+        if "state" in _kw:
+            self._state = _kw["state"]
 
     def set(self, _value) -> None:
         pass
@@ -434,6 +622,107 @@ def test_apply_limits_mobile_skips_disabled_volt_slider() -> None:
     assert not any(call[0] == "set_volt_rail_target" for call in app.native.calls)
 
 
+class _RecordingSlider(FakeSlider):
+    """FakeSlider that records the last configured range + set() value so
+    update_mobile_limits anchoring can be asserted."""
+
+    def __init__(self, state: str = "normal") -> None:
+        super().__init__(state)
+        self.configured: dict = {}
+        self.value = None
+
+    def configure(self, **kw) -> None:
+        self.configured.update(kw)
+
+    def set(self, value) -> None:
+        self.value = value
+
+
+def _make_mobile_limits_tab() -> tuple[OverclockTab, _RecordingSlider, FakeVar]:
+    tab, _app = make_mobile_tab()
+    slider = _RecordingSlider()
+    var = FakeVar("100")
+    tab.plimit_slider = slider
+    tab.plimit_var = var
+    return tab, slider, var
+
+
+def test_update_mobile_limits_anchors_plimit_at_power_wall() -> None:
+    """The Pwr Limit slider anchors at the actually-effective power wall
+    (power_limit_w = min of requested TGP and the active D-Notifier cap),
+    NOT the VBIOS default — anchoring at the default made the slider jump
+    after a D-Notifier apply/section reset."""
+    tab, slider, var = _make_mobile_limits_tab()
+
+    tab.update_mobile_limits(
+        {
+            "tgp": {
+                "policy_index": 2,
+                "min_watt": 5.0,
+                "default_watt": 100.0,
+                "max_watt": 140.0,
+            },
+            "dnotifier": None,
+            "temp_policies": [],
+            "volt_rail": None,
+            "power_limit_w": 55.0,
+        }
+    )
+
+    assert slider.configured["from_"] == 5
+    assert slider.configured["to"] == 140
+    assert slider.value == 55
+    assert var.value == "55"
+
+
+def test_update_mobile_limits_clamps_wall_into_tgp_range() -> None:
+    """A wall outside the fresh TGP range clamps to the nearest bound —
+    never jumps back to the VBIOS default."""
+    tab, slider, var = _make_mobile_limits_tab()
+
+    tab.update_mobile_limits(
+        {
+            "tgp": {
+                "policy_index": 2,
+                "min_watt": 5.0,
+                "default_watt": 100.0,
+                "max_watt": 140.0,
+            },
+            "dnotifier": None,
+            "temp_policies": [],
+            "volt_rail": None,
+            "power_limit_w": 150.0,  # above the fresh max
+        }
+    )
+
+    assert slider.value == 140
+    assert var.value == "140"
+
+
+def test_update_mobile_limits_falls_back_to_default_without_wall() -> None:
+    """No wall reading at all (private family + NVML both unavailable) →
+    keep the VBIOS default as the position."""
+    tab, slider, var = _make_mobile_limits_tab()
+
+    tab.update_mobile_limits(
+        {
+            "tgp": {
+                "policy_index": 2,
+                "min_watt": 5.0,
+                "default_watt": 100.0,
+                "max_watt": 140.0,
+            },
+            "dnotifier": None,
+            "temp_policies": [],
+            "volt_rail": None,
+            "power_limit_w": None,
+        }
+    )
+
+    assert slider.value == 100
+    assert var.value == "100"
+
+
 # ── Xbar (ClockClient domain offset, NVAPI-only) ───────────────────────────
 
 
@@ -513,7 +802,9 @@ def test_format_xbar_offset_result_unsupported() -> None:
 
 
 def test_apply_oc_includes_xbar_when_supported() -> None:
+    # Apply Section applies the CURRENT page; page 1 = Xbar/Sys.
     tab, app = make_tab(xbar_supported=True, xbar_value="10")
+    tab._oc_page = 1
 
     tab._apply_oc()
 
@@ -535,6 +826,7 @@ def test_apply_oc_skips_xbar_when_disabled() -> None:
     # NVML selection greys the row out -> Apply Section must skip it.
     tab, app = make_tab(xbar_supported=True, xbar_value="10")
     tab.xbar_slider = FakeSlider("disabled")
+    tab._oc_page = 1
 
     tab._apply_oc()
 
@@ -543,6 +835,7 @@ def test_apply_oc_skips_xbar_when_disabled() -> None:
 
 def test_reset_oc_resets_xbar_when_supported() -> None:
     tab, app = make_tab(xbar_supported=True, xbar_value="10")
+    tab._oc_page = 1
 
     tab._reset_oc()
 
