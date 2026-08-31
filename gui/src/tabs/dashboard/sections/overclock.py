@@ -234,9 +234,13 @@ class OverclockTab:
 
         # ── Page frames ──
         # Three containers; only the current page is packed. Pre-Pascal only
-        # builds page 0 and never shows the pager.
+        # builds page 0 and never shows the pager. padx=2 keeps the page
+        # frames OFF the card border: CTk draws the border manually on its
+        # canvas (the widget's bd is 0), so a padx=0 child spans the widget's
+        # full bounds and paints _PANEL_BG right over the left/right border
+        # lines — the border visually vanished for the page's whole span.
         page_core = tk.Frame(oc_frame, bg=_PANEL_BG)
-        page_core.pack(fill="x", padx=(0, 0), pady=(0, 3))
+        page_core.pack(fill="x", padx=2, pady=(0, 3))
         page_fabric = tk.Frame(oc_frame, bg=_PANEL_BG)
         page_uncore = tk.Frame(oc_frame, bg=_PANEL_BG)
         self._oc_page_frames = [page_core, page_fabric, page_uncore]
@@ -1686,7 +1690,7 @@ class OverclockTab:
         for i, fr in enumerate(self._oc_page_frames):
             if i < self._oc_n_pages:
                 if i == page:
-                    fr.pack(fill="x", padx=0, pady=(0, 3), before=self._oc_buttons_row)
+                    fr.pack(fill="x", padx=2, pady=(0, 3), before=self._oc_buttons_row)
                 else:
                     fr.pack_forget()
             else:
