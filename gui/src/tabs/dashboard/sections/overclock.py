@@ -650,8 +650,7 @@ class OverclockTab:
             self.app.run_native_action(
                 "enable dynamic boost",
                 lambda native, gpu=gpu: (
-                    native.set_dynamic_boost(gpu, True)
-                    or "Dynamic Boost (PPAB) enabled."
+                    native.set_ppab_status(gpu, True) or "Dynamic Boost (PPAB) enabled."
                 ),
             )
 
@@ -955,7 +954,7 @@ class OverclockTab:
         self.app.run_native_action(
             "toggle dynamic boost",
             lambda native, gpu=gpu, active=active: (
-                native.set_dynamic_boost(gpu, active)
+                native.set_ppab_status(gpu, active)
                 or f"Dynamic Boost (PPAB) {'enabled' if active else 'disabled'}."
             ),
         )
