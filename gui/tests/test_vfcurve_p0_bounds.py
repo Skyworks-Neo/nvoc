@@ -424,6 +424,19 @@ class _ApplyNative:
         self.calls.append(("set_vfp_range_delta", gpu, frm, to, dkz))
         return {}
 
+    # ── ClkDomains global-offset reset surface (bound into _reset_vfp) ──
+    def query_private_freq_domain_info(self, gpu):
+        self.calls.append(("query_private_freq_domain_info", gpu))
+        # 4060L-shaped mask: WRITE bits 0/1/2/3/5/9 exposed.
+        return {
+            "controllable_mask": "0x3FF",
+            "entries": [{"bit": b} for b in (0, 1, 2, 3, 4, 5, 9)],
+        }
+
+    def set_clk_domain_offset(self, gpu, bit, offset_khz, slot, temporary):
+        self.calls.append(("set_clk_domain_offset", gpu, bit, offset_khz, slot))
+        return {"applied": True, "bit": bit, "slot": slot}
+
 
 class _ApplyApp(_FakeApp):
     """App that runs run_native_action synchronously and records."""
@@ -673,6 +686,13 @@ def test_shift_reset_uses_whole_bank_private_reset() -> None:
     assert native.full_resets == [("reset_vfp_private", "GPU0", 0, None)]
     assert not any(c[0] == "set_vfp_point_private" for c in native.calls)
     assert tab._reset_with_shift is False  # consumed
+    # Global counterpart: EVERY exposed WRITE record zeroed on slots 0+1
+    # (curve points and domain global offsets are separate RM storage).
+    clk = [c for c in native.calls if c[0] == "set_clk_domain_offset"]
+    assert ("query_private_freq_domain_info", "GPU0") in native.calls
+    for bit in (0, 1, 2, 3, 4, 5, 9):
+        for slot in (0, 1):
+            assert ("set_clk_domain_offset", "GPU0", bit, 0, slot) in clk
 
 
 def test_plain_reset_keeps_per_point_segment_path() -> None:
@@ -686,6 +706,11 @@ def test_plain_reset_keeps_per_point_segment_path() -> None:
     # Falls through to the per-point mode-0 loop over the segment.
     point_writes = [c for c in native.calls if c[0] == "set_vfp_point_private"]
     assert point_writes  # per-point path taken
+    # AND the matching domain global reset (GPC → WRITE bit0, slots 0+1).
+    clk = [c for c in native.calls if c[0] == "set_clk_domain_offset"]
+    assert ("set_clk_domain_offset", "GPU0", 0, 0, 0) in clk
+    assert ("set_clk_domain_offset", "GPU0", 0, 0, 1) in clk
+    assert len(clk) == 2  # single-domain reset only, no all-domain sweep
 
 
 def test_shift_capture_from_button_press_event() -> None:

@@ -82,6 +82,17 @@ def _curve_meta_for(cid: str) -> dict:
     return {"label": label, "class": "graphics", "domain_bit": None}
 
 
+# ClkDomains WRITE-record bit per curve id (the Ada-verified WRITE map —
+# the same table the OC tab's clock-offset pager uses). Deliberately
+# DISTINCT from _CURVE_META's domain_bit, which is the MEASURE bit: MSD
+# measures on bit21 but its offset WRITE record is bit5; MEM measures on
+# bit4 but writes on bit2. Used by _reset_vfp to also clear the domain
+# GLOBAL offset — curve-point offsets and domain global offsets are
+# separate RM storage, so a curve reset alone leaves a global offset
+# still shifting the domain.
+_CURVE_WRITE_BIT = {"gpc": 0, "xbar": 1, "msd": 5, "mem": 2}
+
+
 def _curve_direct_readable(cid: str) -> bool:
     """Whether the live crosshair must DIRECT-READ this curve's domain.
 
@@ -3832,6 +3843,12 @@ class VFCurveTab:
         reset-private-vftable-offset path): ONE RMW write clearing every
         point on the bank — the per-point loop is O(points) private
         SetControl escapes, painfully slow on wide Pascal banks.
+
+        Every reset ALSO clears the matching ClkDomains GLOBAL offset(s)
+        (see _CURVE_WRITE_BIT): curve-point offsets and domain global
+        offsets are separate RM storage — resetting only the curve would
+        leave a global offset still shifting the domain. The whole-bank
+        Shift+Reset clears the global offsets of ALL domains.
         """
         curve = self._curves.get(self._active_curve)
         if curve is None:
@@ -3848,13 +3865,17 @@ class VFCurveTab:
             def reset_full(native, gpu=gpu, bank=bank, cid=cid) -> str:
                 r = native.reset_vfp_private(gpu, bank, None)
                 if isinstance(r, dict) and r.get("supported") is False:
-                    return f"private whole-bank reset unsupported on {cid}."
-                count = r.get("points_reset") if isinstance(r, dict) else None
-                count_txt = f", {count} points cleared" if count else ""
-                return (
-                    f"Successfully reset ALL {cid} curve points "
-                    f"(private whole-bank{count_txt})."
-                )
+                    base = f"private whole-bank reset unsupported on {cid}."
+                else:
+                    count = r.get("points_reset") if isinstance(r, dict) else None
+                    count_txt = f", {count} points cleared" if count else ""
+                    base = (
+                        f"Successfully reset ALL {cid} curve points "
+                        f"(private whole-bank{count_txt})."
+                    )
+                # Global counterpart: zero EVERY domain's global offset
+                # (the reset-private-freq-domain-global-offset footprint).
+                return f"{base} {self._all_domain_global_reset(native, gpu)}"
 
             self.app.console.append(
                 "[GUI] Shift+Reset: clearing the whole private bank in one write…\n"
@@ -3869,9 +3890,12 @@ class VFCurveTab:
         if curve.write_mode == "public":
             s, e = curve.seg_start, curve.seg_end
 
-            def reset_public(native, gpu=gpu, s=s, e=e, cid=cid) -> str:
+            def reset_public(
+                native, gpu=gpu, s=s, e=e, cid=cid, curve_id=curve.curve_id
+            ) -> str:
                 native.set_vfp_range_delta(gpu, s, e, 0)
-                return f"Successfully reset {cid} curve to default ({s}–{e}, public)."
+                base = f"Successfully reset {cid} curve to default ({s}–{e}, public)."
+                return f"{base}{self._domain_global_reset_note(native, gpu, curve_id)}"
 
             self.app.run_native_action(
                 "reset VFP deltas",
@@ -3925,8 +3949,50 @@ class VFCurveTab:
                 return f"private reset unsupported on {cid}."
             return f"Successfully reset {cid} (private raw, {base}–{end_idx})."
 
+        def reset_private_and_global(native, gpu=gpu, curve_id=curve.curve_id) -> str:
+            base = reset_private(native)
+            return f"{base}{self._domain_global_reset_note(native, gpu, curve_id)}"
+
         self.app.run_native_action(
             "reset VFP deltas",
-            reset_private,
+            reset_private_and_global,
             on_finished=lambda _rc: self.app.after(0, self._refresh_curve),
         )
+
+    def _domain_global_reset_note(self, native, gpu: str, curve_id: str) -> str:
+        """Console note zeroing the curve's ClkDomains WRITE-record global
+        offset (slots 0 and 1).
+
+        Private-table curve-point offsets and domain GLOBAL offsets are
+        separate RM storage — a curve reset alone leaves a global offset
+        still shifting the domain, so every single-curve reset also fires
+        the corresponding domain global reset (the per-domain form of the
+        reset-private-freq-domain-global-offset CLI command). Empty string
+        when the curve has no WRITE bit (unknownN curves).
+        """
+        bit = _CURVE_WRITE_BIT.get(curve_id)
+        if bit is None:
+            return ""
+        bits = [bit]
+        # 30系+: Xbar bit1 couples SYS — clearing bit1 must also clear the
+        # bit3 cancel (same footprint as the OC tab's Xbar reset).
+        oc = getattr(self.app, "tab_overclock", None)
+        if bit == 1 and getattr(oc, "_is_ampere_plus", False):
+            bits.append(3)
+        from src.tabs.dashboard.sections.overclock import OverclockTab
+
+        label = _curve_meta_for(curve_id)["label"]
+        return " " + OverclockTab._reset_clk_domain_action(
+            native, gpu, label, tuple(bits)
+        )
+
+    def _all_domain_global_reset(self, native, gpu: str) -> str:
+        """All-domains ClkDomains global offset reset — the footprint of
+        the reset-private-freq-domain-global-offset CLI command: every
+        WRITE record query_private_freq_domain_info exposes, slots 0 and
+        1, unsupported bits warn and the rest continue. Bound to the VF
+        curve's whole-bank (Shift+Reset) reset for the same separate-
+        storage reason as the single-curve note."""
+        from src.tabs.dashboard.sections.overclock import OverclockTab
+
+        return OverclockTab._reset_all_clk_domains_action(native, gpu)
