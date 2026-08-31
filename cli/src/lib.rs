@@ -27,7 +27,7 @@ use nvoc_core::{
     SetBb2Active, SetClockOffset, SetCoolerLevels, SetEdid, SetFanCurve, SetFanRpm, SetFanSpeed,
     SetFanStop, SetForcePstate, SetGpcVoltLock, SetLegacyClocks, SetLockedClocks,
     SetNvapiBackgroundOcScanner, SetNvapiClkDomainOffset, SetNvapiCoreVoltageControl,
-    SetNvapiDNotifier, SetNvapiDynamicBoost, SetNvapiOverclockedPstates,
+    SetNvapiDNotifier, SetNvapiDynamicBoost, SetNvapiEccConfiguration, SetNvapiOverclockedPstates,
     SetNvapiOvervolt, SetNvapiPStateNative, SetNvapiPerfFreqCap, SetNvapiPerfLevelLock,
     SetNvapiPmgrVoltageArbiter, SetNvapiPowerLimits, SetNvapiPstateLock,
     SetNvapiPstates20PrivateDelta, SetNvapiSensorLimits, SetNvapiTargetTemp, SetNvapiTgpWatt,
@@ -236,6 +236,7 @@ pub enum Command {
     ResetAutoboostStatus,
     SetAutoboostSupport,
     SetEdid,
+    SetEccConfiguration,
     ClearEdid,
     SetLegacyFreq,
     ResetLegacyApplicationFreqLock,
@@ -882,6 +883,20 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     "D-Notifier level 1-5 (D1=Unlimited .. D5=lowest cap)",
                 )])),
                     ..CommandSpec::new("set-dnotifier", Group::Power, "Set NVAPI D-Notifier limit level (D1-D5; shares the TGP power-policy table)")
+                },
+            ),
+            (
+                Command::SetEccConfiguration,
+                CommandSpec {
+                    arity: (1, 1),
+                    options: Box::leak(Box::new(["immediate"])),
+                    positionals: Box::leak(Box::new([PositionalArg::finite(
+                    "arg_enabled",
+                    "ENABLED",
+                    "Whether to enable ECC memory (on/off, yes/no, 1/0)",
+                    PositionalValueKind::Bool,
+                )])),
+                    ..CommandSpec::new("set-ecc-configuration", Group::Info, "Set NVAPI ECC memory configuration (NvAPI_GPU_SetECCConfiguration 0x1CF639D9): persists in non-volatile memory — default defers to the next reboot, --immediate applies now (whether Immediate mode is supported is hardware-dependent, see get-status Ecc). Post-SET readback (enabled / factory default) comes from GetECCConfigurationInfo. GeForce consumer GPUs typically return NotSupported")
                 },
             ),
             (
@@ -2022,6 +2037,10 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .value_name("BITS")
             .action(ArgAction::Set)
             .help("Extra bits ORed into the byte@+4 flags word of the private pstates table (bit1 = RM apply flag)"),
+        "immediate" => Arg::new("immediate")
+            .long("immediate")
+            .action(ArgAction::SetTrue)
+            .help("Apply the ECC configuration change now instead of deferring it to the next reboot (Immediate mode support is hardware-dependent)"),
         _ => unreachable!("unknown command-specific option {name}"),
     }
 }
@@ -2122,6 +2141,7 @@ fn collect_named_options(
             | "all"
             | "verbose"
             | "temporary"
+            | "immediate"
             | "freq-mode"
             | "raw"
             | "raw-converted"
@@ -3354,6 +3374,41 @@ fn execute_target(
             let active = parse_bool(&invocation.positionals[0])?;
             run(target, SetNvapiDynamicBoost { active })?;
             Ok(json!({"applied": true, "dynamic_boost": active}))
+        }
+        Command::SetEccConfiguration => {
+            // NV-stored configuration write — NOT readback semantics: the
+            // SET stores enable into non-volatile memory (default: takes
+            // effect after the next reboot; --immediate requests the
+            // Immediate mode, hardware-dependent). The readback block is a
+            // separate GetECCConfigurationInfo call; null means the GET
+            // failed after a successful SET.
+            let enable = parse_bool(&invocation.positionals[0])?;
+            let immediate = option_bool(invocation, "immediate", false)?;
+            let out = run(
+                target,
+                SetNvapiEccConfiguration {
+                    enable,
+                    immediately: immediate,
+                },
+            )?
+            .output;
+            Ok(match out {
+                Some(a) => json!({
+                    "applied": true,
+                    "enable": enable,
+                    "immediate": immediate,
+                    "readback": {
+                        "enabled": a.enabled,
+                        "enabled_by_default": a.enabled_by_default,
+                    },
+                }),
+                None => json!({
+                    "applied": true,
+                    "enable": enable,
+                    "immediate": immediate,
+                    "readback": null,
+                }),
+            })
         }
         Command::SetPStateLock => {
             // Pin the active NVAPI P-State (mode-1 PstateSelect via 0x39442CFB).
@@ -6555,6 +6610,7 @@ mod tests {
             | Command::ResetAutoboostStatus
             | Command::SetAutoboostSupport
             | Command::SetEdid
+            | Command::SetEccConfiguration
             | Command::ClearEdid
             | Command::SetLegacyFreq
             | Command::ResetLegacyApplicationFreqLock

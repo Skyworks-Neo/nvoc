@@ -2799,6 +2799,59 @@ pub struct NvapiClkDomainOffsetApplied {
     pub temporary_restored: bool,
 }
 
+/// Set the ECC memory configuration (public `NvAPI_GPU_SetECCConfiguration`
+/// 0x1CF639D9): `enable` turns ECC on/off, `immediately` applies the change
+/// now instead of deferring it to the next reboot. The configuration is
+/// stored in non-volatile memory either way — this is NOT a readback-style
+/// SET; the post-write state comes from `GetECCConfigurationInfo`
+/// (0x77A796F3), returned as the operation output when readable.
+#[derive(Clone, Copy, Debug)]
+pub struct SetNvapiEccConfiguration {
+    /// desired ECC enable state
+    pub enable: bool,
+    /// apply immediately (NV_ECC_CONFIGURATION_IMMEDIATE) instead of
+    /// persisting for the next reboot (DEFERRED)
+    pub immediately: bool,
+}
+
+/// Result of a successful ECC configuration write: the NV-stored state
+/// read back after the SET.
+#[derive(Clone, Copy, Debug)]
+pub struct NvapiEccConfigurationApplied {
+    /// ECC enabled in the persistent configuration
+    pub enabled: bool,
+    /// factory default ECC configuration (static)
+    pub enabled_by_default: bool,
+}
+
+impl GpuOperation for SetNvapiEccConfiguration {
+    type Output = Option<NvapiEccConfigurationApplied>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiEccConfiguration
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let gpu = target.nvapi()?;
+        gpu.inner()
+            .ecc_configure(self.enable, self.immediately)
+            .map_err(Error::from)?;
+        // readback from the NV-stored configuration; a GET failure after a
+        // successful SET is surfaced as None, not an error
+        let readback = gpu
+            .inner()
+            .ecc_configuration()
+            .ok()
+            .map(
+                |(enabled, enabled_by_default)| NvapiEccConfigurationApplied {
+                    enabled,
+                    enabled_by_default,
+                },
+            );
+        Ok(readback)
+    }
+}
+
 /// Set the D-Notifier (D0-notify) limit to a D level (1..5). Maps the CLI
 /// level to the signed driver code (-1=D1/Unlimited, 0..3=D2..D5) exactly as
 /// the ref tool's `[GPUHandle::setDNotifyLimit]` switch does, then calls the raw

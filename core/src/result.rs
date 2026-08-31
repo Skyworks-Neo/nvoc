@@ -85,6 +85,10 @@ pub enum OperationKind {
     /// 0x10964), patches a copy, SETs, readbacks, restores on mismatch;
     /// `temporary` restores the snapshot before returning.
     SetNvapiClkDomainOffset,
+    /// Set the ECC memory configuration (public NvAPI_GPU_SetECCConfiguration
+    /// 0x1CF639D9) — enable/disable ECC, immediately or deferred to reboot;
+    /// the configuration persists in non-volatile memory.
+    SetNvapiEccConfiguration,
     /// Query the private ClockClient V/F-POINTS read path (GetInfo 0x8895B510
     /// → GetStatus 0x7FEE9032) — per-bank point masks + V/F curve records
     /// (units calibrated vs the public GPC VFP curve).
@@ -291,6 +295,7 @@ impl OperationKind {
                 | SetNvapiVoltRailOffset
                 | SetNvapiVoltRailTarget
                 | SetNvapiClkDomainOffset
+                | SetNvapiEccConfiguration
                 | SetFanCurve
                 | ResetFanCurve
                 | SetFanStop
