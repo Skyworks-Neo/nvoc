@@ -220,6 +220,28 @@ pub(super) fn format_legacy_gpc_rail_volt_range(output: &Value) -> Vec<String> {
     )
 }
 
+/// Human output for `get-power-ceiling` — mirrors nvidia-smi's PPAB
+/// `GPU Ceiling Power Limit` trio (Current/Requested/Default) plus the
+/// D-Notifier cap that often is the binding constraint.
+pub(super) fn format_power_ceiling(output: &Value) -> Vec<String> {
+    let supported = output.get("supported").and_then(Value::as_bool);
+    if supported == Some(false) {
+        return vec!["  Power Ceiling: N/A (private power-policy family unavailable)".to_string()];
+    }
+    fn watts(output: &Value, key: &str) -> String {
+        match output.get(key).and_then(Value::as_f64) {
+            Some(w) => format!("{w:.1} W"),
+            None => "N/A".to_string(),
+        }
+    }
+    vec![
+        format!("  Ceiling (effective): {}", watts(output, "ceiling_watt")),
+        format!("  Requested TGP: {}", watts(output, "requested_watt")),
+        format!("  D-Notifier Cap: {}", watts(output, "dnotify_watt")),
+        format!("  Default TGP: {}", watts(output, "default_watt")),
+    ]
+}
+
 pub(super) fn format_power_mode(output: &Value) -> Vec<String> {
     let supported = output.get("supported").and_then(Value::as_bool);
     let active = output.get("active").and_then(Value::as_str).unwrap_or("?");

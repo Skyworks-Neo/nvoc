@@ -12,34 +12,35 @@ use nvoc_core::{
     QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomains, QueryNvapiClkVfControl,
     QueryNvapiClkVfPoints, QueryNvapiCoolerInfo, QueryNvapiCoreVoltageControl, QueryNvapiDNotifier,
     QueryNvapiFanPolicyInfo, QueryNvapiOcScannerIncomplete, QueryNvapiPStateLevels,
-    QueryNvapiPStateLockStatus, QueryNvapiPmgrVoltageArbiter, QueryNvapiPstates20Private,
-    QueryNvapiRatedTdp, QueryNvapiTargetTempPolicies, QueryNvapiTargetTempPolicyIndex,
-    QueryNvapiTgpWattRange, QueryNvapiThermalSettings, QueryNvapiThermalSim, QueryNvapiVoltRails,
-    QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks,
-    QueryTdpTempLimits, QueryTemperatureThresholds, QueryThrottleReasons, QueryVbiosImage,
-    QueryVbiosSecurityInfo, QueryVbiosStatusString, QueryVbiosVersion, QueryViolationStatus,
-    QueryVoltageBoost, ResetAutoboostStatus, ResetCoolerLevels, ResetFanCurve, ResetFanSpeed,
-    ResetForcePstate, ResetFreqLock, ResetLegacyApplicationFreqLock,
-    ResetLegacyGpcRailOvervoltLimit, ResetNvapiPowerLimits, ResetNvapiSensorLimits,
-    ResetNvapiTgpWatt, ResetNvapiVfpPrivate, ResetPstateGlobalFreqOffset,
+    QueryNvapiPStateLockStatus, QueryNvapiPmgrVoltageArbiter, QueryNvapiPowerCeiling,
+    QueryNvapiPstates20Private, QueryNvapiRatedTdp, QueryNvapiTargetTempPolicies,
+    QueryNvapiTargetTempPolicyIndex, QueryNvapiTgpWattRange, QueryNvapiThermalSettings,
+    QueryNvapiThermalSim, QueryNvapiVoltRails, QueryPowerLimits, QueryPstateBaseVoltage,
+    QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
+    QueryThrottleReasons, QueryVbiosImage, QueryVbiosSecurityInfo, QueryVbiosStatusString,
+    QueryVbiosVersion, QueryViolationStatus, QueryVoltageBoost, ResetAutoboostStatus,
+    ResetCoolerLevels, ResetFanCurve, ResetFanSpeed, ResetForcePstate, ResetFreqLock,
+    ResetLegacyApplicationFreqLock, ResetLegacyGpcRailOvervoltLimit, ResetNvapiPowerLimits,
+    ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetNvapiVfpPrivate, ResetPstateGlobalFreqOffset,
     ResetPublicVftableGpcLock, ResetPublicVftableOffset, ResetVfpFrequencyLock,
     RestartDisplayDriver, SetApplicationsClocks, SetAutoboostStatus, SetAutoboostSupport,
     SetBb2Active, SetClockOffset, SetCoolerLevels, SetEdid, SetFanCurve, SetFanRpm, SetFanSpeed,
     SetFanStop, SetForcePstate, SetGpcVoltLock, SetLegacyClocks, SetLockedClocks,
     SetNvapiBackgroundOcScanner, SetNvapiClkDomainOffset, SetNvapiCoreVoltageControl,
-    SetNvapiDNotifier, SetNvapiDynamicBoost, SetNvapiOverclockedPstates, SetNvapiOvervolt,
-    SetNvapiPStateNative, SetNvapiPerfFreqCap, SetNvapiPerfLevelLock, SetNvapiPmgrVoltageArbiter,
-    SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiPstates20PrivateDelta, SetNvapiSensorLimits,
-    SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvapiThermalSim, SetNvapiVfpPointPrivate,
-    SetNvapiVfpRangePerPointPrivate, SetNvapiVfpRangePrivate, SetNvapiVoltRailOffset,
-    SetNvapiVoltRailTarget, SetNvmlAcousticTemp, SetNvmlPstateLock,
-    SetPowerLimit as SetNvmlPowerLimit, SetPowerMode, SetPstateBaseVoltage, SetPstateClockOffset,
-    SetPublicVftablePointOffset, SetPublicVftableRangeOffset, SetTemperatureLimit,
-    SetVfpFrequencyLock, SetVoltageBoost, SetWm2Active, SetWm2Mode, VfPointType, VfpResetDomain,
-    Wm2AcousticMode, discover_targets, fetch_gpu_type, nvapi_status_name, nvml_pstate_to_str,
-    parse_nvapi_locked_voltage_target, parse_nvml_fan_control_policy, parse_nvml_pstate,
-    query_domain_vf_points_indexed, query_domain_vfp_indices, run, select_targets,
-    set_nvapi_domain_vfp_deltas, sync_memory_pstate_as_p0,
+    SetNvapiDNotifier, SetNvapiDynamicBoost, SetNvapiOverclockedPstates,
+    SetNvapiOvervolt, SetNvapiPStateNative, SetNvapiPerfFreqCap, SetNvapiPerfLevelLock,
+    SetNvapiPmgrVoltageArbiter, SetNvapiPowerLimits, SetNvapiPstateLock,
+    SetNvapiPstates20PrivateDelta, SetNvapiSensorLimits, SetNvapiTargetTemp, SetNvapiTgpWatt,
+    SetNvapiThermalSim, SetNvapiVfpPointPrivate, SetNvapiVfpRangePerPointPrivate,
+    SetNvapiVfpRangePrivate, SetNvapiVoltRailOffset, SetNvapiVoltRailTarget, SetNvmlAcousticTemp,
+    SetNvmlPstateLock, SetPowerLimit as SetNvmlPowerLimit, SetPowerMode, SetPstateBaseVoltage,
+    SetPstateClockOffset, SetPublicVftablePointOffset, SetPublicVftableRangeOffset,
+    SetTemperatureLimit, SetVfpFrequencyLock, SetVoltageBoost, SetWm2Active, SetWm2Mode,
+    VfPointType, VfpResetDomain, Wm2AcousticMode, discover_targets, fetch_gpu_type,
+    nvapi_status_name, nvml_pstate_to_str, parse_nvapi_locked_voltage_target,
+    parse_nvml_fan_control_policy, parse_nvml_pstate, query_domain_vf_points_indexed,
+    query_domain_vfp_indices, run, select_targets, set_nvapi_domain_vfp_deltas,
+    sync_memory_pstate_as_p0,
 };
 use serde_json::{Value, json};
 use time::OffsetDateTime;
@@ -189,6 +190,7 @@ pub enum Command {
     ResetPowerLimit,
     GetDNotifier,
     SetDNotifier,
+    GetPowerCeiling,
     GetVoltRailInfo,
     SetVoltRailLimit,
     GetCoreVoltageControl,
@@ -558,6 +560,13 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 },
             ),
             (Command::GetPmgrArbiter, CommandSpec::new("get-pmgr-arbiter", Group::Perf, "Read the PMGR voltage-request arbiter values (0x717648FD, escape 0x0700019F)")),
+            (
+                Command::GetPowerCeiling,
+                CommandSpec {
+                    formatter: Some(output::format_power_ceiling),
+                    ..CommandSpec::new("get-power-ceiling", Group::Power, "Read the effective power wall on PPAB mobiles (nvidia-smi's Ceiling trio): requested TGP (ClientTgpWattGetStatus) + active D-Notifier cap, ceiling = min of the two")
+                },
+            ),
             (
                 Command::GetPowerLimit,
                 CommandSpec {
@@ -3447,6 +3456,19 @@ fn execute_target(
                 .map_err(|e| CliError::new(format!("invalid D-Notifier level: {e}")))?;
             run(target, SetNvapiDNotifier { level })?;
             Ok(json!({"applied": true, "dnotifier_level": format!("D{level}")}))
+        }
+        Command::GetPowerCeiling => {
+            let info = run(target, QueryNvapiPowerCeiling)?.output;
+            Ok(match info {
+                Some(c) => json!({
+                    "policy_index": c.policy_index,
+                    "default_watt": c.default_watt,
+                    "requested_watt": c.requested_watt,
+                    "dnotify_watt": c.dnotify_watt,
+                    "ceiling_watt": c.ceiling_watt,
+                }),
+                None => json!({"supported": false}),
+            })
         }
         Command::GetCoreVoltageControl => {
             let out = run(target, QueryNvapiCoreVoltageControl)?.output;
@@ -6408,6 +6430,7 @@ mod tests {
             | Command::ResetPowerLimit
             | Command::GetDNotifier
             | Command::SetDNotifier
+            | Command::GetPowerCeiling
             | Command::GetVoltRailInfo
             | Command::SetVoltRailLimit
             | Command::GetCoreVoltageControl

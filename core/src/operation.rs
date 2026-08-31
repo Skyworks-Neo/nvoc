@@ -7,8 +7,8 @@ use super::result::{
     DNotifierLevel, DisplayInfo, EdidData, FanCurvePointReadout, FanCurveReadout, FanInfo,
     NvapiCoolerInfoEntry, NvapiFanPolicyEntry, NvapiFanPolicyInfo, NvapiFanRpmResult,
     NvapiPStateNativeLock, NvapiPerfFreqCap, OperationKind, OperationReport, OvervoltApplied,
-    PStateLevelEntry, PStateLevelsInfo, PowerModeStatus, PstateBaseVoltage, PstateClockRange,
-    SupportedApplicationClocks, TargetOutcome, TargetTempPolicy, TdpTempLimits,
+    PStateLevelEntry, PStateLevelsInfo, PowerCeilingInfo, PowerModeStatus, PstateBaseVoltage,
+    PstateClockRange, SupportedApplicationClocks, TargetOutcome, TargetTempPolicy, TdpTempLimits,
     TemperatureThreshold, ThermalSensorReading, ThrottleReason, ViolationEntry,
     ViolationStatusReport, VoltageBoostState, VoltageFrequencyCheck,
 };
@@ -1761,6 +1761,60 @@ impl GpuOperation for QueryNvapiDNotifier {
                     })
                     .collect(),
             }))
+    }
+}
+
+/// Query the actually-effective power wall (nvidia-smi's PPAB
+/// `GPU Ceiling Power Limit` trio) by composing the three private reads:
+/// the TGP range (VBIOS default + active policy index), the standalone
+/// `ClientTgpWattGetStatus` (the requested TGP — the slider's live
+/// position), and the active D-Notifier level's cap. The effective ceiling
+/// is the MIN of the requested TGP and the D-Notifier cap (live-verified
+/// against nvidia-smi on RTX 4060 Laptop: D2 active → 55W ceiling, D1
+/// active → full 100W requested). This is the "you set 100W — here is what
+/// actually applies" value the GUI/TUI power slider anchors to.
+/// Returns `None` where the driver doesn't expose the private interface.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiPowerCeiling;
+
+impl GpuOperation for QueryNvapiPowerCeiling {
+    type Output = Option<PowerCeilingInfo>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiPowerCeiling
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let gpu = target.nvapi()?;
+        let range = gpu.tgp_watt_range().map_err(Error::from)?;
+        let status = gpu.tgp_watt_status().map_err(Error::from)?;
+        let dnotify = gpu.dnotify_info().map_err(Error::from)?;
+        // The private family is all-or-nothing: no range ⇒ no ceiling surface.
+        let (policy_index, default_watt) = match range {
+            Some(r) => (r.policy_index, r.default_mw.map(|mw| mw as f64 / 1000.0)),
+            None => return Ok(None),
+        };
+        // tgp_watt_status resolves its own policy index; trust it when it
+        // disagrees (it re-read the same private GetInfo).
+        let (requested_watt, dnotify_watt) = {
+            let requested = status
+                .and_then(|s| s.current_mw)
+                .map(|mw| mw as f64 / 1000.0);
+            // The active D level's cap; D1 (Unlimited) / N/A ⇒ None (no cap).
+            let active = dnotify.and_then(|d| d.active).and_then(|l| l.power_mw);
+            (requested, active.map(|mw| mw as f64 / 1000.0))
+        };
+        let ceiling_watt = [requested_watt, dnotify_watt]
+            .into_iter()
+            .flatten()
+            .reduce(f64::min);
+        Ok(Some(PowerCeilingInfo {
+            policy_index,
+            default_watt,
+            requested_watt,
+            dnotify_watt,
+            ceiling_watt,
+        }))
     }
 }
 

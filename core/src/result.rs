@@ -65,6 +65,7 @@ pub enum OperationKind {
     SetNvapiTargetTemp,
     QueryNvapiDNotifier,
     SetNvapiDNotifier,
+    QueryNvapiPowerCeiling,
     QueryNvapiVoltRails,
     SetNvapiVoltRailOffset,
     /// Set a volt-rail to an absolute target voltage (mV) by deriving the
@@ -455,6 +456,32 @@ pub struct DNotifierInfo {
     pub active: Option<u8>,
     /// The D1..D5 power-cap table (always 5 entries, in D1→D5 order).
     pub levels: Vec<DNotifierLevel>,
+}
+
+/// The actually-effective power wall on PPAB mobile platforms — what nvidia-smi
+/// prints as `GPU Ceiling Power Limit: Current / Requested / Default`. The
+/// driver arbitrates several independent caps; the two we can read privately
+/// are the requested TGP ([`crate::operation::QueryNvapiTgpWattRange`]'s
+/// set-side twin, `ClientTgpWattGetStatus` 0x8B3E7343) and the active D-Notifier
+/// level's cap. Live-verified on RTX 4060 Laptop against nvidia-smi: with D2
+/// (55W) active the ceiling Current is 55W; with D1 (Unlimited) active it is
+/// the full requested 100W — i.e. `ceiling == min(requested, dnotify cap)`.
+/// All values are in **watts**.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PowerCeilingInfo {
+    /// The power-policy entry index all three reads used.
+    pub policy_index: usize,
+    /// VBIOS rated/default TGP (nvidia-smi's "Default Power Limit"), if known.
+    pub default_watt: Option<f64>,
+    /// The requested TGP — what the TGP slider last wrote (nvidia-smi's
+    /// "Requested Power Limit"), if the driver exposed a live value.
+    pub requested_watt: Option<f64>,
+    /// The active D-Notifier level's power cap; `None` when D1 (Unlimited) is
+    /// active, the level is N/A, or the private interface is unavailable.
+    pub dnotify_watt: Option<f64>,
+    /// The effective wall = `min` of the available caps above (only `None`
+    /// when neither the requested TGP nor the D-Notifier cap was readable).
+    pub ceiling_watt: Option<f64>,
 }
 
 /// One P-State entry from the native PerfPstatesGetInfo table (`0x7B30AE0D`):

@@ -10,13 +10,14 @@ use nvoc_core::{
     QueryLegacyCoreOvervoltRanges, QueryNvapiClkDomainFreq, QueryNvapiClkDomainFreqDirect,
     QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomains, QueryNvapiClkVfPoints,
     QueryNvapiCoreVoltageControl, QueryNvapiDNotifier, QueryNvapiOcScannerIncomplete,
-    QueryNvapiPmgrVoltageArbiter, QueryNvapiRatedTdp, QueryNvapiTargetTempPolicies,
-    QueryNvapiTgpWattRange, QueryNvapiThermalSim, QueryNvapiVoltRails, QueryPowerLimits,
-    QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits,
-    QueryTemperatureThresholds, QueryThrottleReasons, QueryVfpPointVoltage, QueryVoltageBoost,
-    ResetAutoboostStatus, ResetCoolerLevels, ResetFanCurve, ResetFanSpeed, ResetFreqLock,
-    ResetLegacyApplicationFreqLock, ResetLegacyGpcRailOvervoltLimit, ResetNvapiPowerLimits,
-    ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetNvapiVfpPrivate, ResetPstateGlobalFreqOffset,
+    QueryNvapiPmgrVoltageArbiter, QueryNvapiPowerCeiling, QueryNvapiRatedTdp,
+    QueryNvapiTargetTempPolicies, QueryNvapiTgpWattRange, QueryNvapiThermalSim,
+    QueryNvapiVoltRails, QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates,
+    QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
+    QueryThrottleReasons, QueryVfpPointVoltage, QueryVoltageBoost, ResetAutoboostStatus,
+    ResetCoolerLevels, ResetFanCurve, ResetFanSpeed, ResetFreqLock, ResetLegacyApplicationFreqLock,
+    ResetLegacyGpcRailOvervoltLimit, ResetNvapiPowerLimits, ResetNvapiSensorLimits,
+    ResetNvapiTgpWatt, ResetNvapiVfpPrivate, ResetPstateGlobalFreqOffset,
     ResetPublicVftableGpcLock, ResetPublicVftableOffset, ResetVfpFrequencyLock,
     SetApplicationsClocks, SetAutoboostStatus, SetAutoboostSupport, SetClockOffset,
     SetCoolerLevels, SetDomainVfpDeltas, SetEdid, SetFanRpm, SetFanSpeed, SetFanStop,
@@ -2058,6 +2059,42 @@ fn query_dnotifier(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
                             })
                             .collect(),
                     ),
+                ),
+            ]),
+        })
+    })?;
+    py_value(py, &value)
+}
+
+/// Effective power wall on PPAB mobiles (nvidia-smi's Ceiling trio):
+/// `ceiling_watt` = min(requested TGP, active D-Notifier cap). This is the
+/// "you set 100W — here is what actually applies" value the GUI/TUI power
+/// slider anchors to. Returns None where the private family is unavailable.
+#[pyfunction]
+fn query_power_ceiling(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
+    let value = with_target(gpu, "nvapi", |target| {
+        let info = run(target, QueryNvapiPowerCeiling)
+            .map_err(to_py_err)?
+            .output;
+        Ok(match info {
+            None => Value::Null,
+            Some(c) => value_object([
+                ("policy_index", Value::from(c.policy_index as u64)),
+                (
+                    "default_watt",
+                    c.default_watt.map(Value::from).unwrap_or(Value::Null),
+                ),
+                (
+                    "requested_watt",
+                    c.requested_watt.map(Value::from).unwrap_or(Value::Null),
+                ),
+                (
+                    "dnotify_watt",
+                    c.dnotify_watt.map(Value::from).unwrap_or(Value::Null),
+                ),
+                (
+                    "ceiling_watt",
+                    c.ceiling_watt.map(Value::from).unwrap_or(Value::Null),
                 ),
             ]),
         })
@@ -4312,6 +4349,7 @@ fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(set_tgp_watt, m)?)?;
     m.add_function(wrap_pyfunction!(reset_tgp_watt, m)?)?;
     m.add_function(wrap_pyfunction!(query_dnotifier, m)?)?;
+    m.add_function(wrap_pyfunction!(query_power_ceiling, m)?)?;
     m.add_function(wrap_pyfunction!(query_target_temp_policies, m)?)?;
     m.add_function(wrap_pyfunction!(set_dnotifier, m)?)?;
     m.add_function(wrap_pyfunction!(query_volt_rails, m)?)?;
