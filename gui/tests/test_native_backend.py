@@ -58,6 +58,94 @@ def test_native_backend_exposes_query_volt_rails() -> None:
     assert callable(getattr(NativeBackend, "query_volt_rails"))
 
 
+class MobileLimitsFakeNative:
+    """pynvoc stand-in covering the mobile-limits fan-out: the PPAB ceiling
+    query plus the NVML enforced fallback."""
+
+    def __init__(self, ceiling: dict | None, enforced: float | None = None) -> None:
+        self.ceiling = ceiling
+        self.enforced = enforced
+        self.calls: list[str] = []
+
+    def query_tgp_watt_range(self, gpu: str):
+        self.calls.append("tgp")
+        return {
+            "policy_index": 2,
+            "min_watt": 5.0,
+            "default_watt": 100.0,
+            "max_watt": 140.0,
+        }
+
+    def query_dnotifier(self, gpu: str):
+        self.calls.append("dnotifier")
+        return {"active": "D2", "levels": []}
+
+    def query_target_temp_policies(self, gpu: str):
+        self.calls.append("temp")
+        return []
+
+    def query_power_ceiling(self, gpu: str):
+        self.calls.append("ceiling")
+        return self.ceiling
+
+    def query_status(self, gpu: str, backends: str):
+        self.calls.append("status")
+        return {"power_limit_w": self.enforced}
+
+    def query_volt_rails(self, gpu: str):
+        self.calls.append("volt_rail")
+        return None
+
+
+def _backend_with_mobile_fake(fake: MobileLimitsFakeNative) -> NativeBackend:
+    app = FakeApp()
+    backend = NativeBackend(app)
+    backend._native = fake
+    return backend
+
+
+def test_mobile_limits_power_wall_prefers_ceiling() -> None:
+    """power_limit_w must be the PPAB ceiling (min of requested TGP and the
+    active D-Notifier cap) when the private query answers — the value the
+    TGP slider anchors to after a D-Notifier apply."""
+    fake = MobileLimitsFakeNative(
+        ceiling={
+            "policy_index": 2,
+            "default_watt": 100.0,
+            "requested_watt": 100.0,
+            "dnotify_watt": 55.0,
+            "ceiling_watt": 55.0,
+        },
+        enforced=123.0,
+    )
+    backend = _backend_with_mobile_fake(fake)
+
+    data = backend.query_mobile_limits("0x0000")
+
+    assert data["power_limit_w"] == 55.0
+    assert "ceiling" in fake.calls
+
+
+def test_mobile_limits_power_wall_falls_back_to_nvml() -> None:
+    """Where the private power-policy family is unavailable (ceiling None),
+    keep the NVML enforced power limit as the wall — the pre-PPAB behavior."""
+    fake = MobileLimitsFakeNative(ceiling=None, enforced=170.0)
+    backend = _backend_with_mobile_fake(fake)
+
+    data = backend.query_mobile_limits("0x0000")
+
+    assert data["power_limit_w"] == 170.0
+
+
+def test_mobile_limits_power_wall_none_when_both_unavailable() -> None:
+    fake = MobileLimitsFakeNative(ceiling=None, enforced=None)
+    backend = _backend_with_mobile_fake(fake)
+
+    data = backend.query_mobile_limits("0x0000")
+
+    assert data["power_limit_w"] is None
+
+
 def test_list_gpus_uses_pynvoc_discovery() -> None:
     app = FakeApp()
     backend = NativeBackend(app)

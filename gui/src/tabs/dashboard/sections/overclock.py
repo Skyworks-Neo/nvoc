@@ -789,16 +789,20 @@ class OverclockTab:
             self._power_default = int(
                 round(float(tgp.get("default_watt") or tgp.get("min_watt")))
             )
-            # Position the slider at the enforced power limit (NVML, from
-            # the mobile-limits query) — the actually-active wall. The TGP
-            # policy exposes no current-value read; default_watt is only
-            # the fallback.
+            # Position the slider at the actually-effective power wall
+            # (``power_limit_w`` from the mobile-limits query — min of the
+            # requested TGP and the active D-Notifier cap, i.e. nvidia-smi's
+            # PPAB Ceiling "Current"). When the wall sits OUTSIDE the fresh
+            # TGP range (a just-applied clamp can leave it a few W off the
+            # new bound), CLAMP to the nearest bound — never jump to the
+            # VBIOS default, which is neither the old nor the new real wall
+            # (the slider used to jump there and it read as a wild value
+            # change).
             current_w = data.get("power_limit_w")
             position = self._power_default
             if current_w is not None:
                 current_w = int(round(float(current_w)))
-                if min_w <= current_w <= max_w:
-                    position = current_w
+                position = max(min_w, min(max_w, current_w))
             self._reconfigure_slider(
                 self.plimit_slider,
                 self.plimit_var,
@@ -957,6 +961,65 @@ class OverclockTab:
             str(info.get("codename", "") or ""),
             str(info.get("gpu_name", "") or ""),
         )
+
+    def _query_clk_domain_capabilities(self, info: dict) -> None:
+        """Async query the private ClockClient controllable mask and derive
+        the per-domain presence for the Sys/Msd/Host rows. Piggybacks on the
+        status thread (one escape, never on the render path). Sets
+        ``_clk_domain_mask`` + ``_sys/msd/host_supported`` and re-applies the
+        grey gate. Pascal MSD is force-disabled (bit5 SET N/A) regardless of
+        mask. Host presence = bit9 in the mask (0x3FF vs 0xFF).
+        """
+        # Pascal verdict computed HERE (main thread, info in hand) — the
+        # loaded callback runs later and must not reach for the info payload
+        # again (the GUI App has no info cache; reaching for one crashed the
+        # callback, leaving Msd/Host greyed forever).
+        self._is_pascal_gpu = self._is_pascal_from_info(info)
+        if not self._has_oc_pager:
+            return
+        gpu = self.app.selected_gpu_target()
+        if gpu is None:
+            return
+
+        def worker() -> None:
+            try:
+                data = self.app.backend.query_private_freq_domain_info(gpu)
+            except Exception:
+                data = None
+            try:
+                self.frame.after(0, lambda: self._on_clk_domain_caps_loaded(data))
+            except Exception:
+                pass
+
+        self.app.run_background("clk-domain-caps", worker)
+
+    def _on_clk_domain_caps_loaded(self, data: Optional[dict]) -> None:
+        if not isinstance(data, dict):
+            return
+        mask_str = data.get("controllable_mask")
+        try:
+            mask = int(str(mask_str), 0) if mask_str is not None else 0
+        except ValueError:
+            mask = 0
+        self._clk_domain_mask = mask
+        self._sys_supported = bool(mask & (1 << 3))
+        # MSD: Pascal has no bit5 SET even if the mask claims the record —
+        # the generation verdict captured at query time rules it out.
+        has_bit5 = bool(mask & (1 << 5))
+        self._msd_supported = has_bit5 and not self._is_pascal_gpu
+        self._host_supported = bool(mask & (1 << 9))
+        self._refresh_nvapi_only_rows()
+
+    @staticmethod
+    def _is_pascal_from_info(info: dict) -> bool:
+        """Pascal (GTX 10-series) detection for the MSD grey-out (Pascal bit5
+        SET N/A). Uses the gpu_series text from pynvoc query_info."""
+        series = str(info.get("gpu_series") or "").lower()
+        if "10 series" in series:
+            return True
+        # codename fallback
+        codename = str(info.get("codename") or "").lower()
+        return codename.startswith("gp")
 
     @staticmethod
     def _xbar_supported_arch(
@@ -1605,20 +1668,98 @@ class OverclockTab:
         """OC backend dropdown moved: re-apply the NVAPI-only row gate."""
         self._refresh_nvapi_only_rows()
 
-    def _refresh_nvapi_only_rows(self):
-        """Sync the enabled state of the NVAPI-only rows (Xbar, Volt Limit).
+    # ── Clock-offset pager ──
+    _OC_PAGE_NAMES = ("Core/Mem", "Xbar/Sys", "Msd/Host")
 
-        NVML exposes neither the private ClockClient domain offsets (Xbar)
-        nor the VoltRails family (Volt Limit), so both rows grey out while
-        the Clock Offsets backend dropdown sits on NVML. Volt Limit is only
-        touched in mobile mode — the desktop panel hides the row and the
-        'off' mode has already disabled the whole panel (this re-applies the
-        gate after _set_limit_panel_mode re-enables the mobile widgets).
+    def _set_oc_page(self, page: int) -> None:
+        """Switch the visible clock-offset page (0..n-1). No-op off-range."""
+        n = max(1, self._oc_n_pages)
+        page = max(0, min(page, n - 1))
+        if page == self._oc_page and self._oc_page_frames[page].winfo_ismapped():
+            # Same page already on screen — still refresh the chrome:
+            # _enable_oc_pager raises _oc_n_pages at capability time and
+            # re-points at page 0, and without this refresh the indicator
+            # keeps its construct-time "1/1" until the first real flip.
+            self._update_oc_pager_chrome(page)
+            return
+        # repack: hide all, show the target (below ps_row, above btn_oc)
+        for i, fr in enumerate(self._oc_page_frames):
+            if i < self._oc_n_pages:
+                if i == page:
+                    fr.pack(fill="x", padx=0, pady=(0, 3), before=self._oc_buttons_row)
+                else:
+                    fr.pack_forget()
+            else:
+                fr.pack_forget()
+        self._oc_page = page
+        self._update_oc_pager_chrome(page)
+        self._refresh_nvapi_only_rows()
+
+    def _oc_page_step(self, delta: int) -> None:
+        """Round-robin page advance: past the last page wraps to the first
+        (and before the first wraps to the last)."""
+        n = max(1, self._oc_n_pages)
+        self._set_oc_page((self._oc_page + delta) % n)
+
+    def _update_oc_pager_chrome(self, page: int) -> None:
+        """Indicator text + arrow states. Round-robin paging has no dead
+        ends, so both arrows stay enabled whenever the pager exists."""
+        if self._oc_page_indicator is not None:
+            self._oc_page_indicator.configure(text=f"{page + 1}/{self._oc_n_pages}")
+        self._oc_btn_prev.configure(state="normal")
+        self._oc_btn_next.configure(state="normal")
+
+    def _enable_oc_pager(self, enabled: bool) -> None:
+        """Show/hide the pager + fabric/uncore pages (Pascal+ vs pre-Pascal)."""
+        self._has_oc_pager = enabled
+        self._oc_n_pages = 3 if enabled else 1
+        if enabled:
+            if not self._oc_pager.winfo_ismapped():
+                self._oc_pager.pack(
+                    side="left", padx=(8, 0), before=self.oc_api_selector
+                )
+        else:
+            self._oc_pager.pack_forget()
+        # ensure only the legal pages exist
+        for i, fr in enumerate(self._oc_page_frames):
+            if i >= self._oc_n_pages:
+                fr.pack_forget()
+        self._set_oc_page(0)
+
+    def _refresh_nvapi_only_rows(self):
+        """Sync the enabled state of the NVAPI-only pages/rows + Volt Limit.
+
+        NVML exposes neither the private ClockClient domain offsets (Xbar/Sys/
+        Msd/Host) nor the VoltRails family (Volt Limit), so the fabric/uncore
+        pages grey out while the Clock Offsets backend sits on NVML. Volt Limit
+        is only touched in mobile mode (re-applies the gate after
+        _set_limit_panel_mode re-enables the mobile widgets).
         """
-        state = "disabled" if self._selected_oc_backend() == "nvml" else "normal"
-        if self._xbar_supported:
-            for widget in (self.xbar_slider, self.xbar_entry, self.btn_apply_xbar):
-                self._safe_set_state(widget, state)
+        nvapi = self._selected_oc_backend() != "nvml"
+        state = "normal" if nvapi else "disabled"
+        # Page 1 (Xbar/Sys): always shown on Pascal+ but disabled under NVML;
+        # each row also gated by its controllable-mask bit.
+        if self._has_oc_pager:
+            for widget, ok in (
+                (self.xbar_slider, True),  # bit1 — present whenever pager is on
+                (self.xbar_entry, True),
+                (self.btn_apply_xbar, True),
+                (self.btn_reset_xbar, True),
+                (self.sys_slider, self._sys_supported),
+                (self.sys_entry, self._sys_supported),
+                (self.btn_apply_sys, self._sys_supported),
+                (self.btn_reset_sys, self._sys_supported),
+                (self.msd_slider, self._msd_supported),
+                (self.msd_entry, self._msd_supported),
+                (self.btn_apply_msd, self._msd_supported),
+                (self.btn_reset_msd, self._msd_supported),
+                (self.host_slider, self._host_supported),
+                (self.host_entry, self._host_supported),
+                (self.btn_apply_host, self._host_supported),
+                (self.btn_reset_host, self._host_supported),
+            ):
+                self._safe_set_state(widget, state if (nvapi and ok) else "disabled")
+        # Volt Limit (mobile) gate unchanged
         if self._limit_panel_mode == "mobile":
             for widget in (
                 self.vlimit_slider,

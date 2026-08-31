@@ -209,9 +209,11 @@ class NativeBackend:
         """Fetch the mobile power/thermal control surface (all NVAPI).
 
         Returns ``{"tgp": dict|None, "dnotifier": dict|None,
-        "temp_policies": list, "volt_rail": dict|None}``;
-        ``None`` sub-dicts mean the private interface isn't exposed by this
-        driver.
+        "temp_policies": list, "volt_rail": dict|None,
+        "power_limit_w": float|None}``; ``None`` sub-dicts mean the private
+        interface isn't exposed by this driver. ``power_limit_w`` is the
+        actually-effective power wall (min of requested TGP and the active
+        D-Notifier cap — nvidia-smi's PPAB Ceiling "Current" value).
         """
         data = self._query_mobile_limits_once(gpu)
         attempts = 0
@@ -248,18 +250,26 @@ class NativeBackend:
                 return default
 
         with ThreadPoolExecutor(
-            max_workers=5, thread_name_prefix="nvoc-mobile"
+            max_workers=6, thread_name_prefix="nvoc-mobile"
         ) as pool:
             tgp_f = pool.submit(_safe, lambda: native.query_tgp_watt_range(gpu), None)
             dnotifier_f = pool.submit(_safe, lambda: native.query_dnotifier(gpu), None)
             policies_f = pool.submit(
                 _safe, lambda: native.query_target_temp_policies(gpu), []
             )
+            # The actually-effective power wall (nvidia-smi's PPAB Ceiling
+            # "Current" value): min(requested TGP, active D-Notifier cap),
+            # composed in Rust from the private power-policy family. This is
+            # what the TGP slider anchors to — the user sees "I set 100W, the
+            # wall actually enforcing is 55W".
+            ceiling_f = pool.submit(
+                _safe, lambda: native.query_power_ceiling(gpu), None
+            )
             enforced_f = pool.submit(
                 _safe,
-                # NVML enforced power limit: the actually-active power wall
-                # (post D-Notifier/load clamp) — the TGP policy itself exposes
-                # no current-value read, so this is the closest real position.
+                # NVML enforced power limit — fallback for machines where the
+                # private power-policy family is unavailable (the PPAB
+                # ceiling path above is preferred where it exists).
                 lambda: native.query_status(gpu, "both").get("power_limit_w"),
                 None,
             )
@@ -270,18 +280,24 @@ class NativeBackend:
         tgp = tgp_f.result()
         dnotifier = dnotifier_f.result()
         policies = policies_f.result()
+        ceiling = ceiling_f.result()
         enforced_w = enforced_f.result()
         volt_rail = volt_rail_f.result()
         if not isinstance(policies, list):
             policies = []
         if not isinstance(volt_rail, dict):
             volt_rail = None
+        power_limit_w = None
+        if isinstance(ceiling, dict):
+            power_limit_w = ceiling.get("ceiling_watt")
+        if power_limit_w is None:
+            power_limit_w = enforced_w
         return {
             "tgp": tgp,
             "dnotifier": dnotifier,
             "temp_policies": policies,
             "volt_rail": volt_rail,
-            "power_limit_w": enforced_w,
+            "power_limit_w": power_limit_w,
         }
 
     def run_action(
