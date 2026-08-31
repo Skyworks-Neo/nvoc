@@ -244,6 +244,7 @@ pub enum Command {
     ResetPublicVftableOffset,
     ResetPublicVftableGpcLock,
     ResetPrivateVftableOffset,
+    ResetPrivateFreqDomainGlobalOffset,
     ResetPublicTgpPercent,
     ResetTempLimit,
     ResetLegacyGpcRailOvervoltLimit,
@@ -772,6 +773,13 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 },
             ),
             (Command::ResetPrivateForcedPstateLockUser, CommandSpec::new("reset-private-forced-pstate-lock-user", Group::Clock, "Release a force-locked pstate via SetForcePstate(pstate=16, set_type=0) — pstate=16 is the bitmask=0 sentinel (GetForcePstate returns 16 when no force active). IDA-verified as the most likely release path.")),
+            (
+                Command::ResetPrivateFreqDomainGlobalOffset,
+                CommandSpec {
+                    options: Box::leak(Box::new(["domain", "slot"])),
+                    ..CommandSpec::new("reset-private-freq-domain-global-offset", Group::Vfp, "Reset private clock-domain global offsets to stock (offset 0) through the same ClkDomains WRITE path as set-private-freq-domain-global-offset; default resets EVERY controllable domain x slots 0 and 1, --domain/--slot narrow the scope; domains the driver refuses (e.g. disp bit 6) are reported as warnings and the reset continues")
+                },
+            ),
             (
                 Command::ResetPrivateVftableOffset,
                 CommandSpec {
@@ -4395,6 +4403,78 @@ fn execute_target(
                 None => json!({"supported": false}),
             })
         }
+        Command::ResetPrivateFreqDomainGlobalOffset => {
+            // Reset = write offset 0 through the exact ClkDomains WRITE path
+            // set-private-freq-domain-global-offset uses (snapshot → SET →
+            // readback → restore-on-mismatch in the medium layer). Default
+            // scope: EVERY controllable domain from the GET_CONTROL block ×
+            // slots 0 and 1 (the two value dwords live-accepted on Ada);
+            // --domain / --slot narrow it. A domain the driver refuses
+            // (e.g. disp bit 6) or a slot it rejects becomes a warning and
+            // the reset continues — one bad record must not abort the rest.
+            let domains: Vec<u32> = match option_one(invocation, "domain") {
+                Some(raw) => vec![parse_clk_domain_write(raw)?],
+                None => run(target, QueryNvapiClkDomains)?
+                    .output
+                    .map(|c| c.entries.iter().map(|e| e.bit).collect::<Vec<u32>>())
+                    .unwrap_or_default(),
+            };
+            let slots: Vec<u32> = match option_one(invocation, "slot") {
+                Some(raw) => {
+                    let slot = raw
+                        .parse::<u32>()
+                        .map_err(|e| CliError::new(format!("invalid --slot: {e}")))?;
+                    // same guard + message as the set command: the medium
+                    // layer's range error reads like a readback mismatch
+                    if slot >= 8 {
+                        return Err(CliError::new(format!(
+                            "invalid --slot {slot}: the record has 8 value dwords (0-7)"
+                        )));
+                    }
+                    vec![slot]
+                }
+                // no --slot: both live-accepted slots (0 = the signed
+                // frequency offset, 1 = the second writable dword)
+                None => vec![0, 1],
+            };
+            let mut applied = Vec::new();
+            let mut warnings = Vec::new();
+            for domain_bit in domains {
+                let name = parse_clk_domain_name(domain_bit);
+                for slot in &slots {
+                    match run(
+                        target,
+                        SetNvapiClkDomainOffset {
+                            domain_bit,
+                            offset_kHz: 0,
+                            slot: *slot,
+                            temporary: false,
+                        },
+                    ) {
+                        Ok(r) => match r.output {
+                            Some(a) => applied.push(json!({
+                                "bit": a.bit,
+                                "domain": name,
+                                "slot": a.slot,
+                                "previous_mHz": a.previous_kHz as f64 / 1000.0,
+                                "applied_mHz": a.applied_kHz as f64 / 1000.0,
+                            })),
+                            // family present but this record has no SET path
+                            None => warnings.push(format!(
+                                "{name}(bit {domain_bit}) slot {slot}: not supported"
+                            )),
+                        },
+                        Err(e) => {
+                            warnings.push(format!("{name}(bit {domain_bit}) slot {slot}: {e}"))
+                        }
+                    }
+                }
+            }
+            Ok(json!({
+                "applied": applied,
+                "warnings": warnings,
+            }))
+        }
         Command::SetGpuClock => {
             // GPU frequency perf-cap (PerfLimitsSetStatus NDA 0x32CA4983, the
             // ref tool `-gpuclk:<MHz>`): clamp the perf max/min frequency to a
@@ -6483,6 +6563,7 @@ mod tests {
             | Command::ResetPublicVftableOffset
             | Command::ResetPublicVftableGpcLock
             | Command::ResetPrivateVftableOffset
+            | Command::ResetPrivateFreqDomainGlobalOffset
             | Command::ResetPublicTgpPercent
             | Command::ResetTempLimit
             | Command::ResetLegacyGpcRailOvervoltLimit
