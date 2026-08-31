@@ -572,6 +572,9 @@ fn normalize_info(target: &GpuTarget<'_>) -> PyResultValue {
         "xbar_supported".into(),
         bool_value(series.supports_xbar_offset()),
     );
+    // bit1 耦合分界（30 系+Ada 的 bit1 耦合 SYS，需 bit3 写 -f 抵消）。
+    // 见 gpu_type.rs is_ampere_plus / is_ada 的跨代 A/B 注释。
+    map.insert("is_ampere_plus".into(), bool_value(series.is_ampere_plus()));
     map.insert("bios_version".into(), text(&info.bios_version));
     map.insert("bus".into(), text(info.bus));
     if let Some(vendor) = info.vendor() {

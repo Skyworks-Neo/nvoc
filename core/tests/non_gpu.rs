@@ -296,6 +296,54 @@ fn gpu_type_display() {
 }
 
 #[test]
+fn gpu_type_is_ampere_plus() {
+    // 30/40/50 消费 + 工作站 + 服务器（Ampere/Lovelace/Blackwell/Hopper）=
+    // 耦合组（bit1 耦合 SYS，超 XBAR 需 bit3 写 -f 抵消）。Hopper 是
+    // Ampere 后的服务器世代，归入耦合组。
+    for t in [
+        GpuType::Mobile30Series,
+        GpuType::Desktop30Series,
+        GpuType::Mobile40Series,
+        GpuType::Desktop40Series,
+        GpuType::Mobile50Series,
+        GpuType::Desktop50Series,
+        GpuType::WorkstationAmpere,
+        GpuType::WorkstationLovelace,
+        GpuType::WorkstationBlackwell,
+        GpuType::ServerAmpere,
+        GpuType::ServerLovelace,
+        GpuType::ServerBlackwell,
+        GpuType::ServerHopper,
+    ] {
+        assert!(t.is_ampere_plus(), "{t:?} should be ampere+");
+    }
+    // Pascal / Turing / GTX16 = 非耦合（bit1 纯 Xbar，直写）。
+    for t in [
+        GpuType::Mobile10Series,
+        GpuType::Desktop10Series,
+        GpuType::Mobile16Series,
+        GpuType::Desktop16Series,
+        GpuType::Mobile20Series,
+        GpuType::Desktop20Series,
+        GpuType::WorkstationPascal,
+        GpuType::ServerPascal,
+        GpuType::WorkstationTuring,
+    ] {
+        assert!(!t.is_ampere_plus(), "{t:?} should NOT be ampere+");
+    }
+    // Volta（服务器，Pascal-era 行为）排除；Kepler/Fermi/Unknown 当然不是。
+    for t in [
+        GpuType::ServerVolta,
+        GpuType::ComputationVolta,
+        GpuType::DesktopKepler,
+        GpuType::DesktopFermi,
+        GpuType::Unknown,
+    ] {
+        assert!(!t.is_ampere_plus(), "{t:?} should NOT be ampere+");
+    }
+}
+
+#[test]
 fn vfp_point_nearest_voltage() {
     let table = BTreeMap::from([
         (

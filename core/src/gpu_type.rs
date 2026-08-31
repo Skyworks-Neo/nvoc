@@ -670,6 +670,34 @@ impl GpuType {
         )
     }
 
+    /// 是否为 Ampere 及更新世代（30/40/50 系 + 对应工作站/服务器）。
+    ///
+    /// 用于 ClkDomains WRITE 记录的 bit1 耦合分界：Ampere30+Ada 的 bit1
+    /// 耦合 SYS（写 bit1 会带动 SYS，需给 bit3 写 -f 抵消），Pascal/
+    /// GTX16/RTX20 的 bit1 纯 Xbar（直写即可）。50 系（Blackwell）未
+    /// 实测，按"30 系和以后"口径归入耦合组。Hopper 是 Ampere 后的服务器
+    /// 世代（H100 后继 A100），归入耦合组。Volta 不含：介于 P100/T4 属
+    /// Pascal-era 行为。
+    /// 见 `is_ada` 注释的跨代 A/B 汇总。
+    pub fn is_ampere_plus(&self) -> bool {
+        matches!(
+            self,
+            GpuType::Mobile30Series
+                | GpuType::Desktop30Series
+                | GpuType::Mobile40Series
+                | GpuType::Desktop40Series
+                | GpuType::Mobile50Series
+                | GpuType::Desktop50Series
+                | GpuType::WorkstationAmpere
+                | GpuType::WorkstationLovelace
+                | GpuType::WorkstationBlackwell
+                | GpuType::ServerAmpere
+                | GpuType::ServerLovelace
+                | GpuType::ServerBlackwell
+                | GpuType::ServerHopper
+        )
+    }
+
     /// 是否为移动端 GPU（20/30/40/50 系移动端 + Kepler/Fermi 移动端）
     pub fn is_mobile(&self) -> bool {
         matches!(
