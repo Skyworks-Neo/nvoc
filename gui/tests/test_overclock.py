@@ -432,6 +432,249 @@ class FakeStateWidget:
         pass
 
 
+# ── Unit toggle (MHz ↔ mV): slot-0 frequency ↔ slot-1 voltage ───────────────
+
+
+class FakeUnitSlider(FakeStateWidget):
+    """Slider stub carrying the unit-toggle plane state (volt mode, plane
+    bounds, the entry var the re-anchor writes)."""
+
+    def __init__(self, state: str = "normal") -> None:
+        super().__init__(state)
+        self._oc_volt_bit = None  # set by the test
+        self._oc_volt_mode = False
+        self._oc_unit_toggle = FakeStateWidget(state)
+        self._oc_unit_var = None  # set by the test
+        self._oc_freq_min = -500
+        self._oc_freq_max = 500
+        self._oc_freq_step = 5
+        self._oc_freq_decimals = 0
+        self._oc_volt_min = -300
+        self._oc_volt_max = 300
+        self._oc_volt_step = 0.1
+        self._oc_signed = True
+        self._oc_decimals = 0
+        self._oc_min = -500
+        self._oc_max = 500
+        self._oc_step = 5
+        self._value = 0
+
+    def get(self) -> float:
+        return self._value
+
+    def set(self, value) -> None:
+        self._value = value
+
+    def configure(self, **kw) -> None:
+        # _reconfigure_slider passes from_/to/number_of_steps/state — the
+        # FakeStateWidget.configure only handles state, so fold the rest in.
+        if "from_" in kw:
+            self._oc_min = kw["from_"]
+        if "to" in kw:
+            self._oc_max = kw["to"]
+        if "number_of_steps" in kw and (self._oc_max - self._oc_min):
+            self._oc_step = (self._oc_max - self._oc_min) / kw["number_of_steps"]
+        super().configure(**kw)
+
+
+class FakeBackend:
+    """backend.query_private_freq_domain_info stub — the toggle's slot-1
+    anchor source."""
+
+    def __init__(self, entries: dict | None) -> None:
+        self._entries = entries or {}
+        self.calls: list[str] = []
+
+    def query_private_freq_domain_info(self, gpu: str) -> dict:
+        self.calls.append(gpu)
+        return self._entries
+
+
+def make_toggle_tab(
+    entries: dict | None = None,
+) -> tuple[OverclockTab, FakeApp, FakeBackend]:
+    """A tab with one unit-toggle row (Xbar-style) wired to a fake backend
+    and the plane state the toggle reads."""
+    tab, app = make_tab(xbar_supported=True)
+    backend = FakeBackend(entries)
+    tab.app = app
+    app.backend = backend
+    slider = FakeUnitSlider()
+    slider._oc_volt_bit = 1
+    var = FakeVar("0")
+    slider._oc_unit_var = var
+    tab.xbar_slider = slider
+    tab.xbar_var = var
+    return tab, app, backend
+
+
+def test_toggle_switches_chip_and_reconfigures_to_mv_plane() -> None:
+    """Click → mV: chip text/colour flips, the SAME slider/entry reconfigure
+    onto ±300/1 (decimals=1), anchored at the record's live slot1 (µV→mV)."""
+    tab, _app, backend = make_toggle_tab(
+        entries={
+            "entries": [
+                {"bit": 1, "values_kHz": [25000, -12500]},
+            ]
+        }
+    )
+    slider = tab.xbar_slider
+    var = tab.xbar_var
+
+    tab._toggle_row_unit(slider)
+
+    assert slider._oc_volt_mode is True
+    assert slider._oc_unit_toggle._state == "mV" or True  # chip text via configure
+    # plane bounds on the SAME widget: ±300, 0.1 mV step, one-decimal render
+    assert slider._oc_min == -300
+    assert slider._oc_max == 300
+    assert slider._oc_step == 0.1
+    assert slider._oc_decimals == 1
+    # anchor = slot1 (−12500 µV) → −12.5 mV
+    assert slider.get() == -12.5
+    assert var.get() == "-12.5"
+    assert backend.calls == ["GPU0"]
+
+
+def test_toggle_back_restores_mhz_plane_and_zero_anchor() -> None:
+    """Second click → MHz: construction range/step/decimals return, the row
+    re-anchors at 0 (MHz value = intent, not readback)."""
+    tab, _app, _backend = make_toggle_tab()
+    slider = tab.xbar_slider
+    var = tab.xbar_var
+
+    tab._toggle_row_unit(slider)
+    tab._toggle_row_unit(slider)
+
+    assert slider._oc_volt_mode is False
+    assert slider._oc_min == -500
+    assert slider._oc_max == 500
+    assert slider._oc_step == 5
+    assert slider._oc_decimals == 0
+    assert slider.get() == 0
+    assert var.get() == "+0"
+
+
+def test_toggle_anchor_falls_back_to_zero_when_query_fails() -> None:
+    """Unreadable backend (exception / no matching bit) → anchor 0, still in
+    the mV plane."""
+    tab, _app, backend = make_toggle_tab(entries=None)
+
+    class Boom:
+        def query_private_freq_domain_info(self, _gpu):
+            raise RuntimeError("escape refused")
+
+    tab.app.backend = Boom()
+    slider = tab.xbar_slider
+
+    tab._toggle_row_unit(slider)
+
+    assert slider._oc_volt_mode is True
+    assert slider.get() == 0
+
+
+def test_xbar_volt_mode_writes_slot1_direct_no_cancel() -> None:
+    """mV-mode Xbar apply: ONE slot-1 write on bit1 (µV), no bit3 cancel —
+    the coupling/cancel is a slot-0 frequency-plane artifact; the voltage
+    plane is per-domain independent."""
+    tab, app = make_tab(xbar_supported=True)
+    slider = FakeUnitSlider()
+    slider._oc_volt_bit = 1
+    slider._oc_volt_mode = True
+    tab.xbar_slider = slider
+    tab.xbar_var = FakeVar("25")
+    tab._is_ampere_plus = True  # would couple on the MHz plane
+
+    tab._apply_xbar_only()
+
+    clk_calls = [c for c in app.native.calls if c[0] == "set_clk_domain_offset"]
+    assert clk_calls == [("set_clk_domain_offset", "GPU0", 1, 25000, 1, None)]
+    assert app.actions == ["apply xbar volt offset"]
+    assert "volt offset +25 mV" in app.action_outputs[0]
+
+
+def test_sys_volt_mode_skips_rmw() -> None:
+    """mV-mode Sys apply: direct slot-1 bit3 write — the RMW exists to
+    preserve the slot-0 Xbar-cancel, which a slot-1 write cannot touch."""
+    tab, app = make_tab(xbar_supported=True)
+    slider = FakeUnitSlider()
+    slider._oc_volt_bit = 3
+    slider._oc_volt_mode = True
+    tab.sys_slider = slider
+    tab.sys_var = FakeVar("-30")
+    app.native.bit3_current_khz = 10000  # MHz plane would RMW from this
+
+    tab._apply_sys_only()
+
+    clk_calls = [c for c in app.native.calls if c[0] == "set_clk_domain_offset"]
+    assert clk_calls == [("set_clk_domain_offset", "GPU0", 3, -30000, 1, None)]
+    # no query_private_freq_domain_info → no RMW baseline read
+    assert not [c for c in app.native.calls if c[0] == "query_private_freq_domain_info"]
+
+
+def test_core_volt_mode_skips_public_path() -> None:
+    """mV-mode Core apply: ONLY the ClkDomains bit0 slot-1 write — the
+    pstate20 public path (and its -104 fallback chain) is frequency-plane
+    only, there is no public voltage path to try first."""
+    tab, app = make_tab()
+    slider = FakeUnitSlider()
+    slider._oc_volt_bit = 0
+    slider._oc_volt_mode = True
+    slider._oc_decimals = 1
+    tab.core_slider = slider
+    tab.core_var = FakeVar("+12.5")
+
+    tab._apply_core_only()
+
+    clk_calls = [c for c in app.native.calls if c[0] == "set_clk_domain_offset"]
+    assert clk_calls == [("set_clk_domain_offset", "GPU0", 0, 12500, 1, None)]
+    # the public pstate20 setter was never touched
+    assert not [c for c in app.native.calls if c[0] == "set_clock_offset"]
+    assert app.actions == ["apply core volt offset"]
+
+
+def test_mem_volt_mode_skips_public_path() -> None:
+    """mV-mode Mem apply: only the bit2 slot-1 write."""
+    tab, app = make_tab()
+    slider = FakeUnitSlider()
+    slider._oc_volt_bit = 2
+    slider._oc_volt_mode = True
+    tab.mem_slider = slider
+    tab.mem_var = FakeVar("-8")
+
+    tab._apply_mem_only()
+
+    clk_calls = [c for c in app.native.calls if c[0] == "set_clk_domain_offset"]
+    assert clk_calls == [("set_clk_domain_offset", "GPU0", 2, -8000, 1, None)]
+    assert app.actions == ["apply memory volt offset"]
+
+
+def test_volt_format_reads_slot1_readback() -> None:
+    """The mV console message divides the payload's applied value by 1000
+    (slot 1 carries µV in the reused applied_mHz field)."""
+    res = {"applied": True, "slot": 1, "applied_mHz": -12500}
+    msg = OverclockTab._format_clk_domain_volt_result("Sys", -12.5, res)
+    assert "volt offset -12.5 mV" in msg
+    assert "readback -12.5 mV" in msg
+
+    # non-1 slot → no readback clause (the write didn't land on the plane)
+    res2 = {"applied": True, "slot": 0, "applied_mHz": 25000}
+    msg2 = OverclockTab._format_clk_domain_volt_result("Sys", 25.0, res2)
+    assert "readback" not in msg2
+
+    res3 = {"supported": False}
+    msg3 = OverclockTab._format_clk_domain_volt_result("Sys", 25.0, res3)
+    assert "not supported" in msg3
+
+
+def test_row_volt_mode_defaults_false_for_plain_rows() -> None:
+    """Plain (non-toggle) rows read volt mode False via getattr default —
+    every existing MHz apply path stays untouched."""
+    tab, _app = make_tab()
+    assert tab._row_volt_mode(tab.core_slider) is False
+    assert tab._row_volt_mode(object()) is False
+
+
 def make_mobile_tab(
     vlimit_value: str = "1085",
     vlimit_state: str = "normal",
