@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use colored::Colorize;
+use colored::{Color, Colorize};
 
 static NO_COLOR_OVERRIDE: AtomicBool = AtomicBool::new(false);
 
@@ -195,6 +195,52 @@ pub fn stylize_config(message: &str) -> String {
     }
 }
 
+/// nvoc-cli grouped-help family heading colors. Keys mirror the CLI's
+/// `Group::key()` values; hues follow the same family conventions as
+/// `stylize_title` (power=red, thermal=yellow, fan=green, clock=cyan,
+/// voltage=magenta). Non-adjacent families may share a hue (perf reuses
+/// thermal's, scanner clock's) — only neighboring blocks must differ.
+pub fn stylize_group_heading(group: &str, text: &str) -> String {
+    if !colors_enabled() {
+        return text.to_string();
+    }
+    let color = match group {
+        "info" => Color::BrightWhite,
+        "power" => Color::BrightRed,
+        "thermal" => Color::BrightYellow,
+        "fan" => Color::BrightGreen,
+        "clock" => Color::BrightCyan,
+        "voltage" => Color::BrightMagenta,
+        "vfp" => Color::BrightBlue,
+        "perf" => Color::BrightYellow,
+        "scanner" => Color::BrightCyan,
+        _ => Color::BrightWhite,
+    };
+    text.color(color).bold().to_string()
+}
+
+/// A command-name row in the grouped help: the leading verb carries the
+/// color (get=read cyan, set/clear/restart=mutate yellow, reset=restore
+/// green) so the action category is legible at a glance; the rest of the
+/// name stays plain.
+pub fn stylize_help_command(name: &str) -> String {
+    if !colors_enabled() {
+        return name.to_string();
+    }
+    for (prefix, color) in [
+        ("reset-", Color::BrightGreen),
+        ("set-", Color::BrightYellow),
+        ("clear-", Color::BrightYellow),
+        ("restart-", Color::BrightYellow),
+        ("get-", Color::BrightCyan),
+    ] {
+        if let Some(rest) = name.strip_prefix(prefix) {
+            return format!("{}{}", prefix.color(color).bold(), rest);
+        }
+    }
+    name.bold().to_string()
+}
+
 /// 专为 SCANNER/调试行设计的着色器。
 /// 将任何包含数字的 token 渲染为亮黄色加粗，其它 token 使用常规 style_value 规则。
 pub fn stylize_scanner(message: &str, is_stderr: bool) -> String {
@@ -229,7 +275,7 @@ pub fn stylize_scanner(message: &str, is_stderr: bool) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{init, stylize_warning};
+    use super::{init, stylize_group_heading, stylize_help_command, stylize_warning};
     use std::sync::{Mutex, OnceLock};
 
     fn color_test_lock() -> std::sync::MutexGuard<'static, ()> {
@@ -238,19 +284,64 @@ mod tests {
     }
 
     #[test]
+    fn group_heading_styled_per_family_when_enabled() {
+        let _guard = color_test_lock();
+        init(false);
+        if std::env::var_os("NO_COLOR").is_some() {
+            return; // colors_enabled() gates on the env; nothing to observe
+        }
+        // cargo test pipes stdout (not a tty) — force colored to render so
+        // the assertion is deterministic.
+        colored::control::set_override(true);
+
+        let heading = stylize_group_heading("power", "Power / TGP (12)");
+        assert_ne!(heading, "Power / TGP (12)");
+        assert!(heading.contains("Power / TGP (12)")); // text survives intact
+        // Verb prefixes get their action color (get=read, set=write,
+        // reset=restore)...
+        let get = stylize_help_command("get-power-limit");
+        assert!(get.starts_with("\u{1b}["));
+        assert!(get.contains("get-") && get.ends_with("power-limit"));
+        assert!(stylize_help_command("set-fan-speed").contains("set-"));
+        assert!(stylize_help_command("reset-fan-speed").contains("reset-"));
+        // ...and unprefixed names fall back to bold.
+        assert_ne!(stylize_help_command("list"), "list");
+
+        colored::control::unset_override();
+    }
+
+    #[test]
+    fn group_heading_plain_when_disabled() {
+        let _guard = color_test_lock();
+        init(true);
+
+        assert_eq!(
+            stylize_group_heading("power", "Power / TGP (12)"),
+            "Power / TGP (12)"
+        );
+        assert_eq!(stylize_help_command("get-power-limit"), "get-power-limit");
+
+        init(false);
+    }
+
+    #[test]
     fn warning_style_colors_whole_line_when_enabled() {
         let _guard = color_test_lock();
         init(false);
+        if std::env::var_os("NO_COLOR").is_some() {
+            return; // colors_enabled() gates on the env; nothing to observe
+        }
+        // cargo test pipes stdout (not a tty) — force colored to render so
+        // the assertion is deterministic.
+        colored::control::set_override(true);
 
         let message = "WARNING: V/F optimization intentionally probes unstable GPU settings.";
         let styled = stylize_warning(message);
-        if std::env::var_os("NO_COLOR").is_none() {
-            assert_ne!(styled, message);
-            assert!(styled.contains("\u{1b}["));
-            assert!(styled.contains(message));
-        } else {
-            assert_eq!(styled, message);
-        }
+        assert_ne!(styled, message);
+        assert!(styled.contains("\u{1b}["));
+        assert!(styled.contains(message));
+
+        colored::control::unset_override();
     }
 
     #[test]

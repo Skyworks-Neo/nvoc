@@ -20,6 +20,26 @@ pub(super) fn execution_to_json(execution: &Execution) -> Value {
     })
 }
 
+/// Recursively annotate every `{"supported": false}` object in the JSON
+/// tree with the thread's last NVAPI status failure — the JSON-mode twin
+/// of the human renderer's "Last NVAPI error" line.
+pub(super) fn annotate_last_error(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            if map.get("supported").and_then(Value::as_bool) == Some(false) {
+                if let Some(err) = nvoc_core::last_status_error() {
+                    map.insert("last_error".into(), Value::String(err));
+                }
+            }
+            for child in map.values_mut() {
+                annotate_last_error(child);
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(annotate_last_error),
+        _ => {}
+    }
+}
+
 pub(super) fn format_human(execution: &Execution) -> String {
     let mut lines = Vec::new();
     lines.push(nvoc_cli_common::color::stylize_title(&format!(
@@ -46,6 +66,18 @@ pub(super) fn format_human(execution: &Execution) -> String {
             ));
             if let Some(output) = &result.output {
                 lines.extend(render_command_output(execution.command, output));
+                // The wrapper layers soft-fail unsupported surfaces to
+                // {"supported": false} — surface the ORIGINAL NVAPI status
+                // recorded underneath (e.g. "-9 IncompatibleStructVersion"
+                // on a stamp-gated family vs a true absence).
+                if output.get("supported").and_then(Value::as_bool) == Some(false) {
+                    if let Some(err) = nvoc_core::last_status_error() {
+                        lines.push(nvoc_cli_common::color::stylize(
+                            &format!("Last NVAPI error: {err}"),
+                            true,
+                        ));
+                    }
+                }
             }
         } else {
             let error = result.error.as_deref().unwrap_or("unknown error");
@@ -1955,10 +1987,13 @@ fn format_label(key: &str) -> String {
             "nvml" => "NVML".to_string(),
             "tdp" => "TDP".to_string(),
             "vfp" => "VFP".to_string(),
-            "uv" => "uV".to_string(),
-            "mv" => "mV".to_string(),
-            "mhz" => "MHz".to_string(),
-            "khz" => "kHz".to_string(),
+            // SI unit words match case-insensitively — keys arrive both as
+            // "mv" and "mV" (JSON field names carry the unit suffix), and a
+            // case-sensitive match turned "mV" into "MV" (m ≠ M in SI).
+            "uv" | "uV" | "UV" => "uV".to_string(),
+            "mv" | "mV" | "MV" => "mV".to_string(),
+            "mhz" | "MHz" | "MHZ" => "MHz".to_string(),
+            "khz" | "kHz" | "KHZ" => "kHz".to_string(),
             "c" => "C".to_string(),
             other => {
                 let mut chars = other.chars();
