@@ -334,7 +334,6 @@ fn gpu_type_is_ampere_plus() {
     // Volta（服务器，Pascal-era 行为）排除；Kepler/Fermi/Unknown 当然不是。
     for t in [
         GpuType::ServerVolta,
-        GpuType::ComputationVolta,
         GpuType::DesktopKepler,
         GpuType::DesktopFermi,
         GpuType::Unknown,

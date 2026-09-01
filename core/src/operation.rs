@@ -2725,9 +2725,12 @@ pub struct SetNvapiClkDomainOffset {
     pub domain_bit: u32,
     /// signed kHz offset to write (0 = stock)
     pub offset_kHz: i32,
-    /// which of the record's 8 value dwords to write (0-7; slot 0 is the
-    /// article's signed frequency offset, the rest are driver-opaque
-    /// range/voltage terms — A/B with MEASURE_FREQ to identify)
+    /// which of the record's 8 value dwords to write (0-7). Identified
+    /// semantics: slot 0 = the article's signed frequency offset (kHz);
+    /// slot 1 = the V/F-curve horizontal voltage shift in µV (live
+    /// V100/GV100 2026-09-01 — slides the whole curve along the voltage
+    /// axis; a GPC slot1 shift breaks get-public-vftable readback). The
+    /// rest are driver-opaque range/voltage terms
     pub slot: u32,
     /// if true, restore the pre-write snapshot before returning (safe
     /// experiment mode); if false, persist the offset

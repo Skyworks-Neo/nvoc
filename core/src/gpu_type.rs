@@ -50,7 +50,6 @@ pub enum GpuType {
     // Kepler/Fermi 服务器 (Tesla K20/K40/K80 / Tesla M-class)
     ServerKepler,
     ServerFermi,
-    ComputationVolta,
     Unknown,
 }
 
@@ -77,7 +76,6 @@ impl fmt::Display for GpuType {
             GpuType::DesktopKepler => write!(f, "Kepler series desktop detected"),
             GpuType::MobileFermi => write!(f, "Fermi series mobile detected"),
             GpuType::DesktopFermi => write!(f, "Fermi series desktop detected"),
-            GpuType::ComputationVolta => write!(f, "Volta series computational card detected"),
             GpuType::WorkstationBlackwell => {
                 write!(f, "Blackwell series workstation card detected")
             }
@@ -235,11 +233,12 @@ pub fn detect_gpu_type(gpu_name: &str, codename: &str) -> GpuType {
             GpuType::DesktopFermi
         }
     } else if codename.starts_with("GV") {
-        if is_server {
-            GpuType::ServerVolta
-        } else {
-            GpuType::ComputationVolta
-        }
+        // Single Volta category. The old ComputationVolta split (Titan V /
+        // Quadro GV100 "consumer Volta") is retired — every GV* part is
+        // compute-class for nvoc's purposes; Titan V's turbo fan is handled
+        // by the fan-count refinement on the frontend, not by a separate
+        // classification.
+        GpuType::ServerVolta
     } else {
         GpuType::Unknown
     }
@@ -500,8 +499,7 @@ impl GpuType {
                 testing_step: 3,
                 freq_step_exp_core: 3,
             },
-            GpuType::ComputationVolta
-            | GpuType::WorkstationBlackwell
+            GpuType::WorkstationBlackwell
             | GpuType::WorkstationLovelace
             | GpuType::WorkstationAmpere
             | GpuType::WorkstationTuring
@@ -719,8 +717,8 @@ impl GpuType {
     /// 是否为服务器级 GPU(Tesla/数据中心被动散热卡:P100/A100/H100 …)。
     /// 这类卡绝大多数无板载可控风扇(NVML cooler count == 0),前端用该标志
     /// 同步灰化 Fan 面板,再由实际 fan count 纠错(例外:L40/L4 归入
-    /// ServerLovelace 但带板载风扇,count ≥ 1 会重新点亮)。
-    /// 注意 ComputationVolta(Titan V,GV100 消费版)有涡轮风扇,不算 server。
+    /// ServerLovelace 但带板载风扇,count ≥ 1 会重新点亮;Titan V/Quadro
+    /// GV100 折入 ServerVolta,同理靠 fan count 重新点亮)。
     pub fn is_server(&self) -> bool {
         matches!(
             self,
@@ -765,7 +763,6 @@ impl GpuType {
                 | GpuType::WorkstationPascal
                 | GpuType::ServerPascal
                 | GpuType::ServerVolta
-                | GpuType::ComputationVolta
                 | GpuType::WorkstationBlackwell
                 | GpuType::WorkstationLovelace
                 | GpuType::WorkstationAmpere

@@ -725,6 +725,12 @@ fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
             ClockDomain::Memory => {
                 map.insert("mem_clock_mhz".into(), f64_value(freq.0 as f64 / 1000.0));
             }
+            // Video decode engine clock — the third public clock the CLI's
+            // get-status prints ("Clocks: Graphics/Memory/Video"); surfaced so
+            // the dashboard can show it next to GPU/MEM.
+            ClockDomain::Video => {
+                map.insert("video_clock_mhz".into(), f64_value(freq.0 as f64 / 1000.0));
+            }
             _ => {}
         }
     }

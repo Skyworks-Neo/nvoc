@@ -308,7 +308,7 @@ pub fn set_pstate_clock_offset_preserve(
             | Ok(GpuType::DesktopKepler)
             | Ok(GpuType::MobileFermi)
             | Ok(GpuType::DesktopFermi)
-            | Ok(GpuType::ComputationVolta)
+            | Ok(GpuType::ServerVolta)
             | Ok(GpuType::Unknown)
             | Err(_)
     );
@@ -343,21 +343,21 @@ pub fn set_pstate_clock_offset_preserve(
         })
         .collect();
 
-    if entries.is_empty() {
-        return Err(Error::from(format!(
-            "{:?} has no editable clock entries",
-            target_pstate
-        )));
-    }
-
+    // SEAL REMOVAL (2026-09-01): when the target domain is missing from the
+    // editable set — server/Volta parts report P0 clocks editable=false —
+    // this used to hard-error with "no editable clock entries" / "not
+    // editable". That message is NOT the driver's NotSupported/-104, so the
+    // GUI/TUI ClkDomains fallback matcher never fired and BOTH OC paths
+    // (pstate20 AND the fallback) were sealed off before any driver call.
+    // Instead append the target entry to the write set: editable siblings
+    // (if any) keep their preserve semantics, and the driver now arbitrates
+    // for real — NotSupported surfaces and fires the ClkDomains fallback,
+    // success means pstates20 took the offset.
     if !entries
         .iter()
         .any(|(_, domain, _)| *domain == target_domain)
     {
-        return Err(Error::from(format!(
-            "{:?} {:?} clock entry not found or not editable",
-            target_pstate, target_domain
-        )));
+        entries.push((target_pstate, target_domain, target_delta));
     }
 
     gpu.inner()
@@ -813,7 +813,7 @@ pub fn reset_vfp_deltas(gpu: &Gpu, domain: VfpResetDomain) -> Result<(), Error> 
     let gpu_type = fetch_gpu_type(&info);
 
     // 9 系及更早（Maxwell/Kepler/Fermi）不支持 VFP 曲线，只能通过 set_pstates
-    // 单点清零。Volta 计算卡同样走此路径。
+    // 单点清零。Volta 计算卡（含 V100/Titan V，均归 ServerVolta）同样走此路径。
     let is_legacy = matches!(
         gpu_type,
         Ok(GpuType::Mobile9Series)
@@ -822,7 +822,7 @@ pub fn reset_vfp_deltas(gpu: &Gpu, domain: VfpResetDomain) -> Result<(), Error> 
             | Ok(GpuType::DesktopKepler)
             | Ok(GpuType::MobileFermi)
             | Ok(GpuType::DesktopFermi)
-            | Ok(GpuType::ComputationVolta)
+            | Ok(GpuType::ServerVolta)
             | Ok(GpuType::Unknown)
             | Err(_)
     );

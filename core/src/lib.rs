@@ -87,3 +87,19 @@ pub use ::nvapi::hi::{
     VfPoint, VfPointType, VoltageDomain,
 };
 pub use ::nvapi::{clk_vf_delta_for_target, clk_vf_effect_for_delta};
+
+/// Most recent NVAPI status failure on this thread, or `None`. nvapi
+/// records it in a thread-local as every failed call funnels through
+/// `status_result`, so wrapper layers that swallow the error into
+/// `Option::None` (rendered downstream as "supported: no") no longer hide
+/// the original status code — e.g. `-9 INCOMPATIBLE_STRUCT_VERSION` on a
+/// stamp-gated family reads completely differently from a true absence.
+pub fn last_status_error() -> Option<String> {
+    ::nvapi::last_status_error()
+}
+
+/// Forget the recorded failure — call at the start of each top-level
+/// command so annotations describe the current run only.
+pub fn clear_status_error() {
+    ::nvapi::clear_status_error()
+}

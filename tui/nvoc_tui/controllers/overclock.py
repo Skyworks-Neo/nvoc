@@ -673,10 +673,11 @@ class OverclockController(PaneController):
         """Server-grade verdict (Tesla/datacenter passive parts: P100/A100 …).
 
         Primary signal: the query_info payload's ``is_server`` flag from core
-        gpu_type.rs detect_gpu_type — Server* variants only (ComputationVolta
-        / Titan V has a blower fan and is excluded). Used to grey the Fan
-        pane out synchronously; the async NVML cooler count refines it
-        (ServerLovelace L40/L4 carry onboard fans, count ≥ 1 re-enables).
+        gpu_type.rs detect_gpu_type — Server* variants only (all Volta folds
+        into ServerVolta; Titan V's blower fan is corrected by the async
+        cooler count). Used to grey the Fan pane out synchronously; the
+        async NVML cooler count refines it (ServerLovelace L40/L4 carry
+        onboard fans, count ≥ 1 re-enables).
         """
         flag = self.app.cache.info.get("is_server")
         return isinstance(flag, bool) and flag
