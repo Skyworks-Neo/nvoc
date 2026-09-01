@@ -631,7 +631,11 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
             (
                 Command::GetPStateLock,
                 CommandSpec {
-                    options: Box::leak(Box::new(["pstate-domain"])),
+                    // Reuses the shared global --domain selector (like
+                    // set-legacy-freq); a dedicated "pstate-domain" arg with
+                    // long --domain collided with the global one in clap's
+                    // debug long-uniqueness assert.
+                    options: Box::leak(Box::new(["domain"])),
                     formatter: Some(output::format_pstate_native_output),
                     ..CommandSpec::new("get-pstate-lock", Group::Clock, "Read the native NVAPI P-State level table")
                 },
@@ -1892,11 +1896,6 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .long("verbose")
             .action(ArgAction::SetTrue)
             .help("Show verbose status (VFP table, raw power-monitor descriptors, D-Notifier D1-D5 cap table)"),
-        "pstate-domain" => Arg::new("pstate-domain")
-            .long("domain")
-            .value_name("DOMAIN")
-            .action(ArgAction::Set)
-            .help("Clock-domain index for get-pstate-native MHz values (0=GPC/core default; the ref tool resolves GPC via 0x57B5A5DF)"),
         "bank" => Arg::new("bank")
             .long("bank")
             .value_name("BANK")
@@ -1906,7 +1905,7 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .value_name("DOMAIN")
             .action(ArgAction::Append)
             .global(true)
-            .help("Domain selector, meaning depends on the command: clock domain (core/memory/processor/video), gpu|acoustic (set-temp-limit NVML path), core|mem (set-legacy-freq), or gpc|xbar|msd|disp|mem (reset-private-vftable-offset; legacy sys/host alias msd)"),
+            .help("Domain selector, meaning depends on the command: clock domain (core/memory/processor/video), gpu|acoustic (set-temp-limit NVML path), core|mem (set-legacy-freq), gpc|xbar|msd|disp|mem (reset-private-vftable-offset; legacy sys/host alias msd), or a 0-3 clock-domain index (get-pstate-lock; 0=GPC/core, 2=memory)"),
         "output-csv" => Arg::new("output-csv")
             .long("output-csv")
             .value_name("PATH")
@@ -2865,7 +2864,7 @@ fn execute_target(
             // Query all 4 clock-domains (the private table exposes per-pstate
             // min/max for each domain: 0/1/3 are core-ish, 2 is memory on RTX
             // 4060 Laptop). `--domain` restricts to a single domain if given.
-            let single_domain = option_one(invocation, "pstate-domain")
+            let single_domain = option_one(invocation, "domain")
                 .map(|s| s.parse::<usize>())
                 .transpose()
                 .map_err(|e| CliError::new(format!("invalid --domain: {e}")))?;
@@ -7508,6 +7507,13 @@ mod tests {
         assert_eq!(invocation.command, Some(Command::SetLegacyFreq));
         assert_eq!(invocation.positionals, vec!["4001"]);
         assert_eq!(option_one(&invocation, "domain"), Some("mem"));
+
+        // get-pstate-lock shares the global --domain selector as a numeric
+        // clock-domain index (regression: a dedicated pstate-domain arg with
+        // the same --domain long tripped clap's debug uniqueness assert).
+        let invocation = parse_args(["get-pstate-lock", "--domain", "2"]).unwrap();
+        assert_eq!(invocation.command, Some(Command::GetPStateLock));
+        assert_eq!(option_one(&invocation, "domain"), Some("2"));
         // core is the default domain
         let invocation = parse_args(["set-legacy-freq", "900"]).unwrap();
         assert_eq!(invocation.positionals, vec!["900"]);
