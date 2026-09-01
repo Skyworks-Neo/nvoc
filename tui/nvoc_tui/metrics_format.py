@@ -371,9 +371,18 @@ def _format_metric_lines(status: dict, architecture: str) -> list[str]:
     else:
         power_text = f"{power_draw} W"
 
+    # GPU/MEM/VIDEO merged onto one compact line — the same
+    # "Clocks: Graphics/Memory/Video" table from get-status.
+    clock_text = " | ".join(
+        [
+            f"GPU {status.get('gpu_clock_mhz', '---')}",
+            f"MEM {status.get('mem_clock_mhz', '---')}",
+            f"VID {status.get('video_clock_mhz', '---')}",
+        ]
+    )
+
     return [
-        f"GPU: {status.get('gpu_clock_mhz', '---')} MHz",
-        f"MEM: {status.get('mem_clock_mhz', '---')} MHz",
+        f"CLK: {clock_text} MHz",
         f"ECLK: {_effective_clocks_text(status)}",
         f"FCLK: {_fabric_clocks_text(status) or '---'}",
         f"VOLT: {_voltage_text(status)}",

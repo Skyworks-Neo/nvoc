@@ -5,6 +5,7 @@ def test_format_metric_lines_full() -> None:
     status = {
         "gpu_clock_mhz": 1800,
         "mem_clock_mhz": 7500,
+        "video_clock_mhz": 1327,
         "voltage_mv": 950,
         "temperature_c": 62.4,
         "power_w": 132,
@@ -35,8 +36,7 @@ def test_format_metric_lines_full() -> None:
 
     text = "\n".join(_format_metric_lines(status, "Ada"))
 
-    assert "GPU: 1800 MHz" in text
-    assert "MEM: 7500 MHz" in text
+    assert "CLK: GPU 1800 | MEM 7500 | VID 1327 MHz" in text
     assert "VOLT: 950 mV" in text
     assert "TEMP: CORE 62 C" in text
     assert "PWR: 132 W" in text
@@ -276,6 +276,7 @@ def test_format_metric_lines_voltage_falls_back_without_rails() -> None:
 def test_format_metric_lines_missing_fields_render_dashes() -> None:
     text = "\n".join(_format_metric_lines({}, "---"))
 
+    assert "CLK: GPU --- | MEM --- | VID --- MHz" in text
     assert "LOAD: GPU --- | MC --- | VEN --- | BUS ---" in text
     assert "VRAM: ---" in text
     assert "FAN: ---" in text
