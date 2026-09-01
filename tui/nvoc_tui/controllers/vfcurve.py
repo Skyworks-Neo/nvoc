@@ -424,8 +424,10 @@ class VFCurveController(PaneController):
         # broken-public-VFP-plane signature (positive gpc slot1 zeroes the
         # lock read alongside the table; live V100 2026-09-01), never a
         # real lock to draw.
-        if active is not None and isinstance(lock_voltage, (int, float)) and (
-            lock_voltage > 0
+        if (
+            active is not None
+            and isinstance(lock_voltage, (int, float))
+            and (lock_voltage > 0)
         ):
             lock_voltage_mv = float(lock_voltage)
             lock_curve_point = find_curve_point_for_voltage(

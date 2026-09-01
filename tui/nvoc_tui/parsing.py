@@ -734,8 +734,10 @@ def build_vf_curves(
     # shifted grid (negative slot1) displays fine through the private axis;
     # an absent public family is "not supported", not breakage — none of
     # those synthesize.
-    public_broken = bool(gpc_points) and len(gpc_points) > 1 and (
-        sum(1 for p in gpc_points if p.get("frequency_khz", 0) > 0) <= 1
+    public_broken = (
+        bool(gpc_points)
+        and len(gpc_points) > 1
+        and (sum(1 for p in gpc_points if p.get("frequency_khz", 0) > 0) <= 1)
     )
     offsets = normalize_domain_offsets(domain_info)
     if offsets and public_broken:

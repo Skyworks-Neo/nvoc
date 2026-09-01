@@ -498,9 +498,7 @@ def test_build_vf_curves_private_segments_and_skips() -> None:
         assert curve.write_mode == "private"
 
 
-def _private_gpc_clk_data(
-    voltages_uv, currents, defaults
-):
+def _private_gpc_clk_data(voltages_uv, currents, defaults):
     return {
         "segments": [
             {
@@ -519,9 +517,7 @@ def _private_gpc_clk_data(
                 "freq_current_mhz": c,
                 "freq_default_mhz": d,
             }
-            for i, (v, c, d) in enumerate(
-                zip(voltages_uv, currents, defaults)
-            )
+            for i, (v, c, d) in enumerate(zip(voltages_uv, currents, defaults))
         ],
     }
 
@@ -695,9 +691,7 @@ def test_synthesize_effective_positive_shift() -> None:
     curve.frequencies = [1000.0, 1100.0]
     curve.defaults = [1000.0, 1100.0]
 
-    eff = synthesize_effective(
-        curve, {"gpc": {"slot0_khz": 25000, "slot1_uv": 100000}}
-    )
+    eff = synthesize_effective(curve, {"gpc": {"slot0_khz": 25000, "slot1_uv": 100000}})
 
     assert eff.applicable is True
     assert eff.offset_mv == 100.0
@@ -728,18 +722,14 @@ def test_synthesize_effective_no_op_guards() -> None:
     pascal = CurveData("gpc")
     pascal.voltages = [0.0, 0.0]
     pascal.frequencies = [1000.0, 1100.0]
-    eff = synthesize_effective(
-        pascal, {"gpc": {"slot0_khz": 0, "slot1_uv": 100000}}
-    )
+    eff = synthesize_effective(pascal, {"gpc": {"slot0_khz": 0, "slot1_uv": 100000}})
     assert eff.applicable is False
 
     # GCOFF-style null-filled frequency segment → nothing to lift.
     gcoff = CurveData("gpc")
     gcoff.voltages = [800.0, 825.0]
     gcoff.frequencies = [0.0, 0.0]
-    eff = synthesize_effective(
-        gcoff, {"gpc": {"slot0_khz": 25000, "slot1_uv": 100000}}
-    )
+    eff = synthesize_effective(gcoff, {"gpc": {"slot0_khz": 25000, "slot1_uv": 100000}})
     assert eff.applicable is False
 
 
@@ -777,7 +767,8 @@ def test_build_vf_curves_sentinel_survivor_still_detected_broken() -> None:
     # the sentinel must never become a hybrid curve.
     volts = [800000, 812500, 825000, 837500]
     clk_data = _private_gpc_clk_data(
-        volts, currents=[1000.0, 1050.0, 1100.0, 1150.0],
+        volts,
+        currents=[1000.0, 1050.0, 1100.0, 1150.0],
         defaults=[1000.0, 1050.0, 1100.0, 1150.0],
     )
     gpc_points = [

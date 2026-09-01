@@ -1588,8 +1588,8 @@ where
     if help_requested && command_hint_from_argv(user_argv).is_none() {
         // Hand-rendered help: init the color state ourselves (the main.rs
         // init only runs after a successful parse, which this path skips).
-        let no_color = argv.iter().any(|arg| arg == "--no-color")
-            || std::env::var_os("NO_COLOR").is_some();
+        let no_color =
+            argv.iter().any(|arg| arg == "--no-color") || std::env::var_os("NO_COLOR").is_some();
         nvoc_cli_common::color::init(no_color);
         return Err(CliError::RootHelp(render_root_help()));
     }
@@ -3958,112 +3958,113 @@ fn execute_target(
                     // 256-point window)
                     let wpb = v.masks.len() / 2;
                     json!({
-                    "bank": bank,
-                    "infer_missing_field": infer,
-                    "masks": v.masks[bank * wpb..(bank + 1) * wpb]
-                        .iter()
-                        .map(|m| format!("0x{:016X}", m))
-                        .collect::<Vec<_>>(),
-                    // contiguous same-type runs — bank 0 packs multiple
-                    // domains back-to-back (GPC curve, mem pstate bins,
-                    // XBAR curve, HOST curve, ...), so plot ONE curve per
-                    // vf_curve segment, not the whole point list
-                    "segments": v.segments.iter().filter(|s| s.bank as usize == bank).map(|s| json!({
-                        "bank": s.bank,
-                        // EMPIRICAL advisory attribution (ordinal-based;
-                        // confirm by domain-offset A/B)
-                        "domain": s.domain_hint.as_str(),
-                        "kind": match s.kind {
-                            nvoc_core::ClkVfSegmentKind::VfCurve => "vf_curve",
-                            nvoc_core::ClkVfSegmentKind::PstateBins => "pstate_bins",
-                        },
-                        "type": s.record_type,
-                        "start_index": s.start_index,
-                        "end_index": s.end_index,
-                        "count": s.count,
-                        "voltage_uV_min": s.voltage_uV_min,
-                        "voltage_uV_max": s.voltage_uV_max,
-                        "freq_default_mhz_min": s.freq_default_mhz_min,
-                        "freq_default_mhz_max": s.freq_default_mhz_max,
-                    })).collect::<Vec<_>>(),
-                    "points": v.points.iter().filter(|p| p.bank as usize == bank).map(|p| {
-                        let ctrl = ctrl_map.get(&(p.bank, p.index)).copied();
-                        let (mode, value) = ctrl.unwrap_or((0, 0));
-                        // effective offset in MHz: mode 0 is u32 kHz; mode 1
-                        // is a raw i16 f-offset control — convert through the
-                        // g(def) prior (segment domain -> class)
-                        let effect_mhz = ctrl.and_then(|_| {
-                            if mode == 0 {
-                                // ÷1000 kHz→MHz (÷2000 on the Pascal 2× axis —
-                                // see pascal_2x_axis above)
-                                Some(value as f64 / mode0_khz_to_mhz)
-                            } else if value == 0 {
-                                // no override written — the g(def) prior's D0
-                                // term would show a phantom offset at raw 0
-                                Some(0.0)
-                            } else {
-                                let class = match v.segments.iter()
-                                    .find(|s| s.bank == p.bank
-                                        && p.index >= s.start_index
-                                        && p.index <= s.end_index)
-                                    .map(|s| s.domain_hint)
-                                {
-                                    Some(nvoc_core::ClkVfDomainHint::Xbar)
-                                    | Some(nvoc_core::ClkVfDomainHint::Msd) => {
-                                        nvoc_core::ClkVfDomainClass::Fabric
-                                    }
-                                    _ => nvoc_core::ClkVfDomainClass::Graphics,
-                                };
-                                // mode-1 g(def) decode is 1:1 on Pascal too —
-                                // live A/B: a doubled-target write lifted
-                                // #30 (stock 1215) by 215 MHz ≈ the raw
-                                // Ada-effect, so the prior needs NO axis
-                                // scaling on either side. Residual per-point
-                                // error (±10%) is prior quantization plus
-                                // decode-at-shifted-def once offsets stack.
-                                nvoc_core::clk_vf_effect_for_delta(
-                                    p.freq_default_mhz,
-                                    value as i16 as i32,
-                                    class,
+                        "bank": bank,
+                        "infer_missing_field": infer,
+                        "masks": v.masks[bank * wpb..(bank + 1) * wpb]
+                            .iter()
+                            .map(|m| format!("0x{:016X}", m))
+                            .collect::<Vec<_>>(),
+                        // contiguous same-type runs — bank 0 packs multiple
+                        // domains back-to-back (GPC curve, mem pstate bins,
+                        // XBAR curve, HOST curve, ...), so plot ONE curve per
+                        // vf_curve segment, not the whole point list
+                        "segments": v.segments.iter().filter(|s| s.bank as usize == bank).map(|s| json!({
+                            "bank": s.bank,
+                            // EMPIRICAL advisory attribution (ordinal-based;
+                            // confirm by domain-offset A/B)
+                            "domain": s.domain_hint.as_str(),
+                            "kind": match s.kind {
+                                nvoc_core::ClkVfSegmentKind::VfCurve => "vf_curve",
+                                nvoc_core::ClkVfSegmentKind::PstateBins => "pstate_bins",
+                            },
+                            "type": s.record_type,
+                            "start_index": s.start_index,
+                            "end_index": s.end_index,
+                            "count": s.count,
+                            "voltage_uV_min": s.voltage_uV_min,
+                            "voltage_uV_max": s.voltage_uV_max,
+                            "freq_default_mhz_min": s.freq_default_mhz_min,
+                            "freq_default_mhz_max": s.freq_default_mhz_max,
+                        })).collect::<Vec<_>>(),
+                        "points": v.points.iter().filter(|p| p.bank as usize == bank).map(|p| {
+                            let ctrl = ctrl_map.get(&(p.bank, p.index)).copied();
+                            let (mode, value) = ctrl.unwrap_or((0, 0));
+                            // effective offset in MHz: mode 0 is u32 kHz; mode 1
+                            // is a raw i16 f-offset control — convert through the
+                            // g(def) prior (segment domain -> class)
+                            let effect_mhz = ctrl.and_then(|_| {
+                                if mode == 0 {
+                                    // ÷1000 kHz→MHz (÷2000 on the Pascal 2× axis —
+                                    // see pascal_2x_axis above)
+                                    Some(value as f64 / mode0_khz_to_mhz)
+                                } else if value == 0 {
+                                    // no override written — the g(def) prior's D0
+                                    // term would show a phantom offset at raw 0
+                                    Some(0.0)
+                                } else {
+                                    let class = match v.segments.iter()
+                                        .find(|s| s.bank == p.bank
+                                            && p.index >= s.start_index
+                                            && p.index <= s.end_index)
+                                        .map(|s| s.domain_hint)
+                                    {
+                                        Some(nvoc_core::ClkVfDomainHint::Xbar)
+                                        | Some(nvoc_core::ClkVfDomainHint::Msd) => {
+                                            nvoc_core::ClkVfDomainClass::Fabric
+                                        }
+                                        _ => nvoc_core::ClkVfDomainClass::Graphics,
+                                    };
+                                    // mode-1 g(def) decode is 1:1 on Pascal too —
+                                    // live A/B: a doubled-target write lifted
+                                    // #30 (stock 1215) by 215 MHz ≈ the raw
+                                    // Ada-effect, so the prior needs NO axis
+                                    // scaling on either side. Residual per-point
+                                    // error (±10%) is prior quantization plus
+                                    // decode-at-shifted-def once offsets stack.
+                                    nvoc_core::clk_vf_effect_for_delta(
+                                        p.freq_default_mhz,
+                                        value as i16 as i32,
+                                        class,
+                                    )
+                                }
+                            });
+                            // Pascal semantic remap (--infer-missing-field): the
+                            // readback "default" field carries the CURRENT
+                            // frequency, so current = <default field> and the
+                            // TRUE default = current − decoded offset. Every
+                            // other generation keeps the literal fields.
+                            let pascal_semantic = infer && pascal_2x_axis;
+                            let (current_mhz, default_mhz) = if pascal_semantic {
+                                let cur = p.freq_default_mhz as f64;
+                                (
+                                    cur,
+                                    (cur - effect_mhz.unwrap_or(0.0)).max(0.0),
                                 )
-                            }
-                        });
-                        // Pascal semantic remap (--infer-missing-field): the
-                        // readback "default" field carries the CURRENT
-                        // frequency, so current = <default field> and the
-                        // TRUE default = current − decoded offset. Every
-                        // other generation keeps the literal fields.
-                        let pascal_semantic = infer && pascal_2x_axis;
-                        let (current_mhz, default_mhz) = if pascal_semantic {
-                            let cur = p.freq_default_mhz as f64;
-                            (
-                                cur,
-                                (cur - effect_mhz.unwrap_or(0.0)).max(0.0),
-                            )
-                        } else {
-                            (p.freq_current_mhz as f64, p.freq_default_mhz as f64)
-                        };
-                        json!({
-                            "bank": p.bank,
-                            "index": p.index,
-                            "type": p.record_type,
-                            // the V/F grid axis (µV): 450000 = 450 mV
-                            "voltage_uV": p.voltage_uV,
-                            // stock default at this voltage (Pascal+infer:
-                            // current − offset; otherwise the literal field)
-                            "freq_default_mhz": default_mhz,
-                            // current MHz (Pascal+infer: the readback default
-                            // field, which moves with the offset)
-                            "freq_current_mhz": current_mhz,
-                            // raw override readback (GetControl 0xDA025C3E):
-                            // mode 0 = absolute kHz offset, 1 = raw delta
-                            "mode": ctrl.map(|(m, _)| m),
-                            "offset": ctrl.map(|(_, v)| v),
-                            // effective offset MHz (mode 1 via g(def) prior)
-                            "offset_effect_mhz": effect_mhz,
-                        })
-                    }).collect::<Vec<_>>(),
-                })}
+                            } else {
+                                (p.freq_current_mhz as f64, p.freq_default_mhz as f64)
+                            };
+                            json!({
+                                "bank": p.bank,
+                                "index": p.index,
+                                "type": p.record_type,
+                                // the V/F grid axis (µV): 450000 = 450 mV
+                                "voltage_uV": p.voltage_uV,
+                                // stock default at this voltage (Pascal+infer:
+                                // current − offset; otherwise the literal field)
+                                "freq_default_mhz": default_mhz,
+                                // current MHz (Pascal+infer: the readback default
+                                // field, which moves with the offset)
+                                "freq_current_mhz": current_mhz,
+                                // raw override readback (GetControl 0xDA025C3E):
+                                // mode 0 = absolute kHz offset, 1 = raw delta
+                                "mode": ctrl.map(|(m, _)| m),
+                                "offset": ctrl.map(|(_, v)| v),
+                                // effective offset MHz (mode 1 via g(def) prior)
+                                "offset_effect_mhz": effect_mhz,
+                            })
+                        }).collect::<Vec<_>>(),
+                    })
+                }
                 None => json!({"supported": false}),
             })
         }
@@ -7303,8 +7304,13 @@ mod tests {
         // set-private-freq-domain-global-offset --freq ≡ --slot 0 (the
         // default) and --volt ≡ --slot 1 — the flags select the slot so
         // the OFFSET positional gets the right unit parser (MHz vs mV).
-        let invocation =
-            parse_args(["set-private-freq-domain-global-offset", "gpc", "+25", "--freq"]).unwrap();
+        let invocation = parse_args([
+            "set-private-freq-domain-global-offset",
+            "gpc",
+            "+25",
+            "--freq",
+        ])
+        .unwrap();
         assert_eq!(
             invocation.command,
             Some(Command::SetPrivateFreqDomainGlobalOffset)
@@ -7313,8 +7319,13 @@ mod tests {
         assert!(option_bool(&invocation, "freq", false).unwrap());
         assert!(option_one(&invocation, "volt").is_none());
 
-        let invocation =
-            parse_args(["set-private-freq-domain-global-offset", "gpc", "-12.5", "--volt"]).unwrap();
+        let invocation = parse_args([
+            "set-private-freq-domain-global-offset",
+            "gpc",
+            "-12.5",
+            "--volt",
+        ])
+        .unwrap();
         assert_eq!(invocation.positionals, vec!["gpc", "-12.5"]);
         assert!(option_bool(&invocation, "volt", false).unwrap());
         assert!(option_one(&invocation, "freq").is_none());
@@ -7343,9 +7354,14 @@ mod tests {
         assert!(err.contains("unexpected argument"), "{err}");
 
         // legacy --slot 1 parses exactly like --volt
-        let invocation =
-            parse_args(["set-private-freq-domain-global-offset", "gpc", "5", "--slot", "1"])
-                .unwrap();
+        let invocation = parse_args([
+            "set-private-freq-domain-global-offset",
+            "gpc",
+            "5",
+            "--slot",
+            "1",
+        ])
+        .unwrap();
         assert_eq!(option_one(&invocation, "slot"), Some("1"));
         assert!(option_one(&invocation, "volt").is_none());
 
@@ -7374,7 +7390,9 @@ mod tests {
         assert!(err.contains("cannot be used with"), "{err}");
 
         // and the alias is rejected on commands without a slot record
-        let err = parse_args(["get-power-limit", "--volt"]).unwrap_err().to_string();
+        let err = parse_args(["get-power-limit", "--volt"])
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("--volt"), "{err}");
     }
 
@@ -7389,8 +7407,7 @@ mod tests {
         let invocation = parse_args(["reset-private-vftable-offset", "0", "--freq"]).unwrap();
         assert!(option_one(&invocation, "freq").is_some());
 
-        let invocation =
-            parse_args(["reset-private-vftable-offset", "0", "--slot", "1"]).unwrap();
+        let invocation = parse_args(["reset-private-vftable-offset", "0", "--slot", "1"]).unwrap();
         assert_eq!(option_one(&invocation, "slot"), Some("1"));
 
         // combined with --domain (the domain-scoped path honours the plane)
@@ -7411,15 +7428,9 @@ mod tests {
             .to_string();
         assert!(err.contains("cannot be used with"), "{err}");
 
-        let err = parse_args([
-            "reset-private-vftable-offset",
-            "0",
-            "--volt",
-            "--slot",
-            "1",
-        ])
-        .unwrap_err()
-        .to_string();
+        let err = parse_args(["reset-private-vftable-offset", "0", "--volt", "--slot", "1"])
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("cannot be used with"), "{err}");
 
         // --mode overlaps with the aliases: caught at validate/execute time
@@ -7453,17 +7464,20 @@ mod tests {
     fn reset_private_freq_domain_global_offset_plane_aliases_parse() {
         // reset-private-freq-domain-global-offset: --freq/--volt alias
         // --slot 0/1 (narrowing the default both-planes reset).
-        let invocation =
-            parse_args(["reset-private-freq-domain-global-offset", "--volt"]).unwrap();
+        let invocation = parse_args(["reset-private-freq-domain-global-offset", "--volt"]).unwrap();
         assert_eq!(
             invocation.command,
             Some(Command::ResetPrivateFreqDomainGlobalOffset)
         );
         assert!(option_one(&invocation, "volt").is_some());
 
-        let invocation =
-            parse_args(["reset-private-freq-domain-global-offset", "--domain", "gpc", "--freq"])
-                .unwrap();
+        let invocation = parse_args([
+            "reset-private-freq-domain-global-offset",
+            "--domain",
+            "gpc",
+            "--freq",
+        ])
+        .unwrap();
         assert_eq!(option_one(&invocation, "domain"), Some("gpc"));
         assert!(option_one(&invocation, "freq").is_some());
 
@@ -7479,10 +7493,9 @@ mod tests {
         assert!(err.contains("cannot be used with"), "{err}");
 
         // root form refused (silent-drop hazard)
-        let err =
-            parse_args(["--volt", "reset-private-freq-domain-global-offset"])
-                .unwrap_err()
-                .to_string();
+        let err = parse_args(["--volt", "reset-private-freq-domain-global-offset"])
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("unexpected argument"), "{err}");
     }
 

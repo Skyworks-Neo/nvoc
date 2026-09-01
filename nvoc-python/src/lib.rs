@@ -1402,15 +1402,24 @@ fn normalize_tdp_temp_limits(target: &GpuTarget<'_>) -> PyResultValue {
     // V100) are omitted entirely — None maps to Value::Null, which
     // value_object drops — rather than fabricated with placeholder values.
     Ok(value_object([
-        ("min_tdp", limits.min_tdp.map(percent_value).unwrap_or(Value::Null)),
+        (
+            "min_tdp",
+            limits.min_tdp.map(percent_value).unwrap_or(Value::Null),
+        ),
         (
             "default_tdp",
             limits.default_tdp.map(percent_value).unwrap_or(Value::Null),
         ),
-        ("max_tdp", limits.max_tdp.map(percent_value).unwrap_or(Value::Null)),
+        (
+            "max_tdp",
+            limits.max_tdp.map(percent_value).unwrap_or(Value::Null),
+        ),
         (
             "min_temp",
-            limits.min_temp.map(|v| u64_value(v.0 as u64)).unwrap_or(Value::Null),
+            limits
+                .min_temp
+                .map(|v| u64_value(v.0 as u64))
+                .unwrap_or(Value::Null),
         ),
         (
             "default_temp",
@@ -1421,7 +1430,10 @@ fn normalize_tdp_temp_limits(target: &GpuTarget<'_>) -> PyResultValue {
         ),
         (
             "max_temp",
-            limits.max_temp.map(|v| u64_value(v.0 as u64)).unwrap_or(Value::Null),
+            limits
+                .max_temp
+                .map(|v| u64_value(v.0 as u64))
+                .unwrap_or(Value::Null),
         ),
     ]))
 }

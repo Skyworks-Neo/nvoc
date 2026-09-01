@@ -105,7 +105,14 @@ class _EffectiveCurve:
     _CurveData.frequencies; the editing paths operate on the base axes.
     """
 
-    __slots__ = ("curve_id", "voltages", "freqs", "offset_mv", "offset_mhz", "applicable")
+    __slots__ = (
+        "curve_id",
+        "voltages",
+        "freqs",
+        "offset_mv",
+        "offset_mhz",
+        "applicable",
+    )
 
     def __init__(self, curve_id: str):
         self.curve_id = curve_id
@@ -1226,12 +1233,8 @@ class VFCurveTab:
             ):
                 # Unshifted public grid: adopt its live CURRENT frequencies
                 # (public deltas / OC state); defaults stay private.
-                cd.frequencies = [
-                    p["frequency_khz"] / 1000.0 for p in gpc_points
-                ]
-                cd.has_fixed = any(
-                    p.get("point_type") == "fixed" for p in gpc_points
-                )
+                cd.frequencies = [p["frequency_khz"] / 1000.0 for p in gpc_points]
+                cd.has_fixed = any(p.get("point_type") == "fixed" for p in gpc_points)
                 cd.source = "hybrid"
             else:
                 # Shifted or broken public read: private currents are the
@@ -1266,8 +1269,10 @@ class VFCurveTab:
         # shifted grid (negative slot1) displays fine through the private
         # axis; an absent public family is "not supported", not breakage —
         # none of those synthesize.
-        public_broken = bool(gpc_points) and len(gpc_points) > 1 and (
-            sum(1 for p in gpc_points if p.get("frequency_khz", 0) > 0) <= 1
+        public_broken = (
+            bool(gpc_points)
+            and len(gpc_points) > 1
+            and (sum(1 for p in gpc_points if p.get("frequency_khz", 0) > 0) <= 1)
         )
         offsets = _normalize_domain_offsets(domain_info)
         if offsets and public_broken:

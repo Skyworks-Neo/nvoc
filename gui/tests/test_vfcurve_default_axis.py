@@ -148,9 +148,7 @@ def test_all_zero_private_voltage_axis_keeps_public_source() -> None:
     # Pascal server cards: the private GPC voltage axis is all-zero — the
     # public read stays the GPC source untouched.
     tab = _make_tab()
-    clk_data = _private_gpc_clk_data(
-        [0, 0], [0.0, 0.0], [0.0, 0.0]
-    )
+    clk_data = _private_gpc_clk_data([0, 0], [0.0, 0.0], [0.0, 0.0])
     gpc_points = [
         {
             "index": 0,
