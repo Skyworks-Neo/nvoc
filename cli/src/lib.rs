@@ -777,21 +777,21 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
             (
                 Command::ResetPrivateFreqDomainGlobalOffset,
                 CommandSpec {
-                    options: Box::leak(Box::new(["domain", "slot"])),
-                    ..CommandSpec::new("reset-private-freq-domain-global-offset", Group::Vfp, "Reset private clock-domain global offsets to stock (offset 0) through the same ClkDomains WRITE path as set-private-freq-domain-global-offset; default resets EVERY controllable domain x slots 0 and 1, --domain/--slot narrow the scope; domains the driver refuses (e.g. disp bit 6) are reported as warnings and the reset continues")
+                    options: Box::leak(Box::new(["domain", "slot", "freq", "volt"])),
+                    ..CommandSpec::new("reset-private-freq-domain-global-offset", Group::Vfp, "Reset private clock-domain global offsets to stock (offset 0) through the same ClkDomains WRITE path as set-private-freq-domain-global-offset; default resets EVERY controllable domain x slots 0 and 1, --domain/--slot narrow the scope (--freq/--volt alias --slot 0/--slot 1); domains the driver refuses (e.g. disp bit 6) are reported as warnings and the reset continues")
                 },
             ),
             (
                 Command::ResetPrivateVftableOffset,
                 CommandSpec {
                     arity: (1, 1),
-                    options: Box::leak(Box::new(["domain", "mode"])),
+                    options: Box::leak(Box::new(["domain", "mode", "freq", "volt", "slot"])),
                     positionals: Box::leak(Box::new([PositionalArg::free(
                     "arg_bank",
                     "BANK",
-                    "Bank to reset: 0 = V/F curve points (clears mode-0 kHz offsets written via set-vfp-point/range-private default/--freq-mode), 1 = pstate-class records; --domain gpc|xbar|msd|disp|mem restricts the reset to that domain's segments (bank 0 only; legacy sys/host alias msd)",
+                    "Bank to reset: 0 = V/F curve points (clears mode-0 kHz offsets written via set-vfp-point/range-private default/--freq-mode), 1 = pstate-class records; --domain gpc|xbar|msd|disp|mem restricts the reset to that domain's segments (bank 0 only; legacy sys/host alias msd); --freq/--volt (or --mode freq|raw, --slot 0/1) pick ONE plane: freq = mode-0 kHz offsets, volt = mode-1 raw values",
                 )])),
-                    ..CommandSpec::new("reset-private-vftable-offset", Group::Vfp, "Reset private V/F-POINTS overrides (clear freq/raw offsets the public/pstate20 reset paths cannot reach; --mode freq|raw clears only that mode, default both)")
+                    ..CommandSpec::new("reset-private-vftable-offset", Group::Vfp, "Reset private V/F-POINTS overrides (clear freq/raw offsets the public/pstate20 reset paths cannot reach; --freq/--volt --mode freq|raw --slot 0/1 are equivalent plane selectors, default both)")
                 },
             ),
             (
@@ -1856,17 +1856,23 @@ fn cli_command(command_hint: Option<Command>) -> ClapCommand {
 
     if let Some(command_hint) = command_hint {
         for option in command_hint.allowed_options() {
-            // --freq/--volt are subcommand-ONLY options: the slot they pick
-            // decides the OFFSET positional's unit (MHz vs mV). The root
-            // registration below exists so command-specific options can be
-            // given BEFORE the command token, but options are COLLECTED
-            // from the subcommand matches — a non-global root arg is
-            // silently dropped there. A dropped --volt would silently turn
-            // a +25 mV voltage intent into a +25 MHz slot-0 frequency
-            // write, so refuse the root form outright (clap: unexpected
-            // argument) instead of silently misinterpreting it.
-            if command_hint == Command::SetPrivateFreqDomainGlobalOffset
-                && matches!(*option, "freq" | "volt")
+            // --freq/--volt are subcommand-ONLY options on the three
+            // slot/mode-selecting commands (set / both resets): the plane
+            // they pick decides the OFFSET positional's unit (MHz vs mV) or
+            // which plane a reset clears. The root registration below
+            // exists so command-specific options can be given BEFORE the
+            // command token, but options are COLLECTED from the subcommand
+            // matches — a non-global root arg is silently dropped there. A
+            // dropped --volt would silently turn a +25 mV voltage intent
+            // into a +25 MHz slot-0 frequency write (or a both-planes reset
+            // instead of volt-only), so refuse the root form outright (clap:
+            // unexpected argument) instead of silently misinterpreting it.
+            if matches!(
+                command_hint,
+                Command::SetPrivateFreqDomainGlobalOffset
+                    | Command::ResetPrivateFreqDomainGlobalOffset
+                    | Command::ResetPrivateVftableOffset
+            ) && matches!(*option, "freq" | "volt")
             {
                 continue;
             }
@@ -2008,7 +2014,7 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .long("slot")
             .value_name("SLOT")
             .action(ArgAction::Set)
-            .help("Which of the record's 8 value dwords to write (0-7; default 0 = the signed frequency offset, alias --freq; 1 = the per-domain V/F-curve voltage addend in uV, alias --volt; 2-7 driver-opaque — identify via A/B with get-clk-domain-freq)"),
+            .help("ClkDomains family (set/reset-private-freq-domain-global-offset): which of the record's 8 value dwords to write (0-7; default 0 = the signed frequency offset, alias --freq; 1 = the per-domain V/F-curve voltage addend in uV, alias --volt; 2-7 driver-opaque — identify via A/B with get-clk-domain-freq). reset-private-vftable-offset: 0 = freq plane (mode-0 kHz offsets), 1 = volt plane (mode-1 raw values)"),
         "freq" => Arg::new("freq")
             .long("freq")
             .action(ArgAction::SetTrue)
@@ -2058,7 +2064,7 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .long("mode")
             .value_name("MODE")
             .action(ArgAction::Set)
-            .help("Whisper Mode 2.0 acoustic mode: quieter, quiet, or balanced (or 0/1/2); on reset-private-vftable-offset: freq or raw (clear only that mode's offsets; default both)"),
+            .help("Whisper Mode 2.0 acoustic mode: quieter, quiet, or balanced (or 0/1/2); on reset-private-vftable-offset: freq or raw (clear only that mode's offsets, default both — same plane as --freq/--volt and --slot 0/1)"),
         "out" => Arg::new("out")
             .long("out")
             .value_name("FILE")
@@ -4551,9 +4557,11 @@ fn execute_target(
             // readback → restore-on-mismatch in the medium layer). Default
             // scope: EVERY controllable domain from the GET_CONTROL block ×
             // slots 0 and 1 (the two value dwords live-accepted on Ada);
-            // --domain / --slot narrow it. A domain the driver refuses
-            // (e.g. disp bit 6) or a slot it rejects becomes a warning and
-            // the reset continues — one bad record must not abort the rest.
+            // --domain / --slot narrow it (--freq/--volt alias --slot 0/1 —
+            // same plane selectors as the set command). A domain the driver
+            // refuses (e.g. disp bit 6) or a slot it rejects becomes a
+            // warning and the reset continues — one bad record must not
+            // abort the rest.
             let domains: Vec<u32> = match option_one(invocation, "domain") {
                 Some(raw) => vec![parse_clk_domain_write(raw)?],
                 None => run(target, QueryNvapiClkDomains)?
@@ -4575,9 +4583,19 @@ fn execute_target(
                     }
                     vec![slot]
                 }
-                // no --slot: both live-accepted slots (0 = the signed
-                // frequency offset, 1 = the second writable dword)
-                None => vec![0, 1],
+                None => {
+                    // plane aliases (clap conflicts make them exclusive
+                    // with --slot): --freq narrows to slot 0, --volt to 1
+                    if option_one(invocation, "volt").is_some() {
+                        vec![1]
+                    } else if option_one(invocation, "freq").is_some() {
+                        vec![0]
+                    } else {
+                        // no selector: both live-accepted slots (0 = the
+                        // signed frequency offset, 1 = the voltage addend)
+                        vec![0, 1]
+                    }
+                }
             };
             let mut applied = Vec::new();
             let mut warnings = Vec::new();
@@ -5259,11 +5277,66 @@ fn execute_target(
             if bank > 1 {
                 return Err(CliError::new("bank must be 0 or 1"));
             }
+            // Plane selector: --mode freq|raw (0|1), the human aliases
+            // --freq/--volt, and the numeric --slot 0/1 all pick the same
+            // plane — exactly one may be given. None = both planes
+            // (whole-bank path; the --domain path's documented default stays
+            // mode-0 freq, matching its original footprint).
+            //   freq / --slot 0 → Some(0): clear mode-0 kHz offsets
+            //   volt / --slot 1 → Some(1): clear mode-1 raw values (the
+            //                     voltage plane — V100 live-identified)
+            let mut selectors: Vec<&str> = Vec::new();
+            for (name, key) in [
+                ("--mode", "mode"),
+                ("--freq", "freq"),
+                ("--volt", "volt"),
+                ("--slot", "slot"),
+            ] {
+                if invocation.options.contains_key(key) {
+                    selectors.push(name);
+                }
+            }
+            if selectors.len() > 1 {
+                return Err(CliError::new(format!(
+                    "pick ONE plane selector: {} are mutually exclusive",
+                    selectors.join(", ")
+                )));
+            }
+            let only_mode = if invocation.options.contains_key("freq") {
+                Some(0u8)
+            } else if invocation.options.contains_key("volt") {
+                Some(1u8)
+            } else if let Some(raw) = invocation.options.get("slot").and_then(|v| v.first()) {
+                match raw.trim() {
+                    "0" => Some(0u8),
+                    "1" => Some(1u8),
+                    other => {
+                        return Err(CliError::new(format!(
+                            "invalid --slot {other:?}: expected 0 (freq) or 1 (volt)"
+                        )));
+                    }
+                }
+            } else {
+                match invocation.options.get("mode").and_then(|v| v.first()) {
+                    Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+                        "freq" | "0" => Some(0u8),
+                        "raw" | "1" => Some(1u8),
+                        other => {
+                            return Err(CliError::new(format!(
+                                "invalid --mode {other:?}: expected freq or raw"
+                            )));
+                        }
+                    },
+                    None => None,
+                }
+            };
             // --domain gpc|xbar|msd|disp|mem: restrict the reset to that
-            // domain's segments within the bank (per-point mode-0/value-0
-            // writes via the private point setter — the same write the
-            // whole-bank reset performs, scoped to the segment's index
-            // range from get-private-vftable's advisory attribution).
+            // domain's segments within the bank (per-point writes via the
+            // private point setter — the same write the whole-bank reset
+            // performs, scoped to the segment's index range from
+            // get-private-vftable's advisory attribution). The plane
+            // selector routes the per-point write: freq → mode-0 kHz
+            // (the documented default), volt → mode-1 raw.
             // The third curve's attribution moved twice: HOST → SYS → MSD
             // (the bit-5 offset A/B pinned MSD); sys/host remain accepted
             // as legacy aliases. The disp bins were also once mislabeled
@@ -5285,6 +5358,7 @@ fn execute_target(
                 let vfp = run(target, QueryNvapiClkVfPoints)?
                     .output
                     .ok_or_else(|| CliError::new("private V/F-POINTS family not supported"))?;
+                let freq_mode = only_mode != Some(1);
                 let mut reset = 0usize;
                 for segment in vfp
                     .segments
@@ -5297,7 +5371,7 @@ fn execute_target(
                             SetNvapiVfpPointPrivate {
                                 bank,
                                 idx,
-                                freq_mode: true,
+                                freq_mode,
                                 value: 0,
                             },
                         )?;
@@ -5314,25 +5388,14 @@ fn execute_target(
                     "applied": true,
                     "bank": bank,
                     "domain": domain_raw.trim(),
-                    "mode": "freq_offset_clear",
+                    "mode": if freq_mode { "freq_offset_clear" } else { "volt_offset_clear" },
                     "points_reset": reset,
                 }));
             }
-            // --mode freq|raw (0|1): clear only points currently in that
-            // mode; default clears BOTH modes (mode-1 raw leftovers survive
-            // a mode-0-only reset)
-            let only_mode = match invocation.options.get("mode").and_then(|v| v.first()) {
-                Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
-                    "freq" | "0" => Some(0u8),
-                    "raw" | "1" => Some(1u8),
-                    other => {
-                        return Err(CliError::new(format!(
-                            "invalid --mode {other:?}: expected freq or raw"
-                        )));
-                    }
-                },
-                None => None,
-            };
+            // No --domain: whole-bank reset through the medium layer.
+            // only_mode clears just the points currently in that mode;
+            // default clears BOTH (mode-1 raw leftovers survive a
+            // mode-0-only reset).
             let out = run(target, ResetNvapiVfpPrivate { bank, only_mode })?.output;
             Ok(match out {
                 Some(count) => json!({
@@ -7312,6 +7375,114 @@ mod tests {
         // and the alias is rejected on commands without a slot record
         let err = parse_args(["get-power-limit", "--volt"]).unwrap_err().to_string();
         assert!(err.contains("--volt"), "{err}");
+    }
+
+    #[test]
+    fn reset_private_vftable_offset_plane_selectors_parse() {
+        // reset-private-vftable-offset: --freq/--volt/--slot 0/1/--mode
+        // freq|raw are all plane selectors; exactly one may be given.
+        let invocation = parse_args(["reset-private-vftable-offset", "0"]).unwrap();
+        assert_eq!(invocation.command, Some(Command::ResetPrivateVftableOffset));
+        assert!(option_one(&invocation, "volt").is_none());
+
+        let invocation = parse_args(["reset-private-vftable-offset", "0", "--freq"]).unwrap();
+        assert!(option_one(&invocation, "freq").is_some());
+
+        let invocation =
+            parse_args(["reset-private-vftable-offset", "0", "--slot", "1"]).unwrap();
+        assert_eq!(option_one(&invocation, "slot"), Some("1"));
+
+        // combined with --domain (the domain-scoped path honours the plane)
+        let invocation = parse_args([
+            "reset-private-vftable-offset",
+            "--domain",
+            "gpc",
+            "0",
+            "--volt",
+        ])
+        .unwrap();
+        assert_eq!(option_one(&invocation, "domain"), Some("gpc"));
+        assert!(option_one(&invocation, "volt").is_some());
+
+        // selectors are mutually exclusive (clap: freq/volt/slot conflict)
+        let err = parse_args(["reset-private-vftable-offset", "0", "--freq", "--volt"])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("cannot be used with"), "{err}");
+
+        let err = parse_args([
+            "reset-private-vftable-offset",
+            "0",
+            "--volt",
+            "--slot",
+            "1",
+        ])
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("cannot be used with"), "{err}");
+
+        // --mode overlaps with the aliases: caught at validate/execute time
+        // (mode is shared with whispermode, so no clap conflict there) —
+        // assert via the handler's selector-count guard
+        let invocation = parse_args([
+            "reset-private-vftable-offset",
+            "0",
+            "--mode",
+            "raw",
+            "--volt",
+        ])
+        .unwrap();
+        // execution needs a GPU; validate_invocation is the parse-side
+        // contract and must PASS (both options are legal individually)
+        assert!(validate_invocation(&invocation).is_ok());
+
+        // root form (before the command token) is refused for the same
+        // silent-drop reason as the set command
+        let err = parse_args(["--volt", "reset-private-vftable-offset", "0"])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unexpected argument"), "{err}");
+        let err = parse_args(["--freq", "reset-private-vftable-offset", "0"])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unexpected argument"), "{err}");
+    }
+
+    #[test]
+    fn reset_private_freq_domain_global_offset_plane_aliases_parse() {
+        // reset-private-freq-domain-global-offset: --freq/--volt alias
+        // --slot 0/1 (narrowing the default both-planes reset).
+        let invocation =
+            parse_args(["reset-private-freq-domain-global-offset", "--volt"]).unwrap();
+        assert_eq!(
+            invocation.command,
+            Some(Command::ResetPrivateFreqDomainGlobalOffset)
+        );
+        assert!(option_one(&invocation, "volt").is_some());
+
+        let invocation =
+            parse_args(["reset-private-freq-domain-global-offset", "--domain", "gpc", "--freq"])
+                .unwrap();
+        assert_eq!(option_one(&invocation, "domain"), Some("gpc"));
+        assert!(option_one(&invocation, "freq").is_some());
+
+        // the aliases conflict with --slot (clap)
+        let err = parse_args([
+            "reset-private-freq-domain-global-offset",
+            "--volt",
+            "--slot",
+            "1",
+        ])
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("cannot be used with"), "{err}");
+
+        // root form refused (silent-drop hazard)
+        let err =
+            parse_args(["--volt", "reset-private-freq-domain-global-offset"])
+                .unwrap_err()
+                .to_string();
+        assert!(err.contains("unexpected argument"), "{err}");
     }
 
     #[test]
