@@ -239,6 +239,8 @@ class _CurveData:
         "write_mode",
         "has_fixed",
         "effective",
+        "current_voltages",
+        "grid_shift_mv",
     )
 
     def __init__(self, curve_id: str):
@@ -246,6 +248,18 @@ class _CurveData:
         self.voltages: List[float] = []
         self.frequencies: List[float] = []
         self.defaults: List[float] = []
+        # Voltage grid the CURRENT series is plotted on. None ⇒ same grid
+        # as ``voltages``. Set when a healthy public read rides a shifted
+        # grid (live gpc slot-1 volt offset: public = private + offset,
+        # 1:1, live-verified on 4060/newer drivers) — the public column is
+        # the real-time curve and keeps its OWN x axis; defaults stay on
+        # the private grid, index-aligned.
+        self.current_voltages: Optional[List[float]] = None
+        # Informational: mean(public − private) per-index grid delta (mV)
+        # when ``current_voltages`` is set — console reporting only, never
+        # a gate (slot-0 / per-point private offsets stack on top and make
+        # the frequency column non-uniform, which is fine).
+        self.grid_shift_mv: float = 0.0
         self.source = "public"
         self.bank = 0
         self.seg_start = 0
@@ -299,6 +313,10 @@ class VFCurveTab:
         self._curve_probe_cache: Dict[str, Dict[str, str]] = {}
         # Monotonic guard so a stale async query doesn't overwrite a newer load.
         self._curve_query_epoch: int = 0
+        # Last GPC public-grid shift reported to the console (mV); the
+        # auto-refresh rebuilds curves every tick, so the "[GUI] …public
+        # grid" line only fires when the shift actually changes.
+        self._last_grid_shift_log: Optional[float] = None
 
         # Selection state  (indices into the data arrays)
         self._sel_start: Optional[int] = None
@@ -1200,13 +1218,15 @@ class VFCurveTab:
 
         # Resolve GPC source. The private GPC segment is the DEFAULT-axis
         # authority whenever its voltage axis is populated (Pascal server
-        # cards: all-zero axis → keep the public source). The public read
-        # donates CURRENT frequencies only when its grid still matches the
-        # default grid — under an active gpc slot1 voltage offset it is
-        # either shifted (negative offset) or empty (positive offset; the
-        # public fill path bails and returns zeroed entries). Whether that
-        # public breakage is V100-, old-driver- or both-specific is open —
-        # runtime grid detection below, never a generation table.
+        # cards: all-zero axis → keep the public source). A HEALTHY public
+        # read (whole frequency column populated, same point count) IS the
+        # real-time current curve and is adopted wholesale — frequencies
+        # AND voltage grid. Under an active gpc slot-1 volt offset the
+        # public grid rides at private + offset (1:1 additive, live-verified
+        # on 4060/newer drivers; older drivers instead zero the read out —
+        # the #0-sentinel broken case below). No grid-match requirement:
+        # slot-0 / per-point private offsets stack on top and legitimately
+        # make both columns diverge from the private table per-point.
         private_gpc_usable = private_gpc is not None and any(
             v > 0 for v in private_gpc.voltages
         )
@@ -1226,19 +1246,28 @@ class VFCurveTab:
                 gpc_points
                 and len(gpc_points) == len(cd.voltages)
                 and nonzero_freq * 2 >= len(gpc_points)
-                and all(
-                    abs(p["voltage_uv"] / 1000.0 - v) <= 0.01
-                    for p, v in zip(gpc_points, cd.voltages)
-                )
             ):
-                # Unshifted public grid: adopt its live CURRENT frequencies
-                # (public deltas / OC state); defaults stay private.
+                # Healthy public read: adopt its live CURRENT frequencies on
+                # their OWN voltage grid (shifted under a volt offset — the
+                # current line then extends past the private table's top,
+                # the extrapolated region the driver actually serves).
+                # Defaults stay on the private grid, index-aligned.
+                diffs = [
+                    p["voltage_uv"] / 1000.0 - v
+                    for p, v in zip(gpc_points, cd.voltages)
+                ]
+                pub_grid = [p["voltage_uv"] / 1000.0 for p in gpc_points]
+                if any(abs(d) > 0.01 for d in diffs):
+                    cd.current_voltages = pub_grid
+                    cd.grid_shift_mv = (max(diffs) + min(diffs)) / 2.0
                 cd.frequencies = [p["frequency_khz"] / 1000.0 for p in gpc_points]
                 cd.has_fixed = any(p.get("point_type") == "fixed" for p in gpc_points)
                 cd.source = "hybrid"
             else:
-                # Shifted or broken public read: private currents are the
-                # honest view (== defaults on legacy, live state elsewhere).
+                # Absent or broken public read (the known breakage: old
+                # driver + positive slot-1 zeroes everything but the #0
+                # sentinel): private currents are the honest view (==
+                # defaults on legacy, live state elsewhere).
                 cd.has_fixed = True
             curves["gpc"] = cd
         elif gpc_curve is not None:
@@ -1283,6 +1312,22 @@ class VFCurveTab:
         # Carry over visibility (default: every discovered curve visible), and
         # keep the active curve valid (fallback to first visible).
         self._curves = curves
+        # Report a grid-shift change once (not per auto-refresh tick).
+        # getattr guards: tests build the tab via __new__ without app/attr.
+        gpc_cd = curves.get("gpc")
+        shift = gpc_cd.grid_shift_mv if gpc_cd is not None else 0.0
+        last_log = getattr(self, "_last_grid_shift_log", None)
+        app = getattr(self, "app", None)
+        if (gpc_cd is not None and gpc_cd.current_voltages) or shift:
+            if last_log is None or abs(shift - last_log) > 0.01:
+                self._last_grid_shift_log = shift
+                if app is not None:
+                    app.console.append(
+                        f"[GUI] GPC current curve on public grid "
+                        f"({shift:+.1f} mV vs private default axis).\n"
+                    )
+        elif last_log is not None:
+            self._last_grid_shift_log = None
         self._curve_visible = {cid: prev_visible.get(cid, True) for cid in curves}
         if (
             not self._curve_visible.get(self._active_curve)
@@ -1333,6 +1378,24 @@ class VFCurveTab:
         self._curve_query_epoch += 1
         self._clear_curve_display()
         self._refresh_curve(force=True)
+
+    def _current_grid(self) -> List[float]:
+        """Voltage grid the ACTIVE curve's current series is plotted on.
+
+        Normally the curve's base (private/default) grid; when a healthy
+        public read rode a shifted grid (live gpc slot-1 volt offset), the
+        current series carries its own public voltage axis. Falls back to
+        ``_voltages`` whenever the per-curve grid is absent or its length
+        no longer matches the frequency column (CSV import / legacy paths).
+        """
+        cd = self._curves.get(self._active_curve)
+        if (
+            cd is not None
+            and cd.current_voltages
+            and len(cd.current_voltages) == len(self._frequencies)
+        ):
+            return cd.current_voltages
+        return self._voltages
 
     def _load_active_curve(self):
         """灌 active curve 数据进 _voltages/_frequencies/_defaults 并重绘。
@@ -1917,7 +1980,7 @@ class VFCurveTab:
                 zorder=2,
             )
             (line_cur,) = ax.plot(
-                curve.voltages,
+                curve.current_voltages or curve.voltages,
                 curve.frequencies,
                 color=colors["current"],
                 linestyle="-",
@@ -1946,7 +2009,10 @@ class VFCurveTab:
                     zorder=3.5,
                 )
 
-        # Active curve (default dashed + current solid+marker, animated).
+        # Active curve (default dashed on the base grid + current
+        # solid+marker on the CURRENT grid — its own public axis when a
+        # volt offset shifted it; animated).
+        g = self._current_grid()
         (self._line_default,) = ax.plot(
             v,
             d,
@@ -1957,7 +2023,7 @@ class VFCurveTab:
             zorder=2,
         )
         (self._line_current,) = ax.plot(
-            v,
+            g,
             f,
             color=active_colors["current"],
             linestyle="-",
@@ -2001,7 +2067,7 @@ class VFCurveTab:
         if self._sel_start is not None and self._sel_end is not None:
             s = min(self._sel_start, self._sel_end)
             e = max(self._sel_start, self._sel_end)
-            sel_v = v[s : e + 1]
+            sel_v = g[s : e + 1]
             sel_f = f[s : e + 1]
 
             # Shaded region — persistent animated artist so selection-range
@@ -2009,7 +2075,7 @@ class VFCurveTab:
             # of the moving curve points) via _update_selection_span without
             # a full _redraw. Re-created here on each full redraw.
             self._sel_rect = ax.axvspan(
-                v[s], v[e], alpha=0.15, color="#ffcc00", zorder=1, animated=True
+                g[s], g[e], alpha=0.15, color="#ffcc00", zorder=1, animated=True
             )
 
             # Highlighted points
@@ -2033,7 +2099,7 @@ class VFCurveTab:
                 sign = "+" if delta >= 0 else ""
                 info = (
                     f"  idx : {s}\n"
-                    f"  V   : {v[s]:.1f} mV\n"
+                    f"  V   : {g[s]:.1f} mV\n"
                     f"  F   : {cur_f:.1f} MHz\n"
                     f"  dF  : {ref_f:.1f} MHz (default)\n"
                     f"  ΔF  : {sign}{delta:.1f} MHz  "
@@ -2045,7 +2111,7 @@ class VFCurveTab:
                 sign = "+" if avg_delta >= 0 else ""
                 info = (
                     f"  idx : {s} – {e}  ({e - s + 1} pts)\n"
-                    f"  V   : {v[s]:.1f} ~ {v[e]:.1f} mV\n"
+                    f"  V   : {g[s]:.1f} ~ {g[e]:.1f} mV\n"
                     f"  ΔF  : {sign}{avg_delta:.1f} MHz (avg vs default)  "
                 )
 
@@ -2089,7 +2155,7 @@ class VFCurveTab:
         # Draw crosshairs for locked points
         for idx in self._locked_points:
             if 0 <= idx < len(v):
-                lv = v[idx]
+                lv = g[idx]
                 lf = f[idx]
                 crosshair_kw = dict(
                     color="#ff4444", linewidth=1.0, linestyle="--", alpha=0.85
@@ -2120,6 +2186,11 @@ class VFCurveTab:
 
         # Axis range with some padding — span every visible curve so all fit.
         v_min, v_max = min(v), max(v)
+        # The current grid (public, volt-offset-shifted) can extend past
+        # the private base grid — its extrapolated top must stay in view.
+        if g:
+            v_min = min(v_min, min(g))
+            v_max = max(v_max, max(g))
         f_vals = list(f) + list(d)
         if _active_eff is not None:
             # The active curve's effective series can extend past the base
@@ -2130,9 +2201,10 @@ class VFCurveTab:
         for cid, curve in self._curves.items():
             if cid == self._active_curve or not self._curve_visible.get(cid):
                 continue
-            if curve.voltages:
-                v_min = min(v_min, min(curve.voltages))
-                v_max = max(v_max, max(curve.voltages))
+            _cv = curve.current_voltages or curve.voltages
+            if _cv:
+                v_min = min(v_min, min(_cv), min(curve.voltages))
+                v_max = max(v_max, max(_cv), max(curve.voltages))
             f_vals += list(curve.frequencies) + list(curve.defaults)
             _eff = curve.effective
             if _eff is not None and _eff.applicable:
@@ -2449,10 +2521,16 @@ class VFCurveTab:
     # Mouse interaction
     # ────────────────────────────────────────────
     def _find_nearest_index(self, x_data: float) -> Optional[int]:
-        """Find the index of the VF point closest to x_data (mV)."""
-        if not self._voltages:
+        """Find the index of the VF point closest to x_data (mV).
+
+        Searches the CURRENT series' displayed grid — under a volt offset
+        the visible current line rides the shifted public grid, so clicks
+        on it must resolve against that grid, not the base/default one.
+        """
+        grid = self._current_grid()
+        if not grid:
             return None
-        arr = self._np().array(self._voltages)
+        arr = self._np().array(grid)
         idx = int(self._np().argmin(self._np().abs(arr - x_data)))
         return idx
 
@@ -2633,7 +2711,9 @@ class VFCurveTab:
                 self._line_current.set_ydata(self._frequencies)
             if self._sel_points is not None:
                 sel_f = self._frequencies[s : e + 1]
-                offsets = self._np().column_stack([self._voltages[s : e + 1], sel_f])
+                offsets = self._np().column_stack(
+                    [self._current_grid()[s : e + 1], sel_f]
+                )
                 self._sel_points.set_offsets(offsets)
             self._blit_animated()
             return
@@ -3224,7 +3304,7 @@ class VFCurveTab:
             return
         s = min(self._sel_start, self._sel_end)
         e = max(self._sel_start, self._sel_end)
-        v = self._voltages
+        v = self._current_grid()
         f = self._frequencies
         x0, x1 = v[s], v[e]
 

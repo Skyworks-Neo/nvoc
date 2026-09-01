@@ -1,14 +1,18 @@
 """Tests for the VF-curve default-axis resolution in ``VFCurveTab._build_curves``.
 
-Server-card regression (V100/GV100, driver 538.78): the private vftable GPC
-segment always reflects DEFAULT values regardless of any gpc slot1 voltage
-offset, while the public vftable read is only trustworthy when its voltage
-grid still matches the default grid:
+Server-card regression (V100/GV100, driver 538.78) + 4060/newer-driver
+behavior: the private vftable GPC segment always reflects DEFAULT values
+regardless of any gpc slot1 voltage offset. The public read's trustworthiness
+is decided by its FREQUENCY column, never its grid:
 
-* unshifted grid          → hybrid (public CURRENT freqs, private defaults)
-* shifted grid (slot1<0)  → private only (public freqs discarded)
-* broken read (slot1>0)   → private only (public fill path bails to zeros;
-                            guarded even if the voltage grid happens to match)
+* healthy read (populated) → hybrid: the public column IS the live current
+  curve — adopted wholesale, frequencies AND voltage grid. Under a volt
+  offset the public grid rides at private + offset (1:1, live-verified on
+  4060/newer drivers), so the current series carries its own x axis while
+  defaults stay index-aligned on the private grid.
+* broken read (old driver + positive slot1: everything zeroed but the #0
+  sentinel) → private only (private currents; effective-series synthesis
+  fallback fires when ClkDomains offsets are readable).
 
 The private GPC segment is the default-axis authority whenever its voltage
 axis is populated; a Pascal-style all-zero axis keeps the public source.
@@ -85,7 +89,13 @@ def test_hybrid_public_currents_with_private_defaults() -> None:
     assert gpc.has_fixed is False
 
 
-def test_shifted_public_grid_falls_back_to_private() -> None:
+def test_shifted_public_grid_adopted_as_current() -> None:
+    # 4060/newer drivers: under a gpc slot-1 volt offset the public read
+    # stays HEALTHY (frequency column populated) on a grid uniformly
+    # shifted by the offset (public = private + offset, 1:1). The public
+    # column IS the real-time current curve: frequencies AND their own
+    # voltage grid are adopted; defaults stay index-aligned on the private
+    # grid. (Old drivers instead zero the read out — see the broken tests.)
     tab = _make_tab()
     clk_data = _private_gpc_clk_data(
         [800000, 825000], [1000.0, 1100.0], [1000.0, 1100.0]
@@ -93,13 +103,13 @@ def test_shifted_public_grid_falls_back_to_private() -> None:
     gpc_points = [
         {
             "index": 0,
-            "voltage_uv": 780000,  # grid shifted by a negative slot1 offset
+            "voltage_uv": 850000,  # grid shifted by a positive slot1 offset
             "frequency_khz": 1050000,
             "point_type": "prog",
         },
         {
             "index": 1,
-            "voltage_uv": 805000,
+            "voltage_uv": 875000,
             "frequency_khz": 1150000,
             "point_type": "prog",
         },
@@ -108,10 +118,15 @@ def test_shifted_public_grid_falls_back_to_private() -> None:
     assert tab._build_curves("GPU0", gpc_points, None, False, clk_data) is True
 
     gpc = tab._curves["gpc"]
-    assert gpc.source == "private"
-    assert gpc.frequencies == [1000.0, 1100.0]
+    assert gpc.source == "hybrid"
+    assert gpc.frequencies == [1050.0, 1150.0]
     assert gpc.defaults == [1000.0, 1100.0]
-    assert gpc.has_fixed is True
+    assert gpc.has_fixed is False
+    # The current series rides the shifted PUBLIC grid; the base/default
+    # axis stays on the private grid.
+    assert gpc.current_voltages == [850.0, 875.0]
+    assert gpc.voltages == [800.0, 825.0]
+    assert gpc.grid_shift_mv == 50.0
 
 
 def test_broken_public_frequencies_rejected_even_on_matching_grid() -> None:
@@ -297,7 +312,10 @@ def test_effective_not_synthesized_on_healthy_or_shifted_public() -> None:
         tab._build_curves("GPU0", shifted_public, None, False, clk_data, _GPC_OFFSETS)
         is True
     )
-    assert tab._curves["gpc"].source == "private"
+    # Shifted-but-valid public (volt offset on a newer driver) is ADOPTED
+    # as the live current curve on its own grid — no synthesis needed.
+    assert tab._curves["gpc"].source == "hybrid"
+    assert tab._curves["gpc"].current_voltages == [780.0, 805.0]
     assert tab._curves["gpc"].effective is None
 
 
