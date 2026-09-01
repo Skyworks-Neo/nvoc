@@ -18,7 +18,7 @@ import re
 from pathlib import Path
 from typing import Any, cast
 
-from .models import CurveData, GpuDescriptor
+from .models import CurveData, EffectiveCurve, GpuDescriptor
 
 
 GPU_LINE_RE = re.compile(r"^GPU\s+(\d+)\s*:\s*(.+)$")
@@ -67,10 +67,13 @@ def _normalize_status_json(value: dict[str, Any]) -> dict[str, Any]:
     if isinstance(clocks, dict):
         graphics = _as_float(clocks.get("Graphics"))
         memory = _as_float(clocks.get("Memory"))
+        video = _as_float(clocks.get("Video"))
         if graphics is not None:
             normalized["gpu_clock_mhz"] = graphics / 1000.0
         if memory is not None:
             normalized["mem_clock_mhz"] = memory / 1000.0
+        if video is not None:
+            normalized["video_clock_mhz"] = video / 1000.0
 
     voltage = _as_float(value.get("voltage"))
     if voltage is None:
@@ -509,19 +512,109 @@ def public_vfp_unsupported(gpc_err: str | None) -> bool:
     return "not supported" in low or "no implementation" in low
 
 
+# ClkDomains WRITE-record bit -> curve id. Deliberately DISTINCT from
+# CURVE_META's domain_bit, which is the MEASURE bit: MSD measures on bit
+# 21 but its offset WRITE record is bit 5; MEM measures on bit 4 but
+# writes on bit 2. Conflating the two tables silently synthesizes from
+# the wrong domain's offset.
+WRITE_BIT_TO_CURVE: dict[int, str] = {0: "gpc", 1: "xbar", 5: "msd", 2: "mem"}
+
+
+def normalize_domain_offsets(raw: Any) -> dict[str, dict[str, int]]:
+    """pynvoc private-freq-domain info payload -> {curve_id: offsets}.
+
+    The payload entries carry ``bit`` / ``value_modifiable`` /
+    ``values_kHz`` — an 8-list whose [0] is the slot-0 kHz frequency
+    offset and [1] the slot-1 µV voltage addend DESPITE the field name;
+    that unit split is normalized here and nowhere else. Entries whose
+    ``value_modifiable`` is False are dropped (their value fields are not
+    driver data), as are bits outside WRITE_BIT_TO_CURVE (measure bits,
+    unexposed domains).
+    """
+    if not isinstance(raw, dict) or not raw.get("entries"):
+        return {}
+    offsets: dict[str, dict[str, int]] = {}
+    for entry in raw["entries"]:
+        if not isinstance(entry, dict) or not entry.get("value_modifiable"):
+            continue
+        try:
+            bit = int(entry["bit"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        curve_id = WRITE_BIT_TO_CURVE.get(bit)
+        if curve_id is None:
+            continue
+        values = entry.get("values_kHz")
+        if not isinstance(values, list) or len(values) < 2:
+            continue
+        try:
+            offsets[curve_id] = {
+                "slot0_khz": int(values[0] or 0),
+                "slot1_uv": int(values[1] or 0),
+            }
+        except (TypeError, ValueError):
+            continue
+    return offsets
+
+
+def synthesize_effective(
+    curve: CurveData, offsets: dict[str, dict[str, int]]
+) -> EffectiveCurve:
+    """Frontier synthesis: the base curve shifted by its OWN offsets.
+
+    F_eff(v) = F_base(v − slot1): the slot-1 µV addend shifts the voltage
+    axis (the grid moves by +slot1 mV), the slot-0 kHz offset adds to the
+    frequencies. Other domains' offsets deliberately do NOT enter — they
+    are silent on this frontier (XBAR demanding 0.7 V under a 0.8 V GPC
+    point means XBAR +50 mV changes nothing observable; only once it
+    exceeds the GPC demand does it lift the shared rail's OPERATING
+    point, which is a floor/unreachable-region question, not a frontier
+    one). Not applicable when the offsets are zero or the base series is
+    degenerate (Pascal all-zero voltage axis, GCOFF null-filled segment).
+    """
+    own = offsets.get(curve.curve_id)
+    off_mv = (own["slot1_uv"] / 1000.0) if own else 0.0
+    off_mhz = (own["slot0_khz"] / 1000.0) if own else 0.0
+    eff = EffectiveCurve(curve.curve_id, offset_mv=off_mv, offset_mhz=off_mhz)
+    if off_mv == 0.0 and off_mhz == 0.0:
+        return eff
+    if not any(v > 0 for v in curve.voltages):
+        return eff  # Pascal-style all-zero voltage axis: nothing to shift
+    if not curve.frequencies or all(f == 0 for f in curve.frequencies):
+        return eff  # GCOFF / null-filled segment
+    eff.voltages = [v + off_mv for v in curve.voltages]
+    eff.freqs = [f + off_mhz for f in curve.frequencies]
+    eff.applicable = True
+    return eff
+
+
 def build_vf_curves(
     gpc_points: list[dict[str, Any]] | None,
     gpc_err: str | None,
     clk_data: dict[str, Any] | None,
+    domain_info: Any = None,
 ) -> dict[str, CurveData] | None:
     """Classify public + private V/F reads into per-domain curves.
 
-    Port of the GUI ``_build_curves``: GPC prefers the open interface
-    (Fixed points flip it to private writes); XBAR/MSD come from the private
-    ClockClient V/F-POINTS ``vf_curve`` segments; unnamed domains (the
-    50-series fourth curve) display as unknownN; pstate_bins are skipped.
-    Point-id ranges come straight from the segment
-    structure — never hardcoded. Returns ``None`` when no curve can be built.
+    Port of the GUI ``_build_curves``: GPC's DEFAULT axis is authoritative
+    from the private GPC segment whenever that segment carries a populated
+    voltage axis; the open interface then only donates CURRENT frequencies
+    (and only when its voltage grid still matches the default grid).
+    XBAR/MSD come from the private ClockClient V/F-POINTS ``vf_curve``
+    segments; unnamed domains (the 50-series fourth curve) display as
+    unknownN; pstate_bins are skipped. Point-id ranges come straight from
+    the segment structure — never hardcoded. Returns ``None`` when no
+    curve can be built.
+
+    Why private defaults: the public fill path returns empty entries
+    whenever a positive gpc slot1 (µV V/F-curve voltage offset) is active,
+    and under negative offsets the public voltage grid is shifted away
+    from the default grid. The private STATUS gpc segment always reflects
+    the default table (V100/538.78 verified; whether the public breakage
+    is V100-, old-driver- or both-specific is open — hence runtime grid
+    detection below, never a generation table). Pascal server cards carry
+    an all-zero private voltage axis (freq-indexed records) and keep the
+    public source via the populated-axis guard.
     """
     curves: dict[str, CurveData] = {}
     unknown_count = 0
@@ -585,14 +678,60 @@ def build_vf_curves(
             else:
                 curves[cd.curve_id] = cd
 
-    # Resolve GPC source: public preferred, private fallback.
-    if gpc_curve is not None:
+    # Resolve GPC source. The private GPC segment is the DEFAULT-axis
+    # authority whenever its voltage axis is populated (Pascal server
+    # cards: all-zero axis → keep the public source). The public read
+    # donates CURRENT frequencies only when its grid still matches the
+    # default grid — under an active slot1 shift it is either shifted
+    # (negative offset) or empty (positive offset) and must be ignored.
+    private_gpc_usable = private_gpc is not None and any(
+        v > 0 for v in private_gpc.voltages
+    )
+    if private_gpc_usable:
+        cd = private_gpc
+        if (
+            gpc_points
+            and len(gpc_points) == len(cd.voltages)
+            and any(p.get("frequency_khz", 0) > 0 for p in gpc_points)
+            and all(
+                abs(p["voltage_uv"] / 1000.0 - v) <= 0.01
+                for p, v in zip(gpc_points, cd.voltages)
+            )
+        ):
+            # Unshifted public grid: adopt its live CURRENT frequencies
+            # (public deltas / OC state); defaults stay private.
+            cd.frequencies = [p["frequency_khz"] / 1000.0 for p in gpc_points]
+            cd.has_fixed = any(p.get("point_type") == "fixed" for p in gpc_points)
+            cd.source = "hybrid"
+        else:
+            # Shifted or broken public read: private currents are the
+            # honest view (== defaults on legacy, live state elsewhere).
+            cd.has_fixed = True
+        curves["gpc"] = cd
+    elif gpc_curve is not None:
         curves["gpc"] = gpc_curve
     elif private_gpc is not None:
+        # Public absent AND private voltage axis empty — last resort.
         curves["gpc"] = private_gpc
 
     if not curves:
         return None
+    # Effective-series synthesis is the FALLBACK for the broken-positive-
+    # slot1 state and nothing else: it triggers only when the public read
+    # came back present-but-corrupt (fill path bailed → all-zero frequency
+    # column) AND the private default axis is authoritative. A healthy
+    # public read (hybrid) already carries the live currents; a shifted
+    # grid (negative slot1) displays fine through the private axis; an
+    # absent public family is "not supported", not breakage — none of
+    # those synthesize.
+    public_broken = bool(gpc_points) and not any(
+        p.get("frequency_khz", 0) > 0 for p in gpc_points
+    )
+    offsets = normalize_domain_offsets(domain_info)
+    if offsets and public_broken:
+        gpc = curves.get("gpc")
+        if gpc is not None and gpc.source != "public":
+            gpc.effective = synthesize_effective(gpc, offsets)
     # Canonical display order GPC → XBAR → MSD → others (unknownN keep
     # discovery order; stable sort). Consumers (selector, plot draws)
     # iterate this dict — without this, a public-source GPC (inserted
@@ -651,6 +790,10 @@ def compute_vf_plot_bounds_multi(
         voltages.extend(curve.voltages)
         freqs.extend(curve.frequencies)
         defaults.extend(curve.defaults)
+        eff = curve.effective
+        if eff is not None and eff.applicable:
+            voltages.extend(eff.voltages)
+            freqs.extend(eff.freqs)
     if not voltages or not freqs or not defaults:
         return None
     return compute_vf_plot_bounds(

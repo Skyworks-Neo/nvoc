@@ -92,6 +92,93 @@ def _curve_meta_for(cid: str) -> dict:
 # still shifting the domain.
 _CURVE_WRITE_BIT = {"gpc": 0, "xbar": 1, "msd": 5, "mem": 2}
 
+# Reverse of _CURVE_WRITE_BIT for offset normalization (bit -> curve id).
+_WRITE_BIT_TO_CURVE = {bit: cid for cid, bit in _CURVE_WRITE_BIT.items()}
+
+
+class _EffectiveCurve:
+    """Forward-synthesized effective series for a curve (display only).
+
+    Mirror of the TUI parsing.EffectiveCurve: the private base curve +
+    ClkDomains slot-1 µV voltage addend (voltage-axis shift) + slot-0 kHz
+    frequency offset. Display-only — never written back into
+    _CurveData.frequencies; the editing paths operate on the base axes.
+    """
+
+    __slots__ = ("curve_id", "voltages", "freqs", "offset_mv", "offset_mhz", "applicable")
+
+    def __init__(self, curve_id: str):
+        self.curve_id = curve_id
+        self.voltages: List[float] = []
+        self.freqs: List[float] = []
+        self.offset_mv = 0.0
+        self.offset_mhz = 0.0
+        self.applicable = False
+
+
+def _normalize_domain_offsets(raw) -> dict:
+    """pynvoc private-freq-domain info payload -> {curve_id: offsets}.
+
+    Entries carry ``bit`` / ``value_modifiable`` / ``values_kHz`` (an
+    8-list: [0] = slot-0 kHz frequency offset, [1] = slot-1 µV voltage
+    addend DESPITE the field name — the unit split is normalized here and
+    nowhere else). ``value_modifiable`` False entries are dropped (value
+    fields not driver data), as are bits outside the WRITE map (measure
+    bits like msd's 21 / mem's 4 must never be conflated with their WRITE
+    bits 5 / 2).
+    """
+    if not isinstance(raw, dict) or not raw.get("entries"):
+        return {}
+    offsets = {}
+    for entry in raw["entries"]:
+        if not isinstance(entry, dict) or not entry.get("value_modifiable"):
+            continue
+        try:
+            bit = int(entry["bit"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        curve_id = _WRITE_BIT_TO_CURVE.get(bit)
+        if curve_id is None:
+            continue
+        values = entry.get("values_kHz")
+        if not isinstance(values, list) or len(values) < 2:
+            continue
+        try:
+            offsets[curve_id] = {
+                "slot0_khz": int(values[0] or 0),
+                "slot1_uv": int(values[1] or 0),
+            }
+        except (TypeError, ValueError):
+            continue
+    return offsets
+
+
+def _synthesize_effective(curve, offsets: dict) -> _EffectiveCurve:
+    """Frontier synthesis: the base curve shifted by its OWN offsets.
+
+    F_eff(v) = F_base(v − slot1); other domains' offsets are silent on
+    this frontier (they lift the shared rail's operating point only once
+    they exceed this domain's demand — a floor question, not a frontier
+    one). Not applicable on zero offsets or degenerate base series
+    (Pascal all-zero voltage axis, GCOFF null-filled segment).
+    """
+    own = offsets.get(curve.curve_id)
+    off_mv = (own["slot1_uv"] / 1000.0) if own else 0.0
+    off_mhz = (own["slot0_khz"] / 1000.0) if own else 0.0
+    eff = _EffectiveCurve(curve.curve_id)
+    eff.offset_mv = off_mv
+    eff.offset_mhz = off_mhz
+    if off_mv == 0.0 and off_mhz == 0.0:
+        return eff
+    if not any(v > 0 for v in curve.voltages):
+        return eff  # Pascal-style all-zero voltage axis: nothing to shift
+    if not curve.frequencies or all(f == 0 for f in curve.frequencies):
+        return eff  # GCOFF / null-filled segment
+    eff.voltages = [v + off_mv for v in curve.voltages]
+    eff.freqs = [f + off_mhz for f in curve.frequencies]
+    eff.applicable = True
+    return eff
+
 
 def _curve_direct_readable(cid: str) -> bool:
     """Whether the live crosshair must DIRECT-READ this curve's domain.
@@ -144,6 +231,7 @@ class _CurveData:
         "seg_end",
         "write_mode",
         "has_fixed",
+        "effective",
     )
 
     def __init__(self, curve_id: str):
@@ -159,6 +247,9 @@ class _CurveData:
         # "private_raw_converted" (private mode-1 raw f-offset via g(def))
         self.write_mode = "public"
         self.has_fixed = False
+        # Synthesized effective series (positive-slot1 display), see
+        # _synthesize_effective. None when no offset data was read.
+        self.effective: Optional[_EffectiveCurve] = None
 
 
 class VFCurveTab:
@@ -932,16 +1023,25 @@ class VFCurveTab:
                 clk_data = self.app.backend.query_private_vftable(gpu)
             except Exception:
                 clk_data = None
+            # ClkDomains offsets (slot0 kHz / slot1 µV readback) feed the
+            # effective-curve synthesis; best-effort like the others.
+            domain_info = None
+            try:
+                domain_info = self.app.backend.query_private_freq_domain_info(gpu)
+            except Exception:
+                domain_info = None
             self.app.after(
                 0,
                 lambda: self._on_multi_query_done(
-                    epoch, gpu, gpc_points, gpc_err, clk_data
+                    epoch, gpu, gpc_points, gpc_err, clk_data, domain_info
                 ),
             )
 
         self.app.run_background("vfcurve-refresh", _worker)
 
-    def _on_multi_query_done(self, epoch, gpu, gpc_points, gpc_err, clk_data):
+    def _on_multi_query_done(
+        self, epoch, gpu, gpc_points, gpc_err, clk_data, domain_info=None
+    ):
         self._refresh_curve_inflight = False
         # After cleanup() the figure/canvas are gone — drop the result and
         # do NOT re-arm the refresh chain, or a late worker would re-submit
@@ -963,7 +1063,7 @@ class VFCurveTab:
             "not supported" in gpc_err.lower() or "no implementation" in gpc_err.lower()
         )
         built = self._build_curves(
-            gpu, gpc_points, gpc_err, public_unsupported, clk_data
+            gpu, gpc_points, gpc_err, public_unsupported, clk_data, domain_info
         )
         if not built:
             # No curve on THIS GPU. When the GPU genuinely has no V/F
@@ -1003,7 +1103,7 @@ class VFCurveTab:
             self._schedule_next_auto_refresh()
 
     def _build_curves(
-        self, gpu, gpc_points, gpc_err, public_unsupported, clk_data
+        self, gpu, gpc_points, gpc_err, public_unsupported, clk_data, domain_info=None
     ) -> bool:
         """Populate ``self._curves`` from public + private reads.
 
@@ -1022,8 +1122,10 @@ class VFCurveTab:
         curves: Dict[str, _CurveData] = {}
         prev_visible = self._curve_visible or {}
 
-        # ── GPC: prefer the open interface; fall back to the private GPC
-        # segment when the public one is explicitly unsupported. ──
+        # ── GPC: the private GPC segment (when its voltage axis is
+        # populated) is the default-axis authority; the public read only
+        # donates current frequencies on an unshifted grid. Public-only
+        # base remains for Pascal-style all-zero private voltage axes. ──
         gpc_curve = None
         if gpc_points:
             gpc_curve = _CurveData("gpc")
@@ -1046,7 +1148,8 @@ class VFCurveTab:
             # only GPC source. Located below from clk_data.
             pass
 
-        # ── Private segments: GPC (fallback), XBAR, MSD, unknownN. ──
+        # ── Private segments: GPC (default-axis authority), XBAR, MSD,
+        # unknownN. ──
         private_gpc: Optional[_CurveData] = None
         unknown_count = 0
         if clk_data and clk_data.get("segments"):
@@ -1088,10 +1191,47 @@ class VFCurveTab:
                 else:
                     curves[cd.curve_id] = cd
 
-        # Resolve GPC source: public preferred, private fallback.
-        if gpc_curve is not None:
+        # Resolve GPC source. The private GPC segment is the DEFAULT-axis
+        # authority whenever its voltage axis is populated (Pascal server
+        # cards: all-zero axis → keep the public source). The public read
+        # donates CURRENT frequencies only when its grid still matches the
+        # default grid — under an active gpc slot1 voltage offset it is
+        # either shifted (negative offset) or empty (positive offset; the
+        # public fill path bails and returns zeroed entries). Whether that
+        # public breakage is V100-, old-driver- or both-specific is open —
+        # runtime grid detection below, never a generation table.
+        private_gpc_usable = private_gpc is not None and any(
+            v > 0 for v in private_gpc.voltages
+        )
+        if private_gpc_usable:
+            cd = private_gpc
+            if (
+                gpc_points
+                and len(gpc_points) == len(cd.voltages)
+                and any(p.get("frequency_khz", 0) > 0 for p in gpc_points)
+                and all(
+                    abs(p["voltage_uv"] / 1000.0 - v) <= 0.01
+                    for p, v in zip(gpc_points, cd.voltages)
+                )
+            ):
+                # Unshifted public grid: adopt its live CURRENT frequencies
+                # (public deltas / OC state); defaults stay private.
+                cd.frequencies = [
+                    p["frequency_khz"] / 1000.0 for p in gpc_points
+                ]
+                cd.has_fixed = any(
+                    p.get("point_type") == "fixed" for p in gpc_points
+                )
+                cd.source = "hybrid"
+            else:
+                # Shifted or broken public read: private currents are the
+                # honest view (== defaults on legacy, live state elsewhere).
+                cd.has_fixed = True
+            curves["gpc"] = cd
+        elif gpc_curve is not None:
             curves["gpc"] = gpc_curve
         elif private_gpc is not None:
+            # Public absent AND private voltage axis empty — last resort.
             curves["gpc"] = private_gpc
 
         if not curves:
@@ -1106,6 +1246,23 @@ class VFCurveTab:
         # private segments.
         order = {"gpc": 0, "xbar": 1, "msd": 2, "mem": 3}
         curves = dict(sorted(curves.items(), key=lambda kv: order.get(kv[0], 4)))
+
+        # Effective-series synthesis is the FALLBACK for the broken-positive-
+        # slot1 state and nothing else: it triggers only when the public read
+        # came back present-but-corrupt (fill path bailed → all-zero
+        # frequency column) AND the private default axis is authoritative.
+        # A healthy public read (hybrid) already carries the live currents; a
+        # shifted grid (negative slot1) displays fine through the private
+        # axis; an absent public family is "not supported", not breakage —
+        # none of those synthesize.
+        public_broken = bool(gpc_points) and not any(
+            p.get("frequency_khz", 0) > 0 for p in gpc_points
+        )
+        offsets = _normalize_domain_offsets(domain_info)
+        if offsets and public_broken:
+            gpc_cd = curves.get("gpc")
+            if gpc_cd is not None and gpc_cd.source != "public":
+                gpc_cd.effective = _synthesize_effective(gpc_cd, offsets)
 
         # Carry over visibility (default: every discovered curve visible), and
         # keep the active curve valid (fallback to first visible).
@@ -1757,6 +1914,21 @@ class VFCurveTab:
                 zorder=3,
             )
             self._curve_lines[cid] = {"current": line_cur, "default": None}
+            eff = curve.effective
+            if eff is not None and eff.applicable:
+                # Effective series overlay: the base curve forward-shifted by
+                # its own ClkDomains slot0/slot1 offsets (positive-slot1
+                # display — the public read is broken there, the private
+                # table only carries defaults). Static and display-only.
+                ax.plot(
+                    eff.voltages,
+                    eff.freqs,
+                    color="#80ff80",
+                    linestyle=":",
+                    linewidth=1.0,
+                    label=f"{lbl} EFF",
+                    zorder=3.5,
+                )
 
         # Active curve (default dashed + current solid+marker, animated).
         (self._line_default,) = ax.plot(
@@ -1786,6 +1958,28 @@ class VFCurveTab:
             "current": self._line_current,
             "default": self._line_default,
         }
+        _active_cd = self._curves.get(self._active_curve)
+        _active_eff = (
+            _active_cd.effective
+            if _active_cd is not None
+            and _active_cd.effective is not None
+            and _active_cd.effective.applicable
+            else None
+        )
+        if _active_eff is not None:
+            # Active curve's effective overlay (see the non-active loop above
+            # for semantics). Static: offsets change on refresh, never during
+            # a drag — the animated artists stay just the current line and
+            # the selection span.
+            ax.plot(
+                _active_eff.voltages,
+                _active_eff.freqs,
+                color="#80ff80",
+                linestyle=":",
+                linewidth=1.0,
+                label=f"{active_label} EFF",
+                zorder=4.4,
+            )
 
         # Selection highlight
         if self._sel_start is not None and self._sel_end is not None:
@@ -1911,6 +2105,12 @@ class VFCurveTab:
         # Axis range with some padding — span every visible curve so all fit.
         v_min, v_max = min(v), max(v)
         f_vals = list(f) + list(d)
+        if _active_eff is not None:
+            # The active curve's effective series can extend past the base
+            # grid (positive slot1 shifts voltage right, slot0 lifts freqs).
+            v_min = min(v_min, min(_active_eff.voltages))
+            v_max = max(v_max, max(_active_eff.voltages))
+            f_vals += list(_active_eff.freqs)
         for cid, curve in self._curves.items():
             if cid == self._active_curve or not self._curve_visible.get(cid):
                 continue
@@ -1918,6 +2118,11 @@ class VFCurveTab:
                 v_min = min(v_min, min(curve.voltages))
                 v_max = max(v_max, max(curve.voltages))
             f_vals += list(curve.frequencies) + list(curve.defaults)
+            _eff = curve.effective
+            if _eff is not None and _eff.applicable:
+                v_min = min(v_min, min(_eff.voltages))
+                v_max = max(v_max, max(_eff.voltages))
+                f_vals += list(_eff.freqs)
         f_min, f_max = min(f_vals), max(f_vals) if f_vals else (0, 1)
 
         # Adjust Y limits if freq lock is outside default range

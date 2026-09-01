@@ -192,6 +192,7 @@ class VFCurveController(PaneController):
             gpc_points: list[dict] | None = None
             gpc_err: str | None = None
             clk_data: dict | None = None
+            domain_info: dict | None = None
             try:
                 gpc_points = self.app.native_service.query_public_vftable(gpu)
             except Exception as exc:
@@ -200,9 +201,17 @@ class VFCurveController(PaneController):
                 clk_data = self.app.native_service.query_private_vftable(gpu)
             except Exception:
                 clk_data = None
+            # ClkDomains offsets (slot0 kHz / slot1 µV readback) feed the
+            # effective-curve synthesis; best-effort like the others.
+            try:
+                domain_info = self.app.native_service.query_private_freq_domain_info(
+                    gpu
+                )
+            except Exception:
+                domain_info = None
             try:
                 self.app.call_from_thread(
-                    self.on_curve_loaded, gpc_points, gpc_err, clk_data
+                    self.on_curve_loaded, gpc_points, gpc_err, clk_data, domain_info
                 )
             except Exception:
                 self._end_refresh()
@@ -250,9 +259,10 @@ class VFCurveController(PaneController):
         gpc_points: "list[dict] | None",
         gpc_err: str | None,
         clk_data: dict | None,
+        domain_info: dict | None = None,
     ) -> None:
         self._end_refresh()
-        curves = build_vf_curves(gpc_points, gpc_err, clk_data)
+        curves = build_vf_curves(gpc_points, gpc_err, clk_data, domain_info)
         self.app.cache.vf_curve_points = gpc_points if curves else None
         self.app.cache.vf_curves = curves
         if curves is None:
@@ -352,6 +362,20 @@ class VFCurveController(PaneController):
             plt.scatter(
                 curve.voltages, curve.defaults, marker="braille", color=default_color
             )
+            # Effective series: the base curve forward-shifted by its own
+            # ClkDomains slot0/slot1 offsets (positive-slot1 display — the
+            # public read is broken there, the private table only carries
+            # defaults). Display-only overlay, never an edit target. Yellow:
+            # distinct from every current-line hue (gpc's is cyan+).
+            eff = curve.effective
+            if eff is not None and eff.applicable:
+                plt.plot(
+                    eff.voltages,
+                    eff.freqs,
+                    marker="braille",
+                    color="yellow",
+                    label=f"{label} EFF",
+                )
         # Live crosshair only on the active curve: GPC frequency from the
         # dashboard status feed, XBAR/MSD from the direct-read poll path.
         # The crosshair VOLTAGE is the rail current on every curve (the

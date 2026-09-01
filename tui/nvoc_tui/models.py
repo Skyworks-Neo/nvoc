@@ -65,6 +65,25 @@ class AppConfig:
 
 
 @dataclass(slots=True)
+class EffectiveCurve:
+    """Forward-synthesized effective series for a curve (display only).
+
+    Composed from the readable offset planes instead of inverting the
+    (underdetermined) observation: the private base curve + the ClkDomains
+    slot-1 µV voltage addend (voltage-axis shift) + the slot-0 kHz
+    frequency offset. Display-only: never written back into
+    CurveData.frequencies — the editing paths operate on the base axes.
+    """
+
+    curve_id: str
+    voltages: list[float] = field(default_factory=list)  # mV, shifted grid
+    freqs: list[float] = field(default_factory=list)  # MHz, offset-added
+    offset_mv: float = 0.0
+    offset_mhz: float = 0.0
+    applicable: bool = False
+
+
+@dataclass(slots=True)
 class CurveData:
     """One plotted V/F curve (GPC public / XBAR / MSD private)."""
 
@@ -78,6 +97,9 @@ class CurveData:
     frequencies: list[float] = field(default_factory=list)  # MHz (current)
     defaults: list[float] = field(default_factory=list)  # MHz (default)
     has_fixed: bool = False
+    # Synthesized effective series (positive-slot1 display), see
+    # parsing.synthesize_effective. None when no offset data was read.
+    effective: EffectiveCurve | None = None
 
 
 @dataclass(slots=True)
