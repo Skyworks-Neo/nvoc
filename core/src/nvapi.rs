@@ -10,9 +10,9 @@ use super::types::{NvapiLockedVoltageTarget, VfpResetDomain};
 use ::nvapi::hi::{
     Celsius, ClockDomain, ClockLockEntry, ClockLockValue, ConnectedIdsFlags, CoolerPolicy,
     CoolerSettings, FanCoolerId, Gpu, Kilohertz, KilohertzDelta, Microvolts, MicrovoltsDelta,
-    PState, Percentage, PerfLimitId, PffCurve, PffPoint, VfpPoint,
+    PState, Percentage, PerfLimitId, PffCurve, VfpPoint,
 };
-use ::nvapi::{CelsiusShifted, DisplayIdsFlags, VoltageDomain};
+use ::nvapi::{DisplayIdsFlags, VoltageDomain};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::iter;
@@ -20,14 +20,20 @@ use std::str::FromStr;
 use std::thread::sleep;
 use std::time::Duration;
 
+/// All seven fields are `Option` — `None` means the driver reported no such
+/// limit (e.g. V100 exposes no thermal-policy entries at all). The old code
+/// seeded `2047/4095/8191` percent and `127/255/511` C plus a fake
+/// 3-point PFF curve as "test placeholders"; those leaked verbatim whenever
+/// the underlying tables were empty, so they were removed in favor of
+/// faithfully reporting the missing data.
 pub type GpuTdpTempLimits = (
-    Percentage,
-    Percentage,
-    Percentage,
-    Celsius,
-    Celsius,
-    Celsius,
-    PffCurve,
+    Option<Percentage>,
+    Option<Percentage>,
+    Option<Percentage>,
+    Option<Celsius>,
+    Option<Celsius>,
+    Option<Celsius>,
+    Option<PffCurve>,
 );
 
 #[derive(Clone, Copy, Debug)]
@@ -1264,42 +1270,24 @@ pub fn get_gpu_tdp_temp_limit(
     gpus: &[&Gpu],
     mut print_separator: impl FnMut(),
 ) -> Result<GpuTdpTempLimits, Error> {
-    let mut min_tdp_percentage = Percentage(2047);
-    let mut max_tdp_percentage = Percentage(4095);
-    let mut default_tdp_percentage = Percentage(8191);
+    // None until a GPU actually reports the limit — see GpuTdpTempLimits.
+    let mut min_tdp_percentage = None;
+    let mut max_tdp_percentage = None;
+    let mut default_tdp_percentage = None;
 
-    let mut min_temp_lim = Celsius(127);
-    let mut max_temp_lim = Celsius(255);
-    let mut default_temp_lim = Celsius(511);
-
-    // Nvidia encodes temperature as << 8 for some reason sometimes.
-    let pff_current_point = vec![
-        PffPoint {
-            x: CelsiusShifted(100 << 8),
-            y: Kilohertz(3300000),
-        },
-        PffPoint {
-            x: CelsiusShifted(110 << 8),
-            y: Kilohertz(3300000),
-        },
-        PffPoint {
-            x: CelsiusShifted(120 << 8),
-            y: Kilohertz(3300000),
-        },
-    ];
-
-    let mut current_pff_curve = PffCurve {
-        points: pff_current_point,
-    };
+    let mut min_temp_lim = None;
+    let mut max_temp_lim = None;
+    let mut default_temp_lim = None;
+    let mut current_pff_curve = None;
 
     for gpu in gpus {
         let info = gpu.info()?;
 
         //power limit readout
         for limit in info.power_limits.iter() {
-            max_tdp_percentage = limit.range.max;
-            min_tdp_percentage = limit.range.min;
-            default_tdp_percentage = limit.default;
+            max_tdp_percentage = Some(limit.range.max);
+            min_tdp_percentage = Some(limit.range.min);
+            default_tdp_percentage = Some(limit.default);
             print_separator();
             print_separator();
         }
@@ -1312,11 +1300,11 @@ pub fn get_gpu_tdp_temp_limit(
                 .chain(iter::repeat(None)),
         ) {
             if let Some(limit) = limit {
-                min_temp_lim = limit.range.min;
-                max_temp_lim = limit.range.max;
-                default_temp_lim = limit.default;
+                min_temp_lim = Some(limit.range.min);
+                max_temp_lim = Some(limit.range.max);
+                default_temp_lim = Some(limit.default);
                 if let Some(pff) = &limit.throttle_curve {
-                    current_pff_curve = pff.clone();
+                    current_pff_curve = Some(pff.clone());
                 }
             }
         }

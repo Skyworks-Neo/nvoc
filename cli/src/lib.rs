@@ -3249,22 +3249,25 @@ fn execute_target(
         }
         Command::GetPublicPowerLimit => {
             // Power-limit half of the old get-tdp-temp-limits (NVAPI
-            // ClientPowerPolicies TDP percent range).
+            // ClientPowerPolicies TDP percent range). Fields are None → null
+            // when the driver reports no power-policy entries.
             let limits = run(target, QueryTdpTempLimits)?.output;
             Ok(json!({
-                "min_tdp_percent": limits.min_tdp.0,
-                "default_tdp_percent": limits.default_tdp.0,
-                "max_tdp_percent": limits.max_tdp.0,
+                "min_tdp_percent": limits.min_tdp.map(|v| v.0),
+                "default_tdp_percent": limits.default_tdp.map(|v| v.0),
+                "max_tdp_percent": limits.max_tdp.map(|v| v.0),
             }))
         }
         Command::GetPublicTempLimit => {
-            // Temp-limit half of the old get-tdp-temp-limits.
+            // Temp-limit half of the old get-tdp-temp-limits. Fields are None
+            // → null when the driver reports no thermal-policy entries (e.g.
+            // V100) — the old code printed fabricated placeholders there.
             let limits = run(target, QueryTdpTempLimits)?.output;
             Ok(json!({
-                "min_temp_c": limits.min_temp.0,
-                "default_temp_c": limits.default_temp.0,
-                "max_temp_c": limits.max_temp.0,
-                "curve": format!("{:?}", limits.throttle_curve),
+                "min_temp_c": limits.min_temp.map(|v| v.0),
+                "default_temp_c": limits.default_temp.map(|v| v.0),
+                "max_temp_c": limits.max_temp.map(|v| v.0),
+                "curve": limits.throttle_curve.map(|c| format!("{:?}", c)),
             }))
         }
         Command::GetLegacyGpcRailVoltRange => {
@@ -6854,7 +6857,6 @@ mod tests {
             | Command::ResetLegacyGpcRailOvervoltLimit
             | Command::ResetPstateGlobalFreqOffset
             | Command::GetVbios
-            | Command::GetFanPolicyInfo
             | Command::ResetPublicGpcRailVoltBoost => {}
         }
     }

@@ -687,15 +687,19 @@ pub struct VoltageLimits {
     pub upper_point: usize,
 }
 
+/// Every field is `None` when the driver reports no such limit (the old code
+/// substituted hardcoded test placeholders — 2047/4095/8191 percent,
+/// 127/255/511 C, and a fake 3-point PFF curve — which leaked as if they were
+/// real data on GPUs with empty policy tables, e.g. V100).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TdpTempLimits {
-    pub min_tdp: ::nvapi::hi::Percentage,
-    pub default_tdp: ::nvapi::hi::Percentage,
-    pub max_tdp: ::nvapi::hi::Percentage,
-    pub min_temp: ::nvapi::hi::Celsius,
-    pub default_temp: ::nvapi::hi::Celsius,
-    pub max_temp: ::nvapi::hi::Celsius,
-    pub throttle_curve: ::nvapi::hi::PffCurve,
+    pub min_tdp: Option<::nvapi::hi::Percentage>,
+    pub default_tdp: Option<::nvapi::hi::Percentage>,
+    pub max_tdp: Option<::nvapi::hi::Percentage>,
+    pub min_temp: Option<::nvapi::hi::Celsius>,
+    pub default_temp: Option<::nvapi::hi::Celsius>,
+    pub max_temp: Option<::nvapi::hi::Celsius>,
+    pub throttle_curve: Option<::nvapi::hi::PffCurve>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

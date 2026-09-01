@@ -478,11 +478,24 @@ fn nvapi_tdp_temp_ok() {
     match result {
         Ok(report) => {
             let limits = report.output;
-            assert!(limits.min_tdp.0 <= limits.max_tdp.0);
-            assert!(limits.default_tdp.0 >= limits.min_tdp.0 || limits.default_tdp.0 == 8191);
-            assert!(limits.min_temp.0 <= limits.max_temp.0);
-            assert!(limits.default_temp.0 >= limits.min_temp.0 || limits.default_temp.0 == 511);
-            assert!(!limits.throttle_curve.points.is_empty());
+            // Fields are None where the driver reports no policy entries
+            // (e.g. V100 exposes neither power nor thermal policies) — that's
+            // valid, but any reported values must be self-consistent.
+            if let (Some(min_tdp), Some(max_tdp)) = (limits.min_tdp, limits.max_tdp) {
+                assert!(min_tdp.0 <= max_tdp.0);
+                if let Some(default_tdp) = limits.default_tdp {
+                    assert!(default_tdp.0 >= min_tdp.0);
+                }
+            }
+            if let (Some(min_temp), Some(max_temp)) = (limits.min_temp, limits.max_temp) {
+                assert!(min_temp.0 <= max_temp.0);
+                if let Some(default_temp) = limits.default_temp {
+                    assert!(default_temp.0 >= min_temp.0);
+                }
+            }
+            if let Some(curve) = limits.throttle_curve {
+                assert!(!curve.points.is_empty());
+            }
         }
         Err(Error::FeatureUnsupportedErr | Error::VfpUnsupported) => {}
         Err(e) => panic!("unexpected read-only TDP/temp error: {e}"),

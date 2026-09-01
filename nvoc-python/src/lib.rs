@@ -1398,13 +1398,31 @@ fn normalize_query_vfp_point(target: &GpuTarget<'_>, point: usize) -> PyResultVa
 
 fn normalize_tdp_temp_limits(target: &GpuTarget<'_>) -> PyResultValue {
     let limits = run(target, QueryTdpTempLimits).map_err(to_py_err)?.output;
+    // Fields the driver didn't report (e.g. no thermal-policy entries on
+    // V100) are omitted entirely — None maps to Value::Null, which
+    // value_object drops — rather than fabricated with placeholder values.
     Ok(value_object([
-        ("min_tdp", percent_value(limits.min_tdp)),
-        ("default_tdp", percent_value(limits.default_tdp)),
-        ("max_tdp", percent_value(limits.max_tdp)),
-        ("min_temp", u64_value(limits.min_temp.0 as u64)),
-        ("default_temp", u64_value(limits.default_temp.0 as u64)),
-        ("max_temp", u64_value(limits.max_temp.0 as u64)),
+        ("min_tdp", limits.min_tdp.map(percent_value).unwrap_or(Value::Null)),
+        (
+            "default_tdp",
+            limits.default_tdp.map(percent_value).unwrap_or(Value::Null),
+        ),
+        ("max_tdp", limits.max_tdp.map(percent_value).unwrap_or(Value::Null)),
+        (
+            "min_temp",
+            limits.min_temp.map(|v| u64_value(v.0 as u64)).unwrap_or(Value::Null),
+        ),
+        (
+            "default_temp",
+            limits
+                .default_temp
+                .map(|v| u64_value(v.0 as u64))
+                .unwrap_or(Value::Null),
+        ),
+        (
+            "max_temp",
+            limits.max_temp.map(|v| u64_value(v.0 as u64)).unwrap_or(Value::Null),
+        ),
     ]))
 }
 

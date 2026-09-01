@@ -1120,29 +1120,43 @@ pub fn apply_autoscan_profile(
 
     match get_gpu_tdp_temp_limit(matches) {
         Ok(limits) => {
+            // Refuse to write placeholder-derived limits: unreadable values
+            // are None since the placeholder fallback was removed.
+            let Some(max_tdp) = limits.max_tdp else {
+                return Err(Error::from(
+                    "Power-limit table not reported by the driver; cannot max out the TDP.",
+                ));
+            };
+            let Some(max_temp) = limits.max_temp else {
+                return Err(Error::from(
+                    "Temp-limit table not reported by the driver; cannot max out the temp limit.",
+                ));
+            };
             run_output(
                 gpu,
                 SetNvapiPowerLimits {
-                    limits: vec![limits.max_tdp],
+                    limits: vec![max_tdp],
                 },
             )?;
             println!(
                 "{}",
-                stylize(
-                    &format!("Successfully set the TDP to {}", limits.max_tdp),
-                    false
-                )
+                stylize(&format!("Successfully set the TDP to {}", max_tdp), false)
             );
 
-            let mut pff_curve = limits.throttle_curve;
-            for point in pff_curve.points.iter_mut() {
-                point.y = Kilohertz(3456000);
-            }
+            // The driver may expose the temp range without a PFF throttle
+            // curve; in that case write the value-only limit and leave the
+            // curve untouched instead of fabricating one.
+            let rewritten_curve = limits.throttle_curve.map(|mut pff_curve| {
+                for point in pff_curve.points.iter_mut() {
+                    point.y = Kilohertz(3456000);
+                }
+                pff_curve
+            });
 
             let temp_limit = SensorThrottle {
-                value: limits.max_temp,
+                value: max_temp,
                 remove_tdp_limit: true,
-                curve: Some(pff_curve.clone()),
+                curve: rewritten_curve.clone(),
             };
 
             run_output(
@@ -1151,16 +1165,28 @@ pub fn apply_autoscan_profile(
                     limits: vec![temp_limit],
                 },
             )?;
-            println!(
-                "{}",
-                stylize(
-                    &format!(
-                        "Successfully set the Temp_limit to {} and pff-curve to {}",
-                        limits.max_temp, pff_curve
-                    ),
-                    false
-                )
-            );
+            match &rewritten_curve {
+                Some(pff_curve) => println!(
+                    "{}",
+                    stylize(
+                        &format!(
+                            "Successfully set the Temp_limit to {} and pff-curve to {}",
+                            max_temp, pff_curve
+                        ),
+                        false
+                    )
+                ),
+                None => println!(
+                    "{}",
+                    stylize(
+                        &format!(
+                            "Successfully set the Temp_limit to {} (no pff-curve reported; left unchanged)",
+                            max_temp
+                        ),
+                        false
+                    )
+                ),
+            }
         }
         Err(e) => {
             return Err(Error::from(format!(
