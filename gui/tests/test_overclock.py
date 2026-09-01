@@ -650,15 +650,24 @@ def test_mem_volt_mode_skips_public_path() -> None:
 
 
 def test_volt_format_reads_slot1_readback() -> None:
-    """The mV console message divides the payload's applied value by 1000
-    (slot 1 carries µV in the reused applied_mHz field)."""
-    res = {"applied": True, "slot": 1, "applied_mHz": -12500}
+    """The mV console message shows pynvoc's applied value AS-IS: the
+    binding already divides the record's raw slot-1 dword (µV) by 1000, so
+    `applied_mHz` IS millivolts — dividing again reported 1000× too small
+    (4060 regression: "+134.8 mV applied, readback +0.1348 mV")."""
+    # -12500 µV raw → pynvoc applied_mHz = -12.5 (already mV)
+    res = {"applied": True, "slot": 1, "applied_mHz": -12.5}
     msg = OverclockTab._format_clk_domain_volt_result("Sys", -12.5, res)
     assert "volt offset -12.5 mV" in msg
     assert "readback -12.5 mV" in msg
+    # the exact 4060 report: +134.8 mV write → raw 134800 µV → applied 134.8
+    res_4060 = {"applied": True, "slot": 1, "applied_mHz": 134.8}
+    msg_4060 = OverclockTab._format_clk_domain_volt_result("Core", 134.8, res_4060)
+    assert "volt offset +134.8 mV" in msg_4060
+    assert "readback +134.8 mV" in msg_4060
+    assert "0.1348" not in msg_4060
 
     # non-1 slot → no readback clause (the write didn't land on the plane)
-    res2 = {"applied": True, "slot": 0, "applied_mHz": 25000}
+    res2 = {"applied": True, "slot": 0, "applied_mHz": 25.0}
     msg2 = OverclockTab._format_clk_domain_volt_result("Sys", 25.0, res2)
     assert "readback" not in msg2
 

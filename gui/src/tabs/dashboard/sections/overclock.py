@@ -2544,17 +2544,18 @@ class OverclockTab:
         label: str, offset_mv: float, result: Any
     ) -> str:
         """Console message for a slot-1 ClkDomains VOLTAGE write (the unit
-        chip's mV mode). The pynvoc payload reuses the `applied_mHz` field
-        for the applied value — slot 1 carries µV there, so divide by 1000
-        for the mV readback (the payload's `slot` field confirms which plane
+        chip's mV mode). pynvoc's `applied_mHz` field is the record's raw
+        slot value ÷1000 — for slot 1 the raw dword is µV, so that number
+        IS millivolts already (display it as-is; dividing again reports
+        1000× too small). The payload's `slot` field confirms which plane
         answered; a non-1 slot means the write didn't land on the voltage
-        plane and the readback is not a voltage)."""
+        plane and the readback is not a voltage."""
         if isinstance(result, dict):
             if result.get("applied"):
                 applied = result.get("applied_mHz")
                 if isinstance(applied, (int, float)):
                     rb = (
-                        f" (driver readback {applied / 1000:+g} mV)"
+                        f" (driver readback {applied:+g} mV)"
                         if result.get("slot") == 1
                         else ""
                     )

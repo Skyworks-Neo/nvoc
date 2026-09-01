@@ -3846,6 +3846,16 @@ fn execute_target(
                 }
                 None => 0,
             };
+            // --domain filter: the segments carry an EMPIRICAL attribution
+            // hint (gpc/xbar/msd/disp/mem — the same vocabulary as
+            // reset-private-vftable-offset); points have no domain of their
+            // own and are attributed by falling inside a segment's index
+            // range, so the filter scopes both. Without it the full bank is
+            // reported (the historical behavior).
+            let domain_filter: Option<ClkVfDomainHint> = match option_one(invocation, "domain") {
+                Some(raw) => Some(parse_clk_vf_domain_hint(raw)?),
+                None => None,
+            };
             let vfp = run(target, QueryNvapiClkVfPoints)?.output;
             // raw control override table (GetControl 0xDA025C3E) — the
             // direct readback of what set-private-vftable-*-offset writes;
@@ -3957,8 +3967,19 @@ fn execute_target(
                     // buffer, not a hardcoded 4 (V100 fills bits past the old
                     // 256-point window)
                     let wpb = v.masks.len() / 2;
+                    // domain-scoped segment view; points are attributed by
+                    // falling inside one of these segments' index ranges
+                    let bank_segments: Vec<_> = v
+                        .segments
+                        .iter()
+                        .filter(|s| {
+                            s.bank as usize == bank
+                                && domain_filter.map_or(true, |h| s.domain_hint == h)
+                        })
+                        .collect();
                     json!({
                         "bank": bank,
+                        "domain": domain_filter.map(|h| h.as_str()),
                         "infer_missing_field": infer,
                         "masks": v.masks[bank * wpb..(bank + 1) * wpb]
                             .iter()
@@ -3968,7 +3989,7 @@ fn execute_target(
                         // domains back-to-back (GPC curve, mem pstate bins,
                         // XBAR curve, HOST curve, ...), so plot ONE curve per
                         // vf_curve segment, not the whole point list
-                        "segments": v.segments.iter().filter(|s| s.bank as usize == bank).map(|s| json!({
+                        "segments": bank_segments.iter().map(|s| json!({
                             "bank": s.bank,
                             // EMPIRICAL advisory attribution (ordinal-based;
                             // confirm by domain-offset A/B)
@@ -3986,7 +4007,21 @@ fn execute_target(
                             "freq_default_mhz_min": s.freq_default_mhz_min,
                             "freq_default_mhz_max": s.freq_default_mhz_max,
                         })).collect::<Vec<_>>(),
-                        "points": v.points.iter().filter(|p| p.bank as usize == bank).map(|p| {
+                        "points": v.points.iter().filter(|p| {
+                            if p.bank as usize != bank {
+                                return false;
+                            }
+                            match domain_filter {
+                                // unfiltered → the full bank, exactly the
+                                // historical output (points outside every
+                                // segment included)
+                                None => true,
+                                Some(_) => bank_segments.iter().any(|s| {
+                                    s.start_index as usize <= p.index as usize
+                                        && p.index as usize <= s.end_index as usize
+                                }),
+                            }
+                        }).map(|p| {
                             let ctrl = ctrl_map.get(&(p.bank, p.index)).copied();
                             let (mode, value) = ctrl.unwrap_or((0, 0));
                             // effective offset in MHz: mode 0 is u32 kHz; mode 1
@@ -6394,6 +6429,28 @@ fn parse_clk_domain_write(raw: &str) -> CliResult<u32> {
             ))
         }),
     }
+}
+
+/// Resolve a `ClkVfDomainHint` selector for the private V/F-POINTS family
+/// (`get-private-vftable` / `reset-private-vftable-offset`): the segment
+/// attribution names (same vocabulary as the WRITE map) or a bare hint
+/// ordinal (0=gpc, 1=xbar, 2=msd, 3=disp, 4=mem).
+fn parse_clk_vf_domain_hint(raw: &str) -> CliResult<ClkVfDomainHint> {
+    let trimmed = raw.trim();
+    let hint = match trimmed.to_ascii_lowercase().as_str() {
+        "gpc" | "core" | "gpu" | "graphics" | "0" => ClkVfDomainHint::Gpc,
+        "xbar" | "1" => ClkVfDomainHint::Xbar,
+        "msd" | "sys" | "host" | "2" => ClkVfDomainHint::Msd,
+        "disp" | "display" | "3" => ClkVfDomainHint::Disp,
+        "mem" | "memory" | "4" => ClkVfDomainHint::Mem,
+        _ => {
+            return Err(CliError::new(format!(
+                "invalid --domain {trimmed:?}: expected gpc, xbar, msd, disp, or mem \
+                 (legacy sys/host alias msd; bare 0-4 selects by hint ordinal)"
+            )));
+        }
+    };
+    Ok(hint)
 }
 
 /// The shared RTSS-derived name→bit table used by parse_clk_domain and
