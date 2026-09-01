@@ -679,17 +679,23 @@ pub(super) fn format_pstate_native_output(output: &Value) -> Vec<String> {
         ] {
             let max = entry.get(format!("max_{dom}_mhz")).and_then(Value::as_f64);
             let min = entry.get(format!("min_{dom}_mhz")).and_then(Value::as_f64);
-            if let (Some(max), Some(min)) = (max, min) {
-                if max == 0.0 && min == 0.0 {
-                    continue;
+            let max = max.filter(|v| *v != 0.0);
+            let min = min.filter(|v| *v != 0.0);
+            // Either side may be absent — the legacy pstate table rescues
+            // clocks per domain and a parked domain can report max only.
+            let values = match (max, min) {
+                (Some(max), Some(min)) => {
+                    format!("Max {} MHz, Min {} MHz", trim_float(max), trim_float(min))
                 }
-                let values = format!("Max {} MHz, Min {} MHz", trim_float(max), trim_float(min));
-                lines.push(format!(
-                    "      {}: {}",
-                    stylize_title(label),
-                    nvoc_cli_common::color::stylize(&values, false)
-                ));
-            }
+                (Some(max), None) => format!("Max {} MHz", trim_float(max)),
+                (None, Some(min)) => format!("Min {} MHz", trim_float(min)),
+                (None, None) => continue,
+            };
+            lines.push(format!(
+                "      {}: {}",
+                stylize_title(label),
+                nvoc_cli_common::color::stylize(&values, false)
+            ));
         }
     }
     lines
