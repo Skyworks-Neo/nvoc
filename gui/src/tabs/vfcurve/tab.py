@@ -1205,10 +1205,20 @@ class VFCurveTab:
         )
         if private_gpc_usable:
             cd = private_gpc
+            # Populated-fraction gate: a HEALTHY public read populates the
+            # whole frequency column; the broken positive-slot1 read zeroes
+            # every data word but lets the #0 sentinel survive (live V100:
+            # #0 450 mV/0.4 MHz + 127 zero rows) — so `any(freq>0)` cannot
+            # tell them apart.
+            nonzero_freq = (
+                sum(1 for p in gpc_points if p.get("frequency_khz", 0) > 0)
+                if gpc_points
+                else 0
+            )
             if (
                 gpc_points
                 and len(gpc_points) == len(cd.voltages)
-                and any(p.get("frequency_khz", 0) > 0 for p in gpc_points)
+                and nonzero_freq * 2 >= len(gpc_points)
                 and all(
                     abs(p["voltage_uv"] / 1000.0 - v) <= 0.01
                     for p, v in zip(gpc_points, cd.voltages)
@@ -1249,14 +1259,15 @@ class VFCurveTab:
 
         # Effective-series synthesis is the FALLBACK for the broken-positive-
         # slot1 state and nothing else: it triggers only when the public read
-        # came back present-but-corrupt (fill path bailed → all-zero
-        # frequency column) AND the private default axis is authoritative.
+        # came back present-but-corrupt (fill path bails → the frequency
+        # column zeroes out EXCEPT the #0 sentinel, live V100: #0 survives
+        # with 450 mV/0.4 MHz) AND the private default axis is authoritative.
         # A healthy public read (hybrid) already carries the live currents; a
         # shifted grid (negative slot1) displays fine through the private
         # axis; an absent public family is "not supported", not breakage —
         # none of those synthesize.
-        public_broken = bool(gpc_points) and not any(
-            p.get("frequency_khz", 0) > 0 for p in gpc_points
+        public_broken = bool(gpc_points) and len(gpc_points) > 1 and (
+            sum(1 for p in gpc_points if p.get("frequency_khz", 0) > 0) <= 1
         )
         offsets = _normalize_domain_offsets(domain_info)
         if offsets and public_broken:

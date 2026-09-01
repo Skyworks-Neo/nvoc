@@ -217,6 +217,40 @@ def test_effective_synthesized_only_on_broken_public_read() -> None:
     assert tab._curves["gpc"].frequencies == [1000.0, 1100.0]
 
 
+def test_effective_synthesized_when_only_sentinel_survives() -> None:
+    # Live-V100 shape: the broken positive-slot1 read zeroes every data word
+    # EXCEPT the #0 sentinel (450 mV / 0.4 MHz survives) — `any(freq>0)`
+    # misses the breakage; the populated-fraction detector must catch it.
+    tab = _make_tab()
+    clk_data = _private_gpc_clk_data(
+        [800000, 812500, 825000, 837500],
+        [1000.0, 1050.0, 1100.0, 1150.0],
+        [1000.0, 1050.0, 1100.0, 1150.0],
+    )
+    gpc_points = [
+        {
+            "index": 0,
+            "voltage_uv": 450000,  # the surviving sentinel
+            "frequency_khz": 405,
+            "point_type": "fixed",
+        },
+    ] + [
+        {"index": i, "voltage_uv": 0, "frequency_khz": 0, "point_type": "fixed"}
+        for i in range(1, 4)
+    ]
+
+    assert (
+        tab._build_curves("GPU0", gpc_points, None, False, clk_data, _GPC_OFFSETS)
+        is True
+    )
+
+    assert tab._curves["gpc"].source == "private"
+    eff = tab._curves["gpc"].effective
+    assert eff is not None
+    assert eff.applicable is True
+    assert eff.voltages == [900.0, 912.5, 925.0, 937.5]
+
+
 def test_effective_not_synthesized_on_healthy_or_shifted_public() -> None:
     # Healthy public (hybrid) and shifted-but-valid public (negative slot1)
     # must NOT synthesize even with offsets present — the fallback is

@@ -770,6 +770,40 @@ def test_build_vf_curves_attaches_effective_on_private_gpc() -> None:
     assert curves["gpc"].frequencies == [1000.0, 1100.0]
 
 
+def test_build_vf_curves_sentinel_survivor_still_detected_broken() -> None:
+    # Live-V100 shape: the broken positive-slot1 read zeroes every data word
+    # EXCEPT the #0 sentinel (450 mV / 0.4 MHz survives) — `any(freq>0)`
+    # misses the breakage; the populated-fraction detector must catch it and
+    # the sentinel must never become a hybrid curve.
+    volts = [800000, 812500, 825000, 837500]
+    clk_data = _private_gpc_clk_data(
+        volts, currents=[1000.0, 1050.0, 1100.0, 1150.0],
+        defaults=[1000.0, 1050.0, 1100.0, 1150.0],
+    )
+    gpc_points = [
+        {
+            "index": 0,
+            "voltage_uv": 450000,  # the surviving sentinel
+            "frequency_khz": 405,
+            "point_type": "fixed",
+        },
+    ] + [
+        {"index": i, "voltage_uv": 0, "frequency_khz": 0, "point_type": "fixed"}
+        for i in range(1, 4)
+    ]
+    domain_info = _domain_info(
+        [{"bit": 0, "value_modifiable": True, "values_kHz": [0, 100000]}]
+    )
+
+    curves = build_vf_curves(gpc_points, None, clk_data, domain_info)
+
+    assert curves["gpc"].source == "private"
+    eff = curves["gpc"].effective
+    assert eff is not None
+    assert eff.applicable is True
+    assert eff.voltages == [900.0, 912.5, 925.0, 937.5]
+
+
 def test_build_vf_curves_no_effective_on_public_source_or_no_offsets() -> None:
     # Pascal-style: private axis all-zero → public stays the GPC source, and
     # a public-source GPC never synthesizes (no trustworthy private base).
