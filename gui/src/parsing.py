@@ -117,7 +117,11 @@ def parse_status_current_values(output: str) -> Tuple[Optional[float], dict[str,
     native_payload = native_query_payload(output)
     if native_payload is not None:
         lock_value = native_payload.get("vfp_lock_mv")
-        if isinstance(lock_value, (int, float)):
+        # >0 gate: a 0 mV lock is physically impossible — it is the
+        # broken-public-VFP-plane signature (positive gpc slot1 zeroes the
+        # lock read alongside the table; live V100 2026-09-01), never a
+        # real lock to draw.
+        if isinstance(lock_value, (int, float)) and lock_value > 0:
             locked_voltage_mv = float(lock_value)
         for key in (
             "core_clock_current",
