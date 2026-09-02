@@ -28,20 +28,20 @@ _FONT_HEADER = ("Segoe UI", 13, "bold")
 _SECTION_BORDER = "#1f4e79"
 
 
+# NVAPI cooler policies (modern GPUs): live A/B — only `continuous`
+# (TemperatureContinuous SW curve) actually applies the manual % level on
+# new cards; the rest of the old enum list either no-ops or is rejected.
+# `manual` stays selectable as the explicit fallback. Legacy GPUs (≤
+# Kepler) take the separate legacy list below.
 NVAPI_POLICIES = [
-    "default",
-    "manual",
-    "perf",
-    "discrete",
     "continuous",
-    "hybrid",
-    "software",
-    "default32",
+    "manual",
 ]
 # Legacy GPUs (≤ Kepler): the modern CoolerPolicy types (TemperatureContinuous
 # etc.) are rejected by the old driver — only the classic CoolerControl
 # manual/default levels work there (verified: `set-fan-speed --nvapi` with
-# policy manual applies on GT730/Fermi R391.35).
+# policy manual applies on GT730/Fermi R391.35). Manual % lands on `manual`
+# there, NOT continuous.
 NVAPI_LEGACY_POLICIES = ["default", "manual"]
 NVML_POLICIES = ["continuous", "manual"]
 

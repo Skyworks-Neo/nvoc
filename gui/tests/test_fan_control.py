@@ -164,3 +164,31 @@ def test_entry_change_clamps_level() -> None:
     FanControlController(pane, FakeBackend()).on_entry_change()
 
     assert pane.level == 100
+
+
+def test_modern_nvapi_policy_list_is_continuous_manual_only() -> None:
+    # Live A/B: on modern GPUs only `continuous` (the TemperatureContinuous SW
+    # curve policy) actually applies the manual % level via NVAPI; `manual` is
+    # the explicit fallback. The old 8-entry enum list (default/perf/... /
+    # no-op or rejected) must not reappear.
+    pane = FakePane(api="NVAPI", policy="default")
+    controller = FanControlController(pane, FakeBackend())
+
+    controller.on_backend_change()
+
+    assert pane.policy_values == ["continuous", "manual"]
+    assert pane.policy == "continuous"
+    assert controller.settings().policy == "continuous"
+
+
+def test_legacy_nvapi_restricts_policy_to_default_manual() -> None:
+    # ≤ Kepler: the modern CoolerPolicy types are rejected by the old driver;
+    # manual % lands on `manual` there, NOT continuous.
+    pane = FakePane(api="NVAPI", policy="continuous")
+    controller = FanControlController(pane, FakeBackend())
+
+    controller.set_legacy_nvapi(True)
+
+    assert pane.policy_values == ["default", "manual"]
+    assert pane.policy == "manual"
+    assert controller.settings().policy == "manual"
