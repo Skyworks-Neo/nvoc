@@ -3342,15 +3342,45 @@ fn reset_locked_clocks(py: Python<'_>, gpu: &str, backend: &str, domain: &str) -
     })
 }
 
-#[pyfunction]
-fn reset_fan_speed(gpu: &str, fan_index: u32) -> PyResult<()> {
+/// NVML fan 写入的 TDR 恢复包装。
+///
+/// OC 不稳定触发 TDR(驱动重启)后,进程缓存的 [`Nvml`] 实例与内核的
+/// 通道已死,SetFanControlPolicy 报 NotFound(前端 surface 成"找不到
+/// policy");而 `Nvml::init()` 对已初始化的库返回 AlreadyInitialized,
+/// `Nvml` 的 Drop 又不会 shutdown —— 普通 refresh 重建不出活的 NVML
+/// 实例,失效会持续到重启前端。恢复 = 先全局 nvmlShutdown 复位(绕开
+/// 被并发快照持有的旧实例),再强制重发现(全新 `Nvml::init` 重枚举),
+/// 然后重试一次;仍失败则透传恢复后的错误。
+fn with_nvml_fan_recovery<T>(op: impl Fn(&SyncInventory) -> PyResult<T>) -> PyResult<T> {
     let inventory = {
         let mut inventory_cache = lock_inventory_cache();
         inventory_cache.entry(BackendSet::Nvml)?
     };
-    let target = selected_target(&inventory.0, gpu)?;
-    run(&target, ResetFanSpeed { fan_index }).map_err(to_py_err)?;
-    Ok(())
+    match op(&inventory) {
+        Ok(v) => Ok(v),
+        Err(_first_err) => {
+            // shutdown best-effort:库不可达时(无 NVML 可复位),随后的
+            // refresh 会报真实错误。
+            let _ = nvoc_core::nvml::force_nvml_shutdown();
+            let inventory = {
+                let mut inventory_cache = lock_inventory_cache();
+                inventory_cache.refresh(BackendSet::Nvml)?
+            };
+            op(&inventory)
+        }
+    }
+}
+
+#[pyfunction]
+fn reset_fan_speed(py: Python<'_>, gpu: &str, fan_index: u32) -> PyResult<()> {
+    let gpu_own = gpu.to_string();
+    py.detach(|| {
+        with_nvml_fan_recovery(|inventory| {
+            let target = selected_target(&inventory.0, &gpu_own)?;
+            run(&target, ResetFanSpeed { fan_index }).map_err(to_py_err)?;
+            Ok(())
+        })
+    })
 }
 
 #[pyfunction]
@@ -4034,41 +4064,43 @@ fn set_fan(
         let is_reset = policy.is_some_and(|p| p.eq_ignore_ascii_case("auto"));
         match backend {
             "nvml" | "nvml-cooler" => {
-                let inventory = {
-                    let mut inventory_cache = lock_inventory_cache();
-                    inventory_cache.entry(BackendSet::Nvml)?
-                };
-                let target = selected_target(&inventory.0, gpu)?;
-                let fan_count = run(&target, QueryFanInfo)
-                    .map(|report| report.output.count)
-                    .unwrap_or(1);
-                let fan_indices = if fan_id == "all" {
-                    (0..fan_count).collect::<Vec<_>>()
-                } else {
-                    vec![fan_id.parse::<u32>().map_err(invalid_value)?]
-                };
-                if is_reset {
-                    // nvmlDeviceSetDefaultFanSpeed_v2 — the documented
-                    // "restore default control policy" call. The old path set
-                    // the SW curve policy AND wrote 0% duty on top.
-                    for fan_index in fan_indices {
-                        run(&target, ResetFanSpeed { fan_index }).map_err(to_py_err)?;
+                // TDR recovery wrapper: a dead post-TDR NVML instance surfaces
+                // as NotFound ("找不到 policy") — first failure triggers a
+                // global nvmlShutdown + forced re-discovery + one retry.
+                with_nvml_fan_recovery(|inventory| {
+                    let target = selected_target(&inventory.0, gpu)?;
+                    let fan_count = run(&target, QueryFanInfo)
+                        .map(|report| report.output.count)
+                        .unwrap_or(1);
+                    let fan_indices = if fan_id == "all" {
+                        (0..fan_count).collect::<Vec<_>>()
+                    } else {
+                        vec![fan_id.parse::<u32>().map_err(invalid_value)?]
+                    };
+                    if is_reset {
+                        // nvmlDeviceSetDefaultFanSpeed_v2 — the documented
+                        // "restore default control policy" call. The old path set
+                        // the SW curve policy AND wrote 0% duty on top.
+                        for fan_index in fan_indices {
+                            run(&target, ResetFanSpeed { fan_index }).map_err(to_py_err)?;
+                        }
+                    } else {
+                        let policy = parse_nvml_fan_control_policy(policy.unwrap_or("continuous"))
+                            .map_err(invalid_value)?;
+                        for fan_index in fan_indices {
+                            run(
+                                &target,
+                                SetFanSpeed {
+                                    fan_index,
+                                    policy,
+                                    level,
+                                },
+                            )
+                            .map_err(to_py_err)?;
+                        }
                     }
-                } else {
-                    let policy = parse_nvml_fan_control_policy(policy.unwrap_or("continuous"))
-                        .map_err(invalid_value)?;
-                    for fan_index in fan_indices {
-                        run(
-                            &target,
-                            SetFanSpeed {
-                                fan_index,
-                                policy,
-                                level,
-                            },
-                        )
-                        .map_err(to_py_err)?;
-                    }
-                }
+                    Ok(())
+                })?
             }
             "nvapi" | "nvapi-cooler" => {
                 let inventory = {

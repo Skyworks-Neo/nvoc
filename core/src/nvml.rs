@@ -551,6 +551,54 @@ pub fn set_default_fan_speed(nvml: &Nvml, gpu_id: u32, fan_idx: u32) -> Result<(
         .map_err(|e| Error::Custom(format!("NVML Set Default Fan Speed Error: {:?}", e)))
 }
 
+/// 全局 nvmlShutdown —— TDR/驱动重启恢复专用。
+///
+/// TDR(OC 不稳定超时 → 驱动重启)后,进程缓存的 [`Nvml`] 实例与内核的
+/// 通道已死,设备/冷却器策略调用报 NotFound(风扇控制surface成"找不到
+/// policy");而 [`Nvml::init()`] 对已初始化的库直接返回 AlreadyInitialized
+/// (nvmlInit_v2 语义),`Nvml` 的 Drop 又不会 shutdown —— 普通
+/// refresh 重建不出活的 NVML 实例。恢复必须先显式 nvmlShutdown 复位
+/// 进程级 NVML 状态,再重新 init 重枚举。
+///
+/// 实现走 raw 符号(libloading 直调 nvmlShutdown):旧 Nvml 实例的 Arc
+/// 快照可能仍被并发轮询持有拿不到所有权;Windows 对同路径重复加载复用
+/// 同一模块,这里新开的 Library 句柄就是 nvml-wrapper 已加载的那个实例。
+/// shutdown 后旧实例的全部调用返回 Uninitialized —— 调用方必须紧跟重新
+/// init 并重建 inventory 缓存。
+///
+/// 库不可达/符号缺失 → `Ok`(进程本就没有可复位的 NVML 状态,让随后的
+/// init 报真实错误);shutdown 调用本身返回非零 → `Err`。
+pub fn force_nvml_shutdown() -> Result<(), Error> {
+    use std::sync::OnceLock;
+
+    struct RawLib(libloading::Library);
+    unsafe impl Send for RawLib {}
+    unsafe impl Sync for RawLib {}
+
+    // 进程生命周期缓存(与 v1_fan_speed 同一模式):同路径重复加载复用
+    // 同一模块,缓存只省重复解析,不改变语义。
+    static LIB: OnceLock<Option<RawLib>> = OnceLock::new();
+    let lib = LIB
+        .get_or_init(|| {
+            crate::dll_path::resolved_nvml_path()
+                .and_then(|path| unsafe { libloading::Library::new(path) }.ok())
+                .map(RawLib)
+        })
+        .as_ref()
+        .ok_or_else(|| {
+            Error::Custom("nvmlShutdown recovery: nvml.dll not resolvable".to_string())
+        })?;
+    let sym: libloading::Symbol<unsafe extern "C" fn() -> i32> =
+        unsafe { lib.0.get(b"nvmlShutdown\0") }
+            .map_err(|e| Error::Custom(format!("nvmlShutdown symbol lookup failed: {e}")))?;
+    let rc = unsafe { sym() };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(Error::Custom(format!("nvmlShutdown returned code {rc}")))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // P-State lock (via memory clock window)
 // ---------------------------------------------------------------------------
