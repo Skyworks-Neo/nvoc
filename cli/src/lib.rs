@@ -607,9 +607,14 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
             (
                 Command::GetPrivateVftable,
                 CommandSpec {
-                    options: Box::leak(Box::new(["bank", "domain", "infer-missing-field"])),
+                    options: Box::leak(Box::new([
+                        "bank",
+                        "domain",
+                        "infer-missing-field",
+                        "dump-records",
+                    ])),
                     formatter: Some(output::format_private_vfp_output),
-                    ..CommandSpec::new("get-private-vftable", Group::Vfp, "Read the private ClockClient V/F-points family: per-bank point masks + V/F curve records (voltage-indexed, units calibrated vs the public GPC VFP); --bank 0|1 selects the mask window (default 0). Faithful read by default; --infer-missing-field fills driver-unmaintained fields — PASCAL ONLY (voltage borrowed from the public grid; the default field is shown as current and the true default = current − offset). Turing's private table is fully populated and needs no inference")
+                    ..CommandSpec::new("get-private-vftable", Group::Vfp, "Read the private ClockClient V/F-points family: per-bank point masks + V/F curve records (voltage-indexed, units calibrated vs the public GPC VFP); --bank 0|1 selects the mask window (default 0); --domain gpc|xbar|msd|disp|mem filters points to one attributed segment group (same vocabulary as reset-private-vftable-offset; legacy sys/host alias msd, bare 0-4 = hint ordinal). Faithful read by default; --infer-missing-field fills driver-unmaintained fields — PASCAL ONLY (voltage borrowed from the public grid; the default field is shown as current and the true default = current − offset). Turing's private table is fully populated and needs no inference")
                 },
             ),
             (
@@ -697,7 +702,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 Command::GetVbios,
                 CommandSpec {
                     options: Box::leak(Box::new(["out", "dump"])),
-                    ..CommandSpec::new("get-vbios", Group::Info, "Read the VBIOS via NvAPI_GPU_GetVbiosImage (0xFC13EE11, escape 0x0700004F): prints version/size/BIT summary; --out <file> writes the raw image (e.g. vbios.rom); --dump prints the full BIT token table + Fermi-model raw blocks")
+                    ..CommandSpec::new("get-vbios", Group::Info, "WINDOWS-ONLY. Read the VBIOS via NvAPI_GPU_GetVbiosImage (0xFC13EE11, escape 0x0700004F): prints version/size/BIT summary; --out <file> writes the raw image (e.g. vbios.rom); --dump prints the full BIT token table + Fermi-model raw blocks")
                 },
             ),
             (Command::GetVoltRailInfo, CommandSpec::new("get-volt-rail-info", Group::Voltage, "Read private VoltRails family: rail mask + per-rail offsets + live voltages (melonVolt path)")),
@@ -782,7 +787,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 Command::ResetPrivateFreqDomainGlobalOffset,
                 CommandSpec {
                     options: Box::leak(Box::new(["domain", "slot", "freq", "volt"])),
-                    ..CommandSpec::new("reset-private-freq-domain-global-offset", Group::Vfp, "Reset private clock-domain global offsets to stock (offset 0) through the same ClkDomains WRITE path as set-private-freq-domain-global-offset; default resets EVERY controllable domain x slots 0 and 1, --domain/--slot narrow the scope (--freq/--volt alias --slot 0/--slot 1); domains the driver refuses (e.g. disp bit 6) are reported as warnings and the reset continues")
+                    ..CommandSpec::new("reset-private-freq-domain-global-offset", Group::Vfp, "Reset private clock-domain global offsets to stock (offset 0) through the same ClkDomains WRITE path as set-private-freq-domain-global-offset; default resets EVERY controllable domain x both plane slots (0/1 on 10~40 series, 2/3 on Blackwell 50 series), --domain/--slot narrow the scope (--freq/--volt alias the frequency/voltage planes per generation); domains the driver refuses (e.g. disp bit 6) are reported as warnings and the reset continues")
                 },
             ),
             (
@@ -1140,9 +1145,9 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     PositionalArg::hyphen(
                         "arg_offset",
                         "OFFSET",
-                        "Slot 0 (--freq, default): signed frequency offset in MHz (one decimal allowed), for example -60, +15.5 or 0 (no-op stock write); an explicit khz/kilohertz suffix keeps the legacy unit. Slot 1 (--volt): per-domain V/F-curve voltage addend in mV (one decimal allowed), for example +25, -12.5 or 0. The driver may reject or clamp; the post-SET readback is returned. Pass --temporary to restore the snapshot before returning",
+                        "--freq (default): signed frequency offset in MHz (one decimal allowed), for example -60, +15.5 or 0 (no-op stock write); an explicit khz/kilohertz suffix keeps the legacy unit. --volt: per-domain V/F-curve voltage addend in mV (one decimal allowed), for example +25, -12.5 or 0. Plane slots are GENERATION-DEPENDENT: --freq/--volt resolve to slot 0/1 on 10~40 series and slot 2/3 on Blackwell 50 series; --slot writes the RAW dword and is never remapped. The driver may reject or clamp; the post-SET readback is returned. Pass --temporary to restore the snapshot before returning",
                     )])),
-                    ..CommandSpec::new("set-private-freq-domain-global-offset", Group::Vfp, "Write a signed MHz offset into one clock-domain control record (dangerous XBar clock write; --temporary restores the snapshot; --freq/--volt alias --slot 0/--slot 1). Names are the ADVISORY RTSS table — the record's physical target does NOT follow it and is per-generation (Ada live A/B: bit0=GPC, bit1=SYS+XBAR, bit2=Mem, bit3=SYS, bit5=MSD, bit9=Host; see get-private-freq-domain-info). Cross-generation A/B: address records by bare integer")
+                    ..CommandSpec::new("set-private-freq-domain-global-offset", Group::Vfp, "Write a signed offset into one clock-domain control record plane (dangerous XBar clock write; --temporary restores the snapshot; --freq/--volt = the frequency/voltage planes, auto-mapped to slot 0/1 on 10~40 series and slot 2/3 on Blackwell 50 series). Names are the ADVISORY RTSS table — the record's physical target does NOT follow it and is per-generation (Ada live A/B: bit0=GPC, bit1=SYS+XBAR, bit2=Mem, bit3=SYS, bit5=MSD, bit9=Host; see get-private-freq-domain-info). Cross-generation A/B: address records by bare integer")
                 },
             ),
             (
@@ -2009,21 +2014,25 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .long("freq-mode")
             .action(ArgAction::SetTrue)
             .help("kHz frequency offset mode (same as public VFP freqDeltaKHz; this is the DEFAULT — flag is an explicit alias. Reaches xbar/msd domains unlike the public API)"),
+        "dump-records" => Arg::new("dump-records")
+            .long("dump-records")
+            .action(ArgAction::SetTrue)
+            .help("get-private-vftable: attach the raw GetStatus records (488B modern / 76B Volta-legacy) and emit a per-offset dword slot map (value range, distinct count, i32 range when signed, exact cross-slot correlations) plus a hex dump of the first record — the layout-discovery tool for generation-specific record slots (e.g. Blackwell's +0x64 signed µV voltage offset)"),
         "slot" => Arg::new("slot")
             .long("slot")
             .value_name("SLOT")
             .action(ArgAction::Set)
-            .help("ClkDomains family (set/reset-private-freq-domain-global-offset): which of the record's 8 value dwords to write (0-7; default 0 = the signed frequency offset, alias --freq; 1 = the per-domain V/F-curve voltage addend in uV, alias --volt; 2-7 driver-opaque — identify via A/B with get-clk-domain-freq). reset-private-vftable-offset: 0 = freq plane (mode-0 kHz offsets), 1 = volt plane (mode-1 raw values)"),
+            .help("ClkDomains family (set/reset-private-freq-domain-global-offset): RAW record dword to write (0-7, never remapped; 10~40系 planes live in 0=freq/1=volt, Blackwell 50系 in 2=freq/3=volt — prefer the --freq/--volt aliases; 2-7 driver-opaque on 10~40系 — identify via A/B with get-clk-domain-freq). reset-private-vftable-offset: 0 = freq plane (mode-0 kHz offsets), 1 = volt plane (mode-1 raw values)"),
         "freq" => Arg::new("freq")
             .long("freq")
             .action(ArgAction::SetTrue)
             .conflicts_with_all(["volt", "slot"])
-            .help("Semantic alias for --slot 0 (the DEFAULT): VALUE is the signed frequency offset in MHz. Slot 0 is a no-op offset on single-domain V100/GV100"),
+            .help("Semantic alias for the FREQUENCY plane (the DEFAULT): VALUE is the signed frequency offset in MHz. Slot is generation-dependent: 0 on 10~40 series (no-op offset on single-domain V100/GV100), 2 on Blackwell 50 series"),
         "volt" => Arg::new("volt")
             .long("volt")
             .action(ArgAction::SetTrue)
             .conflicts_with_all(["freq", "slot"])
-            .help("Semantic alias for --slot 1: VALUE is the per-domain V/F-curve VOLTAGE addend in mV (single-rail arbitration: final voltage = MAX over domains of built-in curve + domain offset)"),
+            .help("Semantic alias for the VOLTAGE plane: VALUE is the per-domain V/F-curve VOLTAGE addend in mV (single-rail arbitration: final voltage = MAX over domains of built-in curve + domain offset). Slot is generation-dependent: 1 on 10~40 series, 3 on Blackwell 50 series"),
         "raw" => Arg::new("raw")
             .long("raw")
             .action(ArgAction::SetTrue)
@@ -2199,7 +2208,8 @@ fn collect_named_options(
             | "dump"
             | "target"
             | "freq"
-            | "volt" => {
+            | "volt"
+            | "dump-records" => {
                 if matches.get_flag(name) {
                     options.insert(name.to_string(), vec!["true".to_string()]);
                 }
@@ -3856,7 +3866,18 @@ fn execute_target(
                 Some(raw) => Some(parse_clk_vf_domain_hint(raw)?),
                 None => None,
             };
-            let vfp = run(target, QueryNvapiClkVfPoints)?.output;
+            // --dump-records: attach the raw 488B GetStatus records and emit
+            // a per-offset dword slot map (which of the record's 122 dwords
+            // carry data, their value ranges, and cross-slot correlations) —
+            // the discovery tool for generation-specific record layouts.
+            let dump_records = option_bool(invocation, "dump-records", false)?;
+            let vfp = run(
+                target,
+                QueryNvapiClkVfPoints {
+                    include_raw: dump_records,
+                },
+            )?
+            .output;
             // raw control override table (GetControl 0xDA025C3E) — the
             // direct readback of what set-private-vftable-*-offset writes;
             // joined per point by (bank, index)
@@ -3960,7 +3981,7 @@ fn execute_target(
                     }
                 }
             }
-            Ok(match vfp {
+            let mut value = match vfp.as_ref() {
                 Some(v) => {
                     // 2048 bits (= 32 u64 words) per bank, sized to the full
                     // GetInfo point space — words_per_bank derives from the
@@ -4084,6 +4105,11 @@ fn execute_target(
                                 "type": p.record_type,
                                 // the V/F grid axis (µV): 450000 = 450 mV
                                 "voltage_uV": p.voltage_uV,
+                                // per-point curve voltage offset (mV) —
+                                // Blackwell records only (their +0x64 slot
+                                // is a signed µV term; −45 mV experiment
+                                // read back as 2³²−45000); 0 elsewhere
+                                "volt_offset_mv": p.volt_offset_uV as f64 / 1000.0,
                                 // stock default at this voltage (Pascal+infer:
                                 // current − offset; otherwise the literal field)
                                 "freq_default_mhz": default_mhz,
@@ -4101,9 +4127,17 @@ fn execute_target(
                     })
                 }
                 None => json!({"supported": false}),
-            })
+            };
+            // --dump-records: attach the raw-record slot map (per-offset
+            // dword stats + first-record hex) for layout judgment
+            if dump_records && let Some(v) = vfp.as_ref() {
+                attach_record_slot_map(&mut value, v, bank, domain_filter);
+            }
+            Ok(value)
         }
         Command::GetVbios => {
+            // WINDOWS-ONLY: NvAPI_GPU_GetVbiosImage routes through the
+            // WDDM/TCC kernel escape 0x0700004F — no Linux NVAPI equivalent.
             // meta companions (best-effort): the VBIOS security word and the
             // status string never gate the image read
             let security_flags = run(target, QueryVbiosSecurityInfo).ok().map(|r| r.output);
@@ -4268,7 +4302,7 @@ fn execute_target(
                 // D0 zero-point is axis-invariant), so the lift target is
                 // doubled INTO the translation — the written control word is
                 // what an unfixed run would compute for 2× the MHz input.
-                let vfp = run(target, QueryNvapiClkVfPoints)?.output;
+                let vfp = run(target, QueryNvapiClkVfPoints::default())?.output;
                 let point = vfp
                     .as_ref()
                     .and_then(|v| v.points.iter().find(|p| p.bank as usize == bank && p.index as usize == idx))
@@ -4420,7 +4454,7 @@ fn execute_target(
                 })
             } else {
                 // --raw-converted: translate the MHz target per-point via g(def)
-                let vfp = run(target, QueryNvapiClkVfPoints)?.output;
+                let vfp = run(target, QueryNvapiClkVfPoints::default())?.output;
                 let vfp = vfp
                     .as_ref()
                     .ok_or_else(|| CliError::new("could not read V/F points — pass --raw"))?;
@@ -4497,9 +4531,12 @@ fn execute_target(
             // on mismatch. --temporary additionally restores the snapshot
             // before returning (the article's reversible experiment recipe).
             // --slot picks which of the record's 8 value dwords to write.
-            // Slot semantics: 0 = the article's signed frequency offset
-            // (kHz); 1 = the per-domain V/F-curve VOLTAGE addend in µV
-            // (live-identified on V100/GV100 2026-09-01, +/− both accepted).
+            // Slot semantics (10~40系): 0 = the article's signed frequency
+            // offset (kHz); 1 = the per-domain V/F-curve VOLTAGE addend in
+            // µV (live-identified on V100/GV100 2026-09-01, +/− both
+            // accepted). Blackwell 50系 shifts both planes one dword down
+            // (freq = slot 2, volt = slot 3 — live user probe 2026-09-02);
+            // --freq/--volt resolve per generation, --slot stays raw.
             // SINGLE-RAIL arbitration (user-verified model): the final
             // voltage at a given frequency = MAX over domains of
             // (built-in curve voltage at that frequency + that domain's
@@ -4510,18 +4547,35 @@ fn execute_target(
             // get-private-vftable is unaffected. 2-4 driver-rejected,
             // 5-7 readback-mismatch — experiments.
             let domain_bit = parse_clk_domain_write(&invocation.positionals[0])?;
-            // --freq / --volt are semantic aliases for --slot 0 / --slot 1
-            // (slot 0 = the signed frequency offset, slot 1 = the V/F-curve
-            // voltage addend in uV). clap already rejects combining any two
-            // of --freq / --volt / --slot, so exactly one of these fires.
-            let slot = if option_one(invocation, "volt").is_some() {
-                1
+            // --freq / --volt are SEMANTIC aliases: the plane each names
+            // lives in a GENERATION-DEPENDENT slot. 10~40系: slot 0 = the
+            // signed frequency offset (kHz), slot 1 = the per-domain
+            // V/F-curve voltage addend (µV; live-identified on V100/GV100
+            // 2026-09-01). Blackwell 50系 shifts the record one dword down:
+            // slot 2 = frequency, slot 3 = voltage (live user probe
+            // 2026-09-02). --slot is the RAW selector and is never remapped.
+            // clap already rejects combining any two of --freq / --volt /
+            // --slot, so at most one of these fires.
+            let gpu_type = run(target, QueryGpuInfo)
+                .ok()
+                .and_then(|r| fetch_gpu_type(&r.output).ok());
+            let (freq_slot, volt_slot) = if gpu_type.is_some_and(|t| t.is_blackwell()) {
+                (2, 3)
             } else {
+                (0, 1)
+            };
+            let slot = if option_one(invocation, "volt").is_some() {
+                volt_slot
+            } else if option_one(invocation, "freq").is_some() {
+                freq_slot
+            } else {
+                // no selector: the frequency plane (the historical slot-0
+                // default; Blackwell's frequency plane lives in slot 2)
                 option_one(invocation, "slot")
                     .map(|s| s.parse::<u32>())
                     .transpose()
                     .map_err(|e| CliError::new(format!("invalid --slot: {e}")))?
-                    .unwrap_or(0)
+                    .unwrap_or(freq_slot)
             };
             // reject out-of-range slots HERE with a clear message — the
             // medium layer also guards, but its ArgumentRange error reads
@@ -4533,7 +4587,7 @@ fn execute_target(
                 )));
             }
             #[allow(non_snake_case)] // kHz/uV suffixes match the nvapi-rs field naming
-            let offset_kHz = if slot == 1 {
+            let offset_kHz = if slot == volt_slot {
                 parse_domain_voltage_uV(&invocation.positionals[1])?
             } else {
                 parse_domain_offset_kHz(&invocation.positionals[1])?
@@ -4555,10 +4609,10 @@ fn execute_target(
             Ok(match out {
                 Some(a) => {
                     #[allow(non_snake_case)]
-                    // slot-aware units: slot 0 = frequency — display MHz
-                    // only; slot 1 = voltage — display mV only (the raw
-                    // 8-dword record dump stays in the record's raw terms).
-                    let unit_fields = if a.slot == 1 {
+                    // slot-aware units: the voltage plane displays mV, the
+                    // frequency plane MHz (the raw 8-dword record dump stays
+                    // in the record's raw terms, slot-indexed).
+                    let unit_fields = if a.slot == volt_slot {
                         json!({
                             "previous_mv": a.previous_kHz as f64 / 1000.0,
                             "applied_mv": a.applied_kHz as f64 / 1000.0,
@@ -4569,16 +4623,29 @@ fn execute_target(
                             "applied_mHz": a.applied_kHz as f64 / 1000.0,
                         })
                     };
+                    // record dump, slot-unit-tagged: a slot carries a unit
+                    // label only when it is THIS generation's plane slot
+                    // (freq = kHz, volt = µV); every other dword stays raw
+                    let slot_label = |i: usize| -> String {
+                        if i == freq_slot as usize {
+                            format!("slot{i}_khz")
+                        } else if i == volt_slot as usize {
+                            format!("slot{i}_uv")
+                        } else {
+                            format!("slot{i}_raw")
+                        }
+                    };
                     let mut out = json!({
                         "applied": true,
                         "bit": a.bit,
                         "type": a.entry_type,
                         "slot": a.slot,
-                        // per-slot units on the record dump: slot0 = kHz
-                        // frequency, slot1 = µV voltage, 2-7 driver-opaque
-                        "slot0_khz": a.values_kHz[0],
-                        "slot1_uv": a.values_kHz[1],
-                        "slots_2-7_raw": a.values_kHz[2..].iter().collect::<Vec<_>>(),
+                        (slot_label(0)): a.values_kHz[0],
+                        (slot_label(1)): a.values_kHz[1],
+                        // full 8-dword record dump (plane slots reappear
+                        // here post-write; neutral name — which dwords are
+                        // plane slots is generation-dependent)
+                        "slots_raw": a.values_kHz,
                         "temporary_restored": a.temporary_restored,
                     });
                     for (k, v) in unit_fields.as_object().expect("json object") {
@@ -4586,7 +4653,44 @@ fn execute_target(
                     }
                     out
                 }
-                None => json!({"supported": false}),
+                None => {
+                    // The soft-fail merges two distinct cases: the whole
+                    // ClkDomains family absent, vs THIS domain refused by
+                    // the write path's record-type gate (a LOCAL check — no
+                    // failing NVAPI call, hence no ledger entry to annotate).
+                    // Re-read the same GET_CONTROL block the write path used
+                    // and say which — a bare "Supported: no" invites reading
+                    // it as a driver error (it used to inherit an unrelated
+                    // info()-probe failure as the "last NVAPI error").
+                    let reason = run(target, QueryNvapiClkDomains)
+                        .ok()
+                        .and_then(|r| r.output)
+                        .and_then(|c| match c.entries.iter().find(|e| e.bit == domain_bit) {
+                            Some(e) if e.value_modifiable => Some(
+                                "record reported writable but the write soft-failed \
+                                     (slot rejected?)"
+                                    .to_string(),
+                            ),
+                            Some(e) => Some(format!(
+                                "domain bit {domain_bit} is present (controllable mask \
+                                     0x{:X}) but its record type {} is not writable through \
+                                     the SetControl protocol — the driver silently drops \
+                                     records of this type, so the write path refuses before \
+                                     issuing SET_CONTROL",
+                                c.mask, e.entry_type
+                            )),
+                            None => Some(format!(
+                                "domain bit {domain_bit} is not in the controllable \
+                                     mask 0x{:X} — the driver maintains no writable record \
+                                     for it",
+                                c.mask
+                            )),
+                        });
+                    match reason {
+                        Some(reason) => json!({"supported": false, "reason": reason}),
+                        None => json!({"supported": false}),
+                    }
+                }
             })
         }
         Command::ResetPrivateFreqDomainGlobalOffset => {
@@ -4594,12 +4698,18 @@ fn execute_target(
             // set-private-freq-domain-global-offset uses (snapshot → SET →
             // readback → restore-on-mismatch in the medium layer). Default
             // scope: EVERY controllable domain from the GET_CONTROL block ×
-            // slots 0 and 1 (the two value dwords live-accepted on Ada);
-            // --domain / --slot narrow it (--freq/--volt alias --slot 0/1 —
-            // same plane selectors as the set command). A domain the driver
-            // refuses (e.g. disp bit 6) or a slot it rejects becomes a
-            // warning and the reset continues — one bad record must not
-            // abort the rest.
+            // both plane slots (10~40系: slots 0/1 live-accepted on Ada;
+            // Blackwell 50系: slots 2/3 — same generation shift as the set
+            // command); --domain / --slot narrow it (--freq/--volt are the
+            // semantic plane aliases, resolved per generation). A domain
+            // the driver refuses (e.g. disp bit 6) or a slot it rejects
+            // becomes a warning and the reset continues — one bad record
+            // must not abort the rest.
+            let blackwell = run(target, QueryGpuInfo)
+                .ok()
+                .and_then(|r| fetch_gpu_type(&r.output).ok())
+                .is_some_and(|t| t.is_blackwell());
+            let volt_slot = if blackwell { 3 } else { 1 };
             let domains: Vec<u32> = match option_one(invocation, "domain") {
                 Some(raw) => vec![parse_clk_domain_write(raw)?],
                 None => run(target, QueryNvapiClkDomains)?
@@ -4623,8 +4733,20 @@ fn execute_target(
                 }
                 None => {
                     // plane aliases (clap conflicts make them exclusive
-                    // with --slot): --freq narrows to slot 0, --volt to 1
-                    if option_one(invocation, "volt").is_some() {
+                    // with --slot): --freq narrows to the frequency plane,
+                    // --volt to the voltage plane — GENERATION-DEPENDENT
+                    // slots (10~40系 0/1; Blackwell 50系 2/3, live user
+                    // probe 2026-09-02)
+                    if blackwell {
+                        if option_one(invocation, "volt").is_some() {
+                            vec![3]
+                        } else if option_one(invocation, "freq").is_some() {
+                            vec![2]
+                        } else {
+                            // no selector: both live-accepted plane slots
+                            vec![2, 3]
+                        }
+                    } else if option_one(invocation, "volt").is_some() {
                         vec![1]
                     } else if option_one(invocation, "freq").is_some() {
                         vec![0]
@@ -4658,15 +4780,14 @@ fn execute_target(
                     ) {
                         Ok(r) => match r.output {
                             Some(a) => {
-                                // slot-aware units: slot 0 = frequency —
-                                // display MHz only; slot 1 = voltage —
-                                // display mV only (no duplicate raw fields)
+                                // slot-aware units: the voltage plane
+                                // displays mV, the frequency plane MHz
                                 let mut entry = json!({
                                     "bit": a.bit,
                                     "domain": name,
                                     "slot": a.slot,
                                 });
-                                if a.slot == 1 {
+                                if a.slot == volt_slot {
                                     entry["previous_mv"] = json!(a.previous_kHz as f64 / 1000.0);
                                     entry["applied_mv"] = json!(a.applied_kHz as f64 / 1000.0);
                                 } else {
@@ -5380,20 +5501,11 @@ fn execute_target(
             // as legacy aliases. The disp bins were also once mislabeled
             // host.
             if let Some(domain_raw) = option_one(invocation, "domain") {
-                let hint = match domain_raw.trim().to_ascii_lowercase().as_str() {
-                    "gpc" | "core" | "gpu" | "graphics" => ClkVfDomainHint::Gpc,
-                    "xbar" => ClkVfDomainHint::Xbar,
-                    // legacy aliases from the HOST/SYS naming eras
-                    "msd" | "sys" | "host" => ClkVfDomainHint::Msd,
-                    "disp" | "display" => ClkVfDomainHint::Disp,
-                    "mem" | "memory" => ClkVfDomainHint::Mem,
-                    other => {
-                        return Err(CliError::new(format!(
-                            "invalid --domain {other:?}; expected gpc, xbar, msd, disp, or mem"
-                        )));
-                    }
-                };
-                let vfp = run(target, QueryNvapiClkVfPoints)?
+                // shared vocabulary with get-private-vftable's --domain
+                // (same hint enum; parse_clk_vf_domain_hint also accepts the
+                // bare ordinals 0-4)
+                let hint = parse_clk_vf_domain_hint(domain_raw)?;
+                let vfp = run(target, QueryNvapiClkVfPoints::default())?
                     .output
                     .ok_or_else(|| CliError::new("private V/F-POINTS family not supported"))?;
                 let freq_mode = only_mode != Some(1);
@@ -6451,6 +6563,157 @@ fn parse_clk_vf_domain_hint(raw: &str) -> CliResult<ClkVfDomainHint> {
         }
     };
     Ok(hint)
+}
+
+/// Attach the raw-record slot map (`--dump-records`) to a get-private-
+/// vftable payload: per-dword-offset statistics over the filtered present
+/// records — value range, distinct count, signed (i32) range when any
+/// value has the top bit set, and exact cross-slot correlations — plus a
+/// hex dump of the first record. This is the discovery tool for
+/// generation-specific record layouts (Blackwell's +0x64 signed µV
+/// voltage-offset slot was identified exactly this way: a −45 mV
+/// experiment read back as 4294922296 = 2³² + (−45000)).
+///
+/// Stride-adaptive: the modern GetStatus layout packs 488 B records
+/// (122 aligned dwords), the Volta/R391 LEGACY layout 0x4C (76) B records
+/// (19 dwords) — the reference slots for correlation tagging follow the
+/// layout.
+fn attach_record_slot_map(
+    value: &mut Value,
+    vfp: &nvoc_core::ClkVfPointsPrivate,
+    bank: usize,
+    domain_filter: Option<ClkVfDomainHint>,
+) {
+    // keep the records matching the same bank/domain filter as the points
+    let kept = |r: &nvoc_core::ClkVfRawRecord| {
+        r.bank as usize == bank
+            && domain_filter.map_or(true, |h| {
+                vfp.segments.iter().any(|s| {
+                    s.bank as usize == bank
+                        && s.domain_hint == h
+                        && s.start_index as usize <= r.index as usize
+                        && r.index as usize <= s.end_index as usize
+                })
+            })
+    };
+    let raws: Vec<&nvoc_core::ClkVfRawRecord> =
+        vfp.raw_records.iter().filter(|r| kept(r)).collect();
+    if raws.is_empty() {
+        if let Some(obj) = value.as_object_mut() {
+            obj.insert(
+                "record_slot_map".into(),
+                json!({"error": "raw records unavailable (no present records in the filtered view)"}),
+            );
+        }
+        return;
+    }
+    let stride = raws[0].bytes.len();
+    if stride < 4 || raws.iter().any(|r| r.bytes.len() != stride) {
+        if let Some(obj) = value.as_object_mut() {
+            obj.insert(
+                "record_slot_map".into(),
+                json!({"error": "inconsistent raw record sizes — unexpected layout"}),
+            );
+        }
+        return;
+    }
+    let rd = |r: &nvoc_core::ClkVfRawRecord, off: usize| -> u32 {
+        u32::from_le_bytes(r.bytes[off..off + 4].try_into().expect("in-bounds"))
+    };
+    // reference columns for exact-correlation tags, per layout
+    let refs: Vec<(&str, usize)> = if stride >= 488 {
+        vec![
+            ("+0x058 (voltage_uV)", 0x58),
+            ("+0x024 (freq_default)", 0x24),
+            ("+0x064 (freq_current / BW volt-offset)", 0x64),
+            ("+0x068 (voltage mirror / BW default?)", 0x68),
+        ]
+    } else {
+        // LEGACY layout: flags@0, voltage µV@4, freq MHz@8
+        vec![("+0x004 (voltage_uV)", 4), ("+0x008 (freq MHz)", 8)]
+    };
+    let mut slots_json: Vec<Value> = Vec::new();
+    let mut human: Vec<String> = Vec::new();
+    let mut zero_slots: Vec<String> = Vec::new();
+    for dword in 0..stride / 4 {
+        let off = dword * 4;
+        let vals: Vec<u32> = raws.iter().map(|r| rd(r, off)).collect();
+        let tag = format!("+0x{off:03X}");
+        if vals.iter().all(|&v| v == 0) {
+            zero_slots.push(tag.clone());
+            continue;
+        }
+        let min = *vals.iter().min().expect("non-empty");
+        let max = *vals.iter().max().expect("non-empty");
+        let mut distinct: Vec<u32> = vals.clone();
+        distinct.sort_unstable();
+        distinct.dedup();
+        let mut entry = json!({
+            "offset_hex": tag,
+            "min": min,
+            "max": max,
+            "distinct": distinct.len(),
+        });
+        let mut line = if min == max {
+            format!("    {tag}: constant {min} (0x{min:08X})")
+        } else {
+            format!("    {tag}: {min}..{max} ({} distinct)", distinct.len())
+        };
+        if min >= 0x8000_0000 || max >= 0x8000_0000 {
+            let imin = min as i32;
+            let imax = max as i32;
+            entry["i32_min"] = json!(imin);
+            entry["i32_max"] = json!(imax);
+            line.push_str(&format!("  [i32 {imin}..{imax}]"));
+        }
+        let mut equals: Vec<String> = Vec::new();
+        for (label, roff) in &refs {
+            if *roff == off {
+                continue;
+            }
+            if raws
+                .iter()
+                .zip(vals.iter())
+                .all(|(r, &v)| rd(r, *roff) == v)
+            {
+                equals.push((*label).to_string());
+            }
+        }
+        if !equals.is_empty() {
+            entry["equals"] = json!(equals);
+            line.push_str(&format!("  [= {}]", equals.join(" = ")));
+        }
+        slots_json.push(entry);
+        human.push(line);
+    }
+    // hex dump of the first kept record (16 bytes per row, tail partial)
+    let first = raws[0];
+    let mut hex_rows: Vec<String> = Vec::new();
+    for base in (0..stride).step_by(16) {
+        let end = (base + 16).min(stride);
+        let bytes: Vec<String> = first.bytes[base..end]
+            .iter()
+            .map(|b| format!("{b:02X}"))
+            .collect();
+        hex_rows.push(format!("+0x{base:03X}: {}", bytes.join(" ")));
+    }
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert(
+            "record_slot_map".into(),
+            json!({
+                "stride": stride,
+                "records": raws.len(),
+                "first_record_index": first.index,
+                "layout": if stride >= 488 { "modern (R610 large-table)" } else { "legacy (Volta/R391 small-table)" },
+                "slots": slots_json,
+                "zero_slot_count": zero_slots.len(),
+                "zero_slots": zero_slots,
+                "record_hex": hex_rows,
+            }),
+        );
+    }
+    // `human` lines are re-derived by the renderer from the structured map
+    let _ = human;
 }
 
 /// The shared RTSS-derived name→bit table used by parse_clk_domain and
@@ -7515,6 +7778,66 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("unexpected argument"), "{err}");
+    }
+
+    #[test]
+    fn clk_vf_domain_hint_vocabulary() {
+        // The shared --domain vocabulary for get-private-vftable and the
+        // reset: canonical slugs, case-insensitive, legacy sys/host aliases
+        // (third attribution naming era), and bare ordinals.
+        assert!(matches!(
+            parse_clk_vf_domain_hint("gpc").unwrap(),
+            ClkVfDomainHint::Gpc
+        ));
+        assert!(matches!(
+            parse_clk_vf_domain_hint("GPC").unwrap(),
+            ClkVfDomainHint::Gpc
+        ));
+        assert!(matches!(
+            parse_clk_vf_domain_hint("core").unwrap(),
+            ClkVfDomainHint::Gpc
+        ));
+        assert!(matches!(
+            parse_clk_vf_domain_hint("xbar").unwrap(),
+            ClkVfDomainHint::Xbar
+        ));
+        assert!(matches!(
+            parse_clk_vf_domain_hint(" msd ").unwrap(),
+            ClkVfDomainHint::Msd
+        ));
+        // legacy aliases from the HOST/SYS naming eras
+        assert!(matches!(
+            parse_clk_vf_domain_hint("sys").unwrap(),
+            ClkVfDomainHint::Msd
+        ));
+        assert!(matches!(
+            parse_clk_vf_domain_hint("host").unwrap(),
+            ClkVfDomainHint::Msd
+        ));
+        assert!(matches!(
+            parse_clk_vf_domain_hint("disp").unwrap(),
+            ClkVfDomainHint::Disp
+        ));
+        assert!(matches!(
+            parse_clk_vf_domain_hint("memory").unwrap(),
+            ClkVfDomainHint::Mem
+        ));
+        // bare ordinals = hint order (gpc/xbar/msd/disp/mem)
+        assert!(matches!(
+            parse_clk_vf_domain_hint("4").unwrap(),
+            ClkVfDomainHint::Mem
+        ));
+        assert!(parse_clk_vf_domain_hint("gpc2").is_err());
+        assert!(parse_clk_vf_domain_hint("").is_err());
+    }
+
+    #[test]
+    fn get_private_vftable_domain_option_parses() {
+        // --domain is a registered option on get-private-vftable (the filter
+        // itself runs against live hardware in the handler)
+        let invocation = parse_args(["get-private-vftable", "--domain", "gpc"]).unwrap();
+        assert_eq!(invocation.command, Some(Command::GetPrivateVftable));
+        assert_eq!(option_one(&invocation, "domain"), Some("gpc"));
     }
 
     #[test]

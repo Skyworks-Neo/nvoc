@@ -452,6 +452,16 @@ pub(super) fn format_private_vfp_output(output: &Value) -> Vec<String> {
                 .and_then(Value::as_f64)
                 .unwrap_or_default();
             let voltage = format!("{:.1} mV", voltage_uv / 1000.0);
+            // per-point curve voltage offset (Blackwell records; 0 elsewhere)
+            let volt_offset_mv = point
+                .get("volt_offset_mv")
+                .and_then(Value::as_f64)
+                .unwrap_or_default();
+            let volt_note = if volt_offset_mv != 0.0 {
+                format!(", volt offset {volt_offset_mv:+.1} mV")
+            } else {
+                String::new()
+            };
             // MHz values — plain integers in faithful mode, one-decimal
             // floats under --infer-missing-field's Pascal remap (true
             // default = current − offset); as_f64 covers both
@@ -487,7 +497,7 @@ pub(super) fn format_private_vfp_output(output: &Value) -> Vec<String> {
                 .unwrap_or_default();
             lines.push(nvoc_cli_common::color::stylize(
                 &format!(
-                    "    #{index}: {voltage}, current {current:.1} MHz, default {default:.1} MHz{control}"
+                    "    #{index}: {voltage}{volt_note}, current {current:.1} MHz, default {default:.1} MHz{control}"
                 ),
                 false,
             ));
@@ -520,6 +530,78 @@ pub(super) fn format_private_vfp_output(output: &Value) -> Vec<String> {
 
     if points.is_none() && segments.is_none() {
         lines.extend(format_value_block(output, 1));
+    }
+
+    // --dump-records: raw 488B record slot map (per-offset dword stats +
+    // first-record hex) — the layout-discovery section
+    if let Some(map) = object.get("record_slot_map").and_then(Value::as_object) {
+        lines.push(format!(
+            "  {}",
+            nvoc_cli_common::color::stylize_title("Record Slot Map")
+        ));
+        if let Some(err) = map.get("error").and_then(Value::as_str) {
+            lines.push(format!("    {err}"));
+            return lines;
+        }
+        let records = map.get("records").and_then(Value::as_i64).unwrap_or(0);
+        let stride = map.get("stride").and_then(Value::as_i64).unwrap_or(488);
+        let layout = map
+            .get("layout")
+            .and_then(Value::as_str)
+            .unwrap_or("modern (R610 large-table)");
+        lines.push(format!(
+            "    {records} raw records × {stride} B [{layout}]; per-dword stats (non-zero slots):"
+        ));
+        if let Some(slot_list) = map.get("slots").and_then(Value::as_array) {
+            for slot in slot_list {
+                let tag = slot
+                    .get("offset_hex")
+                    .and_then(Value::as_str)
+                    .unwrap_or("?");
+                let min = slot.get("min").and_then(Value::as_u64).unwrap_or(0);
+                let max = slot.get("max").and_then(Value::as_u64).unwrap_or(0);
+                let distinct = slot.get("distinct").and_then(Value::as_u64).unwrap_or(0);
+                let mut line = if min == max {
+                    format!("    {tag}: constant {min} (0x{min:08X})")
+                } else {
+                    format!("    {tag}: {min}..{max} ({distinct} distinct)")
+                };
+                if let (Some(imin), Some(imax)) = (
+                    slot.get("i32_min").and_then(Value::as_i64),
+                    slot.get("i32_max").and_then(Value::as_i64),
+                ) {
+                    line.push_str(&format!("  [i32 {imin}..{imax}]"));
+                }
+                if let Some(equals) = slot.get("equals").and_then(Value::as_array) {
+                    let labels: Vec<&str> = equals.iter().filter_map(Value::as_str).collect();
+                    if !labels.is_empty() {
+                        line.push_str(&format!("  [= {}]", labels.join(" = ")));
+                    }
+                }
+                lines.push(line);
+            }
+        }
+        let zeros = map
+            .get("zero_slot_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        lines.push(format!(
+            "    ({zeros} of {} dword slots identically zero)",
+            stride / 4
+        ));
+        if let Some(hex_rows) = map.get("record_hex").and_then(Value::as_array) {
+            lines.push(format!(
+                "    first record (#{}) hex:",
+                map.get("first_record_index")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
+            ));
+            for row in hex_rows {
+                if let Some(text) = row.as_str() {
+                    lines.push(format!("      {text}"));
+                }
+            }
+        }
     }
     lines
 }
