@@ -9,7 +9,8 @@ use nvoc_core::{
     QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings, QueryGpuStatus,
     QueryLegacyCoreOvervoltRanges, QueryNvapiClkDomainFreq, QueryNvapiClkDomainFreqDirect,
     QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomains, QueryNvapiClkVfPoints,
-    QueryNvapiCoreVoltageControl, QueryNvapiDNotifier, QueryNvapiOcScannerIncomplete,
+    QueryNvapiCoolerInfo, QueryNvapiCoreVoltageControl, QueryNvapiDNotifier,
+    QueryNvapiOcScannerIncomplete,
     QueryNvapiPmgrVoltageArbiter, QueryNvapiPowerCeiling, QueryNvapiRatedTdp,
     QueryNvapiTargetTempPolicies, QueryNvapiTgpWattRange, QueryNvapiThermalSim,
     QueryNvapiVoltRails, QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates,
@@ -1241,6 +1242,35 @@ fn normalize_fan_info(target: &GpuTarget<'_>) -> PyResultValue {
     ]))
 }
 
+/// NVAPI cooler-family descriptors (private FanCoolerGetInfo 0x65CE5BFC):
+/// per-cooler info + count. The frontends pair this with NVML fan info for
+/// the legacy verdict — NVML fans ≥1 with an EMPTY private NVAPI cooler
+/// family is the ≤Kepler-driver signature (GT730 live); modern cards report
+/// their coolers through the family too (1650S/A4000 both count=1 live).
+fn normalize_cooler_info(target: &GpuTarget<'_>) -> PyResultValue {
+    let coolers = run(target, QueryNvapiCoolerInfo).map_err(to_py_err)?.output;
+    let count = coolers.len();
+    let entries = Value::Array(
+        coolers
+            .into_iter()
+            .map(|c| {
+                value_object([
+                    ("index", u64_value(c.index as u64)),
+                    ("type", u64_value(c.cooler_type as u64)),
+                    ("min", u64_value(c.min as u64)),
+                    ("max", u64_value(c.max as u64)),
+                    ("current", u64_value(c.current as u64)),
+                    ("current_pwm_percent", u64_value(c.current_pwm_percent as u64)),
+                ])
+            })
+            .collect(),
+    );
+    Ok(value_object([
+        ("count", u64_value(count as u64)),
+        ("coolers", entries),
+    ]))
+}
+
 fn normalize_temperature_thresholds(target: &GpuTarget<'_>) -> PyResultValue {
     let items = run(target, QueryTemperatureThresholds)
         .map_err(to_py_err)?
@@ -1648,6 +1678,12 @@ fn query_pstates(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
 #[pyfunction]
 fn query_fan_info(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
     let value = with_target(gpu, "nvml", normalize_fan_info)?;
+    py_value(py, &value)
+}
+
+#[pyfunction]
+fn query_cooler_info(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
+    let value = with_target(gpu, "nvapi", normalize_cooler_info)?;
     py_value(py, &value)
 }
 
@@ -4429,6 +4465,7 @@ fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(query_power_limits, m)?)?;
     m.add_function(wrap_pyfunction!(query_pstates, m)?)?;
     m.add_function(wrap_pyfunction!(query_fan_info, m)?)?;
+    m.add_function(wrap_pyfunction!(query_cooler_info, m)?)?;
     m.add_function(wrap_pyfunction!(query_temperature_thresholds, m)?)?;
     m.add_function(wrap_pyfunction!(query_throttle_reasons, m)?)?;
     m.add_function(wrap_pyfunction!(query_legacy_gpc_rail_volt_range, m)?)?;
