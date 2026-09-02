@@ -4105,6 +4105,10 @@ fn execute_target(
                                 "type": p.record_type,
                                 // the V/F grid axis (µV): 450000 = 450 mV
                                 "voltage_uV": p.voltage_uV,
+                                // current/effective voltage (mV; stock +
+                                // applied offset; modern @rec+0x68,
+                                // Ada-verified — legacy/BW not reported, 0)
+                                "volt_current_mv": p.volt_current_uV as f64 / 1000.0,
                                 // per-point curve voltage offset (mV) —
                                 // Blackwell records only (their +0x64 slot
                                 // is a signed µV term; −45 mV experiment
@@ -6624,9 +6628,9 @@ fn attach_record_slot_map(
     let refs: Vec<(&str, usize)> = if stride >= 488 {
         vec![
             ("+0x058 (voltage_uV)", 0x58),
-            ("+0x024 (freq_default)", 0x24),
+            ("+0x024 (freq_default / BW current)", 0x24),
             ("+0x064 (freq_current / BW volt-offset)", 0x64),
-            ("+0x068 (voltage mirror / BW default?)", 0x68),
+            ("+0x068 (volt_current / BW default?)", 0x68),
         ]
     } else {
         // LEGACY layout: flags@0, voltage µV@4, freq MHz@8

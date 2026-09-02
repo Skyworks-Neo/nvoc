@@ -446,12 +446,28 @@ pub(super) fn format_private_vfp_output(output: &Value) -> Vec<String> {
                 }
             }
             let index = field_text(point, "index");
-            // voltage axis is µV in this table (450000 = 450.0 mV)
+            // voltage axis is µV in this table (450000 = 450.0 mV).
+            // Modern records also carry the CURRENT/effective voltage
+            // (stock + applied offset; Ada-verified @rec+0x68) — when
+            // reported, the row leads with it and shows the stock reading
+            // as "default". Legacy/BW records don't report it (0) → the
+            // old single-voltage form.
             let voltage_uv = point
                 .get("voltage_uV")
                 .and_then(Value::as_f64)
                 .unwrap_or_default();
-            let voltage = format!("{:.1} mV", voltage_uv / 1000.0);
+            let volt_current_mv = point
+                .get("volt_current_mv")
+                .and_then(Value::as_f64)
+                .unwrap_or_default();
+            let voltage = if volt_current_mv != 0.0 {
+                format!(
+                    "current {volt_current_mv:.1} mV, default {:.1} mV",
+                    voltage_uv / 1000.0
+                )
+            } else {
+                format!("{:.1} mV", voltage_uv / 1000.0)
+            };
             // per-point curve voltage offset (Blackwell records; 0 elsewhere)
             let volt_offset_mv = point
                 .get("volt_offset_mv")

@@ -2645,6 +2645,10 @@ fn query_private_vftable(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
                                     ("type", Value::from(p.record_type)),
                                     // the V/F grid axis (µV): 450000 = 450 mV
                                     ("voltage_uV", Value::from(p.voltage_uV)),
+                                    // current/effective voltage (µV; stock +
+                                    // applied offset; modern @rec+0x68,
+                                    // Ada-verified — legacy/BW not reported, 0)
+                                    ("volt_current_uV", Value::from(p.volt_current_uV)),
                                     // per-point curve voltage offset (µV,
                                     // signed; Blackwell records only, 0
                                     // elsewhere — see set_clk_domain_offset's
