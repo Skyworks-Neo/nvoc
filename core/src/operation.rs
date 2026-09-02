@@ -73,6 +73,17 @@ pub fn run<O: GpuOperation>(
             let _ = gpu.force_gc6_exit(); // best-effort; -104 etc. ignored
         }
     }
+    // Scope the last-error ledger to the operation itself. The wake-gate
+    // classification above probes ~30 info() surfaces with soft-fail, and
+    // every tolerated failure is still RECORDED in the ledger (TCC cards:
+    // GetConnectedDisplayIds -6; WDDM laptops: the GetCoolerSettings
+    // fallback NotSupported, ...). Left in place, a LOCAL refusal inside
+    // the operation — e.g. the ClkDomains V2 record-type gate, which
+    // issues no failing NVAPI call at all — would surface one of those
+    // stale probe errors as the "Last NVAPI error" under supported:false,
+    // blaming the write on a display/fan probe that has nothing to do
+    // with it.
+    ::nvapi::clear_status_error();
     let output = op.run(target)?;
     Ok(OperationReport {
         target: target.id,
@@ -2549,7 +2560,23 @@ impl GpuOperation for QueryNvapiClkDomainFreqsBatch {
 /// private interface. Units live-calibrated vs the public GPC VFP curve
 /// (see `::nvapi::ClkVfPointPrivate`).
 #[derive(Clone, Copy, Debug)]
-pub struct QueryNvapiClkVfPoints;
+pub struct QueryNvapiClkVfPoints {
+    /// Attach the raw 488B GetStatus records (diagnostic slot-map dumps —
+    /// ~64KB per 132-point table). The normal read leaves them empty.
+    pub include_raw: bool,
+}
+
+impl Default for QueryNvapiClkVfPoints {
+    fn default() -> Self {
+        Self { include_raw: false }
+    }
+}
+
+impl From<bool> for QueryNvapiClkVfPoints {
+    fn from(include_raw: bool) -> Self {
+        Self { include_raw }
+    }
+}
 
 impl GpuOperation for QueryNvapiClkVfPoints {
     type Output = Option<::nvapi::ClkVfPointsPrivate>;
@@ -2559,7 +2586,13 @@ impl GpuOperation for QueryNvapiClkVfPoints {
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
-        target.nvapi()?.clk_vf_points_private().map_err(Error::from)
+        let gpu = target.nvapi()?;
+        let out = if self.include_raw {
+            gpu.clk_vf_points_private_raw()
+        } else {
+            gpu.clk_vf_points_private()
+        };
+        out.map_err(Error::from)
     }
 }
 

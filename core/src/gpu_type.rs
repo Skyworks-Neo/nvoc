@@ -626,6 +626,24 @@ impl GpuType {
         matches!(self, GpuType::Mobile50Series | GpuType::Desktop50Series)
     }
 
+    /// 是否为 Blackwell 世代（消费 50 系 / 工作站 / 服务器）。
+    ///
+    /// ClkDomains WRITE 记录的槽位语义在 50 系整体平移（live 用户实测
+    /// 2026-09-02，消费 50 系）：slot2 = 有符号频率偏移（对应 10~40 系的
+    /// slot0），slot3 = V/F 曲线电压偏移 µV（对应 10~40 系的 slot1）。
+    /// 私有 V/F 点记录同步变异：+0x64 从 current-MHz 变为带符号 µV 电压
+    /// 偏移（−45 mV 实验回读 4294922296 = 2³² − 45000）。服务器
+    /// Blackwell 未实测，按同代口径归入。
+    pub fn is_blackwell(&self) -> bool {
+        matches!(
+            self,
+            GpuType::Mobile50Series
+                | GpuType::Desktop50Series
+                | GpuType::WorkstationBlackwell
+                | GpuType::ServerBlackwell
+        )
+    }
+
     /// 是否为 Pascal 世代（消费 10 系 / 工作站 / 服务器）。
     ///
     /// Pascal 私有 V/F 控制轴整体 2× 编码（1080 实测：公开超频 +f → 私有

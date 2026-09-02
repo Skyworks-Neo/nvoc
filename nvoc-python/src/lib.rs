@@ -2509,7 +2509,7 @@ fn query_private_freq_domain_info(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAn
 #[pyfunction]
 fn query_private_vftable(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
     let value = with_target(gpu, "nvapi", |target| {
-        let mut vfp = run(target, QueryNvapiClkVfPoints)
+        let mut vfp = run(target, QueryNvapiClkVfPoints::default())
             .map_err(to_py_err)?
             .output;
         if let Some(v) = vfp.as_mut() {
@@ -2645,6 +2645,11 @@ fn query_private_vftable(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
                                     ("type", Value::from(p.record_type)),
                                     // the V/F grid axis (µV): 450000 = 450 mV
                                     ("voltage_uV", Value::from(p.voltage_uV)),
+                                    // per-point curve voltage offset (µV,
+                                    // signed; Blackwell records only, 0
+                                    // elsewhere — see set_clk_domain_offset's
+                                    // generation-dependent slot mapping)
+                                    ("volt_offset_uV", Value::from(p.volt_offset_uV)),
                                     // default MHz at this voltage
                                     ("freq_default_mhz", Value::from(p.freq_default_mhz)),
                                     // current MHz = default + applied offset.
