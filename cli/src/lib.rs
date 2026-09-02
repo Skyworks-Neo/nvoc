@@ -4099,6 +4099,16 @@ fn execute_target(
                             } else {
                                 (p.freq_current_mhz as f64, p.freq_default_mhz as f64)
                             };
+                            // extended-section per-domain current slots,
+                            // nonzero only: slot k → [freq MHz, volt µV]
+                            let domain_currents: serde_json::Map<String, Value> = p
+                                .domain_freqs_mhz
+                                .iter()
+                                .zip(p.domain_volts_uV.iter())
+                                .enumerate()
+                                .filter(|(_, (f, v))| **f > 0 || **v > 0)
+                                .map(|(i, (f, v))| (i.to_string(), json!([*f, *v])))
+                                .collect();
                             json!({
                                 "bank": p.bank,
                                 "index": p.index,
@@ -4109,6 +4119,10 @@ fn execute_target(
                                 // applied offset; modern @rec+0x68,
                                 // Ada-verified — legacy/BW not reported, 0)
                                 "volt_current_mv": p.volt_current_uV as f64 / 1000.0,
+                                // extended-section per-domain currents
+                                // (Turing-verified; nonzero bits only,
+                                // bit → [freq MHz, volt µV])
+                                "domain_currents": Value::Object(domain_currents),
                                 // per-point curve voltage offset (mV) —
                                 // Blackwell records only (their +0x64 slot
                                 // is a signed µV term; −45 mV experiment
@@ -6631,6 +6645,19 @@ fn attach_record_slot_map(
             ("+0x024 (freq_default / BW current)", 0x24),
             ("+0x064 (freq_current / BW volt-offset)", 0x64),
             ("+0x068 (volt_current / BW default?)", 0x68),
+            // extended section: presence markers + per-domain current
+            // slots at 0x10 stride (roster-minus-owner packing)
+            ("+0x02C (ext marker A)", 0x2C),
+            ("+0x038 (unknown; == ext1 on Ada)", 0x38),
+            ("+0x040 (ext marker B)", 0x40),
+            ("+0x074 (ext0 cur f)", 0x74),
+            ("+0x078 (ext0 cur v)", 0x78),
+            ("+0x084 (ext1 cur f)", 0x84),
+            ("+0x088 (ext1 cur v)", 0x88),
+            ("+0x094 (ext2 cur f)", 0x94),
+            ("+0x098 (ext2 cur v)", 0x98),
+            ("+0x0A4 (ext3 cur f)", 0xA4),
+            ("+0x0A8 (ext3 cur v)", 0xA8),
         ]
     } else {
         // LEGACY layout: flags@0, voltage µV@4, freq MHz@8

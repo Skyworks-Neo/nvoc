@@ -12,6 +12,7 @@ from ..parsing import (
     curve_meta,
     build_vf_curves,
     compute_vf_plot_bounds_multi,
+    extract_ext_curves,
     find_curve_point_for_voltage,
     load_vf_curve_deltas,
     public_vfp_unsupported,
@@ -79,6 +80,14 @@ class VFCurveController(PaneController):
         self._active_curve = "gpc"
         self._curve_visible: dict[str, bool] = {}
         self._direct_read_inflight = False
+        # EXT-slot domain-current overlays (display-only; see parsing.
+        # extract_ext_curves) — Turing gpc block: XBAR/SYS/MSD/HOST,
+        # Ampere/Ada xbar block: SYS/MSD/HOST. Visibility-togglable in
+        # the selector row, never activatable (no writable points).
+        self.domain_curves: list[dict] = []
+        self._domain_visible: dict[str, bool] = {}
+        # Labels ever mounted as selector checkboxes (stale ones hide).
+        self._synced_ext_labels: set[str] = set()
         # Last option list pushed to the curve Select (suppresses no-op
         # set_options calls — each one posts Changed events).
         self._synced_options: list | None = None
@@ -268,6 +277,8 @@ class VFCurveController(PaneController):
         if curves is None:
             self._curves = {}
             self._curve_visible = {}
+            self.domain_curves = []
+            self._domain_visible = {}
             self.app.cache.curve_visible = {}
             self.app.cache.vf_live_point = None
             if public_vfp_unsupported(gpc_err):
@@ -286,6 +297,15 @@ class VFCurveController(PaneController):
         prev_visible = self._curve_visible or {}
         self._curves = curves
         self._curve_visible = {cid: prev_visible.get(cid, True) for cid in curves}
+        # EXT-slot domain-current overlays (display-only). A label that
+        # collides with a main curve is KEPT — Ada's xbar block fills an
+        # MSD-scale ext slot alongside the msd main segment; the draw
+        # path tags the overlay "·ext" so the lines stay distinguishable.
+        self.domain_curves = extract_ext_curves(clk_data)
+        prev_ext = self._domain_visible
+        self._domain_visible = {
+            e["label"]: prev_ext.get(e["label"], True) for e in self.domain_curves
+        }
         if self._active_curve not in curves or not self._curve_visible.get(
             self._active_curve
         ):
@@ -376,6 +396,21 @@ class VFCurveController(PaneController):
                     color="yellow",
                     label=f"{label} EFF",
                 )
+        # EXT-slot domain-current overlays (display-only dotted-ish series;
+        # see parsing.extract_ext_curves). Plotext palette note: magenta+
+        # renders red on some terminal shaders — stick to the verified
+        # orange+/cyan+/yellow/green hues.
+        _EXT_PLOTEXT_COLORS = {"XBAR": "orange+", "SYS": "yellow", "MSD": "cyan+", "HOST": "green"}
+        for ext in self.domain_curves:
+            if not self._domain_visible.get(ext["label"], True):
+                continue
+            plt.plot(
+                ext["volts"],
+                ext["freqs"],
+                marker="braille",
+                color=_EXT_PLOTEXT_COLORS.get(ext["label"], "yellow"),
+                label=f'{ext["label"]}·ext',
+            )
         # Live crosshair only on the active curve: GPC frequency from the
         # dashboard status feed, XBAR/MSD from the direct-read poll path.
         # The crosshair VOLTAGE is the rail current on every curve (the
@@ -459,6 +494,20 @@ class VFCurveController(PaneController):
             live_point=live_point,
             lock_point=lock_point,
         )
+        # EXT-slot overlays can sit outside the main curves' envelope —
+        # widen the frame so they stay in view.
+        if bounds is not None and self.domain_curves:
+            (x_min, x_max), (y_min, y_max) = bounds
+            for ext in self.domain_curves:
+                if not self._domain_visible.get(ext["label"], True):
+                    continue
+                if ext["volts"]:
+                    x_min = min(x_min, min(ext["volts"]))
+                    x_max = max(x_max, max(ext["volts"]))
+                if ext["freqs"]:
+                    y_min = min(y_min, min(ext["freqs"]))
+                    y_max = max(y_max, max(ext["freqs"]))
+            bounds = ((x_min, x_max), (y_min, y_max))
         if bounds is not None:
             (x_min, x_max), (y_min, y_max) = bounds
             plt.xlim(x_min, x_max)
@@ -570,7 +619,7 @@ class VFCurveController(PaneController):
         # curve id (gpc/xbar/msd/mem): iterating only the discovered set left
         # an absent domain's static checkbox never visited, hence never
         # hidden — e.g. P100 (gpc+mem only) kept showing XBAR/MSD boxes.
-        show_checkboxes = len(discovered) >= 2
+        show_checkboxes = len(discovered) + len(self.domain_curves) >= 2
         static_cids = [cid for cid in CURVE_META if cid != "unknown"]
         all_cids = list(dict.fromkeys(discovered + static_cids))
         for cid in all_cids:
@@ -598,6 +647,33 @@ class VFCurveController(PaneController):
             want = cid in self._curves and self._curve_visible.get(cid, True)
             if checkbox.value != want:
                 checkbox.value = want
+        # EXT-overlay checkboxes (ids vf-curve-ext-<LABEL>): mounted on
+        # first sight like unknownN, hidden when the label disappears from
+        # a later refresh. Pure display state — no activation, no guards.
+        current_labels = {e["label"] for e in self.domain_curves}
+        for label in sorted(self._synced_ext_labels | current_labels):
+            cid = f"ext-{label}"
+            try:
+                checkbox = self.app.query_one(f"#vf-curve-{cid}", Checkbox)
+            except Exception:
+                if label not in current_labels:
+                    continue
+                try:
+                    selector = self.app.query_one("#vf-curve-selector")
+                    checkbox = Checkbox(
+                        f"{label}·ext",
+                        value=True,
+                        id=f"vf-curve-{cid}",
+                        compact=True,
+                    )
+                    selector.mount(checkbox)
+                except Exception:
+                    continue
+            checkbox.display = show_checkboxes and label in current_labels
+            want = label in current_labels and self._domain_visible.get(label, True)
+            if checkbox.value != want:
+                checkbox.value = want
+        self._synced_ext_labels = current_labels
         # Echoes posted above are drained before this runs (queue order),
         # so the sync window closes only after they have been ignored.
         self.app.call_after_refresh(self._end_widget_sync)
@@ -628,6 +704,13 @@ class VFCurveController(PaneController):
         """Toggle a curve's visibility. Hidden curves are not drawn and not
         polled. Never leaves zero visible curves; vetoes snap the checkbox
         back."""
+        if curve_id.startswith("ext-"):
+            # EXT-overlay checkbox — pure display state, no guards.
+            label = curve_id[len("ext-") :]
+            if label in {e["label"] for e in self.domain_curves}:
+                self._domain_visible[label] = not self._domain_visible.get(label, True)
+                self.render_plot()
+            return
         if curve_id not in self._curves:
             return
         currently = self._curve_visible.get(curve_id, True)

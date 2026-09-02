@@ -96,6 +96,113 @@ _CURVE_WRITE_BIT = {"gpc": 0, "xbar": 1, "msd": 5, "mem": 2}
 _WRITE_BIT_TO_CURVE = {bit: cid for cid, bit in _CURVE_WRITE_BIT.items()}
 
 
+# ── Extended-section domain-current overlays ──
+# Each 488B private record carries optional EXT slots (+0x74+0x10*k pairs)
+# gated by the record's +0x2C/+0x40 extension markers. The slots pack the
+# curve domains that do NOT have their own main record block, ascending:
+#   Turing (only GPC as main records): 4 slots = XBAR/SYS/MSD/HOST.
+#   Ampere (XBAR promoted to its own #127..253 block): the gpc block is
+#   base-only and the XBAR block fills 3 slots = SYS/MSD/HOST.
+#   Ada (MSD promoted too): the XBAR block fills 2 slots = SYS/HOST —
+#   live A/B: the 35-distinct 225..1335 slot is HOST, not MSD.
+# Attribution derives from the segments present in THIS table — never a
+# generation table.
+_EXT_POOL = ("XBAR", "SYS", "MSD", "HOST")
+_EXT_CURVE_COLORS = {
+    "XBAR": "#FF8C00",  # same hue as the xbar main curve
+    "SYS": "#FFD24D",
+    "MSD": "#B026FF",  # same hue as the msd main curve
+    "HOST": "#B2E834",
+}
+
+
+def _extract_ext_curves(clk_data) -> List[dict]:
+    """Display-only series per populated EXT slot, attributed by layout.
+
+    Returns ``[{"owner", "slot", "label", "volts"(mV), "freqs"(MHz)}, …]``
+    sorted by (owner, slot). Labels come from ``_EXT_POOL`` minus every
+    domain that has its own main vf_curve segment in this table; slots
+    beyond that dynamic roster are dropped — unattributable data stays
+    in the CLI's domain_currents instead of being guessed at.
+    Plausibility gate: ≥4 points, volt axis 100..2000 mV, freq axis
+    10..8000 MHz — wrong-unit or half-zeroed (GCOFF) slot data never
+    plots.
+    """
+    if not isinstance(clk_data, dict):
+        return []
+    segs = [
+        s
+        for s in (clk_data.get("segments") or [])
+        if isinstance(s, dict) and s.get("kind") == "vf_curve"
+    ]
+    if not segs:
+        return []
+    ranges = [
+        (
+            s.get("bank"),
+            int(s.get("start_index", 0)),
+            int(s.get("end_index", -1)),
+            str(s.get("domain", "?")),
+        )
+        for s in segs
+    ]
+    series: Dict[Tuple[str, int], Tuple[List[float], List[float]]] = {}
+    for p in clk_data.get("points") or []:
+        if not isinstance(p, dict):
+            continue
+        fs = p.get("domain_freq_mhz")
+        vs = p.get("domain_volt_uV")
+        if not isinstance(fs, list) or not isinstance(vs, list):
+            continue
+        bank = p.get("bank")
+        try:
+            idx = int(p.get("index", -1))
+        except (TypeError, ValueError):
+            continue
+        owner = next(
+            (d for b, s, e, d in ranges if b == bank and s <= idx <= e), None
+        )
+        if owner is None:
+            continue
+        for k in range(min(4, len(fs), len(vs))):
+            try:
+                f = float(fs[k])
+                v = float(vs[k])
+            except (TypeError, ValueError):
+                continue
+            if f <= 0 or v <= 0:
+                continue  # zeroed slot / GCOFF null: not plottable
+            volts, freqs = series.setdefault((str(owner), k), ([], []))
+            volts.append(v / 1000.0)
+            freqs.append(f)
+    out: List[dict] = []
+    main_domains = {d for _, _, _, d in ranges}
+    roster = [
+        nm for nm in _EXT_POOL if nm.lower() not in main_domains
+    ]
+    for (owner, k), (volts, freqs) in series.items():
+        label = roster[k] if k < len(roster) else None
+        if label is None:
+            continue
+        if len(volts) < 4:
+            continue  # stray records, not a curve
+        if min(volts) < 100.0 or max(volts) > 2000.0:
+            continue  # unit sanity (µV-as-mV or garbage never plots)
+        if min(freqs) < 10.0 or max(freqs) > 8000.0:
+            continue
+        out.append(
+            {
+                "owner": owner,
+                "slot": k,
+                "label": label,
+                "volts": volts,
+                "freqs": freqs,
+            }
+        )
+    out.sort(key=lambda e: (e["owner"], e["slot"]))
+    return out
+
+
 class _EffectiveCurve:
     """Forward-synthesized effective series for a curve (display only).
 
@@ -306,6 +413,11 @@ class VFCurveTab:
         self._active_curve: str = "gpc"
         self._curve_visible: Dict[str, bool] = {}
         self._curve_lines: Dict[str, dict] = {}  # curve_id -> {"current","default"}
+        # Display-only EXT-slot domain-current overlays (Turing XBAR/SYS/
+        # MSD/HOST, Ampere xbar-block SYS/MSD/HOST) — visibility-togglable
+        # in the selector, never activatable (no writable points).
+        self._domain_curves: List[dict] = []
+        self._domain_curve_visible: Dict[str, bool] = {}
         self._curve_selector_row: Optional[tk.Frame] = None
         self._curve_selector_btns: Dict[str, tk.Frame] = {}
         # per-GPU probe of which private write mode each curve supports, so a
@@ -1279,6 +1391,8 @@ class VFCurveTab:
         if not curves:
             self._curves = {}
             self._curve_visible = {}
+            self._domain_curves = []
+            self._domain_curve_visible = {}
             return False
 
         # Canonical display order GPC → XBAR → MSD → MEM → others (unknownN
@@ -1312,6 +1426,17 @@ class VFCurveTab:
         # Carry over visibility (default: every discovered curve visible), and
         # keep the active curve valid (fallback to first visible).
         self._curves = curves
+        # EXT-slot domain-current overlays (display-only). A label that
+        # collides with a main curve is KEPT — Ada's xbar block fills an
+        # MSD-scale ext slot alongside the msd main segment, and the two
+        # are not proven identical; the draw path tags the overlay
+        # "·ext" so the lines stay distinguishable.
+        self._domain_curves = _extract_ext_curves(clk_data)
+        prev_ext_visible = getattr(self, "_domain_curve_visible", None) or {}
+        self._domain_curve_visible = {
+            e["label"]: prev_ext_visible.get(e["label"], True)
+            for e in self._domain_curves
+        }
         # Report a grid-shift change once (not per auto-refresh tick).
         # getattr guards: tests build the tab via __new__ without app/attr.
         gpc_cd = curves.get("gpc")
@@ -1349,6 +1474,8 @@ class VFCurveTab:
         self._curves = {}
         self._curve_visible = {}
         self._active_curve = "gpc"
+        self._domain_curves = []
+        self._domain_curve_visible = {}
         self._voltages = []
         self._frequencies = []
         self._defaults = []
@@ -1722,7 +1849,8 @@ class VFCurveTab:
             child.destroy()
         self._curve_selector_btns = {}
         curves = list(self._curves.items())
-        if len(curves) <= 1:
+        ext_curves = getattr(self, "_domain_curves", None) or []
+        if len(curves) + len(ext_curves) <= 1:
             host.pack_forget()
             return
         host.pack(fill="x", padx=10, pady=(2, 6), after=self._chart_area)
@@ -1767,6 +1895,39 @@ class VFCurveTab:
             btn.bind("<Button-1>", lambda e, c=cid: self._switch_active_curve(c))
             lbl.bind("<Button-1>", lambda e, c=cid: self._switch_active_curve(c))
             self._curve_selector_btns[cid] = btn
+        # EXT-slot overlays: visibility checkboxes only — there is no
+        # activatable curve behind them (no writable points, no live
+        # crosshair), so the chip has no activation binding.
+        for ext in ext_curves:
+            label = ext["label"]
+            chip = tk.Frame(
+                host,
+                bg=_PANEL_BG,
+                highlightthickness=2,
+                highlightcolor=_EXT_CURVE_COLORS.get(label, "#B2E834"),
+                highlightbackground="#444444",
+                bd=0,
+            )
+            chip.pack(side="left", padx=6)
+            var = tk.BooleanVar(
+                value=self._domain_curve_visible.get(label, True)
+            )
+            ckb = ctk.CTkCheckBox(
+                chip,
+                text="",
+                variable=var,
+                width=20,
+                height=20,
+                command=lambda l=label, v=var: self._on_ext_selector_checkbox(l, v),
+            )
+            ckb.pack(side="left", padx=(4, 2), pady=4)
+            tk.Label(
+                chip,
+                text=f"{label}·ext",
+                font=_FONT_BODY,
+                bg=_PANEL_BG,
+                fg=_EXT_CURVE_COLORS.get(label, "#B2E834"),
+            ).pack(side="left", padx=(0, 6))
 
     def _on_selector_checkbox(self, curve_id: str, var: tk.BooleanVar):
         # The checkbox already toggled `var`. Route through the canonical
@@ -1777,6 +1938,11 @@ class VFCurveTab:
         self._toggle_curve_visible(curve_id)
         if self._curve_visible.get(curve_id, True) == before:
             var.set(before)  # vetoed (only-visible guard) — snap checkbox back
+
+    def _on_ext_selector_checkbox(self, label: str, var: tk.BooleanVar):
+        """EXT-overlay visibility toggle — pure display state, no guards."""
+        self._domain_curve_visible[label] = bool(var.get())
+        self._redraw()
 
     @staticmethod
     def _write_vfp_points(path: str, points: List[dict]) -> None:
@@ -2009,6 +2175,25 @@ class VFCurveTab:
                     zorder=3.5,
                 )
 
+        # Extended-section domain-current overlays (display-only dotted
+        # lines — Turing gpc block: XBAR/SYS/MSD/HOST; Ampere/Ada xbar
+        # block: SYS/MSD/HOST). A label colliding with a main curve keeps
+        # drawing, tagged "·ext". Static: no crosshair, no editing.
+        for ext in getattr(self, "_domain_curves", None) or []:
+            if not self._domain_curve_visible.get(ext["label"], True):
+                continue
+            ax.plot(
+                ext["volts"],
+                ext["freqs"],
+                color=_EXT_CURVE_COLORS.get(ext["label"], "#B2E834"),
+                linestyle=":",
+                linewidth=1.0,
+                marker=".",
+                markersize=1.2,
+                label=f'{ext["label"]}·ext',
+                zorder=2.6,
+            )
+
         # Active curve (default dashed on the base grid + current
         # solid+marker on the CURRENT grid — its own public axis when a
         # volt offset shifted it; animated).
@@ -2211,6 +2396,15 @@ class VFCurveTab:
                 v_min = min(v_min, min(_eff.voltages))
                 v_max = max(v_max, max(_eff.voltages))
                 f_vals += list(_eff.freqs)
+        # EXT-slot overlays can sit outside the main curves' envelope —
+        # keep them in frame too.
+        for ext in getattr(self, "_domain_curves", None) or []:
+            if not self._domain_curve_visible.get(ext["label"], True):
+                continue
+            if ext["volts"]:
+                v_min = min(v_min, min(ext["volts"]))
+                v_max = max(v_max, max(ext["volts"]))
+            f_vals += list(ext["freqs"])
         f_min, f_max = min(f_vals), max(f_vals) if f_vals else (0, 1)
 
         # Adjust Y limits if freq lock is outside default range

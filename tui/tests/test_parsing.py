@@ -30,6 +30,7 @@ from nvoc_tui.parsing import (
     parse_status_output,
     synthesize_effective,
     vf_curve_points_to_series,
+    extract_ext_curves,
     public_vfp_unsupported,
     reverse_lookup_voltage,
 )
@@ -883,3 +884,71 @@ def test_build_vf_curves_no_effective_on_healthy_or_shifted_public() -> None:
     curves = build_vf_curves(shifted_public, None, clk_data, domain_info)
     assert curves["gpc"].source == "private"
     assert curves["gpc"].effective is None
+
+
+# ── EXT-slot domain-current overlays (Turing/Ampere record packing) ──
+
+
+def _ext_seg(domain: str, start: int, end: int, bank: int = 0) -> dict:
+    return {
+        "kind": "vf_curve",
+        "domain": domain,
+        "bank": bank,
+        "start_index": start,
+        "end_index": end,
+    }
+
+
+def _ext_pt(i: int, slots: list[tuple[float, float]], bank: int = 0) -> dict:
+    fs = [s[0] for s in slots] + [0] * (4 - len(slots))
+    vs = [s[1] for s in slots] + [0] * (4 - len(slots))
+    return {
+        "bank": bank,
+        "index": i,
+        "voltage_uV": 450000,
+        "freq_current_mhz": 405,
+        "freq_default_mhz": 405,
+        "domain_freq_mhz": fs,
+        "domain_volt_uV": vs,
+    }
+
+
+def test_extract_ext_curves_turing_four_slots() -> None:
+    pts = [
+        _ext_pt(i, [(100 + i, 450000), (300 + i, 600000), (500 + i, 800000), (700 + i, 1000000)])
+        for i in range(12)
+    ]
+    out = extract_ext_curves({"segments": [_ext_seg("gpc", 0, 11)], "points": pts})
+    assert [(e["owner"], e["slot"], e["label"]) for e in out] == [
+        ("gpc", 0, "XBAR"),
+        ("gpc", 1, "SYS"),
+        ("gpc", 2, "MSD"),
+        ("gpc", 3, "HOST"),
+    ]
+    assert out[0]["volts"][0] == 450.0 and out[0]["freqs"][0] == 100.0
+
+
+def test_extract_ext_curves_ampere_xbar_block() -> None:
+    gpc_pts = [_ext_pt(i, []) for i in range(12)]
+    xbar_pts = [
+        _ext_pt(127 + i, [(2000 + i, 600000), (900 + i, 1000000)]) for i in range(12)
+    ]
+    out = extract_ext_curves(
+        {
+            "segments": [_ext_seg("gpc", 0, 126), _ext_seg("xbar", 127, 253)],
+            "points": gpc_pts + xbar_pts,
+        }
+    )
+    assert [(e["owner"], e["slot"], e["label"]) for e in out] == [
+        ("xbar", 0, "SYS"),
+        ("xbar", 1, "MSD"),
+    ]
+
+
+def test_extract_ext_curves_rejects_garbage_and_strays() -> None:
+    # Wrong-unit volts never plot…
+    pts = [_ext_pt(i, [(100 + i, 450000000)]) for i in range(12)]
+    assert extract_ext_curves({"segments": [_ext_seg("gpc", 0, 11)], "points": pts}) == []
+    # …and neither do stray (<4) point runs.
+    pts = [_ext_pt(i, [(100 + i, 450000)]) for i in range(3)]
+    assert extract_ext_curves({"segments": [_ext_seg("gpc", 0, 2)], "points": pts}) == []

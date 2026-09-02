@@ -404,6 +404,11 @@ pub(super) fn format_private_vfp_output(output: &Value) -> Vec<String> {
     };
     let segments = object.get("segments").and_then(Value::as_array);
     let points = object.get("points").and_then(Value::as_array);
+    // extended-section per-(owner, slot) current-pair collector — filled
+    // while the row loop walks the points (it already resolves each
+    // point's owning segment for the row grouping)
+    let mut ext_stats: std::collections::BTreeMap<(String, usize), (usize, f64, f64, f64, f64)> =
+        std::collections::BTreeMap::new();
 
     if let Some(points) = points {
         lines.push(format!(
@@ -446,6 +451,44 @@ pub(super) fn format_private_vfp_output(output: &Value) -> Vec<String> {
                 }
             }
             let index = field_text(point, "index");
+            // extended-section slots, attributed by the owning segment's
+            // domain (roster-minus-owner packing — see clk_vfp_status)
+            if let Some(dc) = point.get("domain_currents").and_then(Value::as_object) {
+                let owner = matching_segment
+                    .and_then(|i| segments.map(|s| &s[i]))
+                    .and_then(|seg| seg.get("domain").and_then(Value::as_str))
+                    .unwrap_or("?")
+                    .to_string();
+                for (k_str, pair) in dc {
+                    let Ok(k) = k_str.parse::<usize>() else {
+                        continue;
+                    };
+                    if k >= 4 {
+                        continue;
+                    }
+                    let Some(pair) = pair.as_array() else {
+                        continue;
+                    };
+                    let (Some(f), Some(v)) = (
+                        pair.first().and_then(Value::as_f64),
+                        pair.get(1).and_then(Value::as_f64),
+                    ) else {
+                        continue;
+                    };
+                    if f == 0.0 && v == 0.0 {
+                        continue;
+                    }
+                    let e =
+                        ext_stats
+                            .entry((owner.clone(), k))
+                            .or_insert((0, f, f, v, v));
+                    e.0 += 1;
+                    e.1 = e.1.min(f);
+                    e.2 = e.2.max(f);
+                    e.3 = e.3.min(v);
+                    e.4 = e.4.max(v);
+                }
+            }
             // voltage axis is µV in this table (450000 = 450.0 mV).
             // Modern records also carry the CURRENT/effective voltage
             // (stock + applied offset; Ada-verified @rec+0x68) — when
@@ -514,6 +557,48 @@ pub(super) fn format_private_vfp_output(output: &Value) -> Vec<String> {
             lines.push(nvoc_cli_common::color::stylize(
                 &format!(
                     "    #{index}: {voltage}{volt_note}, current {current:.1} MHz, default {default:.1} MHz{control}"
+                ),
+                false,
+            ));
+        }
+    }
+
+    // ── Extended-section per-domain current pairs ──
+    // Slots @+0x074+0x10*k (freq MHz / volt µV) pack the curve domains
+    // WITHOUT their own main record block, ascending — Turing (only gpc
+    // main): XBAR/SYS/MSD/HOST; Ampere (xbar main): SYS/MSD/HOST; Ada
+    // (msd main too): SYS/HOST (live A/B: the 35-distinct 225..1335
+    // slot is HOST, not MSD). Reported per owning segment so
+    // multi-block tables never mix.
+    if !ext_stats.is_empty() {
+        let main_domains: std::collections::HashSet<String> = segments
+            .map(|segs| {
+                segs.iter()
+                    .filter_map(|s| s.get("domain").and_then(Value::as_str))
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let roster: Vec<&str> = ["XBAR", "SYS", "MSD", "HOST"]
+            .iter()
+            .copied()
+            .filter(|nm| !main_domains.contains(&nm.to_lowercase()))
+            .collect();
+        lines.push(nvoc_cli_common::color::stylize(
+            "    Extended-section currents (slots @+0x074+0x10*k; roster \
+             [XBAR,SYS,MSD,HOST] minus main-block domains):",
+            false,
+        ));
+        for ((owner, k), (n, fmin, fmax, vmin, vmax)) in &ext_stats {
+            let tag = match roster.get(*k) {
+                Some(nm) => format!("ext{k} ({nm})"),
+                None => format!("ext{k}"),
+            };
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!(
+                    "      {owner} {tag}: {n} pts, f {fmin:.1}..{fmax:.1} MHz, v {:.1}..{:.1} mV",
+                    vmin / 1000.0,
+                    vmax / 1000.0
                 ),
                 false,
             ));

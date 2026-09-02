@@ -752,6 +752,105 @@ def build_vf_curves(
     return dict(sorted(curves.items(), key=lambda kv: order.get(kv[0], 4)))
 
 
+# ── Extended-section domain-current overlays ──
+# Each 488B private record carries optional EXT slots (+0x74+0x10*k pairs)
+# gated by the record's +0x2C/+0x40 extension markers. The slots pack the
+# curve domains that do NOT have their own main record block, ascending:
+#   Turing (only GPC as main records): 4 slots = XBAR/SYS/MSD/HOST.
+#   Ampere (XBAR promoted to its own #127..253 block): the gpc block is
+#   base-only and the XBAR block fills 3 slots = SYS/MSD/HOST.
+#   Ada (MSD promoted too): the XBAR block fills 2 slots = SYS/HOST —
+#   live A/B: the 35-distinct 225..1335 slot is HOST, not MSD.
+# Attribution derives from the segments present in THIS table — never a
+# generation table. Mirror of the GUI tab's _extract_ext_curves.
+EXT_POOL = ("XBAR", "SYS", "MSD", "HOST")
+
+
+def extract_ext_curves(clk_data: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Display-only series per populated EXT slot, attributed by layout.
+
+    Returns ``[{"owner", "slot", "label", "volts"(mV), "freqs"(MHz)}, …]``
+    sorted by (owner, slot). Labels come from ``EXT_POOL`` minus every
+    domain that has its own main vf_curve segment in this table; slots
+    beyond that dynamic roster are dropped — unattributable data stays
+    in the CLI's domain_currents instead of being guessed at.
+    Plausibility gate: ≥4 points, volt axis 100..2000 mV, freq axis
+    10..8000 MHz — wrong-unit or half-zeroed (GCOFF) slot data never
+    plots.
+    """
+    if not isinstance(clk_data, dict):
+        return []
+    segs = [
+        s
+        for s in (clk_data.get("segments") or [])
+        if isinstance(s, dict) and s.get("kind") == "vf_curve"
+    ]
+    if not segs:
+        return []
+    ranges = [
+        (
+            s.get("bank"),
+            int(s.get("start_index", 0)),
+            int(s.get("end_index", -1)),
+            str(s.get("domain", "?")),
+        )
+        for s in segs
+    ]
+    series: dict[tuple[str, int], tuple[list[float], list[float]]] = {}
+    for p in clk_data.get("points") or []:
+        if not isinstance(p, dict):
+            continue
+        fs = p.get("domain_freq_mhz")
+        vs = p.get("domain_volt_uV")
+        if not isinstance(fs, list) or not isinstance(vs, list):
+            continue
+        bank = p.get("bank")
+        try:
+            idx = int(p.get("index", -1))
+        except (TypeError, ValueError):
+            continue
+        owner = next(
+            (d for b, s, e, d in ranges if b == bank and s <= idx <= e), None
+        )
+        if owner is None:
+            continue
+        for k in range(min(4, len(fs), len(vs))):
+            try:
+                f = float(fs[k])
+                v = float(vs[k])
+            except (TypeError, ValueError):
+                continue
+            if f <= 0 or v <= 0:
+                continue  # zeroed slot / GCOFF null: not plottable
+            volts, freqs = series.setdefault((str(owner), k), ([], []))
+            volts.append(v / 1000.0)
+            freqs.append(f)
+    out: list[dict[str, Any]] = []
+    main_domains = {d for _, _, _, d in ranges}
+    roster = [nm for nm in EXT_POOL if nm.lower() not in main_domains]
+    for (owner, k), (volts, freqs) in series.items():
+        label = roster[k] if k < len(roster) else None
+        if label is None:
+            continue
+        if len(volts) < 4:
+            continue  # stray records, not a curve
+        if min(volts) < 100.0 or max(volts) > 2000.0:
+            continue  # unit sanity (µV-as-mV or garbage never plots)
+        if min(freqs) < 10.0 or max(freqs) > 8000.0:
+            continue
+        out.append(
+            {
+                "owner": owner,
+                "slot": k,
+                "label": label,
+                "volts": volts,
+                "freqs": freqs,
+            }
+        )
+    out.sort(key=lambda e: (e["owner"], e["slot"]))
+    return out
+
+
 def reverse_lookup_voltage(
     volts: list[float], freqs: list[float], target_freq: float
 ) -> float | None:

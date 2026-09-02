@@ -2654,6 +2654,32 @@ fn query_private_vftable(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
                                     // elsewhere — see set_clk_domain_offset's
                                     // generation-dependent slot mapping)
                                     ("volt_offset_uV", Value::from(p.volt_offset_uV)),
+                                    // EXTENDED-section per-domain currents,
+                                    // POSITIONAL slots 0..7 (record+
+                                    // 0x74+8*(pos−1) freq MHz / +4 volt µV;
+                                    // nonzero only where the record's
+                                    // extension markers are set). Slot
+                                    // attribution is layout-dependent —
+                                    // Turing single-block: 1=XBAR 3=SYS
+                                    // 5=MSD 7=unknown.
+                                    (
+                                        "domain_freq_mhz",
+                                        Value::Array(
+                                            p.domain_freqs_mhz
+                                                .iter()
+                                                .map(|&x| Value::from(x))
+                                                .collect(),
+                                        ),
+                                    ),
+                                    (
+                                        "domain_volt_uV",
+                                        Value::Array(
+                                            p.domain_volts_uV
+                                                .iter()
+                                                .map(|&x| Value::from(x))
+                                                .collect(),
+                                        ),
+                                    ),
                                     // default MHz at this voltage
                                     ("freq_default_mhz", Value::from(p.freq_default_mhz)),
                                     // current MHz = default + applied offset.
