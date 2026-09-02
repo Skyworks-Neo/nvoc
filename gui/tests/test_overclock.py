@@ -684,6 +684,101 @@ def test_row_volt_mode_defaults_false_for_plain_rows() -> None:
     assert tab._row_volt_mode(object()) is False
 
 
+# ── Blackwell (50系) plane-slot shift: freq 0→2, volt 1→3 ──────────────────
+
+
+def test_is_blackwell_from_info_codename_gate() -> None:
+    """Codename GB* = Blackwell (desktop/laptop/workstation/server);
+    Volta GV100 and Pascal GP* must not collide with the prefix."""
+    f = OverclockTab._is_blackwell_from_info
+    assert f({"codename": "GB207"}) is True
+    assert f({"codename": "gb202-B"}) is True
+    assert f({"codename": "AD107-B"}) is False
+    assert f({"codename": "GV100"}) is False
+    assert f({"codename": "GP104"}) is False
+    assert f({}) is False
+
+
+def _make_blackwell_tab(**kw) -> tuple[OverclockTab, FakeApp]:
+    tab, app = make_tab(**kw)
+    tab._is_blackwell_gpu = True
+    return tab, app
+
+
+def test_blackwell_xbar_mhz_writes_freq_slot2() -> None:
+    """Blackwell: the frequency plane lives in slot 2 (shifted from slot 0).
+    --freq on the CLI and the MHz row apply both target slot 2."""
+    tab, app = _make_blackwell_tab(xbar_supported=True, xbar_value="10")
+
+    tab._apply_xbar_only()
+
+    clk_calls = [c for c in app.native.calls if c[0] == "set_clk_domain_offset"]
+    assert clk_calls == [("set_clk_domain_offset", "GPU0", 1, 10_000, 2, None)]
+
+
+def test_blackwell_xbar_mv_writes_volt_slot3() -> None:
+    """Blackwell: the voltage plane lives in slot 3 — the mV-mode Xbar
+    apply writes slot 3, not slot 1."""
+    tab, app = _make_blackwell_tab(xbar_supported=True)
+    slider = FakeUnitSlider()
+    slider._oc_volt_bit = 1
+    slider._oc_volt_mode = True
+    tab.xbar_slider = slider
+    tab.xbar_var = FakeVar("25")
+    tab._is_ampere_plus = True  # coupling is a slot-2 artifact; not applied
+
+    tab._apply_xbar_only()
+
+    clk_calls = [c for c in app.native.calls if c[0] == "set_clk_domain_offset"]
+    assert clk_calls == [("set_clk_domain_offset", "GPU0", 1, 25_000, 3, None)]
+
+
+def test_blackwell_core_fallback_writes_freq_slot2() -> None:
+    """Blackwell: the pstate20 -104 fallback lands on the ClkDomains
+    frequency plane = slot 2."""
+    tab, app = _make_blackwell_tab()
+    app.native.raise_on_set_clock = RuntimeError("NVAPI NotSupported -104")
+
+    OverclockTab._apply_core_only_action(app.native, "GPU0", "nvapi", 125.0, "P0", 2)
+
+    clk_calls = [c for c in app.native.calls if c[0] == "set_clk_domain_offset"]
+    assert clk_calls == [("set_clk_domain_offset", "GPU0", 0, 125_000, 2, None)]
+
+
+def test_blackwell_row_reset_clears_slots_2_and_3() -> None:
+    """Blackwell: the MHz-mode row reset clears both plane slots (2, 3) —
+    NOT slots 0/1, which are driver-opaque dwords on this generation."""
+    tab, app = _make_blackwell_tab(xbar_supported=True, xbar_value="10")
+
+    tab._reset_clk_domain("Xbar", 1, tab.xbar_slider, tab.xbar_var)
+
+    slots = sorted(c[4] for c in app.native.calls if c[0] == "set_clk_domain_offset")
+    assert slots == [2, 3]
+
+
+def test_blackwell_volt_anchor_reads_slot3() -> None:
+    """The mV toggle's anchor reads the record's slot-3 dword (µV→mV) on
+    Blackwell — slot 1 is an opaque dword there, not the voltage plane."""
+    tab, _app = _make_blackwell_tab(xbar_supported=True)
+    backend = FakeBackend({"entries": [{"bit": 1, "values_kHz": [11, 22, 33, -12500]}]})
+    tab.app.backend = backend
+    slider = FakeUnitSlider()
+    slider._oc_volt_bit = 1
+
+    assert tab._query_row_volt_anchor_mv(slider) == -12.5
+
+
+def test_non_blackwell_volt_anchor_still_reads_slot1() -> None:
+    """10~40系 regression: the anchor keeps reading slot 1."""
+    tab, _app = make_tab(xbar_supported=True)
+    backend = FakeBackend({"entries": [{"bit": 1, "values_kHz": [11, -12500, 33]}]})
+    tab.app.backend = backend
+    slider = FakeUnitSlider()
+    slider._oc_volt_bit = 1
+
+    assert tab._query_row_volt_anchor_mv(slider) == -12.5
+
+
 def make_mobile_tab(
     vlimit_value: str = "1085",
     vlimit_state: str = "normal",
@@ -1007,14 +1102,13 @@ def test_xbar_supported_arch_friendly_names() -> None:
 
 def test_apply_xbar_only_converts_mhz_to_khz() -> None:
     # GUI speaks MHz; pynvoc takes kHz. xbar = ClockClient domain bit 1.
+    # Non-Blackwell tab → the frequency plane rides slot 0 explicitly.
     tab, app = make_tab(xbar_value="10")
 
     tab._apply_xbar_only()
 
     assert app.actions == ["apply xbar offset"]
-    assert app.native.calls == [
-        ("set_clk_domain_offset", "GPU0", 1, 10_000, None, None)
-    ]
+    assert app.native.calls == [("set_clk_domain_offset", "GPU0", 1, 10_000, 0, None)]
 
 
 def test_apply_xbar_action_returns_str_not_dict() -> None:
@@ -1061,7 +1155,7 @@ def test_apply_oc_includes_xbar_when_supported() -> None:
     tab._apply_oc()
 
     assert "apply xbar offset" in app.actions
-    assert ("set_clk_domain_offset", "GPU0", 1, 10_000, None, None) in [
+    assert ("set_clk_domain_offset", "GPU0", 1, 10_000, 0, None) in [
         c for c in app.native.calls if c[0] == "set_clk_domain_offset"
     ]
 

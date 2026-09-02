@@ -1060,6 +1060,28 @@ class OverclockTab:
         return codename.startswith("gp")
 
     @staticmethod
+    def _is_blackwell_from_info(info: dict) -> bool:
+        """Blackwell (50-series) detection for the ClkDomains slot mapping.
+
+        The WRITE record's plane slots shift one dword down on Blackwell
+        (live user probe 2026-09-02: slot2 = frequency offset, slot3 =
+        V/F-curve voltage addend; 10~40 series = slot0/slot1). Codename
+        gate GB* — desktop/laptop/workstation/server Blackwell all share
+        the prefix; Volta GV100 and Pascal GP* don't collide.
+        """
+        codename = str(info.get("codename") or "").upper()
+        return codename.startswith("GB")
+
+    def _clk_freq_slot(self) -> int:
+        """ClkDomains WRITE record slot carrying the FREQUENCY plane —
+        generation-dependent (see _is_blackwell_from_info)."""
+        return 2 if getattr(self, "_is_blackwell_gpu", False) else 0
+
+    def _clk_volt_slot(self) -> int:
+        """ClkDomains WRITE record slot carrying the VOLTAGE plane."""
+        return 3 if getattr(self, "_is_blackwell_gpu", False) else 1
+
+    @staticmethod
     def _xbar_supported_arch(
         arch_id: str, codename: str = "", gpu_name: str = ""
     ) -> bool:
@@ -1537,6 +1559,10 @@ class OverclockTab:
         ampere_flag = info.get("is_ampere_plus")
         if isinstance(ampere_flag, bool):
             self._is_ampere_plus = ampere_flag
+        # Blackwell (50系): the ClkDomains plane slots shift (freq=2/volt=3).
+        # Every ClkDomains read/write on this tab routes through
+        # _clk_freq_slot/_clk_volt_slot.
+        self._is_blackwell_gpu = self._is_blackwell_from_info(info)
         # Controllable mask (which WRITE records the driver exposes) + the
         # per-domain presence derived from it. Queried async — the first tick
         # after a GPU switch still has the previous/default mask.
@@ -2021,10 +2047,11 @@ class OverclockTab:
         self._syncing = False
 
     def _query_row_volt_anchor_mv(self, slider: Any) -> float:
-        """Live slot-1 addend (mV) for one row's WRITE record — the anchor
-        the row re-anchors at when its chip toggles to mV. Reads
+        """Live voltage-plane addend (mV) for one row's WRITE record — the
+        anchor the row re-anchors at when its chip toggles to mV. Reads
         get-private-freq-domain-info and finds this row's bit's record;
-        slot1 lives at values_kHz[1] (µV). Any miss → 0. Synchronous on
+        the voltage plane lives at values_kHz[volt_slot] (µV; slot 1 on
+        10~40 series, slot 3 on Blackwell). Any miss → 0. Synchronous on
         purpose: the toggle click is a user action, a ~ms escape is fine,
         and an async anchor would land after the user already started
         dragging (wrong values would go out)."""
@@ -2034,6 +2061,7 @@ class OverclockTab:
         gpu = self.app.selected_gpu_target()
         if gpu is None:
             return 0.0
+        volt_slot = self._clk_volt_slot()
         try:
             info = self.app.backend.query_private_freq_domain_info(gpu)
         except Exception:
@@ -2043,9 +2071,9 @@ class OverclockTab:
         for e in info.get("entries") or []:
             if isinstance(e, dict) and e.get("bit") == bit:
                 vals = e.get("values_kHz") or []
-                if isinstance(vals, list) and len(vals) > 1:
+                if isinstance(vals, list) and len(vals) > volt_slot:
                     try:
-                        return int(vals[1] or 0) / 1000.0
+                        return int(vals[volt_slot] or 0) / 1000.0
                     except (TypeError, ValueError):
                         return 0.0
                 break
@@ -2240,7 +2268,7 @@ class OverclockTab:
         if volt_bit is not None:
             # ClkDomains row: the label is a thin-bordered CYCLING toggle
             # (MHz → mV → MHz …). mV mode applies the row's value through
-            # the slot-1 voltage plane instead of slot-0 frequency.
+            # the voltage plane (generation-dependent slot) instead of slot-0 frequency.
             toggle = tk.Label(
                 row_frame,
                 text="MHz",
@@ -2427,26 +2455,33 @@ class OverclockTab:
         pstate = self._oc_pstate()
 
         if self._row_volt_mode(self.core_slider):
-            # mV mode: slot-1 voltage addend only — there is no public
+            # mV mode: voltage-plane addend only — there is no public
             # pstate20 path for the per-domain V/F voltage plane (and no
-            # fallback chain to fall back from).
+            # fallback chain to fall back from). Plane slot is
+            # generation-dependent (10~40系 1, Blackwell 3).
+            volt_slot = self._clk_volt_slot()
             self.app.run_native_action(
                 "apply core volt offset",
-                lambda native, gpu=gpu, value=value: (
+                lambda native, gpu=gpu, value=value, slot=volt_slot: (
                     OverclockTab._format_clk_domain_volt_result(
                         "Core",
                         value,
                         native.set_clk_domain_offset(
-                            gpu, 0, int(value * 1000), 1, None
+                            gpu, 0, int(value * 1000), slot, None
                         ),
                     )
                 ),
             )
             return
 
-        def action(native, gpu=gpu, backend=backend, value=value, pstate=pstate):
+        freq_slot = self._clk_freq_slot()
+
+        def action(
+            native, gpu=gpu, backend=backend, value=value, pstate=pstate, slot=freq_slot
+        ):
             # pstate20 public path first; NVAPI NotSupported (-104) on server
-            # cards etc. → fallback to the ClkDomains bit0 WRITE record.
+            # cards etc. → fallback to the ClkDomains bit0 WRITE record
+            # (frequency plane, generation-dependent slot).
             try:
                 native.set_clock_offset(gpu, backend, "core", value, pstate)
                 return f"Successfully applied core offset {value:g} MHz."
@@ -2458,7 +2493,7 @@ class OverclockTab:
                     or "not supported" in msg.lower()
                 ):
                     res = native.set_clk_domain_offset(
-                        gpu, 0, int(value * 1000), None, None
+                        gpu, 0, int(value * 1000), slot, None
                     )
                     applied = res.get("applied_mHz") if isinstance(res, dict) else None
                     rb = f" (readback {applied:+g} MHz)" if applied is not None else ""
@@ -2481,23 +2516,30 @@ class OverclockTab:
         pstate = self._oc_pstate()
 
         if self._row_volt_mode(self.mem_slider):
-            # mV mode: slot-1 voltage addend only (bit2 = WRITE memory M) —
-            # no public path, same as the Core row.
+            # mV mode: voltage-plane addend only (bit2 = WRITE memory M) —
+            # no public path, same as the Core row. Plane slot is
+            # generation-dependent (10~40系 1, Blackwell 3).
+            volt_slot = self._clk_volt_slot()
             self.app.run_native_action(
                 "apply memory volt offset",
-                lambda native, gpu=gpu, value=value: (
+                lambda native, gpu=gpu, value=value, slot=volt_slot: (
                     OverclockTab._format_clk_domain_volt_result(
                         "Memory",
                         value,
-                        native.set_clk_domain_offset(gpu, 2, value * 1000, 1, None),
+                        native.set_clk_domain_offset(gpu, 2, value * 1000, slot, None),
                     )
                 ),
             )
             return
 
-        def action(native, gpu=gpu, backend=backend, value=value, pstate=pstate):
+        freq_slot = self._clk_freq_slot()
+
+        def action(
+            native, gpu=gpu, backend=backend, value=value, pstate=pstate, slot=freq_slot
+        ):
             # pstate20 → fallback ClkDomains bit2 (WRITE bit2 = 显存 M, NOT the
             # MEASURE bit2 which reads SYS — read/write are two tables).
+            # Frequency plane, generation-dependent slot.
             try:
                 native.set_clock_offset(gpu, backend, "memory", value, pstate)
                 return f"Successfully applied memory offset {value} MHz."
@@ -2508,7 +2550,7 @@ class OverclockTab:
                     or "-104" in msg
                     or "not supported" in msg.lower()
                 ):
-                    res = native.set_clk_domain_offset(gpu, 2, value * 1000, None, None)
+                    res = native.set_clk_domain_offset(gpu, 2, value * 1000, slot, None)
                     applied = res.get("applied_mHz") if isinstance(res, dict) else None
                     rb = f" (readback {applied:+g} MHz)" if applied is not None else ""
                     return (
@@ -2606,8 +2648,8 @@ class OverclockTab:
         HoverTooltip(
             btn,
             f"Reset the {label} domain global offset to 0 "
-            f"(writes 0 to ClkDomains WRITE bit {bit}; mV mode: slot 1 only — "
-            f"MHz mode: slots 0 and 1).",
+            f"(writes 0 to ClkDomains WRITE bit {bit}; mV mode: voltage "
+            f"plane only — MHz mode: both plane slots).",
         )
         return btn
 
@@ -2627,7 +2669,11 @@ class OverclockTab:
         bits = [bit]
         if bit == 1 and self._is_ampere_plus and not volt_mode:
             bits.append(3)
-        slots = (1,) if volt_mode else (0, 1)
+        # plane slots are generation-dependent (10~40系 0/1, Blackwell 2/3):
+        # mV mode clears only the voltage plane, MHz mode both planes
+        volt_slot = self._clk_volt_slot()
+        freq_slot = self._clk_freq_slot()
+        slots = (volt_slot,) if volt_mode else (freq_slot, volt_slot)
         if slider is not None and var is not None:
             self._syncing = True
             slider.set(0)
@@ -2666,12 +2712,13 @@ class OverclockTab:
         return msg
 
     @staticmethod
-    def _reset_all_clk_domains_action(native, gpu):
+    def _reset_all_clk_domains_action(native, gpu, slots=(0, 1)):
         """Worker body: reset EVERY ClkDomains WRITE record (bits taken
-        from query_private_freq_domain_info) on slots 0 and 1 — the
-        all-domains form of the CLI reset. Unsupported bits warn and the
-        rest continue. Reused by the VF curve tab's global reset (curve
-        points and domain global offsets are separate storage)."""
+        from query_private_freq_domain_info) on the given plane slots
+        (10~40系 0/1, Blackwell 2/3) — the all-domains form of the CLI
+        reset. Unsupported bits warn and the rest continue. Reused by the
+        VF curve tab's global reset (curve points and domain global
+        offsets are separate storage)."""
         info = native.query_private_freq_domain_info(gpu)
         bits = []
         if isinstance(info, dict) and isinstance(info.get("entries"), list):
@@ -2682,7 +2729,7 @@ class OverclockTab:
             ]
         if not bits:
             return "No clock-domain WRITE records exposed — no global offsets to reset."
-        return OverclockTab._reset_clk_domain_action(native, gpu, "all", bits)
+        return OverclockTab._reset_clk_domain_action(native, gpu, "all", bits, slots)
 
     def _apply_xbar_only(self):
         """Apply the Xbar fabric-clock offset (ClkDomains WRITE bit1).
@@ -2692,7 +2739,7 @@ class OverclockTab:
         current − f) so any Sys offset already on bit3 is preserved. 10/
         16/20/Pascal: bit1 is pure Xbar, write it directly. GUI MHz → kHz ×1000.
 
-        mV mode (unit chip): slot-1 voltage addend, a DIRECT write — the
+        mV mode (unit chip): voltage-plane addend (generation-dependent slot), a DIRECT write — the
         coupling/bit3-cancel is a slot-0 frequency-plane artifact; the
         voltage plane is per-domain independent (single-rail MAX
         arbitration), so no cancel is needed.
@@ -2704,22 +2751,24 @@ class OverclockTab:
             return
         gpu = self.app.selected_gpu_target()
         if self._row_volt_mode(self.xbar_slider):
+            volt_slot = self._clk_volt_slot()
             self.app.run_native_action(
                 "apply xbar volt offset",
-                lambda native, gpu=gpu, value=value: (
+                lambda native, gpu=gpu, value=value, slot=volt_slot: (
                     OverclockTab._format_clk_domain_volt_result(
                         "Xbar",
                         value,
-                        native.set_clk_domain_offset(gpu, 1, value * 1000, 1, None),
+                        native.set_clk_domain_offset(gpu, 1, value * 1000, slot, None),
                     )
                 ),
             )
             return
         coupled = self._is_ampere_plus
+        freq_slot = self._clk_freq_slot()
         self.app.run_native_action(
             "apply xbar offset",
-            lambda native, gpu=gpu, value=value, coupled=coupled: (
-                OverclockTab._apply_xbar_only_action(native, gpu, value, coupled)
+            lambda native, gpu=gpu, value=value, coupled=coupled, slot=freq_slot: (
+                OverclockTab._apply_xbar_only_action(native, gpu, value, coupled, slot)
             ),
         )
 
@@ -2730,7 +2779,7 @@ class OverclockTab:
         write stacks on any Xbar-cancel (-f) already sitting on bit3 rather
         than overwriting it. GUI MHz → kHz ×1000.
 
-        mV mode (unit chip): slot-1 voltage addend, a DIRECT write — the
+        mV mode (unit chip): voltage-plane addend (generation-dependent slot), a DIRECT write — the
         RMW exists to preserve the slot-0 Xbar-cancel on bit3, which lives
         on the frequency plane and is untouched by a slot-1 write.
         """
@@ -2741,28 +2790,30 @@ class OverclockTab:
             return
         gpu = self.app.selected_gpu_target()
         if self._row_volt_mode(self.sys_slider):
+            volt_slot = self._clk_volt_slot()
             self.app.run_native_action(
                 "apply sys volt offset",
-                lambda native, gpu=gpu, value=value: (
+                lambda native, gpu=gpu, value=value, slot=volt_slot: (
                     OverclockTab._format_clk_domain_volt_result(
                         "Sys",
                         value,
-                        native.set_clk_domain_offset(gpu, 3, value * 1000, 1, None),
+                        native.set_clk_domain_offset(gpu, 3, value * 1000, slot, None),
                     )
                 ),
             )
             return
+        freq_slot = self._clk_freq_slot()
         self.app.run_native_action(
             "apply sys offset",
-            lambda native, gpu=gpu, value=value: OverclockTab._apply_sys_only_action(
-                native, gpu, value
+            lambda native, gpu=gpu, value=value, slot=freq_slot: (
+                OverclockTab._apply_sys_only_action(native, gpu, value, slot)
             ),
         )
 
     def _apply_msd_only(self):
         """Apply the Msd offset (ClkDomains WRITE bit5). Pascal greyed-out.
 
-        mV mode (unit chip): slot-1 voltage addend — same record, other plane.
+        mV mode (unit chip): voltage-plane addend (generation-dependent slot) — same record, other plane.
         """
         msd = self.msd_var.get().strip()
         try:
@@ -2771,24 +2822,26 @@ class OverclockTab:
             return
         gpu = self.app.selected_gpu_target()
         if self._row_volt_mode(self.msd_slider):
+            volt_slot = self._clk_volt_slot()
             self.app.run_native_action(
                 "apply msd volt offset",
-                lambda native, gpu=gpu, value=value: (
+                lambda native, gpu=gpu, value=value, slot=volt_slot: (
                     OverclockTab._format_clk_domain_volt_result(
                         "Msd",
                         value,
-                        native.set_clk_domain_offset(gpu, 5, value * 1000, 1, None),
+                        native.set_clk_domain_offset(gpu, 5, value * 1000, slot, None),
                     )
                 ),
             )
             return
+        freq_slot = self._clk_freq_slot()
         self.app.run_native_action(
             "apply msd offset",
-            lambda native, gpu=gpu, value=value: (
+            lambda native, gpu=gpu, value=value, slot=freq_slot: (
                 OverclockTab._format_clk_domain_offset_result(
                     "Msd",
                     value,
-                    native.set_clk_domain_offset(gpu, 5, value * 1000, None, None),
+                    native.set_clk_domain_offset(gpu, 5, value * 1000, slot, None),
                 )
             ),
         )
@@ -2796,7 +2849,7 @@ class OverclockTab:
     def _apply_host_only(self):
         """Apply the Host offset (ClkDomains WRITE bit9).
 
-        mV mode (unit chip): slot-1 voltage addend — same record, other plane.
+        mV mode (unit chip): voltage-plane addend (generation-dependent slot) — same record, other plane.
         """
         host = self.host_var.get().strip()
         try:
@@ -2805,24 +2858,26 @@ class OverclockTab:
             return
         gpu = self.app.selected_gpu_target()
         if self._row_volt_mode(self.host_slider):
+            volt_slot = self._clk_volt_slot()
             self.app.run_native_action(
                 "apply host volt offset",
-                lambda native, gpu=gpu, value=value: (
+                lambda native, gpu=gpu, value=value, slot=volt_slot: (
                     OverclockTab._format_clk_domain_volt_result(
                         "Host",
                         value,
-                        native.set_clk_domain_offset(gpu, 9, value * 1000, 1, None),
+                        native.set_clk_domain_offset(gpu, 9, value * 1000, slot, None),
                     )
                 ),
             )
             return
+        freq_slot = self._clk_freq_slot()
         self.app.run_native_action(
             "apply host offset",
-            lambda native, gpu=gpu, value=value: (
+            lambda native, gpu=gpu, value=value, slot=freq_slot: (
                 OverclockTab._format_clk_domain_offset_result(
                     "Host",
                     value,
-                    native.set_clk_domain_offset(gpu, 9, value * 1000, None, None),
+                    native.set_clk_domain_offset(gpu, 9, value * 1000, slot, None),
                 )
             ),
         )
@@ -2953,6 +3008,8 @@ class OverclockTab:
         page = self._oc_page
         if page == 0:
             actions = []
+            volt_slot = self._clk_volt_slot()
+            freq_slot = self._clk_freq_slot()
             core_mhz = self.core_var.get().strip()
             if core_mhz != "Curve":
                 try:
@@ -2961,12 +3018,12 @@ class OverclockTab:
                         actions.append(
                             (
                                 "apply core volt offset",
-                                lambda native, gpu=gpu, cv=cv: (
+                                lambda native, gpu=gpu, cv=cv, slot=volt_slot: (
                                     OverclockTab._format_clk_domain_volt_result(
                                         "Core",
                                         cv,
                                         native.set_clk_domain_offset(
-                                            gpu, 0, int(cv * 1000), 1, None
+                                            gpu, 0, int(cv * 1000), slot, None
                                         ),
                                     )
                                 ),
@@ -2977,13 +3034,14 @@ class OverclockTab:
                         actions.append(
                             (
                                 "apply core offset",
-                                lambda native, gpu=gpu, cv=cv, pstate=pstate: (
+                                lambda native, gpu=gpu, cv=cv, pstate=pstate, slot=freq_slot: (
                                     OverclockTab._apply_core_only_action(
                                         native,
                                         gpu,
                                         self._selected_oc_backend(),
                                         cv,
                                         pstate,
+                                        slot,
                                     )
                                 ),
                             )
@@ -2996,12 +3054,12 @@ class OverclockTab:
                     actions.append(
                         (
                             "apply memory volt offset",
-                            lambda native, gpu=gpu, mv=mv: (
+                            lambda native, gpu=gpu, mv=mv, slot=volt_slot: (
                                 OverclockTab._format_clk_domain_volt_result(
                                     "Memory",
                                     mv,
                                     native.set_clk_domain_offset(
-                                        gpu, 2, mv * 1000, 1, None
+                                        gpu, 2, mv * 1000, slot, None
                                     ),
                                 )
                             ),
@@ -3012,9 +3070,14 @@ class OverclockTab:
                     actions.append(
                         (
                             "apply memory offset",
-                            lambda native, gpu=gpu, mv=mv, pstate=pstate: (
+                            lambda native, gpu=gpu, mv=mv, pstate=pstate, slot=freq_slot: (
                                 OverclockTab._apply_mem_only_action(
-                                    native, gpu, self._selected_oc_backend(), mv, pstate
+                                    native,
+                                    gpu,
+                                    self._selected_oc_backend(),
+                                    mv,
+                                    pstate,
+                                    slot,
                                 )
                             ),
                         )
@@ -3034,6 +3097,8 @@ class OverclockTab:
         coupled = self._is_ampere_plus
         if page == 1:
             actions = []
+            volt_slot = self._clk_volt_slot()
+            freq_slot = self._clk_freq_slot()
             if self.xbar_slider.cget("state") != "disabled":
                 try:
                     xv = int(self.xbar_var.get().strip())
@@ -3042,12 +3107,12 @@ class OverclockTab:
                             actions.append(
                                 (
                                     "apply xbar volt offset",
-                                    lambda native, gpu=gpu, xv=xv: (
+                                    lambda native, gpu=gpu, xv=xv, slot=volt_slot: (
                                         OverclockTab._format_clk_domain_volt_result(
                                             "Xbar",
                                             xv,
                                             native.set_clk_domain_offset(
-                                                gpu, 1, xv * 1000, 1, None
+                                                gpu, 1, xv * 1000, slot, None
                                             ),
                                         )
                                     ),
@@ -3057,9 +3122,9 @@ class OverclockTab:
                             actions.append(
                                 (
                                     "apply xbar offset",
-                                    lambda native, gpu=gpu, xv=xv, coupled=coupled: (
+                                    lambda native, gpu=gpu, xv=xv, coupled=coupled, slot=freq_slot: (
                                         OverclockTab._apply_xbar_only_action(
-                                            native, gpu, xv, coupled
+                                            native, gpu, xv, coupled, slot
                                         )
                                     ),
                                 )
@@ -3074,12 +3139,12 @@ class OverclockTab:
                             actions.append(
                                 (
                                     "apply sys volt offset",
-                                    lambda native, gpu=gpu, sv=sv: (
+                                    lambda native, gpu=gpu, sv=sv, slot=volt_slot: (
                                         OverclockTab._format_clk_domain_volt_result(
                                             "Sys",
                                             sv,
                                             native.set_clk_domain_offset(
-                                                gpu, 3, sv * 1000, 1, None
+                                                gpu, 3, sv * 1000, slot, None
                                             ),
                                         )
                                     ),
@@ -3089,9 +3154,9 @@ class OverclockTab:
                             actions.append(
                                 (
                                     "apply sys offset",
-                                    lambda native, gpu=gpu, sv=sv: (
+                                    lambda native, gpu=gpu, sv=sv, slot=freq_slot: (
                                         OverclockTab._apply_sys_only_action(
-                                            native, gpu, sv
+                                            native, gpu, sv, slot
                                         )
                                     ),
                                 )
@@ -3105,6 +3170,8 @@ class OverclockTab:
             return
         # page 2: Msd / Host
         actions = []
+        volt_slot = self._clk_volt_slot()
+        freq_slot = self._clk_freq_slot()
         if self._msd_supported and self.msd_slider.cget("state") != "disabled":
             try:
                 mv = int(self.msd_var.get().strip())
@@ -3113,12 +3180,12 @@ class OverclockTab:
                         actions.append(
                             (
                                 "apply msd volt offset",
-                                lambda native, gpu=gpu, mv=mv: (
+                                lambda native, gpu=gpu, mv=mv, slot=volt_slot: (
                                     OverclockTab._format_clk_domain_volt_result(
                                         "Msd",
                                         mv,
                                         native.set_clk_domain_offset(
-                                            gpu, 5, mv * 1000, 1, None
+                                            gpu, 5, mv * 1000, slot, None
                                         ),
                                     )
                                 ),
@@ -3128,12 +3195,12 @@ class OverclockTab:
                         actions.append(
                             (
                                 "apply msd offset",
-                                lambda native, gpu=gpu, mv=mv: (
+                                lambda native, gpu=gpu, mv=mv, slot=freq_slot: (
                                     OverclockTab._format_clk_domain_offset_result(
                                         "Msd",
                                         mv,
                                         native.set_clk_domain_offset(
-                                            gpu, 5, mv * 1000, None, None
+                                            gpu, 5, mv * 1000, slot, None
                                         ),
                                     )
                                 ),
@@ -3149,12 +3216,12 @@ class OverclockTab:
                         actions.append(
                             (
                                 "apply host volt offset",
-                                lambda native, gpu=gpu, hv=hv: (
+                                lambda native, gpu=gpu, hv=hv, slot=volt_slot: (
                                     OverclockTab._format_clk_domain_volt_result(
                                         "Host",
                                         hv,
                                         native.set_clk_domain_offset(
-                                            gpu, 9, hv * 1000, 1, None
+                                            gpu, 9, hv * 1000, slot, None
                                         ),
                                     )
                                 ),
@@ -3164,12 +3231,12 @@ class OverclockTab:
                         actions.append(
                             (
                                 "apply host offset",
-                                lambda native, gpu=gpu, hv=hv: (
+                                lambda native, gpu=gpu, hv=hv, slot=freq_slot: (
                                     OverclockTab._format_clk_domain_offset_result(
                                         "Host",
                                         hv,
                                         native.set_clk_domain_offset(
-                                            gpu, 9, hv * 1000, None, None
+                                            gpu, 9, hv * 1000, slot, None
                                         ),
                                     )
                                 ),
@@ -3305,9 +3372,11 @@ class OverclockTab:
             self.app.run_native_action_chain(resets)
 
     # Static action bodies (so the chain lambdas above stay picklable-free
-    # and the logic is testable without a live widget).
+    # and the logic is testable without a live widget). freq_slot defaults
+    # to 0 (the 10~40系 frequency plane); callers pass the generation-
+    # dependent slot (Blackwell 50系: 2).
     @staticmethod
-    def _apply_core_only_action(native, gpu, backend, value, pstate):
+    def _apply_core_only_action(native, gpu, backend, value, pstate, freq_slot=0):
         try:
             native.set_clock_offset(gpu, backend, "core", value, pstate)
             return f"Successfully applied core offset {value:g} MHz."
@@ -3315,7 +3384,7 @@ class OverclockTab:
             msg = str(exc)
             if "NotSupported" in msg or "-104" in msg or "not supported" in msg.lower():
                 res = native.set_clk_domain_offset(
-                    gpu, 0, int(value * 1000), None, None
+                    gpu, 0, int(value * 1000), freq_slot, None
                 )
                 applied = res.get("applied_mHz") if isinstance(res, dict) else None
                 rb = f" (readback {applied:+g} MHz)" if applied is not None else ""
@@ -3326,14 +3395,16 @@ class OverclockTab:
             raise
 
     @staticmethod
-    def _apply_mem_only_action(native, gpu, backend, value, pstate):
+    def _apply_mem_only_action(native, gpu, backend, value, pstate, freq_slot=0):
         try:
             native.set_clock_offset(gpu, backend, "memory", value, pstate)
             return f"Successfully applied memory offset {value} MHz."
         except Exception as exc:
             msg = str(exc)
             if "NotSupported" in msg or "-104" in msg or "not supported" in msg.lower():
-                res = native.set_clk_domain_offset(gpu, 2, value * 1000, None, None)
+                res = native.set_clk_domain_offset(
+                    gpu, 2, value * 1000, freq_slot, None
+                )
                 applied = res.get("applied_mHz") if isinstance(res, dict) else None
                 rb = f" (readback {applied:+g} MHz)" if applied is not None else ""
                 return (
@@ -3343,9 +3414,9 @@ class OverclockTab:
             raise
 
     @staticmethod
-    def _bit3_current_khz(native, gpu) -> int:
-        """Read the ClkDomains bit3 (pure SYS) slot-0 offset — the RMW
-        baseline shared by the Sys write and the Xbar coupled-cancel."""
+    def _bit3_current_khz(native, gpu, freq_slot=0) -> int:
+        """Read the ClkDomains bit3 (pure SYS) frequency-plane offset — the
+        RMW baseline shared by the Sys write and the Xbar coupled-cancel."""
         info = native.query_private_freq_domain_info(gpu)
         if isinstance(info, dict):
             entries = info.get("entries") or []
@@ -3353,24 +3424,24 @@ class OverclockTab:
                 for e in entries:
                     if isinstance(e, dict) and e.get("bit") == 3:
                         vals = e.get("values_kHz") or []
-                        if isinstance(vals, list) and vals:
+                        if isinstance(vals, list) and len(vals) > freq_slot:
                             try:
-                                return int(vals[0] or 0)
+                                return int(vals[freq_slot] or 0)
                             except (TypeError, ValueError):
                                 return 0
                         break
         return 0
 
     @staticmethod
-    def _apply_xbar_only_action(native, gpu, value, coupled):
-        res = native.set_clk_domain_offset(gpu, 1, value * 1000, None, None)
+    def _apply_xbar_only_action(native, gpu, value, coupled, freq_slot=0):
+        res = native.set_clk_domain_offset(gpu, 1, value * 1000, freq_slot, None)
         msgs = [OverclockTab._format_clk_domain_offset_result("Xbar", value, res)]
         if coupled:
             # RMW the cancel onto bit3 (current − f): a Sys offset already
             # sitting on bit3 survives — only the coupling drift is removed.
-            cur_khz = OverclockTab._bit3_current_khz(native, gpu)
+            cur_khz = OverclockTab._bit3_current_khz(native, gpu, freq_slot)
             new_khz = cur_khz - value * 1000
-            res3 = native.set_clk_domain_offset(gpu, 3, new_khz, None, None)
+            res3 = native.set_clk_domain_offset(gpu, 3, new_khz, freq_slot, None)
             msgs.append(
                 OverclockTab._format_clk_domain_offset_result(
                     "Sys-cancel", -value, res3
@@ -3380,10 +3451,10 @@ class OverclockTab:
         return " ".join(msgs)
 
     @staticmethod
-    def _apply_sys_only_action(native, gpu, value):
-        cur_khz = OverclockTab._bit3_current_khz(native, gpu)
+    def _apply_sys_only_action(native, gpu, value, freq_slot=0):
+        cur_khz = OverclockTab._bit3_current_khz(native, gpu, freq_slot)
         new_khz = cur_khz + value * 1000
-        res = native.set_clk_domain_offset(gpu, 3, new_khz, None, None)
+        res = native.set_clk_domain_offset(gpu, 3, new_khz, freq_slot, None)
         return (
             OverclockTab._format_clk_domain_offset_result("Sys", value, res)
             + f" (bit3 {int(round(cur_khz / 1000)):+d} → {int(round(new_khz / 1000)):+d} MHz)"

@@ -1598,7 +1598,11 @@ class App(ctk.CTk):
         if self.tab_dashboard:
             self.tab_dashboard._fetch_once()
         if self.tab_vfcurve and want_curve:
-            self.tab_vfcurve._refresh_curve()
+            # force=True: a deliberate curve-affecting WRITE must re-query
+            # even inside the 2.5 s dedup window — a voltage addend applied
+            # right after an auto-refresh tick would otherwise leave the
+            # tab showing the pre-write synthesis until the next tick.
+            self.tab_vfcurve._refresh_curve(force=True)
 
     def run_cli_display(
         self, args: List[str], on_finished: Optional[Callable[[int], None]] = None

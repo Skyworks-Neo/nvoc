@@ -4276,24 +4276,29 @@ class VFCurveTab:
             return ""
         bits = [bit]
         # 30系+: Xbar bit1 couples SYS — clearing bit1 must also clear the
-        # bit3 cancel (same footprint as the OC tab's Xbar reset).
+        # bit3 cancel (same footprint as the OC tab's Xbar reset). Plane
+        # slots are generation-dependent (Blackwell 50系: 2/3).
         oc = getattr(self.app, "tab_overclock", None)
         if bit == 1 and getattr(oc, "_is_ampere_plus", False):
             bits.append(3)
+        slots = (2, 3) if getattr(oc, "_is_blackwell_gpu", False) else (0, 1)
         from src.tabs.dashboard.sections.overclock import OverclockTab
 
         label = _curve_meta_for(curve_id)["label"]
         return " " + OverclockTab._reset_clk_domain_action(
-            native, gpu, label, tuple(bits)
+            native, gpu, label, tuple(bits), slots
         )
 
     def _all_domain_global_reset(self, native, gpu: str) -> str:
         """All-domains ClkDomains global offset reset — the footprint of
         the reset-private-freq-domain-global-offset CLI command: every
-        WRITE record query_private_freq_domain_info exposes, slots 0 and
-        1, unsupported bits warn and the rest continue. Bound to the VF
-        curve's whole-bank (Shift+Reset) reset for the same separate-
-        storage reason as the single-curve note."""
+        WRITE record query_private_freq_domain_info exposes, on both
+        plane slots (10~40系 0/1, Blackwell 50系 2/3), unsupported bits
+        warn and the rest continue. Bound to the VF curve's whole-bank
+        (Shift+Reset) reset for the same separate-storage reason as the
+        single-curve note."""
         from src.tabs.dashboard.sections.overclock import OverclockTab
 
-        return OverclockTab._reset_all_clk_domains_action(native, gpu)
+        oc = getattr(self.app, "tab_overclock", None)
+        slots = (2, 3) if getattr(oc, "_is_blackwell_gpu", False) else (0, 1)
+        return OverclockTab._reset_all_clk_domains_action(native, gpu, slots)
