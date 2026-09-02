@@ -30,12 +30,11 @@ _SECTION_BORDER = "#1f4e79"
 
 # NVAPI cooler policies (modern GPUs): live A/B — only `continuous`
 # (TemperatureContinuous SW curve) actually applies the manual % level on
-# new cards; the rest of the old enum list either no-ops or is rejected.
-# `manual` stays selectable as the explicit fallback. Legacy GPUs (≤
-# Kepler) take the separate legacy list below.
+# new cards; everything else — `manual` included — no-ops on the modern
+# cooler paths, so it is not offered at all. Legacy GPUs (≤ Kepler) take
+# the separate legacy list below (their manual % lands on `manual`).
 NVAPI_POLICIES = [
     "continuous",
-    "manual",
 ]
 # Legacy GPUs (≤ Kepler): the modern CoolerPolicy types (TemperatureContinuous
 # etc.) are rejected by the old driver — only the classic CoolerControl

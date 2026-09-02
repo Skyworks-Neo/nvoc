@@ -227,14 +227,14 @@ def compose_overclock() -> ComposeResult:
                             yield Label("Policy")
                             # NVAPI cooler policies (modern GPUs): only
                             # `continuous` actually applies the manual %
-                            # level (live A/B); `manual` is the explicit
-                            # fallback. Legacy GPUs (≤ Kepler) get the
-                            # default/manual dropdown at discovery time —
-                            # manual % lands on `manual` there.
+                            # level (live A/B) — `manual` no-ops on the
+                            # modern cooler paths and is not offered. Legacy
+                            # GPUs (≤ Kepler) get the default/manual dropdown
+                            # at discovery time — manual % lands on `manual`
+                            # there.
                             yield Select(
                                 options=[
                                     ("contin.", "continuous"),
-                                    ("manual", "manual"),
                                 ],
                                 value="continuous",
                                 id="fan-policy",

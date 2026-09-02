@@ -1511,3 +1511,52 @@ def test_fan_surface_loaded_stale_gpu_ignored() -> None:
     tab._fan_surface_loaded("GPU0", {"count": 0})
     assert "GPU0" not in tab._fanless_gpus
     assert fan.supported is True
+
+
+def test_fan_surface_modern_keeps_continuous_policy() -> None:
+    """Modern cards answer the NVAPI cooler family too (1650 Super / A4000
+    count=1 live) — the verdict must NOT flip the policy dropdown to the
+    legacy default/manual list (regression: every fanned GPU was flagged
+    legacy from the NVML count alone)."""
+    tab, fan = _make_fan_tab()
+    tab._fan_surface_gpu = "GPU0"
+    tab._fan_surface_loaded(
+        "GPU0", {"count": 1, "current_percent": 33}, {"count": 1, "coolers": []}
+    )
+    assert ("set_legacy_nvapi", False) in fan.calls
+
+
+def test_fan_surface_legacy_signature_restricts_policy() -> None:
+    """GT730 signature: NVML sees the fan while the private NVAPI cooler
+    family reports zero — policy dropdown restricted to default/manual."""
+    tab, fan = _make_fan_tab()
+    tab._fan_surface_gpu = "GPU0"
+    tab._fan_surface_loaded(
+        "GPU0", {"count": 1, "current_percent": 40}, {"count": 0, "coolers": []}
+    )
+    assert ("set_legacy_nvapi", True) in fan.calls
+
+
+def test_fan_surface_missing_nvapi_answer_counts_legacy() -> None:
+    """No NVAPI cooler answer (old deployed pyd / transient error) is
+    treated conservatively as legacy."""
+    tab, fan = _make_fan_tab()
+    tab._fan_surface_gpu = "GPU0"
+    tab._fan_surface_loaded("GPU0", {"count": 1, "current_percent": 40}, None)
+    assert ("set_legacy_nvapi", True) in fan.calls
+
+
+def test_fan_surface_verdict_flips_between_gpus() -> None:
+    """The shared fan pane must re-verdict BOTH ways on GPU switch: legacy
+    card → modern card restores the modern policy list."""
+    tab, fan = _make_fan_tab()
+    tab._fan_surface_gpu = "GPU0"
+    tab._fan_surface_loaded(
+        "GPU0", {"count": 1, "current_percent": 40}, {"count": 0, "coolers": []}
+    )
+    assert ("set_legacy_nvapi", True) in fan.calls
+    tab._fan_surface_gpu = "GPU1"
+    tab._fan_surface_loaded(
+        "GPU1", {"count": 1, "current_percent": 35}, {"count": 1, "coolers": []}
+    )
+    assert ("set_legacy_nvapi", False) in fan.calls

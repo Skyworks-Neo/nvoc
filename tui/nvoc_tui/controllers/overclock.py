@@ -683,17 +683,19 @@ class OverclockController(PaneController):
         return isinstance(flag, bool) and flag
 
     def _load_fan_surface(self) -> None:
-        """Background-load NVML fan info and adapt the Fan pane.
+        """Background-load the fan surface (NVML fan info + NVAPI cooler
+        family) and adapt the Fan pane.
 
-        On legacy GPUs (≤ Kepler) the private NVAPI cooler family reports
-        zero coolers while NVML still answers (v1 GetFanSpeed: count=1 +
-        live current percent). Restrict the fan Target dropdown to the real
-        count (no "Fan 2" on single-fan cards), seed the Level input with
-        the live duty, and preselect NVML so Apply uses the working path.
+        The two answers together carry the legacy verdict: on ≤ Kepler
+        drivers the private NVAPI cooler family reports zero coolers while
+        NVML still answers (v1 GetFanSpeed: count=1 + live current percent)
+        — that pair restricts the policy dropdown to default/manual. Modern
+        cards answer both surfaces (1650 Super / A4000: NVAPI count=1) and
+        keep continuous/manual. Either way the fan Target dropdown is
+        restricted to the real count (no "Fan 2" on single-fan cards) and
+        the Level input is seeded with the live duty.
         Fanless server cards (P100/A100 …) report count=0 — the whole pane
         greys out (same verdict surface as the GUI's set_supported_state).
-        Modern GPUs keep the All/Fan1/Fan2 defaults (NVAPI is authoritative
-        there) — the dropdown adaptation only fires when NVML reports ≥1 fan.
         """
         gpu = self.app.selected_gpu_target()
         if gpu is None or not self._fan_surface_lock.acquire(blocking=False):
@@ -704,10 +706,14 @@ class OverclockController(PaneController):
                 data = self.app.native_service.query_fan_info(gpu)
             except Exception:
                 data = None
+            try:
+                cooler = self.app.native_service.query_cooler_info(gpu)
+            except Exception:
+                cooler = None
             finally:
                 self._fan_surface_lock.release()
             try:
-                self.app.call_from_thread(self._on_fan_surface, gpu, data)
+                self.app.call_from_thread(self._on_fan_surface, gpu, data, cooler)
             except Exception:
                 pass
 
@@ -729,7 +735,9 @@ class OverclockController(PaneController):
             except Exception:
                 pass
 
-    def _on_fan_surface(self, gpu: str, data: dict | None) -> None:
+    def _on_fan_surface(
+        self, gpu: str, data: dict | None, cooler_data: dict | None = None
+    ) -> None:
         if not isinstance(data, dict):
             return
         # A GPU switch between dispatch and completion must not re-verdict
@@ -756,6 +764,20 @@ class OverclockController(PaneController):
                 select.set_options(options)
                 if current_value in {value for _, value in options}:
                     select.value = current_value
+                # Legacy verdict = the original GT730 signature: NVML sees
+                # fans while the private NVAPI cooler family reports none
+                # (≤ Kepler drivers). Modern cards answer the family too
+                # (1650 Super / A4000 both count=1), so they KEEP the
+                # continuous/manual policy list — the old unconditional
+                # verdict flagged every fanned GPU as legacy. A missing
+                # NVAPI answer conservatively counts as legacy. The verdict
+                # must run both ways: switching legacy → modern restores
+                # the modern list on GPU switch.
+                cooler_count = (
+                    cooler_data.get("count") if isinstance(cooler_data, dict) else None
+                )
+                # None (NVAPI unanswered) or 0 → legacy; ≥1 → modern.
+                legacy_nvapi = not cooler_count
                 # Legacy GPUs (≤ Kepler): modern NVAPI CoolerPolicy types are
                 # rejected by the old driver — restrict the policy dropdown to
                 # default/manual and default to manual. Keep the NVAPI backend
@@ -763,11 +785,19 @@ class OverclockController(PaneController):
                 # v2-only symbols absent in R391's nvml.dll).
                 policy_select = self.app.query_one("#fan-policy", Select)
                 policy_value = str(policy_select.value or "continuous")
-                policy_select.set_options(
-                    [("default", "default"), ("manual", "manual")]
-                )
+                if legacy_nvapi:
+                    policy_options = [("default", "default"), ("manual", "manual")]
+                    fallback = "manual"
+                else:
+                    # Modern coolers ignore `manual` on the NVAPI path —
+                    # offer continuous only.
+                    policy_options = [("contin.", "continuous")]
+                    fallback = "continuous"
+                policy_select.set_options(policy_options)
                 policy_select.value = (
-                    policy_value if policy_value in {"default", "manual"} else "manual"
+                    policy_value
+                    if policy_value in {value for _, value in policy_options}
+                    else fallback
                 )
                 if count == 1 and current is not None:
                     self.set_input("#fan-level", str(max(0, min(100, int(current)))))

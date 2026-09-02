@@ -217,6 +217,20 @@ class NativeService:
         except Exception:
             return None
 
+    def query_cooler_info(self, gpu: str) -> dict | None:
+        """NVAPI cooler-family info (private FanCoolerGetInfo).
+
+        Returns the pynvoc ``query_cooler_info`` dict (``count`` +
+        per-cooler entries) or ``None`` when NVAPI can't answer. Paired
+        with ``query_fan_info`` for the fan-policy legacy verdict:
+        NVML fans ≥1 with an EMPTY NVAPI cooler family is the ≤Kepler
+        signature; modern cards report their coolers through NVAPI too.
+        """
+        try:
+            return self._pynvoc().query_cooler_info(gpu)
+        except Exception:
+            return None
+
     def query_mobile_limits(self, gpu: str) -> dict:
         """Fetch the mobile power/thermal control surface (all NVAPI).
 
