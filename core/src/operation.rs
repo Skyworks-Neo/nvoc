@@ -422,6 +422,71 @@ impl GpuOperation for ResetFanCurve {
     }
 }
 
+/// NVAPI fan reset that actually undoes a pinned level on modern cards.
+///
+/// Live A/B (1650 Super + A4000, 2026-09-03, probe-fan-reset): the NDA
+/// ClientFanCoolers control block carries a per-cooler level-override flag
+/// (`NV_GPU_CLIENT_FAN_COOLER_CONTROL_V1.flags` bit0) next to the pinned
+/// level. Applying "continuous + level %" works BECAUSE
+/// `CoolerSettings::to_raw` sets bit0 with the level — and the ONLY reset
+/// that takes effect is writing the same block back with bit0 CLEARED
+/// (`level: None`): the A4000 returned to its auto curve (tach drifted
+/// 2515→1535 rpm) and the 1650 Super returned to its stock zero-RPM idle
+/// curve. What does NOT work there: the 0x214AC policy-block reset bitmask
+/// (`ResetFanCurve` — accepted, leaves the pin untouched), the public
+/// `RestoreCoolerSettings` and `RestoreCoolerPolicyTable` (both
+/// NOT_SUPPORTED).
+///
+/// Chain: control-block rewrite (bit0=0) on every present cooler, then the
+/// 0x214AC policy-block reset as a harmless best-effort cleanup of
+/// curve-slot state. Callers keep the public RestoreCoolerSettings fallback
+/// for legacy drivers (R391 rejects the NDA family outright — GT730).
+#[derive(Clone, Copy, Debug)]
+pub struct ResetNvapiFanControl;
+
+impl GpuOperation for ResetNvapiFanControl {
+    type Output = ();
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::ResetNvapiFanControl
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let gpu = target.nvapi()?;
+        // Present coolers from the private family (both live cards report
+        // exactly one); fall back to Cooler1 when the family is silent.
+        // Only Cooler1/Cooler2 exist in the enum today.
+        let cooler_ids: Vec<::nvapi::FanCoolerId> = match gpu.inner().cooler_info_private() {
+            Ok(infos) if !infos.is_empty() => infos
+                .iter()
+                .enumerate()
+                .filter_map(|(i, _)| match i {
+                    0 => Some(::nvapi::FanCoolerId::Cooler1),
+                    1 => Some(::nvapi::FanCoolerId::Cooler2),
+                    _ => None,
+                })
+                .collect(),
+            _ => vec![::nvapi::FanCoolerId::Cooler1],
+        };
+        // level None → to_raw writes level 0 with the override bit CLEARED.
+        gpu.inner()
+            .set_cooler(cooler_ids.into_iter().map(|id| {
+                (
+                    id,
+                    ::nvapi::CoolerSettings {
+                        policy: ::nvapi::CoolerPolicy::TemperatureContinuous,
+                        level: None,
+                    },
+                )
+            }))
+            .map_err(Error::from)?;
+        // Best-effort: also clear curve-slot state in the 0x214AC block
+        // (no-op on stock, accepted rc=0 everywhere observed).
+        let _ = gpu.inner().reset_fan_curve(0);
+        Ok(())
+    }
+}
+
 /// Toggle fan stop / zero-RPM for a curve slot (FanArbiterSet NDA 0x44CD3014,
 /// struct magic 0x10144, enable bit0 at +0x28). RE'd from ref tool
 /// setFanCurve's tail call.

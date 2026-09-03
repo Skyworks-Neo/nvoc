@@ -230,6 +230,13 @@ pub enum OperationKind {
     /// RestoreCoolerSettings is rejected with NOT_SUPPORTED (desktop
     /// 3060/2070).
     ResetFanCurve,
+    /// NVAPI fan reset that actually undoes a pinned level on modern
+    /// cards (1650 Super / A4000 live A/B 2026-09-03): rewrite the NDA
+    /// ClientFanCoolers control block with the per-cooler override flag
+    /// (flags bit0) CLEARED — level None. The 0x214AC reset bitmask is
+    /// accepted but leaves the pin; RestoreCoolerSettings and
+    /// RestoreCoolerPolicyTable are NOT_SUPPORTED there.
+    ResetNvapiFanControl,
     /// Toggle fan stop / zero-RPM for a curve slot (FanArbiterSet NDA
     /// 0x44CD3014, struct magic 0x10144, enable bit0 at +0x28).
     SetFanStop,
@@ -298,6 +305,7 @@ impl OperationKind {
                 | SetNvapiEccConfiguration
                 | SetFanCurve
                 | ResetFanCurve
+                | ResetNvapiFanControl
                 | SetFanStop
                 | SetFanRpm
                 | ResetNvapiPowerLimits
