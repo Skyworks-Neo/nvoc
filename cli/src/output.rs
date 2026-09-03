@@ -1108,6 +1108,10 @@ fn format_value_block_with_context(value: &Value, indent: usize, context: &str) 
                     Value::Object(child) if key == "ids" && is_pci_identifiers(child) => {
                         lines.extend(format_pci_identifiers(indent, key, child));
                     }
+                    // `all_clocks` is superseded by `all_clocks_detailed` (same
+                    // GetAllClocks V2 call, richer rows) — drop the flat line
+                    // when the detailed table is present.
+                    _ if key == "all_clocks" && object.contains_key("all_clocks_detailed") => {}
                     Value::Object(child) if key == "utilization" => {
                         lines.push(format!(
                             "{}{}",
@@ -1206,6 +1210,14 @@ fn format_value_block_with_context(value: &Value, indent: usize, context: &str) 
                             };
                             lines.extend(format_p0_voltage_block(indent, &title, object));
                         }
+                    }
+                    // `all_clocks_detailed` (get-status): GetAllClocks V2
+                    // extended-domain entries — effective frequency plus the
+                    // driver's own ratio_domain/ratio declaration and the four
+                    // reserved dwords. Aligned table, same style as the
+                    // private V/F table.
+                    Value::Object(child) if key == "all_clocks_detailed" => {
+                        lines.extend(format_all_clocks_detailed(indent, child));
                     }
                     Value::Object(child) if object_is_measurement_map(key, child) => {
                         lines.push(format_measurement_map_line(indent, key, child));
@@ -1521,6 +1533,67 @@ fn format_measurement_map_line(
         nvoc_cli_common::color::stylize_title(&format_label(key)),
         nvoc_cli_common::color::stylize(&values, false)
     )
+}
+
+/// Render get-status `all_clocks_detailed` (GetAllClocks V2 extended-domain
+/// entries: effective frequency + the driver's own ratio_domain/ratio +
+/// reserved dwords) in the section style used by the rest of get-status —
+/// a title plus one `Name: value` line per domain. The ratio/reserved extras
+/// are appended to a domain's line only when they carry information
+/// (ratio parent set / ratio raw nonzero / reserved nonzero), keeping the
+/// common all-zero case identical in shape to the old flat line.
+fn format_all_clocks_detailed(
+    indent: usize,
+    object: &serde_json::Map<String, Value>,
+) -> Vec<String> {
+    let mut rows: Vec<(String, &serde_json::Map<String, Value>)> = object
+        .iter()
+        .filter_map(|(name, entry)| Some((name.clone(), entry.as_object()?)))
+        .collect();
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let pad = indent_spaces(indent);
+    let row_pad = indent_spaces(indent + 1);
+    let mut lines = vec![format!(
+        "{pad}{}",
+        nvoc_cli_common::color::stylize_title("All Clocks")
+    )];
+    for (name, entry) in rows {
+        let mut text = match entry.get("frequency_khz").and_then(Value::as_f64) {
+            Some(khz) => format!("{name}: {}", format_measurement(khz / 1000.0, "MHz")),
+            None => continue,
+        };
+        if let Some(dom) = entry.get("ratio_domain").and_then(Value::as_str) {
+            let ratio = entry.get("ratio").and_then(Value::as_u64).unwrap_or(0);
+            if ratio != 0 {
+                text.push_str(&format!(", ratio → {dom} ×{ratio}"));
+            } else {
+                text.push_str(&format!(", ratio → {dom}"));
+            }
+        } else if let Some(ratio) = entry.get("ratio").and_then(Value::as_u64) {
+            if ratio != 0 {
+                text.push_str(&format!(", ratio ×{ratio}"));
+            }
+        }
+        let reserved: Vec<u64> = entry
+            .get("reserved")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_u64).collect())
+            .unwrap_or_default();
+        if !reserved.is_empty() && reserved.iter().any(|&v| v != 0) {
+            let joined = reserved
+                .iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join(":");
+            text.push_str(&format!(", rsv {joined}"));
+        }
+        lines.push(format!(
+            "{row_pad}{}",
+            nvoc_cli_common::color::stylize(&text, false)
+        ));
+    }
+    lines
 }
 
 /// Render the P0 voltage-bounds block (`p0_voltage` from get-status) as a
