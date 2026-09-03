@@ -19,7 +19,8 @@ use nvoc_core::{
     QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
     QueryThrottleReasons, QueryVbiosImage, QueryVbiosSecurityInfo, QueryVbiosStatusString,
     QueryVbiosVersion, QueryViolationStatus, QueryVoltageBoost, ResetAutoboostStatus,
-    ResetCoolerLevels, ResetFanCurve, ResetFanSpeed, ResetForcePstate, ResetFreqLock,
+    ResetCoolerLevels, ResetFanCurve, ResetNvapiFanControl, ResetFanSpeed, ResetForcePstate,
+    ResetFreqLock,
     ResetLegacyApplicationFreqLock, ResetLegacyGpcRailOvervoltLimit, ResetNvapiPowerLimits,
     ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetNvapiVfpPrivate, ResetPstateGlobalFreqOffset,
     ResetPublicVftableGpcLock, ResetPublicVftableOffset, ResetVfpFrequencyLock,
@@ -755,7 +756,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 CommandSpec {
                     adapters: &BOTH_BACKENDS,
                     options: Box::leak(Box::new(["fan", "cooler", "rpm"])),
-                    ..CommandSpec::new("reset-fan-speed", Group::Fan, "Restore fan/cooler control: default resets the NVAPI cooler levels / NVML fan to default; --rpm (NVAPI-only) instead disables fan-speed simulation and clears the enable bit (--cooler N picks one cooler)")
+                    ..CommandSpec::new("reset-fan-speed", Group::Fan, "Restore fan/cooler control: default clears the NVAPI cooler level override (control-block bit0 — the only reset that unpins modern cards) / NVML fan to default; --rpm (NVAPI-only) instead disables fan-speed simulation and clears the enable bit (--cooler N picks one cooler)")
                 },
             ),
             (
@@ -5983,7 +5984,21 @@ fn reset_fan(
                     "reset-fan-speed with a specific --fan requires --nvml; NVAPI resets all coolers",
                 ));
             }
-            run(target, ResetCoolerLevels)?;
+            // Modern cards: clear the control-block level override (bit0) —
+            // the ONLY reset that actually unpins (RestoreCoolerSettings /
+            // the 0x214AC reset bitmask are NOT_SUPPORTED / no-op there;
+            // 1650S+A4000 live A/B). Legacy drivers (R391) reject the NDA
+            // family → fall back to the public RestoreCoolerSettings
+            // (GT730-verified).
+            if let Err(modern_err) = run(target, ResetNvapiFanControl)
+                && let Err(public_err) = run(target, ResetCoolerLevels)
+            {
+                return Err(CliError::new(format!(
+                    "fan reset failed on both NVAPI paths: \
+                     control-block override clear: {modern_err}; \
+                     public RestoreCoolerSettings: {public_err}"
+                )));
+            }
             Ok(json!({"applied": true, "fan": fan}))
         }
         BackendAdapter::Nvml => {

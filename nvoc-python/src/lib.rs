@@ -16,7 +16,8 @@ use nvoc_core::{
     QueryNvapiVoltRails, QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates,
     QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
     QueryThrottleReasons, QueryVfpPointVoltage, QueryVoltageBoost, ResetAutoboostStatus,
-    ResetCoolerLevels, ResetFanCurve, ResetFanSpeed, ResetFreqLock, ResetLegacyApplicationFreqLock,
+    ResetCoolerLevels, ResetFanSpeed, ResetFreqLock, ResetLegacyApplicationFreqLock,
+    ResetNvapiFanControl,
     ResetLegacyGpcRailOvervoltLimit, ResetNvapiPowerLimits, ResetNvapiSensorLimits,
     ResetNvapiTgpWatt, ResetNvapiVfpPrivate, ResetPstateGlobalFreqOffset,
     ResetPublicVftableGpcLock, ResetPublicVftableOffset, ResetVfpFrequencyLock,
@@ -4145,27 +4146,27 @@ fn set_fan(
                 };
                 let target = selected_target(&inventory.0, gpu)?;
                 if is_reset {
-                    // ref tool's NVAPI fan reset: FanPolicySetControl (NDA
-                    // 0x2B2A2A45, struct 0x214AC) — GET the policy block, OR
-                    // `1 << curve` into the +0x08 reset bitmask, SET. Unlike
-                    // the public RestoreCoolerSettings (rejected with
-                    // NOT_SUPPORTED on GPUs without a user-mode cooler table,
-                    // e.g. desktop 3060/2070), this private path works there.
-                    // Reset curve slot 0 (ref tool's reset button).
+                    // Modern cards: clear the control-block level override
+                    // (bit0) via ResetNvapiFanControl — the ONLY reset that
+                    // actually unpins there (live A/B 1650S+A4000: the
+                    // 0x214AC reset bitmask is accepted but leaves the pin;
+                    // RestoreCoolerSettings / RestoreCoolerPolicyTable are
+                    // NOT_SUPPORTED).
                     //
-                    // Legacy drivers (e.g. R391/Fermi) reject the NDA GET/SET
-                    // outright (NVAPI_ERROR/-1 — no fan-policy table in the
-                    // user-mode DLL at all), so fall back to the public
-                    // RestoreCoolerSettings, which works there (GT730 live).
-                    // Only surface a combined error when BOTH paths fail:
-                    // NDA-first is what makes this work on the no-cooler-table
-                    // desktop cards, public-first would break those.
-                    if let Err(nda_err) = run(&target, ResetFanCurve { index: 0 })
+                    // Legacy drivers (e.g. R391/Fermi) reject the NDA
+                    // ClientFanCoolers family outright (NVAPI_ERROR/-1 — no
+                    // fan-policy surface in the user-mode DLL at all), so
+                    // fall back to the public RestoreCoolerSettings, which
+                    // works there (GT730 live). Only surface a combined
+                    // error when BOTH paths fail: NDA-first is what makes
+                    // this work on the no-cooler-table desktop cards,
+                    // public-first would break those.
+                    if let Err(nda_err) = run(&target, ResetNvapiFanControl)
                         && let Err(public_err) = run(&target, ResetCoolerLevels)
                     {
                         return Err(invalid_value(format!(
                             "fan reset failed on both NVAPI paths: \
-                             private FanPolicy reset: {nda_err}; \
+                             control-block override clear: {nda_err}; \
                              public RestoreCoolerSettings: {public_err}"
                         )));
                     }
