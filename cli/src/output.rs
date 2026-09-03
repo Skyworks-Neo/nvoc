@@ -393,10 +393,91 @@ pub(super) fn format_vfp_output(output: &Value) -> Vec<String> {
     lines
 }
 
-/// Human format for `get-private-vftable` — mirrors the public V-F table
-/// layout (segment separators + one row per point), minus `point_type`
-/// (private records don't carry it) and with `delta` replaced by `current`
-/// (private GetStatus reports default AND current MHz per point).
+// ── private V/F table column geometry (get-private-vftable human table) ──
+const PVFP_W_ID: usize = 4;
+const PVFP_W_VAL: usize = 7;
+const PVFP_W_MODE: usize = 4;
+const PVFP_SEP: &str = " | ";
+
+/// One table cell: right-aligned bare number, or a width-blank when this
+/// generation's record layout does not report the field.
+fn pvfp_cell(text: Option<String>, w: usize) -> String {
+    match text {
+        Some(t) => format!("{t:>w$}", w = w),
+        None => " ".repeat(w),
+    }
+}
+
+/// Per-segment table header for the private V/F dump. Units are declared
+/// once on the segment separator (`V=mV f=MHz`), the column row is
+/// `ID | V_cur | V_def | F_cur | F_def | V_ext<k> | f_ext<k> … | mode |
+/// offset`, and present EXT columns get a roster-attribution legend line
+/// (slot → curve domain without its own main record block).
+fn push_pvfp_header(
+    lines: &mut Vec<String>,
+    seg: Option<&Value>,
+    ext_slots: &[usize],
+    roster: &[&str],
+    volt_off: bool,
+) {
+    let units = "[V=mV f=MHz; mode: 0=freq, 1=raw; offset=effect MHz]";
+    let sep = match seg {
+        Some(seg) => format!(
+            "    --- bank{} {} {} (index {}..{}) --- {units}",
+            seg.get("bank").and_then(Value::as_i64).unwrap_or_default(),
+            seg.get("domain").and_then(Value::as_str).unwrap_or("?"),
+            seg.get("kind").and_then(Value::as_str).unwrap_or("?"),
+            field_text(seg, "start_index"),
+            field_text(seg, "end_index"),
+        ),
+        None => format!("    --- points --- {units}"),
+    };
+    lines.push(nvoc_cli_common::color::stylize(&sep, false));
+
+    let mut cols: Vec<(String, usize)> = vec![
+        ("ID".to_string(), PVFP_W_ID),
+        ("V_cur".to_string(), PVFP_W_VAL),
+        ("V_def".to_string(), PVFP_W_VAL),
+        ("F_cur".to_string(), PVFP_W_VAL),
+        ("F_def".to_string(), PVFP_W_VAL),
+    ];
+    for k in ext_slots {
+        cols.push((format!("V_ext{k}"), PVFP_W_VAL));
+        cols.push((format!("f_ext{k}"), PVFP_W_VAL));
+    }
+    if volt_off {
+        cols.push(("V_off".to_string(), PVFP_W_VAL));
+    }
+    cols.push(("mode".to_string(), PVFP_W_MODE));
+    cols.push(("offset".to_string(), PVFP_W_VAL));
+    let header = cols
+        .iter()
+        .map(|(h, w)| format!("{h:>w$}", w = w))
+        .collect::<Vec<_>>()
+        .join(PVFP_SEP);
+    lines.push(nvoc_cli_common::color::stylize(
+        &format!("    {header}"),
+        false,
+    ));
+    if !ext_slots.is_empty() {
+        let legend: Vec<String> = ext_slots
+            .iter()
+            .map(|k| match roster.get(*k) {
+                Some(nm) => format!("ext{k}={nm}"),
+                None => format!("ext{k}=?"),
+            })
+            .collect();
+        lines.push(nvoc_cli_common::color::stylize(
+            &format!("    ext: {}", legend.join(" ")),
+            false,
+        ));
+    }
+}
+
+/// Human format for `get-private-vftable` — one aligned bare-number table
+/// per segment (`ID | V_cur | V_def | F_cur | F_def | V_ext<k> | f_ext<k> …
+/// | mode | offset`; units declared once on the segment separator) plus the
+/// extended-currents roster summary and the segment list.
 pub(super) fn format_private_vfp_output(output: &Value) -> Vec<String> {
     let mut lines = Vec::new();
     let Some(object) = output.as_object() else {
@@ -409,48 +490,91 @@ pub(super) fn format_private_vfp_output(output: &Value) -> Vec<String> {
     // point's owning segment for the row grouping)
     let mut ext_stats: std::collections::BTreeMap<(String, usize), (usize, f64, f64, f64, f64)> =
         std::collections::BTreeMap::new();
+    // roster attribution (EXT slot → curve domain) = [XBAR,SYS,MSD,HOST]
+    // minus this table's main-block domains — hoisted so the per-segment
+    // table legend and the bottom summary share one attribution
+    let main_domains: std::collections::HashSet<String> = segments
+        .map(|segs| {
+            segs.iter()
+                .filter_map(|s| s.get("domain").and_then(Value::as_str))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    let roster: Vec<&str> = ["XBAR", "SYS", "MSD", "HOST"]
+        .iter()
+        .copied()
+        .filter(|nm| !main_domains.contains(&nm.to_lowercase()))
+        .collect();
 
     if let Some(points) = points {
         lines.push(format!(
             "  {}",
             nvoc_cli_common::color::stylize_title("V-F Points")
         ));
-        // track which segment (by position in the array) each row belongs to
-        let mut current_segment: Option<usize> = None;
+        // Table layout: one header + aligned bare-number rows per segment
+        // (units declared once on the separator line). The column set —
+        // which EXT slots are present, whether the per-point volt-offset
+        // column is needed — must be known BEFORE a header prints, so
+        // pre-scan the points first.
+        let matches_seg = |point: &Value, seg: &Value| -> bool {
+            let (Some(seg_bank), Some(seg_type)) = (
+                seg.get("bank").and_then(Value::as_i64),
+                seg.get("type").and_then(Value::as_i64),
+            ) else {
+                return false;
+            };
+            let bank_matches = point.get("bank").and_then(Value::as_i64) == Some(seg_bank);
+            let type_matches = point.get("type").and_then(Value::as_i64) == Some(seg_type);
+            let index = point.get("index").and_then(Value::as_i64).unwrap_or(-1);
+            let start = seg.get("start_index").and_then(Value::as_i64).unwrap_or(-1);
+            let end = seg.get("end_index").and_then(Value::as_i64).unwrap_or(-1);
+            bank_matches && type_matches && start <= index && index <= end
+        };
+        let seg_of = |point: &Value| -> Option<usize> {
+            segments.and_then(|segs| segs.iter().position(|seg| matches_seg(point, seg)))
+        };
+        let mut group_ext: std::collections::HashMap<
+            Option<usize>,
+            std::collections::BTreeSet<usize>,
+        > = std::collections::HashMap::new();
+        let mut group_volt_off: std::collections::HashSet<Option<usize>> =
+            std::collections::HashSet::new();
         for point in points {
-            let matching_segment = segments.and_then(|segs| {
-                segs.iter().position(|seg| {
-                    let (Some(seg_bank), Some(seg_type)) = (
-                        seg.get("bank").and_then(Value::as_i64),
-                        seg.get("type").and_then(Value::as_i64),
-                    ) else {
-                        return false;
-                    };
-                    let bank_matches = point.get("bank").and_then(Value::as_i64) == Some(seg_bank);
-                    let type_matches = point.get("type").and_then(Value::as_i64) == Some(seg_type);
-                    let index = point.get("index").and_then(Value::as_i64).unwrap_or(-1);
-                    let start = seg.get("start_index").and_then(Value::as_i64).unwrap_or(-1);
-                    let end = seg.get("end_index").and_then(Value::as_i64).unwrap_or(-1);
-                    bank_matches && type_matches && start <= index && index <= end
-                })
-            });
-            if matching_segment != current_segment {
-                current_segment = matching_segment;
-                if let Some(seg) = matching_segment.and_then(|i| segments.map(|s| &s[i])) {
-                    let domain = seg.get("domain").and_then(Value::as_str).unwrap_or("?");
-                    let kind = seg.get("kind").and_then(Value::as_str).unwrap_or("?");
-                    let bank = seg.get("bank").and_then(Value::as_i64).unwrap_or(0);
-                    lines.push(nvoc_cli_common::color::stylize(
-                        &format!(
-                            "    --- bank{bank} {domain} {kind} (index {}..{}) ---",
-                            field_text(seg, "start_index"),
-                            field_text(seg, "end_index")
-                        ),
-                        false,
-                    ));
+            let group = seg_of(point);
+            if let Some(dc) = point.get("domain_currents").and_then(Value::as_object) {
+                for k in dc
+                    .keys()
+                    .filter_map(|k| k.parse::<usize>().ok())
+                    .filter(|k| *k < 4)
+                {
+                    group_ext.entry(group).or_default().insert(k);
                 }
             }
-            let index = field_text(point, "index");
+            if point
+                .get("volt_offset_mv")
+                .and_then(Value::as_f64)
+                .unwrap_or_default()
+                != 0.0
+            {
+                group_volt_off.insert(group);
+            }
+        }
+        // table group per row: Some(segment position) or None when the
+        // point attributes to no segment
+        let mut current_group: Option<Option<usize>> = None;
+        for point in points {
+            let matching_segment = seg_of(point);
+            if current_group != Some(matching_segment) {
+                current_group = Some(matching_segment);
+                let ext_slots: Vec<usize> = group_ext
+                    .get(&matching_segment)
+                    .map(|set| set.iter().copied().collect())
+                    .unwrap_or_default();
+                let has_volt_off = group_volt_off.contains(&matching_segment);
+                let seg = matching_segment.and_then(|i| segments.map(|s| &s[i]));
+                push_pvfp_header(&mut lines, seg, &ext_slots, &roster, has_volt_off);
+            }
             // extended-section slots, attributed by the owning segment's
             // domain (roster-minus-owner packing — see clk_vfp_status)
             if let Some(dc) = point.get("domain_currents").and_then(Value::as_object) {
@@ -489,75 +613,96 @@ pub(super) fn format_private_vfp_output(output: &Value) -> Vec<String> {
                     e.4 = e.4.max(v);
                 }
             }
-            // voltage axis is µV in this table (450000 = 450.0 mV).
-            // Modern records also carry the CURRENT/effective voltage
-            // (stock + applied offset; Ada-verified @rec+0x68) — when
-            // reported, the row leads with it and shows the stock reading
-            // as "default". Legacy/BW records don't report it (0) → the
-            // old single-voltage form.
-            let voltage_uv = point
-                .get("voltage_uV")
-                .and_then(Value::as_f64)
-                .unwrap_or_default();
-            let volt_current_mv = point
+            // ── table row: bare numbers, blank cell = not reported ──
+            // Voltage axis is µV (450000 = 450.0 mV); V_cur only exists on
+            // modern records (@rec+0x68; legacy/BW report 0 → blank), F_cur
+            // on everything but Pascal's type-1 records (all-zero → blank).
+            let volt_cur = point
                 .get("volt_current_mv")
                 .and_then(Value::as_f64)
                 .unwrap_or_default();
-            let voltage = if volt_current_mv != 0.0 {
-                format!(
-                    "current {volt_current_mv:.1} mV, default {:.1} mV",
-                    voltage_uv / 1000.0
-                )
-            } else {
-                format!("{:.1} mV", voltage_uv / 1000.0)
-            };
-            // per-point curve voltage offset (Blackwell records; 0 elsewhere)
-            let volt_offset_mv = point
-                .get("volt_offset_mv")
-                .and_then(Value::as_f64)
-                .unwrap_or_default();
-            let volt_note = if volt_offset_mv != 0.0 {
-                format!(", volt offset {volt_offset_mv:+.1} mV")
-            } else {
-                String::new()
-            };
+            let volt_def =
+                point.get("voltage_uV").and_then(Value::as_f64).unwrap_or_default() / 1000.0;
             // MHz values — plain integers in faithful mode, one-decimal
             // floats under --infer-missing-field's Pascal remap (true
             // default = current − offset); as_f64 covers both
-            let current = point
+            let f_cur = point
                 .get("freq_current_mhz")
                 .and_then(Value::as_f64)
                 .unwrap_or_default();
-            let default = point
+            let f_def = point
                 .get("freq_default_mhz")
+                .and_then(Value::as_f64)
+                .unwrap_or_default();
+            // per-point curve voltage offset (Blackwell records; 0 elsewhere)
+            let volt_off = point
+                .get("volt_offset_mv")
                 .and_then(Value::as_f64)
                 .unwrap_or_default();
             // raw control override readback (GetControl 0xDA025C3E):
             // mode 0 = absolute kHz offset ("freq"), mode 1 = raw delta;
             // effect MHz comes pre-computed (g(def) prior for mode 1)
-            let control = point
-                .get("mode")
-                .and_then(Value::as_i64)
-                .map(|mode| {
-                    let value = point
-                        .get("offset")
-                        .and_then(Value::as_i64)
-                        .unwrap_or_default();
-                    let effect = point
-                        .get("offset_effect_mhz")
-                        .and_then(Value::as_f64)
-                        .unwrap_or_default();
-                    if mode == 0 {
-                        format!(", mode: freq(0), offset: {effect:.1} MHz ({value} as raw)")
-                    } else {
-                        format!(", mode: raw(1), offset: {effect:.1} MHz ({value} as raw)")
-                    }
-                })
+            let mode = point.get("mode").and_then(Value::as_i64);
+            let effect = point.get("offset_effect_mhz").and_then(Value::as_f64);
+
+            let ext_slots: Vec<usize> = group_ext
+                .get(&matching_segment)
+                .map(|set| set.iter().copied().collect())
                 .unwrap_or_default();
+            let has_volt_off = group_volt_off.contains(&matching_segment);
+            let idx = point.get("index").and_then(Value::as_i64).unwrap_or_default();
+            let mut cells: Vec<String> = Vec::new();
+            cells.push(pvfp_cell(Some(idx.to_string()), PVFP_W_ID));
+            cells.push(pvfp_cell(
+                (volt_cur != 0.0).then(|| format!("{volt_cur:.1}")),
+                PVFP_W_VAL,
+            ));
+            cells.push(pvfp_cell(Some(format!("{volt_def:.1}")), PVFP_W_VAL));
+            cells.push(pvfp_cell(
+                (f_cur != 0.0).then(|| format!("{f_cur:.1}")),
+                PVFP_W_VAL,
+            ));
+            cells.push(pvfp_cell(
+                (f_def != 0.0).then(|| format!("{f_def:.1}")),
+                PVFP_W_VAL,
+            ));
+            let dc = point.get("domain_currents").and_then(Value::as_object);
+            for k in &ext_slots {
+                let (f, v) = dc
+                    .and_then(|o| o.get(&k.to_string()))
+                    .and_then(Value::as_array)
+                    .and_then(|pair| {
+                        match (
+                            pair.first().and_then(Value::as_f64),
+                            pair.get(1).and_then(Value::as_f64),
+                        ) {
+                            (Some(f), Some(v)) => Some((f, v)),
+                            _ => None,
+                        }
+                    })
+                    .unwrap_or((0.0, 0.0));
+                if f == 0.0 && v == 0.0 {
+                    cells.push(pvfp_cell(None, PVFP_W_VAL));
+                    cells.push(pvfp_cell(None, PVFP_W_VAL));
+                } else {
+                    // slot volts arrive as µV
+                    cells.push(pvfp_cell(Some(format!("{:.1}", v / 1000.0)), PVFP_W_VAL));
+                    cells.push(pvfp_cell(Some(format!("{f:.1}")), PVFP_W_VAL));
+                }
+            }
+            if has_volt_off {
+                cells.push(pvfp_cell(
+                    (volt_off != 0.0).then(|| format!("{volt_off:+.1}")),
+                    PVFP_W_VAL,
+                ));
+            }
+            cells.push(pvfp_cell(mode.map(|m| m.to_string()), PVFP_W_MODE));
+            cells.push(pvfp_cell(
+                effect.map(|e| format!("{e:+.1}")),
+                PVFP_W_VAL,
+            ));
             lines.push(nvoc_cli_common::color::stylize(
-                &format!(
-                    "    #{index}: {voltage}{volt_note}, current {current:.1} MHz, default {default:.1} MHz{control}"
-                ),
+                &format!("    {}", cells.join(PVFP_SEP)),
                 false,
             ));
         }
@@ -571,19 +716,6 @@ pub(super) fn format_private_vfp_output(output: &Value) -> Vec<String> {
     // slot is HOST, not MSD). Reported per owning segment so
     // multi-block tables never mix.
     if !ext_stats.is_empty() {
-        let main_domains: std::collections::HashSet<String> = segments
-            .map(|segs| {
-                segs.iter()
-                    .filter_map(|s| s.get("domain").and_then(Value::as_str))
-                    .map(str::to_string)
-                    .collect()
-            })
-            .unwrap_or_default();
-        let roster: Vec<&str> = ["XBAR", "SYS", "MSD", "HOST"]
-            .iter()
-            .copied()
-            .filter(|nm| !main_domains.contains(&nm.to_lowercase()))
-            .collect();
         lines.push(nvoc_cli_common::color::stylize(
             "    Extended-section currents (slots @+0x074+0x10*k; roster \
              [XBAR,SYS,MSD,HOST] minus main-block domains):",
