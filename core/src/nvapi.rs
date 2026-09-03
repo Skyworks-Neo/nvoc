@@ -1388,16 +1388,21 @@ pub fn set_legacy_clocks_nvapi(gpu: &Gpu, core_mhz: u32, mem_mhz: u32) -> Result
 
     const NVAPI_GPU_SET_CLOCKS_ID: u32 = 0x6f151055;
 
+    /// SetClocks shares GetAllClocks' struct family: the driver accepts only
+    /// the 260-byte V1 layout stamped `0x10104` (or the 1156-byte V2
+    /// `0x20484`) — IDA-verified identical on 391.35/538.78/560.94/582.41/
+    /// 610.88. The historic 132-byte ver2 stamp (`0x20084`) is rejected with
+    /// -9 INCOMPATIBLE_STRUCT_VERSION by every audited driver.
     #[repr(C)]
     struct NvClocksInfo {
         version: u32,
-        clocks: [u32; 32],
+        clocks: [u32; 64],
     }
 
-    let version = (size_of::<NvClocksInfo>() as u32) | (2 << 16);
+    let version = 0x10104u32;
     let mut info = NvClocksInfo {
         version,
-        clocks: [0; 32],
+        clocks: [0; 64],
     };
 
     info.clocks[8] = mem_mhz.saturating_mul(1000);
