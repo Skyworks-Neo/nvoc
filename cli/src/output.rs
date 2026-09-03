@@ -397,7 +397,7 @@ pub(super) fn format_vfp_output(output: &Value) -> Vec<String> {
 const PVFP_W_ID: usize = 4;
 const PVFP_W_VAL: usize = 7;
 const PVFP_W_MODE: usize = 4;
-const PVFP_SEP: &str = " | ";
+const PVFP_SEP: &str = "|";
 
 /// One table cell: right-aligned bare number, or a width-blank when this
 /// generation's record layout does not report the field.
