@@ -159,9 +159,7 @@ def _extract_ext_curves(clk_data) -> List[dict]:
             idx = int(p.get("index", -1))
         except (TypeError, ValueError):
             continue
-        owner = next(
-            (d for b, s, e, d in ranges if b == bank and s <= idx <= e), None
-        )
+        owner = next((d for b, s, e, d in ranges if b == bank and s <= idx <= e), None)
         if owner is None:
             continue
         for k in range(min(4, len(fs), len(vs))):
@@ -177,9 +175,7 @@ def _extract_ext_curves(clk_data) -> List[dict]:
             freqs.append(f)
     out: List[dict] = []
     main_domains = {d for _, _, _, d in ranges}
-    roster = [
-        nm for nm in _EXT_POOL if nm.lower() not in main_domains
-    ]
+    roster = [nm for nm in _EXT_POOL if nm.lower() not in main_domains]
     for (owner, k), (volts, freqs) in series.items():
         label = roster[k] if k < len(roster) else None
         if label is None:
@@ -190,15 +186,13 @@ def _extract_ext_curves(clk_data) -> List[dict]:
             continue  # unit sanity (µV-as-mV or garbage never plots)
         if min(freqs) < 10.0 or max(freqs) > 8000.0:
             continue
-        out.append(
-            {
-                "owner": owner,
-                "slot": k,
-                "label": label,
-                "volts": volts,
-                "freqs": freqs,
-            }
-        )
+        out.append({
+            "owner": owner,
+            "slot": k,
+            "label": label,
+            "volts": volts,
+            "freqs": freqs,
+        })
     out.sort(key=lambda e: (e["owner"], e["slot"]))
     return out
 
@@ -469,6 +463,10 @@ class VFCurveTab:
         self._last_chart_resize_width: Optional[int] = None
         self._last_chart_resize_height: Optional[int] = None
         self._pending_chart_resize_wh: Optional[Tuple[int, int]] = None
+        # Written by _on_chart_resize, read by on_resize_state_changed's
+        # flush — must exist before the first flush or the resize-target
+        # loop trips over an AttributeError every startup.
+        self._pending_chart_resize_width: Optional[int] = None
         self._is_resize_active = False
         # True while a mouse button is held on the chart (point drag /
         # selection drag). The dashboard poll's live-point update is deferred
@@ -1909,16 +1907,16 @@ class VFCurveTab:
                 bd=0,
             )
             chip.pack(side="left", padx=6)
-            var = tk.BooleanVar(
-                value=self._domain_curve_visible.get(label, True)
-            )
+            var = tk.BooleanVar(value=self._domain_curve_visible.get(label, True))
             ckb = ctk.CTkCheckBox(
                 chip,
                 text="",
                 variable=var,
                 width=20,
                 height=20,
-                command=lambda l=label, v=var: self._on_ext_selector_checkbox(l, v),
+                command=lambda name=label, v=var: self._on_ext_selector_checkbox(
+                    name, v
+                ),
             )
             ckb.pack(side="left", padx=(4, 2), pady=4)
             tk.Label(
@@ -2190,7 +2188,7 @@ class VFCurveTab:
                 linewidth=1.0,
                 marker=".",
                 markersize=1.2,
-                label=f'{ext["label"]}·ext',
+                label=f"{ext['label']}·ext",
                 zorder=2.6,
             )
 
@@ -2905,9 +2903,10 @@ class VFCurveTab:
                 self._line_current.set_ydata(self._frequencies)
             if self._sel_points is not None:
                 sel_f = self._frequencies[s : e + 1]
-                offsets = self._np().column_stack(
-                    [self._current_grid()[s : e + 1], sel_f]
-                )
+                offsets = self._np().column_stack([
+                    self._current_grid()[s : e + 1],
+                    sel_f,
+                ])
                 self._sel_points.set_offsets(offsets)
             self._blit_animated()
             return

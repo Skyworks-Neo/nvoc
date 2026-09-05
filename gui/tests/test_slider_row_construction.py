@@ -182,3 +182,102 @@ def test_unit_toggle_visibility_round_trip_on_real_widget() -> None:
         assert info["row"] == 0
     finally:
         root.destroy()
+
+
+def _rendered_thumb_value(slider) -> float:
+    """Read the thumb position from the CANVAS ITEMS, not the state.
+
+    The stale-render bug this pins was invisible to state assertions: the
+    slider's _value/_from/_to were always correct while the canvas kept
+    drawing the construction range. Measure the drawn oval instead.
+    """
+    ovals = slider._canvas.find_withtag("all")
+    coords = None
+    for item in ovals:
+        if slider._canvas.type(item) == "oval":
+            coords = slider._canvas.coords(item)
+    assert coords is not None, "no thumb oval rendered"
+    x_center = (coords[0] + coords[2]) / 2
+    width = max(1, slider._canvas.winfo_width())
+    return slider._x_to_value(x_center, width)
+
+
+def test_range_reconfigure_with_same_value_repaints() -> None:
+    """The startup stale-render regression: 'get' lands first and pins the
+    value (100) on the construction range (50..150), then 'info' lands and
+    reconfigures to the real range (70..100) with the SAME value. Both
+    redraws used to be skipped as no-ops and the canvas rendered the
+    construction range forever — the thumb visibly stuck at 33% with the
+    state reading 70..100@100. configure() must mark the geometry dirty so
+    the no-op set() still repaints."""
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        tab = _make_tab(root)
+        frame = tk.Frame(root)
+        slider, _entry, var, _btn = tab._make_slider_row(
+            frame, "Pwr Limit:", 50, 150, 100, step=1
+        )
+        root.update_idletasks()
+
+        # get lands first: power_limit_current=100 on the construction range
+        tab._set_slider_value(slider, var, 100)
+        root.update_idletasks()
+        assert slider.get() == 100.0
+
+        # info lands: the real TDP range with the same default/current
+        tab._reconfigure_slider(slider, var, 70, 100, 100, step=1)
+        root.update_idletasks()
+
+        assert (slider.cget("from_"), slider.cget("to")) == (70.0, 100.0)
+        assert slider.get() == 100.0
+        # THE assertion: the drawn thumb sits at the far right (value 100),
+        # not at the stale 50..150@100 position (33%).
+        assert _rendered_thumb_value(slider) == pytest.approx(100.0)
+    finally:
+        root.destroy()
+
+
+def test_range_reconfigure_reverse_order_repaints() -> None:
+    """Same fix, info-before-get ordering: reconfigure onto 70..100 then a
+    same-value set(100) must not regress the canvas to a stale render."""
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        tab = _make_tab(root)
+        frame = tk.Frame(root)
+        slider, _entry, var, _btn = tab._make_slider_row(
+            frame, "Pwr Limit:", 50, 150, 100, step=1
+        )
+        root.update_idletasks()
+
+        tab._reconfigure_slider(slider, var, 70, 100, 100, step=1)
+        root.update_idletasks()
+        tab._set_slider_value(slider, var, 100)
+        root.update_idletasks()
+
+        assert slider.get() == 100.0
+        assert _rendered_thumb_value(slider) == pytest.approx(100.0)
+    finally:
+        root.destroy()
+
+
+def test_value_move_on_unchanged_range_repaints() -> None:
+    """A real value change still repaints (the no-op fast path stays)."""
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        tab = _make_tab(root)
+        frame = tk.Frame(root)
+        slider, _entry, var, _btn = tab._make_slider_row(
+            frame, "Pwr Limit:", 70, 100, 85, step=1
+        )
+        root.update_idletasks()
+        tab._set_slider_value(slider, var, 100)
+        root.update_idletasks()
+        assert _rendered_thumb_value(slider) == pytest.approx(100.0)
+        tab._set_slider_value(slider, var, 70)
+        root.update_idletasks()
+        assert _rendered_thumb_value(slider) == pytest.approx(70.0)
+    finally:
+        root.destroy()

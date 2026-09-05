@@ -88,12 +88,10 @@ def test_ampere_xbar_block_three_slots_gpc_base_only() -> None:
         )
         for i in range(12)
     ]
-    out = _extract_ext_curves(
-        {
-            "segments": [_seg("gpc", 0, 126), _seg("xbar", 127, 253)],
-            "points": gpc_pts + xbar_pts,
-        }
-    )
+    out = _extract_ext_curves({
+        "segments": [_seg("gpc", 0, 126), _seg("xbar", 127, 253)],
+        "points": gpc_pts + xbar_pts,
+    })
 
     assert [(e["owner"], e["slot"], e["label"]) for e in out] == [
         ("xbar", 0, "SYS"),
@@ -137,12 +135,8 @@ def test_roster_excludes_main_block_domains_not_owner() -> None:
     # slots. An msd-main layout packs [XBAR, SYS, HOST] into its ext
     # slots, so an msd block's ext0 is XBAR by the same rule.
     pts = [_pt(254 + i, [(100 + i, 450000)]) for i in range(12)]
-    out = _extract_ext_curves(
-        {"segments": [_seg("msd", 254, 265)], "points": pts}
-    )
-    assert [(e["owner"], e["slot"], e["label"]) for e in out] == [
-        ("msd", 0, "XBAR")
-    ]
+    out = _extract_ext_curves({"segments": [_seg("msd", 254, 265)], "points": pts})
+    assert [(e["owner"], e["slot"], e["label"]) for e in out] == [("msd", 0, "XBAR")]
 
 
 def test_slots_beyond_dynamic_roster_dropped() -> None:
@@ -153,12 +147,14 @@ def test_slots_beyond_dynamic_roster_dropped() -> None:
         _pt(127 + i, [(2000 + i, 600000), (900 + i, 1000000), (500 + i, 800000)])
         for i in range(12)
     ]
-    out = _extract_ext_curves(
-        {
-            "segments": [_seg("gpc", 0, 126), _seg("xbar", 127, 253), _seg("msd", 254, 265)],
-            "points": [_pt(i, []) for i in range(12)] + pts,
-        }
-    )
+    out = _extract_ext_curves({
+        "segments": [
+            _seg("gpc", 0, 126),
+            _seg("xbar", 127, 253),
+            _seg("msd", 254, 265),
+        ],
+        "points": [_pt(i, []) for i in range(12)] + pts,
+    })
     assert [(e["owner"], e["slot"], e["label"]) for e in out] == [
         ("xbar", 0, "SYS"),
         ("xbar", 1, "HOST"),
@@ -171,9 +167,7 @@ def test_build_curves_populates_and_guards_overlays() -> None:
     tab._curve_visible = {}
     tab._active_curve = "gpc"
 
-    pts = [
-        _pt(i, [(100 + i, 450000), (300 + i, 600000)]) for i in range(12)
-    ]
+    pts = [_pt(i, [(100 + i, 450000), (300 + i, 600000)]) for i in range(12)]
     clk_data = {"segments": [_seg("gpc", 0, 11)], "points": pts}
 
     assert tab._build_curves("GPU0", None, None, False, clk_data) is True
@@ -196,11 +190,16 @@ def test_build_curves_ada_roster_excludes_main_block_domains() -> None:
     tab._domain_curve_visible = {"HOST": False}  # previously toggled off
 
     gpc_pts = [_pt(i, []) for i in range(12)]
-    xbar_pts = [_pt(127 + i, [(2000 + i, 600000), (900 + i, 1000000)]) for i in range(12)]
+    xbar_pts = [
+        _pt(127 + i, [(2000 + i, 600000), (900 + i, 1000000)]) for i in range(12)
+    ]
     clk_data = {
-        "segments": [_seg("gpc", 0, 126), _seg("xbar", 127, 253), _seg("msd", 254, 265)],
-        "points": gpc_pts + xbar_pts
-        + [_pt(254 + i, []) for i in range(12)],
+        "segments": [
+            _seg("gpc", 0, 126),
+            _seg("xbar", 127, 253),
+            _seg("msd", 254, 265),
+        ],
+        "points": gpc_pts + xbar_pts + [_pt(254 + i, []) for i in range(12)],
     }
 
     assert tab._build_curves("GPU0", None, None, False, clk_data) is True

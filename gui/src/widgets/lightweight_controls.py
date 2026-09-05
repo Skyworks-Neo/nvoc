@@ -163,6 +163,13 @@ class CanvasSlider(ctk.CTkFrame):
         self._command = command
         self._state = "normal"
         self._value = float(from_)
+        # Set by configure() when the range/step shape changes while a redraw
+        # is deferred; consumed by the next set() — including a no-op set().
+        # Without this, the classic startup sequence configure(range)+set(
+        # same-value) (e.g. 50..150@100 → 70..100@100) leaves BOTH redraws
+        # skipped and the canvas keeps rendering the construction range
+        # forever — state correct, pixels stale.
+        self._geometry_dirty = False
 
         self._track_pad_x = 8
         self._track_h = 6
@@ -186,6 +193,16 @@ class CanvasSlider(ctk.CTkFrame):
         self._canvas.bind("<Button-5>", self._on_mousewheel)
 
     def configure(self, require_redraw: bool = True, **kwargs):
+        range_changed = False
+        if "from_" in kwargs and float(kwargs["from_"]) != self._from:
+            range_changed = True
+        if "to" in kwargs and float(kwargs["to"]) != self._to:
+            range_changed = True
+        if (
+            "number_of_steps" in kwargs
+            and int(kwargs["number_of_steps"]) != self._steps
+        ):
+            range_changed = True
         if "from_" in kwargs:
             self._from = float(kwargs.pop("from_"))
         if "to" in kwargs:
@@ -199,7 +216,10 @@ class CanvasSlider(ctk.CTkFrame):
 
         super().configure(**kwargs)
         self._value = self._clamp(self._value)
+        if range_changed:
+            self._geometry_dirty = True
         if require_redraw:
+            self._geometry_dirty = False
             self._redraw()
 
     def cget(self, key):
@@ -216,8 +236,14 @@ class CanvasSlider(ctk.CTkFrame):
     def set(self, value):
         clamped = self._clamp(float(value))
         if abs(clamped - self._value) < 1e-9:
-            return  # no-op set: skip the canvas redraw
+            # No-op on the value — but a deferred range change still needs
+            # its repaint (see _geometry_dirty).
+            if self._geometry_dirty:
+                self._geometry_dirty = False
+                self._redraw()
+            return
         self._value = clamped
+        self._geometry_dirty = False
         self._redraw()
 
     def get(self):

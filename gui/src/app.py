@@ -10,6 +10,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+import traceback
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 import pystray
@@ -100,6 +101,28 @@ class _ConsoleWindowProxy:
         self._repeat_count = 0
 
     # ── widget lifecycle ────────────────────────────────────────────────
+    @staticmethod
+    def _mirror_to_file(text: str) -> None:
+        """Append one console line to the packaged-build support log.
+
+        The windowed exe has no stderr, so the console buffer is the ONLY
+        record of what the startup chain did — mirror it to
+        %LOCALAPPDATA%/nvoc-gui/console.log so post-mortems don't require
+        driving the UI. Best-effort; failures are ignored.
+        """
+        try:
+            base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+            log_dir = os.path.join(base, "nvoc-gui")
+            os.makedirs(log_dir, exist_ok=True)
+            with open(
+                os.path.join(log_dir, "console.log"), "a", encoding="utf-8"
+            ) as file:
+                file.write(f"{time.strftime('%H:%M:%S')} {text}")
+                if not text.endswith("\n"):
+                    file.write("\n")
+        except OSError:
+            pass
+
     def _ensure_window(self) -> "OutputConsole":
         if self._widget is not None and self._widget.winfo_exists():
             return self._widget
@@ -151,8 +174,13 @@ class _ConsoleWindowProxy:
                 del self._buffer[: len(self._buffer) - self._MAX_LINES]
             pending.append(text)
             live = self._widget
+        self._mirror_to_file(text)
         if live is not None and live.winfo_exists():
             live.append_batch(pending)
+
+    def mirror(self, text: str) -> None:
+        """Write one diagnostic line to the support log only (no console UI)."""
+        self._mirror_to_file(f"[diag] {text}\n")
 
     def append_batch(self, texts: List[str]) -> None:
         for text in texts:
@@ -214,6 +242,12 @@ class App(ctk.CTk):
         # Warm matplotlib (font cache) on a background thread before any tab
         # builds its chart — keeps the Tk event loop responsive.
         self._mpl_ready = _start_matplotlib_warmup()
+        # Surface Tk callback exceptions: in the windowed (packaged) build
+        # sys.stderr is None, so any exception raised inside an after()- or
+        # bind()-delivered callback vanishes silently — exactly how startup
+        # failures (dropped limit updates, half-applied tabs) used to hide.
+        # Route every callback error into the GUI console AND a file.
+        self.report_callback_exception = self._report_callback_exception
         # CLI output batching (see _on_cli_output)
         self._cli_output_buffer: List[str] = []
         self._cli_output_flush_id: Optional[str] = None
@@ -246,6 +280,12 @@ class App(ctk.CTk):
         self.title("NVOC-GUI — NVIDIA GPU VF Curve Optimizer")
         self.geometry("768x712")
         self.minsize(768, 360)
+        # Set by set_startup_geometry(): re-applied once the window is mapped,
+        # because CTk's DPI ScalingTracker re-issues geometry from ITS OWN
+        # stored width/height at map time and silently clobbers any size a
+        # driver script set before mainloop (the "window ignores the code's
+        # startup dimensions" effect on scaled displays).
+        self._startup_geometry_reapply: Optional[str] = None
         self._single_instance_guard = single_instance_guard
 
         # Appearance
@@ -610,9 +650,17 @@ class App(ctk.CTk):
                     if self._vfp_offset_state_cache is not None:
                         has_vfp_offset, uniform_offset = self._vfp_offset_state_cache
                         tab.set_vfp_state(has_vfp_offset, uniform_offset)
+                self.console.mirror(
+                    "prebuild overclock OK; cache has range keys: "
+                    f"{sorted(k for k in (getattr(self, '_gpu_limits_cache', {}) or {}) if 'power' in k)}"
+                )
             except Exception:
                 # A failed prebuild must not break startup; the tab will be
-                # built lazily on first entry as before.
+                # built lazily on first entry as before. Surface it — a silent
+                # swallow here cost a full startup's worth of limit updates.
+                self.console.append(
+                    f"[GUI] Tab prebuild failed:\n{traceback.format_exc()}\n"
+                )
                 return
             self.after(100, self._prebuild_next_tab)
             return
@@ -700,8 +748,13 @@ class App(ctk.CTk):
             try:
                 cb(resizing=resizing, force_flush=force_flush)
             except Exception:
-                # Resize hooks are best-effort and must never break the UI thread.
-                pass
+                # Resize hooks are best-effort and must never break the UI
+                # thread — but a swallowed hook also silently skips whatever
+                # that hook was mid-applying (e.g. the deferred limits
+                # flush). Log it so the skipped work is visible.
+                self.console.append(
+                    f"[GUI] Resize hook failed:\n{traceback.format_exc()}\n"
+                )
 
     def _begin_resize_session(self):
         if self._is_resizing:
@@ -743,13 +796,93 @@ class App(ctk.CTk):
                 pass
         self._resize_settle_after_id = self.after(140, self._end_resize_session)
 
+    def _report_callback_exception(self, exc_type, exc_value, exc_tb):
+        """Tk callback exception hook (see __init__ for why it exists).
+
+        The console keeps the UI-visible one-liner; the full traceback goes
+        to %LOCALAPPDATA%/nvoc-gui/callback_tracebacks.log so packaged-build
+        failures stay diagnosable even with sys.stderr = None.
+        """
+        text = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+        try:
+            self.console.append(f"[GUI] Callback error: {exc_value!r}\n")
+        except Exception:
+            pass
+        try:
+            base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+            log_dir = os.path.join(base, "nvoc-gui")
+            os.makedirs(log_dir, exist_ok=True)
+            with open(
+                os.path.join(log_dir, "callback_tracebacks.log"),
+                "a",
+                encoding="utf-8",
+            ) as file:
+                file.write(f"=== {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n{text}\n")
+        except OSError:
+            pass
+
+    def after(self, ms, func=None, *args):
+        """Worker-thread-safe ``Widget.after``.
+
+        tkinter only marshals a cross-thread ``after()`` once the main
+        thread is dispatching the Tk loop; before that it blocks ~1s and
+        raises ``RuntimeError: main thread is not in main loop``. Startup
+        fires workers from ``App.__init__`` (tick zero) whose results
+        routinely finish while the UI is still constructing, and every one
+        of those deliveries used to race that window — the discovery race
+        was just the first one observed. Retry from ANY thread instead of
+        dropping: main-thread callers keep tkinter's exact semantics.
+        """
+        if threading.current_thread() is threading.main_thread():
+            return super().after(ms, func, *args)
+        deadline = time.monotonic() + 60.0
+        while True:
+            if getattr(self, "_exiting", False):
+                return None
+            try:
+                return super().after(ms, func, *args)
+            except RuntimeError:
+                # Each failed attempt already spends ~1s inside tkinter's
+                # own main-loop wait; the short pause just paces the retry.
+                if time.monotonic() > deadline:
+                    self.console.append(
+                        "[GUI] Warning: UI loop never came up; a background "
+                        "result was dropped.\n"
+                    )
+                    return None
+                time.sleep(0.1)
+
+    def _deliver_to_ui(self, callback: Callable[[], None]) -> None:
+        """Deliver one worker result to the UI thread (see ``after``)."""
+        self.after(0, callback)
+
+    def set_startup_geometry(self, width: int, height: int, x: int, y: int) -> None:
+        """Pin the window to an exact geometry, surviving CTk's DPI re-apply.
+
+        Drivers and tests MUST use this instead of a bare ``geometry()`` call:
+        a size set before ``mainloop()`` is clobbered when CTk's
+        ScalingTracker re-issues geometry at window-map time (see
+        ``_startup_geometry_reapply``). The re-apply at after(350) lands
+        after that map-time pass, so the requested size is what sticks.
+        """
+        spec = f"{width}x{height}+{x}+{y}"
+        self.geometry(spec)
+        self._startup_geometry_reapply = spec
+        self.after(350, self._reapply_startup_geometry)
+
+    def _reapply_startup_geometry(self) -> None:
+        spec = self._startup_geometry_reapply
+        if spec is not None and not getattr(self, "_exiting", False):
+            self.geometry(spec)
+            self._startup_geometry_reapply = None
+
     def _refresh_gpu_list(self):
         """Query native GPU discovery and populate GPU dropdown."""
         self.console.append("[GUI] Detecting GPUs...\n")
 
         def _worker():
             retcode, output, gpus = self.backend.list_gpus()
-            self.after(0, lambda: self._apply_gpu_list(retcode, output, gpus))
+            self._deliver_to_ui(lambda: self._apply_gpu_list(retcode, output, gpus))
 
         self.run_background("gpu-list", _worker)
 
@@ -1484,9 +1617,10 @@ class App(ctk.CTk):
             # Guard the main-thread marshal during shutdown: an inflight
             # worker (dash-poll / vfcurve-refresh) may complete after
             # _do_shutdown sets _exiting and tears down widgets; scheduling
-            # after() on a destroyed root raises a Tcl error.
+            # after() on a destroyed root raises a Tcl error. _deliver_to_ui
+            # also rides out the pre-mainloop startup window.
             if not getattr(self, "_exiting", False):
-                self.after(0, lambda: callback(retcode, output))
+                self._deliver_to_ui(lambda: callback(retcode, output))
 
         self.run_background(thread_name, _worker)
         return True
