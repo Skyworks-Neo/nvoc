@@ -75,15 +75,13 @@ class FakeNative:
         # the other setters), so the apply path must format the message from
         # it rather than use `setter() or "msg"`. Mirror the real payload
         # (target_uV is an i32 µV integer in the real binding).
-        self.calls.append(
-            (
-                "set_volt_rail_target",
-                gpu,
-                rail_bit,
-                target_mv,
-                expect_type,
-            )
-        )
+        self.calls.append((
+            "set_volt_rail_target",
+            gpu,
+            rail_bit,
+            target_mv,
+            expect_type,
+        ))
         return {"applied": True, "effective_wall_uV": int(target_mv * 1000)}
 
     def set_tgp_watt(self, gpu: str, watts: int, policy_index: int) -> None:
@@ -95,16 +93,14 @@ class FakeNative:
         # Like set_volt_rail_target: always returns a dict (never None), so
         # the apply paths must format the message from it. Mirror the real
         # payload (applied_mHz is the driver readback, MHz).
-        self.calls.append(
-            (
-                "set_clk_domain_offset",
-                gpu,
-                domain_bit,
-                offset_khz,
-                slot,
-                temporary,
-            )
-        )
+        self.calls.append((
+            "set_clk_domain_offset",
+            gpu,
+            domain_bit,
+            offset_khz,
+            slot,
+            temporary,
+        ))
         return {"applied": True, "bit": domain_bit, "applied_mHz": offset_khz / 1000.0}
 
     def set_target_temp(self, gpu: str, tlimit: float, policy_index: int) -> None:
@@ -1001,20 +997,18 @@ def test_update_mobile_limits_anchors_plimit_at_power_wall() -> None:
     after a D-Notifier apply/section reset."""
     tab, slider, var = _make_mobile_limits_tab()
 
-    tab.update_mobile_limits(
-        {
-            "tgp": {
-                "policy_index": 2,
-                "min_watt": 5.0,
-                "default_watt": 100.0,
-                "max_watt": 140.0,
-            },
-            "dnotifier": None,
-            "temp_policies": [],
-            "volt_rail": None,
-            "power_limit_w": 55.0,
-        }
-    )
+    tab.update_mobile_limits({
+        "tgp": {
+            "policy_index": 2,
+            "min_watt": 5.0,
+            "default_watt": 100.0,
+            "max_watt": 140.0,
+        },
+        "dnotifier": None,
+        "temp_policies": [],
+        "volt_rail": None,
+        "power_limit_w": 55.0,
+    })
 
     assert slider.configured["from_"] == 5
     assert slider.configured["to"] == 140
@@ -1027,20 +1021,18 @@ def test_update_mobile_limits_clamps_wall_into_tgp_range() -> None:
     never jumps back to the VBIOS default."""
     tab, slider, var = _make_mobile_limits_tab()
 
-    tab.update_mobile_limits(
-        {
-            "tgp": {
-                "policy_index": 2,
-                "min_watt": 5.0,
-                "default_watt": 100.0,
-                "max_watt": 140.0,
-            },
-            "dnotifier": None,
-            "temp_policies": [],
-            "volt_rail": None,
-            "power_limit_w": 150.0,  # above the fresh max
-        }
-    )
+    tab.update_mobile_limits({
+        "tgp": {
+            "policy_index": 2,
+            "min_watt": 5.0,
+            "default_watt": 100.0,
+            "max_watt": 140.0,
+        },
+        "dnotifier": None,
+        "temp_policies": [],
+        "volt_rail": None,
+        "power_limit_w": 150.0,  # above the fresh max
+    })
 
     assert slider.value == 140
     assert var.value == "140"
@@ -1051,20 +1043,18 @@ def test_update_mobile_limits_falls_back_to_default_without_wall() -> None:
     keep the VBIOS default as the position."""
     tab, slider, var = _make_mobile_limits_tab()
 
-    tab.update_mobile_limits(
-        {
-            "tgp": {
-                "policy_index": 2,
-                "min_watt": 5.0,
-                "default_watt": 100.0,
-                "max_watt": 140.0,
-            },
-            "dnotifier": None,
-            "temp_policies": [],
-            "volt_rail": None,
-            "power_limit_w": None,
-        }
-    )
+    tab.update_mobile_limits({
+        "tgp": {
+            "policy_index": 2,
+            "min_watt": 5.0,
+            "default_watt": 100.0,
+            "max_watt": 140.0,
+        },
+        "dnotifier": None,
+        "temp_policies": [],
+        "volt_rail": None,
+        "power_limit_w": None,
+    })
 
     assert slider.value == 100
     assert var.value == "100"

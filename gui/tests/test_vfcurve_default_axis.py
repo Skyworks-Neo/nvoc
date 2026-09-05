@@ -196,9 +196,9 @@ def _domain_info(entries):
     return {"entries": entries}
 
 
-_GPC_OFFSETS = _domain_info(
-    [{"bit": 0, "value_modifiable": True, "values_kHz": [0, 100000]}]
-)
+_GPC_OFFSETS = _domain_info([
+    {"bit": 0, "value_modifiable": True, "values_kHz": [0, 100000]}
+])
 
 
 def test_effective_synthesized_only_on_broken_public_read() -> None:
@@ -340,14 +340,12 @@ def test_normalize_domain_offsets_write_bit_not_measure_bit() -> None:
     # (msd 5 / mem 2); unmodifiable entries are dropped entirely.
     from src.tabs.vfcurve.tab import _normalize_domain_offsets
 
-    raw = _domain_info(
-        [
-            {"bit": 0, "value_modifiable": True, "values_kHz": [25000, 100000]},
-            {"bit": 5, "value_modifiable": True, "values_kHz": [0, 50000]},
-            {"bit": 21, "value_modifiable": True, "values_kHz": [0, 999999]},
-            {"bit": 1, "value_modifiable": False, "values_kHz": [0, 777777]},
-        ]
-    )
+    raw = _domain_info([
+        {"bit": 0, "value_modifiable": True, "values_kHz": [25000, 100000]},
+        {"bit": 5, "value_modifiable": True, "values_kHz": [0, 50000]},
+        {"bit": 21, "value_modifiable": True, "values_kHz": [0, 999999]},
+        {"bit": 1, "value_modifiable": False, "values_kHz": [0, 777777]},
+    ])
 
     assert _normalize_domain_offsets(raw) == {
         "gpc": {"slot0_khz": 25000, "slot1_uv": 100000},

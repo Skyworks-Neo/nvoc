@@ -596,7 +596,7 @@ class OverclockController(PaneController):
                 if backend == "nvml"
                 else native.set_nvapi_pstate_lock(gpu, pstart, pend)
             )
-        except Exception as exc:
+        except Exception:
             # First mem-range attempt failed → pre-Kepler part. The NVML
             # pstate mem-clock ranges the window derivation needs are Not
             # Supported there; the native single-state pin is the only path.
@@ -1134,67 +1134,49 @@ class OverclockController(PaneController):
             ]
             if str(backend) == "nvapi" and self.xbar_supported():
                 coupled = self.is_ampere_plus()
-                resets.append(
-                    (
-                        "reset xbar offset",
-                        lambda native, gpu=gpu: self._format_xbar_offset_result(
-                            0, native.set_clk_domain_offset(gpu, 1, 0, None, None)
-                        ),
-                    )
-                )
+                resets.append((
+                    "reset xbar offset",
+                    lambda native, gpu=gpu: self._format_xbar_offset_result(
+                        0, native.set_clk_domain_offset(gpu, 1, 0, None, None)
+                    ),
+                ))
                 # 30+ couples bit3 — clear the -f cancel too (bit3=0).
                 if coupled:
-                    resets.append(
-                        (
-                            "reset sys-cancel",
-                            lambda native, gpu=gpu: (
-                                self._format_clk_domain_offset_result(
-                                    "Sys-cancel",
-                                    0,
-                                    native.set_clk_domain_offset(gpu, 3, 0, None, None),
-                                )
-                            ),
-                        )
-                    )
+                    resets.append((
+                        "reset sys-cancel",
+                        lambda native, gpu=gpu: self._format_clk_domain_offset_result(
+                            "Sys-cancel",
+                            0,
+                            native.set_clk_domain_offset(gpu, 3, 0, None, None),
+                        ),
+                    ))
                 if self._sys_supported():
-                    resets.append(
-                        (
-                            "reset sys offset",
-                            lambda native, gpu=gpu: (
-                                self._format_clk_domain_offset_result(
-                                    "Sys",
-                                    0,
-                                    native.set_clk_domain_offset(gpu, 3, 0, None, None),
-                                )
-                            ),
-                        )
-                    )
+                    resets.append((
+                        "reset sys offset",
+                        lambda native, gpu=gpu: self._format_clk_domain_offset_result(
+                            "Sys",
+                            0,
+                            native.set_clk_domain_offset(gpu, 3, 0, None, None),
+                        ),
+                    ))
                 if self._msd_supported():
-                    resets.append(
-                        (
-                            "reset msd offset",
-                            lambda native, gpu=gpu: (
-                                self._format_clk_domain_offset_result(
-                                    "Msd",
-                                    0,
-                                    native.set_clk_domain_offset(gpu, 5, 0, None, None),
-                                )
-                            ),
-                        )
-                    )
+                    resets.append((
+                        "reset msd offset",
+                        lambda native, gpu=gpu: self._format_clk_domain_offset_result(
+                            "Msd",
+                            0,
+                            native.set_clk_domain_offset(gpu, 5, 0, None, None),
+                        ),
+                    ))
                 if self._host_supported():
-                    resets.append(
-                        (
-                            "reset host offset",
-                            lambda native, gpu=gpu: (
-                                self._format_clk_domain_offset_result(
-                                    "Host",
-                                    0,
-                                    native.set_clk_domain_offset(gpu, 9, 0, None, None),
-                                )
-                            ),
-                        )
-                    )
+                    resets.append((
+                        "reset host offset",
+                        lambda native, gpu=gpu: self._format_clk_domain_offset_result(
+                            "Host",
+                            0,
+                            native.set_clk_domain_offset(gpu, 9, 0, None, None),
+                        ),
+                    ))
             self.app.run_action_chain(resets)
             return True
         if button_id == "limits-apply":

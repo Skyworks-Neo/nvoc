@@ -260,15 +260,13 @@ def _format_metric_lines(status: dict, architecture: str) -> list[str]:
         value = util.get(key)
         return f"{round(float(value))}%" if isinstance(value, (int, float)) else "---"
 
-    load_text = " | ".join(
-        [
-            f"GPU {_pct('Graphics')}",
-            # FrameBuffer is NVAPI's name for the memory-controller utilization domain.
-            f"MC {_pct('FrameBuffer')}",
-            f"VEN {_pct('VideoEngine')}",
-            f"BUS {_pct('BusInterface')}",
-        ]
-    )
+    load_text = " | ".join([
+        f"GPU {_pct('Graphics')}",
+        # FrameBuffer is NVAPI's name for the memory-controller utilization domain.
+        f"MC {_pct('FrameBuffer')}",
+        f"VEN {_pct('VideoEngine')}",
+        f"BUS {_pct('BusInterface')}",
+    ])
 
     vram = status.get("vram") or {}
 
@@ -373,13 +371,11 @@ def _format_metric_lines(status: dict, architecture: str) -> list[str]:
 
     # GPU/MEM/VIDEO merged onto one compact line — the same
     # "Clocks: Graphics/Memory/Video" table from get-status.
-    clock_text = " | ".join(
-        [
-            f"GPU {status.get('gpu_clock_mhz', '---')}",
-            f"MEM {status.get('mem_clock_mhz', '---')}",
-            f"VID {status.get('video_clock_mhz', '---')}",
-        ]
-    )
+    clock_text = " | ".join([
+        f"GPU {status.get('gpu_clock_mhz', '---')}",
+        f"MEM {status.get('mem_clock_mhz', '---')}",
+        f"VID {status.get('video_clock_mhz', '---')}",
+    ])
 
     return [
         f"CLK: {clock_text} MHz",
