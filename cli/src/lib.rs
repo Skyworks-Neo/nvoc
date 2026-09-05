@@ -19,18 +19,17 @@ use nvoc_core::{
     QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
     QueryThrottleReasons, QueryVbiosImage, QueryVbiosSecurityInfo, QueryVbiosStatusString,
     QueryVbiosVersion, QueryViolationStatus, QueryVoltageBoost, ResetAutoboostStatus,
-    ResetCoolerLevels, ResetFanCurve, ResetNvapiFanControl, ResetFanSpeed, ResetForcePstate,
-    ResetFreqLock,
-    ResetLegacyApplicationFreqLock, ResetLegacyGpcRailOvervoltLimit, ResetNvapiPowerLimits,
-    ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetNvapiVfpPrivate, ResetPstateGlobalFreqOffset,
-    ResetPublicVftableGpcLock, ResetPublicVftableOffset, ResetVfpFrequencyLock,
-    RestartDisplayDriver, SetApplicationsClocks, SetAutoboostStatus, SetAutoboostSupport,
-    SetBb2Active, SetClockOffset, SetCoolerLevels, SetEdid, SetFanCurve, SetFanRpm, SetFanSpeed,
-    SetFanStop, SetForcePstate, SetGpcVoltLock, SetLegacyClocks, SetLockedClocks,
-    SetNvapiBackgroundOcScanner, SetNvapiClkDomainOffset, SetNvapiCoreVoltageControl,
-    SetNvapiDNotifier, SetNvapiDynamicBoost, SetNvapiEccConfiguration, SetNvapiOverclockedPstates,
-    SetNvapiOvervolt, SetNvapiPStateNative, SetNvapiPerfFreqCap, SetNvapiPerfLevelLock,
-    SetNvapiPmgrVoltageArbiter, SetNvapiPowerLimits, SetNvapiPstateLock,
+    ResetCoolerLevels, ResetFanCurve, ResetFanSpeed, ResetForcePstate, ResetFreqLock,
+    ResetLegacyApplicationFreqLock, ResetLegacyGpcRailOvervoltLimit, ResetNvapiFanControl,
+    ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetNvapiVfpPrivate,
+    ResetPstateGlobalFreqOffset, ResetPublicVftableGpcLock, ResetPublicVftableOffset,
+    ResetVfpFrequencyLock, RestartDisplayDriver, SetApplicationsClocks, SetAutoboostStatus,
+    SetAutoboostSupport, SetBb2Active, SetClockOffset, SetCoolerLevels, SetEdid, SetFanCurve,
+    SetFanRpm, SetFanSpeed, SetFanStop, SetForcePstate, SetGpcVoltLock, SetLegacyClocks,
+    SetLockedClocks, SetNvapiBackgroundOcScanner, SetNvapiClkDomainOffset,
+    SetNvapiCoreVoltageControl, SetNvapiDNotifier, SetNvapiDynamicBoost, SetNvapiEccConfiguration,
+    SetNvapiOverclockedPstates, SetNvapiOvervolt, SetNvapiPStateNative, SetNvapiPerfFreqCap,
+    SetNvapiPerfLevelLock, SetNvapiPmgrVoltageArbiter, SetNvapiPowerLimits, SetNvapiPstateLock,
     SetNvapiPstates20PrivateDelta, SetNvapiSensorLimits, SetNvapiTargetTemp, SetNvapiTgpWatt,
     SetNvapiThermalSim, SetNvapiVfpPointPrivate, SetNvapiVfpRangePerPointPrivate,
     SetNvapiVfpRangePrivate, SetNvapiVoltRailOffset, SetNvapiVoltRailTarget, SetNvmlAcousticTemp,
@@ -158,7 +157,6 @@ pub enum Command {
     GetSettings,
     GetPublicVftable,
     SyncVfpMemoryPstate,
-    GetPowerLimit,
     GetPstateGlobalFreqOffset,
     GetPstateFreqRange,
     GetSupportedLegacyApplicationFreq,
@@ -571,14 +569,6 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 },
             ),
             (
-                Command::GetPowerLimit,
-                CommandSpec {
-                    adapters: &BOTH_BACKENDS,
-                    preferred: BackendAdapter::Nvml,
-                    ..CommandSpec::new("get-power-limit", Group::Power, "Read power limits in watts: NVML min/current/max by default; falls back to the NVAPI TGP-watts range (min/default/max) where NVML is unsupported")
-                },
-            ),
-            (
                 Command::GetPowerMode,
                 CommandSpec {
                     formatter: Some(output::format_power_mode),
@@ -647,7 +637,14 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 },
             ),
             (Command::GetPublicGpcRailVoltBoost, CommandSpec::new("get-public-gpc-rail-volt-boost", Group::Voltage, "Read NVAPI voltage boost percent")),
-            (Command::GetPublicPowerLimit, CommandSpec::new("get-public-power-limit", Group::Power, "Read the NVAPI public power-limit range (TDP min/default/max percent, ClientPowerPolicies)")),
+            (
+                Command::GetPublicPowerLimit,
+                CommandSpec {
+                    adapters: &BOTH_BACKENDS,
+                    preferred: BackendAdapter::Nvml,
+                    ..CommandSpec::new("get-public-power-limit", Group::Power, "Read the power-limit range: --nvml (auto default) reports the NVML power-management limits in watts (min/current/max); --nvapi reports the ClientPowerPolicies TDP percent range (min/default/max) plus the mobile TGP watt range (tgp_range) when the private ClientTgpWatt family is exposed")
+                },
+            ),
             (Command::GetPublicTempLimit, CommandSpec::new("get-public-temp-limit", Group::Thermal, "Read the NVAPI public temp-limit range (min/default/max Celsius + throttle curve)")),
             (
                 Command::GetPublicVftable,
@@ -1944,7 +1941,7 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .long("policy-index")
             .value_name("INDEX")
             .action(ArgAction::Set)
-            .help("TGP power-policy table index (default 2); see get-power-limit (NVAPI fallback)"),
+            .help("TGP power-policy table index (default 2); see get-public-power-limit --nvapi (tgp_range)"),
         "infer-missing-field" => Arg::new("infer-missing-field")
             .long("infer-missing-field")
             .action(ArgAction::SetTrue)
@@ -2593,11 +2590,6 @@ fn discovery_backend_set(command: Command, adapter: BackendAdapter) -> BackendSe
         (Command::GetStatus, BackendAdapter::Nvapi) => BackendSet::Both,
         (Command::GetUuid, BackendAdapter::Nvapi) => BackendSet::Both,
         (Command::SetPstateLockViaMemRange, BackendAdapter::Nvapi) => BackendSet::Both,
-        // get-power-limit tries NVML first then falls back to the NVAPI TGP
-        // range inside one execute — both handles must be on the target
-        // whichever adapter routes the run.
-        (Command::GetPowerLimit, BackendAdapter::Nvapi) => BackendSet::Both,
-        (Command::GetPowerLimit, BackendAdapter::Nvml) => BackendSet::Both,
         (_, BackendAdapter::Nvapi) => BackendSet::Nvapi,
         (_, BackendAdapter::Nvml) => BackendSet::Nvml,
     }
@@ -2816,36 +2808,6 @@ fn execute_target(
         Command::SyncVfpMemoryPstate => {
             sync_memory_pstate_as_p0(target)?;
             Ok(json!({"applied": true}))
-        }
-        Command::GetPowerLimit => {
-            // Merged power-limit getter: the NVML power-management limits
-            // (min/current/max) are the primary surface; where NVML is
-            // unavailable or unsupported (or on an explicit --nvapi run),
-            // fall back to the NVAPI TGP-watts range (min/default/max,
-            // the old get-power-limit-range surface).
-            match run(target, QueryPowerLimits) {
-                Ok(power) => Ok(json!({
-                    "source": "nvml",
-                    "min_watt": power.output.min_watts,
-                    "current_watt": power.output.current_watts,
-                    "max_watt": power.output.max_watts,
-                })),
-                Err(nvml_error) => {
-                    let range = run(target, QueryNvapiTgpWattRange)?.output;
-                    match range {
-                        Some(r) => Ok(json!({
-                            "source": "nvapi_tgp_range",
-                            "policy_index": r.policy_index,
-                            "min_watt": r.min_watt,
-                            "default_watt": r.default_watt,
-                            "max_watt": r.max_watt,
-                        })),
-                        // NVAPI family absent too — surface the original
-                        // NVML failure (the more likely user-facing cause).
-                        None => Err(nvml_error.into()),
-                    }
-                }
-            }
         }
         Command::GetPstateGlobalFreqOffset => get_clock_offset(target, adapter, invocation),
         Command::GetPstateFreqRange => {
@@ -3259,15 +3221,45 @@ fn execute_target(
             }))
         }
         Command::GetPublicPowerLimit => {
-            // Power-limit half of the old get-tdp-temp-limits (NVAPI
-            // ClientPowerPolicies TDP percent range). Fields are None → null
-            // when the driver reports no power-policy entries.
-            let limits = run(target, QueryTdpTempLimits)?.output;
-            Ok(json!({
-                "min_tdp_percent": limits.min_tdp.map(|v| v.0),
-                "default_tdp_percent": limits.default_tdp.map(|v| v.0),
-                "max_tdp_percent": limits.max_tdp.map(|v| v.0),
-            }))
+            // Merged power-limit getter (old get-power-limit + the power half
+            // of the old get-tdp-temp-limits). Adapter routes the plane:
+            //  - NVML: the power-management limits in watts (min/current/max,
+            //    nvidia-smi -pl territory).
+            //  - NVAPI: the ClientPowerPolicies TDP percent range
+            //    (min/default/max) — fields stay None → null when the driver
+            //    reports no power-policy entries — plus the mobile TGP watt
+            //    range when the private ClientTgpWatt family answers (the
+            //    old get-power-limit NVAPI fallback surface).
+            match adapter {
+                BackendAdapter::Nvapi => {
+                    let limits = run(target, QueryTdpTempLimits)?.output;
+                    let mut value = json!({
+                        "min_tdp_percent": limits.min_tdp.map(|v| v.0),
+                        "default_tdp_percent": limits.default_tdp.map(|v| v.0),
+                        "max_tdp_percent": limits.max_tdp.map(|v| v.0),
+                    });
+                    if let Ok(Some(range)) =
+                        run(target, QueryNvapiTgpWattRange).map(|report| report.output)
+                    {
+                        value["tgp_range"] = json!({
+                            "policy_index": range.policy_index,
+                            "min_watt": range.min_watt,
+                            "default_watt": range.default_watt,
+                            "max_watt": range.max_watt,
+                        });
+                    }
+                    Ok(value)
+                }
+                BackendAdapter::Nvml => {
+                    let power = run(target, QueryPowerLimits)?.output;
+                    Ok(json!({
+                        "source": "nvml",
+                        "min_watt": power.min_watts,
+                        "current_watt": power.current_watts,
+                        "max_watt": power.max_watts,
+                    }))
+                }
+            }
         }
         Command::GetPublicTempLimit => {
             // Temp-limit half of the old get-tdp-temp-limits. Fields are None
@@ -3996,7 +3988,7 @@ fn execute_target(
                         .iter()
                         .filter(|s| {
                             s.bank as usize == bank
-                                && domain_filter.map_or(true, |h| s.domain_hint == h)
+                                && domain_filter.is_none_or(|h| s.domain_hint == h)
                         })
                         .collect();
                     json!({
@@ -4684,26 +4676,26 @@ fn execute_target(
                     let reason = run(target, QueryNvapiClkDomains)
                         .ok()
                         .and_then(|r| r.output)
-                        .and_then(|c| match c.entries.iter().find(|e| e.bit == domain_bit) {
-                            Some(e) if e.value_modifiable => Some(
+                        .map(|c| match c.entries.iter().find(|e| e.bit == domain_bit) {
+                            Some(e) if e.value_modifiable => {
                                 "record reported writable but the write soft-failed \
                                      (slot rejected?)"
-                                    .to_string(),
-                            ),
-                            Some(e) => Some(format!(
+                                    .to_string()
+                            }
+                            Some(e) => format!(
                                 "domain bit {domain_bit} is present (controllable mask \
                                      0x{:X}) but its record type {} is not writable through \
                                      the SetControl protocol — the driver silently drops \
                                      records of this type, so the write path refuses before \
                                      issuing SET_CONTROL",
                                 c.mask, e.entry_type
-                            )),
-                            None => Some(format!(
+                            ),
+                            None => format!(
                                 "domain bit {domain_bit} is not in the controllable \
                                      mask 0x{:X} — the driver maintains no writable record \
                                      for it",
                                 c.mask
-                            )),
+                            ),
                         });
                     match reason {
                         Some(reason) => json!({"supported": false, "reason": reason}),
@@ -6620,7 +6612,7 @@ fn attach_record_slot_map(
     // keep the records matching the same bank/domain filter as the points
     let kept = |r: &nvoc_core::ClkVfRawRecord| {
         r.bank as usize == bank
-            && domain_filter.map_or(true, |h| {
+            && domain_filter.is_none_or(|h| {
                 vfp.segments.iter().any(|s| {
                     s.bank as usize == bank
                         && s.domain_hint == h
@@ -6673,6 +6665,25 @@ fn attach_record_slot_map(
             ("+0x098 (ext2 cur v)", 0x98),
             ("+0x0A4 (ext3 cur f)", 0xA4),
             ("+0x0A8 (ext3 cur v)", 0xA8),
+        ]
+    } else if stride == 292 {
+        // R535-era CANONICAL layout (stamp 300164): type u32@0, freq
+        // u16@0x24, volt u32@0x28 (types 0/1/2) or u32@0x58 (curve types,
+        // UNVERIFIED), then five (u16,u32) domain pairs @0x64+0x10*k
+        vec![
+            ("+0x024 (freq u16 lo)", 0x24),
+            ("+0x028 (volt small / ?)", 0x28),
+            ("+0x058 (volt curve?)", 0x58),
+            ("+0x064 (dom0 f)", 0x64),
+            ("+0x068 (dom0 v)", 0x68),
+            ("+0x074 (dom1 f)", 0x74),
+            ("+0x078 (dom1 v)", 0x78),
+            ("+0x084 (dom2 f)", 0x84),
+            ("+0x088 (dom2 v)", 0x88),
+            ("+0x094 (dom3 f)", 0x94),
+            ("+0x098 (dom3 v)", 0x98),
+            ("+0x0A4 (dom4 f)", 0xA4),
+            ("+0x0A8 (dom4 v)", 0xA8),
         ]
     } else {
         // LEGACY layout: flags@0, voltage µV@4, freq MHz@8
@@ -6750,7 +6761,13 @@ fn attach_record_slot_map(
                 "stride": stride,
                 "records": raws.len(),
                 "first_record_index": first.index,
-                "layout": if stride >= 488 { "modern (R610 large-table)" } else { "legacy (Volta/R391 small-table)" },
+                "layout": if stride >= 488 {
+                    "modern (R610 large-table)"
+                } else if stride == 292 {
+                    "R535 canonical (stamp 0x49484, full-payload records)"
+                } else {
+                    "legacy (Volta/R391 small-table)"
+                },
                 "slots": slots_json,
                 "zero_slot_count": zero_slots.len(),
                 "zero_slots": zero_slots,
@@ -7131,7 +7148,6 @@ mod tests {
             | Command::GetSettings
             | Command::GetPublicVftable
             | Command::SyncVfpMemoryPstate
-            | Command::GetPowerLimit
             | Command::GetPstateGlobalFreqOffset
             | Command::GetPstateFreqRange
             | Command::GetPstates20Private
@@ -7265,7 +7281,7 @@ mod tests {
         let rendered = render_root_help();
         assert!(rendered.contains("Commands:"));
         assert!(rendered.contains("Power / TGP"));
-        assert!(rendered.contains("get-power-limit"));
+        assert!(rendered.contains("get-public-power-limit"));
         assert!(rendered.contains("V/F curve tables"));
         // the list meta command itself stays out of the listing
         assert!(!rendered.contains("    list\n"));
@@ -7273,7 +7289,7 @@ mod tests {
         let filtered = render_grouped_commands(Some(Group::Fan));
         assert!(filtered.contains("get-fan-info"));
         assert!(filtered.contains("reset-fan-speed"));
-        assert!(!filtered.contains("get-power-limit"));
+        assert!(!filtered.contains("get-public-power-limit"));
     }
 
     #[test]
@@ -7437,7 +7453,7 @@ mod tests {
 
     #[test]
     fn rejects_option_not_valid_for_command() {
-        let err = parse_args(["get-power-limit", "--domain", "memory"])
+        let err = parse_args(["get-public-power-limit", "--domain", "memory"])
             .unwrap_err()
             .to_string();
         assert!(err.contains("--domain"));
@@ -7634,21 +7650,26 @@ mod tests {
         assert_eq!(invocation.command, Some(Command::ResetFanSpeed));
         assert!(!option_bool(&invocation, "rpm", false).unwrap());
 
-        // get-power-limit (merged NVML + NVAPI-range fallback)
-        let invocation = parse_args(["get-power-limit"]).unwrap();
-        assert_eq!(invocation.command, Some(Command::GetPowerLimit));
-        assert_eq!(invocation.backend, BackendChoice::Auto);
-        assert_eq!(Command::GetPowerLimit.adapters(), &BOTH_BACKENDS);
-        assert_eq!(
-            Command::GetPowerLimit.auto_preferred_backend(),
-            BackendAdapter::Nvml
-        );
-
-        // get-public-power-limit / get-public-temp-limit (split of the old
-        // get-tdp-temp-limits)
+        // get-public-power-limit (merged old get-power-limit + the power half
+        // of get-tdp-temp-limits): dual backend, auto prefers NVML watts,
+        // both explicit flags route to their own plane.
         let invocation = parse_args(["get-public-power-limit"]).unwrap();
         assert_eq!(invocation.command, Some(Command::GetPublicPowerLimit));
-        assert_eq!(Command::GetPublicPowerLimit.adapters(), &NVAPI_ONLY);
+        assert_eq!(invocation.backend, BackendChoice::Auto);
+        assert_eq!(Command::GetPublicPowerLimit.adapters(), &BOTH_BACKENDS);
+        assert_eq!(
+            Command::GetPublicPowerLimit.auto_preferred_backend(),
+            BackendAdapter::Nvml
+        );
+        let invocation = parse_args(["get-public-power-limit", "--nvapi"]).unwrap();
+        assert_eq!(invocation.backend, BackendChoice::Nvapi);
+        let invocation = parse_args(["get-public-power-limit", "--nvml"]).unwrap();
+        assert_eq!(invocation.backend, BackendChoice::Nvml);
+        // the retired name is gone
+        assert!(parse_args(["get-power-limit"]).is_err());
+
+        // get-public-temp-limit (temp half of the old get-tdp-temp-limits
+        // split) stays NVAPI-only
         let invocation = parse_args(["get-public-temp-limit"]).unwrap();
         assert_eq!(invocation.command, Some(Command::GetPublicTempLimit));
         assert_eq!(Command::GetPublicTempLimit.adapters(), &NVAPI_ONLY);
@@ -7756,7 +7777,7 @@ mod tests {
         assert!(err.contains("cannot be used with"), "{err}");
 
         // and the alias is rejected on commands without a slot record
-        let err = parse_args(["get-power-limit", "--volt"])
+        let err = parse_args(["get-public-power-limit", "--volt"])
             .unwrap_err()
             .to_string();
         assert!(err.contains("--volt"), "{err}");

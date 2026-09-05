@@ -299,7 +299,7 @@ mod tests {
         assert!(heading.contains("Power / TGP (12)")); // text survives intact
         // Verb prefixes get their action color (get=read, set=write,
         // reset=restore)...
-        let get = stylize_help_command("get-power-limit");
+        let get = stylize_help_command("get-public-power-limit");
         assert!(get.starts_with("\u{1b}["));
         assert!(get.contains("get-") && get.ends_with("power-limit"));
         assert!(stylize_help_command("set-fan-speed").contains("set-"));
@@ -319,7 +319,10 @@ mod tests {
             stylize_group_heading("power", "Power / TGP (12)"),
             "Power / TGP (12)"
         );
-        assert_eq!(stylize_help_command("get-power-limit"), "get-power-limit");
+        assert_eq!(
+            stylize_help_command("get-public-power-limit"),
+            "get-public-power-limit"
+        );
 
         init(false);
     }
