@@ -2624,17 +2624,11 @@ impl GpuOperation for QueryNvapiClkDomainFreqsBatch {
 /// V/F curve family. Returns `None` where the driver doesn't expose the
 /// private interface. Units live-calibrated vs the public GPC VFP curve
 /// (see `::nvapi::ClkVfPointPrivate`).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct QueryNvapiClkVfPoints {
     /// Attach the raw 488B GetStatus records (diagnostic slot-map dumps —
     /// ~64KB per 132-point table). The normal read leaves them empty.
     pub include_raw: bool,
-}
-
-impl Default for QueryNvapiClkVfPoints {
-    fn default() -> Self {
-        Self { include_raw: false }
-    }
 }
 
 impl From<bool> for QueryNvapiClkVfPoints {

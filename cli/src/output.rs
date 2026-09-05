@@ -26,10 +26,10 @@ pub(super) fn execution_to_json(execution: &Execution) -> Value {
 pub(super) fn annotate_last_error(value: &mut Value) {
     match value {
         Value::Object(map) => {
-            if map.get("supported").and_then(Value::as_bool) == Some(false) {
-                if let Some(err) = nvoc_core::last_status_error() {
-                    map.insert("last_error".into(), Value::String(err));
-                }
+            if map.get("supported").and_then(Value::as_bool) == Some(false)
+                && let Some(err) = nvoc_core::last_status_error()
+            {
+                map.insert("last_error".into(), Value::String(err));
             }
             for child in map.values_mut() {
                 annotate_last_error(child);
@@ -70,13 +70,13 @@ pub(super) fn format_human(execution: &Execution) -> String {
                 // {"supported": false} — surface the ORIGINAL NVAPI status
                 // recorded underneath (e.g. "-9 IncompatibleStructVersion"
                 // on a stamp-gated family vs a true absence).
-                if output.get("supported").and_then(Value::as_bool) == Some(false) {
-                    if let Some(err) = nvoc_core::last_status_error() {
-                        lines.push(nvoc_cli_common::color::stylize(
-                            &format!("Last NVAPI error: {err}"),
-                            true,
-                        ));
-                    }
+                if output.get("supported").and_then(Value::as_bool) == Some(false)
+                    && let Some(err) = nvoc_core::last_status_error()
+                {
+                    lines.push(nvoc_cli_common::color::stylize(
+                        &format!("Last NVAPI error: {err}"),
+                        true,
+                    ));
                 }
             }
         } else {
@@ -487,9 +487,10 @@ pub(super) fn format_private_vfp_output(output: &Value) -> Vec<String> {
     let points = object.get("points").and_then(Value::as_array);
     // extended-section per-(owner, slot) current-pair collector — filled
     // while the row loop walks the points (it already resolves each
-    // point's owning segment for the row grouping)
-    let mut ext_stats: std::collections::BTreeMap<(String, usize), (usize, f64, f64, f64, f64)> =
-        std::collections::BTreeMap::new();
+    // point's owning segment for the row grouping). Value tuple:
+    // (count, f_min, f_max, v_min, v_max).
+    type ExtCurrentStats = std::collections::BTreeMap<(String, usize), (usize, f64, f64, f64, f64)>;
+    let mut ext_stats = ExtCurrentStats::new();
     // roster attribution (EXT slot → curve domain) = [XBAR,SYS,MSD,HOST]
     // minus this table's main-block domains — hoisted so the per-segment
     // table legend and the bottom summary share one attribution
@@ -602,10 +603,9 @@ pub(super) fn format_private_vfp_output(output: &Value) -> Vec<String> {
                     if f == 0.0 && v == 0.0 {
                         continue;
                     }
-                    let e =
-                        ext_stats
-                            .entry((owner.clone(), k))
-                            .or_insert((0, f, f, v, v));
+                    let e = ext_stats
+                        .entry((owner.clone(), k))
+                        .or_insert((0, f, f, v, v));
                     e.0 += 1;
                     e.1 = e.1.min(f);
                     e.2 = e.2.max(f);
@@ -621,8 +621,11 @@ pub(super) fn format_private_vfp_output(output: &Value) -> Vec<String> {
                 .get("volt_current_mv")
                 .and_then(Value::as_f64)
                 .unwrap_or_default();
-            let volt_def =
-                point.get("voltage_uV").and_then(Value::as_f64).unwrap_or_default() / 1000.0;
+            let volt_def = point
+                .get("voltage_uV")
+                .and_then(Value::as_f64)
+                .unwrap_or_default()
+                / 1000.0;
             // MHz values — plain integers in faithful mode, one-decimal
             // floats under --infer-missing-field's Pascal remap (true
             // default = current − offset); as_f64 covers both
@@ -650,7 +653,10 @@ pub(super) fn format_private_vfp_output(output: &Value) -> Vec<String> {
                 .map(|set| set.iter().copied().collect())
                 .unwrap_or_default();
             let has_volt_off = group_volt_off.contains(&matching_segment);
-            let idx = point.get("index").and_then(Value::as_i64).unwrap_or_default();
+            let idx = point
+                .get("index")
+                .and_then(Value::as_i64)
+                .unwrap_or_default();
             let mut cells: Vec<String> = Vec::new();
             cells.push(pvfp_cell(Some(idx.to_string()), PVFP_W_ID));
             cells.push(pvfp_cell(
@@ -697,10 +703,7 @@ pub(super) fn format_private_vfp_output(output: &Value) -> Vec<String> {
                 ));
             }
             cells.push(pvfp_cell(mode.map(|m| m.to_string()), PVFP_W_MODE));
-            cells.push(pvfp_cell(
-                effect.map(|e| format!("{e:+.1}")),
-                PVFP_W_VAL,
-            ));
+            cells.push(pvfp_cell(effect.map(|e| format!("{e:+.1}")), PVFP_W_VAL));
             lines.push(nvoc_cli_common::color::stylize(
                 &format!("    {}", cells.join(PVFP_SEP)),
                 false,
@@ -1570,10 +1573,10 @@ fn format_all_clocks_detailed(
             } else {
                 text.push_str(&format!(", ratio → {dom}"));
             }
-        } else if let Some(ratio) = entry.get("ratio").and_then(Value::as_u64) {
-            if ratio != 0 {
-                text.push_str(&format!(", ratio ×{ratio}"));
-            }
+        } else if let Some(ratio) = entry.get("ratio").and_then(Value::as_u64)
+            && ratio != 0
+        {
+            text.push_str(&format!(", ratio ×{ratio}"));
         }
         let reserved: Vec<u64> = entry
             .get("reserved")
@@ -2415,8 +2418,8 @@ mod tests {
     fn human_output_formats_objects_without_json_dump() {
         nvoc_cli_common::color::init(true);
         let execution = Execution {
-            function: "get-power-watt",
-            command: Command::GetPowerLimit,
+            function: "get-public-power-limit",
+            command: Command::GetPublicPowerLimit,
             backend: "nvml".to_string(),
             warnings: Vec::new(),
             results: vec![TargetResult {
@@ -3026,8 +3029,8 @@ mod tests {
     #[test]
     fn json_output_is_compact() {
         let execution = Execution {
-            function: "get-power-watt",
-            command: Command::GetPowerLimit,
+            function: "get-public-power-limit",
+            command: Command::GetPublicPowerLimit,
             backend: "nvml".to_string(),
             warnings: Vec::new(),
             results: vec![TargetResult {
@@ -3046,7 +3049,7 @@ mod tests {
         let rendered = serde_json::to_string(&execution_to_json(&execution)).unwrap();
 
         assert!(!rendered.contains('\n'));
-        assert!(rendered.contains("\"function\":\"get-power-watt\""));
+        assert!(rendered.contains("\"function\":\"get-public-power-limit\""));
     }
 
     fn sample_output(command: Command) -> Value {
@@ -3102,9 +3105,6 @@ mod tests {
                     "default_frequency_mhz": 1500.0,
                 }],
             }),
-            Command::GetPowerLimit => {
-                json!({"source": "nvml", "min_watt": 100, "current_watt": 250, "max_watt": 350})
-            }
             Command::GetPstateGlobalFreqOffset => {
                 json!({"domain": "graphics", "pstate": "P0", "offset_mhz": 120})
             }
@@ -3153,9 +3153,10 @@ mod tests {
                 },
             }),
             Command::GetPublicPowerLimit => json!({
-                "min_tdp_percent": 50,
-                "default_tdp_percent": 100,
-                "max_tdp_percent": 120,
+                "source": "nvml",
+                "min_watt": 70,
+                "current_watt": 100,
+                "max_watt": 100,
             }),
             Command::GetPublicTempLimit => json!({
                 "min_temp_c": 65,
