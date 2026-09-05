@@ -400,7 +400,12 @@ class VFCurveController(PaneController):
         # see parsing.extract_ext_curves). Plotext palette note: magenta+
         # renders red on some terminal shaders — stick to the verified
         # orange+/cyan+/yellow/green hues.
-        _EXT_PLOTEXT_COLORS = {"XBAR": "orange+", "SYS": "yellow", "MSD": "cyan+", "HOST": "green"}
+        _EXT_PLOTEXT_COLORS = {
+            "XBAR": "orange+",
+            "SYS": "yellow",
+            "MSD": "cyan+",
+            "HOST": "green",
+        }
         for ext in self.domain_curves:
             if not self._domain_visible.get(ext["label"], True):
                 continue
@@ -409,7 +414,7 @@ class VFCurveController(PaneController):
                 ext["freqs"],
                 marker="braille",
                 color=_EXT_PLOTEXT_COLORS.get(ext["label"], "yellow"),
-                label=f'{ext["label"]}·ext',
+                label=f"{ext['label']}·ext",
             )
         # Live crosshair only on the active curve: GPC frequency from the
         # dashboard status feed, XBAR/MSD from the direct-read poll path.

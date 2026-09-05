@@ -809,9 +809,7 @@ def extract_ext_curves(clk_data: dict[str, Any] | None) -> list[dict[str, Any]]:
             idx = int(p.get("index", -1))
         except (TypeError, ValueError):
             continue
-        owner = next(
-            (d for b, s, e, d in ranges if b == bank and s <= idx <= e), None
-        )
+        owner = next((d for b, s, e, d in ranges if b == bank and s <= idx <= e), None)
         if owner is None:
             continue
         for k in range(min(4, len(fs), len(vs))):
@@ -838,15 +836,13 @@ def extract_ext_curves(clk_data: dict[str, Any] | None) -> list[dict[str, Any]]:
             continue  # unit sanity (µV-as-mV or garbage never plots)
         if min(freqs) < 10.0 or max(freqs) > 8000.0:
             continue
-        out.append(
-            {
-                "owner": owner,
-                "slot": k,
-                "label": label,
-                "volts": volts,
-                "freqs": freqs,
-            }
-        )
+        out.append({
+            "owner": owner,
+            "slot": k,
+            "label": label,
+            "volts": volts,
+            "freqs": freqs,
+        })
     out.sort(key=lambda e: (e["owner"], e["slot"]))
     return out
 

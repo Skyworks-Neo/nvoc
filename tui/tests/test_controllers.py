@@ -92,13 +92,11 @@ class FakeApp:
         log_output: bool = True,
         allow_wake: bool = True,
     ) -> None:
-        self.query_calls.append(
-            (
-                command_name,
-                callback,
-                {"log_output": log_output, "allow_wake": allow_wake},
-            )
-        )
+        self.query_calls.append((
+            command_name,
+            callback,
+            {"log_output": log_output, "allow_wake": allow_wake},
+        ))
 
     def write_log(self, text: str) -> None:
         self.logs.append(text)
@@ -169,14 +167,12 @@ class FakeNative:
         self.pstate_lock_warning: str | None = None
 
     def query_public_vftable(self, gpu, domain, infer_missing_default):
-        self.calls.append(
-            (
-                "query_public_vftable",
-                gpu,
-                domain,
-                infer_missing_default,
-            )
-        )
+        self.calls.append((
+            "query_public_vftable",
+            gpu,
+            domain,
+            infer_missing_default,
+        ))
         return [
             {
                 "index": 7,
@@ -200,45 +196,39 @@ class FakeNative:
         return getattr(self, "volt_rails_payload", None)
 
     def set_vfp_point_private(self, gpu, bank, index, delta_khz, freq_mode):
-        self.calls.append(
-            (
-                "set_vfp_point_private",
-                gpu,
-                bank,
-                index,
-                delta_khz,
-                freq_mode,
-            )
-        )
+        self.calls.append((
+            "set_vfp_point_private",
+            gpu,
+            bank,
+            index,
+            delta_khz,
+            freq_mode,
+        ))
         if self.raise_on_set_vfp_point_private is not None:
             raise self.raise_on_set_vfp_point_private
         return {"applied": True}
 
     def set_vfp_range_per_point_private(self, gpu, bank, start, end, deltas):
-        self.calls.append(
-            (
-                "set_vfp_range_per_point_private",
-                gpu,
-                bank,
-                start,
-                end,
-                list(deltas),
-            )
-        )
+        self.calls.append((
+            "set_vfp_range_per_point_private",
+            gpu,
+            bank,
+            start,
+            end,
+            list(deltas),
+        ))
         return {"applied": True}
 
     def clk_vf_delta_for_target_mhz(self, def_mhz, delta_mhz, class_name):
         # Mirrors the call semantics used by the GUI/TUI raw-converted path:
         # the 3rd argument is the desired MHz offset (not an absolute
         # target); the raw f-offset scales it 10×.
-        self.calls.append(
-            (
-                "clk_vf_delta_for_target_mhz",
-                def_mhz,
-                delta_mhz,
-                class_name,
-            )
-        )
+        self.calls.append((
+            "clk_vf_delta_for_target_mhz",
+            def_mhz,
+            delta_mhz,
+            class_name,
+        ))
         return {"delta": int(delta_mhz * 10)}
 
     def set_power_limit(self, gpu, backend, value):
@@ -254,16 +244,14 @@ class FakeNative:
         self.calls.append(("set_legacy_voltage_delta", gpu, delta_uv, pstate))
 
     def set_clk_domain_offset(self, gpu, domain_bit, offset_khz, flags, unknown):
-        self.calls.append(
-            (
-                "set_clk_domain_offset",
-                gpu,
-                domain_bit,
-                offset_khz,
-                flags,
-                unknown,
-            )
-        )
+        self.calls.append((
+            "set_clk_domain_offset",
+            gpu,
+            domain_bit,
+            offset_khz,
+            flags,
+            unknown,
+        ))
         return {"applied": True, "applied_mHz": offset_khz / 1000.0}
 
     def query_private_freq_domain_info(self, gpu):
@@ -678,13 +666,11 @@ def test_overclock_pstate_limits_mem_range_first_on_any_gpu() -> None:
     # actually fails.
     app = _oc_app(codename="GM200", arch="Maxwell")
     app.cache.settings["supported_pstates"] = ["P0", "P2"]
-    app.widgets.update(
-        {
-            "#oc-api": SimpleNamespace(value="nvapi"),
-            "#pstate-start": SimpleNamespace(value="P0"),
-            "#pstate-end": SimpleNamespace(value="P2"),
-        }
-    )
+    app.widgets.update({
+        "#oc-api": SimpleNamespace(value="nvapi"),
+        "#pstate-start": SimpleNamespace(value="P0"),
+        "#pstate-end": SimpleNamespace(value="P2"),
+    })
 
     assert OverclockController(app).handle_button("pstate-limits-apply") is True
 
@@ -699,13 +685,11 @@ def test_overclock_pstate_limits_mem_range_failure_falls_back_to_pin() -> None:
     # range's high-perf endpoint.
     app = _oc_app(codename="GF108")
     app.cache.settings["supported_pstates"] = ["P0", "P8", "P12"]
-    app.widgets.update(
-        {
-            "#oc-api": SimpleNamespace(value="nvapi"),
-            "#pstate-start": SimpleNamespace(value="P8"),
-            "#pstate-end": SimpleNamespace(value="P12"),
-        }
-    )
+    app.widgets.update({
+        "#oc-api": SimpleNamespace(value="nvapi"),
+        "#pstate-start": SimpleNamespace(value="P8"),
+        "#pstate-end": SimpleNamespace(value="P12"),
+    })
     app.native.raise_on_set_nvapi_pstate_lock = RuntimeError("Not Supported")
 
     assert OverclockController(app).handle_button("pstate-limits-apply") is True
@@ -726,13 +710,11 @@ def test_overclock_pstate_pin_sticky_after_fallback() -> None:
     # (no mem-range retry) and reset clears the pin.
     app = _oc_app(codename="GF108")
     app.cache.settings["supported_pstates"] = ["P0", "P8"]
-    app.widgets.update(
-        {
-            "#oc-api": SimpleNamespace(value="nvapi"),
-            "#pstate-start": SimpleNamespace(value="P8"),
-            "#pstate-end": SimpleNamespace(value=""),
-        }
-    )
+    app.widgets.update({
+        "#oc-api": SimpleNamespace(value="nvapi"),
+        "#pstate-start": SimpleNamespace(value="P8"),
+        "#pstate-end": SimpleNamespace(value=""),
+    })
     app.native.raise_on_set_nvapi_pstate_lock = RuntimeError("Not Supported")
     controller = OverclockController(app)
     controller.handle_button("pstate-limits-apply")
@@ -748,13 +730,11 @@ def test_overclock_pstate_fallback_cleared_on_prime() -> None:
     # A fresh settings load (also fires on GPU switch) clears the fallback.
     app = _oc_app(codename="GF108")
     app.cache.settings["supported_pstates"] = ["P0", "P8"]
-    app.widgets.update(
-        {
-            "#oc-api": SimpleNamespace(value="nvapi"),
-            "#pstate-start": SimpleNamespace(value="P8"),
-            "#pstate-end": SimpleNamespace(value=""),
-        }
-    )
+    app.widgets.update({
+        "#oc-api": SimpleNamespace(value="nvapi"),
+        "#pstate-start": SimpleNamespace(value="P8"),
+        "#pstate-end": SimpleNamespace(value=""),
+    })
     app.native.raise_on_set_nvapi_pstate_lock = RuntimeError("Not Supported")
     controller = OverclockController(app)
     controller.handle_button("pstate-limits-apply")
@@ -771,13 +751,11 @@ def test_overclock_pstate_limits_mem_range_warning_surfaced() -> None:
     # output leads with the warning.
     app = _oc_app(codename="GM200", arch="Maxwell")
     app.cache.settings["supported_pstates"] = ["P0"]
-    app.widgets.update(
-        {
-            "#oc-api": SimpleNamespace(value="nvapi"),
-            "#pstate-start": SimpleNamespace(value="P0"),
-            "#pstate-end": SimpleNamespace(value="P0"),
-        }
-    )
+    app.widgets.update({
+        "#oc-api": SimpleNamespace(value="nvapi"),
+        "#pstate-start": SimpleNamespace(value="P0"),
+        "#pstate-end": SimpleNamespace(value="P0"),
+    })
     app.native.pstate_lock_warning = (
         "P0 maps to memory lock window 3501-3601 MHz, which also overlaps "
         "NVML P-States outside the requested range: P2 — applying anyway"
@@ -1812,13 +1790,11 @@ def test_overclock_mobile_apply_skips_volt_limit_when_unavailable() -> None:
 
 
 def test_overclock_volt_limit_bounds_from_p0_walls() -> None:
-    bounds = OverclockController._volt_limit_bounds_from_p0(
-        {
-            "vbios_wall_uV": 1_085_000,
-            "vrm_max_wall_uV": 1_100_000,
-            "effective_wall_uV": 1_060_000,
-        }
-    )
+    bounds = OverclockController._volt_limit_bounds_from_p0({
+        "vbios_wall_uV": 1_085_000,
+        "vrm_max_wall_uV": 1_100_000,
+        "effective_wall_uV": 1_060_000,
+    })
     # min(VBIOS, VRM) = 1085 mV snapped down to the 2.5 mV grid; position
     # 1060 mV is already on-grid.
     assert bounds == (300.0, 1085.0, 1060.0)
@@ -1833,11 +1809,9 @@ def test_overclock_volt_limit_bounds_from_p0_walls() -> None:
 
 def test_overclock_resolve_volt_rail_bit() -> None:
     assert (
-        OverclockController._resolve_volt_rail_bit(
-            {
-                "rail_descriptors": [{"rail_bit": 2}],
-            }
-        )
+        OverclockController._resolve_volt_rail_bit({
+            "rail_descriptors": [{"rail_bit": 2}],
+        })
         == 2
     )
     assert OverclockController._resolve_volt_rail_bit({"rail_mask": "0x5"}) == 0
@@ -2164,7 +2138,9 @@ class _FakeSelect:
         self.options = list(options)
 
 
-def _overclock_controller_with_fan_selects() -> tuple[OverclockController, FakeApp, dict]:
+def _overclock_controller_with_fan_selects() -> tuple[
+    OverclockController, FakeApp, dict
+]:
     controller, app = _overclock_controller_with_fan_panes()
     widgets = {
         "#fan-id": _FakeSelect("all"),
