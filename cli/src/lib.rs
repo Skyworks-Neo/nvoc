@@ -1152,7 +1152,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                         "OFFSET",
                         "--freq (default): signed frequency offset in MHz (one decimal allowed), for example -60, +15.5 or 0 (no-op stock write); an explicit khz/kilohertz suffix keeps the legacy unit. --volt: per-domain V/F-curve voltage addend in mV (one decimal allowed), for example +25, -12.5 or 0. Plane slots are GENERATION-DEPENDENT: --freq/--volt resolve to slot 0/1 on 10~40 series and slot 2/3 on Blackwell 50 series; --slot writes the RAW dword and is never remapped. The driver may reject or clamp; the post-SET readback is returned. Pass --temporary to restore the snapshot before returning",
                     )])),
-                    ..CommandSpec::new("set-private-freq-domain-global-offset", Group::Vfp, "Write a signed offset into one clock-domain control record plane (dangerous XBar clock write; --temporary restores the snapshot; --freq/--volt = the frequency/voltage planes, auto-mapped to slot 0/1 on 10~40 series and slot 2/3 on Blackwell 50 series). Names use the record-space attribution (certified: gpc=0, xbar=1 — its record drives Sys+Xbar together, mem=2, sys=3, msd=5, disp=7, pciegen=8, host=9; hub=4, bit6 unattributed; see get-private-freq-domain-info). Cross-generation A/B: address records by bare integer")
+                    ..CommandSpec::new("set-private-freq-domain-global-offset", Group::Vfp, "Write a signed offset into one clock-domain control record plane (dangerous XBar clock write; --temporary restores the snapshot; --freq/--volt = the frequency/voltage planes, auto-mapped to slot 0/1 on 10~40 series and slot 2/3 on Blackwell 50 series). Names use the record-space attribution (certified: gpc=0, xbar=1, mem=2, sys=3, msd=5, disp=7, pciegen=8, host=9; hub=4, bit6 unattributed; see get-private-freq-domain-info). Cross-generation A/B: address records by bare integer")
                 },
             ),
             (
@@ -6496,9 +6496,11 @@ fn parse_domain(raw: &str) -> CliResult<ClockDomain> {
 /// (mask 0x3FF = bits 0..9 where populated) — verified live 2026-08/09
 /// A/B sweeps across Pascal/Turing/Ampere/Ada/Volta plus 2026-09-06
 /// cross-certification:
-/// - bit0=Gpc, bit1=Sys+Xbar (the Sys coupling is INTRINSIC to the domain
-///   tree — one record drives both), bit2=Mem, bit3=Sys (additive w/
-///   bit1), bit5=Msd (SET unsupported on Pascal — no MSD domain),
+/// - bit0=Gpc, bit1=Xbar (the Sys movement once A/B'd on it is an
+///   intrinsic property of the coupled domain tree, NOT part of the
+///   record's identity — earlier "Sys+Xbar" naming was that pre-2026-09-06
+///   legacy), bit2=Mem, bit3=Sys, bit5=Msd (SET unsupported on Pascal —
+///   no MSD domain),
 ///   bit7=Disp (slot-1 voltage-offset A/B + FreqsEnum sel7 agreement;
 ///   the earlier bit6=Disp attribution was wrong), bit8=PcieGen
 ///   (FreqsEnum bins [1,2,3] = the gen ladder behind the mem bins' ext0
@@ -6521,8 +6523,7 @@ fn clk_client_record_name(bit: u32, gpu_type: nvoc_core::GpuType) -> String {
     );
     match bit {
         0 => "Gpc".into(),
-        // one record drives Sys+Xbar together (intrinsic coupling)
-        1 => "Sys+Xbar".into(),
+        1 => "Xbar".into(),
         2 => "Mem".into(),
         3 => "Sys".into(),
         4 => "Hub".into(),
