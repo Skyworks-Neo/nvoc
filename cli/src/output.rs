@@ -101,6 +101,28 @@ pub(super) fn render_command_output(command: Command, output: &Value) -> Vec<Str
     }
 }
 
+/// Human output for `get-info`: promotes the NVAPI interface version
+/// (`NvAPI_GetInterfaceVersionString`, e.g. "R580") to a banner directly
+/// under the per-GPU "ok" marker — it marks which API generation the
+/// loaded driver exports, which gates every private/stamp-gated family —
+/// and renders the identity/capability block below it without repeating
+/// the version line.
+pub(super) fn format_gpu_info(output: &Value) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(version) = output
+        .get("nvapi_interface_version")
+        .and_then(Value::as_str)
+    {
+        lines.push(format!("NVAPI Interface Version: {version}"));
+    }
+    let mut rest = output.clone();
+    if let Some(map) = rest.as_object_mut() {
+        map.remove("nvapi_interface_version");
+    }
+    lines.extend(format_value_block(&rest, 1));
+    lines
+}
+
 pub(super) fn format_pstate_freq_range(output: &Value) -> Vec<String> {
     format_object_array(
         output,
@@ -460,11 +482,32 @@ fn push_pvfp_header(
         false,
     ));
     if !ext_slots.is_empty() {
+        // EXT-slot attribution: pstate-bin segments have LIVE-CERTIFIED
+        // per-segment semantics (2026-09-06, FreqsEnum cross-match) that
+        // override the roster — the mem bins' ext0 column carries the
+        // PCIe gen mode per pstate (P8→1, P5→2, P3/P2/P0→3), the disp
+        // bins' ext0 column matches Hub's frequency table point-for-point
+        // (display clock follows hub). vf_curve segments keep the
+        // roster-minus-owner attribution (XBAR current — Ada A/B).
+        let seg_kind = seg.and_then(|s| s.get("kind")).and_then(Value::as_str);
+        let seg_domain = seg.and_then(|s| s.get("domain")).and_then(Value::as_str);
+        let bin_ext_name: Option<&str> = match (seg_kind, seg_domain) {
+            (Some("pstate_bins"), Some("mem")) => Some("PCIe gen"),
+            (Some("pstate_bins"), Some("disp")) => Some("Hub"),
+            _ => None,
+        };
         let legend: Vec<String> = ext_slots
             .iter()
-            .map(|k| match roster.get(*k) {
-                Some(nm) => format!("ext{k}={nm}"),
-                None => format!("ext{k}=?"),
+            .map(|&k| {
+                if k == 0 {
+                    if let Some(nm) = bin_ext_name {
+                        return format!("ext{k}={nm}");
+                    }
+                }
+                match roster.get(k) {
+                    Some(nm) => format!("ext{k}={nm}"),
+                    None => format!("ext{k}=?"),
+                }
             })
             .collect();
         lines.push(nvoc_cli_common::color::stylize(
@@ -721,13 +764,22 @@ pub(super) fn format_private_vfp_output(output: &Value) -> Vec<String> {
     if !ext_stats.is_empty() {
         lines.push(nvoc_cli_common::color::stylize(
             "    Extended-section currents (slots @+0x074+0x10*k; roster \
-             [XBAR,SYS,MSD,HOST] minus main-block domains):",
+             [XBAR,SYS,MSD,HOST] minus main-block domains;
+             mem/disp bin owners: ext0 = PCIe gen / Hub):",
             false,
         ));
         for ((owner, k), (n, fmin, fmax, vmin, vmax)) in &ext_stats {
-            let tag = match roster.get(*k) {
-                Some(nm) => format!("ext{k} ({nm})"),
-                None => format!("ext{k}"),
+            // slot-0 columns of pstate-bin owners carry per-segment
+            // quantities (mem = the PCIe gen ladder per pstate, disp = the
+            // Hub domain's frequencies — FreqsEnum cross-match); only
+            // vf_curve owners route through the roster.
+            let tag = if *k == 0 && matches!(owner.as_str(), "mem" | "disp") {
+                format!("ext0 ({})", if owner == "mem" { "PCIe gen" } else { "Hub" })
+            } else {
+                match roster.get(*k) {
+                    Some(nm) => format!("ext{k} ({nm})"),
+                    None => format!("ext{k}"),
+                }
             };
             lines.push(nvoc_cli_common::color::stylize(
                 &format!(
@@ -1171,6 +1223,71 @@ fn format_value_block_with_context(value: &Value, indent: usize, context: &str) 
                         ));
                         lines.extend(format_sensors_array(indent + 1, items));
                     }
+                    // `freq_ranges` (get-private-freq-domain-status) — the
+                    // FreqsEnum legal-frequency enumeration per domain:
+                    // kind=freq_range renders as
+                    //   {domain}: Freq Range {min} - {max} MHz / Step {step} MHz
+                    // (non-uniform grids omit Step), kind=pstate_bins as
+                    //   {domain}: Freq Bins [a, b, c] MHz
+                    Value::Array(items) if key == "freq_ranges" => {
+                        lines.push(format!(
+                            "{}{}",
+                            indent_spaces(indent),
+                            nvoc_cli_common::color::stylize_title("Freq Ranges")
+                        ));
+                        for item in items {
+                            let domain = item.get("domain").and_then(Value::as_str).unwrap_or("?");
+                            let sel = item.get("selector").and_then(Value::as_u64).unwrap_or(0);
+                            match item.get("kind").and_then(Value::as_str) {
+                                Some("freq_range") => {
+                                    let min =
+                                        item.get("min_mhz").and_then(Value::as_u64).unwrap_or(0);
+                                    let max =
+                                        item.get("max_mhz").and_then(Value::as_u64).unwrap_or(0);
+                                    let pts =
+                                        item.get("points").and_then(Value::as_u64).unwrap_or(0);
+                                    let step = item.get("step_mhz").and_then(Value::as_u64);
+                                    let step_part = step
+                                        .map(|s| format!(" / Step {s} MHz"))
+                                        .unwrap_or_else(|| " / non-uniform grid".to_string());
+                                    lines.push(format!(
+                                        "{}{}(sel {sel}): Freq Range {min} - {max} MHz{step_part}  [{pts} pts]",
+                                        indent_spaces(indent + 1),
+                                        nvoc_cli_common::color::stylize(domain, false),
+                                    ));
+                                }
+                                Some("pstate_bins") => {
+                                    let pts = item
+                                        .get("points_mhz")
+                                        .and_then(Value::as_array)
+                                        .map(|a| {
+                                            a.iter()
+                                                .filter_map(Value::as_u64)
+                                                .map(|v| v.to_string())
+                                                .collect::<Vec<_>>()
+                                                .join(", ")
+                                        })
+                                        .unwrap_or_default();
+                                    // PcieGen's "bins" are the gen ladder
+                                    // [1,2,3], not MHz
+                                    if domain == "PcieGen" {
+                                        lines.push(format!(
+                                            "{}{}(sel {sel}): PCIe Gen Bins [{pts}]",
+                                            indent_spaces(indent + 1),
+                                            nvoc_cli_common::color::stylize(domain, false),
+                                        ));
+                                    } else {
+                                        lines.push(format!(
+                                            "{}{}(sel {sel}): Freq Bins [{pts}] MHz",
+                                            indent_spaces(indent + 1),
+                                            nvoc_cli_common::color::stylize(domain, false),
+                                        ));
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
                     Value::Object(child) if object_is_compact_scalar_group(child) => {
                         lines.push(format_scalar_object_line(
                             indent,
@@ -1212,6 +1329,64 @@ fn format_value_block_with_context(value: &Value, indent: usize, context: &str) 
                                 None => "P0 Voltage Limit".to_string(),
                             };
                             lines.extend(format_p0_voltage_block(indent, &title, object));
+                        }
+                    }
+                    // `vrm_devices` (get-volt-rail-info): melonVolt
+                    // voltage-domain windows (VoltVoltDevicesGetInfo
+                    // 0xA38ACF9D) — one titled block per device with the
+                    // packed id / controllable range / step, same style as
+                    // the P0 block. Omitted entirely when the enumerator
+                    // refused (the JSON key carries null then).
+                    Value::Null if key == "vrm_devices" => {}
+                    Value::Array(items) if key == "vrm_devices" => {
+                        for item in items {
+                            let Some(object) = item.as_object() else {
+                                continue;
+                            };
+                            let n = object.get("device").and_then(Value::as_u64).unwrap_or(0);
+                            lines.push(format!(
+                                "{}{}",
+                                indent_spaces(indent),
+                                nvoc_cli_common::color::stylize_title(&format!("VRM Device {n}"))
+                            ));
+                            let id = object.get("id").and_then(Value::as_str).unwrap_or("?");
+                            lines.push(format!(
+                                "{}{}: {}",
+                                indent_spaces(indent + 1),
+                                nvoc_cli_common::color::stylize_title("Id"),
+                                nvoc_cli_common::color::stylize(id, false),
+                            ));
+                            let (min, max) = object
+                                .get("range_mV")
+                                .and_then(Value::as_array)
+                                .and_then(|r| Some((r.first()?.as_u64()?, r.get(1)?.as_u64()?)))
+                                .unwrap_or((0, 0));
+                            let default = object
+                                .get("default_mV")
+                                .and_then(Value::as_u64)
+                                .unwrap_or(0);
+                            lines.push(format!(
+                                "{}{}: {}",
+                                indent_spaces(indent + 1),
+                                nvoc_cli_common::color::stylize_title("Range"),
+                                nvoc_cli_common::color::stylize(
+                                    &format!("{min} - {max} mV ({default} mV default)"),
+                                    false,
+                                ),
+                            ));
+                            let step = match object.get("step_mV").and_then(Value::as_f64) {
+                                Some(s) if (s - s.round()).abs() < 1e-9 => {
+                                    format!("{} mV", s as u64)
+                                }
+                                Some(s) => format!("{s} mV"),
+                                None => "N/A".to_string(),
+                            };
+                            lines.push(format!(
+                                "{}{}: {}",
+                                indent_spaces(indent + 1),
+                                nvoc_cli_common::color::stylize_title("Step"),
+                                nvoc_cli_common::color::stylize(&step, false),
+                            ));
                         }
                     }
                     // `all_clocks_detailed` (get-status): GetAllClocks V2
@@ -1292,11 +1467,18 @@ fn join_context(parent: &str, key: &str) -> String {
 }
 
 fn sorted_object_entries(object: &serde_json::Map<String, Value>) -> Vec<(&String, &Value)> {
-    let mut entries = object.iter().collect::<Vec<_>>();
+    // Keys pinned to the front regardless of the alphabetical pass below:
+    // "vrm_devices" (get-volt-rail-info) is the per-domain summary — the
+    // window each rail clamps into — and reads before the VoltRails walls.
+    const PINNED_FIRST: [&str; 1] = ["vrm_devices"];
+    let (mut pinned, mut entries): (Vec<_>, Vec<_>) = object
+        .iter()
+        .partition(|(key, _)| PINNED_FIRST.contains(&key.as_str()));
     // Numeric keys (clock domains, pstate numbers) sort numerically.
     if entries.iter().all(|(key, _)| key.parse::<i64>().is_ok()) {
         entries.sort_by_key(|(key, _)| key.parse::<i64>().unwrap_or_default());
-        return entries;
+        pinned.append(&mut entries);
+        return pinned;
     }
     // C-style enum keys serialized by serde as variant names (e.g. "P0", "P8",
     // "P12" from NV_GPU_PERF_PSTATE_ID). Without this the BTreeMap's numeric
@@ -1308,9 +1490,11 @@ fn sorted_object_entries(object: &serde_json::Map<String, Value>) -> Vec<(&Strin
         .all(|(key, _)| key.len() > 1 && key.starts_with('P') && key[1..].parse::<u32>().is_ok())
     {
         entries.sort_by_key(|(key, _)| key[1..].parse::<u32>().unwrap_or_default());
-        return entries;
+        pinned.append(&mut entries);
+        return pinned;
     }
-    entries
+    pinned.append(&mut entries);
+    pinned
 }
 
 #[cfg(test)]
@@ -2795,6 +2979,37 @@ mod tests {
         )
         .join("\n");
         assert!(rendered_none.contains("Performance Decrease: None"));
+    }
+
+    #[test]
+    fn human_output_promotes_nvapi_interface_version_under_ok() {
+        nvoc_cli_common::color::init(true);
+        let output = json!({
+            "name": "NVIDIA GeForce RTX 5060 Laptop GPU",
+            "nvapi_interface_version": "R580",
+            "bios_version": "90.16.34.00.60",
+        });
+
+        let lines = render_command_output(Command::GetInfo, &output);
+
+        // Banner lands first, i.e. directly under the "ok" marker.
+        assert_eq!(
+            lines.first().map(String::as_str),
+            Some("NVAPI Interface Version: R580")
+        );
+        // Rendered exactly once — not repeated inside the identity block.
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.contains("Interface Version"))
+                .count(),
+            1
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("Bios Version: 90.16.34.00.60"))
+        );
     }
 
     #[test]

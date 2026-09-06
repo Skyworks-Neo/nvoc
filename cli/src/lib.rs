@@ -8,15 +8,16 @@ use nvoc_core::{
     GpuTarget, Kilohertz, KilohertzDelta, MicrovoltsDelta, NvapiPerfFreqCap, OemOcScanner,
     OemOcScannerAction, PState, Percentage, PmgrArbiterProbe, QueryApiRestriction, QueryAutoBoost,
     QueryClockOffset, QueryDisplays, QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo,
-    QueryGpuSettings, QueryGpuStatus, QueryLegacyCoreOvervoltRanges, QueryNvapiClkDomainFreqDetail,
-    QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomains, QueryNvapiClkVfControl,
-    QueryNvapiClkVfPoints, QueryNvapiCoolerInfo, QueryNvapiCoreVoltageControl, QueryNvapiDNotifier,
-    QueryNvapiFanPolicyInfo, QueryNvapiOcScannerIncomplete, QueryNvapiPStateLevels,
-    QueryNvapiPStateLockStatus, QueryNvapiPmgrVoltageArbiter, QueryNvapiPowerCeiling,
-    QueryNvapiPstates20Private, QueryNvapiRatedTdp, QueryNvapiTargetTempPolicies,
-    QueryNvapiTargetTempPolicyIndex, QueryNvapiTgpWattRange, QueryNvapiThermalSettings,
-    QueryNvapiThermalSim, QueryNvapiVoltRails, QueryPowerLimits, QueryPstateBaseVoltage,
-    QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
+    QueryGpuSettings, QueryGpuStatus, QueryLegacyCoreOvervoltRanges, QueryNvapiBarInfo,
+    QueryNvapiClkDomainFreqDetail, QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomainFreqsEnum,
+    QueryNvapiClkDomains, QueryNvapiClkVfControl, QueryNvapiClkVfPoints, QueryNvapiCoolerInfo,
+    QueryNvapiCoreVoltageControl, QueryNvapiDNotifier, QueryNvapiFanPolicyInfo,
+    QueryNvapiOcScannerIncomplete, QueryNvapiPStateLevels, QueryNvapiPStateLockStatus,
+    QueryNvapiPmgrVoltageArbiter, QueryNvapiPowerCeiling, QueryNvapiPstates20Private,
+    QueryNvapiRatedTdp, QueryNvapiTargetTempPolicies, QueryNvapiTargetTempPolicyIndex,
+    QueryNvapiTgpWattRange, QueryNvapiThermalSettings, QueryNvapiThermalSim, QueryNvapiVoltDevices,
+    QueryNvapiVoltRails, QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates,
+    QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
     QueryThrottleReasons, QueryVbiosImage, QueryVbiosSecurityInfo, QueryVbiosStatusString,
     QueryVbiosVersion, QueryViolationStatus, QueryVoltageBoost, ResetAutoboostStatus,
     ResetCoolerLevels, ResetFanCurve, ResetFanSpeed, ResetForcePstate, ResetFreqLock,
@@ -536,7 +537,13 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     ..CommandSpec::new("get-gpu-list", Group::Info, "List discovered GPUs and available backends")
                 },
             ),
-            (Command::GetInfo, CommandSpec::new("get-info", Group::Info, "Read NVAPI GPU identity and capability information")),
+            (
+                Command::GetInfo,
+                CommandSpec {
+                    formatter: Some(output::format_gpu_info),
+                    ..CommandSpec::new("get-info", Group::Info, "Read NVAPI GPU identity and capability information")
+                },
+            ),
             (Command::GetFanPolicyInfo, CommandSpec::new("get-legacy-fan-policy", Group::Fan, "Read fan-policy capabilities (ClientFanPoliciesGetInfo NDA 0x52B76D12: V2 raw block on modern drivers; legacy V1 decoded on R391-era — policy list + active marker + flag bits, no curve points)")),
             (
                 Command::GetLegacyGpcRailOvervoltLimit,
@@ -583,9 +590,9 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     positionals: Box::leak(Box::new([PositionalArg::free(
                     "arg_domain",
                     "DOMAIN",
-                    "Clock domain: xbar (1), gpc/core (0), sys (2), or mclk/mem (4); omit to measure every controllable domain",
+                    "Clock domain: gpc/core (0), xbar (1), sys (2), hub (3), mem/mclk (4), host (5), or disp (6); omit to measure every controllable domain",
                 )])),
-                    ..CommandSpec::new("get-private-freq-domain-status", Group::Vfp, "Measure one clock domain's physical clock via two-sample MEASURE_FREQ (XBar=1, GPC=0, SYS=2, MCLK=4)")
+                    ..CommandSpec::new("get-private-freq-domain-status", Group::Vfp, "Measure one clock domain's physical clock via two-sample MEASURE_FREQ — MEASURE-bit universe, RTSS order: GPC=0, XBar=1, Sys=2, Hub=3, M=4, Host=5, Disp=6 (NOT the FreqsEnum/record space: its disp is 7; the batch output's Freq Ranges section lists the enum space)")
                 },
             ),
             (
@@ -703,7 +710,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     ..CommandSpec::new("get-vbios", Group::Info, "WINDOWS-ONLY. Read the VBIOS via NvAPI_GPU_GetVbiosImage (0xFC13EE11, escape 0x0700004F): prints version/size/BIT summary; --out <file> writes the raw image (e.g. vbios.rom); --dump prints the full BIT token table + Fermi-model raw blocks")
                 },
             ),
-            (Command::GetVoltRailInfo, CommandSpec::new("get-volt-rail-info", Group::Voltage, "Read private VoltRails family: rail mask + per-rail offsets + live voltages (melonVolt path)")),
+            (Command::GetVoltRailInfo, CommandSpec::new("get-volt-rail-info", Group::Voltage, "Read private VoltRails family: rail mask + per-rail offsets + live voltages (melonVolt path) + VRM device voltage windows (0xA38ACF9D)")),
             (
                 Command::List,
                 CommandSpec {
@@ -1145,7 +1152,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                         "OFFSET",
                         "--freq (default): signed frequency offset in MHz (one decimal allowed), for example -60, +15.5 or 0 (no-op stock write); an explicit khz/kilohertz suffix keeps the legacy unit. --volt: per-domain V/F-curve voltage addend in mV (one decimal allowed), for example +25, -12.5 or 0. Plane slots are GENERATION-DEPENDENT: --freq/--volt resolve to slot 0/1 on 10~40 series and slot 2/3 on Blackwell 50 series; --slot writes the RAW dword and is never remapped. The driver may reject or clamp; the post-SET readback is returned. Pass --temporary to restore the snapshot before returning",
                     )])),
-                    ..CommandSpec::new("set-private-freq-domain-global-offset", Group::Vfp, "Write a signed offset into one clock-domain control record plane (dangerous XBar clock write; --temporary restores the snapshot; --freq/--volt = the frequency/voltage planes, auto-mapped to slot 0/1 on 10~40 series and slot 2/3 on Blackwell 50 series). Names are the ADVISORY RTSS table — the record's physical target does NOT follow it and is per-generation (Ada live A/B: bit0=GPC, bit1=SYS+XBAR, bit2=Mem, bit3=SYS, bit5=MSD, bit9=Host; see get-private-freq-domain-info). Cross-generation A/B: address records by bare integer")
+                    ..CommandSpec::new("set-private-freq-domain-global-offset", Group::Vfp, "Write a signed offset into one clock-domain control record plane (dangerous XBar clock write; --temporary restores the snapshot; --freq/--volt = the frequency/voltage planes, auto-mapped to slot 0/1 on 10~40 series and slot 2/3 on Blackwell 50 series). Names use the record-space attribution (certified: gpc=0, xbar=1 — its record drives Sys+Xbar together, mem=2, sys=3, msd=5, disp=7, pciegen=8, host=9; hub=4, bit6 unattributed; see get-private-freq-domain-info). Cross-generation A/B: address records by bare integer")
                 },
             ),
             (
@@ -2648,6 +2655,16 @@ fn execute_target(
         }
         Command::GetInfo => {
             let mut value = serde_json::to_value(run(target, QueryGpuInfo)?.output)?;
+            // Augment with the NVAPI interface version string
+            // (`NvAPI_GetInterfaceVersionString`, e.g. "R580") — the
+            // driver's API-generation marker that gates which private
+            // families the driver honors. Process-global, not per-GPU;
+            // omitted when NVAPI is unavailable.
+            if let Ok(version) = nvoc_core::nvapi_interface_version()
+                && let Some(map) = value.as_object_mut()
+            {
+                map.insert("nvapi_interface_version".to_string(), json!(version));
+            }
             // Augment with the max PCIe link generation from NVML
             // (`nvmlDeviceGetMaxPcieLinkGeneration`) — the platform/slot cap.
             // NVAPI's GpuInfo doesn't carry PCIe gen. Omitted when unsupported.
@@ -2658,6 +2675,25 @@ fn execute_target(
                 if let Some(max) = max {
                     map.insert("max_pcie_link_gen".to_string(), json!(max));
                 }
+            }
+            // PCI BAR topology (GetBarInfo 0xE4B701E3) — best-effort
+            // enrichment; a refusal only omits the section (alphabetical
+            // rendering places it right above "memory").
+            if let Ok(Some(bars)) = run(target, QueryNvapiBarInfo).map(|r| r.output)
+                && let Some(map) = value.as_object_mut()
+            {
+                map.insert(
+                    "bar_info".to_string(),
+                    json!(
+                        bars.iter()
+                            .map(|b| json!({
+                                "bar": b.index,
+                                "size_mib": b.size_mib,
+                                "base": format!("0x{:016x}", b.base),
+                            }))
+                            .collect::<Vec<_>>()
+                    ),
+                );
             }
             Ok(value)
         }
@@ -3686,9 +3722,26 @@ fn execute_target(
         }
         Command::GetVoltRailInfo => {
             let rails = run(target, QueryNvapiVoltRails)?.output;
+            // Best-effort enrichment: the melonVolt voltage-domain enumerator
+            // (0xA38ACF9D) reports each domain's min/step/max/default µV
+            // window. A refusal here only omits the section — never fails the
+            // command (the VoltRails read above is the primary surface).
+            let vrm_devices = run(target, QueryNvapiVoltDevices)
+                .ok()
+                .and_then(|r| r.output);
             Ok(match rails {
                 Some(r) => {
                     json!({
+                        "vrm_devices": vrm_devices.map(|devices| {
+                            devices.iter().enumerate().map(|(i, d)| json!({
+                                "device": i + 1,
+                                "id": format!("0x{:08x}", d.id),
+                                "range_mV": [d.min_uV / 1000, d.max_uV / 1000],
+                                "default_mV": d.default_uV / 1000,
+                                "step_mV": d.step_uV as f64 / 1000.0,
+                                "rail_index": d.rail_index,
+                            })).collect::<Vec<_>>()
+                        }),
                         "rail_mask": format!("0x{:08X}", r.rail_mask),
                         "p0_rails": volt_rails_p0_rails_json(&r),
                         "rail_descriptors": r.rail_descriptors.iter().map(|d| json!({
@@ -3803,8 +3856,9 @@ fn execute_target(
         }
         Command::GetPrivateFreqDomainInfo => {
             let ctrl = run(target, QueryNvapiClkDomains)?.output;
-            // Write-map labels are empirical per A/B'd generation;
-            // everything else shows the advisory RTSS name.
+            // Labels come from the record-space attribution table
+            // (clk_client_record_name) — plain certified names, no RTSS
+            // cross-references.
             let gpu_type = run(target, QueryGpuInfo)
                 .ok()
                 .and_then(|r| fetch_gpu_type(&r.output).ok())
@@ -4245,6 +4299,48 @@ fn execute_target(
                 },
             )?
             .output;
+            // Legal-frequency enumeration (FreqsEnum 0x40BDDDB36, MHz):
+            // ≤7 points = the domain's pstate-bin table; ≥8 points = the
+            // full legal range on the domain's minimum granularity (tracks
+            // applied OC). PROBED, never hardcoded: the handler's static
+            // selector bound is 32 (`cmp sel,0x1f`); this part serves 0..9
+            // (= the ClkDomains CONTROL mask 0x3FF) and rejects the rest —
+            // other generations may differ, so sweep the full 5-bit space
+            // and keep whatever answers.
+            let freq_ranges: Vec<Value> = (0u8..=31)
+                .filter_map(|sel| {
+                    match run(target, QueryNvapiClkDomainFreqsEnum { selector: sel }) {
+                        Ok(report) => {
+                            let fe = report.output?;
+                            let pts = &fe.freqs_mhz;
+                            let domain = freqs_enum_selector_name(sel);
+                            if pts.len() >= 8 {
+                                // uniform-step range: report min/max/step; a
+                                // non-uniform grid degrades to the full table
+                                let step = pts[1].saturating_sub(pts[0]);
+                                let uniform = pts.windows(2).all(|w| w[1] - w[0] == step);
+                                Some(json!({
+                                    "selector": sel,
+                                    "domain": domain,
+                                    "kind": "freq_range",
+                                    "min_mhz": pts.first(),
+                                    "max_mhz": pts.last(),
+                                    "step_mhz": if uniform { Some(step) } else { None },
+                                    "points": pts.len(),
+                                }))
+                            } else {
+                                Some(json!({
+                                    "selector": sel,
+                                    "domain": domain,
+                                    "kind": "pstate_bins",
+                                    "points_mhz": pts,
+                                }))
+                            }
+                        }
+                        _ => None,
+                    }
+                })
+                .collect();
             Ok(match freqs {
                 Some(fs) => {
                     // readability census: requested domains that don't come
@@ -4263,9 +4359,10 @@ fn execute_target(
                             "freq_mhz": (f.freq_mhz * 1000.0).round() / 1000.0,
                         })).collect::<Vec<_>>(),
                         "skipped_unreadable": skipped,
+                        "freq_ranges": freq_ranges,
                     })
                 }
-                None => json!({"supported": false}),
+                None => json!({"supported": false, "freq_ranges": freq_ranges}),
             })
         }
         Command::SetPrivateVftablePointOffset => {
@@ -6394,54 +6491,27 @@ fn parse_domain(raw: &str) -> CliResult<ClockDomain> {
 /// MEASURE_FREQ — XBAR (1) is not representable in the public enum. Accepts
 /// names (xbar/gpc/sys/mclk) or a bare integer bit.
 /// Display name for a private ClockClient CONTROL-RECORD bit (the
-/// get-private-freq-domain-info listing / the SET write map). Same bit
-/// numbering as MEASURE_FREQ, but the WRITE record's physical attribution
-/// does NOT follow the RTSS label table.
+/// get-private-freq-domain-info listing / the SET write map). The record
+/// bit indexes the SAME domain-object space as the FreqsEnum selectors
+/// (mask 0x3FF = bits 0..9 where populated) — verified live 2026-08/09
+/// A/B sweeps across Pascal/Turing/Ampere/Ada/Volta plus 2026-09-06
+/// cross-certification:
+/// - bit0=Gpc, bit1=Sys+Xbar (the Sys coupling is INTRINSIC to the domain
+///   tree — one record drives both), bit2=Mem, bit3=Sys (additive w/
+///   bit1), bit5=Msd (SET unsupported on Pascal — no MSD domain),
+///   bit7=Disp (slot-1 voltage-offset A/B + FreqsEnum sel7 agreement;
+///   the earlier bit6=Disp attribution was wrong), bit8=PcieGen
+///   (FreqsEnum bins [1,2,3] = the gen ladder behind the mem bins' ext0
+///   column), bit9=Host (FreqsEnum 30..1380 = MEASURE Host reading).
+/// - bit4=Hub (user-certified 2026-09-06; the old write-A/B saw no
+///   GetAllClocks reaction because Hub is off that observation face).
+///   bit6 is the sole unattributed record. Plain names only — no RTSS
+///   cross-references (that table belongs to the MEASURE universe).
 ///
-/// Empirical slot-0 write maps (live A/B, 2026-08-31, bits 0..=7 on
-/// Pascal/Turing/Ampere, 0..=9 on Ada):
-/// - bit0=Gpc, bit2=Mem, bit3=Sys, bit4/7=no observable GetAllClocks
-///   reaction, bit6=Disp (type-0x02) — IDENTICAL across Pascal/Turing/
-///   Ampere/Ada. bit9=Host (Ada only bit tested so far).
-/// - Three generation-dependent axes:
-///   * Xbar↔Sys coupling via bit1 (Ampere+Ada: bit1 moves Sys+Xbar
-///     together, additive with bit3 on Sys; GTX16/Turing20+Pascal:
-///     bit1 is pure Xbar, no coupling).
-///   * MSD domain presence (Pascal has none → bit5 SET unsupported;
-///     GTX16/Turing/Ampere/Ada: bit5=Msd).
-///   * Record-universe size — NOT monotonic by generation: Pascal10/
-///     RTX20/Ampere30 = 8 records (0xFF; bits 8/9 absent), but GTX16 =
-///     10 records (0x3FF accepted, MSD + bits 8/9 present, 2026-08-31
-///     live), same as Ada's 10. 50 series untested.
-///
-/// Write-record attribution for a private ClockClient CONTROL bit (the
-/// get-private-freq-domain-info listing / the SET write map). Fully
-/// verified 2026-08/09 across every generation with a live ClkDomains
-/// surface — Pascal/Turing/Ampere/Ada (2026-08-31 A/B sweep) and Volta
-/// (2026-09-01, live V100: XBAR-SYS UNCOUPLED, matching Pascal; same
-/// 10-record universe 0x3FF and per-bit type sequence 4/5/4/5/5/5/2/4/2/2
-/// as Pascal). Universal attributions: bit0=Gpc, bit2=Mem, bit3=Sys,
-/// bit6=Disp. Generation axes: bit1 couples Sys→Xbar on Ampere+ only;
-/// MSD (bit5) SET unsupported on Pascal only.
 fn clk_client_record_name(bit: u32, gpu_type: nvoc_core::GpuType) -> String {
     use nvoc_core::GpuType;
-    // (xbar_sys_coupled, has_msd)
-    let coupled = matches!(
-        gpu_type,
-        GpuType::Mobile30Series
-            | GpuType::Desktop30Series
-            | GpuType::WorkstationAmpere
-            | GpuType::ServerAmpere
-            | GpuType::Mobile40Series
-            | GpuType::Desktop40Series
-            | GpuType::WorkstationLovelace
-            | GpuType::ServerLovelace
-            | GpuType::Mobile50Series
-            | GpuType::Desktop50Series
-            | GpuType::WorkstationBlackwell
-            | GpuType::ServerBlackwell
-            | GpuType::ServerHopper
-    );
+    // Pascal has no MSD domain (bit5 SET unsupported) — the one
+    // generation-dependent capability in this space.
     let msd = !matches!(
         gpu_type,
         GpuType::Mobile10Series
@@ -6451,25 +6521,28 @@ fn clk_client_record_name(bit: u32, gpu_type: nvoc_core::GpuType) -> String {
     );
     match bit {
         0 => "Gpc".into(),
-        1 if coupled => "Sys+Xbar, Sys additive w/ bit3 (RTSS: Xbar)".into(),
-        1 => "Xbar (pure — no Sys coupling this gen)".into(),
-        2 => "Mem (RTSS: Sys)".into(),
-        3 if coupled => "Sys, additive w/ bit1 (RTSS: Hub)".into(),
+        // one record drives Sys+Xbar together (intrinsic coupling)
+        1 => "Sys+Xbar".into(),
+        2 => "Mem".into(),
         3 => "Sys".into(),
-        4 => "Unattributed (RTSS: M)".into(),
-        5 if msd => "Msd (RTSS: Host)".into(),
-        5 => "SET not supported — no MSD domain this gen (RTSS: Host)".into(),
-        6 => "Disp".into(),
-        7 => "Unattributed (RTSS: Hotclk)".into(),
-        8 => "Unattributed (RTSS: Pclk0)".into(),
-        9 => "Host (RTSS: Pclk1)".into(),
-        _ => parse_clk_domain_name(bit),
+        4 => "Hub".into(),
+        5 if msd => "Msd".into(),
+        5 => "SET not supported — no MSD domain this gen".into(),
+        6 => "Unattributed".into(),
+        7 => "Disp".into(),
+        8 => "PcieGen".into(),
+        9 => "Host".into(),
+        _ => format!("bit {bit}"),
     }
 }
 
 /// Canonical domain name for a raw domain bit (reverse of
 /// [`parse_clk_domain`]'s alias table; "bit N" when unmapped).
 fn parse_clk_domain_name(bit: u32) -> String {
+    // MEASURE-bit universe labels (RTSS order — live: bit2 measures the
+    // SYS clock, bit3 HUB, bit5 HOST). For FreqsEnum selector labels use
+    // [`freqs_enum_selector_name`]; for WRITE-record bits use
+    // clk_client_record_name. Bits without live attribution print raw.
     match bit {
         0 => "Gpc".into(),
         1 => "Xbar".into(),
@@ -6481,35 +6554,16 @@ fn parse_clk_domain_name(bit: u32) -> String {
         7 => "Hotclk".into(),
         8 => "Pclk0".into(),
         9 => "Pclk1".into(),
-        10 => "Bypclk".into(),
-        11 => "Xclk".into(),
-        12 => "Vpv".into(),
-        13 => "Vps".into(),
-        14 => "Gpucacheclk".into(),
-        15 => "Gpc2".into(),
-        16 => "Xbar2".into(),
-        17 => "Sys2".into(),
-        18 => "Hub2".into(),
-        19 => "Leg".into(),
-        20 => "Pwr".into(),
-        21 => "Msd".into(),
-        22 => "Utils".into(),
-        23 => "ColdNv".into(),
-        24 => "ColdHotclk".into(),
-        25 => "Ltc2".into(),
-        28 => "Host1x".into(),
         _ => format!("bit {bit}"),
     }
 }
 
 fn parse_clk_domain(raw: &str) -> CliResult<u32> {
-    // NOTE: this bit→name table is imported wholesale from the RTSS
-    // NV_GPU_CLOCK_DOMAIN_ID (GetAllClocks V2 public space). The private
-    // ClockClient ClkDomains family is indexed by ITS OWN record bits and
-    // the equivalence "bit == RTSS domain id" does NOT fully hold —
-    // live-verified counterexample: the bit-5 WRITE record drives MSD, not
-    // Host (see parse_clk_domain_write / clk_client_record_name). MEASURE
-    // _FREQ per-bit readings are the ground truth for what a bit measures.
+    // NOTE: this is the MEASURE/ENUMERATE name→bit resolver, cross-certified
+    // 2026-09-06 against ClockClkDomainFreqsEnum frequency-point tables (see
+    // parse_clk_domain_table): 0=Gpc 1=Xbar 2=M 3=Sys 4=Hub 5=Msd 7=Disp
+    // (6 is NOT Disp). The WRITE-record path uses the separately-verified
+    // [parse_clk_domain_write] map — do not merge the two tables.
     let trimmed = raw.trim();
     parse_clk_domain_table(trimmed)
 }
@@ -6543,8 +6597,10 @@ fn parse_clk_domain(raw: &str) -> CliResult<u32> {
 /// Pascal/Turing/Ampere/Ada + Volta, see clk_client_record_name):
 /// bit0=Gpc, bit1=Xbar (pure on Pascal/Volta; Ampere+ couples Sys into
 /// bit1), bit2=Mem, bit3=Sys, bit5=Msd (SET unsupported on Pascal),
-/// bit6=Disp, bit9=Host. Bits 4/7/8 are unattributed (no observable
-/// reaction) — raw bit only. Deliberately NOT the shared RTSS name table
+/// bit7=Disp (slot-1 voltage-offset A/B 2026-09-06; the earlier
+/// bit6=Disp attribution was wrong — bit6 is unattributed), bit8=PcieGen
+/// (FreqsEnum bins [1,2,3]), bit9=Host. Bits 4/6 are unattributed —
+/// raw bit only. Deliberately NOT the MEASURE name table
 /// ([parse_clk_domain_table]): that is the MEASURE-domain universe, a
 /// different table — its "sys"→2/"mem"→4/"host"→5 would route WRITE
 /// records to the wrong domains entirely (live-caused misroutes on the
@@ -6557,12 +6613,17 @@ fn parse_clk_domain_write(raw: &str) -> CliResult<u32> {
         "mem" | "memory" | "vram" | "mclk" => Ok(2),
         "sys" => Ok(3),
         "msd" => Ok(5),
-        "disp" | "display" => Ok(6),
+        // DISP record bit is 7 (NOT RTSS 6): live-certified by driving a
+        // slot-1 voltage offset into the bit-7 record and observing the
+        // display clock respond; FreqsEnum (0x40BDDDB36) independently
+        // serves Disp at selector 7 and rejects 6 — the two universes
+        // AGREE on disp here.
+        "disp" | "display" => Ok(7),
         "host" => Ok(9),
         _ => trimmed.parse::<u32>().map_err(|_| {
             CliError::new(format!(
                 "invalid write domain {trimmed:?}: verified WRITE map is gpc=0, xbar=1, \
-                 mem=2, sys=3, msd=5, disp=6, host=9 — or a raw record bit (0-31)"
+                 mem=2, sys=3, msd=5, disp=7, host=9 — or a raw record bit (0-31)"
             ))
         }),
     }
@@ -6782,6 +6843,14 @@ fn attach_record_slot_map(
 /// The shared RTSS-derived name→bit table used by parse_clk_domain and
 /// parse_clk_domain_write.
 fn parse_clk_domain_table(trimmed: &str) -> CliResult<u32> {
+    // MEASURE_FREQ bit universe (get-private-freq-domain-status DOMAIN arg).
+    // Live ground truth (TU116/462.96 batch measure): bit0 reads the GPC
+    // clock, bit1 XBAR-class, bit2 the SYS clock (1980), bit3 the HUB clock
+    // (810), bit5 the HOST clock (1380) — the RTSS ORDER holds for MEASURE
+    // on this generation. This is NOT the FreqsEnum selector space (whose
+    // certified map is 0=Gpc 1=Xbar 2=M 3=Sys 4=Hub 5=Msd 7=Disp — see
+    // [`freqs_enum_selector_name`]) and NOT the WRITE-record bit space
+    // ([parse_clk_domain_write]). Three universes, three tables.
     match trimmed.to_ascii_lowercase().as_str() {
         "gpc" | "core" | "gpu" | "graphics" | "nv" => Ok(0),
         "xbar" | "xbarclk" => Ok(1),
@@ -6815,6 +6884,34 @@ fn parse_clk_domain_table(trimmed: &str) -> CliResult<u32> {
                 "invalid clock domain {trimmed:?}: use a domain name (gpc/xbar/sys/hub/mclk/host/disp/... ) or a raw domain bit (0-31)"
             ))
         }),
+    }
+}
+
+/// FreqsEnum (0x40BDDDB36) selector → domain label — its OWN universe,
+/// cross-certified 2026-09-06 against the returned frequency-point tables
+/// on TU116/462.96: 0=Gpc (141 pts 30..2130 step15), 1=Xbar (135 pts),
+/// 2=M (mem pstates [405,810,5001,5751,6001]), 3=Sys (142 pts), 4=Hub
+/// ([147,324,405,540,648,810] — ALSO the ext0 column of the disp
+/// pstate-bin segment, point-for-point), 5=Msd (131 pts), 6=unsupported
+/// (-104, NOT Disp), 7=Disp ([810,945,1080,1330] — the disp bins' F_cur
+/// set). Selectors ≥8 unattributed — never label them.
+fn freqs_enum_selector_name(sel: u8) -> &'static str {
+    // Selector space = the ClkDomains CONTROL record bits (0..9 serve on
+    // TU116/462.96 = mask 0x3FF; handler static bound 32). 8's bins are
+    // the PCIe gen ladder [1,2,3] (the mem bins' ext0 column); 9's range
+    // max 1380 matches the MEASURE Host reading exactly; 4=Hub is
+    // user-certified on the record side too (2026-09-06).
+    match sel {
+        0 => "Gpc",
+        1 => "Xbar",
+        2 => "M",
+        3 => "Sys",
+        4 => "Hub",
+        5 => "Msd",
+        7 => "Disp",
+        8 => "PcieGen",
+        9 => "Host",
+        _ => "sel",
     }
 }
 

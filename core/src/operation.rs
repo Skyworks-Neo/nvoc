@@ -1917,6 +1917,42 @@ impl GpuOperation for QueryNvapiVoltRails {
     }
 }
 
+/// Enumerate the melonVolt voltage domains (`VoltVoltDevicesGetInfo`,
+/// 0xA38ACF9D) — per-domain min/step/max/default µV window
+/// (`nvapi::VoltDevice`). Sibling of [`QueryNvapiVoltRails`]; consumed as a
+/// best-effort enrichment of get-volt-rail-info (an Err here means the
+/// surface refused — the caller omits the section instead of failing).
+pub struct QueryNvapiVoltDevices;
+
+impl GpuOperation for QueryNvapiVoltDevices {
+    type Output = Option<Vec<::nvapi::VoltDevice>>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiVoltDevices
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target.nvapi()?.volt_devices().map_err(Error::from)
+    }
+}
+
+/// PCI BAR topology (`GetBarInfo`, 0xE4B701E3) — per-BAR {tag, size-MiB,
+/// base} records (`nvapi::BarRecord`). Consumed as a best-effort
+/// enrichment of get-info (a refusal only omits the section).
+pub struct QueryNvapiBarInfo;
+
+impl GpuOperation for QueryNvapiBarInfo {
+    type Output = Option<Vec<::nvapi::BarRecord>>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiBarInfo
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target.nvapi()?.bar_info().map_err(Error::from)
+    }
+}
+
 /// Set one rail's µV offset via the private VoltRails control object (the
 /// melonVolt write path: GET snapshot → locate entry → type guard →
 /// patch → SET → readback verify, see `reverse/melonvolt/ANALYSIS.md`).
@@ -2615,6 +2651,31 @@ impl GpuOperation for QueryNvapiClkDomainFreqsBatch {
         target
             .nvapi()?
             .clk_domain_freqs_batch(&self.domains)
+            .map_err(Error::from)
+    }
+}
+
+/// Per-domain legal frequency enumeration (ClockClkDomainFreqsEnum
+/// ID 0x40BDDDB36, MHz). Selector = the ClkDomains READ-universe domain
+/// id (cross-certified: 0=Gpc 1=Xbar 2=M 3=Sys 4=Hub 5=Msd 7=Disp).
+/// Few returned points = the domain's pstate-bin table; many = the full
+/// legal range on the domain's minimum granularity (tracks applied OC).
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiClkDomainFreqsEnum {
+    pub selector: u8,
+}
+
+impl GpuOperation for QueryNvapiClkDomainFreqsEnum {
+    type Output = Option<::nvapi::ClkDomainFreqsEnum>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiClkDomainFreqsEnum
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .clk_domain_freqs_enum(self.selector)
             .map_err(Error::from)
     }
 }

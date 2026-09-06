@@ -67,6 +67,12 @@ pub enum OperationKind {
     SetNvapiDNotifier,
     QueryNvapiPowerCeiling,
     QueryNvapiVoltRails,
+    /// Enumerate the melonVolt voltage domains (0xA38ACF9D): per-domain
+    /// min/step/max/default µV window (see `nvapi::VoltDevice`).
+    QueryNvapiVoltDevices,
+    /// PCI BAR topology (0xE4B701E3): per-BAR {tag, size-MiB, base} records
+    /// (see `nvapi::BarRecord`).
+    QueryNvapiBarInfo,
     SetNvapiVoltRailOffset,
     /// Set a volt-rail to an absolute target voltage (mV) by deriving the
     /// required µV offset from the live control/status snapshot. Shares the
@@ -146,6 +152,12 @@ pub enum OperationKind {
     /// Direct physical clock for one domain — the green-curve MEASURE path
     /// (ID 0x527FC458). One call returns `freq_khz` (no two-sample Δt).
     QueryNvapiClkDomainFreqDirect,
+    /// Per-domain legal frequency enumeration (ClockClkDomainFreqsEnum
+    /// ID 0x40BDDDB36) — a MHz table per selector. Few points = pstate-bin
+    /// table; many = the domain's full legal range on its minimum
+    /// granularity (moves with applied OC). `Ok(None)` = selector
+    /// unsupported on this part (e.g. selector 6 on TU116).
+    QueryNvapiClkDomainFreqsEnum,
     QueryNvapiPStateLevels,
     QueryNvapiPStateLockStatus,
     SetNvapiPStateNative,

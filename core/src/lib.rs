@@ -17,7 +17,7 @@ pub use ::nvapi::sys::gpu::power::undocumented::Wm2AcousticMode;
 pub use ::nvapi::{P0VoltageBounds, VoltRails};
 pub use conv::ConvertEnum;
 pub use error::Error;
-pub use gpu::GpuSelector;
+pub use gpu::{GpuSelector, nvapi_interface_version};
 pub use gpu_type::{
     ArchOcPrior, GpuOcParams, GpuType, GpuVoltageLimitParams, GpuVoltageLockParams, OcPriorPoint,
 };
@@ -28,12 +28,14 @@ pub use operation::{
     QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings, QueryGpuStatus,
     QueryLegacyCoreOvervoltRanges, QueryLegacyP0CoreMaxVoltageDelta, QueryNvapiClkDomainFreq,
     QueryNvapiClkDomainFreqDetail, QueryNvapiClkDomainFreqDirect, QueryNvapiClkDomainFreqsBatch,
+    QueryNvapiClkDomainFreqsEnum,
     QueryNvapiClkDomains, QueryNvapiClkVfControl, QueryNvapiClkVfPoints, QueryNvapiCoolerInfo,
     QueryNvapiCoreVoltageControl, QueryNvapiDNotifier, QueryNvapiFanPolicyInfo,
     QueryNvapiOcScannerIncomplete, QueryNvapiPStateLevels, QueryNvapiPStateLockStatus,
     QueryNvapiPmgrVoltageArbiter, QueryNvapiPowerCeiling, QueryNvapiPstates20Private,
     QueryNvapiRatedTdp, QueryNvapiTargetTempPolicies, QueryNvapiTargetTempPolicyIndex,
-    QueryNvapiTgpWattRange, QueryNvapiThermalSettings, QueryNvapiThermalSim, QueryNvapiVoltRails,
+    QueryNvapiTgpWattRange, QueryNvapiThermalSettings, QueryNvapiThermalSim,
+    QueryNvapiBarInfo, QueryNvapiVoltDevices, QueryNvapiVoltRails,
     QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks,
     QueryTdpTempLimits, QueryTemperatureThresholds, QueryThrottleReasons, QueryVbiosImage,
     QueryVbiosSecurityInfo, QueryVbiosStatusString, QueryVbiosVersion, QueryVfpPointVoltage,

@@ -74,6 +74,17 @@ pub fn get_sorted_gpus() -> ::nvapi::hi::Result<Vec<Gpu>> {
     gpus.sort_by_key(|g| g.id());
     Ok(gpus)
 }
+
+/// NVAPI interface version string (`NvAPI_GetInterfaceVersionString`, e.g.
+/// "R580") — the driver-side API generation marker. Unlike the driver
+/// version this identifies which NVAPI interface generation the loaded
+/// driver exports, which is what gates the private/stamp-gated families,
+/// so commands that probe capability surfaces should surface it alongside
+/// their results. Process-global (not per-GPU).
+pub fn nvapi_interface_version() -> Result<String, Error> {
+    ensure_nvapi_initialized();
+    ::nvapi::hi::interface_version().map_err(Error::from)
+}
 pub fn get_sorted_gpu_ids_nvml(nvml: &Nvml) -> Result<Vec<u32>, Error> {
     let count = nvml
         .device_count()
