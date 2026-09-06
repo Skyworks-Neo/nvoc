@@ -455,18 +455,13 @@ class VFCurveTab:
         # curve load; consumed by the x-axis FuncFormatter in _style_axes)
         self._volt_unit_tick: Optional[float] = None
         self._chart_build_after_id: Optional[str] = None
-        self._chart_resize_after_id = None
-        self._chart_configure_bind_id: Optional[str] = None
+        self._canvas_resize_after_id = None
+        self._canvas_configure_bind_id: Optional[str] = None
         self._mpl_connection_ids: list[int] = []
-        self._last_chart_event_width: Optional[int] = None
-        self._last_chart_event_height: Optional[int] = None
-        self._last_chart_resize_width: Optional[int] = None
-        self._last_chart_resize_height: Optional[int] = None
-        self._pending_chart_resize_wh: Optional[Tuple[int, int]] = None
-        # Written by _on_chart_resize, read by on_resize_state_changed's
-        # flush — must exist before the first flush or the resize-target
-        # loop trips over an AttributeError every startup.
-        self._pending_chart_resize_width: Optional[int] = None
+        # Single resize authority: the canvas's latest <Configure> size,
+        # coalesced here and applied once 60ms after the last step (or by
+        # on_resize_state_changed's flush during an active window resize).
+        self._pending_canvas_wh: Optional[Tuple[int, int]] = None
         self._is_resize_active = False
         # True while a mouse button is held on the chart (point drag /
         # selection drag). The dashboard poll's live-point update is deferred
@@ -667,6 +662,18 @@ class VFCurveTab:
     # ────────────────────────────────────────────
     # Chart setup
     # ────────────────────────────────────────────
+    def _fs(self, size: float) -> float:
+        """Chart font size in points, boosted on floor-boosted displays
+        (see ``_font_boost`` in ``_build_chart``). No-op elsewhere."""
+        return size * getattr(self, "_font_boost", 1.0)
+
+    @staticmethod
+    def _chart_height_in(font_boost: float) -> float:
+        """Figure height in inches for the display class: the original
+        1.7in band on native ≥125% screens, the compensated 2.4in plot on
+        100% displays the UI-scale floor lifted (font_boost > 1)."""
+        return 2.4 if font_boost > 1.0 else 1.7
+
     def _build_chart_if_alive(self):
         self._chart_build_after_id = None
         if self._cleaned_up:
@@ -713,12 +720,43 @@ class VFCurveTab:
         from matplotlib.figure import Figure
 
         try:
-            scale = self._get_screen_dpi_scale(self.app)
+            # Follow CTk's EFFECTIVE widget scaling, not the raw OS DPI:
+            # the app raises 100%-scaling displays to a 1.25 UI floor
+            # (App._apply_min_ui_scale), and the chart must grow with the
+            # rest of the UI — at raw 1.0 the plot reads flat and its
+            # point-sized fonts stay tiny next to the floored UI text.
+            scale = ctk.ScalingTracker.get_widget_scaling(self.app)
         except Exception:
-            scale = 1.0
+            scale = self._get_screen_dpi_scale(self.app)
         fig_dpi = max(72, round(100 * scale))
 
-        self.fig = Figure(figsize=(9, 1.7), dpi=fig_dpi)
+        # Size the figure to the frame's REAL allocated width from the
+        # start. The old hardcoded 9-inch build rendered a 9in×dpi-wide
+        # canvas inside a much wider slot until the debounced resize
+        # correction landed — the one-frame "wrong flat proportions, then
+        # it re-renders right" flash on high-DPI screens.
+        parent.update_idletasks()
+        frame_w_px = parent.winfo_width()
+        fig_w_in = frame_w_px / fig_dpi if frame_w_px > 80 else 9.0
+        # Chart text boost: point fonts already scale with the figure dpi,
+        # but on floor-boosted displays (100% screens raised to 1.25) the
+        # proportional size still reads small next to the floored UI text.
+        # Boost chart fonts by the same ratio the UI floor introduced — a
+        # no-op on native ≥125% screens (their approved look is untouched).
+        try:
+            os_factor = max(0.5, self.app._os_dpi_factor())
+        except Exception:
+            os_factor = scale
+        self._font_boost = max(1.0, scale / os_factor)
+        # Height belongs to the same floor package as the font boost: the
+        # 1.7in base is the approved look on native ≥125% screens, the
+        # taller 2.4in plot (roomier band next to the boosted fonts and UI)
+        # is for 100% displays the floor lifted — it must NOT leak onto
+        # native high-DPI screens (the "too tall" 4K/2K regression).
+        self.fig = Figure(
+            figsize=(fig_w_in, self._chart_height_in(self._font_boost)),
+            dpi=fig_dpi,
+        )
         self.fig.patch.set_facecolor("#2b2b2b")
         self.ax = self.fig.add_subplot(111)
         # y tick labels are back OUTSIDE the spine — left margin fits the
@@ -736,7 +774,7 @@ class VFCurveTab:
             ha="center",
             va="center",
             color="#888888",
-            fontsize=9,
+            fontsize=self._fs(9),
         )
 
         self.canvas = FigureCanvasTkAgg(self.fig, master=parent)
@@ -761,10 +799,17 @@ class VFCurveTab:
         tk_widget.bind("<Button-4>", self._on_mousewheel)
         tk_widget.bind("<Button-5>", self._on_mousewheel)
 
-        # Resize figure width when the parent frame width changes.
-        # Height is kept fixed (3.5 in) so controls below are never squeezed out.
-        self._chart_configure_bind_id = parent.bind(
-            "<Configure>", self._on_chart_resize, add="+"
+        # ── Single resize authority ──
+        # matplotlib binds the canvas's <Configure> to its own resize()
+        # handler, which re-renders on EVERY layout step — a tab entry or
+        # window resize fired 3-4 full Agg renders as the geometry settled
+        # (measured: sizes 200→170→300, one draw each). Strip that handler
+        # and route canvas resizes through ONE debounced apply instead; the
+        # 60ms coalesce costs nothing at startup (no size steps before the
+        # first show) and collapses resize storms into a single redraw.
+        self.canvas._tkcanvas.unbind("<Configure>")
+        self._canvas_configure_bind_id = self.canvas._tkcanvas.bind(
+            "<Configure>", self._on_canvas_configure
         )
 
         # Plot line references (created on first data load)
@@ -793,6 +838,30 @@ class VFCurveTab:
         if self._pending_full_redraw or self._voltages:
             self._pending_full_redraw = False
             self._redraw()
+
+        # Prebuild path: the tab page may not be laid out at construction
+        # time, so the figure kept the 9-inch fallback width. Correct as
+        # soon as the canvas has a real size — both right away (event-loop
+        # turn) and on <Map> (tab first shown later); the size-delta guard
+        # in _apply_canvas_size makes whichever fires second a no-op.
+        def _snap_to_mapped_size() -> None:
+            if self._cleaned_up:
+                return
+
+            def snap() -> None:
+                if self._cleaned_up or not self._chart_frame.winfo_ismapped():
+                    return
+                widget = self.canvas.get_tk_widget()
+                w, h = widget.winfo_width(), widget.winfo_height()
+                if w > 1 and h > 1:
+                    self._pending_canvas_wh = (w, h)
+                    self._apply_canvas_size()
+
+            self.app.after(0, snap)
+
+        if frame_w_px <= 80:
+            parent.after(0, _snap_to_mapped_size)
+            parent.bind("<Map>", lambda _e: _snap_to_mapped_size(), add="+")
 
         # The selector row couldn't pack before the chart existed (its host
         # uses after=self._chart_area, which needs the chart area mapped).
@@ -854,53 +923,70 @@ class VFCurveTab:
             self._blit_bg = None
             self.canvas.draw_idle()
 
-    def _on_chart_resize(self, event):
-        """Debounce figure width updates to avoid geometry thrash during live resize."""
-        if not hasattr(self, "fig") or not hasattr(self, "canvas"):
+    def _on_canvas_configure(self, event):
+        """Canvas <Configure>: record the latest size and coalesce.
+
+        This is the ONLY figure-size writer (matplotlib's own Configure
+        handler was stripped — see _build_chart). Layout settles in 2-3
+        steps; applying once 60ms after the last step renders once instead
+        of per-step. During an active window resize the apply is deferred
+        to on_resize_state_changed's flush.
+        """
+        if self._cleaned_up or not hasattr(self, "fig") or not hasattr(self, "canvas"):
             return
         if not self._chart_frame.winfo_ismapped():
             return
-        w_px = max(1, int(event.width))
-        if self._last_chart_event_width == w_px:
+        wh = (max(1, int(event.width)), max(1, int(event.height)))
+        if wh == getattr(self, "_pending_canvas_wh", None):
             return
-        self._last_chart_event_width = w_px
-        self._pending_chart_resize_width = w_px
+        self._pending_canvas_wh = wh
 
         if self._is_resize_active:
             return
 
-        if self._chart_resize_after_id is not None:
+        if self._canvas_resize_after_id is not None:
             try:
-                self.app.after_cancel(self._chart_resize_after_id)
+                self.app.after_cancel(self._canvas_resize_after_id)
             except Exception:
                 pass
+        self._canvas_resize_after_id = self.app.after(60, self._apply_canvas_size)
 
-        self._chart_resize_after_id = self.app.after(
-            60, lambda width=w_px: self._apply_chart_resize(width)
-        )
-
-    def _apply_chart_resize(self, width_px: int):
-        self._chart_resize_after_id = None
-        self._blit_bg = None  # stale background: size changed
+    def _apply_canvas_size(self):
+        """Apply the coalesced canvas size to the figure — one redraw."""
+        self._canvas_resize_after_id = None
+        wh = getattr(self, "_pending_canvas_wh", None)
+        self._pending_canvas_wh = None
+        if wh is None or self._cleaned_up:
+            return
         if not hasattr(self, "fig") or not hasattr(self, "canvas"):
             return
-        if width_px <= 0 or not self._chart_frame.winfo_ismapped():
-            return
-        if (
-            self._last_chart_resize_width is not None
-            and abs(width_px - self._last_chart_resize_width) < 8
-        ):
+        width, height = wh
+        if width <= 0 or height <= 0 or not self._chart_frame.winfo_ismapped():
             return
 
         dpi = self.fig.get_dpi()
-        new_w = max(1.0, width_px / dpi)
         cur_w, cur_h = self.fig.get_size_inches()
-        if abs(new_w - cur_w) * dpi < 2:
+        if abs(width / dpi - cur_w) * dpi < 2 and abs(height / dpi - cur_h) * dpi < 2:
             return
 
-        self._last_chart_resize_width = width_px
-        self.fig.set_size_inches(new_w, cur_h)
-        self.canvas.draw_idle()
+        self._blit_bg = None  # stale background: size changed
+        # matplotlib's own canvas-size applier: set_size_inches + photo
+        # reconfigure + redraw in one step (forward=False — the widget size
+        # is the authority here, not the figure's).
+        if hasattr(self.canvas, "_resize_figure_for_canvas_size"):
+            self.canvas._resize_figure_for_canvas_size(width, height)
+        else:  # older matplotlib without the helper
+            self.fig.set_size_inches(width / dpi, height / dpi)
+            self.canvas.draw_idle()
+        # Support-log the live chart plane: turns "chart flat/small on
+        # screen X" reports into a one-line post-mortem (dpi carries the
+        # effective scale the chart actually rendered at).
+        console = getattr(self.app, "console", None)
+        if console is not None:
+            console.mirror(
+                f"chart resize: canvas={width}x{height}px dpi={dpi:g} "
+                f"fig_px=({round(width / dpi * dpi)}x{round(height / dpi * dpi)})"
+            )
 
     def _style_axes(self):
         from matplotlib.ticker import FuncFormatter
@@ -920,7 +1006,7 @@ class VFCurveTab:
             ha="left",
             va="bottom",
             color="#e08020",
-            fontsize=7,
+            fontsize=self._fs(7),
         )
 
         # one decimal on BOTH axes (0.5 / 1.0 / 1.5 ...) — uniform columns.
@@ -937,7 +1023,7 @@ class VFCurveTab:
         ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _pos: f"{v / 1000.0:.1f}"))
         # tick marks grow INWARD from the spines (direction="in"); the
         # numbers stay outside, so each axis reads number + inward bar
-        ax.tick_params(colors="#cccccc", labelsize=6, direction="in")
+        ax.tick_params(colors="#cccccc", labelsize=self._fs(6), direction="in")
         for spine in ax.spines.values():
             spine.set_color("#555555")
         ax.grid(True, color="#333333", linewidth=0.5, alpha=0.7)
@@ -977,13 +1063,13 @@ class VFCurveTab:
                 pass
             self._chart_build_after_id = None
 
-        if self._chart_resize_after_id is not None:
+        if self._canvas_resize_after_id is not None:
             try:
-                self.app.after_cancel(self._chart_resize_after_id)
+                self.app.after_cancel(self._canvas_resize_after_id)
             except Exception:
                 # Best-effort cleanup: timer may already be canceled/destroyed during teardown.
                 pass
-            self._chart_resize_after_id = None
+            self._canvas_resize_after_id = None
 
         if self._key_redraw_after_id is not None:
             try:
@@ -995,13 +1081,17 @@ class VFCurveTab:
         self._stop_auto_refresh()
         self.stop_live_poll()
 
-        if self._chart_configure_bind_id is not None:
+        if self._canvas_configure_bind_id is not None:
             try:
-                self._chart_frame.unbind("<Configure>", self._chart_configure_bind_id)
+                tkcanvas = self.canvas._tkcanvas
+                tkcanvas.unbind("<Configure>", self._canvas_configure_bind_id)
+                # matplotlib's own handler was stripped at build time —
+                # restore it so a later re-entrancy still resizes.
+                tkcanvas.bind("<Configure>", self.canvas.resize)
             except Exception:
                 # Best-effort teardown: widget/bind may already be gone during shutdown.
                 pass
-            self._chart_configure_bind_id = None
+            self._canvas_configure_bind_id = None
 
         canvas = getattr(self, "canvas", None)
         for cid in self._mpl_connection_ids:
@@ -2105,7 +2195,7 @@ class VFCurveTab:
                 ha="center",
                 va="center",
                 color="#888888",
-                fontsize=12,
+                fontsize=self._fs(12),
             )
             self.canvas.draw_idle()
             return
@@ -2305,7 +2395,7 @@ class VFCurveTab:
                 transform=ax.transAxes,
                 ha="right",
                 va="bottom",
-                fontsize=6.5,
+                fontsize=self._fs(6.5),
                 fontfamily="monospace",
                 color="#ffe066",
                 zorder=10,
@@ -2322,7 +2412,7 @@ class VFCurveTab:
 
         legend = ax.legend(
             loc="upper left",
-            fontsize=5,
+            fontsize=self._fs(5),
             framealpha=0.5,
             facecolor="#2b2b2b",
             edgecolor="#555555",
@@ -2363,7 +2453,7 @@ class VFCurveTab:
                     xytext=(6, 6),
                     textcoords="offset points",
                     color="#ff8888",
-                    fontsize=5,
+                    fontsize=self._fs(5),
                     zorder=8,
                 )
 
@@ -2430,7 +2520,7 @@ class VFCurveTab:
                         # the plain tick digits (survives formatter redraws
                         # — only the TEXT is regenerated, not style)
                         label.set_color("#e08020")
-                        label.set_fontsize(7)
+                        label.set_fontsize(self._fs(7))
                 break
 
         # Draw frequency lock visualization (after limits are known)
@@ -2450,7 +2540,7 @@ class VFCurveTab:
                     cmin + (f_max - f_min) * 0.015,
                     f" Freq Lock: {cmin} MHz",
                     color="#ffff00",
-                    fontsize=7,
+                    fontsize=self._fs(7),
                     alpha=0.8,
                     zorder=5,
                 )
@@ -2477,7 +2567,7 @@ class VFCurveTab:
                     cmax + (f_max - f_min) * 0.015,
                     f" Freq Lock: {cmin}-{cmax} MHz",
                     color="#ffff00",
-                    fontsize=7,
+                    fontsize=self._fs(7),
                     alpha=0.8,
                     zorder=5,
                 )
@@ -2528,7 +2618,7 @@ class VFCurveTab:
                     f_max - (f_max - f_min) * 0.02,
                     f" P0 floor{rail_tag}",
                     color="#d96666",
-                    fontsize=6,
+                    fontsize=self._fs(6),
                     alpha=0.85,
                     ha="left",
                     va="top",
@@ -2553,7 +2643,7 @@ class VFCurveTab:
                     f_max - (f_max - f_min) * 0.02,
                     f" P0 ceiling{rail_tag} ",
                     color="#d96666",
-                    fontsize=6,
+                    fontsize=self._fs(6),
                     alpha=0.85,
                     ha="right",
                     va="top",
@@ -2575,7 +2665,7 @@ class VFCurveTab:
                 f_min + (f_max - f_min) * 0.02,
                 f" P0 eff volt lim{rail_tag} ",
                 color="#ff9999",
-                fontsize=6,
+                fontsize=self._fs(6),
                 alpha=0.8,
                 ha="right",
                 va="bottom",
@@ -3385,10 +3475,10 @@ class VFCurveTab:
         if resizing:
             return
 
-        pending_w = self._pending_chart_resize_width
-        self._pending_chart_resize_width = None
-        if pending_w is not None:
-            self._apply_chart_resize(pending_w)
+        # Window resize ended: apply the last canvas size the coalesced
+        # handler recorded (the debounced apply was suppressed while
+        # _is_resize_active).
+        self._apply_canvas_size()
 
         if self._pending_full_redraw:
             self._pending_full_redraw = False
@@ -3445,7 +3535,7 @@ class VFCurveTab:
             xytext=(-70, 3),
             textcoords="offset points",
             color="#88ffaa",
-            fontsize=5,
+            fontsize=self._fs(5),
             zorder=8,
             animated=True,
         )

@@ -114,10 +114,12 @@ class _ConsoleWindowProxy:
             base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
             log_dir = os.path.join(base, "nvoc-gui")
             os.makedirs(log_dir, exist_ok=True)
+            now = time.time()
+            stamp = f"{time.strftime('%H:%M:%S')}.{int(now * 1000) % 1000:03d}"
             with open(
                 os.path.join(log_dir, "console.log"), "a", encoding="utf-8"
             ) as file:
-                file.write(f"{time.strftime('%H:%M:%S')} {text}")
+                file.write(f"{stamp} {text}")
                 if not text.endswith("\n"):
                     file.write("\n")
         except OSError:
@@ -237,6 +239,12 @@ class App(ctk.CTk):
     """Main application window."""
 
     def __init__(self, single_instance_guard: Optional["SingleInstanceGuard"] = None):
+        # MUST precede CTk.__init__: the geometry() override below reads this
+        # pin slot, and CTk's own constructor issues geometry() calls — an
+        # uninitialized slot would route through CTk's __getattr__ into
+        # tkinter and kill construction with a silent AttributeError (the
+        # windowed exe has no stderr to show it).
+        self._startup_geometry_reapply: Optional[str] = None
         super().__init__()
 
         # Warm matplotlib (font cache) on a background thread before any tab
@@ -280,17 +288,18 @@ class App(ctk.CTk):
         self.title("NVOC-GUI — NVIDIA GPU VF Curve Optimizer")
         self.geometry("768x712")
         self.minsize(768, 360)
-        # Set by set_startup_geometry(): re-applied once the window is mapped,
-        # because CTk's DPI ScalingTracker re-issues geometry from ITS OWN
-        # stored width/height at map time and silently clobbers any size a
-        # driver script set before mainloop (the "window ignores the code's
-        # startup dimensions" effect on scaled displays).
-        self._startup_geometry_reapply: Optional[str] = None
         self._single_instance_guard = single_instance_guard
 
         # Appearance
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
+
+        # Minimum effective UI scale (see _apply_min_ui_scale). Must run
+        # BEFORE any widget construction so the whole first layout — fonts,
+        # paddings, window geometry, and the matplotlib chart density that
+        # follows CTk's scaling — is built at the floored factor.
+        self._ui_scale_multiplier_applied: Optional[float] = None
+        self._apply_min_ui_scale()
 
         # Tray icon (initialized lazily)
         self._tray_icon = None  # type: Optional[pystray.Icon]
@@ -781,6 +790,9 @@ class App(ctk.CTk):
         """
         if event.widget is not self:
             return
+        # Monitor switches surface here as a geometry jump: re-check the
+        # UI-scale floor (no-op unless the OS DPI factor crossed it).
+        self._apply_min_ui_scale()
         geom = (int(event.x), int(event.y), int(event.width), int(event.height))
         # Only width is used downstream by resize-sensitive redraws, but the
         # session itself keys on the full geometry so moves are covered.
@@ -859,22 +871,143 @@ class App(ctk.CTk):
     def set_startup_geometry(self, width: int, height: int, x: int, y: int) -> None:
         """Pin the window to an exact geometry, surviving CTk's DPI re-apply.
 
-        Drivers and tests MUST use this instead of a bare ``geometry()`` call:
-        a size set before ``mainloop()`` is clobbered when CTk's
-        ScalingTracker re-issues geometry at window-map time (see
-        ``_startup_geometry_reapply``). The re-apply at after(350) lands
-        after that map-time pass, so the requested size is what sticks.
+        Thin wrapper over the auto-pinning ``geometry()`` override — kept as
+        the self-documenting entry point for drivers and tests.
         """
-        spec = f"{width}x{height}+{x}+{y}"
-        self.geometry(spec)
-        self._startup_geometry_reapply = spec
-        self.after(350, self._reapply_startup_geometry)
+        self.geometry(f"{width}x{height}+{x}+{y}")
+
+    def geometry(self, geometry_string=None):
+        """Auto-pinning ``geometry()``.
+
+        Any size+position spec set while the window is UNMAPPED (i.e. any
+        driver/test calling plain ``app.geometry(...)`` before ``mainloop``,
+        and the app's own constructor) is recorded and re-applied after
+        map: CTk's ScalingTracker re-issues geometry from ITS OWN stored
+        size at map time, silently clobbering whatever the script set (the
+        "window ignores the code's startup dimensions" effect). The
+        ``<Map>`` hook re-applies AFTER CTk's own map handler (binding order
+        — ours is added later, add="+" runs last), and the after-timer is
+        the fallback for already-mapped windows; both clear the pin once
+        the requested geometry has stuck.
+        """
+        if (
+            geometry_string is not None
+            and "x" in geometry_string
+            and not self.winfo_ismapped()
+            and not getattr(self, "_exiting", False)
+        ):
+            # getattr, never a bare read: CTk forwards unknown attributes to
+            # tkinter, so a bare read on a half-constructed window raises.
+            first_pin = getattr(self, "_startup_geometry_reapply", None) is None
+            self._startup_geometry_reapply = geometry_string
+            if first_pin:
+                self.after(350, self._reapply_startup_geometry)
+                self.bind("<Map>", self._on_startup_geometry_map, add="+")
+        return super().geometry(geometry_string)
+
+    def _on_startup_geometry_map(self, _event) -> None:
+        if self._startup_geometry_reapply is not None:
+            # Run after CTk's own <Map> scaling handler (add="+" binding
+            # order) so the re-apply lands last and wins.
+            self.after(0, self._reapply_startup_geometry)
 
     def _reapply_startup_geometry(self) -> None:
         spec = self._startup_geometry_reapply
-        if spec is not None and not getattr(self, "_exiting", False):
-            self.geometry(spec)
-            self._startup_geometry_reapply = None
+        if spec is None or getattr(self, "_exiting", False):
+            return
+        if not self.winfo_ismapped():
+            # The after(350) fallback can fire before mainloop actually
+            # maps the window (long construction): wait for the real map.
+            self.after(100, self._reapply_startup_geometry)
+            return
+        # Mapped now — route through super() so the pinned spec isn't
+        # re-recorded, then retire the pin.
+        super().geometry(spec)
+        self._startup_geometry_reapply = None
+
+    # The layout (fonts, paddings, slider hit-targets, chart text) is tuned
+    # against the 125%/150% panels this app is developed on. A 100%-scaling
+    # 1080p screen renders everything at 1.0x — the VF-curve plot reads flat
+    # and small and the fonts get hard to see. Raise any OS DPI factor below
+    # the floor up to the floor via CTk's manual multipliers; higher OS
+    # factors (125%, 150%) are passed through untouched.
+    _MIN_EFFECTIVE_UI_SCALE = 1.25
+
+    @classmethod
+    def _min_ui_scale_multiplier(cls, os_factor: float) -> float:
+        """Manual CTk scaling multiplier for an OS DPI factor (1.0 = none)."""
+        if os_factor >= cls._MIN_EFFECTIVE_UI_SCALE:
+            return 1.0
+        return cls._MIN_EFFECTIVE_UI_SCALE / max(0.5, os_factor)
+
+    def _os_dpi_factor(self) -> float:
+        """The window's real OS DPI factor (per-monitor, Win32 truth).
+
+        CTk's per-window dict is filled with a provisional 1.0 at window
+        creation and only corrected asynchronously — reading it at
+        __init__-time misfires the floor on 150% displays (1.5 UI briefly
+        renders at 1.25× and the chart bakes at 125 dpi until CTk's own
+        correction lands, which is exactly the "first frame wrong, then it
+        re-renders" effect). GetDpiForWindow answers truthfully the moment
+        the window exists; the rest are fallbacks for exotic setups.
+        """
+        try:
+            if sys.platform == "win32":
+                user32 = ctypes.windll.user32
+                GA_ROOT = 2
+                hwnd = user32.GetAncestor(self.winfo_id(), GA_ROOT)
+                if hwnd:
+                    dpi = user32.GetDpiForWindow(hwnd)
+                    if dpi:
+                        return dpi / 96.0
+        except Exception:
+            pass
+        return self._system_dpi_factor()
+
+    @staticmethod
+    def _system_dpi_factor() -> float:
+        try:
+            if sys.platform == "win32":
+                dpi = ctypes.windll.user32.GetDpiForSystem()
+                if dpi:
+                    return dpi / 96.0
+        except Exception:
+            pass
+        return 1.0
+
+    def _apply_min_ui_scale(self) -> None:
+        """Keep the effective UI scale at or above the floor.
+
+        Idempotent and cheap when nothing changed (the resize/move hook calls
+        it to catch monitor switches — a window dragged onto a 100% screen
+        gets the floor, dragged back onto 150% the manual multiplier drops
+        back to 1.0).
+        """
+        if getattr(self, "_exiting", False):
+            return
+        os_factor = self._os_dpi_factor()
+        multiplier = self._min_ui_scale_multiplier(os_factor)
+        changed = multiplier != getattr(self, "_ui_scale_multiplier_applied", object())
+        # The startup verdict lands in the support log on EVERY run — a
+        # "1080p chart too small" report is only diagnosable if the log says
+        # whether the floor fired (the pre-_build_ui first call has no
+        # console yet; the flag makes the next call with a console write it).
+        needs_log = not getattr(self, "_ui_scale_logged", False)
+        if not changed and not needs_log:
+            return
+        self._ui_scale_multiplier_applied = multiplier
+        ctk.set_widget_scaling(multiplier)
+        ctk.set_window_scaling(multiplier)
+        console = getattr(self, "console", None)
+        if console is not None:
+            # Only consume the startup-log flag once the line actually
+            # landed — the pre-_build_ui first call has no console yet.
+            self._ui_scale_logged = True
+            console.mirror(
+                f"ui scale: os_factor={os_factor:g} multiplier={multiplier:g} "
+                f"effective={os_factor * multiplier:g} "
+                f"(floor {self._MIN_EFFECTIVE_UI_SCALE:g})"
+            )
 
     def _refresh_gpu_list(self):
         """Query native GPU discovery and populate GPU dropdown."""

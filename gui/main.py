@@ -93,10 +93,42 @@ def _require_gui_runtime(
 
 
 def main() -> int:
+    import time
+
+    # Startup phase decomposition (mirrored to the support log with wall-clock
+    # ms stamps): bootloader extraction happens BEFORE this line and is
+    # measured externally; everything from here to the first paint is tagged
+    # below so slow-disk vs slow-CPU shares are separable. The writer is
+    # self-contained on purpose — importing src.app here would pull the
+    # heavy modules INTO the first marker and misattribute their cost.
+    boot_t0 = time.perf_counter()
+
+    def _boot_marker(label: str) -> None:
+        try:
+            base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+            log_dir = os.path.join(base, "nvoc-gui")
+            os.makedirs(log_dir, exist_ok=True)
+            now = time.time()
+            stamp = f"{time.strftime('%H:%M:%S')}.{int(now * 1000) % 1000:03d}"
+            with open(
+                os.path.join(log_dir, "console.log"), "a", encoding="utf-8"
+            ) as file:
+                file.write(
+                    f"{stamp} [boot +{time.perf_counter() - boot_t0:7.3f}s] {label}\n"
+                )
+        except OSError:
+            pass
+
+    _boot_marker("main entered (tkinter/customtkinter import pending)")
     _require_gui_runtime()
+    _boot_marker("gui runtime imported")
 
     from src.app import App
     from src.single_instance import SingleInstanceGuard
+
+    _boot_marker("src imports done")
+
+    guard: Optional[Any] = SingleInstanceGuard()
 
     guard: Optional[Any] = SingleInstanceGuard()
     try:
@@ -108,12 +140,13 @@ def main() -> int:
             f"Failed to initialize single-instance guard: {exc}"
         ) from exc
 
-    import time
-
     start_time = time.perf_counter()
 
     try:
         app = App(single_instance_guard=guard)
+        _boot_marker(
+            f"App built (window up; App() took {time.perf_counter() - start_time:.3f}s)"
+        )
 
         def log_startup_time() -> None:
             elapsed_time = time.perf_counter() - start_time
