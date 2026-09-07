@@ -706,8 +706,9 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
             (
                 Command::GetVbios,
                 CommandSpec {
-                    options: Box::leak(Box::new(["out", "dump"])),
-                    ..CommandSpec::new("get-vbios", Group::Info, "WINDOWS-ONLY. Read the VBIOS via NvAPI_GPU_GetVbiosImage (0xFC13EE11, escape 0x0700004F): prints version/size/BIT summary; --out <file> writes the raw image (e.g. vbios.rom); --dump prints the full BIT token table + Fermi-model raw blocks")
+                    options: Box::leak(Box::new(["out", "dump", "maxwell-vftable-decode"])),
+                    formatter: Some(output::format_maxwell_vftable_output),
+                    ..CommandSpec::new("get-vbios", Group::Info, "WINDOWS-ONLY. Read the VBIOS via NvAPI_GPU_GetVbiosImage (0xFC13EE11, escape 0x0700004F): prints version/size/BIT summary; --out <file> writes the raw image (e.g. vbios.rom); --dump prints the full BIT token table + Fermi-model raw blocks; --maxwell-vftable-decode decodes the Maxwell GPU Boost 2.0 V/F ladder (BIT 'P'+0x34, v0x10: 79 GPC points, voltage via vmap) as an Id/V/F table")
                 },
             ),
             (Command::GetVoltRailInfo, CommandSpec::new("get-volt-rail-info", Group::Voltage, "Read private VoltRails family: rail mask + per-rail offsets + live voltages (melonVolt path) + VRM device voltage windows (0xA38ACF9D)")),
@@ -2087,6 +2088,10 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .long("dump")
             .action(ArgAction::SetTrue)
             .help("Print the full BIT token table + Fermi-model raw blocks instead of the brief summary"),
+        "maxwell-vftable-decode" => Arg::new("maxwell-vftable-decode")
+            .long("maxwell-vftable-decode")
+            .action(ArgAction::SetTrue)
+            .help("Decode the Maxwell GPU Boost 2.0 V/F ladder (BIT 'P'+0x34 v0x10: 79 GPC points; voltage resolved through the vmap table) and print it in the get-public-vftable points format"),
         "flags" => Arg::new("flags")
             .long("flags")
             .value_name("BITS")
@@ -2211,6 +2216,7 @@ fn collect_named_options(
             | "rpm"
             | "offset"
             | "dump"
+            | "maxwell-vftable-decode"
             | "target"
             | "freq"
             | "volt"
@@ -4213,20 +4219,28 @@ fn execute_target(
             // token table + Fermi-model raw blocks);
             // --out <file> writes the raw image.
             let image = run(target, QueryVbiosImage)?.output;
+            let maxwell_vftable = invocation.options.contains_key("maxwell-vftable-decode");
             match invocation.options.get("out").and_then(|v| v.first()) {
                 Some(path) => {
                     std::fs::write(path, &image).map_err(|e| {
                         CliError::new(format!("failed to write --output {path:?}: {e}"))
                     })?;
-                    Ok(json!({
+                    let mut value = json!({
                         "size": image.len(),
                         "path": path,
                         "bit_offset": find_bit_signature(&image),
                         "security_flags": security_flags.map(|f| format!("{:#010x}", f)),
                         "status_string": status_string,
-                    }))
+                    });
+                    if maxwell_vftable {
+                        value["maxwell_vftable"] = decode_maxwell_vftable(&image)?;
+                    }
+                    Ok(value)
                 }
                 None => {
+                    if maxwell_vftable {
+                        return decode_maxwell_vftable(&image);
+                    }
                     let version = run(target, QueryVbiosVersion).ok().map(|r| r.output);
                     let dump = invocation.options.contains_key("dump");
                     if dump {
@@ -5882,6 +5896,66 @@ fn vfp_point_type_label(point_type: VfPointType) -> &'static str {
         VfPointType::Dyn => "dyn",
         _ => "unknown",
     }
+}
+
+/// Decode the Maxwell GPU Boost 2.0 V/F ladder from a VBIOS image and emit it
+/// in the get-public-vftable points shape (index / voltage / frequency). The
+/// ladder lives at BIT 'P'+0x34 (v0x10, RE'd off MaxwellBiosTweaker 1.36 via
+/// ILSpy): 79×5B GPC points (u16 half-MHz + vmap index) plus 6×8B pstate
+/// boundary marks. Point voltage = vmap[entry.vmap_index].
+fn decode_maxwell_vftable(image: &[u8]) -> CliResult<Value> {
+    let vb = nvoc_core::legacy_vbios_parser::parse(image)?;
+    let Some(ladder) = &vb.boost_ladder else {
+        return Err(CliError::new(
+            "no boost-ladder table (BIT 'P'+0x34, v0x10) in this VBIOS image — \
+             Maxwell (GM10x/GM20x) expected",
+        ));
+    };
+    let last_index = ladder.entries.len().saturating_sub(1);
+    let points: Vec<Value> = ladder
+        .entries
+        .iter()
+        .enumerate()
+        .map(|(i, e)| {
+            let (voltage_uv, voltage_max_uv) = vb.ladder_voltage_uv(e.vmap_index).unwrap_or((0, 0));
+            json!({
+                "index": i,
+                "frequency_khz": u32::from(e.freq_mhz_x2) * 500,
+                "frequency_mhz": f64::from(e.freq_mhz_x2) / 2.0,
+                "voltage_uv": voltage_uv,
+                "voltage_mv": f64::from(voltage_uv) / 1000.0,
+                "voltage_max_uv": voltage_max_uv,
+                "vmap_index": e.vmap_index,
+            })
+        })
+        .collect();
+    let pstate_marks: Vec<Value> = ladder
+        .marks
+        .iter()
+        .map(|m| {
+            json!({
+                "pstate": nvoc_core::legacy_vbios_parser::pstate_display_name(m.pstate_raw),
+                "code_raw": format!("{:#06x}", m.code_raw),
+                "index": m.ladder_index,
+            })
+        })
+        .collect();
+    Ok(json!({
+        "domain": "graphics",
+        "indexed": true,
+        "source": "vbios-boost-ladder",
+        "table_version": format!("{:#04x}", ladder.ver),
+        "segments": [{
+            "domain": "graphics",
+            "count": ladder.entries.len(),
+            "first_index": 0,
+            "last_index": last_index,
+        }],
+        "missing_domains": [],
+        "pstate_marks": pstate_marks,
+        "points": points,
+        "warnings": vb.warnings,
+    }))
 }
 
 fn get_clock_offset(

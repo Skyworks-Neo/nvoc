@@ -430,6 +430,110 @@ fn pvfp_cell(text: Option<String>, w: usize) -> String {
     }
 }
 
+/// Human format for `get-vbios --maxwell-vftable-decode` — the Maxwell GPU
+/// Boost 2.0 ladder as one aligned bare-number table (`Id | V_min | V_max |
+/// Freq`, units declared once on the separator), mirroring the
+/// private-vftable table style. Voltage = the vmap node's (min, max) in mV.
+/// Any other get-vbios shape (brief summary, combined `--out` payload) falls
+/// back to the generic value block.
+pub(super) fn format_maxwell_vftable_output(output: &Value) -> Vec<String> {
+    if output.get("source").and_then(Value::as_str) != Some("vbios-boost-ladder") {
+        return format_value_block(output, 1);
+    }
+    let Some(points) = output.get("points").and_then(Value::as_array) else {
+        return format_value_block(output, 1);
+    };
+    let mut lines = Vec::new();
+    let version = output
+        .get("table_version")
+        .and_then(Value::as_str)
+        .unwrap_or("?");
+    lines.push(nvoc_cli_common::color::stylize(
+        &format!(
+            "    --- GPU Boost 2.0 ladder v{version} ({} points) --- [V=mV f=MHz]",
+            points.len()
+        ),
+        false,
+    ));
+    let cols = [
+        ("Id", PVFP_W_ID),
+        ("V_min", PVFP_W_VAL),
+        ("V_max", PVFP_W_VAL),
+        ("Freq", PVFP_W_VAL),
+    ];
+    let header = cols
+        .iter()
+        .map(|(h, w)| format!("{h:>w$}", w = w))
+        .collect::<Vec<_>>()
+        .join(" | ");
+    lines.push(nvoc_cli_common::color::stylize(
+        &format!("    {header}"),
+        false,
+    ));
+    for point in points {
+        let id = point
+            .get("index")
+            .and_then(Value::as_i64)
+            .unwrap_or_default();
+        let v_min = point
+            .get("voltage_uv")
+            .and_then(Value::as_f64)
+            .unwrap_or_default()
+            / 1000.0;
+        let v_max = point
+            .get("voltage_max_uv")
+            .and_then(Value::as_f64)
+            .unwrap_or_default()
+            / 1000.0;
+        let freq = point
+            .get("frequency_mhz")
+            .and_then(Value::as_f64)
+            .unwrap_or_default();
+        let cells = [
+            pvfp_cell(Some(id.to_string()), PVFP_W_ID),
+            pvfp_cell(Some(format!("{v_min:.2}")), PVFP_W_VAL),
+            pvfp_cell(Some(format!("{v_max:.2}")), PVFP_W_VAL),
+            pvfp_cell(Some(format!("{freq:.1}")), PVFP_W_VAL),
+        ];
+        lines.push(nvoc_cli_common::color::stylize(
+            &format!("    {}", cells.join(" | ")),
+            false,
+        ));
+    }
+    // pstate boundary marks as one compact legend line under the table
+    if let Some(marks) = output.get("pstate_marks").and_then(Value::as_array) {
+        let items: Vec<String> = marks
+            .iter()
+            .map(|m| {
+                let idx = m.get("index").and_then(Value::as_i64).unwrap_or_default();
+                match m.get("pstate").and_then(Value::as_str) {
+                    Some(ps) => format!("{ps}@{idx}"),
+                    None => format!("@{idx}"),
+                }
+            })
+            .collect();
+        if !items.is_empty() {
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!("    pstate marks: {}", items.join(", ")),
+                false,
+            ));
+        }
+    }
+    for warning in output
+        .get("warnings")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if let Some(w) = warning.as_str() {
+            lines.push(nvoc_cli_common::color::stylize_warning(&format!(
+                "    warning: {w}"
+            )));
+        }
+    }
+    lines
+}
+
 /// Per-segment table header for the private V/F dump. Units are declared
 /// once on the segment separator (`V=mV f=MHz`), the column row is
 /// `ID | V_cur | V_def | F_cur | F_def | V_ext<k> | f_ext<k> … | mode |
