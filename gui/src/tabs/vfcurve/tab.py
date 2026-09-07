@@ -735,12 +735,13 @@ class VFCurveTab:
         from matplotlib.figure import Figure
 
         try:
-            # Follow CTk's EFFECTIVE widget scaling, not the raw OS DPI:
-            # the app raises 100%-scaling displays to a 1.25 UI floor
-            # (App._apply_min_ui_scale), and the chart must grow with the
-            # rest of the UI — at raw 1.0 the plot reads flat and its
-            # point-sized fonts stay tiny next to the floored UI text.
-            scale = ctk.ScalingTracker.get_widget_scaling(self.app)
+            # Chart density keys off the app's OWN floor package, not CTk's
+            # widget scaling: the widget/window half of the 100%-display
+            # floor was reverted (de-CTk'd panels draw point-sized fonts
+            # CTk scaling can't move — inflating the chrome only made big
+            # buttons around small text), while the chart keeps its floored
+            # look (see App._apply_min_ui_scale).
+            scale = self.app._effective_ui_scale()
         except Exception:
             scale = self._get_screen_dpi_scale(self.app)
         fig_dpi = max(72, round(100 * scale))

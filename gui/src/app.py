@@ -294,10 +294,12 @@ class App(ctk.CTk):
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
 
-        # Minimum effective UI scale (see _apply_min_ui_scale). Must run
-        # BEFORE any widget construction so the whole first layout — fonts,
-        # paddings, window geometry, and the matplotlib chart density that
-        # follows CTk's scaling — is built at the floored factor.
+        # Chart-scale floor package (see _apply_min_ui_scale). Runs early so
+        # the first chart build reads the floored factor; it deliberately
+        # does NOT touch CTk's global widget/window scaling any more — the
+        # de-CTk'd panels draw point-sized fonts that scaling can't move,
+        # so the old widget inflation just built oversized chrome around
+        # unchanged text.
         self._ui_scale_multiplier_applied: Optional[float] = None
         self._apply_min_ui_scale()
 
@@ -925,12 +927,16 @@ class App(ctk.CTk):
         super().geometry(spec)
         self._startup_geometry_reapply = None
 
-    # The layout (fonts, paddings, slider hit-targets, chart text) is tuned
-    # against the 125%/150% panels this app is developed on. A 100%-scaling
-    # 1080p screen renders everything at 1.0x — the VF-curve plot reads flat
-    # and small and the fonts get hard to see. Raise any OS DPI factor below
-    # the floor up to the floor via CTk's manual multipliers; higher OS
-    # factors (125%, 150%) are passed through untouched.
+    # The chart package (figure density, chart fonts, plot height band) is
+    # tuned against the 125%/150% panels this app is developed on; a 100%-
+    # scaling 1080p screen renders the VF-curve plot flat and small. The
+    # floor below raises the CHART's effective scale to 1.25 on such
+    # screens. It used to also raise the whole UI via CTk's manual
+    # widget/window multipliers — reverted: the de-CTk'd panels (overclock,
+    # fan, buttons) draw point-sized fonts that CTk scaling cannot move,
+    # so the widget inflation only produced oversized chrome around
+    # unchanged text ("big buttons, tiny fonts"). Higher OS factors
+    # (125%, 150%) are passed through untouched.
     _MIN_EFFECTIVE_UI_SCALE = 1.25
 
     @classmethod
@@ -939,6 +945,17 @@ class App(ctk.CTk):
         if os_factor >= cls._MIN_EFFECTIVE_UI_SCALE:
             return 1.0
         return cls._MIN_EFFECTIVE_UI_SCALE / max(0.5, os_factor)
+
+    def _effective_ui_scale(self) -> float:
+        """The effective scale the chart package renders at.
+
+        OS DPI factor multiplied by the sub-floor multiplier — the quantity
+        the VF-curve chart must match (it used to read CTk's widget scaling,
+        which equaled this only while the floor still drove the global
+        multipliers).
+        """
+        os_factor = self._os_dpi_factor()
+        return os_factor * self._min_ui_scale_multiplier(os_factor)
 
     def _os_dpi_factor(self) -> float:
         """The window's real OS DPI factor (per-monitor, Win32 truth).
@@ -976,28 +993,30 @@ class App(ctk.CTk):
         return 1.0
 
     def _apply_min_ui_scale(self) -> None:
-        """Keep the effective UI scale at or above the floor.
+        """Keep the CHART's effective scale at or above the floor.
 
-        Idempotent and cheap when nothing changed (the resize/move hook calls
-        it to catch monitor switches — a window dragged onto a 100% screen
-        gets the floor, dragged back onto 150% the manual multiplier drops
-        back to 1.0).
+        Records the sub-floor multiplier for the VF-curve chart package and
+        logs the startup verdict to the support log ("1080p chart too small"
+        is only diagnosable if the log says whether the floor fired). Does
+        NOT touch CTk's global widget/window scaling any more — that half
+        of the floor inflated every CTk widget while the de-CTk'd panels'
+        point fonts stayed put. Idempotent and cheap when nothing changed
+        (the resize/move hook calls it to catch monitor switches — a window
+        dragged onto a 100% screen gets the chart floor, dragged back onto
+        150% the multiplier drops back to 1.0).
         """
         if getattr(self, "_exiting", False):
             return
         os_factor = self._os_dpi_factor()
         multiplier = self._min_ui_scale_multiplier(os_factor)
         changed = multiplier != getattr(self, "_ui_scale_multiplier_applied", object())
-        # The startup verdict lands in the support log on EVERY run — a
-        # "1080p chart too small" report is only diagnosable if the log says
-        # whether the floor fired (the pre-_build_ui first call has no
-        # console yet; the flag makes the next call with a console write it).
+        # The startup verdict lands in the support log on EVERY run — the
+        # pre-_build_ui first call has no console yet; the flag makes the
+        # next call with a console write it.
         needs_log = not getattr(self, "_ui_scale_logged", False)
         if not changed and not needs_log:
             return
         self._ui_scale_multiplier_applied = multiplier
-        ctk.set_widget_scaling(multiplier)
-        ctk.set_window_scaling(multiplier)
         console = getattr(self, "console", None)
         if console is not None:
             # Only consume the startup-log flag once the line actually
@@ -1006,7 +1025,7 @@ class App(ctk.CTk):
             console.mirror(
                 f"ui scale: os_factor={os_factor:g} multiplier={multiplier:g} "
                 f"effective={os_factor * multiplier:g} "
-                f"(floor {self._MIN_EFFECTIVE_UI_SCALE:g})"
+                f"(chart floor {self._MIN_EFFECTIVE_UI_SCALE:g})"
             )
 
     def _refresh_gpu_list(self):
