@@ -58,15 +58,8 @@ Output: `target/release/nvoc-auto-optimizer` (or `.exe`)
 
 ### Build Stress Testing Tools
 
-#### CUDA Edition (Python + PyTorch)
-
-```bash
-cd cli-stressor-cuda
-uv sync
-# or manual install
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu129
-pip install numpy
-```
+> The former Python/PyTorch CUDA stressor (`cli-stressor-cuda/`) was removed in #200.
+> Use the Rust CUDA stressor (`cli-stressor-cuda-rs/`) instead.
 
 #### OpenCL Edition (Python)
 
@@ -81,6 +74,18 @@ Requires CUDA Toolkit:
 
 ```bash
 cargo run -p cli-stressor-cuda-rs --features cuda -- --duration 30
+```
+
+### Build the Python Bindings (pynvoc)
+
+The GUI and TUI depend on `pynvoc`, a native extension built with maturin from
+`nvoc-python/` (requires the Rust toolchain above; on Windows also the MSVC build tools):
+
+```bash
+cd nvoc-python
+uv sync
+uv run maturin develop --release
+cd ..
 ```
 
 ### Run Frontends
@@ -121,20 +126,38 @@ uv sync --group build
 uv run pyinstaller --clean --noconfirm nvoc_tui.spec
 ```
 
-### Development Checks
+### Development & Test Commands
+
+Development and test commands mirrored from the monorepo's `docs/wiki/Build-and-Test.md`:
 
 ```bash
-# Rust
+# Rust workspace build (excludes the CUDA-Rust stressor)
+cargo build --workspace --exclude cli-stressor-cuda-rs
+
+# Rust format check
 cargo fmt --all -- --check
+
+# Rust lint
 cargo clippy --workspace --exclude cli-stressor-cuda-rs --all-targets -- -D warnings
+
+# Core (nvoc-core) tests
 cargo test --package nvoc-core --all-targets
 
-# Python TUI
-cd tui && uv run pytest
+# Python format & lint (matches CI flags)
+ruff format . --preview --check --output-format=github && ruff check . --output-format=github
 
-# Python format & lint
-ruff format . --check && ruff check .
+# GUI tests
+cd gui && uv sync && uv run pytest
+
+# TUI tests
+cd tui && uv sync && uv run pytest
+
+# GUI run
+cd gui && uv sync && uv run python main.py
 ```
+
+**CI mapping**: mirror the same command families locally before opening a PR —
+Rust build/lint/test first, then Python lint/tests for the projects you touched.
 
 ---
 
@@ -194,15 +217,8 @@ cargo build --release
 
 ### 构建压力测试工具
 
-#### CUDA 版（Python + PyTorch）
-
-```bash
-cd cli-stressor-cuda
-uv sync
-# 或手动安装
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu129
-pip install numpy
-```
+> 原 Python/PyTorch CUDA 压力测试工具（`cli-stressor-cuda/`）已在 #200 中移除。
+> 请改用 Rust CUDA 压力测试工具（`cli-stressor-cuda-rs/`）。
 
 #### OpenCL 版（Python）
 
@@ -217,6 +233,18 @@ uv sync
 
 ```bash
 cargo run -p cli-stressor-cuda-rs --features cuda -- --duration 30
+```
+
+### 构建 Python 绑定（pynvoc）
+
+GUI 与 TUI 依赖 `pynvoc`——一个通过 maturin 从 `nvoc-python/` 构建的原生扩展
+（需要上文的 Rust 工具链；Windows 上还需要 MSVC 构建工具）：
+
+```bash
+cd nvoc-python
+uv sync
+uv run maturin develop --release
+cd ..
 ```
 
 ### 运行前端
@@ -257,17 +285,37 @@ uv sync --group build
 uv run pyinstaller --clean --noconfirm nvoc_tui.spec
 ```
 
-### 开发检查
+### 开发与测试命令
+
+开发与测试命令与 monorepo 的 `docs/wiki/Build-and-Test.md` 保持一致：
 
 ```bash
-# Rust
+# Rust workspace 构建（不含 CUDA-Rust 压力测试）
+cargo build --workspace --exclude cli-stressor-cuda-rs
+
+# Rust 格式检查
 cargo fmt --all -- --check
+
+# Rust lint
 cargo clippy --workspace --exclude cli-stressor-cuda-rs --all-targets -- -D warnings
+
+# 核心（nvoc-core）测试
 cargo test --package nvoc-core --all-targets
 
-# Python TUI
-cd tui && uv run pytest
+# Python 格式与 lint（与 CI 参数一致）
+ruff format . --preview --check --output-format=github && ruff check . --output-format=github
 
-# Python 格式与 lint
-ruff format . --check && ruff check .
+# GUI 测试
+cd gui && uv sync && uv run pytest
+
+# TUI 测试
+cd tui && uv sync && uv run pytest
+
+# GUI 运行
+cd gui && uv sync && uv run python main.py
 ```
+
+**CI 对应关系**：提交 PR 前请在本地运行相同的命令族——
+先 Rust 构建/lint/测试，再针对改动过的项目运行 Python lint/测试。
+
+---
