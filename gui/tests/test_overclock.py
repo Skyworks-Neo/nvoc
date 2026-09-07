@@ -155,16 +155,19 @@ class FakeApp:
 
     def run_native_action(self, description: str, action, on_finished=None) -> bool:
         # Mirror the backend worker: run the action, catch its exception
-        # (error output), and never let it escape into the caller.
+        # (error output), and never let it escape into the caller. The
+        # finish code mirrors NativeBackend.run_action too (-1 on failure).
         self.actions.append(description)
+        code = -1
         try:
             output = action(self.native)
         except Exception as exc:
             self.action_outputs.append(f"{exc}")
         else:
             self.action_outputs.append(output)
+            code = 0
         if on_finished is not None:
-            on_finished(0)
+            on_finished(code)
         return True
 
     def after(self, _delay: int, callback) -> None:
@@ -1297,8 +1300,9 @@ def test_pstate_lock_mem_range_failure_falls_back_to_pin() -> None:
     tab.pstate_selector = _FakePstateSelector(("P0", "P2"))
 
     tab._apply_pstate_lock()
-    # FakeApp.after runs the fallback inline: mem-range attempt raises
-    # (recorded), then the pin re-apply fires.
+    # The pin re-apply rides the failed action's on_finished (finish code -1
+    # on the mem-range attempt): the mem-range call raises (recorded), then
+    # the fallback pin fires.
     assert app.native.calls == [
         ("set_nvapi_pstate_lock", "GPU0", "P0", "P2"),
         ("set_pstate_native_lock", "GPU0", "P0"),
@@ -1310,6 +1314,32 @@ def test_pstate_lock_mem_range_failure_falls_back_to_pin() -> None:
         "falling back to the native single-P-State pin" in m
         for m in app.console.messages
     )
+
+
+def test_pstate_fallback_survives_busy_mainloop() -> None:
+    # Regression: the pin used to dispatch via app.after(0) from the
+    # worker's except block — while the first action still held the
+    # _action_running gate — so a busy mainloop ran it into "Another native
+    # action is already running" and the pin never applied. The fallback
+    # must ride the action's on_finished instead. Deferring after()
+    # callbacks here stands in for the busy mainloop: under the old
+    # dispatch the fallback would sit unflushed in `deferred` and this
+    # test would see no pin.
+    tab, app = make_tab(mem_lock_error=RuntimeError("Not Supported"))
+    tab.pstate_selector = _FakePstateSelector(("P0", "P2"))
+    deferred: list = []
+    app.after = lambda _delay, callback: deferred.append(callback)
+
+    tab._apply_pstate_lock()
+
+    # No cross-thread marshal needed — the fallback rode on_finished.
+    assert deferred == []
+    assert app.native.calls == [
+        ("set_nvapi_pstate_lock", "GPU0", "P0", "P2"),
+        ("set_pstate_native_lock", "GPU0", "P0"),
+    ]
+    assert tab._pstate_pin_fallback is True
+    assert tab.pstate_selector.point_mode is True
 
 
 def test_pstate_pin_sticky_after_fallback() -> None:

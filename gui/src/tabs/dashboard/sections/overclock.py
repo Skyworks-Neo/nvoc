@@ -2367,12 +2367,14 @@ class OverclockTab:
         The mem-range range lock is always the first choice. A runtime
         failure on it means the part is older than Kepler (the NVML pstate
         mem-clock query it derives the window from is Not Supported there) —
-        the worker-thread exception can't switch widgets itself, so it
-        re-raises into the app's error path and the user's retry (or the
-        `_pstate_pin_fallback` re-apply below) takes the native single-state
-        pin. When the derived window also overlaps P-States outside the
-        requested range (identical memory clocks, e.g. after a VBIOS edit)
-        the lock still applies and the setter's warning is surfaced.
+        the fallback re-applies as the native single-state pin. The pin must
+        dispatch from the action's on_finished: the worker's except block
+        still runs inside the held _action_running gate, so a fallback
+        launched there is rejected as "Another native action is already
+        running" and the pin silently never applies. When the derived window
+        also overlaps P-States outside the requested range (identical memory
+        clocks, e.g. after a VBIOS edit) the lock still applies and the
+        setter's warning is surfaced.
         """
         selection = self.pstate_selector.get_selection()
         gpu = self.app.selected_gpu_target()
@@ -2403,10 +2405,12 @@ class OverclockTab:
             return
 
         backend = self._selected_oc_backend()
+        fallback_wanted = False
 
         def apply_mem_range(
             native, gpu=gpu, backend=backend, start=start, end=end
         ) -> str:
+            nonlocal fallback_wanted
             try:
                 warning = (
                     native.set_nvml_pstate_lock(gpu, start, end)
@@ -2416,9 +2420,9 @@ class OverclockTab:
             except Exception:
                 # The window derivation needs the NVML pstate mem-clock
                 # ranges — their absence (Not Supported) marks a pre-Kepler
-                # part. Marshal the fallback to the main thread; this worker
-                # thread must not touch widgets.
-                self.app.after(0, lambda: self._on_mem_range_lock_failed(start, end))
+                # part. Mark the intent only; the re-raise still surfaces
+                # the driver error in the console.
+                fallback_wanted = True
                 raise
             message = (
                 f"Successfully applied {backend.upper()} P-State lock {start}-{end}."
@@ -2429,7 +2433,16 @@ class OverclockTab:
                 return f"Warning: {warning}\n{message}"
             return message
 
-        self.app.run_native_action("apply P-State lock", apply_mem_range)
+        def after_mem_range(code: int) -> None:
+            # Fires on the main thread after the worker released the
+            # _action_running gate, so the pin's run_native_action cannot
+            # collide with this (just-failed) action.
+            if code != 0 and fallback_wanted:
+                self._on_mem_range_lock_failed(start, end)
+
+        self.app.run_native_action(
+            "apply P-State lock", apply_mem_range, on_finished=after_mem_range
+        )
 
     def _unlock_pstate_lock(self):
         """Remove P-State lock for the selected OC backend.
