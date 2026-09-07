@@ -943,7 +943,11 @@ def test_vfcurve_refresh_requested_inflight_reruns_after_landing() -> None:
     submitted[0]()  # inflight worker lands
 
     assert controller._refresh_pending is False
-    assert len(submitted) == 2  # deferred refresh re-submitted
+    # The deferred refresh re-submits; the unsupported verdict ALSO fires the
+    # Maxwell/Kepler BIOS-ladder fallback (one fetch per GPU) in between:
+    # [refresh, bios-ladder fetch, deferred refresh].
+    assert len(submitted) == 3
+    assert "_ensure_bios_curve" in submitted[1].__qualname__
 
 
 def test_vfcurve_lock_voltage_rejects_invalid_point() -> None:

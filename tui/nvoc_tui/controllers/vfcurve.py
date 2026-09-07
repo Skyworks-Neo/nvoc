@@ -109,6 +109,11 @@ class VFCurveController(PaneController):
         self._p0_bounds_gpu: str | None = None
         self._p0_rails: list = []  # raw p0_rails payload
         self._p0_bounds_by_rail: dict[int, dict] = {}  # rail_bit → bounds
+        # vBIOS GPU Boost 2.0 ladder (Maxwell/Kepler) — read-only overlay.
+        # Queried once per GPU: the image read is a multi-escape loop and
+        # the ROM contents don't change under a running session.
+        self._bios_curve: dict | None = None
+        self._bios_curve_gpu: str | None = None
         # A refresh requested while another was inflight (e.g. a GPU switch
         # racing the auto-refresh tick): re-run once the inflight one lands,
         # so the new GPU's verdict (curve or none) is final.
@@ -281,14 +286,18 @@ class VFCurveController(PaneController):
             self._domain_visible = {}
             self.app.cache.curve_visible = {}
             self.app.cache.vf_live_point = None
-            if public_vfp_unsupported(gpc_err):
-                # This GPU has no V/F-curve interface at all — say so on the
-                # plot instead of "query failed" (same verdict as the GUI).
-                self.clear_plot("VF curve not supported on this GPU.")
-            else:
-                if gpc_err:
-                    self.app.write_log(f"pynvoc VFP curve query failed: {gpc_err}")
-                self.clear_plot("VF curve query failed.")
+            if gpc_err and not public_vfp_unsupported(gpc_err):
+                self.app.write_log(f"pynvoc VFP curve query failed: {gpc_err}")
+            # No driver VF interface (unsupported OR failed — the legacy
+            # generations error out in various ways): the vBIOS GPU Boost
+            # 2.0 ladder is THE curve representation. _show_bios_fallback
+            # keeps the verdict message when this GPU has no ladder table.
+            self.clear_plot(
+                "VF curve not supported on this GPU."
+                if public_vfp_unsupported(gpc_err)
+                else "VF curve query failed."
+            )
+            self._show_bios_fallback()
             self._sync_curve_widgets()
             self._consume_pending_refresh()
             return
@@ -325,6 +334,7 @@ class VFCurveController(PaneController):
             p0_gpu = None
         if p0_gpu is not None:
             self._ensure_p0_bounds(p0_gpu)
+            self._ensure_bios_curve(p0_gpu)
         if (
             _curve_direct_readable(self._active_curve)
             and not self._direct_read_inflight
@@ -349,6 +359,13 @@ class VFCurveController(PaneController):
     def render_plot(self) -> None:
         curves = self._curves or {}
         if not curves:
+            # No driver curve: on Maxwell/Kepler the vBIOS ladder IS the
+            # curve representation — render it alone instead of the
+            # "No VF curve loaded" placeholder.
+            ladder_pts = self._bios_ladder_points()
+            if ladder_pts:
+                self._render_bios_only_plot(ladder_pts)
+                return
             self.clear_plot("No VF curve loaded.")
             return
         visible = [
@@ -415,6 +432,35 @@ class VFCurveController(PaneController):
                 marker="braille",
                 color=_EXT_PLOTEXT_COLORS.get(ext["label"], "yellow"),
                 label=f"{ext['label']}·ext",
+            )
+        # vBIOS GPU Boost 2.0 ladder (Maxwell/Kepler): read-only overlay in
+        # the same dual-line style as the GUI — upper bound (V_max) cyan+,
+        # lower bound (V_min) white (the new-card GPC pair), dim-cyan
+        # horizontal segments as the band between. Deliberately NOT green:
+        # the live crosshair is green+ and the two must not be confusable.
+        ladder_pts = self._bios_ladder_points()
+        if ladder_pts:
+            for i, p in enumerate(ladder_pts):
+                plt.plot(
+                    [p["v_min_mv"], p["v_max_mv"]],
+                    [p["freq_mhz"], p["freq_mhz"]],
+                    marker="braille",
+                    color="cyan",
+                    label="BIOS Range" if i == 0 else None,
+                )
+            plt.plot(
+                [p["v_max_mv"] for p in ladder_pts],
+                [p["freq_mhz"] for p in ladder_pts],
+                marker="braille",
+                color="cyan+",
+                label="BIOS Max",
+            )
+            plt.plot(
+                [p["v_min_mv"] for p in ladder_pts],
+                [p["freq_mhz"] for p in ladder_pts],
+                marker="braille",
+                color="white",
+                label="BIOS Min",
             )
         # Live crosshair only on the active curve: GPC frequency from the
         # dashboard status feed, XBAR/MSD from the direct-read poll path.
@@ -931,6 +977,147 @@ class VFCurveController(PaneController):
         self._p0_rails = rails
         self._p0_bounds_by_rail = by_rail
         self.render_plot()
+
+    # ── vBIOS GPU Boost 2.0 ladder (Maxwell/Kepler read-only overlay) ──
+    def _ensure_bios_curve(self, gpu: str) -> None:
+        """Query the vBIOS VF ladder once per GPU (the ROM is immutable).
+
+        Pure display in the TUI — no drag/apply. Short-circuits on a cache
+        hit so the per-tick auto-refresh never re-reads the image (the
+        image read is a multi-escape loop, hundreds of ms).
+        """
+        if self._bios_curve_gpu == gpu and self._bios_curve is not None:
+            return
+        if self._bios_curve_gpu != gpu:
+            self._bios_curve = None
+        self._bios_curve_gpu = gpu
+        if gpu is None:
+            return
+
+        def worker() -> None:
+            curve = self.app.native_service.query_vbios_vf_curve(gpu)
+            try:
+                self.app.call_from_thread(self._on_bios_curve_loaded, gpu, curve)
+            except Exception:
+                pass
+
+        try:
+            self.app.native_service.submit_query(worker)
+        except Exception:
+            pass
+
+    def _on_bios_curve_loaded(self, gpu: str, curve: dict | None) -> None:
+        if self._bios_curve_gpu != gpu:
+            return  # a newer GPU switch superseded this query
+        self._bios_curve = curve if isinstance(curve, dict) else None
+        # Redraw ONLY when a ladder actually landed: on non-ladder
+        # generations the unsupported-verdict message must stay on the
+        # plot, not be wiped by a bare "No VF curve loaded" placeholder.
+        if self._bios_ladder_points():
+            self.render_plot()
+
+    def _bios_ladder_points(self) -> list[dict]:
+        """The curve-window ladder points (payload-driven window; 0..P0 on
+        GM200/GK104), or [] when no ladder / not a ladder generation. Nodes
+        with an INVERTED vBIOS range (min > max, e.g. GM200 idx74) are
+        normalized to lo/hi so segment rendering never folds."""
+        bios = self._bios_curve
+        if not bios or not bios.get("available"):
+            return []
+        try:
+            start = int(bios.get("curve_start_index", 0))
+            end = int(bios.get("curve_end_index", 0))
+        except (TypeError, ValueError):
+            return []
+        out = []
+        for p in bios.get("points", []):
+            if not isinstance(p, dict):
+                continue
+            try:
+                idx = int(p.get("index", -1))
+            except (TypeError, ValueError):
+                continue
+            if not start <= idx <= end:
+                continue
+            lo, hi = sorted((float(p["v_min_mv"]), float(p["v_max_mv"])))
+            out.append({**p, "v_min_mv": lo, "v_max_mv": hi})
+        return out
+
+    def _show_bios_fallback(self) -> None:
+        """Maxwell/Kepler branch of "no driver VF interface": fetch the
+        vBIOS ladder (once per GPU) and render it read-only. Cache hit draws
+        immediately; otherwise _on_bios_curve_loaded → render_plot lands the
+        async result on the same chart."""
+        try:
+            gpu = self.app.selected_gpu_target()
+        except Exception:
+            gpu = None
+        if gpu is None:
+            return
+        self._ensure_bios_curve(gpu)
+        if self._bios_ladder_points():
+            self.render_plot()
+
+    def _render_bios_only_plot(self, ladder_pts: list[dict]) -> None:
+        """BIOS-ladder-only chart for legacy GPUs (no driver VF interface).
+
+        Same dual-line scheme as the overlay path: upper bound (V_max)
+        cyan+, lower bound (V_min) white, dim-cyan horizontal segments as
+        the range band. The live crosshair stays green+ — distinct.
+        """
+        try:
+            widget = self.app.query_one("#vf-plot", PlotextPlot)
+        except Exception:
+            return  # pane not composed / being torn down
+        plt = widget.plt
+        plt.clear_figure()
+        plt.clear_data()
+        plt.clear_color()
+        plt.title("vBIOS VF ladder (read-only)")
+        plt.xlabel("mV")
+        plt.ylabel("MHz")
+        for i, p in enumerate(ladder_pts):
+            plt.plot(
+                [p["v_min_mv"], p["v_max_mv"]],
+                [p["freq_mhz"], p["freq_mhz"]],
+                marker="braille",
+                color="cyan",
+                label="BIOS Range" if i == 0 else None,
+            )
+        plt.plot(
+            [p["v_max_mv"] for p in ladder_pts],
+            [p["freq_mhz"] for p in ladder_pts],
+            marker="braille",
+            color="cyan+",
+            label="BIOS Max",
+        )
+        plt.plot(
+            [p["v_min_mv"] for p in ladder_pts],
+            [p["freq_mhz"] for p in ladder_pts],
+            marker="braille",
+            color="white",
+            label="BIOS Min",
+        )
+        # Live working point (same feed as the modern chart's crosshair:
+        # rail current on x, public graphics clock on y) — display-only.
+        rail_volts = self.app.cache.rail_volts
+        live_voltage = (
+            rail_volts[0][1] if rail_volts else self.app.cache.status.get("voltage_mv")
+        )
+        live_clock = self.app.cache.status.get("gpu_clock_mhz")
+        if isinstance(live_voltage, (int, float)) and isinstance(
+            live_clock, (int, float)
+        ):
+            plt.scatter(
+                [float(live_voltage)],
+                [float(live_clock)],
+                marker="braille",
+                color="green+",
+                label="Live Point",
+            )
+            plt.vline(float(live_voltage), color="green+")
+            plt.hline(float(live_clock), color="green+")
+        widget.refresh()
 
     def _active_p0_bounds(self) -> "dict | None":
         """The P0 bounds dict of the ACTIVE curve's rail (primary fallback).
