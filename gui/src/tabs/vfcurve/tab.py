@@ -30,6 +30,9 @@ _TEXT_FG_DIM = "#b3b3b3"  # 'gray70' hints
 _FONT_BODY = ("Segoe UI", 11)
 _FONT_HEADER = ("Segoe UI", 13, "bold")
 _CARD_KW = dict(border_width=1, border_color="#1f4e79", corner_radius=10)
+# Line-gap sentinel for the BIOS ladder segments — must be NaN, never None
+# (None flips matplotlib onto a categorical axis: ghost tick marks).
+_NAN = float("nan")
 
 # ── Multi-curve palette ──
 # Per-curve current/default colors. The current/default line styles
@@ -380,6 +383,13 @@ class VFCurveTab:
     # ── Chart export directory (relative to GUI project root) ──
     _EXPORT_DIR = "vfp_cache"
     _DEFAULT_AUTO_REFRESH_INTERVAL_MS = 1000
+    # vBIOS ladder state — class-level defaults so instances built via
+    # __new__ (the test pattern) can call ensure_p0_bounds → _ensure_bios_curve
+    # without running __init__. _bios_v_max non-None = the chart data IS the
+    # BIOS ladder (upper-bound x array for the current-style line).
+    _bios_curve: Optional[dict] = None
+    _bios_curve_gpu: Optional[str] = None
+    _bios_v_max: Optional[List[float]] = None
 
     @staticmethod
     def _np():
@@ -532,6 +542,11 @@ class VFCurveTab:
         self._dragging_wall: bool = False
         self._p0_rail_bit: int = 0
         self._pending_wall_line = None  # animated dashed axvline (blit overlay)
+        # vBIOS GPU Boost 2.0 ladder (Maxwell/Kepler) — read-only overlay.
+        # Queried once per GPU alongside the P0 bounds: the image read is a
+        # multi-escape loop and the ROM is immutable under a session.
+        self._bios_curve: Optional[dict] = None
+        self._bios_curve_gpu: Optional[str] = None
         # Wall-drag handle: a triangle in the top figure margin (above the
         # axes) whose tip points down at the wall line. Clicks on it have
         # inaxes=None (it's outside the axes), so they never reach the
@@ -1295,6 +1310,10 @@ class VFCurveTab:
             # interface (open family rejected AND no private segments),
             # the previous GPU's curve must leave the chart; a transient
             # error keeps the current display (same-GPU refresh blip).
+            # The legacy generations error out in various ways ("not
+            # supported" but also plain failures), so the fallback fires on
+            # the no-interface verdicts — _show_bios_fallback keeps the
+            # verdict message when this GPU has no ladder table.
             no_vf_interface = public_unsupported or (
                 gpc_err is None
                 and not gpc_points
@@ -1302,11 +1321,18 @@ class VFCurveTab:
             )
             if no_vf_interface:
                 self._clear_curve_display("No VF curve on this GPU")
-                self.app.console.append("[GUI] VF curve not supported on this GPU.\n")
+                if public_unsupported:
+                    self.app.console.append(
+                        "[GUI] VF curve not supported on this GPU.\n"
+                    )
+                else:
+                    self.app.console.append("[GUI] VFP query failed.\n")
+                # Maxwell/Kepler branch: the vBIOS still carries the full
+                # GPU Boost 2.0 ladder — render it as THE curve (read-only)
+                # instead of leaving the dead-end message.
+                self._show_bios_fallback()
             elif gpc_err:
                 self.app.console.append(f"[GUI] VFP query failed: {gpc_err}\n")
-            else:
-                self.app.console.append("[GUI] VFP query failed.\n")
         else:
             self._last_load_ts = _time.monotonic()
             if not self._auto_refreshing:
@@ -1567,6 +1593,7 @@ class VFCurveTab:
         self._voltages = []
         self._frequencies = []
         self._defaults = []
+        self._bios_v_max = None
         self._sel_start = None
         self._sel_end = None
         self._drag_orig_freqs = None
@@ -1667,6 +1694,7 @@ class VFCurveTab:
             # Stale crosshair rail voltage from the previous GPU.
             self._rail_volt_mv = None
         self._p0_bounds_gpu = gpu
+        self._ensure_bios_curve(gpu)
 
         def _worker():
             try:
@@ -1676,6 +1704,117 @@ class VFCurveTab:
             self.app.after(0, lambda: self._on_p0_bounds_loaded(gpu, vr))
 
         self.app.run_background("vfcurve-p0-bounds", _worker)
+
+    def _is_legacy_gpu(self) -> bool:
+        """Maxwell/Kepler 或更旧（core ``is_legacy_voltage``，含 Unknown 的
+        写路径保守归类）。
+
+        Drives the legacy interaction downgrade: the BIOS ladder is the only
+        curve representation, point drag + VFP locks + voltage targeting
+        don't exist on these generations, and space cycles frequency lock
+        directly.
+        """
+        try:
+            idx = self.app.get_current_gpu_index()
+            flags = self.app._gpu_flags_by_idx.get(idx) or {}
+            return flags.get("is_legacy_voltage") is True
+        except Exception:
+            return False
+
+    def _ensure_bios_curve(self, gpu: str) -> None:
+        """Query the vBIOS VF ladder once per GPU (the ROM is immutable).
+
+        Pure display — the ladder is never an edit target. Short-circuits on
+        a cache hit so per-refresh calls never re-read the image.
+        """
+        if self._bios_curve_gpu == gpu and self._bios_curve is not None:
+            return
+        if self._bios_curve_gpu != gpu:
+            self._bios_curve = None
+        self._bios_curve_gpu = gpu
+        if gpu is None:
+            return
+
+        def _worker():
+            try:
+                curve = self.app.backend.query_vbios_vf_curve(gpu)
+            except Exception:
+                curve = None
+            self.app.after(0, lambda: self._on_bios_curve_loaded(gpu, curve))
+
+        self.app.run_background("vfcurve-bios-ladder", _worker)
+
+    def _on_bios_curve_loaded(self, gpu: str, curve: Optional[dict]) -> None:
+        if self._bios_curve_gpu != gpu:
+            return  # a newer GPU switch superseded this query
+        self._bios_curve = curve if isinstance(curve, dict) else None
+        # Adopt into the working arrays + redraw ONLY when a ladder actually
+        # landed: on non-ladder generations the unsupported-verdict message
+        # must stay on the chart, not be wiped by a bare "No data" placeholder.
+        if self._bios_ladder_points() and self._adopt_bios_curve_arrays():
+            self._redraw()
+
+    def _bios_ladder_points(self) -> list:
+        """The curve-window ladder points (marks-derived 5..74 on GM200),
+        or [] when the GPU has no ladder table."""
+        bios = self._bios_curve
+        if not bios or not bios.get("available"):
+            return []
+        try:
+            start = int(bios.get("curve_start_index", 0))
+            end = int(bios.get("curve_end_index", 0))
+        except (TypeError, ValueError):
+            return []
+        return [
+            p
+            for p in bios.get("points", [])
+            if isinstance(p, dict) and start <= int(p.get("index", -1)) <= end
+        ]
+
+    def _adopt_bios_curve_arrays(self) -> bool:
+        """Load the BIOS ladder into the chart's working arrays (READ-ONLY
+        semantics — see _is_legacy_gpu for the interaction downgrade).
+
+        Legacy GPUs have no driver VF curve, but the selection / range-drag /
+        space-frequency-lock interactions all key off ``_voltages``; filling
+        the arrays from the ladder makes them work unchanged. The chart then
+        renders the ladder in the SAME two-line style as the gpc curve, with
+        the bounds swapped per user preference (V_max on the default line,
+        V_min on the current line, blue fill between). Some vBIOS nodes have
+        an INVERTED range (min > max, e.g. GM200 idx74: 1337.5/1281.25) —
+        normalized to lo/hi here so the band never folds. Returns True when
+        the arrays were filled.
+        """
+        ladder_pts = self._bios_ladder_points()
+        if not ladder_pts:
+            return False
+
+        def _clamped(p: dict) -> "tuple[float, float]":
+            lo = float(p["v_min_mv"])
+            hi = float(p["v_max_mv"])
+            return (lo, hi) if lo <= hi else (hi, lo)
+
+        pairs = [_clamped(p) for p in ladder_pts]
+        self._voltages = [lo for lo, _ in pairs]
+        self._bios_v_max = [hi for _, hi in pairs]
+        self._frequencies = [float(p["freq_mhz"]) for p in ladder_pts]
+        self._defaults = [float(p["freq_mhz"]) for p in ladder_pts]
+        return True
+
+    def _show_bios_fallback(self) -> None:
+        """Maxwell/Kepler branch of "no driver VF interface": fetch the
+        vBIOS ladder (once per GPU) and draw it read-only. Cache hit draws
+        immediately; otherwise _on_bios_curve_loaded → _redraw lands the
+        async result on the same chart."""
+        try:
+            gpu = self.app.selected_gpu_target()
+        except Exception:
+            gpu = None
+        if gpu is None:
+            return
+        self._ensure_bios_curve(gpu)
+        if self._bios_ladder_points() and self._adopt_bios_curve_arrays():
+            self._redraw()
 
     @staticmethod
     def _resolve_rail_bit(volt_rail: dict) -> int:
@@ -1775,8 +1914,11 @@ class VFCurveTab:
         rail, so with XBAR/MSD/… selected the triangle would silently adjust
         the GPC voltage rail — disable it to make that explicit. Multi-rail
         parts give xbar/mem their own secondary rail, so dragging there stays
-        meaningful and enabled.
+        meaningful and enabled. Maxwell/Kepler (legacy voltage) have no
+        rail-target write path at all — the BIOS ladder is read-only.
         """
+        if self._is_legacy_gpu():
+            return True
         if self._active_curve == "gpc":
             return False
         return len(sorted(self._p0_bounds_by_rail)) <= 1
@@ -2187,6 +2329,10 @@ class VFCurveTab:
         self._style_axes()
 
         if not self._voltages:
+            ladder_pts = self._bios_ladder_points()
+            if ladder_pts and self._adopt_bios_curve_arrays():
+                return self._redraw(empty_message)
+            self._volt_unit_tick = None
             ax.text(
                 0.5,
                 0.5,
@@ -2282,12 +2428,39 @@ class VFCurveTab:
                 zorder=2.6,
             )
 
+        # (BIOS ladder rendering: the active-curve block below draws it in
+        # the normal two-line style — lower bound on the default line, upper
+        # bound on the current line, blue fill between — when the working
+        # arrays were adopted from the ladder. No separate overlay here.)
+
         # Active curve (default dashed on the base grid + current
         # solid+marker on the CURRENT grid — its own public axis when a
-        # volt offset shifted it; animated).
+        # volt offset shifted it; animated). BIOS-ladder data (Maxwell/
+        # Kepler) reuses the same two-line style with a bound swap: the
+        # default line carries the ladder's V_min (lower bound), the
+        # current line carries V_max (upper bound), blue fill between —
+        # the vmap voltage RANGE per ladder point, drawn as a band.
         g = self._current_grid()
+        bios = self._bios_v_max is not None
+        x_lo = v
+        x_hi = self._bios_v_max if bios else g
+        if bios:
+            # User preference: the UPPER bound (V_max) rides the default
+            # (dashed) style, the LOWER bound (V_min) the current style —
+            # swapped from the driver-curve assignment.
+            band_v = list(v) + list(reversed(self._bios_v_max))
+            band_f = list(d) + list(reversed(f))
+            ax.fill(
+                band_v,
+                band_f,
+                color="#1a3a6b",
+                alpha=0.55,
+                linewidth=0,
+                label="BIOS V range",
+                zorder=1.5,
+            )
         (self._line_default,) = ax.plot(
-            v,
+            x_hi if bios else x_lo,
             d,
             color=active_colors["default"],
             linestyle="--",
@@ -2296,7 +2469,7 @@ class VFCurveTab:
             zorder=2,
         )
         (self._line_current,) = ax.plot(
-            g,
+            x_lo if bios else x_hi,
             f,
             color=active_colors["current"],
             linestyle="-",
@@ -2364,15 +2537,28 @@ class VFCurveTab:
             )
 
             # ── Info popup (right side of axes) ──
+            # BIOS mode: the point's voltage is the full vmap RANGE — show
+            # V_min ~ V_max instead of the single base-grid x.
+            if self._bios_v_max is not None:
+                v_lo = v[s]
+                v_hi = self._bios_v_max[s]
+            else:
+                v_lo = g[s]
+                v_hi = g[e]
             if s == e:
                 # Single point: show V / default F / current F / ΔF vs default
                 cur_f = f[s]
                 ref_f = d[s]
                 delta = cur_f - ref_f
                 sign = "+" if delta >= 0 else ""
+                v_text = (
+                    f"{v_lo:.1f} ~ {v_hi:.1f} mV"
+                    if self._bios_v_max is not None
+                    else f"{v_lo:.1f} mV"
+                )
                 info = (
                     f"  idx : {s}\n"
-                    f"  V   : {g[s]:.1f} mV\n"
+                    f"  V   : {v_text}\n"
                     f"  F   : {cur_f:.1f} MHz\n"
                     f"  dF  : {ref_f:.1f} MHz (default)\n"
                     f"  ΔF  : {sign}{delta:.1f} MHz  "
@@ -2384,7 +2570,7 @@ class VFCurveTab:
                 sign = "+" if avg_delta >= 0 else ""
                 info = (
                     f"  idx : {s} – {e}  ({e - s + 1} pts)\n"
-                    f"  V   : {g[s]:.1f} ~ {g[e]:.1f} mV\n"
+                    f"  V   : {v_lo:.1f} ~ {v_hi:.1f} mV\n"
                     f"  ΔF  : {sign}{avg_delta:.1f} MHz (avg vs default)  "
                 )
 
@@ -2897,6 +3083,15 @@ class VFCurveTab:
             if idx is None:
                 return
 
+            # Legacy (Maxwell/Kepler): drag never edits — a click selects a
+            # SINGLE point; holding and moving extends the range via the
+            # existing selection-drag branch below.
+            if self._is_legacy_gpu():
+                self._sel_start = idx
+                self._sel_end = idx
+                self._redraw()
+                return
+
             # If click inside existing selection → start drag
             if self._sel_start is not None and self._sel_end is not None:
                 s = min(self._sel_start, self._sel_end)
@@ -3195,7 +3390,12 @@ class VFCurveTab:
         has unchecked. XBAR/MSD live data is pushed here by the direct-read
         completion callback instead.
         """
-        if self._active_curve != "gpc" or not self._curve_visible.get("gpc"):
+        # BIOS-only mode (no driver curves): _curve_visible is empty but the
+        # GPC dashboard feed must keep flowing — the crosshair rides the
+        # BIOS ladder there.
+        if self._curves and (
+            self._active_curve != "gpc" or not self._curve_visible.get("gpc")
+        ):
             return
         self._live_pending = (volt_mv, freq_mhz)
 
@@ -3221,8 +3421,10 @@ class VFCurveTab:
         # Only the active+visible curve gets a live-point crosshair. A curve
         # that's unchecked (not visible) is never polled — including GPC, whose
         # dashboard feed is gated in set_live_pending. The active curve is
-        # always visible by construction, but guard anyway.
-        if not self._curve_visible.get(self._active_curve):
+        # always visible by construction, but guard anyway. BIOS-only mode
+        # (no driver curves) polls unconditionally: the crosshair rides the
+        # BIOS ladder.
+        if self._curves and not self._curve_visible.get(self._active_curve):
             self._live_volt = None
             self._live_freq = None
             self._hide_live_point()
@@ -3922,6 +4124,24 @@ class VFCurveTab:
                 return (
                     f"Successfully applied {lock_backend_label} lock for point {idx}."
                 )
+
+            def done(rc: int, local_f=cur_f, backend=lock_backend) -> None:
+                self._locked_points.clear()
+                if rc == 0:
+                    self._set_core_freq_lock_ui(local_f, local_f, backend)
+                self._redraw()
+                self.canvas.draw()
+                self._is_toggling_lock = False
+
+        elif s == e and self._is_legacy_gpu():
+            # Maxwell/Kepler: no VFP point locks (the public VFP family is
+            # Pascal+) — space cycles Unlock <-> Frequency Lock directly,
+            # skipping the VFP stage of the modern-GPU cycle.
+            description = "apply frequency lock"
+
+            def action(native) -> str:
+                self._lock_core_native(native, gpu, lock_backend, cur_f, cur_f)
+                return f"Successfully applied {lock_backend_label} lock at {cur_f} MHz."
 
             def done(rc: int, local_f=cur_f, backend=lock_backend) -> None:
                 self._locked_points.clear()

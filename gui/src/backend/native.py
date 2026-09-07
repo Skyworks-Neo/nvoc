@@ -191,6 +191,24 @@ class NativeBackend:
             except Exception:
                 return None
 
+    def query_vbios_vf_curve(self, gpu: str) -> dict | None:
+        """vBIOS GPU Boost 2.0 ladder (Maxwell/Kepler read-only VF curve).
+
+        Returns the pynvoc ``query_vbios_vf_curve`` dict ({available,
+        curve_start_index, curve_end_index, points, pstate_marks}) or
+        ``None`` on a transient error; ``{available: False}`` on
+        generations without the ladder table. Best-effort wake like the
+        other private reads.
+        """
+        try:
+            return self._pynvoc().query_vbios_vf_curve(gpu)
+        except Exception:
+            self._force_wake(gpu)
+            try:
+                return self._pynvoc().query_vbios_vf_curve(gpu)
+            except Exception:
+                return None
+
     def query_fan_info(self, gpu: str) -> dict | None:
         """NVML fan info (count / min / max / current percent).
 
