@@ -38,6 +38,19 @@ _FONT_HEADER = ("Segoe UI", 13, "bold")
 _FONT_UNIT = ("Segoe UI", 10)
 
 
+def _pstate_sort_key(label: str):
+    """Numeric P-State key for idle-first sorting (p8 before p0).
+
+    Non-numeric labels (defensive: a roster entry that never matched the
+    P<number> shape) sort as 0 — last after the reverse, stable relative
+    to real states.
+    """
+    try:
+        return int(str(label).lstrip("pP") or 0)
+    except ValueError:
+        return 0
+
+
 if TYPE_CHECKING:
     from src.app import App
 
@@ -1737,6 +1750,14 @@ class OverclockTab:
             seen.add(label)
             normalized.append(label)
 
+        # Canonical order idle-first (p8 → p0), regardless of the reporting
+        # backend: NVML's supported-performance-states enumerates idle-first,
+        # but the NVAPI pstates20 roster (the fallback on legacy drivers
+        # where NVML is absent) lists max-first — unsorted, the same selector
+        # rendered mirrored on old cards, and the default selection (last
+        # slot = the max-perf endpoint) silently became the idle state.
+        normalized.sort(key=_pstate_sort_key, reverse=True)
+
         # A fresh p-state roster means a get/GPU-switch refresh — drop any
         # mem-range-failure fallback state from the previous GPU (the pin
         # re-arms per GPU when its own mem-range attempt fails).
@@ -1758,7 +1779,9 @@ class OverclockTab:
         derivation needs is Not Supported (GT730/391.35), so the range lock
         can never succeed — switch to the native single-P-State pin. The pin
         has no range form, so fuse the selector into point-mode and re-apply
-        with the range's high-perf endpoint (start).
+        with the range's high-perf endpoint (start). Runs on the main thread
+        from the mem-range action's on_finished — by then the failed action
+        has released the native-action gate, so the pin's apply goes through.
         """
         gpu = self.app.selected_gpu_target()
         if gpu is None:

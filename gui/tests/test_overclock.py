@@ -1372,6 +1372,22 @@ def test_pstate_fallback_cleared_on_pstate_refresh() -> None:
     assert tab.pstate_selector.point_mode is False
 
 
+def test_supported_pstates_normalized_idle_first() -> None:
+    # Canonical idle-first roster regardless of the reporting backend:
+    # NVML enumerates P8..P0, but the NVAPI pstates20 fallback on legacy
+    # drivers lists max-first — unsorted, the selector rendered mirrored
+    # there and the default selection (last slot) silently became the
+    # idle state instead of the max-perf endpoint.
+    tab, app = make_tab()
+    tab.pstate_selector = _FakePstateSelector(("P0", "P0"))
+    tab.btn_apply_pstate = FakeSlider("normal")
+    tab.btn_unlock_pstate = FakeSlider("normal")
+
+    tab.set_supported_pstates(["P0", "P2", "P8", "P5"])
+
+    assert tab._supported_pstates == ["p8", "p5", "p2", "p0"]
+
+
 def test_pstate_lock_mem_range_warning_surfaced() -> None:
     # Overlapping P-States outside the requested range (identical memory
     # clocks after a VBIOS edit): applied anyway, warning surfaced first.
