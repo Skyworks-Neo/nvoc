@@ -499,10 +499,10 @@ fn push_pvfp_header(
         let legend: Vec<String> = ext_slots
             .iter()
             .map(|&k| {
-                if k == 0 {
-                    if let Some(nm) = bin_ext_name {
-                        return format!("ext{k}={nm}");
-                    }
+                if k == 0
+                    && let Some(nm) = bin_ext_name
+                {
+                    return format!("ext{k}={nm}");
                 }
                 match roster.get(k) {
                     Some(nm) => format!("ext{k}={nm}"),
