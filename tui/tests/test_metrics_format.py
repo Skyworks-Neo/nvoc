@@ -43,7 +43,9 @@ def test_format_metric_lines_full() -> None:
     assert "PSTATE: P0" in text
     assert "LOAD: GPU 100% | MC 0% | VEN 12% | BUS 2%" in text
     assert "VRAM: 2.0 / 8.0 GB" in text
-    assert "FAN: 1234 RPM @ 45%" in text
+    # Exact line match: a substring assert would also match the duplicated
+    # "FAN: FAN: ..." prefix this line once had.
+    assert "FAN: 1234 RPM @ 45%\n" in text + "\n"
     assert "PCIE: Gen4/4 x16" in text
     # PCIe generation prepended as "Gen<cur>/<max>".
     # Bidirectional bandwidth appended after lane count, nvitop-style (↑Tx ↓Rx).
@@ -295,5 +297,8 @@ def test_format_metric_lines_multi_cooler_labels() -> None:
 
     text = "\n".join(_format_metric_lines(status, "---"))
 
-    assert "FAN1: 1000 RPM @ 30%" in text
-    assert "FAN2: 2000 RPM @ 50%" in text
+    # The line-level "FAN:" key stays single; per-cooler indices ride the
+    # parts without a second colon ("FAN: FAN1 1000 RPM @ 30% | ...").
+    assert "FAN1 1000 RPM @ 30%" in text
+    assert "FAN2 2000 RPM @ 50%" in text
+    assert "FAN: FAN1" in text

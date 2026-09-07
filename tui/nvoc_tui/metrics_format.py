@@ -296,8 +296,10 @@ def _format_metric_lines(status: dict, architecture: str) -> list[str]:
         level_s = (
             f"{round(float(level))}%" if isinstance(level, (int, float)) else "---"
         )
-        label = "FAN" if len(valid_coolers) == 1 else f"FAN{idx}"
-        fan_parts.append(f"{label}: {rpm_s} RPM @ {level_s}")
+        # The line-level "FAN:" prefix already names the field; the inner
+        # index (no second colon) only disambiguates multi-cooler cards.
+        label = "" if len(valid_coolers) == 1 else f"FAN{idx} "
+        fan_parts.append(f"{label}{rpm_s} RPM @ {level_s}")
     fan_text = " | ".join(fan_parts) if fan_parts else "---"
 
     lanes = status.get("pcie_lanes")
