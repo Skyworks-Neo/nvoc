@@ -3,6 +3,7 @@ pub mod dll_path;
 mod error;
 mod gpu;
 mod gpu_type;
+pub mod legacy_vbios_parser;
 mod nvapi;
 pub mod nvml;
 pub mod operation;
