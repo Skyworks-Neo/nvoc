@@ -1944,7 +1944,7 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .value_name("POLICY")
             .action(ArgAction::Append)
             .global(true)
-            .help("Fan policy such as manual or continuous"),
+            .help("Fan control policy, default manual. NVML: manual, auto (= continuous, temperature-driven). NVAPI: those plus perf, discrete, hybrid, software (silent-ODT), default, default32"),
         "policy-index" => Arg::new("policy-index")
             .long("policy-index")
             .value_name("INDEX")
