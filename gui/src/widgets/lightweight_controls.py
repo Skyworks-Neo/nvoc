@@ -424,6 +424,7 @@ class SegmentRangeSelector(ctk.CTkFrame):
         self._canvas.bind("<ButtonRelease-1>", self._on_release)
 
         self._summary_text = "No P-State data"
+        self._summary_font = tk_font.Font(root=self, family="Segoe UI", size=8)
 
         self.set_values(self._values)
 
@@ -672,13 +673,22 @@ class SegmentRangeSelector(ctk.CTkFrame):
             )
 
         # Centered summary at the subtitle height (matches the toggle
-        # selector's watt captions).
+        # selector's watt captions), but anchored HORIZONTALLY to the active
+        # selection — a row-wide centered caption sat hundreds of pixels away
+        # from the handle it describes on wide cards. Ranges anchor to the
+        # segment midpoint, points to the fused handle; the clamp keeps the
+        # text inside the canvas when the selection rides an edge node.
+        text_w = self._summary_font.measure(self._summary_text)
+        mid_x = (positions[self._start_idx] + positions[self._end_idx]) / 2.0
+        summary_x = min(
+            max(mid_x, text_w / 2 + 2), max(text_w / 2 + 2, w - text_w / 2 - 2)
+        )
         c.create_text(
-            w / 2,
+            summary_x,
             h - 9,
             text=self._summary_text,
             fill="#7e8da1",
-            font=("Segoe UI", 8),
+            font=self._summary_font,
         )
 
 
