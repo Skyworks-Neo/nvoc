@@ -14,14 +14,14 @@ use nvoc_core::{
     QueryNvapiRatedTdp, QueryNvapiTargetTempPolicies, QueryNvapiTgpWattRange, QueryNvapiThermalSim,
     QueryNvapiVoltRails, QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates,
     QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
-    QueryThrottleReasons, QueryVfpPointVoltage, QueryVoltageBoost, ResetAutoboostStatus,
-    ResetCoolerLevels, ResetFanSpeed, ResetFreqLock, ResetLegacyApplicationFreqLock,
-    ResetLegacyGpcRailOvervoltLimit, ResetNvapiFanControl, ResetNvapiPowerLimits,
-    ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetNvapiVfpPrivate, ResetPstateGlobalFreqOffset,
-    ResetPublicVftableGpcLock, ResetPublicVftableOffset, ResetVfpFrequencyLock,
-    SetApplicationsClocks, SetAutoboostStatus, SetAutoboostSupport, SetClockOffset,
-    SetCoolerLevels, SetDomainVfpDeltas, SetEdid, SetFanRpm, SetFanSpeed, SetFanStop,
-    SetGpcVoltLock, SetLegacyClocks, SetLockedClocks, SetNvapiBackgroundOcScanner,
+    QueryThrottleReasons, QueryVbiosImage, QueryVfpPointVoltage, QueryVoltageBoost,
+    ResetAutoboostStatus, ResetCoolerLevels, ResetFanSpeed, ResetFreqLock,
+    ResetLegacyApplicationFreqLock, ResetLegacyGpcRailOvervoltLimit, ResetNvapiFanControl,
+    ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetNvapiVfpPrivate,
+    ResetPstateGlobalFreqOffset, ResetPublicVftableGpcLock, ResetPublicVftableOffset,
+    ResetVfpFrequencyLock, SetApplicationsClocks, SetAutoboostStatus, SetAutoboostSupport,
+    SetClockOffset, SetCoolerLevels, SetDomainVfpDeltas, SetEdid, SetFanRpm, SetFanSpeed,
+    SetFanStop, SetGpcVoltLock, SetLegacyClocks, SetLockedClocks, SetNvapiBackgroundOcScanner,
     SetNvapiClkDomainOffset, SetNvapiCoreVoltageControl, SetNvapiDNotifier, SetNvapiDynamicBoost,
     SetNvapiPStateNative, SetNvapiPerfFreqCap, SetNvapiPerfLevelLock, SetNvapiPmgrVoltageArbiter,
     SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiSensorLimits, SetNvapiTargetTemp,
@@ -1828,6 +1828,114 @@ fn query_public_vftable(
         })
     })?;
     py_value(py, &value)
+}
+
+/// vBIOS GPU Boost 2.0 阶梯（Maxwell/Kepler 的 "隐藏" V/F 曲线）。
+///
+/// 读整片 VBIOS 镜像后用 core 的 legacy_vbios_parser 解码 boost-ladder
+/// v0x10 表（BIT 'P'+0x34）：79×5B 点（u16 半 MHz + vmap 电压索引）+ pstate
+/// 边界标记。`curve_start_index`/`curve_end_index` 从标记推导出实际曲线窗口
+/// （最低速 pstate 边界 .. P0 边界，GM200 = 5..74；两端之外的点是低功耗态
+/// 和填充点，绘图时应排除）。电压取 vmap 节点 (min,max) µV → mV。只读。
+#[pyfunction]
+#[pyo3(signature = (gpu))]
+fn query_vbios_vf_curve(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
+    let gpu = gpu.to_string();
+    // GIL released: the image read is a multi-escape loop (2 KB chunks).
+    let value = py.detach(|| {
+        with_target(&gpu, "nvapi", |target| {
+            let image = run(target, QueryVbiosImage).map_err(to_py_err)?.output;
+            bios_vf_curve_value(&image).map_err(to_py_err)
+        })
+    })?;
+    py_value(py, &value)
+}
+
+/// 阶梯表 → 绘图就绪 payload（GUI/TUI 共用）。表缺失（非 Maxwell/Kepler
+/// 世代镜像）时返回 `{"available": false}` 而非报错，便于上层静默隐藏。
+fn bios_vf_curve_value(image: &[u8]) -> Result<Value, nvoc_core::Error> {
+    let vb = nvoc_core::legacy_vbios_parser::parse(image)?;
+    let Some(ladder) = &vb.boost_ladder else {
+        return Ok(Value::Object(
+            [("available".to_string(), Value::Bool(false))]
+                .into_iter()
+                .collect(),
+        ));
+    };
+    let points: Vec<Value> = ladder
+        .entries
+        .iter()
+        .enumerate()
+        .map(|(i, e)| {
+            let (vmin, vmax) = vb.ladder_voltage_uv(e.vmap_index).unwrap_or((0, 0));
+            Value::Object(
+                [
+                    ("index".to_string(), u64_value(i as u64)),
+                    (
+                        "freq_mhz".to_string(),
+                        f64_value(f64::from(e.freq_mhz_x2) / 2.0),
+                    ),
+                    ("v_min_mv".to_string(), f64_value(f64::from(vmin) / 1000.0)),
+                    ("v_max_mv".to_string(), f64_value(f64::from(vmax) / 1000.0)),
+                    ("vmap_index".to_string(), u64_value(u64::from(e.vmap_index))),
+                ]
+                .into_iter()
+                .collect(),
+            )
+        })
+        .collect();
+    // 曲线窗口：最低速 pstate（P 编号最大，如 P8=raw7）边界 .. P0 边界。
+    let mark_index = |raw: u8| {
+        ladder
+            .marks
+            .iter()
+            .find(|m| m.pstate_raw == raw)
+            .map(|m| u64::from(m.ladder_index))
+    };
+    let last = ladder.entries.len().saturating_sub(1) as u64;
+    // 绘图窗口从 0 起（低功耗点 0..P8 边界也画进双线）；P8/P0 边界仍由
+    // pstate_marks 携带，终端展示用。
+    let start = 0u64;
+    let end = mark_index(15).unwrap_or(last).min(last);
+    let marks: Vec<Value> = ladder
+        .marks
+        .iter()
+        .map(|m| {
+            Value::Object(
+                [
+                    (
+                        "pstate".to_string(),
+                        nvoc_core::legacy_vbios_parser::pstate_display_name(m.pstate_raw)
+                            .map(Value::String)
+                            .unwrap_or(Value::Null),
+                    ),
+                    ("code_raw".to_string(), text(format!("{:#06x}", m.code_raw))),
+                    ("index".to_string(), u64_value(u64::from(m.ladder_index))),
+                ]
+                .into_iter()
+                .collect(),
+            )
+        })
+        .collect();
+    Ok(Value::Object(
+        [
+            ("available".to_string(), Value::Bool(true)),
+            (
+                "table_version".to_string(),
+                text(format!("{:#04x}", ladder.ver)),
+            ),
+            ("curve_start_index".to_string(), u64_value(start)),
+            ("curve_end_index".to_string(), u64_value(end)),
+            ("points".to_string(), Value::Array(points)),
+            ("pstate_marks".to_string(), Value::Array(marks)),
+            (
+                "warnings".to_string(),
+                Value::Array(vb.warnings.iter().map(text).collect()),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+    ))
 }
 
 /// 原生 GC6 唤醒（force_gc6_exit）。移动端 dGPU 空闲掉电（GCOFF）后，
@@ -4479,6 +4587,7 @@ fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(query_edid, m)?)?;
     m.add_function(wrap_pyfunction!(query_clock_offset, m)?)?;
     m.add_function(wrap_pyfunction!(query_public_vftable, m)?)?;
+    m.add_function(wrap_pyfunction!(query_vbios_vf_curve, m)?)?;
     m.add_function(wrap_pyfunction!(query_vfp_point_voltage, m)?)?;
     m.add_function(wrap_pyfunction!(query_tdp_temp_limits, m)?)?;
     m.add_function(wrap_pyfunction!(probe_voltage_limits, m)?)?;
