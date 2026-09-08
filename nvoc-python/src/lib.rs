@@ -2774,6 +2774,10 @@ fn query_private_vftable(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
                                     ("voltage_uV_max", Value::from(s.voltage_uV_max)),
                                     ("freq_default_mhz_min", Value::from(s.freq_default_mhz_min)),
                                     ("freq_default_mhz_max", Value::from(s.freq_default_mhz_max)),
+                                    (
+                                        "freq_scale_corrected",
+                                        Value::from(s.freq_scale_corrected),
+                                    ),
                                 ])
                             })
                             .collect(),

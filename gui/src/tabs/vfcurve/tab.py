@@ -1339,8 +1339,17 @@ class VFCurveTab:
             if not self._auto_refreshing:
                 cur = self._curves.get(self._active_curve)
                 n = len(cur.voltages) if cur else 0
+                # Segment scale-correction tag (Pascal driver defect): the
+                # private GPC values went through the (f+50)/2 decode.
+                corrected = any(
+                    s.get("freq_scale_corrected")
+                    for s in (clk_data or {}).get("segments", [])
+                    if isinstance(s, dict)
+                )
+                tag = " (corrected)" if corrected else ""
                 self.app.console.append(
-                    f"[GUI] VF curve loaded ({n} points on {self._active_curve.upper()}).\n"
+                    f"[GUI] VF curve loaded ({n} points on "
+                    f"{self._active_curve.upper()}{tag}).\n"
                 )
             self._load_active_curve()
             # P0 voltage-boundary lines: hardware walls are queried once per

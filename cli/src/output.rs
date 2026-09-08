@@ -645,14 +645,22 @@ fn push_pvfp_header(
 ) {
     let units = "[V=mV f=MHz; mode: 0=freq, 1=raw; offset=effect MHz]";
     let sep = match seg {
-        Some(seg) => format!(
-            "    --- bank{} {} {} (index {}..{}) --- {units}",
-            seg.get("bank").and_then(Value::as_i64).unwrap_or_default(),
-            seg.get("domain").and_then(Value::as_str).unwrap_or("?"),
-            seg.get("kind").and_then(Value::as_str).unwrap_or("?"),
-            field_text(seg, "start_index"),
-            field_text(seg, "end_index"),
-        ),
+        Some(seg) => {
+            let corrected = seg
+                .get("freq_scale_corrected")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let corrected_tag = if corrected { " (corrected)" } else { "" };
+            format!(
+                "    --- bank{} {} {}{} (index {}..{}) --- {units}",
+                seg.get("bank").and_then(Value::as_i64).unwrap_or_default(),
+                seg.get("domain").and_then(Value::as_str).unwrap_or("?"),
+                seg.get("kind").and_then(Value::as_str).unwrap_or("?"),
+                corrected_tag,
+                field_text(seg, "start_index"),
+                field_text(seg, "end_index"),
+            )
+        }
         None => format!("    --- points --- {units}"),
     };
     lines.push(nvoc_cli_common::color::stylize(&sep, false));

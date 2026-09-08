@@ -287,6 +287,16 @@ class VFCurveController(PaneController):
         )
         self.app.cache.vf_curve_points = gpc_points if curves else None
         self.app.cache.vf_curves = curves
+        # Segment scale-correction tag (Pascal driver defect): the private
+        # GPC values went through the (f+50)/2 decode.
+        if curves and any(
+            isinstance(s, dict) and s.get("freq_scale_corrected")
+            for s in (clk_data or {}).get("segments", [])
+        ):
+            self.app.write_log(
+                "private GPC frequencies exceeded 3000 MHz on Pascal — "
+                "applied the (f+50)/2 driver-scale correction (corrected)."
+            )
         if curves is None:
             self._curves = {}
             self._curve_visible = {}
