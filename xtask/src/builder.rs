@@ -2,6 +2,8 @@
 //! the single knob.
 
 use crate::args::BuildArgs;
+use crate::nvapi_cache;
+use crate::pathenv;
 use crate::util::{self, Res};
 use std::process::Command;
 
@@ -16,11 +18,17 @@ pub enum CudaMode {
 }
 
 pub fn build(args: &BuildArgs) -> Res<()> {
-    if args.packages.is_empty() {
+    let result = if args.packages.is_empty() {
         build_tree(args)
     } else {
         build_packages(args)
+    };
+    // Convenience that only makes sense after a build that succeeded: put
+    // target/release on the user PATH (idempotent, best-effort).
+    if args.release {
+        pathenv::ensure_release_on_user_path(&util::repo_root());
     }
+    result
 }
 
 fn base(release: bool) -> Command {
@@ -33,6 +41,7 @@ fn base(release: bool) -> Command {
 }
 
 fn build_tree(args: &BuildArgs) -> Res<()> {
+    let root = util::repo_root();
     let label = match args.cuda {
         CudaMode::Cuda12 => "cuda12 (default)",
         CudaMode::Cuda11 => "cuda11 (R470-era drivers)",
@@ -45,7 +54,7 @@ fn build_tree(args: &BuildArgs) -> Res<()> {
     for exclude in workspace_excludes(args.cuda) {
         tree.args(["--exclude", exclude]);
     }
-    util::run(&mut tree)?;
+    nvapi_cache::run_guarded(&root, &mut tree)?;
 
     // auto-optimizer's default feature set already carries the cuda12
     // generation, so only the other two modes need an explicit override.
@@ -53,16 +62,17 @@ fn build_tree(args: &BuildArgs) -> Res<()> {
         let mut optimizer = base(args.release);
         optimizer.arg("-p").arg("nvoc-auto-optimizer");
         optimizer.args(features);
-        util::run(&mut optimizer)?;
+        nvapi_cache::run_guarded(&root, &mut optimizer)?;
     }
 
     let mut stressor = base(args.release);
     stressor.arg("-p").arg("cli-stressor-cuda-rs");
     stressor.args(stressor_feature_args(args.cuda));
-    util::run(&mut stressor)
+    nvapi_cache::run_guarded(&root, &mut stressor)
 }
 
 fn build_packages(args: &BuildArgs) -> Res<()> {
+    let root = util::repo_root();
     for package in &args.packages {
         let mut command = base(args.release);
         command.arg("-p").arg(package);
@@ -73,7 +83,7 @@ fn build_packages(args: &BuildArgs) -> Res<()> {
         {
             command.args(features);
         }
-        util::run(&mut command)?;
+        nvapi_cache::run_guarded(&root, &mut command)?;
     }
     Ok(())
 }

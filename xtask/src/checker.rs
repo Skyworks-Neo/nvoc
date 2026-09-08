@@ -2,6 +2,7 @@
 //! `ci --fmt` auto-fix pass that force-applies formatting and machine
 //! applicable lint suggestions before the gate re-runs.
 
+use crate::nvapi_cache;
 use crate::util::{self, Res};
 use std::process::Command;
 
@@ -34,7 +35,7 @@ pub fn fix_all() -> Res<()> {
             "--allow-dirty",
         ])
         .current_dir(&root);
-    util::run(&mut clippy)?;
+    nvapi_cache::run_guarded(&root, &mut clippy)?;
 
     util::step("auto-fix: clippy --fix (cli-stressor-cuda-rs, no default features)");
     let mut stressor = Command::new("cargo");
@@ -49,7 +50,7 @@ pub fn fix_all() -> Res<()> {
             "--allow-dirty",
         ])
         .current_dir(&root);
-    util::run(&mut stressor)?;
+    nvapi_cache::run_guarded(&root, &mut stressor)?;
 
     let excludes = ruff_exclude_args(&root);
     util::step("auto-fix: ruff format (.)");
@@ -86,7 +87,7 @@ pub fn check() -> Res<()> {
             "warnings",
         ])
         .current_dir(&root);
-    util::run(&mut clippy)?;
+    nvapi_cache::run_guarded(&root, &mut clippy)?;
 
     util::step("clippy: cli-stressor-cuda-rs (no default features)");
     let mut stressor = Command::new("cargo");
@@ -102,7 +103,7 @@ pub fn check() -> Res<()> {
             "warnings",
         ])
         .current_dir(&root);
-    util::run(&mut stressor)?;
+    nvapi_cache::run_guarded(&root, &mut stressor)?;
 
     util::step("ruff format (.)");
     let excludes = ruff_exclude_args(&root);

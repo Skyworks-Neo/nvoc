@@ -6,6 +6,8 @@ mod args;
 mod builder;
 mod checker;
 mod doctor;
+mod nvapi_cache;
+mod pathenv;
 mod runner;
 mod tester;
 mod util;
@@ -24,13 +26,17 @@ fn main() -> ExitCode {
     };
 
     // Every build-bearing command needs the nvapi-rs submodule at the commit
-    // recorded by HEAD; a stale checkout otherwise surfaces as cryptic
+    // recorded by HEAD and a cargo cache consistent with its current content;
+    // a stale checkout or a poisoned nvapi unit otherwise surfaces as cryptic
     // E0425/E0599 errors in nvoc-core. setup runs its own richer doctor.
-    if !matches!(command, Command::Help | Command::Setup(_))
-        && let Err(message) = doctor::ensure_submodule_synced(&util::repo_root())
-    {
-        eprintln!("xtask: {message}");
-        return ExitCode::FAILURE;
+    if !matches!(command, Command::Help | Command::Setup(_)) {
+        let root = util::repo_root();
+        if let Err(message) =
+            doctor::ensure_submodule_synced(&root).and_then(|()| nvapi_cache::ensure_fresh(&root))
+        {
+            eprintln!("xtask: {message}");
+            return ExitCode::FAILURE;
+        }
     }
 
     let result = match command {

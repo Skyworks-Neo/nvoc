@@ -19,4 +19,3 @@ def _close_matplotlib_figures():
     import matplotlib.pyplot as plt
 
     plt.close("all")
-

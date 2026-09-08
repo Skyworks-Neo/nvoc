@@ -3,6 +3,7 @@
 //! gpu-ci.yml runs on hardware. GPU-write paths are deliberately unreachable.
 
 use crate::args::Tier;
+use crate::nvapi_cache;
 use crate::util::{self, Res};
 use std::path::Path;
 use std::process::Command;
@@ -17,7 +18,7 @@ pub fn test(tier: Tier) -> Res<()> {
 fn cargo_test(root: &Path, extra: &[&str]) -> Res<()> {
     let mut command = Command::new("cargo");
     command.arg("test").args(extra).current_dir(root);
-    util::run(&mut command)
+    nvapi_cache::run_guarded(root, &mut command)
 }
 
 fn safe() -> Res<()> {
@@ -66,7 +67,7 @@ fn gpu_readonly() -> Res<()> {
         "--test-threads=1",
     ])
     .current_dir(&root);
-    util::run(&mut core)?;
+    nvapi_cache::run_guarded(&root, &mut core)?;
 
     let mut optimizer = Command::new("cargo");
     optimizer
@@ -80,7 +81,7 @@ fn gpu_readonly() -> Res<()> {
             "gpu_readonly_",
         ])
         .current_dir(&root);
-    util::run(&mut optimizer)?;
+    nvapi_cache::run_guarded(&root, &mut optimizer)?;
 
     util::hint(
         "GPU-write suites are never run by xtask; see core/tests/gpu_write_conservative.rs \
