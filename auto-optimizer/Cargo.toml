@@ -13,12 +13,17 @@ license = "Apache-2.0"
 include = ["/src/**", "/README*", "/LICENSE*"]
 
 [features]
-default = ["stressor-bundled"]
+# The stressor generation selectors mirror cli-stressor-cuda-rs: the bundled
+# stressor must pick exactly one CUDA generation (cuda11 for R470-era drivers,
+# cuda12 otherwise), enforced by compile_error! in the stressor crate.
+default = ["stressor-bundled-cuda12"]
 stressor-bundled = [
   "dep:cli-stressor-cuda-rs",
   "cli-stressor-cuda-rs/cuda",
   "cli-stressor-cuda-rs/vulkan",
 ]
+stressor-bundled-cuda11 = ["stressor-bundled", "cli-stressor-cuda-rs/cuda11"]
+stressor-bundled-cuda12 = ["stressor-bundled", "cli-stressor-cuda-rs/cuda12"]
 stressor-external = []
 
 [dependencies]

@@ -218,14 +218,16 @@ jobs:
       - uses: ./.github/actions/setup-rust
         with:
           cache: "true"
+      # Explicit bundled-generation feature: --all-features would enable both
+      # cuda11 and cuda12, which the stressor crate rejects at compile time.
       - name: Clippy
-        run: cargo clippy --package nvoc-auto-optimizer --all-targets --all-features -- -D warnings
+        run: cargo clippy --package nvoc-auto-optimizer --all-targets --features stressor-bundled-cuda12 -- -D warnings
       - name: Build
-        run: cargo build --package nvoc-auto-optimizer --all-targets --all-features
+        run: cargo build --package nvoc-auto-optimizer --all-targets --features stressor-bundled-cuda12
       # Hardware-gated tests are #[ignore]d and run separately in gpu-ci.yml;
       # this runs the non-GPU unit tests, which previously never ran in CI.
       - name: Test (non-GPU)
-        run: cargo test --package nvoc-auto-optimizer --all-targets --all-features
+        run: cargo test --package nvoc-auto-optimizer --all-targets --features stressor-bundled-cuda12
 
   rust-srv:
     name: srv (windows)
