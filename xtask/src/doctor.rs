@@ -268,7 +268,11 @@ fn bootstrap_python(args: &SetupArgs, root: &Path) -> usize {
             "develop",
             "--release",
         ])
-        .current_dir(root);
+        // maturin resolves pyproject.toml from the working directory; invoked
+        // from the repo root it reads the uv-workspace manifest (no
+        // [build-system]) and aborts, leaving whatever stale wheel uv sync
+        // had cached in place — which then fails the import check below.
+        .current_dir(root.join("nvoc-python"));
     match util::run_dry(&mut command, args.dry_run) {
         Ok(()) => println!("  [ok]   pynvoc native extension built"),
         Err(error) => {
