@@ -64,15 +64,21 @@ extern "C" __global__ void int_alu_stress(
 
 /// Pick the NVRTC virtual-arch target for the device's compute capability.
 ///
-/// Capped at `compute_90`: the CUDA 12.9 NVRTC bundled with cudarc's
+/// Capped at `compute_86` under the cuda11 feature: the CUDA 11.4 NVRTC
+/// knows no newer arch (and 470-era drivers support no newer GPU). Capped at
+/// `compute_90` otherwise: the CUDA 12.9 NVRTC bundled with cudarc's
 /// `cuda-12090` feature may not yet recognize `compute_100` (Blackwell).
-/// Targeting `compute_90` still works on newer GPUs because the driver
+/// Targeting the cap still works on newer GPUs because the driver
 /// JIT-compiles the PTX down to the real architecture, and the
 /// `__CUDA_ARCH__ >= 610` guard in the kernel re-selects the DP4A path at JIT
 /// time.
 fn nvrtc_arch_for(info: &DeviceInfo) -> String {
     let (maj, min) = info.compute_capability.unwrap_or((7, 5));
-    let (tmaj, tmin) = if maj >= 9 { (9, 0) } else { (maj, min) };
+    #[cfg(feature = "cuda11")]
+    let cap = (8, 6);
+    #[cfg(not(feature = "cuda11"))]
+    let cap = (9, 0);
+    let (tmaj, tmin) = if (maj, min) > cap { cap } else { (maj, min) };
     format!("compute_{}{}", tmaj, tmin)
 }
 
