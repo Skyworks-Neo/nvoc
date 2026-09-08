@@ -23,6 +23,16 @@ fn main() -> ExitCode {
         }
     };
 
+    // Every build-bearing command needs the nvapi-rs submodule at the commit
+    // recorded by HEAD; a stale checkout otherwise surfaces as cryptic
+    // E0425/E0599 errors in nvoc-core. setup runs its own richer doctor.
+    if !matches!(command, Command::Help | Command::Setup(_))
+        && let Err(message) = doctor::ensure_submodule_synced(&util::repo_root())
+    {
+        eprintln!("xtask: {message}");
+        return ExitCode::FAILURE;
+    }
+
     let result = match command {
         Command::Help => {
             print!("{}", args::HELP);

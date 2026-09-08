@@ -59,28 +59,85 @@ fn check_git() -> usize {
 }
 
 /// The nvapi-rs submodule is a path dependency of every NVAPI-backed crate, so
-/// its absence blocks everything.
+/// its absence blocks everything. A missing checkout is safe to bootstrap
+/// automatically here; a diverged one may hold intentional nvapi-rs work, so
+/// that case is only reported (see [`ensure_submodule_synced`]).
 fn check_submodule(args: &SetupArgs, root: &Path) -> usize {
-    if root.join("nvapi-rs").join("Cargo.toml").is_file() {
-        println!("  [ok]   nvapi-rs submodule present");
-        return 0;
+    if !root.join("nvapi-rs").join("Cargo.toml").is_file() {
+        println!("  [..]   initializing nvapi-rs submodule");
+        let mut command = Command::new("git");
+        command
+            .args(["submodule", "update", "--init", "nvapi-rs"])
+            .current_dir(root);
+        return match util::run_dry(&mut command, args.dry_run) {
+            Ok(()) => {
+                println!("  [ok]   nvapi-rs submodule initialized");
+                0
+            }
+            Err(error) => {
+                println!("  [FAIL] could not initialize the nvapi-rs submodule ({error})");
+                util::hint("forks need a submodule URL override (see CONTRIBUTING.md):");
+                util::hint(
+                    "git config submodule.nvapi-rs.url git@github.com:<your-org>/nvapi-rs.git",
+                );
+                1
+            }
+        };
     }
-    println!("  [..]   initializing nvapi-rs submodule");
-    let mut command = Command::new("git");
-    command
-        .args(["submodule", "update", "--init"])
-        .current_dir(root);
-    match util::run_dry(&mut command, args.dry_run) {
+    println!("  [..]   checking nvapi-rs submodule against the commit recorded in HEAD");
+    match ensure_submodule_synced(root) {
         Ok(()) => {
-            println!("  [ok]   nvapi-rs submodule initialized");
+            println!("  [ok]   nvapi-rs submodule at the recorded commit");
             0
         }
-        Err(error) => {
-            println!("  [FAIL] could not initialize the nvapi-rs submodule ({error})");
-            util::hint("forks need a submodule URL override (see CONTRIBUTING.md):");
-            util::hint("git config submodule.nvapi-rs.url git@github.com:<your-org>/nvapi-rs.git");
+        Err(message) => {
+            println!("  [FAIL] {message}");
             1
         }
+    }
+}
+
+/// Fails unless the nvapi-rs submodule checkout matches the commit recorded
+/// by HEAD. A stale checkout (very common on machines that pull the main
+/// repository without ever running `git submodule update`) otherwise surfaces
+/// as cryptic E0425/E0599 errors in nvoc-core, because nvapi-rs gains new API
+/// surfaces between recorded commits.
+pub fn ensure_submodule_synced(root: &Path) -> Res<()> {
+    let mut command = Command::new("git");
+    command
+        .args(["submodule", "status", "--", "nvapi-rs"])
+        .current_dir(root);
+    let status = util::capture(&mut command)
+        .map_err(|error| format!("could not query the nvapi-rs submodule state: {error}"))?;
+    let Some(line) = status.lines().next() else {
+        return Err("git reported no nvapi-rs submodule although it is in .gitmodules".to_string());
+    };
+    match submodule_problem(line) {
+        Some(problem) => Err(problem),
+        None => Ok(()),
+    }
+}
+
+/// Maps the first column of a `git submodule status` line to a problem
+/// description: `-` never initialized, `+` checked out aside from the
+/// recorded commit (older machine behind, or an intentional pin), `U`
+/// conflicted.
+fn submodule_problem(line: &str) -> Option<String> {
+    match line.chars().next().unwrap_or(' ') {
+        ' ' => None,
+        '-' => Some(
+            "nvapi-rs submodule is not initialized; run: git submodule update --init nvapi-rs"
+                .to_string(),
+        ),
+        '+' => Some(
+            "nvapi-rs submodule is not at the commit recorded by HEAD; \
+             if it is simply stale, run: git submodule update --init nvapi-rs \
+             (if you intentionally pinned another nvapi-rs revision, keep it \
+             and bump the gitlink in the main repository instead)"
+                .to_string(),
+        ),
+        'U' => Some("nvapi-rs submodule has merge conflicts; resolve them first".to_string()),
+        _ => None,
     }
 }
 
@@ -379,4 +436,21 @@ fn find_field<'a>(version_output: &'a str, field: &str) -> Option<&'a str> {
     version_output
         .lines()
         .find_map(|line| line.strip_prefix(&prefix))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn submodule_status_flags_map_to_problems() {
+        assert!(super::submodule_problem(" 73ff53ab nvapi-rs").is_none());
+        let stale = super::submodule_problem("+73ff53ab nvapi-rs").unwrap();
+        assert!(stale.contains("git submodule update --init nvapi-rs"));
+        let missing = super::submodule_problem("-73ff53ab nvapi-rs").unwrap();
+        assert!(missing.contains("not initialized"));
+        assert!(
+            super::submodule_problem("U73ff53ab nvapi-rs")
+                .unwrap()
+                .contains("merge conflicts")
+        );
+    }
 }
