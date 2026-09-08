@@ -1,7 +1,67 @@
-//! `cargo xtask check`: the local mirror of the ci.yml lint gates.
+//! `cargo xtask check`: the local mirror of the ci.yml lint gates, plus the
+//! `ci --fmt` auto-fix pass that force-applies formatting and machine
+//! applicable lint suggestions before the gate re-runs.
 
 use crate::util::{self, Res};
 use std::process::Command;
+
+/// Auto-apply every compliance fix the toolchain can make on its own:
+/// rustfmt, clippy's machine-applicable suggestions, ruff format and ruff's
+/// fixable lint violations. Verification is deliberately NOT part of this
+/// pass — the caller re-runs [`check`] afterwards, which still fails on
+/// anything the fixers could not resolve.
+pub fn fix_all() -> Res<()> {
+    let root = util::repo_root();
+
+    util::step("auto-fix: rustfmt (cargo fmt --all)");
+    let mut fmt = Command::new("cargo");
+    fmt.args(["fmt", "--all"]).current_dir(&root);
+    util::run(&mut fmt)?;
+
+    // clippy --fix cannot run under -D warnings (the gate would abort before
+    // applying suggestions); the plain run only emits fixable suggestions.
+    // --allow-dirty is required because development trees are rarely clean.
+    util::step("auto-fix: clippy --fix (workspace, CUDA stressor excluded)");
+    let mut clippy = Command::new("cargo");
+    clippy
+        .args([
+            "clippy",
+            "--workspace",
+            "--exclude",
+            "cli-stressor-cuda-rs",
+            "--all-targets",
+            "--fix",
+            "--allow-dirty",
+        ])
+        .current_dir(&root);
+    util::run(&mut clippy)?;
+
+    util::step("auto-fix: clippy --fix (cli-stressor-cuda-rs, no default features)");
+    let mut stressor = Command::new("cargo");
+    stressor
+        .args([
+            "clippy",
+            "-p",
+            "cli-stressor-cuda-rs",
+            "--all-targets",
+            "--no-default-features",
+            "--fix",
+            "--allow-dirty",
+        ])
+        .current_dir(&root);
+    util::run(&mut stressor)?;
+
+    let excludes = ruff_exclude_args(&root);
+    util::step("auto-fix: ruff format (.)");
+    let mut format = util::uv_run(&root, "nvoc-tui", &["ruff", "format", "."]);
+    format.args(&excludes);
+    util::run(&mut format)?;
+
+    util::step("auto-fix: ruff check --fix (.)");
+    let mut lint = util::uv_run(&root, "nvoc-tui", &["ruff", "check", ".", "--fix"]);
+    lint.args(&excludes);
+    util::run(&mut lint)
+}
 
 pub fn check() -> Res<()> {
     let root = util::repo_root();

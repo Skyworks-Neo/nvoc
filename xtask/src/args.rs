@@ -62,6 +62,13 @@ pub struct BuildArgs {
 }
 
 #[derive(Debug)]
+pub struct CiArgs {
+    /// Auto-apply formatting and machine-applicable lint fixes before
+    /// re-running the full gate.
+    pub fmt: bool,
+}
+
+#[derive(Debug)]
 pub enum Command {
     Help,
     Setup(SetupArgs),
@@ -72,7 +79,7 @@ pub enum Command {
         target: RunTarget,
         passthrough: Vec<String>,
     },
-    Ci,
+    Ci(CiArgs),
 }
 
 pub const HELP: &str = "\
@@ -88,6 +95,7 @@ COMMANDS:
     test     Run the test suite (tiered; GPU-write tests are never run)
     run      Launch a component: gui | tui | cli | stressor
     ci       check + test, the local mirror of the ci.yml non-GPU gate
+             (`ci --fmt` force-applies fmt/lint fixes before the gate)
 
 BUILD OPTIONS:
     --release            Build in release mode
@@ -105,6 +113,11 @@ TEST OPTIONS:
                          ignored read-only NVAPI/NVML tests on live hardware.
                          GPU-write tests are never run by xtask; see
                          core/tests/gpu_write_conservative.rs.
+
+CI OPTIONS:
+    --fmt                Force-apply compliance first: cargo fmt, clippy --fix,
+                         ruff format, ruff check --fix; the full gate then
+                         re-runs, so unfixable violations still fail.
 
 EXAMPLES:
     cargo xtask setup
@@ -125,9 +138,20 @@ pub fn parse(tokens: &[String]) -> Result<Command, String> {
         "check" => no_extra(rest, Command::Check),
         "test" => parse_test(rest),
         "run" => parse_run(rest),
-        "ci" => no_extra(rest, Command::Ci),
+        "ci" => parse_ci(rest),
         other => Err(format!("unknown command `{other}`\n\n{HELP}")),
     }
+}
+
+fn parse_ci(rest: &[String]) -> Result<Command, String> {
+    let mut args = CiArgs { fmt: false };
+    for token in rest {
+        match token.as_str() {
+            "--fmt" => args.fmt = true,
+            other => return Err(format!("unknown ci option `{other}`\n\n{HELP}")),
+        }
+    }
+    Ok(Command::Ci(args))
 }
 
 fn no_extra(rest: &[String], command: Command) -> Result<Command, String> {
@@ -324,5 +348,20 @@ mod tests {
     #[test]
     fn unknown_command_fails() {
         assert!(parse(&tokens(&["nonsense"])).is_err());
+    }
+
+    #[test]
+    fn ci_defaults_to_gate_only_and_accepts_fmt() {
+        let cmd = parse(&tokens(&["ci"])).unwrap();
+        let Command::Ci(args) = cmd else {
+            panic!("expected ci");
+        };
+        assert!(!args.fmt);
+        let cmd = parse(&tokens(&["ci", "--fmt"])).unwrap();
+        let Command::Ci(args) = cmd else {
+            panic!("expected ci");
+        };
+        assert!(args.fmt);
+        assert!(parse(&tokens(&["ci", "--nonsense"])).is_err());
     }
 }

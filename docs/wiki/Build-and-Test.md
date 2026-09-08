@@ -5,7 +5,7 @@
 - First-time setup (doctor + bootstrap: submodule, uv envs, pynvoc build):
   `cargo xtask setup` (add `--dry-run` to preview, `--install-missing` to auto-install uv)
 - Local CI mirror (rustfmt + clippy + ruff + safe-tier tests):
-  `cargo xtask ci`
+  `cargo xtask ci` (`cargo xtask ci --fmt` force-applies fmt/lint fixes before the gate)
 - Build the workspace (CUDA stressor generation selectable):
   `cargo xtask build [--release] [--cuda 12|11|none]`
 - Run a component from source:

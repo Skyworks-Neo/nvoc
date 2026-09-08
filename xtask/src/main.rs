@@ -46,7 +46,12 @@ fn main() -> ExitCode {
             target,
             passthrough,
         } => runner::run(target, &passthrough),
-        Command::Ci => checker::check().and_then(|()| tester::test(args::Tier::Safe)),
+        Command::Ci(ci) => {
+            let fixed = if ci.fmt { checker::fix_all() } else { Ok(()) };
+            fixed
+                .and_then(|()| checker::check())
+                .and_then(|()| tester::test(args::Tier::Safe))
+        }
     };
 
     match result {
