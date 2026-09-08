@@ -279,22 +279,22 @@ Reset with `reset-public-vftable-gpc-lock` (same PerfClientLimits line).
 
 ### V/F curve tables family (`vfp`, 14 commands)
 
-| Command | Purpose | 用途 |
-|---|---|---|
-| `get-public-vftable [--domain] [--indexed] [--infer-missing-field] [--output-csv P]` | Public V-F curve (VfPoints line); all domains by default | 公开 V-F curve 表（默认转储全部域） |
-| `set-public-vftable-point-offset POINT DELTA [--domain] [--import-csv P]` | Set one VFP point delta in MHz, or apply a whole CSV curve | 设置单个 VFP 点偏移，或导入整条 CSV 曲线 |
-| `set-public-vftable-range-offset START END DELTA` | Set a VFP point range delta in MHz | 设置 VFP 点区间偏移 |
-| `reset-public-vftable-offset [--domain]` | Reset VFP deltas | 复位 VFP delta |
-| `reset-public-vftable-gpc-lock` | Reset the VFP voltage lock | 复位 VFP 电压锁 |
-| `sync-vfp-memory-pstate` | Copy the memory VFP second-stage curve onto P0 | 将显存 VFP 二段曲线复制到 P0 |
-| `get-private-vftable [--bank] [--domain] [--infer-missing-field] [--dump-records]` | Private ClockClient V/F-points (voltage-indexed, per-bank) | 私有 ClockClient V/F 点 |
-| `set-private-vftable-point-offset BANK INDEX VALUE [--freq-mode] [--raw-converted] [--raw]` | Write one private V/F point (dangerous) | 写一个私有 V/F 点（危险） |
-| `set-private-vftable-range-offset BANK START END VALUE [… modes]` | Batch private V/F edit, one RMW cycle (dangerous) | 批量私有 V/F 编辑（危险） |
-| `reset-private-vftable-offset BANK [--domain] [--mode] [--freq] [--volt] [--slot]` | Clear private V/F overrides the public resets can't reach | 清除公开 reset 路径够不到的私有覆盖 |
-| `get-private-freq-domain-info` | ClkDomains control block: controllable mask + per-domain records | ClkDomains 控制块：可控掩码 + 各域记录 |
-| `get-private-freq-domain-status [DOMAIN]` | Measure domain physical clock (two-sample MEASURE_FREQ) | 测量时钟域物理频率（两次采样） |
-| `set-private-freq-domain-global-offset DOMAIN OFFSET [--freq] [--volt] [--slot] [--temporary]` | Write a per-domain global offset (dangerous XBar write) | 写入域级全局偏移（危险的 XBar 写入） |
-| `reset-private-freq-domain-global-offset [--domain] [--slot] [--freq] [--volt]` | Reset ClkDomains offsets to stock | 复位 ClkDomains 偏移到默认 |
+| Command | Purpose                                                          | 用途                                         |
+|---|------------------------------------------------------------------|----------------------------------------------|
+| `get-public-vftable [--domain] [--indexed] [--infer-missing-field] [--output-csv P]` | Public V-F curve (VfPoints line); all domains by default         | 公开 V-F curve 表（默认转储全部域）          |
+| `set-public-vftable-point-offset POINT DELTA [--domain] [--import-csv P]` | Set one VFP point delta in MHz, or apply a whole CSV curve       | 设置单个 VFP 点偏移，或导入整条 CSV 曲线     |
+| `set-public-vftable-range-offset START END DELTA` | Set a VFP point range delta in MHz                               | 设置 VFP 点区间偏移                          |
+| `reset-public-vftable-offset [--domain]` | Reset VFP deltas                                                 | 复位 VFP delta                               |
+| `reset-public-vftable-gpc-lock` | Reset the VFP voltage lock                                       | 复位 VFP 电压锁                              |
+| `sync-vfp-memory-pstate` | Copy the memory VFP second-pstate curve onto P0                  | 将 第二档pstate 显存的目标频率设置为和P0相同 |
+| `get-private-vftable [--bank] [--domain] [--infer-missing-field] [--dump-records]` | Private ClockClient V/F-points (voltage-indexed, per-bank)       | 私有 ClockClient V/F 点                      |
+| `set-private-vftable-point-offset BANK INDEX VALUE [--freq-mode] [--raw-converted] [--raw]` | Write one private V/F point (dangerous)                          | 写一个私有 V/F 点（危险）                    |
+| `set-private-vftable-range-offset BANK START END VALUE [… modes]` | Batch private V/F edit, one RMW cycle (dangerous)                | 批量私有 V/F 编辑（危险）                    |
+| `reset-private-vftable-offset BANK [--domain] [--mode] [--freq] [--volt] [--slot]` | Clear private V/F overrides the public resets can't reach        | 清除公开 reset 路径够不到的私有覆盖          |
+| `get-private-freq-domain-info` | ClkDomains control block: controllable mask + per-domain records | ClkDomains 控制块：可控掩码 + 各域记录       |
+| `get-private-freq-domain-status [DOMAIN]` | Measure domain physical clock (two-sample MEASURE_FREQ)          | 测量时钟域物理频率（两次采样）               |
+| `set-private-freq-domain-global-offset DOMAIN OFFSET [--freq] [--volt] [--slot] [--temporary]` | Write a per-domain global offset (dangerous XBar write)          | 写入域级全局偏移（危险的 XBar 写入）         |
+| `reset-private-freq-domain-global-offset [--domain] [--slot] [--freq] [--volt]` | Reset ClkDomains offsets to stock                                | 复位 ClkDomains 偏移到默认                   |
 
 Public-table commands use the private NVAPI VfPoints line (`0x21537AD4` family read, VfSetControl `0x0733E009` write per the naming decisions doc). `--import-csv`/`--output-csv` exchange the curve as `voltage,frequency,delta,default_frequency`.
 
