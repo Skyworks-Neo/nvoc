@@ -44,7 +44,7 @@ pub fn check() -> Res<()> {
         .current_dir(&root);
     util::run(&mut stressor)?;
 
-    util::step("ruff format (. --preview --check)");
+    util::step("ruff format (.)");
     let excludes = ruff_exclude_args(&root);
     if !excludes.is_empty() {
         let skipped: Vec<&String> = excludes.iter().skip(1).step_by(2).collect();
@@ -57,11 +57,7 @@ pub fn check() -> Res<()> {
                 .join(", ")
         );
     }
-    let mut format = util::uv_run(
-        &root,
-        "nvoc-tui",
-        &["ruff", "format", ".", "--preview", "--check"],
-    );
+    let mut format = util::uv_run(&root, "nvoc-tui", &["ruff", "format", ".", "--check"]);
     format.args(&excludes);
     util::run(&mut format)?;
 

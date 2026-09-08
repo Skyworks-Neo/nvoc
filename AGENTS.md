@@ -14,7 +14,7 @@ NVOC is a Rust/Python monorepo for NVIDIA GPU overclocking and stress tooling. T
 - `cargo test --package nvoc-core --all-targets`: run non-GPU Rust core tests.
 - `cd gui && uv sync && uv run pytest`: run GUI unit tests.
 - `cd tui && uv sync && uv run pytest`: run TUI unit tests.
-- `ruff format . --preview --check --output-format=github && ruff check . --output-format=github`: mirror CI's Python format and lint checks.
+- `ruff format . --check --output-format=github && ruff check . --output-format=github`: mirror CI's Python format and lint checks.
 - `cd gui && uv sync && uv run python main.py`: run the GUI.
 - `cd tui && uv sync && uv run nvoc-tui`: run the TUI.
 
