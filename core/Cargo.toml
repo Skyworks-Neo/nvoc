@@ -12,10 +12,11 @@ license = "Apache-2.0"
 nvapi = { workspace = true }
 nvml-wrapper = { workspace = true }
 quick-error = { workspace = true }
+# nvml.rs dlopens libnvml.so / nvml.dll by path on every platform.
+libloading = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true }
-libloading = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
