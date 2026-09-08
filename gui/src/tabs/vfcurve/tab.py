@@ -1384,8 +1384,20 @@ class VFCurveTab:
             gpc_curve.source = "public"
             gpc_curve.voltages = [p["voltage_uv"] / 1000.0 for p in gpc_points]
             gpc_curve.frequencies = [p["frequency_khz"] / 1000.0 for p in gpc_points]
+            # Pascal: the public default plane reads all-zero (its private
+            # voltage axis is freq-indexed instead). Fall back to PRIVATE
+            # defaults — NOT public currents: the currents move with the OC
+            # state and would make every apply compound off a moving base.
+            pub_def_populated = sum(
+                1 for p in gpc_points if (p.get("default_frequency_khz") or 0) > 0
+            ) * 2 >= len(gpc_points)
             gpc_curve.defaults = [
-                (p.get("default_frequency_khz") or p["frequency_khz"]) / 1000.0
+                (
+                    (p.get("default_frequency_khz") or 0)
+                    if pub_def_populated
+                    else p["frequency_khz"]
+                )
+                / 1000.0
                 for p in gpc_points
             ]
             gpc_curve.has_fixed = any(
@@ -1471,6 +1483,15 @@ class VFCurveTab:
                 if gpc_points
                 else 0
             )
+            # The default plane must be populated too — an all-zero default
+            # column (driver serves frequencies but no defaults) would
+            # poison every apply (delta = target − default). Private
+            # defaults remain the base in that shape.
+            nonzero_def = (
+                sum(1 for p in gpc_points if (p.get("default_frequency_khz") or 0) > 0)
+                if gpc_points
+                else 0
+            )
             if (
                 gpc_points
                 and len(gpc_points) == len(cd.voltages)
@@ -1480,7 +1501,17 @@ class VFCurveTab:
                 # their OWN voltage grid (shifted under a volt offset — the
                 # current line then extends past the private table's top,
                 # the extrapolated region the driver actually serves).
-                # Defaults stay on the private grid, index-aligned.
+                # Defaults ALSO come from the public read: live 16-series
+                # measurement — after a full reset the public default sits
+                # a small BIAS above the private default, and the public
+                # value is what the driver's own delta arithmetic keys off.
+                # Building the curve on private defaults makes every
+                # apply grow the frequency by that bias (public delta
+                # write = target − public_default, refreshed curve shows
+                # the drift, next apply adds again). Exception: the broken
+                # positive-slot1 state (frequency column zeroed except the
+                # #0 sentinel) — there the public default plane is corrupt
+                # and the private axis stays the authority.
                 diffs = [
                     p["voltage_uv"] / 1000.0 - v
                     for p, v in zip(gpc_points, cd.voltages)
@@ -1490,16 +1521,32 @@ class VFCurveTab:
                     cd.current_voltages = pub_grid
                     cd.grid_shift_mv = (max(diffs) + min(diffs)) / 2.0
                 cd.frequencies = [p["frequency_khz"] / 1000.0 for p in gpc_points]
+                if nonzero_def * 2 >= len(gpc_points):
+                    cd.defaults = [
+                        (p.get("default_frequency_khz") or 0) / 1000.0
+                        for p in gpc_points
+                    ]
                 cd.has_fixed = any(p.get("point_type") == "fixed" for p in gpc_points)
                 cd.source = "hybrid"
             else:
                 # Absent or broken public read (the known breakage: old
                 # driver + positive slot-1 zeroes everything but the #0
-                # sentinel): private currents are the honest view (==
-                # defaults on legacy, live state elsewhere).
+                # sentinel): private currents AND defaults are the honest
+                # view — the public default plane is corrupt there.
                 cd.has_fixed = True
             curves["gpc"] = cd
         elif gpc_curve is not None:
+            # Pascal path (private barred from the default-axis authority).
+            # When its public default plane is the all-zero shape, the
+            # curve's defaults must come from the PRIVATE segment — public
+            # currents would be a moving base under an active OC state.
+            if (
+                self._is_pascal_gpu()
+                and private_gpc is not None
+                and len(private_gpc.defaults) == len(gpc_curve.defaults)
+                and not pub_def_populated
+            ):
+                gpc_curve.defaults = list(private_gpc.defaults)
             curves["gpc"] = gpc_curve
         elif private_gpc is not None:
             # Public absent AND private voltage axis empty — last resort.
