@@ -252,14 +252,16 @@ def test_load_vf_curve(tmp_path: Path) -> None:
 
 
 def test_vf_curve_points_to_series_uses_frequency_as_missing_default() -> None:
-    voltages, frequencies, defaults = vf_curve_points_to_series([
-        {
-            "voltage_uv": 800000,
-            "frequency_khz": 1800000,
-            "default_frequency_khz": 1750000,
-        },
-        {"voltage_uv": 825000, "frequency_khz": 1840000},
-    ])
+    voltages, frequencies, defaults = vf_curve_points_to_series(
+        [
+            {
+                "voltage_uv": 800000,
+                "frequency_khz": 1800000,
+                "default_frequency_khz": 1750000,
+            },
+            {"voltage_uv": 825000, "frequency_khz": 1840000},
+        ]
+    )
 
     assert voltages == [800.0, 825.0]
     assert frequencies == [1800.0, 1840.0]
@@ -639,36 +641,38 @@ def test_normalize_domain_offsets_gates_and_write_bit_mapping() -> None:
     # value_modifiable=False entries are dropped (value fields are not
     # driver data), measure bits (msd 21 / mem 4) never map — only the
     # WRITE bits do (msd 5 / mem 2), and values_kHz[0]=kHz / [1]=µV.
-    raw = _domain_info([
-        {"bit": 0, "value_modifiable": True, "values_kHz": [25000, 100000]},
-        {
-            "bit": 5,
-            "value_modifiable": True,
-            "values_kHz": [0, 50000],
-        },  # msd WRITE bit
-        {
-            "bit": 21,
-            "value_modifiable": True,
-            "values_kHz": [0, 999999],
-        },  # msd MEASURE bit — must be dropped
-        {
-            "bit": 2,
-            "value_modifiable": True,
-            "values_kHz": [0, 0],
-        },  # mem WRITE bit, zero offsets still mapped
-        {
-            "bit": 4,
-            "value_modifiable": True,
-            "values_kHz": [0, 123456],
-        },  # mem MEASURE bit — dropped
-        {
-            "bit": 1,
-            "value_modifiable": False,
-            "values_kHz": [0, 777777],
-        },  # unmodifiable — dropped
-        {"bit": None, "value_modifiable": True, "values_kHz": [1, 2]},
-        {"bit": 3, "value_modifiable": True, "values_kHz": [1]},  # short list
-    ])
+    raw = _domain_info(
+        [
+            {"bit": 0, "value_modifiable": True, "values_kHz": [25000, 100000]},
+            {
+                "bit": 5,
+                "value_modifiable": True,
+                "values_kHz": [0, 50000],
+            },  # msd WRITE bit
+            {
+                "bit": 21,
+                "value_modifiable": True,
+                "values_kHz": [0, 999999],
+            },  # msd MEASURE bit — must be dropped
+            {
+                "bit": 2,
+                "value_modifiable": True,
+                "values_kHz": [0, 0],
+            },  # mem WRITE bit, zero offsets still mapped
+            {
+                "bit": 4,
+                "value_modifiable": True,
+                "values_kHz": [0, 123456],
+            },  # mem MEASURE bit — dropped
+            {
+                "bit": 1,
+                "value_modifiable": False,
+                "values_kHz": [0, 777777],
+            },  # unmodifiable — dropped
+            {"bit": None, "value_modifiable": True, "values_kHz": [1, 2]},
+            {"bit": 3, "value_modifiable": True, "values_kHz": [1]},  # short list
+        ]
+    )
 
     offsets = normalize_domain_offsets(raw)
 
@@ -741,9 +745,9 @@ def test_build_vf_curves_attaches_effective_on_private_gpc() -> None:
         {"index": 0, "voltage_uv": 800000, "frequency_khz": 0, "point_type": "prog"},
         {"index": 1, "voltage_uv": 825000, "frequency_khz": 0, "point_type": "prog"},
     ]
-    domain_info = _domain_info([
-        {"bit": 0, "value_modifiable": True, "values_kHz": [0, 100000]}
-    ])
+    domain_info = _domain_info(
+        [{"bit": 0, "value_modifiable": True, "values_kHz": [0, 100000]}]
+    )
 
     curves = build_vf_curves(gpc_points, None, clk_data, domain_info)
 
@@ -779,9 +783,9 @@ def test_build_vf_curves_sentinel_survivor_still_detected_broken() -> None:
         {"index": i, "voltage_uv": 0, "frequency_khz": 0, "point_type": "fixed"}
         for i in range(1, 4)
     ]
-    domain_info = _domain_info([
-        {"bit": 0, "value_modifiable": True, "values_kHz": [0, 100000]}
-    ])
+    domain_info = _domain_info(
+        [{"bit": 0, "value_modifiable": True, "values_kHz": [0, 100000]}]
+    )
 
     curves = build_vf_curves(gpc_points, None, clk_data, domain_info)
 
@@ -812,9 +816,9 @@ def test_build_vf_curves_no_effective_on_public_source_or_no_offsets() -> None:
             "point_type": "prog",
         },
     ]
-    domain_info = _domain_info([
-        {"bit": 0, "value_modifiable": True, "values_kHz": [0, 100000]}
-    ])
+    domain_info = _domain_info(
+        [{"bit": 0, "value_modifiable": True, "values_kHz": [0, 100000]}]
+    )
 
     curves = build_vf_curves(gpc_points, None, clk_data, domain_info)
     assert curves["gpc"].source == "public"
@@ -841,9 +845,9 @@ def test_build_vf_curves_no_effective_on_healthy_or_shifted_public() -> None:
     clk_data = _private_gpc_clk_data(
         [800000, 825000], currents=[1000.0, 1100.0], defaults=[1000.0, 1100.0]
     )
-    domain_info = _domain_info([
-        {"bit": 0, "value_modifiable": True, "values_kHz": [0, 100000]}
-    ])
+    domain_info = _domain_info(
+        [{"bit": 0, "value_modifiable": True, "values_kHz": [0, 100000]}]
+    )
     healthy_public = [
         {
             "index": 0,
@@ -937,10 +941,12 @@ def test_extract_ext_curves_ampere_xbar_block() -> None:
     xbar_pts = [
         _ext_pt(127 + i, [(2000 + i, 600000), (900 + i, 1000000)]) for i in range(12)
     ]
-    out = extract_ext_curves({
-        "segments": [_ext_seg("gpc", 0, 126), _ext_seg("xbar", 127, 253)],
-        "points": gpc_pts + xbar_pts,
-    })
+    out = extract_ext_curves(
+        {
+            "segments": [_ext_seg("gpc", 0, 126), _ext_seg("xbar", 127, 253)],
+            "points": gpc_pts + xbar_pts,
+        }
+    )
     assert [(e["owner"], e["slot"], e["label"]) for e in out] == [
         ("xbar", 0, "SYS"),
         ("xbar", 1, "MSD"),

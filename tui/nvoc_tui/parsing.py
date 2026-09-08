@@ -836,13 +836,15 @@ def extract_ext_curves(clk_data: dict[str, Any] | None) -> list[dict[str, Any]]:
             continue  # unit sanity (µV-as-mV or garbage never plots)
         if min(freqs) < 10.0 or max(freqs) > 8000.0:
             continue
-        out.append({
-            "owner": owner,
-            "slot": k,
-            "label": label,
-            "volts": volts,
-            "freqs": freqs,
-        })
+        out.append(
+            {
+                "owner": owner,
+                "slot": k,
+                "label": label,
+                "volts": volts,
+                "freqs": freqs,
+            }
+        )
     out.sort(key=lambda e: (e["owner"], e["slot"]))
     return out
 
