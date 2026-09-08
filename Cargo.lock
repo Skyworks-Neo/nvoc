@@ -2173,6 +2173,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "xtask"
+version = "0.2.0-alpha.2"
+
+[[package]]
 name = "zerocopy"
 version = "0.8.56"
 source = "registry+https://github.com/rust-lang/crates.io-index"

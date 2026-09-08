@@ -1,2 +1,7 @@
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
+
+# `cargo xtask <command>` is the one-stop development entry point; the task
+# implementations live in the xtask crate (setup/build/check/test/run/ci).
+[alias]
+xtask = "run -p xtask --"

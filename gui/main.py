@@ -129,8 +129,6 @@ def main() -> int:
     _boot_marker("src imports done")
 
     guard: Optional[Any] = SingleInstanceGuard()
-
-    guard: Optional[Any] = SingleInstanceGuard()
     try:
         if not guard.acquire():
             guard.signal_existing_instance()

@@ -189,15 +189,13 @@ def _extract_ext_curves(clk_data) -> List[dict]:
             continue  # unit sanity (µV-as-mV or garbage never plots)
         if min(freqs) < 10.0 or max(freqs) > 8000.0:
             continue
-        out.append(
-            {
-                "owner": owner,
-                "slot": k,
-                "label": label,
-                "volts": volts,
-                "freqs": freqs,
-            }
-        )
+        out.append({
+            "owner": owner,
+            "slot": k,
+            "label": label,
+            "volts": volts,
+            "freqs": freqs,
+        })
     out.sort(key=lambda e: (e["owner"], e["slot"]))
     return out
 
@@ -3208,12 +3206,10 @@ class VFCurveTab:
                 self._line_current.set_ydata(self._frequencies)
             if self._sel_points is not None:
                 sel_f = self._frequencies[s : e + 1]
-                offsets = self._np().column_stack(
-                    [
-                        self._current_grid()[s : e + 1],
-                        sel_f,
-                    ]
-                )
+                offsets = self._np().column_stack([
+                    self._current_grid()[s : e + 1],
+                    sel_f,
+                ])
                 self._sel_points.set_offsets(offsets)
             self._blit_animated()
             return

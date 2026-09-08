@@ -10,5 +10,10 @@ members = [
 name = "tuna"
 url = "https://pypi.tuna.tsinghua.edu.cn/simple"
 
+[tool.ruff]
+# CI (ci.yml) formats with the preview style; pin it here so plain
+# `ruff format .` (IDEs, pre-commit, manual runs) matches the gate.
+preview = true
+
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F"]

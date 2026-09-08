@@ -7,6 +7,7 @@ members = [
   "srv",
   "cli-stressor-cuda-rs",
   "nvoc-python",
+  "xtask",
 ]
 exclude = ["nvapi-rs"]
 resolver = "3"

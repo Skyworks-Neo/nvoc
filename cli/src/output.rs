@@ -430,16 +430,25 @@ fn pvfp_cell(text: Option<String>, w: usize) -> String {
     }
 }
 
-/// Human format for `get-vbios --maxwell-vftable-decode` — the Maxwell GPU
-/// Boost 2.0 ladder as one aligned bare-number table (`Id | V_min | V_max |
-/// Freq`, units declared once on the separator), mirroring the
-/// private-vftable table style. Voltage = the vmap node's (min, max) in mV.
+/// Human format for `get-vbios --maxwell-vftable-decode` / `--pascal-vp-decode`
+/// — one aligned bare-number table per ladder source, mirroring the
+/// private-vftable table style:
+/// - `vbios-boost-ladder` (Maxwell GPU Boost 2.0): `Id | V_min | V_max | Freq`,
+///   voltage = the vmap node's (min, max) in mV.
+/// - `vbios-vp-ladder` (Pascal+ Virtual P-State): `Id | Freq` — VP points
+///   carry no per-point voltage.
+///
 /// Any other get-vbios shape (brief summary, combined `--out` payload) falls
 /// back to the generic value block.
 pub(super) fn format_maxwell_vftable_output(output: &Value) -> Vec<String> {
-    if output.get("source").and_then(Value::as_str) != Some("vbios-boost-ladder") {
-        return format_value_block(output, 1);
+    match output.get("source").and_then(Value::as_str) {
+        Some("vbios-boost-ladder") => format_boost_ladder_table(output),
+        Some("vbios-vp-ladder") => format_vp_ladder_table(output),
+        _ => format_value_block(output, 1),
     }
+}
+
+fn format_boost_ladder_table(output: &Value) -> Vec<String> {
     let Some(points) = output.get("points").and_then(Value::as_array) else {
         return format_value_block(output, 1);
     };
@@ -518,6 +527,94 @@ pub(super) fn format_maxwell_vftable_output(output: &Value) -> Vec<String> {
                 false,
             ));
         }
+    }
+    for warning in output
+        .get("warnings")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if let Some(w) = warning.as_str() {
+            lines.push(nvoc_cli_common::color::stylize_warning(&format!(
+                "    warning: {w}"
+            )));
+        }
+    }
+    lines
+}
+
+/// Human format for the Pascal+ VP ladder: `Id | Freq` (VP points carry no
+/// voltage), a boost-profile legend under the table, and the memory clock.
+fn format_vp_ladder_table(output: &Value) -> Vec<String> {
+    let Some(points) = output.get("points").and_then(Value::as_array) else {
+        return format_value_block(output, 1);
+    };
+    let mut lines = Vec::new();
+    let generation = output
+        .get("generation")
+        .and_then(Value::as_str)
+        .unwrap_or("?");
+    lines.push(nvoc_cli_common::color::stylize(
+        &format!(
+            "    --- VP ladder ({generation}, {} points) --- [f=MHz; no per-point voltage]",
+            points.len()
+        ),
+        false,
+    ));
+    let cols = [("Id", PVFP_W_ID), ("Freq", PVFP_W_VAL)];
+    let header = cols
+        .iter()
+        .map(|(h, w)| format!("{h:>w$}", w = w))
+        .collect::<Vec<_>>()
+        .join(" | ");
+    lines.push(nvoc_cli_common::color::stylize(
+        &format!("    {header}"),
+        false,
+    ));
+    for point in points {
+        let id = point
+            .get("index")
+            .and_then(Value::as_i64)
+            .unwrap_or_default();
+        let freq = point
+            .get("frequency_mhz")
+            .and_then(Value::as_f64)
+            .unwrap_or_default();
+        let cells = [
+            pvfp_cell(Some(id.to_string()), PVFP_W_ID),
+            pvfp_cell(Some(format!("{freq:.1}")), PVFP_W_VAL),
+        ];
+        lines.push(nvoc_cli_common::color::stylize(
+            &format!("    {}", cells.join(" | ")),
+            false,
+        ));
+    }
+    // boost profiles as a compact legend (limit clocks + mem clock per ID)
+    if let Some(profiles) = output.get("profiles").and_then(Value::as_array) {
+        let items: Vec<String> = profiles
+            .iter()
+            .map(|p| {
+                let id = p.get("id").and_then(Value::as_str).unwrap_or("?");
+                let l1 = p.get("limit1_mhz").and_then(Value::as_f64).unwrap_or(0.0);
+                let l3 = p.get("limit3_mhz").and_then(Value::as_f64).unwrap_or(0.0);
+                match p.get("pstate").and_then(Value::as_str) {
+                    Some(ps) => format!("{id}({ps}) {l1:.0}/{l3:.0}"),
+                    None => format!("{id} {l1:.0}/{l3:.0}"),
+                }
+            })
+            .collect();
+        if !items.is_empty() {
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!("    profiles (limit1/limit3 MHz): {}", items.join(", ")),
+                false,
+            ));
+        }
+    }
+    if let Some(mem) = output.get("mem_clock_mhz").and_then(Value::as_i64) {
+        lines.push(nvoc_cli_common::color::stylize(
+            &format!("    mem clock: {mem} MHz"),
+            false,
+        ));
     }
     for warning in output
         .get("warnings")
@@ -1857,14 +1954,15 @@ fn format_all_clocks_detailed(
         if let Some(dom) = entry.get("ratio_domain").and_then(Value::as_str) {
             let ratio = entry.get("ratio").and_then(Value::as_u64).unwrap_or(0);
             if ratio != 0 {
-                text.push_str(&format!(", ratio → {dom} ×{ratio}"));
+                // ratio is already a percentage (88 = 88% of the parent domain)
+                text.push_str(&format!(", ratio → {dom} × {ratio}%"));
             } else {
                 text.push_str(&format!(", ratio → {dom}"));
             }
         } else if let Some(ratio) = entry.get("ratio").and_then(Value::as_u64)
             && ratio != 0
         {
-            text.push_str(&format!(", ratio ×{ratio}"));
+            text.push_str(&format!(", ratio × {ratio}%"));
         }
         let reserved: Vec<u64> = entry
             .get("reserved")
@@ -2728,6 +2826,38 @@ mod tests {
         assert!(rendered.contains("Watt: Max 350 W, Current 250 W, Min 100 W"));
         assert!(!rendered.contains('{'));
         assert!(!rendered.contains("\"current_watt\""));
+    }
+
+    #[test]
+    fn vp_ladder_formats_id_freq_table_without_voltage() {
+        nvoc_cli_common::color::init(true);
+        let output = json!({
+            "source": "vbios-vp-ladder",
+            "domain": "graphics",
+            "generation": "Pascal",
+            "table_count": 1,
+            "mem_clock_mhz": 1752,
+            "profiles": [
+                {"id": "0x07", "pstate": "P8", "limit1_mhz": 1320.0, "limit3_mhz": 1240.0},
+                {"id": "0x0f", "pstate": "P0", "limit1_mhz": 1911.0, "limit3_mhz": 1811.0}
+            ],
+            "points": [
+                {"index": 0, "frequency_khz": 324000, "frequency_mhz": 324.0},
+                {"index": 1, "frequency_khz": 1911000, "frequency_mhz": 1911.0}
+            ],
+            "warnings": []
+        });
+
+        let lines = format_maxwell_vftable_output(&output);
+        let text = lines.join("\n");
+
+        assert!(text.contains("VP ladder (Pascal, 2 points)"), "{text}");
+        assert!(text.contains("Freq"), "{text}");
+        assert!(!text.contains("V_min"), "{text}");
+        assert!(text.contains("1911.0"), "{text}");
+        assert!(text.contains("profiles (limit1/limit3 MHz)"), "{text}");
+        assert!(text.contains("0x0f(P0) 1911/1811"), "{text}");
+        assert!(text.contains("mem clock: 1752 MHz"), "{text}");
     }
 
     #[test]
