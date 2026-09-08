@@ -421,6 +421,19 @@ fn parse_boost_ladder(r: &Reader, t: usize, warnings: &mut Vec<String>) -> Optio
     let mark_cnt = r.u8(t + 3).unwrap_or(0);
     let entry_len = r.u8(t + 4).unwrap_or(0);
     let entry_cnt = r.u8(t + 5).unwrap_or(0);
+    // Record-shape hardening: only observed on Maxwell (hdr 9, mark 8×6,
+    // entry 5×79) and Kepler (hdr 7, 8×4, 5×53). Other generations may keep
+    // a NON-ladder table at P+0x34 whose version byte happens to be 0x10 —
+    // reject anything off-shape instead of parsing garbage (Pascal/GP104's
+    // P+0x34 pointer is 0 and stays clean either way).
+    if mark_len != 8 || entry_len != 5 || !(1..=8).contains(&mark_cnt) || entry_cnt < 8 {
+        warnings.push(format!(
+            "boost-ladder: off-shape header (mark_len={mark_len} \
+             mark_cnt={mark_cnt} entry_len={entry_len} entry_cnt={entry_cnt}), \
+             skipped"
+        ));
+        return None;
+    }
 
     let mut marks = Vec::new();
     for i in 0..usize::from(mark_cnt) {
@@ -816,14 +829,16 @@ mod tests {
         put(&mut d, 0x70F + 6, &u32le(800_000));
 
         // boost-ladder v0x10 @ 0x780：ver 0x10, hdr 9, mark_len 8, mark_cnt 1,
-        // entry_len 5, entry_cnt 2（形状照抄 GM200 实测，数值缩短）
-        put(&mut d, 0x780, &[0x10, 0x09, 0x08, 0x01, 0x05, 0x02]);
+        // entry_len 5, entry_cnt 8（形状照抄 GM200 实测；8 条目满足
+        // parse_boost_ladder 的 record-shape 硬化下限，数值缩短）
+        put(&mut d, 0x780, &[0x10, 0x09, 0x08, 0x01, 0x05, 0x08]);
         put(&mut d, 0x789, &u16le(0x01E0)); // P0 编码
         put(&mut d, 0x789 + 3, &[0x01]); // 边界在阶梯 idx 1
-        put(&mut d, 0x791, &u16le(0x04A6)); // 595.0 MHz
-        put(&mut d, 0x791 + 4, &[0]); // vmap[0]
-        put(&mut d, 0x796, &u16le(0x0B2D)); // 1430.5 MHz
-        put(&mut d, 0x796 + 4, &[0]);
+        for k in 0..8u16 {
+            let e = 0x791 + k * 5;
+            put(&mut d, usize::from(e), &u16le(0x04A6 + k * 25)); // 595.0 + 12.5k MHz
+            put(&mut d, usize::from(e) + 4, &[0]); // vmap[0]
+        }
         d
     }
 
@@ -862,9 +877,9 @@ mod tests {
         assert_eq!(ladder.marks.len(), 1);
         assert_eq!(ladder.marks[0].pstate_raw, 15);
         assert_eq!(ladder.marks[0].ladder_index, 1);
-        assert_eq!(ladder.entries.len(), 2);
+        assert_eq!(ladder.entries.len(), 8);
         assert_eq!(ladder.entries[0].freq_mhz_x2, 0x04A6);
-        assert_eq!(ladder.entries[1].freq_mhz_x2, 0x0B2D);
+        assert_eq!(ladder.entries[7].freq_mhz_x2, 0x04A6 + 7 * 25);
         assert_eq!(vb.ladder_voltage_uv(0), Some((725_000, 800_000)));
         assert_eq!(vb.ladder_voltage_uv(9), None);
     }
@@ -1127,6 +1142,34 @@ mod tests {
                 .find(|m| m.pstate_raw == 15)
                 .expect("P0 mark");
             assert_eq!(p0m.ladder_index, want_p0_idx, "{path} P0 boundary index");
+        }
+    }
+
+    /// Pascal 及以后：P+0x34 无指针（GP104/P100 实测 = 0）→ 无 boost-ladder；
+    /// 这些世代的 vBIOS 曲线走独立的 Virtual P-State ladder 解码器
+    /// (`--pascal-vp-decode`)，绝不能被本解析器误产垃圾阶梯。
+    #[test]
+    fn pascal_plus_has_no_boost_ladder() {
+        for path in [
+            "../reverse/GP104.rom",
+            "../reverse/p100_vbios.rom",
+            "../reverse/p100-vbios.rom",
+        ] {
+            let Ok(d) = std::fs::read(path) else {
+                eprintln!("skip: {path} not present");
+                continue;
+            };
+            let vb = parse(&d).expect("parse pascal rom");
+            assert!(
+                vb.boost_ladder.is_none(),
+                "{path} must NOT yield a boost-ladder"
+            );
+            assert!(
+                vb.warnings
+                    .iter()
+                    .any(|w| w.contains("boost-ladder: no pointer")),
+                "{path} should warn 'no pointer'"
+            );
         }
     }
 }

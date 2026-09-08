@@ -334,7 +334,9 @@ class VFCurveController(PaneController):
             p0_gpu = None
         if p0_gpu is not None:
             self._ensure_p0_bounds(p0_gpu)
-            self._ensure_bios_curve(p0_gpu)
+        # NOTE: the BIOS ladder is fetched ONLY from the fallback path
+        # (_show_bios_fallback, unsupported/failure verdicts) — Pascal and
+        # later render the driver curve and must never parse the vBIOS.
         if (
             _curve_direct_readable(self._active_curve)
             and not self._direct_read_inflight
@@ -1010,10 +1012,11 @@ class VFCurveController(PaneController):
         if self._bios_curve_gpu != gpu:
             return  # a newer GPU switch superseded this query
         self._bios_curve = curve if isinstance(curve, dict) else None
-        # Redraw ONLY when a ladder actually landed: on non-ladder
-        # generations the unsupported-verdict message must stay on the
-        # plot, not be wiped by a bare "No VF curve loaded" placeholder.
-        if self._bios_ladder_points():
+        # Render ONLY when a ladder actually landed AND no driver curve
+        # exists: on Pascal+ the driver curve owns the chart, and on
+        # non-ladder generations the unsupported-verdict message must stay
+        # on the plot instead of a bare placeholder.
+        if self._bios_ladder_points() and not self._curves:
             self.render_plot()
 
     def _bios_ladder_points(self) -> list[dict]:

@@ -1665,6 +1665,10 @@ class VFCurveTab:
         self._frequencies = curve.frequencies
         self._defaults = curve.defaults
         self._drag_orig_freqs = None
+        # Driver curve data replaces any adopted BIOS ladder arrays — a
+        # stale _bios_v_max from a previous legacy GPU would desync the
+        # band bounds on this curve (length/axis mismatch).
+        self._bios_v_max = None
         # Sync the curve's mutated frequencies back (same list refs, no-op).
         self._rebuild_selector()
         self._apply_curve_data(curve.voltages, curve.frequencies, curve.defaults)
@@ -1695,7 +1699,10 @@ class VFCurveTab:
             # Stale crosshair rail voltage from the previous GPU.
             self._rail_volt_mv = None
         self._p0_bounds_gpu = gpu
-        self._ensure_bios_curve(gpu)
+        # vBIOS ladder is a Maxwell/Kepler-only affordance — Pascal and
+        # later render the driver curve and must never parse the vBIOS.
+        if self._is_legacy_gpu():
+            self._ensure_bios_curve(gpu)
 
         def _worker():
             try:
@@ -1749,10 +1756,15 @@ class VFCurveTab:
         if self._bios_curve_gpu != gpu:
             return  # a newer GPU switch superseded this query
         self._bios_curve = curve if isinstance(curve, dict) else None
-        # Adopt into the working arrays + redraw ONLY when a ladder actually
-        # landed: on non-ladder generations the unsupported-verdict message
-        # must stay on the chart, not be wiped by a bare "No data" placeholder.
-        if self._bios_ladder_points() and self._adopt_bios_curve_arrays():
+        # Adopt into the working arrays + redraw ONLY on a legacy GPU with a
+        # ladder actually landed: Pascal+ render the driver curve, and
+        # non-ladder generations must keep their unsupported-verdict message
+        # instead of a bare "No data" placeholder.
+        if (
+            self._is_legacy_gpu()
+            and self._bios_ladder_points()
+            and self._adopt_bios_curve_arrays()
+        ):
             self._redraw()
 
     def _bios_ladder_points(self) -> list:
@@ -1806,7 +1818,10 @@ class VFCurveTab:
         """Maxwell/Kepler branch of "no driver VF interface": fetch the
         vBIOS ladder (once per GPU) and draw it read-only. Cache hit draws
         immediately; otherwise _on_bios_curve_loaded → _redraw lands the
-        async result on the same chart."""
+        async result on the same chart. Pascal+ render the driver curve and
+        never enter the legacy path."""
+        if not self._is_legacy_gpu():
+            return
         try:
             gpu = self.app.selected_gpu_target()
         except Exception:
@@ -2442,7 +2457,9 @@ class VFCurveTab:
         # current line carries V_max (upper bound), blue fill between —
         # the vmap voltage RANGE per ladder point, drawn as a band.
         g = self._current_grid()
-        bios = self._bios_v_max is not None
+        bios = self._bios_v_max is not None and len(self._bios_v_max) == len(
+            self._voltages
+        )
         x_lo = v
         x_hi = self._bios_v_max if bios else g
         if bios:
