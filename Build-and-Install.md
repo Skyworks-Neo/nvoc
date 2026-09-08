@@ -12,6 +12,20 @@
 - Windows 10/11 or Linux (nvidia-open-dkms / proprietary driver)
 - Administrator privileges (Windows) or sudo (Linux) for overclocking write operations
 
+### One-Stop Development Entry
+
+The monorepo ships an `xtask` orchestrator; `cargo xtask` works from any workspace
+directory (the Rust toolchain auto-installs via `rust-toolchain.toml`):
+
+```bash
+cargo xtask setup    # doctor + bootstrap: submodule, uv envs, pynvoc build, fix hints
+cargo xtask ci       # local mirror of the non-GPU CI gate (fmt + clippy + ruff + tests)
+cargo xtask build    # workspace build; --cuda 12|11|none selects the stressor generation
+cargo xtask run gui  # or: tui | cli | stressor
+```
+
+`cargo xtask help` lists the full command surface. GPU-write tests are never run by xtask.
+
 ### Rust Toolchain
 
 ```bash
@@ -70,10 +84,14 @@ uv sync
 
 #### Rust CUDA Edition
 
-Requires CUDA Toolkit:
+No CUDA Toolkit is needed to build — `cudarc` loads the NVRTC/cuBLAS/cudart
+libraries dynamically at runtime (NVIDIA driver + those runtime libraries are
+required only to run):
 
 ```bash
-cargo run -p cli-stressor-cuda-rs --features cuda -- --duration 30
+cargo build --release -p cli-stressor-cuda-rs                                          # cuda12 (default, driver >= 536)
+cargo build --release -p cli-stressor-cuda-rs --no-default-features --features cuda11  # R470-era drivers (CUDA 11.4 API surface)
+cargo run --release -p cli-stressor-cuda-rs -- --duration 30
 ```
 
 ### Build the Python Bindings (pynvoc)
@@ -128,7 +146,8 @@ uv run pyinstaller --clean --noconfirm nvoc_tui.spec
 
 ### Development & Test Commands
 
-Development and test commands mirrored from the monorepo's `docs/wiki/Build-and-Test.md`:
+Development and test commands mirrored from the monorepo's `docs/wiki/Build-and-Test.md`.
+The one-stop mirror of the non-GPU CI gate is `cargo xtask ci` (see above):
 
 ```bash
 # Rust workspace build (excludes the CUDA-Rust stressor)
@@ -170,6 +189,20 @@ Rust build/lint/test first, then Python lint/tests for the projects you touched.
 - NVIDIA GPU + 兼容驱动（≥ 537）
 - Windows 10/11 或 Linux（nvidia-open-dkms / proprietary driver）
 - 管理员权限（Windows）或 sudo（Linux）用于超频写入操作
+
+### 一站式开发入口
+
+monorepo 自带 `xtask` 编排器；`cargo xtask` 可在任意工作区目录使用（Rust 工具链由
+`rust-toolchain.toml` 自动安装）：
+
+```bash
+cargo xtask setup    # 环境体检 + 引导：子模块、uv 环境、pynvoc 构建、逐项修复提示
+cargo xtask ci       # 本地镜像非 GPU CI 门禁（fmt + clippy + ruff + 测试）
+cargo xtask build    # workspace 构建；--cuda 12|11|none 选择压测器世代
+cargo xtask run gui  # 也可以是：tui | cli | stressor
+```
+
+`cargo xtask help` 查看完整命令面。xtask 永远不会运行 GPU 写入路径测试。
 
 ### Rust 工具链
 
@@ -229,10 +262,13 @@ uv sync
 
 #### Rust CUDA 版
 
-需要安装 CUDA Toolkit：
+**构建不需要 CUDA Toolkit**——`cudarc` 在运行时动态加载 NVRTC/cuBLAS/cudart 库
+（NVIDIA 驱动与这些运行时库仅在运行压测时需要）：
 
 ```bash
-cargo run -p cli-stressor-cuda-rs --features cuda -- --duration 30
+cargo build --release -p cli-stressor-cuda-rs                                          # cuda12（默认，驱动 >= 536）
+cargo build --release -p cli-stressor-cuda-rs --no-default-features --features cuda11  # R470 世代驱动（CUDA 11.4 API 面）
+cargo run --release -p cli-stressor-cuda-rs -- --duration 30
 ```
 
 ### 构建 Python 绑定（pynvoc）
@@ -287,7 +323,8 @@ uv run pyinstaller --clean --noconfirm nvoc_tui.spec
 
 ### 开发与测试命令
 
-开发与测试命令与 monorepo 的 `docs/wiki/Build-and-Test.md` 保持一致：
+开发与测试命令与 monorepo 的 `docs/wiki/Build-and-Test.md` 保持一致。
+非 GPU CI 门禁的一站式本地镜像是 `cargo xtask ci`（见上文）：
 
 ```bash
 # Rust workspace 构建（不含 CUDA-Rust 压力测试）

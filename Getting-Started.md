@@ -8,6 +8,8 @@
 
 Get a working NVOC frontend running in a few minutes. Overclocking writes are high-risk: prefer read-only commands first and verify your recovery path before any write.
 
+Fast path (recommended): after cloning, `cargo xtask setup` checks and bootstraps everything (submodule, Rust toolchain, uv, Python envs, pynvoc native build) and prints per-item fix hints; `cargo xtask run gui|tui|cli|stressor` launches a component and `cargo xtask ci` mirrors the non-GPU CI gate. The manual steps below remain the canonical reference.
+
 1. Clone the repository.
 
    ```bash
@@ -68,6 +70,8 @@ uv run nvoc-tui
 ## 中文
 
 几分钟内即可运行起一个 NVOC 前端。超频写入属于高风险操作：请优先使用只读命令，并在执行任何写入前确认恢复路径。
+
+快速路径（推荐）：克隆后 `cargo xtask setup` 一条命令完成环境体检与引导（子模块、Rust 工具链、uv、Python 环境、pynvoc 原生构建），并逐项给出修复提示；`cargo xtask run gui|tui|cli|stressor` 启动组件，`cargo xtask ci` 本地镜像非 GPU CI 门禁。下方手工步骤仍是权威参考。
 
 1. 克隆仓库。
 
