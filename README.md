@@ -62,6 +62,24 @@ Platform support and feature availability vary by GPU generation and backend. Th
 
 ## Quick Start
 
+### One-command development path
+
+Contributors can bootstrap and verify the whole workspace with the bundled
+`xtask` orchestrator (Rust toolchain auto-installs itself via `rust-toolchain.toml`):
+
+```bash
+git clone https://github.com/Skyworks-Neo/nvoc.git
+cd nvoc
+cargo xtask setup     # doctor + bootstrap: submodule, uv envs, pynvoc build, fix hints
+cargo xtask ci        # local mirror of the non-GPU CI gate (fmt + clippy + ruff + tests)
+cargo xtask run gui   # or: tui | cli | stressor
+```
+
+`cargo xtask help` lists the full surface, including `build --cuda 12|11|none`
+(R470-era drivers take `11`) and `test --tier gpu-readonly` for the ignored
+read-only hardware suites. GPU-write tests are never run by xtask. The manual
+steps below remain the canonical, platform-specific reference.
+
 ### Download a prebuilt release (recommended)
 
 Download the executable for your operating system and architecture from the
@@ -176,37 +194,49 @@ publish it as a separate versioned executable rather than placing it in the opti
 archive. Releases also publish `nvoc-auto-optimizer` directly as the bundled, single executable;
 release packaging no longer creates a separate tools/stressor archive.
 
-Feature flags control the backends:
+Feature flags control the backends and the CUDA driver generation (the two
+generations are mutually exclusive, enforced at compile time):
 
 | Flag | Enables | Dependencies |
 |---|---|---|
-| `cuda` | CUDA GEMM / memcpy / reduction / atomic kernels | `cudarc`, `half`; needs CUDA Toolkit + driver at runtime |
+| `cuda12` (default) | CUDA GEMM / memcpy / reduction / atomic kernels via the CUDA 12.9 API (NVRTC up to `compute_90`) | `cudarc`, `half`; NVIDIA driver ≥ 536 + CUDA runtime libraries at runtime |
+| `cuda11` | Same kernels via the CUDA 11.4 API surface for R470-era drivers (no `cuDeviceGetUuid_v2`, NVRTC capped at `sm_86`) | `cudarc`, `half`; R470+ driver + CUDA runtime libraries at runtime |
 | `vulkan` | Vulkan graphics stress (3D render workloads) | `ash`; needs Vulkan driver at runtime |
 
-**Build with CUDA only:**
+**Build with CUDA (modern drivers — the default):**
 
 ```bash
-cargo build --release -p cli-stressor-cuda-rs --features cuda
+cargo build --release -p cli-stressor-cuda-rs
 ```
 
-**Build with CUDA + Vulkan:**
+**Build for R470-era drivers (CUDA 11 generation):**
 
 ```bash
-cargo build --release -p cli-stressor-cuda-rs --features cuda,vulkan
+cargo build --release -p cli-stressor-cuda-rs --no-default-features --features cuda11
+```
+
+**Build with Vulkan added:**
+
+```bash
+cargo build --release -p cli-stressor-cuda-rs --features vulkan
 ```
 
 **Quick test run:**
 
 ```bash
-cargo run -p cli-stressor-cuda-rs --features cuda -- --duration 30 --precisions fp16,tf32
+cargo run --release -p cli-stressor-cuda-rs -- --duration 30 --precisions fp16,tf32
 ```
 
 **Run with a config file:**
 
 ```bash
-cargo run -p cli-stressor-cuda-rs --features cuda -- --profile standard
+cargo run --release -p cli-stressor-cuda-rs -- --profile standard
 ```
 
+> **No CUDA Toolkit is needed to build** — `cudarc` ships pregenerated bindings and
+> loads the NVRTC/cuBLAS/cudart libraries dynamically at runtime. The NVIDIA driver
+> and the runtime libraries below are only required to run the stressor.
+>
 > **Windows runtime DLLs:** `nvrtc64_*.dll`, `cublasLt64_*.dll`, `cublas64_*.dll`, `cudart64_*.dll`
 > must be on `PATH` or next to the executable (names vary by CUDA version).
 >
@@ -214,9 +244,13 @@ cargo run -p cli-stressor-cuda-rs --features cuda -- --profile standard
 > `libcudart.so.*` must be discoverable by the dynamic loader. Set `LD_LIBRARY_PATH` or
 > configure `ldconfig`.
 >
-> **Default features are empty** — building without `--features cuda` compiles a stub that
-> skips all CUDA paths (used for non-GPU CI). The `cudarc` dependency pins
-> `cuda-12090` (CUDA 12.9). For broader GPU coverage, see the compatibility notes in
+> **Stub build:** `cargo build -p cli-stressor-cuda-rs --no-default-features` compiles a
+> stub that skips all CUDA paths (used for non-GPU CI).
+>
+> The bundled optimizer defaults to the cuda12 generation (`stressor-bundled-cuda12`);
+> R470-era systems build it with `cargo build --release -p nvoc-auto-optimizer
+> --no-default-features --features stressor-bundled-cuda11`. For broader GPU coverage,
+> see the compatibility notes in
 > [cli-stressor-cuda-rs/README.md](./cli-stressor-cuda-rs/README.md).
 
 ### 5 — Build the native Python bindings (pynvoc)
@@ -395,6 +429,23 @@ NVOC 是一个 NVIDIA GPU 超频与稳定性工具的 monorepo。核心是 Rust 
 
 ## 快速开始
 
+### 开发者一键路径
+
+贡献者可以用仓库自带的 `xtask` 编排器（Rust 工具链由 `rust-toolchain.toml` 自动安装）
+一条命令完成环境体检与验证：
+
+```bash
+git clone https://github.com/Skyworks-Neo/nvoc.git
+cd nvoc
+cargo xtask setup     # 环境体检 + 引导：submodule、uv 环境、pynvoc 构建、逐项修复提示
+cargo xtask ci        # 本地镜像非 GPU CI 门禁（fmt + clippy + ruff + 测试）
+cargo xtask run gui   # 也可以是：tui | cli | stressor
+```
+
+`cargo xtask help` 查看完整命令面，包括 `build --cuda 12|11|none`（R470 世代驱动用
+`11`）和 `test --tier gpu-readonly`（被 ignore 的只读硬件测试套件）。xtask 永远不会
+运行 GPU 写入路径测试。下方的手工步骤仍是权威的、分平台的参考。
+
 ### 下载预构建版本（推荐）
 
 从 [GitHub Releases 页面](https://github.com/Skyworks-Neo/nvoc/releases)下载与操作系统和
@@ -498,37 +549,46 @@ cargo build --release
 ###（可选）构建 CUDA 压力测试工具
 
 CUDA 压力测试工具（`cli-stressor-cuda-rs`）是可选的，仅在使用真实 GPU 负载进行
-autoscan 稳定性验证时需要。构建机器需要安装 **CUDA Toolkit** 或手动提取并提供库文件。
+autoscan 稳定性验证时需要。**构建不需要 CUDA Toolkit**——`cudarc` 使用预生成绑定，
+在运行时动态加载 NVRTC/cuBLAS/cudart 库；只有运行压测时才需要 NVIDIA 驱动与下方的
+运行时库（可从 CUDA Toolkit 手动提取）。
 
-通过 feature flag 控制后端：
+通过 feature flag 控制后端与 CUDA 驱动世代（两个世代互斥，编译期强制）：
 
 | Flag | 启用功能 | 依赖 |
 |---|---|---|
-| `cuda` | CUDA GEMM / memcpy / reduction / atomic 内核 | `cudarc`、`half`；运行时需要 CUDA Toolkit + 驱动 |
-| `vulkan` | Vulkan 图形压力测试（ 3D 渲染负载） | `ash`；运行时需要 Vulkan 驱动 |
+| `cuda12`（默认） | 经 CUDA 12.9 API 的 CUDA GEMM / memcpy / reduction / atomic 内核（NVRTC 上限 `compute_90`） | `cudarc`、`half`；运行时需要 NVIDIA 驱动 ≥ 536 + CUDA 运行时库 |
+| `cuda11` | 面向 R470 世代驱动的 CUDA 11.4 API 面（无 `cuDeviceGetUuid_v2`，NVRTC 上限 `sm_86`） | `cudarc`、`half`；R470+ 驱动 + CUDA 运行时库 |
+| `vulkan` | Vulkan 图形压力测试（3D 渲染负载） | `ash`；运行时需要 Vulkan 驱动 |
 
-**仅启用 CUDA 构建：**
+**CUDA 构建（现代驱动，即默认）：**
 
 ```bash
-cargo build --release -p cli-stressor-cuda-rs --features cuda
+cargo build --release -p cli-stressor-cuda-rs
 ```
 
-**启用 CUDA + Vulkan 构建：**
+**面向 R470 世代驱动构建（CUDA 11 世代）：**
 
 ```bash
-cargo build --release -p cli-stressor-cuda-rs --features cuda,vulkan
+cargo build --release -p cli-stressor-cuda-rs --no-default-features --features cuda11
+```
+
+**追加 Vulkan 构建：**
+
+```bash
+cargo build --release -p cli-stressor-cuda-rs --features vulkan
 ```
 
 **快速测试运行：**
 
 ```bash
-cargo run -p cli-stressor-cuda-rs --features cuda -- --duration 30 --precisions fp16,tf32
+cargo run --release -p cli-stressor-cuda-rs -- --duration 30 --precisions fp16,tf32
 ```
 
 **使用配置文件运行：**
 
 ```bash
-cargo run -p cli-stressor-cuda-rs --features cuda -- --profile standard
+cargo run --release -p cli-stressor-cuda-rs -- --profile standard
 ```
 
 > **Windows 运行时 DLL：** `nvrtc64_*.dll`、`cublasLt64_*.dll`、`cublas64_*.dll`、`cudart64_*.dll`
@@ -537,10 +597,13 @@ cargo run -p cli-stressor-cuda-rs --features cuda -- --profile standard
 > **Linux 运行时 `.so` 文件：** `libnvrtc.so.*`、`libcublasLt.so.*`、`libcublas.so.*`、
 > `libcudart.so.*` 需可被动态链接器找到。可设置 `LD_LIBRARY_PATH` 或配置 `ldconfig`。
 >
-> **默认 feature 为空**——不带 `--features cuda` 构建会编译一个跳过所有 CUDA 路径的
-> 存根（用于无 GPU 的 CI）。`cudarc` 依赖固定为 `cuda-12090`（CUDA 12.9）。
-> 如需兼容更多 GPU 架构，请参阅 [cli-stressor-cuda-rs/README.md](./cli-stressor-cuda-rs/README.md)
-> 中的兼容性说明。
+> **存根构建：** `cargo build -p cli-stressor-cuda-rs --no-default-features` 会编译一个
+> 跳过所有 CUDA 路径的存根（用于无 GPU 的 CI）。
+>
+> 内置压测的优化器默认使用 cuda12 世代（`stressor-bundled-cuda12`）；R470 世代系统请用
+> `cargo build --release -p nvoc-auto-optimizer --no-default-features --features
+> stressor-bundled-cuda11` 构建。如需兼容更多 GPU 架构，请参阅
+> [cli-stressor-cuda-rs/README.md](./cli-stressor-cuda-rs/README.md) 中的兼容性说明。
 
 ### 5 — 构建原生 Python 绑定（pynvoc）
 

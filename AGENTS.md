@@ -6,6 +6,8 @@ NVOC is a Rust/Python monorepo for NVIDIA GPU overclocking and stress tooling. T
 
 ## Build, Test, and Development Commands
 
+- `cargo xtask setup`: one-stop environment doctor + bootstrap (submodule, uv envs, pynvoc build); `--dry-run` to preview.
+- `cargo xtask ci`: local mirror of the ci.yml non-GPU gate (rustfmt + clippy + ruff + safe-tier tests); see `cargo xtask help` for build/run/test tiers.
 - `cargo build --workspace --exclude cli-stressor-cuda-rs`: build Rust crates without CUDA linkage.
 - `cargo fmt --all -- --check`: check Rust formatting.
 - `cargo clippy --workspace --exclude cli-stressor-cuda-rs --all-targets -- -D warnings`: run Rust CI linting.
