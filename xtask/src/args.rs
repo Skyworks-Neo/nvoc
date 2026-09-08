@@ -59,6 +59,9 @@ pub struct BuildArgs {
     pub release: bool,
     pub packages: Vec<String>,
     pub cuda: CudaMode,
+    /// After the cargo build, run PyInstaller onefile packaging for the GUI
+    /// and the TUI concurrently (mirrors the release.yml invocations).
+    pub py_onefile: bool,
 }
 
 #[derive(Debug)]
@@ -102,6 +105,9 @@ BUILD OPTIONS:
     -p, --package <name> Build only the named crates (repeatable)
     --cuda <12|11|none>  CUDA stressor generation: 12 (default), 11 for
                          R470-era drivers, none to skip the stressor
+    --py-onefile         Also package the GUI and TUI into onefile
+                         executables with PyInstaller (both run concurrently;
+                         same invocations as release.yml)
 
 SETUP OPTIONS:
     --install-missing    Install missing tools (uv) instead of only reporting
@@ -182,11 +188,13 @@ fn parse_build(rest: &[String]) -> Result<Command, String> {
         release: false,
         packages: Vec::new(),
         cuda: CudaMode::Cuda12,
+        py_onefile: false,
     };
     let mut iter = rest.iter();
     while let Some(token) = iter.next() {
         match token.as_str() {
             "--release" => args.release = true,
+            "--py-onefile" => args.py_onefile = true,
             "--package" | "-p" => {
                 let name = iter
                     .next()
@@ -298,6 +306,16 @@ mod tests {
             panic!("expected build");
         };
         assert_eq!(args.cuda, CudaMode::Off);
+    }
+
+    #[test]
+    fn build_accepts_py_onefile_flag() {
+        let cmd = parse(&tokens(&["build", "--release", "--py-onefile"])).unwrap();
+        let Command::Build(args) = cmd else {
+            panic!("expected build");
+        };
+        assert!(args.release);
+        assert!(args.py_onefile);
     }
 
     #[test]
