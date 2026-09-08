@@ -88,10 +88,12 @@ def test_ampere_xbar_block_three_slots_gpc_base_only() -> None:
         )
         for i in range(12)
     ]
-    out = _extract_ext_curves({
-        "segments": [_seg("gpc", 0, 126), _seg("xbar", 127, 253)],
-        "points": gpc_pts + xbar_pts,
-    })
+    out = _extract_ext_curves(
+        {
+            "segments": [_seg("gpc", 0, 126), _seg("xbar", 127, 253)],
+            "points": gpc_pts + xbar_pts,
+        }
+    )
 
     assert [(e["owner"], e["slot"], e["label"]) for e in out] == [
         ("xbar", 0, "SYS"),
@@ -147,14 +149,16 @@ def test_slots_beyond_dynamic_roster_dropped() -> None:
         _pt(127 + i, [(2000 + i, 600000), (900 + i, 1000000), (500 + i, 800000)])
         for i in range(12)
     ]
-    out = _extract_ext_curves({
-        "segments": [
-            _seg("gpc", 0, 126),
-            _seg("xbar", 127, 253),
-            _seg("msd", 254, 265),
-        ],
-        "points": [_pt(i, []) for i in range(12)] + pts,
-    })
+    out = _extract_ext_curves(
+        {
+            "segments": [
+                _seg("gpc", 0, 126),
+                _seg("xbar", 127, 253),
+                _seg("msd", 254, 265),
+            ],
+            "points": [_pt(i, []) for i in range(12)] + pts,
+        }
+    )
     assert [(e["owner"], e["slot"], e["label"]) for e in out] == [
         ("xbar", 0, "SYS"),
         ("xbar", 1, "HOST"),
