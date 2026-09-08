@@ -706,9 +706,9 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
             (
                 Command::GetVbios,
                 CommandSpec {
-                    options: Box::leak(Box::new(["out", "dump", "maxwell-vftable-decode"])),
+                    options: Box::leak(Box::new(["out", "dump", "maxwell-vftable-decode", "pascal-vp-decode"])),
                     formatter: Some(output::format_maxwell_vftable_output),
-                    ..CommandSpec::new("get-vbios", Group::Info, "WINDOWS-ONLY. Read the VBIOS via NvAPI_GPU_GetVbiosImage (0xFC13EE11, escape 0x0700004F): prints version/size/BIT summary; --out <file> writes the raw image (e.g. vbios.rom); --dump prints the full BIT token table + Fermi-model raw blocks; --maxwell-vftable-decode decodes the Maxwell GPU Boost 2.0 V/F ladder (BIT 'P'+0x34, v0x10: 79 GPC points, voltage via vmap) as an Id/V/F table")
+                    ..CommandSpec::new("get-vbios", Group::Info, "WINDOWS-ONLY. Read the VBIOS via NvAPI_GPU_GetVbiosImage (0xFC13EE11, escape 0x0700004F): prints version/size/BIT summary; --out <file> writes the raw image (e.g. vbios.rom); --dump prints the full BIT token table + Fermi-model raw blocks; --maxwell-vftable-decode decodes the Maxwell GPU Boost 2.0 V/F ladder (BIT 'P'+0x34, v0x10: 79 GPC points, voltage via vmap) as an Id/V/F table; --pascal-vp-decode decodes the Pascal+ Virtual P-State clock ladder + boost profiles (pattern-scanned, generation-coded '20 XX 01' table) as an Id/Freq table")
                 },
             ),
             (Command::GetVoltRailInfo, CommandSpec::new("get-volt-rail-info", Group::Voltage, "Read private VoltRails family: rail mask + per-rail offsets + live voltages (melonVolt path) + VRM device voltage windows (0xA38ACF9D)")),
@@ -2092,6 +2092,10 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .long("maxwell-vftable-decode")
             .action(ArgAction::SetTrue)
             .help("Decode the Maxwell GPU Boost 2.0 V/F ladder (BIT 'P'+0x34 v0x10: 79 GPC points; voltage resolved through the vmap table) and print it in the get-public-vftable points format"),
+        "pascal-vp-decode" => Arg::new("pascal-vp-decode")
+            .long("pascal-vp-decode")
+            .action(ArgAction::SetTrue)
+            .help("Decode the Pascal+ Virtual P-State (VP) clock ladder (pattern-scanned '20 XX 01' table, generation-coded header: 0x10/12 Pascal, 0x13 Turing, 0x15 Ampere, 0x17 Ada; u32/32768 MHz entries, no per-point voltage) plus the boost profiles as an Id/Freq table"),
         "flags" => Arg::new("flags")
             .long("flags")
             .value_name("BITS")
@@ -2217,6 +2221,7 @@ fn collect_named_options(
             | "offset"
             | "dump"
             | "maxwell-vftable-decode"
+            | "pascal-vp-decode"
             | "target"
             | "freq"
             | "volt"
@@ -4220,6 +4225,7 @@ fn execute_target(
             // --out <file> writes the raw image.
             let image = run(target, QueryVbiosImage)?.output;
             let maxwell_vftable = invocation.options.contains_key("maxwell-vftable-decode");
+            let pascal_vp = invocation.options.contains_key("pascal-vp-decode");
             match invocation.options.get("out").and_then(|v| v.first()) {
                 Some(path) => {
                     std::fs::write(path, &image).map_err(|e| {
@@ -4235,11 +4241,17 @@ fn execute_target(
                     if maxwell_vftable {
                         value["maxwell_vftable"] = decode_maxwell_vftable(&image)?;
                     }
+                    if pascal_vp {
+                        value["pascal_vp"] = decode_pascal_vp(&image)?;
+                    }
                     Ok(value)
                 }
                 None => {
                     if maxwell_vftable {
                         return decode_maxwell_vftable(&image);
+                    }
+                    if pascal_vp {
+                        return decode_pascal_vp(&image);
                     }
                     let version = run(target, QueryVbiosVersion).ok().map(|r| r.output);
                     let dump = invocation.options.contains_key("dump");
@@ -5908,7 +5920,7 @@ fn decode_maxwell_vftable(image: &[u8]) -> CliResult<Value> {
     let Some(ladder) = &vb.boost_ladder else {
         return Err(CliError::new(
             "no boost-ladder table (BIT 'P'+0x34, v0x10) in this VBIOS image — \
-             Maxwell (GM10x/GM20x) expected",
+             Maxwell (GM10x/GM20x) expected; for Pascal+ try --pascal-vp-decode",
         ));
     };
     let last_index = ladder.entries.len().saturating_sub(1);
@@ -5955,6 +5967,78 @@ fn decode_maxwell_vftable(image: &[u8]) -> CliResult<Value> {
         "pstate_marks": pstate_marks,
         "points": points,
         "warnings": vb.warnings,
+    }))
+}
+
+/// Decode the Pascal+ Virtual P-State (VP) clock ladder from a VBIOS image.
+/// Unlike the Maxwell ladder (BIT 'P'+0x34), the VP table sits outside the
+/// BIT pointer chain and is pattern-scanned: a `20 XX 01` header whose length
+/// byte encodes the generation (0x10/12 Pascal, 0x13 Turing, 0x15 Ampere,
+/// 0x17 Ada), boost profiles walking backwards from the header, and 41B-stride
+/// ladder entries (u32 LE = MHz × 2^15, 15 fractional bits) terminated at
+/// freq 0. VP points carry NO voltage — Pascal per-point voltage lives in a
+/// separate BIT table, which is why voltage editing was never achieved by the
+/// reference tooling. Semantics per JadeRover's Nvidia-vBIOS-Clock-Power-
+/// Tweaker RE; pending bit-level calibration against a real programmer dump
+/// (raw values are included for that purpose).
+fn decode_pascal_vp(image: &[u8]) -> CliResult<Value> {
+    let tables = nvoc_core::legacy_vbios_parser::find_vp_tables(image);
+    let Some(table) = tables.first() else {
+        return Err(CliError::new(
+            "no Virtual P-State (VP) table found — pattern '20 XX 01' with a \
+             0x0F denominator and a sane first clock; Pascal..Ada expected \
+             (Blackwell has no VP table)",
+        ));
+    };
+    let points: Vec<Value> = table
+        .entries
+        .iter()
+        .enumerate()
+        .map(|(i, e)| {
+            json!({
+                "index": i,
+                "frequency_khz": (e.freq_mhz() * 1000.0).round() as u32,
+                "frequency_mhz": e.freq_mhz(),
+                "raw": format!("{:#010x}", e.raw),
+                "offset": e.offset,
+            })
+        })
+        .collect();
+    let profiles: Vec<Value> = table
+        .profiles
+        .iter()
+        .filter(|p| !p.is_empty())
+        .map(|p| {
+            let limits: Vec<f64> = p.limit_mhz().to_vec();
+            json!({
+                "id": format!("{:#04x}", p.id),
+                "pstate": nvoc_core::legacy_vbios_parser::pstate_display_name(p.id),
+                "limit1_mhz": limits[0],
+                "limit2_mhz": limits[1],
+                "limit3_mhz": limits[2],
+                "mem_short_mhz": p.mem_short_raw,
+                "mem_long_raw": format!("{:#06x}", p.mem_long_raw),
+                "offset": p.offset,
+            })
+        })
+        .collect();
+    Ok(json!({
+        "domain": "graphics",
+        "indexed": true,
+        "source": "vbios-vp-ladder",
+        "generation": table.generation.name(),
+        "table_count": tables.len(),
+        "header_offset": table.header_offset,
+        "ladder_offset": table.ladder_offset,
+        "mem_clock_mhz": table.mem_clock_mhz(),
+        "mem_clock_raw": format!("{:#06x}", table.mem_clock_raw),
+        "profiles": profiles,
+        "points": points,
+        "warnings": if tables.len() > 1 {
+            vec!["dual-image VP tables found; only the first image is decoded".to_string()]
+        } else {
+            vec![]
+        },
     }))
 }
 

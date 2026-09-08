@@ -26,6 +26,32 @@
 //!   entry_cnt(=79)：u16 半 MHz 频率 + byte@+4 = **vmap 电压索引**——阶梯点
 //!   的电压 = vmap[idx]，即完整 V/F 曲线就存在 vBIOS 中。
 //!
+//! # Pascal+ Virtual P-State 表（VP 表）
+//!
+//! Pascal 起 BIT 'P' 表被 VP（Virtual P-State）表族取代（open-gpu-doc
+//! BIOS-Information-Table：BIT_PERF_PTRS v2 的 "Virtual P-State Table
+//! Pointer"）。VP 表不在 BIT 指针链上，只能模式扫描定位——语义来自
+//! JadeRover Nvidia-vBIOS-Clock-Power-Tweaker（`reverse/Nvidia-vBIOS-Clock-
+//! Power-Tweaker-main`）的逆向 + notebooktalk.net topic/3040，**待实机
+//! ROM 逐位校准**（decode 输出保留 raw 值）：
+//!
+//! - 头 3 字节 `20 XX 01`：`XX` = 头长编码兼代际，0x10/0x12=Pascal、
+//!   0x13=Turing、0x15=Ampere、0x17=Ada；Blackwell 无 VP 表。双镜像 ROM
+//!   可命中 2 份。
+//! - 布局：`[profiles × N][20 XX 01][0x0F][ladder 条目 × N][footers × N]
+//!   [marker 00 00 10 0E][FF 填充][VP 段校验字节]`。
+//! - profile（Pascal 57B / 其它 65B）：`+0` ID（观测 0x07..0x0F 连续，与
+//!   pstate_raw 编码空间一致 → 0x07=P8 … 0x0F=P0，0xFF=空槽）；Pascal 字段
+//!   偏移 [7,13,15,19,25] = limit1/limit2/mem_short/mem_long/limit3。
+//! - ladder 条目 41B 步进，以 freq=0 终止：`[-1]=0x0F 分母` + `+0` u32 LE
+//!   频率。**u32/32768 = MHz（15 位小数定点）**——CPR 新旧两代读法与保存
+//!   路径共同验证的唯一定点解释：高 u16 = floor(MHz/2)（CPR 的
+//!   "clock_value/2"），低 u16 = 15 位小数 frac（奇数 MHz → 0x8000，即 CPR
+//!   误当"旗标"的 `±32768` 现象）；完整精度只在 u32。
+//! - mem：首条目 +8 的 u16 = MHz 直存，高两位 0x4000/0x8000 为旗标
+//!   （&0x3FFF 剥离）；VP 点**不带电压**（Maxwell 阶梯每点带 vmap 索引，
+//!   Pascal 的电压在 BIT 另表，故电压编辑在 CPR 中"不可行"）。
+//!
 //! RE 过程：MBT 为 .NET+Babel 混淆程序集，ILSpy 反编译见
 //! `~/ida-scratch/mbt-decomp/`（2026-09-07）。
 
@@ -432,6 +458,250 @@ fn parse_boost_ladder(r: &Reader, t: usize, warnings: &mut Vec<String>) -> Optio
     })
 }
 
+// ── Pascal+ Virtual P-State（VP）表 ─────────────────────────────────────
+
+/// VP 头 `20 XX 01` 的代际编码（`XX` = 头长字节）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VpGeneration {
+    Pascal,
+    Turing,
+    Ampere,
+    AdaLovelace,
+}
+
+impl VpGeneration {
+    fn from_header_len(len: u8) -> Option<Self> {
+        match len {
+            0x10 | 0x12 => Some(Self::Pascal),
+            0x13 => Some(Self::Turing),
+            0x15 => Some(Self::Ampere),
+            0x17 => Some(Self::AdaLovelace),
+            _ => None,
+        }
+    }
+
+    /// 显示名。
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Pascal => "Pascal",
+            Self::Turing => "Turing",
+            Self::Ampere => "Ampere",
+            Self::AdaLovelace => "Ada Lovelace",
+        }
+    }
+
+    /// profile 记录长度（字节）。
+    pub fn profile_len(self) -> usize {
+        if self == Self::Pascal { 57 } else { 65 }
+    }
+
+    /// profile 内 5 字段偏移：limit1 / limit2 / mem_short / mem_long / limit3。
+    fn profile_field_offsets(self) -> [usize; 5] {
+        if self == Self::Pascal {
+            [7, 13, 15, 19, 25]
+        } else {
+            // Turing+ 布局未经实机逐位校准（CPR 观测值）。
+            [9, 15, 17, 21, 39]
+        }
+    }
+}
+
+/// VP profile 一条：一个虚拟 P-state 档位的时钟上限与内存时钟。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VpProfile {
+    /// profile ID（观测 0x07..0x0F，同 pstate_raw 编码 → 0x07=P8 … 0x0F=P0；
+    /// 0xFF = 空槽）。
+    pub id: u8,
+    /// 绝对文件偏移（profile 起点，诊断/将来编辑用）。
+    pub offset: usize,
+    /// 三档 boost 上限原始 u16（Pascal：半 MHz 直存，×2 = MHz）。
+    pub limit_raw: [u16; 3],
+    /// mem clock 短副本原始 u16（MHz 直存）。
+    pub mem_short_raw: u16,
+    /// mem clock 长副本原始 u16（旗标位 0x4000/0x8000 + MHz）。
+    pub mem_long_raw: u16,
+}
+
+impl VpProfile {
+    /// 空槽（ID 0xFF）。
+    pub fn is_empty(&self) -> bool {
+        self.id == 0xFF
+    }
+
+    /// Pascal 语义的三档上限（MHz = raw × 2；单位经 CPR 保存路径
+    /// `custom/2` 回写验证）。非 Pascal 布局未校准，返回 raw×2 仅供参考。
+    pub fn limit_mhz(&self) -> [f64; 3] {
+        self.limit_raw.map(|r| f64::from(r) * 2.0)
+    }
+}
+
+/// VP ladder 一个阶梯点（41B 条目的频率字段）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VpLadderEntry {
+    /// 绝对文件偏移（条目起始）。
+    pub offset: usize,
+    /// 条目前一字节的分母（观测 0x0F = 15 位小数声明；仅首条目保证）。
+    pub denominator: u8,
+    /// 条目起始 u32 LE = MHz × 2^15：高 u16 = floor(MHz/2)（CPR 的
+    /// "clock_value/2"），低 u16 = 15 位小数 frac。
+    pub raw: u32,
+}
+
+impl VpLadderEntry {
+    /// 频率（MHz）：`raw / 32768`（15 位小数定点）。
+    pub fn freq_mhz(&self) -> f64 {
+        f64::from(self.raw) / 32768.0
+    }
+}
+
+/// 一份 VP 表（双镜像 ROM 会解析出两份，内容应一致）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VpTable {
+    pub generation: VpGeneration,
+    /// `20 XX 01` 头的绝对偏移。
+    pub header_offset: usize,
+    /// 阶梯起点（紧跟 0x0F 分母之后的首条目偏移）。
+    pub ladder_offset: usize,
+    /// profiles，从最后一个向前收集（顺序 = 文件顺序）。
+    pub profiles: Vec<VpProfile>,
+    pub entries: Vec<VpLadderEntry>,
+    /// 首条目 +8 的内存频率原始 u16（旗标 + MHz）。
+    pub mem_clock_raw: u16,
+}
+
+impl VpTable {
+    /// 内存时钟（MHz，`&0x3FFF` 剥旗标）。
+    pub fn mem_clock_mhz(&self) -> u16 {
+        self.mem_clock_raw & 0x3FFF
+    }
+
+    /// 非空 profile 数。
+    pub fn non_empty_profiles(&self) -> usize {
+        self.profiles.iter().filter(|p| !p.is_empty()).count()
+    }
+}
+
+const VP_ENTRY_STRIDE: usize = 41;
+const VP_MAX_ENTRIES: usize = 128;
+const VP_MAX_PROFILES: usize = 10;
+
+/// 扫描全部 VP 表（模式定位，不依赖 BIT 目录）。双镜像 ROM 返回 2 份。
+///
+/// 判定三条件（CPR 同款）：`20 XX 01` 头、分母字节 0x0F、首 u32/32768 ∈
+/// (100, 2000) MHz。profiles/ladder 停止条件异常时截断该表（不报错）。
+pub fn find_vp_tables(data: &[u8]) -> Vec<VpTable> {
+    let mut out = Vec::new();
+    if data.len() < 4 {
+        return out;
+    }
+    for header_offset in 0..data.len() - 2 {
+        let [b0, b1, b2] = [
+            data[header_offset],
+            data[header_offset + 1],
+            data[header_offset + 2],
+        ];
+        if b0 != 0x20 || b2 != 0x01 {
+            continue;
+        }
+        let Some(generation) = VpGeneration::from_header_len(b1) else {
+            continue;
+        };
+        // 阶梯起点 = 头后（头长 = XX+1 字节含 0x01），0x0F 分母在其前一字节。
+        let ladder_offset = header_offset + usize::from(b1) + 1;
+        let Some(table) = parse_vp_table(data, generation, header_offset, ladder_offset) else {
+            continue;
+        };
+        out.push(table);
+    }
+    out
+}
+
+fn parse_vp_table(
+    data: &[u8],
+    generation: VpGeneration,
+    header_offset: usize,
+    ladder_offset: usize,
+) -> Option<VpTable> {
+    // 分母 + 首条目频率双验证（CPR 同款），过滤随机字节伪命中。
+    if data.get(ladder_offset.wrapping_sub(1))? != &0x0F {
+        return None;
+    }
+    let first_raw = u32::from(data[ladder_offset])
+        | (u32::from(data[ladder_offset + 1]) << 8)
+        | (u32::from(data[ladder_offset + 2]) << 16)
+        | (u32::from(data[ladder_offset + 3]) << 24);
+    let first_mhz = f64::from(first_raw) / 32768.0;
+    if !(100.0..2000.0).contains(&first_mhz) {
+        return None;
+    }
+
+    // ladder：41B 步进，freq=0 终止。
+    let mut entries = Vec::new();
+    for i in 0..VP_MAX_ENTRIES {
+        let offset = ladder_offset + i * VP_ENTRY_STRIDE;
+        let denominator = *data.get(offset.wrapping_sub(1))?;
+        let raw = u32::from(data.get(offset).copied()?)
+            | (u32::from(data.get(offset + 1).copied()?) << 8)
+            | (u32::from(data.get(offset + 2).copied()?) << 16)
+            | (u32::from(data.get(offset + 3).copied()?) << 24);
+        let freq_mhz = f64::from(raw) / 32768.0;
+        if raw == 0 || freq_mhz > 5000.0 {
+            break;
+        }
+        entries.push(VpLadderEntry {
+            offset,
+            denominator,
+            raw,
+        });
+    }
+    if entries.is_empty() {
+        return None;
+    }
+
+    // profiles：从头位置向前按 profile_len 回走，ID 0x07 = 首条（停止条件）。
+    let profile_len = generation.profile_len();
+    let field_off = generation.profile_field_offsets();
+    let mut walked = Vec::new();
+    for i in 1..=VP_MAX_PROFILES {
+        let offset = header_offset.checked_sub(i * profile_len)?;
+        let id = *data.get(offset)?;
+        let fields = |a: usize| -> u16 {
+            let p = offset + a;
+            u16::from(data.get(p).copied().unwrap_or(0))
+                | (u16::from(data.get(p + 1).copied().unwrap_or(0)) << 8)
+        };
+        walked.push(VpProfile {
+            id,
+            offset,
+            limit_raw: [
+                fields(field_off[0]),
+                fields(field_off[1]),
+                fields(field_off[4]),
+            ],
+            mem_short_raw: fields(field_off[2]),
+            mem_long_raw: fields(field_off[3]),
+        });
+        if id == 0x07 {
+            break;
+        }
+    }
+    walked.reverse();
+
+    // mem clock：首条目 +8（CPR：频率"含奇数"的 REAL 值）。
+    let mem_base = ladder_offset + 8;
+    let mem_clock_raw = u16::from(data.get(mem_base).copied().unwrap_or(0))
+        | (u16::from(data.get(mem_base + 1).copied().unwrap_or(0)) << 8);
+
+    Some(VpTable {
+        generation,
+        header_offset,
+        ladder_offset,
+        profiles: walked,
+        entries,
+        mem_clock_raw,
+    })
+}
+
 /// 解析 legacy vBIOS 镜像（完整 ROM 或已裁剪的镜像数据）。
 pub fn parse(data: &[u8]) -> Result<LegacyVbios, Error> {
     let img =
@@ -616,6 +886,162 @@ mod tests {
         let vb = parse(&d).expect("parse");
         assert!(vb.boost.is_empty());
         assert!(vb.warnings.iter().any(|w| w.contains("boost")));
+    }
+
+    // ── VP 表 ───────────────────────────────────────────────────────────
+
+    /// 构造最小合成 Pascal VP 表：2 profile（0x08、0x07）+ 头 `20 HLEN 01` +
+    /// 3 阶梯点（324.0 idle / 1202.5 / 1911.0 max）+ mem = 0x86D8
+    /// （旗标 0x8000 + 1752 MHz）。数值单位按模块文档：u32 = MHz×2^15
+    /// （1911.0 MHz → 0x03BB_8000，与 CPR "+32768" 观测一致）。
+    /// ladder 起点 = 头位置 + HLEN + 1，分母 0x0F 在其前一字节。
+    fn synthetic_vp_h(hlen: u8) -> Vec<u8> {
+        let u32le = |v: u32| v.to_le_bytes();
+        let mut d = vec![0u8; 0x2000];
+        let put = |d: &mut Vec<u8>, a: usize, b: &[u8]| d[a..a + b.len()].copy_from_slice(b);
+
+        // 两条 57B profile 与头连续：ID 自低到高向头排列（0x07 文件序最前、
+        // 离头最远；0x0F 紧贴头）——CPR 反向回走至 0x07 停止。
+        let profile = |d: &mut Vec<u8>, a: usize, id: u8, l1: u16, l2: u16, l3: u16| {
+            put(d, a, &[id]);
+            put(d, a + 7, &l1.to_le_bytes());
+            put(d, a + 13, &l2.to_le_bytes());
+            put(d, a + 15, &0x0B_D8u16.to_le_bytes()); // mem_short（MHz 直存）
+            put(d, a + 19, &0x86D8u16.to_le_bytes()); // mem_long：旗标+1752
+            put(d, a + 25, &l3.to_le_bytes());
+        };
+        let header = 0x3A2;
+        profile(&mut d, header - 2 * 57, 0x07, 660, 640, 620);
+        profile(&mut d, header - 57, 0x08, 900, 880, 860);
+
+        // 头 + 0x0F 分母 + 3 条 41B 阶梯（324.0 / 1202.5 / 1911.0）+ 0 终止
+        put(&mut d, header, &[0x20, hlen, 0x01]);
+        let ladder = header + usize::from(hlen) + 1;
+        put(&mut d, ladder - 1, &[0x0F]);
+        // mem clock：首条目 +8（旗标 0x8000 + 1752 MHz）
+        put(&mut d, ladder + 8, &0x86D8u16.to_le_bytes());
+        for (i, raw) in [324.0f64 * 32768.0, 1202.5 * 32768.0, 1911.0 * 32768.0]
+            .iter()
+            .enumerate()
+        {
+            let off = ladder + i * 41;
+            put(&mut d, off, &u32le(*raw as u32));
+            if i + 1 < 3 {
+                put(&mut d, off + 41 - 1, &[0x0F]);
+            }
+        }
+        d
+    }
+
+    fn synthetic_vp() -> Vec<u8> {
+        synthetic_vp_h(0x10)
+    }
+
+    #[test]
+    fn vp_synthetic_pascal() {
+        let d = synthetic_vp();
+        let tables = find_vp_tables(&d);
+        assert_eq!(tables.len(), 1);
+        let t = &tables[0];
+        assert_eq!(t.generation, VpGeneration::Pascal);
+        assert_eq!(t.header_offset, 0x3A2);
+        assert_eq!(t.ladder_offset, t.header_offset + 0x11);
+
+        // ladder：3 点；u32 = MHz×2^15（324.0 → 0x00A2_0000，高 u16 = 162 =
+        // floor(MHz/2)，即 CPR 的 "clock_value/2"）
+        assert_eq!(t.entries.len(), 3);
+        assert_eq!(t.entries[0].raw, 324 * 32768);
+        assert_eq!(t.entries[0].raw >> 16, 162);
+        assert_eq!(t.entries[0].denominator, 0x0F);
+        assert_eq!(t.entries[0].freq_mhz(), 324.0);
+        assert_eq!(t.entries[1].freq_mhz(), 1202.5);
+        assert_eq!(t.entries[2].freq_mhz(), 1911.0);
+        // 奇数 MHz → 低 u16 = 0x8000（CPR 的 "flags" 之谜）
+        assert_eq!(t.entries[2].raw & 0xFFFF, 0x8000);
+
+        // profiles：回走至 0x07，反转为文件序 [0x07, 0x08]；limit 半 MHz ×2
+        assert_eq!(t.profiles.len(), 2);
+        assert_eq!(t.profiles[0].id, 0x07);
+        assert_eq!(t.profiles[1].id, 0x08);
+        assert_eq!(t.profiles[1].limit_raw, [900, 880, 860]);
+        assert_eq!(t.profiles[1].limit_mhz(), [1800.0, 1760.0, 1720.0]);
+        assert!(!t.profiles[0].is_empty());
+        assert_eq!(t.non_empty_profiles(), 2);
+
+        // mem：&0x3FFF 剥旗标
+        assert_eq!(t.mem_clock_raw, 0x86D8);
+        assert_eq!(t.mem_clock_mhz(), 1752);
+    }
+
+    #[test]
+    fn vp_generation_dispatch() {
+        // Turing 头（0x13）→ 65B profile；校准数据到位前仅断言代际分派。
+        let d = synthetic_vp_h(0x13);
+        let tables = find_vp_tables(&d);
+        assert_eq!(tables.len(), 1);
+        assert_eq!(tables[0].generation, VpGeneration::Turing);
+        assert_eq!(tables[0].generation.profile_len(), 65);
+
+        // 头长字节落在编码外 → 不识别
+        let mut d2 = synthetic_vp();
+        d2[0x3A2 + 1] = 0x11;
+        assert!(find_vp_tables(&d2).is_empty());
+
+        // 分母不是 0x0F → 拒收
+        let mut d3 = synthetic_vp();
+        d3[0x3A2 + 0x11 - 1] = 0x0E;
+        assert!(find_vp_tables(&d3).is_empty());
+    }
+
+    #[test]
+    fn vp_rejects_random_bytes() {
+        // 全 0xFF / 全 0x00 / 随机小文件均不伪命中
+        assert!(find_vp_tables(&[0xFF; 0x1000]).is_empty());
+        assert!(find_vp_tables(&[0x00; 0x1000]).is_empty());
+        assert!(find_vp_tables(&[0x20, 0x10, 0x01]).is_empty());
+    }
+
+    /// 机会性真文件测试：reverse/ 下若有 Pascal ROM（编程器 dump）则校验
+    /// VP 解析不变量。数值级逐位校准待第一份实机 dump 落库后补入。
+    #[test]
+    fn vp_real_roms_when_present() {
+        for path in [
+            "../reverse/P4000.rom",
+            "../reverse/pascal.rom",
+            "../reverse/P100.rom",
+        ] {
+            let Ok(d) = std::fs::read(path) else {
+                eprintln!("skip: {path} not present");
+                continue;
+            };
+            let tables = find_vp_tables(&d);
+            let Some(t) = tables.first() else {
+                panic!("{path}: no VP table found (Pascal dump expected)");
+            };
+            assert_eq!(t.generation, VpGeneration::Pascal, "{path}");
+            assert!(!t.entries.is_empty(), "{path} ladder empty");
+            for e in &t.entries {
+                let f = e.freq_mhz();
+                assert!((100.0..2500.0).contains(&f), "{path} freq {f} out of range");
+                assert_eq!(e.denominator, 0x0F, "{path} denominator");
+            }
+            // 阶梯单调不减（idle → max）
+            for w in t.entries.windows(2) {
+                assert!(
+                    w[1].freq_mhz() >= w[0].freq_mhz(),
+                    "{path} ladder not monotonic"
+                );
+            }
+            let last = t.profiles.first().expect("{path} no profiles");
+            assert_eq!(last.id, 0x07, "{path} first profile should be 0x07");
+            assert_eq!(
+                t.profiles.last().expect("{path} no profiles").id,
+                0x0F,
+                "{path} last profile should be boost 0x0F"
+            );
+            let mem = t.mem_clock_mhz();
+            assert!((500..8000).contains(&mem), "{path} mem {mem} out of range");
+        }
     }
 
     /// 机会性真文件测试：仓库工作树若存在 reverse/ 下的实测 ROM 则全量解析。
