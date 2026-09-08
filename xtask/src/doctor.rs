@@ -121,7 +121,7 @@ fn check_msvc() -> usize {
     if !vswhere.is_file() {
         println!("  [FAIL] MSVC Build Tools not detected (vswhere missing)");
         util::hint(
-            "winget install --id Microsoft.VisualStudio.2022.BuildTools -e --override \"--quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended\"",
+            "winget install --id Microsoft.VisualStudio.2022.BuildTools -e --override \"--quiet --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.Windows11SDK.26100\"",
         );
         return 1;
     }
@@ -141,10 +141,12 @@ fn check_msvc() -> usize {
             0
         }
         _ => {
-            println!("  [FAIL] Visual Studio found but the C++ workload (MSVC x86/x64) is missing");
-            util::hint("add the \"Desktop development with C++\" workload, or:");
+            println!("  [FAIL] Visual Studio found but the C++ toolset (MSVC x86/x64) is missing");
             util::hint(
-                "winget install --id Microsoft.VisualStudio.2022.BuildTools -e --override \"--quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended\"",
+                "add the \"Desktop development with C++\" workload, or the minimal components:",
+            );
+            util::hint(
+                "winget install --id Microsoft.VisualStudio.2022.BuildTools -e --override \"--quiet --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.Windows11SDK.26100\"",
             );
             1
         }

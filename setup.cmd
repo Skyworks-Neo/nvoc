@@ -27,9 +27,13 @@ if errorlevel 1 goto :msvc_missing
 goto :check_uv
 
 :msvc_missing
+rem Minimal set for the Rust msvc target: compiler/linker plus a Windows SDK
+rem (UCRT + Win32 import libraries). The compilers are *recommended* members of
+rem the VCTools workload, so an explicit component list beats the workload +
+rem --includeRecommended combo, which would also pull CMake tools we never use.
 echo [bootstrap] MSVC C++ Build Tools are required to build Rust binaries.
 echo [bootstrap] Install them with:
-echo     winget install --id Microsoft.VisualStudio.2022.BuildTools -e --override "--quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+echo     winget install --id Microsoft.VisualStudio.2022.BuildTools -e --override "--quiet --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.Windows11SDK.26100"
 echo [bootstrap] then re-run this script.
 exit /b 1
 
