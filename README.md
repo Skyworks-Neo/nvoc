@@ -75,6 +75,12 @@ cargo xtask ci        # local mirror of the non-GPU CI gate (fmt + clippy + ruff
 cargo xtask run gui   # or: tui | cli | stressor
 ```
 
+On a fresh machine, start with the bundled bootstrap shim instead — `setup.cmd`
+(Windows) or `./setup.sh` (Linux/macOS): it installs rustup and uv when they are
+missing, checks the MSVC linker prerequisite (Windows), and hands off to the
+doctor. `cargo xtask` itself requires an existing Rust toolchain and therefore
+cannot install it from the inside.
+
 `cargo xtask help` lists the full surface, including `build --cuda 12|11|none`
 (R470-era drivers take `11`) and `test --tier gpu-readonly` for the ignored
 read-only hardware suites. GPU-write tests are never run by xtask. The manual
@@ -441,6 +447,10 @@ cargo xtask setup     # 环境体检 + 引导：submodule、uv 环境、pynvoc �
 cargo xtask ci        # 本地镜像非 GPU CI 门禁（fmt + clippy + ruff + 测试）
 cargo xtask run gui   # 也可以是：tui | cli | stressor
 ```
+
+全新机器请改用仓库自带的引导脚本起步——`setup.cmd`（Windows）或 `./setup.sh`
+（Linux/macOS）：缺少 rustup/uv 时自动安装、预检 MSVC 链接器（Windows），
+然后交接给环境体检。`cargo xtask` 本身要求已有 Rust 工具链，无法从内部安装。
 
 `cargo xtask help` 查看完整命令面，包括 `build --cuda 12|11|none`（R470 世代驱动用
 `11`）和 `test --tier gpu-readonly`（被 ignore 的只读硬件测试套件）。xtask 永远不会
