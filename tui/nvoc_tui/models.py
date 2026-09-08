@@ -25,6 +25,12 @@ class GpuDescriptor:
     name: str
     uuid: str | None = None
     gpu_id_hex: str | None = None
+    # Generation discriminator from the discover payload (core
+    # detect_gpu_type). Pascal needs a curve-source downgrade — its private
+    # ClockClient frequency terms read with a residual scale error, so the
+    # public read stays the sole GPC authority there.
+    arch: str | None = None
+    is_legacy_voltage: bool | None = None
 
     @property
     def short_label(self) -> str:

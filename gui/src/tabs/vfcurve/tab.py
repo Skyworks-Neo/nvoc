@@ -1454,8 +1454,10 @@ class VFCurveTab:
         # the #0-sentinel broken case below). No grid-match requirement:
         # slot-0 / per-point private offsets stack on top and legitimately
         # make both columns diverge from the private table per-point.
-        private_gpc_usable = private_gpc is not None and any(
-            v > 0 for v in private_gpc.voltages
+        private_gpc_usable = (
+            private_gpc is not None
+            and any(v > 0 for v in private_gpc.voltages)
+            and not self._is_pascal_gpu()
         )
         if private_gpc_usable:
             cd = private_gpc
@@ -1726,6 +1728,23 @@ class VFCurveTab:
             idx = self.app.get_current_gpu_index()
             flags = self.app._gpu_flags_by_idx.get(idx) or {}
             return flags.get("is_legacy_voltage") is True
+        except Exception:
+            return False
+
+    def _is_pascal_gpu(self) -> bool:
+        """Pascal（GP10x）判定。
+
+        Pascal's private ClockClient frequency terms read with a residual
+        scale error even after the type-1 halving (live 1080: private
+        default == current, ~1.7-2.6× the public curve, exact relation
+        private ≈ 2×public − 50.5) — the private segment must NOT be the
+        default-axis authority there; the public read is clean and is the
+        original rendering source for these cards.
+        """
+        try:
+            idx = self.app.get_current_gpu_index()
+            flags = self.app._gpu_flags_by_idx.get(idx) or {}
+            return str(flags.get("gpu_architecture", "")).strip().lower() == "pascal"
         except Exception:
             return False
 

@@ -276,7 +276,15 @@ class VFCurveController(PaneController):
         domain_info: dict | None = None,
     ) -> None:
         self._end_refresh()
-        curves = build_vf_curves(gpc_points, gpc_err, clk_data, domain_info)
+        # Desktop Pascal: the private frequency scale is unreliable — the
+        # public read stays the sole GPC authority (see build_vf_curves).
+        # getattr: test doubles construct bare namespaces (no arch field).
+        gpu_desc = self.app.current_gpu()
+        arch = str(getattr(gpu_desc, "arch", None) or "")
+        pascal = arch.strip().lower() == "pascal"
+        curves = build_vf_curves(
+            gpc_points, gpc_err, clk_data, domain_info, pascal=pascal
+        )
         self.app.cache.vf_curve_points = gpc_points if curves else None
         self.app.cache.vf_curves = curves
         if curves is None:

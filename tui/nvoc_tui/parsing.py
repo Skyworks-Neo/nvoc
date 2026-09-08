@@ -593,6 +593,7 @@ def build_vf_curves(
     gpc_err: str | None,
     clk_data: dict[str, Any] | None,
     domain_info: Any = None,
+    pascal: bool = False,
 ) -> dict[str, CurveData] | None:
     """Classify public + private V/F reads into per-domain curves.
 
@@ -615,6 +616,13 @@ def build_vf_curves(
     detection below, never a generation table). Pascal server cards carry
     an all-zero private voltage axis (freq-indexed records) and keep the
     public source via the populated-axis guard.
+
+    ``pascal`` (from the discover payload's arch) FORCES the public source
+    on desktop Pascal too: its private frequency terms read with a
+    residual scale error even after the type-1 halving (live 1080:
+    private ≈ 2×public − 50.5), so the private segment must never be the
+    default-axis authority there — Pascal renders the original public-only
+    way.
     """
     curves: dict[str, CurveData] = {}
     unknown_count = 0
@@ -684,8 +692,12 @@ def build_vf_curves(
     # donates CURRENT frequencies only when its grid still matches the
     # default grid — under an active slot1 shift it is either shifted
     # (negative offset) or empty (positive offset) and must be ignored.
-    private_gpc_usable = private_gpc is not None and any(
-        v > 0 for v in private_gpc.voltages
+    # Desktop Pascal: the private frequency scale is unreliable (see the
+    # ``pascal`` docstring) — the public read stays the sole GPC authority.
+    private_gpc_usable = (
+        private_gpc is not None
+        and any(v > 0 for v in private_gpc.voltages)
+        and not pascal
     )
     if private_gpc_usable:
         cd = private_gpc

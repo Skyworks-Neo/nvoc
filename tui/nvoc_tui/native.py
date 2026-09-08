@@ -62,6 +62,12 @@ class NativeService:
                 index=int(item.get("index", idx)),
                 name=str(item.get("name") or f"GPU {item.get('index', idx)}"),
                 gpu_id_hex=str(item.get("gpu_id_hex") or "") or None,
+                arch=str(item.get("arch") or "") or None,
+                is_legacy_voltage=(
+                    bool(item["is_legacy_voltage"])
+                    if item.get("is_legacy_voltage") is not None
+                    else None
+                ),
             )
             for idx, item in enumerate(items)
             if isinstance(item, dict)
