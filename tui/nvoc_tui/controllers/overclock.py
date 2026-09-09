@@ -3,12 +3,30 @@ from __future__ import annotations
 import re
 import threading
 
-from textual.widgets import Input, Select
+from textual.widgets import Button, Input, Label, Select
 
 from .base import PaneController
 
 
 class OverclockController(PaneController):
+    # Clock offset rows carrying an MHz/mV unit toggle (GUI V/F Offsets
+    # parity): row name → (ClkDomains WRITE bit, offset input id, toggle id).
+    # mV mode reroutes the row onto the per-domain V/F-curve VOLTAGE plane —
+    # a separate RM storage that coexists with the MHz plane (slot-0 freq /
+    # slot-1 volt on 10~40 series, slot-2 freq / slot-3 volt on Blackwell).
+    _UNIT_ROWS: dict[str, tuple[int, str, str]] = {
+        "core": (0, "#core-offset", "#core-unit"),
+        "mem": (2, "#mem-offset", "#mem-unit"),
+        "xbar": (1, "#xbar-offset", "#xbar-unit"),
+        "sys": (3, "#sys-offset", "#sys-unit"),
+        "msd": (5, "#msd-offset", "#msd-unit"),
+        "host": (9, "#host-offset", "#host-unit"),
+    }
+    # mV-plane bounds (GUI parity): the record's native unit is µV, input is
+    # mV with one decimal; the driver clamps what it refuses.
+    _VOLT_MIN_MV = -300.0
+    _VOLT_MAX_MV = 300.0
+
     def __init__(self, app) -> None:
         super().__init__(app)
         self._mobile_limits_gpu: str | None = None
@@ -28,6 +46,11 @@ class OverclockController(PaneController):
         self._volt_rail_bit = 0  # rail bit (0 on single-rail mobile GPUs)
         self._volt_limit_range = (300.0, 1200.0)  # mV, walls refine the ceiling
         self._volt_limit_supported = False
+        # Per-row MHz/mV plane state for the unit toggles, plus an epoch per
+        # row so a stale anchor readback can't land after the row toggled
+        # back (or toggled twice) while the read was in flight.
+        self._row_volt_mode: dict[str, bool] = dict.fromkeys(self._UNIT_ROWS, False)
+        self._volt_anchor_epoch: dict[str, int] = dict.fromkeys(self._UNIT_ROWS, 0)
         # Set when a mem-range P-State lock failed at runtime (pre-Kepler
         # part: the NVML pstate mem-clock query is Not Supported there) —
         # apply/reset then use the native single-P-State pin instead.
@@ -123,6 +146,11 @@ class OverclockController(PaneController):
         # bit5/Host bit9) is refined by the controllable mask polled below.
         # Default-disabled until the mask lands.
         self._prime_fabric_inputs()
+        # MHz/mV unit toggles ride the same capability/mask gates.
+        self._prime_unit_toggles()
+        # Power pane unit labels (Power Limit follows the #power-api
+        # selector: NVAPI % / NVML W).
+        self._prime_power_units()
         self._poll_clk_domain_mask()
         # Mobile Power pane: mobile GPUs only. Same verdict the loader uses
         # (is_mobile — Rust detect_gpu_type flag primary, name heuristic
@@ -155,23 +183,69 @@ class OverclockController(PaneController):
         # re-arms per GPU when its own mem-range attempt fails.
         self._pstate_pin_fallback = False
 
+    def on_gpu_changed(self) -> None:
+        """GPU switch: drop the previous part's overclock state (the
+        vfcurve.on_gpu_changed pattern).
+
+        The cached info/settings/ClkDomains mask still describe the OLD GPU
+        until the switch's info/get/mask queries land — without this, the
+        rows re-seed from the previous card's applied offsets and keep its
+        capability verdicts (its mask greying Sys/Msd/Host on a modern part,
+        or stale volt-plane modes). Clear them so prime_inputs re-anchors
+        everything at defaults ("no info" = all gated off) until the new
+        GPU's own queries land, and fold any standing mV plane mode back to
+        MHz (the new card's voltage-plane anchor is unknown; the epoch bump
+        also invalidates in-flight anchor readbacks from the old card).
+        """
+        self.app.cache.info = {}
+        self.app.cache.settings = {}
+        self.app.cache.clk_domain_mask = None
+        self._row_volt_mode = dict.fromkeys(self._UNIT_ROWS, False)
+        for name in self._UNIT_ROWS:
+            _, input_id, unit_id = self._UNIT_ROWS[name]
+            self._volt_anchor_epoch[name] = self._volt_anchor_epoch.get(name, 0) + 1
+            try:
+                button = self.app.query_one(unit_id, Button)
+                button.label = "MHz"
+                button.set_class(False, "volt")
+            except Exception:
+                pass
+        # Re-prime now: with the cache cleared, the inputs seed from defaults
+        # instead of the previous card's values and every capability-gated row
+        # greys out; the switch's own queries re-prime again as they land.
+        self.prime_inputs()
+
     def apply_oc(
         self,
         native,
         gpu: str,
         backend: str,
-        core_offset: int,
-        mem_offset: int,
+        core_offset: int | None,
+        mem_offset: int | None,
         xbar_offset: int | None = None,
         sys_offset: int | None = None,
         msd_offset: int | None = None,
         host_offset: int | None = None,
+        volt_offsets: dict[str, float] | None = None,
     ) -> str:
+        """Apply the offset rows. Rows whose unit chip sits on mV ride the
+        ``volt_offsets`` dict ({row name: mV}) — a DIRECT voltage-plane write
+        with no pstate20 path and no bit3 coupling (the coupling is a slot-0
+        frequency-plane artifact). ``None`` MHz offsets (a row on mV) skip
+        the frequency plane entirely.
+
+        Plane slots are generation-dependent (10~40系 freq 0 / volt 1,
+        Blackwell freq 2 / volt 3) and threaded through every ClkDomains
+        write — a slot-0 µV write would land on the FREQUENCY record."""
         messages: list[str] = []
         coupled = self.is_ampere_plus()
+        freq_slot = self._clk_freq_slot()
+        volt_slot = self._clk_volt_slot()
+        volts = volt_offsets or {}
 
         def apply_pstate20(domain: str, value: int, bit: int, label: str) -> str:
-            # pstate20 public path first; -104 NotSupported → ClkDomains bit.
+            # pstate20 public path first; -104 NotSupported → ClkDomains bit
+            # (frequency plane, generation-dependent slot).
             try:
                 native.set_clock_offset(gpu, backend, domain, value, "P0")
                 return f"Successfully applied {label} offset {value} MHz."
@@ -183,67 +257,90 @@ class OverclockController(PaneController):
                     or "not supported" in msg.lower()
                 ):
                     res = native.set_clk_domain_offset(
-                        gpu, bit, value * 1000, None, None
+                        gpu, bit, value * 1000, freq_slot, None
                     )
                     return self._format_clk_domain_offset_result(label, value, res) + (
                         f" (pstate20 -104 fallback bit{bit})"
                     )
                 raise
 
-        messages.append(apply_pstate20("core", core_offset, 0, "core"))
-        messages.append(apply_pstate20("memory", mem_offset, 2, "memory"))
+        def apply_volt(label: str, bit: int, value_mv: float) -> str:
+            # mV mode: voltage-plane addend only — µV payload (mV × 1000).
+            res = native.set_clk_domain_offset(
+                gpu, bit, int(round(value_mv * 1000)), volt_slot, None
+            )
+            return self._format_clk_domain_volt_result(label, value_mv, res, volt_slot)
+
+        if "core" in volts:
+            messages.append(apply_volt("Core", 0, volts["core"]))
+        elif core_offset is not None:
+            messages.append(apply_pstate20("core", core_offset, 0, "core"))
+        if "mem" in volts:
+            messages.append(apply_volt("Memory", 2, volts["mem"]))
+        elif mem_offset is not None:
+            messages.append(apply_pstate20("memory", mem_offset, 2, "memory"))
 
         # Xbar (bit1). 30系+ couples SYS → RMW the cancel onto bit3
         # (current − f) so a Sys offset already there survives; only the
         # coupling drift is removed. 10/16/20/Pascal: bit1 pure, direct write.
-        if xbar_offset is not None:
+        if "xbar" in volts:
+            messages.append(apply_volt("Xbar", 1, volts["xbar"]))
+        elif xbar_offset is not None:
             messages.append(
                 self._format_xbar_offset_result(
                     xbar_offset,
                     native.set_clk_domain_offset(
-                        gpu, 1, xbar_offset * 1000, None, None
+                        gpu, 1, xbar_offset * 1000, freq_slot, None
                     ),
                 )
             )
             if coupled:
-                cur_khz = self._clk_domain_current_offset(native, gpu, 3)
+                cur_khz = self._clk_domain_current_offset(native, gpu, 3, freq_slot)
                 new_khz = cur_khz - xbar_offset * 1000
                 messages.append(
                     self._format_clk_domain_offset_result(
                         "Sys-cancel",
                         -xbar_offset,
-                        native.set_clk_domain_offset(gpu, 3, new_khz, None, None),
+                        native.set_clk_domain_offset(gpu, 3, new_khz, freq_slot, None),
                     )
                     + f" (bit3 {int(round(cur_khz / 1000)):+d} → {int(round(new_khz / 1000)):+d} MHz)"
                 )
         # Sys (bit3) RMW: read current offset, +f, write back. Skipped at 0
         # (no-op — avoids overwriting an Xbar-cancel sitting on bit3).
-        if sys_offset:
-            cur_khz = self._clk_domain_current_offset(native, gpu, 3)
+        if "sys" in volts:
+            messages.append(apply_volt("Sys", 3, volts["sys"]))
+        elif sys_offset:
+            cur_khz = self._clk_domain_current_offset(native, gpu, 3, freq_slot)
             new_khz = cur_khz + sys_offset * 1000
             messages.append(
                 self._format_clk_domain_offset_result(
                     "Sys",
                     sys_offset,
-                    native.set_clk_domain_offset(gpu, 3, new_khz, None, None),
+                    native.set_clk_domain_offset(gpu, 3, new_khz, freq_slot, None),
                 )
                 + f" (bit3 {int(round(cur_khz / 1000)):+d} → {int(round(new_khz / 1000)):+d} MHz)"
             )
-        if msd_offset:
+        if "msd" in volts:
+            messages.append(apply_volt("Msd", 5, volts["msd"]))
+        elif msd_offset:
             messages.append(
                 self._format_clk_domain_offset_result(
                     "Msd",
                     msd_offset,
-                    native.set_clk_domain_offset(gpu, 5, msd_offset * 1000, None, None),
+                    native.set_clk_domain_offset(
+                        gpu, 5, msd_offset * 1000, freq_slot, None
+                    ),
                 )
             )
-        if host_offset:
+        if "host" in volts:
+            messages.append(apply_volt("Host", 9, volts["host"]))
+        elif host_offset:
             messages.append(
                 self._format_clk_domain_offset_result(
                     "Host",
                     host_offset,
                     native.set_clk_domain_offset(
-                        gpu, 9, host_offset * 1000, None, None
+                        gpu, 9, host_offset * 1000, freq_slot, None
                     ),
                 )
             )
@@ -358,6 +455,46 @@ class OverclockController(PaneController):
                 return f"{label} clock-domain offset not supported by this driver."
         return f"Applied {label} offset {offset_mhz:+d} MHz."
 
+    @staticmethod
+    def _format_clk_domain_volt_result(
+        label: str, offset_mv: float, result: object, volt_slot: int = 1
+    ) -> str:
+        """Log message for a VOLTAGE-plane ClkDomains write (a row's mV mode).
+
+        pynvoc's ``applied_mHz`` field is the record's raw slot value ÷1000 —
+        on the volt plane the raw dword is µV, so that number IS millivolts
+        already (display as-is; dividing again reports 1000× too small). The
+        payload's ``slot`` field confirms which plane answered; a non-volt
+        slot means the write didn't land on the voltage plane and the
+        readback is not a voltage (GUI parity guard, slot-parameterized for
+        the Blackwell shift)."""
+        if isinstance(result, dict):
+            if result.get("applied"):
+                applied = result.get("applied_mHz")
+                if isinstance(applied, (int, float)):
+                    rb = (
+                        f" (driver readback {applied:+g} mV)"
+                        if result.get("slot") == volt_slot
+                        else ""
+                    )
+                    return (
+                        f"Successfully applied {label} volt offset "
+                        f"{offset_mv:+g} mV{rb}."
+                    )
+                return f"Successfully applied {label} volt offset {offset_mv:+g} mV."
+            if result.get("supported") is False:
+                return f"{label} clock-domain volt offset not supported by this driver."
+        return f"Applied {label} volt offset {offset_mv:+g} mV."
+
+    @staticmethod
+    def _format_clk_domain_volt_reset(
+        label: str, bit: int, slot: int, result: object
+    ) -> str:
+        """Log message for zeroing one domain's voltage-plane addend."""
+        if isinstance(result, dict) and result.get("supported") is False:
+            return f"{label} volt offset reset unsupported (bit{bit} slot{slot})."
+        return f"Successfully reset {label} volt offset (bit{bit} slot{slot} → 0)."
+
     def is_ampere_plus(self) -> bool:
         """30系+ (Ampere/Ada/Blackwell): bit1 couples SYS, so an Xbar write
         must also write bit3=-f to cancel the SYS drift. Pascal/GTX16/RTX20
@@ -368,6 +505,25 @@ class OverclockController(PaneController):
         if isinstance(flag, bool):
             return flag
         return False
+
+    def _is_blackwell(self) -> bool:
+        """Blackwell (50系) detection for the ClkDomains plane-slot shift.
+
+        Codename gate GB* — desktop/laptop/workstation/server Blackwell all
+        share the prefix; Volta GV100 and Pascal GP* don't collide (the GUI
+        uses the same verdict)."""
+        codename = str(self.app.cache.info.get("codename") or "").upper()
+        return codename.startswith("GB")
+
+    def _clk_freq_slot(self) -> int:
+        """ClkDomains WRITE record slot carrying the FREQUENCY plane —
+        generation-dependent (10~40系 0, Blackwell 2)."""
+        return 2 if self._is_blackwell() else 0
+
+    def _clk_volt_slot(self) -> int:
+        """ClkDomains WRITE record slot carrying the VOLTAGE plane
+        (10~40系 1, Blackwell 3)."""
+        return 3 if self._is_blackwell() else 1
 
     def _is_pascal(self) -> bool:
         """Pascal detection for the MSD grey-out (Pascal bit5 SET N/A)."""
@@ -427,6 +583,11 @@ class OverclockController(PaneController):
             self._prime_fabric_inputs()
         except Exception:
             pass
+        # The unit toggles ride the same per-bit mask gates.
+        try:
+            self._prime_unit_toggles()
+        except Exception:
+            pass
 
     def _prime_fabric_inputs(self) -> None:
         """Set the enabled state of the fabric/uncore offset rows from the
@@ -443,6 +604,144 @@ class OverclockController(PaneController):
             except Exception:
                 pass
 
+    def _prime_unit_toggles(self) -> None:
+        """Set the enabled state of the MHz/mV unit toggles.
+
+        Capability-gated like the GUI pager (NOT backend-gated: the private
+        ClkDomains path forces the NVAPI target inside pynvoc regardless of
+        the API selector): Pascal+ for Core/Mem/Xbar, plus each row's
+        controllable-mask bit for Sys/Msd/Host (Pascal MSD greyed)."""
+        supported = self.xbar_supported()
+        gates = {
+            "core": supported,
+            "mem": supported,
+            "xbar": supported,
+            "sys": supported and self._sys_supported(),
+            "msd": supported and self._msd_supported(),
+            "host": supported and self._host_supported(),
+        }
+        for name, (_, _, unit_id) in self._UNIT_ROWS.items():
+            try:
+                self.app.query_one(unit_id, Button).disabled = not gates[name]
+            except Exception:
+                pass
+
+    def _toggle_row_unit(self, name: str) -> None:
+        """Cycle one row's unit chip MHz ↔ mV (GUI ``_toggle_row_unit`` port).
+
+        mV mode seeds the input at 0.0 and async-reads the record's live
+        voltage-plane addend to re-anchor (the two planes are separate RM
+        storage — the MHz value belongs to the driver, not this row); MHz
+        mode re-anchors at 0 (the row's MHz value is an intent, not a
+        readback)."""
+        bit, input_id, unit_id = self._UNIT_ROWS[name]
+        volt_mode = not self._row_volt_mode.get(name, False)
+        self._row_volt_mode[name] = volt_mode
+        self._volt_anchor_epoch[name] = self._volt_anchor_epoch.get(name, 0) + 1
+        try:
+            button = self.app.query_one(unit_id, Button)
+            button.label = "mV" if volt_mode else "MHz"
+            button.set_class(volt_mode, "volt")
+        except Exception:
+            pass
+        if volt_mode:
+            self.set_input(input_id, "0.0")
+            self._poll_volt_anchor(name, bit, input_id)
+            self.app.write_log(
+                f"{name.capitalize()} row → mV plane (per-domain V/F-curve "
+                "voltage addend, ±300 mV)."
+            )
+        else:
+            self.set_input(input_id, "0")
+            self.app.write_log(f"{name.capitalize()} row → MHz plane.")
+
+    def _poll_volt_anchor(self, name: str, bit: int, input_id: str) -> None:
+        """Async-read the ClkDomains WRITE record's live voltage-plane addend —
+        the anchor a row re-anchors at when its chip lands on mV. Piggybacks
+        on the shared query worker; never on the render path."""
+        gpu = self.app.selected_gpu_target()
+        if gpu is None:
+            return
+        epoch = self._volt_anchor_epoch.get(name, 0)
+
+        def worker() -> None:
+            try:
+                data = self.app.native_service.query_private_freq_domain_info(gpu)
+            except Exception:
+                data = None
+            try:
+                self.app.call_from_thread(
+                    self._on_volt_anchor_loaded, name, input_id, epoch, data
+                )
+            except Exception:
+                pass
+
+        try:
+            self.app.native_service.submit_query(worker)
+        except Exception:
+            pass
+
+    def _on_volt_anchor_loaded(
+        self, name: str, input_id: str, epoch: int, data: object
+    ) -> None:
+        # A toggle while the read was in flight must not re-anchor the row.
+        if (
+            not self._row_volt_mode.get(name)
+            or self._volt_anchor_epoch.get(name) != epoch
+        ):
+            return
+        bit = self._UNIT_ROWS[name][0]
+        anchor = self._volt_anchor_mv_from_info(data, bit, self._clk_volt_slot())
+        anchor = max(self._VOLT_MIN_MV, min(self._VOLT_MAX_MV, anchor))
+        self.set_input(input_id, f"{anchor:.1f}")
+
+    @staticmethod
+    def _volt_anchor_mv_from_info(info: object, bit: int, volt_slot: int) -> float:
+        """Live voltage-plane addend (mV) from a query_private_freq_domain_info
+        payload — ``values_kHz[volt_slot]`` is µV on the volt plane. Any miss
+        → 0.0 (GUI parity: unreadable/absent anchors at 0)."""
+        if not isinstance(info, dict):
+            return 0.0
+        for e in info.get("entries") or []:
+            if isinstance(e, dict) and e.get("bit") == bit:
+                vals = e.get("values_kHz") or []
+                if isinstance(vals, list) and len(vals) > volt_slot:
+                    try:
+                        return int(vals[volt_slot] or 0) / 1000.0
+                    except (TypeError, ValueError):
+                        return 0.0
+                break
+        return 0.0
+
+    def _prime_power_units(self) -> None:
+        """Unit labels for the Power pane rows (display only).
+
+        Power Limit is dual-unit — NVAPI percent / NVML watts — and follows
+        the #power-api selector. Thermal Limit is Celsius on both backends.
+        Voltage Boost is percent on the modern NVAPI boost path but the
+        legacy delta path (Maxwell/900-series) takes mV (the GUI's
+        Overvolt row).
+        """
+        try:
+            backend = str(self.app.query_one("#power-api", Select).value or "nvapi")
+            self.set_label("#power-limit-unit", "%" if backend == "nvapi" else "W")
+        except Exception:
+            pass
+        self.set_label("#thermal-limit-unit", "C")
+        self.set_label("#voltage-boost-unit", "mV" if self.is_legacy_voltage() else "%")
+
+    def on_power_api_changed(self, value: object) -> None:
+        """#power-api Select.Changed: the Power Limit unit follows the
+        backend (NVAPI % / NVML W)."""
+        backend = str(value or "nvapi")
+        self.set_label("#power-limit-unit", "%" if backend == "nvapi" else "W")
+
+    def set_label(self, selector: str, text: str) -> None:
+        try:
+            self.app.query_one(selector, Label).update(text)
+        except Exception:
+            pass
+
     def _oc_backend_is_nvapi(self) -> bool:
         try:
             return (
@@ -451,9 +750,11 @@ class OverclockController(PaneController):
         except Exception:
             return True
 
-    def _clk_domain_current_offset(self, native, gpu: str, bit: int) -> int:
-        """Read a ClkDomains WRITE record's slot-0 offset (kHz) for the Sys
-        RMW baseline. Returns 0 on any failure."""
+    def _clk_domain_current_offset(
+        self, native, gpu: str, bit: int, slot: int = 0
+    ) -> int:
+        """Read a ClkDomains WRITE record's frequency-plane offset (kHz) for
+        the Sys RMW baseline. Returns 0 on any failure."""
         try:
             info = native.query_private_freq_domain_info(gpu)
         except Exception:
@@ -465,9 +766,9 @@ class OverclockController(PaneController):
             for e in entries:
                 if isinstance(e, dict) and e.get("bit") == bit:
                     vals = e.get("values_kHz") or []
-                    if isinstance(vals, list) and vals:
+                    if isinstance(vals, list) and len(vals) > slot:
                         try:
-                            return int(vals[0] or 0)
+                            return int(vals[slot] or 0)
                         except (TypeError, ValueError):
                             return 0
                     break
@@ -1014,30 +1315,54 @@ class OverclockController(PaneController):
             return f"Successfully applied fan {fan_id} {policy} level {level}%."
 
     def handle_button(self, button_id: str) -> bool:
+        # MHz/mV unit toggles (one per offset row — GUI V/F Offsets parity).
+        for name in self._UNIT_ROWS:
+            if button_id == f"{name}-unit":
+                self._toggle_row_unit(name)
+                return True
         if button_id == "oc-apply":
             gpu = self.app.selected_gpu_target()
             backend = str(self.app.query_one("#oc-api", Select).value or "nvapi")
-            core_offset = self.get_int("#core-offset")
-            mem_offset = self.get_int("#mem-offset")
-            # Fabric/uncore ride the NVAPI-only ClockClient path — skipped under
-            # NVML and on pre-Pascal archs (rows disabled, inputs stay 0).
+            # Rows whose chip sits on mV ride the voltage plane: float parse,
+            # clamped into the ±300 mV plane, and their MHz path is skipped
+            # entirely (None → apply_oc writes no frequency-plane record).
+            core_offset: int | None = None
+            mem_offset: int | None = None
+            xbar_offset: int | None = None
+            sys_offset: int | None = None
+            msd_offset: int | None = None
+            host_offset: int | None = None
+            volt_offsets: dict[str, float] = {}
+            # Fabric/uncore rows ride the NVAPI-only ClockClient path — their
+            # inputs are read only when gated in (skipped under NVML and on
+            # pre-Pascal archs).
             fabric_ok = backend == "nvapi" and self.xbar_supported()
-            xbar_offset = self.get_int("#xbar-offset") if fabric_ok else None
-            sys_offset = (
-                self.get_int("#sys-offset")
-                if fabric_ok and self._sys_supported()
-                else None
-            )
-            msd_offset = (
-                self.get_int("#msd-offset")
-                if fabric_ok and self._msd_supported()
-                else None
-            )
-            host_offset = (
-                self.get_int("#host-offset")
-                if fabric_ok and self._host_supported()
-                else None
-            )
+            for name, (_, input_id, _unit_id) in self._UNIT_ROWS.items():
+                if self._row_volt_mode.get(name):
+                    raw = self.app.query_one(input_id, Input).value.strip()
+                    if not raw:
+                        continue
+                    try:
+                        value_mv = float(raw)
+                    except ValueError:
+                        self.app.write_log(
+                            f"Invalid {name} volt offset: {raw!r} (expected mV)."
+                        )
+                        return True
+                    value_mv = max(self._VOLT_MIN_MV, min(self._VOLT_MAX_MV, value_mv))
+                    volt_offsets[name] = value_mv
+                elif name == "core":
+                    core_offset = self.get_int(input_id)
+                elif name == "mem":
+                    mem_offset = self.get_int(input_id)
+                elif name == "xbar" and fabric_ok:
+                    xbar_offset = self.get_int(input_id)
+                elif name == "sys" and fabric_ok and self._sys_supported():
+                    sys_offset = self.get_int(input_id)
+                elif name == "msd" and fabric_ok and self._msd_supported():
+                    msd_offset = self.get_int(input_id)
+                elif name == "host" and fabric_ok and self._host_supported():
+                    host_offset = self.get_int(input_id)
 
             def apply_oc(
                 native,
@@ -1049,6 +1374,7 @@ class OverclockController(PaneController):
                 sys_offset=sys_offset,
                 msd_offset=msd_offset,
                 host_offset=host_offset,
+                volt_offsets=volt_offsets,
             ) -> str:
                 return self.apply_oc(
                     native,
@@ -1060,6 +1386,7 @@ class OverclockController(PaneController):
                     sys_offset,
                     msd_offset,
                     host_offset,
+                    volt_offsets,
                 )
 
             self.app.run_native_action(
@@ -1111,72 +1438,113 @@ class OverclockController(PaneController):
             )
             return True
         if button_id == "oc-reset":
-            backend = self.app.query_one("#oc-api", Select).value or "nvapi"
+            backend = str(self.app.query_one("#oc-api", Select).value or "nvapi")
             gpu = self.app.selected_gpu_target()
             if gpu is None:
                 self.app.write_log("No GPU selected.")
                 return True
-            resets = [
-                (
-                    "reset core offset",
-                    lambda native, gpu=gpu, backend=str(backend): (
-                        native.set_clock_offset(gpu, backend, "core", 0, "P0")
-                        or "Successfully reset core offset."
+            # Plane-aware reset (GUI per-domain ↺ semantics): a row whose
+            # chip sits on mV resets ONLY its voltage-plane addend (the
+            # coupled bit3-cancel is a frequency-plane artifact — untouched);
+            # a row on MHz resets BOTH plane slots so no hidden volt offset
+            # survives. ClkDomains writes are Pascal+ NVAPI only.
+            clk_ok = backend == "nvapi" and self.xbar_supported()
+            freq_slot = self._clk_freq_slot()
+            volt_slot = self._clk_volt_slot()
+
+            def reset_volt(label: str, bit: int):
+                return (
+                    f"reset {label.lower()} volt offset",
+                    lambda native, gpu=gpu, label=label, bit=bit: (
+                        self._format_clk_domain_volt_reset(
+                            label,
+                            bit,
+                            volt_slot,
+                            native.set_clk_domain_offset(gpu, bit, 0, volt_slot, None),
+                        )
                     ),
-                ),
-                (
-                    "reset memory offset",
-                    lambda native, gpu=gpu, backend=str(backend): (
-                        native.set_clock_offset(gpu, backend, "memory", 0, "P0")
-                        or "Successfully reset memory offset."
-                    ),
-                ),
-            ]
-            if str(backend) == "nvapi" and self.xbar_supported():
-                coupled = self.is_ampere_plus()
+                )
+
+            resets: list[tuple[str, object]] = []
+            # Core/Mem: MHz → public pstate20 reset + volt-plane zero;
+            # mV → volt-plane zero only (no public path for the volt plane).
+            for name, bit, label in (("core", 0, "core"), ("mem", 2, "memory")):
+                if self._row_volt_mode.get(name):
+                    if clk_ok:
+                        resets.append(reset_volt(label.capitalize(), bit))
+                    continue
                 resets.append((
-                    "reset xbar offset",
-                    lambda native, gpu=gpu: self._format_xbar_offset_result(
-                        0, native.set_clk_domain_offset(gpu, 1, 0, None, None)
+                    f"reset {label} offset",
+                    lambda native, gpu=gpu, backend=backend, label=label: (
+                        native.set_clock_offset(gpu, backend, label, 0, "P0")
+                        or f"Successfully reset {label} offset."
                     ),
                 ))
-                # 30+ couples bit3 — clear the -f cancel too (bit3=0).
-                if coupled:
+                if clk_ok:
+                    resets.append(reset_volt(label.capitalize(), bit))
+            if clk_ok:
+                coupled = self.is_ampere_plus()
+                if self._row_volt_mode.get("xbar"):
+                    resets.append(reset_volt("Xbar", 1))
+                else:
                     resets.append((
-                        "reset sys-cancel",
-                        lambda native, gpu=gpu: self._format_clk_domain_offset_result(
-                            "Sys-cancel",
+                        "reset xbar offset",
+                        lambda native, gpu=gpu: self._format_xbar_offset_result(
                             0,
-                            native.set_clk_domain_offset(gpu, 3, 0, None, None),
+                            native.set_clk_domain_offset(gpu, 1, 0, freq_slot, None),
                         ),
                     ))
-                if self._sys_supported():
+                    # 30+ couples bit3 — clear the -f cancel too (bit3=0).
+                    if coupled:
+                        resets.append((
+                            "reset sys-cancel",
+                            lambda native, gpu=gpu: (
+                                self._format_clk_domain_offset_result(
+                                    "Sys-cancel",
+                                    0,
+                                    native.set_clk_domain_offset(
+                                        gpu, 3, 0, freq_slot, None
+                                    ),
+                                )
+                            ),
+                        ))
+                    resets.append(reset_volt("Xbar", 1))
+                if self._row_volt_mode.get("sys"):
+                    resets.append(reset_volt("Sys", 3))
+                elif self._sys_supported():
                     resets.append((
                         "reset sys offset",
                         lambda native, gpu=gpu: self._format_clk_domain_offset_result(
                             "Sys",
                             0,
-                            native.set_clk_domain_offset(gpu, 3, 0, None, None),
+                            native.set_clk_domain_offset(gpu, 3, 0, freq_slot, None),
                         ),
                     ))
-                if self._msd_supported():
+                    resets.append(reset_volt("Sys", 3))
+                if self._row_volt_mode.get("msd"):
+                    resets.append(reset_volt("Msd", 5))
+                elif self._msd_supported():
                     resets.append((
                         "reset msd offset",
                         lambda native, gpu=gpu: self._format_clk_domain_offset_result(
                             "Msd",
                             0,
-                            native.set_clk_domain_offset(gpu, 5, 0, None, None),
+                            native.set_clk_domain_offset(gpu, 5, 0, freq_slot, None),
                         ),
                     ))
-                if self._host_supported():
+                    resets.append(reset_volt("Msd", 5))
+                if self._row_volt_mode.get("host"):
+                    resets.append(reset_volt("Host", 9))
+                elif self._host_supported():
                     resets.append((
                         "reset host offset",
                         lambda native, gpu=gpu: self._format_clk_domain_offset_result(
                             "Host",
                             0,
-                            native.set_clk_domain_offset(gpu, 9, 0, None, None),
+                            native.set_clk_domain_offset(gpu, 9, 0, freq_slot, None),
                         ),
                     ))
+                    resets.append(reset_volt("Host", 9))
             self.app.run_action_chain(resets)
             return True
         if button_id == "limits-apply":

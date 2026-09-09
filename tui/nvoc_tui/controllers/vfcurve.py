@@ -258,6 +258,11 @@ class VFCurveController(PaneController):
         self._p0_rails = []
         self._p0_bounds_by_rail = {}
         self._p0_bounds_gpu = None
+        # The vBIOS ladder is per-ROM — a Maxwell/Kepler ladder left in
+        # _bios_curve would overlay the new part's driver curve (observed:
+        # Maxwell vbios-parsed ladder lingering on a Pascal VF chart).
+        self._bios_curve = None
+        self._bios_curve_gpu = None
         self.clear_plot("Loading VF curve…")
         self._sync_curve_widgets()
         self.refresh_curve()

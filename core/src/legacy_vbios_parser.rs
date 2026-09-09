@@ -38,6 +38,10 @@
 //! - 头 3 字节 `20 XX 01`：`XX` = 头长编码兼代际，0x10/0x12=Pascal、
 //!   0x13=Turing、0x15=Ampere、0x17=Ada；Blackwell 无 VP 表。双镜像 ROM
 //!   可命中 2 份。
+//! - **两种变体**：消费级 Pascal 有 profile 数组（紧贴头、ID 0x07→0x0F
+//!   向头递增）；GP100 服务器卡（P100 逐位实测）为**仅阶梯变体**——无
+//!   profile 数组（回走 10 步无 0x07 → profiles 返回空），且 ladder 只有
+//!   2 频点 × 2 副本（服务器卡无 GPU Boost 阶梯）、无 mem 字段。
 //! - 布局：`[profiles × N][20 XX 01][0x0F][ladder 条目 × N][footers × N]
 //!   [marker 00 00 10 0E][FF 填充][VP 段校验字节]`。
 //! - profile（Pascal 57B / 其它 65B）：`+0` ID（观测 0x07..0x0F 连续，与
@@ -672,9 +676,13 @@ fn parse_vp_table(
     }
 
     // profiles：从头位置向前按 profile_len 回走，ID 0x07 = 首条（停止条件）。
+    // 10 步内未见 0x07 = 无 profile 数组的变体表（实测 GP100 服务器卡 P100：
+    // 仅 ladder；消费级 Pascal 观测恒有 0x07 收尾）——返回空 profiles 而
+    // 非垃圾（CPR 同场景会吐垃圾，其注释自认 "Might not be the case"）。
     let profile_len = generation.profile_len();
     let field_off = generation.profile_field_offsets();
     let mut walked = Vec::new();
+    let mut saw_first = false;
     for i in 1..=VP_MAX_PROFILES {
         let offset = header_offset.checked_sub(i * profile_len)?;
         let id = *data.get(offset)?;
@@ -695,8 +703,12 @@ fn parse_vp_table(
             mem_long_raw: fields(field_off[3]),
         });
         if id == 0x07 {
+            saw_first = true;
             break;
         }
+    }
+    if !saw_first {
+        walked.clear();
     }
     walked.reverse();
 
@@ -1057,6 +1069,57 @@ mod tests {
             let mem = t.mem_clock_mhz();
             assert!((500..8000).contains(&mem), "{path} mem {mem} out of range");
         }
+    }
+
+    /// GP100 服务器卡变体（P100 dump 逐位实测，e84d2a98…，264KB ×2 份
+    /// 一致）：VP 表**仅 ladder、无 profile 数组**（回走 10 步无 0x07）；
+    /// 2 频点 × 2 副本，u32/32768 精确命中官方规格（base 名义 1190、boost
+    /// 名义 1328）；HBM2 无消费级 mem 字段（raw 0）。服务器卡无 GPU Boost
+    /// 阶梯，固定频点，与 4 条形态自洽。
+    #[test]
+    fn vp_p100_server_variant_when_present() {
+        let Ok(d) = std::fs::read("../reverse/p100-vbios.rom") else {
+            eprintln!("skip: ../reverse/p100-vbios.rom not present");
+            return;
+        };
+        let tables = find_vp_tables(&d);
+        assert_eq!(tables.len(), 1);
+        let t = &tables[0];
+        assert_eq!(t.generation, VpGeneration::Pascal);
+        assert_eq!(t.header_offset, 0xB160);
+        assert_eq!(t.ladder_offset, 0xB171);
+        // 仅阶梯变体
+        assert!(t.profiles.is_empty(), "GP100 has no profile array");
+
+        assert_eq!(t.entries.len(), 4);
+        assert_eq!(t.entries[0].raw, 0x0252_C94B);
+        assert_eq!(t.entries[1].raw, 0x0252_C94B);
+        assert_eq!(t.entries[2].raw, 0x0298_4A61);
+        assert_eq!(t.entries[3].raw, 0x0298_4A61);
+        let base = t.entries[0].freq_mhz();
+        let boost = t.entries[2].freq_mhz();
+        assert!((1189.0..=1190.0).contains(&base), "base {base}");
+        assert!((1328.0..=1329.0).contains(&boost), "boost {boost}");
+        for e in &t.entries {
+            assert_eq!(e.denominator, 0x0F);
+        }
+        // HBM2：无消费级 mem 字段
+        assert_eq!(t.mem_clock_raw, 0);
+    }
+
+    /// 无 profile 变体（GP100 布局）：回走踩空 → profiles 空，阶梯保留。
+    #[test]
+    fn vp_no_profile_variant_yields_empty_profiles() {
+        let mut d = synthetic_vp();
+        // 抹掉两条 profile 的 ID（0x330、0x369），使回走 10 步无 0x07
+        d[0x330] = 0x55;
+        d[0x369] = 0x55;
+        let tables = find_vp_tables(&d);
+        assert_eq!(tables.len(), 1);
+        let t = &tables[0];
+        assert!(t.profiles.is_empty());
+        assert_eq!(t.entries.len(), 3);
+        assert_eq!(t.entries[2].freq_mhz(), 1911.0);
     }
 
     /// 机会性真文件测试：仓库工作树若存在 reverse/ 下的实测 ROM 则全量解析。
