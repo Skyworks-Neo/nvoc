@@ -198,17 +198,25 @@ extern "C" __global__ void gemm_sample_check(
         ck = 1u;
         unsigned int i = samples[2u * k];
         unsigned int j = samples[2u * k + 1u];
-        // Float accumulation: rounding error (~sqrt(K)*eps) stays orders of
-        // magnitude below the tolerance, and doubles run at 1/32 rate on
-        // consumer GPUs.
-        float acc = 0.0f;
+        // Accumulator precision must match the device math: for fp64 outputs
+        // (tc==1) a float resum injects ~1e-4 absolute error (K-term rounding),
+        // which exceeds the fp64 tolerance band, so we accumulate in double and
+        // read the doubles verbatim. For fp32/fp16/bf16 float accumulation
+        // keeps the checker cheap on consumer GPUs (fp64 runs at 1/32 rate)
+        // while staying orders of magnitude below their tolerances.
+        double dacc = 0.0;
+        float facc = 0.0f;
         for (unsigned int kk = 0u; kk < size; ++kk) {
             unsigned int ai = ta ? (j * size + kk) : (kk * size + j);
             unsigned int bi = tb ? (kk * size + i) : (i * size + kk);
-            acc += v_load(a, ai, tc) * v_load(b, bi, tc);
+            if (tc == 1u) {
+                dacc += ((const double*)a)[ai] * ((const double*)b)[bi];
+            } else {
+                facc += v_load(a, ai, tc) * v_load(b, bi, tc);
+            }
         }
         float cv = v_load(c, (unsigned long long)i * size + j, tc);
-        float refv = acc;
+        float refv = (tc == 1u) ? (float)dacc : facc;
         if (!v_isfinite(cv) || !v_isfinite(refv)) {
             nf = 1u;
         } else {
