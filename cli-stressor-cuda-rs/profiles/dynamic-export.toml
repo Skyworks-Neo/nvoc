@@ -20,3 +20,8 @@ warmup_iters = 0
 burst_iters = 30
 minor_mixture_rate = 0
 weight = 1.00
+
+# Keep the VFP-export load shape byte-for-byte comparable with older runs:
+# no ride-on-load detectors during dynamic curve export.
+[verify]
+enabled = false

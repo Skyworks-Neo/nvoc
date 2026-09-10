@@ -24,6 +24,17 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
+pub mod verify;
+pub use verify::{
+    DetectorStats, GemmStats, SampleStats, SelfTestCheck, SelfTestReport, VerdictClass,
+    VerifyConfig, VerifyReport, classify, dp4a_ref, intalu_ref_element, vexpected_host, vhash32,
+};
+
+// CUDA backend lives in the lib so integration tests (and the bundled
+// optimizer worker) can drive it directly.
+#[cfg(feature = "cuda")]
+pub mod cuda_backend;
+
 macro_rules! println {
     () => { std::println!() };
     ($($arg:tt)*) => {{
@@ -137,7 +148,7 @@ pub struct PrecisionSpec {
     pub tf32_enabled: Option<bool>,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, serde::Serialize)]
 pub struct StressResult {
     pub precision: String,
     pub supported: bool,
@@ -152,6 +163,13 @@ pub struct StressResult {
     pub max_rel_error: f32,
     pub first_error: Option<String>,
     pub first_error_at_s: Option<f64>,
+    /// Ride-on-load detector counters attributed to this precision.
+    #[serde(default)]
+    pub detectors: DetectorStats,
+    /// Approximate workload elements produced (Σ size² per op), the coverage
+    /// denominator for the verdict.
+    #[serde(default)]
+    pub elements_produced: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -169,6 +187,7 @@ pub struct StressRunConfig<'a> {
     pub kernel_mixture: &'a [KernelMixtureEntry],
     pub stream_mode: StreamMode,
     pub kernel_param_overrides: &'a [KernelParamOverride],
+    pub verify: VerifyConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -273,6 +292,26 @@ pub trait Backend {
     fn run_kernel_path(&mut self, request: KernelPathRequest<'_>) -> Result<f64, BackendError>;
     fn synchronize(&self) -> Result<(), BackendError>;
     fn empty_cache(&self) -> Result<(), BackendError>;
+
+    /// First ride-on-load detector failure since the last drain, if any.
+    fn verify_failure(&self) -> Option<String> {
+        None
+    }
+    /// Drain accumulated detector counters (called once per dispatch-loop op).
+    fn verify_drain(&mut self) -> DetectorStats {
+        DetectorStats::default()
+    }
+    /// Exact INT8 GEMM validation: seeded host reference vs device result.
+    /// Returns `(passed, failure_reason)`; Err only for infrastructure errors.
+    fn validate_int8_exact(
+        &mut self,
+        _size: usize,
+        _seed: u64,
+    ) -> Result<(bool, Option<String>), BackendError> {
+        Err(BackendError::Other(
+            "INT8 exact validation unsupported on this backend".to_string(),
+        ))
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -285,6 +324,7 @@ pub struct KernelPathRequest<'a> {
     pub transpose_prob: f64,
     pub seed: u64,
     pub stream_mode: StreamMode,
+    pub verify: VerifyConfig,
 }
 
 fn validation_enabled(validate_interval_s: f64) -> bool {
@@ -293,10 +333,10 @@ fn validation_enabled(validate_interval_s: f64) -> bool {
 
 /// Whether a precision is an integer (INT8/16/32) stress path.
 ///
-/// INT paths have no FP reference to compare against (`validate_precision` is
-/// FP-centric) and the `intalu` kernel is an intentionally non-referenceable
-/// MAD/hash chain, so per-element validation is skipped for them — they are
-/// pure-load stress paths, like the atomic kernel.
+/// INT paths have no FP reference (`validate_precision` is FP-centric): INT8
+/// GEMM is covered by the exact integer sidecar (`validate_int8_exact`) and
+/// the `intalu` chain by the bit-exact host reference (`intalu_ref_element`),
+/// so the FP element loop is skipped for them.
 fn is_int_precision(kind: PrecisionKind) -> bool {
     matches!(
         kind,
@@ -846,6 +886,29 @@ pub fn validate_precision<B: Backend>(
     Ok((passed, max_abs, max_rel, reason))
 }
 
+/// Exact INT8 GEMM reference over `size²` inputs with i32 arithmetic
+/// (inputs are pre-quantized to [-127, 127], so the accumulator cannot
+/// overflow). Rayon-parallel; sizes stay ≤ a few hundred so the host cost is
+/// tens of milliseconds.
+///
+/// SEMANTICS: matches the device, where the verbatim cuBLAS column-major call
+/// makes the row-major output `C[i][j] = Σ_k A[k][j]·B[i][k]` (the A/B roles
+/// are swapped relative to a textbook A*B; see `gemm_sample_check`).
+pub fn cpu_reference_int8(a: &[i8], b: &[i8], size: usize) -> Vec<i32> {
+    (0..size)
+        .into_par_iter()
+        .flat_map_iter(|i| {
+            (0..size).map(move |j| {
+                let mut acc = 0i32;
+                for k in 0..size {
+                    acc += a[k * size + j] as i32 * b[i * size + k] as i32;
+                }
+                acc
+            })
+        })
+        .collect()
+}
+
 fn choose_weighted<'a, T, F>(items: &'a [T], rng: &mut StdRng, weight_of: F) -> Option<&'a T>
 where
     F: Fn(&T) -> f64,
@@ -1072,6 +1135,7 @@ pub fn run_stress_for_precision<B: Backend>(
         kernel_mixture: config.kernel_mixture,
         stream_mode: config.stream_mode,
         kernel_param_overrides: &effective_overrides,
+        verify: config.verify,
     };
 
     while start.elapsed().as_secs_f64() < config.duration_s {
@@ -1116,6 +1180,7 @@ pub fn run_stress_for_precision<B: Backend>(
             transpose_prob: params.transpose_prob,
             seed: op_seed,
             stream_mode: effective_config.stream_mode,
+            verify: effective_config.verify,
         }) {
             Ok(value) => value,
             Err(err) => {
@@ -1130,6 +1195,19 @@ pub fn run_stress_for_precision<B: Backend>(
                 break;
             }
         };
+
+        // Ride-on-load detectors: same fail-fast policy as the mixed loop.
+        let detector_failed = backend.verify_failure();
+        let detector_deltas = backend.verify_drain();
+        result.detectors.merge(&detector_deltas);
+        if let Some(fail) = detector_failed {
+            if result.first_error.is_none() {
+                result.first_error = Some(fail.clone());
+                result.first_error_at_s = Some(start.elapsed().as_secs_f64());
+            }
+            println!("[VERIFY] {:11} | {} | FAIL", kernel_kind.as_str(), fail);
+            break;
+        }
 
         let flops = estimate_kernel_work_flops(kernel_kind, size, params.burst_iters) as f64;
         let inst_tflops = if op_elapsed > 0.0 {
@@ -1293,6 +1371,7 @@ pub fn run_stress_mixed<B: Backend>(
         kernel_mixture: config.kernel_mixture,
         stream_mode: config.stream_mode,
         kernel_param_overrides: &effective_overrides,
+        verify: config.verify,
     };
 
     while start.elapsed().as_secs_f64() < config.duration_s {
@@ -1343,6 +1422,7 @@ pub fn run_stress_mixed<B: Backend>(
             transpose_prob: params.transpose_prob,
             seed: op_seed,
             stream_mode: effective_config.stream_mode,
+            verify: effective_config.verify,
         }) {
             Ok(value) => value,
             Err(err) => {
@@ -1358,6 +1438,27 @@ pub fn run_stress_mixed<B: Backend>(
                 break;
             }
         };
+
+        // Ride-on-load detectors: a hard failure stops the run (same policy as
+        // a validation failure); counters attribute to the active precision.
+        let detector_failed = backend.verify_failure();
+        let detector_deltas = backend.verify_drain();
+        if let Some(idx) = index_by_name.get(op_spec.name) {
+            let result = &mut results[*idx];
+            result.detectors.merge(&detector_deltas);
+            if detector_failed.is_some() && result.first_error.is_none() {
+                result.first_error = detector_failed.clone();
+                result.first_error_at_s = Some(start.elapsed().as_secs_f64());
+            }
+        }
+        if detector_failed.is_some() {
+            println!(
+                "[VERIFY] {:11} | {} | FAIL",
+                kernel_kind.as_str(),
+                detector_failed.unwrap_or_default()
+            );
+            break;
+        }
 
         let flops = estimate_kernel_work_flops(kernel_kind, size, params.burst_iters) as f64;
         let inst_tflops = if op_elapsed > 0.0 {
@@ -1382,6 +1483,7 @@ pub fn run_stress_mixed<B: Backend>(
             result.iterations += params.burst_iters as u64;
             result.total_flops += estimate_kernel_work_flops(kernel_kind, size, params.burst_iters);
             result.compute_s += op_elapsed;
+            result.elements_produced += (size * size) as u64;
             if result.compute_s > 0.0 {
                 result.tflops = (result.total_flops as f64 / result.compute_s) / 1e12;
             }
@@ -1389,44 +1491,80 @@ pub fn run_stress_mixed<B: Backend>(
 
         let _ = backend.empty_cache();
 
-        if validate_enabled && !is_int_precision(op_spec.kind) && elapsed_total >= next_validate {
-            match validate_precision(
-                backend,
-                &op_spec,
-                effective_config.validate_size,
-                validation_seed,
-            ) {
-                Ok((passed, max_abs, max_rel, reason)) => {
-                    let status = if passed { "OK" } else { "FAIL" };
-                    println!(
-                        "[{}] validate | abs={:.3e} | rel={:.3e} | {}",
-                        op_spec.name, max_abs, max_rel, status
-                    );
-                    if let Some(idx) = index_by_name.get(op_spec.name) {
-                        let result = &mut results[*idx];
-                        result.validations += 1;
-                        result.max_abs_error = result.max_abs_error.max(max_abs);
-                        result.max_rel_error = result.max_rel_error.max(max_rel);
-                        if !passed {
-                            result.validation_failures += 1;
-                            if result.first_error.is_none() {
-                                result.first_error = reason;
-                                result.first_error_at_s = Some(start.elapsed().as_secs_f64());
+        if validate_enabled && elapsed_total >= next_validate {
+            if is_int_precision(op_spec.kind) {
+                // INT8 GEMM gets the exact integer sidecar; INT16/32 intalu
+                // chains are covered per-op by the gather-based host reference.
+                if op_spec.kind == PrecisionKind::INT8 && kernel_kind == KernelType::Gemm {
+                    match backend.validate_int8_exact(
+                        effective_config.verify.int8_validate_size,
+                        validation_seed,
+                    ) {
+                        Ok((true, _)) => {
+                            println!("[INT8] validate | exact | OK");
+                        }
+                        Ok((false, reason)) => {
+                            println!("[INT8] validate | exact | FAIL");
+                            if let Some(idx) = index_by_name.get(op_spec.name) {
+                                let result = &mut results[*idx];
+                                result.validation_failures += 1;
+                                if result.first_error.is_none() {
+                                    result.first_error = reason;
+                                    result.first_error_at_s = Some(start.elapsed().as_secs_f64());
+                                }
+                            }
+                            break;
+                        }
+                        Err(err) => {
+                            if let Some(idx) = index_by_name.get(op_spec.name) {
+                                results[*idx].first_error =
+                                    Some(format!("int8 validation error: {err}"));
+                                results[*idx].first_error_at_s =
+                                    Some(start.elapsed().as_secs_f64());
                             }
                             break;
                         }
                     }
-                    next_validate = elapsed_total + effective_config.validate_interval_s;
-                    validation_seed = validation_seed.wrapping_add(1);
                 }
-                Err(err) => {
-                    if let Some(idx) = index_by_name.get(op_spec.name) {
-                        results[*idx].first_error = Some(format!("validation error: {err}"));
-                        results[*idx].first_error_at_s = Some(start.elapsed().as_secs_f64());
+            } else {
+                match validate_precision(
+                    backend,
+                    &op_spec,
+                    effective_config.validate_size,
+                    validation_seed,
+                ) {
+                    Ok((passed, max_abs, max_rel, reason)) => {
+                        let status = if passed { "OK" } else { "FAIL" };
+                        println!(
+                            "[{}] validate | abs={:.3e} | rel={:.3e} | {}",
+                            op_spec.name, max_abs, max_rel, status
+                        );
+                        if let Some(idx) = index_by_name.get(op_spec.name) {
+                            let result = &mut results[*idx];
+                            result.validations += 1;
+                            result.max_abs_error = result.max_abs_error.max(max_abs);
+                            result.max_rel_error = result.max_rel_error.max(max_rel);
+                            if !passed {
+                                result.validation_failures += 1;
+                                if result.first_error.is_none() {
+                                    result.first_error = reason;
+                                    result.first_error_at_s = Some(start.elapsed().as_secs_f64());
+                                }
+                                break;
+                            }
+                        }
                     }
-                    break;
+                    Err(err) => {
+                        if let Some(idx) = index_by_name.get(op_spec.name) {
+                            results[*idx].first_error = Some(format!("validation error: {err}"));
+                            results[*idx].first_error_at_s = Some(start.elapsed().as_secs_f64());
+                        }
+                        break;
+                    }
                 }
             }
+            next_validate = elapsed_total + effective_config.validate_interval_s;
+            validation_seed = validation_seed.wrapping_add(1);
         }
 
         if op_elapsed < 0.01 {

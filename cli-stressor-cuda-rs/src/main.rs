@@ -20,9 +20,9 @@ use cli_stressor_cuda_rs::parse_int_list;
 #[cfg(feature = "cuda")]
 use cli_stressor_cuda_rs::{
     Backend, DeviceInfo, KernelParamOverride, KernelType, PrecisionKind, PrecisionMixtureEntry,
-    PrecisionSpec, StressResult, StressRunConfig, parse_kernel_mixture,
-    parse_kernel_param_overrides, parse_kernel_type, parse_kernel_type_list, parse_precision_list,
-    parse_stream_mode, run_stress_mixed, validate_intalu_precision_overrides,
+    PrecisionSpec, StressResult, StressRunConfig, VerdictClass, VerifyConfig, classify,
+    parse_kernel_mixture, parse_kernel_param_overrides, parse_kernel_type, parse_kernel_type_list,
+    parse_precision_list, parse_stream_mode, run_stress_mixed, validate_intalu_precision_overrides,
 };
 #[cfg(feature = "cuda")]
 use serde::Deserialize;
@@ -30,7 +30,7 @@ use serde::Deserialize;
 mod style;
 
 #[cfg(feature = "cuda")]
-mod cuda_backend;
+use cli_stressor_cuda_rs::cuda_backend;
 
 #[cfg(feature = "cuda")]
 use cuda_backend::{
@@ -157,6 +157,20 @@ struct Args {
     #[arg(long, default_value_t = 1024)]
     validate_size: usize,
 
+    /// Disable the ride-on-load detectors (pattern compare / GEMM scan /
+    /// sampled cross-checks / IntAlu reference)
+    #[arg(long, default_value_t = false)]
+    no_verify: bool,
+
+    /// Skip the detector injection self-test gate
+    #[arg(long, default_value_t = false)]
+    skip_self_test: bool,
+
+    /// Write the machine-readable verdict JSON to this path (also printed as
+    /// a `VERDICT_JSON:` line on stdout)
+    #[arg(long)]
+    json_out: Option<String>,
+
     #[arg(long, default_value_t = 0.5)]
     transpose_prob: f64,
 
@@ -259,6 +273,19 @@ struct Args {
 
 #[cfg(feature = "cuda")]
 #[derive(Debug, Default, Deserialize)]
+struct FileVerifyConfig {
+    enabled: Option<bool>,
+    self_test: Option<bool>,
+    memcpy_every: Option<u32>,
+    memset_every: Option<u32>,
+    gemm_every: Option<u32>,
+    gemm_samples: Option<u32>,
+    intalu_samples: Option<u32>,
+    int8_validate_size: Option<usize>,
+}
+
+#[cfg(feature = "cuda")]
+#[derive(Debug, Default, Deserialize)]
 struct FileConfig {
     duration: Option<f64>,
     matrix_sizes: Option<Vec<usize>>,
@@ -279,6 +306,7 @@ struct FileConfig {
     #[serde(alias = "vulkan-only")]
     vulkan_only: Option<bool>,
     kernel_params: Option<HashMap<String, FileKernelParam>>,
+    verify: Option<FileVerifyConfig>,
     gpu_index: Option<u32>,
     pci_bus: Option<String>,
     gpu_uuid: Option<String>,
@@ -676,6 +704,32 @@ fn apply_file_config_to_args(
     Ok(())
 }
 
+/// Print the machine-readable verdict as a greppable one-liner and optionally
+/// persist it to `--json-out`. The optimizer's output forwarding strips ANSI,
+/// so the `VERDICT_JSON:` prefix survives end-to-end.
+#[cfg(feature = "cuda")]
+fn emit_verdict(verdict: serde_json::Value, json_out: &Option<String>) {
+    println!("{}", stylize(&format!("VERDICT_JSON: {verdict}"), false));
+    if let Some(path) = json_out {
+        match serde_json::to_string_pretty(&verdict) {
+            Ok(pretty) => {
+                if let Err(err) = fs::write(path, pretty + "\n") {
+                    eprintln!(
+                        "{}",
+                        stylize(&format!("Failed to write --json-out: {err}"), true)
+                    );
+                }
+            }
+            Err(err) => {
+                eprintln!(
+                    "{}",
+                    stylize(&format!("Failed to serialize verdict JSON: {err}"), true)
+                );
+            }
+        }
+    }
+}
+
 #[cfg(feature = "cuda")]
 fn resolve_gpu_device_index(args: &Args) -> Result<u32, String> {
     // Count how many selection methods are provided
@@ -979,6 +1033,24 @@ fn print_summary(results: &[StressResult], info: &DeviceInfo) {
                 );
             }
         }
+        let d = &r.detectors;
+        if d.ops_checked > 0 {
+            println!(
+                "{}",
+                stylize(
+                    &format!(
+                        "{:12}      detectors: ops={} checked={} errors={} mismatch={} nonfinite={}",
+                        "",
+                        d.ops_checked,
+                        d.elements_checked,
+                        d.total_errors,
+                        d.mismatches,
+                        d.nonfinite
+                    ),
+                    false
+                )
+            );
+        }
     }
 
     println!("{}", "=".repeat(72));
@@ -1036,6 +1108,44 @@ pub fn run_from_args() {
             stylize(&format!("Invalid config file: {}", err), true)
         );
         std::process::exit(2);
+    }
+
+    // Ride-on-load verification settings: TOML [verify] fills the defaults,
+    // CLI flags override.
+    let mut verify_cfg = VerifyConfig::default();
+    if let Some(parsed) = file_config.as_ref()
+        && let Some(v) = &parsed.verify
+    {
+        if let Some(enabled) = v.enabled {
+            verify_cfg.enabled = enabled;
+        }
+        if let Some(self_test) = v.self_test {
+            verify_cfg.self_test = self_test;
+        }
+        if let Some(every) = v.memcpy_every {
+            verify_cfg.memcpy_every = every;
+        }
+        if let Some(every) = v.memset_every {
+            verify_cfg.memset_every = every;
+        }
+        if let Some(every) = v.gemm_every {
+            verify_cfg.gemm_every = every;
+        }
+        if let Some(samples) = v.gemm_samples {
+            verify_cfg.gemm_samples = samples;
+        }
+        if let Some(samples) = v.intalu_samples {
+            verify_cfg.intalu_samples = samples;
+        }
+        if let Some(size) = v.int8_validate_size {
+            verify_cfg.int8_validate_size = size;
+        }
+    }
+    if args.no_verify {
+        verify_cfg.enabled = false;
+    }
+    if args.skip_self_test {
+        verify_cfg.self_test = false;
     }
 
     if args.list_gpus {
@@ -1203,6 +1313,54 @@ pub fn run_from_args() {
 
     let info = backend.device_info();
     print_device_info(&info);
+
+    // Detector injection self-test (HYDRA heritage): prove the detection
+    // pipeline catches exactly one known injected error before trusting a
+    // green run. A broken detector's all-green is worse than no detector.
+    let self_test = if verify_cfg.enabled && verify_cfg.self_test {
+        backend.run_verify_self_test()
+    } else {
+        None
+    };
+    if let Some(report) = &self_test {
+        for check in &report.checks {
+            println!(
+                "{}",
+                stylize(
+                    &format!(
+                        "[self-test] {}: {} ({})",
+                        check.name,
+                        if check.passed { "OK" } else { "FAIL" },
+                        check.detail
+                    ),
+                    !check.passed
+                )
+            );
+        }
+        if !report.passed {
+            eprintln!(
+                "{}",
+                stylize(
+                    "[FATAL] verify self-test FAILED — the error-detection pipeline is not \
+                     trustworthy; aborting (use --skip-self-test to bypass)",
+                    true
+                )
+            );
+            let verdict = serde_json::json!({
+                "stressor": "cli-stressor-cuda-rs",
+                "result": "fail",
+                "classification": "self_test_failed",
+                "device": info.name,
+                "duration_s": args.duration,
+                "self_test": self_test,
+                "precisions": [],
+                "coverage": 0.0,
+                "confidence_pct": 0,
+            });
+            emit_verdict(verdict, &args.json_out);
+            std::process::exit(1);
+        }
+    }
 
     let precisions = match parse_precision_list(&args.precisions) {
         Ok(values) => values,
@@ -1546,6 +1704,7 @@ pub fn run_from_args() {
             kernel_mixture: &kernel_mixture,
             stream_mode,
             kernel_param_overrides: &kernel_param_overrides,
+            verify: verify_cfg,
         },
         vulkan_abort,
     );
@@ -1582,6 +1741,65 @@ pub fn run_from_args() {
         );
         overall_passed = false;
     }
+
+    // Machine-readable verdict (P0#4): one stdout line + optional --json-out.
+    let verify_totals: cli_stressor_cuda_rs::DetectorStats = {
+        let mut totals = cli_stressor_cuda_rs::DetectorStats::default();
+        for r in &results {
+            totals.merge(&r.detectors);
+        }
+        totals
+    };
+    let validation_failures: u64 = results.iter().map(|r| r.validation_failures as u64).sum();
+    let detector_errors: u64 =
+        verify_totals.total_errors + verify_totals.mismatches + verify_totals.nonfinite;
+    let runtime_errors: u64 = results
+        .iter()
+        .filter(|r| {
+            r.supported
+                && r.first_error
+                    .as_deref()
+                    .is_some_and(|e| e.starts_with("runtime error"))
+        })
+        .count() as u64;
+    let self_ok = self_test.as_ref().map(|s| s.passed).unwrap_or(true);
+    let class = classify(
+        self_ok,
+        validation_failures,
+        detector_errors,
+        runtime_errors,
+    );
+    let elements_produced: u64 = results.iter().map(|r| r.elements_produced).sum();
+    let coverage = if elements_produced > 0 {
+        (verify_totals.elements_checked as f64 / elements_produced as f64).min(1.0)
+    } else {
+        0.0
+    };
+    // Initial confidence formula: errors are hard-fails anyway, so the number
+    // communicates how much of the produced workload the detectors observed.
+    let confidence_pct = (100.0 * coverage * (1.0 - (detector_errors as f64).min(1.0))) as u32;
+    let verdict = serde_json::json!({
+        "stressor": "cli-stressor-cuda-rs",
+        "result": if class == VerdictClass::None && overall_passed { "pass" } else { "fail" },
+        "classification": class.as_str(),
+        "device": info.name,
+        "duration_s": args.duration,
+        "self_test": self_test,
+        "precisions": results,
+        "coverage": (coverage * 10000.0).round() / 10000.0,
+        "confidence_pct": confidence_pct,
+        "verify_config": {
+            "enabled": verify_cfg.enabled,
+            "self_test": verify_cfg.self_test,
+            "memcpy_every": verify_cfg.memcpy_every,
+            "memset_every": verify_cfg.memset_every,
+            "gemm_every": verify_cfg.gemm_every,
+            "gemm_samples": verify_cfg.gemm_samples,
+            "intalu_samples": verify_cfg.intalu_samples,
+            "int8_validate_size": verify_cfg.int8_validate_size,
+        },
+    });
+    emit_verdict(verdict, &args.json_out);
 
     if !overall_passed {
         std::process::exit(1);

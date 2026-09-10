@@ -5,12 +5,14 @@ use rand::{RngExt, SeedableRng};
 use std::time::Instant;
 
 use cudarc::cublas::{Gemm, GemmConfig, result as cublas_res, sys as cublas_sys};
-use cudarc::driver::{DevicePtr, DevicePtrMut};
+use cudarc::driver::{DevicePtr, DevicePtrMut, DeviceRepr};
 use half::{bf16, f16};
 
 use cli_stressor_cuda_rs::{
-    BackendError, PrecisionKind, PrecisionSpec, StreamMode, make_random_host_matrix,
+    BackendError, PrecisionKind, PrecisionSpec, StreamMode, VerifyConfig, choose_tolerance,
+    cpu_reference_int8, make_random_host_matrix,
 };
+use cudarc::driver::ValidAsZeroBits;
 
 use super::backend::CudaBackend;
 
@@ -22,10 +24,75 @@ pub(super) struct GemmPathConfig<'a> {
     pub transpose_prob: f64,
     pub seed: u64,
     pub stream_mode: StreamMode,
+    pub verify: VerifyConfig,
+}
+
+/// Tolerance for the sampled cross-check, scaled for the accumulation length:
+/// rounding error of a K-term dot product grows ~√K relative to the 1024-wide
+/// sidecar the base table was calibrated at.
+fn sample_tolerance(spec: &PrecisionSpec, size: usize) -> (f32, f32) {
+    let (atol, rtol) = choose_tolerance(spec.name);
+    let scale = (size as f32 / 1024.0).sqrt().max(1.0);
+    (atol * scale, rtol)
 }
 
 impl CudaBackend {
-    pub(super) fn run_gemm_path(&self, config: GemmPathConfig<'_>) -> Result<f64, BackendError> {
+    /// Ride-on-load verification for one finished GEMM burst: a full scan of
+    /// the C buffers (non-finite / zero / |C| sum) plus sampled dot-product
+    /// cross-checks recomputed from the same A/B the GEMM consumed.
+    #[allow(clippy::too_many_arguments)]
+    fn run_gemm_verify<T: DeviceRepr + ValidAsZeroBits>(
+        &mut self,
+        spec: &PrecisionSpec,
+        a_devs: &[cudarc::driver::CudaSlice<T>],
+        b_devs: &[cudarc::driver::CudaSlice<T>],
+        c_devs: &[cudarc::driver::CudaSlice<T>],
+        size: usize,
+        ta: bool,
+        tb: bool,
+        tc: u32,
+        seed: u64,
+        verify: VerifyConfig,
+    ) -> Result<(), BackendError> {
+        if self.verify.is_none() || !verify.enabled || !verify.due(verify.gemm_every, seed) {
+            return Ok(());
+        }
+        let streams: Vec<_> = (0..a_devs.len())
+            .map(|l| self.stream_for_lane(l).clone())
+            .collect();
+        let engine = self.verify.as_mut().expect("checked above");
+        let m = (verify.gemm_samples as usize).min(size * size);
+        let (atol, rtol) = sample_tolerance(spec, size);
+        let samples: Vec<u32> = {
+            let mut rng = StdRng::seed_from_u64(seed ^ 0x5EED_5EED_0001);
+            (0..2 * m)
+                .map(|_| rng.random::<u32>() % size as u32)
+                .collect()
+        };
+        for lane in 0..a_devs.len() {
+            engine.gemm_check(
+                &streams[lane],
+                &a_devs[lane],
+                &b_devs[lane],
+                &c_devs[lane],
+                size,
+                ta,
+                tb,
+                tc,
+                &samples,
+                atol,
+                rtol,
+            )?;
+        }
+        Ok(())
+    }
+}
+
+impl CudaBackend {
+    pub(super) fn run_gemm_path(
+        &mut self,
+        config: GemmPathConfig<'_>,
+    ) -> Result<f64, BackendError> {
         let GemmPathConfig {
             spec,
             size,
@@ -34,6 +101,7 @@ impl CudaBackend {
             transpose_prob,
             seed,
             stream_mode,
+            verify,
         } = config;
         let mut rng = StdRng::seed_from_u64(seed);
         let transpose_a = rng.random::<f64>() < transpose_prob;
@@ -125,6 +193,18 @@ impl CudaBackend {
                         .synchronize()
                         .map_err(|err| BackendError::Other(err.to_string()))?;
                 }
+                self.run_gemm_verify(
+                    spec,
+                    &a_devs,
+                    &b_devs,
+                    &c_devs,
+                    size,
+                    transpose_a,
+                    transpose_b,
+                    3,
+                    seed,
+                    verify,
+                )?;
                 Ok(op_start.elapsed().as_secs_f64())
             }
             PrecisionKind::FP16 => {
@@ -197,6 +277,18 @@ impl CudaBackend {
                         .synchronize()
                         .map_err(|err| BackendError::Other(err.to_string()))?;
                 }
+                self.run_gemm_verify(
+                    spec,
+                    &a_devs,
+                    &b_devs,
+                    &c_devs,
+                    size,
+                    transpose_a,
+                    transpose_b,
+                    2,
+                    seed,
+                    verify,
+                )?;
                 Ok(op_start.elapsed().as_secs_f64())
             }
             PrecisionKind::FP32 | PrecisionKind::TF32 => {
@@ -267,6 +359,18 @@ impl CudaBackend {
                         .synchronize()
                         .map_err(|err| BackendError::Other(err.to_string()))?;
                 }
+                self.run_gemm_verify(
+                    spec,
+                    &a_devs,
+                    &b_devs,
+                    &c_devs,
+                    size,
+                    transpose_a,
+                    transpose_b,
+                    0,
+                    seed,
+                    verify,
+                )?;
                 Ok(op_start.elapsed().as_secs_f64())
             }
             PrecisionKind::FP64 => {
@@ -339,6 +443,18 @@ impl CudaBackend {
                         .synchronize()
                         .map_err(|err| BackendError::Other(err.to_string()))?;
                 }
+                self.run_gemm_verify(
+                    spec,
+                    &a_devs,
+                    &b_devs,
+                    &c_devs,
+                    size,
+                    transpose_a,
+                    transpose_b,
+                    1,
+                    seed,
+                    verify,
+                )?;
                 Ok(op_start.elapsed().as_secs_f64())
             }
             PrecisionKind::INT8 => {
@@ -535,5 +651,93 @@ impl CudaBackend {
             .map_err(|err| BackendError::Other(err.to_string()))?;
         }
         Ok(())
+    }
+
+    /// Exact INT8 GEMM validation: quantized host reference vs device C with
+    /// strict i32 equality. Runs a small matrix at the validate cadence so the
+    /// host reference cost stays in the tens of milliseconds.
+    pub(super) fn validate_int8_exact_impl(
+        &mut self,
+        size: usize,
+        seed: u64,
+    ) -> Result<(bool, Option<String>), BackendError> {
+        let size = (size + 15) & !15;
+        let mut rng = StdRng::seed_from_u64(seed);
+        let a_host_f = make_random_host_matrix(size, rng.random::<u64>());
+        let b_host_f = make_random_host_matrix(size, rng.random::<u64>());
+        let a_host: Vec<i8> = a_host_f
+            .data
+            .iter()
+            .map(|v| (*v * 127.0).clamp(-127.0, 127.0) as i8)
+            .collect();
+        let b_host: Vec<i8> = b_host_f
+            .data
+            .iter()
+            .map(|v| (*v * 127.0).clamp(-127.0, 127.0) as i8)
+            .collect();
+
+        let a_dev = self
+            .stream
+            .clone_htod(&a_host)
+            .map_err(|err| BackendError::Other(err.to_string()))?;
+        let b_dev = self
+            .stream
+            .clone_htod(&b_host)
+            .map_err(|err| BackendError::Other(err.to_string()))?;
+        let mut c_dev = self
+            .stream
+            .alloc_zeros::<i32>(size * size)
+            .map_err(|err| BackendError::Other(err.to_string()))?;
+
+        let m = size as i32;
+        let alpha: i32 = 1;
+        let beta: i32 = 0;
+        let op = cublas_sys::cublasOperation_t::CUBLAS_OP_N;
+        Self::launch_int8_gemm(
+            &self.blas,
+            &self.stream,
+            op,
+            op,
+            m,
+            m,
+            m,
+            &alpha,
+            &a_dev,
+            m,
+            &b_dev,
+            m,
+            &beta,
+            &mut c_dev,
+            m,
+            cublas_sys::cublasComputeType_t::CUBLAS_COMPUTE_32I,
+            cublas_sys::cublasGemmAlgo_t::CUBLAS_GEMM_DEFAULT_TENSOR_OP,
+            cublas_sys::cudaDataType::CUDA_R_8I,
+            cublas_sys::cudaDataType::CUDA_R_8I,
+            cublas_sys::cudaDataType::CUDA_R_32I,
+        )?;
+        self.stream
+            .synchronize()
+            .map_err(|err| BackendError::Other(err.to_string()))?;
+        let c_dev_host: Vec<i32> = self
+            .stream
+            .clone_dtoh(&c_dev)
+            .map_err(|err| BackendError::Other(err.to_string()))?;
+        self.stream
+            .synchronize()
+            .map_err(|err| BackendError::Other(err.to_string()))?;
+
+        let reference = cpu_reference_int8(&a_host, &b_host, size);
+        for (idx, (actual, expected)) in c_dev_host.iter().zip(reference.iter()).enumerate() {
+            if actual != expected {
+                let (i, j) = (idx / size, idx % size);
+                return Ok((
+                    false,
+                    Some(format!(
+                        "int8 exact mismatch at [{i},{j}]: device={actual} reference={expected}"
+                    )),
+                ));
+            }
+        }
+        Ok((true, None))
     }
 }

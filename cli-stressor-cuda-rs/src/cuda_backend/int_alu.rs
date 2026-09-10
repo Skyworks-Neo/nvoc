@@ -23,7 +23,10 @@ use rand::{RngExt, SeedableRng};
 use cudarc::driver::{CudaContext, CudaFunction, CudaModule, LaunchConfig, PushKernelArg};
 use cudarc::nvrtc::{CompileOptions, compile_ptx_with_opts};
 
-use cli_stressor_cuda_rs::{BackendError, DeviceInfo, PrecisionKind, PrecisionSpec, StreamMode};
+use cli_stressor_cuda_rs::{
+    BackendError, DeviceInfo, PrecisionKind, PrecisionSpec, StreamMode, VerifyConfig,
+    intalu_ref_element,
+};
 
 use super::backend::CudaBackend;
 use super::kernels::load_kernel;
@@ -72,7 +75,7 @@ extern "C" __global__ void int_alu_stress(
 /// JIT-compiles the PTX down to the real architecture, and the
 /// `__CUDA_ARCH__ >= 610` guard in the kernel re-selects the DP4A path at JIT
 /// time.
-fn nvrtc_arch_for(info: &DeviceInfo) -> String {
+pub(super) fn nvrtc_arch_for(info: &DeviceInfo) -> String {
     let (maj, min) = info.compute_capability.unwrap_or((7, 5));
     #[cfg(feature = "cuda11")]
     let cap = (8, 6);
@@ -100,6 +103,7 @@ pub(super) fn build_intalu_kernel(
 }
 
 impl CudaBackend {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn run_intalu_path(
         &self,
         spec: &PrecisionSpec,
@@ -108,6 +112,7 @@ impl CudaBackend {
         burst_iters: u32,
         seed: u64,
         stream_mode: StreamMode,
+        verify: VerifyConfig,
     ) -> Result<f64, BackendError> {
         let func = self
             .intalu_fn
@@ -189,6 +194,46 @@ impl CudaBackend {
             self.stream_for_lane(lane)
                 .synchronize()
                 .map_err(|err| BackendError::Other(err.to_string()))?;
+        }
+
+        // Ride-on-load check: gather sampled (input_a, input_b, output)
+        // triples and recompute the chain on the host — bit-exact oracle with
+        // no device golden copy and a ~12 KiB D2H per op.
+        if let Some(engine) = &self.verify
+            && verify.enabled
+            && verify.intalu_samples > 0
+        {
+            let m = (verify.intalu_samples as usize).min(n as usize);
+            let mut rng = StdRng::seed_from_u64(seed ^ 0xA11C_E5E5);
+            let samples: Vec<u32> = (0..m).map(|_| rng.random::<u32>() % n).collect();
+            let dp4a = matches!(
+                self.info.compute_capability,
+                Some((major, minor)) if major > 6 || (major == 6 && minor >= 1)
+            );
+            let mut mismatches = 0u64;
+            let mut first_detail: Option<String> = None;
+            for lane in 0..lane_count {
+                let gathered = engine.intalu_gather(
+                    self.stream_for_lane(lane),
+                    &xs[lane],
+                    &outs[lane],
+                    &samples,
+                )?;
+                for (k, triple) in gathered.chunks_exact(3).enumerate() {
+                    let (a, b, out) = (triple[0] as i32, triple[1] as i32, triple[2] as i32);
+                    let expected = intalu_ref_element(a, b, mode, dp4a);
+                    if out != expected {
+                        mismatches += 1;
+                        if first_detail.is_none() {
+                            first_detail = Some(format!(
+                                "intalu reference: sampled output mismatch (lane {}, sample {}, in_a=0x{:08X}, in_b=0x{:08X}): exp=0x{:08X} act=0x{:08X}, mode={mode}, dp4a={dp4a}",
+                                lane, k, a, b, expected, out
+                            ));
+                        }
+                    }
+                }
+            }
+            engine.absorb_intalu((m * lane_count) as u64, mismatches, first_detail);
         }
         Ok(op_start.elapsed().as_secs_f64())
     }

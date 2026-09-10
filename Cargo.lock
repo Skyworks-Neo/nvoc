@@ -259,6 +259,7 @@ dependencies = [
  "rand_distr 0.6.0",
  "rayon",
  "serde",
+ "serde_json",
  "thiserror 2.0.20",
  "toml",
 ]

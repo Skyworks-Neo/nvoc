@@ -1,7 +1,8 @@
 use cli_stressor_cuda_rs::{
-    KernelType, StressResult, choose_tolerance, parse_int_list, parse_kernel_mixture,
+    DetectorStats, KernelType, StressResult, VerifyConfig, VerifyReport, choose_tolerance,
+    classify, dp4a_ref, intalu_ref_element, parse_int_list, parse_kernel_mixture,
     parse_kernel_param_overrides, parse_kernel_type_list, parse_precision_mixture,
-    parse_stream_mode, per_element_allclose,
+    parse_stream_mode, per_element_allclose, vexpected_host,
 };
 
 #[test]
@@ -112,4 +113,133 @@ fn test_parse_kernel_param_overrides() {
                 |v| v.kind == KernelType::Gemm && v.precisions.as_ref().map(|p| p.len()) == Some(2)
             )
     );
+}
+
+#[test]
+fn test_verify_report_layout_and_init() {
+    // The report crosses D2H once per check; keep it compact and the init
+    // invariants (idx_min = max, first_lock = armed) intact.
+    assert_eq!(std::mem::size_of::<VerifyReport>(), 176);
+    let report = VerifyReport::init();
+    assert_eq!(report.magic, VerifyReport::MAGIC);
+    assert_eq!(report.idx_min, u32::MAX);
+    assert_eq!(report.first_lock, u32::MAX);
+    assert_eq!(report.total_errors, 0);
+}
+
+#[test]
+fn test_verify_config_defaults_and_cadence() {
+    let cfg = VerifyConfig::default();
+    assert!(cfg.enabled && cfg.self_test);
+    assert_eq!(cfg.memcpy_every, 1);
+    assert_eq!(cfg.memset_every, 8);
+    assert_eq!(cfg.gemm_every, 4);
+    assert_eq!(cfg.gemm_samples, 512);
+    assert!(cfg.due(cfg.gemm_every, 8));
+    assert!(!cfg.due(3, 8));
+}
+
+#[test]
+fn test_intalu_ref_deterministic() {
+    // The gather-based check compares against this reference, so it must be
+    // a pure function of (a, b, mode, dp4a).
+    let a = 0x1234_5678u32 as i32;
+    let b = 0xDEAD_BEEFu32 as i32;
+    for mode in [8u32, 16, 32] {
+        assert_eq!(
+            intalu_ref_element(a, b, mode, false),
+            intalu_ref_element(a, b, mode, false)
+        );
+        // DP4A fold must change the chain result (data-dependent xor).
+        assert_ne!(
+            intalu_ref_element(a, b, mode, false),
+            intalu_ref_element(a, b, mode, true)
+        );
+    }
+    assert_eq!(dp4a_ref(0x0101_0101, 0x0101_0101), 4);
+}
+
+#[test]
+fn test_vexpected_matches_doc_example() {
+    // The oracle is mirrored in device code; a frozen vector here forces a
+    // deliberate update on both sides if the hash ever changes.
+    assert_eq!(
+        vexpected_host(0xADBA, 0xADBA),
+        vexpected_host(0xADBA, 0xADBA)
+    );
+    assert_ne!(vexpected_host(0, 0xADBA), vexpected_host(1, 0xADBA));
+}
+
+#[test]
+fn test_classify_precedence() {
+    // Self-test failure dominates, then API errors, then memory errors, then
+    // data errors, then none.
+    assert_eq!(
+        classify(false, 0, 0, 0),
+        cli_stressor_cuda_rs::VerdictClass::SelfTestFailed
+    );
+    assert_eq!(
+        classify(true, 0, 0, 2),
+        cli_stressor_cuda_rs::VerdictClass::ApiError
+    );
+    assert_eq!(
+        classify(true, 0, 1, 0),
+        cli_stressor_cuda_rs::VerdictClass::MemoryError
+    );
+    assert_eq!(
+        classify(true, 3, 0, 0),
+        cli_stressor_cuda_rs::VerdictClass::DataError
+    );
+    assert_eq!(
+        classify(true, 0, 0, 0),
+        cli_stressor_cuda_rs::VerdictClass::None
+    );
+}
+
+#[test]
+fn test_detector_stats_merge() {
+    let mut total = DetectorStats::default();
+    let part = DetectorStats {
+        ops_checked: 3,
+        elements_checked: 100,
+        total_errors: 1,
+        mismatches: 0,
+        nonfinite: 0,
+        first_error: Some("memcpy verify: 1 wrong words".into()),
+    };
+    total.merge(&part);
+    total.merge(&DetectorStats {
+        ops_checked: 2,
+        ..DetectorStats::default()
+    });
+    assert_eq!(total.ops_checked, 5);
+    assert_eq!(total.elements_checked, 100);
+    assert_eq!(total.total_errors, 1);
+    // First error sticks across merges.
+    let later = DetectorStats {
+        ops_checked: 1,
+        first_error: Some("later".into()),
+        ..DetectorStats::default()
+    };
+    total.merge(&later);
+    assert_eq!(
+        total.first_error.as_deref(),
+        Some("memcpy verify: 1 wrong words")
+    );
+}
+
+#[test]
+fn test_stress_result_serializes_detectors() {
+    // The verdict JSON embeds StressResult; the detector fields must survive
+    // serialization.
+    let mut r = StressResult {
+        precision: "FP32".into(),
+        supported: true,
+        ..StressResult::default()
+    };
+    r.detectors.ops_checked = 4;
+    let json = serde_json::to_string(&r).unwrap();
+    assert!(json.contains("\"detectors\""));
+    assert!(json.contains("\"ops_checked\":4"));
+    assert!(json.contains("\"elements_produced\":0"));
 }

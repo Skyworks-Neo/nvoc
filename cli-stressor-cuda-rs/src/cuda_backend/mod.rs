@@ -20,6 +20,7 @@ mod int_alu;
 mod kernels;
 mod lanes;
 mod mem_ops;
+mod verify_kernels;
 
 // `CudaMatrix` / `CudaOutput` are the `Backend::Matrix` / `Backend::Output`
 // associated types; re-exported as part of the backend's public surface even
