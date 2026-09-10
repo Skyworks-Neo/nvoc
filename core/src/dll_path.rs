@@ -8,7 +8,17 @@
 //! 1. 显式覆盖优先:env `NVOC_NVML_PATH`(CLI `--nvml-path` 启动期注入同名
 //!    env),用户指哪打哪;
 //! 2. 默认搜索路径(覆盖 System32/PATH 上的新驱动布局);
-//! 3. init 失败 → 依次尝试候选绝对路径(System32 → NVSMI 老布局)。
+//! 3. init 失败 → 依次尝试候选绝对路径(WOA DriverStore ARM64EC → System32
+//!    → NVSMI 老布局)。
+//!
+//! WOA(Windows on ARM64)布局(616.00 WOA 包 nv_surface_woa.inf 实证):
+//! `System32\nvml.dll` 是纯 ARM64 的 `nvml_loader.dll` 改名副本(INF 行
+//! `nvml.dll,nvml_loader.dll,,0x00004000`),x64 进程加载直接报
+//! ERROR_BAD_EXE_FORMAT(193);x64 可用的 NVML 以 ARM64EC 形式
+//! `nvml_arm64ec.dll` 只落在 DriverStore FileRepository。x64 构建在 WOA 上
+//! 要么依赖下方候选探测,要么显式 `NVOC_NVML_PATH`(CLI `--nvml-path`,值为
+//! 完整 DLL 路径)指向 `...\FileRepository\nv_surface_woa.inf_*\nvml_arm64ec.dll`;
+//! ARM64 原生构建走 System32 副本,不受影响。
 //!
 //! **用 init 成败代替版本判据**:一台机器只有一个 NVIDIA 内核驱动实例
 //! (nvlddmkm.sys),nvml.dll 必须与它匹配。版本不匹配的 DLL 过不了 init,
@@ -33,11 +43,47 @@ pub const NVAPI_PATH_ENV: &str = "NVOC_NVAPI_PATH";
 const NVSMI_DIR: &str = r"C:\Program Files\NVIDIA Corporation\NVSMI";
 
 /// NVML 自动 fallback 的候选绝对路径,按新旧驱动布局排序:
-/// System32(新驱动布局,显式列出以覆盖 PATH 被裁剪的场合)→ NVSMI(老驱动布局)。
+/// WOA DriverStore 的 ARM64EC NVML(x64 进程在 WOA 上唯一可用的 NVML;非 WOA
+/// 环境为空列表,零成本)→ System32(新驱动布局,显式列出以覆盖 PATH 被裁剪的
+/// 场合)→ NVSMI(老驱动布局)。init_nvml 逐个尝试,哪个 init 成功用哪个,候选
+/// 顺序只影响探测开销、不影响正确性。
 fn nvml_candidates() -> Vec<PathBuf> {
-    let mut candidates = vec![Path::new(r"C:\Windows\System32\nvml.dll").to_path_buf()];
+    let mut candidates = woa_driverstore_candidates();
+    candidates.push(Path::new(r"C:\Windows\System32\nvml.dll").to_path_buf());
     candidates.push(Path::new(NVSMI_DIR).join("nvml.dll"));
     candidates
+}
+
+/// WOA DriverStore 里的 `nvml_arm64ec.dll`(ARM64EC,x64 与 ARM64 进程均可
+/// 加载)候选。616+ WOA 驱动 INF 只把纯 ARM64 的 nvml_loader.dll 改名成
+/// System32\nvml.dll,ARM64EC 版本留在 FileRepository 的 `nv*.inf_*` 目录;
+/// 逐目录探测,目录名带 hash 无版本序,命中多个时由 init_nvml 择优。
+#[cfg(windows)]
+fn woa_driverstore_candidates() -> Vec<PathBuf> {
+    let store = Path::new(r"C:\Windows\System32\DriverStore\FileRepository");
+    let Ok(entries) = std::fs::read_dir(store) else {
+        return Vec::new();
+    };
+    let mut hits: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|dir| {
+            dir.is_dir()
+                && dir
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("nv") && name.contains(".inf_"))
+        })
+        .map(|dir| dir.join("nvml_arm64ec.dll"))
+        .filter(|candidate| candidate.is_file())
+        .collect();
+    hits.sort();
+    hits
+}
+
+#[cfg(not(windows))]
+fn woa_driverstore_candidates() -> Vec<PathBuf> {
+    Vec::new()
 }
 
 /// 解析"当前实际加载的 nvml.dll"的候选路径(不 init、不验证可加载性)。
@@ -159,8 +205,10 @@ mod tests {
     #[test]
     fn nvml_candidates_cover_system32_and_nvspmi() {
         let candidates = nvml_candidates();
-        assert_eq!(candidates.len(), 2);
-        assert!(candidates[0].ends_with(r"System32\nvml.dll"));
-        assert!(candidates[1].ends_with(r"NVSMI\nvml.dll"));
+        // WOA 机器上前面会多出 DriverStore 的 nvml_arm64ec.dll 候选,末两位固定。
+        let n = candidates.len();
+        assert!(n >= 2);
+        assert!(candidates[n - 2].ends_with(r"System32\nvml.dll"));
+        assert!(candidates[n - 1].ends_with(r"NVSMI\nvml.dll"));
     }
 }

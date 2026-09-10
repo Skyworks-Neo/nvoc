@@ -63,7 +63,9 @@ fn ensure_nvapi_initialized() {
         // 把目录插进传统搜索序(见 dll_path::prepare_nvapi 文档)。
         super::dll_path::prepare_nvapi();
         if let Err(e) = ::nvapi::hi::initialize() {
-            eprintln!("warning: NvAPI_Initialize failed ({e:?}); continuing via implicit init");
+            // Display(非 Debug)——Debug 派生会丢掉 LibraryNotFound 上追加的
+            // 真实 OS 错误(GetLastError/dlerror),那是 WOA/路径问题唯一的线索。
+            eprintln!("warning: NvAPI_Initialize failed ({e}); continuing via implicit init");
         }
     });
 }
