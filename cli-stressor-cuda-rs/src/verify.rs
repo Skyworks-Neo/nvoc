@@ -158,6 +158,10 @@ pub struct VerifyConfig {
     pub gemm_every: u32,
     /// Sampled dot-product cross-checks per GEMM burst.
     pub gemm_samples: u32,
+    /// Output sizes up to this edge length use the full-coverage recompute
+    /// (100% of elements, ~one extra GEMM at naive efficiency) instead of
+    /// sampling; 0 disables the full-coverage path.
+    pub full_check_max_size: usize,
     /// Gathered IntAlu outputs per burst-op for the host reference compare.
     pub intalu_samples: u32,
     /// Matrix side for the exact INT8 GEMM validation.
@@ -173,6 +177,7 @@ impl Default for VerifyConfig {
             memset_every: 8,
             gemm_every: 4,
             gemm_samples: 512,
+            full_check_max_size: 1024,
             intalu_samples: 1024,
             int8_validate_size: 512,
         }

@@ -237,6 +237,50 @@ extern "C" __global__ void gemm_sample_check(
     if (threadIdx.x == 0) atomicAdd(&out->done, 1u);
 }
 
+// Full-coverage recompute: one thread per output element (n^2 threads,
+// K-loop each) using the same B*A index identity as gemm_sample_check.
+// Costs roughly one extra GEMM at naive-kernel efficiency, so restrict to
+// small (L2-resident) sizes where it closes the sampling blind spot.
+extern "C" __global__ void gemm_full_check(
+    const void* a, const void* b, const void* c,
+    unsigned int size, unsigned int ta, unsigned int tb, unsigned int tc,
+    float atol, float rtol, SampleStats* out)
+{
+    unsigned long gid = (unsigned long)blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned long total = (unsigned long)size * size;
+    if (gid >= total) return;
+    if (threadIdx.x == 0) atomicAdd(&out->done, 1u);
+    unsigned int i = (unsigned int)(gid / size);
+    unsigned int j = (unsigned int)(gid % size);
+    // Accumulator precision matches the device math (fp64 -> double), same
+    // rationale as gemm_sample_check.
+    double dacc = 0.0;
+    float facc = 0.0f;
+    for (unsigned int kk = 0u; kk < size; ++kk) {
+        unsigned int ai = ta ? (j * size + kk) : (kk * size + j);
+        unsigned int bi = tb ? (kk * size + i) : (i * size + kk);
+        if (tc == 1u) {
+            dacc += ((const double*)a)[ai] * ((const double*)b)[bi];
+        } else {
+            facc += v_load(a, ai, tc) * v_load(b, bi, tc);
+        }
+    }
+    float cv = v_load(c, gid, tc);
+    float refv = (tc == 1u) ? (float)dacc : facc;
+    if (!v_isfinite(cv) || !v_isfinite(refv)) {
+        atomicAdd(&out->nonfinite, 1u);
+        return;
+    }
+    float diff = refv - cv;
+    if (diff < 0.0f) diff = -diff;
+    float aref = refv >= 0.0f ? refv : -refv;
+    if (diff > atol + rtol * aref) {
+        atomicAdd(&out->mismatch, 1u);
+        atomicMax((int*)&out->max_abs_diff_bits, __float_as_int(diff));
+        atomicCAS(&out->first_bad, 0xFFFFFFFFu, (unsigned int)gid);
+    }
+}
+
 // Gather sampled IntAlu ingredients + outputs so the host can recompute the
 // chain reference without keeping a device copy of the input vector.
 extern "C" __global__ void intalu_gather(
@@ -269,6 +313,7 @@ pub struct VerifyEngine {
     inject_fn: CudaFunction,
     stats_fn: CudaFunction,
     sample_fn: CudaFunction,
+    full_fn: CudaFunction,
     gather_fn: CudaFunction,
     /// Default stream, used by the self-test.
     stream: Arc<CudaStream>,
@@ -309,6 +354,7 @@ impl VerifyEngine {
         let inject_fn = lookup("verify_inject_error")?;
         let stats_fn = lookup("gemm_stats_reduce")?;
         let sample_fn = lookup("gemm_sample_check")?;
+        let full_fn = lookup("gemm_full_check")?;
         let gather_fn = lookup("intalu_gather")?;
 
         let stream = ctx.default_stream();
@@ -337,6 +383,7 @@ impl VerifyEngine {
             inject_fn,
             stats_fn,
             sample_fn,
+            full_fn,
             gather_fn,
             stream,
             reports: RefCell::new(reports),
@@ -531,16 +578,6 @@ impl VerifyEngine {
         if samples_host.is_empty() {
             return Ok(());
         }
-        eprintln!(
-            "[DBG] size={} ta={} tb={} tc={} samples[0..8]={:?} atol={} rtol={}",
-            size,
-            ta,
-            tb,
-            tc,
-            &samples_host[..samples_host.len().min(8)],
-            atol,
-            rtol
-        );
         let m = samples_host.len() / 2;
         let samples_dev = stream
             .clone_htod(samples_host)
@@ -605,6 +642,95 @@ impl VerifyEngine {
                 "gemm sample check: {}/{} sampled outputs exceed tolerance (first_bad={}, max_abs_diff={:.4e}, atol={:.2e}, rtol={:.2e})",
                 sample.mismatch,
                 sample.checked,
+                if sample.first_bad == u32::MAX { 0 } else { sample.first_bad },
+                sample.max_abs_diff(),
+                atol,
+                rtol
+            ));
+        }
+        Ok(())
+    }
+
+    /// Full-coverage cross-check: recompute EVERY output element with a naive
+    /// kernel (same index identity as the gemm) and compare. 100% coverage of
+    /// the checked output; costs ~one extra GEMM at naive-kernel efficiency,
+    /// so restrict to small (L2-resident) sizes. Includes the non-finite scan
+    /// (the sampled path's stats pass is not needed here).
+    #[allow(clippy::too_many_arguments)]
+    pub fn gemm_full_check<T: DeviceRepr + ValidAsZeroBits>(
+        &self,
+        stream: &Arc<CudaStream>,
+        a: &CudaSlice<T>,
+        b: &CudaSlice<T>,
+        c: &CudaSlice<T>,
+        size: usize,
+        ta: bool,
+        tb: bool,
+        tc: u32,
+        atol: f32,
+        rtol: f32,
+    ) -> Result<(), BackendError> {
+        let n = (size * size) as u64;
+        {
+            let mut sample_stats = self.sample_stats.borrow_mut();
+            stream
+                .memcpy_htod(&[SampleStats::init()], &mut *sample_stats)
+                .map_err(|err| BackendError::Other(err.to_string()))?;
+        }
+        const FULL_LOCAL: u64 = 256;
+        let blocks = n.div_ceil(FULL_LOCAL) as u32;
+        let cfg = LaunchConfig {
+            grid_dim: (blocks, 1, 1),
+            block_dim: (FULL_LOCAL as u32, 1, 1),
+            shared_mem_bytes: 0,
+        };
+        let ta_u = ta as u32;
+        let tb_u = tb as u32;
+        let size_u = size as u32;
+        unsafe {
+            let mut stats = self.sample_stats.borrow_mut();
+            stream
+                .launch_builder(&self.full_fn)
+                .arg(a)
+                .arg(b)
+                .arg(c)
+                .arg(&size_u)
+                .arg(&ta_u)
+                .arg(&tb_u)
+                .arg(&tc)
+                .arg(&atol)
+                .arg(&rtol)
+                .arg(&mut *stats)
+                .launch(cfg)
+                .map_err(|err| BackendError::Other(err.to_string()))?;
+        }
+        stream
+            .synchronize()
+            .map_err(|err| BackendError::Other(err.to_string()))?;
+        let sample = stream
+            .clone_dtoh(&*self.sample_stats.borrow())
+            .map_err(|err| BackendError::Other(err.to_string()))?[0];
+
+        self.drained.borrow_mut().ops_checked += 1;
+        self.drained.borrow_mut().elements_checked += n;
+        self.drained.borrow_mut().nonfinite += sample.nonfinite as u64;
+        if sample.done != blocks {
+            self.set_failure(format!(
+                "gemm full check: completion counter mismatch (done={}, expected={blocks})",
+                sample.done
+            ));
+        }
+        if sample.nonfinite > 0 {
+            self.set_failure(format!(
+                "gemm full check: {}/{} outputs non-finite",
+                sample.nonfinite, n
+            ));
+        }
+        if sample.mismatch > 0 {
+            self.set_failure(format!(
+                "gemm full check: {}/{} outputs exceed tolerance (first_bad={}, max_abs_diff={:.4e}, atol={:.2e}, rtol={:.2e})",
+                sample.mismatch,
+                n,
                 if sample.first_bad == u32::MAX { 0 } else { sample.first_bad },
                 sample.max_abs_diff(),
                 atol,

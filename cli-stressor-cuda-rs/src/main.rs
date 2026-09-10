@@ -157,6 +157,11 @@ struct Args {
     #[arg(long, default_value_t = 1024)]
     validate_size: usize,
 
+    /// Output edge length up to which the full-coverage GEMM recompute runs
+    /// (100% of elements; larger sizes use sampled cross-checks)
+    #[arg(long, default_value_t = 1024)]
+    gemm_full_check_max_size: usize,
+
     /// Disable the ride-on-load detectors (pattern compare / GEMM scan /
     /// sampled cross-checks / IntAlu reference)
     #[arg(long, default_value_t = false)]
@@ -276,6 +281,7 @@ struct Args {
 struct FileVerifyConfig {
     enabled: Option<bool>,
     self_test: Option<bool>,
+    full_check_max_size: Option<usize>,
     memcpy_every: Option<u32>,
     memset_every: Option<u32>,
     gemm_every: Option<u32>,
@@ -295,6 +301,7 @@ struct FileConfig {
     burst_iters: Option<u32>,
     validate_interval: Option<f64>,
     validate_size: Option<usize>,
+    gemm_full_check_max_size: Option<usize>,
     transpose_prob: Option<f64>,
     minor_mixture_rate: Option<f64>,
     seed: Option<u64>,
@@ -535,6 +542,7 @@ fn parse_args_with_cli_sources() -> (Args, std::collections::HashSet<&'static st
         "burst_iters",
         "validate_interval",
         "validate_size",
+        "gemm_full_check_max_size",
         "transpose_prob",
         "minor_mixture_rate",
         "seed",
@@ -610,6 +618,12 @@ fn apply_file_config_to_args(
     }
     if let (true, Some(v)) = (!cli_set.contains("validate_size"), parsed.validate_size) {
         args.validate_size = v;
+    }
+    if let (true, Some(v)) = (
+        !cli_set.contains("gemm_full_check_max_size"),
+        parsed.gemm_full_check_max_size,
+    ) {
+        args.gemm_full_check_max_size = v;
     }
     if let (true, Some(v)) = (!cli_set.contains("transpose_prob"), parsed.transpose_prob) {
         args.transpose_prob = v;
@@ -1133,6 +1147,9 @@ pub fn run_from_args() {
         }
         if let Some(samples) = v.gemm_samples {
             verify_cfg.gemm_samples = samples;
+        }
+        if let Some(size) = v.full_check_max_size {
+            verify_cfg.full_check_max_size = size;
         }
         if let Some(samples) = v.intalu_samples {
             verify_cfg.intalu_samples = samples;
@@ -1795,6 +1812,7 @@ pub fn run_from_args() {
             "memset_every": verify_cfg.memset_every,
             "gemm_every": verify_cfg.gemm_every,
             "gemm_samples": verify_cfg.gemm_samples,
+            "gemm_full_check_max_size": verify_cfg.full_check_max_size,
             "intalu_samples": verify_cfg.intalu_samples,
             "int8_validate_size": verify_cfg.int8_validate_size,
         },

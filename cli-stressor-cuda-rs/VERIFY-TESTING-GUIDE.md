@@ -41,7 +41,8 @@ self_test = true          # 启动注入自检门
 memcpy_every = 1          # 每 N 个 memcpy op 校验一次（seed % N == 0）
 memset_every = 8          # 每 8 个 memset 迭代 1 次替换为 pattern fill+verify
 gemm_every = 4            # 每 N 个 GEMM op 做一次全量扫描+采样互检
-gemm_samples = 512        # 每次 GEMM 校验的采样点数
+gemm_samples = 512        # 每次 GEMM 校验的采样点数（大矩阵）
+full_check_max_size = 1024  # ≤此边长用全量朴素重算（100% 元素覆盖）；0=禁用
 intalu_samples = 1024     # IntAlu 每窗口 gather 采样数
 int8_validate_size = 512  # INT8 精确整数 sidecar 的矩阵边长
 ```
@@ -66,7 +67,7 @@ int8_validate_size = 512  # INT8 精确整数 sidecar 的矩阵边长
 错误前缀与域的对应：
 - `memcpy verify:` / `memset verify:` —— 显存域 pattern 校验（显示 idx 区间 + 首错 exp/act + 位直方图）
 - `gemm output scan:` —— C 缓冲全量扫描（non-finite/统计异常）
-- `gemm sample check:` —— 采样点双算互检
+- `gemm sample check:` / `gemm full check:` —— 采样互检 / 全量朴素重算互检（≤full_check_max_size 时自动启用，100% 元素覆盖）
 - `intalu reference:` —— IntAlu 链 host 参考（位精确）
 
 **summary 每精度新增一行：**
