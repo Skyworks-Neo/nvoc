@@ -521,13 +521,31 @@ pub fn set_cooler_levels(
         policy: mode,
         level: Some(Percentage(level)),
     };
-    let cooler_ids: &[FanCoolerId] = match target {
-        CoolerTarget::Cooler1 => &[FanCoolerId::Cooler1],
-        CoolerTarget::Cooler2 => &[FanCoolerId::Cooler2],
-        CoolerTarget::All => &[FanCoolerId::Cooler1, FanCoolerId::Cooler2],
-    };
 
     for gpu in gpus {
+        // Presence-derived entry list for `All`: the driver rejects the whole
+        // SET when it names a cooler the GPU doesn't have (472.12 live:
+        // Cooler1+Cooler2 count=2 on a single-fan card → generic NVAPI_ERROR
+        // -1 for the transaction). Enumerate real coolers from the private
+        // family first, like ResetNvapiFanControl; keep the fixed pair as the
+        // fallback when that family is silent (R391-era, public SET path).
+        let cooler_ids: Vec<FanCoolerId> = match target {
+            CoolerTarget::Cooler1 => vec![FanCoolerId::Cooler1],
+            CoolerTarget::Cooler2 => vec![FanCoolerId::Cooler2],
+            CoolerTarget::All => match gpu.inner().cooler_info_private() {
+                Ok(infos) if !infos.is_empty() => infos
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, _)| match i {
+                        0 => Some(FanCoolerId::Cooler1),
+                        1 => Some(FanCoolerId::Cooler2),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => vec![FanCoolerId::Cooler1, FanCoolerId::Cooler2],
+            },
+        };
+
         gpu.set_cooler_levels(cooler_ids.iter().map(|id| (*id, settings)))?;
     }
     Ok(())

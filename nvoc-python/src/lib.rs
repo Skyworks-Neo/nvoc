@@ -20,18 +20,18 @@ use nvoc_core::{
     ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetNvapiVfpPrivate,
     ResetPstateGlobalFreqOffset, ResetPublicVftableGpcLock, ResetPublicVftableOffset,
     ResetVfpFrequencyLock, SetApplicationsClocks, SetAutoboostStatus, SetAutoboostSupport,
-    SetClockOffset, SetCoolerLevels, SetDomainVfpDeltas, SetEdid, SetFanRpm, SetFanSpeed,
-    SetFanStop, SetGpcVoltLock, SetLegacyClocks, SetLockedClocks, SetNvapiBackgroundOcScanner,
-    SetNvapiClkDomainOffset, SetNvapiCoreVoltageControl, SetNvapiDNotifier, SetNvapiDynamicBoost,
-    SetNvapiPStateNative, SetNvapiPerfFreqCap, SetNvapiPerfLevelLock, SetNvapiPmgrVoltageArbiter,
-    SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiSensorLimits, SetNvapiTargetTemp,
-    SetNvapiTgpWatt, SetNvapiThermalSim, SetNvapiVfpPointPrivate, SetNvapiVfpRangePerPointPrivate,
-    SetNvapiVoltRailOffset, SetNvapiVoltRailTarget, SetNvmlPstateLock, SetPowerLimit,
-    SetPstateBaseVoltage, SetPstateClockOffset, SetPublicVftablePointOffset,
-    SetPublicVftableRangeOffset, SetTemperatureLimit, SetVfpFrequencyLock, SetVoltageBoost,
-    VfPointType, VfpResetDomain, clk_vf_delta_for_target, detect_gpu_type, discover_targets,
-    fetch_gpu_type, nvapi_status_name, nvml_pstate_to_str, parse_nvml_fan_control_policy, run,
-    try_parse_nvml_pstate,
+    SetClockOffset, SetCoolerLevels, SetDomainVfpDeltas, SetEdid, SetFanPercent, SetFanRpm,
+    SetFanSpeed, SetFanStop, SetGpcVoltLock, SetLegacyClocks, SetLockedClocks,
+    SetNvapiBackgroundOcScanner, SetNvapiClkDomainOffset, SetNvapiCoreVoltageControl,
+    SetNvapiDNotifier, SetNvapiDynamicBoost, SetNvapiPStateNative, SetNvapiPerfFreqCap,
+    SetNvapiPerfLevelLock, SetNvapiPmgrVoltageArbiter, SetNvapiPowerLimits, SetNvapiPstateLock,
+    SetNvapiSensorLimits, SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvapiThermalSim,
+    SetNvapiVfpPointPrivate, SetNvapiVfpRangePerPointPrivate, SetNvapiVoltRailOffset,
+    SetNvapiVoltRailTarget, SetNvmlPstateLock, SetPowerLimit, SetPstateBaseVoltage,
+    SetPstateClockOffset, SetPublicVftablePointOffset, SetPublicVftableRangeOffset,
+    SetTemperatureLimit, SetVfpFrequencyLock, SetVoltageBoost, VfPointType, VfpResetDomain,
+    clk_vf_delta_for_target, detect_gpu_type, discover_targets, fetch_gpu_type, nvapi_status_name,
+    nvml_pstate_to_str, parse_nvml_fan_control_policy, run, try_parse_nvml_pstate,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -4181,6 +4181,69 @@ fn set_legacy_voltage_delta(
     })
 }
 
+/// Pin the fan duty through the private fan-simulation surface (percent →
+/// 0..65536 level; `percent = None` disables the simulation → back to auto).
+/// The fallback layer under the cooler-level percent set: 472.12-class
+/// drivers reject the ClientFanCoolers control-block SET (single-fan card +
+/// phantom Cooler2 in `All` → generic NVAPI_ERROR -1; the public cooler
+/// family is NOT_SUPPORTED outright) while this surface takes the pin.
+fn nvapi_fan_percent_pin(
+    gpu: &str,
+    cooler_index: Option<u32>,
+    percent: Option<u32>,
+) -> PyResult<()> {
+    let inventory = {
+        let mut inventory_cache = lock_inventory_cache();
+        inventory_cache.entry(BackendSet::Nvapi)?
+    };
+    let target = selected_target(&inventory.0, gpu)?;
+    run(
+        &target,
+        SetFanPercent {
+            cooler_index,
+            percent,
+        },
+    )
+    .map_err(to_py_err)?;
+    Ok(())
+}
+
+/// NVAPI fan reset: clear the control-block level override (bit0) — the only
+/// reset that actually unpins modern cards (live A/B 1650S+A4000) — with the
+/// public RestoreCoolerSettings fallback for legacy drivers (R391/Fermi,
+/// GT730 live). Then best-effort clear the fan-simulation enable bit: the
+/// percent→sim fallback pin lives there and the control-block clear doesn't
+/// touch it. The sim clear is a no-op when nothing is simulated, and stays
+/// silent on drivers without the surface (nothing could have pinned through
+/// it either).
+fn nvapi_fan_reset(gpu: &str) -> PyResult<()> {
+    let inventory = {
+        let mut inventory_cache = lock_inventory_cache();
+        inventory_cache.entry(BackendSet::Nvapi)?
+    };
+    let target = selected_target(&inventory.0, gpu)?;
+    // Only surface a combined error when BOTH paths fail: NDA-first is what
+    // makes this work on the no-cooler-table desktop cards, public-first
+    // would break those.
+    if let Err(nda_err) = run(&target, ResetNvapiFanControl)
+        && let Err(public_err) = run(&target, ResetCoolerLevels)
+    {
+        return Err(invalid_value(format!(
+            "fan reset failed on both NVAPI paths: \
+             control-block override clear: {nda_err}; \
+             public RestoreCoolerSettings: {public_err}"
+        )));
+    }
+    let _ = run(
+        &target,
+        SetFanPercent {
+            cooler_index: None,
+            percent: None,
+        },
+    );
+    Ok(())
+}
+
 #[pyfunction]
 fn set_fan(
     py: Python<'_>,
@@ -4214,7 +4277,7 @@ fn set_fan(
                 // TDR recovery wrapper: a dead post-TDR NVML instance surfaces
                 // as NotFound ("找不到 policy") — first failure triggers a
                 // global nvmlShutdown + forced re-discovery + one retry.
-                with_nvml_fan_recovery(|inventory| {
+                let nvml_outcome = with_nvml_fan_recovery(|inventory| {
                     let target = selected_target(&inventory.0, gpu)?;
                     let fan_count = run(&target, QueryFanInfo)
                         .map(|report| report.output.count)
@@ -4247,7 +4310,33 @@ fn set_fan(
                         }
                     }
                     Ok(())
-                })?
+                });
+                if let Err(nvml_err) = nvml_outcome {
+                    // R470-class drivers: nvml.dll exports NO fan-write symbols
+                    // at all (GetFanSpeed / _v2 / UnitGetFanSpeedInfo are the
+                    // only fan exports), so both the percent pin and the reset
+                    // die at GetProcAddress. Rescue through the NVAPI surfaces
+                    // instead of failing the frontend.
+                    if is_reset {
+                        nvapi_fan_reset(gpu).map_err(|fallback_err| {
+                            invalid_value(format!(
+                                "NVML fan reset failed ({nvml_err}) and the NVAPI fallback also failed: {fallback_err}"
+                            ))
+                        })?;
+                    } else {
+                        // Same 0-based index space for NVML fans and NDA
+                        // coolers on the single-fan cards this fallback
+                        // serves; "all" → every present cooler.
+                        let cooler_index = fan_id.parse::<u32>().ok();
+                        if let Err(fallback_err) =
+                            nvapi_fan_percent_pin(gpu, cooler_index, Some(level))
+                        {
+                            return Err(invalid_value(format!(
+                                "NVML fan set failed ({nvml_err}) and the fan-simulation percent fallback also failed: {fallback_err}"
+                            )));
+                        }
+                    }
+                }
             }
             "nvapi" | "nvapi-cooler" => {
                 let inventory = {
@@ -4256,30 +4345,7 @@ fn set_fan(
                 };
                 let target = selected_target(&inventory.0, gpu)?;
                 if is_reset {
-                    // Modern cards: clear the control-block level override
-                    // (bit0) via ResetNvapiFanControl — the ONLY reset that
-                    // actually unpins there (live A/B 1650S+A4000: the
-                    // 0x214AC reset bitmask is accepted but leaves the pin;
-                    // RestoreCoolerSettings / RestoreCoolerPolicyTable are
-                    // NOT_SUPPORTED).
-                    //
-                    // Legacy drivers (e.g. R391/Fermi) reject the NDA
-                    // ClientFanCoolers family outright (NVAPI_ERROR/-1 — no
-                    // fan-policy surface in the user-mode DLL at all), so
-                    // fall back to the public RestoreCoolerSettings, which
-                    // works there (GT730 live). Only surface a combined
-                    // error when BOTH paths fail: NDA-first is what makes
-                    // this work on the no-cooler-table desktop cards,
-                    // public-first would break those.
-                    if let Err(nda_err) = run(&target, ResetNvapiFanControl)
-                        && let Err(public_err) = run(&target, ResetCoolerLevels)
-                    {
-                        return Err(invalid_value(format!(
-                            "fan reset failed on both NVAPI paths: \
-                             control-block override clear: {nda_err}; \
-                             public RestoreCoolerSettings: {public_err}"
-                        )));
-                    }
+                    nvapi_fan_reset(gpu)?;
                 } else {
                     let cooler_target = match fan_id {
                         "1" => nvoc_core::CoolerTarget::Cooler1,
@@ -4291,15 +4357,33 @@ fn set_fan(
                         "manual" => CoolerPolicy::Manual,
                         other => CoolerPolicy::from_str(other).map_err(invalid_value)?,
                     };
-                    run(
+                    if let Err(primary_err) = run(
                         &target,
                         SetCoolerLevels {
                             policy: mode,
                             level,
                             cooler_target,
                         },
-                    )
-                    .map_err(to_py_err)?;
+                    ) {
+                        // Fallback: pin the duty through the private
+                        // fan-simulation surface (percent → 0..65536 level).
+                        // 472.12 live: the control-block SET rejects `All`
+                        // (count=2, phantom Cooler2 → generic -1) and the
+                        // public cooler family answers NOT_SUPPORTED (-104),
+                        // so nothing else can serve the percent pin.
+                        let cooler_index = match fan_id {
+                            "1" => Some(0),
+                            "2" => Some(1),
+                            _ => None,
+                        };
+                        if let Err(fallback_err) =
+                            nvapi_fan_percent_pin(gpu, cooler_index, Some(level))
+                        {
+                            return Err(invalid_value(format!(
+                                "cooler-level set failed ({primary_err}) and the fan-simulation percent fallback also failed: {fallback_err}"
+                            )));
+                        }
+                    }
                 }
             }
             _ => {

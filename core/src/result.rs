@@ -263,6 +263,10 @@ pub enum OperationKind {
     /// 0xEB44E8AA): RMW the control block, patch enable+level per cooler
     /// type. RE'd from ref tool setFanSim.
     SetFanRpm,
+    /// Set fan duty by percent through the same fan-simulation surface
+    /// (percent → 0..65536 level). Fallback pin for drivers where the
+    /// ClientFanCoolers control-block SET is rejected (472.12 live).
+    SetFanPercent,
 }
 
 impl OperationKind {
@@ -294,6 +298,7 @@ impl OperationKind {
                 | SetPstateClockOffset
                 | SetCoolerLevels
                 | ResetCoolerLevels
+                | SetFanPercent
                 | SetVfpFrequencyLock
                 | ResetVfpFrequencyLock
                 | SetGpcVoltLock
@@ -605,6 +610,17 @@ pub struct NvapiFanRpmResult {
     pub max_rpm: u32,
     /// None = simulation disabled (returned to auto)
     pub applied_rpm: Option<u32>,
+}
+
+/// Result of a set_fan_percent call (percent → 0..65536 duty on the same
+/// fan-simulation surface).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NvapiFanPercentResult {
+    pub cooler_index: u32,
+    /// 0=active, 1=pwm, 2=pwm-tach
+    pub cooler_type: u32,
+    /// None = simulation disabled (returned to auto)
+    pub applied_percent: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

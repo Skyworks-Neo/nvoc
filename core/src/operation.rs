@@ -5,12 +5,12 @@ use super::nvml as low_nvml;
 use super::result::{
     ApiRestrictionState, AppliedValue, AutoBoostState, BatchReport, ClockOffset, DNotifierInfo,
     DNotifierLevel, DisplayInfo, EdidData, FanCurvePointReadout, FanCurveReadout, FanInfo,
-    NvapiCoolerInfoEntry, NvapiFanPolicyEntry, NvapiFanPolicyInfo, NvapiFanRpmResult,
-    NvapiPStateNativeLock, NvapiPerfFreqCap, OperationKind, OperationReport, OvervoltApplied,
-    PStateLevelEntry, PStateLevelsInfo, PowerCeilingInfo, PowerModeStatus, PstateBaseVoltage,
-    PstateClockRange, SupportedApplicationClocks, TargetOutcome, TargetTempPolicy, TdpTempLimits,
-    TemperatureThreshold, ThermalSensorReading, ThrottleReason, ViolationEntry,
-    ViolationStatusReport, VoltageBoostState, VoltageFrequencyCheck,
+    NvapiCoolerInfoEntry, NvapiFanPercentResult, NvapiFanPolicyEntry, NvapiFanPolicyInfo,
+    NvapiFanRpmResult, NvapiPStateNativeLock, NvapiPerfFreqCap, OperationKind, OperationReport,
+    OvervoltApplied, PStateLevelEntry, PStateLevelsInfo, PowerCeilingInfo, PowerModeStatus,
+    PstateBaseVoltage, PstateClockRange, SupportedApplicationClocks, TargetOutcome,
+    TargetTempPolicy, TdpTempLimits, TemperatureThreshold, ThermalSensorReading, ThrottleReason,
+    ViolationEntry, ViolationStatusReport, VoltageBoostState, VoltageFrequencyCheck,
 };
 use super::target::GpuTarget;
 use super::types::{NvapiLockedVoltageTarget, VfpResetDomain};
@@ -613,6 +613,41 @@ impl GpuOperation for SetFanRpm {
                 min_rpm: r.min_rpm,
                 max_rpm: r.max_rpm,
                 applied_rpm: r.applied_rpm,
+            })
+            .collect())
+    }
+}
+
+/// Set fan duty by percent through the private fan-simulation surface
+/// (percent → 0..65536 level, `None` = back to auto). Fallback pin for
+/// drivers where the ClientFanCoolers control-block SET is rejected but the
+/// simulation surface lives (472.12 live).
+#[derive(Clone, Copy, Debug)]
+pub struct SetFanPercent {
+    /// `None` targets every cooler present in the info mask.
+    pub cooler_index: Option<u32>,
+    pub percent: Option<u32>,
+}
+
+impl GpuOperation for SetFanPercent {
+    type Output = Vec<NvapiFanPercentResult>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetFanPercent
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let rs = target
+            .nvapi()?
+            .inner()
+            .set_fan_percent(self.cooler_index, self.percent)
+            .map_err(Error::from)?;
+        Ok(rs
+            .into_iter()
+            .map(|r| NvapiFanPercentResult {
+                cooler_index: r.cooler_index,
+                cooler_type: r.cooler_type,
+                applied_percent: r.applied_percent,
             })
             .collect())
     }
