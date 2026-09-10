@@ -1,0 +1,58 @@
+{
+  "stressor": "cli-stressor-opencl",
+  "result": "pass",
+  "classification": "none",
+  "platform": "NVIDIA CUDA",
+  "device": "NVIDIA GeForce GTX 1070",
+  "duration_s": 8.0,
+  "self_test": {
+    "passed": true,
+    "checks": [
+      {
+        "name": "pattern_clean",
+        "passed": true,
+        "detail": "total_errors=0, done=4096 (expected 4096)"
+      },
+      {
+        "name": "injection_capture",
+        "passed": true,
+        "detail": "total_errors=1, idx=44474..44474 (want 44474..44474), xor=0x00400000 (want 0x00400000), bit_hist[22]=1"
+      }
+    ]
+  },
+  "precisions": [
+    {
+      "precision": "FP64",
+      "supported": true,
+      "iterations": 30,
+      "total_flops": 1236950581248,
+      "elapsed_s": 17.124232899999697,
+      "compute_s": 9.710760100000698,
+      "tflops": 0.12737937797968163,
+      "validations": 5,
+      "validation_failures": 0,
+      "max_abs_error": 0.0,
+      "max_rel_error": 0.0,
+      "first_error": null,
+      "first_error_at_s": null,
+      "detectors": {
+        "ops_checked": 2,
+        "elements_checked": 33554944,
+        "total_errors": 0,
+        "mismatches": 0,
+        "nonfinite": 0,
+        "first_error": null
+      },
+      "elements_produced": 33554432
+    }
+  ],
+  "coverage": 1.0,
+  "confidence_pct": 100,
+  "verify_config": {
+    "enabled": true,
+    "self_test": true,
+    "gemm_every": 4,
+    "gemm_samples": 512,
+    "pattern_mib": 64
+  }
+}

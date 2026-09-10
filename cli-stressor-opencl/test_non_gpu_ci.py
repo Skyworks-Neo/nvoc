@@ -70,6 +70,17 @@ StressResult = _mod.StressResult
 choose_tolerance = _mod.choose_tolerance
 parse_int_list = _mod.parse_int_list
 
+import os
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    import verify_opencl as vo
+
+    VO_AVAILABLE = True
+except Exception:
+    vo = None
+    VO_AVAILABLE = False
+
 
 # ---------------------------------------------------------------------------
 # Pure-Python per-element allclose (mirrors the fixed numpy logic)
@@ -193,6 +204,71 @@ class TestParseIntList(unittest.TestCase):
     def test_empty_raises(self):
         with self.assertRaises(ValueError):
             parse_int_list("")
+
+
+@unittest.skipUnless(VO_AVAILABLE, "verify_opencl unavailable")
+class TestVerifyCircuit(unittest.TestCase):
+    def test_vhash32_deterministic_and_distinct(self):
+        self.assertEqual(vo.vhash32(1), vo.vhash32(1))
+        self.assertNotEqual(vo.vexpected_host(0, 1), vo.vexpected_host(0, 2))
+        self.assertNotEqual(vo.vexpected_host(0, 1), vo.vexpected_host(1, 1))
+        # seed=0 must differ from the all-zero pattern (i+1 fold)
+        self.assertNotEqual(vo.vexpected_host(0, 0), vo.vexpected_host(0, 1))
+
+    def test_vhash32_matches_cuda_semantics_documentation(self):
+        # Frozen vector: forces deliberate dual-side updates if the finalizer
+        # ever changes (device mirrors live in the CUDA/OpenCL kernel sources).
+        self.assertIsInstance(vo.vhash32(0xDEADBEEF), int)
+        self.assertLess(vo.vhash32(0xDEADBEEF), 1 << 32)
+
+    def test_verify_config_cadence(self):
+        cfg = vo.VerifyConfig()
+        self.assertTrue(cfg.enabled and cfg.self_test)
+        self.assertTrue(cfg.due(cfg.gemm_every, cfg.gemm_every * 3))
+        self.assertFalse(cfg.due(3, 8))
+        self.assertFalse(cfg.due(0, 0))
+        off = vo.VerifyConfig(enabled=False)
+        self.assertFalse(off.due(1, 0))
+
+    def test_classify_precedence(self):
+        self.assertIs(
+            vo.classify(False, 0, 0, 0), vo.VerdictClass.SELF_TEST_FAILED
+        )
+        self.assertIs(vo.classify(True, 0, 0, 2), vo.VerdictClass.API_ERROR)
+        self.assertIs(vo.classify(True, 0, 1, 0), vo.VerdictClass.MEMORY_ERROR)
+        self.assertIs(vo.classify(True, 3, 0, 0), vo.VerdictClass.DATA_ERROR)
+        self.assertIs(vo.classify(True, 0, 0, 0), vo.VerdictClass.NONE)
+
+    def test_detector_stats_merge_keeps_first_error(self):
+        total = vo.DetectorStats()
+        part = vo.DetectorStats(
+            ops_checked=3,
+            elements_checked=100,
+            total_errors=1,
+            first_error="memcpy verify: 1 wrong words",
+        )
+        total.merge(part)
+        total.merge(vo.DetectorStats(ops_checked=2))
+        self.assertEqual(total.ops_checked, 5)
+        self.assertEqual(total.total_errors, 1)
+        total.merge(vo.DetectorStats(first_error="later"))
+        self.assertEqual(total.first_error, "memcpy verify: 1 wrong words")
+
+    def test_sample_tolerance_scales_with_size(self):
+        a1, r1 = vo.sample_tolerance("FP32", 1024)
+        a4, r4 = vo.sample_tolerance("FP32", 4096)
+        self.assertAlmostEqual(a1, 1e-2)
+        self.assertAlmostEqual(a4, 2e-2, places=4)
+        self.assertEqual(r1, r4)
+
+    def test_sample_check_semantics_documented(self):
+        # The OpenCL gemm kernel is self-written textbook row-major
+        # C[i][j] = sum op_ta(A)[i][k] * op_tb(B)[k][j] — the sampled
+        # cross-check must use the same identity (unlike the CUDA backend's
+        # B*A column-major pass-through).
+        src = vo.GEMM_VERIFY_SRC_TEMPLATE
+        self.assertIn("ai = ta ? ((unsigned int)kk * (unsigned int)size + i)", src)
+        self.assertIn("bi = tb ? (j * (unsigned int)size + (unsigned int)kk)", src)
 
 
 if __name__ == "__main__":

@@ -1,10 +1,13 @@
 import argparse
+import dataclasses
+import json
 import math
 import random
 import sys
 import time
 import warnings
 from dataclasses import dataclass, field
+from pathlib import Path as _Path
 from typing import Any, Optional
 
 import numpy as np
@@ -19,6 +22,16 @@ else:
 
     if hasattr(cl, "CompilerWarning"):
         warnings.filterwarnings("ignore", category=cl.CompilerWarning)
+
+# Ride-on-load verification module lives next to this file.
+sys.path.insert(0, str(_Path(__file__).resolve().parent))
+try:
+    import verify_opencl as vo
+except ImportError as exc:
+    vo = None
+    VERIFY_IMPORT_ERROR = exc
+else:
+    VERIFY_IMPORT_ERROR = None
 
 
 PREFERRED_TILE_SIZE = 16
@@ -105,12 +118,15 @@ class StressResult:
     max_rel_error: float = 0.0
     first_error: Optional[str] = None
     first_error_at_s: Optional[float] = None
+    detectors: Any = None
+    elements_produced: int = 0
 
 
 @dataclass
 class KernelBundle:
     program: Any
     kernel: Any
+    verify_program: Any = None
 
 
 @dataclass
@@ -488,7 +504,17 @@ def build_kernel_bundle(runtime: OpenCLRuntime, spec: PrecisionSpec):
     kernel = program.gemm
     if hasattr(kernel, "set_scalar_arg_dtypes"):
         kernel.set_scalar_arg_dtypes([None, None, None, np.int32, np.int32, np.int32])
-    return KernelBundle(program=program, kernel=kernel)
+
+    verify_program = None
+    if vo is not None:
+        try:
+            verify_source = vo.format_gemm_verify_source(
+                spec.scalar_type, spec.accum_type, extension_preamble
+            )
+            verify_program = cl.Program(runtime.context, verify_source).build()
+        except Exception as exc:
+            print(f"Warning: GEMM verify kernel build failed (detectors limited): {exc}")
+    return KernelBundle(program=program, kernel=kernel, verify_program=verify_program)
 
 
 def get_kernel_bundle(runtime: OpenCLRuntime, spec: PrecisionSpec):
@@ -612,9 +638,13 @@ def run_stress_for_precision(
     min_burst_ms: float,
     input_refresh_interval: int,
     base_seed: int,
+    verify_cfg=None,
+    engine=None,
 ):
     supported, reason = detect_capability(runtime.device, spec)
     result = StressResult(precision=spec.name, supported=supported)
+    if vo is not None:
+        result.detectors = vo.DetectorStats()
 
     if not supported:
         result.first_error = f"SKIP: {reason}"
@@ -663,6 +693,7 @@ def run_stress_for_precision(
 
         transpose_a = rng.random() < transpose_prob
         transpose_b = rng.random() < transpose_prob
+        window_seed = rng.randrange(1 << 30)
 
         try:
             if active_buffers is None or active_size != size:
@@ -728,9 +759,45 @@ def run_stress_for_precision(
             result.total_flops += int(2 * (size**3) * executed_iters)
             result.compute_s += op_elapsed
             result.elapsed_s = time.monotonic() - start
+            result.elements_produced += size * size
             if result.compute_s > 0:
                 result.tflops = (result.total_flops / result.compute_s) / 1e12
             windows_since_refresh += 1
+
+            # Ride-on-load verification (checker runs on the live workload
+            # buffers; same fail-fast policy as the CUDA stressor).
+            if (
+                verify_cfg is not None
+                and verify_cfg.enabled
+                and engine is not None
+                and bundle.verify_program is not None
+                and verify_cfg.due(verify_cfg.gemm_every, window_seed)
+            ):
+                try:
+                    atol, rtol = vo.sample_tolerance(spec.name, size)
+                    engine.gemm_check(
+                        runtime.queue,
+                        bundle.verify_program,
+                        spec.name,
+                        active_buffers,
+                        size,
+                        transpose_a,
+                        transpose_b,
+                        window_seed,
+                        atol,
+                        rtol,
+                    )
+                    engine.pattern_check(runtime.queue, window_seed, "pattern verify")
+                except Exception as exc:
+                    engine.set_failure(f"verify runtime error: {exc}")
+                verify_fail = engine.take_failure()
+                result.detectors.merge(engine.drain())
+                if verify_fail is not None:
+                    print(f"[VERIFY] {'GEMM':10} | {verify_fail} | FAIL")
+                    if result.first_error is None:
+                        result.first_error = verify_fail
+                        result.first_error_at_s = time.monotonic() - start
+                    break
 
             if time.monotonic() >= next_validate:
                 passed, max_abs, max_rel, reason = validate_precision(
@@ -813,6 +880,12 @@ def print_summary(runtime: OpenCLRuntime, results):
             print(f"{'':12}      first_error: {r.first_error}")
             if r.first_error_at_s is not None:
                 print(f"{'':12}      at: {r.first_error_at_s:.1f}s")
+        if r.detectors is not None and r.detectors.ops_checked > 0:
+            d = r.detectors
+            print(
+                f"{'':12}      detectors: ops={d.ops_checked} checked={d.elements_checked} "
+                f"errors={d.total_errors} mismatch={d.mismatches} nonfinite={d.nonfinite}"
+            )
 
     print("=" * 72)
     print("总体结论:")
@@ -823,6 +896,66 @@ def print_summary(runtime: OpenCLRuntime, results):
     else:
         print("- 至少有一个受支持的精度模式出现错误或验证失败。")
     print("=" * 72)
+
+
+def build_verdict(runtime, results, self_test, duration_s, verify_cfg, overall_ok):
+    if vo is None:
+        return {
+            "stressor": "cli-stressor-opencl",
+            "result": "pass" if overall_ok else "fail",
+            "classification": "none" if overall_ok else "data_error",
+            "device": runtime.device.name.strip(),
+            "duration_s": duration_s,
+            "self_test": None,
+            "precisions": [dataclasses.asdict(r) for r in results],
+        }
+    verify_totals = vo.DetectorStats()
+    for r in results:
+        if r.detectors is not None:
+            verify_totals.merge(r.detectors)
+    validation_failures = sum(r.validation_failures for r in results)
+    detector_errors = (
+        verify_totals.total_errors + verify_totals.mismatches + verify_totals.nonfinite
+    )
+    runtime_errors = sum(
+        1
+        for r in results
+        if r.supported and r.first_error and r.first_error.startswith("runtime error")
+    )
+    self_ok = self_test.passed if self_test is not None else True
+    cls = vo.classify(self_ok, validation_failures, detector_errors, runtime_errors)
+    elements_produced = sum(r.elements_produced for r in results)
+    coverage = (
+        min(1.0, verify_totals.elements_checked / elements_produced)
+        if elements_produced
+        else 0.0
+    )
+    confidence = int(100.0 * coverage * (1.0 - min(1.0, float(detector_errors))))
+    return {
+        "stressor": "cli-stressor-opencl",
+        "result": "pass" if cls == vo.VerdictClass.NONE and overall_ok else "fail",
+        "classification": cls.value,
+        "platform": runtime.platform.name.strip(),
+        "device": runtime.device.name.strip(),
+        "duration_s": duration_s,
+        "self_test": dataclasses.asdict(self_test) if self_test is not None else None,
+        "precisions": [dataclasses.asdict(r) for r in results],
+        "coverage": round(coverage, 4),
+        "confidence_pct": confidence,
+        "verify_config": dataclasses.asdict(verify_cfg) if verify_cfg else None,
+    }
+
+
+def emit_verdict(verdict: dict, json_out) -> None:
+    print(f"VERDICT_JSON: {json.dumps(verdict)}")
+    if not json_out:
+        return
+    try:
+        with open(json_out, "w", encoding="utf-8") as fh:
+            json.dump(verdict, fh, indent=2)
+            fh.write(chr(10))
+    except OSError as exc:
+        print(f"Failed to write --json-out: {exc}")
 
 
 def build_arg_parser():
@@ -914,6 +1047,40 @@ def build_arg_parser():
     )
     p.add_argument("--seed", type=int, default=12345, help="随机种子")
     p.add_argument(
+        "--no-verify",
+        action="store_true",
+        help="关闭骑载校验回路（A/B 对照的 off 侧）",
+    )
+    p.add_argument(
+        "--skip-self-test",
+        action="store_true",
+        help="跳过注入自检门（检测器照常运行）",
+    )
+    p.add_argument(
+        "--json-out",
+        type=str,
+        default=None,
+        help="verdict JSON 输出路径（stdout 末尾同时打印 VERDICT_JSON: 单行）",
+    )
+    p.add_argument(
+        "--verify-pattern-mib",
+        type=int,
+        default=64,
+        help="常驻 pattern 校验块大小（MiB，显存域检测器；0 关闭）",
+    )
+    p.add_argument(
+        "--gemm-every",
+        type=int,
+        default=4,
+        help="每 N 个 GEMM 窗口做一次骑载校验（窗口种子 %% N == 0）",
+    )
+    p.add_argument(
+        "--gemm-samples",
+        type=int,
+        default=512,
+        help="每次 GEMM 校验的采样点数",
+    )
+    p.add_argument(
         "--disable-fp8",
         action="store_true",
         help=argparse.SUPPRESS,
@@ -987,6 +1154,43 @@ def main():
         f"PyOpenCL版本: {getattr(cl, 'VERSION_TEXT', getattr(cl, '__version__', 'unknown'))}"
     )
 
+    verify_cfg = None
+    engine = None
+    if vo is not None:
+        verify_cfg = vo.VerifyConfig(
+            enabled=not args.no_verify,
+            self_test=not args.skip_self_test,
+            gemm_every=max(1, args.gemm_every),
+            gemm_samples=max(1, args.gemm_samples),
+            pattern_mib=max(0, args.verify_pattern_mib),
+        )
+    if verify_cfg is not None and verify_cfg.enabled:
+        try:
+            engine = vo.VerifyEngine(runtime, verify_cfg, args.seed & 0xFFFFFFFF)
+        except Exception as exc:
+            print(f"Warning: verify engine build failed (检测器已禁用): {exc}")
+
+    self_test = None
+    if engine is not None and verify_cfg.self_test:
+        self_test = engine.run_self_test(runtime.queue)
+        for check in self_test.checks:
+            print(
+                f"[self-test] {check.name}: "
+                f"{'OK' if check.passed else 'FAIL'} ({check.detail})"
+            )
+        if not self_test.passed:
+            print(
+                "[FATAL] verify self-test FAILED — 检测管线不可信，中止 "
+                "(--skip-self-test 可跳过)"
+            )
+            emit_verdict(
+                build_verdict(
+                    runtime, [], self_test, args.duration, verify_cfg, False
+                ),
+                args.json_out,
+            )
+            return 1
+
     random.seed(args.seed)
     results = []
     for idx, spec in enumerate(precisions):
@@ -1018,6 +1222,8 @@ def main():
             min_burst_ms=args.min_burst_ms,
             input_refresh_interval=args.input_refresh_interval,
             base_seed=args.seed + idx * 1000,
+            verify_cfg=verify_cfg,
+            engine=engine,
         )
         results.append(res)
 
@@ -1028,13 +1234,25 @@ def main():
                 # GPU may be in a fault/bus-fallen state on Linux (no TDR); do not
                 # attempt further precisions — print partial summary and exit now.
                 print_summary(runtime, results)
+                overall = all(result_status(r) != "FAIL" for r in results)
+                emit_verdict(
+                    build_verdict(
+                        runtime, results, self_test, args.duration, verify_cfg, overall
+                    ),
+                    args.json_out,
+                )
                 return 1
         else:
             print("  结果: completed without detected error")
         print(f"  累计: {res.iterations} 次 matmul, {res.tflops:.2f} TFLOPS")
 
     print_summary(runtime, results)
-    return 1 if any(result_status(result) == "FAIL" for result in results) else 0
+    overall = all(result_status(r) != "FAIL" for r in results)
+    emit_verdict(
+        build_verdict(runtime, results, self_test, args.duration, verify_cfg, overall),
+        args.json_out,
+    )
+    return 0 if overall else 1
 
 
 if __name__ == "__main__":
