@@ -1,4 +1,6 @@
 use super::style::stylize;
+#[cfg(all(feature = "vulkan", target_os = "windows"))]
+use super::vulkan_heavy_render::run_heavy_render_loop;
 use anstream::eprintln;
 use ash::{Instance, vk};
 use cli_stressor_cuda_rs::PciBusAddress;
@@ -23,6 +25,9 @@ pub struct VulkanImageConfig {
     pub image_count: u32,
     pub msaa: u32,
     pub minor_mixture_rate: f64,
+    /// FurMark-style heavy render mode (Win32 window + shaders + blend +
+    /// depth + present). Windows-only; falls back to the light path elsewhere.
+    pub heavy: bool,
 }
 
 impl Default for VulkanImageConfig {
@@ -34,6 +39,7 @@ impl Default for VulkanImageConfig {
             image_count: 6,
             msaa: 1,
             minor_mixture_rate: 0.15,
+            heavy: false,
         }
     }
 }
@@ -89,7 +95,12 @@ impl VulkanGraphicsEngine {
         has_error.store(false, Ordering::SeqCst);
 
         let handle = thread::spawn(move || {
-            if let Err(e) = run_vulkan_stress_loop(is_running, selection, image_config) {
+            let result = if image_config.heavy {
+                dispatch_heavy(is_running, selection, image_config)
+            } else {
+                run_vulkan_stress_loop(is_running, selection, image_config)
+            };
+            if let Err(e) = result {
                 eprintln!(
                     "{}",
                     stylize(&format!("[VulkanGfx] Thread crashed: {:?}", e), true)
@@ -118,6 +129,31 @@ impl VulkanGraphicsEngine {
         }
         Ok(())
     }
+}
+
+#[cfg(all(feature = "vulkan", target_os = "windows"))]
+fn dispatch_heavy(
+    is_running: Arc<AtomicBool>,
+    selection: Option<VulkanDeviceSelection>,
+    image_config: VulkanImageConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    run_heavy_render_loop(is_running, selection, image_config)
+}
+
+#[cfg(not(all(feature = "vulkan", target_os = "windows")))]
+fn dispatch_heavy(
+    is_running: Arc<AtomicBool>,
+    selection: Option<VulkanDeviceSelection>,
+    image_config: VulkanImageConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    eprintln!(
+        "{}",
+        stylize(
+            "[VKGFX-H] heavy render mode requires Windows; running light path",
+            true
+        )
+    );
+    run_vulkan_stress_loop(is_running, selection, image_config)
 }
 
 fn run_vulkan_stress_loop(
