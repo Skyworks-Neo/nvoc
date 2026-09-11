@@ -49,6 +49,9 @@ pub struct VulkanHeavyConfig {
     /// Animate the torus rotation (dynamic tiles/Z-distribution/interp
     /// inputs). Off for the static-mesh A/B baseline.
     pub rotate: bool,
+    /// Compute->graphics particle pool size (Lumen/TSR-style SSBO ping-pong).
+    /// 0 disables the stage.
+    pub particles: u32,
 }
 
 impl Default for VulkanHeavyConfig {
@@ -61,6 +64,7 @@ impl Default for VulkanHeavyConfig {
             shells: 16,
             offscreen: false,
             rotate: true,
+            particles: 262144,
         }
     }
 }
@@ -144,6 +148,110 @@ void main() {
     out_color = vec4(col, 0.65);
 }
 "#;
+
+
+// ---- compute->graphics ping-pong stage (Lumen/TSR-style SSBO traffic) ----
+// A compute pass integrates a particle pool in an SSBO; a graphics pipeline
+// then reads the SAME storage buffer as a vertex source and draws one quad
+// per particle. Every frame: compute-write -> barrier -> vertex-read on the
+// same memory, driving L2/VRAM read-modify traffic plus a pipeline-role
+// switch, mirroring the UE frame's compute/graphics alternation.
+
+const PARTICLE_COMPUTE_SRC: &str = r#"
+#version 450 core
+layout(local_size_x = 256) in;
+
+struct Particle {
+    vec4 pos_life;   // xyz = position, w = life 0..1
+    vec4 vel_seed;   // xyz = velocity, w = seed
+};
+
+layout(std140, set = 0, binding = 0) buffer ParticlePool {
+    Particle particles[];
+};
+
+layout(push_constant) uniform Pc { float dt; float time; int iters; int count; } pc;
+
+// SFU-heavy, data-dependent integrator: forces from a pseudo-flow-field so
+// positions mutate every iteration (no constant folding possible).
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= uint(pc.count)) return;
+    Particle p = particles[i];
+
+    vec3 pos = p.pos_life.xyz;
+    float life = p.pos_life.w;
+    vec3 vel = p.vel_seed.xyz;
+    float seed = p.vel_seed.w;
+
+    // Swirl field around the Y axis + vertical breathing, all MUFU.
+    float ang = pc.time * 0.4 + seed * 6.2831853;
+    vec3 center = vec3(sin(ang) * 1.2, 0.6 * sin(pc.time * 0.7 + seed * 3.0), cos(ang) * 1.2);
+    vec3 to_c = center - pos;
+    vec3 swirl = normalize(cross(vec3(0.0, 1.0, 0.0), to_c) + 1e-4);
+    float d = length(to_c);
+
+    vel += swirl * 0.9 * pc.dt;
+    vel += vec3(0.0, 0.35 * sin(pc.time * 1.3 + d * 4.0 + seed * 9.0), 0.0) * pc.dt;
+    vel += to_c * (0.25 / (d + 0.2)) * pc.dt;          // gentle attraction
+    vel = normalize(vel + 1e-5) * (1.4 + 0.6 * sin(seed * 12.0));  // renormalize speed
+
+    pos += vel * pc.dt;
+    life -= pc.dt * (0.15 + 0.1 * seed);
+    if (life <= 0.0) {
+        // Respawn on a spiral shell around the origin (MUFU again).
+        float a = seed * 6.2831853 + pc.time;
+        float b = fract(seed * 7.31 + pc.time * 0.37) * 3.14159;
+        pos = 1.3 * vec3(cos(a) * sin(b), cos(b), sin(a) * sin(b));
+        vel = vec3(0.0);
+        life = 1.0;
+    }
+
+    particles[i].pos_life = vec4(pos, life);
+    particles[i].vel_seed = vec4(vel, seed);
+}
+"#;
+
+const PARTICLE_VERT_SRC: &str = r#"
+#version 450 core
+struct Particle {
+    vec4 pos_life;
+    vec4 vel_seed;
+};
+layout(std140, set = 0, binding = 0) readonly buffer ParticlePool {
+    Particle particles[];
+};
+layout(push_constant) uniform Pc { float dt; float time; int iters; int count; } pc;
+layout(location = 0) out vec2 v_uv;
+layout(location = 1) out float v_life;
+void main() {
+    uint i = gl_VertexIndex >> 2u;          // one quad = 4 vertices
+    vec2 corner = vec2(float(gl_VertexIndex & 1u), float((gl_VertexIndex >> 1u) & 1u));
+    Particle p = particles[i];
+    float life = p.pos_life.w;
+    vec4 clip = vec4(p.pos_life.xyz, 1.0);
+    float size = 0.012 * (0.5 + 0.5 * life);
+    vec2 offset = (corner * 2.0 - 1.0) * size;
+    clip.xy += offset;
+    v_uv = corner;
+    v_life = life;
+    gl_Position = clip;
+}
+"#;
+
+const PARTICLE_FRAG_SRC: &str = r#"
+#version 450 core
+layout(location = 0) in vec2 v_uv;
+layout(location = 1) in float v_life;
+layout(location = 0) out vec4 out_color;
+void main() {
+    float r2 = dot(v_uv - 0.5, v_uv - 0.5);
+    if (r2 > 0.25) discard;
+    float glow = exp2(-r2 * 18.0) * (0.25 + 0.75 * v_life);
+    out_color = vec4(0.25, 0.55, 1.0, glow * 0.5);
+}
+"#;
+
 
 fn compile_glsl(
     stage: naga::ShaderStage,
@@ -793,6 +901,248 @@ pub fn run_heavy_render_loop(
             &mut knot_pipeline,
         )?;
 
+        // ---- compute->graphics ping-pong stage ----
+        let (particle_stage, particle_dispatch_count) = if cfg.particles > 0 {
+            let count = cfg.particles as usize;
+            let bytes = (count * 32) as u64; // 2 x vec4 per particle
+
+            let dsl = device.create_descriptor_set_layout(
+                &vk::DescriptorSetLayoutCreateInfo::default().bindings(&[
+                    vk::DescriptorSetLayoutBinding::default()
+                        .binding(0)
+                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                        .descriptor_count(1)
+                        .stage_flags(
+                            vk::ShaderStageFlags::COMPUTE | vk::ShaderStageFlags::VERTEX,
+                        ),
+                ]),
+                None,
+            )?;
+            let pool_sizes = [vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)];
+            let dpool = device.create_descriptor_pool(
+                &vk::DescriptorPoolCreateInfo::default()
+                    .max_sets(1)
+                    .pool_sizes(&pool_sizes),
+                None,
+            )?;
+            let dset = device
+                .allocate_descriptor_sets(
+                    &vk::DescriptorSetAllocateInfo::default()
+                        .descriptor_pool(dpool)
+                        .set_layouts(std::slice::from_ref(&dsl)),
+                )?[0];
+
+            // Device-local SSBO + staging upload of the initial pool.
+            let ssbo_info = vk::BufferCreateInfo::default()
+                .size(bytes)
+                .usage(vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST)
+                .sharing_mode(vk::SharingMode::EXCLUSIVE);
+            let ssbo = device.create_buffer(&ssbo_info, None)?;
+            let req = device.get_buffer_memory_requirements(ssbo);
+            let ssbo_mem_type = find_memory_type(
+                &mem_properties,
+                req,
+                vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            )?;
+            let ssbo_mem = device.allocate_memory(
+                &vk::MemoryAllocateInfo::default()
+                    .allocation_size(req.size)
+                    .memory_type_index(ssbo_mem_type),
+                None,
+            )?;
+            device.bind_buffer_memory(ssbo, ssbo_mem, 0)?;
+
+            let (staging, staging_mem) = create_host_buffer(&device, &mem_properties, bytes)?;
+            {
+                let ptr = device
+                    .map_memory(staging_mem, 0, bytes, vk::MemoryMapFlags::empty())?
+                    as *mut f32;
+                // Spiral-shell spawn; life ramped so respawns stagger.
+                for i in 0..count {
+                    let fi = i as f32;
+                    let seed = (fi * 0.618_034) % 1.0;
+                    let a = seed * std::f32::consts::TAU;
+                    let b = ((fi * 0.381_966) % 1.0) * std::f32::consts::PI;
+                    let base = i * 8;
+                    *ptr.add(base) = 1.3 * a.cos() * b.sin();
+                    *ptr.add(base + 1) = 1.3 * b.cos();
+                    *ptr.add(base + 2) = 1.3 * a.sin() * b.sin();
+                    *ptr.add(base + 3) = 1.0 - (fi % 64.0) / 64.0; // staggered life
+                    *ptr.add(base + 4) = 0.0;
+                    *ptr.add(base + 5) = 0.0;
+                    *ptr.add(base + 6) = 0.0;
+                    *ptr.add(base + 7) = seed;
+                }
+                device.unmap_memory(staging_mem);
+            }
+            device.reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty())?;
+            device.begin_command_buffer(
+                cmd,
+                &vk::CommandBufferBeginInfo::default()
+                    .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+            )?;
+            let region = vk::BufferCopy::default().size(bytes);
+            device.cmd_copy_buffer(cmd, staging, ssbo, &[region]);
+            device.end_command_buffer(cmd)?;
+            device.queue_submit(
+                queue,
+                &[vk::SubmitInfo::default().command_buffers(&[cmd])],
+                vk::Fence::null(),
+            )?;
+            device.queue_wait_idle(queue)?;
+            device.destroy_buffer(staging, None);
+            device.free_memory(staging_mem, None);
+
+            device.update_descriptor_sets(
+                &[vk::WriteDescriptorSet::default()
+                    .dst_set(dset)
+                    .dst_binding(0)
+                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                    .buffer_info(&[vk::DescriptorBufferInfo::default()
+                        .buffer(ssbo)
+                        .offset(0)
+                        .range(bytes)])],
+                &[],
+            );
+
+            let pcomp = make_module(&compile_glsl(naga::ShaderStage::Compute, PARTICLE_COMPUTE_SRC)?)?;
+            let pvert = make_module(&compile_glsl(naga::ShaderStage::Vertex, PARTICLE_VERT_SRC)?)?;
+            let pfrag = make_module(&compile_glsl(naga::ShaderStage::Fragment, PARTICLE_FRAG_SRC)?)?;
+
+            let compute_layout = device.create_pipeline_layout(
+                &vk::PipelineLayoutCreateInfo::default()
+                    .set_layouts(std::slice::from_ref(&dsl))
+                    .push_constant_ranges(&[vk::PushConstantRange::default()
+                        .stage_flags(vk::ShaderStageFlags::COMPUTE)
+                        .offset(0)
+                        .size(16)]),
+                None,
+            )?;
+            let compute_pipeline = {
+                let stage = vk::PipelineShaderStageCreateInfo::default()
+                    .stage(vk::ShaderStageFlags::COMPUTE)
+                    .module(pcomp)
+                    .name(c"main");
+                let pipelines = device.create_compute_pipelines(
+                    vk::PipelineCache::null(),
+                    &[vk::ComputePipelineCreateInfo::default()
+                        .stage(stage)
+                        .layout(compute_layout)],
+                    None,
+                );
+                match pipelines {
+                    Ok(mut v) => v.pop().ok_or("no compute pipeline")?,
+                    Err((_, err)) => return Err(format!("compute pipeline: {err}").into()),
+                }
+            };
+
+            let particle_layout = device.create_pipeline_layout(
+                &vk::PipelineLayoutCreateInfo::default()
+                    .set_layouts(std::slice::from_ref(&dsl))
+                    .push_constant_ranges(&[vk::PushConstantRange::default()
+                        .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
+                        .offset(0)
+                        .size(16)]),
+                None,
+            )?;
+            let particle_pipeline = {
+                let stages = [
+                    vk::PipelineShaderStageCreateInfo::default()
+                        .stage(vk::ShaderStageFlags::VERTEX)
+                        .module(pvert)
+                        .name(c"main"),
+                    vk::PipelineShaderStageCreateInfo::default()
+                        .stage(vk::ShaderStageFlags::FRAGMENT)
+                        .module(pfrag)
+                        .name(c"main"),
+                ];
+                let blend = vk::PipelineColorBlendAttachmentState::default()
+                    .color_write_mask(vk::ColorComponentFlags::RGBA)
+                    .blend_enable(true)
+                    .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
+                    .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+                    .color_blend_op(vk::BlendOp::ADD)
+                    .src_alpha_blend_factor(vk::BlendFactor::ONE)
+                    .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
+                    .alpha_blend_op(vk::BlendOp::ADD);
+                let depth = vk::PipelineDepthStencilStateCreateInfo::default()
+                    .depth_test_enable(false)
+                    .depth_write_enable(false);
+                let pipelines = device.create_graphics_pipelines(
+                    vk::PipelineCache::null(),
+                    &[vk::GraphicsPipelineCreateInfo::default()
+                        .stages(&stages)
+                        .vertex_input_state(&vk::PipelineVertexInputStateCreateInfo::default())
+                        .input_assembly_state(
+                            &vk::PipelineInputAssemblyStateCreateInfo::default()
+                                .topology(vk::PrimitiveTopology::TRIANGLE_STRIP),
+                        )
+                        .viewport_state(&vk::PipelineViewportStateCreateInfo::default()
+                            .viewport_count(1)
+                            .scissor_count(1))
+                        .rasterization_state(
+                            &vk::PipelineRasterizationStateCreateInfo::default()
+                                .polygon_mode(vk::PolygonMode::FILL)
+                                .line_width(1.0),
+                        )
+                        .multisample_state(
+                            &vk::PipelineMultisampleStateCreateInfo::default()
+                                .rasterization_samples(msaa_samples),
+                        )
+                        .depth_stencil_state(&depth)
+                        .color_blend_state(
+                            &vk::PipelineColorBlendStateCreateInfo::default()
+                                .attachments(std::slice::from_ref(&blend)),
+                        )
+                        .dynamic_state(&vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&[
+                            vk::DynamicState::VIEWPORT,
+                            vk::DynamicState::SCISSOR,
+                        ]))
+                        .layout(particle_layout)
+                        .render_pass(render_pass)
+                        .subpass(0)],
+                    None,
+                );
+                match pipelines {
+                    Ok(mut v) => v.pop().ok_or("no particle pipeline")?,
+                    Err((_, err)) => return Err(format!("particle pipeline: {err}").into()),
+                }
+            };
+            device.destroy_shader_module(pcomp, None);
+            device.destroy_shader_module(pvert, None);
+            device.destroy_shader_module(pfrag, None);
+
+            println!(
+                "{}",
+                stylize(
+                    &format!(
+                        "[VKGFX-H] particle ping-pong: {} particles x 32B SSBO, compute 256/thread, gfx quad instread",
+                        count
+                    ),
+                    false
+                )
+            );
+
+            (
+                Some(ParticleStage {
+                    dsl,
+                    dpool,
+                    dset,
+                    ssbo,
+                    ssbo_mem,
+                    compute_layout,
+                    compute_pipeline,
+                    particle_layout,
+                    particle_pipeline,
+                }),
+                (count as u32).div_ceil(256),
+            )
+        } else {
+            (None, 0)
+        };
+
         // ---- offscreen framebuffer (single; layout persists across submits) ----
         let offscreen_fb = if !use_swapchain {
             let (_, _, color_view) = offscreen_color.as_ref().unwrap();
@@ -857,6 +1207,8 @@ pub fn run_heavy_render_loop(
         let mut last_log = start;
         let mut frames: u64 = 0;
         let mut image_idx = 0u32;
+        let mut last_frame_instant = start;
+        let mut last_frame_dt = 1.0f32 / 60.0;
 
         while is_running.load(Ordering::SeqCst) {
             if use_swapchain {
@@ -962,6 +1314,46 @@ pub fn run_heavy_render_loop(
             device.cmd_set_scissor(cmd, 0, &[scissor]);
 
             let time = start.elapsed().as_secs_f32();
+
+            // Compute pass first: integrate the particle pool, then barrier
+            // compute-write -> vertex-read on the same SSBO.
+            if let Some(stage) = particle_stage.as_ref() {
+                let dt = 1.0f32.min(last_frame_dt.max(1e-4));
+                let mut b = [0u8; 16];
+                b[0..4].copy_from_slice(&dt.to_bits().to_ne_bytes());
+                b[4..8].copy_from_slice(&time.to_bits().to_ne_bytes());
+                b[8..12].copy_from_slice(&cfg.iters.to_ne_bytes());
+                b[12..16].copy_from_slice(&cfg.particles.to_ne_bytes());
+                device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, stage.compute_pipeline);
+                device.cmd_bind_descriptor_sets(
+                    cmd,
+                    vk::PipelineBindPoint::COMPUTE,
+                    stage.compute_layout,
+                    0,
+                    &[stage.dset],
+                    &[],
+                );
+                device.cmd_push_constants(
+                    cmd,
+                    stage.compute_layout,
+                    vk::ShaderStageFlags::COMPUTE,
+                    0,
+                    &b,
+                );
+                device.cmd_dispatch(cmd, particle_dispatch_count, 1, 1);
+                device.cmd_pipeline_barrier(
+                    cmd,
+                    vk::PipelineStageFlags::COMPUTE_SHADER,
+                    vk::PipelineStageFlags::VERTEX_SHADER,
+                    vk::DependencyFlags::empty(),
+                    &[vk::MemoryBarrier::default()
+                        .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+                        .dst_access_mask(vk::AccessFlags::SHADER_READ)],
+                    &[],
+                    &[],
+                );
+            }
+
             // Push block is {f32, f32, int} — the int member must be written
             // as its integer bit pattern, not as an f32 bit pattern.
             let push_bytes: [u8; 16] = {
@@ -984,6 +1376,60 @@ pub fn run_heavy_render_loop(
                     &push_bytes,
                 );
                 device.cmd_draw(cmd, 3, 1, 0, 0);
+            }
+
+            // Particle quads: vertex fetch from the SSBO the compute pass
+            // just wrote (graphics reads compute output = ping-pong).
+            if let Some(stage) = particle_stage.as_ref() {
+                let mut b = [0u8; 16];
+                b[0..4].copy_from_slice(&0.016f32.to_bits().to_ne_bytes());
+                b[4..8].copy_from_slice(&time.to_bits().to_ne_bytes());
+                b[8..12].copy_from_slice(&cfg.iters.to_ne_bytes());
+                b[12..16].copy_from_slice(&cfg.particles.to_ne_bytes());
+                device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, stage.particle_pipeline);
+                device.cmd_bind_descriptor_sets(
+                    cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    stage.particle_layout,
+                    0,
+                    &[stage.dset],
+                    &[],
+                );
+                device.cmd_push_constants(
+                    cmd,
+                    stage.particle_layout,
+                    vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                    0,
+                    &b,
+                );
+                device.cmd_draw(cmd, cfg.particles * 4, 1, 0, 0);
+            }
+
+            // Particle quads: vertex fetch from the SSBO the compute pass
+            // just wrote (graphics reads compute output = ping-pong).
+            if let Some(stage) = particle_stage.as_ref() {
+                let mut b = [0u8; 16];
+                b[0..4].copy_from_slice(&0.016f32.to_bits().to_ne_bytes());
+                b[4..8].copy_from_slice(&time.to_bits().to_ne_bytes());
+                b[8..12].copy_from_slice(&cfg.iters.to_ne_bytes());
+                b[12..16].copy_from_slice(&cfg.particles.to_ne_bytes());
+                device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, stage.particle_pipeline);
+                device.cmd_bind_descriptor_sets(
+                    cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    stage.particle_layout,
+                    0,
+                    &[stage.dset],
+                    &[],
+                );
+                device.cmd_push_constants(
+                    cmd,
+                    stage.particle_layout,
+                    vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                    0,
+                    &b,
+                );
+                device.cmd_draw(cmd, cfg.particles * 4, 1, 0, 0);
             }
 
             // Torus shells: instanced draw, alpha-blended layered overdraw.
@@ -1033,7 +1479,9 @@ pub fn run_heavy_render_loop(
             }
 
             frames += 1;
-            let now = std::time::Instant::now();
+            last_frame_dt = last_frame_instant.elapsed().as_secs_f32();
+            last_frame_instant = std::time::Instant::now();
+            let now = last_frame_instant;
             if now.duration_since(last_log) >= std::time::Duration::from_secs(3) {
                 let fps = frames as f64 / now.duration_since(last_log).as_secs_f64();
                 println!(
@@ -1060,6 +1508,16 @@ pub fn run_heavy_render_loop(
         device.device_wait_idle()?;
 
         // ---- teardown ----
+        if let Some(stage) = particle_stage {
+            device.destroy_pipeline(stage.compute_pipeline, None);
+            device.destroy_pipeline_layout(stage.compute_layout, None);
+            device.destroy_pipeline(stage.particle_pipeline, None);
+            device.destroy_pipeline_layout(stage.particle_layout, None);
+            device.destroy_buffer(stage.ssbo, None);
+            device.free_memory(stage.ssbo_mem, None);
+            device.destroy_descriptor_pool(stage.dpool, None);
+            device.destroy_descriptor_set_layout(stage.dsl, None);
+        }
         if let Some(fb) = offscreen_fb {
             device.destroy_framebuffer(fb, None);
         }
@@ -1116,6 +1574,18 @@ pub fn run_heavy_render_loop(
 // Swapchain resources (windowed target): swapchain + views + MSAA color +
 // depth + framebuffers. Recreation on resize/minimize/OUT_OF_DATE.
 // ---------------------------------------------------------------------------
+
+struct ParticleStage {
+    dsl: vk::DescriptorSetLayout,
+    dpool: vk::DescriptorPool,
+    dset: vk::DescriptorSet,
+    ssbo: vk::Buffer,
+    ssbo_mem: vk::DeviceMemory,
+    compute_layout: vk::PipelineLayout,
+    compute_pipeline: vk::Pipeline,
+    particle_layout: vk::PipelineLayout,
+    particle_pipeline: vk::Pipeline,
+}
 
 struct SwapchainResources {
     swapchain: vk::SwapchainKHR,

@@ -278,6 +278,10 @@ struct Args {
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     vulkan_heavy_rotate: bool,
 
+    /// Heavy mode: compute->graphics particle pool size (0 = off)
+    #[arg(long, default_value_t = 262144)]
+    vulkan_heavy_particles: u32,
+
     /// CUDA GPU index in PCI-bus-sorted order (0-based)
     #[arg(
         long,
@@ -1299,6 +1303,7 @@ pub fn run_from_args() {
                         shells: args.vulkan_heavy_shells,
                         offscreen: args.vulkan_heavy_offscreen,
                         rotate: args.vulkan_heavy_rotate,
+                        particles: args.vulkan_heavy_particles,
                     })
                 } else {
                     None
@@ -1729,6 +1734,7 @@ pub fn run_from_args() {
                         shells: args.vulkan_heavy_shells,
                         offscreen: args.vulkan_heavy_offscreen,
                         rotate: args.vulkan_heavy_rotate,
+                        particles: args.vulkan_heavy_particles,
                     })
                 } else {
                     None
