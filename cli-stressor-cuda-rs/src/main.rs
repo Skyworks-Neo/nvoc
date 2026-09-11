@@ -27,7 +27,7 @@ use cli_stressor_cuda_rs::{
 #[cfg(feature = "cuda")]
 use serde::Deserialize;
 
-mod style;
+pub mod style;
 
 #[cfg(feature = "cuda")]
 use cli_stressor_cuda_rs::cuda_backend;
@@ -40,19 +40,10 @@ use cuda_backend::{
 
 // Stressor Vulkan engine (optional). Only compiled when the crate is built with
 // --features "vulkan" in addition to "cuda".
-#[cfg(feature = "vulkan")]
-#[path = "vulkan_gfx_stressor.rs"]
-mod vulkan_gfx_stressor;
-
-// FurMark-style heavy renderer (Win32 window + swapchain + shaders) — only
-// the light clear/blit path exists on non-Windows targets.
-#[cfg(all(feature = "vulkan", target_os = "windows"))]
-#[path = "vulkan_heavy_render.rs"]
-mod vulkan_heavy_render;
 #[cfg(all(feature = "cuda", feature = "vulkan"))]
-use vulkan_gfx_stressor::VulkanDeviceSelection;
+use cli_stressor_cuda_rs::vulkan_gfx_stressor::VulkanDeviceSelection;
 #[cfg(feature = "vulkan")]
-use vulkan_gfx_stressor::{VulkanGraphicsEngine, VulkanImageConfig};
+use cli_stressor_cuda_rs::vulkan_gfx_stressor::{VulkanGraphicsEngine, VulkanImageConfig};
 
 #[cfg(feature = "vulkan")]
 fn run_vulkan_for_duration(duration_s: f64, image_config: VulkanImageConfig) -> i32 {
@@ -257,6 +248,30 @@ struct Args {
     /// depth + present; Windows only)
     #[arg(long, default_value_t = false)]
     vulkan_heavy: bool,
+
+    /// Heavy mode: render width (window or offscreen target)
+    #[arg(long, default_value_t = 1280)]
+    vulkan_heavy_width: u32,
+
+    /// Heavy mode: render height
+    #[arg(long, default_value_t = 720)]
+    vulkan_heavy_height: u32,
+
+    /// Heavy mode: MSAA sample count (1 = off, 2/4/8)
+    #[arg(long, default_value_t = 1)]
+    vulkan_heavy_msaa: u32,
+
+    /// Heavy mode: fragment MUFU/FMA loop iterations per pixel
+    #[arg(long, default_value_t = 128)]
+    vulkan_heavy_iters: u32,
+
+    /// Heavy mode: instanced shell count (layered overdraw)
+    #[arg(long, default_value_t = 16)]
+    vulkan_heavy_shells: u32,
+
+    /// Heavy mode: render offscreen (pure CLI / headless; skips display path)
+    #[arg(long, default_value_t = false)]
+    vulkan_heavy_offscreen: bool,
 
     /// CUDA GPU index in PCI-bus-sorted order (0-based)
     #[arg(
@@ -1270,7 +1285,18 @@ pub fn run_from_args() {
                 image_count: args.vulkan_image_count,
                 msaa: args.vulkan_image_msaa,
                 minor_mixture_rate: args.vulkan_minor_mixture_rate,
-                heavy: args.vulkan_heavy,
+                heavy: if args.vulkan_heavy {
+                    Some(cli_stressor_cuda_rs::vulkan_heavy_render::VulkanHeavyConfig {
+                        width: args.vulkan_heavy_width,
+                        height: args.vulkan_heavy_height,
+                        msaa: args.vulkan_heavy_msaa,
+                        iters: args.vulkan_heavy_iters,
+                        shells: args.vulkan_heavy_shells,
+                        offscreen: args.vulkan_heavy_offscreen,
+                    })
+                } else {
+                    None
+                },
             };
             let selection = cuda_device_identity.map(|identity| VulkanDeviceSelection {
                 cuda_uuid: identity.uuid,
@@ -1688,7 +1714,18 @@ pub fn run_from_args() {
                 image_count: args.vulkan_image_count,
                 msaa: args.vulkan_image_msaa,
                 minor_mixture_rate: args.vulkan_minor_mixture_rate,
-                heavy: args.vulkan_heavy,
+                heavy: if args.vulkan_heavy {
+                    Some(cli_stressor_cuda_rs::vulkan_heavy_render::VulkanHeavyConfig {
+                        width: args.vulkan_heavy_width,
+                        height: args.vulkan_heavy_height,
+                        msaa: args.vulkan_heavy_msaa,
+                        iters: args.vulkan_heavy_iters,
+                        shells: args.vulkan_heavy_shells,
+                        offscreen: args.vulkan_heavy_offscreen,
+                    })
+                } else {
+                    None
+                },
             };
             let selection = VulkanDeviceSelection {
                 cuda_uuid: identity.uuid,

@@ -1,6 +1,6 @@
-use super::style::stylize;
+use crate::runner::style::stylize;
 #[cfg(all(feature = "vulkan", target_os = "windows"))]
-use super::vulkan_heavy_render::run_heavy_render_loop;
+use crate::vulkan_heavy_render::run_heavy_render_loop;
 use anstream::eprintln;
 use ash::{Instance, vk};
 use cli_stressor_cuda_rs::PciBusAddress;
@@ -27,7 +27,7 @@ pub struct VulkanImageConfig {
     pub minor_mixture_rate: f64,
     /// FurMark-style heavy render mode (Win32 window + shaders + blend +
     /// depth + present). Windows-only; falls back to the light path elsewhere.
-    pub heavy: bool,
+    pub heavy: Option<crate::vulkan_heavy_render::VulkanHeavyConfig>,
 }
 
 impl Default for VulkanImageConfig {
@@ -39,7 +39,7 @@ impl Default for VulkanImageConfig {
             image_count: 6,
             msaa: 1,
             minor_mixture_rate: 0.15,
-            heavy: false,
+            heavy: None,
         }
     }
 }
@@ -95,8 +95,8 @@ impl VulkanGraphicsEngine {
         has_error.store(false, Ordering::SeqCst);
 
         let handle = thread::spawn(move || {
-            let result = if image_config.heavy {
-                dispatch_heavy(is_running, selection, image_config)
+            let result = if let Some(heavy_cfg) = image_config.heavy {
+                dispatch_heavy(is_running, selection, heavy_cfg)
             } else {
                 run_vulkan_stress_loop(is_running, selection, image_config)
             };
@@ -135,16 +135,16 @@ impl VulkanGraphicsEngine {
 fn dispatch_heavy(
     is_running: Arc<AtomicBool>,
     selection: Option<VulkanDeviceSelection>,
-    image_config: VulkanImageConfig,
+    heavy_cfg: crate::vulkan_heavy_render::VulkanHeavyConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    run_heavy_render_loop(is_running, selection, image_config)
+    run_heavy_render_loop(is_running, selection, heavy_cfg)
 }
 
 #[cfg(not(all(feature = "vulkan", target_os = "windows")))]
 fn dispatch_heavy(
     is_running: Arc<AtomicBool>,
     selection: Option<VulkanDeviceSelection>,
-    image_config: VulkanImageConfig,
+    heavy_cfg: crate::vulkan_heavy_render::VulkanHeavyConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     eprintln!(
         "{}",

@@ -30,6 +30,16 @@ pub use verify::{
     VerifyConfig, VerifyReport, classify, dp4a_ref, intalu_ref_element, vexpected_host, vhash32,
 };
 
+// Heavy FurMark-style renderer lives in the lib so the bin target and the
+// runner share one type definition.
+#[cfg(feature = "vulkan")]
+#[path = "vulkan_gfx_stressor.rs"]
+pub mod vulkan_gfx_stressor;
+
+#[cfg(all(feature = "vulkan", target_os = "windows"))]
+#[path = "vulkan_heavy_render.rs"]
+pub mod vulkan_heavy_render;
+
 // CUDA backend lives in the lib so integration tests (and the bundled
 // optimizer worker) can drive it directly.
 #[cfg(feature = "cuda")]
