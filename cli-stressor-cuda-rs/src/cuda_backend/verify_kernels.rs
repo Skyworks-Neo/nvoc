@@ -498,9 +498,11 @@ impl VerifyEngine {
     }
 
     fn set_failure(&self, msg: String) {
+        // Deliberately does NOT touch `drained` here: callers (absorb_pattern)
+        // may hold that RefCell borrowed. drain() merges failure into
+        // first_error instead.
         let mut failure = self.failure.borrow_mut();
         if failure.is_none() {
-            self.drained.borrow_mut().first_error = Some(msg.clone());
             *failure = Some(msg);
         }
     }
@@ -983,8 +985,15 @@ impl VerifyEngine {
     }
 
     pub(super) fn drain(&self) -> DetectorStats {
+        let mut drained_old = self.drained.replace(DetectorStats::default());
+        {
+            let failure = self.failure.borrow();
+            if drained_old.first_error.is_none() {
+                drained_old.first_error = failure.clone();
+            }
+        }
         *self.failure.borrow_mut() = None;
-        std::mem::take(&mut self.drained.borrow_mut())
+        drained_old
     }
 
     /// Async pattern fill (no sync; caller orders and syncs).
