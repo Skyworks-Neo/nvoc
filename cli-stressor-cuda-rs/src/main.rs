@@ -273,6 +273,11 @@ struct Args {
     #[arg(long, default_value_t = false)]
     vulkan_heavy_offscreen: bool,
 
+    /// Heavy mode: animate torus rotation (dynamic tiles/Z/interp inputs;
+    /// disable for the static-mesh A/B baseline)
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    vulkan_heavy_rotate: bool,
+
     /// CUDA GPU index in PCI-bus-sorted order (0-based)
     #[arg(
         long,
@@ -1293,6 +1298,7 @@ pub fn run_from_args() {
                         iters: args.vulkan_heavy_iters,
                         shells: args.vulkan_heavy_shells,
                         offscreen: args.vulkan_heavy_offscreen,
+                        rotate: args.vulkan_heavy_rotate,
                     })
                 } else {
                     None
@@ -1722,6 +1728,7 @@ pub fn run_from_args() {
                         iters: args.vulkan_heavy_iters,
                         shells: args.vulkan_heavy_shells,
                         offscreen: args.vulkan_heavy_offscreen,
+                        rotate: args.vulkan_heavy_rotate,
                     })
                 } else {
                     None

@@ -46,6 +46,9 @@ pub struct VulkanHeavyConfig {
     /// Render into an owned color image instead of a window swapchain
     /// (pure CLI / headless; skips the display-engine path).
     pub offscreen: bool,
+    /// Animate the torus rotation (dynamic tiles/Z-distribution/interp
+    /// inputs). Off for the static-mesh A/B baseline.
+    pub rotate: bool,
 }
 
 impl Default for VulkanHeavyConfig {
@@ -57,6 +60,7 @@ impl Default for VulkanHeavyConfig {
             iters: 128,
             shells: 16,
             offscreen: false,
+            rotate: true,
         }
     }
 }
@@ -75,7 +79,7 @@ const BG_FRAG_SRC: &str = r#"
 #version 450 core
 layout(location = 0) in vec2 v_uv;
 layout(location = 0) out vec4 out_color;
-layout(push_constant) uniform Push { float u_time; float shell_off; int iters; } pc;
+layout(push_constant) uniform Push { float u_time; float shell_off; int iters; float rotate; } pc;
 void main() {
     vec2 p = v_uv * 2.0 - 1.0;
     float s = 0.0;
@@ -97,10 +101,20 @@ layout(location = 1) in vec3 in_normal;
 layout(location = 2) in vec2 in_uv;
 layout(location = 0) out vec3 v_normal;
 layout(location = 1) out vec3 v_pos;
-layout(push_constant) uniform Push { float u_time; float shell_off; int iters; } pc;
+layout(push_constant) uniform Push { float u_time; float shell_off; int iters; float rotate; } pc;
 void main() {
-    vec3 p = in_pos + in_normal * pc.shell_off * float(gl_InstanceIndex);
-    v_normal = in_normal;
+    // Object rotation: dynamic geometry rotates tiles/interpolation inputs/
+    // Z-distribution every frame (second-order stress the static mesh lacks).
+    // X+Y compound axis so the projected silhouette actually changes (a pure
+    // Y spin is invisible on a torus and would not move tiles).
+    float t = pc.u_time * 0.5;
+    float cx = cos(t), sx = sin(t);
+    float cy = cos(t * 0.7), sy = sin(t * 0.7);
+    mat3 rot_x = mat3(1.0, 0.0, 0.0, 0.0, cx, sx, 0.0, -sx, cx);
+    mat3 rot_y = mat3(cy, 0.0, sy, 0.0, 1.0, 0.0, -sy, 0.0, cy);
+    mat3 rot = rot_y * rot_x;
+    vec3 p = rot * (in_pos + in_normal * pc.shell_off * float(gl_InstanceIndex));
+    v_normal = rot * in_normal;
     v_pos = p;
     gl_Position = vec4(p, 1.0);
 }
@@ -111,7 +125,7 @@ const KNOT_FRAG_SRC: &str = r#"
 layout(location = 0) in vec3 v_normal;
 layout(location = 1) in vec3 v_pos;
 layout(location = 0) out vec4 out_color;
-layout(push_constant) uniform Push { float u_time; float shell_off; int iters; } pc;
+layout(push_constant) uniform Push { float u_time; float shell_off; int iters; float rotate; } pc;
 void main() {
     vec3 N = normalize(v_normal);
     vec3 V = normalize(vec3(0.0, 0.6, 2.2) - v_pos);
@@ -758,7 +772,7 @@ pub fn run_heavy_render_loop(
         let push_range = vk::PushConstantRange::default()
             .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
             .offset(0)
-            .size(12);
+            .size(16);
         let pipeline_layout = device.create_pipeline_layout(
             &vk::PipelineLayoutCreateInfo::default().push_constant_ranges(&[push_range]),
             None,
@@ -950,11 +964,12 @@ pub fn run_heavy_render_loop(
             let time = start.elapsed().as_secs_f32();
             // Push block is {f32, f32, int} — the int member must be written
             // as its integer bit pattern, not as an f32 bit pattern.
-            let push_bytes: [u8; 12] = {
-                let mut b = [0u8; 12];
+            let push_bytes: [u8; 16] = {
+                let mut b = [0u8; 16];
                 b[0..4].copy_from_slice(&time.to_bits().to_ne_bytes());
                 b[4..8].copy_from_slice(&0.012f32.to_bits().to_ne_bytes());
                 b[8..12].copy_from_slice(&cfg.iters.to_ne_bytes());
+                b[12..16].copy_from_slice(&(if cfg.rotate { 1.0f32 } else { 0.0f32 }).to_bits().to_ne_bytes());
                 b
             };
 
