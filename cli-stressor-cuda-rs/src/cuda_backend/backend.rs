@@ -545,6 +545,12 @@ impl Backend for CudaBackend {
         }
     }
 
+    fn verify_tick(&self, interval_s: f64) {
+        if let Some(engine) = &self.verify {
+            engine.tick(&self.stream, interval_s);
+        }
+    }
+
     fn validate_int8_exact(
         &mut self,
         size: usize,

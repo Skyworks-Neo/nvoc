@@ -311,6 +311,9 @@ pub trait Backend {
     fn verify_drain(&mut self) -> DetectorStats {
         DetectorStats::default()
     }
+    /// Resident-block periodic check (called per dispatch-loop op; the engine
+    /// self-throttles to one check per interval).
+    fn verify_tick(&self, _interval_s: f64) {}
     /// Exact INT8 GEMM validation: seeded host reference vs device result.
     /// Returns `(passed, failure_reason)`; Err only for infrastructure errors.
     fn validate_int8_exact(
@@ -1467,8 +1470,13 @@ pub fn run_stress_mixed<B: Backend>(
                 kernel_kind.as_str(),
                 detector_failed.unwrap_or_default()
             );
-            break;
+            if !effective_config.verify.continue_on_error {
+                break;
+            }
         }
+
+        // Resident-block periodic check (self-throttled inside the engine).
+        backend.verify_tick(effective_config.verify.resident_interval_s);
 
         let flops = estimate_kernel_work_flops(kernel_kind, size, params.burst_iters) as f64;
         let inst_tflops = if op_elapsed > 0.0 {

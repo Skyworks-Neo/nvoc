@@ -146,7 +146,7 @@ impl SampleStats {
 
 /// Tunables for the ride-on-load detectors. All serde-facing fields default
 /// through [`VerifyConfig::default`], so existing profiles stay valid.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct VerifyConfig {
     pub enabled: bool,
     pub self_test: bool,
@@ -166,6 +166,14 @@ pub struct VerifyConfig {
     pub intalu_samples: u32,
     /// Matrix side for the exact INT8 GEMM validation.
     pub int8_validate_size: usize,
+    /// Don't abort on the first detector fault; accumulate counts and finish
+    /// the run (for SDC-rate-vs-frequency/temperature mapping).
+    pub continue_on_error: bool,
+    /// Interval in seconds between resident-block pattern checks (0 = off).
+    /// The resident block is filled once and only re-read at each tick, so
+    /// faults it reports are retention/disturbance flips that happened while
+    /// the actual workload was hammering VRAM.
+    pub resident_interval_s: f64,
 }
 
 impl Default for VerifyConfig {
@@ -180,6 +188,8 @@ impl Default for VerifyConfig {
             full_check_max_size: 1024,
             intalu_samples: 1024,
             int8_validate_size: 512,
+            continue_on_error: false,
+            resident_interval_s: 2.0,
         }
     }
 }
@@ -239,6 +249,12 @@ pub struct DetectorStats {
     pub mismatches: u64,
     pub nonfinite: u64,
     pub first_error: Option<String>,
+    /// Aggregated bit-position histogram over all pattern-compare faults
+    /// (each wrong word contributes 1 to its lowest-set-bit lane). Clusters
+    /// in one byte lane across events = that lane's datapath is marginal.
+    pub bit_hist: [u32; 32],
+    /// Pattern-compare checks that reported at least one wrong word.
+    pub fault_events: u64,
 }
 
 impl DetectorStats {
@@ -248,9 +264,24 @@ impl DetectorStats {
         self.total_errors += other.total_errors;
         self.mismatches += other.mismatches;
         self.nonfinite += other.nonfinite;
+        for (dst, src) in self.bit_hist.iter_mut().zip(other.bit_hist.iter()) {
+            *dst += src;
+        }
+        self.fault_events += other.fault_events;
         if self.first_error.is_none() {
             self.first_error = other.first_error.clone();
         }
+    }
+
+    /// Human-readable non-zero bit histogram, e.g. "bit27=1" / "bit22=2,bit20=1".
+    pub fn bit_summary(&self) -> String {
+        self.bit_hist
+            .iter()
+            .enumerate()
+            .filter(|&(_, &c)| c > 0)
+            .map(|(bit, c)| format!("bit{bit}={c}"))
+            .collect::<Vec<_>>()
+            .join(",")
     }
 }
 

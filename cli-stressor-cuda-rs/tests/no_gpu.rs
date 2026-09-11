@@ -199,14 +199,17 @@ fn test_classify_precedence() {
 #[test]
 fn test_detector_stats_merge() {
     let mut total = DetectorStats::default();
-    let part = DetectorStats {
+    let mut part = DetectorStats {
         ops_checked: 3,
         elements_checked: 100,
         total_errors: 1,
         mismatches: 0,
         nonfinite: 0,
         first_error: Some("memcpy verify: 1 wrong words".into()),
+        bit_hist: [0; 32],
+        fault_events: 1,
     };
+    part.bit_hist[27] = 1;
     total.merge(&part);
     total.merge(&DetectorStats {
         ops_checked: 2,

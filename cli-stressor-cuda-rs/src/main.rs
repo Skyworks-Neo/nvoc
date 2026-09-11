@@ -159,6 +159,15 @@ struct Args {
     #[arg(long, default_value_t = 1024)]
     gemm_full_check_max_size: usize,
 
+    /// Keep running after a detector fault, accumulating SDC statistics
+    /// (for error-rate vs frequency/temperature mapping)
+    #[arg(long, default_value_t = false)]
+    verify_continue_on_error: bool,
+
+    /// Seconds between resident-block pattern checks (0 = off)
+    #[arg(long, default_value_t = 2.0)]
+    verify_resident_interval: f64,
+
     /// Disable the ride-on-load detectors (pattern compare / GEMM scan /
     /// sampled cross-checks / IntAlu reference)
     #[arg(long, default_value_t = false)]
@@ -317,6 +326,8 @@ struct FileVerifyConfig {
     enabled: Option<bool>,
     self_test: Option<bool>,
     full_check_max_size: Option<usize>,
+    continue_on_error: Option<bool>,
+    resident_interval_s: Option<f64>,
     memcpy_every: Option<u32>,
     memset_every: Option<u32>,
     gemm_every: Option<u32>,
@@ -578,6 +589,8 @@ fn parse_args_with_cli_sources() -> (Args, std::collections::HashSet<&'static st
         "validate_interval",
         "validate_size",
         "gemm_full_check_max_size",
+        "verify_continue_on_error",
+        "verify_resident_interval",
         "transpose_prob",
         "minor_mixture_rate",
         "seed",
@@ -1084,17 +1097,20 @@ fn print_summary(results: &[StressResult], info: &DeviceInfo) {
         }
         let d = &r.detectors;
         if d.ops_checked > 0 {
+            let bits = d.bit_summary();
             println!(
                 "{}",
                 stylize(
                     &format!(
-                        "{:12}      detectors: ops={} checked={} errors={} mismatch={} nonfinite={}",
+                        "{:12}      detectors: ops={} checked={} errors={} mismatch={} nonfinite={} events={}{}",
                         "",
                         d.ops_checked,
                         d.elements_checked,
                         d.total_errors,
                         d.mismatches,
-                        d.nonfinite
+                        d.nonfinite,
+                        d.fault_events,
+                        if bits.is_empty() { String::new() } else { format!(" bits=[{bits}]") }
                     ),
                     false
                 )
@@ -1186,6 +1202,12 @@ pub fn run_from_args() {
         if let Some(size) = v.full_check_max_size {
             verify_cfg.full_check_max_size = size;
         }
+        if let Some(c) = v.continue_on_error {
+            verify_cfg.continue_on_error = c;
+        }
+        if let Some(i) = v.resident_interval_s {
+            verify_cfg.resident_interval_s = i;
+        }
         if let Some(samples) = v.intalu_samples {
             verify_cfg.intalu_samples = samples;
         }
@@ -1196,6 +1218,10 @@ pub fn run_from_args() {
     if args.no_verify {
         verify_cfg.enabled = false;
     }
+    if args.verify_continue_on_error {
+        verify_cfg.continue_on_error = true;
+    }
+    verify_cfg.resident_interval_s = args.verify_resident_interval;
     if args.skip_self_test {
         verify_cfg.self_test = false;
     }
@@ -1876,6 +1902,8 @@ pub fn run_from_args() {
             "gemm_every": verify_cfg.gemm_every,
             "gemm_samples": verify_cfg.gemm_samples,
             "gemm_full_check_max_size": verify_cfg.full_check_max_size,
+            "continue_on_error": verify_cfg.continue_on_error,
+            "resident_interval_s": verify_cfg.resident_interval_s,
             "intalu_samples": verify_cfg.intalu_samples,
             "int8_validate_size": verify_cfg.int8_validate_size,
         },

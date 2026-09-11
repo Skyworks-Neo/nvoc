@@ -29,6 +29,9 @@ use super::kernels::load_kernel;
 const STATS_GRID_CAP: u32 = 4096;
 /// Self-test scratch size in u32 words (4 MiB, far above the 0xADBA index).
 const SAMPLE_SCRATCH_WORDS: usize = 1 << 20;
+/// Resident pattern block: 64 MiB, filled once, re-read per tick.
+const RESIDENT_WORDS: usize = 64 << 18; // 64 MiB / 4
+const RESIDENT_SEED: u64 = 0x5EED_0001;
 
 const VERIFY_SRC: &str = r#"
 // ---- report structs (host-mirrored in src/verify.rs; keep in sync) ----
@@ -323,6 +326,10 @@ pub struct VerifyEngine {
     sample_stats: RefCell<CudaSlice<SampleStats>>,
     /// Self-test scratch (2^20 words = 4 MiB, > the 0xADBA injection index).
     scratch: CudaSlice<u32>,
+    /// Resident pattern block: filled once, re-read at each tick — faults it
+    /// reports are retention/disturbance flips under the live workload.
+    resident: CudaSlice<u32>,
+    last_tick: RefCell<Option<std::time::Instant>>,
     /// Cumulative detector counters, drained by the dispatch loop.
     drained: RefCell<DetectorStats>,
     /// First hard failure observed by any detector (sticky until drained).
@@ -375,6 +382,26 @@ impl VerifyEngine {
         let scratch = stream
             .alloc_zeros::<u32>(SAMPLE_SCRATCH_WORDS)
             .map_err(|err| BackendError::Other(err.to_string()))?;
+        let resident = stream
+            .alloc_zeros::<u32>(RESIDENT_WORDS)
+            .map_err(|err| BackendError::Other(err.to_string()))?;
+        // Fill once; ticks only re-read (retention/disturbance semantics).
+        {
+            let seed = RESIDENT_SEED;
+            let cfg = LaunchConfig::for_num_elems(RESIDENT_WORDS as u32);
+            unsafe {
+                stream
+                    .launch_builder(&fill_fn)
+                    .arg(&resident)
+                    .arg(&(RESIDENT_WORDS as u64))
+                    .arg(&seed)
+                    .launch(cfg)
+                    .map_err(|err| BackendError::Other(err.to_string()))?;
+            }
+            stream
+                .synchronize()
+                .map_err(|err| BackendError::Other(err.to_string()))?;
+        }
 
         Ok(Self {
             _module: module,
@@ -390,6 +417,8 @@ impl VerifyEngine {
             stats: RefCell::new(stats),
             sample_stats: RefCell::new(sample_stats),
             scratch,
+            resident,
+            last_tick: RefCell::new(None),
             drained: RefCell::new(DetectorStats::default()),
             failure: RefCell::new(None),
             self_test: RefCell::new(None),
@@ -463,10 +492,21 @@ impl VerifyEngine {
     }
 
     fn absorb_pattern(&self, report: &VerifyReport, n_words: u64, expected_done: u32, label: &str) {
-        let mut drained = self.drained.borrow_mut();
-        drained.ops_checked += 1;
-        drained.elements_checked += n_words;
-        if report.done != expected_done {
+        {
+            let mut drained = self.drained.borrow_mut();
+            drained.ops_checked += 1;
+            drained.elements_checked += n_words;
+            for (dst, src) in drained.bit_hist.iter_mut().zip(report.bit_hist.iter()) {
+                *dst = dst.wrapping_add(*src);
+            }
+            if report.total_errors > 0 {
+                drained.fault_events += 1;
+            }
+        }
+        let drained_borrow = self.drained.borrow();
+        let done_mismatch = report.done != expected_done;
+        drop(drained_borrow);
+        if done_mismatch {
             self.set_failure(format!(
                 "{label}: report completion counter mismatch (done={}, expected={})",
                 report.done, expected_done
@@ -982,6 +1022,69 @@ impl VerifyEngine {
 
     pub(super) fn failure(&self) -> Option<String> {
         self.failure.borrow().clone()
+    }
+
+    /// Resident-block tick: compare-only check at most once per interval.
+    /// A fault refills the block so the next tick measures a fresh event.
+    pub(super) fn tick(&self, stream: &Arc<CudaStream>, interval_s: f64) {
+        if interval_s <= 0.0 {
+            return;
+        }
+        let due = {
+            let mut last = self.last_tick.borrow_mut();
+            match *last {
+                None => {
+                    *last = Some(std::time::Instant::now());
+                    false // first tick: baseline was just filled at build
+                }
+                Some(t) => t.elapsed().as_secs_f64() >= interval_s,
+            }
+        };
+        if !due {
+            return;
+        }
+        let result = self.run_resident_check(stream);
+        if let Err(err) = result {
+            self.set_failure(format!("resident verify: {err}"));
+            return;
+        }
+        let report = result.expect("checked");
+        {
+            let mut last = self.last_tick.borrow_mut();
+            *last = Some(std::time::Instant::now());
+        }
+        if report.total_errors > 0 {
+            // Refill so the next tick counts only NEW flips.
+            let cfg = LaunchConfig::for_num_elems(RESIDENT_WORDS as u32);
+            unsafe {
+                let _ = stream
+                    .launch_builder(&self.fill_fn)
+                    .arg(&self.resident)
+                    .arg(&(RESIDENT_WORDS as u64))
+                    .arg(&RESIDENT_SEED)
+                    .launch(cfg);
+            }
+            let _ = stream.synchronize();
+        }
+    }
+
+    fn run_resident_check(
+        &self,
+        stream: &Arc<CudaStream>,
+    ) -> Result<VerifyReport, BackendError> {
+        self.reset_report(stream, 0)?;
+        let done = self.launch_compare(stream, &self.resident, RESIDENT_SEED, 0)?;
+        stream
+            .synchronize()
+            .map_err(|err| BackendError::Other(err.to_string()))?;
+        let report = self.read_report(stream, 0)?;
+        self.absorb_pattern(
+            &report,
+            RESIDENT_WORDS as u64,
+            done,
+            "resident verify",
+        );
+        Ok(report)
     }
 
     pub(super) fn drain(&self) -> DetectorStats {
