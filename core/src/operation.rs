@@ -469,18 +469,20 @@ impl GpuOperation for ResetNvapiFanControl {
             _ => vec![::nvapi::FanCoolerId::Cooler1],
         };
         // level None → to_raw writes level 0 with the override bit CLEARED.
-        // Policy stays TemperatureContinuous on purpose: GP104/582.66 honors
-        // the policy byte (fan switches to the SW curve and its unpopulated
-        // table), so this op is fallback-only — callers must try
-        // ResetCoolerLevels FIRST. A policy-0 write (CoolerSettings::
-        // clear_override) is the candidate minimal semantics but needs a
-        // live acceptance A/B before switching the default.
+        // Policy = Default (32): nvapioc corroborates that a control-block
+        // write with policy 32 RESTORES THE DRIVER FAN CURVE — the correct
+        // "back to auto" semantics for cards where the public
+        // RestoreCoolerSettings is capability-gated (GP104/582.66: both the
+        // read and write of that family return -104, so restore-first falls
+        // through here every time). The previous TemperatureContinuous (8)
+        // policy byte was the 0-RPM-stall bug: the driver honors it and the
+        // SW curve's ClientFanPolicies table is unpopulated (0/2/6 RPM).
         gpu.inner()
             .set_cooler(cooler_ids.into_iter().map(|id| {
                 (
                     id,
                     ::nvapi::CoolerSettings {
-                        policy: ::nvapi::CoolerPolicy::TemperatureContinuous,
+                        policy: ::nvapi::CoolerPolicy::Default,
                         level: None,
                     },
                 )

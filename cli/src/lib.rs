@@ -2221,6 +2221,7 @@ fn collect_named_options(
             | "background-on"
             | "background-off"
             | "incomplete"
+            | "activate"
             | "percent"
             | "rpm"
             | "offset"
@@ -3024,7 +3025,10 @@ fn execute_target(
                             "current_pwm_percent": c.current_pwm_percent,
                             // Raw NV_COOLER_POLICY: which mode the cooler is
                             // in (1=Manual pin, 8=SW temp curve, 16=SW
-                            // silent, 32=factory default).
+                            // silent, 32=factory default). null = the public
+                            // GetCoolerSettings family is capability-gated
+                            // on this card (GP104 -104); the reset path then
+                            // uses control-block policy Default (32).
                             "control_policy": c.control_policy,
                             "default_policy": c.default_policy,
                         })).collect::<Vec<_>>(),
