@@ -8,12 +8,12 @@
 //! (per-window pattern write + verify cycles, per-window error block,
 //! injection gate at idx 0xADBA / bit 22 with every other window clean).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 
 use cudarc::driver::{
-    CudaContext, CudaFunction, CudaModule, CudaSlice, CudaStream, DeviceRepr, LaunchConfig,
-    PushKernelArg, ValidAsZeroBits,
+    CudaContext, CudaFunction, CudaModule, CudaSlice, CudaStream, CudaView, CudaViewMut,
+    DeviceRepr, LaunchConfig, PushKernelArg, ValidAsZeroBits,
 };
 use cudarc::nvrtc::{CompileOptions, compile_ptx_with_opts};
 
@@ -32,6 +32,8 @@ const SAMPLE_SCRATCH_WORDS: usize = 1 << 20;
 /// Resident pattern block: 64 MiB, filled once, re-read per tick.
 const RESIDENT_WORDS: usize = 64 << 18; // 64 MiB / 4
 const RESIDENT_SEED: u64 = 0x5EED_0001;
+/// Address-walk slab minimum useful size (windows below this are pointless).
+const SLAB_MIN_BYTES: usize = 64 << 20; // 64 MiB
 
 const VERIFY_SRC: &str = r#"
 // ---- report structs (host-mirrored in src/verify.rs; keep in sync) ----
@@ -108,22 +110,39 @@ __device__ int v_isfinite(float v) {
 }
 
 extern "C" __global__ void verify_pattern_fill(
-    unsigned int* buf, unsigned long long n, unsigned long long seed)
+    unsigned int* buf, unsigned long long n, unsigned long long seed,
+    unsigned int mode)
 {
     unsigned long long idx = (unsigned long long)blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= n) return;
-    buf[idx] = vexpected(idx, seed);
+    // TM5-style phase rotation: different patterns exercise different write-
+    // disturb directions (all observed SDC so far are 1->0, so the all-ones
+    // phase is the strongest single stimulus; zeros/cycle catch 0->1).
+    unsigned int v;
+    switch (mode) {
+        case 1u: v = 0xFFFFFFFFu; break;
+        case 2u: v = 0x00000000u; break;
+        case 3u: v = (idx & 1u) ? 0xAAAAAAAAu : 0x55555555u; break;
+        default: v = vexpected(idx, seed); break;
+    }
+    buf[idx] = v;
 }
 
 extern "C" __global__ void verify_compare(
     const unsigned int* buf, unsigned long long n, unsigned long long seed,
-    VerifyReport* report)
+    unsigned int mode, VerifyReport* report)
 {
     unsigned long long idx = (unsigned long long)blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= n) return;
     if (threadIdx.x == 0) atomicAdd(&report->done, 1u);
     unsigned int act = buf[idx];
-    unsigned int exp = vexpected(idx, seed);
+    unsigned int exp;
+    switch (mode) {
+        case 1u: exp = 0xFFFFFFFFu; break;
+        case 2u: exp = 0x00000000u; break;
+        case 3u: exp = (idx & 1u) ? 0xAAAAAAAAu : 0x55555555u; break;
+        default: exp = vexpected(idx, seed); break;
+    }
     if (act != exp) {
         unsigned int x = act ^ exp;
         atomicAdd(&report->total_errors, 1u);
@@ -330,6 +349,14 @@ pub struct VerifyEngine {
     /// reports are retention/disturbance flips under the live workload.
     resident: CudaSlice<u32>,
     last_tick: RefCell<Option<std::time::Instant>>,
+    /// Address-walk slab: one large allocation covering a configurable share
+    /// of VRAM. Memset/memcpy windows slide across it so the pattern sweeps
+    /// different physical pages every op (UE5 camera-turn stimulus).
+    slab: RefCell<Option<CudaSlice<u32>>>,
+    /// Slab walk state: word offset of the next window.
+    slab_cursor: Cell<usize>,
+    /// Actual slab size in bytes (0 = slab disabled).
+    slab_bytes: Cell<usize>,
     /// Cumulative detector counters, drained by the dispatch loop.
     drained: RefCell<DetectorStats>,
     /// First hard failure observed by any detector (sticky until drained).
@@ -342,6 +369,7 @@ impl VerifyEngine {
         ctx: &Arc<CudaContext>,
         info: &DeviceInfo,
         lane_count: usize,
+        slab_pct: u32,
     ) -> Result<Self, BackendError> {
         let arch = nvrtc_arch_for(info);
         let arch_static: &'static str = Box::leak(arch.into_boxed_str());
@@ -388,6 +416,7 @@ impl VerifyEngine {
         // Fill once; ticks only re-read (retention/disturbance semantics).
         {
             let seed = RESIDENT_SEED;
+            let mode = 0u32;
             let cfg = LaunchConfig::for_num_elems(RESIDENT_WORDS as u32);
             unsafe {
                 stream
@@ -395,6 +424,7 @@ impl VerifyEngine {
                     .arg(&resident)
                     .arg(&(RESIDENT_WORDS as u64))
                     .arg(&seed)
+                    .arg(&mode)
                     .launch(cfg)
                     .map_err(|err| BackendError::Other(err.to_string()))?;
             }
@@ -403,6 +433,42 @@ impl VerifyEngine {
                 .map_err(|err| BackendError::Other(err.to_string()))?;
         }
 
+        // Address-walk slab: pct% of total VRAM (capped at 2 GiB) minus what
+        // we already hold. On 8 GB cards a 4 GB slab starves WDDM/driver
+        // reserves and destabilizes later launches — the cap is mandatory.
+        // Allocation failure degrades to None: the walk is an amplifier.
+        const SLAB_MAX_BYTES: usize = 2 << 30;
+        let slab_bytes = if slab_pct > 0 {
+            let total = ctx.total_mem().unwrap_or(0);
+            let held = (RESIDENT_WORDS + SAMPLE_SCRATCH_WORDS) * 4;
+            ((total / 100) * slab_pct as usize)
+                .saturating_sub(held)
+                .min(total.saturating_sub(held))
+                .min(SLAB_MAX_BYTES)
+        } else {
+            0
+        };
+        let slab = if slab_bytes >= SLAB_MIN_BYTES {
+            let words = slab_bytes / 4;
+            match stream.alloc_zeros::<u32>(words) {
+                Ok(slab) => {
+                    // Left UNFILLED: memset/memcpy write it via their own
+                    // fill/memset before every compare.
+                    Some(slab)
+                }
+                Err(err) => {
+                    println!(
+                        "Warning: address-walk slab allocation failed ({});                          pattern sweeps stay on dedicated buffers",
+                        err
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        let slab_actual = slab.as_ref().map(|slab| slab.len() * 4).unwrap_or(0);
         Ok(Self {
             _module: module,
             fill_fn,
@@ -418,6 +484,9 @@ impl VerifyEngine {
             sample_stats: RefCell::new(sample_stats),
             scratch,
             resident,
+            slab: RefCell::new(slab),
+            slab_cursor: Cell::new(0),
+            slab_bytes: Cell::new(slab_actual),
             last_tick: RefCell::new(None),
             drained: RefCell::new(DetectorStats::default()),
             failure: RefCell::new(None),
@@ -443,12 +512,14 @@ impl VerifyEngine {
     ) -> Result<u32, BackendError> {
         let n = buf.len() as u64;
         let cfg = LaunchConfig::for_num_elems(n as u32);
+        let mode = 0u32;
         unsafe {
             stream
                 .launch_builder(&self.fill_fn)
                 .arg(buf)
                 .arg(&n)
                 .arg(&seed)
+                .arg(&mode)
                 .launch(cfg)
                 .map_err(|err| BackendError::Other(err.to_string()))?;
         }
@@ -466,12 +537,14 @@ impl VerifyEngine {
         let cfg = LaunchConfig::for_num_elems(n as u32);
         let mut reports = self.reports.borrow_mut();
         let report = &mut reports[lane];
+        let mode = 0u32;
         unsafe {
             stream
                 .launch_builder(&self.compare_fn)
                 .arg(buf)
                 .arg(&n)
                 .arg(&seed)
+                .arg(&mode)
                 .arg(&mut *report)
                 .launch(cfg)
                 .map_err(|err| BackendError::Other(err.to_string()))?;
@@ -899,7 +972,7 @@ impl VerifyEngine {
         // Gate 1: clean pattern reports zero errors.
         let clean = (|| -> Result<(VerifyReport, u32), BackendError> {
             self.reset_report(&stream, 0)?;
-            self.launch_fill(&stream, &self.scratch, seed)?;
+            self.launch_fill(&stream, &self.scratch, seed)?; // mode=0 hash
             let cmp_done = self.launch_compare(&stream, &self.scratch, seed, 0)?;
             stream
                 .synchronize()
@@ -930,7 +1003,7 @@ impl VerifyEngine {
         let injected = (|| -> Result<VerifyReport, BackendError> {
             self.reset_report(&stream, 0)?;
             // Re-fill so the gate does not depend on gate 1's outcome.
-            self.launch_fill(&stream, &self.scratch, seed)?;
+            self.launch_fill(&stream, &self.scratch, seed)?; // mode=0 hash
             stream
                 .synchronize()
                 .map_err(|err| BackendError::Other(err.to_string()))?;
@@ -960,7 +1033,7 @@ impl VerifyEngine {
                 .map_err(|err| BackendError::Other(err.to_string()))?;
             let report = self.read_report(&stream, 0)?;
             // Restore the scratch to the clean pattern for later reuse.
-            self.launch_fill(&stream, &self.scratch, seed)?;
+            self.launch_fill(&stream, &self.scratch, seed)?; // mode=0 hash
             stream
                 .synchronize()
                 .map_err(|err| BackendError::Other(err.to_string()))?;
@@ -1055,6 +1128,7 @@ impl VerifyEngine {
         }
         if report.total_errors > 0 {
             // Refill so the next tick counts only NEW flips.
+            let mode = 0u32;
             let cfg = LaunchConfig::for_num_elems(RESIDENT_WORDS as u32);
             unsafe {
                 let _ = stream
@@ -1062,6 +1136,7 @@ impl VerifyEngine {
                     .arg(&self.resident)
                     .arg(&(RESIDENT_WORDS as u64))
                     .arg(&RESIDENT_SEED)
+                    .arg(&mode)
                     .launch(cfg);
             }
             let _ = stream.synchronize();
@@ -1077,6 +1152,66 @@ impl VerifyEngine {
         let report = self.read_report(stream, 0)?;
         self.absorb_pattern(&report, RESIDENT_WORDS as u64, done, "resident verify");
         Ok(report)
+    }
+
+    /// Take the next window from the address-walk slab, advancing the
+    /// cursor. Returns `None` when the slab is disabled/exhausted for this
+    /// window size. Windows are 4 MiB-aligned so every walk lands on
+    /// different DRAM row/bank neighborhoods.
+    pub(super) fn take_slab_window(&self, words_needed: usize) -> Option<(usize, usize)> {
+        let slab = self.slab.borrow();
+        let slab = slab.as_ref()?;
+        if self.slab_bytes.get() == 0 {
+            return None;
+        }
+        let total_words = slab.len();
+        if words_needed == 0 || words_needed > total_words {
+            return None;
+        }
+        const ALIGN_WORDS: usize = 1 << 20; // 4 MiB / 4 word-grid
+        let max_off = total_words - words_needed;
+        let mut cursor = self.slab_cursor.get();
+        if cursor > max_off {
+            cursor = 0; // wrap
+        }
+        // Align down to the row-grid.
+        let off = (cursor / ALIGN_WORDS) * ALIGN_WORDS;
+        let clamped = off.min(max_off);
+        // Advance past this window to the NEXT aligned slot: windows handed to
+        // concurrent lanes must never overlap (two streams writing the same
+        // pages race each other's compares).
+        self.slab_cursor
+            .set((clamped + words_needed).next_multiple_of(ALIGN_WORDS));
+        Some((clamped, words_needed))
+    }
+
+    /// Run `f` with a view of the slab window (call right after
+    /// take_slab_window). The RefCell guard lives for the closure.
+    pub(super) fn with_slab_window<R>(
+        &self,
+        offset: usize,
+        words: usize,
+        f: impl FnOnce(CudaView<'_, u32>) -> R,
+    ) -> R {
+        let guard = self.slab.borrow();
+        let slab = guard.as_ref().expect("slab active");
+        f(slab.slice(offset..offset + words))
+    }
+    /// Mutable variant for write passes (memset_zeros / fill_mode).
+    pub(super) fn with_slab_window_mut<R>(
+        &self,
+        offset: usize,
+        words: usize,
+        f: impl FnOnce(&mut CudaViewMut<'_, u32>) -> R,
+    ) -> R {
+        let mut guard = self.slab.borrow_mut();
+        let slab = guard.as_mut().expect("slab active");
+        f(&mut slab.slice_mut(offset..offset + words))
+    }
+
+    /// Whether the slab is active (for the dispatch-loop coverage report).
+    pub(super) fn slab_active(&self) -> bool {
+        self.slab_bytes.get() > 0 && self.slab.borrow().is_some()
     }
 
     pub(super) fn drain(&self) -> DetectorStats {
@@ -1110,6 +1245,59 @@ impl VerifyEngine {
         lane: usize,
     ) -> Result<u32, BackendError> {
         self.launch_compare(stream, buf, seed, lane)
+    }
+
+    /// Pattern-rotating fill (TM5-style phases): 0=hash(seed), 1=all-ones,
+    /// 2=zeros, 3=checkerboard. Works on slices and views alike.
+    pub(super) fn fill_mode(
+        &self,
+        stream: &Arc<CudaStream>,
+        dst: cudarc::driver::sys::CUdeviceptr,
+        n_words: u64,
+        seed: u64,
+        mode: u32,
+    ) -> Result<(), BackendError> {
+        let cfg = LaunchConfig::for_num_elems(n_words as u32);
+        let mode_v = mode;
+        unsafe {
+            stream
+                .launch_builder(&self.fill_fn)
+                .arg(&dst)
+                .arg(&n_words)
+                .arg(&seed)
+                .arg(&mode_v)
+                .launch(cfg)
+                .map_err(|err| BackendError::Other(err.to_string()))?;
+        }
+        Ok(())
+    }
+
+    /// Pattern-rotating compare; returns the expected `done` delta.
+    pub(super) fn compare_mode(
+        &self,
+        stream: &Arc<CudaStream>,
+        src: cudarc::driver::sys::CUdeviceptr,
+        n_words: u64,
+        seed: u64,
+        mode: u32,
+        lane: usize,
+    ) -> Result<u32, BackendError> {
+        let cfg = LaunchConfig::for_num_elems(n_words as u32);
+        let mode_v = mode;
+        let mut reports = self.reports.borrow_mut();
+        let report = &mut reports[lane];
+        unsafe {
+            stream
+                .launch_builder(&self.compare_fn)
+                .arg(&src)
+                .arg(&n_words)
+                .arg(&seed)
+                .arg(&mode_v)
+                .arg(&mut *report)
+                .launch(cfg)
+                .map_err(|err| BackendError::Other(err.to_string()))?;
+        }
+        Ok(cfg.grid_dim.0)
     }
 
     pub(super) fn reset_lane_report(

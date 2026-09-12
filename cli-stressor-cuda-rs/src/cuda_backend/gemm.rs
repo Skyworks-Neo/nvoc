@@ -61,6 +61,27 @@ impl CudaBackend {
             .map(|l| self.stream_for_lane(l).clone())
             .collect();
         let engine = self.verify.as_mut().expect("checked above");
+        // Small (L2-resident) outputs get the full-coverage recompute —
+        // 100% of elements instead of the sampled subset (closes the
+        // sampling blind spot for narrow SDC bands).
+        if verify.full_check_max_size > 0 && size <= verify.full_check_max_size {
+            let (atol_f, rtol_f) = sample_tolerance(spec, size);
+            for lane in 0..a_devs.len() {
+                engine.gemm_full_check(
+                    &streams[lane],
+                    &a_devs[lane],
+                    &b_devs[lane],
+                    &c_devs[lane],
+                    size,
+                    ta,
+                    tb,
+                    tc,
+                    atol_f,
+                    rtol_f,
+                )?;
+            }
+            return Ok(());
+        }
         let m = (verify.gemm_samples as usize).min(size * size);
         let (atol, rtol) = sample_tolerance(spec, size);
         let samples: Vec<u32> = {

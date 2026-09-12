@@ -155,20 +155,50 @@ impl CudaBackend {
         let bytes = size * size * elem_size;
         let words = bytes.div_ceil(4);
         let lane_count = Self::lane_count(stream_mode);
-        let mut bufs = Vec::with_capacity(lane_count);
-        for lane in 0..lane_count {
-            let stream = self.stream_for_lane(lane);
-            bufs.push(
-                stream
-                    .alloc_zeros::<u32>(words)
-                    .map_err(|err| BackendError::Other(err.to_string()))?,
-            );
+        // Address-walk windows: when the slab is active, each lane works on
+        // its own sliding view (different physical pages every op) instead
+        // of a dedicated buffer parked on the same pages forever.
+        let mut slab_windows: Vec<Option<(usize, usize)>> = Vec::with_capacity(lane_count);
+        let mut bufs: Vec<Option<cudarc::driver::CudaSlice<u32>>> = Vec::with_capacity(lane_count);
+        if let Some(engine) = &self.verify {
+            for _ in 0..lane_count {
+                slab_windows.push(engine.take_slab_window(words));
+                bufs.push(None);
+            }
         }
+        for lane in 0..lane_count {
+            if slab_windows[lane].is_none() {
+                let stream = self.stream_for_lane(lane);
+                bufs[lane] = Some(
+                    stream
+                        .alloc_zeros::<u32>(words)
+                        .map_err(|err| BackendError::Other(err.to_string()))?,
+                );
+            }
+        }
+        let streams: Vec<_> = (0..lane_count)
+            .map(|l| self.stream_for_lane(l).clone())
+            .collect();
         for _ in 0..warmup_iters {
-            for (lane, buf) in bufs.iter_mut().enumerate().take(lane_count) {
-                self.stream_for_lane(lane)
-                    .memset_zeros(buf)
-                    .map_err(|err| BackendError::Other(err.to_string()))?;
+            for (lane, stream) in streams.iter().enumerate() {
+                match bufs[lane].as_mut() {
+                    Some(buf) => {
+                        stream
+                            .memset_zeros(buf)
+                            .map_err(|err| BackendError::Other(err.to_string()))?;
+                    }
+                    None => {
+                        if let (Some(engine), Some((off, w))) =
+                            (self.verify.as_ref(), slab_windows[lane])
+                        {
+                            engine.with_slab_window_mut(off, w, |view| {
+                                stream
+                                    .memset_zeros(view)
+                                    .map_err(|err| BackendError::Other(err.to_string()))
+                            })?;
+                        }
+                    }
+                }
             }
         }
         for lane in 0..lane_count {
@@ -181,9 +211,6 @@ impl CudaBackend {
         // the same buffer (write + read = the same bandwidth class of load);
         // the remaining iterations stay pure memset.
         let verify_on = self.verify.is_some() && verify.enabled && verify.memset_every > 0;
-        let streams: Vec<_> = (0..lane_count)
-            .map(|l| self.stream_for_lane(l).clone())
-            .collect();
         if let (true, Some(engine)) = (verify_on, self.verify.as_mut()) {
             for (lane, stream) in streams.iter().enumerate() {
                 engine.reset_lane_report(stream, lane)?;
@@ -195,21 +222,98 @@ impl CudaBackend {
             let verify_iter = verify_on
                 && (iter as u64) % verify.memset_every as u64 == verify.memset_every as u64 - 1;
             if verify_iter {
-                let Some(engine) = self.verify.as_mut() else {
-                    unreachable!("verify_on implies engine");
-                };
-                for (lane, stream) in streams.iter().enumerate() {
-                    engine.fill(stream, &bufs[lane], lane_seed(seed, lane))?;
-                }
+                let engine = self.verify.as_ref().expect("verify_on implies engine");
+                // Pattern rotation (TM5-style): hash -> all-ones -> zeros ->
+                // checkerboard, cycling. Different patterns exercise different
+                // write-disturb directions (all error captures so far are 1->0).
+                let pattern_mode = ((iter as u64 / verify.memset_every as u64) % 4) as u32;
                 for lane in 0..lane_count {
-                    expected_done[lane] +=
-                        engine.compare(&streams[lane], &bufs[lane], lane_seed(seed, lane), lane)?;
+                    match bufs[lane].as_mut() {
+                        Some(buf) => {
+                            use cudarc::driver::{DevicePtr, DevicePtrMut};
+                            let stream_ref = &streams[lane];
+                            let (dst_ptr, _) = buf.device_ptr_mut(stream_ref);
+                            engine.fill_mode(
+                                &streams[lane],
+                                dst_ptr,
+                                words as u64,
+                                lane_seed(seed, lane),
+                                pattern_mode,
+                            )?;
+                            let (src_ptr, _) = buf.device_ptr(stream_ref);
+                            expected_done[lane] += engine.compare_mode(
+                                &streams[lane],
+                                src_ptr,
+                                words as u64,
+                                lane_seed(seed, lane),
+                                pattern_mode,
+                                lane,
+                            )?;
+                        }
+                        None => {
+                            if let (Some((off, w)), true) =
+                                (slab_windows[lane], engine.slab_active())
+                            {
+                                let stream_ref = &streams[lane];
+                                let mut fill_res = Ok(());
+                                engine.with_slab_window_mut(off, w, |view| {
+                                    use cudarc::driver::DevicePtrMut;
+                                    let (dst_ptr, _) = view.device_ptr_mut(stream_ref);
+                                    fill_res = engine.fill_mode(
+                                        &streams[lane],
+                                        dst_ptr,
+                                        words as u64,
+                                        lane_seed(seed, lane),
+                                        pattern_mode,
+                                    );
+                                });
+                                fill_res?;
+                                engine.with_slab_window(off, w, |view| {
+                                    use cudarc::driver::DevicePtr;
+                                    let (src_ptr, _) = view.device_ptr(stream_ref);
+                                    expected_done[lane] += engine
+                                        .compare_mode(
+                                            &streams[lane],
+                                            src_ptr,
+                                            words as u64,
+                                            lane_seed(seed, lane),
+                                            pattern_mode,
+                                            lane,
+                                        )
+                                        .map_err(|err| BackendError::Other(err.to_string()))?;
+                                    Ok::<(), BackendError>(())
+                                })?;
+                            }
+                        }
+                    }
                 }
             } else {
                 for (lane, buf) in bufs.iter_mut().enumerate().take(lane_count) {
-                    streams[lane]
-                        .memset_zeros(buf)
-                        .map_err(|err| BackendError::Other(err.to_string()))?;
+                    match buf {
+                        Some(buf) => {
+                            streams[lane]
+                                .memset_zeros(buf)
+                                .map_err(|err| BackendError::Other(err.to_string()))?;
+                        }
+                        None => {
+                            if let (Some(engine), Some((off, w))) =
+                                (self.verify.as_ref(), slab_windows[lane])
+                            {
+                                let stream_ref = &streams[lane];
+                                engine.with_slab_window_mut(off, w, |view| {
+                                    use cudarc::driver::DevicePtrMut;
+                                    let (dst_ptr, _) = view.device_ptr_mut(stream_ref);
+                                    engine.fill_mode(
+                                        &streams[lane],
+                                        dst_ptr,
+                                        words as u64,
+                                        lane_seed(seed, lane),
+                                        2,
+                                    )
+                                })?;
+                            }
+                        }
+                    }
                 }
             }
         }
