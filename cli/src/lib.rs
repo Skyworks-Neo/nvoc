@@ -6231,12 +6231,20 @@ fn reset_fan(
                     "reset-fan-speed with a specific --fan requires --nvml; NVAPI resets all coolers",
                 ));
             }
-            // Modern cards: clear the control-block level override (bit0) —
-            // the ONLY reset that actually unpins (RestoreCoolerSettings /
-            // the 0x214AC reset bitmask are NOT_SUPPORTED / no-op there;
-            // 1650S+A4000 live A/B). Legacy drivers (R391) reject the NDA
-            // family → fall back to the public RestoreCoolerSettings
-            // (GT730-verified).
+            // Restore-first: the public RestoreCoolerSettings is the
+            // vendor-intended reset and never writes the control-block
+            // policy byte. On GP104/582.66 the control-block write
+            // (ResetNvapiFanControl) carries policy TemperatureContinuous,
+            // which the driver honors — the fan switches to the SW
+            // temperature-curve mode and its unpopulated ClientFanPolicies
+            // table (0/2/6 RPM stall). Cards without the public surface
+            // (1650S/A4000, NOT_SUPPORTED there; live A/B) fall through to
+            // the control-block clear, the only unpin on those. Legacy
+            // drivers (R391) reject the NDA family entirely (GT730 uses the
+            // public path directly).
+            if run(target, ResetCoolerLevels).is_ok() {
+                return Ok(json!({"applied": true, "fan": fan}));
+            }
             if let Err(modern_err) = run(target, ResetNvapiFanControl)
                 && let Err(public_err) = run(target, ResetCoolerLevels)
             {
