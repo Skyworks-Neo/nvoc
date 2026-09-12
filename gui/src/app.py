@@ -308,6 +308,10 @@ class App(ctk.CTk):
         self._tray_thread = None  # type: Optional[Any]
         self._tray_image = None  # type: Optional[Image.Image]
         self._exiting = False
+        # Quit request from a foreign thread (tray menu): drained by the
+        # single-instance poller on the main thread. Never deliver a quit
+        # through after() — see _quit_app.
+        self._quit_requested = False
 
         # ✕ Close button → exit completely
         # Minimize button → hide to tray (via <Unmap>)
@@ -396,8 +400,10 @@ class App(ctk.CTk):
         # never touch Tk), so it overlaps UI construction from tick zero.
         self._refresh_gpu_list()
 
-        if self._single_instance_guard is not None:
-            self.after(200, self._poll_single_instance_signal)
+        # Unconditional: the poller is also the marshal point that drains
+        # foreign-thread quit requests (_quit_app from the tray thread);
+        # the guard access inside is None-safe.
+        self.after(200, self._poll_single_instance_signal)
 
     def _build_ui(self):
         """Build the main UI layout."""
@@ -2037,6 +2043,16 @@ class App(ctk.CTk):
 
     def _poll_single_instance_signal(self):
         """Restore the running instance when a duplicate launch requests it."""
+        # Drain foreign-thread quit requests first: _quit_app from the tray
+        # thread cannot reach the Tk loop through after() (the override
+        # drops exiting-state deliveries by design), so this always-running
+        # main-thread tick is the marshal point for the shutdown. Clear the
+        # flag first: the drain must be single-shot even if a stray armed
+        # tick fires again after shutdown.
+        if self._quit_requested:
+            self._quit_requested = False
+            self._do_shutdown()
+            return
         if self._exiting:
             return
         try:
@@ -2090,19 +2106,29 @@ class App(ctk.CTk):
         """Fully exit the application."""
         if self._exiting:
             return
+
+        # Tray-menu callback runs on the pystray thread and must not touch
+        # Tk: the after() override drops deliveries once _exiting is set —
+        # and the shutdown itself used to be scheduled through it after
+        # setting that very flag, so the request was silently dropped and
+        # the app survived as a hidden zombie (tray gone, process alive).
+        # Set the flag FIRST (before _exiting) so the single-instance
+        # poller's re-arm can never race past it, and let the poller run
+        # the shutdown on the main thread.
+        foreign_thread = threading.current_thread() is not threading.main_thread()
+        if foreign_thread:
+            self._quit_requested = True
         self._exiting = True
 
-        # If called from a non-main thread (e.g. pystray tray menu callback),
-        # schedule the heavy shutdown work on the main Tk thread to avoid:
-        #   1) self-join deadlock (worker thread calling tasks.shutdown(wait=True))
-        #   2) cross-thread Tk destroy (Tkinter is not thread-safe)
-        if threading.current_thread() is not threading.main_thread():
-            # Stop the tray icon from this thread — pystray stop must be
-            # called from the thread that owns the icon's run loop.
+        if foreign_thread:
+            # Stop the tray icon from this thread — icon.stop() is the one
+            # pystray entry point designed for the icon's own thread.
             if self._tray_icon is not None:
-                self._tray_icon.stop()
+                try:
+                    self._tray_icon.stop()
+                except Exception:
+                    pass
                 self._tray_icon = None
-            self.after(0, self._do_shutdown)
             return
 
         self._do_shutdown()
