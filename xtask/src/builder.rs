@@ -192,11 +192,23 @@ impl PyJob {
                 format!("py-onefile: could not create {}: {error}", parent.display())
             })?;
         }
-        for mut command in [self.sync_command(&cwd), self.pyinstaller_command(&cwd)] {
+        for (index, mut command) in [self.sync_command(&cwd), self.pyinstaller_command(&cwd)]
+            .into_iter()
+            .enumerate()
+        {
             let shown = util::display(&command);
-            let log = std::fs::File::create(&log_path).map_err(|error| {
-                format!("py-onefile: could not open {}: {error}", log_path.display())
-            })?;
+            // First command truncates, later commands append: the pyinstaller
+            // step must not wipe the uv sync output above it — that output is
+            // the only record of WHICH pynvoc wheel got frozen into the exe.
+            let log = std::fs::OpenOptions::new()
+                .write(true)
+                .append(index > 0)
+                .truncate(index == 0)
+                .create(true)
+                .open(&log_path)
+                .map_err(|error| {
+                    format!("py-onefile: could not open {}: {error}", log_path.display())
+                })?;
             command.stdout(Stdio::from(log));
             // Share the same file via a fresh handle so both stdout and stderr
             // land in the log without needing a pipe drain thread.
@@ -227,6 +239,13 @@ impl PyJob {
         command
             .args(["sync", "--locked", "--group", self.group, "--no-config"])
             .arg("--no-editable")
+            // --no-editable installs pynvoc from uv's built-wheel cache, whose
+            // key is the nvoc-python DIRECTORY mtime + version — edits under
+            // python/ or src/ never invalidate it, so a stale wheel (old
+            // wrapper without newly wrapped functions) shadows the editable
+            // .pth and gets frozen into the executables. Refresh forces a
+            // rebuild from the current tree every onefile build.
+            .args(["--refresh-package", "pynvoc"])
             .current_dir(cwd);
         command
     }
