@@ -10,13 +10,8 @@ kernel_mixture = { gemm = 0.4, memcpy = 0.2, memset = 0.4 }
 stream_mode = "dual"
 disable_fp8 = true
 vulkan_only = false
-enable_vulkan_stress = true
-vulkan_image_width = 255
-vulkan_image_height = 511
-vulkan_image_depth = 676
-vulkan_image_count = 1
-vulkan_image_msaa = 2
-vulkan_minor_mixture_rate = 0.95
+# Primary graphics load: render stressor (headless offscreen by default).
+vulkan = true
 
 [kernel_params.gemm]
 matrix_sizes = [4096,4097,8192,8193]

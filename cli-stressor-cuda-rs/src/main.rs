@@ -221,75 +221,89 @@ struct Args {
 
     #[arg(long)]
     disable_fp8: bool,
-    /// Enable the Vulkan graphics stressor thread (optional)
-    #[arg(long, default_value_t = false)]
-    enable_vulkan_stress: bool,
-
     /// Run Vulkan-only stress (skip CUDA workload)
     #[arg(long, default_value_t = false)]
     vulkan_only: bool,
 
-    /// Vulkan image width for 3D render stress
-    #[arg(long, default_value_t = 8192)]
-    vulkan_image_width: u32,
+    /// Vulkan render stressor (FurMark-style graphics load; the primary
+    /// graphics stress). Renders to a headless offscreen target unless
+    /// --vulkan-window is passed.
+    #[arg(long, default_value_t = false, alias = "vulkan-heavy")]
+    vulkan: bool,
 
-    /// Vulkan image height for 3D render stress
-    #[arg(long, default_value_t = 8192)]
-    vulkan_image_height: u32,
+    /// Render width (offscreen target or window)
+    #[arg(long, default_value_t = 1280, alias = "vulkan-heavy-width")]
+    vulkan_width: u32,
 
-    /// Number of Vulkan images for 3D render stress
-    #[arg(long, default_value_t = 6)]
-    vulkan_image_count: u32,
+    /// Render height
+    #[arg(long, default_value_t = 720, alias = "vulkan-heavy-height")]
+    vulkan_height: u32,
 
-    /// Vulkan 3D image depth
-    #[arg(long, default_value_t = 1)]
-    vulkan_image_depth: u32,
+    /// MSAA sample count (1 = off, 2/4/8)
+    #[arg(long, default_value_t = 1, alias = "vulkan-heavy-msaa")]
+    vulkan_msaa: u32,
 
-    /// MSAA sample count for Vulkan images (1 = off, use 2/4/8)
-    #[arg(long, default_value_t = 1)]
-    vulkan_image_msaa: u32,
+    /// Fragment MUFU/FMA loop iterations per pixel
+    #[arg(long, default_value_t = 128, alias = "vulkan-heavy-iters")]
+    vulkan_iters: u32,
 
-    /// Vulkan minor mixture rate for small-image mixing
-    #[arg(long, default_value_t = 0.15)]
-    vulkan_minor_mixture_rate: f64,
+    /// Instanced shell count (layered overdraw)
+    #[arg(long, default_value_t = 16, alias = "vulkan-heavy-shells")]
+    vulkan_shells: u32,
 
-    /// FurMark-style heavy Vulkan render mode (window + shaders + blend +
-    /// depth + present; Windows only)
+    /// Show a window and present the swapchain (default: headless offscreen)
     #[arg(long, default_value_t = false)]
-    vulkan_heavy: bool,
+    vulkan_window: bool,
 
-    /// Heavy mode: render width (window or offscreen target)
-    #[arg(long, default_value_t = 1280)]
-    vulkan_heavy_width: u32,
+    /// Animate torus rotation (dynamic tiles/Z/interp inputs; disable for
+    /// the static-mesh A/B baseline)
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set, alias = "vulkan-heavy-rotate")]
+    vulkan_rotate: bool,
 
-    /// Heavy mode: render height
-    #[arg(long, default_value_t = 720)]
-    vulkan_heavy_height: u32,
+    /// Compute->graphics particle pool size (0 = off)
+    #[arg(long, default_value_t = 262144, alias = "vulkan-heavy-particles")]
+    vulkan_particles: u32,
 
-    /// Heavy mode: MSAA sample count (1 = off, 2/4/8)
-    #[arg(long, default_value_t = 1)]
-    vulkan_heavy_msaa: u32,
-
-    /// Heavy mode: fragment MUFU/FMA loop iterations per pixel
-    #[arg(long, default_value_t = 128)]
-    vulkan_heavy_iters: u32,
-
-    /// Heavy mode: instanced shell count (layered overdraw)
-    #[arg(long, default_value_t = 16)]
-    vulkan_heavy_shells: u32,
-
-    /// Heavy mode: render offscreen (pure CLI / headless; skips display path)
-    #[arg(long, default_value_t = false)]
+    /// Deprecated no-op: offscreen rendering is now the default; pass
+    /// --vulkan-window for a window.
+    #[arg(long, hide = true)]
     vulkan_heavy_offscreen: bool,
 
-    /// Heavy mode: animate torus rotation (dynamic tiles/Z/interp inputs;
-    /// disable for the static-mesh A/B baseline)
-    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
-    vulkan_heavy_rotate: bool,
+    /// Legacy image-based Vulkan stressor (compute-style image fill/compare
+    /// load; the pre-render graphics stress)
+    #[arg(long, default_value_t = false, alias = "enable-vulkan-stress")]
+    legacy_vulkan: bool,
 
-    /// Heavy mode: compute->graphics particle pool size (0 = off)
-    #[arg(long, default_value_t = 262144)]
-    vulkan_heavy_particles: u32,
+    /// Legacy stressor image width
+    #[arg(long, default_value_t = 8192, alias = "vulkan-image-width")]
+    legacy_vulkan_image_width: u32,
+
+    /// Legacy stressor image height
+    #[arg(long, default_value_t = 8192, alias = "vulkan-image-height")]
+    legacy_vulkan_image_height: u32,
+
+    /// Legacy stressor image count
+    #[arg(long, default_value_t = 6, alias = "vulkan-image-count")]
+    legacy_vulkan_image_count: u32,
+
+    /// Legacy stressor 3D image depth
+    #[arg(long, default_value_t = 1, alias = "vulkan-image-depth")]
+    legacy_vulkan_image_depth: u32,
+
+    /// Legacy stressor MSAA sample count (1 = off)
+    #[arg(long, default_value_t = 1, alias = "vulkan-image-msaa")]
+    legacy_vulkan_image_msaa: u32,
+
+    /// Legacy stressor minor mixture rate for small-image mixing
+    #[arg(long, default_value_t = 0.15, alias = "vulkan-minor-mixture-rate")]
+    legacy_vulkan_minor_mixture_rate: f64,
+
+    /// Enable the address-walk slab (VRAM pool whose windows slide across
+    /// physical pages; NVOC_VERIFY_SLAB_PCT overrides the share, default
+    /// 25%). Without it the verify loop still runs pattern rotation and the
+    /// write-density cadence on dedicated buffers.
+    #[arg(long, default_value_t = false)]
+    verify_slab: bool,
 
     /// CUDA GPU index in PCI-bus-sorted order (0-based)
     #[arg(
@@ -336,6 +350,42 @@ struct FileVerifyConfig {
     int8_validate_size: Option<usize>,
 }
 
+/// Whether any Vulkan graphics stressor should run (new render load or the
+/// legacy image load). `--vulkan` wins when both are requested.
+fn vulkan_stress_enabled(args: &Args) -> bool {
+    args.vulkan || args.legacy_vulkan
+}
+
+/// Assemble the engine image config: the render stressor rides in `render`
+/// (the engine runs the render loop instead of the legacy image load when
+/// it is present); the outer fields parameterize the legacy image load.
+#[cfg(feature = "vulkan")]
+fn build_vulkan_image_config(args: &Args) -> VulkanImageConfig {
+    let render = if args.vulkan {
+        Some(cli_stressor_cuda_rs::vulkan_render::VulkanRenderConfig {
+            width: args.vulkan_width,
+            height: args.vulkan_height,
+            msaa: args.vulkan_msaa,
+            iters: args.vulkan_iters,
+            shells: args.vulkan_shells,
+            offscreen: !args.vulkan_window,
+            rotate: args.vulkan_rotate,
+            particles: args.vulkan_particles,
+        })
+    } else {
+        None
+    };
+    VulkanImageConfig {
+        width: args.legacy_vulkan_image_width,
+        height: args.legacy_vulkan_image_height,
+        depth: args.legacy_vulkan_image_depth,
+        image_count: args.legacy_vulkan_image_count,
+        msaa: args.legacy_vulkan_image_msaa,
+        minor_mixture_rate: args.legacy_vulkan_minor_mixture_rate,
+        render,
+    }
+}
+
 #[cfg(feature = "cuda")]
 #[derive(Debug, Default, Deserialize)]
 struct FileConfig {
@@ -355,21 +405,37 @@ struct FileConfig {
     kernel_mixture: Option<KernelMixtureConfig>,
     stream_mode: Option<String>,
     disable_fp8: Option<bool>,
-    enable_vulkan_stress: Option<bool>,
+    #[serde(alias = "enable_vulkan_stress")]
+    legacy_vulkan: Option<bool>,
+    vulkan: Option<bool>,
     #[serde(alias = "vulkan-only")]
     vulkan_only: Option<bool>,
+    vulkan_window: Option<bool>,
+    vulkan_width: Option<u32>,
+    vulkan_height: Option<u32>,
+    vulkan_msaa: Option<u32>,
+    vulkan_iters: Option<u32>,
+    vulkan_shells: Option<u32>,
+    vulkan_rotate: Option<bool>,
+    vulkan_particles: Option<u32>,
     kernel_params: Option<HashMap<String, FileKernelParam>>,
     verify: Option<FileVerifyConfig>,
     gpu_index: Option<u32>,
     pci_bus: Option<String>,
     gpu_uuid: Option<String>,
     list_gpus: Option<bool>,
-    vulkan_image_width: Option<u32>,
-    vulkan_image_height: Option<u32>,
-    vulkan_image_count: Option<u32>,
-    vulkan_image_depth: Option<u32>,
-    vulkan_image_msaa: Option<u32>,
-    vulkan_minor_mixture_rate: Option<f64>,
+    #[serde(alias = "vulkan_image_width")]
+    legacy_vulkan_image_width: Option<u32>,
+    #[serde(alias = "vulkan_image_height")]
+    legacy_vulkan_image_height: Option<u32>,
+    #[serde(alias = "vulkan_image_count")]
+    legacy_vulkan_image_count: Option<u32>,
+    #[serde(alias = "vulkan_image_depth")]
+    legacy_vulkan_image_depth: Option<u32>,
+    #[serde(alias = "vulkan_image_msaa")]
+    legacy_vulkan_image_msaa: Option<u32>,
+    #[serde(alias = "vulkan_minor_mixture_rate")]
+    legacy_vulkan_minor_mixture_rate: Option<f64>,
 }
 
 #[cfg(feature = "cuda")]
@@ -597,20 +663,29 @@ fn parse_args_with_cli_sources() -> (Args, std::collections::HashSet<&'static st
         "kernel_types",
         "kernel_mixture",
         "kernel_params",
-        "enable_vulkan_stress",
+        "legacy_vulkan",
+        "vulkan",
         "vulkan_only",
+        "vulkan_window",
+        "vulkan_width",
+        "vulkan_height",
+        "vulkan_msaa",
+        "vulkan_iters",
+        "vulkan_shells",
+        "vulkan_rotate",
+        "vulkan_particles",
         "stream_mode",
         "disable_fp8",
         "gpu_index",
         "pci_bus",
         "gpu_uuid",
         "list_gpus",
-        "vulkan_image_width",
-        "vulkan_image_height",
-        "vulkan_image_count",
-        "vulkan_image_depth",
-        "vulkan_image_msaa",
-        "vulkan_minor_mixture_rate",
+        "legacy_vulkan_image_width",
+        "legacy_vulkan_image_height",
+        "legacy_vulkan_image_count",
+        "legacy_vulkan_image_depth",
+        "legacy_vulkan_image_msaa",
+        "legacy_vulkan_minor_mixture_rate",
     ] {
         if matches.value_source(id) == Some(ValueSource::CommandLine) {
             cli_set.insert(id);
@@ -706,11 +781,38 @@ fn apply_file_config_to_args(
     if let (true, Some(v)) = (!cli_set.contains("disable_fp8"), parsed.disable_fp8) {
         args.disable_fp8 = v;
     }
+    if let (true, Some(v)) = (!cli_set.contains("legacy_vulkan"), parsed.legacy_vulkan) {
+        args.legacy_vulkan = v;
+    }
+    if let (true, Some(v)) = (!cli_set.contains("vulkan"), parsed.vulkan) {
+        args.vulkan = v;
+    }
+    if let (true, Some(v)) = (!cli_set.contains("vulkan_window"), parsed.vulkan_window) {
+        args.vulkan_window = v;
+    }
+    if let (true, Some(v)) = (!cli_set.contains("vulkan_width"), parsed.vulkan_width) {
+        args.vulkan_width = v;
+    }
+    if let (true, Some(v)) = (!cli_set.contains("vulkan_height"), parsed.vulkan_height) {
+        args.vulkan_height = v;
+    }
+    if let (true, Some(v)) = (!cli_set.contains("vulkan_msaa"), parsed.vulkan_msaa) {
+        args.vulkan_msaa = v;
+    }
+    if let (true, Some(v)) = (!cli_set.contains("vulkan_iters"), parsed.vulkan_iters) {
+        args.vulkan_iters = v;
+    }
+    if let (true, Some(v)) = (!cli_set.contains("vulkan_shells"), parsed.vulkan_shells) {
+        args.vulkan_shells = v;
+    }
+    if let (true, Some(v)) = (!cli_set.contains("vulkan_rotate"), parsed.vulkan_rotate) {
+        args.vulkan_rotate = v;
+    }
     if let (true, Some(v)) = (
-        !cli_set.contains("enable_vulkan_stress"),
-        parsed.enable_vulkan_stress,
+        !cli_set.contains("vulkan_particles"),
+        parsed.vulkan_particles,
     ) {
-        args.enable_vulkan_stress = v;
+        args.vulkan_particles = v;
     }
     if let (true, Some(v)) = (!cli_set.contains("vulkan_only"), parsed.vulkan_only) {
         args.vulkan_only = v;
@@ -728,40 +830,40 @@ fn apply_file_config_to_args(
         args.list_gpus = v;
     }
     if let (true, Some(v)) = (
-        !cli_set.contains("vulkan_image_width"),
-        parsed.vulkan_image_width,
+        !cli_set.contains("legacy_vulkan_image_width"),
+        parsed.legacy_vulkan_image_width,
     ) {
-        args.vulkan_image_width = v;
+        args.legacy_vulkan_image_width = v;
     }
     if let (true, Some(v)) = (
-        !cli_set.contains("vulkan_image_height"),
-        parsed.vulkan_image_height,
+        !cli_set.contains("legacy_vulkan_image_height"),
+        parsed.legacy_vulkan_image_height,
     ) {
-        args.vulkan_image_height = v;
+        args.legacy_vulkan_image_height = v;
     }
     if let (true, Some(v)) = (
-        !cli_set.contains("vulkan_image_count"),
-        parsed.vulkan_image_count,
+        !cli_set.contains("legacy_vulkan_image_count"),
+        parsed.legacy_vulkan_image_count,
     ) {
-        args.vulkan_image_count = v;
+        args.legacy_vulkan_image_count = v;
     }
     if let (true, Some(v)) = (
-        !cli_set.contains("vulkan_image_depth"),
-        parsed.vulkan_image_depth,
+        !cli_set.contains("legacy_vulkan_image_depth"),
+        parsed.legacy_vulkan_image_depth,
     ) {
-        args.vulkan_image_depth = v;
+        args.legacy_vulkan_image_depth = v;
     }
     if let (true, Some(v)) = (
-        !cli_set.contains("vulkan_image_msaa"),
-        parsed.vulkan_image_msaa,
+        !cli_set.contains("legacy_vulkan_image_msaa"),
+        parsed.legacy_vulkan_image_msaa,
     ) {
-        args.vulkan_image_msaa = v;
+        args.legacy_vulkan_image_msaa = v;
     }
     if let (true, Some(v)) = (
-        !cli_set.contains("vulkan_minor_mixture_rate"),
-        parsed.vulkan_minor_mixture_rate,
+        !cli_set.contains("legacy_vulkan_minor_mixture_rate"),
+        parsed.legacy_vulkan_minor_mixture_rate,
     ) {
-        args.vulkan_minor_mixture_rate = v;
+        args.legacy_vulkan_minor_mixture_rate = v;
     }
     Ok(())
 }
@@ -1292,11 +1394,19 @@ pub fn run_from_args() {
         }
     };
 
+    // Address-walk slab is opt-in (--verify-slab): lazy allocation keeps the
+    // default run's VRAM footprint lean; pattern rotation and the write
+    // density cadence run on dedicated buffers either way.
+    #[cfg(feature = "cuda")]
+    if args.verify_slab {
+        backend.enable_verify_slab(25);
+    };
+
     #[cfg(feature = "vulkan")]
     let cuda_device_identity = match backend.device_identity() {
         Ok(identity) => Some(identity),
         Err(err) => {
-            if args.enable_vulkan_stress {
+            if vulkan_stress_enabled(&args) {
                 eprintln!(
                     "{}",
                     stylize(
@@ -1317,30 +1427,7 @@ pub fn run_from_args() {
     if args.vulkan_only {
         #[cfg(feature = "vulkan")]
         {
-            let image_config = VulkanImageConfig {
-                width: args.vulkan_image_width,
-                height: args.vulkan_image_height,
-                depth: args.vulkan_image_depth,
-                image_count: args.vulkan_image_count,
-                msaa: args.vulkan_image_msaa,
-                minor_mixture_rate: args.vulkan_minor_mixture_rate,
-                heavy: if args.vulkan_heavy {
-                    Some(
-                        cli_stressor_cuda_rs::vulkan_heavy_render::VulkanHeavyConfig {
-                            width: args.vulkan_heavy_width,
-                            height: args.vulkan_heavy_height,
-                            msaa: args.vulkan_heavy_msaa,
-                            iters: args.vulkan_heavy_iters,
-                            shells: args.vulkan_heavy_shells,
-                            offscreen: args.vulkan_heavy_offscreen,
-                            rotate: args.vulkan_heavy_rotate,
-                            particles: args.vulkan_heavy_particles,
-                        },
-                    )
-                } else {
-                    None
-                },
-            };
+            let image_config = build_vulkan_image_config(&args);
             let selection = cuda_device_identity.map(|identity| VulkanDeviceSelection {
                 cuda_uuid: identity.uuid,
                 cuda_pci_bus: identity.pci_bus,
@@ -1720,23 +1807,35 @@ pub fn run_from_args() {
             stream_mode.stream_count()
         ))
     );
-    if args.enable_vulkan_stress || args.vulkan_only {
+    if args.vulkan {
         println!(
             "{}",
             stylize_config(&format!(
-                "  Vulkan image: {}x{}x{} x{} ({}x MSAA)",
-                args.vulkan_image_width,
-                args.vulkan_image_height,
-                args.vulkan_image_depth,
-                args.vulkan_image_count,
-                args.vulkan_image_msaa,
+                "  Vulkan render: {}x{}, {} shells, {} iters/px, {}x MSAA, {}",
+                args.vulkan_width,
+                args.vulkan_height,
+                args.vulkan_shells,
+                args.vulkan_iters,
+                args.vulkan_msaa,
+                if args.vulkan_window {
+                    "windowed"
+                } else {
+                    "offscreen"
+                },
             ))
         );
+    }
+    if args.legacy_vulkan || args.vulkan_only {
         println!(
             "{}",
             stylize_config(&format!(
-                "  Vulkan minor mixture rate: {:.2}",
-                args.vulkan_minor_mixture_rate
+                "  Legacy Vulkan image: {}x{}x{} x{} ({}x MSAA, minor {:.2})",
+                args.legacy_vulkan_image_width,
+                args.legacy_vulkan_image_height,
+                args.legacy_vulkan_image_depth,
+                args.legacy_vulkan_image_count,
+                args.legacy_vulkan_image_msaa,
+                args.legacy_vulkan_minor_mixture_rate,
             ))
         );
     }
@@ -1747,33 +1846,10 @@ pub fn run_from_args() {
 
     #[cfg(feature = "vulkan")]
     {
-        if args.enable_vulkan_stress
+        if vulkan_stress_enabled(&args)
             && let Some(identity) = cuda_device_identity
         {
-            let image_config = VulkanImageConfig {
-                width: args.vulkan_image_width,
-                height: args.vulkan_image_height,
-                depth: args.vulkan_image_depth,
-                image_count: args.vulkan_image_count,
-                msaa: args.vulkan_image_msaa,
-                minor_mixture_rate: args.vulkan_minor_mixture_rate,
-                heavy: if args.vulkan_heavy {
-                    Some(
-                        cli_stressor_cuda_rs::vulkan_heavy_render::VulkanHeavyConfig {
-                            width: args.vulkan_heavy_width,
-                            height: args.vulkan_heavy_height,
-                            msaa: args.vulkan_heavy_msaa,
-                            iters: args.vulkan_heavy_iters,
-                            shells: args.vulkan_heavy_shells,
-                            offscreen: args.vulkan_heavy_offscreen,
-                            rotate: args.vulkan_heavy_rotate,
-                            particles: args.vulkan_heavy_particles,
-                        },
-                    )
-                } else {
-                    None
-                },
-            };
+            let image_config = build_vulkan_image_config(&args);
             let selection = VulkanDeviceSelection {
                 cuda_uuid: identity.uuid,
                 cuda_pci_bus: identity.pci_bus,
@@ -1926,20 +2002,13 @@ pub fn run_from_args() {
 #[cfg(all(not(feature = "cuda"), feature = "vulkan"))]
 pub fn run_from_args() {
     let args = Args::parse();
-    if args.vulkan_only || args.enable_vulkan_stress {
-        let image_config = VulkanImageConfig {
-            width: args.vulkan_image_width,
-            height: args.vulkan_image_height,
-            depth: args.vulkan_image_depth,
-            image_count: args.vulkan_image_count,
-            msaa: args.vulkan_image_msaa,
-            minor_mixture_rate: args.vulkan_minor_mixture_rate,
-        };
+    if vulkan_stress_enabled(&args) || args.vulkan_only {
+        let image_config = build_vulkan_image_config(&args);
         std::process::exit(run_vulkan_for_duration(args.duration, image_config));
     }
 
     eprintln!(
-        "CUDA support is disabled. Use --vulkan-only (or --enable-vulkan-stress) when building with --features vulkan, or rebuild with --features cuda."
+        "CUDA support is disabled. Use --vulkan-only / --vulkan / --legacy-vulkan when building with --features vulkan, or rebuild with --features cuda."
     );
     std::process::exit(1);
 }

@@ -49,13 +49,27 @@ int8_validate_size = 512  # INT8 精确整数 sidecar 的矩阵边长
 
 临界频率附近的实验建议把节奏拉满：`gemm_every=1, memset_every=1`（memcpy 已是 1）——开销上升但检测灵敏度最大；对照组务必用完全相同的配置。
 
-环境变量（无 CLI 开关）：
+CLI 开关与环境变量：
 
-| 变量 | 作用 |
+| 开关/变量 | 作用 |
 |---|---|
-| `NVOC_VERIFY_SLAB_PCT` | 显存地址游走 slab 池，默认 `25`（占 VRAM 百分比，上限 2 GiB）；`0` 关闭。memset 校验窗口在池内 4 MiB 对齐轮转，每次 op 扫过不同物理页（UE5 视角转动型激励）；关闭后回落到固定专用 buffer |
+| `--verify-slab` | 开启显存地址游走 slab 池（懒分配，默认**关**）。开启后默认占 VRAM 25%（上限 2 GiB），`NVOC_VERIFY_SLAB_PCT` 环境变量可覆写百分比。memset 校验窗口在池内 4 MiB 对齐轮转，每次 op 扫过不同物理页（UE5 视角转动型激励）；关闭时回落到固定专用 buffer，**pattern 轮换与写密度档位照常生效**（slab 只是地址维度放大器） |
+| `NVOC_VERIFY_SLAB_PCT` | 覆写 slab 占 VRAM 百分比（需先开 `--verify-slab`） |
 
 memset 校验的 pattern 轮换（TM5 式相位）：hash(seed) → 全 1 → 全 0 → 棋盘，随校验次数循环。已有 SDC 捕获全部是 1→0 方向（写扰动手性），全 1 相位是最强单相激励；位直方图照常按翻转位累计。
+
+### Vulkan 图形负载（2026-09-13 重命名）
+
+| 旧 | 新 | 说明 |
+|---|---|---|
+| `--vulkan-heavy` | `--vulkan` | 渲染负载成为**默认图形负载**（旧名保留为 alias） |
+| `--vulkan-heavy-width/height/msaa/iters/shells/rotate/particles` | `--vulkan-width/...`（去 heavy） | 默认 1280×720 / MSAA1 / 128 iters / 16 shells |
+| `--vulkan-heavy-offscreen` | 默认即无头；`--vulkan-window` 出窗 | 语义反转：offscreen 是默认，传 `--vulkan-window` 才创建窗口+swapchain present |
+| `--enable-vulkan-stress` | `--legacy-vulkan` | 旧图像式负载（alias 保留） |
+| `--vulkan-image-*` / `--vulkan-minor-mixture-rate` | `--legacy-vulkan-image-*` / `--legacy-vulkan-minor-mixture-rate` | 旧负载参数（TOML 旧键名同样保留 alias） |
+| `--vulkan-only` | 不变 | 跳过 CUDA 只跑图形负载；默认走新渲染负载，配 `--legacy-vulkan` 走旧负载 |
+
+两个负载同时给 flag 时新渲染负载优先。
 
 ---
 

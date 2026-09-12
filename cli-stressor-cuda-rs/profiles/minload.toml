@@ -1,8 +1,10 @@
 vulkan_only = true
-enable_vulkan_stress = true
-vulkan_image_width = 64
-vulkan_image_height = 64
-vulkan_image_depth = 64
-vulkan_image_count = 1
-vulkan_image_msaa = 1
+# Minimal-impact graphics load: legacy image stressor at 64^3 keeps VRAM and
+# SM pressure near-idle (the render stressor would defeat this profile's purpose).
+legacy_vulkan = true
+legacy_vulkan_image_width = 64
+legacy_vulkan_image_height = 64
+legacy_vulkan_image_depth = 64
+legacy_vulkan_image_count = 1
+legacy_vulkan_image_msaa = 1
 duration = 15

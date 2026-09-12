@@ -133,18 +133,14 @@ impl CudaBackend {
             }
         };
         // Ride-on-load verification engine (up to 3 lanes share the reports).
-        // Address-walk slab: 25% of VRAM by default (2 GiB cap), env
-        // NVOC_VERIFY_SLAB_PCT to override (0 disables). Memset/memcpy
-        // windows slide across it so every op touches different physical
-        // pages; allocation failure degrades to dedicated buffers.
+        // Address-walk slab is OPT-IN via --verify-slab (enable_verify_slab
+        // below); the verify loop always runs pattern rotation + the
+        // write-density cadence on dedicated buffers either way.
         // (Historical note: earlier "slab segfaults" on GP104 were actually
         // launch-site param-count mismatches against the pattern-rotation
         // kernels, not WDDM pressure — fixed, slab runs clean in the triple
         // mix.)
-        let verify_slab_pct: u32 = std::env::var("NVOC_VERIFY_SLAB_PCT")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(25);
+        let verify_slab_pct: u32 = 0;
         let verify = match VerifyEngine::build(&ctx, &info, 3, verify_slab_pct) {
             Ok(engine) => Some(engine),
             Err(err) => {
@@ -169,6 +165,18 @@ impl CudaBackend {
             verify,
             info,
         })
+    }
+
+    /// Opt-in the address-walk slab (lazy allocation; --verify-slab). The
+    /// env var NVOC_VERIFY_SLAB_PCT overrides the VRAM share (default 25%).
+    pub fn enable_verify_slab(&self, default_pct: u32) {
+        let pct = std::env::var("NVOC_VERIFY_SLAB_PCT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(default_pct);
+        if let Some(engine) = &self.verify {
+            engine.enable_slab_walk(&self._ctx, &self.stream, pct);
+        }
     }
 
     #[cfg(feature = "vulkan")]

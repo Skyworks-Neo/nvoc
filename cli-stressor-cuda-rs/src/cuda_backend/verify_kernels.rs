@@ -433,37 +433,15 @@ impl VerifyEngine {
                 .map_err(|err| BackendError::Other(err.to_string()))?;
         }
 
-        // Address-walk slab: pct% of total VRAM (capped at 2 GiB) minus what
-        // we already hold. On 8 GB cards a 4 GB slab starves WDDM/driver
-        // reserves and destabilizes later launches — the cap is mandatory.
-        // Allocation failure degrades to None: the walk is an amplifier.
-        const SLAB_MAX_BYTES: usize = 2 << 30;
+        // Address-walk slab: DISABLED at build; --verify-slab calls
+        // enable_slab_walk() after backend construction (lazy allocation).
         let slab_bytes = if slab_pct > 0 {
-            let total = ctx.total_mem().unwrap_or(0);
-            let held = (RESIDENT_WORDS + SAMPLE_SCRATCH_WORDS) * 4;
-            ((total / 100) * slab_pct as usize)
-                .saturating_sub(held)
-                .min(total.saturating_sub(held))
-                .min(SLAB_MAX_BYTES)
+            Self::compute_slab_bytes(ctx, slab_pct)
         } else {
             0
         };
         let slab = if slab_bytes >= SLAB_MIN_BYTES {
-            let words = slab_bytes / 4;
-            match stream.alloc_zeros::<u32>(words) {
-                Ok(slab) => {
-                    // Left UNFILLED: memset/memcpy write it via their own
-                    // fill/memset before every compare.
-                    Some(slab)
-                }
-                Err(err) => {
-                    println!(
-                        "Warning: address-walk slab allocation failed ({});                          pattern sweeps stay on dedicated buffers",
-                        err
-                    );
-                    None
-                }
-            }
+            Self::alloc_slab(&stream, slab_bytes)
         } else {
             None
         };
@@ -1152,6 +1130,55 @@ impl VerifyEngine {
         let report = self.read_report(stream, 0)?;
         self.absorb_pattern(&report, RESIDENT_WORDS as u64, done, "resident verify");
         Ok(report)
+    }
+
+    /// Slab budget: pct% of total VRAM (capped at 2 GiB) minus what the
+    /// engine already holds. On 8 GB cards a 4 GB slab starves WDDM/driver
+    /// reserves — the cap is mandatory.
+    fn compute_slab_bytes(ctx: &Arc<CudaContext>, pct: u32) -> usize {
+        const SLAB_MAX_BYTES: usize = 2 << 30;
+        if pct == 0 {
+            return 0;
+        }
+        let total = ctx.total_mem().unwrap_or(0);
+        let held = (RESIDENT_WORDS + SAMPLE_SCRATCH_WORDS) * 4;
+        ((total / 100) * pct as usize)
+            .saturating_sub(held)
+            .min(total.saturating_sub(held))
+            .min(SLAB_MAX_BYTES)
+    }
+
+    /// Allocate the walk slab. Left UNFILLED: memset/memcpy write it via
+    /// their own fill/memset before every compare. Failure degrades to a
+    /// warning: the walk is an amplifier, not a requirement.
+    fn alloc_slab(stream: &Arc<CudaStream>, slab_bytes: usize) -> Option<CudaSlice<u32>> {
+        match stream.alloc_zeros::<u32>(slab_bytes / 4) {
+            Ok(slab) => Some(slab),
+            Err(err) => {
+                println!(
+                    "Warning: address-walk slab allocation failed ({});                     pattern sweeps stay on dedicated buffers",
+                    err
+                );
+                None
+            }
+        }
+    }
+
+    /// Enable the address-walk slab after construction (lazy allocation, so
+    /// `--verify-slab` stays opt-in and default runs keep VRAM headroom).
+    pub fn enable_slab_walk(&self, ctx: &Arc<CudaContext>, stream: &Arc<CudaStream>, pct: u32) {
+        if self.slab_bytes.get() > 0 {
+            return;
+        }
+        let slab_bytes = Self::compute_slab_bytes(ctx, pct);
+        if slab_bytes < SLAB_MIN_BYTES {
+            return;
+        }
+        if let Some(slab) = Self::alloc_slab(stream, slab_bytes) {
+            let actual = slab.len() * 4;
+            *self.slab.borrow_mut() = Some(slab);
+            self.slab_bytes.set(actual);
+        }
     }
 
     /// Take the next window from the address-walk slab, advancing the

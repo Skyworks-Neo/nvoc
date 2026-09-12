@@ -34,7 +34,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(target_os = "windows")]
 /// FurMark-style heavy render parameters.
 #[derive(Clone, Copy, Debug)]
-pub struct VulkanHeavyConfig {
+pub struct VulkanRenderConfig {
     pub width: u32,
     pub height: u32,
     /// MSAA sample count: 1 = off, 2/4/8. Clamped to device-supported.
@@ -54,7 +54,7 @@ pub struct VulkanHeavyConfig {
     pub particles: u32,
 }
 
-impl Default for VulkanHeavyConfig {
+impl Default for VulkanRenderConfig {
     fn default() -> Self {
         Self {
             width: 1280,
@@ -496,10 +496,10 @@ const SEGS: u32 = 90;
 // ---------------------------------------------------------------------------
 
 #[allow(clippy::too_many_arguments)]
-pub fn run_heavy_render_loop(
+pub fn run_render_loop(
     is_running: Arc<AtomicBool>,
     selection: Option<VulkanDeviceSelection>,
-    cfg: VulkanHeavyConfig,
+    cfg: VulkanRenderConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     unsafe {
         // ---- target selection: windowed swapchain vs headless offscreen ----

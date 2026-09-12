@@ -49,7 +49,7 @@
 - 支持的精度模式：**FP64、FP32、TF32、FP16、BF16、INT8、INT16、INT32**；FP8 尚未实现
 - 使用 CPU FP64 参考结果进行周期性校验（INT 精度跳过校验，详见[注意事项](#注意事项)）
 - 多流提交模式：`single` / `dual` / `triple`
-- 可选 Vulkan 图形压力侧车（`--enable-vulkan-stress`，需 `--features vulkan`）
+- Vulkan 图形压力侧车：渲染负载 `--vulkan`（默认无头 offscreen，`--vulkan-window` 出窗）或旧版图像负载 `--legacy-vulkan`；需 `--features vulkan`
 - PCI 总线 / UUID / 排序索引 GPU 选择；`--list-gpus` 枚举设备
 
 ### 支持精度一览
@@ -246,7 +246,7 @@ burst_iters = 64
 - Precision modes: **FP64, FP32, TF32, FP16, BF16, INT8, INT16, INT32**; FP8 is not yet implemented
 - Periodic validation using a CPU FP64 reference result (INT precisions skip validation; see [Notes](#notes-english))
 - Multi-stream submission: `single` / `dual` / `triple`
-- Optional Vulkan graphics stress sidecar (`--enable-vulkan-stress`; requires `--features vulkan`)
+- Optional Vulkan graphics stress sidecar: render load `--vulkan` (headless offscreen by default, `--vulkan-window` to present a window) or the legacy image load `--legacy-vulkan`; requires `--features vulkan`
 - PCI bus / UUID / sorted-index GPU selection; `--list-gpus` to enumerate devices
 
 ### Precision Matrix

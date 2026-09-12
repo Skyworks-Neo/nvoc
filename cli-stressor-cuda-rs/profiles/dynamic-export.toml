@@ -10,7 +10,7 @@ kernel_mixture = { gemm = 1.0 }
 stream_mode = "dual"
 disable_fp8 = true
 vulkan_only = false
-enable_vulkan_stress = false
+vulkan = false
 
 [kernel_params.gemm]
 matrix_sizes = [8192]
