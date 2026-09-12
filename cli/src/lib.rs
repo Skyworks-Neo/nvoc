@@ -935,6 +935,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 Command::SetFanCurve,
                 CommandSpec {
                     arity: (2, 2),
+                    options: Box::leak(Box::new(["activate"])),
                     positionals: Box::leak(Box::new([PositionalArg::free(
                         "arg_curve",
                         "CURVE",
@@ -945,7 +946,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                         "POINTS",
                         "Three monotonic points temp:rpm, e.g. 40:800,60:1200,75:1800",
                     )])),
-                    ..CommandSpec::new("set-fan-curve", Group::Fan, "Write one fan-curve slot (RMW: --curve idx --points temp:rpm,temp:rpm,temp:rpm)")
+                    ..CommandSpec::new("set-fan-curve", Group::Fan, "Write one fan-curve slot (RMW: --curve idx --points ...). The written slot only drives the fan while the cooler policy is TemperatureContinuous (8) — check get-fan-info --nvapi control_policy; --activate switches the policy to 8 in the same transaction (deactivate via set-fan-speed --policy manual or reset-fan-speed)")
                 },
             ),
             (
@@ -2105,6 +2106,10 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .long("immediate")
             .action(ArgAction::SetTrue)
             .help("Apply the ECC configuration change now instead of deferring it to the next reboot (Immediate mode support is hardware-dependent)"),
+        "activate" => Arg::new("activate")
+            .long("activate")
+            .action(ArgAction::SetTrue)
+            .help("Switch the cooler policy to TemperatureContinuous (8) in the same transaction, so the written curve actually drives the fan"),
         _ => unreachable!("unknown command-specific option {name}"),
     }
 }
@@ -3017,6 +3022,11 @@ fn execute_target(
                             "max": c.max,
                             "current": c.current,
                             "current_pwm_percent": c.current_pwm_percent,
+                            // Raw NV_COOLER_POLICY: which mode the cooler is
+                            // in (1=Manual pin, 8=SW temp curve, 16=SW
+                            // silent, 32=factory default).
+                            "control_policy": c.control_policy,
+                            "default_policy": c.default_policy,
                         })).collect::<Vec<_>>(),
                     }))
                 }
@@ -3085,11 +3095,29 @@ fn execute_target(
                 }
             }
             let curve = run(target, SetFanCurve { index, points })?;
+            // The curve table only drives the fan under policy
+            // TemperatureContinuous — an explicit same-transaction switch
+            // makes "entering curve mode" visible instead of a side effect.
+            let activated = option_one(invocation, "activate").is_some();
+            let policy_switched = if activated {
+                run(
+                    target,
+                    SetCoolerLevels {
+                        policy: nvoc_core::CoolerPolicy::TemperatureContinuous,
+                        level: 0,
+                        cooler_target: nvoc_core::CoolerTarget::All,
+                    },
+                )
+                .is_ok()
+            } else {
+                false
+            };
             Ok(json!({
                 "applied": curve.output.applied.iter().map(|p| json!({
                     "temp_c": p.temp_c,
                     "rpm": p.rpm,
                 })).collect::<Vec<_>>(),
+                "policy_switched_to_continuous": policy_switched,
             }))
         }
         Command::ResetFanCurveCmd => {

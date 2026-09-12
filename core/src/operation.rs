@@ -469,6 +469,12 @@ impl GpuOperation for ResetNvapiFanControl {
             _ => vec![::nvapi::FanCoolerId::Cooler1],
         };
         // level None → to_raw writes level 0 with the override bit CLEARED.
+        // Policy stays TemperatureContinuous on purpose: GP104/582.66 honors
+        // the policy byte (fan switches to the SW curve and its unpopulated
+        // table), so this op is fallback-only — callers must try
+        // ResetCoolerLevels FIRST. A policy-0 write (CoolerSettings::
+        // clear_override) is the candidate minimal semantics but needs a
+        // live acceptance A/B before switching the default.
         gpu.inner()
             .set_cooler(cooler_ids.into_iter().map(|id| {
                 (
@@ -535,6 +541,26 @@ impl GpuOperation for QueryNvapiCoolerInfo {
             .inner()
             .cooler_info_private()
             .map_err(Error::from)?;
+        // Current/default policy from the public GetCoolerSettings control
+        // readback (currentPolicy answers "which mode am I in" — the private
+        // GetControl family does not carry it). Absent on cards where the
+        // public family is capability-gated.
+        let policies: std::collections::BTreeMap<u32, ::nvapi::CoolerPolicy> = target
+            .nvapi()?
+            .inner()
+            .cooler_control()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(id, settings)| (id as u32, settings.policy))
+            .collect();
+        let default_policies: std::collections::BTreeMap<u32, ::nvapi::CoolerPolicy> = target
+            .nvapi()?
+            .inner()
+            .cooler_settings()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(id, cooler)| (id as u32, cooler.info.default_policy))
+            .collect();
         Ok(infos
             .into_iter()
             .map(|c| NvapiCoolerInfoEntry {
@@ -544,6 +570,10 @@ impl GpuOperation for QueryNvapiCoolerInfo {
                 max: c.max,
                 current: c.current,
                 current_pwm_percent: c.current_pwm_percent,
+                control_policy: policies.get(&c.index).map(|p| p.value().repr() as u32),
+                default_policy: default_policies
+                    .get(&c.index)
+                    .map(|p| p.value().repr() as u32),
             })
             .collect())
     }
