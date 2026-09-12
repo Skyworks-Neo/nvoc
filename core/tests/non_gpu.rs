@@ -91,13 +91,16 @@ fn fan_policy_aliases() {
         FanControlPolicy::TemperatureContinousSw
     );
     assert_eq!(
-        parse_nvml_fan_control_policy("auto").unwrap(),
-        FanControlPolicy::TemperatureContinousSw
-    );
-    assert_eq!(
         parse_nvml_fan_control_policy("manual").unwrap(),
         FanControlPolicy::Manual
     );
+
+    // "auto" is reset semantics, rejected as an apply-time curve strategy
+    // (routing it to TemperatureContinousSw caused the 0/2/6 RPM stall).
+    let auto_err = parse_nvml_fan_control_policy("auto")
+        .unwrap_err()
+        .to_string();
+    assert!(auto_err.contains("Invalid NVML fan policy"));
 
     let err = parse_nvml_fan_control_policy("default")
         .unwrap_err()

@@ -935,6 +935,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 Command::SetFanCurve,
                 CommandSpec {
                     arity: (2, 2),
+                    options: Box::leak(Box::new(["activate"])),
                     positionals: Box::leak(Box::new([PositionalArg::free(
                         "arg_curve",
                         "CURVE",
@@ -945,7 +946,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                         "POINTS",
                         "Three monotonic points temp:rpm, e.g. 40:800,60:1200,75:1800",
                     )])),
-                    ..CommandSpec::new("set-fan-curve", Group::Fan, "Write one fan-curve slot (RMW: --curve idx --points temp:rpm,temp:rpm,temp:rpm)")
+                    ..CommandSpec::new("set-fan-curve", Group::Fan, "Write one fan-curve slot (RMW: --curve idx --points ...). The written slot only drives the fan while the cooler policy is TemperatureContinuous (8) — check get-fan-info --nvapi control_policy; --activate switches the policy to 8 in the same transaction (deactivate via set-fan-speed --policy manual or reset-fan-speed)")
                 },
             ),
             (
@@ -2105,6 +2106,10 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .long("immediate")
             .action(ArgAction::SetTrue)
             .help("Apply the ECC configuration change now instead of deferring it to the next reboot (Immediate mode support is hardware-dependent)"),
+        "activate" => Arg::new("activate")
+            .long("activate")
+            .action(ArgAction::SetTrue)
+            .help("Switch the cooler policy to TemperatureContinuous (8) in the same transaction, so the written curve actually drives the fan"),
         _ => unreachable!("unknown command-specific option {name}"),
     }
 }
@@ -2216,6 +2221,7 @@ fn collect_named_options(
             | "background-on"
             | "background-off"
             | "incomplete"
+            | "activate"
             | "percent"
             | "rpm"
             | "offset"
@@ -3017,6 +3023,14 @@ fn execute_target(
                             "max": c.max,
                             "current": c.current,
                             "current_pwm_percent": c.current_pwm_percent,
+                            // Raw NV_COOLER_POLICY: which mode the cooler is
+                            // in (1=Manual pin, 8=SW temp curve, 16=SW
+                            // silent, 32=factory default). null = the public
+                            // GetCoolerSettings family is capability-gated
+                            // on this card (GP104 -104); the reset path then
+                            // uses control-block policy Default (32).
+                            "control_policy": c.control_policy,
+                            "default_policy": c.default_policy,
                         })).collect::<Vec<_>>(),
                     }))
                 }
@@ -3085,11 +3099,29 @@ fn execute_target(
                 }
             }
             let curve = run(target, SetFanCurve { index, points })?;
+            // The curve table only drives the fan under policy
+            // TemperatureContinuous — an explicit same-transaction switch
+            // makes "entering curve mode" visible instead of a side effect.
+            let activated = option_one(invocation, "activate").is_some();
+            let policy_switched = if activated {
+                run(
+                    target,
+                    SetCoolerLevels {
+                        policy: nvoc_core::CoolerPolicy::TemperatureContinuous,
+                        level: 0,
+                        cooler_target: nvoc_core::CoolerTarget::All,
+                    },
+                )
+                .is_ok()
+            } else {
+                false
+            };
             Ok(json!({
                 "applied": curve.output.applied.iter().map(|p| json!({
                     "temp_c": p.temp_c,
                     "rpm": p.rpm,
                 })).collect::<Vec<_>>(),
+                "policy_switched_to_continuous": policy_switched,
             }))
         }
         Command::ResetFanCurveCmd => {
@@ -6231,12 +6263,20 @@ fn reset_fan(
                     "reset-fan-speed with a specific --fan requires --nvml; NVAPI resets all coolers",
                 ));
             }
-            // Modern cards: clear the control-block level override (bit0) —
-            // the ONLY reset that actually unpins (RestoreCoolerSettings /
-            // the 0x214AC reset bitmask are NOT_SUPPORTED / no-op there;
-            // 1650S+A4000 live A/B). Legacy drivers (R391) reject the NDA
-            // family → fall back to the public RestoreCoolerSettings
-            // (GT730-verified).
+            // Restore-first: the public RestoreCoolerSettings is the
+            // vendor-intended reset and never writes the control-block
+            // policy byte. On GP104/582.66 the control-block write
+            // (ResetNvapiFanControl) carries policy TemperatureContinuous,
+            // which the driver honors — the fan switches to the SW
+            // temperature-curve mode and its unpopulated ClientFanPolicies
+            // table (0/2/6 RPM stall). Cards without the public surface
+            // (1650S/A4000, NOT_SUPPORTED there; live A/B) fall through to
+            // the control-block clear, the only unpin on those. Legacy
+            // drivers (R391) reject the NDA family entirely (GT730 uses the
+            // public path directly).
+            if run(target, ResetCoolerLevels).is_ok() {
+                return Ok(json!({"applied": true, "fan": fan}));
+            }
             if let Err(modern_err) = run(target, ResetNvapiFanControl)
                 && let Err(public_err) = run(target, ResetCoolerLevels)
             {

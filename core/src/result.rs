@@ -576,6 +576,14 @@ pub struct NvapiCoolerInfoEntry {
     pub max: u32,
     pub current: u32,
     pub current_pwm_percent: u32,
+    /// Raw NV_COOLER_POLICY currently in force (None where the public
+    /// GetCoolerSettings readback is capability-gated). Answers "which mode
+    /// am I in": 1=Manual (level pinned), 8=TemperatureContinuous (duty
+    /// follows the ClientFanPolicies curve table), 16=SW-silent variant,
+    /// 32=firmware default.
+    pub control_policy: Option<u32>,
+    /// Factory default policy for this cooler.
+    pub default_policy: Option<u32>,
 }
 
 /// Fan-policy capabilities (private ClientFanPoliciesGetInfo 0x52B76D12).

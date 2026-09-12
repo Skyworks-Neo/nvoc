@@ -9,7 +9,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from src.backend.base import FanSettings
-from src.controllers.fan_control import fan_settings_to_cli_args
 
 if TYPE_CHECKING:
     from src.app import App

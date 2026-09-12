@@ -469,12 +469,20 @@ impl GpuOperation for ResetNvapiFanControl {
             _ => vec![::nvapi::FanCoolerId::Cooler1],
         };
         // level None → to_raw writes level 0 with the override bit CLEARED.
+        // Policy = Default (32): nvapioc corroborates that a control-block
+        // write with policy 32 RESTORES THE DRIVER FAN CURVE — the correct
+        // "back to auto" semantics for cards where the public
+        // RestoreCoolerSettings is capability-gated (GP104/582.66: both the
+        // read and write of that family return -104, so restore-first falls
+        // through here every time). The previous TemperatureContinuous (8)
+        // policy byte was the 0-RPM-stall bug: the driver honors it and the
+        // SW curve's ClientFanPolicies table is unpopulated (0/2/6 RPM).
         gpu.inner()
             .set_cooler(cooler_ids.into_iter().map(|id| {
                 (
                     id,
                     ::nvapi::CoolerSettings {
-                        policy: ::nvapi::CoolerPolicy::TemperatureContinuous,
+                        policy: ::nvapi::CoolerPolicy::Default,
                         level: None,
                     },
                 )
@@ -535,6 +543,26 @@ impl GpuOperation for QueryNvapiCoolerInfo {
             .inner()
             .cooler_info_private()
             .map_err(Error::from)?;
+        // Current/default policy from the public GetCoolerSettings control
+        // readback (currentPolicy answers "which mode am I in" — the private
+        // GetControl family does not carry it). Absent on cards where the
+        // public family is capability-gated.
+        let policies: std::collections::BTreeMap<u32, ::nvapi::CoolerPolicy> = target
+            .nvapi()?
+            .inner()
+            .cooler_control()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(id, settings)| (id as u32, settings.policy))
+            .collect();
+        let default_policies: std::collections::BTreeMap<u32, ::nvapi::CoolerPolicy> = target
+            .nvapi()?
+            .inner()
+            .cooler_settings()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(id, cooler)| (id as u32, cooler.info.default_policy))
+            .collect();
         Ok(infos
             .into_iter()
             .map(|c| NvapiCoolerInfoEntry {
@@ -544,6 +572,10 @@ impl GpuOperation for QueryNvapiCoolerInfo {
                 max: c.max,
                 current: c.current,
                 current_pwm_percent: c.current_pwm_percent,
+                control_policy: policies.get(&c.index).map(|p| p.value().repr() as u32),
+                default_policy: default_policies
+                    .get(&c.index)
+                    .map(|p| p.value().repr() as u32),
             })
             .collect())
     }

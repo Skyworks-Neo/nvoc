@@ -4222,9 +4222,24 @@ fn nvapi_fan_reset(gpu: &str) -> PyResult<()> {
         inventory_cache.entry(BackendSet::Nvapi)?
     };
     let target = selected_target(&inventory.0, gpu)?;
-    // Only surface a combined error when BOTH paths fail: NDA-first is what
-    // makes this work on the no-cooler-table desktop cards, public-first
-    // would break those.
+    // Restore-first: RestoreCoolerSettings is the vendor-intended reset and
+    // never touches the control-block policy byte. On GP104/582.66 the
+    // control-block write (ResetNvapiFanControl) carries policy
+    // TemperatureContinuous, which the driver honors — switching the fan to
+    // the SW temperature-curve mode and its unpopulated ClientFanPolicies
+    // table (0/2/6 RPM stall). Cards without the public surface (1650S /
+    // A4000, surface NOT_SUPPORTED) fall through to the control-block clear,
+    // the only unpin there (live A/B).
+    if run(&target, ResetCoolerLevels).is_ok() {
+        let _ = run(
+            &target,
+            SetFanPercent {
+                cooler_index: None,
+                percent: None,
+            },
+        );
+        return Ok(());
+    }
     if let Err(nda_err) = run(&target, ResetNvapiFanControl)
         && let Err(public_err) = run(&target, ResetCoolerLevels)
     {
