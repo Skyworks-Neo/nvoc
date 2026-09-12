@@ -23,13 +23,13 @@
 //! external toolchain needed).
 
 use crate::runner::style::stylize;
+use crate::vulkan_gfx_stressor::{VulkanDeviceSelection, select_gpu_by_cuda_identity};
+use ash::Instance;
 use ash::khr::surface::Instance as SurfaceInstance;
 use ash::khr::swapchain::Device as SwapchainDevice;
 use ash::vk;
-use ash::Instance;
-use crate::vulkan_gfx_stressor::{select_gpu_by_cuda_identity, VulkanDeviceSelection};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(target_os = "windows")]
 /// FurMark-style heavy render parameters.
@@ -149,7 +149,6 @@ void main() {
 }
 "#;
 
-
 // ---- compute->graphics ping-pong stage (Lumen/TSR-style SSBO traffic) ----
 // A compute pass integrates a particle pool in an SSBO; a graphics pipeline
 // then reads the SAME storage buffer as a vertex source and draws one quad
@@ -252,7 +251,6 @@ void main() {
 }
 "#;
 
-
 fn compile_glsl(
     stage: naga::ShaderStage,
     source: &str,
@@ -290,18 +288,39 @@ impl Win32Window {
     fn new(width: u32, height: u32) -> Result<Self, Box<dyn std::error::Error>> {
         use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
         use windows_sys::Win32::UI::WindowsAndMessaging::{
-            AdjustWindowRect, CreateWindowExW, RegisterClassExW, ShowWindow, CW_USEDEFAULT,
-            SW_SHOW, WNDCLASSEXW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+            AdjustWindowRect, CW_USEDEFAULT, CreateWindowExW, RegisterClassExW, SW_SHOW,
+            ShowWindow, WNDCLASSEXW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
         };
 
         const CLASS_NAME: &[u16] = &[
-            b'N' as u16, b'V' as u16, b'O' as u16, b'C' as u16, b'V' as u16, b'K' as u16,
-            b'H' as u16, b'e' as u16, b'a' as u16, b'v' as u16, b'y' as u16, 0,
+            b'N' as u16,
+            b'V' as u16,
+            b'O' as u16,
+            b'C' as u16,
+            b'V' as u16,
+            b'K' as u16,
+            b'H' as u16,
+            b'e' as u16,
+            b'a' as u16,
+            b'v' as u16,
+            b'y' as u16,
+            0,
         ];
         const TITLE: &[u16] = &[
-            b'n' as u16, b'v' as u16, b'o' as u16, b'c' as u16, b' ' as u16, b'v' as u16,
-            b'k' as u16, b' ' as u16, b'h' as u16, b'e' as u16, b'a' as u16, b'v' as u16,
-            b'y' as u16, 0,
+            b'n' as u16,
+            b'v' as u16,
+            b'o' as u16,
+            b'c' as u16,
+            b' ' as u16,
+            b'v' as u16,
+            b'k' as u16,
+            b' ' as u16,
+            b'h' as u16,
+            b'e' as u16,
+            b'a' as u16,
+            b'v' as u16,
+            b'y' as u16,
+            0,
         ];
 
         unsafe {
@@ -350,7 +369,9 @@ impl Win32Window {
                 return Err("CreateWindowExW failed".into());
             }
             ShowWindow(hwnd, SW_SHOW);
-            Ok(Self { hwnd: hwnd as isize })
+            Ok(Self {
+                hwnd: hwnd as isize,
+            })
         }
     }
 
@@ -360,7 +381,7 @@ impl Win32Window {
 
     fn pump_messages(&self) -> Result<(), Box<dyn std::error::Error>> {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
-            DispatchMessageW, PeekMessageW, TranslateMessage, PM_REMOVE, WM_QUIT,
+            DispatchMessageW, PM_REMOVE, PeekMessageW, TranslateMessage, WM_QUIT,
         };
         unsafe {
             let mut msg = std::mem::zeroed();
@@ -395,7 +416,9 @@ unsafe extern "system" fn window_proc(
     wparam: usize,
     lparam: isize,
 ) -> isize {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{DefWindowProcW, PostQuitMessage, WM_DESTROY};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        DefWindowProcW, PostQuitMessage, WM_DESTROY,
+    };
     unsafe {
         if msg == WM_DESTROY {
             PostQuitMessage(0);
@@ -415,7 +438,9 @@ fn find_memory_type(
     (0..mem_properties.memory_type_count)
         .find(|&i| {
             (req.memory_type_bits & (1 << i)) != 0
-                && mem_properties.memory_types[i as usize].property_flags.contains(flags)
+                && mem_properties.memory_types[i as usize]
+                    .property_flags
+                    .contains(flags)
         })
         .ok_or_else(|| "no compatible Vulkan memory type".into())
 }
@@ -439,7 +464,13 @@ fn build_torus_mesh() -> (Vec<f32>, Vec<u32>) {
             let py = r_minor * sv;
             let pz = (r_major + r_minor * cv) * su;
             verts.extend_from_slice(&[
-                px, py, pz, nx, ny, nz, u / std::f32::consts::TAU,
+                px,
+                py,
+                pz,
+                nx,
+                ny,
+                nz,
+                u / std::f32::consts::TAU,
                 v / std::f32::consts::TAU,
             ]);
         }
@@ -479,9 +510,9 @@ pub fn run_heavy_render_loop(
         let window = if use_swapchain {
             let w = Win32Window::new(cfg.width, cfg.height)?;
             window_hwnd = w.hwnd();
-            window_hinstance = windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(
-                std::ptr::null(),
-            ) as isize;
+            window_hinstance =
+                windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(std::ptr::null())
+                    as isize;
             Some(w)
         } else {
             None
@@ -528,8 +559,7 @@ pub fn run_heavy_render_loop(
             vk::SurfaceKHR::null()
         };
 
-        let queue_family_properties =
-            instance.get_physical_device_queue_family_properties(pdevice);
+        let queue_family_properties = instance.get_physical_device_queue_family_properties(pdevice);
         let queue_family = (0..queue_family_properties.len() as u32)
             .find(|&f| {
                 queue_family_properties[f as usize]
@@ -539,11 +569,7 @@ pub fn run_heavy_render_loop(
                         || surface_fn
                             .as_ref()
                             .unwrap()
-                            .get_physical_device_surface_support(
-                                pdevice,
-                                f,
-                                surface,
-                            )
+                            .get_physical_device_surface_support(pdevice, f, surface)
                             .unwrap_or(false))
             })
             .ok_or("no graphics queue family")?;
@@ -594,12 +620,18 @@ pub fn run_heavy_render_loop(
 
         // ---- swapchain (windowed target) ----
         let format = if use_swapchain {
-            let formats = surface_fn.as_ref().unwrap()
+            let formats = surface_fn
+                .as_ref()
+                .unwrap()
                 .get_physical_device_surface_formats(pdevice, surface)?;
             formats
                 .iter()
                 .find(|f| f.format == vk::Format::B8G8R8A8_UNORM)
-                .or_else(|| formats.iter().find(|f| f.format == vk::Format::R8G8B8A8_UNORM))
+                .or_else(|| {
+                    formats
+                        .iter()
+                        .find(|f| f.format == vk::Format::R8G8B8A8_UNORM)
+                })
                 .unwrap_or(&formats[0])
                 .format
         } else {
@@ -676,7 +708,11 @@ pub fn run_heavy_render_loop(
             let info = vk::ImageCreateInfo::default()
                 .image_type(vk::ImageType::TYPE_2D)
                 .format(format)
-                .extent(vk::Extent3D { width: cfg.width, height: cfg.height, depth: 1 })
+                .extent(vk::Extent3D {
+                    width: cfg.width,
+                    height: cfg.height,
+                    depth: 1,
+                })
                 .mip_levels(1)
                 .array_layers(1)
                 .samples(vk::SampleCountFlags::TYPE_1)
@@ -685,13 +721,12 @@ pub fn run_heavy_render_loop(
                 .sharing_mode(vk::SharingMode::EXCLUSIVE);
             let image = device.create_image(&info, None)?;
             let req = device.get_image_memory_requirements(image);
-            let idx = find_memory_type(
-                &mem_properties,
-                req,
-                vk::MemoryPropertyFlags::DEVICE_LOCAL,
-            )?;
+            let idx =
+                find_memory_type(&mem_properties, req, vk::MemoryPropertyFlags::DEVICE_LOCAL)?;
             let mem = device.allocate_memory(
-                &vk::MemoryAllocateInfo::default().allocation_size(req.size).memory_type_index(idx),
+                &vk::MemoryAllocateInfo::default()
+                    .allocation_size(req.size)
+                    .memory_type_index(idx),
                 None,
             )?;
             device.bind_image_memory(image, mem, 0)?;
@@ -767,11 +802,8 @@ pub fn run_heavy_render_loop(
                     .sharing_mode(vk::SharingMode::EXCLUSIVE);
                 let image = device.create_image(&info, None)?;
                 let req = device.get_image_memory_requirements(image);
-                let idx = find_memory_type(
-                    &mem_properties,
-                    req,
-                    vk::MemoryPropertyFlags::DEVICE_LOCAL,
-                )?;
+                let idx =
+                    find_memory_type(&mem_properties, req, vk::MemoryPropertyFlags::DEVICE_LOCAL)?;
                 let mem = device.allocate_memory(
                     &vk::MemoryAllocateInfo::default()
                         .allocation_size(req.size)
@@ -870,7 +902,8 @@ pub fn run_heavy_render_loop(
 
         // ---- shaders / layouts / pipelines ----
         let make_module = |words: &[u32]| -> Result<vk::ShaderModule, Box<dyn std::error::Error>> {
-            Ok(device.create_shader_module(&vk::ShaderModuleCreateInfo::default().code(words), None)?)
+            Ok(device
+                .create_shader_module(&vk::ShaderModuleCreateInfo::default().code(words), None)?)
         };
         let bg_vs = make_module(&compile_glsl(naga::ShaderStage::Vertex, BG_VERT_SRC)?)?;
         let bg_fs = make_module(&compile_glsl(naga::ShaderStage::Fragment, BG_FRAG_SRC)?)?;
@@ -912,9 +945,7 @@ pub fn run_heavy_render_loop(
                         .binding(0)
                         .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                         .descriptor_count(1)
-                        .stage_flags(
-                            vk::ShaderStageFlags::COMPUTE | vk::ShaderStageFlags::VERTEX,
-                        ),
+                        .stage_flags(vk::ShaderStageFlags::COMPUTE | vk::ShaderStageFlags::VERTEX),
                 ]),
                 None,
             )?;
@@ -927,12 +958,11 @@ pub fn run_heavy_render_loop(
                     .pool_sizes(&pool_sizes),
                 None,
             )?;
-            let dset = device
-                .allocate_descriptor_sets(
-                    &vk::DescriptorSetAllocateInfo::default()
-                        .descriptor_pool(dpool)
-                        .set_layouts(std::slice::from_ref(&dsl)),
-                )?[0];
+            let dset = device.allocate_descriptor_sets(
+                &vk::DescriptorSetAllocateInfo::default()
+                    .descriptor_pool(dpool)
+                    .set_layouts(std::slice::from_ref(&dsl)),
+            )?[0];
 
             // Device-local SSBO + staging upload of the initial pool.
             let ssbo_info = vk::BufferCreateInfo::default()
@@ -941,11 +971,8 @@ pub fn run_heavy_render_loop(
                 .sharing_mode(vk::SharingMode::EXCLUSIVE);
             let ssbo = device.create_buffer(&ssbo_info, None)?;
             let req = device.get_buffer_memory_requirements(ssbo);
-            let ssbo_mem_type = find_memory_type(
-                &mem_properties,
-                req,
-                vk::MemoryPropertyFlags::DEVICE_LOCAL,
-            )?;
+            let ssbo_mem_type =
+                find_memory_type(&mem_properties, req, vk::MemoryPropertyFlags::DEVICE_LOCAL)?;
             let ssbo_mem = device.allocate_memory(
                 &vk::MemoryAllocateInfo::default()
                     .allocation_size(req.size)
@@ -956,8 +983,7 @@ pub fn run_heavy_render_loop(
 
             let (staging, staging_mem) = create_host_buffer(&device, &mem_properties, bytes)?;
             {
-                let ptr = device
-                    .map_memory(staging_mem, 0, bytes, vk::MemoryMapFlags::empty())?
+                let ptr = device.map_memory(staging_mem, 0, bytes, vk::MemoryMapFlags::empty())?
                     as *mut f32;
                 // Spiral-shell spawn; life ramped so respawns stagger.
                 for i in 0..count {
@@ -1007,9 +1033,15 @@ pub fn run_heavy_render_loop(
                 &[],
             );
 
-            let pcomp = make_module(&compile_glsl(naga::ShaderStage::Compute, PARTICLE_COMPUTE_SRC)?)?;
+            let pcomp = make_module(&compile_glsl(
+                naga::ShaderStage::Compute,
+                PARTICLE_COMPUTE_SRC,
+            )?)?;
             let pvert = make_module(&compile_glsl(naga::ShaderStage::Vertex, PARTICLE_VERT_SRC)?)?;
-            let pfrag = make_module(&compile_glsl(naga::ShaderStage::Fragment, PARTICLE_FRAG_SRC)?)?;
+            let pfrag = make_module(&compile_glsl(
+                naga::ShaderStage::Fragment,
+                PARTICLE_FRAG_SRC,
+            )?)?;
 
             let compute_layout = device.create_pipeline_layout(
                 &vk::PipelineLayoutCreateInfo::default()
@@ -1079,9 +1111,11 @@ pub fn run_heavy_render_loop(
                             &vk::PipelineInputAssemblyStateCreateInfo::default()
                                 .topology(vk::PrimitiveTopology::TRIANGLE_STRIP),
                         )
-                        .viewport_state(&vk::PipelineViewportStateCreateInfo::default()
-                            .viewport_count(1)
-                            .scissor_count(1))
+                        .viewport_state(
+                            &vk::PipelineViewportStateCreateInfo::default()
+                                .viewport_count(1)
+                                .scissor_count(1),
+                        )
                         .rasterization_state(
                             &vk::PipelineRasterizationStateCreateInfo::default()
                                 .polygon_mode(vk::PolygonMode::FILL)
@@ -1096,10 +1130,12 @@ pub fn run_heavy_render_loop(
                             &vk::PipelineColorBlendStateCreateInfo::default()
                                 .attachments(std::slice::from_ref(&blend)),
                         )
-                        .dynamic_state(&vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&[
-                            vk::DynamicState::VIEWPORT,
-                            vk::DynamicState::SCISSOR,
-                        ]))
+                        .dynamic_state(
+                            &vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&[
+                                vk::DynamicState::VIEWPORT,
+                                vk::DynamicState::SCISSOR,
+                            ]),
+                        )
                         .layout(particle_layout)
                         .render_pass(render_pass)
                         .subpass(0)],
@@ -1151,15 +1187,17 @@ pub fn run_heavy_render_loop(
             if let Some((_, _, mv)) = offscreen_msaa.as_ref() {
                 attachments.push(*mv);
             }
-            Some(device.create_framebuffer(
-                &vk::FramebufferCreateInfo::default()
-                    .render_pass(render_pass)
-                    .attachments(&attachments)
-                    .width(cfg.width)
-                    .height(cfg.height)
-                    .layers(1),
-                None,
-            )?)
+            Some(
+                device.create_framebuffer(
+                    &vk::FramebufferCreateInfo::default()
+                        .render_pass(render_pass)
+                        .attachments(&attachments)
+                        .width(cfg.width)
+                        .height(cfg.height)
+                        .layers(1),
+                    None,
+                )?,
+            )
         } else {
             None
         };
@@ -1169,18 +1207,24 @@ pub fn run_heavy_render_loop(
         let (vertex_buf, vertex_mem) =
             create_host_buffer(&device, &mem_properties, (verts.len() * 4) as u64)?;
         {
-            let ptr = device
-                .map_memory(vertex_mem, 0, (verts.len() * 4) as u64, vk::MemoryMapFlags::empty())?
-                as *mut f32;
+            let ptr = device.map_memory(
+                vertex_mem,
+                0,
+                (verts.len() * 4) as u64,
+                vk::MemoryMapFlags::empty(),
+            )? as *mut f32;
             std::ptr::copy_nonoverlapping(verts.as_ptr(), ptr, verts.len());
             device.unmap_memory(vertex_mem);
         }
         let (index_buf, index_mem) =
             create_host_buffer(&device, &mem_properties, (indices.len() * 4) as u64)?;
         {
-            let ptr = device
-                .map_memory(index_mem, 0, (indices.len() * 4) as u64, vk::MemoryMapFlags::empty())?
-                as *mut u32;
+            let ptr = device.map_memory(
+                index_mem,
+                0,
+                (indices.len() * 4) as u64,
+                vk::MemoryMapFlags::empty(),
+            )? as *mut u32;
             std::ptr::copy_nonoverlapping(indices.as_ptr(), ptr, indices.len());
             device.unmap_memory(index_mem);
         }
@@ -1196,7 +1240,11 @@ pub fn run_heavy_render_loop(
                     msaa_samples.as_raw(),
                     cfg.iters,
                     cfg.shells,
-                    if use_swapchain { "swapchain+present" } else { "offscreen" },
+                    if use_swapchain {
+                        "swapchain+present"
+                    } else {
+                        "offscreen"
+                    },
                 ),
                 false
             )
@@ -1260,12 +1308,18 @@ pub fn run_heavy_render_loop(
                 let sc = sc.as_ref().unwrap();
                 (
                     sc.framebuffers[image_idx as usize],
-                    vk::Extent2D { width: sc.extent.width, height: sc.extent.height },
+                    vk::Extent2D {
+                        width: sc.extent.width,
+                        height: sc.extent.height,
+                    },
                 )
             } else {
                 (
                     offscreen_fb.unwrap(),
-                    vk::Extent2D { width: cfg.width, height: cfg.height },
+                    vk::Extent2D {
+                        width: cfg.width,
+                        height: cfg.height,
+                    },
                 )
             };
 
@@ -1283,8 +1337,10 @@ pub fn run_heavy_render_loop(
                 float32: [0.02, 0.03, 0.05, 1.0],
             };
             let mut depth_clear = vk::ClearValue::default();
-            depth_clear.depth_stencil =
-                vk::ClearDepthStencilValue { depth: 1.0, stencil: 0 };
+            depth_clear.depth_stencil = vk::ClearDepthStencilValue {
+                depth: 1.0,
+                stencil: 0,
+            };
             let clear = [color_clear, depth_clear];
 
             device.cmd_begin_render_pass(
@@ -1324,7 +1380,11 @@ pub fn run_heavy_render_loop(
                 b[4..8].copy_from_slice(&time.to_bits().to_ne_bytes());
                 b[8..12].copy_from_slice(&cfg.iters.to_ne_bytes());
                 b[12..16].copy_from_slice(&cfg.particles.to_ne_bytes());
-                device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, stage.compute_pipeline);
+                device.cmd_bind_pipeline(
+                    cmd,
+                    vk::PipelineBindPoint::COMPUTE,
+                    stage.compute_pipeline,
+                );
                 device.cmd_bind_descriptor_sets(
                     cmd,
                     vk::PipelineBindPoint::COMPUTE,
@@ -1361,7 +1421,11 @@ pub fn run_heavy_render_loop(
                 b[0..4].copy_from_slice(&time.to_bits().to_ne_bytes());
                 b[4..8].copy_from_slice(&0.012f32.to_bits().to_ne_bytes());
                 b[8..12].copy_from_slice(&cfg.iters.to_ne_bytes());
-                b[12..16].copy_from_slice(&(if cfg.rotate { 1.0f32 } else { 0.0f32 }).to_bits().to_ne_bytes());
+                b[12..16].copy_from_slice(
+                    &(if cfg.rotate { 1.0f32 } else { 0.0f32 })
+                        .to_bits()
+                        .to_ne_bytes(),
+                );
                 b
             };
 
@@ -1386,7 +1450,11 @@ pub fn run_heavy_render_loop(
                 b[4..8].copy_from_slice(&time.to_bits().to_ne_bytes());
                 b[8..12].copy_from_slice(&cfg.iters.to_ne_bytes());
                 b[12..16].copy_from_slice(&cfg.particles.to_ne_bytes());
-                device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, stage.particle_pipeline);
+                device.cmd_bind_pipeline(
+                    cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    stage.particle_pipeline,
+                );
                 device.cmd_bind_descriptor_sets(
                     cmd,
                     vk::PipelineBindPoint::GRAPHICS,
@@ -1413,7 +1481,11 @@ pub fn run_heavy_render_loop(
                 b[4..8].copy_from_slice(&time.to_bits().to_ne_bytes());
                 b[8..12].copy_from_slice(&cfg.iters.to_ne_bytes());
                 b[12..16].copy_from_slice(&cfg.particles.to_ne_bytes());
-                device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, stage.particle_pipeline);
+                device.cmd_bind_pipeline(
+                    cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    stage.particle_pipeline,
+                );
                 device.cmd_bind_descriptor_sets(
                     cmd,
                     vk::PipelineBindPoint::GRAPHICS,
@@ -1462,7 +1534,9 @@ pub fn run_heavy_render_loop(
                     .wait_semaphores(&wait_sems)
                     .swapchains(&swapchains)
                     .image_indices(&image_indices);
-                match swapchain_dev.as_ref().unwrap()
+                match swapchain_dev
+                    .as_ref()
+                    .unwrap()
                     .queue_present(queue, &present_info)
                 {
                     Ok(false) => {}
@@ -1502,7 +1576,6 @@ pub fn run_heavy_render_loop(
                 frames = 0;
                 last_log = now;
             }
-
         }
 
         device.device_wait_idle()?;
@@ -1569,7 +1642,6 @@ pub fn run_heavy_render_loop(
     }
 }
 
-
 // ---------------------------------------------------------------------------
 // Swapchain resources (windowed target): swapchain + views + MSAA color +
 // depth + framebuffers. Recreation on resize/minimize/OUT_OF_DATE.
@@ -1621,7 +1693,10 @@ unsafe fn create_swapchain_resources(
     let caps = unsafe { surface_fn.get_physical_device_surface_capabilities(pdevice, surface)? };
     let mut extent = caps.current_extent;
     if extent.width == u32::MAX {
-        extent = vk::Extent2D { width: fallback_width, height: fallback_height };
+        extent = vk::Extent2D {
+            width: fallback_width,
+            height: fallback_height,
+        };
     }
     if extent.width == 0 || extent.height == 0 {
         // Minimized: create nothing; the loop parks until restored.
@@ -1685,7 +1760,11 @@ unsafe fn create_swapchain_resources(
     let depth_info = vk::ImageCreateInfo::default()
         .image_type(vk::ImageType::TYPE_2D)
         .format(vk::Format::D32_SFLOAT)
-        .extent(vk::Extent3D { width: extent.width, height: extent.height, depth: 1 })
+        .extent(vk::Extent3D {
+            width: extent.width,
+            height: extent.height,
+            depth: 1,
+        })
         .mip_levels(1)
         .array_layers(1)
         .samples(msaa_samples)
@@ -1725,7 +1804,11 @@ unsafe fn create_swapchain_resources(
         let info = vk::ImageCreateInfo::default()
             .image_type(vk::ImageType::TYPE_2D)
             .format(format)
-            .extent(vk::Extent3D { width: extent.width, height: extent.height, depth: 1 })
+            .extent(vk::Extent3D {
+                width: extent.width,
+                height: extent.height,
+                depth: 1,
+            })
             .mip_levels(1)
             .array_layers(1)
             .samples(msaa_samples)
@@ -1734,11 +1817,7 @@ unsafe fn create_swapchain_resources(
             .sharing_mode(vk::SharingMode::EXCLUSIVE);
         let image = device.create_image(&info, None)?;
         let req = device.get_image_memory_requirements(image);
-        let idx = find_memory_type(
-            mem_properties,
-            req,
-            vk::MemoryPropertyFlags::DEVICE_LOCAL,
-        )?;
+        let idx = find_memory_type(mem_properties, req, vk::MemoryPropertyFlags::DEVICE_LOCAL)?;
         let mem = device.allocate_memory(
             &vk::MemoryAllocateInfo::default()
                 .allocation_size(req.size)
@@ -1761,7 +1840,11 @@ unsafe fn create_swapchain_resources(
         )?;
         (image, mem, view)
     } else {
-        (vk::Image::null(), vk::DeviceMemory::null(), vk::ImageView::null())
+        (
+            vk::Image::null(),
+            vk::DeviceMemory::null(),
+            vk::ImageView::null(),
+        )
     };
 
     // Framebuffers: attachments follow the render pass attachment order
@@ -1808,33 +1891,33 @@ unsafe fn destroy_swapchain_resources(
     res: SwapchainResources,
 ) {
     unsafe {
-    for &fb in &res.framebuffers {
-        device.destroy_framebuffer(fb, None);
-    }
-    for &view in &res.views {
-        device.destroy_image_view(view, None);
-    }
-    if res.msaa_view != vk::ImageView::null() {
-        device.destroy_image_view(res.msaa_view, None);
-    }
-    if res.msaa_image != vk::Image::null() {
-        device.destroy_image(res.msaa_image, None);
-    }
-    if res.msaa_mem != vk::DeviceMemory::null() {
-        device.free_memory(res.msaa_mem, None);
-    }
-    if res.depth_view != vk::ImageView::null() {
-        device.destroy_image_view(res.depth_view, None);
-    }
-    if res.depth_image != vk::Image::null() {
-        device.destroy_image(res.depth_image, None);
-    }
-    if res.depth_mem != vk::DeviceMemory::null() {
-        device.free_memory(res.depth_mem, None);
-    }
-    if res.swapchain != vk::SwapchainKHR::null() {
-        swapchain_dev.destroy_swapchain(res.swapchain, None);
-    }
+        for &fb in &res.framebuffers {
+            device.destroy_framebuffer(fb, None);
+        }
+        for &view in &res.views {
+            device.destroy_image_view(view, None);
+        }
+        if res.msaa_view != vk::ImageView::null() {
+            device.destroy_image_view(res.msaa_view, None);
+        }
+        if res.msaa_image != vk::Image::null() {
+            device.destroy_image(res.msaa_image, None);
+        }
+        if res.msaa_mem != vk::DeviceMemory::null() {
+            device.free_memory(res.msaa_mem, None);
+        }
+        if res.depth_view != vk::ImageView::null() {
+            device.destroy_image_view(res.depth_view, None);
+        }
+        if res.depth_image != vk::Image::null() {
+            device.destroy_image(res.depth_image, None);
+        }
+        if res.depth_mem != vk::DeviceMemory::null() {
+            device.free_memory(res.depth_mem, None);
+        }
+        if res.swapchain != vk::SwapchainKHR::null() {
+            swapchain_dev.destroy_swapchain(res.swapchain, None);
+        }
     }
 }
 
@@ -1937,8 +2020,8 @@ unsafe fn create_pipelines(
     let viewport_state = vk::PipelineViewportStateCreateInfo::default()
         .viewport_count(1)
         .scissor_count(1);
-    let multisample = vk::PipelineMultisampleStateCreateInfo::default()
-        .rasterization_samples(msaa_samples);
+    let multisample =
+        vk::PipelineMultisampleStateCreateInfo::default().rasterization_samples(msaa_samples);
 
     // Background: fullscreen, no blend, no depth.
     let bg_stages = [
@@ -1978,7 +2061,9 @@ unsafe fn create_pipelines(
                 &vk::PipelineColorBlendStateCreateInfo::default()
                     .attachments(std::slice::from_ref(&bg_blend)),
             )
-            .dynamic_state(&vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_state))
+            .dynamic_state(
+                &vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_state),
+            )
             .layout(layout)
             .render_pass(render_pass)
             .subpass(0)],
@@ -2001,9 +2086,21 @@ unsafe fn create_pipelines(
             .name(c"main"),
     ];
     let vertex_attribs = [
-        vk::VertexInputAttributeDescription::default().location(0).binding(0).format(vk::Format::R32G32B32_SFLOAT).offset(0),
-        vk::VertexInputAttributeDescription::default().location(1).binding(0).format(vk::Format::R32G32B32_SFLOAT).offset(12),
-        vk::VertexInputAttributeDescription::default().location(2).binding(0).format(vk::Format::R32G32_SFLOAT).offset(24),
+        vk::VertexInputAttributeDescription::default()
+            .location(0)
+            .binding(0)
+            .format(vk::Format::R32G32B32_SFLOAT)
+            .offset(0),
+        vk::VertexInputAttributeDescription::default()
+            .location(1)
+            .binding(0)
+            .format(vk::Format::R32G32B32_SFLOAT)
+            .offset(12),
+        vk::VertexInputAttributeDescription::default()
+            .location(2)
+            .binding(0)
+            .format(vk::Format::R32G32_SFLOAT)
+            .offset(24),
     ];
     let vertex_bindings = [vk::VertexInputBindingDescription::default()
         .binding(0)
@@ -2048,7 +2145,9 @@ unsafe fn create_pipelines(
                 &vk::PipelineColorBlendStateCreateInfo::default()
                     .attachments(std::slice::from_ref(&knot_blend)),
             )
-            .dynamic_state(&vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_state))
+            .dynamic_state(
+                &vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_state),
+            )
             .layout(layout)
             .render_pass(render_pass)
             .subpass(0)],

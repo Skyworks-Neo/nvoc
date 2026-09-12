@@ -1068,22 +1068,14 @@ impl VerifyEngine {
         }
     }
 
-    fn run_resident_check(
-        &self,
-        stream: &Arc<CudaStream>,
-    ) -> Result<VerifyReport, BackendError> {
+    fn run_resident_check(&self, stream: &Arc<CudaStream>) -> Result<VerifyReport, BackendError> {
         self.reset_report(stream, 0)?;
         let done = self.launch_compare(stream, &self.resident, RESIDENT_SEED, 0)?;
         stream
             .synchronize()
             .map_err(|err| BackendError::Other(err.to_string()))?;
         let report = self.read_report(stream, 0)?;
-        self.absorb_pattern(
-            &report,
-            RESIDENT_WORDS as u64,
-            done,
-            "resident verify",
-        );
+        self.absorb_pattern(&report, RESIDENT_WORDS as u64, done, "resident verify");
         Ok(report)
     }
 

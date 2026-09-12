@@ -1110,7 +1110,11 @@ fn print_summary(results: &[StressResult], info: &DeviceInfo) {
                         d.mismatches,
                         d.nonfinite,
                         d.fault_events,
-                        if bits.is_empty() { String::new() } else { format!(" bits=[{bits}]") }
+                        if bits.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" bits=[{bits}]")
+                        }
                     ),
                     false
                 )
@@ -1321,16 +1325,18 @@ pub fn run_from_args() {
                 msaa: args.vulkan_image_msaa,
                 minor_mixture_rate: args.vulkan_minor_mixture_rate,
                 heavy: if args.vulkan_heavy {
-                    Some(cli_stressor_cuda_rs::vulkan_heavy_render::VulkanHeavyConfig {
-                        width: args.vulkan_heavy_width,
-                        height: args.vulkan_heavy_height,
-                        msaa: args.vulkan_heavy_msaa,
-                        iters: args.vulkan_heavy_iters,
-                        shells: args.vulkan_heavy_shells,
-                        offscreen: args.vulkan_heavy_offscreen,
-                        rotate: args.vulkan_heavy_rotate,
-                        particles: args.vulkan_heavy_particles,
-                    })
+                    Some(
+                        cli_stressor_cuda_rs::vulkan_heavy_render::VulkanHeavyConfig {
+                            width: args.vulkan_heavy_width,
+                            height: args.vulkan_heavy_height,
+                            msaa: args.vulkan_heavy_msaa,
+                            iters: args.vulkan_heavy_iters,
+                            shells: args.vulkan_heavy_shells,
+                            offscreen: args.vulkan_heavy_offscreen,
+                            rotate: args.vulkan_heavy_rotate,
+                            particles: args.vulkan_heavy_particles,
+                        },
+                    )
                 } else {
                     None
                 },
@@ -1752,16 +1758,18 @@ pub fn run_from_args() {
                 msaa: args.vulkan_image_msaa,
                 minor_mixture_rate: args.vulkan_minor_mixture_rate,
                 heavy: if args.vulkan_heavy {
-                    Some(cli_stressor_cuda_rs::vulkan_heavy_render::VulkanHeavyConfig {
-                        width: args.vulkan_heavy_width,
-                        height: args.vulkan_heavy_height,
-                        msaa: args.vulkan_heavy_msaa,
-                        iters: args.vulkan_heavy_iters,
-                        shells: args.vulkan_heavy_shells,
-                        offscreen: args.vulkan_heavy_offscreen,
-                        rotate: args.vulkan_heavy_rotate,
-                        particles: args.vulkan_heavy_particles,
-                    })
+                    Some(
+                        cli_stressor_cuda_rs::vulkan_heavy_render::VulkanHeavyConfig {
+                            width: args.vulkan_heavy_width,
+                            height: args.vulkan_heavy_height,
+                            msaa: args.vulkan_heavy_msaa,
+                            iters: args.vulkan_heavy_iters,
+                            shells: args.vulkan_heavy_shells,
+                            offscreen: args.vulkan_heavy_offscreen,
+                            rotate: args.vulkan_heavy_rotate,
+                            particles: args.vulkan_heavy_particles,
+                        },
+                    )
                 } else {
                     None
                 },
