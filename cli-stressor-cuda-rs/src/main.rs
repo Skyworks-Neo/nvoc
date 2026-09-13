@@ -352,6 +352,9 @@ struct FileVerifyConfig {
 
 /// Whether any Vulkan graphics stressor should run (new render load or the
 /// legacy image load). `--vulkan` wins when both are requested.
+/// Every caller is feature-gated, so the no-default-features build sees it
+/// as dead code.
+#[cfg_attr(not(any(feature = "cuda", feature = "vulkan")), allow(dead_code))]
 fn vulkan_stress_enabled(args: &Args) -> bool {
     args.vulkan || args.legacy_vulkan
 }

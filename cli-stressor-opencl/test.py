@@ -513,7 +513,9 @@ def build_kernel_bundle(runtime: OpenCLRuntime, spec: PrecisionSpec):
             )
             verify_program = cl.Program(runtime.context, verify_source).build()
         except Exception as exc:
-            print(f"Warning: GEMM verify kernel build failed (detectors limited): {exc}")
+            print(
+                f"Warning: GEMM verify kernel build failed (detectors limited): {exc}"
+            )
     return KernelBundle(program=program, kernel=kernel, verify_program=verify_program)
 
 
@@ -1184,9 +1186,7 @@ def main():
                 "(--skip-self-test 可跳过)"
             )
             emit_verdict(
-                build_verdict(
-                    runtime, [], self_test, args.duration, verify_cfg, False
-                ),
+                build_verdict(runtime, [], self_test, args.duration, verify_cfg, False),
                 args.json_out,
             )
             return 1

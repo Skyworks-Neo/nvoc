@@ -5,6 +5,10 @@
 //!
 //! `cargo test -p cli-stressor-cuda-rs --test verify_gpu -- --ignored`
 
+// The `cuda_backend` module only exists with the `cuda` feature; without this
+// gate the no-default-features clippy/test pass fails to compile the target.
+#![cfg(feature = "cuda")]
+
 use cli_stressor_cuda_rs::{Backend, VerifyConfig, cuda_backend};
 
 #[test]
