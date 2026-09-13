@@ -12,6 +12,18 @@ use serde::Serialize;
 /// forced state; prevents flapping right at the threshold.
 const EMERGENCY_HYSTERESIS_C: f32 = 2.0;
 
+// Adaptive feed-forward (`adaptive_base`): constants rather than knobs —
+// the learning rate only has to be slow relative to the loop, not exact.
+/// |error| below which the loop counts as settled and integral authority is
+/// safe to re-center into the base.
+const BASE_LEARN_BAND_C: f32 = 1.0;
+/// Fraction of the integral term absorbed per tick.
+const BASE_ABSORB_FRACTION: f32 = 0.25;
+/// Do not bother re-centering tiny integrals.
+const BASE_ABSORB_FLOOR: f32 = 0.5;
+/// Per-tick cap on the absorbed duty (%).
+const BASE_ABSORB_MAX: f32 = 2.0;
+
 /// One GPU's sensor readings, from `QueryNvapiThermalSettings` (legacy
 /// core/memory/board view) plus the ThermChannel hotspot when available.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -111,6 +123,10 @@ pub struct GpuController {
     released: bool,
     /// Consecutive ticks with temp ≤ the release line (dwell counter).
     below_streak: u32,
+    /// Adaptive feed-forward state: the learned base duty. Only honored
+    /// while `adaptive_base` is on (and seeded from the config otherwise).
+    base: f32,
+    base_seeded: bool,
     /// PID decomposition of the most recent evaluation (None while the PID
     /// did not run this tick: Auto/Manual modes, released, pre-first-read).
     last_pid: Option<PidTerms>,
@@ -131,6 +147,8 @@ impl GpuController {
             emergency_active: false,
             released: false,
             below_streak: 0,
+            base: 0.0,
+            base_seeded: false,
             last_pid: None,
             last_error: None,
             last_sensors: SensorBundle::default(),
@@ -142,6 +160,14 @@ impl GpuController {
     /// Pull tunables from the config snapshot; preserves PID state.
     pub fn sync_params(&mut self, p: &PidParams) {
         self.pid.sync_params(p);
+        // Base ownership: config-owned when fixed, controller-owned (learned)
+        // once adaptive — seeded from the config on the first tick.
+        if p.adaptive_base && self.base_seeded {
+            self.pid.set_base_percent(self.base);
+        } else {
+            self.base = p.base_percent;
+            self.base_seeded = true;
+        }
     }
 
     /// Restore driver control unconditionally (shutdown/restore paths).
@@ -371,6 +397,7 @@ impl GpuController {
                     p: cfg.pid.kp * error,
                     i: cfg.pid.ki * self.pid.integral(),
                     d: 0.0,
+                    base_percent: self.base,
                     output_percent: 100.0,
                 });
                 100.0 // stay forced while inside the hysteresis band
@@ -387,12 +414,16 @@ impl GpuController {
                 p: cfg.pid.kp * error,
                 i: cfg.pid.ki * self.pid.integral(),
                 d: 0.0,
+                base_percent: self.base,
                 output_percent: 100.0,
             });
             100.0
         } else {
             let terms = self.pid.step(temp, dt_s);
             self.last_pid = Some(terms);
+            if cfg.pid.adaptive_base {
+                self.learn_base(cfg, terms.error_c);
+            }
             terms.output_percent
         };
 
@@ -418,6 +449,25 @@ impl GpuController {
                 }
             }
         }
+    }
+
+    /// Adaptive feed-forward: re-center integral authority into `self.base`
+    /// while the loop is settled. The transfer is output-continuous (base
+    /// rises by exactly what the integral falls), so learning adds no loop
+    /// dynamics — it only re-partitions state. Requires `ki > 0`.
+    fn learn_base(&mut self, cfg: &RuntimeConfig, error_c: f32) {
+        let i_term = self.pid.i_term();
+        if error_c.abs() > BASE_LEARN_BAND_C || i_term.abs() < BASE_ABSORB_FLOOR {
+            return;
+        }
+        let delta = (BASE_ABSORB_FRACTION * i_term).clamp(-BASE_ABSORB_MAX, BASE_ABSORB_MAX);
+        let new_base = (self.base + delta).clamp(cfg.pid.min_percent, cfg.pid.max_percent);
+        let delta = new_base - self.base;
+        if delta == 0.0 {
+            return;
+        }
+        self.base = new_base;
+        self.pid.absorb_integral(delta);
     }
 
     /// Sensor/fan refresh without control action (Auto mode).
@@ -758,6 +808,85 @@ mod tests {
             vec![41, 42, 42, 43],
             "narrow deadband follows the ramp"
         );
+    }
+
+    #[test]
+    fn adaptive_base_learns_the_load_level() {
+        // kp=0, ki=0.4: the integral alone carries the load level.
+        let mut config = cfg(ControlMode::Pid);
+        config.pid.kp = 0.0;
+        config.pid.ki = 0.4;
+        config.pid.base_percent = 40.0;
+        // 3 hot ticks build the integral; then the loop settles near target.
+        let mut m = Mock {
+            temps: vec![
+                Ok(SensorBundle {
+                    core_c: Some(78.0),
+                    ..Default::default()
+                }),
+                Ok(SensorBundle {
+                    core_c: Some(78.0),
+                    ..Default::default()
+                }),
+                Ok(SensorBundle {
+                    core_c: Some(78.0),
+                    ..Default::default()
+                }),
+                Ok(SensorBundle {
+                    core_c: Some(75.2),
+                    ..Default::default()
+                }),
+            ],
+            writes: Vec::new(),
+            restores: 0,
+            fail_writes: false,
+        };
+        let mut c = GpuController::new(PidController::from_params(&config.pid));
+        for _ in 0..3 {
+            tick(&mut c, &mut m, &config);
+        }
+        let i_after_hot = c.last_pid.expect("pid ran").i;
+        assert!(i_after_hot > 1.0, "hot phase must load the integral");
+
+        // Settled ticks: absorption re-centers the integral into the base
+        // while the output stays constant (base + i invariant).
+        for _ in 0..12 {
+            tick(&mut c, &mut m, &config);
+        }
+        let terms = c.last_pid.expect("pid ran");
+        assert!(
+            terms.base_percent > 43.0,
+            "base learned upward, got {}",
+            terms.base_percent
+        );
+        assert!(terms.i.abs() < 1.0, "integral re-centered, got {}", terms.i);
+        // Output kept constant throughout learning: only the initial
+        // approach writes moved the duty.
+        let duty = c.last_written.expect("a duty was written");
+        assert_eq!(m.writes.last(), Some(&duty));
+        assert_eq!(duty, 44); // round(40 + 0.4·(9+0.2·N)) ≈ 44, written once
+
+        // A config base_percent change is ignored while adaptive: the
+        // learned value is controller-owned.
+        config.pid.base_percent = 10.0;
+        let st = tick(&mut c, &mut m, &config);
+        assert!(st.pid.expect("pid ran").base_percent > 43.0);
+    }
+
+    #[test]
+    fn fixed_base_tracks_config_changes() {
+        let mut config = cfg(ControlMode::Pid);
+        config.pid.adaptive_base = false;
+        config.pid.kp = 0.0;
+        config.pid.ki = 0.4;
+        let mut c = GpuController::new(PidController::from_params(&config.pid));
+        let mut m = Mock::steady(75.0);
+        let st = tick(&mut c, &mut m, &config);
+        assert!((st.pid.expect("pid ran").base_percent - 40.0).abs() < 1e-4);
+
+        config.pid.base_percent = 55.0;
+        let st = tick(&mut c, &mut m, &config);
+        assert!((st.pid.expect("pid ran").base_percent - 55.0).abs() < 1e-4);
     }
 
     #[test]

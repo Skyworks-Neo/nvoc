@@ -322,6 +322,21 @@ fn assign_u32(
     }
 }
 
+fn assign_bool(
+    params: &HashMap<String, String>,
+    key: &str,
+    dst: &mut bool,
+    errors: &mut Vec<String>,
+) {
+    if let Some(raw) = params.get(key) {
+        match raw.to_ascii_lowercase().as_str() {
+            "true" | "1" | "on" => *dst = true,
+            "false" | "0" | "off" => *dst = false,
+            _ => errors.push(format!("invalid '{key}'")),
+        }
+    }
+}
+
 /// Partial PID update; absent parameters keep their current value. Full
 /// param-set validation runs after the merge so a bad combination (min>max)
 /// is rejected atomically.
@@ -359,6 +374,12 @@ fn handle_pid_update(
         params,
         "write_deadband_percent",
         &mut p.write_deadband_percent,
+        &mut errors,
+    );
+    assign_bool(
+        params,
+        "adaptive_base",
+        &mut cfg.pid.adaptive_base,
         &mut errors,
     );
     if let Some(v) = params

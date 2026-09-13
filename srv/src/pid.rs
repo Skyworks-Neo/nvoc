@@ -35,6 +35,9 @@ pub struct PidTerms {
     pub p: f32,
     pub i: f32,
     pub d: f32,
+    /// The feed-forward base this step acted around (`base + p + i + d =
+    /// output` before clamping).
+    pub base_percent: f32,
     /// Clamped controller output (fan duty %).
     pub output_percent: f32,
 }
@@ -127,6 +130,27 @@ impl PidController {
         self.integral
     }
 
+    /// The integral contribution in duty units (`ki·∫e·dt`).
+    pub fn i_term(&self) -> f32 {
+        self.ki * self.integral
+    }
+
+    pub fn base_percent(&self) -> f32 {
+        self.base_percent
+    }
+
+    /// Move `delta_duty` of duty authority from the integral into the
+    /// caller's feed-forward state (the caller raises its base by the same
+    /// amount). Output is unchanged at the instant of the transfer; the
+    /// integral is simply re-centered, which is what makes an adaptive
+    /// feed-forward safe — it re-partitions state, it does not add dynamics.
+    /// No-op when `ki == 0` (nothing to re-center through).
+    pub fn absorb_integral(&mut self, delta_duty: f32) {
+        if self.ki > 0.0 {
+            self.integral -= delta_duty / self.ki;
+        }
+    }
+
     /// Advance one control step. `dt_s` ≤ 0 or non-finite falls back to 1 s
     /// so a broken clock cannot inject a huge integral/derivative kick.
     pub fn step(&mut self, measurement_c: f32, dt_s: f32) -> PidTerms {
@@ -172,6 +196,7 @@ impl PidController {
             p,
             i: self.ki * self.integral,
             d,
+            base_percent: self.base_percent,
             output_percent: output,
         }
     }
@@ -284,6 +309,38 @@ mod tests {
             "normal integration rate must resume at zero, got {}",
             pid.integral()
         );
+    }
+
+    #[test]
+    fn integral_absorption_is_output_continuous() {
+        let mut pid = plain(1.0, 0.5, 0.0); // base 40
+        let t1 = pid.step(80.0, 1.0); // e=+5, integral builds
+        let i_before = pid.i_term();
+        assert!(i_before > 0.0);
+
+        // The caller (controller.learn_base) raises its base by delta while
+        // absorb_integral removes delta/ki from the integral state: the
+        // base+I sum is invariant, so the output does not step.
+        pid.set_base_percent(pid.base_percent() + 2.0);
+        pid.absorb_integral(2.0);
+        assert!((pid.i_term() - (i_before - 2.0)).abs() < 1e-4);
+        assert!((pid.base_percent() - 42.0).abs() < 1e-4);
+        assert!(((pid.base_percent() + pid.i_term()) - (40.0 + i_before)).abs() < 1e-4);
+
+        // Next step differs from the previous one only by one tick of
+        // integration (P/D identical on the same measurement).
+        let t2 = pid.step(80.0, 1.0);
+        assert!((t2.base_percent - 42.0).abs() < 1e-4);
+        assert!((t2.output_percent - (t1.output_percent + 0.5 * 5.0)).abs() < 1e-3);
+    }
+
+    #[test]
+    fn absorption_is_noop_without_integral_gain() {
+        let mut pid = plain(1.0, 0.0, 0.0);
+        pid.step(80.0, 1.0);
+        pid.absorb_integral(2.0); // ki = 0: nothing to re-center through
+        assert!((pid.base_percent() - 40.0).abs() < 1e-4);
+        assert_eq!(pid.i_term(), 0.0);
     }
 
     #[test]

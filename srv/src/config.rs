@@ -154,6 +154,12 @@ pub struct PidParams {
     pub engage_below_c: f32,
     /// Consecutive ticks below the release line before releasing.
     pub release_ticks: u32,
+    /// Learn `base_percent` online: while the loop is settled (|error| small)
+    /// the controller continuously re-centers integral authority into the
+    /// feed-forward, so `base_percent` tracks the current load level without
+    /// configuration. The configured `base_percent` acts as the initial
+    /// value; requires `ki > 0` (the integral is the teacher).
+    pub adaptive_base: bool,
     /// Anti-chatter deadband: skip a fan write while the PID output sits
     /// within ±`write_deadband_percent` of the last written duty. Quantized
     /// duty writes are a relay nonlinearity — too little deadband turns
@@ -177,6 +183,7 @@ impl Default for PidParams {
             engage_below_c: 1.0,
             release_ticks: 3,
             write_deadband_percent: 1.0,
+            adaptive_base: true,
         }
     }
 }

@@ -79,6 +79,7 @@ release_below_c = 4.0     # idle release: ≤ target−4 °C hands the fan back 
 engage_below_c = 1.0      # re-engage line: PID resumes at target−1 °C (must be < release_below_c)
 release_ticks = 3         # ticks below the release line before releasing
 write_deadband_percent = 1.0  # skip writes within ±1 % of the duty on the wire (anti-chatter)
+adaptive_base = true      # learn base_percent online from the integral (see below)
 ```
 
 CLI overrides (each maps to a field): `--config <path> --foreground --port
@@ -94,7 +95,7 @@ unchanged from the legacy service).
 |---|---|
 | `GET /status` | top-level `mode`/`interval_ms`/`target_c`; per-GPU temps (core/hotspot/memory/board), written & measured fan duty, `released` flag, last PID decomposition (`error/p/i/d/output`, null when the PID did not run this tick), failsafe state |
 | `GET /config` | effective runtime configuration |
-| `POST /pid?target_c=&kp=&ki=&kd=&base_percent=&min_percent=&max_percent=&emergency_delta_c=&release_below_c=&engage_below_c=&release_ticks=&write_deadband_percent=&interval_ms=&sensor=` | partial PID update, validated atomically, live |
+| `POST /pid?target_c=&kp=&ki=&kd=&base_percent=&min_percent=&max_percent=&emergency_delta_c=&release_below_c=&engage_below_c=&release_ticks=&write_deadband_percent=&adaptive_base=&interval_ms=&sensor=` | partial PID update, validated atomically, live |
 | `POST /mode?value=auto\|pid\|manual` | switch control mode (`auto` hands fans back to the driver) |
 | `POST /fan?percent=0-100` | pin a duty (switches to manual) |
 | `POST /restore` | alias of `/mode?value=auto` |
@@ -238,6 +239,33 @@ One extra hazard to rule out: if the legacy thermal sensor itself lags
 seconds behind reality (cross-check against GPU-Z), that dead time eats
 phase margin faster than any gain. Fix the sensor choice (`sensor=`) before
 touching gains.
+
+### Adaptive feed-forward (learning base_percent)
+
+The load level is not constant, so a hand-set `base_percent` is always a
+compromise. With `adaptive_base = true` (the default) the controller keeps
+`base_percent` itself: whenever the loop is settled (|error| ≤ 1 °C), it
+continuously re-centers integral authority into the base at a bounded rate.
+The transfer is **output-continuous** — the base rises by exactly what the
+integral falls — so learning adds no loop dynamics; it only re-partitions
+state. Effects:
+
+- `base_percent` tracks the current load level automatically (watch
+  `pid.base_percent` in `/status`); the learned value survives idle-release
+  periods and is only re-seeded from the config when `adaptive_base` turns
+  off or the service restarts.
+- The integral stays small, so anti-windup and the 4× discharge have little
+  to fight — the loop runs quieter.
+- Requirements: `ki > 0` (the integral is the teacher). With `ki = 0`,
+  learning is inert.
+- What it cannot do: anticipate a load *step*. The base only learns after
+  the temperature shows the new load; a large step still transiently
+  overshoots toward the emergency line (bounded there). Feed-forward from a
+  measured load signal (NVML power draw, visible before temperature moves)
+  is the future completion of this.
+
+Set `adaptive_base = false` to pin `base_percent` to the configured value
+(config-owned, applies every tick).
 
 Tune on a loaded or semi-loaded GPU (a fixed synthetic load gives a fixed
 plant). All parameters are hot-tunable via `POST /pid` — watch the response
