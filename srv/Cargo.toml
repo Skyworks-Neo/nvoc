@@ -1,29 +1,34 @@
 [package]
 name = "nvoc-srv"
 version = { workspace = true }
-description = "NVOC Windows service"
+description = "NVOC closed-loop control service (fan PID thermal control)"
 authors = ["Skyworks"]
 edition = { workspace = true }
 rust-version = { workspace = true }
 
+[[bin]]
+name = "nvoc_service"
+path = "src/bin/nvoc_service.rs"
+
+[[bin]]
+name = "nvoc-srv-ctl"
+path = "src/bin/nvoc_srv_ctl.rs"
+
 [dependencies]
 nvoc-core = { workspace = true }
-
-async-stream = { workspace = true }
-chrono = { workspace = true }
-clap = { workspace = true }
-compio = { workspace = true }
-futures-util = { workspace = true }
-flume = { workspace = true }
-humantime = { workspace = true }
-nvml-wrapper = { workspace = true }
-nvml-wrapper-sys = { workspace = true }
 nvapi = { workspace = true }
+nvml-wrapper = { workspace = true }
+clap = { workspace = true }
+ctrlc = { workspace = true }
+flume = { workspace = true }
 log = { workspace = true }
 log2 = { workspace = true }
 gag = { workspace = true }
 tiny_http = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+toml = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
 windows-service = { workspace = true }
 windows-sys = { workspace = true }

@@ -1,0 +1,196 @@
+//! NVAPI-backed [`ControlBackend`] with an NVML fallback for drivers/OS
+//! combinations where the NDA fan surface is rejected (-104/-3).
+//!
+//! Write path priority (per the 2026-09-10 472.12 fan-surface audit and the
+//! probe-fan-470 findings): `SetFanPercent` (NDA 0xEB44E8AA RMW — its RMW
+//! presence-mask handling is what keeps the ghost-Cooler2 count mismatch
+//! away) → NVML `set_fan_speed` manual pin (the write symbols exist on
+//! Linux; the Windows nvml.dll exports none, so the fallback is dead there
+//! by construction). Restore path: `ResetNvapiFanControl` (the only verified
+//! un-pin: control block bit0=0 + policy Default) → NVML `set_default_fan_speed`.
+
+use crate::controller::{ControlBackend, FanReading, SensorBundle};
+use log::{info, warn};
+use nvapi::hi::Gpu;
+use nvapi::{ClockDomain, KilohertzDelta, PState, ThermalTarget};
+use nvml_wrapper::Nvml;
+use nvml_wrapper::enums::device::FanControlPolicy;
+use nvoc_core::{
+    BackendSet, GpuId, GpuTarget, QueryFanInfo, QueryNvapiThermalSettings, ResetFanSpeed,
+    ResetNvapiFanControl, SetFanPercent, SetFanSpeed, TargetInventory, discover_targets,
+    run as run_gpu_operation,
+};
+use std::borrow::Cow;
+
+/// GPU count cap for the `?gpu=` parameter (mirrors the legacy guard).
+pub const GPU_INDEX_MAX: usize = 63;
+
+pub struct NvapiBackend {
+    inventory: TargetInventory,
+    /// Index-aligned with the NVML enumeration order (the legacy service's
+    /// pairing, guarded against drift by [`Self::gpu_id`]).
+    gpus: Vec<Gpu>,
+    names: Vec<String>,
+}
+
+impl NvapiBackend {
+    pub fn discover() -> Result<Self, String> {
+        let nvml = Nvml::init().map_err(|e| format!("NVML init failed: {e:?}"))?;
+        let inventory =
+            discover_targets(BackendSet::Both).map_err(|e| format!("GPU discovery failed: {e}"))?;
+        let gpus = Gpu::enumerate().map_err(|e| format!("NVAPI GPU enumeration failed: {e}"))?;
+        let count = nvml.device_count().unwrap_or(0);
+        let mut names = Vec::with_capacity(count as usize);
+        for i in 0..count {
+            let name = nvml
+                .device_by_index(i)
+                .ok()
+                .and_then(|d| d.name().ok())
+                .unwrap_or_else(|| format!("GPU {i}"));
+            names.push(name);
+        }
+        if gpus.len() != names.len() {
+            warn!(
+                "NVML sees {} GPU(s) but NVAPI enumerates {}; controlling the smaller set",
+                names.len(),
+                gpus.len()
+            );
+        }
+        Ok(Self {
+            inventory,
+            gpus,
+            names,
+        })
+    }
+
+    pub fn gpu_count(&self) -> usize {
+        self.gpus.len()
+    }
+
+    pub fn name(&self, index: usize) -> Cow<'_, str> {
+        self.names
+            .get(index)
+            .map(|s| Cow::Borrowed(s.as_str()))
+            .unwrap_or(Cow::Owned(format!("GPU {index}")))
+    }
+
+    fn gpu_id(&self, index: usize) -> Result<GpuId, String> {
+        self.gpus
+            .get(index)
+            .map(|g| GpuId(g.id() as u32))
+            .ok_or_else(|| {
+                format!(
+                    "GPU {index} out of range: NVML/NVAPI drift (NVAPI sees {})",
+                    self.gpus.len()
+                )
+            })
+    }
+
+    fn target(&self, gpu_index: usize) -> Result<GpuTarget<'_>, String> {
+        let id = self.gpu_id(gpu_index)?;
+        self.inventory
+            .target_by_id(id)
+            .map_err(|e| format!("GPU {gpu_index}: {e}"))
+    }
+
+    /// Legacy `/oc_global`: one-shot P0 graphics clock delta.
+    pub fn set_oc_global(&mut self, index: usize, delta_khz: i32) -> Result<(), String> {
+        let gpu = self
+            .gpus
+            .get(index)
+            .ok_or_else(|| format!("GPU {index} out of range"))?;
+        gpu.inner()
+            .set_pstates(
+                [(PState::P0, ClockDomain::Graphics, KilohertzDelta(delta_khz))]
+                    .iter()
+                    .copied(),
+            )
+            .map_err(|e| format!("GPU {index}: set_pstates: {e}"))
+    }
+}
+
+/// ThermChannel hotspot (GPU_MAX primary channel), best effort — absent on
+/// pre-Pascal GPUs and tolerated as `None` there.
+fn read_hotspot(gpu: &Gpu) -> Option<f32> {
+    let info = gpu.inner().thermal_channel_info().ok()?;
+    let idx = info.hotspot_index()?;
+    gpu.inner()
+        .thermal_channel_status(info.channel_mask)
+        .ok()?
+        .get(idx as usize)
+}
+
+impl ControlBackend for NvapiBackend {
+    fn read_temps(&mut self, gpu_index: usize) -> Result<SensorBundle, String> {
+        let target = self.target(gpu_index)?;
+        let report = run_gpu_operation(&target, QueryNvapiThermalSettings)
+            .map_err(|e| format!("GPU {gpu_index}: thermal read: {e}"))?;
+        let mut bundle = SensorBundle::default();
+        for s in report.output {
+            match s.target {
+                ThermalTarget::Gpu => bundle.core_c = Some(s.current_c as f32),
+                ThermalTarget::Memory => bundle.memory_c = Some(s.current_c as f32),
+                ThermalTarget::Board => bundle.board_c = Some(s.current_c as f32),
+                _ => {}
+            }
+        }
+        bundle.hotspot_c = self.gpus.get(gpu_index).and_then(read_hotspot);
+        Ok(bundle)
+    }
+
+    fn read_fan(&mut self, gpu_index: usize) -> Option<FanReading> {
+        let target = self.target(gpu_index).ok()?;
+        let report = run_gpu_operation(&target, QueryFanInfo).ok()?;
+        Some(FanReading {
+            percent: report.output.current_speed,
+        })
+    }
+
+    fn write_fan_percent(&mut self, gpu_index: usize, percent: u32) -> Result<(), String> {
+        let target = self.target(gpu_index)?;
+        match run_gpu_operation(
+            &target,
+            SetFanPercent {
+                cooler_index: None,
+                percent: Some(percent),
+            },
+        ) {
+            Ok(_) => Ok(()),
+            Err(e) if e.is_allowable_nvapi_reset_error() => {
+                warn!(
+                    "GPU {gpu_index}: NDA fan surface rejected ({e}); falling back to NVML manual pin"
+                );
+                run_gpu_operation(
+                    &target,
+                    SetFanSpeed {
+                        fan_index: 0,
+                        policy: FanControlPolicy::Manual,
+                        level: percent,
+                    },
+                )
+                .map(|_| ())
+                .map_err(|e| format!("GPU {gpu_index}: NVML fan write: {e}"))
+            }
+            Err(e) => Err(format!("GPU {gpu_index}: fan write: {e}")),
+        }
+    }
+
+    fn restore_fan_auto(&mut self, gpu_index: usize) -> Result<(), String> {
+        let target = self.target(gpu_index)?;
+        match run_gpu_operation(&target, ResetNvapiFanControl) {
+            Ok(_) => {
+                info!("GPU {gpu_index}: fan control restored to driver curve");
+                Ok(())
+            }
+            Err(e) if e.is_allowable_nvapi_reset_error() => {
+                warn!(
+                    "GPU {gpu_index}: NDA fan reset rejected ({e}); falling back to NVML default"
+                );
+                run_gpu_operation(&target, ResetFanSpeed { fan_index: 0 })
+                    .map(|_| ())
+                    .map_err(|e| format!("GPU {gpu_index}: NVML fan reset: {e}"))
+            }
+            Err(e) => Err(format!("GPU {gpu_index}: fan reset: {e}")),
+        }
+    }
+}

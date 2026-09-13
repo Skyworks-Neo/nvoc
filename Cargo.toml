@@ -41,6 +41,7 @@ clap = { version = "4.6", features = [
   "error-context",
   "derive"
 ] }
+ctrlc = "3.4"
 compio = { version = "0.19.1", features = ["runtime", "time"] }
 csv = "1.4.0"
 futures-util = "0.3"
@@ -59,6 +60,7 @@ nvapi = { path = "./nvapi-rs", features = [
 quick-error = "2.0.1"
 time = { version = "0.3", features = ["formatting", "local-offset", "macros"] }
 tiny_http = "0.12"
+toml = "0.9"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 windows-service = "0.8.0"
