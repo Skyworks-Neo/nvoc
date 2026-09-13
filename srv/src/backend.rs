@@ -12,12 +12,14 @@
 use crate::controller::{ControlBackend, FanReading, SensorBundle};
 use log::{info, warn};
 use nvapi::hi::Gpu;
-use nvapi::{ClockDomain, KilohertzDelta, PState, ThermalTarget};
+use nvapi::{ClockDomain, ClockFrequencyType, Kilohertz, KilohertzDelta, PState, ThermalTarget};
 use nvml_wrapper::Nvml;
 use nvml_wrapper::enums::device::FanControlPolicy;
+
 use nvoc_core::{
     BackendSet, GpuId, GpuTarget, QueryFanInfo, QueryNvapiThermalSettings, ResetFanSpeed,
-    ResetNvapiFanControl, SetFanPercent, SetFanSpeed, TargetInventory, discover_targets,
+    ResetFreqLock, ResetNvapiFanControl, ResetVfpFrequencyLock, SetFanPercent, SetFanSpeed,
+    SetLockedClocks, SetVfpFrequencyLock, TargetInventory, discover_targets,
     run as run_gpu_operation,
 };
 use std::borrow::Cow;
@@ -34,6 +36,8 @@ pub struct NvapiBackend {
     /// ThermChannel LUT per GPU, resolved lazily on first temperature read
     /// (`None` = the card does not expose the channel pair).
     channel_luts: Vec<Option<ThermalChannelLut>>,
+    /// NVML handle for power reads and the locked-clocks fallback.
+    nvml: Nvml,
 }
 
 impl NvapiBackend {
@@ -64,6 +68,7 @@ impl NvapiBackend {
             inventory,
             gpus,
             names,
+            nvml,
         })
     }
 
@@ -208,6 +213,83 @@ impl ControlBackend for NvapiBackend {
         Some(FanReading {
             percent: report.output.current_speed,
         })
+    }
+
+    fn read_power_watts(&mut self, gpu_index: usize) -> Option<f32> {
+        let id = self.gpu_id(gpu_index).ok()?;
+        nvoc_core::nvml::query_nvml_power_draw_watts(&self.nvml, id.0)
+    }
+
+    fn read_core_clock_mhz(&mut self, gpu_index: usize) -> Option<f32> {
+        let gpu = self.gpus.get(gpu_index)?;
+        let clocks = gpu
+            .inner()
+            .clock_frequencies(ClockFrequencyType::Current)
+            .ok()?;
+        clocks
+            .get(&ClockDomain::Graphics)
+            .map(|k| k.0 as f32 / 1000.0)
+    }
+
+    fn write_freq_cap_khz(&mut self, gpu_index: usize, cap_khz: u32) -> Result<(), String> {
+        let target = self.target(gpu_index)?;
+        match run_gpu_operation(
+            &target,
+            SetVfpFrequencyLock {
+                domain: ClockDomain::Graphics,
+                upper: Kilohertz(cap_khz),
+                lower: None,
+            },
+        ) {
+            Ok(_) => Ok(()),
+            Err(e) if e.is_allowable_nvapi_reset_error() => {
+                warn!(
+                    "GPU {gpu_index}: NDA frequency lock rejected ({e}); \
+                     falling back to NVML locked clocks"
+                );
+                run_gpu_operation(
+                    &target,
+                    SetLockedClocks {
+                        domain: ClockDomain::Graphics,
+                        min_mhz: 0,
+                        max_mhz: cap_khz / 1000,
+                    },
+                )
+                .map(|_| ())
+                .map_err(|e| format!("GPU {gpu_index}: NVML locked clocks: {e}"))
+            }
+            Err(e) => Err(format!("GPU {gpu_index}: frequency lock: {e}")),
+        }
+    }
+
+    fn restore_freq_auto(&mut self, gpu_index: usize) -> Result<(), String> {
+        let target = self.target(gpu_index)?;
+        match run_gpu_operation(
+            &target,
+            ResetVfpFrequencyLock {
+                domain: ClockDomain::Graphics,
+            },
+        ) {
+            Ok(_) => {
+                info!("GPU {gpu_index}: frequency lock cleared");
+                Ok(())
+            }
+            Err(e) if e.is_allowable_nvapi_reset_error() => {
+                warn!(
+                    "GPU {gpu_index}: NDA frequency-lock reset rejected ({e}); \
+                     falling back to NVML reset"
+                );
+                run_gpu_operation(
+                    &target,
+                    ResetFreqLock {
+                        domain: ClockDomain::Graphics,
+                    },
+                )
+                .map(|_| ())
+                .map_err(|e| format!("GPU {gpu_index}: NVML freq reset: {e}"))
+            }
+            Err(e) => Err(format!("GPU {gpu_index}: frequency unlock: {e}")),
+        }
     }
 
     fn write_fan_percent(&mut self, gpu_index: usize, percent: u32) -> Result<(), String> {

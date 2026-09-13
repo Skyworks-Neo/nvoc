@@ -134,7 +134,7 @@ pub fn run_control_loop(handles: LoopHandles) -> Result<(), String> {
     let selected = cfg0.selected_indices(discovered);
     let mut controllers: Vec<GpuController> = selected
         .iter()
-        .map(|_| GpuController::new(PidController::from_params(&cfg0.pid)))
+        .map(|_| GpuController::new(PidController::from_params(&cfg0.pid), cfg0.loop_kind))
         .collect();
     info!(
         "control loop: {} of {discovered} GPU(s) under control, mode {:?}, interval {} ms",

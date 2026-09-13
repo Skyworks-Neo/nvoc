@@ -5,9 +5,99 @@
 //! The controller is backend-agnostic ([`ControlBackend`]) so the whole
 //! state machine is unit-testable without a GPU.
 
-use crate::config::{ControlMode, PidParams, RuntimeConfig, SensorKind};
+use crate::config::{ControlMode, FreqParams, LoopKind, PidParams, RuntimeConfig, SensorKind};
 use crate::pid::{PidController, PidTerms};
 use serde::Serialize;
+
+/// The subset of loop parameters the shared PID/zones machinery consumes.
+/// Implemented by both [`PidParams`] (fan loop) and [`FreqParams`]
+/// (frequency loops) so the controller is loop-agnostic; delta units differ
+/// per loop kind (°C for temp loops, W for the power loop).
+pub trait LoopParams {
+    fn target(&self) -> f32;
+    fn kp(&self) -> f32;
+    fn ki(&self) -> f32;
+    fn kd(&self) -> f32;
+    fn base_percent(&self) -> f32;
+    fn min_percent(&self) -> f32;
+    fn max_percent(&self) -> f32;
+    fn idle_delta(&self) -> f32;
+    fn emergency_delta(&self) -> f32;
+    fn adaptive(&self) -> bool;
+    fn write_deadband_percent(&self) -> f32;
+}
+
+impl LoopParams for PidParams {
+    fn target(&self) -> f32 {
+        self.target_c
+    }
+    fn kp(&self) -> f32 {
+        self.kp
+    }
+    fn ki(&self) -> f32 {
+        self.ki
+    }
+    fn kd(&self) -> f32 {
+        self.kd
+    }
+    fn base_percent(&self) -> f32 {
+        self.base_percent
+    }
+    fn min_percent(&self) -> f32 {
+        self.min_percent
+    }
+    fn max_percent(&self) -> f32 {
+        self.max_percent
+    }
+    fn idle_delta(&self) -> f32 {
+        self.idle_delta_c
+    }
+    fn emergency_delta(&self) -> f32 {
+        self.emergency_delta_c
+    }
+    fn adaptive(&self) -> bool {
+        self.adaptive_base
+    }
+    fn write_deadband_percent(&self) -> f32 {
+        self.write_deadband_percent
+    }
+}
+
+impl LoopParams for FreqParams {
+    fn target(&self) -> f32 {
+        self.target
+    }
+    fn kp(&self) -> f32 {
+        self.kp
+    }
+    fn ki(&self) -> f32 {
+        self.ki
+    }
+    fn kd(&self) -> f32 {
+        self.kd
+    }
+    fn base_percent(&self) -> f32 {
+        self.base_percent
+    }
+    fn min_percent(&self) -> f32 {
+        self.min_percent
+    }
+    fn max_percent(&self) -> f32 {
+        self.max_percent
+    }
+    fn idle_delta(&self) -> f32 {
+        self.idle_delta
+    }
+    fn emergency_delta(&self) -> f32 {
+        self.emergency_delta
+    }
+    fn adaptive(&self) -> bool {
+        self.adaptive_base
+    }
+    fn write_deadband_percent(&self) -> f32 {
+        self.write_deadband_percent
+    }
+}
 
 /// Extra cooling below (emergency) / above (idle) a forced-zone entry line
 /// required to leave the zone; prevents flapping right at the threshold.
@@ -65,9 +155,18 @@ pub struct FanReading {
 pub trait ControlBackend: Send {
     fn read_temps(&mut self, gpu_index: usize) -> Result<SensorBundle, String>;
     fn read_fan(&mut self, gpu_index: usize) -> Option<FanReading>;
+    /// Live board power draw (W), best effort — the `freq_power` loop sensor.
+    fn read_power_watts(&mut self, gpu_index: usize) -> Option<f32>;
+    /// Live core clock (MHz), best effort — `/status` readback for freq loops.
+    fn read_core_clock_mhz(&mut self, gpu_index: usize) -> Option<f32>;
     fn write_fan_percent(&mut self, gpu_index: usize, percent: u32) -> Result<(), String>;
+    /// Frequency soft wall: lock the graphics clock range to `0..cap_khz`
+    /// (one-directional — boost may run anywhere at or below the cap).
+    fn write_freq_cap_khz(&mut self, gpu_index: usize, cap_khz: u32) -> Result<(), String>;
     /// Hand fan control back to the driver (undoes any pin).
     fn restore_fan_auto(&mut self, gpu_index: usize) -> Result<(), String>;
+    /// Clear the frequency lock (undoes the soft wall).
+    fn restore_freq_auto(&mut self, gpu_index: usize) -> Result<(), String>;
 }
 
 /// Control states that override the raw PID output.
@@ -103,6 +202,10 @@ pub struct GpuControlStatus {
     pub sensors: SensorBundle,
     /// Last duty we wrote (None = driver is in control).
     pub fan_written_percent: Option<u32>,
+    /// Frequency-loop loop: the cap we last wrote (MHz). None on the fan loop.
+    pub cap_mhz: Option<u32>,
+    /// Live core clock (MHz), freq loops only.
+    pub core_clock_mhz: Option<f32>,
     /// Live duty reported by NVML, best effort.
     pub fan_measured_percent: Option<u32>,
     pub pid: Option<PidTerms>,
@@ -114,6 +217,7 @@ pub struct GpuControlStatus {
 #[derive(Debug)]
 pub struct GpuController {
     pid: PidController,
+    loop_kind: LoopKind,
     applied_mode: ControlMode,
     last_written: Option<u32>,
     failsafe: FailsafeState,
@@ -121,7 +225,7 @@ pub struct GpuController {
     emergency_active: bool,
     idle_active: bool,
     /// Adaptive feed-forward state: the learned base duty. Only honored
-    /// while `adaptive_base` is on (and seeded from the config otherwise).
+    /// while the active loop's `adaptive_base` is on (seeded from config).
     base: f32,
     base_seeded: bool,
     /// PID decomposition of the most recent evaluation (None while the PID
@@ -130,13 +234,18 @@ pub struct GpuController {
     last_error: Option<String>,
     last_sensors: SensorBundle,
     last_temp: Option<f32>,
+    /// Frequency-loop state: the cap we last wrote (MHz) and the live core
+    /// clock readback.
+    last_cap_mhz: Option<u32>,
+    core_clock_mhz: Option<f32>,
     fan_measured: Option<u32>,
 }
 
 impl GpuController {
-    pub fn new(pid: PidController) -> Self {
+    pub fn new(pid: PidController, loop_kind: LoopKind) -> Self {
         Self {
             pid,
+            loop_kind,
             applied_mode: ControlMode::Auto,
             last_written: None,
             failsafe: FailsafeState::Ok,
@@ -149,30 +258,47 @@ impl GpuController {
             last_error: None,
             last_sensors: SensorBundle::default(),
             last_temp: None,
+            last_cap_mhz: None,
+            core_clock_mhz: None,
             fan_measured: None,
         }
     }
 
+    fn params<'a>(&self, cfg: &'a RuntimeConfig) -> &'a dyn LoopParams {
+        match self.loop_kind {
+            LoopKind::FanTemp => &cfg.pid,
+            LoopKind::FreqTemp | LoopKind::FreqPower => &cfg.freq,
+        }
+    }
+
     /// Pull tunables from the config snapshot; preserves PID state.
-    pub fn sync_params(&mut self, p: &PidParams) {
-        self.pid.sync_params(p);
+    pub fn sync_params(&mut self, cfg: &RuntimeConfig) {
+        let p = self.params(cfg);
+        self.pid.set_target_c(p.target());
+        self.pid.set_gains(p.kp(), p.ki(), p.kd());
+        self.pid.set_limits(p.min_percent(), p.max_percent());
         // Base ownership: config-owned when fixed, controller-owned (learned)
         // once adaptive — seeded from the config on the first tick.
-        if p.adaptive_base && self.base_seeded {
+        if p.adaptive() && self.base_seeded {
             self.pid.set_base_percent(self.base);
         } else {
-            self.base = p.base_percent;
+            self.base = p.base_percent();
             self.base_seeded = true;
+            self.pid.set_base_percent(self.base);
         }
     }
 
     /// Restore driver control unconditionally (shutdown/restore paths).
     pub fn restore(&mut self, index: usize, backend: &mut dyn ControlBackend) {
         if self.last_written.is_some() || self.applied_mode != ControlMode::Auto {
-            match backend.restore_fan_auto(index) {
-                Ok(()) => log::info!("GPU {index}: fan control restored to driver"),
+            let result = match self.loop_kind {
+                LoopKind::FanTemp => backend.restore_fan_auto(index),
+                LoopKind::FreqTemp | LoopKind::FreqPower => backend.restore_freq_auto(index),
+            };
+            match result {
+                Ok(()) => log::info!("GPU {index}: control restored to driver"),
                 Err(e) => {
-                    log::error!("GPU {index}: driver fan-control restore FAILED: {e}");
+                    log::error!("GPU {index}: driver control restore FAILED: {e}");
                     self.failsafe = FailsafeState::RestoreFailed;
                     self.last_error = Some(e);
                 }
@@ -193,8 +319,9 @@ impl GpuController {
         backend: &mut dyn ControlBackend,
         dt_s: f32,
     ) -> GpuControlStatus {
+        self.handle_loop_switch(index, cfg, backend);
         self.handle_mode_transition(index, cfg, backend);
-        self.sync_params(&cfg.pid);
+        self.sync_params(cfg);
         // Populated only by a PID evaluation this tick (below).
         self.last_pid = None;
 
@@ -208,6 +335,10 @@ impl GpuController {
         }
 
         self.fan_measured = backend.read_fan(index).and_then(|f| f.percent);
+        self.core_clock_mhz = match self.loop_kind {
+            LoopKind::FanTemp => None,
+            LoopKind::FreqTemp | LoopKind::FreqPower => backend.read_core_clock_mhz(index),
+        };
         GpuControlStatus {
             index,
             name: name.to_string(),
@@ -216,10 +347,43 @@ impl GpuController {
             temp_c: self.last_temp,
             sensors: self.last_sensors.clone(),
             fan_written_percent: self.last_written,
+            cap_mhz: self.last_cap_mhz,
+            core_clock_mhz: self.core_clock_mhz,
             fan_measured_percent: self.fan_measured,
             pid: self.last_pid,
             last_error: self.last_error.clone(),
         }
+    }
+
+    /// Actuator hand-over when the loop kind changes: undo the old loop's
+    /// pin/wall and reset the loop state (the plant is different).
+    fn handle_loop_switch(
+        &mut self,
+        index: usize,
+        cfg: &RuntimeConfig,
+        backend: &mut dyn ControlBackend,
+    ) {
+        if cfg.loop_kind == self.loop_kind {
+            return;
+        }
+        match self.loop_kind {
+            LoopKind::FanTemp => {
+                let _ = backend.restore_fan_auto(index);
+            }
+            LoopKind::FreqTemp | LoopKind::FreqPower => {
+                let _ = backend.restore_freq_auto(index);
+            }
+        }
+        log::info!(
+            "GPU {index}: control loop switched {:?} → {:?}",
+            self.loop_kind,
+            cfg.loop_kind
+        );
+        self.loop_kind = cfg.loop_kind;
+        self.last_written = None;
+        self.pid.reset();
+        self.emergency_active = false;
+        self.idle_active = false;
     }
 
     fn handle_mode_transition(
@@ -236,8 +400,8 @@ impl GpuController {
             ControlMode::Pid => {
                 self.pid.reset();
                 log::info!(
-                    "GPU {index}: PID mode engaged (target {} °C)",
-                    cfg.pid.target_c
+                    "GPU {index}: PID mode engaged (target {})",
+                    self.params(cfg).target()
                 );
             }
             ControlMode::Manual => {
@@ -255,16 +419,38 @@ impl GpuController {
     }
 
     fn tick_manual(&mut self, index: usize, cfg: &RuntimeConfig, backend: &mut dyn ControlBackend) {
-        let target = cfg.manual_percent.min(100);
-        if self.last_written != Some(target) {
-            match backend.write_fan_percent(index, target) {
-                Ok(()) => {
-                    self.last_written = Some(target);
-                    self.last_error = None;
+        match self.loop_kind {
+            LoopKind::FanTemp => {
+                let target = cfg.manual_percent.min(100);
+                if self.last_written != Some(target) {
+                    match backend.write_fan_percent(index, target) {
+                        Ok(()) => {
+                            self.last_written = Some(target);
+                            self.last_error = None;
+                        }
+                        Err(e) => {
+                            log::error!("GPU {index}: manual fan write {}% failed: {e}", target);
+                            self.last_error = Some(e);
+                        }
+                    }
                 }
-                Err(e) => {
-                    log::error!("GPU {index}: manual fan write {}% failed: {e}", target);
-                    self.last_error = Some(e);
+            }
+            LoopKind::FreqTemp | LoopKind::FreqPower => {
+                // Pin the frequency cap: `manual_percent` is restriction effort.
+                let effort = cfg.manual_percent.min(100);
+                let cap_khz = self.cap_khz(cfg, effort as f32);
+                if self.last_written != Some(effort) {
+                    match backend.write_freq_cap_khz(index, cap_khz) {
+                        Ok(()) => {
+                            self.last_written = Some(effort);
+                            self.last_cap_mhz = Some(cap_khz / 1000);
+                            self.last_error = None;
+                        }
+                        Err(e) => {
+                            log::error!("GPU {index}: manual freq-cap write failed: {e}");
+                            self.last_error = Some(e);
+                        }
+                    }
                 }
             }
         }
@@ -278,22 +464,53 @@ impl GpuController {
         backend: &mut dyn ControlBackend,
         dt_s: f32,
     ) {
-        match backend.read_temps(index) {
+        // Loop-sensor read per kind; `freq_power` additionally observes the
+        // temperature (best effort) for the overtemp guard and /status.
+        let reading: Result<f32, String> = match cfg.loop_kind {
+            LoopKind::FanTemp | LoopKind::FreqTemp => match backend.read_temps(index) {
+                Ok(bundle) => {
+                    let value = bundle
+                        .pick(cfg.sensor)
+                        .ok_or_else(|| "selected sensor absent".to_string());
+                    self.last_sensors = bundle;
+                    value
+                }
+                Err(e) => Err(e),
+            },
+            LoopKind::FreqPower => {
+                let value = backend
+                    .read_power_watts(index)
+                    .ok_or_else(|| "power read failed".to_string());
+                // Guard temperature: best effort, never fails the loop.
+                if let Ok(bundle) = backend.read_temps(index) {
+                    self.last_sensors = bundle;
+                }
+                value
+            }
+        };
+        match reading {
             Err(e) => {
                 self.fail_streak += 1;
                 self.last_error = Some(e);
                 if self.fail_streak >= cfg.read_fail_reset.max(1) {
                     if self.last_written.is_some() {
-                        // Hand the fan back to the driver and keep re-trying
-                        // while the pin is ours: the driver may be mid-TDR
-                        // (calls fail, then recover), and a stuck pin during
-                        // that window is the worst case for a stress run.
+                        // Hand the actuator back to the driver and keep
+                        // re-trying while the pin/wall is ours: the driver
+                        // may be mid-TDR (calls fail, then recover), and a
+                        // stuck override during that window is the worst
+                        // case for a stress run.
                         log::error!(
                             "GPU {index}: {} consecutive sensor read failures; \
-                             restoring fan control to driver",
+                             restoring driver control",
                             self.fail_streak
                         );
-                        match backend.restore_fan_auto(index) {
+                        let restore = match cfg.loop_kind {
+                            LoopKind::FanTemp => backend.restore_fan_auto(index),
+                            LoopKind::FreqTemp | LoopKind::FreqPower => {
+                                backend.restore_freq_auto(index)
+                            }
+                        };
+                        match restore {
                             Ok(()) => {
                                 self.last_written = None;
                                 self.failsafe = FailsafeState::ReadFailures;
@@ -313,18 +530,22 @@ impl GpuController {
                     }
                 }
             }
-            Ok(bundle) => {
+            Ok(value) => {
                 self.fail_streak = 0;
-                self.last_sensors = bundle.clone();
-                let temp = bundle.pick(cfg.sensor);
-                self.last_temp = temp;
                 if self.failsafe == FailsafeState::ReadFailures {
                     log::info!("GPU {index}: sensor recovered; PID resumes");
                     self.failsafe = FailsafeState::Ok;
                     self.pid.reset();
                 }
-                if let Some(temp) = temp {
-                    self.apply_pid_output(index, cfg, backend, temp, dt_s);
+                match cfg.loop_kind {
+                    LoopKind::FanTemp => {
+                        self.last_temp = Some(value);
+                        self.apply_pid_output(index, cfg, backend, value, dt_s);
+                    }
+                    LoopKind::FreqTemp | LoopKind::FreqPower => {
+                        self.last_temp = self.last_sensors.pick(cfg.sensor);
+                        self.apply_freq_output(index, cfg, backend, value, dt_s);
+                    }
                 }
             }
         }
@@ -338,67 +559,139 @@ impl GpuController {
         temp: f32,
         dt_s: f32,
     ) {
-        let emergency_at = cfg.pid.target_c + cfg.pid.emergency_delta_c;
-        let idle_at = cfg.pid.target_c - cfg.pid.idle_delta_c;
+        let p = self.params(cfg);
+        let mut terms = self.pid.step(temp, dt_s);
+        self.last_pid = Some(terms);
+        if p.adaptive() {
+            self.learn_base(cfg);
+        }
+        // Forced zones override the output while the PID keeps stepping —
+        // its anti-windup freezes the integral at the rail, so the exit is
+        // bumpless and the /status terms stay live.
+        if let Some(forced) = self.update_zones(index, p, temp, "°C", false) {
+            terms.output_percent = forced;
+            self.last_pid = Some(terms);
+            self.commit_fan(index, cfg, backend, forced, temp);
+        } else {
+            self.commit_fan(index, cfg, backend, terms.output_percent, temp);
+        }
+    }
 
-        // Forced-zone latches with 2 °C exit hysteresis. The PID keeps
-        // stepping through both zones — its conditional anti-windup freezes
-        // the integral at whatever value makes the raw output sit at the
-        // forced rail, so leaving a zone is bumpless (no reset, no blast).
+    /// Frequency-lock loops: same PID/zones in effort space, then the effort
+    /// maps to a frequency cap (`max_mhz` fully open … `min_mhz` deepest).
+    fn apply_freq_output(
+        &mut self,
+        index: usize,
+        cfg: &RuntimeConfig,
+        backend: &mut dyn ControlBackend,
+        value: f32,
+        dt_s: f32,
+    ) {
+        let p = self.params(cfg);
+        let unit = match self.loop_kind {
+            LoopKind::FreqPower => "W",
+            _ => "°C",
+        };
+        let guard = self.temp_guard_active(cfg);
+        let mut terms = self.pid.step(value, dt_s);
+        self.last_pid = Some(terms);
+        if p.adaptive() {
+            self.learn_base(cfg);
+        }
+        if let Some(forced) = self.update_zones(index, p, value, unit, guard) {
+            terms.output_percent = forced;
+            self.last_pid = Some(terms);
+            self.commit_freq(index, cfg, backend, forced);
+        } else {
+            self.commit_freq(index, cfg, backend, terms.output_percent);
+        }
+    }
+
+    /// The `freq_power` loop is blind to temperature by construction, so an
+    /// overtemp guard overrides it: core temp ≥ `temp_guard_c` forces the
+    /// deepest cap. Latched while the temperature stays above the guard.
+    fn temp_guard_active(&self, cfg: &RuntimeConfig) -> bool {
+        if cfg.loop_kind != LoopKind::FreqPower || cfg.freq.temp_guard_c <= 0.0 {
+            return false;
+        }
+        self.last_temp.is_some_and(|t| t >= cfg.freq.temp_guard_c)
+    }
+
+    /// Forced-zone latches with 2-unit exit hysteresis, shared by every loop
+    /// kind. The PID keeps stepping through both zones — its conditional
+    /// anti-windup freezes the integral at whatever value makes the raw
+    /// output sit at the forced rail, so leaving a zone is bumpless (no
+    /// reset, no blast). Returns the forced effort while a zone (or the
+    /// freq_power temperature guard) holds, else `None`.
+    fn update_zones(
+        &mut self,
+        index: usize,
+        p: &dyn LoopParams,
+        value: f32,
+        unit: &str,
+        guard: bool,
+    ) -> Option<f32> {
+        let emergency_at = p.target() + p.emergency_delta();
+        let idle_at = p.target() - p.idle_delta();
         if self.emergency_active {
-            if temp <= emergency_at - ZONE_HYSTERESIS_C {
-                log::info!("GPU {index}: left emergency zone ({temp:.1} °C)");
+            if !guard && value <= emergency_at - ZONE_HYSTERESIS_C {
+                log::info!("GPU {index}: left emergency zone ({value:.1} {unit})");
                 self.emergency_active = false;
             }
-        } else if temp >= emergency_at {
+        } else if value >= emergency_at {
             log::warn!(
-                "GPU {index}: {temp:.1} °C ≥ emergency line {emergency_at:.1} °C; forcing 100% duty"
+                "GPU {index}: {value:.1} {unit} ≥ emergency line {emergency_at:.1} {unit}; \
+                 forcing maximum effort"
             );
             self.emergency_active = true;
         }
         if self.idle_active {
-            if temp >= idle_at + ZONE_HYSTERESIS_C {
-                log::info!("GPU {index}: left idle zone ({temp:.1} °C); PID resumes");
+            if value >= idle_at + ZONE_HYSTERESIS_C {
+                log::info!("GPU {index}: left idle zone ({value:.1} {unit}); PID resumes");
                 self.idle_active = false;
             }
-        } else if cfg.pid.idle_delta_c > 0.0 && temp <= idle_at {
+        } else if p.idle_delta() > 0.0 && value <= idle_at {
             log::info!(
-                "GPU {index}: {temp:.1} °C ≤ idle line {idle_at:.1} °C; forcing {}% duty",
-                cfg.pid.min_percent
+                "GPU {index}: {value:.1} {unit} ≤ idle line {idle_at:.1} {unit}; \
+                 forcing {}% (minimum effort)",
+                p.min_percent()
             );
             self.idle_active = true;
         }
-
-        let terms = self.pid.step(temp, dt_s);
-        self.last_pid = Some(terms);
-        if cfg.pid.adaptive_base {
-            self.learn_base(cfg);
-        }
-
-        let output = if self.emergency_active {
+        if self.emergency_active {
             self.failsafe = FailsafeState::Emergency;
-            100.0
-        } else if self.idle_active {
+            return Some(100.0);
+        }
+        if self.idle_active {
             self.failsafe = FailsafeState::IdleHold;
-            cfg.pid.min_percent
-        } else {
-            // Clear only our own zone flags; ReadFailures/RestoreFailed are
-            // owned by the failure paths and must not be clobbered here.
-            if self.failsafe == FailsafeState::Emergency || self.failsafe == FailsafeState::IdleHold
-            {
-                self.failsafe = FailsafeState::Ok;
-            }
-            terms.output_percent
-        };
+            return Some(p.min_percent());
+        }
+        // The freq_power temperature guard forces the deepest cap — it is a
+        // safety override, not a tuned state.
+        if guard {
+            self.failsafe = FailsafeState::Emergency;
+            return Some(100.0);
+        }
+        // Clear only our own zone flags; ReadFailures/RestoreFailed are
+        // owned by the failure paths and must not be clobbered here.
+        if self.failsafe == FailsafeState::Emergency || self.failsafe == FailsafeState::IdleHold {
+            self.failsafe = FailsafeState::Ok;
+        }
+        None
+    }
 
-        // Write deadband (anti-chatter): quantized duty writes are a relay
-        // nonlinearity; suppress writes while the output stays within the
-        // deadband of the duty already on the wire. A forced-zone write
-        // (|rail − last| ≫ deadband) always passes.
+    fn commit_fan(
+        &mut self,
+        index: usize,
+        cfg: &RuntimeConfig,
+        backend: &mut dyn ControlBackend,
+        output: f32,
+        temp: f32,
+    ) {
         let duty = output.round().clamp(0.0, 100.0) as u32;
         let inside_deadband = match self.last_written {
             None => false,
-            Some(last) => (output - last as f32).abs() < cfg.pid.write_deadband_percent,
+            Some(last) => (output - last as f32).abs() < self.params(cfg).write_deadband_percent(),
         };
         if !inside_deadband {
             match backend.write_fan_percent(index, duty) {
@@ -415,18 +708,58 @@ impl GpuController {
         }
     }
 
+    fn commit_freq(
+        &mut self,
+        index: usize,
+        cfg: &RuntimeConfig,
+        backend: &mut dyn ControlBackend,
+        effort: f32,
+    ) {
+        let cap_khz = self.cap_khz(cfg, effort);
+        self.last_cap_mhz = Some(cap_khz / 1000);
+        let inside_deadband = match self.last_written {
+            None => false,
+            Some(last) => (effort - last as f32).abs() < self.params(cfg).write_deadband_percent(),
+        };
+        if !inside_deadband {
+            match backend.write_freq_cap_khz(index, cap_khz) {
+                Ok(()) => {
+                    self.last_written = Some(effort.round() as u32);
+                    self.last_error = None;
+                    log::info!(
+                        "GPU {index}: freq cap {} MHz (effort {effort:.0}%)",
+                        cap_khz / 1000
+                    );
+                }
+                Err(e) => {
+                    log::error!("GPU {index}: freq cap write failed: {e}");
+                    self.last_error = Some(e);
+                }
+            }
+        }
+    }
+
+    /// Map restriction effort (0 = cap fully open, 100 = deepest cap) to a
+    /// frequency cap in kHz.
+    fn cap_khz(&self, cfg: &RuntimeConfig, effort: f32) -> u32 {
+        let span = (cfg.freq.max_mhz - cfg.freq.min_mhz) as f32;
+        let cap_mhz = cfg.freq.max_mhz as f32 - effort / 100.0 * span;
+        (cap_mhz * 1000.0).round() as u32
+    }
+
     /// Adaptive feed-forward: continuously re-center integral authority into
     /// `self.base`. The transfer is output-continuous (base moves by exactly
     /// what the integral counter-moves), so learning adds no loop dynamics —
     /// it only re-partitions state, which is how the base tracks the load
     /// level in both directions without configuration. Requires `ki > 0`.
     fn learn_base(&mut self, cfg: &RuntimeConfig) {
+        let p = self.params(cfg);
         let i_term = self.pid.i_term();
         if i_term.abs() < BASE_ABSORB_FLOOR {
             return;
         }
         let delta = (BASE_ABSORB_FRACTION * i_term).clamp(-BASE_ABSORB_MAX, BASE_ABSORB_MAX);
-        let new_base = (self.base + delta).clamp(cfg.pid.min_percent, cfg.pid.max_percent);
+        let new_base = (self.base + delta).clamp(p.min_percent(), p.max_percent());
         let delta = new_base - self.base;
         if delta == 0.0 {
             return;
@@ -447,7 +780,7 @@ impl GpuController {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{GpuSelection, RuntimeConfig};
+    use crate::config::{FreqParams, GpuSelection, LoopKind as LK, RuntimeConfig};
 
     /// Scriptable fake hardware.
     struct Mock {
@@ -458,6 +791,11 @@ mod tests {
         fail_writes: bool,
         /// restore_fan_auto fails this many times before succeeding.
         restore_fails: u32,
+        /// Power draw reported by read_power_watts.
+        power: Option<f32>,
+        /// Frequency caps written by write_freq_cap_khz (MHz).
+        freq_caps: Vec<u32>,
+        freq_restores: usize,
     }
 
     impl Mock {
@@ -471,6 +809,9 @@ mod tests {
                 restores: 0,
                 fail_writes: false,
                 restore_fails: 0,
+                power: None,
+                freq_caps: Vec::new(),
+                freq_restores: 0,
             }
         }
     }
@@ -488,11 +829,25 @@ mod tests {
         fn read_fan(&mut self, _i: usize) -> Option<FanReading> {
             None
         }
+        fn read_power_watts(&mut self, _i: usize) -> Option<f32> {
+            self.power
+        }
+        fn read_core_clock_mhz(&mut self, _i: usize) -> Option<f32> {
+            self.freq_caps.last().map(|c| *c as f32 / 1000.0)
+        }
         fn write_fan_percent(&mut self, _i: usize, p: u32) -> Result<(), String> {
             if self.fail_writes {
                 return Err("write rejected".to_string());
             }
             self.writes.push(p);
+            Ok(())
+        }
+        fn write_freq_cap_khz(&mut self, _i: usize, cap_khz: u32) -> Result<(), String> {
+            if self.fail_writes {
+                return Err("write rejected".to_string());
+            }
+            self.freq_caps.push(cap_khz / 1000);
+            self.writes.push(cap_khz / 1000);
             Ok(())
         }
         fn restore_fan_auto(&mut self, _i: usize) -> Result<(), String> {
@@ -501,6 +856,10 @@ mod tests {
                 return Err("restore rejected".to_string());
             }
             self.restores += 1;
+            Ok(())
+        }
+        fn restore_freq_auto(&mut self, _i: usize) -> Result<(), String> {
+            self.freq_restores += 1;
             Ok(())
         }
     }
@@ -518,7 +877,10 @@ mod tests {
 
     #[test]
     fn pid_mode_writes_rising_duty_for_hot_temp() {
-        let mut c = GpuController::new(PidController::from_params(&PidParams::default()));
+        let mut c = GpuController::new(
+            PidController::from_params(&PidParams::default()),
+            LoopKind::FanTemp,
+        );
         let mut m = Mock::steady(85.0);
         let mut config = cfg(ControlMode::Pid);
         config.pid.ki = 0.0; // no integral creep: out = 40 + 2·10 = 60 exactly
@@ -530,7 +892,10 @@ mod tests {
 
     #[test]
     fn deadband_skips_unchanged_writes() {
-        let mut c = GpuController::new(PidController::from_params(&PidParams::default()));
+        let mut c = GpuController::new(
+            PidController::from_params(&PidParams::default()),
+            LoopKind::FanTemp,
+        );
         let mut m = Mock::steady(85.0);
         let mut config = cfg(ControlMode::Pid);
         config.pid.ki = 0.0; // constant plant + pure PD → constant duty
@@ -542,7 +907,10 @@ mod tests {
 
     #[test]
     fn manual_mode_pins_once_and_restore_hands_back() {
-        let mut c = GpuController::new(PidController::from_params(&PidParams::default()));
+        let mut c = GpuController::new(
+            PidController::from_params(&PidParams::default()),
+            LoopKind::FanTemp,
+        );
         let mut m = Mock::steady(60.0);
         let mut config = cfg(ControlMode::Manual);
         config.manual_percent = 55;
@@ -557,7 +925,10 @@ mod tests {
 
     #[test]
     fn emergency_forces_max_with_hysteresis_and_bumpless_exit() {
-        let mut c = GpuController::new(PidController::from_params(&PidParams::default()));
+        let mut c = GpuController::new(
+            PidController::from_params(&PidParams::default()),
+            LoopKind::FanTemp,
+        );
         // default emergency line: 75 + 12 = 87; exit at 85.
         let mut m = Mock::steady(88.0);
         let config = cfg(ControlMode::Pid);
@@ -598,7 +969,7 @@ mod tests {
         config.pid.adaptive_base = false;
         config.pid.ki = 0.4;
         config.pid.base_percent = 60.0;
-        let mut c = GpuController::new(PidController::from_params(&config.pid));
+        let mut c = GpuController::new(PidController::from_params(&config.pid), config.loop_kind);
         let mut m = Mock {
             temps: vec![
                 Ok(SensorBundle {
@@ -630,6 +1001,9 @@ mod tests {
             restores: 0,
             fail_writes: false,
             restore_fails: 0,
+            power: None,
+            freq_caps: Vec::new(),
+            freq_restores: 0,
         };
         let st = tick(&mut c, &mut m, &config);
         assert_eq!(st.failsafe, FailsafeState::Ok);
@@ -661,7 +1035,7 @@ mod tests {
         config.pid.adaptive_base = false;
         config.pid.ki = 0.0;
         config.pid.idle_delta_c = 0.0;
-        let mut c = GpuController::new(PidController::from_params(&config.pid));
+        let mut c = GpuController::new(PidController::from_params(&config.pid), config.loop_kind);
         let mut m = Mock::steady(60.0);
         for _ in 0..3 {
             let st = tick(&mut c, &mut m, &config);
@@ -676,7 +1050,10 @@ mod tests {
 
     #[test]
     fn read_failures_trip_failsafe_then_recover() {
-        let mut c = GpuController::new(PidController::from_params(&PidParams::default()));
+        let mut c = GpuController::new(
+            PidController::from_params(&PidParams::default()),
+            LoopKind::FanTemp,
+        );
         let mut config = cfg(ControlMode::Pid);
         config.read_fail_reset = 3;
         let mut m = Mock {
@@ -685,6 +1062,9 @@ mod tests {
             restores: 0,
             fail_writes: false,
             restore_fails: 0,
+            power: None,
+            freq_caps: Vec::new(),
+            freq_restores: 0,
         };
         // Seed: pretend a duty is currently pinned (restore must fire).
         c.last_written = Some(50);
@@ -713,13 +1093,19 @@ mod tests {
         // every tick until the driver accepts it.
         let mut config = cfg(ControlMode::Pid);
         config.read_fail_reset = 1;
-        let mut c = GpuController::new(PidController::from_params(&PidParams::default()));
+        let mut c = GpuController::new(
+            PidController::from_params(&PidParams::default()),
+            LoopKind::FanTemp,
+        );
         let mut m = Mock {
             temps: vec![Err("sensor gone".into())],
             writes: Vec::new(),
             restores: 0,
             fail_writes: false,
             restore_fails: 2,
+            power: None,
+            freq_caps: Vec::new(),
+            freq_restores: 0,
         };
         c.last_written = Some(50);
         let st = tick(&mut c, &mut m, &config);
@@ -735,7 +1121,10 @@ mod tests {
 
     #[test]
     fn auto_mode_never_writes() {
-        let mut c = GpuController::new(PidController::from_params(&PidParams::default()));
+        let mut c = GpuController::new(
+            PidController::from_params(&PidParams::default()),
+            LoopKind::FanTemp,
+        );
         let mut m = Mock::steady(90.0);
         let st = tick(&mut c, &mut m, &cfg(ControlMode::Auto));
         assert!(m.writes.is_empty());
@@ -745,7 +1134,10 @@ mod tests {
 
     #[test]
     fn write_failure_is_reported_not_fatal() {
-        let mut c = GpuController::new(PidController::from_params(&PidParams::default()));
+        let mut c = GpuController::new(
+            PidController::from_params(&PidParams::default()),
+            LoopKind::FanTemp,
+        );
         let mut m = Mock::steady(85.0);
         m.fail_writes = true;
         let st = tick(&mut c, &mut m, &cfg(ControlMode::Pid));
@@ -760,7 +1152,7 @@ mod tests {
         let mut config = cfg(ControlMode::Pid);
         config.pid.kp = 0.0;
         config.pid.ki = 0.4;
-        let mut c = GpuController::new(PidController::from_params(&config.pid));
+        let mut c = GpuController::new(PidController::from_params(&config.pid), config.loop_kind);
         let mut m = Mock::steady(77.0);
         config.pid.write_deadband_percent = 1.0;
         for _ in 0..4 {
@@ -772,7 +1164,7 @@ mod tests {
             "deadband 1 skips the 0.6 % drift"
         );
 
-        let mut c = GpuController::new(PidController::from_params(&config.pid));
+        let mut c = GpuController::new(PidController::from_params(&config.pid), config.loop_kind);
         let mut m = Mock::steady(77.0);
         config.pid.write_deadband_percent = 0.25;
         for _ in 0..4 {
@@ -816,8 +1208,11 @@ mod tests {
             restores: 0,
             fail_writes: false,
             restore_fails: 0,
+            power: None,
+            freq_caps: Vec::new(),
+            freq_restores: 0,
         };
-        let mut c = GpuController::new(PidController::from_params(&config.pid));
+        let mut c = GpuController::new(PidController::from_params(&config.pid), config.loop_kind);
         for _ in 0..3 {
             tick(&mut c, &mut m, &config);
         }
@@ -857,7 +1252,7 @@ mod tests {
         config.pid.kp = 0.0;
         config.pid.ki = 0.4;
         config.pid.base_percent = 60.0;
-        let mut c = GpuController::new(PidController::from_params(&config.pid));
+        let mut c = GpuController::new(PidController::from_params(&config.pid), config.loop_kind);
         let mut m = Mock::steady(65.0); // ≤ target−4 → idle zone
         let st = tick(&mut c, &mut m, &config);
         assert_eq!(st.failsafe, FailsafeState::IdleHold);
@@ -878,7 +1273,7 @@ mod tests {
         config.pid.adaptive_base = false;
         config.pid.kp = 0.0;
         config.pid.ki = 0.4;
-        let mut c = GpuController::new(PidController::from_params(&config.pid));
+        let mut c = GpuController::new(PidController::from_params(&config.pid), config.loop_kind);
         let mut m = Mock::steady(75.0);
         let st = tick(&mut c, &mut m, &config);
         assert!((st.pid.expect("pid ran").base_percent - 40.0).abs() < 1e-4);
@@ -886,6 +1281,126 @@ mod tests {
         config.pid.base_percent = 55.0;
         let st = tick(&mut c, &mut m, &config);
         assert!((st.pid.expect("pid ran").base_percent - 55.0).abs() < 1e-4);
+    }
+
+    fn freq_power_cfg() -> RuntimeConfig {
+        let mut config = cfg(ControlMode::Pid);
+        config.loop_kind = LK::FreqPower;
+        config.freq = FreqParams {
+            target: 150.0,
+            kp: 1.0,
+            ki: 0.0,
+            kd: 0.0,
+            base_percent: 0.0,
+            min_percent: 0.0,
+            max_percent: 100.0,
+            idle_delta: 30.0,
+            emergency_delta: 30.0,
+            temp_guard_c: 0.0,
+            min_mhz: 300,
+            max_mhz: 2100,
+            adaptive_base: false,
+            write_deadband_percent: 1.0,
+        };
+        config
+    }
+
+    #[test]
+    fn freq_power_loop_caps_the_clock_on_overpower() {
+        let config = freq_power_cfg();
+        let mut c = GpuController::new(
+            PidController::from_params(&PidParams::default()),
+            config.loop_kind,
+        );
+        let mut m = Mock::steady(70.0);
+        m.power = Some(170.0);
+        let st = tick(&mut c, &mut m, &config);
+        // error 20 W, kp 1 → effort 20 % → cap = 2100 − 0.20·1800 = 1740
+        assert_eq!(m.freq_caps, vec![1740]);
+        assert_eq!(st.cap_mhz, Some(1740));
+        assert_eq!(st.failsafe, FailsafeState::Ok);
+
+        // Overpower past the emergency line: deepest cap.
+        m.power = Some(185.0);
+        let st = tick(&mut c, &mut m, &config);
+        assert_eq!(st.failsafe, FailsafeState::Emergency);
+        assert_eq!(m.freq_caps.last(), Some(&300));
+
+        // Light load below the idle band: idle zone, cap fully open.
+        m.power = Some(100.0);
+        let st = tick(&mut c, &mut m, &config);
+        assert_eq!(st.failsafe, FailsafeState::IdleHold);
+        assert_eq!(m.freq_caps.last(), Some(&2100));
+    }
+
+    #[test]
+    fn freq_power_temp_guard_overrides_the_power_loop() {
+        let mut config = freq_power_cfg();
+        config.freq.temp_guard_c = 88.0;
+        config.freq.idle_delta = 0.0; // keep the idle zone out of the way
+        let mut c = GpuController::new(
+            PidController::from_params(&PidParams::default()),
+            config.loop_kind,
+        );
+        // Power at target, but temperature past the guard: deepest cap.
+        let mut m = Mock::steady(90.0);
+        m.power = Some(150.0);
+        let st = tick(&mut c, &mut m, &config);
+        assert_eq!(st.failsafe, FailsafeState::Emergency);
+        assert_eq!(m.freq_caps.last(), Some(&300));
+        // Guard clears with 2 °C hysteresis (88 − 2 = 86): PID resumes.
+        m.temps = vec![Ok(SensorBundle {
+            core_c: Some(85.0),
+            ..Default::default()
+        })];
+        let st = tick(&mut c, &mut m, &config);
+        assert_eq!(st.failsafe, FailsafeState::Ok);
+        // error = 150 − 150 = 0 → effort 0 → cap open
+        assert_eq!(m.freq_caps.last(), Some(&2100));
+    }
+
+    #[test]
+    fn freq_temp_loop_caps_on_overtemp() {
+        let mut config = cfg(ControlMode::Pid);
+        config.loop_kind = LK::FreqTemp;
+        config.freq.target = 75.0;
+        config.freq.kp = 2.0;
+        config.freq.ki = 0.0;
+        let mut c = GpuController::new(
+            PidController::from_params(&PidParams::default()),
+            config.loop_kind,
+        );
+        let mut m = Mock::steady(80.0);
+        let st = tick(&mut c, &mut m, &config);
+        // error 5 °C, kp 2 → effort 10 % → cap 1920 MHz
+        assert_eq!(st.failsafe, FailsafeState::Ok);
+        assert_eq!(m.freq_caps, vec![1920]);
+
+        // Below the idle line: cap fully open (no restriction while cool).
+        m.temps = vec![Ok(SensorBundle {
+            core_c: Some(60.0),
+            ..Default::default()
+        })];
+        let st = tick(&mut c, &mut m, &config);
+        assert_eq!(st.failsafe, FailsafeState::IdleHold);
+        assert_eq!(m.freq_caps.last(), Some(&2100));
+    }
+
+    #[test]
+    fn loop_switch_hands_over_the_actuator() {
+        let mut config = cfg(ControlMode::Pid);
+        let mut c = GpuController::new(PidController::from_params(&config.pid), config.loop_kind);
+        let mut m = Mock::steady(80.0);
+        tick(&mut c, &mut m, &config);
+        assert_eq!(m.writes, vec![50]); // fan: 40 + 2·(80−75)
+
+        // Switch to the frequency loop: the fan pin is undone and the new
+        // actuator takes over in the same tick.
+        config.loop_kind = LK::FreqTemp;
+        let st = tick(&mut c, &mut m, &config);
+        assert_eq!(m.restores, 1, "old actuator restored on switch");
+        assert_eq!(m.freq_caps.len(), 1, "new actuator wrote a cap");
+        assert_eq!(st.failsafe, FailsafeState::Ok);
     }
 
     #[test]

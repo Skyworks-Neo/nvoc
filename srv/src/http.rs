@@ -5,7 +5,9 @@
 //! header, which browsers refuse to attach to cross-origin requests without
 //! a successful preflight.
 
-use crate::config::{ControlMode, INTERVAL_MS_MAX, INTERVAL_MS_MIN, SensorKind};
+use crate::config::{
+    ControlMode, INTERVAL_MS_MAX, INTERVAL_MS_MIN, LoopKind, RuntimeConfig, SensorKind,
+};
 use crate::controller::GpuControlStatus;
 use crate::runtime::{ServiceCmd, SharedConfig, SharedStatus, lock};
 use flume::Sender;
@@ -308,6 +310,20 @@ fn assign_f32(
     }
 }
 
+fn assign_u32(
+    params: &HashMap<String, String>,
+    key: &str,
+    dst: &mut u32,
+    errors: &mut Vec<String>,
+) {
+    if let Some(raw) = params.get(key) {
+        match raw.parse::<u32>() {
+            Ok(v) => *dst = v,
+            _ => errors.push(format!("invalid '{key}'")),
+        }
+    }
+}
+
 fn assign_bool(
     params: &HashMap<String, String>,
     key: &str,
@@ -332,35 +348,88 @@ fn handle_pid_update(
     config: &SharedConfig,
 ) {
     let mut cfg = lock(config);
-    let mut p = cfg.pid.clone();
     let mut errors: Vec<String> = Vec::new();
 
-    assign_f32(params, "target_c", &mut p.target_c, &mut errors);
-    assign_f32(params, "kp", &mut p.kp, &mut errors);
-    assign_f32(params, "ki", &mut p.ki, &mut errors);
-    assign_f32(params, "kd", &mut p.kd, &mut errors);
-    assign_f32(params, "base_percent", &mut p.base_percent, &mut errors);
-    assign_f32(params, "min_percent", &mut p.min_percent, &mut errors);
-    assign_f32(params, "max_percent", &mut p.max_percent, &mut errors);
-    assign_f32(
-        params,
-        "emergency_delta_c",
-        &mut p.emergency_delta_c,
-        &mut errors,
-    );
-    assign_f32(params, "idle_delta_c", &mut p.idle_delta_c, &mut errors);
-    assign_f32(
-        params,
-        "write_deadband_percent",
-        &mut p.write_deadband_percent,
-        &mut errors,
-    );
-    assign_bool(
-        params,
-        "adaptive_base",
-        &mut cfg.pid.adaptive_base,
-        &mut errors,
-    );
+    // Route the shared parameter names to the ACTIVE loop: `[pid]` for the
+    // fan loop, `[freq]` for the frequency loops (units per loop kind).
+    match cfg.loop_kind {
+        LoopKind::FanTemp => {
+            let mut p = cfg.pid.clone();
+            assign_f32(params, "target_c", &mut p.target_c, &mut errors);
+            assign_f32(params, "kp", &mut p.kp, &mut errors);
+            assign_f32(params, "ki", &mut p.ki, &mut errors);
+            assign_f32(params, "kd", &mut p.kd, &mut errors);
+            assign_f32(params, "base_percent", &mut p.base_percent, &mut errors);
+            assign_f32(params, "min_percent", &mut p.min_percent, &mut errors);
+            assign_f32(params, "max_percent", &mut p.max_percent, &mut errors);
+            assign_f32(
+                params,
+                "emergency_delta_c",
+                &mut p.emergency_delta_c,
+                &mut errors,
+            );
+            assign_f32(params, "idle_delta_c", &mut p.idle_delta_c, &mut errors);
+            assign_f32(
+                params,
+                "write_deadband_percent",
+                &mut p.write_deadband_percent,
+                &mut errors,
+            );
+            assign_bool(params, "adaptive_base", &mut p.adaptive_base, &mut errors);
+            if errors.is_empty() {
+                if let Err(e) = p.validate() {
+                    errors.push(e);
+                } else {
+                    cfg.pid = p;
+                }
+            }
+        }
+        LoopKind::FreqTemp | LoopKind::FreqPower => {
+            let mut f = cfg.freq.clone();
+            // `target_c` and `target` both address the setpoint (unit per
+            // loop kind: degC for freq_temp, W for freq_power).
+            let target_raw = params
+                .get("target_c")
+                .or_else(|| params.get("target"))
+                .cloned();
+            if let Some(raw) = target_raw {
+                match raw.parse::<f32>() {
+                    Ok(v) if v.is_finite() => f.target = v,
+                    _ => errors.push("invalid 'target_c'".to_string()),
+                }
+            }
+            assign_f32(params, "kp", &mut f.kp, &mut errors);
+            assign_f32(params, "ki", &mut f.ki, &mut errors);
+            assign_f32(params, "kd", &mut f.kd, &mut errors);
+            assign_f32(params, "base_percent", &mut f.base_percent, &mut errors);
+            assign_f32(params, "min_percent", &mut f.min_percent, &mut errors);
+            assign_f32(params, "max_percent", &mut f.max_percent, &mut errors);
+            assign_f32(
+                params,
+                "emergency_delta_c",
+                &mut f.emergency_delta,
+                &mut errors,
+            );
+            assign_f32(params, "idle_delta_c", &mut f.idle_delta, &mut errors);
+            assign_f32(params, "temp_guard_c", &mut f.temp_guard_c, &mut errors);
+            assign_f32(
+                params,
+                "write_deadband_percent",
+                &mut f.write_deadband_percent,
+                &mut errors,
+            );
+            assign_bool(params, "adaptive_base", &mut f.adaptive_base, &mut errors);
+            assign_u32(params, "min_mhz", &mut f.min_mhz, &mut errors);
+            assign_u32(params, "max_mhz", &mut f.max_mhz, &mut errors);
+            if errors.is_empty() {
+                if let Err(e) = f.validate() {
+                    errors.push(e);
+                } else {
+                    cfg.freq = f;
+                }
+            }
+        }
+    }
     if let Some(v) = params
         .get("interval_ms")
         .and_then(|s| s.parse::<u64>().ok())
@@ -384,19 +453,30 @@ fn handle_pid_update(
         text_response(request, 400, format!("Bad request: {}", errors.join("; ")));
         return;
     }
-    if let Err(e) = p.validate() {
-        text_response(request, 400, format!("Bad request: {e}"));
-        return;
-    }
-    // validate() already bounds the setpoint; this log line is the audit trail.
-    let target = p.target_c;
-    let kp = p.kp;
-    let ki = p.ki;
-    let kd = p.kd;
-    let base = p.base_percent;
-    cfg.pid = p;
-    info!("PID updated via HTTP: target={target} kp={kp} ki={ki} kd={kd} base={base}");
+    let (loop_name, target) = match cfg.loop_kind {
+        LoopKind::FanTemp => ("fan_temp", cfg.pid.target_c),
+        LoopKind::FreqTemp => ("freq_temp", cfg.freq.target),
+        LoopKind::FreqPower => ("freq_power", cfg.freq.target),
+    };
+    info!(
+        "PID updated via HTTP: loop={loop_name} target={target} gains={}",
+        cfg_active_gains(&cfg)
+    );
     text_response(request, 200, "OK: pid updated");
+}
+
+/// Gains of the active loop, for the audit log line.
+fn cfg_active_gains(cfg: &RuntimeConfig) -> String {
+    match cfg.loop_kind {
+        LoopKind::FanTemp => format!(
+            "{}/{}/{}/base={}",
+            cfg.pid.kp, cfg.pid.ki, cfg.pid.kd, cfg.pid.base_percent
+        ),
+        LoopKind::FreqTemp | LoopKind::FreqPower => format!(
+            "{}/{}/{}/base={}",
+            cfg.freq.kp, cfg.freq.ki, cfg.freq.kd, cfg.freq.base_percent
+        ),
+    }
 }
 
 fn handle_oc_global(

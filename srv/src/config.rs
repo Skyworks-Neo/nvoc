@@ -124,6 +124,139 @@ pub enum ControlMode {
     Manual,
 }
 
+/// Which control loop is active — exactly one at a time. All loops share the
+/// PID/zones/adaptive-base machinery in "restriction effort" space (0–100 %):
+/// for the fan loop effort *is* the duty; for the frequency loops effort is
+/// the fraction of the frequency range removed from the cap
+/// (`cap = max_mhz − effort%·(max_mhz − min_mhz)`), which keeps the plant
+/// gain sign identical (more effort ⇒ less boost ⇒ cooler/less power).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum LoopKind {
+    /// Fan duty → temperature (the original loop).
+    #[default]
+    #[serde(rename = "fan_temp")]
+    FanTemp,
+    /// Frequency-lock cap → temperature. For laptops without usable fan or
+    /// private-thermal surfaces, and for targets below the driver's floor.
+    #[serde(rename = "freq_temp")]
+    FreqTemp,
+    /// Frequency-lock cap → board power draw. Physically near-direct
+    /// (P ≈ a(T)·V(f)²·f + b(T)·f): prefer a short `interval_ms` and a
+    /// non-zero `kd`.
+    #[serde(rename = "freq_power")]
+    FreqPower,
+}
+
+/// Frequency-lock loop parameters. `target`/delta units depend on the loop
+/// kind: °C for `freq_temp`, watts for `freq_power`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct FreqParams {
+    /// Control setpoint (°C or W, per loop kind).
+    pub target: f32,
+    pub kp: f32,
+    pub ki: f32,
+    pub kd: f32,
+    /// Feed-forward restriction (% of the cap range removed) — with
+    /// `adaptive_base` on this is only the seed.
+    pub base_percent: f32,
+    /// Restriction effort bounds (%). 0 = cap fully open, 100 = deepest cap.
+    pub min_percent: f32,
+    pub max_percent: f32,
+    /// Sensor far below target → cap fully open (effort 0), mirroring the
+    /// fan loop's idle zone.
+    pub idle_delta: f32,
+    /// Sensor far above target → deepest cap (effort 100).
+    pub emergency_delta: f32,
+    /// `freq_power` only: core temperature ≥ this forces the deepest cap
+    /// regardless of the power loop (the power loop is blind to temperature).
+    /// 0 disables the guard.
+    pub temp_guard_c: f32,
+    /// Deepest allowed frequency cap (MHz) — the controller never restricts
+    /// below this.
+    pub min_mhz: u32,
+    /// Cap ceiling (MHz) — the controller never opens the cap above this.
+    pub max_mhz: u32,
+    /// Learn the restriction base online (same mechanism as the fan loop).
+    pub adaptive_base: bool,
+    /// Anti-chatter deadband in restriction-effort percent.
+    pub write_deadband_percent: f32,
+}
+
+impl Default for FreqParams {
+    fn default() -> Self {
+        Self {
+            target: 75.0,
+            kp: 3.0,
+            ki: 0.05,
+            kd: 0.0,
+            base_percent: 0.0,
+            min_percent: 0.0,
+            max_percent: 100.0,
+            idle_delta: 8.0,
+            emergency_delta: 15.0,
+            temp_guard_c: 90.0,
+            min_mhz: 300,
+            max_mhz: 2100,
+            adaptive_base: true,
+            write_deadband_percent: 1.0,
+        }
+    }
+}
+
+impl FreqParams {
+    pub fn validate(&self) -> Result<(), String> {
+        if !(0.0..=1000.0).contains(&self.target) || !self.target.is_finite() {
+            return Err(format!("target must be 0–1000, got {}", self.target));
+        }
+        for (name, v) in [("kp", self.kp), ("ki", self.ki), ("kd", self.kd)] {
+            if !v.is_finite() || v < 0.0 {
+                return Err(format!("{name} must be finite and >= 0, got {v}"));
+            }
+        }
+        if self.kp > 50.0 || self.ki > 10.0 || self.kd > 50.0 {
+            return Err("kp ≤ 50, ki ≤ 10, kd ≤ 50 (sanity bounds)".to_string());
+        }
+        if !(0.0..=100.0).contains(&self.base_percent) {
+            return Err(format!(
+                "base_percent must be 0–100, got {}",
+                self.base_percent
+            ));
+        }
+        if !(0.0..=100.0).contains(&self.min_percent)
+            || !(0.0..=100.0).contains(&self.max_percent)
+            || self.min_percent > self.max_percent
+        {
+            return Err("0 ≤ min_percent ≤ max_percent ≤ 100 required".to_string());
+        }
+        if !(0.0..=100.0).contains(&self.idle_delta) {
+            return Err(format!("idle_delta must be 0–100, got {}", self.idle_delta));
+        }
+        if !(1.0..=200.0).contains(&self.emergency_delta) {
+            return Err(format!(
+                "emergency_delta must be 1–200, got {}",
+                self.emergency_delta
+            ));
+        }
+        if self.temp_guard_c != 0.0 && !(40.0..=120.0).contains(&self.temp_guard_c) {
+            return Err(format!(
+                "temp_guard_c must be 0 (off) or 40–120 °C, got {}",
+                self.temp_guard_c
+            ));
+        }
+        if self.max_mhz > 4000 {
+            return Err(format!("max_mhz must be ≤ 4000, got {}", self.max_mhz));
+        }
+        if self.min_mhz > self.max_mhz {
+            return Err(format!(
+                "min_mhz ({}) must be ≤ max_mhz ({})",
+                self.min_mhz, self.max_mhz
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// PID gains and output limits. Output (fan %) = `base_percent` + P + I + D.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -248,9 +381,14 @@ pub struct RuntimeConfig {
     pub mode: ControlMode,
     /// Pinned duty for `ControlMode::Manual`.
     pub manual_percent: u32,
+    /// Which control loop is active (exactly one at a time).
+    pub loop_kind: LoopKind,
+    /// Fan→temperature loop parameters.
     pub pid: PidParams,
+    /// Frequency-lock loop parameters (`freq_temp` / `freq_power`).
+    pub freq: FreqParams,
     /// Consecutive sensor read failures before the controller restores
-    /// driver fan control (failsafe against a pinned-stuck fan).
+    /// driver control (failsafe against a pinned-stuck fan).
     pub read_fail_reset: u32,
     /// Heartbeat staleness that trips the watchdog restore (seconds).
     pub watchdog_timeout_s: u64,
@@ -265,7 +403,9 @@ impl Default for RuntimeConfig {
             gpus: GpuSelection::default(),
             mode: ControlMode::default(),
             manual_percent: 50,
+            loop_kind: LoopKind::default(),
             pid: PidParams::default(),
+            freq: FreqParams::default(),
             read_fail_reset: 3,
             watchdog_timeout_s: 30,
         }
@@ -307,6 +447,8 @@ pub fn load_file(path: &std::path::Path) -> Result<RuntimeConfig, String> {
 impl RuntimeConfig {
     pub fn validate(&self) -> Result<(), String> {
         self.pid.validate()?;
+        self.freq.validate()?;
+        self.freq.validate()?;
         if self.port == 0 {
             return Err("port must be non-zero".to_string());
         }

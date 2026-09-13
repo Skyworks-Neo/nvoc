@@ -49,6 +49,25 @@ Bins:
 - `nvoc-srv-ctl` — Windows SCM management: `install` / `uninstall` / `status`
   / `failure-actions`.
 
+## Control loops (one active at a time)
+
+`loop_kind` selects which loop drives the actuator. All loops share the same
+PID / forced-zone / adaptive-base machinery operating in **restriction-effort
+space (0–100 %)**, which keeps the plant-gain sign identical (more effort ⇒
+less boost/heat):
+
+| `loop_kind` | Actuator | Sensor | Plant |
+|---|---|---|---|
+| `fan_temp` (default) | fan duty % | temperature | dissipation path — slow (τ_T ≈ 10–40 s) |
+| `freq_temp` | `SetVfpFrequencyLock` cap 0…fmax | temperature | heat-source path — same thermal mass, but the source is directly throttlable; works when fan/private-thermal surfaces are unavailable and for targets below the driver's floor |
+| `freq_power` | same cap | NVML board power W | near-direct (P ≈ a(T)·V(f)²f + b(T)f ≈ f³): short `interval_ms` (250 ms) and non-zero `kd` recommended; the power loop is blind to temperature, so `temp_guard_c` forces the deepest cap on overtemp |
+
+The frequency soft wall never pushes frequency up — it only caps boost at
+`fmax` (`cap = max_mhz − effort%·(max_mhz − min_mhz)`), falling back to NVML
+locked clocks where the NDA surface is rejected. Switching `loop_kind` at
+runtime hands over cleanly: the old actuator is restored, the new one takes
+over in the same tick.
+
 ## Configuration
 
 Layered (lowest → highest): built-in defaults → TOML file → CLI flags →
@@ -65,6 +84,7 @@ sensor = "core"           # core | hotspot | memory | board | max
 gpus = "all"              # "all" or a list: [0] / "0,1"
 mode = "pid"              # startup mode: auto | pid | manual
 manual_percent = 50       # pinned duty for mode = "manual"
+loop_kind = "fan_temp"    # active loop: fan_temp | freq_temp | freq_power
 read_fail_reset = 3       # consecutive read failures → restore driver control
 watchdog_timeout_s = 30   # heartbeat staleness → watchdog restore
 
@@ -78,6 +98,20 @@ min_percent = 0.0
 max_percent = 100.0
 emergency_delta_c = 12.0  # target+12 °C forces 100% duty (2 °C exit hysteresis)
 idle_delta_c = 4.0        # ≤ target−4 °C forces min duty (fan stop); 0 = off
+
+[freq]                    # frequency-lock loops (freq_temp / freq_power)
+target = 75.0             # freq_temp: °C · freq_power: W
+kp = 3.0                  # %restriction per unit error (freq_power: ~1.0)
+ki = 0.05
+kd = 0.0                  # freq_power: start at 0.05 (plant is near-direct)
+base_percent = 0.0        # restriction feed-forward seed (%)
+min_percent = 0.0         # 0 = cap fully open
+max_percent = 100.0       # 100 = deepest cap
+idle_delta = 8.0          # sensor below target−delta → cap fully open
+emergency_delta = 15.0    # sensor above target+delta → deepest cap
+temp_guard_c = 90.0       # freq_power: core temp ≥ guard → deepest cap (0 = off)
+min_mhz = 300             # deepest allowed cap (MHz)
+max_mhz = 2100            # cap ceiling (MHz) — never opened above this
 write_deadband_percent = 1.0  # skip writes within ±1 % of the duty on the wire (anti-chatter)
 adaptive_base = true      # learn base_percent online from the integral (see below)
 ```
@@ -93,9 +127,9 @@ unchanged from the legacy service).
 
 | Endpoint | Description |
 |---|---|
-| `GET /status` | top-level `mode`/`interval_ms`/`target_c`; per-GPU temps (core/hotspot/memory/board), written & measured fan duty, last PID decomposition — term values `p/i/d` **plus the effective gains `kp/ki/kd`** and the (possibly learned) `base_percent`; null when the PID did not run this tick; zone/failsafe state |
+| `GET /status` | top-level `mode`/`interval_ms`/`target_c`; per-GPU temps (core/hotspot/memory/board, 1/256 °C via ThermChannel where populated), written & measured fan duty, `cap_mhz`/`core_clock_mhz` on frequency loops, last PID decomposition — term values `p/i/d` **plus the effective gains `kp/ki/kd`** and the (possibly learned) `base_percent`; null when the PID did not run this tick; zone/failsafe state |
 | `GET /config` | effective runtime configuration |
-| `POST /pid?target_c=&kp=&ki=&kd=&base_percent=&min_percent=&max_percent=&emergency_delta_c=&idle_delta_c=&write_deadband_percent=&adaptive_base=&interval_ms=&sensor=` | partial PID update, validated atomically, live |
+| `POST /pid?target_c=&target=&kp=&ki=&kd=&base_percent=&min_percent=&max_percent=&emergency_delta_c=&idle_delta_c=&temp_guard_c=&min_mhz=&max_mhz=&write_deadband_percent=&adaptive_base=&interval_ms=&sensor=` | partial update of the **active loop's** parameters (`[pid]` for `fan_temp`, `[freq]` for the frequency loops), validated atomically, live |
 | `POST /mode?value=auto\|pid\|manual` | switch control mode (`auto` hands fans back to the driver) |
 | `POST /fan?percent=0-100` | pin a duty (switches to manual) |
 | `POST /restore` | alias of `/mode?value=auto` |
@@ -350,9 +384,30 @@ write.
    (`/status` shows `fan_written_percent: null` and the tach follows the
    stock curve).
 
+### Frequency loops (`freq_temp` / `freq_power`)
+
+The frequency soft wall caps boost — it never pushes frequency up. In effort
+space the loops behave like the fan loop (0 = unrestricted, 100 = deepest
+cap at `min_mhz`), so zones and anti-windup carry over unchanged. Two
+physics-driven differences:
+
+- **`freq_power` is a near-direct plant** (P ≈ V(f)²f through the V/F curve):
+  use `interval_ms = 250`, `kp ≈ 1.0 %/W`, and **`kd ≈ 0.05`** — the loop
+  needs derivative damping because there is almost no lag between the cap
+  and the power draw. It cannot see temperature, hence `temp_guard_c`.
+- **`freq_temp` behaves like the fan loop** (the thermal mass dominates):
+  1 s tick, `kd = 0`, `kp ≈ 2–3 %/°C`. The advantage over the fan loop is
+  that the controller owns the heat *source* — throttling always wins
+  against dissipation limits, and it works on laptops whose fan and
+  private-thermal surfaces are locked.
+
+Tuning procedure is the same two-point calibration (pin the cap via
+`mode=manual`, or watch cap vs. power/temperature pairs in `/status`), with
+`g` in °C-per-% or W-per-% of restriction respectively.
+
 Interpreting `/status`:
 
-- `pid.error_c` — positive means hotter than target.
+- `pid.error_c` — positive means hotter than target (or over power target).
 - `pid.i` growing while pinned at a rail → you are saturated; consider more
   `base_percent` (feed-forward) instead of more gain.
 - Duty writes every single tick → oscillation or noise; back `kp` off.

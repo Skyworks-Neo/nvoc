@@ -23,5 +23,7 @@ pub mod runtime;
 #[cfg(windows)]
 pub mod service;
 
-pub use config::{ControlMode, GpuSelection, PidParams, RuntimeConfig, SensorKind};
+pub use config::{
+    ControlMode, FreqParams, GpuSelection, LoopKind, PidParams, RuntimeConfig, SensorKind,
+};
 pub use controller::{ControlBackend, GpuControlStatus, SensorBundle};
