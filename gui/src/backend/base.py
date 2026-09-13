@@ -17,3 +17,6 @@ class FanSettings:
 class GuiBackend(Protocol):
     def apply_fan_settings(self, settings: FanSettings) -> None: ...
     def reset_fan_settings(self, settings: FanSettings) -> None: ...
+    def activate_fan_curve(self) -> None:
+        """Apply with policy=curve: activate the curve editor's selected
+        slot (write points + TemperatureContinuous switch + pin release)."""

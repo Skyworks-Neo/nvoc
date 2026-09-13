@@ -11,7 +11,7 @@ import json
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, List, Optional, Tuple
 
 from src.backend.base import FanSettings
 
@@ -415,6 +415,145 @@ class NativeBackend:
             return "Successfully reset fan settings."
 
         self.app.run_native_action("reset fan settings", reset)
+
+    # ── Fan-curve editor (ClientFanPolicies table) ─────────────────────
+
+    def query_fan_curve(
+        self, gpu: str, on_loaded: Callable[[str, dict | None], None]
+    ) -> None:
+        """Background-load the fan-curve table; ``on_loaded`` runs on the UI
+        thread with ``(gpu, payload-or-None)`` (None = no curve surface —
+        legacy driver / mobile EC board, the editor shows N/A)."""
+
+        def query(native: Any, gpu: str = gpu) -> str:
+            try:
+                data = native.query_fan_curve(gpu)
+            except Exception:
+                data = None
+            self.app.after(0, lambda: on_loaded(gpu, data))
+            return "Loaded fan-curve table." if data else "Fan-curve table unavailable."
+
+        self.app.run_native_action("query fan curve", query)
+
+    def query_cooler_max_rpm(
+        self, gpu: str, on_loaded: Callable[[str, Optional[int]], None]
+    ) -> None:
+        """Background-load the cooler family's max-RPM readout (largest
+        across coolers) — the RPM↔PWM conversion anchor for the editor."""
+
+        def query(native: Any, gpu: str = gpu) -> str:
+            max_rpm: Optional[int] = None
+            try:
+                data = native.query_cooler_info(gpu)
+            except Exception:
+                data = None
+            if isinstance(data, dict):
+                maxes = [
+                    c.get("max") for c in data.get("coolers", []) if isinstance(c, dict)
+                ]
+                rpm_maxes = [m for m in maxes if isinstance(m, int) and m > 0]
+                if rpm_maxes:
+                    max_rpm = max(rpm_maxes)
+            self.app.after(0, lambda: on_loaded(gpu, max_rpm))
+            return (
+                f"Cooler max RPM: {max_rpm}."
+                if max_rpm
+                else "Cooler max RPM unavailable."
+            )
+
+        self.app.run_native_action("query cooler max rpm", query)
+
+    def set_fan_curve(
+        self,
+        gpu: str,
+        curve_index: int,
+        points: List[Tuple[int, int]],
+        on_done: Optional[Callable[[], None]] = None,
+    ) -> None:
+        """Write one curve slot + activate (same-transaction
+        TemperatureContinuous switch + best-effort percent-pin release)."""
+
+        def apply(native: Any, gpu: str = gpu) -> str:
+            result = native.set_fan_curve(gpu, curve_index, points, True)
+            policy = (
+                "policy switched to continuous"
+                if result.get("policy_switched_to_continuous")
+                else "policy switch rejected"
+            )
+            pin = "pin released" if result.get("pin_released") else "pin clear skipped"
+            joined = ", ".join(f"{t}°C:{r}RPM" for t, r in points)
+            if on_done is not None:
+                self.app.after(0, on_done)
+            return (
+                f"Successfully set fan curve {curve_index} ({joined}); {policy}, {pin}."
+            )
+
+        self.app.run_native_action("set fan curve", apply)
+
+    def reset_fan_curve(
+        self, gpu: str, curve_index: int, on_done: Optional[Callable[[], None]] = None
+    ) -> None:
+        def reset(native: Any, gpu: str = gpu) -> str:
+            native.reset_fan_curve(gpu, curve_index)
+            if on_done is not None:
+                self.app.after(0, on_done)
+            return f"Successfully reset fan curve {curve_index} to factory."
+
+        self.app.run_native_action("reset fan curve", reset)
+
+    def set_fanstop_status(self, gpu: str, enable: bool, curve_index: int) -> None:
+        def toggle(native: Any, gpu: str = gpu) -> str:
+            native.set_fanstop_status(gpu, enable, curve_index)
+            return (
+                f"Successfully set fan stop {'on' if enable else 'off'} "
+                f"for curve {curve_index}."
+            )
+
+        self.app.run_native_action("set fan stop", toggle)
+
+    def activate_fan_curve(self) -> None:
+        """Apply-Section with policy=curve: activate the curve editor's
+        selected slot. The editor's in-memory points win when the editor
+        holds a table; otherwise the driver's current points are written
+        back (SetFanCurve is RMW anyway) so "activate" is unambiguous."""
+        gpu = self.app.selected_gpu_target()
+        if gpu is None:
+            self.app.console.append("[GUI] No GPU selected.\n")
+            return
+        state = getattr(self.app, "curve_editor_state", None)
+        slot, points = state() if callable(state) else (0, None)
+
+        def activate(
+            native: Any,
+            gpu: str = gpu,
+            slot: int = slot,
+            points: List[Tuple[int, int]] | None = points,
+        ) -> str:
+            pts = points
+            if not pts:
+                data = None
+                try:
+                    data = native.query_fan_curve(gpu)
+                except Exception:
+                    data = None
+                curves = data.get("curves", []) if isinstance(data, dict) else []
+                pts = [
+                    (int(p["temp_c"]), int(p["rpm"]))
+                    for c in curves
+                    if isinstance(c, dict) and c.get("index") == slot
+                    for p in c.get("points", [])
+                    if isinstance(p, dict)
+                ]
+                if len(pts) != 3:
+                    return (
+                        f"Fan-curve slot {slot} is unreadable on this GPU — "
+                        "open the Curve editor and set the table first."
+                    )
+            native.set_fan_curve(gpu, slot, pts, True)
+            joined = ", ".join(f"{t}°C:{r}RPM" for t, r in pts)
+            return f"Activated fan curve {slot} ({joined}); policy continuous."
+
+        self.app.run_native_action("activate fan curve", activate)
 
     @staticmethod
     def _query_output(command_name: str, gpu: str, parsed: dict[str, Any]) -> str:

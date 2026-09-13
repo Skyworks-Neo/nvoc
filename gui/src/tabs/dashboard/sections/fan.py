@@ -28,13 +28,16 @@ _FONT_HEADER = ("Segoe UI", 13, "bold")
 _SECTION_BORDER = "#1f4e79"
 
 
-# NVAPI cooler policies (modern GPUs): live A/B — only `continuous`
-# (TemperatureContinuous SW curve) actually applies the manual % level on
-# new cards; everything else — `manual` included — no-ops on the modern
-# cooler paths, so it is not offered at all. Legacy GPUs (≤ Kepler) take
-# the separate legacy list below (their manual % lands on `manual`).
+# NVAPI cooler policies (modern GPUs): live A/B — `continuous`
+# (TemperatureContinuous) applies the manual % level on new cards, and
+# `curve` hands the fan to the ClientFanPolicies table (edited in the
+# curve editor popup; activation = SetFanCurve + same-transaction policy
+# switch, the CLI `set-fan-curve --activate` semantics). Legacy GPUs
+# (≤ Kepler) take the separate legacy list below (their manual % lands on
+# `manual`).
 NVAPI_POLICIES = [
     "continuous",
+    "curve",
 ]
 # Legacy GPUs (≤ Kepler): the modern CoolerPolicy types (TemperatureContinuous
 # etc.) are rejected by the old driver — only the classic CoolerControl
@@ -141,7 +144,21 @@ class FanControlController:
         self.pane.set_level(level)
         self.apply()
 
+    def open_curve_editor(self) -> None:
+        """Open the fan-curve editor popup (console-window pattern; the
+        proxy lives on the App)."""
+        app = getattr(self.backend, "app", None)
+        proxy = getattr(app, "curve_editor", None)
+        if proxy is not None:
+            proxy.open()
+
     def apply(self) -> None:
+        if self.normalize_policy() == "curve":
+            # Curve mode owns the fan through the ClientFanPolicies table,
+            # not the level pin — apply = activate the editor's selected
+            # slot (write + same-transaction policy switch + pin release).
+            self.backend.activate_fan_curve()
+            return
         self.backend.apply_fan_settings(self.settings())
 
     def reset(self) -> None:
@@ -435,6 +452,16 @@ class FanControlPane:
         )
         self.cooler_api_menu.pack(side="right")
         self._interactive_widgets.append(self.cooler_api_menu)
+        # Curve editor popup (ClientFanPolicies table): sits immediately
+        # left of the NVAPI/NVML selector, console-popup pattern.
+        self.btn_curve_editor = LiteButton(
+            r0_right,
+            text="Curve",
+            width=7,
+            command=self.controller.open_curve_editor,
+        )
+        self.btn_curve_editor.pack(side="right", padx=(0, 8))
+        self._interactive_widgets.append(self.btn_curve_editor)
 
         self.level_var.trace_add("write", lambda *_: self.controller.on_entry_change())
 

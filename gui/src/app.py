@@ -36,6 +36,9 @@ from src.widgets.output_console import OutputConsole
 from src.widgets.lightweight_controls import LiteButton
 from src.tabs.dashboard import DashboardTab
 from src.tabs.dashboard.sections import OverclockTab
+
+if TYPE_CHECKING:
+    from src.widgets.fan_curve_editor import FanCurveEditor
 from src.tabs.vfcurve import VFCurveTab
 from src.tabs.vfcurve.sections import AutoscanTab
 
@@ -195,6 +198,59 @@ class _ConsoleWindowProxy:
             self._repeat_count = 0
         if self._widget is not None and self._widget.winfo_exists():
             self._widget.clear()
+
+
+class _FanCurveEditorProxy:
+    """Standalone fan-curve editor window (the console-window pattern).
+
+    Closing withdraws; the widget and its loaded slot/points stay alive so
+    Apply Section with policy=curve keeps activating what the editor holds
+    (see NativeBackend.activate_fan_curve).
+    """
+
+    def __init__(self, app: "App") -> None:
+        self._app = app
+        self._window = None  # type: Optional[ctk.CTkToplevel]
+        self._widget = None  # type: Optional[FanCurveEditor]
+
+    def _ensure_window(self) -> "FanCurveEditor":
+        if self._widget is not None and self._widget.winfo_exists():
+            return self._widget
+        # Lazy import: matplotlib warms up off-thread at startup; the editor
+        # module pulls it in with its chart build.
+        from src.widgets.fan_curve_editor import FanCurveEditor
+
+        win = ctk.CTkToplevel(self._app)
+        win.title("NVOC Fan Curve Editor")
+        win.geometry("560x520")
+        win.protocol("WM_DELETE_WINDOW", self.close)
+        widget = FanCurveEditor(win, self._app)
+        widget.pack(fill="both", expand=True, padx=6, pady=6)
+        self._window, self._widget = win, widget
+        return widget
+
+    def open(self) -> None:
+        self._ensure_window()
+        if self._window is not None:
+            self._window.deiconify()
+            if self._widget is not None:
+                self._widget.load()
+
+    def close(self) -> None:
+        if self._window is not None:
+            self._window.withdraw()
+
+    def toggle(self) -> None:
+        if self._window is not None and self._window.state() != "withdrawn":
+            self.close()
+        else:
+            self.open()
+
+    def current_state(self) -> Tuple[int, Optional[List[Tuple[int, int]]]]:
+        """(slot, points) the editor holds — (0, None) when never opened."""
+        if self._widget is None or not self._widget.winfo_exists():
+            return 0, None
+        return self._widget.current_state()
 
 
 def _warm_matplotlib(ready_event: "threading.Event") -> None:
@@ -516,6 +572,10 @@ class App(ctk.CTk):
         # The bottom dock is gone; the dashboard gets a Console button.
         # Logs buffer until the window is first opened.
         self.console = _ConsoleWindowProxy(self)
+        # Fan-curve editor lives in its own window too (Curve button on the
+        # Fan Control section); state survives close-withdraw so Apply with
+        # policy=curve activates the edited slot.
+        self.curve_editor = _FanCurveEditorProxy(self)
 
         # Show the window layout immediately before rendering heavy tabs.
         # update_idletasks (layout/paint only) — update() would pump the full
@@ -1782,6 +1842,11 @@ class App(ctk.CTk):
 
         self.run_background(thread_name, _worker)
         return True
+
+    def curve_editor_state(self) -> Tuple[int, Optional[List[Tuple[int, int]]]]:
+        """The curve editor's held (slot, points) — consumed by
+        NativeBackend.activate_fan_curve on Apply with policy=curve."""
+        return self.curve_editor.current_state()
 
     def _on_native_output(self, text: str, _level: str = "info") -> None:
         if getattr(self, "_exiting", False):
