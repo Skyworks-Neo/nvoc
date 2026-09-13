@@ -282,24 +282,35 @@ impl GpuController {
             Err(e) => {
                 self.fail_streak += 1;
                 self.last_error = Some(e);
-                if self.fail_streak >= cfg.read_fail_reset.max(1)
-                    && self.failsafe != FailsafeState::ReadFailures
-                {
-                    log::error!(
-                        "GPU {index}: {} consecutive sensor read failures; \
-                         restoring fan control to driver",
-                        self.fail_streak
-                    );
-                    match backend.restore_fan_auto(index) {
-                        Ok(()) => self.last_written = None,
-                        Err(e) => {
-                            log::error!("GPU {index}: failsafe restore failed: {e}");
-                            self.failsafe = FailsafeState::RestoreFailed;
+                if self.fail_streak >= cfg.read_fail_reset.max(1) {
+                    if self.last_written.is_some() {
+                        // Hand the fan back to the driver and keep re-trying
+                        // while the pin is ours: the driver may be mid-TDR
+                        // (calls fail, then recover), and a stuck pin during
+                        // that window is the worst case for a stress run.
+                        log::error!(
+                            "GPU {index}: {} consecutive sensor read failures; \
+                             restoring fan control to driver",
+                            self.fail_streak
+                        );
+                        match backend.restore_fan_auto(index) {
+                            Ok(()) => {
+                                self.last_written = None;
+                                self.failsafe = FailsafeState::ReadFailures;
+                            }
+                            Err(re) => {
+                                log::error!(
+                                    "GPU {index}: failsafe restore failed: {re}; will retry"
+                                );
+                                self.failsafe = FailsafeState::RestoreFailed;
+                            }
                         }
+                        self.emergency_active = false;
+                        self.idle_active = false;
+                    } else if self.failsafe == FailsafeState::Ok {
+                        // Nothing pinned — surface the degraded read state.
+                        self.failsafe = FailsafeState::ReadFailures;
                     }
-                    self.failsafe = FailsafeState::ReadFailures;
-                    self.emergency_active = false;
-                    self.idle_active = false;
                 }
             }
             Ok(bundle) => {
@@ -445,6 +456,8 @@ mod tests {
         writes: Vec<u32>,
         restores: usize,
         fail_writes: bool,
+        /// restore_fan_auto fails this many times before succeeding.
+        restore_fails: u32,
     }
 
     impl Mock {
@@ -457,6 +470,7 @@ mod tests {
                 writes: Vec::new(),
                 restores: 0,
                 fail_writes: false,
+                restore_fails: 0,
             }
         }
     }
@@ -482,6 +496,10 @@ mod tests {
             Ok(())
         }
         fn restore_fan_auto(&mut self, _i: usize) -> Result<(), String> {
+            if self.restore_fails > 0 {
+                self.restore_fails -= 1;
+                return Err("restore rejected".to_string());
+            }
             self.restores += 1;
             Ok(())
         }
@@ -611,6 +629,7 @@ mod tests {
             writes: Vec::new(),
             restores: 0,
             fail_writes: false,
+            restore_fails: 0,
         };
         let st = tick(&mut c, &mut m, &config);
         assert_eq!(st.failsafe, FailsafeState::Ok);
@@ -665,6 +684,7 @@ mod tests {
             writes: vec![50],
             restores: 0,
             fail_writes: false,
+            restore_fails: 0,
         };
         // Seed: pretend a duty is currently pinned (restore must fire).
         c.last_written = Some(50);
@@ -684,6 +704,33 @@ mod tests {
         let st = tick(&mut c, &mut m, &config);
         assert_eq!(st.failsafe, FailsafeState::Ok);
         assert_eq!(m.writes.last(), Some(&42)); // 40 + 2·1
+    }
+
+    #[test]
+    fn failsafe_restore_is_retried_until_it_succeeds() {
+        // The worst stress-run state is a stuck pin behind a mid-TDR driver:
+        // the hand-back must surface as RestoreFailed and keep retrying
+        // every tick until the driver accepts it.
+        let mut config = cfg(ControlMode::Pid);
+        config.read_fail_reset = 1;
+        let mut c = GpuController::new(PidController::from_params(&PidParams::default()));
+        let mut m = Mock {
+            temps: vec![Err("sensor gone".into())],
+            writes: Vec::new(),
+            restores: 0,
+            fail_writes: false,
+            restore_fails: 2,
+        };
+        c.last_written = Some(50);
+        let st = tick(&mut c, &mut m, &config);
+        assert_eq!(st.failsafe, FailsafeState::RestoreFailed);
+        assert_eq!(c.last_written, Some(50), "pin must stay flagged as ours");
+        let st = tick(&mut c, &mut m, &config);
+        assert_eq!(st.failsafe, FailsafeState::RestoreFailed);
+        let st = tick(&mut c, &mut m, &config); // driver accepts the restore now
+        assert_eq!(st.failsafe, FailsafeState::ReadFailures);
+        assert_eq!(c.last_written, None);
+        assert_eq!(m.restores, 1);
     }
 
     #[test]
@@ -768,6 +815,7 @@ mod tests {
             writes: Vec::new(),
             restores: 0,
             fail_writes: false,
+            restore_fails: 0,
         };
         let mut c = GpuController::new(PidController::from_params(&config.pid));
         for _ in 0..3 {

@@ -12,7 +12,7 @@ use crate::config::RuntimeConfig;
 use crate::controller::{ControlBackend as _, GpuController};
 use crate::pid::PidController;
 use flume::{Receiver, Sender};
-use log::{error, info};
+use log::{error, info, warn};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -20,6 +20,11 @@ use std::time::{Duration, Instant};
 pub type SharedConfig = Arc<Mutex<RuntimeConfig>>;
 pub type SharedStatus = Arc<Mutex<Vec<crate::controller::GpuControlStatus>>>;
 pub type SharedHeartbeat = Arc<Mutex<Instant>>;
+
+/// Consecutive all-GPU-failure ticks before a TDR recovery is attempted.
+const HARD_FAIL_REDISCOVER_TICKS: u32 = 5;
+/// Minimum spacing between recovery attempts.
+const RECOVERY_COOLDOWN: Duration = Duration::from_secs(30);
 
 /// Imperative commands from the HTTP plane that are not pure config edits.
 #[derive(Debug, Clone)]
@@ -80,11 +85,37 @@ fn spawn_watchdog(
                     "watchdog: control-loop heartbeat stale for {stale_for:?} (> {timeout:?}); \
                  restoring fan control to driver"
                 );
-                let mut backend_guard = lock(&backend);
-                for i in 0..backend_guard.gpu_count() {
-                    if let Err(e) = backend_guard.restore_fan_auto(i) {
-                        error!("watchdog: GPU {i} restore failed: {e}");
+                // Never block behind the control thread: it may be wedged
+                // inside a driver call (TDR / hang) while holding the mutex.
+                // Bounded try_lock keeps the watchdog alive to report —
+                // restoring through a wedged driver is impossible from here
+                // anyway, so a process-level restart (SCM failure actions /
+                // systemd Restart) is the backstop for that case.
+                let deadline = Instant::now() + Duration::from_secs(10);
+                let backend_guard = loop {
+                    match backend.try_lock() {
+                        Ok(g) => break Some(g),
+                        Err(std::sync::TryLockError::Poisoned(p)) => break Some(p.into_inner()),
+                        Err(std::sync::TryLockError::WouldBlock) => {
+                            if Instant::now() >= deadline {
+                                break None;
+                            }
+                            std::thread::sleep(Duration::from_millis(100));
+                        }
                     }
+                };
+                match backend_guard {
+                    Some(mut backend_guard) => {
+                        for i in 0..backend_guard.gpu_count() {
+                            if let Err(e) = backend_guard.restore_fan_auto(i) {
+                                error!("watchdog: GPU {i} restore failed: {e}");
+                            }
+                        }
+                    }
+                    None => error!(
+                        "watchdog: backend lock held for 10 s — control thread wedged in a \
+                         driver call; in-process restore impossible, relying on service restart"
+                    ),
                 }
             }
         })
@@ -126,6 +157,9 @@ pub fn run_control_loop(handles: LoopHandles) -> Result<(), String> {
         shutdown_rx,
         ..
     } = handles;
+
+    let mut hard_fail_streak: u32 = 0;
+    let mut last_recovery: Option<Instant> = None;
 
     loop {
         let interval = Duration::from_millis(lock(&config).interval_ms);
@@ -170,6 +204,46 @@ pub fn run_control_loop(handles: LoopHandles) -> Result<(), String> {
             ));
         }
         drop(backend_guard);
+
+        // TDR / driver-reload recovery: when every controlled GPU failed to
+        // read (or errored) for several consecutive ticks, the cached GPU
+        // handles and the process-global NVML state are stale. Reset NVML
+        // (a plain re-init returns AlreadyInitialized) and rebuild the
+        // backend from scratch. Rate-limited so a dead driver yields one
+        // attempt per cooldown, not a spin. The controllers' learned state
+        // is preserved; the first healthy tick re-pins the fan.
+        if !snapshot.is_empty()
+            && snapshot
+                .iter()
+                .all(|s| s.last_error.is_some() || s.temp_c.is_none())
+        {
+            hard_fail_streak += 1;
+        } else {
+            hard_fail_streak = 0;
+        }
+        if hard_fail_streak >= HARD_FAIL_REDISCOVER_TICKS
+            && last_recovery.is_none_or(|t| t.elapsed() >= RECOVERY_COOLDOWN)
+        {
+            warn!(
+                "backend unhealthy for {hard_fail_streak} consecutive ticks; \
+                 attempting TDR recovery (nvmlShutdown + re-discovery)"
+            );
+            last_recovery = Some(Instant::now());
+            if let Err(e) = nvoc_core::nvml::force_nvml_shutdown() {
+                warn!("recovery: nvmlShutdown failed ({e}); re-init will report the real error");
+            }
+            match NvapiBackend::discover() {
+                Ok(fresh) => {
+                    info!(
+                        "recovery: re-discovered {} GPU(s); control state preserved",
+                        fresh.gpu_count()
+                    );
+                    *lock(&backend) = fresh;
+                }
+                Err(e) => error!("recovery: re-discovery failed ({e}); retrying after cooldown"),
+            }
+        }
+
         *lock(&status) = snapshot;
         *lock(&heartbeat) = Instant::now();
     }

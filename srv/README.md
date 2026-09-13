@@ -154,16 +154,41 @@ target − idle_delta_c      target      target + emergency_delta_c
 | Trigger | Response |
 |---|---|
 | Graceful stop (SCM stop, Ctrl-C, SIGTERM, `/shutdown`) | `ResetNvapiFanControl` on every controlled GPU, then exit |
-| ≥ `read_fail_reset` consecutive sensor-read failures | fan restored to driver control; auto-resumes PID on the first good read |
-| temp ≥ `target_c + emergency_delta_c` | 100% duty forced; exits with 2 °C hysteresis, PID re-engages from reset |
-| control-loop heartbeat stale > `watchdog_timeout_s` | independent watchdog thread restores driver fan control |
-| process abort (release builds abort on panic) | configure `nvoc-srv-ctl failure-actions` so SCM restarts the service; worst case the pin survives until the next start/reboot — run `nvoc cli fan reset` manually |
+| ≥ `read_fail_reset` consecutive sensor-read failures | fan handed back to the driver; **the hand-back is retried every tick while the pin is ours** (the driver may be mid-TDR); PID auto-resumes on the first good read |
+| temp ≥ `target_c + emergency_delta_c` | 100% duty forced; exits with 2 °C hysteresis, bumpless (the PID keeps stepping through the zone) |
+| temp ≤ `target_c − idle_delta_c` | `min_percent` duty forced (fan stop at the default floor); same bumpless exit |
+| control-loop heartbeat stale > `watchdog_timeout_s` | independent watchdog thread restores driver fan control (bounded `try_lock` — it reports instead of deadlocking behind a wedged control thread) |
+| process abort | SCM/systemd restarts the service (`install` configures the restart ladder automatically); the fresh process re-discovers and re-pins |
 
-Note the failure-actions step is strongly recommended after `install`:
+## Stress-test safety (TDR / driver loss)
 
-```sh
-./nvoc-srv-ctl.exe failure-actions   # restart after 5 s / 30 s / 60 s
-```
+Running the thermal loop alongside a GPU stressor assumes the driver will
+die mid-run — that is what unstable overclocks do. Behavior per failure
+class:
+
+| Event | What the controller sees | Response | Residual risk |
+|---|---|---|---|
+| TDR in progress (~1–2 s) | reads/writes block or error for a few ticks | heartbeat keeps beating; read-failure failsafe hands the fan back after `read_fail_reset` failures and retries while the pin is ours | the TDR itself |
+| TDR completed, driver back | cached GPU handles + NVML instance stale (NVML answers NotFound; `Nvml::init` returns AlreadyInitialized) | after 5 consecutive all-failed ticks: `nvmlShutdown` reset + full re-discovery (30 s cooldown); the first healthy tick re-pins the fan | **a stale NVML handle can segfault the process instead of erroring** — in-process recovery has a hard ceiling there |
+| Process died (segfault / abort) | — | SCM failure actions (configured by `install`) or systemd `Restart=on-failure` start a fresh process, which re-discovers and re-pins | the fan stays at its last duty until the restart; whether a driver reset clears the pin is card/driver-specific — verify once on your rig (see below) |
+| Driver device disabled (recovery ladder) | discovery-level errors | re-discovery retries every 30 s until the device returns | same NVML segfault ceiling |
+| Bugcheck (0x116 / 0x10E…) | process dies with the OS | driver state resets on reboot — fan returns to firmware auto | none |
+
+Pre-flight checklist for stress runs:
+
+1. `nvoc-srv-ctl install` (failure actions configured automatically) or the
+   systemd unit with `Restart=on-failure`.
+2. `GET /status` shows `failsafe: "ok"` and the written duty tracks the load.
+3. Remember the setpoint conflict: the loop holds **your** target and never
+   yields to the driver's (typically lower) one — that is the design.
+4. Verify pin survival across TDR once on your rig: hold a distinctive duty
+   (`mode=manual`, 40 %), induce a TDR the way your experiments usually do,
+   and watch whether the fan returns to the driver curve after the reset.
+
+Honest limits: an in-process watchdog cannot restore a fan through a wedged
+driver (every call blocks), and a stale-NVML segfault kills the watchdog
+with the process. Process-level restart is the real safety net — which is
+why the service ships restart-configured by default.
 
 ## Installing
 
@@ -172,9 +197,11 @@ Note the failure-actions step is strongly recommended after `install`:
 ```bat
 :: admin prompt
 nvoc-srv-ctl.exe install
-nvoc-srv-ctl.exe failure-actions
 net start nvoc_service
 ```
+
+(`install` configures the restart failure actions automatically; the
+standalone `failure-actions` subcommand re-applies them on demand.)
 
 Logs: `%PROGRAMDATA%\nvoc\logs\nvoc-srv.log` (100 MB × 2 rotation; stdout/stderr
 are redirected there in service mode).

@@ -46,6 +46,35 @@ mod windows_impl {
         ServiceManager::local_computer(None::<&str>, access)
     }
 
+    /// Restart ladder 5 s / 30 s / 60 s with non-crash failures enabled —
+    /// the process-level safety net for a fan controller that dies (stale
+    /// NVML segfault) while the fan is software-pinned.
+    fn configure_failure_actions(
+        service: &windows_service::service::Service,
+    ) -> windows_service::Result<()> {
+        let actions = vec![
+            ServiceAction {
+                action_type: ServiceActionType::Restart,
+                delay: Duration::from_secs(5),
+            },
+            ServiceAction {
+                action_type: ServiceActionType::Restart,
+                delay: Duration::from_secs(30),
+            },
+            ServiceAction {
+                action_type: ServiceActionType::Restart,
+                delay: Duration::from_secs(60),
+            },
+        ];
+        service.update_failure_actions(ServiceFailureActions {
+            reset_period: ServiceFailureResetPeriod::After(Duration::from_secs(86_400)),
+            reboot_msg: None,
+            command: None,
+            actions: Some(actions),
+        })?;
+        service.set_failure_actions_on_non_crash_failures(true)
+    }
+
     pub fn install() -> windows_service::Result<()> {
         let manager_access = ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE;
         let service_manager = manager(manager_access)?;
@@ -73,7 +102,13 @@ mod windows_impl {
         service.set_description(
             "NVOC closed-loop control service: fan PID thermal control via NVAPI/NVML",
         )?;
-        println!("Service installed successfully. Start it with: net start {SERVICE_NAME}");
+        // Safety default: a dead controller must not leave the fan pinned
+        // with nobody at the wheel — restart it.
+        configure_failure_actions(&service)?;
+        println!(
+            "Service installed successfully (failure actions: restart 5/30/60 s). \
+             Start it with: net start {SERVICE_NAME}"
+        );
         Ok(())
     }
 
@@ -127,28 +162,7 @@ mod windows_impl {
             SERVICE_NAME,
             ServiceAccess::QUERY_STATUS | ServiceAccess::CHANGE_CONFIG,
         )?;
-
-        let actions = vec![
-            ServiceAction {
-                action_type: ServiceActionType::Restart,
-                delay: Duration::from_secs(5),
-            },
-            ServiceAction {
-                action_type: ServiceActionType::Restart,
-                delay: Duration::from_secs(30),
-            },
-            ServiceAction {
-                action_type: ServiceActionType::Restart,
-                delay: Duration::from_secs(60),
-            },
-        ];
-        service.update_failure_actions(ServiceFailureActions {
-            reset_period: ServiceFailureResetPeriod::After(Duration::from_secs(86_400)),
-            reboot_msg: None,
-            command: None,
-            actions: Some(actions),
-        })?;
-        service.set_failure_actions_on_non_crash_failures(true)?;
+        configure_failure_actions(&service)?;
         println!(
             "Failure actions configured: restart 5 s / 30 s / 60 s, reset after 24 h, \
              enabled on non-crash failures."
