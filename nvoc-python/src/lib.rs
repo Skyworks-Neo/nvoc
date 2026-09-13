@@ -4,24 +4,24 @@ use nvapi::hi::{
 use nvml_wrapper::enum_wrappers::device::{Api, PerformanceState};
 use nvoc_core::{
     BackendSet, CheckVoltageFrequency, ClearEdid, ClkVfDomainClass, ConvertEnum,
-    DisableNvapiThermalSim, GpuTarget, GpuType, NvapiPStateNativeLock, NvapiPerfFreqCap,
-    PmgrArbiterProbe, QueryApiRestriction, QueryAutoBoost, QueryDisplays, QueryDomainVfpPoints,
-    QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings, QueryGpuStatus,
-    QueryLegacyCoreOvervoltRanges, QueryNvapiClkDomainFreq, QueryNvapiClkDomainFreqDirect,
-    QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomains, QueryNvapiClkVfPoints,
-    QueryNvapiCoolerInfo, QueryNvapiCoreVoltageControl, QueryNvapiDNotifier,
+    DisableNvapiThermalSim, FanCurvePointReadout, GetFanCurves, GpuTarget, GpuType,
+    NvapiPStateNativeLock, NvapiPerfFreqCap, PmgrArbiterProbe, QueryApiRestriction, QueryAutoBoost,
+    QueryDisplays, QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings,
+    QueryGpuStatus, QueryLegacyCoreOvervoltRanges, QueryNvapiClkDomainFreq,
+    QueryNvapiClkDomainFreqDirect, QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomains,
+    QueryNvapiClkVfPoints, QueryNvapiCoolerInfo, QueryNvapiCoreVoltageControl, QueryNvapiDNotifier,
     QueryNvapiOcScannerIncomplete, QueryNvapiPmgrVoltageArbiter, QueryNvapiPowerCeiling,
     QueryNvapiRatedTdp, QueryNvapiTargetTempPolicies, QueryNvapiTgpWattRange, QueryNvapiThermalSim,
     QueryNvapiVoltRails, QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates,
     QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
     QueryThrottleReasons, QueryVbiosImage, QueryVfpPointVoltage, QueryVoltageBoost,
-    ResetAutoboostStatus, ResetCoolerLevels, ResetFanSpeed, ResetFreqLock,
+    ResetAutoboostStatus, ResetCoolerLevels, ResetFanCurve, ResetFanSpeed, ResetFreqLock,
     ResetLegacyApplicationFreqLock, ResetLegacyGpcRailOvervoltLimit, ResetNvapiFanControl,
     ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetNvapiVfpPrivate,
     ResetPstateGlobalFreqOffset, ResetPublicVftableGpcLock, ResetPublicVftableOffset,
     ResetVfpFrequencyLock, SetApplicationsClocks, SetAutoboostStatus, SetAutoboostSupport,
-    SetClockOffset, SetCoolerLevels, SetDomainVfpDeltas, SetEdid, SetFanPercent, SetFanRpm,
-    SetFanSpeed, SetFanStop, SetGpcVoltLock, SetLegacyClocks, SetLockedClocks,
+    SetClockOffset, SetCoolerLevels, SetDomainVfpDeltas, SetEdid, SetFanCurve, SetFanPercent,
+    SetFanRpm, SetFanSpeed, SetFanStop, SetGpcVoltLock, SetLegacyClocks, SetLockedClocks,
     SetNvapiBackgroundOcScanner, SetNvapiClkDomainOffset, SetNvapiCoreVoltageControl,
     SetNvapiDNotifier, SetNvapiDynamicBoost, SetNvapiPStateNative, SetNvapiPerfFreqCap,
     SetNvapiPerfLevelLock, SetNvapiPmgrVoltageArbiter, SetNvapiPowerLimits, SetNvapiPstateLock,
@@ -4485,6 +4485,188 @@ fn set_fan_rpm(
     py_value(py, &value)
 }
 
+/// Read the GPU fan-curve table (`ClientFanPoliciesGetControl` NDA
+/// 0xE543C540, struct magic 0x200DC): up to 4 slots × 3 strictly-monotonic
+/// (temp_c, RPM) points per slot. Desktop boards only — mobile EC-driven
+/// fans carry no NVAPI curve surface.
+#[pyfunction]
+fn query_fan_curve(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
+    let value = py.detach(|| {
+        with_target(gpu, "nvapi", |target| {
+            let curves = run(target, GetFanCurves).map_err(to_py_err)?.output;
+            let items: Vec<Value> = curves
+                .iter()
+                .map(|c| {
+                    value_object([
+                        ("index", Value::from(c.index as u64)),
+                        (
+                            "points",
+                            Value::Array(
+                                c.points
+                                    .iter()
+                                    .map(|p| {
+                                        value_object([
+                                            ("temp_c", Value::from(p.temp_c as u64)),
+                                            ("rpm", Value::from(p.rpm as u64)),
+                                        ])
+                                    })
+                                    .collect(),
+                            ),
+                        ),
+                    ])
+                })
+                .collect();
+            Ok(value_object([("curves", Value::Array(items))]))
+        })
+    })?;
+    py_value(py, &value)
+}
+
+/// Write one fan-curve slot (`ClientFanPoliciesSetControl`, struct 0x200DC;
+/// RMW GET → patch slot → SET, the driver's Set handler enforces strict
+/// monotonicity on every lane and answers a generic -5 on violation).
+/// `points` = exactly 3 `(temp_c, rpm)` pairs.
+///
+/// `activate=True` additionally switches the cooler policy to
+/// TemperatureContinuous in the same transaction (the table only drives the
+/// fan under that policy — same-transaction semantics as the CLI's
+/// `set-fan-curve --activate`) and best-effort clears the fan-simulation
+/// percent pin (a live pin keeps overriding the curve). `fan_id` scopes
+/// that policy switch / pin clear ("1"→Cooler1 / "2"→Cooler2 / None→All) —
+/// the curve table itself is per-GPU, the surface has no per-fan selector.
+#[pyfunction]
+#[pyo3(signature = (gpu, curve_index, points, activate=false, fan_id=None))]
+fn set_fan_curve(
+    py: Python<'_>,
+    gpu: &str,
+    curve_index: u8,
+    points: Vec<(u16, u32)>,
+    activate: bool,
+    fan_id: Option<&str>,
+) -> PyResult<Py<PyAny>> {
+    let gpu_own = gpu.to_string();
+    let fan_id_own = fan_id.map(|s| s.to_string());
+    let value = py.detach(move || -> PyResultValue {
+        let gpu: &str = &gpu_own;
+        let fan_id: Option<&str> = fan_id_own.as_deref();
+        if curve_index >= 4 {
+            return Err(invalid_value(format!(
+                "invalid curve index {curve_index}: slot range is 0-3"
+            )));
+        }
+        if points.len() != 3 {
+            return Err(invalid_value(format!(
+                "expected 3 (temp_c, rpm) points, got {}",
+                points.len()
+            )));
+        }
+        for w in points.windows(2) {
+            if w[1].0 <= w[0].0 || w[1].1 <= w[0].1 {
+                return Err(invalid_value(
+                    "fan-curve points must be strictly increasing in both temperature and RPM",
+                ));
+            }
+        }
+        let points: Vec<FanCurvePointReadout> = points
+            .into_iter()
+            .map(|(temp_c, rpm)| FanCurvePointReadout { temp_c, rpm })
+            .collect();
+        with_target(gpu, "nvapi", |target| {
+            let applied = run(
+                target,
+                SetFanCurve {
+                    index: curve_index,
+                    points,
+                },
+            )
+            .map_err(to_py_err)?
+            .output;
+            let mut policy_switched = false;
+            let mut pin_released = false;
+            if activate {
+                // The curve table only drives the fan under policy
+                // TemperatureContinuous — an explicit same-transaction switch
+                // makes "entering curve mode" visible instead of a side
+                // effect (mirrors the CLI's --activate tail).
+                let (cooler_target, cooler_index) = match fan_id {
+                    Some("1") => (nvoc_core::CoolerTarget::Cooler1, Some(0u32)),
+                    Some("2") => (nvoc_core::CoolerTarget::Cooler2, Some(1)),
+                    _ => (nvoc_core::CoolerTarget::All, None),
+                };
+                policy_switched = run(
+                    target,
+                    SetCoolerLevels {
+                        policy: CoolerPolicy::TemperatureContinuous,
+                        level: 0,
+                        cooler_target,
+                    },
+                )
+                .is_ok();
+                // Best-effort release of the fan-simulation percent pin: a
+                // live pin keeps overriding the curve. Silent no-op when
+                // nothing is simulated (same tail as nvapi_fan_reset).
+                pin_released = run(
+                    target,
+                    SetFanPercent {
+                        cooler_index,
+                        percent: None,
+                    },
+                )
+                .is_ok();
+            }
+            Ok(value_object([
+                ("applied", Value::from(true)),
+                ("curve", Value::from(curve_index as u64)),
+                (
+                    "points",
+                    Value::Array(
+                        applied
+                            .applied
+                            .iter()
+                            .map(|p| {
+                                value_object([
+                                    ("temp_c", Value::from(p.temp_c as u64)),
+                                    ("rpm", Value::from(p.rpm as u64)),
+                                ])
+                            })
+                            .collect(),
+                    ),
+                ),
+                (
+                    "policy_switched_to_continuous",
+                    Value::from(policy_switched),
+                ),
+                ("pin_released", Value::from(pin_released)),
+            ]))
+        })
+    })?;
+    py_value(py, &value)
+}
+
+/// Reset one fan-curve slot to factory (`FanPolicySetControl` NDA
+/// 0x2B2A2A45, struct 0x214AC — OR `1 << curve` into the +0x08 reset
+/// bitmask). Works where the public RestoreCoolerSettings is rejected with
+/// NOT_SUPPORTED (desktop 3060/2070 without a user-mode cooler table).
+#[pyfunction]
+fn reset_fan_curve(py: Python<'_>, gpu: &str, curve_index: u8) -> PyResult<Py<PyAny>> {
+    if curve_index >= 4 {
+        return Err(invalid_value(format!(
+            "invalid curve index {curve_index}: slot range is 0-3"
+        )));
+    }
+    let value = py.detach(|| {
+        with_target(gpu, "nvapi", |target| {
+            run(target, ResetFanCurve { index: curve_index }).map_err(to_py_err)?;
+            Ok(value_object([
+                ("applied", Value::from(true)),
+                ("curve", Value::from(curve_index as u64)),
+                ("reset", Value::from(true)),
+            ]))
+        })
+    })?;
+    py_value(py, &value)
+}
+
 #[pyfunction]
 fn reset_core_clocks(py: Python<'_>, gpu: &str, backend: &str) -> PyResult<()> {
     let gpu_own = gpu.to_string();
@@ -4768,6 +4950,9 @@ fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(set_fan, m)?)?;
     m.add_function(wrap_pyfunction!(set_fanstop_status, m)?)?;
     m.add_function(wrap_pyfunction!(set_fan_rpm, m)?)?;
+    m.add_function(wrap_pyfunction!(query_fan_curve, m)?)?;
+    m.add_function(wrap_pyfunction!(set_fan_curve, m)?)?;
+    m.add_function(wrap_pyfunction!(reset_fan_curve, m)?)?;
     m.add_function(wrap_pyfunction!(reset_core_clocks, m)?)?;
     m.add_function(wrap_pyfunction!(reset_mem_clocks, m)?)?;
     m.add_function(wrap_pyfunction!(reset_vfp_lock, m)?)?;
