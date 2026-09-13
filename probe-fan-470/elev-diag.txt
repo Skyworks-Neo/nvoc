@@ -1,0 +1,14 @@
+GET snapshot:
+  rc 0 flags 0x0 count 1
+  id 1 level 30 flags 0x1
+variant A verbatim snapshot SET:
+  rc 0
+variant B fresh count=1 level=100 manual:
+  rc 0
+variant C fresh count=2 (CLI --fan all) level=100 manual:
+  rc -1
+variant D RMW snapshot level=40 manual valid=false:
+  rc 0
+  verify id 1 level 40 flags 0x1
+restore snapshot:
+  rc 0

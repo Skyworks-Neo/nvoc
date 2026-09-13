@@ -63,3 +63,6 @@ nvapi64_impl_qi_table.txt
 rm_opcode_clusters.txt
 subcommand_clusters.txt
 unknown_ids.txt
+
+# Standalone RE probe workspaces (nested targets are NOT covered by /target/)
+probe-*/target/

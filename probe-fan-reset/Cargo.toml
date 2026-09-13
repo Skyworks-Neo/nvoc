@@ -1,0 +1,9 @@
+[package]
+name = "probe-fan-reset"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+nvapi = { path = "../nvapi-rs" }
+
+[workspace]
