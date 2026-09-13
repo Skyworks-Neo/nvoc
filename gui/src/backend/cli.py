@@ -19,11 +19,16 @@ class CliBackend:
         self.app = app
 
     def apply_fan_settings(self, settings: FanSettings) -> None:
-        self.app.run_cli_display(
-            fan_settings_to_cli_args(self.app.get_gpu_args(), settings)
+        # The CLI arg translation for fan settings was never wired (the class
+        # has no instantiation site yet); fan control goes through the native
+        # backend in the meantime.
+        raise NotImplementedError(
+            "CliBackend fan-settings translation is not implemented; "
+            "use the native backend"
         )
 
     def reset_fan_settings(self, settings: FanSettings) -> None:
-        self.app.run_cli_display(
-            fan_settings_to_cli_args(self.app.get_gpu_args(), settings)
+        raise NotImplementedError(
+            "CliBackend fan-settings translation is not implemented; "
+            "use the native backend"
         )
