@@ -219,7 +219,7 @@ fn handle_request(
                 reject_mutation(request, path);
                 return;
             }
-            handle_pid_update(request, params, config, cmd_tx);
+            handle_pid_update(request, params, config);
         }
         "/mode" => {
             if !is_mutation_request(&request) {
@@ -235,11 +235,6 @@ fn handle_request(
                     };
                     lock(config).mode = mode;
                     info!("control mode set to {mode:?} via HTTP");
-                    // Explicit "control now": also breaks out of idle-release
-                    // when the loop is already in Pid mode.
-                    if mode == ControlMode::Pid {
-                        let _ = cmd_tx.send(ServiceCmd::Reengage);
-                    }
                     text_response(request, 200, format!("OK: mode={mode:?}"));
                 }
                 _ => text_response(request, 400, "Bad request: 'value' must be auto|pid|manual"),
@@ -313,20 +308,6 @@ fn assign_f32(
     }
 }
 
-fn assign_u32(
-    params: &HashMap<String, String>,
-    key: &str,
-    dst: &mut u32,
-    errors: &mut Vec<String>,
-) {
-    if let Some(raw) = params.get(key) {
-        match raw.parse::<u32>() {
-            Ok(v) => *dst = v,
-            _ => errors.push(format!("invalid '{key}'")),
-        }
-    }
-}
-
 fn assign_bool(
     params: &HashMap<String, String>,
     key: &str,
@@ -349,7 +330,6 @@ fn handle_pid_update(
     request: tiny_http::Request,
     params: &HashMap<String, String>,
     config: &SharedConfig,
-    cmd_tx: &Sender<ServiceCmd>,
 ) {
     let mut cfg = lock(config);
     let mut p = cfg.pid.clone();
@@ -368,14 +348,7 @@ fn handle_pid_update(
         &mut p.emergency_delta_c,
         &mut errors,
     );
-    assign_f32(
-        params,
-        "release_below_c",
-        &mut p.release_below_c,
-        &mut errors,
-    );
-    assign_f32(params, "engage_below_c", &mut p.engage_below_c, &mut errors);
-    assign_u32(params, "release_ticks", &mut p.release_ticks, &mut errors);
+    assign_f32(params, "idle_delta_c", &mut p.idle_delta_c, &mut errors);
     assign_f32(
         params,
         "write_deadband_percent",
@@ -423,9 +396,6 @@ fn handle_pid_update(
     let base = p.base_percent;
     cfg.pid = p;
     info!("PID updated via HTTP: target={target} kp={kp} ki={ki} kd={kd} base={base}");
-    // Operator gesture: a param change means "control now" — break out of
-    // idle-release (no-op when not released).
-    let _ = cmd_tx.send(ServiceCmd::Reengage);
     text_response(request, 200, "OK: pid updated");
 }
 

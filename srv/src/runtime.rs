@@ -26,9 +26,6 @@ pub type SharedHeartbeat = Arc<Mutex<Instant>>;
 pub enum ServiceCmd {
     /// Legacy `/oc_global`: one-shot P0 graphics clock delta.
     SetOcGlobal { gpu_index: usize, delta_khz: i32 },
-    /// Operator override: leave the idle-release state and control again
-    /// (sent on any successful `/pid` mutation or `/mode?value=pid`).
-    Reengage,
     /// Graceful loop exit (fans restored first).
     Shutdown,
 }
@@ -147,11 +144,6 @@ pub fn run_control_loop(handles: LoopHandles) -> Result<(), String> {
                 Ok(ServiceCmd::Shutdown) => {
                     stop = true;
                     break;
-                }
-                Ok(ServiceCmd::Reengage) => {
-                    for (slot, &gpu_index) in selected.iter().enumerate() {
-                        controllers[slot].force_reengage(gpu_index);
-                    }
                 }
                 Ok(cmd) => handle_cmd(cmd, &backend),
                 // HTTP plane gone: keep controlling; the watchdog owns failsafe.

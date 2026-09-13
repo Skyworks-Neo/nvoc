@@ -75,9 +75,7 @@ base_percent = 40.0       # feed-forward duty (see tuning guide)
 min_percent = 0.0
 max_percent = 100.0
 emergency_delta_c = 12.0  # target+12 °C forces 100% duty (2 °C exit hysteresis)
-release_below_c = 4.0     # idle release: ≤ target−4 °C hands the fan back to the driver (0 = off)
-engage_below_c = 1.0      # re-engage line: PID resumes at target−1 °C (must be < release_below_c)
-release_ticks = 3         # ticks below the release line before releasing
+idle_delta_c = 4.0        # ≤ target−4 °C forces min duty (fan stop); 0 = off
 write_deadband_percent = 1.0  # skip writes within ±1 % of the duty on the wire (anti-chatter)
 adaptive_base = true      # learn base_percent online from the integral (see below)
 ```
@@ -93,9 +91,9 @@ unchanged from the legacy service).
 
 | Endpoint | Description |
 |---|---|
-| `GET /status` | top-level `mode`/`interval_ms`/`target_c`; per-GPU temps (core/hotspot/memory/board), written & measured fan duty, `released` flag, last PID decomposition (`error/p/i/d/output`, null when the PID did not run this tick), failsafe state |
+| `GET /status` | top-level `mode`/`interval_ms`/`target_c`; per-GPU temps (core/hotspot/memory/board), written & measured fan duty, last PID decomposition — term values `p/i/d` **plus the effective gains `kp/ki/kd`** and the (possibly learned) `base_percent`; null when the PID did not run this tick; zone/failsafe state |
 | `GET /config` | effective runtime configuration |
-| `POST /pid?target_c=&kp=&ki=&kd=&base_percent=&min_percent=&max_percent=&emergency_delta_c=&release_below_c=&engage_below_c=&release_ticks=&write_deadband_percent=&adaptive_base=&interval_ms=&sensor=` | partial PID update, validated atomically, live |
+| `POST /pid?target_c=&kp=&ki=&kd=&base_percent=&min_percent=&max_percent=&emergency_delta_c=&idle_delta_c=&write_deadband_percent=&adaptive_base=&interval_ms=&sensor=` | partial PID update, validated atomically, live |
 | `POST /mode?value=auto\|pid\|manual` | switch control mode (`auto` hands fans back to the driver) |
 | `POST /fan?percent=0-100` | pin a duty (switches to manual) |
 | `POST /restore` | alias of `/mode?value=auto` |
@@ -115,37 +113,39 @@ curl -s -X POST -H "X-Requested-With: XMLHttpRequest" \
 > **Breaking change vs. the old service**: the VFP voltage-lock soft-wall
 > loop was removed, so `/set_temp_limit_soft_vfp` is gone; `GET /config`
 > returns the new schema. PID `error` convention: positive = too hot.
+> The idle-release parameters were replaced by `idle_delta_c` (config keys
+> `release_below_c` / `engage_below_c` / `release_ticks` are gone — delete
+> them from your TOML).
 
-## Idle release (low-side hysteresis)
+## Forced zones (overtemp / idle)
 
-A PID alone idles badly: after a load drop the stored integral keeps the fan
-pinned high while the temperature sinks below the setpoint (undershoot, fan
-never stops). The controller therefore hands the fan **back to the driver's
-own curve** once it is comfortably cool, and takes control again when the GPU
-warms up:
+A PID alone idles badly: after a load drop the feed-forward (base + integral)
+reflects the *old* load and keeps the fan spinning while the temperature
+sinks below the setpoint. Symmetric hysteresis zones clamp both extremes
+while the PID keeps stepping underneath (its anti-windup freezes the
+integral at the rail, so zone exits are bumpless — no reset, no blast):
 
 ```
-target − release_below_c   … target − engage_below_c     target
-        ↑ release after release_ticks cool ticks   ↑ PID re-engages
-       ──────────── hysteresis band: state is held ────────────
+target − idle_delta_c      target      target + emergency_delta_c
+   ↑ forced min duty      ↑ PID active    ↑ forced 100 % duty
+   (0 % = fan stopped)                (2 °C exit hysteresis both sides)
 ```
 
-- Defaults: release at `target − 4 °C` after 3 cool ticks, re-engage at
-  `target − 1 °C`. `/status` shows the state per GPU (`"released": true`,
-  `fan_written_percent: null`).
-- **Operator override**: any successful `POST /pid` change or an explicit
-  `POST /mode?value=pid` takes control back immediately — even deeply below
-  the engage line — and holds it (auto-release suppressed) until the
-  temperature first crosses the re-engage line. Retargeting is therefore
-  always honored.
-- Tighten `release_below_c` (e.g. `2`) if the card idles cooler than you
-  like; set it to `0` to keep the PID in control all the way down.
-- A fast temperature plunge can undershoot the release line by
-  (drop rate × `release_ticks`) before the release fires — lower
-  `release_ticks` on such cards.
-- While released, sensor failures do not trigger the read-failure failsafe
-  (the driver already owns the fan), and an overtemp spike re-engages the
-  PID immediately (emergency 100% still applies).
+- Why not hand the fan back to the driver? The driver runs its **own**
+  temperature setpoint (typically ≈ 58 °C under load). Surrendering control
+  would cap the temperature at the driver's setpoint instead of ours — a
+  stress test targeting 75 °C would never get there. In Pid mode the
+  controller never yields the fan (only mode changes, `/restore`, shutdown
+  and the watchdog do).
+- `idle_delta_c = 4` (default) forces `min_percent` (0 % = fan stopped at
+  the default floor) once the temperature falls 4 °C below target. `0`
+  disables the idle zone.
+- With `adaptive_base = true` the learned feed-forward also **decays while
+  the idle zone holds**, so after a load drop the exit output converges
+  back to the idle need within a couple of zone visits instead of pulsing.
+- Sensor failures still trip the read-failure failsafe in every state (the
+  fan is software-pinned even at 0 %, so a dead sensor must not be trusted
+  to it).
 
 ## Failsafe behavior
 
@@ -238,7 +238,7 @@ With a fixed synthetic load (the stressor is ideal):
 | Fast duty chatter | 2–6 ticks, ±1–2 % | quantized writes acting as a relay; tick faster than sensor refresh | raise `write_deadband_percent` to 2; slow `interval_ms` to the sensor rate |
 | Slow limit cycle | ≈ 4–6·τ_T sawtooth (±2–5 °C) | kp·g too high, or base_percent far from the steady need so the integral carries the load | halve kp; set base_percent to the average duty /status shows near target |
 | Ringing after load steps | 2–3 overshoots, then settles | marginal margin (kp·g ≈ 5) | cut kp ~30 %; leave kd = 0 until/if derivative noise filtering exists |
-| `released` toggling in /status | minutes, bounded by the band | the idle-release hysteresis doing its job | benign by design; widen `release_below_c`/`engage_below_c` gap if the travel bothers you |
+| Idle-zone cycling at idle | fan 0 % ↔ mid every few s–min, decaying | the forced-idle zone unwinding a stale feed-forward | benign and decaying; raise `ki` slightly (faster base re-learning) or lower `idle_delta_c` if the travel bothers you |
 
 One extra hazard to rule out: if the legacy thermal sensor itself lags
 seconds behind reality (cross-check against GPU-Z), that dead time eats
@@ -307,10 +307,10 @@ write.
    reading itself only updates every few seconds on your card, a faster tick
    buys nothing; check `/status` temp granularity first.
 
-5. **Release band.** After load drops, the release hysteresis (section
-   above) hands the fan back to the driver instead of parking it via the
-   integral. Size `release_below_c` to how far below target you accept the
-   temperature to sag while the fan spins down.
+5. **Idle zone.** After load drops the forced-idle zone (section above)
+   clamps the fan to `min_percent` and decays the learned feed-forward, so
+   the temperature is allowed to sag below target while the fan spins down.
+   Size `idle_delta_c` to how far below target you accept that sag.
 
 6. **Setpoint sanity.** `target_c` should sit ≥ 10 °C below your card's
    slowdown threshold so the emergency 100% state stays a last resort, not a

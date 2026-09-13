@@ -28,6 +28,8 @@ use serde::Serialize;
 const INTEGRAL_UNWIND_GAIN: f32 = 4.0;
 
 /// One PID step's decomposition, for `/status` observability and tuning.
+/// `p/i/d` are the *term contributions* (kp·e, ki·∫e·dt, −kd·dT/dt), not
+/// the gains — the gains in effect are echoed alongside as `kp/ki/kd`.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct PidTerms {
     /// `measurement − target` (°C). Positive = too hot.
@@ -38,6 +40,10 @@ pub struct PidTerms {
     /// The feed-forward base this step acted around (`base + p + i + d =
     /// output` before clamping).
     pub base_percent: f32,
+    /// Gains in effect for this step (readback of the live config).
+    pub kp: f32,
+    pub ki: f32,
+    pub kd: f32,
     /// Clamped controller output (fan duty %).
     pub output_percent: f32,
 }
@@ -197,6 +203,9 @@ impl PidController {
             i: self.ki * self.integral,
             d,
             base_percent: self.base_percent,
+            kp: self.kp,
+            ki: self.ki,
+            kd: self.kd,
             output_percent: output,
         }
     }

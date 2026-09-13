@@ -143,22 +143,18 @@ pub struct PidParams {
     /// regardless of PID state (last-resort overtemp response, with 2 °C
     /// hysteresis on the exit side).
     pub emergency_delta_c: f32,
-    /// Idle release: once the selected sensor stays ≤
-    /// `target_c − release_below_c` for `release_ticks` consecutive ticks,
-    /// the fan is handed back to the driver curve (which idles — including
-    /// zero RPM — better than the PID can park it). This bounds the
-    /// low-side undershoot after a load drop. `0` disables releasing.
-    pub release_below_c: f32,
-    /// Re-engage line: PID control resumes at `target_c − engage_below_c`.
-    /// Must be < `release_below_c` (hysteresis band between the two).
-    pub engage_below_c: f32,
-    /// Consecutive ticks below the release line before releasing.
-    pub release_ticks: u32,
-    /// Learn `base_percent` online: while the loop is settled (|error| small)
-    /// the controller continuously re-centers integral authority into the
-    /// feed-forward, so `base_percent` tracks the current load level without
-    /// configuration. The configured `base_percent` acts as the initial
-    /// value; requires `ki > 0` (the integral is the teacher).
+    /// Mirror of the emergency zone on the cold side: at
+    /// `target_c − idle_delta_c` the controller forces `min_percent` duty
+    /// (0 % = fan stopped) instead of letting a stale feed-forward keep
+    /// spinning the fan. The PID keeps stepping through both zones, so
+    /// leaving either one is bumpless. `0` disables the idle zone.
+    pub idle_delta_c: f32,
+    /// Learn `base_percent` online: the controller continuously re-centers
+    /// integral authority into the feed-forward (output-continuous, so it
+    /// adds no loop dynamics), and the base decays while the idle zone
+    /// holds — together these track the load level in both directions
+    /// without configuration. The configured `base_percent` acts as the
+    /// initial value; requires `ki > 0` (the integral is the teacher).
     pub adaptive_base: bool,
     /// Anti-chatter deadband: skip a fan write while the PID output sits
     /// within ±`write_deadband_percent` of the last written duty. Quantized
@@ -179,9 +175,7 @@ impl Default for PidParams {
             min_percent: 0.0,
             max_percent: 100.0,
             emergency_delta_c: 12.0,
-            release_below_c: 4.0,
-            engage_below_c: 1.0,
-            release_ticks: 3,
+            idle_delta_c: 4.0,
             write_deadband_percent: 1.0,
             adaptive_base: true,
         }
@@ -222,26 +216,11 @@ impl PidParams {
                 self.emergency_delta_c
             ));
         }
-        if !(0.0..=30.0).contains(&self.release_below_c) {
+        if !(0.0..=50.0).contains(&self.idle_delta_c) {
             return Err(format!(
-                "release_below_c must be 0–30 °C (0 disables release), got {}",
-                self.release_below_c
+                "idle_delta_c must be 0–50 °C (0 disables the idle zone), got {}",
+                self.idle_delta_c
             ));
-        }
-        if !(0.0..=30.0).contains(&self.engage_below_c) {
-            return Err(format!(
-                "engage_below_c must be 0–30 °C, got {}",
-                self.engage_below_c
-            ));
-        }
-        if self.release_below_c > 0.0 && self.engage_below_c >= self.release_below_c {
-            return Err(format!(
-                "engage_below_c ({}) must be < release_below_c ({}) to form a hysteresis band",
-                self.engage_below_c, self.release_below_c
-            ));
-        }
-        if self.release_ticks == 0 || self.release_ticks > 60 {
-            return Err("release_ticks must be 1–60".to_string());
         }
         if !(0.0..=10.0).contains(&self.write_deadband_percent) {
             return Err(format!(

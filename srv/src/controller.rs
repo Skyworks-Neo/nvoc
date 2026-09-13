@@ -1,5 +1,6 @@
-//! Per-GPU thermal closed-loop controller: mode state machine, failsafe
-//! handling, and write deadbanding around the raw PID.
+//! Per-GPU thermal closed-loop controller: mode state machine, forced
+//! zones (overtemp / undertemp), failsafe handling, and write deadbanding
+//! around the raw PID.
 //!
 //! The controller is backend-agnostic ([`ControlBackend`]) so the whole
 //! state machine is unit-testable without a GPU.
@@ -8,16 +9,13 @@ use crate::config::{ControlMode, PidParams, RuntimeConfig, SensorKind};
 use crate::pid::{PidController, PidTerms};
 use serde::Serialize;
 
-/// Extra cooling below the emergency line required to leave the 100%-duty
-/// forced state; prevents flapping right at the threshold.
-const EMERGENCY_HYSTERESIS_C: f32 = 2.0;
+/// Extra cooling below (emergency) / above (idle) a forced-zone entry line
+/// required to leave the zone; prevents flapping right at the threshold.
+const ZONE_HYSTERESIS_C: f32 = 2.0;
 
 // Adaptive feed-forward (`adaptive_base`): constants rather than knobs —
 // the learning rate only has to be slow relative to the loop, not exact.
-/// |error| below which the loop counts as settled and integral authority is
-/// safe to re-center into the base.
-const BASE_LEARN_BAND_C: f32 = 1.0;
-/// Fraction of the integral term absorbed per tick.
+/// Fraction of the integral term re-centered into the base per tick.
 const BASE_ABSORB_FRACTION: f32 = 0.25;
 /// Do not bother re-centering tiny integrals.
 const BASE_ABSORB_FLOOR: f32 = 0.5;
@@ -72,7 +70,7 @@ pub trait ControlBackend: Send {
     fn restore_fan_auto(&mut self, gpu_index: usize) -> Result<(), String>;
 }
 
-/// Degraded states that override normal PID behavior.
+/// Control states that override the raw PID output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FailsafeState {
@@ -82,8 +80,13 @@ pub enum FailsafeState {
     /// the driver; resumes automatically on the first good read.
     ReadFailures,
     /// Overtemp: `target_c + emergency_delta_c` reached — 100% duty forced
-    /// (exits `EMERGENCY_HYSTERESIS_C` below the entry line).
+    /// (exits `ZONE_HYSTERESIS_C` below the entry line).
     Emergency,
+    /// Undertemp: `target_c − idle_delta_c` reached — `min_percent` duty
+    /// forced (fan stop at the default floor), so a stale feed-forward
+    /// cannot keep the fan spinning when the target is far above (exits
+    /// `ZONE_HYSTERESIS_C` above the entry line).
+    IdleHold,
     /// A driver control hand-back write failed; retried on the next tick.
     RestoreFailed,
 }
@@ -100,9 +103,6 @@ pub struct GpuControlStatus {
     pub sensors: SensorBundle,
     /// Last duty we wrote (None = driver is in control).
     pub fan_written_percent: Option<u32>,
-    /// True while the PID has released the fan to the driver's own curve
-    /// (idle-release hysteresis; see `PidParams::release_below_c`).
-    pub released: bool,
     /// Live duty reported by NVML, best effort.
     pub fan_measured_percent: Option<u32>,
     pub pid: Option<PidTerms>,
@@ -119,19 +119,13 @@ pub struct GpuController {
     failsafe: FailsafeState,
     fail_streak: u32,
     emergency_active: bool,
-    /// Idle-release hysteresis state (Pid mode only).
-    released: bool,
-    /// Consecutive ticks with temp ≤ the release line (dwell counter).
-    below_streak: u32,
-    /// Operator override latch (see [`Self::force_reengage`]): auto-release
-    /// is suppressed until the temperature first crosses the re-engage line.
-    operator_hold: bool,
+    idle_active: bool,
     /// Adaptive feed-forward state: the learned base duty. Only honored
     /// while `adaptive_base` is on (and seeded from the config otherwise).
     base: f32,
     base_seeded: bool,
     /// PID decomposition of the most recent evaluation (None while the PID
-    /// did not run this tick: Auto/Manual modes, released, pre-first-read).
+    /// did not run this tick: Auto/Manual modes, pre-first-read).
     last_pid: Option<PidTerms>,
     last_error: Option<String>,
     last_sensors: SensorBundle,
@@ -148,9 +142,7 @@ impl GpuController {
             failsafe: FailsafeState::Ok,
             fail_streak: 0,
             emergency_active: false,
-            released: false,
-            below_streak: 0,
-            operator_hold: false,
+            idle_active: false,
             base: 0.0,
             base_seeded: false,
             last_pid: None,
@@ -188,26 +180,8 @@ impl GpuController {
         }
         self.last_written = None;
         self.applied_mode = ControlMode::Auto;
-        self.released = false;
-        self.below_streak = 0;
-        self.operator_hold = false;
-    }
-
-    /// Operator override for the idle-release state: any successful `/pid`
-    /// mutation or an explicit `POST /mode?value=pid` lands here. Control is
-    /// taken back immediately and auto-release is suppressed
-    /// (`operator_hold`) until the temperature first crosses the re-engage
-    /// line — so a retarget is honored even while deeply cool. No-op unless
-    /// the controller is currently released in Pid mode.
-    pub fn force_reengage(&mut self, index: usize) {
-        if self.applied_mode != ControlMode::Pid || !self.released {
-            return;
-        }
-        log::info!("GPU {index}: operator re-engage; control taken back from driver curve");
-        self.released = false;
-        self.below_streak = 0;
-        self.operator_hold = true;
-        self.pid.reset();
+        self.emergency_active = false;
+        self.idle_active = false;
     }
 
     /// One control tick; returns the status snapshot for `/status`.
@@ -242,7 +216,6 @@ impl GpuController {
             temp_c: self.last_temp,
             sensors: self.last_sensors.clone(),
             fan_written_percent: self.last_written,
-            released: self.released,
             fan_measured_percent: self.fan_measured,
             pid: self.last_pid,
             last_error: self.last_error.clone(),
@@ -274,10 +247,8 @@ impl GpuController {
         }
         self.applied_mode = cfg.mode;
         self.emergency_active = false;
+        self.idle_active = false;
         self.fail_streak = 0;
-        self.released = false;
-        self.below_streak = 0;
-        self.operator_hold = false;
         if self.failsafe == FailsafeState::ReadFailures {
             self.failsafe = FailsafeState::Ok;
         }
@@ -311,10 +282,7 @@ impl GpuController {
             Err(e) => {
                 self.fail_streak += 1;
                 self.last_error = Some(e);
-                // While released the driver already owns the fan — nothing
-                // to restore, so the read-failure failsafe stays parked.
-                if !self.released
-                    && self.fail_streak >= cfg.read_fail_reset.max(1)
+                if self.fail_streak >= cfg.read_fail_reset.max(1)
                     && self.failsafe != FailsafeState::ReadFailures
                 {
                     log::error!(
@@ -331,6 +299,7 @@ impl GpuController {
                     }
                     self.failsafe = FailsafeState::ReadFailures;
                     self.emergency_active = false;
+                    self.idle_active = false;
                 }
             }
             Ok(bundle) => {
@@ -343,63 +312,9 @@ impl GpuController {
                     self.failsafe = FailsafeState::Ok;
                     self.pid.reset();
                 }
-                let Some(temp) = temp else { return };
-                let engage_at = cfg.pid.target_c - cfg.pid.engage_below_c;
-                let release_at = cfg.pid.target_c - cfg.pid.release_below_c;
-
-                // Operator override: hold control until the loop actually
-                // reaches the engage line, then normal band behavior resumes.
-                if self.operator_hold && temp >= engage_at {
-                    log::info!(
-                        "GPU {index}: loop at engage line {engage_at:.1} °C; operator hold lifted"
-                    );
-                    self.operator_hold = false;
+                if let Some(temp) = temp {
+                    self.apply_pid_output(index, cfg, backend, temp, dt_s);
                 }
-
-                // Idle-release hysteresis: cool → hand the fan to the
-                // driver curve (it idles — zero RPM — better than the PID
-                // can park it); warm again → take control back. Suppressed
-                // while an operator re-engage holds control.
-                if self.released {
-                    if temp >= engage_at {
-                        log::info!(
-                            "GPU {index}: {temp:.1} °C ≥ re-engage line {engage_at:.1} °C; PID control resumes"
-                        );
-                        self.released = false;
-                        self.pid.reset();
-                    } else {
-                        return; // stay on the driver curve this tick
-                    }
-                }
-                let in_release_zone =
-                    !self.operator_hold && cfg.pid.release_below_c > 0.0 && temp <= release_at;
-                if in_release_zone {
-                    self.below_streak += 1;
-                    if self.below_streak >= cfg.pid.release_ticks.max(1) {
-                        match backend.restore_fan_auto(index) {
-                            Ok(()) => {
-                                log::info!(
-                                    "GPU {index}: {temp:.1} °C ≤ release line {release_at:.1} °C \
-                                     for {} tick(s); fan released to driver curve",
-                                    self.below_streak
-                                );
-                                self.last_written = None;
-                                self.pid.reset();
-                                self.released = true;
-                                self.below_streak = 0;
-                                return;
-                            }
-                            Err(e) => {
-                                // Keep controlling; retry the release next tick.
-                                log::error!("GPU {index}: release restore failed: {e}");
-                                self.last_error = Some(e);
-                            }
-                        }
-                    }
-                } else {
-                    self.below_streak = 0;
-                }
-                self.apply_pid_output(index, cfg, backend, temp, dt_s);
             }
         }
     }
@@ -413,59 +328,62 @@ impl GpuController {
         dt_s: f32,
     ) {
         let emergency_at = cfg.pid.target_c + cfg.pid.emergency_delta_c;
-        let output = if self.emergency_active {
-            if temp <= emergency_at - EMERGENCY_HYSTERESIS_C {
-                log::info!("GPU {index}: left emergency state; PID resumes from reset");
+        let idle_at = cfg.pid.target_c - cfg.pid.idle_delta_c;
+
+        // Forced-zone latches with 2 °C exit hysteresis. The PID keeps
+        // stepping through both zones — its conditional anti-windup freezes
+        // the integral at whatever value makes the raw output sit at the
+        // forced rail, so leaving a zone is bumpless (no reset, no blast).
+        if self.emergency_active {
+            if temp <= emergency_at - ZONE_HYSTERESIS_C {
+                log::info!("GPU {index}: left emergency zone ({temp:.1} °C)");
                 self.emergency_active = false;
-                self.pid.reset();
-                self.failsafe = FailsafeState::Ok;
-                let terms = self.pid.step(temp, dt_s);
-                self.last_pid = Some(terms);
-                terms.output_percent
-            } else {
-                // Keep the /status decomposition truthful while the PID is
-                // not being stepped: show what it would compute, with the
-                // forced output.
-                let error = temp - cfg.pid.target_c;
-                self.last_pid = Some(PidTerms {
-                    error_c: error,
-                    p: cfg.pid.kp * error,
-                    i: cfg.pid.ki * self.pid.integral(),
-                    d: 0.0,
-                    base_percent: self.base,
-                    output_percent: 100.0,
-                });
-                100.0 // stay forced while inside the hysteresis band
             }
         } else if temp >= emergency_at {
             log::warn!(
-                "GPU {index}: {temp} °C ≥ emergency line {emergency_at} °C; forcing 100% duty"
+                "GPU {index}: {temp:.1} °C ≥ emergency line {emergency_at:.1} °C; forcing 100% duty"
             );
             self.emergency_active = true;
+        }
+        if self.idle_active {
+            if temp >= idle_at + ZONE_HYSTERESIS_C {
+                log::info!("GPU {index}: left idle zone ({temp:.1} °C); PID resumes");
+                self.idle_active = false;
+            }
+        } else if cfg.pid.idle_delta_c > 0.0 && temp <= idle_at {
+            log::info!(
+                "GPU {index}: {temp:.1} °C ≤ idle line {idle_at:.1} °C; forcing {}% duty",
+                cfg.pid.min_percent
+            );
+            self.idle_active = true;
+        }
+
+        let terms = self.pid.step(temp, dt_s);
+        self.last_pid = Some(terms);
+        if cfg.pid.adaptive_base {
+            self.learn_base(cfg);
+        }
+
+        let output = if self.emergency_active {
             self.failsafe = FailsafeState::Emergency;
-            let error = temp - cfg.pid.target_c;
-            self.last_pid = Some(PidTerms {
-                error_c: error,
-                p: cfg.pid.kp * error,
-                i: cfg.pid.ki * self.pid.integral(),
-                d: 0.0,
-                base_percent: self.base,
-                output_percent: 100.0,
-            });
             100.0
+        } else if self.idle_active {
+            self.failsafe = FailsafeState::IdleHold;
+            cfg.pid.min_percent
         } else {
-            let terms = self.pid.step(temp, dt_s);
-            self.last_pid = Some(terms);
-            if cfg.pid.adaptive_base {
-                self.learn_base(cfg, terms.error_c);
+            // Clear only our own zone flags; ReadFailures/RestoreFailed are
+            // owned by the failure paths and must not be clobbered here.
+            if self.failsafe == FailsafeState::Emergency || self.failsafe == FailsafeState::IdleHold
+            {
+                self.failsafe = FailsafeState::Ok;
             }
             terms.output_percent
         };
 
         // Write deadband (anti-chatter): quantized duty writes are a relay
         // nonlinearity; suppress writes while the output stays within the
-        // deadband of the duty already on the wire. A forced emergency write
-        // (|100 − last| ≫ deadband) always passes.
+        // deadband of the duty already on the wire. A forced-zone write
+        // (|rail − last| ≫ deadband) always passes.
         let duty = output.round().clamp(0.0, 100.0) as u32;
         let inside_deadband = match self.last_written {
             None => false,
@@ -486,13 +404,14 @@ impl GpuController {
         }
     }
 
-    /// Adaptive feed-forward: re-center integral authority into `self.base`
-    /// while the loop is settled. The transfer is output-continuous (base
-    /// rises by exactly what the integral falls), so learning adds no loop
-    /// dynamics — it only re-partitions state. Requires `ki > 0`.
-    fn learn_base(&mut self, cfg: &RuntimeConfig, error_c: f32) {
+    /// Adaptive feed-forward: continuously re-center integral authority into
+    /// `self.base`. The transfer is output-continuous (base moves by exactly
+    /// what the integral counter-moves), so learning adds no loop dynamics —
+    /// it only re-partitions state, which is how the base tracks the load
+    /// level in both directions without configuration. Requires `ki > 0`.
+    fn learn_base(&mut self, cfg: &RuntimeConfig) {
         let i_term = self.pid.i_term();
-        if error_c.abs() > BASE_LEARN_BAND_C || i_term.abs() < BASE_ABSORB_FLOOR {
+        if i_term.abs() < BASE_ABSORB_FLOOR {
             return;
         }
         let delta = (BASE_ABSORB_FRACTION * i_term).clamp(-BASE_ABSORB_MAX, BASE_ABSORB_MAX);
@@ -619,30 +538,121 @@ mod tests {
     }
 
     #[test]
-    fn emergency_forces_max_with_hysteresis() {
+    fn emergency_forces_max_with_hysteresis_and_bumpless_exit() {
         let mut c = GpuController::new(PidController::from_params(&PidParams::default()));
         // default emergency line: 75 + 12 = 87; exit at 85.
         let mut m = Mock::steady(88.0);
         let config = cfg(ControlMode::Pid);
         let st = tick(&mut c, &mut m, &config);
         assert_eq!(st.failsafe, FailsafeState::Emergency);
-        assert_eq!(m.writes.last(), Some(&100));
-        // Still inside hysteresis band: stays at 100.
+        assert_eq!(m.writes, vec![100]);
+        // Still inside the hysteresis band: stays at 100 (no rewrite).
         m.temps = vec![Ok(SensorBundle {
             core_c: Some(86.0),
             ..Default::default()
         })];
         let st = tick(&mut c, &mut m, &config);
         assert_eq!(st.failsafe, FailsafeState::Emergency);
-        assert_eq!(m.writes.last(), Some(&100));
-        // Below exit line: PID resumes (out = 40 + 2·9 = 58).
+        assert_eq!(m.writes, vec![100]);
+        // Below the exit line: the PID resumes WITHOUT a reset — the
+        // integral froze at the rail, so the exit output is continuous
+        // (40 + 2·9 + i(0.65+0.45) ≈ 60.1), not a drop to 58.
         m.temps = vec![Ok(SensorBundle {
             core_c: Some(84.0),
             ..Default::default()
         })];
         let st = tick(&mut c, &mut m, &config);
         assert_eq!(st.failsafe, FailsafeState::Ok);
-        assert_eq!(m.writes.last(), Some(&58));
+        let out = st.pid.expect("pid ran").output_percent;
+        assert!(
+            (58.0..62.0).contains(&out),
+            "bumpless exit near 60, got {out}"
+        );
+    }
+
+    #[test]
+    fn idle_zone_forces_min_and_exit_outputs_decay() {
+        // Stale high base (adaptive off): a load drop must still reach the
+        // fan-stop floor. The stale base unwinds across repeated idle-zone
+        // visits — the integral winds negative while the zone holds and the
+        // exit output decays (50 → 44 → …) instead of re-firing the old 62.
+        let mut config = cfg(ControlMode::Pid);
+        config.pid.adaptive_base = false;
+        config.pid.ki = 0.4;
+        config.pid.base_percent = 60.0;
+        let mut c = GpuController::new(PidController::from_params(&config.pid));
+        let mut m = Mock {
+            temps: vec![
+                Ok(SensorBundle {
+                    core_c: Some(76.0),
+                    ..Default::default()
+                }),
+                Ok(SensorBundle {
+                    core_c: Some(65.0),
+                    ..Default::default()
+                }),
+                Ok(SensorBundle {
+                    core_c: Some(62.0),
+                    ..Default::default()
+                }),
+                Ok(SensorBundle {
+                    core_c: Some(73.0),
+                    ..Default::default()
+                }),
+                Ok(SensorBundle {
+                    core_c: Some(62.0),
+                    ..Default::default()
+                }),
+                Ok(SensorBundle {
+                    core_c: Some(73.0),
+                    ..Default::default()
+                }),
+            ],
+            writes: Vec::new(),
+            restores: 0,
+            fail_writes: false,
+        };
+        let st = tick(&mut c, &mut m, &config);
+        assert_eq!(st.failsafe, FailsafeState::Ok);
+        assert_eq!(m.writes, vec![62]); // 60 + 2·1 + 0.4·1
+        let st = tick(&mut c, &mut m, &config); // 65 ≤ 71 → zone
+        assert_eq!(st.failsafe, FailsafeState::IdleHold);
+        assert_eq!(m.writes.last(), Some(&0));
+        let st = tick(&mut c, &mut m, &config); // still in zone (62 ≤ 73? no: hold until ≥73)
+        assert_eq!(st.failsafe, FailsafeState::IdleHold);
+        assert_eq!(m.writes.len(), 2, "min held by the deadband");
+        let st = tick(&mut c, &mut m, &config); // 73 ≥ 71+2 → exit
+        assert_eq!(st.failsafe, FailsafeState::Ok);
+        assert_eq!(m.writes.last(), Some(&50));
+        let st = tick(&mut c, &mut m, &config); // over-cooled → zone again
+        assert_eq!(st.failsafe, FailsafeState::IdleHold);
+        assert_eq!(m.writes.last(), Some(&0));
+        let st = tick(&mut c, &mut m, &config); // exit again
+        assert_eq!(st.failsafe, FailsafeState::Ok);
+        assert_eq!(
+            m.writes.last(),
+            Some(&44),
+            "exit output decays cycle over cycle"
+        );
+    }
+
+    #[test]
+    fn idle_zone_disabled_at_zero() {
+        let mut config = cfg(ControlMode::Pid);
+        config.pid.adaptive_base = false;
+        config.pid.ki = 0.0;
+        config.pid.idle_delta_c = 0.0;
+        let mut c = GpuController::new(PidController::from_params(&config.pid));
+        let mut m = Mock::steady(60.0);
+        for _ in 0..3 {
+            let st = tick(&mut c, &mut m, &config);
+            assert_eq!(
+                st.failsafe,
+                FailsafeState::Ok,
+                "idle_delta_c=0 disables the zone"
+            );
+        }
+        assert_eq!(m.writes, vec![10]); // 40 + 2·(60−75), deadband holds it
     }
 
     #[test]
@@ -694,123 +704,6 @@ mod tests {
         let st = tick(&mut c, &mut m, &cfg(ControlMode::Pid));
         assert_eq!(st.last_error.as_deref(), Some("write rejected"));
         assert_eq!(st.fan_written_percent, None);
-    }
-
-    /// PID config for release tests: no integral creep, 2-tick dwell.
-    fn release_cfg() -> RuntimeConfig {
-        let mut config = cfg(ControlMode::Pid);
-        config.pid.ki = 0.0;
-        config.pid.release_ticks = 2;
-        config // defaults: release at target−4, re-engage at target−1
-    }
-
-    #[test]
-    fn release_hands_fan_back_to_driver_when_cool() {
-        let mut c = GpuController::new(PidController::from_params(&PidParams::default()));
-        let mut m = Mock::steady(75.0);
-        let config = release_cfg();
-        tick(&mut c, &mut m, &config);
-        assert_eq!(m.writes, vec![40]);
-
-        // Below the release line (71): first tick still controls (dwell 1/2),
-        // second tick releases to the driver curve.
-        m.temps = vec![Ok(SensorBundle {
-            core_c: Some(70.5),
-            ..Default::default()
-        })];
-        let st = tick(&mut c, &mut m, &config);
-        assert!(!st.released);
-        let st = tick(&mut c, &mut m, &config);
-        assert!(st.released);
-        assert_eq!(m.restores, 1);
-        assert_eq!(st.fan_written_percent, None);
-
-        // Released: no further writes while it stays cool.
-        let writes_after_release = m.writes.len();
-        let st = tick(&mut c, &mut m, &config);
-        assert!(st.released);
-        assert_eq!(m.writes.len(), writes_after_release);
-    }
-
-    #[test]
-    fn pid_reengages_when_warm_and_holds_state_inside_the_band() {
-        let mut c = GpuController::new(PidController::from_params(&PidParams::default()));
-        let mut m = Mock::steady(70.5);
-        let config = release_cfg();
-        // Force into the released state (2 ticks below the line).
-        tick(&mut c, &mut m, &config);
-        tick(&mut c, &mut m, &config);
-        assert!(c.released);
-
-        // Warm again past the re-engage line (74): PID resumes immediately.
-        m.temps = vec![Ok(SensorBundle {
-            core_c: Some(74.5),
-            ..Default::default()
-        })];
-        let st = tick(&mut c, &mut m, &config);
-        assert!(!st.released);
-        assert_eq!(m.writes.last(), Some(&39)); // 40 + 2·(74.5−75)
-
-        // Inside the hysteresis band (71–74) while engaged: keep controlling.
-        m.temps = vec![Ok(SensorBundle {
-            core_c: Some(72.5),
-            ..Default::default()
-        })];
-        let st = tick(&mut c, &mut m, &config);
-        assert!(!st.released);
-        assert_eq!(m.writes.last(), Some(&35)); // 40 + 2·(72.5−75)
-
-        // Inside the band while released: stay released.
-        m.temps = vec![Ok(SensorBundle {
-            core_c: Some(70.0),
-            ..Default::default()
-        })];
-        tick(&mut c, &mut m, &config);
-        tick(&mut c, &mut m, &config);
-        assert!(c.released);
-        let writes_released = m.writes.len();
-        m.temps = vec![Ok(SensorBundle {
-            core_c: Some(72.5),
-            ..Default::default()
-        })];
-        let st = tick(&mut c, &mut m, &config);
-        assert!(st.released, "band must hold the released state");
-        assert_eq!(m.writes.len(), writes_released);
-    }
-
-    #[test]
-    fn emergency_overrides_released_state() {
-        let mut c = GpuController::new(PidController::from_params(&PidParams::default()));
-        let mut m = Mock::steady(70.5);
-        let config = release_cfg();
-        tick(&mut c, &mut m, &config);
-        tick(&mut c, &mut m, &config);
-        assert!(c.released);
-
-        // A spike past the emergency line re-engages and forces 100% in the
-        // same tick — release must never gate the overtemp response.
-        m.temps = vec![Ok(SensorBundle {
-            core_c: Some(88.0),
-            ..Default::default()
-        })];
-        let st = tick(&mut c, &mut m, &config);
-        assert!(!st.released);
-        assert_eq!(st.failsafe, FailsafeState::Emergency);
-        assert_eq!(m.writes.last(), Some(&100));
-    }
-
-    #[test]
-    fn release_disabled_when_release_below_zero() {
-        let mut c = GpuController::new(PidController::from_params(&PidParams::default()));
-        let mut m = Mock::steady(60.0);
-        let mut config = release_cfg();
-        config.pid.release_below_c = 0.0;
-        for _ in 0..5 {
-            let st = tick(&mut c, &mut m, &config);
-            assert!(!st.released, "release_below_c=0 must disable releasing");
-        }
-        assert_eq!(m.restores, 0);
-        assert_eq!(m.writes, vec![10]); // 40 + 2·(60−75), deadband holds it
     }
 
     #[test]
@@ -909,6 +802,29 @@ mod tests {
     }
 
     #[test]
+    fn adaptive_base_decays_in_the_idle_zone() {
+        // The idle zone is evidence of over-delivery: the learned base must
+        // fall while the zone holds, so the exit does not re-fire the fan.
+        let mut config = cfg(ControlMode::Pid);
+        config.pid.kp = 0.0;
+        config.pid.ki = 0.4;
+        config.pid.base_percent = 60.0;
+        let mut c = GpuController::new(PidController::from_params(&config.pid));
+        let mut m = Mock::steady(65.0); // ≤ target−4 → idle zone
+        let st = tick(&mut c, &mut m, &config);
+        assert_eq!(st.failsafe, FailsafeState::IdleHold);
+        let base_enter = st.pid.expect("pid ran").base_percent;
+        for _ in 0..10 {
+            tick(&mut c, &mut m, &config);
+        }
+        let base_after = c.last_pid.expect("pid ran").base_percent;
+        assert!(
+            base_after < base_enter - 10.0,
+            "base must decay in the idle zone: {base_enter} → {base_after}"
+        );
+    }
+
+    #[test]
     fn fixed_base_tracks_config_changes() {
         let mut config = cfg(ControlMode::Pid);
         config.pid.adaptive_base = false;
@@ -922,44 +838,6 @@ mod tests {
         config.pid.base_percent = 55.0;
         let st = tick(&mut c, &mut m, &config);
         assert!((st.pid.expect("pid ran").base_percent - 55.0).abs() < 1e-4);
-    }
-
-    #[test]
-    fn operator_reengage_holds_control_below_the_release_line() {
-        let mut c = GpuController::new(PidController::from_params(&PidParams::default()));
-        let mut m = Mock::steady(70.5);
-        let config = release_cfg();
-        // Settle into the released state.
-        tick(&mut c, &mut m, &config);
-        tick(&mut c, &mut m, &config);
-        assert!(c.released);
-
-        // Operator gesture (e.g. a /pid retarget): control comes back even
-        // though the temperature is still far below the engage line.
-        c.force_reengage(0);
-        assert!(!c.released);
-        let st = tick(&mut c, &mut m, &config);
-        assert!(!st.released, "operator hold must suppress auto-release");
-        assert_eq!(m.restores, 1, "no extra restore on re-engage itself");
-        assert_eq!(m.writes.last(), Some(&31)); // 40 + 2·(70.5−75), in control
-
-        // The hold lifts at the engage line; afterwards the release band
-        // works normally again.
-        m.temps = vec![Ok(SensorBundle {
-            core_c: Some(74.5),
-            ..Default::default()
-        })];
-        let st = tick(&mut c, &mut m, &config);
-        assert!(!st.released);
-        assert_eq!(m.writes.last(), Some(&39)); // 40 + 2·(74.5−75)
-        m.temps = vec![Ok(SensorBundle {
-            core_c: Some(70.5),
-            ..Default::default()
-        })];
-        tick(&mut c, &mut m, &config); // dwell tick 1 (writes 31)
-        let st = tick(&mut c, &mut m, &config); // dwell tick 2 → release
-        assert!(st.released);
-        assert_eq!(m.restores, 2);
     }
 
     #[test]
