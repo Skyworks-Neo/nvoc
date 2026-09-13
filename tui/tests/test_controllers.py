@@ -219,6 +219,36 @@ class FakeNative:
         ))
         return {"applied": True}
 
+    def query_fan_curve(self, gpu):
+        self.calls.append(("query_fan_curve", gpu))
+        return getattr(self, "fan_curve_payload", None)
+
+    def set_fan_curve(self, gpu, curve_index, points, activate=True, fan_id=None):
+        self.calls.append((
+            "set_fan_curve",
+            gpu,
+            curve_index,
+            list(points),
+            activate,
+            fan_id,
+        ))
+        if getattr(self, "raise_on_set_fan_curve", None) is not None:
+            raise self.raise_on_set_fan_curve
+        return {
+            "applied": True,
+            "curve": curve_index,
+            "policy_switched_to_continuous": True,
+            "pin_released": True,
+        }
+
+    def reset_fan_curve(self, gpu, curve_index):
+        self.calls.append(("reset_fan_curve", gpu, curve_index))
+        return {"applied": True, "curve": curve_index, "reset": True}
+
+    def set_fanstop_status(self, gpu, enable, curve_index=None):
+        self.calls.append(("set_fanstop_status", gpu, enable, curve_index))
+        return {"applied": True}
+
     def clk_vf_delta_for_target_mhz(self, def_mhz, delta_mhz, class_name):
         # Mirrors the call semantics used by the GUI/TUI raw-converted path:
         # the 3rd argument is the desired MHz offset (not an absolute
@@ -2419,8 +2449,12 @@ def test_overclock_fan_surface_modern_keeps_continuous_policy() -> None:
     controller, app, widgets = _overclock_controller_with_fan_selects()
     gpu = app.selected_gpu_target()
     controller._on_fan_surface(gpu, {"count": 1, "current_percent": 33}, {"count": 1})
-    # Modern coolers ignore `manual` on the NVAPI path — continuous only.
-    assert widgets["#fan-policy"].options == [("contin.", "continuous")]
+    # Modern coolers ignore `manual` on the NVAPI path — continuous plus the
+    # ClientFanPolicies curve mode.
+    assert widgets["#fan-policy"].options == [
+        ("contin.", "continuous"),
+        ("curve", "curve"),
+    ]
     assert widgets["#fan-policy"].value == "continuous"
 
 
@@ -2459,7 +2493,341 @@ def test_overclock_fan_surface_verdict_flips_between_gpus() -> None:
     controller._on_fan_surface(gpu, {"count": 1, "current_percent": 40}, {"count": 0})
     assert widgets["#fan-policy"].value == "manual"
     controller._on_fan_surface(gpu, {"count": 1, "current_percent": 35}, {"count": 1})
-    assert widgets["#fan-policy"].options == [("contin.", "continuous")]
+    assert widgets["#fan-policy"].options == [
+        ("contin.", "continuous"),
+        ("curve", "curve"),
+    ]
     # "manual" is not offered on modern NVAPI coolers — the carried-over
     # selection normalizes back to continuous.
     assert widgets["#fan-policy"].value == "continuous"
+
+
+# ── Fan-curve editor (policy=curve) ────────────────────────────────────────
+
+
+class _CurveEditorStub:
+    """#fan-curve-editor stand-in: records TCSS visibility-class flips and
+    the disabled cascade, mirroring FakePanel + the pane-grey path."""
+
+    def __init__(self) -> None:
+        self.classes: set[str] = set()
+        self.disabled = False
+
+    def add_class(self, class_name: str) -> None:
+        self.classes.add(class_name)
+
+    def remove_class(self, class_name: str) -> None:
+        self.classes.discard(class_name)
+
+    def has_class(self, class_name: str) -> bool:
+        return class_name in self.classes
+
+
+class _SlotLabelStub:
+    def __init__(self) -> None:
+        self.text: str | None = None
+
+    def update(self, text: str) -> None:
+        self.text = text
+
+
+_FAN_CURVE_TABLE = {
+    "curves": [
+        {
+            "index": 0,
+            "points": [
+                {"temp_c": 40, "rpm": 800},
+                {"temp_c": 60, "rpm": 1600},
+                {"temp_c": 75, "rpm": 2400},
+            ],
+        },
+        {
+            "index": 1,
+            "points": [
+                {"temp_c": 30, "rpm": 500},
+                {"temp_c": 50, "rpm": 1200},
+                {"temp_c": 80, "rpm": 3000},
+            ],
+        },
+    ]
+}
+
+
+def _overclock_controller_with_curve_editor() -> tuple[
+    OverclockController, FakeApp, dict
+]:
+    controller, app = _overclock_controller_with_fan_panes()
+    editor = _CurveEditorStub()
+    slot_label = _SlotLabelStub()
+    stop_button = SimpleNamespace(label="Fan Stop: —")
+    widgets: dict[str, object] = {
+        "#fan-curve-editor": editor,
+        "#fan-curve-slot": slot_label,
+        "#fan-curve-stop": stop_button,
+        "#fan-id": _FakeSelect("all"),
+        "#fan-api": _FakeSelect("nvapi"),
+        "#fan-level": _FakeSelect("60"),
+        "#fan-policy": _FakeSelect("continuous"),
+    }
+    for i in range(3):
+        widgets[f"#fan-curve-t{i}"] = SimpleNamespace(value="")
+        widgets[f"#fan-curve-r{i}"] = SimpleNamespace(value="")
+        widgets[f"#fan-curve-p{i}"] = SimpleNamespace(value="", disabled=False)
+    app.widgets.update(widgets)
+    # Readbacks (Set/Reset Curve tails, background reloads) answer with the
+    # fixture table so the synchronous FakeApp flows stay deterministic.
+    app.native.fan_curve_payload = _FAN_CURVE_TABLE
+    app.native_service = SimpleNamespace(
+        action_state=SimpleNamespace(running=False),
+        query_fan_curve=lambda gpu: app.native.query_fan_curve(gpu),
+    )
+    return controller, app, widgets
+
+
+def test_fan_curve_policy_change_toggles_editor_visibility() -> None:
+    controller, app, _ = _overclock_controller_with_curve_editor()
+    # Stub the background load so the visibility test stays synchronous.
+    loads: list[bool] = []
+    controller._load_fan_curve_table = lambda force=False: loads.append(force)  # type: ignore[method-assign]
+
+    controller.on_fan_policy_changed("curve")
+    assert app.widgets["#fan-curve-editor"].has_class("curve-visible")
+    assert loads == [False]
+
+    controller.on_fan_policy_changed("continuous")
+    assert not app.widgets["#fan-curve-editor"].has_class("curve-visible")
+
+
+def test_fan_curve_surface_verdict_retracts_editor_on_legacy() -> None:
+    """A GPU switch to a legacy card drops `curve` from the policy options —
+    the editor must retract even though the dropdown still carried curve."""
+    controller, app, widgets = _overclock_controller_with_curve_editor()
+    controller._show_curve_editor(True)
+    assert app.widgets["#fan-curve-editor"].has_class("curve-visible")
+
+    widgets["#fan-policy"].value = "curve"
+    controller._on_fan_surface(
+        app.selected_gpu_target(), {"count": 1, "current_percent": 40}, {"count": 0}
+    )
+    assert widgets["#fan-policy"].value == "manual"
+    assert not app.widgets["#fan-curve-editor"].has_class("curve-visible")
+
+
+def test_fan_curve_loaded_fills_table_and_pwm_mirror() -> None:
+    controller, app, _ = _overclock_controller_with_curve_editor()
+    controller._cooler_max_rpm = 4000
+
+    controller._on_fan_curve_loaded(app.selected_gpu_target(), _FAN_CURVE_TABLE)
+
+    assert app.widgets["#fan-curve-t0"].value == "40"
+    assert app.widgets["#fan-curve-r0"].value == "800"
+    assert app.widgets["#fan-curve-p0"].value == "20"  # 800/4000
+    assert app.widgets["#fan-curve-p2"].value == "60"  # 2400/4000
+    assert app.widgets["#fan-curve-slot"].text == "Curve 0"
+    assert app.widgets["#fan-curve-p0"].disabled is False
+
+
+def test_fan_curve_loaded_na_when_surface_missing() -> None:
+    controller, app, _ = _overclock_controller_with_curve_editor()
+
+    controller._on_fan_curve_loaded(app.selected_gpu_target(), None)
+
+    assert app.widgets["#fan-curve-t0"].value == ""
+    assert app.widgets["#fan-curve-r0"].value == ""
+    assert app.widgets["#fan-curve-p0"].value == "—"
+    assert app.widgets["#fan-curve-p0"].disabled is True
+
+
+def test_fan_curve_loaded_stale_gpu_ignored() -> None:
+    controller, app, _ = _overclock_controller_with_curve_editor()
+    controller._on_fan_curve_loaded("GPU1", _FAN_CURVE_TABLE)
+    # Nothing filled — the load raced a GPU switch.
+    assert app.widgets["#fan-curve-t0"].value == ""
+    assert controller._curve_loaded_gpu != "GPU1"
+
+
+def test_fan_curve_set_button_parses_and_calls_native() -> None:
+    controller, app, _ = _overclock_controller_with_curve_editor()
+    controller._cooler_max_rpm = 4000
+    controller._on_fan_curve_loaded(app.selected_gpu_target(), _FAN_CURVE_TABLE)
+
+    assert controller.handle_button("fan-curve-set") is True
+
+    assert app.actions == ["set fan curve"]
+    set_calls = [c for c in app.native.calls if c[0] == "set_fan_curve"]
+    assert set_calls == [
+        ("set_fan_curve", "0x0000", 0, [(40, 800), (60, 1600), (75, 2400)], True, None)
+    ]
+    # The readback refreshed the table from the driver (fan-stop state kept).
+    assert app.widgets["#fan-curve-t0"].value == "40"
+
+
+def test_fan_curve_set_rejects_non_monotonic_points() -> None:
+    controller, app, _ = _overclock_controller_with_curve_editor()
+    controller._cooler_max_rpm = 4000
+    controller._on_fan_curve_loaded(app.selected_gpu_target(), _FAN_CURVE_TABLE)
+    # Second point below the first RPM → driver would answer -5.
+    app.widgets["#fan-curve-r1"].value = "700"
+
+    assert controller.handle_button("fan-curve-set") is True
+
+    assert app.actions == []
+    assert not any(call[0] == "set_fan_curve" for call in app.native.calls)
+    assert any("strictly increasing" in line for line in app.logs)
+
+
+def test_fan_curve_set_rejects_non_integer_input() -> None:
+    controller, app, _ = _overclock_controller_with_curve_editor()
+    controller._on_fan_curve_loaded(app.selected_gpu_target(), _FAN_CURVE_TABLE)
+    app.widgets["#fan-curve-t2"].value = "abc"
+
+    assert controller.handle_button("fan-curve-set") is True
+
+    assert app.actions == []
+    assert any("must be integers" in line for line in app.logs)
+
+
+def test_fan_curve_set_passes_fan_id_scoping() -> None:
+    """The fan dropdown scopes the policy switch / pin clear (the curve
+    table itself is per-GPU)."""
+    controller, app, _ = _overclock_controller_with_curve_editor()
+    controller._cooler_max_rpm = 4000
+    controller._on_fan_curve_loaded(app.selected_gpu_target(), _FAN_CURVE_TABLE)
+    app.widgets["#fan-id"].value = "1"
+
+    controller.handle_button("fan-curve-set")
+
+    set_calls = [c for c in app.native.calls if c[0] == "set_fan_curve"]
+    assert set_calls == [
+        ("set_fan_curve", "0x0000", 0, [(40, 800), (60, 1600), (75, 2400)], True, "1")
+    ]
+
+
+def test_fan_curve_next_cycles_slot_and_reloads() -> None:
+    controller, app, _ = _overclock_controller_with_curve_editor()
+    loads: list[bool] = []
+    controller._load_fan_curve_table = lambda force=False: loads.append(force)  # type: ignore[method-assign]
+
+    controller.handle_button("fan-curve-next")
+
+    assert controller._curve_slot == 1
+    assert app.widgets["#fan-curve-slot"].text == "Curve 1"
+    assert loads == [True]
+
+    controller._curve_slot = 3
+    controller.handle_button("fan-curve-next")
+    assert controller._curve_slot == 0
+
+
+def test_fan_curve_next_reloads_driver_points() -> None:
+    """The fill path keys off the active slot: after Next Curve the slot-1
+    points land in the inputs (the button test covers cycling + reload
+    scheduling; this pins the content without racing the worker thread)."""
+    controller, app, _ = _overclock_controller_with_curve_editor()
+    controller._cooler_max_rpm = 4000
+    gpu = app.selected_gpu_target()
+    controller._on_fan_curve_loaded(gpu, _FAN_CURVE_TABLE)
+
+    controller._curve_slot = 1
+    controller._on_fan_curve_loaded(gpu, _FAN_CURVE_TABLE)
+
+    assert app.widgets["#fan-curve-t0"].value == "30"
+    assert app.widgets["#fan-curve-r0"].value == "500"
+    assert app.widgets["#fan-curve-p0"].value == "12"  # 500/4000 (round-half-even)
+    assert app.widgets["#fan-curve-slot"].text == "Curve 1"
+
+
+def test_fan_curve_reset_calls_native_and_reloads() -> None:
+    controller, app, _ = _overclock_controller_with_curve_editor()
+    controller._cooler_max_rpm = 4000
+    controller._on_fan_curve_loaded(app.selected_gpu_target(), _FAN_CURVE_TABLE)
+    app.widgets["#fan-curve-t0"].value = "999"
+
+    controller.handle_button("fan-curve-reset")
+
+    assert ("reset_fan_curve", "0x0000", 0) in app.native.calls
+    assert app.actions == ["reset fan curve"]
+    # The in-action readback restored the driver's table over the edit.
+    assert app.widgets["#fan-curve-t0"].value == "40"
+
+
+def test_fan_curve_stop_toggles_and_labels() -> None:
+    controller, app, _ = _overclock_controller_with_curve_editor()
+
+    controller.handle_button("fan-curve-stop")
+
+    assert ("set_fanstop_status", "0x0000", True, 0) in app.native.calls
+    assert app.widgets["#fan-curve-stop"].label == "Fan Stop: on"
+    assert controller._fan_stop is True
+
+    controller.handle_button("fan-curve-stop")
+    assert ("set_fanstop_status", "0x0000", False, 0) in app.native.calls
+    assert app.widgets["#fan-curve-stop"].label == "Fan Stop: off"
+
+
+def test_fan_curve_fan_apply_routes_to_curve_path() -> None:
+    controller, app, widgets = _overclock_controller_with_curve_editor()
+    controller._cooler_max_rpm = 4000
+    controller._on_fan_curve_loaded(app.selected_gpu_target(), _FAN_CURVE_TABLE)
+    widgets["#fan-policy"].value = "curve"
+
+    controller.handle_button("fan-apply")
+
+    assert app.actions == ["set fan curve"]
+    assert any(c[0] == "set_fan_curve" for c in app.native.calls)
+
+
+def test_fan_curve_input_submitted_mirrors_rpm_to_pwm() -> None:
+    controller, app, _ = _overclock_controller_with_curve_editor()
+    controller._cooler_max_rpm = 4000
+    app.widgets["#fan-curve-r1"].value = "2000"
+
+    controller.on_curve_input_submitted("fan-curve-r1", "2000")
+
+    assert app.widgets["#fan-curve-r1"].value == "2000"
+    assert app.widgets["#fan-curve-p1"].value == "50"  # 2000/4000
+    assert app.widgets["#fan-curve-p1"].disabled is False
+
+
+def test_fan_curve_input_submitted_mirrors_pwm_to_rpm() -> None:
+    controller, app, _ = _overclock_controller_with_curve_editor()
+    controller._cooler_max_rpm = 4000
+
+    controller.on_curve_input_submitted("fan-curve-p2", "50")
+
+    assert app.widgets["#fan-curve-p2"].value == "50"
+    assert app.widgets["#fan-curve-r2"].value == "2000"
+
+
+def test_fan_curve_input_submitted_garbage_ignored() -> None:
+    controller, app, _ = _overclock_controller_with_curve_editor()
+    controller._cooler_max_rpm = 4000
+    app.widgets["#fan-curve-r0"].value = "800"
+
+    controller.on_curve_input_submitted("fan-curve-r0", "abc")
+
+    assert app.widgets["#fan-curve-r0"].value == "800"
+    assert app.widgets["#fan-curve-p0"].value == ""
+
+
+def test_fan_curve_fanless_gpu_disables_editor() -> None:
+    controller, app, _ = _overclock_controller_with_curve_editor()
+    controller._on_fan_curve_loaded(app.selected_gpu_target(), _FAN_CURVE_TABLE)
+
+    controller._on_fan_surface(app.selected_gpu_target(), {"count": 0})
+
+    assert app.widgets["#fan-curve-editor"].disabled is True
+
+
+def test_fan_curve_loaded_without_max_rpm_disables_pwm() -> None:
+    """No cooler max-RPM readout → the PWM column flips to a disabled N/A
+    instead of a wrong conversion."""
+    controller, app, _ = _overclock_controller_with_curve_editor()
+
+    controller._on_fan_curve_loaded(app.selected_gpu_target(), _FAN_CURVE_TABLE)
+
+    assert controller._cooler_max_rpm is None
+    assert app.widgets["#fan-curve-p0"].value == "—"
+    assert app.widgets["#fan-curve-p0"].disabled is True
+    # RPM column still carries the driver truth.
+    assert app.widgets["#fan-curve-r0"].value == "800"

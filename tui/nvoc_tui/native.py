@@ -255,6 +255,39 @@ class NativeService:
         except Exception:
             return None
 
+    def query_fan_curve(self, gpu: str) -> dict | None:
+        """NVAPI fan-curve table (ClientFanPolicies: 4 slots × 3 points).
+
+        Returns the pynvoc ``query_fan_curve`` dict or ``None`` when NVAPI
+        can't answer (legacy drivers / mobile EC-driven boards have no
+        curve surface — the editor shows N/A, mirroring the ref tool).
+        """
+        try:
+            return self._pynvoc().query_fan_curve(gpu)
+        except Exception:
+            return None
+
+    def set_fan_curve(
+        self,
+        gpu: str,
+        curve_index: int,
+        points: list[tuple[int, int]],
+        activate: bool = True,
+        fan_id: str | None = None,
+    ) -> dict:
+        """Write one fan-curve slot (3 strictly-monotonic temp→RPM points).
+
+        ``activate=True`` also switches the cooler policy to
+        TemperatureContinuous in the same transaction and best-effort
+        releases the percent pin. Raises on invalid input or NVAPI
+        failure — the run_action wrapper surfaces the error in console.
+        """
+        return self._pynvoc().set_fan_curve(gpu, curve_index, points, activate, fan_id)
+
+    def reset_fan_curve(self, gpu: str, curve_index: int) -> dict:
+        """Reset one fan-curve slot to factory (reset-bitmask tail)."""
+        return self._pynvoc().reset_fan_curve(gpu, curve_index)
+
     def query_mobile_limits(self, gpu: str) -> dict:
         """Fetch the mobile power/thermal control surface (all NVAPI).
 

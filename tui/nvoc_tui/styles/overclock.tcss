@@ -73,9 +73,47 @@
    pseudo-class cascades to every child (built-in widget dim styles) and
    the pane-level opacity tints the rows with no interactive widget. */
 #fan-controls:disabled,
-#fan-actions:disabled {
+#fan-actions:disabled,
+#fan-curve-editor:disabled {
     opacity: 0.45;
     text-opacity: 0.55;
+}
+
+/* Fan-curve editor (policy=curve only): a Point 0-2 × Tj/RPM/PWM table
+   plus its action row, hidden until the controller flips .curve-visible.
+   Hidden-by-default keeps the 4×1 overclock grid untouched. */
+#fan-curve-editor {
+    display: none;
+    height: auto;
+    padding-top: 1;
+}
+
+#fan-curve-editor.curve-visible {
+    display: block;
+}
+
+#fan-curve-slot {
+    text-opacity: 0.85;
+}
+
+#fan-curve-table {
+    grid-size: 4 4;
+    grid-columns: 9 1fr 1fr 1fr;
+    grid-gutter: 0 1;
+    grid-rows: auto;
+    height: auto;
+}
+
+#fan-curve-table > Label {
+    content-align: center middle;
+}
+
+#fan-curve-actions2 {
+    grid-size: 4 1;
+    grid-columns: 1fr 1fr 1fr 1fr;
+    grid-gutter: 0 1;
+    height: auto;
+    margin-top: 1;
 }
 
 /* MHz/mV unit toggle (GUI V/F Offsets parity): a 3-col chip appended after

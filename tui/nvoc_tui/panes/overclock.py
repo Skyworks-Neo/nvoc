@@ -329,16 +329,17 @@ def compose_overclock() -> ComposeResult:
                             )
                         with Horizontal(classes="row"):
                             yield Label("Policy")
-                            # NVAPI cooler policies (modern GPUs): only
-                            # `continuous` actually applies the manual %
-                            # level (live A/B) — `manual` no-ops on the
-                            # modern cooler paths and is not offered. Legacy
+                            # NVAPI cooler policies (modern GPUs): `continuous`
+                            # applies the manual % level (live A/B); `curve`
+                            # hands the fan to the ClientFanPolicies table
+                            # (set through the curve editor below). Legacy
                             # GPUs (≤ Kepler) get the default/manual dropdown
                             # at discovery time — manual % lands on `manual`
                             # there.
                             yield Select(
                                 options=[
                                     ("contin.", "continuous"),
+                                    ("curve", "curve"),
                                 ],
                                 value="continuous",
                                 id="fan-policy",
@@ -357,3 +358,46 @@ def compose_overclock() -> ComposeResult:
                         yield Button(
                             "Reset Fan", id="fan-reset", classes="green", compact=True
                         )
+                    # Curve editor (policy=curve only): table-driven fan-curve
+                    # editor — the TUI counterpart of the GUI's draggable
+                    # curve popup. 4 slots × 3 strictly-monotonic
+                    # (Tj °C → RPM) points per GPU; PWM mirrors RPM through
+                    # the cooler's max-RPM readout. Hidden until the policy
+                    # dropdown selects `curve`.
+                    with Vertical(id="fan-curve-editor"):
+                        yield Label("Curve 0", id="fan-curve-slot")
+                        with Grid(id="fan-curve-table"):
+                            yield Label("")
+                            yield Label("Tj")
+                            yield Label("RPM")
+                            yield Label("PWM")
+                            for i in range(3):
+                                yield Label(f"Point {i}")
+                                yield ShortcutInput(
+                                    value="", id=f"fan-curve-t{i}", compact=True
+                                )
+                                yield ShortcutInput(
+                                    value="", id=f"fan-curve-r{i}", compact=True
+                                )
+                                yield ShortcutInput(
+                                    value="", id=f"fan-curve-p{i}", compact=True
+                                )
+                        with Grid(id="fan-curve-actions2"):
+                            yield Button(
+                                "Set Curve",
+                                id="fan-curve-set",
+                                classes="red",
+                                compact=True,
+                            )
+                            yield Button(
+                                "Next Curve", id="fan-curve-next", compact=True
+                            )
+                            yield Button(
+                                "Reset Curve",
+                                id="fan-curve-reset",
+                                classes="green",
+                                compact=True,
+                            )
+                            yield Button(
+                                "Fan Stop: —", id="fan-curve-stop", compact=True
+                            )

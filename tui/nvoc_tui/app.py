@@ -17,7 +17,14 @@ from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container
-from textual.widgets import Button, Checkbox, Label, Select, TabbedContent
+from textual.widgets import (
+    Button,
+    Checkbox,
+    Input,
+    Label,
+    Select,
+    TabbedContent,
+)
 
 from .config import ConfigStore
 from .controllers.console import ConsoleController
@@ -393,6 +400,8 @@ class NVOCApp(App[None]):
             self.header_controller.on_gpu_selected(event.value)
         elif event.select.id == "power-api":
             self.overclock_controller.on_power_api_changed(event.value)
+        elif event.select.id == "fan-policy":
+            self.overclock_controller.on_fan_policy_changed(event.value)
         elif event.select.id == "vf-active-curve":
             if self.vfcurve_controller._syncing:
                 # Echo of a programmatic sync write — acting on it resonates
@@ -407,6 +416,16 @@ class NVOCApp(App[None]):
             # Programmatic sync echoes arrive with the value already active —
             # the controller ignores no-op switches.
             self.vfcurve_controller._switch_active_curve(curve_id)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        # Fan-curve table RPM↔PWM mirror — Submitted (Enter) rather than
+        # per-keystroke Changed, so the conversion doesn't chase its own
+        # rounding echo while the user types.
+        input_id = event.input.id or ""
+        if input_id.startswith("fan-curve-r") or input_id.startswith("fan-curve-p"):
+            self.overclock_controller.on_curve_input_submitted(
+                input_id, str(event.value)
+            )
 
     def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
         checkbox_id = event.checkbox.id or ""

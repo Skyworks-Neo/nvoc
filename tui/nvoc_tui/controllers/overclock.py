@@ -32,6 +32,7 @@ class OverclockController(PaneController):
         self._mobile_limits_gpu: str | None = None
         self._mobile_load_lock = threading.Lock()
         self._fan_surface_lock = threading.Lock()
+        self._curve_load_lock = threading.Lock()
         # GPUs whose NVML fan-info reports zero coolers (fanless server cards:
         # P100/A100 …) — the Fan pane greys out for these, the same verdict
         # surface the GUI drives through set_supported_state.
@@ -55,6 +56,16 @@ class OverclockController(PaneController):
         # part: the NVML pstate mem-clock query is Not Supported there) —
         # apply/reset then use the native single-P-State pin instead.
         self._pstate_pin_fallback = False
+        # Fan-curve editor state (policy=curve): active ClientFanPolicies
+        # slot, the cooler's max-RPM readout for PWM↔RPM conversion
+        # (None → PWM column disabled), the last-known fan-stop toggle
+        # state (None = never set this session), and an echo guard for the
+        # RPM↔PWM input mirroring.
+        self._curve_slot = 0
+        self._curve_loaded_gpu: str | None = None
+        self._cooler_max_rpm: int | None = None
+        self._fan_stop: bool | None = None
+        self._curve_syncing = False
 
     def available_pstates(self) -> list[str]:
         pstates = self.app.cache.settings.get("supported_pstates", [])
@@ -1030,7 +1041,7 @@ class OverclockController(PaneController):
         pseudo-class drives the dim style in overclock.tcss — the TUI
         counterpart of the GUI fan pane's ``set_supported_state``.
         """
-        for selector in ("#fan-controls", "#fan-actions"):
+        for selector in ("#fan-controls", "#fan-actions", "#fan-curve-editor"):
             try:
                 self.app.query_one(selector).disabled = disabled
             except Exception:
@@ -1079,6 +1090,18 @@ class OverclockController(PaneController):
                 )
                 # None (NVAPI unanswered) or 0 → legacy; ≥1 → modern.
                 legacy_nvapi = not cooler_count
+                # PWM↔RPM conversion anchor for the curve editor: the
+                # cooler family's max-RPM readout (largest across coolers).
+                self._cooler_max_rpm = None
+                if isinstance(cooler_data, dict):
+                    maxes = [
+                        c.get("max")
+                        for c in cooler_data.get("coolers", [])
+                        if isinstance(c, dict)
+                    ]
+                    rpm_maxes = [m for m in maxes if isinstance(m, int) and m > 0]
+                    if rpm_maxes:
+                        self._cooler_max_rpm = max(rpm_maxes)
                 # Legacy GPUs (≤ Kepler): modern NVAPI CoolerPolicy types are
                 # rejected by the old driver — restrict the policy dropdown to
                 # default/manual and default to manual. Keep the NVAPI backend
@@ -1091,8 +1114,9 @@ class OverclockController(PaneController):
                     fallback = "manual"
                 else:
                     # Modern coolers ignore `manual` on the NVAPI path —
-                    # offer continuous only.
-                    policy_options = [("contin.", "continuous")]
+                    # offer continuous plus the ClientFanPolicies curve
+                    # mode (edited in the fan-curve editor below).
+                    policy_options = [("contin.", "continuous"), ("curve", "curve")]
                     fallback = "continuous"
                 policy_select.set_options(policy_options)
                 policy_select.value = (
@@ -1100,6 +1124,12 @@ class OverclockController(PaneController):
                     if policy_value in {value for _, value in policy_options}
                     else fallback
                 )
+                # A verdict flip that dropped `curve` from the options (GPU
+                # switch to a legacy/fanless card) must retract the editor.
+                if str(policy_select.value or "") != "curve":
+                    self._show_curve_editor(False)
+                else:
+                    self._load_fan_curve_table(force=True)
                 if count == 1 and current is not None:
                     self.set_input("#fan-level", str(max(0, min(100, int(current)))))
             elif count == 0:
@@ -1111,6 +1141,248 @@ class OverclockController(PaneController):
                 self._set_fan_pane_disabled(True)
         except Exception:
             pass
+
+    # ── Fan-curve editor (policy=curve) ────────────────────────────────
+
+    def _show_curve_editor(self, visible: bool) -> None:
+        """Toggle the fan-curve editor section via its TCSS visibility class
+        (`#fan-curve-editor { display: none }` base rule)."""
+        try:
+            editor = self.app.query_one("#fan-curve-editor")
+        except Exception:
+            return
+        if visible:
+            editor.add_class("curve-visible")
+        else:
+            editor.remove_class("curve-visible")
+
+    def on_fan_policy_changed(self, value: object) -> None:
+        """``#fan-policy`` Select changed (routed from App.on_select_changed):
+        the curve editor only exists under `curve`; entering it loads the
+        active slot from the driver."""
+        if str(value or "") == "curve":
+            self._show_curve_editor(True)
+            self._load_fan_curve_table()
+        else:
+            self._show_curve_editor(False)
+
+    def _load_fan_curve_table(self, force: bool = False) -> None:
+        """Background-load the ClientFanPolicies table and fill the editor
+        for the active slot (worker + call_from_thread, the
+        ``_load_fan_surface`` pattern). Skipped when already showing this
+        GPU unless ``force`` (slot switch / reset reload)."""
+        gpu = self.app.selected_gpu_target()
+        if gpu is None:
+            return
+        if not force and gpu == self._curve_loaded_gpu:
+            return
+        if not self._curve_load_lock.acquire(blocking=False):
+            return
+
+        def worker() -> None:
+            data = None
+            try:
+                data = self.app.native_service.query_fan_curve(gpu)
+            except Exception:
+                data = None
+            finally:
+                self._curve_load_lock.release()
+            try:
+                self.app.call_from_thread(self._on_fan_curve_loaded, gpu, data)
+            except Exception:
+                pass
+
+        threading.Thread(target=worker, daemon=True, name="nvoc-tui-fan-curve").start()
+
+    def _on_fan_curve_loaded(
+        self, gpu: str, data: dict | None, reset_stop: bool = True
+    ) -> None:
+        # A GPU switch between dispatch and completion must not fill the
+        # editor for the wrong card (same guard as _on_fan_surface).
+        try:
+            if gpu != self.app.selected_gpu_target():
+                return
+        except Exception:
+            pass
+        self._curve_loaded_gpu = gpu
+        if reset_stop:
+            # Slot/GPU switches invalidate the session's fan-stop knowledge;
+            # a plain table re-read (Set Curve readback) keeps it.
+            self._fan_stop = None
+            self._update_fan_stop_label()
+        slot_points: list[tuple[int, int]] | None = None
+        curves = data.get("curves") if isinstance(data, dict) else None
+        if isinstance(curves, list):
+            for curve in curves:
+                if (
+                    not isinstance(curve, dict)
+                    or curve.get("index") != self._curve_slot
+                ):
+                    continue
+                raw = curve.get("points")
+                if not isinstance(raw, list) or len(raw) != 3:
+                    continue
+                points: list[tuple[int, int]] = []
+                for p in raw:
+                    if not isinstance(p, dict):
+                        break
+                    points.append((int(p.get("temp_c", 0)), int(p.get("rpm", 0))))
+                if len(points) == 3:
+                    slot_points = points
+                    break
+        if slot_points is not None:
+            for i, (temp_c, rpm) in enumerate(slot_points):
+                self.set_input(f"#fan-curve-t{i}", str(temp_c))
+                self._set_curve_rpm(i, rpm)
+        else:
+            # No readable table (legacy driver / mobile EC board): N/A like
+            # the ref tool's empty Fan Curve pane.
+            for i in range(3):
+                self.set_input(f"#fan-curve-t{i}", "")
+                self._set_curve_rpm(i, None)
+        self._update_slot_label()
+
+    def _update_slot_label(self) -> None:
+        try:
+            self.app.query_one("#fan-curve-slot", Label).update(
+                f"Curve {self._curve_slot}"
+            )
+        except Exception:
+            pass
+
+    def _update_fan_stop_label(self) -> None:
+        state = "—" if self._fan_stop is None else ("on" if self._fan_stop else "off")
+        try:
+            self.app.query_one("#fan-curve-stop", Button).label = f"Fan Stop: {state}"
+        except Exception:
+            pass
+
+    def _curve_percent(self, rpm: int) -> int | None:
+        max_rpm = self._cooler_max_rpm
+        if not max_rpm:
+            return None
+        return max(0, min(100, round(rpm * 100 / max_rpm)))
+
+    def _curve_rpm(self, percent: int) -> int | None:
+        max_rpm = self._cooler_max_rpm
+        if not max_rpm:
+            return None
+        return max(0, min(max_rpm, round(percent * max_rpm / 100)))
+
+    def _set_curve_rpm(self, index: int, rpm: int | None) -> None:
+        """Programmatic RPM write + PWM mirror (never fires from user input —
+        user edits come through on_curve_input_changed)."""
+        self._curve_syncing = True
+        try:
+            self.set_input(f"#fan-curve-r{index}", "" if rpm is None else str(rpm))
+            percent = None if rpm is None else self._curve_percent(rpm)
+            try:
+                pwm_input = self.app.query_one(f"#fan-curve-p{index}", Input)
+                if percent is None:
+                    pwm_input.value = "—"
+                    pwm_input.disabled = True
+                else:
+                    pwm_input.value = str(percent)
+                    pwm_input.disabled = False
+            except Exception:
+                pass
+        finally:
+            self._curve_syncing = False
+
+    def _set_curve_percent(self, index: int, percent: int) -> None:
+        """Programmatic PWM write + RPM mirror (user PWM edits land here)."""
+        self._curve_syncing = True
+        try:
+            self.set_input(f"#fan-curve-p{index}", str(percent))
+            rpm = self._curve_rpm(percent)
+            self.set_input(f"#fan-curve-r{index}", "" if rpm is None else str(rpm))
+        finally:
+            self._curve_syncing = False
+
+    def on_curve_input_submitted(self, input_id: str, value: str) -> None:
+        """RPM↔PWM mirror for the curve table, keyed off Input.Submitted
+        (per-keystroke Changed events would chase their own rounding echo)."""
+        if self._curve_syncing:
+            return
+        if not input_id.startswith("fan-curve-r") and not input_id.startswith(
+            "fan-curve-p"
+        ):
+            return
+        try:
+            index = int(input_id[-1])
+        except ValueError:
+            return
+        text = value.strip()
+        if not text or text == "—":
+            return
+        try:
+            number = int(float(text))
+        except ValueError:
+            return
+        if input_id.startswith("fan-curve-r"):
+            self._set_curve_rpm(index, max(0, number))
+        else:
+            self._set_curve_percent(index, max(0, min(100, number)))
+
+    def _read_curve_points(self) -> list[tuple[int, int]] | None:
+        points: list[tuple[int, int]] = []
+        for i in range(3):
+            try:
+                temp_text = str(
+                    self.app.query_one(f"#fan-curve-t{i}", Input).value or ""
+                ).strip()
+                rpm_text = str(
+                    self.app.query_one(f"#fan-curve-r{i}", Input).value or ""
+                ).strip()
+                temp_c = int(float(temp_text))
+                rpm = int(float(rpm_text))
+            except ValueError:
+                self.app.write_log(
+                    f"Invalid fan-curve point {i}: Tj and RPM must be integers."
+                )
+                return None
+            points.append((max(0, temp_c), max(0, rpm)))
+        # The driver's Set handler rejects non-monotonic lanes with a
+        # generic -5 — pre-validate with the CLI's wording (cli
+        # set-fan-curve) so the error is actionable.
+        for (t0, r0), (t1, r1) in zip(points, points[1:]):
+            if t1 <= t0 or r1 <= r0:
+                self.app.write_log(
+                    "Fan-curve points must be strictly increasing in both "
+                    "temperature and RPM."
+                )
+                return None
+        return points
+
+    def _apply_fan_curve_from_table(self) -> bool:
+        gpu = self.app.selected_gpu_target()
+        if gpu is None:
+            self.app.write_log("No GPU selected.")
+            return True
+        points = self._read_curve_points()
+        if points is None:
+            return True
+        fan_id_value = str(self.app.query_one("#fan-id", Select).value or "all")
+        # The curve table is per-GPU (no per-fan selector in the surface);
+        # the fan dropdown scopes the policy switch / pin clear.
+        native_fan_id = None if fan_id_value == "all" else fan_id_value
+        slot = self._curve_slot
+
+        def apply_curve(native, gpu=gpu, points=points, slot=slot) -> str:
+            result = native.set_fan_curve(gpu, slot, points, True, native_fan_id)
+            data = native.query_fan_curve(gpu)
+            self.app.call_from_thread(self._on_fan_curve_loaded, gpu, data, False)
+            policy = (
+                "policy switched to continuous"
+                if result.get("policy_switched_to_continuous")
+                else "policy switch rejected"
+            )
+            pin = "pin released" if result.get("pin_released") else "pin clear skipped"
+            joined = ", ".join(f"{t}°C:{r}RPM" for t, r in points)
+            return f"Successfully set fan curve {slot} ({joined}); {policy}, {pin}."
+
+        self.app.run_native_action("set fan curve", apply_curve)
+        return True
 
     def load_mobile_limits(self, force: bool = False) -> None:
         """Background-load the mobile control surface via pynvoc (NVAPI)."""
@@ -1600,6 +1872,11 @@ class OverclockController(PaneController):
             policy = str(
                 self.app.query_one("#fan-policy", Select).value or "continuous"
             )
+            if policy == "curve":
+                # Curve mode owns the fan through the ClientFanPolicies
+                # table, not the level pin — apply = set+activate the
+                # edited table (same path as the Set Curve button).
+                return self._apply_fan_curve_from_table()
             level = self.get_int("#fan-level", 60)
 
             def apply_fan(
@@ -1636,6 +1913,56 @@ class OverclockController(PaneController):
                 "reset fan",
                 reset_fan,
             )
+            return True
+        if button_id == "fan-curve-set":
+            return self._apply_fan_curve_from_table()
+        if button_id == "fan-curve-next":
+            # Cycle the ClientFanPolicies slot (0-3) and re-read the table —
+            # Next-Fan semantics live in the #fan-id dropdown (the curve
+            # surface itself is per-GPU).
+            self._curve_slot = (self._curve_slot + 1) % 4
+            self._fan_stop = None
+            self._update_fan_stop_label()
+            self._update_slot_label()
+            self._load_fan_curve_table(force=True)
+            return True
+        if button_id == "fan-curve-reset":
+            gpu = self.app.selected_gpu_target()
+            if gpu is None:
+                self.app.write_log("No GPU selected.")
+                return True
+            slot = self._curve_slot
+
+            def reset_curve(native, gpu=gpu, slot=slot) -> str:
+                native.reset_fan_curve(gpu, slot)
+                # Read the factory table back into the editor.
+                try:
+                    data = native.query_fan_curve(gpu)
+                except Exception:
+                    data = None
+                self.app.call_from_thread(self._on_fan_curve_loaded, gpu, data)
+                return f"Successfully reset fan curve {slot} to factory."
+
+            self.app.run_native_action("reset fan curve", reset_curve)
+            return True
+        if button_id == "fan-curve-stop":
+            gpu = self.app.selected_gpu_target()
+            if gpu is None:
+                self.app.write_log("No GPU selected.")
+                return True
+            enable = not bool(self._fan_stop)
+            slot = self._curve_slot
+
+            def toggle_stop(native, gpu=gpu, enable=enable, slot=slot) -> str:
+                native.set_fanstop_status(gpu, enable, slot)
+                return (
+                    f"Successfully set fan stop {'on' if enable else 'off'} "
+                    f"for curve {slot}."
+                )
+
+            self.app.run_native_action("set fan stop", toggle_stop)
+            self._fan_stop = enable
+            self._update_fan_stop_label()
             return True
         if button_id == "mobile-apply":
             gpu = self.app.selected_gpu_target()
