@@ -4243,7 +4243,7 @@ fn nvapi_fan_reset(gpu: &str) -> PyResult<()> {
     if let Err(nda_err) = run(&target, ResetNvapiFanControl)
         && let Err(public_err) = run(&target, ResetCoolerLevels)
     {
-        return Err(invalid_value(format!(
+        return Err(to_py_err(format!(
             "fan reset failed on both NVAPI paths: \
              control-block override clear: {nda_err}; \
              public RestoreCoolerSettings: {public_err}"
@@ -4334,7 +4334,7 @@ fn set_fan(
                     // instead of failing the frontend.
                     if is_reset {
                         nvapi_fan_reset(gpu).map_err(|fallback_err| {
-                            invalid_value(format!(
+                            to_py_err(format!(
                                 "NVML fan reset failed ({nvml_err}) and the NVAPI fallback also failed: {fallback_err}"
                             ))
                         })?;
@@ -4346,7 +4346,7 @@ fn set_fan(
                         if let Err(fallback_err) =
                             nvapi_fan_percent_pin(gpu, cooler_index, Some(level))
                         {
-                            return Err(invalid_value(format!(
+                            return Err(to_py_err(format!(
                                 "NVML fan set failed ({nvml_err}) and the fan-simulation percent fallback also failed: {fallback_err}"
                             )));
                         }
@@ -4394,7 +4394,7 @@ fn set_fan(
                         if let Err(fallback_err) =
                             nvapi_fan_percent_pin(gpu, cooler_index, Some(level))
                         {
-                            return Err(invalid_value(format!(
+                            return Err(to_py_err(format!(
                                 "cooler-level set failed ({primary_err}) and the fan-simulation percent fallback also failed: {fallback_err}"
                             )));
                         }
