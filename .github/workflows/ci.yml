@@ -247,6 +247,8 @@ jobs:
           cache: "true"
       - name: Clippy
         run: cargo clippy --package nvoc-srv --all-targets --all-features -- -D warnings
+      - name: Tests
+        run: cargo test --package nvoc-srv --all-targets --all-features
       - name: Build
         run: cargo build --package nvoc-srv --all-targets --all-features
 
