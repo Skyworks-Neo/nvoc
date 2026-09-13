@@ -36,7 +36,7 @@ This section is the canonical component inventory for the monorepo. `CONTRIBUTIN
 | NVOC-STRESSOR OpenCL                   | [cli-stressor-opencl/](./cli-stressor-opencl/) | Lightweight OpenCL stress tool for broader backend coverage without CUDA-specific dependencies. |
 | NVOC-GUI                               | [gui/](./gui/) | Python GUI frontend for dashboard, autoscan, overclock, V-F curve, fan control, and live CLI output workflows. |
 | NVOC-TUI                               | [tui/](./tui/) | Textual terminal UI frontend for machines where a desktop GUI is unavailable or undesirable. |
-| NVOC-SRV                               | [srv/](./srv/) | Windows service and localhost HTTP control layer for server, workstation, and managed-machine use cases. |
+| NVOC-SRV                               | [srv/](./srv/) | Closed-loop GPU control service (fan PID thermal control) with a loopback HTTP control plane; Windows SCM + Linux systemd. |
 
 ### Internal libraries and experimental modules
 
@@ -364,7 +364,7 @@ nvoc/
 ├── auto-optimizer/       # Rust CLI core and autoscan implementation
 ├── cli-stressor-opencl/  # OpenCL stress workload
 ├── gui/                  # Python GUI frontend
-├── srv/                  # Windows service wrapper and HTTP control endpoint
+├── srv/                  # Closed-loop control service (fan PID) + HTTP control plane
 └── tui/                  # Python Textual terminal frontend
 ```
 
@@ -409,7 +409,7 @@ NVOC 是一个 NVIDIA GPU 超频与稳定性工具的 monorepo。核心是 Rust 
 | NVOC-STRESSOR OpenCL        | [cli-stressor-opencl/](./cli-stressor-opencl/) | 轻量 OpenCL 压力测试工具，用于不依赖 CUDA 专有依赖的后端覆盖。 |
 | NVOC-GUI                    | [gui/](./gui/) | Python 图形界面，提供 Dashboard、Autoscan、Overclock、V-F Curve、Fan Control 和实时 CLI 输出。 |
 | NVOC-TUI                    | [tui/](./tui/) | 基于 Textual 的终端界面，适用于没有桌面环境或不适合运行 GUI 的机器。 |
-| NVOC-SRV                    | [srv/](./srv/) | Windows Service 与 localhost HTTP 控制层，面向服务器、工作站和托管机器场景。 |
+| NVOC-SRV                    | [srv/](./srv/) | GPU 闭环控制服务（风扇 PID 控温）+ localhost HTTP 控制面；Windows SCM + Linux systemd。 |
 
 ### 内部库与实验模块
 
