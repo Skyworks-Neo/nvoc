@@ -396,9 +396,16 @@ impl GpuController {
             terms.output_percent
         };
 
-        // Write deadband: only when the quantized duty actually changes.
+        // Write deadband (anti-chatter): quantized duty writes are a relay
+        // nonlinearity; suppress writes while the output stays within the
+        // deadband of the duty already on the wire. A forced emergency write
+        // (|100 − last| ≫ deadband) always passes.
         let duty = output.round().clamp(0.0, 100.0) as u32;
-        if self.last_written != Some(duty) {
+        let inside_deadband = match self.last_written {
+            None => false,
+            Some(last) => (output - last as f32).abs() < cfg.pid.write_deadband_percent,
+        };
+        if !inside_deadband {
             match backend.write_fan_percent(index, duty) {
                 Ok(()) => {
                     self.last_written = Some(duty);
@@ -719,6 +726,38 @@ mod tests {
         }
         assert_eq!(m.restores, 0);
         assert_eq!(m.writes, vec![10]); // 40 + 2·(60−75), deadband holds it
+    }
+
+    #[test]
+    fn write_deadband_gates_slow_output_drift() {
+        // kp=0, ki=0.4, constant e=+2 → output ramps 0.8 %/tick.
+        // (Gains go through the config: sync_params re-applies them per tick.)
+        let mut config = cfg(ControlMode::Pid);
+        config.pid.kp = 0.0;
+        config.pid.ki = 0.4;
+        let mut c = GpuController::new(PidController::from_params(&config.pid));
+        let mut m = Mock::steady(77.0);
+        config.pid.write_deadband_percent = 1.0;
+        for _ in 0..4 {
+            tick(&mut c, &mut m, &config);
+        }
+        assert_eq!(
+            m.writes,
+            vec![41, 42, 43],
+            "deadband 1 skips the 0.6 % drift"
+        );
+
+        let mut c = GpuController::new(PidController::from_params(&config.pid));
+        let mut m = Mock::steady(77.0);
+        config.pid.write_deadband_percent = 0.25;
+        for _ in 0..4 {
+            tick(&mut c, &mut m, &config);
+        }
+        assert_eq!(
+            m.writes,
+            vec![41, 42, 42, 43],
+            "narrow deadband follows the ramp"
+        );
     }
 
     #[test]

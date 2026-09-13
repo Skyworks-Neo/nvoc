@@ -154,6 +154,12 @@ pub struct PidParams {
     pub engage_below_c: f32,
     /// Consecutive ticks below the release line before releasing.
     pub release_ticks: u32,
+    /// Anti-chatter deadband: skip a fan write while the PID output sits
+    /// within ±`write_deadband_percent` of the last written duty. Quantized
+    /// duty writes are a relay nonlinearity — too little deadband turns
+    /// sensor quantization into a fast self-excited duty cycle. `0` writes
+    /// on every output change.
+    pub write_deadband_percent: f32,
 }
 
 impl Default for PidParams {
@@ -170,6 +176,7 @@ impl Default for PidParams {
             release_below_c: 4.0,
             engage_below_c: 1.0,
             release_ticks: 3,
+            write_deadband_percent: 1.0,
         }
     }
 }
@@ -228,6 +235,12 @@ impl PidParams {
         }
         if self.release_ticks == 0 || self.release_ticks > 60 {
             return Err("release_ticks must be 1–60".to_string());
+        }
+        if !(0.0..=10.0).contains(&self.write_deadband_percent) {
+            return Err(format!(
+                "write_deadband_percent must be 0–10, got {}",
+                self.write_deadband_percent
+            ));
         }
         Ok(())
     }

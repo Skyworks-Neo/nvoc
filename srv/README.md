@@ -78,6 +78,7 @@ emergency_delta_c = 12.0  # target+12 °C forces 100% duty (2 °C exit hysteresi
 release_below_c = 4.0     # idle release: ≤ target−4 °C hands the fan back to the driver (0 = off)
 engage_below_c = 1.0      # re-engage line: PID resumes at target−1 °C (must be < release_below_c)
 release_ticks = 3         # ticks below the release line before releasing
+write_deadband_percent = 1.0  # skip writes within ±1 % of the duty on the wire (anti-chatter)
 ```
 
 CLI overrides (each maps to a field): `--config <path> --foreground --port
@@ -93,7 +94,7 @@ unchanged from the legacy service).
 |---|---|
 | `GET /status` | top-level `mode`/`interval_ms`/`target_c`; per-GPU temps (core/hotspot/memory/board), written & measured fan duty, `released` flag, last PID decomposition (`error/p/i/d/output`, null when the PID did not run this tick), failsafe state |
 | `GET /config` | effective runtime configuration |
-| `POST /pid?target_c=&kp=&ki=&kd=&base_percent=&min_percent=&max_percent=&emergency_delta_c=&release_below_c=&engage_below_c=&release_ticks=&interval_ms=&sensor=` | partial PID update, validated atomically, live |
+| `POST /pid?target_c=&kp=&ki=&kd=&base_percent=&min_percent=&max_percent=&emergency_delta_c=&release_below_c=&engage_below_c=&release_ticks=&write_deadband_percent=&interval_ms=&sensor=` | partial PID update, validated atomically, live |
 | `POST /mode?value=auto\|pid\|manual` | switch control mode (`auto` hands fans back to the driver) |
 | `POST /fan?percent=0-100` | pin a duty (switches to manual) |
 | `POST /restore` | alias of `/mode?value=auto` |
@@ -188,6 +189,55 @@ backend falls back to the NVML manual pin automatically; check
 `nvidia-smi`/`GET /status` before trusting it.
 
 ## PID tuning guide
+
+### The plant you are controlling
+
+```
+C·dT/dt = Q_load − k·u^0.8·(T − T_ambient)     thermal lump, τ_T ≈ 10–40 s
+rpm follows duty with its own lag              actuator, τ_fan ≈ 0.3–2 s
+```
+
+Three consequences that drive every recommendation below:
+
+1. **The static gain is not constant**: `g = ∂T/∂u ≈ 0.8·(T−T_ambient)/u`.
+   Halving the duty roughly doubles the loop gain — the loop that is tame at
+   load can self-oscillate in the low-duty region. (The idle-release band
+   exists precisely to keep the PID out of the worst-gain region.)
+2. **Cooling rate is capped** by `k·u^0.8·ΔT`. No controller beats it; a
+   loop tuned "faster than the plant" only injects oscillation energy.
+   Aim for τ_T-scale settling (15–40 s), not seconds.
+3. **The loop has two lags plus the integrator.** Sampling adds phase too
+   (≈ `ω_c·T_s/2`), which is why a faster `interval_ms` buys real margin —
+   but only up to the sensor's own update rate.
+
+### Sizing the gains from a two-point calibration
+
+With a fixed synthetic load (the stressor is ideal):
+
+1. `mode=manual`, pin 40 % → let temperature settle → read T₁; pin 60 % →
+   settle → T₂. Static gain at the operating point:
+   `g ≈ (T₁−T₂)/20` °C per %. τ_T = time to 63 % of that temperature
+   change (watch the log / `/status` at 1 s resolution).
+2. **kp = 1.5/g to start; keep kp·g ≤ 3** for comfortable phase margin
+   (≤ 5 is marginal, and only OK on fast-fan cards with large τ_T).
+3. **ki ≤ kp/(2·τ_T)** — the default (kp 2, ki 0.05) assumes τ_T = 20 s.
+4. **base_percent = the steady duty that holds target_c** at this load.
+   The feed-forward carries the static `u^0.8` map; the smaller the
+   integral's job, the quieter the loop.
+
+### Self-oscillation fingerprints (diagnose via /status)
+
+| Fingerprint | Period | Root cause | Prescription |
+|---|---|---|---|
+| Fast duty chatter | 2–6 ticks, ±1–2 % | quantized writes acting as a relay; tick faster than sensor refresh | raise `write_deadband_percent` to 2; slow `interval_ms` to the sensor rate |
+| Slow limit cycle | ≈ 4–6·τ_T sawtooth (±2–5 °C) | kp·g too high, or base_percent far from the steady need so the integral carries the load | halve kp; set base_percent to the average duty /status shows near target |
+| Ringing after load steps | 2–3 overshoots, then settles | marginal margin (kp·g ≈ 5) | cut kp ~30 %; leave kd = 0 until/if derivative noise filtering exists |
+| `released` toggling in /status | minutes, bounded by the band | the idle-release hysteresis doing its job | benign by design; widen `release_below_c`/`engage_below_c` gap if the travel bothers you |
+
+One extra hazard to rule out: if the legacy thermal sensor itself lags
+seconds behind reality (cross-check against GPU-Z), that dead time eats
+phase margin faster than any gain. Fix the sensor choice (`sensor=`) before
+touching gains.
 
 Tune on a loaded or semi-loaded GPU (a fixed synthetic load gives a fixed
 plant). All parameters are hot-tunable via `POST /pid` — watch the response

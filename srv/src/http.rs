@@ -355,6 +355,12 @@ fn handle_pid_update(
     );
     assign_f32(params, "engage_below_c", &mut p.engage_below_c, &mut errors);
     assign_u32(params, "release_ticks", &mut p.release_ticks, &mut errors);
+    assign_f32(
+        params,
+        "write_deadband_percent",
+        &mut p.write_deadband_percent,
+        &mut errors,
+    );
     if let Some(v) = params
         .get("interval_ms")
         .and_then(|s| s.parse::<u64>().ok())
