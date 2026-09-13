@@ -453,11 +453,13 @@ class FanControlPane:
         self.cooler_api_menu.pack(side="right")
         self._interactive_widgets.append(self.cooler_api_menu)
         # Curve editor popup (ClientFanPolicies table): sits immediately
-        # left of the NVAPI/NVML selector, console-popup pattern.
+        # left of the NVAPI/NVML selector, console-popup pattern. LiteButton
+        # width is PIXELS (pack_propagate(False) pins it — unlike the grid-
+        # stretched Apply/Reset buttons, pack never stretches this one).
         self.btn_curve_editor = LiteButton(
             r0_right,
             text="Curve",
-            width=7,
+            width=84,
             command=self.controller.open_curve_editor,
         )
         self.btn_curve_editor.pack(side="right", padx=(0, 8))
