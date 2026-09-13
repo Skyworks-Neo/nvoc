@@ -52,6 +52,17 @@ impl SensorKind {
     }
 }
 
+impl LoopKind {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "fan_temp" => Some(Self::FanTemp),
+            "freq_temp" => Some(Self::FreqTemp),
+            "freq_power" => Some(Self::FreqPower),
+            _ => None,
+        }
+    }
+}
+
 /// Which GPUs the service controls: `"all"` or an explicit index list.
 /// (De)serialization is hand-written: `"all"` | `[0,1]` | `"0,1"`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

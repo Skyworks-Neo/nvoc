@@ -22,6 +22,7 @@ pub mod pid;
 pub mod runtime;
 #[cfg(windows)]
 pub mod service;
+pub mod web;
 
 pub use config::{
     ControlMode, FreqParams, GpuSelection, LoopKind, PidParams, RuntimeConfig, SensorKind,

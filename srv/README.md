@@ -119,6 +119,18 @@ adaptive_base = true      # learn base_percent online from the integral (see bel
 CLI overrides (each maps to a field): `--config <path> --foreground --port
 --interval-ms --target-c --kp --ki --kd --base-percent`.
 
+## Web console
+
+Open `http://127.0.0.1:14514/` in a browser — the control plane serves an
+embedded single-page console (compiled into the binary, no external assets).
+It renders one card per controlled GPU: temperature gauges (core / hotspot),
+fan duty, live PID decomposition with the gains in effect, zone badges
+(`emergency` / `idle_hold` / `read_failures`), and — on frequency loops — the
+frequency cap and live core clock. The control panel covers the loop kind,
+mode (auto / pid / manual), a manual effort slider, the full tuning form
+(routed to the active loop), restore and shutdown. The page polls `/status`
+at 1 s; the endpoint table below is what it talks to.
+
 ## HTTP control plane
 
 Loopback-only, port 14514. **Every mutating endpoint requires POST plus the
@@ -131,6 +143,7 @@ unchanged from the legacy service).
 | `GET /config` | effective runtime configuration |
 | `POST /pid?target_c=&target=&kp=&ki=&kd=&base_percent=&min_percent=&max_percent=&emergency_delta_c=&idle_delta_c=&temp_guard_c=&min_mhz=&max_mhz=&write_deadband_percent=&adaptive_base=&interval_ms=&sensor=` | partial update of the **active loop's** parameters (`[pid]` for `fan_temp`, `[freq]` for the frequency loops), validated atomically, live |
 | `POST /mode?value=auto\|pid\|manual` | switch control mode (`auto` hands fans back to the driver) |
+| `POST /loop?value=fan_temp\|freq_temp\|freq_power` | switch the active control loop (restores the old actuator, hands over in the same tick) |
 | `POST /fan?percent=0-100` | pin a duty (switches to manual) |
 | `POST /restore` | alias of `/mode?value=auto` |
 | `POST /oc_global?oc=<kHz>&gpu=<index>` | legacy one-shot P0 graphics clock delta |

@@ -10,6 +10,7 @@ use crate::config::{
 };
 use crate::controller::GpuControlStatus;
 use crate::runtime::{ServiceCmd, SharedConfig, SharedStatus, lock};
+use crate::web;
 use flume::Sender;
 use log::{error, info, warn};
 use serde::Serialize;
@@ -25,6 +26,7 @@ const OC_DELTA_MAX: i32 = 2_000_000;
 #[derive(Serialize)]
 struct StatusView<'a> {
     mode: ControlMode,
+    loop_kind: LoopKind,
     /// Control tick period (ms) — the PID dt.
     interval_ms: u64,
     /// Current PID setpoint (°C), for interpreting `pid.error_c`.
@@ -99,6 +101,13 @@ fn reject_mutation(request: tiny_http::Request, path: &str) {
 
 fn json_content_type() -> Header {
     Header::from_bytes("Content-Type", "application/json").expect("static header is valid ASCII")
+}
+
+/// Serve an embedded asset with its content type.
+fn serve_static(request: tiny_http::Request, body: &'static str, content_type: &str) {
+    let header =
+        Header::from_bytes("Content-Type", content_type).expect("static header is valid ASCII");
+    respond(request, Response::from_string(body).with_header(header));
 }
 
 fn json_response<T: Serialize>(request: tiny_http::Request, value: &T) {
@@ -184,11 +193,22 @@ fn handle_request(
 ) {
     match path {
         "/" => {
+            // The embedded console page (GET is same-origin safe).
+            serve_static(request, web::INDEX_HTML, "text/html; charset=utf-8");
+        }
+        "/ui.css" => {
+            serve_static(request, web::STYLE_CSS, "text/css; charset=utf-8");
+        }
+        "/ui.js" => {
+            serve_static(request, web::APP_JS, "text/javascript; charset=utf-8");
+        }
+        "/help" => {
             let help = "nvoc-srv control plane\n\
                         GET  /status   — per-GPU temps, fan duty, PID terms, failsafe state\n\
                         GET  /config   — effective runtime configuration\n\
-                        POST /pid?target_c=&kp=&ki=&kd=&base_percent=&min_percent=&max_percent=&emergency_delta_c=&interval_ms=&sensor=\n\
+                        POST /pid?target_c=&kp=&ki=&kd=&base_percent=&min_percent=&max_percent=&emergency_delta_c=&idle_delta_c=&temp_guard_c=&min_mhz=&max_mhz=&interval_ms=&sensor=\n\
                         POST /mode?value=auto|pid|manual\n\
+                        POST /loop?value=fan_temp|freq_temp|freq_power\n\
                         POST /fan?percent=0-100        (switches to manual)\n\
                         POST /restore                  (alias of /mode?value=auto)\n\
                         POST /oc_global?oc=<kHz>&gpu=<index>\n\
@@ -196,16 +216,35 @@ fn handle_request(
                         Mutations require POST + X-Requested-With: XMLHttpRequest.\n";
             text_response(request, 200, help);
         }
+        "/loop" => {
+            if !is_mutation_request(&request) {
+                reject_mutation(request, path);
+                return;
+            }
+            match params.get("value").and_then(|v| LoopKind::parse(v)) {
+                Some(kind) => {
+                    lock(config).loop_kind = kind;
+                    info!("control loop set to {kind:?} via HTTP");
+                    text_response(request, 200, format!("OK: loop={kind:?}"));
+                }
+                None => text_response(
+                    request,
+                    400,
+                    "Bad request: 'value' must be fan_temp|freq_temp|freq_power",
+                ),
+            }
+        }
         "/status" => {
-            let (mode, interval_ms, target_c) = {
+            let (mode, loop_kind, interval_ms, target_c) = {
                 let cfg = lock(config);
-                (cfg.mode, cfg.interval_ms, cfg.pid.target_c)
+                (cfg.mode, cfg.loop_kind, cfg.interval_ms, cfg.pid.target_c)
             };
             let guard = lock(status);
             json_response(
                 request,
                 &StatusView {
                     mode,
+                    loop_kind,
                     interval_ms,
                     target_c,
                     gpus: &guard,
