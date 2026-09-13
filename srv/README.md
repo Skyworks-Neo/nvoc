@@ -60,6 +60,8 @@ and revert on restart. Default path: `%PROGRAMDATA%\nvoc\nvoc-srv.toml`
 port = 14514              # HTTP control plane (loopback only)
 interval_ms = 1000        # control tick / PID dt (200–10000)
 sensor = "core"           # core | hotspot | memory | board | max
+                          # (ThermChannel readings decode at 1/256 °C on
+                          # Pascal+; the legacy integer sensor is the fallback)
 gpus = "all"              # "all" or a list: [0] / "0,1"
 mode = "pid"              # startup mode: auto | pid | manual
 manual_percent = 50       # pinned duty for mode = "manual"

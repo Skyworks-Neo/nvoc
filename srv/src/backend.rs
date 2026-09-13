@@ -31,6 +31,9 @@ pub struct NvapiBackend {
     /// pairing, guarded against drift by [`Self::gpu_id`]).
     gpus: Vec<Gpu>,
     names: Vec<String>,
+    /// ThermChannel LUT per GPU, resolved lazily on first temperature read
+    /// (`None` = the card does not expose the channel pair).
+    channel_luts: Vec<Option<ThermalChannelLut>>,
 }
 
 impl NvapiBackend {
@@ -57,6 +60,7 @@ impl NvapiBackend {
             );
         }
         Ok(Self {
+            channel_luts: vec![None; gpus.len()],
             inventory,
             gpus,
             names,
@@ -109,15 +113,52 @@ impl NvapiBackend {
     }
 }
 
-/// ThermChannel hotspot (GPU_MAX primary channel), best effort — absent on
-/// pre-Pascal GPUs and tolerated as `None` there.
-fn read_hotspot(gpu: &Gpu) -> Option<f32> {
-    let info = gpu.inner().thermal_channel_info().ok()?;
-    let idx = info.hotspot_index()?;
-    gpu.inner()
-        .thermal_channel_status(info.channel_mask)
-        .ok()?
-        .get(idx as usize)
+/// ThermChannel layout for one GPU (the priChIdx LUT is static per card, so
+/// it is resolved once and cached). Channels missing on a card are `None`
+/// and the corresponding reading falls back to the legacy integer sensor.
+#[derive(Debug, Clone, Copy)]
+struct ThermalChannelLut {
+    mask: u32,
+    /// GPU_AVG primary channel — the fine-grained core reading.
+    core: Option<u8>,
+    /// GPU_MAX primary channel — the hot spot.
+    hotspot: Option<u8>,
+    memory: Option<u8>,
+    board: Option<u8>,
+}
+
+/// Plausibility guard for ThermChannel decodes: an unpopulated channel can
+/// decode to 0 °C, which must never reach the controller (it would read as
+/// an extreme over-cool).
+fn plausible(t: Option<f32>) -> Option<f32> {
+    t.filter(|v| *v > 0.0 && *v < 150.0)
+}
+
+impl NvapiBackend {
+    /// Resolve (and cache) the ThermChannel LUT for a GPU. `None` when the
+    /// card does not expose the channel pair (pre-Pascal) — callers then
+    /// fall back to the legacy sensors only.
+    fn channel_lut(&mut self, gpu_index: usize) -> Option<ThermalChannelLut> {
+        if gpu_index >= self.channel_luts.len() {
+            return None;
+        }
+        if self.channel_luts[gpu_index].is_none() {
+            let lut = self.gpus.get(gpu_index).and_then(|g| {
+                let info = g.inner().thermal_channel_info().ok()?;
+                // `primary` is indexed by channel type:
+                // 0=GPU_AVG(core), 1=GPU_MAX(hotspot), 2=BOARD, 3=MEMORY.
+                Some(ThermalChannelLut {
+                    mask: info.channel_mask,
+                    core: info.primary.first().copied().flatten(),
+                    hotspot: info.hotspot_index(),
+                    board: info.primary.get(2).copied().flatten(),
+                    memory: info.memory_index(),
+                })
+            });
+            self.channel_luts[gpu_index] = lut;
+        }
+        self.channel_luts[gpu_index]
+    }
 }
 
 impl ControlBackend for NvapiBackend {
@@ -134,7 +175,30 @@ impl ControlBackend for NvapiBackend {
                 _ => {}
             }
         }
-        bundle.hotspot_c = self.gpus.get(gpu_index).and_then(read_hotspot);
+
+        // Fine-grained overlay: ThermChannel decodes at 1/256 °C while the
+        // legacy view above is integer-only. Channels a card does not
+        // populate keep the legacy reading.
+        if let Some(lut) = self.channel_lut(gpu_index) {
+            let status = self
+                .gpus
+                .get(gpu_index)
+                .and_then(|g| g.inner().thermal_channel_status(lut.mask).ok());
+            if let Some(status) = status {
+                if let Some(v) = lut.core.and_then(|i| plausible(status.get(i as usize))) {
+                    bundle.core_c = Some(v);
+                }
+                if let Some(v) = lut.hotspot.and_then(|i| plausible(status.get(i as usize))) {
+                    bundle.hotspot_c = Some(v);
+                }
+                if let Some(v) = lut.memory.and_then(|i| plausible(status.get(i as usize))) {
+                    bundle.memory_c = Some(v);
+                }
+                if let Some(v) = lut.board.and_then(|i| plausible(status.get(i as usize))) {
+                    bundle.board_c = Some(v);
+                }
+            }
+        }
         Ok(bundle)
     }
 
