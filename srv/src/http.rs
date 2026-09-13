@@ -23,6 +23,10 @@ const OC_DELTA_MAX: i32 = 2_000_000;
 #[derive(Serialize)]
 struct StatusView<'a> {
     mode: ControlMode,
+    /// Control tick period (ms) — the PID dt.
+    interval_ms: u64,
+    /// Current PID setpoint (°C), for interpreting `pid.error_c`.
+    target_c: f32,
     gpus: &'a [GpuControlStatus],
 }
 
@@ -191,9 +195,20 @@ fn handle_request(
             text_response(request, 200, help);
         }
         "/status" => {
-            let mode = lock(config).mode;
+            let (mode, interval_ms, target_c) = {
+                let cfg = lock(config);
+                (cfg.mode, cfg.interval_ms, cfg.pid.target_c)
+            };
             let guard = lock(status);
-            json_response(request, &StatusView { mode, gpus: &guard });
+            json_response(
+                request,
+                &StatusView {
+                    mode,
+                    interval_ms,
+                    target_c,
+                    gpus: &guard,
+                },
+            );
         }
         "/config" => {
             let cfg = lock(config);
@@ -293,6 +308,20 @@ fn assign_f32(
     }
 }
 
+fn assign_u32(
+    params: &HashMap<String, String>,
+    key: &str,
+    dst: &mut u32,
+    errors: &mut Vec<String>,
+) {
+    if let Some(raw) = params.get(key) {
+        match raw.parse::<u32>() {
+            Ok(v) => *dst = v,
+            _ => errors.push(format!("invalid '{key}'")),
+        }
+    }
+}
+
 /// Partial PID update; absent parameters keep their current value. Full
 /// param-set validation runs after the merge so a bad combination (min>max)
 /// is rejected atomically.
@@ -318,6 +347,14 @@ fn handle_pid_update(
         &mut p.emergency_delta_c,
         &mut errors,
     );
+    assign_f32(
+        params,
+        "release_below_c",
+        &mut p.release_below_c,
+        &mut errors,
+    );
+    assign_f32(params, "engage_below_c", &mut p.engage_below_c, &mut errors);
+    assign_u32(params, "release_ticks", &mut p.release_ticks, &mut errors);
     if let Some(v) = params
         .get("interval_ms")
         .and_then(|s| s.parse::<u64>().ok())

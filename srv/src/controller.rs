@@ -88,6 +88,9 @@ pub struct GpuControlStatus {
     pub sensors: SensorBundle,
     /// Last duty we wrote (None = driver is in control).
     pub fan_written_percent: Option<u32>,
+    /// True while the PID has released the fan to the driver's own curve
+    /// (idle-release hysteresis; see `PidParams::release_below_c`).
+    pub released: bool,
     /// Live duty reported by NVML, best effort.
     pub fan_measured_percent: Option<u32>,
     pub pid: Option<PidTerms>,
@@ -104,6 +107,13 @@ pub struct GpuController {
     failsafe: FailsafeState,
     fail_streak: u32,
     emergency_active: bool,
+    /// Idle-release hysteresis state (Pid mode only).
+    released: bool,
+    /// Consecutive ticks with temp ≤ the release line (dwell counter).
+    below_streak: u32,
+    /// PID decomposition of the most recent evaluation (None while the PID
+    /// did not run this tick: Auto/Manual modes, released, pre-first-read).
+    last_pid: Option<PidTerms>,
     last_error: Option<String>,
     last_sensors: SensorBundle,
     last_temp: Option<f32>,
@@ -119,6 +129,9 @@ impl GpuController {
             failsafe: FailsafeState::Ok,
             fail_streak: 0,
             emergency_active: false,
+            released: false,
+            below_streak: 0,
+            last_pid: None,
             last_error: None,
             last_sensors: SensorBundle::default(),
             last_temp: None,
@@ -145,6 +158,8 @@ impl GpuController {
         }
         self.last_written = None;
         self.applied_mode = ControlMode::Auto;
+        self.released = false;
+        self.below_streak = 0;
     }
 
     /// One control tick; returns the status snapshot for `/status`.
@@ -158,6 +173,8 @@ impl GpuController {
     ) -> GpuControlStatus {
         self.handle_mode_transition(index, cfg, backend);
         self.sync_params(&cfg.pid);
+        // Populated only by a PID evaluation this tick (below).
+        self.last_pid = None;
 
         match self.applied_mode {
             ControlMode::Auto => {
@@ -177,8 +194,9 @@ impl GpuController {
             temp_c: self.last_temp,
             sensors: self.last_sensors.clone(),
             fan_written_percent: self.last_written,
+            released: self.released,
             fan_measured_percent: self.fan_measured,
-            pid: None,
+            pid: self.last_pid,
             last_error: self.last_error.clone(),
         }
     }
@@ -209,6 +227,8 @@ impl GpuController {
         self.applied_mode = cfg.mode;
         self.emergency_active = false;
         self.fail_streak = 0;
+        self.released = false;
+        self.below_streak = 0;
         if self.failsafe == FailsafeState::ReadFailures {
             self.failsafe = FailsafeState::Ok;
         }
@@ -242,7 +262,10 @@ impl GpuController {
             Err(e) => {
                 self.fail_streak += 1;
                 self.last_error = Some(e);
-                if self.fail_streak >= cfg.read_fail_reset.max(1)
+                // While released the driver already owns the fan — nothing
+                // to restore, so the read-failure failsafe stays parked.
+                if !self.released
+                    && self.fail_streak >= cfg.read_fail_reset.max(1)
                     && self.failsafe != FailsafeState::ReadFailures
                 {
                     log::error!(
@@ -271,9 +294,51 @@ impl GpuController {
                     self.failsafe = FailsafeState::Ok;
                     self.pid.reset();
                 }
-                if let Some(temp) = temp {
-                    self.apply_pid_output(index, cfg, backend, temp, dt_s);
+                let Some(temp) = temp else { return };
+                let engage_at = cfg.pid.target_c - cfg.pid.engage_below_c;
+                let release_at = cfg.pid.target_c - cfg.pid.release_below_c;
+
+                // Idle-release hysteresis: cool → hand the fan to the
+                // driver curve (it idles — zero RPM — better than the PID
+                // can park it); warm again → take control back.
+                if self.released {
+                    if temp >= engage_at {
+                        log::info!(
+                            "GPU {index}: {temp:.1} °C ≥ re-engage line {engage_at:.1} °C; PID control resumes"
+                        );
+                        self.released = false;
+                        self.pid.reset();
+                    } else {
+                        return; // stay on the driver curve this tick
+                    }
                 }
+                if cfg.pid.release_below_c > 0.0 && temp <= release_at {
+                    self.below_streak += 1;
+                    if self.below_streak >= cfg.pid.release_ticks.max(1) {
+                        match backend.restore_fan_auto(index) {
+                            Ok(()) => {
+                                log::info!(
+                                    "GPU {index}: {temp:.1} °C ≤ release line {release_at:.1} °C \
+                                     for {} tick(s); fan released to driver curve",
+                                    self.below_streak
+                                );
+                                self.last_written = None;
+                                self.pid.reset();
+                                self.released = true;
+                                self.below_streak = 0;
+                                return;
+                            }
+                            Err(e) => {
+                                // Keep controlling; retry the release next tick.
+                                log::error!("GPU {index}: release restore failed: {e}");
+                                self.last_error = Some(e);
+                            }
+                        }
+                    }
+                } else {
+                    self.below_streak = 0;
+                }
+                self.apply_pid_output(index, cfg, backend, temp, dt_s);
             }
         }
     }
@@ -293,8 +358,21 @@ impl GpuController {
                 self.emergency_active = false;
                 self.pid.reset();
                 self.failsafe = FailsafeState::Ok;
-                self.pid.step(temp, dt_s).output_percent
+                let terms = self.pid.step(temp, dt_s);
+                self.last_pid = Some(terms);
+                terms.output_percent
             } else {
+                // Keep the /status decomposition truthful while the PID is
+                // not being stepped: show what it would compute, with the
+                // forced output.
+                let error = temp - cfg.pid.target_c;
+                self.last_pid = Some(PidTerms {
+                    error_c: error,
+                    p: cfg.pid.kp * error,
+                    i: cfg.pid.ki * self.pid.integral(),
+                    d: 0.0,
+                    output_percent: 100.0,
+                });
                 100.0 // stay forced while inside the hysteresis band
             }
         } else if temp >= emergency_at {
@@ -303,9 +381,19 @@ impl GpuController {
             );
             self.emergency_active = true;
             self.failsafe = FailsafeState::Emergency;
+            let error = temp - cfg.pid.target_c;
+            self.last_pid = Some(PidTerms {
+                error_c: error,
+                p: cfg.pid.kp * error,
+                i: cfg.pid.ki * self.pid.integral(),
+                d: 0.0,
+                output_percent: 100.0,
+            });
             100.0
         } else {
-            self.pid.step(temp, dt_s).output_percent
+            let terms = self.pid.step(temp, dt_s);
+            self.last_pid = Some(terms);
+            terms.output_percent
         };
 
         // Write deadband: only when the quantized duty actually changes.
@@ -514,6 +602,123 @@ mod tests {
         let st = tick(&mut c, &mut m, &cfg(ControlMode::Pid));
         assert_eq!(st.last_error.as_deref(), Some("write rejected"));
         assert_eq!(st.fan_written_percent, None);
+    }
+
+    /// PID config for release tests: no integral creep, 2-tick dwell.
+    fn release_cfg() -> RuntimeConfig {
+        let mut config = cfg(ControlMode::Pid);
+        config.pid.ki = 0.0;
+        config.pid.release_ticks = 2;
+        config // defaults: release at target−4, re-engage at target−1
+    }
+
+    #[test]
+    fn release_hands_fan_back_to_driver_when_cool() {
+        let mut c = GpuController::new(PidController::from_params(&PidParams::default()));
+        let mut m = Mock::steady(75.0);
+        let config = release_cfg();
+        tick(&mut c, &mut m, &config);
+        assert_eq!(m.writes, vec![40]);
+
+        // Below the release line (71): first tick still controls (dwell 1/2),
+        // second tick releases to the driver curve.
+        m.temps = vec![Ok(SensorBundle {
+            core_c: Some(70.5),
+            ..Default::default()
+        })];
+        let st = tick(&mut c, &mut m, &config);
+        assert!(!st.released);
+        let st = tick(&mut c, &mut m, &config);
+        assert!(st.released);
+        assert_eq!(m.restores, 1);
+        assert_eq!(st.fan_written_percent, None);
+
+        // Released: no further writes while it stays cool.
+        let writes_after_release = m.writes.len();
+        let st = tick(&mut c, &mut m, &config);
+        assert!(st.released);
+        assert_eq!(m.writes.len(), writes_after_release);
+    }
+
+    #[test]
+    fn pid_reengages_when_warm_and_holds_state_inside_the_band() {
+        let mut c = GpuController::new(PidController::from_params(&PidParams::default()));
+        let mut m = Mock::steady(70.5);
+        let config = release_cfg();
+        // Force into the released state (2 ticks below the line).
+        tick(&mut c, &mut m, &config);
+        tick(&mut c, &mut m, &config);
+        assert!(c.released);
+
+        // Warm again past the re-engage line (74): PID resumes immediately.
+        m.temps = vec![Ok(SensorBundle {
+            core_c: Some(74.5),
+            ..Default::default()
+        })];
+        let st = tick(&mut c, &mut m, &config);
+        assert!(!st.released);
+        assert_eq!(m.writes.last(), Some(&39)); // 40 + 2·(74.5−75)
+
+        // Inside the hysteresis band (71–74) while engaged: keep controlling.
+        m.temps = vec![Ok(SensorBundle {
+            core_c: Some(72.5),
+            ..Default::default()
+        })];
+        let st = tick(&mut c, &mut m, &config);
+        assert!(!st.released);
+        assert_eq!(m.writes.last(), Some(&35)); // 40 + 2·(72.5−75)
+
+        // Inside the band while released: stay released.
+        m.temps = vec![Ok(SensorBundle {
+            core_c: Some(70.0),
+            ..Default::default()
+        })];
+        tick(&mut c, &mut m, &config);
+        tick(&mut c, &mut m, &config);
+        assert!(c.released);
+        let writes_released = m.writes.len();
+        m.temps = vec![Ok(SensorBundle {
+            core_c: Some(72.5),
+            ..Default::default()
+        })];
+        let st = tick(&mut c, &mut m, &config);
+        assert!(st.released, "band must hold the released state");
+        assert_eq!(m.writes.len(), writes_released);
+    }
+
+    #[test]
+    fn emergency_overrides_released_state() {
+        let mut c = GpuController::new(PidController::from_params(&PidParams::default()));
+        let mut m = Mock::steady(70.5);
+        let config = release_cfg();
+        tick(&mut c, &mut m, &config);
+        tick(&mut c, &mut m, &config);
+        assert!(c.released);
+
+        // A spike past the emergency line re-engages and forces 100% in the
+        // same tick — release must never gate the overtemp response.
+        m.temps = vec![Ok(SensorBundle {
+            core_c: Some(88.0),
+            ..Default::default()
+        })];
+        let st = tick(&mut c, &mut m, &config);
+        assert!(!st.released);
+        assert_eq!(st.failsafe, FailsafeState::Emergency);
+        assert_eq!(m.writes.last(), Some(&100));
+    }
+
+    #[test]
+    fn release_disabled_when_release_below_zero() {
+        let mut c = GpuController::new(PidController::from_params(&PidParams::default()));
+        let mut m = Mock::steady(60.0);
+        let mut config = release_cfg();
+        config.pid.release_below_c = 0.0;
+        for _ in 0..5 {
+            let st = tick(&mut c, &mut m, &config);
+            assert!(!st.released, "release_below_c=0 must disable releasing");
+        }
+        assert_eq!(m.restores, 0);
+        assert_eq!(m.writes, vec![10]); // 40 + 2·(60−75), deadband holds it
     }
 
     #[test]

@@ -75,6 +75,9 @@ base_percent = 40.0       # feed-forward duty (see tuning guide)
 min_percent = 0.0
 max_percent = 100.0
 emergency_delta_c = 12.0  # target+12 °C forces 100% duty (2 °C exit hysteresis)
+release_below_c = 4.0     # idle release: ≤ target−4 °C hands the fan back to the driver (0 = off)
+engage_below_c = 1.0      # re-engage line: PID resumes at target−1 °C (must be < release_below_c)
+release_ticks = 3         # ticks below the release line before releasing
 ```
 
 CLI overrides (each maps to a field): `--config <path> --foreground --port
@@ -88,9 +91,9 @@ unchanged from the legacy service).
 
 | Endpoint | Description |
 |---|---|
-| `GET /status` | per-GPU temps (core/hotspot/memory/board), written & measured fan duty, PID terms (`error/p/i/d/output`), failsafe state |
+| `GET /status` | top-level `mode`/`interval_ms`/`target_c`; per-GPU temps (core/hotspot/memory/board), written & measured fan duty, `released` flag, last PID decomposition (`error/p/i/d/output`, null when the PID did not run this tick), failsafe state |
 | `GET /config` | effective runtime configuration |
-| `POST /pid?target_c=&kp=&ki=&kd=&base_percent=&min_percent=&max_percent=&emergency_delta_c=&interval_ms=&sensor=` | partial PID update, validated atomically, live |
+| `POST /pid?target_c=&kp=&ki=&kd=&base_percent=&min_percent=&max_percent=&emergency_delta_c=&release_below_c=&engage_below_c=&release_ticks=&interval_ms=&sensor=` | partial PID update, validated atomically, live |
 | `POST /mode?value=auto\|pid\|manual` | switch control mode (`auto` hands fans back to the driver) |
 | `POST /fan?percent=0-100` | pin a duty (switches to manual) |
 | `POST /restore` | alias of `/mode?value=auto` |
@@ -110,6 +113,32 @@ curl -s -X POST -H "X-Requested-With: XMLHttpRequest" \
 > **Breaking change vs. the old service**: the VFP voltage-lock soft-wall
 > loop was removed, so `/set_temp_limit_soft_vfp` is gone; `GET /config`
 > returns the new schema. PID `error` convention: positive = too hot.
+
+## Idle release (low-side hysteresis)
+
+A PID alone idles badly: after a load drop the stored integral keeps the fan
+pinned high while the temperature sinks below the setpoint (undershoot, fan
+never stops). The controller therefore hands the fan **back to the driver's
+own curve** once it is comfortably cool, and takes control again when the GPU
+warms up:
+
+```
+target − release_below_c   … target − engage_below_c     target
+        ↑ release after release_ticks cool ticks   ↑ PID re-engages
+       ──────────── hysteresis band: state is held ────────────
+```
+
+- Defaults: release at `target − 4 °C` after 3 cool ticks, re-engage at
+  `target − 1 °C`. `/status` shows the state per GPU (`"released": true`,
+  `fan_written_percent: null`).
+- Tighten `release_below_c` (e.g. `2`) if the card idles cooler than you
+  like; set it to `0` to keep the PID in control all the way down.
+- A fast temperature plunge can undershoot the release line by
+  (drop rate × `release_ticks`) before the release fires — lower
+  `release_ticks` on such cards.
+- While released, sensor failures do not trigger the read-failure failsafe
+  (the driver already owns the fan), and an overtemp spike re-engages the
+  PID immediately (emergency 100% still applies).
 
 ## Failsafe behavior
 
@@ -189,11 +218,22 @@ write.
    try `kd = 0.5–2` and watch for duty chatter (writes every tick = noise
    amplification — reduce it).
 
-4. **Setpoint sanity.** `target_c` should sit ≥ 10 °C below your card's
+4. **Tick period.** The loop runs every `interval_ms` (default 1000; the PID
+   dt follows it). 500 ms makes the loop snappier at the cost of 2× NVAPI
+   traffic — hot-tunable via `POST /pid?interval_ms=500`. If the temperature
+   reading itself only updates every few seconds on your card, a faster tick
+   buys nothing; check `/status` temp granularity first.
+
+5. **Release band.** After load drops, the release hysteresis (section
+   above) hands the fan back to the driver instead of parking it via the
+   integral. Size `release_below_c` to how far below target you accept the
+   temperature to sag while the fan spins down.
+
+6. **Setpoint sanity.** `target_c` should sit ≥ 10 °C below your card's
    slowdown threshold so the emergency 100% state stays a last resort, not a
    routine visitor.
 
-5. **Verify recovery.** Flip `mode=auto` → `pid` → `auto` and stop/start the
+7. **Verify recovery.** Flip `mode=auto` → `pid` → `auto` and stop/start the
    service; confirm in each case that the driver regains fan control
    (`/status` shows `fan_written_percent: null` and the tach follows the
    stock curve).

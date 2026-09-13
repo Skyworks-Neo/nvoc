@@ -11,9 +11,21 @@
 //! - **Conditional-integration anti-windup**: the integrator freezes while
 //!   the output is saturated AND the error would push it further into that
 //!   rail, so recovery from saturation is immediate.
+//! - **Asymmetric integral discharge**: integral that *opposes* the current
+//!   error unwinds [`INTEGRAL_UNWIND_GAIN`]× faster (clamped so it cannot
+//!   cross zero). Without this, the integral built during the hot phase
+//!   discharges at only `ki·|e|` per second — after a load drop the fan
+//!   stays pinned high for minutes (observed as low-side undershoot and
+//!   never idling).
 
 use crate::config::PidParams;
 use serde::Serialize;
+
+/// Multiplier on the integration increment while the stored integral
+/// opposes the current error sign. Discharge-only acceleration: clamped at
+/// zero, so it can never wind the integral in the *error's* direction
+/// faster than plain `ki` would.
+const INTEGRAL_UNWIND_GAIN: f32 = 4.0;
 
 /// One PID step's decomposition, for `/status` observability and tuning.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
@@ -130,7 +142,20 @@ impl PidController {
             None => 0.0,
         };
 
-        let trial_i = self.integral + error * dt;
+        // Accelerated discharge when the integral opposes the error, clamped
+        // so it discharges to (never through) zero.
+        let opposed = (self.integral > 0.0 && error < 0.0) || (self.integral < 0.0 && error > 0.0);
+        let delta = if opposed {
+            let fast = error * dt * INTEGRAL_UNWIND_GAIN;
+            if self.integral > 0.0 {
+                fast.max(-self.integral)
+            } else {
+                fast.min(-self.integral)
+            }
+        } else {
+            error * dt
+        };
+        let trial_i = self.integral + delta;
         let raw_trial = self.base_percent + p + self.ki * trial_i + d;
         let saturating_high = raw_trial > self.out_max && error > 0.0;
         let saturating_low = raw_trial < self.out_min && error < 0.0;
@@ -205,6 +230,59 @@ mod tests {
             t.output_percent < 100.0,
             "output must leave the rail on the first step, got {}",
             t.output_percent
+        );
+    }
+
+    #[test]
+    fn integral_unwinds_faster_when_error_opposes_it() {
+        // Build integral +10 at e=+2 (kp=0, ki=0.5, base=40, no saturation).
+        let mut pid = plain(0.0, 0.5, 0.0);
+        for _ in 0..5 {
+            pid.step(77.0, 1.0);
+        }
+        assert!((pid.integral() - 10.0).abs() < 1e-4);
+        // Error flips to −1: the 4× discharge (clamped at zero) empties the
+        // integral in 3 ticks instead of the plain ki·|e| trickle.
+        for _ in 0..3 {
+            pid.step(74.0, 1.0);
+        }
+        assert!(
+            pid.integral().abs() < 0.5,
+            "integral discharged to zero, got {}",
+            pid.integral()
+        );
+        // The fast path stops at zero: the next tick integrates at the plain
+        // error·dt rate (e = −1), not at 4×.
+        pid.step(74.0, 1.0);
+        assert!(
+            (pid.integral() + 1.0).abs() < 1e-4,
+            "normal integration rate must resume at zero, got {}",
+            pid.integral()
+        );
+    }
+
+    #[test]
+    fn integral_discharge_is_symmetric() {
+        // Negative integral built while cool discharges fast once hot.
+        let mut pid = plain(0.0, 0.5, 0.0);
+        for _ in 0..5 {
+            pid.step(73.0, 1.0);
+        }
+        assert!((pid.integral() + 10.0).abs() < 1e-4);
+        for _ in 0..2 {
+            pid.step(77.0, 1.0);
+        }
+        assert!(
+            pid.integral().abs() < 0.5,
+            "integral discharged to zero, got {}",
+            pid.integral()
+        );
+        // Normal rate resumes after the fast discharge lands on zero.
+        pid.step(77.0, 1.0);
+        assert!(
+            (pid.integral() - 2.0).abs() < 1e-4,
+            "normal integration rate must resume at zero, got {}",
+            pid.integral()
         );
     }
 
