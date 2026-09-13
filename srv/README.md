@@ -133,6 +133,11 @@ target − release_below_c   … target − engage_below_c     target
 - Defaults: release at `target − 4 °C` after 3 cool ticks, re-engage at
   `target − 1 °C`. `/status` shows the state per GPU (`"released": true`,
   `fan_written_percent: null`).
+- **Operator override**: any successful `POST /pid` change or an explicit
+  `POST /mode?value=pid` takes control back immediately — even deeply below
+  the engage line — and holds it (auto-release suppressed) until the
+  temperature first crosses the re-engage line. Retargeting is therefore
+  always honored.
 - Tighten `release_below_c` (e.g. `2`) if the card idles cooler than you
   like; set it to `0` to keep the PID in control all the way down.
 - A fast temperature plunge can undershoot the release line by

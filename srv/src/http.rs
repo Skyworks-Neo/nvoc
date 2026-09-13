@@ -219,7 +219,7 @@ fn handle_request(
                 reject_mutation(request, path);
                 return;
             }
-            handle_pid_update(request, params, config);
+            handle_pid_update(request, params, config, cmd_tx);
         }
         "/mode" => {
             if !is_mutation_request(&request) {
@@ -235,6 +235,11 @@ fn handle_request(
                     };
                     lock(config).mode = mode;
                     info!("control mode set to {mode:?} via HTTP");
+                    // Explicit "control now": also breaks out of idle-release
+                    // when the loop is already in Pid mode.
+                    if mode == ControlMode::Pid {
+                        let _ = cmd_tx.send(ServiceCmd::Reengage);
+                    }
                     text_response(request, 200, format!("OK: mode={mode:?}"));
                 }
                 _ => text_response(request, 400, "Bad request: 'value' must be auto|pid|manual"),
@@ -344,6 +349,7 @@ fn handle_pid_update(
     request: tiny_http::Request,
     params: &HashMap<String, String>,
     config: &SharedConfig,
+    cmd_tx: &Sender<ServiceCmd>,
 ) {
     let mut cfg = lock(config);
     let mut p = cfg.pid.clone();
@@ -417,6 +423,9 @@ fn handle_pid_update(
     let base = p.base_percent;
     cfg.pid = p;
     info!("PID updated via HTTP: target={target} kp={kp} ki={ki} kd={kd} base={base}");
+    // Operator gesture: a param change means "control now" — break out of
+    // idle-release (no-op when not released).
+    let _ = cmd_tx.send(ServiceCmd::Reengage);
     text_response(request, 200, "OK: pid updated");
 }
 

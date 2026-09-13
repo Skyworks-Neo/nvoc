@@ -123,6 +123,9 @@ pub struct GpuController {
     released: bool,
     /// Consecutive ticks with temp ≤ the release line (dwell counter).
     below_streak: u32,
+    /// Operator override latch (see [`Self::force_reengage`]): auto-release
+    /// is suppressed until the temperature first crosses the re-engage line.
+    operator_hold: bool,
     /// Adaptive feed-forward state: the learned base duty. Only honored
     /// while `adaptive_base` is on (and seeded from the config otherwise).
     base: f32,
@@ -147,6 +150,7 @@ impl GpuController {
             emergency_active: false,
             released: false,
             below_streak: 0,
+            operator_hold: false,
             base: 0.0,
             base_seeded: false,
             last_pid: None,
@@ -186,6 +190,24 @@ impl GpuController {
         self.applied_mode = ControlMode::Auto;
         self.released = false;
         self.below_streak = 0;
+        self.operator_hold = false;
+    }
+
+    /// Operator override for the idle-release state: any successful `/pid`
+    /// mutation or an explicit `POST /mode?value=pid` lands here. Control is
+    /// taken back immediately and auto-release is suppressed
+    /// (`operator_hold`) until the temperature first crosses the re-engage
+    /// line — so a retarget is honored even while deeply cool. No-op unless
+    /// the controller is currently released in Pid mode.
+    pub fn force_reengage(&mut self, index: usize) {
+        if self.applied_mode != ControlMode::Pid || !self.released {
+            return;
+        }
+        log::info!("GPU {index}: operator re-engage; control taken back from driver curve");
+        self.released = false;
+        self.below_streak = 0;
+        self.operator_hold = true;
+        self.pid.reset();
     }
 
     /// One control tick; returns the status snapshot for `/status`.
@@ -255,6 +277,7 @@ impl GpuController {
         self.fail_streak = 0;
         self.released = false;
         self.below_streak = 0;
+        self.operator_hold = false;
         if self.failsafe == FailsafeState::ReadFailures {
             self.failsafe = FailsafeState::Ok;
         }
@@ -324,9 +347,19 @@ impl GpuController {
                 let engage_at = cfg.pid.target_c - cfg.pid.engage_below_c;
                 let release_at = cfg.pid.target_c - cfg.pid.release_below_c;
 
+                // Operator override: hold control until the loop actually
+                // reaches the engage line, then normal band behavior resumes.
+                if self.operator_hold && temp >= engage_at {
+                    log::info!(
+                        "GPU {index}: loop at engage line {engage_at:.1} °C; operator hold lifted"
+                    );
+                    self.operator_hold = false;
+                }
+
                 // Idle-release hysteresis: cool → hand the fan to the
                 // driver curve (it idles — zero RPM — better than the PID
-                // can park it); warm again → take control back.
+                // can park it); warm again → take control back. Suppressed
+                // while an operator re-engage holds control.
                 if self.released {
                     if temp >= engage_at {
                         log::info!(
@@ -338,7 +371,9 @@ impl GpuController {
                         return; // stay on the driver curve this tick
                     }
                 }
-                if cfg.pid.release_below_c > 0.0 && temp <= release_at {
+                let in_release_zone =
+                    !self.operator_hold && cfg.pid.release_below_c > 0.0 && temp <= release_at;
+                if in_release_zone {
                     self.below_streak += 1;
                     if self.below_streak >= cfg.pid.release_ticks.max(1) {
                         match backend.restore_fan_auto(index) {
@@ -887,6 +922,44 @@ mod tests {
         config.pid.base_percent = 55.0;
         let st = tick(&mut c, &mut m, &config);
         assert!((st.pid.expect("pid ran").base_percent - 55.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn operator_reengage_holds_control_below_the_release_line() {
+        let mut c = GpuController::new(PidController::from_params(&PidParams::default()));
+        let mut m = Mock::steady(70.5);
+        let config = release_cfg();
+        // Settle into the released state.
+        tick(&mut c, &mut m, &config);
+        tick(&mut c, &mut m, &config);
+        assert!(c.released);
+
+        // Operator gesture (e.g. a /pid retarget): control comes back even
+        // though the temperature is still far below the engage line.
+        c.force_reengage(0);
+        assert!(!c.released);
+        let st = tick(&mut c, &mut m, &config);
+        assert!(!st.released, "operator hold must suppress auto-release");
+        assert_eq!(m.restores, 1, "no extra restore on re-engage itself");
+        assert_eq!(m.writes.last(), Some(&31)); // 40 + 2·(70.5−75), in control
+
+        // The hold lifts at the engage line; afterwards the release band
+        // works normally again.
+        m.temps = vec![Ok(SensorBundle {
+            core_c: Some(74.5),
+            ..Default::default()
+        })];
+        let st = tick(&mut c, &mut m, &config);
+        assert!(!st.released);
+        assert_eq!(m.writes.last(), Some(&39)); // 40 + 2·(74.5−75)
+        m.temps = vec![Ok(SensorBundle {
+            core_c: Some(70.5),
+            ..Default::default()
+        })];
+        tick(&mut c, &mut m, &config); // dwell tick 1 (writes 31)
+        let st = tick(&mut c, &mut m, &config); // dwell tick 2 → release
+        assert!(st.released);
+        assert_eq!(m.restores, 2);
     }
 
     #[test]
