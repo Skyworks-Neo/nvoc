@@ -20,6 +20,7 @@ cuda12 = ["cuda", "cudarc/cuda-12090"]
 vulkan = ["ash", "dep:naga", "dep:windows-sys"]
 
 [dependencies]
+ctrlc = { workspace = true }
 nvoc-cli-common = { workspace = true }
 clap = { workspace = true }
 rand = "0.10"

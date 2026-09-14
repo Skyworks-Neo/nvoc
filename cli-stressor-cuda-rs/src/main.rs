@@ -27,6 +27,7 @@ use cli_stressor_cuda_rs::{
 #[cfg(feature = "cuda")]
 use serde::Deserialize;
 
+pub mod srv_thermal;
 pub mod style;
 
 #[cfg(feature = "cuda")]
@@ -332,6 +333,9 @@ struct Args {
     /// List CUDA GPUs (PCI-sorted index, CUDA index, PCI bus, UUID) and exit
     #[arg(long, default_value_t = false)]
     list_gpus: bool,
+
+    #[command(flatten)]
+    thermal: srv_thermal::ThermalArgs,
 }
 
 #[cfg(feature = "cuda")]
@@ -352,9 +356,9 @@ struct FileVerifyConfig {
 
 /// Whether any Vulkan graphics stressor should run (new render load or the
 /// legacy image load). `--vulkan` wins when both are requested.
-/// Every caller is feature-gated, so the no-default-features build sees it
-/// as dead code.
-#[cfg_attr(not(any(feature = "cuda", feature = "vulkan")), allow(dead_code))]
+/// Every caller is feature-gated behind `vulkan`, so builds without that
+/// feature (cuda-only default, no-default-features) see it as dead code.
+#[cfg_attr(not(feature = "vulkan"), allow(dead_code))]
 fn vulkan_stress_enabled(args: &Args) -> bool {
     args.vulkan || args.legacy_vulkan
 }
@@ -1347,6 +1351,10 @@ pub fn run_from_args() {
             }
         }
     }
+
+    // Debug thermal channel: opt-in via --target-temp; no-op without it
+    // and skipped entirely in optimizer-worker mode.
+    srv_thermal::engage(&args.thermal, args._nvoc_stressor_worker);
 
     let matrix_sizes = match parse_int_list(&args.matrix_sizes) {
         Ok(values) => values,
