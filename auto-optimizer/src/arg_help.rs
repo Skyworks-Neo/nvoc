@@ -300,7 +300,7 @@ fn srv_thermal_args(cmd: Command) -> Command {
             .long("srv-exe")
             .value_name("PATH")
             .num_args(1)
-            .help("nvoc_service binary to spawn when no srv is running (default: next to this executable)"),
+            .help("nvoc-srv binary to spawn when no srv is running (default: next to this executable)"),
     )
 }
 

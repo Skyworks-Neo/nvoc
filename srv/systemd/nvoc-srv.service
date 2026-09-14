@@ -1,6 +1,6 @@
 # NVOC closed-loop GPU thermal control (fan PID).
 # Install:
-#   sudo cp nvoc_service /usr/local/bin/
+#   sudo cp nvoc-srv /usr/local/bin/
 #   sudo cp srv/systemd/nvoc-srv.service /etc/systemd/system/
 #   sudo mkdir -p /etc/nvoc && sudo $EDITOR /etc/nvoc/nvoc-srv.toml   # optional
 #   sudo systemctl daemon-reload && sudo systemctl enable --now nvoc-srv
@@ -14,7 +14,7 @@ After=multi-user.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/nvoc_service --foreground --config /etc/nvoc/nvoc-srv.toml
+ExecStart=/usr/local/bin/nvoc-srv --foreground --config /etc/nvoc/nvoc-srv.toml
 Restart=on-failure
 RestartSec=5
 

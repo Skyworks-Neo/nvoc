@@ -4,7 +4,7 @@
 //!
 //! Self-contained by design — this module does not share code with the
 //! optimizer's session manager. Lifecycle: probe `/status` (adopt a healthy
-//! srv; spawn `nvoc_service --foreground` as a child when nothing listens;
+//! srv; spawn `nvoc-srv --foreground` as a child when nothing listens;
 //! hard-error on a port occupied by something else), wait for readiness,
 //! push the setpoint, engage PID mode. [`exit`] routes every stressor
 //! termination through teardown: `POST /restore`, and — only for a spawned
@@ -58,7 +58,7 @@ pub struct ThermalArgs {
     /// nvoc-srv control-plane port for --target-temp (default 14514).
     #[arg(long, value_name = "PORT")]
     pub srv_port: Option<u16>,
-    /// nvoc_service binary to spawn when no srv is running
+    /// nvoc-srv binary to spawn when no srv is running
     /// (default: next to this executable).
     #[arg(long, value_name = "PATH")]
     pub srv_exe: Option<String>,
@@ -107,8 +107,8 @@ pub fn engage(args: &ThermalArgs, worker_mode: bool) {
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|| {
                     std::env::current_exe()
-                        .unwrap_or_else(|_| std::path::PathBuf::from("nvoc_service"))
-                        .with_file_name("nvoc_service.exe")
+                        .unwrap_or_else(|_| std::path::PathBuf::from("nvoc-srv"))
+                        .with_file_name("nvoc-srv.exe")
                 });
             match std::process::Command::new(&exe)
                 .arg("--foreground")

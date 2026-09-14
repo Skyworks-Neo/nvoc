@@ -5,7 +5,7 @@
 //! Lifecycle (probe-first):
 //! 1. [`ensure`] at scan start — if a healthy srv answers, adopt it
 //!    (restore-only at teardown); if nothing listens, spawn
-//!    `nvoc_service --foreground` as a child, wait for readiness, then push
+//!    `nvoc-srv --foreground` as a child, wait for readiness, then push
 //!    the setpoint and switch to PID mode. A port occupied by something
 //!    that is *not* srv is a hard error (spawning would only add a blind
 //!    second instance).
@@ -222,12 +222,12 @@ fn kill_child(state: &mut SessionState) {
     *state.child.lock().expect("session child mutex") = None;
 }
 
-/// The optimizer ships alongside `nvoc_service.exe` (same convention as
+/// The optimizer ships alongside `nvoc-srv.exe` (same convention as
 /// nvoc-srv-ctl's sibling-binary install).
 fn default_srv_exe() -> PathBuf {
     std::env::current_exe()
-        .unwrap_or_else(|_| PathBuf::from("nvoc_service"))
-        .with_file_name("nvoc_service.exe")
+        .unwrap_or_else(|_| PathBuf::from("nvoc-srv"))
+        .with_file_name("nvoc-srv.exe")
 }
 
 /// Test seam: reset the global session between unit tests.

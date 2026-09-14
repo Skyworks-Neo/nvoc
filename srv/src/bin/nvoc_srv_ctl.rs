@@ -30,7 +30,7 @@ mod windows_impl {
 
     #[derive(Subcommand)]
     pub enum Command {
-        /// Install nvoc_service (manual start, LocalSystem, sibling binary).
+        /// Install nvoc-srv (manual start, LocalSystem, sibling binary).
         Install,
         /// Uninstall nvoc_service (stops it first if running).
         Uninstall,
@@ -80,7 +80,7 @@ mod windows_impl {
         let service_manager = manager(manager_access)?;
         let service_binary_path = std::env::current_exe()
             .expect("current exe")
-            .with_file_name("nvoc_service.exe");
+            .with_file_name("nvoc-srv.exe");
 
         let service_info = ServiceInfo {
             name: OsString::from(SERVICE_NAME),

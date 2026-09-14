@@ -1,6 +1,6 @@
 # NVOC-SRV — closed-loop GPU control service
 
-`nvoc_service` is a long-lived control service for NVIDIA GPUs. Its job is
+`nvoc-srv` is a long-lived control service for NVIDIA GPUs. Its job is
 **closed-loop control**: today a fan-speed PID that regulates GPU temperature;
 the controller framework is the intended home for future target-optimization
 loops (power, clocks) and for exposing safe control to the stressor / MCP
@@ -13,7 +13,7 @@ One-shot writes and inspection remain in `nvoc cli`; the service owns
 
 ```
 ┌────────────────────────────────────────────────────────────────────┐
-│ nvoc_service (one process)                                         │
+│ nvoc-srv (one process)                                              │
 │                                                                    │
 │  HTTP control plane (tiny_http, 127.0.0.1:14514, CSRF-gated)       │
 │        │ config edits / imperative commands (flume)                │
@@ -44,7 +44,7 @@ cargo test  --package nvoc-srv            # pure logic, no GPU needed
 
 Bins:
 
-- `nvoc_service` — the service. Windows: SCM launch path by default, or
+- `nvoc-srv` — the service binary. Windows: SCM launch path by default (service name `nvoc_service`), or
   `--foreground` in a console. Linux: always foreground.
 - `nvoc-srv-ctl` — Windows SCM management: `install` / `uninstall` / `status`
   / `failure-actions`.
@@ -143,7 +143,7 @@ is known the controller writes no cap at all — never a guessed one.
 
 | Caller | Mechanism | Session lifecycle |
 |---|---|---|
-| `nvoc-auto-optimizer --target-temp N` (formal) | probe `/status` -> adopt, else spawn `nvoc_service --foreground` as child | session spans the whole scan (every stress round); `cleanup_autoscan_exit` restores fans and stops only a *spawned* child |
+| `nvoc-auto-optimizer --target-temp N` (formal) | probe `/status` -> adopt, else spawn `nvoc-srv --foreground` as child | session spans the whole scan (every stress round); `cleanup_autoscan_exit` restores fans and stops only a *spawned* child |
 | `cli-stressor-cuda-rs --target-temp N` (debug) | same probe/spawn logic, self-contained | session = one stress run; torn down on completion and Ctrl-C; a hard crash leaves the spawned srv orphaned-but-safe (it keeps controlling; reuse next run or `/restore` via the web UI) |
 | manual (curl / web console / MCP later) | the HTTP API directly | you own it |
 
@@ -288,7 +288,7 @@ are redirected there in service mode).
 ### Linux (systemd)
 
 ```sh
-sudo cp target/release/nvoc_service /usr/local/bin/
+sudo cp target/release/nvoc-srv /usr/local/bin/
 sudo cp srv/systemd/nvoc-srv.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now nvoc-srv
 ```

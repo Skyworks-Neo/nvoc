@@ -1,4 +1,4 @@
-//! `nvoc_service` — the control service binary.
+//! `nvoc-srv` — the control service binary.
 //!
 //! Windows: launched without arguments by the SCM (`dispatch`); launched by
 //! a human, pass `--foreground` to run in the console.
@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "nvoc_service",
+    name = "nvoc-srv",
     about = "NVOC closed-loop control service: fan PID thermal control"
 )]
 struct Cli {

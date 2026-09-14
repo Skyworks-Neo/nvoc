@@ -7,8 +7,8 @@ edition = { workspace = true }
 rust-version = { workspace = true }
 
 [[bin]]
-name = "nvoc_service"
-path = "src/bin/nvoc_service.rs"
+name = "nvoc-srv"
+path = "src/bin/nvoc_srv.rs"
 
 [[bin]]
 name = "nvoc-srv-ctl"
