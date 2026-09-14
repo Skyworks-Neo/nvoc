@@ -16,7 +16,9 @@ mod progressbar;
 mod scan_log;
 mod scan_strategy;
 mod scan_support;
+mod srv_client;
 mod stressor_process;
+mod thermal_session;
 
 use anyhow::Result;
 use cleanup::{AutoscanExit, cleanup_autoscan_exit};
@@ -194,30 +196,39 @@ fn main_result() -> Result<i32, Box<dyn std::error::Error>> {
             let gpu = single_target(&nvapi_selected)?;
             fix_result(gpu, matches)?
         }
-        Some(("autoscan-vfp", matches)) => match autoscan_gpuboostv3(&nvapi_selected, matches) {
-            Ok(()) => cleanup_autoscan_exit(&nvapi_selected, AutoscanExit::Success),
-            Err(e) => {
-                eprintln!("Error in autoscan: {:?}", e);
-                cleanup_autoscan_exit(&nvapi_selected, AutoscanExit::Error);
-                return Ok(1);
+        Some(("autoscan-vfp", matches)) => {
+            thermal_session::ensure(matches)?;
+            match autoscan_gpuboostv3(&nvapi_selected, matches) {
+                Ok(()) => cleanup_autoscan_exit(&nvapi_selected, AutoscanExit::Success),
+                Err(e) => {
+                    eprintln!("Error in autoscan: {:?}", e);
+                    cleanup_autoscan_exit(&nvapi_selected, AutoscanExit::Error);
+                    return Ok(1);
+                }
             }
-        },
-        Some(("autoscan-vfp-legacy", matches)) => match autoscan_legacy(&nvapi_selected, matches) {
-            Ok(()) => cleanup_autoscan_exit(&nvapi_selected, AutoscanExit::Success),
-            Err(e) => {
-                eprintln!("Error in autoscan_legacy: {:?}", e);
-                cleanup_autoscan_exit(&nvapi_selected, AutoscanExit::Error);
-                return Ok(1);
+        }
+        Some(("autoscan-vfp-legacy", matches)) => {
+            thermal_session::ensure(matches)?;
+            match autoscan_legacy(&nvapi_selected, matches) {
+                Ok(()) => cleanup_autoscan_exit(&nvapi_selected, AutoscanExit::Success),
+                Err(e) => {
+                    eprintln!("Error in autoscan_legacy: {:?}", e);
+                    cleanup_autoscan_exit(&nvapi_selected, AutoscanExit::Error);
+                    return Ok(1);
+                }
             }
-        },
-        Some(("optimize", matches)) => match run_optimize(&nvapi_selected, matches) {
-            Ok(()) => cleanup_autoscan_exit(&nvapi_selected, AutoscanExit::Success),
-            Err(e) => {
-                eprintln!("Error in optimize: {:?}", e);
-                cleanup_autoscan_exit(&nvapi_selected, AutoscanExit::Error);
-                return Ok(1);
+        }
+        Some(("optimize", matches)) => {
+            thermal_session::ensure(matches)?;
+            match run_optimize(&nvapi_selected, matches) {
+                Ok(()) => cleanup_autoscan_exit(&nvapi_selected, AutoscanExit::Success),
+                Err(e) => {
+                    eprintln!("Error in optimize: {:?}", e);
+                    cleanup_autoscan_exit(&nvapi_selected, AutoscanExit::Error);
+                    return Ok(1);
+                }
             }
-        },
+        }
         _ => unreachable!("unknown command"),
     }
 

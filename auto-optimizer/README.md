@@ -349,6 +349,22 @@ nvoc-auto-optimizer.exe autoscan-vfp -u -b aggressive
 | `-i <路径>`     | —    | `./ws/vfp-init.csv` | 参考原始曲线 CSV 路径                                               |
 | `-m`          | —    | 关                   | 同时扫描显存超频                                                    |
 | `-b <方式>`     | —    | 按 GPU 世代自动选择        | 崩溃恢复方式：`aggressive`（主动 BSOD 重启）或 `traditional`（等待 TDR 自动恢复） |
+| `--target-temp <°C>` | — | 关（不控温） | 压测期间由 nvoc-srv 风扇 PID 环把 GPU 控制在该温度（`autoscan-vfp-legacy`/`optimize` 同样支持，见下方"压测控温会话"） |
+| `--srv-port <端口>` | — | `14514` | 配合 `--target-temp` 的 nvoc-srv 控制面端口 |
+| `--srv-exe <路径>` | — | 本程序同目录 `nvoc_service.exe` | 配合 `--target-temp`：无 srv 在跑时拉起的二进制 |
+
+#### 压测控温会话（--target-temp）
+
+`--target-temp` 让 nvoc-srv 的风扇闭环在扫描全程把温度稳在设定值（扫描中每轮压测共享同一会话，收尾统一恢复）：
+
+- **探测复用**：启动时探测 `127.0.0.1:<srv-port>`，已有健康 nvoc-srv 则直接采用（结束时只恢复风扇自动，不关闭服务）；
+- **按需拉起**：无 srv 在跑则以子进程拉起同目录 `nvoc_service.exe --foreground`，扫描结束后自动 `/restore` + 关闭；
+- **收尾双路径**：扫描成功与失败路径都会 `/restore` 交还风扇驱动控制（失败路径另有风扇 100% 兜底）；
+- 端口被非 nvoc-srv 程序占用时报错退出（不会盲目叠加第二实例）。
+
+```bat
+nvoc-auto-optimizer.exe autoscan-vfp --target-temp 70
+```
 
 ---
 

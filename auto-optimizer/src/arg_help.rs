@@ -132,7 +132,7 @@ fn optimize_command() -> Command {
             );
     }
 
-    cmd
+    srv_thermal_args(cmd)
 }
 
 fn vfp_export_command() -> Command {
@@ -273,6 +273,35 @@ fn vfp_fix_result_command() -> Command {
                 .value_parser(clap::value_parser!(i32).range(-50..=50))
                 .help("Margin bin adjustment integer"),
         )
+}
+
+/// Thermal-session argument group shared by every stress-orchestrating
+/// command: opt-in fan PID control on the nvoc-srv control plane.
+fn srv_thermal_args(cmd: Command) -> Command {
+    cmd.arg(
+        Arg::new("target_temp")
+            .long("target-temp")
+            .value_name("TEMP_C")
+            .num_args(1)
+            .help(
+                "Hold the GPU at this temperature during the scan via the                  nvoc-srv fan control loop (spawns/reuses a local nvoc-srv)",
+            ),
+    )
+    .arg(
+        Arg::new("srv_port")
+            .long("srv-port")
+            .value_name("PORT")
+            .num_args(1)
+            .value_parser(clap::value_parser!(u16))
+            .help("nvoc-srv control-plane port (default 14514)"),
+    )
+    .arg(
+        Arg::new("srv_exe")
+            .long("srv-exe")
+            .value_name("PATH")
+            .num_args(1)
+            .help("nvoc_service binary to spawn when no srv is running (default: next to this executable)"),
+    )
 }
 
 fn vfp_autoscan_command(legacy: bool) -> Command {
@@ -440,7 +469,7 @@ fn vfp_autoscan_command(legacy: bool) -> Command {
             );
     }
 
-    cmd.args(hidden_vfp_lock_args())
+    srv_thermal_args(cmd).args(hidden_vfp_lock_args())
 }
 
 fn vfp_reset_command() -> Command {

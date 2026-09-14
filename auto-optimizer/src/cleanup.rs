@@ -18,6 +18,10 @@ pub fn cleanup_autoscan_exit(gpus: &[GpuTarget<'_>], exit: AutoscanExit) {
             AutoscanExit::Error => cleanup_error(gpu),
         }
     }
+    // Hand the thermal session back (restore fan control; stop a spawned
+    // nvoc-srv). Runs after the direct GPU cleanup so the fan hand-back is
+    // the last write.
+    crate::thermal_session::finish();
 }
 
 fn cleanup_error(gpu: &GpuTarget<'_>) {
