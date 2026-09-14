@@ -10,6 +10,7 @@ pub mod operation;
 pub mod result;
 pub mod target;
 mod types;
+pub mod vbios_dcb;
 
 pub use self::nvapi::{
     CoolerTarget, GpuTdpTempLimits, VfpLockRequest, nvapi_overvolt_reported, set_nvapi_overvolt,
