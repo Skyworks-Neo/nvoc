@@ -119,6 +119,18 @@ adaptive_base = true      # learn base_percent online from the integral (see bel
 CLI overrides (each maps to a field): `--config <path> --foreground --port
 --interval-ms --target-c --kp --ki --kd --base-percent`.
 
+## Who owns the thermal session?
+
+| Caller | Mechanism | Session lifecycle |
+|---|---|---|
+| `nvoc-auto-optimizer --target-temp N` (formal) | probe `/status` -> adopt, else spawn `nvoc_service --foreground` as child | session spans the whole scan (every stress round); `cleanup_autoscan_exit` restores fans and stops only a *spawned* child |
+| `cli-stressor-cuda-rs --target-temp N` (debug) | same probe/spawn logic, self-contained | session = one stress run; torn down on completion and Ctrl-C; a hard crash leaves the spawned srv orphaned-but-safe (it keeps controlling; reuse next run or `/restore` via the web UI) |
+| manual (curl / web console / MCP later) | the HTTP API directly | you own it |
+
+`--target-temp` on the stressor is **ignored in optimizer-worker mode** —
+the optimizer owns the session there, so passing it through
+`--stressor-extra-args` cannot create a second controller.
+
 ## Web console
 
 Open `http://127.0.0.1:14514/` in a browser — the control plane serves an
