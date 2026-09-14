@@ -111,13 +111,33 @@ idle_delta = 8.0          # sensor below target−delta → cap fully open
 emergency_delta = 15.0    # sensor above target+delta → deepest cap
 temp_guard_c = 90.0       # freq_power: core temp ≥ guard → deepest cap (0 = off)
 min_mhz = 300             # deepest allowed cap (MHz)
-max_mhz = 2100            # cap ceiling (MHz) — never opened above this
+max_mhz = 0               # cap ceiling; 0 = auto-detect (see below)
 write_deadband_percent = 1.0  # skip writes within ±1 % of the duty on the wire (anti-chatter)
 adaptive_base = true      # learn base_percent online from the integral (see below)
 ```
 
 CLI overrides (each maps to a field): `--config <path> --foreground --port
 --interval-ms --target-c --kp --ki --kd --base-percent`.
+
+## Frequency ceiling (auto-detected)
+
+The effort→cap mapping needs to know the card's maximum possible frequency.
+A hardcoded 2100 MHz would compress the whole mapping on a 40/50-series
+(and worse after an overclock), so `max_mhz = 0` (the default) resolves the
+ceiling per GPU every tick:
+
+1. **Detected**: the highest-frequency point of the V/F table's *current*
+   plane — its top point is the P0 boost frequency, and the current plane
+   already includes any applied core offset (own or external OC tools), on
+   new and pre-Pascal cards alike.
+2. **Observed**: anything running faster than the detected table (an
+   aggressive offset the table hasn't reflected yet) raises the ceiling;
+   removing the overclock lets it fall back on the next detection.
+
+`/status` shows the resulting `cap_mhz` and live `core_clock_mhz` so the
+mapping is directly auditable. Set `max_mhz > 0` only to pin the ceiling
+manually (detection and observation are ignored then); before any ceiling
+is known the controller writes no cap at all — never a guessed one.
 
 ## Who owns the thermal session?
 

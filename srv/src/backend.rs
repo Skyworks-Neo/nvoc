@@ -231,6 +231,18 @@ impl ControlBackend for NvapiBackend {
             .map(|k| k.0 as f32 / 1000.0)
     }
 
+    fn read_freq_ceiling_mhz(&mut self, gpu_index: usize) -> Option<f32> {
+        let gpu = self.gpus.get(gpu_index)?;
+        let status = gpu.status().ok()?;
+        let vfp = status.vfp?;
+        vfp.graphics
+            .values()
+            .map(|p| p.frequency.0)
+            .max()
+            .map(|khz| khz as f32 / 1000.0)
+            .filter(|mhz| *mhz > 0.0)
+    }
+
     fn write_freq_cap_khz(&mut self, gpu_index: usize, cap_khz: u32) -> Result<(), String> {
         let target = self.target(gpu_index)?;
         match run_gpu_operation(

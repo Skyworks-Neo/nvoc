@@ -159,6 +159,9 @@ pub trait ControlBackend: Send {
     fn read_power_watts(&mut self, gpu_index: usize) -> Option<f32>;
     /// Live core clock (MHz), best effort — `/status` readback for freq loops.
     fn read_core_clock_mhz(&mut self, gpu_index: usize) -> Option<f32>;
+    /// Frequency ceiling (MHz) of the V/F table's current plane (P0 boost
+    /// point, offset-inclusive). None = card does not expose the table.
+    fn read_freq_ceiling_mhz(&mut self, gpu_index: usize) -> Option<f32>;
     fn write_fan_percent(&mut self, gpu_index: usize, percent: u32) -> Result<(), String>;
     /// Frequency soft wall: lock the graphics clock range to `0..cap_khz`
     /// (one-directional — boost may run anywhere at or below the cap).
@@ -238,6 +241,9 @@ pub struct GpuController {
     /// clock readback.
     last_cap_mhz: Option<u32>,
     core_clock_mhz: Option<f32>,
+    /// Frequency ceiling in effect for the cap mapping (MHz): the detected
+    /// V/F-table maximum raised by anything observed running faster.
+    ceiling_mhz: Option<f32>,
     fan_measured: Option<u32>,
 }
 
@@ -260,6 +266,7 @@ impl GpuController {
             last_temp: None,
             last_cap_mhz: None,
             core_clock_mhz: None,
+            ceiling_mhz: None,
             fan_measured: None,
         }
     }
@@ -438,7 +445,11 @@ impl GpuController {
             LoopKind::FreqTemp | LoopKind::FreqPower => {
                 // Pin the frequency cap: `manual_percent` is restriction effort.
                 let effort = cfg.manual_percent.min(100);
-                let cap_khz = self.cap_khz(cfg, effort as f32);
+                self.refresh_ceiling(index, cfg, backend);
+                let Some(ceiling) = self.ceiling_mhz else {
+                    return; // ceiling not yet known — never guess
+                };
+                let cap_khz = self.cap_khz_with(ceiling, cfg, effort as f32);
                 if self.last_written != Some(effort) {
                     match backend.write_freq_cap_khz(index, cap_khz) {
                         Ok(()) => {
@@ -715,12 +726,26 @@ impl GpuController {
         backend: &mut dyn ControlBackend,
         effort: f32,
     ) {
-        let cap_khz = self.cap_khz(cfg, effort);
-        self.last_cap_mhz = Some(cap_khz / 1000);
-        let inside_deadband = match self.last_written {
-            None => false,
-            Some(last) => (effort - last as f32).abs() < self.params(cfg).write_deadband_percent(),
+        self.refresh_ceiling(index, cfg, backend);
+        let Some(ceiling) = self.ceiling_mhz else {
+            // Ceiling not yet known (first tick, no detection and no
+            // observation): never guess — an unwritten cap is the correct
+            // "unknown" state; the next tick writes it.
+            return;
         };
+        let cap_khz = self.cap_khz_with(ceiling, cfg, effort);
+        // Deadband measures the *cap* delta as a fraction of the ceiling —
+        // effort alone is not enough since a moving ceiling shifts the cap
+        // without any effort change (e.g. a freshly observed overclock).
+        // Must be evaluated BEFORE last_cap_mhz takes the new value.
+        let inside_deadband = match self.last_cap_mhz {
+            Some(last_cap) => {
+                ((cap_khz / 1000) as f32 - last_cap as f32).abs() / ceiling * 100.0
+                    < self.params(cfg).write_deadband_percent()
+            }
+            None => false,
+        };
+        self.last_cap_mhz = Some(cap_khz / 1000);
         if !inside_deadband {
             match backend.write_freq_cap_khz(index, cap_khz) {
                 Ok(()) => {
@@ -741,9 +766,44 @@ impl GpuController {
 
     /// Map restriction effort (0 = cap fully open, 100 = deepest cap) to a
     /// frequency cap in kHz.
-    fn cap_khz(&self, cfg: &RuntimeConfig, effort: f32) -> u32 {
-        let span = (cfg.freq.max_mhz - cfg.freq.min_mhz) as f32;
-        let cap_mhz = cfg.freq.max_mhz as f32 - effort / 100.0 * span;
+    /// Resolve the frequency ceiling the cap maps against, per tick:
+    /// - `freq.max_mhz > 0` pins it (manual override);
+    /// - otherwise the detected V/F-table maximum (current plane, offset
+    ///   inclusive), refreshed every tick and **raised** by anything
+    ///   observed running faster — an external OC tool or a config change
+    ///   lifts the ceiling without restart, and removing the overclock
+    ///   lets it fall back on the next detection.
+    fn refresh_ceiling(
+        &mut self,
+        index: usize,
+        cfg: &RuntimeConfig,
+        backend: &mut dyn ControlBackend,
+    ) {
+        if cfg.freq.max_mhz > 0 {
+            self.ceiling_mhz = Some(cfg.freq.max_mhz as f32);
+            return;
+        }
+        let detected = backend.read_freq_ceiling_mhz(index);
+        let observed = self.core_clock_mhz;
+        let merged = match (detected, observed) {
+            (Some(d), Some(o)) => Some(d.max(o)),
+            (d, o) => d.or(o),
+        };
+        match (merged, self.ceiling_mhz) {
+            (Some(v), _) => self.ceiling_mhz = Some(v),
+            // First ticks with neither detection nor observation: keep the
+            // previous ceiling if any, else defer (cap stays unwritten).
+            (None, prev) => {
+                self.ceiling_mhz = prev;
+            }
+        }
+    }
+
+    fn cap_khz_with(&self, ceiling: f32, cfg: &RuntimeConfig, effort: f32) -> u32 {
+        // Effort 0 maps to the ceiling (cap fully open), effort 100 to
+        // min_mhz (deepest cap).
+        let floor = cfg.freq.min_mhz as f32;
+        let cap_mhz = ceiling - effort / 100.0 * (ceiling - floor);
         (cap_mhz * 1000.0).round() as u32
     }
 
@@ -796,6 +856,11 @@ mod tests {
         /// Frequency caps written by write_freq_cap_khz (MHz).
         freq_caps: Vec<u32>,
         freq_restores: usize,
+        /// V/F-table ceiling reported by read_freq_ceiling_mhz.
+        ceiling: Option<f32>,
+        /// Live core clock reported by read_core_clock_mhz (overrides the
+        /// cap-derived default when set).
+        clock: Option<f32>,
     }
 
     impl Mock {
@@ -812,6 +877,8 @@ mod tests {
                 power: None,
                 freq_caps: Vec::new(),
                 freq_restores: 0,
+                ceiling: None,
+                clock: None,
             }
         }
     }
@@ -833,7 +900,11 @@ mod tests {
             self.power
         }
         fn read_core_clock_mhz(&mut self, _i: usize) -> Option<f32> {
-            self.freq_caps.last().map(|c| *c as f32 / 1000.0)
+            self.clock
+                .or_else(|| self.freq_caps.last().map(|c| *c as f32 / 1000.0))
+        }
+        fn read_freq_ceiling_mhz(&mut self, _i: usize) -> Option<f32> {
+            self.ceiling
         }
         fn write_fan_percent(&mut self, _i: usize, p: u32) -> Result<(), String> {
             if self.fail_writes {
@@ -1004,6 +1075,8 @@ mod tests {
             power: None,
             freq_caps: Vec::new(),
             freq_restores: 0,
+            ceiling: None,
+            clock: None,
         };
         let st = tick(&mut c, &mut m, &config);
         assert_eq!(st.failsafe, FailsafeState::Ok);
@@ -1065,6 +1138,8 @@ mod tests {
             power: None,
             freq_caps: Vec::new(),
             freq_restores: 0,
+            ceiling: None,
+            clock: None,
         };
         // Seed: pretend a duty is currently pinned (restore must fire).
         c.last_written = Some(50);
@@ -1106,6 +1181,8 @@ mod tests {
             power: None,
             freq_caps: Vec::new(),
             freq_restores: 0,
+            ceiling: None,
+            clock: None,
         };
         c.last_written = Some(50);
         let st = tick(&mut c, &mut m, &config);
@@ -1211,6 +1288,8 @@ mod tests {
             power: None,
             freq_caps: Vec::new(),
             freq_restores: 0,
+            ceiling: None,
+            clock: None,
         };
         let mut c = GpuController::new(PidController::from_params(&config.pid), config.loop_kind);
         for _ in 0..3 {
@@ -1366,6 +1445,7 @@ mod tests {
         config.freq.target = 75.0;
         config.freq.kp = 2.0;
         config.freq.ki = 0.0;
+        config.freq.max_mhz = 2100; // pin: expectations below are in this space
         let mut c = GpuController::new(
             PidController::from_params(&PidParams::default()),
             config.loop_kind,
@@ -1386,6 +1466,91 @@ mod tests {
         assert_eq!(m.freq_caps.last(), Some(&2100));
     }
 
+    fn freq_auto_cfg() -> RuntimeConfig {
+        let mut config = freq_power_cfg();
+        config.freq.max_mhz = 0; // auto ceiling
+        config
+    }
+
+    #[test]
+    fn freq_auto_ceiling_follows_the_detected_vf_maximum() {
+        // A 40/50-class card: V/F max 2790, not the legacy 2100 constant.
+        let config = freq_auto_cfg();
+        let mut c = GpuController::new(
+            PidController::from_params(&PidParams::default()),
+            config.loop_kind,
+        );
+        let mut m = Mock::steady(70.0);
+        m.power = Some(170.0);
+        m.ceiling = Some(2790.0);
+        let st = tick(&mut c, &mut m, &config);
+        // error 20 W, kp 1 -> effort 20 % -> cap = 2790 - 0.20*2490 = 2292
+        assert_eq!(m.freq_caps, vec![2292]);
+        assert_eq!(st.cap_mhz, Some(2292));
+    }
+
+    #[test]
+    fn freq_auto_ceiling_is_raised_by_observed_overclock() {
+        // External OC pushes the card past the detected table maximum: the
+        // ceiling must follow, or the mapping would saturate.
+        let config = freq_auto_cfg();
+        let mut c = GpuController::new(
+            PidController::from_params(&PidParams::default()),
+            config.loop_kind,
+        );
+        let mut m = Mock::steady(70.0);
+        m.power = Some(170.0);
+        m.ceiling = Some(2790.0);
+        m.clock = Some(3120.0); // overclocked, running above the table
+        // Tick 1: observation lags by one tick — ceiling = detected 2790.
+        let _ = tick(&mut c, &mut m, &config);
+        assert_eq!(m.freq_caps, vec![2292]);
+        // Tick 2: the raised ceiling lands — cap = 3120 - 0.20*2820 = 2556.
+        let st = tick(&mut c, &mut m, &config);
+        assert_eq!(m.freq_caps, vec![2292, 2556]);
+        assert_eq!(st.cap_mhz, Some(2556));
+    }
+
+    #[test]
+    fn freq_auto_ceiling_falls_back_to_observation() {
+        // Cards without a readable V/F table: the observed clock becomes
+        // the ceiling (restriction then works relative to where the card
+        // actually runs).
+        let config = freq_auto_cfg();
+        let mut c = GpuController::new(
+            PidController::from_params(&PidParams::default()),
+            config.loop_kind,
+        );
+        let mut m = Mock::steady(70.0);
+        m.power = Some(170.0);
+        m.ceiling = None;
+        m.clock = Some(2640.0);
+        // Tick 1: no detection, observation not yet sampled — no cap write.
+        let _ = tick(&mut c, &mut m, &config);
+        assert!(m.freq_caps.is_empty(), "must not guess a ceiling");
+        // Tick 2: observed 2640 becomes the ceiling; cap = 2640 - 0.20*2340.
+        let st = tick(&mut c, &mut m, &config);
+        assert_eq!(m.freq_caps, vec![2172]);
+        assert_eq!(st.cap_mhz, Some(2172));
+    }
+
+    #[test]
+    fn freq_manual_ceiling_pins_the_mapping() {
+        let mut config = freq_auto_cfg();
+        config.freq.max_mhz = 2100; // manual pin: detection ignored
+        let mut c = GpuController::new(
+            PidController::from_params(&PidParams::default()),
+            config.loop_kind,
+        );
+        let mut m = Mock::steady(70.0);
+        m.power = Some(170.0);
+        m.ceiling = Some(2790.0);
+        m.clock = Some(3120.0);
+        let st = tick(&mut c, &mut m, &config);
+        assert_eq!(m.freq_caps, vec![1740]); // legacy 2100 mapping, unchanged
+        assert_eq!(st.cap_mhz, Some(1740));
+    }
+
     #[test]
     fn loop_switch_hands_over_the_actuator() {
         let mut config = cfg(ControlMode::Pid);
@@ -1397,6 +1562,8 @@ mod tests {
         // Switch to the frequency loop: the fan pin is undone and the new
         // actuator takes over in the same tick.
         config.loop_kind = LK::FreqTemp;
+        m.ceiling = Some(2100.0); // freq side needs a ceiling to map effort
+        m.clock = Some(1850.0);
         let st = tick(&mut c, &mut m, &config);
         assert_eq!(m.restores, 1, "old actuator restored on switch");
         assert_eq!(m.freq_caps.len(), 1, "new actuator wrote a cap");

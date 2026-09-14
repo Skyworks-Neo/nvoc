@@ -186,7 +186,10 @@ pub struct FreqParams {
     /// Deepest allowed frequency cap (MHz) — the controller never restricts
     /// below this.
     pub min_mhz: u32,
-    /// Cap ceiling (MHz) — the controller never opens the cap above this.
+    /// Cap ceiling (MHz); **0 = auto** (default): the ceiling is the
+    /// detected V/F-table maximum (current plane — P0 boost point,
+    /// offset-inclusive), raised by anything observed running faster. A
+    /// non-zero value pins the ceiling manually.
     pub max_mhz: u32,
     /// Learn the restriction base online (same mechanism as the fan loop).
     pub adaptive_base: bool,
@@ -208,7 +211,7 @@ impl Default for FreqParams {
             emergency_delta: 15.0,
             temp_guard_c: 90.0,
             min_mhz: 300,
-            max_mhz: 2100,
+            max_mhz: 0, // auto: detected V/F maximum
             adaptive_base: true,
             write_deadband_percent: 1.0,
         }
@@ -256,9 +259,14 @@ impl FreqParams {
             ));
         }
         if self.max_mhz > 4000 {
-            return Err(format!("max_mhz must be ≤ 4000, got {}", self.max_mhz));
+            return Err(format!(
+                "max_mhz must be ≤ 4000 (0 = auto), got {}",
+                self.max_mhz
+            ));
         }
-        if self.min_mhz > self.max_mhz {
+        // min ≤ max only applies when the ceiling is pinned (max_mhz > 0);
+        // in auto mode the ceiling comes from the card.
+        if self.max_mhz > 0 && self.min_mhz > self.max_mhz {
             return Err(format!(
                 "min_mhz ({}) must be ≤ max_mhz ({})",
                 self.min_mhz, self.max_mhz
