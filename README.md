@@ -36,7 +36,7 @@ This section is the canonical component inventory for the monorepo. `CONTRIBUTIN
 | NVOC-STRESSOR OpenCL                   | [cli-stressor-opencl/](./cli-stressor-opencl/) | Lightweight OpenCL stress tool for broader backend coverage without CUDA-specific dependencies. |
 | NVOC-GUI                               | [gui/](./gui/) | Python GUI frontend for dashboard, autoscan, overclock, V-F curve, fan control, and live CLI output workflows. |
 | NVOC-TUI                               | [tui/](./tui/) | Textual terminal UI frontend for machines where a desktop GUI is unavailable or undesirable. |
-| NVOC-SRV                               | [srv/](./srv/) | Windows service and localhost HTTP control layer for server, workstation, and managed-machine use cases. |
+| NVOC-SRV                               | [srv/](./srv/) | Closed-loop GPU control service (fan PID thermal control) with a loopback HTTP control plane; Windows SCM + Linux systemd. |
 
 ### Internal libraries and experimental modules
 
@@ -79,7 +79,11 @@ On a fresh machine, start with the bundled bootstrap shim instead — `setup.cmd
 (Windows) or `./setup.sh` (Linux/macOS): it installs rustup and uv when they are
 missing, checks the MSVC linker prerequisite (Windows), and hands off to the
 doctor. `cargo xtask` itself requires an existing Rust toolchain and therefore
-cannot install it from the inside.
+cannot install it from the inside. On Windows, `setup.cmd --msys2 [llvm|gcc]`
+additionally bootstraps an [MSYS2 toolchain environment](./docs/design/msys2-gnullvm-compat.md)
+— clang64/gnullvm (LLVM, default, verified) or ucrt64/windows-gnu (GCC); the
+doctor branches on the resolved rustc host triple, so both the msvc and the
+gnu-like faces pass the same setup.
 
 `cargo xtask help` lists the full surface, including `build --cuda 12|11|none`
 (R470-era drivers take `11`) and `test --tier gpu-readonly` for the ignored
@@ -364,7 +368,7 @@ nvoc/
 ├── auto-optimizer/       # Rust CLI core and autoscan implementation
 ├── cli-stressor-opencl/  # OpenCL stress workload
 ├── gui/                  # Python GUI frontend
-├── srv/                  # Windows service wrapper and HTTP control endpoint
+├── srv/                  # Closed-loop control service (fan PID) + HTTP control plane
 └── tui/                  # Python Textual terminal frontend
 ```
 
@@ -409,7 +413,7 @@ NVOC 是一个 NVIDIA GPU 超频与稳定性工具的 monorepo。核心是 Rust 
 | NVOC-STRESSOR OpenCL        | [cli-stressor-opencl/](./cli-stressor-opencl/) | 轻量 OpenCL 压力测试工具，用于不依赖 CUDA 专有依赖的后端覆盖。 |
 | NVOC-GUI                    | [gui/](./gui/) | Python 图形界面，提供 Dashboard、Autoscan、Overclock、V-F Curve、Fan Control 和实时 CLI 输出。 |
 | NVOC-TUI                    | [tui/](./tui/) | 基于 Textual 的终端界面，适用于没有桌面环境或不适合运行 GUI 的机器。 |
-| NVOC-SRV                    | [srv/](./srv/) | Windows Service 与 localhost HTTP 控制层，面向服务器、工作站和托管机器场景。 |
+| NVOC-SRV                    | [srv/](./srv/) | GPU 闭环控制服务（风扇 PID 控温）+ localhost HTTP 控制面；Windows SCM + Linux systemd。 |
 
 ### 内部库与实验模块
 
@@ -451,6 +455,10 @@ cargo xtask run gui   # 也可以是：tui | cli | stressor
 全新机器请改用仓库自带的引导脚本起步——`setup.cmd`（Windows）或 `./setup.sh`
 （Linux/macOS）：缺少 rustup/uv 时自动安装、预检 MSVC 链接器（Windows），
 然后交接给环境体检。`cargo xtask` 本身要求已有 Rust 工具链，无法从内部安装。
+Windows 上 `setup.cmd --msys2 [llvm|gcc]` 还可选引导一套
+[MSYS2 工具链环境](./docs/design/msys2-gnullvm-compat.md)
+——clang64/gnullvm（LLVM，默认，已实测）或 ucrt64/windows-gnu（GCC）——doctor 按
+解析到的 rustc host 三元组分流，msvc 与 gnu-like 两个构建面走同一份 setup。
 
 `cargo xtask help` 查看完整命令面，包括 `build --cuda 12|11|none`（R470 世代驱动用
 `11`）和 `test --tier gpu-readonly`（被 ignore 的只读硬件测试套件）。xtask 永远不会
