@@ -2,8 +2,11 @@
 //!
 //! Every check prints `[ok]` / `[warn]` / `[FAIL]` with an actionable hint, and
 //! mutating steps honor `--dry-run`. Blocking failures (git, submodule, Rust,
-//! MSVC, uv, Python envs) fail the run; informational probes (CUDA runtime,
-//! tkinter) never do.
+//! the native toolchain, uv, Python envs) fail the run; informational probes
+//! (CUDA runtime, tkinter) never do. The native-toolchain check branches on
+//! the resolved rustc's host triple: `-msvc` requires Visual Studio Build
+//! Tools, while gnu-like faces (msys2's clang64 `windows-gnullvm`) link via
+//! the toolchain's own lld and skip the MSVC gate.
 
 use crate::args::SetupArgs;
 use crate::util::{self, Res};
@@ -20,8 +23,9 @@ pub fn setup(args: &SetupArgs) -> Res<()> {
     let mut problems = 0usize;
     problems += check_git();
     problems += check_submodule(args, &root);
-    problems += check_rust();
-    problems += check_msvc();
+    let rust = check_rust();
+    problems += rust.problems;
+    problems += check_native_toolchain(rust.flavor);
 
     if check_uv(args) {
         problems += bootstrap_python(args, &root);
@@ -141,28 +145,109 @@ fn submodule_problem(line: &str) -> Option<String> {
     }
 }
 
-fn check_rust() -> usize {
+/// Which link environment the resolved rustc is built for, decided from the
+/// `host:` line of `rustc -vV`. The msvc face needs Visual Studio components;
+/// the gnu-like faces (windows-gnu, and msys2's windows-gnullvm) link through
+/// the toolchain's own lld and need none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolchainFlavor {
+    Msvc,
+    GnuLike,
+}
+
+fn flavor_for_host(host: &str) -> ToolchainFlavor {
+    if host.ends_with("-msvc") {
+        ToolchainFlavor::Msvc
+    } else if host.contains("gnu") {
+        ToolchainFlavor::GnuLike
+    } else {
+        // Unknown triple: keep the historical MSVC requirement.
+        ToolchainFlavor::Msvc
+    }
+}
+
+struct RustStatus {
+    problems: usize,
+    flavor: ToolchainFlavor,
+}
+
+fn check_rust() -> RustStatus {
     if !util::have("rustc") {
         println!("  [FAIL] rustc not found");
         util::hint("install rustup from https://rustup.rs; rust-toolchain.toml pins 1.95.0");
-        return 1;
+        return RustStatus {
+            problems: 1,
+            flavor: ToolchainFlavor::Msvc,
+        };
     }
     let mut command = Command::new("rustc");
     command.arg("-vV");
     match util::capture(&mut command) {
         Ok(output) => {
             let release = find_field(&output, "release").unwrap_or("unknown");
-            println!("  [ok]   rustc {release}");
-            if release != "1.95.0" {
+            let host = find_field(&output, "host").unwrap_or("");
+            let flavor = flavor_for_host(host);
+            match flavor {
+                ToolchainFlavor::Msvc => println!("  [ok]   rustc {release} ({host})"),
+                ToolchainFlavor::GnuLike => {
+                    println!("  [ok]   rustc {release} ({host}, gnu-like face)");
+                }
+            }
+            if release != "1.95.0" && flavor == ToolchainFlavor::Msvc {
                 util::hint(
                     "rust-toolchain.toml pins 1.95.0; rustup fetches it on the next cargo invocation",
                 );
+            } else if release != "1.95.0" && flavor == ToolchainFlavor::GnuLike {
+                // A non-rustup toolchain (e.g. msys2's) ignores
+                // rust-toolchain.toml entirely, so the pin cannot auto-apply.
+                util::hint(
+                    "rust-toolchain.toml pins 1.95.0 for the msvc face; this non-rustup toolchain \
+                     ignores that file and follows its package manager (e.g. `pacman -Syu`)",
+                );
             }
-            0
+            RustStatus {
+                problems: 0,
+                flavor,
+            }
         }
         Err(error) => {
             println!("  [FAIL] `rustc -vV` failed ({error})");
-            1
+            RustStatus {
+                problems: 1,
+                flavor: ToolchainFlavor::Msvc,
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn check_native_toolchain(flavor: ToolchainFlavor) -> usize {
+    match flavor {
+        ToolchainFlavor::Msvc => check_msvc(),
+        ToolchainFlavor::GnuLike => {
+            // gnu-like faces ship their own linker (rust-lld with the
+            // toolchain's own mingw-w64 sysroot on the llvm face, the bundled
+            // mingw driver on the gcc face); no Visual Studio components
+            // involved. The C compiler differs per face: clang on clang64,
+            // gcc on ucrt64.
+            let c_compiler = ["clang", "gcc"].into_iter().find(|&name| util::have(name));
+            match c_compiler {
+                Some(compiler) => {
+                    let version =
+                        util::capture(Command::new(compiler).arg("--version")).unwrap_or_default();
+                    let first = version.lines().next().unwrap_or(compiler);
+                    println!("  [ok]   gnu-like native toolchain ({first})");
+                }
+                None => util::warn(
+                    "neither clang nor gcc on PATH; rust still links via its bundled linker, \
+                     but C sources would have no compiler",
+                ),
+            }
+            util::hint(
+                "gnu-like artifacts need their toolchain's bin on PATH to run \
+                 (e.g. C:\\msys64\\clang64\\bin or C:\\msys64\\ucrt64\\bin)",
+            );
+            0
         }
     }
 }
@@ -211,7 +296,7 @@ fn check_msvc() -> usize {
 }
 
 #[cfg(not(windows))]
-fn check_msvc() -> usize {
+fn check_native_toolchain(_flavor: ToolchainFlavor) -> usize {
     if util::have("cc") {
         println!("  [ok]   C compiler (cc)");
     } else {
@@ -230,6 +315,16 @@ fn check_uv(args: &SetupArgs) -> bool {
         let version = util::capture(&mut command).unwrap_or_default();
         println!("  [ok]   uv ({version})");
         return true;
+    }
+    #[cfg(windows)]
+    if let Some(found) = uv_off_path_install() {
+        println!("  [FAIL] uv is installed off-PATH at {}", found.display());
+        util::hint(
+            "msys2 shells launched with a minimal PATH hide it: start them via \
+             msys2_shell.cmd -clang64 -use-full-path,",
+        );
+        util::hint("or add uv.exe's directory to PATH, then re-run setup");
+        return false;
     }
     if args.install_missing {
         println!("  [..]   installing uv");
@@ -274,6 +369,40 @@ fn install_uv_command() -> Command {
             .arg("curl -LsSf https://astral.sh/uv/install.sh | sh");
         command
     }
+}
+
+/// Well-known uv install locations that can sit off-PATH — the msys2
+/// minimal-PATH shell is the case in point: uv is installed and working, the
+/// shell just never sees it. Pure so tests can inject the environment.
+#[cfg(windows)]
+fn uv_off_path_candidates(
+    local_app_data: Option<&str>,
+    user_profile: Option<&str>,
+) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(local) = local_app_data {
+        candidates.push(
+            Path::new(local)
+                .join("Microsoft")
+                .join("WinGet")
+                .join("Links")
+                .join("uv.exe"),
+        );
+    }
+    if let Some(profile) = user_profile {
+        candidates.push(Path::new(profile).join(".local").join("bin").join("uv.exe"));
+    }
+    candidates
+}
+
+/// The first well-known location where uv is actually installed, if any.
+#[cfg(windows)]
+fn uv_off_path_install() -> Option<PathBuf> {
+    let local = std::env::var("LOCALAPPDATA").ok();
+    let profile = std::env::var("USERPROFILE").ok();
+    uv_off_path_candidates(local.as_deref(), profile.as_deref())
+        .into_iter()
+        .find(|candidate| candidate.is_file())
 }
 
 /// Syncs every Python workspace member the way ci.yml does, then rebuilds the
@@ -440,6 +569,8 @@ fn find_field<'a>(version_output: &'a str, field: &str) -> Option<&'a str> {
 
 #[cfg(test)]
 mod tests {
+    use super::{ToolchainFlavor, flavor_for_host};
+
     #[test]
     fn submodule_status_flags_map_to_problems() {
         assert!(super::submodule_problem(" 73ff53ab nvapi-rs").is_none());
@@ -452,5 +583,44 @@ mod tests {
                 .unwrap()
                 .contains("merge conflicts")
         );
+    }
+
+    #[test]
+    fn host_triples_map_to_toolchain_flavors() {
+        assert_eq!(
+            flavor_for_host("x86_64-pc-windows-msvc"),
+            ToolchainFlavor::Msvc
+        );
+        assert_eq!(
+            flavor_for_host("x86_64-pc-windows-gnullvm"),
+            ToolchainFlavor::GnuLike
+        );
+        assert_eq!(
+            flavor_for_host("aarch64-pc-windows-gnullvm"),
+            ToolchainFlavor::GnuLike
+        );
+        assert_eq!(
+            flavor_for_host("x86_64-pc-windows-gnu"),
+            ToolchainFlavor::GnuLike
+        );
+        // Unknown triples keep the historical MSVC requirement.
+        assert_eq!(flavor_for_host("something-else"), ToolchainFlavor::Msvc);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn uv_candidates_cover_winget_links_and_local_bin() {
+        use super::uv_off_path_candidates;
+        let candidates =
+            uv_off_path_candidates(Some(r"C:\Users\dev\AppData\Local"), Some(r"C:\Users\dev"));
+        assert_eq!(
+            candidates,
+            vec![
+                std::path::PathBuf::from(r"C:\Users\dev\AppData\Local")
+                    .join(r"Microsoft\WinGet\Links\uv.exe"),
+                std::path::PathBuf::from(r"C:\Users\dev").join(r".local\bin\uv.exe"),
+            ]
+        );
+        assert!(uv_off_path_candidates(None, None).is_empty());
     }
 }
