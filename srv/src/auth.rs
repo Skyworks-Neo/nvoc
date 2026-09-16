@@ -67,8 +67,8 @@ fn os_verify(user: &str, password: &str, _cfg: &RuntimeConfig) -> std::result::R
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
     use windows_sys::Win32::Security::LogonUserW;
     use windows_sys::Win32::Security::{
-    AllocateAndInitializeSid, CheckTokenMembership, FreeSid, SID_IDENTIFIER_AUTHORITY,
-};
+        AllocateAndInitializeSid, CheckTokenMembership, FreeSid, SID_IDENTIFIER_AUTHORITY,
+    };
 
     const LOGON32_LOGON_INTERACTIVE: u32 = 2;
     const LOGON32_PROVIDER_DEFAULT: u32 = 0;
@@ -150,8 +150,8 @@ fn os_verify(user: &str, password: &str, cfg: &RuntimeConfig) -> std::result::Re
                 .to_string(),
         );
     }
-    let ok = pwhash::unix::verify(password, &hash)
-        .map_err(|e| format!("hash verify failed: {e}"))?;
+    let ok =
+        pwhash::unix::verify(password, &hash).map_err(|e| format!("hash verify failed: {e}"))?;
     if !ok {
         return Err("invalid username or password".to_string());
     }

@@ -57,10 +57,7 @@ impl History {
             return Vec::new();
         };
         let cutoff = now_s().saturating_sub(seconds);
-        ring.iter()
-            .skip_while(|s| s.t < cutoff)
-            .cloned()
-            .collect()
+        ring.iter().skip_while(|s| s.t < cutoff).cloned().collect()
     }
 
     pub fn gpu_count(&self) -> usize {

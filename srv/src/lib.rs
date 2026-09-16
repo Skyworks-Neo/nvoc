@@ -13,13 +13,13 @@
 //! Windows-only SCM integration lives in [`service`]; on Linux the same
 //! binary runs in foreground mode under the systemd unit in `srv/systemd/`.
 
+pub mod audit;
+pub mod auth;
 pub mod backend;
 pub mod config;
 pub mod controller;
-pub mod http;
-pub mod audit;
-pub mod auth;
 pub mod history;
+pub mod http;
 pub mod logging;
 pub mod monitor;
 pub mod pid;

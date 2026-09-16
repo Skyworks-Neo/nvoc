@@ -84,11 +84,14 @@ fn service_main(_arguments: Vec<OsString>) {
     };
     report(ServiceState::Running, ServiceControlAccept::STOP);
 
-    crate::http::spawn_supervised(
-        handles.config.clone(),
-        handles.status.clone(),
-        handles.cmd_tx.clone(),
-    );
+    let state = std::sync::Arc::new(crate::http::ServerState {
+        config: handles.config.clone(),
+        status: handles.status.clone(),
+        backend: handles.backend.clone(),
+        history: handles.history.clone(),
+        cmd_tx: handles.cmd_tx.clone(),
+    });
+    crate::http::spawn_supervised(state);
 
     if let Err(e) = crate::runtime::run_control_loop(handles) {
         // Discovery failure etc. — the service stops (and SCM failure

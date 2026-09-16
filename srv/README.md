@@ -151,7 +151,44 @@ is known the controller writes no cap at all — never a guessed one.
 the optimizer owns the session there, so passing it through
 `--stressor-extra-args` cannot create a second controller.
 
-## Web console
+## Web console (management panel)
+
+Open `http://127.0.0.1:14514/` — a dark, Grafana-style management panel
+served from the binary itself (embedded assets + vendored
+[uPlot](https://github.com/leeoniya/uPlot), no external requests).
+
+Sidebar pages:
+
+- **Dashboard** — per-GPU cards (temp / power / core clock / fan big
+  numbers + 60 s sparkline, failsafe badge) and global time-series panels
+  (temperature, power, clock, fan) with 5 m / 15 m / 1 h windows. History is
+  a per-GPU ring on the server (3600 samples @ tick rate); restart clears it.
+- **Control** — the closed-loop submenu: loop kind, mode (auto / pid /
+  manual), manual effort, full tuning form, restore / shutdown.
+- **Overclock** — clock offsets (core / mem, P0, NVML), power limit (W),
+  temperature limit (°C). Every write pops a confirm dialog and lands in
+  the audit log; readback shows the applied value.
+- **V/F Curve** (read-only) — the core V/F table's current plane (mV × MHz,
+  offset-inclusive) with hover readout.
+- **About** — full GPU info table (identity, BIOS, bus, memory, limits).
+
+## Authentication
+
+`auth = "auto"` (default) enables OS-account authentication on Windows:
+the browser pops the native login dialog and the service validates the
+user+password via `LogonUser`, requiring membership in
+BUILTIN\Administrators. No passwords are stored by nvoc-srv. curl users:
+`curl -u USER:PASS …`.
+
+- `auth = "on"` / `"off"` force the mode; `auth_group` (Linux) lists the
+  groups that grant access (default `wheel,sudo`).
+- Linux: `off` by default — the unit already runs as root. To turn it on,
+  run as root and verify the account is in `wheel`/`sudo` (yescrypt-only
+  accounts are rejected; see auth.rs).
+- Every mutation and every failed login is recorded in the in-memory audit
+  trail: `GET /api/log` (restart clears it).
+
+## HTTP control plane## Web console
 
 Open `http://127.0.0.1:14514/` in a browser — the control plane serves an
 embedded single-page console (compiled into the binary, no external assets).
@@ -180,6 +217,13 @@ unchanged from the legacy service).
 | `POST /restore` | alias of `/mode?value=auto` |
 | `POST /oc_global?oc=<kHz>&gpu=<index>` | legacy one-shot P0 graphics clock delta |
 | `POST /shutdown` | graceful stop (fans restored first) |
+| `GET /api/gpus` · `GET /api/status` | JSON monitoring (status includes monitor readback) |
+| `GET /api/history?gpu=&seconds=` | time-series ring (≤3600 s) |
+| `GET /api/info?gpu=` · `GET /api/vfcurve?gpu=` | full GPU info · V/F points (uV×MHz) |
+| `POST /api/oc/offset?gpu=&domain=core\|mem&value=±MHz` | P0 clock offset (NVML) |
+| `POST /api/oc/power?gpu=&watt=` · `POST /api/oc/temp?gpu=&c=` | power / temperature limits |
+| `POST /api/reset?gpu=&kind=offset_core\|offset_mem\|power\|temp` | restore defaults |
+| `GET /api/log` | audit trail (newest first) |
 
 Examples:
 

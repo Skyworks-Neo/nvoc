@@ -9,6 +9,12 @@ pub enum OffsetDomain {
     Mem,
 }
 
+impl std::fmt::Display for OffsetDomain {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 impl OffsetDomain {
     pub fn parse(s: &str) -> Option<Self> {
         match s.to_ascii_lowercase().as_str() {

@@ -212,13 +212,7 @@ pub fn run_control_loop(handles: LoopHandles) -> Result<(), String> {
         let mut snapshot = Vec::with_capacity(selected.len());
         for (slot, &gpu_index) in selected.iter().enumerate() {
             let name = backend_ref.name(gpu_index).into_owned();
-            snapshot.push(controllers[slot].tick(
-                gpu_index,
-                &name,
-                &cfg,
-                backend_ref,
-                dt_s,
-            ));
+            snapshot.push(controllers[slot].tick(gpu_index, &name, &cfg, backend_ref, dt_s));
         }
         // Dashboard history sample: monitor readback per controlled GPU
         // (best effort — history gaps are fine, control is not affected).
@@ -228,7 +222,10 @@ pub fn run_control_loop(handles: LoopHandles) -> Result<(), String> {
                 let effort = snapshot[slot].fan_written_percent;
                 let temp = snapshot[slot].temp_c;
                 let monitor = backend_ref.read_monitor(gpu_index).unwrap_or_default();
-                history.push(gpu_index, crate::history::sample_from(effort, temp, &monitor));
+                history.push(
+                    gpu_index,
+                    crate::history::sample_from(effort, temp, &monitor),
+                );
             }
         }
         drop(backend_guard);

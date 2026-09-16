@@ -166,23 +166,17 @@ pub trait ControlBackend: Send {
 
     /// Dashboard monitor sample (best effort, every field optional):
     /// utilization %, core voltage mV, memory clock MHz, P-state name.
-    fn read_monitor(
-        &mut self,
-        gpu_index: usize,
-    ) -> Result<crate::monitor::MonitorSample, String>;
+    fn read_monitor(&mut self, gpu_index: usize) -> Result<crate::monitor::MonitorSample, String>;
     /// GPU identity/info snapshot as JSON (About page).
     fn read_gpu_info_json(&mut self, gpu_index: usize) -> Result<serde_json::Value, String>;
     /// V/F curve points (voltage uV, frequency MHz), ascending voltage.
     fn read_vf_curve(&mut self, gpu_index: usize) -> Result<Vec<(f32, f32)>, String>;
     /// Current core/mem offset (MHz), for the OC page readback.
-    fn read_offset_mhz(&mut self, gpu_index: usize, domain: OffsetDomain)
-        -> Result<i32, String>;
+    fn read_offset_mhz(&mut self, gpu_index: usize, domain: OffsetDomain) -> Result<i32, String>;
     /// Power-limit window (min, current, max) in watts, for slider bounds.
-    fn read_power_limit_w(&mut self, gpu_index: usize)
-        -> Result<Option<(u32, u32, u32)>, String>;
+    fn read_power_limit_w(&mut self, gpu_index: usize) -> Result<Option<(u32, u32, u32)>, String>;
     /// Temperature-wall window (min, current, max) in °C, best effort.
-    fn read_temp_limit_c(&mut self, gpu_index: usize)
-        -> Result<Option<(i32, i32, i32)>, String>;
+    fn read_temp_limit_c(&mut self, gpu_index: usize) -> Result<Option<(i32, i32, i32)>, String>;
     fn write_offset_mhz(
         &mut self,
         gpu_index: usize,
@@ -983,7 +977,12 @@ mod tests {
         fn read_temp_limit_c(&mut self, _i: usize) -> Result<Option<(i32, i32, i32)>, String> {
             Ok(None)
         }
-        fn write_offset_mhz(&mut self, _i: usize, _d: OffsetDomain, _mhz: i32) -> Result<(), String> {
+        fn write_offset_mhz(
+            &mut self,
+            _i: usize,
+            _d: OffsetDomain,
+            _mhz: i32,
+        ) -> Result<(), String> {
             Ok(())
         }
         fn write_power_limit_w(&mut self, _i: usize, _w: u32) -> Result<(), String> {

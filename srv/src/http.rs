@@ -8,9 +8,10 @@
 use crate::config::{
     ControlMode, INTERVAL_MS_MAX, INTERVAL_MS_MIN, LoopKind, RuntimeConfig, SensorKind,
 };
-use crate::controller::GpuControlStatus;
-use crate::runtime::{ServiceCmd, SharedConfig, SharedStatus, lock};
-use crate::web;
+use crate::controller::{ControlBackend, GpuControlStatus};
+use crate::monitor::OffsetDomain;
+use crate::runtime::{ServiceCmd, SharedBackend, SharedConfig, SharedHistory, SharedStatus, lock};
+use crate::{audit, auth, web};
 use flume::Sender;
 use log::{error, info, warn};
 use serde::Serialize;
@@ -99,6 +100,278 @@ fn reject_mutation(request: tiny_http::Request, path: &str) {
     );
 }
 
+/// 401 + Basic challenge (browser pops the native login dialog).
+fn challenge(request: tiny_http::Request) {
+    let header =
+        Header::from_bytes("WWW-Authenticate", "Basic realm=\"nvoc-srv\"").expect("valid header");
+    respond(
+        request,
+        Response::from_string("authentication required")
+            .with_status_code(401)
+            .with_header(header),
+    );
+}
+
+/// Audit + execute a backend write op from the HTTP plane.
+fn audited_write(
+    auth_user: &str,
+    action: &str,
+    detail: String,
+    op: impl FnOnce() -> Result<(), String>,
+) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
+    match op() {
+        Ok(()) => {
+            audit::record(auth_user, action, &detail);
+            text_response_body(format!("OK: {action} {detail}"))
+        }
+        Err(e) => text_response_body(format!("ERR: {e}")),
+    }
+}
+
+fn text_response_body(body: String) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
+    Response::from_string(body)
+}
+
+/// `/api/*` — JSON plane: monitoring, history, info, OC writes, audit log.
+#[allow(clippy::too_many_arguments)]
+fn handle_api(
+    request: tiny_http::Request,
+    api_path: &str,
+    params: &HashMap<String, String>,
+    config: &SharedConfig,
+    status: &SharedStatus,
+    backend: &SharedBackend,
+    history: &SharedHistory,
+    cmd_tx: &Sender<ServiceCmd>,
+    auth_user: &str,
+) {
+    // cmd_tx is plumbed for future API commands (shutdown/restore live on the
+    // legacy routes; new API mutations talk to the backend directly).
+    let _ = cmd_tx;
+    let gpu_index = || -> Result<usize, String> {
+        params
+            .get("gpu")
+            .ok_or_else(|| "missing 'gpu'".to_string())?
+            .parse::<usize>()
+            .map_err(|_| "invalid 'gpu'".to_string())
+    };
+
+    match (request.method(), api_path) {
+        (_, "log") => json_response(request, &audit::snapshot()),
+
+        // ---- reads ----
+        (&tiny_http::Method::Get, "status") => {
+            let cfg = lock(config);
+            let guard = lock(status);
+            json_response(
+                request,
+                &serde_json::json!({
+                    "mode": cfg.mode,
+                    "loop_kind": cfg.loop_kind,
+                    "interval_ms": cfg.interval_ms,
+                    "target_c": cfg.pid.target_c,
+                    "gpus": &*guard,
+                }),
+            );
+        }
+        (&tiny_http::Method::Get, "gpus") => {
+            let guard = lock(status);
+            let list: Vec<serde_json::Value> = guard
+                .iter()
+                .map(|g| {
+                    serde_json::json!({
+                        "index": g.index,
+                        "name": g.name,
+                        "mode": g.mode,
+                        "failsafe": g.failsafe,
+                    })
+                })
+                .collect();
+            json_response(request, &serde_json::json!({ "gpus": list }));
+        }
+        (&tiny_http::Method::Get, "history") => {
+            let index = match gpu_index() {
+                Ok(v) => v,
+                Err(e) => return text_response(request, 400, format!("Bad request: {e}")),
+            };
+            let seconds = params
+                .get("seconds")
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(300)
+                .min(3600);
+            let guard = lock(history);
+            json_response(request, &guard.last(index, seconds));
+        }
+        (&tiny_http::Method::Get, "info") | (&tiny_http::Method::Get, "vfcurve") => {
+            let index = match gpu_index() {
+                Ok(v) => v,
+                Err(e) => return text_response(request, 400, format!("Bad request: {e}")),
+            };
+            let mut guard = lock(backend);
+            let Some(backend) = guard.as_mut() else {
+                return text_response(request, 503, "backend not ready");
+            };
+            if api_path == "info" {
+                match backend.read_gpu_info_json(index) {
+                    Ok(v) => json_response(request, &v),
+                    Err(e) => text_response(request, 502, e),
+                }
+            } else {
+                match backend.read_vf_curve(index) {
+                    Ok(pts) => json_response(
+                        request,
+                        &serde_json::json!({
+                            "points": pts.iter()
+                                .map(|(mv, mhz)| serde_json::json!({"mv": mv, "mhz": mhz}))
+                                .collect::<Vec<_>>()
+                        }),
+                    ),
+                    Err(e) => text_response(request, 502, e),
+                }
+            }
+        }
+
+        // ---- OC reads for the form ----
+        (&tiny_http::Method::Get, "oc") => {
+            let index = match gpu_index() {
+                Ok(v) => v,
+                Err(e) => return text_response(request, 400, format!("Bad request: {e}")),
+            };
+            let mut guard = lock(backend);
+            let Some(backend) = guard.as_mut() else {
+                return text_response(request, 503, "backend not ready");
+            };
+            let core_off = backend.read_offset_mhz(index, OffsetDomain::Core).ok();
+            let mem_off = backend.read_offset_mhz(index, OffsetDomain::Mem).ok();
+            let power = backend.read_power_limit_w(index).ok().flatten();
+            let temp = backend.read_temp_limit_c(index).ok().flatten();
+            json_response(
+                request,
+                &serde_json::json!({
+                    "core_offset_mhz": core_off,
+                    "mem_offset_mhz": mem_off,
+                    "power": power.map(|(min, cur, max)| {
+                        serde_json::json!({"min_w": min, "current_w": cur, "max_w": max})
+                    }),
+                    "temp": temp.map(|(min, cur, max)| {
+                        serde_json::json!({"min_c": min, "current_c": cur, "max_c": max})
+                    }),
+                }),
+            );
+        }
+
+        // ---- writes (audited) ----
+        (&tiny_http::Method::Post, "oc/offset") => {
+            let (index, domain, value) = match oc_offset_params(params) {
+                Ok(v) => v,
+                Err(e) => return text_response(request, 400, format!("Bad request: {e}")),
+            };
+            let detail = format!("gpu {index} {domain} {value} MHz");
+            let mut guard = lock(backend);
+            let Some(backend) = guard.as_mut() else {
+                return text_response(request, 503, "backend not ready");
+            };
+            let response = audited_write(auth_user, "oc.offset", detail, || {
+                backend.write_offset_mhz(index, domain, value)
+            });
+            // Readback so the UI can display the applied value.
+            let _ = backend.read_offset_mhz(index, domain);
+            respond(request, response);
+        }
+        (&tiny_http::Method::Post, "oc/power") => {
+            let index = match gpu_index() {
+                Ok(v) => v,
+                Err(e) => return text_response(request, 400, format!("Bad request: {e}")),
+            };
+            let Some(watts) = params.get("watt").and_then(|s| s.parse::<u32>().ok()) else {
+                return text_response(request, 400, "Bad request: 'watt' required");
+            };
+            let mut guard = lock(backend);
+            let Some(backend) = guard.as_mut() else {
+                return text_response(request, 503, "backend not ready");
+            };
+            let detail = format!("gpu {index} {watts} W");
+            let response = audited_write(auth_user, "oc.power", detail, || {
+                backend.write_power_limit_w(index, watts)
+            });
+            respond(request, response);
+        }
+        (&tiny_http::Method::Post, "oc/temp") => {
+            let index = match gpu_index() {
+                Ok(v) => v,
+                Err(e) => return text_response(request, 400, format!("Bad request: {e}")),
+            };
+            let Some(c) = params.get("c").and_then(|s| s.parse::<i32>().ok()) else {
+                return text_response(request, 400, "Bad request: 'c' required");
+            };
+            let mut guard = lock(backend);
+            let Some(backend) = guard.as_mut() else {
+                return text_response(request, 503, "backend not ready");
+            };
+            let detail = format!("gpu {index} {c} °C");
+            let response = audited_write(auth_user, "oc.temp", detail, || {
+                backend.write_temp_limit_c(index, c)
+            });
+            respond(request, response);
+        }
+        (&tiny_http::Method::Post, "reset") => {
+            let index = match gpu_index() {
+                Ok(v) => v,
+                Err(e) => return text_response(request, 400, format!("Bad request: {e}")),
+            };
+            let Some(kind) = params.get("kind").map(|s| s.as_str()) else {
+                return text_response(request, 400, "Bad request: 'kind' required");
+            };
+            let mut guard = lock(backend);
+            let Some(backend) = guard.as_mut() else {
+                return text_response(request, 503, "backend not ready");
+            };
+            let result = match kind {
+                "offset_core" => backend.reset_offset(index, OffsetDomain::Core),
+                "offset_mem" => backend.reset_offset(index, OffsetDomain::Mem),
+                "power" => backend.reset_power_limit(index),
+                "temp" => backend.reset_temp_limit(index),
+                other => {
+                    return text_response(
+                        request,
+                        400,
+                        format!("Bad request: unknown kind {other:?}"),
+                    );
+                }
+            };
+            let detail = format!("gpu {index} {kind}");
+            let response = audited_write(auth_user, "reset", detail, || result);
+            respond(request, response);
+        }
+
+        _ => text_response(request, 404, "Not found"),
+    }
+}
+
+/// Parse + validate `oc/offset` params: `gpu`, `domain=core|mem`, `value=±MHz`.
+fn oc_offset_params(
+    params: &HashMap<String, String>,
+) -> Result<(usize, OffsetDomain, i32), String> {
+    let index = params
+        .get("gpu")
+        .ok_or("missing 'gpu'")?
+        .parse::<usize>()
+        .map_err(|_| "invalid 'gpu'")?;
+    let domain = params
+        .get("domain")
+        .and_then(|s| OffsetDomain::parse(s))
+        .ok_or("'domain' must be core|mem")?;
+    let raw = params.get("value").ok_or("missing 'value'")?;
+    let value = raw
+        .trim_end_matches(['m', 'H', 'z'])
+        .parse::<i32>()
+        .map_err(|_| "invalid 'value'")?;
+    if !(-1000..=1000).contains(&value) {
+        return Err(format!("'value' must be -1000..1000 MHz, got {value}"));
+    }
+    Ok((index, domain, value))
+}
+
 fn json_content_type() -> Header {
     Header::from_bytes("Content-Type", "application/json").expect("static header is valid ASCII")
 }
@@ -139,16 +412,21 @@ fn text_response(request: tiny_http::Request, code: u16, msg: impl Into<String>)
 /// control-plane failure doesn't leave the service running but unresponsive
 /// (#67). (Release builds abort on panic — SCM failure actions are the last
 /// resort there; this loop covers clean exits and debug-build panics.)
-pub fn spawn_supervised(
-    config: SharedConfig,
-    status: SharedStatus,
-    cmd_tx: Sender<ServiceCmd>,
-) -> JoinHandle<()> {
+/// Shared plane state threaded through every request.
+pub struct ServerState {
+    pub config: SharedConfig,
+    pub status: SharedStatus,
+    pub backend: SharedBackend,
+    pub history: SharedHistory,
+    pub cmd_tx: Sender<ServiceCmd>,
+}
+
+pub fn spawn_supervised(state: std::sync::Arc<ServerState>) -> JoinHandle<()> {
     std::thread::Builder::new()
         .name("nvoc-http".into())
         .spawn(move || {
             loop {
-                start_http_server(&config, &status, &cmd_tx);
+                start_http_server(&state);
                 warn!("HTTP server exited; restarting in 1 s");
                 std::thread::sleep(Duration::from_secs(1));
             }
@@ -156,12 +434,8 @@ pub fn spawn_supervised(
         .expect("spawn HTTP thread")
 }
 
-pub fn start_http_server(
-    config: &SharedConfig,
-    status: &SharedStatus,
-    cmd_tx: &Sender<ServiceCmd>,
-) {
-    let port = lock(config).port;
+pub fn start_http_server(state: &std::sync::Arc<ServerState>) {
+    let port = lock(&state.config).port;
     let bind = format!("127.0.0.1:{port}");
     let server = match Server::http(bind.as_str()) {
         Ok(s) => s,
@@ -179,7 +453,7 @@ pub fn start_http_server(
             None => (full_url.as_str(), ""),
         };
         let params = parse_query(query_str);
-        handle_request(request, path, &params, config, status, cmd_tx);
+        handle_request(request, path, &params, state);
     }
 }
 
@@ -187,10 +461,56 @@ fn handle_request(
     request: tiny_http::Request,
     path: &str,
     params: &HashMap<String, String>,
-    config: &SharedConfig,
-    status: &SharedStatus,
-    cmd_tx: &Sender<ServiceCmd>,
+    state: &std::sync::Arc<ServerState>,
 ) {
+    let ServerState {
+        config,
+        status,
+        backend,
+        history,
+        cmd_tx,
+    } = state.as_ref();
+
+    // OS-account authentication gate (whole site — one gate, one audit story).
+    let auth_enabled = lock(config).auth.resolves_enabled();
+    let mut auth_user = "anonymous".to_string();
+    if auth_enabled {
+        let header = request
+            .headers()
+            .iter()
+            .find(|h| h.field.equiv("Authorization"))
+            .map(|h| h.value.as_str().to_string());
+        match header.as_deref().and_then(auth::parse_basic) {
+            Some(creds) => {
+                let reason = {
+                    let cfg = lock(config);
+                    auth::verify(&creds.user, &creds.password, &cfg).err()
+                };
+                match reason {
+                    None => auth_user = creds.user,
+                    Some(reason) => {
+                        audit::record("-", "login.failed", &reason);
+                        warn!("auth: failed login for {:?}: {reason}", creds.user);
+                        challenge(request);
+                        return;
+                    }
+                }
+            }
+            None => {
+                challenge(request);
+                return;
+            }
+        }
+    }
+
+    // API plane (JSON, audited).
+    if let Some(api) = path.strip_prefix("/api/") {
+        handle_api(
+            request, api, params, config, status, backend, history, cmd_tx, &auth_user,
+        );
+        return;
+    }
+
     match path {
         "/" => {
             // The embedded console page (GET is same-origin safe).
@@ -199,8 +519,11 @@ fn handle_request(
         "/ui.css" => {
             serve_static(request, web::STYLE_CSS, "text/css; charset=utf-8");
         }
-        "/ui.js" => {
+        "/app.js" => {
             serve_static(request, web::APP_JS, "text/javascript; charset=utf-8");
+        }
+        "/vendor/uplot.iife.min.js" => {
+            serve_static(request, web::UPLOT_JS, "text/javascript; charset=utf-8");
         }
         "/help" => {
             let help = "nvoc-srv control plane\n\

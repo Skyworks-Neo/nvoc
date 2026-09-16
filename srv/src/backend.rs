@@ -14,19 +14,17 @@ use crate::monitor::{MonitorSample, OffsetDomain};
 use log::{info, warn};
 use nvapi::hi::Gpu;
 use nvapi::{ClockDomain, ClockFrequencyType, Kilohertz, KilohertzDelta, PState, ThermalTarget};
-use nvml_wrapper::enum_wrappers::device::{
-    Clock as NvmlClockType, ClockId, PerformanceState,
-};
 use nvml_wrapper::Nvml;
 use nvml_wrapper::enum_wrappers::device::TemperatureThreshold;
+use nvml_wrapper::enum_wrappers::device::{Clock as NvmlClockType, ClockId, PerformanceState};
 use nvml_wrapper::enums::device::FanControlPolicy;
 
 use nvoc_core::{
-    BackendSet, GpuId, GpuTarget, QueryClockOffset, QueryFanInfo,
-    QueryNvapiThermalSettings, ResetFanSpeed, ResetFreqLock, ResetNvapiFanControl,
-    ResetPstateGlobalFreqOffset, ResetVfpFrequencyLock, SetClockOffset, SetFanPercent,
-    SetFanSpeed, SetLockedClocks, SetPowerLimit, SetTemperatureLimit, SetVfpFrequencyLock,
-    TargetInventory, discover_targets, run as run_gpu_operation,
+    BackendSet, GpuId, GpuTarget, QueryClockOffset, QueryFanInfo, QueryNvapiThermalSettings,
+    ResetFanSpeed, ResetFreqLock, ResetNvapiFanControl, ResetPstateGlobalFreqOffset,
+    ResetVfpFrequencyLock, SetClockOffset, SetFanPercent, SetFanSpeed, SetLockedClocks,
+    SetPowerLimit, SetTemperatureLimit, SetVfpFrequencyLock, TargetInventory, discover_targets,
+    run as run_gpu_operation,
 };
 use std::borrow::Cow;
 
@@ -326,14 +324,20 @@ impl ControlBackend for NvapiBackend {
 
     fn read_gpu_info_json(&mut self, gpu_index: usize) -> Result<serde_json::Value, String> {
         let gpu = self.gpus.get(gpu_index).ok_or("GPU index out of range")?;
-        let info = gpu.info().map_err(|e| format!("GPU {gpu_index}: info: {e}"))?;
+        let info = gpu
+            .info()
+            .map_err(|e| format!("GPU {gpu_index}: info: {e}"))?;
         serde_json::to_value(&info).map_err(|e| format!("serialize info: {e}"))
     }
 
     fn read_vf_curve(&mut self, gpu_index: usize) -> Result<Vec<(f32, f32)>, String> {
         let gpu = self.gpus.get(gpu_index).ok_or("GPU index out of range")?;
-        let status = gpu.status().map_err(|e| format!("GPU {gpu_index}: status: {e}"))?;
-        let vfp = status.vfp.ok_or_else(|| "VFP table unavailable".to_string())?;
+        let status = gpu
+            .status()
+            .map_err(|e| format!("GPU {gpu_index}: status: {e}"))?;
+        let vfp = status
+            .vfp
+            .ok_or_else(|| "VFP table unavailable".to_string())?;
         let mut pts: Vec<(f32, f32)> = vfp
             .graphics
             .values()
@@ -343,11 +347,7 @@ impl ControlBackend for NvapiBackend {
         Ok(pts)
     }
 
-    fn read_offset_mhz(
-        &mut self,
-        gpu_index: usize,
-        domain: OffsetDomain,
-    ) -> Result<i32, String> {
+    fn read_offset_mhz(&mut self, gpu_index: usize, domain: OffsetDomain) -> Result<i32, String> {
         let target = self.target(gpu_index)?;
         let report = run_gpu_operation(
             &target,
@@ -360,10 +360,7 @@ impl ControlBackend for NvapiBackend {
         Ok(report.output.mhz)
     }
 
-    fn read_power_limit_w(
-        &mut self,
-        gpu_index: usize,
-    ) -> Result<Option<(u32, u32, u32)>, String> {
+    fn read_power_limit_w(&mut self, gpu_index: usize) -> Result<Option<(u32, u32, u32)>, String> {
         let device = self
             .nvml
             .device_by_index(gpu_index as u32)
@@ -379,10 +376,7 @@ impl ControlBackend for NvapiBackend {
         )))
     }
 
-    fn read_temp_limit_c(
-        &mut self,
-        gpu_index: usize,
-    ) -> Result<Option<(i32, i32, i32)>, String> {
+    fn read_temp_limit_c(&mut self, gpu_index: usize) -> Result<Option<(i32, i32, i32)>, String> {
         let device = self
             .nvml
             .device_by_index(gpu_index as u32)
@@ -427,11 +421,7 @@ impl ControlBackend for NvapiBackend {
             .map_err(|e| format!("GPU {gpu_index}: temp write: {e}"))
     }
 
-    fn reset_offset(
-        &mut self,
-        gpu_index: usize,
-        domain: OffsetDomain,
-    ) -> Result<(), String> {
+    fn reset_offset(&mut self, gpu_index: usize, domain: OffsetDomain) -> Result<(), String> {
         let target = self.target(gpu_index)?;
         run_gpu_operation(
             &target,
@@ -468,9 +458,14 @@ impl ControlBackend for NvapiBackend {
             .temperature_threshold(TemperatureThreshold::Slowdown)
             .map_err(|e| format!("GPU {gpu_index}: slowdown: {e:?}"))?;
         let target = self.target(gpu_index)?;
-        run_gpu_operation(&target, SetTemperatureLimit { celsius: slow as i32 })
-            .map(|_| ())
-            .map_err(|e| format!("GPU {gpu_index}: temp reset: {e}"))
+        run_gpu_operation(
+            &target,
+            SetTemperatureLimit {
+                celsius: slow as i32,
+            },
+        )
+        .map(|_| ())
+        .map_err(|e| format!("GPU {gpu_index}: temp reset: {e}"))
     }
 
     fn restore_freq_auto(&mut self, gpu_index: usize) -> Result<(), String> {

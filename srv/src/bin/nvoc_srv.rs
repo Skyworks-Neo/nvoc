@@ -123,11 +123,14 @@ fn run_foreground(cli: Cli) {
     );
 
     let handles = nvoc_srv::runtime::setup(cfg);
-    nvoc_srv::http::spawn_supervised(
-        handles.config.clone(),
-        handles.status.clone(),
-        handles.cmd_tx.clone(),
-    );
+    let state = std::sync::Arc::new(nvoc_srv::http::ServerState {
+        config: handles.config.clone(),
+        status: handles.status.clone(),
+        backend: handles.backend.clone(),
+        history: handles.history.clone(),
+        cmd_tx: handles.cmd_tx.clone(),
+    });
+    nvoc_srv::http::spawn_supervised(state);
 
     let shutdown_tx = handles.shutdown_tx.clone();
     if ctrlc::set_handler(move || {
