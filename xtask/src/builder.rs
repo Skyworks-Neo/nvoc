@@ -332,6 +332,7 @@ impl PyJob {
             // rebuild from the current tree every onefile build.
             .args(["--refresh-package", "pynvoc"])
             .current_dir(cwd);
+        crate::util::apply_uv_index(&mut command);
         command
     }
 

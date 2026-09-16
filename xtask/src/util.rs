@@ -124,6 +124,24 @@ pub fn have(program: &str) -> bool {
         .is_ok_and(|status| status.success())
 }
 
+/// The PyPI mirror every uv invocation should use. uv commands run by xtask
+/// pass `--no-config`, so the `[[tool.uv.index]]` pin in the root
+/// pyproject.toml is never discovered; this env var is what actually steers
+/// the index. Respects a value the caller already exported (that is the
+/// documented override for a slow mirror).
+pub const UV_DEFAULT_INDEX: &str = "https://pypi.tuna.tsinghua.edu.cn/simple";
+
+/// Injects `UV_DEFAULT_INDEX` into a uv `Command` unless the environment
+/// already defines it (or the older `UV_INDEX_URL`), so CI machines and
+/// mirrors of choice keep working without xtask hard-coding over them.
+pub fn apply_uv_index(command: &mut Command) {
+    let already_set = std::env::var_os("UV_DEFAULT_INDEX").is_some()
+        || std::env::var_os("UV_INDEX_URL").is_some();
+    if !already_set {
+        command.env("UV_DEFAULT_INDEX", UV_DEFAULT_INDEX);
+    }
+}
+
 /// Builds `uv run --locked --package <package> --group dev --no-config …`,
 /// the same invocation shape ci.yml uses for every Python step.
 pub fn uv_run(root: &Path, package: &str, extra: &[&str]) -> Command {
@@ -139,5 +157,6 @@ pub fn uv_run(root: &Path, package: &str, extra: &[&str]) -> Command {
     ]);
     command.args(extra);
     command.current_dir(root);
+    apply_uv_index(&mut command);
     command
 }

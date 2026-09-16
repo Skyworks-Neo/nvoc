@@ -38,8 +38,8 @@ pub fn setup(args: &SetupArgs) -> Res<()> {
     }
 
     probe_cuda_runtime();
-    println!("  [info] PyPI index: the root pyproject.toml pins the Tsinghua (tuna) mirror;");
-    println!("         override with UV_DEFAULT_INDEX if that mirror is slow from your network.");
+    println!("  [info] PyPI index: uv runs default to the Tsinghua (tuna) mirror");
+    println!("         (UV_DEFAULT_INDEX already overrides this if it is set).");
 
     if problems == 0 {
         println!("\nsetup complete: environment ready.");
@@ -429,6 +429,7 @@ fn bootstrap_python(args: &SetupArgs, root: &Path) -> usize {
                 "--no-config",
             ])
             .current_dir(root);
+        util::apply_uv_index(&mut command);
         match util::run_dry(&mut command, args.dry_run) {
             Ok(()) => println!("  [ok]   {label}"),
             Err(error) => {
@@ -459,6 +460,7 @@ fn bootstrap_python(args: &SetupArgs, root: &Path) -> usize {
         // [build-system]) and aborts, leaving whatever stale wheel uv sync
         // had cached in place — which then fails the import check below.
         .current_dir(root.join("nvoc-python"));
+    util::apply_uv_index(&mut command);
     match util::run_dry(&mut command, args.dry_run) {
         Ok(()) => println!("  [ok]   pynvoc native extension built"),
         Err(error) => {
