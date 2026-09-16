@@ -11,9 +11,9 @@
   <nav class="nav">
     <div class="brand">NVOC<em>SRV</em></div>
     <a href="#/dashboard" data-page="dashboard">Dashboard</a>
-    <a href="#/control" data-page="control">Control</a>
+    <a href="#/control" data-page="control">Control (loop)</a>
     <a href="#/overclock" data-page="overclock">Overclock</a>
-    <a href="#/fan" data-page="fan">Fan</a>
+    <a href="#/fan" data-page="fan">Fan (manual)</a>
     <a href="#/vfcurve" data-page="vfcurve">V/F Curve</a>
     <a href="#/about" data-page="about">About</a>
     <div class="nav-foot">
@@ -120,7 +120,7 @@
         <select id="oc-gpu" class="gpupick"></select>
       </div>
       <div class="panel">
-        <h2>Clock offset <span class="tag">P0 · NVML</span></h2>
+        <h2>Clock offset <span class="tag">P0 · NVML → NVAPI fallback</span></h2>
         <div class="row"><label>Core</label>
           <input type="number" id="oc-core" step="5" min="-1000" max="1000">
           <span class="hint">MHz · current: <b id="oc-core-cur" class="mono">…</b></span>
@@ -159,7 +159,32 @@
       <p class="hint">All writes are confirmed and logged (see <a href="/api/log">audit log</a>).</p>
     </section>
 
-    <!-- ============ Fan (placeholder: folded into Control for now) ============ -->
+    <!-- ============ Fan ============ -->
+    <section id="page-fan" class="page">
+      <div class="page-head"><h1>Fan</h1></div>
+      <div class="panel">
+        <h2>Manual duty</h2>
+        <div class="row"><label>Duty %</label>
+          <input type="range" id="fan-pct" min="0" max="100" value="50">
+          <output id="fan-pct-v" class="mono">50</output>
+          <button class="act primary" id="fan-pin">Pin duty</button>
+          <button class="act" id="fan-auto">Back to auto</button>
+        </div>
+        <p class="hint">Pinning writes the duty through the fan backend
+        (NVAPI fan surface, NVML fallback). "Back to auto" hands control
+        back to the driver's own curve.</p>
+      </div>
+      <div class="panel">
+        <h2>Live readout</h2>
+        <div class="bignums mono">
+          <div><div class="v" id="fan-live">—</div><div class="u">fan %</div></div>
+          <div><div class="v" id="fan-temp">—</div><div class="u">temp °C</div></div>
+        </div>
+        <p class="hint">The closed-loop control lives in the
+        <a href="#/control">Control</a> page — this page only pins a manual
+        duty.</p>
+      </div>
+    </section>
 
     <!-- ============ V/F Curve ============ -->
     <section id="page-vfcurve" class="page">

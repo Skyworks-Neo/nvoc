@@ -23,8 +23,8 @@ use nvoc_core::{
     BackendSet, GpuId, GpuTarget, QueryClockOffset, QueryFanInfo, QueryNvapiThermalSettings,
     ResetFanSpeed, ResetFreqLock, ResetNvapiFanControl, ResetPstateGlobalFreqOffset,
     ResetVfpFrequencyLock, SetClockOffset, SetFanPercent, SetFanSpeed, SetLockedClocks,
-    SetPowerLimit, SetTemperatureLimit, SetVfpFrequencyLock, TargetInventory, discover_targets,
-    run as run_gpu_operation,
+    SetNvapiClkDomainOffset, SetPowerLimit, SetTemperatureLimit, SetVfpFrequencyLock,
+    TargetInventory, discover_targets, run as run_gpu_operation,
 };
 use std::borrow::Cow;
 
@@ -395,16 +395,40 @@ impl ControlBackend for NvapiBackend {
         mhz: i32,
     ) -> Result<(), String> {
         let target = self.target(gpu_index)?;
-        run_gpu_operation(
+        let clock_domain = offset_clock_domain(domain);
+        match run_gpu_operation(
             &target,
             SetClockOffset {
-                domain: offset_clock_domain(domain),
+                domain: clock_domain,
                 pstate: PerformanceState::Zero,
                 mhz,
             },
-        )
-        .map(|_| ())
-        .map_err(|e| format!("GPU {gpu_index}: offset write: {e}"))
+        ) {
+            Ok(_) => Ok(()),
+            // NVML rejected (locked surface): the NVAPI private ClkDomains
+            // path takes the same offset in kHz.
+            Err(e) => {
+                let domain_bit = match domain {
+                    OffsetDomain::Core => 0, // Graphics bit
+                    OffsetDomain::Mem => 2,  // Memory bit
+                };
+                run_gpu_operation(
+                    &target,
+                    SetNvapiClkDomainOffset {
+                        domain_bit,
+                        offset_kHz: mhz.saturating_mul(1000),
+                        slot: 0, // signed frequency offset dword
+                        temporary: false,
+                    },
+                )
+                .map(|_| ())
+                .map_err(|nvapi_err| {
+                    format!(
+                        "GPU {gpu_index}: offset write failed on both backends                          (NVML: {e}; NVAPI: {nvapi_err})"
+                    )
+                })
+            }
+        }
     }
 
     fn write_power_limit_w(&mut self, gpu_index: usize, watts: u32) -> Result<(), String> {

@@ -114,9 +114,7 @@ fn os_verify(user: &str, password: &str, _cfg: &RuntimeConfig) -> std::result::R
             let mut sid: *mut core::ffi::c_void = std::ptr::null_mut();
             // S-1-5-32-544: NT authority + two sub-authorities
             // (32 = SECURITY_BUILTIN_DOMAIN_RID, 544 = DOMAIN_ALIAS_RID_ADMINS).
-            let ok = AllocateAndInitializeSid(
-                &authority, 2, 32, 544, 0, 0, 0, 0, 0, 0, &mut sid,
-            );
+            let ok = AllocateAndInitializeSid(&authority, 2, 32, 544, 0, 0, 0, 0, 0, 0, &mut sid);
             if ok == 0 || sid.is_null() {
                 return Err("cannot construct the Administrators SID".to_string());
             }

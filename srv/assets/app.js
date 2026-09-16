@@ -10,6 +10,7 @@ let cfg = null;
 let lastOk = null;
 let rangeSecs = 300;
 let charts = {};        // key -> uPlot instance (dashboard)
+let chartsReady = false;
 let vfChart = null;     // uPlot instance (v/f curve)
 
 function toast(msg, bad = false) {
@@ -73,6 +74,11 @@ function route() {
   const page = (location.hash || "#/dashboard").replace("#/", "") || "dashboard";
   $$(".page").forEach((p) => p.classList.toggle("on", p.id === `page-${page}`));
   $$(".nav a[data-page]").forEach((a) => a.classList.toggle("on", a.dataset.page === page));
+  if (page === "dashboard" && !chartsReady) {
+    // The page just became visible — uPlot can measure its containers now.
+    initCharts();
+    loadHistory();
+  }
   if (page === "vfcurve") refreshVf();
   if (page === "about") refreshAbout();
   if (page === "overclock") refreshOc();
@@ -156,8 +162,6 @@ $("#shutdown").addEventListener("click", async () => {
 });
 
 /* ---------- dashboard ---------- */
-function setConn_ok() { setConn("ok", "live"); }
-
 const fmt = (v, d = 1) => (v == null || Number.isNaN(+v) ? "—" : (+v).toFixed(d));
 
 function gpuCard(g) {
@@ -187,8 +191,8 @@ function gpuCard(g) {
 }
 
 function makeSpark(el) {
-  if (!window.uPlot) return null;
-  const w = el.clientWidth || 280;
+  if (!window.uPlot || el.clientWidth < 20) return null;
+  const w = el.clientWidth;
   return new uPlot(
     {
       width: w, height: 54,
@@ -232,6 +236,10 @@ function renderStatus(s) {
         el.querySelector('[data-k="pwr"]').textContent = fmt(last.power_w);
         el.querySelector('[data-k="clk"]').textContent = fmt(last.core_clock_mhz, 0);
         el.querySelector('[data-k="fan"]').textContent = fmt(last.fan_pct, 0);
+        if (pageNow() === "fan" && g.index === 0) {
+          $("#fan-live").textContent = fmt(last.fan_pct, 0);
+          $("#fan-temp").textContent = fmt(last.temp_c);
+        }
         if (el._spark) {
           el._spark.setData([
             hist.map((h) => h.t),
@@ -246,13 +254,15 @@ function renderStatus(s) {
 
 /* ---------- big time-series charts ---------- */
 async function loadHistory() {
+  if (!chartsReady) return;
   const gpus = $$("#cards .gpu");
   if (!gpus.length) return;
   const first = gpus[0]?.id?.replace("gpu-", "");
   if (first == null) return;
   try {
     const hist = await (await fetch(`/api/history?gpu=${first}&seconds=${rangeSecs}`)).json();
-    const ts = hist.map((h) => h.t * 1000);
+    // uPlot time scales are in SECONDS.
+    const ts = hist.map((h) => h.t);
     const data = (key) => [ts, ...hist.map((h) => h[key] ?? null)];
     if (charts.temp) charts.temp.setData([ts, hist.map((h) => h.temp_c)]);
     if (charts.power) charts.power.setData([ts, hist.map((h) => h.power_w)]);
@@ -283,6 +293,7 @@ function initCharts() {
   charts.power = mk("#chart-power", "Power", "W", "#e8a33d");
   charts.clock = mk("#chart-clock", "Core clock", "MHz", "#539bf5");
   charts.fan = mk("#chart-fan", "Fan", "%", "#4cc38a");
+  chartsReady = true;
   $("#range").addEventListener("click", (ev) => {
     const s = ev.target.dataset.s;
     if (!s) return;
@@ -375,6 +386,14 @@ $("#temp-reset").addEventListener("click", async () => {
   }
 });
 
+/* ---------- fan page ---------- */
+$("#fan-pct").addEventListener("input", (ev) => {
+  $("#fan-pct-v").textContent = ev.target.value;
+});
+$("#fan-pin").addEventListener("click", () =>
+  post(`/fan?percent=${$("#fan-pct").value}`));
+$("#fan-auto").addEventListener("click", () => post("/restore"));
+
 /* ---------- v/f curve (read-only) ---------- */
 async function refreshVf() {
   const gpu = $("#vf-gpu").value ?? "0";
@@ -445,12 +464,31 @@ function setConn2(cls, text) { setConn(cls, text); }
 
 (async function boot() {
   route();
-  initCharts();
   await loadConfig();
   await pollStatus();
   fillGpuPicks(await (await fetch("/api/status")).json());
+  // uPlot needs a visible container to measure itself — init on first
+  // Dashboard view (route() toggles display before this runs) and adapt
+  // to resizes.
+  if (location.hash === "#/dashboard" || !location.hash) initCharts();
   await loadHistory();
   setInterval(pollStatus, 1000);
-  setInterval(loadHistory, 5000);
+  setInterval(() => {
+    if (activePage() === "dashboard" && chartsReady) loadHistory();
+  }, 5000);
   setInterval(loadConfig, 10000);
+  window.addEventListener("resize", () => {
+    if (!chartsReady) return;
+    for (const chart of Object.values(charts)) {
+      chart.setSize({ width: chart.root.parentElement.clientWidth });
+    }
+    for (const el of $$("#cards [data-spark]")) {
+      if (el._spark) el._spark.setSize({ width: el.clientWidth });
+    }
+  });
 })();
+
+function activePage() {
+  return (location.hash || "#/dashboard").replace("#/", "") || "dashboard";
+}
+const pageNow = activePage;
