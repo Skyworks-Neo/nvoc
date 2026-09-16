@@ -9,7 +9,7 @@ use crate::config::{
     ControlMode, INTERVAL_MS_MAX, INTERVAL_MS_MIN, LoopKind, RuntimeConfig, SensorKind,
 };
 use crate::controller::{ControlBackend, GpuControlStatus};
-use crate::monitor::OffsetDomain;
+use crate::monitor::{OffsetBackend, OffsetDomain};
 use crate::runtime::{ServiceCmd, SharedBackend, SharedConfig, SharedHistory, SharedStatus, lock};
 use crate::{audit, auth, web};
 use flume::Sender;
@@ -241,8 +241,12 @@ fn handle_api(
             let Some(backend) = guard.as_mut() else {
                 return text_response(request, 503, "backend not ready");
             };
-            let core_off = backend.read_offset_mhz(index, OffsetDomain::Core).ok();
-            let mem_off = backend.read_offset_mhz(index, OffsetDomain::Mem).ok();
+            let core_off = backend
+                .read_offset_mhz(index, OffsetDomain::Core, OffsetBackend::Nvml)
+                .ok();
+            let mem_off = backend
+                .read_offset_mhz(index, OffsetDomain::Mem, OffsetBackend::Nvml)
+                .ok();
             let power = backend.read_power_limit_w(index).ok().flatten();
             let temp = backend.read_temp_limit_c(index).ok().flatten();
             json_response(
@@ -262,20 +266,21 @@ fn handle_api(
 
         // ---- writes (audited) ----
         (&tiny_http::Method::Post, "oc/offset") => {
-            let (index, domain, value) = match oc_offset_params(params) {
+            let (index, domain, backend_kind, value) = match oc_offset_params(params) {
                 Ok(v) => v,
                 Err(e) => return text_response(request, 400, format!("Bad request: {e}")),
             };
-            let detail = format!("gpu {index} {domain} {value} MHz");
+            let detail = format!(
+                "gpu {index} {domain} {value} MHz via {}",
+                backend_kind.as_str()
+            );
             let mut guard = lock(backend);
             let Some(backend) = guard.as_mut() else {
                 return text_response(request, 503, "backend not ready");
             };
             let response = audited_write(auth_user, "oc.offset", detail, || {
-                backend.write_offset_mhz(index, domain, value)
+                backend.write_offset_mhz(index, domain, backend_kind, value)
             });
-            // Readback so the UI can display the applied value.
-            let _ = backend.read_offset_mhz(index, domain);
             respond(request, response);
         }
         (&tiny_http::Method::Post, "oc/power") => {
@@ -327,7 +332,19 @@ fn handle_api(
                 return text_response(request, 503, "backend not ready");
             };
             let result = match kind {
-                "offset_core" => backend.reset_offset(index, OffsetDomain::Core),
+                "offset_core" | "offset_core_nvml" => {
+                    let backend_kind = if kind == "offset_core_nvml" {
+                        OffsetBackend::Nvml
+                    } else {
+                        OffsetBackend::Nvapi
+                    };
+                    // NVML reset semantics = write 0 on P0.
+                    if backend_kind == OffsetBackend::Nvml {
+                        backend.write_offset_mhz(index, OffsetDomain::Core, backend_kind, 0)
+                    } else {
+                        backend.reset_offset(index, OffsetDomain::Core)
+                    }
+                }
                 "offset_mem" => backend.reset_offset(index, OffsetDomain::Mem),
                 "power" => backend.reset_power_limit(index),
                 "temp" => backend.reset_temp_limit(index),
@@ -348,10 +365,11 @@ fn handle_api(
     }
 }
 
-/// Parse + validate `oc/offset` params: `gpu`, `domain=core|mem`, `value=±MHz`.
+/// Parse + validate `oc/offset` params: `gpu`, `domain=core|mem`,
+/// `backend=nvml|nvapi`, `value=±MHz`.
 fn oc_offset_params(
     params: &HashMap<String, String>,
-) -> Result<(usize, OffsetDomain, i32), String> {
+) -> Result<(usize, OffsetDomain, OffsetBackend, i32), String> {
     let index = params
         .get("gpu")
         .ok_or("missing 'gpu'")?
@@ -361,6 +379,10 @@ fn oc_offset_params(
         .get("domain")
         .and_then(|s| OffsetDomain::parse(s))
         .ok_or("'domain' must be core|mem")?;
+    let backend_kind = params
+        .get("backend")
+        .and_then(|s| OffsetBackend::parse(s))
+        .unwrap_or(OffsetBackend::Nvml);
     let raw = params.get("value").ok_or("missing 'value'")?;
     let value = raw
         .trim_end_matches(['m', 'H', 'z'])
@@ -369,7 +391,7 @@ fn oc_offset_params(
     if !(-1000..=1000).contains(&value) {
         return Err(format!("'value' must be -1000..1000 MHz, got {value}"));
     }
-    Ok((index, domain, value))
+    Ok((index, domain, backend_kind, value))
 }
 
 fn json_content_type() -> Header {

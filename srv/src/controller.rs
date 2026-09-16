@@ -6,7 +6,7 @@
 //! state machine is unit-testable without a GPU.
 
 use crate::config::{ControlMode, FreqParams, LoopKind, PidParams, RuntimeConfig, SensorKind};
-use crate::monitor::OffsetDomain;
+use crate::monitor::{OffsetBackend, OffsetDomain};
 use crate::pid::{PidController, PidTerms};
 use serde::Serialize;
 
@@ -171,8 +171,14 @@ pub trait ControlBackend: Send {
     fn read_gpu_info_json(&mut self, gpu_index: usize) -> Result<serde_json::Value, String>;
     /// V/F curve points (voltage uV, frequency MHz), ascending voltage.
     fn read_vf_curve(&mut self, gpu_index: usize) -> Result<Vec<(f32, f32)>, String>;
-    /// Current core/mem offset (MHz), for the OC page readback.
-    fn read_offset_mhz(&mut self, gpu_index: usize, domain: OffsetDomain) -> Result<i32, String>;
+    /// Current core/mem offset (MHz), for the OC page readback — queried
+    /// from the selected backend's own surface.
+    fn read_offset_mhz(
+        &mut self,
+        gpu_index: usize,
+        domain: OffsetDomain,
+        backend: OffsetBackend,
+    ) -> Result<i32, String>;
     /// Power-limit window (min, current, max) in watts, for slider bounds.
     fn read_power_limit_w(&mut self, gpu_index: usize) -> Result<Option<(u32, u32, u32)>, String>;
     /// Temperature-wall window (min, current, max) in °C, best effort.
@@ -181,6 +187,7 @@ pub trait ControlBackend: Send {
         &mut self,
         gpu_index: usize,
         domain: OffsetDomain,
+        backend: OffsetBackend,
         mhz: i32,
     ) -> Result<(), String>;
     fn write_power_limit_w(&mut self, gpu_index: usize, watts: u32) -> Result<(), String>;
@@ -968,7 +975,12 @@ mod tests {
         fn read_vf_curve(&mut self, _i: usize) -> Result<Vec<(f32, f32)>, String> {
             Ok(Vec::new())
         }
-        fn read_offset_mhz(&mut self, _i: usize, _d: OffsetDomain) -> Result<i32, String> {
+        fn read_offset_mhz(
+            &mut self,
+            _i: usize,
+            _d: OffsetDomain,
+            _b: OffsetBackend,
+        ) -> Result<i32, String> {
             Ok(0)
         }
         fn read_power_limit_w(&mut self, _i: usize) -> Result<Option<(u32, u32, u32)>, String> {
@@ -981,6 +993,7 @@ mod tests {
             &mut self,
             _i: usize,
             _d: OffsetDomain,
+            _b: OffsetBackend,
             _mhz: i32,
         ) -> Result<(), String> {
             Ok(())

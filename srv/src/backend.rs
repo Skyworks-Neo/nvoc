@@ -10,7 +10,7 @@
 //! un-pin: control block bit0=0 + policy Default) → NVML `set_default_fan_speed`.
 
 use crate::controller::{ControlBackend, FanReading, SensorBundle};
-use crate::monitor::{MonitorSample, OffsetDomain};
+use crate::monitor::{MonitorSample, OffsetBackend, OffsetDomain};
 use log::{info, warn};
 use nvapi::hi::Gpu;
 use nvapi::{ClockDomain, ClockFrequencyType, Kilohertz, KilohertzDelta, PState, ThermalTarget};
@@ -167,6 +167,13 @@ impl NvapiBackend {
             self.channel_luts[gpu_index] = lut;
         }
         self.channel_luts[gpu_index]
+    }
+}
+
+fn offset_domain_bit(domain: OffsetDomain) -> u32 {
+    match domain {
+        OffsetDomain::Core => 0, // Graphics
+        OffsetDomain::Mem => 2,  // Memory
     }
 }
 
@@ -347,17 +354,40 @@ impl ControlBackend for NvapiBackend {
         Ok(pts)
     }
 
-    fn read_offset_mhz(&mut self, gpu_index: usize, domain: OffsetDomain) -> Result<i32, String> {
-        let target = self.target(gpu_index)?;
-        let report = run_gpu_operation(
-            &target,
-            QueryClockOffset {
-                domain: offset_clock_domain(domain),
-                pstate: PerformanceState::Zero,
-            },
-        )
-        .map_err(|e| format!("GPU {gpu_index}: offset read: {e}"))?;
-        Ok(report.output.mhz)
+    fn read_offset_mhz(
+        &mut self,
+        gpu_index: usize,
+        domain: OffsetDomain,
+        backend_kind: OffsetBackend,
+    ) -> Result<i32, String> {
+        match backend_kind {
+            OffsetBackend::Nvml => {
+                let target = self.target(gpu_index)?;
+                let report = run_gpu_operation(
+                    &target,
+                    QueryClockOffset {
+                        domain: offset_clock_domain(domain),
+                        pstate: PerformanceState::Zero,
+                    },
+                )
+                .map_err(|e| format!("GPU {gpu_index}: offset read: {e}"))?;
+                Ok(report.output.mhz)
+            }
+            OffsetBackend::Nvapi => {
+                let gpu = self.gpus.get(gpu_index).ok_or("GPU index out of range")?;
+                let control = gpu
+                    .clk_domains_control()
+                    .map_err(|e| format!("GPU {gpu_index}: clk domains: {e}"))?
+                    .ok_or_else(|| "clk domains not populated".to_string())?;
+                let bit = offset_domain_bit(domain);
+                control
+                    .entries
+                    .iter()
+                    .find(|e| e.bit == bit)
+                    .map(|e| (e.values_kHz[0] as f32 / 1000.0).round() as i32)
+                    .ok_or_else(|| format!("GPU {gpu_index}: clk domain bit {bit} not populated"))
+            }
+        }
     }
 
     fn read_power_limit_w(&mut self, gpu_index: usize) -> Result<Option<(u32, u32, u32)>, String> {
@@ -392,41 +422,38 @@ impl ControlBackend for NvapiBackend {
         &mut self,
         gpu_index: usize,
         domain: OffsetDomain,
+        backend_kind: OffsetBackend,
         mhz: i32,
     ) -> Result<(), String> {
-        let target = self.target(gpu_index)?;
-        let clock_domain = offset_clock_domain(domain);
-        match run_gpu_operation(
-            &target,
-            SetClockOffset {
-                domain: clock_domain,
-                pstate: PerformanceState::Zero,
-                mhz,
-            },
-        ) {
-            Ok(_) => Ok(()),
-            // NVML rejected (locked surface): the NVAPI private ClkDomains
-            // path takes the same offset in kHz.
-            Err(e) => {
-                let domain_bit = match domain {
-                    OffsetDomain::Core => 0, // Graphics bit
-                    OffsetDomain::Mem => 2,  // Memory bit
-                };
+        match backend_kind {
+            // NVML: MHz on P0 via SetClockOffset.
+            OffsetBackend::Nvml => {
+                let target = self.target(gpu_index)?;
+                run_gpu_operation(
+                    &target,
+                    SetClockOffset {
+                        domain: offset_clock_domain(domain),
+                        pstate: PerformanceState::Zero,
+                        mhz,
+                    },
+                )
+                .map(|_| ())
+                .map_err(|e| format!("GPU {gpu_index}: offset write: {e}"))
+            }
+            // NVAPI: private ClkDomains SetControl — kHz at slot 0.
+            OffsetBackend::Nvapi => {
+                let target = self.target(gpu_index)?;
                 run_gpu_operation(
                     &target,
                     SetNvapiClkDomainOffset {
-                        domain_bit,
+                        domain_bit: offset_domain_bit(domain),
                         offset_kHz: mhz.saturating_mul(1000),
-                        slot: 0, // signed frequency offset dword
+                        slot: 0,
                         temporary: false,
                     },
                 )
                 .map(|_| ())
-                .map_err(|nvapi_err| {
-                    format!(
-                        "GPU {gpu_index}: offset write failed on both backends                          (NVML: {e}; NVAPI: {nvapi_err})"
-                    )
-                })
+                .map_err(|e| format!("GPU {gpu_index}: offset write: {e}"))
             }
         }
     }

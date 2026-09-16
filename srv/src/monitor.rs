@@ -2,6 +2,35 @@
 
 use serde::Serialize;
 
+/// Backend selector for clock offsets (GUI parity): each backend exposes
+/// its own interface and they are never mixed.
+/// - NVML: `SetClockOffset` / `QueryClockOffset` (P0, MHz).
+/// - NVAPI: private ClkDomains `SetControl`/`GetControl`
+///   (bit 0 = graphics / 2 = memory, slot 0 = signed kHz offset).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OffsetBackend {
+    #[default]
+    Nvml,
+    Nvapi,
+}
+
+impl OffsetBackend {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "nvml" => Some(Self::Nvml),
+            "nvapi" => Some(Self::Nvapi),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Nvml => "nvml",
+            Self::Nvapi => "nvapi",
+        }
+    }
+}
+
 /// Domain selector for clock offsets (core = graphics, mem = memory).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OffsetDomain {

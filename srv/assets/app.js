@@ -8,6 +8,7 @@ const CSRF = { "X-Requested-With": "XMLHttpRequest" };
 
 let cfg = null;
 let lastOk = null;
+let ocBackend = "nvml";   // offset backend selection (nvml | nvapi)
 let rangeSecs = 300;
 let charts = {};        // key -> uPlot instance (dashboard)
 let chartsReady = false;
@@ -272,9 +273,10 @@ async function loadHistory() {
 }
 
 function initCharts() {
-  if (!window.uPlot) return;
+  if (chartsReady || !window.uPlot) return;
   const mk = (sel, title, unit, stroke) => {
     const el = $(sel);
+    el.innerHTML = ""; // never stack a second instance
     return new uPlot(
       {
         title, width: el.clientWidth || 800, height: 130,
@@ -304,10 +306,20 @@ function initCharts() {
 }
 
 /* ---------- overclock page ---------- */
+$("#oc-backend-seg").addEventListener("click", (ev) => {
+  const b = ev.target.dataset.backend;
+  if (!b) return;
+  ocBackend = b;
+  $$("#oc-backend-seg button").forEach((x) => x.classList.toggle("on", x === ev.target));
+  $("#oc-backend-hint").textContent =
+    b === "nvml" ? "NVML: MHz on P0" : "NVAPI: private ClkDomains, kHz slot 0";
+  refreshOc();
+});
+
 async function refreshOc() {
   const gpu = $("#oc-gpu").value ?? "0";
   try {
-    const oc = await (await fetch(`/api/oc?gpu=${gpu}`)).json();
+    const oc = await (await fetch(`/api/oc?gpu=${gpu}&backend=${ocBackend}`)).json();
     $("#oc-core-cur").textContent = oc.core_offset_mhz ?? "—";
     $("#oc-mem-cur").textContent = oc.mem_offset_mhz ?? "—";
     if (oc.power) {
@@ -341,16 +353,27 @@ $("#oc-apply").addEventListener("click", async () => {
   const core = $("#oc-core").value, mem = $("#oc-mem").value;
   if (core === "" && mem === "") { toast("nothing to apply", true); return; }
   if (!(await confirmBox("Apply clock offsets",
-    `core: ${core || "unchanged"} MHz · mem: ${mem || "unchanged"} MHz`))) return;
-  if (core !== "") await post(`/api/oc/offset?gpu=${gpu}&domain=core&value=${core}`);
-  if (mem !== "") await post(`/api/oc/offset?gpu=${gpu}&domain=mem&value=${mem}`);
+    `backend: ${ocBackend} · core: ${core || "unchanged"} MHz · mem: ${mem || "unchanged"} MHz`)))
+    return;
+  if (core !== "")
+    await post(`/api/oc/offset?gpu=${gpu}&domain=core&backend=${ocBackend}&value=${core}`);
+  if (mem !== "")
+    await post(`/api/oc/offset?gpu=${gpu}&domain=mem&backend=${ocBackend}&value=${mem}`);
   refreshOc();
 });
 $("#oc-reset").addEventListener("click", async () => {
   const gpu = $("#oc-gpu").value ?? "0";
-  if (!(await confirmBox("Reset offsets", "Reset core and memory offsets to 0?"))) return;
-  await post(`/api/reset?gpu=${gpu}&kind=offset_core`);
-  await post(`/api/reset?gpu=${gpu}&kind=offset_mem`);
+  if (!(await confirmBox("Reset offsets", `Reset core and memory offsets to 0 (${ocBackend})?`)))
+    return;
+  const kind = ocBackend === "nvml" ? "offset_core_nvml" : "offset_core";
+  if (ocBackend === "nvml") {
+    // NVML reset = write 0 on P0.
+    await post(`/api/oc/offset?gpu=${gpu}&domain=core&backend=nvml&value=0`);
+    await post(`/api/oc/offset?gpu=${gpu}&domain=mem&backend=nvml&value=0`);
+  } else {
+    await post(`/api/reset?gpu=${gpu}&kind=offset_core`);
+    await post(`/api/reset?gpu=${gpu}&kind=offset_mem`);
+  }
   refreshOc();
 });
 $("#power-apply").addEventListener("click", async () => {
@@ -467,10 +490,8 @@ function setConn2(cls, text) { setConn(cls, text); }
   await loadConfig();
   await pollStatus();
   fillGpuPicks(await (await fetch("/api/status")).json());
-  // uPlot needs a visible container to measure itself — init on first
-  // Dashboard view (route() toggles display before this runs) and adapt
-  // to resizes.
-  if (location.hash === "#/dashboard" || !location.hash) initCharts();
+  // Charts initialize lazily via route() when the Dashboard becomes
+  // visible (uPlot needs a laid-out container to measure itself).
   await loadHistory();
   setInterval(pollStatus, 1000);
   setInterval(() => {

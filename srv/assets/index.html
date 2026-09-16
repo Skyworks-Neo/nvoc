@@ -120,7 +120,14 @@
         <select id="oc-gpu" class="gpupick"></select>
       </div>
       <div class="panel">
-        <h2>Clock offset <span class="tag">P0 · NVML → NVAPI fallback</span></h2>
+        <h2>Clock offset <span class="tag">P0</span></h2>
+        <div class="row"><label>Backend</label>
+          <div class="seg" id="oc-backend-seg">
+            <button data-backend="nvml" class="on">NVML (MHz)</button>
+            <button data-backend="nvapi">NVAPI (ClkDomains)</button>
+          </div>
+          <span class="hint" id="oc-backend-hint">NVML: MHz on P0</span>
+        </div>
         <div class="row"><label>Core</label>
           <input type="number" id="oc-core" step="5" min="-1000" max="1000">
           <span class="hint">MHz · current: <b id="oc-core-cur" class="mono">…</b></span>
