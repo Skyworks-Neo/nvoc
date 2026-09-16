@@ -1540,12 +1540,15 @@ pub struct Invocation {
     pub backend: BackendChoice,
     pub output: OutputFormat,
     pub no_color: bool,
-    /// `--nvml-path`: explicit nvml.dll path. Also injected into
+    /// `--nvml-path`: explicit NVML library path (Windows: nvml.dll file;
+    /// Linux: libnvidia-ml.so.1 file or directory). Also injected into
     /// `nvoc_core::dll_path::NVML_PATH_ENV` at parse time so core's NVML
     /// resolution picks it up (GUI/pynvoc use the env directly).
     pub nvml_path: Option<String>,
-    /// `--nvapi-path`: DLL search-path directory for nvapi64.dll. Injected
-    /// into `nvoc_core::dll_path::NVAPI_PATH_ENV` at parse time.
+    /// `--nvapi-path`: explicit NVAPI library override (Windows: search-path
+    /// directory or nvapi64.dll file; Linux: libnvidia-api.so.1 file or
+    /// directory). Injected into `nvoc_core::dll_path::NVAPI_PATH_ENV` at
+    /// parse time.
     pub nvapi_path: Option<String>,
     pub gpu_specs: Vec<String>,
     pub command: Option<Command>,
@@ -1842,14 +1845,14 @@ fn cli_command(command_hint: Option<Command>) -> ClapCommand {
                 .long("nvml-path")
                 .value_name("PATH")
                 .global(true)
-                .help("Explicit nvml.dll path (overrides NVOC_NVML_PATH / auto-probe; legacy drivers keep NVML outside the DLL search path, e.g. ...\\NVSMI\\nvml.dll)"),
+                .help("Explicit NVML library path (overrides NVOC_NVML_PATH / auto-probe). Windows: nvml.dll (e.g. ...\\NVSMI\\nvml.dll); Linux: libnvidia-ml.so.1 file (or its directory)"),
         )
         .arg(
             Arg::new("nvapi-path")
                 .long("nvapi-path")
                 .value_name("PATH")
                 .global(true)
-                .help("Directory (or nvapi64.dll file) inserted into the DLL search path before NVAPI loads (overrides NVOC_NVAPI_PATH)"),
+                .help("Explicit NVAPI library override (overrides NVOC_NVAPI_PATH). Windows: directory (or nvapi64.dll file) inserted into the DLL search path; Linux: libnvidia-api.so.1 file (or its directory), preloaded so the SONAME lookup hits it"),
         )
         .arg(
             Arg::new("output")
