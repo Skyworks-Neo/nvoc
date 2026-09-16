@@ -49,12 +49,31 @@ fn main() {
 
     #[cfg(windows)]
     if !cli.foreground {
-        // SCM launch path: block on the dispatcher until the service stops.
+        // SCM launch path when actually started by the service manager.
         if let Err(e) = nvoc_srv::service::dispatch() {
-            eprintln!("service dispatcher failed: {e}");
-            std::process::exit(1);
+            use windows_sys::Win32::Foundation::ERROR_FAILED_SERVICE_CONTROLLER_CONNECT;
+            let connect_err = matches!(
+                &e,
+                windows_service::Error::Winapi(winapi_err)
+                    if winapi_err.raw_os_error()
+                        == Some(ERROR_FAILED_SERVICE_CONTROLLER_CONNECT as i32)
+            );
+            if connect_err {
+                // Launched from a console (not by the SCM): fall through to
+                // foreground mode instead of dying with a cryptic error.
+                eprintln!("not started by the service manager; running in foreground mode");
+            } else {
+                eprintln!("service dispatcher failed: {e}");
+                if !nvoc_srv::service::process_is_elevated() {
+                    eprintln!(
+                        "hint: the service manager rejects non-elevated processes. Run from an                          elevated prompt, install via `nvoc-srv-ctl install`, or use --foreground."
+                    );
+                }
+                std::process::exit(1);
+            }
+        } else {
+            return; // dispatched: service_main owns the process now
         }
-        return;
     }
 
     #[cfg(not(windows))]

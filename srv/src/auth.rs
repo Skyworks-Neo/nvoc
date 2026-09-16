@@ -67,14 +67,72 @@ fn os_verify(user: &str, password: &str, _cfg: &RuntimeConfig) -> std::result::R
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
     use windows_sys::Win32::Security::LogonUserW;
     use windows_sys::Win32::Security::{
-        AllocateAndInitializeSid, CheckTokenMembership, FreeSid, SID_IDENTIFIER_AUTHORITY,
+        AllocateAndInitializeSid, EqualSid, FreeSid, GetTokenInformation, SID_AND_ATTRIBUTES,
+        SID_IDENTIFIER_AUTHORITY, TOKEN_GROUPS, TokenGroups,
     };
 
     const LOGON32_LOGON_INTERACTIVE: u32 = 2;
     const LOGON32_PROVIDER_DEFAULT: u32 = 0;
+    // SE_GROUP_ENABLED (used) — and SE_GROUP_USE_FOR_DENY_ONLY, which is how
+    // the UAC-filtered token of an *administrator account* carries the
+    // Administrators SID. Deny-only therefore still proves "this account is
+    // an admin"; the filtered token itself is not elevated, but that is not
+    // what we are asking.
+    const SE_GROUP_ENABLED: u32 = 0x0000_0004;
+    const SE_GROUP_USE_FOR_DENY_ONLY: u32 = 0x0000_0010;
 
     fn to_wide(s: &str) -> Vec<u16> {
         s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    unsafe fn admin_sid() -> Result<*mut core::ffi::c_void, String> {
+        unsafe {
+            let authority = SID_IDENTIFIER_AUTHORITY {
+                Value: [0, 0, 0, 0, 0, 5],
+            };
+            let mut sid: *mut core::ffi::c_void = std::ptr::null_mut();
+            let ok = AllocateAndInitializeSid(
+                &authority, 1, 544, // DOMAIN_ALIAS_RID_ADMINS
+                0, 0, 0, 0, 0, 0, 0, &mut sid,
+            );
+            if ok == 0 || sid.is_null() {
+                return Err("cannot construct the Administrators SID".to_string());
+            }
+            Ok(sid)
+        }
+    }
+
+    /// Admin membership from a token's group list: the Administrators SID
+    /// present with either the enabled or the deny-only attribute.
+    unsafe fn token_is_admin(token: HANDLE, admin: *mut core::ffi::c_void) -> bool {
+        unsafe {
+            let mut len: u32 = 0;
+            GetTokenInformation(token, TokenGroups, std::ptr::null_mut(), 0, &mut len);
+            if len == 0 {
+                return false;
+            }
+            let mut buf = vec![0u8; len as usize];
+            let ok =
+                GetTokenInformation(token, TokenGroups, buf.as_mut_ptr().cast(), len, &mut len);
+            if ok == 0 {
+                return false;
+            }
+            let groups = &*(buf.as_ptr() as *const TOKEN_GROUPS);
+            for i in 0..groups.GroupCount as usize {
+                let g = groups.Groups.get(i).unwrap_or(&SID_AND_ATTRIBUTES {
+                    Sid: std::ptr::null_mut(),
+                    Attributes: 0,
+                });
+                if g.Sid.is_null() {
+                    continue;
+                }
+                if EqualSid(g.Sid, admin) != 0 {
+                    let attrs = g.Attributes;
+                    return attrs & (SE_GROUP_ENABLED | SE_GROUP_USE_FOR_DENY_ONLY) != 0;
+                }
+            }
+            false
+        }
     }
 
     let user_w = to_wide(user);
@@ -94,34 +152,20 @@ fn os_verify(user: &str, password: &str, _cfg: &RuntimeConfig) -> std::result::R
             return Err("invalid username or password".to_string());
         }
 
-        // BUILTIN\Administrators = S-1-5-32-544.
-        let authority = SID_IDENTIFIER_AUTHORITY {
-            Value: [0, 0, 0, 0, 0, 5],
+        let admin = match admin_sid() {
+            Ok(sid) => sid,
+            Err(e) => {
+                CloseHandle(token);
+                return Err(e);
+            }
         };
-        let mut admin_sid: *mut core::ffi::c_void = std::ptr::null_mut();
-        let ok = AllocateAndInitializeSid(
-            &authority,
-            1,
-            544, // DOMAIN_ALIAS_RID_ADMINS
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            &mut admin_sid,
-        );
-        if ok == 0 || admin_sid.is_null() {
-            CloseHandle(token);
-            return Err("cannot construct the Administrators SID".to_string());
-        }
-        let mut is_member: i32 = 0;
-        let ok = CheckTokenMembership(token, admin_sid, &mut is_member);
-        FreeSid(admin_sid);
+        let is_admin = token_is_admin(token, admin);
+        FreeSid(admin);
         CloseHandle(token);
-        if ok == 0 || is_member == 0 {
-            return Err(format!("{user} is not in the Administrators group"));
+        if !is_admin {
+            return Err(format!(
+                "{user} is not an administrator account (UAC deny-only count included)"
+            ));
         }
         Ok(())
     }
