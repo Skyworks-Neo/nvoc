@@ -67,8 +67,8 @@ fn os_verify(user: &str, password: &str, _cfg: &RuntimeConfig) -> std::result::R
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
     use windows_sys::Win32::Security::LogonUserW;
     use windows_sys::Win32::Security::{
-        AllocateAndInitializeSid, EqualSid, FreeSid, GetTokenInformation, SID_AND_ATTRIBUTES,
-        SID_IDENTIFIER_AUTHORITY, TOKEN_GROUPS, TokenGroups,
+        AllocateAndInitializeSid, EqualSid, FreeSid, GetTokenInformation, SID_IDENTIFIER_AUTHORITY,
+        TOKEN_GROUPS, TokenGroups,
     };
 
     const LOGON32_LOGON_INTERACTIVE: u32 = 2;
@@ -118,11 +118,13 @@ fn os_verify(user: &str, password: &str, _cfg: &RuntimeConfig) -> std::result::R
                 return false;
             }
             let groups = &*(buf.as_ptr() as *const TOKEN_GROUPS);
-            for i in 0..groups.GroupCount as usize {
-                let g = groups.Groups.get(i).unwrap_or(&SID_AND_ATTRIBUTES {
-                    Sid: std::ptr::null_mut(),
-                    Attributes: 0,
-                });
+            // `Groups` is declared [SID_AND_ATTRIBUTES; 1] in the FFI (the
+            // usual Windows variable-length tail); the real count is
+            // GroupCount. Walk the raw slice — indexing the declared array
+            // would only ever examine the first entry.
+            let entries =
+                std::slice::from_raw_parts(groups.Groups.as_ptr(), groups.GroupCount as usize);
+            for g in entries {
                 if g.Sid.is_null() {
                     continue;
                 }
