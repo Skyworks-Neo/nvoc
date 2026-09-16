@@ -6,6 +6,7 @@
 //! state machine is unit-testable without a GPU.
 
 use crate::config::{ControlMode, FreqParams, LoopKind, PidParams, RuntimeConfig, SensorKind};
+use crate::monitor::OffsetDomain;
 use crate::pid::{PidController, PidTerms};
 use serde::Serialize;
 
@@ -162,6 +163,37 @@ pub trait ControlBackend: Send {
     /// Frequency ceiling (MHz) of the V/F table's current plane (P0 boost
     /// point, offset-inclusive). None = card does not expose the table.
     fn read_freq_ceiling_mhz(&mut self, gpu_index: usize) -> Option<f32>;
+
+    /// Dashboard monitor sample (best effort, every field optional):
+    /// utilization %, core voltage mV, memory clock MHz, P-state name.
+    fn read_monitor(
+        &mut self,
+        gpu_index: usize,
+    ) -> Result<crate::monitor::MonitorSample, String>;
+    /// GPU identity/info snapshot as JSON (About page).
+    fn read_gpu_info_json(&mut self, gpu_index: usize) -> Result<serde_json::Value, String>;
+    /// V/F curve points (voltage uV, frequency MHz), ascending voltage.
+    fn read_vf_curve(&mut self, gpu_index: usize) -> Result<Vec<(f32, f32)>, String>;
+    /// Current core/mem offset (MHz), for the OC page readback.
+    fn read_offset_mhz(&mut self, gpu_index: usize, domain: OffsetDomain)
+        -> Result<i32, String>;
+    /// Power-limit window (min, current, max) in watts, for slider bounds.
+    fn read_power_limit_w(&mut self, gpu_index: usize)
+        -> Result<Option<(u32, u32, u32)>, String>;
+    /// Temperature-wall window (min, current, max) in °C, best effort.
+    fn read_temp_limit_c(&mut self, gpu_index: usize)
+        -> Result<Option<(i32, i32, i32)>, String>;
+    fn write_offset_mhz(
+        &mut self,
+        gpu_index: usize,
+        domain: OffsetDomain,
+        mhz: i32,
+    ) -> Result<(), String>;
+    fn write_power_limit_w(&mut self, gpu_index: usize, watts: u32) -> Result<(), String>;
+    fn write_temp_limit_c(&mut self, gpu_index: usize, celsius: i32) -> Result<(), String>;
+    fn reset_offset(&mut self, gpu_index: usize, domain: OffsetDomain) -> Result<(), String>;
+    fn reset_power_limit(&mut self, gpu_index: usize) -> Result<(), String>;
+    fn reset_temp_limit(&mut self, gpu_index: usize) -> Result<(), String>;
     fn write_fan_percent(&mut self, gpu_index: usize, percent: u32) -> Result<(), String>;
     /// Frequency soft wall: lock the graphics clock range to `0..cap_khz`
     /// (one-directional — boost may run anywhere at or below the cap).
@@ -841,6 +873,7 @@ impl GpuController {
 mod tests {
     use super::*;
     use crate::config::{FreqParams, GpuSelection, LoopKind as LK, RuntimeConfig};
+    use crate::monitor::MonitorSample;
 
     /// Scriptable fake hardware.
     struct Mock {
@@ -927,6 +960,45 @@ mod tests {
                 return Err("restore rejected".to_string());
             }
             self.restores += 1;
+            Ok(())
+        }
+        fn read_monitor(&mut self, _i: usize) -> Result<MonitorSample, String> {
+            Ok(MonitorSample {
+                power_w: self.power,
+                ..MonitorSample::default()
+            })
+        }
+        fn read_gpu_info_json(&mut self, _i: usize) -> Result<serde_json::Value, String> {
+            Ok(serde_json::json!({ "name": "mock" }))
+        }
+        fn read_vf_curve(&mut self, _i: usize) -> Result<Vec<(f32, f32)>, String> {
+            Ok(Vec::new())
+        }
+        fn read_offset_mhz(&mut self, _i: usize, _d: OffsetDomain) -> Result<i32, String> {
+            Ok(0)
+        }
+        fn read_power_limit_w(&mut self, _i: usize) -> Result<Option<(u32, u32, u32)>, String> {
+            Ok(None)
+        }
+        fn read_temp_limit_c(&mut self, _i: usize) -> Result<Option<(i32, i32, i32)>, String> {
+            Ok(None)
+        }
+        fn write_offset_mhz(&mut self, _i: usize, _d: OffsetDomain, _mhz: i32) -> Result<(), String> {
+            Ok(())
+        }
+        fn write_power_limit_w(&mut self, _i: usize, _w: u32) -> Result<(), String> {
+            Ok(())
+        }
+        fn write_temp_limit_c(&mut self, _i: usize, _c: i32) -> Result<(), String> {
+            Ok(())
+        }
+        fn reset_offset(&mut self, _i: usize, _d: OffsetDomain) -> Result<(), String> {
+            Ok(())
+        }
+        fn reset_power_limit(&mut self, _i: usize) -> Result<(), String> {
+            Ok(())
+        }
+        fn reset_temp_limit(&mut self, _i: usize) -> Result<(), String> {
             Ok(())
         }
         fn restore_freq_auto(&mut self, _i: usize) -> Result<(), String> {

@@ -10,17 +10,23 @@
 //! un-pin: control block bit0=0 + policy Default) → NVML `set_default_fan_speed`.
 
 use crate::controller::{ControlBackend, FanReading, SensorBundle};
+use crate::monitor::{MonitorSample, OffsetDomain};
 use log::{info, warn};
 use nvapi::hi::Gpu;
 use nvapi::{ClockDomain, ClockFrequencyType, Kilohertz, KilohertzDelta, PState, ThermalTarget};
+use nvml_wrapper::enum_wrappers::device::{
+    Clock as NvmlClockType, ClockId, PerformanceState,
+};
 use nvml_wrapper::Nvml;
+use nvml_wrapper::enum_wrappers::device::TemperatureThreshold;
 use nvml_wrapper::enums::device::FanControlPolicy;
 
 use nvoc_core::{
-    BackendSet, GpuId, GpuTarget, QueryFanInfo, QueryNvapiThermalSettings, ResetFanSpeed,
-    ResetFreqLock, ResetNvapiFanControl, ResetVfpFrequencyLock, SetFanPercent, SetFanSpeed,
-    SetLockedClocks, SetVfpFrequencyLock, TargetInventory, discover_targets,
-    run as run_gpu_operation,
+    BackendSet, GpuId, GpuTarget, QueryClockOffset, QueryFanInfo,
+    QueryNvapiThermalSettings, ResetFanSpeed, ResetFreqLock, ResetNvapiFanControl,
+    ResetPstateGlobalFreqOffset, ResetVfpFrequencyLock, SetClockOffset, SetFanPercent,
+    SetFanSpeed, SetLockedClocks, SetPowerLimit, SetTemperatureLimit, SetVfpFrequencyLock,
+    TargetInventory, discover_targets, run as run_gpu_operation,
 };
 use std::borrow::Cow;
 
@@ -166,6 +172,13 @@ impl NvapiBackend {
     }
 }
 
+fn offset_clock_domain(domain: OffsetDomain) -> ClockDomain {
+    match domain {
+        OffsetDomain::Core => ClockDomain::Graphics,
+        OffsetDomain::Mem => ClockDomain::Memory,
+    }
+}
+
 impl ControlBackend for NvapiBackend {
     fn read_temps(&mut self, gpu_index: usize) -> Result<SensorBundle, String> {
         let target = self.target(gpu_index)?;
@@ -272,6 +285,192 @@ impl ControlBackend for NvapiBackend {
             }
             Err(e) => Err(format!("GPU {gpu_index}: frequency lock: {e}")),
         }
+    }
+
+    fn read_monitor(&mut self, gpu_index: usize) -> Result<MonitorSample, String> {
+        let mut m = MonitorSample::default();
+
+        // NVML: util / power / mem clock / fan / (p-state fallback).
+        if let Ok(device) = self.nvml.device_by_index(gpu_index as u32) {
+            if let Ok(util) = device.utilization_rates() {
+                m.util_pct = Some(util.gpu as f32);
+            }
+            if let Ok(mw) = device.power_usage() {
+                m.power_w = Some(mw as f32 / 1000.0);
+            }
+            if let Ok(mhz) = device.clock(NvmlClockType::Memory, ClockId::Current) {
+                m.mem_clock_mhz = Some(mhz as f32);
+            }
+            if let Ok(pct) = device.fan_speed(0) {
+                m.fan_pct = Some(pct);
+            }
+            if let Ok(ps) = device.performance_state() {
+                m.pstate = Some(format!("{ps:?}"));
+            }
+        }
+
+        // NVAPI single status call: voltage / core clock / core temp /
+        // authoritative p-state.
+        let gpu = self.gpus.get(gpu_index).ok_or("GPU index out of range")?;
+        if let Ok(status) = gpu.status() {
+            m.volt_mv = status.voltage.map(|v| v.0 as f32 / 1000.0);
+            m.pstate = Some(format!("{}", status.pstate));
+            m.core_clock_mhz = status
+                .clocks
+                .get(&ClockDomain::Graphics)
+                .map(|k| k.0 as f32 / 1000.0);
+            m.temp_c = status.sensors.first().map(|(_, t)| *t);
+        }
+        Ok(m)
+    }
+
+    fn read_gpu_info_json(&mut self, gpu_index: usize) -> Result<serde_json::Value, String> {
+        let gpu = self.gpus.get(gpu_index).ok_or("GPU index out of range")?;
+        let info = gpu.info().map_err(|e| format!("GPU {gpu_index}: info: {e}"))?;
+        serde_json::to_value(&info).map_err(|e| format!("serialize info: {e}"))
+    }
+
+    fn read_vf_curve(&mut self, gpu_index: usize) -> Result<Vec<(f32, f32)>, String> {
+        let gpu = self.gpus.get(gpu_index).ok_or("GPU index out of range")?;
+        let status = gpu.status().map_err(|e| format!("GPU {gpu_index}: status: {e}"))?;
+        let vfp = status.vfp.ok_or_else(|| "VFP table unavailable".to_string())?;
+        let mut pts: Vec<(f32, f32)> = vfp
+            .graphics
+            .values()
+            .map(|p| (p.voltage.0 as f32 / 1000.0, p.frequency.0 as f32 / 1000.0))
+            .collect();
+        pts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        Ok(pts)
+    }
+
+    fn read_offset_mhz(
+        &mut self,
+        gpu_index: usize,
+        domain: OffsetDomain,
+    ) -> Result<i32, String> {
+        let target = self.target(gpu_index)?;
+        let report = run_gpu_operation(
+            &target,
+            QueryClockOffset {
+                domain: offset_clock_domain(domain),
+                pstate: PerformanceState::Zero,
+            },
+        )
+        .map_err(|e| format!("GPU {gpu_index}: offset read: {e}"))?;
+        Ok(report.output.mhz)
+    }
+
+    fn read_power_limit_w(
+        &mut self,
+        gpu_index: usize,
+    ) -> Result<Option<(u32, u32, u32)>, String> {
+        let device = self
+            .nvml
+            .device_by_index(gpu_index as u32)
+            .map_err(|e| format!("GPU {gpu_index}: NVML: {e:?}"))?;
+        let current = device
+            .power_management_limit()
+            .map_err(|e| format!("GPU {gpu_index}: power limit: {e:?}"))?;
+        let bounds = device.power_management_limit_constraints().ok();
+        Ok(Some((
+            bounds.as_ref().map(|b| b.min_limit).unwrap_or(current),
+            current,
+            bounds.as_ref().map(|b| b.max_limit).unwrap_or(current),
+        )))
+    }
+
+    fn read_temp_limit_c(
+        &mut self,
+        gpu_index: usize,
+    ) -> Result<Option<(i32, i32, i32)>, String> {
+        let device = self
+            .nvml
+            .device_by_index(gpu_index as u32)
+            .map_err(|e| format!("GPU {gpu_index}: NVML: {e:?}"))?;
+        let slow = device
+            .temperature_threshold(TemperatureThreshold::Slowdown)
+            .map_err(|e| format!("GPU {gpu_index}: slowdown: {e:?}"))? as i32;
+        // NVML exposes no writable-temp window; offer a band around slowdown.
+        Ok(Some((slow.saturating_sub(15), slow, slow)))
+    }
+
+    fn write_offset_mhz(
+        &mut self,
+        gpu_index: usize,
+        domain: OffsetDomain,
+        mhz: i32,
+    ) -> Result<(), String> {
+        let target = self.target(gpu_index)?;
+        run_gpu_operation(
+            &target,
+            SetClockOffset {
+                domain: offset_clock_domain(domain),
+                pstate: PerformanceState::Zero,
+                mhz,
+            },
+        )
+        .map(|_| ())
+        .map_err(|e| format!("GPU {gpu_index}: offset write: {e}"))
+    }
+
+    fn write_power_limit_w(&mut self, gpu_index: usize, watts: u32) -> Result<(), String> {
+        let target = self.target(gpu_index)?;
+        run_gpu_operation(&target, SetPowerLimit { watts })
+            .map(|_| ())
+            .map_err(|e| format!("GPU {gpu_index}: power write: {e}"))
+    }
+
+    fn write_temp_limit_c(&mut self, gpu_index: usize, celsius: i32) -> Result<(), String> {
+        let target = self.target(gpu_index)?;
+        run_gpu_operation(&target, SetTemperatureLimit { celsius })
+            .map(|_| ())
+            .map_err(|e| format!("GPU {gpu_index}: temp write: {e}"))
+    }
+
+    fn reset_offset(
+        &mut self,
+        gpu_index: usize,
+        domain: OffsetDomain,
+    ) -> Result<(), String> {
+        let target = self.target(gpu_index)?;
+        run_gpu_operation(
+            &target,
+            ResetPstateGlobalFreqOffset {
+                offsets: vec![(PState::P0, offset_clock_domain(domain))],
+            },
+        )
+        .map(|_| ())
+        .map_err(|e| format!("GPU {gpu_index}: offset reset: {e}"))
+    }
+
+    fn reset_power_limit(&mut self, gpu_index: usize) -> Result<(), String> {
+        let device = self
+            .nvml
+            .device_by_index(gpu_index as u32)
+            .map_err(|e| format!("GPU {gpu_index}: NVML: {e:?}"))?;
+        let default_w = device
+            .power_management_limit_default()
+            .map_err(|e| format!("GPU {gpu_index}: default limit: {e:?}"))?;
+        let target = self.target(gpu_index)?;
+        run_gpu_operation(&target, SetPowerLimit { watts: default_w })
+            .map(|_| ())
+            .map_err(|e| format!("GPU {gpu_index}: power reset: {e}"))
+    }
+
+    fn reset_temp_limit(&mut self, gpu_index: usize) -> Result<(), String> {
+        // NVML thresholds are not restore-able per-call; write the slowdown
+        // threshold back as the sensible default.
+        let device = self
+            .nvml
+            .device_by_index(gpu_index as u32)
+            .map_err(|e| format!("GPU {gpu_index}: NVML: {e:?}"))?;
+        let slow = device
+            .temperature_threshold(TemperatureThreshold::Slowdown)
+            .map_err(|e| format!("GPU {gpu_index}: slowdown: {e:?}"))?;
+        let target = self.target(gpu_index)?;
+        run_gpu_operation(&target, SetTemperatureLimit { celsius: slow as i32 })
+            .map(|_| ())
+            .map_err(|e| format!("GPU {gpu_index}: temp reset: {e}"))
     }
 
     fn restore_freq_auto(&mut self, gpu_index: usize) -> Result<(), String> {

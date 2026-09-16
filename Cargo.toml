@@ -42,6 +42,7 @@ clap = { version = "4.6", features = [
   "derive"
 ] }
 ctrlc = "3.4"
+pwhash = "1"
 compio = { version = "0.19.1", features = ["runtime", "time"] }
 csv = "1.4.0"
 futures-util = "0.3"

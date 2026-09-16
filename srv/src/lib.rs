@@ -17,7 +17,11 @@ pub mod backend;
 pub mod config;
 pub mod controller;
 pub mod http;
+pub mod audit;
+pub mod auth;
+pub mod history;
 pub mod logging;
+pub mod monitor;
 pub mod pid;
 pub mod runtime;
 #[cfg(windows)]

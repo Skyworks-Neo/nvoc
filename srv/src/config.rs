@@ -123,16 +123,42 @@ impl<'de> Deserialize<'de> for GpuSelection {
 /// driver's own curve at any time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ControlMode {
-    /// Driver fan curve (no writes; controller only observes).
+    /// Driver fan curve (no writes; controller only observes). **The
+    /// startup default** — control is opt-in (config / CLI / web), never
+    /// something a reboot silently re-engages.
     #[serde(rename = "auto")]
+    #[default]
     Auto,
     /// Closed-loop PID fan control against `pid.target_c`.
     #[serde(rename = "pid")]
-    #[default]
     Pid,
     /// Pinned duty (`manual_percent`) until the mode changes.
     #[serde(rename = "manual")]
     Manual,
+}
+
+/// Web/API authentication mode. `auto` resolves per platform: Windows on
+/// (LogonUser is always available), Linux off (needs no extra setup for a
+/// root-only unit; see README to enable).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum AuthMode {
+    #[serde(rename = "auto")]
+    #[default]
+    Auto,
+    #[serde(rename = "on")]
+    On,
+    #[serde(rename = "off")]
+    Off,
+}
+
+impl AuthMode {
+    pub fn resolves_enabled(self) -> bool {
+        match self {
+            Self::On => true,
+            Self::Off => false,
+            Self::Auto => cfg!(windows),
+        }
+    }
 }
 
 /// Which control loop is active — exactly one at a time. All loops share the
@@ -406,6 +432,15 @@ pub struct RuntimeConfig {
     pub pid: PidParams,
     /// Frequency-lock loop parameters (`freq_temp` / `freq_power`).
     pub freq: FreqParams,
+    /// Web/API authentication: ask the OS whether the provided user+password
+    /// is valid and belongs to an administrator group (Windows:
+    /// LogonUser + BUILTIN\Administrators; Linux: /etc/shadow verify +
+    /// `auth_group` membership). `auto` = on for Windows, off for Linux
+    /// (the unit runs as root; flip it on after adding the PAM/shadow
+    /// prerequisites). Loopback-only regardless.
+    pub auth: AuthMode,
+    /// Linux only: comma-separated groups that grant access.
+    pub auth_group: String,
     /// Consecutive sensor read failures before the controller restores
     /// driver control (failsafe against a pinned-stuck fan).
     pub read_fail_reset: u32,
@@ -422,6 +457,8 @@ impl Default for RuntimeConfig {
             gpus: GpuSelection::default(),
             mode: ControlMode::default(),
             manual_percent: 50,
+            auth: AuthMode::default(),
+            auth_group: "wheel,sudo".to_string(),
             loop_kind: LoopKind::default(),
             pid: PidParams::default(),
             freq: FreqParams::default(),
@@ -506,7 +543,8 @@ mod tests {
     fn defaults_are_valid() {
         let cfg = RuntimeConfig::default();
         assert_eq!(cfg.port, DEFAULT_PORT);
-        assert_eq!(cfg.mode, ControlMode::Pid);
+        // Startup is always driver-auto: control is opt-in.
+        assert_eq!(cfg.mode, ControlMode::Auto);
         cfg.validate().expect("defaults must validate");
         cfg.pid.validate().expect("default pid must validate");
     }
@@ -517,7 +555,7 @@ mod tests {
         assert_eq!(cfg.pid.target_c, 68.0);
         assert_eq!(cfg.pid.kp, PidParams::default().kp);
         assert_eq!(cfg.sensor, SensorKind::Core);
-        assert_eq!(cfg.mode, ControlMode::Pid);
+        assert_eq!(cfg.mode, ControlMode::Auto);
     }
 
     #[test]

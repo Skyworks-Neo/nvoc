@@ -20,6 +20,10 @@ use std::time::{Duration, Instant};
 pub type SharedConfig = Arc<Mutex<RuntimeConfig>>;
 pub type SharedStatus = Arc<Mutex<Vec<crate::controller::GpuControlStatus>>>;
 pub type SharedHeartbeat = Arc<Mutex<Instant>>;
+/// Backend handle shared with the HTTP plane (`None` before discovery /
+/// after a failed TDR re-discovery — the API layer answers 503).
+pub type SharedBackend = Arc<Mutex<Option<NvapiBackend>>>;
+pub type SharedHistory = Arc<Mutex<crate::history::History>>;
 
 /// Consecutive all-GPU-failure ticks before a TDR recovery is attempted.
 const HARD_FAIL_REDISCOVER_TICKS: u32 = 5;
@@ -40,6 +44,8 @@ pub struct LoopHandles {
     pub config: SharedConfig,
     pub status: SharedStatus,
     pub heartbeat: SharedHeartbeat,
+    pub backend: SharedBackend,
+    pub history: SharedHistory,
     pub cmd_tx: Sender<ServiceCmd>,
     pub cmd_rx: Receiver<ServiceCmd>,
     pub shutdown_tx: Sender<()>,
@@ -53,6 +59,8 @@ pub fn setup(config: RuntimeConfig) -> LoopHandles {
         config: Arc::new(Mutex::new(config)),
         status: Arc::new(Mutex::new(Vec::new())),
         heartbeat: Arc::new(Mutex::new(Instant::now())),
+        backend: Arc::new(Mutex::new(None)),
+        history: Arc::new(Mutex::new(crate::history::History::new(0))),
         cmd_tx,
         cmd_rx,
         shutdown_tx,
@@ -67,7 +75,7 @@ pub fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 fn spawn_watchdog(
-    backend: Arc<Mutex<NvapiBackend>>,
+    backend: SharedBackend,
     config: SharedConfig,
     heartbeat: SharedHeartbeat,
 ) -> JoinHandle<()> {
@@ -105,9 +113,12 @@ fn spawn_watchdog(
                     }
                 };
                 match backend_guard {
-                    Some(mut backend_guard) => {
-                        for i in 0..backend_guard.gpu_count() {
-                            if let Err(e) = backend_guard.restore_fan_auto(i) {
+                    Some(mut guard) => {
+                        let Some(backend) = guard.as_mut() else {
+                            return;
+                        };
+                        for i in 0..backend.gpu_count() {
+                            if let Err(e) = backend.restore_fan_auto(i) {
                                 error!("watchdog: GPU {i} restore failed: {e}");
                             }
                         }
@@ -126,9 +137,11 @@ fn spawn_watchdog(
 /// Ctrl-C, `/shutdown`) or discovery fails; fans are restored to driver
 /// control on every exit path that reaches the loop.
 pub fn run_control_loop(handles: LoopHandles) -> Result<(), String> {
-    let backend = NvapiBackend::discover()?;
-    let discovered = backend.gpu_count();
-    let backend = Arc::new(Mutex::new(backend));
+    let discovered_backend = NvapiBackend::discover()?;
+    let discovered = discovered_backend.gpu_count();
+    *lock(&handles.backend) = Some(discovered_backend);
+    *lock(&handles.history) = crate::history::History::new(discovered);
+    let backend = handles.backend.clone();
 
     let cfg0 = lock(&handles.config).clone();
     let selected = cfg0.selected_indices(discovered);
@@ -192,16 +205,31 @@ pub fn run_control_loop(handles: LoopHandles) -> Result<(), String> {
         let cfg = lock(&config).clone();
         let dt_s = cfg.interval_ms as f32 / 1000.0;
         let mut backend_guard = lock(&backend);
+        let Some(backend_ref) = backend_guard.as_mut() else {
+            error!("backend disappeared; control tick skipped");
+            continue;
+        };
         let mut snapshot = Vec::with_capacity(selected.len());
         for (slot, &gpu_index) in selected.iter().enumerate() {
-            let name = backend_guard.name(gpu_index).into_owned();
+            let name = backend_ref.name(gpu_index).into_owned();
             snapshot.push(controllers[slot].tick(
                 gpu_index,
                 &name,
                 &cfg,
-                &mut *backend_guard,
+                backend_ref,
                 dt_s,
             ));
+        }
+        // Dashboard history sample: monitor readback per controlled GPU
+        // (best effort — history gaps are fine, control is not affected).
+        {
+            let mut history = lock(&handles.history);
+            for (slot, &gpu_index) in selected.iter().enumerate() {
+                let effort = snapshot[slot].fan_written_percent;
+                let temp = snapshot[slot].temp_c;
+                let monitor = backend_ref.read_monitor(gpu_index).unwrap_or_default();
+                history.push(gpu_index, crate::history::sample_from(effort, temp, &monitor));
+            }
         }
         drop(backend_guard);
 
@@ -238,7 +266,7 @@ pub fn run_control_loop(handles: LoopHandles) -> Result<(), String> {
                         "recovery: re-discovered {} GPU(s); control state preserved",
                         fresh.gpu_count()
                     );
-                    *lock(&backend) = fresh;
+                    *lock(&backend) = Some(fresh);
                 }
                 Err(e) => error!("recovery: re-discovery failed ({e}); retrying after cooldown"),
             }
@@ -251,8 +279,10 @@ pub fn run_control_loop(handles: LoopHandles) -> Result<(), String> {
     // Every graceful exit hands the fans back to the driver.
     {
         let mut backend_guard = lock(&backend);
-        for (slot, &gpu_index) in selected.iter().enumerate() {
-            controllers[slot].restore(gpu_index, &mut *backend_guard);
+        if let Some(backend) = backend_guard.as_mut() {
+            for (slot, &gpu_index) in selected.iter().enumerate() {
+                controllers[slot].restore(gpu_index, backend);
+            }
         }
     }
     *lock(&heartbeat) = Instant::now();
@@ -260,7 +290,7 @@ pub fn run_control_loop(handles: LoopHandles) -> Result<(), String> {
     Ok(())
 }
 
-fn handle_cmd(cmd: ServiceCmd, backend: &Mutex<NvapiBackend>) {
+fn handle_cmd(cmd: ServiceCmd, backend: &Mutex<Option<NvapiBackend>>) {
     let ServiceCmd::SetOcGlobal {
         gpu_index,
         delta_khz,
@@ -273,14 +303,18 @@ fn handle_cmd(cmd: ServiceCmd, backend: &Mutex<NvapiBackend>) {
         return;
     }
     let mut backend_guard = lock(backend);
-    if gpu_index >= backend_guard.gpu_count() {
+    let Some(backend) = backend_guard.as_mut() else {
+        error!("OC command rejected: backend not initialized");
+        return;
+    };
+    if gpu_index >= backend.gpu_count() {
         error!(
             "OC command rejected: GPU {gpu_index} out of range (system has {})",
-            backend_guard.gpu_count()
+            backend.gpu_count()
         );
         return;
     }
-    match backend_guard.set_oc_global(gpu_index, delta_khz) {
+    match backend.set_oc_global(gpu_index, delta_khz) {
         Ok(()) => info!("GPU {gpu_index}: OC delta {delta_khz} kHz applied"),
         Err(e) => error!("{e}"),
     }
