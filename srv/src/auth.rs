@@ -63,6 +63,27 @@ pub fn verify(user: &str, password: &str, cfg: &RuntimeConfig) -> std::result::R
 }
 
 #[cfg(windows)]
+fn sid_to_string(sid: *mut core::ffi::c_void) -> Option<String> {
+    // S-1-{identifier-authority}-{sub-authority...} — the wire format is
+    // fixed: rev(1) count(1) authority(6) sub-authorities(u32 LE each).
+    unsafe {
+        let bytes = sid as *const u8;
+        let revision = *bytes;
+        let count = *bytes.add(1) as usize;
+        let mut authority: u64 = 0;
+        for i in 0..6 {
+            authority = (authority << 8) | *bytes.add(2 + i) as u64;
+        }
+        let mut out = format!("S-{revision}-{authority}");
+        let subs = bytes.add(8) as *const u32;
+        for i in 0..count {
+            out.push_str(&format!("-{}", *subs.add(i)));
+        }
+        Some(out)
+    }
+}
+
+#[cfg(windows)]
 fn os_verify(user: &str, password: &str, _cfg: &RuntimeConfig) -> std::result::Result<(), String> {
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
     use windows_sys::Win32::Security::LogonUserW;
@@ -124,15 +145,30 @@ fn os_verify(user: &str, password: &str, _cfg: &RuntimeConfig) -> std::result::R
             // would only ever examine the first entry.
             let entries =
                 std::slice::from_raw_parts(groups.Groups.as_ptr(), groups.GroupCount as usize);
+            let mut seen: Vec<String> = Vec::new();
             for g in entries {
                 if g.Sid.is_null() {
                     continue;
                 }
                 if EqualSid(g.Sid, admin) != 0 {
                     let attrs = g.Attributes;
-                    return attrs & (SE_GROUP_ENABLED | SE_GROUP_USE_FOR_DENY_ONLY) != 0;
+                    // SE_GROUP_ENABLED(4) or SE_GROUP_USE_FOR_DENY_ONLY(0x10,
+                    // the UAC-filtered admin token) both prove membership.
+                    let is_admin = attrs & (SE_GROUP_ENABLED | SE_GROUP_USE_FOR_DENY_ONLY) != 0;
+                    log::info!(
+                        "auth: Administrators SID present in token (attrs 0x{attrs:x}) -> admin={is_admin}"
+                    );
+                    return is_admin;
+                }
+                if let Some(text) = sid_to_string(g.Sid) {
+                    seen.push(format!("{text}[0x{:x}]", g.Attributes));
                 }
             }
+            // Admin SID not in the token at all — dump what we saw so the
+            // failure is diagnosable from the log alone.
+            log::error!(
+                "auth: Administrators SID (S-1-5-32-544) NOT in token groups; saw: {seen:?}"
+            );
             false
         }
     }
