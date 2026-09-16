@@ -79,7 +79,11 @@ On a fresh machine, start with the bundled bootstrap shim instead — `setup.cmd
 (Windows) or `./setup.sh` (Linux/macOS): it installs rustup and uv when they are
 missing, checks the MSVC linker prerequisite (Windows), and hands off to the
 doctor. `cargo xtask` itself requires an existing Rust toolchain and therefore
-cannot install it from the inside.
+cannot install it from the inside. On Windows, `setup.cmd --msys2 [llvm|gcc]`
+additionally bootstraps an [MSYS2 toolchain environment](./docs/design/msys2-gnullvm-compat.md)
+— clang64/gnullvm (LLVM, default, verified) or ucrt64/windows-gnu (GCC); the
+doctor branches on the resolved rustc host triple, so both the msvc and the
+gnu-like faces pass the same setup.
 
 `cargo xtask help` lists the full surface, including `build --cuda 12|11|none`
 (R470-era drivers take `11`) and `test --tier gpu-readonly` for the ignored
@@ -451,6 +455,10 @@ cargo xtask run gui   # 也可以是：tui | cli | stressor
 全新机器请改用仓库自带的引导脚本起步——`setup.cmd`（Windows）或 `./setup.sh`
 （Linux/macOS）：缺少 rustup/uv 时自动安装、预检 MSVC 链接器（Windows），
 然后交接给环境体检。`cargo xtask` 本身要求已有 Rust 工具链，无法从内部安装。
+Windows 上 `setup.cmd --msys2 [llvm|gcc]` 还可选引导一套
+[MSYS2 工具链环境](./docs/design/msys2-gnullvm-compat.md)
+——clang64/gnullvm（LLVM，默认，已实测）或 ucrt64/windows-gnu（GCC）——doctor 按
+解析到的 rustc host 三元组分流，msvc 与 gnu-like 两个构建面走同一份 setup。
 
 `cargo xtask help` 查看完整命令面，包括 `build --cuda 12|11|none`（R470 世代驱动用
 `11`）和 `test --tier gpu-readonly`（被 ignore 的只读硬件测试套件）。xtask 永远不会

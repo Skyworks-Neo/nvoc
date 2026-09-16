@@ -59,35 +59,31 @@ fn build_tree(args: &BuildArgs) -> Res<()> {
     for exclude in workspace_excludes(args.cuda) {
         tree.args(["--exclude", exclude]);
     }
+    tree.args(tree_feature_args(args.cuda));
     nvapi_cache::run_guarded(&root, &mut tree)?;
 
-    // auto-optimizer's default feature set already carries the cuda12
-    // generation, so only the other two modes need an explicit override.
-    if let Some(features) = optimizer_feature_args(args.cuda) {
-        let mut optimizer = base(args.release);
-        optimizer.arg("-p").arg("nvoc-auto-optimizer");
-        optimizer.args(features);
-        nvapi_cache::run_guarded(&root, &mut optimizer)?;
+    // cuda11/none need a second invocation because feature unification would
+    // merge the mutually exclusive cudarc cuda-11040/cuda-12090 units inside
+    // one build. Within that invocation the optimizer and the stressor agree
+    // on one feature set per generation, so their tail is a single call.
+    if let Some(tail_args) = tail_feature_args(args.cuda) {
+        let mut tail = base(args.release);
+        tail.arg("-p").arg("nvoc-auto-optimizer");
+        tail.arg("-p").arg("cli-stressor-cuda-rs");
+        tail.args(tail_args);
+        nvapi_cache::run_guarded(&root, &mut tail)?;
     }
-
-    let mut stressor = base(args.release);
-    stressor.arg("-p").arg("cli-stressor-cuda-rs");
-    stressor.args(stressor_feature_args(args.cuda));
-    nvapi_cache::run_guarded(&root, &mut stressor)
+    Ok(())
 }
 
 fn build_packages(args: &BuildArgs) -> Res<()> {
     let root = util::repo_root();
-    for package in &args.packages {
+    for (packages, feature_args) in package_groups(&args.packages, args.cuda) {
         let mut command = base(args.release);
-        command.arg("-p").arg(package);
-        if package == "cli-stressor-cuda-rs" {
-            command.args(stressor_feature_args(args.cuda));
-        } else if package == "nvoc-auto-optimizer"
-            && let Some(features) = optimizer_feature_args(args.cuda)
-        {
-            command.args(features);
+        for package in packages {
+            command.arg("-p").arg(package);
         }
+        command.args(feature_args);
         nvapi_cache::run_guarded(&root, &mut command)?;
     }
     Ok(())
@@ -103,12 +99,101 @@ pub fn stressor_feature_args(cuda: CudaMode) -> Vec<&'static str> {
     }
 }
 
-/// Whole-tree `--exclude` list for the requested CUDA mode.
+/// Whole-tree `--exclude` list for the requested CUDA mode. cuda12 keeps every
+/// member in one invocation: the stressor's direct member selection (default
+/// cuda12) and the optimizer's bundled activation unify to the same
+/// {cuda12, vulkan} unit, so the workspace step builds the standalone binary
+/// itself. cuda11/none must drop both CUDA crates or the workspace selection's
+/// default cuda12 features would poison the tail's cuda11 units.
 pub fn workspace_excludes(cuda: CudaMode) -> Vec<&'static str> {
     match cuda {
-        CudaMode::Cuda12 => vec!["cli-stressor-cuda-rs"],
+        CudaMode::Cuda12 => vec![],
         CudaMode::Cuda11 | CudaMode::Off => vec!["cli-stressor-cuda-rs", "nvoc-auto-optimizer"],
     }
+}
+
+/// Extra feature arguments for the workspace invocation. The bare `vulkan`
+/// name is unambiguous (only the stressor declares it), so cargo applies it
+/// there alone; without it the member-selected stressor binary would build
+/// without the Vulkan backend the `stressor-bundled` edge always expects.
+pub fn tree_feature_args(cuda: CudaMode) -> Vec<&'static str> {
+    match cuda {
+        CudaMode::Cuda12 => vec!["--features", "vulkan"],
+        CudaMode::Cuda11 | CudaMode::Off => vec![],
+    }
+}
+
+/// Feature arguments for the second invocation that builds the optimizer and
+/// the stressor together in cuda11/none modes; `None` means cuda12, whose
+/// workspace step already covers both. `--no-default-features` applies to
+/// both selected packages and the bare `cuda11` name is unambiguous across
+/// them (only the stressor declares it), so the stressor side still receives
+/// exactly its {cuda11, vulkan} set — vulkan arrives via `stressor-bundled`.
+pub fn tail_feature_args(cuda: CudaMode) -> Option<Vec<&'static str>> {
+    match cuda {
+        CudaMode::Cuda12 => None,
+        CudaMode::Cuda11 => Some(vec![
+            "--no-default-features",
+            "--features",
+            "stressor-bundled-cuda11,cuda11",
+        ]),
+        CudaMode::Off => Some(vec![
+            "--no-default-features",
+            "--features",
+            "stressor-external",
+        ]),
+    }
+}
+
+/// Feature arguments for one explicitly-selected package; empty means default
+/// features.
+fn package_feature_args(package: &str, cuda: CudaMode) -> Vec<&'static str> {
+    match package {
+        "cli-stressor-cuda-rs" => stressor_feature_args(cuda),
+        "nvoc-auto-optimizer" => optimizer_feature_args(cuda).unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
+/// Folds explicitly-selected packages into one cargo invocation per feature
+/// signature (first-seen order): same-signature packages share a single
+/// build's parallelism instead of each paying a separate cargo start-up and
+/// full graph re-scan. When the optimizer and the stressor are selected
+/// together in cuda11/none modes they share the merged tree-tail signature.
+fn package_groups<'a>(
+    packages: &'a [String],
+    cuda: CudaMode,
+) -> Vec<(Vec<&'a str>, Vec<&'static str>)> {
+    let pair_signature = if packages.iter().any(|p| p == "nvoc-auto-optimizer")
+        && packages.iter().any(|p| p == "cli-stressor-cuda-rs")
+    {
+        tail_feature_args(cuda)
+    } else {
+        None
+    };
+    let mut groups: Vec<(Vec<&'a str>, Vec<&'static str>)> = Vec::new();
+    for package in packages {
+        let signature = if pair_signature.is_some()
+            && matches!(
+                package.as_str(),
+                "nvoc-auto-optimizer" | "cli-stressor-cuda-rs"
+            ) {
+            pair_signature
+                .clone()
+                .expect("pair_signature is Some whenever it is read")
+        } else {
+            package_feature_args(package, cuda)
+        };
+        if let Some(group) = groups
+            .iter_mut()
+            .find(|(_, existing)| *existing == signature)
+        {
+            group.0.push(package.as_str());
+        } else {
+            groups.push((vec![package.as_str()], signature));
+        }
+    }
+    groups
 }
 
 /// Feature arguments for auto-optimizer when its default features do not
@@ -376,17 +461,77 @@ mod tests {
     }
 
     #[test]
-    fn excludes_always_drop_the_stressor_crate() {
-        for mode in [CudaMode::Cuda11, CudaMode::Cuda12, CudaMode::Off] {
-            assert!(super::workspace_excludes(mode).contains(&"cli-stressor-cuda-rs"));
+    fn cuda12_builds_everything_in_one_invocation() {
+        assert!(super::workspace_excludes(CudaMode::Cuda12).is_empty());
+        assert_eq!(
+            super::tree_feature_args(CudaMode::Cuda12),
+            vec!["--features", "vulkan"]
+        );
+        assert_eq!(super::tail_feature_args(CudaMode::Cuda12), None);
+    }
+
+    #[test]
+    fn cuda11_and_none_split_into_workspace_plus_merged_tail() {
+        for mode in [CudaMode::Cuda11, CudaMode::Off] {
+            let excludes = super::workspace_excludes(mode);
+            assert!(excludes.contains(&"cli-stressor-cuda-rs"), "{mode:?}");
+            assert!(excludes.contains(&"nvoc-auto-optimizer"), "{mode:?}");
+            assert!(super::tree_feature_args(mode).is_empty(), "{mode:?}");
+            let tail = super::tail_feature_args(mode).expect("tail invocation required");
+            assert_eq!(tail.first(), Some(&"--no-default-features"), "{mode:?}");
         }
         assert_eq!(
-            super::workspace_excludes(CudaMode::Cuda12),
-            vec!["cli-stressor-cuda-rs"]
+            super::tail_feature_args(CudaMode::Cuda11),
+            Some(vec![
+                "--no-default-features",
+                "--features",
+                "stressor-bundled-cuda11,cuda11"
+            ])
         );
         assert_eq!(
-            super::workspace_excludes(CudaMode::Off),
-            vec!["cli-stressor-cuda-rs", "nvoc-auto-optimizer"]
+            super::tail_feature_args(CudaMode::Off),
+            Some(vec![
+                "--no-default-features",
+                "--features",
+                "stressor-external"
+            ])
         );
+    }
+
+    #[test]
+    fn cuda12_default_feature_packages_share_one_invocation() {
+        let packages = ["nvoc-cli", "nvoc-auto-optimizer", "nvoc-srv"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>();
+        let groups = super::package_groups(&packages, CudaMode::Cuda12);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(
+            groups[0].0,
+            vec!["nvoc-cli", "nvoc-auto-optimizer", "nvoc-srv"]
+        );
+        assert!(groups[0].1.is_empty());
+    }
+
+    #[test]
+    fn cuda11_optimizer_stressor_pair_shares_the_tail_signature() {
+        let packages = ["nvoc-auto-optimizer", "cli-stressor-cuda-rs"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>();
+        let groups = super::package_groups(&packages, CudaMode::Cuda11);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(
+            groups[0].1,
+            super::tail_feature_args(CudaMode::Cuda11).unwrap()
+        );
+    }
+
+    #[test]
+    fn cuda11_lone_stressor_keeps_its_own_signature() {
+        let packages = vec!["cli-stressor-cuda-rs".to_string()];
+        let groups = super::package_groups(&packages, CudaMode::Cuda11);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].1, super::stressor_feature_args(CudaMode::Cuda11));
     }
 }
