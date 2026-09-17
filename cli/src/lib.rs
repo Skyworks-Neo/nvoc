@@ -1470,6 +1470,15 @@ fn render_root_help() -> String {
     text.push_str("  -g, --gpu <GPU_ID>     GPU selector; repeat for multiple GPUs\n");
     text.push_str("      --nvapi            Force the NVAPI backend\n");
     text.push_str("      --nvml             Force the NVML backend\n");
+    text.push_str("      --nvml-path <PATH> Explicit NVML library path (Windows: nvml.dll file;\n");
+    text.push_str("                         Linux: libnvidia-ml.so.1 file or its directory\n");
+    text.push_str(
+        "      --nvapi-path <PATH> Explicit NVAPI library override (Windows: directory or\n",
+    );
+    text.push_str(
+        "                         nvapi64.dll file; Linux: libnvidia-api.so.1 file or its\n",
+    );
+    text.push_str("                         directory, preloaded for the SONAME lookup\n");
     text.push_str("  -O, --output <FORMAT>  Output format: human or json [default: human]\n");
     text.push_str("      --no-color         Disable ANSI color output\n");
     text.push_str("  -h, --help             Print help\n");
@@ -7544,6 +7553,9 @@ mod tests {
         assert!(rendered.contains("V/F curve tables"));
         // the list meta command itself stays out of the listing
         assert!(!rendered.contains("    list\n"));
+        // global library-path overrides stay in the hand-rendered options block
+        assert!(rendered.contains("--nvml-path <PATH>"));
+        assert!(rendered.contains("--nvapi-path <PATH>"));
 
         let filtered = render_grouped_commands(Some(Group::Fan));
         assert!(filtered.contains("get-fan-info"));
