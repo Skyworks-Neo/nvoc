@@ -16,4 +16,13 @@ if ! command -v uv >/dev/null 2>&1; then
     export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 fi
 
+# nvapi-rs is a path dependency of nvoc-core, so `cargo run -p xtask` cannot
+# even parse the workspace manifest without it — yet the submodule bootstrap
+# is itself a step inside `cargo xtask setup`. Break the chicken-and-egg by
+# checking it out here, before the first cargo invocation.
+if [ ! -f nvapi-rs/Cargo.toml ]; then
+    echo "[bootstrap] nvapi-rs submodule missing - initializing..."
+    git submodule update --init nvapi-rs
+fi
+
 exec cargo run --quiet -p xtask -- setup "$@"
