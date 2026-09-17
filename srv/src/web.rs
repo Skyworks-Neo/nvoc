@@ -6,10 +6,8 @@
 //! header, so the mutation guard is unchanged.
 
 /// GET `/` — the console page.
-pub const INDEX_HTML: &str = include_str!("../assets/index.html");
+pub const INDEX_HTML: &str = include_str!("../assets/ui.html");
 /// GET `/ui.css` — console stylesheet.
 pub const STYLE_CSS: &str = include_str!("../assets/ui.css");
-/// GET `/app.js` — console logic (routing, polling, mutations, uPlot).
-pub const APP_JS: &str = include_str!("../assets/app.js");
-/// GET `/vendor/uplot.iife.min.js` — vendored uPlot dist (MIT, see uPlot.LICENSE.txt).
-pub const UPLOT_JS: &str = include_str!("../assets/vendor/uplot.iife.min.js");
+/// GET `/ui.js` — console logic (polling + mutations).
+pub const APP_JS: &str = include_str!("../assets/ui.js");

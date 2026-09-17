@@ -541,12 +541,7 @@ fn handle_request(
         "/ui.css" => {
             serve_static(request, web::STYLE_CSS, "text/css; charset=utf-8");
         }
-        "/app.js" => {
-            serve_static(request, web::APP_JS, "text/javascript; charset=utf-8");
-        }
-        "/vendor/uplot.iife.min.js" => {
-            serve_static(request, web::UPLOT_JS, "text/javascript; charset=utf-8");
-        }
+
         "/help" => {
             let help = "nvoc-srv control plane\n\
                         GET  /status   — per-GPU temps, fan duty, PID terms, failsafe state\n\
