@@ -55,7 +55,15 @@ pub fn run(command: &mut Command) -> Res<()> {
 /// log lets callers diagnose cargo failures after the fact; rustc diagnostics
 /// all go to stderr, so nothing diagnostic is lost.
 pub fn run_capture_stderr(command: &mut Command, stderr_log: &mut String) -> Res<()> {
-    use std::io::{BufRead, BufReader};
+    use std::io::{BufRead, BufReader, IsTerminal};
+    // Piping stderr makes cargo's auto color detection see a non-tty stderr
+    // and strip rustc diagnostic colors, even though this function forwards
+    // the lines (escape codes included) to a real terminal below. Ask for
+    // colors explicitly when our own stderr is a terminal; keep auto for
+    // CI/redirected runs so captured logs stay free of ANSI codes.
+    if std::io::stderr().is_terminal() {
+        command.env("CARGO_TERM_COLOR", "always");
+    }
     let shown = display(command);
     println!("  $ {shown}");
     command.stderr(Stdio::piped());
