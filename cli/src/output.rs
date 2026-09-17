@@ -430,9 +430,9 @@ fn pvfp_cell(text: Option<String>, w: usize) -> String {
     }
 }
 
-/// Human format for `get-vbios --maxwell-vftable-decode` / `--pascal-vp-decode`
-/// — one aligned bare-number table per ladder source, mirroring the
-/// private-vftable table style:
+/// Human format for `get-vbios --enable-detail-parser` (and its deprecated
+/// alias `--maxwell-vftable-decode`) — one aligned bare-number table per
+/// ladder source, mirroring the private-vftable table style:
 /// - `vbios-boost-ladder` (Maxwell GPU Boost 2.0): `Id | V_min | V_max | Freq`,
 ///   voltage = the vmap node's (min, max) in mV.
 /// - `vbios-vp-ladder` (Pascal+ Virtual P-State): `Id | Freq` — VP points
@@ -444,8 +444,140 @@ pub(super) fn format_maxwell_vftable_output(output: &Value) -> Vec<String> {
     match output.get("source").and_then(Value::as_str) {
         Some("vbios-boost-ladder") => format_boost_ladder_table(output),
         Some("vbios-vp-ladder") => format_vp_ladder_table(output),
+        Some("vbios-blackwell") => format_blackwell_table(output),
         _ => format_value_block(output, 1),
     }
+}
+
+/// Human format for the Blackwell container detail (`vbios-blackwell`):
+/// container header + power record + thermal/fan lines, mirroring the
+/// vp-ladder renderer's compact key-line style.
+fn format_blackwell_table(output: &Value) -> Vec<String> {
+    let mut lines = Vec::new();
+    let container = output.get("container");
+    let magic = container
+        .and_then(|c| c.get("magic"))
+        .and_then(Value::as_str)
+        .unwrap_or("?");
+    let base = container
+        .and_then(|c| c.get("image_base"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let bit = container
+        .and_then(|c| c.get("bit_offset"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    lines.push(nvoc_cli_common::color::stylize(
+        &format!("    --- Blackwell container {magic} | 55AA base {base:#x} | BIT {bit:#x} ---"),
+        false,
+    ));
+    if let Some(v) = output.get("bios_version").and_then(Value::as_str) {
+        lines.push(nvoc_cli_common::color::stylize(
+            &format!("    bios: {v}"),
+            false,
+        ));
+    }
+    let iu = output.get("internal_use");
+    if iu.and_then(|i| i.get("present")).and_then(Value::as_bool) == Some(true) {
+        let parts: Vec<String> = [
+            iu.and_then(|i| i.get("version"))
+                .and_then(Value::as_str)
+                .map(|s| s.to_string()),
+            iu.and_then(|i| i.get("project"))
+                .and_then(Value::as_str)
+                .map(|s| format!("project {s}")),
+            iu.and_then(|i| i.get("build_date"))
+                .and_then(Value::as_str)
+                .map(|s| format!("built {s}")),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        if !parts.is_empty() {
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!("    internal: {}", parts.join(" | ")),
+                false,
+            ));
+        }
+    }
+    if let Some(p) = output.get("power").filter(|p| !p.is_null()) {
+        let rated = p.get("rated_watt").and_then(Value::as_f64).unwrap_or(0.0);
+        let max = p.get("max_watt").and_then(Value::as_f64).unwrap_or(0.0);
+        lines.push(nvoc_cli_common::color::stylize(
+            &format!("    power: rated {rated:.0} W, max {max:.0} W"),
+            false,
+        ));
+    }
+    if let Some(t) = output
+        .get("thermal")
+        .and_then(|t| t.get("slowdown_c"))
+        .and_then(Value::as_array)
+    {
+        let temps: Vec<String> = t
+            .iter()
+            .filter_map(Value::as_u64)
+            .map(|c| format!("{c}C"))
+            .collect();
+        if !temps.is_empty() {
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!("    thermal slowdown: {}", temps.join("/")),
+                false,
+            ));
+        }
+    }
+    if let Some(curve) = output
+        .get("fan")
+        .and_then(|f| f.get("curve"))
+        .and_then(Value::as_array)
+    {
+        let points: Vec<String> = curve
+            .iter()
+            .filter_map(|p| {
+                let t = p.get("temp_c").and_then(Value::as_f64)?;
+                let r = p.get("rpm").and_then(Value::as_u64)?;
+                Some(format!("{t:.1}C->{r}rpm"))
+            })
+            .collect();
+        if !points.is_empty() {
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!("    fan curve: {}", points.join(", ")),
+                false,
+            ));
+        }
+    }
+    let pairs = output
+        .get("fan")
+        .and_then(|f| f.get("cooler_pairs"))
+        .and_then(Value::as_array);
+    if let Some(pairs) = pairs.filter(|p| !p.is_empty()) {
+        let items: Vec<String> = pairs
+            .iter()
+            .filter_map(|p| {
+                let min = p.get("min_rpm").and_then(Value::as_u64)?;
+                let max = p.get("max_rpm").and_then(Value::as_u64)?;
+                Some(format!("{min}/{max}"))
+            })
+            .collect();
+        lines.push(nvoc_cli_common::color::stylize(
+            &format!(
+                "    fan coolers ({}): min/max rpm {}",
+                items.len(),
+                items.join(", ")
+            ),
+            false,
+        ));
+    }
+    let delta = output
+        .get("perf_pointers")
+        .and_then(|p| p.get("delta"))
+        .and_then(Value::as_str);
+    if let Some(delta) = delta {
+        lines.push(nvoc_cli_common::color::stylize(
+            &format!("    perf ptrs: relocation delta {delta}"),
+            false,
+        ));
+    }
+    lines
 }
 
 fn format_boost_ladder_table(output: &Value) -> Vec<String> {
@@ -610,11 +742,388 @@ fn format_vp_ladder_table(output: &Value) -> Vec<String> {
             ));
         }
     }
-    if let Some(mem) = output.get("mem_clock_mhz").and_then(Value::as_i64) {
+    if let Some(mem) = output.get("mem_clock_ddr_mhz").and_then(Value::as_i64) {
         lines.push(nvoc_cli_common::color::stylize(
-            &format!("    mem clock: {mem} MHz"),
+            &format!("    mem clock (DDR): {mem} MHz"),
             false,
         ));
+    }
+    // VP footers: per-ID memory clocks (CPR footer walk, file order)
+    if let Some(footers) = output.get("footers").and_then(Value::as_array) {
+        let items: Vec<String> = footers
+            .iter()
+            .map(|f| {
+                let id = f.get("id").and_then(Value::as_str).unwrap_or("?");
+                let mem = f.get("mem_clock_mhz").and_then(Value::as_i64).unwrap_or(0);
+                let ddr = f
+                    .get("mem_clock_ddr_mhz")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                format!("{id} {mem}/{ddr}")
+            })
+            .collect();
+        if !items.is_empty() {
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!("    footers (DRAM/DDR MHz): {}", items.join(", ")),
+                false,
+            ));
+        }
+    }
+    // power table (target/limit/slider per CPR power scan)
+    if let Some(power) = output.get("power").and_then(Value::as_array)
+        && let Some(p) = power.first()
+    {
+        let platform = p.get("platform").and_then(Value::as_str).unwrap_or("?");
+        let target = p.get("target_watt").and_then(Value::as_f64).unwrap_or(0.0);
+        let limit = p.get("limit_watt").and_then(Value::as_f64).unwrap_or(0.0);
+        let slider = p
+            .get("slider")
+            .and_then(|s| s.get("enabled"))
+            .and_then(Value::as_bool);
+        let slider_text = match slider {
+            Some(true) => "enabled",
+            Some(false) => "disabled",
+            None => "not found",
+        };
+        let min_w = p
+            .get("min_watt")
+            .and_then(Value::as_f64)
+            .map(|v| format!("min {v:.0} W, "));
+        let range = p
+            .get("adjustment_percent")
+            .and_then(Value::as_str)
+            .map(|r| format!(", range {r}"))
+            .unwrap_or_default();
+        let count = if power.len() > 1 {
+            format!(" ({} copies)", power.len())
+        } else {
+            String::new()
+        };
+        lines.push(nvoc_cli_common::color::stylize(
+                &format!(
+                    "    power ({platform}): {}target {target:.0} W, limit {limit:.0} W{range}, slider {slider_text}{count}",
+                    min_w.unwrap_or_default()
+                ),
+                false,
+            ));
+    }
+    // thermal/fan: documented BIT 'P' table (nouveau semantics). The
+    // absence note only prints when no modern-slot fan/thermal data rendered
+    // above — on Pascal those slots carry the actionable tables instead.
+    if let Some(thermal) = output.get("thermal_fan") {
+        match thermal.get("present").and_then(Value::as_bool) {
+            Some(true) => {
+                let mode = thermal
+                    .get("fan_mode")
+                    .and_then(Value::as_str)
+                    .unwrap_or("?");
+                let mut text = format!("    thermal/fan: mode {mode}");
+                if let (Some(min), Some(max)) = (
+                    thermal.get("linear_min_temp_c").and_then(Value::as_i64),
+                    thermal.get("linear_max_temp_c").and_then(Value::as_i64),
+                ) {
+                    text.push_str(&format!(", linear {min}..{max} C"));
+                }
+                if let (Some(min), Some(max)) = (
+                    thermal.get("min_duty_percent").and_then(Value::as_i64),
+                    thermal.get("max_duty_percent").and_then(Value::as_i64),
+                ) {
+                    text.push_str(&format!(", duty {min}..{max}%"));
+                }
+                if let Some(trips) = thermal.get("trips").and_then(Value::as_array) {
+                    let items: Vec<String> = trips
+                        .iter()
+                        .map(|t| {
+                            format!(
+                                "{}C->{}%",
+                                t.get("temp_c").and_then(Value::as_i64).unwrap_or(0),
+                                t.get("duty_percent").and_then(Value::as_i64).unwrap_or(0)
+                            )
+                        })
+                        .collect();
+                    if !items.is_empty() {
+                        text.push_str(&format!(", trips: {}", items.join(", ")));
+                    }
+                }
+                lines.push(nvoc_cli_common::color::stylize(&text, false));
+            }
+            _ => {
+                let has_modern_fan_data = output
+                    .get("fan_cooler")
+                    .and_then(|f| f.get("present"))
+                    .and_then(Value::as_bool)
+                    == Some(true);
+                if !has_modern_fan_data
+                    && let Some(note) = thermal.get("note").and_then(Value::as_str)
+                {
+                    lines.push(nvoc_cli_common::color::stylize_warning(&format!(
+                        "    thermal/fan: {note}"
+                    )));
+                }
+            }
+        }
+    }
+    // display map (DCB connector table)
+    if let Some(dcb) = output.get("dcb")
+        && let Some(pads) = dcb.get("pads").and_then(Value::as_array)
+    {
+        let items: Vec<String> = pads
+            .iter()
+            .map(|p| {
+                let pad = p.get("pad").and_then(Value::as_str).unwrap_or("?");
+                let roles = p
+                    .get("roles")
+                    .and_then(Value::as_array)
+                    .map(|rs| {
+                        rs.iter()
+                            .filter_map(Value::as_str)
+                            .collect::<Vec<_>>()
+                            .join("+")
+                    })
+                    .unwrap_or_default();
+                format!("{pad}={roles}")
+            })
+            .collect();
+        if !items.is_empty() {
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!("    display: {}", items.join(" ")),
+                false,
+            ));
+        }
+    }
+    // General (GPU-Z aligned: version / build date / message / board)
+    if let Some(id) = output.get("identity") {
+        let mut bits: Vec<String> = Vec::new();
+        for key in ["version", "build_date", "message", "board_id"] {
+            if let Some(v) = id.get(key).and_then(Value::as_str) {
+                bits.push(v.to_string());
+            }
+        }
+        if !bits.is_empty() {
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!("    bios: {}", bits.join(" | ")),
+                false,
+            ));
+        }
+    }
+    // memory subsystem summary (clock ranges / timings / variants)
+    if let Some(mem) = output.get("memory") {
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(info) = mem
+            .get("info")
+            .and_then(|i| i.get("variants"))
+            .and_then(Value::as_array)
+        {
+            let mut types = std::collections::BTreeSet::new();
+            let mut vendors = std::collections::BTreeSet::new();
+            for v in info {
+                if let Some(t) = v.get("type").and_then(Value::as_str) {
+                    types.insert(t.to_string());
+                }
+                if let Some(vd) = v.get("vendor").and_then(Value::as_str) {
+                    vendors.insert(vd.to_string());
+                }
+            }
+            if !types.is_empty() {
+                parts.push(format!(
+                    "{} {}",
+                    types.iter().cloned().collect::<Vec<_>>().join("/"),
+                    vendors.iter().cloned().collect::<Vec<_>>().join("/")
+                ));
+            }
+        }
+        if let Some(clock) = mem
+            .get("clock_table")
+            .and_then(|c| c.get("freq_ranges"))
+            .and_then(Value::as_array)
+        {
+            parts.push(format!("{} freq ranges", clock.len()));
+        }
+        if let Some(tw) = mem
+            .get("tweak_table")
+            .and_then(|t| t.get("timing_sets"))
+            .and_then(Value::as_i64)
+        {
+            parts.push(format!("{tw} timing sets"));
+        }
+        if !parts.is_empty() {
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!("    memory: {}", parts.join(", ")),
+                false,
+            ));
+        }
+    }
+    // Thermal limits (GPU-Z aligned: rated / maximum from ThermalPolicy)
+    if let Some(tp) = output.get("thermal_policy")
+        && tp.get("present").and_then(Value::as_bool) == Some(true)
+        && let Some(entries) = tp.get("entries").and_then(Value::as_array)
+    {
+        let temps: Vec<String> = entries
+            .iter()
+            .filter(|e| e.get("enabled").and_then(Value::as_bool) == Some(true))
+            .map(|e| {
+                format!(
+                    "{}..{}C",
+                    e.get("temp_a_c").and_then(Value::as_i64).unwrap_or(0),
+                    e.get("temp_c_c").and_then(Value::as_i64).unwrap_or(0)
+                )
+            })
+            .collect();
+        if !temps.is_empty() {
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!("    thermal limits: {}", temps.join(", ")),
+                false,
+            ));
+        }
+    }
+    // Fan curve (FanPolicy tail: (temp °C<<5, RPM) points, ascending)
+    if let Some(fp) = output.get("fan_policy")
+        && fp.get("present").and_then(Value::as_bool) == Some(true)
+        && let Some(curves) = fp.get("curves").and_then(Value::as_array)
+        && let Some(curve) = curves.first().and_then(Value::as_array)
+        && !curve.is_empty()
+    {
+        let pts: Vec<String> = curve
+            .iter()
+            .map(|p| {
+                format!(
+                    "{}C->{}rpm",
+                    p.get("temp_c").and_then(Value::as_f64).unwrap_or(0.0),
+                    p.get("rpm").and_then(Value::as_i64).unwrap_or(0)
+                )
+            })
+            .collect();
+        lines.push(nvoc_cli_common::color::stylize(
+            &format!("    fan curve: {}", pts.join(", ")),
+            false,
+        ));
+    }
+    // Fan cooler envelope (per-cooler max duty / max RPM; count = cooler
+    // controllers the ROM provisions — NVAPI cooler Count same semantics)
+    if let Some(fc) = output.get("fan_cooler")
+        && fc.get("present").and_then(Value::as_bool) == Some(true)
+        && let Some(coolers) = fc.get("coolers").and_then(Value::as_array)
+    {
+        let count = fc
+            .get("cooler_count")
+            .and_then(Value::as_i64)
+            .unwrap_or(coolers.len() as i64);
+        let items: Vec<String> = coolers
+            .iter()
+            .map(|c| {
+                let duty = c.get("max_duty_percent").and_then(Value::as_i64);
+                let rpm = c.get("max_rpm").and_then(Value::as_i64);
+                format!(
+                    "duty {}%, max rpm {}",
+                    duty.map(|d| d.to_string()).unwrap_or_else(|| "?".into()),
+                    rpm.map(|r| r.to_string()).unwrap_or_else(|| "?".into())
+                )
+            })
+            .collect();
+        lines.push(nvoc_cli_common::color::stylize(
+            &format!("    fan coolers ({}): {}", count, items.join("; ")),
+            false,
+        ));
+    }
+    // Falcon ucode inventory (PMU/devinit/security-license firmware)
+    if let Some(falcon) = output.get("falcon")
+        && falcon.get("present").and_then(Value::as_bool) == Some(true)
+        && let Some(entries) = falcon.get("entries").and_then(Value::as_array)
+    {
+        let items: Vec<String> = entries
+            .iter()
+            .filter(|e| e.get("desc").is_some_and(|d| !d.is_null()))
+            .map(|e| {
+                let app = e.get("application").and_then(Value::as_str).unwrap_or("?");
+                let tgt = e.get("target").and_then(Value::as_str).unwrap_or("?");
+                let stored = e
+                    .get("desc")
+                    .and_then(|d| d.get("stored_size"))
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                format!("{app}/{tgt} {stored:#x}")
+            })
+            .collect();
+        if !items.is_empty() {
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!("    falcon ucode: {}", items.join(", ")),
+                false,
+            ));
+        }
+    }
+    // NVGI root header (programmer dumps only)
+    if let Some(nvgi) = output.get("nvgi")
+        && !nvgi.is_null()
+    {
+        let sub = nvgi
+            .get("xve_subsystem_id")
+            .and_then(Value::as_str)
+            .unwrap_or("?");
+        let vend = nvgi
+            .get("xve_sub_vendor")
+            .and_then(Value::as_str)
+            .unwrap_or("?");
+        lines.push(nvoc_cli_common::color::stylize(
+            &format!(
+                "    NVGI: version {}, total {:#x}, subsystem {}:{}",
+                nvgi.get("version").and_then(Value::as_i64).unwrap_or(0),
+                nvgi.get("total_data_size")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+                vend,
+                sub
+            ),
+            false,
+        ));
+    }
+    // PERF_PTR slot map — one line per non-zero pointer: slot offset, table
+    // name, rebased absolute file offset, and the target's (ver, hdr, len,
+    // cnt) header. "header invalid" = the target bytes don't decode as a
+    // table header (pointer target outside any known layout).
+    if let Some(pp) = output.get("perf_pointers")
+        && let Some(slots) = pp.get("slots").and_then(Value::as_array)
+        && !slots.is_empty()
+    {
+        let plausible_count = slots
+            .iter()
+            .filter(|s| s.get("plausible").and_then(Value::as_bool) == Some(true))
+            .count();
+        lines.push(nvoc_cli_common::color::stylize(
+            &format!(
+                "    perf ptrs: {} non-zero, {} plausible tables",
+                slots.len(),
+                plausible_count
+            ),
+            false,
+        ));
+        for s in slots {
+            let name = s.get("name").and_then(Value::as_str).unwrap_or("?");
+            let slot = s.get("slot_offset").and_then(Value::as_i64).unwrap_or(0);
+            let abs = s.get("abs_offset").and_then(Value::as_i64).unwrap_or(0);
+            let plausible = s.get("plausible").and_then(Value::as_bool) == Some(true);
+            let header = s
+                .get("header")
+                .and_then(Value::as_str)
+                .unwrap_or("?? ?? ?? ??");
+            let bytes: Vec<&str> = header.split(' ').collect();
+            let detail = if plausible && bytes.len() == 4 {
+                // header string is hex; ver keeps hex, the rest print decimal
+                let byte = |i: usize| u8::from_str_radix(bytes[i], 16).unwrap_or(0);
+                format!(
+                    "ver=0x{:02X} hdr={} len={} cnt={}",
+                    byte(0),
+                    byte(1),
+                    byte(2),
+                    byte(3)
+                )
+            } else {
+                format!("header invalid ({header})")
+            };
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!("      +0x{slot:04X} {name:<18} -> 0x{abs:X}  {detail}"),
+                false,
+            ));
+        }
     }
     for warning in output
         .get("warnings")
@@ -645,14 +1154,22 @@ fn push_pvfp_header(
 ) {
     let units = "[V=mV f=MHz; mode: 0=freq, 1=raw; offset=effect MHz]";
     let sep = match seg {
-        Some(seg) => format!(
-            "    --- bank{} {} {} (index {}..{}) --- {units}",
-            seg.get("bank").and_then(Value::as_i64).unwrap_or_default(),
-            seg.get("domain").and_then(Value::as_str).unwrap_or("?"),
-            seg.get("kind").and_then(Value::as_str).unwrap_or("?"),
-            field_text(seg, "start_index"),
-            field_text(seg, "end_index"),
-        ),
+        Some(seg) => {
+            let corrected = seg
+                .get("freq_scale_corrected")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let corrected_tag = if corrected { " (corrected)" } else { "" };
+            format!(
+                "    --- bank{} {} {}{} (index {}..{}) --- {units}",
+                seg.get("bank").and_then(Value::as_i64).unwrap_or_default(),
+                seg.get("domain").and_then(Value::as_str).unwrap_or("?"),
+                seg.get("kind").and_then(Value::as_str).unwrap_or("?"),
+                corrected_tag,
+                field_text(seg, "start_index"),
+                field_text(seg, "end_index"),
+            )
+        }
         None => format!("    --- points --- {units}"),
     };
     lines.push(nvoc_cli_common::color::stylize(&sep, false));
@@ -2836,11 +3353,28 @@ mod tests {
             "domain": "graphics",
             "generation": "Pascal",
             "table_count": 1,
-            "mem_clock_mhz": 1752,
+            "mem_clock_ddr_mhz": 4004,
             "profiles": [
                 {"id": "0x07", "pstate": "P8", "limit1_mhz": 1320.0, "limit3_mhz": 1240.0},
                 {"id": "0x0f", "pstate": "P0", "limit1_mhz": 1911.0, "limit3_mhz": 1811.0}
             ],
+            "footers": [
+                {"id": "0x0f", "pstate": "P0", "mem_clock_mhz": 2002, "mem_clock_ddr_mhz": 4004}
+            ],
+            "power": [
+                {"platform": "desktop", "target_watt": 180.0, "limit_watt": 200.0,
+                 "slider": {"enabled": true}}
+            ],
+            "thermal_fan": {
+                "present": false,
+                "note": "BIT 'P' thermal pointer is zero (Pascal)"
+            },
+            "dcb": {
+                "pads": [
+                    {"pad": "DP_A", "roles": ["DVI/HDMI"], "connectors": []},
+                    {"pad": "DP_B", "roles": ["DP"], "connectors": []}
+                ]
+            },
             "points": [
                 {"index": 0, "frequency_khz": 324000, "frequency_mhz": 324.0},
                 {"index": 1, "frequency_khz": 1911000, "frequency_mhz": 1911.0}
@@ -2857,7 +3391,20 @@ mod tests {
         assert!(text.contains("1911.0"), "{text}");
         assert!(text.contains("profiles (limit1/limit3 MHz)"), "{text}");
         assert!(text.contains("0x0f(P0) 1911/1811"), "{text}");
-        assert!(text.contains("mem clock: 1752 MHz"), "{text}");
+        assert!(text.contains("mem clock (DDR): 4004 MHz"), "{text}");
+        assert!(
+            text.contains("footers (DRAM/DDR MHz): 0x0f 2002/4004"),
+            "{text}"
+        );
+        assert!(
+            text.contains("power (desktop): target 180 W, limit 200 W, slider enabled"),
+            "{text}"
+        );
+        assert!(
+            text.contains("thermal/fan: BIT 'P' thermal pointer is zero"),
+            "{text}"
+        );
+        assert!(text.contains("display: DP_A=DVI/HDMI DP_B=DP"), "{text}");
     }
 
     #[test]

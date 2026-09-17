@@ -1339,8 +1339,17 @@ class VFCurveTab:
             if not self._auto_refreshing:
                 cur = self._curves.get(self._active_curve)
                 n = len(cur.voltages) if cur else 0
+                # Segment scale-correction tag (Pascal driver defect): the
+                # private GPC values went through the (f+50)/2 decode.
+                corrected = any(
+                    s.get("freq_scale_corrected")
+                    for s in (clk_data or {}).get("segments", [])
+                    if isinstance(s, dict)
+                )
+                tag = " (corrected)" if corrected else ""
                 self.app.console.append(
-                    f"[GUI] VF curve loaded ({n} points on {self._active_curve.upper()}).\n"
+                    f"[GUI] VF curve loaded ({n} points on "
+                    f"{self._active_curve.upper()}{tag}).\n"
                 )
             self._load_active_curve()
             # P0 voltage-boundary lines: hardware walls are queried once per
@@ -1384,8 +1393,20 @@ class VFCurveTab:
             gpc_curve.source = "public"
             gpc_curve.voltages = [p["voltage_uv"] / 1000.0 for p in gpc_points]
             gpc_curve.frequencies = [p["frequency_khz"] / 1000.0 for p in gpc_points]
+            # Pascal: the public default plane reads all-zero (its private
+            # voltage axis is freq-indexed instead). Fall back to PRIVATE
+            # defaults — NOT public currents: the currents move with the OC
+            # state and would make every apply compound off a moving base.
+            pub_def_populated = sum(
+                1 for p in gpc_points if (p.get("default_frequency_khz") or 0) > 0
+            ) * 2 >= len(gpc_points)
             gpc_curve.defaults = [
-                (p.get("default_frequency_khz") or p["frequency_khz"]) / 1000.0
+                (
+                    (p.get("default_frequency_khz") or 0)
+                    if pub_def_populated
+                    else p["frequency_khz"]
+                )
+                / 1000.0
                 for p in gpc_points
             ]
             gpc_curve.has_fixed = any(
@@ -1454,8 +1475,10 @@ class VFCurveTab:
         # the #0-sentinel broken case below). No grid-match requirement:
         # slot-0 / per-point private offsets stack on top and legitimately
         # make both columns diverge from the private table per-point.
-        private_gpc_usable = private_gpc is not None and any(
-            v > 0 for v in private_gpc.voltages
+        private_gpc_usable = (
+            private_gpc is not None
+            and any(v > 0 for v in private_gpc.voltages)
+            and not self._is_pascal_gpu()
         )
         if private_gpc_usable:
             cd = private_gpc
@@ -1469,6 +1492,15 @@ class VFCurveTab:
                 if gpc_points
                 else 0
             )
+            # The default plane must be populated too — an all-zero default
+            # column (driver serves frequencies but no defaults) would
+            # poison every apply (delta = target − default). Private
+            # defaults remain the base in that shape.
+            nonzero_def = (
+                sum(1 for p in gpc_points if (p.get("default_frequency_khz") or 0) > 0)
+                if gpc_points
+                else 0
+            )
             if (
                 gpc_points
                 and len(gpc_points) == len(cd.voltages)
@@ -1478,7 +1510,17 @@ class VFCurveTab:
                 # their OWN voltage grid (shifted under a volt offset — the
                 # current line then extends past the private table's top,
                 # the extrapolated region the driver actually serves).
-                # Defaults stay on the private grid, index-aligned.
+                # Defaults ALSO come from the public read: live 16-series
+                # measurement — after a full reset the public default sits
+                # a small BIAS above the private default, and the public
+                # value is what the driver's own delta arithmetic keys off.
+                # Building the curve on private defaults makes every
+                # apply grow the frequency by that bias (public delta
+                # write = target − public_default, refreshed curve shows
+                # the drift, next apply adds again). Exception: the broken
+                # positive-slot1 state (frequency column zeroed except the
+                # #0 sentinel) — there the public default plane is corrupt
+                # and the private axis stays the authority.
                 diffs = [
                     p["voltage_uv"] / 1000.0 - v
                     for p, v in zip(gpc_points, cd.voltages)
@@ -1488,16 +1530,32 @@ class VFCurveTab:
                     cd.current_voltages = pub_grid
                     cd.grid_shift_mv = (max(diffs) + min(diffs)) / 2.0
                 cd.frequencies = [p["frequency_khz"] / 1000.0 for p in gpc_points]
+                if nonzero_def * 2 >= len(gpc_points):
+                    cd.defaults = [
+                        (p.get("default_frequency_khz") or 0) / 1000.0
+                        for p in gpc_points
+                    ]
                 cd.has_fixed = any(p.get("point_type") == "fixed" for p in gpc_points)
                 cd.source = "hybrid"
             else:
                 # Absent or broken public read (the known breakage: old
                 # driver + positive slot-1 zeroes everything but the #0
-                # sentinel): private currents are the honest view (==
-                # defaults on legacy, live state elsewhere).
+                # sentinel): private currents AND defaults are the honest
+                # view — the public default plane is corrupt there.
                 cd.has_fixed = True
             curves["gpc"] = cd
         elif gpc_curve is not None:
+            # Pascal path (private barred from the default-axis authority).
+            # When its public default plane is the all-zero shape, the
+            # curve's defaults must come from the PRIVATE segment — public
+            # currents would be a moving base under an active OC state.
+            if (
+                self._is_pascal_gpu()
+                and private_gpc is not None
+                and len(private_gpc.defaults) == len(gpc_curve.defaults)
+                and not pub_def_populated
+            ):
+                gpc_curve.defaults = list(private_gpc.defaults)
             curves["gpc"] = gpc_curve
         elif private_gpc is not None:
             # Public absent AND private voltage axis empty — last resort.
@@ -1726,6 +1784,23 @@ class VFCurveTab:
             idx = self.app.get_current_gpu_index()
             flags = self.app._gpu_flags_by_idx.get(idx) or {}
             return flags.get("is_legacy_voltage") is True
+        except Exception:
+            return False
+
+    def _is_pascal_gpu(self) -> bool:
+        """Pascal（GP10x）判定。
+
+        Pascal's private ClockClient frequency terms read with a residual
+        scale error even after the type-1 halving (live 1080: private
+        default == current, ~1.7-2.6× the public curve, exact relation
+        private ≈ 2×public − 50.5) — the private segment must NOT be the
+        default-axis authority there; the public read is clean and is the
+        original rendering source for these cards.
+        """
+        try:
+            idx = self.app.get_current_gpu_index()
+            flags = self.app._gpu_flags_by_idx.get(idx) or {}
+            return str(flags.get("gpu_architecture", "")).strip().lower() == "pascal"
         except Exception:
             return False
 

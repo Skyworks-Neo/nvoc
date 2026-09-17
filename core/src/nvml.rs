@@ -512,11 +512,16 @@ fn v1_fan_speed(_device: *mut std::ffi::c_void) -> Option<u32> {
 // ---------------------------------------------------------------------------
 
 pub fn parse_nvml_fan_control_policy(policy_raw: &str) -> Result<FanControlPolicy, Error> {
+    // "auto" is deliberately NOT an alias here: it is reset semantics
+    // (restore the firmware/default control policy), not a curve strategy.
+    // Routing it to TemperatureContinousSw switches the fan onto the
+    // ClientFanPolicies table, which is unpopulated by default (0/2/6 RPM
+    // stall until 84C).
     match policy_raw.to_ascii_lowercase().as_str() {
-        "continuous" | "auto" => Ok(FanControlPolicy::TemperatureContinousSw),
+        "continuous" => Ok(FanControlPolicy::TemperatureContinousSw),
         "manual" => Ok(FanControlPolicy::Manual),
         _ => Err(Error::Custom(format!(
-            "Invalid NVML fan policy '{}'. Expected continuous/manual/auto",
+            "Invalid NVML fan policy '{}'. Expected continuous/manual",
             policy_raw
         ))),
     }

@@ -523,8 +523,10 @@ def _private_gpc_clk_data(voltages_uv, currents, defaults):
 
 def test_build_vf_curves_hybrid_public_currents_private_defaults() -> None:
     # Unshifted public grid matches the private voltage axis: the curve
-    # adopts public CURRENT frequencies (OC state) while the private
-    # segment stays the DEFAULT-axis authority.
+    # adopts public CURRENT frequencies AND public DEFAULTS — the driver's
+    # delta arithmetic keys off the public default, and on 16-series the
+    # private default sits a small bias below it (building on private made
+    # every apply grow the frequency).
     clk_data = _private_gpc_clk_data(
         [800000, 825000], currents=[1000.0, 1100.0], defaults=[1000.0, 1100.0]
     )
@@ -533,13 +535,46 @@ def test_build_vf_curves_hybrid_public_currents_private_defaults() -> None:
             "index": 0,
             "voltage_uv": 800000,
             "frequency_khz": 1050000,
-            "default_frequency_khz": 999999,  # public default IGNORED
+            "default_frequency_khz": 1005000,  # public default = authority
             "point_type": "prog",
         },
         {
             "index": 1,
             "voltage_uv": 825000,
             "frequency_khz": 1150000,
+            "default_frequency_khz": 1105000,
+            "point_type": "prog",
+        },
+    ]
+
+    curves = build_vf_curves(gpc_points, None, clk_data)
+
+    assert curves["gpc"].source == "hybrid"
+    assert curves["gpc"].frequencies == [1050.0, 1150.0]
+    assert curves["gpc"].defaults == [1005.0, 1105.0]
+    assert curves["gpc"].has_fixed is False
+
+
+def test_build_vf_curves_hybrid_public_defaults_unpopulated_keeps_private() -> None:
+    # A driver that serves frequencies but leaves the public default plane
+    # zeroed must NOT poison the apply base (delta = target − default):
+    # private defaults remain the authority in that shape.
+    clk_data = _private_gpc_clk_data(
+        [800000, 825000], currents=[1000.0, 1100.0], defaults=[1000.0, 1100.0]
+    )
+    gpc_points = [
+        {
+            "index": 0,
+            "voltage_uv": 800000,
+            "frequency_khz": 1050000,
+            "default_frequency_khz": 0,
+            "point_type": "prog",
+        },
+        {
+            "index": 1,
+            "voltage_uv": 825000,
+            "frequency_khz": 1150000,
+            "default_frequency_khz": 0,
             "point_type": "prog",
         },
     ]
@@ -549,7 +584,40 @@ def test_build_vf_curves_hybrid_public_currents_private_defaults() -> None:
     assert curves["gpc"].source == "hybrid"
     assert curves["gpc"].frequencies == [1050.0, 1150.0]
     assert curves["gpc"].defaults == [1000.0, 1100.0]
-    assert curves["gpc"].has_fixed is False
+
+
+def test_build_vf_curves_pascal_public_defaults_all_zero_falls_back_to_private() -> (
+    None
+):
+    # Pascal (private barred from authority): its public default plane
+    # reads all-zero — the curve's defaults must come from the PRIVATE
+    # segment, NOT public currents (a moving base under an active OC state
+    # would make every apply compound).
+    clk_data = _private_gpc_clk_data(
+        [800000, 825000], currents=[1000.0, 1100.0], defaults=[1000.0, 1100.0]
+    )
+    gpc_points = [
+        {
+            "index": 0,
+            "voltage_uv": 800000,
+            "frequency_khz": 1050000,
+            "default_frequency_khz": 0,
+            "point_type": "prog",
+        },
+        {
+            "index": 1,
+            "voltage_uv": 825000,
+            "frequency_khz": 1150000,
+            "default_frequency_khz": 0,
+            "point_type": "prog",
+        },
+    ]
+
+    curves = build_vf_curves(gpc_points, None, clk_data, pascal=True)
+
+    assert curves["gpc"].source == "public"
+    assert curves["gpc"].frequencies == [1050.0, 1150.0]
+    assert curves["gpc"].defaults == [1000.0, 1100.0]
 
 
 def test_build_vf_curves_shifted_public_grid_falls_back_to_private() -> None:

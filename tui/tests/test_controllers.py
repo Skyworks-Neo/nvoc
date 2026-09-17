@@ -256,6 +256,10 @@ class FakeNative:
 
     def query_private_freq_domain_info(self, gpu):
         self.calls.append(("query_private_freq_domain_info", gpu))
+        # Test-settable full payload (volt-plane anchor reads).
+        payload = getattr(self, "freq_domain_info_payload", None)
+        if payload is not None:
+            return payload
         # controllable mask 0x3FF (bits 0-9 incl. bit3 SYS, bit5 MSD, bit9 HOST);
         # bit3 slot-0 current offset (kHz) for the Sys/Xbar-cancel RMW baseline.
         return {
@@ -877,12 +881,18 @@ def test_header_gpu_switch_reloads_vf_curve() -> None:
     app.native_service.submit_query = submitted.append
     controller = VFCurveController(app)
     app.vfcurve_controller = controller
+    # The switch also drops the overclock pane's previous-part state.
+    app.overclock_controller = SimpleNamespace(on_gpu_changed=lambda: None)
     # Previous GPU's curve + per-GPU P0 walls loaded.
     controller._curves = {
         "gpc": CurveData("gpc", voltages=[800.0], frequencies=[1500.0])
     }
     controller._p0_bounds = {"min_hold_uV": 600_000}
     controller._p0_bounds_gpu = "0x0000"
+    # A legacy ladder cached for the previous GPU (Maxwell vbios-parsed
+    # curve) must not overlay the new part's driver curve.
+    controller._bios_curve = {"available": True, "points": [{"index": 1}]}
+    controller._bios_curve_gpu = "0x0000"
 
     HeaderController(app).on_gpu_selected("1")
 
@@ -890,6 +900,8 @@ def test_header_gpu_switch_reloads_vf_curve() -> None:
     assert controller._curves == {}
     assert controller._p0_bounds is None
     assert controller._p0_bounds_gpu is None
+    assert controller._bios_curve is None
+    assert controller._bios_curve_gpu is None
     # The reload query was submitted for the new GPU.
     assert len(submitted) == 1
 
@@ -1446,6 +1458,21 @@ def test_dashboard_rail_poll_disables_after_failures() -> None:
     assert app.cache.rail_volts is None
 
 
+class FakeToggle:
+    """Minimal Button stand-in for the offset rows' MHz/mV unit toggles."""
+
+    def __init__(self) -> None:
+        self.label = "MHz"
+        self.disabled = False
+        self.classes: set[str] = set()
+
+    def set_class(self, condition: bool, class_name: str) -> None:
+        if condition:
+            self.classes.add(class_name)
+        else:
+            self.classes.discard(class_name)
+
+
 def _oc_app(**info: object) -> FakeApp:
     app = FakeApp()
     app.cache.info = dict(info)
@@ -1467,6 +1494,8 @@ def _oc_app(**info: object) -> FakeApp:
         "#mobile-target-temp": SimpleNamespace(value="85"),
         "#mobile-volt-limit": SimpleNamespace(value="1050"),
     }
+    for name in ("core", "mem", "xbar", "sys", "msd", "host"):
+        app.widgets[f"#{name}-unit"] = FakeToggle()
     return app
 
 
@@ -1626,7 +1655,8 @@ def test_overclock_apply_oc_includes_xbar_when_supported() -> None:
     assert calls == [
         ("set_clock_offset", "0x0000", "nvapi", "core", 100, "P0"),
         ("set_clock_offset", "0x0000", "nvapi", "memory", 200, "P0"),
-        ("set_clk_domain_offset", "0x0000", 1, 60000, None, None),
+        # Xbar write carries the explicit frequency-plane slot (10~40系 0).
+        ("set_clk_domain_offset", "0x0000", 1, 60000, 0, None),
     ]
     out = app.action_outputs[0]
     assert "Successfully applied core offset 100 MHz." in out
@@ -1681,12 +1711,19 @@ def test_overclock_reset_oc_chain_resets_xbar_when_supported() -> None:
 
     assert OverclockController(app).handle_button("oc-reset") is True
 
+    # MHz rows reset BOTH plane slots — no hidden volt offset survives.
     assert app.actions == [
         "reset core offset",
+        "reset core volt offset",
         "reset memory offset",
+        "reset memory volt offset",
         "reset xbar offset",
+        "reset xbar volt offset",
     ]
-    assert ("set_clk_domain_offset", "0x0000", 1, 0, None, None) in app.native.calls
+    calls = app.native.calls
+    assert ("set_clk_domain_offset", "0x0000", 1, 0, 0, None) in calls  # freq plane
+    assert ("set_clk_domain_offset", "0x0000", 1, 0, 1, None) in calls  # volt plane
+    assert ("set_clk_domain_offset", "0x0000", 0, 0, 1, None) in calls
     assert "Successfully applied Xbar offset +0 MHz" in "\n".join(app.logs)
 
 
@@ -1697,6 +1734,225 @@ def test_overclock_reset_oc_chain_skips_xbar_when_unsupported() -> None:
 
     assert app.actions == ["reset core offset", "reset memory offset"]
     assert not any(c[0] == "set_clk_domain_offset" for c in app.native.calls)
+
+
+def test_overclock_unit_toggle_anchors_mv_at_live_plane_offset() -> None:
+    """Toggling a row to mV seeds 0.0, then re-anchors at the record's live
+    voltage-plane addend (values_kHz[volt_slot] is µV → 62500 µV = 62.5 mV)."""
+    app = _oc_app(xbar_supported=True)
+    app.cache.clk_domain_mask = 0x3FF
+    app.native.freq_domain_info_payload = {
+        "controllable_mask": "0x3FF",
+        "entries": [
+            {"bit": 0, "values_kHz": [15000, 62500]},  # slot0 kHz / slot1 µV
+        ],
+    }
+    scheduled: list[object] = []
+    app.native_service.submit_query = lambda job: scheduled.append(job)
+    app.native_service.query_private_freq_domain_info = (
+        app.native.query_private_freq_domain_info
+    )
+    controller = OverclockController(app)
+
+    assert controller.handle_button("core-unit") is True
+
+    toggle = app.widgets["#core-unit"]
+    assert toggle.label == "mV"
+    assert "volt" in toggle.classes
+    assert app.widgets["#core-offset"].value == "0.0"  # seeded before anchor
+    scheduled[0]()  # FakeApp.call_from_thread runs the callback inline
+    assert app.widgets["#core-offset"].value == "62.5"
+
+    # Toggling back re-anchors the MHz plane at 0 (intent, not readback).
+    assert controller.handle_button("core-unit") is True
+    assert toggle.label == "MHz"
+    assert "volt" not in toggle.classes
+    assert app.widgets["#core-offset"].value == "0"
+
+
+def test_overclock_unit_toggle_ignores_stale_anchor_after_toggle_back() -> None:
+    """An anchor readback in flight when the row toggles back to MHz must not
+    overwrite the re-anchored input (epoch guard)."""
+    app = _oc_app(xbar_supported=True)
+    app.native.freq_domain_info_payload = {
+        "controllable_mask": "0x3FF",
+        "entries": [{"bit": 0, "values_kHz": [0, 62500]}],
+    }
+    scheduled: list[object] = []
+    app.native_service.submit_query = lambda job: scheduled.append(job)
+    app.native_service.query_private_freq_domain_info = (
+        app.native.query_private_freq_domain_info
+    )
+    controller = OverclockController(app)
+
+    controller.handle_button("core-unit")
+    controller.handle_button("core-unit")  # back to MHz before the read lands
+    scheduled[0]()
+
+    assert app.widgets["#core-offset"].value == "0"
+
+
+def test_overclock_apply_core_volt_plane_skips_pstate20() -> None:
+    """mV mode is a DIRECT voltage-plane write: µV payload on the volt slot,
+    no pstate20 path for that row (mem stays on the MHz path)."""
+    app = _oc_app(xbar_supported=True)
+    app.widgets["#core-offset"] = SimpleNamespace(value="12.5")
+    controller = OverclockController(app)
+    controller._row_volt_mode["core"] = True
+
+    controller.handle_button("oc-apply")
+
+    assert not any(
+        c[0] == "set_clock_offset" and c[3] == "core" for c in app.native.calls
+    )
+    assert ("set_clk_domain_offset", "0x0000", 0, 12500, 1, None) in app.native.calls
+    out = app.action_outputs[0]
+    assert "Successfully applied Core volt offset +12.5 mV" in out
+    assert "Successfully applied memory offset 200 MHz." in out
+
+
+def test_overclock_apply_volt_blackwell_uses_shifted_slots() -> None:
+    """Blackwell (GB*): the volt plane lives at slot 3 (freq moved to 2) —
+    a slot-1 write there would land on the wrong record."""
+    app = _oc_app(xbar_supported=True, codename="GB205")
+    app.widgets["#core-offset"] = SimpleNamespace(value="-50")
+    controller = OverclockController(app)
+    controller._row_volt_mode["core"] = True
+
+    controller.handle_button("oc-apply")
+
+    assert ("set_clk_domain_offset", "0x0000", 0, -50000, 3, None) in app.native.calls
+    assert controller._clk_volt_slot() == 3
+    assert controller._clk_freq_slot() == 2
+
+
+def test_overclock_apply_clamps_mv_into_plane_bounds() -> None:
+    app = _oc_app(xbar_supported=True)
+    app.widgets["#mem-offset"] = SimpleNamespace(value="9999")
+    controller = OverclockController(app)
+    controller._row_volt_mode["mem"] = True
+
+    controller.handle_button("oc-apply")
+
+    assert ("set_clk_domain_offset", "0x0000", 2, 300000, 1, None) in app.native.calls
+
+
+def test_overclock_apply_rejects_invalid_mv_value() -> None:
+    app = _oc_app(xbar_supported=True)
+    app.widgets["#core-offset"] = SimpleNamespace(value="abc")
+    controller = OverclockController(app)
+    controller._row_volt_mode["core"] = True
+
+    assert controller.handle_button("oc-apply") is True
+
+    assert app.actions == []  # nothing dispatched
+    assert any("Invalid core volt offset" in m for m in app.logs)
+
+
+def test_overclock_reset_mixed_planes_footprint() -> None:
+    """Reset OC with core on mV, everything else MHz: the mV row zeroes ONLY
+    its volt plane (public pstate20 reset skipped); MHz rows zero both plane
+    slots."""
+    app = _oc_app(xbar_supported=True)
+    app.cache.clk_domain_mask = 0x3FF
+    controller = OverclockController(app)
+    controller._row_volt_mode["core"] = True
+
+    controller.handle_button("oc-reset")
+
+    actions = app.actions
+    assert "reset core volt offset" in actions
+    assert "reset core offset" not in actions  # no public write for the mV row
+    assert "reset memory offset" in actions
+    assert "reset memory volt offset" in actions
+    assert "reset xbar offset" in actions
+    assert "reset xbar volt offset" in actions
+
+    calls = app.native.calls
+    assert not any(c[0] == "set_clock_offset" and c[3] == "core" for c in calls)
+    clk = [c for c in calls if c[0] == "set_clk_domain_offset"]
+    assert ("set_clk_domain_offset", "0x0000", 0, 0, 1, None) in clk  # core volt only
+    assert not any(c[2] == 0 and c[4] == 0 for c in clk)  # core freq slot untouched
+    # mem (MHz): public pstate20 reset covers the freq plane; volt zero rides.
+    assert ("set_clock_offset", "0x0000", "nvapi", "memory", 0, "P0") in calls
+    assert ("set_clk_domain_offset", "0x0000", 2, 0, 1, None) in clk
+
+
+def test_overclock_unit_toggles_gated_on_capability_and_mask() -> None:
+    """Toggles are capability-gated (Pascal+ for Core/Mem/Xbar) and mask-gated
+    per row (Sys bit3 / Msd bit5 / Host bit9)."""
+    app = _oc_app(gpu_name="NVIDIA GeForce GTX 980")  # pre-Pascal
+    controller = OverclockController(app)
+    controller._prime_unit_toggles()
+    assert all(app.widgets[f"#{n}-unit"].disabled for n in controller._UNIT_ROWS)
+
+    app2 = _oc_app(xbar_supported=True)
+    app2.cache.clk_domain_mask = 0x2  # bit1 only — no Sys/Msd/Host
+    controller2 = OverclockController(app2)
+    controller2._prime_unit_toggles()
+    assert app2.widgets["#core-unit"].disabled is False
+    assert app2.widgets["#xbar-unit"].disabled is False
+    assert app2.widgets["#sys-unit"].disabled is True
+    assert app2.widgets["#msd-unit"].disabled is True
+    assert app2.widgets["#host-unit"].disabled is True
+
+
+def test_overclock_gpu_switch_drops_previous_part_state() -> None:
+    """Maxwell → modern switch: the cached info/settings/ClkDomains mask and
+    any standing mV plane mode from the old card must not leak into the new
+    part's rows — on_gpu_changed clears them and re-primes at defaults."""
+    app = _oc_app(xbar_supported=True, codename="GP104")
+    app.cache.clk_domain_mask = 0x3FF
+    app.cache.settings = {"core_clock_current": 150}
+    app.widgets["#core-offset"] = SimpleNamespace(value="150")
+    controller = OverclockController(app)
+    controller._row_volt_mode["core"] = True
+    app.widgets["#core-unit"].label = "mV"
+    app.widgets["#core-unit"].classes.add("volt")
+
+    controller.on_gpu_changed()
+
+    assert app.cache.info == {}
+    assert app.cache.settings == {}
+    assert app.cache.clk_domain_mask is None
+    assert not any(controller._row_volt_mode.values())
+    toggle = app.widgets["#core-unit"]
+    assert toggle.label == "MHz"
+    assert "volt" not in toggle.classes
+    # Re-primed from the cleared cache: the old card's +150 offset is gone.
+    assert app.widgets["#core-offset"].value == "0"
+
+
+def test_overclock_power_units_follow_backend_and_legacy() -> None:
+    """Power pane unit labels: Power Limit follows #power-api (NVAPI % /
+    NVML W), Thermal Limit is C, Voltage Boost is % on the modern boost
+    path and mV on the legacy Overvolt delta path."""
+    app = _oc_app()
+    for uid in ("#power-limit-unit", "#thermal-limit-unit", "#voltage-boost-unit"):
+        app.widgets[uid] = FakeLabel()
+    controller = OverclockController(app)
+
+    controller._prime_power_units()
+    assert app.widgets["#power-limit-unit"].text == "%"
+    assert app.widgets["#thermal-limit-unit"].text == "C"
+    assert app.widgets["#voltage-boost-unit"].text == "%"
+
+    controller.on_power_api_changed("nvml")
+    assert app.widgets["#power-limit-unit"].text == "W"
+    controller.on_power_api_changed("nvapi")
+    assert app.widgets["#power-limit-unit"].text == "%"
+
+    app.cache.info = {"is_legacy_voltage": True}
+    controller._prime_power_units()
+    assert app.widgets["#voltage-boost-unit"].text == "mV"
+
+
+class FakeLabel:
+    def __init__(self) -> None:
+        self.text = ""
+
+    def update(self, text: str) -> None:
+        self.text = text
 
 
 def test_overclock_apply_limits_routes_legacy_overvolt() -> None:

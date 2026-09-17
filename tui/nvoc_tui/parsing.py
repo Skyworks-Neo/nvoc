@@ -593,6 +593,7 @@ def build_vf_curves(
     gpc_err: str | None,
     clk_data: dict[str, Any] | None,
     domain_info: Any = None,
+    pascal: bool = False,
 ) -> dict[str, CurveData] | None:
     """Classify public + private V/F reads into per-domain curves.
 
@@ -615,6 +616,13 @@ def build_vf_curves(
     detection below, never a generation table). Pascal server cards carry
     an all-zero private voltage axis (freq-indexed records) and keep the
     public source via the populated-axis guard.
+
+    ``pascal`` (from the discover payload's arch) FORCES the public source
+    on desktop Pascal too: its private frequency terms read with a
+    residual scale error even after the type-1 halving (live 1080:
+    private ≈ 2×public − 50.5), so the private segment must never be the
+    default-axis authority there — Pascal renders the original public-only
+    way.
     """
     curves: dict[str, CurveData] = {}
     unknown_count = 0
@@ -625,8 +633,20 @@ def build_vf_curves(
         gpc_curve.source = "public"
         gpc_curve.voltages = [p["voltage_uv"] / 1000.0 for p in gpc_points]
         gpc_curve.frequencies = [p["frequency_khz"] / 1000.0 for p in gpc_points]
+        # Pascal: the public default plane reads all-zero (its private
+        # voltage axis is freq-indexed instead). Fall back to PRIVATE
+        # defaults — NOT public currents: the currents move with the OC
+        # state and would make every apply compound off a moving base.
+        pub_def_populated = sum(
+            1 for p in gpc_points if (p.get("default_frequency_khz") or 0) > 0
+        ) * 2 >= len(gpc_points)
         gpc_curve.defaults = [
-            (p.get("default_frequency_khz") or p["frequency_khz"]) / 1000.0
+            (
+                (p.get("default_frequency_khz") or 0)
+                if pub_def_populated
+                else p["frequency_khz"]
+            )
+            / 1000.0
             for p in gpc_points
         ]
         gpc_curve.has_fixed = any(p.get("point_type") == "fixed" for p in gpc_points)
@@ -684,8 +704,12 @@ def build_vf_curves(
     # donates CURRENT frequencies only when its grid still matches the
     # default grid — under an active slot1 shift it is either shifted
     # (negative offset) or empty (positive offset) and must be ignored.
-    private_gpc_usable = private_gpc is not None and any(
-        v > 0 for v in private_gpc.voltages
+    # Desktop Pascal: the private frequency scale is unreliable (see the
+    # ``pascal`` docstring) — the public read stays the sole GPC authority.
+    private_gpc_usable = (
+        private_gpc is not None
+        and any(v > 0 for v in private_gpc.voltages)
+        and not pascal
     )
     if private_gpc_usable:
         cd = private_gpc
@@ -695,6 +719,15 @@ def build_vf_curves(
         # MHz + 127 zero rows) — so `any(freq>0)` cannot tell them apart.
         nonzero_freq = (
             sum(1 for p in gpc_points if p.get("frequency_khz", 0) > 0)
+            if gpc_points
+            else 0
+        )
+        # The default plane must be populated too — an all-zero default
+        # column (driver serves frequencies but no defaults) would poison
+        # every apply (delta = target − default). Fall back to private
+        # defaults in that shape.
+        nonzero_def = (
+            sum(1 for p in gpc_points if (p.get("default_frequency_khz") or 0) > 0)
             if gpc_points
             else 0
         )
@@ -708,16 +741,40 @@ def build_vf_curves(
             )
         ):
             # Unshifted public grid: adopt its live CURRENT frequencies
-            # (public deltas / OC state); defaults stay private.
+            # (public deltas / OC state). Defaults ALSO come from the
+            # public read: live 16-series measurement — after a full reset
+            # the public default sits a small BIAS above the private
+            # default, and the public value is what the driver's delta
+            # arithmetic keys off. Building on private defaults makes
+            # every apply grow the frequency by that bias. Exception: the
+            # broken positive-slot1 state (frequency column zeroed except
+            # the #0 sentinel) — the public default plane is corrupt and
+            # the private axis stays the authority.
             cd.frequencies = [p["frequency_khz"] / 1000.0 for p in gpc_points]
+            if nonzero_def * 2 >= len(gpc_points):
+                cd.defaults = [
+                    (p.get("default_frequency_khz") or 0) / 1000.0 for p in gpc_points
+                ]
             cd.has_fixed = any(p.get("point_type") == "fixed" for p in gpc_points)
             cd.source = "hybrid"
         else:
-            # Shifted or broken public read: private currents are the
-            # honest view (== defaults on legacy, live state elsewhere).
+            # Shifted or broken public read: private currents AND defaults
+            # are the honest view — the public default plane is corrupt
+            # there (== defaults on legacy, live state elsewhere).
             cd.has_fixed = True
         curves["gpc"] = cd
     elif gpc_curve is not None:
+        # Pascal path (private barred from the default-axis authority).
+        # When its public default plane is the all-zero shape, the curve's
+        # defaults must come from the PRIVATE segment — public currents
+        # would be a moving base under an active OC state.
+        if (
+            pascal
+            and private_gpc is not None
+            and len(private_gpc.defaults) == len(gpc_curve.defaults)
+            and not pub_def_populated
+        ):
+            gpc_curve.defaults = list(private_gpc.defaults)
         curves["gpc"] = gpc_curve
     elif private_gpc is not None:
         # Public absent AND private voltage axis empty — last resort.

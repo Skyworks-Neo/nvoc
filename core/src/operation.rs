@@ -5,12 +5,12 @@ use super::nvml as low_nvml;
 use super::result::{
     ApiRestrictionState, AppliedValue, AutoBoostState, BatchReport, ClockOffset, DNotifierInfo,
     DNotifierLevel, DisplayInfo, EdidData, FanCurvePointReadout, FanCurveReadout, FanInfo,
-    NvapiCoolerInfoEntry, NvapiFanPolicyEntry, NvapiFanPolicyInfo, NvapiFanRpmResult,
-    NvapiPStateNativeLock, NvapiPerfFreqCap, OperationKind, OperationReport, OvervoltApplied,
-    PStateLevelEntry, PStateLevelsInfo, PowerCeilingInfo, PowerModeStatus, PstateBaseVoltage,
-    PstateClockRange, SupportedApplicationClocks, TargetOutcome, TargetTempPolicy, TdpTempLimits,
-    TemperatureThreshold, ThermalSensorReading, ThrottleReason, ViolationEntry,
-    ViolationStatusReport, VoltageBoostState, VoltageFrequencyCheck,
+    NvapiCoolerInfoEntry, NvapiFanPercentResult, NvapiFanPolicyEntry, NvapiFanPolicyInfo,
+    NvapiFanRpmResult, NvapiPStateNativeLock, NvapiPerfFreqCap, OperationKind, OperationReport,
+    OvervoltApplied, PStateLevelEntry, PStateLevelsInfo, PowerCeilingInfo, PowerModeStatus,
+    PstateBaseVoltage, PstateClockRange, SupportedApplicationClocks, TargetOutcome,
+    TargetTempPolicy, TdpTempLimits, TemperatureThreshold, ThermalSensorReading, ThrottleReason,
+    ViolationEntry, ViolationStatusReport, VoltageBoostState, VoltageFrequencyCheck,
 };
 use super::target::GpuTarget;
 use super::types::{NvapiLockedVoltageTarget, VfpResetDomain};
@@ -469,12 +469,20 @@ impl GpuOperation for ResetNvapiFanControl {
             _ => vec![::nvapi::FanCoolerId::Cooler1],
         };
         // level None → to_raw writes level 0 with the override bit CLEARED.
+        // Policy = Default (32): nvapioc corroborates that a control-block
+        // write with policy 32 RESTORES THE DRIVER FAN CURVE — the correct
+        // "back to auto" semantics for cards where the public
+        // RestoreCoolerSettings is capability-gated (GP104/582.66: both the
+        // read and write of that family return -104, so restore-first falls
+        // through here every time). The previous TemperatureContinuous (8)
+        // policy byte was the 0-RPM-stall bug: the driver honors it and the
+        // SW curve's ClientFanPolicies table is unpopulated (0/2/6 RPM).
         gpu.inner()
             .set_cooler(cooler_ids.into_iter().map(|id| {
                 (
                     id,
                     ::nvapi::CoolerSettings {
-                        policy: ::nvapi::CoolerPolicy::TemperatureContinuous,
+                        policy: ::nvapi::CoolerPolicy::Default,
                         level: None,
                     },
                 )
@@ -535,6 +543,26 @@ impl GpuOperation for QueryNvapiCoolerInfo {
             .inner()
             .cooler_info_private()
             .map_err(Error::from)?;
+        // Current/default policy from the public GetCoolerSettings control
+        // readback (currentPolicy answers "which mode am I in" — the private
+        // GetControl family does not carry it). Absent on cards where the
+        // public family is capability-gated.
+        let policies: std::collections::BTreeMap<u32, ::nvapi::CoolerPolicy> = target
+            .nvapi()?
+            .inner()
+            .cooler_control()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(id, settings)| (id as u32, settings.policy))
+            .collect();
+        let default_policies: std::collections::BTreeMap<u32, ::nvapi::CoolerPolicy> = target
+            .nvapi()?
+            .inner()
+            .cooler_settings()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(id, cooler)| (id as u32, cooler.info.default_policy))
+            .collect();
         Ok(infos
             .into_iter()
             .map(|c| NvapiCoolerInfoEntry {
@@ -544,6 +572,10 @@ impl GpuOperation for QueryNvapiCoolerInfo {
                 max: c.max,
                 current: c.current,
                 current_pwm_percent: c.current_pwm_percent,
+                control_policy: policies.get(&c.index).map(|p| p.value().repr() as u32),
+                default_policy: default_policies
+                    .get(&c.index)
+                    .map(|p| p.value().repr() as u32),
             })
             .collect())
     }
@@ -613,6 +645,41 @@ impl GpuOperation for SetFanRpm {
                 min_rpm: r.min_rpm,
                 max_rpm: r.max_rpm,
                 applied_rpm: r.applied_rpm,
+            })
+            .collect())
+    }
+}
+
+/// Set fan duty by percent through the private fan-simulation surface
+/// (percent → 0..65536 level, `None` = back to auto). Fallback pin for
+/// drivers where the ClientFanCoolers control-block SET is rejected but the
+/// simulation surface lives (472.12 live).
+#[derive(Clone, Copy, Debug)]
+pub struct SetFanPercent {
+    /// `None` targets every cooler present in the info mask.
+    pub cooler_index: Option<u32>,
+    pub percent: Option<u32>,
+}
+
+impl GpuOperation for SetFanPercent {
+    type Output = Vec<NvapiFanPercentResult>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetFanPercent
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let rs = target
+            .nvapi()?
+            .inner()
+            .set_fan_percent(self.cooler_index, self.percent)
+            .map_err(Error::from)?;
+        Ok(rs
+            .into_iter()
+            .map(|r| NvapiFanPercentResult {
+                cooler_index: r.cooler_index,
+                cooler_type: r.cooler_type,
+                applied_percent: r.applied_percent,
             })
             .collect())
     }

@@ -61,6 +61,11 @@ class HeaderController(PaneController):
             # interface) the VF curve — without this the previous GPU's
             # curve lingers on the plot.
             self.app.vfcurve_controller.on_gpu_changed()
+            # Same for the overclock pane: the cached info/settings/ClkDomains
+            # mask and any standing mV plane mode still describe the previous
+            # part — drop them so nothing from the old card leaks into the
+            # new one's rows.
+            self.app.overclock_controller.on_gpu_changed()
 
     def on_gpu_list_loaded(
         self, code: int, output: str, gpus: list[GpuDescriptor]

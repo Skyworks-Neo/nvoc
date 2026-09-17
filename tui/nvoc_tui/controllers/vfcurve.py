@@ -258,6 +258,11 @@ class VFCurveController(PaneController):
         self._p0_rails = []
         self._p0_bounds_by_rail = {}
         self._p0_bounds_gpu = None
+        # The vBIOS ladder is per-ROM — a Maxwell/Kepler ladder left in
+        # _bios_curve would overlay the new part's driver curve (observed:
+        # Maxwell vbios-parsed ladder lingering on a Pascal VF chart).
+        self._bios_curve = None
+        self._bios_curve_gpu = None
         self.clear_plot("Loading VF curve…")
         self._sync_curve_widgets()
         self.refresh_curve()
@@ -276,9 +281,27 @@ class VFCurveController(PaneController):
         domain_info: dict | None = None,
     ) -> None:
         self._end_refresh()
-        curves = build_vf_curves(gpc_points, gpc_err, clk_data, domain_info)
+        # Desktop Pascal: the private frequency scale is unreliable — the
+        # public read stays the sole GPC authority (see build_vf_curves).
+        # getattr: test doubles construct bare namespaces (no arch field).
+        gpu_desc = self.app.current_gpu()
+        arch = str(getattr(gpu_desc, "arch", None) or "")
+        pascal = arch.strip().lower() == "pascal"
+        curves = build_vf_curves(
+            gpc_points, gpc_err, clk_data, domain_info, pascal=pascal
+        )
         self.app.cache.vf_curve_points = gpc_points if curves else None
         self.app.cache.vf_curves = curves
+        # Segment scale-correction tag (Pascal driver defect): the private
+        # GPC values went through the (f+50)/2 decode.
+        if curves and any(
+            isinstance(s, dict) and s.get("freq_scale_corrected")
+            for s in (clk_data or {}).get("segments", [])
+        ):
+            self.app.write_log(
+                "private GPC frequencies exceeded 3000 MHz on Pascal — "
+                "applied the (f+50)/2 driver-scale correction (corrected)."
+            )
         if curves is None:
             self._curves = {}
             self._curve_visible = {}
