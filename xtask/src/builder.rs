@@ -32,6 +32,7 @@ pub fn build(args: &BuildArgs) -> Res<()> {
     result?;
     if args.py_onefile {
         py_onefile(&util::repo_root())?;
+        pathenv::ensure_onefile_on_user_path(&util::repo_root());
     }
     Ok(())
 }
