@@ -4296,9 +4296,15 @@ mod tests {
                 "rail_descriptors": [{
                     "rail_bit": 0,
                     "type": 1,
+                    "class": 1,
+                    "uv_a": 750000,
+                    "uv_b": 820000,
                 }, {
                     "rail_bit": 1,
                     "type": 3,
+                    "class": 3,
+                    "uv_a": 700000,
+                    "uv_b": 700000,
                 }],
                 "control": [{
                     "rail_bit": 0, "type": 3, "values_uV": [0, 0, 0, 0, 0, 0],

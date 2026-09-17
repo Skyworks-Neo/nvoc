@@ -711,7 +711,13 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     ..CommandSpec::new("get-vbios", Group::Info, "Read and decode a VBIOS image. -i/--input <file> parses a local ROM dump OFFLINE (no GPU/NvAPI needed — works on Linux); without it the live image is read via NvAPI_GPU_GetVbiosImage (0xFC13EE11, escape 0x0700004F, Windows-only). Live: --out <file> writes the raw image; --dump prints the full BIT token table + Fermi-model raw blocks. Both modes: --enable-detail-parser runs the full detail decoder — Pascal+ Virtual P-State ladder + profiles + footers, Maxwell/Kepler GPU Boost 2.0 ladder (BIT 'P'+0x34), power/thermal/fan tables, DCB display map, memory tables, falcon ucode inventory, board identity. --maxwell-vftable-decode is a deprecated alias of it (superset: the Boost 2.0 ladder is now a section of the detail output)")
                 },
             ),
-            (Command::GetVoltRailInfo, CommandSpec::new("get-volt-rail-info", Group::Voltage, "Read private VoltRails family: rail mask + per-rail offsets + live voltages (melonVolt path) + VRM device voltage windows (0xA38ACF9D)")),
+            (
+                Command::GetVoltRailInfo,
+                CommandSpec {
+                    options: Box::leak(Box::new(["verbose"])),
+                    ..CommandSpec::new("get-volt-rail-info", Group::Voltage, "Read private VoltRails family: rail mask + per-rail offsets + live voltages (melonVolt path) + VRM device voltage windows (0xA38ACF9D). --verbose adds each rail descriptor's raw 48-dword array (undecoded fields, cross-GPU comparison)")
+                },
+            ),
             (
                 Command::List,
                 CommandSpec {
@@ -3783,6 +3789,7 @@ fn execute_target(
             })
         }
         Command::GetVoltRailInfo => {
+            let verbose = option_bool(invocation, "verbose", false)?;
             let rails = run(target, QueryNvapiVoltRails)?.output;
             // Best-effort enrichment: the melonVolt voltage-domain enumerator
             // (0xA38ACF9D) reports each domain's min/step/max/default µV
@@ -3806,10 +3813,25 @@ fn execute_target(
                         }),
                         "rail_mask": format!("0x{:08X}", r.rail_mask),
                         "p0_rails": volt_rails_p0_rails_json(&r),
-                        "rail_descriptors": r.rail_descriptors.iter().map(|d| json!({
-                            "rail_bit": d.rail_bit,
-                            "type": d.entry_type(),
-                        })).collect::<Vec<_>>(),
+                        // Decoded descriptor fields for cross-GPU comparison
+                        // (class = the field V1 status mirrors as "type";
+                        // uv_a/uv_b are the two µV readings, semantics
+                        // unconfirmed). The full 48-dword raw array — for
+                        // debugging the still-undecoded fields — only with
+                        // --verbose.
+                        "rail_descriptors": r.rail_descriptors.iter().map(|d| {
+                            let mut entry = json!({
+                                "rail_bit": d.rail_bit,
+                                "type": d.entry_type(),
+                                "class": d.class(),
+                                "uv_a": d.uv_a(),
+                                "uv_b": d.uv_b(),
+                            });
+                            if verbose {
+                                entry["raw"] = json!(d.raw_u32);
+                            }
+                            entry
+                        }).collect::<Vec<_>>(),
                         "control": r.control.iter().map(|e| json!({
                             "rail_bit": e.rail_bit, "type": e.entry_type, "values_uV": e.values,
                         })).collect::<Vec<_>>(),
