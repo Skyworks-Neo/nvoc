@@ -502,17 +502,17 @@ fn handle_request(
             .iter()
             .find(|h| h.field.equiv("Authorization"))
             .map(|h| h.value.as_str().to_string());
-        match header.as_deref().and_then(auth::parse_basic) {
-            Some(creds) => {
+        match header.as_deref() {
+            Some(header_value) => {
                 let reason = {
                     let cfg = lock(config);
-                    auth::verify(&creds.user, &creds.password, &cfg).err()
+                    auth::authenticate(header_value, &cfg).err()
                 };
                 match reason {
-                    None => auth_user = creds.user,
+                    None => auth_user = auth::session_user(header_value).unwrap_or_default(),
                     Some(reason) => {
                         audit::record("-", "login.failed", &reason);
-                        warn!("auth: failed login for {:?}: {reason}", creds.user);
+                        warn!("auth: failed login: {reason}");
                         challenge(request);
                         return;
                     }
@@ -540,6 +540,9 @@ fn handle_request(
         }
         "/ui.css" => {
             serve_static(request, web::STYLE_CSS, "text/css; charset=utf-8");
+        }
+        "/ui.js" => {
+            serve_static(request, web::APP_JS, "text/javascript; charset=utf-8");
         }
 
         "/help" => {

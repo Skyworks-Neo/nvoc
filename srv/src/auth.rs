@@ -56,6 +56,66 @@ fn base64_decode(input: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// Authenticated-session cache: a successful OS verify grants 15 minutes
+/// of header-keyed access, so the polling UI does not re-run LogonUser on
+/// every request. Keyed by the raw Authorization header (in-process state;
+/// the process boundary is the trust edge). Expired entries are purged on
+/// each check.
+const SESSION_TTL_SECS: u64 = 900;
+
+fn sessions() -> &'static std::sync::Mutex<std::collections::HashMap<String, (String, u64)>> {
+    static SESSIONS: std::sync::LazyLock<
+        std::sync::Mutex<std::collections::HashMap<String, (String, u64)>>,
+    > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    &SESSIONS
+}
+
+fn now_s() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Check the session cache; returns the authenticated user on a hit.
+pub fn session_user(header: &str) -> Option<String> {
+    let mut map = sessions().lock().unwrap_or_else(|p| p.into_inner());
+    let now = now_s();
+    map.retain(|_, (_, exp)| *exp > now);
+    map.get(header)
+        .filter(|(_, exp)| *exp > now)
+        .map(|(user, _)| user.clone())
+}
+
+/// Insert/refresh a session for a successfully verified header.
+fn session_insert(header: &str, user: &str) {
+    let mut map = sessions().lock().unwrap_or_else(|p| p.into_inner());
+    map.insert(
+        header.to_string(),
+        (user.to_string(), now_s() + SESSION_TTL_SECS),
+    );
+}
+
+/// Full gate for one request's Authorization header: session cache first,
+/// OS verify on miss. Returns the authenticated user.
+pub fn authenticate(
+    header_value: &str,
+    cfg: &RuntimeConfig,
+) -> std::result::Result<String, String> {
+    if let Some(user) = session_user(header_value) {
+        return Ok(user);
+    }
+    let creds = parse_basic(header_value).ok_or_else(|| "malformed credentials".to_string())?;
+    verify(&creds.user, &creds.password, cfg)?;
+    session_insert(header_value, &creds.user);
+    log::info!(
+        "auth: {} authenticated (session valid {} min)",
+        creds.user,
+        SESSION_TTL_SECS / 60
+    );
+    Ok(creds.user)
+}
+
 /// Verify credentials against the OS account database and require
 /// administrator-group membership. `Err` carries a user-facing reason.
 pub fn verify(user: &str, password: &str, cfg: &RuntimeConfig) -> std::result::Result<(), String> {
@@ -154,7 +214,7 @@ fn os_verify(user: &str, password: &str, _cfg: &RuntimeConfig) -> std::result::R
                     // SE_GROUP_ENABLED(4) or SE_GROUP_USE_FOR_DENY_ONLY(0x10,
                     // the UAC-filtered admin token) both prove membership.
                     let is_admin = attrs & (SE_GROUP_ENABLED | SE_GROUP_USE_FOR_DENY_ONLY) != 0;
-                    log::info!(
+                    log::debug!(
                         "auth: Administrators SID present in token (attrs 0x{attrs:x}) -> admin={is_admin}"
                     );
                     return is_admin;
