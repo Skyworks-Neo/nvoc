@@ -432,7 +432,9 @@ fn pvfp_cell(text: Option<String>, w: usize) -> String {
 
 /// Human format for `get-vbios --enable-detail-parser` (and its deprecated
 /// alias `--maxwell-vftable-decode`) — one aligned bare-number table per
-/// ladder source, mirroring the private-vftable table style:
+/// ladder source, mirroring the private-vftable table style, followed by the
+/// shared detail sections (power/thermal/fan/identity/memory/falcon/NVGI),
+/// so pre-Pascal (Maxwell/Kepler) images read exactly like Pascal ones:
 /// - `vbios-boost-ladder` (Maxwell GPU Boost 2.0): `Id | V_min | V_max | Freq`,
 ///   voltage = the vmap node's (min, max) in mV.
 /// - `vbios-vp-ladder` (Pascal+ Virtual P-State): `Id | Freq` — VP points
@@ -660,18 +662,7 @@ fn format_boost_ladder_table(output: &Value) -> Vec<String> {
             ));
         }
     }
-    for warning in output
-        .get("warnings")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        if let Some(w) = warning.as_str() {
-            lines.push(nvoc_cli_common::color::stylize_warning(&format!(
-                "    warning: {w}"
-            )));
-        }
-    }
+    push_detail_shared_sections(output, &mut lines);
     lines
 }
 
@@ -769,6 +760,16 @@ fn format_vp_ladder_table(output: &Value) -> Vec<String> {
             ));
         }
     }
+    push_detail_shared_sections(output, &mut lines);
+    lines
+}
+
+/// Detail sections shared by every ladder source (Pascal+ VP ladder and
+/// the pre-Pascal Boost 2.0 fallback — Maxwell/Kepler render the same
+/// lines as Pascal): power, thermal, DCB display map, identity,
+/// internal-use, flash directory, memory, thermal limits, fan curve /
+/// coolers, falcon ucode, NVGI and the PERF_PTR slot map.
+fn push_detail_shared_sections(output: &Value, lines: &mut Vec<String>) {
     // power table (target/limit/slider per CPR power scan)
     if let Some(power) = output.get("power").and_then(Value::as_array)
         && let Some(p) = power.first()
@@ -1125,6 +1126,111 @@ fn format_vp_ladder_table(output: &Value) -> Vec<String> {
             ));
         }
     }
+    // BIT 'i' InternalUse (board id / compile date / SKU / project)
+    if let Some(iu) = output.get("internal_use")
+        && iu.get("present").and_then(Value::as_bool) == Some(true)
+    {
+        let mut bits: Vec<String> = Vec::new();
+        for key in ["version", "project", "build_date"] {
+            if let Some(v) = iu.get(key).and_then(Value::as_str) {
+                bits.push(v.to_string());
+            }
+        }
+        if !bits.is_empty() {
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!("    internal: {}", bits.join(" | ")),
+                false,
+            ));
+        }
+    }
+    // Clock States (perf table v0x40: per-Pstate domain clocks, Kepler/Maxwell)
+    if let Some(cs) = output.get("clock_states")
+        && cs.get("present").and_then(Value::as_bool) == Some(true)
+        && let Some(states) = cs.get("states").and_then(Value::as_array)
+    {
+        let names: Vec<&str> = cs
+            .get("domain_names")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        for st in states {
+            let ps = st.get("pstate").and_then(Value::as_str).unwrap_or("?");
+            let items: Vec<String> = st
+                .get("domains_mhz")
+                .and_then(Value::as_array)
+                .map(|d| {
+                    d.iter()
+                        .enumerate()
+                        .map(|(k, v)| {
+                            let name = names.get(k).copied().unwrap_or("?");
+                            format!("{name} {}", v.as_u64().unwrap_or(0))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            if !items.is_empty() {
+                lines.push(nvoc_cli_common::color::stylize(
+                    &format!("    clock states {ps}: {}", items.join(" ")),
+                    false,
+                ));
+            }
+        }
+    }
+    // Boost States (P+0x30 table: per-Pstate domain min/max, half-MHz)
+    if let Some(bs) = output.get("boost_states")
+        && bs.get("present").and_then(Value::as_bool) == Some(true)
+        && let Some(states) = bs.get("states").and_then(Value::as_array)
+    {
+        for st in states {
+            let ps = st.get("pstate").and_then(Value::as_str).unwrap_or("?");
+            let items: Vec<String> = st
+                .get("ranges")
+                .and_then(Value::as_array)
+                .map(|rs| {
+                    rs.iter()
+                        .map(|r| {
+                            format!(
+                                "{} {:.1}-{:.1}",
+                                r.get("domain").and_then(Value::as_str).unwrap_or("?"),
+                                r.get("min_mhz").and_then(Value::as_f64).unwrap_or(0.0),
+                                r.get("max_mhz").and_then(Value::as_f64).unwrap_or(0.0)
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            if !items.is_empty() {
+                lines.push(nvoc_cli_common::color::stylize(
+                    &format!("    boost states {ps}: {}", items.join(" ")),
+                    false,
+                ));
+            }
+        }
+    }
+    // RFFS/RFRD flash directory (NVGI full dumps, Turing+)
+    if let Some(fd) = output.get("flash_directory")
+        && fd.get("present").and_then(Value::as_bool) == Some(true)
+    {
+        let pci_ok = fd.get("pci_rom_magic_ok").and_then(Value::as_bool);
+        lines.push(nvoc_cli_common::color::stylize(
+            &format!(
+                "    flash dir: RFFS v{}, romdir v{}, PCI ROM @ {:#x} ({})",
+                fd.get("rffs_version").and_then(Value::as_i64).unwrap_or(0),
+                fd.get("rom_dir_version")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0),
+                fd.get("pci_option_rom_offset")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+                match pci_ok {
+                    Some(true) => "55AA ok",
+                    Some(false) => "magic mismatch",
+                    None => "unchecked",
+                }
+            ),
+            false,
+        ));
+    }
     for warning in output
         .get("warnings")
         .and_then(Value::as_array)
@@ -1137,7 +1243,6 @@ fn format_vp_ladder_table(output: &Value) -> Vec<String> {
             )));
         }
     }
-    lines
 }
 
 /// Per-segment table header for the private V/F dump. Units are declared

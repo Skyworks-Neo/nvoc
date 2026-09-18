@@ -411,7 +411,7 @@ fn pstate_raw_from_f0(f0: u16) -> u8 {
     ((f0 & 0x1E0) >> 5) as u8
 }
 
-/// boost-ladder v0x10 @ P+0x34：mark 8B×N + 阶梯 5B×N（见模块文档）。
+/// boost-ladder v0x10 @ P+0x34：mark 8B/4B×N + 阶梯 5B×N（见模块文档）。
 fn parse_boost_ladder(r: &Reader, t: usize, warnings: &mut Vec<String>) -> Option<BoostLadder> {
     let ver = match r.u8(t) {
         Ok(v) => v,
@@ -432,11 +432,15 @@ fn parse_boost_ladder(r: &Reader, t: usize, warnings: &mut Vec<String>) -> Optio
     let entry_len = r.u8(t + 4).unwrap_or(0);
     let entry_cnt = r.u8(t + 5).unwrap_or(0);
     // Record-shape hardening: only observed on Maxwell (hdr 9, mark 8×6,
-    // entry 5×79) and Kepler (hdr 7, 8×4, 5×53). Other generations may keep
-    // a NON-ladder table at P+0x34 whose version byte happens to be 0x10 —
-    // reject anything off-shape instead of parsing garbage (Pascal/GP104's
-    // P+0x34 pointer is 0 and stays clean either way).
-    if mark_len != 8 || entry_len != 5 || !(1..=8).contains(&mark_cnt) || entry_cnt < 8 {
+    // entry 5×79), GeForce Kepler 780Ti (hdr 7, mark 8×4, entry 5×53) and
+    // Quadro Kepler K4000 (hdr 6, mark 4×4, entry 5×63 — GK106 的 GPU Boost
+    // 阶梯同样在此，16 个非零点 324.0..810.5 MHz，KeplerBiosTweaker 逐字节
+    // 对照实证)。Other generations may keep a NON-ladder table at P+0x34
+    // whose version byte happens to be 0x10 — reject anything off-shape
+    // instead of parsing garbage (Pascal/GP104's P+0x34 pointer is 0 and
+    // stays clean either way).
+    if !matches!(mark_len, 4 | 8) || entry_len != 5 || !(1..=8).contains(&mark_cnt) || entry_cnt < 8
+    {
         warnings.push(format!(
             "boost-ladder: off-shape header (mark_len={mark_len} \
              mark_cnt={mark_cnt} entry_len={entry_len} entry_cnt={entry_cnt}), \
@@ -908,6 +912,199 @@ const PERF_PTR_SLOTS: [(usize, &str); 45] = [
     (0xB0, "IllumDevice"),
 ];
 
+/// 旧布局（Fermi..Maxwell，P token len < 0x9C）的槽位名覆盖。语义来自
+/// KeplerBiosTweaker 逆向（_E027 ctor 的槽位分发：ptr[11]=Fan、
+/// ptr[12]=BoostStates、ptr[13]=BoostLadder、ptr[14]=BaseBoost；K4000
+/// 字节逐槽验证）+ GM200 记录（+0x20=vmap、+0x30=boost、+0x34=ladder）。
+/// 未覆盖槽位保持 modern 名（前三槽 PerfTable/MemClockTable/MemTweakTable
+/// 两代同名且 K4000 实证可解）。
+const PERF_PTR_SLOTS_LEGACY: [(usize, &str); 5] = [
+    (0x20, "VoltageMap"),
+    (0x2C, "FanSettings"),
+    (0x30, "BoostStates"),
+    (0x34, "BoostLadder"),
+    (0x38, "BaseBoost"),
+];
+
+// ── Clock States / Boost States（Kepler/Maxwell per-Pstate 时钟域）────────
+
+/// perf 表 v0x40 的时钟域顺序（KeplerBiosTweaker 域名字典；K4000
+/// P08/P05/P00 三态逐域字节验证——P08 GPC/XBAR/L2C/SYS/HUB=648、
+/// DDR/PWR=324、MSD=405、DISP=540 与 KBT Clock States 页一致）。
+pub const PERF_DOMAIN_NAMES: [&str; 9] = [
+    "GPC", "XBAR", "L2C", "DDR", "SYS", "HUB", "MSD", "PWR", "DISP",
+];
+
+/// 一个 P-state 的各时钟域（Clock States）。频率 MHz 直存，值 = 域 u32
+/// & 0xFFF——高 4 位为旗标（K4000 P00 实测 0x444A & 0xFFF = 1098 =
+/// KBT UI 值；魔改卡旗标位被改写而值不变）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PerfState {
+    /// 条目绝对偏移。
+    pub offset: usize,
+    /// pstate 原始编码（byte@0：0x07=P8、0x0A=P5、0x0F=P0；0xFF=空槽已滤）。
+    pub pstate_code: u8,
+    /// byte@2：vmap 电压索引（vmap[vid] = 该态电压范围）。
+    pub vmap_index: u8,
+    /// 各域频率 MHz，顺序 = [`PERF_DOMAIN_NAMES`]。
+    pub domains_mhz: Vec<u32>,
+}
+
+/// Boost States 一个域的 min/max（半 MHz×2 编码，同阶梯点）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BoostStateRange {
+    pub domain: &'static str,
+    pub min_mhz_x2: u16,
+    pub max_mhz_x2: u16,
+}
+
+/// Boost States 一个 P-state 组（K4000 实测 P00/P05/P08 三组，与 KBT
+/// Boost States 页逐值一致：P00 GPC 1098/1621 = 549.0/810.5 MHz）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoostStateGroup {
+    pub pstate_code: u8,
+    pub ranges: Vec<BoostStateRange>,
+}
+
+/// BIT 'P' 表定位（img 基址 + ptab 绝对偏移）。
+fn perf_ptab(data: &[u8], what: &str) -> Result<(usize, usize), Error> {
+    let img = find_image_base(data)
+        .ok_or_else(|| Error::from(format!("{what}: 55 AA base not found")))?;
+    let sig = find_bit_signature(data, img)
+        .ok_or_else(|| Error::from(format!("{what}: BIT signature not found")))?;
+    let entries = bit_entries(data, sig, img)?;
+    let p = entries
+        .iter()
+        .find(|e| e.id == b'P')
+        .ok_or_else(|| Error::from(format!("{what}: BIT 'P' entry not found")))?;
+    Ok((img, img + usize::from(p.offset)))
+}
+
+/// 解码 Clock States（perf 表 v0x40 @ P+0x00，Kepler/Maxwell 旧布局）。
+/// 表头 `[ver=0x40][hdr][entry_len][cnt][dom_count][dom_size]`；条目 =
+/// `[pstate_code u8][?][vmap_idx u8][?]…` + dom_count 个域值。Pascal+ perf
+/// 为 ver 0x50/0x60 族 → None。
+pub fn find_perf_states(data: &[u8]) -> Result<Option<Vec<PerfState>>, Error> {
+    let (img, ptab) = perf_ptab(data, "clock states")?;
+    let r = Reader { data };
+    let ptr = r.u32(ptab)?;
+    if ptr == 0 {
+        return Ok(None);
+    }
+    let t = img + usize::try_from(ptr).map_err(|_| Error::from("clock states: bad pointer"))?;
+    if t + 6 > data.len() || data[t] != 0x40 {
+        return Ok(None);
+    }
+    let hdr = usize::from(r.u8(t + 1)?);
+    let entry_len = usize::from(r.u8(t + 2)?);
+    let cnt = usize::from(r.u8(t + 3)?);
+    let dom_count = usize::from(r.u8(t + 4)?);
+    let dom_size = usize::from(r.u8(t + 5)?);
+    if dom_count == 0
+        || dom_count > PERF_DOMAIN_NAMES.len()
+        || !(2..=8).contains(&dom_size)
+        || entry_len == 0
+    {
+        return Ok(None);
+    }
+    let stride = entry_len + dom_count * dom_size;
+    let mut out = Vec::new();
+    for i in 0..cnt {
+        let e = t + hdr + i * stride;
+        if e + stride > data.len() {
+            break;
+        }
+        let code = data[e];
+        if code == 0xFF {
+            continue;
+        }
+        let domains = (0..dom_count)
+            .map(|k| {
+                let a = e + entry_len + k * dom_size;
+                let raw = u32::from(data[a])
+                    | u32::from(data.get(a + 1).copied().unwrap_or(0)) << 8
+                    | u32::from(data.get(a + 2).copied().unwrap_or(0)) << 16
+                    | u32::from(data.get(a + 3).copied().unwrap_or(0)) << 24;
+                raw & 0xFFF
+            })
+            .collect();
+        out.push(PerfState {
+            offset: e,
+            pstate_code: code,
+            vmap_index: data[e + 2],
+            domains_mhz: domains,
+        });
+    }
+    if out.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(out))
+    }
+}
+
+/// 解码 Boost States（P+0x30 槽，表头 ver 0x11）：hdr 字节后是
+/// `(u16 tag, u16 min_x2, u16 max_x2)` 三元组流。GPC 三元组 tag =
+/// pstate_code<<5（0xE0→P8、0x140→P5、0x1E0→P0）开启新组；其余域 tag 低
+/// 字节 = 域 id（1=L2C、2=XBAR、4=SYS，高位随 pstate 变化忽略）。
+/// min/max 双零 = 流结束。
+pub fn find_boost_states(data: &[u8]) -> Result<Option<Vec<BoostStateGroup>>, Error> {
+    let (img, ptab) = perf_ptab(data, "boost states")?;
+    let r = Reader { data };
+    let ptr = r.u32(ptab + 0x30)?;
+    if ptr == 0 {
+        return Ok(None);
+    }
+    let t = img + usize::try_from(ptr).map_err(|_| Error::from("boost states: bad pointer"))?;
+    if t + 6 > data.len() || data[t] != 0x11 {
+        return Ok(None);
+    }
+    let hdr = usize::from(r.u8(t + 1)?);
+    let mut groups: Vec<BoostStateGroup> = Vec::new();
+    let mut a = t + hdr;
+    for _ in 0..64 {
+        if a + 6 > data.len() {
+            break;
+        }
+        let tag = r.u16(a)?;
+        let min_x2 = r.u16(a + 2)?;
+        let max_x2 = r.u16(a + 4)?;
+        if min_x2 == 0 && max_x2 == 0 {
+            break;
+        }
+        let ps = tag >> 5;
+        if (tag & 0x1F) == 0 && (1..=15).contains(&ps) {
+            groups.push(BoostStateGroup {
+                pstate_code: ps as u8,
+                ranges: vec![BoostStateRange {
+                    domain: "GPC",
+                    min_mhz_x2: min_x2,
+                    max_mhz_x2: max_x2,
+                }],
+            });
+        } else if let Some(g) = groups.last_mut() {
+            let domain = match tag & 0xFF {
+                1 => "L2C",
+                2 => "XBAR",
+                4 => "SYS",
+                _ => "Unknown",
+            };
+            g.ranges.push(BoostStateRange {
+                domain,
+                min_mhz_x2: min_x2,
+                max_mhz_x2: max_x2,
+            });
+        } else {
+            break;
+        }
+        a += 6;
+    }
+    if groups.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(groups))
+    }
+}
+
 /// 一个非零 PERF_PTR 槽位及其目标表头探测。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PerfPtrSlot {
@@ -957,11 +1154,22 @@ pub fn find_perf_ptr_map(data: &[u8]) -> Result<PerfPtrMap, Error> {
     let ptab = img + usize::from(p.offset);
     let p_len = p.len;
     let (pc_end, gap) = efi_gap_after_pc(data, img);
+    // Pre-Pascal（旧 22/26 槽布局）用 legacy 槽名覆盖——0x20 起语义完全
+    // 不同（modern 名会把 vmap 标成 VoltageDesc、阶梯标成 VoltageFreq）。
+    let legacy_layout = p_len < 0x9C;
     let mut slots = Vec::new();
     for &(off, name) in &PERF_PTR_SLOTS {
         if off + 4 > usize::from(p_len) {
             break;
         }
+        let name = if legacy_layout {
+            PERF_PTR_SLOTS_LEGACY
+                .iter()
+                .find(|(o, _)| *o == off)
+                .map_or(name, |(_, n)| *n)
+        } else {
+            name
+        };
         let target = r.u32(ptab + off)?;
         if target == 0 {
             continue;
@@ -3373,6 +3581,107 @@ mod tests {
         }
         // HBM2：无消费级 mem 字段
         assert_eq!(t.mem_clock_raw, 0);
+    }
+
+    /// Quadro Kepler（K4000/GK106）的 GPU Boost 阶梯：P+0x34 头
+    /// `10 06 04 04 05 3f`——mark **4B**×4（Maxwell/780Ti 为 8B，旧门禁
+    /// 因此拒收 = "读不到 VFTable" 的根因）+ 5B×63 点。16 个非零点
+    /// 324.0..810.5 MHz 与 KeplerBiosTweaker "Boost Clocks" 网格逐值一致；
+    /// 电压经 vmap（P+0x20，ver 0x20/34B 条目）解析，顶点 875..975mV
+    /// 与 KBT Voltage Table 页一致。魔改镜像（活卡 dump）阶梯顶被抬到
+    /// 1045.5 MHz / 1312.5mV。
+    #[test]
+    fn kepler_quadro_boost_ladder_when_present() {
+        const K4000: &str = "../reverse/K4000_original.rom";
+        let Ok(d) = std::fs::read(K4000) else {
+            eprintln!("skip: {K4000} not present");
+            return;
+        };
+        let vb = parse(&d).expect("legacy parse");
+        let ladder = vb.boost_ladder.as_ref().expect("K4000 boost ladder");
+        assert_eq!(ladder.ver, 0x10);
+        assert_eq!(ladder.entries.len(), 63);
+        let nonzero: Vec<u16> = ladder
+            .entries
+            .iter()
+            .map(|e| e.freq_mhz_x2)
+            .filter(|f| *f != 0)
+            .collect();
+        assert_eq!(nonzero.len(), 16);
+        assert_eq!(nonzero[0], 648, "324.0 MHz x2");
+        assert_eq!(*nonzero.last().expect("nonempty"), 1621, "810.5 MHz x2");
+        // 顶点电压 = vmap[26]（875..975 mV，与 KBT Voltage Table 一致）。
+        let top = &ladder.entries[15];
+        assert_eq!(top.freq_mhz_x2, 1621);
+        let (vmin, vmax) = vb.ladder_voltage_uv(top.vmap_index).expect("vmap");
+        assert_eq!((vmin, vmax), (875_000, 975_000));
+
+        // 活卡魔改 dump：阶梯顶 1045.5 MHz、电压上限 1312.5 mV。
+        const MODDED: &str = "../reverse/K4000_modded.rom";
+        let Ok(m) = std::fs::read(MODDED) else {
+            eprintln!("skip: {MODDED} not present");
+            return;
+        };
+        let mvb = parse(&m).expect("legacy parse");
+        let mladder = mvb.boost_ladder.as_ref().expect("modded ladder");
+        assert_eq!(mladder.entries[15].freq_mhz_x2, 2091, "1045.5 MHz x2");
+        let (_, mmax) = mvb
+            .ladder_voltage_uv(mladder.entries[15].vmap_index)
+            .expect("vmap");
+        assert_eq!(mmax, 1_312_500);
+    }
+
+    /// Clock States（perf v0x40 per-Pstate 9 域）+ Boost States（P+0x30
+    /// 三元组流）：K4000 与 KeplerBiosTweaker 两页逐值一致；域值 = u32
+    /// & 0xFFF（P0 高位旗标 0x4000 剥离后 GPC=1098/DDR=2808）。
+    #[test]
+    fn kepler_clock_and_boost_states_when_present() {
+        const K4000: &str = "../reverse/K4000_original.rom";
+        let Ok(d) = std::fs::read(K4000) else {
+            eprintln!("skip: {K4000} not present");
+            return;
+        };
+        let states = find_perf_states(&d).expect("ok").expect("perf states");
+        assert_eq!(states.len(), 3);
+        let codes: Vec<u8> = states.iter().map(|s| s.pstate_code).collect();
+        assert_eq!(codes, vec![0x07, 0x0A, 0x0F]); // P8, P5, P0
+        assert_eq!(states.len() * 9, states.len() * PERF_DOMAIN_NAMES.len());
+        // P0：域旗标剥离
+        let p0 = &states[2];
+        assert_eq!(p0.vmap_index, 0x04);
+        assert_eq!(
+            p0.domains_mhz,
+            vec![1098, 1152, 1098, 2808, 1229, 1080, 540, 324, 540]
+        );
+        // P8：整卡怠速域
+        assert_eq!(
+            states[0].domains_mhz,
+            vec![648, 648, 648, 324, 648, 648, 405, 324, 540]
+        );
+
+        let groups = find_boost_states(&d).expect("ok").expect("boost states");
+        assert_eq!(groups.len(), 3);
+        let p0 = &groups[2];
+        assert_eq!(p0.pstate_code, 0x0F);
+        let by_name = |name: &str| {
+            p0.ranges
+                .iter()
+                .find(|r| r.domain == name)
+                .copied()
+                .expect("domain")
+        };
+        assert_eq!(
+            (by_name("GPC").min_mhz_x2, by_name("GPC").max_mhz_x2),
+            (1098, 1621)
+        );
+        assert_eq!(
+            (by_name("SYS").min_mhz_x2, by_name("SYS").max_mhz_x2),
+            (1229, 1815)
+        );
+        assert_eq!(
+            (by_name("L2C").min_mhz_x2, by_name("L2C").max_mhz_x2),
+            (1152, 1702)
+        );
     }
 
     /// Turing+ 阶梯解码 = 低 14 位直存 MHz（&0x3FFF）：2070 点值

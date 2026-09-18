@@ -6488,6 +6488,39 @@ fn decode_vbios_detail(image: &[u8]) -> CliResult<Value> {
         }),
         None => json!({"present": false}),
     };
+    // Clock States（perf 表 v0x40 per-Pstate 时钟域；Kepler/Maxwell）。
+    let clock_states = match nvoc_core::legacy_vbios_parser::find_perf_states(image) {
+        Ok(Some(states)) => json!({
+            "present": true,
+            "domain_names": nvoc_core::legacy_vbios_parser::PERF_DOMAIN_NAMES,
+            "states": states.iter().map(|s| json!({
+                "pstate": nvoc_core::legacy_vbios_parser::pstate_display_name(s.pstate_code),
+                "pstate_code": format!("{:#04x}", s.pstate_code),
+                "vmap_index": s.vmap_index,
+                "offset": s.offset,
+                "domains_mhz": s.domains_mhz,
+            })).collect::<Vec<_>>(),
+        }),
+        Ok(None) => json!({"present": false}),
+        Err(e) => json!({"present": false, "note": format!("{e}")}),
+    };
+    // Boost States（P+0x30 表，per-Pstate 域 min/max）。
+    let boost_states = match nvoc_core::legacy_vbios_parser::find_boost_states(image) {
+        Ok(Some(groups)) => json!({
+            "present": true,
+            "states": groups.iter().map(|g| json!({
+                "pstate": nvoc_core::legacy_vbios_parser::pstate_display_name(g.pstate_code),
+                "pstate_code": format!("{:#04x}", g.pstate_code),
+                "ranges": g.ranges.iter().map(|r| json!({
+                    "domain": r.domain,
+                    "min_mhz": f64::from(r.min_mhz_x2) / 2.0,
+                    "max_mhz": f64::from(r.max_mhz_x2) / 2.0,
+                })).collect::<Vec<_>>(),
+            })).collect::<Vec<_>>(),
+        }),
+        Ok(None) => json!({"present": false}),
+        Err(e) => json!({"present": false, "note": format!("{e}")}),
+    };
     let thermal_policy = match nvoc_core::legacy_vbios_parser::find_thermal_policy(image) {
         Ok(Some(tp)) => json!({
             "present": true,
@@ -6690,6 +6723,8 @@ fn decode_vbios_detail(image: &[u8]) -> CliResult<Value> {
             "nvgi": nvgi,
             "internal_use": internal_use,
             "flash_directory": flash_directory,
+            "clock_states": clock_states,
+            "boost_states": boost_states,
             "voltage_freq_ladder": ladder,
             "points": points,
             "warnings": if tables.len() > 1 {
@@ -6720,6 +6755,8 @@ fn decode_vbios_detail(image: &[u8]) -> CliResult<Value> {
             base["nvgi"] = json!(nvgi);
             base["internal_use"] = internal_use;
             base["flash_directory"] = flash_directory;
+            base["clock_states"] = clock_states;
+            base["boost_states"] = boost_states;
             Ok(base)
         }
     }
