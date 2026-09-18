@@ -302,3 +302,17 @@ status=0、controllable mask=0xFF，**8 条记录在 bit 0..7**：dom 0-5/7 = ty
 **负载态补测（同日）**：0=2220.69（GPC）／1=1962.60（XBAR，**GPC 比 0.8838**——非 0.9，0.9 是 Blackwell 工具默认，代际有移）／2=1879.47（SYS，比 0.8464，与 XBAR 比值两态恒 ≈1.045，同为 GPC 派生域）／3=449.81（**定频不变**，用户假设 HUB——待差分写确认）／4=7993.53（MCLK=16Gbps 满档）。≤40 系 index 语义负载态复核成立。slot 上界未知，探针已扩到 +4=0..15（K4000 全 -3=族不支持，属预期；40/50 系可枚举完整可测集）。裁决协议不变：50 系看 +4=2——≈0.9×GPC ⇒ mask 语义定案；跟随 SYS 特征 ⇒ index 语义延续。接口本身 nvapi-rs 早已接线（`Gpu::clk_domain_freq_direct`，green-curve 集成），探针是 sys 层直调扫表。
 
 **机器归因纠正（用户指正）**：§9.3 的 +4=0..15 扫表、TUI FCLK 对照、V2 块（0x08/0x09）三组数据**全部来自 RTX 2070（Turing）**，非 4060L。修正后：测量 7 槽映射 {0=GPC,1=XBAR,2=SYS,3=HUB,4=MEM,5=HOST,6=DISP,7+=-104} 为 **Turing 实证**（2070 扫表 + 2070 TUI GetAllClocks 同源对照，HUB=slot3/MSD 无槽由此定案），与 4060L 已证 0..4 子集跨代一致（Ada 的 5..15 待扫）。MSD 无测量槽为 Turing 观测。V2 记录子型：Turing={08×3,09×4,02}、Ada={0A×7,02}、Blackwell={0F}(工具)——type=记录子型非纯代际戳。XBAR:GPC=0.8838 为 4060L 负载态事实，不受此纠正影响。
+
+---
+
+## 10. 落地台账（nvapi-rs 子模块）
+
+| commit | 内容 |
+|---|---|
+| a41c49f | TopRels 三件套类型化（结构+语义访问器+nvapi! 声明）+ Blackwell V2 锚点 + 测量 50 系 caveat |
+| 8d86d48 / e198c7c | `tests/blackwell_recon_live.rs` 探针（TopRels/V2 锚点/测量扫表 0..15+自动比率行） |
+| 818f753 | Ada TopRels 活体形态（GPC:XBAR 边 tag5/payload0——比率记录 Blackwell 特有） |
+| 25b5ada | V2 记录 type=子型非纯代际戳（Turing {08,09}/Ada {0A}/BW {0F}）；探针标签修正 |
+| 本批 | power.rs 挂 RM 电源策略对象模型文档块（对象链/F7 公式/出厂-DB 态/用户态映射/顶不可达）+ `set_pstates` 最小 V1 确认注记 + `tests/power_policy_state_live.rs` 只读状态探针（NO-LIVE-REQUEST/AT-CEILING/ENFORCED 分类；K4000 桌面也有 TGP-watt 策略族=平台普查新数据点） |
+
+§3 缺口收尾：TopRels 语义（已落）、V/F SET 0x0733E009（**早已注册**——nvid.rs 枚举 + typed 结构 + 函数声明俱全，首次 grep 因大小写漏检）、Pstates20 SET V1 魔数 0x11C94（**早已在** gpu.rs 级联，工具的最小 V1 SET 与本仓 minimal-build 模式一致，文档已互引）。
