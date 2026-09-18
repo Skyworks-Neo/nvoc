@@ -1896,7 +1896,18 @@ fn bios_vf_curve_value(image: &[u8]) -> Result<Value, nvoc_core::Error> {
     // 绘图窗口从 0 起（低功耗点 0..P8 边界也画进双线）；P8/P0 边界仍由
     // pstate_marks 携带，终端展示用。
     let start = 0u64;
-    let end = mark_index(15).unwrap_or(last).min(last);
+    // P0 边界 mark 缺位时（Kepler Quadro 的 4B mark 不携带 P0 边界，
+    // 如 K4000），窗口钳到最后一个非零频点——0 MHz 填充点（K4000
+    // 63 点中 47 个）不进绘图窗口，否则图表被拖到 0 轴。
+    let last_nonzero = ladder
+        .entries
+        .iter()
+        .rposition(|e| e.freq_mhz_x2 != 0)
+        .map_or(last, |i| i as u64);
+    let end = mark_index(15)
+        .unwrap_or(last)
+        .min(last)
+        .min(last_nonzero);
     let marks: Vec<Value> = ladder
         .marks
         .iter()
