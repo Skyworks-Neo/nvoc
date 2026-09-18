@@ -316,3 +316,5 @@ status=0、controllable mask=0xFF，**8 条记录在 bit 0..7**：dom 0-5/7 = ty
 | 本批 | power.rs 挂 RM 电源策略对象模型文档块（对象链/F7 公式/出厂-DB 态/用户态映射/顶不可达）+ `set_pstates` 最小 V1 确认注记 + `tests/power_policy_state_live.rs` 只读状态探针（NO-LIVE-REQUEST/AT-CEILING/ENFORCED 分类；K4000 桌面也有 TGP-watt 策略族=平台普查新数据点） |
 
 §3 缺口收尾：TopRels 语义（已落）、V/F SET 0x0733E009（**早已注册**——nvid.rs 枚举 + typed 结构 + 函数声明俱全，首次 grep 因大小写漏检）、Pstates20 SET V1 魔数 0x11C94（**早已在** gpu.rs 级联，工具的最小 V1 SET 与本仓 minimal-build 模式一致，文档已互引）。
+
+**测量宇宙勘误（用户 CLI 对照触发）**：`nvoc-cli get-private-freq-domain-status`（计数器双采样 0xFB8F61EC）与探针（直读 0x527FC458）**共用同一 MEASURE 位宇宙（RTSS 序）**，CLI 的 name→bit 表（cli/src/lib.rs parse_clk_domain_table，含 Turing TU116 活体 ground truth）与本文 7 槽归因逐一吻合——两 ID/两代/两路径四重互证。据此**撤回"MSD 无测量槽"**：该结论基于 0..15 扫表，而 CLI 位表定义 **msd=21、pwr=20、utils=22、host1x=28** 均在同一宇宙；探针已扩至 +4=0..28，40/50 系重跑即枚举完整可测集。三宇宙分立备忘（CLI 注释既有的结论，本文再证）：MEASURE=RTSS 序 ≠ FreqsEnum selector 序（disp=7）≠ WRITE-record 位空间。
