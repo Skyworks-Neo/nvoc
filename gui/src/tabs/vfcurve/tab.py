@@ -4105,6 +4105,11 @@ class VFCurveTab:
         """Shift the frequency of the currently selected point(s) by delta_mhz."""
         if self._sel_start is None or self._sel_end is None:
             return
+        # Legacy (Maxwell/Kepler): the BIOS ladder is read-only — arrow keys
+        # and the mouse wheel must not move points any more than drag does
+        # (the mouse drag path is already gated in the press handler).
+        if self._is_legacy_gpu():
+            return
         s = min(self._sel_start, self._sel_end)
         e = max(self._sel_start, self._sel_end)
 
