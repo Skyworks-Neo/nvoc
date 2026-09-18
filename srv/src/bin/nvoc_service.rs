@@ -118,6 +118,36 @@ mod nvoc_service {
         let (cmd_tx, cmd_rx) = flume::unbounded();
         let http_tx = cmd_tx.clone();
 
+        // Hosted scans are opt-in until administrators provision distinct manual
+        // and automation credentials. Neither token is returned by the API.
+        let scan_host = match (
+            env::var("NVOC_SCAN_MANUAL_TOKEN"),
+            env::var("NVOC_SCAN_AUTOMATION_TOKEN"),
+        ) {
+            (Ok(manual), Ok(automation)) => {
+                let install = env::current_exe().unwrap().parent().unwrap().to_path_buf();
+                let root = env::var_os("NVOC_SCAN_ROOT")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| install.join("scan-data"));
+                Some(
+                    nvoc_srv::scan_api::Host::start(
+                        root,
+                        install.join("nvoc-auto-optimizer.exe"),
+                        manual,
+                        automation,
+                    )
+                    .expect("Failed to initialize hosted scans"),
+                )
+            }
+            _ => {
+                warn!(
+                    "Hosted scans disabled: configure NVOC_SCAN_MANUAL_TOKEN and NVOC_SCAN_AUTOMATION_TOKEN"
+                );
+                None
+            }
+        };
+        let scans = scan_host.as_ref().map(|host| host.manager.clone());
+
         // Create a channel to be able to poll a stop event from the service worker loop.
         let (shutdown_tx, shutdown_rx) = flume::unbounded();
 
@@ -182,7 +212,11 @@ mod nvoc_service {
         let _ = compio::runtime::RuntimeBuilder::new()
             .build()
             .unwrap()
-            .block_on(run_service(config, shutdown_rx, cmd_rx));
+            .block_on(run_service(config, shutdown_rx, cmd_rx, scans));
+
+        if let Some(host) = scan_host {
+            host.stop();
+        }
 
         // Tell the system that service has stopped.
         let _ = status_handle.set_service_status(ServiceStatus {
@@ -200,6 +234,7 @@ mod nvoc_service {
         config: Arc<Mutex<NVOCServiceConfig>>,
         shutdown_rx: flume::Receiver<()>,
         cmd_rx: flume::Receiver<NVOCServiceCmd>,
+        scans: Option<Arc<nvoc_srv::scans::Manager>>,
     ) -> Result<()> {
         let mut stopc = shutdown_rx.into_stream();
         let mut cmdc = cmd_rx.into_stream();
@@ -231,6 +266,11 @@ mod nvoc_service {
 
                 cmd = cmdc.next() => {
                     if let Some(cmd) = cmd {
+                        let _admission = scans.as_ref().map(|s| s.admission.lock().unwrap());
+                        if scans.as_ref().is_some_and(|s| s.busy() || !s.registry.lock().unwrap().recovery_required.is_empty()) {
+                            warn!("Legacy OC command rejected while hosted scan/recovery owns GPU control");
+                            continue;
+                        }
                         info!("Received command: {}", cmd.cmd);
                         match cmd.cmd.as_str() {
                             "set_oc_global" => {
@@ -265,6 +305,12 @@ mod nvoc_service {
                 }
 
                 _ = timer.next() => {
+                    let _admission = scans.as_ref().map(|s| s.admission.lock().unwrap());
+                    if scans.as_ref().is_some_and(|s| s.busy() || !s.registry.lock().unwrap().recovery_required.is_empty()) {
+                        // The optimizer retains its own thermal checks. Do not
+                        // rewrite its working point from the background policy.
+                        continue;
+                    }
                     let cfg = match config.lock() {
                         Ok(c) => c,
                         Err(e) => {

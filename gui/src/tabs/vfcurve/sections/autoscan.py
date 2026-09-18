@@ -1,337 +1,318 @@
-"""
-Autoscan Tab - VFP auto-scanning workflow.
-"""
+"""Submit and monitor srv-owned optimization; closing the GUI only detaches."""
 
+from __future__ import annotations
+
+import json
 import tkinter as tk
-import customtkinter as ctk
+import uuid
 from tkinter import filedialog
-from typing import TYPE_CHECKING, Optional, Tuple
-from src.widgets.lightweight_controls import (
-    ct_button_font,
-    LiteButton,
-    LiteEntry,
-    install_mousewheel_support,
-)
 
-# De-CTk'd palette (matches overclock.py / fan_control.py)
-_PANE_BG = "#2b2b2b"
-_TEXT_FG = "#e5e5e5"
-_FONT_BODY = ("Segoe UI", 11)
-_FONT_HEADER = ("Segoe UI", 13, "bold")
-_SECTION_BORDER = "#1f4e79"
+import customtkinter as ctk
 
-if TYPE_CHECKING:
-    from src.app import App
+from src.widgets.lightweight_controls import LiteButton, install_mousewheel_support
+
+
+TERMINAL = {"succeeded", "cancelled", "failed", "interrupted"}
 
 
 class AutoscanTab:
-    """Autoscan tab for VFP curve auto-optimization."""
-
-    def __init__(self, parent: ctk.CTkFrame, app: "App") -> None:
+    def __init__(self, parent, app) -> None:
         self.app = app
         self.frame = parent
+        self._task_id = None
+        self._tasks = {}
+        self._offset = 0
+        self._refreshing = False
+        self._acting = False
         self._is_resize_active = False
-        self._pending_scan_button_state: Optional[Tuple[bool, bool]] = None
+        self._pending_scan_button_state = None
 
-        # Scrollable content
-        scroll = ctk.CTkScrollableFrame(self.frame)
+        scroll = ctk.CTkScrollableFrame(parent)
         scroll.pack(fill="both", expand=True, padx=10, pady=10)
         install_mousewheel_support(scroll)
-
-        # === Mode Selection ===
-        mode_frame = ctk.CTkFrame(
-            scroll, border_width=1, border_color=_SECTION_BORDER, corner_radius=10
-        )
-        mode_frame.pack(fill="x", pady=(0, 10))
-        tk.Label(
-            mode_frame, text="🔍 Scan Mode", font=_FONT_HEADER, bg=_PANE_BG, fg=_TEXT_FG
-        ).pack(anchor="w", padx=10, pady=(10, 5))
-
-        self.mode_var = ctk.StringVar(value="Standard")
-        mode_row = tk.Frame(mode_frame, bg=_PANE_BG)
-        mode_row.pack(fill="x", padx=10, pady=(0, 10))
-        tk.Label(
-            mode_row, text="Mode:", font=_FONT_BODY, bg=_PANE_BG, fg=_TEXT_FG
-        ).pack(side="left", padx=(0, 6))
-        self.mode_menu = ctk.CTkOptionMenu(
-            mode_row,
-            variable=self.mode_var,
-            values=["Standard", "Ultrafast", "Legacy"],
-            width=140,
-            anchor="center",
-            font=ct_button_font(mode_row),
-        )
-        self.mode_menu.pack(side="left")
-        tk.Label(
-            mode_row, text="BSOD:", font=_FONT_BODY, bg=_PANE_BG, fg=_TEXT_FG
-        ).pack(side="left", padx=(16, 6))
-        self.bsod_var = ctk.StringVar(value="(auto)")
-        self.bsod_menu = ctk.CTkOptionMenu(
-            mode_row,
-            variable=self.bsod_var,
-            values=["(auto)", "aggressive", "traditional"],
-            width=130,
-            anchor="center",
-            font=ct_button_font(mode_row),
-        )
-        self.bsod_menu.pack(side="left")
-
-        # === Parameters (left half) | Actions (right half) ===
-        split = tk.Frame(scroll, bg=_PANE_BG)
-        split.pack(fill="x", pady=(0, 10))
-        split.grid_columnconfigure(0, weight=1, uniform="scan_split")
-        split.grid_columnconfigure(1, weight=1, uniform="scan_split")
-
-        param_frame = ctk.CTkFrame(
-            split, border_width=1, border_color=_SECTION_BORDER, corner_radius=10
-        )
-        param_frame.grid(row=0, column=0, sticky="new", padx=(0, 5))
-        tk.Label(
-            param_frame,
-            text="⚙ Parameters",
-            font=_FONT_HEADER,
-            bg=_PANE_BG,
-            fg=_TEXT_FG,
-        ).pack(anchor="w", padx=10, pady=(10, 5))
-
-        params_grid = tk.Frame(param_frame, bg=_PANE_BG)
-        params_grid.pack(fill="x", padx=10, pady=(0, 10))
-        params_grid.columnconfigure(1, weight=0)
-
-        row = 0
-        # Output CSV
-        tk.Label(
-            params_grid, text="Output CSV:", font=_FONT_BODY, bg=_PANE_BG, fg=_TEXT_FG
-        ).grid(row=row, column=0, sticky="w", padx=5, pady=3)
-        self.output_csv_var = ctk.StringVar(value="./ws/vfp-tem.csv")
-        out_row = tk.Frame(params_grid, bg=_PANE_BG)
-        out_row.grid(row=row, column=1, sticky="ew", padx=5, pady=3)
-        out_entry = LiteEntry(
-            out_row,
-            textvariable=self.output_csv_var,
-            width=20,
-            min_px=140,
+        ctk.CTkLabel(
+            scroll, text="Service optimization", font=("Segoe UI", 14, "bold")
+        ).pack(anchor="w")
+        ctk.CTkLabel(
+            scroll,
+            text="The service runs the full optimization workflow and saves its files.\n"
+            "Closing this window does not stop a task. Use Stop to cancel and reset scan settings.",
             justify="left",
-        )
-        out_entry.pack(side="left", fill="x", expand=True)
-        LiteButton(
-            out_row,
-            text="...",
-            width=34,
-            command=lambda: self._browse_save(self.output_csv_var),
-        ).pack(side="left", padx=(5, 0))
+        ).pack(anchor="w", pady=5)
 
-        row += 1
-        # Init CSV
-        tk.Label(
-            params_grid, text="Init CSV:", font=_FONT_BODY, bg=_PANE_BG, fg=_TEXT_FG
-        ).grid(row=row, column=0, sticky="w", padx=5, pady=3)
-        self.init_csv_var = ctk.StringVar(value="./ws/vfp-init.csv")
-        init_row = tk.Frame(params_grid, bg=_PANE_BG)
-        init_row.grid(row=row, column=1, sticky="ew", padx=5, pady=3)
-        init_entry = LiteEntry(
-            init_row,
-            textvariable=self.init_csv_var,
-            width=20,
-            min_px=140,
-            justify="left",
-        )
-        init_entry.pack(side="left", fill="x", expand=True)
-        LiteButton(
-            init_row,
-            text="...",
-            width=34,
-            command=lambda: self._browse_file(self.init_csv_var),
-        ).pack(side="left", padx=(5, 0))
-
-        # === Action Buttons (right half) ===
-        btn_frame = ctk.CTkFrame(
-            split, border_width=1, border_color=_SECTION_BORDER, corner_radius=10
-        )
-        btn_frame.grid(row=0, column=1, sticky="new", padx=(5, 0))
-        tk.Label(
-            btn_frame, text="▶ Actions", font=_FONT_HEADER, bg=_PANE_BG, fg=_TEXT_FG
-        ).pack(anchor="w", padx=10, pady=(10, 5))
-
-        btn_row = tk.Frame(btn_frame, bg=_PANE_BG)
-        btn_row.pack(fill="x", padx=10, pady=(0, 10))
-
-        LiteButton(
-            btn_row, text="📤 Export Init VFP", width=10, command=self._export_init
-        ).pack(side="left", fill="x", expand=True, padx=5)
-        LiteButton(
-            btn_row,
-            text="🔓 Reset VFP",
-            width=10,
-            fg_color="#c0392b",
-            hover_color="#96281b",
-            command=self._reset_unlock,
-        ).pack(side="left", fill="x", expand=True, padx=5)
-        LiteButton(
-            btn_row, text="🔧 Fix Results", width=10, command=self._fix_result
-        ).pack(side="left", fill="x", expand=True, padx=5)
-
-        btn_row2 = tk.Frame(btn_frame, bg=_PANE_BG)
-        btn_row2.pack(fill="x", padx=10, pady=(0, 10))
-
+        modes = ctk.CTkFrame(scroll)
+        modes.pack(fill="x", pady=5)
+        self.mode_var = tk.StringVar(value="Standard")
+        ctk.CTkOptionMenu(
+            modes, variable=self.mode_var, values=["Standard", "Ultrafast", "Legacy"]
+        ).pack(side="left", padx=5)
         self.start_btn = LiteButton(
-            btn_row2,
-            text="▶ Start Autoscan",
-            width=160,
-            fg_color="#2d8a4e",
-            hover_color="#236b3c",
-            command=self._start_scan,
+            modes, text="Start optimization", command=self._start_scan
         )
         self.start_btn.pack(side="left", padx=5)
-
-        self.stop_btn = LiteButton(
-            btn_row2,
-            text="⏹ Stop",
-            width=100,
-            fg_color="#c0392b",
-            hover_color="#96281b",
-            command=self._stop_scan,
-        )
-        self.stop_btn.configure(state="disabled")
+        self.stop_btn = LiteButton(modes, text="Stop task", command=self._stop_scan)
         self.stop_btn.pack(side="left", padx=5)
 
-        btn_row3 = tk.Frame(btn_frame, bg=_PANE_BG)
-        btn_row3.pack(fill="x", padx=10, pady=(0, 10))
+        row = ctk.CTkFrame(scroll)
+        row.pack(fill="x", pady=5)
+        self.task_var = tk.StringVar(value="No tasks")
+        self.task_menu = ctk.CTkOptionMenu(
+            row,
+            variable=self.task_var,
+            values=["No tasks"],
+            command=self._select_task,
+            width=280,
+        )
+        self.task_menu.pack(side="left", padx=5)
+        LiteButton(row, text="Refresh", command=self._refresh).pack(side="left", padx=5)
+        LiteButton(row, text="Save result", command=self._save_result).pack(
+            side="left", padx=5
+        )
 
+        controls = ctk.CTkFrame(scroll)
+        controls.pack(fill="x", pady=5)
         LiteButton(
-            btn_row3, text="📥 Import Final VFP", width=10, command=self._import_final
-        ).pack(side="left", fill="x", expand=True, padx=5)
-        LiteButton(
-            btn_row3, text="📤 Export Final VFP", width=160, command=self._export_final
+            controls,
+            text="Stop automation & take over",
+            command=lambda: self._control("takeover"),
         ).pack(side="left", padx=5)
+        LiteButton(
+            controls, text="Allow automation", command=lambda: self._control("release")
+        ).pack(side="left", padx=5)
+        LiteButton(
+            controls, text="Retry recovery", command=lambda: self._control("recover")
+        ).pack(side="left", padx=5)
+        self.status_var = tk.StringVar(value="Connecting to scan service…")
+        ctk.CTkLabel(
+            scroll, textvariable=self.status_var, justify="left", wraplength=750
+        ).pack(anchor="w", pady=5)
+        self.frame.after(100, self._poll)
 
-    def _browse_file(self, var: ctk.StringVar) -> None:
-        path = filedialog.askopenfilename()
-        if path:
-            var.set(path)
+    @staticmethod
+    def _client():
+        from pynvoc.scan_client import ScanClient
 
-    def _browse_save(self, var: ctk.StringVar) -> None:
-        path = filedialog.asksaveasfilename(
-            defaultextension=".csv", filetypes=[("CSV", "*.csv"), ("All", "*.*")]
-        )
-        if path:
-            var.set(path)
+        return ScanClient()
 
-    def _set_scan_buttons(self, start_enabled: bool, stop_enabled: bool):
-        if self._is_resize_active:
-            self._pending_scan_button_state = (start_enabled, stop_enabled)
+    def _alive(self):
+        return not getattr(self.app, "_exiting", False)
+
+    def _background(self, action, complete, failed=None):
+        """Poll futures on Tk's thread; worker functions never touch widgets."""
+        future = self.app.run_background("hosted-scan", action)
+
+        def deliver():
+            if not self._alive():
+                return
+            if not future.done():
+                self.frame.after(100, deliver)
+                return
+            try:
+                value = future.result()
+            except Exception as exc:
+                self.status_var.set(str(exc))
+                if failed:
+                    failed(exc)
+            else:
+                complete(value)
+
+        self.frame.after(100, deliver)
+
+    def _selected_gpu(self):
+        # Do not use get_gpu_args' display-index fallback as a stable GPU ID.
+        value = self.app.gpu_map.get(self.app.gpu_var.get())
+        if value is None:
+            raise ValueError("Select a detected GPU before starting a task")
+        text = str(value)
+        return int(text, 16 if text.lower().startswith("0x") else 10)
+
+    def _control_gpu(self):
+        task = self._tasks.get(self._task_id)
+        return task["request"]["gpu_id"] if task else self._selected_gpu()
+
+    def _start_scan(self):
+        if self._acting:
             return
+        try:
+            pending = self.app.config.get("hosted_scan_pending")
+            if not pending:
+                pending = {
+                    "gpu_id": self._selected_gpu(),
+                    "mode": self.mode_var.get().lower(),
+                    "request_id": uuid.uuid4().hex,
+                }
+                # Persist before sending so a lost reply/restart can reuse the ID.
+                self.app.config.set("hosted_scan_pending", pending)
+        except (ValueError, TypeError) as exc:
+            self.status_var.set(str(exc))
+            return
+        self._acting = True
+        self.start_btn.configure(state="disabled")
+        self.status_var.set("Submitting optimization…")
 
-        desired_start = "normal" if start_enabled else "disabled"
-        desired_stop = "normal" if stop_enabled else "disabled"
-        if self.start_btn.cget("state") != desired_start:
-            self.start_btn.configure(state=desired_start)
-        if self.stop_btn.cget("state") != desired_stop:
-            self.stop_btn.configure(state=desired_stop)
+        def accepted(task):
+            self._acting = False
+            self.app.config.set("hosted_scan_pending", None)
+            self._task_id = task["id"]
+            self._offset = 0
+            self._tasks[self._task_id] = task
+            self.status_var.set(f"Task {task['id']} accepted by the service")
+            self._refresh()
 
-    def on_resize_state_changed(
-        self, resizing: bool, force_flush: bool = False
-    ) -> None:
-        self._is_resize_active = resizing
-        if (
-            (not resizing)
-            and force_flush
-            and self._pending_scan_button_state is not None
-        ):
-            start_enabled, stop_enabled = self._pending_scan_button_state
-            self._pending_scan_button_state = None
-            self._set_scan_buttons(start_enabled, stop_enabled)
+        def failed(exc):
+            self._acting = False
+            self.start_btn.configure(state="normal")
+            # A definite rejection is safe to replace. Network failures preserve
+            # the pending payload; pressing Start retries exactly that submission.
+            if getattr(exc, "status", 0) in {400, 401, 403, 404, 409}:
+                self.app.config.set("hosted_scan_pending", None)
 
-    def _export_init(self) -> None:
-        gpu_args = self.app.get_gpu_args()
-        gpu = self.app.selected_gpu_target()
-        self.app.console.append("[GUI] Resetting core offset/curve...\n")
+        self._background(lambda: self._client().start(**pending), accepted, failed)
 
-        def export_after_reset(code: int) -> None:
-            if code == 0:
-                self.app.run_cli_display(gpu_args + ["export-vfp", "-q", "-"])
+    def _action(self, operation):
+        if self._acting:
+            return
+        self._acting = True
 
-        self.app.run_native_action(
-            "reset core offset",
-            lambda native, gpu=gpu: (
-                native.set_clock_offset(gpu, "nvml", "core", 0, "P0")
-                or "Successfully reset core offset."
-            ),
-            on_finished=export_after_reset,
-        )
+        def done(_value):
+            self._acting = False
+            self._refresh()
 
-    def _reset_unlock(self) -> None:
-        """Reset VF curve explicitly and unlock NVAPI VFP states, then auto refresh."""
-        gpu_args = self.app.get_gpu_args()
-        gpu = self.app.selected_gpu_target()
+        def failed(_error):
+            self._acting = False
 
-        def refresh_curve(_code: int) -> None:
-            if getattr(self.app, "tab_vfcurve", None):
-                self.app.tab_vfcurve._refresh_curve()
+        self._background(operation, done, failed)
 
-        def reset_curve_after_unlock(code: int) -> None:
-            if code == 0:
-                self.app.run_cli_display(
-                    gpu_args + ["reset-vfp"],
-                    on_finished=refresh_curve,
+    def _stop_scan(self):
+        if self._task_id is not None:
+            task_id = self._task_id
+            self._action(lambda: self._client().cancel(task_id))
+
+    def _control(self, action):
+        try:
+            gpu = self._control_gpu()
+        except ValueError as exc:
+            self.status_var.set(str(exc))
+            return
+        self._action(lambda: getattr(self._client(), action)(gpu))
+
+    def _select_task(self, label):
+        try:
+            task_id = int(label.split(":", 1)[0])
+        except ValueError:
+            return
+        if task_id != self._task_id:
+            self._task_id = task_id
+            self._offset = 0
+        self._refresh()
+
+    def _poll(self):
+        if self._alive():
+            self._refresh()
+            self.frame.after(1500, self._poll)
+
+    def _refresh(self):
+        if self._refreshing or not self._alive():
+            return
+        self._refreshing = True
+        selected, offset = self._task_id, self._offset
+
+        def read():
+            client = self._client()
+            tasks = client.tasks()
+            controls = client.control()
+            log = client.log(selected, offset) if selected is not None else None
+            return tasks, controls, log
+
+        def failed(_error):
+            self._refreshing = False
+
+        def show(snapshot):
+            self._refreshing = False
+            tasks, controls, log = snapshot
+            self._tasks = {task["id"]: task for task in tasks}
+            if self._task_id is None and tasks:
+                active = [t for t in tasks if t["state"] not in TERMINAL]
+                self._task_id = (active or tasks)[-1]["id"]
+            pending = self.app.config.get("hosted_scan_pending")
+            if pending:
+                recovered = next(
+                    (
+                        t
+                        for t in tasks
+                        if t["origin"] == "manual" and t["request"] == pending
+                    ),
+                    None,
                 )
-
-        self.app.run_native_action(
-            "reset VFP lock",
-            lambda native, gpu=gpu: (
-                native.reset_vfp_lock(gpu) or "Successfully reset VFP lock."
-            ),
-            on_finished=reset_curve_after_unlock,
-        )
-
-    def _start_scan(self) -> None:
-        gpu_args = self.app.get_gpu_args()
-        mode = {
-            "Ultrafast": "ultrafast",
-            "Legacy": "legacy",
-        }.get(self.mode_var.get(), "standard")
-
-        if mode == "legacy":
-            args = gpu_args + ["autoscan-vfp-legacy"]
-            bsod = self.bsod_var.get()
-            if bsod != "(auto)":
-                args += ["-b", bsod]
-        else:
-            args = gpu_args + ["autoscan-vfp"]
-            if mode == "ultrafast":
-                args.append("-u")
-            args += ["-o", self.output_csv_var.get()]
-            args += ["-i", self.init_csv_var.get()]
-            bsod = self.bsod_var.get()
-            if bsod != "(auto)":
-                args += ["-b", bsod]
-
-        self._set_scan_buttons(start_enabled=False, stop_enabled=True)
-
-        def on_finished(retcode: int) -> None:
-            self.frame.after(
-                0,
-                lambda: self._set_scan_buttons(start_enabled=True, stop_enabled=False),
+                if recovered:
+                    self.app.config.set("hosted_scan_pending", None)
+                    if self._task_id != recovered["id"]:
+                        self._task_id = recovered["id"]
+                        self._offset = 0
+            labels = {
+                t[
+                    "id"
+                ]: f"{t['id']}: GPU {t['request']['gpu_id']} · {t['origin']} · {t['state']}"
+                for t in tasks
+            }
+            self.task_menu.configure(
+                values=list(reversed(list(labels.values()))) or ["No tasks"]
             )
+            self.task_var.set(labels.get(self._task_id, "No tasks"))
+            current = self._tasks.get(self._task_id)
+            busy = any(t["state"] not in TERMINAL for t in tasks)
+            self._set_scan_buttons(
+                not busy and not self._acting,
+                bool(current and current["state"] not in TERMINAL),
+            )
+            if current:
+                gpu = current["request"]["gpu_id"]
+                held = gpu in controls["manual_hold"]
+                needs_recovery = gpu in controls["recovery_required"]
+                self.status_var.set(
+                    f"Task {current['id']}: {current['state']} · GPU {gpu}\n"
+                    f"Automation: {'held by user' if held else 'allowed'}"
+                    + (" · Recovery required" if needs_recovery else "")
+                    + (f"\n{current['error']}" if current.get("error") else "")
+                )
+            else:
+                self.status_var.set("Scan service connected. No tasks yet.")
+            if log is not None and selected == self._task_id:
+                self._offset = log["next_offset"]
+                if log["text"]:
+                    self.app.console.append(log["text"])
 
-        self.app.run_cli(args, on_finished=on_finished)
+        self._background(read, show, failed)
 
-    def _stop_scan(self) -> None:
-        self.app.cancel_cli()
-        self._set_scan_buttons(start_enabled=True, stop_enabled=False)
+    def _save_result(self):
+        if self._task_id is None:
+            return
+        task_id = self._task_id
 
-    def _fix_result(self) -> None:
-        gpu_args = self.app.get_gpu_args()
-        mode = {"Ultrafast": "ultrafast"}.get(self.mode_var.get(), "standard")
-        args = gpu_args + ["fix-vfp-result", "-m", "1"]
-        if mode == "ultrafast":
-            args.append("-u")
-        self.app.run_cli_display(args)
+        def save(result):
+            csv = result.get("final_csv")
+            path = filedialog.asksaveasfilename(
+                defaultextension=".csv" if csv is not None else ".json",
+                initialfile=f"scan-{task_id}.csv"
+                if csv is not None
+                else f"scan-{task_id}.json",
+            )
+            if path:
+                try:
+                    with open(path, "w", encoding="utf-8", newline="") as output:
+                        output.write(
+                            csv
+                            if csv is not None
+                            else json.dumps(result, ensure_ascii=False, indent=2)
+                        )
+                except OSError as exc:
+                    self.status_var.set(str(exc))
 
-    def _import_final(self) -> None:
-        gpu_args = self.app.get_gpu_args()
-        self.app.run_cli_display(gpu_args + ["import-vfp", "./ws/vfp.csv"])
+        self._background(lambda: self._client().result(task_id), save)
 
-    def _export_final(self) -> None:
-        gpu_args = self.app.get_gpu_args()
-        self.app.run_cli_display(gpu_args + ["export-vfp", "./ws/vfp-final.csv"])
+    def _set_scan_buttons(self, start_enabled, stop_enabled):
+        self.start_btn.configure(state="normal" if start_enabled else "disabled")
+        self.stop_btn.configure(state="normal" if stop_enabled else "disabled")
+
+    def on_resize_state_changed(self, resizing, force_flush=False):
+        self._is_resize_active = resizing
