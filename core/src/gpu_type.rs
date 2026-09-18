@@ -607,7 +607,10 @@ impl GpuType {
     }
 
     /// 900 系（Maxwell，GM 代号）及更早 → true，需使用 SetPstates20 写 baseVoltage delta
-    /// 10 系（Pascal）及以后 → false，使用 VoltRails boost
+    /// 10 系（Pascal）及以后 → false，使用 VoltRails boost。
+    /// Quadro K/F 系工作站卡（WorkstationKepler/Fermi，如 GK106 的 K4000）
+    /// 与同代 GeForce 同硅——GUI/TUI 的 BIOS VF 阶梯门控
+    /// （vfcurve `_is_legacy_gpu`）依赖此旗标，漏列会导致 "No VF curve"。
     pub fn is_legacy_voltage(&self) -> bool {
         matches!(
             self,
@@ -617,6 +620,8 @@ impl GpuType {
                 | GpuType::DesktopKepler
                 | GpuType::MobileFermi
                 | GpuType::DesktopFermi
+                | GpuType::WorkstationKepler
+                | GpuType::WorkstationFermi
                 | GpuType::Unknown
         )
     }
@@ -932,5 +937,27 @@ impl ArchOcPrior {
             points: Vec::new(),
             probe_margin_khz: 0,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Quadro K/F 系工作站卡（GK106 的 K4000 实机）与同代 GeForce 同为
+    /// legacy 电压——GUI/TUI 的 BIOS VF 阶梯门控依赖此旗标；漏列会让
+    /// K4000 在 vfcurve 停在 "No VF curve"（2026-09-18 实机回归）。
+    #[test]
+    fn workstation_kepler_fermi_are_legacy_voltage() {
+        assert_eq!(
+            detect_gpu_type("Quadro K4000", "GK106"),
+            GpuType::WorkstationKepler
+        );
+        assert!(detect_gpu_type("Quadro K4000", "GK106").is_legacy_voltage());
+        assert!(GpuType::WorkstationKepler.is_legacy_voltage());
+        assert!(GpuType::WorkstationFermi.is_legacy_voltage());
+        // 非 legacy 对照：Pascal 工作站 / 消费 10 系
+        assert!(!GpuType::WorkstationPascal.is_legacy_voltage());
+        assert!(!GpuType::Desktop10Series.is_legacy_voltage());
     }
 }
