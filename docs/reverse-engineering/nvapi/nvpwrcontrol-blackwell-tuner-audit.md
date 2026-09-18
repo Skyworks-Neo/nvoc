@@ -259,3 +259,42 @@ XMGPowerPatch（未随包分发，`\\.\XMGPowerPatch`）是另一独立内核驱
 - 全部为**静态源码分析**；工具自称 5070Ti 上 145/150/160W 实机验证、XMG 2C18 live-verified / 2C19 pending（其自带标注，未独立验证）。
 - 所有 RVA/偏移/魔数严格限定 nvlddmkm **616.92**（timestamp 0x6A9B4070）；跨驱动版本不成立（工具自己的门禁哲学）。
 - 与我们的交叉验证项（772 步长、mask@+8、Pstates20 布局、magic 公式）为双源一致，置信度高；工具独有断言（RM 对象偏移、XMG 契约值）为单源，标注待验证。
+
+---
+
+## 9. 40 系首测（2026-09-18，RTX 4060 Laptop，`blackwell_recon_live`）
+
+工具落地当天在 4060L（R610 世代驱动）首测，本节为活体判读：
+
+### 9.1 TopRels 拓扑树首次活体填充——域号表被独立表面交叉验证
+
+GetInfo 返 0，count=15、mask 11 条，raw bytes=`{src,dst,bidir}`：
+
+```
+rec0  GPC(0)→XBAR(1)      rec5  XBAR(1)→Hub(4)     rec8  Mem(2)→Host(9)
+rec1  XBAR(1)→Sys(3)      rec6  Mem(2)→XBAR(1)     rec9  Mem(2)→Msd(5)
+rec2  XBAR(1)→Host(9)     rec7  Mem(2)→Sys(3)      rec10 XBAR(1)→Disp(7)
+rec3  XBAR(1)→Msd(5)      rec4  Mem(2)→PcieGen(8)
+```
+
+边集与物理常识完全自洽（GPC→XBAR→外设群；Mem→XBAR/Sys/Host/Msd/PcieGen），域号 0/1/2/3/4/5/7/8/9 与 nvclocks 审计最终域表**逐一吻合**——`clkprop-tops-toprels-regimes.md` 的"本机树空"悬念在 Ada 上以满树形态收官，域号表获得第三方表面实证。
+
+**代际差异（重要）**：Ada 的 GPC→XBAR 边是 **enum=2（wire tag 5）、payload=0——没有比率字段**。工具的严格五元组门（enum==0 + payload==0xE660）在 Ada 必然失配，比率记录（tag 3 + 0xE660）是 **Blackwell/616.92 特有**。我们 `find_gpc_xbar_records()` 采用仅字节匹配 `[0,1,1]` 的宽松门（payload 另读）是正确设计。GetControl 返 -1：Ada 上比率控制未填充，与 payload=0 自洽。
+
+### 9.2 ClockDomains V2：代际探针验证 + Ada 布局再确认
+
+status=0、controllable mask=0xFF，**8 条记录在 bit 0..7**：dom 0-5/7 = type **0x0A**、dom 6 = type **0x02**。代际探针验证成立（Ada=0x0A ↔ 50 系预期 0x0F）；BW 锚点（freq@+0x114/MSVDD@+0x11C）在 Ada 全读 0——符合预期（Ada 双平面值在 VALUES[0]/[1]，见 vf-curve-families 记忆），锚点常量不影响 Ada 读路径。`find_unique_populated_entry()` 在全零 Ada 块上正确返 None（不误触发）。
+
+### 9.3 测量域 40 系基线表（50 系对照的 diff 基准）
+
+空闲期 0x527FC458 五槽全通（status=0）：
+
+| +4 | 读数 | 判读 |
+|---|---|---|
+| 0 | 26.26 MHz | GPC 深空闲门周期伪影（与既有 4060L 记录一致；负载下重测应 ≈2000） |
+| 1 | 1054.16 MHz | XBAR（≈GPC/2，轻载） |
+| 2 | 1004.73 MHz | SYS（与 XBAR 接近，负载下重测分辨：XBAR 随 GPC 走、SYS 定频） |
+| 3 | 449.90 MHz | **新数据点**：测量空间 3 未在我们域表归因，读定频 ~450（疑 Disp/Hub） |
+| 4 | 7009.71 MHz | MCLK 铁证（GDDR 有效频率） |
+
+≤40 系 index 语义再获确认（4=MCLK 无歧义）。**50 系裁决协议**：同表重跑，若 +4=2 变为 ≈0.9×GPC 而非 ~1000 定频 → mask 语义定案（工具对）；若仍 ~1000 定频 → index 语义延续，工具的 "XBAR physical" 实为 SYS。负载下跑 +4∈{0,1,2} 可同时钉死 0/1/2 归属。
