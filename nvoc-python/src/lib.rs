@@ -1904,10 +1904,7 @@ fn bios_vf_curve_value(image: &[u8]) -> Result<Value, nvoc_core::Error> {
         .iter()
         .rposition(|e| e.freq_mhz_x2 != 0)
         .map_or(last, |i| i as u64);
-    let end = mark_index(15)
-        .unwrap_or(last)
-        .min(last)
-        .min(last_nonzero);
+    let end = mark_index(15).unwrap_or(last).min(last).min(last_nonzero);
     let marks: Vec<Value> = ladder
         .marks
         .iter()
