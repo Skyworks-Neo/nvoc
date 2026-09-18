@@ -16,7 +16,7 @@ Do not change existing GUI/TUI ownership locks or ordinary pynvoc control paths.
 - `srv/src/scan_process.rs`: Windows Job Object, suspended launch then assignment/resume, inherited-handle whitelist, full process-tree cleanup; injectable backend and worker panic handling. Cancellation/failure resets defaults, NOT a snapshot of previous settings. Successful optimization preserves results. `spawn` strips the verbatim `\\?\` cwd prefix before `CreateProcessW` (children created with a verbatim current directory hang at startup before running any code).
 - `srv/src/scan_api.rs`: authenticated loopback HTTP on 127.0.0.1:14515, separate manual/automation credentials. Async recovery task. Up to four submit-body readers so incomplete submission does not block control requests.
 - `srv/src/bin/nvoc_service.rs`: optional embedded host, pauses legacy srv temperature/OC writes during hosted work/recovery-required state.
-- `srv/src/bin/nvoc_scan_host.rs`: foreground host, Enter requests shutdown and cleanup. Optimizer executable is a fixed sibling binary.
+- `srv/src/bin/nvoc_scan_host.rs`: foreground host for debugging and development only — a 24-line wrapper over the same `Host::start` core, not a supported deployment form. The service with embedded host is the deployment path. Enter requests shutdown and cleanup. Optimizer executable is a fixed sibling binary.
 - `srv/tests/hosted_scans.rs`: 12 mock/state-machine tests.
 - `srv/tests/hosted_http.rs`: live TCP/HTTP integration (port 0 + injectable fake backend): full lifecycle over real HTTP (submit → worker launches optimizer process via ProcessTree → stdout streamed through /log → cancel kills the tree and seals state) plus incomplete-POST-body reader not blocking control endpoints. `Host::start_with` is now `pub` for this. No GPU and no service involved.
 - `srv/tests/process_tree.rs`: 3 harmless real Windows process-tree tests plus 3 ignored fixture entry points invoked by those tests.
@@ -43,14 +43,12 @@ New fix this round: `ProcessTree::spawn` normalizes verbatim `\\?\` cwd paths (`
 
 ## Remaining work
 
-## Remaining work
-
 - HTTP hardening: submit readers bounded to four but no socket read timeout; stuck readers can exhaust submissions. Other response writes remain synchronous and a slow reader may block dispatch. Resolve before claiming robust service behavior.
 - Log paging: terminal 64 KiB pages can split UTF-8; preserve incomplete trailing codepoint whenever more file bytes remain, not only while nonterminal.
 - Result API currently only final CSV and silently truncates at 4 MiB. Make size behavior explicit and expose useful legacy artifacts (`scan/vfp.jsonl`, stdout). JSONL last test entry can be rewritten in place: do not assume immutable append-only events.
 - GUI pending request persistence uses config.set (async flush), despite comment promising persistence before submission; explicitly save before sending or correct durability behavior.
 - GUI _action should attach returned recovery task ID; enable Stop only for cancellable Scan states, not Recovery/recovering.
-- Add user-facing setup/usage docs, replacing or supplementing this checkpoint. Explain full optimize workflow replaces old raw autoscan panel, default-reset recovery, no real GPU validation, and direct control paths remaining outside arbitration.
+- Add user-facing setup/usage docs, replacing or supplementing this checkpoint. Explain full optimize workflow replaces old raw autoscan panel, default-reset recovery, no real GPU validation, and direct control paths remaining outside arbitration. Present `nvoc_scan_host` as a debugging harness, not a supported deployment form.
 - Run final fmt, clippy, relevant Rust/Python suites and git diff --check. No MCP implementation yet.
 
 ## API/configuration
