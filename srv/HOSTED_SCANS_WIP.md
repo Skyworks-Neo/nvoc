@@ -6,7 +6,7 @@ Status: implementation in progress, saved at user request. No commit, service in
 
 1. Unify ordinary GPU control APIs later.
 2. Current work: srv owns optimizer launch, lifetime, logs, cancellation and process-tree cleanup; GUI submits hosted tasks. Manual takeover blocks automation until released.
-3. Optimizer-only MCP mapping comes later and has not been started.
+3. Optimizer-only MCP mapping: implemented as an automation-credential MCP server (`scan_mcp.py`) exposing scan tools only; takeover/release/recover are deliberately not exposed.
 
 Do not change existing GUI/TUI ownership locks or ordinary pynvoc control paths. TUI currently has no scan UI. Direct driver callers still bypass hosted-task arbitration. Globally serialize hosted scans because optimizer recovery can reset the driver; manual automation holds are per GPU.
 
@@ -22,6 +22,8 @@ Do not change existing GUI/TUI ownership locks or ordinary pynvoc control paths.
 - `srv/tests/process_tree.rs`: 3 harmless real Windows process-tree tests plus 3 ignored fixture entry points invoked by those tests.
 - `nvoc-python/python/pynvoc/scan_client.py`: urllib client, loopback only, bearer credentials, no proxy/redirect/subprocess fallback.
 - `nvoc-python/tests/test_scan_client.py`: 5 client tests, imports module directly to avoid native pynvoc dependency.
+- `nvoc-python/python/pynvoc/scan_mcp.py`: FastMCP stdio server (`nvoc-scans`), automation credential only (`NVOC_SCAN_AUTOMATION_TOKEN`, never the manual one), scan tools only (submit/status/list/log/result/control/cancel); loads `scan_client.py` by file path so the native pynvoc package is never imported. srv arbitration rejections reach the agent verbatim as `[HTTP status] SCAN_BUSY/MANUAL_CONTROL/RECOVERY_REQUIRED/UNAUTHORIZED/FORBIDDEN`.
+- `nvoc-python/tests/test_scan_mcp.py`: 11 MCP server tests (argument/payload passthrough, arbitration error surfacing, automation-token refusal, manual-only controls absent, one real in-memory MCP session round-trip).
 - `gui/src/tabs/vfcurve/sections/autoscan.py`: hosted full optimization panel (standard/ultrafast/legacy), task list, logs, cancellation, takeover/release/recovery, result export, reconnect and pending request ID handling. Closing GUI stops polling, not srv task.
 - `gui/tests/test_hosted_autoscan.py`: 4 controller tests.
 - `srv/Cargo.toml`, `srv/src/lib.rs`: required module/dependency wiring.
@@ -41,6 +43,10 @@ All three previously unverified edits compile and pass: expanded GPU default rec
 
 New fix this round: `ProcessTree::spawn` normalizes verbatim `\\?\` cwd paths (`plain_cwd`). Root cause found by controlled experiments: a child created with a verbatim current directory hangs during startup (resumed but stuck in kernel waits, never runs main, never spawns descendants), while identical spawns with a plain path work. The process-tree tests reproduce this via `Workspace::new()` `canonicalize()` and pass with the original canonicalize restored, so the verbatim path case stays permanently covered. Hardware behavior of the recovery resets remains unvalidated.
 
+## Verified 2026-09-19 (MCP mapping)
+
+`scan_mcp.py` + `test_scan_mcp.py`: ruff format/check clean, pytest 118 passed (107 prior + 11 new), real stdio transport smoke check passed (server named `nvoc-scans`, exactly the 7 scan tools, an arbitration failure surfaced to the client as an isError tool result with `[HTTP 0] Scan service unavailable; ...`). SDK note: MCP clients only inherit a safe-env whitelist by default — the automation token must be passed explicitly (Claude Code `-e`, Desktop `env`), which the registration snippets above already do.
+
 ## Remaining work
 
 - HTTP hardening: submit readers bounded to four but no socket read timeout; stuck readers can exhaust submissions. Other response writes remain synchronous and a slow reader may block dispatch. Resolve before claiming robust service behavior.
@@ -49,7 +55,7 @@ New fix this round: `ProcessTree::spawn` normalizes verbatim `\\?\` cwd paths (`
 - GUI pending request persistence uses config.set (async flush), despite comment promising persistence before submission; explicitly save before sending or correct durability behavior.
 - GUI _action should attach returned recovery task ID; enable Stop only for cancellable Scan states, not Recovery/recovering.
 - Add user-facing setup/usage docs, replacing or supplementing this checkpoint. Explain full optimize workflow replaces old raw autoscan panel, default-reset recovery, no real GPU validation, and direct control paths remaining outside arbitration. Present `nvoc_scan_host` as a debugging harness, not a supported deployment form.
-- Run final fmt, clippy, relevant Rust/Python suites and git diff --check. No MCP implementation yet.
+- Run final fmt, clippy, relevant Rust/Python suites and git diff --check.
 
 ## API/configuration
 
@@ -61,6 +67,23 @@ Host enabled with distinct `NVOC_SCAN_MANUAL_TOKEN` and `NVOC_SCAN_AUTOMATION_TO
 - GET /v1/control.
 - POST /v1/control/{gpu_id}/takeover, /release, /recover (manual credential only).
 - Restart marks unfinished tasks interrupted and requires explicit recovery. Successful recovery clears recovery_required but retains manual hold until released.
+
+## MCP server
+
+`scan_mcp.py` gives an AI assistant (MCP client) the automation role — the first real
+automation client, which is what makes the arbitration above demonstrable in practice.
+
+- Install (host-side dependency only; pyproject/uv.lock intentionally untouched):
+  `& .deps\py\Scripts\python.exe -m pip install --index-url https://mirrors.aliyun.com/pypi/simple/ "mcp>=1.10,<2"` (Tsinghua mirror 403s this package; PyPI direct also works).
+- Launch (by file path; do not run as `pynvoc.scan_mcp` — the package `__init__` needs the native extension):
+  `D:\08-skyworks\nvoc-srv\.deps\py\Scripts\python.exe D:\08-skyworks\nvoc-srv\nvoc\nvoc-python\python\pynvoc\scan_mcp.py`
+- Environment: `NVOC_SCAN_AUTOMATION_TOKEN` (required, >=32 characters, distinct from the manual credential), optional `NVOC_SCAN_URL` (default `http://127.0.0.1:14515`).
+- Tools: `submit_scan(gpu_id, mode, request_id)`, `scan_status(task_id)`, `scan_list()`, `scan_log(task_id, offset)`, `scan_result(task_id)`, `scan_control()`, `scan_cancel(task_id)`. Takeover/release/recover are absent by design (manual-credential exclusive; srv also enforces this with FORBIDDEN).
+- Claude Code registration:
+  `claude mcp add nvoc-scans -e NVOC_SCAN_AUTOMATION_TOKEN=<automation token> -- D:\08-skyworks\nvoc-srv\.deps\py\Scripts\python.exe D:\08-skyworks\nvoc-srv\nvoc\nvoc-python\python\pynvoc\scan_mcp.py`
+- Claude Desktop `claude_desktop_config.json`:
+  `{"mcpServers": {"nvoc-scans": {"command": "D:\\08-skyworks\\nvoc-srv\\.deps\\py\\Scripts\\python.exe", "args": ["D:\\08-skyworks\\nvoc-srv\\nvoc\\nvoc-python\\python\\pynvoc\\scan_mcp.py"], "env": {"NVOC_SCAN_AUTOMATION_TOKEN": "<automation token>"}}}}`
+- Safe arbitration demo without touching a GPU: hold a manual takeover in the GUI, then submit from MCP — the agent sees `[HTTP 409] MANUAL_CONTROL` and the task is never started; MCP calls to takeover/release/recover cannot exist (tool set is scan-only).
 
 ## Workspace and commands
 
@@ -80,7 +103,7 @@ $env:PATH = "$rustBin;$env:PATH"
 & "$rustBin\cargo.exe" test --offline --manifest-path nvoc/Cargo.toml -p nvoc-srv --all-targets
 & "$rustBin\cargo.exe" clippy --offline --manifest-path nvoc/Cargo.toml -p nvoc-srv --all-targets -- -D warnings
 # rustfmt changed Rust files with --edition 2024.
-& .deps/py/Scripts/python.exe -m pytest nvoc/gui/tests nvoc/nvoc-python/tests/test_scan_client.py
+& .deps/py/Scripts/python.exe -m pytest nvoc/gui/tests nvoc/nvoc-python/tests/test_scan_client.py nvoc/nvoc-python/tests/test_scan_mcp.py
 ```
 
 Python venv .deps/py uses existing bundled Python 3.12 with system-site-packages; pytest/ruff/customtkinter/pystray installed locally. All 232 Cargo.lock registry packages are cached locally; .deps/fetch_crates.py verified checksums and worked around old archive mtimes on this volume. nvapi-rs submodule initialized. No background build/download/test process remains from this checkpoint.
