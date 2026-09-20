@@ -39,8 +39,8 @@ mod tests {
 
     #[test]
     fn version_json_carries_both_build_fields() {
-        let parsed: serde_json::Value = serde_json::from_str(&version_json())
-            .expect("version_json must be valid JSON");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&version_json()).expect("version_json must be valid JSON");
         assert_eq!(parsed["version"], BUILD_VERSION);
         assert_eq!(parsed["git_hash"], BUILD_GIT_HASH);
         assert_ne!(parsed["git_hash"], "");
