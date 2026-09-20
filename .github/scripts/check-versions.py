@@ -23,6 +23,7 @@ CRATES = [
     "srv",
     "cli-stressor-cuda-rs",
     "nvoc-python",
+    "xtask",
 ]
 PYPROJECTS = [
     "gui/pyproject.toml",

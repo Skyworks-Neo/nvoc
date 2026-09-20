@@ -163,6 +163,13 @@ class CanvasSlider(ctk.CTkFrame):
         self._command = command
         self._state = "normal"
         self._value = float(from_)
+        # Set by configure() when the range/step shape changes while a redraw
+        # is deferred; consumed by the next set() — including a no-op set().
+        # Without this, the classic startup sequence configure(range)+set(
+        # same-value) (e.g. 50..150@100 → 70..100@100) leaves BOTH redraws
+        # skipped and the canvas keeps rendering the construction range
+        # forever — state correct, pixels stale.
+        self._geometry_dirty = False
 
         self._track_pad_x = 8
         self._track_h = 6
@@ -186,6 +193,16 @@ class CanvasSlider(ctk.CTkFrame):
         self._canvas.bind("<Button-5>", self._on_mousewheel)
 
     def configure(self, require_redraw: bool = True, **kwargs):
+        range_changed = False
+        if "from_" in kwargs and float(kwargs["from_"]) != self._from:
+            range_changed = True
+        if "to" in kwargs and float(kwargs["to"]) != self._to:
+            range_changed = True
+        if (
+            "number_of_steps" in kwargs
+            and int(kwargs["number_of_steps"]) != self._steps
+        ):
+            range_changed = True
         if "from_" in kwargs:
             self._from = float(kwargs.pop("from_"))
         if "to" in kwargs:
@@ -199,7 +216,10 @@ class CanvasSlider(ctk.CTkFrame):
 
         super().configure(**kwargs)
         self._value = self._clamp(self._value)
+        if range_changed:
+            self._geometry_dirty = True
         if require_redraw:
+            self._geometry_dirty = False
             self._redraw()
 
     def cget(self, key):
@@ -216,8 +236,14 @@ class CanvasSlider(ctk.CTkFrame):
     def set(self, value):
         clamped = self._clamp(float(value))
         if abs(clamped - self._value) < 1e-9:
-            return  # no-op set: skip the canvas redraw
+            # No-op on the value — but a deferred range change still needs
+            # its repaint (see _geometry_dirty).
+            if self._geometry_dirty:
+                self._geometry_dirty = False
+                self._redraw()
+            return
         self._value = clamped
+        self._geometry_dirty = False
         self._redraw()
 
     def get(self):
@@ -371,6 +397,11 @@ class SegmentRangeSelector(ctk.CTkFrame):
         self._end_idx = 0
         self._active_handle = None  # type: Optional[str]
         self._last_active_handle = "end"
+        # Point-mode: both handles fused into one (start == end always).
+        # Entered after a mem-range lock failure reveals a pre-Kepler part —
+        # the native P-State pin fallback only accepts a single P-State, so
+        # the selector collapses to one fused handle.
+        self._point_mode = False
         self._pad_x = 18
         self._line_y = 26
         self._node_r = 5
@@ -393,6 +424,7 @@ class SegmentRangeSelector(ctk.CTkFrame):
         self._canvas.bind("<ButtonRelease-1>", self._on_release)
 
         self._summary_text = "No P-State data"
+        self._summary_font = tk_font.Font(root=self, family="Segoe UI", size=8)
 
         self.set_values(self._values)
 
@@ -444,6 +476,10 @@ class SegmentRangeSelector(ctk.CTkFrame):
             self._start_idx = default_idx
             self._end_idx = default_idx
 
+        if self._point_mode:
+            # Keep the fused handle collapsed after a value refresh.
+            self._end_idx = self._start_idx
+
         self._update_summary()
         self._redraw()
 
@@ -456,10 +492,29 @@ class SegmentRangeSelector(ctk.CTkFrame):
             return
         self._start_idx = self._values.index(start_label)
         self._end_idx = self._values.index(end_label)
-        if self._start_idx > self._end_idx:
+        if self._point_mode:
+            self._end_idx = self._start_idx
+        elif self._start_idx > self._end_idx:
             self._start_idx, self._end_idx = self._end_idx, self._start_idx
         self._update_summary()
         self._redraw()
+
+    def set_point_mode(self, enabled: bool):
+        """Fuse both handles into one (single-P-State selection, no range).
+
+        The native P-State pin (`set-pstate-lock`) only accepts a single
+        P-State — there is no range form. Point-mode keeps start == end so
+        ``get_selection`` always returns a single label and dragging moves
+        the fused handle.
+        """
+        prev = self._point_mode
+        self._point_mode = bool(enabled)
+        if self._point_mode and self._values:
+            # Collapse any existing range to its high-perf (start) endpoint.
+            self._end_idx = self._start_idx
+        if prev != self._point_mode:
+            self._update_summary()
+            self._redraw()
 
     def get_selection(self) -> Optional[Tuple[str, str]]:
         if not self._values:
@@ -502,7 +557,11 @@ class SegmentRangeSelector(ctk.CTkFrame):
         return "start" if dist_start <= dist_end else "end"
 
     def _apply_drag_index(self, idx: int):
-        if self._active_handle == "start":
+        if self._point_mode:
+            # Fused handle: move the single point, keep start == end.
+            self._start_idx = idx
+            self._end_idx = idx
+        elif self._active_handle == "start":
             self._start_idx = min(idx, self._end_idx)
         elif self._active_handle == "end":
             self._end_idx = max(idx, self._start_idx)
@@ -614,13 +673,22 @@ class SegmentRangeSelector(ctk.CTkFrame):
             )
 
         # Centered summary at the subtitle height (matches the toggle
-        # selector's watt captions).
+        # selector's watt captions), but anchored HORIZONTALLY to the active
+        # selection — a row-wide centered caption sat hundreds of pixels away
+        # from the handle it describes on wide cards. Ranges anchor to the
+        # segment midpoint, points to the fused handle; the clamp keeps the
+        # text inside the canvas when the selection rides an edge node.
+        text_w = self._summary_font.measure(self._summary_text)
+        mid_x = (positions[self._start_idx] + positions[self._end_idx]) / 2.0
+        summary_x = min(
+            max(mid_x, text_w / 2 + 2), max(text_w / 2 + 2, w - text_w / 2 - 2)
+        )
         c.create_text(
-            w / 2,
+            summary_x,
             h - 9,
             text=self._summary_text,
             fill="#7e8da1",
-            font=("Segoe UI", 8),
+            font=self._summary_font,
         )
 
 

@@ -5,6 +5,7 @@ def test_format_metric_lines_full() -> None:
     status = {
         "gpu_clock_mhz": 1800,
         "mem_clock_mhz": 7500,
+        "video_clock_mhz": 1327,
         "voltage_mv": 950,
         "temperature_c": 62.4,
         "power_w": 132,
@@ -35,15 +36,16 @@ def test_format_metric_lines_full() -> None:
 
     text = "\n".join(_format_metric_lines(status, "Ada"))
 
-    assert "GPU: 1800 MHz" in text
-    assert "MEM: 7500 MHz" in text
+    assert "CLK: GPU 1800 | MEM 7500 | VID 1327 MHz" in text
     assert "VOLT: 950 mV" in text
     assert "TEMP: CORE 62 C" in text
     assert "PWR: 132 W" in text
     assert "PSTATE: P0" in text
     assert "LOAD: GPU 100% | MC 0% | VEN 12% | BUS 2%" in text
     assert "VRAM: 2.0 / 8.0 GB" in text
-    assert "FAN: 1234 RPM @ 45%" in text
+    # Exact line match: a substring assert would also match the duplicated
+    # "FAN: FAN: ..." prefix this line once had.
+    assert "FAN: 1234 RPM @ 45%\n" in text + "\n"
     assert "PCIE: Gen4/4 x16" in text
     # PCIe generation prepended as "Gen<cur>/<max>".
     # Bidirectional bandwidth appended after lane count, nvitop-style (↑Tx ↓Rx).
@@ -87,23 +89,62 @@ def test_format_metric_lines_pcie_bandwidth_only_lanes_missing() -> None:
 
 
 def test_format_metric_lines_fabric_clocks() -> None:
-    """FCLK line surfaces internal fabric clocks (Xbar/crossbar, Sys, Hub, ...)
-    from the GetAllClocks V2 all_clocks_mhz breakdown."""
+    """FCLK line surfaces internal fabric clocks (Xbar/crossbar, Sys, Msd,
+    Hub, ...) from the GetAllClocks V2 all_clocks_mhz breakdown. Msd renders:
+    it is the uncore-band domain the ClkDomains bit-5 offset record drives
+    (it was hidden back when it read as memory-subsystem noise)."""
     status = {
         "all_clocks_mhz": {
             "Gpc": 2100.0,
             "Xbar": 1800.0,  # the "crossbar clock" GPU-Z shows
             "Sys": 900.0,
+            "Msd": 2460.0,
             "Hub": 600.0,
             "M": 7500.0,  # memory — not in the fabric list
             "Hotclk": 0.0,  # zero -> omitted
         }
     }
     text = "\n".join(_format_metric_lines(status, "Ada"))
-    assert "FCLK: XBAR 1800 | SYS 900 | HUB 600 | GPC 2100 MHz" in text
+    assert "FCLK: GPC 2100 | XBAR 1800 | SYS 900 | MSD 2460 | HUB 600 MHz" in text
     # Memory and zero clocks must NOT appear on the FCLK line.
     assert "M 7500" not in text
     assert "HOTCLK 0" not in text
+
+
+def test_format_metric_lines_fabric_clocks_v2_suffixed_names() -> None:
+    """Server Pascal (P100) reports the V2-suffixed Pascal-cluster domain
+    names — Gpc2/Xbar2/Sys2/Hub2/Ltc2 plus Pwr/Utils — which must all render
+    (regression: only bare names matched and FCLK showed HOST alone)."""
+    status = {
+        "all_clocks_mhz": {
+            "Gpc2": 1256.923,
+            "Xbar2": 1235.302,
+            "Sys2": 1130.459,
+            "Hub2": 1296.0,
+            "Ltc2": 1209.988,
+            "Host": 571.428,
+            "Pwr": 540.0,
+            "Utils": 108.0,
+            "M": 715.5,  # memory — stays off FCLK
+        }
+    }
+    text = "\n".join(_format_metric_lines(status, "Pascal"))
+    assert (
+        "FCLK: GPC 1257 | XBAR 1235 | SYS 1130 | HUB 1296 | HOST 571"
+        " | LTC 1210 | PWR 540 | UTILS 108 MHz" in text
+    )
+    assert "M 716" not in text
+    # No "2" suffix leaks into a rendered label.
+    assert "GPC2" not in text
+
+
+def test_format_metric_lines_fabric_clocks_prefers_first_of_duplicates() -> None:
+    """A payload carrying both the bare and V2-suffixed spelling of one
+    domain must not print the cluster twice."""
+    status = {"all_clocks_mhz": {"Gpc": 2100.0, "Gpc2": 2099.0}}
+    text = "\n".join(_format_metric_lines(status, "Ada"))
+    assert text.count("GPC ") == 1
+    assert "GPC 2100" in text
 
 
 def test_format_metric_lines_fabric_clocks_absent() -> None:
@@ -191,9 +232,53 @@ def test_format_metric_lines_thresholds_optional() -> None:
     assert "TEMP: CORE 46 / 87 C | HOTSPOT 53 C" in text
 
 
+def test_format_metric_lines_multi_rail_voltage() -> None:
+    """Multi-rail part: VOLT goes per-rail (GPC | MEM/MSVDD) using the live
+    rail currents the dashboard poll attaches; fractional mV kept, whole mV
+    rendered bare."""
+    status = {
+        "voltage_mv": 950,
+        "rail_volts_mv": [("GPC", 1050.0), ("MEM", 681.25)],
+    }
+    text = "\n".join(_format_metric_lines(status, "Pascal"))
+    assert "VOLT: GPC 1050 mV | MEM 681.25 mV" in text
+
+    # Fabric rail (50-series MSVDD) uses its own label.
+    status["rail_volts_mv"] = [("GPC", 1000.0), ("MSVDD", 655.5)]
+    text = "\n".join(_format_metric_lines(status, "Blackwell"))
+    assert "VOLT: GPC 1000 mV | MSVDD 655.5 mV" in text
+
+
+def test_format_metric_lines_single_rail_uses_real_rail_current() -> None:
+    """Single-rail part: VOLT shows the real rail current_uV (volt-rails
+    status), not the coarse NVAPI ``voltage_mv`` field — they differ by a
+    few mV on a 4060 Laptop (1020 rail vs 1010 voltage_mv). Plain form,
+    no label (only one rail to name)."""
+    # Real rail 1020 mV, voltage_mv would say 1010 — the rail value wins.
+    status = {"voltage_mv": 1010, "rail_volts_mv": [("GPC", 1020.0)]}
+    text = "\n".join(_format_metric_lines(status, "Ada"))
+    assert "VOLT: 1020 mV" in text
+    assert "1010" not in text  # voltage_mv must NOT leak in
+    assert "GPC" not in text  # no label on single-rail form
+
+    # Second rail present but reading zero (idle) — dropped, stays single-rail.
+    status["rail_volts_mv"] = [("GPC", 950.0), ("MSVDD", 0.0)]
+    text = "\n".join(_format_metric_lines(status, "Ada"))
+    assert "VOLT: 950 mV" in text
+
+
+def test_format_metric_lines_voltage_falls_back_without_rails() -> None:
+    """No rail data at all (volt-rails family unsupported on this part):
+    fall back to the NVAPI ``voltage_mv`` field."""
+    status = {"voltage_mv": 950}
+    text = "\n".join(_format_metric_lines(status, "Ada"))
+    assert "VOLT: 950 mV" in text
+
+
 def test_format_metric_lines_missing_fields_render_dashes() -> None:
     text = "\n".join(_format_metric_lines({}, "---"))
 
+    assert "CLK: GPU --- | MEM --- | VID --- MHz" in text
     assert "LOAD: GPU --- | MC --- | VEN --- | BUS ---" in text
     assert "VRAM: ---" in text
     assert "FAN: ---" in text
@@ -212,5 +297,8 @@ def test_format_metric_lines_multi_cooler_labels() -> None:
 
     text = "\n".join(_format_metric_lines(status, "---"))
 
-    assert "FAN1: 1000 RPM @ 30%" in text
-    assert "FAN2: 2000 RPM @ 50%" in text
+    # The line-level "FAN:" key stays single; per-cooler indices ride the
+    # parts without a second colon ("FAN: FAN1 1000 RPM @ 30% | ...").
+    assert "FAN1 1000 RPM @ 30%" in text
+    assert "FAN2 2000 RPM @ 50%" in text
+    assert "FAN: FAN1" in text

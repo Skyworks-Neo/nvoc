@@ -7,6 +7,7 @@ members = [
   "srv",
   "cli-stressor-cuda-rs",
   "nvoc-python",
+  "xtask",
 ]
 exclude = ["nvapi-rs"]
 resolver = "3"
@@ -52,7 +53,7 @@ colored = "3.1.1"
 num-traits = "0.2.19"
 nvml-wrapper = "0.13.0"
 nvml-wrapper-sys = "0.10.0"
-nvapi-hi = { path = "./nvapi-rs/hi", features = [
+nvapi = { path = "./nvapi-rs", features = [
   "serde",
 ] }
 quick-error = "2.0.1"
@@ -62,3 +63,4 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 windows-service = "0.8.0"
 windows-sys = { version = "0.61.2", features = ["Win32"] }
+libloading = "0.8"

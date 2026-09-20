@@ -65,7 +65,14 @@ pub enum OperationKind {
     SetNvapiTargetTemp,
     QueryNvapiDNotifier,
     SetNvapiDNotifier,
+    QueryNvapiPowerCeiling,
     QueryNvapiVoltRails,
+    /// Enumerate the melonVolt voltage domains (0xA38ACF9D): per-domain
+    /// min/step/max/default µV window (see `nvapi::VoltDevice`).
+    QueryNvapiVoltDevices,
+    /// PCI BAR topology (0xE4B701E3): per-BAR {tag, size-MiB, base} records
+    /// (see `nvapi::BarRecord`).
+    QueryNvapiBarInfo,
     SetNvapiVoltRailOffset,
     /// Set a volt-rail to an absolute target voltage (mV) by deriving the
     /// required µV offset from the live control/status snapshot. Shares the
@@ -84,6 +91,10 @@ pub enum OperationKind {
     /// 0x10964), patches a copy, SETs, readbacks, restores on mismatch;
     /// `temporary` restores the snapshot before returning.
     SetNvapiClkDomainOffset,
+    /// Set the ECC memory configuration (public NvAPI_GPU_SetECCConfiguration
+    /// 0x1CF639D9) — enable/disable ECC, immediately or deferred to reboot;
+    /// the configuration persists in non-volatile memory.
+    SetNvapiEccConfiguration,
     /// Query the private ClockClient V/F-POINTS read path (GetInfo 0x8895B510
     /// → GetStatus 0x7FEE9032) — per-bank point masks + V/F curve records
     /// (units calibrated vs the public GPC VFP curve).
@@ -92,6 +103,16 @@ pub enum OperationKind {
     /// 0xDA025C3E) — the raw mode/value readback for everything the private
     /// SetControl 0xFEC00D04 writes. All-zero at stock.
     QueryNvapiClkVfControl,
+    /// Read the full VBIOS image via `NvAPI_GPU_GetVbiosImage`
+    /// (0xFC13EE11, escape 0x0700004F). On legacy drivers this escape
+    /// succeeds where the VFP-curve escape 0x0700004A is
+    /// kernel-unimplemented, making it the viable path to the V/F curve
+    /// (BIT VoltageTable) on old GPUs.
+    QueryVbiosImage,
+    /// Read the VBIOS version string via `NvAPI_GPU_GetVbiosVersionString`.
+    QueryVbiosSecurityInfo,
+    QueryVbiosStatusString,
+    QueryVbiosVersion,
     /// Write one V/F curve point via the private V/F-POINTS SetControl
     /// (ID 0xFEC00D04, mode 0 absolute / mode 1 delta). DANGEROUS:
     /// snapshots, patches, SETs, readbacks, restores on mismatch.
@@ -103,7 +124,8 @@ pub enum OperationKind {
     /// mode-0 override via the private SetControl (single RMW cycle).
     ResetNvapiVfpPrivate,
     // OC-gap wraps (2026-08-26 audit follow-up)
-    QueryNvapiPowerMizer,
+    // QueryNvapiPowerMizer withdrawn with the op (2026-08-28) — the GET is a
+    // boot-time constant, not a readback (see docs reverse-engineering notes).
     // QueryNvapiDynamicBoost withdrawn with the op (2026-08-26) — the ID is
     // PCF platform status, not the PPAB enable readback.
     QueryNvapiCoreVoltageControl,
@@ -130,6 +152,12 @@ pub enum OperationKind {
     /// Direct physical clock for one domain — the green-curve MEASURE path
     /// (ID 0x527FC458). One call returns `freq_khz` (no two-sample Δt).
     QueryNvapiClkDomainFreqDirect,
+    /// Per-domain legal frequency enumeration (ClockClkDomainFreqsEnum
+    /// ID 0x40BDDDB36) — a MHz table per selector. Few points = pstate-bin
+    /// table; many = the domain's full legal range on its minimum
+    /// granularity (moves with applied OC). `Ok(None)` = selector
+    /// unsupported on this part (e.g. selector 6 on TU116).
+    QueryNvapiClkDomainFreqsEnum,
     QueryNvapiPStateLevels,
     QueryNvapiPStateLockStatus,
     SetNvapiPStateNative,
@@ -188,32 +216,57 @@ pub enum OperationKind {
     /// clamp the perf max/min frequency to a cap value. The ref tool's
     /// `-gpuclk:<MHz>`. Distinct from P-state lock (SetNvapiPStateNative).
     SetNvapiPerfFreqCap,
+    /// Toggle the overclocked-pstate unlock (EnableOverclockedPstates NDA
+    /// 0xB23B70EE) — opens the extended/OC pstate range before a
+    /// SetPstates20 delta write.
+    SetNvapiOverclockedPstates,
+    /// Read-only raw dump of the private pstates-2.0 delta table
+    /// (GetPstates20Private 0xC5DDF56E) — the frequency-ceiling storage.
+    QueryNvapiPstates20Private,
+    /// RMW one delta in the private pstates-2.0 table
+    /// (SetPstates20Private 0x4C0B519A).
+    SetNvapiPstates20PrivateDelta,
     /// Read the GPU fan-curve table (ClientFanPoliciesGetControl NDA
     /// 0xE543C540, struct magic 0x200DC) — up to 4 curve slots × 3
     /// monotonic (temperature, RPM) points. Desktop-only (mobile drives
     /// fans through the EC).
     GetFanCurves,
     /// Write one fan-curve slot (ClientFanPoliciesSetControl NDA 0xC181947A,
-    /// struct magic 0x200DC) via the GPUMon RMW protocol — GET snapshot,
+    /// struct magic 0x200DC) via the ref tool RMW protocol — GET snapshot,
     /// patch the target slot, SET the whole table back. Desktop-only.
     SetFanCurve,
     /// Reset one fan-curve slot to factory (FanPolicySetControl NDA
     /// 0x2B2A2A45, struct magic 0x214AC): GET the policy block, OR
     /// `1 << curve_index` into the +0x08 reset bitmask, SET. This is
-    /// GPUMon's NVAPI fan reset — works where the public
+    /// ref tool 2's NVAPI fan reset — works where the public
     /// RestoreCoolerSettings is rejected with NOT_SUPPORTED (desktop
     /// 3060/2070).
     ResetFanCurve,
+    /// NVAPI fan reset that actually undoes a pinned level on modern
+    /// cards (1650 Super / A4000 live A/B 2026-09-03): rewrite the NDA
+    /// ClientFanCoolers control block with the per-cooler override flag
+    /// (flags bit0) CLEARED — level None. The 0x214AC reset bitmask is
+    /// accepted but leaves the pin; RestoreCoolerSettings and
+    /// RestoreCoolerPolicyTable are NOT_SUPPORTED there.
+    ResetNvapiFanControl,
     /// Toggle fan stop / zero-RPM for a curve slot (FanArbiterSet NDA
     /// 0x44CD3014, struct magic 0x10144, enable bit0 at +0x28).
     SetFanStop,
     /// Query per-cooler info via the private FanCoolerGetInfo (NDA
     /// 0x65CE5BFC): cooler count + per-cooler index.
     QueryNvapiCoolerInfo,
+    /// Query fan-policy capabilities via the private
+    /// ClientFanPoliciesGetInfo (NDA 0x52B76D12): V2 raw block on modern
+    /// drivers, legacy V1 (policy list + active + flag bits) on R391-era.
+    QueryNvapiFanPolicyInfo,
     /// Set fan speed by RPM via the private FanCoolerSetControl (NDA
     /// 0xEB44E8AA): RMW the control block, patch enable+level per cooler
-    /// type. RE'd from GPUMon setFanSim.
+    /// type. RE'd from ref tool setFanSim.
     SetFanRpm,
+    /// Set fan duty by percent through the same fan-simulation surface
+    /// (percent → 0..65536 level). Fallback pin for drivers where the
+    /// ClientFanCoolers control-block SET is rejected (472.12 live).
+    SetFanPercent,
 }
 
 impl OperationKind {
@@ -245,6 +298,7 @@ impl OperationKind {
                 | SetPstateClockOffset
                 | SetCoolerLevels
                 | ResetCoolerLevels
+                | SetFanPercent
                 | SetVfpFrequencyLock
                 | ResetVfpFrequencyLock
                 | SetGpcVoltLock
@@ -265,8 +319,10 @@ impl OperationKind {
                 | SetNvapiVoltRailOffset
                 | SetNvapiVoltRailTarget
                 | SetNvapiClkDomainOffset
+                | SetNvapiEccConfiguration
                 | SetFanCurve
                 | ResetFanCurve
+                | ResetNvapiFanControl
                 | SetFanStop
                 | SetFanRpm
                 | ResetNvapiPowerLimits
@@ -287,6 +343,8 @@ impl OperationKind {
                 | SetWm2Active
                 | SetWm2Mode
                 | SetNvapiPerfFreqCap
+                | SetNvapiOverclockedPstates
+                | SetNvapiPstates20PrivateDelta
         )
     }
 }
@@ -324,7 +382,7 @@ pub struct PowerLimits {
 }
 
 /// One temperature→RPM point of a GPU fan curve (`ClientFanPolicies` table,
-/// struct magic `0x200DC`, RE'd from GPUMon `DialogFanCurve`). Desktop-only:
+/// struct magic `0x200DC`, RE'd from ref tool `DialogFanCurve`). Desktop-only:
 /// mobile boards drive fans through the EC, not NVAPI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FanCurvePointReadout {
@@ -372,9 +430,9 @@ pub struct TemperatureThreshold {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ThermalSensorReading {
     /// Sensor target: GPU core / Memory / Board.
-    pub target: nvapi_hi::nvapi::ThermalTarget,
+    pub target: ::nvapi::ThermalTarget,
     /// Controller (internal / ADM1032 / ...).
-    pub controller: nvapi_hi::nvapi::ThermalController,
+    pub controller: ::nvapi::ThermalController,
     /// Live reading.
     pub current_c: i32,
     /// Sensor physical range (defaultMinTemp..defaultMaxTemp).
@@ -430,6 +488,32 @@ pub struct DNotifierInfo {
     pub levels: Vec<DNotifierLevel>,
 }
 
+/// The actually-effective power wall on PPAB mobile platforms — what nvidia-smi
+/// prints as `GPU Ceiling Power Limit: Current / Requested / Default`. The
+/// driver arbitrates several independent caps; the two we can read privately
+/// are the requested TGP ([`crate::operation::QueryNvapiTgpWattRange`]'s
+/// set-side twin, `ClientTgpWattGetStatus` 0x8B3E7343) and the active D-Notifier
+/// level's cap. Live-verified on RTX 4060 Laptop against nvidia-smi: with D2
+/// (55W) active the ceiling Current is 55W; with D1 (Unlimited) active it is
+/// the full requested 100W — i.e. `ceiling == min(requested, dnotify cap)`.
+/// All values are in **watts**.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PowerCeilingInfo {
+    /// The power-policy entry index all three reads used.
+    pub policy_index: usize,
+    /// VBIOS rated/default TGP (nvidia-smi's "Default Power Limit"), if known.
+    pub default_watt: Option<f64>,
+    /// The requested TGP — what the TGP slider last wrote (nvidia-smi's
+    /// "Requested Power Limit"), if the driver exposed a live value.
+    pub requested_watt: Option<f64>,
+    /// The active D-Notifier level's power cap; `None` when D1 (Unlimited) is
+    /// active, the level is N/A, or the private interface is unavailable.
+    pub dnotify_watt: Option<f64>,
+    /// The effective wall = `min` of the available caps above (only `None`
+    /// when neither the requested TGP nor the D-Notifier cap was readable).
+    pub ceiling_watt: Option<f64>,
+}
+
 /// One P-State entry from the native PerfPstatesGetInfo table (`0x7B30AE0D`):
 /// the pstate number and its min/max core clock in **MHz** (converted from the
 /// driver's kHz for ergonomic CLI output). RE'd from the ref tool's `queryPStateInfo`.
@@ -455,7 +539,7 @@ pub struct PStateLevelsInfo {
 }
 
 /// Native NVAPI P-State lock request (the the ref tool `-pstate:<index>` SETTER).
-/// Core-level mirror of [`nvapi_hi::PStateNativeLock`].
+/// Core-level mirror of [`::nvapi::hi::PStateNativeLock`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NvapiPStateNativeLock {
     /// Reset all P-State locks to default (the ref tool `-pstate:-1`).
@@ -468,7 +552,7 @@ pub enum NvapiPStateNativeLock {
 
 /// GPU frequency perf-cap request (the ref tool `-gpuclk:<MHz>` SETTER,
 /// PerfLimitsSetStatus NDA 0x32CA4983). Core-level mirror of
-/// [`nvapi_hi::PerfFreqCap`]: clamps the perf max/min frequency to a cap
+/// [`::nvapi::hi::PerfFreqCap`]: clamps the perf max/min frequency to a cap
 /// value (NOT an offset, NOT a P-state lock). `freq_khz` = MHz × 1000.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NvapiPerfFreqCap {
@@ -492,6 +576,36 @@ pub struct NvapiCoolerInfoEntry {
     pub max: u32,
     pub current: u32,
     pub current_pwm_percent: u32,
+    /// Raw NV_COOLER_POLICY currently in force (None where the public
+    /// GetCoolerSettings readback is capability-gated). Answers "which mode
+    /// am I in": 1=Manual (level pinned), 8=TemperatureContinuous (duty
+    /// follows the ClientFanPolicies curve table), 16=SW-silent variant,
+    /// 32=firmware default.
+    pub control_policy: Option<u32>,
+    /// Factory default policy for this cooler.
+    pub default_policy: Option<u32>,
+}
+
+/// Fan-policy capabilities (private ClientFanPoliciesGetInfo 0x52B76D12).
+/// `layout` distinguishes the modern V2 block (raw payload for offline
+/// decoding) from the legacy R391-era V1 block (decoded policy entries:
+/// which fan policies exist, which is active, two capability flag bits).
+#[derive(Debug, Clone)]
+pub struct NvapiFanPolicyInfo {
+    /// "v2" (0x2004C raw) or "v1" (0x1003C decoded)
+    pub layout: &'static str,
+    /// V2 only: opaque driver payload (hex in output).
+    pub raw: Vec<u8>,
+    /// V1 only: decoded per-policy entries.
+    pub entries: Vec<NvapiFanPolicyEntry>,
+}
+
+/// One legacy-V1 fan-policy entry.
+#[derive(Debug, Clone, Copy)]
+pub struct NvapiFanPolicyEntry {
+    pub dword0: u32,
+    pub active: bool,
+    pub flags: u32,
 }
 
 /// Result of a set_fan_rpm call (private FanCoolerSetControl NDA 0xEB44E8AA).
@@ -506,6 +620,17 @@ pub struct NvapiFanRpmResult {
     pub applied_rpm: Option<u32>,
 }
 
+/// Result of a set_fan_percent call (percent → 0..65536 duty on the same
+/// fan-simulation surface).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NvapiFanPercentResult {
+    pub cooler_index: u32,
+    /// 0=active, 1=pwm, 2=pwm-tach
+    pub cooler_type: u32,
+    /// None = simulation disabled (returned to auto)
+    pub applied_percent: Option<u32>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ClockOffset {
     pub mhz: i32,
@@ -513,18 +638,18 @@ pub struct ClockOffset {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PstateBaseVoltage {
-    pub pstate: nvapi_hi::PState,
-    pub voltage_domain: nvapi_hi::VoltageDomain,
+    pub pstate: ::nvapi::hi::PState,
+    pub voltage_domain: ::nvapi::hi::VoltageDomain,
     pub editable: bool,
-    pub voltage: nvapi_hi::Microvolts,
-    pub delta: nvapi_hi::MicrovoltsDelta,
-    pub min_delta: nvapi_hi::MicrovoltsDelta,
-    pub max_delta: nvapi_hi::MicrovoltsDelta,
+    pub voltage: ::nvapi::hi::Microvolts,
+    pub delta: ::nvapi::hi::MicrovoltsDelta,
+    pub min_delta: ::nvapi::hi::MicrovoltsDelta,
+    pub max_delta: ::nvapi::hi::MicrovoltsDelta,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VoltageBoostState {
-    pub voltage_boost: Option<nvapi_hi::Percentage>,
+    pub voltage_boost: Option<::nvapi::hi::Percentage>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -579,6 +704,9 @@ pub struct FanInfo {
     pub count: u32,
     pub min_speed: Option<u32>,
     pub max_speed: Option<u32>,
+    /// Current fan duty in percent (v1 `nvmlDeviceGetFanSpeed` on legacy
+    /// NVML, v2 on modern). `None` where neither symbol answers.
+    pub current_speed: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -593,7 +721,7 @@ pub struct AppliedValue<T> {
 /// on such SKUs (Ada mobile).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OvervoltApplied {
-    pub applied: AppliedValue<nvapi_hi::MicrovoltsDelta>,
+    pub applied: AppliedValue<::nvapi::hi::MicrovoltsDelta>,
     pub driver_ov_entries: bool,
 }
 
@@ -603,15 +731,19 @@ pub struct VoltageLimits {
     pub upper_point: usize,
 }
 
+/// Every field is `None` when the driver reports no such limit (the old code
+/// substituted hardcoded test placeholders — 2047/4095/8191 percent,
+/// 127/255/511 C, and a fake 3-point PFF curve — which leaked as if they were
+/// real data on GPUs with empty policy tables, e.g. V100).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TdpTempLimits {
-    pub min_tdp: nvapi_hi::Percentage,
-    pub default_tdp: nvapi_hi::Percentage,
-    pub max_tdp: nvapi_hi::Percentage,
-    pub min_temp: nvapi_hi::Celsius,
-    pub default_temp: nvapi_hi::Celsius,
-    pub max_temp: nvapi_hi::Celsius,
-    pub throttle_curve: nvapi_hi::PffCurve,
+    pub min_tdp: Option<::nvapi::hi::Percentage>,
+    pub default_tdp: Option<::nvapi::hi::Percentage>,
+    pub max_tdp: Option<::nvapi::hi::Percentage>,
+    pub min_temp: Option<::nvapi::hi::Celsius>,
+    pub default_temp: Option<::nvapi::hi::Celsius>,
+    pub max_temp: Option<::nvapi::hi::Celsius>,
+    pub throttle_curve: Option<::nvapi::hi::PffCurve>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

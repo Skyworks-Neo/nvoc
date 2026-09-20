@@ -1,6 +1,6 @@
 use super::Error;
 use super::target::gpu_id_from_nvml_device;
-use nvapi_hi::Gpu;
+use ::nvapi::hi::Gpu;
 use nvml_wrapper::Nvml;
 use std::str::FromStr;
 
@@ -52,24 +52,40 @@ fn parse_gpu_id(raw: &str) -> Result<usize, Error> {
 /// Explicitly initialize NVAPI exactly once before first use. nvapi-rs relies
 /// on the driver's implicit initialization, which fails on some old/legacy
 /// drivers where tools that call NvAPI_Initialize up front (MSI Afterburner,
-/// the GPUMon plugin) still work — so we call it explicitly, like they do.
+/// the ref tool plugin) still work — so we call it explicitly, like they do.
 /// Failure is non-fatal: enumeration proceeds via the implicit path, which is
 /// enough on every modern driver.
 fn ensure_nvapi_initialized() {
     use std::sync::Once;
     static INIT: Once = Once::new();
     INIT.call_once(|| {
-        if let Err(e) = nvapi_hi::initialize() {
-            eprintln!("warning: NvAPI_Initialize failed ({e:?}); continuing via implicit init");
+        // 显式 NVOC_NVAPI_PATH 覆盖要先于任何 LoadLibraryA("nvapi64.dll")
+        // 把目录插进传统搜索序(见 dll_path::prepare_nvapi 文档)。
+        super::dll_path::prepare_nvapi();
+        if let Err(e) = ::nvapi::hi::initialize() {
+            // Display(非 Debug)——Debug 派生会丢掉 LibraryNotFound 上追加的
+            // 真实 OS 错误(GetLastError/dlerror),那是 WOA/路径问题唯一的线索。
+            eprintln!("warning: NvAPI_Initialize failed ({e}); continuing via implicit init");
         }
     });
 }
 
-pub fn get_sorted_gpus() -> nvapi_hi::Result<Vec<Gpu>> {
+pub fn get_sorted_gpus() -> ::nvapi::hi::Result<Vec<Gpu>> {
     ensure_nvapi_initialized();
     let mut gpus = Gpu::enumerate()?;
     gpus.sort_by_key(|g| g.id());
     Ok(gpus)
+}
+
+/// NVAPI interface version string (`NvAPI_GetInterfaceVersionString`, e.g.
+/// "R580") — the driver-side API generation marker. Unlike the driver
+/// version this identifies which NVAPI interface generation the loaded
+/// driver exports, which is what gates the private/stamp-gated families,
+/// so commands that probe capability surfaces should surface it alongside
+/// their results. Process-global (not per-GPU).
+pub fn nvapi_interface_version() -> Result<String, Error> {
+    ensure_nvapi_initialized();
+    ::nvapi::hi::interface_version().map_err(Error::from)
 }
 pub fn get_sorted_gpu_ids_nvml(nvml: &Nvml) -> Result<Vec<u32>, Error> {
     let count = nvml

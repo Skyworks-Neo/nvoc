@@ -4,7 +4,7 @@ from textual.app import ComposeResult
 from textual.containers import Grid, Horizontal, Vertical
 from textual.widgets import Button, Label, Select, TabPane
 
-from ..widgets import ShortcutInput, mnemonic_text
+from ..widgets import ShortcutInput, UnitToggle, mnemonic_text
 
 
 def compose_overclock() -> ComposeResult:
@@ -46,23 +46,136 @@ def compose_overclock() -> ComposeResult:
                             compact=True,
                         )
                     with Grid(id="clock-controls"):
+                        # Each offset row carries a MHz/mV unit toggle (GUI
+                        # V/F Offsets parity): mV mode reroutes the row's
+                        # apply onto the per-domain V/F-curve VOLTAGE plane
+                        # (ClkDomains slot-1, Blackwell slot-3). Toggles stay
+                        # disabled until the controller proves the ClkDomains
+                        # family (Pascal+ NVAPI).
                         with Horizontal(classes="row"):
                             yield Label("Core Offset")
                             yield ShortcutInput(
                                 value="0", id="core-offset", compact=True
+                            )
+                            yield UnitToggle(
+                                "MHz",
+                                id="core-unit",
+                                classes="unit-toggle",
+                                variant="default",
+                                compact=True,
+                                tooltip=(
+                                    "MHz ↔ mV plane toggle: mV applies this "
+                                    "row's value as the per-domain V/F-curve "
+                                    "voltage addend (±300 mV). The two planes "
+                                    "are separate storage; switching "
+                                    "re-anchors at the plane's current offset."
+                                ),
                             )
                         with Horizontal(classes="row"):
                             yield Label("Mem Offset")
                             yield ShortcutInput(
                                 value="0", id="mem-offset", compact=True
                             )
+                            yield UnitToggle(
+                                "MHz",
+                                id="mem-unit",
+                                classes="unit-toggle",
+                                variant="default",
+                                compact=True,
+                                tooltip=(
+                                    "MHz ↔ mV plane toggle: mV applies this "
+                                    "row's value as the per-domain V/F-curve "
+                                    "voltage addend (±300 mV). The two planes "
+                                    "are separate storage; switching "
+                                    "re-anchors at the plane's current offset."
+                                ),
+                            )
                         with Horizontal(classes="row"):
                             # Fabric-clock offset (NVAPI-only ClockClient path,
                             # xbar = domain bit 1). Arch-gated: the controller
-                            # disables this row for pre-Turing GPUs.
+                            # disables this row for pre-Pascal GPUs.
                             yield Label("Xbar Offset")
                             yield ShortcutInput(
                                 value="0", id="xbar-offset", compact=True
+                            )
+                            yield UnitToggle(
+                                "MHz",
+                                id="xbar-unit",
+                                classes="unit-toggle",
+                                variant="default",
+                                compact=True,
+                                tooltip=(
+                                    "MHz ↔ mV plane toggle: mV applies this "
+                                    "row's value as the per-domain V/F-curve "
+                                    "voltage addend (±300 mV). The two planes "
+                                    "are separate storage; switching "
+                                    "re-anchors at the plane's current offset."
+                                ),
+                            )
+                        with Horizontal(classes="row"):
+                            # Sys = ClkDomains bit3 (pure SYS). RMW: read bit3
+                            # current offset, +f, write back. 30系+ bit1 couples
+                            # SYS so an Xbar write also drags bit3 — the Sys RMW
+                            # stacks on top rather than overwriting the -f cancel.
+                            yield Label("Sys Offset")
+                            yield ShortcutInput(
+                                value="0", id="sys-offset", compact=True
+                            )
+                            yield UnitToggle(
+                                "MHz",
+                                id="sys-unit",
+                                classes="unit-toggle",
+                                variant="default",
+                                compact=True,
+                                tooltip=(
+                                    "MHz ↔ mV plane toggle: mV applies this "
+                                    "row's value as the per-domain V/F-curve "
+                                    "voltage addend (±300 mV). The two planes "
+                                    "are separate storage; switching "
+                                    "re-anchors at the plane's current offset."
+                                ),
+                            )
+                        with Horizontal(classes="row"):
+                            # Msd = ClkDomains bit5. Pascal: bit5 SET N/A →
+                            # controller disables this row on Pascal.
+                            yield Label("Msd Offset")
+                            yield ShortcutInput(
+                                value="0", id="msd-offset", compact=True
+                            )
+                            yield UnitToggle(
+                                "MHz",
+                                id="msd-unit",
+                                classes="unit-toggle",
+                                variant="default",
+                                compact=True,
+                                tooltip=(
+                                    "MHz ↔ mV plane toggle: mV applies this "
+                                    "row's value as the per-domain V/F-curve "
+                                    "voltage addend (±300 mV). The two planes "
+                                    "are separate storage; switching "
+                                    "re-anchors at the plane's current offset."
+                                ),
+                            )
+                        with Horizontal(classes="row"):
+                            # Host = ClkDomains bit9 (presence via controllable
+                            # mask: 0x3FF has bit9, 0xFF does not).
+                            yield Label("Host Offset")
+                            yield ShortcutInput(
+                                value="0", id="host-offset", compact=True
+                            )
+                            yield UnitToggle(
+                                "MHz",
+                                id="host-unit",
+                                classes="unit-toggle",
+                                variant="default",
+                                compact=True,
+                                tooltip=(
+                                    "MHz ↔ mV plane toggle: mV applies this "
+                                    "row's value as the per-domain V/F-curve "
+                                    "voltage addend (±300 mV). The two planes "
+                                    "are separate storage; switching "
+                                    "re-anchors at the plane's current offset."
+                                ),
                             )
                     with Grid(id="clock-actions"):
                         yield Button(
@@ -86,19 +199,33 @@ def compose_overclock() -> ComposeResult:
                                 compact=True,
                             )
                         with Horizontal(classes="row"):
+                            # Unit labels (display only): Power Limit is
+                            # dual-unit — NVAPI percent / NVML watts — and
+                            # follows the #power-api selector (controller).
                             yield Label("Power Limit")
                             yield ShortcutInput(
                                 value="100", id="power-limit", compact=True
+                            )
+                            yield Label(
+                                "%", id="power-limit-unit", classes="unit-label"
                             )
                         with Horizontal(classes="row"):
                             yield Label("Thermal Limit")
                             yield ShortcutInput(
                                 value="83", id="thermal-limit", compact=True
                             )
+                            yield Label(
+                                "C", id="thermal-limit-unit", classes="unit-label"
+                            )
                         with Horizontal(classes="row"):
+                            # % on the modern NVAPI boost path; mV on the
+                            # legacy Overvolt delta path (Maxwell/900-series).
                             yield Label("Voltage Boost")
                             yield ShortcutInput(
                                 value="0", id="voltage-boost", compact=True
+                            )
+                            yield Label(
+                                "%", id="voltage-boost-unit", classes="unit-label"
                             )
                     with Grid(id="power-actions"):
                         yield Button(
@@ -114,7 +241,7 @@ def compose_overclock() -> ComposeResult:
                             compact=True,
                         )
 
-                with Vertical(classes="subpane") as mobile_pane:
+                with Vertical(classes="subpane", id="mobile-power-pane") as mobile_pane:
                     mobile_pane.border_title = mnemonic_text("M", "obile Power")
                     with Grid(id="mobile-controls"):
                         with Horizontal(classes="row"):
@@ -202,12 +329,16 @@ def compose_overclock() -> ComposeResult:
                             )
                         with Horizontal(classes="row"):
                             yield Label("Policy")
+                            # NVAPI cooler policies (modern GPUs): only
+                            # `continuous` actually applies the manual %
+                            # level (live A/B) — `manual` no-ops on the
+                            # modern cooler paths and is not offered. Legacy
+                            # GPUs (≤ Kepler) get the default/manual dropdown
+                            # at discovery time — manual % lands on `manual`
+                            # there.
                             yield Select(
                                 options=[
                                     ("contin.", "continuous"),
-                                    ("manual", "manual"),
-                                    ("default", "default"),
-                                    ("auto", "auto"),
                                 ],
                                 value="continuous",
                                 id="fan-policy",

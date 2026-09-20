@@ -3,7 +3,7 @@
 //! 将散落在 `basic_func.rs` 和 `oc_get_set_function.rs` 中的 GpuType 枚举、
 //! OC 扫描参数、电压限制探测参数、电压锁定参数统一管理于此文件。
 
-use nvapi_hi::GpuInfo;
+use ::nvapi::hi::GpuInfo;
 use std::fmt;
 
 use super::error::Error;
@@ -26,11 +26,20 @@ pub enum GpuType {
     Desktop10Series,
     Mobile9Series,
     Desktop9Series,
+    // ── Kepler (GK) — GeForce 600/700 系列 (2012) ──
+    MobileKepler,
+    DesktopKepler,
+    // ── Fermi (GF) — GeForce 400/500 系列 (2010) ──
+    MobileFermi,
+    DesktopFermi,
     WorkstationBlackwell,
     WorkstationLovelace,
     WorkstationAmpere,
     WorkstationTuring,
     WorkstationPascal,
+    // Kepler/Fermi 工作站 (Quadro K / Quadro 4000-6000 系列)
+    WorkstationKepler,
+    WorkstationFermi,
     ServerBlackwell,
     ServerHopper,
     ServerLovelace,
@@ -38,7 +47,9 @@ pub enum GpuType {
     ServerVolta,
     ServerPascal,
     ServerTuringTesla,
-    ComputationVolta,
+    // Kepler/Fermi 服务器 (Tesla K20/K40/K80 / Tesla M-class)
+    ServerKepler,
+    ServerFermi,
     Unknown,
 }
 
@@ -61,7 +72,10 @@ impl fmt::Display for GpuType {
             GpuType::Desktop10Series => write!(f, "10 series desktop detected"),
             GpuType::Mobile9Series => write!(f, "9 series mobile detected"),
             GpuType::Desktop9Series => write!(f, "9 series desktop detected"),
-            GpuType::ComputationVolta => write!(f, "Volta series computational card detected"),
+            GpuType::MobileKepler => write!(f, "Kepler series mobile detected"),
+            GpuType::DesktopKepler => write!(f, "Kepler series desktop detected"),
+            GpuType::MobileFermi => write!(f, "Fermi series mobile detected"),
+            GpuType::DesktopFermi => write!(f, "Fermi series desktop detected"),
             GpuType::WorkstationBlackwell => {
                 write!(f, "Blackwell series workstation card detected")
             }
@@ -69,6 +83,10 @@ impl fmt::Display for GpuType {
             GpuType::WorkstationAmpere => write!(f, "Ampere series workstation card detected"),
             GpuType::WorkstationTuring => write!(f, "Turing series workstation card detected"),
             GpuType::WorkstationPascal => write!(f, "Pascal series workstation card detected"),
+            GpuType::WorkstationKepler => {
+                write!(f, "Kepler series workstation card detected")
+            }
+            GpuType::WorkstationFermi => write!(f, "Fermi series workstation card detected"),
             GpuType::ServerBlackwell => write!(f, "Blackwell series server card detected"),
             GpuType::ServerHopper => write!(f, "Hopper series server card detected"),
             GpuType::ServerLovelace => write!(f, "Lovelace series server card detected"),
@@ -78,6 +96,8 @@ impl fmt::Display for GpuType {
             GpuType::ServerTuringTesla => {
                 write!(f, "Turing Tesla series server card (e.g. T4) detected")
             }
+            GpuType::ServerKepler => write!(f, "Kepler series server card detected"),
+            GpuType::ServerFermi => write!(f, "Fermi series server card detected"),
             GpuType::Unknown => write!(f, "Unknown"),
         }
     }
@@ -86,100 +106,139 @@ impl fmt::Display for GpuType {
 // ─────────────────────────── 检测 / 构造 ─────────────────────────────────────
 
 /// 根据 GPU 名称 + codename 字符串判定世代
-pub fn detect_gpu_type(gpu_name: &str) -> GpuType {
-    let is_rtx_a = gpu_name.contains("RTX A");
-    let is_rtx_professional = gpu_name.contains("RTX")
-        && (gpu_name.contains("2000")
-            || gpu_name.contains("3000")
-            || gpu_name.contains("4000")
-            || gpu_name.contains("5000")
-            || gpu_name.contains("6000"))
-        && !gpu_name.contains("GeForce");
-    let is_quadro = gpu_name.contains("Quadro");
-    let is_tesla = gpu_name.contains("Tesla");
+/// Chip-family detection. The chip prefix (GB202 / GH100 / AD102 / GA102 /
+/// TU104 / GP104 / GM204 / GK104 / GF108 / GV100 …) is a property of the
+/// CODENAME, never of the product name — matching it against the product
+/// name misclassified Tesla VRAM suffixes as chip generations (live P100:
+/// "Tesla P100-PCIE-16GB" + "GP100GL-A" hit `contains("GB")` on the "16GB"
+/// capacity → ServerBlackwell, wrongly enabling Turing+ gates like the XBAR
+/// offset). `chip` is matched case-sensitively from the codename only;
+/// `gpu_name` drives the product-keyword classification (Tesla / Laptop /
+/// Quadro / RTX professional / server SKU numbers).
+pub fn detect_gpu_type(gpu_name: &str, codename: &str) -> GpuType {
+    // Both sources feed the keyword checks: the product name carries
+    // "Tesla"/"Laptop"/"Quadro", the codename carries "GP100"-style SKU
+    // roots — either legitimately identifies a server card.
+    let combined = format!("{gpu_name}{codename}");
+    let is_rtx_a = combined.contains("RTX A");
+    let is_rtx_professional = combined.contains("RTX")
+        && (combined.contains("2000")
+            || combined.contains("3000")
+            || combined.contains("4000")
+            || combined.contains("5000")
+            || combined.contains("6000"))
+        && !combined.contains("GeForce");
+    let is_quadro = combined.contains("Quadro");
+    let is_tesla = combined.contains("Tesla");
     let is_server = is_tesla
-        || gpu_name.contains("H100")
-        || gpu_name.contains("H800")
-        || gpu_name.contains("A100")
-        || gpu_name.contains("A800")
-        || gpu_name.contains("B100")
-        || gpu_name.contains("B200")
-        || gpu_name.contains("V100")
-        || gpu_name.contains("P100")
-        || gpu_name.contains("L40")
-        || gpu_name.contains("L4");
+        || combined.contains("H100")
+        || combined.contains("H800")
+        || combined.contains("A100")
+        || combined.contains("A800")
+        || combined.contains("B100")
+        || combined.contains("B200")
+        || combined.contains("V100")
+        || combined.contains("P100")
+        || combined.contains("L40")
+        || combined.contains("L4");
 
-    if gpu_name.contains("GB") {
+    // Chip family: CODENAME prefix only (see the doc comment above).
+    if codename.starts_with("GB") {
         if is_server {
             GpuType::ServerBlackwell
         } else if is_rtx_professional || is_quadro {
             GpuType::WorkstationBlackwell
-        } else if gpu_name.contains("Laptop") {
+        } else if combined.contains("Laptop") {
             GpuType::Mobile50Series
         } else {
             GpuType::Desktop50Series
         }
-    } else if gpu_name.contains("GH") {
+    } else if codename.starts_with("GH") {
         GpuType::ServerHopper
-    } else if gpu_name.contains("AD") {
+    } else if codename.starts_with("AD") {
         if is_server {
             GpuType::ServerLovelace // L40/L4 are Ada/Lovelace server cards
         } else if is_rtx_professional || is_quadro || is_rtx_a {
             GpuType::WorkstationLovelace
-        } else if gpu_name.contains("Laptop") {
+        } else if combined.contains("Laptop") {
             GpuType::Mobile40Series
         } else {
             GpuType::Desktop40Series
         }
-    } else if gpu_name.contains("GA") {
+    } else if codename.starts_with("GA") {
         if is_server {
             GpuType::ServerAmpere
         } else if is_rtx_professional || is_quadro || is_rtx_a {
             GpuType::WorkstationAmpere
-        } else if gpu_name.contains("Laptop") {
+        } else if combined.contains("Laptop") {
             GpuType::Mobile30Series
         } else {
             GpuType::Desktop30Series
         }
-    } else if gpu_name.contains("TU10") {
+    } else if codename.starts_with("TU10") {
         if is_server {
             GpuType::ServerTuringTesla
         } else if is_rtx_professional || is_quadro {
             GpuType::WorkstationTuring
-        } else if gpu_name.contains("Laptop") {
+        } else if combined.contains("Laptop") {
             GpuType::Mobile20Series
         } else {
             GpuType::Desktop20Series
         }
-    } else if gpu_name.contains("TU11") {
-        if gpu_name.contains("Laptop") {
+    } else if codename.starts_with("TU11") {
+        if combined.contains("Laptop") {
             GpuType::Mobile16Series
         } else {
             GpuType::Desktop16Series
         }
-    } else if gpu_name.contains("GP1") {
+    } else if codename.starts_with("GP1") {
         // Do NOT mess up with 'GPU'
         if is_server {
             GpuType::ServerPascal
         } else if is_quadro {
             GpuType::WorkstationPascal
-        } else if gpu_name.contains("Laptop") {
+        } else if combined.contains("Laptop") {
             GpuType::Mobile10Series
         } else {
             GpuType::Desktop10Series
         }
-    } else if gpu_name.contains("GM") {
-        if gpu_name.contains("Laptop") {
+    } else if codename.starts_with("GM") {
+        if combined.contains("Laptop") {
             GpuType::Mobile9Series
         } else {
             GpuType::Desktop9Series
         }
-    } else if gpu_name.contains("GV") {
+    } else if codename.starts_with("GK") {
+        // Kepler (GK): GeForce 600/700 系列 (含 GT 730 GK208/GK107 变体)。
+        // Tesla K20/K40/K80 → server；Quadro K 系列 → workstation。
         if is_server {
-            GpuType::ServerVolta
+            GpuType::ServerKepler
+        } else if is_quadro {
+            GpuType::WorkstationKepler
+        } else if combined.contains("Laptop") {
+            GpuType::MobileKepler
         } else {
-            GpuType::ComputationVolta
+            GpuType::DesktopKepler
         }
+    } else if codename.starts_with("GF") {
+        // Fermi (GF): GeForce 400/500 系列 (含 GT 730 GF108 变体)。
+        // Tesla M-class → server；Quadro 4000/5000/6000 → workstation。
+        if is_server {
+            GpuType::ServerFermi
+        } else if is_quadro {
+            GpuType::WorkstationFermi
+        } else if combined.contains("Laptop") {
+            GpuType::MobileFermi
+        } else {
+            GpuType::DesktopFermi
+        }
+    } else if codename.starts_with("GV") {
+        // Single Volta category. The old ComputationVolta split (Titan V /
+        // Quadro GV100 "consumer Volta") is retired — every GV* part is
+        // compute-class for nvoc's purposes; Titan V's turbo fan is handled
+        // by the fan-count refinement on the frontend, not by a separate
+        // classification.
+        GpuType::ServerVolta
     } else {
         GpuType::Unknown
     }
@@ -187,8 +246,7 @@ pub fn detect_gpu_type(gpu_name: &str) -> GpuType {
 
 /// 从 `GpuInfo` 获取 GPU 世代类型
 pub fn fetch_gpu_type(info: &GpuInfo) -> Result<GpuType, Error> {
-    let criteria = format!("{}{}", info.name, info.codename);
-    Ok(detect_gpu_type(&criteria))
+    Ok(detect_gpu_type(&info.name, &info.codename))
 }
 
 // ─────────────────────── GpuOcParams: OC 扫描参数 ────────────────────────────
@@ -441,19 +499,28 @@ impl GpuType {
                 testing_step: 3,
                 freq_step_exp_core: 3,
             },
-            GpuType::ComputationVolta
-            | GpuType::WorkstationBlackwell
+            GpuType::WorkstationBlackwell
             | GpuType::WorkstationLovelace
             | GpuType::WorkstationAmpere
             | GpuType::WorkstationTuring
             | GpuType::WorkstationPascal
+            | GpuType::WorkstationKepler
+            | GpuType::WorkstationFermi
             | GpuType::ServerBlackwell
             | GpuType::ServerHopper
             | GpuType::ServerLovelace
             | GpuType::ServerAmpere
             | GpuType::ServerVolta
             | GpuType::ServerPascal
-            | GpuType::ServerTuringTesla => GpuOcParams {
+            | GpuType::ServerTuringTesla
+            | GpuType::ServerKepler
+            | GpuType::ServerFermi
+            // Kepler/Fermi 消费端：legacy 电压架构，使用保守扫描参数
+            // （与 Unknown/Workstation 同档：小步进、低上限、大弹性余量）。
+            | GpuType::MobileKepler
+            | GpuType::DesktopKepler
+            | GpuType::MobileFermi
+            | GpuType::DesktopFermi => GpuOcParams {
                 minimum_delta_core_freq_step: 15000,
                 core_oc_safe_limit: 300000,
                 init_core_oc_value: 0,
@@ -540,11 +607,22 @@ impl GpuType {
     }
 
     /// 900 系（Maxwell，GM 代号）及更早 → true，需使用 SetPstates20 写 baseVoltage delta
-    /// 10 系（Pascal）及以后 → false，使用 VoltRails boost
+    /// 10 系（Pascal）及以后 → false，使用 VoltRails boost。
+    /// Quadro K/F 系工作站卡（WorkstationKepler/Fermi，如 GK106 的 K4000）
+    /// 与同代 GeForce 同硅——GUI/TUI 的 BIOS VF 阶梯门控
+    /// （vfcurve `_is_legacy_gpu`）依赖此旗标，漏列会导致 "No VF curve"。
     pub fn is_legacy_voltage(&self) -> bool {
         matches!(
             self,
-            GpuType::Mobile9Series | GpuType::Desktop9Series | GpuType::Unknown
+            GpuType::Mobile9Series
+                | GpuType::Desktop9Series
+                | GpuType::MobileKepler
+                | GpuType::DesktopKepler
+                | GpuType::MobileFermi
+                | GpuType::DesktopFermi
+                | GpuType::WorkstationKepler
+                | GpuType::WorkstationFermi
+                | GpuType::Unknown
         )
     }
 
@@ -553,7 +631,95 @@ impl GpuType {
         matches!(self, GpuType::Mobile50Series | GpuType::Desktop50Series)
     }
 
-    /// 是否为移动端（笔记本 dGPU）。
+    /// 是否为 Blackwell 世代（消费 50 系 / 工作站 / 服务器）。
+    ///
+    /// ClkDomains WRITE 记录的槽位语义在 50 系整体平移（live 用户实测
+    /// 2026-09-02，消费 50 系）：slot2 = 有符号频率偏移（对应 10~40 系的
+    /// slot0），slot3 = V/F 曲线电压偏移 µV（对应 10~40 系的 slot1）。
+    /// 私有 V/F 点记录同步变异：+0x64 从 current-MHz 变为带符号 µV 电压
+    /// 偏移（−45 mV 实验回读 4294922296 = 2³² − 45000）。服务器
+    /// Blackwell 未实测，按同代口径归入。
+    pub fn is_blackwell(&self) -> bool {
+        matches!(
+            self,
+            GpuType::Mobile50Series
+                | GpuType::Desktop50Series
+                | GpuType::WorkstationBlackwell
+                | GpuType::ServerBlackwell
+        )
+    }
+
+    /// 是否为 Pascal 世代（消费 10 系 / 工作站 / 服务器）。
+    ///
+    /// Pascal 私有 V/F 控制轴整体 2× 编码（1080 实测：公开超频 +f → 私有
+    /// mode-0 读 2f；P100 实测：raw 129300 ↔ 真实 64.65 MHz；点值 raw 也是
+    /// 2×，reader 已按 type-1 ÷2）。私有面的**读解码与写加倍**都以本判定
+    /// 为准——消费卡日常用 public 路径写（无 2× 问题），但 private 路径
+    /// （set-private-vftable-*、私有表读回）在消费卡上同样 2×。
+    pub fn is_pascal(&self) -> bool {
+        matches!(
+            self,
+            GpuType::Mobile10Series
+                | GpuType::Desktop10Series
+                | GpuType::WorkstationPascal
+                | GpuType::ServerPascal
+        )
+    }
+
+    /// 是否为 Ada Lovelace 世代（消费 40 系 / 工作站）。
+    ///
+    /// Ada 的 ClkDomains 私有写记录→物理域映射已 slot-0 全位 A/B 实证
+    /// （RTX 4060 Laptop / R610，2026-08-31）：
+    /// bit0=纯GPC、bit1=SYS+XBAR 同动、bit2=显存 M、bit3=纯SYS、
+    /// bit5=MSD、bit9=纯HOST；bit1 与 bit3 对 SYS 的效果叠加；
+    /// bit4/7/8 在 GetAllClocks 无可观测反应、
+    /// bit6 type-0x02 协议不搬运。其它世代未实证——显示层仅在本判定
+    /// 为真时使用 Ada 实证名。
+    ///
+    /// 跨代汇总（2026-08-31 实测 Pascal10/GTX16/RTX20/Ampere30 + Ada）：
+    /// 记录宇宙大小**不随代际单调增长**——GTX16 竟返回 10 条
+    /// （0x3FF 被接受，有 MSD 与 bits 8/9），而更新的 RTX20/Ampere30
+    /// 反而只有 8 条（0xFF，无 bits 8/9）。bit1 耦合轴：Ampere30+Ada
+    /// 耦合（bit1 动 Sys+Xbar 且与 bit3 叠加），Pascal/GTX16/RTX20
+    /// 不耦合（bit1 纯 Xbar）。MSD 轴：Pascal 无（bit5 SET 不支持），
+    /// GTX16/Turing/Ampere/Ada 均有（bit5=Msd）。bit0/2/3/4/6/7 语义
+    /// 五代逐位一致。50 系待测。
+    pub fn is_ada(&self) -> bool {
+        matches!(
+            self,
+            GpuType::Mobile40Series | GpuType::Desktop40Series | GpuType::WorkstationLovelace
+        )
+    }
+
+    /// 是否为 Ampere 及更新世代（30/40/50 系 + 对应工作站/服务器）。
+    ///
+    /// 用于 ClkDomains WRITE 记录的 bit1 耦合分界：Ampere30+Ada 的 bit1
+    /// 耦合 SYS（写 bit1 会带动 SYS，需给 bit3 写 -f 抵消），Pascal/
+    /// GTX16/RTX20 的 bit1 纯 Xbar（直写即可）。50 系（Blackwell）未
+    /// 实测，按"30 系和以后"口径归入耦合组。Hopper 是 Ampere 后的服务器
+    /// 世代（H100 后继 A100），归入耦合组。Volta 不含：介于 P100/T4 属
+    /// Pascal-era 行为。
+    /// 见 `is_ada` 注释的跨代 A/B 汇总。
+    pub fn is_ampere_plus(&self) -> bool {
+        matches!(
+            self,
+            GpuType::Mobile30Series
+                | GpuType::Desktop30Series
+                | GpuType::Mobile40Series
+                | GpuType::Desktop40Series
+                | GpuType::Mobile50Series
+                | GpuType::Desktop50Series
+                | GpuType::WorkstationAmpere
+                | GpuType::WorkstationLovelace
+                | GpuType::WorkstationBlackwell
+                | GpuType::ServerAmpere
+                | GpuType::ServerLovelace
+                | GpuType::ServerBlackwell
+                | GpuType::ServerHopper
+        )
+    }
+
+    /// 是否为移动端 GPU（20/30/40/50 系移动端 + Kepler/Fermi 移动端）
     pub fn is_mobile(&self) -> bool {
         matches!(
             self,
@@ -561,9 +727,8 @@ impl GpuType {
                 | GpuType::Mobile40Series
                 | GpuType::Mobile30Series
                 | GpuType::Mobile20Series
-                | GpuType::Mobile16Series
-                | GpuType::Mobile10Series
-                | GpuType::Mobile9Series
+                | GpuType::MobileKepler
+                | GpuType::MobileFermi
         )
     }
 
@@ -572,7 +737,37 @@ impl GpuType {
         matches!(self, GpuType::Unknown)
     }
 
-    /// XBAR ClockClient domain offsets are available from Turing onward.
+    /// 是否为服务器级 GPU(Tesla/数据中心被动散热卡:P100/A100/H100 …)。
+    /// 这类卡绝大多数无板载可控风扇(NVML cooler count == 0),前端用该标志
+    /// 同步灰化 Fan 面板,再由实际 fan count 纠错(例外:L40/L4 归入
+    /// ServerLovelace 但带板载风扇,count ≥ 1 会重新点亮;Titan V/Quadro
+    /// GV100 折入 ServerVolta,同理靠 fan count 重新点亮)。
+    pub fn is_server(&self) -> bool {
+        matches!(
+            self,
+            GpuType::ServerBlackwell
+                | GpuType::ServerHopper
+                | GpuType::ServerLovelace
+                | GpuType::ServerAmpere
+                | GpuType::ServerVolta
+                | GpuType::ServerPascal
+                | GpuType::ServerTuringTesla
+                | GpuType::ServerKepler
+                | GpuType::ServerFermi
+        )
+    }
+
+    /// 移动端或未知 GPU 在 OC 写入前需要 GC6 唤醒
+    pub fn needs_gc6_wake(&self) -> bool {
+        self.is_mobile() || self.is_unknown()
+    }
+
+    /// XBAR ClockClient 域偏移（set-clk-domain-offset xbar / pynvoc
+    /// set_clk_domain_offset）—— Pascal（10系）起所有架构放行：Pascal 经
+    /// nvoc-cli 实测可用（2026-08-31），Volta（P100 与 T4 之间的服务器卡
+    /// 系）一并放行。Kepler 及更旧、Unknown 不支持。
+    /// workstation/server 卡一并放行（写入本身有 snapshot/
+    /// readback/restore 保护，个别不支持会由驱动报错）。
     pub fn supports_xbar_offset(&self) -> bool {
         matches!(
             self,
@@ -586,6 +781,11 @@ impl GpuType {
                 | GpuType::Desktop20Series
                 | GpuType::Mobile16Series
                 | GpuType::Desktop16Series
+                | GpuType::Mobile10Series
+                | GpuType::Desktop10Series
+                | GpuType::WorkstationPascal
+                | GpuType::ServerPascal
+                | GpuType::ServerVolta
                 | GpuType::WorkstationBlackwell
                 | GpuType::WorkstationLovelace
                 | GpuType::WorkstationAmpere
@@ -595,11 +795,6 @@ impl GpuType {
                 | GpuType::ServerAmpere
                 | GpuType::ServerTuringTesla
         )
-    }
-
-    /// 移动端或未知 GPU 在 OC 写入前需要 GC6 唤醒
-    pub fn needs_gc6_wake(&self) -> bool {
-        self.is_mobile() || self.is_unknown()
     }
 
     /// 核心频率步进（kHz），供 handle_vfp_export / fix_result 使用
@@ -742,5 +937,27 @@ impl ArchOcPrior {
             points: Vec::new(),
             probe_margin_khz: 0,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Quadro K/F 系工作站卡（GK106 的 K4000 实机）与同代 GeForce 同为
+    /// legacy 电压——GUI/TUI 的 BIOS VF 阶梯门控依赖此旗标；漏列会让
+    /// K4000 在 vfcurve 停在 "No VF curve"（2026-09-18 实机回归）。
+    #[test]
+    fn workstation_kepler_fermi_are_legacy_voltage() {
+        assert_eq!(
+            detect_gpu_type("Quadro K4000", "GK106"),
+            GpuType::WorkstationKepler
+        );
+        assert!(detect_gpu_type("Quadro K4000", "GK106").is_legacy_voltage());
+        assert!(GpuType::WorkstationKepler.is_legacy_voltage());
+        assert!(GpuType::WorkstationFermi.is_legacy_voltage());
+        // 非 legacy 对照：Pascal 工作站 / 消费 10 系
+        assert!(!GpuType::WorkstationPascal.is_legacy_voltage());
+        assert!(!GpuType::Desktop10Series.is_legacy_voltage());
     }
 }

@@ -117,7 +117,11 @@ def parse_status_current_values(output: str) -> Tuple[Optional[float], dict[str,
     native_payload = native_query_payload(output)
     if native_payload is not None:
         lock_value = native_payload.get("vfp_lock_mv")
-        if isinstance(lock_value, (int, float)):
+        # >0 gate: a 0 mV lock is physically impossible — it is the
+        # broken-public-VFP-plane signature (positive gpc slot1 zeroes the
+        # lock read alongside the table; live V100 2026-09-01), never a
+        # real lock to draw.
+        if isinstance(lock_value, (int, float)) and lock_value > 0:
             locked_voltage_mv = float(lock_value)
         for key in (
             "core_clock_current",
@@ -321,9 +325,24 @@ def parse_dashboard_status(output: str) -> dict[str, Any]:
         )
         return parsed
 
+    in_voltage_domains_block = False
     for raw in output.splitlines():
         line = raw.strip()
         low = line.lower()
+        # "Voltage Domains" opens an indented block; its "Voltage: 880000 uV"
+        # line is the legacy (≤ Kepler) core-domain voltage fallback when the
+        # primary "Voltage:" field is N/A. Track block membership by the
+        # indentation of the raw line (block children are indented).
+        if re.fullmatch(r"voltage\s*domains", low):
+            in_voltage_domains_block = True
+            continue
+        if in_voltage_domains_block:
+            if raw and not raw[0].isspace():
+                in_voltage_domains_block = False
+            elif parsed["voltage_mv"] is None:
+                match = re.search(r"voltage:\s*(\d+)\s*uv", low)
+                if match:
+                    parsed["voltage_mv"] = float(match.group(1)) / 1000.0
         if parsed["gpu_clock_mhz"] is None and re.search(
             r"graphics.clock|core.clock|gpu.clock", low
         ):

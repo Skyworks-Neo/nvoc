@@ -95,11 +95,32 @@ def test_canvas_slider_skips_redraw_when_clamped_value_is_unchanged() -> None:
     slider._to = 100.0
     slider._steps = 100
     slider._value = 50.0
+    slider._geometry_dirty = False
     slider._redraw = Mock()
 
     slider.set(50)
 
     slider._redraw.assert_not_called()
+
+
+def test_canvas_slider_repaints_noop_set_after_deferred_range_change() -> None:
+    """configure(range) with require_redraw=False defers the repaint to the
+    next set() — including a no-op set (same value). This is the startup
+    stale-render fix: get pins 100 on 50..150, info reconfigures to 70..100
+    with the same 100, and without the dirty flag the canvas would keep
+    drawing the construction range forever."""
+    slider = CanvasSlider.__new__(CanvasSlider)
+    slider._from = 50.0
+    slider._to = 150.0
+    slider._steps = 100
+    slider._value = 100.0
+    slider._geometry_dirty = True
+    slider._redraw = Mock()
+
+    slider.set(100)
+
+    assert slider._geometry_dirty is False
+    slider._redraw.assert_called_once_with()
 
 
 def test_canvas_slider_redraws_when_value_changes() -> None:

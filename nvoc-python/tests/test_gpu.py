@@ -61,7 +61,14 @@ class TestDiscoverGpus:
         assert expected_keys.issubset(gpus[0].keys())
 
     def test_nvml_backend_filter(self, pynvoc, gpu):
-        gpus = pynvoc.discover_gpus("nvml")
+        # On a machine with NVAPI but no NVML binding, discover_gpus("nvml")
+        # raises RuntimeError (NVML init failed) rather than returning a list.
+        # Skip there rather than erroring — the NVML-backed path is exercised on
+        # NVML-equipped CI, the normal environment.
+        try:
+            gpus = pynvoc.discover_gpus("nvml")
+        except RuntimeError:
+            pytest.skip("NVML unavailable")
         assert isinstance(gpus, list)
 
     def test_nvapi_backend_filter(self, pynvoc, gpu):
@@ -77,7 +84,12 @@ class TestQueryInfo:
         assert "name" in result
 
     def test_nvml_backend(self, pynvoc, gpu):
-        result = pynvoc.query_info(gpu, "nvml")
+        # query_info(gpu, "nvml") hard-errors when NVML is unavailable (explicit
+        # NVML request). Skip on no-NVML machines; the NVML path runs on CI.
+        try:
+            result = pynvoc.query_info(gpu, "nvml")
+        except RuntimeError:
+            pytest.skip("NVML unavailable")
         assert isinstance(result, dict)
 
     def test_nvapi_backend(self, pynvoc, gpu):

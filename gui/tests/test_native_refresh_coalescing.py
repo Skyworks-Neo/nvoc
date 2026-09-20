@@ -53,4 +53,6 @@ def test_deferred_native_refresh_runs_each_query_once() -> None:
     app._query_gpu_get.assert_called_once_with()
     app._query_overclock_status.assert_called_once_with()
     app.tab_dashboard._fetch_once.assert_called_once_with()
-    app.tab_vfcurve._refresh_curve.assert_called_once_with()
+    # Curve-affecting writes refresh with force=True — the 2.5 s dedup
+    # gate must not eat the post-write refresh.
+    app.tab_vfcurve._refresh_curve.assert_called_once_with(force=True)

@@ -9,8 +9,10 @@ from textual_plotext import PlotextPlot
 from ..models import CurveData
 from ..parsing import (
     CURVE_META,
+    curve_meta,
     build_vf_curves,
     compute_vf_plot_bounds_multi,
+    extract_ext_curves,
     find_curve_point_for_voltage,
     load_vf_curve_deltas,
     public_vfp_unsupported,
@@ -21,12 +23,50 @@ from ..widgets import mnemonic_text
 from .base import PaneController
 
 # Per-curve plotext colors: (current line, default scatter).
+# The third curve's attribution moved HOST → SYS → MSD; the bit-5 offset
+# A/B pinned MSD — see ClkVfSegment::domain_hint in nvapi-rs.
 _CURVE_COLORS = {
     "gpc": ("cyan+", "white"),
     "xbar": ("orange+", "gray+"),
-    "host": ("magenta+", "gray+"),
+    "msd": ("magenta+", "gray+"),
 }
-_CURVE_ORDER = ("gpc", "xbar", "host")
+
+
+def _curve_colors_for(cid: str) -> tuple[str, str]:
+    """Color lookup with a yellow-green fallback for unknownN curves
+    (plotext's fixed 16-color terminal palette has no yellow-green:
+    yellow ≈ light, green ≈ dark)."""
+    return _CURVE_COLORS.get(cid) or ("yellow", "green")
+
+
+_CURVE_ORDER = ("gpc", "xbar", "msd")
+
+# ── Curve → VoltRails rail mapping (display-only in the TUI) ──
+# GPC/MSD ride the PRIMARY rail (lowest bit — the core rail); XBAR and the
+# Pascal-HBM MEM curve are fed by the SECONDARY rail (RTX 50-series MSVDD /
+# GP100·GV100 HBM). Single-rail parts resolve every curve to the primary.
+_SECONDARY_RAIL_CURVES = ("xbar", "mem")
+
+
+def _curve_direct_readable(curve_id: str) -> bool:
+    """Whether the live crosshair must DIRECT-READ this curve's domain.
+
+    True for xbar/msd/mem — curves whose live clock only the private
+    MEASURE_FREQ path can see (the dashboard poll has no public clock for
+    them). GPC is False even though it has a domain_bit: its operating point
+    is fed by the dashboard's public Graphics clock instead. unknownN curves
+    have no domain_bit. Replaces the old hardcoded ("xbar", "sys") gates
+    that left MEM (HBM) crosshair-less.
+    """
+    return curve_id != "gpc" and curve_meta(curve_id)["domain_bit"] is not None
+
+
+def _discovered_cids(curves: dict) -> list[str]:
+    """Canonical display order: GPC → XBAR → MSD → others (dict order;
+    build_vf_curves already returns the dict canonically sorted, so the
+    tail is unknownN in discovery order)."""
+    known = [cid for cid in _CURVE_ORDER if cid in curves]
+    return known + [cid for cid in curves if cid not in _CURVE_ORDER]
 
 
 class VFCurveController(PaneController):
@@ -40,6 +80,14 @@ class VFCurveController(PaneController):
         self._active_curve = "gpc"
         self._curve_visible: dict[str, bool] = {}
         self._direct_read_inflight = False
+        # EXT-slot domain-current overlays (display-only; see parsing.
+        # extract_ext_curves) — Turing gpc block: XBAR/SYS/MSD/HOST,
+        # Ampere/Ada xbar block: SYS/MSD/HOST. Visibility-togglable in
+        # the selector row, never activatable (no writable points).
+        self.domain_curves: list[dict] = []
+        self._domain_visible: dict[str, bool] = {}
+        # Labels ever mounted as selector checkboxes (stale ones hide).
+        self._synced_ext_labels: set[str] = set()
         # Last option list pushed to the curve Select (suppresses no-op
         # set_options calls — each one posts Changed events).
         self._synced_options: list | None = None
@@ -52,6 +100,24 @@ class VFCurveController(PaneController):
         # into an unbounded switch ping-pong (each hop = full plot render +
         # a Log thread worker that never completes under load).
         self._syncing = False
+        # P0 voltage-boundary display lines (deep red floor/ceiling + light
+        # red effective). Pure display — no drag/apply in the TUI. Cached
+        # once per GPU (hardware walls are immutable), like the GUI. The
+        # per-rail map lets the lines follow the ACTIVE curve's rail
+        # (gpc/msd → primary, xbar/mem → the secondary HBM/MSVDD rail).
+        self._p0_bounds: dict | None = None
+        self._p0_bounds_gpu: str | None = None
+        self._p0_rails: list = []  # raw p0_rails payload
+        self._p0_bounds_by_rail: dict[int, dict] = {}  # rail_bit → bounds
+        # vBIOS GPU Boost 2.0 ladder (Maxwell/Kepler) — read-only overlay.
+        # Queried once per GPU: the image read is a multi-escape loop and
+        # the ROM contents don't change under a running session.
+        self._bios_curve: dict | None = None
+        self._bios_curve_gpu: str | None = None
+        # A refresh requested while another was inflight (e.g. a GPU switch
+        # racing the auto-refresh tick): re-run once the inflight one lands,
+        # so the new GPU's verdict (curve or none) is final.
+        self._refresh_pending = False
 
     def auto_refresh_label(self) -> Text:
         state = "On" if self.app.config_data.vfcurve.auto_refresh else "Off"
@@ -120,6 +186,11 @@ class VFCurveController(PaneController):
 
     def refresh_curve(self) -> None:
         if not self._begin_refresh():
+            # Inflight — remember the request and re-run after it lands
+            # (see _consume_pending_refresh). Without this, a GPU switch
+            # arriving mid-flight would be swallowed by the inflight guard
+            # and the previous GPU's curve would linger on the plot.
+            self._refresh_pending = True
             return
         try:
             gpu = self.app.selected_gpu_target()
@@ -135,6 +206,7 @@ class VFCurveController(PaneController):
             gpc_points: list[dict] | None = None
             gpc_err: str | None = None
             clk_data: dict | None = None
+            domain_info: dict | None = None
             try:
                 gpc_points = self.app.native_service.query_public_vftable(gpu)
             except Exception as exc:
@@ -143,9 +215,17 @@ class VFCurveController(PaneController):
                 clk_data = self.app.native_service.query_private_vftable(gpu)
             except Exception:
                 clk_data = None
+            # ClkDomains offsets (slot0 kHz / slot1 µV readback) feed the
+            # effective-curve synthesis; best-effort like the others.
+            try:
+                domain_info = self.app.native_service.query_private_freq_domain_info(
+                    gpu
+                )
+            except Exception:
+                domain_info = None
             try:
                 self.app.call_from_thread(
-                    self.on_curve_loaded, gpc_points, gpc_err, clk_data
+                    self.on_curve_loaded, gpc_points, gpc_err, clk_data, domain_info
                 )
             except Exception:
                 self._end_refresh()
@@ -157,31 +237,107 @@ class VFCurveController(PaneController):
             self._end_refresh()
             raise
 
+    def on_gpu_changed(self) -> None:
+        """GPU switch: drop the previous GPU's curve and reload for the new one.
+
+        The old curve's point indices / voltages / lock state / P0 walls are
+        meaningless against another part — clear them immediately (the plot
+        says "loading" rather than showing stale data), then re-query. A GPU
+        with no V/F interface stays cleared ("not supported") once the
+        refresh lands.
+        """
+        self._curves = {}
+        self._curve_visible = {}
+        self._active_curve = "gpc"
+        self.app.cache.vf_curve_points = None
+        self.app.cache.vf_curves = None
+        self.app.cache.curve_visible = {}
+        self.app.cache.active_curve = "gpc"
+        self.app.cache.vf_live_point = None
+        self._p0_bounds = None
+        self._p0_rails = []
+        self._p0_bounds_by_rail = {}
+        self._p0_bounds_gpu = None
+        # The vBIOS ladder is per-ROM — a Maxwell/Kepler ladder left in
+        # _bios_curve would overlay the new part's driver curve (observed:
+        # Maxwell vbios-parsed ladder lingering on a Pascal VF chart).
+        self._bios_curve = None
+        self._bios_curve_gpu = None
+        self.clear_plot("Loading VF curve…")
+        self._sync_curve_widgets()
+        self.refresh_curve()
+
+    def _consume_pending_refresh(self) -> None:
+        """Run one deferred refresh when one was requested mid-flight."""
+        if self._refresh_pending:
+            self._refresh_pending = False
+            self.refresh_curve()
+
     def on_curve_loaded(
         self,
         gpc_points: "list[dict] | None",
         gpc_err: str | None,
         clk_data: dict | None,
+        domain_info: dict | None = None,
     ) -> None:
         self._end_refresh()
-        curves = build_vf_curves(gpc_points, gpc_err, clk_data)
+        # Desktop Pascal: the private frequency scale is unreliable — the
+        # public read stays the sole GPC authority (see build_vf_curves).
+        # getattr: test doubles construct bare namespaces (no arch field).
+        gpu_desc = self.app.current_gpu()
+        arch = str(getattr(gpu_desc, "arch", None) or "")
+        pascal = arch.strip().lower() == "pascal"
+        curves = build_vf_curves(
+            gpc_points, gpc_err, clk_data, domain_info, pascal=pascal
+        )
         self.app.cache.vf_curve_points = gpc_points if curves else None
         self.app.cache.vf_curves = curves
+        # Segment scale-correction tag (Pascal driver defect): the private
+        # GPC values went through the (f+50)/2 decode.
+        if curves and any(
+            isinstance(s, dict) and s.get("freq_scale_corrected")
+            for s in (clk_data or {}).get("segments", [])
+        ):
+            self.app.write_log(
+                "private GPC frequencies exceeded 3000 MHz on Pascal — "
+                "applied the (f+50)/2 driver-scale correction (corrected)."
+            )
         if curves is None:
             self._curves = {}
             self._curve_visible = {}
+            self.domain_curves = []
+            self._domain_visible = {}
             self.app.cache.curve_visible = {}
             self.app.cache.vf_live_point = None
             if gpc_err and not public_vfp_unsupported(gpc_err):
                 self.app.write_log(f"pynvoc VFP curve query failed: {gpc_err}")
-            self.clear_plot("VF curve query failed.")
+            # No driver VF interface (unsupported OR failed — the legacy
+            # generations error out in various ways): the vBIOS GPU Boost
+            # 2.0 ladder is THE curve representation. _show_bios_fallback
+            # keeps the verdict message when this GPU has no ladder table.
+            self.clear_plot(
+                "VF curve not supported on this GPU."
+                if public_vfp_unsupported(gpc_err)
+                else "VF curve query failed."
+            )
+            self._show_bios_fallback()
             self._sync_curve_widgets()
+            self._consume_pending_refresh()
             return
         # Carry over visibility (default: every discovered curve visible) and
         # keep the active curve valid (must exist and be visible).
         prev_visible = self._curve_visible or {}
         self._curves = curves
         self._curve_visible = {cid: prev_visible.get(cid, True) for cid in curves}
+        # EXT-slot domain-current overlays (display-only). A label that
+        # collides with a main curve is KEPT — Ada's xbar block fills an
+        # MSD-scale ext slot alongside the msd main segment; the draw
+        # path tags the overlay "·ext" so the lines stay distinguishable.
+        self.domain_curves = extract_ext_curves(clk_data)
+        prev_ext = self._domain_visible
+        self._domain_visible = {
+            e["label"]: prev_ext.get(e["label"], True) for e in self.domain_curves
+        }
         if self._active_curve not in curves or not self._curve_visible.get(
             self._active_curve
         ):
@@ -193,8 +349,23 @@ class VFCurveController(PaneController):
         self.app.cache.vf_live_point = None
         self.render_plot()
         self._sync_curve_widgets()
-        if self._active_curve in ("xbar", "host") and not self._direct_read_inflight:
+        # P0 voltage-boundary lines: queried once per GPU (cache hit on
+        # repeat refresh), so this never adds a per-tick NVAPI read.
+        try:
+            p0_gpu = self.app.selected_gpu_target()
+        except Exception:
+            p0_gpu = None
+        if p0_gpu is not None:
+            self._ensure_p0_bounds(p0_gpu)
+        # NOTE: the BIOS ladder is fetched ONLY from the fallback path
+        # (_show_bios_fallback, unsupported/failure verdicts) — Pascal and
+        # later render the driver curve and must never parse the vBIOS.
+        if (
+            _curve_direct_readable(self._active_curve)
+            and not self._direct_read_inflight
+        ):
             self._kick_direct_read(self._active_curve)
+        self._consume_pending_refresh()
 
     def clear_plot(self, title: str) -> None:
         try:
@@ -213,12 +384,19 @@ class VFCurveController(PaneController):
     def render_plot(self) -> None:
         curves = self._curves or {}
         if not curves:
+            # No driver curve: on Maxwell/Kepler the vBIOS ladder IS the
+            # curve representation — render it alone instead of the
+            # "No VF curve loaded" placeholder.
+            ladder_pts = self._bios_ladder_points()
+            if ladder_pts:
+                self._render_bios_only_plot(ladder_pts)
+                return
             self.clear_plot("No VF curve loaded.")
             return
         visible = [
             curves[cid]
-            for cid in _CURVE_ORDER
-            if cid in curves and self._curve_visible.get(cid, True)
+            for cid in _discovered_cids(curves)
+            if self._curve_visible.get(cid, True)
         ]
         if not visible:
             self.clear_plot("No VF curve visible.")
@@ -234,10 +412,8 @@ class VFCurveController(PaneController):
         plt.clear_data()
         plt.clear_color()
         for curve in visible:
-            current_color, default_color = _CURVE_COLORS.get(
-                curve.curve_id, _CURVE_COLORS["gpc"]
-            )
-            label = CURVE_META.get(curve.curve_id, CURVE_META["gpc"])["label"]
+            current_color, default_color = _curve_colors_for(curve.curve_id)
+            label = curve_meta(curve.curve_id)["label"]
             plt.plot(
                 curve.voltages,
                 curve.frequencies,
@@ -248,22 +424,95 @@ class VFCurveController(PaneController):
             plt.scatter(
                 curve.voltages, curve.defaults, marker="braille", color=default_color
             )
-        # Live crosshair only on the active curve: GPC from the dashboard
-        # status feed, XBAR/HOST from the direct-read poll path. Hidden
-        # curves are neither plotted nor polled.
+            # Effective series: the base curve forward-shifted by its own
+            # ClkDomains slot0/slot1 offsets (positive-slot1 display — the
+            # public read is broken there, the private table only carries
+            # defaults). Display-only overlay, never an edit target. Yellow:
+            # distinct from every current-line hue (gpc's is cyan+).
+            eff = curve.effective
+            if eff is not None and eff.applicable:
+                plt.plot(
+                    eff.voltages,
+                    eff.freqs,
+                    marker="braille",
+                    color="yellow",
+                    label=f"{label} EFF",
+                )
+        # EXT-slot domain-current overlays (display-only dotted-ish series;
+        # see parsing.extract_ext_curves). Plotext palette note: magenta+
+        # renders red on some terminal shaders — stick to the verified
+        # orange+/cyan+/yellow/green hues.
+        _EXT_PLOTEXT_COLORS = {
+            "XBAR": "orange+",
+            "SYS": "yellow",
+            "MSD": "cyan+",
+            "HOST": "green",
+        }
+        for ext in self.domain_curves:
+            if not self._domain_visible.get(ext["label"], True):
+                continue
+            plt.plot(
+                ext["volts"],
+                ext["freqs"],
+                marker="braille",
+                color=_EXT_PLOTEXT_COLORS.get(ext["label"], "yellow"),
+                label=f"{ext['label']}·ext",
+            )
+        # vBIOS GPU Boost 2.0 ladder (Maxwell/Kepler): read-only overlay in
+        # the same dual-line style as the GUI — upper bound (V_max) cyan+,
+        # lower bound (V_min) white (the new-card GPC pair), dim-cyan
+        # horizontal segments as the band between. Deliberately NOT green:
+        # the live crosshair is green+ and the two must not be confusable.
+        ladder_pts = self._bios_ladder_points()
+        if ladder_pts:
+            for i, p in enumerate(ladder_pts):
+                plt.plot(
+                    [p["v_min_mv"], p["v_max_mv"]],
+                    [p["freq_mhz"], p["freq_mhz"]],
+                    marker="braille",
+                    color="cyan",
+                    label="BIOS Range" if i == 0 else None,
+                )
+            plt.plot(
+                [p["v_max_mv"] for p in ladder_pts],
+                [p["freq_mhz"] for p in ladder_pts],
+                marker="braille",
+                color="cyan+",
+                label="BIOS Max",
+            )
+            plt.plot(
+                [p["v_min_mv"] for p in ladder_pts],
+                [p["freq_mhz"] for p in ladder_pts],
+                marker="braille",
+                color="white",
+                label="BIOS Min",
+            )
+        # Live crosshair only on the active curve: GPC frequency from the
+        # dashboard status feed, XBAR/MSD from the direct-read poll path.
+        # The crosshair VOLTAGE is the rail current on every curve (the
+        # dashboard sweep's rail_volts["GPC"] for GPC, the direct-read
+        # rail poll for the fabric curves): the public status voltage is a
+        # quantized setpoint (pinned 900 mV under load live-observed) while
+        # the private VoltRails current is live-sensed (910-920 mV the same
+        # moment) — one true source, no 5-20 mV split between curves.
+        # Hidden curves are neither plotted nor polled.
         live_point: tuple[float, float] | None = None
-        live_color = "yellow+"
+        # Single measured working-point crosshair, green on every curve.
+        live_color = "green+"
         live_voltage: float | None = None
         if active is not None:
             if active_id == "gpc":
-                live_voltage = self.app.cache.status.get("voltage_mv")
+                rail_volts = self.app.cache.rail_volts
+                if rail_volts:
+                    live_voltage = rail_volts[0][1]
+                else:
+                    live_voltage = self.app.cache.status.get("voltage_mv")
                 live_clock = self.app.cache.status.get("gpu_clock_mhz")
                 if isinstance(live_voltage, (int, float)) and isinstance(
                     live_clock, (int, float)
                 ):
                     live_point = (float(live_voltage), float(live_clock))
             else:
-                live_color = "green+"
                 cached_point = self.app.cache.vf_live_point
                 if cached_point is not None:
                     live_point = cached_point
@@ -282,7 +531,15 @@ class VFCurveController(PaneController):
         lock_point: tuple[float, float] | None = None
         lock_voltage_mv: float | None = None
         lock_voltage = self.app.cache.status.get("vfp_lock_mv")
-        if active is not None and isinstance(lock_voltage, (int, float)):
+        # >0 gate: a 0 mV lock is physically impossible — it is the
+        # broken-public-VFP-plane signature (positive gpc slot1 zeroes the
+        # lock read alongside the table; live V100 2026-09-01), never a
+        # real lock to draw.
+        if (
+            active is not None
+            and isinstance(lock_voltage, (int, float))
+            and (lock_voltage > 0)
+        ):
             lock_voltage_mv = float(lock_voltage)
             lock_curve_point = find_curve_point_for_voltage(
                 active.voltages, active.frequencies, lock_voltage_mv
@@ -290,8 +547,11 @@ class VFCurveController(PaneController):
             if lock_curve_point is not None:
                 lock_point = (lock_voltage_mv, lock_curve_point[1])
         if lock_point is not None:
+            # A single vertical line at the lock voltage — no horizontal
+            # marker: the lock clamps voltage, it doesn't pin frequency, so
+            # any hline would just be a (wrong after clamping) reverse curve
+            # lookup like the old working-point line was.
             plt.vline(lock_point[0], color="orange+")
-            plt.hline(lock_point[1], color="orange+")
             plt.text(
                 "Locked at {} mV".format(lock_voltage_mv),
                 lock_point[0],
@@ -299,25 +559,90 @@ class VFCurveController(PaneController):
                 color="orange+",
                 alignment="right",
             )
-        working_point = None
-        if active is not None:
-            working_point = find_curve_point_for_voltage(
-                active.voltages,
-                active.frequencies,
-                float(live_voltage) if isinstance(live_voltage, (int, float)) else None,
-            )
-        if working_point is not None:
-            plt.hline(working_point[1], color="green+")
+        # No separate "working point" line: the live crosshair IS the working
+        # point. The old green hline reverse-looked-up the curve at the live
+        # voltage, which goes wrong once the P0 voltage floor (effective wall
+        # / Volt Limit) clamps the rail — the running GPC frequency no longer
+        # matches the curve value at that voltage — and, being drawn after
+        # the crosshair, it overprinted the (correct) live hline anyway.
         bounds = compute_vf_plot_bounds_multi(
             visible,
             live_point=live_point,
             lock_point=lock_point,
-            working_point=working_point,
         )
+        # EXT-slot overlays can sit outside the main curves' envelope —
+        # widen the frame so they stay in view.
+        if bounds is not None and self.domain_curves:
+            (x_min, x_max), (y_min, y_max) = bounds
+            for ext in self.domain_curves:
+                if not self._domain_visible.get(ext["label"], True):
+                    continue
+                if ext["volts"]:
+                    x_min = min(x_min, min(ext["volts"]))
+                    x_max = max(x_max, max(ext["volts"]))
+                if ext["freqs"]:
+                    y_min = min(y_min, min(ext["freqs"]))
+                    y_max = max(y_max, max(ext["freqs"]))
+            bounds = ((x_min, x_max), (y_min, y_max))
         if bounds is not None:
             (x_min, x_max), (y_min, y_max) = bounds
             plt.xlim(x_min, x_max)
             plt.ylim(y_min, y_max)
+        # P0 voltage-boundary vertical lines (display only). Deep red
+        # (floor = min_hold, ceiling = min(vbios, vrm)) are immutable per-GPU;
+        # light red is the live effective wall. All fall inside the curve's
+        # voltage range by design — no axis adjustment. The walls follow the
+        # ACTIVE curve's rail: gpc/msd → primary (lowest bit, core); xbar/mem
+        # → the second bit when present (Pascal-HBM MEM rail, 50-series
+        # MSVDD); single-rail parts fall back to the primary for every curve.
+        p0 = self._active_p0_bounds()
+        if isinstance(p0, dict):
+            floor_uv = int(p0.get("min_hold_uV", 0) or 0)
+            if floor_uv > 0:
+                plt.vline(floor_uv / 1000.0, color="red")
+            vbios_uv = int(p0.get("vbios_wall_uV", 0) or 0)
+            vrm_uv = int(p0.get("vrm_max_wall_uV", 0) or 0)
+            walls = [w for w in (vbios_uv, vrm_uv) if w > 0]
+            if walls:
+                plt.vline(min(walls) / 1000.0, color="red")
+            # Workable-region indicator: a blue horizontal bar on the row
+            # just above the x-axis, spanning floor → ceiling. Region
+            # shading isn't expressible in plotext (no background colors;
+            # fill attempts drown the curve in marker noise), but a single
+            # text-layer full-block row reads as a clean bar. That row is
+            # below the curve's in-band segment (the curve only reaches the
+            # bottom at its low-voltage end, left of the floor), so it
+            # collides with nothing. Text length is in terminal columns —
+            # convert the band's data width via the plot's column estimate.
+            if (
+                floor_uv > 0
+                and walls
+                and min(walls) > floor_uv
+                and bounds is not None
+                and widget.size.width > 0
+            ):
+                plot_cols = max(widget.size.width - 6, 10)  # minus y-axis gutter
+                span_cols = int(
+                    (min(walls) - floor_uv) / 1000.0 / (x_max - x_min) * plot_cols
+                )
+                if span_cols >= 2:
+                    # Full-block glyphs render as a solid bar rather than a
+                    # rule line — reads unmistakably as a region.
+                    plt.text(
+                        "█" * span_cols,
+                        floor_uv / 1000.0,
+                        y_min,
+                        color="blue+",
+                        alignment="left",
+                    )
+            eff_uv = int(p0.get("effective_wall_uV", 0) or 0)
+            if eff_uv > 0:
+                # The live wall gets a distinct hue from the immutable deep-red
+                # floor/ceiling AND from the orange+ lock crosshair — plotext
+                # has no named brown, so pass the 256-color code directly:
+                # 130 = #af5f00 brown. (Integer color codes 0-255 are valid
+                # plotext colors, same validation path as the names.)
+                plt.vline(eff_uv / 1000.0, color=130)
         plt.title("VF Curve")
         plt.xlabel("mV")
         plt.ylabel("MHz")
@@ -330,7 +655,10 @@ class VFCurveController(PaneController):
         if not self._curves:
             return
         self.render_plot()
-        if self._active_curve in ("xbar", "host") and not self._direct_read_inflight:
+        if (
+            _curve_direct_readable(self._active_curve)
+            and not self._direct_read_inflight
+        ):
             self._kick_direct_read(self._active_curve)
 
     def _sync_curve_widgets(self) -> None:
@@ -349,8 +677,8 @@ class VFCurveController(PaneController):
             select = self.app.query_one("#vf-active-curve", Select)
         except Exception:
             return
-        discovered = [cid for cid in _CURVE_ORDER if cid in self._curves]
-        options = [(CURVE_META[cid]["label"], cid) for cid in discovered] or [
+        discovered = _discovered_cids(self._curves)
+        options = [(curve_meta(cid)["label"], cid) for cid in discovered] or [
             ("GPC", "gpc")
         ]
         if self._synced_options != options:
@@ -359,15 +687,69 @@ class VFCurveController(PaneController):
         self._syncing = True
         if select.value != self._active_curve:
             select.value = self._active_curve
-        for cid in _CURVE_ORDER:
+        # Checkbox visibility: an undiscovered curve has nothing to toggle,
+        # so its checkbox is hidden entirely (not merely disabled); with a
+        # single discovered curve there is nothing to show/hide either —
+        # hide the whole checkbox group until ≥2 curves exist.
+        # The loop covers the discovered set PLUS every statically-marked-up
+        # curve id (gpc/xbar/msd/mem): iterating only the discovered set left
+        # an absent domain's static checkbox never visited, hence never
+        # hidden — e.g. P100 (gpc+mem only) kept showing XBAR/MSD boxes.
+        show_checkboxes = len(discovered) + len(self.domain_curves) >= 2
+        static_cids = [cid for cid in CURVE_META if cid != "unknown"]
+        all_cids = list(dict.fromkeys(discovered + static_cids))
+        for cid in all_cids:
             try:
                 checkbox = self.app.query_one(f"#vf-curve-{cid}", Checkbox)
             except Exception:
-                continue
-            checkbox.disabled = cid not in self._curves
+                # unknownN curves have no static checkbox — mount one into
+                # the selector row on first sight (ids are stable per
+                # refresh, so a later query_one finds it). Only discovered
+                # curves get mounted; an absent static id stays absent.
+                if cid not in self._curves:
+                    continue
+                try:
+                    selector = self.app.query_one("#vf-curve-selector")
+                    checkbox = Checkbox(
+                        curve_meta(cid)["label"],
+                        value=True,
+                        id=f"vf-curve-{cid}",
+                        compact=True,
+                    )
+                    selector.mount(checkbox)
+                except Exception:
+                    continue
+            checkbox.display = show_checkboxes and cid in self._curves
             want = cid in self._curves and self._curve_visible.get(cid, True)
             if checkbox.value != want:
                 checkbox.value = want
+        # EXT-overlay checkboxes (ids vf-curve-ext-<LABEL>): mounted on
+        # first sight like unknownN, hidden when the label disappears from
+        # a later refresh. Pure display state — no activation, no guards.
+        current_labels = {e["label"] for e in self.domain_curves}
+        for label in sorted(self._synced_ext_labels | current_labels):
+            cid = f"ext-{label}"
+            try:
+                checkbox = self.app.query_one(f"#vf-curve-{cid}", Checkbox)
+            except Exception:
+                if label not in current_labels:
+                    continue
+                try:
+                    selector = self.app.query_one("#vf-curve-selector")
+                    checkbox = Checkbox(
+                        f"{label}·ext",
+                        value=True,
+                        id=f"vf-curve-{cid}",
+                        compact=True,
+                    )
+                    selector.mount(checkbox)
+                except Exception:
+                    continue
+            checkbox.display = show_checkboxes and label in current_labels
+            want = label in current_labels and self._domain_visible.get(label, True)
+            if checkbox.value != want:
+                checkbox.value = want
+        self._synced_ext_labels = current_labels
         # Echoes posted above are drained before this runs (queue order),
         # so the sync window closes only after they have been ignored.
         self.app.call_after_refresh(self._end_widget_sync)
@@ -386,7 +768,7 @@ class VFCurveController(PaneController):
         self.app.cache.vf_live_point = None
         self.render_plot()
         self._sync_curve_widgets()
-        if curve_id in ("xbar", "host") and not self._direct_read_inflight:
+        if _curve_direct_readable(curve_id) and not self._direct_read_inflight:
             self._kick_direct_read(curve_id)
         curve = self._curves[curve_id]
         self.app.write_log(
@@ -398,6 +780,13 @@ class VFCurveController(PaneController):
         """Toggle a curve's visibility. Hidden curves are not drawn and not
         polled. Never leaves zero visible curves; vetoes snap the checkbox
         back."""
+        if curve_id.startswith("ext-"):
+            # EXT-overlay checkbox — pure display state, no guards.
+            label = curve_id[len("ext-") :]
+            if label in {e["label"] for e in self.domain_curves}:
+                self._domain_visible[label] = not self._domain_visible.get(label, True)
+                self.render_plot()
+            return
         if curve_id not in self._curves:
             return
         currently = self._curve_visible.get(curve_id, True)
@@ -423,7 +812,10 @@ class VFCurveController(PaneController):
         self.app.cache.active_curve = self._active_curve
         self.render_plot()
         self._sync_curve_widgets()
-        if self._active_curve in ("xbar", "host") and not self._direct_read_inflight:
+        if (
+            _curve_direct_readable(self._active_curve)
+            and not self._direct_read_inflight
+        ):
             self._kick_direct_read(self._active_curve)
 
     def _kick_direct_read(self, curve_id: str) -> None:
@@ -439,7 +831,9 @@ class VFCurveController(PaneController):
             return
         if gpu is None:
             return
-        domain_bit = CURVE_META[curve_id]["domain_bit"]
+        domain_bit = curve_meta(curve_id)["domain_bit"]
+        if domain_bit is None:
+            return  # unknownN curves have no measurable domain bit
         # Snapshot for the completion callback (a refresh may replace the
         # curve dicts while the read is in flight).
         volts = list(curve.voltages)
@@ -456,9 +850,10 @@ class VFCurveController(PaneController):
                 # guard a raised escape leaves it stuck True forever and the
                 # live crosshair silently dies (or retry logic spins).
                 result = None
+            rail_mv = self._poll_rail_current_mv(curve_id, gpu)
             try:
                 self.app.call_from_thread(
-                    self._on_direct_read_done, result, curve_id, volts, freqs
+                    self._on_direct_read_done, result, curve_id, volts, freqs, rail_mv
                 )
             except Exception:
                 self._direct_read_inflight = False
@@ -470,12 +865,56 @@ class VFCurveController(PaneController):
             self._direct_read_inflight = False
             raise
 
+    def _poll_rail_current_mv(self, curve_id: str, gpu: str) -> float | None:
+        """Live voltage of the rail this curve rides, for the crosshair.
+
+        gpc/msd ride the PRIMARY (core) rail; xbar/mem the SECONDARY rail
+        (50-series MSVDD, Pascal-HBM) when the part exposes one — the rail's
+        real ``current_uV`` IS the operating voltage for those domains.
+        Single-rail parts read the primary rail's live ``current_uV`` too.
+        The status voltage (public, quantized setpoint — pinned 900 mV under
+        load live-observed, while the private VoltRails current reads
+        910-920 mV the same moment) is a DIFFERENT quantity and is only the
+        fallback when the rail read fails — every curve's crosshair draws
+        the rail current (GPC via the dashboard sweep's rail_volts, the
+        fabric curves via this fresh poll).
+        Falls back to None → reverse curve lookup in the caller.
+        """
+        try:
+            vr = self.app.native_service.query_volt_rails(gpu)
+        except Exception:
+            return None
+        if not isinstance(vr, dict):
+            return None
+        rails = vr.get("p0_rails")
+        entries = (
+            [e for e in rails if isinstance(e, dict)] if isinstance(rails, list) else []
+        )
+        try:
+            bits = sorted({int(e["rail_bit"]) for e in entries if "rail_bit" in e})
+        except (TypeError, ValueError):
+            return None
+        if not bits:
+            return None
+        bit = (
+            bits[1]
+            if (curve_id in _SECONDARY_RAIL_CURVES and len(bits) > 1)
+            else bits[0]
+        )
+        for e in entries:
+            if e.get("rail_bit") == bit:
+                cur = e.get("current_uV")
+                if isinstance(cur, (int, float)) and cur > 0:
+                    return float(cur) / 1000.0
+        return None
+
     def _on_direct_read_done(
         self,
         result: dict | None,
         curve_id: str,
         volts: list[float],
         freqs: list[float],
+        rail_mv: float | None = None,
     ) -> None:
         self._direct_read_inflight = False
         # Stale (different active curve now) or hidden while in flight — a
@@ -492,11 +931,233 @@ class VFCurveController(PaneController):
             # 0 ⇒ driver refused / not measurable through this interface.
             return
         freq_mhz = freq_khz / 1000.0
-        volt = reverse_lookup_voltage(volts, freqs, freq_mhz)
+        # Voltage preference: the curve's own RAIL current (freshly polled —
+        # multi-rail parts get a real per-rail reading: 50-series MSVDD for
+        # xbar, Pascal-HBM for mem; single-rail parts' primary rail IS the
+        # GPC voltage every domain shares). Reverse curve lookup is only the
+        # fallback when the rail reading is unavailable.
+        volt = (
+            float(rail_mv)
+            if isinstance(rail_mv, (int, float)) and rail_mv > 0
+            else reverse_lookup_voltage(volts, freqs, freq_mhz)
+        )
         if volt is None:
             return
         self.app.cache.vf_live_point = (volt, freq_mhz)
         self.render_plot()
+
+    # ── P0 voltage-boundary display (deep red walls + light red effective) ──
+    def _ensure_p0_bounds(self, gpu: str) -> None:
+        """Query P0 voltage bounds once per GPU (hardware walls don't move).
+
+        Pure display in the TUI — no drag/apply. Short-circuits on a cache
+        hit so the per-tick auto-refresh never re-queries volt_rails.
+        """
+        if self._p0_bounds_gpu == gpu and self._p0_bounds is not None:
+            return
+        if self._p0_bounds_gpu != gpu:
+            self._p0_bounds = None
+            self._p0_rails = []
+            self._p0_bounds_by_rail = {}
+        self._p0_bounds_gpu = gpu
+        if gpu is None:
+            return
+
+        def worker() -> None:
+            vr = self.app.native_service.query_volt_rails(gpu)
+            try:
+                self.app.call_from_thread(self._on_p0_bounds_loaded, gpu, vr)
+            except Exception:
+                pass
+
+        try:
+            self.app.native_service.submit_query(worker)
+        except Exception:
+            pass
+
+    def _on_p0_bounds_loaded(self, gpu: str, vr: dict | None) -> None:
+        if self._p0_bounds_gpu != gpu:
+            return  # a newer GPU switch superseded this query
+        p0 = None
+        rails: list = []
+        if isinstance(vr, dict):
+            p0 = vr.get("p0") if isinstance(vr.get("p0"), dict) else None
+            raw_rails = vr.get("p0_rails")
+            if isinstance(raw_rails, list):
+                rails = raw_rails
+        self._p0_bounds = p0
+        # rail_bit → bounds map (fallback: the primary p0 payload alone when
+        # the payload has no p0_rails list).
+        by_rail: dict[int, dict] = {}
+        for entry in rails:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                bit = int(entry.get("rail_bit"))
+            except (TypeError, ValueError):
+                continue
+            by_rail[bit] = entry
+        if p0 is not None:
+            by_rail.setdefault(0, p0)
+        self._p0_rails = rails
+        self._p0_bounds_by_rail = by_rail
+        self.render_plot()
+
+    # ── vBIOS GPU Boost 2.0 ladder (Maxwell/Kepler read-only overlay) ──
+    def _ensure_bios_curve(self, gpu: str) -> None:
+        """Query the vBIOS VF ladder once per GPU (the ROM is immutable).
+
+        Pure display in the TUI — no drag/apply. Short-circuits on a cache
+        hit so the per-tick auto-refresh never re-reads the image (the
+        image read is a multi-escape loop, hundreds of ms).
+        """
+        if self._bios_curve_gpu == gpu and self._bios_curve is not None:
+            return
+        if self._bios_curve_gpu != gpu:
+            self._bios_curve = None
+        self._bios_curve_gpu = gpu
+        if gpu is None:
+            return
+
+        def worker() -> None:
+            curve = self.app.native_service.query_vbios_vf_curve(gpu)
+            try:
+                self.app.call_from_thread(self._on_bios_curve_loaded, gpu, curve)
+            except Exception:
+                pass
+
+        try:
+            self.app.native_service.submit_query(worker)
+        except Exception:
+            pass
+
+    def _on_bios_curve_loaded(self, gpu: str, curve: dict | None) -> None:
+        if self._bios_curve_gpu != gpu:
+            return  # a newer GPU switch superseded this query
+        self._bios_curve = curve if isinstance(curve, dict) else None
+        # Render ONLY when a ladder actually landed AND no driver curve
+        # exists: on Pascal+ the driver curve owns the chart, and on
+        # non-ladder generations the unsupported-verdict message must stay
+        # on the plot instead of a bare placeholder.
+        if self._bios_ladder_points() and not self._curves:
+            self.render_plot()
+
+    def _bios_ladder_points(self) -> list[dict]:
+        """The curve-window ladder points (payload-driven window; 0..P0 on
+        GM200/GK104), or [] when no ladder / not a ladder generation. Nodes
+        with an INVERTED vBIOS range (min > max, e.g. GM200 idx74) are
+        normalized to lo/hi so segment rendering never folds."""
+        bios = self._bios_curve
+        if not bios or not bios.get("available"):
+            return []
+        try:
+            start = int(bios.get("curve_start_index", 0))
+            end = int(bios.get("curve_end_index", 0))
+        except (TypeError, ValueError):
+            return []
+        out = []
+        for p in bios.get("points", []):
+            if not isinstance(p, dict):
+                continue
+            try:
+                idx = int(p.get("index", -1))
+            except (TypeError, ValueError):
+                continue
+            if not start <= idx <= end:
+                continue
+            lo, hi = sorted((float(p["v_min_mv"]), float(p["v_max_mv"])))
+            out.append({**p, "v_min_mv": lo, "v_max_mv": hi})
+        return out
+
+    def _show_bios_fallback(self) -> None:
+        """Maxwell/Kepler branch of "no driver VF interface": fetch the
+        vBIOS ladder (once per GPU) and render it read-only. Cache hit draws
+        immediately; otherwise _on_bios_curve_loaded → render_plot lands the
+        async result on the same chart."""
+        try:
+            gpu = self.app.selected_gpu_target()
+        except Exception:
+            gpu = None
+        if gpu is None:
+            return
+        self._ensure_bios_curve(gpu)
+        if self._bios_ladder_points():
+            self.render_plot()
+
+    def _render_bios_only_plot(self, ladder_pts: list[dict]) -> None:
+        """BIOS-ladder-only chart for legacy GPUs (no driver VF interface).
+
+        Same dual-line scheme as the overlay path: upper bound (V_max)
+        cyan+, lower bound (V_min) white, dim-cyan horizontal segments as
+        the range band. The live crosshair stays green+ — distinct.
+        """
+        try:
+            widget = self.app.query_one("#vf-plot", PlotextPlot)
+        except Exception:
+            return  # pane not composed / being torn down
+        plt = widget.plt
+        plt.clear_figure()
+        plt.clear_data()
+        plt.clear_color()
+        plt.title("vBIOS VF ladder (read-only)")
+        plt.xlabel("mV")
+        plt.ylabel("MHz")
+        for i, p in enumerate(ladder_pts):
+            plt.plot(
+                [p["v_min_mv"], p["v_max_mv"]],
+                [p["freq_mhz"], p["freq_mhz"]],
+                marker="braille",
+                color="cyan",
+                label="BIOS Range" if i == 0 else None,
+            )
+        plt.plot(
+            [p["v_max_mv"] for p in ladder_pts],
+            [p["freq_mhz"] for p in ladder_pts],
+            marker="braille",
+            color="cyan+",
+            label="BIOS Max",
+        )
+        plt.plot(
+            [p["v_min_mv"] for p in ladder_pts],
+            [p["freq_mhz"] for p in ladder_pts],
+            marker="braille",
+            color="white",
+            label="BIOS Min",
+        )
+        # Live working point (same feed as the modern chart's crosshair:
+        # rail current on x, public graphics clock on y) — display-only.
+        rail_volts = self.app.cache.rail_volts
+        live_voltage = (
+            rail_volts[0][1] if rail_volts else self.app.cache.status.get("voltage_mv")
+        )
+        live_clock = self.app.cache.status.get("gpu_clock_mhz")
+        if isinstance(live_voltage, (int, float)) and isinstance(
+            live_clock, (int, float)
+        ):
+            plt.scatter(
+                [float(live_voltage)],
+                [float(live_clock)],
+                marker="braille",
+                color="green+",
+                label="Live Point",
+            )
+            plt.vline(float(live_voltage), color="green+")
+            plt.hline(float(live_clock), color="green+")
+        widget.refresh()
+
+    def _active_p0_bounds(self) -> "dict | None":
+        """The P0 bounds dict of the ACTIVE curve's rail (primary fallback).
+
+        gpc/msd → the lowest rail bit (core rail); xbar/mem → the second-lowest
+        bit when the part exposes one (Pascal-HBM MEM rail, 50-series MSVDD).
+        Falls back to the plain ``p0`` payload when no per-rail map exists.
+        """
+        bits = sorted(self._p0_bounds_by_rail)
+        if not bits:
+            return self._p0_bounds
+        if self._active_curve in _SECONDARY_RAIL_CURVES and len(bits) > 1:
+            return self._p0_bounds_by_rail.get(bits[1]) or self._p0_bounds
+        return self._p0_bounds_by_rail.get(bits[0]) or self._p0_bounds
 
     def handle_button(self, button_id: str) -> bool:
         if button_id == "vf-refresh":
@@ -540,7 +1201,7 @@ class VFCurveController(PaneController):
             return True
         if button_id == "vf-reset":
             # Active-curve semantics: public GPC resets its own segment via
-            # the open interface; private curves (XBAR/HOST, or GPC when the
+            # the open interface; private curves (XBAR/MSD, or GPC when the
             # public family is unsupported) clear per point with a
             # raw-converted fallback. Never touches other curves' segments.
             curve = self._curves.get(self._active_curve)

@@ -7,27 +7,33 @@ use super::nvml::{
 };
 use super::result::PstateBaseVoltage;
 use super::types::{NvapiLockedVoltageTarget, VfpResetDomain};
-use nvapi_hi::nvapi::{CelsiusShifted, DisplayIdsFlags, VoltageDomain};
-use nvapi_hi::{
+use ::nvapi::hi::{
     Celsius, ClockDomain, ClockLockEntry, ClockLockValue, ConnectedIdsFlags, CoolerPolicy,
     CoolerSettings, FanCoolerId, Gpu, Kilohertz, KilohertzDelta, Microvolts, MicrovoltsDelta,
-    PState, Percentage, PerfLimitId, PffCurve, PffPoint, VfpPoint,
+    PState, Percentage, PerfLimitId, PffCurve, VfpPoint,
 };
+use ::nvapi::{DisplayIdsFlags, VoltageDomain};
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::iter;
 use std::str::FromStr;
 use std::thread::sleep;
 use std::time::Duration;
 
+/// All seven fields are `Option` — `None` means the driver reported no such
+/// limit (e.g. V100 exposes no thermal-policy entries at all). The old code
+/// seeded `2047/4095/8191` percent and `127/255/511` C plus a fake
+/// 3-point PFF curve as "test placeholders"; those leaked verbatim whenever
+/// the underlying tables were empty, so they were removed in favor of
+/// faithfully reporting the missing data.
 pub type GpuTdpTempLimits = (
-    Percentage,
-    Percentage,
-    Percentage,
-    Celsius,
-    Celsius,
-    Celsius,
-    PffCurve,
+    Option<Percentage>,
+    Option<Percentage>,
+    Option<Percentage>,
+    Option<Celsius>,
+    Option<Celsius>,
+    Option<Celsius>,
+    Option<PffCurve>,
 );
 
 #[derive(Clone, Copy, Debug)]
@@ -124,7 +130,7 @@ pub fn set_pstate_base_voltage(
     delta_uv: MicrovoltsDelta,
     target_pstate: PState,
 ) -> Result<(), Error> {
-    use nvapi_hi::sys::gpu::pstate as sys_pstate;
+    use ::nvapi::sys::gpu::pstate as sys_pstate;
 
     // 1. 先读取当前 pstate 信息，确认目标 pstate 的 baseVoltages 可写并取得允许范围
     let pstates = gpu
@@ -166,19 +172,19 @@ pub fn set_pstate_base_voltage(
 
     // 2. 构造最小化的 NV_GPU_PERF_PSTATES20_INFO，只填目标 pstate 的 baseVoltages，不修改时钟
     let mut info = sys_pstate::NV_GPU_PERF_PSTATES20_INFO::default();
-    info.bIsEditable = nvapi_hi::sys::types::BoolU32::from(true);
+    info.bIsEditable = ::nvapi::sys::types::BoolU32::from(true);
     info.numPstates = 1;
     info.numClocks = 0; // 不修改时钟
     info.numBaseVoltages = 1; // 一个核心电压条目
 
     {
         let pe = &mut info.pstates[0];
-        pe.pstateId = target_pstate.raw();
-        pe.bIsEditable = nvapi_hi::sys::types::BoolU32::from(true);
+        pe.pstateId = target_pstate.value();
+        pe.bIsEditable = ::nvapi::sys::types::BoolU32::from(true);
 
         let ve = &mut pe.baseVoltages[0];
-        ve.domainId = VoltageDomain::Core.raw();
-        ve.bIsEditable = nvapi_hi::sys::types::BoolU32::from(true);
+        ve.domainId = VoltageDomain::Core.value();
+        ve.bIsEditable = ::nvapi::sys::types::BoolU32::from(true);
         ve.volt_uV = base_volt.voltage.0;
         ve.voltDelta_uV.value = delta_uv.0;
         ve.voltDelta_uV.min = range.min.0;
@@ -187,7 +193,7 @@ pub fn set_pstate_base_voltage(
 
     // 3. 调用私有 undocumented API，返回值 0 = NVAPI_OK
     let status =
-        unsafe { sys_pstate::private::NvAPI_GPU_SetPstates20(*gpu.inner().handle(), &info) };
+        unsafe { sys_pstate::undocumented::NvAPI_GPU_SetPstates20(*gpu.inner().handle(), &info) };
 
     if status != 0 {
         return Err(Error::from(format!(
@@ -289,7 +295,32 @@ pub fn set_pstate_clock_offset_preserve(
     target_domain: ClockDomain,
     target_delta: KilohertzDelta,
 ) -> Result<(), Error> {
-    let graphics_vfp = if target_domain == ClockDomain::Memory {
+    // On legacy GPUs (Maxwell and earlier: Fermi/Kepler/Maxwell, Volta
+    // compute, Unknown) the private VFP SetControl that the graphics-VFP
+    // save/restore relies on is kernel-unimplemented → the restore would fail
+    // with NVAPI_ERROR and block the whole mem-offset path. On those GPUs the
+    // pstates20 write carries BOTH core and mem deltas (from target_ps.clocks),
+    // so the global core/gpc offset is preserved by pstates20 itself and no VFP
+    // round-trip is needed (the SetPstates20 "clears graphics VFP" side-effect
+    // only happens on modern GPUs where the private VFP path exists). Skip the
+    // capture → `graphics_vfp = None` → the restore below is a no-op. Same
+    // legacy set as `reset_vfp_deltas` (nvapi.rs:779).
+    let info = gpu.info().map_err(Error::from)?;
+    let is_legacy = matches!(
+        fetch_gpu_type(&info),
+        Ok(GpuType::Mobile9Series)
+            | Ok(GpuType::Desktop9Series)
+            | Ok(GpuType::MobileKepler)
+            | Ok(GpuType::DesktopKepler)
+            | Ok(GpuType::MobileFermi)
+            | Ok(GpuType::DesktopFermi)
+            | Ok(GpuType::WorkstationKepler)
+            | Ok(GpuType::WorkstationFermi)
+            | Ok(GpuType::ServerVolta)
+            | Ok(GpuType::Unknown)
+            | Err(_)
+    );
+    let graphics_vfp = if target_domain == ClockDomain::Memory && !is_legacy {
         capture_graphics_vfp(gpu)?
     } else {
         None
@@ -320,21 +351,21 @@ pub fn set_pstate_clock_offset_preserve(
         })
         .collect();
 
-    if entries.is_empty() {
-        return Err(Error::from(format!(
-            "{:?} has no editable clock entries",
-            target_pstate
-        )));
-    }
-
+    // SEAL REMOVAL (2026-09-01): when the target domain is missing from the
+    // editable set — server/Volta parts report P0 clocks editable=false —
+    // this used to hard-error with "no editable clock entries" / "not
+    // editable". That message is NOT the driver's NotSupported/-104, so the
+    // GUI/TUI ClkDomains fallback matcher never fired and BOTH OC paths
+    // (pstate20 AND the fallback) were sealed off before any driver call.
+    // Instead append the target entry to the write set: editable siblings
+    // (if any) keep their preserve semantics, and the driver now arbitrates
+    // for real — NotSupported surfaces and fires the ClkDomains fallback,
+    // success means pstates20 took the offset.
     if !entries
         .iter()
         .any(|(_, domain, _)| *domain == target_domain)
     {
-        return Err(Error::from(format!(
-            "{:?} {:?} clock entry not found or not editable",
-            target_pstate, target_domain
-        )));
+        entries.push((target_pstate, target_domain, target_delta));
     }
 
     gpu.inner()
@@ -427,7 +458,7 @@ fn restore_memory_vfp(gpu: &Gpu, vfp: &BTreeMap<usize, KilohertzDelta>) -> Resul
 /// 单个 pstate 失败时打印警告并继续，不中断其他 pstate 的清零。
 #[allow(clippy::field_reassign_with_default)] // struct literal form fails: NV_GPU_PERF_PSTATES20_INFO V1/V2 type alias mismatch
 pub fn reset_all_pstate_base_voltages(gpu: &Gpu) -> Result<(), Error> {
-    use nvapi_hi::sys::gpu::pstate as sys_pstate;
+    use ::nvapi::sys::gpu::pstate as sys_pstate;
 
     let pstates = gpu
         .inner()
@@ -453,27 +484,28 @@ pub fn reset_all_pstate_base_voltages(gpu: &Gpu) -> Result<(), Error> {
 
         // 构造单 pstate 写入结构
         let mut info = sys_pstate::NV_GPU_PERF_PSTATES20_INFO::default();
-        info.bIsEditable = nvapi_hi::sys::types::BoolU32::from(true);
+        info.bIsEditable = ::nvapi::sys::types::BoolU32::from(true);
         info.numPstates = 1;
         info.numClocks = 0;
         info.numBaseVoltages = 1;
 
         {
             let pe = &mut info.pstates[0];
-            pe.pstateId = ps.id.raw();
-            pe.bIsEditable = nvapi_hi::sys::types::BoolU32::from(true);
+            pe.pstateId = ps.id.value();
+            pe.bIsEditable = ::nvapi::sys::types::BoolU32::from(true);
 
             let ve = &mut pe.baseVoltages[0];
-            ve.domainId = VoltageDomain::Core.raw();
-            ve.bIsEditable = nvapi_hi::sys::types::BoolU32::from(true);
+            ve.domainId = VoltageDomain::Core.value();
+            ve.bIsEditable = ::nvapi::sys::types::BoolU32::from(true);
             ve.volt_uV = base_volt.voltage.0;
             ve.voltDelta_uV.value = 0; // 清零
             ve.voltDelta_uV.min = range.min.0;
             ve.voltDelta_uV.max = range.max.0;
         }
 
-        let status =
-            unsafe { sys_pstate::private::NvAPI_GPU_SetPstates20(*gpu.inner().handle(), &info) };
+        let status = unsafe {
+            sys_pstate::undocumented::NvAPI_GPU_SetPstates20(*gpu.inner().handle(), &info)
+        };
 
         let _ = status;
     }
@@ -491,13 +523,31 @@ pub fn set_cooler_levels(
         policy: mode,
         level: Some(Percentage(level)),
     };
-    let cooler_ids: &[FanCoolerId] = match target {
-        CoolerTarget::Cooler1 => &[FanCoolerId::Cooler1],
-        CoolerTarget::Cooler2 => &[FanCoolerId::Cooler2],
-        CoolerTarget::All => &[FanCoolerId::Cooler1, FanCoolerId::Cooler2],
-    };
 
     for gpu in gpus {
+        // Presence-derived entry list for `All`: the driver rejects the whole
+        // SET when it names a cooler the GPU doesn't have (472.12 live:
+        // Cooler1+Cooler2 count=2 on a single-fan card → generic NVAPI_ERROR
+        // -1 for the transaction). Enumerate real coolers from the private
+        // family first, like ResetNvapiFanControl; keep the fixed pair as the
+        // fallback when that family is silent (R391-era, public SET path).
+        let cooler_ids: Vec<FanCoolerId> = match target {
+            CoolerTarget::Cooler1 => vec![FanCoolerId::Cooler1],
+            CoolerTarget::Cooler2 => vec![FanCoolerId::Cooler2],
+            CoolerTarget::All => match gpu.inner().cooler_info_private() {
+                Ok(infos) if !infos.is_empty() => infos
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, _)| match i {
+                        0 => Some(FanCoolerId::Cooler1),
+                        1 => Some(FanCoolerId::Cooler2),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => vec![FanCoolerId::Cooler1, FanCoolerId::Cooler2],
+            },
+        };
+
         gpu.set_cooler_levels(cooler_ids.iter().map(|id| (*id, settings)))?;
     }
     Ok(())
@@ -584,11 +634,18 @@ pub fn parse_nvapi_locked_voltage_target(raw: &str) -> Result<NvapiLockedVoltage
     let lower = input.to_ascii_lowercase();
 
     if let Some(v) = lower.strip_suffix("mv") {
-        let mv = u32::from_str(v.trim()).map_err(|_| {
+        // mV accepts one decimal — the hardware grid is 12.5/6.25 mV-class,
+        // so "981.25mV" is a legitimate target. Rounds to the nearest µV.
+        let mv: f64 = v.trim().parse().map_err(|_| {
             Error::from("Invalid --nvapi-locked-voltage value: expected POINT or <N>mV/<N>uV")
         })?;
+        if !mv.is_finite() || !(0.0..10_000.0).contains(&mv) {
+            return Err(Error::from(
+                "Invalid --nvapi-locked-voltage value: expected POINT or <N>mV/<N>uV",
+            ));
+        }
         return Ok(NvapiLockedVoltageTarget::Voltage(Microvolts(
-            mv.saturating_mul(1000),
+            (mv * 1000.0).round() as u32,
         )));
     }
 
@@ -621,7 +678,7 @@ pub fn set_nvapi_pstate_lock(
     gpu_id: u32,
     first_pstate: nvml_wrapper::enum_wrappers::device::PerformanceState,
     second_pstate: nvml_wrapper::enum_wrappers::device::PerformanceState,
-) -> Result<(String, u32, u32), Error> {
+) -> Result<(String, u32, u32, Option<String>), Error> {
     let pstates = get_nvml_pstate_info(nvml, gpu_id).ok_or_else(|| {
         Error::Custom(format!(
             "Failed to query NVML P-State information for GPU {}",
@@ -672,15 +729,23 @@ pub fn set_nvapi_pstate_lock(
     let outside_requested_range =
         collect_outside_requested_range(&overlapping_pstates, min_index, max_index);
 
-    if !outside_requested_range.is_empty() {
-        return Err(Error::Custom(format!(
-            "{} would map to memory lock window {}-{} MHz, but that also overlaps NVML P-States outside the requested range: {}. Use --locked-mem-clocks for a manual NVAPI range instead.",
+    // A window that also admits P-States outside the requested range is NOT
+    // a hard error: identical memory clocks across P-States (e.g. a VBIOS
+    // edit pinning P2 to P0's clocks) make the ranges inseparable by design
+    // — locking the window anyway is exactly what the user asked for. Warn
+    // (returned as the 4th output element for CLI/GUI/TUI to surface) and
+    // apply.
+    let warning = if outside_requested_range.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "{} maps to memory lock window {}-{} MHz, which also overlaps NVML P-States outside the requested range: {} — applying anyway (the window cannot exclude them; use --locked-mem-clocks for a manual NVAPI range if exclusion is required).",
             range_label,
             min_lock_mhz,
             max_lock_mhz,
             outside_requested_range.join(", "),
-        )));
-    }
+        ))
+    };
 
     set_vfp_frequency_lock(
         gpu,
@@ -689,7 +754,7 @@ pub fn set_nvapi_pstate_lock(
         Some(Kilohertz(min_lock_mhz.saturating_mul(1000))),
     )?;
 
-    Ok((range_label, min_lock_mhz, max_lock_mhz))
+    Ok((range_label, min_lock_mhz, max_lock_mhz, warning))
 }
 
 pub fn lock_vfp(gpus: &[&Gpu], request: VfpLockRequest, feedback_flag: bool) -> Result<(), Error> {
@@ -773,12 +838,19 @@ pub fn reset_vfp_deltas(gpu: &Gpu, domain: VfpResetDomain) -> Result<(), Error> 
     let info = gpu.info().map_err(Error::from)?;
     let gpu_type = fetch_gpu_type(&info);
 
-    // 9 系及更早（Maxwell 及之前）不支持 VFP 曲线，只能通过 set_pstates 单点清零
+    // 9 系及更早（Maxwell/Kepler/Fermi）不支持 VFP 曲线，只能通过 set_pstates
+    // 单点清零。Volta 计算卡（含 V100/Titan V，均归 ServerVolta）同样走此路径。
     let is_legacy = matches!(
         gpu_type,
         Ok(GpuType::Mobile9Series)
             | Ok(GpuType::Desktop9Series)
-            | Ok(GpuType::ComputationVolta)
+            | Ok(GpuType::MobileKepler)
+            | Ok(GpuType::DesktopKepler)
+            | Ok(GpuType::MobileFermi)
+            | Ok(GpuType::DesktopFermi)
+            | Ok(GpuType::WorkstationKepler)
+            | Ok(GpuType::WorkstationFermi)
+            | Ok(GpuType::ServerVolta)
             | Ok(GpuType::Unknown)
             | Err(_)
     );
@@ -918,13 +990,57 @@ pub fn query_domain_vf_points_indexed(
     gpu: &Gpu,
     domain: ClockDomain,
     infer_missing_default: bool,
-) -> Result<Vec<(usize, nvapi_hi::VfPoint)>, Error> {
+) -> Result<Vec<(usize, ::nvapi::hi::VfPoint)>, Error> {
     let info = gpu.inner().vfp_info()?;
     let curve = gpu.inner().vfp_curve(&info)?;
     let table = gpu.inner().vfp_table(&info)?;
 
     let points = curve.points.get(&domain).cloned().unwrap_or_default();
     let deltas = table.delta_points.get(&domain).cloned().unwrap_or_default();
+
+    // Pascal server/workstation default inference. On these cards the public
+    // VFP table is read-only (every point Fixed): the public `delta` stays 0
+    // even with an offset active (offsets reach the hardware only through the
+    // private SetControl), so the generic `current − delta` inference would
+    // just echo the OC'd current. There the TRUE stock default comes from the
+    // private table, where — Pascal semantics — the `default` field carries
+    // the CURRENT frequency (moves with the offset) and the mode-0 control
+    // offset sits on the 2× axis (raw 129300 = 64.65 MHz, live P100; GTX
+    // 1080 cross-check: public OC +f → private reads 2f):
+    //   true_default = private.freq_default − private_offset_raw / 2
+    // Scope: ServerPascal | WorkstationPascal (per the generation owner);
+    // consumer Pascal still infers via the working public delta, everything
+    // else keeps the generic path.
+    let private_defaults = if infer_missing_default {
+        let pascal_fixed = fetch_gpu_type(&gpu.info()?)
+            .is_ok_and(|t| matches!(t, GpuType::ServerPascal | GpuType::WorkstationPascal));
+        if pascal_fixed {
+            // Best-effort: a private-family read failure falls back to the
+            // generic current−delta inference below rather than failing the
+            // whole public query.
+            let (Ok(pts), Ok(ctrl)) = (
+                gpu.inner().clk_vf_points_private(),
+                gpu.inner().clk_vf_control_private(),
+            ) else {
+                return Err(Error::Custom(
+                    "private V/F table unavailable for Pascal default inference".into(),
+                ));
+            };
+            let mut map: HashMap<u16, (u32, u32, u32)> = HashMap::new();
+            for p in &ctrl.points {
+                map.insert(p.index, (0, p.mode, p.value));
+            }
+            for p in &pts.points {
+                let e = map.entry(p.index).or_insert((p.freq_default_mhz, 0, 0));
+                e.0 = p.freq_default_mhz;
+            }
+            Some(map)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     let mut pts = points.into_iter().peekable();
     let mut dts = deltas.into_iter().peekable();
@@ -938,7 +1054,7 @@ pub fn query_domain_vf_points_indexed(
             Ordering::Equal => {
                 let (i, point) = pts.next().unwrap();
                 let (_, delta) = dts.next().unwrap();
-                let mut point = nvapi_hi::VfPoint {
+                let mut point = ::nvapi::hi::VfPoint {
                     point_type: point.point_type,
                     voltage: point.configured().voltage,
                     frequency: point.configured().frequency,
@@ -946,8 +1062,21 @@ pub fn query_domain_vf_points_indexed(
                     delta,
                 };
                 if infer_missing_default && point.default_frequency.0 == 0 {
-                    let base = point.frequency.0 as i64 - point.delta.0 as i64;
-                    point.default_frequency = Kilohertz(base.max(0) as u32);
+                    if let Some((def_mhz, mode, raw)) =
+                        private_defaults.as_ref().and_then(|m| m.get(&(i as u16)))
+                    {
+                        // Pascal 2× axis: mode-0 value is 2× the real kHz →
+                        // real offset kHz = raw / 2. Mode-1 (raw f-offset
+                        // control) has no Pascal calibration — leave the
+                        // current as the default there rather than applying
+                        // the Ada g(def) prior to the wrong axis.
+                        let offset_khz = if *mode == 0 { raw / 2 } else { 0 };
+                        let default_khz = (*def_mhz as i64) * 1000 - offset_khz as i64;
+                        point.default_frequency = Kilohertz(default_khz.max(0) as u32);
+                    } else {
+                        let base = point.frequency.0 as i64 - point.delta.0 as i64;
+                        point.default_frequency = Kilohertz(base.max(0) as u32);
+                    }
                 }
                 result.push((i, point));
             }
@@ -972,7 +1101,7 @@ pub fn set_nvapi_domain_vfp_deltas(
     domain: ClockDomain,
     deltas: &[(usize, KilohertzDelta)],
 ) -> Result<(), Error> {
-    use nvapi_hi::sys::gpu::clock::private::NV_GPU_CLOCK_CLIENT_CLK_VF_POINTS_CONTROL;
+    use ::nvapi::sys::gpu::clock::undocumented::NV_GPU_CLOCK_CLIENT_CLK_VF_POINTS_CONTROL;
 
     let info = gpu
         .inner()
@@ -986,11 +1115,11 @@ pub fn set_nvapi_domain_vfp_deltas(
     };
 
     unsafe {
-        let status = nvapi_hi::sys::api::NvAPI_GPU_ClockClientClkVfPointsGetControl(
+        let status = ::nvapi::sys::api::NvAPI_GPU_ClockClientClkVfPointsGetControl(
             *gpu.inner().handle(),
             &mut data,
         );
-        nvapi_hi::sys::status_result(status).map_err(|e| {
+        ::nvapi::sys::status_result(status).map_err(|e| {
             Error::Custom(format!(
                 "NvAPI_GPU_ClockClientClkVfPointsGetControl failed: {:?}",
                 e
@@ -1010,11 +1139,11 @@ pub fn set_nvapi_domain_vfp_deltas(
     }
 
     unsafe {
-        let status = nvapi_hi::sys::api::NvAPI_GPU_ClockClientClkVfPointsSetControl(
+        let status = ::nvapi::sys::api::NvAPI_GPU_ClockClientClkVfPointsSetControl(
             *gpu.inner().handle(),
             &data,
         );
-        nvapi_hi::sys::status_result(status).map_err(|e| {
+        ::nvapi::sys::status_result(status).map_err(|e| {
             Error::Custom(format!(
                 "NvAPI_GPU_ClockClientClkVfPointsSetControl failed: {:?}",
                 e
@@ -1062,7 +1191,17 @@ pub fn handle_test_voltage_limits(
                 margin_threshold_check = 1;
             }
 
-            if matches!(t, GpuType::Mobile9Series | GpuType::Desktop9Series) {
+            if matches!(
+                t,
+                GpuType::Mobile9Series
+                    | GpuType::Desktop9Series
+                    | GpuType::MobileKepler
+                    | GpuType::DesktopKepler
+                    | GpuType::MobileFermi
+                    | GpuType::DesktopFermi
+                    | GpuType::WorkstationKepler
+                    | GpuType::WorkstationFermi
+            ) {
                 drop(Error::VfpUnsupported);
             }
         }
@@ -1155,42 +1294,24 @@ pub fn get_gpu_tdp_temp_limit(
     gpus: &[&Gpu],
     mut print_separator: impl FnMut(),
 ) -> Result<GpuTdpTempLimits, Error> {
-    let mut min_tdp_percentage = Percentage(2047);
-    let mut max_tdp_percentage = Percentage(4095);
-    let mut default_tdp_percentage = Percentage(8191);
+    // None until a GPU actually reports the limit — see GpuTdpTempLimits.
+    let mut min_tdp_percentage = None;
+    let mut max_tdp_percentage = None;
+    let mut default_tdp_percentage = None;
 
-    let mut min_temp_lim = Celsius(127);
-    let mut max_temp_lim = Celsius(255);
-    let mut default_temp_lim = Celsius(511);
-
-    // Nvidia encodes temperature as << 8 for some reason sometimes.
-    let pff_current_point = vec![
-        PffPoint {
-            x: CelsiusShifted(100 << 8),
-            y: Kilohertz(3300000),
-        },
-        PffPoint {
-            x: CelsiusShifted(110 << 8),
-            y: Kilohertz(3300000),
-        },
-        PffPoint {
-            x: CelsiusShifted(120 << 8),
-            y: Kilohertz(3300000),
-        },
-    ];
-
-    let mut current_pff_curve = PffCurve {
-        points: pff_current_point,
-    };
+    let mut min_temp_lim = None;
+    let mut max_temp_lim = None;
+    let mut default_temp_lim = None;
+    let mut current_pff_curve = None;
 
     for gpu in gpus {
         let info = gpu.info()?;
 
         //power limit readout
         for limit in info.power_limits.iter() {
-            max_tdp_percentage = limit.range.max;
-            min_tdp_percentage = limit.range.min;
-            default_tdp_percentage = limit.default;
+            max_tdp_percentage = Some(limit.range.max);
+            min_tdp_percentage = Some(limit.range.min);
+            default_tdp_percentage = Some(limit.default);
             print_separator();
             print_separator();
         }
@@ -1203,11 +1324,11 @@ pub fn get_gpu_tdp_temp_limit(
                 .chain(iter::repeat(None)),
         ) {
             if let Some(limit) = limit {
-                min_temp_lim = limit.range.min;
-                max_temp_lim = limit.range.max;
-                default_temp_lim = limit.default;
+                min_temp_lim = Some(limit.range.min);
+                max_temp_lim = Some(limit.range.max);
+                default_temp_lim = Some(limit.default);
                 if let Some(pff) = &limit.throttle_curve {
-                    current_pff_curve = pff.clone();
+                    current_pff_curve = Some(pff.clone());
                 }
             }
         }
@@ -1286,21 +1407,26 @@ pub fn set_vfp_range(
 }
 
 pub fn set_legacy_clocks_nvapi(gpu: &Gpu, core_mhz: u32, mem_mhz: u32) -> Result<(), Error> {
-    use nvapi_hi::sys::nvapi_QueryInterface;
+    use ::nvapi::sys::nvapi_QueryInterface;
     use std::mem;
 
     const NVAPI_GPU_SET_CLOCKS_ID: u32 = 0x6f151055;
 
+    /// SetClocks shares GetAllClocks' struct family: the driver accepts only
+    /// the 260-byte V1 layout stamped `0x10104` (or the 1156-byte V2
+    /// `0x20484`) — IDA-verified identical on 391.35/538.78/560.94/582.41/
+    /// 610.88. The historic 132-byte ver2 stamp (`0x20084`) is rejected with
+    /// -9 INCOMPATIBLE_STRUCT_VERSION by every audited driver.
     #[repr(C)]
     struct NvClocksInfo {
         version: u32,
-        clocks: [u32; 32],
+        clocks: [u32; 64],
     }
 
-    let version = (size_of::<NvClocksInfo>() as u32) | (2 << 16);
+    let version = 0x10104u32;
     let mut info = NvClocksInfo {
         version,
-        clocks: [0; 32],
+        clocks: [0; 64],
     };
 
     info.clocks[8] = mem_mhz.saturating_mul(1000);
@@ -1320,14 +1446,14 @@ pub fn set_legacy_clocks_nvapi(gpu: &Gpu, core_mhz: u32, mem_mhz: u32) -> Result
 
         #[allow(improper_ctypes_definitions)]
         type SetClocksFn = unsafe extern "system" fn(
-            h_physical_gpu: nvapi_hi::sys::api::NvPhysicalGpuHandle,
+            h_physical_gpu: ::nvapi::sys::api::NvPhysicalGpuHandle,
             p_clks: *mut NvClocksInfo,
-        ) -> nvapi_hi::sys::Status;
+        ) -> ::nvapi::sys::Status;
 
         let func: SetClocksFn = mem::transmute(ptr);
         let status = func(*gpu.inner().handle(), &mut info);
 
-        if status != nvapi_hi::sys::Status::Ok {
+        if status != ::nvapi::sys::Status::Ok {
             return Err(Error::Custom(format!(
                 "Failed to call legacy interface NvAPI_GPU_SetClocks, error code: {:?}",
                 status

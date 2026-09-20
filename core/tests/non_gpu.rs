@@ -1,4 +1,4 @@
-use nvapi_hi::{ClockDomain, CoolerPolicy, Kilohertz, Microvolts, PState, VfPointType, VfpPoint};
+use nvapi::hi::{ClockDomain, CoolerPolicy, Kilohertz, Microvolts, PState, VfPointType, VfpPoint};
 use nvml_wrapper::enum_wrappers::device::{Api, PerformanceState};
 use nvml_wrapper::enums::device::FanControlPolicy;
 use nvoc_core::{
@@ -91,13 +91,16 @@ fn fan_policy_aliases() {
         FanControlPolicy::TemperatureContinousSw
     );
     assert_eq!(
-        parse_nvml_fan_control_policy("auto").unwrap(),
-        FanControlPolicy::TemperatureContinousSw
-    );
-    assert_eq!(
         parse_nvml_fan_control_policy("manual").unwrap(),
         FanControlPolicy::Manual
     );
+
+    // "auto" is reset semantics, rejected as an apply-time curve strategy
+    // (routing it to TemperatureContinousSw caused the 0/2/6 RPM stall).
+    let auto_err = parse_nvml_fan_control_policy("auto")
+        .unwrap_err()
+        .to_string();
+    assert!(auto_err.contains("Invalid NVML fan policy"));
 
     let err = parse_nvml_fan_control_policy("default")
         .unwrap_err()
@@ -169,39 +172,84 @@ fn gpu_id_selection_rejects_bad_specs() {
 
 #[test]
 fn gpu_type_detection() {
+    // (product name, codename, expected) — the chip prefix is matched
+    // against the CODENAME only; product names carry marketing strings
+    // like "16GB" that must never read as chip generations.
     let cases = [
         (
-            "NVIDIA GeForce RTX 5090 Laptop GPU GB203",
+            "NVIDIA GeForce RTX 5090 Laptop GPU",
+            "GB203",
             GpuType::Mobile50Series,
         ),
-        ("NVIDIA GeForce RTX 5090 GB202", GpuType::Desktop50Series),
-        ("NVIDIA GeForce RTX 4090 AD102", GpuType::Desktop40Series),
+        ("NVIDIA GeForce RTX 5090", "GB202", GpuType::Desktop50Series),
+        ("NVIDIA GeForce RTX 4090", "AD102", GpuType::Desktop40Series),
         (
-            "NVIDIA GeForce RTX 4080 Laptop GPU AD104",
+            "NVIDIA GeForce RTX 4080 Laptop GPU",
+            "AD104",
             GpuType::Mobile40Series,
         ),
-        ("NVIDIA RTX A6000 GA102", GpuType::WorkstationAmpere),
-        ("NVIDIA L40 AD102", GpuType::ServerLovelace),
-        ("NVIDIA H100 GH100", GpuType::ServerHopper),
-        ("NVIDIA Tesla V100 GV100", GpuType::ServerVolta),
-        ("NVIDIA GeForce GTX 1080 GP104", GpuType::Desktop10Series),
+        ("NVIDIA RTX A6000", "GA102", GpuType::WorkstationAmpere),
+        ("NVIDIA L40", "AD102", GpuType::ServerLovelace),
+        ("NVIDIA H100", "GH100", GpuType::ServerHopper),
+        ("NVIDIA Tesla V100", "GV100", GpuType::ServerVolta),
+        ("NVIDIA GeForce GTX 1080", "GP104", GpuType::Desktop10Series),
         (
-            "NVIDIA GeForce GTX 980M Laptop GPU GM204",
+            "NVIDIA GeForce GTX 980M Laptop GPU",
+            "GM204",
             GpuType::Mobile9Series,
         ),
+        // Kepler (GK) — GT 730 Kepler 变体不再落 Unknown
+        ("NVIDIA GeForce GT 730", "GK208", GpuType::DesktopKepler),
+        (
+            "NVIDIA GeForce GTX 780M Laptop GPU",
+            "GK104",
+            GpuType::MobileKepler,
+        ),
+        ("NVIDIA Quadro K5000", "GK104", GpuType::WorkstationKepler),
+        ("NVIDIA Tesla K40", "GK110", GpuType::ServerKepler),
+        // Fermi (GF) — GT 730 Fermi 变体
+        ("NVIDIA GeForce GT 730", "GF108", GpuType::DesktopFermi),
+        ("NVIDIA GeForce GTX 580", "GF110", GpuType::DesktopFermi),
+        ("NVIDIA Tesla M2090", "GF100", GpuType::ServerFermi),
+        // VRAM-size chip-prefix traps (live P100 regression): the capacity
+        // suffix in the product name must not classify the card — the
+        // codename does. P100-16GB was detected as ServerBlackwell via
+        // "16GB".contains("GB") and wrongly enabled Turing+ gates.
+        (
+            "NVIDIA Tesla P100-PCIE-16GB",
+            "GP100GL-A",
+            GpuType::ServerPascal,
+        ),
+        (
+            "NVIDIA Tesla V100-SXM2-16GB",
+            "GV100GL-A",
+            GpuType::ServerVolta,
+        ),
+        ("NVIDIA A100-SXM4-40GB", "GA100", GpuType::ServerAmpere),
+        (
+            "NVIDIA GeForce RTX 4090D 24GB",
+            "AD102",
+            GpuType::Desktop40Series,
+        ),
+        // No codename → Unknown (no chip family to key on).
+        ("NVIDIA Experimental GPU", "", GpuType::Unknown),
     ];
 
-    for (name, expected) in cases {
-        assert_eq!(detect_gpu_type(name), expected, "{name}");
+    for (name, codename, expected) in cases {
+        assert_eq!(
+            detect_gpu_type(name, codename),
+            expected,
+            "{name}/{codename}"
+        );
     }
-
-    assert_eq!(detect_gpu_type("NVIDIA Experimental GPU"), GpuType::Unknown);
 }
 
 #[test]
 fn gpu_type_xbar_support() {
-    // XBAR ClockClient domain offsets exist from Turing (GTX 16系) onward —
-    // mobile AND desktop alike.
+    // XBAR ClockClient domain offsets: Pascal (10系) onward, mobile AND
+    // desktop alike, workstation/server cards included (Pascal verified live
+    // 2026-08-31; writes carry snapshot/readback/restore protection). Kepler
+    // and older, and Unknown, stay excluded.
     let supported = [
         GpuType::Mobile50Series,
         GpuType::Desktop50Series,
@@ -213,18 +261,31 @@ fn gpu_type_xbar_support() {
         GpuType::Desktop20Series,
         GpuType::Mobile16Series,
         GpuType::Desktop16Series,
+        GpuType::Mobile10Series,
+        GpuType::Desktop10Series,
+        GpuType::WorkstationPascal,
+        GpuType::ServerPascal,
+        GpuType::ServerVolta,
+        GpuType::WorkstationBlackwell,
+        GpuType::WorkstationLovelace,
+        GpuType::WorkstationAmpere,
         GpuType::WorkstationTuring,
+        GpuType::ServerBlackwell,
+        GpuType::ServerLovelace,
+        GpuType::ServerAmpere,
         GpuType::ServerTuringTesla,
     ];
     let unsupported = [
-        GpuType::Mobile10Series,
-        GpuType::Desktop10Series,
         GpuType::Mobile9Series,
         GpuType::Desktop9Series,
-        GpuType::ServerVolta,
-        GpuType::ComputationVolta,
-        GpuType::WorkstationPascal,
-        GpuType::ServerPascal,
+        GpuType::MobileKepler,
+        GpuType::DesktopKepler,
+        GpuType::MobileFermi,
+        GpuType::DesktopFermi,
+        GpuType::WorkstationKepler,
+        GpuType::WorkstationFermi,
+        GpuType::ServerKepler,
+        GpuType::ServerFermi,
         GpuType::Unknown,
     ];
     for t in supported {
@@ -235,9 +296,13 @@ fn gpu_type_xbar_support() {
     }
 
     // End-to-end through the name-based detector (the pynvoc payload path):
-    // the 4060 Laptop name+codename that the GUI gates on live.
-    assert!(detect_gpu_type("NVIDIA GeForce RTX 4060 Laptop GPUAD107-B").supports_xbar_offset());
-    assert!(!detect_gpu_type("NVIDIA GeForce GTX 1080 GP104").supports_xbar_offset());
+    // the 4060 Laptop name+codename that the GUI gates on live; Pascal
+    // desktop passes the new gate; Maxwell 9系 does not.
+    assert!(
+        detect_gpu_type("NVIDIA GeForce RTX 4060 Laptop GPU", "AD107-B").supports_xbar_offset()
+    );
+    assert!(detect_gpu_type("NVIDIA GeForce GTX 1080", "GP104").supports_xbar_offset());
+    assert!(!detect_gpu_type("NVIDIA GeForce GTX 980M Laptop GPU", "GM204").supports_xbar_offset());
 }
 
 #[test]
@@ -272,6 +337,20 @@ fn gpu_type_params() {
     assert!(!GpuType::Desktop30Series.needs_gc6_wake());
     assert!(!GpuType::Desktop40Series.needs_gc6_wake());
     assert!(!GpuType::ServerBlackwell.needs_gc6_wake());
+
+    // Kepler/Fermi 走 legacy 电压路径（SetPstates20 baseVoltage delta），
+    // 不支持 XBAR offset、VFP 曲线；移动端需 GC6 唤醒。
+    assert!(GpuType::DesktopKepler.is_legacy_voltage());
+    assert!(GpuType::DesktopFermi.is_legacy_voltage());
+    assert!(!GpuType::DesktopKepler.is_legacy_vfp());
+    assert!(!GpuType::DesktopKepler.supports_xbar_offset());
+    assert!(!GpuType::DesktopFermi.supports_xbar_offset());
+    assert!(GpuType::MobileKepler.is_mobile());
+    assert!(GpuType::MobileKepler.needs_gc6_wake());
+    assert!(!GpuType::DesktopKepler.is_mobile());
+    // 工作站/服务器 Kepler/Fermi 与同代桌面/移动端共用 conservative 参数
+    assert!(!GpuType::WorkstationKepler.oc_params().wakeup_load_needed);
+    assert!(!GpuType::ServerFermi.oc_params().is_50_series);
 }
 
 #[test]
@@ -281,6 +360,53 @@ fn gpu_type_display() {
         "40 series desktop detected"
     );
     assert_eq!(GpuType::Unknown.to_string(), "Unknown");
+}
+
+#[test]
+fn gpu_type_is_ampere_plus() {
+    // 30/40/50 消费 + 工作站 + 服务器（Ampere/Lovelace/Blackwell/Hopper）=
+    // 耦合组（bit1 耦合 SYS，超 XBAR 需 bit3 写 -f 抵消）。Hopper 是
+    // Ampere 后的服务器世代，归入耦合组。
+    for t in [
+        GpuType::Mobile30Series,
+        GpuType::Desktop30Series,
+        GpuType::Mobile40Series,
+        GpuType::Desktop40Series,
+        GpuType::Mobile50Series,
+        GpuType::Desktop50Series,
+        GpuType::WorkstationAmpere,
+        GpuType::WorkstationLovelace,
+        GpuType::WorkstationBlackwell,
+        GpuType::ServerAmpere,
+        GpuType::ServerLovelace,
+        GpuType::ServerBlackwell,
+        GpuType::ServerHopper,
+    ] {
+        assert!(t.is_ampere_plus(), "{t:?} should be ampere+");
+    }
+    // Pascal / Turing / GTX16 = 非耦合（bit1 纯 Xbar，直写）。
+    for t in [
+        GpuType::Mobile10Series,
+        GpuType::Desktop10Series,
+        GpuType::Mobile16Series,
+        GpuType::Desktop16Series,
+        GpuType::Mobile20Series,
+        GpuType::Desktop20Series,
+        GpuType::WorkstationPascal,
+        GpuType::ServerPascal,
+        GpuType::WorkstationTuring,
+    ] {
+        assert!(!t.is_ampere_plus(), "{t:?} should NOT be ampere+");
+    }
+    // Volta（服务器，Pascal-era 行为）排除；Kepler/Fermi/Unknown 当然不是。
+    for t in [
+        GpuType::ServerVolta,
+        GpuType::DesktopKepler,
+        GpuType::DesktopFermi,
+        GpuType::Unknown,
+    ] {
+        assert!(!t.is_ampere_plus(), "{t:?} should NOT be ampere+");
+    }
 }
 
 #[test]

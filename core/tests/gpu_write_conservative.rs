@@ -1,4 +1,4 @@
-use nvapi_hi::{ClockDomain, KilohertzDelta, PState};
+use nvapi::hi::{ClockDomain, KilohertzDelta, PState};
 use nvml_wrapper::enum_wrappers::device::PerformanceState;
 use nvml_wrapper::enums::device::FanControlPolicy;
 use nvoc_core::{

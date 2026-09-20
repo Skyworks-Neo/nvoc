@@ -22,7 +22,7 @@ use anyhow::Result;
 use cleanup::{AutoscanExit, cleanup_autoscan_exit};
 use nvoc_core::{
     BackendSet, ConvertEnum, GpuSelector, GpuTarget, ResetPublicVftableOffset, VfpResetDomain,
-    discover_targets, run, select_targets, sync_memory_pstate_as_p0,
+    discover_targets, run, select_targets,
 };
 use oc_profile_function::{export_vfp_from_log, fix_result, handle_vfp_export, handle_vfp_import};
 use oc_scanner::{autoscan_gpuboostv3, autoscan_legacy};
@@ -91,9 +91,7 @@ struct CommandRequirements {
 fn command_requirements(command: &str) -> Option<CommandRequirements> {
     let target = match command {
         "export-vfp-log" => TargetRequirement::None,
-        "export-vfp" | "import-vfp" | "sync-vfp-memory-pstate" | "fix-vfp-result" => {
-            TargetRequirement::NvapiSingle
-        }
+        "export-vfp" | "import-vfp" | "fix-vfp-result" => TargetRequirement::NvapiSingle,
         "reset-vfp" | "autoscan-vfp" | "autoscan-vfp-legacy" | "optimize" => {
             TargetRequirement::NvapiAny
         }
@@ -101,12 +99,7 @@ fn command_requirements(command: &str) -> Option<CommandRequirements> {
     };
     let elevation = matches!(
         command,
-        "reset-vfp"
-            | "import-vfp"
-            | "sync-vfp-memory-pstate"
-            | "autoscan-vfp"
-            | "autoscan-vfp-legacy"
-            | "optimize"
+        "reset-vfp" | "import-vfp" | "autoscan-vfp" | "autoscan-vfp-legacy" | "optimize"
     );
 
     Some(CommandRequirements { target, elevation })
@@ -174,17 +167,28 @@ fn main_result() -> Result<i32, Box<dyn std::error::Error>> {
             }
         }
         Some(("export-vfp", matches)) => {
+            // Static export is retired from user surface; --quick stays
+            // functional only until the GUI autoscan.py binary calls are
+            // migrated (separate PR).
+            if matches.get_flag("quick") {
+                eprintln!(
+                    "Warning: `export-vfp --quick` is deprecated; static CSV export moved to \
+                     `nvoc-cli get-public-vftable --output-csv <PATH> --domain <DOMAIN>`"
+                );
+            }
             let gpu = single_target(&nvapi_selected)?;
             handle_vfp_export(gpu, matches)?;
         }
         Some(("export-vfp-log", _)) => unreachable!("offline command was already dispatched"),
         Some(("import-vfp", matches)) => {
+            // Internal optimize-workflow entry point; user-facing import moved
+            // to nvoc-cli (set-public-vftable-point-offset --import-csv).
+            eprintln!(
+                "Warning: `import-vfp` is an internal workflow command; user imports should use \
+                 `nvoc-cli set-public-vftable-point-offset --import-csv <PATH> [--domain <DOMAIN>]`"
+            );
             let gpu = single_target(&nvapi_selected)?;
             handle_vfp_import(gpu, matches)?;
-        }
-        Some(("sync-vfp-memory-pstate", _matches)) => {
-            let gpu = single_target(&nvapi_selected)?;
-            sync_memory_pstate_as_p0(gpu)?;
         }
         Some(("fix-vfp-result", matches)) => {
             let gpu = single_target(&nvapi_selected)?;
@@ -274,7 +278,6 @@ mod tests {
         for command in [
             "reset-vfp",
             "import-vfp",
-            "sync-vfp-memory-pstate",
             "autoscan-vfp",
             "autoscan-vfp-legacy",
         ] {

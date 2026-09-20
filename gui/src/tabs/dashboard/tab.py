@@ -359,7 +359,7 @@ class DashboardTab:
 
         self._status_lbl = _NoopLabel()
 
-        # Host frame for the overclock tab's top panels (Clock Offsets +
+        # Host frame for the overclock tab's top panels (V/F Offsets +
         # Power & Thermal Limits) — the dashboard doubles as the control
         # center. Empty (zero height) until the overclock tab is built.
         self.oc_panels_host = tk.Frame(self.frame, bg="#2b2b2b")

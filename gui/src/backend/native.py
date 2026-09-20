@@ -126,27 +126,126 @@ class NativeBackend:
         Returns ``{"domain_bit", "freq_khz"}`` (``freq_khz == 0`` ⇒ driver
         refused / not measurable — caller should not draw a live point), or
         ``{"supported": false}`` when the family is absent, or ``None`` on a
-        transient error. Preferred over the counter-based read for XBAR/HOST
+        transient error. Preferred over the counter-based read for XBAR/MSD
         live-point polling: one call, no 50 ms sleep.
         """
         try:
-            return self._pynvoc().query_private_freq_domain_status(gpu, int(domain_bit))
+            result = self._pynvoc().query_private_freq_domain_status(
+                gpu, int(domain_bit)
+            )
         except Exception:
             self._force_wake(gpu)
             try:
-                return self._pynvoc().query_private_freq_domain_status(
+                result = self._pynvoc().query_private_freq_domain_status(
                     gpu, int(domain_bit)
                 )
             except Exception:
                 return None
 
+        # Direct-family fallback: some kernels don't implement the
+        # green-curve escape (live P100/TCC 582.41 → supported=false).
+        # Retry once through the counter-based two-sample MEASURE — same
+        # domain bit, same HBM MEM decode, ~50 ms sleep (fine at the 1 Hz
+        # crosshair cadence, unlike the dashboard poll loop).
+        if isinstance(result, dict) and result.get("supported") is False:
+            try:
+                r = self._pynvoc().query_clk_domain_freq(gpu, int(domain_bit))
+                if isinstance(r, dict) and r.get("freq_mhz"):
+                    return {
+                        "domain_bit": int(domain_bit),
+                        "freq_khz": int(r["freq_mhz"] * 1000),
+                        "counter_fallback": True,
+                    }
+            except Exception:
+                return None
+        return result
+
+    def query_private_freq_domain_info(self, gpu: str) -> dict | None:
+        """Private ClockClient ClkDomains GetControl (controllable mask + per-
+        domain WRITE records). Used by the GUI overclock tab to decide which
+        fabric/uncore domains (Sys bit3 / Msd bit5 / Host bit9) the driver
+        exposes, and to read bit3's current offset for the Sys RMW write."""
+        try:
+            return self._pynvoc().query_private_freq_domain_info(gpu)
+        except Exception:
+            self._force_wake(gpu)
+            try:
+                return self._pynvoc().query_private_freq_domain_info(gpu)
+            except Exception:
+                return None
+
+    def query_volt_rails(self, gpu: str) -> dict | None:
+        """Private VoltRails family (rail mask + P0 voltage bounds).
+
+        Returns the pynvoc ``query_volt_rails`` dict (with a ``p0`` sub-dict
+        of floor/ceiling/effective walls) or ``None`` on a transient error.
+        Best-effort wake like the other private reads. Used by the VF Curve
+        tab's P0 boundary lines and the wall-drag apply path.
+        """
+        try:
+            return self._pynvoc().query_volt_rails(gpu)
+        except Exception:
+            self._force_wake(gpu)
+            try:
+                return self._pynvoc().query_volt_rails(gpu)
+            except Exception:
+                return None
+
+    def query_vbios_vf_curve(self, gpu: str) -> dict | None:
+        """vBIOS GPU Boost 2.0 ladder (Maxwell/Kepler read-only VF curve).
+
+        Returns the pynvoc ``query_vbios_vf_curve`` dict ({available,
+        curve_start_index, curve_end_index, points, pstate_marks}) or
+        ``None`` on a transient error; ``{available: False}`` on
+        generations without the ladder table. Best-effort wake like the
+        other private reads.
+        """
+        try:
+            return self._pynvoc().query_vbios_vf_curve(gpu)
+        except Exception:
+            self._force_wake(gpu)
+            try:
+                return self._pynvoc().query_vbios_vf_curve(gpu)
+            except Exception:
+                return None
+
+    def query_fan_info(self, gpu: str) -> dict | None:
+        """NVML fan info (count / min / max / current percent).
+
+        Returns the pynvoc ``query_fan_info`` dict or ``None`` when NVML
+        can't answer. On legacy GPUs (≤ Kepler) this is the authoritative
+        fan source: the private NVAPI cooler family reports zero coolers
+        there, while NVML's v1 ``nvmlDeviceGetFanSpeed`` answers (count=1,
+        current percent live; min/max are v2-only and None).
+        """
+        try:
+            return self._pynvoc().query_fan_info(gpu)
+        except Exception:
+            return None
+
+    def query_cooler_info(self, gpu: str) -> dict | None:
+        """NVAPI cooler-family info (private FanCoolerGetInfo).
+
+        Returns the pynvoc ``query_cooler_info`` dict (``count`` +
+        per-cooler entries) or ``None`` when NVAPI can't answer. Paired
+        with ``query_fan_info`` for the fan-policy legacy verdict:
+        NVML fans ≥1 with an EMPTY NVAPI cooler family is the ≤Kepler
+        signature; modern cards report their coolers through NVAPI too.
+        """
+        try:
+            return self._pynvoc().query_cooler_info(gpu)
+        except Exception:
+            return None
+
     def query_mobile_limits(self, gpu: str) -> dict[str, Any]:
         """Fetch the mobile power/thermal control surface (all NVAPI).
 
         Returns ``{"tgp": dict|None, "dnotifier": dict|None,
-        "temp_policies": list, "volt_rail": dict|None}``;
-        ``None`` sub-dicts mean the private interface isn't exposed by this
-        driver.
+        "temp_policies": list, "volt_rail": dict|None,
+        "power_limit_w": float|None}``; ``None`` sub-dicts mean the private
+        interface isn't exposed by this driver. ``power_limit_w`` is the
+        actually-effective power wall (min of requested TGP and the active
+        D-Notifier cap — nvidia-smi's PPAB Ceiling "Current" value).
         """
         data = self._query_mobile_limits_once(gpu)
         attempts = 0
@@ -183,18 +282,26 @@ class NativeBackend:
                 return default
 
         with ThreadPoolExecutor(
-            max_workers=5, thread_name_prefix="nvoc-mobile"
+            max_workers=6, thread_name_prefix="nvoc-mobile"
         ) as pool:
             tgp_f = pool.submit(_safe, lambda: native.query_tgp_watt_range(gpu), None)
             dnotifier_f = pool.submit(_safe, lambda: native.query_dnotifier(gpu), None)
             policies_f = pool.submit(
                 _safe, lambda: native.query_target_temp_policies(gpu), []
             )
+            # The actually-effective power wall (nvidia-smi's PPAB Ceiling
+            # "Current" value): min(requested TGP, active D-Notifier cap),
+            # composed in Rust from the private power-policy family. This is
+            # what the TGP slider anchors to — the user sees "I set 100W, the
+            # wall actually enforcing is 55W".
+            ceiling_f = pool.submit(
+                _safe, lambda: native.query_power_ceiling(gpu), None
+            )
             enforced_f = pool.submit(
                 _safe,
-                # NVML enforced power limit: the actually-active power wall
-                # (post D-Notifier/load clamp) — the TGP policy itself exposes
-                # no current-value read, so this is the closest real position.
+                # NVML enforced power limit — fallback for machines where the
+                # private power-policy family is unavailable (the PPAB
+                # ceiling path above is preferred where it exists).
                 lambda: native.query_status(gpu, "both").get("power_limit_w"),
                 None,
             )
@@ -205,18 +312,24 @@ class NativeBackend:
         tgp = tgp_f.result()
         dnotifier = dnotifier_f.result()
         policies = policies_f.result()
+        ceiling = ceiling_f.result()
         enforced_w = enforced_f.result()
         volt_rail = volt_rail_f.result()
         if not isinstance(policies, list):
             policies = []
         if not isinstance(volt_rail, dict):
             volt_rail = None
+        power_limit_w = None
+        if isinstance(ceiling, dict):
+            power_limit_w = ceiling.get("ceiling_watt")
+        if power_limit_w is None:
+            power_limit_w = enforced_w
         return {
             "tgp": tgp,
             "dnotifier": dnotifier,
             "temp_policies": policies,
             "volt_rail": volt_rail,
-            "power_limit_w": enforced_w,
+            "power_limit_w": power_limit_w,
         }
 
     def run_action(

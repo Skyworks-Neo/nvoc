@@ -158,7 +158,13 @@ class FakeNative:
         self.calls: list[tuple] = []
         self.raise_on_set_clock: Exception | None = None
         self.raise_on_set_vfp_point_private: Exception | None = None
+        # Raised by the mem-range nvapi pstate lock when set (pre-Kepler
+        # part: the NVML pstate query is Not Supported).
+        self.raise_on_set_nvapi_pstate_lock: Exception | None = None
         self.direct_freq_khz: int = 0
+        # What the mem-range pstate setters return (pynvoc: None on a clean
+        # apply, else the overlap warning string).
+        self.pstate_lock_warning: str | None = None
 
     def query_public_vftable(self, gpu, domain, infer_missing_default):
         self.calls.append((
@@ -184,6 +190,10 @@ class FakeNative:
     def query_private_freq_domain_status(self, gpu, domain_bit):
         self.calls.append(("query_private_freq_domain_status", gpu, domain_bit))
         return {"domain_bit": domain_bit, "freq_khz": self.direct_freq_khz}
+
+    def query_volt_rails(self, gpu):
+        self.calls.append(("query_volt_rails", gpu))
+        return getattr(self, "volt_rails_payload", None)
 
     def set_vfp_point_private(self, gpu, bank, index, delta_khz, freq_mode):
         self.calls.append((
@@ -211,7 +221,7 @@ class FakeNative:
 
     def clk_vf_delta_for_target_mhz(self, def_mhz, delta_mhz, class_name):
         # Mirrors the call semantics used by the GUI/TUI raw-converted path:
-        # the 2nd argument is the desired MHz offset (not an absolute
+        # the 3rd argument is the desired MHz offset (not an absolute
         # target); the raw f-offset scales it 10×.
         self.calls.append((
             "clk_vf_delta_for_target_mhz",
@@ -242,7 +252,22 @@ class FakeNative:
             flags,
             unknown,
         ))
-        return {"applied": True, "applied_kHz": offset_khz}
+        return {"applied": True, "applied_mHz": offset_khz / 1000.0}
+
+    def query_private_freq_domain_info(self, gpu):
+        self.calls.append(("query_private_freq_domain_info", gpu))
+        # Test-settable full payload (volt-plane anchor reads).
+        payload = getattr(self, "freq_domain_info_payload", None)
+        if payload is not None:
+            return payload
+        # controllable mask 0x3FF (bits 0-9 incl. bit3 SYS, bit5 MSD, bit9 HOST);
+        # bit3 slot-0 current offset (kHz) for the Sys/Xbar-cancel RMW baseline.
+        return {
+            "controllable_mask": "0x000003FF",
+            "entries": [
+                {"bit": 3, "values_kHz": [getattr(self, "bit3_current_khz", 0)]},
+            ],
+        }
 
     def set_volt_rail_target(self, gpu, rail_bit, target_mv, unknown):
         self.calls.append(("set_volt_rail_target", gpu, rail_bit, target_mv, unknown))
@@ -270,9 +295,19 @@ class FakeNative:
 
     def set_nvml_pstate_lock(self, gpu, pstart, pend):
         self.calls.append(("set_nvml_pstate_lock", gpu, pstart, pend))
+        return self.pstate_lock_warning
 
     def set_nvapi_pstate_lock(self, gpu, pstart, pend):
         self.calls.append(("set_nvapi_pstate_lock", gpu, pstart, pend))
+        if self.raise_on_set_nvapi_pstate_lock is not None:
+            raise self.raise_on_set_nvapi_pstate_lock
+        return self.pstate_lock_warning
+
+    def set_pstate_native_lock(self, gpu, pstate):
+        self.calls.append(("set_pstate_native_lock", gpu, pstate))
+
+    def reset_pstate_native_lock(self, gpu):
+        self.calls.append(("reset_pstate_native_lock", gpu))
 
     def reset_locked_clocks(self, gpu, backend, domain):
         self.calls.append(("reset_locked_clocks", gpu, backend, domain))
@@ -382,6 +417,35 @@ def test_header_reprobes_empty_gpu_list_and_stops_after_gpu_returns() -> None:
     assert app.full_refreshes == 1
 
 
+def test_console_write_log_collapses_identical_runs() -> None:
+    # A per-second poll logging the same expected condition forever (e.g.
+    # "GPU N has no NvAPI backend" on a chip without one) shows once; the
+    # repeat count flushes as a one-line summary on the next distinct line.
+    written: list[str] = []
+
+    class _Log:
+        def write_line(self, line: str) -> None:
+            written.append(line)
+
+        def scroll_end(self) -> None:
+            pass
+
+    log = _Log()
+    app = FakeApp()
+    app.widgets = {"#output-log": log}
+    app.query_one = lambda selector, expect=None: log
+
+    controller = ConsoleController(app)
+    for _ in range(5):
+        controller.write_log("pynvoc query failed: GPU 256 has no NvAPI backend\n")
+
+    assert written == ["pynvoc query failed: GPU 256 has no NvAPI backend"]
+
+    controller.write_log("different message\n")
+
+    assert written[-1] == "(previous line repeated 4×)"
+
+
 def test_console_maximize_toggle_updates_app_class_and_label() -> None:
     app = FakeApp()
     log = SimpleNamespace(focused=False)
@@ -486,7 +550,8 @@ def test_overclock_apply_ignores_pstate_fields() -> None:
     assert OverclockController(app).handle_button("oc-apply") is True
 
     assert app.actions == ["apply overclock"]
-    assert app.action_outputs == ["Successfully applied nvapi overclock."]
+    assert "Successfully applied core offset 100 MHz." in app.action_outputs[0]
+    assert "Successfully applied memory offset 200 MHz." in app.action_outputs[0]
     assert app.native.calls == [
         ("set_clock_offset", "0x0000", "nvapi", "core", 100, "P0"),
         ("set_clock_offset", "0x0000", "nvapi", "memory", 200, "P0"),
@@ -542,6 +607,11 @@ def test_overclock_pstate_limits_defaults_blank_end_to_start_and_calls_nvml() ->
 
 
 def test_overclock_pstate_limits_enriches_native_unknown_pstate() -> None:
+    # A mem-range failure whose message mentions an unknown pstate still
+    # enriches with the available list — but under the fallback design any
+    # mem-range failure first arms the native pin (that IS the contract:
+    # failure ⇒ pre-Kepler part). The enrichment surfaces when the pin
+    # path itself raises unknown-pstate.
     app = FakeApp()
     app.cache.settings["supported_pstates"] = ["P0", "P2"]
     app.native.raise_on_set_clock = RuntimeError("unknown pstate")
@@ -551,13 +621,14 @@ def test_overclock_pstate_limits_enriches_native_unknown_pstate() -> None:
         "#pstate-end": SimpleNamespace(value=""),
     }
 
-    original = app.native.set_nvapi_pstate_lock
+    original = app.native.set_pstate_native_lock
 
     def raise_unknown(*args):
         original(*args)
         raise app.native.raise_on_set_clock
 
-    app.native.set_nvapi_pstate_lock = raise_unknown
+    app.native.set_pstate_native_lock = raise_unknown
+    app.native.raise_on_set_nvapi_pstate_lock = RuntimeError("Not Supported")
 
     try:
         OverclockController(app).handle_button("pstate-limits-apply")
@@ -593,7 +664,114 @@ def test_overclock_pstate_reset_uses_nvml_memory_locked_clocks() -> None:
     assert app.native.calls == [("reset_locked_clocks", "0x0000", "nvml", "memory")]
 
 
-def test_overclock_fan_reset_preserves_target() -> None:
+def test_overclock_pstate_limits_mem_range_first_on_any_gpu() -> None:
+    # Mem-range is ALWAYS the first choice — no generation gating. A
+    # legacy-voltage part (Maxwell Titan X) gets the range lock until it
+    # actually fails.
+    app = _oc_app(codename="GM200", arch="Maxwell")
+    app.cache.settings["supported_pstates"] = ["P0", "P2"]
+    app.widgets.update({
+        "#oc-api": SimpleNamespace(value="nvapi"),
+        "#pstate-start": SimpleNamespace(value="P0"),
+        "#pstate-end": SimpleNamespace(value="P2"),
+    })
+
+    assert OverclockController(app).handle_button("pstate-limits-apply") is True
+
+    assert app.actions == ["apply PState limits"]
+    assert app.action_outputs == ["Successfully applied nvapi PState limits P0-P2."]
+    assert app.native.calls == [("set_nvapi_pstate_lock", "0x0000", "P0", "P2")]
+
+
+def test_overclock_pstate_limits_mem_range_failure_falls_back_to_pin() -> None:
+    # Runtime mem-range failure (pre-Kepler part: NVML pstate mem-clock
+    # query Not Supported) → retry with the native single-P-State pin on the
+    # range's high-perf endpoint.
+    app = _oc_app(codename="GF108")
+    app.cache.settings["supported_pstates"] = ["P0", "P8", "P12"]
+    app.widgets.update({
+        "#oc-api": SimpleNamespace(value="nvapi"),
+        "#pstate-start": SimpleNamespace(value="P8"),
+        "#pstate-end": SimpleNamespace(value="P12"),
+    })
+    app.native.raise_on_set_nvapi_pstate_lock = RuntimeError("Not Supported")
+
+    assert OverclockController(app).handle_button("pstate-limits-apply") is True
+
+    assert app.actions == ["apply PState limits"]
+    output = app.action_outputs[0]
+    assert output.startswith("Memory-range P-State lock unavailable on this GPU")
+    assert "Successfully pinned NVAPI P-State P8." in output
+    # Mem-range attempted first, then the pin fallback.
+    assert app.native.calls == [
+        ("set_nvapi_pstate_lock", "0x0000", "P8", "P12"),
+        ("set_pstate_native_lock", "0x0000", "P8"),
+    ]
+
+
+def test_overclock_pstate_pin_sticky_after_fallback() -> None:
+    # After the fallback armed, subsequent applies go straight to the pin
+    # (no mem-range retry) and reset clears the pin.
+    app = _oc_app(codename="GF108")
+    app.cache.settings["supported_pstates"] = ["P0", "P8"]
+    app.widgets.update({
+        "#oc-api": SimpleNamespace(value="nvapi"),
+        "#pstate-start": SimpleNamespace(value="P8"),
+        "#pstate-end": SimpleNamespace(value=""),
+    })
+    app.native.raise_on_set_nvapi_pstate_lock = RuntimeError("Not Supported")
+    controller = OverclockController(app)
+    controller.handle_button("pstate-limits-apply")
+
+    controller.handle_button("pstate-limits-apply")
+    assert app.native.calls[-1] == ("set_pstate_native_lock", "0x0000", "P8")
+
+    controller.handle_button("pstate-limits-reset")
+    assert app.native.calls[-1] == ("reset_pstate_native_lock", "0x0000")
+
+
+def test_overclock_pstate_fallback_cleared_on_prime() -> None:
+    # A fresh settings load (also fires on GPU switch) clears the fallback.
+    app = _oc_app(codename="GF108")
+    app.cache.settings["supported_pstates"] = ["P0", "P8"]
+    app.widgets.update({
+        "#oc-api": SimpleNamespace(value="nvapi"),
+        "#pstate-start": SimpleNamespace(value="P8"),
+        "#pstate-end": SimpleNamespace(value=""),
+    })
+    app.native.raise_on_set_nvapi_pstate_lock = RuntimeError("Not Supported")
+    controller = OverclockController(app)
+    controller.handle_button("pstate-limits-apply")
+    assert controller._pstate_pin_fallback is True
+
+    controller.prime_inputs()
+
+    assert controller._pstate_pin_fallback is False
+
+
+def test_overclock_pstate_limits_mem_range_warning_surfaced() -> None:
+    # Overlapping P-States outside the requested range (identical memory
+    # clocks after a VBIOS edit): the lock applies anyway and the action
+    # output leads with the warning.
+    app = _oc_app(codename="GM200", arch="Maxwell")
+    app.cache.settings["supported_pstates"] = ["P0"]
+    app.widgets.update({
+        "#oc-api": SimpleNamespace(value="nvapi"),
+        "#pstate-start": SimpleNamespace(value="P0"),
+        "#pstate-end": SimpleNamespace(value="P0"),
+    })
+    app.native.pstate_lock_warning = (
+        "P0 maps to memory lock window 3501-3601 MHz, which also overlaps "
+        "NVML P-States outside the requested range: P2 — applying anyway"
+    )
+
+    assert OverclockController(app).handle_button("pstate-limits-apply") is True
+
+    assert app.actions == ["apply PState limits"]
+    output = app.action_outputs[0]
+    assert output.startswith("Warning: P0 maps to memory lock window")
+    assert "Successfully applied nvapi PState limits P0-P0." in output
+    assert app.native.calls == [("set_nvapi_pstate_lock", "0x0000", "P0", "P0")]
     app = FakeApp()
     app.widgets = {
         "#fan-api": SimpleNamespace(value="nvml"),
@@ -691,6 +869,97 @@ def test_vfcurve_refresh_clears_inflight_when_thread_start_fails(
         controller.refresh_curve()
 
     assert controller.is_refresh_inflight() is False
+
+
+def test_header_gpu_switch_reloads_vf_curve() -> None:
+    """Switching GPUs must drop the previous GPU's curve and re-query it
+    (regression: the old curve lingered on the plot when the new part had
+    no V/F interface and auto-refresh was off)."""
+    app = FakeApp()
+    app.widgets = _selector_widgets()
+    submitted: list[object] = []
+    app.native_service.submit_query = submitted.append
+    controller = VFCurveController(app)
+    app.vfcurve_controller = controller
+    # The switch also drops the overclock pane's previous-part state.
+    app.overclock_controller = SimpleNamespace(on_gpu_changed=lambda: None)
+    # Previous GPU's curve + per-GPU P0 walls loaded.
+    controller._curves = {
+        "gpc": CurveData("gpc", voltages=[800.0], frequencies=[1500.0])
+    }
+    controller._p0_bounds = {"min_hold_uV": 600_000}
+    controller._p0_bounds_gpu = "0x0000"
+    # A legacy ladder cached for the previous GPU (Maxwell vbios-parsed
+    # curve) must not overlay the new part's driver curve.
+    controller._bios_curve = {"available": True, "points": [{"index": 1}]}
+    controller._bios_curve_gpu = "0x0000"
+
+    HeaderController(app).on_gpu_selected("1")
+
+    assert app.full_refreshes == 1
+    assert controller._curves == {}
+    assert controller._p0_bounds is None
+    assert controller._p0_bounds_gpu is None
+    assert controller._bios_curve is None
+    assert controller._bios_curve_gpu is None
+    # The reload query was submitted for the new GPU.
+    assert len(submitted) == 1
+
+
+def test_vfcurve_unsupported_gpu_clears_plot_with_message() -> None:
+    """A GPU with no V/F-curve interface must clear the plot and say so —
+    not "query failed", and not the previous GPU's curve."""
+    app = FakeApp()
+    app.widgets = _selector_widgets()
+    titles: list[str] = []
+    plot = _plot_widget()
+    plot.plt.title = titles.append
+    app.widgets["#vf-plot"] = plot
+
+    def unsupported(_gpu, _domain="graphics", _infer=True):
+        raise RuntimeError("NvAPI function not supported")
+
+    app.native_service.query_public_vftable = unsupported
+    app.native_service.query_private_vftable = lambda _gpu: None
+    app.native_service.submit_query = lambda job: job()
+    controller = VFCurveController(app)
+    controller._curves = {
+        "gpc": CurveData("gpc", voltages=[800.0], frequencies=[1500.0])
+    }
+
+    controller.refresh_curve()
+
+    assert controller._curves == {}
+    assert "not supported" in titles[-1]
+
+
+def test_vfcurve_refresh_requested_inflight_reruns_after_landing() -> None:
+    """A refresh requested while another was inflight (a GPU switch racing
+    the auto-refresh tick) must re-run once the inflight one lands."""
+    app = FakeApp()
+
+    def unsupported(_gpu, _domain="graphics", _infer=True):
+        raise RuntimeError("NvAPI function not supported")
+
+    app.native_service.query_public_vftable = unsupported
+    app.native_service.query_private_vftable = lambda _gpu: None
+    submitted: list[object] = []
+    app.native_service.submit_query = submitted.append
+    controller = VFCurveController(app)
+
+    controller.refresh_curve()  # inflight (worker not yet run)
+    controller.refresh_curve()  # deferred behind the inflight one
+    assert len(submitted) == 1
+    assert controller._refresh_pending is True
+
+    submitted[0]()  # inflight worker lands
+
+    assert controller._refresh_pending is False
+    # The deferred refresh re-submits; the unsupported verdict ALSO fires the
+    # Maxwell/Kepler BIOS-ladder fallback (one fetch per GPU) in between:
+    # [refresh, bios-ladder fetch, deferred refresh].
+    assert len(submitted) == 3
+    assert "_ensure_bios_curve" in submitted[1].__qualname__
 
 
 def test_vfcurve_lock_voltage_rejects_invalid_point() -> None:
@@ -862,6 +1131,10 @@ def test_vfcurve_apply_private_mode0_then_raw_fallback() -> None:
 
 
 class _FakePlt:
+    def __init__(self) -> None:
+        # scatter recording for live-point assertions (no-ops otherwise).
+        self.scatter_calls: list[tuple] = []
+
     def clear_figure(self) -> None:
         pass
 
@@ -875,7 +1148,7 @@ class _FakePlt:
         pass
 
     def scatter(self, *args, **kwargs) -> None:
-        pass
+        self.scatter_calls.append((args, kwargs))
 
     def vline(self, *args, **kwargs) -> None:
         pass
@@ -914,7 +1187,7 @@ def _selector_widgets() -> dict[str, SimpleNamespace]:
         ),
         "#vf-curve-gpc": SimpleNamespace(value=True, disabled=False),
         "#vf-curve-xbar": SimpleNamespace(value=True, disabled=False),
-        "#vf-curve-host": SimpleNamespace(value=True, disabled=False),
+        "#vf-curve-msd": SimpleNamespace(value=True, disabled=False),
     }
 
 
@@ -941,6 +1214,32 @@ def test_vfcurve_toggle_visibility_guards_last_visible_curve() -> None:
     controller._toggle_curve_visible("xbar", xbar_checkbox)
     assert controller._curve_visible == {"gpc": False, "xbar": True}
     assert xbar_checkbox.value is True
+
+
+def test_vfcurve_sync_hides_absent_static_checkboxes() -> None:
+    """P100 shape: gpc+mem only — the static XBAR/MSD checkboxes must hide.
+
+    The sync loop once iterated only the DISCOVERED set, so an absent
+    domain's static checkbox was never visited and stayed visible forever.
+    """
+    app = FakeApp()
+    app.widgets = _selector_widgets()
+    # the pane markup now carries a static MEM box too
+    app.widgets["#vf-curve-mem"] = SimpleNamespace(value=True, disabled=False)
+    controller = VFCurveController(app)
+    controller._curves = {
+        "gpc": CurveData("gpc", frequencies=[1800.0], defaults=[1785.0]),
+        "mem": CurveData("mem", frequencies=[715.0], defaults=[715.0]),
+    }
+    controller._curve_visible = {"gpc": True, "mem": True}
+    controller._active_curve = "gpc"
+
+    controller._sync_curve_widgets()
+
+    assert app.widgets["#vf-curve-gpc"].display is True
+    assert app.widgets["#vf-curve-mem"].display is True
+    assert app.widgets["#vf-curve-xbar"].display is False
+    assert app.widgets["#vf-curve-msd"].display is False
 
 
 def test_vfcurve_on_curve_loaded_builds_multi_curves() -> None:
@@ -1032,6 +1331,148 @@ def test_vfcurve_direct_read_updates_live_point() -> None:
     assert app.cache.vf_live_point == (775.0, 1350.0)
 
 
+def test_vfcurve_direct_read_prefers_rail_voltage() -> None:
+    """Multi-rail part: the crosshair voltage is the secondary rail's live
+    current (xbar on MSVDD/HBM parts), NOT the curve reverse lookup."""
+    app = FakeApp()
+    app.widgets = _selector_widgets()
+    controller = VFCurveController(app)
+    controller._curves = {
+        "xbar": CurveData(
+            "xbar",
+            voltages=[700.0, 750.0, 800.0],
+            frequencies=[1200.0, 1300.0, 1400.0],
+            defaults=[1200.0, 1300.0, 1400.0],
+        )
+    }
+    controller._curve_visible = {"xbar": True}
+    controller._active_curve = "xbar"
+    scheduled: list[object] = []
+    app.native_service.submit_query = lambda job: scheduled.append(job)
+    app.native_service.query_private_freq_domain_status = (
+        app.native.query_private_freq_domain_status
+    )
+    app.native.direct_freq_khz = 1350000
+    app.native_service.query_volt_rails = app.native.query_volt_rails
+    # Two rails: primary (bit 0) 1050 mV, secondary (bit 1) 681.25 mV.
+    app.native.volt_rails_payload = {
+        "p0_rails": [
+            {"rail_bit": 0, "current_uV": 1_050_000},
+            {"rail_bit": 1, "current_uV": 681_250},
+        ]
+    }
+
+    controller._kick_direct_read("xbar")
+    scheduled[0]()
+
+    # Reverse lookup would say 775 mV — the rail current must win.
+    assert app.cache.vf_live_point == (681.25, 1350.0)
+
+
+def test_vfcurve_direct_read_rail_failure_falls_back() -> None:
+    """Volt-rails query failing/empty leaves the reverse lookup in charge."""
+    app = FakeApp()
+    app.widgets = _selector_widgets()
+    controller = VFCurveController(app)
+    controller._curves = {
+        "xbar": CurveData(
+            "xbar",
+            voltages=[700.0, 750.0, 800.0],
+            frequencies=[1200.0, 1300.0, 1400.0],
+            defaults=[1200.0, 1300.0, 1400.0],
+        )
+    }
+    controller._curve_visible = {"xbar": True}
+    controller._active_curve = "xbar"
+    scheduled: list[object] = []
+    app.native_service.submit_query = lambda job: scheduled.append(job)
+    app.native_service.query_private_freq_domain_status = (
+        app.native.query_private_freq_domain_status
+    )
+    app.native.direct_freq_khz = 1350000
+    app.native_service.query_volt_rails = app.native.query_volt_rails
+    # Payload present but with no usable rails (empty p0_rails).
+    app.native.volt_rails_payload = {"p0_rails": []}
+
+    controller._kick_direct_read("xbar")
+    scheduled[0]()
+
+    assert app.cache.vf_live_point == (775.0, 1350.0)
+
+
+def test_dashboard_rail_poll_labels_multi_rail_volt_line() -> None:
+    """The status sweep piggybacks a volt-rails read; on a multi-rail HBM
+    part the VOLT line goes per-rail (GPC | MEM), on an MSVDD part the
+    second label is MSVDD."""
+    app = FakeApp()
+    app.widgets["#metrics"] = SimpleNamespace(update=lambda _v: None)
+    controller = DashboardController(app)
+    scheduled: list[object] = []
+    app.native_service.submit_query = lambda job: scheduled.append(job)
+    app.native_service.query_volt_rails = app.native.query_volt_rails
+
+    # HBM part (P100): second rail is memory.
+    app.cache.info = {"arch": "Pascal", "codename": "GP100", "name": "P100"}
+    app.native.volt_rails_payload = {
+        "p0_rails": [
+            {"rail_bit": 0, "current_uV": 1_050_000},
+            {"rail_bit": 1, "current_uV": 681_250},
+        ]
+    }
+    controller.on_status_loaded(0, "", {"voltage_mv": 950})
+    assert len(scheduled) == 1
+    scheduled[0]()  # FakeApp.call_from_thread runs the callback inline
+    assert app.cache.rail_volts == [("GPC", 1050.0), ("MEM", 681.25)]
+
+    # MSVDD part (50-series): second rail is the fabric supply.
+    app.cache.info = {"arch": "Blackwell", "codename": "GB205"}
+    app.native.volt_rails_payload = {
+        "p0_rails": [
+            {"rail_bit": 0, "current_uV": 1_000_000},
+            {"rail_bit": 1, "current_uV": 655_500},
+        ]
+    }
+    controller.on_status_loaded(0, "", {"voltage_mv": 950})
+    scheduled[1]()
+    assert app.cache.rail_volts == [("GPC", 1000.0), ("MSVDD", 655.5)]
+
+
+def test_dashboard_rail_poll_disables_after_failures() -> None:
+    """A part without the volt-rails family must not burn an escape per
+    tick forever — three consecutive failures disable the poll."""
+    app = FakeApp()
+    app.widgets["#metrics"] = SimpleNamespace(update=lambda _v: None)
+    controller = DashboardController(app)
+    scheduled: list[object] = []
+    app.native_service.submit_query = lambda job: scheduled.append(job)
+    # No query_volt_rails wiring → the worker's read raises → vr=None.
+
+    for _ in range(3):
+        controller.on_status_loaded(0, "", {"voltage_mv": 950})
+        scheduled.pop()()
+    assert controller._rail_poll_disabled is True
+
+    # Disabled: no further polls are scheduled.
+    controller.on_status_loaded(0, "", {"voltage_mv": 950})
+    assert len(scheduled) == 0
+    assert app.cache.rail_volts is None
+
+
+class FakeToggle:
+    """Minimal Button stand-in for the offset rows' MHz/mV unit toggles."""
+
+    def __init__(self) -> None:
+        self.label = "MHz"
+        self.disabled = False
+        self.classes: set[str] = set()
+
+    def set_class(self, condition: bool, class_name: str) -> None:
+        if condition:
+            self.classes.add(class_name)
+        else:
+            self.classes.discard(class_name)
+
+
 def _oc_app(**info: object) -> FakeApp:
     app = FakeApp()
     app.cache.info = dict(info)
@@ -1041,6 +1482,9 @@ def _oc_app(**info: object) -> FakeApp:
         "#core-offset": SimpleNamespace(value="100"),
         "#mem-offset": SimpleNamespace(value="200"),
         "#xbar-offset": SimpleNamespace(value="60"),
+        "#sys-offset": SimpleNamespace(value="30"),
+        "#msd-offset": SimpleNamespace(value="20"),
+        "#host-offset": SimpleNamespace(value="10"),
         "#power-limit": SimpleNamespace(value="110"),
         "#thermal-limit": SimpleNamespace(value="88"),
         "#voltage-boost": SimpleNamespace(value="25"),
@@ -1050,7 +1494,155 @@ def _oc_app(**info: object) -> FakeApp:
         "#mobile-target-temp": SimpleNamespace(value="85"),
         "#mobile-volt-limit": SimpleNamespace(value="1050"),
     }
+    for name in ("core", "mem", "xbar", "sys", "msd", "host"):
+        app.widgets[f"#{name}-unit"] = FakeToggle()
     return app
+
+
+def test_overclock_apply_xbar_30plus_writes_bit3_cancel() -> None:
+    """30系+ (is_ampere_plus): bit1 couples SYS → Xbar write must also RMW
+    bit3 (current − f) to cancel the SYS drift. Stock bit3=0 → −f.
+    (sys offset held at 0 so the Sys RMW doesn't run — tested separately.)"""
+    app = _oc_app(xbar_supported=True, is_ampere_plus=True)
+    app.cache.clk_domain_mask = 0x3FF
+    app.widgets["#sys-offset"] = SimpleNamespace(value="0")
+
+    OverclockController(app).handle_button("oc-apply")
+
+    clk_calls = [c for c in app.native.calls if c[0] == "set_clk_domain_offset"]
+    bits = {c[2]: c[3] for c in clk_calls}
+    assert bits.get(1) == 60000  # Xbar +60 MHz
+    assert bits.get(3) == -60000  # Sys-cancel -60 MHz
+
+
+def test_overclock_apply_xbar_cancel_preserves_existing_sys_offset() -> None:
+    """The coupled cancel is an RMW (current − f): a Sys offset already on
+    bit3 survives. bit3 preloaded +30 MHz → Xbar +60 writes bit3 = +30−60."""
+    app = _oc_app(xbar_supported=True, is_ampere_plus=True)
+    app.cache.clk_domain_mask = 0x3FF
+    app.native.bit3_current_khz = 30000  # Sys +30 already on bit3
+    app.widgets["#sys-offset"] = SimpleNamespace(value="0")
+
+    OverclockController(app).handle_button("oc-apply")
+
+    clk_calls = [c for c in app.native.calls if c[0] == "set_clk_domain_offset"]
+    bits = {c[2]: c[3] for c in clk_calls}
+    assert bits.get(3) == 30000 - 60000  # +30 preserved, −60 drift removed
+    out = app.action_outputs[0]
+    assert "bit3 +30 → -30 MHz" in out
+
+
+def test_overclock_apply_xbar_pascal_direct_no_cancel() -> None:
+    """Pascal/GTX16/RTX20 (not ampere_plus): bit1 is pure Xbar → direct write,
+    no bit3 cancel."""
+    app = _oc_app(xbar_supported=True, is_ampere_plus=False)
+    app.cache.clk_domain_mask = 0x3FF
+    app.widgets["#sys-offset"] = SimpleNamespace(value="0")
+
+    OverclockController(app).handle_button("oc-apply")
+
+    clk_calls = [c for c in app.native.calls if c[0] == "set_clk_domain_offset"]
+    bits = {c[2]: c[3] for c in clk_calls}
+    assert bits.get(1) == 60000
+    assert -60000 not in bits.values()  # no Sys-cancel on non-coupled arch
+
+
+def test_overclock_apply_sys_rmw_stacks_on_current() -> None:
+    """Sys (bit3) RMW: read current offset, +f, write back — stacking on any
+    Xbar-cancel already on bit3 rather than overwriting."""
+    app = _oc_app(xbar_supported=True, is_ampere_plus=False)
+    app.cache.clk_domain_mask = 0x3FF  # bit3 present
+    app.native.bit3_current_khz = 10000  # +10 MHz already on bit3
+
+    OverclockController(app).handle_button("oc-apply")
+
+    clk_calls = [c for c in app.native.calls if c[0] == "set_clk_domain_offset"]
+    bit3 = next(c for c in clk_calls if c[2] == 3)
+    assert bit3[3] == 10000 + 30000  # current 10 + requested 30 = 40 MHz
+    out = app.action_outputs[0]
+    assert "bit3 +10 → +40 MHz" in out
+
+
+def test_overclock_apply_core_fallback_on_not_supported() -> None:
+    """pstate20 returns -104 NotSupported → core offset falls back to
+    ClkDomains bit0 (Gpc)."""
+    app = _oc_app(xbar_supported=False)
+    app.native.raise_on_set_clock = RuntimeError("NVAPI NotSupported -104")
+
+    OverclockController(app).handle_button("oc-apply")
+
+    clk_calls = [c for c in app.native.calls if c[0] == "set_clk_domain_offset"]
+    # core → bit0, +100 MHz
+    assert any(c[2] == 0 and c[3] == 100000 for c in clk_calls)
+    assert "pstate20 -104 fallback bit0" in app.action_outputs[0]
+
+
+def test_overclock_apply_mem_fallback_on_not_supported() -> None:
+    """pstate20 -104 → mem offset falls back to ClkDomains bit2 (WRITE bit2 =
+    显存 M, NOT the MEASURE bit2 which reads SYS)."""
+    app = _oc_app(xbar_supported=False)
+    app.native.raise_on_set_clock = RuntimeError("NVAPI NotSupported -104")
+
+    OverclockController(app).handle_button("oc-apply")
+
+    clk_calls = [c for c in app.native.calls if c[0] == "set_clk_domain_offset"]
+    # mem → bit2, +200 MHz
+    assert any(c[2] == 2 and c[3] == 200000 for c in clk_calls)
+    assert "pstate20 -104 fallback bit2" in app.action_outputs[0]
+
+
+def test_overclock_apply_msd_skipped_on_pascal() -> None:
+    """Pascal: bit5 SET N/A → MSD row disabled even if the mask claims bit5."""
+    app = _oc_app(
+        xbar_supported=True,
+        is_ampere_plus=False,
+        gpu_series="10 series desktop detected",
+    )
+    app.cache.clk_domain_mask = 0x3FF  # bit5 present in mask...
+
+    ctrl = OverclockController(app)
+    # Pascal MSD gate: mask has bit5 but _msd_supported() is False
+    assert ctrl._msd_supported() is False
+
+    ctrl.handle_button("oc-apply")
+    clk_calls = [c for c in app.native.calls if c[0] == "set_clk_domain_offset"]
+    # bit5 must NOT be written on Pascal
+    assert not any(c[2] == 5 for c in clk_calls)
+
+
+def test_overclock_apply_msd_written_on_non_pascal() -> None:
+    """Non-Pascal with bit5 in mask → MSD offset writes bit5."""
+    app = _oc_app(
+        xbar_supported=True, is_ampere_plus=True, gpu_series="40 series mobile detected"
+    )
+    app.cache.clk_domain_mask = 0x3FF
+
+    OverclockController(app).handle_button("oc-apply")
+
+    clk_calls = [c for c in app.native.calls if c[0] == "set_clk_domain_offset"]
+    assert any(c[2] == 5 and c[3] == 20000 for c in clk_calls)  # Msd +20 MHz
+
+
+def test_overclock_apply_host_when_bit9_present() -> None:
+    """Host offset writes bit9 when the controllable mask has bit9 (0x3FF)."""
+    app = _oc_app(xbar_supported=True, is_ampere_plus=True)
+    app.cache.clk_domain_mask = 0x3FF
+
+    OverclockController(app).handle_button("oc-apply")
+
+    clk_calls = [c for c in app.native.calls if c[0] == "set_clk_domain_offset"]
+    assert any(c[2] == 9 and c[3] == 10000 for c in clk_calls)  # Host +10 MHz
+
+
+def test_overclock_apply_host_skipped_when_bit9_absent() -> None:
+    """Mask 0xFF (no bit9) → Host offset skipped (bit9 not controllable)."""
+    app = _oc_app(xbar_supported=True, is_ampere_plus=True)
+    app.cache.clk_domain_mask = 0xFF
+
+    OverclockController(app).handle_button("oc-apply")
+
+    clk_calls = [c for c in app.native.calls if c[0] == "set_clk_domain_offset"]
+    assert not any(c[2] == 9 for c in clk_calls)
 
 
 def test_overclock_apply_oc_includes_xbar_when_supported() -> None:
@@ -1063,10 +1655,13 @@ def test_overclock_apply_oc_includes_xbar_when_supported() -> None:
     assert calls == [
         ("set_clock_offset", "0x0000", "nvapi", "core", 100, "P0"),
         ("set_clock_offset", "0x0000", "nvapi", "memory", 200, "P0"),
-        ("set_clk_domain_offset", "0x0000", 1, 60000, None, None),
+        # Xbar write carries the explicit frequency-plane slot (10~40系 0).
+        ("set_clk_domain_offset", "0x0000", 1, 60000, 0, None),
     ]
-    assert "Successfully applied nvapi overclock." in app.action_outputs[0]
-    assert "Successfully applied Xbar offset +60 MHz" in app.action_outputs[0]
+    out = app.action_outputs[0]
+    assert "Successfully applied core offset 100 MHz." in out
+    assert "Successfully applied memory offset 200 MHz." in out
+    assert "Successfully applied Xbar offset +60 MHz" in out
 
 
 def test_overclock_apply_oc_skips_xbar_when_unsupported() -> None:
@@ -1091,8 +1686,21 @@ def test_overclock_xbar_supported_arch_heuristic() -> None:
     controller = OverclockController(app)
     assert controller.xbar_supported() is True
 
+    # Pascal: live-verified Xbar offset target (2026-08-31) — now supported
+    # via the chip code, the friendly name, and the marketing floor.
+    app_gp = _oc_app(codename="GP104")
+    assert OverclockController(app_gp).xbar_supported() is True
+    app_pascal = _oc_app(gpu_architecture="Pascal")
+    assert OverclockController(app_pascal).xbar_supported() is True
     app2 = _oc_app(gpu_name="NVIDIA GeForce GTX 1080")
-    assert OverclockController(app2).xbar_supported() is False
+    assert OverclockController(app2).xbar_supported() is True
+
+    # Volta (server-card generation between P100 and T4) is allowed through.
+    app_gv = _oc_app(codename="GV100")
+    assert OverclockController(app_gv).xbar_supported() is True
+    # 9-series and below stay hidden.
+    app_980 = _oc_app(gpu_name="NVIDIA GeForce GTX 980")
+    assert OverclockController(app_980).xbar_supported() is False
 
     app3 = _oc_app(gpu_name="NVIDIA GeForce RTX 4060 Laptop GPU")
     assert OverclockController(app3).xbar_supported() is True
@@ -1103,12 +1711,19 @@ def test_overclock_reset_oc_chain_resets_xbar_when_supported() -> None:
 
     assert OverclockController(app).handle_button("oc-reset") is True
 
+    # MHz rows reset BOTH plane slots — no hidden volt offset survives.
     assert app.actions == [
         "reset core offset",
+        "reset core volt offset",
         "reset memory offset",
+        "reset memory volt offset",
         "reset xbar offset",
+        "reset xbar volt offset",
     ]
-    assert ("set_clk_domain_offset", "0x0000", 1, 0, None, None) in app.native.calls
+    calls = app.native.calls
+    assert ("set_clk_domain_offset", "0x0000", 1, 0, 0, None) in calls  # freq plane
+    assert ("set_clk_domain_offset", "0x0000", 1, 0, 1, None) in calls  # volt plane
+    assert ("set_clk_domain_offset", "0x0000", 0, 0, 1, None) in calls
     assert "Successfully applied Xbar offset +0 MHz" in "\n".join(app.logs)
 
 
@@ -1119,6 +1734,225 @@ def test_overclock_reset_oc_chain_skips_xbar_when_unsupported() -> None:
 
     assert app.actions == ["reset core offset", "reset memory offset"]
     assert not any(c[0] == "set_clk_domain_offset" for c in app.native.calls)
+
+
+def test_overclock_unit_toggle_anchors_mv_at_live_plane_offset() -> None:
+    """Toggling a row to mV seeds 0.0, then re-anchors at the record's live
+    voltage-plane addend (values_kHz[volt_slot] is µV → 62500 µV = 62.5 mV)."""
+    app = _oc_app(xbar_supported=True)
+    app.cache.clk_domain_mask = 0x3FF
+    app.native.freq_domain_info_payload = {
+        "controllable_mask": "0x3FF",
+        "entries": [
+            {"bit": 0, "values_kHz": [15000, 62500]},  # slot0 kHz / slot1 µV
+        ],
+    }
+    scheduled: list[object] = []
+    app.native_service.submit_query = lambda job: scheduled.append(job)
+    app.native_service.query_private_freq_domain_info = (
+        app.native.query_private_freq_domain_info
+    )
+    controller = OverclockController(app)
+
+    assert controller.handle_button("core-unit") is True
+
+    toggle = app.widgets["#core-unit"]
+    assert toggle.label == "mV"
+    assert "volt" in toggle.classes
+    assert app.widgets["#core-offset"].value == "0.0"  # seeded before anchor
+    scheduled[0]()  # FakeApp.call_from_thread runs the callback inline
+    assert app.widgets["#core-offset"].value == "62.5"
+
+    # Toggling back re-anchors the MHz plane at 0 (intent, not readback).
+    assert controller.handle_button("core-unit") is True
+    assert toggle.label == "MHz"
+    assert "volt" not in toggle.classes
+    assert app.widgets["#core-offset"].value == "0"
+
+
+def test_overclock_unit_toggle_ignores_stale_anchor_after_toggle_back() -> None:
+    """An anchor readback in flight when the row toggles back to MHz must not
+    overwrite the re-anchored input (epoch guard)."""
+    app = _oc_app(xbar_supported=True)
+    app.native.freq_domain_info_payload = {
+        "controllable_mask": "0x3FF",
+        "entries": [{"bit": 0, "values_kHz": [0, 62500]}],
+    }
+    scheduled: list[object] = []
+    app.native_service.submit_query = lambda job: scheduled.append(job)
+    app.native_service.query_private_freq_domain_info = (
+        app.native.query_private_freq_domain_info
+    )
+    controller = OverclockController(app)
+
+    controller.handle_button("core-unit")
+    controller.handle_button("core-unit")  # back to MHz before the read lands
+    scheduled[0]()
+
+    assert app.widgets["#core-offset"].value == "0"
+
+
+def test_overclock_apply_core_volt_plane_skips_pstate20() -> None:
+    """mV mode is a DIRECT voltage-plane write: µV payload on the volt slot,
+    no pstate20 path for that row (mem stays on the MHz path)."""
+    app = _oc_app(xbar_supported=True)
+    app.widgets["#core-offset"] = SimpleNamespace(value="12.5")
+    controller = OverclockController(app)
+    controller._row_volt_mode["core"] = True
+
+    controller.handle_button("oc-apply")
+
+    assert not any(
+        c[0] == "set_clock_offset" and c[3] == "core" for c in app.native.calls
+    )
+    assert ("set_clk_domain_offset", "0x0000", 0, 12500, 1, None) in app.native.calls
+    out = app.action_outputs[0]
+    assert "Successfully applied Core volt offset +12.5 mV" in out
+    assert "Successfully applied memory offset 200 MHz." in out
+
+
+def test_overclock_apply_volt_blackwell_uses_shifted_slots() -> None:
+    """Blackwell (GB*): the volt plane lives at slot 3 (freq moved to 2) —
+    a slot-1 write there would land on the wrong record."""
+    app = _oc_app(xbar_supported=True, codename="GB205")
+    app.widgets["#core-offset"] = SimpleNamespace(value="-50")
+    controller = OverclockController(app)
+    controller._row_volt_mode["core"] = True
+
+    controller.handle_button("oc-apply")
+
+    assert ("set_clk_domain_offset", "0x0000", 0, -50000, 3, None) in app.native.calls
+    assert controller._clk_volt_slot() == 3
+    assert controller._clk_freq_slot() == 2
+
+
+def test_overclock_apply_clamps_mv_into_plane_bounds() -> None:
+    app = _oc_app(xbar_supported=True)
+    app.widgets["#mem-offset"] = SimpleNamespace(value="9999")
+    controller = OverclockController(app)
+    controller._row_volt_mode["mem"] = True
+
+    controller.handle_button("oc-apply")
+
+    assert ("set_clk_domain_offset", "0x0000", 2, 300000, 1, None) in app.native.calls
+
+
+def test_overclock_apply_rejects_invalid_mv_value() -> None:
+    app = _oc_app(xbar_supported=True)
+    app.widgets["#core-offset"] = SimpleNamespace(value="abc")
+    controller = OverclockController(app)
+    controller._row_volt_mode["core"] = True
+
+    assert controller.handle_button("oc-apply") is True
+
+    assert app.actions == []  # nothing dispatched
+    assert any("Invalid core volt offset" in m for m in app.logs)
+
+
+def test_overclock_reset_mixed_planes_footprint() -> None:
+    """Reset OC with core on mV, everything else MHz: the mV row zeroes ONLY
+    its volt plane (public pstate20 reset skipped); MHz rows zero both plane
+    slots."""
+    app = _oc_app(xbar_supported=True)
+    app.cache.clk_domain_mask = 0x3FF
+    controller = OverclockController(app)
+    controller._row_volt_mode["core"] = True
+
+    controller.handle_button("oc-reset")
+
+    actions = app.actions
+    assert "reset core volt offset" in actions
+    assert "reset core offset" not in actions  # no public write for the mV row
+    assert "reset memory offset" in actions
+    assert "reset memory volt offset" in actions
+    assert "reset xbar offset" in actions
+    assert "reset xbar volt offset" in actions
+
+    calls = app.native.calls
+    assert not any(c[0] == "set_clock_offset" and c[3] == "core" for c in calls)
+    clk = [c for c in calls if c[0] == "set_clk_domain_offset"]
+    assert ("set_clk_domain_offset", "0x0000", 0, 0, 1, None) in clk  # core volt only
+    assert not any(c[2] == 0 and c[4] == 0 for c in clk)  # core freq slot untouched
+    # mem (MHz): public pstate20 reset covers the freq plane; volt zero rides.
+    assert ("set_clock_offset", "0x0000", "nvapi", "memory", 0, "P0") in calls
+    assert ("set_clk_domain_offset", "0x0000", 2, 0, 1, None) in clk
+
+
+def test_overclock_unit_toggles_gated_on_capability_and_mask() -> None:
+    """Toggles are capability-gated (Pascal+ for Core/Mem/Xbar) and mask-gated
+    per row (Sys bit3 / Msd bit5 / Host bit9)."""
+    app = _oc_app(gpu_name="NVIDIA GeForce GTX 980")  # pre-Pascal
+    controller = OverclockController(app)
+    controller._prime_unit_toggles()
+    assert all(app.widgets[f"#{n}-unit"].disabled for n in controller._UNIT_ROWS)
+
+    app2 = _oc_app(xbar_supported=True)
+    app2.cache.clk_domain_mask = 0x2  # bit1 only — no Sys/Msd/Host
+    controller2 = OverclockController(app2)
+    controller2._prime_unit_toggles()
+    assert app2.widgets["#core-unit"].disabled is False
+    assert app2.widgets["#xbar-unit"].disabled is False
+    assert app2.widgets["#sys-unit"].disabled is True
+    assert app2.widgets["#msd-unit"].disabled is True
+    assert app2.widgets["#host-unit"].disabled is True
+
+
+def test_overclock_gpu_switch_drops_previous_part_state() -> None:
+    """Maxwell → modern switch: the cached info/settings/ClkDomains mask and
+    any standing mV plane mode from the old card must not leak into the new
+    part's rows — on_gpu_changed clears them and re-primes at defaults."""
+    app = _oc_app(xbar_supported=True, codename="GP104")
+    app.cache.clk_domain_mask = 0x3FF
+    app.cache.settings = {"core_clock_current": 150}
+    app.widgets["#core-offset"] = SimpleNamespace(value="150")
+    controller = OverclockController(app)
+    controller._row_volt_mode["core"] = True
+    app.widgets["#core-unit"].label = "mV"
+    app.widgets["#core-unit"].classes.add("volt")
+
+    controller.on_gpu_changed()
+
+    assert app.cache.info == {}
+    assert app.cache.settings == {}
+    assert app.cache.clk_domain_mask is None
+    assert not any(controller._row_volt_mode.values())
+    toggle = app.widgets["#core-unit"]
+    assert toggle.label == "MHz"
+    assert "volt" not in toggle.classes
+    # Re-primed from the cleared cache: the old card's +150 offset is gone.
+    assert app.widgets["#core-offset"].value == "0"
+
+
+def test_overclock_power_units_follow_backend_and_legacy() -> None:
+    """Power pane unit labels: Power Limit follows #power-api (NVAPI % /
+    NVML W), Thermal Limit is C, Voltage Boost is % on the modern boost
+    path and mV on the legacy Overvolt delta path."""
+    app = _oc_app()
+    for uid in ("#power-limit-unit", "#thermal-limit-unit", "#voltage-boost-unit"):
+        app.widgets[uid] = FakeLabel()
+    controller = OverclockController(app)
+
+    controller._prime_power_units()
+    assert app.widgets["#power-limit-unit"].text == "%"
+    assert app.widgets["#thermal-limit-unit"].text == "C"
+    assert app.widgets["#voltage-boost-unit"].text == "%"
+
+    controller.on_power_api_changed("nvml")
+    assert app.widgets["#power-limit-unit"].text == "W"
+    controller.on_power_api_changed("nvapi")
+    assert app.widgets["#power-limit-unit"].text == "%"
+
+    app.cache.info = {"is_legacy_voltage": True}
+    controller._prime_power_units()
+    assert app.widgets["#voltage-boost-unit"].text == "mV"
+
+
+class FakeLabel:
+    def __init__(self) -> None:
+        self.text = ""
+
+    def update(self, text: str) -> None:
+        self.text = text
 
 
 def test_overclock_apply_limits_routes_legacy_overvolt() -> None:
@@ -1142,6 +1976,43 @@ def test_overclock_is_legacy_voltage_heuristic() -> None:
 
     app3 = _oc_app(codename="GM204")
     assert OverclockController(app3).is_legacy_voltage() is True
+
+
+def test_overclock_mobile_limits_anchor_tgp_at_power_wall() -> None:
+    """The TGP input anchors at the actually-effective power wall
+    (power_limit_w = min of requested TGP and the active D-Notifier cap,
+    nvidia-smi's PPAB Ceiling "Current") — not at the VBIOS default, which
+    made the input jump to a value that is neither the old nor the new real
+    wall after a D-Notifier apply/reset."""
+    app = _oc_app(is_mobile=True)
+    app.widgets["#mobile-dnotifier"] = SimpleNamespace(
+        value=2, set_options=lambda _opts: None
+    )
+    controller = OverclockController(app)
+
+    controller._on_mobile_limits(
+        "0x0000",
+        {
+            "tgp": {
+                "policy_index": 2,
+                "min_watt": 5.0,
+                "default_watt": 100.0,
+                "max_watt": 140.0,
+            },
+            "dnotifier": {
+                "active": "D2",
+                "levels": [
+                    {"level": "D1", "watts": None},
+                    {"level": "D2", "watts": 55.0},
+                ],
+            },
+            "temp_policies": [],
+            "volt_rail": None,
+            "power_limit_w": 55.0,
+        },
+    )
+
+    assert app.widgets["#mobile-tgp"].value == "55"
 
 
 def test_overclock_mobile_apply_includes_volt_limit() -> None:
@@ -1223,3 +2094,372 @@ def test_overclock_format_volt_rail_result_messages() -> None:
         OverclockController._format_volt_rail_result(1050.0, {"applied": True})
         == "Successfully applied Volt Limit 1050 mV."
     )
+
+
+class _RecordingPlt(_FakePlt):
+    """_FakePlt that records vline coordinates for assertion."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.vlines: list[float] = []
+        self.texts: list[str] = []
+
+    def vline(self, coordinate, color=None, xside=None) -> None:
+        self.vlines.append(float(coordinate))
+
+    def text(self, text, *args, **kwargs) -> None:
+        self.texts.append(str(text))
+
+
+def _vfcurve_controller_with_plot() -> tuple[VFCurveController, _RecordingPlt]:
+    app = FakeApp()
+    app.widgets = _selector_widgets()
+    plt = _RecordingPlt()
+    app.widgets["#vf-plot"] = SimpleNamespace(
+        plt=plt, refresh=lambda: None, size=SimpleNamespace(width=100)
+    )
+    controller = VFCurveController(app)
+    controller._curves = {
+        "gpc": CurveData(
+            "gpc",
+            voltages=[700.0, 800.0, 900.0, 1000.0, 1100.0],
+            frequencies=[1400.0, 1500.0, 1600.0, 1700.0, 1800.0],
+            defaults=[1400.0, 1500.0, 1600.0, 1700.0, 1800.0],
+        )
+    }
+    controller._curve_visible = {"gpc": True}
+    controller._active_curve = "gpc"
+    app.native_service.submit_query = lambda job: None
+    return controller, plt
+
+
+def test_vfcurve_render_plot_draws_p0_boundary_vlines() -> None:
+    controller, plt = _vfcurve_controller_with_plot()
+    # Inject cached P0 bounds directly (as if a query had landed).
+    controller._p0_bounds = {
+        "min_hold_uV": 625_000,
+        "effective_wall_uV": 1_005_000,
+        "vbios_wall_uV": 0,
+        "vrm_max_wall_uV": 1_200_000,
+    }
+
+    controller.render_plot()
+
+    # floor (625), ceiling (1200), effective (1005) — three vlines.
+    assert 625.0 in plt.vlines
+    assert 1200.0 in plt.vlines
+    assert 1005.0 in plt.vlines
+    assert len(plt.vlines) == 3
+    # Blue workable-region bar: a full-block-only text on the bottom row.
+    # Band 625→1200 mV over an x-range of ~700→1125 mV on a ~94-col plot
+    # area ≈ 50+ columns.
+    bars = [t for t in plt.texts if t and set(t) == {"█"}]
+    assert len(bars) == 1
+    assert len(bars[0]) >= 50
+
+
+def test_vfcurve_render_plot_gpc_live_point_uses_rail_voltage() -> None:
+    """GPC crosshair voltage is the rail current (dashboard sweep's
+    rail_volts), NOT the status setpoint — one true source for every
+    curve (status 900 mV pinned vs rail 915 mV live-observed)."""
+    controller, plt = _vfcurve_controller_with_plot()
+    controller.app.cache.status = {"voltage_mv": 900.0, "gpu_clock_mhz": 1600.0}
+    controller.app.cache.rail_volts = [("GPC", 915.0), ("MSVDD", 655.5)]
+
+    controller.render_plot()
+
+    live = [call for call in plt.scatter_calls if call[1].get("label") == "Live Point"]
+    assert len(live) == 1
+    assert live[0][0][0] == [915.0]  # rail current, not the 900 setpoint
+
+
+def test_vfcurve_render_plot_gpc_live_point_falls_back_to_status() -> None:
+    """No rail reading yet (family absent / first tick) → status voltage."""
+    controller, plt = _vfcurve_controller_with_plot()
+    controller.app.cache.status = {"voltage_mv": 900.0, "gpu_clock_mhz": 1600.0}
+    controller.app.cache.rail_volts = None
+
+    controller.render_plot()
+
+    live = [call for call in plt.scatter_calls if call[1].get("label") == "Live Point"]
+    assert len(live) == 1
+    assert live[0][0][0] == [900.0]
+
+
+def test_vfcurve_render_plot_skips_p0_vlines_when_absent() -> None:
+    controller, plt = _vfcurve_controller_with_plot()
+    controller._p0_bounds = None
+
+    controller.render_plot()
+
+    # No P0 vlines (the live-point/lock vlines may still be present; the P0
+    # set is empty here because no bounds are cached).
+    assert 625.0 not in plt.vlines
+    assert 1200.0 not in plt.vlines
+
+
+def test_vfcurve_ensure_p0_bounds_caches_per_gpu() -> None:
+    app = FakeApp()
+    app.widgets = _selector_widgets()
+    controller = VFCurveController(app)
+    submitted: list[object] = []
+    app.native_service.submit_query = lambda job: submitted.append(job)
+    app.native_service.query_volt_rails = lambda gpu: {
+        "p0": {
+            "min_hold_uV": 625_000,
+            "effective_wall_uV": 1_005_000,
+            "vbios_wall_uV": 0,
+            "vrm_max_wall_uV": 1_200_000,
+        }
+    }
+
+    controller._ensure_p0_bounds("GPU0")
+    assert len(submitted) == 1
+    submitted[0]()  # run worker → _on_p0_bounds_loaded
+    assert controller._p0_bounds is not None
+
+    # Same GPU again → cache hit, no new submission.
+    controller._ensure_p0_bounds("GPU0")
+    assert len(submitted) == 1
+
+
+# ── Fan pane verdict: fanless server cards (is_server + NVML count) ──
+
+
+def _overclock_controller_with_fan_panes() -> tuple[OverclockController, FakeApp]:
+    app = FakeApp()
+    fan_controls = SimpleNamespace(disabled=False)
+    fan_actions = SimpleNamespace(disabled=False)
+    app.widgets["#fan-controls"] = fan_controls
+    app.widgets["#fan-actions"] = fan_actions
+    return OverclockController(app), app
+
+
+def test_overclock_is_server_flag() -> None:
+    controller, app = _overclock_controller_with_fan_panes()
+    assert controller.is_server() is False
+    app.cache.info["is_server"] = True
+    assert controller.is_server() is True
+
+
+def test_overclock_fan_surface_count_zero_disables_pane() -> None:
+    controller, app = _overclock_controller_with_fan_panes()
+    gpu = app.selected_gpu_target()  # FakeApp reports "0x0000"
+    controller._on_fan_surface(gpu, {"count": 0})
+    assert gpu in controller._fanless_gpus
+    assert gpu not in controller._fanned_gpus
+    assert app.widgets["#fan-controls"].disabled is True
+    assert app.widgets["#fan-actions"].disabled is True
+
+
+def test_overclock_fan_surface_count_positive_re_enables() -> None:
+    """ServerLovelace L40/L4 carry fans: count ≥ 1 re-enables the pane and
+    waives the is_server classification."""
+    controller, app = _overclock_controller_with_fan_panes()
+    gpu = app.selected_gpu_target()
+    app.cache.info["is_server"] = True
+    controller._on_fan_surface(gpu, {"count": 0})
+    assert app.widgets["#fan-controls"].disabled is True
+
+    controller._on_fan_surface(gpu, {"count": 2})
+    assert gpu in controller._fanned_gpus
+    assert gpu not in controller._fanless_gpus
+    assert app.widgets["#fan-controls"].disabled is False
+
+
+def test_overclock_prime_inputs_greys_pane_for_server_gpu() -> None:
+    """The synchronous is_server classification greys the pane immediately,
+    no fan query needed (the async load only refines it)."""
+    controller, app = _overclock_controller_with_fan_panes()
+    # Minimal input surface for prime_inputs (it seeds every field before the
+    # fan-verdict block).
+    for selector in (
+        "#core-offset",
+        "#mem-offset",
+        "#power-limit",
+        "#thermal-limit",
+        "#voltage-boost",
+        "#core-clock-min",
+        "#core-clock-max",
+        "#mem-clock-min",
+        "#mem-clock-max",
+    ):
+        app.widgets.setdefault(selector, SimpleNamespace(value="0"))
+    app.widgets.setdefault("#fan-level", SimpleNamespace(value="30"))
+    app.cache.info["is_server"] = True
+
+    controller.prime_inputs()
+
+    assert app.widgets["#fan-controls"].disabled is True
+    assert app.widgets["#fan-actions"].disabled is True
+
+
+def test_overclock_fan_surface_stale_gpu_ignored() -> None:
+    """A fan verdict landing after a GPU switch must not re-verdict the
+    newly selected card."""
+    controller, app = _overclock_controller_with_fan_panes()
+    # FakeApp.selected_gpu_target returns "GPU0"; simulate the switch by
+    # having the callback carry a different gpu.
+    controller._on_fan_surface("GPU1", {"count": 0})
+    assert "GPU1" not in controller._fanless_gpus
+    assert app.widgets["#fan-controls"].disabled is False
+
+
+# ── VF curve: per-curve VoltRails rail selection (P100 HBM / 50-series) ──
+
+
+_P100_RAIL0 = {
+    "rail_bit": 0,
+    "current_uV": 675_000,
+    "target_wall_uV": 1_131_250,
+    "effective_wall_uV": 1_125_000,
+    "vbios_wall_uV": 0,
+    "vrm_max_wall_uV": 1_125_000,
+    "min_hold_uV": 675_000,
+}
+_P100_RAIL1 = {
+    "rail_bit": 1,
+    "current_uV": 681_250,
+    "target_wall_uV": 1_018_750,
+    "effective_wall_uV": 1_018_750,
+    "vbios_wall_uV": 0,
+    "vrm_max_wall_uV": 1_125_000,
+    "min_hold_uV": 681_250,
+}
+
+
+def test_vfcurve_multirail_mem_curve_uses_hbm_rail_vlines() -> None:
+    controller, plt = _vfcurve_controller_with_plot()
+    controller._p0_bounds = dict(_P100_RAIL0)
+    controller._p0_bounds_by_rail = {0: _P100_RAIL0, 1: _P100_RAIL1}
+    controller._active_curve = "mem"
+
+    controller.render_plot()
+
+    # floor 681.25 / ceiling 1125.0 / effective 1018.75 — all rail-1 (HBM).
+    assert 681.25 in plt.vlines
+    assert 1125.0 in plt.vlines
+    assert 1018.75 in plt.vlines
+
+
+def test_vfcurve_multirail_gpc_curve_uses_primary_rail_vlines() -> None:
+    controller, plt = _vfcurve_controller_with_plot()
+    controller._p0_bounds = dict(_P100_RAIL0)
+    controller._p0_bounds_by_rail = {0: _P100_RAIL0, 1: _P100_RAIL1}
+    controller._active_curve = "gpc"
+
+    controller.render_plot()
+
+    assert 675.0 in plt.vlines  # rail-0 floor
+    assert 1125.0 in plt.vlines
+    assert 1018.75 not in plt.vlines  # the MEM rail's effective stays hidden
+
+
+def test_vfcurve_on_p0_bounds_loaded_builds_rail_map() -> None:
+    app = FakeApp()
+    app.widgets = _selector_widgets()
+    controller = VFCurveController(app)
+    controller._p0_bounds_gpu = "GPU0"
+    controller._curves = {}
+    app.widgets["#vf-plot"] = SimpleNamespace(plt=_RecordingPlt(), refresh=lambda: None)
+
+    controller._on_p0_bounds_loaded(
+        "GPU0", {"p0": _P100_RAIL0, "p0_rails": [_P100_RAIL0, _P100_RAIL1]}
+    )
+
+    assert controller._p0_bounds_by_rail.keys() == {0, 1}
+    assert controller._active_p0_bounds()["min_hold_uV"] == 675_000
+    controller._active_curve = "mem"
+    assert controller._active_p0_bounds()["min_hold_uV"] == 681_250
+
+
+def test_vfcurve_single_rail_falls_back_to_primary_for_mem() -> None:
+    controller, plt = _vfcurve_controller_with_plot()
+    single = {
+        "rail_bit": 0,
+        "min_hold_uV": 625_000,
+        "effective_wall_uV": 1_005_000,
+        "vbios_wall_uV": 0,
+        "vrm_max_wall_uV": 1_200_000,
+    }
+    controller._p0_bounds = dict(single)
+    controller._p0_bounds_by_rail = {0: single}
+    controller._active_curve = "mem"
+
+    assert controller._active_p0_bounds()["min_hold_uV"] == 625_000
+
+
+class _FakeSelect:
+    def __init__(self, value) -> None:
+        self.value = value
+        self.options: list | None = None
+
+    def set_options(self, options) -> None:
+        self.options = list(options)
+
+
+def _overclock_controller_with_fan_selects() -> tuple[
+    OverclockController, FakeApp, dict
+]:
+    controller, app = _overclock_controller_with_fan_panes()
+    widgets = {
+        "#fan-id": _FakeSelect("all"),
+        "#fan-policy": _FakeSelect("continuous"),
+        "#fan-level": _FakeSelect("60"),
+    }
+    app.widgets.update(widgets)
+    return controller, app, widgets
+
+
+def test_overclock_fan_surface_modern_keeps_continuous_policy() -> None:
+    """Modern cards answer the NVAPI cooler family too (1650 Super / A4000
+    count=1 live) — the policy dropdown must stay continuous/manual
+    (regression: every fanned GPU was flagged legacy from the NVML count
+    alone)."""
+    controller, app, widgets = _overclock_controller_with_fan_selects()
+    gpu = app.selected_gpu_target()
+    controller._on_fan_surface(gpu, {"count": 1, "current_percent": 33}, {"count": 1})
+    # Modern coolers ignore `manual` on the NVAPI path — continuous only.
+    assert widgets["#fan-policy"].options == [("contin.", "continuous")]
+    assert widgets["#fan-policy"].value == "continuous"
+
+
+def test_overclock_fan_surface_legacy_signature_restricts_policy() -> None:
+    """GT730 signature: NVML sees the fan while the private NVAPI cooler
+    family reports zero — policy dropdown restricted to default/manual and
+    the continuous selection remapped to manual."""
+    controller, app, widgets = _overclock_controller_with_fan_selects()
+    gpu = app.selected_gpu_target()
+    controller._on_fan_surface(gpu, {"count": 1, "current_percent": 40}, {"count": 0})
+    assert widgets["#fan-policy"].options == [
+        ("default", "default"),
+        ("manual", "manual"),
+    ]
+    assert widgets["#fan-policy"].value == "manual"
+
+
+def test_overclock_fan_surface_missing_nvapi_answer_counts_legacy() -> None:
+    """No NVAPI cooler answer (old deployed pyd / transient error) is
+    treated conservatively as legacy."""
+    controller, app, widgets = _overclock_controller_with_fan_selects()
+    gpu = app.selected_gpu_target()
+    controller._on_fan_surface(gpu, {"count": 1, "current_percent": 40}, None)
+    assert widgets["#fan-policy"].options == [
+        ("default", "default"),
+        ("manual", "manual"),
+    ]
+    assert widgets["#fan-policy"].value == "manual"
+
+
+def test_overclock_fan_surface_verdict_flips_between_gpus() -> None:
+    """The shared Fan pane must re-verdict BOTH ways on GPU switch: legacy
+    card → modern card restores the continuous/manual policy list."""
+    controller, app, widgets = _overclock_controller_with_fan_selects()
+    gpu = app.selected_gpu_target()
+    controller._on_fan_surface(gpu, {"count": 1, "current_percent": 40}, {"count": 0})
+    assert widgets["#fan-policy"].value == "manual"
+    controller._on_fan_surface(gpu, {"count": 1, "current_percent": 35}, {"count": 1})
+    assert widgets["#fan-policy"].options == [("contin.", "continuous")]
+    # "manual" is not offered on modern NVAPI coolers — the carried-over
+    # selection normalizes back to continuous.
+    assert widgets["#fan-policy"].value == "continuous"

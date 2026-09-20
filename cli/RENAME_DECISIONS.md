@@ -236,7 +236,7 @@
 | 命令 | 决策 |
 |---|---|
 | `get/set-pmgr-arbiter` | 保留 |
-| `get-power-mizer` | 保留 |
+| `get-power-mizer` | **撤出**(2026-08-28)——GET 非回读,引导期常量;提权 SET rc=0 零效果(见 docs/reverse-engineering/nvapi/power-mizer-corevolt-pmgr-semantics.md) |
 | `get/set-power-mode` | 保留 |
 | `get-rated-tdp` | 保留 |
 | `set/reset-perf-freq-caps` | 保留 |

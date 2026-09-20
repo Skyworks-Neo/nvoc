@@ -12,9 +12,27 @@ class ConsoleController(PaneController):
     MAXIMIZE_LABEL = "Max (^x)"
     RESTORE_LABEL = "Restore (^x)"
 
+    def __init__(self, app) -> None:
+        super().__init__(app)
+        # Identical-consecutive-line collapse: a per-second poll logging the
+        # same expected condition forever (e.g. "GPU N has no NvAPI backend"
+        # on a chip without one) must show once, not flood the log. The
+        # first occurrence shows; repeats are counted and flushed as a
+        # one-line "repeated N×" summary when a different message arrives.
+        self._last_text: str | None = None
+        self._repeat_count = 0
+
     def write_log(self, text: str) -> None:
         log = self.app.query_one("#output-log", Log)
-        for line in text.rstrip("\n").splitlines() or [""]:
+        if text == self._last_text:
+            self._repeat_count += 1
+            return
+        lines = text.rstrip("\n").splitlines() or [""]
+        if self._repeat_count:
+            lines.append(f"(previous line repeated {self._repeat_count}×)")
+            self._repeat_count = 0
+        self._last_text = text
+        for line in lines:
             log.write_line(line)
             log.scroll_end()
 
@@ -62,6 +80,8 @@ class ConsoleController(PaneController):
         )
 
     def clear_output(self) -> None:
+        self._last_text = None
+        self._repeat_count = 0
         self.app.query_one("#output-log", Log).clear()
 
     def handle_button(self, button: Button, button_id: str) -> bool:

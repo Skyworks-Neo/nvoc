@@ -32,11 +32,6 @@ pub fn get_arguments() -> Command {
         .subcommand(vfp_export_command())
         .subcommand(vfp_export_log_command())
         .subcommand(vfp_import_command())
-        .subcommand(
-            Command::new("sync-vfp-memory-pstate").about(
-                "Sync the second-highest adjustable memory VFP stage to P0 memory frequency",
-            ),
-        )
         .subcommand(vfp_fix_result_command())
         .subcommand(vfp_autoscan_command(false))
         .subcommand(vfp_autoscan_command(true))
@@ -129,7 +124,10 @@ fn optimize_command() -> Command {
 
 fn vfp_export_command() -> Command {
     Command::new("export-vfp")
-        .about("Export current VFP curve as CSV")
+        .about(
+            "Export current VFP curve as CSV (dynamic load sampling; static --quick is deprecated \
+             — use `nvoc-cli get-public-vftable --output-csv <PATH> --domain <DOMAIN>`)",
+        )
         .args(vfp_domain_args("Export"))
         .arg(
             Arg::new("output")
@@ -143,7 +141,9 @@ fn vfp_export_command() -> Command {
                 .short('q')
                 .long("quick")
                 .action(ArgAction::SetTrue)
-                .help("Skip dynamic load export"),
+                .help(
+                    "Deprecated: static export moved to nvoc-cli get-public-vftable --output-csv",
+                ),
         )
         .arg(
             Arg::new("nocheck")
@@ -185,7 +185,11 @@ fn vfp_export_log_command() -> Command {
 
 fn vfp_import_command() -> Command {
     Command::new("import-vfp")
-        .about("Import a modified VFP curve from CSV")
+        .about(
+            "Internal optimize-workflow driver; users should import via \
+             `nvoc-cli set-public-vftable-point-offset --import-csv <PATH> [--domain <DOMAIN>]`",
+        )
+        .hide(true)
         .args(vfp_domain_args("Import"))
         .arg(
             Arg::new("input")

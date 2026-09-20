@@ -1,87 +1,80 @@
 mod conv;
+pub mod dll_path;
 mod error;
 mod gpu;
 mod gpu_type;
+pub mod legacy_vbios_parser;
 mod nvapi;
 pub mod nvml;
 pub mod operation;
 pub mod result;
 pub mod target;
 mod types;
+pub mod vbios_dcb;
 
+pub use self::nvapi::{
+    CoolerTarget, GpuTdpTempLimits, VfpLockRequest, nvapi_overvolt_reported, set_nvapi_overvolt,
+};
+pub use ::nvapi::sys::gpu::power::undocumented::Wm2AcousticMode;
+pub use ::nvapi::{P0VoltageBounds, VoltRails};
 pub use conv::ConvertEnum;
 pub use error::Error;
-pub use gpu::GpuSelector;
+pub use gpu::{GpuSelector, nvapi_interface_version};
 pub use gpu_type::{
     ArchOcPrior, GpuOcParams, GpuType, GpuVoltageLimitParams, GpuVoltageLockParams, OcPriorPoint,
 };
-pub use nvapi::{
-    CoolerTarget, GpuTdpTempLimits, VfpLockRequest, nvapi_overvolt_reported, set_nvapi_overvolt,
-};
-pub use nvapi_hi::nvapi::sys::gpu::power::private::Wm2AcousticMode;
-pub use nvapi_hi::nvapi::{P0VoltageBounds, VoltRails};
 pub use operation::{
     CheckVoltageFrequency, ClearEdid, DisableNvapiThermalSim, GetFanCurves, GetPowerMode,
-    GpuOperation, OemOcScanner, OemOcScannerAction, ProbeVoltageLimits, QueryApiRestriction,
-    QueryAutoBoost, QueryClockOffset, QueryDisplays, QueryDomainVfpIndices, QueryDomainVfpPoints,
-    QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings, QueryGpuStatus,
-    QueryLegacyCoreOvervoltRanges, QueryLegacyP0CoreMaxVoltageDelta, QueryNvapiClkDomainFreq,
-    QueryNvapiClkDomainFreqDetail, QueryNvapiClkDomainFreqDirect, QueryNvapiClkDomainFreqsBatch,
-    QueryNvapiClkDomains, QueryNvapiClkVfControl, QueryNvapiClkVfPoints, QueryNvapiCoolerInfo,
-    QueryNvapiCoreVoltageControl, QueryNvapiDNotifier, QueryNvapiOcScannerIncomplete,
-    QueryNvapiPStateLevels, QueryNvapiPStateLockStatus, QueryNvapiPmgrVoltageArbiter,
-    QueryNvapiPowerMizer, QueryNvapiRatedTdp, QueryNvapiTargetTempPolicies,
-    QueryNvapiTargetTempPolicyIndex, QueryNvapiTgpWattRange, QueryNvapiThermalSettings,
-    QueryNvapiThermalSim, QueryNvapiVoltRails, QueryPowerLimits, QueryPstateBaseVoltage,
-    QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
-    QueryThrottleReasons, QueryVfpPointVoltage, QueryViolationStatus, QueryVoltageBoost,
+    GpuOperation, OemOcScanner, OemOcScannerAction, PmgrArbiterProbe, ProbeVoltageLimits,
+    QueryApiRestriction, QueryAutoBoost, QueryClockOffset, QueryDisplays, QueryDomainVfpIndices,
+    QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings, QueryGpuStatus,
+    QueryLegacyCoreOvervoltRanges, QueryLegacyP0CoreMaxVoltageDelta, QueryNvapiBarInfo,
+    QueryNvapiClkDomainFreq, QueryNvapiClkDomainFreqDetail, QueryNvapiClkDomainFreqDirect,
+    QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomainFreqsEnum, QueryNvapiClkDomains,
+    QueryNvapiClkVfControl, QueryNvapiClkVfPoints, QueryNvapiCoolerInfo,
+    QueryNvapiCoreVoltageControl, QueryNvapiDNotifier, QueryNvapiFanPolicyInfo,
+    QueryNvapiOcScannerIncomplete, QueryNvapiPStateLevels, QueryNvapiPStateLockStatus,
+    QueryNvapiPmgrVoltageArbiter, QueryNvapiPowerCeiling, QueryNvapiPstates20Private,
+    QueryNvapiRatedTdp, QueryNvapiTargetTempPolicies, QueryNvapiTargetTempPolicyIndex,
+    QueryNvapiTgpWattRange, QueryNvapiThermalSettings, QueryNvapiThermalSim, QueryNvapiVoltDevices,
+    QueryNvapiVoltRails, QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates,
+    QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
+    QueryThrottleReasons, QueryVbiosImage, QueryVbiosSecurityInfo, QueryVbiosStatusString,
+    QueryVbiosVersion, QueryVfpPointVoltage, QueryViolationStatus, QueryVoltageBoost,
     ResetAutoboostStatus, ResetCoolerLevels, ResetFanCurve, ResetFanSpeed, ResetForcePstate,
     ResetFreqLock, ResetLegacyApplicationFreqLock, ResetLegacyGpcRailOvervoltLimit,
-    ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetNvapiVfpPrivate,
-    ResetPstateGlobalFreqOffset, ResetPublicVftableGpcLock, ResetPublicVftableOffset,
-    ResetVfpFrequencyLock, RestartDisplayDriver, SetApplicationsClocks, SetAutoboostStatus,
-    SetAutoboostSupport, SetBb2Active, SetClockOffset, SetCoolerLevels, SetDomainVfpDeltas,
-    SetEdid, SetFanCurve, SetFanRpm, SetFanSpeed, SetFanStop, SetForcePstate, SetGpcVoltLock,
-    SetLegacyClocks, SetLockedClocks, SetNvapiBackgroundOcScanner, SetNvapiClkDomainOffset,
-    SetNvapiCoreVoltageControl, SetNvapiDNotifier, SetNvapiDynamicBoost, SetNvapiOvervolt,
-    SetNvapiPStateNative, SetNvapiPerfFreqCap, SetNvapiPerfLevelLock, SetNvapiPmgrVoltageArbiter,
-    SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiSensorLimits, SetNvapiTargetTemp,
+    ResetNvapiFanControl, ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetNvapiTgpWatt,
+    ResetNvapiVfpPrivate, ResetPstateGlobalFreqOffset, ResetPublicVftableGpcLock,
+    ResetPublicVftableOffset, ResetVfpFrequencyLock, RestartDisplayDriver, SetApplicationsClocks,
+    SetAutoboostStatus, SetAutoboostSupport, SetBb2Active, SetClockOffset, SetCoolerLevels,
+    SetDomainVfpDeltas, SetEdid, SetFanCurve, SetFanPercent, SetFanRpm, SetFanSpeed, SetFanStop,
+    SetForcePstate, SetGpcVoltLock, SetLegacyClocks, SetLockedClocks, SetNvapiBackgroundOcScanner,
+    SetNvapiClkDomainOffset, SetNvapiCoreVoltageControl, SetNvapiDNotifier, SetNvapiDynamicBoost,
+    SetNvapiEccConfiguration, SetNvapiOverclockedPstates, SetNvapiOvervolt, SetNvapiPStateNative,
+    SetNvapiPerfFreqCap, SetNvapiPerfLevelLock, SetNvapiPmgrVoltageArbiter, SetNvapiPowerLimits,
+    SetNvapiPstateLock, SetNvapiPstates20PrivateDelta, SetNvapiSensorLimits, SetNvapiTargetTemp,
     SetNvapiTgpWatt, SetNvapiThermalSim, SetNvapiVfpPointPrivate, SetNvapiVfpRangePerPointPrivate,
     SetNvapiVfpRangePrivate, SetNvapiVoltRailOffset, SetNvapiVoltRailTarget, SetNvmlAcousticTemp,
     SetNvmlPstateLock, SetPowerLimit, SetPowerMode, SetPstateBaseVoltage, SetPstateClockOffset,
     SetPublicVftablePointOffset, SetPublicVftableRangeOffset, SetTemperatureLimit,
     SetVfpFrequencyLock, SetVoltageBoost, SetWm2Active, SetWm2Mode, TgpWattRangeInfo,
     detect_gpu_type, fetch_gpu_type, find_matching_vfp_point, legacy_core_overvolt_ranges,
-    legacy_p0_core_max_voltage_delta, nvml_pstate_to_index, nvml_pstate_to_str,
+    legacy_p0_core_max_voltage_delta, nvapi_status_name, nvml_pstate_to_index, nvml_pstate_to_str,
     parse_nvapi_locked_voltage_target, parse_nvml_fan_control_policy, parse_nvml_pstate,
     query_domain_vf_points_indexed, query_domain_vfp_indices, run, run_many,
     set_nvapi_cooler_settings, set_nvapi_domain_vfp_deltas, set_nvapi_legacy_clocks,
     set_nvapi_pstate_clock_offsets, set_nvapi_vfp_curve_delta, sync_memory_pstate_as_p0,
     try_parse_nvml_pstate,
 };
-
-// Compatibility aliases for internal consumers that have not adopted the
-// normalized CLI terminology yet. Keep the operation implementation single-
-// sourced while allowing optimizer and Python bindings to migrate separately.
-pub use operation::{
-    ResetAutoboostStatus as SetAutoBoostDefault, ResetFreqLock as ResetLockedClocks,
-    ResetLegacyApplicationFreqLock as ResetApplicationsClocks,
-    ResetLegacyGpcRailOvervoltLimit as ResetPstateBaseVoltages,
-    ResetPstateGlobalFreqOffset as ResetPstateClockOffsets,
-    ResetPublicVftableGpcLock as ResetVfpLock, ResetPublicVftableOffset as ResetVfpDeltas,
-    SetAutoboostStatus as SetAutoBoost, SetAutoboostSupport as SetApiRestriction,
-    SetGpcVoltLock as SetVfpVoltageLock, SetPublicVftablePointOffset as SetVfpPointDelta,
-    SetPublicVftableRangeOffset as SetVfpRangeDelta,
-};
 pub use result::{
     ApiRestrictionState, AppliedValue, AutoBoostState, BatchReport, ClockOffset, DNotifierInfo,
     DNotifierLevel, DisplayInfo, EdidData, FanCurvePointReadout, FanCurveReadout, FanInfo,
-    NvapiCoolerInfoEntry, NvapiFanRpmResult, NvapiPStateNativeLock, NvapiPerfFreqCap,
-    OperationKind, OperationReport, OperationWarning, PStateLevelEntry, PStateLevelsInfo,
-    PowerLimits, PowerModeStatus, PstateBaseVoltage, PstateClockRange, SupportedApplicationClocks,
-    TargetOutcome, TargetTempPolicy, TdpTempLimits, TemperatureThreshold, ThermalSensorReading,
-    ThrottleReason, ViolationEntry, ViolationStatusReport, VoltageBoostState,
-    VoltageFrequencyCheck, VoltageLimits,
+    NvapiCoolerInfoEntry, NvapiFanPolicyEntry, NvapiFanPolicyInfo, NvapiFanRpmResult,
+    NvapiPStateNativeLock, NvapiPerfFreqCap, OperationKind, OperationReport, OperationWarning,
+    PStateLevelEntry, PStateLevelsInfo, PowerLimits, PowerModeStatus, PstateBaseVoltage,
+    PstateClockRange, SupportedApplicationClocks, TargetOutcome, TargetTempPolicy, TdpTempLimits,
+    TemperatureThreshold, ThermalSensorReading, ThrottleReason, ViolationEntry,
+    ViolationStatusReport, VoltageBoostState, VoltageFrequencyCheck, VoltageLimits,
 };
 pub use target::{
     BackendSet, GpuId, GpuTarget, PciAddress, TargetInventory, discover_targets,
@@ -89,11 +82,27 @@ pub use target::{
 };
 pub use types::{NvapiLockedVoltageTarget, VfpResetDomain};
 
-pub use nvapi_hi::nvapi::{clk_vf_delta_for_target, clk_vf_effect_for_delta};
-pub use nvapi_hi::{
+pub use ::nvapi::hi::{
     Celsius, ClkVfControlPointPrivate, ClkVfControlPrivate, ClkVfDomainClass, ClkVfDomainHint,
-    ClkVfPointPrivate, ClkVfPointsPrivate, ClkVfSegmentKind, ClockDomain, CoolerControl,
-    CoolerPolicy, CoolerSettings, DisplayId, FanCoolerId, GpuInfo, GpuSettings, GpuStatus,
-    Kilohertz, KilohertzDelta, Microvolts, MicrovoltsDelta, PState, Percentage, SensorThrottle,
-    VfPoint, VfPointType, VoltageDomain,
+    ClkVfPointPrivate, ClkVfPointsPrivate, ClkVfRawRecord, ClkVfSegmentKind, ClockDomain,
+    CoolerControl, CoolerPolicy, CoolerSettings, DisplayId, FanCoolerId, GpuInfo, GpuSettings,
+    GpuStatus, Kilohertz, KilohertzDelta, Microvolts, MicrovoltsDelta, PState, Percentage,
+    SensorThrottle, VfPoint, VfPointType, VoltageDomain,
 };
+pub use ::nvapi::{clk_vf_delta_for_target, clk_vf_effect_for_delta};
+
+/// Most recent NVAPI status failure on this thread, or `None`. nvapi
+/// records it in a thread-local as every failed call funnels through
+/// `status_result`, so wrapper layers that swallow the error into
+/// `Option::None` (rendered downstream as "supported: no") no longer hide
+/// the original status code — e.g. `-9 INCOMPATIBLE_STRUCT_VERSION` on a
+/// stamp-gated family reads completely differently from a true absence.
+pub fn last_status_error() -> Option<String> {
+    ::nvapi::last_status_error()
+}
+
+/// Forget the recorded failure — call at the start of each top-level
+/// command so annotations describe the current run only.
+pub fn clear_status_error() {
+    ::nvapi::clear_status_error()
+}

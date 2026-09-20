@@ -43,25 +43,71 @@ def _format_mibps(mibps: float) -> str:
 
 # Internal fabric clock domains (from GetAllClocks V2 `all_clocks_mhz`) to surface
 # on a dedicated FCLK line — the "crossbar clock" GPU-Z shows plus the other
-# structurally-interesting fabric clocks. Ordered for stable display.
-_FABRIC_CLOCK_DOMAINS = ["Xbar", "Sys", "Hub", "Host", "Gpc", "Disp", "Hotclk"]
+# structurally-interesting fabric clocks. Ordered for stable display. Memory
+# ("M") stays off this line: it's already on MEM/ECLK. MSD IS shown: it is
+# the uncore-band domain the ClkDomains bit-5 offset record drives (the
+# third V/F curve) — it was hidden back when it read as memory-subsystem
+# noise, but it is now a first-class OC surface.
+_FABRIC_CLOCK_DOMAINS = [
+    "Gpc",
+    "Xbar",
+    "Sys",
+    "Msd",
+    "Hub",
+    "Host",
+    "Ltc",
+    "Disp",
+    "Hotclk",
+    "Pwr",
+    "Utils",
+]
+# Domains that never render on FCLK even when present in the payload.
+_FABRIC_HIDDEN_DOMAINS = {"m", "pciegen", "host1x"}
+
+
+def _fabric_canonical_key(domain: str) -> str:
+    """Canonical key for a fabric-domain name: lowercase with any trailing
+    digits stripped. The same domain arrives under different namings
+    depending on the driver path — server Pascal reports the V2 suffixed
+    Pascal-cluster names (``Gpc2``/``Xbar2``/``Sys2``/``Hub2``/``Ltc2``),
+    other platforms the bare names (``Gpc``/``Xbar``/...) — both must match."""
+    return str(domain).rstrip("0123456789").lower()
 
 
 def _fabric_clocks_text(status: dict) -> str:
     """Format the internal-fabric clocks line (Xbar/crossbar, Sys, Hub, ...).
 
     Reads the per-domain MHz from ``all_clocks_mhz`` (GetAllClocks V2's full
-    32-domain breakdown). Returns ``""`` when no fabric domains are present so
-    the line is omitted entirely.
+    32-domain breakdown; V2-suffixed domain names are canonicalized — see
+    ``_fabric_canonical_key``). Returns ``""`` when no fabric domains are
+    present so the line is omitted entirely.
     """
     all_clocks = status.get("all_clocks_mhz")
     if not isinstance(all_clocks, dict):
         return ""
-    parts = []
+    by_key: dict[str, float] = {}
+    for domain, mhz in all_clocks.items():
+        if not isinstance(mhz, (int, float)) or float(mhz) <= 0:
+            continue
+        key = _fabric_canonical_key(domain)
+        if key in _FABRIC_HIDDEN_DOMAINS:
+            continue
+        # First occurrence of a canonical key wins (a payload carrying both
+        # Gpc and Gpc2 shouldn't print the cluster twice).
+        by_key.setdefault(key, float(mhz))
+    parts: list[str] = []
+    seen: set[str] = set()
     for domain in _FABRIC_CLOCK_DOMAINS:
-        mhz = all_clocks.get(domain)
-        if isinstance(mhz, (int, float)) and float(mhz) > 0:
-            parts.append(f"{domain.upper()} {round(float(mhz))}")
+        key = domain.lower()
+        mhz = by_key.get(key)
+        if mhz is not None:
+            parts.append(f"{domain.upper()} {round(mhz)}")
+            seen.add(key)
+    # Unknown-but-present domains still surface, in payload order, so a new
+    # domain naming never silently drops a reading.
+    for key, mhz in by_key.items():
+        if key not in seen:
+            parts.append(f"{key.upper()} {round(mhz)}")
     return " | ".join(parts) + " MHz" if parts else ""
 
 
@@ -156,6 +202,43 @@ def _perf_limits_text(perf) -> str:
     return ", ".join(reasons) if reasons else "none"
 
 
+def _voltage_text(status: dict) -> str:
+    """Format the VOLT value.
+
+    On single- and multi-rail parts the dashboard poll attaches
+    ``rail_volts_mv`` (a ``[(label, mV), ...]`` list built from the volt-rails
+    status currents). Multi-rail parts render per-rail —
+    ``GPC 1050 mV | MEM 681.25 mV`` (HBM parts) or ``... | MSVDD ...``
+    (50-series fabric rail); single-rail parts render the plain form
+    ``1020 mV`` (no label, since there is only one rail to name). The real
+    rail ``current_uV`` is preferred over the NVAPI generic ``voltage_mv``
+    field: the latter is a coarse rounded figure that lags the live rail
+    value by up to a few mV (e.g. 1020 rail vs 1010 voltage_mv on a 4060
+    Laptop). No rail data at all (family unsupported on this part) falls
+    back to ``voltage_mv``.
+    """
+    rails = status.get("rail_volts_mv")
+    if isinstance(rails, list):
+        usable: list[tuple[str, float]] = []
+        for entry in rails:
+            if not (isinstance(entry, (list, tuple)) and len(entry) == 2):
+                continue
+            label, mv = entry
+            if isinstance(mv, (int, float)) and mv > 0:
+                usable.append((label, float(mv)))
+        if usable:
+            if len(usable) >= 2:
+                parts = [
+                    f"{lbl} {mv:.2f}".rstrip("0").rstrip(".") + " mV"
+                    for lbl, mv in usable
+                ]
+                return " | ".join(parts)
+            # single rail: real rail current, plain form (label adds nothing
+            # when there is only one rail to name).
+            return f"{usable[0][1]:.2f}".rstrip("0").rstrip(".") + " mV"
+    return f"{status.get('voltage_mv', '---')} mV"
+
+
 def _format_metric_lines(status: dict, architecture: str) -> list[str]:
     """Build the dashboard metric lines from a normalized status dict.
 
@@ -213,8 +296,10 @@ def _format_metric_lines(status: dict, architecture: str) -> list[str]:
         level_s = (
             f"{round(float(level))}%" if isinstance(level, (int, float)) else "---"
         )
-        label = "FAN" if len(valid_coolers) == 1 else f"FAN{idx}"
-        fan_parts.append(f"{label}: {rpm_s} RPM @ {level_s}")
+        # The line-level "FAN:" prefix already names the field; the inner
+        # index (no second colon) only disambiguates multi-cooler cards.
+        label = "" if len(valid_coolers) == 1 else f"FAN{idx} "
+        fan_parts.append(f"{label}{rpm_s} RPM @ {level_s}")
     fan_text = " | ".join(fan_parts) if fan_parts else "---"
 
     lanes = status.get("pcie_lanes")
@@ -286,12 +371,19 @@ def _format_metric_lines(status: dict, architecture: str) -> list[str]:
     else:
         power_text = f"{power_draw} W"
 
+    # GPU/MEM/VIDEO merged onto one compact line — the same
+    # "Clocks: Graphics/Memory/Video" table from get-status.
+    clock_text = " | ".join([
+        f"GPU {status.get('gpu_clock_mhz', '---')}",
+        f"MEM {status.get('mem_clock_mhz', '---')}",
+        f"VID {status.get('video_clock_mhz', '---')}",
+    ])
+
     return [
-        f"GPU: {status.get('gpu_clock_mhz', '---')} MHz",
-        f"MEM: {status.get('mem_clock_mhz', '---')} MHz",
+        f"CLK: {clock_text} MHz",
         f"ECLK: {_effective_clocks_text(status)}",
         f"FCLK: {_fabric_clocks_text(status) or '---'}",
-        f"VOLT: {status.get('voltage_mv', '---')} mV",
+        f"VOLT: {_voltage_text(status)}",
         f"VFP LOCK: {vfp_lock_text}",
         f"TEMP: {temp_text}",
         f"PWR: {power_text}",

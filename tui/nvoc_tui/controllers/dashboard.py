@@ -7,6 +7,11 @@ from ..metrics_format import _format_metric_lines
 from ..widgets import mnemonic_text
 from .base import PaneController
 
+# Codename tokens of HBM parts — their SECOND volt rail feeds memory, so the
+# dashboard VOLT line labels it MEM. Every other multi-rail part has the
+# second rail being the 50-series MSVDD fabric supply, labelled MSVDD.
+_HBM_CODENAME_TOKENS = ("P100", "V100", "A100", "H100", "B100", "B200", "GB200")
+
 
 class DashboardController(PaneController):
     # First sample may wake the GPU; later polls never block GC6 sleep.
@@ -19,6 +24,10 @@ class DashboardController(PaneController):
     _OFFLINE_FAIL_THRESHOLD = 3
     _OFFLINE_BACKOFF_S = 5.0
     _OFFLINE_BACKOFF_CAP_S = 15.0
+    # Volt-rails polling gives up after this many consecutive failures (part
+    # without the volt-rails family — e.g. Fermi — must not burn an escape
+    # per tick forever).
+    _RAIL_FAIL_THRESHOLD = 3
 
     def __init__(self, app) -> None:
         super().__init__(app)
@@ -28,6 +37,9 @@ class DashboardController(PaneController):
         self._consecutive_offline = 0
         self._in_offline_backoff = False
         self._offline_hint_logged = False
+        self._rail_poll_inflight = False
+        self._rail_poll_failures = 0
+        self._rail_poll_disabled = False
 
     def set_poll_timer(self, interval: float) -> None:
         interval = max(0.2, min(interval, 60.0))
@@ -119,6 +131,9 @@ class DashboardController(PaneController):
         if code != 0 and not parsed:
             return
         self.app.cache.info = parsed
+        # Info reloads on GPU switch — drop rail voltages from the previous
+        # GPU so the VOLT line can't show another part's rails for a tick.
+        self.app.cache.rail_volts = None
         self.update_metrics()
         self.app.overclock_controller.prime_inputs()
 
@@ -134,10 +149,84 @@ class DashboardController(PaneController):
             return
         self.app.cache.status = parsed
         self.update_metrics()
+        self._poll_rail_volts()
         if self.app.cache.vf_curve_points or self.app.cache.vf_curves:
             # Re-render the GPC live point (status feed) and kick the
             # direct-read poll when the active curve is xbar/host.
             self.app.vfcurve_controller.poll_live()
+
+    def _poll_rail_volts(self) -> None:
+        """Piggyback a volt-rails read on the status sweep (worker thread).
+
+        Feeds ``cache.rail_volts`` for the per-rail dashboard VOLT line
+        (GPC | MEM/MSVDD on multi-rail parts). One extra escape per tick;
+        after repeated failures (family absent on this part) the poll
+        disables itself instead of burning escapes forever.
+        """
+        if self._rail_poll_disabled or self._rail_poll_inflight:
+            return
+        try:
+            gpu = self.app.selected_gpu_target()
+        except Exception:
+            return
+        if gpu is None:
+            return
+        self._rail_poll_inflight = True
+
+        def worker() -> None:
+            try:
+                vr = self.app.native_service.query_volt_rails(gpu)
+            except Exception:
+                vr = None
+            try:
+                self.app.call_from_thread(self._on_rail_volts_loaded, vr)
+            except Exception:
+                self._rail_poll_inflight = False
+                raise
+
+        try:
+            self.app.native_service.submit_query(worker)
+        except Exception:
+            # The rail line is a display nicety — a broken executor must
+            # never take the status sweep down with it.
+            self._rail_poll_inflight = False
+
+    def _on_rail_volts_loaded(self, vr) -> None:
+        self._rail_poll_inflight = False
+        if not isinstance(vr, dict):
+            self._rail_poll_failures += 1
+            if self._rail_poll_failures >= self._RAIL_FAIL_THRESHOLD:
+                self._rail_poll_disabled = True
+            return
+        self._rail_poll_failures = 0
+        rails = vr.get("p0_rails")
+        entries = (
+            [e for e in rails if isinstance(e, dict)] if isinstance(rails, list) else []
+        )
+        try:
+            bits = sorted({int(e["rail_bit"]) for e in entries if "rail_bit" in e})
+        except (TypeError, ValueError):
+            return
+        readings: list[float] = []
+        for bit in bits[:2]:
+            for e in entries:
+                if e.get("rail_bit") == bit:
+                    cur = e.get("current_uV")
+                    if isinstance(cur, (int, float)) and cur > 0:
+                        readings.append(float(cur) / 1000.0)
+                    break
+        if not readings:
+            return
+        info = self.app.cache.info
+        codename = f"{info.get('codename') or ''} {info.get('name') or ''}".upper()
+        second_label = (
+            "MEM" if any(t in codename for t in _HBM_CODENAME_TOKENS) else "MSVDD"
+        )
+        rail_volts = [("GPC", readings[0])]
+        if len(readings) > 1:
+            rail_volts.append((second_label, readings[1]))
+        self.app.cache.rail_volts = rail_volts
+        self.update_metrics()
 
     def on_get_loaded(self, code: int, output: str, parsed: dict) -> None:
         if code != 0:
@@ -149,6 +238,8 @@ class DashboardController(PaneController):
         info = self.app.cache.info
         status = self.app.cache.status
         architecture = info.get("arch") or info.get("codename") or "---"
+        if self.app.cache.rail_volts:
+            status = {**status, "rail_volts_mv": self.app.cache.rail_volts}
         lines = _format_metric_lines(status, architecture)
         self.app.query_one("#metrics", Static).update("\n".join(lines))
 

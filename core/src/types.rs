@@ -1,4 +1,4 @@
-use nvapi_hi::Microvolts;
+use ::nvapi::hi::Microvolts;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum VfpResetDomain {

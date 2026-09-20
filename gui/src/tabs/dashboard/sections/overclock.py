@@ -30,8 +30,25 @@ _PANEL_BG = "#2b2b2b"  # CTk dark frame/scroll background
 _TEXT_FG = "#e5e5e5"  # default label text
 _TEXT_FG_DIM = "#b3b3b3"  # 'gray70' hints
 _TEXT_FG_FAINT = "#999999"  # 'gray60' status text
+_ACCENT_FG = "#e67e22"  # active-mode unit chip (mV) — orange accent
 _FONT_BODY = ("Segoe UI", 11)
 _FONT_HEADER = ("Segoe UI", 13, "bold")
+# Unit toggle (MHz/mV): slightly smaller than body so the thin border reads
+# as a chip around the unit, not a button competing with the ✓ apply.
+_FONT_UNIT = ("Segoe UI", 10)
+
+
+def _pstate_sort_key(label: str):
+    """Numeric P-State key for idle-first sorting (p8 before p0).
+
+    Non-numeric labels (defensive: a roster entry that never matched the
+    P<number> shape) sort as 0 — last after the reverse, stable relative
+    to real states.
+    """
+    try:
+        return int(str(label).lstrip("pP") or 0)
+    except ValueError:
+        return 0
 
 
 if TYPE_CHECKING:
@@ -77,7 +94,32 @@ class OverclockTab:
         self._mobile_limits_gpu = None  # type: Optional[str]
         self._mobile_load_in_flight = False
         self._volt_rail_bit = 0  # VoltRails rail bit (0 on single-rail mobile GPUs)
-        self._xbar_supported = False  # Xbar row: Turing (GTX 16系) and newer
+        # GPUs whose NVML fan-info reports zero coolers (fanless server cards:
+        # P100/A100 …) — the Fan pane greys out for these via the same
+        # set_supported_state path the mobile verdict drives.
+        self._fanless_gpus = set()  # type: Set[str]
+        # GPUs whose NVML cooler count came back ≥ 1 — observed fans win over
+        # the is_server classification (ServerLovelace L40/L4 carry fans).
+        self._fanned_gpus = set()  # type: Set[str]
+        self._fan_surface_gpu = None  # type: Optional[str]
+        self._xbar_supported = False  # Xbar row: Pascal (GTX 10系) and newer
+        # ── Clock-offset pager state ──
+        # pre-Pascal (Kepler/Fermi/Maxwell-9) has no pager: only Core/Mem.
+        # Pascal+ has 3 pages: (Core/Mem)(Xbar/Sys)(Msd/Host). Bit mapping is
+        # the Ada-verified WRITE-record table (see gpu_type.rs is_ada): bit0=GPC,
+        # bit1=XBAR(30+ couples SYS), bit2=Mem, bit3=SYS, bit5=MSD, bit9=HOST.
+        self._has_oc_pager = False
+        self._oc_page = 0
+        self._oc_page_frames = []  # type: List[tk.Frame]
+        self._oc_page_indicator = None  # type: Optional[tk.Label]
+        self._is_ampere_plus = False  # 30系+: bit1 couples SYS → bit3 -f抵消
+        self._is_pascal_gpu = False  # Pascal verdict captured at caps-query time
+        self._clk_domain_mask = (
+            0  # controllable mask from query_private_freq_domain_info
+        )
+        self._sys_supported = False  # mask has bit3
+        self._msd_supported = False  # mask has bit5 AND not Pascal (Pascal: SET N/A)
+        self._host_supported = False  # mask has bit9
         self._is_resize_active = False
         self._pending_limits = None  # type: Optional[Dict[str, Any]]
         self._pending_capabilities = None  # type: Optional[Dict[str, Any]]
@@ -94,7 +136,7 @@ class OverclockTab:
 
         d = self._DEFAULTS
 
-        # Top panels (Clock Offsets + Power & Thermal Limits) can be hosted by
+        # Top panels (V/F Offsets + Power & Thermal Limits) can be hosted by
         # the dashboard (integration mode) or live in this tab's scroll frame.
         content_host = content_parent if content_parent is not None else scroll
         content_row = tk.Frame(content_host, bg=_PANEL_BG)
@@ -104,25 +146,58 @@ class OverclockTab:
         content_row.grid_columnconfigure(1, weight=1, uniform="oc_cards")
 
         # ═══════════════════════════════════════════
-        # Clock Offset (OC)
+        # Clock Offset (OC) — 3-page pager (pre-Pascal: no pager, Core/Mem only)
         # ═══════════════════════════════════════════
-        # Thin rounded dark-blue frame marks the section boundary
+        # Page 0: Core / Mem (pstate20, -104 fallback → ClkDomains bit0/bit2)
+        # Page 1: Xbar / Sys (ClkDomains bit1/bit3; 30+ couples bit1→bit3 -f)
+        # Page 2: Msd / Host (bit5/bit9; Pascal MSD N/A, host via bit9 in mask)
         oc_frame = ctk.CTkFrame(
             content_row, border_width=1, border_color="#1f4e79", corner_radius=10
         )
-        # "new": natural height, top aligned — with "nsew" the two cards
-        # stretch to the taller one's height and the shorter card shows a
-        # large empty gap under its sliders (e.g. mobile mode layout).
         oc_frame.grid(row=0, column=0, sticky="new", padx=(0, 5))
         oc_header = tk.Frame(oc_frame, bg=_PANEL_BG)
         oc_header.pack(fill="x", padx=10, pady=(10, 9))
         tk.Label(
             oc_header,
-            text="⚡ Clock Offsets",
+            text="⚡ V/F Offsets",
             font=_FONT_HEADER,
             bg=_PANEL_BG,
             fg=_TEXT_FG,
         ).pack(side="left")
+        # Pager < > + page indicator — packed between title and API selector,
+        # hidden entirely on pre-Pascal (no fabric pages to flip).
+        pager = tk.Frame(oc_header, bg=_PANEL_BG)
+        pager.pack(side="left", padx=(8, 0))
+        self._oc_btn_prev = LiteButton(
+            pager,
+            text="◂",
+            width=26,
+            command=lambda: self._oc_page_step(-1),
+        )
+        self._oc_btn_prev.pack(side="left", padx=(0, 2))
+        self._oc_page_indicator = tk.Label(
+            pager,
+            text="1/1",
+            font=_FONT_BODY,
+            bg=_PANEL_BG,
+            fg=_TEXT_FG,
+            width=4,
+        )
+        self._oc_page_indicator.pack(side="left")
+        self._oc_btn_next = LiteButton(
+            pager,
+            text="▸",
+            width=26,
+            command=lambda: self._oc_page_step(1),
+        )
+        self._oc_btn_next.pack(side="left", padx=(2, 0))
+        pager.pack_forget()  # hidden until check_capabilities enables it
+        self._oc_pager = pager
+        HoverTooltip(
+            self._oc_btn_next,
+            "Fabric-clock pages: Xbar/Sys, Msd/Host. Pre-Pascal cards have "
+            "Core/Mem only — no pager.",
+        )
         self.oc_api_var = ctk.StringVar(value="NVAPI")
         self.oc_api_selector = ctk.CTkOptionMenu(
             oc_header,
@@ -139,11 +214,11 @@ class OverclockTab:
             "Clock offset API selector (core/memory + PState lock).\n"
             "- NVAPI: --core-offset / --mem-offset values are in kHz.\n"
             "- NVML: --core-offset / --mem-offset values are in MHz.\n"
-            "NVAPI-only rows (Xbar, Volt Limit) grey out under NVML."
+            "NVAPI-only pages (Xbar/Sys, Msd/Host) grey out under NVML."
         )
         HoverTooltip(self.oc_api_selector, oc_api_tip)
 
-        # PState lock selector
+        # PState lock selector (spans all pages)
         ps_row = tk.Frame(oc_frame, bg=_PANEL_BG)
         ps_row.pack(fill="x", padx=(26, 10), pady=(0, 5))
         ps_row.grid_columnconfigure(1, weight=1)
@@ -174,12 +249,30 @@ class OverclockTab:
         self.btn_unlock_pstate.pack(side="left")
         self.set_supported_pstates([])
 
-        # Core Clock slider + entry. Step 2.5 MHz with one decimal — the
-        # LCM-friendly grid that divides both the 7.5 MHz frequency step on
-        # 30-series and newer and the 12.5 MHz step on 10/16/20-series.
-        # entry_width=8 like Volt Limit: "+122.5" needs the extra char.
-        self.core_slider, self.core_entry, self.core_var, _ = self._make_slider_row(
-            oc_frame,
+        # ── Page frames ──
+        # Three containers; only the current page is packed. Pre-Pascal only
+        # builds page 0 and never shows the pager. padx=2 keeps the page
+        # frames OFF the card border: CTk draws the border manually on its
+        # canvas (the widget's bd is 0), so a padx=0 child spans the widget's
+        # full bounds and paints _PANEL_BG right over the left/right border
+        # lines — the border visually vanished for the page's whole span.
+        page_core = tk.Frame(oc_frame, bg=_PANEL_BG)
+        page_core.pack(fill="x", padx=2, pady=(0, 3))
+        page_fabric = tk.Frame(oc_frame, bg=_PANEL_BG)
+        page_uncore = tk.Frame(oc_frame, bg=_PANEL_BG)
+        self._oc_page_frames = [page_core, page_fabric, page_uncore]
+        self._oc_n_pages = 1  # raised to 3 once Pascal+ capabilities land
+
+        # ── Page 0: Core / Mem ──
+        # Core: step 2.5 MHz / one decimal — LCM grid for 7.5 (30+) and
+        # 12.5 (10/16/20) hardware steps. entry_width=8: "+122.5" needs it.
+        (
+            self.core_slider,
+            self.core_entry,
+            self.core_var,
+            btn_apply_core,
+        ) = self._make_slider_row(
+            page_core,
             "Core:",
             d["core_clock_min"],
             d["core_clock_max"],
@@ -190,12 +283,11 @@ class OverclockTab:
             unit="MHz",
             decimals=1,
             entry_width=8,
+            volt_bit=0,
         )
-
-        # Memory Clock slider + entry
         self.mem_slider, self.mem_entry, self.mem_var, btn_apply_mem = (
             self._make_slider_row(
-                oc_frame,
+                page_core,
                 "Mem:",
                 d["mem_clock_min"],
                 d["mem_clock_max"],
@@ -204,30 +296,48 @@ class OverclockTab:
                 apply_cmd=self._apply_mem_only,
                 signed=True,
                 unit="MHz",
+                volt_bit=2,
             )
         )
+        # The ClkDomains slot-1 volt plane (unit toggle) exists from Pascal —
+        # page 0's Core/Mem chips start as STATIC "MHz" labels (unit visible,
+        # no mV toggling) until _enable_oc_pager turns the toggle on. Hiding
+        # the chip entirely cost the pre-Pascal cards their MHz unit display
+        # (K4000: entries read "+0.0" unitless — 2026-09-18 regression).
+        for _slider in (self.core_slider, self.mem_slider):
+            self._set_unit_toggle_static(_slider, True)
         btn_apply_mem.configure(shift_command=self._apply_mem_with_sync)
         HoverTooltip(
             btn_apply_mem,
             "Shift+Click: apply global offset then sync P2 memory VFP to P0 frequency",
         )
+        # Volt-plane per-row resets (↺ next to ✓): built like the fabric
+        # rows' but VOLT-ONLY — the MHz plane's reset is the section reset's
+        # public path (pstate20/NVML), not a ClkDomains write. The chip
+        # toggle grids/grid_removes them with the plane.
+        self.btn_reset_core = self._make_domain_reset_button(
+            btn_apply_core, "Core", 0, self.core_slider, self.core_var
+        )
+        self.btn_reset_mem = self._make_domain_reset_button(
+            btn_apply_mem, "Mem", 2, self.mem_slider, self.mem_var
+        )
+        self.core_slider._oc_reset_volt_only = True
+        self.mem_slider._oc_reset_volt_only = True
+        self.btn_reset_core.grid_remove()
+        self.btn_reset_mem.grid_remove()
 
-        # Xbar (crossbar fabric) clock offset — NVAPI-only private ClockClient
-        # domain offset (pynvoc set_clk_domain_offset, the GUI-MHz face of the
-        # CLI's `set-clk-domain-offset xbar <kHz>`). Same row format as
-        # Core/Mem; arch-gated to Turing (GTX 16-series) and newer, and greyed
-        # under the NVML backend selection. Range ±500 MHz with a 5 MHz
-        # wheel/drag step — the article only documented a ±60 MHz XBAR bound
-        # on GB202, but 50-series fabric clocks run far higher, so leave the
-        # wide range and let the driver reject unsafe writes (the medium
-        # layer snapshot/SET/readback/restore guards the write itself).
+        # ── Page 1: Xbar / Sys ──
+        # Xbar = ClkDomains bit1. 30系+Ada couples bit1→SYS, so超 XBAR f writes
+        # bit1=+f AND bit3=-f to cancel the SYS drift; 10/16/20/Pascal直写 bit1.
+        # Range ±500 MHz / 5 MHz step — let the driver reject unsafe writes
+        # (snapshot/SET/readback/restore guards the write itself).
         (
             self.xbar_slider,
             self.xbar_entry,
             self.xbar_var,
             self.btn_apply_xbar,
         ) = self._make_slider_row(
-            oc_frame,
+            page_fabric,
             "Xbar:",
             -500,
             500,
@@ -236,30 +346,93 @@ class OverclockTab:
             apply_cmd=self._apply_xbar_only,
             signed=True,
             unit="MHz",
+            volt_bit=1,
+        )
+        self.btn_reset_xbar = self._make_domain_reset_button(
+            self.btn_apply_xbar, "Xbar", 1, self.xbar_slider, self.xbar_var
+        )
+        # Sys = ClkDomains bit3 (纯 SYS). RMW: read bit3 current offset, +f, write
+        # back (preserves any Xbar抵消 already on bit3).
+        self.sys_slider, self.sys_entry, self.sys_var, self.btn_apply_sys = (
+            self._make_slider_row(
+                page_fabric,
+                "Sys:",
+                -500,
+                500,
+                0,
+                step=5,
+                apply_cmd=self._apply_sys_only,
+                signed=True,
+                unit="MHz",
+                volt_bit=3,
+            )
+        )
+        self.btn_reset_sys = self._make_domain_reset_button(
+            self.btn_apply_sys, "Sys", 3, self.sys_slider, self.sys_var
         )
 
-        # Buttons — apply/reset each take half the row
+        # ── Page 2: Msd / Host ──
+        # Msd = bit5 (Pascal: SET N/A → greyed). Host = bit9 (presence via
+        # controllable mask: 0x3FF has bit9, 0xFF does not).
+        self.msd_slider, self.msd_entry, self.msd_var, self.btn_apply_msd = (
+            self._make_slider_row(
+                page_uncore,
+                "Msd:",
+                -500,
+                500,
+                0,
+                step=5,
+                apply_cmd=self._apply_msd_only,
+                signed=True,
+                unit="MHz",
+                volt_bit=5,
+            )
+        )
+        self.btn_reset_msd = self._make_domain_reset_button(
+            self.btn_apply_msd, "Msd", 5, self.msd_slider, self.msd_var
+        )
+        self.host_slider, self.host_entry, self.host_var, self.btn_apply_host = (
+            self._make_slider_row(
+                page_uncore,
+                "Host:",
+                -500,
+                500,
+                0,
+                step=5,
+                apply_cmd=self._apply_host_only,
+                signed=True,
+                unit="MHz",
+                volt_bit=9,
+            )
+        )
+        self.btn_reset_host = self._make_domain_reset_button(
+            self.btn_apply_host, "Host", 9, self.host_slider, self.host_var
+        )
+        # Fabric/uncore pages start hidden until check_capabilities enables the
+        # pager (Pascal+). Their slider rows live inside page_fabric/uncore,
+        # which themselves are not packed until paged-to.
+        page_fabric.pack_forget()
+        page_uncore.pack_forget()
+
+        # Buttons — apply/reset the CURRENT page
         btn_oc = tk.Frame(oc_frame, bg=_PANEL_BG)
         btn_oc.pack(fill="x", padx=(26, 10), pady=(5, 10))
         btn_oc.columnconfigure(0, weight=1, uniform="oc_btns")
         btn_oc.columnconfigure(1, weight=1, uniform="oc_btns")
-        # Anchor for repacking the arch-gated Xbar row (kept just below Mem).
         self._oc_buttons_row = btn_oc
-        LiteButton(
+        self.btn_apply_oc = LiteButton(
             btn_oc, text="✅ Apply Section", width=10, command=self._apply_oc
-        ).grid(row=0, column=0, sticky="ew", padx=(0, 5))
-        LiteButton(
+        )
+        self.btn_apply_oc.grid(row=0, column=0, sticky="ew", padx=(0, 5))
+        self.btn_reset_oc = LiteButton(
             btn_oc,
             text="🔄 Reset Section",
             width=10,
             fg_color="#c0392b",
             hover_color="#96281b",
             command=self._reset_oc,
-        ).grid(row=0, column=1, sticky="ew", padx=(5, 0))
-
-        # Xbar is arch-gated (Turing/16-series and newer): hidden until
-        # check_capabilities() sees a matching architecture.
-        self.xbar_slider.master.pack_forget()
+        )
+        self.btn_reset_oc.grid(row=0, column=1, sticky="ew", padx=(5, 0))
 
         # ═══════════════════════════════════════════
         # Power & Thermal Limits
@@ -640,8 +813,7 @@ class OverclockTab:
             self.app.run_native_action(
                 "enable dynamic boost",
                 lambda native, gpu=gpu: (
-                    native.set_dynamic_boost(gpu, True)
-                    or "Dynamic Boost (PPAB) enabled."
+                    native.set_ppab_status(gpu, True) or "Dynamic Boost (PPAB) enabled."
                 ),
             )
 
@@ -668,16 +840,20 @@ class OverclockTab:
             self._power_default = int(
                 round(float(tgp.get("default_watt") or tgp.get("min_watt")))
             )
-            # Position the slider at the enforced power limit (NVML, from
-            # the mobile-limits query) — the actually-active wall. The TGP
-            # policy exposes no current-value read; default_watt is only
-            # the fallback.
+            # Position the slider at the actually-effective power wall
+            # (``power_limit_w`` from the mobile-limits query — min of the
+            # requested TGP and the active D-Notifier cap, i.e. nvidia-smi's
+            # PPAB Ceiling "Current"). When the wall sits OUTSIDE the fresh
+            # TGP range (a just-applied clamp can leave it a few W off the
+            # new bound), CLAMP to the nearest bound — never jump to the
+            # VBIOS default, which is neither the old nor the new real wall
+            # (the slider used to jump there and it read as a wild value
+            # change).
             current_w = data.get("power_limit_w")
             position = self._power_default
             if current_w is not None:
                 current_w = int(round(float(current_w)))
-                if min_w <= current_w <= max_w:
-                    position = current_w
+                position = max(min_w, min(max_w, current_w))
             self._reconfigure_slider(
                 self.plimit_slider,
                 self.plimit_var,
@@ -749,6 +925,15 @@ class OverclockTab:
                     pos_mv,
                     step=2.5,
                 )
+                # Push the refreshed P0 effective wall to the VF curve tab so
+                # its light-red boundary line tracks a Volt Limit apply. The
+                # hardware walls (floor/ceiling) are cached once by the VF
+                # curve's own first-load query and never re-pushed here.
+                vfcurve = getattr(self.app, "tab_vfcurve", None)
+                if vfcurve is not None and hasattr(vfcurve, "update_p0_effective_wall"):
+                    eff = int(p0.get("effective_wall_uV", 0) or 0)
+                    if eff > 0:
+                        vfcurve.update_p0_effective_wall(eff)
 
     @staticmethod
     def _volt_limit_bounds_from_p0(p0: dict) -> tuple[float, float, float]:
@@ -828,42 +1013,129 @@ class OverclockTab:
             str(info.get("gpu_name", "") or ""),
         )
 
+    def _query_clk_domain_capabilities(self, info: dict) -> None:
+        """Async query the private ClockClient controllable mask and derive
+        the per-domain presence for the Sys/Msd/Host rows. Piggybacks on the
+        status thread (one escape, never on the render path). Sets
+        ``_clk_domain_mask`` + ``_sys/msd/host_supported`` and re-applies the
+        grey gate. Pascal MSD is force-disabled (bit5 SET N/A) regardless of
+        mask. Host presence = bit9 in the mask (0x3FF vs 0xFF).
+        """
+        # Pascal verdict computed HERE (main thread, info in hand) — the
+        # loaded callback runs later and must not reach for the info payload
+        # again (the GUI App has no info cache; reaching for one crashed the
+        # callback, leaving Msd/Host greyed forever).
+        self._is_pascal_gpu = self._is_pascal_from_info(info)
+        if not self._has_oc_pager:
+            return
+        gpu = self.app.selected_gpu_target()
+        if gpu is None:
+            return
+
+        def worker() -> None:
+            try:
+                data = self.app.backend.query_private_freq_domain_info(gpu)
+            except Exception:
+                data = None
+            try:
+                self.frame.after(0, lambda: self._on_clk_domain_caps_loaded(data))
+            except Exception:
+                pass
+
+        self.app.run_background("clk-domain-caps", worker)
+
+    def _on_clk_domain_caps_loaded(self, data: Optional[dict]) -> None:
+        if not isinstance(data, dict):
+            return
+        mask_str = data.get("controllable_mask")
+        try:
+            mask = int(str(mask_str), 0) if mask_str is not None else 0
+        except ValueError:
+            mask = 0
+        self._clk_domain_mask = mask
+        self._sys_supported = bool(mask & (1 << 3))
+        # MSD: Pascal has no bit5 SET even if the mask claims the record —
+        # the generation verdict captured at query time rules it out.
+        has_bit5 = bool(mask & (1 << 5))
+        self._msd_supported = has_bit5 and not self._is_pascal_gpu
+        self._host_supported = bool(mask & (1 << 9))
+        self._refresh_nvapi_only_rows()
+
+    @staticmethod
+    def _is_pascal_from_info(info: dict) -> bool:
+        """Pascal (GTX 10-series) detection for the MSD grey-out (Pascal bit5
+        SET N/A). Uses the gpu_series text from pynvoc query_info."""
+        series = str(info.get("gpu_series") or "").lower()
+        if "10 series" in series:
+            return True
+        # codename fallback
+        codename = str(info.get("codename") or "").lower()
+        return codename.startswith("gp")
+
+    @staticmethod
+    def _is_blackwell_from_info(info: dict) -> bool:
+        """Blackwell (50-series) detection for the ClkDomains slot mapping.
+
+        The WRITE record's plane slots shift one dword down on Blackwell
+        (live user probe 2026-09-02: slot2 = frequency offset, slot3 =
+        V/F-curve voltage addend; 10~40 series = slot0/slot1). Codename
+        gate GB* — desktop/laptop/workstation/server Blackwell all share
+        the prefix; Volta GV100 and Pascal GP* don't collide.
+        """
+        codename = str(info.get("codename") or "").upper()
+        return codename.startswith("GB")
+
+    def _clk_freq_slot(self) -> int:
+        """ClkDomains WRITE record slot carrying the FREQUENCY plane —
+        generation-dependent (see _is_blackwell_from_info)."""
+        return 2 if getattr(self, "_is_blackwell_gpu", False) else 0
+
+    def _clk_volt_slot(self) -> int:
+        """ClkDomains WRITE record slot carrying the VOLTAGE plane."""
+        return 3 if getattr(self, "_is_blackwell_gpu", False) else 1
+
     @staticmethod
     def _xbar_supported_arch(
         arch_id: str, codename: str = "", gpu_name: str = ""
     ) -> bool:
-        """True for Turing (the GTX 16-series) and every newer architecture.
+        """True for Pascal (GTX 10-series) and every newer architecture.
+
+        Pascal is included since the Xbar offset was live-verified there
+        (nvoc-cli set-private-freq-domain-global-offset xbar, 2026-08-31),
+        and Volta (the server-card generation between P100 and T4) is
+        allowed through alongside it. Kepler and older return False — the
+        XBAR ClockClient domain postdates them.
 
         Three signals, in priority order:
-        1. Chip codes from the codename or the arch string (tu106, ga102,
-           ad107, gb202 — optionally suffixed ":rev", "-B", " (process)").
-           The codename matters: on Ada the pynvoc ArchInfo enum has no AD
-           variant and reports ``gpu_architecture = 'Unknown:400:7:161'``,
-           while ``codename = 'AD107-B'`` carries the real chip code.
-        2. Friendly architecture names (Turing, Ampere, Ada, Blackwell) from
-           the CLI human output.
-        3. Marketing-name fallback: ``RTX 4060`` / ``GTX 1660`` — the model
-           number >= 1600 means 16-series or newer (GTX 1080/10-series and
-           below stay hidden).
-        Pascal (gp), Volta (gv) and older return False — the XBAR
-        ClockClient domain postdates them.
+        1. Chip codes from the codename or the arch string (gp104, tu106,
+           ga102, ad107, gb202 — optionally suffixed ":rev", "-B",
+           " (process)"). The codename matters: on Ada the pynvoc ArchInfo
+           enum has no AD variant and reports
+           ``gpu_architecture = 'Unknown:400:7:161'``, while
+           ``codename = 'AD107-B'`` carries the real chip code.
+        2. Friendly architecture names (Pascal, Turing, Ampere, Ada,
+           Blackwell) from the CLI human output.
+        3. Marketing-name fallback: ``RTX 4060`` / ``GTX 1660`` / ``GTX
+           1080`` — the model number >= 1000 means 10-series or newer
+           (GTX 980/9-series and below stay hidden).
         """
         # 1) chip codes (codename first — it is the reliable one on Ada).
         for raw in (codename, arch_id):
             head = (
                 raw.lower().split("(", 1)[0].split(":", 1)[0].split("-", 1)[0].strip()
             )
-            if head.startswith(("tu", "ga", "ad", "gb")):
+            if head.startswith(("gp", "gv", "tu", "ga", "ad", "gb")):
                 return True
         # 2) friendly names.
         if any(
-            name in arch_id.lower() for name in ("turing", "ampere", "ada", "blackwell")
+            name in arch_id.lower()
+            for name in ("pascal", "volta", "turing", "ampere", "ada", "blackwell")
         ):
             return True
-        # 3) marketing name: RTX/GTX + model number, 1600 = 16-series floor.
+        # 3) marketing name: RTX/GTX + model number, 1000 = 10-series floor.
         match = __import__("re").search(r"\b(?:rtx|gtx)\s*(\d{3,4})", gpu_name.lower())
         if match:
-            return int(match.group(1)) >= 1600
+            return int(match.group(1)) >= 1000
         return False
 
     @staticmethod
@@ -897,17 +1169,23 @@ class OverclockTab:
         """Build the console message from a ``set_clk_domain_offset`` result.
 
         Like ``set_volt_rail_target``, the pynvoc call returns a dict (the
-        applied payload with the driver's readback ``applied_kHz``, or
+        applied payload with the driver's readback ``applied_mHz`` (or the
+        legacy ``applied_kHz``), or
         ``{"supported": False}``) — never ``None`` — so the message must be
         formatted here rather than via ``setter() or "msg"``.
         """
         if isinstance(result, dict):
             if result.get("applied"):
-                applied = result.get("applied_kHz")
+                applied = result.get("applied_mHz")
+                if applied is None:
+                    legacy = result.get("applied_kHz")
+                    applied = (
+                        legacy / 1000.0 if isinstance(legacy, (int, float)) else None
+                    )
                 if isinstance(applied, (int, float)):
                     return (
                         f"Successfully applied Xbar offset {offset_mhz:+d} MHz "
-                        f"(driver readback {applied / 1000.0:+g} MHz)."
+                        f"(driver readback {applied:+g} MHz)."
                     )
                 return f"Successfully applied Xbar offset {offset_mhz:+d} MHz."
             if result.get("supported") is False:
@@ -924,7 +1202,7 @@ class OverclockTab:
         self.app.run_native_action(
             "toggle dynamic boost",
             lambda native, gpu=gpu, active=active: (
-                native.set_dynamic_boost(gpu, active)
+                native.set_ppab_status(gpu, active)
                 or f"Dynamic Boost (PPAB) {'enabled' if active else 'disabled'}."
             ),
         )
@@ -1011,34 +1289,34 @@ class OverclockTab:
         vboost_entry_state = self._safe_get_state(self.vboost_entry)
         vboost_btn_state = self._safe_get_state(self.btn_apply_vboost)
 
-        if "core_clock_min" in limits and "core_clock_max" in limits:
-            current = limits.get("core_clock_current", 0)
-            self._reconfigure_slider(
+        # Core/Mem rows are PLANE-AWARE: a row whose unit chip sits on mV
+        # must not be re-anchored from the public pstate20 frequency table —
+        # that payload's *_clock_current is the FREQUENCY offset, and writing
+        # it into an mV row stomps the whole plane (range/step bounce back to
+        # the MHz construction values, the entry shows the freq offset). The
+        # mV row remembers the MHz range for the toggle-back and re-anchors
+        # its value at the record's live ClkDomains slot-1 — after an apply
+        # that reads back what the driver actually accepted.
+        for slider, var, key_min, key_max, key_cur, mhz_step in (
+            (
                 self.core_slider,
                 self.core_var,
-                limits["core_clock_min"],
-                limits["core_clock_max"],
-                current,
-                step=2.5,
-            )
-        elif "core_clock_current" in limits:
-            self._set_slider_value(
-                self.core_slider, self.core_var, limits["core_clock_current"]
-            )
-
-        if "mem_clock_min" in limits and "mem_clock_max" in limits:
-            current = limits.get("mem_clock_current", 0)
-            self._reconfigure_slider(
+                "core_clock_min",
+                "core_clock_max",
+                "core_clock_current",
+                2.5,
+            ),
+            (
                 self.mem_slider,
                 self.mem_var,
-                limits["mem_clock_min"],
-                limits["mem_clock_max"],
-                current,
-                step=5,
-            )
-        elif "mem_clock_current" in limits:
-            self._set_slider_value(
-                self.mem_slider, self.mem_var, limits["mem_clock_current"]
+                "mem_clock_min",
+                "mem_clock_max",
+                "mem_clock_current",
+                5,
+            ),
+        ):
+            self._update_clock_row_from_limits(
+                slider, var, limits, key_min, key_max, key_cur, mhz_step
             )
 
         if self._mobile_mode:
@@ -1094,6 +1372,16 @@ class OverclockTab:
                 self._set_slider_value(
                     self.plimit_slider, self.plimit_var, limits["power_limit_current"]
                 )
+        # Support-log the live power-slider plane: file-only (no console
+        # noise), and it turns "slider stayed at construction defaults"
+        # reports into a one-line post-mortem without screen access.
+        self.app.console.mirror(
+            f"plimit slider now "
+            f"{self.plimit_slider.cget('from_')}..{self.plimit_slider.cget('to')}"
+            f"@{self.plimit_slider.get()} "
+            f"({power_backend}, keys: "
+            f"{sorted(k for k in limits if 'power' in k)})"
+        )
 
         if "thermal_limit_min" in limits and "thermal_limit_max" in limits:
             default_raw = limits.get("thermal_limit_default", 83)
@@ -1174,6 +1462,45 @@ class OverclockTab:
         if "supported_pstates" in limits:
             self.set_supported_pstates(limits.get("supported_pstates"))
 
+    def _update_clock_row_from_limits(
+        self,
+        slider: Any,
+        var: ctk.StringVar,
+        limits: Dict[str, Any],
+        key_min: str,
+        key_max: str,
+        key_cur: str,
+        mhz_step: float,
+    ):
+        """One Core/Mem row's update_limits handling, plane-aware.
+
+        MHz plane (chip on MHz): the original behavior — full range
+        reconfigure from min/max, or value-only from current. mV plane (chip
+        on mV): the payload's public freq table is NOT this row's state;
+        only remember the MHz range for the toggle-back and re-anchor the
+        value at the live ClkDomains slot-1. Payloads that say nothing
+        about the row are ignored (no anchor query, no stomp mid-typing).
+        """
+        if not any(k in limits for k in (key_min, key_max, key_cur)):
+            return
+        if self._row_volt_mode(slider):
+            if key_min in limits and key_max in limits:
+                slider._oc_freq_min = limits[key_min]
+                slider._oc_freq_max = limits[key_max]
+            self._set_slider_value(slider, var, self._query_row_volt_anchor_mv(slider))
+            return
+        if key_min in limits and key_max in limits:
+            self._reconfigure_slider(
+                slider,
+                var,
+                limits[key_min],
+                limits[key_max],
+                limits.get(key_cur, 0),
+                step=mhz_step,
+            )
+        elif key_cur in limits:
+            self._set_slider_value(slider, var, limits[key_cur])
+
     def set_vfp_state(
         self, has_vfp_offset: bool, uniform_core_offset_mhz: Optional[int] = None
     ):
@@ -1225,22 +1552,44 @@ class OverclockTab:
             gpu = self.app.selected_gpu_target()
             if gpu is not None and gpu != self._mobile_limits_gpu:
                 self._load_mobile_limits()
-        self.fan_section.set_supported(not is_mobile)
+        # Fan verdict: mobile GPUs AND fanless server cards both grey the
+        # pane out through the same set_supported_state path. Server verdict
+        # is synchronous (gpu_type.rs is_server flag in this payload — Tesla
+        # P100/A100/… are passive); the async NVML cooler count refines it
+        # (ServerLovelace L40/L4 carry onboard fans, count ≥ 1 re-enables).
+        fan_gpu = self.app.selected_gpu_target()
+        server_flag = info.get("is_server")
+        fanless = (fan_gpu is not None and fan_gpu in self._fanless_gpus) or (
+            isinstance(server_flag, bool)
+            and server_flag
+            and fan_gpu not in self._fanned_gpus
+        )
+        self.fan_section.set_supported(not is_mobile and not fanless)
+        self._refresh_fan_surface(is_mobile)
 
-        # Xbar (private ClockClient domain offset) exists from Turing — the
-        # GTX 16-series — onward. Older archs hide the row entirely; when it
-        # is shown, the OC backend dropdown gate also applies (NVML has no
-        # Xbar path).
+        # Xbar (private ClockClient domain offset) exists from Pascal — the
+        # GTX 10-series — onward. Pascal+ enables the 3-page clock-offset pager
+        # (Core/Mem | Xbar/Sys | Msd/Host); pre-Pascal has Core/Mem only (no
+        # pager). The pager is driven by the same xbar_supported flag; the
+        # per-row presence (Sys/Msd/Host) is refined by the controllable mask
+        # queried asynchronously below.
         xbar_ok = self._xbar_supported_from_info(info)
-        if xbar_ok != self._xbar_supported:
+        if xbar_ok != self._has_oc_pager:
             self._xbar_supported = xbar_ok
-            if xbar_ok:
-                self.xbar_slider.master.pack(
-                    fill="x", padx=(26, 10), pady=3, before=self._oc_buttons_row
-                )
-            else:
-                self.xbar_slider.master.pack_forget()
-            self._refresh_nvapi_only_rows()
+            self._enable_oc_pager(xbar_ok)
+        # 30系+ (Ampere/Ada/Blackwell): bit1 couples SYS → XBAR write must also
+        # write bit3=-f to cancel the SYS drift. Pascal/Turing/GTX16 直写 bit1.
+        ampere_flag = info.get("is_ampere_plus")
+        if isinstance(ampere_flag, bool):
+            self._is_ampere_plus = ampere_flag
+        # Blackwell (50系): the ClkDomains plane slots shift (freq=2/volt=3).
+        # Every ClkDomains read/write on this tab routes through
+        # _clk_freq_slot/_clk_volt_slot.
+        self._is_blackwell_gpu = self._is_blackwell_from_info(info)
+        # Controllable mask (which WRITE records the driver exposes) + the
+        # per-domain presence derived from it. Queried async — the first tick
+        # after a GPU switch still has the previous/default mask.
+        self._query_clk_domain_capabilities(info)
         # Maxwell / 900 series and older detection. Primary signal: the
         # payload's is_legacy_voltage flag (core gpu_type.rs — 9系 GM 及更旧,
         # 含 Kepler/Fermi 落 Unknown 的保守归类). Fallback heuristic below for
@@ -1286,6 +1635,102 @@ class OverclockTab:
             self.vboost_label_var.set("VoltBoost:")
             self.vboost_unit_var.set("%")
 
+    # ── Fan surface (dropdown / initial level / policy verdict) ──────────
+    def _refresh_fan_surface(self, is_mobile: bool) -> None:
+        """Query the fan surface (NVML fan info + NVAPI cooler family) and
+        adapt the Fan Control pane.
+
+        The two answers together carry the legacy verdict: on ≤ Kepler
+        drivers the private NVAPI cooler family reports zero coolers while
+        NVML still answers (v1 GetFanSpeed: count=1, live current percent)
+        — that pair restricts the policy dropdown to default/manual. On
+        modern cards both surfaces answer (1650 Super / A4000: NVAPI
+        count=1) and the continuous/manual policy list is kept. Either
+        way the fan-target dropdown is restricted to the real cooler
+        count (no "Fan 2" on single-fan cards) and the level slider
+        starts at the live current duty when NVML can read one.
+        """
+        if is_mobile or getattr(self, "_fan_surface_load_in_flight", False):
+            return
+        gpu = self.app.selected_gpu_target()
+        if gpu is None:
+            return
+        backend = self.app.backend
+        self._fan_surface_load_in_flight = True
+        self._fan_surface_gpu = gpu
+
+        def worker():
+            try:
+                data = backend.query_fan_info(gpu)
+            except Exception:
+                data = None
+            try:
+                cooler = backend.query_cooler_info(gpu)
+            except Exception:
+                cooler = None
+            try:
+                self.frame.after(0, lambda: self._fan_surface_loaded(gpu, data, cooler))
+            except Exception:
+                self._fan_surface_load_in_flight = False
+
+        try:
+            self.app.run_background("fan-surface", worker)
+        except Exception:
+            self._fan_surface_load_in_flight = False
+            raise
+
+    def _fan_surface_loaded(
+        self, gpu: str, data: Optional[dict], cooler_data: Optional[dict] = None
+    ) -> None:
+        self._fan_surface_load_in_flight = False
+        if not isinstance(data, dict):
+            return
+        # A GPU switch between dispatch and completion must not re-verdict
+        # the pane for the wrong card.
+        if gpu != self._fan_surface_gpu:
+            return
+        try:
+            count = data.get("count")
+            count = count if isinstance(count, int) else 0
+            current = data.get("current_percent")
+            current = current if isinstance(current, int) else None
+
+            if count >= 1:
+                self._fanless_gpus.discard(gpu)
+                self._fanned_gpus.add(gpu)
+                self.fan_section.set_supported(True)
+                # Legacy verdict = the original GT730 signature: NVML sees
+                # fans while the private NVAPI cooler family reports none
+                # (≤ Kepler drivers). Modern cards answer the family too
+                # (1650 Super / A4000 both count=1), so they KEEP the
+                # continuous/manual policy list — the old unconditional
+                # verdict flagged every fanned GPU as legacy. A missing
+                # NVAPI answer conservatively counts as legacy. The verdict
+                # must run both ways: switching legacy → modern restores
+                # the modern list (the controller early-returns on no-op).
+                cooler_count = (
+                    cooler_data.get("count") if isinstance(cooler_data, dict) else None
+                )
+                # None (NVAPI unanswered) or 0 → legacy; ≥1 → modern.
+                legacy_nvapi = not cooler_count
+                self.fan_section.set_legacy_nvapi(legacy_nvapi)
+                choices = ["All"] + [f"Fan {i}" for i in range(1, count + 1)]
+                self.fan_section.set_fan_choices(choices)
+                if count == 1 and current is not None:
+                    # Seed the level with the live duty so the slider starts
+                    # where the fan actually is.
+                    self.fan_section.set_level(max(0, min(100, int(current))))
+            elif count == 0:
+                # Fanless server card (P100/A100 …): NVML reports zero
+                # coolers and the private NVAPI cooler family answers
+                # NOT_SUPPORTED — grey the section out (same path mobile
+                # takes) instead of leaving dead controls behind.
+                self._fanless_gpus.add(gpu)
+                self._fanned_gpus.discard(gpu)
+                self.fan_section.set_supported(False)
+        except Exception:
+            pass
+
     @staticmethod
     def _normalize_pstate_label(value: Any) -> Optional[str]:
         if isinstance(value, str):
@@ -1307,6 +1752,20 @@ class OverclockTab:
             seen.add(label)
             normalized.append(label)
 
+        # Canonical order idle-first (p8 → p0), regardless of the reporting
+        # backend: NVML's supported-performance-states enumerates idle-first,
+        # but the NVAPI pstates20 roster (the fallback on legacy drivers
+        # where NVML is absent) lists max-first — unsorted, the same selector
+        # rendered mirrored on old cards, and the default selection (last
+        # slot = the max-perf endpoint) silently became the idle state.
+        normalized.sort(key=_pstate_sort_key, reverse=True)
+
+        # A fresh p-state roster means a get/GPU-switch refresh — drop any
+        # mem-range-failure fallback state from the previous GPU (the pin
+        # re-arms per GPU when its own mem-range attempt fails).
+        self._pstate_pin_fallback = False
+        self.pstate_selector.set_point_mode(False)
+
         self._supported_pstates = normalized
         self.pstate_selector.set_values(normalized)
 
@@ -1314,6 +1773,35 @@ class OverclockTab:
         self._safe_set_state(self.pstate_selector, state)
         self._safe_set_state(self.btn_apply_pstate, state)
         self._safe_set_state(self.btn_unlock_pstate, state)
+
+    def _on_mem_range_lock_failed(self, start: str, end: str) -> None:
+        """Mem-range lock failed at runtime → pre-Kepler part, fall back.
+
+        On these parts the NVML P-State mem-clock-range query the window
+        derivation needs is Not Supported (GT730/391.35), so the range lock
+        can never succeed — switch to the native single-P-State pin. The pin
+        has no range form, so fuse the selector into point-mode and re-apply
+        with the range's high-perf endpoint (start). Runs on the main thread
+        from the mem-range action's on_finished — by then the failed action
+        has released the native-action gate, so the pin's apply goes through.
+        """
+        gpu = self.app.selected_gpu_target()
+        if gpu is None:
+            return
+        self._pstate_pin_fallback = True
+        self.pstate_selector.set_point_mode(True)
+        self.app.console.append(
+            "[GUI] Memory-range P-State lock unavailable on this GPU — "
+            "falling back to the native single-P-State pin "
+            f"(P{str(start).lstrip('Pp')}).\n"
+        )
+        self.app.run_native_action(
+            "apply P-State lock",
+            lambda native, gpu=gpu, pstate=start: (
+                native.set_pstate_native_lock(gpu, pstate)
+                or f"Successfully pinned NVAPI P-State {pstate}."
+            ),
+        )
 
     @staticmethod
     def _oc_pstate() -> str:
@@ -1329,20 +1817,105 @@ class OverclockTab:
         """OC backend dropdown moved: re-apply the NVAPI-only row gate."""
         self._refresh_nvapi_only_rows()
 
-    def _refresh_nvapi_only_rows(self):
-        """Sync the enabled state of the NVAPI-only rows (Xbar, Volt Limit).
+    # ── Clock-offset pager ──
+    _OC_PAGE_NAMES = ("Core/Mem", "Xbar/Sys", "Msd/Host")
 
-        NVML exposes neither the private ClockClient domain offsets (Xbar)
-        nor the VoltRails family (Volt Limit), so both rows grey out while
-        the Clock Offsets backend dropdown sits on NVML. Volt Limit is only
-        touched in mobile mode — the desktop panel hides the row and the
-        'off' mode has already disabled the whole panel (this re-applies the
-        gate after _set_limit_panel_mode re-enables the mobile widgets).
+    def _set_oc_page(self, page: int) -> None:
+        """Switch the visible clock-offset page (0..n-1). No-op off-range."""
+        n = max(1, self._oc_n_pages)
+        page = max(0, min(page, n - 1))
+        if page == self._oc_page and self._oc_page_frames[page].winfo_ismapped():
+            # Same page already on screen — still refresh the chrome:
+            # _enable_oc_pager raises _oc_n_pages at capability time and
+            # re-points at page 0, and without this refresh the indicator
+            # keeps its construct-time "1/1" until the first real flip.
+            self._update_oc_pager_chrome(page)
+            return
+        # repack: hide all, show the target (below ps_row, above btn_oc)
+        for i, fr in enumerate(self._oc_page_frames):
+            if i < self._oc_n_pages:
+                if i == page:
+                    fr.pack(fill="x", padx=2, pady=(0, 3), before=self._oc_buttons_row)
+                else:
+                    fr.pack_forget()
+            else:
+                fr.pack_forget()
+        self._oc_page = page
+        self._update_oc_pager_chrome(page)
+        self._refresh_nvapi_only_rows()
+
+    def _oc_page_step(self, delta: int) -> None:
+        """Round-robin page advance: past the last page wraps to the first
+        (and before the first wraps to the last)."""
+        n = max(1, self._oc_n_pages)
+        self._set_oc_page((self._oc_page + delta) % n)
+
+    def _update_oc_pager_chrome(self, page: int) -> None:
+        """Indicator text + arrow states. Round-robin paging has no dead
+        ends, so both arrows stay enabled whenever the pager exists."""
+        if self._oc_page_indicator is not None:
+            self._oc_page_indicator.configure(text=f"{page + 1}/{self._oc_n_pages}")
+        self._oc_btn_prev.configure(state="normal")
+        self._oc_btn_next.configure(state="normal")
+
+    def _enable_oc_pager(self, enabled: bool) -> None:
+        """Show/hide the pager + fabric/uncore pages (Pascal+ vs pre-Pascal)."""
+        self._has_oc_pager = enabled
+        self._oc_n_pages = 3 if enabled else 1
+        # The ClkDomains slot-1 volt plane exists from Pascal — page 0's
+        # Core/Mem unit chips switch between interactive toggles (Pascal+)
+        # and static MHz labels (pre-Pascal: no ClockClient WRITE plane to
+        # toggle into, but the unit display stays).
+        for slider in (self.core_slider, self.mem_slider):
+            self._set_unit_toggle_static(slider, not enabled)
+            self._set_unit_toggle_visible(slider, True)
+        if enabled:
+            if not self._oc_pager.winfo_ismapped():
+                self._oc_pager.pack(
+                    side="left", padx=(8, 0), before=self.oc_api_selector
+                )
+        else:
+            self._oc_pager.pack_forget()
+        # ensure only the legal pages exist
+        for i, fr in enumerate(self._oc_page_frames):
+            if i >= self._oc_n_pages:
+                fr.pack_forget()
+        self._set_oc_page(0)
+
+    def _refresh_nvapi_only_rows(self):
+        """Sync the enabled state of the NVAPI-only pages/rows + Volt Limit.
+
+        NVML exposes neither the private ClockClient domain offsets (Xbar/Sys/
+        Msd/Host) nor the VoltRails family (Volt Limit), so the fabric/uncore
+        pages grey out while the V/F Offsets backend sits on NVML. Volt Limit
+        is only touched in mobile mode (re-applies the gate after
+        _set_limit_panel_mode re-enables the mobile widgets).
         """
-        state = "disabled" if self._selected_oc_backend() == "nvml" else "normal"
-        if self._xbar_supported:
-            for widget in (self.xbar_slider, self.xbar_entry, self.btn_apply_xbar):
-                self._safe_set_state(widget, state)
+        nvapi = self._selected_oc_backend() != "nvml"
+        state = "normal" if nvapi else "disabled"
+        # Page 1 (Xbar/Sys): always shown on Pascal+ but disabled under NVML;
+        # each row also gated by its controllable-mask bit.
+        if self._has_oc_pager:
+            for widget, ok in (
+                (self.xbar_slider, True),  # bit1 — present whenever pager is on
+                (self.xbar_entry, True),
+                (self.btn_apply_xbar, True),
+                (self.btn_reset_xbar, True),
+                (self.sys_slider, self._sys_supported),
+                (self.sys_entry, self._sys_supported),
+                (self.btn_apply_sys, self._sys_supported),
+                (self.btn_reset_sys, self._sys_supported),
+                (self.msd_slider, self._msd_supported),
+                (self.msd_entry, self._msd_supported),
+                (self.btn_apply_msd, self._msd_supported),
+                (self.btn_reset_msd, self._msd_supported),
+                (self.host_slider, self._host_supported),
+                (self.host_entry, self._host_supported),
+                (self.btn_apply_host, self._host_supported),
+                (self.btn_reset_host, self._host_supported),
+            ):
+                self._safe_set_state(widget, state if (nvapi and ok) else "disabled")
+        # Volt Limit (mobile) gate unchanged
         if self._limit_panel_mode == "mobile":
             for widget in (
                 self.vlimit_slider,
@@ -1378,9 +1951,11 @@ class OverclockTab:
         step: float = 1,
     ):
         """Reconfigure a slider's range, steps, and reset to default value."""
-        # int() (truncation) == floor for the non-negative span/step here; use
-        # it instead of // so a fractional step like 2.5 mV works.
-        n_steps = int((max_val - min_val) / step) if step else int(max_val - min_val)
+        # round() (not int()) so a binary-inexact step like 0.1 mV yields
+        # 600/0.1 → 5999.99… → 6000 steps, not 5999 — the mV plane's anchor
+        # must land ON the grid. Exact-representable steps (2.5, 5, 0.5) are
+        # unaffected (round == int there).
+        n_steps = round((max_val - min_val) / step) if step else int(max_val - min_val)
 
         # Preserve the current state (disabled/normal) before reconfiguring
         current_state = self._safe_get_state(slider)
@@ -1417,9 +1992,14 @@ class OverclockTab:
 
         ``:+`` renders an explicit sign on positives AND on zero (``+0.0``) —
         offset rows read 0 as "no offset applied", so the + keeps the column
-        visually consistent.
+        visually consistent. Unit-toggle rows render per their ACTIVE plane
+        (mV = one decimal) via ``_row_decimals``.
         """
-        decimals = getattr(slider, "_oc_decimals", 0)
+        decimals = (
+            OverclockTab._row_decimals(slider)
+            if getattr(slider, "_oc_volt_bit", None) is not None
+            else getattr(slider, "_oc_decimals", 0)
+        )
         signed = getattr(slider, "_oc_signed", False)
         if decimals:
             return f"{float(value):{'+.' if signed else '.'}{decimals}f}"
@@ -1437,9 +2017,168 @@ class OverclockTab:
         var.set(self._fmt_slider_value(slider, clamped))
         self._syncing = False
 
+    # ── Unit toggle: slot-0 frequency (MHz) ↔ slot-1 voltage (mV) ──────────
+    # Each ClkDomains row's bordered unit chip cycles MHz → mV → MHz. mV mode
+    # reconfigures the SAME slider+entry onto the ±300 mV plane (so the
+    # drag/type interaction is identical to MHz, just different numbers and
+    # a one-decimal render) and reroutes the row's apply to the slot-1
+    # per-domain V/F-curve voltage addend (set-private-freq-domain-global-
+    # offset --volt). The two planes are SEPARATE RM storage — a domain's
+    # slot0 and slot1 coexist — so each switch re-anchors the row at the
+    # TARGET plane's CURRENT offset: mV mode reads the record's slot1 (µV,
+    # from get-private-freq-domain-info); MHz mode anchors at 0 (the
+    # frequency plane's current value belongs to the driver, not this row).
+
+    def _toggle_row_unit(self, slider: Any) -> None:
+        """Cycle one row's unit chip MHz ↔ mV, reconfiguring the row's own
+        slider/entry onto the target plane and re-anchoring at its current
+        offset (mV: the record's live slot1; MHz: 0)."""
+        var = getattr(slider, "_oc_unit_var", None)
+        toggle = getattr(slider, "_oc_unit_toggle", None)
+        if var is None or toggle is None:
+            return
+        if getattr(slider, "_oc_unit_static", False):
+            return
+        volt_mode = not getattr(slider, "_oc_volt_mode", False)
+        slider._oc_volt_mode = volt_mode
+        try:
+            toggle.configure(
+                text="mV" if volt_mode else "MHz",
+                fg=_ACCENT_FG if volt_mode else _TEXT_FG_DIM,
+            )
+        except Exception:
+            pass
+        if volt_mode:
+            # Re-anchor at the record's live slot-1 addend (µV → mV, clamped
+            # into the ±300 plane). Unreadable/absent → 0.
+            anchor = self._query_row_volt_anchor_mv(slider)
+            self._reconfigure_slider(
+                slider,
+                var,
+                slider._oc_volt_min,
+                slider._oc_volt_max,
+                anchor,
+                slider._oc_volt_step,
+            )
+            slider._oc_decimals = 1
+        else:
+            # Back to the MHz plane: restore the construction range and
+            # anchor at 0 (the row's MHz value is an intent, not readback).
+            self._reconfigure_slider(
+                slider,
+                var,
+                slider._oc_freq_min,
+                slider._oc_freq_max,
+                0,
+                slider._oc_freq_step,
+            )
+            slider._oc_decimals = slider._oc_freq_decimals
+        # Volt-only ↺ resets (Core/Mem) follow the plane: visible on mV,
+        # hidden on MHz. Fabric rows' ↺ stays gridded regardless.
+        reset_btn = getattr(slider, "_oc_reset_btn", None)
+        if reset_btn is not None and getattr(slider, "_oc_reset_volt_only", False):
+            try:
+                if volt_mode:
+                    reset_btn.grid()
+                else:
+                    reset_btn.grid_remove()
+            except Exception:
+                pass
+        # The entry var's write callback (_on_entry) re-fires on the
+        # re-anchored text; both are already in sync so nothing to do beyond
+        # forcing the one-decimal render through the shared formatter.
+        self._syncing = True
+        var.set(
+            self._fmt_slider_value(
+                slider, slider.get() if hasattr(slider, "get") else 0
+            )
+        )
+        self._syncing = False
+
+    def _query_row_volt_anchor_mv(self, slider: Any) -> float:
+        """Live voltage-plane addend (mV) for one row's WRITE record — the
+        anchor the row re-anchors at when its chip toggles to mV. Reads
+        get-private-freq-domain-info and finds this row's bit's record;
+        the voltage plane lives at values_kHz[volt_slot] (µV; slot 1 on
+        10~40 series, slot 3 on Blackwell). Any miss → 0. Synchronous on
+        purpose: the toggle click is a user action, a ~ms escape is fine,
+        and an async anchor would land after the user already started
+        dragging (wrong values would go out)."""
+        bit = getattr(slider, "_oc_volt_bit", None)
+        if bit is None:
+            return 0.0
+        gpu = self.app.selected_gpu_target()
+        if gpu is None:
+            return 0.0
+        volt_slot = self._clk_volt_slot()
+        try:
+            info = self.app.backend.query_private_freq_domain_info(gpu)
+        except Exception:
+            return 0.0
+        if not isinstance(info, dict):
+            return 0.0
+        for e in info.get("entries") or []:
+            if isinstance(e, dict) and e.get("bit") == bit:
+                vals = e.get("values_kHz") or []
+                if isinstance(vals, list) and len(vals) > volt_slot:
+                    try:
+                        return int(vals[volt_slot] or 0) / 1000.0
+                    except (TypeError, ValueError):
+                        return 0.0
+                break
+        return 0.0
+
+    def _set_unit_toggle_static(self, slider: Any, static: bool) -> None:
+        """Unit chip as a STATIC "MHz" label (unit display without the mV
+        toggle). Pre-Pascal rows have no ClockClient volt plane to cycle
+        into — hiding the chip outright (the old behavior) also removed the
+        MHz unit text. Static mode keeps the chip gridded, dim, non-hand
+        cursor, and blocks _toggle_row_unit."""
+        toggle = getattr(slider, "_oc_unit_toggle", None)
+        if toggle is None:
+            return
+        slider._oc_unit_static = static
+        try:
+            if static:
+                toggle.configure(text="MHz", fg=_TEXT_FG_DIM, cursor="")
+            else:
+                toggle.configure(cursor="hand2")
+        except Exception:
+            pass
+
+    def _set_unit_toggle_visible(self, slider: Any, visible: bool) -> None:
+        """Show/hide one row's unit chip (page-0 rows hide theirs until the
+        pager proves the ClkDomains family exists — pre-Pascal has no
+        ClockClient WRITE records to toggle into)."""
+        toggle = getattr(slider, "_oc_unit_toggle", None)
+        if toggle is None:
+            return
+        try:
+            if visible:
+                toggle.grid()
+            else:
+                toggle.grid_remove()
+        except Exception:
+            pass
+
+    def _row_volt_mode(self, slider: Any) -> bool:
+        """True when the row's unit chip sits on mV (slot-1 volt mode)."""
+        return getattr(slider, "_oc_volt_mode", False)
+
     # ────────────────────────────────────────────
     # Helper: create a  Label | Slider | Entry  row
     # ────────────────────────────────────────────
+
+    @staticmethod
+    def _row_decimals(slider: Any) -> int:
+        """Entry render decimals for a unit-toggle row: 1 in mV mode (the
+        ±300 mV plane snaps to the 2.5 mV-ish grid cleanly with one decimal),
+        the row's construction decimals in MHz mode. Plain rows keep their
+        construction decimals (this only reroutes toggle rows)."""
+        if getattr(slider, "_oc_volt_mode", False):
+            return 1
+        return getattr(slider, "_oc_decimals", 0)
+
     def _make_slider_row(
         self,
         parent: ctk.CTkFrame,
@@ -1453,6 +2192,7 @@ class OverclockTab:
         unit: Union[str, ctk.StringVar] = "",
         decimals: int = 0,
         entry_width: int = 7,
+        volt_bit: Optional[int] = None,
     ) -> Tuple[Any, ctk.CTkEntry, ctk.StringVar, ctk.CTkButton]:
         """Create a row with label, slider, numeric entry and apply button.
 
@@ -1462,13 +2202,28 @@ class OverclockTab:
         decimals>0 switches the entry to a fixed-point render (e.g.
         ``decimals=1`` → ``1082.5``) and parses typed input as float — used by
         the Volt Limit row whose 2.5 mV step needs one decimal on 10/20-series.
+
+        volt_bit (ClkDomains WRITE-record bit) replaces the plain unit label
+        with a thin-bordered CLICKABLE toggle: MHz → mV → MHz …  mV mode
+        reconfigures the SAME slider+entry widgets onto the ±300 mV plane
+        (one decimal — the same drag/type interaction as MHz, different
+        numbers) and reroutes the row's apply to the slot-1 per-domain V/F-
+        curve VOLTAGE addend (the CLI's set-private-freq-domain-global-offset
+        --volt). The two planes are separate RM storage, so switching
+        re-anchors the row at the target plane's CURRENT offset (mV mode
+        reads it from get-private-freq-domain-info; MHz mode anchors at 0 —
+        the current offset plane is the driver's, not ours to track).
         """
 
         def _fmt(v: float) -> str:
             # `:+` also signs zero (+0 / +0.0) — offset rows show 0 as an
             # explicitly-applied zero offset (see _fmt_slider_value).
-            if decimals:
-                return f"{float(v):{'+.' if signed else '.'}{decimals}f}"
+            # NOTE self._row_decimals, not the bare name — the nested scope
+            # chain (locals → method locals → module globals) has no class
+            # attributes; the bare reference NameError'd at construction.
+            d = self._row_decimals(slider) if volt_bit is not None else decimals
+            if d:
+                return f"{float(v):{'+.' if signed else '.'}{d}f}"
             return f"{int(v):+d}" if signed else str(int(v))
 
         row_frame = tk.Frame(parent, bg=_PANEL_BG)
@@ -1576,8 +2331,56 @@ class OverclockTab:
         entry.bind("<FocusOut>", _on_focusout)
         entry.bind("<Return>", _on_focusout)
 
-        # Unit label right of the entry (matches the fan '%' style)
-        if isinstance(unit, ctk.StringVar):
+        # Unit label right of the entry (matches the fan '%' style).
+        if volt_bit is not None:
+            # ClkDomains row: the label is a thin-bordered CYCLING toggle
+            # (MHz → mV → MHz …). mV mode applies the row's value through
+            # the voltage plane (generation-dependent slot) instead of slot-0 frequency.
+            toggle = tk.Label(
+                row_frame,
+                text="MHz",
+                font=_FONT_UNIT,
+                bg=_PANEL_BG,
+                fg=_TEXT_FG_DIM,
+                relief="solid",
+                bd=1,
+                padx=4,
+                cursor="hand2",
+            )
+            toggle.grid(row=0, column=3, padx=(3, 0))
+
+            # Per-plane row state: the SAME slider+entry widgets get
+            # reconfigured onto the mV plane on toggle (±300 mV, 1 mV step,
+            # one-decimal entry) and back onto the remembered MHz plane.
+            # Construction values are stored per-plane on the slider.
+            slider._oc_volt_bit = volt_bit
+            slider._oc_volt_mode = False
+            slider._oc_unit_toggle = toggle
+            slider._oc_unit_var = var  # entry var (re-anchor target)
+            # MHz-plane originals (restored when toggling back)
+            slider._oc_freq_min = min_val
+            slider._oc_freq_max = max_val
+            slider._oc_freq_step = step
+            slider._oc_freq_decimals = decimals
+            # mV-plane bounds: ±300 mV, 0.1 mV step — the record's native
+            # unit is µV, so a tenth-mV grid keeps the live slot-1 anchor
+            # faithful (6250 µV anchors at 6.2/6.3, not snapped to 6 or 7).
+            # The driver clamps what it refuses — the medium layer's
+            # snapshot/readback guards the write.
+            slider._oc_volt_min = -300
+            slider._oc_volt_max = 300
+            slider._oc_volt_step = 0.1
+            toggle.bind("<Button-1>", lambda _e, _s=slider: self._toggle_row_unit(_s))
+            HoverTooltip(
+                toggle,
+                "Click to switch this row between the slot-0 frequency "
+                "offset (MHz) and the slot-1 per-domain V/F-curve voltage "
+                "addend (mV) — set-private-freq-domain-global-offset "
+                "--freq / --volt. The two planes are separate storage; "
+                "switching re-anchors this row at the plane's current "
+                "offset (mV mode reads it from get-private-freq-domain-info).",
+            )
+        elif isinstance(unit, ctk.StringVar):
             tk.Label(
                 row_frame,
                 textvariable=unit,
@@ -1605,7 +2408,20 @@ class OverclockTab:
     # ────────────────────────────────────────────
 
     def _apply_pstate_lock(self):
-        """Apply P-State lock range with the selected OC backend."""
+        """Apply P-State lock: memory-clock-range first, native pin fallback.
+
+        The mem-range range lock is always the first choice. A runtime
+        failure on it means the part is older than Kepler (the NVML pstate
+        mem-clock query it derives the window from is Not Supported there) —
+        the fallback re-applies as the native single-state pin. The pin must
+        dispatch from the action's on_finished: the worker's except block
+        still runs inside the held _action_running gate, so a fallback
+        launched there is rejected as "Another native action is already
+        running" and the pin silently never applies. When the derived window
+        also overlaps P-States outside the requested range (identical memory
+        clocks, e.g. after a VBIOS edit) the lock still applies and the
+        setter's warning is surfaced.
+        """
         selection = self.pstate_selector.get_selection()
         gpu = self.app.selected_gpu_target()
         if gpu is None or selection is None:
@@ -1622,23 +2438,76 @@ class OverclockTab:
         except ValueError:
             pass
 
+        if getattr(self, "_pstate_pin_fallback", False):
+            # Native single-P-State pin (no range form). Point-mode keeps
+            # start == end; use start as the single target.
+            self.app.run_native_action(
+                "apply P-State lock",
+                lambda native, gpu=gpu, pstate=start: (
+                    native.set_pstate_native_lock(gpu, pstate)
+                    or f"Successfully pinned NVAPI P-State {pstate}."
+                ),
+            )
+            return
+
         backend = self._selected_oc_backend()
-        self.app.run_native_action(
-            "apply P-State lock",
-            lambda native, gpu=gpu, backend=backend, start=start, end=end: (
-                (
+        fallback_wanted = False
+
+        def apply_mem_range(
+            native, gpu=gpu, backend=backend, start=start, end=end
+        ) -> str:
+            nonlocal fallback_wanted
+            try:
+                warning = (
                     native.set_nvml_pstate_lock(gpu, start, end)
                     if backend == "nvml"
                     else native.set_nvapi_pstate_lock(gpu, start, end)
                 )
-                or f"Successfully applied {backend.upper()} P-State lock {start}-{end}."
-            ),
+            except Exception:
+                # The window derivation needs the NVML pstate mem-clock
+                # ranges — their absence (Not Supported) marks a pre-Kepler
+                # part. Mark the intent only; the re-raise still surfaces
+                # the driver error in the console.
+                fallback_wanted = True
+                raise
+            message = (
+                f"Successfully applied {backend.upper()} P-State lock {start}-{end}."
+            )
+            if warning:
+                # Overlapping P-States ride the same memory window by
+                # construction — applied anyway, so surface the caveat.
+                return f"Warning: {warning}\n{message}"
+            return message
+
+        def after_mem_range(code: int) -> None:
+            # Fires on the main thread after the worker released the
+            # _action_running gate, so the pin's run_native_action cannot
+            # collide with this (just-failed) action.
+            if code != 0 and fallback_wanted:
+                self._on_mem_range_lock_failed(start, end)
+
+        self.app.run_native_action(
+            "apply P-State lock", apply_mem_range, on_finished=after_mem_range
         )
 
     def _unlock_pstate_lock(self):
-        """Remove memory lock settings for the selected OC backend."""
+        """Remove P-State lock for the selected OC backend.
+
+        After a mem-range failure flipped the panel onto the native pin
+        (`_pstate_pin_fallback`), unlock resets that pin; otherwise the
+        NVML/VFP memory-clock lock is cleared as usual.
+        """
         gpu = self.app.selected_gpu_target()
         if gpu is None:
+            return
+        if getattr(self, "_pstate_pin_fallback", False):
+            self.app.run_native_action(
+                "reset P-State lock",
+                lambda native, gpu=gpu: (
+                    native.reset_pstate_native_lock(gpu)
+                    or "Successfully reset NVAPI P-State lock."
+                ),
+            )
             return
         backend = self._selected_oc_backend()
         self.app.run_native_action(
@@ -1663,13 +2532,58 @@ class OverclockTab:
         except ValueError:
             return
         gpu = self.app.selected_gpu_target()
-        self.app.run_native_action(
-            "apply core offset",
-            lambda native, gpu=gpu, backend=backend, value=value: (
-                native.set_clock_offset(gpu, backend, "core", value, self._oc_pstate())
-                or f"Successfully applied core offset {value:g} MHz."
-            ),
-        )
+        pstate = self._oc_pstate()
+
+        if self._row_volt_mode(self.core_slider):
+            # mV mode: voltage-plane addend only — there is no public
+            # pstate20 path for the per-domain V/F voltage plane (and no
+            # fallback chain to fall back from). Plane slot is
+            # generation-dependent (10~40系 1, Blackwell 3).
+            volt_slot = self._clk_volt_slot()
+            self.app.run_native_action(
+                "apply core volt offset",
+                lambda native, gpu=gpu, value=value, slot=volt_slot: (
+                    OverclockTab._format_clk_domain_volt_result(
+                        "Core",
+                        value,
+                        native.set_clk_domain_offset(
+                            gpu, 0, int(value * 1000), slot, None
+                        ),
+                    )
+                ),
+            )
+            return
+
+        freq_slot = self._clk_freq_slot()
+
+        def action(
+            native, gpu=gpu, backend=backend, value=value, pstate=pstate, slot=freq_slot
+        ):
+            # pstate20 public path first; NVAPI NotSupported (-104) on server
+            # cards etc. → fallback to the ClkDomains bit0 WRITE record
+            # (frequency plane, generation-dependent slot).
+            try:
+                native.set_clock_offset(gpu, backend, "core", value, pstate)
+                return f"Successfully applied core offset {value:g} MHz."
+            except Exception as exc:
+                msg = str(exc)
+                if (
+                    "NotSupported" in msg
+                    or "-104" in msg
+                    or "not supported" in msg.lower()
+                ):
+                    res = native.set_clk_domain_offset(
+                        gpu, 0, int(value * 1000), slot, None
+                    )
+                    applied = res.get("applied_mHz") if isinstance(res, dict) else None
+                    rb = f" (readback {applied:+g} MHz)" if applied is not None else ""
+                    return (
+                        f"pstate20 unsupported (-104); applied core offset "
+                        f"{value:g} MHz via ClkDomains bit0{rb}."
+                    )
+                raise
+
+        self.app.run_native_action("apply core offset", action)
 
     def _apply_mem_only(self):
         mem_mhz = self.mem_var.get().strip()
@@ -1679,15 +2593,53 @@ class OverclockTab:
         except ValueError:
             return
         gpu = self.app.selected_gpu_target()
-        self.app.run_native_action(
-            "apply memory offset",
-            lambda native, gpu=gpu, backend=backend, value=value: (
-                native.set_clock_offset(
-                    gpu, backend, "memory", value, self._oc_pstate()
-                )
-                or f"Successfully applied memory offset {value} MHz."
-            ),
-        )
+        pstate = self._oc_pstate()
+
+        if self._row_volt_mode(self.mem_slider):
+            # mV mode: voltage-plane addend only (bit2 = WRITE memory M) —
+            # no public path, same as the Core row. Plane slot is
+            # generation-dependent (10~40系 1, Blackwell 3).
+            volt_slot = self._clk_volt_slot()
+            self.app.run_native_action(
+                "apply memory volt offset",
+                lambda native, gpu=gpu, value=value, slot=volt_slot: (
+                    OverclockTab._format_clk_domain_volt_result(
+                        "Memory",
+                        value,
+                        native.set_clk_domain_offset(gpu, 2, value * 1000, slot, None),
+                    )
+                ),
+            )
+            return
+
+        freq_slot = self._clk_freq_slot()
+
+        def action(
+            native, gpu=gpu, backend=backend, value=value, pstate=pstate, slot=freq_slot
+        ):
+            # pstate20 → fallback ClkDomains bit2 (WRITE bit2 = 显存 M, NOT the
+            # MEASURE bit2 which reads SYS — read/write are two tables).
+            # Frequency plane, generation-dependent slot.
+            try:
+                native.set_clock_offset(gpu, backend, "memory", value, pstate)
+                return f"Successfully applied memory offset {value} MHz."
+            except Exception as exc:
+                msg = str(exc)
+                if (
+                    "NotSupported" in msg
+                    or "-104" in msg
+                    or "not supported" in msg.lower()
+                ):
+                    res = native.set_clk_domain_offset(gpu, 2, value * 1000, slot, None)
+                    applied = res.get("applied_mHz") if isinstance(res, dict) else None
+                    rb = f" (readback {applied:+g} MHz)" if applied is not None else ""
+                    return (
+                        f"pstate20 unsupported (-104); applied memory offset "
+                        f"{value} MHz via ClkDomains bit2{rb}."
+                    )
+                raise
+
+        self.app.run_native_action("apply memory offset", action)
 
     def _apply_mem_with_sync(self):
         """Shift+click: apply memory offset then sync P2→P0."""
@@ -1709,14 +2661,168 @@ class OverclockTab:
             )[-1],
         )
 
-    def _apply_xbar_only(self):
-        """Apply the Xbar fabric-clock offset (NVAPI-only ClockClient path).
+    @staticmethod
+    def _format_clk_domain_volt_result(
+        label: str, offset_mv: float, result: Any
+    ) -> str:
+        """Console message for a slot-1 ClkDomains VOLTAGE write (the unit
+        chip's mV mode). pynvoc's `applied_mHz` field is the record's raw
+        slot value ÷1000 — for slot 1 the raw dword is µV, so that number
+        IS millivolts already (display it as-is; dividing again reports
+        1000× too small). The payload's `slot` field confirms which plane
+        answered; a non-1 slot means the write didn't land on the voltage
+        plane and the readback is not a voltage."""
+        if isinstance(result, dict):
+            if result.get("applied"):
+                applied = result.get("applied_mHz")
+                if isinstance(applied, (int, float)):
+                    rb = (
+                        f" (driver readback {applied:+g} mV)"
+                        if result.get("slot") == 1
+                        else ""
+                    )
+                    return f"Successfully applied {label} volt offset {offset_mv:+g} mV{rb}."
+                return f"Successfully applied {label} volt offset {offset_mv:+g} mV."
+            if result.get("supported") is False:
+                return f"{label} clock-domain volt offset not supported by this driver."
+        return f"Applied {label} volt offset {offset_mv:+g} mV."
 
-        The GUI speaks signed MHz like Core/Mem; pynvoc's
-        ``set_clk_domain_offset`` takes kHz (the CLI spelling is
-        ``set-clk-domain-offset xbar <kHz>``; xbar = domain bit 1). The
-        medium layer snapshots the control block, patches, SETs, readbacks,
-        and restores on mismatch.
+    @staticmethod
+    def _format_clk_domain_offset_result(
+        label: str, offset_mhz: int, result: Any
+    ) -> str:
+        """Console message for a set_clk_domain_offset result (shared by
+        Xbar/Sys/Msd/Host). Mirrors _format_xbar_offset_result."""
+        if isinstance(result, dict):
+            if result.get("applied"):
+                applied = result.get("applied_mHz")
+                if isinstance(applied, (int, float)):
+                    return (
+                        f"Successfully applied {label} offset {offset_mhz:+d} MHz "
+                        f"(driver readback {applied:+g} MHz)."
+                    )
+                return f"Successfully applied {label} offset {offset_mhz:+d} MHz."
+            if result.get("supported") is False:
+                return f"{label} clock-domain offset not supported by this driver."
+        return f"Applied {label} offset {offset_mhz:+d} MHz."
+
+    def _make_domain_reset_button(self, apply_btn, label, bit, slider, var):
+        """Small ↺ button right of a domain row's ✓ apply (grid column 5).
+
+        Wired to _reset_clk_domain — the single-domain GUI twin of the
+        reset-private-freq-domain-global-offset CLI command. Plane-aware on
+        click: a row whose chip sits on mV resets only its slot-1 addend.
+        """
+        btn = LiteButton(
+            apply_btn.master,
+            text="↺",
+            width=34,
+            fg_color="#c0392b",
+            hover_color="#96281b",
+            command=lambda: self._reset_clk_domain(label, bit, slider, var),
+        )
+        btn.grid(row=0, column=5, padx=(3, 0))
+        # the chip toggle shows/hides volt-only resets (Core/Mem) with the
+        # plane — fabric rows keep theirs always visible.
+        slider._oc_reset_btn = btn
+        HoverTooltip(
+            btn,
+            f"Reset the {label} domain global offset to 0 "
+            f"(writes 0 to ClkDomains WRITE bit {bit}; mV mode: voltage "
+            f"plane only — MHz mode: both plane slots).",
+        )
+        return btn
+
+    def _reset_clk_domain(self, label, bit, slider=None, var=None):
+        """Reset ONE domain's global offset, plane-aware: a row whose chip
+        sits on mV resets ONLY its slot-1 voltage addend (the voltage plane
+        is per-domain independent — no bit3 coupled-cancel either, that
+        lives on the frequency plane); on MHz it resets slots 0 AND 1 (the
+        footprint of the reset-private-freq-domain-global-offset CLI
+        command). Either way the row re-anchors at 0. On 30系+ an MHz Xbar
+        reset also clears the coupled bit3 SYS-cancel — the section reset
+        does the same, the cancel belongs to the Xbar write."""
+        gpu = self.app.selected_gpu_target()
+        if gpu is None:
+            return
+        volt_mode = slider is not None and self._row_volt_mode(slider)
+        bits = [bit]
+        if bit == 1 and self._is_ampere_plus and not volt_mode:
+            bits.append(3)
+        # plane slots are generation-dependent (10~40系 0/1, Blackwell 2/3):
+        # mV mode clears only the voltage plane, MHz mode both planes
+        volt_slot = self._clk_volt_slot()
+        freq_slot = self._clk_freq_slot()
+        slots = (volt_slot,) if volt_mode else (freq_slot, volt_slot)
+        if slider is not None and var is not None:
+            self._syncing = True
+            slider.set(0)
+            var.set(self._fmt_slider_value(slider, 0))
+            self._syncing = False
+        self.app.run_native_action(
+            f"reset {label.lower()} domain {'volt ' if volt_mode else ''}offset",
+            lambda native, gpu=gpu, label=label, bits=tuple(bits), slots=slots: (
+                OverclockTab._reset_clk_domain_action(native, gpu, label, bits, slots)
+            ),
+        )
+
+    @staticmethod
+    def _reset_clk_domain_action(native, gpu, label, bits, slots=(0, 1)):
+        """Worker body: zero each bit on the given slots (driver-opaque
+        slots 2-7 are left alone — the CLI reset has the same footprint).
+        A refused write degrades to a warning and the remaining writes
+        continue, matching the CLI's warning semantics."""
+        parts = []
+        warnings = []
+        for b in bits:
+            for slot in slots:
+                res = native.set_clk_domain_offset(gpu, b, 0, slot, None)
+                if isinstance(res, dict) and res.get("supported") is False:
+                    warnings.append(f"bit {b} slot {slot}: unsupported")
+                else:
+                    parts.append(f"bit {b} slot {slot} → 0")
+        subject = (
+            "all clock-domain global offsets"
+            if label == "all"
+            else f"{label} domain global offset"
+        )
+        msg = f"Successfully reset {subject} ({'; '.join(parts)})."
+        if warnings:
+            msg += " Warnings: " + "; ".join(warnings) + "."
+        return msg
+
+    @staticmethod
+    def _reset_all_clk_domains_action(native, gpu, slots=(0, 1)):
+        """Worker body: reset EVERY ClkDomains WRITE record (bits taken
+        from query_private_freq_domain_info) on the given plane slots
+        (10~40系 0/1, Blackwell 2/3) — the all-domains form of the CLI
+        reset. Unsupported bits warn and the rest continue. Reused by the
+        VF curve tab's global reset (curve points and domain global
+        offsets are separate storage)."""
+        info = native.query_private_freq_domain_info(gpu)
+        bits = []
+        if isinstance(info, dict) and isinstance(info.get("entries"), list):
+            bits = [
+                e.get("bit")
+                for e in info["entries"]
+                if isinstance(e, dict) and isinstance(e.get("bit"), int)
+            ]
+        if not bits:
+            return "No clock-domain WRITE records exposed — no global offsets to reset."
+        return OverclockTab._reset_clk_domain_action(native, gpu, "all", bits, slots)
+
+    def _apply_xbar_only(self):
+        """Apply the Xbar fabric-clock offset (ClkDomains WRITE bit1).
+
+        30系+ (is_ampere_plus): bit1 couples SYS, so writing +f to bit1 also
+        moves SYS — cancel that by RMW-ing bit3 (read current, write
+        current − f) so any Sys offset already on bit3 is preserved. 10/
+        16/20/Pascal: bit1 is pure Xbar, write it directly. GUI MHz → kHz ×1000.
+
+        mV mode (unit chip): voltage-plane addend (generation-dependent slot), a DIRECT write — the
+        coupling/bit3-cancel is a slot-0 frequency-plane artifact; the
+        voltage plane is per-domain independent (single-rail MAX
+        arbitration), so no cancel is needed.
         """
         xbar = self.xbar_var.get().strip()
         try:
@@ -1724,11 +2830,135 @@ class OverclockTab:
         except ValueError:
             return
         gpu = self.app.selected_gpu_target()
+        if self._row_volt_mode(self.xbar_slider):
+            volt_slot = self._clk_volt_slot()
+            self.app.run_native_action(
+                "apply xbar volt offset",
+                lambda native, gpu=gpu, value=value, slot=volt_slot: (
+                    OverclockTab._format_clk_domain_volt_result(
+                        "Xbar",
+                        value,
+                        native.set_clk_domain_offset(gpu, 1, value * 1000, slot, None),
+                    )
+                ),
+            )
+            return
+        coupled = self._is_ampere_plus
+        freq_slot = self._clk_freq_slot()
         self.app.run_native_action(
             "apply xbar offset",
-            lambda native, gpu=gpu, value=value: self._format_xbar_offset_result(
-                value,
-                native.set_clk_domain_offset(gpu, 1, value * 1000, None, None),
+            lambda native, gpu=gpu, value=value, coupled=coupled, slot=freq_slot: (
+                OverclockTab._apply_xbar_only_action(native, gpu, value, coupled, slot)
+            ),
+        )
+
+    def _apply_sys_only(self):
+        """Apply the Sys fabric-clock offset (ClkDomains WRITE bit3, pure SYS).
+
+        RMW: read bit3's current slot-0 offset, add +f, write back — so the
+        write stacks on any Xbar-cancel (-f) already sitting on bit3 rather
+        than overwriting it. GUI MHz → kHz ×1000.
+
+        mV mode (unit chip): voltage-plane addend (generation-dependent slot), a DIRECT write — the
+        RMW exists to preserve the slot-0 Xbar-cancel on bit3, which lives
+        on the frequency plane and is untouched by a slot-1 write.
+        """
+        sysv = self.sys_var.get().strip()
+        try:
+            value = int(sysv)
+        except ValueError:
+            return
+        gpu = self.app.selected_gpu_target()
+        if self._row_volt_mode(self.sys_slider):
+            volt_slot = self._clk_volt_slot()
+            self.app.run_native_action(
+                "apply sys volt offset",
+                lambda native, gpu=gpu, value=value, slot=volt_slot: (
+                    OverclockTab._format_clk_domain_volt_result(
+                        "Sys",
+                        value,
+                        native.set_clk_domain_offset(gpu, 3, value * 1000, slot, None),
+                    )
+                ),
+            )
+            return
+        freq_slot = self._clk_freq_slot()
+        self.app.run_native_action(
+            "apply sys offset",
+            lambda native, gpu=gpu, value=value, slot=freq_slot: (
+                OverclockTab._apply_sys_only_action(native, gpu, value, slot)
+            ),
+        )
+
+    def _apply_msd_only(self):
+        """Apply the Msd offset (ClkDomains WRITE bit5). Pascal greyed-out.
+
+        mV mode (unit chip): voltage-plane addend (generation-dependent slot) — same record, other plane.
+        """
+        msd = self.msd_var.get().strip()
+        try:
+            value = int(msd)
+        except ValueError:
+            return
+        gpu = self.app.selected_gpu_target()
+        if self._row_volt_mode(self.msd_slider):
+            volt_slot = self._clk_volt_slot()
+            self.app.run_native_action(
+                "apply msd volt offset",
+                lambda native, gpu=gpu, value=value, slot=volt_slot: (
+                    OverclockTab._format_clk_domain_volt_result(
+                        "Msd",
+                        value,
+                        native.set_clk_domain_offset(gpu, 5, value * 1000, slot, None),
+                    )
+                ),
+            )
+            return
+        freq_slot = self._clk_freq_slot()
+        self.app.run_native_action(
+            "apply msd offset",
+            lambda native, gpu=gpu, value=value, slot=freq_slot: (
+                OverclockTab._format_clk_domain_offset_result(
+                    "Msd",
+                    value,
+                    native.set_clk_domain_offset(gpu, 5, value * 1000, slot, None),
+                )
+            ),
+        )
+
+    def _apply_host_only(self):
+        """Apply the Host offset (ClkDomains WRITE bit9).
+
+        mV mode (unit chip): voltage-plane addend (generation-dependent slot) — same record, other plane.
+        """
+        host = self.host_var.get().strip()
+        try:
+            value = int(host)
+        except ValueError:
+            return
+        gpu = self.app.selected_gpu_target()
+        if self._row_volt_mode(self.host_slider):
+            volt_slot = self._clk_volt_slot()
+            self.app.run_native_action(
+                "apply host volt offset",
+                lambda native, gpu=gpu, value=value, slot=volt_slot: (
+                    OverclockTab._format_clk_domain_volt_result(
+                        "Host",
+                        value,
+                        native.set_clk_domain_offset(gpu, 9, value * 1000, slot, None),
+                    )
+                ),
+            )
+            return
+        freq_slot = self._clk_freq_slot()
+        self.app.run_native_action(
+            "apply host offset",
+            lambda native, gpu=gpu, value=value, slot=freq_slot: (
+                OverclockTab._format_clk_domain_offset_result(
+                    "Host",
+                    value,
+                    native.set_clk_domain_offset(gpu, 9, value * 1000, slot, None),
+                )
             ),
         )
 
@@ -1737,12 +2967,22 @@ class OverclockTab:
         if plimit:
             gpu = self.app.selected_gpu_target()
             if self._mobile_mode:
+
+                def on_finished(_code):
+                    # The TGP SET can clamp (PPAB interplay, D-Notifier
+                    # level, driver policy) — re-anchor the slider to the
+                    # enforced wall right away instead of leaving the typed
+                    # value (which the next unrelated mobile refresh would
+                    # then overwrite with a jump).
+                    self._load_mobile_limits()
+
                 self.app.run_native_action(
                     "apply TGP watt limit",
                     lambda native, gpu=gpu, watts=int(plimit): (
                         native.set_tgp_watt(gpu, watts, self._tgp_policy_index)
                         or f"Successfully applied TGP limit {watts} W."
                     ),
+                    on_finished=on_finished,
                 )
                 return
             backend = self._selected_power_backend()
@@ -1836,109 +3076,433 @@ class OverclockTab:
                 )
 
     def _apply_oc(self):
+        """Apply the CURRENT page's offsets (page 0 also handles -104 fallback
+        via the per-domain handlers). NVML disables the NVAPI-only pages.
+
+        A row whose unit chip sits on mV applies through the slot-1 voltage
+        plane instead (direct write — no pstate20 path, no RMW/cancel, the
+        voltage plane is per-domain independent)."""
         gpu = self.app.selected_gpu_target()
-        backend = self._selected_oc_backend()
-
-        core_mhz = self.core_var.get().strip()
-        mem_mhz = self.mem_var.get().strip()
-
-        actions = []
-        if core_mhz != "Curve":
-            try:
-                # One decimal (2.5 MHz grid) — see _apply_core_only.
-                core_value = float(core_mhz)
-                actions.append((
-                    "apply core offset",
-                    lambda native, gpu=gpu, backend=backend, core_value=core_value: (
-                        native.set_clock_offset(
-                            gpu, backend, "core", core_value, self._oc_pstate()
-                        )
-                        or f"Successfully applied core offset {core_value:g} MHz."
-                    ),
-                ))
-            except ValueError:
-                pass
-
-        try:
-            mem_value = int(mem_mhz)
-            actions.append((
-                "apply memory offset",
-                lambda native, gpu=gpu, backend=backend, mem_value=mem_value: (
-                    native.set_clock_offset(
-                        gpu, backend, "memory", mem_value, self._oc_pstate()
-                    )
-                    or f"Successfully applied memory offset {mem_value} MHz."
-                ),
-            ))
-        except ValueError:
-            pass
-
-        # Xbar is NVAPI-only: the row is disabled under the NVML backend
-        # selection, and the state check skips it there (and on archs where
-        # the row is hidden).
-        if self._xbar_supported and self.xbar_slider.cget("state") != "disabled":
-            try:
-                xbar_value = int(self.xbar_var.get().strip())
-                actions.append((
-                    "apply xbar offset",
-                    lambda native, gpu=gpu, xbar_value=xbar_value: (
-                        self._format_xbar_offset_result(
-                            xbar_value,
-                            native.set_clk_domain_offset(
-                                gpu, 1, xbar_value * 1000, None, None
+        if gpu is None:
+            return
+        page = self._oc_page
+        if page == 0:
+            actions = []
+            volt_slot = self._clk_volt_slot()
+            freq_slot = self._clk_freq_slot()
+            core_mhz = self.core_var.get().strip()
+            if core_mhz != "Curve":
+                try:
+                    cv = float(core_mhz)
+                    if self._row_volt_mode(self.core_slider):
+                        actions.append((
+                            "apply core volt offset",
+                            lambda native, gpu=gpu, cv=cv, slot=volt_slot: (
+                                OverclockTab._format_clk_domain_volt_result(
+                                    "Core",
+                                    cv,
+                                    native.set_clk_domain_offset(
+                                        gpu, 0, int(cv * 1000), slot, None
+                                    ),
+                                )
                             ),
-                        )
-                    ),
-                ))
+                        ))
+                    else:
+                        pstate = self._oc_pstate()
+                        actions.append((
+                            "apply core offset",
+                            lambda native, gpu=gpu, cv=cv, pstate=pstate, slot=freq_slot: (
+                                OverclockTab._apply_core_only_action(
+                                    native,
+                                    gpu,
+                                    self._selected_oc_backend(),
+                                    cv,
+                                    pstate,
+                                    slot,
+                                )
+                            ),
+                        ))
+                except ValueError:
+                    pass
+            try:
+                mv = int(self.mem_var.get().strip())
+                if self._row_volt_mode(self.mem_slider):
+                    actions.append((
+                        "apply memory volt offset",
+                        lambda native, gpu=gpu, mv=mv, slot=volt_slot: (
+                            OverclockTab._format_clk_domain_volt_result(
+                                "Memory",
+                                mv,
+                                native.set_clk_domain_offset(
+                                    gpu, 2, mv * 1000, slot, None
+                                ),
+                            )
+                        ),
+                    ))
+                else:
+                    pstate = self._oc_pstate()
+                    actions.append((
+                        "apply memory offset",
+                        lambda native, gpu=gpu, mv=mv, pstate=pstate, slot=freq_slot: (
+                            OverclockTab._apply_mem_only_action(
+                                native,
+                                gpu,
+                                self._selected_oc_backend(),
+                                mv,
+                                pstate,
+                                slot,
+                            )
+                        ),
+                    ))
             except ValueError:
                 pass
+            if not actions:
+                self.app.console.append("[GUI] No valid clock offset values.\n")
+                return
+            self.app.run_native_action_chain(actions)
+            return
 
+        # Pages 1/2 are NVAPI-only.
+        if self._selected_oc_backend() == "nvml":
+            self.app.console.append("[GUI] Fabric/uncore offsets require NVAPI.\n")
+            return
+        coupled = self._is_ampere_plus
+        if page == 1:
+            actions = []
+            volt_slot = self._clk_volt_slot()
+            freq_slot = self._clk_freq_slot()
+            if self.xbar_slider.cget("state") != "disabled":
+                try:
+                    xv = int(self.xbar_var.get().strip())
+                    if xv:
+                        if self._row_volt_mode(self.xbar_slider):
+                            actions.append((
+                                "apply xbar volt offset",
+                                lambda native, gpu=gpu, xv=xv, slot=volt_slot: (
+                                    OverclockTab._format_clk_domain_volt_result(
+                                        "Xbar",
+                                        xv,
+                                        native.set_clk_domain_offset(
+                                            gpu, 1, xv * 1000, slot, None
+                                        ),
+                                    )
+                                ),
+                            ))
+                        else:
+                            actions.append((
+                                "apply xbar offset",
+                                lambda native, gpu=gpu, xv=xv, coupled=coupled, slot=freq_slot: (
+                                    OverclockTab._apply_xbar_only_action(
+                                        native, gpu, xv, coupled, slot
+                                    )
+                                ),
+                            ))
+                except ValueError:
+                    pass
+            if self._sys_supported and self.sys_slider.cget("state") != "disabled":
+                try:
+                    sv = int(self.sys_var.get().strip())
+                    if sv:
+                        if self._row_volt_mode(self.sys_slider):
+                            actions.append((
+                                "apply sys volt offset",
+                                lambda native, gpu=gpu, sv=sv, slot=volt_slot: (
+                                    OverclockTab._format_clk_domain_volt_result(
+                                        "Sys",
+                                        sv,
+                                        native.set_clk_domain_offset(
+                                            gpu, 3, sv * 1000, slot, None
+                                        ),
+                                    )
+                                ),
+                            ))
+                        else:
+                            actions.append((
+                                "apply sys offset",
+                                lambda native, gpu=gpu, sv=sv, slot=freq_slot: (
+                                    OverclockTab._apply_sys_only_action(
+                                        native, gpu, sv, slot
+                                    )
+                                ),
+                            ))
+                except ValueError:
+                    pass
+            if not actions:
+                self.app.console.append("[GUI] No valid clock offset values.\n")
+                return
+            self.app.run_native_action_chain(actions)
+            return
+        # page 2: Msd / Host
+        actions = []
+        volt_slot = self._clk_volt_slot()
+        freq_slot = self._clk_freq_slot()
+        if self._msd_supported and self.msd_slider.cget("state") != "disabled":
+            try:
+                mv = int(self.msd_var.get().strip())
+                if mv:
+                    if self._row_volt_mode(self.msd_slider):
+                        actions.append((
+                            "apply msd volt offset",
+                            lambda native, gpu=gpu, mv=mv, slot=volt_slot: (
+                                OverclockTab._format_clk_domain_volt_result(
+                                    "Msd",
+                                    mv,
+                                    native.set_clk_domain_offset(
+                                        gpu, 5, mv * 1000, slot, None
+                                    ),
+                                )
+                            ),
+                        ))
+                    else:
+                        actions.append((
+                            "apply msd offset",
+                            lambda native, gpu=gpu, mv=mv, slot=freq_slot: (
+                                OverclockTab._format_clk_domain_offset_result(
+                                    "Msd",
+                                    mv,
+                                    native.set_clk_domain_offset(
+                                        gpu, 5, mv * 1000, slot, None
+                                    ),
+                                )
+                            ),
+                        ))
+            except ValueError:
+                pass
+        if self._host_supported and self.host_slider.cget("state") != "disabled":
+            try:
+                hv = int(self.host_var.get().strip())
+                if hv:
+                    if self._row_volt_mode(self.host_slider):
+                        actions.append((
+                            "apply host volt offset",
+                            lambda native, gpu=gpu, hv=hv, slot=volt_slot: (
+                                OverclockTab._format_clk_domain_volt_result(
+                                    "Host",
+                                    hv,
+                                    native.set_clk_domain_offset(
+                                        gpu, 9, hv * 1000, slot, None
+                                    ),
+                                )
+                            ),
+                        ))
+                    else:
+                        actions.append((
+                            "apply host offset",
+                            lambda native, gpu=gpu, hv=hv, slot=freq_slot: (
+                                OverclockTab._format_clk_domain_offset_result(
+                                    "Host",
+                                    hv,
+                                    native.set_clk_domain_offset(
+                                        gpu, 9, hv * 1000, slot, None
+                                    ),
+                                )
+                            ),
+                        ))
+            except ValueError:
+                pass
         if not actions:
             self.app.console.append("[GUI] No valid clock offset values.\n")
             return
         self.app.run_native_action_chain(actions)
 
     def _reset_oc(self):
+        """Reset the CURRENT page's offsets to 0."""
         gpu = self.app.selected_gpu_target()
-        # Reset sliders to 0 — var text goes through the row formatter so the
-        # sign convention (+0 / +0.0) matches what typing/focusout renders.
+        page = self._oc_page
         self._syncing = True
-        self.core_slider.set(0)
-        self.core_var.set(self._fmt_slider_value(self.core_slider, 0))
-        self.mem_slider.set(0)
-        self.mem_var.set(self._fmt_slider_value(self.mem_slider, 0))
-        if self._xbar_supported:
+        if page == 0:
+            self.core_slider.set(0)
+            self.core_var.set(self._fmt_slider_value(self.core_slider, 0))
+            self.mem_slider.set(0)
+            self.mem_var.set(self._fmt_slider_value(self.mem_slider, 0))
+        elif page == 1:
             self.xbar_slider.set(0)
             self.xbar_var.set(self._fmt_slider_value(self.xbar_slider, 0))
+            if self._sys_supported:
+                self.sys_slider.set(0)
+                self.sys_var.set(self._fmt_slider_value(self.sys_slider, 0))
+        else:
+            if self._msd_supported:
+                self.msd_slider.set(0)
+                self.msd_var.set(self._fmt_slider_value(self.msd_slider, 0))
+            if self._host_supported:
+                self.host_slider.set(0)
+                self.host_var.set(self._fmt_slider_value(self.host_slider, 0))
         self._syncing = False
 
-        backend = self._selected_oc_backend()
-        resets = [
-            (
-                "reset core offset",
-                lambda native, gpu=gpu, backend=backend: (
-                    native.set_clock_offset(gpu, backend, "core", 0, self._oc_pstate())
-                    or "Successfully reset core offset."
+        if page == 0:
+            backend = self._selected_oc_backend()
+            resets = [
+                (
+                    "reset core offset",
+                    lambda native, gpu=gpu, backend=backend: (
+                        native.set_clock_offset(
+                            gpu, backend, "core", 0, self._oc_pstate()
+                        )
+                        or "Successfully reset core offset."
+                    ),
                 ),
-            ),
-            (
-                "reset memory offset",
-                lambda native, gpu=gpu, backend=backend: (
-                    native.set_clock_offset(
-                        gpu, backend, "memory", 0, self._oc_pstate()
-                    )
-                    or "Successfully reset memory offset."
+                (
+                    "reset memory offset",
+                    lambda native, gpu=gpu, backend=backend: (
+                        native.set_clock_offset(
+                            gpu, backend, "memory", 0, self._oc_pstate()
+                        )
+                        or "Successfully reset memory offset."
+                    ),
                 ),
-            ),
-        ]
-        if self._xbar_supported:
+            ]
+            self.app.run_native_action_chain(resets)
+            return
+
+        # NVAPI-only reset for the page's bits. Xbar 30+ couples bit3, so the
+        # reset clears bit1 AND bit3 (write 0 to both — no -f to cancel).
+        resets = []
+        if page == 1:
             resets.append((
                 "reset xbar offset",
-                lambda native, gpu=gpu: self._format_xbar_offset_result(
-                    0, native.set_clk_domain_offset(gpu, 1, 0, None, None)
+                lambda native, gpu=gpu: OverclockTab._format_clk_domain_offset_result(
+                    "Xbar",
+                    0,
+                    native.set_clk_domain_offset(gpu, 1, 0, None, None),
                 ),
             ))
-        self.app.run_native_action_chain(resets)
+            if self._is_ampere_plus:
+                resets.append((
+                    "reset sys-cancel",
+                    lambda native, gpu=gpu: (
+                        OverclockTab._format_clk_domain_offset_result(
+                            "Sys-cancel",
+                            0,
+                            native.set_clk_domain_offset(gpu, 3, 0, None, None),
+                        )
+                    ),
+                ))
+            if self._sys_supported:
+                resets.append((
+                    "reset sys offset",
+                    lambda native, gpu=gpu: (
+                        OverclockTab._format_clk_domain_offset_result(
+                            "Sys",
+                            0,
+                            native.set_clk_domain_offset(gpu, 3, 0, None, None),
+                        )
+                    ),
+                ))
+        else:
+            if self._msd_supported:
+                resets.append((
+                    "reset msd offset",
+                    lambda native, gpu=gpu: (
+                        OverclockTab._format_clk_domain_offset_result(
+                            "Msd",
+                            0,
+                            native.set_clk_domain_offset(gpu, 5, 0, None, None),
+                        )
+                    ),
+                ))
+            if self._host_supported:
+                resets.append((
+                    "reset host offset",
+                    lambda native, gpu=gpu: (
+                        OverclockTab._format_clk_domain_offset_result(
+                            "Host",
+                            0,
+                            native.set_clk_domain_offset(gpu, 9, 0, None, None),
+                        )
+                    ),
+                ))
+        if resets:
+            self.app.run_native_action_chain(resets)
+
+    # Static action bodies (so the chain lambdas above stay picklable-free
+    # and the logic is testable without a live widget). freq_slot defaults
+    # to 0 (the 10~40系 frequency plane); callers pass the generation-
+    # dependent slot (Blackwell 50系: 2).
+    @staticmethod
+    def _apply_core_only_action(native, gpu, backend, value, pstate, freq_slot=0):
+        try:
+            native.set_clock_offset(gpu, backend, "core", value, pstate)
+            return f"Successfully applied core offset {value:g} MHz."
+        except Exception as exc:
+            msg = str(exc)
+            if "NotSupported" in msg or "-104" in msg or "not supported" in msg.lower():
+                res = native.set_clk_domain_offset(
+                    gpu, 0, int(value * 1000), freq_slot, None
+                )
+                applied = res.get("applied_mHz") if isinstance(res, dict) else None
+                rb = f" (readback {applied:+g} MHz)" if applied is not None else ""
+                return (
+                    f"pstate20 unsupported (-104); applied core offset "
+                    f"{value:g} MHz via ClkDomains bit0{rb}."
+                )
+            raise
+
+    @staticmethod
+    def _apply_mem_only_action(native, gpu, backend, value, pstate, freq_slot=0):
+        try:
+            native.set_clock_offset(gpu, backend, "memory", value, pstate)
+            return f"Successfully applied memory offset {value} MHz."
+        except Exception as exc:
+            msg = str(exc)
+            if "NotSupported" in msg or "-104" in msg or "not supported" in msg.lower():
+                res = native.set_clk_domain_offset(
+                    gpu, 2, value * 1000, freq_slot, None
+                )
+                applied = res.get("applied_mHz") if isinstance(res, dict) else None
+                rb = f" (readback {applied:+g} MHz)" if applied is not None else ""
+                return (
+                    f"pstate20 unsupported (-104); applied memory offset "
+                    f"{value} MHz via ClkDomains bit2{rb}."
+                )
+            raise
+
+    @staticmethod
+    def _bit3_current_khz(native, gpu, freq_slot=0) -> int:
+        """Read the ClkDomains bit3 (pure SYS) frequency-plane offset — the
+        RMW baseline shared by the Sys write and the Xbar coupled-cancel."""
+        info = native.query_private_freq_domain_info(gpu)
+        if isinstance(info, dict):
+            entries = info.get("entries") or []
+            if isinstance(entries, list):
+                for e in entries:
+                    if isinstance(e, dict) and e.get("bit") == 3:
+                        vals = e.get("values_kHz") or []
+                        if isinstance(vals, list) and len(vals) > freq_slot:
+                            try:
+                                return int(vals[freq_slot] or 0)
+                            except (TypeError, ValueError):
+                                return 0
+                        break
+        return 0
+
+    @staticmethod
+    def _apply_xbar_only_action(native, gpu, value, coupled, freq_slot=0):
+        res = native.set_clk_domain_offset(gpu, 1, value * 1000, freq_slot, None)
+        msgs = [OverclockTab._format_clk_domain_offset_result("Xbar", value, res)]
+        if coupled:
+            # RMW the cancel onto bit3 (current − f): a Sys offset already
+            # sitting on bit3 survives — only the coupling drift is removed.
+            cur_khz = OverclockTab._bit3_current_khz(native, gpu, freq_slot)
+            new_khz = cur_khz - value * 1000
+            res3 = native.set_clk_domain_offset(gpu, 3, new_khz, freq_slot, None)
+            msgs.append(
+                OverclockTab._format_clk_domain_offset_result(
+                    "Sys-cancel", -value, res3
+                )
+                + f" (bit3 {int(round(cur_khz / 1000)):+d} → {int(round(new_khz / 1000)):+d} MHz)"
+            )
+        return " ".join(msgs)
+
+    @staticmethod
+    def _apply_sys_only_action(native, gpu, value, freq_slot=0):
+        cur_khz = OverclockTab._bit3_current_khz(native, gpu, freq_slot)
+        new_khz = cur_khz + value * 1000
+        res = native.set_clk_domain_offset(gpu, 3, new_khz, freq_slot, None)
+        return (
+            OverclockTab._format_clk_domain_offset_result("Sys", value, res)
+            + f" (bit3 {int(round(cur_khz / 1000)):+d} → {int(round(new_khz / 1000)):+d} MHz)"
+        )
 
     def _apply_limits(self):
         gpu = self.app.selected_gpu_target()

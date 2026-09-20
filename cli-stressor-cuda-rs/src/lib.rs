@@ -1,5 +1,14 @@
 extern crate self as cli_stressor_cuda_rs;
 
+// See the [features] table in Cargo.toml for the cuda11/cuda12 split.
+#[cfg(all(feature = "cuda11", feature = "cuda12"))]
+compile_error!(
+    "features `cuda11` and `cuda12` are mutually exclusive; \
+     build the legacy variant with `cargo build --no-default-features --features cuda11`"
+);
+#[cfg(all(feature = "cuda", not(any(feature = "cuda11", feature = "cuda12"))))]
+compile_error!("feature `cuda` requires a CUDA generation selector: enable `cuda11` or `cuda12`");
+
 // Reuse the CLI implementation as the bundled optimizer worker. The optimizer
 // calls runner::run_from_args only inside its isolated child process.
 #[path = "main.rs"]

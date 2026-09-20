@@ -13,19 +13,24 @@
 # limitations under the License.
 from pathlib import Path
 
+from nvoc_tui.models import CurveData
 from nvoc_tui.parsing import (
     build_vf_curves,
+    curve_meta,
     compute_vf_plot_bounds,
     find_curve_point_for_voltage,
     load_vf_curve,
     load_vf_curve_deltas,
+    normalize_domain_offsets,
     normalize_query_output,
     parse_get_output,
     parse_gpu_list,
     parse_info_output,
     parse_json_output,
     parse_status_output,
+    synthesize_effective,
     vf_curve_points_to_series,
+    extract_ext_curves,
     public_vfp_unsupported,
     reverse_lookup_voltage,
 )
@@ -147,7 +152,8 @@ def test_normalize_status_json_output() -> None:
       {
         "clocks": {
           "Graphics": 300000,
-          "Memory": 405000
+          "Memory": 405000,
+          "Video": 1327000
         },
         "voltage": 650000,
         "power": {
@@ -179,6 +185,7 @@ def test_normalize_status_json_output() -> None:
 
     assert parsed["gpu_clock_mhz"] == 300.0
     assert parsed["mem_clock_mhz"] == 405.0
+    assert parsed["video_clock_mhz"] == 1327.0
     assert parsed["voltage_mv"] == 650.0
     assert parsed["temperature_c"] == 37.0
     # Typed core temp mirrors temperature_c (channel_type 0); the unclassified
@@ -364,6 +371,18 @@ def test_build_vf_curves_fixed_point_forces_private_write() -> None:
     assert curves["gpc"].write_mode == "private"
 
 
+def test_curve_meta_fallback_for_unknown_ids() -> None:
+    # Known ids resolve through CURVE_META unchanged.
+    assert curve_meta("gpc")["label"] == "GPC"
+    assert curve_meta("msd")["domain_bit"] == 21
+    # unknownN ids synthesize display-only meta: no domain bit (no live
+    # crosshair), neutral prior class, label UNK<n>.
+    meta = curve_meta("unknown1")
+    assert meta["label"] == "UNK1"
+    assert meta["domain_bit"] is None
+    assert meta["class"] == "graphics"
+
+
 def test_build_vf_curves_private_segments_and_skips() -> None:
     clk_data = {
         "segments": [
@@ -383,12 +402,13 @@ def test_build_vf_curves_private_segments_and_skips() -> None:
             },
             {
                 "kind": "vf_curve",
-                "domain": "host",
+                "domain": "msd",
                 "bank": 2,
                 "start_index": 6,
                 "end_index": 7,
             },
-            # pstate_bins and unknown domains are never curves.
+            # pstate_bins are never curves; the unnamed "sysclk" domain
+            # displays as unknown1 (50-series fourth-curve support).
             {
                 "kind": "pstate_bins",
                 "domain": "gpc",
@@ -460,15 +480,202 @@ def test_build_vf_curves_private_segments_and_skips() -> None:
     curves = build_vf_curves(None, "driver said Not Supported", clk_data)
 
     # Public read unsupported → private GPC segment is the GPC source.
-    assert set(curves) == {"gpc", "xbar", "host"}
+    assert set(curves) == {"gpc", "xbar", "msd", "unknown1"}
+    # Canonical display order: GPC → XBAR → MSD → unknownN, even though the
+    # GPC segment is resolved last (the selector/plot iterate this dict).
+    assert list(curves) == ["gpc", "xbar", "msd", "unknown1"]
     assert curves["gpc"].source == "private"
     assert curves["gpc"].bank == 0
     assert (curves["gpc"].seg_start, curves["gpc"].seg_end) == (0, 1)
     assert curves["xbar"].bank == 1
     assert (curves["xbar"].seg_start, curves["xbar"].seg_end) == (2, 3)
-    assert curves["host"].voltages == [600.0, 650.0]
+    assert curves["msd"].voltages == [600.0, 650.0]
+    # Unnamed domain → unknown1, plotted like any curve (one point here).
+    assert curves["unknown1"].voltages == [500.0]
+    assert curves["unknown1"].frequencies == [800.0]
     for curve in curves.values():
         assert curve.write_mode == "private"
+
+
+def _private_gpc_clk_data(voltages_uv, currents, defaults):
+    return {
+        "segments": [
+            {
+                "kind": "vf_curve",
+                "domain": "gpc",
+                "bank": 0,
+                "start_index": 0,
+                "end_index": len(voltages_uv) - 1,
+            }
+        ],
+        "points": [
+            {
+                "bank": 0,
+                "index": i,
+                "voltage_uV": v,
+                "freq_current_mhz": c,
+                "freq_default_mhz": d,
+            }
+            for i, (v, c, d) in enumerate(zip(voltages_uv, currents, defaults))
+        ],
+    }
+
+
+def test_build_vf_curves_hybrid_public_currents_private_defaults() -> None:
+    # Unshifted public grid matches the private voltage axis: the curve
+    # adopts public CURRENT frequencies AND public DEFAULTS — the driver's
+    # delta arithmetic keys off the public default, and on 16-series the
+    # private default sits a small bias below it (building on private made
+    # every apply grow the frequency).
+    clk_data = _private_gpc_clk_data(
+        [800000, 825000], currents=[1000.0, 1100.0], defaults=[1000.0, 1100.0]
+    )
+    gpc_points = [
+        {
+            "index": 0,
+            "voltage_uv": 800000,
+            "frequency_khz": 1050000,
+            "default_frequency_khz": 1005000,  # public default = authority
+            "point_type": "prog",
+        },
+        {
+            "index": 1,
+            "voltage_uv": 825000,
+            "frequency_khz": 1150000,
+            "default_frequency_khz": 1105000,
+            "point_type": "prog",
+        },
+    ]
+
+    curves = build_vf_curves(gpc_points, None, clk_data)
+
+    assert curves["gpc"].source == "hybrid"
+    assert curves["gpc"].frequencies == [1050.0, 1150.0]
+    assert curves["gpc"].defaults == [1005.0, 1105.0]
+    assert curves["gpc"].has_fixed is False
+
+
+def test_build_vf_curves_hybrid_public_defaults_unpopulated_keeps_private() -> None:
+    # A driver that serves frequencies but leaves the public default plane
+    # zeroed must NOT poison the apply base (delta = target − default):
+    # private defaults remain the authority in that shape.
+    clk_data = _private_gpc_clk_data(
+        [800000, 825000], currents=[1000.0, 1100.0], defaults=[1000.0, 1100.0]
+    )
+    gpc_points = [
+        {
+            "index": 0,
+            "voltage_uv": 800000,
+            "frequency_khz": 1050000,
+            "default_frequency_khz": 0,
+            "point_type": "prog",
+        },
+        {
+            "index": 1,
+            "voltage_uv": 825000,
+            "frequency_khz": 1150000,
+            "default_frequency_khz": 0,
+            "point_type": "prog",
+        },
+    ]
+
+    curves = build_vf_curves(gpc_points, None, clk_data)
+
+    assert curves["gpc"].source == "hybrid"
+    assert curves["gpc"].frequencies == [1050.0, 1150.0]
+    assert curves["gpc"].defaults == [1000.0, 1100.0]
+
+
+def test_build_vf_curves_pascal_public_defaults_all_zero_falls_back_to_private() -> (
+    None
+):
+    # Pascal (private barred from authority): its public default plane
+    # reads all-zero — the curve's defaults must come from the PRIVATE
+    # segment, NOT public currents (a moving base under an active OC state
+    # would make every apply compound).
+    clk_data = _private_gpc_clk_data(
+        [800000, 825000], currents=[1000.0, 1100.0], defaults=[1000.0, 1100.0]
+    )
+    gpc_points = [
+        {
+            "index": 0,
+            "voltage_uv": 800000,
+            "frequency_khz": 1050000,
+            "default_frequency_khz": 0,
+            "point_type": "prog",
+        },
+        {
+            "index": 1,
+            "voltage_uv": 825000,
+            "frequency_khz": 1150000,
+            "default_frequency_khz": 0,
+            "point_type": "prog",
+        },
+    ]
+
+    curves = build_vf_curves(gpc_points, None, clk_data, pascal=True)
+
+    assert curves["gpc"].source == "public"
+    assert curves["gpc"].frequencies == [1050.0, 1150.0]
+    assert curves["gpc"].defaults == [1000.0, 1100.0]
+
+
+def test_build_vf_curves_shifted_public_grid_falls_back_to_private() -> None:
+    # Negative slot1 shift: the public voltage grid moved, so it no longer
+    # matches the private default axis — public currents are discarded.
+    clk_data = _private_gpc_clk_data(
+        [800000, 825000], currents=[1000.0, 1100.0], defaults=[1000.0, 1100.0]
+    )
+    gpc_points = [
+        {
+            "index": 0,
+            "voltage_uv": 780000,  # shifted by -20mV
+            "frequency_khz": 1050000,
+            "point_type": "prog",
+        },
+        {
+            "index": 1,
+            "voltage_uv": 805000,
+            "frequency_khz": 1150000,
+            "point_type": "prog",
+        },
+    ]
+
+    curves = build_vf_curves(gpc_points, None, clk_data)
+
+    assert curves["gpc"].source == "private"
+    assert curves["gpc"].frequencies == [1000.0, 1100.0]
+    assert curves["gpc"].defaults == [1000.0, 1100.0]
+    assert curves["gpc"].has_fixed is True
+
+
+def test_build_vf_curves_broken_public_frequencies_rejected() -> None:
+    # Positive slot1 breakage: the public fill path bails and zeroes the
+    # data words. Even if the voltage grid happened to match, an
+    # all-zero CURRENT frequency column must not become a hybrid curve.
+    clk_data = _private_gpc_clk_data(
+        [800000, 825000], currents=[1000.0, 1100.0], defaults=[1000.0, 1100.0]
+    )
+    gpc_points = [
+        {
+            "index": 0,
+            "voltage_uv": 800000,
+            "frequency_khz": 0,
+            "point_type": "prog",
+        },
+        {
+            "index": 1,
+            "voltage_uv": 825000,
+            "frequency_khz": 0,
+            "point_type": "prog",
+        },
+    ]
+
+    curves = build_vf_curves(gpc_points, None, clk_data)
+
+    assert curves["gpc"].source == "private"
+    assert curves["gpc"].frequencies == [1000.0, 1100.0]
+    assert curves["gpc"].defaults == [1000.0, 1100.0]
 
 
 def test_build_vf_curves_none_when_no_source() -> None:
@@ -490,3 +697,332 @@ def test_reverse_lookup_voltage_interpolates_and_clamps() -> None:
     )
     assert reverse_lookup_voltage([], [], 1000.0) is None
     assert reverse_lookup_voltage([700.0], [1200.0], 900.0) == 700.0
+
+
+def _domain_info(entries):
+    return {"entries": entries}
+
+
+def test_normalize_domain_offsets_gates_and_write_bit_mapping() -> None:
+    # value_modifiable=False entries are dropped (value fields are not
+    # driver data), measure bits (msd 21 / mem 4) never map — only the
+    # WRITE bits do (msd 5 / mem 2), and values_kHz[0]=kHz / [1]=µV.
+    raw = _domain_info([
+        {"bit": 0, "value_modifiable": True, "values_kHz": [25000, 100000]},
+        {
+            "bit": 5,
+            "value_modifiable": True,
+            "values_kHz": [0, 50000],
+        },  # msd WRITE bit
+        {
+            "bit": 21,
+            "value_modifiable": True,
+            "values_kHz": [0, 999999],
+        },  # msd MEASURE bit — must be dropped
+        {
+            "bit": 2,
+            "value_modifiable": True,
+            "values_kHz": [0, 0],
+        },  # mem WRITE bit, zero offsets still mapped
+        {
+            "bit": 4,
+            "value_modifiable": True,
+            "values_kHz": [0, 123456],
+        },  # mem MEASURE bit — dropped
+        {
+            "bit": 1,
+            "value_modifiable": False,
+            "values_kHz": [0, 777777],
+        },  # unmodifiable — dropped
+        {"bit": None, "value_modifiable": True, "values_kHz": [1, 2]},
+        {"bit": 3, "value_modifiable": True, "values_kHz": [1]},  # short list
+    ])
+
+    offsets = normalize_domain_offsets(raw)
+
+    assert offsets == {
+        "gpc": {"slot0_khz": 25000, "slot1_uv": 100000},
+        "msd": {"slot0_khz": 0, "slot1_uv": 50000},
+        "mem": {"slot0_khz": 0, "slot1_uv": 0},
+    }
+    assert normalize_domain_offsets(None) == {}
+    assert normalize_domain_offsets({"entries": []}) == {}
+    assert normalize_domain_offsets({"supported": False}) == {}
+
+
+def test_synthesize_effective_positive_shift() -> None:
+    curve = CurveData("gpc")
+    curve.voltages = [800.0, 825.0]
+    curve.frequencies = [1000.0, 1100.0]
+    curve.defaults = [1000.0, 1100.0]
+
+    eff = synthesize_effective(curve, {"gpc": {"slot0_khz": 25000, "slot1_uv": 100000}})
+
+    assert eff.applicable is True
+    assert eff.offset_mv == 100.0
+    assert eff.offset_mhz == 25.0
+    assert eff.voltages == [900.0, 925.0]
+    assert eff.freqs == [1025.0, 1125.0]
+
+
+def test_synthesize_effective_no_op_guards() -> None:
+    curve = CurveData("gpc")
+    curve.voltages = [800.0, 825.0]
+    curve.frequencies = [1000.0, 1100.0]
+
+    # Zero offsets → not applicable.
+    eff = synthesize_effective(curve, {"gpc": {"slot0_khz": 0, "slot1_uv": 0}})
+    assert eff.applicable is False
+    assert eff.voltages == []
+
+    # No own-domain entry (other domains' offsets are not ours to apply).
+    eff = synthesize_effective(curve, {"xbar": {"slot0_khz": 0, "slot1_uv": 50000}})
+    assert eff.applicable is False
+
+    # No offset data at all.
+    eff = synthesize_effective(curve, {})
+    assert eff.applicable is False
+
+    # Pascal-style all-zero voltage axis → nothing to shift.
+    pascal = CurveData("gpc")
+    pascal.voltages = [0.0, 0.0]
+    pascal.frequencies = [1000.0, 1100.0]
+    eff = synthesize_effective(pascal, {"gpc": {"slot0_khz": 0, "slot1_uv": 100000}})
+    assert eff.applicable is False
+
+    # GCOFF-style null-filled frequency segment → nothing to lift.
+    gcoff = CurveData("gpc")
+    gcoff.voltages = [800.0, 825.0]
+    gcoff.frequencies = [0.0, 0.0]
+    eff = synthesize_effective(gcoff, {"gpc": {"slot0_khz": 25000, "slot1_uv": 100000}})
+    assert eff.applicable is False
+
+
+def test_build_vf_curves_attaches_effective_on_private_gpc() -> None:
+    # Positive-slot1 broken state: public read zeroed, private defaults rule,
+    # and the gpc slot1 readback synthesizes the effective (right-shifted)
+    # series — the display cure for the broken-positive-offset state.
+    clk_data = _private_gpc_clk_data(
+        [800000, 825000], currents=[1000.0, 1100.0], defaults=[1000.0, 1100.0]
+    )
+    gpc_points = [
+        {"index": 0, "voltage_uv": 800000, "frequency_khz": 0, "point_type": "prog"},
+        {"index": 1, "voltage_uv": 825000, "frequency_khz": 0, "point_type": "prog"},
+    ]
+    domain_info = _domain_info([
+        {"bit": 0, "value_modifiable": True, "values_kHz": [0, 100000]}
+    ])
+
+    curves = build_vf_curves(gpc_points, None, clk_data, domain_info)
+
+    eff = curves["gpc"].effective
+    assert eff is not None
+    assert eff.applicable is True
+    assert eff.voltages == [900.0, 925.0]
+    assert eff.freqs == [1000.0, 1100.0]
+    # Display-only: the base series itself must stay unshifted.
+    assert curves["gpc"].voltages == [800.0, 825.0]
+    assert curves["gpc"].frequencies == [1000.0, 1100.0]
+
+
+def test_build_vf_curves_sentinel_survivor_still_detected_broken() -> None:
+    # Live-V100 shape: the broken positive-slot1 read zeroes every data word
+    # EXCEPT the #0 sentinel (450 mV / 0.4 MHz survives) — `any(freq>0)`
+    # misses the breakage; the populated-fraction detector must catch it and
+    # the sentinel must never become a hybrid curve.
+    volts = [800000, 812500, 825000, 837500]
+    clk_data = _private_gpc_clk_data(
+        volts,
+        currents=[1000.0, 1050.0, 1100.0, 1150.0],
+        defaults=[1000.0, 1050.0, 1100.0, 1150.0],
+    )
+    gpc_points = [
+        {
+            "index": 0,
+            "voltage_uv": 450000,  # the surviving sentinel
+            "frequency_khz": 405,
+            "point_type": "fixed",
+        },
+    ] + [
+        {"index": i, "voltage_uv": 0, "frequency_khz": 0, "point_type": "fixed"}
+        for i in range(1, 4)
+    ]
+    domain_info = _domain_info([
+        {"bit": 0, "value_modifiable": True, "values_kHz": [0, 100000]}
+    ])
+
+    curves = build_vf_curves(gpc_points, None, clk_data, domain_info)
+
+    assert curves["gpc"].source == "private"
+    eff = curves["gpc"].effective
+    assert eff is not None
+    assert eff.applicable is True
+    assert eff.voltages == [900.0, 912.5, 925.0, 937.5]
+
+
+def test_build_vf_curves_no_effective_on_public_source_or_no_offsets() -> None:
+    # Pascal-style: private axis all-zero → public stays the GPC source, and
+    # a public-source GPC never synthesizes (no trustworthy private base).
+    clk_data = _private_gpc_clk_data([0, 0], [0.0, 0.0], [0.0, 0.0])
+    gpc_points = [
+        {
+            "index": 0,
+            "voltage_uv": 800000,
+            "frequency_khz": 1050000,
+            "default_frequency_khz": 1000000,
+            "point_type": "prog",
+        },
+        {
+            "index": 1,
+            "voltage_uv": 825000,
+            "frequency_khz": 1150000,
+            "default_frequency_khz": 1100000,
+            "point_type": "prog",
+        },
+    ]
+    domain_info = _domain_info([
+        {"bit": 0, "value_modifiable": True, "values_kHz": [0, 100000]}
+    ])
+
+    curves = build_vf_curves(gpc_points, None, clk_data, domain_info)
+    assert curves["gpc"].source == "public"
+    assert curves["gpc"].effective is None
+
+    # No domain_info at all → zero behavior change for a private GPC too.
+    clk_data2 = _private_gpc_clk_data(
+        [800000, 825000], [1000.0, 1100.0], [1000.0, 1100.0]
+    )
+    curves2 = build_vf_curves(None, "not supported", clk_data2, None)
+    assert curves2["gpc"].effective is None
+
+    # Public absent with offsets present is "not supported", NOT breakage —
+    # the fallback must not fire.
+    curves3 = build_vf_curves(None, "not supported", clk_data2, domain_info)
+    assert curves3["gpc"].effective is None
+
+
+def test_build_vf_curves_no_effective_on_healthy_or_shifted_public() -> None:
+    # The synthesis fallback fires ONLY on the detected-broken public read.
+    # A healthy unshifted public read (hybrid) already carries live currents,
+    # and a shifted-but-valid read (negative slot1) displays fine through
+    # the private axis — neither synthesizes even with offsets present.
+    clk_data = _private_gpc_clk_data(
+        [800000, 825000], currents=[1000.0, 1100.0], defaults=[1000.0, 1100.0]
+    )
+    domain_info = _domain_info([
+        {"bit": 0, "value_modifiable": True, "values_kHz": [0, 100000]}
+    ])
+    healthy_public = [
+        {
+            "index": 0,
+            "voltage_uv": 800000,
+            "frequency_khz": 1050000,
+            "point_type": "prog",
+        },
+        {
+            "index": 1,
+            "voltage_uv": 825000,
+            "frequency_khz": 1150000,
+            "point_type": "prog",
+        },
+    ]
+    shifted_public = [
+        {
+            "index": 0,
+            "voltage_uv": 780000,  # negative-slot1 grid shift, data intact
+            "frequency_khz": 1050000,
+            "point_type": "prog",
+        },
+        {
+            "index": 1,
+            "voltage_uv": 805000,
+            "frequency_khz": 1150000,
+            "point_type": "prog",
+        },
+    ]
+
+    curves = build_vf_curves(healthy_public, None, clk_data, domain_info)
+    assert curves["gpc"].source == "hybrid"
+    assert curves["gpc"].effective is None
+
+    curves = build_vf_curves(shifted_public, None, clk_data, domain_info)
+    assert curves["gpc"].source == "private"
+    assert curves["gpc"].effective is None
+
+
+# ── EXT-slot domain-current overlays (Turing/Ampere record packing) ──
+
+
+def _ext_seg(domain: str, start: int, end: int, bank: int = 0) -> dict:
+    return {
+        "kind": "vf_curve",
+        "domain": domain,
+        "bank": bank,
+        "start_index": start,
+        "end_index": end,
+    }
+
+
+def _ext_pt(i: int, slots: list[tuple[float, float]], bank: int = 0) -> dict:
+    fs = [s[0] for s in slots] + [0] * (4 - len(slots))
+    vs = [s[1] for s in slots] + [0] * (4 - len(slots))
+    return {
+        "bank": bank,
+        "index": i,
+        "voltage_uV": 450000,
+        "freq_current_mhz": 405,
+        "freq_default_mhz": 405,
+        "domain_freq_mhz": fs,
+        "domain_volt_uV": vs,
+    }
+
+
+def test_extract_ext_curves_turing_four_slots() -> None:
+    pts = [
+        _ext_pt(
+            i,
+            [
+                (100 + i, 450000),
+                (300 + i, 600000),
+                (500 + i, 800000),
+                (700 + i, 1000000),
+            ],
+        )
+        for i in range(12)
+    ]
+    out = extract_ext_curves({"segments": [_ext_seg("gpc", 0, 11)], "points": pts})
+    assert [(e["owner"], e["slot"], e["label"]) for e in out] == [
+        ("gpc", 0, "XBAR"),
+        ("gpc", 1, "SYS"),
+        ("gpc", 2, "MSD"),
+        ("gpc", 3, "HOST"),
+    ]
+    assert out[0]["volts"][0] == 450.0 and out[0]["freqs"][0] == 100.0
+
+
+def test_extract_ext_curves_ampere_xbar_block() -> None:
+    gpc_pts = [_ext_pt(i, []) for i in range(12)]
+    xbar_pts = [
+        _ext_pt(127 + i, [(2000 + i, 600000), (900 + i, 1000000)]) for i in range(12)
+    ]
+    out = extract_ext_curves({
+        "segments": [_ext_seg("gpc", 0, 126), _ext_seg("xbar", 127, 253)],
+        "points": gpc_pts + xbar_pts,
+    })
+    assert [(e["owner"], e["slot"], e["label"]) for e in out] == [
+        ("xbar", 0, "SYS"),
+        ("xbar", 1, "MSD"),
+    ]
+
+
+def test_extract_ext_curves_rejects_garbage_and_strays() -> None:
+    # Wrong-unit volts never plot…
+    pts = [_ext_pt(i, [(100 + i, 450000000)]) for i in range(12)]
+    assert (
+        extract_ext_curves({"segments": [_ext_seg("gpc", 0, 11)], "points": pts}) == []
+    )
+    # …and neither do stray (<4) point runs.
+    pts = [_ext_pt(i, [(100 + i, 450000)]) for i in range(3)]
+    assert (
+        extract_ext_curves({"segments": [_ext_seg("gpc", 0, 2)], "points": pts}) == []
+    )

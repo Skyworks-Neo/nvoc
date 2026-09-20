@@ -1,5 +1,13 @@
 # Getting Started
 
+Fast path (recommended): after cloning, `cargo xtask setup` checks and bootstraps
+everything (submodule, Rust toolchain, uv, Python envs, pynvoc native build) and
+prints per-item fix hints; then `cargo xtask run gui|tui|cli|stressor` launches a
+component and `cargo xtask ci` mirrors the non-GPU CI gate. See
+[Build-and-Test](./Build-and-Test.md).
+
+Manual path:
+
 1. Clone repository.
    ```bash
    git clone https://github.com/Skyworks-Neo/nvoc.git

@@ -62,6 +62,12 @@ class NativeService:
                 index=int(item.get("index", idx)),
                 name=str(item.get("name") or f"GPU {item.get('index', idx)}"),
                 gpu_id_hex=str(item.get("gpu_id_hex") or "") or None,
+                arch=str(item.get("arch") or "") or None,
+                is_legacy_voltage=(
+                    bool(item["is_legacy_voltage"])
+                    if item.get("is_legacy_voltage") is not None
+                    else None
+                ),
             )
             for idx, item in enumerate(items)
             if isinstance(item, dict)
@@ -140,26 +146,125 @@ class NativeService:
         Returns ``{"domain_bit", "freq_khz"}`` (``freq_khz == 0`` ⇒ driver
         refused / not measurable — caller should not draw a live point),
         ``{"supported": false}`` when the family is absent, or ``None`` on a
-        transient error. Preferred over the counter-based read for XBAR/HOST
+        transient error. Preferred over the counter-based read for XBAR/MSD
         live-point polling: one call, no 50 ms sleep.
         """
         try:
-            return self._pynvoc().query_private_freq_domain_status(gpu, int(domain_bit))
+            result = self._pynvoc().query_private_freq_domain_status(
+                gpu, int(domain_bit)
+            )
         except Exception:
             self._force_wake(gpu)
             try:
-                return self._pynvoc().query_private_freq_domain_status(
+                result = self._pynvoc().query_private_freq_domain_status(
                     gpu, int(domain_bit)
                 )
             except Exception:
                 return None
 
+        # Direct-family fallback: some kernels don't implement the
+        # green-curve escape (live P100/TCC 582.41 → supported=false).
+        # Retry once through the counter-based two-sample MEASURE — same
+        # domain bit, same HBM MEM decode, ~50 ms sleep (fine at the 1 Hz
+        # crosshair cadence, unlike the dashboard poll loop).
+        if isinstance(result, dict) and result.get("supported") is False:
+            try:
+                r = self._pynvoc().query_clk_domain_freq(gpu, int(domain_bit))
+                if isinstance(r, dict) and r.get("freq_mhz"):
+                    return {
+                        "domain_bit": int(domain_bit),
+                        "freq_khz": int(r["freq_mhz"] * 1000),
+                        "counter_fallback": True,
+                    }
+            except Exception:
+                return None
+        return result
+
+    def query_volt_rails(self, gpu: str) -> dict | None:
+        """Private VoltRails family (rail mask + P0 voltage bounds).
+
+        Returns the pynvoc ``query_volt_rails`` dict (with a ``p0`` sub-dict
+        of floor/ceiling/effective walls) or ``None`` on a transient error.
+        Best-effort wake like the other private reads. Mirrors the GUI backend.
+        """
+        try:
+            return self._pynvoc().query_volt_rails(gpu)
+        except Exception:
+            self._force_wake(gpu)
+            try:
+                return self._pynvoc().query_volt_rails(gpu)
+            except Exception:
+                return None
+
+    def query_vbios_vf_curve(self, gpu: str) -> dict | None:
+        """vBIOS GPU Boost 2.0 ladder (Maxwell/Kepler read-only VF curve).
+
+        Returns the pynvoc ``query_vbios_vf_curve`` dict ({available,
+        curve_start_index, curve_end_index, points, pstate_marks}) or
+        ``None`` on a transient error; ``{available: False}`` on
+        generations without the ladder table. Best-effort wake like the
+        other private reads.
+        """
+        try:
+            return self._pynvoc().query_vbios_vf_curve(gpu)
+        except Exception:
+            self._force_wake(gpu)
+            try:
+                return self._pynvoc().query_vbios_vf_curve(gpu)
+            except Exception:
+                return None
+
+    def query_private_freq_domain_info(self, gpu: str) -> dict | None:
+        """Private ClockClient ClkDomains GetControl: controllable mask +
+        per-domain WRITE records. Drives the Sys/Msd/Host row presence
+        (bit3/bit5/bit9 in the mask) and the bit3 RMW baseline. Mirrors the
+        GUI backend (best-effort wake like the other private reads)."""
+        try:
+            return self._pynvoc().query_private_freq_domain_info(gpu)
+        except Exception:
+            self._force_wake(gpu)
+            try:
+                return self._pynvoc().query_private_freq_domain_info(gpu)
+            except Exception:
+                return None
+
+    def query_fan_info(self, gpu: str) -> dict | None:
+        """NVML fan info (count / min / max / current percent).
+
+        Returns the pynvoc ``query_fan_info`` dict or ``None`` when NVML
+        can't answer. On legacy GPUs (≤ Kepler) this is the authoritative
+        fan source: the private NVAPI cooler family reports zero coolers
+        there, while NVML's v1 ``nvmlDeviceGetFanSpeed`` answers.
+        """
+        try:
+            return self._pynvoc().query_fan_info(gpu)
+        except Exception:
+            return None
+
+    def query_cooler_info(self, gpu: str) -> dict | None:
+        """NVAPI cooler-family info (private FanCoolerGetInfo).
+
+        Returns the pynvoc ``query_cooler_info`` dict (``count`` +
+        per-cooler entries) or ``None`` when NVAPI can't answer. Paired
+        with ``query_fan_info`` for the fan-policy legacy verdict:
+        NVML fans ≥1 with an EMPTY NVAPI cooler family is the ≤Kepler
+        signature; modern cards report their coolers through NVAPI too.
+        """
+        try:
+            return self._pynvoc().query_cooler_info(gpu)
+        except Exception:
+            return None
+
     def query_mobile_limits(self, gpu: str) -> dict:
         """Fetch the mobile power/thermal control surface (all NVAPI).
 
         Returns ``{"tgp": dict|None, "dnotifier": dict|None,
-        "temp_policies": list, "volt_rail": dict|None}``; ``None`` sub-dicts
-        mean the private interface isn't exposed by this driver.
+        "temp_policies": list, "volt_rail": dict|None,
+        "power_limit_w": float|None}``; ``None`` sub-dicts mean the private
+        interface isn't exposed by this driver. ``power_limit_w`` is the
+        actually-effective power wall (min of requested TGP and the active
+        D-Notifier cap — nvidia-smi's PPAB Ceiling "Current" value), used to
+        anchor the TGP input.
         """
         data = self._query_mobile_limits_once(gpu)
         if (
@@ -179,6 +284,7 @@ class NativeService:
         dnotifier = None
         policies: Any = []
         volt_rail = None
+        ceiling = None
         try:
             tgp = native.query_tgp_watt_range(gpu)
         except Exception:
@@ -199,11 +305,21 @@ class NativeService:
             volt_rail = None
         if not isinstance(volt_rail, dict):
             volt_rail = None
+        # The actually-effective power wall (min of requested TGP and the
+        # active D-Notifier cap — nvidia-smi's PPAB Ceiling "Current" value).
+        try:
+            ceiling = native.query_power_ceiling(gpu)
+        except Exception:
+            ceiling = None
+        if not isinstance(ceiling, dict):
+            ceiling = None
+        power_limit_w = ceiling.get("ceiling_watt") if ceiling else None
         return {
             "tgp": tgp,
             "dnotifier": dnotifier,
             "temp_policies": policies,
             "volt_rail": volt_rail,
+            "power_limit_w": power_limit_w,
         }
 
     def run_action(

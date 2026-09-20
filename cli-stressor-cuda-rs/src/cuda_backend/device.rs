@@ -224,10 +224,27 @@ fn format_pci_address(pci: &PciBusAddress) -> String {
     )
 }
 
+/// UUID fetch shared by enumeration and the Vulkan bridge. The cuda11 build
+/// must use `cuDeviceGetUuid` (v1): `cuDeviceGetUuid_v2` only exists on
+/// drivers with a CUDA 12.2+ API surface, and a missing symbol panics inside
+/// cudarc's dynamic loader before any CUresult can be observed. v1 is
+/// exported by every driver and returns identical bytes for non-MIG devices
+/// (v2 only changed MIG UUID semantics).
+fn cu_device_get_uuid(uuid: *mut cuda_sys::CUuuid, device: i32) -> cuda_sys::CUresult {
+    #[cfg(feature = "cuda11")]
+    unsafe {
+        cuda_sys::cuDeviceGetUuid(uuid, device)
+    }
+    #[cfg(not(feature = "cuda11"))]
+    unsafe {
+        cuda_sys::cuDeviceGetUuid_v2(uuid, device)
+    }
+}
+
 fn fetch_device_uuid(device: i32) -> Result<[u8; 16], BackendError> {
     let mut raw_uuid = std::mem::MaybeUninit::<cuda_sys::CUuuid>::zeroed();
     unsafe {
-        let res = cuda_sys::cuDeviceGetUuid_v2(raw_uuid.as_mut_ptr(), device);
+        let res = cu_device_get_uuid(raw_uuid.as_mut_ptr(), device);
         if res as u32 != 0 {
             // Return zero UUID if not supported instead of failing
             return Ok([0u8; 16]);
@@ -275,10 +292,10 @@ pub(super) fn query_cuda_device_uuid(device_index: u32) -> Result<[u8; 16], Back
 
     let mut raw_uuid = std::mem::MaybeUninit::<cuda_sys::CUuuid>::zeroed();
     unsafe {
-        let res = cuda_sys::cuDeviceGetUuid_v2(raw_uuid.as_mut_ptr(), device);
+        let res = cu_device_get_uuid(raw_uuid.as_mut_ptr(), device);
         if res as u32 != 0 {
             return Err(BackendError::Other(format!(
-                "cuDeviceGetUuid_v2 failed: error code {}",
+                "cuDeviceGetUuid failed: error code {}",
                 res as u32
             )));
         }

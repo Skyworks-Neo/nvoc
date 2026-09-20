@@ -10,9 +10,9 @@ import sys
 import threading
 import time
 import tkinter as tk
+import traceback
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
-import pystray
 from PIL import Image
 
 from src.backend import NativeBackend
@@ -65,6 +65,8 @@ def _is_discovery_offline_error(output: str) -> bool:
 
 
 if TYPE_CHECKING:
+    import pystray
+
     from src.single_instance import SingleInstanceGuard
 
 
@@ -91,8 +93,39 @@ class _ConsoleWindowProxy:
         self._window = None  # type: Optional[ctk.CTkToplevel]
         self._buffer: List[str] = []
         self._lock = threading.Lock()
+        # Identical-consecutive-line collapse: a per-second poll logging the
+        # same expected condition forever (e.g. "GPU N has no NvAPI backend"
+        # on a chip without one) must show once, not flood the console. The
+        # first occurrence shows; repeats are counted and flushed as a
+        # one-line "repeated N×" summary when a different message arrives.
+        self._last_text: Optional[str] = None
+        self._repeat_count = 0
 
     # ── widget lifecycle ────────────────────────────────────────────────
+    @staticmethod
+    def _mirror_to_file(text: str) -> None:
+        """Append one console line to the packaged-build support log.
+
+        The windowed exe has no stderr, so the console buffer is the ONLY
+        record of what the startup chain did — mirror it to
+        %LOCALAPPDATA%/nvoc-gui/console.log so post-mortems don't require
+        driving the UI. Best-effort; failures are ignored.
+        """
+        try:
+            base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+            log_dir = os.path.join(base, "nvoc-gui")
+            os.makedirs(log_dir, exist_ok=True)
+            now = time.time()
+            stamp = f"{time.strftime('%H:%M:%S')}.{int(now * 1000) % 1000:03d}"
+            with open(
+                os.path.join(log_dir, "console.log"), "a", encoding="utf-8"
+            ) as file:
+                file.write(f"{stamp} {text}")
+                if not text.endswith("\n"):
+                    file.write("\n")
+        except OSError:
+            pass
+
     def _ensure_window(self) -> "OutputConsole":
         if self._widget is not None and self._widget.winfo_exists():
             return self._widget
@@ -127,13 +160,30 @@ class _ConsoleWindowProxy:
 
     # ── OutputConsole API ───────────────────────────────────────────────
     def append(self, text: str) -> None:
+        pending: List[str] = []
         with self._lock:
+            if text == self._last_text:
+                # Identical consecutive line — count it, show nothing.
+                self._repeat_count += 1
+                return
+            if self._repeat_count:
+                pending.append(
+                    f"[GUI] (previous line repeated {self._repeat_count}×)\n"
+                )
+                self._repeat_count = 0
+            self._last_text = text
             self._buffer.append(text)
             if len(self._buffer) > self._MAX_LINES:
                 del self._buffer[: len(self._buffer) - self._MAX_LINES]
+            pending.append(text)
             live = self._widget
+        self._mirror_to_file(text)
         if live is not None and live.winfo_exists():
-            live.append(text)
+            live.append_batch(pending)
+
+    def mirror(self, text: str) -> None:
+        """Write one diagnostic line to the support log only (no console UI)."""
+        self._mirror_to_file(f"[diag] {text}\n")
 
     def append_batch(self, texts: List[str]) -> None:
         for text in texts:
@@ -142,6 +192,8 @@ class _ConsoleWindowProxy:
     def clear(self) -> None:
         with self._lock:
             self._buffer = []
+            self._last_text = None
+            self._repeat_count = 0
         if self._widget is not None and self._widget.winfo_exists():
             self._widget.clear()
 
@@ -188,11 +240,23 @@ class App(ctk.CTk):
     """Main application window."""
 
     def __init__(self, single_instance_guard: Optional["SingleInstanceGuard"] = None):
+        # MUST precede CTk.__init__: the geometry() override below reads this
+        # pin slot, and CTk's own constructor issues geometry() calls — an
+        # uninitialized slot would route through CTk's __getattr__ into
+        # tkinter and kill construction with a silent AttributeError (the
+        # windowed exe has no stderr to show it).
+        self._startup_geometry_reapply: Optional[str] = None
         super().__init__()
 
         # Warm matplotlib (font cache) on a background thread before any tab
         # builds its chart — keeps the Tk event loop responsive.
         self._mpl_ready = _start_matplotlib_warmup()
+        # Surface Tk callback exceptions: in the windowed (packaged) build
+        # sys.stderr is None, so any exception raised inside an after()- or
+        # bind()-delivered callback vanishes silently — exactly how startup
+        # failures (dropped limit updates, half-applied tabs) used to hide.
+        # Route every callback error into the GUI console AND a file.
+        self.report_callback_exception = self._report_callback_exception
         # CLI output batching (see _on_cli_output)
         self._cli_output_buffer: List[str] = []
         self._cli_output_flush_id: Optional[str] = None
@@ -231,11 +295,24 @@ class App(ctk.CTk):
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
 
+        # Chart-scale floor package (see _apply_min_ui_scale). Runs early so
+        # the first chart build reads the floored factor; it deliberately
+        # does NOT touch CTk's global widget/window scaling any more — the
+        # de-CTk'd panels draw point-sized fonts that scaling can't move,
+        # so the old widget inflation just built oversized chrome around
+        # unchanged text.
+        self._ui_scale_multiplier_applied: Optional[float] = None
+        self._apply_min_ui_scale()
+
         # Tray icon (initialized lazily)
         self._tray_icon = None  # type: Optional[pystray.Icon]
         self._tray_thread = None  # type: Optional[Any]
         self._tray_image = None  # type: Optional[Image.Image]
         self._exiting = False
+        # Quit request from a foreign thread (tray menu): drained by the
+        # single-instance poller on the main thread. Never deliver a quit
+        # through after() — see _quit_app.
+        self._quit_requested = False
 
         # ✕ Close button → exit completely
         # Minimize button → hide to tray (via <Unmap>)
@@ -324,8 +401,10 @@ class App(ctk.CTk):
         # never touch Tk), so it overlaps UI construction from tick zero.
         self._refresh_gpu_list()
 
-        if self._single_instance_guard is not None:
-            self.after(200, self._poll_single_instance_signal)
+        # Unconditional: the poller is also the marshal point that drains
+        # foreign-thread quit requests (_quit_app from the tray thread);
+        # the guard access inside is None-safe.
+        self.after(200, self._poll_single_instance_signal)
 
     def _build_ui(self):
         """Build the main UI layout."""
@@ -589,9 +668,17 @@ class App(ctk.CTk):
                     if self._vfp_offset_state_cache is not None:
                         has_vfp_offset, uniform_offset = self._vfp_offset_state_cache
                         tab.set_vfp_state(has_vfp_offset, uniform_offset)
+                self.console.mirror(
+                    "prebuild overclock OK; cache has range keys: "
+                    f"{sorted(k for k in (getattr(self, '_gpu_limits_cache', {}) or {}) if 'power' in k)}"
+                )
             except Exception:
                 # A failed prebuild must not break startup; the tab will be
-                # built lazily on first entry as before.
+                # built lazily on first entry as before. Surface it — a silent
+                # swallow here cost a full startup's worth of limit updates.
+                self.console.append(
+                    f"[GUI] Tab prebuild failed:\n{traceback.format_exc()}\n"
+                )
                 return
             self.after(100, self._prebuild_next_tab)
             return
@@ -679,8 +766,13 @@ class App(ctk.CTk):
             try:
                 cb(resizing=resizing, force_flush=force_flush)
             except Exception:
-                # Resize hooks are best-effort and must never break the UI thread.
-                pass
+                # Resize hooks are best-effort and must never break the UI
+                # thread — but a swallowed hook also silently skips whatever
+                # that hook was mid-applying (e.g. the deferred limits
+                # flush). Log it so the skipped work is visible.
+                self.console.append(
+                    f"[GUI] Resize hook failed:\n{traceback.format_exc()}\n"
+                )
 
     def _begin_resize_session(self):
         if self._is_resizing:
@@ -707,6 +799,9 @@ class App(ctk.CTk):
         """
         if event.widget is not self:
             return
+        # Monitor switches surface here as a geometry jump: re-check the
+        # UI-scale floor (no-op unless the OS DPI factor crossed it).
+        self._apply_min_ui_scale()
         geom = (int(event.x), int(event.y), int(event.width), int(event.height))
         # Only width is used downstream by resize-sensitive redraws, but the
         # session itself keys on the full geometry so moves are covered.
@@ -722,13 +817,231 @@ class App(ctk.CTk):
                 pass
         self._resize_settle_after_id = self.after(140, self._end_resize_session)
 
+    def _report_callback_exception(self, exc_type, exc_value, exc_tb):
+        """Tk callback exception hook (see __init__ for why it exists).
+
+        The console keeps the UI-visible one-liner; the full traceback goes
+        to %LOCALAPPDATA%/nvoc-gui/callback_tracebacks.log so packaged-build
+        failures stay diagnosable even with sys.stderr = None.
+        """
+        text = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+        try:
+            self.console.append(f"[GUI] Callback error: {exc_value!r}\n")
+        except Exception:
+            pass
+        try:
+            base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+            log_dir = os.path.join(base, "nvoc-gui")
+            os.makedirs(log_dir, exist_ok=True)
+            with open(
+                os.path.join(log_dir, "callback_tracebacks.log"),
+                "a",
+                encoding="utf-8",
+            ) as file:
+                file.write(f"=== {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n{text}\n")
+        except OSError:
+            pass
+
+    def after(self, ms, func=None, *args):
+        """Worker-thread-safe ``Widget.after``.
+
+        tkinter only marshals a cross-thread ``after()`` once the main
+        thread is dispatching the Tk loop; before that it blocks ~1s and
+        raises ``RuntimeError: main thread is not in main loop``. Startup
+        fires workers from ``App.__init__`` (tick zero) whose results
+        routinely finish while the UI is still constructing, and every one
+        of those deliveries used to race that window — the discovery race
+        was just the first one observed. Retry from ANY thread instead of
+        dropping: main-thread callers keep tkinter's exact semantics.
+        """
+        if threading.current_thread() is threading.main_thread():
+            return super().after(ms, func, *args)
+        deadline = time.monotonic() + 60.0
+        while True:
+            if getattr(self, "_exiting", False):
+                return None
+            try:
+                return super().after(ms, func, *args)
+            except RuntimeError:
+                # Each failed attempt already spends ~1s inside tkinter's
+                # own main-loop wait; the short pause just paces the retry.
+                if time.monotonic() > deadline:
+                    self.console.append(
+                        "[GUI] Warning: UI loop never came up; a background "
+                        "result was dropped.\n"
+                    )
+                    return None
+                time.sleep(0.1)
+
+    def _deliver_to_ui(self, callback: Callable[[], None]) -> None:
+        """Deliver one worker result to the UI thread (see ``after``)."""
+        self.after(0, callback)
+
+    def set_startup_geometry(self, width: int, height: int, x: int, y: int) -> None:
+        """Pin the window to an exact geometry, surviving CTk's DPI re-apply.
+
+        Thin wrapper over the auto-pinning ``geometry()`` override — kept as
+        the self-documenting entry point for drivers and tests.
+        """
+        self.geometry(f"{width}x{height}+{x}+{y}")
+
+    def geometry(self, geometry_string=None):
+        """Auto-pinning ``geometry()``.
+
+        Any size+position spec set while the window is UNMAPPED (i.e. any
+        driver/test calling plain ``app.geometry(...)`` before ``mainloop``,
+        and the app's own constructor) is recorded and re-applied after
+        map: CTk's ScalingTracker re-issues geometry from ITS OWN stored
+        size at map time, silently clobbering whatever the script set (the
+        "window ignores the code's startup dimensions" effect). The
+        ``<Map>`` hook re-applies AFTER CTk's own map handler (binding order
+        — ours is added later, add="+" runs last), and the after-timer is
+        the fallback for already-mapped windows; both clear the pin once
+        the requested geometry has stuck.
+        """
+        if (
+            geometry_string is not None
+            and "x" in geometry_string
+            and not self.winfo_ismapped()
+            and not getattr(self, "_exiting", False)
+        ):
+            # getattr, never a bare read: CTk forwards unknown attributes to
+            # tkinter, so a bare read on a half-constructed window raises.
+            first_pin = getattr(self, "_startup_geometry_reapply", None) is None
+            self._startup_geometry_reapply = geometry_string
+            if first_pin:
+                self.after(350, self._reapply_startup_geometry)
+                self.bind("<Map>", self._on_startup_geometry_map, add="+")
+        return super().geometry(geometry_string)
+
+    def _on_startup_geometry_map(self, _event) -> None:
+        if self._startup_geometry_reapply is not None:
+            # Run after CTk's own <Map> scaling handler (add="+" binding
+            # order) so the re-apply lands last and wins.
+            self.after(0, self._reapply_startup_geometry)
+
+    def _reapply_startup_geometry(self) -> None:
+        spec = self._startup_geometry_reapply
+        if spec is None or getattr(self, "_exiting", False):
+            return
+        if not self.winfo_ismapped():
+            # The after(350) fallback can fire before mainloop actually
+            # maps the window (long construction): wait for the real map.
+            self.after(100, self._reapply_startup_geometry)
+            return
+        # Mapped now — route through super() so the pinned spec isn't
+        # re-recorded, then retire the pin.
+        super().geometry(spec)
+        self._startup_geometry_reapply = None
+
+    # The chart package (figure density, chart fonts, plot height band) is
+    # tuned against the 125%/150% panels this app is developed on; a 100%-
+    # scaling 1080p screen renders the VF-curve plot flat and small. The
+    # floor below raises the CHART's effective scale to 1.25 on such
+    # screens. It used to also raise the whole UI via CTk's manual
+    # widget/window multipliers — reverted: the de-CTk'd panels (overclock,
+    # fan, buttons) draw point-sized fonts that CTk scaling cannot move,
+    # so the widget inflation only produced oversized chrome around
+    # unchanged text ("big buttons, tiny fonts"). Higher OS factors
+    # (125%, 150%) are passed through untouched.
+    _MIN_EFFECTIVE_UI_SCALE = 1.25
+
+    @classmethod
+    def _min_ui_scale_multiplier(cls, os_factor: float) -> float:
+        """Manual CTk scaling multiplier for an OS DPI factor (1.0 = none)."""
+        if os_factor >= cls._MIN_EFFECTIVE_UI_SCALE:
+            return 1.0
+        return cls._MIN_EFFECTIVE_UI_SCALE / max(0.5, os_factor)
+
+    def _effective_ui_scale(self) -> float:
+        """The effective scale the chart package renders at.
+
+        OS DPI factor multiplied by the sub-floor multiplier — the quantity
+        the VF-curve chart must match (it used to read CTk's widget scaling,
+        which equaled this only while the floor still drove the global
+        multipliers).
+        """
+        os_factor = self._os_dpi_factor()
+        return os_factor * self._min_ui_scale_multiplier(os_factor)
+
+    def _os_dpi_factor(self) -> float:
+        """The window's real OS DPI factor (per-monitor, Win32 truth).
+
+        CTk's per-window dict is filled with a provisional 1.0 at window
+        creation and only corrected asynchronously — reading it at
+        __init__-time misfires the floor on 150% displays (1.5 UI briefly
+        renders at 1.25× and the chart bakes at 125 dpi until CTk's own
+        correction lands, which is exactly the "first frame wrong, then it
+        re-renders" effect). GetDpiForWindow answers truthfully the moment
+        the window exists; the rest are fallbacks for exotic setups.
+        """
+        try:
+            if sys.platform == "win32":
+                user32 = ctypes.windll.user32
+                GA_ROOT = 2
+                hwnd = user32.GetAncestor(self.winfo_id(), GA_ROOT)
+                if hwnd:
+                    dpi = user32.GetDpiForWindow(hwnd)
+                    if dpi:
+                        return dpi / 96.0
+        except Exception:
+            pass
+        return self._system_dpi_factor()
+
+    @staticmethod
+    def _system_dpi_factor() -> float:
+        try:
+            if sys.platform == "win32":
+                dpi = ctypes.windll.user32.GetDpiForSystem()
+                if dpi:
+                    return dpi / 96.0
+        except Exception:
+            pass
+        return 1.0
+
+    def _apply_min_ui_scale(self) -> None:
+        """Keep the CHART's effective scale at or above the floor.
+
+        Records the sub-floor multiplier for the VF-curve chart package and
+        logs the startup verdict to the support log ("1080p chart too small"
+        is only diagnosable if the log says whether the floor fired). Does
+        NOT touch CTk's global widget/window scaling any more — that half
+        of the floor inflated every CTk widget while the de-CTk'd panels'
+        point fonts stayed put. Idempotent and cheap when nothing changed
+        (the resize/move hook calls it to catch monitor switches — a window
+        dragged onto a 100% screen gets the chart floor, dragged back onto
+        150% the multiplier drops back to 1.0).
+        """
+        if getattr(self, "_exiting", False):
+            return
+        os_factor = self._os_dpi_factor()
+        multiplier = self._min_ui_scale_multiplier(os_factor)
+        changed = multiplier != getattr(self, "_ui_scale_multiplier_applied", object())
+        # The startup verdict lands in the support log on EVERY run — the
+        # pre-_build_ui first call has no console yet; the flag makes the
+        # next call with a console write it.
+        needs_log = not getattr(self, "_ui_scale_logged", False)
+        if not changed and not needs_log:
+            return
+        self._ui_scale_multiplier_applied = multiplier
+        console = getattr(self, "console", None)
+        if console is not None:
+            # Only consume the startup-log flag once the line actually
+            # landed — the pre-_build_ui first call has no console yet.
+            self._ui_scale_logged = True
+            console.mirror(
+                f"ui scale: os_factor={os_factor:g} multiplier={multiplier:g} "
+                f"effective={os_factor * multiplier:g} "
+                f"(chart floor {self._MIN_EFFECTIVE_UI_SCALE:g})"
+            )
+
     def _refresh_gpu_list(self):
         """Query native GPU discovery and populate GPU dropdown."""
         self.console.append("[GUI] Detecting GPUs...\n")
 
         def _worker():
             retcode, output, gpus = self.backend.list_gpus()
-            self.after(0, lambda: self._apply_gpu_list(retcode, output, gpus))
+            self._deliver_to_ui(lambda: self._apply_gpu_list(retcode, output, gpus))
 
         self.run_background("gpu-list", _worker)
 
@@ -819,6 +1132,7 @@ class App(ctk.CTk):
                 "is_mobile": item.get("is_mobile"),
                 "is_legacy_voltage": item.get("is_legacy_voltage"),
                 "xbar_supported": item.get("xbar_supported"),
+                "backend_nvml": item.get("backend_nvml"),
             }
 
         ordered_indices = sorted(short_labels.keys())
@@ -851,11 +1165,24 @@ class App(ctk.CTk):
         if last_idx not in ordered_indices:
             last_idx = ordered_indices[0]
 
+        # Programmatic selection below is guarded (no _on_gpu_changed), so a
+        # re-detection that silently falls back to another GPU (the selected
+        # part disappeared) must clear the VF curve itself — otherwise the
+        # removed GPU's curve lingers on the chart. Compare native targets
+        # (uuid > index): a re-indexed list can seat a different card on the
+        # same index.
+        prev_target = self.selected_gpu_target()
         self._programmatic_gpu_set = True
         try:
             self.gpu_var.set(short_labels[last_idx])
         finally:
             self._programmatic_gpu_set = False
+        if (
+            prev_target is not None
+            and prev_target != self.selected_gpu_target()
+            and self.tab_vfcurve is not None
+        ):
+            self.tab_vfcurve.on_gpu_changed()
         self.console.append(f"[GUI] Found {len(ordered_indices)} GPU(s).\n")
         # A GPU landed — stop the background re-probe (no longer needed).
         self._stop_gpu_reprobe()
@@ -912,6 +1239,11 @@ class App(ctk.CTk):
         if self.tab_overclock:
             self.tab_overclock.set_vfp_state(False)
             self.tab_overclock.set_supported_pstates([])
+        # VF curve: the previous GPU's curve (point indices, voltages, lock
+        # state, P0 walls) is meaningless against the new part — clear it and
+        # reload; a GPU with no V/F interface stays cleared with a message.
+        if self.tab_vfcurve is not None:
+            self.tab_vfcurve.on_gpu_changed()
 
         # Re-run the full init chain: info → limits → status → OC values → curve
         self._query_gpu_info()
@@ -1444,9 +1776,10 @@ class App(ctk.CTk):
             # Guard the main-thread marshal during shutdown: an inflight
             # worker (dash-poll / vfcurve-refresh) may complete after
             # _do_shutdown sets _exiting and tears down widgets; scheduling
-            # after() on a destroyed root raises a Tcl error.
+            # after() on a destroyed root raises a Tcl error. _deliver_to_ui
+            # also rides out the pre-mainloop startup window.
             if not getattr(self, "_exiting", False):
-                self.after(0, lambda: callback(retcode, output))
+                self._deliver_to_ui(lambda: callback(retcode, output))
 
         self.run_background(thread_name, _worker)
         return True
@@ -1558,7 +1891,11 @@ class App(ctk.CTk):
         if self.tab_dashboard:
             self.tab_dashboard._fetch_once()
         if self.tab_vfcurve and want_curve:
-            self.tab_vfcurve._refresh_curve()
+            # force=True: a deliberate curve-affecting WRITE must re-query
+            # even inside the 2.5 s dedup window — a voltage addend applied
+            # right after an auto-refresh tick would otherwise leave the
+            # tab showing the pre-write synthesis until the next tick.
+            self.tab_vfcurve._refresh_curve(force=True)
 
     def run_cli_display(
         self, args: List[str], on_finished: Optional[Callable[[int], None]] = None
@@ -1638,8 +1975,18 @@ class App(ctk.CTk):
         self._tray_image = img
         return img
 
-    def _build_tray_icon(self) -> "pystray.Icon":
-        """Create and return a new pystray.Icon instance."""
+    def _build_tray_icon(self) -> Optional["pystray.Icon"]:
+        """Create and return a new pystray.Icon instance.
+
+        Returns None when pystray is unusable in this environment — the
+        import itself probes the display (headless Linux raises
+        DisplayNameError from the X11 backend at import time), so it must
+        stay lazy and failure-tolerant instead of a module-level import.
+        """
+        try:
+            import pystray
+        except Exception:
+            return None
         menu = pystray.Menu(
             pystray.MenuItem("显示主界面", self._show_from_tray, default=True),
             pystray.Menu.SEPARATOR,
@@ -1660,6 +2007,12 @@ class App(ctk.CTk):
 
     def _hide_to_tray(self):
         """Hide the main window and show the tray icon."""
+        # Build the icon BEFORE withdrawing: on tray-less environments
+        # (headless Linux — pystray import fails) the window must stay
+        # reachable through the taskbar instead of vanishing.
+        tray_icon = self._build_tray_icon()
+        if tray_icon is None:
+            return
         self.withdraw()
         # (Re)create tray icon each time so pystray state is clean
         if self._tray_icon is not None:
@@ -1667,7 +2020,7 @@ class App(ctk.CTk):
                 self._tray_icon.stop()
             except Exception:
                 pass
-        self._tray_icon = self._build_tray_icon()
+        self._tray_icon = tray_icon
         self._tray_thread = self.run_background("tray-icon", self._tray_icon.run)
         # Keep-alive: after long tray idles Windows pages the GUI's working
         # set out, making the first restore repaint painfully slow. A slow
@@ -1707,6 +2060,16 @@ class App(ctk.CTk):
 
     def _poll_single_instance_signal(self):
         """Restore the running instance when a duplicate launch requests it."""
+        # Drain foreign-thread quit requests first: _quit_app from the tray
+        # thread cannot reach the Tk loop through after() (the override
+        # drops exiting-state deliveries by design), so this always-running
+        # main-thread tick is the marshal point for the shutdown. Clear the
+        # flag first: the drain must be single-shot even if a stray armed
+        # tick fires again after shutdown.
+        if self._quit_requested:
+            self._quit_requested = False
+            self._do_shutdown()
+            return
         if self._exiting:
             return
         try:
@@ -1760,19 +2123,29 @@ class App(ctk.CTk):
         """Fully exit the application."""
         if self._exiting:
             return
+
+        # Tray-menu callback runs on the pystray thread and must not touch
+        # Tk: the after() override drops deliveries once _exiting is set —
+        # and the shutdown itself used to be scheduled through it after
+        # setting that very flag, so the request was silently dropped and
+        # the app survived as a hidden zombie (tray gone, process alive).
+        # Set the flag FIRST (before _exiting) so the single-instance
+        # poller's re-arm can never race past it, and let the poller run
+        # the shutdown on the main thread.
+        foreign_thread = threading.current_thread() is not threading.main_thread()
+        if foreign_thread:
+            self._quit_requested = True
         self._exiting = True
 
-        # If called from a non-main thread (e.g. pystray tray menu callback),
-        # schedule the heavy shutdown work on the main Tk thread to avoid:
-        #   1) self-join deadlock (worker thread calling tasks.shutdown(wait=True))
-        #   2) cross-thread Tk destroy (Tkinter is not thread-safe)
-        if threading.current_thread() is not threading.main_thread():
-            # Stop the tray icon from this thread — pystray stop must be
-            # called from the thread that owns the icon's run loop.
+        if foreign_thread:
+            # Stop the tray icon from this thread — icon.stop() is the one
+            # pystray entry point designed for the icon's own thread.
             if self._tray_icon is not None:
-                self._tray_icon.stop()
+                try:
+                    self._tray_icon.stop()
+                except Exception:
+                    pass
                 self._tray_icon = None
-            self.after(0, self._do_shutdown)
             return
 
         self._do_shutdown()

@@ -391,6 +391,8 @@ class NVOCApp(App[None]):
     def on_select_changed(self, event: Select.Changed) -> None:
         if event.select.id == "gpu-select":
             self.header_controller.on_gpu_selected(event.value)
+        elif event.select.id == "power-api":
+            self.overclock_controller.on_power_api_changed(event.value)
         elif event.select.id == "vf-active-curve":
             if self.vfcurve_controller._syncing:
                 # Echo of a programmatic sync write — acting on it resonates
