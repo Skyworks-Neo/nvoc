@@ -13,7 +13,6 @@ import tkinter as tk
 import traceback
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
-import pystray
 from PIL import Image
 
 from src.backend import NativeBackend
@@ -66,6 +65,8 @@ def _is_discovery_offline_error(output: str) -> bool:
 
 
 if TYPE_CHECKING:
+    import pystray
+
     from src.single_instance import SingleInstanceGuard
 
 
@@ -1974,8 +1975,18 @@ class App(ctk.CTk):
         self._tray_image = img
         return img
 
-    def _build_tray_icon(self) -> "pystray.Icon":
-        """Create and return a new pystray.Icon instance."""
+    def _build_tray_icon(self) -> Optional["pystray.Icon"]:
+        """Create and return a new pystray.Icon instance.
+
+        Returns None when pystray is unusable in this environment — the
+        import itself probes the display (headless Linux raises
+        DisplayNameError from the X11 backend at import time), so it must
+        stay lazy and failure-tolerant instead of a module-level import.
+        """
+        try:
+            import pystray
+        except Exception:
+            return None
         menu = pystray.Menu(
             pystray.MenuItem("显示主界面", self._show_from_tray, default=True),
             pystray.Menu.SEPARATOR,
@@ -1996,6 +2007,12 @@ class App(ctk.CTk):
 
     def _hide_to_tray(self):
         """Hide the main window and show the tray icon."""
+        # Build the icon BEFORE withdrawing: on tray-less environments
+        # (headless Linux — pystray import fails) the window must stay
+        # reachable through the taskbar instead of vanishing.
+        tray_icon = self._build_tray_icon()
+        if tray_icon is None:
+            return
         self.withdraw()
         # (Re)create tray icon each time so pystray state is clean
         if self._tray_icon is not None:
@@ -2003,7 +2020,7 @@ class App(ctk.CTk):
                 self._tray_icon.stop()
             except Exception:
                 pass
-        self._tray_icon = self._build_tray_icon()
+        self._tray_icon = tray_icon
         self._tray_thread = self.run_background("tray-icon", self._tray_icon.run)
         # Keep-alive: after long tray idles Windows pages the GUI's working
         # set out, making the first restore repaint painfully slow. A slow

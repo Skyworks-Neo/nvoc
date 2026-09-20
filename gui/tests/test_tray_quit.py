@@ -21,6 +21,11 @@ import pytest
 try:
     import customtkinter as ctk
 
+    # Probe kept ALIVE on purpose: this doubles as the session's anchor Tk
+    # root. Python 3.14's Windows Tcl can fail a fresh Tcl_Init with
+    # "Can't find a usable init.tcl" after prior roots were destroyed, so
+    # destroying the probe makes later shims flaky; a leaked root keeps
+    # every later init stable. Headless Linux fails here -> module skips.
     ctk.CTk()
     tk_available = True
 except Exception:
