@@ -10,7 +10,12 @@
 
 use crate::args::SetupArgs;
 use crate::util::{self, Res};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+// Every PathBuf use in this file lives behind #[cfg(windows)] (MSVC probe,
+// off-path uv candidates, CUDA PATH scan) — gate the import to match, or
+// Linux CI's `-D warnings` flags it as unused.
+#[cfg(windows)]
+use std::path::PathBuf;
 use std::process::Command;
 
 pub fn setup(args: &SetupArgs) -> Res<()> {
