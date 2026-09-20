@@ -1,8 +1,4 @@
-use crate::stressor_process::{bundled_command, external_command, is_bundled};
 use nvoc_core::{Error, GpuOperation, GpuTarget, run as nvoc_run};
-#[cfg(windows)]
-use std::process::Command;
-use std::process::{Child, Stdio};
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -10,69 +6,32 @@ pub(super) fn run_output<O: GpuOperation>(gpu: &GpuTarget<'_>, op: O) -> Result<
     nvoc_run(gpu, op).map(|report| report.output)
 }
 
-/// Spawns a minimal Vulkan load process to wake a power-gated GPU on Optimus
-/// laptops, then kills the process when dropped.
-pub(super) struct MinLoadPulse(Option<Child>);
-
-impl MinLoadPulse {
-    pub(super) fn wake(test_exe: &str, cuda_device: Option<u32>) -> Self {
-        let mut cmd = if is_bundled(test_exe) {
-            match bundled_command(Some("minload"), None, 15.0, cuda_device, &[]) {
-                Ok(command) => command,
-                Err(e) => {
-                    eprintln!("MinLoadPulse: failed to prepare bundled worker: {e}");
-                    return Self(None);
-                }
-            }
-        } else {
-            external_command(test_exe, Some("minload"), None, 15.0, cuda_device, &[])
-        };
-        cmd.stdout(Stdio::null());
-        cmd.stderr(Stdio::null());
-        match cmd.spawn() {
-            Ok(child) => {
-                eprintln!("MinLoadPulse: spawned PID {} to wake GPU.", child.id(),);
-                sleep(Duration::from_secs(3));
-                Self(Some(child))
-            }
-            Err(e) => {
-                eprintln!("MinLoadPulse: failed to spawn: {}", e);
-                Self(None)
-            }
-        }
-    }
-}
-
-impl Drop for MinLoadPulse {
-    fn drop(&mut self) {
-        if let Some(mut child) = self.0.take() {
-            let pid = child.id();
-            #[cfg(windows)]
-            {
-                let _ = Command::new("taskkill")
-                    .args(["/F", "/T", "/PID", &pid.to_string()])
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status();
-            }
-            let _ = child.kill();
-            let _ = child.wait();
-            eprintln!("MinLoadPulse: killed PID {}.", pid);
-        }
+/// 原生唤醒：对 GC6/GCOFF 掉电的 dGPU 调用 force_gc6_exit（NVAPI 0x55590CB2），
+/// 一次性拉回 D0。取代旧的 MinLoadPulse 方案（spawn Vulkan minload 子进程 +
+/// 固定 3s sleep + taskkill）—— 无子进程、毫秒级完成、无残留进程风险。
+///
+/// 唤醒非持久（空闲约 5-20s 后会重新 GCOFF），因此只对紧随其后的操作序列
+/// 有效；NVAPI 写操作另由 core::operation::run 的预唤醒钩子按
+/// GpuType::needs_gc6_wake() 自动兜底，读操作序列则需在本侧显式调用。
+/// 桌面端（无 GC6）驱动返回 NoImplementation(-104) 等，按 best-effort 忽略。
+pub(super) fn native_wake(gpu: &GpuTarget<'_>) {
+    match gpu.force_wake() {
+        Ok(()) => eprintln!("NativeWake: force_gc6_exit ok."),
+        Err(e) => eprintln!("NativeWake: force_gc6_exit failed (continuing): {:?}", e),
     }
 }
 
 // Retry a generic operation with exponential backoff on any NVAPI error.
-// When GPUnotpowered is detected, automatically spawns a minimal Vulkan load
-// via minload_exe to wake the GPU before retrying.
+// When GPUnotpowered is detected, natively wake every GPU in `gpus` via
+// force_gc6_exit before retrying (see native_wake). The error itself proves
+// the GPU is power-gated, so no generation gate is needed here — desktop
+// GPUs never return GPUnotpowered.
 pub(super) fn retry_operation_with_backoff<T, F>(
+    gpus: &[GpuTarget<'_>],
     mut op: F,
     label: &str,
     attempts: usize,
     base_wait_secs: u64,
-    minload_exe: &str,
-    cuda_device: Option<u32>,
-    wakeup_load_needed: bool,
 ) -> Result<T, Error>
 where
     F: FnMut() -> Result<T, Error>,
@@ -99,12 +58,14 @@ where
                 let s_lower = format!("{:?}", &e).to_lowercase();
                 last_err = Some(e);
 
-                if s_lower.contains("gpunotpowered") && wakeup_load_needed {
+                if s_lower.contains("gpunotpowered") {
                     eprintln!(
-                        "{}: GPUnotpowered detected, launching min-load pulse...",
+                        "{}: GPUnotpowered detected, natively waking via force_gc6_exit...",
                         label
                     );
-                    let _pulse = MinLoadPulse::wake(minload_exe, cuda_device);
+                    for gpu in gpus {
+                        native_wake(gpu);
+                    }
                     match op() {
                         Ok(v) => {
                             eprintln!("{} succeeded on GPU wake retry.", label);

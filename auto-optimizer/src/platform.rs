@@ -29,21 +29,6 @@ pub const fn default_test_exe_path() -> &'static str {
     }
 }
 
-pub const fn default_minload_exe_path() -> &'static str {
-    #[cfg(feature = "stressor-bundled")]
-    {
-        crate::stressor_process::BUNDLED_SENTINEL
-    }
-    #[cfg(all(not(feature = "stressor-bundled"), feature = "stressor-external"))]
-    {
-        "cli-stressor-cuda-rs"
-    }
-    #[cfg(not(any(feature = "stressor-bundled", feature = "stressor-external")))]
-    {
-        ""
-    }
-}
-
 #[cfg(all(not(windows), not(target_os = "linux")))]
 pub fn panic_windows_only(feature: &str) -> ! {
     panic!("{feature} is only supported on Windows in this repository")
@@ -126,7 +111,7 @@ pub fn is_elevated() -> bool {
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
-    use super::{default_minload_exe_path, default_test_exe_path};
+    use super::default_test_exe_path;
 
     #[test]
     #[cfg(target_os = "linux")]
@@ -137,15 +122,10 @@ mod tests {
                 default_test_exe_path(),
                 crate::stressor_process::BUNDLED_SENTINEL
             );
-            assert_eq!(
-                default_minload_exe_path(),
-                crate::stressor_process::BUNDLED_SENTINEL
-            );
         }
         #[cfg(all(not(feature = "stressor-bundled"), feature = "stressor-external"))]
         {
             assert_eq!(default_test_exe_path(), "cli-stressor-cuda-rs");
-            assert_eq!(default_minload_exe_path(), "cli-stressor-cuda-rs");
         }
     }
 }
