@@ -246,8 +246,10 @@ fn gpu_type_detection() {
 
 #[test]
 fn gpu_type_xbar_support() {
-    // XBAR ClockClient domain offsets exist from Turing (GTX 16系) onward —
-    // mobile AND desktop alike.
+    // XBAR ClockClient domain offsets: Pascal (10系) onward, mobile AND
+    // desktop alike, workstation/server cards included (Pascal verified live
+    // 2026-08-31; writes carry snapshot/readback/restore protection). Kepler
+    // and older, and Unknown, stay excluded.
     let supported = [
         GpuType::Mobile50Series,
         GpuType::Desktop50Series,
@@ -259,18 +261,31 @@ fn gpu_type_xbar_support() {
         GpuType::Desktop20Series,
         GpuType::Mobile16Series,
         GpuType::Desktop16Series,
+        GpuType::Mobile10Series,
+        GpuType::Desktop10Series,
+        GpuType::WorkstationPascal,
+        GpuType::ServerPascal,
+        GpuType::ServerVolta,
+        GpuType::WorkstationBlackwell,
+        GpuType::WorkstationLovelace,
+        GpuType::WorkstationAmpere,
         GpuType::WorkstationTuring,
+        GpuType::ServerBlackwell,
+        GpuType::ServerLovelace,
+        GpuType::ServerAmpere,
         GpuType::ServerTuringTesla,
     ];
     let unsupported = [
-        GpuType::Mobile10Series,
-        GpuType::Desktop10Series,
         GpuType::Mobile9Series,
         GpuType::Desktop9Series,
-        GpuType::ServerVolta,
-        GpuType::ComputationVolta,
-        GpuType::WorkstationPascal,
-        GpuType::ServerPascal,
+        GpuType::MobileKepler,
+        GpuType::DesktopKepler,
+        GpuType::MobileFermi,
+        GpuType::DesktopFermi,
+        GpuType::WorkstationKepler,
+        GpuType::WorkstationFermi,
+        GpuType::ServerKepler,
+        GpuType::ServerFermi,
         GpuType::Unknown,
     ];
     for t in supported {
@@ -281,9 +296,13 @@ fn gpu_type_xbar_support() {
     }
 
     // End-to-end through the name-based detector (the pynvoc payload path):
-    // the 4060 Laptop name+codename that the GUI gates on live.
-    assert!(detect_gpu_type("NVIDIA GeForce RTX 4060 Laptop GPUAD107-B").supports_xbar_offset());
-    assert!(!detect_gpu_type("NVIDIA GeForce GTX 1080 GP104").supports_xbar_offset());
+    // the 4060 Laptop name+codename that the GUI gates on live; Pascal
+    // desktop passes the new gate; Maxwell 9系 does not.
+    assert!(
+        detect_gpu_type("NVIDIA GeForce RTX 4060 Laptop GPU", "AD107-B").supports_xbar_offset()
+    );
+    assert!(detect_gpu_type("NVIDIA GeForce GTX 1080", "GP104").supports_xbar_offset());
+    assert!(!detect_gpu_type("NVIDIA GeForce GTX 980M Laptop GPU", "GM204").supports_xbar_offset());
 }
 
 #[test]

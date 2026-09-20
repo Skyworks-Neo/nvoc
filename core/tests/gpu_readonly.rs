@@ -29,7 +29,7 @@
 //!
 //! ## Why bypass `RawConversion`?
 //!
-//! The op/hi layers (`QueryGpuStatus`, `nvapi_hi::GpuStatus`) call `RawConversion::convert_raw`,
+//! The op/hi layers (`QueryGpuStatus`, `nvapi::GpuStatus`) call `RawConversion::convert_raw`,
 //! which is *lossy by design*: it validates padding fields and returns
 //! `Err(ArgumentRangeError)` (or `allowable_result` downgrades it to `None`) when padding is
 //! non-zero or an enum discriminant is out of range. That is correct for production reads,
@@ -41,9 +41,9 @@
 //! For an ID that *is* wrapped in nvapi-rs (struct + FFI symbol exist), stamp the version
 //! magic and call the raw FFI:
 //! ```ignore
-//! use nvapi_hi::sys::gpu::power::private as pw;
-//! use nvapi_hi::sys::nvapi::{NvVersion, VersionedStruct};
-//! use nvapi_hi::sys::{api, Status};
+//! use nvapi::sys::gpu::power::private as pw;
+//! use nvapi::sys::nvapi::{NvVersion, VersionedStructField};
+//! use nvapi::sys::{api, Status};
 //!
 //! // versioned() is ambiguous (struct impls both StructVersion and StructVersion<1>);
 //! // use this macro instead to zero + stamp the v1 magic.
@@ -69,7 +69,7 @@
 //! `nvapi_QueryInterface` with a scratch buffer, trying candidate sizes until one returns
 //! `Ok` (see the GetPowerMizerInfo probe below for the full template):
 //! ```ignore
-//! use nvapi_hi::sys::nvapi_QueryInterface;
+//! use nvapi::sys::nvapi_QueryInterface;
 //! const ID: u32 = 0xXXXXXXXX;
 //! #[repr(C)] struct Scratch { version: u32, data: [u32; 63] }
 //! let mut s = Scratch { version: 0, data: [0; 63] };
@@ -793,10 +793,10 @@ fn nvapi_effective_clocks_are_positive_when_available() {
 /// DO return live per-rail power — see `nvapi_power_monitor_v4` /
 /// `nvapi_power_monitor_raw`.
 fn nvapi_raw_payload_probe() {
-    use nvapi_hi::sys::Status;
-    use nvapi_hi::sys::api;
-    use nvapi_hi::sys::gpu::power::private as pw;
-    use nvapi_hi::sys::nvapi::{NvVersion, VersionedStruct};
+    use nvapi::sys::Status;
+    use nvapi::sys::api;
+    use nvapi::sys::gpu::power::undocumented as pw;
+    use nvapi::sys::nvapi::{NvVersion, VersionedStructField};
 
     // Helper: zero a versioned struct and stamp its version magic. Avoids the
     // ambiguous `StructVersion::versioned` call (each struct impls both
@@ -815,11 +815,11 @@ fn nvapi_raw_payload_probe() {
         eprintln!("nvapi_raw_payload_probe: no NVAPI backend, skipping");
         return;
     }
-    // Get the first NVAPI physical GPU handle via nvapi_hi directly (the op
+    // Get the first NVAPI physical GPU handle via nvapi directly (the op
     // layer in core wraps RawConversion, which is exactly what we want to
     // sidestep here).
-    nvapi_hi::initialize().expect("nvapi initialize");
-    let gpus = nvapi_hi::Gpu::enumerate().expect("nvapi enumerate");
+    nvapi::initialize().expect("nvapi initialize");
+    let gpus = nvapi::hi::Gpu::enumerate().expect("nvapi enumerate");
     if gpus.is_empty() {
         eprintln!("nvapi_raw_payload_probe: no NVAPI GPUs");
         return;
@@ -1014,7 +1014,7 @@ fn nvapi_raw_payload_probe() {
         //    via QueryInterface to see if it carries live power-state data. The
         //    struct size is unknown; try a 256-byte scratch buffer with version
         //    magic guessed as v1|sz256 = (1<<16)|256 = 65792.
-        use nvapi_hi::sys::nvapi_QueryInterface;
+        use nvapi::sys::nvapi_QueryInterface;
         const GET_POWERMIZER_INFO_ID: u32 = 0x76bfa16b;
         #[repr(C)]
         struct Scratch {
@@ -1033,9 +1033,9 @@ fn nvapi_raw_payload_probe() {
                 Err(_) => break,
             };
             type Fn = unsafe extern "system" fn(
-                nvapi_hi::sys::api::NvPhysicalGpuHandle,
+                nvapi::sys::api::NvPhysicalGpuHandle,
                 *mut Scratch,
-            ) -> nvapi_hi::sys::Status;
+            ) -> nvapi::sys::Status;
             let func: Fn = std::mem::transmute(ptr);
             let status = func(handle, &mut scratch);
             eprintln!(
@@ -1120,10 +1120,10 @@ fn nvapi_therm_channel_info() {
 #[test]
 #[ignore]
 fn nvapi_therm_channel_raw() {
-    use nvapi_hi::sys::Status;
-    use nvapi_hi::sys::api;
-    use nvapi_hi::sys::gpu::thermal::private as th;
-    use nvapi_hi::sys::nvapi::NvVersion;
+    use nvapi::sys::Status;
+    use nvapi::sys::api;
+    use nvapi::sys::gpu::thermal::undocumented as th;
+    use nvapi::sys::nvapi::NvVersion;
 
     let inv = inventory();
     let target = first_target(&inv);
@@ -1131,8 +1131,8 @@ fn nvapi_therm_channel_raw() {
         eprintln!("nvapi_therm_channel_raw: no NVAPI backend, skipping");
         return;
     }
-    nvapi_hi::initialize().expect("nvapi initialize");
-    let gpus = nvapi_hi::Gpu::enumerate().expect("nvapi enumerate");
+    nvapi::initialize().expect("nvapi initialize");
+    let gpus = nvapi::hi::Gpu::enumerate().expect("nvapi enumerate");
     if gpus.is_empty() {
         eprintln!("nvapi_therm_channel_raw: no NVAPI GPUs");
         return;
@@ -1278,10 +1278,10 @@ fn nvapi_therm_channel_raw() {
 #[test]
 #[ignore]
 fn nvapi_volt_rails_raw() {
-    use nvapi_hi::sys::Status;
-    use nvapi_hi::sys::api;
-    use nvapi_hi::sys::gpu::power::private as pw;
-    use nvapi_hi::sys::nvapi::{NvVersion, VersionedStruct};
+    use nvapi::sys::Status;
+    use nvapi::sys::api;
+    use nvapi::sys::gpu::power::undocumented as pw;
+    use nvapi::sys::nvapi::{NvVersion, VersionedStructField};
 
     let inv = inventory();
     let target = first_target(&inv);
@@ -1289,8 +1289,8 @@ fn nvapi_volt_rails_raw() {
         eprintln!("nvapi_volt_rails_raw: no NVAPI backend, skipping");
         return;
     }
-    nvapi_hi::initialize().expect("nvapi initialize");
-    let gpus = nvapi_hi::Gpu::enumerate().expect("nvapi enumerate");
+    nvapi::initialize().expect("nvapi initialize");
+    let gpus = nvapi::hi::Gpu::enumerate().expect("nvapi enumerate");
     if gpus.is_empty() {
         eprintln!("nvapi_volt_rails_raw: no NVAPI GPUs");
         return;
@@ -1398,8 +1398,8 @@ fn nvapi_volt_rails_raw() {
 #[test]
 #[ignore]
 fn nvapi_power_monitor_raw() {
-    use nvapi_hi::sys::Status;
-    use nvapi_hi::sys::nvapi_QueryInterface;
+    use nvapi::sys::Status;
+    use nvapi::sys::nvapi_QueryInterface;
 
     let inv = inventory();
     let target = first_target(&inv);
@@ -1407,8 +1407,8 @@ fn nvapi_power_monitor_raw() {
         eprintln!("nvapi_power_monitor_raw: no NVAPI backend, skipping");
         return;
     }
-    nvapi_hi::initialize().expect("nvapi initialize");
-    let gpus = nvapi_hi::Gpu::enumerate().expect("nvapi enumerate");
+    nvapi::initialize().expect("nvapi initialize");
+    let gpus = nvapi::hi::Gpu::enumerate().expect("nvapi enumerate");
     if gpus.is_empty() {
         eprintln!("nvapi_power_monitor_raw: no NVAPI GPUs");
         return;
@@ -1445,7 +1445,7 @@ fn nvapi_power_monitor_raw() {
     }
 
     type Fn =
-        unsafe extern "system" fn(nvapi_hi::sys::api::NvPhysicalGpuHandle, *mut Scratch) -> Status;
+        unsafe extern "system" fn(nvapi::sys::api::NvPhysicalGpuHandle, *mut Scratch) -> Status;
 
     // Run each IID against its OWN accepted-magic set. For GetStatus, take the
     // first accepted magic (one live layout is enough). For GetInfo, try ALL
@@ -1735,7 +1735,7 @@ fn nvapi_power_monitor_raw() {
             let tag = if chans.len() > 1 { " MULTI" } else { "" };
             // GPU-Z semantic label for this offset (human cross-check only;
             // from the soft-gate table, not used by production extraction).
-            let gpuz = nvapi_hi::nvapi::gpuz_offset_label(*off)
+            let gpuz = nvapi::gpuz_offset_label(*off)
                 .map(|l| format!("  [GPU-Z: {}]", l))
                 .unwrap_or_default();
             eprintln!("  +0x{:04X}: {}{}{}", off, names.join(", "), tag, gpuz);
@@ -1762,7 +1762,7 @@ fn nvapi_power_monitor_raw() {
 #[test]
 #[ignore]
 fn nvapi_power_monitor_v4() {
-    use nvapi_hi::Gpu;
+    use nvapi::hi::Gpu;
 
     let inv = inventory();
     let target = first_target(&inv);
@@ -1770,7 +1770,7 @@ fn nvapi_power_monitor_v4() {
         eprintln!("nvapi_power_monitor_v4: no NVAPI backend, skipping");
         return;
     }
-    nvapi_hi::initialize().expect("nvapi initialize");
+    nvapi::initialize().expect("nvapi initialize");
     let gpus = Gpu::enumerate().expect("nvapi enumerate");
     if gpus.is_empty() {
         eprintln!("nvapi_power_monitor_v4: no NVAPI GPUs");
@@ -1899,7 +1899,7 @@ fn rail_name(rail: u32) -> &'static str {
 #[test]
 #[ignore]
 fn nvapi_power_monitor_bit_isolation() {
-    use nvapi_hi::sys::nvapi_QueryInterface;
+    use nvapi::sys::nvapi_QueryInterface;
 
     let inv = inventory();
     let target = first_target(&inv);
@@ -1907,8 +1907,8 @@ fn nvapi_power_monitor_bit_isolation() {
         eprintln!("nvapi_power_monitor_bit_isolation: no NVAPI backend, skipping");
         return;
     }
-    nvapi_hi::initialize().expect("nvapi initialize");
-    let gpus = nvapi_hi::Gpu::enumerate().expect("nvapi enumerate");
+    nvapi::initialize().expect("nvapi initialize");
+    let gpus = nvapi::hi::Gpu::enumerate().expect("nvapi enumerate");
     if gpus.is_empty() {
         return;
     }
@@ -1924,9 +1924,9 @@ fn nvapi_power_monitor_bit_isolation() {
         }
     };
     type InfoFn = unsafe extern "system" fn(
-        nvapi_hi::sys::api::NvPhysicalGpuHandle,
+        nvapi::sys::api::NvPhysicalGpuHandle,
         *mut u8,
-    ) -> nvapi_hi::sys::Status;
+    ) -> nvapi::sys::Status;
     let info_fn: InfoFn = unsafe { std::mem::transmute(info_ptr) };
     let mut info = vec![0u8; 6312];
     // v4 GetInfo magic = (4<<16)|6312 = 0x418A8 = 268456.
@@ -1948,9 +1948,9 @@ fn nvapi_power_monitor_bit_isolation() {
         }
     };
     type StatusFn = unsafe extern "system" fn(
-        nvapi_hi::sys::api::NvPhysicalGpuHandle,
+        nvapi::sys::api::NvPhysicalGpuHandle,
         *mut u8,
-    ) -> nvapi_hi::sys::Status;
+    ) -> nvapi::sys::Status;
     let status_fn: StatusFn = unsafe { std::mem::transmute(status_ptr) };
 
     eprintln!("=== per-bit GetStatus isolation (which offsets fill for each channel bit) ===");
