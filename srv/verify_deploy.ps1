@@ -4,9 +4,10 @@
 # service is the right build and still behaves correctly".
 #
 # Verifies against the live install (no elevation required):
-#   1. registration : service exists, RUNNING, binPath in the out-of-repo
-#                     install dir (regression guard for the old
-#                     dangling-registration incident)
+#   1. registration : service exists, RUNNING, binPath where deploy.ps1
+#                     registered it (the build output dir by default, or the
+#                     -InstallDir location; a binPath inside the repo is
+#                     flagged as the dangling-registration pattern)
 #   2. identity     : /version returns version + git_hash; the service log's
 #                     latest startup line agrees with it
 #   3. config plane : /config shape
@@ -19,18 +20,25 @@
 # Usage:
 #   .\verify_deploy.ps1                          # verify the live install
 #   .\verify_deploy.ps1 -ExpectedGitHash <hash>  # hard-assert embedded hash
+#   .\verify_deploy.ps1 -InstallDir X            # same -InstallDir as deploy used
 #
 # Exit code: 0 = all checks passed, 1 = at least one FAIL.
 param(
     [string]$ServiceName = "nvoc_service",
     [string]$BaseUrl = "http://127.0.0.1:14514",
-    [string]$InstallDir = "D:\08-skyworks\nvoc-srv\install",
+    [string]$InstallDir = "",       # empty = build output dir, matching deploy.ps1's default
     [string]$ExpectedGitHash = ""
 )
 
 $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $LogPath = Join-Path $env:PROGRAMDATA "nvoc\logs\nvoc_service-output.log"
+# Resolve the default expected binPath exactly like deploy.ps1 does:
+# workspace-env.ps1's CARGO_TARGET_DIR when present, else repo target\.
+$EnvFile = Join-Path (Split-Path -Parent $RepoRoot) "workspace-env.ps1"
+if (Test-Path $EnvFile) { . $EnvFile }
+$CargoTargetRoot = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $RepoRoot "target" }
+if (-not $InstallDir) { $InstallDir = Join-Path $CargoTargetRoot "release" }
 $Pass = 0; $Fail = 0; $Warn = 0
 
 function Check([bool]$Ok, [string]$Label, [string]$FailHint = "") {

@@ -17,24 +17,34 @@ p.s. Remember to stop the service when you compile and build the project.
 
 ## 1 Deploy (install / update / uninstall)
 
-The service binary path must live outside the build output and the repository,
-so the registration does not dangle when `target/` is cleaned or the repo is
-deleted/moved. `srv/deploy.ps1` automates the whole cycle:
+`srv/deploy.ps1` automates the whole cycle: build → stop → install/start →
+health check. By default the service is registered **from the build output
+directory** — the same behavior as manually running `install_service.exe`
+(the registered binary path is the `nvoc_service.exe` next to it, see
+`srv/src/bin/install_service.rs`).
+
+Whether the registration follows the build tree is now an explicit choice:
+pass `-InstallDir` to stage the exes into a stable out-of-repo directory and
+register from there instead. A registration pointing into the build output
+dangles when that directory is deleted/moved (`cargo clean`, workspace
+cleanup) — exactly how the old dangling `nvoc_service` registration happened —
+so use `-InstallDir` if you routinely clean the build tree.
 
 ```powershell
 # elevated PowerShell
 cd srv
-.\deploy.ps1                 # build (release) + stop + copy + install/start + health check
-.\deploy.ps1 -SkipBuild      # reuse existing target\release binaries
+.\deploy.ps1                 # default: register from the build output dir
+.\deploy.ps1 -InstallDir X   # stage exes into X and register from there
+.\deploy.ps1 -SkipBuild      # reuse existing release binaries
 .\deploy.ps1 -NoStart        # stage + install, leave service stopped
-.\deploy.ps1 -InstallDir X   # override install dir (default D:\08-skyworks\nvoc-srv\install)
 ```
 
-What it does: stop the service → copy `nvoc_service.exe`, the 6 service
-helper exes and `nvoc-cli.exe` into the install dir → run
-`install_service.exe` from there on first deploy (the registered binary path
-is derived from install_service.exe's own directory) → start the service →
-health-check `GET /version` and `GET /config`.
+What it does: build (release) → stop the service → if `-InstallDir` differs
+from the build output, copy `nvoc_service.exe`, the 6 service helper exes and
+`nvoc-cli.exe` there → run `install_service.exe` from the install location on
+first deploy, or re-register (`sc delete` + install) when an existing
+registration points somewhere else → start the service → health-check
+`GET /version` and `GET /config`.
 
 Manual equivalents:
 

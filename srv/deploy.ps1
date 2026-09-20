@@ -1,22 +1,21 @@
-# srv/deploy.ps1 - build srv + cli, stage them into an out-of-repo install
-# directory, and (re)install the nvoc_service Windows service there.
+# srv/deploy.ps1 - build srv + cli, then (re)install the nvoc_service Windows
+# service from the build output.
 #
-# Why an out-of-repo install dir: a service registration pointing into the
-# build output (or the repo itself) dangles as soon as that directory is
-# deleted/moved - exactly how the old dangling "nvoc_service" registration
-# happened. The install dir survives repo deletes and `cargo clean`.
+# Default install location is the build output directory itself - the same
+# behavior as manually running install_service.exe, which registers the
+# nvoc_service.exe next to itself (srv/src/bin/install_service.rs). Pass
+# -InstallDir to register from a stable out-of-repo directory instead: a
+# registration pointing into the build output dangles as soon as that
+# directory is deleted/moved (cargo clean, workspace cleanup) - exactly how
+# the old dangling "nvoc_service" registration happened.
 #
 # Usage (elevated PowerShell):
-#   .\deploy.ps1                    # build + stop + copy + install/start + health check
+#   .\deploy.ps1                    # build + stop + install/start + health check
+#   .\deploy.ps1 -InstallDir X      # stage exes into X and register from there
 #   .\deploy.ps1 -NoStart           # stage and install but leave the service stopped
-#   .\deploy.ps1 -SkipBuild         # reuse existing target\release binaries
-#   .\deploy.ps1 -InstallDir X      # override install location
-#
-# The service binary path is derived from install_service.exe's own directory
-# (srv/src/bin/install_service.rs), so install_service.exe must be run FROM
-# the install dir - which this script does.
+#   .\deploy.ps1 -SkipBuild         # reuse existing release binaries
 param(
-    [string]$InstallDir = "D:\08-skyworks\nvoc-srv\install",
+    [string]$InstallDir = "",       # empty = build output dir (main's original behavior)
     [switch]$NoStart,
     [switch]$SkipBuild
 )
@@ -62,6 +61,8 @@ $env:PATH = "$rustBin;$env:PATH"
 # resolve the release dir from it instead of assuming repo-local target\.
 $CargoTargetRoot = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $RepoRoot "target" }
 $TargetDir = Join-Path $CargoTargetRoot "release"
+# Default install location: the build output itself (main's original flow).
+if (-not $InstallDir) { $InstallDir = $TargetDir }
 
 if (-not $SkipBuild) {
     Write-Host "== cargo build (offline, release): nvoc-srv + nvoc-cli =="
@@ -85,26 +86,47 @@ if ($state -ne "absent" -and $state -ne $SvcStopped) {
     }
 }
 
-# --- stage binaries into the install dir.
-Write-Host "== staging into $InstallDir =="
-New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-$Exes = @(
-    "nvoc_service.exe", "install_service.exe", "uninstall_service.exe",
-    "notify_service.exe", "pause_continue.exe", "service_config.exe",
-    "service_failure_actions.exe", "nvoc-cli.exe"
-)
-foreach ($exe in $Exes) {
-    $src = Join-Path $TargetDir $exe
-    if (-not (Test-Path $src)) { throw "missing build output: $src (run without -SkipBuild)" }
-    Copy-Item -Force -Path $src -Destination (Join-Path $InstallDir $exe)
+# --- stage binaries into the install dir (no-op when it is the build output).
+if ($InstallDir -ine $TargetDir) {
+    Write-Host "== staging into $InstallDir =="
+    New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+    $Exes = @(
+        "nvoc_service.exe", "install_service.exe", "uninstall_service.exe",
+        "notify_service.exe", "pause_continue.exe", "service_config.exe",
+        "service_failure_actions.exe", "nvoc-cli.exe"
+    )
+    foreach ($exe in $Exes) {
+        $src = Join-Path $TargetDir $exe
+        if (-not (Test-Path $src)) { throw "missing build output: $src (run without -SkipBuild)" }
+        Copy-Item -Force -Path $src -Destination (Join-Path $InstallDir $exe)
+    }
+} else {
+    Write-Host "== install dir is the build output; no staging copy =="
+    foreach ($exe in @("nvoc_service.exe", "install_service.exe")) {
+        if (-not (Test-Path (Join-Path $TargetDir $exe))) {
+            throw "missing build output: $(Join-Path $TargetDir $exe) (run without -SkipBuild)"
+        }
+    }
 }
 
-# --- first install: install_service.exe registers binPath from its own dir.
+# --- install, or re-register when an existing registration points elsewhere.
 $state = Get-ServiceStateCode $SvcName
 if ($state -eq "absent") {
     Write-Host "== installing service from $InstallDir =="
     & (Join-Path $InstallDir "install_service.exe")
     if ($LASTEXITCODE -ne 0) { throw "install_service.exe failed" }
+} else {
+    $binPath = (Get-CimInstance Win32_Service -Filter "Name='$SvcName'").PathName.Trim('"')
+    $wantBin = Join-Path $InstallDir "nvoc_service.exe"
+    if ($binPath -ine $wantBin) {
+        Write-Host "== re-registering service: $binPath -> $wantBin =="
+        # The service is already stopped at this point (see above); drop the
+        # old registration and recreate it from the current install location.
+        & sc.exe delete $SvcName | Out-Null
+        Start-Sleep -Milliseconds 500
+        & (Join-Path $InstallDir "install_service.exe")
+        if ($LASTEXITCODE -ne 0) { throw "install_service.exe failed (re-register)" }
+    }
 }
 
 # --- start and verify.
