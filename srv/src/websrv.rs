@@ -18,6 +18,35 @@ const OC_DELTA_MAX: i32 = 2_000_000;
 // above this value is either a misconfiguration or an attack probe.
 const GPU_INDEX_MAX: usize = 63;
 
+// Build identity, surfaced in the service startup log and via GET /version so
+// a deployed service can always be attributed to a commit.
+pub const BUILD_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const BUILD_GIT_HASH: &str = match option_env!("NVOC_BUILD_GIT_HASH") {
+    Some(hash) => hash,
+    None => "unknown",
+};
+
+/// `{"version":"...","git_hash":"..."}` for the /version endpoint. Both values
+/// are build-time constants with restricted character sets (SemVer / hex or
+/// "unknown"), so no JSON escaping is needed.
+pub fn version_json() -> String {
+    serde_json::json!({ "version": BUILD_VERSION, "git_hash": BUILD_GIT_HASH }).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn version_json_carries_both_build_fields() {
+        let parsed: serde_json::Value = serde_json::from_str(&version_json())
+            .expect("version_json must be valid JSON");
+        assert_eq!(parsed["version"], BUILD_VERSION);
+        assert_eq!(parsed["git_hash"], BUILD_GIT_HASH);
+        assert_ne!(parsed["git_hash"], "");
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct NVOCServiceConfig {
     pub vfp_lock_point: usize,
@@ -136,6 +165,15 @@ pub fn start_http_server(
                     }
                 };
                 respond(request, response);
+            }
+
+            "/version" => {
+                respond(
+                    request,
+                    Response::from_string(version_json())
+                        .with_status_code(200)
+                        .with_header(json_content_type()),
+                );
             }
 
             "/set_temp_limit_soft_vfp" => {

@@ -111,6 +111,14 @@ mod nvoc_service {
             .level(LevelFilter::Info)
             .start();
 
+        // Log the build identity first, before anything that can fail, so a
+        // deployed service is always attributable to a commit.
+        info!(
+            "nvoc_service {} ({}) starting",
+            crate::websrv::BUILD_VERSION,
+            crate::websrv::BUILD_GIT_HASH
+        );
+
         let config = Arc::new(Mutex::new(NVOCServiceConfig {
             vfp_lock_point: 70,
             temp_limit: 60,

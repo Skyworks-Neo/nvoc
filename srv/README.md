@@ -15,52 +15,66 @@ cargo build
 
 p.s. Remember to stop the service when you compile and build the project.
 
-## 1 Install and Uninstall service
+## 1 Deploy (install / update / uninstall)
 
-### 1.1 install
+The service binary path must live outside the build output and the repository,
+so the registration does not dangle when `target/` is cleaned or the repo is
+deleted/moved. `srv/deploy.ps1` automates the whole cycle:
 
-```
-.\target\debug\install_service.exe
+```powershell
+# elevated PowerShell
+cd srv
+.\deploy.ps1                 # build (release) + stop + copy + install/start + health check
+.\deploy.ps1 -SkipBuild      # reuse existing target\release binaries
+.\deploy.ps1 -NoStart        # stage + install, leave service stopped
+.\deploy.ps1 -InstallDir X   # override install dir (default D:\08-skyworks\nvoc-srv\install)
 ```
 
-### 1.2 uninstall
+What it does: stop the service → copy `nvoc_service.exe`, the 6 service
+helper exes and `nvoc-cli.exe` into the install dir → run
+`install_service.exe` from there on first deploy (the registered binary path
+is derived from install_service.exe's own directory) → start the service →
+health-check `GET /version` and `GET /config`.
 
-```
-.\target\debug\uninstall_service.exe
-```
+Manual equivalents:
 
-### 1.3 check the state
-
-```
-.\notify\debug\uninstall_service.exe
-```
+- install: run `install_service.exe` **from the install dir** (it registers
+  the `nvoc_service.exe` next to itself)
+- uninstall: `uninstall_service.exe` (also removes the registration)
+- update: stop service (`sc stop nvoc_service`), replace exes, start again
+- check the state: `sc query nvoc_service`
 
 ## 2 Check log
 
-Usually on a Windows System Computer the path is
+```
+%PROGRAMDATA%\nvoc\logs\nvoc_service-output.log
+```
 
-```
-logs/
-```
+The first log line is the build identity: `nvoc_service <version> (<git hash>) starting`.
 
 ## 3 Parameter update
 
-A web service is on the 1145 port of localhost.
+A web service is on the 14514 port of localhost (loopback only).
 
-Now the example is a temperature wall of 64C. Over 64C will be set to vfp ref point 48.
+Identify a deployed build:
 
-
-To change the ref point to 44
 ```
-curl.exe "http://127.0.0.1:1145/set_tem_wall_vfp?point=44"
+curl.exe "http://127.0.0.1:14514/version"
+{"version":"0.2.0-alpha.2","git_hash":"3f9c1a2b4d6e"}
 ```
 
-To check the ref point
+To check the config
+
 ```
-curl.exe "http://127.0.0.1:1145/config"
+curl.exe "http://127.0.0.1:14514/config"
+```
+
+To change the temp limit to 44
+```
+curl.exe -X POST -H "X-Requested-With: XMLHttpRequest" "http://127.0.0.1:14514/set_temp_limit_soft_vfp?limit=44"
 ```
 
 To set a global OC frequency
 ```
-curl.exe "http://127.0.0.1:1145/oc_global?oc=75"
+curl.exe -X POST -H "X-Requested-With: XMLHttpRequest" "http://127.0.0.1:14514/oc_global?oc=75"
 ```
