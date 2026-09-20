@@ -1,7 +1,9 @@
 //! Process helpers shared by every subcommand.
 
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::OnceLock;
 
 pub type Res<T> = Result<T, String>;
 
@@ -16,15 +18,42 @@ pub fn repo_root() -> PathBuf {
 }
 
 pub fn step(title: &str) {
-    println!("==> {title}");
+    println!("{} {title}", ansi("1;36", "==>"));
 }
 
 pub fn warn(msg: &str) {
-    println!("  [warn] {msg}");
+    println!("  {} {msg}", ansi("1;33", "[warn]"));
 }
 
 pub fn hint(msg: &str) {
-    println!("         hint: {msg}");
+    println!("         {} {msg}", ansi("36", "hint:"));
+}
+
+/// Wraps `text` in the SGR `code` when xtask's own output is an interactive
+/// terminal. Children (cargo/ruff/pytest) color themselves; this only covers
+/// xtask's echo lines. `NO_COLOR` / `TERM=dumb` opt out, and pipes, CI logs
+/// and redirected files stay plain.
+pub fn ansi(code: &str, text: &str) -> String {
+    paint(std::io::stdout().is_terminal(), code, text)
+}
+
+/// Same gate as [`ansi`], but keyed on stderr (for the failure summary).
+pub fn ansi_stderr(code: &str, text: &str) -> String {
+    paint(std::io::stderr().is_terminal(), code, text)
+}
+
+fn paint(enabled: bool, code: &str, text: &str) -> String {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    let allowed = ENABLED.get_or_init(|| {
+        let no_color = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
+        let dumb_term = std::env::var_os("TERM").is_some_and(|v| v == "dumb");
+        !no_color && !dumb_term
+    });
+    if enabled && *allowed {
+        format!("\x1b[{code}m{text}\x1b[0m")
+    } else {
+        text.to_string()
+    }
 }
 
 pub fn display(command: &Command) -> String {
@@ -39,7 +68,7 @@ pub fn display(command: &Command) -> String {
 /// Runs a command with inherited stdio; fails when the child exits nonzero.
 pub fn run(command: &mut Command) -> Res<()> {
     let shown = display(command);
-    println!("  $ {shown}");
+    println!("  {} {shown}", ansi("1;32", "$"));
     let status = command
         .status()
         .map_err(|error| format!("failed to spawn `{shown}`: {error}"))?;
@@ -65,7 +94,7 @@ pub fn run_capture_stderr(command: &mut Command, stderr_log: &mut String) -> Res
         command.env("CARGO_TERM_COLOR", "always");
     }
     let shown = display(command);
-    println!("  $ {shown}");
+    println!("  {} {shown}", ansi("1;32", "$"));
     command.stderr(Stdio::piped());
     let mut child = command
         .spawn()
@@ -84,7 +113,10 @@ pub fn run_capture_stderr(command: &mut Command, stderr_log: &mut String) -> Res
                 Err(error) => {
                     // The exit status stays the source of truth; keep the
                     // lines collected so far and stop draining.
-                    eprintln!("  [warn] could not read child stderr: {error}");
+                    eprintln!(
+                        "  {} could not read child stderr: {error}",
+                        ansi_stderr("1;33", "[warn]")
+                    );
                     break;
                 }
             }
@@ -103,7 +135,12 @@ pub fn run_capture_stderr(command: &mut Command, stderr_log: &mut String) -> Res
 /// Like [`run`], but only prints the command when `dry_run` is set.
 pub fn run_dry(command: &mut Command, dry_run: bool) -> Res<()> {
     if dry_run {
-        println!("  [dry-run] $ {}", display(command));
+        println!(
+            "  {} {} {}",
+            ansi("1;35", "[dry-run]"),
+            ansi("1;32", "$"),
+            display(command)
+        );
         Ok(())
     } else {
         run(command)

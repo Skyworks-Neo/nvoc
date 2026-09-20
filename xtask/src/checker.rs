@@ -89,6 +89,8 @@ pub fn check() -> Res<()> {
         .current_dir(&root);
     nvapi_cache::run_guarded(&root, &mut clippy)?;
 
+    linux_clippy_mirror(&root)?;
+
     util::step("clippy: cli-stressor-cuda-rs (no default features)");
     let mut stressor = Command::new("cargo");
     stressor
@@ -126,6 +128,48 @@ pub fn check() -> Res<()> {
     let mut lint = util::uv_run(&root, "nvoc-tui", &["ruff", "check", "."]);
     lint.args(&excludes);
     util::run(&mut lint)
+}
+
+/// Re-runs ci.yml's ubuntu Clippy job against the `x86_64-unknown-linux-gnu`
+/// target from a non-Linux host. `#[cfg(windows)]`-only code compiles away
+/// locally, so an import (or any item) used solely by Windows-only blocks
+/// passes the host clippy yet fails `-D warnings` on CI (xtask's own
+/// doctor.rs did exactly that). Static checks only — cross-compiled test
+/// binaries cannot execute here, so behavioral platform gaps still belong to
+/// CI. On Linux hosts the step is redundant with the workspace clippy above
+/// and is skipped. The target's rust-std is installed on first use.
+fn linux_clippy_mirror(root: &std::path::Path) -> Res<()> {
+    if cfg!(target_os = "linux") {
+        return Ok(());
+    }
+    const TARGET: &str = "x86_64-unknown-linux-gnu";
+
+    util::step("clippy: linux-target mirror (ubuntu CI job)");
+    let installed = util::capture(Command::new("rustup").args(["target", "list", "--installed"]))?
+        .lines()
+        .any(|line| line.trim() == TARGET);
+    if !installed {
+        let mut add = Command::new("rustup");
+        add.args(["target", "add", TARGET]);
+        util::run(&mut add)?;
+    }
+
+    let mut clippy = Command::new("cargo");
+    clippy
+        .args([
+            "clippy",
+            "--workspace",
+            "--exclude",
+            "cli-stressor-cuda-rs",
+            "--all-targets",
+            "--target",
+            TARGET,
+            "--",
+            "-D",
+            "warnings",
+        ])
+        .current_dir(root);
+    nvapi_cache::run_guarded(root, &mut clippy)
 }
 
 /// `--exclude` arguments for the ruff steps covering top-level paths git does

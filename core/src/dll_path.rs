@@ -96,11 +96,6 @@ fn woa_driverstore_candidates() -> Vec<PathBuf> {
 }
 
 #[cfg(not(windows))]
-fn woa_driverstore_candidates() -> Vec<PathBuf> {
-    Vec::new()
-}
-
-#[cfg(not(windows))]
 fn nvml_candidates() -> Vec<PathBuf> {
     Vec::new()
 }
