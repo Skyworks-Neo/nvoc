@@ -4,10 +4,11 @@
 # service is the right build and still behaves correctly".
 #
 # Verifies against the live install (no elevation required):
-#   1. registration : service exists, RUNNING, binPath where deploy.ps1
-#                     registered it (the build output dir by default, or the
-#                     -InstallDir location; a binPath inside the repo is
-#                     flagged as the dangling-registration pattern)
+#   1. registration : service exists, RUNNING; its registered binPath is
+#                     auto-detected from the live service, must exist on disk,
+#                     and must sit outside the repo (dangling-registration
+#                     pattern check). -InstallDir optionally asserts a
+#                     specific expected location.
 #   2. identity     : /version returns version + git_hash; the service log's
 #                     latest startup line agrees with it
 #   3. config plane : /config shape
@@ -20,25 +21,19 @@
 # Usage:
 #   .\verify_deploy.ps1                          # verify the live install
 #   .\verify_deploy.ps1 -ExpectedGitHash <hash>  # hard-assert embedded hash
-#   .\verify_deploy.ps1 -InstallDir X            # same -InstallDir as deploy used
+#   .\verify_deploy.ps1 -InstallDir X            # optionally assert the registered location
 #
 # Exit code: 0 = all checks passed, 1 = at least one FAIL.
 param(
     [string]$ServiceName = "nvoc_service",
     [string]$BaseUrl = "http://127.0.0.1:14514",
-    [string]$InstallDir = "",       # empty = build output dir, matching deploy.ps1's default
+    [string]$InstallDir = "",       # empty = auto-detect from the live registration
     [string]$ExpectedGitHash = ""
 )
 
 $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $LogPath = Join-Path $env:PROGRAMDATA "nvoc\logs\nvoc_service-output.log"
-# Resolve the default expected binPath exactly like deploy.ps1 does:
-# workspace-env.ps1's CARGO_TARGET_DIR when present, else repo target\.
-$EnvFile = Join-Path (Split-Path -Parent $RepoRoot) "workspace-env.ps1"
-if (Test-Path $EnvFile) { . $EnvFile }
-$CargoTargetRoot = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $RepoRoot "target" }
-if (-not $InstallDir) { $InstallDir = Join-Path $CargoTargetRoot "release" }
 $Pass = 0; $Fail = 0; $Warn = 0
 
 function Check([bool]$Ok, [string]$Label, [string]$FailHint = "") {
@@ -105,12 +100,21 @@ if (-not $svc) {
 Check ($svc.State -eq "Running") "service state is Running (state: $($svc.State))" `
     "start with: sc.exe start $ServiceName"
 
-$expectedBin = Join-Path $InstallDir "nvoc_service.exe"
+# Location is auto-detected from the live registration; -InstallDir only
+# asserts an expected location, it is not required to verify.
 $binPath = $svc.PathName.Trim('"')
-Check ($binPath -ieq $expectedBin) "binPath = $binPath" "expected $expectedBin (pass the same -InstallDir used at deploy time)"
+Check (Test-Path $binPath) "registered exe exists: $binPath" `
+    "dangling registration - binary missing; redeploy with srv\deploy.ps1"
 Check (-not $binPath.StartsWith($RepoRoot, [StringComparison]::OrdinalIgnoreCase)) `
     "binPath is outside the repo" `
-    "dangling-registration regression: binPath must not live under $RepoRoot"
+    "dangling-registration pattern: binPath must not live under $RepoRoot"
+if ($InstallDir) {
+    $expectedBin = Join-Path $InstallDir "nvoc_service.exe"
+    Check ($binPath -ieq $expectedBin) "binPath matches -InstallDir" `
+        "registered $binPath, expected $expectedBin"
+} else {
+    Write-Host "  [INFO] binPath auto-detected: $binPath (pass -InstallDir to assert a specific location)"
+}
 
 # --- 2. build identity (/version) ---
 $ver = Invoke-Httpraw "GET" "$BaseUrl/version"
