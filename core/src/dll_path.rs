@@ -206,9 +206,14 @@ mod tests {
     fn nvml_candidates_cover_system32_and_nvspmi() {
         let candidates = nvml_candidates();
         // WOA 机器上前面会多出 DriverStore 的 nvml_arm64ec.dll 候选,末两位固定。
+        // 用精确相等而不是 Path::ends_with:测试也在 Linux CI 上跑,那里
+        // 反斜杠不是分隔符,组件式后缀匹配永远为 false。
         let n = candidates.len();
         assert!(n >= 2);
-        assert!(candidates[n - 2].ends_with(r"System32\nvml.dll"));
-        assert!(candidates[n - 1].ends_with(r"NVSMI\nvml.dll"));
+        assert_eq!(
+            candidates[n - 2],
+            Path::new(r"C:\Windows\System32\nvml.dll")
+        );
+        assert_eq!(candidates[n - 1], Path::new(NVSMI_DIR).join("nvml.dll"));
     }
 }
