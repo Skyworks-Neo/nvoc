@@ -44,6 +44,17 @@ Manual equivalents:
 - update: stop service (`sc stop nvoc_service`), replace exes, start again
 - check the state: `sc query nvoc_service`
 
+Post-deploy acceptance (no elevation needed): `verify_deploy.ps1` checks the
+service registration and install dir, that `/version` and the startup log
+agree on the build identity, the `/config` shape, the CSRF/range guards on
+both mutation endpoints, and one reversible `temp_limit` write that is
+restored afterwards. Exits non-zero on any failure:
+
+```powershell
+.\verify_deploy.ps1                          # verify the live install
+.\verify_deploy.ps1 -ExpectedGitHash <hash>  # also hard-assert the embedded hash
+```
+
 ## 2 Check log
 
 ```
