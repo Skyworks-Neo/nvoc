@@ -4334,7 +4334,12 @@ fn set_fan(
                     // instead of failing the frontend.
                     if is_reset {
                         nvapi_fan_reset(gpu).map_err(|fallback_err| {
-                            invalid_value(format!(
+                            // Both legs are execution failures (no GPU selected,
+                            // driver without fan-write symbols, …), not bad
+                            // argument values — surface as RuntimeError so
+                            // callers can distinguish validation from hardware
+                            // trouble.
+                            to_py_err(format!(
                                 "NVML fan reset failed ({nvml_err}) and the NVAPI fallback also failed: {fallback_err}"
                             ))
                         })?;
@@ -4346,7 +4351,9 @@ fn set_fan(
                         if let Err(fallback_err) =
                             nvapi_fan_percent_pin(gpu, cooler_index, Some(level))
                         {
-                            return Err(invalid_value(format!(
+                            // Same distinction as the reset leg above: both
+                            // failures are execution errors → RuntimeError.
+                            return Err(to_py_err(format!(
                                 "NVML fan set failed ({nvml_err}) and the fan-simulation percent fallback also failed: {fallback_err}"
                             )));
                         }
@@ -4394,7 +4401,8 @@ fn set_fan(
                         if let Err(fallback_err) =
                             nvapi_fan_percent_pin(gpu, cooler_index, Some(level))
                         {
-                            return Err(invalid_value(format!(
+                            // Execution failure, not a bad argument value.
+                            return Err(to_py_err(format!(
                                 "cooler-level set failed ({primary_err}) and the fan-simulation percent fallback also failed: {fallback_err}"
                             )));
                         }
