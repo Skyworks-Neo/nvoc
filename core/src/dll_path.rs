@@ -202,7 +202,11 @@ mod tests {
         assert_eq!(override_path(key), None);
     }
 
+    // Windows-only invariant: 候选表的 System32/NVSMI 布局只在 Windows 上有
+    // 意义,且 Path::ends_with 的分隔符语义也随平台不同(Linux 上整条
+    // `C:\...` 路径是单一组件,断言恒假)。
     #[test]
+    #[cfg(windows)]
     fn nvml_candidates_cover_system32_and_nvspmi() {
         let candidates = nvml_candidates();
         // WOA 机器上前面会多出 DriverStore 的 nvml_arm64ec.dll 候选,末两位固定。

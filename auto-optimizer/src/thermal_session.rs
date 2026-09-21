@@ -66,9 +66,12 @@ pub fn ensure(matches: &ArgMatches) -> Result<()> {
     if !(30.0..=110.0).contains(&target_c) {
         return Err(anyhow!("--target-temp must be 30–110 °C, got {target_c}"));
     }
+    // 定义侧是 value_parser!(u16)（arg_help.rs），读取必须同为 u16——
+    // 用 String downcast 会在真的传了 --srv-port 时 panic（缺省时
+    // get_one 返回 None 不触碰值类型，所以默认端口路径测不出来）。
     let port = matches
-        .get_one::<String>("srv_port")
-        .and_then(|s| s.parse().ok())
+        .get_one::<u16>("srv_port")
+        .copied()
         .unwrap_or(crate::srv_client::DEFAULT_PORT);
 
     let mut state = session_lock();
@@ -270,6 +273,30 @@ mod tests {
     }
 
     #[test]
+    fn real_cli_definition_matches_u16_srv_port_access() {
+        // 钉死"定义 == 读取"的类型契约：arg_help.rs 用 value_parser!(u16)
+        // 定义 --srv-port，本模块读取也必须是 get_one::<u16>。T-B 现场故障
+        // （Mismatch between definition and access of `srv_port`）的回归点：
+        // 任何一侧改类型，这条测试都会在 downcast 处直接 panic。
+        reset_for_tests();
+        let cmd = crate::arg_help::get_arguments();
+        let matches = cmd
+            .try_get_matches_from([
+                "nvoc-auto-optimizer",
+                "optimize",
+                "--target-temp",
+                "70",
+                "--srv-port",
+                "14515",
+            ])
+            .expect("real CLI definition must parse --target-temp/--srv-port");
+        let sub = matches
+            .subcommand_matches("optimize")
+            .expect("optimize subcommand");
+        assert_eq!(sub.get_one::<u16>("srv_port"), Some(&14515));
+    }
+
+    #[test]
     fn unhealthy_port_is_a_hard_error_not_a_spawn() {
         reset_for_tests();
         // Occupy the port with a plain TCP listener: not a srv.
@@ -281,7 +308,15 @@ mod tests {
                     .long("target-temp")
                     .num_args(1),
             )
-            .arg(clap::Arg::new("srv_port").long("srv-port").num_args(1));
+            // 与 arg_help.rs 的真实定义保持一致：value_parser!(u16)。
+            // 回归点：若读取侧退回 get_one::<String>，传了 --srv-port 的
+            // 这条用例会在 downcast 处 panic，直接复现 T-B 现场故障。
+            .arg(
+                clap::Arg::new("srv_port")
+                    .long("srv-port")
+                    .num_args(1)
+                    .value_parser(clap::value_parser!(u16)),
+            );
         let matches = app
             .try_get_matches_from(["t", "--target-temp", "70", "--srv-port", &port.to_string()])
             .expect("parse");

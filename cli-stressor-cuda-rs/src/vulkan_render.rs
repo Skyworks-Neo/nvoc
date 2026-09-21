@@ -23,51 +23,15 @@
 //! external toolchain needed).
 
 use crate::runner::style::stylize;
-use crate::vulkan_gfx_stressor::{VulkanDeviceSelection, select_gpu_by_cuda_identity};
+use crate::vulkan_gfx_stressor::{
+    VulkanDeviceSelection, VulkanRenderConfig, select_gpu_by_cuda_identity,
+};
 use ash::Instance;
 use ash::khr::surface::Instance as SurfaceInstance;
 use ash::khr::swapchain::Device as SwapchainDevice;
 use ash::vk;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-
-#[cfg(target_os = "windows")]
-/// FurMark-style heavy render parameters.
-#[derive(Clone, Copy, Debug)]
-pub struct VulkanRenderConfig {
-    pub width: u32,
-    pub height: u32,
-    /// MSAA sample count: 1 = off, 2/4/8. Clamped to device-supported.
-    pub msaa: u32,
-    /// Fragment MUFU/FMA loop iterations per pixel.
-    pub iters: u32,
-    /// Instanced shell count (layered overdraw with alpha blending).
-    pub shells: u32,
-    /// Render into an owned color image instead of a window swapchain
-    /// (pure CLI / headless; skips the display-engine path).
-    pub offscreen: bool,
-    /// Animate the torus rotation (dynamic tiles/Z-distribution/interp
-    /// inputs). Off for the static-mesh A/B baseline.
-    pub rotate: bool,
-    /// Compute->graphics particle pool size (Lumen/TSR-style SSBO ping-pong).
-    /// 0 disables the stage.
-    pub particles: u32,
-}
-
-impl Default for VulkanRenderConfig {
-    fn default() -> Self {
-        Self {
-            width: 1280,
-            height: 720,
-            msaa: 1,
-            iters: 128,
-            shells: 16,
-            offscreen: false,
-            rotate: true,
-            particles: 262144,
-        }
-    }
-}
 
 const BG_VERT_SRC: &str = r#"
 #version 450 core

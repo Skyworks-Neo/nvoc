@@ -10,7 +10,10 @@
 
 use crate::args::SetupArgs;
 use crate::util::{self, Res};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+// PathBuf is only referenced by the Windows-native probes below.
+#[cfg(windows)]
+use std::path::PathBuf;
 use std::process::Command;
 
 pub fn setup(args: &SetupArgs) -> Res<()> {

@@ -17,6 +17,46 @@ pub struct VulkanDeviceSelection {
     pub cuda_pci_bus: Option<PciBusAddress>,
 }
 
+/// FurMark-style heavy render parameters. Pure data: defined here (not in
+/// windows-only `vulkan_render`) so `VulkanImageConfig` can carry it on every
+/// platform the `vulkan` feature builds on; the heavy render *path* itself
+/// stays Windows-only and falls back to the light loop elsewhere.
+#[derive(Clone, Copy, Debug)]
+pub struct VulkanRenderConfig {
+    pub width: u32,
+    pub height: u32,
+    /// MSAA sample count: 1 = off, 2/4/8. Clamped to device-supported.
+    pub msaa: u32,
+    /// Fragment MUFU/FMA loop iterations per pixel.
+    pub iters: u32,
+    /// Instanced shell count (layered overdraw with alpha blending).
+    pub shells: u32,
+    /// Render into an owned color image instead of a window swapchain
+    /// (pure CLI / headless; skips the display-engine path).
+    pub offscreen: bool,
+    /// Animate the torus rotation (dynamic tiles/Z-distribution/interp
+    /// inputs). Off for the static-mesh A/B baseline.
+    pub rotate: bool,
+    /// Compute->graphics particle pool size (Lumen/TSR-style SSBO ping-pong).
+    /// 0 disables the stage.
+    pub particles: u32,
+}
+
+impl Default for VulkanRenderConfig {
+    fn default() -> Self {
+        Self {
+            width: 1280,
+            height: 720,
+            msaa: 1,
+            iters: 128,
+            shells: 16,
+            offscreen: false,
+            rotate: true,
+            particles: 262144,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct VulkanImageConfig {
     pub width: u32,
@@ -27,7 +67,7 @@ pub struct VulkanImageConfig {
     pub minor_mixture_rate: f64,
     /// FurMark-style heavy render mode (Win32 window + shaders + blend +
     /// depth + present). Windows-only; falls back to the light path elsewhere.
-    pub render: Option<crate::vulkan_render::VulkanRenderConfig>,
+    pub render: Option<VulkanRenderConfig>,
 }
 
 impl Default for VulkanImageConfig {
@@ -95,9 +135,26 @@ impl VulkanGraphicsEngine {
         has_error.store(false, Ordering::SeqCst);
 
         let handle = thread::spawn(move || {
+            // Heavy render is a Windows-only path (Win32 window + swapchain);
+            // everywhere else fall back to the light clear/blit loop even
+            // when a render config was supplied.
+            #[cfg(all(feature = "vulkan", target_os = "windows"))]
             let result = if let Some(render_cfg) = image_config.render {
                 dispatch_heavy(is_running, selection, render_cfg)
             } else {
+                run_vulkan_stress_loop(is_running, selection, image_config)
+            };
+            #[cfg(not(all(feature = "vulkan", target_os = "windows")))]
+            let result = {
+                if image_config.render.is_some() {
+                    eprintln!(
+                        "{}",
+                        stylize(
+                            "[VKGFX-H] heavy render mode requires Windows; running light path",
+                            true
+                        )
+                    );
+                }
                 run_vulkan_stress_loop(is_running, selection, image_config)
             };
             if let Err(e) = result {
@@ -135,25 +192,9 @@ impl VulkanGraphicsEngine {
 fn dispatch_heavy(
     is_running: Arc<AtomicBool>,
     selection: Option<VulkanDeviceSelection>,
-    render_cfg: crate::vulkan_render::VulkanRenderConfig,
+    render_cfg: VulkanRenderConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     run_render_loop(is_running, selection, render_cfg)
-}
-
-#[cfg(not(all(feature = "vulkan", target_os = "windows")))]
-fn dispatch_heavy(
-    is_running: Arc<AtomicBool>,
-    selection: Option<VulkanDeviceSelection>,
-    render_cfg: crate::vulkan_render::VulkanRenderConfig,
-) -> Result<(), Box<dyn std::error::Error>> {
-    eprintln!(
-        "{}",
-        stylize(
-            "[VKGFX-H] heavy render mode requires Windows; running light path",
-            true
-        )
-    );
-    run_vulkan_stress_loop(is_running, selection, image_config)
 }
 
 fn run_vulkan_stress_loop(
