@@ -89,7 +89,7 @@ pub fn check() -> Res<()> {
         .current_dir(&root);
     nvapi_cache::run_guarded(&root, &mut clippy)?;
 
-    linux_clippy_mirror(&root)?;
+    cross_clippy_mirror(&root)?;
 
     util::step("clippy: cli-stressor-cuda-rs (no default features)");
     let mut stressor = Command::new("cargo");
@@ -130,27 +130,32 @@ pub fn check() -> Res<()> {
     util::run(&mut lint)
 }
 
-/// Re-runs ci.yml's ubuntu Clippy job against the `x86_64-unknown-linux-gnu`
-/// target from a non-Linux host. `#[cfg(windows)]`-only code compiles away
-/// locally, so an import (or any item) used solely by Windows-only blocks
-/// passes the host clippy yet fails `-D warnings` on CI (xtask's own
-/// doctor.rs did exactly that). Static checks only — cross-compiled test
-/// binaries cannot execute here, so behavioral platform gaps still belong to
-/// CI. On Linux hosts the step is redundant with the workspace clippy above
-/// and is skipped. The target's rust-std is installed on first use.
-fn linux_clippy_mirror(root: &std::path::Path) -> Res<()> {
-    if cfg!(target_os = "linux") {
-        return Ok(());
-    }
-    const TARGET: &str = "x86_64-unknown-linux-gnu";
+/// Re-runs the CI clippy shape against the platform this host is NOT, so
+/// `#[cfg(...)]`-gated code compiles in the gate instead of silently
+/// vanishing: platform-skewed imports and dead items pass the host clippy
+/// yet fail `-D warnings` on the other platform's CI job (xtask's own
+/// doctor.rs unused `PathBuf`, core's dead non-Windows stub — both caught
+/// here). Windows hosts mirror the ubuntu job (`x86_64-unknown-linux-gnu`);
+/// Linux hosts mirror the Windows jobs (`x86_64-pc-windows-msvc` — a
+/// workspace-wide superset of ci.yml's auto-optimizer/srv Windows runs);
+/// hosts with no CI platform (macOS) mirror nothing. Static checks only —
+/// cross-compiled test binaries cannot execute locally, so behavioral
+/// platform gaps still belong to CI. The target's rust-std is installed on
+/// first use.
+fn cross_clippy_mirror(root: &std::path::Path) -> Res<()> {
+    let target = match std::env::consts::OS {
+        "windows" => "x86_64-unknown-linux-gnu",
+        "linux" => "x86_64-pc-windows-msvc",
+        _ => return Ok(()),
+    };
 
-    util::step("clippy: linux-target mirror (ubuntu CI job)");
+    util::step(&format!("clippy: cross-target mirror ({target})"));
     let installed = util::capture(Command::new("rustup").args(["target", "list", "--installed"]))?
         .lines()
-        .any(|line| line.trim() == TARGET);
+        .any(|line| line.trim() == target);
     if !installed {
         let mut add = Command::new("rustup");
-        add.args(["target", "add", TARGET]);
+        add.args(["target", "add", target]);
         util::run(&mut add)?;
     }
 
@@ -163,7 +168,7 @@ fn linux_clippy_mirror(root: &std::path::Path) -> Res<()> {
             "cli-stressor-cuda-rs",
             "--all-targets",
             "--target",
-            TARGET,
+            target,
             "--",
             "-D",
             "warnings",
