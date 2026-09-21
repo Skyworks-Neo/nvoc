@@ -291,8 +291,7 @@ fn os_verify(user: &str, password: &str, cfg: &RuntimeConfig) -> std::result::Re
                 .to_string(),
         );
     }
-    let ok =
-        pwhash::unix::verify(password, &hash).map_err(|e| format!("hash verify failed: {e}"))?;
+    let ok = pwhash::unix::verify(password, &hash);
     if !ok {
         return Err("invalid username or password".to_string());
     }
@@ -326,12 +325,12 @@ fn os_verify(user: &str, password: &str, cfg: &RuntimeConfig) -> std::result::Re
     let passwd = std::fs::read_to_string("/etc/passwd").unwrap_or_default();
     for line in passwd.lines() {
         let fields: Vec<&str> = line.split(':').collect();
-        if fields.len() >= 4 && fields[0] == user {
-            if let Ok(gid) = fields[3].parse::<u32>() {
-                if allowed_gids.contains(&gid) {
-                    return Ok(());
-                }
-            }
+        if fields.len() >= 4
+            && fields[0] == user
+            && let Ok(gid) = fields[3].parse::<u32>()
+            && allowed_gids.contains(&gid)
+        {
+            return Ok(());
         }
     }
     Err(format!(

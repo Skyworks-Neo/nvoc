@@ -13,7 +13,6 @@ import tkinter as tk
 import traceback
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
-import pystray
 from PIL import Image
 
 from src.backend import NativeBackend
@@ -38,6 +37,13 @@ from src.tabs.dashboard import DashboardTab
 from src.tabs.dashboard.sections import OverclockTab
 
 if TYPE_CHECKING:
+    # pystray is import-heavy AND has an import-time side effect: on Linux it
+    # opens an X display connection (pystray/_xorg.py runs
+    # Xlib.display.Display() at module import), which hard-crashes collection
+    # of anything importing src.app on headless machines. Import it lazily in
+    # _build_tray_icon — the only place tray objects are constructed.
+    import pystray
+
     from src.widgets.fan_curve_editor import FanCurveEditor
 from src.tabs.vfcurve import VFCurveTab
 from src.tabs.vfcurve.sections import AutoscanTab
@@ -2041,6 +2047,8 @@ class App(ctk.CTk):
 
     def _build_tray_icon(self) -> "pystray.Icon":
         """Create and return a new pystray.Icon instance."""
+        import pystray
+
         menu = pystray.Menu(
             pystray.MenuItem("显示主界面", self._show_from_tray, default=True),
             pystray.Menu.SEPARATOR,
