@@ -4,6 +4,7 @@ Usage: python pin_test.py <backend> <percent|auto>
 Runs pynvoc.set_fan the same way gui/src/backend/native.py and
 tui/nvoc_tui/controllers/overclock.py do.
 """
+
 import sys
 
 import pynvoc

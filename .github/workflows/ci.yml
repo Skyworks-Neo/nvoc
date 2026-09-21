@@ -427,16 +427,22 @@ jobs:
           ALLOWLIST = {
               "bitflags",        # 1.x / 2.x
               "colored",         # 2.x via log2 / 3.x workspace CLI styling
+              "cpufeatures",     # 0.2.x via pwhash (srv auth) / 0.3.x via rand 0.10
               "getrandom",       # 0.2 / 0.3 / 0.4
               "hashbrown",       # 0.15 / 0.17
               "libloading",      # 0.8.x (nvml-wrapper) / 0.9.x (cudarc)
               "r-efi",           # 5.x / 6.x
               "rand",            # 0.9.x via half / 0.10.x CUDA stressor
+              "rand_chacha",     # 0.3.x via rand 0.9 / 0.9.x via rand 0.10
               "rand_core",       # 0.9.x via half / 0.10.x CUDA stressor
               "rand_distr",      # 0.5.x via half / 0.6.x CUDA stressor
               "syn",             # 2.x ecosystem / 3.x serde and thiserror derives
               "thiserror",       # 1.x / 2.x
               "thiserror-impl",  # 1.x / 2.x
+              "toml",            # 0.9.x (srv config) / 1.x workspace tooling
+              "toml_datetime",   # 0.7.x via toml 0.9 / 1.x via toml 1.x
+              "unicode-width",   # 0.1.x console tables / 0.2.x newer tooling
+              "winnow",          # 0.7.x via toml 0.9 / 1.x via toml 1.x
               "windows-sys",     # 0.52 / 0.59 / 0.61
               "wit-bindgen",     # 0.51 / 0.57
               "zerocopy",        # 0.6 / 0.8
