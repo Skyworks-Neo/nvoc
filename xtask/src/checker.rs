@@ -186,8 +186,9 @@ fn cross_clippy_mirror(root: &std::path::Path) -> Res<()> {
 /// nvoc-auto-optimizer / cli-stressor-cuda-rs) plus pynvoc, which the
 /// GUI/TUI onefile jobs compile through maturin. A c_char-skewed buffer
 /// (e.g. `[i8]` passed to cudarc's `*mut c_char` APIs) passes every host
-/// gate and only explodes in the arm64 release cell (E0308, the
-/// v0.2.0-alpha.2 linux-arm64 build). The workspace is deliberately NOT
+/// gate and only explodes in the arm64 release cell (E0308, the failed
+/// 0.2.0-alpha.2 release attempt's linux-arm64 build). The workspace is
+/// deliberately NOT
 /// checked wholesale: nvoc-srv is Windows-only and would false-fail.
 /// Check-only — no cross linker and no CUDA toolkit are needed; the
 /// target's rust-std is installed on first use, mirroring
