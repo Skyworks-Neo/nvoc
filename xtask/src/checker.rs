@@ -107,8 +107,8 @@ pub fn check() -> Res<()> {
         .current_dir(&root);
     nvapi_cache::run_guarded(&root, &mut stressor)?;
 
-    util::step("cross-check: cli-stressor-cuda-rs (aarch64-linux, where c_char = u8)");
-    cross_check_cuda_stressor(&root)?;
+    util::step("cross-check: release Rust packages (aarch64-linux, where c_char = u8)");
+    cross_check_arm64_release(&root)?;
 
     util::step("ruff format (.)");
     let excludes = ruff_exclude_args(&root);
@@ -180,15 +180,19 @@ fn cross_clippy_mirror(root: &std::path::Path) -> Res<()> {
     nvapi_cache::run_guarded(root, &mut clippy)
 }
 
-/// Cross-checks the CUDA stressor against aarch64-linux, the one release
-/// target where `core::ffi::c_char` is `u8` rather than `i8`. release.yml's
-/// linux-arm64 cell is the only place the crate meets that target, so a
-/// c_char-skewed buffer (e.g. `[i8]` passed to cudarc's `*mut c_char` APIs)
-/// passes every host gate and only explodes when a release tag builds
-/// (E0308, the v0.2.0-alpha.2 arm64 cell). Check-only — no cross linker and
-/// no CUDA toolkit are needed; the target's rust-std is installed on first
-/// use, mirroring [`cross_clippy_mirror`].
-fn cross_check_cuda_stressor(root: &std::path::Path) -> Res<()> {
+/// Cross-checks every crate the release matrix natively compiles for
+/// aarch64-linux — the one release target where `core::ffi::c_char` is `u8`
+/// rather than `i8`: the release.yml Rust build line (nvoc-cli /
+/// nvoc-auto-optimizer / cli-stressor-cuda-rs) plus pynvoc, which the
+/// GUI/TUI onefile jobs compile through maturin. A c_char-skewed buffer
+/// (e.g. `[i8]` passed to cudarc's `*mut c_char` APIs) passes every host
+/// gate and only explodes in the arm64 release cell (E0308, the
+/// v0.2.0-alpha.2 linux-arm64 build). The workspace is deliberately NOT
+/// checked wholesale: nvoc-srv is Windows-only and would false-fail.
+/// Check-only — no cross linker and no CUDA toolkit are needed; the
+/// target's rust-std is installed on first use, mirroring
+/// [`cross_clippy_mirror`].
+fn cross_check_arm64_release(root: &std::path::Path) -> Res<()> {
     const TARGET: &str = "aarch64-unknown-linux-gnu";
 
     let installed = util::capture(Command::new("rustup").args(["target", "list", "--installed"]))?
@@ -205,7 +209,13 @@ fn cross_check_cuda_stressor(root: &std::path::Path) -> Res<()> {
         .args([
             "check",
             "-p",
+            "nvoc-cli",
+            "-p",
+            "nvoc-auto-optimizer",
+            "-p",
             "cli-stressor-cuda-rs",
+            "-p",
+            "pynvoc",
             "--features",
             "cuda12,vulkan",
             "--target",
