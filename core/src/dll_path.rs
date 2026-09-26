@@ -50,17 +50,14 @@ pub const NVML_PATH_ENV: &str = "NVOC_NVML_PATH";
 pub const NVAPI_PATH_ENV: &str = "NVOC_NVAPI_PATH";
 
 /// 旧驱动布局的 NVSMI 目录(64 位;32 位 DLL 同目录)。
-#[cfg(windows)]
 const NVSMI_DIR: &str = r"C:\Program Files\NVIDIA Corporation\NVSMI";
 
 /// NVML 自动 fallback 的候选绝对路径,按新旧驱动布局排序:
 /// WOA DriverStore 的 ARM64EC NVML(x64 进程在 WOA 上唯一可用的 NVML;非 WOA
 /// 环境为空列表,零成本)→ System32(新驱动布局,显式列出以覆盖 PATH 被裁剪的
 /// 场合)→ NVSMI(老驱动布局)。init_nvml 逐个尝试,哪个 init 成功用哪个,候选
-/// 顺序只影响探测开销、不影响正确性。
-/// System32(新驱动布局,显式列出以覆盖 PATH 被裁剪的场合)→ NVSMI(老驱动布局)。
-/// Linux 上默认 SONAME 搜索(ldconfig)已覆盖驱动安装布局,无候选。
-#[cfg(windows)]
+/// 顺序只影响探测开销、不影响正确性。Linux 上这些 Windows 绝对路径一律不命中
+/// (`is_file` 恒假),实际覆盖由默认 SONAME 搜索承担。
 fn nvml_candidates() -> Vec<PathBuf> {
     let mut candidates = woa_driverstore_candidates();
     candidates.push(Path::new(r"C:\Windows\System32\nvml.dll").to_path_buf());
@@ -95,8 +92,9 @@ fn woa_driverstore_candidates() -> Vec<PathBuf> {
     hits
 }
 
+/// 非 Windows 平台没有 DriverStore 可探测,恒为空列表。
 #[cfg(not(windows))]
-fn nvml_candidates() -> Vec<PathBuf> {
+fn woa_driverstore_candidates() -> Vec<PathBuf> {
     Vec::new()
 }
 
@@ -276,15 +274,19 @@ mod tests {
         assert_eq!(override_path(key), None);
     }
 
-    #[cfg(windows)]
     #[test]
     fn nvml_candidates_cover_system32_and_nvspmi() {
         let candidates = nvml_candidates();
         // WOA 机器上前面会多出 DriverStore 的 nvml_arm64ec.dll 候选,末两位固定。
+        // 用精确相等而不是 Path::ends_with:测试也在 Linux CI 上跑,那里
+        // 反斜杠不是分隔符,组件式后缀匹配永远为 false。
         let n = candidates.len();
         assert!(n >= 2);
-        assert!(candidates[n - 2].ends_with(r"System32\nvml.dll"));
-        assert!(candidates[n - 1].ends_with(r"NVSMI\nvml.dll"));
+        assert_eq!(
+            candidates[n - 2],
+            Path::new(r"C:\Windows\System32\nvml.dll")
+        );
+        assert_eq!(candidates[n - 1], Path::new(NVSMI_DIR).join("nvml.dll"));
     }
 
     #[cfg(unix)]

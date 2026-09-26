@@ -300,10 +300,12 @@ class OverclockTab:
             )
         )
         # The ClkDomains slot-1 volt plane (unit toggle) exists from Pascal —
-        # page 0's Core/Mem toggles stay hidden until _enable_oc_pager turns
-        # them on. The fabric/uncore rows sit on pager-gated pages already.
+        # page 0's Core/Mem chips start as STATIC "MHz" labels (unit visible,
+        # no mV toggling) until _enable_oc_pager turns the toggle on. Hiding
+        # the chip entirely cost the pre-Pascal cards their MHz unit display
+        # (K4000: entries read "+0.0" unitless — 2026-09-18 regression).
         for _slider in (self.core_slider, self.mem_slider):
-            self._set_unit_toggle_visible(_slider, False)
+            self._set_unit_toggle_static(_slider, True)
         btn_apply_mem.configure(shift_command=self._apply_mem_with_sync)
         HoverTooltip(
             btn_apply_mem,
@@ -1861,11 +1863,12 @@ class OverclockTab:
         self._has_oc_pager = enabled
         self._oc_n_pages = 3 if enabled else 1
         # The ClkDomains slot-1 volt plane exists from Pascal — page 0's
-        # Core/Mem unit toggles appear/disappear with the pager. (Switching
-        # OFF re-hides the chips but leaves any mV mode standing; the rows
-        # grey out entirely pre-Pascal anyway.)
+        # Core/Mem unit chips switch between interactive toggles (Pascal+)
+        # and static MHz labels (pre-Pascal: no ClockClient WRITE plane to
+        # toggle into, but the unit display stays).
         for slider in (self.core_slider, self.mem_slider):
-            self._set_unit_toggle_visible(slider, enabled)
+            self._set_unit_toggle_static(slider, not enabled)
+            self._set_unit_toggle_visible(slider, True)
         if enabled:
             if not self._oc_pager.winfo_ismapped():
                 self._oc_pager.pack(
@@ -2034,6 +2037,8 @@ class OverclockTab:
         toggle = getattr(slider, "_oc_unit_toggle", None)
         if var is None or toggle is None:
             return
+        if getattr(slider, "_oc_unit_static", False):
+            return
         volt_mode = not getattr(slider, "_oc_volt_mode", False)
         slider._oc_volt_mode = volt_mode
         try:
@@ -2122,6 +2127,24 @@ class OverclockTab:
                         return 0.0
                 break
         return 0.0
+
+    def _set_unit_toggle_static(self, slider: Any, static: bool) -> None:
+        """Unit chip as a STATIC "MHz" label (unit display without the mV
+        toggle). Pre-Pascal rows have no ClockClient volt plane to cycle
+        into — hiding the chip outright (the old behavior) also removed the
+        MHz unit text. Static mode keeps the chip gridded, dim, non-hand
+        cursor, and blocks _toggle_row_unit."""
+        toggle = getattr(slider, "_oc_unit_toggle", None)
+        if toggle is None:
+            return
+        slider._oc_unit_static = static
+        try:
+            if static:
+                toggle.configure(text="MHz", fg=_TEXT_FG_DIM, cursor="")
+            else:
+                toggle.configure(cursor="hand2")
+        except Exception:
+            pass
 
     def _set_unit_toggle_visible(self, slider: Any, visible: bool) -> None:
         """Show/hide one row's unit chip (page-0 rows hide theirs until the

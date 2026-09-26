@@ -314,6 +314,8 @@ pub fn set_pstate_clock_offset_preserve(
             | Ok(GpuType::DesktopKepler)
             | Ok(GpuType::MobileFermi)
             | Ok(GpuType::DesktopFermi)
+            | Ok(GpuType::WorkstationKepler)
+            | Ok(GpuType::WorkstationFermi)
             | Ok(GpuType::ServerVolta)
             | Ok(GpuType::Unknown)
             | Err(_)
@@ -846,6 +848,8 @@ pub fn reset_vfp_deltas(gpu: &Gpu, domain: VfpResetDomain) -> Result<(), Error> 
             | Ok(GpuType::DesktopKepler)
             | Ok(GpuType::MobileFermi)
             | Ok(GpuType::DesktopFermi)
+            | Ok(GpuType::WorkstationKepler)
+            | Ok(GpuType::WorkstationFermi)
             | Ok(GpuType::ServerVolta)
             | Ok(GpuType::Unknown)
             | Err(_)
@@ -1195,6 +1199,8 @@ pub fn handle_test_voltage_limits(
                     | GpuType::DesktopKepler
                     | GpuType::MobileFermi
                     | GpuType::DesktopFermi
+                    | GpuType::WorkstationKepler
+                    | GpuType::WorkstationFermi
             ) {
                 drop(Error::VfpUnsupported);
             }

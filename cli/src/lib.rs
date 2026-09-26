@@ -711,7 +711,13 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     ..CommandSpec::new("get-vbios", Group::Info, "Read and decode a VBIOS image. -i/--input <file> parses a local ROM dump OFFLINE (no GPU/NvAPI needed — works on Linux); without it the live image is read via NvAPI_GPU_GetVbiosImage (0xFC13EE11, escape 0x0700004F, Windows-only). Live: --out <file> writes the raw image; --dump prints the full BIT token table + Fermi-model raw blocks. Both modes: --enable-detail-parser runs the full detail decoder — Pascal+ Virtual P-State ladder + profiles + footers, Maxwell/Kepler GPU Boost 2.0 ladder (BIT 'P'+0x34), power/thermal/fan tables, DCB display map, memory tables, falcon ucode inventory, board identity. --maxwell-vftable-decode is a deprecated alias of it (superset: the Boost 2.0 ladder is now a section of the detail output)")
                 },
             ),
-            (Command::GetVoltRailInfo, CommandSpec::new("get-volt-rail-info", Group::Voltage, "Read private VoltRails family: rail mask + per-rail offsets + live voltages (melonVolt path) + VRM device voltage windows (0xA38ACF9D)")),
+            (
+                Command::GetVoltRailInfo,
+                CommandSpec {
+                    options: Box::leak(Box::new(["verbose"])),
+                    ..CommandSpec::new("get-volt-rail-info", Group::Voltage, "Read private VoltRails family: rail mask + per-rail offsets + live voltages (melonVolt path) + VRM device voltage windows (0xA38ACF9D). --verbose adds each rail descriptor's raw 48-dword array (undecoded fields, cross-GPU comparison)")
+                },
+            ),
             (
                 Command::List,
                 CommandSpec {
@@ -1471,15 +1477,6 @@ fn render_root_help() -> String {
     text.push_str("  -g, --gpu <GPU_ID>     GPU selector; repeat for multiple GPUs\n");
     text.push_str("      --nvapi            Force the NVAPI backend\n");
     text.push_str("      --nvml             Force the NVML backend\n");
-    text.push_str("      --nvml-path <PATH> Explicit NVML library path (Windows: nvml.dll file;\n");
-    text.push_str("                         Linux: libnvidia-ml.so.1 file or its directory\n");
-    text.push_str(
-        "      --nvapi-path <PATH> Explicit NVAPI library override (Windows: directory or\n",
-    );
-    text.push_str(
-        "                         nvapi64.dll file; Linux: libnvidia-api.so.1 file or its\n",
-    );
-    text.push_str("                         directory, preloaded for the SONAME lookup\n");
     text.push_str("  -O, --output <FORMAT>  Output format: human or json [default: human]\n");
     text.push_str("      --no-color         Disable ANSI color output\n");
     text.push_str("  -h, --help             Print help\n");
@@ -1855,7 +1852,7 @@ fn cli_command(command_hint: Option<Command>) -> ClapCommand {
                 .long("nvml-path")
                 .value_name("PATH")
                 .global(true)
-                .help("Explicit NVML library path (overrides NVOC_NVML_PATH / auto-probe). Windows: nvml.dll (e.g. ...\\NVSMI\\nvml.dll); Linux: libnvidia-ml.so.1 file (or its directory)"),
+                .help("Explicit NVML library path (overrides NVOC_NVML_PATH / auto-probe). Windows: nvml.dll (legacy drivers keep it outside the DLL search path, e.g. ...\\NVSMI\\nvml.dll); Linux: libnvidia-ml.so.1 file (or its directory)"),
         )
         .arg(
             Arg::new("nvapi-path")
@@ -3795,6 +3792,7 @@ fn execute_target(
             })
         }
         Command::GetVoltRailInfo => {
+            let verbose = option_bool(invocation, "verbose", false)?;
             let rails = run(target, QueryNvapiVoltRails)?.output;
             // Best-effort enrichment: the melonVolt voltage-domain enumerator
             // (0xA38ACF9D) reports each domain's min/step/max/default µV
@@ -3818,10 +3816,25 @@ fn execute_target(
                         }),
                         "rail_mask": format!("0x{:08X}", r.rail_mask),
                         "p0_rails": volt_rails_p0_rails_json(&r),
-                        "rail_descriptors": r.rail_descriptors.iter().map(|d| json!({
-                            "rail_bit": d.rail_bit,
-                            "type": d.entry_type(),
-                        })).collect::<Vec<_>>(),
+                        // Decoded descriptor fields for cross-GPU comparison
+                        // (class = the field V1 status mirrors as "type";
+                        // uv_a/uv_b are the two µV readings, semantics
+                        // unconfirmed). The full 48-dword raw array — for
+                        // debugging the still-undecoded fields — only with
+                        // --verbose.
+                        "rail_descriptors": r.rail_descriptors.iter().map(|d| {
+                            let mut entry = json!({
+                                "rail_bit": d.rail_bit,
+                                "type": d.entry_type(),
+                                "class": d.class(),
+                                "uv_a": d.uv_a(),
+                                "uv_b": d.uv_b(),
+                            });
+                            if verbose {
+                                entry["raw"] = json!(d.raw_u32);
+                            }
+                            entry
+                        }).collect::<Vec<_>>(),
                         "control": r.control.iter().map(|e| json!({
                             "rail_bit": e.rail_bit, "type": e.entry_type, "values_uV": e.values,
                         })).collect::<Vec<_>>(),
@@ -6478,6 +6491,39 @@ fn decode_vbios_detail(image: &[u8]) -> CliResult<Value> {
         }),
         None => json!({"present": false}),
     };
+    // Clock States（perf 表 v0x40 per-Pstate 时钟域；Kepler/Maxwell）。
+    let clock_states = match nvoc_core::legacy_vbios_parser::find_perf_states(image) {
+        Ok(Some(states)) => json!({
+            "present": true,
+            "domain_names": nvoc_core::legacy_vbios_parser::PERF_DOMAIN_NAMES,
+            "states": states.iter().map(|s| json!({
+                "pstate": nvoc_core::legacy_vbios_parser::pstate_display_name(s.pstate_code),
+                "pstate_code": format!("{:#04x}", s.pstate_code),
+                "vmap_index": s.vmap_index,
+                "offset": s.offset,
+                "domains_mhz": s.domains_mhz,
+            })).collect::<Vec<_>>(),
+        }),
+        Ok(None) => json!({"present": false}),
+        Err(e) => json!({"present": false, "note": format!("{e}")}),
+    };
+    // Boost States（P+0x30 表，per-Pstate 域 min/max）。
+    let boost_states = match nvoc_core::legacy_vbios_parser::find_boost_states(image) {
+        Ok(Some(groups)) => json!({
+            "present": true,
+            "states": groups.iter().map(|g| json!({
+                "pstate": nvoc_core::legacy_vbios_parser::pstate_display_name(g.pstate_code),
+                "pstate_code": format!("{:#04x}", g.pstate_code),
+                "ranges": g.ranges.iter().map(|r| json!({
+                    "domain": r.domain,
+                    "min_mhz": f64::from(r.min_mhz_x2) / 2.0,
+                    "max_mhz": f64::from(r.max_mhz_x2) / 2.0,
+                })).collect::<Vec<_>>(),
+            })).collect::<Vec<_>>(),
+        }),
+        Ok(None) => json!({"present": false}),
+        Err(e) => json!({"present": false, "note": format!("{e}")}),
+    };
     let thermal_policy = match nvoc_core::legacy_vbios_parser::find_thermal_policy(image) {
         Ok(Some(tp)) => json!({
             "present": true,
@@ -6680,6 +6726,8 @@ fn decode_vbios_detail(image: &[u8]) -> CliResult<Value> {
             "nvgi": nvgi,
             "internal_use": internal_use,
             "flash_directory": flash_directory,
+            "clock_states": clock_states,
+            "boost_states": boost_states,
             "voltage_freq_ladder": ladder,
             "points": points,
             "warnings": if tables.len() > 1 {
@@ -6710,6 +6758,8 @@ fn decode_vbios_detail(image: &[u8]) -> CliResult<Value> {
             base["nvgi"] = json!(nvgi);
             base["internal_use"] = internal_use;
             base["flash_directory"] = flash_directory;
+            base["clock_states"] = clock_states;
+            base["boost_states"] = boost_states;
             Ok(base)
         }
     }
@@ -8341,9 +8391,6 @@ mod tests {
         assert!(rendered.contains("V/F curve tables"));
         // the list meta command itself stays out of the listing
         assert!(!rendered.contains("    list\n"));
-        // global library-path overrides stay in the hand-rendered options block
-        assert!(rendered.contains("--nvml-path <PATH>"));
-        assert!(rendered.contains("--nvapi-path <PATH>"));
 
         let filtered = render_grouped_commands(Some(Group::Fan));
         assert!(filtered.contains("get-fan-info"));

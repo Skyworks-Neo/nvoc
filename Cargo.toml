@@ -51,8 +51,8 @@ log2 = "0.3.0"
 gag = "1.0.0"
 colored = "3.1.1"
 num-traits = "0.2.19"
-nvml-wrapper = "0.12.1"
-nvml-wrapper-sys = "0.9.1"
+nvml-wrapper = "0.13.0"
+nvml-wrapper-sys = "0.10.0"
 nvapi = { path = "./nvapi-rs", features = [
   "serde",
 ] }
@@ -63,4 +63,4 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 windows-service = "0.8.0"
 windows-sys = { version = "0.61.2", features = ["Win32"] }
-libloading = "0.8"
+libloading = "0.9"
