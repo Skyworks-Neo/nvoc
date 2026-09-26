@@ -50,7 +50,7 @@ def semver_to_pep440(semver: str) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--tag", help="release tag to compare, e.g. v0.2.0-alpha.2")
+    parser.add_argument("--tag", help="release tag to compare, e.g. v0.3.0-alpha.1")
     args = parser.parse_args()
 
     with open("Cargo.toml", "rb") as f:

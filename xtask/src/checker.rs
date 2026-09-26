@@ -89,6 +89,8 @@ pub fn check() -> Res<()> {
         .current_dir(&root);
     nvapi_cache::run_guarded(&root, &mut clippy)?;
 
+    cross_clippy_mirror(&root)?;
+
     util::step("clippy: cli-stressor-cuda-rs (no default features)");
     let mut stressor = Command::new("cargo");
     stressor
@@ -104,6 +106,9 @@ pub fn check() -> Res<()> {
         ])
         .current_dir(&root);
     nvapi_cache::run_guarded(&root, &mut stressor)?;
+
+    util::step("cross-check: release Rust packages (aarch64-linux, where c_char = u8)");
+    cross_check_arm64_release(&root)?;
 
     util::step("ruff format (.)");
     let excludes = ruff_exclude_args(&root);
@@ -126,6 +131,99 @@ pub fn check() -> Res<()> {
     let mut lint = util::uv_run(&root, "nvoc-tui", &["ruff", "check", "."]);
     lint.args(&excludes);
     util::run(&mut lint)
+}
+
+/// Re-runs the CI clippy shape against the platform this host is NOT, so
+/// `#[cfg(...)]`-gated code compiles in the gate instead of silently
+/// vanishing: platform-skewed imports and dead items pass the host clippy
+/// yet fail `-D warnings` on the other platform's CI job (xtask's own
+/// doctor.rs unused `PathBuf`, core's dead non-Windows stub — both caught
+/// here). Windows hosts mirror the ubuntu job (`x86_64-unknown-linux-gnu`);
+/// Linux hosts mirror the Windows jobs (`x86_64-pc-windows-msvc` — a
+/// workspace-wide superset of ci.yml's auto-optimizer/srv Windows runs);
+/// hosts with no CI platform (macOS) mirror nothing. Static checks only —
+/// cross-compiled test binaries cannot execute locally, so behavioral
+/// platform gaps still belong to CI. The target's rust-std is installed on
+/// first use.
+fn cross_clippy_mirror(root: &std::path::Path) -> Res<()> {
+    let target = match std::env::consts::OS {
+        "windows" => "x86_64-unknown-linux-gnu",
+        "linux" => "x86_64-pc-windows-msvc",
+        _ => return Ok(()),
+    };
+
+    util::step(&format!("clippy: cross-target mirror ({target})"));
+    let installed = util::capture(Command::new("rustup").args(["target", "list", "--installed"]))?
+        .lines()
+        .any(|line| line.trim() == target);
+    if !installed {
+        let mut add = Command::new("rustup");
+        add.args(["target", "add", target]);
+        util::run(&mut add)?;
+    }
+
+    let mut clippy = Command::new("cargo");
+    clippy
+        .args([
+            "clippy",
+            "--workspace",
+            "--exclude",
+            "cli-stressor-cuda-rs",
+            "--all-targets",
+            "--target",
+            target,
+            "--",
+            "-D",
+            "warnings",
+        ])
+        .current_dir(root);
+    nvapi_cache::run_guarded(root, &mut clippy)
+}
+
+/// Cross-checks every crate the release matrix natively compiles for
+/// aarch64-linux — the one release target where `core::ffi::c_char` is `u8`
+/// rather than `i8`: the release.yml Rust build line (nvoc-cli /
+/// nvoc-auto-optimizer / cli-stressor-cuda-rs) plus pynvoc, which the
+/// GUI/TUI onefile jobs compile through maturin. A c_char-skewed buffer
+/// (e.g. `[i8]` passed to cudarc's `*mut c_char` APIs) passes every host
+/// gate and only explodes in the arm64 release cell (E0308, the failed
+/// 0.2.0-alpha.2 release attempt's linux-arm64 build). The workspace is
+/// deliberately NOT
+/// checked wholesale: nvoc-srv is Windows-only and would false-fail.
+/// Check-only — no cross linker and no CUDA toolkit are needed; the
+/// target's rust-std is installed on first use, mirroring
+/// [`cross_clippy_mirror`].
+fn cross_check_arm64_release(root: &std::path::Path) -> Res<()> {
+    const TARGET: &str = "aarch64-unknown-linux-gnu";
+
+    let installed = util::capture(Command::new("rustup").args(["target", "list", "--installed"]))?
+        .lines()
+        .any(|line| line.trim() == TARGET);
+    if !installed {
+        let mut add = Command::new("rustup");
+        add.args(["target", "add", TARGET]);
+        util::run(&mut add)?;
+    }
+
+    let mut check = Command::new("cargo");
+    check
+        .args([
+            "check",
+            "-p",
+            "nvoc-cli",
+            "-p",
+            "nvoc-auto-optimizer",
+            "-p",
+            "cli-stressor-cuda-rs",
+            "-p",
+            "pynvoc",
+            "--features",
+            "cuda12,vulkan",
+            "--target",
+            TARGET,
+        ])
+        .current_dir(root);
+    nvapi_cache::run_guarded(root, &mut check)
 }
 
 /// `--exclude` arguments for the ruff steps covering top-level paths git does

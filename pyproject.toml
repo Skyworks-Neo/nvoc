@@ -9,6 +9,7 @@ members = [
 [[tool.uv.index]]
 name = "tuna"
 url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true
 
 [tool.ruff]
 # CI (ci.yml) formats with the preview style; pin it here so plain

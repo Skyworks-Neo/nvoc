@@ -32,6 +32,7 @@ pub fn build(args: &BuildArgs) -> Res<()> {
     result?;
     if args.py_onefile {
         py_onefile(&util::repo_root())?;
+        pathenv::ensure_onefile_on_user_path(&util::repo_root());
     }
     Ok(())
 }
@@ -41,6 +42,20 @@ fn base(release: bool) -> Command {
     command.arg("build");
     if release {
         command.arg("--release");
+        // Cargo.toml keeps a conservative cross-machine baseline
+        // (codegen-units = 8); release builds through xtask scale it up to
+        // this machine's parallelism via cargo's profile env override (higher
+        // priority than the manifest, so the repo stays diff-free). A value
+        // the user exported wins outright (=1 restores a max-optimization
+        // build); dev profile is untouched (cargo defaults to 256 there).
+        if std::env::var_os("CARGO_PROFILE_RELEASE_CODEGEN_UNITS").is_none()
+            && let Ok(cores) = std::thread::available_parallelism()
+        {
+            command.env(
+                "CARGO_PROFILE_RELEASE_CODEGEN_UNITS",
+                cores.get().to_string(),
+            );
+        }
     }
     command
 }
@@ -332,6 +347,7 @@ impl PyJob {
             // rebuild from the current tree every onefile build.
             .args(["--refresh-package", "pynvoc"])
             .current_dir(cwd);
+        crate::util::apply_uv_index(&mut command);
         command
     }
 

@@ -269,6 +269,18 @@ jobs:
         run: cargo clippy --package cli-stressor-cuda-rs --all-targets --no-default-features -- -D warnings
       - name: Test
         run: cargo test --package cli-stressor-cuda-rs --all-targets --no-default-features
+      # The release matrix (release.yml) is the only workflow that compiles
+      # these crates for aarch64-linux, where core::ffi::c_char is u8
+      # instead of the i8 seen on every other release target. Type errors
+      # there (e.g. [i8] buffers passed to cudarc's *mut c_char APIs) are
+      # invisible to every host-target gate, so mirror the arm64 release
+      # cell's full native-compilation surface — the Rust build line plus
+      # pynvoc (compiled by maturin in the onefile jobs) — with a check-only
+      # cross-compile (no linker or CUDA toolkit needed).
+      - name: Cross-check aarch64-linux (c_char is u8 there)
+        run: |
+          rustup target add aarch64-unknown-linux-gnu
+          cargo check --package nvoc-cli --package nvoc-auto-optimizer --package cli-stressor-cuda-rs --package pynvoc --features cuda12,vulkan --target aarch64-unknown-linux-gnu
 
   python-tui:
     name: tui (${{ matrix.os }} / py${{ matrix.python-version }})

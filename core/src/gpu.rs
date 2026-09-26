@@ -59,8 +59,8 @@ fn ensure_nvapi_initialized() {
     use std::sync::Once;
     static INIT: Once = Once::new();
     INIT.call_once(|| {
-        // 显式 NVOC_NVAPI_PATH 覆盖要先于任何 LoadLibraryA("nvapi64.dll")
-        // 把目录插进传统搜索序(见 dll_path::prepare_nvapi 文档)。
+        // 显式 NVOC_NVAPI_PATH 覆盖要先于任何库加载生效(Windows: 插入传统
+        // 搜索序;Linux: SONAME 预加载,见 dll_path::prepare_nvapi 文档)。
         super::dll_path::prepare_nvapi();
         if let Err(e) = ::nvapi::hi::initialize() {
             // Display(非 Debug)——Debug 派生会丢掉 LibraryNotFound 上追加的

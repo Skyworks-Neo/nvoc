@@ -11,9 +11,7 @@
 use crate::args::SetupArgs;
 use crate::util::{self, Res};
 use std::path::Path;
-// Every PathBuf use in this file lives behind #[cfg(windows)] (MSVC probe,
-// off-path uv candidates, CUDA PATH scan) — gate the import to match, or
-// Linux CI's `-D warnings` flags it as unused.
+// Only the Windows uv off-PATH probe builds concrete paths.
 #[cfg(windows)]
 use std::path::PathBuf;
 use std::process::Command;
@@ -35,7 +33,7 @@ pub fn setup(args: &SetupArgs) -> Res<()> {
     if check_uv(args) {
         problems += bootstrap_python(args, &root);
         if !args.dry_run {
-            problems += sanity_imports(&root);
+            problems += sanity_imports(&root, args.install_missing);
         }
     } else {
         println!("  [..]   skipping Python bootstrap (uv unavailable)");
@@ -43,8 +41,8 @@ pub fn setup(args: &SetupArgs) -> Res<()> {
     }
 
     probe_cuda_runtime();
-    println!("  [info] PyPI index: the root pyproject.toml pins the Tsinghua (tuna) mirror;");
-    println!("         override with UV_DEFAULT_INDEX if that mirror is slow from your network.");
+    println!("  [info] PyPI index: uv runs default to the Tsinghua (tuna) mirror");
+    println!("         (UV_DEFAULT_INDEX already overrides this if it is set).");
 
     if problems == 0 {
         println!("\nsetup complete: environment ready.");
@@ -176,6 +174,24 @@ struct RustStatus {
     flavor: ToolchainFlavor,
 }
 
+/// Minimum rustc that can even parse the workspace manifest: the repo is
+/// edition 2024 (rustc 1.85) with `resolver = "3"` (cargo 1.84). Distro
+/// toolchains (apt's cargo on current LTS releases) are older and ignore
+/// rust-toolchain.toml, so without this gate `cargo xtask setup` dies later
+/// with the cryptic "`resolver` setting `3` is not valid" manifest error.
+const MIN_RUSTC_MINOR: u32 = 85;
+
+/// Parse a `rustc -vV` release field ("1.95.0", nightly date strings) into
+/// (major, minor); returns None for shapes it does not recognize.
+fn rustc_minor_version(release: &str) -> Option<u32> {
+    let mut parts = release.split('.');
+    let major = parts.next()?.parse::<u32>().ok()?;
+    if major != 1 {
+        return None;
+    }
+    parts.next()?.parse::<u32>().ok()
+}
+
 fn check_rust() -> RustStatus {
     if !util::have("rustc") {
         println!("  [FAIL] rustc not found");
@@ -192,6 +208,23 @@ fn check_rust() -> RustStatus {
             let release = find_field(&output, "release").unwrap_or("unknown");
             let host = find_field(&output, "host").unwrap_or("");
             let flavor = flavor_for_host(host);
+            let minor = rustc_minor_version(release);
+            if minor.is_none_or(|minor| minor < MIN_RUSTC_MINOR) {
+                println!("  [FAIL] rustc {release} is too old for this workspace");
+                println!(
+                    "         (edition 2024 / resolver 3 need rustc >= 1.{MIN_RUSTC_MINOR}; \
+                     the manifest will not even parse)"
+                );
+                util::hint(
+                    "the system package manager's cargo ignores rust-toolchain.toml; \
+                     install rustup from https://rustup.rs — it reads the pin and \
+                     fetches 1.95.0 on the next cargo invocation",
+                );
+                return RustStatus {
+                    problems: 1,
+                    flavor,
+                };
+            }
             match flavor {
                 ToolchainFlavor::Msvc => println!("  [ok]   rustc {release} ({host})"),
                 ToolchainFlavor::GnuLike => {
@@ -434,6 +467,7 @@ fn bootstrap_python(args: &SetupArgs, root: &Path) -> usize {
                 "--no-config",
             ])
             .current_dir(root);
+        util::apply_uv_index(&mut command);
         match util::run_dry(&mut command, args.dry_run) {
             Ok(()) => println!("  [ok]   {label}"),
             Err(error) => {
@@ -464,6 +498,7 @@ fn bootstrap_python(args: &SetupArgs, root: &Path) -> usize {
         // [build-system]) and aborts, leaving whatever stale wheel uv sync
         // had cached in place — which then fails the import check below.
         .current_dir(root.join("nvoc-python"));
+    util::apply_uv_index(&mut command);
     match util::run_dry(&mut command, args.dry_run) {
         Ok(()) => println!("  [ok]   pynvoc native extension built"),
         Err(error) => {
@@ -475,15 +510,18 @@ fn bootstrap_python(args: &SetupArgs, root: &Path) -> usize {
     problems
 }
 
-fn sanity_imports(root: &Path) -> usize {
+// The install_missing opt-in only fires inside the unix tkinter diagnosis.
+#[cfg_attr(windows, allow(unused_variables))]
+fn sanity_imports(root: &Path, install_missing: bool) -> usize {
     let mut problems = 0usize;
 
     println!("  [..]   checking tkinter in the gui environment");
     let mut tkinter = util::uv_run(root, "nvoc-gui", &["python", "-c", "import tkinter"]);
     if util::run(&mut tkinter).is_err() {
-        util::warn(
-            "tkinter unavailable; the GUI needs it (Linux: python3-tk, Windows: reinstall Python with tcl/tk)",
-        );
+        #[cfg(not(windows))]
+        diagnose_tkinter(root, install_missing);
+        #[cfg(windows)]
+        util::warn("tkinter unavailable; the GUI needs it (Windows: reinstall Python with tcl/tk)");
     }
 
     println!("  [..]   checking pynvoc native module in the tui environment");
@@ -494,6 +532,121 @@ fn sanity_imports(root: &Path) -> usize {
         problems += 1;
     }
     problems
+}
+
+/// The tkinter import failed. A uv-managed interpreter bundles Tcl/Tk, so a
+/// package-manager install is usually NOT the fix — classify which
+/// interpreter the gui environment resolved to and tailor the guidance:
+/// managed (rare failure) points at refreshing the toolchain, system points
+/// at the distro's split tkinter package. Warn-only, like the check above.
+#[cfg(not(windows))]
+fn diagnose_tkinter(root: &Path, install_missing: bool) {
+    let mut prefix = util::uv_run(
+        root,
+        "nvoc-gui",
+        &["python", "-c", "import sys; print(sys.base_prefix)"],
+    );
+    let prefix = util::capture(&mut prefix).unwrap_or_default();
+    let mut managed_dir = Command::new("uv");
+    managed_dir.args(["python", "dir"]);
+    let managed_dir = util::capture(&mut managed_dir).unwrap_or_default();
+
+    if prefix_is_uv_managed(&prefix, &managed_dir) {
+        util::warn("tkinter import failed although the uv-managed interpreter bundles Tcl/Tk");
+        util::hint("the managed toolchain is stale or broken; refresh it and re-run setup:");
+        util::hint("`uv python install --reinstall`");
+        return;
+    }
+
+    let os_release = std::fs::read_to_string("/etc/os-release").unwrap_or_default();
+    match distro_tk_command(&os_release) {
+        Some(command) => {
+            util::warn(
+                "tkinter unavailable: the gui environment runs a system Python, which \
+                 distros ship without tkinter",
+            );
+            util::hint(&format!(
+                "uv-managed pythons bundle Tcl/Tk by default; to keep this system \
+                 interpreter, run: {command}"
+            ));
+            if install_missing {
+                try_install_non_interactive(command);
+            }
+        }
+        None => {
+            util::warn("tkinter unavailable; the GUI needs it");
+            util::hint(
+                "install your distro's tkinter package (e.g. python3-tk), or let uv \
+                 provision its Tcl/Tk-bundled python instead of a system one",
+            );
+        }
+    }
+}
+
+/// True when the interpreter's base prefix lives under uv's managed-python
+/// directory — those distributions bundle Tcl/Tk. Pure so tests can feed
+/// samples; the exact-child boundary keeps lookalike siblings (…/python-x)
+/// from counting as managed.
+#[cfg(any(not(windows), test))]
+fn prefix_is_uv_managed(base_prefix: &str, uv_python_dir: &str) -> bool {
+    let prefix = base_prefix.trim().trim_end_matches('/');
+    let dir = uv_python_dir.trim().trim_end_matches('/');
+    if prefix.is_empty() || dir.is_empty() {
+        return false;
+    }
+    prefix == dir || prefix.starts_with(&format!("{dir}/"))
+}
+
+/// Maps `/etc/os-release` contents to the distro's tkinter install command.
+/// `None` when the distro is unrecognized; pure so tests can feed samples.
+#[cfg(any(not(windows), test))]
+fn distro_tk_command(os_release: &str) -> Option<&'static str> {
+    let mut id = "";
+    let mut id_like = "";
+    for line in os_release.lines() {
+        if let Some(rest) = line.strip_prefix("ID=") {
+            id = rest.trim_matches('"');
+        } else if let Some(rest) = line.strip_prefix("ID_LIKE=") {
+            id_like = rest.trim_matches('"');
+        }
+    }
+    let family = format!("{id} {id_like}");
+    if family.contains("ubuntu") || family.contains("debian") {
+        Some("sudo apt install python3-tk")
+    } else if family.contains("fedora") || family.contains("rhel") || family.contains("centos") {
+        Some("sudo dnf install python3-tkinter")
+    } else if family.contains("arch") || family.contains("manjaro") {
+        Some("sudo pacman -S --needed tk")
+    } else if family.contains("suse") {
+        Some("sudo zypper install python3-tk")
+    } else if family.contains("alpine") {
+        Some("apk add python3-tkinter")
+    } else {
+        None
+    }
+}
+
+/// Best-effort non-interactive system-package install (opt-in via
+/// `--install-missing`). `sudo -n` fails fast instead of hanging on a
+/// password prompt, so the manual hint above remains the fallback.
+#[cfg(not(windows))]
+fn try_install_non_interactive(command: &str) {
+    let non_interactive = command.replacen("sudo ", "sudo -n ", 1);
+    let mut parts = non_interactive.split_whitespace();
+    let Some(program) = parts.next() else {
+        return;
+    };
+    let mut install = Command::new(program);
+    install.args(parts);
+    println!(
+        "  [..]   attempting (non-interactive): {}",
+        util::display(&install)
+    );
+    if util::run(&mut install).is_err() {
+        util::hint(
+            "the non-interactive install failed (password needed?); run the command above manually",
+        );
+    }
 }
 
 /// Warn-only: the CUDA stressor needs the runtime DLLs/SOs to RUN, never to
@@ -591,6 +744,18 @@ mod tests {
     }
 
     #[test]
+    fn rustc_release_field_parses_into_minor_version() {
+        assert_eq!(super::rustc_minor_version("1.95.0"), Some(95));
+        assert_eq!(super::rustc_minor_version("1.75.0"), Some(75));
+        // distro patch tags and channel builds still expose the minor
+        assert_eq!(super::rustc_minor_version("1.70.0-1ubuntu2"), Some(70));
+        assert_eq!(super::rustc_minor_version("1.86.0-nightly"), Some(86));
+        // unparseable shapes fail the check via None, not by passing
+        assert_eq!(super::rustc_minor_version("unknown"), None);
+        assert_eq!(super::rustc_minor_version("2.0.0"), None);
+    }
+
+    #[test]
     fn host_triples_map_to_toolchain_flavors() {
         assert_eq!(
             flavor_for_host("x86_64-pc-windows-msvc"),
@@ -627,5 +792,53 @@ mod tests {
             ]
         );
         assert!(uv_off_path_candidates(None, None).is_empty());
+    }
+
+    #[test]
+    fn os_release_maps_to_tkinter_package_commands() {
+        let command = |os_release| super::distro_tk_command(os_release);
+        assert_eq!(
+            command("ID=ubuntu\nID_LIKE=debian\n"),
+            Some("sudo apt install python3-tk")
+        );
+        assert_eq!(command("ID=debian\n"), Some("sudo apt install python3-tk"));
+        assert_eq!(
+            command("ID=fedora\nVERSION=43\n"),
+            Some("sudo dnf install python3-tkinter")
+        );
+        assert_eq!(
+            command("ID=manjaro\nID_LIKE=arch\n"),
+            Some("sudo pacman -S --needed tk")
+        );
+        assert_eq!(
+            command("ID=opensuse-leap\n"),
+            Some("sudo zypper install python3-tk")
+        );
+        assert_eq!(command("ID=alpine\n"), Some("apk add python3-tkinter"));
+        assert_eq!(command("ID=nixos\n"), None);
+        assert_eq!(command(""), None);
+        // os-release values may be quoted.
+        assert_eq!(command("ID=\"arch\"\n"), Some("sudo pacman -S --needed tk"));
+    }
+
+    #[test]
+    fn managed_prefix_detection_covers_dir_and_children_only() {
+        let managed = super::prefix_is_uv_managed;
+        assert!(managed(
+            "/home/u/.local/share/uv/python/cpython-3.12.7-linux-gnu",
+            "/home/u/.local/share/uv/python"
+        ));
+        assert!(managed(
+            "/home/u/.local/share/uv/python",
+            "/home/u/.local/share/uv/python/"
+        ));
+        assert!(!managed("/usr", "/home/u/.local/share/uv/python"));
+        // A lookalike sibling directory is not the managed tree.
+        assert!(!managed(
+            "/home/u/.local/share/uv/python-custom",
+            "/home/u/.local/share/uv/python"
+        ));
+        assert!(!managed("", "/home/u/.local/share/uv/python"));
+        assert!(!managed("/usr", ""));
     }
 }
