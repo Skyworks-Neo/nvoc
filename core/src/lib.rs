@@ -21,8 +21,8 @@ pub use conv::ConvertEnum;
 pub use error::Error;
 pub use gpu::{GpuSelector, nvapi_interface_version};
 pub use gpu_type::{
-    ArchOcPrior, Evidence, FabricDomain, FabricEdgeRecord, FabricTree, GenScope, GpuOcParams,
-    GpuType, GpuVoltageLimitParams, GpuVoltageLockParams, OcPriorPoint, describe_edges, edge_label,
+    ArchOcPrior, FabricDomain, FabricTree, GpuOcParams, GpuType, GpuVoltageLimitParams,
+    GpuVoltageLockParams, OcPriorPoint,
 };
 pub use operation::{
     CheckVoltageFrequency, ClearEdid, DisableNvapiThermalSim, GetFanCurves, GetPowerMode,

@@ -573,9 +573,6 @@ fn normalize_info(target: &GpuTarget<'_>) -> PyResultValue {
         "xbar_supported".into(),
         bool_value(series.supports_xbar_offset()),
     );
-    // bit1 耦合分界（30 系+Ada 的 bit1 耦合 SYS，需 bit3 写 -f 抵消）。
-    // 见 gpu_type.rs is_ampere_plus / is_ada 的跨代 A/B 注释。
-    map.insert("is_ampere_plus".into(), bool_value(series.is_ampere_plus()));
     map.insert("bios_version".into(), text(&info.bios_version));
     map.insert("bus".into(), text(info.bus));
     if let Some(vendor) = info.vendor() {
@@ -2660,12 +2657,12 @@ fn query_private_freq_domain_info(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAn
 /// (point at offset j ← public point j) so the GUI plots the curve against a
 /// real voltage axis instead of collapsing every point to V=0. Cards whose
 /// private voltage IS filled (Ada/R610.74) are untouched.
-/// `fabric_relations` payload fragment: the driver's main-domain → attached
-/// (ext-slot) domain relation plus the evidence verdicts that decide which
-/// edges the front-ends may compensate against — see `nvoc_core::FabricTree`.
-/// Derived from the **unfiltered** table, so a consumer can trust the roster
-/// regardless of what it asked for. The CLI's `get-private-vftable` builds the
-/// same shape; keep the two in lockstep.
+/// `fabric_relations` payload fragment: the driver's master → slave (ext-slot)
+/// domain relation the front-ends compensate against — see
+/// `nvoc_core::FabricTree`. Derived from the **unfiltered** table, so a
+/// consumer can trust the roster regardless of what it asked for;
+/// `table_available: false` = no relation (refuse fabric writes). The CLI's
+/// `get-private-vftable` builds the same shape; keep the two in lockstep.
 fn fabric_relations_json(tree: &FabricTree) -> Value {
     let mut map = Map::new();
     map.insert("source".into(), Value::from("vftable-ext"));
@@ -2685,30 +2682,16 @@ fn fabric_relations_json(tree: &FabricTree) -> Value {
     map.insert(
         "edges".into(),
         Value::Array(
-            tree.records()
-                .into_iter()
-                .map(|r| {
+            tree.edges()
+                .iter()
+                .map(|(parent, child)| {
                     let mut e = Map::new();
-                    e.insert("parent".into(), Value::from(r.parent.slug()));
-                    e.insert("parent_bit".into(), Value::from(r.parent.bit()));
-                    e.insert("child".into(), Value::from(r.child.slug()));
-                    e.insert("child_bit".into(), Value::from(r.child.bit()));
-                    e.insert("evidence".into(), Value::from(r.evidence.slug()));
-                    e.insert("scope".into(), Value::from(r.scope.slug()));
-                    e.insert("applied".into(), Value::from(r.applied));
-                    e.insert("derived".into(), Value::from(r.derived));
-                    e.insert("note".into(), Value::from(r.note));
+                    e.insert("parent".into(), Value::from(parent.slug()));
+                    e.insert("parent_bit".into(), Value::from(parent.bit()));
+                    e.insert("child".into(), Value::from(child.slug()));
+                    e.insert("child_bit".into(), Value::from(child.bit()));
                     Value::Object(e)
                 })
-                .collect(),
-        ),
-    );
-    map.insert(
-        "unmatched_applied".into(),
-        Value::Array(
-            tree.unmatched_applied()
-                .into_iter()
-                .map(|(p, c)| Value::from(nvoc_core::edge_label(p, c)))
                 .collect(),
         ),
     );
@@ -2801,15 +2784,11 @@ fn query_private_vftable(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
             }
         }
         let vfp = vfp;
-        let gpu_type = run(target, QueryGpuInfo)
-            .ok()
-            .and_then(|r| fetch_gpu_type(&r.output).ok())
-            .unwrap_or(GpuType::Unknown);
         Ok(match vfp {
             Some(v) => value_object([
                 (
                     "fabric_relations",
-                    fabric_relations_json(&FabricTree::derive(Some(&v), gpu_type)),
+                    fabric_relations_json(&FabricTree::from_table(Some(&v))),
                 ),
                 (
                     "masks",
@@ -2922,15 +2901,14 @@ fn query_private_vftable(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
                     ),
                 ),
             ]),
-            // No private table (arch without the read, or it failed) — the
-            // evidence verdicts still apply, so the front-ends keep
-            // compensating the edges we have measured (and stay off the ones
-            // we have refuted).
+            // No private table (arch without the read, or it failed): the
+            // relation is UNKNOWN — the front-ends refuse fabric writes
+            // rather than compensate on a guess.
             None => value_object([
                 ("supported", Value::from(false)),
                 (
                     "fabric_relations",
-                    fabric_relations_json(&FabricTree::derive(None, gpu_type)),
+                    fabric_relations_json(&FabricTree::from_table(None)),
                 ),
             ]),
         })

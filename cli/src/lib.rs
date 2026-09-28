@@ -4280,18 +4280,13 @@ fn execute_target(
                 }
                 None => json!({"supported": false}),
             };
-            // ── main domain → attached (ext-slot) domain relation ──────────
+            // ── master → slave (ext-slot) domain relation ──────────────────
             // Always derived from the FULL table (`vfp`), never the filtered
             // view above: the roster is the pool minus every domain owning a
             // main block *anywhere* in the table, so a --domain view would
-            // relabel the slots. The tree also stands when `vfp` is None
-            // (unsupported read) — the measured verdicts are generation
-            // scoped, not table scoped.
-            let gpu_type = run(target, QueryGpuInfo)
-                .ok()
-                .and_then(|r| fetch_gpu_type(&r.output).ok())
-                .unwrap_or(nvoc_core::GpuType::Unknown);
-            let fabric = nvoc_core::FabricTree::derive(vfp.as_ref(), gpu_type);
+            // relabel the slots. A failed read (`vfp` = None) leaves the
+            // relation unknown — `table_available: false`, no edges.
+            let fabric = nvoc_core::FabricTree::from_table(vfp.as_ref());
             if let Some(obj) = value.as_object_mut() {
                 obj.insert(
                     "fabric_relations".to_string(),
@@ -7503,12 +7498,16 @@ fn parse_clk_domain(raw: &str) -> CliResult<u32> {
 /// WRITE-record domain resolver for set/reset-private-freq-domain-global-
 /// offset — the experimentally VERIFIED map (A/B sweep 2026-08/09 across
 /// Pascal/Turing/Ampere/Ada + Volta, see clk_client_record_name):
-/// bit0=Gpc, bit1=Xbar (pure on Pascal/Volta; Ampere+ couples Sys into
-/// bit1), bit2=Mem, bit3=Sys, bit5=Msd (SET unsupported on Pascal),
+/// bit0=Gpc, bit1=Xbar, bit2=Mem, bit3=Sys,
+/// bit5=Msd (SET unsupported on Pascal),
 /// bit7=Disp (slot-1 voltage-offset A/B 2026-09-06; the earlier
 /// bit6=Disp attribution was wrong — bit6 is unattributed), bit8=PcieGen
 /// (FreqsEnum bins [1,2,3]), bit9=Host. Bits 4/6 are unattributed —
-/// raw bit only. Deliberately NOT the MEASURE name table
+/// raw bit only. Which domains a WRITE actually drags is NOT this map's
+/// business and not a per-generation rule: the driver's own table declares
+/// it (get-private-vftable's `fabric_relations`, the ext slots of each
+/// bank's vf_curve record) and the front-ends resolve net offsets against
+/// that. Deliberately NOT the MEASURE name table
 /// ([parse_clk_domain_table]): that is the MEASURE-domain universe, a
 /// different table — its "sys"→2/"mem"→4/"host"→5 would route WRITE
 /// records to the wrong domains entirely (live-caused misroutes on the
@@ -7908,36 +7907,23 @@ fn pascal_private_2x_axis(target: &GpuTarget) -> bool {
 }
 
 /// `fabric_relations` payload fragment: which fabric domains ride into which
-/// other ones, per the driver's own ext-slot declaration, plus the evidence
-/// verdict that says whether a compensation may be written against each edge
-/// (see `nvoc_core::FabricTree`). MUST be derived from the unfiltered table — the
+/// other ones (master → slave), per the driver's own ext-slot declaration (see
+/// `nvoc_core::FabricTree`). MUST be derived from the unfiltered table — the
 /// roster is a whole-table property, so a `--bank/--domain` filtered view
-/// would mislabel slots. pynvoc's `query_private_vftable` builds the same
-/// shape; keep the two in lockstep.
+/// would mislabel slots. `table_available: false` = no relation: the
+/// front-ends refuse fabric writes. pynvoc's `query_private_vftable` builds
+/// the same shape; keep the two in lockstep.
 fn fabric_relations_json(tree: &nvoc_core::FabricTree) -> Value {
     json!({
         "source": "vftable-ext",
         "table_available": tree.table_available(),
         "roster": tree.roster().iter().map(|d| d.slug()).collect::<Vec<_>>(),
-        "edges": tree.records().into_iter().map(|r| json!({
-            "parent": r.parent.slug(),
-            "parent_bit": r.parent.bit(),
-            "child": r.child.slug(),
-            "child_bit": r.child.bit(),
-            "evidence": r.evidence.slug(),
-            "scope": r.scope.slug(),
-            // the evidence verdict: may the front-ends *write* the
-            // compensation for this edge?
-            "applied": r.applied,
-            // the driver's own table shows this edge on this GPU
-            "derived": r.derived,
-            "note": r.note,
+        "edges": tree.edges().iter().map(|(parent, child)| json!({
+            "parent": parent.slug(),
+            "parent_bit": parent.bit(),
+            "child": child.slug(),
+            "child_bit": child.bit(),
         })).collect::<Vec<_>>(),
-        // applied edges the table does NOT show while it was readable —
-        // nonempty means a driver update moved the topology under us
-        "unmatched_applied": tree.unmatched_applied().into_iter()
-            .map(|(p, c)| nvoc_core::edge_label(p, c))
-            .collect::<Vec<_>>(),
     })
 }
 

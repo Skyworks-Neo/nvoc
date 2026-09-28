@@ -686,38 +686,14 @@ impl GpuType {
     /// 不耦合（bit1 纯 Xbar）。MSD 轴：Pascal 无（bit5 SET 不支持），
     /// GTX16/Turing/Ampere/Ada 均有（bit5=Msd）。bit0/2/3/4/6/7 语义
     /// 五代逐位一致。50 系待测。
+    ///
+    /// 以上是 A/B 侧的观测。谁随谁动由**驱动自己的表**给出（bank 的
+    /// vf_curve ext 槽 → `FabricTree`），按卡读、不按世代断言；本注释
+    /// 的跨代观测是该表的旁证（Ada 的 ext0=SYS 正对应上面 bit1 动 SYS）。
     pub fn is_ada(&self) -> bool {
         matches!(
             self,
             GpuType::Mobile40Series | GpuType::Desktop40Series | GpuType::WorkstationLovelace
-        )
-    }
-
-    /// 是否为 Ampere 及更新世代（30/40/50 系 + 对应工作站/服务器）。
-    ///
-    /// 用于 ClkDomains WRITE 记录的 bit1 耦合分界：Ampere30+Ada 的 bit1
-    /// 耦合 SYS（写 bit1 会带动 SYS，需给 bit3 写 -f 抵消），Pascal/
-    /// GTX16/RTX20 的 bit1 纯 Xbar（直写即可）。50 系（Blackwell）未
-    /// 实测，按"30 系和以后"口径归入耦合组。Hopper 是 Ampere 后的服务器
-    /// 世代（H100 后继 A100），归入耦合组。Volta 不含：介于 P100/T4 属
-    /// Pascal-era 行为。
-    /// 见 `is_ada` 注释的跨代 A/B 汇总。
-    pub fn is_ampere_plus(&self) -> bool {
-        matches!(
-            self,
-            GpuType::Mobile30Series
-                | GpuType::Desktop30Series
-                | GpuType::Mobile40Series
-                | GpuType::Desktop40Series
-                | GpuType::Mobile50Series
-                | GpuType::Desktop50Series
-                | GpuType::WorkstationAmpere
-                | GpuType::WorkstationLovelace
-                | GpuType::WorkstationBlackwell
-                | GpuType::ServerAmpere
-                | GpuType::ServerLovelace
-                | GpuType::ServerBlackwell
-                | GpuType::ServerHopper
         )
     }
 
@@ -982,35 +958,32 @@ mod tests {
 // `[XBAR, SYS, MSD, HOST]` minus every domain that owns a main `vf_curve`
 // block **in this table** — a layout fact, never a generation table.
 //
-// Live A/B on that 4060 confirmed the attachment for SYS and HOST and
-// **refuted** it for MSD (writing bit1 does not move MSD, and MSD is absent
-// from the xbar block's ext list — the two agree).
+// Two live dumps agree on the rule, on two generations:
 //
-// ## Two sources, two jobs
+// * RTX 4060 Laptop (Ada / R610.74): `bank0 xbar vf_curve … ext0=SYS
+//   ext1=HOST`. MSD owns a main block of its own on Ada, so the driver packs
+//   only SYS/HOST into the xbar record. A/B: writing bit1 moves SYS and HOST;
+//   it does NOT move MSD — which is exactly MSD's absence from the roster.
+// * 30 系 (Ampere): the same record carries `ext0=SYS ext1=MSD ext2=HOST`.
+//   MSD owns no main block there, and all three follow the XBAR offset (the
+//   master→slave linkage was observed live on SYS/HOST/MSD alike).
 //
-// * **Structure** (which edges exist) comes from the driver table.
-// * **Availability** (whether we are willing to *write* compensations
-//   against an edge) comes from [`LEDGER`], a hand-maintained evidence log
-//   scoped to the generations the experiment ran on. The ledger never adds
-//   structure; it only gates trust, and it keeps working on generations
-//   whose ext layout is not decoded yet (Blackwell: the reader deliberately
-//   leaves the extended section alone, so the table yields no edges there
-//   while `bit1 → SYS` stays applied exactly as it did before this module
-//   existed).
-//
-// An edge that the table shows but the ledger does not cover is reported
-// (`evidence = unverified`, `applied = false`): the front-ends keep their
-// previous raw-write behavior until an A/B promotes it.
+// **Every edge the table declares is applied** — master/slave control follows
+// the driver's own declaration. The one thing we must not do is guess when we
+// cannot see it: a table that never arrived leaves
+// [`FabricTree::table_available`] false and the front-ends refuse the fabric
+// writes outright. (A table whose ext slots come back undecoded — Blackwell
+// today — is a card we cannot yet see the relation *of*; it reads as a table
+// declaring no edge and writes raw, see [`FabricTree::from_table`].)
 //
 // ## Net semantics
 //
-// `net(d) = own(d) + Σ own(applied parents of d)`. A row displays and writes
-// the NET value; [`FabricTree::plan`] turns a set of net targets into the raw
+// `net(d) = own(d) + Σ own(parents of d)`. A row displays and writes the NET
+// value; [`FabricTree::plan`] turns a set of net targets into the raw
 // WRITE-record values that realize them, re-parking every non-target child of
 // a moved parent so its net stays put, in topological order (parents first).
 //
-// 私有 V/F 表的 ext 槽解码 + 世代证据台账 + 净值守恒求解器，见下。本文件
-// 的 GpuType 是台账生效范围的键（GenScope → is_ada / is_ampere_plus）。
+// 私有 V/F 表的 ext 槽解码 + 净值守恒求解器，见下。
 
 /// Slots observed per (owner, ext slot) before the slot counts as an edge —
 /// mirrors the ext-curve plausibility gate the GUI/TUI extractors use
@@ -1096,175 +1069,40 @@ impl FabricDomain {
     }
 }
 
-/// How much we trust an edge's *write-side* propagation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Evidence {
-    /// Measured by a live A/B on this generation class.
-    AbVerified,
-    /// The driver's table shows the edge; nobody has offset the parent and
-    /// watched the child. Reported, **not** compensated.
-    Unverified,
-    /// Measured NOT to propagate — compensate and the target lands off by the
-    /// parent's offset.
-    Refuted,
-}
-
-impl Evidence {
-    pub fn slug(self) -> &'static str {
-        match self {
-            Evidence::AbVerified => "ab-verified",
-            Evidence::Unverified => "unverified",
-            Evidence::Refuted => "refuted",
-        }
-    }
-}
-
-/// Generation scope an evidence claim covers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GenScope {
-    /// The 30系+/workstation/server class — `GpuType::is_ampere_plus`.
-    AmperePlus,
-    /// Ada only — `GpuType::is_ada`.
-    Ada,
-    /// Not a measurement: the driver table itself (derived edges).
-    Structure,
-}
-
-impl GenScope {
-    pub fn accepts(self, gpu: GpuType) -> bool {
-        match self {
-            GenScope::AmperePlus => gpu.is_ampere_plus(),
-            GenScope::Ada => gpu.is_ada(),
-            GenScope::Structure => true,
-        }
-    }
-
-    pub fn slug(self) -> &'static str {
-        match self {
-            GenScope::AmperePlus => "ampere-plus",
-            GenScope::Ada => "ada",
-            GenScope::Structure => "structure",
-        }
-    }
-}
-
-/// One evidence-log entry. `note` carries the provenance so a future reader
-/// can re-run the experiment or demote the edge without archaeology.
-struct LedgerEntry {
-    parent: FabricDomain,
-    child: FabricDomain,
-    evidence: Evidence,
-    scope: GenScope,
-    note: &'static str,
-}
-
-/// The evidence log. Deliberately tiny and hand-written: every line is a claim
-/// someone measured, not a generation table. Structural edges the driver
-/// declares but this list does not cover stay `Unverified` (reported only).
-const LEDGER: &[LedgerEntry] = &[
-    LedgerEntry {
-        parent: FabricDomain::Xbar,
-        child: FabricDomain::Sys,
-        evidence: Evidence::AbVerified,
-        scope: GenScope::AmperePlus,
-        note: "slot-0 A/B (Ampere30 + Ada, 2026-08-31): bit1 moves SYS and stacks with bit3; \
-               bank0 xbar vf_curve carries ext0=SYS on Ada",
-    },
-    LedgerEntry {
-        parent: FabricDomain::Xbar,
-        child: FabricDomain::Host,
-        evidence: Evidence::AbVerified,
-        scope: GenScope::Ada,
-        note: "RTX 4060 Laptop A/B + bank0 xbar vf_curve ext1=HOST on Ada (R610.74)",
-    },
-    LedgerEntry {
-        parent: FabricDomain::Xbar,
-        child: FabricDomain::Msd,
-        evidence: Evidence::Refuted,
-        scope: GenScope::Ada,
-        note: "RTX 4060 Laptop A/B: writing bit1 does NOT move MSD; MSD is absent from the \
-               xbar block's ext roster",
-    },
-];
-
-/// Resolved relation for one GPU: the driver-derived structure merged with the
-/// evidence log.
+/// Resolved relation for one GPU, read out of the driver's own table.
 #[derive(Debug, Clone, Default)]
 pub struct FabricTree {
     roster: Vec<FabricDomain>,
-    edges: Vec<Edge>,
+    edges: Vec<(FabricDomain, FabricDomain)>,
     table_available: bool,
 }
 
-#[derive(Debug, Clone)]
-struct Edge {
-    parent: FabricDomain,
-    child: FabricDomain,
-    evidence: Evidence,
-    scope: GenScope,
-    /// Seen in *this* table's ext slots.
-    derived: bool,
-    note: &'static str,
-}
-
-/// Payload-ready projection of one edge (no serde dependency in core).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FabricEdgeRecord {
-    pub parent: FabricDomain,
-    pub child: FabricDomain,
-    pub evidence: Evidence,
-    pub scope: GenScope,
-    /// Trusted enough to write compensations against.
-    pub applied: bool,
-    /// The driver's table shows this edge on this GPU (false when the table
-    /// was unavailable — not the same as "the driver disagrees").
-    pub derived: bool,
-    pub note: &'static str,
-}
-
 impl FabricTree {
-    /// Build the relation for `gpu`. `table` is the **unfiltered** private V/F
-    /// table (both banks, every domain) — a `--bank/--domain` filtered view
-    /// would distort the roster and must never be passed here. `None` (read
-    /// unsupported / failed) leaves the evidence log standing alone.
-    pub fn derive(table: Option<&ClkVfPointsPrivate>, gpu: GpuType) -> Self {
-        let (roster, derived) = match table {
-            Some(t) => derive_structure(t),
-            None => (Vec::new(), BTreeSet::new()),
-        };
-        let mut edges: Vec<Edge> = Vec::new();
-        // Evidence log first: its verdict outranks a structural sighting.
-        for e in LEDGER {
-            if !e.scope.accepts(gpu) {
-                continue;
+    /// Build the relation from the **unfiltered** private V/F table (both
+    /// banks, every domain) — a `--bank/--domain` filtered view would distort
+    /// the roster (a domain filtered out reappears in it and shifts every
+    /// later slot) and must never be passed here.
+    ///
+    /// `None` (no table at all: read unsupported, or the call failed) = no
+    /// roster, no edges, `table_available() == false`: the relation is
+    /// UNKNOWN, and the front-ends refuse fabric writes rather than guess.
+    ///
+    /// A table whose ext slots do not come back decoded (Blackwell today —
+    /// the reader gates that layout, see `nvapi-rs` `blackwell_layout`)
+    /// arrives here as a table that declares no edge, so a 50-series write
+    /// goes out raw, the way it did before this relation existed. Giving
+    /// those cards their true edges is a separate change.
+    pub fn from_table(table: Option<&ClkVfPointsPrivate>) -> Self {
+        match table {
+            Some(t) => {
+                let (roster, edges) = derive_structure(t);
+                Self {
+                    roster,
+                    edges: edges.into_iter().collect(),
+                    table_available: true,
+                }
             }
-            edges.push(Edge {
-                parent: e.parent,
-                child: e.child,
-                evidence: e.evidence,
-                scope: e.scope,
-                derived: derived.contains(&(e.parent, e.child)),
-                note: e.note,
-            });
-        }
-        // Structural edges nobody has measured yet are reported, not applied.
-        for &(parent, child) in &derived {
-            if edges.iter().any(|e| e.parent == parent && e.child == child) {
-                continue;
-            }
-            edges.push(Edge {
-                parent,
-                child,
-                evidence: Evidence::Unverified,
-                scope: GenScope::Structure,
-                derived: true,
-                note: "driver ext-slot attachment; no A/B yet — writes stay raw",
-            });
-        }
-        Self {
-            roster,
-            edges,
-            table_available: table.is_some(),
+            None => Self::default(),
         }
     }
 
@@ -1277,65 +1115,39 @@ impl FabricTree {
         &self.roster
     }
 
-    pub fn records(&self) -> Vec<FabricEdgeRecord> {
+    /// Every attachment the driver's table declares: `(master, slave)`.
+    pub fn edges(&self) -> &[(FabricDomain, FabricDomain)] {
+        &self.edges
+    }
+
+    /// Parents (masters) whose offset rides into `child`. Empty = the driver
+    /// attaches nothing to it — the row writes raw.
+    pub fn parents(&self, child: FabricDomain) -> Vec<FabricDomain> {
         self.edges
             .iter()
-            .map(|e| FabricEdgeRecord {
-                parent: e.parent,
-                child: e.child,
-                evidence: e.evidence,
-                scope: e.scope,
-                applied: e.applied(),
-                derived: e.derived,
-                note: e.note,
-            })
+            .filter(|(_, c)| *c == child)
+            .map(|(p, _)| *p)
             .collect()
     }
 
-    /// Applied edges the driver's table does *not* show on a GPU where the
-    /// table was readable — the signal that a driver update moved the
-    /// topology out from under us. Empty when the table was unavailable
-    /// (nothing to check against).
-    pub fn unmatched_applied(&self) -> Vec<(FabricDomain, FabricDomain)> {
-        if !self.table_available {
-            return Vec::new();
-        }
+    pub fn children(&self, parent: FabricDomain) -> Vec<FabricDomain> {
         self.edges
             .iter()
-            .filter(|e| e.applied() && !e.derived)
-            .map(|e| (e.parent, e.child))
+            .filter(|(p, _)| *p == parent)
+            .map(|(_, c)| *c)
             .collect()
     }
 
-    /// Parents whose offset rides into `child` and that we are willing to
-    /// compensate against. Empty = today's raw-write behavior.
-    pub fn applied_parents(&self, child: FabricDomain) -> Vec<FabricDomain> {
-        self.edges
-            .iter()
-            .filter(|e| e.child == child && e.applied())
-            .map(|e| e.parent)
-            .collect()
+    /// Does this relation attach anything at all? Front-ends use it to skip
+    /// the net path (and its extra reads) on a card where nothing does.
+    pub fn has_edges(&self) -> bool {
+        !self.edges.is_empty()
     }
 
-    pub fn applied_children(&self, parent: FabricDomain) -> Vec<FabricDomain> {
-        self.edges
-            .iter()
-            .filter(|e| e.parent == parent && e.applied())
-            .map(|e| e.child)
-            .collect()
-    }
-
-    /// Is any edge in this relation applied at all? Front-ends use this to
-    /// skip the whole net path (and its extra reads) on generations where the
-    /// relation is empty.
-    pub fn has_applied_edges(&self) -> bool {
-        self.edges.iter().any(|e| e.applied())
-    }
-
-    /// NET offset (kHz) of `d`: its own raw value plus every applied parent's.
+    /// NET offset (kHz) of `d`: its own raw value plus every parent's.
     pub fn net_khz(&self, own_now: &BTreeMap<u8, i64>, d: FabricDomain) -> i64 {
         let mut total = own_now.get(&d.bit()).copied().unwrap_or(0);
-        for p in self.applied_parents(d) {
+        for p in self.parents(d) {
             total += own_now.get(&p.bit()).copied().unwrap_or(0);
         }
         total
@@ -1359,17 +1171,15 @@ impl FabricTree {
                 nodes.insert(d);
             }
         }
-        for e in &self.edges {
-            if e.applied() {
-                nodes.insert(e.parent);
-                nodes.insert(e.child);
-            }
+        for &(parent, child) in &self.edges {
+            nodes.insert(parent);
+            nodes.insert(child);
         }
         let order = self.topological(&nodes);
         let mut new_own: BTreeMap<u8, i64> = own_now.clone();
         let mut writes: Vec<(u8, i64)> = Vec::new();
         for d in order {
-            let parents = self.applied_parents(d);
+            let parents = self.parents(d);
             let old = own_now.get(&d.bit()).copied().unwrap_or(0);
             let upstream_moved = parents.iter().any(|p| {
                 new_own.get(&p.bit()).copied().unwrap_or(0)
@@ -1428,7 +1238,7 @@ impl FabricTree {
             return; // already emitted, or a back edge in a cycle
         }
         visiting.insert(d);
-        for p in self.applied_parents(d) {
+        for p in self.parents(d) {
             if nodes.contains(&p) {
                 self.visit(p, nodes, out, done, visiting);
             }
@@ -1437,12 +1247,6 @@ impl FabricTree {
         if done.insert(d) {
             out.push(d);
         }
-    }
-}
-
-impl Edge {
-    fn applied(&self) -> bool {
-        self.evidence == Evidence::AbVerified
     }
 }
 
@@ -1493,20 +1297,6 @@ fn derive_structure(
         .map(|((owner, k), _)| (owner, roster[k]))
         .collect();
     (roster, edges)
-}
-
-/// One edge as a label (`"xbar→sys"`) — shared by logs and payload fields.
-pub fn edge_label(parent: FabricDomain, child: FabricDomain) -> String {
-    format!("{}→{}", parent.slug(), child.slug())
-}
-
-/// Human-readable one-line summary for logs (`"xbar→sys, xbar→host"`).
-pub fn describe_edges(edges: &[(FabricDomain, FabricDomain)]) -> String {
-    edges
-        .iter()
-        .map(|&(p, c)| edge_label(p, c))
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 #[cfg(test)]
@@ -1562,7 +1352,8 @@ mod fabric_tests {
         t
     }
 
-    /// Ampere shape: only gpc + xbar own main blocks, xbar fills 3 slots.
+    /// 30 系 live dump shape: only gpc + xbar own main blocks, and the xbar
+    /// block fills all three slots (`ext0=SYS ext1=MSD ext2=HOST`).
     fn ampere_table() -> ClkVfPointsPrivate {
         let mut t = ClkVfPointsPrivate {
             segments: vec![
@@ -1613,68 +1404,47 @@ mod fabric_tests {
 
     #[test]
     fn ada_roster_and_edges_match_the_live_dump() {
-        let tree = FabricTree::derive(Some(&ada_table()), GpuType::Mobile40Series);
+        let tree = FabricTree::from_table(Some(&ada_table()));
         assert!(tree.table_available());
         assert_eq!(tree.roster(), [FabricDomain::Sys, FabricDomain::Host]);
-        let applied: Vec<_> = tree
-            .records()
-            .into_iter()
-            .filter(|r| r.applied)
-            .map(|r| (r.parent, r.child, r.evidence, r.derived))
-            .collect();
         assert_eq!(
-            applied,
-            vec![
-                (
-                    FabricDomain::Xbar,
-                    FabricDomain::Sys,
-                    Evidence::AbVerified,
-                    true
-                ),
-                (
-                    FabricDomain::Xbar,
-                    FabricDomain::Host,
-                    Evidence::AbVerified,
-                    true
-                ),
+            tree.edges(),
+            [
+                (FabricDomain::Xbar, FabricDomain::Sys),
+                (FabricDomain::Xbar, FabricDomain::Host)
             ]
         );
-        assert_eq!(tree.applied_parents(FabricDomain::Msd), vec![]);
-        assert!(tree.unmatched_applied().is_empty());
+        // MSD owns a main block of its own on Ada — it is off the roster, and
+        // no edge may point at it (the A/B agrees: bit1 does not move MSD).
+        assert_eq!(tree.parents(FabricDomain::Msd), vec![]);
+        assert!(tree.has_edges());
     }
 
     #[test]
-    fn ampere_derives_three_children_but_only_sys_is_trusted() {
-        let tree = FabricTree::derive(Some(&ampere_table()), GpuType::Mobile30Series);
+    fn ampere_attaches_every_slot_the_driver_packs() {
+        // 30 系 live dump: ext0=SYS ext1=MSD ext2=HOST — all three follow the
+        // XBAR offset, so all three compensate.
+        let tree = FabricTree::from_table(Some(&ampere_table()));
         assert_eq!(
             tree.roster(),
             [FabricDomain::Sys, FabricDomain::Msd, FabricDomain::Host]
         );
         assert_eq!(
-            tree.applied_parents(FabricDomain::Sys),
-            vec![FabricDomain::Xbar]
+            tree.children(FabricDomain::Xbar),
+            vec![FabricDomain::Sys, FabricDomain::Msd, FabricDomain::Host]
         );
-        // derived but unmeasured → reported, not compensated
-        assert_eq!(tree.applied_parents(FabricDomain::Msd), vec![]);
-        assert_eq!(tree.applied_parents(FabricDomain::Host), vec![]);
-        let unverified: Vec<_> = tree
-            .records()
-            .into_iter()
-            .filter(|r| r.evidence == Evidence::Unverified && r.derived)
-            .map(|r| (r.parent, r.child))
-            .collect();
-        assert_eq!(
-            unverified,
-            vec![
-                (FabricDomain::Xbar, FabricDomain::Msd),
-                (FabricDomain::Xbar, FabricDomain::Host),
-            ]
-        );
+        for child in [FabricDomain::Sys, FabricDomain::Msd, FabricDomain::Host] {
+            assert_eq!(tree.parents(child), vec![FabricDomain::Xbar], "{child:?}");
+        }
+        assert_eq!(tree.parents(FabricDomain::Xbar), vec![]);
     }
 
     #[test]
-    fn turing_structure_is_reported_but_never_applied() {
-        let tree = FabricTree::derive(Some(&turing_table()), GpuType::Mobile20Series);
+    fn turing_gpc_slots_are_not_fabric_edges() {
+        // The only main block is GPC's and GPC has no fabric WRITE bit: the
+        // whole pool is roster, nothing is attached, and a Core offset never
+        // re-parks a fabric record.
+        let tree = FabricTree::from_table(Some(&turing_table()));
         assert_eq!(
             tree.roster(),
             [
@@ -1684,10 +1454,7 @@ mod fabric_tests {
                 FabricDomain::Host
             ]
         );
-        assert!(tree.records().iter().all(|r| !r.applied));
-        assert!(!tree.has_applied_edges());
-        // GPC is not a fabric WRITE bit — the gpc-owned ext slots stay
-        // reported-only, so a Core offset never re-parks fabric records.
+        assert!(!tree.has_edges());
         let plan = tree.plan(
             &own(&[(1, 50_000)]),
             &targets(&[(FabricDomain::Sys, 30_000)]),
@@ -1696,50 +1463,23 @@ mod fabric_tests {
     }
 
     #[test]
-    fn blackwell_without_ext_keeps_the_30series_edge() {
-        // The reader leaves the extended section alone on Blackwell: no table,
-        // no derived edges — the evidence log alone must keep bit1→SYS alive.
-        let tree = FabricTree::derive(None, GpuType::Mobile50Series);
+    fn no_table_means_no_relation_at_all() {
+        // A read that never produced a table (unsupported arch, failed call):
+        // empty roster, no edges, `table_available` false — the front-ends
+        // read that as UNKNOWN and refuse a fabric write instead of guessing
+        // one.
+        let tree = FabricTree::from_table(None);
         assert!(!tree.table_available());
         assert!(tree.roster().is_empty());
-        assert_eq!(
-            tree.applied_parents(FabricDomain::Sys),
-            vec![FabricDomain::Xbar]
-        );
-        assert_eq!(tree.applied_parents(FabricDomain::Host), vec![]);
-        assert!(tree.unmatched_applied().is_empty()); // nothing to check against
-        let plan = tree.plan(
-            &own(&[(1, 100_000), (3, 20_000)]),
-            &targets(&[(FabricDomain::Sys, 30_000)]),
-        );
-        assert_eq!(plan, vec![(3, -70_000)]);
-    }
-
-    #[test]
-    fn applied_parent_reports_a_stale_driver_table() {
-        // An Ada table whose xbar block no longer carries the SYS slot: the
-        // ledger edge still applies (driver-version drift is worth surfacing,
-        // not silently obeying).
-        let mut t = ada_table();
-        for p in t.points.iter_mut() {
-            p.domain_freqs_mhz[0] = 0;
-            p.domain_volts_uV[0] = 0;
-        }
-        let tree = FabricTree::derive(Some(&t), GpuType::Mobile40Series);
-        assert_eq!(
-            tree.unmatched_applied(),
-            vec![(FabricDomain::Xbar, FabricDomain::Sys)]
-        );
-        assert_eq!(
-            tree.applied_parents(FabricDomain::Sys),
-            vec![FabricDomain::Xbar]
-        );
+        assert!(!tree.has_edges());
+        assert_eq!(tree.parents(FabricDomain::Sys), vec![]);
+        assert_eq!(tree.parents(FabricDomain::Xbar), vec![]);
     }
 
     // ── plan() must reproduce the shipped single-edge formulas exactly ──
 
     fn ada_tree() -> FabricTree {
-        FabricTree::derive(Some(&ada_table()), GpuType::Mobile40Series)
+        FabricTree::from_table(Some(&ada_table()))
     }
 
     #[test]
@@ -1756,6 +1496,27 @@ mod fabric_tests {
             .chain(plan.iter().copied())
             .collect();
         assert_eq!(tree.net_khz(&after, FabricDomain::Sys), -40_000);
+        assert_eq!(tree.net_khz(&after, FabricDomain::Host), -10_000);
+    }
+
+    #[test]
+    fn ampere_master_move_parks_msd_and_host_too() {
+        // 30 系: MSD rides XBAR exactly like SYS/HOST (live linkage), so a
+        // master move must hold all three nets.
+        let tree = FabricTree::from_table(Some(&ampere_table()));
+        let now = own(&[(1, 0), (3, -40_000), (5, 20_000), (9, -10_000)]);
+        let plan = tree.plan(&now, &targets(&[(FabricDomain::Xbar, 100_000)]));
+        assert_eq!(
+            plan,
+            vec![(1, 100_000), (3, -140_000), (5, -80_000), (9, -110_000)]
+        );
+        let after: BTreeMap<u8, i64> = now
+            .iter()
+            .map(|(k, v)| (*k, *v))
+            .chain(plan.iter().copied())
+            .collect();
+        assert_eq!(tree.net_khz(&after, FabricDomain::Sys), -40_000);
+        assert_eq!(tree.net_khz(&after, FabricDomain::Msd), 20_000);
         assert_eq!(tree.net_khz(&after, FabricDomain::Host), -10_000);
     }
 
@@ -1859,25 +1620,30 @@ mod fabric_tests {
     }
 
     #[test]
-    fn net_khz_sums_applied_parents_only() {
+    fn net_khz_sums_every_parent() {
         let tree = ada_tree();
         let now = own(&[(1, 100_000), (3, 20_000), (5, 70_000), (9, -30_000)]);
         assert_eq!(tree.net_khz(&now, FabricDomain::Sys), 120_000);
         assert_eq!(tree.net_khz(&now, FabricDomain::Host), 70_000);
-        assert_eq!(tree.net_khz(&now, FabricDomain::Msd), 70_000); // refuted → raw
+        // MSD owns a main block on Ada → nothing rides into it
+        assert_eq!(tree.net_khz(&now, FabricDomain::Msd), 70_000);
         assert_eq!(tree.net_khz(&now, FabricDomain::Xbar), 100_000);
     }
 
     #[test]
-    fn stray_single_record_does_not_invent_an_edge() {
+    fn a_single_stray_record_does_not_invent_an_edge() {
+        // One msd-block point carrying a slot-0 value is below
+        // MIN_SLOT_POINTS — it must not turn into an `msd → sys` attachment.
         let mut t = ada_table();
-        t.points.push(point(0, 250, &[(2, 2600, 1_100_000)])); // one HOST-ish slot
-        let tree = FabricTree::derive(Some(&t), GpuType::Mobile40Series);
+        t.points.push(point(0, 260, &[(0, 900, 800_000)]));
+        let tree = FabricTree::from_table(Some(&t));
         assert_eq!(tree.roster(), [FabricDomain::Sys, FabricDomain::Host]);
-        assert!(
-            tree.records().iter().all(|r| (r.parent, r.child)
-                != (FabricDomain::Xbar, FabricDomain::Host)
-                || r.derived)
+        assert_eq!(
+            tree.edges(),
+            [
+                (FabricDomain::Xbar, FabricDomain::Sys),
+                (FabricDomain::Xbar, FabricDomain::Host)
+            ]
         );
     }
 
