@@ -1254,7 +1254,7 @@ fn push_pvfp_header(
     lines: &mut Vec<String>,
     seg: Option<&Value>,
     ext_slots: &[usize],
-    roster: &[&str],
+    roster: Option<&[String]>,
     volt_off: bool,
 ) {
     let units = "[V=mV f=MHz; mode: 0=freq, 1=raw; offset=effect MHz]";
@@ -1327,7 +1327,7 @@ fn push_pvfp_header(
                 {
                     return format!("ext{k}={nm}");
                 }
-                match roster.get(k) {
+                match roster.and_then(|r| r.get(k)) {
                     Some(nm) => format!("ext{k}={nm}"),
                     None => format!("ext{k}=?"),
                 }
@@ -1357,22 +1357,26 @@ pub(super) fn format_private_vfp_output(output: &Value) -> Vec<String> {
     // (count, f_min, f_max, v_min, v_max).
     type ExtCurrentStats = std::collections::BTreeMap<(String, usize), (usize, f64, f64, f64, f64)>;
     let mut ext_stats = ExtCurrentStats::new();
-    // roster attribution (EXT slot → curve domain) = [XBAR,SYS,MSD,HOST]
-    // minus this table's main-block domains — hoisted so the per-segment
-    // table legend and the bottom summary share one attribution
-    let main_domains: std::collections::HashSet<String> = segments
-        .map(|segs| {
-            segs.iter()
-                .filter_map(|s| s.get("domain").and_then(Value::as_str))
-                .map(str::to_string)
+    // roster attribution (EXT slot → curve domain): the pool minus every
+    // domain owning a main vf_curve block, which is what the driver's
+    // ext-slot packing follows. Read the relation core derived from the
+    // WHOLE table (`fabric_relations.roster`) — never re-derive it from
+    // this view's `segments`, which is --bank/--domain filtered: a domain
+    // filtered out of the view would reappear in the roster and shift
+    // every slot label after it. `None` = no block at all (an older build,
+    // or a failed read): the relation is unknown and the slots stay
+    // unnamed rather than guessed. Hoisted so the per-segment table legend
+    // and the bottom summary share one attribution.
+    let roster: Option<Vec<String>> = object
+        .get("fabric_relations")
+        .and_then(|f| f.get("roster"))
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_uppercase)
                 .collect()
-        })
-        .unwrap_or_default();
-    let roster: Vec<&str> = ["XBAR", "SYS", "MSD", "HOST"]
-        .iter()
-        .copied()
-        .filter(|nm| !main_domains.contains(&nm.to_lowercase()))
-        .collect();
+        });
 
     if let Some(points) = points {
         lines.push(format!(
@@ -1440,7 +1444,7 @@ pub(super) fn format_private_vfp_output(output: &Value) -> Vec<String> {
                     .unwrap_or_default();
                 let has_volt_off = group_volt_off.contains(&matching_segment);
                 let seg = matching_segment.and_then(|i| segments.map(|s| &s[i]));
-                push_pvfp_header(&mut lines, seg, &ext_slots, &roster, has_volt_off);
+                push_pvfp_header(&mut lines, seg, &ext_slots, roster.as_deref(), has_volt_off);
             }
             // extended-section slots, attributed by the owning segment's
             // domain (roster-minus-owner packing — see clk_vfp_status)
@@ -1585,10 +1589,25 @@ pub(super) fn format_private_vfp_output(output: &Value) -> Vec<String> {
     // slot is HOST, not MSD). Reported per owning segment so
     // multi-block tables never mix.
     if !ext_stats.is_empty() {
+        // Print the roster THIS table resolves to, not the pool the rule
+        // starts from: on a table where a domain owns a main block (Ada:
+        // MSD does) the pool text names a domain the driver never packs
+        // into the record's ext slots. No `fabric_relations` block at all
+        // = the relation was never read; say so rather than fall back to
+        // the pool guess.
+        let roster_note = match roster.as_ref() {
+            None => "unknown: no fabric relation in this payload".to_string(),
+            Some(r) if r.is_empty() => {
+                "unattributed: every pool domain owns a main block here".to_string()
+            }
+            Some(r) => r.join(","),
+        };
         lines.push(nvoc_cli_common::color::stylize(
-            "    Extended-section currents (slots @+0x074+0x10*k; roster \
-             [XBAR,SYS,MSD,HOST] minus main-block domains;
-             mem/disp bin owners: ext0 = PCIe gen / Hub):",
+            &format!(
+                "    Extended-section currents (slots @+0x074+0x10*k; \
+                 roster [{roster_note}] = pool minus this table's main-block owners; \
+                 mem/disp bin owners: ext0 = PCIe gen / Hub):"
+            ),
             false,
         ));
         for ((owner, k), (n, fmin, fmax, vmin, vmax)) in &ext_stats {
@@ -1599,7 +1618,7 @@ pub(super) fn format_private_vfp_output(output: &Value) -> Vec<String> {
             let tag = if *k == 0 && matches!(owner.as_str(), "mem" | "disp") {
                 format!("ext0 ({})", if owner == "mem" { "PCIe gen" } else { "Hub" })
             } else {
-                match roster.get(*k) {
+                match roster.as_ref().and_then(|r| r.get(*k)) {
                     Some(nm) => format!("ext{k} ({nm})"),
                     None => format!("ext{k}"),
                 }
@@ -4471,5 +4490,60 @@ mod tests {
             }),
             _ => json!({}),
         }
+    }
+
+    #[test]
+    fn ext_currents_legend_names_the_resolved_roster_not_the_pool() {
+        nvoc_cli_common::color::init(true);
+        let payload = |relations: Option<Value>| {
+            let mut value = json!({
+                "segments": [{
+                    "bank": 0, "domain": "xbar", "kind": "vf_curve", "type": 5,
+                    "start_index": 0, "end_index": 1, "count": 2,
+                    "voltage_uV_min": 450000, "voltage_uV_max": 1240000,
+                    "freq_default_mhz_min": 225, "freq_default_mhz_max": 2370,
+                }],
+                "points": [
+                    {"bank": 0, "index": 0, "type": 5, "voltage_uV": 450000,
+                     "volt_current_mv": 450, "freq_current_mhz": 210,
+                     "freq_default_mhz": 210,
+                     "domain_currents": {"0": [210.0, 450000.0], "1": [225.0, 450000.0]}},
+                    {"bank": 0, "index": 1, "type": 5, "voltage_uV": 1240000,
+                     "volt_current_mv": 1240, "freq_current_mhz": 2370,
+                     "freq_default_mhz": 2370,
+                     "domain_currents": {"0": [2370.0, 1240000.0], "1": [1350.0, 1240000.0]}},
+                ],
+            });
+            if let Some(relations) = relations {
+                value["fabric_relations"] = relations;
+            }
+            value
+        };
+
+        // Ada: MSD owns a main vf_curve block, so the xbar record packs
+        // SYS/HOST — the pool's MSD must not be named anywhere in the view
+        let ada = payload(Some(json!({
+            "source": "vftable-ext", "table_available": true,
+            "roster": ["sys", "host"], "edges": [],
+        })));
+        let text = format_private_vfp_output(&ada).join("\n");
+        assert!(text.contains("roster [SYS,HOST]"), "{text}");
+        assert!(text.contains("xbar ext0 (SYS)"), "{text}");
+        assert!(text.contains("xbar ext1 (HOST)"), "{text}");
+        assert!(!text.contains("MSD"), "{text}");
+
+        // no relation block at all (older build, or the read failed): the
+        // relation is unknown, so neither the summary nor the legend names
+        // a domain — the slots stay `?` rather than take the pool guess
+        let legacy = payload(None);
+        let text = format_private_vfp_output(&legacy).join("\n");
+        assert!(
+            text.contains("roster [unknown: no fabric relation in this payload]"),
+            "{text}"
+        );
+        assert!(text.contains("ext: ext0=? ext1=?"), "{text}");
+        assert!(!text.contains("(SYS)"), "{text}");
+        assert!(!text.contains("(HOST)"), "{text}");
+        assert!(!text.contains("MSD"), "{text}");
     }
 }
