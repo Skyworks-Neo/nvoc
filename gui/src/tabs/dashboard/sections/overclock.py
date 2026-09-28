@@ -63,6 +63,18 @@ class OverclockTab:
     # the same numbers mean Retired/Disp/…). Labels are the row captions.
     _FABRIC_LABELS = {1: "Xbar", 3: "Sys", 5: "Msd", 9: "Host"}
 
+    # Said when the driver's relation never arrived for the selected card.
+    # The four rows are NETS, so without the relation a write cannot be
+    # resolved (an Xbar write on Ada would land the SYS/HOST net on
+    # value + bit1) — and it must not be written on a generation guess
+    # either. Refuse, loudly.
+    _FABRIC_UNKNOWN_MSG = (
+        "Fabric relation unavailable for this GPU — the Xbar/Sys/Msd/Host "
+        "frequency offsets were not written. The private V/F table read "
+        "failed, or the installed pynvoc predates the fabric_relations "
+        "binding; refresh pynvoc and retry."
+    )
+
     # ── Fallback defaults (overridden by real GPU info) ──
     _DEFAULTS = {
         "core_clock_min": -500,
@@ -112,18 +124,21 @@ class OverclockTab:
         # pre-Pascal (Kepler/Fermi/Maxwell-9) has no pager: only Core/Mem.
         # Pascal+ has 3 pages: (Core/Mem)(Xbar/Sys)(Msd/Host). Bit mapping is
         # the Ada-verified WRITE-record table (see gpu_type.rs is_ada): bit0=GPC,
-        # bit1=XBAR(30+ couples SYS), bit2=Mem, bit3=SYS, bit5=MSD, bit9=HOST.
+        # bit1=XBAR, bit2=Mem, bit3=SYS, bit5=MSD, bit9=HOST — what a bit
+        # drags along is the driver's table, not the generation
+        # (see _fabric_relation).
         self._has_oc_pager = False
         self._oc_page = 0
         self._oc_page_frames = []  # type: List[tk.Frame]
         self._oc_page_indicator = None  # type: Optional[tk.Label]
-        self._is_ampere_plus = False  # 30系+ (see _fabric_relation's fallback)
-        # The driver's OWN main-domain → attached-domain relation, read out of
-        # the private V/F table's ext slots (get-private-vftable →
-        # ``fabric_relations``): {child_bit: (parent_bit, ...)} of the edges we
-        # may compensate against. None until a payload lands (the relation
-        # arrives with the caps query) — the ``_is_ampere_plus`` heuristic
-        # below then stands in for deployments whose pynvoc predates the key.
+        # The driver's OWN master → slave relation, read out of the private
+        # V/F table's ext slots (get-private-vftable → ``fabric_relations``):
+        # {child_bit: (parent_bit, ...)} of the edges we compensate against.
+        # None until a payload for the SELECTED card lands (the relation
+        # arrives with the caps query); ``{}`` is a real answer — a table that
+        # declares no attachment (Turing/Pascal), which writes raw. None is
+        # "unknown" (no payload, or ``table_available: false``): the rows
+        # refuse to write.
         self._fabric_parents = None  # type: Optional[Dict[int, Tuple[int, ...]]]
         self._fabric_gpu = None  # type: Optional[str]  (GPU the relation is for)
         self._is_pascal_gpu = False  # Pascal verdict captured at caps-query time
@@ -167,7 +182,8 @@ class OverclockTab:
         # Clock Offset (OC) — 3-page pager (pre-Pascal: no pager, Core/Mem only)
         # ═══════════════════════════════════════════
         # Page 0: Core / Mem (pstate20, -104 fallback → ClkDomains bit0/bit2)
-        # Page 1: Xbar / Sys (ClkDomains bit1/bit3; 30+ couples bit1→bit3 -f)
+        # Page 1: Xbar / Sys (ClkDomains bit1/bit3, written as nets —
+        # see _fabric_relation)
         # Page 2: Msd / Host (bit5/bit9; Pascal MSD N/A, host via bit9 in mask)
         oc_frame = ctk.CTkFrame(
             content_row, border_width=1, border_color="#1f4e79", corner_radius=10
@@ -345,8 +361,10 @@ class OverclockTab:
         self.btn_reset_mem.grid_remove()
 
         # ── Page 1: Xbar / Sys ──
-        # Xbar = ClkDomains bit1. 30系+Ada couples bit1→SYS, so超 XBAR f writes
-        # bit1=+f AND bit3=-f to cancel the SYS drift; 10/16/20/Pascal直写 bit1.
+        # Xbar = ClkDomains bit1, typed as a NET:超 XBAR f writes bit1=+f AND
+        # parks every domain the driver's table attaches to XBAR so its net
+        # holds; with no edge declared (10/16/20/Pascal) it degenerates to the
+        # plain bit1 write.
         # Range ±500 MHz / 5 MHz step — let the driver reject unsafe writes
         # (snapshot/SET/readback/restore guards the write itself).
         (
@@ -1075,10 +1093,12 @@ class OverclockTab:
         self.app.run_background("clk-domain-caps", worker)
 
     def _fetch_fabric_relations(self, gpu: str) -> Optional[dict]:
-        """Read the driver's main-domain → attached-domain relation from the
-        private V/F table (``fabric_relations`` block). Best-effort: an older
-        pynvoc without the binding, or a transient read failure, returns None
-        and the legacy ``_is_ampere_plus`` heuristic stays in charge."""
+        """Read the driver's master → slave relation from the private V/F
+        table (``fabric_relations`` block). Best-effort: an older pynvoc
+        without the binding, or a transient read failure, returns None — the
+        rows then read raw and refuse to write (see ``_FABRIC_UNKNOWN_MSG``)
+        until a payload lands. A driver whose table read failed answers with
+        ``table_available: false``, which reads the same way: unknown."""
         backend = getattr(self.app, "backend", None)
         fetch = getattr(backend, "query_private_vftable", None)
         if fetch is None:
@@ -1089,29 +1109,31 @@ class OverclockTab:
             return None
 
     @staticmethod
-    def _fabric_parents_from_payload(payload: Any) -> Optional[Dict[int, Tuple[int, ...]]]:
+    def _fabric_parents_from_payload(
+        payload: Any,
+    ) -> Optional[Dict[int, Tuple[int, ...]]]:
         """Parse a get-private-vftable payload into ``{child_bit: (parent, …)}``.
 
-        Only ``applied`` edges are compensated: the payload carries every
-        observed edge, and an edge measured NOT to hold (``refuted``) or one
-        derived from the table but never A/B'd (``unverified``) must change no
-        write. For a table the driver refused to hand over the same block
-        carries the ledger's verdicts alone — so an unavailable table is still
-        a usable answer, not a reason to skip. Returns None when the payload
-        has no such block at all (an older binding), which the callers read as
-        "fall back to the generation heuristic".
+        Every edge the driver's table declares is compensated (master → slave);
+        the table is the only source. An UNKNOWN relation — no block at all (an
+        older binding), no ``edges`` list, or ``table_available: false`` (no
+        table came back: the read is unsupported here, or it failed) — returns
+        None, and the callers read that as "unknown for this card", never as
+        "no edges": the rows refuse to write. A KNOWN relation that attaches
+        nothing (a card whose ext slots are not decoded yet, or one the driver
+        genuinely attaches nothing to) parses to ``{}`` and writes raw.
         """
         if not isinstance(payload, dict):
             return None
         block = payload.get("fabric_relations")
-        if not isinstance(block, dict):
+        if not isinstance(block, dict) or block.get("table_available") is not True:
             return None
         edges = block.get("edges")
         if not isinstance(edges, list):
             return None
         parents = {}  # type: Dict[int, list]
         for edge in edges:
-            if not isinstance(edge, dict) or edge.get("applied") is not True:
+            if not isinstance(edge, dict):
                 continue
             child, parent = edge.get("child_bit"), edge.get("parent_bit")
             if not isinstance(child, int) or not isinstance(parent, int):
@@ -1121,25 +1143,38 @@ class OverclockTab:
                 bucket.append(parent)
         return {bit: tuple(sorted(bits)) for bit, bits in parents.items()}
 
-    def _fabric_relation(self) -> Dict[int, Tuple[int, ...]]:
-        """``{child_bit: (parent_bit, …)}`` for the rows we may compensate.
+    def _fabric_relation(self) -> Optional[Dict[int, Tuple[int, ...]]]:
+        """``{child_bit: (parent_bit, …)}`` for the rows we compensate, or
+        None while no answer for the SELECTED card has been adopted.
 
-        The driver's own relation once a payload for the SELECTED card has
-        landed — a relation read off the card we just left is not evidence
-        about this one, so it falls back to the generation heuristic rather
-        than compensating a card the driver never described. That heuristic is
-        30系+ XBAR⋯SYS, exactly the behavior that predates the payload (and
-        the correct answer for a Turing/Pascal card too, where it yields
-        nothing).
+        The driver's own table is the only source, and every edge it declares
+        is compensated. There is no generation guess standing behind it: an
+        empty dict is a card the driver described and attached nothing to
+        (Turing/Pascal), while None is a card nobody has answered for yet — a
+        failed read (``table_available: false``), an installed pynvoc that
+        predates the binding, or the moment after a GPU switch, before that
+        card's payload lands. A relation read off the card we just left says
+        nothing about this one, so it is never reused.
+
+        Readers treat None as "no parent term" (the row reads its own value);
+        writers refuse outright — see ``_FABRIC_UNKNOWN_MSG``.
         """
         if self._fabric_parents is not None and self._fabric_gpu in (
             None,
             self.app.selected_gpu_target(),
         ):
             return self._fabric_parents
-        if self._is_ampere_plus:
-            return {3: (1,)}
-        return {}
+        return None
+
+    @staticmethod
+    def _is_fabric_row_bit(bit: int) -> bool:
+        """True for the ClkDomains WRITE bits the fabric rows live on.
+
+        Structure, not relation: the answer must not depend on the payload
+        that is missing when this is asked (it decides which rows refuse a
+        reset while the relation is unknown).
+        """
+        return bit in OverclockTab._FABRIC_LABELS
 
     def _on_clk_domain_caps_loaded(
         self,
@@ -1214,11 +1249,11 @@ class OverclockTab:
         the construction +0.
 
         Each row shows its NET offset: the domain's own plane value plus every
-        applied parent's, i.e. what actually reaches that clock tree (the
+        declared parent's, i.e. what actually reaches that clock tree (the
         relation is the driver's own — see ``_fabric_relation``; on Ada the
         XBAR record's ext slots put both SYS and HOST under it, so both rows
         carry the XBAR term). Bit1's own row stays the raw plane value because
-        nothing rides into XBAR. On a part with no applied edges every row is
+        nothing rides into XBAR. On a part with no declared edge every row is
         just its own record, which is the whole story for 10/16/20/Pascal.
 
         Rows are skipped when their domain is unsupported, when the payload
@@ -1238,7 +1273,9 @@ class OverclockTab:
         )
         if not offsets:
             return
-        parents = self._fabric_relation()
+        # A read, so an unknown relation degrades to the row's own value (the
+        # write path is where "unknown" must stop being silent).
+        parents = self._fabric_relation() or {}
         for slider, var, bit, present in (
             (self.xbar_slider, self.xbar_var, 1, True),
             (self.sys_slider, self.sys_var, 3, self._sys_supported),
@@ -1772,11 +1809,9 @@ class OverclockTab:
         if xbar_ok != self._has_oc_pager:
             self._xbar_supported = xbar_ok
             self._enable_oc_pager(xbar_ok)
-        # 30系+ (Ampere/Ada/Blackwell): bit1 couples SYS → XBAR write must also
-        # write bit3=-f to cancel the SYS drift. Pascal/Turing/GTX16 直写 bit1.
-        ampere_flag = info.get("is_ampere_plus")
-        if isinstance(ampere_flag, bool):
-            self._is_ampere_plus = ampere_flag
+        # Whether an XBAR write has to cancel a child's drift is NOT decided
+        # here: it comes from the driver's own relation (fabric_relations,
+        # read per GPU) — see _fabric_relation. No generation flag stands in.
         # Blackwell (50系): the ClkDomains plane slots shift (freq=2/volt=3).
         # Every ClkDomains read/write on this tab routes through
         # _clk_freq_slot/_clk_volt_slot.
@@ -2333,7 +2368,7 @@ class OverclockTab:
         driver's ClkDomains offsets (see _anchor_fabric_rows), so the MHz plane
         must re-anchor at the live value rather than at 0.
 
-        The value is the row's NET (its own plane + every applied parent's —
+        The value is the row's NET (its own plane + every declared parent's —
         on Ada the XBAR term rides into both SYS and HOST); the volt-only
         Core/Mem rows carry bits 0/2, whose MHz source of truth is pstate20,
         not this record → 0. Any miss → 0.
@@ -2350,8 +2385,10 @@ class OverclockTab:
             return 0.0
         freq_slot = self._clk_freq_slot()
         mhz = self._freq_domain_offset_khz_from_info(info, bit, freq_slot) / 1000.0
-        for parent in self._fabric_relation().get(bit, ()):
-            mhz += self._freq_domain_offset_khz_from_info(info, parent, freq_slot) / 1000.0
+        for parent in (self._fabric_relation() or {}).get(bit, ()):
+            mhz += (
+                self._freq_domain_offset_khz_from_info(info, parent, freq_slot) / 1000.0
+            )
         return mhz
 
     def _set_unit_toggle_static(self, slider: Any, static: bool) -> None:
@@ -2972,10 +3009,15 @@ class OverclockTab:
         The MHz reset is NET-aware for a domain that takes part in the
         driver's relation (see ``_fabric_relation``): "reset this row" means
         its NET goes to 0, so a domain with a parent has to park the parent's
-        term (bit3 := −bit1 on a 30系+, exactly as before) and a domain with
-        children has to re-park them, or zeroing the parent would drag them.
+        term (Sys rides Xbar: bit3 := −bit1) and a domain with children has to
+        re-park them, or zeroing the parent would drag them.
         A domain outside the relation takes the plain zeroing path — the
         byte-identical footprint this had before the relation existed.
+
+        With the relation UNKNOWN (None) the fabric bits route to the fabric
+        action, which refuses: their net cannot be resolved, and zeroing the
+        raw bit is the drift the net model exists to prevent. Core/mem never
+        had a parent term, so they keep the plain path either way.
         """
         gpu = self.app.selected_gpu_target()
         if gpu is None:
@@ -2986,7 +3028,10 @@ class OverclockTab:
         volt_slot = self._clk_volt_slot()
         freq_slot = self._clk_freq_slot()
         parents = self._fabric_relation()
-        in_relation = bit in parents or any(bit in ps for ps in parents.values())
+        if parents is None:
+            in_relation = OverclockTab._is_fabric_row_bit(bit)
+        else:
+            in_relation = bit in parents or any(bit in ps for ps in parents.values())
         action = None
         if in_relation and not volt_mode:
             action = (
@@ -2997,6 +3042,12 @@ class OverclockTab:
                     )
                 ),
             )
+            if parents is None:
+                # Unresolved row: the worker refuses. Leave the widget alone —
+                # showing +0 for a value that never reached the driver is the
+                # same lie the refusal exists to prevent.
+                self.app.run_native_action(*action)
+                return
         if slider is not None and var is not None:
             self._syncing = True
             slider.set(0)
@@ -3021,18 +3072,23 @@ class OverclockTab:
         plane, then clear that domain's own voltage plane.
 
         Resetting a row means ITS row reads +0 — and the row is the net
-        (``own + Σ own(applied parents)``), so the raw plane cannot simply be
-        zeroed:
+        (``own + Σ own(parents)``), so the raw plane cannot simply be zeroed:
           * a domain that has a parent resolves ``own := −Σ own(parents)``
-            (bit3 := −bit1 on a 30系+; zeroing bit3 outright would leave the
-            parent's offset standing as this row's drift — the row's 0 would
-            be a lie);
+            (where the table attaches SYS to XBAR that is bit3 := −bit1;
+            zeroing bit3 outright would leave the parent's offset standing as
+            this row's drift — the row's 0 would be a lie);
           * every domain riding THIS one is re-parked at the net it was
             holding (``own_c := net_old(c) − Σ new own(parents)``), so an XBAR
             reset does not drag SYS/HOST.
         The voltage planes of the parked children belong to those domains and
         are left alone; only the reset domain's own plane is cleared.
+
+        ``parents is None`` = the relation never arrived for this card: the
+        row's net cannot be resolved, so nothing is written (zeroing the raw
+        bit instead would be the very lie this action exists to prevent).
         """
+        if parents is None:
+            return OverclockTab._FABRIC_UNKNOWN_MSG
         info = native.query_private_freq_domain_info(gpu)
         own = OverclockTab._fabric_own_khz(info, freq_slot)
         # own := 0 resolved against the parents' LIVE plane values (no parent
@@ -3083,7 +3139,12 @@ class OverclockTab:
         Domains outside the relation collapse to the plain ``bit := 0`` this
         always wrote; the targets are written even when already 0 (a reset
         says so, it does not silently skip the row).
+
+        ``parents is None`` = the relation never arrived for this card: the
+        page's rows are nets that cannot be resolved, so nothing is written.
         """
+        if parents is None:
+            return OverclockTab._FABRIC_UNKNOWN_MSG
         info = native.query_private_freq_domain_info(gpu)
         own = OverclockTab._fabric_own_khz(info, freq_slot)
         plan = OverclockTab._fabric_plan_khz(
@@ -3205,8 +3266,9 @@ class OverclockTab:
         Absolute against the NET: the row (and the startup anchor) shows this
         domain's own offset plus everything riding into it, so the write
         resolves own := value − Σ own(parents) and lands on the typed value —
-        on a 30系+ that is bit3 := f − bit1, on 10/16/20/Pascal it degenerates
-        to bit3 := f. Re-applying the same value is a no-op instead of
+        where the table attaches SYS to XBAR that is bit3 := f − bit1, and
+        with no declared parent it degenerates to bit3 := f. Re-applying the
+        same value is a no-op instead of
         stacking (see _apply_fabric_row_action). GUI MHz → kHz ×1000.
 
         mV mode (unit chip): voltage-plane addend (generation-dependent slot), a DIRECT write — the
@@ -3246,8 +3308,9 @@ class OverclockTab:
     def _apply_msd_only(self):
         """Apply the Msd offset (ClkDomains WRITE bit5). Pascal greyed-out.
 
-        Net-aware like the other fabric rows (the relation decides; Msd has no
-        applied edge today, so this is the plain write on every known part).
+        Net-aware like the other fabric rows (the relation decides; no table
+        seen so far attaches a parent to Msd, so on every known part this is
+        the plain write).
 
         mV mode (unit chip): voltage-plane addend (generation-dependent slot) — same record, other plane.
         """
@@ -3659,6 +3722,11 @@ class OverclockTab:
         """Reset the CURRENT page's offsets to 0."""
         gpu = self.app.selected_gpu_target()
         page = self._oc_page
+        # Pages 1/2 hold fabric rows, whose reset resolves through the
+        # driver's relation. While it is UNKNOWN the reset refuses, so the
+        # widgets keep their values — a row reading +0 for an offset that
+        # never reached the driver would be a lie.
+        parents = self._fabric_relation()
         self._syncing = True
         if page == 0:
             self.core_slider.set(0)
@@ -3666,12 +3734,13 @@ class OverclockTab:
             self.mem_slider.set(0)
             self.mem_var.set(self._fmt_slider_value(self.mem_slider, 0))
         elif page == 1:
-            self.xbar_slider.set(0)
-            self.xbar_var.set(self._fmt_slider_value(self.xbar_slider, 0))
-            if self._sys_supported:
-                self.sys_slider.set(0)
-                self.sys_var.set(self._fmt_slider_value(self.sys_slider, 0))
-        else:
+            if parents is not None:
+                self.xbar_slider.set(0)
+                self.xbar_var.set(self._fmt_slider_value(self.xbar_slider, 0))
+                if self._sys_supported:
+                    self.sys_slider.set(0)
+                    self.sys_var.set(self._fmt_slider_value(self.sys_slider, 0))
+        elif parents is not None:
             if self._msd_supported:
                 self.msd_slider.set(0)
                 self.msd_var.set(self._fmt_slider_value(self.msd_slider, 0))
@@ -3721,7 +3790,6 @@ class OverclockTab:
             if self._host_supported:
                 targets[9] = 0
         if targets:
-            parents = self._fabric_relation()
             freq_slot = self._clk_freq_slot()
             label = "xbar/sys" if page == 1 else "msd/host"
             self.app.run_native_action(
@@ -3820,14 +3888,14 @@ class OverclockTab:
     @staticmethod
     def _fabric_net_khz(own: Dict[int, int], parents, bit: int) -> int:
         """The NET offset of one fabric domain: its own plane value plus every
-        applied parent's (what the row reads and what its write resolves to)."""
+        declared parent's (what the row reads and what its write resolves to)."""
         return own.get(bit, 0) + sum(own.get(p, 0) for p in parents.get(bit, ()))
 
     @staticmethod
     def _fabric_plan_khz(
         parents, own: Dict[int, int], targets: Dict[int, int], force=()
     ) -> list:
-        """Solve ``own(d) := target(d) − Σ own(applied parents)`` for the
+        """Solve ``own(d) := target(d) − Σ own(declared parents)`` for the
         target domains, plus "hold the NET" for every other domain their move
         reaches: ``own(d) := net_old(d) − Σ new own(parents(d))``.
 
@@ -3885,9 +3953,17 @@ class OverclockTab:
         that rides the same parents at the net it was holding. Only changed
         writes go out — re-applying the same value is a no-op.
 
-        10/16/20/Pascal (no applied edges) collapse to the plain
+        10/16/20/Pascal (no declared edge) collapse to the plain
         ``bit := value`` write this always was.
+
+        ``parents is None`` = the relation never arrived for this card: the
+        ask is a NET and cannot be resolved, so nothing is written and the
+        caller gets ``_FABRIC_UNKNOWN_MSG`` (writing ``value`` raw would land
+        the row's net at ``value + Σ parents`` — the stacking this model
+        exists to prevent).
         """
+        if parents is None:
+            return OverclockTab._FABRIC_UNKNOWN_MSG
         info = native.query_private_freq_domain_info(gpu)
         own = OverclockTab._fabric_own_khz(info, freq_slot)
         plan = OverclockTab._fabric_plan_khz(parents, own, {bit: value * 1000})
@@ -3915,9 +3991,7 @@ class OverclockTab:
         if not parts:
             # Already on the asked-for net — say so instead of returning "".
             label = OverclockTab._FABRIC_LABELS.get(bit, f"bit {bit}")
-            parts.append(
-                f"{label} net already {value:+d} MHz — no write needed."
-            )
+            parts.append(f"{label} net already {value:+d} MHz — no write needed.")
         return " ".join(parts)
 
     def _apply_limits(self):

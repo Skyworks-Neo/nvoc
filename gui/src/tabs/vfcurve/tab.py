@@ -4884,11 +4884,20 @@ class VFCurveTab:
         from src.tabs.dashboard.sections.overclock import OverclockTab
 
         oc = getattr(self.app, "tab_overclock", None)
-        freq_slot, volt_slot = (2, 3) if getattr(oc, "_is_blackwell_gpu", False) else (0, 1)
+        freq_slot, volt_slot = (
+            (2, 3) if getattr(oc, "_is_blackwell_gpu", False) else (0, 1)
+        )
         relation = getattr(oc, "_fabric_relation", None)
-        parents = relation() if callable(relation) else {}
+        parents = relation() if callable(relation) else None
         label = _curve_meta_for(curve_id)["label"]
-        if bit in parents or any(bit in ps for ps in parents.values()):
+        if parents is None:
+            # Relation unknown for this card: the fabric bits cannot be
+            # resolved, so their reset refuses (the message explains why) —
+            # GPC/MEM never carry a parent term and zero as they always did.
+            in_relation = OverclockTab._is_fabric_row_bit(bit)
+        else:
+            in_relation = bit in parents or any(bit in ps for ps in parents.values())
+        if in_relation:
             return " " + OverclockTab._reset_fabric_row_action(
                 native, gpu, label, bit, parents, freq_slot, volt_slot
             )
