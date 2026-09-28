@@ -4280,6 +4280,24 @@ fn execute_target(
                 }
                 None => json!({"supported": false}),
             };
+            // ── main domain → attached (ext-slot) domain relation ──────────
+            // Always derived from the FULL table (`vfp`), never the filtered
+            // view above: the roster is the pool minus every domain owning a
+            // main block *anywhere* in the table, so a --domain view would
+            // relabel the slots. The tree also stands when `vfp` is None
+            // (unsupported read) — the measured verdicts are generation
+            // scoped, not table scoped.
+            let gpu_type = run(target, QueryGpuInfo)
+                .ok()
+                .and_then(|r| fetch_gpu_type(&r.output).ok())
+                .unwrap_or(nvoc_core::GpuType::Unknown);
+            let fabric = nvoc_core::fabric::FabricTree::derive(vfp.as_ref(), gpu_type);
+            if let Some(obj) = value.as_object_mut() {
+                obj.insert(
+                    "fabric_relations".to_string(),
+                    fabric_relations_json(&fabric),
+                );
+            }
             // --dump-records: attach the raw-record slot map (per-offset
             // dword stats + first-record hex) for layout judgment
             if dump_records && let Some(v) = vfp.as_ref() {
@@ -7887,6 +7905,40 @@ fn pascal_private_2x_axis(target: &GpuTarget) -> bool {
         .ok()
         .and_then(|r| fetch_gpu_type(&r.output).ok())
         .is_some_and(|t| t.is_pascal())
+}
+
+/// `fabric_relations` payload fragment: which fabric domains ride into which
+/// other ones, per the driver's own ext-slot declaration, plus the evidence
+/// verdict that says whether a compensation may be written against each edge
+/// (see `nvoc_core::fabric`). MUST be derived from the unfiltered table — the
+/// roster is a whole-table property, so a `--bank/--domain` filtered view
+/// would mislabel slots. pynvoc's `query_private_vftable` builds the same
+/// shape; keep the two in lockstep.
+fn fabric_relations_json(tree: &nvoc_core::fabric::FabricTree) -> Value {
+    json!({
+        "source": "vftable-ext",
+        "table_available": tree.table_available(),
+        "roster": tree.roster().iter().map(|d| d.slug()).collect::<Vec<_>>(),
+        "edges": tree.records().into_iter().map(|r| json!({
+            "parent": r.parent.slug(),
+            "parent_bit": r.parent.bit(),
+            "child": r.child.slug(),
+            "child_bit": r.child.bit(),
+            "evidence": r.evidence.slug(),
+            "scope": r.scope.slug(),
+            // the evidence verdict: may the front-ends *write* the
+            // compensation for this edge?
+            "applied": r.applied,
+            // the driver's own table shows this edge on this GPU
+            "derived": r.derived,
+            "note": r.note,
+        })).collect::<Vec<_>>(),
+        // applied edges the table does NOT show while it was readable —
+        // nonempty means a driver update moved the topology under us
+        "unmatched_applied": tree.unmatched_applied().into_iter()
+            .map(|(p, c)| nvoc_core::fabric::edge_label(p, c))
+            .collect::<Vec<_>>(),
+    })
 }
 
 /// Parse a voltage value for ClkDomains WRITE-record slot 1 — identified

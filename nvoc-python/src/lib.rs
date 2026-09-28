@@ -30,8 +30,9 @@ use nvoc_core::{
     SetNvapiVoltRailTarget, SetNvmlPstateLock, SetPowerLimit, SetPstateBaseVoltage,
     SetPstateClockOffset, SetPublicVftablePointOffset, SetPublicVftableRangeOffset,
     SetTemperatureLimit, SetVfpFrequencyLock, SetVoltageBoost, VfPointType, VfpResetDomain,
-    clk_vf_delta_for_target, detect_gpu_type, discover_targets, fetch_gpu_type, nvapi_status_name,
-    nvml_pstate_to_str, parse_nvml_fan_control_policy, run, try_parse_nvml_pstate,
+    clk_vf_delta_for_target, detect_gpu_type, discover_targets, fabric::FabricTree, fetch_gpu_type,
+    nvapi_status_name, nvml_pstate_to_str, parse_nvml_fan_control_policy, run,
+    try_parse_nvml_pstate,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -2660,6 +2661,61 @@ fn query_private_freq_domain_info(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAn
 /// (point at offset j ← public point j) so the GUI plots the curve against a
 /// real voltage axis instead of collapsing every point to V=0. Cards whose
 /// private voltage IS filled (Ada/R610.74) are untouched.
+/// `fabric_relations` payload fragment: the driver's main-domain → attached
+/// (ext-slot) domain relation plus the evidence verdicts that decide which
+/// edges the front-ends may compensate against — see `nvoc_core::fabric`.
+/// Derived from the **unfiltered** table, so a consumer can trust the roster
+/// regardless of what it asked for. The CLI's `get-private-vftable` builds the
+/// same shape; keep the two in lockstep.
+fn fabric_relations_json(tree: &FabricTree) -> Value {
+    let mut map = Map::new();
+    map.insert("source".into(), Value::from("vftable-ext"));
+    map.insert(
+        "table_available".into(),
+        Value::from(tree.table_available()),
+    );
+    map.insert(
+        "roster".into(),
+        Value::Array(
+            tree.roster()
+                .iter()
+                .map(|d| Value::from(d.slug()))
+                .collect(),
+        ),
+    );
+    map.insert(
+        "edges".into(),
+        Value::Array(
+            tree.records()
+                .into_iter()
+                .map(|r| {
+                    let mut e = Map::new();
+                    e.insert("parent".into(), Value::from(r.parent.slug()));
+                    e.insert("parent_bit".into(), Value::from(r.parent.bit()));
+                    e.insert("child".into(), Value::from(r.child.slug()));
+                    e.insert("child_bit".into(), Value::from(r.child.bit()));
+                    e.insert("evidence".into(), Value::from(r.evidence.slug()));
+                    e.insert("scope".into(), Value::from(r.scope.slug()));
+                    e.insert("applied".into(), Value::from(r.applied));
+                    e.insert("derived".into(), Value::from(r.derived));
+                    e.insert("note".into(), Value::from(r.note));
+                    Value::Object(e)
+                })
+                .collect(),
+        ),
+    );
+    map.insert(
+        "unmatched_applied".into(),
+        Value::Array(
+            tree.unmatched_applied()
+                .into_iter()
+                .map(|(p, c)| Value::from(nvoc_core::fabric::edge_label(p, c)))
+                .collect(),
+        ),
+    );
+    Value::Object(map)
+}
+
 #[pyfunction]
 fn query_private_vftable(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
     let value = with_target(gpu, "nvapi", |target| {
@@ -2746,8 +2802,16 @@ fn query_private_vftable(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
             }
         }
         let vfp = vfp;
+        let gpu_type = run(target, QueryGpuInfo)
+            .ok()
+            .and_then(|r| fetch_gpu_type(&r.output).ok())
+            .unwrap_or(GpuType::Unknown);
         Ok(match vfp {
             Some(v) => value_object([
+                (
+                    "fabric_relations",
+                    fabric_relations_json(&FabricTree::derive(Some(&v), gpu_type)),
+                ),
                 (
                     "masks",
                     Value::Array(
@@ -2859,7 +2923,17 @@ fn query_private_vftable(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
                     ),
                 ),
             ]),
-            None => value_object([("supported", Value::from(false))]),
+            // No private table (arch without the read, or it failed) — the
+            // evidence verdicts still apply, so the front-ends keep
+            // compensating the edges we have measured (and stay off the ones
+            // we have refuted).
+            None => value_object([
+                ("supported", Value::from(false)),
+                (
+                    "fabric_relations",
+                    fabric_relations_json(&FabricTree::derive(None, gpu_type)),
+                ),
+            ]),
         })
     })?;
     py_value(py, &value)

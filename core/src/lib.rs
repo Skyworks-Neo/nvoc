@@ -1,6 +1,7 @@
 mod conv;
 pub mod dll_path;
 mod error;
+pub mod fabric;
 mod gpu;
 mod gpu_type;
 pub mod legacy_vbios_parser;
@@ -89,7 +90,7 @@ pub use ::nvapi::hi::{
     GpuStatus, Kilohertz, KilohertzDelta, Microvolts, MicrovoltsDelta, PState, Percentage,
     SensorThrottle, VfPoint, VfPointType, VoltageDomain,
 };
-pub use ::nvapi::{clk_vf_delta_for_target, clk_vf_effect_for_delta};
+pub use ::nvapi::{ClkVfSegment, clk_vf_delta_for_target, clk_vf_effect_for_delta};
 
 /// Most recent NVAPI status failure on this thread, or `None`. nvapi
 /// records it in a thread-local as every failed call funnels through
