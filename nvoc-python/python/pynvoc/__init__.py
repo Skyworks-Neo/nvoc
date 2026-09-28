@@ -1,6 +1,7 @@
 from ._native import (
     check_voltage_frequency,
     clear_edid,
+    configure_library_paths,
     discover_gpus,
     force_wake,
     get_display_list,
@@ -109,6 +110,7 @@ from ._native import (
 __all__ = [
     "check_voltage_frequency",
     "clear_edid",
+    "configure_library_paths",
     "discover_gpus",
     "force_wake",
     "get_display_list",

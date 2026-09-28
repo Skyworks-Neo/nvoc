@@ -239,6 +239,63 @@ fn lock_inventory_cache() -> std::sync::MutexGuard<'static, InventoryCache> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// 是否还允许配置库路径覆盖：NVAPI 显式初始化未发生且 inventory 缓存全空。
+/// 所有 pynvoc 调用都经 `with_target` → `InventoryCache::entry` → 发现路径
+/// （NVAPI 的 `prepare_nvapi` + 显式 init、NVML 的 `init_nvml` 都在其中），
+/// 所以"缓存全空"就等于"进程内还没有任何 GPU 调用触碰过库加载"。
+fn library_paths_configurable() -> bool {
+    if nvoc_core::nvapi_init_attempted() {
+        return false;
+    }
+    let cache = lock_inventory_cache();
+    cache.both.is_none() && cache.nvapi.is_none() && cache.nvml.is_none()
+}
+
+fn non_empty_trimmed(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|p| !p.is_empty())
+}
+
+/// 写入库路径覆盖 env（`NVOC_NVML_PATH` / `NVOC_NVAPI_PATH`），与 CLI
+/// `--nvml-path`/`--nvapi-path` 的启动期注入同一机制。None 跳过对应变量
+/// （不清理已有值）；空串/纯空白视为未传（与 core `override_path` 的
+/// 空串语义一致）。
+fn set_library_path_env(nvapi_path: Option<&str>, nvml_path: Option<&str>) -> PyResult<()> {
+    if !library_paths_configurable() {
+        return Err(PyRuntimeError::new_err(
+            "library paths must be configured before the first GPU call: NVAPI \
+             initialization is one-shot and inventory discovery is cached, so \
+             later overrides never take effect",
+        ));
+    }
+    if let Some(path) = non_empty_trimmed(nvapi_path) {
+        // SAFETY: 契约是"首次 GPU 调用前、持 GIL 时调用"——此刻尚无任何
+        // nvoc-core 路径并发读这两个 env（GPU 调用都发生在之后的 Python
+        // worker 线程里），与 CLI 启动期单线程注入同一约定。
+        unsafe { std::env::set_var(nvoc_core::dll_path::NVAPI_PATH_ENV, path) };
+    }
+    if let Some(path) = non_empty_trimmed(nvml_path) {
+        // SAFETY: 同上，见 NVAPI 分支注释。
+        unsafe { std::env::set_var(nvoc_core::dll_path::NVML_PATH_ENV, path) };
+    }
+    Ok(())
+}
+
+/// 设置 NVML/NVAPI 用户态库路径覆盖，与 CLI `--nvml-path`/`--nvapi-path` 同一
+/// 机制（写 env `NVOC_NVML_PATH` / `NVOC_NVAPI_PATH`，nvoc-core 在首次 GPU
+/// 调用时读取）。必须在第一次 GPU 调用（discover_gpus / query_* / set_* ...）
+/// 之前调用，之后设置不再生效。
+///
+/// 值的语义（见 nvoc-core dll_path 模块文档）：
+/// - NVML：nvml.dll / libnvidia-ml.so.1 的文件路径（Linux 也接受目录，自动
+///   拼 SONAME）。指错时 NVML init 直接报错，不静默回落。
+/// - NVAPI：Windows 传 nvapi64.dll 所在目录或完整文件路径（文件取父目录）；
+///   Linux 传目录（自动拼 `libnvidia-api.so.1`）或文件路径，副本不带预期
+///   SONAME 时打印 warning 并回落系统库。
+#[pyfunction]
+fn configure_library_paths(nvapi_path: Option<&str>, nvml_path: Option<&str>) -> PyResult<()> {
+    set_library_path_env(nvapi_path, nvml_path)
+}
+
 /// Process-level cache of the NVML-enforced power limit (TGP wall, watts),
 /// keyed by GPU id. Populated by `normalize_info` (which runs at GPU-switch /
 /// Refresh-Info time — a low-frequency, user-initiated path where the dGPU is
@@ -4682,6 +4739,7 @@ fn reset_all(py: Python<'_>, gpu: &str, domain: Option<&str>) -> PyResult<()> {
 
 #[pymodule]
 fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(configure_library_paths, m)?)?;
     m.add_function(wrap_pyfunction!(discover_gpus, m)?)?;
     m.add_function(wrap_pyfunction!(force_wake, m)?)?;
     m.add_function(wrap_pyfunction!(query_info, m)?)?;
@@ -4825,5 +4883,39 @@ mod tests {
         assert_eq!(first_number_in_display("912.5 mV").unwrap(), 912.5);
         assert_eq!(first_number_in_display("N/A"), None);
         assert_eq!(first_number_in_display("-12 MHz").unwrap(), -12.0);
+    }
+
+    #[test]
+    fn library_paths_configurable_before_first_gpu_call() {
+        // 本 crate 的其余测试都是纯解析逻辑，fresh 测试进程里 NVAPI Once
+        // 未消费、inventory 缓存全空——覆盖仍可配置。
+        assert!(library_paths_configurable());
+    }
+
+    #[test]
+    fn non_empty_trimmed_skips_blank() {
+        assert_eq!(non_empty_trimmed(None), None);
+        assert_eq!(non_empty_trimmed(Some("")), None);
+        assert_eq!(non_empty_trimmed(Some("   ")), None);
+        assert_eq!(non_empty_trimmed(Some(" /opt/nv ")), Some("/opt/nv"));
+    }
+
+    #[test]
+    fn set_library_path_env_writes_and_skips() {
+        set_library_path_env(Some(" /opt/nvapi "), None).unwrap();
+        assert_eq!(
+            std::env::var(nvoc_core::dll_path::NVAPI_PATH_ENV).unwrap(),
+            "/opt/nvapi"
+        );
+        // 空串等价未传：NVAPI env 保持上一行写入的值，NVML env 新写入。
+        set_library_path_env(Some("   "), Some(" /opt/nvml ")).unwrap();
+        assert_eq!(
+            std::env::var(nvoc_core::dll_path::NVAPI_PATH_ENV).unwrap(),
+            "/opt/nvapi"
+        );
+        assert_eq!(
+            std::env::var(nvoc_core::dll_path::NVML_PATH_ENV).unwrap(),
+            "/opt/nvml"
+        );
     }
 }
