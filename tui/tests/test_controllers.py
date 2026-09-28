@@ -1499,6 +1499,22 @@ def _oc_app(**info: object) -> FakeApp:
     return app
 
 
+def _vftable_payload(*edges: tuple[int, int, bool]) -> dict:
+    """Minimal get-private-vftable payload carrying the fabric_relations
+    block the driver-side table emits (edge = parent, child, applied)."""
+    return {
+        "fabric_relations": {
+            "source": "vftable-ext",
+            "table_available": True,
+            "roster": ["sys", "host"],
+            "edges": [
+                {"parent_bit": p, "child_bit": c, "applied": applied}
+                for p, c, applied in edges
+            ],
+        }
+    }
+
+
 def test_overclock_apply_xbar_30plus_writes_bit3_cancel() -> None:
     """30系+ (is_ampere_plus): bit1 couples SYS → Xbar write must also RMW
     bit3 (current − f) to cancel the SYS drift. Stock bit3=0 → −f.
@@ -1548,8 +1564,9 @@ def test_overclock_apply_xbar_pascal_direct_no_cancel() -> None:
 
 
 def test_overclock_apply_sys_rmw_stacks_on_current() -> None:
-    """Sys (bit3) RMW: read current offset, +f, write back — stacking on any
-    Xbar-cancel already on bit3 rather than overwriting."""
+    """The box holds the NET, not a delta: with no applied edge (10/16/20/
+    Pascal) the Sys row IS its own record, so the box value lands raw —
+    replacing a previously-applied offset rather than stacking on it."""
     app = _oc_app(xbar_supported=True, is_ampere_plus=False)
     app.cache.clk_domain_mask = 0x3FF  # bit3 present
     app.native.bit3_current_khz = 10000  # +10 MHz already on bit3
@@ -1558,9 +1575,110 @@ def test_overclock_apply_sys_rmw_stacks_on_current() -> None:
 
     clk_calls = [c for c in app.native.calls if c[0] == "set_clk_domain_offset"]
     bit3 = next(c for c in clk_calls if c[2] == 3)
-    assert bit3[3] == 10000 + 30000  # current 10 + requested 30 = 40 MHz
+    assert bit3[3] == 30000  # the requested net, not current + requested
     out = app.action_outputs[0]
-    assert "bit3 +10 → +40 MHz" in out
+    assert "bit3 +10 → +30 MHz" in out
+    assert "net SYS +30 MHz" in out
+
+
+def test_overclock_apply_sys_resolves_the_net_against_its_parent() -> None:
+    """With the driver's relation ({3: (1,)}) the Sys box value is a NET:
+    own(bit3) := value − own(bit1), so +30 MHz with Xbar at +60 writes −30."""
+    app = _oc_app(xbar_supported=True, is_ampere_plus=True)
+    controller = OverclockController(app)
+    controller._on_clk_domain_mask_loaded(
+        {"controllable_mask": "0x3FF"},
+        "0x0000",
+        _vftable_payload((1, 3, True)),
+    )
+    app.native.bit3_current_khz = 0
+    app.widgets["#sys-offset"] = SimpleNamespace(value="30")
+
+    controller.handle_button("oc-apply")
+
+    clk_calls = [c for c in app.native.calls if c[0] == "set_clk_domain_offset"]
+    bits = {c[2]: c[3] for c in clk_calls}
+    assert bits.get(1) == 60000  # Xbar stays where the box says
+    assert bits.get(3) == 30000 - 60000  # net SYS +30 resolved under XBAR +60
+    assert "net SYS +30 MHz" in app.action_outputs[0]
+
+
+def test_overclock_apply_host_resolves_the_net_against_its_parent() -> None:
+    """The relation generalizes past bit3: once the payload says HOST rides
+    XBAR (Ada's ext1), the Host box is a NET too — +50 MHz requested under
+    Xbar +60 writes bit9 := −10, not +50. A non-Ampere card proves the
+    payload (not the generation heuristic) chose the edge."""
+    app = _oc_app(xbar_supported=True, is_ampere_plus=False)
+    controller = OverclockController(app)
+    controller._on_clk_domain_mask_loaded(
+        {"controllable_mask": "0x3FF"},
+        "0x0000",
+        _vftable_payload((1, 9, True)),
+    )
+    app.widgets["#host-offset"] = SimpleNamespace(value="50")
+    app.widgets["#sys-offset"] = SimpleNamespace(value="0")
+    app.widgets["#msd-offset"] = SimpleNamespace(value="0")
+
+    controller.handle_button("oc-apply")
+
+    clk_calls = [c for c in app.native.calls if c[0] == "set_clk_domain_offset"]
+    bits = {c[2]: c[3] for c in clk_calls}
+    assert bits.get(1) == 60000  # Xbar stays where the box says
+    assert bits.get(9) == 50000 - 60000  # net HOST +50 resolved under XBAR +60
+    assert "net HOST +50 MHz" in app.action_outputs[0]
+
+
+def test_overclock_fabric_relation_is_adopted_when_the_mask_read_fails() -> None:
+    """The relation rides its own read: a mask poll that came back empty (a
+    driver hiccup) must not throw the relation away with it."""
+    app = _oc_app(xbar_supported=True, is_ampere_plus=False)
+    controller = OverclockController(app)
+
+    controller._on_clk_domain_mask_loaded(
+        None, "0x0000", _vftable_payload((1, 9, True))
+    )
+
+    assert controller._fabric_relation() == {9: (1,)}
+
+
+def test_overclock_fabric_relation_read_off_another_card_is_not_used() -> None:
+    """A relation is evidence about the card it was read from: switch to a GPU
+    the driver never described and the generation heuristic takes over instead
+    of the old card's edges."""
+    app = _oc_app(xbar_supported=True, is_ampere_plus=False)
+    controller = OverclockController(app)
+    controller._on_clk_domain_mask_loaded(
+        {"controllable_mask": "0x3FF"}, "0x0000", _vftable_payload((1, 9, True))
+    )
+    assert controller._fabric_relation() == {9: (1,)}
+
+    app.selected_gpu_target = lambda: "0x0001"
+
+    assert controller._fabric_relation() == {}
+
+
+def test_overclock_apply_fabric_rows_are_idempotent() -> None:
+    """Re-applying what the driver already holds writes nothing and says so:
+    the rows are solved against the live plane, not blindly written."""
+    app = _oc_app(xbar_supported=True, is_ampere_plus=True)
+    app.cache.clk_domain_mask = 0x3FF
+    app.native.freq_domain_info_payload = {
+        "controllable_mask": "0x3FF",
+        "entries": [
+            {"bit": 1, "values_kHz": [60000]},  # XBAR +60 …
+            {"bit": 3, "values_kHz": [-30000]},  # … with its SYS park in place
+        ],
+    }
+    app.widgets["#msd-offset"] = SimpleNamespace(value="0")
+    app.widgets["#host-offset"] = SimpleNamespace(value="0")
+
+    OverclockController(app).handle_button("oc-apply")
+
+    clk_calls = [c for c in app.native.calls if c[0] == "set_clk_domain_offset"]
+    assert not any(c[2] in (1, 3) for c in clk_calls)
+    out = app.action_outputs[0]
+    assert "Xbar net already +60 MHz — no write needed." in out
+    assert "Sys net already +30 MHz — no write needed." in out
 
 
 def test_overclock_apply_core_fallback_on_not_supported() -> None:
@@ -1655,6 +1773,9 @@ def test_overclock_apply_oc_includes_xbar_when_supported() -> None:
     assert calls == [
         ("set_clock_offset", "0x0000", "nvapi", "core", 100, "P0"),
         ("set_clock_offset", "0x0000", "nvapi", "memory", 200, "P0"),
+        # The fabric rows are nets, so the apply snapshots the live plane once
+        # before solving anything.
+        ("query_private_freq_domain_info", "0x0000"),
         # Xbar write carries the explicit frequency-plane slot (10~40系 0).
         ("set_clk_domain_offset", "0x0000", 1, 60000, 0, None),
     ]
@@ -1734,6 +1855,68 @@ def test_overclock_reset_oc_chain_skips_xbar_when_unsupported() -> None:
 
     assert app.actions == ["reset core offset", "reset memory offset"]
     assert not any(c[0] == "set_clk_domain_offset" for c in app.native.calls)
+
+
+def test_overclock_reset_fabric_rows_reparks_a_child_left_off_the_plan() -> None:
+    """↺ drives the MHz-plane rows to NET 0 in one joint plan. A related
+    domain whose own row lives on the mV plane (Msd here) is NOT reset — so
+    its record is re-parked at the net it was holding, instead of being
+    dragged along by the XBAR write (the old write-0-to-every-coupling-bit
+    reset did exactly that)."""
+    app = _oc_app(xbar_supported=True, is_ampere_plus=False)
+    app.cache.clk_domain_mask = 0x3FF
+    app.native.freq_domain_info_payload = {
+        "controllable_mask": "0x3FF",
+        "entries": [
+            {"bit": 1, "values_kHz": [60000]},  # XBAR +60 …
+            {"bit": 5, "values_kHz": [0]},  # … MSD riding it, own 0
+        ],
+    }
+    controller = OverclockController(app)
+    controller._on_clk_domain_mask_loaded(
+        {"controllable_mask": "0x3FF"},
+        "0x0000",
+        _vftable_payload((1, 3, True), (1, 5, True)),
+    )
+    controller._row_volt_mode["msd"] = True  # Msd row is on the volt plane
+
+    controller.handle_button("oc-reset")
+
+    clk = [c for c in app.native.calls if c[0] == "set_clk_domain_offset"]
+    freq = {c[2]: c[3] for c in clk if c[4] == 0}
+    assert freq.get(1) == 0  # net XBAR → 0
+    assert freq.get(3) == 0  # net SYS → 0
+    assert freq.get(5) == 60000  # parked: own := net_old(MSD) − own(XBAR)
+    assert "net MSD +60 MHz kept" in "\n".join(app.action_outputs)
+
+
+def test_overclock_fabric_rows_anchor_at_the_drivers_nets_once_per_gpu() -> None:
+    """Startup anchor (GUI parity): each row is seeded from the live plane as
+    its NET — the domain's own record plus every applied parent's — exactly
+    once per GPU, so a value typed before the next mask poll is never
+    silently reverted."""
+    app = _oc_app(xbar_supported=True, is_ampere_plus=False)
+    controller = OverclockController(app)
+    relations = _vftable_payload((1, 3, True), (1, 9, True))
+    data = {
+        "controllable_mask": "0x3FF",
+        "entries": [
+            {"bit": 1, "values_kHz": [60000], "value_modifiable": True},
+            {"bit": 3, "values_kHz": [-30000], "value_modifiable": True},
+            {"bit": 9, "values_kHz": [-10000], "value_modifiable": True},
+        ],
+    }
+
+    controller._on_clk_domain_mask_loaded(data, "0x0000", relations)
+
+    assert app.widgets["#xbar-offset"].value == "60"
+    assert app.widgets["#sys-offset"].value == "30"  # own −30 + XBAR +60
+    assert app.widgets["#host-offset"].value == "50"  # own −10 + XBAR +60
+    assert app.widgets["#msd-offset"].value == "20"  # no record → untouched
+
+    app.widgets["#sys-offset"] = SimpleNamespace(value="77")
+    controller._on_clk_domain_mask_loaded(data, "0x0000", relations)
+    assert app.widgets["#sys-offset"].value == "77"  # anchored once per GPU
 
 
 def test_overclock_unit_toggle_anchors_mv_at_live_plane_offset() -> None:
@@ -1852,7 +2035,10 @@ def test_overclock_apply_rejects_invalid_mv_value() -> None:
 def test_overclock_reset_mixed_planes_footprint() -> None:
     """Reset OC with core on mV, everything else MHz: the mV row zeroes ONLY
     its volt plane (public pstate20 reset skipped); MHz rows zero both plane
-    slots."""
+    slots.
+
+    The four fabric rows share one plan (they are nets of a related group),
+    so they are dispatched — and labelled — as one action."""
     app = _oc_app(xbar_supported=True)
     app.cache.clk_domain_mask = 0x3FF
     controller = OverclockController(app)
@@ -1865,7 +2051,7 @@ def test_overclock_reset_mixed_planes_footprint() -> None:
     assert "reset core offset" not in actions  # no public write for the mV row
     assert "reset memory offset" in actions
     assert "reset memory volt offset" in actions
-    assert "reset xbar offset" in actions
+    assert "reset xbar/sys/msd/host offset" in actions
     assert "reset xbar volt offset" in actions
 
     calls = app.native.calls
