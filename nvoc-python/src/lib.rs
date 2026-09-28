@@ -2639,24 +2639,6 @@ fn query_private_freq_domain_info(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAn
     py_value(py, &value)
 }
 
-/// Read the private ClockClient V/F-points family (GetInfo 0x8895B510 →
-/// GetStatus 0x7FEE9032): per-bank point masks + V/F curve records.
-/// Records are voltage-indexed; units live-calibrated vs the public GPC VFP
-/// curve (voltage µV, default/current MHz). Bank 0 packs multiple domains:
-/// type-8 segments are V/F curves (GPC first, then the 127-point XBAR
-/// candidate), type-7 segments are per-domain pstate frequency lists.
-/// Returns `{"supported": false}` when the driver doesn't expose it.
-///
-/// Voltage fallback: some drivers leave the private voltage fields unfilled
-/// (e.g. GP100/TCC 582.41 — every record reads 0 µV, live-verified). The
-/// private records are INDEXED BY VOLTAGE, so the j-th point of ANY V/F
-/// segment sits at the same grid level as the j-th point of every other
-/// segment — including the public GPC VFP curve, which DOES carry voltage on
-/// those same drivers. When a V/F segment's voltage range is degenerate
-/// (max==0), we borrow the public GPC voltage grid by index-within-segment
-/// (point at offset j ← public point j) so the GUI plots the curve against a
-/// real voltage axis instead of collapsing every point to V=0. Cards whose
-/// private voltage IS filled (Ada/R610.74) are untouched.
 /// `fabric_relations` payload fragment: the driver's master → slave (ext-slot)
 /// domain relation the front-ends compensate against — see
 /// `nvoc_core::FabricTree`. Derived from the **unfiltered** table, so a
@@ -2698,6 +2680,24 @@ fn fabric_relations_json(tree: &FabricTree) -> Value {
     Value::Object(map)
 }
 
+/// Read the private ClockClient V/F-points family (GetInfo 0x8895B510 →
+/// GetStatus 0x7FEE9032): per-bank point masks + V/F curve records.
+/// Records are voltage-indexed; units live-calibrated vs the public GPC VFP
+/// curve (voltage µV, default/current MHz). Bank 0 packs multiple domains:
+/// type-8 segments are V/F curves (GPC first, then the 127-point XBAR
+/// candidate), type-7 segments are per-domain pstate frequency lists.
+/// Returns `{"supported": false}` when the driver doesn't expose it.
+///
+/// Voltage fallback: some drivers leave the private voltage fields unfilled
+/// (e.g. GP100/TCC 582.41 — every record reads 0 µV, live-verified). The
+/// private records are INDEXED BY VOLTAGE, so the j-th point of ANY V/F
+/// segment sits at the same grid level as the j-th point of every other
+/// segment — including the public GPC VFP curve, which DOES carry voltage on
+/// those same drivers. When a V/F segment's voltage range is degenerate
+/// (max==0), we borrow the public GPC voltage grid by index-within-segment
+/// (point at offset j ← public point j) so the GUI plots the curve against a
+/// real voltage axis instead of collapsing every point to V=0. Cards whose
+/// private voltage IS filled (Ada/R610.74) are untouched.
 #[pyfunction]
 fn query_private_vftable(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
     let value = with_target(gpu, "nvapi", |target| {
