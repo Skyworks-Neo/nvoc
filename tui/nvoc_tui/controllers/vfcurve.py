@@ -9,6 +9,7 @@ from textual_plotext import PlotextPlot
 from ..models import CurveData
 from ..parsing import (
     CURVE_META,
+    CURVE_WRITE_BIT,
     curve_meta,
     build_vf_curves,
     compute_vf_plot_bounds_multi,
@@ -21,6 +22,7 @@ from ..parsing import (
 )
 from ..widgets import mnemonic_text
 from .base import PaneController
+from .overclock import OverclockController
 
 # Per-curve plotext colors: (current line, default scatter).
 # The third curve's attribution moved HOST → SYS → MSD; the bit-5 offset
@@ -1159,6 +1161,47 @@ class VFCurveController(PaneController):
             return self._p0_bounds_by_rail.get(bits[1]) or self._p0_bounds
         return self._p0_bounds_by_rail.get(bits[0]) or self._p0_bounds
 
+    def _domain_global_reset_note(self, native, gpu: str, curve_id: str) -> str:
+        """Note zeroing the curve's ClkDomains WRITE-record global offset
+        (freq + volt plane slots).
+
+        Private-table curve-point offsets and domain GLOBAL offsets are
+        separate RM storage — a curve reset alone leaves a global offset still
+        shifting the domain, so every single-curve reset also fires the
+        corresponding domain global reset (the per-domain form of the
+        reset-private-freq-domain-global-offset CLI command). Empty string
+        when the curve has no WRITE bit (unknownN segments).
+
+        The global offset is a NET when the driver attaches other domains to
+        this one (the OC pane's relation): resetting the XBAR curve zeroes the
+        XBAR net and re-parks SYS/HOST at theirs — the old write-0-to-bit1-
+        and-bit3 also wiped SYS's own offset on the way. Plane slots are
+        generation-dependent (Blackwell 50系: 2/3).
+        """
+        bit = CURVE_WRITE_BIT.get(curve_id)
+        if bit is None:
+            return ""
+        oc = getattr(self.app, "overclock_controller", None)
+        freq_slot = oc._clk_freq_slot() if oc is not None else 0
+        volt_slot = oc._clk_volt_slot() if oc is not None else 1
+        relation = getattr(oc, "_fabric_relation", None)
+        parents = relation() if callable(relation) else None
+        label = curve_meta(curve_id)["label"]
+        if parents is None:
+            # Relation unknown for this card: the fabric bits cannot be
+            # resolved, so their reset refuses (the message explains why) —
+            # GPC/MEM never carry a parent term and zero as they always did.
+            in_relation = bit in OverclockController._FABRIC_LABELS
+        else:
+            in_relation = bit in parents or any(bit in ps for ps in parents.values())
+        if in_relation:
+            return " " + OverclockController._reset_fabric_row_action(
+                native, gpu, label, bit, parents, freq_slot, volt_slot
+            )
+        return " " + OverclockController._reset_clk_domain_action(
+            native, gpu, label, (bit,), (freq_slot, volt_slot)
+        )
+
     def handle_button(self, button_id: str) -> bool:
         if button_id == "vf-refresh":
             self.sync_from_ui()
@@ -1215,12 +1258,20 @@ class VFCurveController(PaneController):
                 seg_start, seg_end = curve.seg_start, curve.seg_end
 
                 def reset_public(
-                    native, gpu=gpu, seg_start=seg_start, seg_end=seg_end, cid=cid
+                    native,
+                    gpu=gpu,
+                    seg_start=seg_start,
+                    seg_end=seg_end,
+                    cid=cid,
+                    curve_id=curve.curve_id,
                 ) -> str:
                     native.set_vfp_range_delta(gpu, seg_start, seg_end, 0)
-                    return (
+                    base = (
                         f"Successfully reset {cid} curve to default "
                         f"({seg_start}-{seg_end}, public)."
+                    )
+                    return (
+                        f"{base}{self._domain_global_reset_note(native, gpu, curve_id)}"
                     )
 
                 self.app.run_native_action("reset VFP deltas", reset_public)
@@ -1275,7 +1326,17 @@ class VFCurveController(PaneController):
                     return f"private reset unsupported on {cid}."
                 return f"Successfully reset {cid} (private raw, {base}-{end_idx})."
 
-            self.app.run_native_action("reset VFP deltas", reset_private)
+            def reset_private_and_global(
+                native, gpu=gpu, curve_id=curve.curve_id
+            ) -> str:
+                # The curve's domain GLOBAL offset is separate RM storage:
+                # clearing the points alone leaves it shifting the domain.
+                base_msg = reset_private(native)
+                return (
+                    f"{base_msg}{self._domain_global_reset_note(native, gpu, curve_id)}"
+                )
+
+            self.app.run_native_action("reset VFP deltas", reset_private_and_global)
             return True
         if button_id == "vf-unlock":
             gpu = self.app.selected_gpu_target()
