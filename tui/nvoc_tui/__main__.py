@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import argparse
 import os
 import time
 
@@ -45,13 +46,48 @@ _boot_marker("main entered (textual/plotext/pynvoc import pending)")
 
 if __package__:
     from .app import NVOCApp
+    from .native import apply_native_paths
 else:
     from nvoc_tui.app import NVOCApp
+    from nvoc_tui.native import apply_native_paths
 
 _boot_marker("imports done (textual+plotext+pynvoc)")
 
 
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="nvoc-tui",
+        description="NVOC TUI — NVIDIA GPU monitoring / overclocking terminal UI.",
+    )
+    parser.add_argument(
+        "--nvapi-path",
+        default=None,
+        metavar="DIR_OR_FILE",
+        help=(
+            "NVAPI library override (env NVOC_NVAPI_PATH). Windows: the "
+            "directory holding nvapi64.dll, or the DLL path itself. Linux: the "
+            "directory holding libnvidia-api.so.1 (SONAME joined automatically), "
+            "or the .so path directly (must carry that SONAME, else a warning "
+            "prints and the system copy loads). Must precede the first GPU call."
+        ),
+    )
+    parser.add_argument(
+        "--nvml-path",
+        default=None,
+        metavar="FILE_OR_DIR",
+        help=(
+            "NVML library override (env NVOC_NVML_PATH). Path to nvml.dll / "
+            "libnvidia-ml.so.1; Linux also accepts a directory (SONAME joined "
+            "automatically). A wrong path fails NVML init loudly instead of "
+            "silently falling back. Must precede the first GPU call."
+        ),
+    )
+    return parser
+
+
 def main() -> int:
+    args = _build_parser().parse_args()
+    apply_native_paths(args.nvapi_path, args.nvml_path, override=True)
     app = NVOCApp()
     _boot_marker("NVOCApp constructed")
     app.run()

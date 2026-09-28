@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import queue
+import sys
 import threading
 from pathlib import Path
 from typing import Any, Callable
@@ -13,6 +15,65 @@ from .models import ActionState, GpuDescriptor
 OutputCallback = Callable[[str, str], None]
 FinishCallback = Callable[[int], None]
 ActionCallback = Callable[[Any], str | None]
+
+NVAPI_PATH_ENV = "NVOC_NVAPI_PATH"
+NVML_PATH_ENV = "NVOC_NVML_PATH"
+
+
+def apply_native_paths(
+    nvapi_path: str | None = None,
+    nvml_path: str | None = None,
+    *,
+    override: bool = True,
+    warn: Callable[[str], None] | None = None,
+) -> None:
+    """Seed the NVOC_* library path overrides before the first pynvoc call.
+
+    与 CLI --nvapi-path/--nvml-path 同一机制：写 env，nvoc-core 在首次 GPU
+    调用时读取（Windows=SetDllDirectoryW / NVML lib_path；Linux=SONAME 预加载
+    / 按路径 dlopen）。优先走 pynvoc.configure_library_paths（带"太迟"校验），
+    旧 pynvoc 缺该函数时回落直接写 os.environ——机制等价。成功后镜像回
+    os.environ，保证后续 override=False 的配置键应用能看到已生效的值。
+
+    override=True（命令行参数）无条件写入；override=False（配置键）只在对应
+    env 尚未设置时生效，得到 参数 > 预设 env > 配置键 的优先级。空串视为未
+    提供；"太迟"（库已加载）时经 warn 告知而不崩启动。
+    """
+    pending: dict[str, str] = {}
+    for env, value in ((NVAPI_PATH_ENV, nvapi_path), (NVML_PATH_ENV, nvml_path)):
+        value = (value or "").strip()
+        if not value:
+            continue
+        if not override and os.environ.get(env, "").strip():
+            continue
+        pending[env] = value
+    if not pending:
+        return
+
+    def _warn(message: str) -> None:
+        if warn is not None:
+            warn(message)
+        else:
+            print(message, file=sys.stderr)
+
+    try:
+        native = importlib.import_module("pynvoc")
+    except Exception:
+        native = None
+    if native is not None and hasattr(native, "configure_library_paths"):
+        try:
+            native.configure_library_paths(
+                nvapi_path=pending.get(NVAPI_PATH_ENV),
+                nvml_path=pending.get(NVML_PATH_ENV),
+            )
+        except RuntimeError as exc:
+            _warn(f"warning: native library path override ignored: {exc}")
+            return
+    # API 成功时 Rust set_var 已写进程 env；这里镜像进 os.environ（旧 pynvoc
+    # 走 API 缺失路径时这一步就是唯一写入），保证后续 override=False 的
+    # 优先级判断能看到已生效的值。
+    for env, value in pending.items():
+        os.environ[env] = value
 
 
 class NativeService:

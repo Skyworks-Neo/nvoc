@@ -63,11 +63,23 @@ class UiSettings:
 
 
 @dataclass(slots=True)
+class NativeSettings:
+    """Native library path overrides (NVOC_NVAPI_PATH / NVOC_NVML_PATH).
+
+    命令行参数优先于这里的持久化配置；两者都必须发生在首次 GPU 调用前。
+    """
+
+    nvapi_path: str = ""
+    nvml_path: str = ""
+
+
+@dataclass(slots=True)
 class AppConfig:
     last_gpu_idx: int | None = None
     dashboard: DashboardSettings = field(default_factory=DashboardSettings)
     vfcurve: VFCurveSettings = field(default_factory=VFCurveSettings)
     ui: UiSettings = field(default_factory=UiSettings)
+    native: NativeSettings = field(default_factory=NativeSettings)
 
 
 @dataclass(slots=True)
