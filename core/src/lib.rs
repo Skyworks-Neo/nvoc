@@ -1,7 +1,6 @@
 mod conv;
 pub mod dll_path;
 mod error;
-pub mod fabric;
 mod gpu;
 mod gpu_type;
 pub mod legacy_vbios_parser;
@@ -22,7 +21,8 @@ pub use conv::ConvertEnum;
 pub use error::Error;
 pub use gpu::{GpuSelector, nvapi_interface_version};
 pub use gpu_type::{
-    ArchOcPrior, GpuOcParams, GpuType, GpuVoltageLimitParams, GpuVoltageLockParams, OcPriorPoint,
+    ArchOcPrior, Evidence, FabricDomain, FabricEdgeRecord, FabricTree, GenScope, GpuOcParams,
+    GpuType, GpuVoltageLimitParams, GpuVoltageLockParams, OcPriorPoint, describe_edges, edge_label,
 };
 pub use operation::{
     CheckVoltageFrequency, ClearEdid, DisableNvapiThermalSim, GetFanCurves, GetPowerMode,

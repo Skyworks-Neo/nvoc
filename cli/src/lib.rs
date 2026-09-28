@@ -4291,7 +4291,7 @@ fn execute_target(
                 .ok()
                 .and_then(|r| fetch_gpu_type(&r.output).ok())
                 .unwrap_or(nvoc_core::GpuType::Unknown);
-            let fabric = nvoc_core::fabric::FabricTree::derive(vfp.as_ref(), gpu_type);
+            let fabric = nvoc_core::FabricTree::derive(vfp.as_ref(), gpu_type);
             if let Some(obj) = value.as_object_mut() {
                 obj.insert(
                     "fabric_relations".to_string(),
@@ -7910,11 +7910,11 @@ fn pascal_private_2x_axis(target: &GpuTarget) -> bool {
 /// `fabric_relations` payload fragment: which fabric domains ride into which
 /// other ones, per the driver's own ext-slot declaration, plus the evidence
 /// verdict that says whether a compensation may be written against each edge
-/// (see `nvoc_core::fabric`). MUST be derived from the unfiltered table — the
+/// (see `nvoc_core::FabricTree`). MUST be derived from the unfiltered table — the
 /// roster is a whole-table property, so a `--bank/--domain` filtered view
 /// would mislabel slots. pynvoc's `query_private_vftable` builds the same
 /// shape; keep the two in lockstep.
-fn fabric_relations_json(tree: &nvoc_core::fabric::FabricTree) -> Value {
+fn fabric_relations_json(tree: &nvoc_core::FabricTree) -> Value {
     json!({
         "source": "vftable-ext",
         "table_available": tree.table_available(),
@@ -7936,7 +7936,7 @@ fn fabric_relations_json(tree: &nvoc_core::fabric::FabricTree) -> Value {
         // applied edges the table does NOT show while it was readable —
         // nonempty means a driver update moved the topology under us
         "unmatched_applied": tree.unmatched_applied().into_iter()
-            .map(|(p, c)| nvoc_core::fabric::edge_label(p, c))
+            .map(|(p, c)| nvoc_core::edge_label(p, c))
             .collect::<Vec<_>>(),
     })
 }

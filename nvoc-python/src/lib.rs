@@ -4,9 +4,9 @@ use nvapi::hi::{
 use nvml_wrapper::enum_wrappers::device::{Api, PerformanceState};
 use nvoc_core::{
     BackendSet, CheckVoltageFrequency, ClearEdid, ClkVfDomainClass, ConvertEnum,
-    DisableNvapiThermalSim, GpuTarget, GpuType, NvapiPStateNativeLock, NvapiPerfFreqCap,
-    PmgrArbiterProbe, QueryApiRestriction, QueryAutoBoost, QueryDisplays, QueryDomainVfpPoints,
-    QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings, QueryGpuStatus,
+    DisableNvapiThermalSim, FabricTree, GpuTarget, GpuType, NvapiPStateNativeLock,
+    NvapiPerfFreqCap, PmgrArbiterProbe, QueryApiRestriction, QueryAutoBoost, QueryDisplays,
+    QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings, QueryGpuStatus,
     QueryLegacyCoreOvervoltRanges, QueryNvapiClkDomainFreq, QueryNvapiClkDomainFreqDirect,
     QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomains, QueryNvapiClkVfPoints,
     QueryNvapiCoolerInfo, QueryNvapiCoreVoltageControl, QueryNvapiDNotifier,
@@ -30,9 +30,8 @@ use nvoc_core::{
     SetNvapiVoltRailTarget, SetNvmlPstateLock, SetPowerLimit, SetPstateBaseVoltage,
     SetPstateClockOffset, SetPublicVftablePointOffset, SetPublicVftableRangeOffset,
     SetTemperatureLimit, SetVfpFrequencyLock, SetVoltageBoost, VfPointType, VfpResetDomain,
-    clk_vf_delta_for_target, detect_gpu_type, discover_targets, fabric::FabricTree, fetch_gpu_type,
-    nvapi_status_name, nvml_pstate_to_str, parse_nvml_fan_control_policy, run,
-    try_parse_nvml_pstate,
+    clk_vf_delta_for_target, detect_gpu_type, discover_targets, fetch_gpu_type, nvapi_status_name,
+    nvml_pstate_to_str, parse_nvml_fan_control_policy, run, try_parse_nvml_pstate,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -2663,7 +2662,7 @@ fn query_private_freq_domain_info(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAn
 /// private voltage IS filled (Ada/R610.74) are untouched.
 /// `fabric_relations` payload fragment: the driver's main-domain → attached
 /// (ext-slot) domain relation plus the evidence verdicts that decide which
-/// edges the front-ends may compensate against — see `nvoc_core::fabric`.
+/// edges the front-ends may compensate against — see `nvoc_core::FabricTree`.
 /// Derived from the **unfiltered** table, so a consumer can trust the roster
 /// regardless of what it asked for. The CLI's `get-private-vftable` builds the
 /// same shape; keep the two in lockstep.
@@ -2709,7 +2708,7 @@ fn fabric_relations_json(tree: &FabricTree) -> Value {
         Value::Array(
             tree.unmatched_applied()
                 .into_iter()
-                .map(|(p, c)| Value::from(nvoc_core::fabric::edge_label(p, c)))
+                .map(|(p, c)| Value::from(nvoc_core::edge_label(p, c)))
                 .collect(),
         ),
     );
