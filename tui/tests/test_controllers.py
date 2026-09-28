@@ -1827,6 +1827,34 @@ def test_overclock_reset_refuses_while_the_relation_is_unknown() -> None:
     assert any(
         OverclockController._FABRIC_UNKNOWN_MSG in out for out in app.action_outputs
     )
+    # …and the rows keep their values: a reset that never reached the driver
+    # must not make the boxes read 0.
+    assert app.widgets["#xbar-offset"].value == "60"
+
+
+def test_overclock_reset_oc_seeds_the_fabric_rows_it_reset() -> None:
+    """↺ leaves the rows showing what the card now holds: the four fabric rows
+    are readbacks (see _anchor_fabric_inputs), so the reset zeroes the boxes it
+    just zeroed on the driver. A row parked on the mV plane is not a frequency
+    target — its box shows the volt addend the same ↺ cleared. GUI parity:
+    _reset_oc zeroes its page's widgets the same way."""
+    app = _oc_app(xbar_supported=True)
+    app.cache.clk_domain_mask = 0x3FF
+    app.native.freq_domain_info_payload = {
+        "controllable_mask": "0x3FF",
+        "entries": [
+            {"bit": 1, "value_modifiable": True, "values_kHz": [60000, 25000]},
+            {"bit": 5, "value_modifiable": True, "values_kHz": [20000, 0]},
+        ],
+    }
+    controller = _adopt_relation(app, (1, 3), (1, 5))
+    controller._row_volt_mode["msd"] = True  # Msd row sits on the mV plane
+
+    assert controller.handle_button("oc-reset") is True
+
+    assert app.widgets["#xbar-offset"].value == "0"
+    assert app.widgets["#sys-offset"].value == "0"
+    assert app.widgets["#msd-offset"].value == "0.0"
 
 
 def test_overclock_reset_one_fabric_row_parks_a_grandchild_at_its_net() -> None:
@@ -2153,11 +2181,45 @@ def test_overclock_unit_toggle_anchors_mv_at_live_plane_offset() -> None:
     scheduled[0]()  # FakeApp.call_from_thread runs the callback inline
     assert app.widgets["#core-offset"].value == "62.5"
 
-    # Toggling back re-anchors the MHz plane at 0 (intent, not readback).
+    # Toggling back: Core carries no frequency-plane anchor in this record
+    # (its MHz source of truth is pstate20), so the MHz plane seeds 0. A
+    # fabric row re-anchors at its live NET instead — see below.
     assert controller.handle_button("core-unit") is True
     assert toggle.label == "MHz"
     assert "volt" not in toggle.classes
     assert app.widgets["#core-offset"].value == "0"
+
+
+def test_overclock_toggle_back_reanchors_a_fabric_row_at_the_drivers_net() -> None:
+    """A fabric row's MHz value is a readback (see _anchor_fabric_inputs): the
+    chip flip back from mV must land on the row's live NET, not 0 — a bare
+    toggle-then-Apply that seeded 0 would write a net zero nobody asked for."""
+    app = _oc_app(xbar_supported=True)
+    app.cache.clk_domain_mask = 0x3FF
+    app.native.freq_domain_info_payload = {
+        "controllable_mask": "0x3FF",
+        "entries": [
+            # slot0 kHz / slot1 µV: XBAR +60, SYS's own record −20.
+            {"bit": 1, "value_modifiable": True, "values_kHz": [60000, 0]},
+            {"bit": 3, "value_modifiable": True, "values_kHz": [-20000, 0]},
+        ],
+    }
+    scheduled: list[object] = []
+    app.native_service.submit_query = lambda job: scheduled.append(job)
+    app.native_service.query_private_freq_domain_info = (
+        app.native.query_private_freq_domain_info
+    )
+    controller = _adopt_relation(app, (1, 3))  # SYS rides XBAR
+
+    assert controller.handle_button("sys-unit") is True
+    assert app.widgets["#sys-offset"].value == "0.0"  # seeded before the anchor
+    scheduled[0]()  # FakeApp.call_from_thread runs the callback inline
+    assert app.widgets["#sys-offset"].value == "0.0"  # volt slot is 0 µV
+
+    assert controller.handle_button("sys-unit") is True
+    assert app.widgets["#sys-offset"].value == "0"  # placeholder, not an anchor
+    scheduled[1]()
+    assert app.widgets["#sys-offset"].value == "40"  # own −20 + XBAR +60
 
 
 def test_overclock_unit_toggle_ignores_stale_anchor_after_toggle_back() -> None:

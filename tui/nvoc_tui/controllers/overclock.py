@@ -67,7 +67,7 @@ class OverclockController(PaneController):
         # row so a stale anchor readback can't land after the row toggled
         # back (or toggled twice) while the read was in flight.
         self._row_volt_mode: dict[str, bool] = dict.fromkeys(self._UNIT_ROWS, False)
-        self._volt_anchor_epoch: dict[str, int] = dict.fromkeys(self._UNIT_ROWS, 0)
+        self._anchor_epoch: dict[str, int] = dict.fromkeys(self._UNIT_ROWS, 0)
         # Set when a mem-range P-State lock failed at runtime (pre-Kepler
         # part: the NVML pstate mem-clock query is Not Supported there) —
         # apply/reset then use the native single-P-State pin instead.
@@ -228,7 +228,7 @@ class OverclockController(PaneController):
         self._row_volt_mode = dict.fromkeys(self._UNIT_ROWS, False)
         for name in self._UNIT_ROWS:
             _, input_id, unit_id = self._UNIT_ROWS[name]
-            self._volt_anchor_epoch[name] = self._volt_anchor_epoch.get(name, 0) + 1
+            self._anchor_epoch[name] = self._anchor_epoch.get(name, 0) + 1
             try:
                 button = self.app.query_one(unit_id, Button)
                 button.label = "MHz"
@@ -720,15 +720,18 @@ class OverclockController(PaneController):
     def _toggle_row_unit(self, name: str) -> None:
         """Cycle one row's unit chip MHz ↔ mV (GUI ``_toggle_row_unit`` port).
 
-        mV mode seeds the input at 0.0 and async-reads the record's live
-        voltage-plane addend to re-anchor (the two planes are separate RM
-        storage — the MHz value belongs to the driver, not this row); MHz
-        mode re-anchors at 0 (the row's MHz value is an intent, not a
-        readback)."""
+        Whichever plane the chip lands on, the input re-anchors at the LIVE
+        record: mV at the record's voltage-plane addend (the two planes are
+        separate RM storage), MHz at the row's NET frequency offset. The MHz
+        plane is a readback too (see ``_anchor_fabric_inputs``) — seeding a
+        fabric row back to 0 on a chip flip would make a bare toggle-then-
+        Apply write a net zero nobody asked for. The read is async (shared
+        query worker); the value seeded here is a placeholder until it
+        lands."""
         bit, input_id, unit_id = self._UNIT_ROWS[name]
         volt_mode = not self._row_volt_mode.get(name, False)
         self._row_volt_mode[name] = volt_mode
-        self._volt_anchor_epoch[name] = self._volt_anchor_epoch.get(name, 0) + 1
+        self._anchor_epoch[name] = self._anchor_epoch.get(name, 0) + 1
         try:
             button = self.app.query_one(unit_id, Button)
             button.label = "mV" if volt_mode else "MHz"
@@ -737,7 +740,6 @@ class OverclockController(PaneController):
             pass
         if volt_mode:
             self.set_input(input_id, "0.0")
-            self._poll_volt_anchor(name, bit, input_id)
             self.app.write_log(
                 f"{name.capitalize()} row → mV plane (per-domain V/F-curve "
                 "voltage addend, ±300 mV)."
@@ -745,15 +747,18 @@ class OverclockController(PaneController):
         else:
             self.set_input(input_id, "0")
             self.app.write_log(f"{name.capitalize()} row → MHz plane.")
+        self._poll_row_anchor(name, input_id)
 
-    def _poll_volt_anchor(self, name: str, bit: int, input_id: str) -> None:
-        """Async-read the ClkDomains WRITE record's live voltage-plane addend —
-        the anchor a row re-anchors at when its chip lands on mV. Piggybacks
-        on the shared query worker; never on the render path."""
+    def _poll_row_anchor(self, name: str, input_id: str) -> None:
+        """Async-read the ClkDomains WRITE record for one row and let the
+        landing answer re-anchor it on whichever plane its chip now sits —
+        the anchor a row takes when it flips (mV: the voltage-plane addend;
+        MHz: the row's NET offset). Piggybacks on the shared query worker;
+        never on the render path."""
         gpu = self.app.selected_gpu_target()
         if gpu is None:
             return
-        epoch = self._volt_anchor_epoch.get(name, 0)
+        epoch = self._anchor_epoch.get(name, 0)
 
         def worker() -> None:
             try:
@@ -762,7 +767,7 @@ class OverclockController(PaneController):
                 data = None
             try:
                 self.app.call_from_thread(
-                    self._on_volt_anchor_loaded, name, input_id, epoch, data
+                    self._on_row_anchor_loaded, name, input_id, epoch, data
                 )
             except Exception:
                 pass
@@ -772,19 +777,40 @@ class OverclockController(PaneController):
         except Exception:
             pass
 
-    def _on_volt_anchor_loaded(
+    def _on_row_anchor_loaded(
         self, name: str, input_id: str, epoch: int, data: object
     ) -> None:
         # A toggle while the read was in flight must not re-anchor the row.
-        if (
-            not self._row_volt_mode.get(name)
-            or self._volt_anchor_epoch.get(name) != epoch
-        ):
+        if self._anchor_epoch.get(name) != epoch:
             return
         bit = self._UNIT_ROWS[name][0]
-        anchor = self._volt_anchor_mv_from_info(data, bit, self._clk_volt_slot())
-        anchor = max(self._VOLT_MIN_MV, min(self._VOLT_MAX_MV, anchor))
-        self.set_input(input_id, f"{anchor:.1f}")
+        if self._row_volt_mode.get(name):
+            anchor = self._volt_anchor_mv_from_info(data, bit, self._clk_volt_slot())
+            anchor = max(self._VOLT_MIN_MV, min(self._VOLT_MAX_MV, anchor))
+            self.set_input(input_id, f"{anchor:.1f}")
+            return
+        # Back on MHz when the answer lands: only the fabric rows carry a
+        # frequency-plane anchor (Core/Mem's MHz source of truth is pstate20,
+        # not this record) — GUI parity: _query_row_freq_anchor_mhz.
+        if bit in self._FABRIC_LABELS:
+            self.set_input(input_id, f"{self._freq_net_mhz_from_info(data, bit):g}")
+
+    def _freq_net_mhz_from_info(self, info: object, bit: int) -> float:
+        """Live NET frequency offset (MHz) for one fabric row out of a
+        query_private_freq_domain_info payload — the same read
+        ``_anchor_fabric_inputs`` seeds with: the domain's own plane value
+        plus every declared parent's (the XBAR term rides into SYS/HOST where
+        the driver's table says so). Unknown relation or missing record →
+        the row's own value only / 0.0, never a fabricated parent term."""
+        entries = info.get("entries") if isinstance(info, dict) else None
+        offsets = self._freq_domain_offsets_mhz(entries, self._clk_freq_slot())
+        own = offsets.get(bit)
+        if own is None:
+            return 0.0
+        total = own
+        for parent in (self._fabric_relation() or {}).get(bit, ()):
+            total += offsets.get(parent, 0.0)
+        return total
 
     @staticmethod
     def _volt_anchor_mv_from_info(info: object, bit: int, volt_slot: int) -> float:
@@ -1233,6 +1259,22 @@ class OverclockController(PaneController):
                 self.set_input(self._UNIT_ROWS[name][1], f"{value:g}")
         if gpu is not None:
             self._fabric_anchor_gpu = gpu
+
+    def _seed_fabric_inputs_after_reset(self, targets: dict[int, int]) -> None:
+        """Show the fabric rows as the ↺ leaves them: the rows are readbacks
+        (see ``_anchor_fabric_inputs``), so keeping the old number on screen
+        would be a lie the next Apply would re-send. A target row's net lands
+        on 0 by construction; a row parked on the mV plane instead shows the
+        volt addend, which the same ↺ zeroes on the volt slot. A refused reset
+        (relation unknown) never reaches here. GUI parity: its ``_reset_oc``
+        zeroes the page's widgets the same way."""
+        for name, (bit, input_id, _unit_id) in self._UNIT_ROWS.items():
+            if bit not in self._FABRIC_LABELS:
+                continue
+            if self._row_volt_mode.get(name):
+                self.set_input(input_id, "0.0")
+            elif bit in targets:
+                self.set_input(input_id, "0")
 
     @staticmethod
     def _format_volt_rail_result(target_mv: float, result: object) -> str:
@@ -1964,6 +2006,8 @@ class OverclockController(PaneController):
                     names = "/".join(
                         self._FABRIC_LABELS[b].lower() for b in sorted(targets)
                     )
+                    if parents is not None:
+                        self._seed_fabric_inputs_after_reset(targets)
                     resets.append((
                         f"reset {names} offset",
                         lambda native, gpu=gpu, targets=targets, parents=parents, fs=freq_slot: (
