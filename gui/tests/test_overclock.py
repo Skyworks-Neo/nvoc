@@ -51,6 +51,9 @@ class FakeNative:
         # What query_private_freq_domain_info reports for bit3's slot-0 offset
         # (kHz) — the Sys RMW baseline.
         self.bit3_current_khz: int = 0
+        # Full override of the payload's entries (pynvoc shape) for tests that
+        # need more than bit3 — the startup anchor reads all four fabric bits.
+        self.domain_entries: list[dict] | None = None
 
     def set_clock_offset(
         self, gpu: str, backend: str, domain: str, offset: int, pstate: str
@@ -61,11 +64,12 @@ class FakeNative:
 
     def query_private_freq_domain_info(self, gpu: str) -> dict:
         self.calls.append(("query_private_freq_domain_info", gpu))
+        entries = self.domain_entries
+        if entries is None:
+            entries = [{"bit": 3, "values_kHz": [self.bit3_current_khz]}]
         return {
             "controllable_mask": "0x000003FF",
-            "entries": [
-                {"bit": 3, "values_kHz": [self.bit3_current_khz]},
-            ],
+            "entries": entries,
         }
 
     def set_volt_rail_target(
@@ -128,6 +132,34 @@ class FakeNative:
         self.calls.append(("reset_mem_clocks", gpu, backend))
 
 
+class FakeFrame:
+    """The tab's parent widget: only ``after`` is used, to bounce a background
+    worker's result back onto the render thread."""
+
+    def after(self, _delay: int, callback) -> None:
+        callback()
+
+
+def _domain_entries(
+    offsets_khz: dict[int, int], freq_slot: int = 0, width: int = 8
+) -> list[dict]:
+    """Build get-private-freq-domain-info ``entries`` in the pynvoc payload
+    shape: one record per bit, ``value_modifiable`` True (the protocol
+    marshals it, so the value dwords ARE driver data) and the frequency-plane
+    offset parked in this generation's slot."""
+    entries = []
+    for bit, khz in offsets_khz.items():
+        vals = [0] * width
+        vals[freq_slot] = khz
+        entries.append({
+            "bit": bit,
+            "type": 10,
+            "value_modifiable": True,
+            "values_kHz": vals,
+        })
+    return entries
+
+
 class FakeApp:
     def __init__(
         self,
@@ -174,6 +206,11 @@ class FakeApp:
         # Run immediately so the worker-thread fallback lands synchronously.
         callback()
 
+    def run_background(self, _name: str, task) -> None:
+        # The caps query dispatches its worker through here; run it inline so
+        # the whole query → parse → anchor path is testable synchronously.
+        task()
+
     def run_native_action_chain(self, commands) -> None:
         for description, action in commands:
             self.actions.append(description)
@@ -189,6 +226,7 @@ def make_tab(
     app = FakeApp(legacy_voltage=legacy_voltage, mem_lock_error=mem_lock_error)
     tab = OverclockTab.__new__(OverclockTab)
     tab.app = app
+    tab.frame = FakeFrame()
     tab._syncing = False
     tab._is_resize_active = False
     tab._pending_vfp_state = None
@@ -213,6 +251,8 @@ def make_tab(
     tab._sys_supported = bool(tab._clk_domain_mask & (1 << 3))
     tab._msd_supported = bool(tab._clk_domain_mask & (1 << 5))
     tab._host_supported = bool(tab._clk_domain_mask & (1 << 9))
+    # Startup anchor marker (None → this GPU's fabric rows were never seeded).
+    tab._domain_anchor_gpu = None
     tab.sys_var = FakeVar("0")
     tab.msd_var = FakeVar("0")
     tab.host_var = FakeVar("0")
@@ -344,17 +384,82 @@ def test_xbar_non_coupled_direct_write_no_cancel() -> None:
     assert 3 not in bits
 
 
-def test_sys_rmw_stacks_on_current_offset() -> None:
-    """Sys (bit3) RMW: read current offset, +f, write back — stacks on any
-    Xbar-cancel already on bit3 rather than overwriting."""
+def test_sys_apply_is_absolute_net_on_coupled_arch() -> None:
+    """Sys (bit3) resolves from the NET target: bit3 := f − bit1, because on
+    30系+ the XBAR offset rides into SYS (bit1), so the live SYS offset — and
+    the value this row displays — is bit1 + bit3. Xbar +100 has parked
+    bit3 = −100 (net SYS 0); asking for +30 must land bit3 at −70 (= +30 net
+    through the +100 coupling), never at −100 + 30."""
     tab, app = make_tab(xbar_supported=True)
-    app.native.bit3_current_khz = 10000  # +10 MHz already on bit3
+    app.native.domain_entries = _domain_entries({1: 100_000, 3: -100_000})
 
-    msg = OverclockTab._apply_sys_only_action(app.native, "GPU0", 30)
+    msg = OverclockTab._apply_sys_only_action(app.native, "GPU0", 30, coupled=True)
 
     bits = {c[2]: c[3] for c in app.native.calls if c[0] == "set_clk_domain_offset"}
-    assert bits.get(3) == 10000 + 30000  # current 10 + requested 30 = 40 MHz
-    assert "bit3 +10 → +40 MHz" in msg
+    assert bits.get(3) == 30_000 - 100_000
+    assert "net SYS +30 MHz" in msg
+
+
+def test_sys_apply_is_idempotent_on_reapply() -> None:
+    """Regression (the reported startup bug's write half): an untouched
+    "Apply Section" right after boot re-sends the anchored value. With the
+    old stacking RMW each re-apply added f again (−100 → −70 → −40 …); the
+    absolute net form lands on the same bit3 every time."""
+    tab, app = make_tab(xbar_supported=True)
+    entries = _domain_entries({1: 100_000, 3: -70_000})  # net SYS = +30
+    app.native.domain_entries = entries
+
+    OverclockTab._apply_sys_only_action(app.native, "GPU0", 30, coupled=True)
+    # The driver now holds what we just wrote; re-apply the same row value.
+    app.native.domain_entries = _domain_entries({1: 100_000, 3: -70_000})
+
+    OverclockTab._apply_sys_only_action(app.native, "GPU0", 30, coupled=True)
+
+    writes = [c[3] for c in app.native.calls if c[0] == "set_clk_domain_offset"]
+    assert writes == [-70_000, -70_000]
+
+
+def test_sys_apply_without_coupling_ignores_bit1() -> None:
+    """10/16/20/Pascal: no XBAR→SYS coupling, so bit1 is pure Xbar and the
+    absolute form degenerates to bit3 := f (bit1 must NOT be subtracted)."""
+    tab, app = make_tab(xbar_supported=True)
+    app.native.domain_entries = _domain_entries({1: 100_000, 3: 10_000})
+
+    OverclockTab._apply_sys_only_action(app.native, "GPU0", 30)
+
+    bits = {c[2]: c[3] for c in app.native.calls if c[0] == "set_clk_domain_offset"}
+    assert bits.get(3) == 30_000
+
+
+def test_xbar_cancel_keeps_net_sys_when_xbar_moves() -> None:
+    """bit3 := (bit1_cur + bit3_cur) − f — the OLD bit3_cur − f forgot the
+    previous XBAR term, dragging SYS by −f on every re-apply. Sys +30 with
+    Xbar +100 in place (net = +30), Xbar → +150 → bit3 = +30 − 150 = −120,
+    i.e. net SYS stays +30."""
+    tab, app = make_tab(xbar_supported=True)
+    app.native.domain_entries = _domain_entries({1: 100_000, 3: -70_000})
+
+    msg = OverclockTab._apply_xbar_only_action(app.native, "GPU0", 150, coupled=True)
+
+    bits = {c[2]: c[3] for c in app.native.calls if c[0] == "set_clk_domain_offset"}
+    assert bits.get(1) == 150_000
+    assert bits.get(3) == 30_000 - 150_000
+    assert "net SYS +30 MHz kept" in msg
+
+
+def test_xbar_cancel_reapply_is_idempotent() -> None:
+    """Re-applying the SAME Xbar value must not leak a −f drift into SYS:
+    +60 twice leaves bit3 at −60 both times."""
+    tab, app = make_tab(xbar_supported=True)
+    app.native.domain_entries = _domain_entries({1: 60_000, 3: -60_000})
+
+    OverclockTab._apply_xbar_only_action(app.native, "GPU0", 60, coupled=True)
+    OverclockTab._apply_xbar_only_action(app.native, "GPU0", 60, coupled=True)
+
+    writes = [
+        c[3] for c in app.native.calls if c[0] == "set_clk_domain_offset" and c[2] == 3
+    ]
+    assert writes == [-60_000, -60_000]
 
 
 def test_vfp_state_does_not_replace_core_offset_display() -> None:
@@ -464,6 +569,16 @@ class FakeUnitSlider(FakeStateWidget):
     def set(self, value) -> None:
         self._value = value
 
+    def cget(self, key: str):
+        # A real CTkSlider exposes numeric from_/to; mirror that. (The stub
+        # inherits a ""-returning cget, and _set_slider_value's getattr
+        # default is evaluated eagerly even when _oc_min exists.)
+        if key == "from_":
+            return self._oc_min
+        if key == "to":
+            return self._oc_max
+        return super().cget(key)
+
     def configure(self, **kw) -> None:
         # _reconfigure_slider passes from_/to/number_of_steps/state — the
         # FakeStateWidget.configure only handles state, so fold the rest in.
@@ -507,6 +622,228 @@ def make_toggle_tab(
     return tab, app, backend
 
 
+# ── Startup anchor: seed the fabric rows from the live ClkDomains offsets ──
+
+
+def _install_anchor_rows(tab: OverclockTab) -> dict[str, FakeUnitSlider]:
+    """Give every fabric row a unit-toggle-capable slider+var pair so the
+    anchor path (_set_slider_value) has somewhere to land. Returns them by
+    row name."""
+    rows: dict[str, FakeUnitSlider] = {}
+    for name, bit in (("xbar", 1), ("sys", 3), ("msd", 5), ("host", 9)):
+        slider = FakeUnitSlider()
+        slider._oc_volt_bit = bit
+        var = FakeVar("+0")
+        slider._oc_unit_var = var
+        setattr(tab, f"{name}_slider", slider)
+        setattr(tab, f"{name}_var", var)
+        rows[name] = slider
+    return rows
+
+
+def _place(tab: OverclockTab, entries: list, mask: str = "0x000003FF", gpu="GPU0"):
+    """Drive the caps-load callback the way the async worker does (gpu rides
+    along so the anchor is keyed to the card it was read from)."""
+    tab._on_clk_domain_caps_loaded({"controllable_mask": mask, "entries": entries}, gpu)
+
+
+def test_query_clk_domain_caps_anchors_fabric_rows_end_to_end() -> None:
+    """The reported bug: at startup the Xbar/Sys/Msd/Host rows stayed at the
+    construction +0 even though the driver held real offsets. The whole
+    startup path — check_capabilities → _query_clk_domain_capabilities →
+    worker → _on_clk_domain_caps_loaded(gpu) — now seeds them from
+    get-private-freq-domain-info."""
+    tab, app = make_tab(xbar_supported=True)
+    app.backend = FakeBackend({
+        "controllable_mask": "0x000003FF",
+        "entries": _domain_entries({1: 100_000, 3: -70_000, 9: 40_000}),
+    })
+    tab._is_ampere_plus = True
+    rows = _install_anchor_rows(tab)
+
+    tab._query_clk_domain_capabilities({"gpu_series": "GeForce RTX 40 Series"})
+
+    assert app.backend.calls == ["GPU0"]
+    assert rows["xbar"].get() == 100.0
+    assert rows["sys"].get() == 30.0  # bit1 + bit3 (XBAR rides into SYS)
+    assert rows["host"].get() == 40.0
+    assert tab.xbar_var.get() == "+100"
+    assert tab.host_var.get() == "+40"
+
+
+def test_startup_anchor_sys_row_includes_coupled_xbar_term() -> None:
+    """30系+: the live SYS offset is bit1 + bit3 — the XBAR term rides into
+    SYS, so the row must show the NET (that is also what the Sys write
+    resolves to)."""
+    tab, _app = make_tab(xbar_supported=True)
+    tab._is_ampere_plus = True
+    rows = _install_anchor_rows(tab)
+
+    _place(tab, _domain_entries({1: 100_000, 3: -70_000}))
+
+    assert rows["xbar"].get() == 100.0
+    assert rows["sys"].get() == 30.0
+
+
+def test_startup_anchor_runs_once_per_gpu() -> None:
+    """The caps query re-runs on every refresh (initial status, GPU switch,
+    after every native action) — re-seeding would silently revert a value the
+    user typed but has not applied yet."""
+    tab, _app = make_tab(xbar_supported=True)
+    rows = _install_anchor_rows(tab)
+    _place(tab, _domain_entries({1: 100_000}))
+    assert rows["xbar"].get() == 100.0
+
+    tab.xbar_var.set("+150")  # user types, does not apply
+    rows["xbar"].set(150)
+    _place(tab, _domain_entries({1: 100_000}))  # a refresh re-loads the caps
+
+    assert rows["xbar"].get() == 150.0
+    assert tab.xbar_var.get() == "+150"
+
+
+def test_startup_anchor_reseeds_after_a_gpu_switch() -> None:
+    """A different card is a different anchor — the new GPU's rows get seeded
+    from ITS offsets (keyed by gpu, not a plain once-ever flag)."""
+    tab, app = make_tab(xbar_supported=True)
+    rows = _install_anchor_rows(tab)
+    _place(tab, _domain_entries({1: 100_000}), gpu="GPU0")
+    assert rows["xbar"].get() == 100.0
+
+    app.selected_gpu_target = lambda: "GPU1"
+    _place(tab, _domain_entries({1: 20_000}), gpu="GPU1")
+
+    assert rows["xbar"].get() == 20.0
+    assert tab._domain_anchor_gpu == "GPU1"
+
+
+def test_startup_anchor_skips_non_driver_data_and_unknown_rows() -> None:
+    """value_modifiable False → the dwords are protocol placeholders, NOT
+    offsets (the CLI's write path refuses those records too); a bit the mask
+    does not claim has no row; a bit the payload omits leaves its row at 0."""
+    tab, _app = make_tab(xbar_supported=True)
+    rows = _install_anchor_rows(tab)
+    placeholder = _domain_entries({1: 77_000})[0]
+    placeholder["value_modifiable"] = False
+
+    _place(tab, [placeholder] + _domain_entries({3: 20_000}), mask="0x000000FF")
+
+    assert rows["xbar"].get() == 0.0  # placeholder must not be shown as truth
+    assert rows["sys"].get() == 20.0
+    assert rows["msd"].get() == 0.0  # absent from the payload
+    assert rows["host"].get() == 0.0  # bit9 not in the mask
+
+
+def test_startup_anchor_leaves_volt_mode_rows_alone() -> None:
+    """A row the user already flipped to mV shows the voltage plane — the
+    anchor must not write a MHz offset onto it."""
+    tab, _app = make_tab(xbar_supported=True)
+    rows = _install_anchor_rows(tab)
+    rows["xbar"]._oc_volt_mode = True
+    rows["xbar"]._oc_decimals = 1
+    rows["xbar"].set(7.5)
+
+    _place(tab, _domain_entries({1: 100_000}))
+
+    assert rows["xbar"].get() == 7.5
+
+
+def test_startup_anchor_reads_the_generation_freq_slot() -> None:
+    """Blackwell 50系 parks the frequency plane in slot 2 (voltage 3), so the
+    anchor must read this generation's slot, not slot 0."""
+    tab, _app = make_tab(xbar_supported=True)
+    tab._is_blackwell_gpu = True
+    rows = _install_anchor_rows(tab)
+
+    _place(tab, _domain_entries({1: 100_000, 5: -20_000}, freq_slot=2))
+
+    assert rows["xbar"].get() == 100.0
+    assert rows["msd"].get() == -20.0
+
+
+def test_startup_anchor_retries_when_the_payload_has_nothing_to_anchor() -> None:
+    """An empty/unreadable payload must not mark the GPU anchored — the next
+    caps load retries instead of leaving the rows at 0 for the session."""
+    tab, _app = make_tab(xbar_supported=True)
+    rows = _install_anchor_rows(tab)
+
+    _place(tab, [])
+    assert tab._domain_anchor_gpu is None
+
+    _place(tab, _domain_entries({1: 100_000}))
+
+    assert rows["xbar"].get() == 100.0
+
+
+def test_clk_domain_caps_result_for_another_gpu_is_ignored() -> None:
+    """A GPU switch landing mid-flight: the payload belongs to GPU9 while the
+    panel now shows GPU0 — neither the mask verdict nor the anchor may land."""
+    tab, _app = make_tab(xbar_supported=True)
+    tab._sys_supported = False
+    rows = _install_anchor_rows(tab)
+
+    _place(tab, _domain_entries({1: 100_000}), gpu="GPU9")
+
+    assert tab._sys_supported is False
+    assert rows["xbar"].get() == 0.0
+
+
+# ── Per-row resets: net-aware on the coupled 30系+ XBAR/SYS pair ────────────
+
+
+def test_reset_sys_domain_zeroes_the_net_offset() -> None:
+    """Sys ↺ on 30系+: bit3 := −bit1 so the NET SYS offset is 0. Zeroing bit3
+    outright would leave the whole XBAR offset standing as SYS drift, i.e. the
+    row's 0 would be a lie. The volt plane is that domain's own → cleared."""
+    tab, app = make_tab(xbar_supported=True)
+    tab._is_ampere_plus = True
+    rows = _install_anchor_rows(tab)
+    app.native.domain_entries = _domain_entries({1: 100_000, 3: -70_000})
+
+    tab._reset_clk_domain("Sys", 3, rows["sys"], tab.sys_var)
+
+    writes = [c for c in app.native.calls if c[0] == "set_clk_domain_offset"]
+    assert [w[2:] for w in writes] == [(3, -100_000, 0, None), (3, 0, 1, None)]
+    assert app.actions == ["reset sys domain offset"]
+    assert tab.sys_var.get() == "+0"
+
+
+def test_reset_xbar_domain_keeps_net_sys() -> None:
+    """Xbar ↺ on 30系+ must not drag SYS: bit1 → 0 on both planes and bit3 :=
+    the net the cancel was holding (bit1_cur + bit3_cur). The bit3 voltage
+    plane belongs to the SYS domain and is left alone."""
+    tab, app = make_tab(xbar_supported=True)
+    tab._is_ampere_plus = True
+    rows = _install_anchor_rows(tab)
+    app.native.domain_entries = _domain_entries({1: 100_000, 3: -70_000})
+
+    tab._reset_clk_domain("Xbar", 1, rows["xbar"], tab.xbar_var)
+
+    writes = [c for c in app.native.calls if c[0] == "set_clk_domain_offset"]
+    assert [w[2:] for w in writes] == [
+        (1, 0, 0, None),
+        (1, 0, 1, None),
+        (3, 30_000, 0, None),
+    ]
+    assert app.actions == ["reset xbar domain offset"]
+    assert tab.xbar_var.get() == "+0"
+
+
+def test_reset_sys_domain_in_volt_mode_clears_only_the_volt_plane() -> None:
+    """mV mode has no coupling (separate plane), so the reset stays the plain
+    single-slot zeroing."""
+    tab, app = make_tab(xbar_supported=True)
+    tab._is_ampere_plus = True
+    rows = _install_anchor_rows(tab)
+    rows["sys"]._oc_volt_mode = True
+    app.native.domain_entries = _domain_entries({1: 100_000})
+
+    tab._reset_clk_domain("Sys", 3, rows["sys"], tab.sys_var)
+
+    writes = [c for c in app.native.calls if c[0] == "set_clk_domain_offset"]
+    assert [w[2:] for w in writes] == [(3, 0, 1, None)]
+
+
 def test_toggle_switches_chip_and_reconfigures_to_mv_plane() -> None:
     """Click → mV: chip text/colour flips, the SAME slider/entry reconfigure
     onto ±300/1 (decimals=1), anchored at the record's live slot1 (µV→mV)."""
@@ -535,9 +872,37 @@ def test_toggle_switches_chip_and_reconfigures_to_mv_plane() -> None:
     assert backend.calls == ["GPU0"]
 
 
-def test_toggle_back_restores_mhz_plane_and_zero_anchor() -> None:
+def test_toggle_back_restores_mhz_plane_and_live_anchor() -> None:
     """Second click → MHz: construction range/step/decimals return, the row
-    re-anchors at 0 (MHz value = intent, not readback)."""
+    re-anchors at the record's LIVE frequency offset — a fabric row's MHz
+    value is a readback (see the startup anchor), so flipping the chip must
+    not leave it showing 0 while the card still holds the offset."""
+    tab, _app, backend = make_toggle_tab(
+        entries={
+            "entries": [
+                {"bit": 1, "values_kHz": [25000, -12500]},
+            ]
+        }
+    )
+    slider = tab.xbar_slider
+    var = tab.xbar_var
+
+    tab._toggle_row_unit(slider)
+    backend._entries["entries"][0]["values_kHz"][0] = 40_000  # moved meanwhile
+    tab._toggle_row_unit(slider)
+
+    assert slider._oc_volt_mode is False
+    assert slider._oc_min == -500
+    assert slider._oc_max == 500
+    assert slider._oc_step == 5
+    assert slider._oc_decimals == 0
+    assert slider.get() == 40.0
+    assert var.get() == "+40"
+
+
+def test_toggle_back_anchors_at_zero_when_the_payload_has_no_offset() -> None:
+    """No record for the bit (or an unreadable payload) → the MHz plane still
+    comes back, anchored at 0."""
     tab, _app, _backend = make_toggle_tab()
     slider = tab.xbar_slider
     var = tab.xbar_var
@@ -546,12 +911,35 @@ def test_toggle_back_restores_mhz_plane_and_zero_anchor() -> None:
     tab._toggle_row_unit(slider)
 
     assert slider._oc_volt_mode is False
-    assert slider._oc_min == -500
-    assert slider._oc_max == 500
-    assert slider._oc_step == 5
-    assert slider._oc_decimals == 0
     assert slider.get() == 0
     assert var.get() == "+0"
+
+
+def test_toggle_back_anchors_sys_row_at_the_net_offset() -> None:
+    """The Sys row's MHz plane is the NET offset on 30系+ (bit1 + bit3) — the
+    same value the startup anchor shows and the Sys write resolves to, not the
+    raw bit3 cancel."""
+    tab, _app, _backend = make_toggle_tab(
+        entries={
+            "entries": [
+                {"bit": 1, "values_kHz": [100_000, 0]},
+                {"bit": 3, "values_kHz": [-70_000, 0]},
+            ]
+        }
+    )
+    tab._is_ampere_plus = True
+    slider = FakeUnitSlider()
+    slider._oc_volt_bit = 3
+    var = FakeVar("0")
+    slider._oc_unit_var = var
+    tab.sys_slider = slider
+    tab.sys_var = var
+
+    tab._toggle_row_unit(slider)  # → mV plane
+    tab._toggle_row_unit(slider)  # → back to MHz
+
+    assert slider.get() == 30.0
+    assert var.get() == "+30"
 
 
 def test_toggle_anchor_falls_back_to_zero_when_query_fails() -> None:
