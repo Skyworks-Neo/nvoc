@@ -123,10 +123,10 @@ class OverclockTab:
         # ── Clock-offset pager state ──
         # pre-Pascal (Kepler/Fermi/Maxwell-9) has no pager: only Core/Mem.
         # Pascal+ has 3 pages: (Core/Mem)(Xbar/Sys)(Msd/Host). Bit mapping is
-        # the Ada-verified WRITE-record table (see gpu_type.rs is_ada): bit0=GPC,
-        # bit1=XBAR, bit2=Mem, bit3=SYS, bit5=MSD, bit9=HOST — what a bit
-        # drags along is the driver's table, not the generation
-        # (see _fabric_relation).
+        # the A/B'd WRITE-record table (see cli/src/lib.rs
+        # clk_client_record_name): bit0=GPC, bit1=XBAR, bit2=Mem, bit3=SYS,
+        # bit5=MSD, bit9=HOST — what a bit drags along is the driver's table,
+        # not the generation (see _fabric_relation).
         self._has_oc_pager = False
         self._oc_page = 0
         self._oc_page_frames = []  # type: List[tk.Frame]

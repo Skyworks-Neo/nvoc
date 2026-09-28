@@ -799,7 +799,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 Command::ResetPrivateFreqDomainGlobalOffset,
                 CommandSpec {
                     options: Box::leak(Box::new(["domain", "slot", "freq", "volt"])),
-                    ..CommandSpec::new("reset-private-freq-domain-global-offset", Group::Vfp, "Reset private clock-domain global offsets to stock (offset 0) through the same ClkDomains WRITE path as set-private-freq-domain-global-offset; default resets EVERY controllable domain x both plane slots (0/1 on 10~40 series, 2/3 on Blackwell 50 series), --domain/--slot narrow the scope (--freq/--volt alias the frequency/voltage planes per generation); domains the driver refuses (e.g. disp bit 6) are reported as warnings and the reset continues")
+                    ..CommandSpec::new("reset-private-freq-domain-global-offset", Group::Vfp, "Reset private clock-domain global offsets to stock (offset 0) through the same ClkDomains WRITE path as set-private-freq-domain-global-offset; default resets EVERY controllable domain x both plane slots (0/1 on 10~40 series, 2/3 on Blackwell 50 series), --domain/--slot narrow the scope (--freq/--volt alias the frequency/voltage planes per generation); domains the driver refuses (e.g. the unattributed bit 6) are reported as warnings and the reset continues; RAW record channel — offset 0 goes to the domains named and no net re-parking follows, so a domain the driver's table attaches to one of them is dragged along, not held (get-private-vftable fabric_relations)")
                 },
             ),
             (
@@ -1160,7 +1160,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                         "OFFSET",
                         "--freq (default): signed frequency offset in MHz (one decimal allowed), for example -60, +15.5 or 0 (no-op stock write); an explicit khz/kilohertz suffix keeps the legacy unit. --volt: per-domain V/F-curve voltage addend in mV (one decimal allowed), for example +25, -12.5 or 0. Plane slots are GENERATION-DEPENDENT: --freq/--volt resolve to slot 0/1 on 10~40 series and slot 2/3 on Blackwell 50 series; --slot writes the RAW dword and is never remapped. The driver may reject or clamp; the post-SET readback is returned. Pass --temporary to restore the snapshot before returning",
                     )])),
-                    ..CommandSpec::new("set-private-freq-domain-global-offset", Group::Vfp, "Write a signed offset into one clock-domain control record plane (dangerous XBar clock write; --temporary restores the snapshot; --freq/--volt = the frequency/voltage planes, auto-mapped to slot 0/1 on 10~40 series and slot 2/3 on Blackwell 50 series). Names use the record-space attribution (certified: gpc=0, xbar=1, mem=2, sys=3, msd=5, disp=7, pciegen=8, host=9; hub=4, bit6 unattributed; see get-private-freq-domain-info). Cross-generation A/B: address records by bare integer")
+                    ..CommandSpec::new("set-private-freq-domain-global-offset", Group::Vfp, "Write a signed offset into one clock-domain control record plane (dangerous XBar clock write; --temporary restores the snapshot; --freq/--volt = the frequency/voltage planes, auto-mapped to slot 0/1 on 10~40 series and slot 2/3 on Blackwell 50 series). RAW record channel: the value lands on the domain named, and whatever the driver's own table attaches to it (get-private-vftable fabric_relations, master → slave) is dragged along by the driver — no net conversion and no re-parking here (the GUI/TUI fabric rows are the net view). Names use the record-space attribution (certified: gpc=0, xbar=1, mem=2, sys=3, msd=5, disp=7, pciegen=8, host=9; hub=4, bit6 unattributed; see get-private-freq-domain-info). Cross-generation A/B: address records by bare integer")
                 },
             ),
             (
@@ -4921,7 +4921,7 @@ fn execute_target(
             // Blackwell 50系: slots 2/3 — same generation shift as the set
             // command); --domain / --slot narrow it (--freq/--volt are the
             // semantic plane aliases, resolved per generation). A domain
-            // the driver refuses (e.g. disp bit 6) or a slot it rejects
+            // the driver refuses (e.g. the unattributed bit 6) or a slot it rejects
             // becomes a warning and the reset continues — one bad record
             // must not abort the rest.
             let blackwell = run(target, QueryGpuInfo)
@@ -7398,9 +7398,10 @@ fn parse_domain(raw: &str) -> CliResult<ClockDomain> {
 /// (mask 0x3FF = bits 0..9 where populated) — verified live 2026-08/09
 /// A/B sweeps across Pascal/Turing/Ampere/Ada/Volta plus 2026-09-06
 /// cross-certification:
-/// - bit0=Gpc, bit1=Xbar (the Sys movement once A/B'd on it is an
-///   intrinsic property of the coupled domain tree, NOT part of the
-///   record's identity — earlier "Sys+Xbar" naming was that pre-2026-09-06
+/// - bit0=Gpc, bit1=Xbar (the Sys movement once A/B'd on it belongs to the
+///   CARD's coupling, not the record's identity — which domains ride which
+///   is declared by the driver's own table, get-private-vftable's
+///   `fabric_relations`; earlier "Sys+Xbar" naming was that pre-2026-09-06
 ///   legacy), bit2=Mem, bit3=Sys, bit5=Msd (SET unsupported on Pascal —
 ///   no MSD domain),
 ///   bit7=Disp (slot-1 voltage-offset A/B + FreqsEnum sel7 agreement;
@@ -7476,13 +7477,14 @@ fn parse_clk_domain(raw: &str) -> CliResult<u32> {
 ///
 /// NO ALIAS ROUTING: names resolve through the plain RTSS position table
 /// only (`parse_clk_domain_table`), same as the MEASURE path. The record
-/// bits' physical attribution is per-generation and does NOT follow the
-/// RTSS labels — the historical msd/sys/host→bit-5 remap was removed
-/// (2026-08-31) because it papered over exactly that arch-dependence:
-///   - Ada 4060 slot-0 A/B: bit1 moves SYS+XBAR, bit2 moves memory M,
-///     bit3 pure SYS, bit5 MSD, bit9 pure Host (see
-///     [`clk_client_record_name`]);
-///   - Pascal 1080 (live-reported): bit 5 moves GetAllClocks SYS.
+/// bits do NOT follow the RTSS labels — the historical msd/sys/host→bit-5
+/// remap was removed (2026-08-31) because it papered over exactly that
+/// mismatch. The card-level A/B record behind this map
+/// ([`clk_client_record_name`]): Ada 4060 slot-0 — bit1 moves SYS+XBAR,
+/// bit2 moves memory M, bit3 pure SYS, bit5 MSD, bit9 pure Host; Pascal 1080
+/// (live-reported) — bit 5 moves GetAllClocks SYS. Those movements are
+/// observations of what the CARD couples, not part of what a record IS; the
+/// authority on them is the paragraph below.
 ///
 /// For cross-generation A/B work, address records by BARE INTEGER — the
 /// name table is advisory only. The medium layer rejects bits outside

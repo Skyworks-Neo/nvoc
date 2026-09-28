@@ -670,13 +670,16 @@ impl GpuType {
 
     /// 是否为 Ada Lovelace 世代（消费 40 系 / 工作站）。
     ///
-    /// Ada 的 ClkDomains 私有写记录→物理域映射已 slot-0 全位 A/B 实证
-    /// （RTX 4060 Laptop / R610，2026-08-31）：
-    /// bit0=纯GPC、bit1=SYS+XBAR 同动、bit2=显存 M、bit3=纯SYS、
+    /// 注意：本判定**不再**参与任何 fabric 补偿或命名——谁随谁动由驱动
+    /// 自己的表给出（bank 的 vf_curve ext 槽 → `FabricTree`），按卡读、
+    /// 不按世代断言；本方法目前无调用点。下面两段是 A/B 侧的历史观测，
+    /// 作为那张表的旁证。
+    ///
+    /// Ada 上 slot-0 全位 A/B（RTX 4060 Laptop / R610，2026-08-31）：
+    /// bit0=纯GPC、bit1 动 SYS+XBAR、bit2=显存 M、bit3=纯SYS、
     /// bit5=MSD、bit9=纯HOST；bit1 与 bit3 对 SYS 的效果叠加；
     /// bit4/7/8 在 GetAllClocks 无可观测反应、
-    /// bit6 type-0x02 协议不搬运。其它世代未实证——显示层仅在本判定
-    /// 为真时使用 Ada 实证名。
+    /// bit6 type-0x02 协议不搬运。
     ///
     /// 跨代汇总（2026-08-31 实测 Pascal10/GTX16/RTX20/Ampere30 + Ada）：
     /// 记录宇宙大小**不随代际单调增长**——GTX16 竟返回 10 条
