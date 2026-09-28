@@ -882,8 +882,8 @@ pub fn validate_precision<B: Backend>(
             failures += 1;
             if failures >= 1 {
                 let reason = format!(
-                    "{} elements exceed atol+rtol*|ref|: max_abs={:.4e}, max_rel={:.4e} (first idx={})",
-                    failures, max_abs, max_rel, idx
+                    "{} elements exceed atol+rtol*|ref|: max_abs={:.4e}, max_rel={:.4e} (first idx={}, ref={:.6e}, got={:.6e}, diff={:.4e})",
+                    failures, max_abs, max_rel, idx, *ref_val, *out, diff
                 );
                 return Ok((false, max_abs, max_rel, Some(reason)));
             }
