@@ -519,6 +519,14 @@ def public_vfp_unsupported(gpc_err: str | None) -> bool:
 # the wrong domain's offset.
 WRITE_BIT_TO_CURVE: dict[int, str] = {0: "gpc", 1: "xbar", 5: "msd", 2: "mem"}
 
+# The same table the other way round: curve id -> the WRITE bit whose domain
+# GLOBAL offset a curve reset also zeroes (curve-point offsets and domain
+# global offsets are separate RM storage). The fabric bits among them
+# (1/3/5/9) are NETS solved against the driver's relation — see
+# OverclockController._fabric_relation — while GPC/MEM zero raw. A curve with
+# no entry here (the unnamed unknownN segments) has no global offset.
+CURVE_WRITE_BIT: dict[str, int] = {cid: bit for bit, cid in WRITE_BIT_TO_CURVE.items()}
+
 
 def normalize_domain_offsets(raw: Any) -> dict[str, dict[str, int]]:
     """pynvoc private-freq-domain info payload -> {curve_id: offsets}.

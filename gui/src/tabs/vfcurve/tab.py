@@ -4863,7 +4863,7 @@ class VFCurveTab:
 
     def _domain_global_reset_note(self, native, gpu: str, curve_id: str) -> str:
         """Console note zeroing the curve's ClkDomains WRITE-record global
-        offset (slots 0 and 1).
+        offset (freq + volt plane slots).
 
         Private-table curve-point offsets and domain GLOBAL offsets are
         separate RM storage — a curve reset alone leaves a global offset
@@ -4871,23 +4871,38 @@ class VFCurveTab:
         the corresponding domain global reset (the per-domain form of the
         reset-private-freq-domain-global-offset CLI command). Empty string
         when the curve has no WRITE bit (unknownN curves).
+
+        The global offset is a NET when the driver attaches other domains to
+        this one (the OC tab's relation): resetting the XBAR curve zeroes the
+        XBAR net and re-parks SYS/HOST at theirs — the old write-0-to-bit1-
+        and-bit3 also wiped SYS's own offset on the way. Plane slots are
+        generation-dependent (Blackwell 50系: 2/3).
         """
         bit = _CURVE_WRITE_BIT.get(curve_id)
         if bit is None:
             return ""
-        bits = [bit]
-        # 30系+: Xbar bit1 couples SYS — clearing bit1 must also clear the
-        # bit3 cancel (same footprint as the OC tab's Xbar reset). Plane
-        # slots are generation-dependent (Blackwell 50系: 2/3).
-        oc = getattr(self.app, "tab_overclock", None)
-        if bit == 1 and getattr(oc, "_is_ampere_plus", False):
-            bits.append(3)
-        slots = (2, 3) if getattr(oc, "_is_blackwell_gpu", False) else (0, 1)
         from src.tabs.dashboard.sections.overclock import OverclockTab
 
+        oc = getattr(self.app, "tab_overclock", None)
+        freq_slot, volt_slot = (
+            (2, 3) if getattr(oc, "_is_blackwell_gpu", False) else (0, 1)
+        )
+        relation = getattr(oc, "_fabric_relation", None)
+        parents = relation() if callable(relation) else None
         label = _curve_meta_for(curve_id)["label"]
+        if parents is None:
+            # Relation unknown for this card: the fabric bits cannot be
+            # resolved, so their reset refuses (the message explains why) —
+            # GPC/MEM never carry a parent term and zero as they always did.
+            in_relation = OverclockTab._is_fabric_row_bit(bit)
+        else:
+            in_relation = bit in parents or any(bit in ps for ps in parents.values())
+        if in_relation:
+            return " " + OverclockTab._reset_fabric_row_action(
+                native, gpu, label, bit, parents, freq_slot, volt_slot
+            )
         return " " + OverclockTab._reset_clk_domain_action(
-            native, gpu, label, tuple(bits), slots
+            native, gpu, label, (bit,), (freq_slot, volt_slot)
         )
 
     def _all_domain_global_reset(self, native, gpu: str) -> str:

@@ -4,9 +4,11 @@
 //! OC 扫描参数、电压限制探测参数、电压锁定参数统一管理于此文件。
 
 use ::nvapi::hi::GpuInfo;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use super::error::Error;
+use crate::{ClkVfDomainHint, ClkVfPointsPrivate, ClkVfSegmentKind};
 
 // ─────────────────────────────── GpuType 枚举 ───────────────────────────────
 
@@ -668,13 +670,16 @@ impl GpuType {
 
     /// 是否为 Ada Lovelace 世代（消费 40 系 / 工作站）。
     ///
-    /// Ada 的 ClkDomains 私有写记录→物理域映射已 slot-0 全位 A/B 实证
-    /// （RTX 4060 Laptop / R610，2026-08-31）：
-    /// bit0=纯GPC、bit1=SYS+XBAR 同动、bit2=显存 M、bit3=纯SYS、
+    /// 注意：本判定**不再**参与任何 fabric 补偿或命名——谁随谁动由驱动
+    /// 自己的表给出（bank 的 vf_curve ext 槽 → `FabricTree`），按卡读、
+    /// 不按世代断言；本方法目前无调用点。下面两段是 A/B 侧的历史观测，
+    /// 作为那张表的旁证。
+    ///
+    /// Ada 上 slot-0 全位 A/B（RTX 4060 Laptop / R610，2026-08-31）：
+    /// bit0=纯GPC、bit1 动 SYS+XBAR、bit2=显存 M、bit3=纯SYS、
     /// bit5=MSD、bit9=纯HOST；bit1 与 bit3 对 SYS 的效果叠加；
     /// bit4/7/8 在 GetAllClocks 无可观测反应、
-    /// bit6 type-0x02 协议不搬运。其它世代未实证——显示层仅在本判定
-    /// 为真时使用 Ada 实证名。
+    /// bit6 type-0x02 协议不搬运。
     ///
     /// 跨代汇总（2026-08-31 实测 Pascal10/GTX16/RTX20/Ampere30 + Ada）：
     /// 记录宇宙大小**不随代际单调增长**——GTX16 竟返回 10 条
@@ -684,38 +689,14 @@ impl GpuType {
     /// 不耦合（bit1 纯 Xbar）。MSD 轴：Pascal 无（bit5 SET 不支持），
     /// GTX16/Turing/Ampere/Ada 均有（bit5=Msd）。bit0/2/3/4/6/7 语义
     /// 五代逐位一致。50 系待测。
+    ///
+    /// 以上是 A/B 侧的观测。谁随谁动由**驱动自己的表**给出（bank 的
+    /// vf_curve ext 槽 → `FabricTree`），按卡读、不按世代断言；本注释
+    /// 的跨代观测是该表的旁证（Ada 的 ext0=SYS 正对应上面 bit1 动 SYS）。
     pub fn is_ada(&self) -> bool {
         matches!(
             self,
             GpuType::Mobile40Series | GpuType::Desktop40Series | GpuType::WorkstationLovelace
-        )
-    }
-
-    /// 是否为 Ampere 及更新世代（30/40/50 系 + 对应工作站/服务器）。
-    ///
-    /// 用于 ClkDomains WRITE 记录的 bit1 耦合分界：Ampere30+Ada 的 bit1
-    /// 耦合 SYS（写 bit1 会带动 SYS，需给 bit3 写 -f 抵消），Pascal/
-    /// GTX16/RTX20 的 bit1 纯 Xbar（直写即可）。50 系（Blackwell）未
-    /// 实测，按"30 系和以后"口径归入耦合组。Hopper 是 Ampere 后的服务器
-    /// 世代（H100 后继 A100），归入耦合组。Volta 不含：介于 P100/T4 属
-    /// Pascal-era 行为。
-    /// 见 `is_ada` 注释的跨代 A/B 汇总。
-    pub fn is_ampere_plus(&self) -> bool {
-        matches!(
-            self,
-            GpuType::Mobile30Series
-                | GpuType::Desktop30Series
-                | GpuType::Mobile40Series
-                | GpuType::Desktop40Series
-                | GpuType::Mobile50Series
-                | GpuType::Desktop50Series
-                | GpuType::WorkstationAmpere
-                | GpuType::WorkstationLovelace
-                | GpuType::WorkstationBlackwell
-                | GpuType::ServerAmpere
-                | GpuType::ServerLovelace
-                | GpuType::ServerBlackwell
-                | GpuType::ServerHopper
         )
     }
 
@@ -959,5 +940,731 @@ mod tests {
         // 非 legacy 对照：Pascal 工作站 / 消费 10 系
         assert!(!GpuType::WorkstationPascal.is_legacy_voltage());
         assert!(!GpuType::Desktop10Series.is_legacy_voltage());
+    }
+}
+
+// ────────────────────── Fabric 域附着关系与净值求解 ──────────────────────
+//
+// Fabric-domain attachment: which ClkDomains WRITE-record offsets ride into
+// which other domains, and how to resolve a **net** (sign-corrected) write.
+//
+// ## Where the relation comes from
+//
+// The driver declares the attachment in its private V/F table: each bank's
+// main `vf_curve` block carries optional EXTENDED-section slots
+// (`ClkVfPointPrivate::domain_freqs_mhz`, `+0x74+0x10*k`) holding the
+// *derived* operating point of the fabric domains that have no main block of
+// their own. `get-private-vftable` on an RTX 4060 (Ada/R610.74) reads
+// `bank0 xbar vf_curve … ext0=SYS ext1=HOST` — XBAR is the parent, SYS and
+// HOST its attached children: moving XBAR drags them, and their own offsets
+// stack on top of the dragged value. The slot roster is
+// `[XBAR, SYS, MSD, HOST]` minus every domain that owns a main `vf_curve`
+// block **in this table** — a layout fact, never a generation table.
+//
+// Two live dumps agree on the rule, on two generations:
+//
+// * RTX 4060 Laptop (Ada / R610.74): `bank0 xbar vf_curve … ext0=SYS
+//   ext1=HOST`. MSD owns a main block of its own on Ada, so the driver packs
+//   only SYS/HOST into the xbar record. A/B: writing bit1 moves SYS and HOST;
+//   it does NOT move MSD — which is exactly MSD's absence from the roster.
+// * 30 系 (Ampere): the same record carries `ext0=SYS ext1=MSD ext2=HOST`.
+//   MSD owns no main block there, and all three follow the XBAR offset (the
+//   master→slave linkage was observed live on SYS/HOST/MSD alike).
+//
+// **Every edge the table declares is applied** — master/slave control follows
+// the driver's own declaration. The one thing we must not do is guess when we
+// cannot see it: a table that never arrived leaves
+// [`FabricTree::table_available`] false and the front-ends refuse the fabric
+// writes outright. (A table whose ext slots come back undecoded — Blackwell
+// today — is a card we cannot yet see the relation *of*; it reads as a table
+// declaring no edge and writes raw, see [`FabricTree::from_table`].)
+//
+// ## Net semantics
+//
+// `net(d) = own(d) + Σ own(parents of d)`. A row displays and writes the NET
+// value; [`FabricTree::plan`] turns a set of net targets into the raw
+// WRITE-record values that realize them, re-parking every non-target child of
+// a moved parent so its net stays put, in topological order (parents first).
+//
+// 私有 V/F 表的 ext 槽解码 + 净值守恒求解器，见下。
+
+/// Slots observed per (owner, ext slot) before the slot counts as an edge —
+/// mirrors the ext-curve plausibility gate the GUI/TUI extractors use
+/// (`_extract_ext_curves`), so a single stray record cannot invent a relation.
+const MIN_SLOT_POINTS: usize = 4;
+
+/// The fabric domains that can appear in the ext roster, in slot order.
+///
+/// **Universe warning**: these are ClkDomains **WRITE-record** bits (the
+/// `clk_client_record_name` list), *not* the MEASURE/RTSS bit space and *not*
+/// `GetAllClocks`'s `ClockDomainId`. The three are disjoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum FabricDomain {
+    Xbar,
+    Sys,
+    Msd,
+    Host,
+}
+
+impl FabricDomain {
+    /// Roster order = ext slot order.
+    pub const POOL: [FabricDomain; 4] = [
+        FabricDomain::Xbar,
+        FabricDomain::Sys,
+        FabricDomain::Msd,
+        FabricDomain::Host,
+    ];
+
+    /// ClkDomains WRITE-record bit for this domain.
+    pub fn bit(self) -> u8 {
+        match self {
+            FabricDomain::Xbar => 1,
+            FabricDomain::Sys => 3,
+            FabricDomain::Msd => 5,
+            FabricDomain::Host => 9,
+        }
+    }
+
+    pub fn from_bit(bit: u8) -> Option<Self> {
+        match bit {
+            1 => Some(FabricDomain::Xbar),
+            3 => Some(FabricDomain::Sys),
+            5 => Some(FabricDomain::Msd),
+            9 => Some(FabricDomain::Host),
+            _ => None,
+        }
+    }
+
+    /// lowercase slug used in CLI/JSON payloads.
+    pub fn slug(self) -> &'static str {
+        match self {
+            FabricDomain::Xbar => "xbar",
+            FabricDomain::Sys => "sys",
+            FabricDomain::Msd => "msd",
+            FabricDomain::Host => "host",
+        }
+    }
+
+    /// UPPERCASE name as it appears in the ext-slot roster legend.
+    pub fn roster_name(self) -> &'static str {
+        match self {
+            FabricDomain::Xbar => "XBAR",
+            FabricDomain::Sys => "SYS",
+            FabricDomain::Msd => "MSD",
+            FabricDomain::Host => "HOST",
+        }
+    }
+
+    pub fn from_roster_name(name: &str) -> Option<Self> {
+        FabricDomain::POOL
+            .into_iter()
+            .find(|d| d.roster_name().eq_ignore_ascii_case(name))
+    }
+
+    /// Map a `vf_curve` segment's empirical domain hint into this space.
+    /// `Gpc`/`Mem`/`Disp`/`Unknown` have no fabric WRITE bit of their own.
+    pub fn from_hint(hint: ClkVfDomainHint) -> Option<Self> {
+        match hint {
+            ClkVfDomainHint::Xbar => Some(FabricDomain::Xbar),
+            ClkVfDomainHint::Msd => Some(FabricDomain::Msd),
+            _ => None,
+        }
+    }
+}
+
+/// Resolved relation for one GPU, read out of the driver's own table.
+#[derive(Debug, Clone, Default)]
+pub struct FabricTree {
+    roster: Vec<FabricDomain>,
+    edges: Vec<(FabricDomain, FabricDomain)>,
+    table_available: bool,
+}
+
+impl FabricTree {
+    /// Build the relation from the **unfiltered** private V/F table (both
+    /// banks, every domain) — a `--bank/--domain` filtered view would distort
+    /// the roster (a domain filtered out reappears in it and shifts every
+    /// later slot) and must never be passed here.
+    ///
+    /// `None` (no table at all: read unsupported, or the call failed) = no
+    /// roster, no edges, `table_available() == false`: the relation is
+    /// UNKNOWN, and the front-ends refuse fabric writes rather than guess.
+    ///
+    /// A table whose ext slots do not come back decoded (Blackwell today —
+    /// the reader gates that layout, see `nvapi-rs` `blackwell_layout`)
+    /// arrives here as a table that declares no edge, so a 50-series write
+    /// goes out raw, the way it did before this relation existed. Giving
+    /// those cards their true edges is a separate change.
+    pub fn from_table(table: Option<&ClkVfPointsPrivate>) -> Self {
+        match table {
+            Some(t) => {
+                let (roster, edges) = derive_structure(t);
+                Self {
+                    roster,
+                    edges: edges.into_iter().collect(),
+                    table_available: true,
+                }
+            }
+            None => Self::default(),
+        }
+    }
+
+    pub fn table_available(&self) -> bool {
+        self.table_available
+    }
+
+    /// Roster-minus-owners as read from this table (empty when unavailable).
+    pub fn roster(&self) -> &[FabricDomain] {
+        &self.roster
+    }
+
+    /// Every attachment the driver's table declares: `(master, slave)`.
+    pub fn edges(&self) -> &[(FabricDomain, FabricDomain)] {
+        &self.edges
+    }
+
+    /// Parents (masters) whose offset rides into `child`. Empty = the driver
+    /// attaches nothing to it — the row writes raw.
+    pub fn parents(&self, child: FabricDomain) -> Vec<FabricDomain> {
+        self.edges
+            .iter()
+            .filter(|(_, c)| *c == child)
+            .map(|(p, _)| *p)
+            .collect()
+    }
+
+    pub fn children(&self, parent: FabricDomain) -> Vec<FabricDomain> {
+        self.edges
+            .iter()
+            .filter(|(p, _)| *p == parent)
+            .map(|(_, c)| *c)
+            .collect()
+    }
+
+    /// Does this relation attach anything at all? Front-ends use it to skip
+    /// the net path (and its extra reads) on a card where nothing does.
+    pub fn has_edges(&self) -> bool {
+        !self.edges.is_empty()
+    }
+
+    /// NET offset (kHz) of `d`: its own raw value plus every parent's.
+    pub fn net_khz(&self, own_now: &BTreeMap<u8, i64>, d: FabricDomain) -> i64 {
+        let mut total = own_now.get(&d.bit()).copied().unwrap_or(0);
+        for p in self.parents(d) {
+            total += own_now.get(&p.bit()).copied().unwrap_or(0);
+        }
+        total
+    }
+
+    /// Resolve net targets into raw WRITE-record values (kHz).
+    ///
+    /// `own_now` is the current raw frequency-plane value per WRITE bit
+    /// (missing = 0). Returns `(bit, kHz)` writes for the frequency plane in
+    /// topological order (parents first), **omitting no-ops** so an unchanged
+    /// target re-applies cleanly. Every non-target child of a moved parent is
+    /// re-parked to hold its net constant.
+    pub fn plan(
+        &self,
+        own_now: &BTreeMap<u8, i64>,
+        targets: &BTreeMap<FabricDomain, i64>,
+    ) -> Vec<(u8, i64)> {
+        let mut nodes: BTreeSet<FabricDomain> = targets.keys().copied().collect();
+        for d in FabricDomain::POOL {
+            if own_now.contains_key(&d.bit()) {
+                nodes.insert(d);
+            }
+        }
+        for &(parent, child) in &self.edges {
+            nodes.insert(parent);
+            nodes.insert(child);
+        }
+        let order = self.topological(&nodes);
+        let mut new_own: BTreeMap<u8, i64> = own_now.clone();
+        let mut writes: Vec<(u8, i64)> = Vec::new();
+        for d in order {
+            let parents = self.parents(d);
+            let old = own_now.get(&d.bit()).copied().unwrap_or(0);
+            let upstream_moved = parents.iter().any(|p| {
+                new_own.get(&p.bit()).copied().unwrap_or(0)
+                    != own_now.get(&p.bit()).copied().unwrap_or(0)
+            });
+            let target = targets.get(&d).copied();
+            if target.is_none() && !upstream_moved {
+                continue; // untouched and nothing above it moved
+            }
+            let parent_sum: i64 = parents
+                .iter()
+                .map(|p| new_own.get(&p.bit()).copied().unwrap_or(0))
+                .sum();
+            // A target's own := target − Σ parents. A dragged non-target keeps
+            // the net it had: own := net_old − Σ new parents.
+            let new = match target {
+                Some(t) => t - parent_sum,
+                None => {
+                    let net_old: i64 = old
+                        + parents
+                            .iter()
+                            .map(|p| own_now.get(&p.bit()).copied().unwrap_or(0))
+                            .sum::<i64>();
+                    net_old - parent_sum
+                }
+            };
+            if new != old {
+                writes.push((d.bit(), new));
+            }
+            new_own.insert(d.bit(), new);
+        }
+        writes
+    }
+
+    /// Parents before children; a cycle (never expected — the driver's fabric
+    /// is a forest) is broken by dropping the back edge rather than looping.
+    fn topological(&self, nodes: &BTreeSet<FabricDomain>) -> Vec<FabricDomain> {
+        let mut out = Vec::new();
+        let mut done: BTreeSet<FabricDomain> = BTreeSet::new();
+        let mut visiting: BTreeSet<FabricDomain> = BTreeSet::new();
+        for &d in nodes {
+            self.visit(d, nodes, &mut out, &mut done, &mut visiting);
+        }
+        out
+    }
+
+    fn visit(
+        &self,
+        d: FabricDomain,
+        nodes: &BTreeSet<FabricDomain>,
+        out: &mut Vec<FabricDomain>,
+        done: &mut BTreeSet<FabricDomain>,
+        visiting: &mut BTreeSet<FabricDomain>,
+    ) {
+        if done.contains(&d) || visiting.contains(&d) {
+            return; // already emitted, or a back edge in a cycle
+        }
+        visiting.insert(d);
+        for p in self.parents(d) {
+            if nodes.contains(&p) {
+                self.visit(p, nodes, out, done, visiting);
+            }
+        }
+        visiting.remove(&d);
+        if done.insert(d) {
+            out.push(d);
+        }
+    }
+}
+
+/// Read the attachment structure out of an unfiltered private V/F table:
+/// `(roster, edges)`.
+///
+/// Roster = `[XBAR, SYS, MSD, HOST]` minus every domain owning a main
+/// `vf_curve` block **in this table** (positions, not generations). A
+/// `vf_curve` segment is the owner of the points inside its index range; a
+/// slot `k` populated on ≥ [`MIN_SLOT_POINTS`] of them turns `owner → roster[k]`
+/// into an edge.
+fn derive_structure(
+    table: &ClkVfPointsPrivate,
+) -> (Vec<FabricDomain>, BTreeSet<(FabricDomain, FabricDomain)>) {
+    let segments: Vec<_> = table
+        .segments
+        .iter()
+        .filter(|s| s.kind == ClkVfSegmentKind::VfCurve)
+        .collect();
+    let owners: BTreeSet<FabricDomain> = segments
+        .iter()
+        .filter_map(|s| FabricDomain::from_hint(s.domain_hint))
+        .collect();
+    let roster: Vec<FabricDomain> = FabricDomain::POOL
+        .into_iter()
+        .filter(|d| !owners.contains(d))
+        .collect();
+    let mut counts: BTreeMap<(FabricDomain, usize), usize> = BTreeMap::new();
+    for p in &table.points {
+        let owner = segments
+            .iter()
+            .find(|s| {
+                s.bank == p.bank
+                    && s.start_index as usize <= p.index as usize
+                    && p.index as usize <= s.end_index as usize
+            })
+            .and_then(|s| FabricDomain::from_hint(s.domain_hint));
+        let Some(owner) = owner else { continue };
+        for k in 0..roster.len().min(4).min(p.domain_freqs_mhz.len()) {
+            if p.domain_freqs_mhz[k] > 0 && p.domain_volts_uV[k] > 0 {
+                *counts.entry((owner, k)).or_default() += 1;
+            }
+        }
+    }
+    let edges = counts
+        .into_iter()
+        .filter(|&(_, n)| n >= MIN_SLOT_POINTS)
+        .map(|((owner, k), _)| (owner, roster[k]))
+        .collect();
+    (roster, edges)
+}
+
+#[cfg(test)]
+mod fabric_tests {
+    use super::*;
+    use crate::{ClkVfPointPrivate, ClkVfSegment, ClkVfSegmentKind};
+
+    fn point(bank: u8, index: u16, slots: &[(usize, u32, u32)]) -> ClkVfPointPrivate {
+        let mut p = ClkVfPointPrivate {
+            bank,
+            index,
+            record_type: 8,
+            ..Default::default()
+        };
+        for &(k, f, v) in slots {
+            p.domain_freqs_mhz[k] = f;
+            p.domain_volts_uV[k] = v;
+        }
+        p
+    }
+
+    fn seg(bank: u8, hint: ClkVfDomainHint, start: u16, end: u16) -> ClkVfSegment {
+        ClkVfSegment {
+            bank,
+            record_type: 8,
+            kind: ClkVfSegmentKind::VfCurve,
+            domain_hint: hint,
+            start_index: start,
+            end_index: end,
+            count: end - start + 1,
+            ..Default::default()
+        }
+    }
+
+    /// Ada/R610.74 shape: gpc + xbar + msd all have main blocks in bank 0, the
+    /// xbar block carries ext0=SYS, ext1=HOST (live 4060 dump).
+    fn ada_table() -> ClkVfPointsPrivate {
+        let mut t = ClkVfPointsPrivate {
+            segments: vec![
+                seg(0, ClkVfDomainHint::Gpc, 0, 126),
+                seg(0, ClkVfDomainHint::Xbar, 127, 253),
+                seg(0, ClkVfDomainHint::Msd, 254, 380),
+            ],
+            ..Default::default()
+        };
+        for i in 0..8u16 {
+            t.points.push(point(
+                0,
+                127 + i,
+                &[(0, 2400 + i as u32, 1_000_000), (1, 900, 800_000)],
+            ));
+        }
+        t
+    }
+
+    /// 30 系 live dump shape: only gpc + xbar own main blocks, and the xbar
+    /// block fills all three slots (`ext0=SYS ext1=MSD ext2=HOST`).
+    fn ampere_table() -> ClkVfPointsPrivate {
+        let mut t = ClkVfPointsPrivate {
+            segments: vec![
+                seg(0, ClkVfDomainHint::Gpc, 0, 126),
+                seg(0, ClkVfDomainHint::Xbar, 127, 253),
+            ],
+            ..Default::default()
+        };
+        for i in 0..8u16 {
+            t.points.push(point(
+                0,
+                127 + i,
+                &[(0, 2400, 1_000_000), (1, 1900, 900_000), (2, 1600, 850_000)],
+            ));
+        }
+        t
+    }
+
+    /// Turing shape: the gpc block is the only main block, 4 slots = the
+    /// whole pool.
+    fn turing_table() -> ClkVfPointsPrivate {
+        let mut t = ClkVfPointsPrivate {
+            segments: vec![seg(0, ClkVfDomainHint::Gpc, 0, 126)],
+            ..Default::default()
+        };
+        for i in 0..8u16 {
+            t.points.push(point(
+                0,
+                i,
+                &[
+                    (0, 2400, 1_000_000),
+                    (1, 1900, 900_000),
+                    (2, 1600, 850_000),
+                    (3, 1300, 800_000),
+                ],
+            ));
+        }
+        t
+    }
+
+    fn own(pairs: &[(u8, i64)]) -> BTreeMap<u8, i64> {
+        pairs.iter().copied().collect()
+    }
+
+    fn targets(pairs: &[(FabricDomain, i64)]) -> BTreeMap<FabricDomain, i64> {
+        pairs.iter().copied().collect()
+    }
+
+    #[test]
+    fn ada_roster_and_edges_match_the_live_dump() {
+        let tree = FabricTree::from_table(Some(&ada_table()));
+        assert!(tree.table_available());
+        assert_eq!(tree.roster(), [FabricDomain::Sys, FabricDomain::Host]);
+        assert_eq!(
+            tree.edges(),
+            [
+                (FabricDomain::Xbar, FabricDomain::Sys),
+                (FabricDomain::Xbar, FabricDomain::Host)
+            ]
+        );
+        // MSD owns a main block of its own on Ada — it is off the roster, and
+        // no edge may point at it (the A/B agrees: bit1 does not move MSD).
+        assert_eq!(tree.parents(FabricDomain::Msd), vec![]);
+        assert!(tree.has_edges());
+    }
+
+    #[test]
+    fn ampere_attaches_every_slot_the_driver_packs() {
+        // 30 系 live dump: ext0=SYS ext1=MSD ext2=HOST — all three follow the
+        // XBAR offset, so all three compensate.
+        let tree = FabricTree::from_table(Some(&ampere_table()));
+        assert_eq!(
+            tree.roster(),
+            [FabricDomain::Sys, FabricDomain::Msd, FabricDomain::Host]
+        );
+        assert_eq!(
+            tree.children(FabricDomain::Xbar),
+            vec![FabricDomain::Sys, FabricDomain::Msd, FabricDomain::Host]
+        );
+        for child in [FabricDomain::Sys, FabricDomain::Msd, FabricDomain::Host] {
+            assert_eq!(tree.parents(child), vec![FabricDomain::Xbar], "{child:?}");
+        }
+        assert_eq!(tree.parents(FabricDomain::Xbar), vec![]);
+    }
+
+    #[test]
+    fn turing_gpc_slots_are_not_fabric_edges() {
+        // The only main block is GPC's and GPC has no fabric WRITE bit: the
+        // whole pool is roster, nothing is attached, and a Core offset never
+        // re-parks a fabric record.
+        let tree = FabricTree::from_table(Some(&turing_table()));
+        assert_eq!(
+            tree.roster(),
+            [
+                FabricDomain::Xbar,
+                FabricDomain::Sys,
+                FabricDomain::Msd,
+                FabricDomain::Host
+            ]
+        );
+        assert!(!tree.has_edges());
+        let plan = tree.plan(
+            &own(&[(1, 50_000)]),
+            &targets(&[(FabricDomain::Sys, 30_000)]),
+        );
+        assert_eq!(plan, vec![(3, 30_000)]);
+    }
+
+    #[test]
+    fn no_table_means_no_relation_at_all() {
+        // A read that never produced a table (unsupported arch, failed call):
+        // empty roster, no edges, `table_available` false — the front-ends
+        // read that as UNKNOWN and refuse a fabric write instead of guessing
+        // one.
+        let tree = FabricTree::from_table(None);
+        assert!(!tree.table_available());
+        assert!(tree.roster().is_empty());
+        assert!(!tree.has_edges());
+        assert_eq!(tree.parents(FabricDomain::Sys), vec![]);
+        assert_eq!(tree.parents(FabricDomain::Xbar), vec![]);
+    }
+
+    // ── plan() must reproduce the shipped single-edge formulas exactly ──
+
+    fn ada_tree() -> FabricTree {
+        FabricTree::from_table(Some(&ada_table()))
+    }
+
+    #[test]
+    fn xbar_write_parks_the_child_cancels_and_holds_both_nets() {
+        let tree = ada_tree();
+        // Pre-write: no Xbar offset yet, SYS net −40 MHz, HOST net −10 MHz.
+        // Writing Xbar = +200 MHz must leave both nets exactly where they were.
+        let now = own(&[(1, 0), (3, -40_000), (9, -10_000)]);
+        let plan = tree.plan(&now, &targets(&[(FabricDomain::Xbar, 200_000)]));
+        assert_eq!(plan, vec![(1, 200_000), (3, -240_000), (9, -210_000)]);
+        let after: BTreeMap<u8, i64> = now
+            .iter()
+            .map(|(k, v)| (*k, *v))
+            .chain(plan.iter().copied())
+            .collect();
+        assert_eq!(tree.net_khz(&after, FabricDomain::Sys), -40_000);
+        assert_eq!(tree.net_khz(&after, FabricDomain::Host), -10_000);
+    }
+
+    #[test]
+    fn ampere_master_move_parks_msd_and_host_too() {
+        // 30 系: MSD rides XBAR exactly like SYS/HOST (live linkage), so a
+        // master move must hold all three nets.
+        let tree = FabricTree::from_table(Some(&ampere_table()));
+        let now = own(&[(1, 0), (3, -40_000), (5, 20_000), (9, -10_000)]);
+        let plan = tree.plan(&now, &targets(&[(FabricDomain::Xbar, 100_000)]));
+        assert_eq!(
+            plan,
+            vec![(1, 100_000), (3, -140_000), (5, -80_000), (9, -110_000)]
+        );
+        let after: BTreeMap<u8, i64> = now
+            .iter()
+            .map(|(k, v)| (*k, *v))
+            .chain(plan.iter().copied())
+            .collect();
+        assert_eq!(tree.net_khz(&after, FabricDomain::Sys), -40_000);
+        assert_eq!(tree.net_khz(&after, FabricDomain::Msd), 20_000);
+        assert_eq!(tree.net_khz(&after, FabricDomain::Host), -10_000);
+    }
+
+    #[test]
+    fn xbar_write_is_idempotent() {
+        let tree = ada_tree();
+        let now = own(&[(1, 200_000), (3, -40_000), (9, -150_000)]);
+        assert_eq!(
+            tree.plan(&now, &targets(&[(FabricDomain::Xbar, 200_000)])),
+            vec![]
+        );
+    }
+
+    #[test]
+    fn sys_write_resolves_the_net_against_the_parent() {
+        let tree = ada_tree();
+        let now = own(&[(1, 120_000), (3, 30_000), (9, 0)]);
+        // net SYS target +80 → bit3 := 80_000 − 120_000 = −40_000
+        assert_eq!(
+            tree.plan(&now, &targets(&[(FabricDomain::Sys, 80_000)])),
+            vec![(3, -40_000)]
+        );
+    }
+
+    #[test]
+    fn host_write_is_now_net_aware_on_ada() {
+        let tree = ada_tree();
+        let now = own(&[(1, 100_000), (3, 0), (9, 0)]);
+        assert_eq!(
+            tree.plan(&now, &targets(&[(FabricDomain::Host, 50_000)])),
+            vec![(9, -50_000)]
+        );
+    }
+
+    #[test]
+    fn resetting_a_row_zeroes_its_net_and_keeps_the_siblings() {
+        let tree = ada_tree();
+        // Xbar ↺: bit1 := 0; SYS net (−100_000+? no: 100_000−100_000=0) and HOST
+        // net 140_000 both survive — bit3/bit9 absorb the parent's departure.
+        let now = own(&[(1, 100_000), (3, -100_000), (9, 40_000)]);
+        assert_eq!(
+            tree.plan(&now, &targets(&[(FabricDomain::Xbar, 0)])),
+            vec![(1, 0), (3, 0), (9, 140_000)]
+        );
+        let after = own(&[(1, 0), (3, 0), (9, 140_000)]);
+        assert_eq!(tree.net_khz(&after, FabricDomain::Sys), 0);
+        assert_eq!(tree.net_khz(&after, FabricDomain::Host), 140_000);
+        // Sys ↺ with a live SYS net: bit3 := −bit1; XBAR/HOST untouched. This
+        // is the write today's `_reset_sys_domain_action` performs, and it is
+        // now the *net* zero (old code also wrote bit3 := 0 → net became bit1).
+        let now = own(&[(1, 100_000), (3, 30_000), (9, 40_000)]);
+        assert_eq!(
+            tree.plan(&now, &targets(&[(FabricDomain::Sys, 0)])),
+            vec![(3, -100_000)]
+        );
+        // …and an already-zero SYS net needs no write at all (idempotent ↺).
+        let now = own(&[(1, 100_000), (3, -100_000), (9, 40_000)]);
+        assert_eq!(tree.plan(&now, &targets(&[(FabricDomain::Sys, 0)])), vec![]);
+    }
+
+    #[test]
+    fn joint_targets_solve_in_parent_first_order() {
+        let tree = ada_tree();
+        let now = own(&[(1, 0), (3, 0), (9, 0)]);
+        let plan = tree.plan(
+            &now,
+            &targets(&[(FabricDomain::Xbar, 100_000), (FabricDomain::Sys, 30_000)]),
+        );
+        // bit1 := 100; bit3 := 30 − 100 = −70; HOST keeps net 0 → bit9 := −100
+        assert_eq!(plan, vec![(1, 100_000), (3, -70_000), (9, -100_000)]);
+    }
+
+    #[test]
+    fn zeroing_every_own_zeroes_every_net() {
+        // "reset all domains" with a complete read of the four records.
+        let tree = ada_tree();
+        let now = own(&[(1, 100_000), (3, -100_000), (5, 70_000), (9, 40_000)]);
+        let all: BTreeMap<FabricDomain, i64> =
+            FabricDomain::POOL.into_iter().map(|d| (d, 0)).collect();
+        let plan = tree.plan(&now, &all);
+        assert_eq!(plan, vec![(1, 0), (3, 0), (5, 0), (9, 0)]);
+        let after: BTreeMap<u8, i64> = plan.iter().copied().collect();
+        assert_eq!(tree.net_khz(&after, FabricDomain::Sys), 0);
+        assert_eq!(tree.net_khz(&after, FabricDomain::Host), 0);
+    }
+
+    #[test]
+    fn missing_records_read_as_zero_and_still_hold_their_net() {
+        // `own_now` is the caller's read of each record; an absent bit is 0,
+        // not "skip me" — so a parent move still parks that record's believed
+        // net instead of silently dropping it. (Front-ends must therefore
+        // hand in every record they claim to manage: the four fabric rows all
+        // come from one `get-private-freq-domain-info` read.)
+        let tree = ada_tree();
+        let now = own(&[(1, 100_000), (9, 40_000)]); // bit3 never read → 0
+        assert_eq!(tree.net_khz(&now, FabricDomain::Sys), 100_000);
+        assert_eq!(
+            tree.plan(&now, &targets(&[(FabricDomain::Xbar, 0)])),
+            vec![(1, 0), (3, 100_000), (9, 140_000)]
+        );
+    }
+
+    #[test]
+    fn net_khz_sums_every_parent() {
+        let tree = ada_tree();
+        let now = own(&[(1, 100_000), (3, 20_000), (5, 70_000), (9, -30_000)]);
+        assert_eq!(tree.net_khz(&now, FabricDomain::Sys), 120_000);
+        assert_eq!(tree.net_khz(&now, FabricDomain::Host), 70_000);
+        // MSD owns a main block on Ada → nothing rides into it
+        assert_eq!(tree.net_khz(&now, FabricDomain::Msd), 70_000);
+        assert_eq!(tree.net_khz(&now, FabricDomain::Xbar), 100_000);
+    }
+
+    #[test]
+    fn a_single_stray_record_does_not_invent_an_edge() {
+        // One msd-block point carrying a slot-0 value is below
+        // MIN_SLOT_POINTS — it must not turn into an `msd → sys` attachment.
+        let mut t = ada_table();
+        t.points.push(point(0, 260, &[(0, 900, 800_000)]));
+        let tree = FabricTree::from_table(Some(&t));
+        assert_eq!(tree.roster(), [FabricDomain::Sys, FabricDomain::Host]);
+        assert_eq!(
+            tree.edges(),
+            [
+                (FabricDomain::Xbar, FabricDomain::Sys),
+                (FabricDomain::Xbar, FabricDomain::Host)
+            ]
+        );
+    }
+
+    #[test]
+    fn domains_map_to_the_write_record_bits() {
+        assert_eq!(FabricDomain::from_bit(9), Some(FabricDomain::Host));
+        assert_eq!(
+            FabricDomain::from_roster_name("host"),
+            Some(FabricDomain::Host)
+        );
+        assert_eq!(FabricDomain::from_hint(ClkVfDomainHint::Gpc), None);
+        assert_eq!(
+            FabricDomain::from_hint(ClkVfDomainHint::Xbar),
+            Some(FabricDomain::Xbar)
+        );
+        assert_eq!(FabricDomain::Xbar.bit(), 1);
+        assert_eq!(FabricDomain::Sys.bit(), 3);
+        assert_eq!(FabricDomain::Msd.bit(), 5);
+        assert_eq!(FabricDomain::Host.bit(), 9);
     }
 }

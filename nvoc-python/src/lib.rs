@@ -4,9 +4,9 @@ use nvapi::hi::{
 use nvml_wrapper::enum_wrappers::device::{Api, PerformanceState};
 use nvoc_core::{
     BackendSet, CheckVoltageFrequency, ClearEdid, ClkVfDomainClass, ConvertEnum,
-    DisableNvapiThermalSim, GpuTarget, GpuType, NvapiPStateNativeLock, NvapiPerfFreqCap,
-    PmgrArbiterProbe, QueryApiRestriction, QueryAutoBoost, QueryDisplays, QueryDomainVfpPoints,
-    QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings, QueryGpuStatus,
+    DisableNvapiThermalSim, FabricTree, GpuTarget, GpuType, NvapiPStateNativeLock,
+    NvapiPerfFreqCap, PmgrArbiterProbe, QueryApiRestriction, QueryAutoBoost, QueryDisplays,
+    QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings, QueryGpuStatus,
     QueryLegacyCoreOvervoltRanges, QueryNvapiClkDomainFreq, QueryNvapiClkDomainFreqDirect,
     QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomains, QueryNvapiClkVfPoints,
     QueryNvapiCoolerInfo, QueryNvapiCoreVoltageControl, QueryNvapiDNotifier,
@@ -573,9 +573,6 @@ fn normalize_info(target: &GpuTarget<'_>) -> PyResultValue {
         "xbar_supported".into(),
         bool_value(series.supports_xbar_offset()),
     );
-    // bit1 耦合分界（30 系+Ada 的 bit1 耦合 SYS，需 bit3 写 -f 抵消）。
-    // 见 gpu_type.rs is_ampere_plus / is_ada 的跨代 A/B 注释。
-    map.insert("is_ampere_plus".into(), bool_value(series.is_ampere_plus()));
     map.insert("bios_version".into(), text(&info.bios_version));
     map.insert("bus".into(), text(info.bus));
     if let Some(vendor) = info.vendor() {
@@ -2642,6 +2639,47 @@ fn query_private_freq_domain_info(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAn
     py_value(py, &value)
 }
 
+/// `fabric_relations` payload fragment: the driver's master → slave (ext-slot)
+/// domain relation the front-ends compensate against — see
+/// `nvoc_core::FabricTree`. Derived from the **unfiltered** table, so a
+/// consumer can trust the roster regardless of what it asked for;
+/// `table_available: false` = no relation (refuse fabric writes). The CLI's
+/// `get-private-vftable` builds the same shape; keep the two in lockstep.
+fn fabric_relations_json(tree: &FabricTree) -> Value {
+    let mut map = Map::new();
+    map.insert("source".into(), Value::from("vftable-ext"));
+    map.insert(
+        "table_available".into(),
+        Value::from(tree.table_available()),
+    );
+    map.insert(
+        "roster".into(),
+        Value::Array(
+            tree.roster()
+                .iter()
+                .map(|d| Value::from(d.slug()))
+                .collect(),
+        ),
+    );
+    map.insert(
+        "edges".into(),
+        Value::Array(
+            tree.edges()
+                .iter()
+                .map(|(parent, child)| {
+                    let mut e = Map::new();
+                    e.insert("parent".into(), Value::from(parent.slug()));
+                    e.insert("parent_bit".into(), Value::from(parent.bit()));
+                    e.insert("child".into(), Value::from(child.slug()));
+                    e.insert("child_bit".into(), Value::from(child.bit()));
+                    Value::Object(e)
+                })
+                .collect(),
+        ),
+    );
+    Value::Object(map)
+}
+
 /// Read the private ClockClient V/F-points family (GetInfo 0x8895B510 →
 /// GetStatus 0x7FEE9032): per-bank point masks + V/F curve records.
 /// Records are voltage-indexed; units live-calibrated vs the public GPC VFP
@@ -2748,6 +2786,10 @@ fn query_private_vftable(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
         let vfp = vfp;
         Ok(match vfp {
             Some(v) => value_object([
+                (
+                    "fabric_relations",
+                    fabric_relations_json(&FabricTree::from_table(Some(&v))),
+                ),
                 (
                     "masks",
                     Value::Array(
@@ -2859,7 +2901,16 @@ fn query_private_vftable(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
                     ),
                 ),
             ]),
-            None => value_object([("supported", Value::from(false))]),
+            // No private table (arch without the read, or it failed): the
+            // relation is UNKNOWN — the front-ends refuse fabric writes
+            // rather than compensate on a guess.
+            None => value_object([
+                ("supported", Value::from(false)),
+                (
+                    "fabric_relations",
+                    fabric_relations_json(&FabricTree::from_table(None)),
+                ),
+            ]),
         })
     })?;
     py_value(py, &value)

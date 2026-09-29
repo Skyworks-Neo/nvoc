@@ -21,7 +21,8 @@ pub use conv::ConvertEnum;
 pub use error::Error;
 pub use gpu::{GpuSelector, nvapi_interface_version};
 pub use gpu_type::{
-    ArchOcPrior, GpuOcParams, GpuType, GpuVoltageLimitParams, GpuVoltageLockParams, OcPriorPoint,
+    ArchOcPrior, FabricDomain, FabricTree, GpuOcParams, GpuType, GpuVoltageLimitParams,
+    GpuVoltageLockParams, OcPriorPoint,
 };
 pub use operation::{
     CheckVoltageFrequency, ClearEdid, DisableNvapiThermalSim, GetFanCurves, GetPowerMode,
@@ -89,7 +90,7 @@ pub use ::nvapi::hi::{
     GpuStatus, Kilohertz, KilohertzDelta, Microvolts, MicrovoltsDelta, PState, Percentage,
     SensorThrottle, VfPoint, VfPointType, VoltageDomain,
 };
-pub use ::nvapi::{clk_vf_delta_for_target, clk_vf_effect_for_delta};
+pub use ::nvapi::{ClkVfSegment, clk_vf_delta_for_target, clk_vf_effect_for_delta};
 
 /// Most recent NVAPI status failure on this thread, or `None`. nvapi
 /// records it in a thread-local as every failed call funnels through
