@@ -20,6 +20,7 @@ EXPECTED_EXPORTS = [
     "check_voltage_frequency",
     "clear_edid",
     "clk_vf_delta_for_target_mhz",
+    "configure_library_paths",
     "discover_gpus",
     "force_wake",
     "get_core_voltage_control",

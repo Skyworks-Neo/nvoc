@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 from PIL import Image
 
-from src.backend import NativeBackend
+from src.backend import NativeBackend, apply_native_paths
 from src.cli_runner import CLIRunner
 from src.config import Config
 from src.parsing import (
@@ -386,6 +386,14 @@ class App(ctk.CTk):
         self._vfp_offset_state_cache = None  # type: Optional[Tuple[bool, Optional[int]]]
         self._vfp_offset_refresh_inflight = False  # is a worker running now
         self._pending_vfp_offset_refresh = False  # do we need one more run
+        # 配置键的库路径覆盖：只补 env 还没设置的槽位（main() 里的命令行参数
+        # 与用户预设 env 优先），且必须先于 NativeBackend 的首次 GPU 调用。
+        apply_native_paths(
+            str(self.config.get("nvapi_lib_path") or ""),
+            str(self.config.get("nvml_lib_path") or ""),
+            override=False,
+            warn=lambda message: self.console.append(f"[GUI] {message}\n"),
+        )
         self.backend = NativeBackend(self)
 
         # Guard to suppress _on_gpu_changed during programmatic gpu_var.set() calls

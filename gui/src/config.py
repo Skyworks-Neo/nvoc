@@ -12,6 +12,11 @@ JSONValue = Union[JSONPrimitive, Dict[str, Any], List[Any]]
 
 DEFAULT_CONFIG: Dict[str, JSONValue] = {
     "cli_exe_path": "",  # Auto-detected or user-specified
+    # Native library path overrides (env NVOC_NVAPI_PATH / NVOC_NVML_PATH).
+    # 命令行参数 --nvapi-path/--nvml-path 优先于这里的持久化配置；两者都
+    # 必须发生在首次 GPU 调用前（App 启动早期应用）。
+    "nvapi_lib_path": "",
+    "nvml_lib_path": "",
     "last_gpu_id": "",
     "last_gpu_idx": "",
     "autoscan": {

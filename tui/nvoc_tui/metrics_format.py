@@ -264,7 +264,9 @@ def _format_metric_lines(status: dict, architecture: str) -> list[str]:
         f"GPU {_pct('Graphics')}",
         # FrameBuffer is NVAPI's name for the memory-controller utilization domain.
         f"MC {_pct('FrameBuffer')}",
-        f"VEN {_pct('VideoEngine')}",
+        # VideoEngine is the whole video-engine domain (encode + decode + ...),
+        # not just encode — hence the VID label.
+        f"VID {_pct('VideoEngine')}",
         f"BUS {_pct('BusInterface')}",
     ])
 
