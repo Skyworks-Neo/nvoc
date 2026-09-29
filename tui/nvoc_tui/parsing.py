@@ -605,6 +605,50 @@ def synthesize_effective(
     return eff
 
 
+def route_for_index(curve: CurveData, index: int) -> str:
+    """Which V/F table ``index`` of ``curve`` (a visible/plotted index) goes to.
+
+    ``curve.public_writable`` is the per-point editability read off the public
+    table (``query_public_vftable``'s ``point_type``): True = the open VFP
+    interface can move the point, False = it reads Fixed there and only the
+    private table can. ``None`` (private-only segment, corrupt public read)
+    means no per-point information — the curve-level verdict stands, exactly
+    as before.
+    """
+    writable = getattr(curve, "public_writable", None)
+    if writable is None or not (0 <= index < len(writable)):
+        return "public" if curve.write_mode == "public" else "private"
+    return "public" if writable[index] else "private"
+
+
+def group_route_runs(
+    routes: list[str], deltas_khz: list[int], start: int
+) -> list[tuple[str, int, int, int]]:
+    """Split a selection into contiguous same-route, same-delta write runs.
+
+    ``routes`` and ``deltas_khz`` are index-aligned with the selection, whose
+    first point is the visible index ``start``. Returns ``[(route, frm, to,
+    dkhz), …]`` with inclusive VISIBLE indices — callers add ``seg_start`` to
+    reach the private table. A run breaks when the route flips (a Fixed point
+    inside the selection) or the delta changes (the public path's existing
+    grouping); a private run must stay contiguous because
+    ``set_vfp_range_per_point_private`` writes one span at a time.
+    """
+    if len(routes) != len(deltas_khz):
+        raise ValueError(
+            f"routes/deltas length mismatch: {len(routes)} != {len(deltas_khz)}"
+        )
+    runs: list[tuple[str, int, int, int]] = []
+    for offset, route in enumerate(routes):
+        dkhz = deltas_khz[offset]
+        if runs and runs[-1][0] == route and runs[-1][3] == dkhz:
+            prev_route, frm, _to, _dkhz = runs[-1]
+            runs[-1] = (prev_route, frm, start + offset, dkhz)
+        else:
+            runs.append((route, start + offset, start + offset, dkhz))
+    return runs
+
+
 def build_vf_curves(
     gpc_points: list[dict[str, Any]] | None,
     gpc_err: str | None,
@@ -666,11 +710,11 @@ def build_vf_curves(
             / 1000.0
             for p in gpc_points
         ]
-        gpc_curve.has_fixed = any(p.get("point_type") == "fixed" for p in gpc_points)
         gpc_curve.seg_start = 0
         gpc_curve.seg_end = len(gpc_points) - 1 if gpc_points else 0
-        # Public family present: traditional OC unless a point is Fixed.
-        gpc_curve.write_mode = "private" if gpc_curve.has_fixed else "public"
+        # Public family present: traditional OC for every point it can move,
+        # the private table only for the Fixed ones.
+        gpc_curve.mark_public_read([p.get("point_type") != "fixed" for p in gpc_points])
     elif public_vfp_unsupported(gpc_err):
         # Open family rejected — the private GPC segment (if any) is the
         # only GPC source; located below from clk_data.
@@ -780,12 +824,26 @@ def build_vf_curves(
                 cd.defaults = [
                     (p.get("default_frequency_khz") or 0) / 1000.0 for p in gpc_points
                 ]
-            cd.has_fixed = any(p.get("point_type") == "fixed" for p in gpc_points)
+                # Public default plane adopted ⇒ the public write is the
+                # honest base for every point it can move. Routing is PER
+                # POINT: an Ada/consumer GPC reads all-prog and goes entirely
+                # public (the private table STACKS on top there — a private
+                # write would double the offset invisibly), while a Fixed
+                # point among them still needs the private table. Only adopt
+                # when the default plane is public: the else-shape keeps
+                # PRIVATE defaults, and a public write (delta = target −
+                # default) would bake the private/public bias in as an error
+                # on every apply. Such a curve keeps the private route it had.
+                cd.mark_public_read([
+                    p.get("point_type") != "fixed" for p in gpc_points
+                ])
             cd.source = "hybrid"
         else:
             # Shifted or broken public read: private currents AND defaults
             # are the honest view — the public default plane is corrupt
-            # there (== defaults on legacy, live state elsewhere).
+            # there (== defaults on legacy, live state elsewhere). No usable
+            # per-point classes either: has_fixed marks the whole curve as not
+            # publicly writable (public_writable stays None).
             cd.has_fixed = True
         curves["gpc"] = cd
     elif gpc_curve is not None:

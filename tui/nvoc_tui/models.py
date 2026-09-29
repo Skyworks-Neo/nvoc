@@ -106,7 +106,7 @@ class CurveData:
     """One plotted V/F curve (GPC public / XBAR / MSD private)."""
 
     curve_id: str
-    source: str = "public"  # "public" | "private"
+    source: str = "public"  # "public" | "private" | "hybrid"
     write_mode: str = "public"  # "public" | "private"
     bank: int = 0
     seg_start: int = 0
@@ -115,9 +115,39 @@ class CurveData:
     frequencies: list[float] = field(default_factory=list)  # MHz (current)
     defaults: list[float] = field(default_factory=list)  # MHz (default)
     has_fixed: bool = False
+    # Per-point public editability, index-aligned with ``voltages``: True =
+    # the open VFP interface moves that point, False = it reads Fixed on the
+    # public table and only the private one can. None = no trustworthy public
+    # read (private-only segment, corrupt read), in which case the curve-level
+    # ``write_mode`` decides as it always did. ``write_mode`` is the AGGREGATE
+    # of this list — "public" when any point is publicly writable. Only
+    # parsing.route_for_index may be used for a per-point decision.
+    public_writable: list[bool] | None = None
     # Synthesized effective series (positive-slot1 display), see
     # parsing.synthesize_effective. None when no offset data was read.
     effective: EffectiveCurve | None = None
+
+    def mark_public_read(self, public_writable: list[bool] | None) -> None:
+        """Adopt the public table's per-point editability for this curve.
+
+        ``None`` (or an empty read — no points, nothing to decide) = no
+        trustworthy public read: the curve keeps its curve-level ``write_mode``
+        and every point routes the old way.
+        """
+        if not public_writable:
+            self.public_writable = None
+            return
+        self.public_writable = list(public_writable)
+        self.has_fixed = any(not w for w in self.public_writable)
+        self.write_mode = "public" if any(self.public_writable) else "private"
+
+    def public_read_note(self) -> str:
+        """Log suffix naming the per-point class mix, "" when unknown."""
+        writable = self.public_writable
+        if not writable:
+            return ""
+        fixed = sum(1 for w in writable if not w)
+        return f", {fixed}/{len(writable)} Fixed" if fixed else ""
 
 
 @dataclass(slots=True)
