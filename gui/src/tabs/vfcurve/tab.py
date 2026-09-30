@@ -44,6 +44,13 @@ _CURVE_COLORS = {
     # Pascal-HBM compute cards (GP100/V100): bank 0's 2nd 80-pt curve is
     # the HBM MEM V/F curve (live A/B: the MEM domain offset hits it).
     "mem": {"current": "#00CC66", "default": "#004D25"},  # bright green / dark green
+    # Server Pascal dual-plane (P100 live campaign 2026-09-30): bank 0 =
+    # 80 points x 2 planes — A 0..79 PRE-OC (voltage side), B 80..159 OC
+    # (frequency side, index = A + 80). The GUI merges them into ONE
+    # logical GPC OC curve (the B-plane segment); plane A is kept as the
+    # axis authority only, and applies go through the paired-write call.
+    "gpc_pre_oc": {"current": "#00ccff", "default": "#1f4e79"},
+    "gpc_oc": {"current": "#00CC66", "default": "#004D25"},
 }
 # Display label + private-domain class for the raw-converted prior.
 # The third curve's attribution moved twice — HOST → SYS (voltage-lock)
@@ -66,6 +73,12 @@ _CURVE_META = {
     # g(def) prior — no HBM-specific C(def) calibration exists yet, so the
     # raw-converted path uses the base table like GPC.
     "mem": {"label": "MEM", "class": "graphics", "domain_bit": 4},
+    # Server Pascal dual-plane planes. The MEASURE bits are unknown (the
+    # planes are GPC-physical; rail attribution is still being mapped) —
+    # domain_bit stays None so no live crosshair claims a rail. Applies go
+    # through the paired-write call, not the raw-converted prior.
+    "gpc_pre_oc": {"label": "GPC PRE-OC", "class": "graphics", "domain_bit": None},
+    "gpc_oc": {"label": "GPC OC", "class": "graphics", "domain_bit": None},
 }
 
 # ── Unknown-curve support ──
@@ -93,6 +106,9 @@ def _curve_meta_for(cid: str) -> dict:
 # GLOBAL offset — curve-point offsets and domain global offsets are
 # separate RM storage, so a curve reset alone leaves a global offset
 # still shifting the domain.
+# The dual-plane GPC OC plane has NO known domain-global WRITE bit (the
+# old "mem"→bit2 attribution belonged to the pre-rename mislabel) — no
+# global reset is attempted for it.
 _CURVE_WRITE_BIT = {"gpc": 0, "xbar": 1, "msd": 5, "mem": 2}
 
 # Reverse of _CURVE_WRITE_BIT for offset normalization (bit -> curve id).
@@ -317,7 +333,7 @@ def _curve_colors_for(cid: str) -> dict:
 # RTX 50-series MSVDD powers the XBAR curve, GP100/GV100's bit-1 rail is the
 # HBM MEM rail. Single-rail parts (mobile 4060, mask 0x1) fall back to the
 # primary rail for every curve.
-_SECONDARY_RAIL_CURVES = ("xbar", "mem")
+_SECONDARY_RAIL_CURVES = ("xbar", "mem", "gpc_oc")
 
 
 class _CurveData:
@@ -1363,6 +1379,16 @@ class VFCurveTab:
         elif self._auto_refreshing:
             self._schedule_next_auto_refresh()
 
+    def _curve_label(self, cid: str) -> str:
+        """Display label with the dual-plane rename: on server Pascal
+        dual-plane cards the PUBLIC GPC curve is the LIM (voltage-side
+        PRE-OC limit) plane — same ladder, so it renders as GPC LIM while
+        the merged private curve is GPC OC."""
+        label = _curve_meta_for(cid)["label"]
+        if cid == "gpc" and getattr(self, "_dual_plane_gpc", False):
+            return "GPC LIM"
+        return label
+
     def _build_curves(
         self, gpu, gpc_points, gpc_err, public_unsupported, clk_data, domain_info=None
     ) -> bool:
@@ -1422,12 +1448,23 @@ class VFCurveTab:
             pass
 
         # ── Private segments: GPC (default-axis authority), XBAR, MSD,
-        # unknownN. ──
+        # unknownN. Server Pascal dual-plane cards report the 80+80 pair
+        # (gpc_pre_oc + gpc_oc): the GUI merges them into ONE logical GPC
+        # OC curve — plane A (gpc_pre_oc) is kept as the axis authority
+        # only, plane B (gpc_oc) is the displayed/edited curve, and every
+        # apply goes through the paired-write call (nvoc_core keeps
+        # plane A >= plane B at every instant).
         private_gpc: Optional[_CurveData] = None
         unknown_count = 0
+        self._dual_plane_gpc = False
         if clk_data and clk_data.get("segments"):
             segs = clk_data["segments"]
             pts = clk_data.get("points", [])
+            vf_hints = {
+                seg.get("domain") for seg in segs if seg.get("kind") == "vf_curve"
+            }
+            dual_plane_gpc = "gpc_pre_oc" in vf_hints and "gpc_oc" in vf_hints
+            self._dual_plane_gpc = dual_plane_gpc
             for seg in segs:
                 if seg.get("kind") != "vf_curve":
                     continue  # pstate_bins are not curves — never plotted
@@ -1443,7 +1480,12 @@ class VFCurveTab:
                 ]
                 if not seg_pts:
                     continue
-                if hint in _CURVE_COLORS:
+                if dual_plane_gpc and hint == "gpc_pre_oc":
+                    # merged into the logical GPC OC curve — plane A is the
+                    # axis authority only, never a separate displayed curve
+                    # (per-plane freedom stays with the CLI --unsafe path).
+                    curve_id = "gpc_pre_oc"
+                elif hint in _CURVE_COLORS:
                     curve_id = hint
                 else:
                     # Unnamed domain (50-series 4th curve): display as
@@ -1459,7 +1501,7 @@ class VFCurveTab:
                 cd.frequencies = [p["freq_current_mhz"] for p in seg_pts]
                 cd.defaults = [p["freq_default_mhz"] for p in seg_pts]
                 cd.write_mode = "private"
-                if cd.curve_id == "gpc":
+                if cd.curve_id in ("gpc", "gpc_pre_oc"):
                     private_gpc = cd
                 else:
                     curves[cd.curve_id] = cd
@@ -1573,7 +1615,8 @@ class VFCurveTab:
         # legend all iterate this dict directly — without this, a
         # public-source GPC (inserted last above) would sort after the
         # private segments.
-        order = {"gpc": 0, "xbar": 1, "msd": 2, "mem": 3}
+        order = {"gpc": 0, "gpc_oc": 1, "xbar": 2, "msd": 3, "mem": 4, "gpc_pre_oc": 5}
+        # (gpc_pre_oc is merged away on dual-plane cards; kept for safety)
         curves = dict(sorted(curves.items(), key=lambda kv: order.get(kv[0], 4)))
 
         # Effective-series synthesis is the FALLBACK for the broken-positive-
@@ -2200,7 +2243,7 @@ class VFCurveTab:
             # Label (right): curve name + active indicator.
             colors = _curve_colors_for(cid)
             active = cid == self._active_curve
-            label_text = _curve_meta_for(cid)["label"]
+            label_text = self._curve_label(cid)
             lbl = tk.Label(
                 btn,
                 text=label_text,
@@ -2451,7 +2494,7 @@ class VFCurveTab:
         self._pending_wall_line = None
         self._wall_handle = None
         active_colors = _curve_colors_for(self._active_curve)
-        active_label = _curve_meta_for(self._active_curve)["label"]
+        active_label = self._curve_label(self._active_curve)
 
         # Non-active visible curves first (lower zorder, static).
         for cid, curve in self._curves.items():
@@ -2460,7 +2503,7 @@ class VFCurveTab:
             if not self._curve_visible.get(cid):
                 continue
             colors = _curve_colors_for(cid)
-            lbl = _curve_meta_for(cid)["label"]
+            lbl = self._curve_label(cid)
             ax.plot(
                 curve.voltages,
                 curve.defaults,
@@ -3151,7 +3194,7 @@ class VFCurveTab:
                 # writes the GPC (primary) rail regardless of the selected
                 # curve — refuse the grab so the grayed handle means what it
                 # shows.
-                label = _curve_meta_for(self._active_curve)["label"]
+                label = self._curve_label(self._active_curve)
                 self.app.console.append(
                     f"[GUI] Volt Limit handle disabled on {label}: this part has a "
                     f"single (GPC) voltage rail — switch to GPC to drag it.\n"
@@ -4579,6 +4622,50 @@ class VFCurveTab:
         base = curve.seg_start + start  # absolute private index of `start`
         class_name = _curve_meta_for(curve.curve_id)["class"]
         defaults_mhz = list(self._defaults)
+
+        # ── Server Pascal dual-plane: the logical GPC OC curve applies
+        # through the paired write — both planes converge to the same value
+        # in the invariant-safe order (raises: plane A first; lowers: plane
+        # B first), so plane A >= plane B holds at every instant. ──
+        if curve.curve_id == "gpc_oc" and getattr(self, "_dual_plane_gpc", False):
+            a_base = base - 80  # plane-A coordinate of the same points
+            self.app.console.append(
+                f"[GUI] Applying PAIRED dual-plane VFP to GPC OC {start}–{end} "
+                f"(planes A {a_base}..+{len(deltas_khz) - 1} + B {a_base + 80}..…)\n"
+            )
+
+            def apply_paired(
+                native,
+                gpu=gpu,
+                a_base=a_base,
+                deltas_khz=deltas_khz,
+                pending_wall=pending_wall,
+                rail_bit=self._active_p0_rail_bit(),
+            ) -> str:
+                wall_msg = (
+                    self._apply_wall_inline(native, gpu, pending_wall, rail_bit) + "\n"
+                    if pending_wall is not None
+                    else ""
+                )
+                for offset, dkz in enumerate(deltas_khz):
+                    r = native.set_vfp_pair_offset(gpu, a_base + offset, 1, dkz)
+                    if isinstance(r, dict) and r.get("supported") is False:
+                        raise RuntimeError(
+                            "paired dual-plane write unsupported on this GPU"
+                        )
+                return wall_msg + (
+                    f"Successfully applied PAIRED dual-plane offsets to GPC OC "
+                    f"({len(deltas_khz)} pts; planes A{a_base}..{a_base + len(deltas_khz) - 1} "
+                    f"+ B{a_base + 80}..{a_base + 79 + len(deltas_khz)} converged)."
+                )
+
+            self.app.run_native_action(
+                "apply paired dual-plane VFP offsets",
+                apply_paired,
+                on_finished=lambda _rc: self.app.after(0, self._refresh_curve),
+            )
+            return
+
         self.app.console.append(
             f"[GUI] Applying private VFP to {curve.curve_id.upper()} "
             f"{start}–{end} (bank {bank}, mode-0 → raw-converted fallback)…\n"
@@ -4761,6 +4848,40 @@ class VFCurveTab:
 
         shift_full = self._reset_with_shift
         self._reset_with_shift = False
+        # Server Pascal dual-plane: EVERY reset path routes through the
+        # paired write with target 0. Reset is a sequential fill of 0 and
+        # index order is LETHAL there — zeroing plane A point n while its
+        # plane B counterpart (n+80) still holds a positive offset violates
+        # A >= B (non-monotonic table → soft hang, possibly reboot-only
+        # recovery). The paired controller lowers plane B first, then plane
+        # A — including the Shift+Reset path: the whole-bank single-RMW
+        # reset (reset_vfp_private) has an uncontrollable internal record
+        # order and must NOT run on dual-plane cards.
+        if curve.write_mode == "private" and getattr(self, "_dual_plane_gpc", False):
+
+            def reset_paired(native, gpu=gpu) -> str:
+                # reset_vfp_pair_offset is the CONVERGE controller (both
+                # planes to 0, B first) — the OC-apply ratchet never lowers
+                # plane A, so it must not be used for resets.
+                r = native.reset_vfp_pair_offset(gpu)
+                if isinstance(r, dict) and r.get("supported") is False:
+                    return "Paired dual-plane reset unsupported on this GPU."
+                return (
+                    "Successfully reset GPC OC + GPC LIM (ordered paired: plane B "
+                    "80–159 → 0, then plane A 0–79 → 0)."
+                )
+
+            self.app.console.append(
+                "[GUI] Reset: ordered paired clear (plane B first — index order is "
+                "lethal on dual-plane cards)…\n"
+            )
+            self.app.run_native_action(
+                "reset VFP paired dual-plane",
+                reset_paired,
+                on_finished=lambda _rc: self.app.after(0, self._refresh_curve),
+            )
+            return
+
         if shift_full and curve.write_mode != "public":
             bank = curve.bank
 
@@ -4890,6 +5011,8 @@ class VFCurveTab:
         relation = getattr(oc, "_fabric_relation", None)
         parents = relation() if callable(relation) else None
         label = _curve_meta_for(curve_id)["label"]
+        if curve_id == "gpc" and getattr(self, "_dual_plane_gpc", False):
+            label = "GPC LIM"
         if parents is None:
             # Relation unknown for this card: the fabric bits cannot be
             # resolved, so their reset refuses (the message explains why) —
