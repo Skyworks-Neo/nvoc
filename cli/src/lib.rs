@@ -4185,8 +4185,9 @@ fn execute_target(
                             let effect_mhz = ctrl.and_then(|_| {
                                 if mode == 0 {
                                     // ÷1000 kHz→MHz (÷2000 on the Pascal 2× axis —
-                                    // see pascal_2x_axis above)
-                                    Some(value as f64 / mode0_khz_to_mhz)
+                                    // see pascal_2x_axis above); VALUE is signed,
+                                    // see mode0_offset_effect_mhz
+                                    Some(mode0_offset_effect_mhz(value, mode0_khz_to_mhz))
                                 } else if value == 0 {
                                     // no override written — the g(def) prior's D0
                                     // term would show a phantom offset at raw 0
@@ -4579,6 +4580,8 @@ fn execute_target(
                     "pascal_2x_write": pascal_2x && freq_mode,
                     "unit": translated_mhz.map(|m| format!("{:.0} MHz", m)).unwrap_or_else(|| "raw".to_string()),
                     "retained": retained,
+                    "warning": (freq_mode && raw_value < 0)
+                        .then(negative_mode0_offset_warning),
                 }),
                 None => json!({"supported": false}),
             })
@@ -4645,6 +4648,7 @@ fn execute_target(
                     "pascal_2x_write": axis_scale == 2,
                     "unit": "kHz",
                     "points_written": end - start + 1,
+                    "warning": (val < 0).then(negative_mode0_offset_warning),
                 }))
             } else if raw_flag {
                 // mode 1: same raw control word on every point
@@ -7891,6 +7895,27 @@ fn parse_i32_unit(raw: &str, suffix: &str, label: &str) -> CliResult<i32> {
         .map_err(|_| CliError::new(format!("invalid {label} value {raw:?}")))
 }
 
+/// Signed effect in MHz of a mode-0 control VALUE dword. The field is an i32
+/// kHz offset; the write path casts through u32 and RM stores two's
+/// complement, so the readback must re-interpret as i32 BEFORE scaling
+/// (÷1000 kHz→MHz, ÷2000 on the Pascal 2× axis). A plain u32 read renders
+/// -200000 as +2147383.6 — the 2026-09-30 P100 incident signature.
+fn mode0_offset_effect_mhz(value: u32, mode0_khz_to_mhz: f64) -> f64 {
+    value as i32 as f64 / mode0_khz_to_mhz
+}
+
+/// Negative mode-0 offsets are NOT clamped by the RM back-interpolation
+/// slope cap that bounds single-point mode-1 negatives (live P100/582.41:
+/// 16 single-point setter calls all retained -200000). Range-scale negative
+/// writes can collapse the rail and wedge SetControl with -1 until device
+/// disable/enable or reboot. Surfaced as a non-blocking output field.
+fn negative_mode0_offset_warning() -> &'static str {
+    "negative mode-0 offsets bypass the RM slope cap that clamps single-point \
+     mode-1 negatives; large magnitudes can collapse voltage/clock state and \
+     wedge SetControl (-1, recovery: write 0 > reset-private-vftable-offset > \
+     device disable/enable or reboot) — P100 582.41 incident 2026-09-30"
+}
+
 /// Pascal private V/F control axis is 2×-encoded for the mode-0 kHz field on
 /// ALL Pascal generations (see GpuType::is_pascal): the mode-0 control value
 /// is 2× the real kHz (live P100: raw 129300 ↔ 64.65 MHz real; GTX 1080
@@ -8147,6 +8172,21 @@ fn summarize_errors(execution: &Execution) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Mode-0 control VALUE is signed (i32 kHz, stored two's complement):
+    /// -100000 kHz ×2 Pascal axis must render -100.0 MHz, not the
+    /// u32/2000 = +2147383.648 wrap seen in the 2026-09-30 P100 incident.
+    #[test]
+    fn mode0_offset_effect_is_signed_on_pascal_axis() {
+        let written = (-200000_i32) as u32;
+        assert!((mode0_offset_effect_mhz(written, 2000.0) + 100.0).abs() < 1e-9);
+        // the pre-fix signature, for contrast
+        assert!((written as f64 / 2000.0 - 2_147_383.648).abs() < 0.001);
+        assert!((mode0_offset_effect_mhz(200_000, 2000.0) - 100.0).abs() < 1e-9);
+        assert_eq!(mode0_offset_effect_mhz(0, 2000.0), 0.0);
+        // non-Pascal axis divides by 1000
+        assert!((mode0_offset_effect_mhz((-50_000_i32) as u32, 1000.0) + 50.0).abs() < 1e-9);
+    }
 
     /// `get-vbios -i <file>` 离线模式：不触碰 GPU 发现/NvAPI，直接产出与
     /// 在线路径同形的解码结果（机会性真文件；GP104 Pascal dump）。
