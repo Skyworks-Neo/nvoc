@@ -1062,7 +1062,9 @@ impl FabricDomain {
     }
 
     /// Map a `vf_curve` segment's empirical domain hint into this space.
-    /// `Gpc`/`Mem`/`Disp`/`Unknown` have no fabric WRITE bit of their own.
+    /// `Gpc`, the Pascal server dual-plane pair (`GpcPreOc`/`GpcOc` — both
+    /// are GPC-physical planes of one curve), `Mem`/`Disp`/`Unknown` have
+    /// no fabric WRITE bit of their own.
     pub fn from_hint(hint: ClkVfDomainHint) -> Option<Self> {
         match hint {
             ClkVfDomainHint::Xbar => Some(FabricDomain::Xbar),
