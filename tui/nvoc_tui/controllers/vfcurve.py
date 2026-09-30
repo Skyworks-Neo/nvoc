@@ -41,13 +41,13 @@ def _curve_colors_for(cid: str) -> tuple[str, str]:
     return _CURVE_COLORS.get(cid) or ("yellow", "green")
 
 
-_CURVE_ORDER = ("gpc", "xbar", "msd")
+_CURVE_ORDER = ("gpc", "gpc_oc", "xbar", "msd")
 
 # ── Curve → VoltRails rail mapping (display-only in the TUI) ──
 # GPC/MSD ride the PRIMARY rail (lowest bit — the core rail); XBAR and the
 # Pascal-HBM MEM curve are fed by the SECONDARY rail (RTX 50-series MSVDD /
 # GP100·GV100 HBM). Single-rail parts resolve every curve to the primary.
-_SECONDARY_RAIL_CURVES = ("xbar", "mem")
+_SECONDARY_RAIL_CURVES = ("xbar", "mem", "gpc_oc")
 
 
 def _curve_direct_readable(curve_id: str) -> bool:
@@ -120,6 +120,15 @@ class VFCurveController(PaneController):
         # racing the auto-refresh tick): re-run once the inflight one lands,
         # so the new GPU's verdict (curve or none) is final.
         self._refresh_pending = False
+
+    def _curve_label(self, curve_id: str) -> str:
+        """Display label with the dual-plane rename: on server Pascal
+        dual-plane cards the PUBLIC GPC curve is the LIM (voltage-side
+        PRE-OC limit) plane; the merged private curve is GPC OC."""
+        label = curve_meta(curve_id)["label"]
+        if curve_id == "gpc" and getattr(self, "_dual_plane_gpc", False):
+            return "GPC LIM"
+        return label
 
     def auto_refresh_label(self) -> Text:
         state = "On" if self.app.config_data.vfcurve.auto_refresh else "Off"
@@ -330,6 +339,10 @@ class VFCurveController(PaneController):
         # keep the active curve valid (must exist and be visible).
         prev_visible = self._curve_visible or {}
         self._curves = curves
+        # Server Pascal dual-plane: the public GPC curve renders as GPC LIM
+        # (the voltage-side PRE-OC limit plane); the merged private curve
+        # is GPC OC.
+        self._dual_plane_gpc = "gpc_oc" in curves
         self._curve_visible = {cid: prev_visible.get(cid, True) for cid in curves}
         # EXT-slot domain-current overlays (display-only). A label that
         # collides with a main curve is KEPT — Ada's xbar block fills an
@@ -415,7 +428,7 @@ class VFCurveController(PaneController):
         plt.clear_color()
         for curve in visible:
             current_color, default_color = _curve_colors_for(curve.curve_id)
-            label = curve_meta(curve.curve_id)["label"]
+            label = self._curve_label(curve.curve_id)
             plt.plot(
                 curve.voltages,
                 curve.frequencies,
@@ -680,7 +693,7 @@ class VFCurveController(PaneController):
         except Exception:
             return
         discovered = _discovered_cids(self._curves)
-        options = [(curve_meta(cid)["label"], cid) for cid in discovered] or [
+        options = [(self._curve_label(cid), cid) for cid in discovered] or [
             ("GPC", "gpc")
         ]
         if self._synced_options != options:
@@ -713,7 +726,7 @@ class VFCurveController(PaneController):
                 try:
                     selector = self.app.query_one("#vf-curve-selector")
                     checkbox = Checkbox(
-                        curve_meta(cid)["label"],
+                        self._curve_label(cid),
                         value=True,
                         id=f"vf-curve-{cid}",
                         compact=True,
@@ -722,6 +735,12 @@ class VFCurveController(PaneController):
                 except Exception:
                     continue
             checkbox.display = show_checkboxes and cid in self._curves
+            # dual-plane rename: the static GPC checkbox relabels to GPC LIM
+            if cid == "gpc" and getattr(self, "_dual_plane_gpc", False):
+                try:
+                    checkbox.label = self._curve_label(cid)
+                except Exception:
+                    pass
             want = cid in self._curves and self._curve_visible.get(cid, True)
             if checkbox.value != want:
                 checkbox.value = want
@@ -1283,6 +1302,29 @@ class VFCurveController(PaneController):
             class_name = CURVE_META[curve.curve_id]["class"]
             defaults_mhz = list(curve.defaults)
 
+            # ── Server Pascal dual-plane: every reset routes through the
+            # paired write with target 0. Reset is a sequential fill of 0
+            # and index order is LETHAL there — zeroing plane A point n
+            # while its plane B counterpart (n+80) still holds a positive
+            # offset violates A >= B (non-monotonic table → soft hang).
+            # The paired controller lowers plane B first, then plane A. ──
+            if curve.curve_id == "gpc_oc":
+
+                def reset_paired(native, gpu=gpu) -> str:
+                    # reset_vfp_pair_offset is the CONVERGE controller (both
+                    # planes to 0, B first) — the OC-apply ratchet never
+                    # lowers plane A, so it must not be used for resets.
+                    r = native.reset_vfp_pair_offset(gpu)
+                    if isinstance(r, dict) and r.get("supported") is False:
+                        return "Paired dual-plane reset unsupported on this GPU."
+                    return (
+                        "Successfully reset GPC OC + GPC LIM (ordered paired: "
+                        "plane B 80-159 → 0, then plane A 0-79 → 0)."
+                    )
+
+                self.app.run_native_action("reset VFP paired dual-plane", reset_paired)
+                return True
+
             def reset_private(
                 native,
                 gpu=gpu,
@@ -1391,6 +1433,40 @@ class VFCurveController(PaneController):
             cid = curve.curve_id.upper()
             # TUI range inputs apply a uniform delta over the range.
             deltas_khz = [delta * 1000] * (end - start + 1)
+
+            # ── Server Pascal dual-plane: the logical GPC OC curve applies
+            # through the paired write — both planes converge to the same
+            # value in the invariant-safe order (raises: plane A first;
+            # lowers: plane B first), so plane A >= plane B holds at every
+            # instant. Negative deltas (lowering) are handled by the same
+            # call: the controller brings plane B down FIRST. ──
+            if curve.curve_id == "gpc_oc":
+                a_base = base - 80  # plane-A coordinate of the same points
+
+                def apply_paired(
+                    native,
+                    gpu=gpu,
+                    a_base=a_base,
+                    deltas_khz=deltas_khz,
+                    cid=cid,
+                ) -> str:
+                    for offset, dkz in enumerate(deltas_khz):
+                        r = native.set_vfp_pair_offset(gpu, a_base + offset, 1, dkz)
+                        if isinstance(r, dict) and r.get("supported") is False:
+                            return (
+                                f"Paired dual-plane write unsupported on this GPU "
+                                f"({cid})."
+                            )
+                    return (
+                        f"Successfully applied PAIRED dual-plane offsets to {cid} "
+                        f"({len(deltas_khz)} pts; planes converged, safe order)."
+                    )
+
+                self.app.run_native_action(
+                    "apply paired dual-plane VFP offsets",
+                    apply_paired,
+                )
+                return True
 
             def apply_private(
                 native,
