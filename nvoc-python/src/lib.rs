@@ -3150,6 +3150,149 @@ fn set_vfp_point_private(
     py_value(py, &value)
 }
 
+/// Paired dual-plane V/F offset write (server Pascal only) — OC-AUTHORITATIVE:
+/// the OC plane (B) is set to the demanded value and the PRE-OC plane (A)
+/// follows ONLY where it falls short (A = max(A₀, demand) per point, never
+/// lowered by an OC edit). Writes go in the invariant-safe order (raises:
+/// plane A first). `value_khz` is the caller-intended kHz (the Pascal 2×
+/// axis is applied here, matching `set_vfp_point_private`). Returns
+/// `{"supported": false}` off the gate; refuses with an error when the
+/// current table already violates plane A ≥ plane B.
+#[pyfunction]
+fn set_vfp_pair_offset(
+    py: Python<'_>,
+    gpu: &str,
+    start: usize,
+    count: usize,
+    value_khz: i32,
+) -> PyResult<Py<PyAny>> {
+    let value = with_target(gpu, "nvapi", |target| {
+        if !nvoc_core::is_server_pascal_dual_plane(target).map_err(to_py_err)? {
+            return Ok(value_object([("supported", Value::from(false))]));
+        }
+        // the paired path is server-Pascal-only, so the 2× axis always
+        // applies inside it
+        let value_raw = value_khz.saturating_mul(2) as u32;
+        let report = nvoc_core::set_private_vf_oc_offset(target, 0, start, count, value_raw)
+            .map_err(to_py_err)?;
+        let writes = report
+            .writes
+            .iter()
+            .map(|w| {
+                value_object([
+                    (
+                        "plane",
+                        Value::from(match w.plane {
+                            nvoc_core::PrivateVfPairPlane::PreOc => "pre_oc",
+                            nvoc_core::PrivateVfPairPlane::Oc => "oc",
+                        }),
+                    ),
+                    ("bank", Value::from(w.bank as u64)),
+                    ("index", Value::from(w.index as u64)),
+                    ("retained_raw", Value::from(w.retained_raw.unwrap_or(0))),
+                ])
+            })
+            .collect::<Vec<_>>();
+        Ok(value_object([
+            ("applied", Value::from(true)),
+            ("bank", Value::from(report.bank as u64)),
+            ("start", Value::from(report.start as u64)),
+            ("count", Value::from(report.count as u64)),
+            ("value_khz", Value::from(value_khz)),
+            ("value_raw", Value::from(report.value_raw)),
+            (
+                "plane_a_before",
+                Value::from(
+                    report
+                        .plane_a_before
+                        .iter()
+                        .map(|&v| Value::from(v))
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "plane_b_before",
+                Value::from(
+                    report
+                        .plane_b_before
+                        .iter()
+                        .map(|&v| Value::from(v))
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            ("writes", Value::from(writes)),
+        ]))
+    })?;
+    py_value(py, &value)
+}
+
+/// Ordered paired RESET (server Pascal only): converges BOTH planes of the
+/// 80+80 GPC curve to 0 — plane B (OC) first, then plane A (PRE-OC) — the
+/// only invariant-safe order for a fill-of-0 (zeroing plane A point n while
+/// its n+80 counterpart still holds a positive offset violates A ≥ B and
+/// soft-hangs the GPU). Deliberately the CONVERGE controller, NOT the
+/// OC-authoritative ratchet: a reset must lower plane A too, which the
+/// ratchet never does. Clears the mode-0 kHz offsets of both planes
+/// (indices 0..79 + 80..159); the pstate bins (160..167) are untouched.
+#[pyfunction]
+fn reset_vfp_pair_offset(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
+    let value = with_target(gpu, "nvapi", |target| {
+        if !nvoc_core::is_server_pascal_dual_plane(target).map_err(to_py_err)? {
+            return Ok(value_object([("supported", Value::from(false))]));
+        }
+        let report =
+            nvoc_core::set_private_vf_pair_offset(target, 0, 0, 80, 0).map_err(to_py_err)?;
+        let writes = report
+            .writes
+            .iter()
+            .map(|w| {
+                value_object([
+                    (
+                        "plane",
+                        Value::from(match w.plane {
+                            nvoc_core::PrivateVfPairPlane::PreOc => "pre_oc",
+                            nvoc_core::PrivateVfPairPlane::Oc => "oc",
+                        }),
+                    ),
+                    ("bank", Value::from(w.bank as u64)),
+                    ("index", Value::from(w.index as u64)),
+                    ("retained_raw", Value::from(w.retained_raw.unwrap_or(0))),
+                ])
+            })
+            .collect::<Vec<_>>();
+        Ok(value_object([
+            ("applied", Value::from(true)),
+            (
+                "reset_order",
+                Value::from(["plane B 80-159 -> 0", "plane A 0-79 -> 0"]),
+            ),
+            ("points_reset", Value::from(report.writes.len() as u64)),
+            (
+                "plane_a_before",
+                Value::from(
+                    report
+                        .plane_a_before
+                        .iter()
+                        .map(|&v| Value::from(v))
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "plane_b_before",
+                Value::from(
+                    report
+                        .plane_b_before
+                        .iter()
+                        .map(|&v| Value::from(v))
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            ("writes", Value::from(writes)),
+        ]))
+    })?;
+    py_value(py, &value)
+}
+
 /// Reset present V/F curve points on `bank` to default via the private
 /// SetControl (single RMW cycle). `only_mode` 0|1 restricts the clear to
 /// points in that mode (0 = absolute kHz, 1 = raw delta); None clears both.
@@ -4838,6 +4981,8 @@ fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(query_private_vftable, m)?)?;
     m.add_function(wrap_pyfunction!(set_clk_domain_offset, m)?)?;
     m.add_function(wrap_pyfunction!(set_vfp_point_private, m)?)?;
+    m.add_function(wrap_pyfunction!(set_vfp_pair_offset, m)?)?;
+    m.add_function(wrap_pyfunction!(reset_vfp_pair_offset, m)?)?;
     m.add_function(wrap_pyfunction!(set_vfp_range_per_point_private, m)?)?;
     m.add_function(wrap_pyfunction!(clk_vf_delta_for_target_mhz, m)?)?;
     m.add_function(wrap_pyfunction!(reset_vfp_private, m)?)?;

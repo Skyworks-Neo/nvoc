@@ -612,7 +612,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                         "dump-records",
                     ])),
                     formatter: Some(output::format_private_vfp_output),
-                    ..CommandSpec::new("get-private-vftable", Group::Vfp, "Read the private ClockClient V/F-points family: per-bank point masks + V/F curve records (voltage-indexed, units calibrated vs the public GPC VFP); --bank 0|1 selects the mask window (default 0); --domain gpc|xbar|msd|disp|mem filters points to one attributed segment group (same vocabulary as reset-private-vftable-offset; legacy sys/host alias msd, bare 0-4 = hint ordinal). Faithful read by default; --infer-missing-field fills driver-unmaintained fields — PASCAL ONLY (voltage borrowed from the public grid; the default field is shown as current and the true default = current − offset). Turing's private table is fully populated and needs no inference")
+                    ..CommandSpec::new("get-private-vftable", Group::Vfp, "Read the private ClockClient V/F-points family: per-bank point masks + V/F curve records (voltage-indexed, units calibrated vs the public GPC VFP); --bank 0|1 selects the mask window (default 0); --domain gpc|xbar|msd|disp|mem|gpc_pre_oc|gpc_oc filters points to one attributed segment group (same vocabulary as reset-private-vftable-offset; legacy sys/host alias msd, bare 0-6 = hint ordinal; the gpc_pre_oc/gpc_oc pair is the server-Pascal dual-plane curve). Faithful read by default; --infer-missing-field fills driver-unmaintained fields — PASCAL ONLY (voltage borrowed from the public grid; the default field is shown as current and the true default = current − offset). Turing's private table is fully populated and needs no inference")
                 },
             ),
             (
@@ -806,13 +806,13 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 Command::ResetPrivateVftableOffset,
                 CommandSpec {
                     arity: (1, 1),
-                    options: Box::leak(Box::new(["domain", "mode", "freq", "volt", "slot"])),
+                    options: Box::leak(Box::new(["domain", "mode", "freq", "volt", "slot", "unsafe"])),
                     positionals: Box::leak(Box::new([PositionalArg::free(
                     "arg_bank",
                     "BANK",
-                    "Bank to reset: 0 = V/F curve points (clears mode-0 kHz offsets written via set-vfp-point/range-private default/--freq-mode), 1 = pstate-class records; --domain gpc|xbar|msd|disp|mem restricts the reset to that domain's segments (bank 0 only; legacy sys/host alias msd); --freq/--volt (or --mode freq|raw, --slot 0/1) pick ONE plane: freq = mode-0 kHz offsets, volt = mode-1 raw values",
+                    "Bank to reset: 0 = V/F curve points (clears mode-0 kHz offsets written via set-vfp-point/range-private default/--freq-mode), 1 = pstate-class records; --domain gpc|xbar|msd|disp|mem|gpc_pre_oc|gpc_oc restricts the reset to that domain's segments (bank 0 only; legacy sys/host alias msd); --freq/--volt (or --mode freq|raw, --slot 0/1) pick ONE plane: freq = mode-0 kHz offsets, volt = mode-1 raw values",
                 )])),
-                    ..CommandSpec::new("reset-private-vftable-offset", Group::Vfp, "Reset private V/F-POINTS overrides (clear freq/raw offsets the public/pstate20 reset paths cannot reach; --freq/--volt --mode freq|raw --slot 0/1 are equivalent plane selectors, default both)")
+                    ..CommandSpec::new("reset-private-vftable-offset", Group::Vfp, "Reset private V/F-POINTS overrides (clear freq/raw offsets the public/pstate20 reset paths cannot reach; --freq/--volt --mode freq|raw --slot 0/1 are equivalent plane selectors, default both). On server Pascal dual-plane cards the default/--freq reset is ORDERED (plane B to 0 first, then plane A - index-order resets are lethal there); --unsafe restores the legacy paths)")
                 },
             ),
             (
@@ -1205,7 +1205,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 Command::SetPrivateVftablePointOffset,
                 CommandSpec {
                     arity: (3, 3),
-                    options: Box::leak(Box::new(["freq-mode", "raw", "raw-converted"])),
+                    options: Box::leak(Box::new(["freq-mode", "raw", "raw-converted", "unsafe"])),
                     positionals: Box::leak(Box::new([PositionalArg::free(
                         "arg_bank",
                         "BANK",
@@ -1221,14 +1221,14 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                         "VALUE",
                         "default/--freq-mode: kHz freq offset (e.g. 200000 = +200 MHz). --raw-converted: MHz target translated to a raw f-offset control value via the universal g(def) prior (effect_mhz = C(def)*(delta-D0)). --raw: raw f-offset control value verbatim",
                     )])),
-                    ..CommandSpec::new("set-private-vftable-point-offset", Group::Vfp, "Write one V/F curve point via the private SetControl (dangerous V/F edit; bank 0=V/F curve, 1=pstate-class; default/--freq-mode = kHz freq offset (same as public VFP, safest; also reaches xbar/msd domains); --raw-converted = MHz target translated to a raw f-offset control value via the universal g(def) prior; --raw = write the raw f-offset control value verbatim)")
+                    ..CommandSpec::new("set-private-vftable-point-offset", Group::Vfp, "Write one V/F curve point via the private SetControl (dangerous V/F edit; bank 0=V/F curve, 1=pstate-class; default/--freq-mode = kHz freq offset (same as public VFP, safest; also reaches xbar/msd domains); --raw-converted = MHz target translated to a raw f-offset control value via the universal g(def) prior; --raw = write the raw f-offset control value verbatim). On server Pascal dual-plane cards the default/--freq-mode write is PAIRED (both planes, safe order) — --unsafe writes the single addressed plane only")
                 },
             ),
             (
                 Command::SetPrivateVftableRangeOffset,
                 CommandSpec {
                     arity: (4, 4),
-                    options: Box::leak(Box::new(["freq-mode", "raw", "raw-converted"])),
+                    options: Box::leak(Box::new(["freq-mode", "raw", "raw-converted", "unsafe"])),
                     positionals: Box::leak(Box::new([PositionalArg::free(
                         "arg_bank",
                         "BANK",
@@ -1241,7 +1241,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                         "VALUE",
                         "default/--freq-mode: kHz freq offset applied to every point (e.g. 200000 = +200 MHz). --raw-converted: MHz target translated per-point to a raw f-offset control value via g(def) (each point gets its own C(def)/D0). --raw: raw f-offset control word applied to every point",
                     )])),
-                    ..CommandSpec::new("set-private-vftable-range-offset", Group::Vfp, "Write a range of V/F curve points via the private SetControl (dangerous batch V/F edit; single RMW cycle; default/--freq-mode = same kHz freq offset on every point, --raw-converted = one MHz target translated per-point via g(def), --raw = one raw control word on every point)")
+                    ..CommandSpec::new("set-private-vftable-range-offset", Group::Vfp, "Write a range of V/F curve points via the private SetControl (dangerous batch V/F edit; single RMW cycle; default/--freq-mode = same kHz freq offset on every point, --raw-converted = one MHz target translated per-point via g(def), --raw = one raw control word on every point). On server Pascal dual-plane cards the default/--freq-mode write is PAIRED (both planes, safe order) — --unsafe writes the single addressed plane only")
                 },
             ),
             (
@@ -1926,7 +1926,7 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .value_name("DOMAIN")
             .action(ArgAction::Append)
             .global(true)
-            .help("Domain selector, meaning depends on the command: clock domain (core/memory/processor/video), gpu|acoustic (set-temp-limit NVML path), core|mem (set-legacy-freq), gpc|xbar|msd|disp|mem (reset-private-vftable-offset; legacy sys/host alias msd), or a 0-3 clock-domain index (get-pstate-lock; 0=GPC/core, 2=memory)"),
+            .help("Domain selector, meaning depends on the command: clock domain (core/memory/processor/video), gpu|acoustic (set-temp-limit NVML path), core|mem (set-legacy-freq), gpc|xbar|msd|disp|mem|gpc_pre_oc|gpc_oc (private-vftable commands; legacy sys/host alias msd), or a 0-3 clock-domain index (get-pstate-lock; 0=GPC/core, 2=memory)"),
         "output-csv" => Arg::new("output-csv")
             .long("output-csv")
             .value_name("PATH")
@@ -2125,6 +2125,10 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .long("activate")
             .action(ArgAction::SetTrue)
             .help("Switch the cooler policy to TemperatureContinuous (8) in the same transaction, so the written curve actually drives the fan"),
+        "unsafe" => Arg::new("unsafe")
+            .long("unsafe")
+            .action(ArgAction::SetTrue)
+            .help("set-private-vftable-{point,range}-offset on a server Pascal dual-plane card: write the ONE addressed plane instead of the default paired write (both planes converged, safe order). Single-plane writes are your responsibility: plane B > plane A feeds the GPU a non-monotonic table and soft-hangs it"),
         _ => unreachable!("unknown command-specific option {name}"),
     }
 }
@@ -2246,7 +2250,8 @@ fn collect_named_options(
             | "target"
             | "freq"
             | "volt"
-            | "dump-records" => {
+            | "dump-records"
+            | "unsafe" => {
                 if matches.get_flag(name) {
                     options.insert(name.to_string(), vec!["true".to_string()]);
                 }
@@ -4185,8 +4190,9 @@ fn execute_target(
                             let effect_mhz = ctrl.and_then(|_| {
                                 if mode == 0 {
                                     // ÷1000 kHz→MHz (÷2000 on the Pascal 2× axis —
-                                    // see pascal_2x_axis above)
-                                    Some(value as f64 / mode0_khz_to_mhz)
+                                    // see pascal_2x_axis above); VALUE is signed,
+                                    // see mode0_offset_effect_mhz
+                                    Some(mode0_offset_effect_mhz(value, mode0_khz_to_mhz))
                                 } else if value == 0 {
                                     // no override written — the g(def) prior's D0
                                     // term would show a phantom offset at raw 0
@@ -4502,10 +4508,39 @@ fn execute_target(
             // default (no flag) = freq_mode, same as public VFP but reaches
             // xbar/msd; --freq-mode is the explicit alias of the default.
             let freq_mode = !raw_flag && !raw_converted;
+            let unsafe_flag = option_bool(invocation, "unsafe", false)?;
             // Pascal 2× axis: freq-mode writes the real kHz ×2; --raw is the
             // one mode that stays verbatim (raw semantics are raw semantics).
             let pascal_2x = pascal_private_2x_axis(target);
             let axis_scale: i32 = if pascal_2x && freq_mode { 2 } else { 1 };
+
+            // Server Pascal dual-plane (80+80): the default/--freq-mode write
+            // is PAIRED — both planes converge to the same raw value in the
+            // invariant-safe order (raises: plane A first; lowers: plane B
+            // first). --unsafe restores the legacy single-plane write (the
+            // addressed plane only) for per-plane freedom.
+            if freq_mode
+                && bank == 0
+                && !unsafe_flag
+                && nvoc_core::is_server_pascal_dual_plane(target)?
+            {
+                // the user may address either plane; the controller
+                // coordinates are plane A (index − 80 for B-plane inputs)
+                let a_idx = if idx >= 80 { idx - 80 } else { idx };
+                let report = nvoc_core::set_private_vf_oc_offset(
+                    target,
+                    0,
+                    a_idx,
+                    1,
+                    value.saturating_mul(axis_scale) as u32,
+                )?;
+                return Ok(pair_report_json(
+                    &report,
+                    value,
+                    axis_scale,
+                    json!({"bank": bank, "index": idx}),
+                ));
+            }
 
             let (mode_label, raw_value, translated_mhz) = if freq_mode {
                 (
@@ -4567,6 +4602,13 @@ fn execute_target(
                 },
             )?
             .output;
+            let pairing_warning = if unsafe_flag && freq_mode && bank == 0 {
+                nvoc_core::is_server_pascal_dual_plane(target)
+                    .unwrap_or(false)
+                    .then(unsafe_pairing_warning)
+            } else {
+                None
+            };
             Ok(match out {
                 Some(retained) => json!({
                     "applied": true,
@@ -4579,6 +4621,9 @@ fn execute_target(
                     "pascal_2x_write": pascal_2x && freq_mode,
                     "unit": translated_mhz.map(|m| format!("{:.0} MHz", m)).unwrap_or_else(|| "raw".to_string()),
                     "retained": retained,
+                    "warning": (freq_mode && raw_value < 0)
+                        .then(negative_mode0_offset_warning),
+                    "pairing_warning": pairing_warning,
                 }),
                 None => json!({"supported": false}),
             })
@@ -4609,6 +4654,42 @@ fn execute_target(
             // translates the MHz lift verbatim; --raw stays verbatim.
             let pascal_2x = pascal_private_2x_axis(target);
             let axis_scale: i32 = if pascal_2x && freq_mode { 2 } else { 1 };
+
+            let unsafe_flag = option_bool(invocation, "unsafe", false)?;
+            // Server Pascal dual-plane (80+80): the default/--freq-mode range
+            // write is PAIRED — both planes converge to the same raw value in
+            // the invariant-safe order. A range may address either plane
+            // (105-115 maps to its 25-35 counterpart); a range crossing the
+            // 79/80 boundary has no coherent counterpart and is refused.
+            // --unsafe restores the legacy single-plane loop.
+            if freq_mode
+                && bank == 0
+                && !unsafe_flag
+                && nvoc_core::is_server_pascal_dual_plane(target)?
+            {
+                let count = end - start + 1;
+                let (a_start, addressed) = if end < 80 {
+                    (start, json!({"bank": bank, "start": start, "end": end}))
+                } else if start >= 80 {
+                    (
+                        start - 80,
+                        json!({"bank": bank, "start": start, "end": end}),
+                    )
+                } else {
+                    return Err(CliError::new(
+                        "range crosses the plane boundary (index 79/80) — split it into one \
+                         range per plane, or pass --unsafe for a single-plane write",
+                    ));
+                };
+                let report = nvoc_core::set_private_vf_oc_offset(
+                    target,
+                    0,
+                    a_start,
+                    count,
+                    val.saturating_mul(axis_scale) as u32,
+                )?;
+                return Ok(pair_report_json(&report, val, axis_scale, addressed));
+            }
 
             if freq_mode {
                 // mode 0 kHz offset: the batch range method only writes mode 1,
@@ -4645,6 +4726,14 @@ fn execute_target(
                     "pascal_2x_write": axis_scale == 2,
                     "unit": "kHz",
                     "points_written": end - start + 1,
+                    "warning": (val < 0).then(negative_mode0_offset_warning),
+                    "pairing_warning": (unsafe_flag && bank == 0)
+                        .then(|| {
+                            nvoc_core::is_server_pascal_dual_plane(target)
+                                .unwrap_or(false)
+                                .then(unsafe_pairing_warning)
+                        })
+                        .flatten(),
                 }))
             } else if raw_flag {
                 // mode 1: same raw control word on every point
@@ -5719,6 +5808,73 @@ fn execute_target(
             // (the bit-5 offset A/B pinned MSD); sys/host remain accepted
             // as legacy aliases. The disp bins were also once mislabeled
             // host.
+            //
+            // Server Pascal dual-plane (80+80): reset is a sequential fill
+            // of 0, and INDEX ORDER IS LETHAL — zeroing plane A point n
+            // while its plane B counterpart (n+80) still holds a positive
+            // offset violates the cross-plane invariant (B > A feeds the
+            // GPU a non-monotonic table and soft-hangs it; recovery may
+            // need a reboot). Default: ORDERED reset — plane B (OC)
+            // to 0 first, then plane A (PRE-OC), through the paired
+            // controller with target 0. Zeroing plane B alone is safe
+            // (A >= B is preserved), so a --domain gpc_oc reset stays
+            // single-plane. --unsafe restores the legacy paths (single-
+            // plane resets are then the caller's responsibility).
+            let unsafe_flag = option_bool(invocation, "unsafe", false)?;
+            let domain_hint = option_one(invocation, "domain")
+                .map(parse_clk_vf_domain_hint)
+                .transpose()?;
+            if bank == 0
+                && !unsafe_flag
+                && only_mode != Some(1)
+                && nvoc_core::is_server_pascal_dual_plane(target)?
+            {
+                match domain_hint {
+                    Some(ClkVfDomainHint::GpcOc) => {
+                        // plane B only: lowering B keeps A >= B
+                        let mut reset = 0usize;
+                        for idx in 80..=159usize {
+                            run(
+                                target,
+                                SetNvapiVfpPointPrivate {
+                                    bank: 0,
+                                    idx,
+                                    freq_mode: true,
+                                    value: 0,
+                                },
+                            )?;
+                            reset += 1;
+                        }
+                        return Ok(json!({
+                            "applied": true,
+                            "bank": bank,
+                            "domain": "gpc_oc",
+                            "mode": "freq_offset_clear",
+                            "ordered_reset": "plane B only (80..159 → 0; A >= B preserved)",
+                            "points_reset": reset,
+                        }));
+                    }
+                    hint if hint.is_none()
+                        || hint == Some(ClkVfDomainHint::Gpc)
+                        || hint == Some(ClkVfDomainHint::GpcPreOc) =>
+                    {
+                        // touches plane A: both planes must come down
+                        // together, plane B first
+                        let report = nvoc_core::set_private_vf_pair_offset(target, 0, 0, 80, 0)?;
+                        return Ok(json!({
+                            "applied": true,
+                            "bank": bank,
+                            "mode": "freq_offset_clear",
+                            "ordered_paired_reset": true,
+                            "reset_order": ["plane B (80..159) → 0", "plane A (0..79) → 0"],
+                            "points_reset": report.writes.len(),
+                            "plane_a_before": report.plane_a_before,
+                            "plane_b_before": report.plane_b_before,
+                        }));
+                    }
+                    _ => {} // mem/xbar/msd/disp: legacy path below
+                }
+            }
             if let Some(domain_raw) = option_one(invocation, "domain") {
                 // shared vocabulary with get-private-vftable's --domain
                 // (same hint enum; parse_clk_vf_domain_hint also accepts the
@@ -7550,10 +7706,12 @@ fn parse_clk_vf_domain_hint(raw: &str) -> CliResult<ClkVfDomainHint> {
         "msd" | "sys" | "host" | "2" => ClkVfDomainHint::Msd,
         "disp" | "display" | "3" => ClkVfDomainHint::Disp,
         "mem" | "memory" | "4" => ClkVfDomainHint::Mem,
+        "gpc_pre_oc" | "gpc-pre-oc" | "pre_oc" | "pre-oc" | "5" => ClkVfDomainHint::GpcPreOc,
+        "gpc_oc" | "gpc-oc" | "oc" | "6" => ClkVfDomainHint::GpcOc,
         _ => {
             return Err(CliError::new(format!(
-                "invalid --domain {trimmed:?}: expected gpc, xbar, msd, disp, or mem \
-                 (legacy sys/host alias msd; bare 0-4 selects by hint ordinal)"
+                "invalid --domain {trimmed:?}: expected gpc, xbar, msd, disp, mem, gpc_pre_oc, \
+                 or gpc_oc (legacy sys/host alias msd; bare 0-6 selects by hint ordinal)"
             )));
         }
     };
@@ -7891,6 +8049,78 @@ fn parse_i32_unit(raw: &str, suffix: &str, label: &str) -> CliResult<i32> {
         .map_err(|_| CliError::new(format!("invalid {label} value {raw:?}")))
 }
 
+/// Signed effect in MHz of a mode-0 control VALUE dword. The field is an i32
+/// kHz offset; the write path casts through u32 and RM stores two's
+/// complement, so the readback must re-interpret as i32 BEFORE scaling
+/// (÷1000 kHz→MHz, ÷2000 on the Pascal 2× axis). A plain u32 read renders
+/// -200000 as +2147383.6 — the 2026-09-30 P100 incident signature.
+fn mode0_offset_effect_mhz(value: u32, mode0_khz_to_mhz: f64) -> f64 {
+    value as i32 as f64 / mode0_khz_to_mhz
+}
+
+/// Negative mode-0 offsets are NOT clamped by the RM back-interpolation
+/// slope cap that bounds single-point mode-1 negatives (live P100/582.41:
+/// 16 single-point setter calls all retained -200000). Range-scale negative
+/// writes can collapse the rail and wedge SetControl with -1 until device
+/// disable/enable or reboot. Surfaced as a non-blocking output field.
+fn negative_mode0_offset_warning() -> &'static str {
+    "negative mode-0 offsets bypass the RM slope cap that clamps single-point \
+     mode-1 negatives; large magnitudes can collapse voltage/clock state and \
+     wedge SetControl (-1, recovery: write 0 > reset-private-vftable-offset > \
+     device disable/enable or reboot) — P100 582.41 incident 2026-09-30"
+}
+
+/// Single-plane write (--unsafe) on a server Pascal dual-plane card: warn
+/// that the paired default exists and that the cross-plane invariant is
+/// now the caller's responsibility.
+fn unsafe_pairing_warning() -> &'static str {
+    "server Pascal dual-plane card: --unsafe wrote ONE plane only — the \
+     paired default keeps both planes converged with plane A >= plane B \
+     (B > A feeds the GPU a non-monotonic table and soft-hangs it); keep \
+     the other plane <= this value"
+}
+
+/// JSON shape for a paired dual-plane write report (shared by the point
+/// and range commands). `addressed` carries the user-facing coordinates
+/// (the controller always reports plane-A coordinates in `plane_a_start`).
+fn pair_report_json(
+    report: &nvoc_core::PrivateVfPairReport,
+    value: i32,
+    axis_scale: i32,
+    addressed: Value,
+) -> Value {
+    json!({
+        "applied": true,
+        "paired": true,
+        "addressed": addressed,
+        "plane_a_start": report.start,
+        "count": report.count,
+        "mode": "freq_offset",
+        "value": value,
+        // written raw control word (= VALUE ×2 on the Pascal 2× axis)
+        "written_value": value.saturating_mul(axis_scale),
+        "pascal_2x_write": axis_scale == 2,
+        "unit": "kHz",
+        "plane_a_before": report.plane_a_before,
+        "plane_b_before": report.plane_b_before,
+        "writes": report
+            .writes
+            .iter()
+            .map(|w| {
+                json!({
+                    "plane": match w.plane {
+                        nvoc_core::PrivateVfPairPlane::PreOc => "pre_oc",
+                        nvoc_core::PrivateVfPairPlane::Oc => "oc",
+                    },
+                    "bank": w.bank,
+                    "index": w.index,
+                    "retained_raw": w.retained_raw,
+                })
+            })
+            .collect::<Vec<_>>(),
+    })
+}
+
 /// Pascal private V/F control axis is 2×-encoded for the mode-0 kHz field on
 /// ALL Pascal generations (see GpuType::is_pascal): the mode-0 control value
 /// is 2× the real kHz (live P100: raw 129300 ↔ 64.65 MHz real; GTX 1080
@@ -8147,6 +8377,21 @@ fn summarize_errors(execution: &Execution) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Mode-0 control VALUE is signed (i32 kHz, stored two's complement):
+    /// -100000 kHz ×2 Pascal axis must render -100.0 MHz, not the
+    /// u32/2000 = +2147383.648 wrap seen in the 2026-09-30 P100 incident.
+    #[test]
+    fn mode0_offset_effect_is_signed_on_pascal_axis() {
+        let written = (-200000_i32) as u32;
+        assert!((mode0_offset_effect_mhz(written, 2000.0) + 100.0).abs() < 1e-9);
+        // the pre-fix signature, for contrast
+        assert!((written as f64 / 2000.0 - 2_147_383.648).abs() < 0.001);
+        assert!((mode0_offset_effect_mhz(200_000, 2000.0) - 100.0).abs() < 1e-9);
+        assert_eq!(mode0_offset_effect_mhz(0, 2000.0), 0.0);
+        // non-Pascal axis divides by 1000
+        assert!((mode0_offset_effect_mhz((-50_000_i32) as u32, 1000.0) + 50.0).abs() < 1e-9);
+    }
 
     /// `get-vbios -i <file>` 离线模式：不触碰 GPU 发现/NvAPI，直接产出与
     /// 在线路径同形的解码结果（机会性真文件；GP104 Pascal dump）。
@@ -9035,10 +9280,36 @@ mod tests {
             parse_clk_vf_domain_hint("memory").unwrap(),
             ClkVfDomainHint::Mem
         ));
-        // bare ordinals = hint order (gpc/xbar/msd/disp/mem)
+        // bare ordinals = hint order (gpc/xbar/msd/disp/mem/gpc_pre_oc/gpc_oc)
         assert!(matches!(
             parse_clk_vf_domain_hint("4").unwrap(),
             ClkVfDomainHint::Mem
+        ));
+        // server Pascal dual-plane vocabulary (2026-09-30 P100 campaign):
+        // plane A = PRE-OC (voltage side), plane B = OC (frequency side)
+        assert!(matches!(
+            parse_clk_vf_domain_hint("gpc_pre_oc").unwrap(),
+            ClkVfDomainHint::GpcPreOc
+        ));
+        assert!(matches!(
+            parse_clk_vf_domain_hint("pre-oc").unwrap(),
+            ClkVfDomainHint::GpcPreOc
+        ));
+        assert!(matches!(
+            parse_clk_vf_domain_hint("gpc_oc").unwrap(),
+            ClkVfDomainHint::GpcOc
+        ));
+        assert!(matches!(
+            parse_clk_vf_domain_hint("oc").unwrap(),
+            ClkVfDomainHint::GpcOc
+        ));
+        assert!(matches!(
+            parse_clk_vf_domain_hint("5").unwrap(),
+            ClkVfDomainHint::GpcPreOc
+        ));
+        assert!(matches!(
+            parse_clk_vf_domain_hint("6").unwrap(),
+            ClkVfDomainHint::GpcOc
         ));
         assert!(parse_clk_vf_domain_hint("gpc2").is_err());
         assert!(parse_clk_vf_domain_hint("").is_err());
