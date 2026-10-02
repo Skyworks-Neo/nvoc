@@ -21,6 +21,7 @@ from typing import Any
 from .models import (
     AppConfig,
     DashboardSettings,
+    NativeSettings,
     UiSettings,
     VFCurveSettings,
 )
@@ -58,6 +59,7 @@ class ConfigStore:
             "dashboard": asdict(self.data.dashboard),
             "vfcurve": asdict(self.data.vfcurve),
             "ui": asdict(self.data.ui),
+            "native": asdict(self.data.native),
         }
         self.path.write_text(
             json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
@@ -90,11 +92,16 @@ class ConfigStore:
         last_gpu_idx = data.get("last_gpu_idx")
         if not isinstance(last_gpu_idx, int):
             last_gpu_idx = None
+        native = NativeSettings(
+            nvapi_path=str(data.get("native", {}).get("nvapi_path", "") or ""),
+            nvml_path=str(data.get("native", {}).get("nvml_path", "") or ""),
+        )
         return AppConfig(
             last_gpu_idx=last_gpu_idx,
             dashboard=dashboard,
             vfcurve=vfcurve,
             ui=ui,
+            native=native,
         )
 
     def _decode_from_gui(self, data: dict[str, Any]) -> AppConfig:
@@ -102,9 +109,14 @@ class ConfigStore:
         last_gpu_idx = (
             int(last_gpu_idx_raw) if str(last_gpu_idx_raw).isdigit() else None
         )
+        native = NativeSettings(
+            nvapi_path=str(data.get("nvapi_lib_path", "") or ""),
+            nvml_path=str(data.get("nvml_lib_path", "") or ""),
+        )
         return AppConfig(
             last_gpu_idx=last_gpu_idx,
             dashboard=DashboardSettings(refresh_interval=1.0),
             vfcurve=VFCurveSettings(default_path="", auto_refresh=False),
             ui=UiSettings(log_expanded=True, active_tab="dashboard"),
+            native=native,
         )

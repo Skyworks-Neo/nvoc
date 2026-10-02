@@ -8,17 +8,28 @@
 //! best-effort: failures warn but never fail the build that already succeeded.
 
 use crate::util::{self, Res};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Called after a successful `xtask build --release`.
 pub fn ensure_release_on_user_path(root: &Path) {
-    if let Err(message) = add(root) {
+    ensure_dirs_on_user_path(&[root.join("target").join("release")]);
+}
+
+/// Called after a successful `xtask build --release --py-onefile`: the two
+/// PyInstaller dist directories join the user PATH next to target/release,
+/// so the onefile `NVOC-GUI`/`nvoc-tui` launchers are reachable everywhere.
+pub fn ensure_onefile_on_user_path(root: &Path) {
+    ensure_dirs_on_user_path(&[root.join("gui").join("dist"), root.join("tui").join("dist")]);
+}
+
+fn ensure_dirs_on_user_path(dirs: &[PathBuf]) {
+    if let Err(message) = add(dirs) {
         util::warn(&format!(
-            "could not put target/release on the user PATH: {message}"
+            "could not put the build outputs on the user PATH: {message}"
         ));
         util::hint(
-            "add <repo>/target/release to your PATH manually if you want the \
-             release binaries available in every shell",
+            "add the directories printed above to your PATH manually if you want \
+             the binaries available in every shell",
         );
     }
 }
@@ -31,26 +42,48 @@ fn live_path_covers(dir: &str) -> bool {
 }
 
 #[cfg(windows)]
-fn add(root: &Path) -> Res<()> {
+fn add(dirs: &[PathBuf]) -> Res<()> {
     use std::process::Command;
-    let dir = root.join("target").join("release");
-    let dir = dir.to_string_lossy().replace('/', "\\").to_string();
-
-    if live_path_covers(&dir) {
+    let candidates: Vec<String> = dirs
+        .iter()
+        .map(|dir| dir.to_string_lossy().replace('/', "\\"))
+        .filter(|dir| !live_path_covers(dir))
+        .collect();
+    if candidates.is_empty() {
         return Ok(());
     }
     let query = Command::new("reg")
         .args(["query", r"HKCU\Environment", "/v", "Path"])
         .output()
         .map_err(|error| format!("could not run `reg query`: {error}"))?;
-    let Some((kind, raw)) = parse_reg_path_value(&String::from_utf8_lossy(&query.stdout)) else {
-        return write_user_path(&dir, "REG_SZ").and_then(|()| broadcast_environment_change());
+    let missing: Vec<&String> = match parse_reg_path_value(&String::from_utf8_lossy(&query.stdout))
+    {
+        Some((kind, raw)) => {
+            let missing: Vec<&String> = candidates
+                .iter()
+                .filter(|dir| !entry_present(&raw, dir))
+                .collect();
+            if missing.is_empty() {
+                return Ok(());
+            }
+            let mut data = raw;
+            for dir in &missing {
+                data.push(';');
+                data.push_str(dir);
+            }
+            write_user_path(&data, kind)?;
+            missing
+        }
+        None => {
+            let joined = candidates.join(";");
+            write_user_path(&joined, "REG_SZ")?;
+            candidates.iter().collect()
+        }
     };
-    if entry_present(&raw, &dir) {
-        return Ok(());
+    for dir in &missing {
+        println!("  [..]   adding {dir} to the user PATH");
     }
-    println!("  [..]   adding {dir} to the user PATH");
-    write_user_path(&format!("{raw};{dir}"), kind).and_then(|()| broadcast_environment_change())?;
+    broadcast_environment_change()?;
     println!("  [ok]   user PATH updated (new terminals will see it)");
     Ok(())
 }
@@ -141,11 +174,13 @@ fn entry_present(raw: &str, dir: &str) -> bool {
 }
 
 #[cfg(unix)]
-fn add(root: &Path) -> Res<()> {
-    use std::path::PathBuf;
-    let dir = root.join("target").join("release");
-    let dir = dir.to_string_lossy().into_owned();
-    if live_path_covers(&dir) {
+fn add(dirs: &[PathBuf]) -> Res<()> {
+    let candidates: Vec<String> = dirs
+        .iter()
+        .map(|dir| dir.to_string_lossy().into_owned())
+        .filter(|dir| !live_path_covers(dir))
+        .collect();
+    if candidates.is_empty() {
         return Ok(());
     }
     let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
@@ -153,18 +188,31 @@ fn add(root: &Path) -> Res<()> {
     };
     let shell = std::env::var("SHELL").unwrap_or_default();
     let shell = shell.rsplit('/').next().unwrap_or_default();
-    let (rc, line) = rc_for_shell(&home, shell, &dir)?;
+    let rc = {
+        // Resolve the rc once via the first candidate; the file does not
+        // depend on which directory is being added.
+        let (rc, _) = rc_for_shell(&home, shell, candidates.first().unwrap())?;
+        rc
+    };
     let existing = std::fs::read_to_string(&rc).unwrap_or_default();
-    if existing.contains(&dir) {
+    let missing: Vec<&String> = candidates
+        .iter()
+        .filter(|dir| !existing.contains(dir.as_str()))
+        .collect();
+    if missing.is_empty() {
         return Ok(());
     }
     let mut appended = existing;
     if !appended.is_empty() && !appended.ends_with('\n') {
         appended.push('\n');
     }
-    appended.push_str("# nvoc xtask: release binaries\n");
-    appended.push_str(&line);
-    appended.push('\n');
+    for dir in &missing {
+        let (_, line) = rc_for_shell(&home, shell, dir)?;
+        appended.push_str("# nvoc xtask: nvoc binaries\n");
+        appended.push_str(&line);
+        appended.push('\n');
+        println!("  [..]   adding {dir} to the user PATH");
+    }
     if let Some(parent) = rc.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|error| format!("could not create {}: {error}", parent.display()))?;
@@ -172,7 +220,9 @@ fn add(root: &Path) -> Res<()> {
     std::fs::write(&rc, appended)
         .map_err(|error| format!("could not write {}: {error}", rc.display()))?;
     println!(
-        "  [ok]   added {dir} to {} (new shells will see it)",
+        "  [ok]   added {} director{} to {} (new shells will see it)",
+        missing.len(),
+        if missing.len() == 1 { "y" } else { "ies" },
         rc.display()
     );
     Ok(())

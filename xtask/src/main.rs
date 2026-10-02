@@ -63,7 +63,7 @@ fn main() -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
-            eprintln!("\nxtask: {message}");
+            eprintln!("\n{} {message}", util::ansi_stderr("1;31", "xtask:"));
             ExitCode::FAILURE
         }
     }

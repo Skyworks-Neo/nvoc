@@ -25,7 +25,7 @@ use cudarc::nvrtc::{CompileOptions, compile_ptx_with_opts};
 
 use cli_stressor_cuda_rs::{
     BackendError, DeviceInfo, PrecisionKind, PrecisionSpec, StreamMode, VerifyConfig,
-    intalu_ref_element,
+    fill_random_i32, intalu_ref_element,
 };
 
 use super::backend::CudaBackend;
@@ -120,7 +120,6 @@ impl CudaBackend {
             .ok_or_else(|| BackendError::Other("INT ALU kernel unavailable".to_string()))?;
         let n = (size * size) as u32;
         let lane_count = Self::lane_count(stream_mode);
-        let mut rng = StdRng::seed_from_u64(seed);
         let mode: u32 = match spec.kind {
             PrecisionKind::INT8 => 8,
             PrecisionKind::INT16 => 16,
@@ -135,21 +134,60 @@ impl CudaBackend {
 
         let mut xs = Vec::with_capacity(lane_count);
         let mut outs = Vec::with_capacity(lane_count);
-        for lane in 0..lane_count {
-            let stream = self.stream_for_lane(lane);
-            // Seed with i32 data regardless of mode; the kernel narrows
-            // internally for the 8/16-bit stress variants.
-            let host: Vec<i32> = (0..n).map(|_| rng.random::<u32>() as i32).collect();
-            xs.push(
-                stream
-                    .clone_htod(&host)
-                    .map_err(|err| BackendError::Other(err.to_string()))?,
-            );
-            outs.push(
-                stream
+        if self.gpu_generate_enabled() {
+            let kernels = self
+                .gpu_fill
+                .as_ref()
+                .ok_or_else(|| BackendError::Other("gpu fill kernels unavailable".into()))?;
+            let total = n as u64;
+            for lane in 0..lane_count {
+                let stream = self.stream_for_lane(lane);
+                // i32 data regardless of mode; the kernel narrows internally
+                // for the 8/16-bit stress variants.
+                let x = stream
                     .alloc_zeros::<i32>(n as usize)
+                    .map_err(|err| BackendError::Other(err.to_string()))?;
+                unsafe {
+                    stream
+                        .launch_builder(&kernels.i32_fn)
+                        .arg(&x)
+                        .arg(&total)
+                        .arg(&(seed.wrapping_add(lane as u64)))
+                        .launch(LaunchConfig::for_num_elems(n.max(1)))
+                        .map_err(|err| BackendError::Other(err.to_string()))?;
+                }
+                xs.push(x);
+                outs.push(
+                    stream
+                        .alloc_zeros::<i32>(n as usize)
+                        .map_err(|err| BackendError::Other(err.to_string()))?,
+                );
+            }
+        } else {
+            // Page-locked (write-combined) staging for full-bandwidth H2D;
+            // write-only fill, so WC's slow reads never trigger. One fill
+            // shared by all lanes.
+            let mut pinned = unsafe { self._ctx.alloc_pinned::<i32>(n as usize) }
+                .map_err(|err| BackendError::Other(err.to_string()))?;
+            fill_random_i32(
+                pinned
+                    .as_mut_slice()
                     .map_err(|err| BackendError::Other(err.to_string()))?,
+                seed,
             );
+            for lane in 0..lane_count {
+                let stream = self.stream_for_lane(lane);
+                xs.push(
+                    stream
+                        .clone_htod(&pinned)
+                        .map_err(|err| BackendError::Other(err.to_string()))?,
+                );
+                outs.push(
+                    stream
+                        .alloc_zeros::<i32>(n as usize)
+                        .map_err(|err| BackendError::Other(err.to_string()))?,
+                );
+            }
         }
         let cfg = LaunchConfig::for_num_elems(n.max(1));
 

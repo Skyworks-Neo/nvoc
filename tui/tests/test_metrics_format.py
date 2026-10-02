@@ -41,7 +41,7 @@ def test_format_metric_lines_full() -> None:
     assert "TEMP: CORE 62 C" in text
     assert "PWR: 132 W" in text
     assert "PSTATE: P0" in text
-    assert "LOAD: GPU 100% | MC 0% | VEN 12% | BUS 2%" in text
+    assert "LOAD: GPU 100% | MC 0% | VID 12% | BUS 2%" in text
     assert "VRAM: 2.0 / 8.0 GB" in text
     # Exact line match: a substring assert would also match the duplicated
     # "FAN: FAN: ..." prefix this line once had.
@@ -279,7 +279,7 @@ def test_format_metric_lines_missing_fields_render_dashes() -> None:
     text = "\n".join(_format_metric_lines({}, "---"))
 
     assert "CLK: GPU --- | MEM --- | VID --- MHz" in text
-    assert "LOAD: GPU --- | MC --- | VEN --- | BUS ---" in text
+    assert "LOAD: GPU --- | MC --- | VID --- | BUS ---" in text
     assert "VRAM: ---" in text
     assert "FAN: ---" in text
     assert "PCIE: ---" in text

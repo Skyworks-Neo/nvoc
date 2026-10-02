@@ -3,6 +3,7 @@ NVOC-GUI — NVIDIA GPU VF Curve Optimizer GUI
 Entry point for the application.
 """
 
+import argparse
 import importlib
 import os
 import sys
@@ -92,8 +93,41 @@ def _require_gui_runtime(
         ) from exc
 
 
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="nvoc-gui",
+        description="NVOC GUI — NVIDIA GPU VF curve optimizer desktop app.",
+    )
+    parser.add_argument(
+        "--nvapi-path",
+        default=None,
+        metavar="DIR_OR_FILE",
+        help=(
+            "NVAPI library override (env NVOC_NVAPI_PATH). Windows: the "
+            "directory holding nvapi64.dll, or the DLL path itself. Linux: the "
+            "directory holding libnvidia-api.so.1 (SONAME joined automatically), "
+            "or the .so path directly (must carry that SONAME, else a warning "
+            "prints and the system copy loads). Must precede the first GPU call."
+        ),
+    )
+    parser.add_argument(
+        "--nvml-path",
+        default=None,
+        metavar="FILE_OR_DIR",
+        help=(
+            "NVML library override (env NVOC_NVML_PATH). Path to nvml.dll / "
+            "libnvidia-ml.so.1; Linux also accepts a directory (SONAME joined "
+            "automatically). A wrong path fails NVML init loudly instead of "
+            "silently falling back. Must precede the first GPU call."
+        ),
+    )
+    return parser
+
+
 def main() -> int:
     import time
+
+    args = _build_parser().parse_args()
 
     # Startup phase decomposition (mirrored to the support log with wall-clock
     # ms stamps): bootloader extraction happens BEFORE this line and is
@@ -124,9 +158,14 @@ def main() -> int:
     _boot_marker("gui runtime imported")
 
     from src.app import App
+    from src.backend.native import apply_native_paths
     from src.single_instance import SingleInstanceGuard
 
     _boot_marker("src imports done")
+
+    # 命令行参数无条件写入（覆盖配置键与预设 env）；必须在 App() 的首次
+    # GPU 调用之前生效。
+    apply_native_paths(args.nvapi_path, args.nvml_path, override=True)
 
     guard: Optional[Any] = SingleInstanceGuard()
     try:

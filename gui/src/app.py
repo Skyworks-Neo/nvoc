@@ -13,10 +13,9 @@ import tkinter as tk
 import traceback
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
-import pystray
 from PIL import Image
 
-from src.backend import NativeBackend
+from src.backend import NativeBackend, apply_native_paths
 from src.cli_runner import CLIRunner
 from src.config import Config
 from src.parsing import (
@@ -66,6 +65,8 @@ def _is_discovery_offline_error(output: str) -> bool:
 
 
 if TYPE_CHECKING:
+    import pystray
+
     from src.single_instance import SingleInstanceGuard
 
 
@@ -385,6 +386,14 @@ class App(ctk.CTk):
         self._vfp_offset_state_cache = None  # type: Optional[Tuple[bool, Optional[int]]]
         self._vfp_offset_refresh_inflight = False  # is a worker running now
         self._pending_vfp_offset_refresh = False  # do we need one more run
+        # 配置键的库路径覆盖：只补 env 还没设置的槽位（main() 里的命令行参数
+        # 与用户预设 env 优先），且必须先于 NativeBackend 的首次 GPU 调用。
+        apply_native_paths(
+            str(self.config.get("nvapi_lib_path") or ""),
+            str(self.config.get("nvml_lib_path") or ""),
+            override=False,
+            warn=lambda message: self.console.append(f"[GUI] {message}\n"),
+        )
         self.backend = NativeBackend(self)
 
         # Guard to suppress _on_gpu_changed during programmatic gpu_var.set() calls
@@ -1974,8 +1983,18 @@ class App(ctk.CTk):
         self._tray_image = img
         return img
 
-    def _build_tray_icon(self) -> "pystray.Icon":
-        """Create and return a new pystray.Icon instance."""
+    def _build_tray_icon(self) -> Optional["pystray.Icon"]:
+        """Create and return a new pystray.Icon instance.
+
+        Returns None when pystray is unusable in this environment — the
+        import itself probes the display (headless Linux raises
+        DisplayNameError from the X11 backend at import time), so it must
+        stay lazy and failure-tolerant instead of a module-level import.
+        """
+        try:
+            import pystray
+        except Exception:
+            return None
         menu = pystray.Menu(
             pystray.MenuItem("显示主界面", self._show_from_tray, default=True),
             pystray.Menu.SEPARATOR,
@@ -1996,6 +2015,12 @@ class App(ctk.CTk):
 
     def _hide_to_tray(self):
         """Hide the main window and show the tray icon."""
+        # Build the icon BEFORE withdrawing: on tray-less environments
+        # (headless Linux — pystray import fails) the window must stay
+        # reachable through the taskbar instead of vanishing.
+        tray_icon = self._build_tray_icon()
+        if tray_icon is None:
+            return
         self.withdraw()
         # (Re)create tray icon each time so pystray state is clean
         if self._tray_icon is not None:
@@ -2003,7 +2028,7 @@ class App(ctk.CTk):
                 self._tray_icon.stop()
             except Exception:
                 pass
-        self._tray_icon = self._build_tray_icon()
+        self._tray_icon = tray_icon
         self._tray_thread = self.run_background("tray-icon", self._tray_icon.run)
         # Keep-alive: after long tray idles Windows pages the GUI's working
         # set out, making the first restore repaint painfully slow. A slow

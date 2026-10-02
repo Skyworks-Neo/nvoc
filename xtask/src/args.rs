@@ -94,7 +94,8 @@ USAGE:
 COMMANDS:
     setup    Bootstrap a fresh clone: submodule, uv envs, pynvoc build, doctor report
     build    Build the workspace (CUDA stressor generation selectable)
-    check    rustfmt + clippy + ruff, mirroring the ci.yml gates
+    check    rustfmt + clippy + ruff + CUDA-stressor arm64 cross-check,
+             mirroring the ci.yml gates
     test     Run the test suite (tiered; GPU-write tests are never run)
     run      Launch a component: gui | tui | cli | stressor
     ci       check + test, the local mirror of the ci.yml non-GPU gate

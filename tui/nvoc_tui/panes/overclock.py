@@ -113,10 +113,11 @@ def compose_overclock() -> ComposeResult:
                                 ),
                             )
                         with Horizontal(classes="row"):
-                            # Sys = ClkDomains bit3 (pure SYS). RMW: read bit3
-                            # current offset, +f, write back. 30系+ bit1 couples
-                            # SYS so an Xbar write also drags bit3 — the Sys RMW
-                            # stacks on top rather than overwriting the -f cancel.
+                            # Sys = ClkDomains bit3, shown and typed as a NET
+                            # (own + every declared parent's, see
+                            # _fabric_relation): the typed value lands on the
+                            # net, so a parent's term is subtracted out of the
+                            # write rather than stacked on top of it.
                             yield Label("Sys Offset")
                             yield ShortcutInput(
                                 value="0", id="sys-offset", compact=True

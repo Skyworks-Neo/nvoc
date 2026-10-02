@@ -49,6 +49,19 @@ fn parse_gpu_id(raw: &str) -> Result<usize, Error> {
     }
 }
 
+use std::sync::Once;
+
+/// NVAPI 显式初始化的一次性闸门。模块级放置以便 [`nvapi_init_attempted`]
+/// 在不触发初始化的前提下检查它是否已被消费（库路径覆盖的"太迟"判定）。
+static NVAPI_INIT: Once = Once::new();
+
+/// 是否已经尝试过 NVAPI 显式初始化（含首次 GPU 调用路径）。为 true 时
+/// `NVOC_NVAPI_PATH` 覆盖不再生效——`prepare_nvapi` 只在 INIT 的第一次
+/// `call_once` 里跑，之后改 env 不会被读到。
+pub fn nvapi_init_attempted() -> bool {
+    NVAPI_INIT.is_completed()
+}
+
 /// Explicitly initialize NVAPI exactly once before first use. nvapi-rs relies
 /// on the driver's implicit initialization, which fails on some old/legacy
 /// drivers where tools that call NvAPI_Initialize up front (MSI Afterburner,
@@ -56,11 +69,9 @@ fn parse_gpu_id(raw: &str) -> Result<usize, Error> {
 /// Failure is non-fatal: enumeration proceeds via the implicit path, which is
 /// enough on every modern driver.
 fn ensure_nvapi_initialized() {
-    use std::sync::Once;
-    static INIT: Once = Once::new();
-    INIT.call_once(|| {
-        // 显式 NVOC_NVAPI_PATH 覆盖要先于任何 LoadLibraryA("nvapi64.dll")
-        // 把目录插进传统搜索序(见 dll_path::prepare_nvapi 文档)。
+    NVAPI_INIT.call_once(|| {
+        // 显式 NVOC_NVAPI_PATH 覆盖要先于任何库加载生效(Windows: 插入传统
+        // 搜索序;Linux: SONAME 预加载,见 dll_path::prepare_nvapi 文档)。
         super::dll_path::prepare_nvapi();
         if let Err(e) = ::nvapi::hi::initialize() {
             // Display(非 Debug)——Debug 派生会丢掉 LibraryNotFound 上追加的

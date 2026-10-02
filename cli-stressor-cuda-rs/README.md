@@ -121,7 +121,7 @@ cargo run -p cli-stressor-cuda-rs --features cuda -- \
   --kernel-types gemm,intalu
 ```
 
-若使用内置 `minload` profile 或启用 Vulkan 图形压力，请同时启用 `vulkan` feature：
+若启用 Vulkan 图形压力，请同时启用 `vulkan` feature：
 
 ```bash
 cargo build --release -p cli-stressor-cuda-rs --features cuda,vulkan
@@ -318,7 +318,7 @@ cargo run -p cli-stressor-cuda-rs --features cuda -- \
   --kernel-types gemm,intalu
 ```
 
-When using the built-in `minload` profile or Vulkan graphics stress, build with both features:
+When enabling Vulkan graphics stress, build with both features:
 
 ```bash
 cargo build --release -p cli-stressor-cuda-rs --features cuda,vulkan

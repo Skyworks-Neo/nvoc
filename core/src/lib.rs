@@ -3,6 +3,8 @@ pub mod dll_path;
 mod error;
 mod gpu;
 mod gpu_type;
+
+pub use gpu::nvapi_init_attempted;
 pub mod legacy_vbios_parser;
 mod nvapi;
 pub mod nvml;
@@ -10,6 +12,7 @@ pub mod operation;
 pub mod result;
 pub mod target;
 mod types;
+pub mod vbios_dcb;
 
 pub use self::nvapi::{
     CoolerTarget, GpuTdpTempLimits, VfpLockRequest, nvapi_overvolt_reported, set_nvapi_overvolt,
@@ -20,13 +23,15 @@ pub use conv::ConvertEnum;
 pub use error::Error;
 pub use gpu::{GpuSelector, nvapi_interface_version};
 pub use gpu_type::{
-    ArchOcPrior, GpuOcParams, GpuType, GpuVoltageLimitParams, GpuVoltageLockParams, OcPriorPoint,
+    ArchOcPrior, FabricDomain, FabricTree, GpuOcParams, GpuType, GpuVoltageLimitParams,
+    GpuVoltageLockParams, OcPriorPoint,
 };
 pub use operation::{
     CheckVoltageFrequency, ClearEdid, DisableNvapiThermalSim, GetFanCurves, GetPowerMode,
-    GpuOperation, OemOcScanner, OemOcScannerAction, PmgrArbiterProbe, ProbeVoltageLimits,
-    QueryApiRestriction, QueryAutoBoost, QueryClockOffset, QueryDisplays, QueryDomainVfpIndices,
-    QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings, QueryGpuStatus,
+    GpuOperation, OemOcScanner, OemOcScannerAction, PmgrArbiterProbe, PrivateVfPairPlane,
+    PrivateVfPairReport, PrivateVfPairWrite, ProbeVoltageLimits, QueryApiRestriction,
+    QueryAutoBoost, QueryClockOffset, QueryDisplays, QueryDomainVfpIndices, QueryDomainVfpPoints,
+    QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings, QueryGpuStatus,
     QueryLegacyCoreOvervoltRanges, QueryLegacyP0CoreMaxVoltageDelta, QueryNvapiBarInfo,
     QueryNvapiClkDomainFreq, QueryNvapiClkDomainFreqDetail, QueryNvapiClkDomainFreqDirect,
     QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomainFreqsEnum, QueryNvapiClkDomains,
@@ -57,13 +62,14 @@ pub use operation::{
     SetNvmlPstateLock, SetPowerLimit, SetPowerMode, SetPstateBaseVoltage, SetPstateClockOffset,
     SetPublicVftablePointOffset, SetPublicVftableRangeOffset, SetTemperatureLimit,
     SetVfpFrequencyLock, SetVoltageBoost, SetWm2Active, SetWm2Mode, TgpWattRangeInfo,
-    detect_gpu_type, fetch_gpu_type, find_matching_vfp_point, legacy_core_overvolt_ranges,
-    legacy_p0_core_max_voltage_delta, nvapi_status_name, nvml_pstate_to_index, nvml_pstate_to_str,
-    parse_nvapi_locked_voltage_target, parse_nvml_fan_control_policy, parse_nvml_pstate,
-    query_domain_vf_points_indexed, query_domain_vfp_indices, run, run_many,
-    set_nvapi_cooler_settings, set_nvapi_domain_vfp_deltas, set_nvapi_legacy_clocks,
-    set_nvapi_pstate_clock_offsets, set_nvapi_vfp_curve_delta, sync_memory_pstate_as_p0,
-    try_parse_nvml_pstate,
+    detect_gpu_type, fetch_gpu_type, find_matching_vfp_point, is_server_pascal_dual_plane,
+    legacy_core_overvolt_ranges, legacy_p0_core_max_voltage_delta, nvapi_status_name,
+    nvml_pstate_to_index, nvml_pstate_to_str, parse_nvapi_locked_voltage_target,
+    parse_nvml_fan_control_policy, parse_nvml_pstate, plan_private_vf_oc_order,
+    plan_private_vf_pair_order, query_domain_vf_points_indexed, query_domain_vfp_indices, run,
+    run_many, set_nvapi_cooler_settings, set_nvapi_domain_vfp_deltas, set_nvapi_legacy_clocks,
+    set_nvapi_pstate_clock_offsets, set_nvapi_vfp_curve_delta, set_private_vf_oc_offset,
+    set_private_vf_pair_offset, sync_memory_pstate_as_p0, try_parse_nvml_pstate,
 };
 pub use result::{
     ApiRestrictionState, AppliedValue, AutoBoostState, BatchReport, ClockOffset, DNotifierInfo,
@@ -88,7 +94,7 @@ pub use ::nvapi::hi::{
     GpuStatus, Kilohertz, KilohertzDelta, Microvolts, MicrovoltsDelta, PState, Percentage,
     SensorThrottle, VfPoint, VfPointType, VoltageDomain,
 };
-pub use ::nvapi::{clk_vf_delta_for_target, clk_vf_effect_for_delta};
+pub use ::nvapi::{ClkVfSegment, clk_vf_delta_for_target, clk_vf_effect_for_delta};
 
 /// Most recent NVAPI status failure on this thread, or `None`. nvapi
 /// records it in a thread-local as every failed call funnels through

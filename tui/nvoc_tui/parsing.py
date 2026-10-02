@@ -481,6 +481,15 @@ CURVE_META: dict[str, dict[str, Any]] = {
     # the HBM MEM V/F curve (live A/B: the MEM domain offset hits it).
     # class "graphics" = the neutral g(def) prior (no HBM calibration yet).
     "mem": {"label": "MEM", "class": "graphics", "domain_bit": 4},
+    # Server Pascal dual-plane (P100 live campaign 2026-09-30): bank 0 =
+    # 80 points x 2 planes — A 0..79 PRE-OC (voltage side), B 80..159 OC
+    # (frequency side, index = A + 80). The TUI merges them into ONE
+    # logical GPC OC curve (the B-plane segment); plane A is the axis
+    # authority only, and applies/resets go through the paired call.
+    # MEASURE bits unknown → domain_bit None (no live crosshair claims a
+    # rail); there is no domain-global WRITE bit either.
+    "gpc_pre_oc": {"label": "GPC PRE-OC", "class": "graphics", "domain_bit": None},
+    "gpc_oc": {"label": "GPC OC", "class": "graphics", "domain_bit": None},
 }
 
 
@@ -518,6 +527,14 @@ def public_vfp_unsupported(gpc_err: str | None) -> bool:
 # writes on bit 2. Conflating the two tables silently synthesizes from
 # the wrong domain's offset.
 WRITE_BIT_TO_CURVE: dict[int, str] = {0: "gpc", 1: "xbar", 5: "msd", 2: "mem"}
+
+# The same table the other way round: curve id -> the WRITE bit whose domain
+# GLOBAL offset a curve reset also zeroes (curve-point offsets and domain
+# global offsets are separate RM storage). The fabric bits among them
+# (1/3/5/9) are NETS solved against the driver's relation — see
+# OverclockController._fabric_relation — while GPC/MEM zero raw. A curve with
+# no entry here (the unnamed unknownN segments) has no global offset.
+CURVE_WRITE_BIT: dict[str, int] = {cid: bit for bit, cid in WRITE_BIT_TO_CURVE.items()}
 
 
 def normalize_domain_offsets(raw: Any) -> dict[str, dict[str, int]]:
@@ -660,9 +677,12 @@ def build_vf_curves(
         pass
 
     private_gpc: CurveData | None = None
+    dual_plane_gpc = False
     if clk_data and clk_data.get("segments"):
         segs = clk_data["segments"]
         pts = clk_data.get("points", [])
+        vf_hints = {seg.get("domain") for seg in segs if seg.get("kind") == "vf_curve"}
+        dual_plane_gpc = "gpc_pre_oc" in vf_hints and "gpc_oc" in vf_hints
         for seg in segs:
             if seg.get("kind") != "vf_curve":
                 continue  # pstate_bins are not curves — never plotted
@@ -677,7 +697,12 @@ def build_vf_curves(
             ]
             if not seg_pts:
                 continue
-            if hint in CURVE_META:
+            if dual_plane_gpc and hint == "gpc_pre_oc":
+                # merged into the logical GPC OC curve — plane A is the
+                # axis authority only, never a separate displayed curve
+                # (per-plane freedom stays with the CLI --unsafe path).
+                curve_id = "gpc_pre_oc"
+            elif hint in CURVE_META:
                 curve_id = hint
             else:
                 # Unnamed domain (50-series fourth curve): display as
@@ -693,7 +718,7 @@ def build_vf_curves(
             cd.frequencies = [p["freq_current_mhz"] for p in seg_pts]
             cd.defaults = [p["freq_default_mhz"] for p in seg_pts]
             cd.write_mode = "private"
-            if cd.curve_id == "gpc":
+            if cd.curve_id in ("gpc", "gpc_pre_oc"):
                 private_gpc = cd
             else:
                 curves[cd.curve_id] = cd
@@ -805,8 +830,9 @@ def build_vf_curves(
     # discovery order; stable sort). Consumers (selector, plot draws)
     # iterate this dict — without this, a public-source GPC (inserted
     # last above) would sort after the private segments.
-    order = {"gpc": 0, "xbar": 1, "msd": 2, "mem": 3}
-    return dict(sorted(curves.items(), key=lambda kv: order.get(kv[0], 4)))
+    order = {"gpc": 0, "gpc_oc": 1, "xbar": 2, "msd": 3, "mem": 4, "gpc_pre_oc": 5}
+    # (gpc_pre_oc is merged away on dual-plane cards; kept for safety)
+    return dict(sorted(curves.items(), key=lambda kv: order.get(kv[0], 6)))
 
 
 # ── Extended-section domain-current overlays ──

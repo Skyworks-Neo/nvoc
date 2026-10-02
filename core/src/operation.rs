@@ -4205,6 +4205,518 @@ pub fn set_nvapi_legacy_clocks(
     .map(|report| report.output)
 }
 
+// ---------------------------------------------------------------------------
+// Pascal server dual-plane paired V/F offset write
+//
+// Live-derived on P100/GP100 @ 582.41 (2026-09-30 campaign, see
+// docs/reverse-engineering/nvapi/p100-58241-privatevftable-audit.md §6c-6f):
+// bank 0 = 80 points x 2 planes. Plane A (0..79) is the voltage-side
+// PRE-OC plane; plane B (80..159, index = A + 80) is the frequency-side OC
+// plane. Equal-offset writes to BOTH planes move the real frequency axis
+// (+100 MHz at a constant 750 mV lock); single-plane writes only shift
+// voltage or soft-hang the GPU on a non-monotonic table. The safety
+// invariant is `plane A >= plane B` at EVERY instant, and the write ORDER
+// (raises: A first; lowers: B first) is what maintains it.
+// ---------------------------------------------------------------------------
+
+/// One plane of the Pascal server dual-plane bank-0 GPC curve. See
+/// `::nvapi::ClkVfDomainHint::GpcPreOc`/`GpcOc` for the live-derived
+/// semantics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrivateVfPairPlane {
+    /// plane A: indices 0..79 — voltage-side PRE-OC
+    PreOc,
+    /// plane B: indices 80..159 — frequency-side OC (index = A + 80)
+    Oc,
+}
+
+impl PrivateVfPairPlane {
+    fn record_index(self, bank: usize, start: usize, i: usize) -> (usize, usize) {
+        match self {
+            PrivateVfPairPlane::PreOc => (bank, start + i),
+            PrivateVfPairPlane::Oc => (bank, start + 80 + i),
+        }
+    }
+}
+
+/// Pure planner for ONE point of a paired write: which plane must move
+/// first (and which follows) so the cross-plane invariant `A >= B` holds
+/// at every intermediate instant. Case analysis over the target relative
+/// to the current planes (precondition `B <= A`):
+///
+/// * raise (`target > A`): A leads, B follows — raising the OC plane
+///   105-115 brings the PRE-OC plane 25-35 up FIRST; raising 25-35 brings
+///   105-115 up AFTER (the operator's two canonical test cases);
+/// * lower (`target < B`): B leads, A follows;
+/// * split (`B < target < A`): the rising plane leads, the falling plane
+///   follows;
+/// * single-sided moves write that plane only.
+///
+/// `None` when both planes already sit at the target.
+pub fn plan_private_vf_pair_order(
+    current_a: u32,
+    current_b: u32,
+    target: u32,
+) -> Option<(PrivateVfPairPlane, Option<PrivateVfPairPlane>)> {
+    use PrivateVfPairPlane::{Oc, PreOc};
+    debug_assert!(current_b <= current_a, "caller validates B <= A");
+    if target > current_a {
+        // both planes rise: A leads, B follows
+        Some((PreOc, Some(Oc)))
+    } else if target < current_b {
+        // both planes fall: B leads, A follows
+        Some((Oc, Some(PreOc)))
+    } else {
+        // current_b <= target <= current_a
+        match (target > current_b, target < current_a) {
+            // split: B rises first (stays <= A), then A falls onto it
+            (true, true) => Some((Oc, Some(PreOc))),
+            // only B rises (target == A): converges equal
+            (true, false) => Some((Oc, None)),
+            // only A falls (target == B): converges equal
+            (false, true) => Some((PreOc, None)),
+            // both planes already at the target
+            (false, false) => None,
+        }
+    }
+}
+
+/// One executed plane write.
+#[derive(Debug, Clone)]
+pub struct PrivateVfPairWrite {
+    pub plane: PrivateVfPairPlane,
+    pub bank: usize,
+    pub index: usize,
+    /// raw control word read back after the SET (None = unsupported)
+    pub retained_raw: Option<u32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PrivateVfPairReport {
+    pub bank: usize,
+    pub start: usize,
+    pub count: usize,
+    pub value_raw: u32,
+    pub plane_a_before: Vec<u32>,
+    pub plane_b_before: Vec<u32>,
+    pub writes: Vec<PrivateVfPairWrite>,
+}
+
+/// Structural + generation gate for the paired write: **server Pascal**
+/// with the 80+80 dual-plane bank-0 curve (planes decoded as
+/// `GpcPreOc`/`GpcOc`). Everything else — consumer Pascal, Turing and
+/// later, single-plane shapes — returns false and callers keep the legacy
+/// single-plane behavior. Every pairing branch in every layer MUST sit
+/// behind this gate.
+pub fn is_server_pascal_dual_plane(target: &GpuTarget<'_>) -> Result<bool, Error> {
+    let info = run(target, QueryGpuInfo)?.output;
+    let gpu_type = fetch_gpu_type(&info).unwrap_or(super::gpu_type::GpuType::Unknown);
+    if !matches!(gpu_type, super::gpu_type::GpuType::ServerPascal) {
+        return Ok(false);
+    }
+    let Some(vfp) = run(target, QueryNvapiClkVfPoints::default())?.output else {
+        return Ok(false);
+    };
+    let curves: Vec<_> = vfp
+        .segments
+        .iter()
+        .filter(|s| s.bank == 0 && s.kind == ::nvapi::ClkVfSegmentKind::VfCurve)
+        .collect();
+    Ok(curves.len() >= 2
+        && curves[0].domain_hint == ::nvapi::ClkVfDomainHint::GpcPreOc
+        && curves[1].domain_hint == ::nvapi::ClkVfDomainHint::GpcOc)
+}
+
+/// Paired mode-0 offset write to the Pascal server dual-plane GPC curve:
+/// writes the SAME raw control value to plane A (`start..start+count`,
+/// indices 0..79) and plane B (`+80`) in the invariant-safe order from
+/// [`plan_private_vf_pair_order`]. `value_raw` is the mode-0 control word
+/// AFTER the caller's Pascal 2× axis scaling — the same number
+/// `SetNvapiVfpPointPrivate.value` takes.
+///
+/// DANGEROUS (V/F table write), but strictly safer than two independent
+/// single-plane writes: the cross-plane invariant `A >= B` is validated
+/// before any write and re-checked after every phase; a pre-existing
+/// violation (external tooling) is refused with a pointer to the reset.
+pub fn set_private_vf_pair_offset(
+    target: &GpuTarget<'_>,
+    bank: usize,
+    start: usize,
+    count: usize,
+    value_raw: u32,
+) -> Result<PrivateVfPairReport, Error> {
+    if count == 0 {
+        return Err(Error::Custom("empty paired range".into()));
+    }
+    // plane A must stay inside 0..79 so plane B (= A + 80) stays inside
+    // 80..159 — a range crossing the boundary has no coherent counterpart
+    if bank != 0 || start + count > 80 {
+        return Err(Error::Custom(
+            "paired range must lie inside plane A (bank 0, indices 0..79)".into(),
+        ));
+    }
+    if !is_server_pascal_dual_plane(target)? {
+        return Err(Error::Custom(
+            "paired V/F write requires a server Pascal dual-plane (80+80) curve".into(),
+        ));
+    }
+    let ctrl = run(target, QueryNvapiClkVfControl)?
+        .output
+        .ok_or_else(|| Error::Custom("private V/F control table not exposed".into()))?;
+    let value_of = |plane: PrivateVfPairPlane, i: usize| -> u32 {
+        let (b, idx) = plane.record_index(bank, start, i);
+        ctrl.points
+            .iter()
+            .find(|p| p.bank as usize == b && p.index as usize == idx)
+            .map(|p| p.value)
+            .unwrap_or(0)
+    };
+    let plane_a_before: Vec<u32> = (0..count)
+        .map(|i| value_of(PrivateVfPairPlane::PreOc, i))
+        .collect();
+    let plane_b_before: Vec<u32> = (0..count)
+        .map(|i| value_of(PrivateVfPairPlane::Oc, i))
+        .collect();
+    // entry gate: refuse an already-illegal table (external tooling may
+    // have produced it) — reset first, never write into a violation
+    for i in 0..count {
+        if plane_b_before[i] > plane_a_before[i] {
+            return Err(Error::Custom(format!(
+                "plane B[{}] raw {} > plane A[{}] raw {} — cross-plane invariant already \
+                 violated; run reset-private-vftable-offset before paired writes",
+                start + 80 + i,
+                plane_b_before[i],
+                start + i,
+                plane_a_before[i]
+            )));
+        }
+    }
+    let mut report = PrivateVfPairReport {
+        bank,
+        start,
+        count,
+        value_raw,
+        plane_a_before,
+        plane_b_before,
+        writes: Vec::new(),
+    };
+    // two phases: every point's first-move plane, then its counterpart.
+    // The plan is recomputed per point from the BEFORE snapshot, so the
+    // phase-1 pass executes every "leads" write and the phase-2 pass every
+    // "follows" write — no point is touched twice in one phase.
+    for phase in 0..2usize {
+        for i in 0..count {
+            let Some((first, second)) = plan_private_vf_pair_order(
+                report.plane_a_before[i],
+                report.plane_b_before[i],
+                value_raw,
+            ) else {
+                continue;
+            };
+            let plane = if phase == 0 {
+                first
+            } else {
+                match second {
+                    Some(p) => p,
+                    None => continue,
+                }
+            };
+            let (b, idx) = plane.record_index(bank, start, i);
+            let retained = run(
+                target,
+                SetNvapiVfpPointPrivate {
+                    bank: b,
+                    idx,
+                    freq_mode: true,
+                    value: value_raw,
+                },
+            )?
+            .output;
+            let Some(retained_raw) = retained else {
+                return Err(Error::Custom(format!(
+                    "paired plane write not supported at bank{b} #{idx}"
+                )));
+            };
+            report.writes.push(PrivateVfPairWrite {
+                plane,
+                bank: b,
+                index: idx,
+                retained_raw: Some(retained_raw),
+            });
+        }
+    }
+    Ok(report)
+}
+
+/// OC-authoritative planner: the user's OC (plane B) demand is the target;
+/// plane A (PRE-OC) follows unconditionally to SATISFY it — raised to the
+/// demand when short — but is never lowered by an OC edit (a pre-boost the
+/// user set explicitly stays as headroom; lowering it is a PRE-OC action).
+///
+/// * `target > current_a`: demand exceeds the pre-boost → raise A first,
+///   then B (the invariant-safe order);
+/// * `current_b != target <= current_a`: B alone moves (up within the
+///   headroom, or down — lowering B always keeps `A >= B`);
+/// * `current_b == target <= current_a`: nothing to do → `None`.
+///
+/// Always converges `B = target` and ends with `A = max(A₀, target)`.
+pub fn plan_private_vf_oc_order(current_a: u32, current_b: u32, target: u32) -> Option<bool> {
+    debug_assert!(current_b <= current_a, "caller validates B <= A");
+    if target > current_a {
+        Some(true) // raise A to the demand first, then B
+    } else if target != current_b {
+        Some(false) // B alone (raise within headroom, or lower)
+    } else {
+        None
+    }
+}
+
+/// OC-authoritative paired write: same coordinates and safety gate as
+/// [`set_private_vf_pair_offset`], but the planes do NOT converge — plane B
+/// (OC) is set to `value_raw` and plane A (PRE-OC) is raised to match ONLY
+/// where it falls short (`A = max(A₀, target)` per point). This makes the
+/// user's OC edit the authority: dragging OC to +200 after a PRE-OC +200
+/// keeps both at +200 instead of dragging them to a middle value.
+pub fn set_private_vf_oc_offset(
+    target: &GpuTarget<'_>,
+    bank: usize,
+    start: usize,
+    count: usize,
+    value_raw: u32,
+) -> Result<PrivateVfPairReport, Error> {
+    if count == 0 {
+        return Err(Error::Custom("empty paired range".into()));
+    }
+    if bank != 0 || start + count > 80 {
+        return Err(Error::Custom(
+            "paired range must lie inside plane A (bank 0, indices 0..79)".into(),
+        ));
+    }
+    if !is_server_pascal_dual_plane(target)? {
+        return Err(Error::Custom(
+            "paired V/F write requires a server Pascal dual-plane (80+80) curve".into(),
+        ));
+    }
+    let ctrl = run(target, QueryNvapiClkVfControl)?
+        .output
+        .ok_or_else(|| Error::Custom("private V/F control table not exposed".into()))?;
+    let value_of = |plane: PrivateVfPairPlane, i: usize| -> u32 {
+        let (b, idx) = plane.record_index(bank, start, i);
+        ctrl.points
+            .iter()
+            .find(|p| p.bank as usize == b && p.index as usize == idx)
+            .map(|p| p.value)
+            .unwrap_or(0)
+    };
+    let plane_a_before: Vec<u32> = (0..count)
+        .map(|i| value_of(PrivateVfPairPlane::PreOc, i))
+        .collect();
+    let plane_b_before: Vec<u32> = (0..count)
+        .map(|i| value_of(PrivateVfPairPlane::Oc, i))
+        .collect();
+    for i in 0..count {
+        if plane_b_before[i] > plane_a_before[i] {
+            return Err(Error::Custom(format!(
+                "plane B[{}] raw {} > plane A[{}] raw {} — cross-plane invariant already \
+                 violated; run reset-private-vftable-offset before paired writes",
+                start + 80 + i,
+                plane_b_before[i],
+                start + i,
+                plane_a_before[i]
+            )));
+        }
+    }
+    let mut report = PrivateVfPairReport {
+        bank,
+        start,
+        count,
+        value_raw,
+        plane_a_before,
+        plane_b_before,
+        writes: Vec::new(),
+    };
+    // phase 0: the raising-A writes (only where the demand exceeds A);
+    // phase 1: the B writes (every point whose B differs from the demand)
+    for phase in 0..2usize {
+        for i in 0..count {
+            let raise_a = plan_private_vf_oc_order(
+                report.plane_a_before[i],
+                report.plane_b_before[i],
+                value_raw,
+            );
+            let (write_a, plane) = match (phase, raise_a) {
+                (0, Some(true)) => (true, PrivateVfPairPlane::PreOc),
+                (1, _) => (false, PrivateVfPairPlane::Oc),
+                _ => continue,
+            };
+            if !write_a && report.plane_b_before[i] == value_raw {
+                continue; // B already at the demand
+            }
+            let (b, idx) = plane.record_index(bank, start, i);
+            let retained = run(
+                target,
+                SetNvapiVfpPointPrivate {
+                    bank: b,
+                    idx,
+                    freq_mode: true,
+                    value: value_raw,
+                },
+            )?
+            .output;
+            let Some(retained_raw) = retained else {
+                return Err(Error::Custom(format!(
+                    "paired plane write not supported at bank{b} #{idx}"
+                )));
+            };
+            report.writes.push(PrivateVfPairWrite {
+                plane,
+                bank: b,
+                index: idx,
+                retained_raw: Some(retained_raw),
+            });
+        }
+    }
+    Ok(report)
+}
+
+#[cfg(test)]
+mod pair_plan_tests {
+    use super::PrivateVfPairPlane::{Oc, PreOc};
+    use super::{PrivateVfPairPlane, plan_private_vf_oc_order, plan_private_vf_pair_order};
+
+    /// The operator's two canonical cases (2026-09-30): raising the OC
+    /// plane brings the PRE-OC plane up FIRST; raising the PRE-OC plane
+    /// brings the OC plane up AFTER.
+    #[test]
+    fn raising_oc_bring_pre_oc_up_first() {
+        assert_eq!(
+            plan_private_vf_pair_order(0, 0, 100_000),
+            Some((PreOc, Some(Oc)))
+        );
+    }
+
+    #[test]
+    fn raising_pre_oc_brings_oc_up_after() {
+        assert_eq!(
+            plan_private_vf_pair_order(100_000, 100_000, 200_000),
+            Some((PreOc, Some(Oc)))
+        );
+    }
+
+    /// Table-driven case analysis (raise / lower / split / single-sided /
+    /// no-op).
+    #[test]
+    fn plan_case_analysis() {
+        use plan_private_vf_pair_order as plan;
+        // lower: B leads
+        assert_eq!(plan(200_000, 200_000, 100_000), Some((Oc, Some(PreOc))));
+        // split: the rising plane (B) leads
+        assert_eq!(plan(200_000, 100_000, 150_000), Some((Oc, Some(PreOc))));
+        // split: the rising plane (B) leads, A falls after
+        assert_eq!(plan(200_000, 50_000, 120_000), Some((Oc, Some(PreOc))));
+        // only B rises (A already at target)
+        assert_eq!(plan(200_000, 100_000, 200_000), Some((Oc, None)));
+        // only A falls (B already at target)
+        assert_eq!(plan(200_000, 100_000, 100_000), Some((PreOc, None)));
+        // no-op
+        assert_eq!(plan(100_000, 100_000, 100_000), None);
+    }
+
+    /// The invariant simulation: for every start state with B <= A and
+    /// every target, executing the planned phases step by step keeps
+    /// A >= B after EVERY write and converges to A == B == target.
+    #[test]
+    fn pair_plan_maintains_a_ge_b_at_every_step() {
+        let states = [
+            (0u32, 0u32),
+            (200_000, 200_000),
+            (200_000, 100_000),
+            (100_000, 0),
+            (330_400, 165_200),
+        ];
+        let targets = [0u32, 25_000, 100_000, 165_200, 200_000, 330_400, 400_000];
+        for &(a0, b0) in &states {
+            for &target in &targets {
+                let (mut a, mut b) = (a0, b0);
+                assert!(b <= a);
+                if let Some((first, second)) = plan_private_vf_pair_order(a, b, target) {
+                    let apply = |plane: PrivateVfPairPlane, a: &mut u32, b: &mut u32| match plane {
+                        PreOc => *a = target,
+                        Oc => *b = target,
+                    };
+                    apply(first, &mut a, &mut b);
+                    assert!(
+                        a >= b,
+                        "first phase broke A>=B: a={a} b={b} (from {a0}/{b0} → {target})"
+                    );
+                    if let Some(second) = second {
+                        apply(second, &mut a, &mut b);
+                        assert!(
+                            a >= b,
+                            "second phase broke A>=B: a={a} b={b} (from {a0}/{b0} → {target})"
+                        );
+                    }
+                }
+                assert_eq!(a, target, "A must converge");
+                assert_eq!(b, target, "B must converge");
+            }
+        }
+    }
+
+    /// OC-authoritative plan: the operator's regression case — drag PRE-OC
+    /// to +200 then OC to +200 must leave both at +200 (the demand is
+    /// already satisfied; the old converge semantics dragged them to a
+    /// middle value instead).
+    #[test]
+    fn oc_plan_case_analysis() {
+        use plan_private_vf_oc_order as plan;
+        // demand exceeds the pre-boost: A must be raised first
+        assert_eq!(plan(0, 0, 200_000), Some(true));
+        assert_eq!(plan(100_000, 100_000, 200_000), Some(true));
+        // demand within the headroom: B alone (raise or lower)
+        assert_eq!(plan(200_000, 100_000, 150_000), Some(false));
+        assert_eq!(plan(200_000, 200_000, 100_000), Some(false));
+        // demand already satisfied exactly: no-op
+        assert_eq!(plan(200_000, 200_000, 200_000), None);
+    }
+
+    /// OC-mode simulation: B always converges to the demand, A is a
+    /// ratchet (max(A₀, target)) — never lowered by an OC edit — and
+    /// A >= B holds after every step.
+    #[test]
+    fn oc_plan_ratchets_a_and_satisfies_b() {
+        let states = [
+            (0u32, 0u32),
+            (200_000, 200_000),
+            (200_000, 100_000),
+            (300_000, 50_000),
+        ];
+        let targets = [0u32, 100_000, 150_000, 200_000, 250_000, 400_000];
+        for &(a0, b0) in &states {
+            for &target in &targets {
+                let (mut a, mut b) = (a0, b0);
+                assert!(b <= a);
+                if let Some(raise_a_first) = plan_private_vf_oc_order(a, b, target) {
+                    if raise_a_first {
+                        a = target; // phase 0: A to the demand
+                        assert!(a >= b, "A raise broke A>=B: a={a} b={b}");
+                    }
+                    // phase 1: B to the demand (skipped when already there)
+                    if b != target {
+                        b = target;
+                    }
+                    assert!(
+                        a >= b,
+                        "B move broke A>=B: a={a} b={b} (from {a0}/{b0} → {target})"
+                    );
+                }
+                assert_eq!(b, target, "B must satisfy the demand");
+                assert_eq!(a, a0.max(target), "A must ratchet, never lower");
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

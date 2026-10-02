@@ -42,6 +42,9 @@ pub struct CudaBackend {
     pub(super) intalu_fn: Option<CudaFunction>,
     /// Ride-on-load verification engine (None when NVRTC build failed).
     pub(super) verify: Option<VerifyEngine>,
+    /// Opt-in device-side stress-buffer generation (`--gpu-generate`).
+    pub(super) gpu_generate: bool,
+    pub(super) gpu_fill: Option<super::gpu_fill::GpuFillKernels>,
     pub(super) info: DeviceInfo,
 }
 
@@ -163,6 +166,8 @@ impl CudaBackend {
             _intalu_module: intalu_module,
             intalu_fn,
             verify,
+            gpu_generate: false,
+            gpu_fill: None,
             info,
         })
     }

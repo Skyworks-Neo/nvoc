@@ -26,7 +26,7 @@ from .controllers.header import HeaderController
 from .controllers.overclock import OverclockController
 from .controllers.vfcurve import VFCurveController
 from .models import AppConfig, GpuCache, GpuDescriptor, repo_root
-from .native import ActionCallback, NativeService
+from .native import ActionCallback, NativeService, apply_native_paths
 from .panes.console import compose_console
 from .panes.dashboard import compose_dashboard
 from .panes.header import compose_header
@@ -110,6 +110,13 @@ class NVOCApp(App[None]):
         self.root_dir = repo_root()
         self.config_store = ConfigStore(self.root_dir)
         self.config_data: AppConfig = self.config_store.load()
+        # 配置键的库路径覆盖：只补 env 还没设置的槽位（main() 里的命令行参数
+        # 与用户预设 env 优先），且必须先于 NativeService 的首次 GPU 调用。
+        apply_native_paths(
+            self.config_data.native.nvapi_path,
+            self.config_data.native.nvml_path,
+            override=False,
+        )
         self.native_service = NativeService(self.root_dir)
         self.gpus: list[GpuDescriptor] = []
         self.cache = GpuCache()

@@ -4,9 +4,9 @@ use nvapi::hi::{
 use nvml_wrapper::enum_wrappers::device::{Api, PerformanceState};
 use nvoc_core::{
     BackendSet, CheckVoltageFrequency, ClearEdid, ClkVfDomainClass, ConvertEnum,
-    DisableNvapiThermalSim, GpuTarget, GpuType, NvapiPStateNativeLock, NvapiPerfFreqCap,
-    PmgrArbiterProbe, QueryApiRestriction, QueryAutoBoost, QueryDisplays, QueryDomainVfpPoints,
-    QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings, QueryGpuStatus,
+    DisableNvapiThermalSim, FabricTree, GpuTarget, GpuType, NvapiPStateNativeLock,
+    NvapiPerfFreqCap, PmgrArbiterProbe, QueryApiRestriction, QueryAutoBoost, QueryDisplays,
+    QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings, QueryGpuStatus,
     QueryLegacyCoreOvervoltRanges, QueryNvapiClkDomainFreq, QueryNvapiClkDomainFreqDirect,
     QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomains, QueryNvapiClkVfPoints,
     QueryNvapiCoolerInfo, QueryNvapiCoreVoltageControl, QueryNvapiDNotifier,
@@ -237,6 +237,63 @@ fn lock_inventory_cache() -> std::sync::MutexGuard<'static, InventoryCache> {
     INVENTORY_CACHE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// 是否还允许配置库路径覆盖：NVAPI 显式初始化未发生且 inventory 缓存全空。
+/// 所有 pynvoc 调用都经 `with_target` → `InventoryCache::entry` → 发现路径
+/// （NVAPI 的 `prepare_nvapi` + 显式 init、NVML 的 `init_nvml` 都在其中），
+/// 所以"缓存全空"就等于"进程内还没有任何 GPU 调用触碰过库加载"。
+fn library_paths_configurable() -> bool {
+    if nvoc_core::nvapi_init_attempted() {
+        return false;
+    }
+    let cache = lock_inventory_cache();
+    cache.both.is_none() && cache.nvapi.is_none() && cache.nvml.is_none()
+}
+
+fn non_empty_trimmed(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|p| !p.is_empty())
+}
+
+/// 写入库路径覆盖 env（`NVOC_NVML_PATH` / `NVOC_NVAPI_PATH`），与 CLI
+/// `--nvml-path`/`--nvapi-path` 的启动期注入同一机制。None 跳过对应变量
+/// （不清理已有值）；空串/纯空白视为未传（与 core `override_path` 的
+/// 空串语义一致）。
+fn set_library_path_env(nvapi_path: Option<&str>, nvml_path: Option<&str>) -> PyResult<()> {
+    if !library_paths_configurable() {
+        return Err(PyRuntimeError::new_err(
+            "library paths must be configured before the first GPU call: NVAPI \
+             initialization is one-shot and inventory discovery is cached, so \
+             later overrides never take effect",
+        ));
+    }
+    if let Some(path) = non_empty_trimmed(nvapi_path) {
+        // SAFETY: 契约是"首次 GPU 调用前、持 GIL 时调用"——此刻尚无任何
+        // nvoc-core 路径并发读这两个 env（GPU 调用都发生在之后的 Python
+        // worker 线程里），与 CLI 启动期单线程注入同一约定。
+        unsafe { std::env::set_var(nvoc_core::dll_path::NVAPI_PATH_ENV, path) };
+    }
+    if let Some(path) = non_empty_trimmed(nvml_path) {
+        // SAFETY: 同上，见 NVAPI 分支注释。
+        unsafe { std::env::set_var(nvoc_core::dll_path::NVML_PATH_ENV, path) };
+    }
+    Ok(())
+}
+
+/// 设置 NVML/NVAPI 用户态库路径覆盖，与 CLI `--nvml-path`/`--nvapi-path` 同一
+/// 机制（写 env `NVOC_NVML_PATH` / `NVOC_NVAPI_PATH`，nvoc-core 在首次 GPU
+/// 调用时读取）。必须在第一次 GPU 调用（discover_gpus / query_* / set_* ...）
+/// 之前调用，之后设置不再生效。
+///
+/// 值的语义（见 nvoc-core dll_path 模块文档）：
+/// - NVML：nvml.dll / libnvidia-ml.so.1 的文件路径（Linux 也接受目录，自动
+///   拼 SONAME）。指错时 NVML init 直接报错，不静默回落。
+/// - NVAPI：Windows 传 nvapi64.dll 所在目录或完整文件路径（文件取父目录）；
+///   Linux 传目录（自动拼 `libnvidia-api.so.1`）或文件路径，副本不带预期
+///   SONAME 时打印 warning 并回落系统库。
+#[pyfunction]
+fn configure_library_paths(nvapi_path: Option<&str>, nvml_path: Option<&str>) -> PyResult<()> {
+    set_library_path_env(nvapi_path, nvml_path)
 }
 
 /// Process-level cache of the NVML-enforced power limit (TGP wall, watts),
@@ -573,9 +630,6 @@ fn normalize_info(target: &GpuTarget<'_>) -> PyResultValue {
         "xbar_supported".into(),
         bool_value(series.supports_xbar_offset()),
     );
-    // bit1 耦合分界（30 系+Ada 的 bit1 耦合 SYS，需 bit3 写 -f 抵消）。
-    // 见 gpu_type.rs is_ampere_plus / is_ada 的跨代 A/B 注释。
-    map.insert("is_ampere_plus".into(), bool_value(series.is_ampere_plus()));
     map.insert("bios_version".into(), text(&info.bios_version));
     map.insert("bus".into(), text(info.bus));
     if let Some(vendor) = info.vendor() {
@@ -1896,7 +1950,15 @@ fn bios_vf_curve_value(image: &[u8]) -> Result<Value, nvoc_core::Error> {
     // 绘图窗口从 0 起（低功耗点 0..P8 边界也画进双线）；P8/P0 边界仍由
     // pstate_marks 携带，终端展示用。
     let start = 0u64;
-    let end = mark_index(15).unwrap_or(last).min(last);
+    // P0 边界 mark 缺位时（Kepler Quadro 的 4B mark 不携带 P0 边界，
+    // 如 K4000），窗口钳到最后一个非零频点——0 MHz 填充点（K4000
+    // 63 点中 47 个）不进绘图窗口，否则图表被拖到 0 轴。
+    let last_nonzero = ladder
+        .entries
+        .iter()
+        .rposition(|e| e.freq_mhz_x2 != 0)
+        .map_or(last, |i| i as u64);
+    let end = mark_index(15).unwrap_or(last).min(last).min(last_nonzero);
     let marks: Vec<Value> = ladder
         .marks
         .iter()
@@ -2634,6 +2696,47 @@ fn query_private_freq_domain_info(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAn
     py_value(py, &value)
 }
 
+/// `fabric_relations` payload fragment: the driver's master → slave (ext-slot)
+/// domain relation the front-ends compensate against — see
+/// `nvoc_core::FabricTree`. Derived from the **unfiltered** table, so a
+/// consumer can trust the roster regardless of what it asked for;
+/// `table_available: false` = no relation (refuse fabric writes). The CLI's
+/// `get-private-vftable` builds the same shape; keep the two in lockstep.
+fn fabric_relations_json(tree: &FabricTree) -> Value {
+    let mut map = Map::new();
+    map.insert("source".into(), Value::from("vftable-ext"));
+    map.insert(
+        "table_available".into(),
+        Value::from(tree.table_available()),
+    );
+    map.insert(
+        "roster".into(),
+        Value::Array(
+            tree.roster()
+                .iter()
+                .map(|d| Value::from(d.slug()))
+                .collect(),
+        ),
+    );
+    map.insert(
+        "edges".into(),
+        Value::Array(
+            tree.edges()
+                .iter()
+                .map(|(parent, child)| {
+                    let mut e = Map::new();
+                    e.insert("parent".into(), Value::from(parent.slug()));
+                    e.insert("parent_bit".into(), Value::from(parent.bit()));
+                    e.insert("child".into(), Value::from(child.slug()));
+                    e.insert("child_bit".into(), Value::from(child.bit()));
+                    Value::Object(e)
+                })
+                .collect(),
+        ),
+    );
+    Value::Object(map)
+}
+
 /// Read the private ClockClient V/F-points family (GetInfo 0x8895B510 →
 /// GetStatus 0x7FEE9032): per-bank point masks + V/F curve records.
 /// Records are voltage-indexed; units live-calibrated vs the public GPC VFP
@@ -2740,6 +2843,10 @@ fn query_private_vftable(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
         let vfp = vfp;
         Ok(match vfp {
             Some(v) => value_object([
+                (
+                    "fabric_relations",
+                    fabric_relations_json(&FabricTree::from_table(Some(&v))),
+                ),
                 (
                     "masks",
                     Value::Array(
@@ -2851,7 +2958,16 @@ fn query_private_vftable(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
                     ),
                 ),
             ]),
-            None => value_object([("supported", Value::from(false))]),
+            // No private table (arch without the read, or it failed): the
+            // relation is UNKNOWN — the front-ends refuse fabric writes
+            // rather than compensate on a guess.
+            None => value_object([
+                ("supported", Value::from(false)),
+                (
+                    "fabric_relations",
+                    fabric_relations_json(&FabricTree::from_table(None)),
+                ),
+            ]),
         })
     })?;
     py_value(py, &value)
@@ -3030,6 +3146,149 @@ fn set_vfp_point_private(
             ]),
             None => value_object([("supported", Value::from(false))]),
         })
+    })?;
+    py_value(py, &value)
+}
+
+/// Paired dual-plane V/F offset write (server Pascal only) — OC-AUTHORITATIVE:
+/// the OC plane (B) is set to the demanded value and the PRE-OC plane (A)
+/// follows ONLY where it falls short (A = max(A₀, demand) per point, never
+/// lowered by an OC edit). Writes go in the invariant-safe order (raises:
+/// plane A first). `value_khz` is the caller-intended kHz (the Pascal 2×
+/// axis is applied here, matching `set_vfp_point_private`). Returns
+/// `{"supported": false}` off the gate; refuses with an error when the
+/// current table already violates plane A ≥ plane B.
+#[pyfunction]
+fn set_vfp_pair_offset(
+    py: Python<'_>,
+    gpu: &str,
+    start: usize,
+    count: usize,
+    value_khz: i32,
+) -> PyResult<Py<PyAny>> {
+    let value = with_target(gpu, "nvapi", |target| {
+        if !nvoc_core::is_server_pascal_dual_plane(target).map_err(to_py_err)? {
+            return Ok(value_object([("supported", Value::from(false))]));
+        }
+        // the paired path is server-Pascal-only, so the 2× axis always
+        // applies inside it
+        let value_raw = value_khz.saturating_mul(2) as u32;
+        let report = nvoc_core::set_private_vf_oc_offset(target, 0, start, count, value_raw)
+            .map_err(to_py_err)?;
+        let writes = report
+            .writes
+            .iter()
+            .map(|w| {
+                value_object([
+                    (
+                        "plane",
+                        Value::from(match w.plane {
+                            nvoc_core::PrivateVfPairPlane::PreOc => "pre_oc",
+                            nvoc_core::PrivateVfPairPlane::Oc => "oc",
+                        }),
+                    ),
+                    ("bank", Value::from(w.bank as u64)),
+                    ("index", Value::from(w.index as u64)),
+                    ("retained_raw", Value::from(w.retained_raw.unwrap_or(0))),
+                ])
+            })
+            .collect::<Vec<_>>();
+        Ok(value_object([
+            ("applied", Value::from(true)),
+            ("bank", Value::from(report.bank as u64)),
+            ("start", Value::from(report.start as u64)),
+            ("count", Value::from(report.count as u64)),
+            ("value_khz", Value::from(value_khz)),
+            ("value_raw", Value::from(report.value_raw)),
+            (
+                "plane_a_before",
+                Value::from(
+                    report
+                        .plane_a_before
+                        .iter()
+                        .map(|&v| Value::from(v))
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "plane_b_before",
+                Value::from(
+                    report
+                        .plane_b_before
+                        .iter()
+                        .map(|&v| Value::from(v))
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            ("writes", Value::from(writes)),
+        ]))
+    })?;
+    py_value(py, &value)
+}
+
+/// Ordered paired RESET (server Pascal only): converges BOTH planes of the
+/// 80+80 GPC curve to 0 — plane B (OC) first, then plane A (PRE-OC) — the
+/// only invariant-safe order for a fill-of-0 (zeroing plane A point n while
+/// its n+80 counterpart still holds a positive offset violates A ≥ B and
+/// soft-hangs the GPU). Deliberately the CONVERGE controller, NOT the
+/// OC-authoritative ratchet: a reset must lower plane A too, which the
+/// ratchet never does. Clears the mode-0 kHz offsets of both planes
+/// (indices 0..79 + 80..159); the pstate bins (160..167) are untouched.
+#[pyfunction]
+fn reset_vfp_pair_offset(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
+    let value = with_target(gpu, "nvapi", |target| {
+        if !nvoc_core::is_server_pascal_dual_plane(target).map_err(to_py_err)? {
+            return Ok(value_object([("supported", Value::from(false))]));
+        }
+        let report =
+            nvoc_core::set_private_vf_pair_offset(target, 0, 0, 80, 0).map_err(to_py_err)?;
+        let writes = report
+            .writes
+            .iter()
+            .map(|w| {
+                value_object([
+                    (
+                        "plane",
+                        Value::from(match w.plane {
+                            nvoc_core::PrivateVfPairPlane::PreOc => "pre_oc",
+                            nvoc_core::PrivateVfPairPlane::Oc => "oc",
+                        }),
+                    ),
+                    ("bank", Value::from(w.bank as u64)),
+                    ("index", Value::from(w.index as u64)),
+                    ("retained_raw", Value::from(w.retained_raw.unwrap_or(0))),
+                ])
+            })
+            .collect::<Vec<_>>();
+        Ok(value_object([
+            ("applied", Value::from(true)),
+            (
+                "reset_order",
+                Value::from(["plane B 80-159 -> 0", "plane A 0-79 -> 0"]),
+            ),
+            ("points_reset", Value::from(report.writes.len() as u64)),
+            (
+                "plane_a_before",
+                Value::from(
+                    report
+                        .plane_a_before
+                        .iter()
+                        .map(|&v| Value::from(v))
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "plane_b_before",
+                Value::from(
+                    report
+                        .plane_b_before
+                        .iter()
+                        .map(|&v| Value::from(v))
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            ("writes", Value::from(writes)),
+        ]))
     })?;
     py_value(py, &value)
 }
@@ -4334,7 +4593,12 @@ fn set_fan(
                     // instead of failing the frontend.
                     if is_reset {
                         nvapi_fan_reset(gpu).map_err(|fallback_err| {
-                            invalid_value(format!(
+                            // Both legs are execution failures (no GPU selected,
+                            // driver without fan-write symbols, …), not bad
+                            // argument values — surface as RuntimeError so
+                            // callers can distinguish validation from hardware
+                            // trouble.
+                            to_py_err(format!(
                                 "NVML fan reset failed ({nvml_err}) and the NVAPI fallback also failed: {fallback_err}"
                             ))
                         })?;
@@ -4346,7 +4610,9 @@ fn set_fan(
                         if let Err(fallback_err) =
                             nvapi_fan_percent_pin(gpu, cooler_index, Some(level))
                         {
-                            return Err(invalid_value(format!(
+                            // Same distinction as the reset leg above: both
+                            // failures are execution errors → RuntimeError.
+                            return Err(to_py_err(format!(
                                 "NVML fan set failed ({nvml_err}) and the fan-simulation percent fallback also failed: {fallback_err}"
                             )));
                         }
@@ -4394,7 +4660,8 @@ fn set_fan(
                         if let Err(fallback_err) =
                             nvapi_fan_percent_pin(gpu, cooler_index, Some(level))
                         {
-                            return Err(invalid_value(format!(
+                            // Execution failure, not a bad argument value.
+                            return Err(to_py_err(format!(
                                 "cooler-level set failed ({primary_err}) and the fan-simulation percent fallback also failed: {fallback_err}"
                             )));
                         }
@@ -4666,6 +4933,7 @@ fn reset_all(py: Python<'_>, gpu: &str, domain: Option<&str>) -> PyResult<()> {
 
 #[pymodule]
 fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(configure_library_paths, m)?)?;
     m.add_function(wrap_pyfunction!(discover_gpus, m)?)?;
     m.add_function(wrap_pyfunction!(force_wake, m)?)?;
     m.add_function(wrap_pyfunction!(query_info, m)?)?;
@@ -4713,6 +4981,8 @@ fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(query_private_vftable, m)?)?;
     m.add_function(wrap_pyfunction!(set_clk_domain_offset, m)?)?;
     m.add_function(wrap_pyfunction!(set_vfp_point_private, m)?)?;
+    m.add_function(wrap_pyfunction!(set_vfp_pair_offset, m)?)?;
+    m.add_function(wrap_pyfunction!(reset_vfp_pair_offset, m)?)?;
     m.add_function(wrap_pyfunction!(set_vfp_range_per_point_private, m)?)?;
     m.add_function(wrap_pyfunction!(clk_vf_delta_for_target_mhz, m)?)?;
     m.add_function(wrap_pyfunction!(reset_vfp_private, m)?)?;
@@ -4809,5 +5079,39 @@ mod tests {
         assert_eq!(first_number_in_display("912.5 mV").unwrap(), 912.5);
         assert_eq!(first_number_in_display("N/A"), None);
         assert_eq!(first_number_in_display("-12 MHz").unwrap(), -12.0);
+    }
+
+    #[test]
+    fn library_paths_configurable_before_first_gpu_call() {
+        // 本 crate 的其余测试都是纯解析逻辑，fresh 测试进程里 NVAPI Once
+        // 未消费、inventory 缓存全空——覆盖仍可配置。
+        assert!(library_paths_configurable());
+    }
+
+    #[test]
+    fn non_empty_trimmed_skips_blank() {
+        assert_eq!(non_empty_trimmed(None), None);
+        assert_eq!(non_empty_trimmed(Some("")), None);
+        assert_eq!(non_empty_trimmed(Some("   ")), None);
+        assert_eq!(non_empty_trimmed(Some(" /opt/nv ")), Some("/opt/nv"));
+    }
+
+    #[test]
+    fn set_library_path_env_writes_and_skips() {
+        set_library_path_env(Some(" /opt/nvapi "), None).unwrap();
+        assert_eq!(
+            std::env::var(nvoc_core::dll_path::NVAPI_PATH_ENV).unwrap(),
+            "/opt/nvapi"
+        );
+        // 空串等价未传：NVAPI env 保持上一行写入的值，NVML env 新写入。
+        set_library_path_env(Some("   "), Some(" /opt/nvml ")).unwrap();
+        assert_eq!(
+            std::env::var(nvoc_core::dll_path::NVAPI_PATH_ENV).unwrap(),
+            "/opt/nvapi"
+        );
+        assert_eq!(
+            std::env::var(nvoc_core::dll_path::NVML_PATH_ENV).unwrap(),
+            "/opt/nvml"
+        );
     }
 }

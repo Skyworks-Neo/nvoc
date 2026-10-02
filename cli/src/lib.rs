@@ -612,7 +612,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                         "dump-records",
                     ])),
                     formatter: Some(output::format_private_vfp_output),
-                    ..CommandSpec::new("get-private-vftable", Group::Vfp, "Read the private ClockClient V/F-points family: per-bank point masks + V/F curve records (voltage-indexed, units calibrated vs the public GPC VFP); --bank 0|1 selects the mask window (default 0); --domain gpc|xbar|msd|disp|mem filters points to one attributed segment group (same vocabulary as reset-private-vftable-offset; legacy sys/host alias msd, bare 0-4 = hint ordinal). Faithful read by default; --infer-missing-field fills driver-unmaintained fields — PASCAL ONLY (voltage borrowed from the public grid; the default field is shown as current and the true default = current − offset). Turing's private table is fully populated and needs no inference")
+                    ..CommandSpec::new("get-private-vftable", Group::Vfp, "Read the private ClockClient V/F-points family: per-bank point masks + V/F curve records (voltage-indexed, units calibrated vs the public GPC VFP); --bank 0|1 selects the mask window (default 0); --domain gpc|xbar|msd|disp|mem|gpc_pre_oc|gpc_oc filters points to one attributed segment group (same vocabulary as reset-private-vftable-offset; legacy sys/host alias msd, bare 0-6 = hint ordinal; the gpc_pre_oc/gpc_oc pair is the server-Pascal dual-plane curve). Faithful read by default; --infer-missing-field fills driver-unmaintained fields — PASCAL ONLY (voltage borrowed from the public grid; the default field is shown as current and the true default = current − offset). Turing's private table is fully populated and needs no inference")
                 },
             ),
             (
@@ -706,12 +706,18 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
             (
                 Command::GetVbios,
                 CommandSpec {
-                    options: Box::leak(Box::new(["out", "dump", "maxwell-vftable-decode", "pascal-vp-decode"])),
+                    options: Box::leak(Box::new(["out", "dump", "enable-detail-parser", "maxwell-vftable-decode", "input"])),
                     formatter: Some(output::format_maxwell_vftable_output),
-                    ..CommandSpec::new("get-vbios", Group::Info, "WINDOWS-ONLY. Read the VBIOS via NvAPI_GPU_GetVbiosImage (0xFC13EE11, escape 0x0700004F): prints version/size/BIT summary; --out <file> writes the raw image (e.g. vbios.rom); --dump prints the full BIT token table + Fermi-model raw blocks; --maxwell-vftable-decode decodes the Maxwell GPU Boost 2.0 V/F ladder (BIT 'P'+0x34, v0x10: 79 GPC points, voltage via vmap) as an Id/V/F table; --pascal-vp-decode decodes the Pascal+ Virtual P-State clock ladder + boost profiles (pattern-scanned, generation-coded '20 XX 01' table) as an Id/Freq table")
+                    ..CommandSpec::new("get-vbios", Group::Info, "Read and decode a VBIOS image. -i/--input <file> parses a local ROM dump OFFLINE (no GPU/NvAPI needed — works on Linux); without it the live image is read via NvAPI_GPU_GetVbiosImage (0xFC13EE11, escape 0x0700004F, Windows-only). Live: --out <file> writes the raw image; --dump prints the full BIT token table + Fermi-model raw blocks. Both modes: --enable-detail-parser runs the full detail decoder — Pascal+ Virtual P-State ladder + profiles + footers, Maxwell/Kepler GPU Boost 2.0 ladder (BIT 'P'+0x34), power/thermal/fan tables, DCB display map, memory tables, falcon ucode inventory, board identity. --maxwell-vftable-decode is a deprecated alias of it (superset: the Boost 2.0 ladder is now a section of the detail output)")
                 },
             ),
-            (Command::GetVoltRailInfo, CommandSpec::new("get-volt-rail-info", Group::Voltage, "Read private VoltRails family: rail mask + per-rail offsets + live voltages (melonVolt path) + VRM device voltage windows (0xA38ACF9D)")),
+            (
+                Command::GetVoltRailInfo,
+                CommandSpec {
+                    options: Box::leak(Box::new(["verbose"])),
+                    ..CommandSpec::new("get-volt-rail-info", Group::Voltage, "Read private VoltRails family: rail mask + per-rail offsets + live voltages (melonVolt path) + VRM device voltage windows (0xA38ACF9D). --verbose adds each rail descriptor's raw 48-dword array (undecoded fields, cross-GPU comparison)")
+                },
+            ),
             (
                 Command::List,
                 CommandSpec {
@@ -793,20 +799,20 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 Command::ResetPrivateFreqDomainGlobalOffset,
                 CommandSpec {
                     options: Box::leak(Box::new(["domain", "slot", "freq", "volt"])),
-                    ..CommandSpec::new("reset-private-freq-domain-global-offset", Group::Vfp, "Reset private clock-domain global offsets to stock (offset 0) through the same ClkDomains WRITE path as set-private-freq-domain-global-offset; default resets EVERY controllable domain x both plane slots (0/1 on 10~40 series, 2/3 on Blackwell 50 series), --domain/--slot narrow the scope (--freq/--volt alias the frequency/voltage planes per generation); domains the driver refuses (e.g. disp bit 6) are reported as warnings and the reset continues")
+                    ..CommandSpec::new("reset-private-freq-domain-global-offset", Group::Vfp, "Reset private clock-domain global offsets to stock (offset 0) through the same ClkDomains WRITE path as set-private-freq-domain-global-offset; default resets EVERY controllable domain x both plane slots (0/1 on 10~40 series, 2/3 on Blackwell 50 series), --domain/--slot narrow the scope (--freq/--volt alias the frequency/voltage planes per generation); domains the driver refuses (e.g. the unattributed bit 6) are reported as warnings and the reset continues; RAW record channel — offset 0 goes to the domains named and no net re-parking follows, so a domain the driver's table attaches to one of them is dragged along, not held (get-private-vftable fabric_relations)")
                 },
             ),
             (
                 Command::ResetPrivateVftableOffset,
                 CommandSpec {
                     arity: (1, 1),
-                    options: Box::leak(Box::new(["domain", "mode", "freq", "volt", "slot"])),
+                    options: Box::leak(Box::new(["domain", "mode", "freq", "volt", "slot", "unsafe"])),
                     positionals: Box::leak(Box::new([PositionalArg::free(
                     "arg_bank",
                     "BANK",
-                    "Bank to reset: 0 = V/F curve points (clears mode-0 kHz offsets written via set-vfp-point/range-private default/--freq-mode), 1 = pstate-class records; --domain gpc|xbar|msd|disp|mem restricts the reset to that domain's segments (bank 0 only; legacy sys/host alias msd); --freq/--volt (or --mode freq|raw, --slot 0/1) pick ONE plane: freq = mode-0 kHz offsets, volt = mode-1 raw values",
+                    "Bank to reset: 0 = V/F curve points (clears mode-0 kHz offsets written via set-vfp-point/range-private default/--freq-mode), 1 = pstate-class records; --domain gpc|xbar|msd|disp|mem|gpc_pre_oc|gpc_oc restricts the reset to that domain's segments (bank 0 only; legacy sys/host alias msd); --freq/--volt (or --mode freq|raw, --slot 0/1) pick ONE plane: freq = mode-0 kHz offsets, volt = mode-1 raw values",
                 )])),
-                    ..CommandSpec::new("reset-private-vftable-offset", Group::Vfp, "Reset private V/F-POINTS overrides (clear freq/raw offsets the public/pstate20 reset paths cannot reach; --freq/--volt --mode freq|raw --slot 0/1 are equivalent plane selectors, default both)")
+                    ..CommandSpec::new("reset-private-vftable-offset", Group::Vfp, "Reset private V/F-POINTS overrides (clear freq/raw offsets the public/pstate20 reset paths cannot reach; --freq/--volt --mode freq|raw --slot 0/1 are equivalent plane selectors, default both). On server Pascal dual-plane cards the default/--freq reset is ORDERED (plane B to 0 first, then plane A - index-order resets are lethal there); --unsafe restores the legacy paths)")
                 },
             ),
             (
@@ -1154,7 +1160,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                         "OFFSET",
                         "--freq (default): signed frequency offset in MHz (one decimal allowed), for example -60, +15.5 or 0 (no-op stock write); an explicit khz/kilohertz suffix keeps the legacy unit. --volt: per-domain V/F-curve voltage addend in mV (one decimal allowed), for example +25, -12.5 or 0. Plane slots are GENERATION-DEPENDENT: --freq/--volt resolve to slot 0/1 on 10~40 series and slot 2/3 on Blackwell 50 series; --slot writes the RAW dword and is never remapped. The driver may reject or clamp; the post-SET readback is returned. Pass --temporary to restore the snapshot before returning",
                     )])),
-                    ..CommandSpec::new("set-private-freq-domain-global-offset", Group::Vfp, "Write a signed offset into one clock-domain control record plane (dangerous XBar clock write; --temporary restores the snapshot; --freq/--volt = the frequency/voltage planes, auto-mapped to slot 0/1 on 10~40 series and slot 2/3 on Blackwell 50 series). Names use the record-space attribution (certified: gpc=0, xbar=1, mem=2, sys=3, msd=5, disp=7, pciegen=8, host=9; hub=4, bit6 unattributed; see get-private-freq-domain-info). Cross-generation A/B: address records by bare integer")
+                    ..CommandSpec::new("set-private-freq-domain-global-offset", Group::Vfp, "Write a signed offset into one clock-domain control record plane (dangerous XBar clock write; --temporary restores the snapshot; --freq/--volt = the frequency/voltage planes, auto-mapped to slot 0/1 on 10~40 series and slot 2/3 on Blackwell 50 series). RAW record channel: the value lands on the domain named, and whatever the driver's own table attaches to it (get-private-vftable fabric_relations, master → slave) is dragged along by the driver — no net conversion and no re-parking here (the GUI/TUI fabric rows are the net view). Names use the record-space attribution (certified: gpc=0, xbar=1, mem=2, sys=3, msd=5, disp=7, pciegen=8, host=9; hub=4, bit6 unattributed; see get-private-freq-domain-info). Cross-generation A/B: address records by bare integer")
                 },
             ),
             (
@@ -1199,7 +1205,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 Command::SetPrivateVftablePointOffset,
                 CommandSpec {
                     arity: (3, 3),
-                    options: Box::leak(Box::new(["freq-mode", "raw", "raw-converted"])),
+                    options: Box::leak(Box::new(["freq-mode", "raw", "raw-converted", "unsafe"])),
                     positionals: Box::leak(Box::new([PositionalArg::free(
                         "arg_bank",
                         "BANK",
@@ -1215,14 +1221,14 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                         "VALUE",
                         "default/--freq-mode: kHz freq offset (e.g. 200000 = +200 MHz). --raw-converted: MHz target translated to a raw f-offset control value via the universal g(def) prior (effect_mhz = C(def)*(delta-D0)). --raw: raw f-offset control value verbatim",
                     )])),
-                    ..CommandSpec::new("set-private-vftable-point-offset", Group::Vfp, "Write one V/F curve point via the private SetControl (dangerous V/F edit; bank 0=V/F curve, 1=pstate-class; default/--freq-mode = kHz freq offset (same as public VFP, safest; also reaches xbar/msd domains); --raw-converted = MHz target translated to a raw f-offset control value via the universal g(def) prior; --raw = write the raw f-offset control value verbatim)")
+                    ..CommandSpec::new("set-private-vftable-point-offset", Group::Vfp, "Write one V/F curve point via the private SetControl (dangerous V/F edit; bank 0=V/F curve, 1=pstate-class; default/--freq-mode = kHz freq offset (same as public VFP, safest; also reaches xbar/msd domains); --raw-converted = MHz target translated to a raw f-offset control value via the universal g(def) prior; --raw = write the raw f-offset control value verbatim). On server Pascal dual-plane cards the default/--freq-mode write is PAIRED (both planes, safe order) — --unsafe writes the single addressed plane only")
                 },
             ),
             (
                 Command::SetPrivateVftableRangeOffset,
                 CommandSpec {
                     arity: (4, 4),
-                    options: Box::leak(Box::new(["freq-mode", "raw", "raw-converted"])),
+                    options: Box::leak(Box::new(["freq-mode", "raw", "raw-converted", "unsafe"])),
                     positionals: Box::leak(Box::new([PositionalArg::free(
                         "arg_bank",
                         "BANK",
@@ -1235,7 +1241,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                         "VALUE",
                         "default/--freq-mode: kHz freq offset applied to every point (e.g. 200000 = +200 MHz). --raw-converted: MHz target translated per-point to a raw f-offset control value via g(def) (each point gets its own C(def)/D0). --raw: raw f-offset control word applied to every point",
                     )])),
-                    ..CommandSpec::new("set-private-vftable-range-offset", Group::Vfp, "Write a range of V/F curve points via the private SetControl (dangerous batch V/F edit; single RMW cycle; default/--freq-mode = same kHz freq offset on every point, --raw-converted = one MHz target translated per-point via g(def), --raw = one raw control word on every point)")
+                    ..CommandSpec::new("set-private-vftable-range-offset", Group::Vfp, "Write a range of V/F curve points via the private SetControl (dangerous batch V/F edit; single RMW cycle; default/--freq-mode = same kHz freq offset on every point, --raw-converted = one MHz target translated per-point via g(def), --raw = one raw control word on every point). On server Pascal dual-plane cards the default/--freq-mode write is PAIRED (both planes, safe order) — --unsafe writes the single addressed plane only")
                 },
             ),
             (
@@ -1541,12 +1547,15 @@ pub struct Invocation {
     pub backend: BackendChoice,
     pub output: OutputFormat,
     pub no_color: bool,
-    /// `--nvml-path`: explicit nvml.dll path. Also injected into
+    /// `--nvml-path`: explicit NVML library path (Windows: nvml.dll file;
+    /// Linux: libnvidia-ml.so.1 file or directory). Also injected into
     /// `nvoc_core::dll_path::NVML_PATH_ENV` at parse time so core's NVML
     /// resolution picks it up (GUI/pynvoc use the env directly).
     pub nvml_path: Option<String>,
-    /// `--nvapi-path`: DLL search-path directory for nvapi64.dll. Injected
-    /// into `nvoc_core::dll_path::NVAPI_PATH_ENV` at parse time.
+    /// `--nvapi-path`: explicit NVAPI library override (Windows: search-path
+    /// directory or nvapi64.dll file; Linux: libnvidia-api.so.1 file or
+    /// directory). Injected into `nvoc_core::dll_path::NVAPI_PATH_ENV` at
+    /// parse time.
     pub nvapi_path: Option<String>,
     pub gpu_specs: Vec<String>,
     pub command: Option<Command>,
@@ -1843,14 +1852,14 @@ fn cli_command(command_hint: Option<Command>) -> ClapCommand {
                 .long("nvml-path")
                 .value_name("PATH")
                 .global(true)
-                .help("Explicit nvml.dll path (overrides NVOC_NVML_PATH / auto-probe; legacy drivers keep NVML outside the DLL search path, e.g. ...\\NVSMI\\nvml.dll)"),
+                .help("Explicit NVML library path (overrides NVOC_NVML_PATH / auto-probe). Windows: nvml.dll (legacy drivers keep it outside the DLL search path, e.g. ...\\NVSMI\\nvml.dll); Linux: libnvidia-ml.so.1 file (or its directory)"),
         )
         .arg(
             Arg::new("nvapi-path")
                 .long("nvapi-path")
                 .value_name("PATH")
                 .global(true)
-                .help("Directory (or nvapi64.dll file) inserted into the DLL search path before NVAPI loads (overrides NVOC_NVAPI_PATH)"),
+                .help("Explicit NVAPI library override (overrides NVOC_NVAPI_PATH). Windows: directory (or nvapi64.dll file) inserted into the DLL search path; Linux: libnvidia-api.so.1 file (or its directory), preloaded so the SONAME lookup hits it"),
         )
         .arg(
             Arg::new("output")
@@ -1917,7 +1926,7 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .value_name("DOMAIN")
             .action(ArgAction::Append)
             .global(true)
-            .help("Domain selector, meaning depends on the command: clock domain (core/memory/processor/video), gpu|acoustic (set-temp-limit NVML path), core|mem (set-legacy-freq), gpc|xbar|msd|disp|mem (reset-private-vftable-offset; legacy sys/host alias msd), or a 0-3 clock-domain index (get-pstate-lock; 0=GPC/core, 2=memory)"),
+            .help("Domain selector, meaning depends on the command: clock domain (core/memory/processor/video), gpu|acoustic (set-temp-limit NVML path), core|mem (set-legacy-freq), gpc|xbar|msd|disp|mem|gpc_pre_oc|gpc_oc (private-vftable commands; legacy sys/host alias msd), or a 0-3 clock-domain index (get-pstate-lock; 0=GPC/core, 2=memory)"),
         "output-csv" => Arg::new("output-csv")
             .long("output-csv")
             .value_name("PATH")
@@ -2092,11 +2101,17 @@ fn command_specific_arg(name: &'static str) -> Arg {
         "maxwell-vftable-decode" => Arg::new("maxwell-vftable-decode")
             .long("maxwell-vftable-decode")
             .action(ArgAction::SetTrue)
-            .help("Decode the Maxwell GPU Boost 2.0 V/F ladder (BIT 'P'+0x34 v0x10: 79 GPC points; voltage resolved through the vmap table) and print it in the get-public-vftable points format"),
-        "pascal-vp-decode" => Arg::new("pascal-vp-decode")
-            .long("pascal-vp-decode")
+            .help("Deprecated alias of --enable-detail-parser (the Maxwell GPU Boost 2.0 ladder it used to decode is now a section of the detail output)"),
+        "input" => Arg::new("input")
+            .short('i')
+            .long("input")
+            .value_name("FILE")
+            .action(ArgAction::Set)
+            .help("Parse a local VBIOS ROM dump instead of reading the live GPU image (offline mode: no NvAPI, works on Linux)"),
+        "enable-detail-parser" => Arg::new("enable-detail-parser")
+            .long("enable-detail-parser")
             .action(ArgAction::SetTrue)
-            .help("Decode the Pascal+ Virtual P-State (VP) clock ladder (pattern-scanned '20 XX 01' table, generation-coded header: 0x10/12 Pascal, 0x13 Turing, 0x15 Ampere, 0x17 Ada; u32/32768 MHz entries, no per-point voltage) plus the boost profiles as an Id/Freq table"),
+            .help("Run the full detail decoder: Pascal+ Virtual P-State clock ladder (pattern-scanned '20 XX 01' table, generation-coded header: 0x10/12 Pascal, 0x13 Turing, 0x15 Ampere, 0x17 Ada; u32/32768 MHz entries, no per-point voltage) + boost profiles + VP memory footers; Maxwell/Kepler GPU Boost 2.0 V/F ladder (BIT 'P'+0x34 v0x10, voltage resolved through the vmap table); the power table (target/limit/slider); the BIT 'P' thermal/fan tables (nouveau semantics + PERF_PTRS slots); the DCB display map; memory clock/tweak/info tables; falcon ucode inventory; board identity"),
         "flags" => Arg::new("flags")
             .long("flags")
             .value_name("BITS")
@@ -2110,6 +2125,10 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .long("activate")
             .action(ArgAction::SetTrue)
             .help("Switch the cooler policy to TemperatureContinuous (8) in the same transaction, so the written curve actually drives the fan"),
+        "unsafe" => Arg::new("unsafe")
+            .long("unsafe")
+            .action(ArgAction::SetTrue)
+            .help("set-private-vftable-{point,range}-offset on a server Pascal dual-plane card: write the ONE addressed plane instead of the default paired write (both planes converged, safe order). Single-plane writes are your responsibility: plane B > plane A feeds the GPU a non-monotonic table and soft-hangs it"),
         _ => unreachable!("unknown command-specific option {name}"),
     }
 }
@@ -2227,11 +2246,12 @@ fn collect_named_options(
             | "offset"
             | "dump"
             | "maxwell-vftable-decode"
-            | "pascal-vp-decode"
+            | "enable-detail-parser"
             | "target"
             | "freq"
             | "volt"
-            | "dump-records" => {
+            | "dump-records"
+            | "unsafe" => {
                 if matches.get_flag(name) {
                     options.insert(name.to_string(), vec!["true".to_string()]);
                 }
@@ -2275,6 +2295,19 @@ fn execute(invocation: &Invocation) -> CliResult<Execution> {
     let command = invocation
         .command
         .ok_or_else(|| CliError::new("missing function name"))?;
+
+    // get-vbios -i <file>: offline ROM parsing. Short-circuits before any
+    // GPU discovery so it works with NvAPI unavailable and on Linux; every
+    // decoder below is a pure function over the image bytes.
+    if command == Command::GetVbios
+        && let Some(path) = invocation
+            .options
+            .get("input")
+            .and_then(|v| v.first())
+            .filter(|p| !p.is_empty())
+    {
+        return execute_get_vbios_file(invocation, command, path);
+    }
 
     match invocation.backend {
         BackendChoice::Nvapi => execute_backend(invocation, command, BackendAdapter::Nvapi),
@@ -3764,6 +3797,7 @@ fn execute_target(
             })
         }
         Command::GetVoltRailInfo => {
+            let verbose = option_bool(invocation, "verbose", false)?;
             let rails = run(target, QueryNvapiVoltRails)?.output;
             // Best-effort enrichment: the melonVolt voltage-domain enumerator
             // (0xA38ACF9D) reports each domain's min/step/max/default µV
@@ -3787,10 +3821,25 @@ fn execute_target(
                         }),
                         "rail_mask": format!("0x{:08X}", r.rail_mask),
                         "p0_rails": volt_rails_p0_rails_json(&r),
-                        "rail_descriptors": r.rail_descriptors.iter().map(|d| json!({
-                            "rail_bit": d.rail_bit,
-                            "type": d.entry_type(),
-                        })).collect::<Vec<_>>(),
+                        // Decoded descriptor fields for cross-GPU comparison
+                        // (class = the field V1 status mirrors as "type";
+                        // uv_a/uv_b are the two µV readings, semantics
+                        // unconfirmed). The full 48-dword raw array — for
+                        // debugging the still-undecoded fields — only with
+                        // --verbose.
+                        "rail_descriptors": r.rail_descriptors.iter().map(|d| {
+                            let mut entry = json!({
+                                "rail_bit": d.rail_bit,
+                                "type": d.entry_type(),
+                                "class": d.class(),
+                                "uv_a": d.uv_a(),
+                                "uv_b": d.uv_b(),
+                            });
+                            if verbose {
+                                entry["raw"] = json!(d.raw_u32);
+                            }
+                            entry
+                        }).collect::<Vec<_>>(),
                         "control": r.control.iter().map(|e| json!({
                             "rail_bit": e.rail_bit, "type": e.entry_type, "values_uV": e.values,
                         })).collect::<Vec<_>>(),
@@ -4141,8 +4190,9 @@ fn execute_target(
                             let effect_mhz = ctrl.and_then(|_| {
                                 if mode == 0 {
                                     // ÷1000 kHz→MHz (÷2000 on the Pascal 2× axis —
-                                    // see pascal_2x_axis above)
-                                    Some(value as f64 / mode0_khz_to_mhz)
+                                    // see pascal_2x_axis above); VALUE is signed,
+                                    // see mode0_offset_effect_mhz
+                                    Some(mode0_offset_effect_mhz(value, mode0_khz_to_mhz))
                                 } else if value == 0 {
                                     // no override written — the g(def) prior's D0
                                     // term would show a phantom offset at raw 0
@@ -4236,6 +4286,19 @@ fn execute_target(
                 }
                 None => json!({"supported": false}),
             };
+            // ── master → slave (ext-slot) domain relation ──────────────────
+            // Always derived from the FULL table (`vfp`), never the filtered
+            // view above: the roster is the pool minus every domain owning a
+            // main block *anywhere* in the table, so a --domain view would
+            // relabel the slots. A failed read (`vfp` = None) leaves the
+            // relation unknown — `table_available: false`, no edges.
+            let fabric = nvoc_core::FabricTree::from_table(vfp.as_ref());
+            if let Some(obj) = value.as_object_mut() {
+                obj.insert(
+                    "fabric_relations".to_string(),
+                    fabric_relations_json(&fabric),
+                );
+            }
             // --dump-records: attach the raw-record slot map (per-offset
             // dword stats + first-record hex) for layout judgment
             if dump_records && let Some(v) = vfp.as_ref() {
@@ -4256,8 +4319,10 @@ fn execute_target(
             // token table + Fermi-model raw blocks);
             // --out <file> writes the raw image.
             let image = run(target, QueryVbiosImage)?.output;
-            let maxwell_vftable = invocation.options.contains_key("maxwell-vftable-decode");
-            let pascal_vp = invocation.options.contains_key("pascal-vp-decode");
+            // --maxwell-vftable-decode is a deprecated alias: the Boost 2.0
+            // ladder it used to decode is now a section of the detail output.
+            let detail = invocation.options.contains_key("enable-detail-parser")
+                || invocation.options.contains_key("maxwell-vftable-decode");
             match invocation.options.get("out").and_then(|v| v.first()) {
                 Some(path) => {
                     std::fs::write(path, &image).map_err(|e| {
@@ -4270,20 +4335,14 @@ fn execute_target(
                         "security_flags": security_flags.map(|f| format!("{:#010x}", f)),
                         "status_string": status_string,
                     });
-                    if maxwell_vftable {
-                        value["maxwell_vftable"] = decode_maxwell_vftable(&image)?;
-                    }
-                    if pascal_vp {
-                        value["pascal_vp"] = decode_pascal_vp(&image)?;
+                    if detail {
+                        value["detail"] = decode_vbios_detail(&image)?;
                     }
                     Ok(value)
                 }
                 None => {
-                    if maxwell_vftable {
-                        return decode_maxwell_vftable(&image);
-                    }
-                    if pascal_vp {
-                        return decode_pascal_vp(&image);
+                    if detail {
+                        return decode_vbios_detail(&image);
                     }
                     let version = run(target, QueryVbiosVersion).ok().map(|r| r.output);
                     let dump = invocation.options.contains_key("dump");
@@ -4449,10 +4508,39 @@ fn execute_target(
             // default (no flag) = freq_mode, same as public VFP but reaches
             // xbar/msd; --freq-mode is the explicit alias of the default.
             let freq_mode = !raw_flag && !raw_converted;
+            let unsafe_flag = option_bool(invocation, "unsafe", false)?;
             // Pascal 2× axis: freq-mode writes the real kHz ×2; --raw is the
             // one mode that stays verbatim (raw semantics are raw semantics).
             let pascal_2x = pascal_private_2x_axis(target);
             let axis_scale: i32 = if pascal_2x && freq_mode { 2 } else { 1 };
+
+            // Server Pascal dual-plane (80+80): the default/--freq-mode write
+            // is PAIRED — both planes converge to the same raw value in the
+            // invariant-safe order (raises: plane A first; lowers: plane B
+            // first). --unsafe restores the legacy single-plane write (the
+            // addressed plane only) for per-plane freedom.
+            if freq_mode
+                && bank == 0
+                && !unsafe_flag
+                && nvoc_core::is_server_pascal_dual_plane(target)?
+            {
+                // the user may address either plane; the controller
+                // coordinates are plane A (index − 80 for B-plane inputs)
+                let a_idx = if idx >= 80 { idx - 80 } else { idx };
+                let report = nvoc_core::set_private_vf_oc_offset(
+                    target,
+                    0,
+                    a_idx,
+                    1,
+                    value.saturating_mul(axis_scale) as u32,
+                )?;
+                return Ok(pair_report_json(
+                    &report,
+                    value,
+                    axis_scale,
+                    json!({"bank": bank, "index": idx}),
+                ));
+            }
 
             let (mode_label, raw_value, translated_mhz) = if freq_mode {
                 (
@@ -4514,6 +4602,13 @@ fn execute_target(
                 },
             )?
             .output;
+            let pairing_warning = if unsafe_flag && freq_mode && bank == 0 {
+                nvoc_core::is_server_pascal_dual_plane(target)
+                    .unwrap_or(false)
+                    .then(unsafe_pairing_warning)
+            } else {
+                None
+            };
             Ok(match out {
                 Some(retained) => json!({
                     "applied": true,
@@ -4526,6 +4621,9 @@ fn execute_target(
                     "pascal_2x_write": pascal_2x && freq_mode,
                     "unit": translated_mhz.map(|m| format!("{:.0} MHz", m)).unwrap_or_else(|| "raw".to_string()),
                     "retained": retained,
+                    "warning": (freq_mode && raw_value < 0)
+                        .then(negative_mode0_offset_warning),
+                    "pairing_warning": pairing_warning,
                 }),
                 None => json!({"supported": false}),
             })
@@ -4556,6 +4654,42 @@ fn execute_target(
             // translates the MHz lift verbatim; --raw stays verbatim.
             let pascal_2x = pascal_private_2x_axis(target);
             let axis_scale: i32 = if pascal_2x && freq_mode { 2 } else { 1 };
+
+            let unsafe_flag = option_bool(invocation, "unsafe", false)?;
+            // Server Pascal dual-plane (80+80): the default/--freq-mode range
+            // write is PAIRED — both planes converge to the same raw value in
+            // the invariant-safe order. A range may address either plane
+            // (105-115 maps to its 25-35 counterpart); a range crossing the
+            // 79/80 boundary has no coherent counterpart and is refused.
+            // --unsafe restores the legacy single-plane loop.
+            if freq_mode
+                && bank == 0
+                && !unsafe_flag
+                && nvoc_core::is_server_pascal_dual_plane(target)?
+            {
+                let count = end - start + 1;
+                let (a_start, addressed) = if end < 80 {
+                    (start, json!({"bank": bank, "start": start, "end": end}))
+                } else if start >= 80 {
+                    (
+                        start - 80,
+                        json!({"bank": bank, "start": start, "end": end}),
+                    )
+                } else {
+                    return Err(CliError::new(
+                        "range crosses the plane boundary (index 79/80) — split it into one \
+                         range per plane, or pass --unsafe for a single-plane write",
+                    ));
+                };
+                let report = nvoc_core::set_private_vf_oc_offset(
+                    target,
+                    0,
+                    a_start,
+                    count,
+                    val.saturating_mul(axis_scale) as u32,
+                )?;
+                return Ok(pair_report_json(&report, val, axis_scale, addressed));
+            }
 
             if freq_mode {
                 // mode 0 kHz offset: the batch range method only writes mode 1,
@@ -4592,6 +4726,14 @@ fn execute_target(
                     "pascal_2x_write": axis_scale == 2,
                     "unit": "kHz",
                     "points_written": end - start + 1,
+                    "warning": (val < 0).then(negative_mode0_offset_warning),
+                    "pairing_warning": (unsafe_flag && bank == 0)
+                        .then(|| {
+                            nvoc_core::is_server_pascal_dual_plane(target)
+                                .unwrap_or(false)
+                                .then(unsafe_pairing_warning)
+                        })
+                        .flatten(),
                 }))
             } else if raw_flag {
                 // mode 1: same raw control word on every point
@@ -4868,7 +5010,7 @@ fn execute_target(
             // Blackwell 50系: slots 2/3 — same generation shift as the set
             // command); --domain / --slot narrow it (--freq/--volt are the
             // semantic plane aliases, resolved per generation). A domain
-            // the driver refuses (e.g. disp bit 6) or a slot it rejects
+            // the driver refuses (e.g. the unattributed bit 6) or a slot it rejects
             // becomes a warning and the reset continues — one bad record
             // must not abort the rest.
             let blackwell = run(target, QueryGpuInfo)
@@ -5666,6 +5808,73 @@ fn execute_target(
             // (the bit-5 offset A/B pinned MSD); sys/host remain accepted
             // as legacy aliases. The disp bins were also once mislabeled
             // host.
+            //
+            // Server Pascal dual-plane (80+80): reset is a sequential fill
+            // of 0, and INDEX ORDER IS LETHAL — zeroing plane A point n
+            // while its plane B counterpart (n+80) still holds a positive
+            // offset violates the cross-plane invariant (B > A feeds the
+            // GPU a non-monotonic table and soft-hangs it; recovery may
+            // need a reboot). Default: ORDERED reset — plane B (OC)
+            // to 0 first, then plane A (PRE-OC), through the paired
+            // controller with target 0. Zeroing plane B alone is safe
+            // (A >= B is preserved), so a --domain gpc_oc reset stays
+            // single-plane. --unsafe restores the legacy paths (single-
+            // plane resets are then the caller's responsibility).
+            let unsafe_flag = option_bool(invocation, "unsafe", false)?;
+            let domain_hint = option_one(invocation, "domain")
+                .map(parse_clk_vf_domain_hint)
+                .transpose()?;
+            if bank == 0
+                && !unsafe_flag
+                && only_mode != Some(1)
+                && nvoc_core::is_server_pascal_dual_plane(target)?
+            {
+                match domain_hint {
+                    Some(ClkVfDomainHint::GpcOc) => {
+                        // plane B only: lowering B keeps A >= B
+                        let mut reset = 0usize;
+                        for idx in 80..=159usize {
+                            run(
+                                target,
+                                SetNvapiVfpPointPrivate {
+                                    bank: 0,
+                                    idx,
+                                    freq_mode: true,
+                                    value: 0,
+                                },
+                            )?;
+                            reset += 1;
+                        }
+                        return Ok(json!({
+                            "applied": true,
+                            "bank": bank,
+                            "domain": "gpc_oc",
+                            "mode": "freq_offset_clear",
+                            "ordered_reset": "plane B only (80..159 → 0; A >= B preserved)",
+                            "points_reset": reset,
+                        }));
+                    }
+                    hint if hint.is_none()
+                        || hint == Some(ClkVfDomainHint::Gpc)
+                        || hint == Some(ClkVfDomainHint::GpcPreOc) =>
+                    {
+                        // touches plane A: both planes must come down
+                        // together, plane B first
+                        let report = nvoc_core::set_private_vf_pair_offset(target, 0, 0, 80, 0)?;
+                        return Ok(json!({
+                            "applied": true,
+                            "bank": bank,
+                            "mode": "freq_offset_clear",
+                            "ordered_paired_reset": true,
+                            "reset_order": ["plane B (80..159) → 0", "plane A (0..79) → 0"],
+                            "points_reset": report.writes.len(),
+                            "plane_a_before": report.plane_a_before,
+                            "plane_b_before": report.plane_b_before,
+                        }));
+                    }
+                    _ => {} // mem/xbar/msd/disp: legacy path below
+                }
+            }
             if let Some(domain_raw) = option_one(invocation, "domain") {
                 // shared vocabulary with get-private-vftable's --domain
                 // (same hint enum; parse_clk_vf_domain_hint also accepts the
@@ -5942,18 +6151,88 @@ fn vfp_point_type_label(point_type: VfPointType) -> &'static str {
     }
 }
 
-/// Decode the Maxwell GPU Boost 2.0 V/F ladder from a VBIOS image and emit it
-/// in the get-public-vftable points shape (index / voltage / frequency). The
-/// ladder lives at BIT 'P'+0x34 (v0x10, RE'd off MaxwellBiosTweaker 1.36 via
-/// ILSpy): 79×5B GPC points (u16 half-MHz + vmap index) plus 6×8B pstate
-/// boundary marks. Point voltage = vmap[entry.vmap_index].
-fn decode_maxwell_vftable(image: &[u8]) -> CliResult<Value> {
+/// `get-vbios -i <file>`: parse a local ROM dump offline. Mirrors the live
+/// paths' output shapes (same decode functions, same formatter sniffing);
+/// NvAPI-only metadata (security_flags, status_string) is absent by design.
+fn execute_get_vbios_file(
+    invocation: &Invocation,
+    command: Command,
+    path: &str,
+) -> CliResult<Execution> {
+    if invocation.options.contains_key("out") {
+        return Err(CliError::new(
+            "--out writes the live-read image and is not applicable with -i/--input",
+        ));
+    }
+    let image = std::fs::read(path)
+        .map_err(|e| CliError::new(format!("failed to read VBIOS file {path:?}: {e}")))?;
+    if image.len() < 0x40 {
+        return Err(CliError::new(format!(
+            "VBIOS file {path:?} too small ({:?} bytes)",
+            image.len()
+        )));
+    }
+
+    // --maxwell-vftable-decode is a deprecated alias of --enable-detail-parser.
+    let detail = invocation.options.contains_key("enable-detail-parser")
+        || invocation.options.contains_key("maxwell-vftable-decode");
+    let dump = invocation.options.contains_key("dump");
+    let value = if detail {
+        decode_vbios_detail(&image)?
+    } else if dump {
+        let bit_summary = vbios::parse_bit(&image).ok();
+        let fermi_model = bit_summary
+            .as_ref()
+            .map(|s| vbios::parse_fermi_model(&image, s));
+        json!({
+            "size": image.len(),
+            "path": path,
+            "boot_magic": format!("{:02x} {:02x}", image[0], image[1]),
+            "bit": bit_summary.as_ref().map(|s| s.to_json()),
+            "fermi_model": fermi_model,
+        })
+    } else {
+        let bit = vbios::parse_bit(&image).ok();
+        json!({
+            "size": image.len(),
+            "path": path,
+            "boot_magic": format!("{:02x} {:02x}", image[0], image[1]),
+            "bit_offset": find_bit_signature(&image),
+            "bit_tokens": bit.as_ref().map(|s| s.tokens.len()),
+            "nvgi": nvoc_core::legacy_vbios_parser::parse_nvgi(&image).map(|n| json!({
+                "version": n.version,
+                "total_data_size": n.total_data_size,
+                "xve_sub_vendor": format!("{:#06x}", n.xve_sub_vendor),
+                "xve_subsystem_id": format!("{:#06x}", n.xve_subsystem_id),
+            })),
+        })
+    };
+
+    Ok(Execution {
+        function: "get-vbios",
+        command,
+        backend: "file".to_string(),
+        warnings: vec![],
+        results: vec![TargetResult {
+            gpu_id: None,
+            backend: "file",
+            ok: true,
+            output: Some(value),
+            error: None,
+        }],
+    })
+}
+
+/// Boost 2.0 V/F ladder JSON (get-public-vftable points shape), or `None` when
+/// the image carries no ladder. The ladder lives at BIT 'P'+0x34 (v0x10, RE'd
+/// off MaxwellBiosTweaker 1.36 via ILSpy): 79×5B GPC points (u16 half-MHz +
+/// vmap index) plus 6×8B pstate boundary marks. Point voltage =
+/// vmap[entry.vmap_index]. Present on Maxwell/Kepler; Pascal+ replaced it with
+/// the Virtual P-State tables.
+fn boost_ladder_json(image: &[u8]) -> CliResult<Option<Value>> {
     let vb = nvoc_core::legacy_vbios_parser::parse(image)?;
     let Some(ladder) = &vb.boost_ladder else {
-        return Err(CliError::new(
-            "no boost-ladder table (BIT 'P'+0x34, v0x10) in this VBIOS image — \
-             Maxwell (GM10x/GM20x) expected; for Pascal+ try --pascal-vp-decode",
-        ));
+        return Ok(None);
     };
     let last_index = ladder.entries.len().saturating_sub(1);
     let points: Vec<Value> = ladder
@@ -5984,7 +6263,7 @@ fn decode_maxwell_vftable(image: &[u8]) -> CliResult<Value> {
             })
         })
         .collect();
-    Ok(json!({
+    Ok(Some(json!({
         "domain": "graphics",
         "indexed": true,
         "source": "vbios-boost-ladder",
@@ -5999,79 +6278,660 @@ fn decode_maxwell_vftable(image: &[u8]) -> CliResult<Value> {
         "pstate_marks": pstate_marks,
         "points": points,
         "warnings": vb.warnings,
+    })))
+}
+
+/// Full detail decoder for `get-vbios --enable-detail-parser` (née
+/// --pascal-vp-decode, now also covering the deprecated
+/// --maxwell-vftable-decode). Unlike the Maxwell ladder (BIT 'P'+0x34), the
+/// Pascal+ VP table sits outside the BIT pointer chain and is pattern-scanned:
+/// a `20 XX 01` header whose length byte encodes the generation (0x10/12
+/// Pascal, 0x13 Turing, 0x15 Ampere, 0x17 Ada), boost profiles walking
+/// backwards from the header, and 41B-stride ladder entries (u32 LE = MHz ×
+/// 2^15, 15 fractional bits) terminated at freq 0. VP points carry NO voltage
+/// — Pascal per-point voltage lives in a separate BIT table, which is why
+/// voltage editing was never achieved by the reference tooling. On pre-Pascal
+/// images (no VP table) the decoder falls back to the Boost 2.0 ladder as the
+/// top-level points source, so Maxwell/Kepler stay a subset of this output.
+/// VP semantics per JadeRover's Nvidia-vBIOS-Clock-Power-Tweaker RE; pending
+/// bit-level calibration against a real programmer dump (raw values are
+/// included for that purpose).
+/// Blackwell（50 系）detail 解码。容器与 NVGI 族完全不同（`4C` 头、
+/// BIT token 相对 55AA 镜像基址、'P' 槽需 per-build delta 重定位、功率
+/// 走 TLV 记录锚），VP/boost-ladder 均不存在——独立 JSON 分支。
+fn decode_blackwell_detail(image: &[u8]) -> CliResult<Value> {
+    let info = nvoc_core::legacy_vbios_parser::find_blackwell(image)
+        .ok_or_else(|| CliError::new("not a Blackwell container (4C C0/4C FF)"))?;
+    let bit_entries =
+        nvoc_core::legacy_vbios_parser::bit_entries(image, info.bit_offset, info.image_base)
+            .unwrap_or_default();
+    // 'B' 版本（BCD BE 段）。
+    let bios_version = bit_entries.iter().find(|e| e.id == b'B').and_then(|e| {
+        let t = info.image_base + usize::from(e.offset);
+        if t + 5 > image.len() {
+            return None;
+        }
+        let v = u32::from(image[t])
+            | u32::from(image[t + 1]) << 8
+            | u32::from(image[t + 2]) << 16
+            | u32::from(image[t + 3]) << 24;
+        Some(format!(
+            "{:02x}.{:02x}.{:02x}.{:02x}.{:02X}",
+            (v >> 24) & 0xFF,
+            (v >> 16) & 0xFF,
+            (v >> 8) & 0xFF,
+            v & 0xFF,
+            image[t + 4]
+        ))
+    });
+    // 'i' InternalUse（同一布局，基址 = info.image_base）。
+    let internal_use =
+        match nvoc_core::legacy_vbios_parser::find_internal_use_at(image, info.image_base) {
+            Ok(Some(iu)) => json!({
+                "present": true,
+                "version": iu.version,
+                "build_date": iu.build_date,
+                "project": iu.project,
+                "project_sku": iu.project_sku,
+                "chip_sku": iu.chip_sku,
+                "board_id": iu.board_id,
+                "cert_flag": iu.cert_flag,
+                "build_guid": iu.build_guid
+                    .map(|g| g.iter().map(|b| format!("{b:02x}")).collect::<String>()),
+                "tail_len": iu.tail_raw.len(),
+            }),
+            Ok(None) => json!({"present": false}),
+            Err(e) => json!({"present": false, "note": format!("{e}")}),
+        };
+    let perf = json!({
+        "table_offset": info.perf.as_ref().map(|p| p.table_offset),
+        "slot_count": info.perf.as_ref().map(|p| p.slots.len()),
+        "delta": info.perf.as_ref().and_then(|p| p.delta).map(|d| format!("{d:#x}")),
+    });
+    let power = info.power.map(|p| {
+        json!({
+            "anchor_offset": p.anchor_offset,
+            "budget_raw": p.budget_raw,
+            "rated_mw": p.rated_mw,
+            "max_mw": p.max_mw,
+            "rated_watt": f64::from(p.rated_mw) / 1000.0,
+            "max_watt": f64::from(p.max_mw) / 1000.0,
+        })
+    });
+    Ok(json!({
+        "domain": "graphics",
+        "indexed": false,
+        "source": "vbios-blackwell",
+        "container": {
+            "magic": format!("{:02x} {:02x}", image[0], image[1]),
+            "size": image.len(),
+            "bit_offset": info.bit_offset,
+            "image_base": info.image_base,
+            "token_count": info.token_count,
+        },
+        "bios_version": bios_version,
+        "internal_use": internal_use,
+        "perf_pointers": perf,
+        "power": power,
+        "thermal": {
+            "slowdown_c": info.slowdown_c,
+        },
+        "fan": {
+            "curve": info.fan_curves.iter().map(|p| json!({
+                "temp_c": p.temp_c,
+                "rpm": p.rpm,
+            })).collect::<Vec<_>>(),
+            "cooler_pairs": info.fan_cooler_pairs.iter().map(|(min, max)| json!({
+                "min_rpm": min,
+                "max_rpm": max,
+            })).collect::<Vec<_>>(),
+        },
+        "nvgi": nvoc_core::legacy_vbios_parser::parse_nvgi(image).map(|n| json!({
+            "version": n.version,
+            "header_len": n.header_len,
+            "total_data_size": n.total_data_size,
+            "xve_sub_vendor": format!("{:#06x}", n.xve_sub_vendor),
+            "xve_subsystem_id": format!("{:#06x}", n.xve_subsystem_id),
+        })),
+        "warnings": Vec::<String>::new(),
     }))
 }
 
-/// Decode the Pascal+ Virtual P-State (VP) clock ladder from a VBIOS image.
-/// Unlike the Maxwell ladder (BIT 'P'+0x34), the VP table sits outside the
-/// BIT pointer chain and is pattern-scanned: a `20 XX 01` header whose length
-/// byte encodes the generation (0x10/12 Pascal, 0x13 Turing, 0x15 Ampere,
-/// 0x17 Ada), boost profiles walking backwards from the header, and 41B-stride
-/// ladder entries (u32 LE = MHz × 2^15, 15 fractional bits) terminated at
-/// freq 0. VP points carry NO voltage — Pascal per-point voltage lives in a
-/// separate BIT table, which is why voltage editing was never achieved by the
-/// reference tooling. Semantics per JadeRover's Nvidia-vBIOS-Clock-Power-
-/// Tweaker RE; pending bit-level calibration against a real programmer dump
-/// (raw values are included for that purpose).
-fn decode_pascal_vp(image: &[u8]) -> CliResult<Value> {
+fn decode_vbios_detail(image: &[u8]) -> CliResult<Value> {
+    if nvoc_core::legacy_vbios_parser::is_blackwell_container(image) {
+        return decode_blackwell_detail(image);
+    }
+    let ladder = boost_ladder_json(image)?;
     let tables = nvoc_core::legacy_vbios_parser::find_vp_tables(image);
-    let Some(table) = tables.first() else {
+    if tables.is_empty() && ladder.is_none() {
         return Err(CliError::new(
-            "no Virtual P-State (VP) table found — pattern '20 XX 01' with a \
-             0x0F denominator and a sane first clock; Pascal..Ada expected \
-             (Blackwell has no VP table)",
+            "no VP table (pattern '20 XX 01' with a 0x0F denominator and a \
+             sane first clock; Pascal..Ada) and no boost-ladder table (BIT \
+             'P'+0x34 v0x10; Maxwell/Kepler) found in this VBIOS image",
         ));
-    };
-    let points: Vec<Value> = table
-        .entries
-        .iter()
-        .enumerate()
-        .map(|(i, e)| {
-            json!({
-                "index": i,
-                "frequency_khz": (e.freq_mhz() * 1000.0).round() as u32,
-                "frequency_mhz": e.freq_mhz(),
-                "raw": format!("{:#010x}", e.raw),
-                "offset": e.offset,
-            })
+    }
+    // VP-dependent builders (points/profiles/footers). On pre-Pascal images
+    // there is no VP table: the builders stay empty and the Boost 2.0 ladder
+    // is promoted to the top-level points source instead (final assembly).
+    let vp = tables.first();
+    let points: Vec<Value> = vp
+        .map(|t| {
+            t.entries
+                .iter()
+                .enumerate()
+                .map(|(i, e)| {
+                    json!({
+                        "index": i,
+                        "frequency_khz": (e.freq_mhz() * 1000.0).round() as u32,
+                        "frequency_mhz": e.freq_mhz(),
+                        "raw": format!("{:#010x}", e.raw),
+                        "offset": e.offset,
+                    })
+                })
+                .collect()
         })
-        .collect();
-    let profiles: Vec<Value> = table
-        .profiles
+        .unwrap_or_default();
+    let profiles: Vec<Value> = vp
+        .map(|t| {
+            t.profiles
+                .iter()
+                .filter(|p| !p.is_empty())
+                .map(|p| {
+                    let limits: Vec<f64> = p.limit_mhz().to_vec();
+                    json!({
+                        "id": format!("{:#04x}", p.id),
+                        "pstate": nvoc_core::legacy_vbios_parser::pstate_display_name(p.id),
+                        "limit1_mhz": limits[0],
+                        "limit2_mhz": limits[1],
+                        "limit3_mhz": limits[2],
+                        "mem_clock_mhz": p.mem_clock_mhz(),
+                        "mem_clock_ddr_mhz": p.mem_clock_ddr_mhz(),
+                        "mem_long_raw": format!("{:#06x}", p.mem_long_raw),
+                        "offset": p.offset,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let footers: Vec<Value> = vp
+        .map(|t| {
+            t.footers
+                .iter()
+                .filter(|f| !f.is_empty())
+                .map(|f| {
+                    json!({
+                        "id": format!("{:#04x}", f.id),
+                        "pstate": nvoc_core::legacy_vbios_parser::pstate_display_name(f.id),
+                        "mem_clock_mhz": f.mem_clock_mhz(),
+                        "mem_clock_ddr_mhz": f.mem_clock_ddr_mhz(),
+                        "mem_x2_raw": format!("{:#06x}", f.mem_x2_raw),
+                        "offset": f.offset,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let footer_slots = vp.map(|t| t.footers.len()).unwrap_or(0);
+    let mut power: Vec<Value> = nvoc_core::legacy_vbios_parser::find_power_tables(image)
         .iter()
-        .filter(|p| !p.is_empty())
         .map(|p| {
-            let limits: Vec<f64> = p.limit_mhz().to_vec();
+            let lo = p
+                .min_mw
+                .map(|m| (m as f64 - p.target_mw as f64) / p.target_mw as f64 * 100.0);
+            let hi = Some((p.limit_mw as f64 - p.target_mw as f64) / p.target_mw as f64 * 100.0);
             json!({
-                "id": format!("{:#04x}", p.id),
-                "pstate": nvoc_core::legacy_vbios_parser::pstate_display_name(p.id),
-                "limit1_mhz": limits[0],
-                "limit2_mhz": limits[1],
-                "limit3_mhz": limits[2],
-                "mem_short_mhz": p.mem_short_raw,
-                "mem_long_raw": format!("{:#06x}", p.mem_long_raw),
-                "offset": p.offset,
+                "platform": p.platform.name(),
+                "min_watt": p.min_mw.map(|m| m as f64 / 1000.0),
+                "target_watt": p.target_mw as f64 / 1000.0,
+                "limit_watt": p.limit_mw as f64 / 1000.0,
+                "target_mw": p.target_mw,
+                "limit_mw": p.limit_mw,
+                "adjustment_percent": match (lo, hi) {
+                    (Some(lo), Some(hi)) => Some(format!("{lo:.0}% to +{hi:.0}%")),
+                    _ => None,
+                },
+                "anchor_offset": p.anchor_offset,
+                "slider": p.sliders.first().map(|s| json!({
+                    "enabled": s.enabled,
+                    "offset": s.offset,
+                })),
             })
         })
         .collect();
-    Ok(json!({
-        "domain": "graphics",
-        "indexed": true,
-        "source": "vbios-vp-ladder",
-        "generation": table.generation.name(),
-        "table_count": tables.len(),
-        "header_offset": table.header_offset,
-        "ladder_offset": table.ladder_offset,
-        "mem_clock_mhz": table.mem_clock_mhz(),
-        "mem_clock_raw": format!("{:#06x}", table.mem_clock_raw),
-        "profiles": profiles,
-        "points": points,
-        "warnings": if tables.len() > 1 {
-            vec!["dual-image VP tables found; only the first image is decoded".to_string()]
+    // Maxwell/Pascal 前缀三元组补充扫描（GM204/TITAN X 无 CPR 锚；与锚点
+    // 扫描按 (target, limit) 去重）。
+    for t in nvoc_core::legacy_vbios_parser::find_power_triples(image) {
+        let dup = power.iter().any(|p| {
+            p.get("target_mw").and_then(Value::as_u64) == Some(u64::from(t.target_mw))
+                && p.get("limit_mw").and_then(Value::as_u64) == Some(u64::from(t.limit_mw))
+        });
+        if dup {
+            continue;
+        }
+        let lo = (t.min_mw as f64 - t.target_mw as f64) / t.target_mw as f64 * 100.0;
+        let hi = (t.limit_mw as f64 - t.target_mw as f64) / t.target_mw as f64 * 100.0;
+        power.push(json!({
+            "platform": "prefix-triple",
+            "min_watt": t.min_mw as f64 / 1000.0,
+            "target_watt": t.target_mw as f64 / 1000.0,
+            "limit_watt": t.limit_mw as f64 / 1000.0,
+            "target_mw": t.target_mw,
+            "limit_mw": t.limit_mw,
+            "adjustment_percent": format!("{lo:.0}% to +{hi:.0}%"),
+            "anchor_offset": t.offset,
+            "prefix": format!("{:02x} {:02x}", t.prefix[0], t.prefix[1]),
+            "slider": Value::Null,
+        }));
+    }
+    let thermal = match nvoc_core::legacy_vbios_parser::find_thermal(image) {
+        Ok(Some(th)) => {
+            fn pack(t: Option<nvoc_core::legacy_vbios_parser::TempThreshold>) -> serde_json::Value {
+                match t {
+                    Some(x) => json!({"temp_c": x.temp_c, "hysteresis": x.hysteresis}),
+                    None => serde_json::Value::Null,
+                }
+            }
+            let thresholds = json!({
+                "critical": pack(th.thresholds.critical),
+                "down_clock": pack(th.thresholds.down_clock),
+                "fan_boost": pack(th.thresholds.fan_boost),
+                "shutdown": pack(th.thresholds.shutdown),
+            });
+            let sensor = json!({
+                "offset_constant": th.sensor.offset_constant,
+                "offset_num": th.sensor.offset_num,
+                "offset_den": th.sensor.offset_den,
+                "slope_mult": th.sensor.slope_mult,
+                "slope_div": th.sensor.slope_div,
+            });
+            json!({
+                "present": true,
+                "table_offset": th.table_offset,
+                "table_version": format!("{:#04x}", th.ver),
+                "fan_mode": th.fan_mode.map(|m| m.name()),
+                "min_duty_percent": th.min_duty,
+                "max_duty_percent": th.max_duty,
+                "pwm_freq": th.pwm_freq,
+                "linear_min_temp_c": th.linear_min_temp,
+                "linear_max_temp_c": th.linear_max_temp,
+                "trips": th.trips.iter().map(|t| json!({
+                    "temp_c": t.temp_c,
+                    "hysteresis": t.hysteresis,
+                    "duty_percent": t.duty_percent,
+                })).collect::<Vec<_>>(),
+                "thresholds": thresholds,
+                "sensor": sensor,
+                "unknown_tags": th.unknown_entries.iter().map(|u| format!("{:#04x}", u.tag)).collect::<Vec<_>>(),
+            })
+        }
+        Ok(None) => json!({
+            "present": false,
+            "note": "nouveau-style BIT 'P'+0x10 thermal pointer is zero; modern
+                     PERF_PTRS slots (ThermalPolicy +0x50, FanCooler +0x58,
+                     FanPolicy +0x5C, FanTest +0x64) do carry plaintext tables
+                     after EFI-gap rebase — see perf_pointers; field layouts
+                     not yet decoded",
+        }),
+        Err(e) => json!({"present": false, "note": format!("thermal table lookup failed: {e}")}),
+    };
+    let dcb = nvoc_core::vbios_dcb::DcbBlock::primary(image).map(|block| {
+        let map = block.display_map();
+        let pads: Vec<Value> = map
+            .iter()
+            .filter(|p| !p.roles.is_empty())
+            .map(|p| {
+                json!({
+                    "pad": p.name,
+                    "roles": p.roles,
+                    "connectors": p.connectors.iter().map(|c| json!({
+                        "raw": format!("{:02x} {:02x} {:02x} {:02x}", c.raw[0], c.raw[1], c.raw[2], c.raw[3]),
+                        "type": c.connector_type.short_role(),
+                        "index": c.index,
+                    })).collect::<Vec<_>>(),
+                    "internal_panel": p.is_internal_panel,
+                })
+            })
+            .collect();
+        json!({
+            "offset": block.offset,
+            "version": format!("{:#04x}", block.version),
+            "connector_offset": block.connector_offset,
+            "internal_panel": map.iter().any(|p| p.is_internal_panel),
+            "pads": pads,
+        })
+    });
+    let identity = match nvoc_core::legacy_vbios_parser::find_bios_identity(image) {
+        Ok(id) => json!({
+            "version": id.version,
+            "oem_version": id.oem_version,
+            "build_date": id.build_date,
+            "internal_build_date": id.internal_build_date,
+            "message": id.message,
+            "board_id": id.board_id,
+            "cert_flag": id.cert_flag,
+            "h264_hevc_caps": id.h264_hevc_caps,
+            "max_heads": id.max_heads,
+        }),
+        Err(e) => json!({"error": format!("{e}")}),
+    };
+    // BIT 'i' InternalUse 全解（board id/编译日期/SKU/Project/P4/GUID）。
+    let internal_use = match nvoc_core::legacy_vbios_parser::find_internal_use(image) {
+        Ok(Some(iu)) => json!({
+            "present": true,
+            "offset": iu.table_offset,
+            "token_len": iu.token_len,
+            "version": iu.version,
+            "oem_version": iu.oem_version,
+            "features": iu.features,
+            "p4_magic": iu.p4_magic,
+            "board_id": iu.board_id,
+            "build_date": iu.build_date,
+            "chip_sku": iu.chip_sku,
+            "project": iu.project,
+            "project_sku": iu.project_sku,
+            "business_cycle": iu.business_cycle,
+            "cert_flag": iu.cert_flag,
+            "alternate_board_id": iu.alternate_board_id,
+            "build_guid": iu.build_guid
+                .map(|g| g.iter().map(|b| format!("{b:02x}")).collect::<String>()),
+            "min_netlist_rev": iu.min_netlist_rev,
+            "revlock": iu.revlock.map(|r| format!("{:02x} {:02x}", r[0], r[1])),
+            "tail_len": iu.tail_raw.len(),
+        }),
+        Ok(None) => json!({"present": false}),
+        Err(e) => json!({"present": false, "note": format!("{e}")}),
+    };
+    // RFFS/RFRD flash 目录（NVGI full dump 专有；Turing+ 实测定案布局）。
+    let flash_directory = match nvoc_core::legacy_vbios_parser::find_flash_directory(image) {
+        Some(fd) => json!({
+            "present": true,
+            "rffs_version": fd.rffs.version,
+            "ledger_entry_size": fd.rffs.entry_size,
+            "ledger_size": fd.rffs.ledger_size,
+            "rom_dir_version": fd.rom_dir.version,
+            "rom_dir_struct_size": fd.rom_dir.struct_size,
+            "pci_option_rom_offset": fd.rom_dir.pci_option_rom_offset,
+            "pci_option_rom_size": fd.rom_dir.pci_option_rom_size,
+            "pci_rom_magic_ok": fd.pci_rom_magic_ok,
+            "inforom_offset": fd.rom_dir.inforom_offset,
+            "inforom_size": fd.rom_dir.inforom_size,
+            "bootloader_ucode_offset": fd.rom_dir.bootloader_ucode_offset,
+            "secondary_base": fd.rom_dir.secondary_base,
+        }),
+        None => json!({"present": false}),
+    };
+    // Clock States（perf 表 v0x40 per-Pstate 时钟域；Kepler/Maxwell）。
+    let clock_states = match nvoc_core::legacy_vbios_parser::find_perf_states(image) {
+        Ok(Some(states)) => json!({
+            "present": true,
+            "domain_names": nvoc_core::legacy_vbios_parser::PERF_DOMAIN_NAMES,
+            "states": states.iter().map(|s| json!({
+                "pstate": nvoc_core::legacy_vbios_parser::pstate_display_name(s.pstate_code),
+                "pstate_code": format!("{:#04x}", s.pstate_code),
+                "vmap_index": s.vmap_index,
+                "offset": s.offset,
+                "domains_mhz": s.domains_mhz,
+            })).collect::<Vec<_>>(),
+        }),
+        Ok(None) => json!({"present": false}),
+        Err(e) => json!({"present": false, "note": format!("{e}")}),
+    };
+    // Boost States（P+0x30 表，per-Pstate 域 min/max）。
+    let boost_states = match nvoc_core::legacy_vbios_parser::find_boost_states(image) {
+        Ok(Some(groups)) => json!({
+            "present": true,
+            "states": groups.iter().map(|g| json!({
+                "pstate": nvoc_core::legacy_vbios_parser::pstate_display_name(g.pstate_code),
+                "pstate_code": format!("{:#04x}", g.pstate_code),
+                "ranges": g.ranges.iter().map(|r| json!({
+                    "domain": r.domain,
+                    "min_mhz": f64::from(r.min_mhz_x2) / 2.0,
+                    "max_mhz": f64::from(r.max_mhz_x2) / 2.0,
+                })).collect::<Vec<_>>(),
+            })).collect::<Vec<_>>(),
+        }),
+        Ok(None) => json!({"present": false}),
+        Err(e) => json!({"present": false, "note": format!("{e}")}),
+    };
+    let thermal_policy = match nvoc_core::legacy_vbios_parser::find_thermal_policy(image) {
+        Ok(Some(tp)) => json!({
+            "present": true,
+            "entries": tp.entries.iter().map(|e| json!({
+                "enabled": e.enabled,
+                "temp_a_c": e.temp_a_c,
+                "temp_b_c": e.temp_b_c,
+                "temp_c_c": e.temp_c_c,
+                "hysteresis_raw": e.hysteresis_raw,
+            })).collect::<Vec<_>>(),
+        }),
+        Ok(None) => json!({"present": false}),
+        Err(e) => json!({"present": false, "note": format!("{e}")}),
+    };
+    // FanCooler：签名定位跨代通用（含 min RPM 字段）；槽位路径兜底。
+    let fan_cooler = {
+        let sig = nvoc_core::legacy_vbios_parser::find_fan_cooler_by_signature(image);
+        let from_table = |fc: &nvoc_core::legacy_vbios_parser::FanCoolerTable| {
+            json!({
+                "present": true,
+                "offset": fc.table_offset,
+                // 条目数 = fan cooler 控制器数候选（NVAPI cooler Count 同语义）
+                "cooler_count": fc.coolers.len(),
+                "coolers": fc.coolers.iter().map(|c| json!({
+                    "max_duty_percent": c.max_duty_percent,
+                    "min_rpm": c.min_rpm,
+                    "max_rpm": c.max_rpm,
+                })).collect::<Vec<_>>(),
+            })
+        };
+        if sig.coolers.is_empty() {
+            match nvoc_core::legacy_vbios_parser::find_fan_cooler(image) {
+                Ok(Some(fc)) => from_table(&fc),
+                Ok(None) => json!({"present": false}),
+                Err(e) => json!({"present": false, "note": format!("{e}")}),
+            }
         } else {
-            vec![]
-        },
-    }))
+            from_table(&sig)
+        }
+    };
+    // FanPolicy：签名定位优先（Maxwell PERF+0x5C 槽位在 Pascal 上是压缩
+    // 数据）；槽位路径兜底。
+    let fan_policy = {
+        let sig = nvoc_core::legacy_vbios_parser::find_fan_policy_by_signature(image);
+        let has_curves = sig.curves.iter().any(|c| !c.is_empty());
+        let from_table = |fp: &nvoc_core::legacy_vbios_parser::FanPolicyTable| {
+            json!({
+                "present": true,
+                "offset": fp.table_offset,
+                "entry_len": fp.entry_len,
+                "curves": fp.curves.iter().map(|curve| curve.iter().map(|p| json!({
+                    "temp_c": p.temp_c,
+                    "rpm": p.rpm,
+                })).collect::<Vec<_>>()).collect::<Vec<_>>(),
+                "raw": fp.raw_entries.iter().map(|e| e.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ")).collect::<Vec<_>>(),
+            })
+        };
+        if has_curves {
+            from_table(&sig)
+        } else {
+            match nvoc_core::legacy_vbios_parser::find_fan_policy(image) {
+                Ok(Some(fp)) => from_table(&fp),
+                Ok(None) => json!({"present": false}),
+                Err(e) => json!({"present": false, "note": format!("{e}")}),
+            }
+        }
+    };
+    let fan_test = match nvoc_core::legacy_vbios_parser::find_fan_test(image) {
+        Ok(Some(ft)) => json!({
+            "present": true,
+            "offset": ft.table_offset,
+            "raw": ft.entries.iter().map(|e| e.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ")).collect::<Vec<_>>(),
+        }),
+        Ok(None) => json!({"present": false}),
+        Err(e) => json!({"present": false, "note": format!("{e}")}),
+    };
+    let memory = {
+        let clock = nvoc_core::legacy_vbios_parser::find_memory_clock_table(image)
+            .ok()
+            .flatten();
+        let tweak = nvoc_core::legacy_vbios_parser::find_memory_tweak_table(image)
+            .ok()
+            .flatten();
+        let info = nvoc_core::legacy_vbios_parser::find_memory_info(image)
+            .ok()
+            .flatten();
+        json!({
+            "clock_table": clock.map(|c| json!({
+                "offset": c.table_offset,
+                "version": format!("{:#04x}", c.ver),
+                "freq_ranges": c.entries.iter().map(|e| json!({
+                    "freq_min_raw": e.freq_min_raw,
+                    "freq_max_raw": e.freq_max_raw,
+                    "strap_copies": e.straps.len(),
+                })).collect::<Vec<_>>(),
+            })),
+            "tweak_table": tweak.map(|t| json!({
+                "offset": t.table_offset,
+                "version": format!("{:#04x}", t.ver),
+                "base_entry_size": t.base_entry_size,
+                "extended_entry_size": t.extended_entry_size,
+                "extended_entry_count": t.extended_entry_count,
+                "timing_sets": t.entries.len(),
+            })),
+            "info": info.map(|i| json!({
+                "offset": i.table_offset,
+                "strap_count": i.strap_count,
+                "variants": i.entries.iter().map(|e| {
+                    let v = e.variant;
+                    json!({
+                        "type": nvoc_core::legacy_vbios_parser::memory_type_name(v.mem_type),
+                        "vendor": nvoc_core::legacy_vbios_parser::memory_vendor_name(v.vendor_id),
+                        "density": nvoc_core::legacy_vbios_parser::memory_density_name(v.density),
+                        "strap": v.strap,
+                        "rev": v.rev_id,
+                        "org": v.org,
+                        "tj_max_fan_limit": e.tj_max_fan_limit,
+                        "therm_policy": e.therm_policy,
+                        "pwr_adjustment_slope": e.pwr_adjustment_slope,
+                        "pwr_adjustment_intercept_mw": e.pwr_adjustment_intercept_mw,
+                    })
+                }).collect::<Vec<_>>(),
+            })),
+        })
+    };
+    let falcon = match nvoc_core::legacy_vbios_parser::find_falcon_table(image) {
+        Ok(Some(f)) => json!({
+            "present": true,
+            "table_offset": f.table_offset,
+            "raw_ptr": format!("{:#010x}", f.raw_ptr),
+            "entries": f.entries.iter().map(|e| json!({
+                "application": e.application,
+                "application_id": e.application_id,
+                "target": e.target,
+                "target_id": e.target_id,
+                "desc": e.desc.as_ref().map(|d| json!({
+                    "has_version_crypt": d.has_version_crypt,
+                    "version": d.version,
+                    "stored_size": d.stored_size,
+                    "uncompressed_size": d.uncompressed_size,
+                    "virtual_entry": d.virtual_entry,
+                })),
+            })).collect::<Vec<_>>(),
+        }),
+        Ok(None) => json!({"present": false}),
+        Err(e) => json!({"present": false, "note": format!("{e}")}),
+    };
+    let nvgi = nvoc_core::legacy_vbios_parser::parse_nvgi(image).map(|n| {
+        json!({
+            "version": n.version,
+            "header_len": n.header_len,
+            "fixed_byte": format!("{:#04x}", n.fixed_byte),
+            "flags_hi": format!("{:#04x}", n.flags_hi),
+            "total_data_size": n.total_data_size,
+            "flags": format!("{:#04x}", n.flags),
+            "xve_sub_vendor": format!("{:#06x}", n.xve_sub_vendor),
+            "xve_subsystem_id": format!("{:#06x}", n.xve_subsystem_id),
+        })
+    });
+    let perf_pointers = match nvoc_core::legacy_vbios_parser::find_perf_ptr_map(image) {
+        Ok(m) => json!({
+            "ptab_offset": m.ptab_offset,
+            "p_len": m.p_len,
+            "slots": m.slots.iter().map(|s| json!({
+                "slot_offset": s.slot_offset,
+                "name": s.name,
+                "target": format!("{:#010x}", s.target),
+                "abs_offset": s.abs_offset,
+                "header": s.header.map(|h| format!("{:02x} {:02x} {:02x} {:02x}", h[0], h[1], h[2], h[3])),
+                "plausible": s.plausible,
+            })).collect::<Vec<_>>(),
+        }),
+        Err(e) => json!({"error": format!("{e}")}),
+    };
+    match vp {
+        Some(table) => Ok(json!({
+            "domain": "graphics",
+            "indexed": true,
+            "source": "vbios-vp-ladder",
+            "generation": table.generation.name(),
+            "table_count": tables.len(),
+            "header_offset": table.header_offset,
+            "ladder_offset": table.ladder_offset,
+            "mem_clock_ddr_mhz": table.mem_clock_mhz(),
+            "mem_clock_raw": format!("{:#06x}", table.mem_clock_raw),
+            "profiles": profiles,
+            "footer_slots": footer_slots,
+            "footers": footers,
+            "power": power,
+            "thermal_fan": thermal,
+            "dcb": dcb,
+            "perf_pointers": perf_pointers,
+            "memory": memory,
+            "identity": identity,
+            "thermal_policy": thermal_policy,
+            "fan_cooler": fan_cooler,
+            "fan_policy": fan_policy,
+            "fan_test": fan_test,
+            "falcon": falcon,
+            "nvgi": nvgi,
+            "internal_use": internal_use,
+            "flash_directory": flash_directory,
+            "clock_states": clock_states,
+            "boost_states": boost_states,
+            "voltage_freq_ladder": ladder,
+            "points": points,
+            "warnings": if tables.len() > 1 {
+                vec!["dual-image VP tables found; only the first image is decoded".to_string()]
+            } else {
+                vec![]
+            },
+        })),
+        None => {
+            // Pre-Pascal fallback (Maxwell/Kepler): promote the Boost 2.0
+            // ladder to the top-level points so the human formatter renders
+            // the Id/V/F table, and attach every shared detail section under
+            // the same keys as the VP branch.
+            let mut base = ladder.expect("checked above: ladder or VP table");
+            base["generation"] = json!("pre-pascal");
+            base["vp_table"] = json!(false);
+            base["power"] = json!(power);
+            base["thermal_fan"] = thermal;
+            base["dcb"] = json!(dcb);
+            base["perf_pointers"] = perf_pointers;
+            base["memory"] = memory;
+            base["identity"] = identity;
+            base["thermal_policy"] = thermal_policy;
+            base["fan_cooler"] = fan_cooler;
+            base["fan_policy"] = fan_policy;
+            base["fan_test"] = fan_test;
+            base["falcon"] = falcon;
+            base["nvgi"] = json!(nvgi);
+            base["internal_use"] = internal_use;
+            base["flash_directory"] = flash_directory;
+            base["clock_states"] = clock_states;
+            base["boost_states"] = boost_states;
+            Ok(base)
+        }
+    }
 }
 
 fn get_clock_offset(
@@ -6694,9 +7554,10 @@ fn parse_domain(raw: &str) -> CliResult<ClockDomain> {
 /// (mask 0x3FF = bits 0..9 where populated) — verified live 2026-08/09
 /// A/B sweeps across Pascal/Turing/Ampere/Ada/Volta plus 2026-09-06
 /// cross-certification:
-/// - bit0=Gpc, bit1=Xbar (the Sys movement once A/B'd on it is an
-///   intrinsic property of the coupled domain tree, NOT part of the
-///   record's identity — earlier "Sys+Xbar" naming was that pre-2026-09-06
+/// - bit0=Gpc, bit1=Xbar (the Sys movement once A/B'd on it belongs to the
+///   CARD's coupling, not the record's identity — which domains ride which
+///   is declared by the driver's own table, get-private-vftable's
+///   `fabric_relations`; earlier "Sys+Xbar" naming was that pre-2026-09-06
 ///   legacy), bit2=Mem, bit3=Sys, bit5=Msd (SET unsupported on Pascal —
 ///   no MSD domain),
 ///   bit7=Disp (slot-1 voltage-offset A/B + FreqsEnum sel7 agreement;
@@ -6772,13 +7633,14 @@ fn parse_clk_domain(raw: &str) -> CliResult<u32> {
 ///
 /// NO ALIAS ROUTING: names resolve through the plain RTSS position table
 /// only (`parse_clk_domain_table`), same as the MEASURE path. The record
-/// bits' physical attribution is per-generation and does NOT follow the
-/// RTSS labels — the historical msd/sys/host→bit-5 remap was removed
-/// (2026-08-31) because it papered over exactly that arch-dependence:
-///   - Ada 4060 slot-0 A/B: bit1 moves SYS+XBAR, bit2 moves memory M,
-///     bit3 pure SYS, bit5 MSD, bit9 pure Host (see
-///     [`clk_client_record_name`]);
-///   - Pascal 1080 (live-reported): bit 5 moves GetAllClocks SYS.
+/// bits do NOT follow the RTSS labels — the historical msd/sys/host→bit-5
+/// remap was removed (2026-08-31) because it papered over exactly that
+/// mismatch. The card-level A/B record behind this map
+/// ([`clk_client_record_name`]): Ada 4060 slot-0 — bit1 moves SYS+XBAR,
+/// bit2 moves memory M, bit3 pure SYS, bit5 MSD, bit9 pure Host; Pascal 1080
+/// (live-reported) — bit 5 moves GetAllClocks SYS. Those movements are
+/// observations of what the CARD couples, not part of what a record IS; the
+/// authority on them is the paragraph below.
 ///
 /// For cross-generation A/B work, address records by BARE INTEGER — the
 /// name table is advisory only. The medium layer rejects bits outside
@@ -6794,12 +7656,16 @@ fn parse_clk_domain(raw: &str) -> CliResult<u32> {
 /// WRITE-record domain resolver for set/reset-private-freq-domain-global-
 /// offset — the experimentally VERIFIED map (A/B sweep 2026-08/09 across
 /// Pascal/Turing/Ampere/Ada + Volta, see clk_client_record_name):
-/// bit0=Gpc, bit1=Xbar (pure on Pascal/Volta; Ampere+ couples Sys into
-/// bit1), bit2=Mem, bit3=Sys, bit5=Msd (SET unsupported on Pascal),
+/// bit0=Gpc, bit1=Xbar, bit2=Mem, bit3=Sys,
+/// bit5=Msd (SET unsupported on Pascal),
 /// bit7=Disp (slot-1 voltage-offset A/B 2026-09-06; the earlier
 /// bit6=Disp attribution was wrong — bit6 is unattributed), bit8=PcieGen
 /// (FreqsEnum bins [1,2,3]), bit9=Host. Bits 4/6 are unattributed —
-/// raw bit only. Deliberately NOT the MEASURE name table
+/// raw bit only. Which domains a WRITE actually drags is NOT this map's
+/// business and not a per-generation rule: the driver's own table declares
+/// it (get-private-vftable's `fabric_relations`, the ext slots of each
+/// bank's vf_curve record) and the front-ends resolve net offsets against
+/// that. Deliberately NOT the MEASURE name table
 /// ([parse_clk_domain_table]): that is the MEASURE-domain universe, a
 /// different table — its "sys"→2/"mem"→4/"host"→5 would route WRITE
 /// records to the wrong domains entirely (live-caused misroutes on the
@@ -6840,10 +7706,12 @@ fn parse_clk_vf_domain_hint(raw: &str) -> CliResult<ClkVfDomainHint> {
         "msd" | "sys" | "host" | "2" => ClkVfDomainHint::Msd,
         "disp" | "display" | "3" => ClkVfDomainHint::Disp,
         "mem" | "memory" | "4" => ClkVfDomainHint::Mem,
+        "gpc_pre_oc" | "gpc-pre-oc" | "pre_oc" | "pre-oc" | "5" => ClkVfDomainHint::GpcPreOc,
+        "gpc_oc" | "gpc-oc" | "oc" | "6" => ClkVfDomainHint::GpcOc,
         _ => {
             return Err(CliError::new(format!(
-                "invalid --domain {trimmed:?}: expected gpc, xbar, msd, disp, or mem \
-                 (legacy sys/host alias msd; bare 0-4 selects by hint ordinal)"
+                "invalid --domain {trimmed:?}: expected gpc, xbar, msd, disp, mem, gpc_pre_oc, \
+                 or gpc_oc (legacy sys/host alias msd; bare 0-6 selects by hint ordinal)"
             )));
         }
     };
@@ -7181,6 +8049,78 @@ fn parse_i32_unit(raw: &str, suffix: &str, label: &str) -> CliResult<i32> {
         .map_err(|_| CliError::new(format!("invalid {label} value {raw:?}")))
 }
 
+/// Signed effect in MHz of a mode-0 control VALUE dword. The field is an i32
+/// kHz offset; the write path casts through u32 and RM stores two's
+/// complement, so the readback must re-interpret as i32 BEFORE scaling
+/// (÷1000 kHz→MHz, ÷2000 on the Pascal 2× axis). A plain u32 read renders
+/// -200000 as +2147383.6 — the 2026-09-30 P100 incident signature.
+fn mode0_offset_effect_mhz(value: u32, mode0_khz_to_mhz: f64) -> f64 {
+    value as i32 as f64 / mode0_khz_to_mhz
+}
+
+/// Negative mode-0 offsets are NOT clamped by the RM back-interpolation
+/// slope cap that bounds single-point mode-1 negatives (live P100/582.41:
+/// 16 single-point setter calls all retained -200000). Range-scale negative
+/// writes can collapse the rail and wedge SetControl with -1 until device
+/// disable/enable or reboot. Surfaced as a non-blocking output field.
+fn negative_mode0_offset_warning() -> &'static str {
+    "negative mode-0 offsets bypass the RM slope cap that clamps single-point \
+     mode-1 negatives; large magnitudes can collapse voltage/clock state and \
+     wedge SetControl (-1, recovery: write 0 > reset-private-vftable-offset > \
+     device disable/enable or reboot) — P100 582.41 incident 2026-09-30"
+}
+
+/// Single-plane write (--unsafe) on a server Pascal dual-plane card: warn
+/// that the paired default exists and that the cross-plane invariant is
+/// now the caller's responsibility.
+fn unsafe_pairing_warning() -> &'static str {
+    "server Pascal dual-plane card: --unsafe wrote ONE plane only — the \
+     paired default keeps both planes converged with plane A >= plane B \
+     (B > A feeds the GPU a non-monotonic table and soft-hangs it); keep \
+     the other plane <= this value"
+}
+
+/// JSON shape for a paired dual-plane write report (shared by the point
+/// and range commands). `addressed` carries the user-facing coordinates
+/// (the controller always reports plane-A coordinates in `plane_a_start`).
+fn pair_report_json(
+    report: &nvoc_core::PrivateVfPairReport,
+    value: i32,
+    axis_scale: i32,
+    addressed: Value,
+) -> Value {
+    json!({
+        "applied": true,
+        "paired": true,
+        "addressed": addressed,
+        "plane_a_start": report.start,
+        "count": report.count,
+        "mode": "freq_offset",
+        "value": value,
+        // written raw control word (= VALUE ×2 on the Pascal 2× axis)
+        "written_value": value.saturating_mul(axis_scale),
+        "pascal_2x_write": axis_scale == 2,
+        "unit": "kHz",
+        "plane_a_before": report.plane_a_before,
+        "plane_b_before": report.plane_b_before,
+        "writes": report
+            .writes
+            .iter()
+            .map(|w| {
+                json!({
+                    "plane": match w.plane {
+                        nvoc_core::PrivateVfPairPlane::PreOc => "pre_oc",
+                        nvoc_core::PrivateVfPairPlane::Oc => "oc",
+                    },
+                    "bank": w.bank,
+                    "index": w.index,
+                    "retained_raw": w.retained_raw,
+                })
+            })
+            .collect::<Vec<_>>(),
+    })
+}
+
 /// Pascal private V/F control axis is 2×-encoded for the mode-0 kHz field on
 /// ALL Pascal generations (see GpuType::is_pascal): the mode-0 control value
 /// is 2× the real kHz (live P100: raw 129300 ↔ 64.65 MHz real; GTX 1080
@@ -7196,6 +8136,27 @@ fn pascal_private_2x_axis(target: &GpuTarget) -> bool {
         .ok()
         .and_then(|r| fetch_gpu_type(&r.output).ok())
         .is_some_and(|t| t.is_pascal())
+}
+
+/// `fabric_relations` payload fragment: which fabric domains ride into which
+/// other ones (master → slave), per the driver's own ext-slot declaration (see
+/// `nvoc_core::FabricTree`). MUST be derived from the unfiltered table — the
+/// roster is a whole-table property, so a `--bank/--domain` filtered view
+/// would mislabel slots. `table_available: false` = no relation: the
+/// front-ends refuse fabric writes. pynvoc's `query_private_vftable` builds
+/// the same shape; keep the two in lockstep.
+fn fabric_relations_json(tree: &nvoc_core::FabricTree) -> Value {
+    json!({
+        "source": "vftable-ext",
+        "table_available": tree.table_available(),
+        "roster": tree.roster().iter().map(|d| d.slug()).collect::<Vec<_>>(),
+        "edges": tree.edges().iter().map(|(parent, child)| json!({
+            "parent": parent.slug(),
+            "parent_bit": parent.bit(),
+            "child": child.slug(),
+            "child_bit": child.bit(),
+        })).collect::<Vec<_>>(),
+    })
 }
 
 /// Parse a voltage value for ClkDomains WRITE-record slot 1 — identified
@@ -7416,6 +8377,140 @@ fn summarize_errors(execution: &Execution) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Mode-0 control VALUE is signed (i32 kHz, stored two's complement):
+    /// -100000 kHz ×2 Pascal axis must render -100.0 MHz, not the
+    /// u32/2000 = +2147383.648 wrap seen in the 2026-09-30 P100 incident.
+    #[test]
+    fn mode0_offset_effect_is_signed_on_pascal_axis() {
+        let written = (-200000_i32) as u32;
+        assert!((mode0_offset_effect_mhz(written, 2000.0) + 100.0).abs() < 1e-9);
+        // the pre-fix signature, for contrast
+        assert!((written as f64 / 2000.0 - 2_147_383.648).abs() < 0.001);
+        assert!((mode0_offset_effect_mhz(200_000, 2000.0) - 100.0).abs() < 1e-9);
+        assert_eq!(mode0_offset_effect_mhz(0, 2000.0), 0.0);
+        // non-Pascal axis divides by 1000
+        assert!((mode0_offset_effect_mhz((-50_000_i32) as u32, 1000.0) + 50.0).abs() < 1e-9);
+    }
+
+    /// `get-vbios -i <file>` 离线模式：不触碰 GPU 发现/NvAPI，直接产出与
+    /// 在线路径同形的解码结果（机会性真文件；GP104 Pascal dump）。
+    #[test]
+    fn get_vbios_file_mode_offline_decodes() {
+        let path = "../reverse/gp104-1070.rom";
+        let Ok(_) = std::fs::read(path) else {
+            eprintln!("skip: {path} not present");
+            return;
+        };
+        let mut invocation = Invocation {
+            backend: crate::BackendChoice::Auto,
+            output: crate::OutputFormat::Human,
+            no_color: true,
+            nvml_path: None,
+            nvapi_path: None,
+            gpu_specs: vec![],
+            command: Some(Command::GetVbios),
+            positionals: vec![],
+            options: Default::default(),
+        };
+        invocation
+            .options
+            .insert("input".to_string(), vec![path.to_string()]);
+        invocation
+            .options
+            .insert("enable-detail-parser".to_string(), vec!["true".to_string()]);
+
+        let execution = execute(&invocation).expect("file mode executes");
+        assert_eq!(execution.backend, "file");
+        assert!(!execution.has_errors());
+        let output = execution.results[0].output.as_ref().expect("output");
+        assert_eq!(
+            output.get("source").and_then(Value::as_str),
+            Some("vbios-vp-ladder")
+        );
+        assert_eq!(
+            output.get("generation").and_then(Value::as_str),
+            Some("Pascal")
+        );
+        // min power (GPU-Z Minimum 90 W) present in offline path too
+        let power = output.get("power").and_then(Value::as_array).unwrap();
+        assert_eq!(power[0].get("min_watt").and_then(Value::as_f64), Some(90.0));
+    }
+
+    /// Maxwell ROM：无 VP 表时 detail 解码回落到 Boost 2.0 阶梯（顶层 points
+    /// 带电压），并保留全部共享 detail 节 —— 旧 --maxwell-vftable-decode 的
+    /// 输出成为本路径的子集（机会性真文件）。
+    #[test]
+    fn get_vbios_file_mode_maxwell_falls_back_to_boost_ladder() {
+        let path = "../reverse/Palit.GTX980.4096.141009.rom";
+        let Ok(_) = std::fs::read(path) else {
+            eprintln!("skip: {path} not present");
+            return;
+        };
+        let mut invocation = Invocation {
+            backend: crate::BackendChoice::Auto,
+            output: crate::OutputFormat::Human,
+            no_color: true,
+            nvml_path: None,
+            nvapi_path: None,
+            gpu_specs: vec![],
+            command: Some(Command::GetVbios),
+            positionals: vec![],
+            options: Default::default(),
+        };
+        invocation
+            .options
+            .insert("input".to_string(), vec![path.to_string()]);
+        // deprecated alias must behave identically to --enable-detail-parser
+        invocation.options.insert(
+            "maxwell-vftable-decode".to_string(),
+            vec!["true".to_string()],
+        );
+
+        let execution = execute(&invocation).expect("file mode executes");
+        assert!(!execution.has_errors());
+        let output = execution.results[0].output.as_ref().expect("output");
+        assert_eq!(
+            output.get("source").and_then(Value::as_str),
+            Some("vbios-boost-ladder")
+        );
+        assert_eq!(
+            output.get("generation").and_then(Value::as_str),
+            Some("pre-pascal")
+        );
+        // ladder points carry resolved voltage (the old maxwell-vftable shape)
+        let points = output.get("points").and_then(Value::as_array).unwrap();
+        assert!(!points.is_empty());
+        assert!(points[0].get("voltage_uv").and_then(Value::as_u64).unwrap() > 0);
+        // shared detail sections ride along
+        assert!(output.get("power").is_some());
+        assert!(output.get("memory").is_some());
+        assert!(output.get("identity").is_some());
+    }
+
+    /// `-i` + `--out` 组合必须报错（--out 属于在线读取路径）。
+    #[test]
+    fn get_vbios_file_mode_rejects_out() {
+        let mut invocation = Invocation {
+            backend: crate::BackendChoice::Auto,
+            output: crate::OutputFormat::Human,
+            no_color: true,
+            nvml_path: None,
+            nvapi_path: None,
+            gpu_specs: vec![],
+            command: Some(Command::GetVbios),
+            positionals: vec![],
+            options: Default::default(),
+        };
+        invocation
+            .options
+            .insert("input".to_string(), vec!["whatever.rom".to_string()]);
+        invocation
+            .options
+            .insert("out".to_string(), vec!["copy.rom".to_string()]);
+        let err = execute(&invocation).expect_err("--out must conflict with -i");
+        assert!(err.to_string().contains("--out"));
+    }
 
     #[test]
     fn commands_listed_in_lexicographic_order() {
@@ -8185,10 +9280,36 @@ mod tests {
             parse_clk_vf_domain_hint("memory").unwrap(),
             ClkVfDomainHint::Mem
         ));
-        // bare ordinals = hint order (gpc/xbar/msd/disp/mem)
+        // bare ordinals = hint order (gpc/xbar/msd/disp/mem/gpc_pre_oc/gpc_oc)
         assert!(matches!(
             parse_clk_vf_domain_hint("4").unwrap(),
             ClkVfDomainHint::Mem
+        ));
+        // server Pascal dual-plane vocabulary (2026-09-30 P100 campaign):
+        // plane A = PRE-OC (voltage side), plane B = OC (frequency side)
+        assert!(matches!(
+            parse_clk_vf_domain_hint("gpc_pre_oc").unwrap(),
+            ClkVfDomainHint::GpcPreOc
+        ));
+        assert!(matches!(
+            parse_clk_vf_domain_hint("pre-oc").unwrap(),
+            ClkVfDomainHint::GpcPreOc
+        ));
+        assert!(matches!(
+            parse_clk_vf_domain_hint("gpc_oc").unwrap(),
+            ClkVfDomainHint::GpcOc
+        ));
+        assert!(matches!(
+            parse_clk_vf_domain_hint("oc").unwrap(),
+            ClkVfDomainHint::GpcOc
+        ));
+        assert!(matches!(
+            parse_clk_vf_domain_hint("5").unwrap(),
+            ClkVfDomainHint::GpcPreOc
+        ));
+        assert!(matches!(
+            parse_clk_vf_domain_hint("6").unwrap(),
+            ClkVfDomainHint::GpcOc
         ));
         assert!(parse_clk_vf_domain_hint("gpc2").is_err());
         assert!(parse_clk_vf_domain_hint("").is_err());

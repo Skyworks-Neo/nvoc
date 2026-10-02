@@ -80,6 +80,16 @@ if errorlevel 1 (
     set "PATH=%LOCALAPPDATA%\Microsoft\WinGet\Links;%PATH%"
 )
 
+rem nvapi-rs is a path dependency of nvoc-core, so `cargo run -p xtask` cannot
+rem even parse the workspace manifest without it - yet the submodule bootstrap
+rem is itself a step inside `cargo xtask setup`. Break the chicken-and-egg by
+rem checking it out here, before the first cargo invocation.
+if not exist nvapi-rs\Cargo.toml (
+    echo [bootstrap] nvapi-rs submodule missing - initializing...
+    git submodule update --init nvapi-rs
+    if errorlevel 1 exit /b 1
+)
+
 cargo run --quiet -p xtask -- setup %FORWARD%
 goto :eof
 

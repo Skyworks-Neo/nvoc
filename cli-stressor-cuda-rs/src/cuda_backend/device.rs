@@ -1,7 +1,7 @@
 //! CUDA device enumeration and selection (by UUID / PCI bus / sorted index),
 //! plus compute-capability / memory queries.
 
-use std::ffi::CStr;
+use std::ffi::{CStr, c_char};
 
 use cudarc::driver::sys as cuda_sys;
 
@@ -21,7 +21,9 @@ pub(super) fn query_device_info_for_index(device_index: u32) -> Result<DeviceInf
         }
     }
 
-    let mut name_buf = [0i8; 128];
+    // cuDeviceGetName takes `*mut c_char`, which is `u8` on aarch64-linux but
+    // `i8` everywhere else in the release matrix — size the buffer as c_char.
+    let mut name_buf = [0 as c_char; 128];
     unsafe {
         cuda_sys::cuDeviceGetName(name_buf.as_mut_ptr(), name_buf.len() as i32, device);
     }
@@ -92,7 +94,7 @@ pub fn enumerate_cuda_devices() -> Result<Vec<CudaDeviceEnumInfo>, BackendError>
             cuda_sys::cuDeviceGet(&mut device, idx);
         }
 
-        let mut name_buf = [0i8; 128];
+        let mut name_buf = [0 as c_char; 128];
         unsafe {
             cuda_sys::cuDeviceGetName(name_buf.as_mut_ptr(), name_buf.len() as i32, device);
         }
@@ -256,7 +258,8 @@ fn fetch_device_uuid(device: i32) -> Result<[u8; 16], BackendError> {
 }
 
 fn fetch_device_pci_bus(device: i32) -> Result<Option<PciBusAddress>, BackendError> {
-    let mut buf = [0i8; 32];
+    // Same c_char caveat as the device-name buffers above (cuDeviceGetPCIBusId).
+    let mut buf = [0 as c_char; 32];
     unsafe {
         let res = cuda_sys::cuDeviceGetPCIBusId(buf.as_mut_ptr(), buf.len() as i32, device);
         if res as u32 != 0 {

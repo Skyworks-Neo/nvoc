@@ -10,7 +10,7 @@ use rand::{RngExt, SeedableRng};
 use std::time::Instant;
 
 use cudarc::cublas::{Asum, AsumConfig, sys as cublas_sys};
-use cudarc::driver::{DevicePtr, DevicePtrMut};
+use cudarc::driver::{DevicePtr, DevicePtrMut, PushKernelArg};
 
 use cli_stressor_cuda_rs::{
     BackendError, PrecisionKind, PrecisionSpec, StreamMode, VerifyConfig, make_random_host_matrix,
@@ -46,18 +46,60 @@ impl CudaBackend {
         let lane_count = Self::lane_count(stream_mode);
         let mut srcs = Vec::with_capacity(lane_count);
         let mut dsts = Vec::with_capacity(lane_count);
-        for lane in 0..lane_count {
-            let stream = self.stream_for_lane(lane);
-            srcs.push(
-                stream
+        // Buffers are u32 words: the ride-on-load detectors compare whole words.
+        // Content generation is only a convenience here (memcpy never inspects
+        // the source), and the detectors overwrite `src` below with their own
+        // deterministic pattern whenever verification is active.
+        let verify_fill = self.verify.is_some() && verify.enabled;
+        if self.gpu_generate_enabled() && !verify_fill {
+            // Device-side generation: no host RNG, no H2D copy. The fill runs
+            // over the buffer's full byte span (words * 4).
+            let kernels = self
+                .gpu_fill
+                .as_ref()
+                .ok_or_else(|| BackendError::Other("gpu fill kernels unavailable".into()))?;
+            let span_bytes = words * 4;
+            let n = span_bytes as u64;
+            for lane in 0..lane_count {
+                let stream = self.stream_for_lane(lane);
+                let src = stream
                     .alloc_zeros::<u32>(words)
-                    .map_err(|err| BackendError::Other(err.to_string()))?,
-            );
-            dsts.push(
-                stream
-                    .alloc_zeros::<u32>(words)
-                    .map_err(|err| BackendError::Other(err.to_string()))?,
-            );
+                    .map_err(|err| BackendError::Other(err.to_string()))?;
+                unsafe {
+                    stream
+                        .launch_builder(&kernels.bytes_fn)
+                        .arg(&src)
+                        .arg(&n)
+                        .arg(&(seed.wrapping_add(lane as u64)))
+                        .launch(cudarc::driver::LaunchConfig::for_num_elems(
+                            span_bytes.min(u32::MAX as usize) as u32,
+                        ))
+                        .map_err(|err| BackendError::Other(err.to_string()))?;
+                }
+                srcs.push(src);
+                dsts.push(
+                    stream
+                        .alloc_zeros::<u32>(words)
+                        .map_err(|err| BackendError::Other(err.to_string()))?,
+                );
+            }
+        } else {
+            // Zero-seeded words. When verification is active the detectors fill
+            // `src` with their deterministic pattern below; otherwise the
+            // (irrelevant to a copy) content simply stays zero.
+            for lane in 0..lane_count {
+                let stream = self.stream_for_lane(lane);
+                srcs.push(
+                    stream
+                        .alloc_zeros::<u32>(words)
+                        .map_err(|err| BackendError::Other(err.to_string()))?,
+                );
+                dsts.push(
+                    stream
+                        .alloc_zeros::<u32>(words)
+                        .map_err(|err| BackendError::Other(err.to_string()))?,
+                );
+            }
         }
         // Deterministic device-side pattern instead of host random bytes:
         // same pseudo-random traffic, no host generation or H2D in setup.

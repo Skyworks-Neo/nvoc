@@ -1,6 +1,7 @@
 from ._native import (
     check_voltage_frequency,
     clear_edid,
+    configure_library_paths,
     discover_gpus,
     force_wake,
     get_display_list,
@@ -30,6 +31,8 @@ from ._native import (
     query_private_freq_domain_status,
     query_private_vftable,
     set_clk_domain_offset,
+    reset_vfp_pair_offset,
+    set_vfp_pair_offset,
     set_vfp_point_private,
     set_vfp_range_per_point_private,
     clk_vf_delta_for_target_mhz,
@@ -109,6 +112,7 @@ from ._native import (
 __all__ = [
     "check_voltage_frequency",
     "clear_edid",
+    "configure_library_paths",
     "discover_gpus",
     "force_wake",
     "get_display_list",
@@ -194,6 +198,8 @@ __all__ = [
     "set_volt_rail_offset",
     "set_volt_rail_target",
     "set_clk_domain_offset",
+    "reset_vfp_pair_offset",
+    "set_vfp_pair_offset",
     "set_vfp_point_private",
     "set_vfp_range_per_point_private",
     "clk_vf_delta_for_target_mhz",
