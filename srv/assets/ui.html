@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NVOC-SRV Console</title>
+<link rel="stylesheet" href="/ui.css">
+</head>
+<body>
+<header>
+  <div class="brand">NVOC<em>SRV</em></div>
+  <div id="conn" class="conn stale">connecting…</div>
+  <div class="summary" id="summary">—</div>
+</header>
+
+<main>
+  <section class="panel" id="control">
+    <h2>Control</h2>
+    <div class="row">
+      <label>Loop</label>
+      <div class="seg" id="loopseg">
+        <button data-loop="fan_temp">fan→temp</button>
+        <button data-loop="freq_temp">freq→temp</button>
+        <button data-loop="freq_power">freq→power</button>
+      </div>
+    </div>
+    <div class="row">
+      <label>Mode</label>
+      <div class="seg" id="modeseg">
+        <button data-mode="auto">auto</button>
+        <button data-mode="pid">pid</button>
+        <button data-mode="manual">manual</button>
+      </div>
+    </div>
+    <div class="row">
+      <label>Manual effort</label>
+      <input type="range" id="manual" min="0" max="100" value="50">
+      <output id="manualv">50</output>
+      <button class="act" id="pin">Pin</button>
+    </div>
+    <div class="row actions">
+      <button class="act" id="restore">Restore driver</button>
+      <button class="act danger" id="shutdown">Shutdown</button>
+    </div>
+    <p class="hint" id="hint"></p>
+  </section>
+
+  <section class="panel" id="tuning">
+    <h2>Tuning <span id="tuneloop" class="tag"></span></h2>
+    <form id="tune">
+      <div class="grid">
+        <label>target <input name="target_c" type="number" step="0.1"></label>
+        <label>kp <input name="kp" type="number" step="0.01"></label>
+        <label>ki <input name="ki" type="number" step="0.005"></label>
+        <label>kd <input name="kd" type="number" step="0.01"></label>
+        <label>base % <input name="base_percent" type="number" step="0.5"></label>
+        <label>min % <input name="min_percent" type="number" step="1"></label>
+        <label>max % <input name="max_percent" type="number" step="1"></label>
+        <label>idle Δ <input name="idle_delta_c" type="number" step="0.5"></label>
+        <label>emerg Δ <input name="emergency_delta_c" type="number" step="0.5"></label>
+        <label>guard °C <input name="temp_guard_c" type="number" step="1"></label>
+        <label>deadband % <input name="write_deadband_percent" type="number" step="0.25"></label>
+        <label>interval ms <input name="interval_ms" type="number" step="50"></label>
+        <label>sensor
+          <select name="sensor">
+            <option value="">—</option>
+            <option value="core">core</option>
+            <option value="hotspot">hotspot</option>
+            <option value="memory">memory</option>
+            <option value="board">board</option>
+            <option value="max">max</option>
+          </select>
+        </label>
+        <label>adaptive
+          <select name="adaptive_base">
+            <option value="">—</option>
+            <option value="true">on</option>
+            <option value="false">off</option>
+          </select>
+        </label>
+      </div>
+      <div class="row">
+        <button class="act primary" type="submit">Apply</button>
+        <button type="button" id="reload">Reload</button>
+        <span id="tuneres" class="hint"></span>
+      </div>
+    </form>
+  </section>
+
+  <section id="gpus" class="gpus"></section>
+</main>
+
+<footer>loopback-only control plane · mutations require POST + X-Requested-With · <a href="/help">endpoint help</a></footer>
+<script src="/ui.js"></script>
+</body>
+</html>
