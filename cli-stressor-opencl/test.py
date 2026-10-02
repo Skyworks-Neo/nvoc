@@ -27,11 +27,8 @@ else:
 sys.path.insert(0, str(_Path(__file__).resolve().parent))
 try:
     import verify_opencl as vo
-except ImportError as exc:
+except ImportError:
     vo = None
-    VERIFY_IMPORT_ERROR = exc
-else:
-    VERIFY_IMPORT_ERROR = None
 
 
 PREFERRED_TILE_SIZE = 16

@@ -395,7 +395,6 @@ class VerifyEngine:
         self.scratch = cl.Buffer(
             runtime.context, flags.READ_WRITE, size=4 * SAMPLE_SCRATCH_WORDS
         )
-        self.scratch_words = SAMPLE_SCRATCH_WORDS
 
         self.pattern_buf = None
         self.pattern_words = 0
