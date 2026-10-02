@@ -1711,6 +1711,7 @@ class OverclockController(PaneController):
             try:
                 self.app.call_from_thread(self._on_fan_curve_loaded, gpu, data)
             except Exception:
+                # App torn down before the callback landed — nothing to update.
                 pass
 
         threading.Thread(target=worker, daemon=True, name="nvoc-tui-fan-curve").start()
@@ -1724,6 +1725,7 @@ class OverclockController(PaneController):
             if gpu != self.app.selected_gpu_target():
                 return
         except Exception:
+            # App teardown can make the query raise; fall through and fill.
             pass
         self._curve_loaded_gpu = gpu
         if reset_stop:
@@ -1769,6 +1771,7 @@ class OverclockController(PaneController):
                 f"Curve {self._curve_slot}"
             )
         except Exception:
+            # Slot label not mounted yet (pre-compose) — nothing to update.
             pass
 
     def _update_fan_stop_label(self) -> None:
@@ -1776,6 +1779,7 @@ class OverclockController(PaneController):
         try:
             self.app.query_one("#fan-curve-stop", Button).label = f"Fan Stop: {state}"
         except Exception:
+            # Fan-stop button not mounted yet (pre-compose) — nothing to update.
             pass
 
     def _curve_percent(self, rpm: int) -> int | None:
@@ -1806,6 +1810,7 @@ class OverclockController(PaneController):
                     pwm_input.value = str(percent)
                     pwm_input.disabled = False
             except Exception:
+                # PWM mirror input not mounted yet (pre-compose) — RPM still set.
                 pass
         finally:
             self._curve_syncing = False
