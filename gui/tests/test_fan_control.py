@@ -166,18 +166,19 @@ def test_entry_change_clamps_level() -> None:
     assert pane.level == 100
 
 
-def test_modern_nvapi_policy_list_is_continuous_only() -> None:
+def test_modern_nvapi_policy_list_is_continuous_plus_curve() -> None:
     # Live A/B: on modern GPUs only `continuous` (the TemperatureContinuous SW
     # curve policy) actually applies the manual % level via NVAPI — `manual`
-    # no-ops on the modern cooler paths, so it is not offered at all. The old
-    # 8-entry enum list (default/perf/... / no-op or rejected) must not
-    # reappear.
+    # no-ops on the modern cooler paths, so it is not offered at all. `curve`
+    # rides the ClientFanPolicies table (edited in the curve editor popup).
+    # The old 8-entry enum list (default/perf/... / no-op or rejected) must
+    # not reappear.
     pane = FakePane(api="NVAPI", policy="default")
     controller = FanControlController(pane, FakeBackend())
 
     controller.on_backend_change()
 
-    assert pane.policy_values == ["continuous"]
+    assert pane.policy_values == ["continuous", "curve"]
     assert pane.policy == "continuous"
     assert controller.settings().policy == "continuous"
 
