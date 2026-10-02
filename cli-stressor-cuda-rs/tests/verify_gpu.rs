@@ -5,6 +5,10 @@
 //!
 //! `cargo test -p cli-stressor-cuda-rs --test verify_gpu -- --ignored`
 
+// The lib's `cuda_backend` module only exists under the `cuda` feature; the
+// non-CUDA CI job compiles this test target with `--no-default-features`.
+#![cfg(feature = "cuda")]
+
 use cli_stressor_cuda_rs::{Backend, VerifyConfig, cuda_backend};
 
 #[test]

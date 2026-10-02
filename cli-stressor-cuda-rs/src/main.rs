@@ -369,16 +369,18 @@ fn vulkan_stress_enabled(args: &Args) -> bool {
 #[cfg(feature = "vulkan")]
 fn build_vulkan_image_config(args: &Args) -> VulkanImageConfig {
     let render = if args.vulkan {
-        Some(cli_stressor_cuda_rs::vulkan_render::VulkanRenderConfig {
-            width: args.vulkan_width,
-            height: args.vulkan_height,
-            msaa: args.vulkan_msaa,
-            iters: args.vulkan_iters,
-            shells: args.vulkan_shells,
-            offscreen: !args.vulkan_window,
-            rotate: args.vulkan_rotate,
-            particles: args.vulkan_particles,
-        })
+        Some(
+            cli_stressor_cuda_rs::vulkan_gfx_stressor::VulkanRenderConfig {
+                width: args.vulkan_width,
+                height: args.vulkan_height,
+                msaa: args.vulkan_msaa,
+                iters: args.vulkan_iters,
+                shells: args.vulkan_shells,
+                offscreen: !args.vulkan_window,
+                rotate: args.vulkan_rotate,
+                particles: args.vulkan_particles,
+            },
+        )
     } else {
         None
     };

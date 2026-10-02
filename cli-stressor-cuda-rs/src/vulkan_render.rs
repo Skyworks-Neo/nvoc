@@ -31,28 +31,9 @@ use ash::vk;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-#[cfg(target_os = "windows")]
-/// FurMark-style heavy render parameters.
-#[derive(Clone, Copy, Debug)]
-pub struct VulkanRenderConfig {
-    pub width: u32,
-    pub height: u32,
-    /// MSAA sample count: 1 = off, 2/4/8. Clamped to device-supported.
-    pub msaa: u32,
-    /// Fragment MUFU/FMA loop iterations per pixel.
-    pub iters: u32,
-    /// Instanced shell count (layered overdraw with alpha blending).
-    pub shells: u32,
-    /// Render into an owned color image instead of a window swapchain
-    /// (pure CLI / headless; skips the display-engine path).
-    pub offscreen: bool,
-    /// Animate the torus rotation (dynamic tiles/Z-distribution/interp
-    /// inputs). Off for the static-mesh A/B baseline.
-    pub rotate: bool,
-    /// Compute->graphics particle pool size (Lumen/TSR-style SSBO ping-pong).
-    /// 0 disables the stage.
-    pub particles: u32,
-}
+// The render config type lives in `vulkan_gfx_stressor` (compiled on every
+// platform); this Windows-only module just consumes it.
+pub use crate::vulkan_gfx_stressor::VulkanRenderConfig;
 
 impl Default for VulkanRenderConfig {
     fn default() -> Self {

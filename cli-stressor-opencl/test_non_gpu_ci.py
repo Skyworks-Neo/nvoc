@@ -7,6 +7,7 @@ Runs with stdlib only — no OpenCL, pyopencl, or numpy required.
   #38 - compute_s-based TFLOPS (not total wall-time)
 """
 
+import os
 import pathlib
 import sys
 import types
@@ -69,8 +70,6 @@ except Exception:
 StressResult = _mod.StressResult
 choose_tolerance = _mod.choose_tolerance
 parse_int_list = _mod.parse_int_list
-
-import os
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
@@ -231,9 +230,7 @@ class TestVerifyCircuit(unittest.TestCase):
         self.assertFalse(off.due(1, 0))
 
     def test_classify_precedence(self):
-        self.assertIs(
-            vo.classify(False, 0, 0, 0), vo.VerdictClass.SELF_TEST_FAILED
-        )
+        self.assertIs(vo.classify(False, 0, 0, 0), vo.VerdictClass.SELF_TEST_FAILED)
         self.assertIs(vo.classify(True, 0, 0, 2), vo.VerdictClass.API_ERROR)
         self.assertIs(vo.classify(True, 0, 1, 0), vo.VerdictClass.MEMORY_ERROR)
         self.assertIs(vo.classify(True, 3, 0, 0), vo.VerdictClass.DATA_ERROR)

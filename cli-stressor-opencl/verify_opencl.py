@@ -61,27 +61,25 @@ def verify_report_dtype():
     """
     import numpy as np
 
-    return np.dtype(
-        {
-            "names": [
-                "magic",
-                "total_errors",
-                "idx_min",
-                "idx_max",
-                "first_exp",
-                "first_act",
-                "first_lock",
-                "bit_hist",
-                "checked",
-                "done",
-                "_pad",
-            ],
-            "formats": [np.uint32] * 7
-            + [(np.uint32, (32,)), np.uint64, np.uint32, np.uint32],
-            "offsets": [0, 4, 8, 12, 16, 20, 24, 28, 160, 168, 172],
-            "itemsize": 176,
-        }
-    )
+    return np.dtype({
+        "names": [
+            "magic",
+            "total_errors",
+            "idx_min",
+            "idx_max",
+            "first_exp",
+            "first_act",
+            "first_lock",
+            "bit_hist",
+            "checked",
+            "done",
+            "_pad",
+        ],
+        "formats": [np.uint32] * 7
+        + [(np.uint32, (32,)), np.uint64, np.uint32, np.uint32],
+        "offsets": [0, 4, 8, 12, 16, 20, 24, 28, 160, 168, 172],
+        "itemsize": 176,
+    })
 
 
 def verify_report_init():
@@ -258,9 +256,12 @@ __kernel void gemm_sample_check(
 """
 
 
-def format_gemm_verify_source(spec_scalar_type: str, spec_accum_type: str, preamble: str):
+def format_gemm_verify_source(
+    spec_scalar_type: str, spec_accum_type: str, preamble: str
+):
     return (
-        GEMM_VERIFY_SRC_TEMPLATE.replace("__EXT_PREAMBLE__", preamble)
+        GEMM_VERIFY_SRC_TEMPLATE
+        .replace("__EXT_PREAMBLE__", preamble)
         .replace("__SCALAR_T__", spec_scalar_type)
         .replace("__ACCUM_T__", spec_accum_type)
         .replace("__LOCAL_SIZE__", str(LOCAL_SIZE))
@@ -404,9 +405,7 @@ class VerifyEngine:
                 runtime.context, flags.READ_WRITE, size=4 * self.pattern_words
             )
 
-        self.pattern_program = cl.Program(
-            runtime.context, VERIFY_PATTERN_SRC
-        ).build()
+        self.pattern_program = cl.Program(runtime.context, VERIFY_PATTERN_SRC).build()
         self._fill_kernel = self.pattern_program.verify_pattern_fill
         self._compare_kernel = self.pattern_program.verify_compare
         self._inject_kernel = self.pattern_program.verify_inject_error
@@ -423,9 +422,7 @@ class VerifyEngine:
         # Fill the resident pattern block once (static victim; the GEMM
         # working set next to it provides the neighbor pressure).
         if self.pattern_buf is not None:
-            self.fill(
-                runtime.queue, self.pattern_buf, base_seed & _MASK32
-            )
+            self.fill(runtime.queue, self.pattern_buf, base_seed & _MASK32)
             runtime.queue.finish()
 
     # -- low-level primitives ------------------------------------------------
@@ -437,7 +434,12 @@ class VerifyEngine:
         n = buf.size // 4
         blocks = (n + LOCAL_SIZE - 1) // LOCAL_SIZE
         self._fill_kernel(
-            queue, (blocks * LOCAL_SIZE,), (LOCAL_SIZE,), buf, np.uint64(n), np.uint64(seed)
+            queue,
+            (blocks * LOCAL_SIZE,),
+            (LOCAL_SIZE,),
+            buf,
+            np.uint64(n),
+            np.uint64(seed),
         )
         return blocks
 
@@ -445,7 +447,13 @@ class VerifyEngine:
         n = buf.size // 4
         blocks = (n + LOCAL_SIZE - 1) // LOCAL_SIZE
         self._compare_kernel(
-            queue, (blocks * LOCAL_SIZE,), (LOCAL_SIZE,), buf, np.uint64(n), np.uint64(seed), self.report_buf
+            queue,
+            (blocks * LOCAL_SIZE,),
+            (LOCAL_SIZE,),
+            buf,
+            np.uint64(n),
+            np.uint64(seed),
+            self.report_buf,
         )
         return blocks
 
@@ -518,9 +526,7 @@ class VerifyEngine:
             )
             return
         if total_errors > 0:
-            bits = ",".join(
-                f"bit{b}={c}" for b, c in enumerate(bit_hist) if c > 0
-            )
+            bits = ",".join(f"bit{b}={c}" for b, c in enumerate(bit_hist) if c > 0)
             self._set_failure(
                 f"{label}: {total_errors} wrong words (idx {idx_min}..{idx_max}, "
                 f"exp=0x{first_exp:08X} act=0x{first_act:08X}, bits: {bits or 'none'})"
@@ -548,13 +554,21 @@ class VerifyEngine:
         stats_reduce = program.gemm_stats_reduce
         sample_check = program.gemm_sample_check
         if hasattr(stats_reduce, "set_scalar_arg_dtypes"):
-            stats_reduce.set_scalar_arg_dtypes(
-                [None, np.uint64, None, None, None]
-            )
+            stats_reduce.set_scalar_arg_dtypes([None, np.uint64, None, None, None])
         if hasattr(sample_check, "set_scalar_arg_dtypes"):
-            sample_check.set_scalar_arg_dtypes(
-                [None, None, None, np.int32, np.int32, np.int32, None, np.uint32, np.float32, np.float32, None]
-            )
+            sample_check.set_scalar_arg_dtypes([
+                None,
+                None,
+                None,
+                np.int32,
+                np.int32,
+                np.int32,
+                None,
+                np.uint32,
+                np.float32,
+                np.float32,
+                None,
+            ])
 
         # Stats pass (grid-stride, per-group partials).
         grid_blocks = min((n + LOCAL_SIZE - 1) // LOCAL_SIZE, STATS_GRID_CAP)
@@ -650,7 +664,6 @@ class VerifyEngine:
     def run_self_test(self, queue) -> SelfTestReport:
         checks = []
         seed = SELF_TEST_SEED
-        scratch_words = self.scratch_words
 
         def gate(fill_first: bool, inject: bool) -> tuple:
             self._reset_report(queue)
@@ -686,7 +699,9 @@ class VerifyEngine:
             )
         except Exception as exc:
             checks.append(
-                SelfTestCheck(name="pattern_clean", passed=False, detail=f"kernel error: {exc}")
+                SelfTestCheck(
+                    name="pattern_clean", passed=False, detail=f"kernel error: {exc}"
+                )
             )
 
         # Gate 2: single injected error at 0xADBA / bit 22 is caught exactly.
@@ -720,7 +735,11 @@ class VerifyEngine:
             )
         except Exception as exc:
             checks.append(
-                SelfTestCheck(name="injection_capture", passed=False, detail=f"kernel error: {exc}")
+                SelfTestCheck(
+                    name="injection_capture",
+                    passed=False,
+                    detail=f"kernel error: {exc}",
+                )
             )
 
         # Restore the scratch pattern for later reuse.

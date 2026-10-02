@@ -17,6 +17,31 @@ pub struct VulkanDeviceSelection {
     pub cuda_pci_bus: Option<PciBusAddress>,
 }
 
+/// FurMark-style heavy render parameters. Defined here (rather than in the
+/// Windows-only `vulkan_render` module) so the config type exists on every
+/// platform; only the render *loop* is Windows-gated, and non-Windows builds
+/// fall back to the light image path.
+#[derive(Clone, Copy, Debug)]
+pub struct VulkanRenderConfig {
+    pub width: u32,
+    pub height: u32,
+    /// MSAA sample count: 1 = off, 2/4/8. Clamped to device-supported.
+    pub msaa: u32,
+    /// Fragment MUFU/FMA loop iterations per pixel.
+    pub iters: u32,
+    /// Instanced shell count (layered overdraw with alpha blending).
+    pub shells: u32,
+    /// Render into an owned color image instead of a window swapchain
+    /// (pure CLI / headless; skips the display-engine path).
+    pub offscreen: bool,
+    /// Animate the torus rotation (dynamic tiles/Z-distribution/interp
+    /// inputs). Off for the static-mesh A/B baseline.
+    pub rotate: bool,
+    /// Compute->graphics particle pool size (Lumen/TSR-style SSBO ping-pong).
+    /// 0 disables the stage.
+    pub particles: u32,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct VulkanImageConfig {
     pub width: u32,
@@ -27,7 +52,7 @@ pub struct VulkanImageConfig {
     pub minor_mixture_rate: f64,
     /// FurMark-style heavy render mode (Win32 window + shaders + blend +
     /// depth + present). Windows-only; falls back to the light path elsewhere.
-    pub render: Option<crate::vulkan_render::VulkanRenderConfig>,
+    pub render: Option<VulkanRenderConfig>,
 }
 
 impl Default for VulkanImageConfig {
@@ -96,7 +121,7 @@ impl VulkanGraphicsEngine {
 
         let handle = thread::spawn(move || {
             let result = if let Some(render_cfg) = image_config.render {
-                dispatch_heavy(is_running, selection, render_cfg)
+                dispatch_heavy(is_running, selection, image_config, render_cfg)
             } else {
                 run_vulkan_stress_loop(is_running, selection, image_config)
             };
@@ -131,20 +156,22 @@ impl VulkanGraphicsEngine {
     }
 }
 
-#[cfg(all(feature = "vulkan", target_os = "windows"))]
+#[cfg(target_os = "windows")]
 fn dispatch_heavy(
     is_running: Arc<AtomicBool>,
     selection: Option<VulkanDeviceSelection>,
-    render_cfg: crate::vulkan_render::VulkanRenderConfig,
+    _image_config: VulkanImageConfig,
+    render_cfg: VulkanRenderConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     run_render_loop(is_running, selection, render_cfg)
 }
 
-#[cfg(not(all(feature = "vulkan", target_os = "windows")))]
+#[cfg(not(target_os = "windows"))]
 fn dispatch_heavy(
     is_running: Arc<AtomicBool>,
     selection: Option<VulkanDeviceSelection>,
-    render_cfg: crate::vulkan_render::VulkanRenderConfig,
+    image_config: VulkanImageConfig,
+    _render_cfg: VulkanRenderConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     eprintln!(
         "{}",
