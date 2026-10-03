@@ -11,6 +11,9 @@ use std::path::PathBuf;
 
 /// Loopback HTTP control-plane port (unchanged from the legacy service).
 pub const DEFAULT_PORT: u16 = 14514;
+/// Loopback port for the MCP (streamable-HTTP) endpoint. Distinct from the
+/// main control plane so enabling MCP never collides with `port`.
+pub const DEFAULT_MCP_PORT: u16 = 14516;
 pub const DEFAULT_INTERVAL_MS: u64 = 1000;
 pub const INTERVAL_MS_MIN: u64 = 200;
 pub const INTERVAL_MS_MAX: u64 = 10_000;
@@ -410,6 +413,34 @@ impl PidParams {
     }
 }
 
+/// MCP server configuration (control-plane tools exposed to an AI agent).
+///
+/// Disabled by default: enabling it opens a second loopback listener. The MCP
+/// endpoint registers as an ordinary [`crate::session`] consumer in the MCP
+/// priority band, so an agent-driven claim is arbitrated and lease-bounded
+/// exactly like any other consumer — a crashed agent cannot leave a fan pinned.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct McpConfig {
+    /// Serve the MCP endpoint at all.
+    pub enabled: bool,
+    /// Loopback port for the streamable-HTTP MCP endpoint.
+    pub port: u16,
+    /// Optional bearer token required on every MCP request. `None` relies on
+    /// the same loopback trust edge as the main control plane.
+    pub token: Option<String>,
+}
+
+impl Default for McpConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            port: DEFAULT_MCP_PORT,
+            token: None,
+        }
+    }
+}
+
 /// Full service configuration (one TOML document).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -446,6 +477,8 @@ pub struct RuntimeConfig {
     pub read_fail_reset: u32,
     /// Heartbeat staleness that trips the watchdog restore (seconds).
     pub watchdog_timeout_s: u64,
+    /// MCP control-plane endpoint (agent tools). Off unless enabled.
+    pub mcp: McpConfig,
 }
 
 impl Default for RuntimeConfig {
@@ -464,6 +497,7 @@ impl Default for RuntimeConfig {
             freq: FreqParams::default(),
             read_fail_reset: 3,
             watchdog_timeout_s: 30,
+            mcp: McpConfig::default(),
         }
     }
 }
@@ -522,6 +556,12 @@ impl RuntimeConfig {
         }
         if !(5..=600).contains(&self.watchdog_timeout_s) {
             return Err("watchdog_timeout_s must be 5–600".to_string());
+        }
+        if self.mcp.enabled && (self.mcp.port == 0 || self.mcp.port == self.port) {
+            return Err(format!(
+                "mcp.port must be non-zero and differ from port ({}), got {}",
+                self.port, self.mcp.port
+            ));
         }
         Ok(())
     }
@@ -598,5 +638,41 @@ mod tests {
             ..PidParams::default()
         };
         assert!(p.validate().is_err());
+    }
+
+    #[test]
+    fn mcp_disabled_by_default_with_distinct_port() {
+        let cfg = RuntimeConfig::default();
+        assert!(!cfg.mcp.enabled);
+        assert_eq!(cfg.mcp.port, DEFAULT_MCP_PORT);
+        assert_ne!(cfg.mcp.port, cfg.port);
+        // Disabled MCP does not constrain anything.
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn toml_without_mcp_section_parses_and_unknown_mcp_key_is_rejected() {
+        // Absent section: the container default fills `mcp` in.
+        let cfg: RuntimeConfig = toml::from_str("port = 14514\nauth = \"off\"\n").unwrap();
+        assert!(!cfg.mcp.enabled);
+        // Unknown keys inside [mcp] are rejected (deny_unknown_fields).
+        let bad =
+            toml::from_str::<RuntimeConfig>("port = 14514\n[mcp]\nenabled = true\noops = 1\n");
+        assert!(bad.is_err());
+    }
+
+    #[test]
+    fn mcp_validation_rejects_port_clash_and_zero() {
+        let mut cfg = RuntimeConfig {
+            port: 14514,
+            ..RuntimeConfig::default()
+        };
+        cfg.mcp.enabled = true;
+        cfg.mcp.port = 14514;
+        assert!(cfg.validate().is_err(), "mcp.port == port must be rejected");
+        cfg.mcp.port = 0;
+        assert!(cfg.validate().is_err(), "mcp.port == 0 must be rejected");
+        cfg.mcp.port = DEFAULT_MCP_PORT;
+        assert!(cfg.validate().is_ok());
     }
 }

@@ -149,6 +149,9 @@ fn run_foreground(cli: Cli) {
         history: handles.history.clone(),
         cmd_tx: handles.cmd_tx.clone(),
     });
+    if nvoc_srv::runtime::lock(&state.config).mcp.enabled {
+        nvoc_srv::mcp::spawn_supervised(state.clone());
+    }
     nvoc_srv::http::spawn_supervised(state);
 
     let shutdown_tx = handles.shutdown_tx.clone();

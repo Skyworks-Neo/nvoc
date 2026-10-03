@@ -29,6 +29,11 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
 pwhash = { workspace = true }
+rmcp = { workspace = true }
+tokio = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+schemars = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-service = { workspace = true }

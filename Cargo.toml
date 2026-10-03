@@ -69,3 +69,17 @@ serde_json = "1.0"
 windows-service = "0.8.0"
 windows-sys = { version = "0.61.2", features = ["Win32"] }
 libloading = "0.9"
+
+# MCP server (srv control-plane tools). rmcp is the official Rust MCP SDK;
+# the streamable-HTTP transport needs a tokio runtime + axum, which srv hosts
+# on a dedicated thread so its synchronous control plane is untouched.
+rmcp = { version = "3.5", features = [
+  "server",
+  "macros",
+  "schemars",
+  "transport-streamable-http-server"
+] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time"] }
+axum = "0.8"
+tower = "0.5"
+schemars = "1"

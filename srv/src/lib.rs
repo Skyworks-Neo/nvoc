@@ -9,6 +9,7 @@
 //! - [`runtime`]: single-threaded control loop + heartbeat watchdog
 //! - [`session`]: consumer registry + priority arbitration for control ownership
 //! - [`http`]: loopback-only HTTP control plane
+//! - [`mcp`]: loopback-only MCP (streamable HTTP) control-plane tools
 //! - [`logging`]: rotating file sink (+console tee in foreground)
 //!
 //! Windows-only SCM integration lives in [`service`]; on Linux the same
@@ -22,6 +23,7 @@ pub mod controller;
 pub mod history;
 pub mod http;
 pub mod logging;
+pub mod mcp;
 pub mod monitor;
 pub mod pid;
 pub mod runtime;

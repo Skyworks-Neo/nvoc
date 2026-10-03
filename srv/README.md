@@ -16,7 +16,9 @@ One-shot writes and inspection remain in `nvoc cli`; the service owns
 │ nvoc-srv (one process)                                              │
 │                                                                    │
 │  HTTP control plane (tiny_http, 127.0.0.1:14514, CSRF-gated)       │
+│  MCP control plane (rmcp, 127.0.0.1:<mcp.port>, opt-in, bearer)    │
 │        │ config edits / imperative commands (flume)                │
+│        │ consumer registry: claim + lease arbitration              │
 │        ▼                                                           │
 │  control loop (std thread, tick = interval_ms, default 1 s)        │
 │    per GPU: GpuController ── PidController (pure, unit-tested)     │
@@ -27,6 +29,10 @@ One-shot writes and inspection remain in `nvoc cli`; the service owns
 │  watchdog thread (heartbeat > 30 s → restore driver fan control)   │
 └────────────────────────────────────────────────────────────────────┘
 ```
+
+Both control planes are loopback-only. The MCP endpoint is a thin adapter
+over the same registry/controller calls the HTTP routes make — it adds no
+control logic, only a second transport.
 
 Platform status:
 
@@ -114,6 +120,11 @@ min_mhz = 300             # deepest allowed cap (MHz)
 max_mhz = 0               # cap ceiling; 0 = auto-detect (see below)
 write_deadband_percent = 1.0  # skip writes within ±1 % of the duty on the wire (anti-chatter)
 adaptive_base = true      # learn base_percent online from the integral (see below)
+
+[mcp]                     # MCP control-plane endpoint (opt-in)
+enabled = false           # open the loopback MCP listener at startup
+port = 14516              # loopback-only; must differ from `port` and nonzero
+# token = "…"             # optional bearer token (defense in depth)
 ```
 
 CLI overrides (each maps to a field): `--config <path> --foreground --port
@@ -144,25 +155,29 @@ is known the controller writes no cap at all — never a guessed one.
 Control is arbitrated by the consumer registry: a client registers, claims a
 priority band, and holds a renewable lease; the loop applies the
 highest-priority live claim and restores `auto` when no claim remains. Bands
-(`srv/src/session.rs`) run stressor (10) < auto-optimizer (35) < desktop (40,
-the GUI/TUI) < human console. A crashed or idle client lapses its lease and
-control falls back on the same timescale as any other consumer — no client can
-leave a fan pinned.
+(`srv/src/session.rs`) run stressor (10) < MCP (30) < auto-optimizer (35) <
+desktop (40, the GUI/TUI) < human console. The auto-optimizer's `--target-temp`
+scan outranks the MCP agent because it holds a temperature-critical exclusive
+session for its entire duration and must not be preempted mid-measurement. A
+crashed or idle client lapses its lease and control falls back on the same
+timescale as any other consumer — no client can leave a fan pinned.
 
 | Caller | Band | Mechanism | Session lifecycle |
 |---|---|---|---|
 | `nvoc-auto-optimizer` | 35 | registers as a consumer against a resident srv | session spans the whole scan; released on scan exit |
 | `cli-stressor-cuda-rs` | 10 | registers as a consumer against a resident srv | one stress run; released on completion / Ctrl-C; a hard crash lapses the lease |
+| AI agent (MCP) | 30 | MCP tool call binds an MCP session to an nvoc consumer | heartbeat renewed per tool call; released after 30 s idle or when the MCP session closes |
 | desktop GUI / TUI | 40 | registers as a consumer over the HTTP session API (same account auth as the console) | one session per app instance; heartbeat while open; the band is released on hand-back and on exit; a crash lapses the lease |
 | manual (curl / web console) | console | the HTTP API directly | you own it; a human op preempts every band |
 
-The desktop GUI and TUI register at band 40 — above the optimizer, and below
-the reserved console, so a web-console op still preempts. Only the *arbitrated*
-control ops go through the registry: a manual fan duty is a claim, while reset
-or hand-back-to-driver **releases the band** (the session stays open, so the
-next manual op re-claims at once) and lets a waiting optimizer consumer drive
-the fan. Deep OC/VF-curve/P-state writes are driver-side and stay
-direct-to-pynvoc.
+The desktop GUI and TUI register at band 40 — above the MCP agent, so a
+person's explicit fan/mode operation wins over an agent, and below the
+reserved console, so a web-console op still preempts. Only the *arbitrated*
+control ops go through the registry: a manual fan duty is a claim, while
+reset or hand-back-to-driver **releases the band** (the session stays open, so
+the next manual op re-claims at once) and lets a waiting optimizer/MCP
+consumer drive the fan. Deep OC/VF-curve/P-state writes are driver-side and
+stay direct-to-pynvoc.
 Both attach automatically when a resident srv is present and fall back to
 driving the GPU directly when it is not. They authenticate with the same OS
 account the web console asks for (HTTP Basic, `LogonUser` on Windows).
@@ -261,6 +276,65 @@ curl -s -X POST -H "X-Requested-With: XMLHttpRequest" \
 > The idle-release parameters were replaced by `idle_delta_c` (config keys
 > `release_below_c` / `engage_below_c` / `release_ticks` are gone — delete
 > them from your TOML).
+
+## MCP control plane (agent interface)
+
+`nvoc-srv` can expose the same control plane as **Model Context Protocol**
+tools, so an AI agent is a first-class consumer: it inspects state and drives
+the loop under the same claim/lease arbitration as any other client. **Off by
+default** (`[mcp] enabled = false`) — enabling opens one more loopback
+listener.
+
+Transport is the MCP **streamable-HTTP** endpoint (`rmcp`), bound to
+`127.0.0.1:<mcp.port>` (default 14516). It is never stdio: srv is a resident
+service with no per-client child process to attach a stdio server to. The
+listener runs on its own tokio runtime inside one supervised std thread,
+mirroring the HTTP plane; on a clean exit it restarts after 1 s (a panic in a
+release build aborts the process — SCM/systemd restart is the backstop, same
+as the HTTP plane).
+
+Tools (control-class only; each maps onto an existing registry/controller
+call — no new control logic):
+
+| Tool | Effect |
+|---|---|
+| `nvoc_status` | current mode, loop, setpoint, per-GPU temps/duty/failsafe, owner |
+| `nvoc_sessions` | registered consumers and the current control owner |
+| `nvoc_get_config` | the effective `RuntimeConfig` |
+| `nvoc_set_mode` | claim control for this session and set `auto` / `pid` / `manual` |
+| `nvoc_set_pid_target` | claim and set the PID setpoint (°C); switches to `pid` |
+| `nvoc_set_fan_manual` | claim and pin a manual duty (0–100 %) |
+| `nvoc_restore_auto` | release this session's claim (arbitration restores driver `auto`) |
+| `nvoc_whoami` | echo this MCP session's nvoc id, band, and owner state |
+| `nvoc_shutdown` | graceful stop (fans restored first) |
+
+Control-affecting tools bind the MCP transport session to an nvoc consumer in
+the **MCP band (30)** — above the optimizer, so an agent explicitly driving
+control wins; below the console, so a human op still preempts. The session
+heartbeats per tool call and is released after 30 s idle or on MCP session
+close; a crashed agent therefore lapses its lease and the loop restores `auto`
+within that window, exactly like any other consumer.
+
+**Auth.** Loopback-only bind, consistent with the HTTP plane. The OS-account
+Basic-auth layer is not reused (MCP clients don't speak it); instead an
+optional `[mcp] token` adds a bearer-token check as defense in depth:
+
+```toml
+[mcp]
+enabled = true
+port = 14516
+token = "a-long-random-string"
+```
+
+Clients send `Authorization: Bearer <token>`. With no token, loopback is the
+only trust edge — document and require real auth before binding to a
+non-loopback address.
+
+Register the endpoint with an MCP client, e.g.:
+
+```sh
+claude mcp add --transport http nvoc-srv http://127.0.0.1:14516
+```
 
 ## Forced zones (overtemp / idle)
 
