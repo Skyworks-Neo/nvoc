@@ -10,6 +10,9 @@ old "the optimizer spawns and owns a srv child" model:
 * idle release,
 * arbitration: a lower-priority claim does not preempt the owner; closing the
   owner hands control to the next claim, not straight to Auto,
+* yield-on-handback: a desktop-band claim preempts the scan; releasing it hands
+  control back to the waiting scan while the session stays registered (the
+  ``POST /api/session/release`` path); re-claiming preempts again,
 * crash-safety: a hard-killed higher-priority consumer's lease lapses and
   control falls back to the next claim,
 * teardown: closing the last claim restores ``auto``.
@@ -69,9 +72,13 @@ IO_TIMEOUT_S = 5.0
 TEARDOWN_TIMEOUT_S = 15.0
 HEARTBEAT_S = 10.0
 
-# Mirror the client crate's priority bands (srv-client/src/lib.rs).
+# Mirror the client crate's priority bands (srv-client/src/lib.rs) and the srv
+# registry (srv/src/session.rs). The desktop band sits above the optimizer's
+# temperature-critical scan; the MCP band sits below it.
 PRIORITY_STRESSOR = 10
-PRIORITY_OPTIMIZER = 20
+PRIORITY_MCP = 30
+PRIORITY_OPTIMIZER = 35
+PRIORITY_DESKTOP = 40
 # The srv lease window (srv/src/session.rs LEASE_TTL); a lapsed crash-safety
 # check must wait at least this long plus a sweep tick.
 LEASE_TTL_S = 30.0
@@ -166,6 +173,12 @@ class Srv:
 
     def session_close(self, sid: str) -> None:
         self.post_json(f"/api/session/close?id={urllib.parse.quote(sid)}")
+
+    def session_release(self, sid: str) -> dict:
+        """Yield the control band but keep the session registered."""
+        return json.loads(
+            self.post_json(f"/api/session/release?id={urllib.parse.quote(sid)}")
+        )
 
     def sessions(self) -> dict:
         code, body = self._request("GET", "/api/sessions")
@@ -575,6 +588,53 @@ def check_arbitration(
         low.close()
 
 
+def check_yield_handback(
+    srv: Srv,
+    owner: HeldSession,
+    args: argparse.Namespace,
+    checks: Checks,
+) -> None:
+    """Yield-on-handback (the desktop band + ``/api/session/release``): a
+    desktop-band claim preempts the scan, a release yields the band so control
+    falls back to the still-live scan while the session stays registered, and a
+    re-claim without reconnecting preempts again."""
+    human = HeldSession(srv, "smoke-human", PRIORITY_DESKTOP)
+    try:
+        took = human.claim("manual", manual_percent=55)
+        st = safe_status(srv)
+        mode = st.get("mode") if st else "?"
+        owner_id = srv.sessions().get("owner")
+        checks.add(
+            "yield-preempt",
+            took and mode == "manual" and owner_id == human.id,
+            f"desktop-band claim owner={took}, mode={mode} (expected the human to "
+            f"take control from the scan)",
+        )
+
+        srv.session_release(human.id)
+        back, mode = wait_mode(srv, "pid", 10.0)
+        registered = any(
+            s["id"] == human.id for s in srv.sessions().get("sessions", [])
+        )
+        checks.add(
+            "yield-fallback",
+            back and registered,
+            f"after release: mode={mode} (expected pid), human session kept="
+            f"{registered}",
+        )
+
+        re = human.claim("manual", manual_percent=60)
+        st = safe_status(srv)
+        mode = st.get("mode") if st else "?"
+        checks.add(
+            "yield-reclaim-preempt",
+            re and mode == "manual",
+            f"re-claim owner={re}, mode={mode} (expected manual again)",
+        )
+    finally:
+        human.close()
+
+
 def check_crash_safety(
     args: argparse.Namespace, checks: Checks, srv: Srv, owner: HeldSession
 ) -> None:
@@ -716,6 +776,7 @@ def run_direct(args: argparse.Namespace, checks: Checks) -> int:
         load = None  # stopped inside the check
 
         check_arbitration(srv, owner, args.gpu, args, checks)
+        check_yield_handback(srv, owner, args, checks)
         if not args.skip_lease_check:
             check_crash_safety(args, checks, srv, owner)
 
@@ -862,7 +923,7 @@ def main() -> int:
         "--priority",
         type=int,
         default=PRIORITY_OPTIMIZER,
-        help="priority band for the direct-mode consumer (default: optimizer=20)",
+        help="priority band for the direct-mode consumer (default: optimizer=35)",
     )
     ap.add_argument(
         "--soak-seconds",
