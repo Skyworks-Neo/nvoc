@@ -27,6 +27,7 @@ fn safe() -> Res<()> {
 
     cargo_test(&root, &["-p", "nvoc-core", "--all-targets"])?;
     cargo_test(&root, &["-p", "nvoc-cli", "--all-targets"])?;
+    cargo_test(&root, &["-p", "nvoc-srv", "--all-targets"])?;
     cargo_test(&root, &["-p", "pynvoc", "--no-default-features"])?;
     cargo_test(&root, &["-p", "nvoc-auto-optimizer", "--all-targets"])?;
 
