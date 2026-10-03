@@ -451,6 +451,7 @@ jobs:
               "syn",             # 2.x ecosystem / 3.x serde and thiserror derives
               "thiserror",       # 1.x / 2.x
               "thiserror-impl",  # 1.x / 2.x
+              "unicode-width",   # 0.1.x via codespan-reporting (naga) / 0.2.x
               "windows-sys",     # 0.52 / 0.59 / 0.61
               "wit-bindgen",     # 0.51 / 0.57
               "zerocopy",        # 0.6 / 0.8

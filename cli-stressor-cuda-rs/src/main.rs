@@ -20,17 +20,17 @@ use cli_stressor_cuda_rs::parse_int_list;
 #[cfg(feature = "cuda")]
 use cli_stressor_cuda_rs::{
     Backend, DeviceInfo, KernelParamOverride, KernelType, PrecisionKind, PrecisionMixtureEntry,
-    PrecisionSpec, StressResult, StressRunConfig, parse_kernel_mixture,
-    parse_kernel_param_overrides, parse_kernel_type, parse_kernel_type_list, parse_precision_list,
-    parse_stream_mode, run_stress_mixed, validate_intalu_precision_overrides,
+    PrecisionSpec, StressResult, StressRunConfig, VerdictClass, VerifyConfig, classify,
+    parse_kernel_mixture, parse_kernel_param_overrides, parse_kernel_type, parse_kernel_type_list,
+    parse_precision_list, parse_stream_mode, run_stress_mixed, validate_intalu_precision_overrides,
 };
 #[cfg(feature = "cuda")]
 use serde::Deserialize;
 
-mod style;
+pub mod style;
 
 #[cfg(feature = "cuda")]
-mod cuda_backend;
+use cli_stressor_cuda_rs::cuda_backend;
 
 #[cfg(feature = "cuda")]
 use cuda_backend::{
@@ -40,13 +40,10 @@ use cuda_backend::{
 
 // Stressor Vulkan engine (optional). Only compiled when the crate is built with
 // --features "vulkan" in addition to "cuda".
-#[cfg(feature = "vulkan")]
-#[path = "vulkan_gfx_stressor.rs"]
-mod vulkan_gfx_stressor;
 #[cfg(all(feature = "cuda", feature = "vulkan"))]
-use vulkan_gfx_stressor::VulkanDeviceSelection;
+use cli_stressor_cuda_rs::vulkan_gfx_stressor::VulkanDeviceSelection;
 #[cfg(feature = "vulkan")]
-use vulkan_gfx_stressor::{VulkanGraphicsEngine, VulkanImageConfig};
+use cli_stressor_cuda_rs::vulkan_gfx_stressor::{VulkanGraphicsEngine, VulkanImageConfig};
 
 #[cfg(feature = "vulkan")]
 fn run_vulkan_for_duration(duration_s: f64, image_config: VulkanImageConfig) -> i32 {
@@ -157,6 +154,34 @@ struct Args {
     #[arg(long, default_value_t = 1024)]
     validate_size: usize,
 
+    /// Output edge length up to which the full-coverage GEMM recompute runs
+    /// (100% of elements; larger sizes use sampled cross-checks)
+    #[arg(long, default_value_t = 1024)]
+    gemm_full_check_max_size: usize,
+
+    /// Keep running after a detector fault, accumulating SDC statistics
+    /// (for error-rate vs frequency/temperature mapping)
+    #[arg(long, default_value_t = false)]
+    verify_continue_on_error: bool,
+
+    /// Seconds between resident-block pattern checks (0 = off)
+    #[arg(long, default_value_t = 2.0)]
+    verify_resident_interval: f64,
+
+    /// Disable the ride-on-load detectors (pattern compare / GEMM scan /
+    /// sampled cross-checks / IntAlu reference)
+    #[arg(long, default_value_t = false)]
+    no_verify: bool,
+
+    /// Skip the detector injection self-test gate
+    #[arg(long, default_value_t = false)]
+    skip_self_test: bool,
+
+    /// Write the machine-readable verdict JSON to this path (also printed as
+    /// a `VERDICT_JSON:` line on stdout)
+    #[arg(long)]
+    json_out: Option<String>,
+
     #[arg(long, default_value_t = 0.5)]
     transpose_prob: f64,
 
@@ -196,13 +221,15 @@ struct Args {
 
     #[arg(long)]
     disable_fp8: bool,
-    /// Enable the Vulkan graphics stressor thread (optional)
-    #[arg(long, default_value_t = false)]
-    enable_vulkan_stress: bool,
-
     /// Run Vulkan-only stress (skip CUDA workload)
     #[arg(long, default_value_t = false)]
     vulkan_only: bool,
+
+    /// Vulkan render stressor (FurMark-style graphics load; the primary
+    /// graphics stress). Renders to a headless offscreen target unless
+    /// --vulkan-window is passed.
+    #[arg(long, default_value_t = false, alias = "vulkan-heavy")]
+    vulkan: bool,
 
     /// Generate stress buffers on the GPU (NVRTC fill kernels) instead of
     /// host-side parallel RNG + H2D copy; cuts the non-compute gap between
@@ -210,29 +237,79 @@ struct Args {
     #[arg(long, default_value_t = false)]
     gpu_generate: bool,
 
-    /// Vulkan image width for 3D render stress
-    #[arg(long, default_value_t = 8192)]
-    vulkan_image_width: u32,
+    /// Render width (offscreen target or window)
+    #[arg(long, default_value_t = 1280, alias = "vulkan-heavy-width")]
+    vulkan_width: u32,
 
-    /// Vulkan image height for 3D render stress
-    #[arg(long, default_value_t = 8192)]
-    vulkan_image_height: u32,
+    /// Render height
+    #[arg(long, default_value_t = 720, alias = "vulkan-heavy-height")]
+    vulkan_height: u32,
 
-    /// Number of Vulkan images for 3D render stress
-    #[arg(long, default_value_t = 6)]
-    vulkan_image_count: u32,
+    /// MSAA sample count (1 = off, 2/4/8)
+    #[arg(long, default_value_t = 1, alias = "vulkan-heavy-msaa")]
+    vulkan_msaa: u32,
 
-    /// Vulkan 3D image depth
-    #[arg(long, default_value_t = 1)]
-    vulkan_image_depth: u32,
+    /// Fragment MUFU/FMA loop iterations per pixel
+    #[arg(long, default_value_t = 128, alias = "vulkan-heavy-iters")]
+    vulkan_iters: u32,
 
-    /// MSAA sample count for Vulkan images (1 = off, use 2/4/8)
-    #[arg(long, default_value_t = 1)]
-    vulkan_image_msaa: u32,
+    /// Instanced shell count (layered overdraw)
+    #[arg(long, default_value_t = 16, alias = "vulkan-heavy-shells")]
+    vulkan_shells: u32,
 
-    /// Vulkan minor mixture rate for small-image mixing
-    #[arg(long, default_value_t = 0.15)]
-    vulkan_minor_mixture_rate: f64,
+    /// Show a window and present the swapchain (default: headless offscreen)
+    #[arg(long, default_value_t = false)]
+    vulkan_window: bool,
+
+    /// Animate torus rotation (dynamic tiles/Z/interp inputs; disable for
+    /// the static-mesh A/B baseline)
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set, alias = "vulkan-heavy-rotate")]
+    vulkan_rotate: bool,
+
+    /// Compute->graphics particle pool size (0 = off)
+    #[arg(long, default_value_t = 262144, alias = "vulkan-heavy-particles")]
+    vulkan_particles: u32,
+
+    /// Deprecated no-op: offscreen rendering is now the default; pass
+    /// --vulkan-window for a window.
+    #[arg(long, hide = true)]
+    vulkan_heavy_offscreen: bool,
+
+    /// Legacy image-based Vulkan stressor (compute-style image fill/compare
+    /// load; the pre-render graphics stress)
+    #[arg(long, default_value_t = false, alias = "enable-vulkan-stress")]
+    legacy_vulkan: bool,
+
+    /// Legacy stressor image width
+    #[arg(long, default_value_t = 8192, alias = "vulkan-image-width")]
+    legacy_vulkan_image_width: u32,
+
+    /// Legacy stressor image height
+    #[arg(long, default_value_t = 8192, alias = "vulkan-image-height")]
+    legacy_vulkan_image_height: u32,
+
+    /// Legacy stressor image count
+    #[arg(long, default_value_t = 6, alias = "vulkan-image-count")]
+    legacy_vulkan_image_count: u32,
+
+    /// Legacy stressor 3D image depth
+    #[arg(long, default_value_t = 1, alias = "vulkan-image-depth")]
+    legacy_vulkan_image_depth: u32,
+
+    /// Legacy stressor MSAA sample count (1 = off)
+    #[arg(long, default_value_t = 1, alias = "vulkan-image-msaa")]
+    legacy_vulkan_image_msaa: u32,
+
+    /// Legacy stressor minor mixture rate for small-image mixing
+    #[arg(long, default_value_t = 0.15, alias = "vulkan-minor-mixture-rate")]
+    legacy_vulkan_minor_mixture_rate: f64,
+
+    /// Enable the address-walk slab (VRAM pool whose windows slide across
+    /// physical pages; NVOC_VERIFY_SLAB_PCT overrides the share, default
+    /// 25%). Without it the verify loop still runs pattern rotation and the
+    /// write-density cadence on dedicated buffers.
+    #[arg(long, default_value_t = false)]
+    verify_slab: bool,
 
     /// CUDA GPU index in PCI-bus-sorted order (0-based)
     #[arg(
@@ -265,6 +342,61 @@ struct Args {
 
 #[cfg(feature = "cuda")]
 #[derive(Debug, Default, Deserialize)]
+struct FileVerifyConfig {
+    enabled: Option<bool>,
+    self_test: Option<bool>,
+    full_check_max_size: Option<usize>,
+    continue_on_error: Option<bool>,
+    resident_interval_s: Option<f64>,
+    memcpy_every: Option<u32>,
+    memset_every: Option<u32>,
+    gemm_every: Option<u32>,
+    gemm_samples: Option<u32>,
+    intalu_samples: Option<u32>,
+    int8_validate_size: Option<usize>,
+}
+
+/// Whether any Vulkan graphics stressor should run (new render load or the
+/// legacy image load). `--vulkan` wins when both are requested.
+#[cfg(feature = "vulkan")]
+fn vulkan_stress_enabled(args: &Args) -> bool {
+    args.vulkan || args.legacy_vulkan
+}
+
+/// Assemble the engine image config: the render stressor rides in `render`
+/// (the engine runs the render loop instead of the legacy image load when
+/// it is present); the outer fields parameterize the legacy image load.
+#[cfg(feature = "vulkan")]
+fn build_vulkan_image_config(args: &Args) -> VulkanImageConfig {
+    let render = if args.vulkan {
+        Some(
+            cli_stressor_cuda_rs::vulkan_gfx_stressor::VulkanRenderConfig {
+                width: args.vulkan_width,
+                height: args.vulkan_height,
+                msaa: args.vulkan_msaa,
+                iters: args.vulkan_iters,
+                shells: args.vulkan_shells,
+                offscreen: !args.vulkan_window,
+                rotate: args.vulkan_rotate,
+                particles: args.vulkan_particles,
+            },
+        )
+    } else {
+        None
+    };
+    VulkanImageConfig {
+        width: args.legacy_vulkan_image_width,
+        height: args.legacy_vulkan_image_height,
+        depth: args.legacy_vulkan_image_depth,
+        image_count: args.legacy_vulkan_image_count,
+        msaa: args.legacy_vulkan_image_msaa,
+        minor_mixture_rate: args.legacy_vulkan_minor_mixture_rate,
+        render,
+    }
+}
+
+#[cfg(feature = "cuda")]
+#[derive(Debug, Default, Deserialize)]
 struct FileConfig {
     duration: Option<f64>,
     matrix_sizes: Option<Vec<usize>>,
@@ -274,6 +406,7 @@ struct FileConfig {
     burst_iters: Option<u32>,
     validate_interval: Option<f64>,
     validate_size: Option<usize>,
+    gemm_full_check_max_size: Option<usize>,
     transpose_prob: Option<f64>,
     minor_mixture_rate: Option<f64>,
     seed: Option<u64>,
@@ -281,10 +414,21 @@ struct FileConfig {
     kernel_mixture: Option<KernelMixtureConfig>,
     stream_mode: Option<String>,
     disable_fp8: Option<bool>,
-    enable_vulkan_stress: Option<bool>,
+    #[serde(alias = "enable_vulkan_stress")]
+    legacy_vulkan: Option<bool>,
+    vulkan: Option<bool>,
     #[serde(alias = "vulkan-only")]
     vulkan_only: Option<bool>,
+    vulkan_window: Option<bool>,
+    vulkan_width: Option<u32>,
+    vulkan_height: Option<u32>,
+    vulkan_msaa: Option<u32>,
+    vulkan_iters: Option<u32>,
+    vulkan_shells: Option<u32>,
+    vulkan_rotate: Option<bool>,
+    vulkan_particles: Option<u32>,
     kernel_params: Option<HashMap<String, FileKernelParam>>,
+    verify: Option<FileVerifyConfig>,
     /// Generate stress buffers on the GPU via NVRTC fill kernels (default
     /// off; host generation remains the conservative path).
     gpu_generate: Option<bool>,
@@ -292,12 +436,18 @@ struct FileConfig {
     pci_bus: Option<String>,
     gpu_uuid: Option<String>,
     list_gpus: Option<bool>,
-    vulkan_image_width: Option<u32>,
-    vulkan_image_height: Option<u32>,
-    vulkan_image_count: Option<u32>,
-    vulkan_image_depth: Option<u32>,
-    vulkan_image_msaa: Option<u32>,
-    vulkan_minor_mixture_rate: Option<f64>,
+    #[serde(alias = "vulkan_image_width")]
+    legacy_vulkan_image_width: Option<u32>,
+    #[serde(alias = "vulkan_image_height")]
+    legacy_vulkan_image_height: Option<u32>,
+    #[serde(alias = "vulkan_image_count")]
+    legacy_vulkan_image_count: Option<u32>,
+    #[serde(alias = "vulkan_image_depth")]
+    legacy_vulkan_image_depth: Option<u32>,
+    #[serde(alias = "vulkan_image_msaa")]
+    legacy_vulkan_image_msaa: Option<u32>,
+    #[serde(alias = "vulkan_minor_mixture_rate")]
+    legacy_vulkan_minor_mixture_rate: Option<f64>,
 }
 
 #[cfg(feature = "cuda")]
@@ -515,27 +665,40 @@ fn parse_args_with_cli_sources() -> (Args, std::collections::HashSet<&'static st
         "burst_iters",
         "validate_interval",
         "validate_size",
+        "gemm_full_check_max_size",
+        "verify_continue_on_error",
+        "verify_resident_interval",
         "transpose_prob",
         "minor_mixture_rate",
         "seed",
         "kernel_types",
         "kernel_mixture",
         "kernel_params",
+        "legacy_vulkan",
+        "vulkan",
         "gpu_generate",
         "enable_vulkan_stress",
         "vulkan_only",
+        "vulkan_window",
+        "vulkan_width",
+        "vulkan_height",
+        "vulkan_msaa",
+        "vulkan_iters",
+        "vulkan_shells",
+        "vulkan_rotate",
+        "vulkan_particles",
         "stream_mode",
         "disable_fp8",
         "gpu_index",
         "pci_bus",
         "gpu_uuid",
         "list_gpus",
-        "vulkan_image_width",
-        "vulkan_image_height",
-        "vulkan_image_count",
-        "vulkan_image_depth",
-        "vulkan_image_msaa",
-        "vulkan_minor_mixture_rate",
+        "legacy_vulkan_image_width",
+        "legacy_vulkan_image_height",
+        "legacy_vulkan_image_count",
+        "legacy_vulkan_image_depth",
+        "legacy_vulkan_image_msaa",
+        "legacy_vulkan_minor_mixture_rate",
     ] {
         if matches.value_source(id) == Some(ValueSource::CommandLine) {
             cli_set.insert(id);
@@ -592,6 +755,12 @@ fn apply_file_config_to_args(
     if let (true, Some(v)) = (!cli_set.contains("validate_size"), parsed.validate_size) {
         args.validate_size = v;
     }
+    if let (true, Some(v)) = (
+        !cli_set.contains("gemm_full_check_max_size"),
+        parsed.gemm_full_check_max_size,
+    ) {
+        args.gemm_full_check_max_size = v;
+    }
     if let (true, Some(v)) = (!cli_set.contains("transpose_prob"), parsed.transpose_prob) {
         args.transpose_prob = v;
     }
@@ -628,11 +797,38 @@ fn apply_file_config_to_args(
     if let (true, Some(v)) = (!cli_set.contains("disable_fp8"), parsed.disable_fp8) {
         args.disable_fp8 = v;
     }
+    if let (true, Some(v)) = (!cli_set.contains("legacy_vulkan"), parsed.legacy_vulkan) {
+        args.legacy_vulkan = v;
+    }
+    if let (true, Some(v)) = (!cli_set.contains("vulkan"), parsed.vulkan) {
+        args.vulkan = v;
+    }
+    if let (true, Some(v)) = (!cli_set.contains("vulkan_window"), parsed.vulkan_window) {
+        args.vulkan_window = v;
+    }
+    if let (true, Some(v)) = (!cli_set.contains("vulkan_width"), parsed.vulkan_width) {
+        args.vulkan_width = v;
+    }
+    if let (true, Some(v)) = (!cli_set.contains("vulkan_height"), parsed.vulkan_height) {
+        args.vulkan_height = v;
+    }
+    if let (true, Some(v)) = (!cli_set.contains("vulkan_msaa"), parsed.vulkan_msaa) {
+        args.vulkan_msaa = v;
+    }
+    if let (true, Some(v)) = (!cli_set.contains("vulkan_iters"), parsed.vulkan_iters) {
+        args.vulkan_iters = v;
+    }
+    if let (true, Some(v)) = (!cli_set.contains("vulkan_shells"), parsed.vulkan_shells) {
+        args.vulkan_shells = v;
+    }
+    if let (true, Some(v)) = (!cli_set.contains("vulkan_rotate"), parsed.vulkan_rotate) {
+        args.vulkan_rotate = v;
+    }
     if let (true, Some(v)) = (
-        !cli_set.contains("enable_vulkan_stress"),
-        parsed.enable_vulkan_stress,
+        !cli_set.contains("vulkan_particles"),
+        parsed.vulkan_particles,
     ) {
-        args.enable_vulkan_stress = v;
+        args.vulkan_particles = v;
     }
     if let (true, Some(v)) = (!cli_set.contains("vulkan_only"), parsed.vulkan_only) {
         args.vulkan_only = v;
@@ -650,42 +846,68 @@ fn apply_file_config_to_args(
         args.list_gpus = v;
     }
     if let (true, Some(v)) = (
-        !cli_set.contains("vulkan_image_width"),
-        parsed.vulkan_image_width,
+        !cli_set.contains("legacy_vulkan_image_width"),
+        parsed.legacy_vulkan_image_width,
     ) {
-        args.vulkan_image_width = v;
+        args.legacy_vulkan_image_width = v;
     }
     if let (true, Some(v)) = (
-        !cli_set.contains("vulkan_image_height"),
-        parsed.vulkan_image_height,
+        !cli_set.contains("legacy_vulkan_image_height"),
+        parsed.legacy_vulkan_image_height,
     ) {
-        args.vulkan_image_height = v;
+        args.legacy_vulkan_image_height = v;
     }
     if let (true, Some(v)) = (
-        !cli_set.contains("vulkan_image_count"),
-        parsed.vulkan_image_count,
+        !cli_set.contains("legacy_vulkan_image_count"),
+        parsed.legacy_vulkan_image_count,
     ) {
-        args.vulkan_image_count = v;
+        args.legacy_vulkan_image_count = v;
     }
     if let (true, Some(v)) = (
-        !cli_set.contains("vulkan_image_depth"),
-        parsed.vulkan_image_depth,
+        !cli_set.contains("legacy_vulkan_image_depth"),
+        parsed.legacy_vulkan_image_depth,
     ) {
-        args.vulkan_image_depth = v;
+        args.legacy_vulkan_image_depth = v;
     }
     if let (true, Some(v)) = (
-        !cli_set.contains("vulkan_image_msaa"),
-        parsed.vulkan_image_msaa,
+        !cli_set.contains("legacy_vulkan_image_msaa"),
+        parsed.legacy_vulkan_image_msaa,
     ) {
-        args.vulkan_image_msaa = v;
+        args.legacy_vulkan_image_msaa = v;
     }
     if let (true, Some(v)) = (
-        !cli_set.contains("vulkan_minor_mixture_rate"),
-        parsed.vulkan_minor_mixture_rate,
+        !cli_set.contains("legacy_vulkan_minor_mixture_rate"),
+        parsed.legacy_vulkan_minor_mixture_rate,
     ) {
-        args.vulkan_minor_mixture_rate = v;
+        args.legacy_vulkan_minor_mixture_rate = v;
     }
     Ok(())
+}
+
+/// Print the machine-readable verdict as a greppable one-liner and optionally
+/// persist it to `--json-out`. The optimizer's output forwarding strips ANSI,
+/// so the `VERDICT_JSON:` prefix survives end-to-end.
+#[cfg(feature = "cuda")]
+fn emit_verdict(verdict: serde_json::Value, json_out: &Option<String>) {
+    println!("{}", stylize(&format!("VERDICT_JSON: {verdict}"), false));
+    if let Some(path) = json_out {
+        match serde_json::to_string_pretty(&verdict) {
+            Ok(pretty) => {
+                if let Err(err) = fs::write(path, pretty + "\n") {
+                    eprintln!(
+                        "{}",
+                        stylize(&format!("Failed to write --json-out: {err}"), true)
+                    );
+                }
+            }
+            Err(err) => {
+                eprintln!(
+                    "{}",
+                    stylize(&format!("Failed to serialize verdict JSON: {err}"), true)
+                );
+            }
+        }
+    }
 }
 
 #[cfg(feature = "cuda")]
@@ -991,6 +1213,31 @@ fn print_summary(results: &[StressResult], info: &DeviceInfo) {
                 );
             }
         }
+        let d = &r.detectors;
+        if d.ops_checked > 0 {
+            let bits = d.bit_summary();
+            println!(
+                "{}",
+                stylize(
+                    &format!(
+                        "{:12}      detectors: ops={} checked={} errors={} mismatch={} nonfinite={} events={}{}",
+                        "",
+                        d.ops_checked,
+                        d.elements_checked,
+                        d.total_errors,
+                        d.mismatches,
+                        d.nonfinite,
+                        d.fault_events,
+                        if bits.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" bits=[{bits}]")
+                        }
+                    ),
+                    false
+                )
+            );
+        }
     }
 
     println!("{}", "=".repeat(72));
@@ -1048,6 +1295,57 @@ pub fn run_from_args() {
             stylize(&format!("Invalid config file: {}", err), true)
         );
         std::process::exit(2);
+    }
+
+    // Ride-on-load verification settings: TOML [verify] fills the defaults,
+    // CLI flags override.
+    let mut verify_cfg = VerifyConfig::default();
+    if let Some(parsed) = file_config.as_ref()
+        && let Some(v) = &parsed.verify
+    {
+        if let Some(enabled) = v.enabled {
+            verify_cfg.enabled = enabled;
+        }
+        if let Some(self_test) = v.self_test {
+            verify_cfg.self_test = self_test;
+        }
+        if let Some(every) = v.memcpy_every {
+            verify_cfg.memcpy_every = every;
+        }
+        if let Some(every) = v.memset_every {
+            verify_cfg.memset_every = every;
+        }
+        if let Some(every) = v.gemm_every {
+            verify_cfg.gemm_every = every;
+        }
+        if let Some(samples) = v.gemm_samples {
+            verify_cfg.gemm_samples = samples;
+        }
+        if let Some(size) = v.full_check_max_size {
+            verify_cfg.full_check_max_size = size;
+        }
+        if let Some(c) = v.continue_on_error {
+            verify_cfg.continue_on_error = c;
+        }
+        if let Some(i) = v.resident_interval_s {
+            verify_cfg.resident_interval_s = i;
+        }
+        if let Some(samples) = v.intalu_samples {
+            verify_cfg.intalu_samples = samples;
+        }
+        if let Some(size) = v.int8_validate_size {
+            verify_cfg.int8_validate_size = size;
+        }
+    }
+    if args.no_verify {
+        verify_cfg.enabled = false;
+    }
+    if args.verify_continue_on_error {
+        verify_cfg.continue_on_error = true;
+    }
+    verify_cfg.resident_interval_s = args.verify_resident_interval;
+    if args.skip_self_test {
+        verify_cfg.self_test = false;
     }
 
     if args.list_gpus {
@@ -1126,11 +1424,19 @@ pub fn run_from_args() {
         );
     }
 
+    // Address-walk slab is opt-in (--verify-slab): lazy allocation keeps the
+    // default run's VRAM footprint lean; pattern rotation and the write
+    // density cadence run on dedicated buffers either way.
+    #[cfg(feature = "cuda")]
+    if args.verify_slab {
+        backend.enable_verify_slab(25);
+    };
+
     #[cfg(feature = "vulkan")]
     let cuda_device_identity = match backend.device_identity() {
         Ok(identity) => Some(identity),
         Err(err) => {
-            if args.enable_vulkan_stress {
+            if vulkan_stress_enabled(&args) {
                 eprintln!(
                     "{}",
                     stylize(
@@ -1151,14 +1457,7 @@ pub fn run_from_args() {
     if args.vulkan_only {
         #[cfg(feature = "vulkan")]
         {
-            let image_config = VulkanImageConfig {
-                width: args.vulkan_image_width,
-                height: args.vulkan_image_height,
-                depth: args.vulkan_image_depth,
-                image_count: args.vulkan_image_count,
-                msaa: args.vulkan_image_msaa,
-                minor_mixture_rate: args.vulkan_minor_mixture_rate,
-            };
+            let image_config = build_vulkan_image_config(&args);
             let selection = cuda_device_identity.map(|identity| VulkanDeviceSelection {
                 cuda_uuid: identity.uuid,
                 cuda_pci_bus: identity.pci_bus,
@@ -1229,6 +1528,54 @@ pub fn run_from_args() {
 
     let info = backend.device_info();
     print_device_info(&info);
+
+    // Detector injection self-test (HYDRA heritage): prove the detection
+    // pipeline catches exactly one known injected error before trusting a
+    // green run. A broken detector's all-green is worse than no detector.
+    let self_test = if verify_cfg.enabled && verify_cfg.self_test {
+        backend.run_verify_self_test()
+    } else {
+        None
+    };
+    if let Some(report) = &self_test {
+        for check in &report.checks {
+            println!(
+                "{}",
+                stylize(
+                    &format!(
+                        "[self-test] {}: {} ({})",
+                        check.name,
+                        if check.passed { "OK" } else { "FAIL" },
+                        check.detail
+                    ),
+                    !check.passed
+                )
+            );
+        }
+        if !report.passed {
+            eprintln!(
+                "{}",
+                stylize(
+                    "[FATAL] verify self-test FAILED — the error-detection pipeline is not \
+                     trustworthy; aborting (use --skip-self-test to bypass)",
+                    true
+                )
+            );
+            let verdict = serde_json::json!({
+                "stressor": "cli-stressor-cuda-rs",
+                "result": "fail",
+                "classification": "self_test_failed",
+                "device": info.name,
+                "duration_s": args.duration,
+                "self_test": self_test,
+                "precisions": [],
+                "coverage": 0.0,
+                "confidence_pct": 0,
+            });
+            emit_verdict(verdict, &args.json_out);
+            std::process::exit(1);
+        }
+    }
 
     let precisions = match parse_precision_list(&args.precisions) {
         Ok(values) => values,
@@ -1496,23 +1843,35 @@ pub fn run_from_args() {
             stream_mode.stream_count()
         ))
     );
-    if args.enable_vulkan_stress || args.vulkan_only {
+    if args.vulkan {
         println!(
             "{}",
             stylize_config(&format!(
-                "  Vulkan image: {}x{}x{} x{} ({}x MSAA)",
-                args.vulkan_image_width,
-                args.vulkan_image_height,
-                args.vulkan_image_depth,
-                args.vulkan_image_count,
-                args.vulkan_image_msaa,
+                "  Vulkan render: {}x{}, {} shells, {} iters/px, {}x MSAA, {}",
+                args.vulkan_width,
+                args.vulkan_height,
+                args.vulkan_shells,
+                args.vulkan_iters,
+                args.vulkan_msaa,
+                if args.vulkan_window {
+                    "windowed"
+                } else {
+                    "offscreen"
+                },
             ))
         );
+    }
+    if args.legacy_vulkan || args.vulkan_only {
         println!(
             "{}",
             stylize_config(&format!(
-                "  Vulkan minor mixture rate: {:.2}",
-                args.vulkan_minor_mixture_rate
+                "  Legacy Vulkan image: {}x{}x{} x{} ({}x MSAA, minor {:.2})",
+                args.legacy_vulkan_image_width,
+                args.legacy_vulkan_image_height,
+                args.legacy_vulkan_image_depth,
+                args.legacy_vulkan_image_count,
+                args.legacy_vulkan_image_msaa,
+                args.legacy_vulkan_minor_mixture_rate,
             ))
         );
     }
@@ -1523,17 +1882,10 @@ pub fn run_from_args() {
 
     #[cfg(feature = "vulkan")]
     {
-        if args.enable_vulkan_stress
+        if vulkan_stress_enabled(&args)
             && let Some(identity) = cuda_device_identity
         {
-            let image_config = VulkanImageConfig {
-                width: args.vulkan_image_width,
-                height: args.vulkan_image_height,
-                depth: args.vulkan_image_depth,
-                image_count: args.vulkan_image_count,
-                msaa: args.vulkan_image_msaa,
-                minor_mixture_rate: args.vulkan_minor_mixture_rate,
-            };
+            let image_config = build_vulkan_image_config(&args);
             let selection = VulkanDeviceSelection {
                 cuda_uuid: identity.uuid,
                 cuda_pci_bus: identity.pci_bus,
@@ -1578,6 +1930,7 @@ pub fn run_from_args() {
             kernel_mixture: &kernel_mixture,
             stream_mode,
             kernel_param_overrides: &kernel_param_overrides,
+            verify: verify_cfg,
         },
         vulkan_abort,
     );
@@ -1615,6 +1968,68 @@ pub fn run_from_args() {
         overall_passed = false;
     }
 
+    // Machine-readable verdict (P0#4): one stdout line + optional --json-out.
+    let verify_totals: cli_stressor_cuda_rs::DetectorStats = {
+        let mut totals = cli_stressor_cuda_rs::DetectorStats::default();
+        for r in &results {
+            totals.merge(&r.detectors);
+        }
+        totals
+    };
+    let validation_failures: u64 = results.iter().map(|r| r.validation_failures as u64).sum();
+    let detector_errors: u64 =
+        verify_totals.total_errors + verify_totals.mismatches + verify_totals.nonfinite;
+    let runtime_errors: u64 = results
+        .iter()
+        .filter(|r| {
+            r.supported
+                && r.first_error
+                    .as_deref()
+                    .is_some_and(|e| e.starts_with("runtime error"))
+        })
+        .count() as u64;
+    let self_ok = self_test.as_ref().map(|s| s.passed).unwrap_or(true);
+    let class = classify(
+        self_ok,
+        validation_failures,
+        detector_errors,
+        runtime_errors,
+    );
+    let elements_produced: u64 = results.iter().map(|r| r.elements_produced).sum();
+    let coverage = if elements_produced > 0 {
+        (verify_totals.elements_checked as f64 / elements_produced as f64).min(1.0)
+    } else {
+        0.0
+    };
+    // Initial confidence formula: errors are hard-fails anyway, so the number
+    // communicates how much of the produced workload the detectors observed.
+    let confidence_pct = (100.0 * coverage * (1.0 - (detector_errors as f64).min(1.0))) as u32;
+    let verdict = serde_json::json!({
+        "stressor": "cli-stressor-cuda-rs",
+        "result": if class == VerdictClass::None && overall_passed { "pass" } else { "fail" },
+        "classification": class.as_str(),
+        "device": info.name,
+        "duration_s": args.duration,
+        "self_test": self_test,
+        "precisions": results,
+        "coverage": (coverage * 10000.0).round() / 10000.0,
+        "confidence_pct": confidence_pct,
+        "verify_config": {
+            "enabled": verify_cfg.enabled,
+            "self_test": verify_cfg.self_test,
+            "memcpy_every": verify_cfg.memcpy_every,
+            "memset_every": verify_cfg.memset_every,
+            "gemm_every": verify_cfg.gemm_every,
+            "gemm_samples": verify_cfg.gemm_samples,
+            "gemm_full_check_max_size": verify_cfg.full_check_max_size,
+            "continue_on_error": verify_cfg.continue_on_error,
+            "resident_interval_s": verify_cfg.resident_interval_s,
+            "intalu_samples": verify_cfg.intalu_samples,
+            "int8_validate_size": verify_cfg.int8_validate_size,
+        },
+    });
+    emit_verdict(verdict, &args.json_out);
+
     if !overall_passed {
         std::process::exit(1);
     }
@@ -1623,20 +2038,13 @@ pub fn run_from_args() {
 #[cfg(all(not(feature = "cuda"), feature = "vulkan"))]
 pub fn run_from_args() {
     let args = Args::parse();
-    if args.vulkan_only || args.enable_vulkan_stress {
-        let image_config = VulkanImageConfig {
-            width: args.vulkan_image_width,
-            height: args.vulkan_image_height,
-            depth: args.vulkan_image_depth,
-            image_count: args.vulkan_image_count,
-            msaa: args.vulkan_image_msaa,
-            minor_mixture_rate: args.vulkan_minor_mixture_rate,
-        };
+    if vulkan_stress_enabled(&args) || args.vulkan_only {
+        let image_config = build_vulkan_image_config(&args);
         std::process::exit(run_vulkan_for_duration(args.duration, image_config));
     }
 
     eprintln!(
-        "CUDA support is disabled. Use --vulkan-only (or --enable-vulkan-stress) when building with --features vulkan, or rebuild with --features cuda."
+        "CUDA support is disabled. Use --vulkan-only / --vulkan / --legacy-vulkan when building with --features vulkan, or rebuild with --features cuda."
     );
     std::process::exit(1);
 }

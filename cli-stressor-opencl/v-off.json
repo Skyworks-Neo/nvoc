@@ -1,0 +1,44 @@
+{
+  "stressor": "cli-stressor-opencl",
+  "result": "pass",
+  "classification": "none",
+  "platform": "NVIDIA CUDA",
+  "device": "NVIDIA GeForce GTX 1070",
+  "duration_s": 3.0,
+  "self_test": null,
+  "precisions": [
+    {
+      "precision": "FP32",
+      "supported": true,
+      "iterations": 3372,
+      "total_flops": 453289967616,
+      "elapsed_s": 3.1203334000001632,
+      "compute_s": 0.708131899988075,
+      "tflops": 0.640120813119185,
+      "validations": 18,
+      "validation_failures": 0,
+      "max_abs_error": 0.00026702880859375,
+      "max_rel_error": 12.232361793518066,
+      "first_error": null,
+      "first_error_at_s": null,
+      "detectors": {
+        "ops_checked": 0,
+        "elements_checked": 0,
+        "total_errors": 0,
+        "mismatches": 0,
+        "nonfinite": 0,
+        "first_error": null
+      },
+      "elements_produced": 3674112
+    }
+  ],
+  "coverage": 0.0,
+  "confidence_pct": 0,
+  "verify_config": {
+    "enabled": false,
+    "self_test": true,
+    "gemm_every": 4,
+    "gemm_samples": 512,
+    "pattern_mib": 64
+  }
+}

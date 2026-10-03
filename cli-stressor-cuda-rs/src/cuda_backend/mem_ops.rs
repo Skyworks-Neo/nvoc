@@ -1,5 +1,9 @@
 //! Memory-bandwidth and element-wise stress paths (memcpy / memset / sgeam /
 //! reduction), all driven through cuBLAS or the driver memory primitives.
+//!
+//! The copy/fill buffers are pattern-seeded device-side and verified in-stream
+//! by the ride-on-load detectors: the checked bytes are the bytes the stress
+//! op is hammering, so verification adds bandwidth load instead of replacing it.
 
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
@@ -9,21 +13,23 @@ use cudarc::cublas::{Asum, AsumConfig, sys as cublas_sys};
 use cudarc::driver::{DevicePtr, DevicePtrMut, PushKernelArg};
 
 use cli_stressor_cuda_rs::{
-    BackendError, PrecisionKind, PrecisionSpec, RNG_TILE_BYTES, StreamMode, fill_random_bytes,
-    make_random_host_matrix,
+    BackendError, PrecisionKind, PrecisionSpec, StreamMode, VerifyConfig, make_random_host_matrix,
 };
 
 use super::backend::CudaBackend;
+use super::verify_kernels::lane_seed;
 
 impl CudaBackend {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn run_memcpy_path(
-        &self,
+        &mut self,
         spec: &PrecisionSpec,
         size: usize,
         warmup_iters: u32,
         burst_iters: u32,
         seed: u64,
         stream_mode: StreamMode,
+        verify: VerifyConfig,
     ) -> Result<f64, BackendError> {
         let elem_size = match spec.kind {
             PrecisionKind::BF16 | PrecisionKind::FP16 => 2usize,
@@ -34,22 +40,30 @@ impl CudaBackend {
             PrecisionKind::INT16 => 2usize,
             PrecisionKind::INT32 => 4usize,
         };
+        // Word-rounded so the pattern compare can run over whole u32 words.
         let bytes = size * size * elem_size;
+        let words = bytes.div_ceil(4);
         let lane_count = Self::lane_count(stream_mode);
         let mut srcs = Vec::with_capacity(lane_count);
         let mut dsts = Vec::with_capacity(lane_count);
-        if self.gpu_generate_enabled() {
-            // Device-side generation: no host RNG, no H2D copy. Content is
-            // kernel-generated splitmix data; memcpy never inspects it.
+        // Buffers are u32 words: the ride-on-load detectors compare whole words.
+        // Content generation is only a convenience here (memcpy never inspects
+        // the source), and the detectors overwrite `src` below with their own
+        // deterministic pattern whenever verification is active.
+        let verify_fill = self.verify.is_some() && verify.enabled;
+        if self.gpu_generate_enabled() && !verify_fill {
+            // Device-side generation: no host RNG, no H2D copy. The fill runs
+            // over the buffer's full byte span (words * 4).
             let kernels = self
                 .gpu_fill
                 .as_ref()
                 .ok_or_else(|| BackendError::Other("gpu fill kernels unavailable".into()))?;
-            let n = bytes as u64;
+            let span_bytes = words * 4;
+            let n = span_bytes as u64;
             for lane in 0..lane_count {
                 let stream = self.stream_for_lane(lane);
                 let src = stream
-                    .alloc_zeros::<u8>(bytes)
+                    .alloc_zeros::<u32>(words)
                     .map_err(|err| BackendError::Other(err.to_string()))?;
                 unsafe {
                     stream
@@ -58,50 +72,42 @@ impl CudaBackend {
                         .arg(&n)
                         .arg(&(seed.wrapping_add(lane as u64)))
                         .launch(cudarc::driver::LaunchConfig::for_num_elems(
-                            bytes.min(u32::MAX as usize) as u32,
+                            span_bytes.min(u32::MAX as usize) as u32,
                         ))
                         .map_err(|err| BackendError::Other(err.to_string()))?;
                 }
                 srcs.push(src);
                 dsts.push(
                     stream
-                        .alloc_zeros::<u8>(bytes)
+                        .alloc_zeros::<u32>(words)
                         .map_err(|err| BackendError::Other(err.to_string()))?,
                 );
             }
         } else {
-            // Host path, tile + device-side repeat: only RNG_TILE_BYTES cross
-            // PCIe (pageable staging cost scales with bytes); the bulk fill
-            // runs D2D on the copy engine at VRAM bandwidth. The tile is
-            // shared by all lanes — memcpy never inspects the source.
-            let tile_len = RNG_TILE_BYTES.min(bytes);
-            let mut tile = vec![0u8; tile_len];
-            fill_random_bytes(&mut tile, seed);
+            // Zero-seeded words. When verification is active the detectors fill
+            // `src` with their deterministic pattern below; otherwise the
+            // (irrelevant to a copy) content simply stays zero.
             for lane in 0..lane_count {
                 let stream = self.stream_for_lane(lane);
-                let tile_dev = stream
-                    .clone_htod(&tile)
-                    .map_err(|err| BackendError::Other(err.to_string()))?;
-                let mut src = stream
-                    .alloc_zeros::<u8>(bytes)
-                    .map_err(|err| BackendError::Other(err.to_string()))?;
-                let mut offset = 0;
-                while offset < bytes {
-                    let len = tile_len.min(bytes - offset);
+                srcs.push(
                     stream
-                        .memcpy_dtod(
-                            &tile_dev.slice(0..len),
-                            &mut src.slice_mut(offset..offset + len),
-                        )
-                        .map_err(|err| BackendError::Other(err.to_string()))?;
-                    offset += len;
-                }
-                srcs.push(src);
-                dsts.push(
-                    stream
-                        .alloc_zeros::<u8>(bytes)
+                        .alloc_zeros::<u32>(words)
                         .map_err(|err| BackendError::Other(err.to_string()))?,
                 );
+                dsts.push(
+                    stream
+                        .alloc_zeros::<u32>(words)
+                        .map_err(|err| BackendError::Other(err.to_string()))?,
+                );
+            }
+        }
+        // Deterministic device-side pattern instead of host random bytes:
+        // same pseudo-random traffic, no host generation or H2D in setup.
+        if let Some(engine) = &self.verify
+            && verify.enabled
+        {
+            for (lane, src) in srcs.iter().enumerate() {
+                engine.fill(self.stream_for_lane(lane), src, lane_seed(seed, lane))?;
             }
         }
         for _ in 0..warmup_iters {
@@ -127,21 +133,57 @@ impl CudaBackend {
                     .map_err(|err| BackendError::Other(err.to_string()))?;
             }
         }
-        for lane in 0..lane_count {
-            self.stream_for_lane(lane)
-                .synchronize()
-                .map_err(|err| BackendError::Other(err.to_string()))?;
+        // Verify the actual stress buffers (dst) against the same oracle. The
+        // full read of dst rides the same streams; errors surface on the next
+        // dispatch-loop drain.
+        let streams: Vec<_> = (0..lane_count)
+            .map(|l| self.stream_for_lane(l).clone())
+            .collect();
+        if verify.enabled
+            && verify.due(verify.memcpy_every, seed)
+            && let Some(engine) = self.verify.as_mut()
+        {
+            for (lane, stream) in streams.iter().enumerate() {
+                engine.reset_lane_report(stream, lane)?;
+            }
+            let mut expected_done = Vec::with_capacity(streams.len());
+            for (lane, stream) in streams.iter().enumerate() {
+                expected_done.push(engine.compare(
+                    stream,
+                    &dsts[lane],
+                    lane_seed(seed, lane),
+                    lane,
+                )?);
+            }
+            for stream in &streams {
+                stream
+                    .synchronize()
+                    .map_err(|err| BackendError::Other(err.to_string()))?;
+            }
+            for (lane, stream) in streams.iter().enumerate() {
+                let report = engine.lane_report(stream, lane)?;
+                engine.absorb(&report, words as u64, expected_done[lane], "memcpy verify");
+            }
+        } else {
+            for lane in 0..lane_count {
+                self.stream_for_lane(lane)
+                    .synchronize()
+                    .map_err(|err| BackendError::Other(err.to_string()))?;
+            }
         }
         Ok(op_start.elapsed().as_secs_f64())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn run_memset_path(
-        &self,
+        &mut self,
         spec: &PrecisionSpec,
         size: usize,
         warmup_iters: u32,
         burst_iters: u32,
+        seed: u64,
         stream_mode: StreamMode,
+        verify: VerifyConfig,
     ) -> Result<f64, BackendError> {
         let elem_size = match spec.kind {
             PrecisionKind::BF16 | PrecisionKind::FP16 => 2usize,
@@ -153,21 +195,52 @@ impl CudaBackend {
             PrecisionKind::INT32 => 4usize,
         };
         let bytes = size * size * elem_size;
+        let words = bytes.div_ceil(4);
         let lane_count = Self::lane_count(stream_mode);
-        let mut bufs = Vec::with_capacity(lane_count);
-        for lane in 0..lane_count {
-            let stream = self.stream_for_lane(lane);
-            bufs.push(
-                stream
-                    .alloc_zeros::<u8>(bytes)
-                    .map_err(|err| BackendError::Other(err.to_string()))?,
-            );
+        // Address-walk windows: when the slab is active, each lane works on
+        // its own sliding view (different physical pages every op) instead
+        // of a dedicated buffer parked on the same pages forever.
+        let mut slab_windows: Vec<Option<(usize, usize)>> = Vec::with_capacity(lane_count);
+        let mut bufs: Vec<Option<cudarc::driver::CudaSlice<u32>>> = Vec::with_capacity(lane_count);
+        if let Some(engine) = &self.verify {
+            for _ in 0..lane_count {
+                slab_windows.push(engine.take_slab_window(words));
+                bufs.push(None);
+            }
         }
+        for lane in 0..lane_count {
+            if slab_windows[lane].is_none() {
+                let stream = self.stream_for_lane(lane);
+                bufs[lane] = Some(
+                    stream
+                        .alloc_zeros::<u32>(words)
+                        .map_err(|err| BackendError::Other(err.to_string()))?,
+                );
+            }
+        }
+        let streams: Vec<_> = (0..lane_count)
+            .map(|l| self.stream_for_lane(l).clone())
+            .collect();
         for _ in 0..warmup_iters {
-            for (lane, buf) in bufs.iter_mut().enumerate().take(lane_count) {
-                self.stream_for_lane(lane)
-                    .memset_zeros(buf)
-                    .map_err(|err| BackendError::Other(err.to_string()))?;
+            for (lane, stream) in streams.iter().enumerate() {
+                match bufs[lane].as_mut() {
+                    Some(buf) => {
+                        stream
+                            .memset_zeros(buf)
+                            .map_err(|err| BackendError::Other(err.to_string()))?;
+                    }
+                    None => {
+                        if let (Some(engine), Some((off, w))) =
+                            (self.verify.as_ref(), slab_windows[lane])
+                        {
+                            engine.with_slab_window_mut(off, w, |view| {
+                                stream
+                                    .memset_zeros(view)
+                                    .map_err(|err| BackendError::Other(err.to_string()))
+                            })?;
+                        }
+                    }
+                }
             }
         }
         for lane in 0..lane_count {
@@ -176,18 +249,126 @@ impl CudaBackend {
                 .map_err(|err| BackendError::Other(err.to_string()))?;
         }
 
-        let op_start = Instant::now();
-        for _ in 0..burst_iters {
-            for (lane, buf) in bufs.iter_mut().enumerate().take(lane_count) {
-                self.stream_for_lane(lane)
-                    .memset_zeros(buf)
-                    .map_err(|err| BackendError::Other(err.to_string()))?;
+        // Every Nth burst iteration is replaced by pattern fill + compare on
+        // the same buffer (write + read = the same bandwidth class of load);
+        // the remaining iterations stay pure memset.
+        let verify_on = self.verify.is_some() && verify.enabled && verify.memset_every > 0;
+        if let (true, Some(engine)) = (verify_on, self.verify.as_mut()) {
+            for (lane, stream) in streams.iter().enumerate() {
+                engine.reset_lane_report(stream, lane)?;
             }
         }
-        for lane in 0..lane_count {
-            self.stream_for_lane(lane)
+        let mut expected_done = vec![0u32; lane_count];
+        let op_start = Instant::now();
+        for iter in 0..burst_iters {
+            let verify_iter = verify_on
+                && (iter as u64) % verify.memset_every as u64 == verify.memset_every as u64 - 1;
+            if verify_iter {
+                let engine = self.verify.as_ref().expect("verify_on implies engine");
+                // Pattern rotation (TM5-style): hash -> all-ones -> zeros ->
+                // checkerboard, cycling. Different patterns exercise different
+                // write-disturb directions (all error captures so far are 1->0).
+                let pattern_mode = ((iter as u64 / verify.memset_every as u64) % 4) as u32;
+                for lane in 0..lane_count {
+                    match bufs[lane].as_mut() {
+                        Some(buf) => {
+                            use cudarc::driver::{DevicePtr, DevicePtrMut};
+                            let stream_ref = &streams[lane];
+                            let (dst_ptr, _) = buf.device_ptr_mut(stream_ref);
+                            engine.fill_mode(
+                                &streams[lane],
+                                dst_ptr,
+                                words as u64,
+                                lane_seed(seed, lane),
+                                pattern_mode,
+                            )?;
+                            let (src_ptr, _) = buf.device_ptr(stream_ref);
+                            expected_done[lane] += engine.compare_mode(
+                                &streams[lane],
+                                src_ptr,
+                                words as u64,
+                                lane_seed(seed, lane),
+                                pattern_mode,
+                                lane,
+                            )?;
+                        }
+                        None => {
+                            if let (Some((off, w)), true) =
+                                (slab_windows[lane], engine.slab_active())
+                            {
+                                let stream_ref = &streams[lane];
+                                let mut fill_res = Ok(());
+                                engine.with_slab_window_mut(off, w, |view| {
+                                    use cudarc::driver::DevicePtrMut;
+                                    let (dst_ptr, _) = view.device_ptr_mut(stream_ref);
+                                    fill_res = engine.fill_mode(
+                                        &streams[lane],
+                                        dst_ptr,
+                                        words as u64,
+                                        lane_seed(seed, lane),
+                                        pattern_mode,
+                                    );
+                                });
+                                fill_res?;
+                                engine.with_slab_window(off, w, |view| {
+                                    use cudarc::driver::DevicePtr;
+                                    let (src_ptr, _) = view.device_ptr(stream_ref);
+                                    expected_done[lane] += engine
+                                        .compare_mode(
+                                            &streams[lane],
+                                            src_ptr,
+                                            words as u64,
+                                            lane_seed(seed, lane),
+                                            pattern_mode,
+                                            lane,
+                                        )
+                                        .map_err(|err| BackendError::Other(err.to_string()))?;
+                                    Ok::<(), BackendError>(())
+                                })?;
+                            }
+                        }
+                    }
+                }
+            } else {
+                for (lane, buf) in bufs.iter_mut().enumerate().take(lane_count) {
+                    match buf {
+                        Some(buf) => {
+                            streams[lane]
+                                .memset_zeros(buf)
+                                .map_err(|err| BackendError::Other(err.to_string()))?;
+                        }
+                        None => {
+                            if let (Some(engine), Some((off, w))) =
+                                (self.verify.as_ref(), slab_windows[lane])
+                            {
+                                let stream_ref = &streams[lane];
+                                engine.with_slab_window_mut(off, w, |view| {
+                                    use cudarc::driver::DevicePtrMut;
+                                    let (dst_ptr, _) = view.device_ptr_mut(stream_ref);
+                                    engine.fill_mode(
+                                        &streams[lane],
+                                        dst_ptr,
+                                        words as u64,
+                                        lane_seed(seed, lane),
+                                        2,
+                                    )
+                                })?;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for stream in &streams {
+            stream
                 .synchronize()
                 .map_err(|err| BackendError::Other(err.to_string()))?;
+        }
+        if let (true, Some(engine)) = (verify_on, self.verify.as_ref()) {
+            for lane in 0..lane_count {
+                let report = engine.lane_report(&streams[lane], lane)?;
+                engine.absorb(&report, words as u64, expected_done[lane], "memset verify");
+            }
         }
         Ok(op_start.elapsed().as_secs_f64())
     }
