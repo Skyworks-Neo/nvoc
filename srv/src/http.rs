@@ -549,6 +549,7 @@ fn handle_request(
             let help = "nvoc-srv control plane\n\
                         GET  /status   — per-GPU temps, fan duty, PID terms, failsafe state\n\
                         GET  /config   — effective runtime configuration\n\
+                        GET  /version  — build identity (version + git hash)\n\
                         POST /pid?target_c=&kp=&ki=&kd=&base_percent=&min_percent=&max_percent=&emergency_delta_c=&idle_delta_c=&temp_guard_c=&min_mhz=&max_mhz=&interval_ms=&sensor=\n\
                         POST /mode?value=auto|pid|manual\n\
                         POST /loop?value=fan_temp|freq_temp|freq_power\n\
@@ -597,6 +598,15 @@ fn handle_request(
         "/config" => {
             let cfg = lock(config);
             json_response(request, &*cfg);
+        }
+        // Build identity for the deployed service (GET is same-origin safe).
+        "/version" => {
+            respond(
+                request,
+                Response::from_string(crate::build_info::version_json())
+                    .with_status_code(200)
+                    .with_header(json_content_type()),
+            );
         }
         "/pid" => {
             if !is_mutation_request(&request) {
