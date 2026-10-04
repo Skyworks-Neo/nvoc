@@ -30,6 +30,7 @@ PYPROJECTS = [
     "tui/pyproject.toml",
     "nvoc-python/pyproject.toml",
     "cli-stressor-opencl/pyproject.toml",
+    "srv-client-py/pyproject.toml",
 ]
 
 # SemVer pre-release -> PEP 440. Extend only when a new pre-release kind is used.

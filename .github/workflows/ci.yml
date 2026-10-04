@@ -85,6 +85,7 @@ jobs:
       srv: ${{ steps.filter.outputs.srv }}
       tui: ${{ steps.filter.outputs.tui }}
       gui: ${{ steps.filter.outputs.gui }}
+      srv_client: ${{ steps.filter.outputs.srv_client }}
       stressor_cuda_rs: ${{ steps.filter.outputs.stressor_cuda_rs }}
       stressor_opencl: ${{ steps.filter.outputs.stressor_opencl }}
     steps:
@@ -126,6 +127,8 @@ jobs:
               - 'tui/**'
             gui:
               - 'gui/**'
+            srv_client:
+              - 'srv-client-py/**'
             stressor_cuda_rs:
               - 'cli-stressor-cuda-rs/**'
             stressor_opencl:
@@ -293,7 +296,8 @@ jobs:
       needs.changes.outputs.rust_base == 'true' ||
       needs.changes.outputs.nvoc_core == 'true' ||
       needs.changes.outputs.nvoc_python == 'true' ||
-      needs.changes.outputs.tui == 'true'
+      needs.changes.outputs.tui == 'true' ||
+      needs.changes.outputs.srv_client == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -342,7 +346,8 @@ jobs:
       needs.changes.outputs.rust_base == 'true' ||
       needs.changes.outputs.nvoc_core == 'true' ||
       needs.changes.outputs.nvoc_python == 'true' ||
-      needs.changes.outputs.gui == 'true'
+      needs.changes.outputs.gui == 'true' ||
+      needs.changes.outputs.srv_client == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -378,6 +383,43 @@ jobs:
           ruff check gui/
       - name: non-GPU unit tests
         run: uv run --locked --package nvoc-gui --group dev --no-config pytest -q gui/tests/
+
+  python-srv-client:
+    name: srv-client (sync + tests)
+    needs: changes
+    if: >-
+      needs.changes.outputs.ci_config == 'true' ||
+      needs.changes.outputs.python_base == 'true' ||
+      needs.changes.outputs.srv_client == 'true' ||
+      needs.changes.outputs.tui == 'true' ||
+      needs.changes.outputs.gui == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10.2.0
+        with:
+          version: "0.11.19"
+          enable-cache: "true"
+          cache-dependency-glob: uv.lock
+          cache-suffix: srv-client-py3.12
+      - name: Install deps
+        shell: bash
+        run: |
+          uv sync --locked --package nvoc-srv-client --group dev --no-config || (
+            echo "uv.lock was stale; refreshing lockfile for CI dependency updates"
+            uv lock --no-config
+            uv sync --locked --package nvoc-srv-client --group dev --no-config
+          )
+      - name: byte-compile
+        run: uv run --locked --package nvoc-srv-client --group dev --no-config python -m compileall -q srv-client-py/
+      - name: non-GPU unit tests
+        run: uv run --locked --package nvoc-srv-client --group dev --no-config pytest -q srv-client-py/tests/
 
   python-stressor-opencl:
     name: stressor compile (cli-stressor-opencl)

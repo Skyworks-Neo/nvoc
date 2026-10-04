@@ -16,7 +16,8 @@ from __future__ import annotations
 from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Container
+from textual.containers import Container, Horizontal, Vertical
+from textual.screen import Screen
 from textual.widgets import (
     Button,
     Checkbox,
@@ -34,6 +35,7 @@ from .controllers.overclock import OverclockController
 from .controllers.vfcurve import VFCurveController
 from .models import AppConfig, GpuCache, GpuDescriptor, repo_root
 from .native import ActionCallback, NativeService, apply_native_paths
+from . import srv as srv_plane
 from .panes.console import compose_console
 from .panes.dashboard import compose_dashboard
 from .panes.header import compose_header
@@ -60,6 +62,34 @@ def _is_offline_error(output: str) -> bool:
         or "novidevicefound" in lowered
         or "gpu is lost" in lowered
     )
+
+
+class SrvLoginScreen(Screen):
+    """Modal prompt for the OS account the resident srv verifies.
+
+    Mirrors the browser's native Basic-auth dialog the web console relies on.
+    Dismisses with ``(username, password)`` or ``None`` on cancel.
+    """
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="srv-login"):
+            yield Label(
+                "The resident nvoc-srv requires administrator credentials\n"
+                "(the same account the web console asks for)."
+            )
+            yield Input(placeholder="user", id="srv-user")
+            yield Input(placeholder="password", password=True, id="srv-pass")
+            with Horizontal():
+                yield Button("OK", variant="primary", id="srv-ok")
+                yield Button("Cancel", id="srv-cancel")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "srv-ok":
+            user = self.query_one("#srv-user", Input).value.strip()
+            password = self.query_one("#srv-pass", Input).value
+            self.dismiss((user, password) if user else None)
+        else:
+            self.dismiss(None)
 
 
 class NVOCApp(App[None]):
@@ -164,6 +194,40 @@ class NVOCApp(App[None]):
             self.config_data.dashboard.refresh_interval
         )
         self.vfcurve_controller.set_poll_timer(self.config_data.vfcurve.auto_refresh)
+        self._connect_srv()
+
+    def _connect_srv(self) -> None:
+        """Attach to a resident srv as a consumer, or stay native.
+
+        If the srv demands credentials, prompt once via :class:`SrvLoginScreen`.
+        """
+        try:
+            state = srv_plane.probe()
+        except Exception:  # noqa: BLE001 - never block startup on srv
+            state = None
+        if state in ("ready", "starting"):
+            self._attach_srv()
+        elif state == "auth_required":
+            self.push_screen(SrvLoginScreen(), self._on_srv_credentials)
+
+    def _on_srv_credentials(self, creds) -> None:
+        if creds:
+            self._attach_srv(creds[0], creds[1])
+
+    def _attach_srv(
+        self, username: str | None = None, password: str | None = None
+    ) -> None:
+        control = srv_plane.attach(username=username, password=password)
+        if control is None:
+            self.write_log("No resident nvoc-srv; driving the GPU directly.")
+            return
+        self.native_service.srv = control
+        self.write_log(
+            f"Attached to resident nvoc-srv as a consumer (session {control.id})."
+        )
+
+    def on_unmount(self) -> None:
+        self.native_service.close_srv()
 
     def save_config(self) -> None:
         self.config_store.data = self.config_data

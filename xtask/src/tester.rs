@@ -43,6 +43,11 @@ fn safe() -> Res<()> {
     ))?;
     util::run(&mut util::uv_run(
         &root,
+        "nvoc-srv-client",
+        &["pytest", "-q", "srv-client-py/tests/"],
+    ))?;
+    util::run(&mut util::uv_run(
+        &root,
         "pynvoc",
         &["pytest", "-q", "nvoc-python/tests/"],
     ))

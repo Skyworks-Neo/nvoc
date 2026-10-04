@@ -7,6 +7,7 @@ requires-python = ">=3.11"
 license = { file = "LICENSE" }
 dependencies = [
     "pynvoc",
+    "nvoc-srv-client",
     "plotext>=5.3.2",
     "textual>=8.2.8",
     "textual-plotext>=1.0.1",
@@ -28,6 +29,7 @@ package = true
 
 [tool.uv.sources]
 pynvoc = { workspace = true }
+nvoc-srv-client = { workspace = true }
 
 [tool.setuptools.packages.find]
 include = ["nvoc_tui*"]

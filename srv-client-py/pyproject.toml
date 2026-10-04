@@ -1,0 +1,23 @@
+[project]
+name = "nvoc-srv-client"
+version = "0.3.0a1"
+description = "Client for the resident nvoc-srv control plane"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest>=8.3.0"]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["nvoc_srv_client*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.uv]
+package = true

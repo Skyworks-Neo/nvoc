@@ -2107,10 +2107,33 @@ class OverclockController(PaneController):
     ) -> str:
         if reset:
             native.set_fan(gpu, backend, fan_id, "auto", 0)
+            self._release_control()
             return "Successfully reset fan control."
         else:
             native.set_fan(gpu, backend, fan_id, policy, level)
+            # Arbitrated control: a manual duty is a manual-percent claim on the
+            # srv loop; any other policy (curve/auto) is driver-side, so yield
+            # the band back entirely rather than pinning it at auto.
+            if policy == "manual":
+                self._claim_control("manual", manual_percent=int(level))
+            else:
+                self._release_control()
             return f"Successfully applied fan {fan_id} {policy} level {level}%."
+
+    def _claim_control(self, mode: str, **kwargs) -> None:
+        """Route an arbitrated control op to the srv consumer session if one is
+        attached; a no-op otherwise (direct-pynvoc path)."""
+        service = getattr(self.app, "native_service", None)
+        claim = getattr(service, "claim_control", None)
+        if callable(claim):
+            claim(mode, **kwargs)
+
+    def _release_control(self) -> None:
+        """Yield the srv control band (hand fan control back to the driver)."""
+        service = getattr(self.app, "native_service", None)
+        release = getattr(service, "release_control", None)
+        if callable(release):
+            release()
 
     def handle_button(self, button_id: str) -> bool:
         # MHz/mV unit toggles (one per offset row — GUI V/F Offsets parity).
