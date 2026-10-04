@@ -3,7 +3,8 @@ members = [
     "gui",
     "tui",
     "cli-stressor-opencl",
-    "nvoc-python"
+    "nvoc-python",
+    "srv-client-py"
 ]
 
 [[tool.uv.index]]

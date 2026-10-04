@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 from PIL import Image
 
 from src.backend import NativeBackend, apply_native_paths
+from src.backend import srv as srv_backend
 from src.cli_runner import CLIRunner
 from src.config import Config
 from src.parsing import (
@@ -450,7 +451,16 @@ class App(ctk.CTk):
             override=False,
             warn=lambda message: self.console.append(f"[GUI] {message}\n"),
         )
-        self.backend = NativeBackend(self)
+        # Prefer the resident srv control plane when one is running: register as
+        # a consumer so the human journey is arbitrated like every other client.
+        # Absent srv (or any probe/auth failure) falls back to the direct native
+        # backend unchanged.
+        try:
+            backend = srv_backend.connect(self, self._ask_srv_credentials)
+        except Exception as exc:  # noqa: BLE001 - never block startup on srv
+            self.console.append(f"[GUI] srv backend unavailable: {exc}\n")
+            backend = None
+        self.backend = backend if backend is not None else NativeBackend(self)
 
         # Guard to suppress _on_gpu_changed during programmatic gpu_var.set() calls
         self._programmatic_gpu_set: bool = False
@@ -2222,6 +2232,67 @@ class App(ctk.CTk):
             return
 
         self._do_shutdown()
+
+    def _ask_srv_credentials(self) -> Optional[Tuple[str, str]]:
+        """Prompt once for the OS account the resident srv will verify.
+
+        Mirrors the browser's native Basic-auth dialog the web console relies
+        on. Returns ``(username, password)`` or ``None`` if the user cancels
+        (in which case srv is skipped and the native backend is used).
+        """
+        import tkinter as tk
+
+        result: dict[str, Optional[Tuple[str, str]]] = {"creds": None}
+        win = tk.Toplevel(self)
+        win.title("nvoc-srv authentication")
+        win.transient(self)
+        win.resizable(False, False)
+
+        tk.Label(
+            win,
+            text=(
+                "The resident nvoc-srv requires an account with administrator\n"
+                "rights (same credentials the web console asks for)."
+            ),
+            justify="left",
+        ).grid(row=0, column=0, columnspan=2, padx=12, pady=(12, 6), sticky="w")
+        tk.Label(win, text="User:").grid(
+            row=1, column=0, padx=(12, 4), pady=2, sticky="e"
+        )
+        user_var = tk.StringVar()
+        tk.Entry(win, textvariable=user_var, width=28).grid(
+            row=1, column=1, padx=(0, 12), pady=2, sticky="w"
+        )
+        tk.Label(win, text="Password:").grid(
+            row=2, column=0, padx=(12, 4), pady=2, sticky="e"
+        )
+        pass_var = tk.StringVar()
+        tk.Entry(win, textvariable=pass_var, show="*", width=28).grid(
+            row=2, column=1, padx=(0, 12), pady=2, sticky="w"
+        )
+
+        def _ok(_event=None) -> None:
+            result["creds"] = (user_var.get().strip(), pass_var.get())
+            win.destroy()
+
+        def _cancel(_event=None) -> None:
+            win.destroy()
+
+        btns = tk.Frame(win)
+        btns.grid(row=3, column=0, columnspan=2, pady=(6, 12))
+        tk.Button(btns, text="OK", width=10, command=_ok).pack(side="left", padx=4)
+        tk.Button(btns, text="Cancel", width=10, command=_cancel).pack(
+            side="left", padx=4
+        )
+        win.bind("<Return>", _ok)
+        win.bind("<Escape>", _cancel)
+        win.grab_set()
+        win.focus_set()
+        self.wait_window(win)
+        creds = result["creds"]
+        if creds is not None and not creds[0]:
+            return None
+        return creds
 
     def _do_shutdown(self):
         """Perform shutdown cleanup. Must run on the main Tk thread."""

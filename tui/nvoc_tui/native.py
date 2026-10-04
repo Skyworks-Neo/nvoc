@@ -81,6 +81,10 @@ class NativeService:
         self.repo_root = repo_root
         self._native: Any | None = None
         self._lock = threading.Lock()
+        # Optional resident-srv consumer session (see ``srv.py``): when set,
+        # arbitrated control ops (manual fan duty / reset) are routed through
+        # the srv registry. ``None`` = drive the GPU directly, as before.
+        self.srv: Any | None = None
         self.action_state = ActionState()
         self._query_queue: queue.Queue[Callable[[], None] | None] = queue.Queue()
         self._query_worker = threading.Thread(
@@ -107,6 +111,47 @@ class NativeService:
     def submit_query(self, job: Callable[[], None]) -> None:
         """Run a read-only frontend query on the shared serial worker."""
         self._query_queue.put(job)
+
+    def claim_control(self, mode: str, **kwargs) -> None:
+        """Route an arbitrated control op through the resident srv, if attached.
+
+        Best-effort: a control-plane hiccup must never break a fan operation,
+        and with no srv session attached this is a no-op (direct-pynvoc path).
+        """
+        control = self.srv
+        if control is None:
+            return
+        try:
+            control.claim(mode, **kwargs)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def release_control(self) -> None:
+        """Hand the control band back to the srv (yield), if attached.
+
+        Called when the user returns fan control to the driver (reset / auto /
+        curve activation): the srv drops this consumer's claim so a waiting
+        optimizer/MCP consumer can drive the fan. Best-effort and a no-op when
+        no srv session is attached.
+        """
+        control = self.srv
+        if control is None:
+            return
+        try:
+            control.release()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def close_srv(self) -> None:
+        """Release the srv consumer session (restores driver control)."""
+        control = self.srv
+        self.srv = None
+        if control is None:
+            return
+        try:
+            control.close()
+        except Exception:  # noqa: BLE001
+            pass
 
     def _pynvoc(self) -> Any:
         if self._native is None:
