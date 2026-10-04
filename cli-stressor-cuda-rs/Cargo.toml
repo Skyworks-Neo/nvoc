@@ -21,6 +21,7 @@ vulkan = ["ash", "dep:naga", "dep:windows-sys"]
 
 [dependencies]
 nvoc-cli-common = { workspace = true }
+nvoc-srv-client = { workspace = true }
 clap = { workspace = true }
 rand = "0.10"
 rand_distr = "0.6"

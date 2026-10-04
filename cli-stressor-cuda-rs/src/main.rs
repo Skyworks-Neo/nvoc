@@ -30,6 +30,9 @@ use serde::Deserialize;
 pub mod style;
 
 #[cfg(feature = "cuda")]
+mod srv_thermal;
+
+#[cfg(feature = "cuda")]
 use cli_stressor_cuda_rs::cuda_backend;
 
 #[cfg(feature = "cuda")]
@@ -334,6 +337,16 @@ struct Args {
         help = "CUDA GPU UUID (32 hex digits or space/dash separated)"
     )]
     gpu_uuid: Option<String>,
+
+    /// Register with the resident nvoc-srv and hold this GPU temperature (°C,
+    /// 30-110) for the duration of the stress run. Opt-in debug thermal channel
+    /// at the lowest priority band; requires a resident/installable nvoc-srv.
+    #[arg(long, value_name = "TEMP_C")]
+    srv_target_temp: Option<f32>,
+
+    /// Port of the resident nvoc-srv control plane (default: 14514)
+    #[arg(long, value_name = "PORT")]
+    srv_port: Option<u16>,
 
     /// List CUDA GPUs (PCI-sorted index, CUDA index, PCI bus, UUID) and exit
     #[arg(long, default_value_t = false)]
@@ -1361,6 +1374,16 @@ pub fn run_from_args() {
         }
     }
 
+    // Opt-in srv thermal channel: engage before any GPU load (the self-test
+    // already warms the part) and hold the setpoint for the whole run.
+    if let Err(err) = srv_thermal::engage(args.srv_target_temp, args.srv_port) {
+        eprintln!(
+            "{}",
+            stylize(&format!("srv thermal channel unavailable: {err}"), true)
+        );
+        std::process::exit(2);
+    }
+
     let matrix_sizes = match parse_int_list(&args.matrix_sizes) {
         Ok(values) => values,
         Err(err) => {
@@ -1510,6 +1533,7 @@ pub fn run_from_args() {
                 // Fallback: no CUDA identity available, use first physical device
                 run_vulkan_for_duration(args.duration, image_config)
             };
+            srv_thermal::release();
             std::process::exit(result);
         }
 
@@ -1953,6 +1977,10 @@ pub fn run_from_args() {
         );
         overall_passed = false;
     }
+
+    // Hand cooling control back before the summary (which may exit non-zero on
+    // a failed run); a crashed/dropped session would lapse on its own anyway.
+    srv_thermal::release();
 
     print_summary(&results, &info);
 

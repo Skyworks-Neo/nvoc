@@ -12,6 +12,9 @@ pub enum AutoscanExit {
 }
 
 pub fn cleanup_autoscan_exit(gpus: &[GpuTarget<'_>], exit: AutoscanExit) {
+    // Release the srv thermal session first so control hand-back is not
+    // gated on the per-GPU resets below.
+    crate::thermal_session::finish();
     for gpu in gpus {
         match exit {
             AutoscanExit::Success => cleanup_success(gpu),

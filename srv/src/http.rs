@@ -11,6 +11,7 @@ use crate::config::{
 use crate::controller::{ControlBackend, GpuControlStatus};
 use crate::monitor::{OffsetBackend, OffsetDomain};
 use crate::runtime::{ServiceCmd, SharedBackend, SharedConfig, SharedHistory, SharedStatus, lock};
+use crate::session::{self, Claim};
 use crate::{audit, auth, web};
 use flume::Sender;
 use log::{error, info, warn};
@@ -361,7 +362,95 @@ fn handle_api(
             respond(request, response);
         }
 
+        // ---- consumer/session plane (control ownership) ----
+        (&tiny_http::Method::Get, "sessions") => {
+            let (owner, views) = session::snapshot();
+            json_response(
+                request,
+                &serde_json::json!({ "owner": owner, "sessions": views }),
+            );
+        }
+        (&tiny_http::Method::Post, "session/open") => {
+            let name = params
+                .get("name")
+                .cloned()
+                .unwrap_or_else(|| "unknown".to_string());
+            let priority = params
+                .get("priority")
+                .and_then(|s| s.parse::<i32>().ok())
+                .unwrap_or(0);
+            json_response(request, &session::open(&name, priority));
+        }
+        (&tiny_http::Method::Post, "session/heartbeat") => {
+            let Some(id) = params.get("id") else {
+                return text_response(request, 400, "Bad request: 'id' required");
+            };
+            match session::heartbeat(id) {
+                Ok(owner) => {
+                    session::sweep_and_apply(config);
+                    json_response(request, &serde_json::json!({ "ok": true, "owner": owner }))
+                }
+                Err(e) => text_response(request, 404, format!("Bad request: {e}")),
+            }
+        }
+        (&tiny_http::Method::Post, "session/claim") => {
+            let Some(id) = params.get("id") else {
+                return text_response(request, 400, "Bad request: 'id' required");
+            };
+            let Some(mode) = params.get("mode").and_then(|m| parse_control_mode(m)) else {
+                return text_response(request, 400, "Bad request: 'mode' must be auto|pid|manual");
+            };
+            let target_c = params.get("target_c").and_then(|s| s.parse::<f32>().ok());
+            let manual_percent = params
+                .get("manual_percent")
+                .and_then(|s| s.parse::<u32>().ok());
+            match session::claim(id, Claim::new(mode, target_c, manual_percent)) {
+                Ok(()) => {
+                    let owner = session::sweep_and_apply(config);
+                    json_response(
+                        request,
+                        &serde_json::json!({ "ok": true, "owner": owner.as_deref() == Some(id.as_str()) }),
+                    )
+                }
+                Err(e) => text_response(request, 404, format!("Bad request: {e}")),
+            }
+        }
+        (&tiny_http::Method::Post, "session/release") => {
+            let Some(id) = params.get("id") else {
+                return text_response(request, 400, "Bad request: 'id' required");
+            };
+            match session::release(id) {
+                Ok(()) => {
+                    session::sweep_and_apply(config);
+                    json_response(request, &serde_json::json!({ "ok": true }))
+                }
+                Err(e) => text_response(request, 404, format!("Bad request: {e}")),
+            }
+        }
+        (&tiny_http::Method::Post, "session/close") => {
+            let Some(id) = params.get("id") else {
+                return text_response(request, 400, "Bad request: 'id' required");
+            };
+            match session::close(id) {
+                Ok(()) => {
+                    session::sweep_and_apply(config);
+                    json_response(request, &serde_json::json!({ "ok": true }))
+                }
+                Err(e) => text_response(request, 404, format!("Bad request: {e}")),
+            }
+        }
+
         _ => text_response(request, 404, "Not found"),
+    }
+}
+
+/// Parse a `ControlMode` from the wire token (`auto`|`pid`|`manual`).
+fn parse_control_mode(s: &str) -> Option<ControlMode> {
+    match s.to_ascii_lowercase().as_str() {
+        "auto" => Some(ControlMode::Auto),
+        "pid" => Some(ControlMode::Pid),
+        "manual" => Some(ControlMode::Manual),
+        _ => None,
     }
 }
 
@@ -525,8 +614,13 @@ fn handle_request(
         }
     }
 
-    // API plane (JSON, audited).
+    // API plane (JSON, audited). Mutations carry the same CSRF guard as the
+    // legacy routes (the console's `post()` always sends the header).
     if let Some(api) = path.strip_prefix("/api/") {
+        if request.method() == &tiny_http::Method::Post && !is_mutation_request(&request) {
+            reject_mutation(request, path);
+            return;
+        }
         handle_api(
             request, api, params, config, status, backend, history, cmd_tx, &auth_user,
         );
@@ -555,6 +649,12 @@ fn handle_request(
                         POST /fan?percent=0-100        (switches to manual)\n\
                         POST /restore                  (alias of /mode?value=auto)\n\
                         POST /oc_global?oc=<kHz>&gpu=<index>\n\
+                        GET  /api/sessions       — registered consumers + control owner\n\
+                        POST /api/session/open?name=&priority=       — register a consumer\n\
+                        POST /api/session/heartbeat?id=              — renew the lease\n\
+                        POST /api/session/claim?id=&mode=&target_c=  — declare control intent\n\
+                        POST /api/session/release?id=               — yield the band (keep session)\n\
+                        POST /api/session/close?id=                  — deregister\n\
                         POST /shutdown\n\
                         Mutations require POST + X-Requested-With: XMLHttpRequest.\n";
             text_response(request, 200, help);
@@ -610,18 +710,15 @@ fn handle_request(
                 reject_mutation(request, path);
                 return;
             }
-            match params.get("value").map(|s| s.to_ascii_lowercase()) {
-                Some(v) if v == "auto" || v == "pid" || v == "manual" => {
-                    let mode = match v.as_str() {
-                        "auto" => ControlMode::Auto,
-                        "pid" => ControlMode::Pid,
-                        _ => ControlMode::Manual,
-                    };
-                    lock(config).mode = mode;
-                    info!("control mode set to {mode:?} via HTTP");
+            match params.get("value").and_then(|v| parse_control_mode(v)) {
+                Some(mode) => {
+                    // Console intent becomes a top-priority console claim.
+                    session::console_claim(mode, None, None);
+                    session::sweep_and_apply(config);
+                    info!("control mode set to {mode:?} via HTTP (console session)");
                     text_response(request, 200, format!("OK: mode={mode:?}"));
                 }
-                _ => text_response(request, 400, "Bad request: 'value' must be auto|pid|manual"),
+                None => text_response(request, 400, "Bad request: 'value' must be auto|pid|manual"),
             }
         }
         "/fan" => {
@@ -631,10 +728,9 @@ fn handle_request(
             }
             match params.get("percent").and_then(|s| s.parse::<u32>().ok()) {
                 Some(p) if p <= 100 => {
-                    let mut cfg = lock(config);
-                    cfg.mode = ControlMode::Manual;
-                    cfg.manual_percent = p;
-                    info!("manual fan duty {p}% via HTTP");
+                    session::console_claim(ControlMode::Manual, None, Some(p));
+                    session::sweep_and_apply(config);
+                    info!("manual fan duty {p}% via HTTP (console session)");
                     text_response(request, 200, format!("OK: manual {p}%"));
                 }
                 _ => text_response(request, 400, "Bad request: 'percent' must be 0–100"),
@@ -645,7 +741,8 @@ fn handle_request(
                 reject_mutation(request, path);
                 return;
             }
-            lock(config).mode = ControlMode::Auto;
+            session::console_claim(ControlMode::Auto, None, None);
+            session::sweep_and_apply(config);
             info!("fan control restored to driver via HTTP /restore");
             text_response(request, 200, "OK: mode=Auto, driver control resumes");
         }
