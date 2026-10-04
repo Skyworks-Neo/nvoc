@@ -116,6 +116,9 @@ fn service_main(_arguments: Vec<OsString>) {
         history: handles.history.clone(),
         cmd_tx: handles.cmd_tx.clone(),
     });
+    if crate::runtime::lock(&state.config).mcp.enabled {
+        crate::mcp::spawn_supervised(state.clone());
+    }
     crate::http::spawn_supervised(state);
 
     if let Err(e) = crate::runtime::run_control_loop(handles) {

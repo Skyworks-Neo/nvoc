@@ -440,6 +440,9 @@ jobs:
               "bitflags",        # 1.x / 2.x
               "colored",         # 2.x via log2 / 3.x workspace CLI styling
               "cpufeatures",     # 0.2.x via pwhash->sha2 / 0.3.x rustcrypto
+              "darling",         # 0.20.x via wrapcenum-derive / 0.24.x via rmcp-macros
+              "darling_core",    # 0.20.x via wrapcenum-derive / 0.24.x via rmcp-macros
+              "darling_macro",   # 0.20.x via wrapcenum-derive / 0.24.x via rmcp-macros
               "getrandom",       # 0.2 / 0.3 / 0.4
               "hashbrown",       # 0.15 / 0.17
               "libloading",      # 0.8.x (nvml-wrapper) / 0.9.x (cudarc)
