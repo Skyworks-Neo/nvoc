@@ -1,0 +1,13 @@
+[package]
+name = "nvoc-srv-client"
+version = { workspace = true }
+description = "Client for the resident nvoc-srv control plane: consumer registration + control claims"
+authors = ["Skyworks"]
+edition = { workspace = true }
+rust-version = { workspace = true }
+license = "Apache-2.0"
+
+[dependencies]
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }

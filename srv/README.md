@@ -141,11 +141,31 @@ is known the controller writes no cap at all — never a guessed one.
 
 ## Who owns the thermal session?
 
-| Caller | Mechanism | Session lifecycle |
-|---|---|---|
-| `nvoc-auto-optimizer --target-temp N` (formal) | probe `/status` -> adopt, else spawn `nvoc-srv --foreground` as child | session spans the whole scan (every stress round); `cleanup_autoscan_exit` restores fans and stops only a *spawned* child |
-| `cli-stressor-cuda-rs --target-temp N` (debug) | same probe/spawn logic, self-contained | session = one stress run; torn down on completion and Ctrl-C; a hard crash leaves the spawned srv orphaned-but-safe (it keeps controlling; reuse next run or `/restore` via the web UI) |
-| manual (curl / web console / MCP later) | the HTTP API directly | you own it |
+Control is arbitrated by the consumer registry: a client registers, claims a
+priority band, and holds a renewable lease; the loop applies the
+highest-priority live claim and restores `auto` when no claim remains. Bands
+(`srv/src/session.rs`) run stressor (10) < auto-optimizer (35) < desktop (40,
+the GUI/TUI) < human console. A crashed or idle client lapses its lease and
+control falls back on the same timescale as any other consumer — no client can
+leave a fan pinned.
+
+| Caller | Band | Mechanism | Session lifecycle |
+|---|---|---|---|
+| `nvoc-auto-optimizer` | 35 | registers as a consumer against a resident srv | session spans the whole scan; released on scan exit |
+| `cli-stressor-cuda-rs` | 10 | registers as a consumer against a resident srv | one stress run; released on completion / Ctrl-C; a hard crash lapses the lease |
+| desktop GUI / TUI | 40 | registers as a consumer over the HTTP session API (same account auth as the console) | one session per app instance; heartbeat while open; the band is released on hand-back and on exit; a crash lapses the lease |
+| manual (curl / web console) | console | the HTTP API directly | you own it; a human op preempts every band |
+
+The desktop GUI and TUI register at band 40 — above the optimizer, and below
+the reserved console, so a web-console op still preempts. Only the *arbitrated*
+control ops go through the registry: a manual fan duty is a claim, while reset
+or hand-back-to-driver **releases the band** (the session stays open, so the
+next manual op re-claims at once) and lets a waiting optimizer consumer drive
+the fan. Deep OC/VF-curve/P-state writes are driver-side and stay
+direct-to-pynvoc.
+Both attach automatically when a resident srv is present and fall back to
+driving the GPU directly when it is not. They authenticate with the same OS
+account the web console asks for (HTTP Basic, `LogonUser` on Windows).
 
 `--target-temp` on the stressor is **ignored in optimizer-worker mode** —
 the optimizer owns the session there, so passing it through

@@ -5,6 +5,7 @@ members = [
   "cli",
   "auto-optimizer",
   "srv",
+  "srv-client",
   "cli-stressor-cuda-rs",
   "nvoc-python",
   "xtask",
@@ -30,6 +31,7 @@ codegen-units = 8
 [workspace.dependencies]
 nvoc-core = { path = "./core" }
 nvoc-cli-common = { path = "./cli-common" }
+nvoc-srv-client = { path = "./srv-client" }
 
 anyhow = "*"
 async-stream = "0.3"

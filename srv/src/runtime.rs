@@ -202,6 +202,11 @@ pub fn run_control_loop(handles: LoopHandles) -> Result<(), String> {
             break;
         }
 
+        // Consumer leases: expire lapsed sessions and re-apply the current
+        // owner's claim (or hand back to Auto when none remains). Remote
+        // clients that die simply stop heartbeating and lose control here.
+        let _ = crate::session::sweep_and_apply(&config);
+
         let cfg = lock(&config).clone();
         let dt_s = cfg.interval_ms as f32 / 1000.0;
         let mut backend_guard = lock(&backend);

@@ -69,7 +69,8 @@ fn optimize_command() -> Command {
                 .value_name("PATH")
                 .num_args(1)
                 .help("Relative per-GPU scan workspace path"),
-        );
+        )
+        .args(srv_thermal_args());
 
     #[cfg(feature = "stressor-bundled")]
     {
@@ -410,7 +411,7 @@ fn vfp_autoscan_command(legacy: bool) -> Command {
             );
     }
 
-    cmd.args(hidden_vfp_lock_args())
+    cmd.args(srv_thermal_args()).args(hidden_vfp_lock_args())
 }
 
 fn vfp_reset_command() -> Command {
@@ -425,6 +426,26 @@ fn vfp_reset_command() -> Command {
                 .value_parser(VfpResetDomain::possible_values().to_vec())
                 .help("VFP reset domain: all, core, or memory"),
         )
+}
+
+fn srv_thermal_args() -> Vec<Arg> {
+    vec![
+        Arg::new("target_temp")
+            .long("target-temp")
+            .value_name("TEMP_C")
+            .num_args(1)
+            .allow_hyphen_values(true)
+            .help(
+                "Opt in to closed-loop cooling: register with the resident nvoc-srv and hold \
+                 this GPU temperature (°C, 30–110) for the scan",
+            ),
+        Arg::new("srv_port")
+            .long("srv-port")
+            .value_name("PORT")
+            .num_args(1)
+            .value_parser(clap::value_parser!(u16))
+            .help("Port of the resident nvoc-srv control plane (default: 14514)"),
+    ]
 }
 
 fn vfp_domain_args(action: &'static str) -> Vec<Arg> {

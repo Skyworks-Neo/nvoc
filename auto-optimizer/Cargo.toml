@@ -35,6 +35,7 @@ stressor-external = []
 [dependencies]
 nvoc-core = { workspace = true }
 nvoc-cli-common = { workspace = true }
+nvoc-srv-client = { workspace = true }
 nvml-wrapper = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }

@@ -7,6 +7,7 @@
 //! - [`controller`]: per-GPU mode state machine + failsafes around the PID
 //! - [`backend`]: NVAPI-backed [`ControlBackend`] with NVML fallback
 //! - [`runtime`]: single-threaded control loop + heartbeat watchdog
+//! - [`session`]: consumer registry + priority arbitration for control ownership
 //! - [`http`]: loopback-only HTTP control plane
 //! - [`logging`]: rotating file sink (+console tee in foreground)
 //!
@@ -26,6 +27,7 @@ pub mod pid;
 pub mod runtime;
 #[cfg(windows)]
 pub mod service;
+pub mod session;
 pub mod web;
 
 pub use config::{

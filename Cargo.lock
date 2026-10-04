@@ -278,6 +278,7 @@ dependencies = [
  "matrixmultiply",
  "naga",
  "nvoc-cli-common",
+ "nvoc-srv-client",
  "rand 0.10.3",
  "rand_distr 0.6.0",
  "rayon",
@@ -1034,6 +1035,7 @@ dependencies = [
  "nvml-wrapper",
  "nvoc-cli-common",
  "nvoc-core",
+ "nvoc-srv-client",
  "once_cell",
  "serde",
  "serde_json",
@@ -1092,6 +1094,15 @@ dependencies = [
  "toml",
  "windows-service",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "nvoc-srv-client"
+version = "0.3.0-alpha.1"
+dependencies = [
+ "anyhow",
+ "log",
+ "serde_json",
 ]
 
 [[package]]
