@@ -2055,6 +2055,101 @@ impl GpuOperation for QueryNvapiComputeCaps {
 /// ceiling is not wasted in a dangerous sense — it just cannot raise the
 /// wall further. The post-SET readback reports the effective wall so the
 /// user sees the clamp.
+/// Outcome of a melonVolt payload-slot write: the slot, the value before,
+/// the value the driver retained, and the post-write status walls
+/// (values[3] = VRM max wall, values[5] = min-hold) for effect evidence.
+#[derive(Clone, Copy, Debug)]
+#[allow(non_snake_case)] // uV suffix matches the nvapi-rs field naming
+pub struct NvapiVoltRailSlotApplied {
+    pub rail_bit: u32,
+    pub slot: usize,
+    pub previous: i32,
+    pub applied: i32,
+    /// status values[3] after the write (VRM max wall, µV)
+    pub vrm_max_wall_uV: i32,
+    /// status values[5] after the write (min hold, µV)
+    pub min_hold_uV: i32,
+}
+
+/// Write one melonVolt payload slot (0..6) of a volt-rail control entry.
+///
+/// Slot semantics pinned on Tesla P100 / 582.41 (slot-probe, live diff):
+/// slot 0 = µV operating offset ([`SetNvapiVoltRailOffset`]); slot 2 =
+/// VRM max wall offset (status values[3] follows 1:1); slot 3 = VMIN /
+/// min-hold offset (status values[5] follows 1:1); slots 1/4/5 are
+/// retained-but-quiet firmware-opaque dwords. Same snapshot → patch →
+/// SET → readback protocol as the offset path.
+#[derive(Clone, Copy, Debug)]
+#[allow(non_snake_case)] // uV suffix matches the nvapi-rs field naming
+pub struct SetNvapiVoltRailSlot {
+    pub rail_bit: u32,
+    pub slot: usize,
+    pub value_uV: i32,
+    pub expected_type: Option<u32>,
+}
+
+impl GpuOperation for SetNvapiVoltRailSlot {
+    type Output = Option<NvapiVoltRailSlotApplied>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiVoltRailSlot
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        if self.slot > 5 {
+            return Err(Error::Custom(format!(
+                "volt-rail slot {} out of range (melonVolt payload is 0..6)",
+                self.slot
+            )));
+        }
+        let gpu = target.nvapi()?;
+        let rails = gpu.volt_rails().map_err(Error::from)?;
+        let Some(rails) = rails else {
+            return Ok(None);
+        };
+        let entry = rails
+            .control
+            .iter()
+            .find(|e| e.rail_bit == self.rail_bit)
+            .ok_or_else(|| {
+                Error::Custom(format!(
+                    "rail bit {} not present (mask 0x{:08X})",
+                    self.rail_bit, rails.rail_mask
+                ))
+            })?;
+        if let Some(expected) = self.expected_type
+            && entry.entry_type != expected
+        {
+            return Err(Error::Custom(format!(
+                "rail {} entry type {} != expected {expected} — refusing to write",
+                self.rail_bit, entry.entry_type
+            )));
+        }
+        let previous = entry.values[self.slot];
+        let applied = gpu
+            .set_volt_rail_slot(self.rail_bit, self.slot, self.value_uV)
+            .map_err(Error::from)?
+            .ok_or_else(|| Error::Custom("volt-rails family vanished between reads".into()))?;
+        // Post-write status walls: values[3] (VRM max) and values[5]
+        // (min hold) are the two words empirically tied to slots 2/3.
+        let status = gpu.volt_rails().map_err(Error::from)?.and_then(|r| {
+            r.status
+                .iter()
+                .find(|e| e.rail_bit == self.rail_bit)
+                .map(|e| (e.values[3], e.values[5]))
+        });
+        #[allow(non_snake_case)] // uV suffix matches the nvapi-rs field naming
+        let (vrm_max_wall_uV, min_hold_uV) = status.unwrap_or((0, 0));
+        Ok(Some(NvapiVoltRailSlotApplied {
+            rail_bit: self.rail_bit,
+            slot: self.slot,
+            previous,
+            applied,
+            vrm_max_wall_uV,
+            min_hold_uV,
+        }))
+    }
+}
 #[derive(Clone, Copy, Debug)]
 #[allow(non_snake_case)] // uV suffix matches the nvapi-rs field naming
 pub struct SetNvapiVoltRailOffset {

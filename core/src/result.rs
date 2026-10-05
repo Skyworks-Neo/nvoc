@@ -130,6 +130,12 @@ pub enum OperationKind {
     /// required µV offset from the live control/status snapshot. Shares the
     /// melonVolt write path with [`OperationKind::SetNvapiVoltRailOffset`].
     SetNvapiVoltRailTarget,
+    /// Write one melonVolt payload slot (0..6) of a volt-rail control entry.
+    /// Slot 0 = the µV offset [`OperationKind::SetNvapiVoltRailOffset`]
+    /// covers; slot 2 = VRM max wall offset, slot 3 = VMIN/min-hold offset
+    /// (both P100/582.41-pinned); slots 1/4/5 are retained-but-quiet
+    /// firmware-opaque dwords.
+    SetNvapiVoltRailSlot,
     /// Query the controllable clock-domain block (private ClockClient
     /// GetControl, RM 0x2080901b) — mask + per-domain type/range/offset.
     /// The Blackwell XBar family (reverse/melonvolt/xbar.txt).
@@ -400,6 +406,7 @@ impl OperationKind {
                 | SetNvapiPowerChannelValue
                 | SetNvapiPowerCommand
                 | SetNvapiTopRelsRatio
+                | SetNvapiVoltRailSlot
         )
     }
 }

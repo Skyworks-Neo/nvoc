@@ -36,12 +36,12 @@ use nvoc_core::{
     SetNvapiPowerCommand, SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiPstates20PrivateDelta,
     SetNvapiSensorLimits, SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvapiThermalSim,
     SetNvapiTopRelsRatio, SetNvapiVfpPointPrivate, SetNvapiVfpRangePerPointPrivate,
-    SetNvapiVfpRangePrivate, SetNvapiVoltRailOffset, SetNvapiVoltRailTarget, SetNvmlAcousticTemp,
-    SetNvmlPstateLock, SetPowerLimit as SetNvmlPowerLimit, SetPowerMode, SetPstateBaseVoltage,
-    SetPstateClockOffset, SetPublicVftablePointOffset, SetPublicVftableRangeOffset,
-    SetTemperatureLimit, SetVfpFrequencyLock, SetVoltageBoost, SetWm2Active, SetWm2Mode,
-    VfPointType, VfpResetDomain, Wm2AcousticMode, discover_targets, fetch_gpu_type,
-    nvapi_status_name, nvml_pstate_to_str, parse_nvapi_locked_voltage_target,
+    SetNvapiVfpRangePrivate, SetNvapiVoltRailOffset, SetNvapiVoltRailSlot, SetNvapiVoltRailTarget,
+    SetNvmlAcousticTemp, SetNvmlPstateLock, SetPowerLimit as SetNvmlPowerLimit, SetPowerMode,
+    SetPstateBaseVoltage, SetPstateClockOffset, SetPublicVftablePointOffset,
+    SetPublicVftableRangeOffset, SetTemperatureLimit, SetVfpFrequencyLock, SetVoltageBoost,
+    SetWm2Active, SetWm2Mode, VfPointType, VfpResetDomain, Wm2AcousticMode, discover_targets,
+    fetch_gpu_type, nvapi_status_name, nvml_pstate_to_str, parse_nvapi_locked_voltage_target,
     parse_nvml_fan_control_policy, parse_nvml_pstate, query_domain_vf_points_indexed,
     query_domain_vfp_indices, run, select_targets, set_nvapi_domain_vfp_deltas,
     sync_memory_pstate_as_p0,
@@ -1443,7 +1443,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 Command::SetVoltRailLimit,
                 CommandSpec {
                     arity: (2, 2),
-                    options: Box::leak(Box::new(["expect-type", "offset", "target"])),
+                    options: Box::leak(Box::new(["expect-type", "offset", "target", "slot"])),
                     positionals: Box::leak(Box::new([PositionalArg::free(
                         "arg_rail_bit",
                         "RAIL_BIT",
@@ -1454,7 +1454,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                         "VALUE",
                         "Volt-rail limit value, millivolts in both modes (e.g. 1125 or 56.25; `uv` suffix = raw µV): --offset (default) writes the offset directly; --target takes an absolute target and derives the offset from the live control/status snapshot. The driver clamps the effective wall to min(target, vbios_wall, vrm_max_wall)",
                     )])),
-                    ..CommandSpec::new("set-volt-rail-limit", Group::Voltage, "Set a volt-rail limit: --offset (default) writes an mV offset directly (melonVolt write path; 5090 MSVDD = rail 1 type 3); --target takes an absolute mV target and derives the offset from the live control/status snapshot. Both take millivolts by default, `uv` suffix = raw µV")
+                    ..CommandSpec::new("set-volt-rail-limit", Group::Voltage, "Set a volt-rail limit: --offset (default) writes an mV offset directly (melonVolt write path; 5090 MSVDD = rail 1 type 3); --target takes an absolute mV target and derives the offset from the live control/status snapshot. Both take millivolts by default, `uv` suffix = raw µV --slot N (0..5, default 0) selects the melonVolt payload dword: 0 = the uV offset (offset/target modes above); 2 = VRM max wall offset; 3 = VMIN/min-hold offset (both mV-in/uV-out like offset mode, P100/582.41-pinned, status Min Hold/VRM wall follow 1:1); 1/4/5 = retained-but-quiet firmware-opaque dwords (raw i32 in, no unit semantics). --slot >0 conflicts with --target")
                 },
             ),
             (
@@ -1817,6 +1817,15 @@ fn validate_invocation(invocation: &Invocation) -> CliResult<()> {
         }
     }
 
+    if command == Command::SetVoltRailLimit
+        && option_one(invocation, "slot")
+            .is_some_and(|raw| raw.parse::<usize>().map(|v| v > 5).unwrap_or(true))
+    {
+        return Err(CliError::new(
+            "--slot out of range (melonVolt payload is 0..5)",
+        ));
+    }
+
     if command == Command::ResetFanSpeed
         && option_one(invocation, "fan").is_some_and(|fan| !fan.eq_ignore_ascii_case("all"))
         && invocation.backend != BackendChoice::Nvml
@@ -1966,6 +1975,7 @@ fn option_takes_value(token: &str) -> bool {
             | "--fan"
             | "--policy"
             | "--policy-index"
+            | "--slot"
             | "--channel"
             | "--command"
     )
@@ -2203,7 +2213,7 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .long("slot")
             .value_name("SLOT")
             .action(ArgAction::Set)
-            .help("ClkDomains family (set/reset-private-freq-domain-global-offset): RAW record dword to write (0-7, never remapped; 10~40系 planes live in 0=freq/1=volt, Blackwell 50系 in 2=freq/3=volt — prefer the --freq/--volt aliases; 2-7 driver-opaque on 10~40系 — identify via A/B with get-clk-domain-freq). reset-private-vftable-offset: 0 = freq plane (mode-0 kHz offsets), 1 = volt plane (mode-1 raw values)"),
+            .help("set-volt-rail-limit: melonVolt payload dword 0..5 (0 = the uV offset; 2 = VRM max wall offset; 3 = VMIN/min-hold offset, P100/582.41-pinned; 1/4/5 firmware-opaque). ClkDomains family (set/reset-private-freq-domain-global-offset): RAW record dword to write (0-7, never remapped; 10~40系 planes live in 0=freq/1=volt, Blackwell 50系 in 2=freq/3=volt — prefer the --freq/--volt aliases; 2-7 driver-opaque on 10~40系 — identify via A/B with get-clk-domain-freq). reset-private-vftable-offset: 0 = freq plane (mode-0 kHz offsets), 1 = volt plane (mode-1 raw values)"),
         "freq" => Arg::new("freq")
             .long("freq")
             .action(ArgAction::SetTrue)
@@ -4401,6 +4411,57 @@ fn execute_target(
                 return Err(CliError::new(
                     "--offset and --target are mutually exclusive",
                 ));
+            }
+            let slot = match option_one(invocation, "slot") {
+                Some(raw) => {
+                    let slot = raw
+                        .parse::<usize>()
+                        .map_err(|_| CliError::new(format!("invalid --slot {raw:?} (0..5)")))?;
+                    if slot > 5 {
+                        return Err(CliError::new(format!(
+                            "--slot {slot} out of range (melonVolt payload is 0..5)"
+                        )));
+                    }
+                    Some(slot)
+                }
+                None => None,
+            };
+            if target_mode && slot.is_some_and(|v| v != 0) {
+                return Err(CliError::new(
+                    "--target only writes slot 0 — use --offset semantics (a bare offset) for --slot > 0",
+                ));
+            }
+            if let Some(slot) = slot.filter(|v| *v != 0) {
+                // melonVolt payload slots 1..5: slot 2 = VRM max wall offset,
+                // slot 3 = VMIN/min-hold offset (mV→µV like slot 0), 1/4/5 =
+                // firmware-opaque (raw i32 in — accept the same mV/uv grammar
+                // and document that the unit does not survive the firmware).
+                #[allow(non_snake_case)] // uV suffix matches the nvapi-rs naming
+                let value_uV = parse_domain_voltage_uV(&invocation.positionals[1])?;
+                let out = run(
+                    target,
+                    SetNvapiVoltRailSlot {
+                        rail_bit,
+                        slot,
+                        value_uV,
+                        expected_type: expect_type,
+                    },
+                )?
+                .output;
+                return Ok(match out {
+                    Some(a) => json!({
+                        "applied": true,
+                        "mode": "slot",
+                        "rail_bit": a.rail_bit,
+                        "slot": a.slot,
+                        "previous": a.previous,
+                        "applied": a.applied,
+                        "uV_note": "payload dwords are firmware-opaque for slots 1/4/5; slots 2/3 are uV offsets (VRM max wall / VMIN min-hold)",
+                        "vrm_max_wall_mv": a.vrm_max_wall_uV as f64 / 1000.0,
+                        "min_hold_mv": a.min_hold_uV as f64 / 1000.0,
+                    }),
+                    None => json!({"supported": false}),
+                });
             }
             if target_mode {
                 // Absolute-target convenience: the caller thinks in mV (one
@@ -9625,6 +9686,11 @@ mod tests {
         assert_eq!(option_one(&invocation, "policy-index"), Some("2"));
         let invocation = parse_args(["set-pwr-cur-limit", "board", "140", "--nvml"]).unwrap();
         assert_eq!(invocation.backend, BackendChoice::Nvml);
+        // --slot selects the melonVolt payload dword (0..5); raw passthrough.
+        let invocation = parse_args(["set-volt-rail-limit", "0", "12.5", "--slot", "3"]).unwrap();
+        assert_eq!(invocation.command, Some(Command::SetVoltRailLimit));
+        assert_eq!(option_one(&invocation, "slot"), Some("3"));
+        assert!(parse_args(["set-volt-rail-limit", "0", "12.5", "--slot", "6"]).is_err());
         // Old names are gone.
         assert!(parse_args(["set-power-limit", "140"]).is_err());
         assert!(parse_args(["set-ocp-limit", "nvvdd", "140"]).is_err());
