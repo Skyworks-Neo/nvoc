@@ -87,11 +87,13 @@
 
 - NVIDIA GPU，且已安装 CUDA 驱动/工具包
 - Rust 1.70+
-- Windows 运行时需确保以下 DLL（*取决于 CUDA 版本）可被加载（位于系统 PATH 或程序同目录）：
-  - `nvrtc64_*.dll`
+- Windows 运行时需确保以下 DLL（*取决于 CUDA 版本）可被加载（位于系统 PATH、程序同目录，或用 `--cuda-path <DIR>` 指定其所在目录）：
+  - `nvrtc64_*.dll`（及其 builtins，如 `nvrtc-builtins64_12x.dll`）
   - `cublasLt64_*.dll`
   - `cublas64_*.dll`
   - `cudart64_*.dll`
+
+`--cuda-path` 在 Windows 与 Linux 均可使用：既可以是运行库所在目录本身，也可以是 CUDA 工具包根目录（自动探测其 `bin/`、`lib64/`、`lib/` 子目录）。工具会在任何 CUDA 调用前预加载找到的运行库。缺少 cuBLAS 等必需库时会输出可读错误并以退出码 1 结束（不再 panic）；缺少 NVRTC 时仅降级禁用 NVRTC 编译的内核（atomic/intalu/校验引擎/GPU 填充）。
 
 ### 构建与运行
 
