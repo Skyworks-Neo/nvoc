@@ -2096,9 +2096,9 @@ impl GpuOperation for SetNvapiVoltRailSlot {
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
-        if self.slot > 5 {
+        if self.slot > 3 {
             return Err(Error::Custom(format!(
-                "volt-rail slot {} out of range (melonVolt payload is 0..6)",
+                "volt-rail slot {} is not writable: slots 4/5 have no known use and                  crashed the driver on 4060 Laptop / 610 (2026-10-06 field report: -300                  write reproduced on both slots; -100..-200 observed safe; desktop 2070                  unaffected). Writable slots are 0 (uV offset), 1 (VBIOS max wall offset),                  2 (VRM max wall offset), 3 (VMIN/min-hold offset)",
                 self.slot
             )));
         }
