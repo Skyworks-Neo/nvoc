@@ -220,3 +220,12 @@ Apply 通用模型（NvidiaController.ApplyCoreAsync :1387-1989）：**staging �
 | E5 TopRels 边语义 | 确证仅 50 系可裁，搁置 |
 | E6 BoostLock | **定案**（双向实证） |
 | E1 V/F 几何+deltaScale | 待 e1b 写-读轮（探针就绪） |
+
+### 16.7 第二轮判读（同日，4060L + 2070，探针 c3ead23→b96a8be）
+
+- **E1b 证伪两个候选几何**：SET 被接受（status=0）但 +15000 kHz 在 nvapioc 槽（4060L@564、2070@1140）与 xOCD 槽均不保留，恢复逐字节校验 OK ×2。结论：delta 字段不在 60+36i 也不在 124+36(i-1)——**矛盾①升级为「字段位置未知」**，clock.rs:384 的 nvapioc「R610.74 live round-trip」记载与本次读回矛盾，待 e1c 定位后回改。
+- **e1c 已交付（字段发现扫描）**：扫 [40,204] 每 4 字节——仅原值为 0 的偏移补丁 15000 → SET → GET → **全表 diff**（若值被驱动搬到别的槽，diff 直接暴露真字段）→ 每步恢复+校验，失配即中止。双门控同 e1b。
+- **E3 round-2 扫描作废**：两机 0x12720 GET 返回全零载荷（命中 [0] 均为版本魔数 75552 的宽区间假阳性）。根因：探针未做 set_tgp_watt 的「私有 GetInfo 预热 + dword1 mask 播种」。round-3 已修（预热+播种 0x7FFF、跳过头部、精确默认值/严格区间内匹配、载荷非零 dword 计数）。
+- **E2 首批佐证**：2070 VoltRailsStatus(v1|2760) +72=712500/+76=1125000 µV **= UI 截图 NVVDD range 712–1125**；4060L +80=1200000（1.2V VRM/OV 墙，与 xOCD status.values[3] 语义吻合）；2070 control +72/+76=32000（32mV 标定窗，xOCD ctrl.values[0/1] 呼应）。两卡均单轨 → **bit 序 vs dense 序仍需 50 系双轨卡**。
+- 2070 E4 稳定复现：bit0/type0x8/slot0 = **-1000 kHz**（非输出交错，含义未定，与 -lgc 范围锁是否相关待查）。
+- e3 探针的未使用变量警告已修；JSON 路径修复生效（本轮 e1/e6/e3 JSON 均落盘成功）。
