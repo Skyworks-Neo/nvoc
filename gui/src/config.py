@@ -24,6 +24,9 @@ DEFAULT_CONFIG: Dict[str, JSONValue] = {
         # tab's stress-tool panel. Empty = auto-discovered (next to the
         # configured optimizer CLI, then PATH).
         "exe_path": "",
+        # Directory holding the CUDA runtime libraries when they are not next
+        # to the executable (forwarded as --cuda-path; empty = auto).
+        "cuda_path": "",
         # Every option below is forwarded only when non-empty/true, so the
         # tool's own defaults apply to blank fields.
         "profile": "(default)",  # (default) / standard / low-vram / 40-50 / dynamic-export
@@ -56,8 +59,13 @@ DEFAULT_CONFIG: Dict[str, JSONValue] = {
         "vulkan_iters": "",
         "vulkan_shells": "",
         "vulkan_window": False,
-        "vulkan_rotate": False,
-        "vulkan_particles": False,
+        # Value-taking bool on the CLI (--vulkan-rotate <BOOL>, default true):
+        # the panel forwards the checkbox state explicitly so what is shown is
+        # what runs.
+        "vulkan_rotate": True,
+        # Particle pool size (0 = off); "(default)" forwards nothing so the
+        # CLI's own default (262144) applies.
+        "vulkan_particles": "(default)",
         "vulkan_offscreen": False,
     },
 }

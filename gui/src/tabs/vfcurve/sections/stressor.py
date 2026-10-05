@@ -155,6 +155,11 @@ class StressorPanel:
         if isinstance(default, bool):
             var: Any = ctk.BooleanVar(value=bool(stored))
         else:
+            # A value-taking option can inherit a stale bool from an older
+            # config block (vulkan_particles used to be a checkbox); treat it
+            # as unset instead of forwarding "False" to clap.
+            if isinstance(stored, bool):
+                stored = ""
             var = ctk.StringVar(value="" if stored is None else str(stored))
         self._vars[key] = var
         var.trace_add("write", lambda *_: self._persist())
@@ -355,6 +360,23 @@ class StressorPanel:
             side="left", padx=(5, 0)
         )
 
+        cuda_label = self._label(grid, "CUDA libs:")
+        cuda_label.grid(row=2, column=0, sticky="w", padx=(5, 6), pady=3)
+        cuda_row = tk.Frame(grid, bg=_PANE_BG)
+        cuda_row.grid(row=2, column=1, columnspan=3, sticky="ew", pady=3)
+        cuda_entry = LiteEntry(
+            cuda_row,
+            textvariable=self._mk_var("cuda_path"),
+            width=28,
+            min_px=240,
+            justify="left",
+        )
+        cuda_entry.pack(side="left", fill="x", expand=True)
+        LiteButton(cuda_row, text="...", width=34, command=self._browse_cuda_path).pack(
+            side="left", padx=(5, 0)
+        )
+        self._register_gated("cuda_path", cuda_entry, cuda_label)
+
         tools = tk.Frame(body, bg=_PANE_BG)
         tools.pack(fill="x", pady=(8, 0))
         LiteButton(tools, text="🔄 List GPUs", width=110, command=self._list_gpus).pack(
@@ -490,7 +512,9 @@ class StressorPanel:
         self._entry_cell(grid, 3, 0, "Shells:", "vulkan_shells", width=8, gated=True)
         self._check_cell(grid, 4, 0, "Windowed", "vulkan_window", gated=True)
         self._check_cell(grid, 4, 1, "Rotate", "vulkan_rotate", gated=True)
-        self._check_cell(grid, 5, 0, "Particles", "vulkan_particles", gated=True)
+        self._entry_cell(
+            grid, 5, 0, "Particles:", "vulkan_particles", width=10, gated=True
+        )
         self._check_cell(grid, 5, 1, "Heavy offscreen", "vulkan_offscreen", gated=True)
 
     # ── executable discovery / capability probe ────────────────────────────
@@ -532,6 +556,15 @@ class StressorPanel:
         )
         if path and "json_out" in self._vars:
             self._vars["json_out"].set(path)
+
+    def _browse_cuda_path(self) -> None:
+        current = str(self._value("cuda_path") or "").strip()
+        path = filedialog.askdirectory(
+            title="Select the directory holding the CUDA runtime libraries",
+            initialdir=current or None,
+        )
+        if path and "cuda_path" in self._vars:
+            self._vars["cuda_path"].set(path)
 
     def _schedule_probe(self) -> None:
         exe = self._exe_path()

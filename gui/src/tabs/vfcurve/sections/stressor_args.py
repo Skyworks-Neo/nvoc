@@ -24,6 +24,7 @@ from typing import List, Mapping, Optional, Sequence, Set, Tuple
 # The tuple order is the emit order on the command line.
 CONTROL_SPECS: Tuple[Tuple[str, Tuple[str, ...], bool], ...] = (
     ("gpu_index", ("--gpu-index",), True),
+    ("cuda_path", ("--cuda-path",), True),
     ("profile", ("--profile",), True),
     ("duration", ("--duration",), True),
     ("matrix_sizes", ("--matrix-sizes",), True),
@@ -49,8 +50,10 @@ CONTROL_SPECS: Tuple[Tuple[str, Tuple[str, ...], bool], ...] = (
     ("vulkan_iters", ("--vulkan-iters",), True),
     ("vulkan_shells", ("--vulkan-shells",), True),
     ("vulkan_window", ("--vulkan-window",), False),
-    ("vulkan_rotate", ("--vulkan-rotate",), False),
-    ("vulkan_particles", ("--vulkan-particles",), False),
+    # The CLI declares these two as value-taking (bool / u32) even though the
+    # panel renders them as a checkbox and a text field.
+    ("vulkan_rotate", ("--vulkan-rotate",), True),
+    ("vulkan_particles", ("--vulkan-particles",), True),
     ("vulkan_offscreen", ("--vulkan-heavy-offscreen",), False),
 )
 
@@ -96,7 +99,13 @@ def build_stressor_args(
         if flag is None:
             continue
         if takes_value:
-            value = str(state.get(key, "") or "").strip()
+            raw = state.get(key, "")
+            if isinstance(raw, bool):
+                # Checkbox feeding a value-taking option (--vulkan-rotate):
+                # forward the state explicitly instead of a bare flag.
+                value = "true" if raw else "false"
+            else:
+                value = str(raw or "").strip()
             if value:
                 args += [flag, value]
         elif state.get(key):

@@ -69,6 +69,7 @@ ENHANCED_CAPS = MAIN_CAPS - {
     "--gemm-full-check-max-size",
     "--skip-self-test",
     "--json-out",
+    "--cuda-path",
 }
 
 
@@ -176,6 +177,7 @@ def test_capability_gating_follows_the_probe(panel):
     assert gated["no_verify"].cget("state") == "disabled"
     assert gated["verify_continue_on_error"].cget("state") == "disabled"
     assert gated["json_out"].cget("state") == "disabled"
+    assert gated["cuda_path"].cget("state") == "disabled"
     # Main-lineage builds still advertise the legacy Vulkan family.
     assert gated["vulkan"].cget("state") == "normal"
     assert gated["vulkan_width"].cget("state") == "normal"
@@ -183,6 +185,7 @@ def test_capability_gating_follows_the_probe(panel):
     built._apply_capabilities(ENHANCED_CAPS)
     assert gated["no_verify"].cget("state") == "normal"
     assert gated["json_out"].cget("state") == "normal"
+    assert gated["cuda_path"].cget("state") == "normal"
     assert gated["vulkan"].cget("state") == "normal"
 
 
@@ -226,6 +229,7 @@ def test_enhanced_build_uses_renamed_vulkan_flag(panel):
     built._apply_capabilities(ENHANCED_CAPS)
     built._vars["vulkan"].set(True)
     built._vars["verify_continue_on_error"].set(True)
+    built._vars["cuda_path"].set(r"D:\cuda\runtime")
 
     built._start_run()
 
@@ -233,6 +237,11 @@ def test_enhanced_build_uses_renamed_vulkan_flag(panel):
     assert "--vulkan" in args
     assert "--enable-vulkan-stress" not in args
     assert "--verify-continue-on-error" in args
+    assert ["--cuda-path", r"D:\cuda\runtime"] == args[args.index("--cuda-path") :][:2]
+    # Value-taking Vulkan knobs: the rotate checkbox forwards its state, the
+    # particle pool stays on the "(default)" sentinel until the user types.
+    assert ["--vulkan-rotate", "true"] == args[args.index("--vulkan-rotate") :][:2]
+    assert "--vulkan-particles" not in args
 
 
 def test_verdict_line_and_exit_land_in_the_panel(panel):

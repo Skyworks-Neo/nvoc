@@ -44,6 +44,11 @@ Options:
           [default: 1]
       --vulkan-heavy-offscreen
           Offscreen render mode
+      --vulkan-rotate <VULKAN_ROTATE>
+          Animate the torus rotation (disable for the static-mesh A/B
+          baseline) [default: true]
+      --vulkan-particles <VULKAN_PARTICLES>
+          Compute->graphics particle pool size (0 = off) [default: 262144]
       --verify-continue-on-error
           Keep running after a detector fault, accumulating SDC statistics
       --verify-resident-interval <VERIFY_RESIDENT_INTERVAL>
@@ -54,6 +59,9 @@ Options:
           Skip the startup self test
       --json-out <JSON_OUT>
           Write the machine-readable verdict JSON to this path
+      --cuda-path <DIR>
+          Directory holding the CUDA runtime libraries, loaded before any
+          CUDA call
       --vulkan-image-width <VULKAN_IMAGE_WIDTH>
           Legacy Vulkan image width (alias: --legacy-vulkan-image-width)
 """
@@ -123,6 +131,48 @@ def test_build_args_enhanced_lineage_prefers_new_names_and_verify() -> None:
     # The old spellings must not leak in alongside the new ones.
     assert "--enable-vulkan-stress" not in args
     assert "--vulkan-image-width" not in args
+
+
+def test_build_args_forwards_value_taking_checkbox_and_particle_pool() -> None:
+    caps = parse_help_flags(ENHANCED_HELP)
+
+    rot_on = build_stressor_args({"vulkan": True, "vulkan_rotate": True}, caps)
+    rot_off = build_stressor_args({"vulkan": True, "vulkan_rotate": False}, caps)
+    particles = build_stressor_args(
+        {"vulkan": True, "vulkan_particles": "262144"}, caps
+    )
+    blank = build_stressor_args({"vulkan": True, "vulkan_particles": ""}, caps)
+
+    assert ["--vulkan-rotate", "true"] == rot_on[rot_on.index("--vulkan-rotate") :][:2]
+    assert ["--vulkan-rotate", "false"] == rot_off[rot_off.index("--vulkan-rotate") :][
+        :2
+    ]
+    assert ["--vulkan-particles", "262144"] == particles[
+        particles.index("--vulkan-particles") :
+    ][:2]
+    assert "--vulkan-particles" not in blank
+
+
+def test_value_taking_vulkan_options_are_gated_off_the_main_lineage() -> None:
+    caps = parse_help_flags(MAIN_HELP)
+
+    assert flag_for("vulkan_rotate", caps) is None
+    assert flag_for("vulkan_particles", caps) is None
+
+
+def test_cuda_path_is_forwarded_when_supported() -> None:
+    caps = parse_help_flags(ENHANCED_HELP)
+
+    args = build_stressor_args({"cuda_path": r"D:\cuda\runtime"}, caps)
+
+    assert ["--cuda-path", r"D:\cuda\runtime"] == args[args.index("--cuda-path") :][:2]
+
+
+def test_cuda_path_is_gated_off_older_builds() -> None:
+    caps = parse_help_flags(MAIN_HELP)
+
+    assert flag_for("cuda_path", caps) is None
+    assert build_stressor_args({"cuda_path": r"D:\cuda\runtime"}, caps) == []
 
 
 def test_build_args_unknown_capabilities_do_not_gate() -> None:
