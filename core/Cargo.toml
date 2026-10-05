@@ -23,6 +23,7 @@ windows-sys = { workspace = true, features = [
     "Win32_Security",
     "Win32_Storage_FileSystem",
     "Win32_System_IO",
+    "Win32_System_Registry",
 ] }
 
 [dev-dependencies]

@@ -23,6 +23,18 @@
    `get-pwr-cur-info` / `get-power-command` / NVML 三面读数一致。
 4. 每个写臂铁律:**identity → 扰动 → 读回 → 恢复**,恢复失败响亮报错;
    任何失配/异常(EC 狂转、黑屏、温度跳变)立即恢复 + 中止。
+5. **(2026-10-06)静态轨已闭合,活体定位未闭合**:610.74 的 RM 命令
+   (0x2080A61A/0x2080E61B)、PowerRoot 全字段漂移(-0x30)、函数族 RVA、
+   UPpper 写入点枚举均已定案 → 见
+   `kmd-power-policy-layout-r610-74.md`(capstone+idalib 双路互证)。
+   差分判读不得硬性假设 base==UPPER(610 base 可能为 -1 哨兵)。
+6. **(2026-10-06)BSOD 事故与安全 envelope**:BFS 25 万页池簇走查触发
+   KMODE_EXCEPTION_NOT_HANDLED(无 minidump)。此后单次走查页数预算 ≤2000
+   (NVOC_POWER_WALK_PAGES 显式放大须记录);策略对象不在锚页 2MB 簇、
+   锚页 1-2 跳、.data 一跳、枢纽 FIFO 1500 页(全为阴性,详见布局档案 §6)。
+7. **(2026-10-06)传输层代际**:PMXDRV(老服务/PAIPTAC 重建款)被驱动
+   安全策略拦;**PMXDRV_NEW(Intel2019,B1A8EE…)可用**——本机实测多轮。
+   kmd 通道一律连 PMXDRV_NEW。SET 须提权(非提权 -137,与既有台账一致)。
 
 ## 1. L0 环境准备
 
