@@ -70,16 +70,18 @@ L3 判据（决定是否值得封装写入）：identity 写被接受且读回�
 | 机器 | graph_roles | power_command | control_input | 写臂 |
 |---|---|---|---|---|
 | Tesla P100（Pascal，非提权） | Err；诊断=Modern 0x2BA030 被 -9、fallback 0xF4BF4 成功但角色解码失败（Pascal 无角色拓扑） | 仅 ch0：0xF8=`0xFFFFFFFF` 哨兵、0xFE=**250000**（板功率 mW） | 跳过 | 命中 ch0/0xFE 但 SET=-137（非提权） |
-| RTX 4060 Laptop（Ada） | Err | 仅 ch0：0xF8=`0xFFFFFFFF` 哨兵、0xFE=**100000**（板功率 mW） | 跳过 | 命中 ch0/0xFE（需提权执行） |
+| RTX 4060 Laptop（Ada，提权） | Err；诊断=Modern 0x2BA030 被 **-9**、fallback 0xF4BF4 成功但角色解码失败（与 Pascal 同态：Ada 笔记本驱动也不给 Modern 图，且 fallback 合成后的角色不匹配我们的解码期望） | 仅 ch0：0xF8=`0xFFFFFFFF` 哨兵、0xFE=**100000**（板功率 mW） | 跳过 | **PASS**：identity SET 接受+读回、扰动 100001 接受+读回、恢复 baseline=100000 成功 |
 
-要点：**`power_command` ch0/0xFE 返回的正是板功率 mW**（P100 250 W / 4060L 100 W，与 NVML/通道表三面一致）——这是本面唯一在两代上都有真实数据的通道，也是写封装的价值点。`power_graph_roles` 在两台都 `Err`，故 `power_control_input` 连带跳过；**要做角色/输入面的封装裁决，需一台能通过 graph 解码的机器**，届时重跑 L1/L2 会由新增诊断行打印 Modern/fallback 两个戳的原始 status，据此判断是「驱动不给」还是「我们的解码期望不匹配该卡」。
+**L3 结论（2026-10-05，4060L 提权实测）**：`set_power_command` 在 ch0/0xFE 上**写通路成立**——identity、+1 mW 扰动、恢复三步全部被驱动接受且读回一致（无粒度钳位、无静默丢弃），且写的就是板功率 mW 本身（NVML/通道表同值）。**写入封装的前置门已通过。**
+
+要点：**`power_command` ch0/0xFE 返回的正是板功率 mW**（P100 250 W / 4060L 100 W，与 NVML/通道表三面一致）——这是本面唯一在两代上都有真实数据的通道，也是读写封装的价值点。`power_graph_roles` 在两台都 `Err`，且诊断显示**两台的 Modern 0x2BA030 都被 -9**（回退 347124 成功后角色解码仍失败）——即 pre-50（含 Ada 笔记本）都不走 Modern 图；**要做角色/输入面的封装裁决，需一台接受 Modern 图的机器（Blackwell 50 系优先）**，届时重跑 L1/L2 由诊断行确认。
 
 ## 4. L4 — 封装裁决门（用户决策）
 
 只有当 L1/L2 在目标机**至少一个面上有实质非哨兵数据**、且 L3 identity 写成立时，才建议封装。裁决清单：
 
 1. **读面**（graph_roles / power_command / control_input）是否返回真实语义数据（非 0/哨兵）？`power_command ch0/0xFE` 已可判定为"有" → 可封装只读命令（如 `get-power-command`）。
-2. **写面** identity SET 是否被驱动接受并读回？**需提权复跑 L3**——这是唯一的封写入前置门。
+2. **写面** identity SET 是否被驱动接受并读回？**已通过**（4060L 提权：identity/扰动/恢复三步全绿）→ 可封装 ch0/0xFE 写入命令。
 3. 扰动/恢复是否符合单一显式窗口语义（而非静默丢弃）？若像 VF 表那样静默重建归零 → **可写面判定为无效**，不封装写。
 4. 是否需要给 0xFE 单独一条命令/开关（内核 power-cap 请求语义）？若封则单列，先不混进 0xF8。
 
