@@ -2536,7 +2536,7 @@ fn execute_auto(invocation: &Invocation, command: Command) -> CliResult<Executio
                 }
                 return Ok(execution);
             }
-            Ok(nvapi_execution) if supports_nvml => {
+            Ok(nvapi_execution) if supports_nvml && nvml_fallback_applies(invocation, command) => {
                 let mut nvml_execution =
                     execute_backend(invocation, command, BackendAdapter::Nvml)?;
                 nvml_execution.warnings.insert(
@@ -2558,7 +2558,7 @@ fn execute_auto(invocation: &Invocation, command: Command) -> CliResult<Executio
                 return Ok(nvml_execution);
             }
             Ok(execution) => return Ok(execution),
-            Err(nvapi_error) if supports_nvml => {
+            Err(nvapi_error) if supports_nvml && nvml_fallback_applies(invocation, command) => {
                 let mut nvml_execution =
                     execute_backend(invocation, command, BackendAdapter::Nvml)?;
                 nvml_execution.warnings.insert(
@@ -2579,6 +2579,20 @@ fn execute_auto(invocation: &Invocation, command: Command) -> CliResult<Executio
         "{} has no runnable backend",
         command.name()
     )))
+}
+
+/// Whether an auto-mode NVML fallback can act on this invocation at all.
+/// set-pwr-cur-limit's nvvdd/msvdd/INDEX targets are PowerChannels-only —
+/// an NVML fallback can only re-reject the target string there and bury the
+/// real NVAPI error, so it must not run for them.
+fn nvml_fallback_applies(invocation: &Invocation, command: Command) -> bool {
+    if command != Command::SetPwrCurLimit {
+        return true;
+    }
+    invocation
+        .positionals
+        .first()
+        .is_some_and(|target| matches!(target.to_ascii_lowercase().as_str(), "tgp" | "board"))
 }
 
 fn execute_backend(
