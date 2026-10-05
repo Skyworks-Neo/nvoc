@@ -59,13 +59,20 @@ class CLIRunner:
         args: Sequence[str],
         cwd: Optional[str] = None,
         on_finished: Optional[Callable[[int], None]] = None,
+        exe: Optional[str] = None,
+        on_output: Optional[Callable[[str], None]] = None,
     ) -> None:
         """
         Run the CLI with given arguments in a background thread.
 
         Args:
             args: Command-line arguments (without the exe path)
-            cwd: Working directory (defaults to exe parent directory)
+            cwd: Working directory (defaults to the exe parent directory)
+            exe: Override executable for this run (e.g. cli-stressor-cuda-rs
+                from the VF Curve tab); keeps the single-command guard,
+                cancellation and console plumbing in one place.
+            on_output: Extra per-line tap invoked in addition to the console
+                sink, for callers that parse the stream (verdict lines).
         """
         with self._lock:
             if self._busy:
@@ -79,8 +86,9 @@ class CLIRunner:
                 on_finished if on_finished is not None else self.on_finished
             )
 
+        run_exe = exe or self.exe_path
         if cwd is None:
-            cwd = os.path.dirname(self.exe_path) or "."
+            cwd = os.path.dirname(run_exe) or "."
 
         def _complete(retcode: int) -> None:
             with self._lock:
@@ -93,7 +101,7 @@ class CLIRunner:
                 callback(retcode)
 
         def _worker() -> None:
-            cmd = [self.exe_path] + args
+            cmd = [run_exe] + args
             self.on_output(f"[GUI] > {' '.join(cmd)}\n")
             try:
                 with self._lock:
@@ -120,6 +128,8 @@ class CLIRunner:
                         if self._cancelled:
                             break
                         self.on_output(line)
+                        if on_output is not None:
+                            on_output(line)
                     process.stdout.close()
                 retcode = process.wait()
                 if self._cancelled:
@@ -128,9 +138,7 @@ class CLIRunner:
                     self.on_output(f"[GUI] Process exited with code {retcode}\n")
                 _complete(retcode)
             except FileNotFoundError:
-                self.on_output(
-                    f"[GUI] ERROR: CLI executable not found: {self.exe_path}\n"
-                )
+                self.on_output(f"[GUI] ERROR: CLI executable not found: {run_exe}\n")
                 _complete(-1)
             except Exception as e:
                 self.on_output(f"[GUI] ERROR: {e}\n")

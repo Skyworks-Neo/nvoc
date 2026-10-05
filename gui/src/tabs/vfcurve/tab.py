@@ -674,9 +674,9 @@ class VFCurveTab:
         )
         self.freq_lock_api_menu.pack(side="left", padx=(0, 5))
 
-        # ── Bottom half: host for the autoscan section ──
-        self.autoscan_host = tk.Frame(self.frame, bg=_PANEL_BG)
-        self.autoscan_host.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        # ── Bottom half: host for the stress-tool section ──
+        self.bottom_host = tk.Frame(self.frame, bg=_PANEL_BG)
+        self.bottom_host.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
         # ── State vars kept for logic compatibility (Point-Adj / lock UIs
         # removed: chart drag/wheel/space covers those operations) ──

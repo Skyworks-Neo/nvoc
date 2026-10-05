@@ -953,6 +953,11 @@ class LiteCheckbutton(tk.Frame):
         super().configure(**kwargs)
         self._redraw()
 
+    def cget(self, key):
+        if key == "state":
+            return self._state
+        return super().cget(key)
+
     def _rounded_rect(self, c, x0, y0, x1, y1, r, **kw):
         points = [
             x0 + r,

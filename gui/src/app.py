@@ -39,7 +39,7 @@ from src.tabs.dashboard.sections import OverclockTab
 if TYPE_CHECKING:
     from src.widgets.fan_curve_editor import FanCurveEditor
 from src.tabs.vfcurve import VFCurveTab
-from src.tabs.vfcurve.sections import AutoscanTab
+from src.tabs.vfcurve.sections import StressorPanel
 
 
 import shutil
@@ -593,7 +593,7 @@ class App(ctk.CTk):
 
         # Placeholders for tabs
         self.tab_dashboard = None
-        self.tab_autoscan = None
+        self.tab_stressor = None
         self.tab_overclock = None
         self.tab_vfcurve = None
 
@@ -750,10 +750,10 @@ class App(ctk.CTk):
                 return
             self.after(100, self._prebuild_next_tab)
             return
-        if self.tab_autoscan is None and self.tab_vfcurve is not None:
+        if self.tab_stressor is None and self.tab_vfcurve is not None:
             try:
-                self.tab_autoscan = AutoscanTab(self.tab_vfcurve.autoscan_host, self)
-                self.register_resize_target(self.tab_autoscan)
+                self.tab_stressor = StressorPanel(self.tab_vfcurve.bottom_host, self)
+                self.register_resize_target(self.tab_stressor)
             except Exception:
                 return
 
@@ -761,7 +761,7 @@ class App(ctk.CTk):
         # Suspending CTkScrollableFrame-heavy tabs can corrupt layout after repeated resizes.
         for internal_name in [
             "tab_dashboard",
-            "tab_autoscan",
+            "tab_stressor",
             "tab_overclock",
             "tab_vfcurve",
         ]:
@@ -1971,19 +1971,46 @@ class App(ctk.CTk):
             self.tab_vfcurve._refresh_curve(force=True)
 
     def run_cli_display(
-        self, args: List[str], on_finished: Optional[Callable[[int], None]] = None
+        self,
+        args: List[str],
+        on_finished: Optional[Callable[[int], None]] = None,
+        exe: Optional[str] = None,
+        on_output: Optional[Callable[[str], None]] = None,
     ) -> None:
         """Run CLI command and stream output to the console.
 
         This helper now accepts an optional completion callback for command chaining.
+        ``exe`` overrides the configured CLI executable for this run (the VF
+        Curve tab's stressor panel drives cli-stressor-cuda-rs through the same
+        single-command runner and console plumbing); ``on_output`` adds a
+        per-line tap on top of the console sink.
         """
-        self.runner.run(args, cwd=self.cli_cwd, on_finished=on_finished)
+        self.runner.run(
+            args,
+            cwd=self.cli_cwd,
+            on_finished=on_finished,
+            exe=exe,
+            on_output=on_output,
+        )
 
     def run_cli(
-        self, args: List[str], on_finished: Optional[Callable[[int], None]] = None
+        self,
+        args: List[str],
+        on_finished: Optional[Callable[[int], None]] = None,
+        exe: Optional[str] = None,
+        on_output: Optional[Callable[[str], None]] = None,
     ) -> None:
-        """Run CLI command with custom on_finished callback."""
-        self.runner.run(args, cwd=self.cli_cwd, on_finished=on_finished)
+        """Run CLI command with custom on_finished callback.
+
+        See ``run_cli_display`` for the ``exe``/``on_output`` overrides.
+        """
+        self.runner.run(
+            args,
+            cwd=self.cli_cwd,
+            on_finished=on_finished,
+            exe=exe,
+            on_output=on_output,
+        )
 
     def cancel_cli(self):
         """Cancel the running CLI process."""

@@ -19,11 +19,46 @@ DEFAULT_CONFIG: Dict[str, JSONValue] = {
     "nvml_lib_path": "",
     "last_gpu_id": "",
     "last_gpu_idx": "",
-    "autoscan": {
-        "mode": "standard",  # standard / ultrafast / legacy
-        "output_csv": "./ws/vfp-tem.csv",
-        "init_csv": "./ws/vfp-init.csv",
-        "bsod_recovery": "",
+    "stressor": {
+        # Standalone cli-stressor-cuda-rs executable driven by the VF Curve
+        # tab's stress-tool panel. Empty = auto-discovered (next to the
+        # configured optimizer CLI, then PATH).
+        "exe_path": "",
+        # Every option below is forwarded only when non-empty/true, so the
+        # tool's own defaults apply to blank fields.
+        "profile": "(default)",  # (default) / standard / low-vram / 40-50 / dynamic-export
+        "duration": "90",
+        "precisions": "",
+        "matrix_sizes": "",
+        "kernel_types": "",
+        "validate_interval": "",
+        "validate_size": "",
+        "seed": "",
+        "stream_mode": "(default)",  # (default) / single / dual / triple
+        "gpu_generate": False,
+        "extra_args": "",
+        # Verify/SDC family (enhanced stressor builds only; the panel greys
+        # these out when the local executable does not advertise them).
+        "no_verify": False,
+        "verify_continue_on_error": False,
+        "verify_resident_interval": "",
+        "verify_slab": False,
+        "gemm_full_check_max_size": "",
+        "skip_self_test": False,
+        "json_out": "",
+        # Vulkan family (spellings differ between the two stressor
+        # generations; the capability probe picks the right one).
+        "vulkan": False,
+        "vulkan_only": False,
+        "vulkan_width": "",
+        "vulkan_height": "",
+        "vulkan_msaa": "",
+        "vulkan_iters": "",
+        "vulkan_shells": "",
+        "vulkan_window": False,
+        "vulkan_rotate": False,
+        "vulkan_particles": False,
+        "vulkan_offscreen": False,
     },
 }
 

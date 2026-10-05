@@ -1,5 +1,5 @@
 """Sections hosted on the VF Curve tab."""
 
-from .autoscan import AutoscanTab
+from .stressor import StressorPanel
 
-__all__ = ["AutoscanTab"]
+__all__ = ["StressorPanel"]
