@@ -73,6 +73,44 @@ pub enum OperationKind {
     /// PCI BAR topology (0xE4B701E3): per-BAR {tag, size-MiB, base} records
     /// (see `nvapi::BarRecord`).
     QueryNvapiBarInfo,
+    /// Compute/topology capability counters (GPU-Z 2.71 audit gap-fill):
+    /// VPE / raster-backend / TPC / SM / SP / core / shader-pipe /
+    /// shader-sub-pipe / partition counts + active-outputs mask, each
+    /// `None` where the board refuses the counter.
+    QueryNvapiComputeCaps,
+    /// PowerChannels policy table (0x67F31384, xOCD v4 2672B layout):
+    /// per-channel (policyId, subtype, min/default/max) — board power in
+    /// raw mW (policyId 0, defaults match the card TGP spec on all four
+    /// live generations) and per-rail OCP current in raw mA (50-series
+    /// (19,13)/(19,12), Ampere+Ada (13,19), Turing (6,19), Pascal none);
+    /// plus the live control-block values with geometry detection. See
+    /// docs/reverse-engineering/nvapi/xocd-oc-tool-audit.md §16.
+    QueryNvapiPowerChannels,
+    /// PerfClientLimits 7-domain lock snapshot (0xE440B867 v2 780B):
+    /// clock-range locks (id 0/1, mode 2, kHz bounds — the `-lgc` family)
+    /// and the V/F voltage lock (id 6, mode 3, µV). Live-verified both
+    /// ways on RTX 2070 (xocd audit §16.2).
+    QueryNvapiBoostLocks,
+    /// ThermChannel capability map (0x0BC8163D v2) — populated channel
+    /// metadata + the primary channel index per thermal type (GPU_AVG /
+    /// hotspot / board / VRAM / PWR_SUPPLY), joined with the live
+    /// temperatures (0x65FE3AAD v2, 8.8 fixed point ÷256 °C; index
+    /// semantics 0=GPU/1=hotspot/VRAM=2(RTX50)/7(RTX40)/9(older)).
+    QueryNvapiThermalChannels,
+    /// OCP / power-channel limit write (0xAFFC2279): raw mA on the
+    /// policyId-19 family, generation-resolved by nvapi-rs
+    /// (`set_power_channel_value`, RMW + readback + rollback inside).
+    /// HIGH RISK: raises an over-current protection ceiling; pre-50-series
+    /// drivers fail closed until the 0x12720 write offset is located.
+    SetNvapiPowerChannelValue,
+    /// TopRels relation-ratio read (0xCBFF71D0, U16.16 at the resolved
+    /// offset). Control GET only answers on 50-series (Pascal/Turing
+    /// -103, Ampere/Ada -1 live).
+    QueryNvapiTopRelsRatio,
+    /// TopRels relation-ratio write (0xEF3D20EA, 0.7–1.2 envelope; 0.9 =
+    /// the exact hardware literal 0xE660). DANGEROUS driver-wide
+    /// clock-tree write, 50-series only, full snapshot/rollback recipe.
+    SetNvapiTopRelsRatio,
     SetNvapiVoltRailOffset,
     /// Set a volt-rail to an absolute target voltage (mV) by deriving the
     /// required µV offset from the live control/status snapshot. Shares the
@@ -345,6 +383,8 @@ impl OperationKind {
                 | SetNvapiPerfFreqCap
                 | SetNvapiOverclockedPstates
                 | SetNvapiPstates20PrivateDelta
+                | SetNvapiPowerChannelValue
+                | SetNvapiTopRelsRatio
         )
     }
 }

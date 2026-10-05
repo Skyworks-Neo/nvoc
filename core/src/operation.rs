@@ -2020,6 +2020,25 @@ impl GpuOperation for QueryNvapiBarInfo {
     }
 }
 
+/// Compute/topology capability counters (GPU-Z 2.71 audit gap-fill,
+/// `docs/reverse-engineering/gpu-z/gpuz-sensor-audit.md` §9): BTree of
+/// counter name → raw u32 (`None` where the board refuses the counter).
+/// Consumed as a best-effort `compute_caps` section of get-info.
+pub struct QueryNvapiComputeCaps;
+
+impl GpuOperation for QueryNvapiComputeCaps {
+    type Output = std::collections::BTreeMap<String, Option<u32>>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiComputeCaps
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let caps = target.nvapi()?.compute_caps().map_err(Error::from)?;
+        Ok(caps.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
+    }
+}
+
 /// Set one rail's µV offset via the private VoltRails control object (the
 /// melonVolt write path: GET snapshot → locate entry → type guard →
 /// patch → SET → readback verify, see `reverse/melonvolt/ANALYSIS.md`).
@@ -2133,6 +2152,167 @@ pub struct NvapiVoltRailOffsetApplied {
     /// it may be below the requested offset's implied wall. 0 = no status
     /// entry / driver hasn't refreshed yet (re-run get-volt-rails).
     pub effective_wall_uV: i32,
+}
+
+/// PowerChannels snapshot (0x67F31384 v4 + 0x8B3E7343 control read):
+/// policy table (board-power mW + per-rail OCP mA, generation-skewed
+/// identities), the resolved NVVDD/MSVDD OCP channels, and the live
+/// control-block values with geometry detection. Read-only; `None` when
+/// the surface refuses (pre-50-series drivers reject the compact control
+/// but still expose the info table — the CLI degrades per section).
+#[derive(Debug, Clone)]
+pub struct NvapiPowerChannelSnapshot {
+    pub policies: Vec<::nvapi::PowerChannelPolicy>,
+    pub nvvdd_ocp: Option<::nvapi::PowerChannelPolicy>,
+    pub msvdd_ocp: Option<::nvapi::PowerChannelPolicy>,
+    /// Live control values (one per populated policy) + compact-geometry
+    /// detection (`Some(true)` = xOCD 40B stride, `Some(false)` = R465
+    /// 136B stride, `None` = ambiguous). `None` overall = control refused.
+    pub control: Option<(Vec<u32>, Option<bool>)>,
+}
+
+/// Read the PowerChannels policy table + OCP channel identities + live
+/// control values (see [`NvapiPowerChannelSnapshot`]). Live-verified on
+/// Pascal/Turing/Ampere/Ada (xocd audit §16.1).
+pub struct QueryNvapiPowerChannels;
+
+impl GpuOperation for QueryNvapiPowerChannels {
+    type Output = Option<NvapiPowerChannelSnapshot>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiPowerChannels
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let gpu = target.nvapi()?;
+        let Some(policies) = gpu.power_channel_policies().ok().flatten() else {
+            return Ok(None);
+        };
+        let (nvvdd_ocp, msvdd_ocp) = gpu.ocp_channels().unwrap_or((None, None));
+        let control = gpu.power_channel_control(&policies).ok().flatten();
+        Ok(Some(NvapiPowerChannelSnapshot {
+            policies,
+            nvvdd_ocp,
+            msvdd_ocp,
+            control,
+        }))
+    }
+}
+
+/// PerfClientLimits 7-domain lock snapshot (0xE440B867) — clock-range
+/// locks (id 0/1, mode 2, kHz bounds) and the V/F voltage lock (id 6,
+/// mode 3, µV). Live-verified both ways on RTX 2070. `None` when the
+/// surface refuses.
+pub struct QueryNvapiBoostLocks;
+
+impl GpuOperation for QueryNvapiBoostLocks {
+    type Output = Option<Vec<::nvapi::BoostLockEntry>>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiBoostLocks
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        Ok(target.nvapi()?.boost_lock_snapshot().ok().flatten())
+    }
+}
+
+/// ThermChannel capability map + live temperatures (0x0BC8163D v2 info fed
+/// into the 0x65FE3AAD v2 status). `status` is `None` when the STATUS half
+/// refuses while INFO answered.
+#[derive(Debug, Clone)]
+pub struct NvapiThermalChannelSnapshot {
+    pub info: ::nvapi::ThermalChannelInfo,
+    pub status: Option<::nvapi::ThermalChannelStatus>,
+}
+
+pub struct QueryNvapiThermalChannels;
+
+impl GpuOperation for QueryNvapiThermalChannels {
+    type Output = Option<NvapiThermalChannelSnapshot>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiThermalChannels
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let gpu = target.nvapi()?;
+        let Some(info) = gpu.thermal_channel_info().ok() else {
+            return Ok(None);
+        };
+        let status = gpu.thermal_channel_status(info.channel_mask).ok();
+        Ok(Some(NvapiThermalChannelSnapshot { info, status }))
+    }
+}
+
+/// OCP / power-channel limit write (raw mA on the policyId-19 family;
+/// nvapi-rs resolves the generation identity, clamps to the driver window
+/// and the 1..5001 A hard envelope, and runs the full RMW + readback +
+/// rollback recipe). HIGH RISK: raises an over-current protection
+/// ceiling. Pre-50-series drivers fail closed (compact control -9) until
+/// the 0x12720 write offset is located (xocd audit E3 round 3).
+#[derive(Clone, Copy, Debug)]
+pub struct SetNvapiPowerChannelValue {
+    pub policy_id: u32,
+    pub subtype: u32,
+    pub value_raw: u32,
+}
+
+impl GpuOperation for SetNvapiPowerChannelValue {
+    type Output = u32;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiPowerChannelValue
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .set_power_channel_value(self.policy_id, self.subtype, self.value_raw)
+            .map_err(Error::from)
+    }
+}
+
+/// TopRels relation ratio: (resolved absolute offset, raw U16.16). The
+/// control GET answers on 50-series only (Pascal/Turing -103, Ampere/Ada
+/// -1 live) — `None` there. Edge semantics (GPC→XBAR vs MSVDD:memory)
+/// remain under adjudication (xocd audit contradiction ③).
+pub struct QueryNvapiTopRelsRatio;
+
+impl GpuOperation for QueryNvapiTopRelsRatio {
+    type Output = Option<(usize, u32)>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiTopRelsRatio
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        Ok(target.nvapi()?.top_rels_ratio().ok().flatten())
+    }
+}
+
+/// TopRels relation-ratio write (0.7–1.2 envelope; 0.9 keeps the exact
+/// hardware literal 0xE660). DANGEROUS driver-wide clock-tree write with
+/// the full snapshot/rollback recipe inside nvapi-rs; returns the
+/// readback ratio. 50-series only.
+#[derive(Clone, Copy, Debug)]
+pub struct SetNvapiTopRelsRatio {
+    pub ratio: f64,
+}
+
+impl GpuOperation for SetNvapiTopRelsRatio {
+    type Output = f64;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiTopRelsRatio
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .set_top_rels_ratio(self.ratio)
+            .map_err(Error::from)
+    }
 }
 
 /// Set a volt-rail to an ABSOLUTE target voltage by deriving the required µV

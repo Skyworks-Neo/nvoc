@@ -9,13 +9,15 @@ use nvoc_core::{
     OemOcScannerAction, PState, Percentage, PmgrArbiterProbe, QueryApiRestriction, QueryAutoBoost,
     QueryClockOffset, QueryDisplays, QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo,
     QueryGpuSettings, QueryGpuStatus, QueryLegacyCoreOvervoltRanges, QueryNvapiBarInfo,
-    QueryNvapiClkDomainFreqDetail, QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomainFreqsEnum,
-    QueryNvapiClkDomains, QueryNvapiClkVfControl, QueryNvapiClkVfPoints, QueryNvapiCoolerInfo,
+    QueryNvapiBoostLocks, QueryNvapiClkDomainFreqDetail, QueryNvapiClkDomainFreqsBatch,
+    QueryNvapiClkDomainFreqsEnum, QueryNvapiClkDomains, QueryNvapiClkVfControl,
+    QueryNvapiClkVfPoints, QueryNvapiComputeCaps, QueryNvapiCoolerInfo,
     QueryNvapiCoreVoltageControl, QueryNvapiDNotifier, QueryNvapiFanPolicyInfo,
     QueryNvapiOcScannerIncomplete, QueryNvapiPStateLevels, QueryNvapiPStateLockStatus,
-    QueryNvapiPmgrVoltageArbiter, QueryNvapiPowerCeiling, QueryNvapiPstates20Private,
-    QueryNvapiRatedTdp, QueryNvapiTargetTempPolicies, QueryNvapiTargetTempPolicyIndex,
-    QueryNvapiTgpWattRange, QueryNvapiThermalSettings, QueryNvapiThermalSim, QueryNvapiVoltDevices,
+    QueryNvapiPmgrVoltageArbiter, QueryNvapiPowerCeiling, QueryNvapiPowerChannels,
+    QueryNvapiPstates20Private, QueryNvapiRatedTdp, QueryNvapiTargetTempPolicies,
+    QueryNvapiTargetTempPolicyIndex, QueryNvapiTgpWattRange, QueryNvapiThermalChannels,
+    QueryNvapiThermalSettings, QueryNvapiThermalSim, QueryNvapiTopRelsRatio, QueryNvapiVoltDevices,
     QueryNvapiVoltRails, QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates,
     QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
     QueryThrottleReasons, QueryVbiosImage, QueryVbiosSecurityInfo, QueryVbiosStatusString,
@@ -30,18 +32,18 @@ use nvoc_core::{
     SetLockedClocks, SetNvapiBackgroundOcScanner, SetNvapiClkDomainOffset,
     SetNvapiCoreVoltageControl, SetNvapiDNotifier, SetNvapiDynamicBoost, SetNvapiEccConfiguration,
     SetNvapiOverclockedPstates, SetNvapiOvervolt, SetNvapiPStateNative, SetNvapiPerfFreqCap,
-    SetNvapiPerfLevelLock, SetNvapiPmgrVoltageArbiter, SetNvapiPowerLimits, SetNvapiPstateLock,
-    SetNvapiPstates20PrivateDelta, SetNvapiSensorLimits, SetNvapiTargetTemp, SetNvapiTgpWatt,
-    SetNvapiThermalSim, SetNvapiVfpPointPrivate, SetNvapiVfpRangePerPointPrivate,
-    SetNvapiVfpRangePrivate, SetNvapiVoltRailOffset, SetNvapiVoltRailTarget, SetNvmlAcousticTemp,
-    SetNvmlPstateLock, SetPowerLimit as SetNvmlPowerLimit, SetPowerMode, SetPstateBaseVoltage,
-    SetPstateClockOffset, SetPublicVftablePointOffset, SetPublicVftableRangeOffset,
-    SetTemperatureLimit, SetVfpFrequencyLock, SetVoltageBoost, SetWm2Active, SetWm2Mode,
-    VfPointType, VfpResetDomain, Wm2AcousticMode, discover_targets, fetch_gpu_type,
-    nvapi_status_name, nvml_pstate_to_str, parse_nvapi_locked_voltage_target,
-    parse_nvml_fan_control_policy, parse_nvml_pstate, query_domain_vf_points_indexed,
-    query_domain_vfp_indices, run, select_targets, set_nvapi_domain_vfp_deltas,
-    sync_memory_pstate_as_p0,
+    SetNvapiPerfLevelLock, SetNvapiPmgrVoltageArbiter, SetNvapiPowerChannelValue,
+    SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiPstates20PrivateDelta, SetNvapiSensorLimits,
+    SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvapiThermalSim, SetNvapiTopRelsRatio,
+    SetNvapiVfpPointPrivate, SetNvapiVfpRangePerPointPrivate, SetNvapiVfpRangePrivate,
+    SetNvapiVoltRailOffset, SetNvapiVoltRailTarget, SetNvmlAcousticTemp, SetNvmlPstateLock,
+    SetPowerLimit as SetNvmlPowerLimit, SetPowerMode, SetPstateBaseVoltage, SetPstateClockOffset,
+    SetPublicVftablePointOffset, SetPublicVftableRangeOffset, SetTemperatureLimit,
+    SetVfpFrequencyLock, SetVoltageBoost, SetWm2Active, SetWm2Mode, VfPointType, VfpResetDomain,
+    Wm2AcousticMode, discover_targets, fetch_gpu_type, nvapi_status_name, nvml_pstate_to_str,
+    parse_nvapi_locked_voltage_target, parse_nvml_fan_control_policy, parse_nvml_pstate,
+    query_domain_vf_points_indexed, query_domain_vfp_indices, run, select_targets,
+    set_nvapi_domain_vfp_deltas, sync_memory_pstate_as_p0,
 };
 use serde_json::{Value, json};
 use time::OffsetDateTime;
@@ -191,6 +193,12 @@ pub enum Command {
     GetDNotifier,
     SetDNotifier,
     GetPowerCeiling,
+    GetPowerChannels,
+    GetBoostLocks,
+    GetThermalChannels,
+    SetPowerChannelLimit,
+    GetTopRelsRatio,
+    SetTopRelsRatio,
     GetVoltRailInfo,
     SetVoltRailLimit,
     GetCoreVoltageControl,
@@ -501,6 +509,10 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     ..CommandSpec::new("get-autoboost-support", Group::Perf, "Read NVML API restriction state")
                 },
             ),
+            (
+                Command::GetBoostLocks,
+                CommandSpec::new("get-boost-locks", Group::Perf, "Read the PerfClientLimits 7-domain lock table (0xE440B867 v2): clock-range locks (id 0/1, mode 2, kHz bounds — the -lgc family) and the V/F voltage lock (id 6, mode 3, µV); all mode 0 = unlocked. Live-verified on RTX 2070 both ways")
+            ),
             (Command::GetCoreVoltageControl, CommandSpec::new("get-core-voltage-control", Group::Voltage, "Read the core-voltage control object (0xA91F88EB, escape 0x07000045)")),
             (
                 Command::GetDisplayList,
@@ -574,6 +586,10 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     formatter: Some(output::format_power_ceiling),
                     ..CommandSpec::new("get-power-ceiling", Group::Power, "Read the effective power wall on PPAB mobiles (nvidia-smi's Ceiling trio): requested TGP (ClientTgpWattGetStatus) + active D-Notifier cap, ceiling = min of the two")
                 },
+            ),
+            (
+                Command::GetPowerChannels,
+                CommandSpec::new("get-power-channels", Group::Power, "Read the PowerChannels policy table (0x67F31384 v4): board power in raw mW (policyId 0, defaults = the card TGP spec) + per-rail OCP current in raw mA (50-series (19,13)/(19,12), Ampere+Ada (13,19), Turing (6,19), Pascal none) with the resolved NVVDD/MSVDD OCP channels and live control values (xocd audit §16.1)")
             ),
             (
                 Command::GetPowerMode,
@@ -695,12 +711,20 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 },
             ),
             (
+                Command::GetThermalChannels,
+                CommandSpec::new("get-thermal-channels", Group::Thermal, "Read the ThermChannel map: populated channel metadata + the primary channel per thermal type (GPU_AVG/hotspot/board/VRAM/PWR_SUPPLY) joined with live temperatures (0x0BC8163D + 0x65FE3AAD, 8.8 fixed point; hotspot=idx1, VRAM=idx2 on RTX50 / 7 on RTX40 / 9 on older)")
+            ),
+            (
                 Command::GetThrottleReasons,
                 CommandSpec {
                     adapters: &NVML_ONLY,
                     formatter: Some(output::format_throttle_reasons_output),
                     ..CommandSpec::new("get-throttle-reasons", Group::Info, "Read NVML throttle reasons")
                 },
+            ),
+            (
+                Command::GetTopRelsRatio,
+                CommandSpec::new("get-top-rels-ratio", Group::Clock, "Read the TopRels clock-tree relation ratio (0xCBFF71D0, raw U16.16 at the resolved offset; 50-series only — Pascal/Turing -103, Ampere/Ada -1). Edge semantics (GPC→XBAR vs MSVDD:memory ratio) are under adjudication; see docs/reverse-engineering/nvapi/xocd-oc-tool-audit.md §16.3"),
             ),
             (Command::GetUuid, CommandSpec::new("get-uuid", Group::Info, "Read GPU UUID")),
             (
@@ -1043,6 +1067,25 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 },
             ),
             (
+                Command::SetPowerChannelLimit,
+                CommandSpec {
+                    arity: (2, 2),
+                    positionals: Box::leak(Box::new([
+                        PositionalArg::free(
+                            "arg_rail",
+                            "RAIL",
+                            "OCP rail: nvvdd (core) or msvdd (memory); see get-power-channels for the resolved channel per generation",
+                        ),
+                        PositionalArg::hyphen(
+                            "arg_current",
+                            "CURRENT",
+                            "Current limit: amperes by default (one decimal allowed), `ma` suffix = raw milliamperes (e.g. 240 or 240000ma)",
+                        ),
+                    ])),
+                    ..CommandSpec::new("set-ocp-limit", Group::Power, "Write the NVVDD/MSVDD OCP current limit (0xAFFC2279, raw mA; HIGH RISK — raises an over-current protection ceiling, no confirmation gate). nvapi-rs resolves the generation identity, clamps to the driver [min,max] window and the 1..5001 A envelope, and runs the full RMW + readback + rollback recipe. 50-series only today: pre-50-series drivers reject the compact control (-9, fail-closed) until the 0x12720 write offset is located (xocd audit E3)")
+                },
+            ),
+            (
                 Command::SetOverclockedPstates,
                 CommandSpec {
                     arity: (1, 1),
@@ -1367,6 +1410,18 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     "Fake temperature in Celsius the driver will see (DANGEROUS research tool)",
                 )])),
                     ..CommandSpec::new("set-temp-sim", Group::Thermal, "Fake the driver-visible GPU temperature in Celsius (DANGEROUS research tool; Extended->basic fallback; Secured-Overrides gated)")
+                },
+            ),
+            (
+                Command::SetTopRelsRatio,
+                CommandSpec {
+                    arity: (1, 1),
+                    positionals: Box::leak(Box::new([PositionalArg::free(
+                    "arg_ratio",
+                    "RATIO",
+                    "Relation ratio 0.7-1.2 (raw U16.16 = ratio*65536; 0.9 keeps the exact hardware literal 0xE660)",
+                )])),
+                    ..CommandSpec::new("set-top-rels-ratio", Group::Clock, "Write the TopRels clock-tree relation ratio (0xEF3D20EA; 50-series only). DANGEROUS driver-wide clock-tree write, no privilege gate; full snapshot/readback/rollback recipe inside. Edge semantics (GPC→XBAR vs MSVDD:memory) under adjudication — xocd audit §16.3")
                 },
             ),
             (
@@ -2745,6 +2800,15 @@ fn execute_target(
                     ),
                 );
             }
+            // Compute/topology capability counters (GPU-Z 2.71 audit
+            // gap-fill): best-effort — each entry is null where the board
+            // refuses that counter. Rendered alphabetically by the generic
+            // object renderer.
+            if let Ok(caps) = run(target, QueryNvapiComputeCaps).map(|r| r.output)
+                && let Some(map) = value.as_object_mut()
+            {
+                map.insert("compute_caps".to_string(), json!(caps));
+            }
             Ok(value)
         }
         Command::GetUuid => {
@@ -3850,6 +3914,170 @@ fn execute_target(
                 }
                 None => json!({"supported": false}),
             })
+        }
+        Command::GetPowerChannels => {
+            let Some(snap) = run(target, QueryNvapiPowerChannels)?.output else {
+                return Ok(json!({"supported": false}));
+            };
+            // raw + derived display per identity: policyId 0 = mW (board
+            // power), OCP mA family = A. Sentinels (def==max==5001000) are
+            // "unbounded".
+            Ok(json!({
+                "policies": snap.policies.iter().map(|c| {
+                    let display = if c.is_board_power() {
+                        format!("{} W default / {} W max", c.default_raw / 1000, c.max_raw / 1000)
+                    } else if c.is_ocp_current() && c.max_raw != 5_001_000 {
+                        format!("{:.2} A default / {:.2} A max", c.default_raw as f64 / 1000.0, c.max_raw as f64 / 1000.0)
+                    } else {
+                        "unbounded (sentinel)".to_string()
+                    };
+                    json!({
+                        "index": c.index,
+                        "policy_id": c.policy_id,
+                        "subtype": c.subtype,
+                        "is_board_power": c.is_board_power(),
+                        "is_ocp_current": c.is_ocp_current(),
+                        "min_raw": c.min_raw,
+                        "default_raw": c.default_raw,
+                        "max_raw": c.max_raw,
+                        "display": display,
+                    })
+                }).collect::<Vec<_>>(),
+                "nvvdd_ocp": snap.nvvdd_ocp.map(|c| json!({
+                    "identity": format!("({},{})", c.policy_id, c.subtype),
+                    "default_mA": c.default_raw,
+                    "max_mA": c.max_raw,
+                    "default_A": c.default_raw as f64 / 1000.0,
+                    "max_A": c.max_raw as f64 / 1000.0,
+                })),
+                "msvdd_ocp": snap.msvdd_ocp.map(|c| json!({
+                    "identity": format!("({},{})", c.policy_id, c.subtype),
+                    "default_mA": c.default_raw,
+                    "max_mA": c.max_raw,
+                    "default_A": c.default_raw as f64 / 1000.0,
+                    "max_A": c.max_raw as f64 / 1000.0,
+                })),
+                "control": snap.control.map(|(values, compact)| json!({
+                    "values": values,
+                    "compact_geometry": compact,
+                })),
+            }))
+        }
+        Command::GetBoostLocks => {
+            let Some(entries) = run(target, QueryNvapiBoostLocks)?.output else {
+                return Ok(json!({"supported": false}));
+            };
+            Ok(json!({
+                "entries": entries.iter().map(|e| json!({
+                    "id": e.id,
+                    "mode": e.mode,
+                    "value": e.value,
+                    "clock_range_lock": e.is_clock_range_lock(),
+                    "voltage_lock": e.is_voltage_lock(),
+                })).collect::<Vec<_>>(),
+                "hint": "id0/1+mode2 = clock-range lock (kHz bounds, -lgc family); id6+mode3 = V/F voltage lock (uV); all mode 0 = unlocked",
+            }))
+        }
+        Command::GetThermalChannels => {
+            let Some(snap) = run(target, QueryNvapiThermalChannels)?.output else {
+                return Ok(json!({"supported": false}));
+            };
+            let type_names = [
+                "GPU_AVG",
+                "GPU_MAX(hotspot)",
+                "BOARD",
+                "MEMORY(vram)",
+                "PWR_SUPPLY",
+            ];
+            Ok(json!({
+                "channel_mask": format!("0x{:08X}", snap.info.channel_mask),
+                "primary": snap.info.primary.iter().enumerate().map(|(ty, slot)| json!({
+                    "type": type_names.get(ty).copied().unwrap_or("UNKNOWN"),
+                    "channel": slot,
+                    "temp_c": slot.and_then(|i| snap.status.as_ref().and_then(|s| s.get(i as usize))),
+                })).collect::<Vec<_>>(),
+                "channels": snap.info.channels.iter().enumerate().filter_map(|(i, c)| c.as_ref().map(|c| json!({
+                    "channel": i,
+                    "ch_type": c.ch_type,
+                    "ch_class": c.ch_class,
+                    "therm_dev": [c.therm_dev_idx, c.therm_dev_prov_idx],
+                    "temp_c": snap.status.as_ref().and_then(|s| s.get(i)),
+                }))).collect::<Vec<_>>(),
+                "status_supported": snap.status.is_some(),
+            }))
+        }
+        Command::SetPowerChannelLimit => {
+            let rail = invocation.positionals[0].to_ascii_lowercase();
+            let raw = invocation.positionals[1].trim();
+            // A by default (one decimal allowed); `ma` suffix = raw mA.
+            let value_raw: u32 = if let Some(ma) = raw.strip_suffix("ma") {
+                ma.trim()
+                    .parse::<u32>()
+                    .map_err(|e| CliError::new(format!("invalid mA value: {e}")))?
+            } else {
+                (raw.parse::<f64>()
+                    .map_err(|e| CliError::new(format!("invalid current: {e}")))?
+                    * 1000.0)
+                    .round() as u32
+            };
+            let snap = run(target, QueryNvapiPowerChannels)?
+                .output
+                .ok_or_else(|| {
+                    CliError::new("PowerChannels table not supported on this GPU/driver")
+                })?;
+            let channel = match rail.as_str() {
+                "nvvdd" | "core" => snap.nvvdd_ocp,
+                "msvdd" | "memory" => snap.msvdd_ocp,
+                other => {
+                    return Err(CliError::new(format!(
+                        "unknown rail '{other}' (expected nvvdd|msvdd)"
+                    )))
+                }
+            }
+            .ok_or_else(|| CliError::new(format!(
+                "no OCP current channel resolved for rail '{rail}' on this generation (Pascal has none; see get-power-channels)"
+            )))?;
+            let applied = run(
+                target,
+                SetNvapiPowerChannelValue {
+                    policy_id: channel.policy_id,
+                    subtype: channel.subtype,
+                    value_raw,
+                },
+            )?
+            .output;
+            Ok(json!({
+                "applied": true,
+                "rail": rail,
+                "identity": format!("({},{})", channel.policy_id, channel.subtype),
+                "raw_mA": applied,
+                "amperes": applied as f64 / 1000.0,
+                "driver_window_mA": [channel.min_raw, channel.max_raw],
+            }))
+        }
+        Command::GetTopRelsRatio => {
+            let Some((offset, raw)) = run(target, QueryNvapiTopRelsRatio)?.output else {
+                return Ok(
+                    json!({"supported": false, "note": "TopRels control answers on 50-series only (Pascal/Turing -103, Ampere/Ada -1)"}),
+                );
+            };
+            Ok(json!({
+                "offset": offset,
+                "raw": raw,
+                "raw_hex": format!("{raw:#x}"),
+                "ratio": raw as f64 / 65536.0,
+            }))
+        }
+        Command::SetTopRelsRatio => {
+            let ratio: f64 = invocation.positionals[0]
+                .parse()
+                .map_err(|e| CliError::new(format!("invalid ratio: {e}")))?;
+            let readback = run(target, SetNvapiTopRelsRatio { ratio })?.output;
+            Ok(json!({
+                "applied": true,
+                "requested": ratio,
+                "readback": readback,
+            }))
         }
         Command::SetVoltRailLimit => {
             // Merged volt-rail setter: --offset (default) writes a µV offset
@@ -8572,6 +8800,12 @@ mod tests {
             | Command::GetDNotifier
             | Command::SetDNotifier
             | Command::GetPowerCeiling
+            | Command::GetPowerChannels
+            | Command::GetBoostLocks
+            | Command::GetThermalChannels
+            | Command::SetPowerChannelLimit
+            | Command::GetTopRelsRatio
+            | Command::SetTopRelsRatio
             | Command::GetVoltRailInfo
             | Command::SetVoltRailLimit
             | Command::GetCoreVoltageControl

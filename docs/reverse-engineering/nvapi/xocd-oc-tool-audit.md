@@ -278,6 +278,14 @@ P2 —— 依赖未定案或无实机，暂缓：
 
 P3 —— 设计借鉴（用户已裁决后续再做）：Profile 体系、Apply 级联回滚栈+undo、双速遥测、opt-in 安全门控、self-test 命令档、基准 worker 协议。
 
+### 17.2.1 实施状态（2026-10-05 深夜，用户勾选后落地）
+
+已实施（用户裁决：P0 全部 + P1 仅 #4 不加保护 + TopRels 比率写 CLI；#5/#6 缓做、#7 不采纳）：
+- nvoc-core：OperationKind 新增 6 变体（QueryNvapiPowerChannels/QueryNvapiBoostLocks/QueryNvapiThermalChannels/SetNvapiPowerChannelValue/QueryNvapiTopRelsRatio/SetNvapiTopRelsRatio，写侧入 is_nvapi_write GC6 预热门）+ 6 个 GpuOperation（读侧包装 None-降级，OCP 写直通 nvapi-rs 内建钳位/RMW/回滚）。
+- cli：6 命令落地——get-power-channels（mA/A 双列 + 哨兵标注 + 几何检测）、get-boost-locks（含谓词与 hint 行）、get-thermal-channels（primary 类型表 + 逐通道实测 °C）、set-ocp-limit <nvvdd|msvdd> <A|ma>（按用户要求无确认门；代际解析 + 驱动窗钳位，pre-50 天然 fail-closed）、get-top-rels-ratio、set-top-rels-ratio <0.7-1.2>（0.9=0xE660 字面量）。
+- nvapi-rs hi 层：7 个透传（power_channel_policies/ocp_channels/power_channel_control/boost_lock_snapshot/top_rels_ratio + 2 写）。
+- 门禁：fmt/clippy 全绿，cli 68 / core 71 / nvapi 全绿（含 specs 排序与穷举守卫）。
+
 ### 17.3 实施注意
 
 - core 每条写操作走既有 OperationKind + is_nvapi_write() GC6 预热门；OCP 写额外要求二次确认语义（xOCD RiskAcknowledgement 的最小版）。
