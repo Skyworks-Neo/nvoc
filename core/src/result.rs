@@ -100,8 +100,9 @@ pub enum OperationKind {
     /// OCP / power-channel limit write (0xAFFC2279): raw mA on the
     /// policyId-19 family, generation-resolved by nvapi-rs
     /// (`set_power_channel_value`, RMW + readback + rollback inside).
-    /// HIGH RISK: raises an over-current protection ceiling; pre-50-series
-    /// drivers fail closed until the 0x12720 write offset is located.
+    /// HIGH RISK: raises an over-current protection ceiling. Drives the
+    /// xOCD compact control geometry (stamp v1|2636, info-mask seed) on
+    /// every generation; the old pre-50 -9 "fail-closed" was a stamp typo.
     SetNvapiPowerChannelValue,
     /// TopRels relation-ratio read (0xCBFF71D0, U16.16 at the resolved
     /// offset). Control GET only answers on 50-series (Pascal/Turing

@@ -2158,8 +2158,10 @@ pub struct NvapiVoltRailOffsetApplied {
 /// policy table (board-power mW + per-rail OCP mA, generation-skewed
 /// identities), the resolved NVVDD/MSVDD OCP channels, and the live
 /// control-block values with geometry detection. Read-only; `None` when
-/// the surface refuses (pre-50-series drivers reject the compact control
-/// but still expose the info table — the CLI degrades per section).
+/// the surface refuses (the control GET answers on every generation once
+/// the xOCD stamp/seed recipe is driven — see
+/// `NV_GPU_CLIENT_TGP_WATT_STATUS_10A4C_V1::STAMP`; the pre-fix v16 typo
+/// made it -9 everywhere and was mistaken for a pre-50 gate).
 #[derive(Debug, Clone)]
 pub struct NvapiPowerChannelSnapshot {
     pub policies: Vec<::nvapi::PowerChannelPolicy>,
@@ -2249,8 +2251,9 @@ impl GpuOperation for QueryNvapiThermalChannels {
 /// nvapi-rs resolves the generation identity, clamps to the driver window
 /// and the 1..5001 A hard envelope, and runs the full RMW + readback +
 /// rollback recipe). HIGH RISK: raises an over-current protection
-/// ceiling. Pre-50-series drivers fail closed (compact control -9) until
-/// the 0x12720 write offset is located (xocd audit E3 round 3).
+/// ceiling. Every generation shares the xOCD compact control geometry
+/// (stamp v1|2636, feature-detected at runtime); the old pre-50 -9
+/// "fail-closed" was a stamp typo, not a generation gate.
 #[derive(Clone, Copy, Debug)]
 pub struct SetNvapiPowerChannelValue {
     pub policy_id: u32,

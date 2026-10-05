@@ -1085,7 +1085,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                             "Current limit: amperes by default (one decimal allowed), `ma` suffix = raw milliamperes (e.g. 240 or 240000ma)",
                         ),
                     ])),
-                    ..CommandSpec::new("set-ocp-limit", Group::Power, "Write the NVVDD/MSVDD OCP current limit (0xAFFC2279, raw mA; HIGH RISK — raises an over-current protection ceiling, no confirmation gate). nvapi-rs resolves the generation identity, clamps to the driver [min,max] window and the 1..5001 A envelope, and runs the full RMW + readback + rollback recipe. 50-series only today: pre-50-series drivers reject the compact control (-9, fail-closed) until the 0x12720 write offset is located (xocd audit E3)")
+                    ..CommandSpec::new("set-ocp-limit", Group::Power, "Write the NVVDD/MSVDD OCP current limit (0xAFFC2279, raw mA; HIGH RISK — raises an over-current protection ceiling, no confirmation gate). nvapi-rs resolves the generation identity, clamps to the driver [min,max] window and the 1..5001 A envelope, and runs the full RMW + readback + rollback recipe. Drives the xOCD compact control geometry (stamp v1|2636, info-mask-seeded GET) on every generation; the buffer's geometry is feature-detected at runtime (xocd audit E3)")
                 },
             ),
             (
@@ -4021,7 +4021,7 @@ fn execute_target(
                         "offset_hw": c.offset_hw,
                         "scaling": c.scaling,
                         "range_c": (c.min_temp != 0 || c.max_temp != 0)
-                            .then(|| [c.min_temp / 256, c.max_temp / 256]),
+                            .then_some([c.min_temp / 256, c.max_temp / 256]),
                         "temp_c": snap.status.as_ref().and_then(|s| s.get(i)),
                     })
                 })).collect::<Vec<_>>(),

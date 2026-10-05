@@ -3145,10 +3145,7 @@ pub(super) fn format_thermal_channels(output: &Value) -> Vec<String> {
     }
     if let Some(channels) = output.get("channels").and_then(Value::as_array) {
         if !channels.is_empty() {
-            lines.push(format!(
-                "{}",
-                nvoc_cli_common::color::stylize_title("Channels")
-            ));
+            lines.push(nvoc_cli_common::color::stylize_title("Channels").to_string());
         }
         for entry in channels {
             let idx = entry
@@ -3172,10 +3169,10 @@ pub(super) fn format_thermal_channels(output: &Value) -> Vec<String> {
                 let d = dev.first().and_then(Value::as_u64).unwrap_or(0);
                 let p = dev.get(1).and_then(Value::as_u64).unwrap_or(0);
                 parts.push(format!("dev({d},{p})"));
-                if p == 1 {
-                    if let Some(sib) = entry.get("same_sensor_as").and_then(Value::as_u64) {
-                        parts.push(format!("same sensor as ch{sib} (+offset_hw)"));
-                    }
+                if p == 1
+                    && let Some(sib) = entry.get("same_sensor_as").and_then(Value::as_u64)
+                {
+                    parts.push(format!("same sensor as ch{sib} (+offset_hw)"));
                 }
             }
             for key in ["offset_sw", "offset_hw", "scaling"] {
