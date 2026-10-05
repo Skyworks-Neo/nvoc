@@ -46,7 +46,7 @@ cargo test -p nvapi --release --test xocd_gap_probe_live \
 
 ## 3. L3 — 写入活体（`set_power_command`，双门控 + 自恢复）
 
-唯一 SET。默认不跑；显式开启后探针执行：identity 写 baseline → 扰动 +1 → 恢复 baseline，每步读回校验，恢复失败会打印 `!! RESTORE FAILED`（响亮失败，不静默）。
+唯一 SET。默认不跑；显式开启后探针在第一个可用通道（优先 0xF8，回退 0xFE）上执行：identity 写 baseline → 扰动 +1 → 恢复 baseline，每步读回校验，恢复失败会打印 `!! RESTORE FAILED`（响亮失败，不静默）。
 
 ```bash
 cd nvapi-rs
@@ -57,21 +57,31 @@ NVOC_ALLOW_PWR_CMD_WRITE=1 cargo test -p nvapi --release \
 
 安全约束（务必先读）：
 
-- 写臂**只写 0xF8（观测）通道**；0xFE（内核 power-cap 请求）不在自动写臂内，需调用方显式 arm。
-- 通道 baseline 为 0 / 0xFFFFFFFF 哨兵时**跳过**（无可安全扰动目标）——Pascal 因此直接跳过，属预期。
-- 提权：非提权会拿到 -137/NoPermission，属预期优雅路径，不算失败。
-- 写臂挑**第一个可写 0xF8 通道**即停（不遍历全部），最小扰动面。
+- 写臂优先 0xF8（观测），无可用通道时**回退到 0xFE（内核 power-cap 请求）**——Pascal/Ada 上唯一有数据的通道就是 ch0/0xFE（=板功率 mW），不回退则永远无物可写。
+- 通道 baseline 为 0 / 0xFFFFFFFF 哨兵时**跳过**（无可安全扰动目标）。
+- 写入序列 = identity 写回原值 → +1/-1 扰动 → 恢复原值，逐步读回校验；恢复失败会打印 `!! RESTORE FAILED`（响亮失败）。0xFE 上扰动幅度仅 ±1 mW，等价无害。
+- 提权：非提权 identity SET 会得到 `InvalidUserPrivilege`(-137)，探针打印"live channel found but every SET was rejected (privilege? run elevated)"——属预期优雅路径，不算失败。
+- 写臂挑**第一个可用通道**即停（不遍历全部），最小扰动面。
 
 L3 判据（决定是否值得封装写入）：identity 写被接受且读回一致 = SET 通路成立；扰动写若 `Err` 且随后 baseline 恢复成功 = 驱动钳位/拒绝（记录窗口）；恢复失败 = **红旗**，封装前必须查清。
 
+## 3b. 已跑结果台账（2026-10-05）
+
+| 机器 | graph_roles | power_command | control_input | 写臂 |
+|---|---|---|---|---|
+| Tesla P100（Pascal，非提权） | Err；诊断=Modern 0x2BA030 被 -9、fallback 0xF4BF4 成功但角色解码失败（Pascal 无角色拓扑） | 仅 ch0：0xF8=`0xFFFFFFFF` 哨兵、0xFE=**250000**（板功率 mW） | 跳过 | 命中 ch0/0xFE 但 SET=-137（非提权） |
+| RTX 4060 Laptop（Ada） | Err | 仅 ch0：0xF8=`0xFFFFFFFF` 哨兵、0xFE=**100000**（板功率 mW） | 跳过 | 命中 ch0/0xFE（需提权执行） |
+
+要点：**`power_command` ch0/0xFE 返回的正是板功率 mW**（P100 250 W / 4060L 100 W，与 NVML/通道表三面一致）——这是本面唯一在两代上都有真实数据的通道，也是写封装的价值点。`power_graph_roles` 在两台都 `Err`，故 `power_control_input` 连带跳过；**要做角色/输入面的封装裁决，需一台能通过 graph 解码的机器**，届时重跑 L1/L2 会由新增诊断行打印 Modern/fallback 两个戳的原始 status，据此判断是「驱动不给」还是「我们的解码期望不匹配该卡」。
+
 ## 4. L4 — 封装裁决门（用户决策）
 
-只有当 L1/L2 在目标机（Ada/Blackwell）**至少一个面上有实质非哨兵数据**、且 L3 identity 写成立时，才建议封装。裁决清单：
+只有当 L1/L2 在目标机**至少一个面上有实质非哨兵数据**、且 L3 identity 写成立时，才建议封装。裁决清单：
 
-1. **读面**（graph_roles / power_command / control_input）是否返回真实语义数据（非 0/哨兵）？是 → 封装只读命令（如 `get-power-graph`/`get-power-command`）。
-2. **写面** identity SET 是否被驱动接受并读回？是 → 封装写入命令（建议镜像 `set-pwr-cur-limit` 的 `TARGET VALUE` 形态，加高危提示）。
+1. **读面**（graph_roles / power_command / control_input）是否返回真实语义数据（非 0/哨兵）？`power_command ch0/0xFE` 已可判定为"有" → 可封装只读命令（如 `get-power-command`）。
+2. **写面** identity SET 是否被驱动接受并读回？**需提权复跑 L3**——这是唯一的封写入前置门。
 3. 扰动/恢复是否符合单一显式窗口语义（而非静默丢弃）？若像 VF 表那样静默重建归零 → **可写面判定为无效**，不封装写。
-4. 是否需要给 0xFE 单独一条命令/开关（内核 power-cap 请求语义）？默认不建议，先只封 0xF8。
+4. 是否需要给 0xFE 单独一条命令/开关（内核 power-cap 请求语义）？若封则单列，先不混进 0xF8。
 
 结论落地：在审计报告写一段封测结论 + 若封装则补对应 `*/tests/*` 与 CLI/TUI 触点。
 
