@@ -157,7 +157,8 @@ impl<'a> PeImage<'a> {
         let image_base = u64::from_le_bytes(img[opt + 24..opt + 32].try_into().unwrap());
         let size_of_image = u32::from_le_bytes(img[opt + 56..opt + 60].try_into().unwrap());
         let nsec = u16::from_le_bytes(img[coff + 2..coff + 4].try_into().unwrap()) as usize;
-        let secoff = opt + u16::from_le_bytes(img[coff + 16..coff + 18].try_into().unwrap()) as usize;
+        let secoff =
+            opt + u16::from_le_bytes(img[coff + 16..coff + 18].try_into().unwrap()) as usize;
         let mut sections = Vec::new();
         for i in 0..nsec {
             let s = secoff + i * 40;
@@ -253,8 +254,8 @@ fn anchor_generator(
     }
     trail.push(format!("F7 签名 {} 处 @ {:#x?}", f7_sites.len(), f7_sites));
 
-    use capstone::arch::x86::X86OperandType;
     use capstone::arch::DetailsArchInsn;
+    use capstone::arch::x86::X86OperandType;
 
     for &site in &f7_sites {
         let Some(fn_off) = fn_start_before(pe.img, site, 0x800) else {
@@ -276,7 +277,9 @@ fn anchor_generator(
             if insn.address() >= site_stop {
                 break; // F7 写点后一点点就够
             }
-            let Ok(detail) = cs.insn_detail(insn) else { continue };
+            let Ok(detail) = cs.insn_detail(insn) else {
+                continue;
+            };
             let ops: Vec<_> = match detail.arch_detail().x86() {
                 Some(x) => x.operands().collect(),
                 None => continue,
@@ -292,10 +295,7 @@ fn anchor_generator(
             } else {
                 (None, None)
             };
-            if matches!(
-                insn.mnemonic(),
-                Some("mov") | Some("movzx") | Some("cmp")
-            )
+            if matches!(insn.mnemonic(), Some("mov") | Some("movzx") | Some("cmp"))
                 && let (Some(dst), Some(mem)) = (dst, mem)
             {
                 let base_name = cs.reg_name(mem.base()).unwrap_or_default();
@@ -308,7 +308,9 @@ fn anchor_generator(
                     // 序首 root 装载:mov r64,[rcx+M]
                     major_root = Some(mem.disp() as u32);
                     root_reg = Some(*dst);
-                } else if root_reg.is_some_and(|r| r == mem.base()) && mem.index() == capstone::RegId(0) {
+                } else if root_reg.is_some_and(|r| r == mem.base())
+                    && mem.index() == capstone::RegId(0)
+                {
                     // root 字段访问(mov/movzx 读,cmp 测试)
                     let byte_acc =
                         insn.mnemonic() == Some("cmp") || insn.mnemonic() == Some("movzx");
@@ -377,13 +379,9 @@ struct RootFields {
 
 /// 锚 2 互证:SetAmount 族签名 `cmp byte [reg+init],0`(80 B8)的函数序首
 /// `mov r64,[rcx+d32]` → 第二个 Major→root 来源。
-fn anchor_set_amount(
-    pe: &PeImage,
-    cs: &capstone::Capstone,
-    init_off: u32,
-) -> Option<u32> {
-    use capstone::arch::x86::X86OperandType;
+fn anchor_set_amount(pe: &PeImage, cs: &capstone::Capstone, init_off: u32) -> Option<u32> {
     use capstone::arch::DetailsArchInsn;
+    use capstone::arch::x86::X86OperandType;
     let mut pat = vec![0x80u8, 0xB8];
     pat.extend_from_slice(&init_off.to_le_bytes());
     pat.push(0x00);
@@ -450,8 +448,8 @@ struct ChainScan {
 }
 
 fn scan_chains(pe: &PeImage, cs: &capstone::Capstone) -> Result<ChainScan, ProbeError> {
-    use capstone::arch::x86::X86OperandType;
     use capstone::arch::DetailsArchInsn;
+    use capstone::arch::x86::X86OperandType;
     // 字节锚定(与活体差分 session 的 Python 成功版同构):
     // 1) 全 .text 扫 `48/4C 8B ??(mod=00,rm=101)` = mov r64,[rip+d32];
     // 2) 目标落在写段 → state 槽装载候选;小窗(0x200)反汇编跟踪寄存器,
@@ -482,8 +480,8 @@ fn scan_chains(pe: &PeImage, cs: &capstone::Capstone) -> Result<ChainScan, Probe
                 let reg_ext = (u16::from((b0 >> 2) & 1)) << 3; // REX.R → bit3
                 let reg_num = (((modrm >> 3) & 7) as u16 | reg_ext) as usize;
                 const REGS: [&str; 16] = [
-                    "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi",
-                    "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15",
+                    "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10",
+                    "r11", "r12", "r13", "r14", "r15",
                 ];
                 let mut holders: Vec<&str> = vec![REGS[reg_num]];
                 let window = &pe.img[i + 7..(i + 7 + 0x200).min(pe.img.len())];
@@ -494,14 +492,18 @@ fn scan_chains(pe: &PeImage, cs: &capstone::Capstone) -> Result<ChainScan, Probe
                         if insn.mnemonic() == Some("ret") {
                             break;
                         }
-                        let Ok(detail) = cs.insn_detail(insn) else { continue };
+                        let Ok(detail) = cs.insn_detail(insn) else {
+                            continue;
+                        };
                         let ops: Vec<_> = match detail.arch_detail().x86() {
                             Some(x) => x.operands().collect(),
                             None => continue,
                         };
                         // 找 mem 操作数(基寄存器在 holders)
                         for (oi, op) in ops.iter().enumerate() {
-                            let X86OperandType::Mem(mem) = &op.op_type else { continue };
+                            let X86OperandType::Mem(mem) = &op.op_type else {
+                                continue;
+                            };
                             let base = cs.reg_name(mem.base()).unwrap_or_default();
                             if !holders.iter().any(|h| *h == base) {
                                 continue;
@@ -573,9 +575,7 @@ fn scan_chains(pe: &PeImage, cs: &capstone::Capstone) -> Result<ChainScan, Probe
 
 /// 从链簇选 GPU 表链:(槽, D) 组内找 ID/Major 对(M=I-8 双双在列)与
 /// count(C 在 I 后 0x100..0x400)。
-fn pick_table_chain(
-    scan: &ChainScan,
-) -> Result<(u64, u32, u32, u32, u32), ProbeError> {
+fn pick_table_chain(scan: &ChainScan) -> Result<(u64, u32, u32, u32, u32), ProbeError> {
     // 组槽+D → (bigdisp, size) 集合
     let mut groups: std::collections::HashMap<(u64, u32), Vec<(u32, u8)>> = Default::default();
     for ((slot, d, big), (_, sz)) in &scan.chains {
@@ -588,8 +588,16 @@ fn pick_table_chain(
         // 616.92 Major 带 disp32(qword mov)、ID 折叠。宽度语义:dword=ID/qword=Major
         // (count 也是 dword,故 dword 候选逐个试,以「ID 后 0x100..0x400 有 count」
         // 为接受条件;qword 候选与 dword 候选差 8 时互证)。
-        let qwords: Vec<u32> = bigs.iter().filter(|(_, sz)| *sz == 8).map(|(b, _)| *b).collect();
-        let dwords: Vec<u32> = bigs.iter().filter(|(_, sz)| *sz == 4).map(|(b, _)| *b).collect();
+        let qwords: Vec<u32> = bigs
+            .iter()
+            .filter(|(_, sz)| *sz == 8)
+            .map(|(b, _)| *b)
+            .collect();
+        let dwords: Vec<u32> = bigs
+            .iter()
+            .filter(|(_, sz)| *sz == 4)
+            .map(|(b, _)| *b)
+            .collect();
         // qword 主导(Major 直接可见)
         for &m in &qwords {
             let count = bigs
@@ -613,13 +621,15 @@ fn pick_table_chain(
         }
     }
     // 全组失败 → 诊断输出后报最热组
-    eprintln!("[probe-debug] pairs top8: {:?}", &scan.pairs[..scan.pairs.len().min(8)]);
-    eprintln!("[probe-debug] chains top8: {:?}", &scan.chains[..scan.chains.len().min(8)]);
-    let hottest = scan
-        .pairs
-        .first()
-        .map(|((_, d), _)| *d)
-        .unwrap_or(0);
+    eprintln!(
+        "[probe-debug] pairs top8: {:?}",
+        &scan.pairs[..scan.pairs.len().min(8)]
+    );
+    eprintln!(
+        "[probe-debug] chains top8: {:?}",
+        &scan.chains[..scan.chains.len().min(8)]
+    );
+    let hottest = scan.pairs.first().map(|((_, d), _)| *d).unwrap_or(0);
     Err(ProbeError::TableEntryLayoutFailed(hottest))
 }
 
@@ -727,8 +737,7 @@ pub fn probe(img: &[u8]) -> Result<NvlddmkmLayout, ProbeError> {
 /// 文件偏移 → RVA。
 fn pe_file_to_rva(pe: &PeImage, file_off: u64) -> Option<u64> {
     pe.sections.iter().find_map(|s| {
-        (file_off >= s.raw && file_off < s.raw + s.rawsz)
-            .then_some(s.rva + (file_off - s.raw))
+        (file_off >= s.raw && file_off < s.raw + s.rawsz).then_some(s.rva + (file_off - s.raw))
     })
 }
 
