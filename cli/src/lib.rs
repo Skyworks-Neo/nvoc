@@ -1454,7 +1454,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                         "VALUE",
                         "Volt-rail limit value, millivolts in both modes (e.g. 1125 or 56.25; `uv` suffix = raw µV): --offset (default) writes the offset directly; --target takes an absolute target and derives the offset from the live control/status snapshot. The driver clamps the effective wall to min(target, vbios_wall, vrm_max_wall)",
                     )])),
-                    ..CommandSpec::new("set-volt-rail-limit", Group::Voltage, "Set a volt-rail limit: --offset (default) writes an mV offset directly (melonVolt write path; 5090 MSVDD = rail 1 type 3); --target takes an absolute mV target and derives the offset from the live control/status snapshot. Both take millivolts by default, `uv` suffix = raw µV --slot N (0..3, default 0) selects the melonVolt payload dword: 0 = the uV offset (offset/target modes above); 1 = VBIOS max wall offset (user A/B); 2 = VRM max wall offset; 3 = VMIN/min-hold offset (all mV-in/uV-out like offset mode; 2/3 pinned on P100/582.41, status VRM wall/Min Hold follow 1:1). Slots 4/5: no known use; refused here (-300 crashed the driver on 4060 Laptop / 610; -100..-200 observed safe — lab-only, not exposed). --slot >0 conflicts with --target")
+                    ..CommandSpec::new("set-volt-rail-limit", Group::Voltage, "Set a volt-rail limit: --offset (default) writes an mV offset directly (melonVolt write path; 5090 MSVDD = rail 1 type 3); --target takes an absolute mV target and derives the offset from the live control/status snapshot. Both take millivolts by default, `uv` suffix = raw µV --slot N (0..3, default 0) selects the melonVolt payload dword: 0 = the uV offset (offset/target modes above); 1 = VBIOS max wall offset (user A/B); 2 = VRM max wall offset; 3 = VMIN/min-hold offset (all mV-in/uV-out like offset mode; 2/3 pinned on P100/582.41, status VRM wall/Min Hold follow 1:1). Slots 4/5: no known use — -300 crashed the driver on 4060 Laptop / 610, -100..-200 observed safe; honored as-is, know what you are writing. --slot >0 conflicts with --target")
                 },
             ),
             (
@@ -1817,12 +1817,14 @@ fn validate_invocation(invocation: &Invocation) -> CliResult<()> {
         }
     }
 
+    // Protocol bound: the melonVolt payload is 0..5. Slots 4/5 are legal
+    // but dangerous (honored as-is per user choice; see the --slot help).
     if command == Command::SetVoltRailLimit
         && option_one(invocation, "slot")
-            .is_some_and(|raw| raw.parse::<usize>().map(|v| v > 3).unwrap_or(true))
+            .is_some_and(|raw| raw.parse::<usize>().map(|v| v > 5).unwrap_or(true))
     {
         return Err(CliError::new(
-            "--slot out of range (writable payload slots are 0..3; slots 4/5 have no known use and crashed the driver at -300 on 4060 Laptop / 610 — small writes -100..-200 observed safe, refused here anyway)",
+            "--slot out of range (melonVolt payload is 0..5)",
         ));
     }
 
@@ -2213,7 +2215,7 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .long("slot")
             .value_name("SLOT")
             .action(ArgAction::Set)
-            .help("set-volt-rail-limit: melonVolt payload dword 0..3 (0 = the uV offset; 1 = VBIOS max wall offset, user A/B; 2 = VRM max wall offset; 3 = VMIN/min-hold offset, P100/582.41-pinned; ⚠️ 4/5 no known use, refused — -300 crashed 4060L/610, -100..-200 observed safe). ClkDomains family (set/reset-private-freq-domain-global-offset): RAW record dword to write (0-7, never remapped; 10~40系 planes live in 0=freq/1=volt, Blackwell 50系 in 2=freq/3=volt — prefer the --freq/--volt aliases; 2-7 driver-opaque on 10~40系 — identify via A/B with get-clk-domain-freq). reset-private-vftable-offset: 0 = freq plane (mode-0 kHz offsets), 1 = volt plane (mode-1 raw values)"),
+            .help("set-volt-rail-limit: melonVolt payload dword 0..3 (0 = the uV offset; 1 = VBIOS max wall offset, user A/B; 2 = VRM max wall offset; 3 = VMIN/min-hold offset, P100/582.41-pinned; ⚠️ 4/5 no known use — -300 crashed 4060L/610, -100..-200 observed safe, honored as-is). ClkDomains family (set/reset-private-freq-domain-global-offset): RAW record dword to write (0-7, never remapped; 10~40系 planes live in 0=freq/1=volt, Blackwell 50系 in 2=freq/3=volt — prefer the --freq/--volt aliases; 2-7 driver-opaque on 10~40系 — identify via A/B with get-clk-domain-freq). reset-private-vftable-offset: 0 = freq plane (mode-0 kHz offsets), 1 = volt plane (mode-1 raw values)"),
         "freq" => Arg::new("freq")
             .long("freq")
             .action(ArgAction::SetTrue)
@@ -9693,8 +9695,9 @@ mod tests {
         assert!(parse_args(["set-volt-rail-limit", "0", "12.5", "--slot", "6"]).is_err());
         // slots 4/5: refused at parse (no known use; -300 crashed 4060L/610,
         // -100..-200 observed safe — kept lab-only)
-        assert!(parse_args(["set-volt-rail-limit", "0", "12.5", "--slot", "4"]).is_err());
-        assert!(parse_args(["set-volt-rail-limit", "0", "12.5", "--slot", "5"]).is_err());
+        // slots 4/5 honored as-is (user choice; crash matrix in help)
+        assert!(parse_args(["set-volt-rail-limit", "0", "12.5", "--slot", "4"]).is_ok());
+        assert!(parse_args(["set-volt-rail-limit", "0", "12.5", "--slot", "5"]).is_ok());
         // Old names are gone.
         assert!(parse_args(["set-power-limit", "140"]).is_err());
         assert!(parse_args(["set-ocp-limit", "nvvdd", "140"]).is_err());
