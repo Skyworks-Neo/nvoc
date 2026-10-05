@@ -24,6 +24,7 @@
 //! 只从窗口拷出字节;pmxdrv 不加探测直接解引用用户指针,窗口内访问不可访问
 //! 物理页的行为与 xOCD 同源,探针只触碰 RAM 范围(低内存/页表帧)。
 
+pub mod layout_probe;
 pub mod pagewalk;
 
 #[cfg(windows)]

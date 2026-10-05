@@ -14,6 +14,7 @@
 //! read:按 NVOC_POWER_READ_VA 直读 root 对象并解析八字段(L3 身份基线)。
 #![cfg(windows)]
 
+use nvoc_core::kmd::layout_probe::{probe as probe_layout, NvlddmkmLayout};
 use nvoc_core::kmd::pagewalk::{
     discover_root, find_loaded_module, read_virtual, translate, PeFingerprint, PhysicalMemory,
 };
@@ -22,7 +23,7 @@ use serde_json::{json, Value};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// 差分观测值(mW):90/95/100/140 W 与窗下限 5 W;150000=策略 max 候选
 /// (锚页值表实测),135000=NVVDD OCP max,50000=半功率槽。
@@ -245,10 +246,30 @@ fn out_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../reverse/kmd-power-4060l"))
 }
 
+/// 从 NVOC_POWER_LAYOUT_IMG(磁盘 nvlddmkm.sys 路径)静态推导布局;
+/// 未设置时返回 None(相位回退到硬编码 610.74 常量)。
+fn load_layout() -> Option<NvlddmkmLayout> {
+    let path = env::var("NVOC_POWER_LAYOUT_IMG").ok()?;
+    let img = std::fs::read(&path).unwrap_or_else(|e| panic!("读布局镜像 {path} 失败: {e}"));
+    let layout = probe_layout(&img).unwrap_or_else(|e| panic!("布局推导失败(fail-closed): {e:?}"));
+    println!(
+        "布局: 槽={:#x} state+{:#x} count=+{:#x} Major=+{:#x} M→root={:#x} init={:#x} UPPER={:#x}",
+        layout.global_slot_rva,
+        layout.state_table_off,
+        layout.table_count_off,
+        layout.entry_major_off,
+        layout.major_root_off,
+        layout.root_init_off,
+        layout.root_upper_off
+    );
+    Some(layout)
+}
+
 fn connect_walk() -> (
     nvoc_core::kmd::pagewalk::LoadedModule,
     CachedPhys<'static>,
     u64,
+    &'static PmxDrv,
 ) {
     // 返回值生命周期走借用会牵扯 PmxDrv 存活期;这里泄漏连接对象,
     // 测试进程退出即回收(单次批处理工具,不做运行时清理)。
@@ -273,7 +294,7 @@ fn connect_walk() -> (
         .unique_root()
         .expect("页表根不唯一,中止(见事件)");
     println!("页表根: 0x{root:016X}");
-    (module, phys, root)
+    (module, phys, root, drv)
 }
 
 /// 逐页读一段内核 VA(缺页置 0 并记录洞)。
@@ -382,21 +403,95 @@ fn l2_power_policy_diff() {
         "hub" => hub(&dir),
         "region" => region(&tag, &dir),
         "trace" => trace(&dir),
-        "trace" => trace(&dir),
-        "graphwalk" => graphwalk(&tag, &dir),
         "graphwalk" => graphwalk(&tag, &dir),
         "marker" => marker(&dir),
         "chain" => chain(&dir),
         "statewalk" => statewalk(&dir),
-        other => panic!("未知相位 {other}(snapshot|diff|read|near|hub|region|trace|graphwalk|marker|chain|statewalk)"),
+        "write" => write_upper(&dir),
+        other => panic!("未知相位 {other}(snapshot|diff|read|near|hub|region|trace|graphwalk|marker|chain|statewalk|write)"),
     }
+}
+
+/// write:L3 执行层写探针 —— root UPPER 槽单 u32 写(经物理帧,PAGE_READWRITE 窗)。
+/// 铁律:身份门(init/key/期望 UPPER)不过即拒写;ARM=YES 才动手;写后读回。
+/// env: NVOC_POWER_WRITE_ROOT(root VA)、NVOC_POWER_WRITE_UPPER(新值 mW)、
+///       NVOC_POWER_WRITE_EXPECT_UPPER(默认 140000)、NVOC_POWER_WRITE_ARM=YES。
+fn write_upper(_dir: &Path) {
+    if env::var("NVOC_POWER_WRITE_ARM").as_deref() != Ok("YES") {
+        panic!("写臂未武装(需 NVOC_POWER_WRITE_ARM=YES)");
+    }
+    let root_va = u64::from_str_radix(
+        env::var("NVOC_POWER_WRITE_ROOT").expect("write 需 NVOC_POWER_WRITE_ROOT").trim_start_matches("0x"),
+        16,
+    ).unwrap();
+    // mW 十进制
+    let new_upper: u32 = env::var("NVOC_POWER_WRITE_UPPER").expect("write 需 NVOC_POWER_WRITE_UPPER").trim().parse().unwrap();
+    let expect_upper: u32 = env::var("NVOC_POWER_WRITE_EXPECT_UPPER").ok().and_then(|s| s.trim().parse().ok()).unwrap_or(140000);
+
+    let (_module, phys, root, drv) = connect_walk();
+    // 身份门偏移:layout 优先(跨代),否则 610.74 常量
+    let (init_off, key_off, upper_off): (u64, u64, u64) = if let Some(l) = load_layout() {
+        (
+            u64::from(l.root_init_off),
+            u64::from(l.root_key_off),
+            u64::from(l.root_upper_off),
+        )
+    } else {
+        (OFF_INIT, OFF_KEY, OFF_UPPER)
+    };
+    let rd4 = |va: u64| -> Option<u32> {
+        let mut h = Vec::new();
+        let b = read_range(&phys, root, va, 4, &mut h);
+        if h.is_empty() && b.len() == 4 {
+            Some(u32::from_le_bytes(b[0..4].try_into().unwrap()))
+        } else {
+            None
+        }
+    };
+    // 身份门
+    let init = rd4(root_va + u64::from(init_off)).map(|v| v & 0xFF);
+    let key = rd4(root_va + u64::from(key_off)).map(|v| v & 0xFF);
+    let upper = rd4(root_va + u64::from(upper_off));
+    println!(
+        "身份: init={init:?} key={key:?} UPPER={upper:?}(期望 init=1 key=2 UPPER={expect_upper})"
+    );
+    if init != Some(1) || key != Some(2) || upper != Some(expect_upper) {
+        panic!("身份门不过 — 拒写(对象可能漂移,先重走 L2 链)");
+    }
+    // 经物理帧写单 u32
+    let upper_va = root_va + u64::from(upper_off);
+    let pa = translate(&phys, root, upper_va).expect("UPPER 槽 VA 翻译失败");
+    let frame = pa & !0xFFF;
+    let off_in_page = (upper_va & 0xFFF) as usize;
+    println!("写 UPPER: 0x{upper_va:016X} 帧 0x{frame:X} 页内 +0x{off_in_page:X}:{expect_upper} → {new_upper}");
+    let mapped = drv.map_physical(frame, 1).expect("帧映射失败(写)");
+    let dst = (mapped + off_in_page as u64) as *mut u32;
+    unsafe {
+        dst.write_volatile(new_upper);
+        // 三级诊断 1:同一映射窗口立即读
+        let w = dst.read_volatile();
+        println!("诊断① 同窗口读回 = {w}(期望 {new_upper})");
+    }
+    drv.unmap_physical(mapped).expect("反映射失败(写)");
+    // 三级诊断 2:同一帧重新映射读
+    let mapped2 = drv.map_physical(frame, 1).expect("帧映射失败(读回2)");
+    let w2 = unsafe { ((mapped2 + off_in_page as u64) as *const u32).read_volatile() };
+    println!("诊断② 新映射读回 = {w2}");
+    drv.unmap_physical(mapped2).expect("反映射失败(读回2)");
+    // 三级诊断 3:页表路径读
+    let after = rd4(upper_va);
+    println!("读回 UPPER = {after:?}(期望 {new_upper})");
+    if after != Some(new_upper) {
+        panic!("写后读回不符 — 恢复失败,立即检查");
+    }
+    println!("UPPER 写入成功并读回一致");
 }
 
 /// statewalk:全局槽 0x13AAD58 → state 页全部指针 P,对每个 P 探两种形态:
 /// [P+0xEE10](per-GPU 大上下文持 root)与 [P+0x2510](Major 持 root)。
 /// root 门:init==1 && key<0x40 && UPPER ∈ 候选集。
-fn statewalk(dir: &PathBuf) {
-    let (module, phys, root) = connect_walk();
+fn statewalk(dir: &Path) {
+    let (module, phys, root, _drv) = connect_walk();
     let slot_rva = 0x13AAD58;
     let state = {
         let mut h = Vec::new();
@@ -425,7 +520,6 @@ fn statewalk(dir: &PathBuf) {
         }
     }
     println!("state 指针 {} 个(span 0x{state_span:X})", state_ptrs.len());
-    let page = [0u8; 4096]; // 兼容旧循环变量(实际循环已下沉)
     let expect_uppers: Vec<u32> = env::var("NVOC_POWER_EXPECT_UPPER")
         .unwrap_or_else(|_| "100000,140000,150000,135000".into())
         .split(',')
@@ -471,7 +565,7 @@ fn statewalk(dir: &PathBuf) {
                         continue;
                     }
                     let f = |roff: u64| -> Option<u32> {
-                        let Some(v2) = root_va.checked_add(roff) else { return None };
+                        let v2 = root_va.checked_add(roff)?;
                         let mut h4 = Vec::new();
                         let b4 = read_range(&phys, root, v2, 4, &mut h4);
                         if h4.is_empty() && b4.len() == 4 {
@@ -584,15 +678,22 @@ fn statewalk(dir: &PathBuf) {
 /// (state→table 偏移)、NVOC_POWER_CHAIN_TABLE_SPAN(默认 0x60000)。
 /// Major 候选 = 表内的内核指针;root 判据 = [Major+0x2510] → 页含
 /// init==1 && key<0x40 && UPPER∈{100000,其它} 五元组。
-fn chain(dir: &PathBuf) {
-    let slot_rva = u64::from_str_radix(
-        env::var("NVOC_POWER_CHAIN_SLOT").expect("chain 需 NVOC_POWER_CHAIN_SLOT").trim_start_matches("0x"),
-        16,
-    ).unwrap();
-    let table_off = u64::from_str_radix(
-        env::var("NVOC_POWER_CHAIN_TABLE_OFF").expect("chain 需 NVOC_POWER_CHAIN_TABLE_OFF").trim_start_matches("0x"),
-        16,
-    ).unwrap();
+fn chain(dir: &Path) {
+    // layout 优先;env 覆盖仍支持(调试用)
+    let (slot_rva, table_off) = if let Some(l) = load_layout() {
+        (l.global_slot_rva, u64::from(l.state_table_off))
+    } else {
+        (
+            {
+                let v = env::var("NVOC_POWER_CHAIN_SLOT").unwrap_or_else(|_| "13AAD58".into());
+                u64::from_str_radix(v.trim_start_matches("0x"), 16).unwrap()
+            },
+            {
+                let v = env::var("NVOC_POWER_CHAIN_TABLE_OFF").unwrap_or_else(|_| "200".into());
+                u64::from_str_radix(v.trim_start_matches("0x"), 16).unwrap()
+            },
+        )
+    };
     let span = env::var("NVOC_POWER_CHAIN_TABLE_SPAN")
         .ok()
         .and_then(|s| usize::from_str_radix(s.trim_start_matches("0x"), 16).ok())
@@ -601,7 +702,7 @@ fn chain(dir: &PathBuf) {
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(1500);
-    let (module, phys, root) = connect_walk();
+    let (module, phys, root, _drv) = connect_walk();
 
     let rd_q = |va: u64| -> Option<u64> {
         let mut h = Vec::new();
@@ -691,7 +792,8 @@ fn chain(dir: &PathBuf) {
             continue;
         }
         let root_va = u64::from_le_bytes(b[0..8].try_into().unwrap());
-        if root_va < 0xFFFF_8000_0000_0000 {
+        println!("  候选 Major 0x{major:016X} → [x+0x2510] = 0x{root_va:016X}");
+        if !(0xFFFF_8000_0000_0000..=0xFFFF_F7FF_FFFF_F000).contains(&root_va) {
             continue;
         }
         // root 头 16 字节(init/elig/amountActive/pad + base/amount)快速门
@@ -769,12 +871,12 @@ fn chain(dir: &PathBuf) {
 
 /// marker:查找 lookup 函数指针(静态 RVA 0xCF1EA0,写在 root+0x1CC8)的
 /// 活体精确值,定位 PowerRoot 第一页 → 推出 root_va → 验指纹 → 解析全字段。
-fn marker(dir: &PathBuf) {
+fn marker(dir: &Path) {
     let budget = env::var("NVOC_POWER_WALK_BUDGET")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(2500);
-    let (module, phys, root) = connect_walk();
+    let (module, phys, root, _drv) = connect_walk();
     let image_end = module.base + 0x7370_0000u64;
     let lookup_marker = module.base + 0xCF1EA0;
     println!("lookup 指针活体值 = 0x{lookup_marker:016X}(module.base + 0xCF1EA0)");
@@ -838,6 +940,15 @@ fn marker(dir: &PathBuf) {
             };
             let fr = translate(&phys, root, root_va + OFF_UPPER).map(|pa| pa & !0xFFF).ok();
             let fr0 = translate(&phys, root, root_va).map(|pa| pa & !0xFFF).ok();
+            let registry = {
+                let mut h2 = Vec::new();
+                let b = read_range(&phys, root, root_va + 0x1C90, 8, &mut h2);
+                if h2.is_empty() && b.len() == 8 {
+                    Some(u64::from_le_bytes(b[0..8].try_into().unwrap()))
+                } else {
+                    None
+                }
+            };
             let rec = json!({
                 "root_va": root_va,
                 "marker_page": page, "marker_off": o,
@@ -849,14 +960,12 @@ fn marker(dir: &PathBuf) {
                 "key@3CEC": f(OFF_KEY).map(|b| b & 0xFF),
                 "lower@3CF0": f(OFF_LOWER), "upper@3CF4": f(OFF_UPPER),
                 "aux1@3CF8": f(OFF_UPPER + 4), "aux2@3CFC": f(OFF_UPPER + 8),
-                "registry@1C90": (|| { let mut h2 = Vec::new();
-                    let b = read_range(&phys, root, root_va + 0x1C90, 8, &mut h2);
-                    if h2.is_empty() && b.len() == 8 { Some(u64::from_le_bytes(b[0..8].try_into().unwrap())) } else { None } })(),
+                "registry@1C90": registry,
             });
             println!(
                 "    init={} elig={} amountActive={} base={} amount={} key={} lower={} upper={} aux={}/{} registry=0x{:?}",
                 rec["init@3CE0"], rec["elig@3CE1"], rec["amountActive@3CE2"],
-                rec["base@3CE4"].as_u64().map(|v| v).unwrap_or(0xFFFF_FFFF),
+                rec["base@3CE4"].as_u64().unwrap_or(0xFFFF_FFFF),
                 rec["amount@3CE8"], rec["key@3CEC"],
                 rec["lower@3CF0"], rec["upper@3CF4"], rec["aux1@3CF8"], rec["aux2@3CFC"],
                 rec["registry@1C90"].as_u64()
@@ -883,7 +992,7 @@ fn marker(dir: &PathBuf) {
 /// graphwalk:从枢纽页(资源描述符注册表/锚表)做 FIFO 广度走查,预算内
 /// 逐页扫 root 指纹、差分值、F7 记录(Board selector3 源数组标记,0x3F7)。
 /// 命中页(含任意信号)存 hex 供离线判读。
-fn graphwalk(tag: &str, dir: &PathBuf) {
+fn graphwalk(tag: &str, dir: &Path) {
     let budget = env::var("NVOC_POWER_WALK_BUDGET")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
@@ -897,7 +1006,7 @@ fn graphwalk(tag: &str, dir: &PathBuf) {
         .filter_map(|s| u64::from_str_radix(s.trim().trim_start_matches("0x"), 16).ok())
         .map(|v| v & !0xFFF)
         .collect();
-    let (module, phys, root) = connect_walk();
+    let (module, phys, root, _drv) = connect_walk();
     let image_end = module.base + 0x7370_0000u64;
 
     let mut visited: HashSet<u64> = HashSet::new();
@@ -962,12 +1071,12 @@ fn graphwalk(tag: &str, dir: &PathBuf) {
 /// trace:GPU-ID 指纹定位注册表页 → 相邻 {Major 指针, GPU ID} 对提取 Major →
 /// 读 Major 页全部指针目标做 root 指纹检查。
 /// 铁律:读取预算 NVOC_POWER_TRACE_BUDGET(默认 900 页),超即停。
-fn trace(dir: &PathBuf) {
+fn trace(dir: &Path) {
     let budget = env::var("NVOC_POWER_TRACE_BUDGET")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(900);
-    let (module, phys, root) = connect_walk();
+    let (module, phys, root, _drv) = connect_walk();
     let image_end = module.base + 0x7370_0000u64;
 
     // 1) 镜像数据节收集指针 → 读一跳目标页,找含 GPU-ID 的页
@@ -1032,12 +1141,12 @@ fn trace(dir: &PathBuf) {
             } else {
                 0
             };
-            if q >= 0xFFFF_8000_0000_0000 && (next == GPU_ID || next == SUBSYS_DEV || prev == GPU_ID || prev == SUBSYS_DEV)
+            if q >= 0xFFFF_8000_0000_0000
+                && (next == GPU_ID || next == SUBSYS_DEV || prev == GPU_ID || prev == SUBSYS_DEV)
+                && !majors.contains(&(q & !0xFFF))
             {
-                if !majors.contains(&(q & !0xFFF)) {
-                    majors.push(q & !0xFFF);
-                    println!("    Major 候选 0x{:016X}(pair @+0x{o:X})", q & !0xFFF);
-                }
+                majors.push(q & !0xFFF);
+                println!("    Major 候选 0x{:016X}(pair @+0x{o:X})", q & !0xFFF);
             }
         }
     }
@@ -1149,7 +1258,7 @@ fn trace(dir: &PathBuf) {
 
 /// region:以 2MB 对齐基址起读 NVOC_POWER_REGION_SPAN(默认 0x200000=512 页)
 /// 的整个池簇,存全量 hex(512×8KB≈4MB JSON)。差分在离线完成。
-fn region(tag: &str, dir: &PathBuf) {
+fn region(tag: &str, dir: &Path) {
     let base = u64::from_str_radix(
         env::var("NVOC_POWER_REGION_BASE").expect("region 相位需 NVOC_POWER_REGION_BASE").trim_start_matches("0x"),
         16,
@@ -1158,7 +1267,7 @@ fn region(tag: &str, dir: &PathBuf) {
         .ok()
         .and_then(|s| usize::from_str_radix(s.trim_start_matches("0x"), 16).ok())
         .unwrap_or(0x20_0000);
-    let (_module, phys, root) = connect_walk();
+    let (_module, phys, root, _drv) = connect_walk();
     println!("region 0x{base:016X}..0x{:016X}({} 页)", base + span as u64, span / 0x1000);
     let mut pages = Vec::new();
     let mut ok = 0usize;
@@ -1197,7 +1306,7 @@ fn region(tag: &str, dir: &PathBuf) {
 /// hub:读锚页全部内核指针目标页(≤ NVOC_POWER_HUB_CAP/默认 256 页)做
 /// 指纹+值扫描 —— 锚页(功率通道控制表)是枢纽对象,root/Board 应在其
 /// 指针邻域内。二跳仅在需要时用 NVOC_POWER_HUB_HOP2=1 开启。
-fn hub(dir: &PathBuf) {
+fn hub(dir: &Path) {
     let va_src = env::var("NVOC_POWER_HUB_VA")
         .or_else(|_| env::var("NVOC_POWER_READ_VA"))
         .expect("hub 相位需 NVOC_POWER_HUB_VA");
@@ -1207,7 +1316,7 @@ fn hub(dir: &PathBuf) {
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(256);
     let hop2 = env::var("NVOC_POWER_HUB_HOP2").map(|v| v == "1").unwrap_or(false);
-    let (_module, phys, root) = connect_walk();
+    let (_module, phys, root, _drv) = connect_walk();
     let mut hole = Vec::new();
     let anchor_buf = read_range(&phys, root, anchor, 4096, &mut hole);
     assert!(hole.is_empty(), "锚页不可读");
@@ -1332,7 +1441,7 @@ fn hub(dir: &PathBuf) {
 /// 每次 ≤ ~50 页映射,与两次安全跑通的单跳扫描同量级)。
 /// env: NVOC_POWER_NEAR_VA(锚页)、NVOC_POWER_NEAR_BEFORE/默认 0x4000、
 ///       NVOC_POWER_NEAR_AFTER/默认 0x7000。
-fn near(dir: &PathBuf) {
+fn near(dir: &Path) {
     let va_src = env::var("NVOC_POWER_NEAR_VA")
         .or_else(|_| env::var("NVOC_POWER_READ_VA"))
         .expect("near 相位需 NVOC_POWER_NEAR_VA(或 NVOC_POWER_READ_VA)");
@@ -1345,7 +1454,7 @@ fn near(dir: &PathBuf) {
         .ok()
         .and_then(|s| usize::from_str_radix(s.trim_start_matches("0x"), 16).ok())
         .unwrap_or(0x10000) as u64;
-    let (_module, phys, root) = connect_walk();
+    let (_module, phys, root, _drv) = connect_walk();
     let start = anchor.saturating_sub(before);
     let end = anchor + after;
     println!("邻域扫描 0x{start:016X}..0x{end:016X}(锚 0x{anchor:016X}),共 {} 页", (end - start) / 0x1000);
@@ -1448,8 +1557,8 @@ fn near(dir: &PathBuf) {
     }
 }
 
-fn snapshot(tag: &str, dir: &PathBuf) {
-    let (module, phys, root) = connect_walk();
+fn snapshot(tag: &str, dir: &Path) {
+    let (module, phys, root, _drv) = connect_walk();
     let image_end = module.base + 0x7370_0000u64;
 
     // 1) 镜像数据节:读内容,收集指针 + 值命中
@@ -1549,7 +1658,7 @@ fn snapshot(tag: &str, dir: &PathBuf) {
                 }
             }
         }
-        if scanned % 8192 == 0 {
+        if scanned.is_multiple_of(8192) {
             println!(
                 "  已扫 {scanned} 页,队列 {},候选 {},值页 {}",
                 frontier.len(),
@@ -1626,7 +1735,7 @@ fn snapshot(tag: &str, dir: &PathBuf) {
     );
 }
 
-fn diff(tag: &str, dir: &PathBuf) {
+fn diff(tag: &str, dir: &Path) {
     let base_tag = env::var("NVOC_POWER_DIFF_BASE").unwrap_or_else(|_| "a".into());
     let base_path = dir.join(format!("{base_tag}.snapshot.json"));
     let base: Value =
@@ -1634,7 +1743,7 @@ fn diff(tag: &str, dir: &PathBuf) {
             panic!("读基线快照 {} 失败: {e}", base_path.display())
         }))
         .unwrap();
-    let (_module, phys, root) = connect_walk();
+    let (_module, phys, root, _drv) = connect_walk();
 
     let mut changed_pages: Vec<Value> = Vec::new();
     let mut pages_checked = 0usize;
@@ -1732,7 +1841,7 @@ fn diff(tag: &str, dir: &PathBuf) {
     }
 }
 
-fn read_object(dir: &PathBuf) {
+fn read_object(dir: &Path) {
     let va = u64::from_str_radix(
         env::var("NVOC_POWER_READ_VA").expect("read 相位需 NVOC_POWER_READ_VA").trim_start_matches("0x"),
         16,
@@ -1741,7 +1850,7 @@ fn read_object(dir: &PathBuf) {
         .ok()
         .and_then(|s| usize::from_str_radix(s.trim_start_matches("0x"), 16).ok())
         .unwrap_or(0x4000);
-    let (_module, phys, root) = connect_walk();
+    let (_module, phys, root, _drv) = connect_walk();
     let mut hole = Vec::new();
     let buf = read_range(&phys, root, va, len, &mut hole);
     let field = |off: u64| -> Value {

@@ -10,6 +10,8 @@ license = "Apache-2.0"
 
 [dependencies]
 nvapi = { workspace = true }
+serde = { workspace = true }
+capstone = { workspace = true }
 nvml-wrapper = { workspace = true }
 quick-error = { workspace = true }
 # nvml.rs dlopens libnvml.so / nvml.dll by path on every platform.
