@@ -241,10 +241,11 @@ Apply 通用模型（NvidiaController.ApplyCoreAsync :1387-1989）：**staging �
 - **旧证据再更正**：§16.5 的「+20 处 2070=31/3060=15/4060L=15/P100=0 非跨代稳定点数」= 点阵 dword[4]（位 128..），实即各卡点表长度尾部：2070=133 位、4060L=132 位、P100=80 位；并无独立 count 字段。
 - **B3/B4 双机裁决（v0.2.x@7252a85，4060L+2070 提权实跑，两机输出逐字一致）**：
   - **② 结案：点阵位就是写入白名单**。表外点 140 的 raw delta 槽（两机均 abs 5128）补丁 60001 → SET **被接受（status 0）但驱动重建表时该槽归零**（retention 0、全表 diff 0 dword）→ 表外 delta 被静默丢弃、不被消费；走 API 路径（`set_vfp_table` 顺手置 bit140）则整个 SET 被拒 **-1**。实践含义：写点索引必须落在 GET 点阵位数内（2070=133、4060L=132），越界 -1 是 fail-closed，可接受、无需改码。
-  - **④ entry+0 = 驱动所有的只读字段**。entry10 的 +0（当前 0）试写 {1,2,8,9,255} → **双机五值全 -1**（连表内他处合法的 1 也被拒）；结合 e1c（15000 被拒）与 P100 非提权跑（v=1=原值未被值校验拒、只撞 -137 权限）→ **该字段只接受"原值回显"，任何变更被拒**。我们的写路径 RMW 从不改动它，天然安全。
+  - **④ entry+0 = `clock_type`（VfPointType）字段，驱动逐点声明、只读** —— 用户判读定案：值 1 = `NV_GPU_CLOCK_CLIENT_CLK_VF_POINT_TYPE_FIXED`（enum Prog=0/Fixed=1/Dyn=2，sys/gpu/clock.rs:480-485；即 hi 层 `VfpPoint.point_type`/`is_editable()` 与 core「Pascal 公共表全 Fixed 只读」注释所依据的同一字段）。分布自洽：2070/4060L 的 Fixed 尾段（128..130 / 127..130）即 memory 段锚点（CLI 文档 "trailing memory entries 127..131"），用户 OC 差量只落 Prog 区 0..70；P100 全表=1（整表 Fixed=公共只读，与 core/src/nvapi.rs Pascal 分支一致；e7 本地烟测 B5 在 P100 上 pick p0 正因此）。B4 事实：entry10（当前 0）试写 {1,2,8,9,255} → **双机五值全 -1**（连表内他处合法的 1 也被拒）；结合 e1c 与 P100 非提权跑（v=1=原值只过值校验、只撞 -137）→ **点类型由驱动声明，SET 只接受原值回显**。我们的写路径 RMW 从不改动它，天然安全。
+  - **残留（B5 臂已交付 v0.2.x@后随提交）**：点阵内 Fixed 点是否消费 delta 未测（已知：表外点被丢弃、Prog 点保留）。B5=取首个"在点阵内且 clock_type≠0、delta=0"条目 raw 补 delta→SET→读保留；若 Fixed 不接受 delta，则 set-public-vftable 写 memory 锚点该跳过/提示，B5 输出即可裁。
   - ③ rsvd[4]/unknown[8]/padding[3]：仍全零、从未被带值触发；继续保持"勿动"（RMW 保原值）即可。**公共 VF 表至此全字段身份定案：可写面=delta(88+36i)+点阵位数（≤GET 值），其余全部驱动所有只读。**
 - **结论**：写路径（`set_vfp_table` 及 CLI 公开 VF 写）与 struct 几何自始正确；`get-public-vftable` 的 delta 列虽来自 curve/status 面（current−默认），但其与 raw 表 88+36i 一致。**矛盾①⑥结案**；clock.rs 与探针注释中的 60+36i 算术为化石错误（e7 模块注释已留勘误）。
-- 余留观察（不影响结论）：2070 表 mask=133 位而 clock_type=1 仅 entries 128..130（P100 为 0..79 全 1）——entry+0 的 0/1 分布语义未定（写侧只读，已由 B4 双机封闭），仅作留档。
+- 余留观察（不影响结论）：clock_type=Fixed 仅落尾段（2070 128..130、4060L 127..130，即 memory 段锚点），P100 全表 Fixed——分布语义已对齐现有 VfPointType 解析（get-public-vftable 本就输出 point_type 列），无需改码；仅剩"Fixed 点是否消费 delta"由 B5 收尾。
 
 ## 17. nvoc-core / cli 封装建议清单（2026-10-05，逆向与测试暂停点）
 
