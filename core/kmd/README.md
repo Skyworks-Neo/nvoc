@@ -24,20 +24,20 @@
   符号链接 `\DosDevices\PMXDRV`(用户态开 `\\.\PMXDRV`),全部
   `CTL_CODE(FILE_DEVICE_UNKNOWN, fn, METHOD_BUFFERED, FILE_ANY_ACCESS)`:
 
-  IOCTL 面按构建代际分两套码表(请求布局两代相同,连接时用无副作用的
-  LAST_ERROR 探针自动探测,`PmxDrv::build()` 返回代际):
+  IOCTL 码表(`0x222A80` 族,请求布局见行内):本机两代构建(Intel 2019 款与
+  system32 在役 PAIPTAC 款)**实测同一码表**——PAIPTAC 款是超集(22 码 vs
+  本通道使用的 6 码),map/unmap/lasterror 逐一同位,2026-10-06 在役 PAIPTAC
+  构建实跑走查全绿:
 
-  | 原语(请求布局,经 16 字节指针转发) | `Intel2019` 码 | `Paiptac` 码 |
+  | 原语(请求布局,经 16 字节指针转发) | 码 | 状态 |
   |---|---|---|
-  | MAP_PHYS `{tag=24, u64 pa@4(≠0), u32 pages@12, u64 va_out@16}` | `0x222AB8` | `0x222878` |
-  | UNMAP_PHYS `{tag=24, u64 va@16}` | `0x222ABC` | `0x22287C` |
-  | LAST_ERROR(驱动写 u32 错误码到请求 `+4`) | `0x222AD0` | `0x222890` |
-  | PORT_IO `{tag=16, op@4(1/2/3 in b/w/d, 4/5/6 out), u16 port@8, val@12}` | `0x222AA4` | `0x222864`(未接线) |
-  | PCI_CFG `{tag=28, mode@4, bdf/off@8, bus@10, and@12, or@16, old@20, val@24}` | `0x222AA8` | `0x222868`(未接线) |
-  | 事件环 17168 字节日志缓冲(xOCD 遥测) | `0x222A80` | `0x222840`(未接线) |
-
-  Paiptac 构建还有 16 个其余码(0x222844..0x2228A4 面共 22 码,含 MSR/cpuid/
-  虚拟读写等),未接线。
+  | MAP_PHYS `{tag=24, u64 pa@4(≠0), u32 pages@12, u64 va_out@16}` | `0x222AB8` | 已接线 |
+  | UNMAP_PHYS `{tag=24, u64 va@16}` | `0x222ABC` | 已接线 |
+  | LAST_ERROR(驱动写 u32 错误码到请求 `+4`) | `0x222AD0` | 已接线 |
+  | PORT_IO `{tag=16, op@4(1/2/3 in b/w/d, 4/5/6 out), u16 port@8, val@12}` | `0x222AA4` | 未接线 |
+  | PCI_CFG `{tag=28, mode@4, bdf/off@8, bus@10, and@12, or@16, old@20, val@24}` | `0x222AA8` | 未接线 |
+  | 事件环 17168 字节日志缓冲(xOCD 遥测) | `0x222A80` | 未接线 |
+  | (PAIPTAC 款另有 16 码至 `0x222AE4`,含 MSR/cpuid/虚拟读写等) | — | 未接线 |
 
 - **调用形态**(也是它被归为"漏洞驱动"的原因):DeviceIoControl 输入恒
   16 字节 = `[u64 用户态请求指针][u32 aux<=0x3F][u32 pad]`,驱动**不加探测
@@ -46,11 +46,12 @@
   **当前进程**,返回的 `va_out` 是本进程用户态地址,读完 `UNMAP_PHYS` 即可。
   映射页保护是 PAGE_READWRITE:传输层天然可写,本车道只读、写路径继续封存。
   映射失败的哨兵:va_out = 0 或 `0xBEEF`(32 位分支另有 `0xDEAD` = VA 超 32 位)。
-- **坑(已踩,后记修正)**:对 2019 款,IDA 反编译器把分发器 IOCTL 基址
-  折叠成 0x222840 族(实测 0x2228 族全数 win32 87 拒绝),汇编实证真基址是
-  `0x222A80`(`sub edx, 222A80h`)。**但 0x222840 族并非虚构**——它恰是
-  PAIPTAC 重建款的真码表(idalib case 表 + map/unmap handler 调用图实证,
-  见下节):两代构建功能号排布互换,所以本通道按构建分键双码表。
+- **坑(已踩,真相反转)**:初版把反编译器 case 表的**十进制** 2239104
+  手算成 0x222840,据此写出一套 0x2228 族错码、实测全数 win32 87 拒绝,又
+  从汇编 `sub edx, 222A80h` 得出"IDA 折叠出错"的错误结论。精算后
+  2239104 = **0x222A80**——反编译器与汇编从来一致,错的是我的进制换算。
+  教训:CTL_CODE 常量一律用工具换算,不手算(见 nvapi-struct-magic-idioms
+  同类教训)。
 - **实机复现**(本机 K4000/582.41):两段探针全绿 ——
   `probe_pmxdrv_transport_maps_low_memory`(map/read/unmap 冒烟)+
   `probe_kernel_walk_reads_nvlddmkm_header`(255/255 低内存页可读,
@@ -90,12 +91,13 @@ Eclypsium 2019-11《Mother of All Drivers》即本文档主角:PMxDrv=能力超�
 Intel 于 2019-11-12 发过修复版。实测 **PAIPTAC 重建版(`pmxdrv_new.sys`,
 `CN=PAIPTAC Driver`,PDB `pmx-pai-built-source`)漏洞原样保留**——prologue
 无探测用户指针解引用、create 空桩、`\Device\PhysicalMemory` 映射进调用进程
-逐点同构,且 IOCTL 面膨胀到 22 码(**0x222840 族**,与 2019 版 0x222A80 族
-不同代;双版兼容传输层需按构建分键码表)。同目录微软 WHQL 的 `KslD` 是
+逐点同构,且 IOCTL 面膨胀到 22 码(同一 **0x222A80 族**的超集;初版分析的
+"0x222840 族换代"说法是十进制换算错误,已撤,见上节坑注)。同目录微软 WHQL 的 `KslD` 是
 Defender TDT 传感器驱动(Rust,tdt_driver_lib),非物理内存 provider,排除。
-本车道主用 Intel 1.0.0.1003(哈希钉死);**2026-10-06 起 pmxdrv.rs 双码表
-兼容 PAIPTAC 重建款**(连接时 LAST_ERROR 探针自动分代,`PmxDrv::build()` 可查;
-map/unmap/lasterror 布局两代逐字段相同,仅 map 多 `pa≠0` 校验,本通道不受影响)。
+本车道主用 Intel 1.0.0.1003(哈希钉死);PAIPTAC 重建款与它**同码表线兼容**
+(实机验证:system32 在役 PAIPTAC 构建跑走查全绿),但 **4060L 笔记本上
+PAIPTAC 款被安全策略阻止装载、Intel 2019 款正常**(2026-10-06 用户实测)——
+出发行继续钉死 Intel 款。
 
 ## 同类替代品盘点(2026-10-05)
 

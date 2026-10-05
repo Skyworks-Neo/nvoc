@@ -55,9 +55,10 @@ sc start PMXDRV
 cargo test -p nvoc-core --test kmd_pmxdrv_probe_live -- --ignored --nocapture
 ```
 
-预期:探针打印 `驱动构建代际: Intel2019 或 Paiptac`(连接时自动探测);
-冒烟 map/read/unmap 全通;走查 255/255 低内存页可读、low-stub 唯一根、
+预期:冒烟 map/read/unmap 全通;走查 255/255 低内存页可读、low-stub 唯一根、
 活体 nvlddmkm 头与磁盘指纹三项全匹配。**任何一步失败即止**(输出含诊断)。
+构建注意:4060L 实测 PAIPTAC 重建款被安全策略阻止装载,Intel 2019 款正常——
+笔记本一律用 `reverse/xocd/pmxdrv.sys`(哈希钉死)。
 测完 `sc stop PMXDRV; sc delete PMXDRV`(或保留服务供后续步骤,结束再清)。
 
 ## 3. L2 RM 策略对象定位(只读,核心难点)
@@ -118,6 +119,12 @@ e. 写回原值:nvoc-cli set-pwr-cur-limit tgp <默认>
 6. 恢复:UPPER 写回原值 → set-pwr-cur-limit 回默认 → 重启复验持久性
    (预期:UPPER 写易失,重启回落;若持久,记录为重要发现并更新文档)
 ```
+
+**终态同步(用户假设,写臂成功后执行)**:`set-power-command` 租约写与内核
+UPPER 写是互补的一对——UPPER 管执行墙,租约管回显面。L3 抬顶成功后,把
+租约写到与 UPPER 一致的值(`nvoc-cli set-power-command <新墙 W> --force`),
+使 GET/NVML/nvidia-smi 的 Cap 与真实执行墙一致,否则遥测面会显示旧值造成
+误判;恢复时反向同步。即完整破解 = 回显(租约) + 执行(UPPER) 双写。
 
 ## 5. 对照臂 L3e(回显层,已封装,低风险)
 
