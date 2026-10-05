@@ -14,12 +14,12 @@
 //! read:按 NVOC_POWER_READ_VA 直读 root 对象并解析八字段(L3 身份基线)。
 #![cfg(windows)]
 
-use nvoc_core::kmd::layout_probe::{probe as probe_layout, NvlddmkmLayout};
+use nvoc_core::kmd::layout_probe::{NvlddmkmLayout, probe as probe_layout};
 use nvoc_core::kmd::pagewalk::{
-    discover_root, find_loaded_module, read_virtual, translate, PeFingerprint, PhysicalMemory,
+    PeFingerprint, PhysicalMemory, discover_root, find_loaded_module, read_virtual, translate,
 };
 use nvoc_core::kmd::pmxdrv::{PmxDrv, PmxDrvPhysMem};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::env;
@@ -69,11 +69,15 @@ struct CachedPhys<'a> {
 /// 提取 RAM 范围。解析失败返回空表(调用方按"不过滤"降级并打印告警)。
 fn ram_ranges() -> Vec<(u64, u64)> {
     use windows_sys::Win32::System::Registry::{
-        RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY_LOCAL_MACHINE, KEY_READ,
+        HKEY_LOCAL_MACHINE, KEY_READ, RegCloseKey, RegOpenKeyExW, RegQueryValueExW,
     };
     const PATH: &str = r"HARDWARE\RESOURCEMAP\System Resources\Physical Memory";
     const VALUE: &str = ".Translated";
-    let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+    let wide = |s: &str| {
+        s.encode_utf16()
+            .chain(std::iter::once(0))
+            .collect::<Vec<u16>>()
+    };
     let mut buf = vec![0u8; 65536];
     let mut size = buf.len() as u32;
     let mut value_type: u32 = 0;
@@ -82,13 +86,21 @@ fn ram_ranges() -> Vec<(u64, u64)> {
     let value_w = wide(VALUE);
     // RegGetValueW 对 REG_RESOURCE_LIST 实测返回 ERROR_FILE_NOT_FOUND,
     // 用经典 Open/Query 对。
-    let status = unsafe { RegOpenKeyExW(HKEY_LOCAL_MACHINE, path_w.as_ptr(), 0, KEY_READ, &mut hkey) };
+    let status =
+        unsafe { RegOpenKeyExW(HKEY_LOCAL_MACHINE, path_w.as_ptr(), 0, KEY_READ, &mut hkey) };
     if status != 0 {
         println!("  警告: 打开 Physical Memory 键失败 status=0x{status:X},RAM 白名单降级为不过滤");
         return Vec::new();
     }
     let status = unsafe {
-        RegQueryValueExW(hkey, value_w.as_ptr(), std::ptr::null_mut(), &mut value_type, buf.as_mut_ptr(), &mut size)
+        RegQueryValueExW(
+            hkey,
+            value_w.as_ptr(),
+            std::ptr::null_mut(),
+            &mut value_type,
+            buf.as_mut_ptr(),
+            &mut size,
+        )
     };
     unsafe { RegCloseKey(hkey) };
     if status != 0 {
@@ -98,10 +110,13 @@ fn ram_ranges() -> Vec<(u64, u64)> {
     buf.truncate(size as usize);
     // CM_RESOURCE_LIST: FullDescriptors[] { InterfaceType, BusNumber, Version, Revision,
     //   Count, PartialResourceDescriptors[] };PARTIAL_DESCRIPTOR { Type u8, ShareDisposition u8,
-    //   Flags u16, u64 union }。type=3(CmResourceTypeMemory) 且 Flags bit12(CM_RESOURCE_MEMORY_READABLE)? 
+    //   Flags u16, u64 union }。type=3(CmResourceTypeMemory) 且 Flags bit12(CM_RESOURCE_MEMORY_READABLE)?
     //   取 union: 内存描述符 union = {u64 Start}。
     let le = |b: &[u8]| -> u64 {
-        b.iter().take(8).enumerate().fold(0u64, |a, (i, &x)| a | ((x as u64) << (8 * i)))
+        b.iter()
+            .take(8)
+            .enumerate()
+            .fold(0u64, |a, (i, &x)| a | ((x as u64) << (8 * i)))
     };
     let mut ranges = Vec::new();
     // CM_PARTIAL_RESOURCE_DESCRIPTOR 的 stride/union 偏移存在两种候选布局
@@ -113,10 +128,16 @@ fn ram_ranges() -> Vec<(u64, u64)> {
     let count = u32::from_le_bytes(buf[0..4].try_into().unwrap()) as usize;
     println!(
         "  RAM 表原始头 64B: {}",
-        buf[..buf.len().min(64)].iter().map(|b| format!("{b:02x}")).collect::<String>()
+        buf[..buf.len().min(64)]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
     );
     let mut best: Option<(Vec<(u64, u64)>, &str)> = None;
-    for (stride, union_off, label) in [(20usize, 4usize, "stride20/union4"), (24, 8, "stride24/union8")] {
+    for (stride, union_off, label) in [
+        (20usize, 4usize, "stride20/union4"),
+        (24, 8, "stride24/union8"),
+    ] {
         let mut rs = Vec::new();
         let mut off = 4usize;
         let mut bad = false;
@@ -125,7 +146,8 @@ fn ram_ranges() -> Vec<(u64, u64)> {
                 bad = true;
                 break;
             }
-            let partial_count = u32::from_le_bytes(buf[off + 12..off + 16].try_into().unwrap()) as usize;
+            let partial_count =
+                u32::from_le_bytes(buf[off + 12..off + 16].try_into().unwrap()) as usize;
             off += 16;
             for _ in 0..partial_count {
                 if off + stride > buf.len() {
@@ -135,7 +157,9 @@ fn ram_ranges() -> Vec<(u64, u64)> {
                 if buf[off] == 3 {
                     let start = le(&buf[off + union_off..off + union_off + 8]);
                     let len = u32::from_le_bytes(
-                        buf[off + union_off + 8..off + union_off + 12].try_into().unwrap(),
+                        buf[off + union_off + 8..off + union_off + 12]
+                            .try_into()
+                            .unwrap(),
                     ) as u64;
                     if len > 0 {
                         rs.push((start, start + len));
@@ -179,7 +203,11 @@ impl<'a> CachedPhys<'a> {
             "RAM 白名单: {} 段, 共 {:.1} GiB{}",
             ram.len(),
             total as f64 / (1 << 30) as f64,
-            if ram.is_empty() { "(降级:不过滤)" } else { "" }
+            if ram.is_empty() {
+                "(降级:不过滤)"
+            } else {
+                ""
+            }
         );
         Self {
             inner,
@@ -194,7 +222,10 @@ impl<'a> CachedPhys<'a> {
         if self.ram_ranges.is_empty() {
             return true;
         }
-        let ok = self.ram_ranges.iter().any(|(s, e)| frame >= *s && frame < *e);
+        let ok = self
+            .ram_ranges
+            .iter()
+            .any(|(s, e)| frame >= *s && frame < *e);
         if !ok {
             *self.rejected.borrow_mut() += 1;
         }
@@ -243,7 +274,9 @@ impl PhysicalMemory for CachedPhys<'_> {
 fn out_dir() -> PathBuf {
     env::var_os("NVOC_POWER_OUT_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../reverse/kmd-power-4060l"))
+        .unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../reverse/kmd-power-4060l")
+        })
 }
 
 /// 从 NVOC_POWER_LAYOUT_IMG(磁盘 nvlddmkm.sys 路径)静态推导布局;
@@ -279,20 +312,18 @@ fn connect_walk() -> (
         module.base,
         module.path.display()
     );
-    let disk_head =
-        std::fs::read(&module.path).unwrap_or_else(|e| panic!("读磁盘镜像失败: {e}"));
+    let disk_head = std::fs::read(&module.path).unwrap_or_else(|e| panic!("读磁盘镜像失败: {e}"));
     let fingerprint = PeFingerprint::from_image(&disk_head).expect("磁盘镜像不是有效 PE32+");
-    let drv: &'static PmxDrv =
-        Box::leak(Box::new(PmxDrv::connect().expect("PMXDRV 连接失败(服务须运行)")));
+    let drv: &'static PmxDrv = Box::leak(Box::new(
+        PmxDrv::connect().expect("PMXDRV 连接失败(服务须运行)"),
+    ));
     let pm: &'static PmxDrvPhysMem<'static> = Box::leak(Box::new(PmxDrvPhysMem::new(drv)));
     let phys = CachedPhys::new(pm);
     let discovery = discover_root(&phys, module.base, &fingerprint);
     for event in &discovery.events {
         println!("  {event}");
     }
-    let root = discovery
-        .unique_root()
-        .expect("页表根不唯一,中止(见事件)");
+    let root = discovery.unique_root().expect("页表根不唯一,中止(见事件)");
     println!("页表根: 0x{root:016X}");
     (module, phys, root, drv)
 }
@@ -408,7 +439,9 @@ fn l2_power_policy_diff() {
         "chain" => chain(&dir),
         "statewalk" => statewalk(&dir),
         "write" => write_upper(&dir),
-        other => panic!("未知相位 {other}(snapshot|diff|read|near|hub|region|trace|graphwalk|marker|chain|statewalk|write)"),
+        other => panic!(
+            "未知相位 {other}(snapshot|diff|read|near|hub|region|trace|graphwalk|marker|chain|statewalk|write)"
+        ),
     }
 }
 
@@ -421,12 +454,22 @@ fn write_upper(_dir: &Path) {
         panic!("写臂未武装(需 NVOC_POWER_WRITE_ARM=YES)");
     }
     let root_va = u64::from_str_radix(
-        env::var("NVOC_POWER_WRITE_ROOT").expect("write 需 NVOC_POWER_WRITE_ROOT").trim_start_matches("0x"),
+        env::var("NVOC_POWER_WRITE_ROOT")
+            .expect("write 需 NVOC_POWER_WRITE_ROOT")
+            .trim_start_matches("0x"),
         16,
-    ).unwrap();
+    )
+    .unwrap();
     // mW 十进制
-    let new_upper: u32 = env::var("NVOC_POWER_WRITE_UPPER").expect("write 需 NVOC_POWER_WRITE_UPPER").trim().parse().unwrap();
-    let expect_upper: u32 = env::var("NVOC_POWER_WRITE_EXPECT_UPPER").ok().and_then(|s| s.trim().parse().ok()).unwrap_or(140000);
+    let new_upper: u32 = env::var("NVOC_POWER_WRITE_UPPER")
+        .expect("write 需 NVOC_POWER_WRITE_UPPER")
+        .trim()
+        .parse()
+        .unwrap();
+    let expect_upper: u32 = env::var("NVOC_POWER_WRITE_EXPECT_UPPER")
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(140000);
 
     let (_module, phys, root, drv) = connect_walk();
     // 身份门偏移:layout 优先(跨代),否则 610.74 常量
@@ -449,9 +492,9 @@ fn write_upper(_dir: &Path) {
         }
     };
     // 身份门
-    let init = rd4(root_va + u64::from(init_off)).map(|v| v & 0xFF);
-    let key = rd4(root_va + u64::from(key_off)).map(|v| v & 0xFF);
-    let upper = rd4(root_va + u64::from(upper_off));
+    let init = rd4(root_va + init_off).map(|v| v & 0xFF);
+    let key = rd4(root_va + key_off).map(|v| v & 0xFF);
+    let upper = rd4(root_va + upper_off);
     println!(
         "身份: init={init:?} key={key:?} UPPER={upper:?}(期望 init=1 key=2 UPPER={expect_upper})"
     );
@@ -459,11 +502,13 @@ fn write_upper(_dir: &Path) {
         panic!("身份门不过 — 拒写(对象可能漂移,先重走 L2 链)");
     }
     // 经物理帧写单 u32
-    let upper_va = root_va + u64::from(upper_off);
+    let upper_va = root_va + upper_off;
     let pa = translate(&phys, root, upper_va).expect("UPPER 槽 VA 翻译失败");
     let frame = pa & !0xFFF;
     let off_in_page = (upper_va & 0xFFF) as usize;
-    println!("写 UPPER: 0x{upper_va:016X} 帧 0x{frame:X} 页内 +0x{off_in_page:X}:{expect_upper} → {new_upper}");
+    println!(
+        "写 UPPER: 0x{upper_va:016X} 帧 0x{frame:X} 页内 +0x{off_in_page:X}:{expect_upper} → {new_upper}"
+    );
     let mapped = drv.map_physical(frame, 1).expect("帧映射失败(写)");
     let dst = (mapped + off_in_page as u64) as *mut u32;
     unsafe {
@@ -534,7 +579,9 @@ fn statewalk(dir: &Path) {
             continue;
         }
         for (probe_off, label) in [(0xEE10u64, "ctx+EE10"), (0x2510, "Major+2510")] {
-            let Some(va) = p.checked_add(probe_off) else { continue };
+            let Some(va) = p.checked_add(probe_off) else {
+                continue;
+            };
             let mut hh = Vec::new();
             let b = read_range(&phys, root, va, 8, &mut hh);
             spent += 1;
@@ -545,7 +592,9 @@ fn statewalk(dir: &Path) {
             if !(0xFFFF_8000_0000_0000..=0xFFFF_F7FF_FFFF_F000).contains(&root_va) {
                 continue;
             }
-            let Some(init_va) = root_va.checked_add(OFF_INIT) else { continue };
+            let Some(init_va) = root_va.checked_add(OFF_INIT) else {
+                continue;
+            };
             let mut h2 = Vec::new();
             let head = read_range(&phys, root, init_va, 16, &mut h2);
             spent += 1;
@@ -555,7 +604,9 @@ fn statewalk(dir: &Path) {
                 if init != 1 || key >= 0x40 {
                     continue;
                 }
-                let Some(uva) = root_va.checked_add(OFF_UPPER) else { continue };
+                let Some(uva) = root_va.checked_add(OFF_UPPER) else {
+                    continue;
+                };
                 let mut h3 = Vec::new();
                 let ub = read_range(&phys, root, uva, 4, &mut h3);
                 spent += 1;
@@ -575,7 +626,9 @@ fn statewalk(dir: &Path) {
                         }
                     };
                     let fr = translate(&phys, root, root_va).map(|pa| pa & !0xFFF).ok();
-                    let fru = translate(&phys, root, root_va + OFF_UPPER).map(|pa| pa & !0xFFF).ok();
+                    let fru = translate(&phys, root, root_va + OFF_UPPER)
+                        .map(|pa| pa & !0xFFF)
+                        .ok();
                     let rec = json!({
                         "via": label, "state_ptr_off": o, "ptr": p, "root_va": root_va,
                         "frame@root": fr, "frame@upper": fru,
@@ -587,11 +640,20 @@ fn statewalk(dir: &Path) {
                     });
                     println!(
                         "★ root@0x{root_va:016X} via {label}(state+0x{o:X}) init={init} elig={} aa={} base={} amount={} key={} lower={} UPPER={upper} aux1={} aux2={}",
-                        rec["elig@3CE1"], rec["amountActive@3CE2"], rec["base@3CE4"],
-                        rec["amount@3CE8"], rec["key@3CEC"], rec["lower@3CF0"],
-                        rec["aux1@3CF8"], rec["aux2@3CFC"]
+                        rec["elig@3CE1"],
+                        rec["amountActive@3CE2"],
+                        rec["base@3CE4"],
+                        rec["amount@3CE8"],
+                        rec["key@3CEC"],
+                        rec["lower@3CF0"],
+                        rec["aux1@3CF8"],
+                        rec["aux2@3CFC"]
                     );
-                    println!("   帧: root=0x{:016X} upper=0x{:016X}", fr.unwrap_or(0), fru.unwrap_or(0));
+                    println!(
+                        "   帧: root=0x{:016X} upper=0x{:016X}",
+                        fr.unwrap_or(0),
+                        fru.unwrap_or(0)
+                    );
                     roots.push(rec);
                 }
             }
@@ -603,7 +665,9 @@ fn statewalk(dir: &Path) {
         if !seen.insert(p) {
             continue;
         }
-        let Some(probe_va) = p.checked_add(0x48000) else { continue };
+        let Some(probe_va) = p.checked_add(0x48000) else {
+            continue;
+        };
         let mut hp = Vec::new();
         let _probe = read_range(&phys, root, probe_va, 8, &mut hp);
         if !hp.is_empty() {
@@ -611,7 +675,9 @@ fn statewalk(dir: &Path) {
         }
         println!("  大分配候选 state+0x{o:X} = 0x{p:016X}(+0x48000 可读)");
         for off in (0x40000u64..0x50000).step_by(0x1000) {
-            let Some(va) = p.checked_add(off) else { continue };
+            let Some(va) = p.checked_add(off) else {
+                continue;
+            };
             let mut h5 = Vec::new();
             let buf = read_range(&phys, root, va, 4096, &mut h5);
             if !h5.is_empty() {
@@ -623,7 +689,9 @@ fn statewalk(dir: &Path) {
                 if !(0xFFFF_8000_0000_0000..=0xFFFF_F7FF_FFFF_F000).contains(&q2) {
                     continue;
                 }
-                let Some(mva) = q2.checked_add(0x2510) else { continue };
+                let Some(mva) = q2.checked_add(0x2510) else {
+                    continue;
+                };
                 let mut h6 = Vec::new();
                 let b = read_range(&phys, root, mva, 8, &mut h6);
                 spent += 1;
@@ -632,7 +700,9 @@ fn statewalk(dir: &Path) {
                     if !(0xFFFF_8000_0000_0000..=0xFFFF_F7FF_FFFF_F000).contains(&root_va) {
                         continue;
                     }
-                    let Some(init_va) = root_va.checked_add(OFF_INIT) else { continue };
+                    let Some(init_va) = root_va.checked_add(OFF_INIT) else {
+                        continue;
+                    };
                     let mut h7 = Vec::new();
                     let head = read_range(&phys, root, init_va, 16, &mut h7);
                     spent += 1;
@@ -642,7 +712,9 @@ fn statewalk(dir: &Path) {
                         if init != 1 || key >= 0x40 {
                             continue;
                         }
-                        let Some(uva) = root_va.checked_add(OFF_UPPER) else { continue };
+                        let Some(uva) = root_va.checked_add(OFF_UPPER) else {
+                            continue;
+                        };
                         let mut h8 = Vec::new();
                         let ub = read_range(&phys, root, uva, 4, &mut h8);
                         spent += 1;
@@ -652,11 +724,17 @@ fn statewalk(dir: &Path) {
                                 continue;
                             }
                             let fr = translate(&phys, root, root_va).map(|pa| pa & !0xFFF).ok();
-                            let fru = translate(&phys, root, root_va + OFF_UPPER).map(|pa| pa & !0xFFF).ok();
+                            let fru = translate(&phys, root, root_va + OFF_UPPER)
+                                .map(|pa| pa & !0xFFF)
+                                .ok();
                             println!(
                                 "★★ root@0x{root_va:016X} via GPU 表(state+0x{o:X},entry@+0x{off:X}+0x{po:X}) init={init} key={key} UPPER={upper}"
                             );
-                            println!("   帧: root=0x{:016X} upper=0x{:016X}", fr.unwrap_or(0), fru.unwrap_or(0));
+                            println!(
+                                "   帧: root=0x{:016X} upper=0x{:016X}",
+                                fr.unwrap_or(0),
+                                fru.unwrap_or(0)
+                            );
                             roots.push(json!({"via": "gpu_table", "state_ptr_off": o,
                                 "table": p, "entry_va": q2, "root_va": root_va,
                                 "frame@root": fr, "frame@upper": fru,
@@ -670,7 +748,11 @@ fn statewalk(dir: &Path) {
     let report = json!({"state": state, "spent": spent, "roots": roots});
     let path = dir.join("statewalk_report.json");
     std::fs::write(&path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
-    println!("statewalk 完成: 读 {spent} 页, root 命中 {} → {}", roots.len(), path.display());
+    println!(
+        "statewalk 完成: 读 {spent} 页, root 命中 {} → {}",
+        roots.len(),
+        path.display()
+    );
 }
 
 /// chain:静态链(全局槽 → 状态 → GPU 表 → Major → root)的有界活体走查。
@@ -714,7 +796,10 @@ fn chain(dir: &Path) {
         }
     };
     let global_state = rd_q(module.base + slot_rva).filter(|v| *v >= 0xFFFF_8000_0000_0000);
-    println!("全局槽 @镜像+0x{slot_rva:X} → state = 0x{:016X?}", global_state);
+    println!(
+        "全局槽 @镜像+0x{slot_rva:X} → state = 0x{:016X?}",
+        global_state
+    );
     let state = global_state.expect("全局槽不是内核指针");
     let table = rd_q(state + table_off).filter(|v| *v >= 0xFFFF_8000_0000_0000);
     println!("state+0x{table_off:X} → GPU 表 = 0x{:016X?}", table);
@@ -734,8 +819,13 @@ fn chain(dir: &Path) {
         Some(t) => t,
         None => {
             let path = dir.join("chain_state_page.json");
-            std::fs::write(&path, serde_json::to_string_pretty(&json!({
-                "state": state, "table_off_tried": table_off, "ptrs": state_ptrs})).unwrap()).unwrap();
+            std::fs::write(
+                &path,
+                serde_json::to_string_pretty(&json!({
+                "state": state, "table_off_tried": table_off, "ptrs": state_ptrs}))
+                .unwrap(),
+            )
+            .unwrap();
             panic!("GPU 表指针无效;state 页指针已转储 {}", path.display());
         }
     };
@@ -783,7 +873,9 @@ fn chain(dir: &Path) {
             break;
         }
         // [Major+0x2510] → root 指针
-        let Some(major_off) = major.checked_add(0x2510) else { continue };
+        let Some(major_off) = major.checked_add(0x2510) else {
+            continue;
+        };
         let mut h = Vec::new();
         let b = read_range(&phys, root, major_off, 8, &mut h);
         spent += 1;
@@ -798,7 +890,9 @@ fn chain(dir: &Path) {
         }
         // root 头 16 字节(init/elig/amountActive/pad + base/amount)快速门
         let mut h2 = Vec::new();
-        let Some(init_va) = root_va.checked_add(OFF_INIT) else { continue };
+        let Some(init_va) = root_va.checked_add(OFF_INIT) else {
+            continue;
+        };
         let head = read_range(&phys, root, init_va, 16, &mut h2);
         spent += 1;
         if h2.is_empty() && head.len() == 16 {
@@ -817,7 +911,9 @@ fn chain(dir: &Path) {
                 .collect();
             let upper_now = {
                 let mut h3 = Vec::new();
-                let Some(uva) = root_va.checked_add(OFF_UPPER) else { continue };
+                let Some(uva) = root_va.checked_add(OFF_UPPER) else {
+                    continue;
+                };
                 let b = read_range(&phys, root, uva, 4, &mut h3);
                 if h3.is_empty() && b.len() == 4 {
                     Some(u32::from_le_bytes(b[0..4].try_into().unwrap()))
@@ -825,7 +921,10 @@ fn chain(dir: &Path) {
                     None
                 }
             };
-            if !upper_now.map(|u| expect_uppers.contains(&u)).unwrap_or(false) {
+            if !upper_now
+                .map(|u| expect_uppers.contains(&u))
+                .unwrap_or(false)
+            {
                 continue;
             }
             // 命中:读全字段 + 翻译帧
@@ -839,8 +938,12 @@ fn chain(dir: &Path) {
                 }
             };
             let fr = translate(&phys, root, root_va).map(|pa| pa & !0xFFF).ok();
-            let fru = translate(&phys, root, root_va + OFF_UPPER).map(|pa| pa & !0xFFF).ok();
-            let frb = translate(&phys, root, root_va + OFF_BASE).map(|pa| pa & !0xFFF).ok();
+            let fru = translate(&phys, root, root_va + OFF_UPPER)
+                .map(|pa| pa & !0xFFF)
+                .ok();
+            let frb = translate(&phys, root, root_va + OFF_BASE)
+                .map(|pa| pa & !0xFFF)
+                .ok();
             let rec = json!({
                 "major_va": major, "root_va": root_va,
                 "frame@root": fr, "frame@base": frb, "frame@upper": fru,
@@ -851,12 +954,18 @@ fn chain(dir: &Path) {
             });
             println!(
                 "  ★ root@0x{root_va:016X}(Major 0x{major:016X}): init={init} elig={} amountActive={} base={base} amount={amount} key={key} lower={} upper={} aux={}/{}",
-                rec["elig@3CE1"], rec["amountActive@3CE2"],
-                rec["lower@3CF0"], rec["upper@3CF4"], rec["aux1@3CF8"], rec["aux2@3CFC"]
+                rec["elig@3CE1"],
+                rec["amountActive@3CE2"],
+                rec["lower@3CF0"],
+                rec["upper@3CF4"],
+                rec["aux1@3CF8"],
+                rec["aux2@3CFC"]
             );
             println!(
                 "    帧: root=0x{:016X} base=0x{:016X} upper=0x{:016X}",
-                fr.unwrap_or(0), frb.unwrap_or(0), fru.unwrap_or(0)
+                fr.unwrap_or(0),
+                frb.unwrap_or(0),
+                fru.unwrap_or(0)
             );
             roots.push(rec);
         }
@@ -866,7 +975,11 @@ fn chain(dir: &Path) {
         "table_hex": table_hex});
     let path = dir.join("chain_report.json");
     std::fs::write(&path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
-    println!("chain 完成: 读 {spent} 页, root 命中 {} → {}", roots.len(), path.display());
+    println!(
+        "chain 完成: 读 {spent} 页, root 命中 {} → {}",
+        roots.len(),
+        path.display()
+    );
 }
 
 /// marker:查找 lookup 函数指针(静态 RVA 0xCF1EA0,写在 root+0x1CC8)的
@@ -890,7 +1003,8 @@ fn marker(dir: &Path) {
         let buf = read_range(&phys, root, va, size as usize, &mut holes);
         for o in (0..buf.len().saturating_sub(7)).step_by(8) {
             let q = u64::from_le_bytes(buf[o..o + 8].try_into().unwrap());
-            if q >= 0xFFFF_8000_0000_0000 && (q < module.base || q >= image_end)
+            if q >= 0xFFFF_8000_0000_0000
+                && (q < module.base || q >= image_end)
                 && seen.insert(q & !0xFFF)
             {
                 queue.push_back(q & !0xFFF);
@@ -898,7 +1012,12 @@ fn marker(dir: &Path) {
         }
     }
     // 种子:枢纽页
-    for h in ["0xFFFFC889A4A04000", "0xFFFFC889776E2000", "0xFFFFC88985AC0000", "0xFFFFC889710B9000"] {
+    for h in [
+        "0xFFFFC889A4A04000",
+        "0xFFFFC889776E2000",
+        "0xFFFFC88985AC0000",
+        "0xFFFFC889710B9000",
+    ] {
         if let Ok(v) = u64::from_str_radix(h.trim_start_matches("0x"), 16) {
             queue.push_back(v & !0xFFF);
         }
@@ -927,7 +1046,9 @@ fn marker(dir: &Path) {
                 continue;
             }
             let root_va = page + o as u64 - 0x1CC8;
-            println!("  ★ lookup 指针命中 page 0x{page:016X} +0x{o:X} → root_va = 0x{root_va:016X}");
+            println!(
+                "  ★ lookup 指针命中 page 0x{page:016X} +0x{o:X} → root_va = 0x{root_va:016X}"
+            );
             // 解析 root 全字段(root 可能跨页,逐字段读)
             let f = |roff: u64| -> Option<u32> {
                 let mut h2 = Vec::new();
@@ -938,7 +1059,9 @@ fn marker(dir: &Path) {
                     None
                 }
             };
-            let fr = translate(&phys, root, root_va + OFF_UPPER).map(|pa| pa & !0xFFF).ok();
+            let fr = translate(&phys, root, root_va + OFF_UPPER)
+                .map(|pa| pa & !0xFFF)
+                .ok();
             let fr0 = translate(&phys, root, root_va).map(|pa| pa & !0xFFF).ok();
             let registry = {
                 let mut h2 = Vec::new();
@@ -964,10 +1087,16 @@ fn marker(dir: &Path) {
             });
             println!(
                 "    init={} elig={} amountActive={} base={} amount={} key={} lower={} upper={} aux={}/{} registry=0x{:?}",
-                rec["init@3CE0"], rec["elig@3CE1"], rec["amountActive@3CE2"],
+                rec["init@3CE0"],
+                rec["elig@3CE1"],
+                rec["amountActive@3CE2"],
                 rec["base@3CE4"].as_u64().unwrap_or(0xFFFF_FFFF),
-                rec["amount@3CE8"], rec["key@3CEC"],
-                rec["lower@3CF0"], rec["upper@3CF4"], rec["aux1@3CF8"], rec["aux2@3CFC"],
+                rec["amount@3CE8"],
+                rec["key@3CEC"],
+                rec["lower@3CF0"],
+                rec["upper@3CF4"],
+                rec["aux1@3CF8"],
+                rec["aux2@3CFC"],
                 rec["registry@1C90"].as_u64()
             );
             roots.push(rec);
@@ -983,10 +1112,15 @@ fn marker(dir: &Path) {
             }
         }
     }
-    let report = json!({"budget": budget, "spent": spent, "lookup_marker": lookup_marker, "roots": roots});
+    let report =
+        json!({"budget": budget, "spent": spent, "lookup_marker": lookup_marker, "roots": roots});
     let path = dir.join("marker_report.json");
     std::fs::write(&path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
-    println!("marker 完成: 读 {spent} 页, lookup 命中 {} → {}", roots.len(), path.display());
+    println!(
+        "marker 完成: 读 {spent} 页, lookup 命中 {} → {}",
+        roots.len(),
+        path.display()
+    );
 }
 
 /// graphwalk:从枢纽页(资源描述符注册表/锚表)做 FIFO 广度走查,预算内
@@ -1042,7 +1176,10 @@ fn graphwalk(tag: &str, dir: &Path) {
             println!(
                 "  ★ 0x{page:016X} fp={:?} vals={:?} f7={} ptrs={n_ptrs}",
                 scan.fingerprint,
-                scan.value_hits.iter().map(|(k, v)| (k, v.len())).collect::<Vec<_>>(),
+                scan.value_hits
+                    .iter()
+                    .map(|(k, v)| (k, v.len()))
+                    .collect::<Vec<_>>(),
                 scan.f7_hits.len()
             );
             hits.push(json!({"va": page, "fingerprint": scan.fingerprint,
@@ -1065,7 +1202,11 @@ fn graphwalk(tag: &str, dir: &Path) {
     let report = json!({"tag": tag, "budget": budget, "spent": spent, "hits": hits});
     let path = dir.join(format!("graphwalk_{tag}.json"));
     std::fs::write(&path, serde_json::to_string(&report).unwrap()).unwrap();
-    println!("graphwalk 完成: 读 {spent} 页, 信号页 {} → {}", hits.len(), path.display());
+    println!(
+        "graphwalk 完成: 读 {spent} 页, 信号页 {} → {}",
+        hits.len(),
+        path.display()
+    );
 }
 
 /// trace:GPU-ID 指纹定位注册表页 → 相邻 {Major 指针, GPU ID} 对提取 Major →
@@ -1089,7 +1230,8 @@ fn trace(dir: &Path) {
             let buf = read_range(&phys, root, va, size as usize, &mut holes);
             for o in (0..buf.len().saturating_sub(7)).step_by(8) {
                 let q = u64::from_le_bytes(buf[o..o + 8].try_into().unwrap());
-                if q >= 0xFFFF_8000_0000_0000 && (q < module.base || q >= image_end)
+                if q >= 0xFFFF_8000_0000_0000
+                    && (q < module.base || q >= image_end)
                     && seen.insert(q & !0xFFF)
                 {
                     ptrs.push(q & !0xFFF);
@@ -1150,7 +1292,11 @@ fn trace(dir: &Path) {
             }
         }
     }
-    println!("注册表页 {}, Major 候选 {}", registry_pages.len(), majors.len());
+    println!(
+        "注册表页 {}, Major 候选 {}",
+        registry_pages.len(),
+        majors.len()
+    );
 
     // 2) 读 Major 页,对其指针目标做 root 指纹检查
     let mut roots = Vec::new();
@@ -1235,7 +1381,10 @@ fn trace(dir: &Path) {
         } else if !scan.value_hits.is_empty() {
             println!(
                 "  值页 page 0x{page:016X} vals={:?}",
-                scan.value_hits.iter().map(|(k, v)| (k, v.len())).collect::<Vec<_>>()
+                scan.value_hits
+                    .iter()
+                    .map(|(k, v)| (k, v.len()))
+                    .collect::<Vec<_>>()
             );
         }
     }
@@ -1244,14 +1393,25 @@ fn trace(dir: &Path) {
         "majors": majors, "roots": roots});
     let path = dir.join("trace_report.json");
     std::fs::write(&path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
-    println!("trace 完成: 读 {spent} 页, root 命中 {} → {}", roots.len(), path.display());
+    println!(
+        "trace 完成: 读 {spent} 页, root 命中 {} → {}",
+        roots.len(),
+        path.display()
+    );
     for r in &roots {
         println!(
             "  root@0x{:X}: init={} elig={} amountActive={} base={} amount={} key={} lower={} upper={} aux={}/{}",
             r["root_va"].as_u64().unwrap(),
-            r["init@3CE0"], r["elig@3CE1"], r["amountActive@3CE2"],
-            r["base@3CE4"], r["amount@3CE8"], r["key@3CEC"],
-            r["lower@3CF0"], r["upper@3CF4"], r["aux1@3CF8"], r["aux2@3CFC"]
+            r["init@3CE0"],
+            r["elig@3CE1"],
+            r["amountActive@3CE2"],
+            r["base@3CE4"],
+            r["amount@3CE8"],
+            r["key@3CEC"],
+            r["lower@3CF0"],
+            r["upper@3CF4"],
+            r["aux1@3CF8"],
+            r["aux2@3CFC"]
         );
     }
 }
@@ -1260,15 +1420,23 @@ fn trace(dir: &Path) {
 /// 的整个池簇,存全量 hex(512×8KB≈4MB JSON)。差分在离线完成。
 fn region(tag: &str, dir: &Path) {
     let base = u64::from_str_radix(
-        env::var("NVOC_POWER_REGION_BASE").expect("region 相位需 NVOC_POWER_REGION_BASE").trim_start_matches("0x"),
+        env::var("NVOC_POWER_REGION_BASE")
+            .expect("region 相位需 NVOC_POWER_REGION_BASE")
+            .trim_start_matches("0x"),
         16,
-    ).unwrap() & !0x1F_FFFF;
+    )
+    .unwrap()
+        & !0x1F_FFFF;
     let span = env::var("NVOC_POWER_REGION_SPAN")
         .ok()
         .and_then(|s| usize::from_str_radix(s.trim_start_matches("0x"), 16).ok())
         .unwrap_or(0x20_0000);
     let (_module, phys, root, _drv) = connect_walk();
-    println!("region 0x{base:016X}..0x{:016X}({} 页)", base + span as u64, span / 0x1000);
+    println!(
+        "region 0x{base:016X}..0x{:016X}({} 页)",
+        base + span as u64,
+        span / 0x1000
+    );
     let mut pages = Vec::new();
     let mut ok = 0usize;
     let mut unreadable = 0usize;
@@ -1283,7 +1451,10 @@ fn region(tag: &str, dir: &Path) {
                 println!(
                     "  值页 0x{va:016X} fp={:?} vals={:?} f7={}",
                     scan.fingerprint,
-                    scan.value_hits.iter().map(|(k, v)| (k, v.len())).collect::<Vec<_>>(),
+                    scan.value_hits
+                        .iter()
+                        .map(|(k, v)| (k, v.len()))
+                        .collect::<Vec<_>>(),
                     scan.f7_hits.len()
                 );
             }
@@ -1315,7 +1486,9 @@ fn hub(dir: &Path) {
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(256);
-    let hop2 = env::var("NVOC_POWER_HUB_HOP2").map(|v| v == "1").unwrap_or(false);
+    let hop2 = env::var("NVOC_POWER_HUB_HOP2")
+        .map(|v| v == "1")
+        .unwrap_or(false);
     let (_module, phys, root, _drv) = connect_walk();
     let mut hole = Vec::new();
     let anchor_buf = read_range(&phys, root, anchor, 4096, &mut hole);
@@ -1413,26 +1586,43 @@ fn hub(dir: &Path) {
             println!(
                 "  指纹命中 page 0x{page:016X} fp={:?} values={:?}",
                 scan.fingerprint,
-                scan.value_hits.iter().map(|(k, v)| (k, v.len())).collect::<Vec<_>>()
+                scan.value_hits
+                    .iter()
+                    .map(|(k, v)| (k, v.len()))
+                    .collect::<Vec<_>>()
             );
         } else if scan.value_hits.contains_key(&90000) || scan.value_hits.contains_key(&95000) {
             println!(
                 "  差分值页 page 0x{page:016X} values={:?}",
-                scan.value_hits.iter().map(|(k, v)| (k, v.len())).collect::<Vec<_>>()
+                scan.value_hits
+                    .iter()
+                    .map(|(k, v)| (k, v.len()))
+                    .collect::<Vec<_>>()
             );
         }
     }
     let report = json!({"anchor": anchor, "scanned": scanned, "roots": roots});
     let path = dir.join("hub_report.json");
     std::fs::write(&path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
-    println!("hub 完成: 扫 {scanned} 页, root 命中 {} → {}", roots.len(), path.display());
+    println!(
+        "hub 完成: 扫 {scanned} 页, root 命中 {} → {}",
+        roots.len(),
+        path.display()
+    );
     for r in &roots {
         println!(
             "  root@0x{:X}: init={} elig={} amountActive={} base={} amount={} key={} lower={} upper={} aux={}/{}",
             r["root_va"].as_u64().unwrap(),
-            r["init@3CE0"], r["elig@3CE1"], r["amountActive@3CE2"],
-            r["base@3CE4"], r["amount@3CE8"], r["key@3CEC"],
-            r["lower@3CF0"], r["upper@3CF4"], r["aux1@3CF8"], r["aux2@3CFC"]
+            r["init@3CE0"],
+            r["elig@3CE1"],
+            r["amountActive@3CE2"],
+            r["base@3CE4"],
+            r["amount@3CE8"],
+            r["key@3CEC"],
+            r["lower@3CF0"],
+            r["upper@3CF4"],
+            r["aux1@3CF8"],
+            r["aux2@3CFC"]
         );
     }
 }
@@ -1457,7 +1647,10 @@ fn near(dir: &Path) {
     let (_module, phys, root, _drv) = connect_walk();
     let start = anchor.saturating_sub(before);
     let end = anchor + after;
-    println!("邻域扫描 0x{start:016X}..0x{end:016X}(锚 0x{anchor:016X}),共 {} 页", (end - start) / 0x1000);
+    println!(
+        "邻域扫描 0x{start:016X}..0x{end:016X}(锚 0x{anchor:016X}),共 {} 页",
+        (end - start) / 0x1000
+    );
     let mut hits = Vec::new();
     let mut pages = Vec::new();
     let mut page = start;
@@ -1480,7 +1673,10 @@ fn near(dir: &Path) {
                 println!(
                     "  页 0x{page:016X} fp={:?} values={:?} f7n={} ptrs={n_ptrs}",
                     scan.fingerprint,
-                    scan.value_hits.iter().map(|(k, v)| (k, v.len())).collect::<Vec<_>>(),
+                    scan.value_hits
+                        .iter()
+                        .map(|(k, v)| (k, v.len()))
+                        .collect::<Vec<_>>(),
                     scan.f7_hits.len()
                 );
             }
@@ -1503,9 +1699,8 @@ fn near(dir: &Path) {
     for (page_va, buf) in &pages {
         for &o in &scan_page(buf).fingerprint {
             let root_va = page_va + o as u64 - OFF_UPPER;
-            let put = |off: usize| -> u32 {
-                u32::from_le_bytes(buf[off..off + 4].try_into().unwrap())
-            };
+            let put =
+                |off: usize| -> u32 { u32::from_le_bytes(buf[off..off + 4].try_into().unwrap()) };
             let in_page = |off: usize| off + 4 <= 4096;
             let f = |roff: u64| -> Option<u32> {
                 // root 字段可能落在锚页之外,回读
@@ -1546,14 +1741,31 @@ fn near(dir: &Path) {
     });
     let path = dir.join("near_report.json");
     std::fs::write(&path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
-    println!("near 完成: 命中 {} 页,root 解析 {} → {}", hits.len(), roots.len(), path.display());
+    println!(
+        "near 完成: 命中 {} 页,root 解析 {} → {}",
+        hits.len(),
+        roots.len(),
+        path.display()
+    );
     for r in &roots {
-        println!("  root@0x{:X}: init={} elig={} amountActive={} base={} amount={} key={} lower={} upper={} aux={}/{}",
+        println!(
+            "  root@0x{:X}: init={} elig={} amountActive={} base={} amount={} key={} lower={} upper={} aux={}/{}",
             r["root_va"].as_u64().unwrap(),
-            r["init@3CE0"], r["elig@3CE1"], r["amountActive@3CE2"],
-            r["base@3CE4"], r["amount@3CE8"], r["key@3CEC"],
-            r["lower@3CF0"], r["upper@3CF4"], r["aux1@3CF8"], r["aux2@3CFC"]);
-        println!("    anchor 页帧: 0x{:X}", r["anchor_frame"].as_u64().unwrap_or(0));
+            r["init@3CE0"],
+            r["elig@3CE1"],
+            r["amountActive@3CE2"],
+            r["base@3CE4"],
+            r["amount@3CE8"],
+            r["key@3CEC"],
+            r["lower@3CF0"],
+            r["upper@3CF4"],
+            r["aux1@3CF8"],
+            r["aux2@3CFC"]
+        );
+        println!(
+            "    anchor 页帧: 0x{:X}",
+            r["anchor_frame"].as_u64().unwrap_or(0)
+        );
     }
 }
 
@@ -1621,7 +1833,10 @@ fn snapshot(tag: &str, dir: &Path) {
     let _ = MAX_PAGES;
     while let Some(page_va) = frontier.pop() {
         if scanned >= max_pages {
-            println!("  达到安全预算 {max_pages} 页,停止走查(剩余队列 {})", frontier.len());
+            println!(
+                "  达到安全预算 {max_pages} 页,停止走查(剩余队列 {})",
+                frontier.len()
+            );
             break;
         }
         if !visited.insert(page_va) || visited.len() > MAX_PAGES {
@@ -1738,11 +1953,11 @@ fn snapshot(tag: &str, dir: &Path) {
 fn diff(tag: &str, dir: &Path) {
     let base_tag = env::var("NVOC_POWER_DIFF_BASE").unwrap_or_else(|_| "a".into());
     let base_path = dir.join(format!("{base_tag}.snapshot.json"));
-    let base: Value =
-        serde_json::from_str(&std::fs::read_to_string(&base_path).unwrap_or_else(|e| {
-            panic!("读基线快照 {} 失败: {e}", base_path.display())
-        }))
-        .unwrap();
+    let base: Value = serde_json::from_str(
+        &std::fs::read_to_string(&base_path)
+            .unwrap_or_else(|e| panic!("读基线快照 {} 失败: {e}", base_path.display())),
+    )
+    .unwrap();
     let (_module, phys, root, _drv) = connect_walk();
 
     let mut changed_pages: Vec<Value> = Vec::new();
@@ -1774,9 +1989,9 @@ fn diff(tag: &str, dir: &Path) {
         }
         if !changes.is_empty() || byte_changes != changes.len() * 4 {
             let fp = root_fingerprint(&new_bytes);
-            let has_f7 = (0..4094).step_by(2).any(|o| {
-                u16::from_le_bytes(new_bytes[o..o + 2].try_into().unwrap()) == F7_RECORD
-            });
+            let has_f7 = (0..4094)
+                .step_by(2)
+                .any(|o| u16::from_le_bytes(new_bytes[o..o + 2].try_into().unwrap()) == F7_RECORD);
             changed_pages.push(json!({
                 "page_va": page_va,
                 "status": "changed",
@@ -1835,7 +2050,16 @@ fn diff(tag: &str, dir: &Path) {
             page["status"].as_str().unwrap_or("?"),
             page["dword_changes"]
                 .as_array()
-                .map(|c| c.iter().map(|x| format!("+{:X}: {}→{}", x["off"].as_u64().unwrap(), x["old"], x["new"])).collect::<Vec<_>>().join(", "))
+                .map(|c| c
+                    .iter()
+                    .map(|x| format!(
+                        "+{:X}: {}→{}",
+                        x["off"].as_u64().unwrap(),
+                        x["old"],
+                        x["new"]
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(", "))
                 .unwrap_or_default()
         );
     }
@@ -1843,9 +2067,12 @@ fn diff(tag: &str, dir: &Path) {
 
 fn read_object(dir: &Path) {
     let va = u64::from_str_radix(
-        env::var("NVOC_POWER_READ_VA").expect("read 相位需 NVOC_POWER_READ_VA").trim_start_matches("0x"),
+        env::var("NVOC_POWER_READ_VA")
+            .expect("read 相位需 NVOC_POWER_READ_VA")
+            .trim_start_matches("0x"),
         16,
-    ).unwrap();
+    )
+    .unwrap();
     let len = env::var("NVOC_POWER_READ_LEN")
         .ok()
         .and_then(|s| usize::from_str_radix(s.trim_start_matches("0x"), 16).ok())
@@ -1881,13 +2108,24 @@ fn read_object(dir: &Path) {
     std::fs::write(&path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
     println!(
         "root 对象 @0x{va:016X}: init={} elig={} amountActive={} base={} amount={} key={} lower={} upper={} aux={}/{} → {}",
-        report["init@3CE0"], report["elig@3CE1"], report["amountActive@3CE2"],
-        report["base@3CE4"], report["amount@3CE8"], report["key@3CEC"],
-        report["lower@3CF0"], report["upper@3CF4"], report["aux1@3CF8"], report["aux2@3CFC"],
+        report["init@3CE0"],
+        report["elig@3CE1"],
+        report["amountActive@3CE2"],
+        report["base@3CE4"],
+        report["amount@3CE8"],
+        report["key@3CEC"],
+        report["lower@3CF0"],
+        report["upper@3CF4"],
+        report["aux1@3CF8"],
+        report["aux2@3CFC"],
         path.display()
     );
     for f in &frames {
-        println!("  页 0x{:X} → 帧 0x{:X}", f["va"].as_u64().unwrap(), f["frame"].as_u64().unwrap());
+        println!(
+            "  页 0x{:X} → 帧 0x{:X}",
+            f["va"].as_u64().unwrap(),
+            f["frame"].as_u64().unwrap()
+        );
     }
 }
 
@@ -1902,7 +2140,8 @@ fn hex_to_bytes(s: &str) -> Vec<u8> {
 fn scan_page_fingerprint_synthetic() {
     let mut buf = vec![0u8; 4096];
     // root 页内对齐:UPPER @ o=0xCF4 → base@0xCE4, key@0xCEC, init@0xCE0
-    let put = |buf: &mut [u8], off: usize, v: u32| buf[off..off + 4].copy_from_slice(&v.to_le_bytes());
+    let put =
+        |buf: &mut [u8], off: usize, v: u32| buf[off..off + 4].copy_from_slice(&v.to_le_bytes());
     put(&mut buf, 0xCE4, 100000);
     put(&mut buf, 0xCF4, 100000);
     put(&mut buf, 0xCEC, 0x0000_0005); // key=5(<0x40)
@@ -1914,7 +2153,11 @@ fn scan_page_fingerprint_synthetic() {
     buf[0x200..0x204].copy_from_slice(&90000u32.to_le_bytes());
     buf[0x300..0x302].copy_from_slice(&0x3F7u16.to_le_bytes()); // F7 记录(独立槽)
     let scan = scan_page(&buf);
-    assert_eq!(scan.fingerprint, vec![0xCF4], "root 指纹应精确命中 UPPER 槽");
+    assert_eq!(
+        scan.fingerprint,
+        vec![0xCF4],
+        "root 指纹应精确命中 UPPER 槽"
+    );
     assert_eq!(scan.value_hits[&100000], vec![0xCE4, 0xCF4]);
     assert_eq!(scan.value_hits[&90000], vec![0x200]);
     assert_eq!(scan.value_hits[&5000], vec![0xCF0]);
@@ -1926,5 +2169,9 @@ fn scan_page_fingerprint_synthetic() {
     assert!(scan_page(&bad2).fingerprint.is_empty(), "init=0 不得命中");
     let mut sentinel = buf.clone();
     put(&mut sentinel, 0xCE4, 0xFFFFFFFF);
-    assert_eq!(scan_page(&sentinel).fingerprint, vec![0xCF4], "base=-1 哨兵不应阻止命中");
+    assert_eq!(
+        scan_page(&sentinel).fingerprint,
+        vec![0xCF4],
+        "base=-1 哨兵不应阻止命中"
+    );
 }
