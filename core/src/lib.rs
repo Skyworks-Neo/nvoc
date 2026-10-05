@@ -65,6 +65,7 @@ pub use operation::{
     SetEdid, SetFanCurve, SetFanPercent, SetFanRpm, SetFanSpeed, SetFanStop, SetForcePstate,
     SetGpcVoltLock, SetLegacyClocks, SetLockedClocks, SetNvapiBackgroundOcScanner,
     SetNvapiClkDomainOffset, SetNvapiCoreVoltageControl, SetNvapiDNotifier, SetNvapiDynamicBoost,
+<<<<<<< HEAD
     SetNvapiEccConfiguration, SetNvapiFramerateLimit, SetNvapiI2cWrite, SetNvapiOverclockedPstates,
     SetNvapiOvervolt, SetNvapiPStateNative, SetNvapiPerfFreqCap, SetNvapiPerfLevelLock,
     SetNvapiPmgrVoltageArbiter, SetNvapiPowerChannelValue, SetNvapiPowerCommand,
@@ -74,6 +75,15 @@ pub use operation::{
     SetNvapiVoltRailOffset, SetNvapiVoltRailSlot, SetNvapiVoltRailTarget, SetNvmlAcousticTemp,
     SetNvmlPstateLock, SetPowerLimit, SetPowerMode, SetPstateBaseVoltage, SetPstateClockOffset,
     SetPublicVftablePointOffset, SetPublicVftableRangeOffset, SetSubdomainFreqRatio,
+=======
+    SetNvapiEccConfiguration, SetNvapiOverclockedPstates, SetNvapiOvervolt, SetNvapiPStateNative,
+    SetNvapiPerfFreqCap, SetNvapiPerfLevelLock, SetNvapiPmgrVoltageArbiter, SetNvapiPowerLimits,
+    SetNvapiPstateLock, SetNvapiPstates20PrivateDelta, SetNvapiSensorLimits, SetNvapiTargetTemp,
+    SetNvapiTgpWatt, SetNvapiThermalSim, SetNvapiVfpPointPrivate, SetNvapiVfpRangePerPointPrivate,
+    SetNvapiVfpRangePrivate, SetNvapiVoltRailOffset, SetNvapiVoltRailSlot, SetNvapiVoltRailTarget,
+    SetNvmlAcousticTemp, SetNvmlPstateLock, SetPowerLimit, SetPowerMode, SetPstateBaseVoltage,
+    SetPstateClockOffset, SetPublicVftablePointOffset, SetPublicVftableRangeOffset,
+>>>>>>> d35d5b6 (volt: expose the melonVolt payload slots in the CLI — set-volt-rail-limit --slot (0..5), P100/582.41 slot semantics pinned)
     SetTemperatureLimit, SetVfpFrequencyLock, SetVfpLockEntries, SetVoltageBoost, SetWm2Active,
     SetWm2Mode, TgpWattRangeInfo, detect_gpu_type, fetch_gpu_type, find_matching_vfp_point,
     is_server_pascal_dual_plane, legacy_core_overvolt_ranges, legacy_p0_core_max_voltage_delta,
