@@ -219,7 +219,7 @@ Apply 通用模型（NvidiaController.ApplyCoreAsync :1387-1989）：**staging �
 | E4 域 20/21 命名 | 用户裁决结案（MSD=media subsystem）；类型普查归档 |
 | E5 TopRels 边语义 | 确证仅 50 系可裁，搁置 |
 | E6 BoostLock | **定案**（双向实证） |
-| E1 V/F 几何+deltaScale | 待 e1b 写-读轮（探针就绪） |
+| E1 V/F 几何+deltaScale | **定案**（真几何 88+36i 双机实证，见 §16.8） |
 
 ### 16.7 第二轮判读（同日，4060L + 2070，探针 c3ead23→b96a8be）
 
@@ -229,6 +229,16 @@ Apply 通用模型（NvidiaController.ApplyCoreAsync :1387-1989）：**staging �
 - **E2 首批佐证**：2070 VoltRailsStatus(v1|2760) +72=712500/+76=1125000 µV **= UI 截图 NVVDD range 712–1125**；4060L +80=1200000（1.2V VRM/OV 墙，与 xOCD status.values[3] 语义吻合）；2070 control +72/+76=32000（32mV 标定窗，xOCD ctrl.values[0/1] 呼应）。两卡均单轨 → **bit 序 vs dense 序仍需 50 系双轨卡**。
 - 2070 E4 稳定复现：bit0/type0x8/slot0 = **-1000 kHz**（非输出交错，含义未定，与 -lgc 范围锁是否相关待查）。
 - e3 探针的未使用变量警告已修；JSON 路径修复生效（本轮 e1/e6/e3 JSON 均落盘成功）。
+
+### 16.8 E1 终局结案（2026-10-05 深夜，offset_of 实证 + 2070 实测写-读差量）
+
+- **根因=探针手算偏移错误，不是结构体/驱动问题**：`NV_GPU_CLOCK_CLIENT_CLK_VF_POINTS_CONTROL_V1` 头部实为 version(4)+ClockMask<8>(32)+unknown(32)=68B，points@68、entry 36B、freqDeltaKHz@entry+20 ⇒ **delta(i)=88+36i**（size_of=9248 的唯一解）。e1/e1b 的「nvapioc 60+36i」是 40B 头假设的产物；xOCD 的 124+36(i-1) 对 i≥1 与其为同一族（off-by-one 贴错标签）。
+- **原始证据重解释**：e1c 保留位 {88,124,160,196} 即真槽位；68/104/140/176 被拒 -1 = 那正是各 entry 的 clock_type 字段（驱动枚举校验拒绝 15000）；e1b 的 60+36×30 落在 entry29 尾 padding（驱动重建置零，故"不保留"）。§16.7 的「字段位置未知」结论作废。
+- **e7 探针（v0.2.x@ec0e654）实证**：
+  - 2070/610.47（用户 OC +50×0..70 生效态）：A2 普查 `50000: n=71 [88+36k k=0..70]`；A4 ours 列 pt0..7=50000、old60 列=0；**B1 `set_vfp_table(p5,+80MHz)` 差量恰 1 dword：abs 268(=88+36×5) 50000→80000**；B2 raw 补丁 268=55555 保留；两臂恢复逐字节校验 OK。
+  - P100（本机，只读）：status 0、mask 80 位、type=1@68+36k k=0..79、delta 全 0（写臂需提权，-137 优雅跳过）。
+- **结论**：写路径（`set_vfp_table` 及 CLI 公开 VF 写）与 struct 几何自始正确；`get-public-vftable` 的 delta 列虽来自 curve/status 面（current−默认），但其与 raw 表 88+36i 一致。**矛盾①⑥结案**；clock.rs 与探针注释中的 60+36i 算术为化石错误（e7 模块注释已留勘误）。
+- 余留观察（不影响结论）：2070 表 mask=133 位而 clock_type=1 仅 entries 128..130（P100 为 0..79 全 1）——entry+0 字段语义未定，留档。
 
 ## 17. nvoc-core / cli 封装建议清单（2026-10-05，逆向与测试暂停点）
 
