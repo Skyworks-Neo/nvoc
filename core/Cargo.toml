@@ -16,7 +16,14 @@ quick-error = { workspace = true }
 libloading = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true }
+# kmd/pawnio.rs talks to \Device\PawnIO with CreateFileW/DeviceIoControl
+# directly; the Win32 umbrella feature does not pull in the sub-namespaces.
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+] }
 
 [dev-dependencies]
 serde_json = { workspace = true }
