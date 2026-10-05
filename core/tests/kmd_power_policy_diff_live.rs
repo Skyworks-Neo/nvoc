@@ -384,9 +384,387 @@ fn l2_power_policy_diff() {
         "trace" => trace(&dir),
         "trace" => trace(&dir),
         "graphwalk" => graphwalk(&tag, &dir),
+        "graphwalk" => graphwalk(&tag, &dir),
         "marker" => marker(&dir),
-        other => panic!("未知相位 {other}(snapshot|diff|read|near|hub|region|trace|graphwalk|marker)"),
+        "chain" => chain(&dir),
+        "statewalk" => statewalk(&dir),
+        other => panic!("未知相位 {other}(snapshot|diff|read|near|hub|region|trace|graphwalk|marker|chain|statewalk)"),
     }
+}
+
+/// statewalk:全局槽 0x13AAD58 → state 页全部指针 P,对每个 P 探两种形态:
+/// [P+0xEE10](per-GPU 大上下文持 root)与 [P+0x2510](Major 持 root)。
+/// root 门:init==1 && key<0x40 && UPPER ∈ 候选集。
+fn statewalk(dir: &PathBuf) {
+    let (module, phys, root) = connect_walk();
+    let slot_rva = 0x13AAD58;
+    let state = {
+        let mut h = Vec::new();
+        let b = read_range(&phys, root, module.base + slot_rva, 8, &mut h);
+        let v = u64::from_le_bytes(b[0..8].try_into().unwrap());
+        assert!(h.is_empty() && v >= 0xFFFF_8000_0000_0000, "state 指针无效");
+        v
+    };
+    println!("state = 0x{state:016X}");
+    let state_span = env::var("NVOC_POWER_STATE_SPAN")
+        .ok()
+        .and_then(|s| usize::from_str_radix(s.trim_start_matches("0x"), 16).ok())
+        .unwrap_or(0x1000);
+    let mut state_ptrs: Vec<(u64, u64)> = Vec::new(); // (state 内偏移, 指针)
+    for off in (0..state_span).step_by(0x1000) {
+        let mut h = Vec::new();
+        let page = read_range(&phys, root, state + off as u64, 4096, &mut h);
+        if !h.is_empty() {
+            continue;
+        }
+        for o in (0..4088).step_by(8) {
+            let q = u64::from_le_bytes(page[o..o + 8].try_into().unwrap());
+            if (0xFFFF_8000_0000_0000..=0xFFFF_F7FF_FFFF_F000).contains(&q) {
+                state_ptrs.push(((off + o) as u64, q & !0xFFF));
+            }
+        }
+    }
+    println!("state 指针 {} 个(span 0x{state_span:X})", state_ptrs.len());
+    let page = [0u8; 4096]; // 兼容旧循环变量(实际循环已下沉)
+    let expect_uppers: Vec<u32> = env::var("NVOC_POWER_EXPECT_UPPER")
+        .unwrap_or_else(|_| "100000,140000,150000,135000".into())
+        .split(',')
+        .filter_map(|s| u32::from_str_radix(s.trim().trim_start_matches("0x"), 16).ok())
+        .collect();
+
+    let mut roots = Vec::new();
+    let mut seen = HashSet::new();
+    let mut spent = 0usize;
+    for (o, p) in state_ptrs.clone() {
+        if !seen.insert(p) {
+            continue;
+        }
+        for (probe_off, label) in [(0xEE10u64, "ctx+EE10"), (0x2510, "Major+2510")] {
+            let Some(va) = p.checked_add(probe_off) else { continue };
+            let mut hh = Vec::new();
+            let b = read_range(&phys, root, va, 8, &mut hh);
+            spent += 1;
+            if !hh.is_empty() || b.len() != 8 {
+                continue;
+            }
+            let root_va = u64::from_le_bytes(b[0..8].try_into().unwrap());
+            if !(0xFFFF_8000_0000_0000..=0xFFFF_F7FF_FFFF_F000).contains(&root_va) {
+                continue;
+            }
+            let Some(init_va) = root_va.checked_add(OFF_INIT) else { continue };
+            let mut h2 = Vec::new();
+            let head = read_range(&phys, root, init_va, 16, &mut h2);
+            spent += 1;
+            if h2.is_empty() && head.len() == 16 {
+                let init = head[0];
+                let key = head[12];
+                if init != 1 || key >= 0x40 {
+                    continue;
+                }
+                let Some(uva) = root_va.checked_add(OFF_UPPER) else { continue };
+                let mut h3 = Vec::new();
+                let ub = read_range(&phys, root, uva, 4, &mut h3);
+                spent += 1;
+                if h3.is_empty() && ub.len() == 4 {
+                    let upper = u32::from_le_bytes(ub[0..4].try_into().unwrap());
+                    if !expect_uppers.contains(&upper) {
+                        continue;
+                    }
+                    let f = |roff: u64| -> Option<u32> {
+                        let Some(v2) = root_va.checked_add(roff) else { return None };
+                        let mut h4 = Vec::new();
+                        let b4 = read_range(&phys, root, v2, 4, &mut h4);
+                        if h4.is_empty() && b4.len() == 4 {
+                            Some(u32::from_le_bytes(b4[0..4].try_into().unwrap()))
+                        } else {
+                            None
+                        }
+                    };
+                    let fr = translate(&phys, root, root_va).map(|pa| pa & !0xFFF).ok();
+                    let fru = translate(&phys, root, root_va + OFF_UPPER).map(|pa| pa & !0xFFF).ok();
+                    let rec = json!({
+                        "via": label, "state_ptr_off": o, "ptr": p, "root_va": root_va,
+                        "frame@root": fr, "frame@upper": fru,
+                        "init@3CE0": init, "elig@3CE1": head[1], "amountActive@3CE2": head[2],
+                        "base@3CE4": u32::from_le_bytes(head[4..8].try_into().unwrap()),
+                        "amount@3CE8": u32::from_le_bytes(head[8..12].try_into().unwrap()),
+                        "key@3CEC": key, "lower@3CF0": f(OFF_LOWER), "upper@3CF4": upper,
+                        "aux1@3CF8": f(OFF_UPPER + 4), "aux2@3CFC": f(OFF_UPPER + 8),
+                    });
+                    println!(
+                        "★ root@0x{root_va:016X} via {label}(state+0x{o:X}) init={init} elig={} aa={} base={} amount={} key={} lower={} UPPER={upper} aux1={} aux2={}",
+                        rec["elig@3CE1"], rec["amountActive@3CE2"], rec["base@3CE4"],
+                        rec["amount@3CE8"], rec["key@3CEC"], rec["lower@3CF0"],
+                        rec["aux1@3CF8"], rec["aux2@3CFC"]
+                    );
+                    println!("   帧: root=0x{:016X} upper=0x{:016X}", fr.unwrap_or(0), fru.unwrap_or(0));
+                    roots.push(rec);
+                }
+            }
+        }
+    }
+    // 大分配探测:GPU 表(616.92 式 ~300KB)应使 P+0x48000 可读;
+    // 对通过者扫 0x40000-0x50000 的指针域做 root 门。
+    for (o, p) in state_ptrs {
+        if !seen.insert(p) {
+            continue;
+        }
+        let Some(probe_va) = p.checked_add(0x48000) else { continue };
+        let mut hp = Vec::new();
+        let _probe = read_range(&phys, root, probe_va, 8, &mut hp);
+        if !hp.is_empty() {
+            continue;
+        }
+        println!("  大分配候选 state+0x{o:X} = 0x{p:016X}(+0x48000 可读)");
+        for off in (0x40000u64..0x50000).step_by(0x1000) {
+            let Some(va) = p.checked_add(off) else { continue };
+            let mut h5 = Vec::new();
+            let buf = read_range(&phys, root, va, 4096, &mut h5);
+            if !h5.is_empty() {
+                continue;
+            }
+            spent += 1;
+            for po in (0..4088).step_by(8) {
+                let q2 = u64::from_le_bytes(buf[po..po + 8].try_into().unwrap());
+                if !(0xFFFF_8000_0000_0000..=0xFFFF_F7FF_FFFF_F000).contains(&q2) {
+                    continue;
+                }
+                let Some(mva) = q2.checked_add(0x2510) else { continue };
+                let mut h6 = Vec::new();
+                let b = read_range(&phys, root, mva, 8, &mut h6);
+                spent += 1;
+                if h6.is_empty() && b.len() == 8 {
+                    let root_va = u64::from_le_bytes(b[0..8].try_into().unwrap());
+                    if !(0xFFFF_8000_0000_0000..=0xFFFF_F7FF_FFFF_F000).contains(&root_va) {
+                        continue;
+                    }
+                    let Some(init_va) = root_va.checked_add(OFF_INIT) else { continue };
+                    let mut h7 = Vec::new();
+                    let head = read_range(&phys, root, init_va, 16, &mut h7);
+                    spent += 1;
+                    if h7.is_empty() && head.len() == 16 {
+                        let init = head[0];
+                        let key = head[12];
+                        if init != 1 || key >= 0x40 {
+                            continue;
+                        }
+                        let Some(uva) = root_va.checked_add(OFF_UPPER) else { continue };
+                        let mut h8 = Vec::new();
+                        let ub = read_range(&phys, root, uva, 4, &mut h8);
+                        spent += 1;
+                        if h8.is_empty() && ub.len() == 4 {
+                            let upper = u32::from_le_bytes(ub[0..4].try_into().unwrap());
+                            if !expect_uppers.contains(&upper) {
+                                continue;
+                            }
+                            let fr = translate(&phys, root, root_va).map(|pa| pa & !0xFFF).ok();
+                            let fru = translate(&phys, root, root_va + OFF_UPPER).map(|pa| pa & !0xFFF).ok();
+                            println!(
+                                "★★ root@0x{root_va:016X} via GPU 表(state+0x{o:X},entry@+0x{off:X}+0x{po:X}) init={init} key={key} UPPER={upper}"
+                            );
+                            println!("   帧: root=0x{:016X} upper=0x{:016X}", fr.unwrap_or(0), fru.unwrap_or(0));
+                            roots.push(json!({"via": "gpu_table", "state_ptr_off": o,
+                                "table": p, "entry_va": q2, "root_va": root_va,
+                                "frame@root": fr, "frame@upper": fru,
+                                "init@3CE0": init, "key@3CEC": key, "upper@3CF4": upper}));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let report = json!({"state": state, "spent": spent, "roots": roots});
+    let path = dir.join("statewalk_report.json");
+    std::fs::write(&path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
+    println!("statewalk 完成: 读 {spent} 页, root 命中 {} → {}", roots.len(), path.display());
+}
+
+/// chain:静态链(全局槽 → 状态 → GPU 表 → Major → root)的有界活体走查。
+/// env: NVOC_POWER_CHAIN_SLOT(全局槽 RVA)、NVOC_POWER_CHAIN_TABLE_OFF
+/// (state→table 偏移)、NVOC_POWER_CHAIN_TABLE_SPAN(默认 0x60000)。
+/// Major 候选 = 表内的内核指针;root 判据 = [Major+0x2510] → 页含
+/// init==1 && key<0x40 && UPPER∈{100000,其它} 五元组。
+fn chain(dir: &PathBuf) {
+    let slot_rva = u64::from_str_radix(
+        env::var("NVOC_POWER_CHAIN_SLOT").expect("chain 需 NVOC_POWER_CHAIN_SLOT").trim_start_matches("0x"),
+        16,
+    ).unwrap();
+    let table_off = u64::from_str_radix(
+        env::var("NVOC_POWER_CHAIN_TABLE_OFF").expect("chain 需 NVOC_POWER_CHAIN_TABLE_OFF").trim_start_matches("0x"),
+        16,
+    ).unwrap();
+    let span = env::var("NVOC_POWER_CHAIN_TABLE_SPAN")
+        .ok()
+        .and_then(|s| usize::from_str_radix(s.trim_start_matches("0x"), 16).ok())
+        .unwrap_or(0x6_0000);
+    let budget = env::var("NVOC_POWER_WALK_BUDGET")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(1500);
+    let (module, phys, root) = connect_walk();
+
+    let rd_q = |va: u64| -> Option<u64> {
+        let mut h = Vec::new();
+        let b = read_range(&phys, root, va, 8, &mut h);
+        if h.is_empty() && b.len() == 8 {
+            Some(u64::from_le_bytes(b[0..8].try_into().unwrap()))
+        } else {
+            None
+        }
+    };
+    let global_state = rd_q(module.base + slot_rva).filter(|v| *v >= 0xFFFF_8000_0000_0000);
+    println!("全局槽 @镜像+0x{slot_rva:X} → state = 0x{:016X?}", global_state);
+    let state = global_state.expect("全局槽不是内核指针");
+    let table = rd_q(state + table_off).filter(|v| *v >= 0xFFFF_8000_0000_0000);
+    println!("state+0x{table_off:X} → GPU 表 = 0x{:016X?}", table);
+    // 侦察:转储 state 页 0x0-0x400 的全部内核指针(表指针若不在 0x208,离线挑)
+    let mut h = Vec::new();
+    let state_page = read_range(&phys, root, state, 4096, &mut h);
+    let mut state_ptrs = Vec::new();
+    if h.is_empty() {
+        for o in (0..4088).step_by(8) {
+            let q = u64::from_le_bytes(state_page[o..o + 8].try_into().unwrap());
+            if q >= 0xFFFF_8000_0000_0000 {
+                state_ptrs.push(json!({"off": o, "ptr": q}));
+            }
+        }
+    }
+    let table = match table {
+        Some(t) => t,
+        None => {
+            let path = dir.join("chain_state_page.json");
+            std::fs::write(&path, serde_json::to_string_pretty(&json!({
+                "state": state, "table_off_tried": table_off, "ptrs": state_ptrs})).unwrap()).unwrap();
+            panic!("GPU 表指针无效;state 页指针已转储 {}", path.display());
+        }
+    };
+
+    // 表域扫描:收集 Major 候选(表内内核指针,去重目标页)
+    let mut spent = 0usize;
+    let mut targets: Vec<u64> = Vec::new();
+    let mut seen_t = HashSet::new();
+    for off in (0..span).step_by(0x1000) {
+        if spent >= budget {
+            break;
+        }
+        let mut h = Vec::new();
+        let buf = read_range(&phys, root, table + off as u64, 4096, &mut h);
+        if !h.is_empty() {
+            continue;
+        }
+        spent += 1;
+        for o in (0..4088).step_by(8) {
+            let q = u64::from_le_bytes(buf[o..o + 8].try_into().unwrap());
+            // canonical 内核地址窗(排除 0xFFFF…FF 类野指针,防加法溢出)
+            if (0xFFFF_8000_0000_0000..=0xFFFF_F7FF_FFFF_F000).contains(&q)
+                && seen_t.insert(q & !0xFFF)
+            {
+                targets.push(q & !0xFFF);
+            }
+        }
+    }
+    println!("表域 {} 页,Major 候选目标 {} 个", spent, targets.len());
+    // 表域 hex 留档(离线定表项布局)
+    let mut table_hex = Vec::new();
+    for off in (0..span).step_by(0x1000) {
+        let mut h = Vec::new();
+        let buf = read_range(&phys, root, table + off as u64, 4096, &mut h);
+        if h.is_empty() {
+            table_hex.push(json!({"va": table + off as u64, "hex": hex(&buf)}));
+        }
+    }
+
+    let mut roots = Vec::new();
+    let mut checked = 0usize;
+    for &major in &targets {
+        if spent >= budget || checked >= 1200 {
+            println!("  达到预算,截断(已检 {checked} 候选)");
+            break;
+        }
+        // [Major+0x2510] → root 指针
+        let Some(major_off) = major.checked_add(0x2510) else { continue };
+        let mut h = Vec::new();
+        let b = read_range(&phys, root, major_off, 8, &mut h);
+        spent += 1;
+        checked += 1;
+        if !h.is_empty() || b.len() != 8 {
+            continue;
+        }
+        let root_va = u64::from_le_bytes(b[0..8].try_into().unwrap());
+        if root_va < 0xFFFF_8000_0000_0000 {
+            continue;
+        }
+        // root 头 16 字节(init/elig/amountActive/pad + base/amount)快速门
+        let mut h2 = Vec::new();
+        let Some(init_va) = root_va.checked_add(OFF_INIT) else { continue };
+        let head = read_range(&phys, root, init_va, 16, &mut h2);
+        spent += 1;
+        if h2.is_empty() && head.len() == 16 {
+            let init = head[0];
+            let base = u32::from_le_bytes(head[4..8].try_into().unwrap());
+            let amount = u32::from_le_bytes(head[8..12].try_into().unwrap());
+            let key = head[12];
+            if init != 1 || key >= 0x40 {
+                continue;
+            }
+            // UPPER 硬门:接受出厂/滑条顶候选集(差分时经 NVOC_POWER_EXPECT_UPPER 覆盖)
+            let expect_uppers: Vec<u32> = env::var("NVOC_POWER_EXPECT_UPPER")
+                .unwrap_or_else(|_| "100000,140000,150000,135000".into())
+                .split(',')
+                .filter_map(|s| u32::from_str_radix(s.trim().trim_start_matches("0x"), 16).ok())
+                .collect();
+            let upper_now = {
+                let mut h3 = Vec::new();
+                let Some(uva) = root_va.checked_add(OFF_UPPER) else { continue };
+                let b = read_range(&phys, root, uva, 4, &mut h3);
+                if h3.is_empty() && b.len() == 4 {
+                    Some(u32::from_le_bytes(b[0..4].try_into().unwrap()))
+                } else {
+                    None
+                }
+            };
+            if !upper_now.map(|u| expect_uppers.contains(&u)).unwrap_or(false) {
+                continue;
+            }
+            // 命中:读全字段 + 翻译帧
+            let f = |roff: u64| -> Option<u32> {
+                let mut h3 = Vec::new();
+                let b = read_range(&phys, root, root_va + roff, 4, &mut h3);
+                if h3.is_empty() && b.len() == 4 {
+                    Some(u32::from_le_bytes(b[0..4].try_into().unwrap()))
+                } else {
+                    None
+                }
+            };
+            let fr = translate(&phys, root, root_va).map(|pa| pa & !0xFFF).ok();
+            let fru = translate(&phys, root, root_va + OFF_UPPER).map(|pa| pa & !0xFFF).ok();
+            let frb = translate(&phys, root, root_va + OFF_BASE).map(|pa| pa & !0xFFF).ok();
+            let rec = json!({
+                "major_va": major, "root_va": root_va,
+                "frame@root": fr, "frame@base": frb, "frame@upper": fru,
+                "init@3CE0": init, "elig@3CE1": head[1], "amountActive@3CE2": head[2],
+                "base@3CE4": base, "amount@3CE8": amount, "key@3CEC": key,
+                "lower@3CF0": f(OFF_LOWER), "upper@3CF4": f(OFF_UPPER),
+                "aux1@3CF8": f(OFF_UPPER + 4), "aux2@3CFC": f(OFF_UPPER + 8),
+            });
+            println!(
+                "  ★ root@0x{root_va:016X}(Major 0x{major:016X}): init={init} elig={} amountActive={} base={base} amount={amount} key={key} lower={} upper={} aux={}/{}",
+                rec["elig@3CE1"], rec["amountActive@3CE2"],
+                rec["lower@3CF0"], rec["upper@3CF4"], rec["aux1@3CF8"], rec["aux2@3CFC"]
+            );
+            println!(
+                "    帧: root=0x{:016X} base=0x{:016X} upper=0x{:016X}",
+                fr.unwrap_or(0), frb.unwrap_or(0), fru.unwrap_or(0)
+            );
+            roots.push(rec);
+        }
+    }
+    let report = json!({"slot": slot_rva, "table_off": table_off, "state": state,
+        "table": table, "table_pages": spent, "candidates": checked, "roots": roots,
+        "table_hex": table_hex});
+    let path = dir.join("chain_report.json");
+    std::fs::write(&path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
+    println!("chain 完成: 读 {spent} 页, root 命中 {} → {}", roots.len(), path.display());
 }
 
 /// marker:查找 lookup 函数指针(静态 RVA 0xCF1EA0,写在 root+0x1CC8)的
