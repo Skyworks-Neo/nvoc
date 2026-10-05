@@ -27,7 +27,8 @@ use nvoc_core::{
     SetNvapiPerfLevelLock, SetNvapiPmgrVoltageArbiter, SetNvapiPowerLimits, SetNvapiPstateLock,
     SetNvapiSensorLimits, SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvapiThermalSim,
     SetNvapiVfpPointPrivate, SetNvapiVfpRangePerPointPrivate, SetNvapiVoltRailOffset,
-    SetNvapiVoltRailTarget, SetNvmlPstateLock, SetPowerLimit, SetPstateBaseVoltage,
+    ResetNvapiVoltRailLimit, SetNvapiVoltRailSlot, SetNvapiVoltRailTarget,
+    SetNvmlPstateLock, SetPowerLimit, SetPstateBaseVoltage,
     SetPstateClockOffset, SetPublicVftablePointOffset, SetPublicVftableRangeOffset,
     SetTemperatureLimit, SetVfpFrequencyLock, SetVoltageBoost, VfPointType, VfpResetDomain,
     clk_vf_delta_for_target, detect_gpu_type, discover_targets, fetch_gpu_type, nvapi_status_name,
@@ -2584,6 +2585,97 @@ fn set_volt_rail_target(
                 ("previous_offset_uV", Value::from(a.previous_offset_uV)),
                 ("applied_uV", Value::from(a.applied_uV)),
                 ("effective_wall_uV", Value::from(a.effective_wall_uV)),
+            ]),
+            None => value_object([("supported", Value::from(false))]),
+        })
+    })?;
+    py_value(py, &value)
+}
+
+/// Write ONE melonVolt payload slot (0..5) of a volt-rail control entry as a
+/// raw µV offset. Slot semantics (P100/582.41-pinned + user A/B): 0 = uV
+/// operating offset, 1 = VBIOS max wall offset, 2 = VRM max wall offset,
+/// 3 = VMIN/min-hold offset; 4/5 honored as-is (no known use; -300 crashed
+/// 4060L/610, -100..-200 observed safe).
+#[pyfunction]
+fn set_volt_rail_slot_offset(
+    py: Python<'_>,
+    gpu: &str,
+    rail_bit: u32,
+    slot: usize,
+    offset_u_v: i32,
+    expect_type: Option<u32>,
+) -> PyResult<Py<PyAny>> {
+    let value = with_target(gpu, "nvapi", |target| {
+        let out = run(
+            target,
+            SetNvapiVoltRailSlot {
+                rail_bit,
+                slot,
+                value_uV: offset_u_v,
+                expected_type: expect_type,
+            },
+        )
+        .map_err(to_py_err)?
+        .output;
+        Ok(match out {
+            Some(a) => value_object([
+                ("applied", Value::from(true)),
+                ("rail_bit", Value::from(a.rail_bit)),
+                ("slot", Value::from(a.slot)),
+                ("previous", Value::from(a.previous)),
+                ("applied_value", Value::from(a.applied)),
+                ("vrm_max_wall_uV", Value::from(a.vrm_max_wall_uV)),
+                ("min_hold_uV", Value::from(a.min_hold_uV)),
+            ]),
+            None => value_object([("supported", Value::from(false))]),
+        })
+    })?;
+    py_value(py, &value)
+}
+
+/// Zero melonVolt payload slots back to stock. Default (slot = None) resets
+/// the mapped slots 0..3; passing a slot resets only that one (0..5 honored
+/// as-is per user choice).
+#[pyfunction]
+fn reset_volt_rail_limit(
+    py: Python<'_>,
+    gpu: &str,
+    rail_bit: u32,
+    slot: Option<usize>,
+    expect_type: Option<u32>,
+) -> PyResult<Py<PyAny>> {
+    let value = with_target(gpu, "nvapi", |target| {
+        let out = run(
+            target,
+            ResetNvapiVoltRailLimit {
+                rail_bit,
+                slot,
+                expected_type: expect_type,
+            },
+        )
+        .map_err(to_py_err)?
+        .output;
+        Ok(match out {
+            Some(a) => value_object([
+                ("applied", Value::from(true)),
+                ("rail_bit", Value::from(a.rail_bit)),
+                (
+                    "resets",
+                    Value::Array(
+                        a.resets
+                            .iter()
+                            .map(|r| {
+                                value_object([
+                                    ("slot", Value::from(r.slot)),
+                                    ("previous", Value::from(r.previous)),
+                                ])
+                            })
+                            .collect(),
+                    ),
+                ),
+                ("vrm_max_wall_uV", Value::from(a.vrm_max_wall_uV)),
+                ("min_hold_uV", Value::from(a.min_hold_uV)),
             ]),
             None => value_object([("supported", Value::from(false))]),
         })
@@ -5156,6 +5248,8 @@ fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(query_volt_rails, m)?)?;
     m.add_function(wrap_pyfunction!(set_volt_rail_offset, m)?)?;
     m.add_function(wrap_pyfunction!(set_volt_rail_target, m)?)?;
+    m.add_function(wrap_pyfunction!(set_volt_rail_slot_offset, m)?)?;
+    m.add_function(wrap_pyfunction!(reset_volt_rail_limit, m)?)?;
     m.add_function(wrap_pyfunction!(set_perf_freq_cap, m)?)?;
     m.add_function(wrap_pyfunction!(query_private_freq_domain_info, m)?)?;
     m.add_function(wrap_pyfunction!(query_clk_domain_freq, m)?)?;
