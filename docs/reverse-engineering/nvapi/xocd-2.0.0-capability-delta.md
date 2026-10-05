@@ -145,8 +145,8 @@ FlatUI 重写：可拖拽绘图（键盘方向键微调）、预设 Silent/Balan
 
 ### 4.3 对 nvapi-rs 的落点
 
-- **已注册零封装**：`0x33AB0353/0x17695269`（仅 nvid.rs 注册表，无 sys 结构）——xOCD 给出了完整几何（0x10528、通道 mask/值/命令偏移），值得补 sys 类型+安全封装：这是 Blackwell 功率抬顶的**回退通道**。
-- **几何扩展候选**：`0x67F31384` INFO 2,727,984 B/0x2BA030 与 347,124 B/0xF4BF4；PwrPolicies Control Modern 2,393,824 B/0x2786E0、Legacy 307,376 B/0x5B0B0——与我们既有「同 ID 多布局」警告一致，dispatch 应把这些尺寸并入。
+- **已注册零封装**：`0x33AB0353/0x17695269`（仅 nvid.rs 注册表，无 sys 结构）——xOCD 给出了完整几何（0x10528、通道 mask/值/命令偏移），值得补 sys 类型+安全封装：这是 Blackwell 功率抬顶的**回退通道**。**已落地**（2026-10-05，nvapi-rs v0.2.x `0b331f3`+`b5f2e82`）：sys 包 `NV_GPU_POWER_COMMAND_PACKET_V1` + GET/SET FFI，src 层 `power_command/set_power_command`（0/0xFFFFFFFF 拒绝、写后读回验证），hi 层直通封装。
+- **几何扩展候选**：`0x67F31384` INFO 2,727,984 B/0x2BA030 与 347,124 B/0xF4BF4；PwrPolicies Control Modern 2,393,824 B/0x2786E0、Legacy 307,376 B/0x5B0B0——与我们既有「同 ID 多布局」警告一致，dispatch 应把这些尺寸并入。**已落地**：graph 角色解码（`power_graph_roles`，-9 时按 xOCD 的 5 段字节复制合成大布局）+ 输入策略 CONTROL Modern→Legacy 探测（`power_control_input`），均带字节级单测；「同 ID 多布局」impl 级 dispatch 归 core/cli 车道后续接入。
 - 已封装无需动：`0xFA579A0F`（`src/gpu.rs:1363`）、`0x57F7CAAC`（`sys/gpu/mod.rs:867`）。
 - 未采用面：`0x3CC2D181/0xEB44E8AA`（FanCooler）与 `0xA38ACF9D` VoltVoltDevices 两版 xOCD 均未用，本次 diff 无交叉验证价值。
 
@@ -161,7 +161,7 @@ FlatUI 重写：可拖拽绘图（键盘方向键微调）、预设 Silent/Balan
 | xOCD 2.0.0 能力 | nvapi-rs 现状 | 差距性质 |
 |---|---|---|
 | ExtendedLimits 超顶（>125% 功率、GDDR7 offset >+3000 MHz） | 不可达（用户态） | **结构性**：需内核/物理内存补丁（pmxdrv.sys 路线或 PawnIO 类），NVAPI 面无法表达 |
-| 板卡策略 GET/SET `0x70916171/0xAD95F5ED`、功率命令 `0x33AB0353/0x17695269` | 均已注册（命令族无 sys 封装） | 仅差封装；几何已由 xOCD 给出（§4.3），且封了也改不动顶——只差「内核改顶」 |
+| 板卡策略 GET/SET `0x70916171/0xAD95F5ED`、功率命令 `0x33AB0353/0x17695269` | 均已注册；功率命令族**已封装**（v0.2.x `0b331f3`），板卡策略族仍无 sys 封装 | 仅差封装；几何已由 xOCD 给出（§4.3），且封了也改不动顶——只差「内核改顶」 |
 | 时钟微调 XBAR/SYS/NVD offset | 已有域控制（0xD14B69CF 等） | 语义已覆盖；xOCD 的 RMW 单字段+回滚纪律值得对照 |
 | V/F 上段斜坡 / 裸表 dump | 未封装 | 可低成本补（读 0x21537AD4/0x23F1B133 已有；斜坡=纯算法） |
 | RetainedLimits/DPAPI 回滚胶囊 | 无 | 设计可借鉴：跨启动失效 + 失败闭合 + 认证胶囊 |
@@ -180,4 +180,36 @@ FlatUI 重写：可拖拽绘图（键盘方向键微调）、预设 Silent/Balan
 
 - 高：产物哈希/同一性、文件级改动统计、PMX 驱动身份与 IOCTL、生成门控与上限公式、保留限制/回滚胶囊语义、UI 能力清单（均有二进制或代码直证）。
 - 中：Ada/Ampere 具体瓦数结果（硬编码已验证表，未跨机复核）；「>+3000 MHz 未验证」是 xOCD 自述而非独立裁决。
+
+## 8. 内核驱动签名来源分析（xOCD pmxdrv 与同业对照）
+
+缘起：Windows 内核驱动签名素称难拿，但近年超频/监控工具界「一下子冒出很多内核驱动」。本节把本机直接可验证的签名事实摊开（2026-10-05 实测：`Get-AuthenticodeSignature` + PE 证书表拆分脚本 + `certutil -dump` 逐链核对），再给机制解释。
+
+### 8.1 实测签名台账
+
+| 工具 / 仓库位置 | 驱动 | 签名链 | 签名日期 | 本机状态 | 加载路线 |
+|---|---|---|---|---|---|
+| xOCD 2.0 ExtendedLimits（`~/ida-scratch/xocd-decomp-new/src/xOCD.PmxDriver`，xOCD.exe 内嵌资源，43,632 B） | pmxdrv ＝ Intel(R) Management Engine Tools Driver 1.0.0.1003 | **双签**：①CN=Intel(R) Embedded Subsystems and IP Blocks Group ← Intel External Issuing CA 7B ← COMODO RSA CA；②CN=Microsoft Windows Hardware Compatibility Publisher ← Microsoft Windows Third Party Component CA 2014 ← Microsoft Root CA 2010 | 2018-10（①）/2018-09（②） | Valid（两链均带可信时间戳，证书本身已过期不影响） | **复用 Intel 的 WHQL 认证驱动**——xOCD 自身零签名工作 |
+| NvpwrControl 61692（`reverse/NvpwrControl_.../dist/Nvpwr.sys`） | Nvpwr.sys | CN="WDKTestCert games,134336316486057175"（自签） | 2026-09-12 | UnknownError（需测试签名模式或证书入信任库） | **测试签名**（WDKTestCert 是新生成的开发证书） |
+| MSI Afterburner 4.6.7b2（`reverse/MSIAfterburnerSetup467Beta2/RTCore64.sys`） | RTCore64.sys | CN=MICRO-STAR INTERNATIONAL（EV）← GlobalSign GCC R45 EV CodeSigning CA 2020 | 2022-09-13 | Valid；但见 8.2-5 黑名单 | 正规 EV（+微软代签）；被黑名单单独治理 |
+| NVIDIA System Tools 6.08（`reverse/6.08-nvidia-system-tools/NVMonitor/nvclk64/nvoclk64.sys`） | nvoclk64.sys | CN=NVIDIA Corporation ← VeriSign Class 3 Code Signing 2009-2（"Microsoft Software Validation v2"＝微软交叉签计划） | 2009-07-31 | Valid，Win11 至今可加载 | **祖父条款交叉签**（2015-07-29 前签发） |
+| NVIDIA 610（对照，`reverse/610_nvlddmkm.sys`） | nvlddmkm.sys | NVIDIA ← DigiCert G4 2021 CA1（+MS WHQL 副签） | 2025-07-02 | Valid | 正规 WHQL |
+| GPU-Z 2.71（`reverse/gpuz/GPU-Z.exe`） | WinRing0x64.sys 系（文件名 XOR 混淆，明文字符串不可见；指纹＝IOCTL 0x800064A0/A4 + `Global\Access_PCI` 互斥量，见 `docs/reverse-engineering/gpu-z/per-rail-power.md` §2.1-2.2） | OpenLibSys（Noriyuki Miyazaki）血统交叉签 | ~2008-2009 | 无 HVCI 的机器可加载 | 祖父条款交叉签；2025 年被列入微软推荐驱动黑名单 → 本轮迁移潮源头之一 |
+
+附带实证：GPU-Z 2.71（脱壳 53.7 MB）内嵌的 3 个 NATIVE 子系统 PE 全部是 nvflash.sys 家族（"NVIDIA Flash Driver 1.21.0"，x86/x64），**不含 WinRing0**——WinRing0 的路径/文件名按上述 XOR 方案在运行时构造，静态字符串扫描天然为 0 命中。
+
+### 8.2 机制：哪几条路能拿到「Win10/11 可加载的内核驱动」
+
+1. **祖父条款交叉签（2007–2015 绝版资产）**：2015-07-29 前签发的交叉签 KMCS 驱动在 Win10/11 永久可加载（时间戳成立即可，证书过期无碍）。WinRing0（2008）、nvoclk64（2009）今天还能跑就是这么来的。此通道对新驱动已关闭，因此"老签名二进制"成了公共资源——这也解释了为什么这批"突然出现"的驱动很多其实是十几年前的签名。
+2. **Microsoft Dev Portal 代签（2016+ 事实标准）**：EV 证书（需企业实体）+ 门户提交 attestation（Win10+）或 WHQL。门槛是「公司身份＋年费＋流程」，不是技术难度；Intel 2018 的 WHQL 链与 MSI 2022 的 EV 链都属此体系。**签名难度被 2016 年的 attestation 显著拉低**——这正是"最近多起来"的一层底色。
+3. **复用他人已签驱动（最省事，xOCD 的选择）**：pmxdrv 就是 Intel「ME Tools Driver」原件——微软已 WHQL 认证、IOCTL 恰好允许物理内存/MMIO 访问，于是直接成为通用「用户态摸硬件」代理。生态里 RTCore64（MSI OSD 驱动）被多家工具复用、WinRing0 被数百款工具复用（GPU-Z、硬盘检测、风扇控制等）都是同一模式：**真正稀缺的不是"驱动"，而是"一个已签名且权限够宽的通用 IO 代理"；签一个，全行业借光**。
+4. **测试签名（个人开发者路线）**：WDKTestCert 自签 + `bcdedit /set testsigning on`（或证书入信任库）。NvpwrControl 即是（2026-09-12 的新证书＝每次重编自签）。零成本，代价是用户要开测试模式（桌面水印、部分反作弊/DRM 冲突）。爱好者/国产工具大量走这条——"一大堆"里相当比例是这一类，**它们根本不是微软签的**。
+5. **黑名单与签名分离（本轮"爆发"的直接诱因）**：微软「易受攻击驱动黑名单」在 HVCI/内存完整性开启时按文件哈希/名称拦截，收录过 RTCore64（CVE-2019-16098 系列，任意 MSR/内存读写）与 WinRing0（2024 末–2025 初，公开资料，中置信）。**签名有效 ≠ 允许加载**；被拦的恰恰是"权限太宽"的通用代理。于是所有依赖 WinRing0 的工具在 2024–2025 集体换驱动，催生了 PawnIO 这类"已签名的通用字节码执行器"（签一个驱动、各工具上传小程序）——观感就是"一下子冒出一大堆内核驱动"。实际被微软签过的二进制很少，**复用它的人很多**。
+6. **感知偏差**：用户态 API（NVAPI/NVML）覆盖的传感器越来越多，本该用驱动的场景在减少；同时黑名单逼出迁移潮、测试签名工具随爱好者生态繁荣——两头叠加，看起来像"驱动大爆发"。
+
+### 8.3 对 nvoc 的含义
+
+- nvoc 自身不载驱动（全部经 NVAPI/NVML 用户态）；xOCD 的 pmxdrv 路线是"为过签名关借别人的驱动"的教科书案例，目前 nvoc 没有必须借的场景。
+- 若将来要直读板载采样芯片（INA3221 类）或改 BAR（GPU-Z 那条路）：优先选「借用已签通用代理」或「测试签名」并非唯一解——现有 NVAPI PowerMonitor per-rail 已覆盖大部分诉求；真需要时，PawnIO 模式（已签执行器 + 用户态小程序）是成本最低的第三条路。
+- 反面教训（写进评估口径）：签名只保证"能加载"，不保证"安全/被允许"——RTCore64 是 EV 正规签却进黑名单；而 2009 年的 nvoclk64 一无 WHQL 二无 EV，靠祖父条款活到今天。做依赖内核驱动的设计时，**黑名单/HVCI 风险要按"驱动身份"而非"签名链"评估**。
 - 低：无（本节所有条目均为 2.0.0 静态证据；E-matrix 式实机探针列于 §6）。
