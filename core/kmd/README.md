@@ -56,6 +56,17 @@
   sc stop PMXDRV && sc delete PMXDRV
   ```
 
+## 后继构建考证(2026-10-06,`reverse/kmd-driver-exploit-candidate/ANALYSIS.md`)
+
+Eclypsium 2019-11《Mother of All Drivers》即本文档主角:PMxDrv=能力超集,
+Intel 于 2019-11-12 发过修复版。实测 **PAIPTAC 重建版(`pmxdrv_new.sys`,
+`CN=PAIPTAC Driver`,PDB `pmx-pai-built-source`)漏洞原样保留**——prologue
+无探测用户指针解引用、create 空桩、`\Device\PhysicalMemory` 映射进调用进程
+逐点同构,且 IOCTL 面膨胀到 22 码(**0x222840 族**,与 2019 版 0x222A80 族
+不同代;双版兼容传输层需按构建分键码表)。同目录微软 WHQL 的 `KslD` 是
+Defender TDT 传感器驱动(Rust,tdt_driver_lib),非物理内存 provider,排除。
+本车道维持 Intel 1.0.0.1003(哈希钉死)不变。
+
 ## 同类替代品盘点(2026-10-05)
 
 | 驱动 | 出品 | 原语 | 状态 |
