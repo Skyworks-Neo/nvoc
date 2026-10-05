@@ -712,7 +712,10 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
             ),
             (
                 Command::GetThermalChannels,
-                CommandSpec::new("get-thermal-channels", Group::Thermal, "Read the ThermChannel map: populated channel metadata + the primary channel per thermal type (GPU_AVG/hotspot/board/VRAM/PWR_SUPPLY) joined with live temperatures (0x0BC8163D + 0x65FE3AAD, 8.8 fixed point; hotspot=idx1, VRAM=idx2 on RTX50 / 7 on RTX40 / 9 on older)")
+                CommandSpec {
+                    formatter: Some(output::format_thermal_channels),
+                    ..CommandSpec::new("get-thermal-channels", Group::Thermal, "Read the FULL ThermChannel map (the research-detail view; get-status only surfaces the classified primaries): populated channel metadata (type/offset_sw/offset_hw/scaling/range) + the primary channel per thermal type (GPU_AVG/hotspot/board/VRAM/PWR_SUPPLY) joined with live temperatures (0x0BC8163D + 0x65FE3AAD, 8.8 fixed point; hotspot=idx1, VRAM=idx2 on RTX50 / 7 on RTX40 / 9 on older)")
+                },
             ),
             (
                 Command::GetThrottleReasons,
@@ -3989,6 +3992,14 @@ fn execute_target(
                 "MEMORY(vram)",
                 "PWR_SUPPLY",
             ];
+            // (dev, 0) → channel index, for the same_sensor_as backref on the
+            // (dev, 1) half (the reading that already carries offset_hw).
+            let raw_sibling = |want_dev: u8| -> Option<usize> {
+                snap.info.channels.iter().position(|c| {
+                    c.as_ref()
+                        .is_some_and(|c| c.therm_dev_idx == want_dev && c.therm_dev_prov_idx == 0)
+                })
+            };
             Ok(json!({
                 "channel_mask": format!("0x{:08X}", snap.info.channel_mask),
                 "primary": snap.info.primary.iter().enumerate().map(|(ty, slot)| json!({
@@ -3996,13 +4007,24 @@ fn execute_target(
                     "channel": slot,
                     "temp_c": slot.and_then(|i| snap.status.as_ref().and_then(|s| s.get(i as usize))),
                 })).collect::<Vec<_>>(),
-                "channels": snap.info.channels.iter().enumerate().filter_map(|(i, c)| c.as_ref().map(|c| json!({
-                    "channel": i,
-                    "ch_type": c.ch_type,
-                    "ch_class": c.ch_class,
-                    "therm_dev": [c.therm_dev_idx, c.therm_dev_prov_idx],
-                    "temp_c": snap.status.as_ref().and_then(|s| s.get(i)),
-                }))).collect::<Vec<_>>(),
+                "channels": snap.info.channels.iter().enumerate().filter_map(|(i, c)| c.as_ref().map(|c| {
+                    let sibling = (c.therm_dev_prov_idx == 1)
+                        .then(|| raw_sibling(c.therm_dev_idx))
+                        .flatten();
+                    json!({
+                        "channel": i,
+                        "ch_type": c.ch_type,
+                        "ch_class": c.ch_class,
+                        "therm_dev": [c.therm_dev_idx, c.therm_dev_prov_idx],
+                        "same_sensor_as": sibling,
+                        "offset_sw": c.offset_sw,
+                        "offset_hw": c.offset_hw,
+                        "scaling": c.scaling,
+                        "range_c": (c.min_temp != 0 || c.max_temp != 0)
+                            .then(|| [c.min_temp / 256, c.max_temp / 256]),
+                        "temp_c": snap.status.as_ref().and_then(|s| s.get(i)),
+                    })
+                })).collect::<Vec<_>>(),
                 "status_supported": snap.status.is_some(),
             }))
         }
