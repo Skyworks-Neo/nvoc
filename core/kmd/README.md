@@ -35,9 +35,10 @@
 
 - **调用形态**(也是它被归为"漏洞驱动"的原因):DeviceIoControl 输入恒
   16 字节 = `[u64 用户态请求指针][u32 aux<=0x3F][u32 pad]`,驱动**不加探测
-  直接解引用该指针**;`MAP_PHYS` 经 `\Device\PhysicalMemory` 节对象
-  `ZwMapViewOfSection(NtCurrentProcess)` 把物理页映射进**调用进程的用户空间**
-  (PAGE_READWRITE),返回的 `va_out` 直接当用户指针读,读完 `UNMAP_PHYS`。
+  直接解引用该指针**——所以请求结构就是本进程的普通堆内存;
+  `MAP_PHYS` 经 `\Device\PhysicalMemory` 节对象 `ZwMapViewOfSection` 到
+  **当前进程**,返回的 `va_out` 是本进程用户态地址,读完 `UNMAP_PHYS` 即可。
+  映射页保护是 PAGE_READWRITE:传输层天然可写,本车道只读、写路径继续封存。
   映射失败的哨兵:va_out = 0 或 `0xBEEF`(32 位分支另有 `0xDEAD` = VA 超 32 位)。
 - **坑(已踩)**:IDA 反编译器对分发器 `sub edx,imm / jz` 链的常量折叠会
   给出**错 0x240 的 IOCTL 基址**(0x222840 族)——汇编实证基址是
@@ -55,6 +56,25 @@
   cargo test -p nvoc-core --test kmd_pmxdrv_probe_live -- --ignored --nocapture
   sc stop PMXDRV && sc delete PMXDRV
   ```
+
+## PawnIO 车道(已清退,结论保留)
+
+2026-10-05 的早期路线:直连 `\Device\PawnIO`(g-helper 同款,不经
+PawnIOLib.dll),装载官方签名模块跑 `ioctl_` 函数。实测结论:
+
+1. **白手套调用层零签名工作**:官方签名模块(Echo)装载+执行全通;
+2. **官方 23 枚签名模块没有任意物理内存读**(Nvidia.bin=BAR0 MMIO 温度、
+   IntelMCHBAR=MMIO 窗口、MSR 族=MSR……`virtual_read_*`/`physical_read_*`
+   原语只在驱动内,没有模块把它们透出成公开函数);
+3. 自研 PhysMem 模块被签名门拒绝;等上游 PawnIO.Modules 收编签名 = 不可控
+   等待,**用户裁决此路不通,代码与工件已清退**(传输层、模块源码/blob、
+   探针测试均删除,git 历史可考古);
+4. 附带发现:2.2.0 安装器的 `-unrestricted` 版与官方版**代码逐字节相同**
+   (仅签名排布不同,`PAWNIO_UNRESTRICTED` 的 DbgPrint 串两枚都没有)——
+   安装器开关在 2.2.0 不改代码,期望它开门本来就是死路。
+
+驱动侧 `physical_read_*`(`MmGetVirtualForPhysical` + `__try/__except`)在位;
+若未来 PawnIO.Modules 收编物理读模块,从 git 历史恢复 pawnio.rs 即可换回。
 
 ## 后继构建考证(2026-10-06,`reverse/kmd-driver-exploit-candidate/ANALYSIS.md`)
 
@@ -76,61 +96,15 @@ Defender TDT 传感器驱动(Rust,tdt_driver_lib),非物理内存 provider,排�
 | RTCore64.sys | MSI Afterburner(reverse/MSIAfterburnerSetup467Beta2 可提取) | 物理 r/w、MSR、端口 | 签名有效但黑名单常拦,且 nvoc 本身就是 NVAPI 生态,无需引入 |
 | InpOutx64.sys | Phil Gibbons(InpOut32) | 端口 IO + `MapPhysToLin` | 可用,老,无增量 |
 | gdrv.sys | Gigabyte | 物理 r/w(漏洞著名) | 黑名单钉死,排除 |
-| PawnIO(官方版) | namazso | 官方签名模块的白名单原语 | 见下节:官方模块集无任意物理读,自研模块等签名=不可控等待 |
+| PawnIO(官方版) | namazso | 官方签名模块的白名单原语 | 见上节:官方模块集无任意物理读,自研模块等签名=不可控等待,已清退 |
 
 选型结论:pmxdrv 是唯一「合法 Intel 签名 + 任意物理 map + 本机实证可装载」
 的组合;风险口径是 BYOVD(自带漏洞驱动)——传输层天然可写、无探测解引用,
 本车道代码只读并只触碰 RAM 范围(低内存/页表帧)。
 
-## PawnIO 车道(实验存档,pawnio.rs + PhysMem.p)
-
-早期路线,调用形态与 g-helper(`reverse/g-helper-main/app/Pawn/PawnIOWrapper.cs`)
-一致:直接打开 `\Device\PawnIO` 做 `LOAD_BINARY(0xA1B22084)` /
-`EXECUTE_FN(0xA1B22104)` / `VERSION(0xA1B22184)`,每句柄装载一个 Pawn 模块。
-
-实测结论(本机,驱动 2.2.0 Official):
-
-1. **白手套调用层零签名工作**:官方签名模块(Echo)装载+执行全通,
-   `ioctl_not(0x0123456789ABCDEF) -> 0xFEDCBA9876543210`;
-2. **官方 23 枚签名模块没有任意物理内存读**(Nvidia.bin=BAR0 MMIO 温度、
-   IntelMCHBAR=MMIO 窗口、MSR 族=MSR……`virtual_read_*`/`physical_read_*`
-   原语只在驱动内,没有模块把它们透出成公开函数);
-3. 自研 PhysMem 模块(源码与 blob 留档本目录)被签名门拒绝;等上游
-   PawnIO.Modules 收编签名 = 不可控等待,**用户裁决此路不通**;
-4. 附带发现:2.2.0 安装器的 `-unrestricted` 版与官方版**代码逐字节相同**
-   (仅 WHQL cat 21816B vs 自签 cat 11328B 之差,恰等于 sys 大小差 10488B;
-   `PAWNIO_UNRESTRICTED` 的 DbgPrint 串两枚都没有)——安装器开关在 2.2.0
-   不改代码,期望它开门本来就是死路。
-
-驱动侧 `physical_read_*`(`MmGetVirtualForPhysical` + `__try/__except`)在位,
-PhysMem.p 上游就绪;若未来 PawnIO.Modules 收编,换回 pawnio.rs 传输层即可。
-
-### 文件
-
-| 文件 | 说明 |
-|---|---|
-| [PhysMem.p](PhysMem.p) | 自研 Pawn 模块源码:`ioctl_read_phys_qword` / `ioctl_read_phys_page`(512×u64)/ `ioctl_read_phys_dword` + 三个写 ioctl(未接线) |
-| `PhysMem.amx` | pawncc 4.1.7152 编译产物(与上游 PawnIO.Modules CI 同工具链、同旗标) |
-| `PhysMem.bin` | 装载 blob = `[u32 sig_len=0][amx]`——**未签名**,官方驱动拒收 |
-| `Echo.bin` | 上游官方模块包 0.2.11 的签名模块 fixture(传输层对照,`ioctl_not`),LGPL-2.1-or-later |
-
-构建(与上游 CI 完全一致的旗标):
-
-```
-pawncc PhysMem.p -i<PawnIO>/pawn/include -C64 -;+ -(+ -p
-printf '\0\0\0\0' > PhysMem.bin && cat PhysMem.amx >> PhysMem.bin
-```
-
-注意上游 `Echo.p` 的注释:模块只引用一个 native 会触发解释器 bug;本模块
-已经引用多个 `physical_*` native,`main()` 里另取一次 `get_version()` 双保险。
-
-PawnIO 探针(管理员):`cargo test -p nvoc-core --test kmd_pawnio_probe_live -- --ignored --nocapture`;
-环境变量 `NVOC_KMD_SIGNED_BLOB`(默认 `core/kmd/Echo.bin`)、
-`NVOC_KMD_PHYS_MODULE`(默认 `core/kmd/PhysMem.bin`)。
-
-## 安全模型(两条通道通用)
+## 安全模型
 
 - 走查限内核指针(`>= 0xFFFF8000_00000000`),单次虚拟读 ≤64 KiB,
   低内存扫描 255 页固定范围;
 - 读错物理页的后果是读到垃圾(探针报活体/磁盘不一致),不会写坏;
-- 唯一的写风险在显式接写路径之后——当前两条通道的 Rust 层均无写调用。
+- 唯一的写风险在显式接写路径之后——当前 Rust 层无任何写调用。

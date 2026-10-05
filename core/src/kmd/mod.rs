@@ -11,14 +11,14 @@
 //!   页表,Linux CI 可跑;
 //! - [`pmxdrv`](cfg(windows)):**主传输层** —— Intel PMxDrv(`pmxdrv.sys`,
 //!   xOCD 内嵌同款,Intel CSE/ME 工具链出品、签名有效)的 map/unmap 直连,
-//!   接口全量逆向见模块文档;本机实机复现走查用它;
-//! - [`pawnio`](cfg(windows)):PawnIO 设备直连的传输层(实验存档)。2026-10-05
-//!   实裁决:PawnIO 官方签名模块集(23 枚)**没有任意物理内存读模块**——
-//!   调用层(官方 Echo/Nvidia 模块)零签名工作且本机已跑通,但 nvlddmkm
-//!   走查所需的原语只有自研模块能提供,而自研模块等上游签名收编=不可控
-//!   等待,经用户裁决放弃;PhysMem.p 源码与 blob 保留在 `core/kmd/`,
-//!   驱动 `physical_read_*` 原语在位(上游就绪),若未来 PawnIO.Modules
-//!   收编即可无缝换回。
+//!   接口全量逆向见模块文档;本机实机复现走查用它。
+//!
+//! 历史裁决(2026-10-05/06,代码已清退,结论保留):PawnIO 白手套调用层零
+//! 签名工作已证(官方 Echo 模块往返通),但官方 23 枚签名模块**没有任意
+//! 物理内存读模块**,自研模块等上游收编签名=不可控等待,经用户裁决放弃;
+//! 传输层与模块工件(pawnio.rs/PhysMem.*/Echo.bin)已删除,完整结论与
+//! 实测记录在 `core/kmd/README.md` 与
+//! `docs/reverse-engineering/nvapi/xocd-oc-tool-audit.md`。
 //!
 //! 风险口径:pmxdrv 的映射窗口是 PAGE_READWRITE(传输层天然可写),本车道
 //! 只从窗口拷出字节;pmxdrv 不加探测直接解引用用户指针,窗口内访问不可访问
@@ -28,6 +28,3 @@ pub mod pagewalk;
 
 #[cfg(windows)]
 pub mod pmxdrv;
-
-#[cfg(windows)]
-pub mod pawnio;

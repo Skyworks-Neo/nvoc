@@ -2,8 +2,7 @@
 //!
 //! 取证见 `docs/reverse-engineering/nvapi/xocd-oc-tool-audit.md` §8;原实现把
 //! 任意物理读交给 Intel ME 后门驱动 `\\.\pmxdrv`(IOCTL 2239160 映射控制),
-//! 这里把同一算法接到 PawnIO 的物理读原语上(`core/kmd/PhysMem.p` 模块),
-//! 四步一一对应:
+//! 本车道用 [`super::pmxdrv`] 的同款传输接上同一算法,四步一一对应:
 //!
 //! 1. `NtQuerySystemInformation(11)` 取 `nvlddmkm.sys` 内核基址(纯用户态 API,
 //!    不需要任何内核读);
@@ -18,7 +17,7 @@
 //!
 //! 本文件是平台中立的:物理读经 [`PhysicalMemory`] 抽象,单测用内存模拟页表
 //! 覆盖翻译/大页/寻根逻辑(无需驱动、Linux CI 可跑);Windows 上的实现见
-//! [`super::pawnio`]。只读:**没有**任何写路径,写留给后续能力位实验。
+//! [`super::pmxdrv`]。只读:**没有**任何写路径,写留给后续能力位实验。
 
 use std::collections::HashSet;
 
