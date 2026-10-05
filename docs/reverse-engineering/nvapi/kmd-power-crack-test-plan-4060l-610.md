@@ -140,6 +140,9 @@ Major+0x25B0→Root、Board+0x2D0 setter。粗验证起步可只直写 UPPER+amo
    采样。判据:功率平台值顶到 ~110 W = 执行层抬顶成功;
    仍钳 100 W = UPPER 在 610 上不是执行墙 → 回 L2 重推布局
 5. 温度/风扇全程监控;异常即恢复中止
+   field note(nvpwr_another__Release mVolt+ 作者实测):若解锁后负载吃不满
+   新墙,**抬 MSVDD 最低电压**(mVolt+ 实测有效;NVVDD min 无帧数收益)——
+   显存侧 Vmin 是低负载吃满功率的常见卡点,对应我们的 set-domain-voltage 面
 6. 恢复:UPPER 写回原值 → set-pwr-cur-limit 回默认 → 重启复验持久性
    (预期:UPPER 写易失,重启回落;若持久,记录为重要发现并更新文档)
 ```
