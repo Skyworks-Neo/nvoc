@@ -1793,9 +1793,12 @@ impl GpuOperation for SetNvapiDynamicBoost {
 }
 
 /// Set the GPU TGP in watts (notebook watts-form TGP slider; the range that
-/// appears under the PPAB/Dynamic-Boost enable). NDA-private nvapi triplet:
-/// GET 0x8B3E7343 → patch → SET 0xBFF09E59. `policy_index` selects the entry
-/// (use [`QueryNvapiTgpWattRange`]); if None, defaults to index 2 like the ref tool.
+/// appears under the PPAB/Dynamic-Boost enable). Writes the shared power-channel
+/// control table through the compact core (NDA GET 0x8B3E7343 / SET 0xAFFC2279,
+/// stamp 0x0001_0A4C): mask-scoped RMW (mask = 1<<index, so OCP rows are never
+/// touched), clamp to the driver window, readback, rollback. `policy_index`
+/// selects the entry (use [`QueryNvapiTgpWattRange`]); if None, defaults to
+/// index 2 like the ref tool.
 #[derive(Clone, Debug)]
 pub struct SetNvapiTgpWatt {
     pub watts: u32,

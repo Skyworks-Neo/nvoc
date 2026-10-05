@@ -352,4 +352,28 @@ P3 —— 设计借鉴（用户已裁决后续再做）：Profile 体系、Apply
 
 - **几何（代码已发布并对齐）**：`NV_GPU_CLIENT_TGP_WATT_STATUS_V1` 现公开 `ENTRY_BASE=0x8A0`/`ENTRY_STRIDE=40`/`ENTRY_VALUE_OFF=4`；紧凑视图 `NV_GPU_CLIENT_TGP_WATT_STATUS_10A4C_V1` 的 `COMPACT_STRIDE=40`/`COMPACT_VALUE_OFF=4`/`COMPACT_ENTRY_BASE=28`。**两视图共享 stride 与 value 偏移（entry+4），唯一差异是表基址**（0x8A0 vs 28）；行索引 = info 掩码位 = 控制条目 = 写掩码位，写契约 `1<<index` 两视图一致。sys 单测 `tgp_full_and_compact_views_align` 断言该几何恒等式（stride/value 相等、基址不等、buffer dword = base+value_off+40i），已绿。
 - **活体实证（P100/582.41，探针 e8）**：同一 info 掩码播种（`seed=0x449f`）下，两戳 GET 均 `status=0`；8 个已填充条目（bit 0/1/2/3/4/7/10/14，含板功率 bit2 id(0,0)、Turing OCP 家族的 (6,1)/(3,x) 等）**compact 值 == full 值 == info 默认值，逐条 ALIGNED，0 MISMATCH**。快照 `reverse/xocd/e8-tgp-alignment.json`；探针 `e8_tgp_full_compact_alignment`（GET-only）。
-- **对写路径的含义**：`set-power-limit`(--nvapi) 现走 0x12720（538+ 才有此戳）；紧凑 0x10A4C 是**兼容面更宽**的同一对象视图（R465 起即接受）。故"把 TGP 写落到共享的紧凑核心上"在几何上无阻碍（同一 stride/value/掩码契约），可作为后续统一点——收益=pre-538 驱动也能走同一 `set_tgp_watt` 核心；风险=需按 §16.9 配方（info 播种 + 几何检测 + `1<<index` 读回/回滚）改写并实机回归。当前不强制合并，两视图各自可写。
+- **对写路径的含义**：`set-power-limit`(--nvapi) 现已落到**共享的紧凑核心**（见 §18.4），0x12720 视图在代码中统一标记为 V2（新宽表视图，538+ 才有此戳）；紧凑 0x10A4C 是**兼容面更宽**的同一对象视图（R465 起即接受）。
+
+### 18.4 TGP 写路径落到共享紧凑核心；0x12720 全表标记为 V2（2026-10-05 用户指示）
+
+用户指示"TGP 写落到这个共享紧凑核心，原来的 0x12720 全部标记为 V2"。落地：
+
+- **单一共享核心**：`PhysicalGpu::set_channel_raw_core(all, index, value_raw)`（`vapi-rs/src/gpu.rs`）承载 §16.9 的完整紧凑 RMW 配方——info 播种（stamp `0x0001_0A4C`）→ 几何检测 → 按 `[min,max]` 钳位（`value_raw==u32::MAX` 为"复位/不钳"哨兵）→ 写掩码恰 `1<<index` → SET `0xAFFC2279` → 掩码播种 `1<<index` 读回 → 不符则 SET 回滚并报 `ArgumentRange`。`set_power_channel_value`（OCP 任意 index）与 `set_tgp_watt`/`reset_tgp_watt` **全部委托**同一核心，写契约只有一处实现。
+- **类型统一**：`set_tgp_watt`/`reset_tgp_watt` 返回类型由 `crate::NvapiResult` 改为 `crate::Result`，与其余写面一致（`hi/gpu.rs` 包装去掉冗余 `map_err`；core `SetNvapiTgpWatt` 文档同步）。
+- **命名标记**：sys `NV_GPU_CLIENT_TGP_WATT_STATUS_V1` → `NV_GPU_CLIENT_TGP_WATT_STATUS_V2`（含 nvversion 别名重定向），文档注明"V2 = 538+ 新宽表视图（0x12720），不是版本 nibble；是紧凑核心的第二视图"。所有 0x12720 相关标识/注释统一以 V2 命名。
+- **不做**：不改写入语义（仍 `1<<index` 掩码 scoped）、不改几何（§18.3 已证对齐）；`get-power-channels`/`set-ocp-limit`/`set-power-limit` 全部走同一核心的收益=pre-538 驱动也归一到兼容面更宽的 0x10A4C 戳。
+
+### 18.5 功率表 index 上限核查：不是 15，已放宽到 32（2026-10-05 用户提问"确定只有上限 15 个吗"）
+
+用户问功率表索引是否真的封顶 15，是否应再往上探测。**答案：不是 15；代码原先的 `0..15` 是错的（丢真实条目），已全部放宽到 32，并活体复探。**
+
+- **掩码是 32 位**，表物理可容 32 条（紧凑表 entry 31 的值落在缓冲字节 1272，远在 2636B 结构内）。xOCD 的 `WriteMask`/`VerifyValues` 只迭代 `0..=14`（0x7FFF），但那只是它的自限，不是驱动契约。
+- **P100/582.41 活体（探针 e3，放宽后重跑）**：info 掩码 = `0xc49f`，**bit 15 已置位**——旧 `0..15` 循环静默丢掉了它。全掩码播种紧凑 GET（`status=0`）返回条目位 0/1/2/3/4/7/10/14/**15**；其中 bit 14、15 均为 `id=(6,1) def=max=5001000` 的"无界"哨兵条目。稠密 0..31 扫描：未置位 bit 返回 0（驱动只填掩码内条目），**16..31 无任何条目填充**，与掩码 `0xc49f` 完全自洽。
+- **对齐确认**：放宽后 e8 复跑为 **9/9 ALIGNED**（含 bit 15），0 MISMATCH——即新恢复的 bit 15 在两视图上同样对齐（快照 `reverse/xocd/e8-tgp-alignment.json`）。
+- **代码变更**：`power_channel_policies`（`src/gpu.rs`）、`find_channel`（`sys/src/gpu/power.rs`）循环 `0..15`→`0..32`；`COMPACT_ENTRIES` 15→32；`NV_GPU_CLIENT_POWER_CHANNELS_INFO_V4.mask` 文档改为"扫描全部 32 位"；探针 e3/e8 的 `0..15` 与 `info_mask & 0x7FFF` 播种全部改为全掩码 `0..32`/`info_mask`。**结论：本机会话驱动（P100）16..31 无填充，但封顶 15 确实会丢 bit 15，放宽正确且安全。**
+
+### 18.6 ExtendedLimits 面的活体测试流程（2026-10-05 用户提问）
+
+用户问 xOCD 2.0 ExtendedLimits 面（§4 的 `power_graph_roles`/`power_command`/`power_control_input`）有没有测试流程。**此前只有离线字节回放单测（`xocd2_extended_limits_tests`、`xocd2_power_graph_decode_tests`），无活体探针。** 本次新增 GET-only 探针 `e9_extended_limits_surface`（`tests/xocd_gap_probe_live.rs`）：`power_graph_roles`（0x2BA030，-9 时按 xOCD 方式合成 347124B 布局）+ `power_command` 0..31 通道 0xF8(observed-only) 读 + 由 graph role 派生的 `power_control_input`。`set_power_command`（唯一 ExtendedLimits SET）不在此探针内调用，保持只读。
+
+- **P100 实机判读**：`power_graph_roles` = `Err(ArgumentRange)`（Pascal 无 Ada/Blackwell 角色拓扑，被正确拒绝）；`power_command` 仅 ch0 接受（value=0xFFFFFFFF=unset 哨兵），ch1..31 `GetControl` 返回 Error——Pascal 上该面基本 inert；`power_control_input` 因无 graph/shared role 跳过。**结论：该探针流程在 pre-Ada 上优雅降级，是后续 Ada/Blackwell 机器上的验证入口。** 快照 `reverse/xocd/e9-extended-limits.json`。
