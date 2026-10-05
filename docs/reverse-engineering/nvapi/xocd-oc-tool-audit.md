@@ -229,3 +229,58 @@ Apply 通用模型（NvidiaController.ApplyCoreAsync :1387-1989）：**staging �
 - **E2 首批佐证**：2070 VoltRailsStatus(v1|2760) +72=712500/+76=1125000 µV **= UI 截图 NVVDD range 712–1125**；4060L +80=1200000（1.2V VRM/OV 墙，与 xOCD status.values[3] 语义吻合）；2070 control +72/+76=32000（32mV 标定窗，xOCD ctrl.values[0/1] 呼应）。两卡均单轨 → **bit 序 vs dense 序仍需 50 系双轨卡**。
 - 2070 E4 稳定复现：bit0/type0x8/slot0 = **-1000 kHz**（非输出交错，含义未定，与 -lgc 范围锁是否相关待查）。
 - e3 探针的未使用变量警告已修；JSON 路径修复生效（本轮 e1/e6/e3 JSON 均落盘成功）。
+
+## 17. nvoc-core / cli 封装建议清单（2026-10-05，逆向与测试暂停点）
+
+### 17.1 手头结果汇总（截至本节）
+
+已落地（nvapi-rs v0.2.x@b96a8be，全部带 RMW+读回+回滚配方）：
+ClkDomains 类型化 freq/volt-demand 写（0xD14B69CF，代际槽位分派）、TopRels 比率读/写（0xCBFF71D0/0xEF3D20EA，唯一关系门控）、SetPstates20 偏移 RMW + RTX50 隔离 P0 模板、OCP PowerChannels 读/写（info v4 + 0x10A4C 双几何检测）、BoostLock 七域快照与谓词、vf_delta_scale 判据、GET-only 探针族 e1/e1b/e1c/e3/e4/e5/e6。
+
+四代实证（2070 Turing / 3060 Ampere / P100 Pascal / 4060L Ada）：
+policyId 0 = 板功率 mW（默认值=卡规格，四代通用）；OCP 电流 mA 身份代际轮换（50 系 (19,13)(19,12)、Ampere+Ada (13,19)、Turing (6,19)、Pascal 无）；5001000/1001000 哨兵=无上限；BoostLock 语义双向实证（电压锁 id6/mode3 µV、范围锁 id0+id1 mode2 kHz 界、无锁全 mode0）；VoltRailsStatus µV/墙序模型佐证（712–1125 UI 对齐、1.2V VRM 墙）；TopRels 控制仅 50 系（Pascal/Turing -103、Ampere/Ada -1）；ClkDomains 记录类型字节随驱动版本漂移（Ada 0x0A→0x10）。
+
+未定案（探针就绪，按用户指示暂停）：V/F delta 真实字段位置（两候选几何均证伪，e1c 扫描待跑）；pre-50 系 OCP 写偏移（0x12720 需预热+播种的 round-3 扫描待跑）；E2 双轨槽位序（需 50 系）；TopRels 比率语义（需 50 系）。
+
+### 17.2 封装建议（按优先级）
+
+P0 —— 读侧、证据实锤、零写风险，可直接实施：
+
+| # | 交付 | nvoc-core | cli | 价值/证据 |
+|---|---|---|---|---|
+| 1 | 功率通道表读取 | QueryNvapiPowerChannels（operation.rs 新 Kind，包 power_channel_policies + ocp_channels + power_channel_control） | get-power-channels | OCP/板功率/电流通道/哨兵一览，四代可用；渲染 A 与 mA 双列；is_board_power/is_ocp_current 已备 |
+| 2 | BoostLock 快照 | QueryBoostLocks（包 boost_lock_snapshot） | get-boost-locks | 「频率为何被钳」排查 + 一切 V/F/电压写操作的前置安全检查（见 #7）；双向实证 |
+| 3 | 精细温度通道暴露 | 无需新 Kind（thermal_channel_info 已封装） | get-thermal-channels | hotspot/显存结温（索引语义 0/1/2(50系)/7(40系)/9(其它) 已注释）；xOCD 遥测面板同款数据 |
+
+P1 —— 写侧、nvapi-rs 原语就绪且配方内置，需 CLI 风险标注（部分有前置依赖）：
+
+| # | 交付 | nvoc-core | cli | 依赖/风险 |
+|---|---|---|---|---|
+| 4 | OCP 限值写 | SetNvapiPowerChannelValue | set-ocp-limit（--confirm-disable-protection 二次确认 + 风险行） | 50 系可先行；pre-50 等 E3-r3 定位 0x12720 偏移，未定位前 nvapi-rs 几何检测 fail-closed 自动拒绝；高危（解除保护），恢复路径=写回 default |
+| 5 | 域电压 demand 写 | SetNvapiDomainVoltageDemand | set-domain-voltage --domain xbar/sys/video --uv | set_clk_domain_voltage_demand 就绪（±500mV 钳 + RMW）；4060L 即可验证；中危 |
+| 6 | 域时钟类型化偏移 | SetNvapiDomainClockOffsetTyped（或给既有 set-private-freq-domain-global-offset 加 --auto-slot） | 同左 | set_clk_domain_freq_offset 就绪（记录类型分派槽位）；新驱动卡（0x10 记录）需要；中危 |
+| 7 | 写前外部锁检查（pre-flight） | CheckExternalBoostLocks：V/F/电压类写操作执行前查 boost_lock_snapshot，范围锁激活则拒绝电压锁（xOCD 安全语义） | 不单独暴露，作为写操作的内置 gate + --force 旁路 | 纯读检查；把 2070 实证的保护语义变成产品行为 |
+
+P1.5 —— 读侧增强（独立可做）：
+
+| # | 交付 | 层 | 说明 |
+|---|---|---|---|
+| 8 | NVML 增量 | core/src/nvml.rs | GetClockInfo 三域 / Utilization / MemoryInfo / TemperatureV(hotspot) / ClockOffsets 探测 / GetArchitecture——xOCD 当主力遥测源的整套；补齐后 get-info 可跨驱动兜底 |
+
+P2 —— 依赖未定案或无实机，暂缓：
+
+| # | 交付 | 前置 |
+|---|---|---|
+| 9 | TopRels 比率写 CLI（set-top-rels-ratio） | 仅 50 系可验证 |
+| 10 | RTX50 隔离 P0 写 CLI（set-p0-reference-clock） | 仅 50 系 |
+| 11 | V/F 公共表写修正（set_vfp_table 偏移/文档回改 + deltaScale 接入 CLI 曲线写） | 等 e1c 定位真字段 |
+| 12 | 板功率 mW 直写（set-power-channel-value 走 (0,subtype) 通道） | 与既有 set-power-limit 重叠，价值存疑 |
+
+P3 —— 设计借鉴（用户已裁决后续再做）：Profile 体系、Apply 级联回滚栈+undo、双速遥测、opt-in 安全门控、self-test 命令档、基准 worker 协议。
+
+### 17.3 实施注意
+
+- core 每条写操作走既有 OperationKind + is_nvapi_write() GC6 预热门；OCP 写额外要求二次确认语义（xOCD RiskAcknowledgement 的最小版）。
+- cli 新命令入 Groups（Power/Clock/Voltage/Thermal）+ output.rs 渲染管线约定（BTreeMap 序、mA/A 双列、uV 命名 allow 惯例）。
+- pre-50 系 OCP 写在 E3-r3 定位前保持 NotSupported 拒绝（nvapi-rs 几何检测已 fail-closed，core/cli 无需额外判断）。
+- 全部 P0 读命令在 P100 上即可验收（info v4/BoostLock/ThermChannel 四代可用）。
