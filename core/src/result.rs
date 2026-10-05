@@ -86,6 +86,13 @@ pub enum OperationKind {
     /// plus the live control-block values with geometry detection. See
     /// docs/reverse-engineering/nvapi/xocd-oc-tool-audit.md §16.
     QueryNvapiPowerChannels,
+    /// ExtendedLimits PowerCommand channel read (NDA 0x33AB0353 GET, packet
+    /// stamp v1|1320): one (channel, command) cell of the kernel power-command
+    /// lease — `command` 0xF8 = observed, 0xFE = the kernel power-cap request.
+    /// Live: only channel 0 answers on Pascal/Ada, where 0xFE reads the board
+    /// power in mW (matches NVML/the PowerChannels table); unpkg 0xF8 is the
+    /// 0xFFFFFFFF unset sentinel. See xocd audit §18.6/§18.8.
+    QueryNvapiPowerCommand,
     /// PerfClientLimits 7-domain lock snapshot (0xE440B867 v2 780B):
     /// clock-range locks (id 0/1, mode 2, kHz bounds — the `-lgc` family)
     /// and the V/F voltage lock (id 6, mode 3, µV). Live-verified both
@@ -102,9 +109,14 @@ pub enum OperationKind {
     /// the board-power row), generation-resolved by nvapi-rs
     /// (`set_power_channel_value`, RMW + readback + rollback inside);
     /// the CLI's nvvdd/msvdd aliases resolve to the generation's OCP pair,
-    /// or any `get-power-channels` index can be targeted. HIGH RISK:
+    /// or any `get-pwr-cur-info` index can be targeted. HIGH RISK:
     /// raising an OCP ceiling disables a safety net.
     SetNvapiPowerChannelValue,
+    /// ExtendedLimits PowerCommand write (NDA 0x17695269 SET, packet stamp
+    /// v1|1320): raw value on one (channel, command) cell, verified by
+    /// re-read inside nvapi-rs. `command` 0xFE drives the kernel-side
+    /// power-cap request — the caller owns the baseline. HIGH RISK on 0xFE.
+    SetNvapiPowerCommand,
     /// TopRels relation-ratio read (0xCBFF71D0, U16.16 at the resolved
     /// offset). Control GET only answers on 50-series (Pascal/Turing
     /// -103, Ampere/Ada -1 live).
@@ -386,6 +398,7 @@ impl OperationKind {
                 | SetNvapiOverclockedPstates
                 | SetNvapiPstates20PrivateDelta
                 | SetNvapiPowerChannelValue
+                | SetNvapiPowerCommand
                 | SetNvapiTopRelsRatio
         )
     }

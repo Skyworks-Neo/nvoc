@@ -387,3 +387,24 @@ P3 —— 设计借鉴（用户已裁决后续再做）：Profile 体系、Apply
 - **旧名删除**（非别名）：`set-power-limit` 与 `set-ocp-limit` 两个 CLI 名字直接移除，clap 解析旧名即报错。决策记录在 `cli/RENAME_DECISIONS.md`。
 - **测试**：新增 `set_pwr_cur_limit_parses_all_targets`（tgp/board/nvvdd/msvdd/数值 index、`--policy-index`/`--nvml` 解析、旧名报错）；`commands_listed_in_lexicographic_order` 门禁通过（spec 置于 `set-public-vftable-range-offset` 与 `set-temp-limit` 之间）；cli 73 测试绿。
 - **风险面不变**：抬升 OCP 上限仍是解除一项安全网（无确认门），`--nvml` 主功率墙仍为常规操作。本机 P100 非提权，写臂照旧优雅跳过（NVML NoPermission / NVAPI -137）。
+
+### 18.8 封装：`get-power-command` / `set-power-command` + `get-pwr-cur-info` 改名（2026-10-05 用户指示）
+
+用户问"power_command 这条写入是之前没有的吗？和 set-pwr-cur-limit 不是同一个？"——**是两条完全不同的 NVAPI 族**：
+
+| | `set-pwr-cur-limit`（§18.7 合并体） | `power_command`（本次新封装） |
+|---|---|---|
+| GET | `0x8B3E7343`（ClientTgpWattGetStatus / PowerPolicyGetControl） | **`0x33AB0353`**（NvAPI_GPU_ClientPwrPoliciesGetControl） |
+| SET | `0xAFFC2279`（ClientTgpWattSetStatus / PowerPolicySetControl） | **`0x17695269`**（NvAPI_GPU_ClientPwrPoliciesSetControl） |
+| 缓冲戳 | v1\|2636（0x10A4C 紧凑）/ v1\|10016（0x12720 全表 V2） | **v1\|1320（0x0001_0528，1320B 租约包）** |
+| 寻址 | 32 位掩码下的通道 index（=info mask 位） | (channel 0..31, command 0xF8\|0xFE) 40B 槽 @40*(ch+1) |
+| 语义 | 驱动 [min,max] 窗钳的通道限值（mA/mW） | 内核功率上限请求租约：0xFE=可写 request/lease（活体单位 mW，=板功率），0xF8=observed-only 读回（活体哨兵 0xFFFFFFFF） |
+| 写入契约 | mask-scoped RMW+读回+回滚 | 值拒 0/0xFFFFFFFF 哨兵，写后读回验证，**无隐式恢复**（调用方自持基线） |
+
+power_command 的 FFI 与 hi 封装（`power_command`/`set_power_command`）在本车道早已落库（§18.6 E9 探针的底层），此前缺的是 core/CLI 出口。本次按用户指示补齐：
+
+- **core**：`QueryNvapiPowerCommand { channel, command }` / `SetNvapiPowerCommand { channel, command, value }` 两个 GpuOperation + OperationKind 变体（写侧进 `is_nvapi_write` 清单触发 GC6 预唤醒）+ lib.rs 再导出。
+- **CLI**：`get-power-command [--channel N] [--command observed|request]`（默认 ch0/request；request 渲染 mW/W 视图，0xFFFFFFFF 渲染 unset）、`set-power-command <VALUE> [--channel N] [--command observed|request]`（VALUE 裸数=瓦特×1000，`mw` 后缀=原始整数；与 `set-pwr-cur-limit` 共用 `parse_power_channel_value`）。均 Group::Power、NVAPI_ONLY。高危注记：request=0xFE 直驱内核功率上限请求，无确认门。
+- **`get-power-channels` → `get-pwr-cur-info`**（用户指示，旧名直接删除无别名）：与 `set-pwr-cur-limit` 构成同一功率/电流面的读/写对。**行单位分类法（用户判读法）**：min=1→电流通道（mA 渲染 A）、min≥1000→功率通道（mW 渲染 W，含全零退化行）；"unbounded (sentinel)" 分支取消，所有行带单位渲染（4060L 的 (15,3) 38 W、(4,5) 12.4 W 每轨功率行就此可读）。分类谓词 `PowerChannelPolicy::is_current_channel` 落 nvapi-rs 数据模型，`set-pwr-cur-limit` 写后渲染键同步用同一分类。
+- **测试**：`power_command_commands_parse`（选项/选择器解析、ch 32 拒绝、0xAA 拒绝、旧名 `get-power-channels` 报错）+ 后端断言；cli 74 测试绿，core/nvapi/clippy/fmt 全绿。
+- **边界**：活体仅 ch0/0xFE 有数据（两代实测=板功率 mW，与 NVML/通道表三面一致）；0xF8 全哨兵、ch1..31 空的作用仍待 Blackwell 实机（§18.6 L4 判据）。

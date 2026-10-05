@@ -87,6 +87,17 @@ L3 判据（决定是否值得封装写入）：identity 写被接受且读回�
 
 结论落地：在审计报告写一段封测结论 + 若封装则补对应 `*/tests/*` 与 CLI/TUI 触点。
 
+### L4 裁决结果（2026-10-05，用户拍板）——已封装
+
+四项判据全部满足，用户指示新增封装：
+
+1. 读面 ✅（ch0/0xFE = 板功率 mW）→ `get-power-command [--channel N] [--command observed|request]`。
+2. 写面 ✅（4060L 提权三步全绿）→ `set-power-command <VALUE> [--channel N] [--command observed|request]`（HIGH RISK 注记在 spec）。
+3. 单一显式窗口语义 ✅（identity/扰动/恢复均接受+读回，无静默丢弃）。
+4. 0xFE/0xF8 未单列命令，以 `--command request|observed` 选择器共存于同一条命令（0xF8 活体全哨兵、无独立价值；若 Blackwell 上 0xF8 出现实数据再议拆分）。
+
+同批落地：`get-power-channels` → **`get-pwr-cur-info`** 改名（旧名删除无别名），行单位分类法 min=1→电流(A)/min≥1000→功率(W) 全行带单位渲染；审计报告 §18.8 为封装台账，`cli/RENAME_DECISIONS.md` 为改名记录。
+
 ## 5. 一键命令汇总
 
 ```bash

@@ -15,35 +15,36 @@ use nvoc_core::{
     QueryNvapiCoreVoltageControl, QueryNvapiDNotifier, QueryNvapiFanPolicyInfo,
     QueryNvapiOcScannerIncomplete, QueryNvapiPStateLevels, QueryNvapiPStateLockStatus,
     QueryNvapiPmgrVoltageArbiter, QueryNvapiPowerCeiling, QueryNvapiPowerChannels,
-    QueryNvapiPstates20Private, QueryNvapiRatedTdp, QueryNvapiTargetTempPolicies,
-    QueryNvapiTargetTempPolicyIndex, QueryNvapiTgpWattRange, QueryNvapiThermalChannels,
-    QueryNvapiThermalSettings, QueryNvapiThermalSim, QueryNvapiTopRelsRatio, QueryNvapiVoltDevices,
-    QueryNvapiVoltRails, QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates,
-    QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
-    QueryThrottleReasons, QueryVbiosImage, QueryVbiosSecurityInfo, QueryVbiosStatusString,
-    QueryVbiosVersion, QueryViolationStatus, QueryVoltageBoost, ResetAutoboostStatus,
-    ResetCoolerLevels, ResetFanCurve, ResetFanSpeed, ResetForcePstate, ResetFreqLock,
-    ResetLegacyApplicationFreqLock, ResetLegacyGpcRailOvervoltLimit, ResetNvapiFanControl,
-    ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetNvapiVfpPrivate,
-    ResetPstateGlobalFreqOffset, ResetPublicVftableGpcLock, ResetPublicVftableOffset,
-    ResetVfpFrequencyLock, RestartDisplayDriver, SetApplicationsClocks, SetAutoboostStatus,
-    SetAutoboostSupport, SetBb2Active, SetClockOffset, SetCoolerLevels, SetEdid, SetFanCurve,
-    SetFanRpm, SetFanSpeed, SetFanStop, SetForcePstate, SetGpcVoltLock, SetLegacyClocks,
-    SetLockedClocks, SetNvapiBackgroundOcScanner, SetNvapiClkDomainOffset,
+    QueryNvapiPowerCommand, QueryNvapiPstates20Private, QueryNvapiRatedTdp,
+    QueryNvapiTargetTempPolicies, QueryNvapiTargetTempPolicyIndex, QueryNvapiTgpWattRange,
+    QueryNvapiThermalChannels, QueryNvapiThermalSettings, QueryNvapiThermalSim,
+    QueryNvapiTopRelsRatio, QueryNvapiVoltDevices, QueryNvapiVoltRails, QueryPowerLimits,
+    QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits,
+    QueryTemperatureThresholds, QueryThrottleReasons, QueryVbiosImage, QueryVbiosSecurityInfo,
+    QueryVbiosStatusString, QueryVbiosVersion, QueryViolationStatus, QueryVoltageBoost,
+    ResetAutoboostStatus, ResetCoolerLevels, ResetFanCurve, ResetFanSpeed, ResetForcePstate,
+    ResetFreqLock, ResetLegacyApplicationFreqLock, ResetLegacyGpcRailOvervoltLimit,
+    ResetNvapiFanControl, ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetNvapiTgpWatt,
+    ResetNvapiVfpPrivate, ResetPstateGlobalFreqOffset, ResetPublicVftableGpcLock,
+    ResetPublicVftableOffset, ResetVfpFrequencyLock, RestartDisplayDriver, SetApplicationsClocks,
+    SetAutoboostStatus, SetAutoboostSupport, SetBb2Active, SetClockOffset, SetCoolerLevels,
+    SetEdid, SetFanCurve, SetFanRpm, SetFanSpeed, SetFanStop, SetForcePstate, SetGpcVoltLock,
+    SetLegacyClocks, SetLockedClocks, SetNvapiBackgroundOcScanner, SetNvapiClkDomainOffset,
     SetNvapiCoreVoltageControl, SetNvapiDNotifier, SetNvapiDynamicBoost, SetNvapiEccConfiguration,
     SetNvapiOverclockedPstates, SetNvapiOvervolt, SetNvapiPStateNative, SetNvapiPerfFreqCap,
     SetNvapiPerfLevelLock, SetNvapiPmgrVoltageArbiter, SetNvapiPowerChannelValue,
-    SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiPstates20PrivateDelta, SetNvapiSensorLimits,
-    SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvapiThermalSim, SetNvapiTopRelsRatio,
-    SetNvapiVfpPointPrivate, SetNvapiVfpRangePerPointPrivate, SetNvapiVfpRangePrivate,
-    SetNvapiVoltRailOffset, SetNvapiVoltRailTarget, SetNvmlAcousticTemp, SetNvmlPstateLock,
-    SetPowerLimit as SetNvmlPowerLimit, SetPowerMode, SetPstateBaseVoltage, SetPstateClockOffset,
-    SetPublicVftablePointOffset, SetPublicVftableRangeOffset, SetTemperatureLimit,
-    SetVfpFrequencyLock, SetVoltageBoost, SetWm2Active, SetWm2Mode, VfPointType, VfpResetDomain,
-    Wm2AcousticMode, discover_targets, fetch_gpu_type, nvapi_status_name, nvml_pstate_to_str,
-    parse_nvapi_locked_voltage_target, parse_nvml_fan_control_policy, parse_nvml_pstate,
-    query_domain_vf_points_indexed, query_domain_vfp_indices, run, select_targets,
-    set_nvapi_domain_vfp_deltas, sync_memory_pstate_as_p0,
+    SetNvapiPowerCommand, SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiPstates20PrivateDelta,
+    SetNvapiSensorLimits, SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvapiThermalSim,
+    SetNvapiTopRelsRatio, SetNvapiVfpPointPrivate, SetNvapiVfpRangePerPointPrivate,
+    SetNvapiVfpRangePrivate, SetNvapiVoltRailOffset, SetNvapiVoltRailTarget, SetNvmlAcousticTemp,
+    SetNvmlPstateLock, SetPowerLimit as SetNvmlPowerLimit, SetPowerMode, SetPstateBaseVoltage,
+    SetPstateClockOffset, SetPublicVftablePointOffset, SetPublicVftableRangeOffset,
+    SetTemperatureLimit, SetVfpFrequencyLock, SetVoltageBoost, SetWm2Active, SetWm2Mode,
+    VfPointType, VfpResetDomain, Wm2AcousticMode, discover_targets, fetch_gpu_type,
+    nvapi_status_name, nvml_pstate_to_str, parse_nvapi_locked_voltage_target,
+    parse_nvml_fan_control_policy, parse_nvml_pstate, query_domain_vf_points_indexed,
+    query_domain_vfp_indices, run, select_targets, set_nvapi_domain_vfp_deltas,
+    sync_memory_pstate_as_p0,
 };
 use serde_json::{Value, json};
 use time::OffsetDateTime;
@@ -192,10 +193,12 @@ pub enum Command {
     GetDNotifier,
     SetDNotifier,
     GetPowerCeiling,
-    GetPowerChannels,
+    GetPwrCurInfo,
+    GetPowerCommand,
     GetBoostLocks,
     GetThermalChannels,
     SetPwrCurLimit,
+    SetPowerCommand,
     GetTopRelsRatio,
     SetTopRelsRatio,
     GetVoltRailInfo,
@@ -587,8 +590,12 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 },
             ),
             (
-                Command::GetPowerChannels,
-                CommandSpec::new("get-power-channels", Group::Power, "Read the PowerChannels policy table (0x67F31384 v4): board power in raw mW (policyId 0, defaults = the card TGP spec) + per-rail OCP current in raw mA (50-series (19,13)/(19,12), Ampere+Ada (13,19), Turing (6,19), Pascal none) with the resolved NVVDD/MSVDD OCP channels, the live control value paired to each row, and the geometry detection (xocd audit §16.1). Each row's `index` is a valid set-pwr-cur-limit write target")
+                Command::GetPowerCommand,
+                CommandSpec {
+                    options: Box::leak(Box::new(["channel", "command"])),
+                    formatter: Some(output::format_power_command),
+                    ..CommandSpec::new("get-power-command", Group::Power, "Read one ExtendedLimits power-command lease cell (NDA 0x33AB0353 GET, packet stamp v1|1320; xOCD 2.0 ReadPowerCommand) — a per-channel command/lease surface distinct from the TGP-watt/PowerChannels control (0x8B3E7343/0xAFFC2279). --command observed (0xF8, observed-only readback) | request (0xFE, the writable request/lease; live unit mW); --channel 0..31 (default 0; only channel 0 carries data on Pascal/Ada). 0xFFFFFFFF = unset sentinel")
+                },
             ),
             (
                 Command::GetPowerMode,
@@ -675,6 +682,10 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     formatter: Some(output::format_vfp_output),
                     ..CommandSpec::new("get-public-vftable", Group::Vfp, "Read the public V-F curve table: default dumps all domains (graphics points plus the trailing memory entries, e.g. index 127..131 on 30/40 series); --domain gpc|memory narrows to one segment; --output-csv PATH writes the single-domain curve as CSV (voltage,frequency,delta,default_frequency). Faithful read by default (driver-reported default column, zeros included); --infer-missing-field derives the default as current − delta where the driver leaves it empty (Pascal/Turing)")
                 },
+            ),
+            (
+                Command::GetPwrCurInfo,
+                CommandSpec::new("get-pwr-cur-info", Group::Power, "Read the power/current info table (0x67F31384 v4): board power in raw mW (policyId 0, defaults = the card TGP spec) + per-rail OCP current in raw mA (50-series (19,13)/(19,12), Ampere+Ada (13,19), Turing (6,19), Pascal none) with the resolved NVVDD/MSVDD OCP channels, the live control value paired to each row, and the geometry detection (xocd audit §16.1). Row unit taxonomy: min=1 → current (mA), min≥1000 → power (mW) — every row renders with units. Each row's `index` is a valid set-pwr-cur-limit write target")
             ),
             (Command::GetRatedTdp, CommandSpec::new("get-rated-tdp", Group::Power, "Rated-TDP readback trio (0xED2BEA09/0x87BD35EF/0xFCBDF642)")),
             (
@@ -1119,6 +1130,20 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 },
             ),
             (
+                Command::SetPowerCommand,
+                CommandSpec {
+                    arity: (1, 1),
+                    options: Box::leak(Box::new(["channel", "command"])),
+                    positionals: Box::leak(Box::new([PositionalArg::free(
+                    "arg_value",
+                    "VALUE",
+                    "Raw cell value; a bare number is watts (×1000 = the mW driver unit), a `mw` suffix is the raw integer. 0 and 0xFFFFFFFF are rejected (unset sentinels)",
+                )])),
+                    formatter: Some(output::format_set_power_command),
+                    ..CommandSpec::new("set-power-command", Group::Power, "Write one ExtendedLimits power-command lease cell (NDA 0x17695269 SET, packet stamp v1|1320; xOCD 2.0 SetPowerCommand) — distinct from set-pwr-cur-limit (0x8B3E7343/0xAFFC2279). --command request (0xFE, default; the writable request/lease — drives the kernel-side power-cap request, live unit mW) | observed (0xF8, readback-only); --channel 0..31 (default 0). nvapi-rs rejects the unset sentinels, writes, and verifies by re-read. HIGH RISK on request: no implicit restore — the caller owns the baseline")
+                },
+            ),
+            (
                 Command::SetPowerMode,
                 CommandSpec {
                     arity: (1, 1),
@@ -1365,7 +1390,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                         PositionalArg::free(
                             "arg_target",
                             "TARGET",
-                            "Write target: tgp/board (the board-power / TGP policy row; `--policy-index` and `--nvml` apply here), nvvdd (core OCP) / msvdd (memory OCP), or a numeric index from get-power-channels to write any populated channel (value units then follow the row: A/mA on current channels, W/mW on board power)",
+                            "Write target: tgp/board (the board-power / TGP policy row; `--policy-index` and `--nvml` apply here), nvvdd (core OCP) / msvdd (memory OCP), or a numeric index from get-pwr-cur-info to write any populated channel (value units then follow the row: A/mA on current channels, W/mW on board power)",
                         ),
                         PositionalArg::hyphen(
                             "arg_value",
@@ -1373,7 +1398,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                             "Limit value: watts on tgp/board (one decimal allowed), amperes on OCP current channels; `ma`/`mw` suffix (case-insensitive) = raw driver integer in the row's own unit (e.g. 240 or 240000ma)",
                         ),
                     ])),
-                    ..CommandSpec::new("set-pwr-cur-limit", Group::Power, "Set a power/current limit. Unified writer for the PowerChannels control table (0xAFFC2279; HIGH RISK — raising an OCP ceiling disables a safety net, no confirmation gate): tgp/board writes the TGP/board-power row (NVAPI compact core with --policy-index, or --nvml for the nvidia-smi -pl path), nvvdd/msvdd/INDEX writes any populated channel printed by get-power-channels. nvapi-rs resolves the identity, clamps to the driver [min,max] window (plus the 1..5001 A envelope on OCP current channels), and runs the full RMW + readback + rollback recipe against the xOCD compact control geometry (stamp v1|2636, info-mask-seeded GET); the buffer geometry is feature-detected at runtime (xocd audit E3/§18)")
+                    ..CommandSpec::new("set-pwr-cur-limit", Group::Power, "Set a power/current limit. Unified writer for the PowerChannels control table (0xAFFC2279; HIGH RISK — raising an OCP ceiling disables a safety net, no confirmation gate): tgp/board writes the TGP/board-power row (NVAPI compact core with --policy-index, or --nvml for the nvidia-smi -pl path), nvvdd/msvdd/INDEX writes any populated channel printed by get-pwr-cur-info. nvapi-rs resolves the identity, clamps to the driver [min,max] window (plus the 1..5001 A envelope on OCP current channels), and runs the full RMW + readback + rollback recipe against the xOCD compact control geometry (stamp v1|2636, info-mask-seeded GET); the buffer geometry is feature-detected at runtime (xocd audit E3/§18)")
                 },
             ),
             (
@@ -1837,6 +1862,66 @@ fn parse_power_channel_value(raw: &str) -> CliResult<u32> {
     Ok((big * 1000.0).round() as u32)
 }
 
+/// ExtendedLimits power-command channel: 0..=31 (the packet mask is 32 bits;
+/// nvapi-rs validates the same bound). Live, only channel 0 carries data.
+fn parse_power_command_channel(invocation: &Invocation) -> CliResult<u8> {
+    let Some(raw) = option_one(invocation, "channel") else {
+        return Ok(0);
+    };
+    let channel: u8 = raw
+        .trim()
+        .parse()
+        .map_err(|_| CliError::new(format!("invalid --channel value {raw:?} (0..31)")))?;
+    if channel > 31 {
+        return Err(CliError::new(format!(
+            "--channel {channel} out of range (the power-command mask is 32 bits, 0..31)"
+        )));
+    }
+    Ok(channel)
+}
+
+/// ExtendedLimits power-command selector: observed (0xF8, the observed-only
+/// readback command) | request (0xFE, the writable request/lease that xOCD
+/// drives; live unit mW), or the raw dword.
+fn parse_power_command_selector(raw: &str) -> CliResult<u32> {
+    let lower = raw.trim().to_ascii_lowercase();
+    match lower.as_str() {
+        "observed" | "0xf8" | "248" => Ok(0xF8),
+        "request" | "0xfe" | "254" => Ok(0xFE),
+        other => Err(CliError::new(format!(
+            "invalid --command {other:?}; expected observed (0xF8) or request (0xFE)"
+        ))),
+    }
+}
+
+/// JSON shape shared by get-power-command / set-power-command: the raw cell
+/// plus the derived mW/W view on the request command (0xFE — the one whose
+/// live unit is known: the board power in mW). `unset` marks the
+/// 0xFFFFFFFF xOCD sentinel.
+fn power_command_json(channel: u8, command: u32, value: u32, applied: bool) -> Value {
+    let name = match command {
+        0xF8 => "observed",
+        0xFE => "request",
+        _ => "unknown",
+    };
+    let unset = value == u32::MAX;
+    let mut out = json!({
+        "channel": channel,
+        "command": name,
+        "command_raw": command,
+        "value": value,
+        "unset": unset,
+    });
+    if applied {
+        out["applied"] = json!(true);
+    }
+    if command == 0xFE && !unset {
+        out["value_mW"] = json!(value);
+        out["value_W"] = json!(value as f64 / 1000.0);
+    }
+    out
+}
+
 fn parse_command(raw: &str) -> CliResult<Command> {
     // Naming-compat aliases: the per-pstate baseVoltage SET predates the
     // "legacy overvolt" GET naming; alias keeps the get/set pair obvious.
@@ -1881,6 +1966,8 @@ fn option_takes_value(token: &str) -> bool {
             | "--fan"
             | "--policy"
             | "--policy-index"
+            | "--channel"
+            | "--command"
     )
 }
 
@@ -2028,6 +2115,16 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .value_name("INDEX")
             .action(ArgAction::Set)
             .help("TGP power-policy table index (default 2); see get-public-power-limit --nvapi (tgp_range)"),
+        "channel" => Arg::new("channel")
+            .long("channel")
+            .value_name("CHANNEL")
+            .action(ArgAction::Set)
+            .help("ExtendedLimits power-command channel (0..31; only channel 0 carries data on Pascal/Ada)"),
+        "command" => Arg::new("command")
+            .long("command")
+            .value_name("COMMAND")
+            .action(ArgAction::Set)
+            .help("ExtendedLimits power-command selector: observed (0xF8, observed-only readback) | request (0xFE, writable request/lease) | the raw dword"),
         "infer-missing-field" => Arg::new("infer-missing-field")
             .long("infer-missing-field")
             .action(ArgAction::SetTrue)
@@ -3896,28 +3993,43 @@ fn execute_target(
                 None => json!({"supported": false}),
             })
         }
-        Command::GetPowerChannels => {
+        Command::GetPwrCurInfo => {
             let Some(snap) = run(target, QueryNvapiPowerChannels)?.output else {
                 return Ok(json!({"supported": false}));
             };
-            // raw + derived display per identity: policyId 0 = mW (board
-            // power), OCP mA family = A. Sentinels (def==max==5001000) are
-            // "unbounded". `current_raw` is the live control value paired to
-            // this index (index = the set-pwr-cur-limit write target).
+            // raw + derived display per identity. Unit taxonomy (2026-10-05
+            // user classification): min == 1 → current channel (the mA driver
+            // unit, rendered A); min >= 1000 → power channel (the mW driver
+            // unit, rendered W — the degenerate all-zero policyId-0 rows land
+            // here too). Every populated row renders with units; there is no
+            // "unbounded" branch — the 5001000 mA / 5001 A ceilings are just
+            // that number in the row's own unit. `current_raw` is the live
+            // control value paired to this index (index = the
+            // set-pwr-cur-limit write target).
             let control_values = snap.control.as_ref().map(|(values, _)| values.clone());
             Ok(json!({
                 "policies": snap.policies.iter().enumerate().map(|(i, c)| {
-                    let display = if c.is_board_power() {
-                        format!("{} W default / {} W max", c.default_raw / 1000, c.max_raw / 1000)
-                    } else if c.is_ocp_current() && c.max_raw != 5_001_000 {
-                        format!("{:.2} A default / {:.2} A max", c.default_raw as f64 / 1000.0, c.max_raw as f64 / 1000.0)
+                    let current = c.is_current_channel();
+                    let display = if current {
+                        format!(
+                            "{:.2} A min / {:.2} A default / {:.2} A max",
+                            c.min_raw as f64 / 1000.0,
+                            c.default_raw as f64 / 1000.0,
+                            c.max_raw as f64 / 1000.0
+                        )
                     } else {
-                        "unbounded (sentinel)".to_string()
+                        format!(
+                            "{:.1} W min / {:.1} W default / {:.1} W max",
+                            c.min_raw as f64 / 1000.0,
+                            c.default_raw as f64 / 1000.0,
+                            c.max_raw as f64 / 1000.0
+                        )
                     };
                     json!({
                         "index": c.index,
                         "policy_id": c.policy_id,
                         "subtype": c.subtype,
+                        "unit_kind": if current { "current" } else { "power" },
                         "is_board_power": c.is_board_power(),
                         "is_ocp_current": c.is_ocp_current(),
                         "min_raw": c.min_raw,
@@ -3946,6 +4058,14 @@ fn execute_target(
                     "compact_geometry": compact,
                 })),
             }))
+        }
+        Command::GetPowerCommand => {
+            let channel = parse_power_command_channel(invocation)?;
+            let command = parse_power_command_selector(
+                option_one(invocation, "command").unwrap_or("request"),
+            )?;
+            let value = run(target, QueryNvapiPowerCommand { channel, command })?.output;
+            Ok(power_command_json(channel, command, value, false))
         }
         Command::GetBoostLocks => {
             let Some(entries) = run(target, QueryNvapiBoostLocks)?.output else {
@@ -4016,7 +4136,7 @@ fn execute_target(
             // tgp/board: the board-power / TGP policy row. This is the retired
             // `set-power-limit` surface — it keeps the NVML backend (nvidia-smi
             // -pl) and `--policy-index`. Both names are the same row (xocd audit
-            // §18.1: same GET/SET table); `board` is the get-power-channels
+            // §18.1: same GET/SET table); `board` is the get-pwr-cur-info
             // vocabulary, `tgp` the watts-form one.
             if matches!(target_name.as_str(), "tgp" | "board") {
                 let watts = parse_u32_unit(raw_value, "w", "watt")?;
@@ -4068,7 +4188,7 @@ fn execute_target(
                     CliError::new("PowerChannels table not supported on this GPU/driver")
                 })?;
             // Rail resolution: named NVVDD/MSVDD aliases, or a numeric index
-            // straight off get-power-channels (any populated channel —
+            // straight off get-pwr-cur-info (any populated channel —
             // value units follow the row: A/mA on current channels, W/mW on
             // the board-power row).
             let channel = if let Ok(index) = target_name.parse::<u32>() {
@@ -4091,13 +4211,13 @@ fn execute_target(
                     "msvdd" | "memory" => snap.msvdd_ocp.as_ref(),
                     other => {
                         return Err(CliError::new(format!(
-                            "unknown target '{other}' (expected tgp|board|nvvdd|msvdd or a numeric index from get-power-channels)"
+                            "unknown target '{other}' (expected tgp|board|nvvdd|msvdd or a numeric index from get-pwr-cur-info)"
                         )));
                     }
                 };
                 named.ok_or_else(|| {
                     CliError::new(format!(
-                        "no OCP current channel resolved for '{target_name}' on this generation (Pascal has none; see get-power-channels)"
+                        "no OCP current channel resolved for '{target_name}' on this generation (Pascal has none; see get-pwr-cur-info)"
                     ))
                 })?
             };
@@ -4111,13 +4231,14 @@ fn execute_target(
             )?
             .output;
             // Unit-suffixed keys so the human labels carry the row's own
-            // unit: "Raw mA" / "Driver Window mA" on an OCP current channel,
-            // "Raw mW" / "Watts" on the board-power row.
-            let board = channel.is_board_power();
-            let (raw_key, window_key, big_key) = if board {
-                ("raw_mW", "driver_window_mW", "watts")
-            } else {
+            // unit (same min-based taxonomy as get-pwr-cur-info): "Raw mA" /
+            // "Driver Window mA" on a current channel, "Raw mW" / "Watts" on
+            // a power channel.
+            let current = channel.is_current_channel();
+            let (raw_key, window_key, big_key) = if current {
                 ("raw_mA", "driver_window_mA", "amperes")
+            } else {
+                ("raw_mW", "driver_window_mW", "watts")
             };
             let mut output = serde_json::Map::new();
             output.insert("applied".to_string(), json!(true));
@@ -4137,12 +4258,28 @@ fn execute_target(
                 // The write went through the driver's [min,max] window (the
                 // user's own run: 140 A asked, 135 A window max stored).
                 output.insert(
-                    format!("requested_{}", if board { "mW" } else { "mA" }),
+                    format!("requested_{}", if current { "mA" } else { "mW" }),
                     json!(value_raw),
                 );
                 output.insert("clamped_to_driver_window".to_string(), json!(true));
             }
             Ok(Value::Object(output))
+        }
+        Command::SetPowerCommand => {
+            let channel = parse_power_command_channel(invocation)?;
+            let command = parse_power_command_selector(
+                option_one(invocation, "command").unwrap_or("request"),
+            )?;
+            let value_raw = parse_power_channel_value(&invocation.positionals[0])?;
+            run(
+                target,
+                SetNvapiPowerCommand {
+                    channel,
+                    command,
+                    value: value_raw,
+                },
+            )?;
+            Ok(power_command_json(channel, command, value_raw, true))
         }
         Command::GetTopRelsRatio => {
             let Some((offset, raw)) = run(target, QueryNvapiTopRelsRatio)?.output else {
@@ -8907,10 +9044,12 @@ mod tests {
             | Command::GetDNotifier
             | Command::SetDNotifier
             | Command::GetPowerCeiling
-            | Command::GetPowerChannels
+            | Command::GetPwrCurInfo
+            | Command::GetPowerCommand
             | Command::GetBoostLocks
             | Command::GetThermalChannels
             | Command::SetPwrCurLimit
+            | Command::SetPowerCommand
             | Command::GetTopRelsRatio
             | Command::SetTopRelsRatio
             | Command::GetVoltRailInfo
@@ -9337,6 +9476,52 @@ mod tests {
         assert_eq!(Command::GetEdid.adapters(), &NVAPI_ONLY);
         assert_eq!(Command::SetEdid.adapters(), &NVAPI_ONLY);
         assert_eq!(Command::ClearEdid.adapters(), &NVAPI_ONLY);
+        assert_eq!(Command::GetPwrCurInfo.adapters(), &NVAPI_ONLY);
+        assert_eq!(Command::GetPowerCommand.adapters(), &NVAPI_ONLY);
+        assert_eq!(Command::SetPowerCommand.adapters(), &NVAPI_ONLY);
+    }
+
+    #[test]
+    fn power_command_commands_parse() {
+        // Renamed read command: get-power-channels is gone.
+        let invocation = parse_args(["get-pwr-cur-info"]).unwrap();
+        assert_eq!(invocation.command, Some(Command::GetPwrCurInfo));
+        assert!(parse_args(["get-power-channels"]).is_err());
+
+        // ExtendedLimits power-command lease read: channel + selector options.
+        let invocation = parse_args([
+            "get-power-command",
+            "--channel",
+            "0",
+            "--command",
+            "observed",
+        ])
+        .unwrap();
+        assert_eq!(invocation.command, Some(Command::GetPowerCommand));
+        assert_eq!(option_one(&invocation, "channel"), Some("0"));
+        assert_eq!(option_one(&invocation, "command"), Some("observed"));
+        // Defaults + validation live in the dispatch helpers.
+        assert_eq!(
+            parse_power_command_channel(&parse_args(["get-power-command"]).unwrap()).unwrap(),
+            0
+        );
+        assert!(
+            parse_power_command_channel(
+                &parse_args(["get-power-command", "--channel", "32"]).unwrap()
+            )
+            .is_err()
+        );
+        assert_eq!(parse_power_command_selector("observed").unwrap(), 0xF8);
+        assert_eq!(parse_power_command_selector("REQUEST").unwrap(), 0xFE);
+        assert_eq!(parse_power_command_selector("0xfe").unwrap(), 0xFE);
+        assert!(parse_power_command_selector("0xAA").is_err());
+
+        // Write form takes one VALUE positional.
+        let invocation = parse_args(["set-power-command", "100", "--command", "request"]).unwrap();
+        assert_eq!(invocation.command, Some(Command::SetPowerCommand));
+        assert_eq!(invocation.positionals, vec!["100"]);
+        assert_eq!(option_one(&invocation, "command"), Some("request"));
+        assert!(parse_args(["set-power-command"]).is_err());
     }
 
     #[test]

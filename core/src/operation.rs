@@ -2252,7 +2252,7 @@ impl GpuOperation for QueryNvapiThermalChannels {
 
 /// PowerChannels control write (raw driver-unit value: mA on OCP current
 /// channels, mW on the board-power row; the CLI resolves nvvdd/msvdd to
-/// the generation's OCP pair or takes any `get-power-channels` index).
+/// the generation's OCP pair or takes any `get-pwr-cur-info` index).
 /// nvapi-rs clamps to the driver [min,max] window (plus the 1..5001 A
 /// envelope on OCP current channels) and runs the full RMW + readback +
 /// rollback recipe. HIGH RISK: raising an OCP ceiling disables a safety
@@ -2278,6 +2278,60 @@ impl GpuOperation for SetNvapiPowerChannelValue {
             .nvapi()?
             .set_power_channel_value(self.policy_id, self.subtype, self.value_raw)
             .map_err(Error::from)
+    }
+}
+
+/// ExtendedLimits PowerCommand channel read (NDA 0x33AB0353, packet stamp
+/// v1|1320; xOCD 2.0 `ReadPowerCommand`). One cell of the kernel
+/// power-command lease keyed by (channel, command): `command` 0xF8 =
+/// observed, 0xFE = the kernel power-cap request. Structural refusals error
+/// (the packet contract is validated in nvapi-rs), so there is no `Ok(None)`
+/// — an unsupported generation errors instead.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiPowerCommand {
+    pub channel: u8,
+    pub command: u32,
+}
+
+impl GpuOperation for QueryNvapiPowerCommand {
+    type Output = u32;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiPowerCommand
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .power_command(self.channel, self.command)
+            .map_err(Error::from)
+    }
+}
+
+/// ExtendedLimits PowerCommand channel write (NDA 0x17695269, packet stamp
+/// v1|1320; xOCD 2.0 `SetPowerCommand`). nvapi-rs rejects the 0/0xFFFFFFFF
+/// unset sentinels, writes, and verifies by re-read. DANGEROUS where
+/// `command` = 0xFE — it drives the kernel-side power-cap request and there
+/// is no implicit restore; the caller owns the baseline.
+#[derive(Clone, Copy, Debug)]
+pub struct SetNvapiPowerCommand {
+    pub channel: u8,
+    pub command: u32,
+    pub value: u32,
+}
+
+impl GpuOperation for SetNvapiPowerCommand {
+    type Output = u32;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiPowerCommand
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let gpu = target.nvapi()?;
+        gpu.set_power_command(self.channel, self.command, self.value)
+            .map_err(Error::from)?;
+        Ok(self.value)
     }
 }
 

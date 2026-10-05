@@ -296,6 +296,49 @@ pub(super) fn format_power_ceiling(output: &Value) -> Vec<String> {
     ]
 }
 
+/// Human output for `get-power-command`: one ExtendedLimits power-command
+/// lease cell (raw value, or the mW/W view on the request command where the
+/// live unit is known).
+pub(super) fn format_power_command(output: &Value) -> Vec<String> {
+    let channel = output.get("channel").and_then(Value::as_u64).unwrap_or(0);
+    let command = output.get("command").and_then(Value::as_str).unwrap_or("?");
+    if output.get("unset").and_then(Value::as_bool) == Some(true) {
+        return vec![format!(
+            "  Power command (channel {channel}, {command}): unset (0xFFFFFFFF)"
+        )];
+    }
+    let value = output.get("value").and_then(Value::as_u64).unwrap_or(0);
+    let mut lines = vec![format!(
+        "  Power command (channel {channel}, {command}): {value}"
+    )];
+    if let (Some(mw), Some(watt)) = (
+        output.get("value_mW").and_then(Value::as_u64),
+        output.get("value_W").and_then(Value::as_f64),
+    ) {
+        lines.push(format!("    {mw} mW ({watt:.1} W)"));
+    }
+    lines
+}
+
+/// Human output for `set-power-command` — the post-write readback nvapi-rs
+/// verified is what the formatter prints.
+pub(super) fn format_set_power_command(output: &Value) -> Vec<String> {
+    let channel = output.get("channel").and_then(Value::as_u64).unwrap_or(0);
+    let command = output.get("command").and_then(Value::as_str).unwrap_or("?");
+    let value = output.get("value").and_then(Value::as_u64).unwrap_or(0);
+    match (
+        output.get("value_mW").and_then(Value::as_u64),
+        output.get("value_W").and_then(Value::as_f64),
+    ) {
+        (Some(mw), Some(watt)) => vec![format!(
+            "  Power command set: channel {channel} {command} = {mw} mW ({watt:.1} W)"
+        )],
+        _ => vec![format!(
+            "  Power command set: channel {channel} {command} = {value}"
+        )],
+    }
+}
+
 pub(super) fn format_power_mode(output: &Value) -> Vec<String> {
     let supported = output.get("supported").and_then(Value::as_bool);
     let active = output.get("active").and_then(Value::as_str).unwrap_or("?");
